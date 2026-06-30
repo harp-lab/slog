@@ -1,0 +1,14 @@
+table (parent int int)
+table (grandparent int int)
+
+facts
+(parent 1 2)
+(parent 2 3)
+(parent 3 4)
+(parent 4 5)
+
+rule
+(parent X Y)
+(parent Y Z)
+-->
+(grandparent X Z)

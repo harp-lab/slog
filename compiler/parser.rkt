@@ -1,0 +1,420 @@
+#lang racket
+
+(provide parse-port
+         parse-file
+         strip-prov
+         verbose-print-ast
+         parse-error
+         parse-error-delim
+         syn->filename)
+
+(require "lexer.rkt")
+
+(define (syn->filename ast)
+  (match ast
+    [`(syn (prov ,t ,_) ,_ ...) (pos->file (token->pos t))]
+    [_ (error "Cannot lookup filename for syntax.")]))
+
+(define (whitespace n)
+  (if (= n 0)
+      ""
+      (string-append " " (whitespace (- n 1)))))
+
+(define module-toks (hash))
+(define (parse-error-delim msg tok0 tok1)
+  (match tok0
+    [`(token ,t (pos ,m ,_ ...) ,p1)
+     (define mtoks (hash-ref module-toks m))
+     (define toks0
+       (let loop ([toks mtoks])
+         (if (equal? (car toks) tok0)
+             toks
+             (loop (cdr toks)))))
+     (define toks1
+       (let loop ([toks toks0])
+         (if (equal? (car toks) tok1)
+             toks
+             (loop (cdr toks)))))
+     (parse-error msg toks0 toks1)]))
+(define (parse-error msg toks [after-toks '()])
+  (newline)
+  ; Pretty-prints an error message
+  (define (line-prefix line)
+    (let ([pre (format "~a: " line)]) (string-append (whitespace (- 5 (string-length pre))) pre)))
+  ; whitespace up to first column
+  (define col (pos->startcol (token->pos (first toks))))
+  (define origin-line (pos->startline (token->pos (first toks))))
+  (display (line-prefix origin-line))
+  (display (whitespace col))
+  ; prints toks
+  (let loop ([toks toks]
+             [line origin-line]
+             [col col])
+    (if (null? toks)
+        (newline)
+        (let* ([ctok (first toks)]
+               [cpos (token->pos ctok)])
+          (if (> (pos->startline cpos) (+ 3 origin-line))
+              (newline)
+              (if (> (pos->startline cpos) line)
+                  (begin
+                    (newline)
+                    (display (line-prefix (add1 line)))
+                    (loop toks (add1 line) 0))
+                  (if (> (pos->startcol cpos) col)
+                      (let ([dist (- (pos->startcol cpos) col)])
+                        (display (whitespace dist))
+                        (loop toks line (+ col dist)))
+                      (begin
+                        (display (token->str ctok))
+                        (loop (cdr toks) (pos->endline cpos) (pos->endcol cpos))))))))
+    ; print error
+
+    (newline))
+  (display (format "Error: ~a" msg))
+  (newline)
+  (newline)
+  (exit 1))
+
+(define (peek toks [i 0])
+  ; peeks at the ith token
+  (if (> (length toks) i)
+      (list-ref toks i)
+      `(token eof (position "" 0 0 0 0) "")))
+
+(define (advance toks [i 1])
+  ; removes the first i number of tokens
+  (if (or (null? toks) (= i 0))
+      toks
+      (advance (cdr toks) (- i 1))))
+
+(define (expect toks str)
+  ; expects a token and advances toks
+  (if (and (not (null? toks)) (equal? str (token->str (first toks))))
+      (advance toks)
+      (parse-error (format "expected '~a'" str) toks)))
+
+(define (strip-prov e)
+  ; strips provenance information from an AST
+  (match e
+    [`(syn ,prov . ,e0) (strip-prov e0)]
+    [(? list? e) (map strip-prov e)]
+    [`((token ,_ ...) ...) '(toks)]
+    [(? set? s) (list->set (map strip-prov (set->list s)))]
+    [(? hash? h)
+     (foldl (lambda (k h+) (hash-set h+ (strip-prov k) (strip-prov (hash-ref h k))))
+            (hash)
+            (hash-keys h))
+     ;`(hash: ,@(map strip-prov (hash-keys h)))
+     ]
+    [_ e]))
+
+(define (verbose-print-ast e)
+  ; dumps a preorder traversal pretty-printing of an AST to STDOUT
+  (match e
+    [`(module ,name ,toks
+        ,ast)
+     (verbose-print-ast ast)]
+    [`(syn (prov ,rest ...) const ,e0) (pretty-print e)]
+    [`(syn (prov ,rest ...) ,tag ,es ...)
+     (pretty-print `(syn (prov ,@rest) ,tag ,(map strip-prov es)))
+     (void (map verbose-print-ast es))]))
+
+(define (emit-expr expr before-toks after-toks)
+  ; emits a provenance-tagged expression
+  (when (not (list? expr))
+    (error "Parser: emit-expr must be given a proper list"))
+  (define left-tok (peek before-toks))
+  (define right-tok
+    (let loop ([t before-toks])
+      (if (or (equal? (peek after-toks) (peek t)) (equal? (peek after-toks) (peek t 1)))
+          (peek t)
+          (loop (advance t)))))
+  `(syn (prov ,left-tok ,right-tok) . ,expr))
+
+(define (parse-bracketed-then toks parser close-str k)
+  (if (equal? close-str (token->str (peek toks)))
+      (k '() (advance toks))
+      (let ()
+        (match-define (cons e0 toks+) (parser toks))
+        (parse-bracketed-then toks+ parser close-str (lambda (es toks++) (k (cons e0 es) toks++))))))
+
+(define (parse-atom toks)
+  ; parses an atom expression from toks
+  (define tok (peek toks))
+  (match (token->tag tok)
+    [(or 'id 'ref)
+     (define symb (string->symbol (token->str tok)))
+     (if (member symb '(true false))
+         (cons (emit-expr `(const ,symb) toks (advance toks)) (advance toks))
+         (cons symb (advance toks)))]
+    ['num
+     (cons (emit-expr `(const ,(string->number (token->str tok))) toks (advance toks))
+           (advance toks))]
+    ['str
+     (define tokstr (token->str tok))
+     (cons (emit-expr `(const ,(substring tokstr 1 (- (string-length tokstr) 1))) toks (advance toks))
+           (advance toks))]
+    #;['op
+       #:when (equal? "|" (token->str tok))
+       (parse-bracketed-then
+        (advance toks)
+        parse
+        "|"
+        (lambda (es toks+)
+          (cons (emit-expr `(,(emit-expr `(ref ,(string->symbol "||")) toks toks+) . ,es) toks toks+)
+                toks+)))]
+    ['popen
+     #:when (hash-has-key? keywords (token->str (peek toks 1)))
+     (match-define (cons e0 toks+) (parse (advance toks)))
+     (cons e0 (expect toks+ ")"))]
+    ['popen
+     #:when (equal? "ref" (token->str (peek toks 1)))
+     (parse-bracketed-then (advance toks 2)
+                           parse
+                           ")"
+                           (lambda (es toks+)
+                             (cons (emit-expr `(,(string->symbol "ref") ,@es) toks toks+) toks+)))]
+    ['popen
+     #:when (eq? 'op (token->tag (peek toks 1)))
+     (parse-bracketed-then
+      (advance toks 2)
+      parse
+      ")"
+      (lambda (es toks+)
+        (cons (emit-expr `(,(string->symbol (token->str (peek toks 1))) ,@es) toks toks+) toks+)))]
+    ['popen
+     (parse-bracketed-then (advance toks)
+                           parse
+                           ")"
+                           (lambda (es toks+) (cons (emit-expr es toks toks+) toks+)))]
+    ['copen
+     (parse-bracketed-then (advance toks)
+                           parse
+                           "}"
+                           (lambda (es toks+)
+                             (cons (emit-expr `(,(string->symbol "{}") . ,es) toks toks+) toks+)))]
+    ['sopen
+     (parse-bracketed-then (advance toks)
+                           parse
+                           "]"
+                           (lambda (es toks+)
+                             (cons (emit-expr `(,(string->symbol "[]") . ,es) toks toks+) toks+)))]
+    [_ (parse-error "Expected an atom---literal, variable, s-expr, etc." toks)]))
+
+(define (parse-w-rem-operators-pre toks prefixes ops)
+  (define tokstr (token->str (peek toks)))
+  (if (set-member? prefixes tokstr)
+      (let* ([toks+ (advance toks)])
+        (match-define (cons e0 toks++) (parse-w-rem-operators toks+ ops))
+        (cons (emit-expr `(,(string->symbol tokstr) ,e0) toks toks++) toks++))
+      (parse-w-rem-operators toks (cdr ops))))
+
+(define (parse-w-rem-operators-post toks postfixes ops)
+  (match-define (cons e0 toks+) (parse-w-rem-operators toks (cdr ops)))
+  (let loop ([ops '()]
+             [after-tokss '()]
+             [toks+ toks+])
+    (define tokstr (token->str (peek toks+)))
+    (define toks++ (advance toks+))
+    (if (set-member? postfixes tokstr)
+        ; found another postfix operator:
+        (loop (cons (string->symbol tokstr) ops) (cons toks++ after-tokss) toks++)
+        ; done finding postfix operators:
+        (if (null? ops)
+            ; there were none:
+            (cons e0 toks+)
+            ; there were some:
+            (let loop ([ops (reverse ops)]
+                       [after-tokss (reverse after-tokss)]
+                       [e0 e0])
+              (if (null? ops)
+                  (cons e0 toks+)
+                  (loop (cdr ops)
+                        (cdr after-tokss)
+                        (emit-expr `(,(car ops) ,e0) toks (car after-tokss)))))))))
+
+(define (parse-w-rem-operators toks ops)
+  ; parses operators in order (from ops, a suffix of operators) from toks
+  (if (null? ops)
+      (parse-atom toks)
+      (match (car (first ops))
+        ['bin (parse-w-rem-operators-bin toks (list->set (cdr (first ops))) ops)]
+        ['pre (parse-w-rem-operators-pre toks (list->set (cdr (first ops))) ops)]
+        ['post (parse-w-rem-operators-post toks (list->set (cdr (first ops))) ops)])))
+
+(define (parse-w-rem-operators-bin toks group ops)
+  ; parses an operator group from toks, with remaining ops (right assoc)
+  (match-define (cons e0 toks+) (parse-w-rem-operators toks (rest ops)))
+  (define tokstr (token->str (peek toks+)))
+  (define tokstrsym (string->symbol tokstr))
+  (if (and (not (eq? 'ref (token->tag (peek toks+)))) (set-member? group tokstr))
+      (let ([toks++ (advance toks+)])
+        (match-define (cons e1 toks+++) (parse-w-rem-operators toks++ ops))
+        (match e1
+          [`(syn ,_ ,(? (lambda (x) (equal? x tokstrsym))) ,e+s ...)
+           (cons (emit-expr `(,tokstrsym ,e0 ,@e+s) toks toks+++) toks+++)]
+          [_ (cons (emit-expr `(,tokstrsym ,e0 ,e1) toks toks+++) toks+++)]))
+      (cons e0 toks+)))
+
+(define (parse toks)
+  ; parses a single expression from toks, checking keywords, then operators, postfixes, prefixes, atoms
+  (define tok (peek toks))
+  (define tokstr (token->str tok))
+  (if (hash-has-key? keywords tokstr)
+      ((hash-ref keywords tokstr) toks)
+      (parse-w-rem-operators toks operators)))
+
+(define (parse-N toks parser n)
+  ; parses N expressions from toks and returns a list of ASTs
+  (match n
+    [0 (cons '() toks)]
+    [_
+     (match-define (cons e toks+) (parser toks))
+     (match-define (cons es toks++) (parse-N toks+ parser (- n 1)))
+     (cons `(,e . ,es) toks++)]))
+
+(define (make-parse-id-then-N-emit parser N)
+  ; idiom used for keywords, prefixes, generates a parser for id e...^N
+  (lambda (toks)
+    (match-define (cons expr toks+) (parse-id-then-N toks parser N))
+    (cons (emit-expr expr toks toks+) toks+)))
+
+(define (parse-id-then-N toks parser N)
+  ; parses id e...^N from toks
+  (define tag (string->symbol (token->str (peek toks))))
+  (define toks+ (advance toks))
+  (match-define (cons es toks++) (parse-N toks+ parser N))
+  (cons `(,tag ,@es) toks++))
+
+(define (parse-def toks is-toplevel)
+  (define toks+1 (advance toks)) ; always 'def'
+  (match-define (cons pattern-e toks+2) (parse toks+1))
+  (match-define (cons w-or-b toks+3) (parse toks+2))
+  (if (equal? (last w-or-b) 'when)
+      (let ()
+        (match-define (cons guard-e toks+4) (parse toks+3))
+        (match-define (cons body-e toks+5) (parse toks+4))
+        (match-define (cons rest-e toks+6)
+          (if is-toplevel
+              (parse-top-level toks+5)
+              (parse toks+5)))
+        (cons (emit-expr `(def ,pattern-e ,guard-e ,body-e ,rest-e) toks toks+6) toks+6))
+      (let ()
+        (match-define (cons rest-e toks+4)
+          (if is-toplevel
+              (parse-top-level toks+3)
+              (parse toks+3)))
+        (cons (emit-expr `(def ,pattern-e ,w-or-b ,rest-e) toks toks+4) toks+4))))
+
+(define (parse-top-level toks)
+  ;; parses top level expression from toks
+  (define top-level-keywords (set "def" "rule" "enum" "facts" "table" "struct" "union" ""))
+  (match (token->str (peek toks))
+    ["def" (parse-def toks #t)]
+    [(or "import" "export")
+     (define import/export (string->symbol (token->str (peek toks))))
+     (define toks+ (advance toks))
+     (match-define (cons e0 toks+2) (parse toks+))
+     (when (not (equal? "as" (token->str (peek toks+2))))
+       (parse-error (format "Expected 'as' next in ~a statement" import/export) toks))
+     (match-define (cons e1 toks+3) (parse (advance toks+2)))
+     (match-define (cons body toks+4) (parse-top-level toks+3))
+     (cons (emit-expr `(,import/export ,e0 ,e1 ,body) toks toks+3) toks+4)]
+    ["facts"
+     (let loop ([toks (advance toks)]
+                [fact-lst '()])
+       (if (set-member? top-level-keywords (token->str (peek toks)))
+           (let () ;; parse the rest of the top level and emit rule
+             (match-define (cons topbody toks+) (parse-top-level toks))
+             (cons (emit-expr `(facts ,@fact-lst ,topbody) toks toks+) toks+))
+           (let () ;; gather each fact
+             (match-define (cons e toks+) (parse toks))
+             (loop toks+ `(,@fact-lst ,e)))))]
+    ["rule"
+     (let loop ([toks+ (advance toks)]
+                [body0 '()])
+       (define arrow (string->symbol (token->str (peek toks+))))
+       (if (or (eq? arrow '-->) (eq? arrow '<--))
+           (let loop ([toks+ (advance toks+)]
+                      [body1 '()])
+             (if (set-member? top-level-keywords (token->str (peek toks+)))
+                 (let () ; parse the rest of the top level and emit rule
+                   (match-define (cons topbody toks++) (parse-top-level toks+))
+                   (cons (emit-expr `(rule ,@body0 ,arrow ,@body1 ,topbody) toks toks+) toks++))
+                 (let () ; gather each clause in the second half
+                   (match-define (cons e toks++) (parse toks+))
+                   (loop toks++ `(,@body1 ,e)))))
+           (let () ; gather each clause in the first half
+             (match-define (cons e toks++) (parse toks+))
+             (loop toks++ `(,@body0 ,e)))))]
+    ["let"
+     (match-define (cons tag-pat-rhs toks+) (parse-id-then-N toks parse 2))
+     (match-define (cons body toks++) (parse-top-level toks+))
+     (cons (emit-expr `(,@tag-pat-rhs ,body) toks toks++) toks++)]
+    [(or "include" "run" "union" "struct" "table" "enum")
+     (match-define (cons tag-str toks+) (parse-id-then-N toks parse 1))
+     (match-define (cons body toks++) (parse-top-level toks+))
+     (cons (emit-expr `(,@tag-str ,body) toks toks++) toks++)]
+    ["" (cons (emit-expr '(top-level) toks toks) toks)]
+    [_ (parse toks)]))
+
+; Defines infix operators, precedence, grouping, associativity
+(define operators
+  `((bin ";") (bin "<-")
+              (pre "->")
+              (bin "&" "|")
+              (bin "=" "/=")
+              (bin ":=")
+              (bin "+" "-")
+              (bin "*" "/" "%")
+              (bin "^")
+              (post "...")
+              (bin ":")
+              (bin "?")
+              (pre "`" ",")
+              (bin ".")))
+
+; Defines keyword parsers
+(define keywords
+  (hash) ; turn off for slog?
+  #;(hash "def"
+          (lambda (toks) (parse-def toks #f))
+          "let"
+          (make-parse-id-then-N-emit parse 3)
+          "use"
+          (make-parse-id-then-N-emit parse 2)
+          "if"
+          (make-parse-id-then-N-emit parse 3)
+          "lambda"
+          (make-parse-id-then-N-emit parse 2)
+          "#"
+          (make-parse-id-then-N-emit parse 2)))
+
+; Parses a module from an input port
+(define (parse-port filename input-port)
+  (define lex (make-tinkr-lexer filename input-port))
+  (define raw-toks
+    (let loop ()
+      (let ([tok (lex input-port)])
+        (match tok
+          [`(token eof ,_ ...) `(,tok)]
+          [_ `(,tok . ,(loop))]))))
+  (define real-toks
+    (filter (lambda (x)
+              (and (not (eq? (first x) eof))
+                   (> (length x) 1)
+                   (not (eq? (second x) 'space))
+                   (not (eq? (second x) 'comment))
+                   (not (eq? (second x) 'newline))))
+            raw-toks))
+  (set! module-toks (hash-set module-toks filename raw-toks))
+  (match-define (cons file-ast residual-toks) (parse-top-level real-toks))
+  (if (eq? 'eof (token->tag (peek residual-toks)))
+      `(module ,filename ,raw-toks
+         ,file-ast)
+      (parse-error "End of file expected." real-toks residual-toks)))
+
+; Parses a module from a filename
+(define (parse-file filename)
+  (with-input-from-file filename (lambda () (parse-port filename (current-input-port)))))

@@ -1,0 +1,15 @@
+table (a int)
+table (b int)
+table (c int int)
+
+facts
+(a 1)
+(a 2)
+(b 10)
+(b 20)
+
+rule
+(a X)
+(b Y)
+-->
+(c X Y)

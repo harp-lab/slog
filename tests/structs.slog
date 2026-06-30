@@ -1,0 +1,13 @@
+struct (pair int int)
+table (in int int)
+table (out pair)
+
+facts
+(in 1 2)
+(in 3 4)
+(in 1 2)
+
+rule
+(in X Y)
+-->
+(out (pair X Y))
