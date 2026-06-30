@@ -1,4 +1,4 @@
-Y#lang racket
+#lang racket
 
 (require racket/cmdline
          racket/format

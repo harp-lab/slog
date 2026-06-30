@@ -239,7 +239,9 @@
            "-fmax-errors=1"
            "-shared"
            "-g"
-           ;"-O3"
+           ;; Operator templates fuse into one tight loop only once inlined;
+           ;; at -O0 each push operator would be a separate call per tuple.
+           "-O2"
            (format "-o~a" so-path)
            extra-flags))
   (let loop () ; echo (debug) output from daemon
