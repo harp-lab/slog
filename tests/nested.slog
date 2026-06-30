@@ -1,0 +1,13 @@
+struct (bar int)
+struct (foo bar int)
+table (in int int)
+table (out foo)
+
+facts
+(in 1 2)
+(in 3 4)
+
+rule
+(in X Y)
+-->
+(out (foo (bar X) Y))

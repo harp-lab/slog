@@ -194,39 +194,6 @@
                  inner
                  ((emit-lines indent-len) "});"))))]))
 
-     ;; Struct head (= z0 (name ord zs)) -- preserved verbatim from the original
-     ;; nested-loop emitter (do/while + continue-on-dup); the struct/intern path
-     ;; is still unverified, so this is intentionally NOT routed through the
-     ;; operators.h sink (which is shaped for relation heads where |zs|==|ord|).
-     (define (emit-struct-head head-name head-ord zs i indent-len)
-       (define head-index (format "head_index[~a]" i))
-       (string-append
-        ((emit-lines indent-len) (format "do {  // head clause ~a" `(,head-name ,head-ord ,@zs)))
-        (if (null? head-ord)
-            ""
-            ((emit-lines indent-len)
-             (format "if (static_cast<slog::BTreeIndex<~a>*>(~a[buckethash(v_~a)])->contains(std::array<u64,~a>{~a})) continue;"
-                     (length zs) head-index (car zs) (length zs)
-                     (apply string-append
-                            (add-between (map (lambda (z) (format "v_~a" z)) zs) ", ")))))
-        ((emit-lines indent-len)
-         (format "newbatch[~a]->data[newbatch[~a]->usage] = 0;" i i)
-         (let ([head-ord (if (null? head-ord) (range (length zs)) head-ord)])
-           (foldl (lambda (z j acc)
-                    ((emit-lines 0) acc
-                                    (format "newbatch[~a]->data[newbatch[~a]->usage+~a] = v_~a;"
-                                            i i (list-ref head-ord j) z)))
-                  "" zs (range (length zs))))
-         (format "newbatch[~a]->usage += ~a;"
-                 i (if (null? head-ord) (length zs) (length head-ord)))
-         (format "if (newbatch[~a]->usage + ~a >= batch_size_max)"
-                 i (if (null? head-ord) (length zs) (length head-ord)))
-         "{"
-         (format "  head_rel[~a]->sendBatch(newbatch[~a]);" i i)
-         (format "  newbatch[~a] = new slog::InsertBatch();" i)
-         "}"
-         "} while (false);")))
-
      ;; The innermost continuation: emit each head clause.  Relation/temp heads
      ;; go through the operators.h sink (emit / emit_temp, which do their own
      ;; dedup + batch flush and early-return on a duplicate -- independently per
@@ -256,8 +223,19 @@
                                     "}"))
                     head-env)]
              [`(= ,z0 (,head-name ,head-ord ,zs ...))
-              (cons (string-append head-acc-str
-                                   (emit-struct-head head-name head-ord zs i indent-len))
+              ;; Struct head: A = stored arity (fields + id column).  The sink
+              ;; writes the id placeholder and scatters fields via head-ord;
+              ;; InternStructTask assigns the real id and dedups (operators.h).
+              (define A (add1 (length zs)))
+              (cons (string-append
+                     head-acc-str
+                     ((emit-lines indent-len)
+                      (format "slog::emit_struct<~a>(head_rel[~a], newbatch[~a], std::array<u64,~a>{~a}, std::array<u16,~a>{~a});"
+                              A i i (length zs)
+                              (apply string-append
+                                     (add-between (map (lambda (z) (format "v_~a" z)) zs) ", "))
+                              A
+                              (apply string-append (add-between (map ~a head-ord) ", ")))))
                     (set-add head-env z0))]
              [`(,head-name ,head-ord ,zs ...)
               (define A (length zs))
@@ -352,9 +330,10 @@
            [`(let ,x ,y) acc]
            [`(== ,x ,y) acc]
            [`(= ,_ (,head-name ,head-ord ,_ ...))
+            ;; Struct head: emit_struct needs only head_rel (dedup/id lives in
+            ;; the intern phase), so no head_index lookup is set up here.
             (string-append acc
-                           (format "    head_rel[~a] = db->getRelation(\"~a\");\n" i head-name)
-                           (add-index-def head-name (format "head_index[~a]" i) head-ord))]
+                           (format "    head_rel[~a] = db->getRelation(\"~a\");\n" i head-name))]
            [`(,head-name () ,_ ...)
             (string-append acc (format "    head_rel[~a] = db->getRelation(\"~a\");\n" i head-name))]
            [`(,head-name ,head-ord ,_ ...)

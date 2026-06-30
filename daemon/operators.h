@@ -122,6 +122,30 @@ inline void emit_temp(Relation* rel, InsertBatch*& nb, const std::array<u64, A>&
   }
 }
 
+// SINK (struct head): scatter the A-1 field values into their storage slots and
+// write a 0 placeholder into the id column; InternStructTask owns dedup (content
+// match on the master index) and id assignment (struct_encode), so this sink does
+// NO emit-time dedup -- it just produces the not-yet-interned tuple.  `head_ord`
+// is the master-index ordering: head_ord[A-1] is the id column's storage position
+// (nominal 0) and head_ord[j<A-1] the storage position of field j.  0 is a safe
+// placeholder since slog_null (which intern skips) is not 0.
+template <u16 A>
+inline void emit_struct(Relation* head_rel, InsertBatch*& nb,
+                        const std::array<u64, A - 1>& fields,
+                        const std::array<u16, A>& head_ord)
+{
+  u64* d = nb->data + nb->usage;
+  d[head_ord[A - 1]] = 0;                              // id placeholder
+  for (u16 j = 0; j < A - 1; ++j)
+    d[head_ord[j]] = fields[j];
+  nb->usage += A;
+  if (nb->usage + A >= batch_size_max)
+  {
+    head_rel->sendBatch(nb);
+    nb = new InsertBatch();
+  }
+}
+
 
 // ---------------------------------------------------------------------------
 // Write- and intern-phase tasks.  Unlike read-phase rules (each a bespoke
