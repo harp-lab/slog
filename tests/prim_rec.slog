@@ -1,0 +1,16 @@
+;; Primitives inside a recursive fixpoint: a comparison guard provides the
+;; termination condition and arithmetic advances the recursion.  Exercises
+;; delta-driven semi-naive evaluation of prim-bearing rules.
+
+table (count int)          ;; 0,1,2,3,4,5
+table (tri int int)        ;; (n, triangular number sum_{i=0}^{n} i)
+
+facts
+(count 0)
+(tri 0 0)
+
+;; count up to 5
+rule (count X) (< X 5) (= Y (+ X 1)) --> (count Y)
+
+;; triangular numbers, accumulating while N < 5
+rule (tri N S) (< N 5) (= N2 (+ N 1)) (= S2 (+ S N2)) --> (tri N2 S2)

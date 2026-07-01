@@ -137,6 +137,11 @@
           (string-append
            ((emit-lines indent-len) (format "if (v_~a == v_~a) return;" x y))
            (add-rule-body bodys-rem env head-fun parallelize indent-len))]
+         [`((cmp ,fn ,x ,y) ,bodys-rem ...)
+          ;; Ordering guard: keep this tuple only if the comparison holds.
+          (string-append
+           ((emit-lines indent-len) (format "if (!_prim_~a(db, v_~a, v_~a)) return;" fn x y))
+           (add-rule-body bodys-rem env head-fun parallelize indent-len))]
          [`((join_with ,_ ,index ,x0 ,xs ...) . ,bodys-rem)
           ;; The chosen index orders the bound (join-key) columns first, so this
           ;; literal's already-bound vars are a prefix of (x0 . xs).  K of them
@@ -211,17 +216,7 @@
                                             x name (prim-arglist args))))
                     (set-add head-env x))]
              [`(== ,x ,y)
-              (cons (string-append head-acc-str
-                                   ((emit-lines indent-len)
-                                    (format "unifybatch->data[unifybatch->usage] = v_~a;" x)
-                                    (format "unifybatch->data[unifybatch->usage+1] = v_~a;" y)
-                                    "unifybatch->usage += 2;"
-                                    "if (unifybatch->usage + 2 >= batch_size_max)"
-                                    "{"
-                                    "  db->sendEqBatch(unifybatch);"
-                                    "  unifybatch = new slog::InsertBatch();"
-                                    "}"))
-                    head-env)]
+              (error "value unification (==) heads are not implemented")]
              [`(= ,z0 (,head-name ,head-ord ,zs ...))
               ;; Struct head: A = stored arity (fields + id column).  The sink
               ;; writes the id placeholder and scatters fields via head-ord;
@@ -274,6 +269,7 @@
                 (match-define (list bodys defs names) acc)
                 (match body-clause
                   [`(/= ,x ,y) (list (cons body-clause bodys) defs names)]
+                  [`(cmp ,fn ,x ,y) (list (cons body-clause bodys) defs names)]
                   [`(let ,x ,y) (list (cons body-clause bodys) defs names)]
                   [`(read_delta ,name ,ys ...) (list (cons body-clause bodys) defs names)]
                   [`(join_with ,(and 'delta d) ... ,name ,ind ,ys ...)
@@ -305,10 +301,6 @@
               head*
               (range (length head*))))
 
-     ;; Only allocate/flush a unify (==) batch when the rule actually unifies.
-     (define has-unify?
-       (ormap (lambda (cl) (match cl [`(== ,_ ,_) #t] [_ #f])) head*))
-
      ((emit-lines 2)
       (format "// ~a" rule)
       (format "class ~a : public slog::Task" readtask)
@@ -328,7 +320,6 @@
        (lambda (head-cl i acc)
          (match head-cl
            [`(let ,x ,y) acc]
-           [`(== ,x ,y) acc]
            [`(= ,_ (,head-name ,head-ord ,_ ...))
             ;; Struct head: emit_struct needs only head_rel (dedup/id lives in
             ;; the intern phase), so no head_index lookup is set up here.
@@ -352,9 +343,6 @@
       (format "  {")
       (if (null? body0) ;; todo change this to static task?
           (format "    if (db->getIterationCount() > ~a) return;" (length head*))
-          "")
-      (if has-unify?
-          (format "    slog::InsertBatch* unifybatch = new slog::InsertBatch();")
           "")
       (format "    slog::InsertBatch* newbatch[~a];" (length head*))
       (foldl (lambda (i acc)
@@ -398,9 +386,6 @@
                (string-append acc "      " (format "head_rel[~a]->sendBatch(newbatch[~a]);\n" i i)))
              ""
              real-head-is)
-      (if has-unify?
-          (format "      db->sendEqBatch(unifybatch);\n")
-          "")
       (format "    }")
       (format "  };")
       (format "  for (u16 b = 0; b < ~a; ++b)" (if (null? body0) 1 bucket-count))
@@ -465,8 +450,8 @@
              s
              (match cv
                [(? string?) (format "  v_~a = str_encode(db,\"~a\");\n" (hash-ref constants cv) cv)]
-               [(? integer?) (format "  v_~a = s32_encode(~a);\n" (hash-ref constants cv) cv)]
-               [(and (? number?) (? inexact?))
+               [(? exact-integer?) (format "  v_~a = s32_encode(~a);\n" (hash-ref constants cv) cv)]
+               [(? inexact-real?)
                 (format "  v_~a = float_encode(~a);\n" (hash-ref constants cv) cv)])))
           ""
           (hash-keys constants))

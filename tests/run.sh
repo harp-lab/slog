@@ -10,7 +10,7 @@ set -u
 cd "$(dirname "$0")/.."
 
 RUNS=4
-TESTS="reach grandparent line hub labels structs nested cartesian"
+TESTS="reach grandparent line hub labels structs nested cartesian prim_int prim_cmp prim_float prim_rec"
 update=0
 [ "${1:-}" = "--update" ] && update=1
 

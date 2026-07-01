@@ -1,0 +1,57 @@
+;; Integer primitive coverage: arithmetic, bitwise, shifts, unary.
+;; Negative literals are not parseable, so negative values are *derived*
+;; (via neg / - / bnot) to exercise signed and two's-complement behavior.
+;; One relation per op keeps goldens readable.
+
+table (in2 int int)
+table (in1 int)
+
+table (add int int int)
+table (sub int int int)
+table (mul int int int)
+table (dv  int int int)
+table (md  int int int)
+table (mn  int int int)
+table (mx  int int int)
+table (pw  int int int)
+table (bnd int int int)
+table (bor2 int int int)
+table (bxr int int int)
+table (shlr int int int)
+table (shrr int int int)
+table (absd int int int)
+
+table (negr int int)
+table (absr int int)
+table (bnr  int int)
+
+facts
+(in2 12 5)
+(in2 7 2)
+(in2 5 12)
+(in2 2 7)
+
+(in1 7)
+(in1 5)
+(in1 0)
+
+rule (in2 A B) (= R (+ A B))    --> (add A B R)
+rule (in2 A B) (= R (- A B))    --> (sub A B R)
+rule (in2 A B) (= R (* A B))    --> (mul A B R)
+rule (in2 A B) (= R (/ A B))    --> (dv A B R)
+rule (in2 A B) (= R (% A B))    --> (md A B R)
+rule (in2 A B) (= R (min A B))  --> (mn A B R)
+rule (in2 A B) (= R (max A B))  --> (mx A B R)
+rule (in2 A B) (= R (pow A B))  --> (pw A B R)
+rule (in2 A B) (= R (band A B)) --> (bnd A B R)
+rule (in2 A B) (= R (bor A B))  --> (bor2 A B R)
+rule (in2 A B) (= R (bxor A B)) --> (bxr A B R)
+rule (in2 A B) (= R (shl A B))  --> (shlr A B R)
+rule (in2 A B) (= R (shr A B))  --> (shrr A B R)
+
+;; abs of a derived (sometimes negative) difference
+rule (in2 A B) (= D (- A B)) (= R (abs D)) --> (absd A B R)
+
+rule (in1 A) (= R (neg A))  --> (negr A R)
+rule (in1 A) (= R (abs A))  --> (absr A R)
+rule (in1 A) (= R (bnot A)) --> (bnr A R)

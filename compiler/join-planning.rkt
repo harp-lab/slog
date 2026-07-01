@@ -1,7 +1,8 @@
 #lang racket
 
 (require "utils.rkt"
-         "parser.rkt")
+         "parser.rkt"
+         "preds.rkt")
 
 (provide plan-rule)
 
@@ -32,6 +33,7 @@
      (define (special-cl? cl)
        (match cl
          [`(syn ,_ /= ,x ,y) #t]
+         [`(syn ,_ ,(? primitive-cmp?) ,x ,y) #t]
          [`(syn ,_ let ,x ,y) #t]
          [_ #f]))
      (define (const-cl? cl)
@@ -46,8 +48,11 @@
                 (match hcl
                   [`(syn ,p = ,x ,cl)
                    #:when (set-member? env x)
-                   (define ux (gensymb 'uni))
-                   (cons env `(,@heads+ (syn ,p = ,ux ,cl) (syn ,p == ,ux ,x)))]
+                   ;; Two head clauses bind the same new id var to different
+                   ;; constructions -- a value-unification constraint whose
+                   ;; runtime (==) was never implemented.  Reject loudly.
+                   (error 'plan-rule
+                          "value unification (==) is not supported: head binds ~a twice" x)]
                   ;; when not already seen
                   [`(syn ,p = ,x ,cl) (cons (set-add env x) (cons hcl heads+))]
                   [_ (cons env (cons hcl heads+))]))
@@ -72,6 +77,7 @@
        (define (ground-special? cl)
          (match cl
            [`(syn ,_ /= ,x ,y) (and (set-member? ground+ x) (set-member? ground+ y))]
+           [`(syn ,_ ,(? primitive-cmp?) ,x ,y) (and (set-member? ground+ x) (set-member? ground+ y))]
            [`(syn ,_ let ,x (syn ,_ ,name ,args ...)) (subset? (list->set args) ground+)]
            [_ #f]))
        (define ins-special (filter ground-special? rem-special))
@@ -87,12 +93,13 @@
             (* 20
                (foldl (lambda (cl c) ;; special clauses it enables to run
                         (match cl
-                          [`(syn ,_ /= ,x ,y)
+                          [(or `(syn ,_ /= ,x ,y) `(syn ,_ ,(? primitive-cmp?) ,x ,y))
                            (if (and (not (and (set-member? ground+ x) (set-member? ground+ y)))
                                     (set-member? ground++ x)
                                     (set-member? ground++ y))
                                (add1 c)
-                               c)]))
+                               c)]
+                          [_ c]))
                       0
                       special-cls))))
        (define (pick-next rems)

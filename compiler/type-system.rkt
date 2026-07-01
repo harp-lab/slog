@@ -2,6 +2,7 @@
 
 (require "parser.rkt")
 (require "utils.rkt")
+(require "preds.rkt")
 
 (provide typecheck-rule)
 
@@ -15,15 +16,22 @@
      (define (add-to-local cl env)
        (match cl
          [`(syn ,_ /= ,x ,y) env]
+         [`(syn ,_ ,(? primitive-cmp?) ,x ,y) env]
          [`(syn ,_ = ,x (syn ,_ const ,(? string?))) (hash-set env x 'str)]
-         [`(syn ,_ = ,x (syn ,_ const ,(? integer?))) (hash-set env x 'int)]
+         [`(syn ,_ = ,x (syn ,_ const ,(? exact-integer?))) (hash-set env x 'int)]
+         [`(syn ,_ = ,x (syn ,_ const ,(? inexact-real?))) (hash-set env x 'float)]
          [`(syn ,_ = ,x (syn ,_ ,name ,args ...))
           #:when (hash-has-key? fun-env name)
           (match-define `(fun ,argts ... -> ,rett) (hash-ref fun-env name))
           (define env+
             (foldl (lambda (y t env)
                      (if (set-member? (set 'A 'B 'C) t)
-                         (foldl (lambda (arg env) (hash-set env `(= ,arg) y))
+                         ;; Link the other args (and, for the result type var,
+                         ;; the target x) to this arg's equivalence class.  Skip
+                         ;; the self-link (= y)->y: a computed arg has no direct
+                         ;; type, so a self-alias would loop resolve-local-type.
+                         (foldl (lambda (arg env)
+                                  (if (equal? arg y) env (hash-set env `(= ,arg) y)))
                                 (if (eq? t rett)
                                     (hash-set env `(= ,x) y)
                                     env)
@@ -116,6 +124,7 @@
                     (error (format "~a is being used with the wrong arity" name))))]))
        (match cl
          [`(syn ,_ /= ,(? symbol? x) ,(? symbol? y)) cl]
+         [`(syn ,_ ,(? primitive-cmp?) ,(? symbol? x) ,(? symbol? y)) cl]
          [`(syn ,_ = ,(? symbol? x) (syn ,_ const ,v)) cl]
          [`(syn ,pr0 = ,(? symbol? x) (syn ,pr1 ,name ,(? symbol? args) ...))
           #:when (hash-has-key? fun-env name)

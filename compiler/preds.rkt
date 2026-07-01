@@ -1,25 +1,42 @@
 #lang racket
 
-(provide rule?)
+(provide rule?
+         primitive-cmp?
+         cmp-prim-name)
 
 (define (primitive-unarop? x)
   (match x
-    ['size #t]
+    [(or 'size 'neg 'abs 'bnot
+         'sqrt 'sin 'cos 'tan 'exp 'log 'floor 'ceil 'round
+         'tofloat 'toint) #t]
     [_ #f]))
 
 (define (primitive-binop? x)
   (match x
-    ['- #t]
-    ['+ #t]
-    ['* #t]
-    ['/ #t]
-    ['% #t]
+    [(or '- '+ '* '/ '% 'min 'max 'pow
+         'band 'bor 'bxor 'shl 'shr) #t]
     [_ #f]))
 
 (define (primitive-triarop? x)
   (match x
     ['substr #t]
     [_ #f]))
+
+;; Ordering comparisons are body guards (filters), not value-producing prims:
+;; `(< x y)` behaves like `/=`, keeping only tuples where the relation holds.
+(define (primitive-cmp? x)
+  (match x
+    [(or '< '<= '> '>=) #t]
+    [_ #f]))
+
+;; The runtime prim function base name (daemon/prims.h) for a comparison op.
+;; Chosen alnum so escape-id-for-C leaves it untouched.
+(define (cmp-prim-name op)
+  (match op
+    ['<  'lt]
+    ['<= 'le]
+    ['>  'gt]
+    ['>= 'ge]))
 
 (define (slog-const? x)
   (match x

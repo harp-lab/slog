@@ -635,12 +635,6 @@ public:
     return 0;
   }
 
-  void sendEqBatch(InsertBatch* batch)
-  {
-    // TODO: actually send eq batch to a lockfree queue
-    delete batch;
-  }
-
   void addTask(u16 phase, Task* task, bool isstatic = false)
   {
     if (isstatic)
@@ -826,7 +820,13 @@ public:
     else if (is_str(v))
       return std::string("\"") + str_decode(this,v)->cpp_str() + "\"";
     else if (is_float(v))
-      return std::format("{}", float_decode(v));
+    {
+      // Shortest round-trippable form, but keep floats visually distinct from
+      // ints: an integer-valued double ("2") gets a ".0" suffix.
+      std::string s = std::format("{}", float_decode(v));
+      if (s.find_first_of(".eEnN") == std::string::npos) s += ".0";
+      return s;
+    }
     else if (is_struct(v))
       return writeStructCSV(v);
     else

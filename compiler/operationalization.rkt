@@ -1,6 +1,7 @@
 #lang racket
 
 (require "utils.rkt")
+(require "preds.rkt")
 
 (provide globalize-constants
          type-select-sets
@@ -12,6 +13,7 @@
 (define (clause-vars cl)
   (match cl
     [`(syn ,_ /= ,x ,y) (set x y)]
+    [`(syn ,_ ,(? primitive-cmp?) ,x ,y) (set x y)]
     [`(syn ,_ let ,x ,(? symbol? y)) (set x y)]
     [`(syn ,_ let ,x (syn ,_ ,name ,args ...)) (list->set `(,x ,@args))]
     [`(syn ,_ = ,x (syn ,_ const ,_)) (set x)]
@@ -69,6 +71,7 @@
            `(,sel ,nsel))
          (match cl
            [`(syn ,_ /= ,x ,y) (list (set-union ground (clause-vars cl)) not-first? ss)]
+           [`(syn ,_ ,(? primitive-cmp?) ,x ,y) (list (set-union ground (clause-vars cl)) not-first? ss)]
            [`(syn ,_ let ,x ,(? symbol? y)) (list (set-add ground x) not-first? ss)]
            [`(syn ,_ = ,x (syn ,_ ,name ,xs ...))
             (if (or not-first? (set-empty? (set-intersect (list->set xs) ground)))
@@ -129,7 +132,6 @@
   (define (add-head head heads)
     (match head
       [`(syn ,_ let ,x (syn ,_ ,name ,args ...)) (cons `(let ,x (,name ,@args)) heads)]
-      [`(syn ,_ == ,x ,y) (cons `(== ,x ,y) heads)]
       [`(syn ,_ = ,x (syn ,_ ,name ,xs ...))
        (define ind-lst (filter (lambda (i) (= 0 (last i))) (set->list (hash-ref indices name set))))
        (when (null? ind-lst)
@@ -173,6 +175,8 @@
                   #t))))
     (match body
       [`(syn ,_ /= ,x ,y) (list (cons `(/= ,x ,y) bodys) ground hit-first-read?)]
+      [`(syn ,_ ,(? primitive-cmp? op) ,x ,y)
+       (list (cons `(cmp ,(cmp-prim-name op) ,x ,y) bodys) ground hit-first-read?)]
       [`(syn ,_ let ,x ,(? symbol? y))
        (list (cons `(let ,x ,y) bodys) (set-add ground x) hit-first-read?)]
       [`(syn ,_ let ,x (syn ,_ ,name ,args ...))

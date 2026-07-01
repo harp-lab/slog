@@ -1,0 +1,58 @@
+;; Floating-point primitive coverage: arithmetic, math, rounding, unary,
+;; conversions, and int->float promotion in a mixed-operand op.
+;; Negatives are derived (no negative literals) via subtraction.
+
+table (f2 float float)
+table (f1 float)
+table (n  int)
+
+table (fadd float float float)
+table (fsub float float float)
+table (fmul float float float)
+table (fdiv float float float)
+table (fmod2 float float float)
+table (fmin float float float)
+table (fmax float float float)
+table (fpow float float float)
+table (fabsd float float float)   ;; abs(B - A)
+
+table (fsqrt float float)
+table (ffloor float float)
+table (fceil float float)
+table (fround float float)
+table (fneg float float)
+
+table (ti float int)     ;; toint (truncates)
+table (tf int float)     ;; tofloat
+table (nplus float)      ;; tofloat(int) + float  (explicit conversion)
+
+facts
+(f2 6.0 4.0)
+(f2 3.0 2.0)
+
+(f1 6.25)
+(f1 2.5)
+(f1 9.0)
+
+(n 3)
+(n 10)
+
+rule (f2 A B) (= R (+ A B))   --> (fadd A B R)
+rule (f2 A B) (= R (- A B))   --> (fsub A B R)
+rule (f2 A B) (= R (* A B))   --> (fmul A B R)
+rule (f2 A B) (= R (/ A B))   --> (fdiv A B R)
+rule (f2 A B) (= R (% A B))   --> (fmod2 A B R)
+rule (f2 A B) (= R (min A B)) --> (fmin A B R)
+rule (f2 A B) (= R (max A B)) --> (fmax A B R)
+rule (f2 A B) (= R (pow A B)) --> (fpow A B R)
+rule (f2 A B) (= D (- B A)) (= R (abs D)) --> (fabsd A B R)
+
+rule (f1 X) (= R (sqrt X))  --> (fsqrt X R)
+rule (f1 X) (= R (floor X)) --> (ffloor X R)
+rule (f1 X) (= R (ceil X))  --> (fceil X R)
+rule (f1 X) (= R (round X)) --> (fround X R)
+rule (f1 X) (= R (neg X))   --> (fneg X R)
+
+rule (f1 X) (= R (toint X)) --> (ti X R)
+rule (n  X) (= R (tofloat X)) --> (tf X R)
+rule (n  X) (= XF (tofloat X)) (= R (+ XF 0.5)) --> (nplus R)

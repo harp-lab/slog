@@ -1,0 +1,34 @@
+;; Ordering-comparison guards (< <= > >=) on ints and floats, plus a
+;; constant bound and a mixed int/float comparison (promotes to double).
+
+table (p int int)
+table (fp float float)
+
+table (ltp int int)
+table (lep int int)
+table (gtp int int)
+table (gep int int)
+table (fltp float float)
+table (fgep float float)
+table (ltc int)      ;; A < 6   (int constant)
+table (mixlt int)    ;; A < 5.5 (mixed int/float)
+
+facts
+(p 3 5)
+(p 5 5)
+(p 8 5)
+
+(fp 1.5 2.5)
+(fp 2.5 2.5)
+(fp 3.5 2.5)
+
+rule (p A B) (< A B)  --> (ltp A B)
+rule (p A B) (<= A B) --> (lep A B)
+rule (p A B) (> A B)  --> (gtp A B)
+rule (p A B) (>= A B) --> (gep A B)
+
+rule (fp A B) (< A B)  --> (fltp A B)
+rule (fp A B) (>= A B) --> (fgep A B)
+
+rule (p A B) (< A 6)   --> (ltc A)
+rule (p A B) (< A 5.5) --> (mixlt A)

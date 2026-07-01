@@ -48,8 +48,8 @@ typedef int8_t s8;
 // We use a NaN-based IEEE-754 Binary64 encoding of non-float values
 // Interned Values:  0 11111111111 111..14b..1111 XXX YYYY....[35bit intern-id]....YYYYYY
 // Primitive Values: 0 11111111111 000..14b..0000 XXX YYYY....[35bit prim-value]...YYYYYY
-#define intern_encode(t,id) (((u64)(t) << 35) | ((u64)id) | internflags)
-#define prim_encode(t,v) (((u64)(t) << 35) | ((u64)v) | NaNflags)
+#define intern_encode(t,id) (((u64)(t) << 35) | ((u64)(id)) | internflags)
+#define prim_encode(t,v) (((u64)(t) << 35) | ((u64)(v)) | NaNflags)
 #define decode_type(x) (((u64)(x) >> 35) & 7)
 #define decode_val(x) ((u64)(x) & 0x00000007ffffffff)
 #define is_prim(x) (((x) & typetopmask) == NaNflags && (7 & ((x) >> 35)) > 0)
@@ -62,7 +62,7 @@ typedef int8_t s8;
 
 // s32 
 #define is_s32(x) (is_prim(x) && decode_type(x) == s32_prim_tag)
-#define s32_encode(v) (prim_encode(s32_prim_tag, v & 0xffffffff))
+#define s32_encode(v) (prim_encode(s32_prim_tag, (v) & 0xffffffff))
 #define s32_decode(v) ((s32)(u32)(decode_val(v) & 0xffffffff))
 
 // float
