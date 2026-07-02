@@ -108,6 +108,7 @@ private:
   //   - read_buckets[b] = an even round-robin split (consumed by ReadTask).
   std::vector<u16> write_leadcols;
   std::vector<s16> leadcol_slot;
+  u32 last_slot_leadcols = 0;  // write_leadcols.size() when leadcol_slot was last built
   // Per-thread, so the reorg runs in parallel with no races; consumers read
   // across threads (0..thread_count).
   std::vector<std::vector<std::vector<RefVec>>> write_buckets;  // [tid][slot][bucket]
@@ -119,7 +120,15 @@ public:
     : name(_name), arity(_arity),
       struct_id(_struct_id), indices(), deltaindices(),
       struct_master_index(0), struct_lookup_index(0),
-      delta(new std::vector<InsertBatch*>())
+      delta(new std::vector<InsertBatch*>()),
+      // Zero the per-bucket struct-id allocators.  These are a plain C array, so
+      // without this they hold garbage heap memory; InternStructTask packs the
+      // allocator value into the low 38 bits of a struct id, and a garbage value
+      // spills into the struct-type-id field (bits 38..51), producing tuples with
+      // corrupt (unresolvable) struct ids.  It presented as a flaky crash because
+      // fresh heap pages are usually zeroed by the OS -- only heap churn (e.g.
+      // more worker threads) lands a Relation on dirty memory and triggers it.
+      intern_allocators{}
   {
   }
 
@@ -281,11 +290,18 @@ public:
   void ensureReorgBuffers(u32 nthreads)
   {
     const u32 nlead = write_leadcols.size();
-    if (leadcol_slot.size() != arity)
+    // Rebuild the column->slot map whenever it is stale.  `write_leadcols` grows
+    // as programs register indices, and a later program (after a reload) can add
+    // a new leading column on a persistent relation -- leaving a previously-built
+    // leadcol_slot that maps the new column to -1, which getWriteBucket would then
+    // index out of bounds.  Keying the guard on arity alone is unsound because
+    // arity is constant across reloads; key it on the leadcol count instead.
+    if (leadcol_slot.size() != arity || last_slot_leadcols != nlead)
     {
       leadcol_slot.assign(arity, -1);
       for (u32 s = 0; s < nlead; ++s)
 	leadcol_slot[write_leadcols[s]] = (s16)s;
+      last_slot_leadcols = nlead;
     }
     write_buckets.assign(nthreads,
 	std::vector<std::vector<RefVec>>(nlead, std::vector<RefVec>(bucket_count)));

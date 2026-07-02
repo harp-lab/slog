@@ -1,0 +1,71 @@
+
+
+run "prog0.slog"
+run "freevars.slog"
+
+
+include "types.slog"
+
+
+union (val lambda)
+
+table (result val)
+
+table (eval expr stack)
+table (ret val stack)
+
+table (store str val)
+table (kstore (kaddr expr) stack)
+union (stack (halt)
+	     kaddr
+	     (ar expr stack)
+	     (fn val stack))
+
+
+rule (program e)
+ -->
+     (eval e (halt))
+
+
+rule (eval (ref x) k)
+     (store x v)
+ -->
+     (ret v k)
+
+
+rule (eval (app ef ea) k)
+ -->
+     (eval ef (ar ea k))
+
+
+rule (eval (lambda x eb) k)
+ -->
+     (ret (lambda x eb) k)
+
+
+rule (ret v (ar ea k))
+ -->
+     (eval ea (fn v k))
+
+
+rule (ret v (fn (lambda x eb) k))
+ --> 
+     (eval eb (kaddr eb))
+     (store x v)
+     (kstore (kaddr eb) k)
+
+
+rule (ret v (kaddr eb))
+     (kstore (kaddr eb) k)
+ -->
+     (ret v k) 
+
+
+rule (ret v (halt))
+ -->
+     (result v)
+
+
+
+
+

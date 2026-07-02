@@ -1,0 +1,26 @@
+
+
+include "types.slog"
+
+
+table (freevar str expr)
+
+
+rule id = (ref x)
+ --> (freevar x id)
+
+
+rule id = (app ef ea)
+     (freevar x ef) | (freevar x ea)     
+ --> (freevar x id)
+
+
+rule (freevar y eb)
+     id = (lambda x eb)
+     x /= y
+ --> (freevar y id)
+
+
+
+
+

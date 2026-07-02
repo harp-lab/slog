@@ -1,0 +1,12 @@
+
+
+
+include "types.slog"
+
+
+facts
+  (program (lambda "x" (ref "x")))
+  (program
+   (app (lambda "x" (app (ref "x") (ref "x")))
+	(lambda "y" (app (ref "y") (app (ref "y") (ref "y"))))))
+
