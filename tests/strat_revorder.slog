@@ -1,0 +1,15 @@
+;; Dependency chain a -> b -> c -> d with the rules written in REVERSE
+;; order in the file: strata must be scheduled by dependency (topological
+;; order of the SCC DAG), not by source order.
+
+table (a int)
+table (b int)
+table (c int)
+table (d int)
+
+facts
+(a 1)
+
+rule (c X) (= Y (+ X 1)) --> (d Y)
+rule (b X) (= Y (+ X 1)) --> (c Y)
+rule (a X) (= Y (+ X 1)) --> (b Y)

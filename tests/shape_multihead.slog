@@ -1,0 +1,29 @@
+;; Multi-head rule: one body clause deriving four heads --
+;; two plain tables, one struct construction, and a head with a repeated var.
+;;
+;; Expected:
+;;   src = {(1 2), (3 4)}
+;;   t1  = {1, 3}
+;;   t2  = {(2 1), (4 3)}
+;;   t3  = {(pr 1 2), (pr 3 4)}
+;;   t4  = {(1 2 1), (3 4 3)}
+;;   pr  = {(pr 1 2), (pr 3 4)}
+
+struct (pr int int)
+table (src int int)
+table (t1 int)
+table (t2 int int)
+table (t3 pr)
+table (t4 int int int)
+
+facts
+(src 1 2)
+(src 3 4)
+
+rule
+(src X Y)
+-->
+(t1 X)
+(t2 Y X)
+(t3 (pr X Y))
+(t4 X Y X)

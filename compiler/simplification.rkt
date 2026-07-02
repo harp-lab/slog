@@ -1,5 +1,17 @@
 #lang racket
 
+;; Simplification: source rules to flat rules (ir-stack.rkt).
+;;
+;; Four steps, applied per rule:
+;;   1. split `|` alternatives in the body into separate rules;
+;;   2. flatten all nested structure -- every nested construction, constant,
+;;      and & conjunction lifts into a fresh (= var ...) clause, so clause
+;;      arguments are all plain variables afterwards;
+;;   3. replace each _ wildcard with a fresh variable;
+;;   4. statically unify to a fixpoint: identical right-hand sides share one
+;;      binding, variable-variable equalities collapse via union-find, and
+;;      trivial (= x x) clauses drop.
+
 (require "utils.rkt")
 (require "parser.rkt")
 
@@ -109,11 +121,16 @@
                 scls))
        (cons `(syn ,prov ,name ,@xs) clauses+)]
       [_ (cdr (simplify-subclause cl clauses))]))
+  (define (or-symbol? x)
+    (and (symbol? x) (equal? "|" (symbol->string x))))
   (define (split-or cl)
     (match cl
-      [`(syn ,_ ,pipe ,cls ...)
-       #:when (equal? "|" (symbol->string pipe))
+      [`(syn ,_ ,(? or-symbol?) ,cls ...)
        (foldl set-union (set) (map split-or cls))]
+      ;; a fully parenthesized alternative like ((a X) | (b X)) parses as a
+      ;; one-element application whose head is the or expression: unwrap it
+      [`(syn ,_ (syn ,prov ,(? or-symbol? pipe) ,cls ...))
+       (split-or `(syn ,prov ,pipe ,@cls))]
       [`(,cl0 ,cls ...)
        (foldl
         (lambda (cl0v acc)
@@ -131,8 +148,15 @@
       [`(syn ,prov rule ,bodys ... --> ,heads ...)
        (match-define (cons rhs-env bodys+) (rhs-unify-clauses bodys))
        (match-define (cons _ heads+) (rhs-unify-clauses heads rhs-env))
-       (match-define (cons lhs-env bodys++) (lhs-unify-clauses bodys+))
-       (match-define (cons _ heads++) (lhs-unify-clauses heads+ lhs-env))
+       ;; variable-variable equalities substitute over the WHOLE rule: a
+       ;; head-side (= Y t) must rewrite Y in the body too, or the head
+       ;; silently disconnects from the body's Y (unifying instead turns it
+       ;; into the natural constraint -- e.g. a body self-join or, for a
+       ;; computed t, the planner's ==-check)
+       (match-define (cons lhs-env all++)
+         (lhs-unify-clauses (append bodys+ heads+)))
+       (define bodys++ (take all++ (length bodys+)))
+       (define heads++ (drop all++ (length bodys+)))
        (define rule+
          (filter (lambda (cl)
                    (match cl

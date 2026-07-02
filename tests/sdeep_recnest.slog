@@ -1,0 +1,20 @@
+;; Recursively growing struct nesting depth: Peano numerals built in a
+;; recursive rule head (bounded by a guard), then destructured.
+;; (zero) is a nullary union member, an interned enum constant.
+
+union (nat (zero) (succ nat))
+
+table (tonum nat int)
+table (isthree nat)
+table (pred nat nat)
+
+facts
+(tonum (zero) 0)
+
+;; grow nesting one level per step, up to depth 3
+rule (tonum N V) (< V 3) (= W (+ V 1)) --> (tonum (succ N) W)
+
+rule (tonum N 3) --> (isthree N)
+
+;; destructure one succ level off any numeral
+rule (tonum (succ M) _) --> (pred (succ M) M)

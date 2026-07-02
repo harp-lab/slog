@@ -1,0 +1,14 @@
+;; substr with start > 0 and end < size(str): the documented semantics is
+;; (substr s start end) -- characters in [start, end).  These cases
+;; distinguish (start,end) from a (start,length) misreading.
+
+table (t str)
+table (mid24 str str)   ;; substr S 2 4
+table (mid13 str str)   ;; substr S 1 3
+
+facts
+(t "abcdef")
+(t "hello")
+
+rule (t S) (= R (substr S 2 4)) --> (mid24 S R)
+rule (t S) (= R (substr S 1 3)) --> (mid13 S R)

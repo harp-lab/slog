@@ -1,0 +1,2 @@
+(tag "a" (_enum "ok"))
+(tag "b" (_enum "bad"))

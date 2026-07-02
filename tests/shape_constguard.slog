@@ -1,0 +1,18 @@
+;; Rules whose bodies have zero relational clauses: only constant
+;; bindings and guards.  A passing guard fires once; a failing guard
+;; derives nothing.
+;;
+;; Expected:
+;;   ok   = {1}
+;;   bad  = {}      (no bad.csv emitted)
+;;   also = {15}
+
+table (ok int)
+table (bad int)
+table (also int)
+
+rule (= a 1) (= b 2) (< a b) --> (ok 1)
+
+rule (= c 5) (= d 2) (< c d) --> (bad 1)
+
+rule (= x 10) (= y (+ x 5)) (>= y 15) --> (also y)

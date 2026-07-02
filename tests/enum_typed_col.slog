@@ -1,0 +1,14 @@
+;; A column declared with the enum's name should accept its members:
+;; 'enum (color red green blue)' then 'table (fav str color)' with
+;; facts storing (red)/(green).
+
+enum (color red green blue)
+
+table (fav str color)
+table (redfans str)
+
+facts
+(fav "tom" (red))
+(fav "amy" (green))
+
+rule (fav n (red)) --> (redfans n)

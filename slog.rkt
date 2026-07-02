@@ -84,7 +84,8 @@
                    #:out-db [out-db #f]
                    #:debug-dir [debug-dir #f]
                    #:show-banner? [show-banner? #t]
-                   #:verbose? [verbose? #f])
+                   #:verbose? [verbose? #f]
+                   #:sizes? [sizes? #f])
 
   (when show-banner?
     (ascii-art-banner))
@@ -110,7 +111,7 @@
                                 (if (exn:fail:contract? e) "Contract violation" "Runtime error")))
                      (exit EXIT-RUNTIME-ERROR))])
 
-    (slog-simple-run-all (path->string slog-file) db-name out-db* debug-dir*)
+    (slog-run-file (path->string slog-file) db-name out-db* debug-dir* sizes?)
 
     (when verbose?
       (fprintf (current-error-port) "Execution completed successfully.\n"))))
@@ -123,6 +124,7 @@
   (define print-version? #f)
   (define show-help? #f)
   (define verbose? #f)
+  (define sizes? #f)
   (define program-name "slog")
 
   (define parsed-args
@@ -140,6 +142,7 @@
       (set! debug-dir path)]
      [("--version") "Print Slog version and exit" (set! print-version? #t)]
      [("--verbose" "-v") "Enable verbose output" (set! verbose? #t)]
+     [("--sizes") "Report each relation's tuple count after the run" (set! sizes? #t)]
      #:args (slog-file)
      (cond
        [print-version?
@@ -151,5 +154,6 @@
                    #:out-db out-db
                    #:debug-dir debug-dir
                    #:show-banner? show-banner?
-                   #:verbose? verbose?)]))))
+                   #:verbose? verbose?
+                   #:sizes? sizes?)]))))
 

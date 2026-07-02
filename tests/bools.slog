@@ -1,0 +1,15 @@
+;; Symbol literals true/false as enum constants (interned _enum structs),
+;; usable in facts, bodies, and heads without any declaration.
+
+table (flag str any)
+table (yes str)
+table (inverted str any)
+
+facts
+(flag "a" true)
+(flag "b" false)
+
+rule (flag n true) --> (yes n)
+
+rule (flag n true)  --> (inverted n false)
+rule (flag n false) --> (inverted n true)

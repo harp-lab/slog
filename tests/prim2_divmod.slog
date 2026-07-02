@@ -1,0 +1,24 @@
+;; Integer division and modulo, including C-style truncation toward zero
+;; with negative dividends/divisors (negatives derived via (- 0 x)).
+
+table (d int int)
+
+table (quot int int int)    ;; A / B
+table (remm int int int)    ;; A % B
+table (nquot int int int)   ;; (-A) / B
+table (nrem int int int)    ;; (-A) % B
+table (dquot int int int)   ;; A / (-B)
+table (drem int int int)    ;; A % (-B)
+
+facts
+(d 7 2)
+(d 9 4)
+(d 8 2)
+(d 1 5)
+
+rule (d A B) (= Q (/ A B)) --> (quot A B Q)
+rule (d A B) (= R (% A B)) --> (remm A B R)
+rule (d A B) (= NA (- 0 A)) (= Q (/ NA B)) --> (nquot NA B Q)
+rule (d A B) (= NA (- 0 A)) (= R (% NA B)) --> (nrem NA B R)
+rule (d A B) (= NB (- 0 B)) (= Q (/ A NB)) --> (dquot A NB Q)
+rule (d A B) (= NB (- 0 B)) (= R (% A NB)) --> (drem A NB R)

@@ -2,13 +2,13 @@
 
 (provide parse-port
          parse-file
-         strip-prov
          verbose-print-ast
          parse-error
          parse-error-delim
          syn->filename)
 
 (require "lexer.rkt")
+(require "ir-shared.rkt")
 
 (define (syn->filename ast)
   (match ast
@@ -93,21 +93,6 @@
   (if (and (not (null? toks)) (equal? str (token->str (first toks))))
       (advance toks)
       (parse-error (format "expected '~a'" str) toks)))
-
-(define (strip-prov e)
-  ; strips provenance information from an AST
-  (match e
-    [`(syn ,prov . ,e0) (strip-prov e0)]
-    [(? list? e) (map strip-prov e)]
-    [`((token ,_ ...) ...) '(toks)]
-    [(? set? s) (list->set (map strip-prov (set->list s)))]
-    [(? hash? h)
-     (foldl (lambda (k h+) (hash-set h+ (strip-prov k) (strip-prov (hash-ref h k))))
-            (hash)
-            (hash-keys h))
-     ;`(hash: ,@(map strip-prov (hash-keys h)))
-     ]
-    [_ e]))
 
 (define (verbose-print-ast e)
   ; dumps a preorder traversal pretty-printing of an AST to STDOUT

@@ -1,0 +1,23 @@
+;; Structs as join keys: owner and score share a struct-typed column.
+;; (key "a" 1) appears in both facts blocks and must intern to one id
+;; for the join to fire.  Second rule joins on a field destructured out
+;; of the key instead of the key id itself.
+
+struct (key str int)
+
+table (owner key str)
+table (score key float)
+table (joined str float)
+table (keyname str)
+
+facts
+(owner (key "a" 1) "alice")
+(owner (key "b" 2) "bob")
+(score (key "a" 1) 9.5)
+(score (key "c" 3) 7.0)
+
+;; join on the struct id
+rule (owner K Name) (score K V) --> (joined Name V)
+
+;; join on the str field pulled out of each key
+rule (owner (key S _) _) (score (key S _) _) --> (keyname S)

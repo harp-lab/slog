@@ -1,0 +1,16 @@
+;; Runtime behavior of the size primitive (string length in codepoints),
+;; fed through `any`-typed columns.  NOTE: size on a `str`-typed column
+;; currently fails typecheck (see tests/broken/prim2_size.slog); this test
+;; pins the runtime semantics via `any` columns, which do typecheck.
+
+table (w any)
+table (len any int)
+table (catlen any int)
+
+facts
+(w "foo")
+(w "")
+(w "hello world")
+
+rule (w A) (= N (size A)) --> (len A N)
+rule (w A) (= C (+ A A)) (= N (size C)) --> (catlen C N)

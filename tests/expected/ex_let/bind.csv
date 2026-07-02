@@ -1,0 +1,5 @@
+(bind "x" 1 (_enum "mt"))
+(bind "x" 2 (_enum "mt"))
+(bind "x" 3 (_enum "mt"))
+(bind "x" 6 (bind "x" 1 (_enum "mt")))
+(bind "y" 12 (bind "x" 2 (_enum "mt")))

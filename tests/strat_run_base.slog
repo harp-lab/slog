@@ -1,0 +1,12 @@
+;; Prerequisite program for strat_run_main.slog: chained via 'run', it is
+;; executed to fixpoint first and its database persists into the main
+;; program.  Not a standalone test (no golden).
+
+table (seed int)
+table (grow int)
+
+facts
+(seed 1)
+(seed 2)
+
+rule (seed X) (= Y (* X 10)) --> (grow Y)

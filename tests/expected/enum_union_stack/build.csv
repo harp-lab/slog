@@ -1,0 +1,4 @@
+(_enum "halt")   0   
+(more (_enum "halt"))   1   
+(more (more (_enum "halt")))   2   
+(more (more (more (_enum "halt"))))   3   

@@ -1,0 +1,8 @@
+(lambda "x" (app (ref "x") (ref "x")))   (ar (lambda "y" (app (ref "y") (app (ref "y") (ref "y")))) (_enum "halt"))   
+(lambda "x" (ref "x"))   (_enum "halt")   
+(lambda "y" (app (ref "y") (app (ref "y") (ref "y"))))   (ar (app (ref "y") (ref "y")) (kaddr (app (ref "y") (app (ref "y") (ref "y")))))   
+(lambda "y" (app (ref "y") (app (ref "y") (ref "y"))))   (ar (ref "x") (kaddr (app (ref "x") (ref "x"))))   
+(lambda "y" (app (ref "y") (app (ref "y") (ref "y"))))   (ar (ref "y") (fn (lambda "y" (app (ref "y") (app (ref "y") (ref "y")))) (kaddr (app (ref "y") (app (ref "y") (ref "y"))))))   
+(lambda "y" (app (ref "y") (app (ref "y") (ref "y"))))   (fn (lambda "x" (app (ref "x") (ref "x"))) (_enum "halt"))   
+(lambda "y" (app (ref "y") (app (ref "y") (ref "y"))))   (fn (lambda "y" (app (ref "y") (app (ref "y") (ref "y")))) (fn (lambda "y" (app (ref "y") (app (ref "y") (ref "y")))) (kaddr (app (ref "y") (app (ref "y") (ref "y"))))))   
+(lambda "y" (app (ref "y") (app (ref "y") (ref "y"))))   (fn (lambda "y" (app (ref "y") (app (ref "y") (ref "y")))) (kaddr (app (ref "x") (ref "x"))))   

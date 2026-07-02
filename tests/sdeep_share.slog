@@ -1,0 +1,30 @@
+;; Dedup of struct content across construction routes: a struct written
+;; literally in a facts block vs the same content built from a primitive
+;; computation must intern to the same id.  Also: the same inner struct
+;; used twice inside one parent.
+
+struct (leaf3 int)
+struct (mid3 leaf3 leaf3)
+struct (fbox float)
+
+table (viafact mid3)
+table (m mid3)
+table (samefact mid3)
+
+table (given2 fbox)
+table (computed fbox)
+table (fsame fbox)
+
+facts
+(viafact (mid3 (leaf3 1) (leaf3 1)))
+(given2 (fbox 1.5))
+
+;; rebuild the same mid3 content from a computed int
+rule (viafact _) (= X (+ 0 1)) --> (m (mid3 (leaf3 X) (leaf3 X)))
+
+rule (m P) (viafact P) --> (samefact P)
+
+;; rebuild the same fbox content from a computed float
+rule (given2 _) (= F (/ 3.0 2.0)) --> (computed (fbox F))
+
+rule (given2 P) (computed P) --> (fsame P)

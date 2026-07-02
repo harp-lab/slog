@@ -1,0 +1,4 @@
+(add (ref "x") (lit 10))
+(add (ref "x") (lit 5))
+(add (ref "x") (ref "x"))
+(add (ref "x") (ref "y"))

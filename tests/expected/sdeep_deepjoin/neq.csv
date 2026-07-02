@@ -1,0 +1,4 @@
+(dnode (dleaf 1) "l1")   (dnode (dleaf 1) "r1")   
+(dnode (dleaf 1) "l1")   (dnode (dleaf 3) "r3")   
+(dnode (dleaf 2) "l2")   (dnode (dleaf 1) "r1")   
+(dnode (dleaf 2) "l2")   (dnode (dleaf 3) "r3")   

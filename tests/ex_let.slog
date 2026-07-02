@@ -1,0 +1,43 @@
+;; Let-language evaluator with reified environments.
+;;
+;; Environments are themselves recursive structs ((mt) or (bind str int env))
+;; created during the fixpoint by the need rule for elet bodies, and consumed
+;; by lookup rules that match interned binds via infix = patterns -- so struct
+;; creation feeds back into struct matching inside one recursive SCC.
+;; lookup takes the newest binding first, giving let-shadowing.
+
+union (expr (lit int) (ref str) (add expr expr) (elet str expr expr))
+union (env (mt) (bind str int env))
+
+table (root str expr)
+table (need expr env)
+table (ev expr env int)
+table (lookup env str int)
+table (res str int)
+
+facts
+(root "p1" (elet "x" (lit 3) (add (ref "x") (ref "x"))))
+(root "p2" (elet "x" (lit 2) (elet "y" (add (ref "x") (lit 10)) (add (ref "x") (ref "y")))))
+(root "p3" (elet "x" (lit 1) (elet "x" (add (ref "x") (lit 5)) (ref "x"))))
+
+;; demand: which (expr, env) pairs must be evaluated
+rule (root _ ee) --> (need ee (mt))
+rule (need (elet _ e1 _) rho) --> (need e1 rho)
+rule (need (elet nm e1 e2) rho) (ev e1 rho w) --> (need e2 (bind nm w rho))
+rule (need (add a b) rho) --> (need a rho) (need b rho)
+
+;; evaluation
+rule (need (lit n) rho) --> (ev (lit n) rho n)
+rule (need (ref nm) rho) (lookup rho nm w) --> (ev (ref nm) rho w)
+rule (need (add a b) rho)
+     (ev a rho wa) (ev b rho wb) (= w (+ wa wb))
+ --> (ev (add a b) rho w)
+rule (need (elet nm e1 e2) rho)
+     (ev e1 rho w1) (ev e2 (bind nm w1 rho) w2)
+ --> (ev (elet nm e1 e2) rho w2)
+
+;; environment lookup over interned binds (newest binding shadows)
+rule q = (bind nm w _) --> (lookup q nm w)
+rule q = (bind other _ rest) (lookup rest nm w) (/= nm other) --> (lookup q nm w)
+
+rule (root pname ee) (ev ee (mt) w) --> (res pname w)

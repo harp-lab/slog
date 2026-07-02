@@ -21,10 +21,17 @@ u64 _prim_str_size_unsafe(slog::Database* db, u64 v)
 
 
 
-u64 _prim_substr(slog::Database* db, u64 s, u64 i, u64 l)
+//  (substr s start end) -- the characters in [start, end), clamped
+u64 _prim_substr(slog::Database* db, u64 s, u64 i, u64 e)
 {
-  if (is_str(s) && is_s32(i) && is_s32(l))
-    return str_encode(db, str_decode(db,s)->substr(s32_decode(i), s32_decode(l)));
+  if (is_str(s) && is_s32(i) && is_s32(e))
+  {
+    s32 start = s32_decode(i);
+    s32 end = s32_decode(e);
+    if (start < 0) start = 0;
+    if (end < start) end = start;
+    return str_encode(db, str_decode(db,s)->substr(start, end - start));
+  }
 
   slog::fatal("Substr invoked on bad inputs.");
   return 0;

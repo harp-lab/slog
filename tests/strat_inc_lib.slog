@@ -1,0 +1,7 @@
+;; Helper library for strat_inc_main.slog -- shared declarations and a
+;; rule; textually merged via 'include'.  Not a standalone test (no golden).
+
+table (base int int)
+table (dbl int int)
+
+rule (base X Y) (= Z (* Y 2)) --> (dbl X Z)

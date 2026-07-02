@@ -2,24 +2,38 @@
  *
  * A multi-threaded backend for the deductive database and language Slog.
  *
- * Accepts line-delimited commands in one of two modes:
+ * The entire client protocol is one line per message, each line a path to
+ * a plugin shared object.  Each plugin is dlopen'd and its
  *
- *   slogd            read commands from stdin, results to stdout
- *                    (used by the compiler driver, compiler/runslog.rkt)
- *   slogd -p PORT    connect back to a TCP parent on PORT and exchange
- *                    commands/results as s-expressions (used by the
- *                    interactive console, daemon/slogd.rkt).  A 2s idle
- *                    heartbeat emits (pending); (close) is answered with
- *                    (bye <unixtime>) before exiting.
+ *     extern "C" void slog_plugin(slog::Daemon*)
  *
- * In both modes a command that reaches a fixpoint emits (fixpoint).
+ * called with the daemon object (daemon.h) -- the API through which plugins
+ * push strata of rules, run the pipeline, read/write the database on disk,
+ * inspect relations, and send results back over the connection.  Anything a
+ * client wants of the database -- including one-off queries like a relation
+ * count -- it expresses by compiling a (tiny, cached) plugin and sending
+ * its path.
+ *
+ * Two transports:
+ *
+ *   slogd [-t N]           read plugin paths from stdin, responses to
+ *                          stdout (used by the compiler driver,
+ *                          compiler/runslog.rkt)
+ *   slogd [-t N] -p PORT   connect back to a TCP parent on PORT; plugin
+ *                          paths arrive as lines, responses are sent as
+ *                          s-expressions (used by the interactive console,
+ *                          daemon/slogd.rkt).  A 2s idle heartbeat emits
+ *                          (pending); the transport-level (close) line is
+ *                          answered with (bye <unixtime>) before exiting.
+ *
+ * -t N sets the worker thread count (default 6).
  *
  * Copyright (C) Thomas Gilray, Kristopher Micinski, Sidharth Kumar, et al., 2023-2025
  * Some rights reserved. See License.md for details.
  *
  ******************************/
 
-#include "slogd.h"
+#include "daemon.h"
 
 #include <dlfcn.h>
 #include <string>
@@ -27,6 +41,7 @@
 #include <cstring>
 #include <chrono>
 #include <functional>
+#include <filesystem>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <unistd.h>
@@ -52,78 +67,39 @@ static void send_bye(int sock)
     send_msg(sock, "(bye " + std::to_string(seconds) + ")");
 }
 
-// Execute a single line-delimited command.  Any user-facing output is
-// emitted as an s-expression through `emit` (to the socket or to stdout
-// depending on mode); diagnostic chatter has been removed (see debug.h).
-using Emit = std::function<void(const std::string&)>;
-
-static void process_command(const Emit& emit,
-                            const std::string& line,
-                            slog::Database*& db,
-                            std::vector<void*>& so_handles,
-                            u32& num_threads)
+// Load and invoke one plugin.  The dlopen handle is retained (vtables of
+// objects the plugin created live in the .so, so it must outlive them).
+static void run_plugin(slog::Daemon* d,
+                       const std::string& path,
+                       std::vector<void*>& so_handles)
 {
-    std::string cmd = line;
-
-    if (cmd.substr(0,4) == "run:")
+    if (!std::filesystem::is_regular_file(path))
     {
-        cmd = cmd.substr(4);
-        if (db == 0) slog::fatal("No database to run a program on!");
-        db->runProgram();
-        emit("(fixpoint)");
+        d->emit("(error \"no such plugin: " + path + "\")");
+        return;
     }
-    else if (cmd.substr(0,5) == "load:")
+    void* h = dlopen(path.c_str(), RTLD_LAZY);
+    if (h == 0)
     {
-        cmd = cmd.substr(5);
-        if (db == 0) slog::fatal("No database to load a program for!");
-        so_handles.push_back(dlopen(cmd.c_str(), RTLD_LAZY));
-        if (so_handles[so_handles.size()-1] == 0)
-            slog::fatal(std::string("Failed to load ")+cmd);
-        auto loadP = (void (*)(slog::Database*))dlsym(so_handles[so_handles.size()-1], "loadProgram");
-        if (loadP == 0) slog::fatal(std::string("Could not load loadProgram() for ") + cmd);
-        loadP(db);
+        d->emit(std::string("(error \"failed to load plugin: ") + dlerror() + "\")");
+        return;
     }
-    else if (cmd.substr(0,6) == "write:")
+    so_handles.push_back(h);
+    auto entry = (void (*)(slog::Daemon*))dlsym(h, "slog_plugin");
+    if (entry == 0)
     {
-        cmd = cmd.substr(6);
-        if (db == 0) slog::fatal("No database to write!");
-        db->writeDatabaseBIN(cmd);
+        d->emit("(error \"no slog_plugin() in " + path + "\")");
+        return;
     }
-    else if (cmd.substr(0,9) == "writeCSV:")
-    {
-        cmd = cmd.substr(9);
-        if (db == 0) slog::fatal("No database to write!");
-        db->writeDatabaseCSV(cmd);
-    }
-    else if (cmd.substr(0,5) == "open:")
-    {
-        cmd = cmd.substr(5);
-        db = new slog::Database(cmd, num_threads);
-    }
-    else if (cmd.substr(0,4) == "new:")
-    {
-        db = new slog::Database(num_threads);
-    }
-    else if (cmd.substr(0,7) == "reload:")
-    {
-        db->reloadInsertBatches();
-    }
-    else if (cmd.substr(0,8) == "threads:")
-    {
-        cmd = cmd.substr(8);
-        num_threads = std::min(std::max(static_cast<u32>(std::atoi(cmd.c_str())), MIN_THREADS), MAX_THREADS);
-    }
+    entry(d);
 }
 
-// Legacy mode: read newline-delimited commands from stdin, results to
-// stdout.  This is what the compiler driver (compiler/runslog.rkt) uses.
-static int run_stdin()
+// stdin transport: one plugin path per line, responses to stdout.
+static int run_stdin(u32 num_threads)
 {
-    slog::Database* db = 0;
     std::vector<void*> so_handles;
-    u32 num_threads = DEFAULT_NUM_THREADS;
-
-    auto emit = [](const std::string& s) { std::cout << s << std::endl; };
+    auto* daemon = new slog::Daemon(num_threads,
+        [](const std::string& s) { std::cout << s << std::endl; });
 
     std::string line;
     while (std::getline(std::cin, line))
@@ -131,18 +107,20 @@ static int run_stdin()
         if (!line.empty() && line.back() == '\r')
             line.pop_back();
         if (!line.empty())
-            process_command(emit, line, db, so_handles, num_threads);
+            run_plugin(daemon, line, so_handles);
     }
 
-    // Delete the database BEFORE dlclosing: index objects (BTreeIndex<A>)
-    // are instantiated in the .so, so their vtables/destructors live there.
-    if (db) delete db;
+    // Delete the daemon (and its database) BEFORE dlclosing: index objects
+    // (BTreeIndex<A>) are instantiated in the .so's, so their vtables and
+    // destructors live there.
+    delete daemon;
     for (void* h : so_handles) if (h) dlclose(h);
     return 0;
 }
 
-// TCP mode: connect back to a parent on `port` and exchange s-expressions.
-static int run_tcp(int port)
+// TCP transport: connect back to a parent on `port`; plugin paths arrive as
+// lines, responses are sent back as s-expressions.
+static int run_tcp(u32 num_threads, int port)
 {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0)
@@ -157,12 +135,9 @@ static int run_tcp(int port)
     if (connect(sock, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) < 0)
         return 1;
 
-    // Daemon state, owned by this connection.
-    slog::Database* db = 0;
     std::vector<void*> so_handles;
-    u32 num_threads = DEFAULT_NUM_THREADS;
-
-    auto emit = [sock](const std::string& s) { send_msg(sock, s); };
+    auto* daemon = new slog::Daemon(num_threads,
+        [sock](const std::string& s) { send_msg(sock, s); });
 
     pollfd pfd;
     pfd.fd = sock;
@@ -191,8 +166,9 @@ static int run_tcp(int port)
 
         inbuf.append(buffer, valread);
 
-        // Dispatch complete, newline-terminated commands in order; a
-        // (close) is handled in sequence so any queued commands still run.
+        // Dispatch complete, newline-terminated lines in order; the
+        // transport-level (close) is handled in sequence so any queued
+        // plugins still run.
         size_t nl;
         while ((nl = inbuf.find('\n')) != std::string::npos)
         {
@@ -208,12 +184,12 @@ static int run_tcp(int port)
                 break;
             }
             if (!line.empty())
-                process_command(emit, line, db, so_handles, num_threads);
+                run_plugin(daemon, line, so_handles);
         }
         if (done)
             break;
 
-        // The driver's EOF path sends a bare (close) with no newline.
+        // The console's EOF path sends a bare (close) with no newline.
         if (inbuf.find("(close)") != std::string::npos)
         {
             send_bye(sock);
@@ -221,10 +197,8 @@ static int run_tcp(int port)
         }
     }
 
-    // Close shared-object handles, delete the database, and exit.
-    // Delete the database BEFORE dlclosing: index objects (BTreeIndex<A>)
-    // are instantiated in the .so, so their vtables/destructors live there.
-    if (db) delete db;
+    // Delete the daemon BEFORE dlclosing (vtables live in the .so's).
+    delete daemon;
     for (void* h : so_handles) if (h) dlclose(h);
     close(sock);
     return 0;
@@ -232,9 +206,19 @@ static int run_tcp(int port)
 
 int main(int argc, char* argv[])
 {
-    if (argc >= 3 && std::strcmp(argv[1], "-p") == 0)
-        return run_tcp(std::stoi(argv[2]));
+    u32 num_threads = DEFAULT_NUM_THREADS;
+    int port = -1;
 
-    // No -p: legacy stdin command mode (used by the compiler driver).
-    return run_stdin();
+    for (int i = 1; i < argc; ++i)
+    {
+        if (std::strcmp(argv[i], "-t") == 0 && i + 1 < argc)
+            num_threads = std::min(std::max((u32)std::atoi(argv[++i]), MIN_THREADS),
+                                   MAX_THREADS);
+        else if (std::strcmp(argv[i], "-p") == 0 && i + 1 < argc)
+            port = std::atoi(argv[++i]);
+    }
+
+    if (port >= 0)
+        return run_tcp(num_threads, port);
+    return run_stdin(num_threads);
 }

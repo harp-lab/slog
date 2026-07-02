@@ -1,0 +1,12 @@
+ (_enum "halt"))
+ (app (ref "y") (ref "y"))
+ (fn (lambda "y" (app (ref "y") (app (ref "y") (ref "y")))) (kaddr (app (ref "y") (app (ref "y") (ref "y"))))))
+ (kaddr (app (ref "x") (ref "x"))))
+ (kaddr (app (ref "y") (app (ref "y") (ref "y")))))
+ (lambda "y" (app (ref "y") (app (ref "y") (ref "y"))))
+ (ref "x")
+ (ref "y")
+(ar
+(ar
+(ar
+(ar

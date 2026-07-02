@@ -1,0 +1,3 @@
+(mid (leaf 1) 2)
+(mid (leaf 4) 5)
+(mid (leaf 7) 8)

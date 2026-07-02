@@ -1,0 +1,20 @@
+;; Declared enum members used in facts, body matches, and heads.
+;; Matching a specific member in a body must select only those rows,
+;; and distinct members must be distinct constants.
+
+enum (color red green blue)
+
+table (item str any)
+table (isred str)
+table (isgreen str)
+table (verdict str any)
+
+facts
+(item "a" (red))
+(item "b" (green))
+(item "c" (red))
+(item "d" (blue))
+
+rule (item n (red)) --> (isred n)
+rule (item n (green)) --> (isgreen n)
+rule (isred n) --> (verdict n (blue))

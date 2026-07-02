@@ -253,6 +253,26 @@ public:
     return 0;
   }
 
+  // Register the identity-ordering index if the relation has no index at
+  // all, so the daemon can materialize data it loads itself (an opened or
+  // refreshed database with no program yet).  Runtime-constructed via
+  // makeIndex (index.h); a program's own indices arrive later as usual.
+  void ensureDefaultIndex()
+  {
+    if (getAnyIndex())
+      return;
+    std::vector<u16> ord(arity);
+    for (u16 c = 0; c < arity; ++c)
+      ord[c] = c;
+    Index** arr = new Index*[bucket_count];
+    for (u32 b = 0; b < bucket_count; ++b)
+      arr[b] = makeIndex(arity);
+    indices[ord] = arr;
+    if (std::find(write_leadcols.begin(), write_leadcols.end(), (u16)0)
+	== write_leadcols.end())
+      write_leadcols.push_back(0);
+  }
+
   bool isEmpty()
   {
     auto ord = getAnyIndex();
@@ -262,6 +282,22 @@ public:
       if (!rootnode[b]->empty())
 	return false;
     return true;
+  }
+
+  // The number of (distinct) tuples currently indexed.  Every non-delta
+  // index holds exactly the relation's full tuple set and the underlying
+  // btrees maintain their size, so this is a 32-bucket sum -- accurate at
+  // any phase boundary, no separate counter to keep in sync.  0 for an
+  // index-free relation (a temp, or mid-reload).
+  u64 tupleCount()
+  {
+    auto ord = getAnyIndex();
+    if (ord == 0) return 0;
+    Index** rootnode = getIndex(*ord, false);
+    u64 n = 0;
+    for (u16 b = 0; b < bucket_count; ++b)
+      n += rootnode[b]->size();
+    return n;
   }
 
   Index**& getIndex(const std::vector<u16>& ord, bool delta)
@@ -522,6 +558,85 @@ public:
       this->sendBatch(writeAllFacts(new InsertBatch(), node, rewrite_ord));
     }
   }
+
+  // Drop every tuple while KEEPING the index registrations (contrast
+  // clearAllIndices, which removes the indices themselves): empties each
+  // index bucket, the pending delta, and the send shards.  Used to refresh
+  // a relation's contents from disk.
+  void clearContents()
+  {
+    for (const auto& it : indices)
+      for (u16 b = 0; b < bucket_count; ++b)
+	it.second[b]->clear();
+    for (const auto& it : deltaindices)
+      for (u16 b = 0; b < bucket_count; ++b)
+	it.second[b]->clear();
+    for (InsertBatch* ib : *delta)
+      delete ib;
+    delta->clear();
+    for (auto& shard : send_shards)
+    {
+      for (InsertBatch* ib : shard)
+	delete ib;
+      shard.clear();
+    }
+  }
+
+  // Insert every (non-null) tuple of the current delta into all registered
+  // indices, through the arity-generic Index::insertTuple cold path.  The
+  // daemon cannot instantiate the templated WriteTask<A>s itself (those live
+  // in generated code), so out-of-band ingestion -- refreshing a relation
+  // from disk between runs -- goes through here instead of the write phase.
+  void ingestDelta()
+  {
+    for (InsertBatch* batch : *delta)
+      for (u32 j = 0; j < batch->usage; j += arity)
+      {
+	if (batch->data[j] == slog_null)
+	  continue;
+	const u64* t = batch->data + j;
+	for (const auto& it : indices)
+	  it.second[buckethash(t[it.first[0]])]->insertTuple(t, it.first.data());
+      }
+  }
+};
+
+
+// The object representation of one stratum of rules: the write/read/intern
+// tasks the compiler generated for it, plus metadata.  Strata are pushed to
+// the Daemon's pipeline by generated plugin .so's and stay resident after
+// running (daemon.h); the Database also builds short-lived internal strata
+// for its disk and reload work.  A Stratum owns its tasks.
+class Stratum
+{
+public:
+  std::string name;
+  // once[phase] tasks run only in the stratum's first iteration (facts,
+  // rules over closed relations, initial index ingestion); every[phase]
+  // tasks run each iteration until fixpoint.
+  std::vector<Task*> once[phase_count];
+  std::vector<Task*> every[phase_count];
+  // relations this stratum's rules grow -- the seam for incremental
+  // recomputation later (push a delta into a stratum, replay downstream)
+  std::vector<std::string> dynamic_rels;
+
+  Stratum(const std::string& _name) : name(_name) {}
+
+  ~Stratum()
+  {
+    for (u16 p = 0; p < phase_count; ++p)
+    {
+      for (Task* t : once[p]) delete t;
+      for (Task* t : every[p]) delete t;
+    }
+  }
+
+  void addTask(u16 phase, Task* task, bool once_only = false)
+  {
+    (once_only ? once[phase] : every[phase]).push_back(task);
+  }
+
+  void addDynamicRel(const std::string& r) { dynamic_rels.push_back(r); }
 };
 
 
@@ -540,8 +655,11 @@ private:
 
   std::unordered_map<std::string, Relation*> relations;
   std::unordered_map<u32, Relation*> structs_by_id;
-  std::vector<Task*> program[phase_count];
-  std::vector<Task*> program0[phase_count];
+  // per-relation on-disk modification times, recorded at each load/write,
+  // backing relationChangedOnDisk
+  std::unordered_map<std::string, std::filesystem::file_time_type> disk_mtimes;
+  // the stratum currently executing (its `every` tasks refill the queues)
+  const Stratum* running = nullptr;
   boost::lockfree::queue<Task*, big_capacity> task_queues[phase_count];
   // Cyclic barriers used to synchronize the worker threads each iteration.
   // Allocated in runProgram once thread_count and tofixpoint are known.
@@ -556,16 +674,6 @@ private:
 
   
 public:
-  Database(const std::string& db_name, u32 _thread_count)
-  {
-    thread_count = _thread_count;
-    iteration_count = 0;
-    struct_id_max = 1;
-    string_table = new InternTable<utf8string>();
-    
-    loadDatabaseBIN("data/" + db_name + "/");
-  }
-
   Database(u32 _thread_count)
   {
     thread_count = _thread_count;
@@ -576,7 +684,6 @@ public:
 
   ~Database()
   {
-    clearTasks();
     delete string_table;
     for (auto it : relations)
       delete it.second;
@@ -636,6 +743,19 @@ public:
     return relations[name];
   }
 
+  // All relations by name (iterate + Relation::tupleCount for statistics).
+  const std::unordered_map<std::string, Relation*>& getRelations()
+  {
+    return relations;
+  }
+
+  // Distinct-tuple count of a relation; 0 if unknown or index-free.
+  u64 relationSize(const std::string& name)
+  {
+    auto it = relations.find(name);
+    return (it == relations.end()) ? 0 : it->second->tupleCount();
+  }
+
   Relation* getStructById(u32 struct_id)
   {
     if (struct_id > 0 && !structs_by_id.contains(struct_id))
@@ -651,34 +771,10 @@ public:
     return 0;
   }
 
-  void addTask(u16 phase, Task* task, bool isstatic = false)
-  {
-    if (isstatic)
-      program0[phase].push_back(task);
-    else
-      program[phase].push_back(task);
-  }
-
-  void clearTasks()
-  {
-    for (u16 phase = 0; phase < phase_count; ++phase)
-    {
-      Task* task;
-      while (task_queues[phase].pop(task))
-	;
-      for (u32 i = 0; i < program[phase].size(); ++i)
-	delete program[phase][i];
-      for (u32 i = 0; i < program0[phase].size(); ++i)
-	delete program0[phase][i];
-      program0[phase].clear();
-      program[phase].clear();
-    }
-  }
-
   void reloadPhaseQueue(u32 phase)
   {
-    for (u32 i = 0; i < program[phase].size(); ++i)
-      task_queues[phase].push(program[phase][i]);
+    for (Task* t : running->every[phase])
+      task_queues[phase].push(t);
   }
   // Union every relation's per-thread send buffers into its delta for the next
   // iteration.  Single-threaded: called from a barrier completion (or before
@@ -759,12 +855,16 @@ public:
     }
   }
 
-  void runProgram(bool tofixpoint = true)
+  // Execute one stratum: run its tasks to fixpoint (or for a single pass).
+  // The stratum owns its tasks and survives the run unchanged, so a resident
+  // pipeline stratum can be re-run later (after re-binding -- see daemon.h).
+  void runStratum(Stratum* s, bool tofixpoint = true)
   {
+    running = s;
     for (u32 i = 0; i < phase_count; ++i)
     {
-      for (u32 j = 0; j < program0[i].size(); ++j)
-        task_queues[i].push(program0[i][j]);
+      for (Task* t : s->once[i])
+        task_queues[i].push(t);
       reloadPhaseQueue(i);
     }
 
@@ -796,7 +896,14 @@ public:
       delete phase_barrier[i];
       phase_barrier[i] = nullptr;
     }
-    clearTasks();
+
+    // Drain the queues (the sentinel refilled them at the end of the final
+    // iteration); the tasks belong to the stratum, so no deletion here.
+    Task* task;
+    for (u32 i = 0; i < phase_count; ++i)
+      while (task_queues[i].pop(task))
+        ;
+    running = nullptr;
   }
 
   std::string writeStructCSV(u64 v)
@@ -870,11 +977,14 @@ public:
 
     node->forEach([&](const u64* t)  // t is the tuple in index order
     {
-      // line[d] holds the value at index level d (a struct's id column, whose
-      // index position is 0, is rendered as the relation name).
+      // line[d] holds the value at index level d; index level d stores
+      // storage column ord[d], so a struct's id column (storage 0) sits at
+      // the level with ord[d]==0 and is rendered as the relation name.
+      // (rewrite_ord[d]==0 is NOT equivalent unless ord is self-inverse --
+      // a 3-cycle ordering used to scramble struct CSV rows here.)
       std::vector<std::string> line(n);
       for (u16 d = 0; d < n; ++d)
-	line[d] = (is_struct && rewrite_ord[d] == 0) ? name : writeValCSV(t[d]);
+	line[d] = (is_struct && ord[d] == 0) ? name : writeValCSV(t[d]);
 
       if (is_struct)
       {
@@ -895,35 +1005,39 @@ public:
     });
   }
 
+  // Write one relation's rows to <dir>/<name>.csv.
+  void writeRelationCSV(const std::string& dir, const std::string& name)
+  {
+    Relation* rel = relations[name];
+    if (rel == 0)
+      fatal("Cannot write unknown relation " + name);
+    std::string dir_path = dir;
+    if (!dir_path.empty() && dir_path.back() != '/' && dir_path.back() != '\\')
+      dir_path += "/";
+    std::filesystem::create_directories(dir_path);
+
+    const std::vector<u16>* ord = rel->getAnyIndex();
+    if (ord)
+    {
+      std::ofstream os;
+      os.open(dir_path + name + ".csv");
+      Index** allbuckets = rel->getIndex(*ord, false);
+      bool is_struct = (rel->getStructId() > 0);
+      for (u16 b = 0; b < bucket_count; ++b)
+	writeAllFactsCSV(os, allbuckets[b], *ord, is_struct, name);
+      os.close();
+    }
+  }
+
   void writeDatabaseCSV(const std::string& db_dir)
   {
     std::filesystem::remove_all(db_dir);
     std::filesystem::create_directory(db_dir);
-    
-    // Ensure directory path ends with separator
-    std::string dir_path = db_dir;
-    if (!dir_path.empty() && dir_path.back() != '/' && dir_path.back() != '\\') {
-      dir_path += "/";
-    }
-    
+
     for (auto& rel : relations)
       if (!rel.second->isEmpty())
-      {
-	std::ofstream os;
-	os.open(dir_path + rel.first + ".csv");
-	
-	// Use any index to write to disk:
-	const std::vector<u16>* ord = rel.second->getAnyIndex();
-	if (ord)
-        {
-	  Index** allbuckets = rel.second->getIndex(*ord, false);
-	  bool is_struct = (rel.second->getStructId() > 0);
-	  for (u16 b = 0; b < bucket_count; ++b)
-	    writeAllFactsCSV(os, allbuckets[b], *ord, is_struct, rel.first);
-	  os.close();
-	}
-      }
-  
+	writeRelationCSV(db_dir, rel.first);
+
     DEBUG("Wrote CSV output to " << db_dir)
   }
 
@@ -954,208 +1068,308 @@ public:
       file.write((u8*)(void*)wordbuf, pos << 3);
   }
 
-  void writeDatabaseBIN(const std::string& db_name)
+  // The on-disk directory for one relation under a database directory (in
+  // binary format, structs and tables differ only in filename metadata).
+  std::string relationDirBIN(const std::string& db_dir,
+			     const std::string& name, Relation* rel)
   {
-    // Loads a parallel program of tasks that writes the DB
-    std::string db_dir("data/"+db_name+"/");
-    std::filesystem::remove_all(db_dir);
-    std::filesystem::create_directory(db_dir);
-    for (auto& rel : relations)
-      if (!rel.second->isEmpty())
+    if (rel->getStructId() > 0)
+      return db_dir + "struct." + name
+	     + ".arity." + std::to_string(rel->getArity())
+	     + ".id." + std::to_string(rel->getStructId()) + "/";
+    return db_dir + "table." + name
+	   + ".arity." + std::to_string(rel->getArity()) + "/";
+  }
+
+private:
+  // Newest write time across a directory's files (::min() if absent/empty).
+  static std::filesystem::file_time_type dirMTime(const std::string& dir)
+  {
+    auto t = std::filesystem::file_time_type::min();
+    if (std::filesystem::is_directory(dir))
+      for (const auto& e : std::filesystem::directory_iterator(dir))
+	t = std::max(t, std::filesystem::last_write_time(e.path()));
+    return t;
+  }
+
+  // Stage per-bucket tasks writing one relation's .bin files into `s`,
+  // replacing whatever the relation's directory held before.
+  void stageRelationWriteBIN(Stratum& s, const std::string& db_dir,
+			     const std::string& name, Relation* rel)
+  {
+    class WriteRel : public Task
+    {
+    public:
+      Database* db; std::string path; Index* node;
+      const std::vector<u16>* ord;
+      WriteRel(Database* _db, const std::string& _path, Index* _node,
+	       const std::vector<u16>* _ord)
+	: db(_db), path(_path), node(_node), ord(_ord)
+      {}
+      virtual void work()
       {
-	std::string rel_dir(db_dir);
-	// In binary format, structs and relations only differ
-	// in their filename meta info
-	if (rel.second->getStructId() > 0)
-	  rel_dir += "struct." + rel.first
-		  + ".arity." + std::to_string(rel.second->getArity())
-		  + ".id." + std::to_string(rel.second->getStructId()) + "/";
-	else
-	  rel_dir += "table." + rel.first
-		  + ".arity." + std::to_string(rel.second->getArity()) + "/";
+	DBWriteFile file(path);
+	db->writeAllFactsBIN(file, node, *ord);
+      }
+    };
 
-        std::filesystem::create_directory(rel_dir);
+    std::string rel_dir = relationDirBIN(db_dir, name, rel);
+    std::filesystem::remove_all(rel_dir);
+    std::filesystem::create_directory(rel_dir);
 
-	// Use any index to write the file out (permuted by its ordering) 
-	const std::vector<u16>* ord = rel.second->getAnyIndex();
-	if (ord)
+    // Use any index to write the file out (permuted by its ordering)
+    const std::vector<u16>* ord = rel->getAnyIndex();
+    if (ord)
+    {
+      Index** allbuckets = rel->getIndex(*ord, false);
+      for (u16 b = 0; b < bucket_count; ++b)
+	s.addTask(0,
+		  new WriteRel(this, rel_dir+std::format("{}",b)+db_out_ext,
+			       allbuckets[b], ord),
+		  true);
+    }
+  }
+
+  // Stage tasks (re)writing the interned-strings table into `s`.  Strings
+  // are append-only, so rewriting the full table is always safe; relation
+  // rows reference strings by content-hashed intern ids, which re-reading
+  // resolves identically.
+  void stageStringsWrite(Stratum& s, const std::string& db_dir)
+  {
+    class WriteStrings : public Task
+    {
+    public:
+      Database* db; u32 i; std::string path;
+      WriteStrings(Database* _db, u32 _i, const std::string& _path)
+	: db(_db), i(_i), path(_path)
+      {}
+      virtual void work()
+      {
+	DBWriteFile file(path);
+	for (auto it = db->string_table->begin(i); it != db->string_table->end(); ++it)
 	{
-	  class WriteRel : public Task
-	  {
-	  public:
-	    Database* db; std::string path; Index* node;
-	    const std::vector<u16>* ord;
-	    WriteRel(Database* _db, const std::string& _path, Index* _node,
-		      const std::vector<u16>* _ord)
-	      : db(_db), path(_path), node(_node), ord(_ord)
-	    {}
-	    virtual void work()
-	    {
-	      DBWriteFile file(path);
-	      db->writeAllFactsBIN(file, node, *ord);
-	    }
-	  };
-	  
-	  Index** allbuckets = rel.second->getIndex(*ord, false);
-	  for (u16 b = 0; b < bucket_count; ++b)
-	    addTask(0,
-		    new WriteRel(this, rel_dir+std::format("{}",b)+db_out_ext, allbuckets[b], ord),
-		    true);
+	  // By saving it *in order* according to the iterator
+	  // these strings will end up with the same intern ids
+	  // if loaded again in this order exactly
+	  file.write((u8*)(*it).c_str(), (*it).size()+1);
 	}
       }
+    };
 
-    // Save strings table
-    {
-      class WriteStrings : public Task
-      {
-      public:
-	Database* db; u32 i; std::string path;
-	WriteStrings(Database* _db, u32 _i, const std::string& _path)
-	  : db(_db), i(_i), path(_path)
-	{}
-	virtual void work()
-	{
-	  DBWriteFile file(path);
-	  for (auto it = db->string_table->begin(i); it != db->string_table->end(); ++it)
-	  {
-	    // By saving it *in order* according to the iterator
-	    // these strings will end up with the same intern ids
-	    // if loaded again in this order exactly
-	    file.write((u8*)(*it).c_str(), (*it).size()+1);
-	  }
-	}
-      };
-      
-      std::filesystem::create_directory(db_dir + "value.strings/");
-      for (u16 i = 0; i < string_table->getWritePartitions(); ++i)
-	addTask(0,
-		new WriteStrings(this, i, db_dir + "value.strings/" + std::to_string(i) + db_out_ext),
+    std::filesystem::remove_all(db_dir + "value.strings/");
+    std::filesystem::create_directory(db_dir + "value.strings/");
+    for (u16 i = 0; i < string_table->getWritePartitions(); ++i)
+      s.addTask(0,
+		new WriteStrings(this, i,
+				 db_dir + "value.strings/" + std::to_string(i) + db_out_ext),
 		true);
-    }
-    
-    runProgram(false);
+  }
+
+public:
+  // Write one relation (plus the strings table its rows may reference)
+  // under data/<db_name>/, leaving other relations' files untouched.
+  void writeRelationBIN(const std::string& db_name, const std::string& relname)
+  {
+    Relation* rel = relations[relname];
+    if (rel == 0)
+      fatal("Cannot write unknown relation " + relname);
+    std::string db_dir("data/" + db_name + "/");
+    std::filesystem::create_directories(db_dir);
+
+    Stratum s("write " + relname);
+    stageRelationWriteBIN(s, db_dir, relname, rel);
+    stageStringsWrite(s, db_dir);
+    runStratum(&s, false);
+    disk_mtimes[relname] = dirMTime(relationDirBIN(db_dir, relname, rel));
+    DEBUG("Wrote relation " << relname << " to " << db_dir)
+  }
+
+  void writeDatabaseBIN(const std::string& db_name)
+  {
+    std::string db_dir("data/"+db_name+"/");
+    std::filesystem::remove_all(db_dir);
+    std::filesystem::create_directories(db_dir);
+
+    Stratum s("write " + db_name);
+    for (auto& rel : relations)
+      if (!rel.second->isEmpty())
+	stageRelationWriteBIN(s, db_dir, rel.first, rel.second);
+    stageStringsWrite(s, db_dir);
+    runStratum(&s, false);
+
+    for (auto& rel : relations)
+      if (!rel.second->isEmpty())
+	disk_mtimes[rel.first] = dirMTime(relationDirBIN(db_dir, rel.first, rel.second));
     DEBUG("Wrote Database " << db_name)
   }
 
-  void loadDatabaseBIN(const std::string& db_dir)
+private:
+  // (Re)read every interned-strings partition under db_dir.  Interning
+  // deduplicates by content, so re-reading is idempotent: existing strings
+  // keep their ids and genuinely new ones intern fresh.
+  void loadStringsBIN(const std::string& db_dir)
   {
-    class ReadStrings : public Task
+    if (!std::filesystem::is_directory(db_dir + "value.strings"))
+      return;
+    for (const auto& partfile : std::filesystem::directory_iterator(db_dir+"value.strings"))
     {
-    public:
-      Database* db; std::string path; bool gz;
-      ReadStrings(Database* _db, const std::string& _path, bool iscompressed)
-	: db(_db), path(_path), gz(iscompressed)
-      {}
-      virtual void work()
+      std::string path(partfile.path());
+      bool gz = path.find(".gz") != std::string::npos;
+      if (gz)
       {
-	if (gz)
+	GzReadFile file(path);
+	u8 byte = 0;
+	while (file.read(&byte, 1))
 	{
-	  GzReadFile file(path);
-	  u8 byte = 0;
-	  while (file.read(&byte, 1))
-	  {
-	    std::string str;
-	    if (byte) str += (char)byte;
-	    while(file.read(&byte, 1)
-		&& byte > 0)
-	      str += (char)byte;
-	    db->intern_string(new utf8string(str));
-	  }
-	}
-	else
-	{
-	  std::ifstream file(path, std::ios::binary);
-	  u8 byte = 0;
-	  while (file.read(reinterpret_cast<char*>(&byte), 1))
-	  {
-	    std::string str;
-	    if (byte) str += (char)byte;
-	    while(file.read(reinterpret_cast<char*>(&byte), 1)
-		  && byte > 0)
-	      str += (char)byte;
-	    db->intern_string(new utf8string(str));
-	  }
-	}
-      }
-    };
-
-    class ReadTable : public Task
-    {
-    public:
-      Relation* rel; std::string path; bool gz;
-      ReadTable(Relation* _rel, const std::string& _path, bool iscompressed)
-	: rel(_rel), path(_path), gz(iscompressed)
-      {}
-      virtual void work()
-      {
-	if (gz) rel->readGzBIN(path);
-	else rel->readBIN(path);
-      }
-    };
-    
-    // Find the intern tables files and load these first:
-    for (const auto& entry : std::filesystem::directory_iterator(db_dir))
-    {
-      std::string path(entry.path());
-      if (path.find("value.strings") != std::string::npos)
-      {
-	for (const auto& partfile : std::filesystem::directory_iterator(db_dir+"value.strings"))
-	{
-	  if (std::string(partfile.path()).find(".gz") != std::string::npos)
-	    addTask(0, new ReadStrings(this, partfile.path(), true), true);
-	  else
-	    addTask(0, new ReadStrings(this, partfile.path(), false), true);
+	  std::string str;
+	  if (byte) str += (char)byte;
+	  while(file.read(&byte, 1)
+	      && byte > 0)
+	    str += (char)byte;
+	  intern_string(new utf8string(str));
 	}
       }
       else
       {
-	std::string name(path);
-	bool isstruct = name.find("struct.") != std::string::npos;
-	if (name.find("table.") != std::string::npos || isstruct)
+	std::ifstream file(path, std::ios::binary);
+	u8 byte = 0;
+	while (file.read(reinterpret_cast<char*>(&byte), 1))
 	{
-	  if (isstruct)
-	    name = name.substr(name.find("struct.")+7);
-	  else
-	    name = name.substr(name.find("table.")+6);
-	  
-	  std::string arity_ext = name.substr(name.find(".arity.")+7);
-	  std::string arity;
-	  u32 struct_id = 0;
-	  if (isstruct)
-	  {
-	    arity = arity_ext.substr(0, arity_ext.find(".id."));
-	    std::string ext = arity_ext.substr(arity_ext.find(".id.")+4) + "/";
-	    struct_id = std::atoi(ext.substr(0, ext.find("/")).c_str());
-	  }
-	  else
-	  {
-	    arity_ext += "/";
-	    arity = arity_ext.substr(0, arity_ext.find("/"));
-	  }
-	  struct_id_max = std::max(struct_id_max, struct_id+1);
-	
-	  name = name.substr(0, name.find(".arity."));
-	  if (relations.find(name) != relations.end())
-	    fatal(name + " appears to be a duplicated relation");
-	  
-	  relations[name] = new Relation(name, std::atoi(arity.c_str()), struct_id);
-	  for (const auto& p : std::filesystem::directory_iterator(path))
-	  {
-	    std::string path(p.path());
-	    if (path.find(".gz") != std::string::npos)
-	      addTask(0, new ReadTable(relations[name], path, true), true);
-	    else if (path.find(".bin") != std::string::npos)
-	      addTask(0, new ReadTable(relations[name], path, false), true);
-	  }
+	  std::string str;
+	  if (byte) str += (char)byte;
+	  while(file.read(reinterpret_cast<char*>(&byte), 1)
+		&& byte > 0)
+	    str += (char)byte;
+	  intern_string(new utf8string(str));
 	}
       }
     }
+  }
 
-    runProgram(false);
-    
+  // Read one relation directory's .bin/.gz files into the relation's send
+  // shards (staged; not yet indexed).
+  void readRelationFiles(Relation* rel, const std::string& rel_dir)
+  {
+    for (const auto& p : std::filesystem::directory_iterator(rel_dir))
+    {
+      std::string path(p.path());
+      if (path.find(".gz") != std::string::npos)
+	rel->readGzBIN(path);
+      else if (path.find(".bin") != std::string::npos)
+	rel->readBIN(path);
+    }
+  }
+
+public:
+  // Open a stored database: register its relations and stage their tuples
+  // (the first stratum run ingests them as its iteration-zero delta).
+  void loadDatabaseBIN(const std::string& db_dir)
+  {
+    loadStringsBIN(db_dir);
+
+    for (const auto& entry : std::filesystem::directory_iterator(db_dir))
+    {
+      std::string path(entry.path());
+      if (path.find("value.strings") != std::string::npos)
+	continue;
+
+      std::string name(path);
+      bool isstruct = name.find("struct.") != std::string::npos;
+      if (name.find("table.") != std::string::npos || isstruct)
+      {
+	if (isstruct)
+	  name = name.substr(name.find("struct.")+7);
+	else
+	  name = name.substr(name.find("table.")+6);
+
+	std::string arity_ext = name.substr(name.find(".arity.")+7);
+	std::string arity;
+	u32 struct_id = 0;
+	if (isstruct)
+	{
+	  arity = arity_ext.substr(0, arity_ext.find(".id."));
+	  std::string ext = arity_ext.substr(arity_ext.find(".id.")+4) + "/";
+	  struct_id = std::atoi(ext.substr(0, ext.find("/")).c_str());
+	}
+	else
+	{
+	  arity_ext += "/";
+	  arity = arity_ext.substr(0, arity_ext.find("/"));
+	}
+	struct_id_max = std::max(struct_id_max, struct_id+1);
+
+	name = name.substr(0, name.find(".arity."));
+	if (relations.find(name) != relations.end())
+	  fatal(name + " appears to be a duplicated relation");
+
+	Relation* rel = new Relation(name, std::atoi(arity.c_str()), struct_id);
+	relations[name] = rel;
+	rel->initShards(thread_count);
+	readRelationFiles(rel, path);
+	// materialize immediately (into a default index) so the database is
+	// queryable/writable before any program arrives; a following stratum
+	// re-ingests via the deferred reload (Daemon::open sets it)
+	rel->ensureDefaultIndex();
+	rel->finalizeBatches();
+	rel->ingestDelta();
+	disk_mtimes[name] = dirMTime(path + "/");
+      }
+    }
+
     DEBUG("Loaded Database at: " << db_dir);
   }
-  
+
+  // Replace one relation's contents from its files under data/<db_name>/,
+  // keeping its index registrations (contents are re-ingested immediately
+  // through the arity-generic index path, so no stratum run is needed).
+  // The relation must already exist with the same arity; struct ids and
+  // interned-string ids are only stable within the database directory that
+  // wrote them, so refresh from the database this instance opened or wrote.
+  void loadRelationBIN(const std::string& db_name, const std::string& relname)
+  {
+    Relation* rel = relations[relname];
+    if (rel == 0)
+      fatal("Cannot load unknown relation " + relname);
+    std::string db_dir("data/" + db_name + "/");
+    std::string rel_dir = relationDirBIN(db_dir, relname, rel);
+    if (!std::filesystem::is_directory(rel_dir))
+      fatal("No on-disk data for relation " + relname + " at " + rel_dir);
+
+    // pick up any strings the on-disk data references (idempotent)
+    loadStringsBIN(db_dir);
+
+    rel->clearContents();
+    readRelationFiles(rel, rel_dir);
+    rel->ensureDefaultIndex();
+    rel->finalizeBatches();
+    rel->ingestDelta();
+    disk_mtimes[relname] = dirMTime(rel_dir);
+    DEBUG("Loaded relation " << relname << " from " << db_dir);
+  }
+
+  // Has the relation's on-disk data changed since this instance last read
+  // or wrote it?  (True for never-synced relations that exist on disk.)
+  bool relationChangedOnDisk(const std::string& db_name, const std::string& relname)
+  {
+    Relation* rel = relations[relname];
+    if (rel == 0)
+      return false;
+    std::string rel_dir = relationDirBIN("data/" + db_name + "/", relname, rel);
+    auto it = disk_mtimes.find(relname);
+    if (it == disk_mtimes.end())
+      return std::filesystem::is_directory(rel_dir);
+    return dirMTime(rel_dir) != it->second;
+  }
+
+  // Refresh the relation from disk iff it changed; returns whether it did.
+  bool refreshRelationBIN(const std::string& db_name, const std::string& relname)
+  {
+    if (!relationChangedOnDisk(db_name, relname))
+      return false;
+    loadRelationBIN(db_name, relname);
+    return true;
+  }
+
   void reloadInsertBatches()
   {
     class ReloadBatches : public Task
@@ -1170,7 +1384,7 @@ public:
 	rel->reloadInsertBatches(b);
       }
     };
-    
+
     class ClearAllIndices : public Task
     {
     public:
@@ -1183,16 +1397,17 @@ public:
 	rel->clearAllIndices();
       }
     };
-    
+
+    Stratum s("reload");
     for (auto& p : relations)
     {
       // Should be parallelized
       for (u16 b = 0; b < bucket_count; ++b)
-	addTask(0, new ReloadBatches(p.second, b), true);
-      addTask(1, new ClearAllIndices(p.second), true);
+	s.addTask(0, new ReloadBatches(p.second, b), true);
+      s.addTask(1, new ClearAllIndices(p.second), true);
     }
-    
-    runProgram(false);
+
+    runStratum(&s, false);
   }
 };
 

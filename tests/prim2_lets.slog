@@ -1,0 +1,18 @@
+;; Chained let computations, lets written out of dependency order (the
+;; planner must reorder), and a guard over a computed value.
+
+table (n int)
+table (chain int int int)   ;; (A, B=A+1, C=B*B)
+table (ooo int int)         ;; lets textually reversed: C=B*B before B=A+2
+table (bounded int int)     ;; keep only C=(A+1)^2 < 30
+
+facts
+(n 0)
+(n 1)
+(n 2)
+(n 3)
+(n 7)
+
+rule (n A) (= B (+ A 1)) (= C (* B B)) --> (chain A B C)
+rule (n A) (= C (* B B)) (= B (+ A 2)) --> (ooo A C)
+rule (n A) (= B (+ A 1)) (= C (* B B)) (< C 30) --> (bounded A C)

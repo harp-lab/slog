@@ -1,0 +1,8 @@
+;; First prerequisite in the two-step run chain of strat_run2_main.slog.
+;; Not a standalone test (no golden).
+
+table (p int)
+
+facts
+(p 1)
+(p 2)

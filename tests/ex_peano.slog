@@ -1,0 +1,38 @@
+;; Peano arithmetic through recursive structs.
+;;
+;; nat is a recursive union: the enum constant (z) or a successor struct
+;; (s nat).  Ints 0..4 are mapped to nested (s (s ... (z))) values in num,
+;; then relational addition padd is computed structurally:
+;;   z + b = b        s(a) + b = s(a + b)
+;; and mapped back to ints in sum, which must agree with integer addition.
+
+union (nat (z) (s nat))
+
+table (count int)
+table (num int nat)
+table (padd nat nat nat)
+table (sum int int int)
+table (check str)
+
+facts
+(count 0)
+(num 0 (z))
+
+;; count 0..4
+rule (count N) (< N 4) (= M (+ N 1)) --> (count M)
+
+;; num: int -> Peano nat, 0..4
+rule (num N X) (< N 4) (= M (+ N 1)) --> (num M (s X))
+
+;; padd base: z + b = b, for every nat b in num
+rule (num _ B) --> (padd (z) B B)
+
+;; padd step: s(a) + b = s(a+b), only for successors s(a) present in num
+rule (padd A B C) (num _ (s A)) --> (padd (s A) B (s C))
+
+;; map structural sums back to ints (only where the result is <= 4,
+;; since num only covers 0..4)
+rule (padd NA NB NC) (num A NA) (num B NB) (num C NC) --> (sum A B C)
+
+;; structural sanity check: 2 + 2 = 4
+rule (num 2 T) (num 4 F) (padd T T F) --> (check "2+2=4")

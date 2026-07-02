@@ -1,0 +1,40 @@
+;; Repeated variables inside a single clause:
+;;   - (edge X X) as the sole (delta-driven) body clause
+;;   - (edge X X) as a secondary join clause
+;;   - a head with a repeated variable (dup X X)
+;;   - a triple-repeat (tri X X X)
+;;
+;; Expected:
+;;   selfd   = {1, 2}
+;;   node    = {1, 2, 3, 4}
+;;   selfj   = {1, 2}
+;;   dup     = {(1 1), (2 2), (3 3), (4 4)}
+;;   allsame = {5}
+
+table (edge int int)
+table (node int)
+table (selfd int)
+table (selfj int)
+table (dup int int)
+table (tri int int int)
+table (allsame int)
+
+facts
+(edge 1 1)
+(edge 1 2)
+(edge 2 2)
+(edge 2 3)
+(edge 3 4)
+(tri 5 5 5)
+(tri 5 5 6)
+(tri 7 8 7)
+
+rule (edge X X) --> (selfd X)
+
+rule (edge X Y) --> (node X) (node Y)
+
+rule (node X) (edge X X) --> (selfj X)
+
+rule (node X) --> (dup X X)
+
+rule (tri X X X) --> (allsame X)

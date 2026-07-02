@@ -1,0 +1,15 @@
+;; Nullary constructor (halt) inside a union, matched in bodies and
+;; emitted in heads; the union-typed column also holds real structs.
+
+union (stack (halt) (more stack))
+
+table (build stack int)
+table (halt_depth int)
+table (more_depth int)
+
+facts
+(build (halt) 0)
+
+rule (build s n) (< n 3) (= m (+ n 1)) --> (build (more s) m)
+rule (build (halt) n) --> (halt_depth n)
+rule (build (more s2) n) --> (more_depth n)

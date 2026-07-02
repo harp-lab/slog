@@ -1,0 +1,24 @@
+;; String primitives: + concatenation (var-var and var-literal) and substr
+;; in positions where (start,end) and (start,len) readings agree
+;; (start = 0, or end = size of the string), so the golden is robust.
+
+table (w str str)
+table (t str)
+
+table (cat str str str)     ;; A ++ B
+table (bang str str)        ;; A ++ "!"
+table (pre str str)         ;; substr S 0 5
+table (suf str str)         ;; substr S 6 11 (end = size, both readings agree)
+
+facts
+(w "foo" "bar")
+(w "" "xyz")
+(w "a" "a")
+
+(t "hello world")
+
+rule (w A B) (= C (+ A B))   --> (cat A B C)
+rule (w A B) (= C (+ A "!")) --> (bang A C)
+
+rule (t S) (= R (substr S 0 5))  --> (pre S R)
+rule (t S) (= R (substr S 6 11)) --> (suf S R)

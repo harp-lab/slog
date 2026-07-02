@@ -1,0 +1,31 @@
+;; Bottom-up evaluator for a small arithmetic expression language.
+;;
+;; expr is a recursive union of interned structs.  Every interned expr node
+;; is evaluated into (val e n) by destructuring with infix = patterns; the
+;; named root expressions are then reported in answer.
+
+union (expr (lit int) (plus expr expr) (times expr expr))
+
+table (prog str expr)
+table (val expr int)
+table (answer str int)
+
+facts
+(prog "e1" (plus (lit 2) (times (lit 3) (lit 4))))
+(prog "e2" (times (plus (lit 1) (lit 2)) (plus (lit 3) (lit 4))))
+(prog "e3" (lit 7))
+(prog "e4" (times (lit 5) (plus (lit 6) (times (lit 2) (lit 10)))))
+
+rule e = (lit n) --> (val e n)
+
+rule e = (plus a b)
+     (val a x) (val b y)
+     (= z (+ x y))
+ --> (val e z)
+
+rule e = (times a b)
+     (val a x) (val b y)
+     (= z (* x y))
+ --> (val e z)
+
+rule (prog name e) (val e v) --> (answer name v)

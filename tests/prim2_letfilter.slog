@@ -1,0 +1,25 @@
+;; A let whose output variable is ALSO bound by a relation column must act
+;; as a filter (equality check), keeping only rows where the column value
+;; equals the computed value.  Also: two lets targeting the same variable.
+
+table (p int int)
+table (n int)
+table (consec int int)   ;; rows of p with Y = X+1
+table (dbl int int)      ;; rows of p with Y = 2*X
+table (fixp int int)     ;; X where X+1 = 2*X
+
+facts
+(p 0 1)
+(p 1 2)
+(p 2 4)
+(p 3 3)
+(p 5 6)
+
+(n 0)
+(n 1)
+(n 2)
+(n 3)
+
+rule (p X Y) (= Y (+ X 1)) --> (consec X Y)
+rule (p X Y) (= Y (* X 2)) --> (dbl X Y)
+rule (n X) (= Y (+ X 1)) (= Y (* X 2)) --> (fixp X Y)

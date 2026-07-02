@@ -1,0 +1,31 @@
+;; '_' wildcards in several positions, including two wildcards in one
+;; clause, a wildcard alongside a repeated variable, and a wildcard in a
+;; joined (non-delta) clause.
+;;
+;; Expected:
+;;   fst    = {1, 4, 7}
+;;   mid    = {2, 5, 8}
+;;   lst    = {3, 6, 7}
+;;   outr   = {(1 3), (4 6), (7 7)}
+;;   skew   = {7}            (first == third, middle ignored)
+;;   joined = {3, 6, 7}      (every fst value keys a tri row)
+
+table (tri int int int)
+table (fst int)
+table (mid int)
+table (lst int)
+table (outr int int)
+table (skew int)
+table (joined int)
+
+facts
+(tri 1 2 3)
+(tri 4 5 6)
+(tri 7 8 7)
+
+rule (tri X _ _) --> (fst X)
+rule (tri _ Y _) --> (mid Y)
+rule (tri _ _ Z) --> (lst Z)
+rule (tri X _ Z) --> (outr X Z)
+rule (tri X _ X) --> (skew X)
+rule (fst X) (tri X _ C) --> (joined C)

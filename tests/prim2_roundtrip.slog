@@ -1,0 +1,22 @@
+;; toint/tofloat round trips.  toint truncates toward zero (also for
+;; negative floats, which are derived by subtraction from 0.0).
+
+table (i int)
+table (fl float)
+
+table (rti int int)       ;; N -> toint(tofloat(N)) : identity on ints
+table (rtf float float)   ;; F -> tofloat(toint(F)) : truncation
+table (tineg float int)   ;; toint of a negative float truncates toward zero
+
+facts
+(i 0)
+(i 7)
+(i 123456)
+
+(fl 3.75)
+(fl 0.5)
+(fl 9.0)
+
+rule (i N) (= F (tofloat N)) (= M (toint F)) --> (rti N M)
+rule (fl F) (= N (toint F)) (= G (tofloat N)) --> (rtf F G)
+rule (fl F) (= NF (- 0.0 F)) (= N (toint NF)) --> (tineg NF N)

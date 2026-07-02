@@ -6,9 +6,34 @@
          finish-jit
          fullpath
          ensure-slogd-exists
-         slogd-argv)
+         slogd-argv
+         daemon-headers-fingerprint
+         compiler-sources-fingerprint)
 
 (require "utils.rkt")
+(require racket/runtime-path)
+
+(define-runtime-path daemon-dir "../daemon")
+(define-runtime-path compiler-dir ".")
+
+(define (fingerprint-dir dir rx)
+  (apply string-append
+         (for/list ([f (in-list (sort (map path->string (directory-list dir))
+                                      string<?))]
+                    #:when (and (regexp-match? rx f)
+                                ;; skip dangling editor lock symlinks (.#foo.h)
+                                (file-exists? (build-path dir f))))
+           (file->string (build-path dir f)))))
+
+;; Fingerprint of the daemon headers.  Generated .so's #include daemon
+;; headers and inline Database's layout and methods, so any header change
+;; must invalidate cached .so's (otherwise a stale .so reads members at the
+;; wrong offsets).  Folded into every .so cache key.
+(define daemon-headers-fingerprint (fingerprint-dir daemon-dir #rx"\\.h$"))
+
+;; Fingerprint of the compiler itself, so editing a pass invalidates cached
+;; .so's (previously a stale .so could silently mask a codegen change).
+(define compiler-sources-fingerprint (fingerprint-dir compiler-dir #rx"\\.rkt$"))
 
 (define (delete-folder path)
   (define-values (sp out in err) (subprocess #f #f #f "/bin/rm" "-rf" path))

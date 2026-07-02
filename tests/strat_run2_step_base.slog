@@ -1,0 +1,8 @@
+;; Second prerequisite in the run chain of strat_run2_main.slog: consumes
+;; p from the earlier chained run (strat_run2_base.slog) via the shared
+;; database.  Not a standalone test (no golden).
+
+table (p int)
+table (q int)
+
+rule (p X) (= Y (+ X 100)) --> (q Y)

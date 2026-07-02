@@ -1,0 +1,14 @@
+;; The size primitive on column-bound and computed strings, written in the
+;; natural order (binding clause first, then the size computation).
+
+table (w str)
+table (len str int)
+table (catlen str int)
+
+facts
+(w "foo")
+(w "")
+(w "hello world")
+
+rule (w A) (= N (size A)) --> (len A N)
+rule (w A) (= C (+ A A)) (= N (size C)) --> (catlen C N)

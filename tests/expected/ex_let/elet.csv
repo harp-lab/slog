@@ -1,0 +1,20 @@
+ "x"
+ "x"
+ "x"
+ "x"
+ "y"
+ (add (ref "x") (lit 10))
+ (add (ref "x") (lit 5))
+ (add (ref "x") (ref "x")))
+ (add (ref "x") (ref "y")))
+ (elet "x" (add (ref "x") (lit 5)) (ref "x")))
+ (elet "y" (add (ref "x") (lit 10)) (add (ref "x") (ref "y"))))
+ (lit 1)
+ (lit 2)
+ (lit 3)
+ (ref "x"))
+(elet
+(elet
+(elet
+(elet
+(elet

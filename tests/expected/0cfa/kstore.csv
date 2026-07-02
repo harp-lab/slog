@@ -1,0 +1,3 @@
+(kaddr (app (ref "x") (ref "x")))   (_enum "halt")   
+(kaddr (app (ref "y") (app (ref "y") (ref "y"))))   (fn (lambda "y" (app (ref "y") (app (ref "y") (ref "y")))) (kaddr (app (ref "y") (app (ref "y") (ref "y")))))   
+(kaddr (app (ref "y") (app (ref "y") (ref "y"))))   (kaddr (app (ref "x") (ref "x")))   

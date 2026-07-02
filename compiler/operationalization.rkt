@@ -1,201 +1,313 @@
 #lang racket
 
+;; Operationalization: lower one stratum's planned rules to the c-program
+;; (see ir-stack.rkt) that emit-cpp.rkt renders as C++.
+;;
+;; Four steps, each a fold over the planned rules:
+;;   1. globalize constants -- each distinct literal becomes one global
+;;      variable, initialized once at program load;
+;;   2. collect select sets -- for every join, the set of columns it probes
+;;      with (against the delta index for drivers, the full index otherwise);
+;;   3. choose indices -- naively, one index per select set: the selected
+;;      columns (sorted) first, the rest after, deduplicated per relation
+;;      (indices.rkt has the min-chain-cover machinery for doing better);
+;;   4. lower each rule -- resolve every join to a concrete index, reorder
+;;      its tuple to match, and split the body into pre-ops / driver / ops.
+;;
+;; Variables and primitive names are C-escaped here, in one place; relation
+;; names stay raw (they only appear inside C string literals downstream).
+
+(provide build-cprog)
+
 (require "utils.rkt")
-(require "preds.rkt")
+(require "ir-shared.rkt")
 
-(provide globalize-constants
-         type-select-sets
-         add-select-sets
-         add-c-rule
-         make-rel-decls
-         escape-all-ids-for-C)
+;; -----------------------------------------------------------------------
+;; Clause views shared by the steps below.
 
-(define (clause-vars cl)
+(define (join-cl? cl)
   (match cl
-    [`(syn ,_ /= ,x ,y) (set x y)]
-    [`(syn ,_ ,(? primitive-cmp?) ,x ,y) (set x y)]
-    [`(syn ,_ let ,x ,(? symbol? y)) (set x y)]
-    [`(syn ,_ let ,x (syn ,_ ,name ,args ...)) (list->set `(,x ,@args))]
-    [`(syn ,_ = ,x (syn ,_ const ,_)) (set x)]
-    [`(syn ,_ = ,x (syn ,_ ,name ,xs ...)) (list->set `(,x ,@xs))]
-    [`(syn ,_ ,name ,xs ...) (list->set xs)]))
+    [`(syn ,_ ,(or '/= '== 'let) ,_ ...) #f]
+    [`(syn ,_ ,(? primitive-cmp?) ,_ ,_) #f]
+    [_ #t]))
+
+(define (join-rel cl)
+  (match cl
+    [`(syn ,_ = ,_ (syn ,_ ,name ,_ ...)) name]
+    [`(syn ,_ ,name ,_ ...) name]))
+
+;; The join's tuple in storage order (a struct's id is storage column 0).
+(define (join-tuple cl)
+  (match cl
+    [`(syn ,_ = ,x (syn ,_ ,name ,xs ...)) (cons x xs)]
+    [`(syn ,_ ,name ,xs ...) xs]))
+
+(define (rule-body rule)
+  (match rule [`(syn ,_ rule ,bodys ... --> ,heads ...) bodys]))
+
+(define (rule-heads rule)
+  (match rule [`(syn ,_ rule ,bodys ... --> ,heads ...) heads]))
+
+;; -----------------------------------------------------------------------
+;; The pass driver.
+;;
+;; planned-rules  set of planned rules (one stratum)
+;; rel-env        relation declarations, including this stratum's temps
+;;
+;; Returns a cprog.  The dynamic-relation set (heads of this stratum's
+;; rules) determines which read tasks re-run every iteration versus once.
+
+(define (build-cprog planned-rules rel-env)
+  (define rules0 (set->list planned-rules))
+  (match-define (cons constants rules) (globalize-constants rules0))
+  (define dynamic-rels
+    (for/fold ([acc (set)]) ([rule (in-list rules)])
+      (set-union acc (list->set (map join-rel (filter join-cl? (rule-heads rule)))))))
+  (define selections
+    (foldl add-select-sets (seed-select-sets rel-env) rules))
+  (define decls (make-rel-decls rel-env selections))
+  (define crules (map (lower-rule rel-env selections) rules))
+  `(cprog ,dynamic-rels ,constants ,decls ,crules))
+
+;; -----------------------------------------------------------------------
+;; 1. Constants.
+;;
+;; Rewrite every (let x (const v)) to (let x g), collecting v -> g.  The
+;; generated code declares each g as a global and initializes it at load
+;; time (interning strings, NaN-boxing numbers).
 
 (define (globalize-constants rules)
-  (define (gen v constants)
-    (hash-ref constants v (lambda () (gensymb 'const))))
-  (foldl (lambda (rule acc)
-           (match-define (cons constants rules-st) acc)
-           (match-define (cons constants+ rule+)
-             (foldr (lambda (cl acc)
-                      (match-define (cons constants rule+) acc)
-                      (match cl
-                        [`(syn ,prov let ,x (syn ,_ const ,v))
-                         (define constants+ (hash-set constants v (gen v constants)))
-                         (cons constants+ (cons `(syn ,prov let ,x ,(gen v constants+)) rule+))]
-                        [_ (cons constants (cons cl rule+))]))
-                    (cons constants '())
-                    rule))
-           (cons constants+ (set-add rules-st rule+)))
-         (cons (hash) (set))
-         rules))
+  (for/fold ([acc (cons (hash) '())]
+             #:result (cons (car acc) (reverse (cdr acc))))
+            ([rule (in-list rules)])
+    (match-define (cons constants rules+) acc)
+    (match-define `(syn ,prov rule ,cls ...) rule)
+    (define-values (constants+ cls+)
+      (for/fold ([constants constants] [out '()]
+                 #:result (values constants (reverse out)))
+                ([cl (in-list cls)])
+        (match cl
+          [`(syn ,p let ,x (syn ,_ const ,v))
+           (define g (hash-ref constants v (lambda () (gensymb 'const))))
+           (values (hash-set constants v g)
+                   (cons `(syn ,p let ,x ,g) out))]
+          [_ (values constants (cons cl out))])))
+    (cons constants+ (cons `(syn ,prov rule ,@cls+) rules+))))
 
-(define (type-select-sets rel-env)
-  (foldl (lambda (name ss)
-           (match (hash-ref rel-env name)
-             [`(struct ,xs ...)
-              (hash-set ss
-                        name
-                        ;; structs must have an interning index and a lookup index (resp.)
-                        (set `(,(list->set (range 1 (add1 (length xs)))) ,(set 0))
-                             `(,(set 0) ,(list->set (range 1 (add1 (length xs)))))))]
-             ;; tables must have *some* index
-             [`(table ,xs ...) (hash-set ss name (set `(,(set) ,(list->set (range (length xs))))))]
-             [`(temp ,_) ss]
-             [`(enum ,_) ss])) ;; temp rels do not have an index
-         (hash)
-         (hash-keys rel-env)))
+;; -----------------------------------------------------------------------
+;; 2. Select sets: relation (or (delta relation)) -> set of column sets.
 
+;; Every struct needs its interning master index (content columns first, the
+;; id column -- storage 0 -- last) and its lookup index (id first); every
+;; table needs at least one index to exist in (and be reloadable from).
+(define (seed-select-sets rel-env)
+  (for/fold ([ss (hash)]) ([(name decl) (in-hash rel-env)])
+    (match decl
+      [`(struct ,ts ...)
+       (hash-set ss name (set (list->set (range 1 (add1 (length ts))))
+                              (set 0)))]
+      [`(table ,ts ...) (hash-set ss name (set (set)))]
+      [_ ss])))                                   ; temps and enums: none
+
+(define (add-select-set ss key columns)
+  (hash-update ss key (lambda (s) (set-add s columns)) (set)))
+
+;; Walk one rule's body in schedule order, recording each join's probe
+;; columns.  The first join is the driver: a probing driver hits the DELTA
+;; index of its relation; a driver with no bound columns scans the raw delta
+;; and needs no index at all.
 (define (add-select-sets rule ss)
-  (match rule
-    [`(syn ,_ rule ,bodys ... --> ,heads ...)
-     (last
-      (foldl
-       (lambda (cl acc)
-         (match-define (list ground not-first? ss) acc)
-         (define (select-set tup)
-           (define sel
-             (list->set (filter (lambda (i) (set-member? ground (list-ref tup i)))
-                                (range (length tup)))))
-           (define nsel
-             (list->set (filter (lambda (i) (not (set-member? sel i))) (range (length tup)))))
-           `(,sel ,nsel))
-         (match cl
-           [`(syn ,_ /= ,x ,y) (list (set-union ground (clause-vars cl)) not-first? ss)]
-           [`(syn ,_ ,(? primitive-cmp?) ,x ,y) (list (set-union ground (clause-vars cl)) not-first? ss)]
-           [`(syn ,_ let ,x ,(? symbol? y)) (list (set-add ground x) not-first? ss)]
-           [`(syn ,_ = ,x (syn ,_ ,name ,xs ...))
-            (if (or not-first? (set-empty? (set-intersect (list->set xs) ground)))
-                (list (set-union ground (clause-vars cl))
-                      #t
-                      (hash-set ss name (set-add (hash-ref ss name set) (select-set (cons x xs)))))
-                ;; or, if first, and has variables grounded, delta index:
-                (list (set-union ground (clause-vars cl))
-                      #t
-                      (hash-set ss
-                                `(delta ,name)
-                                (set-add (hash-ref ss `(delta name) set) (select-set (cons x xs))))))]
-           [`(syn ,_ ,name ,xs ...)
-            (if (or not-first? (set-empty? (set-intersect (list->set xs) ground)))
-                (list (set-union ground (clause-vars cl))
-                      #t
-                      (hash-set ss name (set-add (hash-ref ss name set) (select-set xs))))
-                ;; or, if first, and has variables grounded, delta index:
-                (list (set-union ground (clause-vars cl))
-                      #t
-                      (hash-set ss
-                                `(delta ,name)
-                                (set-add (hash-ref ss `(delta name) set) (select-set xs)))))]))
-       (list (set) #f ss)
-       bodys))]))
+  (for/fold ([ground (set)] [first? #t] [ss ss] #:result ss)
+            ([cl (in-list (rule-body rule))])
+    (cond
+      [(join-cl? cl)
+       (define tup (join-tuple cl))
+       (define sel
+         (for/set ([x (in-list tup)] [i (in-naturals)]
+                   #:when (set-member? ground x))
+           i))
+       (define ss+
+         (cond
+           [(and first? (set-empty? sel)) ss]                    ; delta scan
+           [first? (add-select-set ss `(delta ,(join-rel cl)) sel)]
+           [else (add-select-set ss (join-rel cl) sel)]))
+       (values (set-union ground (clause-vars cl)) #f ss+)]
+      [else
+       (values (set-union ground (clause-out-vars cl)) first? ss)])))
+
+;; -----------------------------------------------------------------------
+;; 3. Indices: one per select set, selected columns (sorted) first, the
+;; rest after.  Orderings are derived on demand from the selections and
+;; deduplicated per relation by the set they land in.
+
+(define (index-for-selection sel all-columns)
+  (append (sort (set->list sel) <)
+          (sort (set->list (set-subtract all-columns sel)) <)))
+
+;; The full index orderings for a relation of the given arity.
+(define (indices-of selections key arity)
+  (for/set ([sel (in-set (hash-ref selections key (set)))])
+    (index-for-selection sel (list->set (range arity)))))
+
+;; -----------------------------------------------------------------------
+;; 4. Relation declarations.
 
 (define (make-rel-decls rel-env indices)
-  (map (lambda (name)
-         (define typ (hash-ref rel-env name))
-         (define myindices (hash-ref indices name set))
-         (define mydeltaindices (hash-ref indices `(delta ,name) set))
-         (match typ
-           [`(struct ,_ ...)
-            (let* ([master (filter (lambda (i) (= 0 (last i))) (set->list myindices))]
-                   [lookup (filter (lambda (i) (= 0 (first i))) (set->list myindices))])
-              (when (null? master)
-                (error (format "~a has no interning index!" name)))
-              (when (null? lookup)
-                (error (format "~a has no lookup index!" name)))
-              (define otherind (set-subtract myindices (set (car master) (car lookup))))
-              `(struct ,name ,(length typ)
-                 ,(car master)
-                 ,(car lookup)
-                 ,@(set->list otherind)
-                 ,@(map (lambda (ind) `(delta ,@ind)) (set->list mydeltaindices))))]
-           [`(table ,_ ...)
-            `(relation ,name
-                       ,(- (length typ) 1)
-                       ,@(set->list myindices)
-                       ,@(map (lambda (ind) `(delta ,@ind)) (set->list mydeltaindices)))]
-           [`(temp ,arity) `(temp ,name ,arity)]))
-       (filter (lambda (k) (not (eq? 'enum (first (hash-ref rel-env k))))) (hash-keys rel-env))))
+  (for/fold ([decls '()]) ([name (in-list (sort (hash-keys rel-env) symbol<?))])
+    (define decl (hash-ref rel-env name))
+    (define arity (rel-decl-arity decl))
+    (match decl
+      [`(struct ,_ ...)
+       (define stored (add1 arity))    ; fields + id column
+       (define all (indices-of indices name stored))
+       (define master (findf (lambda (i) (= 0 (last i))) (set->list all)))
+       (define lookup (findf (lambda (i) (= 0 (first i))) (set->list all)))
+       ;; seed-select-sets guarantees both exist:
+       ;;   (set)  -> (1 ... n 0)  = master/interning, and
+       ;;   (set 0)-> (0 1 ... n)  = lookup
+       (define others (set->list (set-subtract all (set master lookup))))
+       (define deltas (set->list (indices-of indices `(delta ,name) stored)))
+       (cons `(struct ,name ,stored
+                ,master ,lookup ,@others
+                ,@(map (lambda (i) `(delta ,@i)) deltas))
+             decls)]
+      [`(table ,_ ...)
+       (define all (set->list (indices-of indices name arity)))
+       (define deltas (set->list (indices-of indices `(delta ,name) arity)))
+       (cons `(relation ,name ,arity ,@all
+                        ,@(map (lambda (i) `(delta ,@i)) deltas))
+             decls)]
+      [`(temp ,arity) (cons `(temp ,name ,arity) decls)]
+      [`(enum ,_) decls])))
 
-(define ((add-c-rule rel-env indices) rule rules)
-  (define (ordered-clause name ind tup)
-    (define ord-tup (map (lambda (p) (list-ref tup p)) ind))
-    `(,name ,ind ,@ord-tup))
-  (define (add-head head heads)
-    (match head
-      [`(syn ,_ let ,x (syn ,_ ,name ,args ...)) (cons `(let ,x (,name ,@args)) heads)]
-      [`(syn ,_ = ,x (syn ,_ ,name ,xs ...))
-       (define ind-lst (filter (lambda (i) (= 0 (last i))) (set->list (hash-ref indices name set))))
-       (when (null? ind-lst)
-         (error "No struct index found"))
-       (define ord-cl (ordered-clause name (car ind-lst) (cons x xs)))
-       (cons `(= ,x ,(take ord-cl (sub1 (length ord-cl)))) heads)]
-      [`(syn ,_ ,name ,xs ...)
-       #:when (match (hash-ref rel-env name (lambda () #f))
-                [`(temp ,_) #t]
-                [_ #f])
-       (cons `(,name () ,@xs) heads)]
-      [`(syn ,_ ,name ,xs ...)
-       (when (set-empty? (hash-ref indices name set))
-         (error "No rel index found"))
-       (define ind (set-first (hash-ref indices name)))
-       (cons (ordered-clause name ind xs) heads)]))
-  (define (add-body body acc)
-    (match-define (list bodys ground hit-first-read?) acc)
-    (define (emit-join-with name tup)
-      (define join-vars (set-intersect ground (list->set tup)))
-      (if (and (not hit-first-read?) (set-empty? join-vars))
-          (list (cons `(read_delta ,name ,@tup) bodys) (set-union ground (list->set tup)) #t)
-          (let ([ind-lst (filter (lambda (i)
-                                   (let* ([ordvars (map (lambda (n) (list-ref tup n)) i)])
-                                     (equal? (list->set (take ordvars (set-count join-vars)))
-                                             join-vars)))
-                                 (set->list (hash-ref indices
-                                                      (if hit-first-read?
-                                                          name
-                                                          `(delta ,name))
-                                                      set)))])
-            (when (null? ind-lst)
-              (error "No index found!"))
-            (define ind (car ind-lst))
-            (list (cons `(join_with ,@(if hit-first-read?
-                                          '()
-                                          '(delta))
-                                    ,@(ordered-clause name ind tup))
-                        bodys)
-                  (set-union ground (list->set tup))
-                  #t))))
-    (match body
-      [`(syn ,_ /= ,x ,y) (list (cons `(/= ,x ,y) bodys) ground hit-first-read?)]
+;; -----------------------------------------------------------------------
+;; 5. Rule lowering.
+
+;; Escape a variable for use as a C identifier (v_<name> in the emitter).
+(define esc escape-id-for-C)
+
+;; Reorder `tup` by index ordering `ind`.
+(define (order-tuple ind tup)
+  (map (lambda (p) (list-ref tup p)) ind))
+
+;; Find an index of `key` whose leading columns are exactly `sel`.
+(define (find-index indices key arity sel who)
+  (define candidates
+    (filter (lambda (ind)
+              (equal? (list->set (take ind (set-count sel))) sel))
+            (set->list (indices-of indices key arity))))
+  (when (null? candidates)
+    (error 'operationalization "no ~a index with prefix ~a for ~a" key sel who))
+  (car candidates))
+
+;; A struct's master (interning) index: content columns first, id last.
+;; Guaranteed to exist by seed-select-sets.
+(define (master-index-of indices name stored who)
+  (or (findf (lambda (ind) (= 0 (last ind)))
+             (set->list (indices-of indices name stored)))
+      (error 'operationalization "no master index for struct ~a in ~a" name who)))
+
+(define ((lower-rule rel-env indices) rule)
+  (define (rel-arity name)
+    (rel-decl-arity (hash-ref rel-env name)))
+  (define (stored-arity name)                      ; struct tuples carry an id
+    (match (hash-ref rel-env name)
+      [`(struct ,ts ...) (add1 (length ts))]
+      [decl (rel-decl-arity decl)]))
+  (define (temp-rel? name)
+    (match (hash-ref rel-env name #f)
+      [`(temp ,_) #t]
+      [_ #f]))
+  (define (struct-rel? name)
+    (match (hash-ref rel-env name #f)
+      [`(struct ,_ ...) #t]
+      [_ #f]))
+
+  ;; a non-join body op
+  (define (lower-op cl)
+    (match cl
+      [`(syn ,_ /= ,x ,y) `(neq ,(esc x) ,(esc y))]
+      [`(syn ,_ == ,x ,y) `(eq ,(esc x) ,(esc y))]
       [`(syn ,_ ,(? primitive-cmp? op) ,x ,y)
-       (list (cons `(cmp ,(cmp-prim-name op) ,x ,y) bodys) ground hit-first-read?)]
-      [`(syn ,_ let ,x ,(? symbol? y))
-       (list (cons `(let ,x ,y) bodys) (set-add ground x) hit-first-read?)]
-      [`(syn ,_ let ,x (syn ,_ ,name ,args ...))
-       (list (cons `(let ,x (,name ,@args)) bodys) (set-add ground x) hit-first-read?)]
-      [`(syn ,_ = ,x (syn ,_ ,name ,xs ...)) (emit-join-with name (cons x xs))]
-      [`(syn ,_ ,name ,xs ...) (emit-join-with name xs)]
-      [_ (cons (cons body bodys) ground)]))
-  (match rule
-    [`(syn ,_ rule ,bodys ... --> ,heads ...)
-     (match-define (list bodys+ ground _) (foldl add-body (list '() (set) #f) bodys))
-     (match-define heads+ (foldr add-head '() heads))
-     (cons `(crule ,@(reverse bodys+) --> ,@heads+) rules)]))
+       `(cmp ,(cmp-prim-name op) ,(esc x) ,(esc y))]
+      [`(syn ,_ let ,x ,(? var? y)) `(let ,(esc x) ,(esc y))]
+      [`(syn ,_ let ,x (syn ,_ ,f ,args ...))
+       `(let ,(esc x) (,(esc f) ,@(map esc args)))]))
 
-(define (escape-all-ids-for-C e)
-  (match e
-    [(? symbol?)
-     #:when (regexp-match #px"^_t" (symbol->string e))
-     e]
-    [(or '--> '= '/= '== 'join_with 'read_delta) e]
-    [(? list? lst) (map escape-all-ids-for-C lst)]
-    [(? symbol? x) (escape-id-for-C x)]
-    [_ e]))
+  ;; a body join op: pick the index whose prefix carries the bound columns
+  (define (lower-join cl ground)
+    (define name (join-rel cl))
+    (define tup (join-tuple cl))
+    (define sel
+      (for/set ([x (in-list tup)] [i (in-naturals)]
+                #:when (set-member? ground x))
+        i))
+    (define ind (find-index indices name (stored-arity name) sel (strip-prov cl)))
+    `(join ,name ,ind ,(set-count sel) ,@(map esc (order-tuple ind tup))))
+
+  ;; the driver: scan the raw delta, or probe the delta index
+  (define (lower-driver cl ground)
+    (define name (join-rel cl))
+    (define tup (join-tuple cl))
+    (define sel
+      (for/set ([x (in-list tup)] [i (in-naturals)]
+                #:when (set-member? ground x))
+        i))
+    (if (set-empty? sel)
+        `(scan ,name ,@(map esc tup))
+        (let ([ind (find-index indices `(delta ,name) (stored-arity name) sel
+                               (strip-prov cl))])
+          `(probe ,name ,ind ,(set-count sel) ,@(map esc (order-tuple ind tup))))))
+
+  ;; a head op
+  (define (lower-head cl)
+    (match cl
+      [`(syn ,_ let ,x (syn ,_ ,f ,args ...))
+       `(let ,(esc x) (,(esc f) ,@(map esc args)))]
+      [`(syn ,_ = ,x (syn ,_ ,name ,fields ...))
+       (define stored (stored-arity name))
+       (define master (master-index-of indices name stored (strip-prov cl)))
+       ;; master orders content first, id (storage 0) last; emit the fields
+       ;; in master (content) order, the ordering array scattering them home
+       `(mkstruct ,name ,master ,(esc x)
+                  ,@(map esc (order-tuple (take master (sub1 stored))
+                                          (cons x fields))))]
+      [`(syn ,_ ,name ,xs ...)
+       #:when (temp-rel? name)
+       `(emit-temp ,name ,@(map esc xs))]
+      [`(syn ,_ ,name ,xs ...)
+       (define ind (find-index indices name (rel-arity name) (set)
+                               (strip-prov cl)))
+       `(emit ,name ,ind ,@(map esc (order-tuple ind xs)))]))
+
+  ;; split the body: everything before the first join is a pre-op
+  (define bodys (rule-body rule))
+  (define-values (pre-cls rest) (splitf-at bodys (lambda (cl) (not (join-cl? cl)))))
+  (define pre-ground
+    (for/fold ([g (set)]) ([cl (in-list pre-cls)])
+      (set-union g (clause-out-vars cl))))
+  (define-values (driver ops)
+    (if (null? rest)
+        (values `(once) '())                      ; fact rule: no joins;
+        ;; its ops all land in `pre` (below), which the emitter runs before
+        ;; allocating batches -- so a failing constant guard aborts cleanly
+        (let loop ([driver (lower-driver (car rest) pre-ground)]
+                   [ground (set-union pre-ground (clause-vars (car rest)))]
+                   [ops '()]
+                   [cls (cdr rest)])
+          (cond
+            [(null? cls) (values driver (reverse ops))]
+            [(join-cl? (car cls))
+             (loop driver
+                   (set-union ground (clause-vars (car cls)))
+                   (cons (lower-join (car cls) ground) ops)
+                   (cdr cls))]
+            [else
+             (loop driver
+                   (set-union ground (clause-out-vars (car cls)))
+                   (cons (lower-op (car cls)) ops)
+                   (cdr cls))]))))
+  `(crule (pre ,@(map lower-op pre-cls))
+          ,driver
+          (body ,@ops)
+          (head ,@(map lower-head (rule-heads rule)))))

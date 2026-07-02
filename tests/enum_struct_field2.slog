@@ -1,0 +1,16 @@
+;; Enum constants as struct fields (single-field struct), constructed in
+;; heads and pattern-matched back out of the struct in bodies.
+
+enum (status ok bad)
+
+struct (box any)
+table (in str any)
+table (out str box)
+table (oks str)
+
+facts
+(in "a" (ok))
+(in "b" (bad))
+
+rule (in n s) --> (out n (box s))
+rule (out n (box (ok))) --> (oks n)

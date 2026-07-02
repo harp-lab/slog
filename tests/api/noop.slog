@@ -1,0 +1,6 @@
+;; Declarations only, no rules or facts: compiles to zero strata.  Used by
+;; the API tests to open a stored database and run terminal actions (sizes,
+;; writes) against it without deriving anything new.
+
+table (edge int int)
+table (path int int)

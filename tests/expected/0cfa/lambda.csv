@@ -1,0 +1,5 @@
+ "y"
+ (app (ref "y") (app (ref "y") (ref "y"))))
+(lambda
+(lambda "x" (app (ref "x") (ref "x")))
+(lambda "x" (ref "x"))

@@ -1,209 +1,72 @@
-;; Automatic Index Selection
+;; Minimum-index-set selection, after
+;;   [1] "Automatic Index Selection for Large-Scale Datalog Computation"
+;;       (Subotic, Jordan, Scholz et al., VLDB 2018)
 ;;
-;; From the paper [1]:
-;; Automatic Index Selection for Large-Scale Datalog Computation
-;;
-;; See end of file for examples
+;; Currently unused: operationalization.rkt builds one index per distinct
+;; select set, which is simple and correct but can materialize more indices
+;; than necessary.  The minimum chain cover below computes, for one
+;; relation's set of selections, a minimal set of index orderings such that
+;; every selection is a prefix of some ordering -- swap it in behind
+;; operationalization's indices-of when index count starts to matter.
 #lang racket
 
-(require graph) ;; for connected components
-(provide (contract-out [min-chain-cover (-> (set/c selection?) (set/c selection?))]
-                       [indices-from-selections (-> (set/c selection?) columns? indices?)]
-                       [naive-indices (-> select-iter-ignore-set? indices?)]
-                       [naive-indices-bin (-> any/c indices?)])) ; added temporarily
+(require graph)
+(provide (contract-out
+          [min-chain-cover (-> (set/c selection?) (listof (listof selection?)))]
+          [indices-from-selections (-> (set/c selection?) columns? indices?)]))
 
-;;
-;; Contracts
-;;
 (define index? (listof natural-number/c))
-
 (define indices? (set/c index?))
-
 (define columns? (set/c natural-number/c))
-
 (define selection? columns?)
 
-; A select, iter, ignore list is a list of sets:
-;  - A set of columns to select on
-;  - A set of columns to iterate over
-;  - A set of columns to ignore
-(define select-iter-ignore? (and/c (λ (l) (= (length l) 3)) (listof (set/c natural-number/c))))
-
-(define select-iter-ignore-set? (set/c select-iter-ignore?))
-
-(define (sorted? l)
-  (equal? (sort l) l))
-
-;;
-;; Interface
-;;
-
-;;
-;; Debugging
-;;
-(define debug? #f)
-(define (ddisplay x)
-  (if debug?
-      (display x)
-      (void)))
-(define (dpretty-print x)
-  (if debug?
-      (pretty-print x)
-      (void)))
-
-;; (contract-out
-;; ;(-> (listof (and/c (listof natural-number/c) sorted?))
-;; ;                              (listof natural-number/c))
-;;           [min-chain-cover (-> any/c any/c)])
-
-;;
-;; Graph ceremony
-;;
-
 (struct vtx (tag contents) #:transparent)
-
-(define (set-remove S e)
-  (list->set (remove e (set->list S) equal?)))
 
 (define (sort-sets s)
   (sort s proper-subset?))
 
-;;
-;; Minimum chain cover (Algorithm 1 in [1])
-;;
-
-; Calculate the minimum chain cover of a set of searches. Produce a
-; set of searches that can be converted into indices.
-; (-> (set/c selection?) (set/c selection?))
+;; Calculate the minimum chain cover of a set of selections (Algorithm 1 in
+;; [1]): chains of subset-ordered selections, via maximum bipartite matching.
 (define (min-chain-cover selections)
-
-  (define (gen-vertices selections tag)
-    (set-map selections (λ (selection) `(vtx ,tag ,selection))))
   (define selections-l (set->list selections))
 
-  ; Form a bipartite graph from two copies of the set of selections.  To
-  ; make vertices unique for each copy, we just create vertices of n,s
-  ; for all s ∈ selections and n ∈ {0,1}
-  (define U (gen-vertices selections 0))
-  (define V (gen-vertices selections 1))
-
-  ; Form edges between elements of U  and V when s1 ∈ U is
-  ; lexicographically less than s2 ∈ V
+  ;; Form edges u -> v between two copies of the selections whenever u is a
+  ;; proper subset of v (u's columns can prefix an index that also serves v).
   (define edges
     (map (match-lambda
            [`(,x . ,y) (list (vtx 0 x) (vtx 1 y))])
-         (set->list (foldl (λ (selection current-edges)
-                             (foldl (λ (other-selection current-edges)
-                                      (if (proper-subset? selection other-selection)
-                                          (set-add current-edges (cons selection other-selection))
-                                          current-edges))
-                                    current-edges
-                                    selections-l))
-                           (set)
-                           selections-l))))
+         (set->list (for*/set ([s (in-list selections-l)]
+                               [t (in-list selections-l)]
+                               #:when (proper-subset? s t))
+                      (cons s t)))))
 
-  ; Find a maximum matching of the set of verices
   (define matching (maximum-bipartite-matching (undirected-graph edges)))
 
-  (ddisplay "matching...\n")
-  (dpretty-print matching)
-
-  ; Calculate the chains by finding maximal paths through unipartite
-  ; graph consisting of all vertices.
+  ;; Chains are the connected components of the matched pairs.
   (define chain-input-edges
-    (foldr (λ (matching-edge curr-edges)
-             (ddisplay "edge\n")
-             (ddisplay matching-edge)
-             (cons (sort-sets (list (vtx-contents (first matching-edge))
-                                    (vtx-contents (cadr matching-edge))))
-                   curr-edges))
-           '()
-           matching))
+    (for/list ([matching-edge (in-list matching)])
+      (sort-sets (list (vtx-contents (first matching-edge))
+                       (vtx-contents (second matching-edge))))))
+  (map sort-sets (cc (undirected-graph chain-input-edges))))
 
-  (ddisplay "chain-input-edges\n")
-  (dpretty-print chain-input-edges)
-
-  (ddisplay "undirected-edges graph")
-  (dpretty-print (undirected-graph edges))
-
-  (define connected-components (cc (undirected-graph chain-input-edges)))
-
-  (ddisplay "connected components")
-  (dpretty-print (undirected-graph edges))
-
-  (define chains (map sort-sets connected-components))
-  (ddisplay "chains")
-  (dpretty-print chains)
-
-  chains)
-
-;;
-;; Index selection for selection sets (Algorithm 2 in [1])
-;;
-
-; Assemble an index out of a given chain
+;; Assemble an index ordering out of a given chain of selections.
 (define ((assemble-index all-columns) chain)
-  (define (h chain columns-left seen index)
+  (let loop ([chain chain] [columns-left (list->set all-columns)] [seen (set)] [index '()])
     (match chain
       ['() (append index (set->list columns-left))]
       [`(,hd . ,tl)
-       (let* ([curr-iter (set-subtract (list->set hd) seen)]
-              [columns-left+ (set-subtract columns-left seen)]
-              [seen+ (set-union seen curr-iter)]
-              [index+ (append index (set->list curr-iter))])
-         (h tl columns-left+ seen+ index+))]))
-  (h chain (list->set all-columns) (set) '()))
+       (let* ([curr (set-subtract (list->set hd) seen)]
+              [columns-left+ (set-subtract columns-left curr)]
+              [seen+ (set-union seen curr)])
+         (loop tl columns-left+ seen+ (append index (set->list curr))))])))
 
-;; Calculate a set of indices from a set of selections
-;; (-> (set/c selection?) columns? indices?)
+;; A minimal set of indices covering a set of selections.
 (define (indices-from-selections selections all-columns)
-  ; First, calculate the minimum chain cover
-  (define min-chain-cov (min-chain-cover selections))
-  (list->set (map (assemble-index all-columns) min-chain-cov)))
+  (list->set (map (assemble-index (set->list all-columns))
+                  (min-chain-cover selections))))
 
-;; Same as the above, except the input is '((s0 ...) (i0 ...))  where
-;; the first is a list of selected columns and the second is the
-;; non-selected columns.
-(define (indices-from-select-lists select-lists)
-  (if (empty? select-lists)
-      (set)
-      (let* ([selections (map (lambda (x) (list->set (first x))) (set->list select-lists))]
-             [fst (set-first select-lists)]
-             [all-columns (append (first fst) (second fst))])
-        (match (set-count selections)
-          [1
-           (set (append (set->list (set-first selections))
-                        (set->list (set-subtract (list->set all-columns) (set-first selections)))))]
-          [_ (list->set (map (assemble-index all-columns) (min-chain-cover selections)))]))))
-
-;;
-;; Naive index selection for selection,iter,ignore sets
-;;
-(define (naive-indices sii-sets)
-  (-> select-iter-ignore-set? indices?)
-  (list->set (set-map sii-sets
-                      (match-lambda
-                        [`(,select ,iter ,ignore)
-                         (append (set->list select) (set->list iter) (set->list ignore))]))))
-
-(define (naive-indices-bin si-sets)
-  (-> any/c indices?)
-  (naive-indices (foldl (lambda (c si) (set-add si `(,@c ,(set)))) (set) (set->list si-sets))))
-
-#;(indices-from-select-lists ; ;
-   (set '((0 2 3) (1 4)) '((4 1 2) (0 3))))
-
-;(indices-from-select-lists (set '((0 1) ()) '((1 0) ()) '((0) ())))
-
-(define example-selections (set (set 0) (set 1) (set 0 1) (set 0 1 2)))
-;x  (min-chain-cover example-selections)
-
-;;
-;; Examples
-;;
-#;(module+ test
-    (define example-selections (set (set 0) (set 1) (set 0 1) (set 0 1 2)))
-    (min-chain-cover example-selections)
-    (naive-indices (set (list (set 1 2) (set 3 5) (set 4))))
-    (naive-indices (set (list (set 3 5) (set 1 4) (set 2 6))))
-    (naive-indices (set (list (set) (set 1 4) (set 2 3)))))
+(module+ test
+  (require rackunit)
+  (define example (set (set 0) (set 1) (set 0 1) (set 0 1 2)))
+  ;; {0},{0,1},{0,1,2} chain into one index; {1} needs its own
+  (check-equal? (set-count (indices-from-selections example (set 0 1 2))) 2))

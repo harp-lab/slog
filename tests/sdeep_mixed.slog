@@ -1,0 +1,24 @@
+;; Structs holding strings and floats; a wide 6-field struct whose second
+;; field is itself a struct, mixed with scalar fields.
+
+struct (tag str float)
+struct (rec int tag str float int str)
+
+table (in int str float)
+table (recs rec)
+table (names str)
+table (vals float)
+table (inner tag)
+table (fourth float)
+
+facts
+(in 1 "alpha" 1.5)
+(in 2 "beta" 2.25)
+
+rule (in N S F) --> (recs (rec N (tag S F) S F N S))
+
+;; destructure the wide struct: reach inside the nested tag
+rule (recs (rec _ (tag S F) _ _ _ _)) --> (names S) (vals F) (inner (tag S F))
+
+;; pull a scalar field out from position 4 of the wide struct
+rule (recs (rec _ _ _ X _ _)) --> (fourth X)

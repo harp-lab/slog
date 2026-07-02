@@ -1,0 +1,39 @@
+;; Two 'facts' blocks with many facts of mixed relations (str and int
+;; columns interleaved across relations), consumed by simple rules.
+;; Also reuses one relation twice in a body (mutual likes).
+;;
+;; Expected:
+;;   person = {("amy" 34),("bob" 12),("cat" 19),("dan" 40)}
+;;   likes  = {("amy" "bob"),("bob" "amy"),("amy" "cat")}
+;;   num    = {1, 2, 3, 4}
+;;   adult  = {"amy", "cat", "dan"}
+;;   mutual = {("amy" "bob"),("bob" "amy")}
+;;   bignum = {3, 4}
+
+table (person str int)
+table (likes str str)
+table (num int)
+table (adult str)
+table (mutual str str)
+table (bignum int)
+
+facts
+(person "amy" 34)
+(person "bob" 12)
+(likes "amy" "bob")
+(num 1)
+(person "cat" 19)
+(likes "bob" "amy")
+(num 2)
+(likes "amy" "cat")
+(num 3)
+
+facts
+(num 4)
+(person "dan" 40)
+
+rule (person P A) (>= A 18) --> (adult P)
+
+rule (likes X Y) (likes Y X) --> (mutual X Y)
+
+rule (num N) (> N 2) --> (bignum N)

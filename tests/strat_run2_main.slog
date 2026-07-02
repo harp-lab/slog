@@ -1,0 +1,13 @@
+;; Two chained 'run' prerequisites, where the second one's rules consume
+;; the first one's facts through the shared database (the tinycfa
+;; prog0 -> freevars pattern, minimized).  This main program then reads
+;; the second prerequisite's output.
+
+run "strat_run2_base.slog"
+run "strat_run2_step_base.slog"
+
+table (p int)
+table (q int)
+table (r int)
+
+rule (q X) (= Y (* X 2)) --> (r Y)

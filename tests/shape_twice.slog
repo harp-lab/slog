@@ -1,0 +1,20 @@
+;; The same relation appearing twice (and three times) in one body:
+;; grandparent / great-grandparent via parent joined with itself.
+;;
+;; Expected:
+;;   gp  = {("ann" "cid"), ("bob" "dee")}
+;;   ggp = {("ann" "dee")}
+
+table (parent str str)
+table (gp str str)
+table (ggp str str)
+
+facts
+(parent "ann" "bob")
+(parent "bob" "cid")
+(parent "cid" "dee")
+(parent "ann" "eve")
+
+rule (parent X Y) (parent Y Z) --> (gp X Z)
+
+rule (parent X Y) (parent Y Z) (parent Z W) --> (ggp X W)

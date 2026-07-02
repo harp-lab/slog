@@ -1,0 +1,28 @@
+;; '<--' reversed rules: heads written before the body, including a
+;; recursive reversed rule and a reversed rule with two heads, mixed
+;; with a normal '-->' rule in the same program.
+;;
+;; Expected:
+;;   path  = {(1 2),(1 3),(1 4),(2 3),(2 4),(3 4)}   (transitive closure)
+;;   start = {1, 2, 3}
+;;   rev   = {(2 1), (3 2), (4 3)}
+;;   two   = {(1 3), (2 4)}
+
+table (edge int int)
+table (path int int)
+table (start int)
+table (rev int int)
+table (two int int)
+
+facts
+(edge 1 2)
+(edge 2 3)
+(edge 3 4)
+
+rule (path X Y) <-- (edge X Y)
+
+rule (path X Z) <-- (path X Y) (edge Y Z)
+
+rule (start X) (rev Y X) <-- (edge X Y)
+
+rule (edge X Y) (edge Y Z) --> (two X Z)

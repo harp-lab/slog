@@ -54,9 +54,10 @@
 
 
 ;; Boot the daemon and give the user a "> " prompt.  Whatever the user
-;; types is forwarded verbatim to the daemon; whatever the daemon sends
-;; back is printed just above the prompt as it arrives.  Ctrl-D (EOF on
-;; stdin) sends a graceful (close) and exits.
+;; types is forwarded verbatim to the daemon -- whose whole protocol is one
+;; plugin .so path per line (see daemon/slogd.cpp); whatever the daemon
+;; sends back is printed just above the prompt as it arrives.  Ctrl-D (EOF
+;; on stdin) sends a graceful (close) and exits.
 (define (run-console)
   (define-values (proc in out) (spawn-daemon))
 

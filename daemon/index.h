@@ -42,8 +42,14 @@ class Index
 public:
   virtual ~Index() = default;
   virtual bool empty() const = 0;
+  virtual u64 size() const = 0;
   virtual void clear() = 0;
   virtual void forEach(const std::function<void(const u64*)>& f) const = 0;
+  // Insert a tuple given in STORAGE order, permuted by this index's column
+  // ordering `ord` (which must have this index's arity).  A cold-path,
+  // arity-generic escape hatch for the daemon itself (out-of-band ingestion);
+  // generated code uses the typed insert below.
+  virtual void insertTuple(const u64* t, const u16* ord) = 0;
 };
 
 
@@ -69,11 +75,47 @@ public:
 
   // ---- cold path (virtual; used by the daemon) ----
   bool empty() const override { return tree.empty(); }
+  u64 size() const override { return tree.size(); }
   void clear() override { tree.clear(); }
   void forEach(const std::function<void(const u64*)>& f) const override
   {
     for (const Key& k : tree) f(k.data());
   }
+  void insertTuple(const u64* t, const u16* ord) override
+  {
+    Key k;
+    for (u16 c = 0; c < A; ++c)
+      k[c] = t[ord[c]];
+    tree.insert(k);
+  }
 };
+
+
+// Runtime index construction for the daemon itself.  Generated code knows
+// its arities statically and instantiates BTreeIndex<A> directly; the
+// daemon (opening a stored database with no program loaded, say) does not,
+// so it dispatches over a bounded set of pre-instantiated arities.
+constexpr u16 max_daemon_arity = 32;
+
+template <u16 A>
+inline Index* makeIndexRec(u16 arity)
+{
+  if constexpr (A == 0)
+  {
+    (void)arity;
+    return nullptr;
+  }
+  else
+    return (arity == A) ? static_cast<Index*>(new BTreeIndex<A>())
+                        : makeIndexRec<A - 1>(arity);
+}
+
+inline Index* makeIndex(u16 arity)
+{
+  if (arity == 0 || arity > max_daemon_arity)
+    fatal("Relation arity beyond daemon-side index support ("
+          + std::to_string(arity) + ")");
+  return makeIndexRec<max_daemon_arity>(arity);
+}
 
 }

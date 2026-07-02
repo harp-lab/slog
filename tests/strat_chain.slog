@@ -1,0 +1,18 @@
+;; Long non-recursive dependency chain: a -> b -> c -> d -> e.
+;; Each level is its own stratum; verifies stratified execution with
+;; database reloads between fixpoints preserves semantics.
+
+table (a int)
+table (b int)
+table (c int)
+table (d int)
+table (e int)
+
+facts
+(a 1)
+(a 2)
+
+rule (a X) (= Y (+ X 10)) --> (b Y)
+rule (b X) (= Y (+ X 100)) --> (c Y)
+rule (c X) (= Y (+ X 1000)) --> (d Y)
+rule (d X) (= Y (+ X 10000)) --> (e Y)

@@ -1,0 +1,4 @@
+(plus (lit 1) (lit 2))
+(plus (lit 2) (times (lit 3) (lit 4)))
+(plus (lit 3) (lit 4))
+(plus (lit 6) (times (lit 2) (lit 10)))

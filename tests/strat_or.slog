@@ -1,0 +1,16 @@
+;; Disjunction whose branches read relations produced in different
+;; strata: b gets both src values, c only src 1 (guarded), and d is
+;; the union of b and c via '|'.
+
+table (src int)
+table (b int)
+table (c int)
+table (d int)
+
+facts
+(src 1)
+(src 2)
+
+rule (src X) (= Y (+ X 10)) --> (b Y)
+rule (src X) (< X 2) (= Y (+ X 20)) --> (c Y)
+rule (b X) | (c X) --> (d X)

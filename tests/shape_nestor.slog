@@ -1,0 +1,14 @@
+;; Probe: explicitly parenthesized nested alternatives.
+;; If supported, o = {1, 2, 3}.
+
+table (a int)
+table (b int)
+table (c int)
+table (o int)
+
+facts
+(a 1)
+(b 2)
+(c 3)
+
+rule ((a X) | (b X)) | (c X) --> (o X)

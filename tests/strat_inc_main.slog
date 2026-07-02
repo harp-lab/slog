@@ -1,0 +1,13 @@
+;; Multi-file test: 'include' textually merges strat_inc_lib.slog
+;; (decls for base/dbl plus the doubling rule) into this program.
+;; Facts live here; a further rule reads the lib-derived dbl.
+
+include "strat_inc_lib.slog"
+
+table (final int)
+
+facts
+(base 1 3)
+(base 2 5)
+
+rule (dbl X Z) (= W (+ X Z)) --> (final W)

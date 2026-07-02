@@ -9,7 +9,8 @@
 ;; an unsupported combination.
 ;;
 ;; Ordering comparisons (< <= > >=) are NOT here: they are body *guards*
-;; (filters, like /=), recognized structurally via preds.rkt's primitive-cmp?.
+;; (filters, like /=), recognized structurally via ir-shared.rkt's
+;; primitive-cmp?.
 (define prim-fun-env
   (apply hash
          `(;; polymorphic arithmetic (int + int, float + float; + also concats str)

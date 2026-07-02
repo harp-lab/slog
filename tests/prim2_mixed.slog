@@ -1,0 +1,18 @@
+;; Mixed int/float at runtime through `any` columns: arithmetic promotes to
+;; double when either operand is a float, stays integer when both are ints;
+;; ordering comparisons promote the same way.
+
+table (v any)
+table (sums any any any)
+table (mx2 any any any)
+table (small any)
+table (ltv any any)
+
+facts
+(v 2)
+(v 2.5)
+
+rule (v A) (v B) (= R (+ A B))   --> (sums A B R)
+rule (v A) (v B) (= R (max A B)) --> (mx2 A B R)
+rule (v A) (< A 2.4) --> (small A)
+rule (v A) (v B) (< A B) --> (ltv A B)

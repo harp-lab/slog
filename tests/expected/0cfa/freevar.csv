@@ -1,0 +1,5 @@
+"x"   (app (ref "x") (ref "x"))   
+"x"   (ref "x")   
+"y"   (app (ref "y") (app (ref "y") (ref "y")))   
+"y"   (app (ref "y") (ref "y"))   
+"y"   (ref "y")   

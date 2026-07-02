@@ -1,0 +1,16 @@
+;; Diamond dependency: b and c both derive from a (independent strata /
+;; parallel branches of the SCC DAG), d joins b and c back together.
+
+table (a int int)
+table (b int int)
+table (c int int)
+table (d int int int)
+
+facts
+(a 1 2)
+(a 2 3)
+(a 3 4)
+
+rule (a X Y) (= Z (* Y 2)) --> (b X Z)
+rule (a X Y) (= Z (+ Y 5)) --> (c X Z)
+rule (b X U) (c X V) --> (d X U V)

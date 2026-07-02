@@ -1,0 +1,21 @@
+;; Join on a value nested two levels deep on BOTH sides of the join,
+;; and /= between nested-struct-typed variables (cartesian + guard).
+
+struct (dleaf int)
+struct (dnode dleaf str)
+
+table (left dnode)
+table (right dnode)
+table (agree int str str)
+table (neq dnode dnode)
+
+facts
+(left (dnode (dleaf 1) "l1"))
+(left (dnode (dleaf 2) "l2"))
+(right (dnode (dleaf 1) "r1"))
+(right (dnode (dleaf 3) "r3"))
+
+;; N is buried under dnode->dleaf on each side
+rule (left (dnode (dleaf N) A)) (right (dnode (dleaf N) B)) --> (agree N A B)
+
+rule (left P) (right Q) (/= P Q) --> (neq P Q)

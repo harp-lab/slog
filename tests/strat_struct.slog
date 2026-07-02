@@ -1,0 +1,17 @@
+;; Struct identity across strata: pairs are interned in the fact stratum,
+;; destructured one stratum later, joined against two strata later, and
+;; NEW pairs are interned in a final stratum (after database reloads).
+
+struct (pair int int)
+table (mk pair)
+table (fsts int)
+table (both int int)
+table (rebuilt pair)
+
+facts
+(mk (pair 1 2))
+(mk (pair 3 4))
+
+rule (mk (pair X Y)) --> (fsts X)
+rule (fsts X) (mk (pair X Y)) --> (both X Y)
+rule (both X Y) --> (rebuilt (pair Y X))

@@ -1,0 +1,20 @@
+;; reach is both read and written by its own rules (self-recursive SCC
+;; over a graph containing the cycle 1->2->3->1 plus 3->4), then read by
+;; two downstream strata (samecycle and from1).
+
+table (edge int int)
+table (reach int int)
+table (samecycle int int)
+table (from1 int)
+
+facts
+(edge 1 2)
+(edge 2 3)
+(edge 3 1)
+(edge 3 4)
+
+rule (edge X Y) --> (reach X Y)
+rule (reach X Y) (edge Y Z) --> (reach X Z)
+
+rule (reach X Y) (reach Y X) --> (samecycle X Y)
+rule (reach 1 Y) --> (from1 Y)

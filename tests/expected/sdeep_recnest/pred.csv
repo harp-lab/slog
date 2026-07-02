@@ -1,0 +1,3 @@
+(succ (_enum "zero"))   (_enum "zero")   
+(succ (succ (_enum "zero")))   (succ (_enum "zero"))   
+(succ (succ (succ (_enum "zero"))))   (succ (succ (_enum "zero")))   

@@ -1,0 +1,21 @@
+;; Graph reachability alternating between two edge kinds: reacha/reachb
+;; form a mutually recursive SCC.  Distractor edges ea(2,9) and eb(1,7)
+;; must NOT fire (wrong phase of the alternation).
+
+table (ea int int)
+table (eb int int)
+table (reacha int)
+table (reachb int)
+
+facts
+(ea 1 2)
+(ea 3 4)
+(ea 5 6)
+(ea 2 9)
+(eb 2 3)
+(eb 4 5)
+(eb 1 7)
+(reacha 1)
+
+rule (reacha X) (ea X Y) --> (reachb Y)
+rule (reachb X) (eb X Y) --> (reacha Y)

@@ -1,0 +1,20 @@
+(add (ref "x") (lit 10))   (bind "x" 2 (_enum "mt"))   12   
+(add (ref "x") (lit 5))   (bind "x" 1 (_enum "mt"))   6   
+(add (ref "x") (ref "x"))   (bind "x" 3 (_enum "mt"))   6   
+(add (ref "x") (ref "y"))   (bind "y" 12 (bind "x" 2 (_enum "mt")))   14   
+(elet "x" (add (ref "x") (lit 5)) (ref "x"))   (bind "x" 1 (_enum "mt"))   6   
+(elet "x" (lit 1) (elet "x" (add (ref "x") (lit 5)) (ref "x")))   (_enum "mt")   6   
+(elet "x" (lit 2) (elet "y" (add (ref "x") (lit 10)) (add (ref "x") (ref "y"))))   (_enum "mt")   14   
+(elet "x" (lit 3) (add (ref "x") (ref "x")))   (_enum "mt")   6   
+(elet "y" (add (ref "x") (lit 10)) (add (ref "x") (ref "y")))   (bind "x" 2 (_enum "mt"))   14   
+(lit 1)   (_enum "mt")   1   
+(lit 10)   (bind "x" 2 (_enum "mt"))   10   
+(lit 2)   (_enum "mt")   2   
+(lit 3)   (_enum "mt")   3   
+(lit 5)   (bind "x" 1 (_enum "mt"))   5   
+(ref "x")   (bind "x" 1 (_enum "mt"))   1   
+(ref "x")   (bind "x" 2 (_enum "mt"))   2   
+(ref "x")   (bind "x" 3 (_enum "mt"))   3   
+(ref "x")   (bind "x" 6 (bind "x" 1 (_enum "mt")))   6   
+(ref "x")   (bind "y" 12 (bind "x" 2 (_enum "mt")))   2   
+(ref "y")   (bind "y" 12 (bind "x" 2 (_enum "mt")))   12   

@@ -1,0 +1,3 @@
+ (app (ref "y") (app (ref "y") (ref "y"))))
+(kaddr
+(kaddr (app (ref "x") (ref "x")))

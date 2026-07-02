@@ -1,0 +1,23 @@
+;; Infix = struct patterns: bind the struct id AND its deep fields at once.
+;; Also a nonlinear pattern (node L L) and a rule whose body is only an
+;; = pattern (iterating every interned node).
+
+struct (leaf2 int)
+struct (node leaf2 leaf2)
+
+table (t node)
+table (both node int int)
+table (samepair node)
+table (lefts int)
+
+facts
+(t (node (leaf2 1) (leaf2 2)))
+(t (node (leaf2 3) (leaf2 3)))
+
+rule (t id) id = (node (leaf2 A) (leaf2 B)) --> (both id A B)
+
+;; nonlinear: both fields must be the same interned leaf2
+rule (t id) id = (node L L) --> (samepair id)
+
+;; body is just the pattern: ranges over all interned node structs
+rule id = (node (leaf2 A) _) --> (lefts A)

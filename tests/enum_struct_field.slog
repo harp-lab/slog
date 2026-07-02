@@ -1,0 +1,16 @@
+;; Enum constants stored as struct fields and pattern-matched back out
+;; of the struct in a rule body.
+
+enum (status ok bad)
+
+struct (tag str any)
+table (in str any)
+table (out tag)
+table (oks str)
+
+facts
+(in "a" (ok))
+(in "b" (bad))
+
+rule (in n s) --> (out (tag n s))
+rule (out (tag n (ok))) --> (oks n)

@@ -1,0 +1,58 @@
+;; Or-bodies with '|':
+;;   - one clause with two alternatives
+;;   - one clause with three alternatives (right-assoc flattening)
+;;   - two clauses each with alternatives (cross product of 4 rules)
+;;   - an alternative clause joined against a preceding clause
+;;   - alternatives between comparison guards
+;;
+;; Expected:
+;;   o1 = {1, 10, 2}                 (a union b)
+;;   o2 = {1, 10, 2, 3}              (a union b union c)
+;;   o3 = {1,2,10} x {3,4} = {(1 3),(1 4),(2 3),(2 4),(10 3),(10 4)}
+;;   h  = {100, 200}                 (e keyed by f-or-g members {1,2})
+;;   q  = {1, 5}                     (p filtered by <2 or >4)
+
+table (a int)
+table (b int)
+table (c int)
+table (d int)
+table (e int int)
+table (f int)
+table (g int)
+table (p int)
+
+table (o1 int)
+table (o2 int)
+table (o3 int int)
+table (h int)
+table (q int)
+
+facts
+(a 1)
+(a 10)
+(b 2)
+(b 10)
+(c 3)
+(d 4)
+(e 1 100)
+(e 2 200)
+(e 3 300)
+(f 1)
+(g 2)
+(p 1)
+(p 3)
+(p 5)
+
+rule (a X) | (b X) --> (o1 X)
+
+rule (a X) | (b X) | (c X) --> (o2 X)
+
+rule
+(a X) | (b X)
+(c Y) | (d Y)
+-->
+(o3 X Y)
+
+rule (e K V) (f K) | (g K) --> (h V)
+
+rule (p X) (< X 2) | (> X 4) --> (q X)

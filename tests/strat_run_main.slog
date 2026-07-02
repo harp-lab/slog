@@ -1,0 +1,14 @@
+;; Multi-program test: 'run' executes strat_run_base.slog to fixpoint
+;; first (seed {1,2}, grow {10,20}), then this program extends the
+;; persisted database with a new grow fact and a downstream rule.
+
+run "strat_run_base.slog"
+
+table (seed int)
+table (grow int)
+table (big int)
+
+facts
+(grow 7)
+
+rule (grow X) (= Y (+ X 5)) --> (big Y)

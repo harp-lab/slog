@@ -1,0 +1,20 @@
+;; A union member struct used both through the union-typed column and
+;; directly through its own struct-typed column, plus a nullary member
+;; of the same union.
+
+union (shape (circle int) (square int) (nothing))
+
+table (drawn shape)
+table (circles circle)
+table (circ_r int)
+table (empty_seen int)
+
+facts
+(drawn (circle 3))
+(drawn (square 4))
+(drawn (circle 5))
+(drawn (nothing))
+
+rule (drawn (circle r)) --> (circles (circle r))
+rule (circles (circle r)) --> (circ_r r)
+rule (drawn (nothing)) --> (empty_seen 1)

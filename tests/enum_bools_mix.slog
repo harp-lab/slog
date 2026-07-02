@@ -1,0 +1,20 @@
+;; true/false symbol literals coexist with declared enum members;
+;; every constant is a distinct interned _enum row and matching one
+;; selects only its own facts.
+
+enum (color red green blue)
+
+table (obs str any)
+table (saw_true str)
+table (saw_false str)
+table (saw_red str)
+
+facts
+(obs "x" true)
+(obs "y" (red))
+(obs "z" false)
+(obs "w" (green))
+
+rule (obs n true) --> (saw_true n)
+rule (obs n false) --> (saw_false n)
+rule (obs n (red)) --> (saw_red n)

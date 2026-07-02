@@ -1,0 +1,14 @@
+;; A head computation whose output variable is already bound by the body is
+;; a unification constraint: the rule fires only where the computed value
+;; agrees.  (A naive compiler would shadow Y and emit (q 5 6) from (p 5 9).)
+
+table (p int int)
+table (q int int)
+
+facts
+(p 1 2)
+(p 3 4)
+(p 1 3)
+(p 5 9)
+
+rule (p X Y) --> (= Y (+ X 1)) (q X Y)

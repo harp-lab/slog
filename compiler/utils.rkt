@@ -7,6 +7,11 @@
          gensymb)
 
 (require "params.rkt")
+(require racket/runtime-path)
+
+;; Resolved relative to this source file, not the current directory, so the
+;; compiler's modules can be loaded (e.g. by unit tests) from anywhere.
+(define-runtime-path daemon-dir "../daemon")
 
 ;; This parameter must be set to the same value as in daemon/database.h
 (define bucket-count
@@ -14,7 +19,7 @@
    1
    (string->number
     (first (regexp-match #rx"[0123456789]+"
-                         (first (let ([s (with-input-from-file "daemon/database.h"
+                         (first (let ([s (with-input-from-file (build-path daemon-dir "database.h")
                                                                (lambda () (read-string 9999)))])
                                   (regexp-match #rx"define bucket_bits [0123456789]+" s))))))))
 

@@ -1,0 +1,28 @@
+;; The same struct content constructed by two different rules must intern
+;; to the same identity: (pt 1 2) built from both a and b must join in
+;; `same`, and /= between struct-typed variables must only hold for
+;; genuinely different structs.
+
+struct (pt int int)
+
+table (a int int)
+table (b int int)
+table (s1 pt)
+table (s2 pt)
+table (same pt)
+table (diff pt pt)
+
+facts
+(a 1 2)
+(a 3 4)
+(b 1 2)
+(b 5 6)
+
+rule (a X Y) --> (s1 (pt X Y))
+rule (b X Y) --> (s2 (pt X Y))
+
+;; joins on the struct id itself: only works if dedup gives one id
+rule (s1 P) (s2 P) --> (same P)
+
+;; cartesian product filtered by struct disequality
+rule (s1 P) (s2 Q) (/= P Q) --> (diff P Q)

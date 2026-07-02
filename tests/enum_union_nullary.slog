@@ -1,0 +1,16 @@
+;; Two nullary members of one union stored in a union-typed column;
+;; matching each member selects only its own rows.
+
+union (light (on) (off))
+
+table (lamp str light)
+table (lit str)
+table (dark str)
+
+facts
+(lamp "porch" (on))
+(lamp "cellar" (off))
+(lamp "hall" (on))
+
+rule (lamp n (on)) --> (lit n)
+rule (lamp n (off)) --> (dark n)

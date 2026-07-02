@@ -1,0 +1,25 @@
+;; Structs constructed in an early (recursive) stratum and destructured in
+;; later strata: n is its own recursive SCC, holds depends on n, unbox on
+;; holds, final on unbox -- four strata chained through a struct value.
+
+struct (box int)
+
+table (n int)
+table (holds box)
+table (unbox int)
+table (final int)
+
+facts
+(n 0)
+
+;; stratum 1: recursive, bounded
+rule (n X) (< X 4) (= Y (+ X 1)) --> (n Y)
+
+;; stratum 2: wrap each n in a struct
+rule (n X) --> (holds (box X))
+
+;; stratum 3: destructure the struct built earlier
+rule (holds (box X)) --> (unbox X)
+
+;; stratum 4: consume the unboxed scalar
+rule (unbox X) (>= X 3) --> (final X)
