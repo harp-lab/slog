@@ -1,0 +1,17 @@
+;; The escape hatch: everything the sugar generates can be named
+;; directly.  A bare-arity head is a fire-and-forget ask; sq_ans keyed by
+;; the demand written in place is a content join (that key column's type
+;; IS the demand struct, so it is never read as a call); and scanning
+;; sq_ans enumerates every answer.
+
+demand (sq int) int
+rule (sq n r) <-- (= r (* n n))
+
+table (want int)
+table (got int int)
+table (allans int)
+facts (want 5) (want 7)
+
+rule (want n) --> (sq n)
+rule (sq_ans (sq n) r) --> (got n r)
+rule (sq_ans d r) --> (allans r)

@@ -415,6 +415,13 @@ Net-new work:
 
 ## 7A. Aggregation, rank, and lattice-valued recursion (plan-ahead)
 
+> **See also `docs/lattices.md`** — the full batch-first design for
+> lattice-valued relations (declarations, monotone-use calculus, runtime,
+> milestones), written to slot into this section's M6/M7. It sharpens one
+> point here: value-change deltas should travel as replacement *pairs*
+> `(key, old, new)` so ⊑-increasing changes route through the monotone phase
+> (IncA/DRed_L "change splitting") instead of the negative fixpoint.
+
 Aggregation is deferred past the first incremental milestones (M0–M4 do plain recursion),
 but the substrate must **anticipate** it, because the mechanism that makes recursive
 aggregation work is the *same* mechanism that makes recursive deletion precise. Get the

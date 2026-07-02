@@ -1,0 +1,7 @@
+ (_enum "tint")
+ (_enum "tint"))
+ (arrow (_enum "tint") (_enum "tint"))
+ (arrow (arrow (_enum "tint") (_enum "tint")) (_enum "tint")))
+(arrow
+(arrow
+(arrow (_enum "tint") (_enum "tint"))

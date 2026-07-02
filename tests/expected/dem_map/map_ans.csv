@@ -1,0 +1,8 @@
+(map (_enum "dbl") (_enum "nil"))   (_enum "nil")   
+(map (_enum "dbl") (cons 1 (cons 2 (cons 3 (_enum "nil")))))   (cons 2 (cons 4 (cons 6 (_enum "nil"))))   
+(map (_enum "dbl") (cons 2 (cons 3 (_enum "nil"))))   (cons 4 (cons 6 (_enum "nil")))   
+(map (_enum "dbl") (cons 3 (_enum "nil")))   (cons 6 (_enum "nil"))   
+(map (addk 10) (_enum "nil"))   (_enum "nil")   
+(map (addk 10) (cons 1 (cons 2 (cons 3 (_enum "nil")))))   (cons 11 (cons 12 (cons 13 (_enum "nil"))))   
+(map (addk 10) (cons 2 (cons 3 (_enum "nil"))))   (cons 12 (cons 13 (_enum "nil")))   
+(map (addk 10) (cons 3 (_enum "nil")))   (cons 13 (_enum "nil"))   

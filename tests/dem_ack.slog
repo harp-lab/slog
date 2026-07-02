@@ -1,0 +1,13 @@
+;; Ackermann: the classic nested non-primitive recursion, written as
+;; three judgment clauses with calls in answer position -- including a
+;; call nested inside another call's demand argument, which chains the
+;; asks (the inner answer must arrive before the outer demand exists).
+
+demand (ack int int) int
+facts (ack 0 n (+ n 1))
+rule (ack m 0 (ack (- m 1) 1)) <-- (< 0 m)
+rule (ack m n (ack (- m 1) (ack m (- n 1)))) <-- (< 0 m) (< 0 n)
+
+table (res int int int)
+rule (ack 2 3 r) --> (res 2 3 r)
+rule (ack 3 3 r) --> (res 3 3 r)

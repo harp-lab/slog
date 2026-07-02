@@ -1,0 +1,31 @@
+;; Lambdas and first-class calls.  A lambda lifts to a closure value
+;; (capturing its free variables) answering the synthesized global applyN
+;; judgment; a bound variable in call position dispatches to applyN.
+;; map2 is two facts: the recursive case calls both its argument closure
+;; and itself in the answer position.
+
+union (list (nil) (cons int list))
+
+demand (map2 clo list) list
+facts (map2 f (nil) (nil))
+facts (map2 f (cons x xs) (cons (f x) (map2 f xs)))
+
+table (input list)
+facts (input (cons 1 (cons 2 (cons 3 (nil)))))
+
+;; a lambda capturing k from the rule
+table (kv int)
+facts (kv 10)
+table (scaled list)
+rule (kv k) (input l) (= r (map2 (lambda (n) (* n k)) l)) --> (scaled r)
+
+;; closures as answers: compose returns a lambda capturing two closures
+demand (compose clo clo) clo
+facts (compose f g (lambda (x) (f (g x))))
+
+table (twice list)
+rule (input l)
+     (= h (compose (lambda (n) (+ n 1)) (lambda (n) (+ n n))))
+     (= r (map2 h l))
+ -->
+     (twice r)

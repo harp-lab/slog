@@ -10,16 +10,23 @@
 ;;
 ;; Loading a path therefore yields a tree of programs; linearizing it
 ;; dependencies-first gives the program list.  Alongside, each module's type
-;; declarations (table/struct/union/enum) are extracted into a type
+;; declarations (table/struct/union/enum/demand) are extracted into a type
 ;; environment (see ir-shared.rkt) and merged across modules with conflict
 ;; checking; and a manifest of relations already present in the database is
 ;; threaded through the list so each program declares what it inherits.
+;;
+;; A `demand (f in ...) out ...` declaration turns into its two backing
+;; relations here -- struct (f in ...) and table (f_ans f out ...) -- and,
+;; once each program's modules are merged, the demand transform
+;; (demand.rkt) desugars every rule's judgment occurrences of f into plain
+;; rules over those relations.  Programs leave this file free of demands.
 
 (provide load-program-list)
 
 (require "parser.rkt")
 (require "utils.rkt")
 (require "ir-shared.rkt")
+(require "demand.rkt")
 
 ;; -----------------------------------------------------------------------
 ;; Entry point: path -> (listof program?), dependencies first, manifests
@@ -220,6 +227,26 @@
        (extract-type-env body
                          (unify-type-envs env+ (type-env-union name (list->set (cons name xs)))))]
 
+      ;; demand (f in ...) out ...: declare the backing relations -- the
+      ;; demand struct itself and its answer table, keyed by the demand
+      [`(syn ,_ demand (syn ,_ ,(? symbol? name) ,args ...) ,ans ... ,body)
+       (when (null? args)
+         (error (format "Demand relation ~a must have at least one input column" name)))
+       (when (null? ans)
+         (error (format "Demand relation ~a must declare at least one answer column" name)))
+       (match-define (cons xs env+) (flatten-nested-types env args))
+       (match-define (cons ys env++) (flatten-nested-types env+ ans))
+       (extract-type-env
+        body
+        (unify-type-envs
+         env++
+         (unify-type-envs (type-env-rel name `(struct ,@xs))
+                          (type-env-rel (demand-ans-name name)
+                                        `(table ,name ,@ys)))))]
+      [`(syn ,_ demand ,rest ...)
+       (error (format "Malformed demand declaration: expected demand (name in-type ...) answer-type ..., got ~a"
+                      (strip-prov `(demand ,@(drop-right rest 1)))))]
+
       [`(syn ,_ enum (syn ,_ ,name ,(? symbol? names) ...) ,body)
        ;; A bare nullary constructor (`enum (halt)`, via a union member) is
        ;; itself a constant.  A named enumeration (`enum (color red green
@@ -259,36 +286,81 @@
       ;; skip over defs, funs, etc
       [_ (extract-rules (last ast) rules)]))
 
+  ;; demand-moded relations: name -> (cons input-arity answer-arity),
+  ;; consumed program-wide by the demand transform after env merging
+  (define (extract-demands ast [demands (hash)])
+    (match ast
+      [`(syn ,_ top-level) demands]
+      [`(syn ,_ demand (syn ,_ ,(? symbol? name) ,args ...) ,ans ... ,body)
+       (define entry (cons (length args) (length ans)))
+       (when (and (hash-has-key? demands name)
+                  (not (equal? entry (hash-ref demands name))))
+         (error (format "Demand relation ~a is declared twice with different signatures" name)))
+       (extract-demands body (hash-set demands name entry))]
+      [_ (extract-demands (last ast) demands)]))
+
   (match module-ast
     [`(module ,path ,toks
         ,ast)
      `(program ()
                ,(set `(module ,path ,toks
                         ,(extract-type-env ast)
+                        ,(extract-demands ast)
                         ,(extract-rules ast))))]))
 
 ;; -----------------------------------------------------------------------
 ;; Lifting and linearization.
 
-;; Merge each program's per-module type environments into one program-level
-;; environment (recursively over the run tree).
+;; Merge two demand registries, requiring agreeing signatures.
+(define (unify-demands d0 d1)
+  (for/fold ([d d0]) ([(name entry) (in-hash d1)])
+    (when (and (hash-has-key? d name) (not (equal? entry (hash-ref d name))))
+      (error (format "Demand relation ~a is declared twice with different signatures" name)))
+    (hash-set d name entry)))
+
+;; Merge each program's per-module type environments (and demand
+;; registries) into one program-level environment, then desugar every
+;; module's demand-moded rules against the merged view -- a rule may use a
+;; judgment declared in another included module (recursively over the run
+;; tree).  The transform can synthesize declarations of its own (closure
+;; structs and enum constants from lambdas, the `clo` union, and the
+;; applyN backing relations); those merge into the type env here, with
+;; the usual conflict checking.
 (define (lift-type-envs p)
   (match p
     [`(program ,reqs ,mods)
-     (match-define (cons type-env mods+)
+     (match-define (list type-env demands mods+)
        (foldl (lambda (mod acc)
-                (match-define (cons type-env+ mods+) acc)
+                (match-define (list type-env+ demands+ mods+) acc)
                 (match mod
                   [`(module ,path ,toks
                       ,type-env
+                      ,demands
                       ,rules)
-                   (cons (unify-type-envs type-env type-env+)
-                         (set-add mods+
-                                  `(module ,path ,toks
-                                     ,rules)))]))
-              (cons base-type-env (set))
+                   (list (unify-type-envs type-env type-env+)
+                         (unify-demands demands+ demands)
+                         (cons (list path toks rules) mods+))]))
+              (list base-type-env (hash) '())
               (set->list mods)))
-     `(program ,(map lift-type-envs reqs) ,type-env ,mods)]))
+     (define-values (mods-desugared synth-rels clo-members)
+       (desugar-demand-program mods+ demands type-env))
+     (define type-env+
+       (let* ([env (foldl (lambda (name env)
+                            (unify-type-envs
+                             env
+                             (type-env-rel name (hash-ref synth-rels name))))
+                          type-env
+                          (sort (hash-keys synth-rels) symbol<?))])
+         (if (set-empty? clo-members)
+             env
+             (unify-type-envs
+              env
+              (type-env-union 'clo (set-add clo-members 'clo))))))
+     (define mods++
+       (for/set ([m (in-list mods-desugared)])
+         (match-define (list path toks rules) m)
+         `(module ,path ,toks ,rules)))
+     `(program ,(map lift-type-envs reqs) ,type-env+ ,mods++)]))
 
 ;; Dependencies-first (post-order) linearization of the run tree.
 (define (linearize-programs prog)

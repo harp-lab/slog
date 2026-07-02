@@ -73,7 +73,10 @@
   slog-file)
 
 (define (validate-and-prepare-paths out-db debug-dir)
-  (values (and out-db (path->string (ensure-dir! (expand-tilde out-db))))
+  ;; out-db is a logical DB name: the daemon stores it under data/<name>/
+  (when out-db
+    (ensure-dir! (string-append "data/" out-db)))
+  (values out-db
           (and debug-dir (path->string (ensure-dir! (expand-tilde debug-dir))))))
 
 (define (print-version)
@@ -135,7 +138,7 @@
       name
       "Logical DB name to use for the run (a directory under /data)"
       (set! db-name name)]
-     [("--out-db") path "Directory to write DB artifacts (created if missing)" (set! out-db path)]
+     [("--out-db") name "Write the final database as data/<name>/ (loadable later with -d)" (set! out-db name)]
      [("--debug-dir")
       path
       "Directory to write debug dumps / traces (created if missing)"

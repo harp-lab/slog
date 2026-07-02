@@ -1,0 +1,30 @@
+;; Natural deduction, demand-driven: an STLC type checker whose rules
+;; read as the textbook inference rules.  Failure is absence: the
+;; ill-typed program simply has no answer, no error machinery.
+
+union (ty (tint) (arrow ty ty))
+union (tenv (mt) (ext tenv str ty))
+union (tm (num int) (var str) (lam str ty tm) (app tm tm))
+
+demand (lookup tenv str) ty
+facts (lookup (ext env x t) x t)
+rule (lookup (ext env y _) x t) <-- (/= x y) (lookup env x t)
+
+demand (ck tenv tm) ty
+facts (ck env (num i) (tint))
+facts (ck env (var x) (lookup env x))
+facts (ck env (lam x t1 e) (arrow t1 (ck (ext env x t1) e)))
+rule (ck env (app e1 e2) t2)
+ <--
+     (ck env e1 (arrow t1 t2))
+     (ck env e2 t1)
+
+table (prog tm)
+facts
+(prog (app (lam "f" (arrow (tint) (tint)) (app (var "f") (num 1)))
+           (lam "x" (tint) (var "x"))))
+(prog (app (num 3) (num 4)))
+(prog (lam "x" (tint) (lam "y" (arrow (tint) (tint)) (app (var "y") (var "x")))))
+
+table (typed tm ty)
+rule (prog e) (= t (ck (mt) e)) --> (typed e t)

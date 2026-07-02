@@ -1,0 +1,14 @@
+;; Non-tail double recursion with memoization-by-interning: each distinct
+;; (fib n) demand is one interned struct computed once, shared by both
+;; recursive call sites.  The guard gates the recursive asks, so no
+;; demands below 0 are ever created.
+
+demand (fib int) int
+rule (fib n n) <-- (< n 2)
+rule (fib n r) <-- (< 1 n) (fib (- n 1) a) (fib (- n 2) b) (= r (+ a b))
+
+table (query int)
+table (fibres int int)
+facts (query 10) (query 7)
+
+rule (query n) (fib n r) --> (fibres n r)

@@ -1,0 +1,2 @@
+(node (leaf 0) (node (leaf 1) (leaf 2)))   
+(node (node (leaf 0) (leaf 1)) (leaf 2))   

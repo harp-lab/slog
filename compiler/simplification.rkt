@@ -15,7 +15,33 @@
 (require "utils.rkt")
 (require "parser.rkt")
 
-(provide simplify-rule)
+(provide simplify-rule split-or-clauses)
+
+;; Split `|` alternatives: the cartesian product of each clause's
+;; alternatives, over a clause or a whole body (a list of clauses).
+;; Exported for the demand transform (demand.rkt), which must split
+;; alternatives before scheduling ask rules -- each alternative grounds
+;; its own variables.
+(define (or-symbol? x)
+  (and (symbol? x) (equal? "|" (symbol->string x))))
+
+(define (split-or-clauses cl)
+  (match cl
+    [`(syn ,_ ,(? or-symbol?) ,cls ...)
+     (foldl set-union (set) (map split-or-clauses cls))]
+    ;; a fully parenthesized alternative like ((a X) | (b X)) parses as a
+    ;; one-element application whose head is the or expression: unwrap it
+    [`(syn ,_ (syn ,prov ,(? or-symbol? pipe) ,cls ...))
+     (split-or-clauses `(syn ,prov ,pipe ,@cls))]
+    [`(,cl0 ,cls ...)
+     (foldl
+      (lambda (cl0v acc)
+        (foldl (lambda (clsv acc) (set-add acc `(,cl0v ,@clsv)))
+               acc
+               (set->list (split-or-clauses cls))))
+      (set)
+      (set->list (split-or-clauses cl0)))]
+    [_ (set cl)]))
 
 (define (simplify-rule rule rules)
   (define (rhs-unify-clauses cls [rhs-env (hash)])
@@ -121,23 +147,6 @@
                 scls))
        (cons `(syn ,prov ,name ,@xs) clauses+)]
       [_ (cdr (simplify-subclause cl clauses))]))
-  (define (or-symbol? x)
-    (and (symbol? x) (equal? "|" (symbol->string x))))
-  (define (split-or cl)
-    (match cl
-      [`(syn ,_ ,(? or-symbol?) ,cls ...)
-       (foldl set-union (set) (map split-or cls))]
-      ;; a fully parenthesized alternative like ((a X) | (b X)) parses as a
-      ;; one-element application whose head is the or expression: unwrap it
-      [`(syn ,_ (syn ,prov ,(? or-symbol? pipe) ,cls ...))
-       (split-or `(syn ,prov ,pipe ,@cls))]
-      [`(,cl0 ,cls ...)
-       (foldl
-        (lambda (cl0v acc)
-          (foldl (lambda (clsv acc) (set-add acc `(,cl0v ,@clsv))) acc (set->list (split-or cls))))
-        (set)
-        (set->list (split-or cl0)))]
-      [_ (set cl)]))
   (define (handle-wild-card v)
     (match v
       ['_ (gensymb '__)]
@@ -171,7 +180,7 @@
   (match rule
     ;; 1. split rule bodies by or clauses
     [`(syn ,prov rule ,bodys ... --> ,heads ...)
-     (define all-bodies (split-or bodys))
+     (define all-bodies (split-or-clauses bodys))
      ;; 2. simplify all heads and bodys (flatten all nested structure)
      (define heads+ (handle-wild-card (foldl simplify-clause '() heads)))
      (foldl (lambda (bodys rules)

@@ -1,0 +1,12 @@
+;; Smallest demand program: one judgment, asked from a rule body.  The
+;; transform generates an ask rule (demanding inc for every start) and a
+;; resume join; answers exist only for demanded inputs.
+
+demand (inc int) int
+rule (inc n m) <-- (= m (+ n 1))
+
+table (start int)
+table (result int int)
+facts (start 3) (start 10)
+
+rule (start n) (inc n m) --> (result n m)

@@ -1,0 +1,12 @@
+;; Enum constants inside demand patterns, and a chained ask: the second
+;; demand's input needs the first demand's answer, so its ask rule joins
+;; the first answer before demanding.
+
+enum (dir north south)
+
+demand (step dir int) int
+rule (step (north) n m) <-- (= m (+ n 1))
+rule (step (south) n m) <-- (= m (- n 1))
+
+table (go int int)
+rule (step (north) 5 r) (step (south) r q) --> (go r q)

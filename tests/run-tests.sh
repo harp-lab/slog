@@ -36,6 +36,7 @@ if [ ${#TESTS[@]} -eq 0 ]; then
     esac
   done
   TESTS+=("examples/tinycfa/0cfa.slog")
+  TESTS+=("examples/tinycfa/0cfa-demand.slog")
 fi
 
 if [ "$KEEP_CACHE" -eq 0 ]; then

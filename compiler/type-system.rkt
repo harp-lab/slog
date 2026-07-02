@@ -132,11 +132,18 @@
                    (let* ([y (hash-ref local-env-proto k)]
                           [yt (resolve-local-type y)]
                           [xt (hash-ref local-env-proto x (lambda () #f))])
-                     (if xt
-                         (if (equal? xt yt)
-                             (hash-set env x xt)
-                             (error (format "Arguments ~a : ~a and ~a : ~a do not match" x xt y yt)))
-                         (hash-set env x yt)))]
+                     (cond
+                       [(not xt) (hash-set env x yt)]
+                       [(equal? xt yt) (hash-set env x xt)]
+                       ;; `any` is the universal escape hatch (as in
+                       ;; type-match?): a polymorphic link between any and
+                       ;; a concrete type resolves to the concrete side --
+                       ;; e.g. (+ n 1) where n comes from an any-typed
+                       ;; column (the demand transform's applyN judgments)
+                       [(eq? xt 'any) (hash-set env x yt)]
+                       [(eq? yt 'any) (hash-set env x xt)]
+                       [else
+                        (error (format "Arguments ~a : ~a and ~a : ~a do not match" x xt y yt))]))]
                   [(? symbol? x) (hash-set env x (hash-ref local-env-proto x))]))
               (hash)
               (hash-keys local-env-proto)))

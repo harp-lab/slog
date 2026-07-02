@@ -1,0 +1,37 @@
+;; 0CFA via demand-moded relations: the demand transform supplies all the
+;; plumbing that 0cfa.slog builds by hand (the ar/fn continuation structs,
+;; the kaddr/kstore continuation store, the eval/ret protocol).  What is
+;; left is the analysis itself: a monovariant big-step evaluator with a
+;; global store, evaluated on demand -- only reachable subexpressions are
+;; ever analyzed, and the diverging object program still terminates
+;; because the finite expressions admit only finitely many demands.
+
+run "prog0.slog"
+
+include "types.slog"
+
+union (val lambda)
+table (store str val)
+table (result val)
+
+demand (eval expr) val
+
+;; a lambda evaluates to itself
+facts (eval (lambda x eb) (lambda x eb))
+
+;; a reference evaluates to whatever its variable holds
+rule (eval (ref x) v) <-- (store x v)
+
+;; application: evaluate the callee and argument, then the body
+rule (eval (app ef ea) v)
+ <--
+     (eval ef (lambda x eb))
+     (eval ea va)
+     (eval eb v)
+
+;; the argument flows to the parameter as soon as callee and argument
+;; are known -- before the body can possibly answer
+rule (eval (app ef ea)) (eval ef (lambda x eb)) (eval ea va) --> (store x va)
+
+rule (program e) --> (eval e)
+rule (program e) (eval e v) --> (result v)

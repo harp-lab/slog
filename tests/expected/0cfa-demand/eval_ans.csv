@@ -1,0 +1,5 @@
+(eval (lambda "x" (app (ref "x") (ref "x"))))   (lambda "x" (app (ref "x") (ref "x")))   
+(eval (lambda "x" (ref "x")))   (lambda "x" (ref "x"))   
+(eval (lambda "y" (app (ref "y") (app (ref "y") (ref "y")))))   (lambda "y" (app (ref "y") (app (ref "y") (ref "y"))))   
+(eval (ref "x"))   (lambda "y" (app (ref "y") (app (ref "y") (ref "y"))))   
+(eval (ref "y"))   (lambda "y" (app (ref "y") (app (ref "y") (ref "y"))))   

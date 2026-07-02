@@ -1,0 +1,17 @@
+;; Multiple answer columns and nondeterminism: one demand, many (a, b)
+;; answers.  Also demand gating -- answers exist only for the demanded
+;; n = 4 (the num-pair space is only explored under a demand) -- and
+;; bare-arity enumeration of the demands themselves.
+
+demand (split int) int int
+table (num int)
+facts (num 1) (num 2) (num 3)
+
+rule (split n a b) <-- (num a) (num b) (= n (+ a b))
+
+table (pairs int int int)
+rule (split 4 a b) --> (pairs 4 a b)
+
+;; bare arity in a body enumerates what has been demanded
+table (demanded int)
+rule (split n) --> (demanded n)

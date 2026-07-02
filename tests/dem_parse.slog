@@ -1,0 +1,29 @@
+;; A grammar is a parser: the demand transform yields an Earley-style
+;; algorithm.  Demands are prediction, tok joins are scanning, answers
+;; flowing back are completion.  Left recursion is fine -- it is a
+;; fixpoint, not a descent.  Input: ( n + n ) * n
+
+demand (parse str int) int
+table (tok int str)
+table (len int)
+table (accepted int)
+
+facts
+(tok 0 "(") (tok 1 "n") (tok 2 "+") (tok 3 "n") (tok 4 ")") (tok 5 "*") (tok 6 "n")
+(len 7)
+
+;; E -> E + T | T
+rule (parse "E" i k) <-- (parse "E" i j) (tok j "+") (parse "T" (+ j 1) k)
+rule (parse "E" i j) <-- (parse "T" i j)
+
+;; T -> T * F | F
+rule (parse "T" i k) <-- (parse "T" i j) (tok j "*") (parse "F" (+ j 1) k)
+rule (parse "T" i j) <-- (parse "F" i j)
+
+;; F -> n | ( E )
+rule (parse "F" i (+ i 1)) <-- (tok i "n")
+rule (parse "F" i (+ j 1)) <-- (tok i "(") (parse "E" (+ i 1) j) (tok j ")")
+
+;; seed: constructing the demand struct IS asking
+facts (parse "E" 0)
+rule (parse "E" 0 n) (len n) --> (accepted n)

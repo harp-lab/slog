@@ -1,0 +1,13 @@
+ (app (lambda "x" (app (ref "x") (ref "x"))) (lambda "y" (app (ref "y") (app (ref "y") (ref "y"))))))
+ (app (ref "y") (app (ref "y") (ref "y"))))
+ (lambda "x" (app (ref "x") (ref "x"))))
+ (lambda "y" (app (ref "y") (app (ref "y") (ref "y")))))
+(eval
+(eval
+(eval
+(eval
+(eval (app (ref "x") (ref "x")))
+(eval (app (ref "y") (ref "y")))
+(eval (lambda "x" (ref "x")))
+(eval (ref "x"))
+(eval (ref "y"))

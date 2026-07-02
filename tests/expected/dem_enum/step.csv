@@ -1,0 +1,2 @@
+(step (_enum "north") 5)
+(step (_enum "south") 6)

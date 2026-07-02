@@ -1,0 +1,16 @@
+;; | alternatives in a judgment rule's body: the transform splits the
+;; alternatives before scheduling, so each alternative grounds its own
+;; variables and gets its own gated main rule.
+
+table (laba int str)
+table (labb int str)
+facts (laba 1 "one") (labb 2 "two")
+
+demand (classify int) str
+rule (classify n s) <-- (laba n s) | (labb n s)
+
+table (probe int)
+table (out int str)
+facts (probe 1) (probe 2) (probe 3)
+
+rule (probe n) (classify n s) --> (out n s)

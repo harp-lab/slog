@@ -1,0 +1,10 @@
+;; Joint gating: a rule with a judgment head and an ordinary head fires
+;; only when the judgment's demand exists -- seen holds exactly the
+;; demanded inputs.  Seeding here is bare-arity facts (pure asks).
+
+demand (half int) int
+table (seen int)
+
+rule (half n m) (seen n) <-- (= m (/ n 2))
+
+facts (half 8) (half 12)

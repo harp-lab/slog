@@ -1,0 +1,6 @@
+ (lam "f" (arrow (_enum "tint") (_enum "tint")) (app (var "f") (num 1)))
+ (lam "x" (_enum "tint") (var "x")))
+(app
+(app (num 3) (num 4))
+(app (var "f") (num 1))
+(app (var "y") (var "x"))

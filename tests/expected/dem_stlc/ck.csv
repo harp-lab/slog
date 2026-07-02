@@ -1,0 +1,39 @@
+ (_enum "mt")
+ (_enum "mt")
+ (_enum "mt")
+ (_enum "mt")
+ (app (lam "f" (arrow (_enum "tint") (_enum "tint")) (app (var "f") (num 1))) (lam "x" (_enum "tint") (var "x"))))
+ (app (var "f") (num 1)))
+ (app (var "y") (var "x")))
+ (ext (_enum "mt") "f" (arrow (_enum "tint") (_enum "tint")))
+ (ext (_enum "mt") "f" (arrow (_enum "tint") (_enum "tint")))
+ (ext (_enum "mt") "f" (arrow (_enum "tint") (_enum "tint")))
+ (ext (_enum "mt") "x" (_enum "tint"))
+ (ext (_enum "mt") "x" (_enum "tint"))
+ (ext (ext (_enum "mt") "x" (_enum "tint")) "y" (arrow (_enum "tint") (_enum "tint")))
+ (ext (ext (_enum "mt") "x" (_enum "tint")) "y" (arrow (_enum "tint") (_enum "tint")))
+ (ext (ext (_enum "mt") "x" (_enum "tint")) "y" (arrow (_enum "tint") (_enum "tint")))
+ (lam "f" (arrow (_enum "tint") (_enum "tint")) (app (var "f") (num 1))))
+ (lam "x" (_enum "tint") (lam "y" (arrow (_enum "tint") (_enum "tint")) (app (var "y") (var "x")))))
+ (lam "x" (_enum "tint") (var "x")))
+ (lam "y" (arrow (_enum "tint") (_enum "tint")) (app (var "y") (var "x"))))
+ (num 1))
+ (var "f"))
+ (var "x"))
+ (var "x"))
+ (var "y"))
+(ck
+(ck
+(ck
+(ck
+(ck
+(ck
+(ck
+(ck
+(ck
+(ck
+(ck
+(ck
+(ck (_enum "mt") (app (num 3) (num 4)))
+(ck (_enum "mt") (num 3))
+(ck (_enum "mt") (num 4))

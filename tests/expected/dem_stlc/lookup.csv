@@ -1,0 +1,12 @@
+ "f")
+ "x")
+ "x")
+ "y")
+ (ext (_enum "mt") "f" (arrow (_enum "tint") (_enum "tint")))
+ (ext (_enum "mt") "x" (_enum "tint"))
+ (ext (ext (_enum "mt") "x" (_enum "tint")) "y" (arrow (_enum "tint") (_enum "tint")))
+ (ext (ext (_enum "mt") "x" (_enum "tint")) "y" (arrow (_enum "tint") (_enum "tint")))
+(lookup
+(lookup
+(lookup
+(lookup

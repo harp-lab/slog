@@ -8,7 +8,8 @@
 ;; checks are O(program) and the pipeline runs each only once per stratum).
 ;;
 ;;   module-ast          parser.rkt            (module path toks ast)
-;;     |  modules.rkt: include/run resolution, type-env extraction+merge
+;;     |  modules.rkt: include/run resolution, type-env extraction+merge,
+;;     |               demand desugar (demand.rkt)
 ;;   program-list        modules.rkt           (program type-env mods manifest)
 ;;     |  simplification.rkt: or-split, flatten, wildcards, static unification
 ;;   flat rules          (set/c flat-rule?)

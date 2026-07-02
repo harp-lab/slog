@@ -1,0 +1,13 @@
+ "f"
+ "x"
+ "y"
+ (_enum "tint")
+ (app (var "f") (num 1)))
+ (app (var "y") (var "x")))
+ (arrow (_enum "tint") (_enum "tint"))
+ (arrow (_enum "tint") (_enum "tint"))
+ (lam "y" (arrow (_enum "tint") (_enum "tint")) (app (var "y") (var "x"))))
+(lam
+(lam
+(lam
+(lam "x" (_enum "tint") (var "x"))

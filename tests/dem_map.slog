@@ -1,0 +1,24 @@
+;; Defunctionalized higher-order code: closure structs in a union, one
+;; apply judgment dispatching on the tag, and map as non-tail recursion
+;; over cons-lists.  Base cases of judgments are facts with pattern
+;; variables (the gate binds them).  Both asks in the recursive rule are
+;; ready in the same stage and fire in parallel.
+
+union (clo (addk int) (dbl))
+union (list (nil) (cons int list))
+
+demand (apply clo int) int
+rule (apply (addk k) n r) <-- (= r (+ n k))
+rule (apply (dbl) n r) <-- (= r (+ n n))
+
+demand (map clo list) list
+facts (map f (nil) (nil))
+rule (map f (cons x xs) (cons y ys)) <-- (apply f x y) (map f xs ys)
+
+table (input list)
+table (bumped list)
+table (doubled list)
+facts (input (cons 1 (cons 2 (cons 3 (nil)))))
+
+rule (input l) (map (addk 10) l r) --> (bumped r)
+rule (input l) (map (dbl) l r) --> (doubled r)
