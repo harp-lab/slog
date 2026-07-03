@@ -1,0 +1,17 @@
+ (app (lambda "dummy" (app (ref "id") (lambda "v" (ref "v")))) (app (ref "id") (lambda "w" (ref "w")))))
+ (app (lambda "id" (app (lambda "dummy" (app (ref "id") (lambda "v" (ref "v")))) (app (ref "id") (lambda "w" (ref "w"))))) (lambda "z" (ref "z"))))
+ (app (ref "id") (lambda "v" (ref "v"))))
+ (app (ref "id") (lambda "w" (ref "w"))))
+ (lambda "dummy" (app (ref "id") (lambda "v" (ref "v")))))
+ (lambda "id" (app (lambda "dummy" (app (ref "id") (lambda "v" (ref "v")))) (app (ref "id") (lambda "w" (ref "w"))))))
+(eval
+(eval
+(eval
+(eval
+(eval
+(eval
+(eval (lambda "v" (ref "v")))
+(eval (lambda "w" (ref "w")))
+(eval (lambda "z" (ref "z")))
+(eval (ref "id"))
+(eval (ref "z"))

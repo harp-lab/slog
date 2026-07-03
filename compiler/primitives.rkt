@@ -50,4 +50,14 @@
 
            ;; strings
            size   (fun any -> int)
-           substr (fun str int int -> str))))
+           substr (fun str int int -> str)
+
+           ;; lattice constants and transfers (docs/lattices.md).  $count is
+           ;; the base type of (count) -- not lexable as a user type name, so
+           ;; only these primitives and count-lattice columns inhabit it.
+           ;; (top) is flat's top; it types as `any` and the monotone-use
+           ;; calculus (lattice-check.rkt) polices where it may land.
+           one   (fun -> $count)
+           inf   (fun -> $count)
+           cplus (fun $count $count -> $count)
+           top   (fun -> any))))

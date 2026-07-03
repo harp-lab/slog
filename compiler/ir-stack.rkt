@@ -190,6 +190,11 @@
 ;;             | (probe name idx K x ...)   probe the relation's delta index
 ;;             | (once)                     fact rule: run at startup only
 ;;   op      ::= (join name idx K x ...)    probe/scan a full index
+;;             | (exists name idx K x ...)  semijoin filter: prune the tuple
+;;                                          unless some tuple of the full
+;;                                          index matches the K bound cols
+;;                                          (x ... are exactly the K key
+;;                                          vars, in index-prefix order)
 ;;             | (let x y) | (let x (f y ...))
 ;;             | (eq x y) | (neq x y) | (cmp fn x y)
 ;; K counts the join's bound columns; the index orders those first, so the
@@ -209,12 +214,23 @@
   (match d
     [`(relation ,(? var?) ,(? natural?) ,(? index?) ...) #t]
     [`(struct ,(? var?) ,(? natural?) ,(? index?) ..2) #t]
+    ;; a lattice (map) relation: keys -> merged value (last storage column);
+    ;; the spec is the valuespec sans its `lattice` head, e.g. (min int (floor 0));
+    ;; non-delta indices are payload maps registered under full orderings that
+    ;; end in the value column, delta indices are ordinary full-width sets
+    [`(lattice ,(? var?) ,(? natural?) (,(? var?) ,_ ...) ,(? index?) ..1) #t]
     [`(temp ,(? var?) ,(? natural?)) #t]
     [_ #f]))
 
 (define (c-op? op)
   (match op
     [`(join ,(? var?) (,(? natural?) ..1) ,(? natural?) ,(? var?) ...) #t]
+    ;; a semijoin filter: existence probe of a future clause's relation on
+    ;; the K currently-bound columns (which the index orders first)
+    [`(exists ,(? var?) (,(? natural?) ..1) ,(? natural?) ,(? var?) ..1) #t]
+    ;; a lattice body read: probe the payload map on the key prefix; the vars
+    ;; are the key columns in index order plus, last, the bound merged value
+    [`(join-lat ,(? var?) (,(? natural?) ..1) ,(? natural?) ,(? var?) ...) #t]
     [`(let ,(? var?) ,(? var?)) #t]
     [`(let ,(? var?) (,(? var?) ,(? var?) ...)) #t]
     [`(eq ,(? var?) ,(? var?)) #t]
@@ -235,6 +251,9 @@
     [`(mkstruct ,(? var?) (,(? natural?) ..1) ,(? var?) ,(? var?) ...) #t]
     [`(emit ,(? var?) (,(? natural?) ..1) ,(? var?) ...) #t]
     [`(emit-temp ,(? var?) ,(? var?) ...) #t]
+    ;; a lattice contribution, in storage order (keys then value): batched
+    ;; with no dedup -- subsumption is decided at the merge (intern) phase
+    [`(emit-lat ,(? var?) ,(? var?) ...) #t]
     [_ #f]))
 
 (define (crule? r)

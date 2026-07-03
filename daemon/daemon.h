@@ -34,6 +34,8 @@
 
 #include "slogd.h"
 
+#include <chrono>
+#include <cstdio>
 #include <functional>
 #include <string>
 #include <vector>
@@ -111,14 +113,22 @@ public:
   // Run every not-yet-run stratum, in order, each to fixpoint.  A stratum
   // plugin is expected to beginStratum/register/push/run as one unit, so
   // each pending stratum's indices were registered against the freshly
-  // reloaded database.
+  // reloaded database.  Each fixpoint reports its iteration count and wall
+  // time -- nothing parses this message; it is for humans and benchmarks.
   void run()
   {
     for (; next_unrun < pipeline.size(); ++next_unrun)
     {
+      const auto t0 = std::chrono::steady_clock::now();
       database->runStratum(pipeline[next_unrun]);
+      const double ms =
+        std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - t0).count() / 1000.0;
       needs_reload = true;
-      emit("(fixpoint " + pipeline[next_unrun]->name + ")");
+      char stats[64];
+      std::snprintf(stats, sizeof(stats), " %u %.3f)",
+                    database->getIterationCount(), ms);
+      emit("(fixpoint " + pipeline[next_unrun]->name + stats);
     }
   }
 };

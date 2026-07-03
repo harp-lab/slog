@@ -1,0 +1,25 @@
+;; Semijoin-filter correctness: the three-relation triangle from the
+;; benchmark suite, small enough to verify by hand.  The filter (exists
+;; tedge keyed on its second column) prunes redge tuples whose source never
+;; appears as a tedge destination -- which must not change the output.
+;;
+;;   triangles: (1,2,4)            via redge(1,2) sedge(2,4) tedge(4,1,7)
+;;              (3,2,5)            via redge(3,2) sedge(2,5) tedge(5,3,9)
+;;   near-misses that must stay excluded:
+;;     redge(6,2): 6 appears in tedge col-1 (tedge 8 6 1) but sedge(2,8)
+;;                 is absent, so the 2-path never reaches 8 -- the filter
+;;                 PASSES this tuple and the final join rejects it;
+;;     redge(7,2): 7 never appears in tedge col-1 -- the filter PRUNES it
+;;                 (and without filters the final join rejects it).
+
+table (redge int int)
+table (sedge int int)
+table (tedge int int int)
+table (tri int int int)
+
+facts
+(redge 1 2) (redge 3 2) (redge 6 2) (redge 7 2)
+(sedge 2 4) (sedge 2 5)
+(tedge 4 1 7) (tedge 5 3 9) (tedge 8 6 1)
+
+rule (redge A B) (sedge B C) (tedge C A W) --> (tri A B C)

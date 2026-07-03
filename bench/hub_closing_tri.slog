@@ -1,0 +1,11 @@
+;; db: bench_hub_closing
+;; Moderate version of hub_tri: T closes the triangle for k=60 of the n
+;; spokes, so the filter keeps k*n of the n^2 intermediate pairs -- a big
+;; class win rather than total elimination, with NON-EMPTY output (checks
+;; that pruning never drops real derivations).
+table (redge int int)
+table (sedge int int)
+table (tedge int int int)
+table (tri int int int)
+
+rule (redge A B) (sedge B C) (tedge C A W) --> (tri A B C)

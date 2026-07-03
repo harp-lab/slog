@@ -1,0 +1,9 @@
+;; db: bench_er_mid
+;; Directed 4-cycles on a random ER graph.  The future clause (edge D A) has
+;; A bound (column 1) right after the driver, so a semijoin filter probes an
+;; edge index keyed on the DESTINATION column -- exercising filter-driven
+;; index requisition.  Pruning kicks in only for nodes with no in-edge.
+table (edge int int)
+table (cyc4 int int int int)
+
+rule (edge A B) (edge B C) (edge C D) (edge D A) --> (cyc4 A B C D)

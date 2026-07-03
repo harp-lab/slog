@@ -1,13 +1,15 @@
 # Slog
 
 Slog is a logic programming language in the Datalog family, with
-s-expression syntax, first-class structured values, and a parallel
-engine underneath. You don't write step-by-step instructions; you write
-*facts* (things that are true) and *rules* (ways to derive new facts
-from old ones), and Slog computes everything derivable — no more, no
-less. This Readme is a short tutorial: four tiny programs, each run for
-real at the command line, ending with a control-flow analyzer in six
-rules.
+s-expression syntax, first-class structured values, lattice-valued
+relations, and a parallel engine underneath. You don't write
+step-by-step instructions; you write *facts* (things that are true) and
+*rules* (ways to derive new facts from old ones), and Slog computes
+everything derivable — no more, no less. This Readme is a short
+tutorial: a handful of tiny programs, each run for real at the command
+line, including shortest paths that converge on cyclic graphs, a
+control-flow analyzer in six rules, and a constant-propagation pass
+whose soundness discipline is enforced by the compiler.
 
 To follow along you'll need Racket (with the `graph` and `sha`
 packages), a `clang++` with OpenMP (`libomp-dev`), boost headers, and
@@ -98,10 +100,8 @@ filter that must hold for the rule to fire.
 Why the guard? This graph has a cycle (4 loops back to 1), and Datalog
 derives *every* derivable fact — including the cost of going around the
 loop once, twice, three times, forever. The bound keeps the set finite.
-(A proper `min`-lattice, so `dist` keeps only the smallest cost per
-node and cycles converge on their own, is where the language is headed
-— see `docs/lattices.md` — but bounded enumeration is the honest pure-
-Datalog version.)
+That's the honest pure-Datalog version; the proper version is one
+declaration away (below).
 
 ```
 $ racket slog.rkt --debug-dir out/sssp sssp.slog
@@ -121,6 +121,62 @@ $ sort -k1,1n -k2,2n out/sssp/dist.csv
 Each node's *shortest* distance is its first row: node 2 at cost 3 (via
 3, since 1+2 < 4), node 4 at cost 8. The other rows are real too —
 longer routes, and trips around the cycle that stayed under the bound.
+
+### The lattice version
+
+The bound is a hack, and it computes the wrong relation — we wanted
+*the* shortest distance, not "every cost under 12". Declare the cost
+column as a `min`-lattice and both problems disappear. Replace
+`sssp.slog` with:
+
+```
+lattice (cost (min int #:floor 0))
+table (edge int int int)
+table (dist int cost)          ;; now a MAP: node ⟼ least cost
+
+facts
+(edge 1 2 4)
+(edge 1 3 1)
+(edge 3 2 2)
+(edge 2 4 5)
+(edge 4 1 1)
+
+facts (dist 1 0)
+rule (dist X C) (edge X Y W) --> (dist Y (+ C W))
+```
+
+`lattice` declares a value *type* equipped with a merge — here integers
+merged by `min`. Any relation with a lattice-typed column is
+automatically a *map* from its other columns to a single merged value:
+deriving `(dist Y 9)` doesn't insert a row, it *contributes* 9, and the
+stored value only ever improves. Absence means "no path found yet", the
+guard and the `(= C2 ...)` scaffolding are gone, and the cycle
+converges on its own because a trip around the loop is never an
+improvement:
+
+```
+$ racket slog.rkt --debug-dir out/sssp sssp.slog
+$ sort -k1,1n out/sssp/dist.csv
+1   0
+2   3
+3   1
+4   8
+```
+
+One row per node, each the true shortest distance — Dijkstra's answer
+from a two-line program that never says "visited" or "priority queue".
+
+Two details worth noticing. `#:floor 0` clamps costs below at zero:
+that's what makes termination a *guarantee* rather than your problem
+(with negative-weight cycles, costs would otherwise improve forever;
+leave the floor off and the compiler warns you that termination is on
+you). And inside `dist`'s own recursion, the compiler only admits uses
+of `C` that stay correct while the value is still improving —
+contributing it onward through monotone arithmetic, bounding it above
+with `<`, or ignoring it. Try to smuggle a still-improving cost into an
+ordinary relation, use it as a lookup key, or test it with `>`, and you
+get a compile error naming the offense. After `dist`'s fixpoint, later
+rules can do anything with the final values.
 
 ## 3. Functions on demand
 
@@ -251,7 +307,96 @@ dispatched through a generated `apply` relation, so you can write
 See `tests/dem_lambda.slog` and `tests/dem_stlc.slog` (a type checker
 whose rules are the textbook inference rules) for where that leads.
 
-## 5. Keeping a database around
+## 5. Lattices over structured values: constant propagation
+
+Section 2's lattice merged numbers. Lattices also merge *structured*
+values, and that turns set-of-facts analyses into classic dataflow
+analyses. Constant propagation asks, for every program point and
+register: does it hold one known constant, or has it been overwritten
+by conflicting values? That's a three-level answer — *nothing yet*,
+*this exact value*, or *more than one* — which is precisely the `flat`
+lattice: `(flat T)` lifts any type `T` so that equal contributions
+stay themselves and any two different ones collapse to `(top)`. Put
+this in `constprop.slog`:
+
+```
+union (value (vnum int) (vstr str))
+lattice (fv (flat value))
+
+table (assign int int value)   ;; label, register, constant assigned there
+table (flow int int)           ;; control-flow edge
+table (regval int int fv)      ;; MAP: (label, register) ⟼ known value
+table (constat int int value)
+table (nonconst int int)
+
+facts
+(assign 1 10 (vnum 5))
+(assign 2 11 (vnum 1))
+(assign 3 11 (vstr "two"))
+(flow 1 2) (flow 1 3) (flow 2 4) (flow 3 4)
+
+rule (assign L R K) --> (regval L R K)
+rule (flow L L2) (regval L R V) --> (regval L2 R V)
+
+rule (regval L R V) (= V (vnum N)) --> (constat L R (vnum N))
+rule (regval L R V) (= V (top))   --> (nonconst L R)
+```
+
+The control-flow graph is a diamond: label 1 branches to 2 and 3, which
+rejoin at 4. Register 10 is set once, before the branch; register 11 is
+set to *different* constants on the two arms. The analysis is the two
+rules in the middle — an assignment contributes its constant, and flow
+edges propagate whatever is known. Note what's being merged: `(vnum 5)`
+and `(vstr "two")` are interned structured values, ordinary column
+data, and `flat`'s merge only needs equality — so this works unchanged
+over your own IR's terms, ASTs, types, whatever you've declared.
+
+```
+$ racket slog.rkt --debug-dir out/constprop constprop.slog
+$ sort -k1,1n -k2,2n out/constprop/regval.csv
+1   10   (vnum 5)
+2   10   (vnum 5)
+2   11   (vnum 1)
+3   10   (vnum 5)
+3   11   (vstr "two")
+4   10   (vnum 5)
+4   11   (top)
+```
+
+Register 10 survives the join as a constant; register 11's two arms
+collide and label 4 sees `(top)` — one row per (label, register), the
+textbook result. The extraction rules then report both readings:
+
+```
+$ cat out/constprop/nonconst.csv
+4   11
+$ sort -k1,1n out/constprop/constat.csv | tail -2
+3   10   (vnum 5)
+4   10   (vnum 5)
+```
+
+The interesting part is what the compiler let those last two rules do,
+and where. Asking `(= V (top))` — "is it already conflicting?" — is
+safe at any time: once true, more merging can't make it false. Asking
+`(= V (vnum N))` — "is it (still) this constant?" — is the classic
+dataflow soundness trap: a conclusion drawn mid-analysis can be
+overturned when another branch merges in. Slog's rule is simple:
+inside the strongly-connected component that's still growing `regval`,
+downward-closed tests like that are compile errors; in a later stratum
+(these two rules only *read* `regval`, so they run after its fixpoint)
+they're unrestricted. The bug you'd normally document in a comment is
+a type error here.
+
+The same machinery covers more exotic measures — `(count)` is the
+abstract-counting chain 0 < 1 < ∞ used to justify strong updates in
+higher-order analyses: `examples/tinycfa/0cfa-counting.slog` bolts it
+onto section 4's analyzer and certifies which variables are must-alias
+singletons. And lattice types compose with `demand` so a recursive
+function's memoized answers merge instead of accumulate:
+`tests/lat_demand.slog` computes min-cost paths as a one-line recursive
+function. `docs/lattices.md` has the full design.
+
+## 6. Keeping a database around
 
 Everything so far ran facts-to-CSVs in one shot. You can also persist
 the database and build on it across runs. Split the reachability
@@ -308,12 +453,16 @@ that's how the tinycfa example loads its test programs.)
 The `tests/` directory is a corpus of small worked examples — the
 `dem_*` family covers the demand feature from every angle (`dem_parse`
 turns a grammar into an Earley-style parser; `dem_ack` is Ackermann;
-`dem_sppf` builds shared parse forests). Design notes live in `docs/`
-(`demand.md` for everything in sections 3–4, `incremental.md` and
-`lattices.md` for where things are going). The compiler is Racket under
-`compiler/` (`ir-stack.rkt` maps the passes), and the runtime is a
-parallel C++ fixpoint engine under `daemon/`; each stratum of your
-program JIT-compiles to a native plugin, cached in `build/` so
+`dem_sppf` builds shared parse forests), and the `lat_*` family does
+the same for lattices (shortest paths with and without negative cycles,
+the constant propagator above, abstract counting, lattice-valued demand
+answers). Design notes live in `docs/` (`demand.md` for sections 3–4,
+`lattices.md` for sections 2 and 5 — including the monotone-use rules
+and what's still to come, like powerset and interval lattices — and
+`incremental.md` for where things are going next). The compiler is
+Racket under `compiler/` (`ir-stack.rkt` maps the passes), and the
+runtime is a parallel C++ fixpoint engine under `daemon/`; each stratum
+of your program JIT-compiles to a native plugin, cached in `build/` so
 unchanged programs restart instantly.
 
 To run the test suite:

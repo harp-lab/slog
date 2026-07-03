@@ -178,6 +178,63 @@
   (unify-type-envs empty-type-env (type-env-rel '_enum `(struct str))))
 
 ;; -----------------------------------------------------------------------
+;; Lattice valuespecs (docs/lattices.md §3).
+;;
+;; A valuespec expression -- (min int #:floor 0), (max float), (count),
+;; (flat T) -- normalizes to the canonical rel-env entry
+;; (lattice kind base? (param val) ...).  Returns #f when the expression is
+;; not headed by a valuespec constructor (so nested-type flattening can fall
+;; through to unions/enums/structs); malformed uses of a constructor error.
+
+(define (parse-valuespec-maybe type-e)
+  (define (kw->param-key s)
+    (match (symbol->string s)
+      ["#:floor" 'floor]
+      ["#:ceiling" 'ceiling]
+      [_ #f]))
+  (define (parse-params kind base kvs)
+    (let loop ([kvs kvs] [params '()])
+      (match kvs
+        ['() (reverse params)]
+        [`(,(? symbol? kw) (syn ,_ const ,(? number? v)) ,rest ...)
+         (define key (kw->param-key kw))
+         (unless key
+           (error (format "Unknown lattice parameter ~a in (~a ~a ...)" kw kind base)))
+         (unless (case key
+                   [(floor) (eq? kind 'min)]
+                   [(ceiling) (eq? kind 'max)]
+                   [else #f])
+           (error (format "Lattice parameter ~a does not apply to (~a ...)" kw kind)))
+         (unless (or (and (eq? base 'int) (exact-integer? v))
+                     (and (eq? base 'float) (inexact-real? v)))
+           (error (format "Lattice parameter ~a value ~a must be a~a ~a literal"
+                          kw v (if (eq? base 'int) "n" "") base)))
+         (loop rest (cons (list key v) params))]
+        [_ (error (format "Malformed lattice parameters ~a in (~a ...)"
+                          (strip-prov kvs) kind))])))
+  (match type-e
+    [`(syn ,_ ,(and kind (or 'min 'max)) ,(and base (or 'int 'float)) ,kvs ...)
+     `(lattice ,kind ,base ,@(parse-params kind base kvs))]
+    [`(syn ,_ ,(and kind (or 'min 'max)) ,_ ...)
+     (error (format "Lattice (~a T) requires T = int or float: ~a"
+                    kind (strip-prov type-e)))]
+    [`(syn ,_ count) `(lattice count)]
+    [`(syn ,_ flat ,(? symbol? t)) `(lattice flat ,t)]
+    [`(syn ,_ flat ,_ ...)
+     (error (format "Lattice (flat T) requires a single named type: ~a"
+                    (strip-prov type-e)))]
+    [_ #f]))
+
+;; Deterministic name for an anonymous inline valuespec: the same spec
+;; names the same type, and no gensym (declarations enter the .so cache
+;; key, which must be stable run to run).
+(define (lattice-anon-name spec)
+  (string->symbol
+   (apply string-append "_lat"
+          (map (lambda (part) (format "_~a" part))
+               (flatten (cdr spec))))))
+
+;; -----------------------------------------------------------------------
 ;; Per-module organization: extract the type environment and the rule set
 ;; from a module's AST, leaving a (module path toks rules) inside a
 ;; single-module program.
@@ -196,6 +253,12 @@
              (unify-type-envs env+
                               (extract-type-env
                                `(syn ,prov union (,g ,@xs) (syn ,prov top-level)))))]
+      ;; an inline anonymous lattice valuespec: (min int), (flat T), ... --
+      ;; declares (deterministically named) a lattice type in place, the same
+      ;; sugar unions/structs already have
+      [(app parse-valuespec-maybe (? list? spec))
+       (define g (lattice-anon-name spec))
+       (cons g (unify-type-envs env (type-env-rel g spec)))]
       [`(syn ,prov ,name)
        (cons name
              (extract-type-env `(syn ,prov enum (syn ,prov ,name) (syn ,prov top-level))
@@ -226,6 +289,18 @@
        (match-define (cons xs env+) (flatten-nested-types env args))
        (extract-type-env body
                          (unify-type-envs env+ (type-env-union name (list->set (cons name xs)))))]
+
+      ;; lattice (name valuespec): declare a lattice value TYPE; relations
+      ;; with a lattice-typed (last) column are maps automatically
+      [`(syn ,_ lattice (syn ,_ ,(? symbol? name) ,spec-e) ,body)
+       (define spec (parse-valuespec-maybe spec-e))
+       (unless spec
+         (error (format "Malformed lattice valuespec for ~a: expected (min int #:floor n), (max T #:ceiling n), (count), or (flat T); got ~a"
+                        name (strip-prov spec-e))))
+       (extract-type-env body (unify-type-envs env (type-env-rel name spec)))]
+      [`(syn ,_ lattice ,rest ...)
+       (error (format "Malformed lattice declaration: expected lattice (name valuespec), got ~a"
+                      (strip-prov `(lattice ,@(drop-right rest 1)))))]
 
       ;; demand (f in ...) out ...: declare the backing relations -- the
       ;; demand struct itself and its answer table, keyed by the demand
@@ -377,6 +452,17 @@
   (define rels (type-env-rels type-env))
   (foldl (lambda (x man)
            (match (hash-ref rels x)
+             ;; a map relation (table with a lattice-typed last column)
+             ;; carries its valuespec so open/reload can re-register it
+             [`(table ,xs ...)
+              #:when (rel-lattice-spec rels x)
+              (define entry `(lat ,x ,(length xs) ,(rel-lattice-spec rels x)))
+              (cond
+                [(hash-has-key? man x)
+                 (when (not (equal? (hash-ref man x) entry))
+                   (error (format "Lattice relation declaration does not match input database: ~a" x)))
+                 man]
+                [else (hash-set man x entry)])]
              [`(table ,xs ...)
               #:when (hash-has-key? man x)
               (when (not (equal? (hash-ref man x) `(rel ,x ,(length xs))))
@@ -390,7 +476,8 @@
              [`(table ,xs ...) (hash-set man x `(rel ,x ,(length xs)))]
              [`(struct ,xs ...) (hash-set man x `(struct ,x ,(add1 (length xs))))]
              [`(temp ,_ ...) man]
-             [`(enum ,name) man]))
+             [`(enum ,name) man]
+             [(? lattice-spec?) man]))
          manifest
          (hash-keys rels)))
 

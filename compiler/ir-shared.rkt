@@ -26,6 +26,9 @@
  ;; type environments
  empty-type-env type-env? type-env-aliases type-env-rels type-env-funs
  rel-decl-kind rel-decl-arity
+ ;; lattice value types
+ lattice-spec? lattice-spec-kind lattice-spec-base lattice-spec-param
+ lattice-base-type rel-lattice-spec rel-lattice-key-arity
  ;; clause analysis (typed/planned clause grammar)
  clause-vars clause-in-vars clause-out-vars head-in-vars)
 
@@ -142,7 +145,63 @@
     [`(table ,ts ...) (length ts)]
     [`(struct ,ts ...) (length ts)]
     [`(temp ,arity) arity]
-    [`(enum ,_) 0]))
+    [`(enum ,_) 0]
+    [`(lattice ,_ ...) 0]))
+
+;; -----------------------------------------------------------------------
+;; Lattice value types (docs/lattices.md).
+;;
+;; A `lattice` declaration binds a name to a valuespec in the rels env:
+;;   (lattice min int)               (lattice min int (floor 0))
+;;   (lattice max float)             (lattice max int (ceiling 100))
+;;   (lattice count)                 (lattice flat T)
+;; A table whose LAST column has a lattice type is a map from its other
+;; (key) columns to the merged value; the value column's storage type is
+;; the lattice's base type.  For typing purposes lattice types are
+;; transparent (they resolve to their base); the monotone-use discipline
+;; is enforced by lattice-check.rkt.
+
+(define (lattice-spec? d)
+  (match d
+    [`(lattice ,_ ...) #t]
+    [_ #f]))
+
+(define (lattice-spec-kind spec) (second spec))
+
+(define (lattice-spec-base spec)
+  (match spec
+    [`(lattice ,(or 'min 'max) ,base ,_ ...) base]
+    [`(lattice count) '$count]
+    [`(lattice flat ,t) t]))
+
+;; A keyword parameter of the spec: (lattice-spec-param spec 'floor) -> 0 | #f
+(define (lattice-spec-param spec key)
+  (for/first ([p (in-list (cdr spec))]
+              #:when (and (pair? p) (eq? (car p) key)))
+    (second p)))
+
+;; Resolve a column type through the rels env: the lattice's base type if
+;; it names a lattice, the type itself otherwise.
+(define (lattice-base-type rel-env t)
+  (match (hash-ref rel-env t #f)
+    [(? lattice-spec? spec) (lattice-spec-base spec)]
+    [_ t]))
+
+;; The valuespec of a map relation: #f unless `name` is a table whose last
+;; column is lattice-typed (declaration validation guarantees a lattice
+;; type appears only there).
+(define (rel-lattice-spec rel-env name)
+  (match (hash-ref rel-env name #f)
+    [`(table ,ts ..1)
+     (match (hash-ref rel-env (last ts) #f)
+       [(? lattice-spec? spec) spec]
+       [_ #f])]
+    [_ #f]))
+
+(define (rel-lattice-key-arity rel-env name)
+  (match (hash-ref rel-env name #f)
+    [`(table ,ts ..1) (sub1 (length ts))]
+    [_ #f]))
 
 ;; -----------------------------------------------------------------------
 ;; Clause variable analysis

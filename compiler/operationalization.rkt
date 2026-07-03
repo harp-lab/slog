@@ -17,9 +17,11 @@
 ;; Variables and primitive names are C-escaped here, in one place; relation
 ;; names stay raw (they only appear inside C string literals downstream).
 
-(provide build-cprog)
+(provide build-cprog
+         semijoin-filters)   ; exported for tests/unit/semijoin-tests.rkt
 
 (require "utils.rkt")
+(require "params.rkt")
 (require "ir-shared.rkt")
 
 ;; -----------------------------------------------------------------------
@@ -64,7 +66,7 @@
     (for/fold ([acc (set)]) ([rule (in-list rules)])
       (set-union acc (list->set (map join-rel (filter join-cl? (rule-heads rule)))))))
   (define selections
-    (foldl add-select-sets (seed-select-sets rel-env) rules))
+    (foldl (add-select-sets rel-env) (seed-select-sets rel-env) rules))
   (define decls (make-rel-decls rel-env selections))
   (define crules (map (lower-rule rel-env selections) rules))
   `(cprog ,dynamic-rels ,constants ,decls ,crules))
@@ -95,6 +97,104 @@
     (cons constants+ (cons `(syn ,prov rule ,@cls+) rules+))))
 
 ;; -----------------------------------------------------------------------
+;; Semijoin filters (Yannakakis-style lookahead pruning).
+;;
+;; Before an EXPANDING join (one that binds at least one fresh variable),
+;; a partial tuple that cannot satisfy some future clause of the schedule
+;; is dead weight: every match the join produces from it will be discarded
+;; when that clause finally runs.  So, just before each expanding join, we
+;; place an existence probe against each future clause's relation on the
+;; columns already bound -- pruning BEFORE the fan-out instead of after.
+;; This is the pipelined form of a semijoin reducer: it cannot beat a
+;; worst-case optimal join on dense cyclic queries (nothing prunes a
+;; bipartite triangle query), but it collapses the common pathologies --
+;; star joins where a later clause is selective, and recursive rules whose
+;; delta drives into a fan-out that a later clause mostly rejects.
+;;
+;; Sound under semi-naive evaluation: the probe reads the same full-index
+;; snapshot the future join itself reads this iteration, so a pruned tuple
+;; could never have joined NOW; combinations enabled by later growth of the
+;; future relation re-arrive through that relation's own delta-driven rule
+;; version, exactly as they would without filters.
+;;
+;; Conservative by construction:
+;;   - only fires before a join that binds fresh variables, so there is
+;;     always fan-out between the check and the clause it guards (a rule
+;;     with two joins gets no filters at all);
+;;   - re-checks a future clause only when its bound-column set has GROWN
+;;     since the last check placed for it;
+;;   - identical probes at the same point are deduplicated;
+;;   - lattice and temp relations are skipped (payload maps and index-free
+;;     temps have no set index to probe), as is a struct probed only on its
+;;     id column (an interned id is present by construction).
+;;
+;; Returns a hash from join position (0 = driver, counting join clauses in
+;; schedule order) to the filters to run immediately before that join, each
+;; a (list name sel tuple): the future clause's relation, bound storage
+;; columns, and full tuple (the lowering picks the key vars out of it).
+;; Each filter's sel is also a select set (add-select-sets), so the index
+;; it probes is requisitioned like any join's.
+
+(define (semijoin-filters bodys rel-env)
+  (define (skip-rel? name)
+    (match (hash-ref rel-env name #f)
+      [#f #t]
+      [`(temp ,_) #t]
+      [_ (and (rel-lattice-spec rel-env name) #t)]))
+  (define (struct-rel? name)
+    (match (hash-ref rel-env name #f)
+      [`(struct ,_ ...) #t]
+      [_ #f]))
+  (define joins (list->vector (filter join-cl? bodys)))
+  (define n (vector-length joins))
+  (cond
+    [(or (not (semijoin-filters-enabled)) (< n 3)) (hash)]
+    [else
+     (define last-sel (make-hash))   ; future join index -> sel last checked
+     ;; existence checks worth placing just before join `jpos` fires
+     (define (filters-at jpos ground)
+       (for/fold ([out '()] [seen (set)] #:result (reverse out))
+                 ([m (in-range (add1 jpos) n)])
+         (define fut (vector-ref joins m))
+         (define name (join-rel fut))
+         (define tup (join-tuple fut))
+         (define sel
+           (for/set ([x (in-list tup)] [i (in-naturals)]
+                     #:when (set-member? ground x))
+             i))
+         (define probe-key           ; identity of the runtime check itself
+           (cons name (for/list ([x (in-list tup)] [i (in-naturals)]
+                                 #:when (set-member? ground x))
+                        (cons i x))))
+         (cond
+           [(or (skip-rel? name)
+                (set-empty? sel)
+                (and (struct-rel? name) (equal? sel (set 0)))
+                (equal? (hash-ref last-sel m (set)) sel))
+            (values out seen)]
+           [(set-member? seen probe-key)          ; same check already placed
+            (hash-set! last-sel m sel)            ; here for another clause
+            (values out seen)]
+           [else
+            (hash-set! last-sel m sel)
+            (values (cons (list name sel tup) out)
+                    (set-add seen probe-key))])))
+     (for/fold ([ground (set)] [jpos 0] [acc (hash)] #:result acc)
+               ([cl (in-list bodys)])
+       (cond
+         [(join-cl? cl)
+          (define expanding? (not (subset? (clause-vars cl) ground)))
+          (define acc+
+            (if (and (> jpos 0) expanding?)
+                (match (filters-at jpos ground)
+                  ['() acc]
+                  [fs (hash-set acc jpos fs)])
+                acc))
+          (values (set-union ground (clause-vars cl)) (add1 jpos) acc+)]
+         [else
+          (values (set-union ground (clause-out-vars cl)) jpos acc)]))]))
+
+;; -----------------------------------------------------------------------
 ;; 2. Select sets: relation (or (delta relation)) -> set of column sets.
 
 ;; Every struct needs its interning master index (content columns first, the
@@ -115,25 +215,45 @@
 ;; Walk one rule's body in schedule order, recording each join's probe
 ;; columns.  The first join is the driver: a probing driver hits the DELTA
 ;; index of its relation; a driver with no bound columns scans the raw delta
-;; and needs no index at all.
-(define (add-select-sets rule ss)
-  (for/fold ([ground (set)] [first? #t] [ss ss] #:result ss)
-            ([cl (in-list (rule-body rule))])
+;; and needs no index at all.  Semijoin filters placed before a join probe
+;; the full index of THEIR relation on the filter's bound columns, so each
+;; filter contributes a select set of its own -- this is where the extra
+;; indices the filters need get requisitioned.
+;;
+;; A lattice relation's non-driver joins never select on the value column
+;; (the payload is bound by the map probe, not by an index prefix): in-SCC
+;; the calculus guarantees the value variable is unground, and cross-stratum
+;; a ground value becomes an equality check after the probe (lower-join).
+;; Delta indices are ordinary full-width sets, so drivers are unrestricted.
+(define ((add-select-sets rel-env) rule ss)
+  (define bodys (rule-body rule))
+  (define sj-filters (semijoin-filters bodys rel-env))
+  (for/fold ([ground (set)] [jpos 0] [ss ss] #:result ss)
+            ([cl (in-list bodys)])
     (cond
       [(join-cl? cl)
+       (define first? (= jpos 0))
        (define tup (join-tuple cl))
+       (define lat-value-pos
+         (and (rel-lattice-spec rel-env (join-rel cl)) (sub1 (length tup))))
        (define sel
          (for/set ([x (in-list tup)] [i (in-naturals)]
                    #:when (set-member? ground x))
            i))
+       (define ss0
+         (for/fold ([ss ss]) ([f (in-list (hash-ref sj-filters jpos '()))])
+           (add-select-set ss (first f) (second f))))
        (define ss+
          (cond
-           [(and first? (set-empty? sel)) ss]                    ; delta scan
-           [first? (add-select-set ss `(delta ,(join-rel cl)) sel)]
-           [else (add-select-set ss (join-rel cl) sel)]))
-       (values (set-union ground (clause-vars cl)) #f ss+)]
+           [(and first? (set-empty? sel)) ss0]                   ; delta scan
+           [first? (add-select-set ss0 `(delta ,(join-rel cl)) sel)]
+           [else (add-select-set ss0 (join-rel cl)
+                                 (if lat-value-pos
+                                     (set-remove sel lat-value-pos)
+                                     sel))]))
+       (values (set-union ground (clause-vars cl)) (add1 jpos) ss+)]
       [else
-       (values (set-union ground (clause-out-vars cl)) first? ss)])))
+       (values (set-union ground (clause-out-vars cl)) jpos ss)])))
 
 ;; -----------------------------------------------------------------------
 ;; 3. Indices: one per select set, selected columns (sorted) first, the
@@ -172,13 +292,27 @@
                 ,@(map (lambda (i) `(delta ,@i)) deltas))
              decls)]
       [`(table ,_ ...)
+       #:when (rel-lattice-spec rel-env name)
+       ;; a lattice (map) relation: every non-delta ordering ends in the
+       ;; value column automatically (it is the highest storage column and
+       ;; never selected), which is the layout the payload-map index wants;
+       ;; the first index is the merge task's master
+       (define spec (rel-lattice-spec rel-env name))
+       (define all (sort (set->list (indices-of indices name arity))
+                         (lambda (a b) (string<? (~a a) (~a b)))))
+       (define deltas (set->list (indices-of indices `(delta ,name) arity)))
+       (cons `(lattice ,name ,arity ,(cdr spec) ,@all
+                       ,@(map (lambda (i) `(delta ,@i)) deltas))
+             decls)]
+      [`(table ,_ ...)
        (define all (set->list (indices-of indices name arity)))
        (define deltas (set->list (indices-of indices `(delta ,name) arity)))
        (cons `(relation ,name ,arity ,@all
                         ,@(map (lambda (i) `(delta ,@i)) deltas))
              decls)]
       [`(temp ,arity) (cons `(temp ,name ,arity) decls)]
-      [`(enum ,_) decls])))
+      [`(enum ,_) decls]
+      [(? lattice-spec?) decls])))
 
 ;; -----------------------------------------------------------------------
 ;; 5. Rule lowering.
@@ -234,16 +368,35 @@
       [`(syn ,_ let ,x (syn ,_ ,f ,args ...))
        `(let ,(esc x) (,(esc f) ,@(map esc args)))]))
 
-  ;; a body join op: pick the index whose prefix carries the bound columns
+  ;; a body join op: pick the index whose prefix carries the bound columns.
+  ;; Returns a LIST of ops: a lattice join binding an already-ground value
+  ;; variable (legal cross-stratum only) probes into a fresh variable and
+  ;; appends an equality check.
   (define (lower-join cl ground)
     (define name (join-rel cl))
     (define tup (join-tuple cl))
+    (define lat? (and (rel-lattice-spec rel-env name) #t))
+    (define value-pos (and lat? (sub1 (length tup))))
     (define sel
       (for/set ([x (in-list tup)] [i (in-naturals)]
-                #:when (set-member? ground x))
+                #:when (and (set-member? ground x)
+                            (not (equal? i value-pos))))
         i))
-    (define ind (find-index indices name (stored-arity name) sel (strip-prov cl)))
-    `(join ,name ,ind ,(set-count sel) ,@(map esc (order-tuple ind tup))))
+    (cond
+      [lat?
+       (define vvar (last tup))
+       (define value-ground? (set-member? ground vvar))
+       (define vvar+ (if value-ground? (gensymb 'latchk) vvar))
+       (define ind (find-index indices name (stored-arity name) sel (strip-prov cl)))
+       ;; the ordering ends in the value column; the op's vars are the key
+       ;; columns in index order with the bound value variable last
+       (define keytup (order-tuple (take ind (sub1 (length ind))) tup))
+       (cons `(join-lat ,name ,ind ,(set-count sel)
+                        ,@(map esc keytup) ,(esc vvar+))
+             (if value-ground? (list `(eq ,(esc vvar) ,(esc vvar+))) '()))]
+      [else
+       (define ind (find-index indices name (stored-arity name) sel (strip-prov cl)))
+       (list `(join ,name ,ind ,(set-count sel) ,@(map esc (order-tuple ind tup))))]))
 
   ;; the driver: scan the raw delta, or probe the delta index
   (define (lower-driver cl ground)
@@ -276,12 +429,27 @@
        #:when (temp-rel? name)
        `(emit-temp ,name ,@(map esc xs))]
       [`(syn ,_ ,name ,xs ...)
+       #:when (rel-lattice-spec rel-env name)
+       ;; a lattice contribution: batch in storage order with no dedup --
+       ;; subsumption is decided by the merge (intern) task
+       `(emit-lat ,name ,@(map esc xs))]
+      [`(syn ,_ ,name ,xs ...)
        (define ind (find-index indices name (rel-arity name) (set)
                                (strip-prov cl)))
        `(emit ,name ,ind ,@(map esc (order-tuple ind xs)))]))
 
+  ;; a semijoin filter: existence probe of the future clause's relation on
+  ;; its bound columns, which the requisitioned index orders first
+  (define (lower-filter f)
+    (match-define (list name sel tup) f)
+    (define ind (find-index indices name (stored-arity name) sel
+                            (format "semijoin filter on ~a" name)))
+    (define K (set-count sel))
+    `(exists ,name ,ind ,K ,@(map esc (order-tuple (take ind K) tup))))
+
   ;; split the body: everything before the first join is a pre-op
   (define bodys (rule-body rule))
+  (define sj-filters (semijoin-filters bodys rel-env))
   (define-values (pre-cls rest) (splitf-at bodys (lambda (cl) (not (join-cl? cl)))))
   (define pre-ground
     (for/fold ([g (set)]) ([cl (in-list pre-cls)])
@@ -294,18 +462,25 @@
         (let loop ([driver (lower-driver (car rest) pre-ground)]
                    [ground (set-union pre-ground (clause-vars (car rest)))]
                    [ops '()]
+                   [jpos 1]
                    [cls (cdr rest)])
           (cond
             [(null? cls) (values driver (reverse ops))]
             [(join-cl? (car cls))
+             (define filter-ops
+               (map lower-filter (hash-ref sj-filters jpos '())))
              (loop driver
                    (set-union ground (clause-vars (car cls)))
-                   (cons (lower-join (car cls) ground) ops)
+                   (append (reverse (lower-join (car cls) ground))
+                           (reverse filter-ops)
+                           ops)
+                   (add1 jpos)
                    (cdr cls))]
             [else
              (loop driver
                    (set-union ground (clause-out-vars (car cls)))
                    (cons (lower-op (car cls)) ops)
+                   jpos
                    (cdr cls))]))))
   `(crule (pre ,@(map lower-op pre-cls))
           ,driver

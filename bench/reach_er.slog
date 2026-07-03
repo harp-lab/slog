@@ -1,0 +1,10 @@
+;; db: bench_er_sparse
+;; Multi-source reachability: the classic 2-join recursive rule.  No rule
+;; has a "future clause", so the filter pass must add NOTHING here -- this
+;; is the no-regression canary for recursive workloads.
+table (edge int int)
+table (source int)
+table (reach int int)
+
+rule (source X) (edge X Y) --> (reach X Y)
+rule (reach X Y) (edge Y Z) --> (reach X Z)

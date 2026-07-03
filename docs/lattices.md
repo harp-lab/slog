@@ -1,9 +1,77 @@
 # Lattice-Valued Relations and Recursive Aggregation
 
-**Status:** design / pre-implementation (research notes + plan)
+**Status:** L0 + L1 IMPLEMENTED (2026-07-02); L2 (ps/interval/products/lift2)
+and L3 (extern) remain design.
 **Companions:** `docs/incremental.md` §7A (the incrementality dovetail this design
 tees up), `docs/demand.md` (demand-moded judgments, which lattice answers compose
 with).
+
+## 0. Implementation status and deviations (2026-07-02)
+
+Shipped, end to end: the `lattice` type declaration and inline anonymous
+valuespecs (§3.1) for `(min|max int|float [#:floor/#:ceiling])`, `(count)`,
+and `(flat T)`; the monotone-use calculus and occurrence restrictions
+(`compiler/lattice-check.rkt`, post-stratify, per §5.1/§5.3 -- 27 unit tests
+in `tests/unit/lattice-tests.rkt` pin the acceptance/rejection battery); the
+payload-map runtime (`BTreeMapIndex` in `daemon/index.h`, `LatticeInternTask`
++ `MapWriteTask` + payload-binding `join_probe_lat`/`join_all_lat` in
+`daemon/operators.h`, kernels in `daemon/types.h`); value-carrying deltas
+with subsume-as-null and in-place rewrite; floor/ceiling clamps; the
+unbounded-descent warning; CSV output one-row-per-key; reload and
+cross-program (`run`) persistence via `(lat ...)` manifest entries; and the
+§3.4 demand composition (a lattice-typed answer column makes `f_ans` a map
+with zero demand-specific machinery -- `tests/lat_demand.slog`).  Golden
+tests: `tests/lat_*.slog` (sssp on a cyclic graph, cross-stratum extraction
++ secondary map orderings, flat constprop over a diamond CFG, abstract
+counting with `cplus`, max-float with ceiling, negative cycle clamped by
+`#:floor`).
+
+Deviations and v1 choices, relative to the design below:
+
+- **Guard spellings**: the upward-closed tests are written with existing
+  forms -- `(= V (inf))` on count and `(= V (top))` on flat -- rather than
+  new `cinf?`/`top?` guards (the planner's `==`-check machinery makes them
+  free; the calculus classifies them by direction).  `(= V (one))` and
+  `(= V (const ...))` in-SCC are rejected, as designed.
+- **`(bool)` is deferred**: it is the degenerate presence lattice, and
+  slog's true/false are interned `_enum` constants, so its payload word has
+  no clean representation; `(max int #:ceiling 1)` covers the need.
+- The type system treats lattice types as **transparent aliases of their
+  base types** (implicit injection in, unwrap out); all lattice discipline
+  lives in the post-stratify check pass.  The same-SCC bit uses the fact
+  that a body relation at the same stratum LEVEL is necessarily in the same
+  SCC (a cross-SCC body->head edge forces a strictly higher level).
+- **Secondary indices are payload maps too** (not key-only sets with an
+  extra master probe as §4.3 sketched): every non-delta index of a lattice
+  relation is a `BTreeMapIndex` registered under a full-length ordering
+  ending in the value column, kept exact by join-merging write tasks each
+  iteration -- so probes on any ordering bind the payload directly.  Delta
+  indices stay full-width sets (delta rows are immutable post-intern).
+- **Representations**: count is tagged-s32 1/2 (printed `(one)`/`(inf)`);
+  flat's top is the reserved word `slog_lat_top` (printed `(top)`), distinct
+  from `slog_null`.
+- **Restrictions**: one lattice column per relation, in the last position,
+  with at least one key column (all checked; products are L2).
+- The head sink is `emit_temp` (batch, no dedup) -- no emit-time subsume
+  probe yet; the merge task owns subsumption, and the termination flag
+  keeps its existing one-iteration lag (subsumed records are nulled and
+  reorged away, so the next delta is empty).
+- **On-disk BIN round-trip works** (`write-db` / `open`): a lattice
+  relation's directory is `lat.<name>.arity.<N>.spec.<token>`, where the
+  token is the canonical valuespec ("min-int-floor-0", "count",
+  "flat-value") -- carried opaquely from the compiler through
+  `setLattice`, emitted by `relationDirBIN`, parsed back by the daemon's
+  open path (kind + clamps + a payload-map default index, so out-of-band
+  ingestion merges) and by runslog's manifest scan (a `(lat name arity
+  spec)` entry, checked against redeclarations).
+- **Abstract counting is dogfooded**: `examples/tinycfa/0cfa-counting.slog`
+  adds the mu measure to the demand-driven 0CFA -- one variable certified
+  a singleton (must-alias), one genuinely polyvariant, one polyvariant by
+  monovariant imprecision, dead parameters absent -- with the
+  singleton/polyvariant reports forced into later strata by the calculus.
+- **Deferred**: the `sizes`-style top-k/top-fraction report; the emit-time
+  subsume pre-check; L2/L3 items (`ps`, `interval`+widening, products,
+  `lift2` flat transfers, merge budgets, `registerLattice`).
 
 Slog's relations are already lattices — *powerset* lattices: a relation's extent
 grows monotonically under ∪, rules are monotone maps, and evaluation is a least
@@ -99,7 +167,8 @@ already has:
 
 ```
 table   (edge int int int)          ;; src dst weight
-lattice (dist int int) (min int)    ;; keys: src dst; value: min-merged int
+lattice (cost (min int))            ;; a value type: int merged by min
+table   (dist int int cost)         ;; hence a map: (src, dst) ⟼ cost
 
 rule (edge X Y W) --> (dist X Y W)
 rule (dist X Y D) (edge Y Z W) --> (dist X Z (+ D W))
@@ -120,7 +189,8 @@ hand. The lattice version terminates on any nonneg-weight graph because only
 ### 2.2 Constant propagation (flat lattice)
 
 ```
-lattice (regval label reg) (flat value)   ;; value: any slog type incl. structs
+lattice (fv (flat value))                 ;; flat lift of any slog type incl. structs
+table   (regval label reg fv)             ;; map: (label, reg) ⟼ fv
 
 rule (assign L R (constk K))                  --> (regval L R K)
 rule (assign L R (copyk R2)) (regval L R2 V)  --> (regval L R V)
@@ -150,7 +220,8 @@ strong-update licenses.) Two counting idioms, both expressible:
 **Global (flow-insensitive) cardinality** — one count per address:
 
 ```
-lattice (mu addr) (count)     ;; chain 0 < 1 < inf; 0 = absence; join = max
+lattice (card (count))        ;; chain 0 < 1 < inf; 0 = absence; join = max
+table   (mu addr card)
 
 ;; every binding event contributes 1
 rule (bind St A V) --> (mu A (one))
@@ -173,7 +244,7 @@ non-idempotent but **monotone in each argument**, so it is a legal transfer
 (`cplus`), while the per-key merge stays the idempotent max:
 
 ```
-lattice (mucnt state addr) (count)
+table (mucnt state addr card)
 
 rule (step S S2) (mucnt S A C) (not-bound S2 A)  --> (mucnt S2 A C)
 rule (step S S2) (mucnt S A C) (binds S2 A)      --> (mucnt S2 A (cplus C (one)))
@@ -200,7 +271,7 @@ four built-in aggregators, so Doop can only encode powerset-based analyses").
 `docs/demand.md`'s grammar-is-a-parser example, with one changed declaration:
 
 ```
-demand (parse str int) (min int)    ;; answers merge: cheapest completion end?
+demand (parse str int) (min int)    ;; inline spec, or a named type: ... cost
 ```
 
 or more usefully cost-per-span:
@@ -220,14 +291,37 @@ recognition. The same move gives memoized recursive functions over any lattice:
 
 ## 3. Surface language
 
-### 3.1 The declaration (recommended: Option A)
+### 3.1 The declaration (recommended): `lattice` declares a TYPE
 
 ```
-lattice (R keytype ...) valuespec ...
+lattice (cost (min int #:floor 0))
+lattice (reg  (flat value))
+lattice (card (count))
 ```
 
-mirroring `demand (f in ...) out ...`: keys in the signature, value column(s)
-after. Each `valuespec` is a lattice constructor:
+`lattice` declares a **value type** equipped with a merge — not a relation.
+It joins `union`/`struct`/`enum` in the type vocabulary, and lattice-ness then
+flows through the *existing* declaration forms by occurrence:
+
+```
+table  (dist int int cost)        ;; a map (int,int) ⟼ cost: merged, one row/key
+demand (parsecost str int int) cost   ;; answers merge tropically per demand
+```
+
+**Any relation with a lattice-typed column is automatically a map** from its
+non-lattice columns to its lattice columns (product, pointwise, if several).
+No `lat`-vs-`rel` keyword split, no parallel `demand`-vs-`demand-lattice`
+forms: one orthogonal axis, carried by the type. This is how slog already
+works — enums intern because of their *type*, structs nest because of their
+*type* — and it makes the demand composition (§3.3) literally zero
+special-casing: the generated `f_ans` table has a lattice-typed column, so it
+is a map, by the same rule as every other table.
+
+Anonymous inline specs are the same sugar the language already has for nested
+unions/structs: `table (dist int int (min int))` declares an anonymous lattice
+type in place (as `union (stack (halt) ...)` declares `halt` in place).
+
+Each constructor bundles join kernel + metadata (§3.2):
 
 ```
 valuespec ::= (min T)                 T ∈ {int, float}; join = min
@@ -240,61 +334,121 @@ valuespec ::= (min T)                 T ∈ {int, float}; join = min
             | (extern name)           plugin-defined join/leq (§7)              [v2]
 ```
 
-Optional parameters, per constructor: `(min int #:floor 0)`,
+Optional parameters live on the type, declared once: `(min int #:floor 0)`,
 `(max int #:ceiling 100)` (clamp = finite-effective-height, §6);
-`(interval #:widen-after 3)`. Multiple valuespecs = product lattice, pointwise.
+`(interval #:widen-after 3)`.
 
 Rules use full arity; the head **contributes** (merged), the body **binds the
-current value**. Base-typed expressions inject implicitly into `min/max/flat`
-value positions (an `int` contributes itself); `count` and `flat`'s top have
-lattice constants (`(one)`, `(inf)`, `(top)`) checked by the type system.
+current value**. Base-typed expressions inject implicitly (an `int` contributes
+itself to a `cost` position); `count` and `flat` have lattice constants
+(`(one)`, `(inf)`, `(top)`) checked by the type system.
 
-Rejected alternatives, for the record:
+**Occurrence restrictions** (the price of inference, all machine-checked):
+a lattice type may appear only as a top-level column of a `table` or an answer
+column of a `demand`. Not as a struct/union field (interned identity and
+merged state are incompatible — the merge would change the content a stored id
+points to), not as a demand *input* (demands are interned structs), not as a
+key column of another map. Cross-stratum, a lattice value read out of a closed
+relation *unwraps* to its base type (a final `cost` is just an `int`), so
+downstream code stores snapshots in plain columns naturally.
 
-- **Option B — column annotation on `table`:** `table (dist int int (min int))`.
-  Same information; but keys-vs-values becomes positional and invisible in the
-  keyword, and the symmetry with `demand` (inputs in the signature, outputs
-  after) is lost. Purely syntactic preference; easy to also support later.
-  (Survey of the neighbors: Flix marks the split with a semicolon in every
-  *atom* — `Dist(y; v)` — Ascent and old Flix mark the *declaration* and fix
-  "last column is the value". We mark the declaration and let arity + the
-  keyword carry it, like `demand`. Ascent's `Dual<T>` wrapper — min as max
-  over the flipped order — is elegant for a trait system; with built-in
-  constructors, distinct `(min T)`/`(max T)` keeps each whitelist table
-  readable and is the same thing underneath.)
-- **Option C — semiring-valued relations (Datalogo-style):** annotate the whole
-  relation with a semiring; conjunction multiplies (⊗), alternation adds (⊕).
-  Strictly more general (provenance, gradient semirings) and strictly more
-  invasive: every rule's meaning changes, plain relations become the Boolean
-  special case, and the "which columns are keys" question returns as "which
-  variables are summed." A worthy future reading — the runtime designed here
-  (key→payload indices, value-carrying deltas) is the substrate it would need —
-  but the keyed-lattice form covers the motivating uses at a fraction of the
-  semantic budget.
+**The one footgun to document**: giving a column a lattice type changes the
+relation's semantics from set to map, silently at the use site. A weighted-EDB
+relation `(edge int int cost)` would collapse parallel edges to their min —
+almost certainly wrong; edge weights are plain `int`s, `cost` is for the
+*derived* map. The type name is the signal (that is why the declaration
+carries an honest name), and the same collapse is one keyword away in every
+alternative design; but reviews of lattice programs should check column types
+first. We considered requiring a per-relation opt-in marker as a guard
+(Flix marks every atom with `;`; Soufflé 2.5 marks the attribute with `<>`) —
+inference-plus-naming was judged lighter and more slog-like; revisit if
+practice disagrees.
 
-### 3.2 Reserved behavior worth stating
+### 3.2 What a constructor is (and what `min` is)
+
+`min` today is a value primitive, `(fun A A -> A)`, usable as
+`(= x (min a b))`. The lattice constructor `(min int)` *reuses that kernel* as
+its join — same u64 function the merge task calls — but a lattice is more than
+its join. A constructor bundles:
+
+- the **join kernel** (an existing prim kernel where one exists: min, max,
+  bitwise-or for `ps`; equality-plus-⊤ for `flat`; a two-line kernel for
+  `count`);
+- the **⊥ convention** (absence — never stored);
+- the **induced order** `x ⊑ y iff x ⊔ y = y` (derivable from the join; used
+  by guards, debug audits, and later by incremental change-splitting);
+- **constants** (`(one)`, `(inf)`, `(top)`);
+- the **monotonicity table**: which prims are order-preserving transfers for
+  this order, which predicates are upward-closed guards (§5.1) — the metadata
+  a bare binary function cannot carry, and the reason "point at any prim and
+  call it a join" is not the v1 design.
+
+So: the prim and the constructor are two roles sharing one kernel. They also
+compose — `(min D x)` applied to a `cost`-typed `D` is a whitelisted monotone
+transfer whose runtime call is the very function that implements `cost`'s
+merge. Nothing is special-cased twice.
+
+Alternatives considered for the declaration site, for the record:
+
+- **Relation-level keyword** (this document's first draft):
+  `lattice (dist int int) (min int)` — the merge declared per relation.
+  Subsumed by the type-level form: it repeats the algebra at every relation,
+  and composing with `demand` (and any future relation-former) needs a
+  parallel declaration form each time, where the type threads through all of
+  them for free. Kept only as a possible reading of the inline-anonymous
+  sugar.
+- **Explicit per-relation opt-in over lattice types** (Flix's `lat`/`;`,
+  Soufflé's `<>` attribute suffix): the type carries the algebra, the relation
+  additionally marks the merge. Guards the §3.1 footgun at the cost of a
+  second annotation that is redundant given the occurrence restrictions (a
+  lattice-typed column has no non-merged reading that is ever sound in-SCC,
+  and unwraps cross-stratum anyway).
+- **Option C — semiring-valued relations (Datalogo).** A genuinely different
+  design, not the type-level variant of this one: the value is not a column
+  but an annotation on *every tuple*; all columns are keys; and — the crucial
+  part — rule *syntax* becomes sum-of-products, with body conjunction
+  combining annotations by ⊗ **implicitly** (`T(x,y) ⊕= T(x,z) ⊗ E(z,y)` —
+  no `(+ D W)` anywhere; ⊗ = + does it). Pro: sum-product programs get
+  shorter, and monotonicity of the combination is a semiring axiom rather
+  than a whitelist. Con, and it is decisive for our uses: **one ⊗ per
+  program point is not enough.** Abstract counting needs an evolution
+  operator (⊕-increment along transitions) *distinct from* the merge
+  (max across paths) — §2.3's whole point — and flat-lattice transfer
+  functions (`lift2 +`) are not any semiring's ⊗. Column lattices with
+  explicit transfers express these directly; Datalogo would need its
+  multi-semiring extensions immediately. Add the whole-language shift
+  (every relation becomes B-annotated by default, mixing annotated and
+  plain relations needs "keys-to-values" bridging) and the non-stable
+  semirings reintroducing exactly the divergence we fence off — and the
+  verdict is: the runtime built here (key→payload, value-carrying deltas)
+  is the substrate Datalogo evaluation would need, so nothing is lost by
+  deferring it; the surface is not worth its semantic budget for the
+  motivating workloads.
+
+### 3.3 Reserved behavior worth stating
 
 - `facts (dist 3 7 10)` — contributions, like any head.
-- A lattice relation in a body at full arity is the only read form. There is no
+- A map relation in a body at full arity is the only read form. There is no
   bare-arity "key exists" form in v1 (write `(R k̄ _)`; the wildcard binds the
   value and discards it — the calculus treats a discarded value as unused, so
   this is always legal).
-- Lattice relations may not be declared `struct` (identity is the key tuple; a
-  merged value with an interned id would dangle on every merge). They compose
-  with structs by *containing* struct-typed keys or flat-of-struct values.
+- Lattice-typed columns cannot appear in `struct` declarations (identity is
+  content; merged state has none). Maps compose with structs by *containing*
+  struct-typed keys or flat-of-struct values.
 - CSV output prints one row per key with the final value; `(relation_size R)`
   counts keys.
 
-### 3.3 Composition with `demand`
+### 3.4 Composition with `demand` (now automatic)
 
-`demand (f in ...) valuespec-or-type ...` — any answer column may carry a
-lattice spec. The desugaring is unchanged except the generated answer table
-becomes `lattice (f_ans f) valuespec ...` (keyed by the demand id; plain answer
-columns and lattice answer columns may mix, though a mix forfeits the
-one-row-per-demand property unless all are lattice). Ask/resume machinery is
-untouched: a resume join binds the current merged answer, and re-fires as it
-improves. This is the memoization-of-recursive-functions-over-lattices story,
-and it is nearly free given both features.
+`demand (f in ...) cost` — an answer column with a lattice type makes the
+generated `table (f_ans f cost)` a map keyed by the demand id, **by §3.1's
+general rule, with no demand-specific machinery at all**. Ask/resume is
+untouched: a resume join binds the current merged answer and re-fires as it
+improves. Plain and lattice answer columns may mix (a mix forfeits
+one-row-per-demand unless all are lattice). This is the
+memoization-of-recursive-functions-over-lattices story — and the automatic
+composition is the argument that decided §3.1: declaration forms multiply,
+types thread.
 
 ---
 
@@ -534,13 +688,56 @@ not a hack, it is the published convergence condition surfaced as syntax.
 
 ---
 
-## 7. Custom lattices (v2): the plugin route
+## 7. Programmability: what is built in, what the user can build
+
+The gradient, from zero obligations to full trust, is the design's second
+load-bearing wall (after the calculus). Each tier is strictly more expressive
+and strictly more trusted than the last:
+
+**Tier 0 — built-in constructors over built-in scalars** (`(min int)`,
+`(max float)`, `(count)`, `(bool)`): laws and monotonicity tables are theorems
+proven once, in the compiler's whitelist and its test suite. Zero user
+obligations beyond §5.5's termination row.
+
+**Tier 1 — built-in constructors over USER types** — already genuinely
+programmable, and easy to underestimate: `(flat T)` lifts *any* slog type
+including user structs and unions (constant propagation over your own IR's
+terms — the join only needs equality of interned words); `(ps E)` is the
+powerset of *your* enum (reaching-definitions, effect sets); products via
+multiple lattice-typed columns; and v2 composition candidates like
+`(lex (min int) (flat T))` — lexicographic pairing whose join keeps the
+witness at strictly-better cost and flat-merges at ties, i.e. shortest-path
+*with evidence*, the packed-forest trick from `dem_sppf` transported to
+optimization. All of Tier 1 keeps zero proof obligations: the constructors'
+laws are parametric in the payload type, and the monotonicity tables compose
+mechanically.
+
+**Tier 2 — new transfers/guards over existing lattices**: the whitelist is
+*data* (a table in the compiler keyed by lattice constructor), and the
+intended early contribution path is adding a row plus a prim kernel plus a
+one-off monotonicity argument in the test suite — a pull-request-sized unit,
+not a language change.
+
+**Tier 3 — `extern`: user-defined algebras via the plugin route** (v2, below):
+new joins as native code, laws trusted + audited.
+
+**Tier 4 — verified user algebras** (research tail): an ISSTA'18-style SMT
+verifier over a restricted kernel language for extern joins/transfers
+(`law`-style annotations, height-function termination proofs), or
+Datafun-style monotonicity typing if slog ever grows a function sublanguage.
+Rule-*defined* joins (a `demand (join L L) L` judgment as the merge) are noted
+and rejected for the merge path — the merge runs inside the intern phase and
+cannot re-enter rule evaluation; revisit only if a two-phase propose/normalize
+evaluation ever exists.
+
+### 7.1 The `extern` tier concretely
 
 The daemon's plugin architecture (everything is a `.so` calling the Daemon API)
 gives `extern` lattices a natural shape with no interpreter in the merge path:
 
 ```
-lattice (sim node node) (extern simord)
+lattice (simord (extern simord))
+table   (sim node node simord)
 ```
 
 compiles against a lattice *registered by name*: a small hand-written plugin
@@ -696,7 +893,7 @@ payload abstraction.
 
 | Decision | Options | Recommendation |
 |---|---|---|
-| Surface form | (A) `lattice (R keys) valuespec` decl; (B) column annotations on `table`; (C) semiring-valued relations | **A** — mirrors `demand`, keeps keys/values explicit; C is a future reading whose runtime this design already builds |
+| Surface form | (A′) `lattice` declares a value **type**; relations/demands with lattice-typed columns are maps automatically (inline anonymous specs as sugar); (A) relation-level `lattice` keyword; (B′) lattice types + per-relation opt-in marker (Flix/Soufflé); (C) semiring-valued relations | **A′** — one orthogonal axis, threads through `table`/`demand`/future forms with zero special-casing; occurrence restrictions make the inference unambiguous; C is a future reading whose runtime this design already builds |
 | Body-read semantics | current-value binding (Flix) vs. contribution enumeration | **current-value** — contributions are not observable; anything else breaks the FD |
 | Monotonicity enforcement | syntactic whitelist calculus; SMT verification (Flix PLDI'16); trust-the-user (Souffle subsumption) | **whitelist calculus** for v1 (zero proof burden, built-ins only); SMT worth revisiting only for `extern` |
 | Non-monotone reads | reject vs. allow-with-annotation | **reject in-SCC, free cross-stratum** — the stratifier already gives the boundary; add an `unsafe` escape only if practice demands |

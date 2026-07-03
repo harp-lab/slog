@@ -1,0 +1,16 @@
+;; A negative-weight cycle: unbounded descent as bare (min int), clamped
+;; into Trop+ by #:floor 0 -- the published convergence condition surfaced
+;; as syntax.  Negative literals are not parseable, so the weight is
+;; derived with neg.  Every contribution clamps at the merge, so costs
+;; stabilize at max(cost, 0).
+
+lattice (cost (min int #:floor 0))
+table (edge int int int)
+table (dist int int cost)
+
+facts
+(edge 2 1 2)
+
+rule (= W (neg 5)) --> (edge 1 2 W)
+rule (edge X Y W) --> (dist X Y W)
+rule (dist X Y D) (edge Y Z W) --> (dist X Z (+ D W))

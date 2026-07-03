@@ -68,6 +68,27 @@ inline void join_probe(Index** index, const std::array<u64, A>& key, Cont&& k)
   }
 }
 
+// FILTER (semijoin existence probe): does ANY tuple of the index match the
+// K-column bound prefix?  One lower_bound + prefix compare, no iteration.
+// Used to prune a partial join against a FUTURE clause's relation before an
+// expanding join enumerates matches the future clause would only discard
+// (Yannakakis-style lookahead; see operationalization.rkt "Semijoin
+// filters").  Probes the same full-index snapshot the future join itself
+// will read, so a pruned tuple could never have joined this iteration.
+template <u16 A, u16 K>
+inline bool exists_probe(Index** index, const std::array<u64, A>& key)
+{
+  auto* idx = static_cast<BTreeIndex<A>*>(index[buckethash(key[0])]);
+  auto it = idx->lower_bound(key);
+  if (it == idx->end())
+    return false;
+  const std::array<u64, A>& m = *it;
+  for (u16 c = 0; c < K; ++c)
+    if (m[c] != key[c])
+      return false;
+  return true;
+}
+
 // JOIN (no bound prefix == cartesian): this literal shares no variable with the
 // grounded set.  Tuples are hash-partitioned by their lead column across all
 // buckets, so a cartesian scan must visit every bucket and every tuple.  Calls
@@ -80,6 +101,36 @@ inline void join_all(Index** index, Cont&& k)
     auto* idx = static_cast<BTreeIndex<A>*>(index[b]);
     for (auto it = idx->begin(); it != idx->end(); ++it)
       k(*it);
+  }
+}
+
+// JOIN over a lattice (payload-map) index, bound key prefix: like join_probe
+// over the KA key columns, but each match additionally hands the continuation
+// the key's current merged value -- k(const std::array<u64,KA>& keys, u64 val).
+// Read-phase tasks only read the map (it is mutated in the write/intern
+// phases), so this is safe alongside them.
+template <u16 KA, u16 K, class Cont>
+inline void join_probe_lat(Index** index, const std::array<u64, KA>& key, Cont&& k)
+{
+  auto* idx = static_cast<BTreeMapIndex<KA>*>(index[buckethash(key[0])]);
+  for (auto it = idx->lower_bound(key); it != idx->end(); ++it)
+  {
+    const std::array<u64, KA>& m = it->first;
+    for (u16 c = 0; c < K; ++c)
+      if (m[c] != key[c]) return;       // prefix gone => done (sorted order)
+    k(m, it->second);
+  }
+}
+
+// JOIN over a lattice index with no bound prefix (cartesian).
+template <u16 KA, class Cont>
+inline void join_all_lat(Index** index, Cont&& k)
+{
+  for (u16 b = 0; b < bucket_count; ++b)
+  {
+    auto* idx = static_cast<BTreeMapIndex<KA>*>(index[b]);
+    for (auto it = idx->begin(); it != idx->end(); ++it)
+      k(it->first, it->second);
   }
 }
 
@@ -228,6 +279,91 @@ public:
         for (u16 c = 0; c < N; ++c) key[c] = batch->data[j + ord[c]];
         if (root->contains(key)) batch->data[j] = slog_null;
         else root->insert(key);
+      }
+    }
+  }
+};
+
+// WRITE (lattice): merge this iteration's delta into one bucket of one
+// payload-map index.  Contributions are join-merged (never assigned), so the
+// result is independent of row order within the delta -- values only ascend,
+// so every map converges to the master's payload without reading it.  A is
+// the storage arity; ord is the index's full ordering (value column last).
+template <u16 A>
+class MapWriteTask : public Task
+{
+  Database* db;
+  Relation* rel;
+  u16 bucket;
+  std::array<u16, A> ord;
+  BTreeMapIndex<A - 1>* root;
+public:
+  MapWriteTask(Database* _db, Relation* _rel, const std::array<u16, A>& _ord, u16 _b)
+    : db(_db), rel(_rel), bucket(_b), ord(_ord)
+  {
+    std::vector<u16> ordv(ord.begin(), ord.end());
+    root = static_cast<BTreeMapIndex<A - 1>*>(rel->getIndex(ordv, false)[bucket]);
+  }
+  void work() override
+  {
+    const u16 leadcol = ord[0];
+    const u32 nthreads = db->getThreadCount();
+    bool changed = false;
+    for (u32 t = 0; t < nthreads; ++t)
+    {
+      RefVec& refs = rel->getWriteBucket(t, leadcol, bucket);
+      const u32 n = (u32)refs.size();
+      for (u32 r = 0; r < n; ++r)
+      {
+        const u64* d = refs[r].batch->data + refs[r].offset;
+        std::array<u64, A - 1> key;
+        for (u16 c = 0; c + 1 < A; ++c) key[c] = d[ord[c]];
+        root->merge(key, d[ord[A - 1]], changed);
+      }
+    }
+  }
+};
+
+// INTERN (lattice): the merge point (docs/lattices.md §4.2).  Interning with a
+// twist: content-keyed lookup in the master map, then join instead of
+// id-allocation.  A subsumed contribution (join produced no change) is nulled
+// in place -- the lattice analogue of the dedup-skip, so it never propagates;
+// an ascending one has its payload word REWRITTEN in place to the merged
+// value, so downstream rules join against the post-merge value, never the raw
+// contribution (the value-carrying delta).
+template <u16 N>
+class LatticeInternTask : public Task
+{
+  Database* db;
+  Relation* rel;
+  u16 bucket;
+  std::array<u16, N> ord;      // master ordering: key columns, value last
+  BTreeMapIndex<N - 1>* root;
+public:
+  LatticeInternTask(Database* _db, Relation* _rel, const std::array<u16, N>& _ord, u16 _b)
+    : db(_db), rel(_rel), bucket(_b), ord(_ord)
+  {
+    std::vector<u16> ordv(ord.begin(), ord.end());
+    root = static_cast<BTreeMapIndex<N - 1>*>(rel->getIndex(ordv, false)[bucket]);
+  }
+  void work() override
+  {
+    auto& delta = rel->getDelta();
+    for (u32 i = 0; i < delta.size(); ++i)
+    {
+      InsertBatch* batch = delta[i];
+      for (u32 j = 0; j < batch->usage; j += N)
+      {
+        if (buckethash(batch->data[j + ord[0]]) != bucket || batch->data[j] == slog_null)
+          continue;
+        std::array<u64, N - 1> key;
+        for (u16 c = 0; c + 1 < N; ++c) key[c] = batch->data[j + ord[c]];
+        bool changed = false;
+        const u64 merged = root->merge(key, batch->data[j + ord[N - 1]], changed);
+        if (!changed)
+          batch->data[j] = slog_null;             // subsumed: no propagation
+        else
+          batch->data[j + ord[N - 1]] = merged;   // value-carrying delta
       }
     }
   }

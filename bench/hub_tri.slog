@@ -1,0 +1,14 @@
+;; db: bench_hub
+;; THE PATHOLOGICAL CASE.  R = spokes->hub, S = hub->spokes, so R join S
+;; enumerates n^2 (a,hub,c) triples; T's values are disjoint from R and S,
+;; so nothing ever joins.  T carries a weight column: the extra free
+;; variable keeps it from ever being scheduled as the driver, so the
+;; explosive middle join is unavoidable without filters.  A semijoin filter
+;; on T right after the driver (is the driver's spoke among T's endpoints?)
+;; prunes every driver tuple: O(n^2) collapses to O(n).
+table (redge int int)
+table (sedge int int)
+table (tedge int int int)
+table (tri int int int)
+
+rule (redge A B) (sedge B C) (tedge C A W) --> (tri A B C)

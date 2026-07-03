@@ -1,0 +1,5 @@
+"dummy"   (lambda "v" (ref "v"))   
+"dummy"   (lambda "w" (ref "w"))   
+"id"   (lambda "z" (ref "z"))   
+"z"   (lambda "v" (ref "v"))   
+"z"   (lambda "w" (ref "w"))   

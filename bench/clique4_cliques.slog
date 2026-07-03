@@ -1,0 +1,8 @@
+;; db: bench_cliques
+;; 4-cliques (directed: all ordered pairs present).  Planted cliques in
+;; sparse ER noise; multiple weak filters fire (has-out-edge checks).
+table (edge int int)
+table (clique4 int int int int)
+
+rule (edge A B) (edge A C) (edge A D) (edge B C) (edge B D) (edge C D)
+  --> (clique4 A B C D)

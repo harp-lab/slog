@@ -77,10 +77,13 @@
   (exit 1))
 
 (define (peek toks [i 0])
-  ; peeks at the ith token
-  (if (> (length toks) i)
-      (list-ref toks i)
-      `(token eof (position "" 0 0 0 0) "")))
+  ; peeks at the ith token -- O(i), NOT O(|toks|): computing (length toks)
+  ; here made every peek walk the whole remaining token list, turning the
+  ; parser quadratic (minutes for a few thousand facts)
+  (cond
+    [(null? toks) `(token eof (position "" 0 0 0 0) "")]
+    [(zero? i) (first toks)]
+    [else (peek (rest toks) (sub1 i))]))
 
 (define (advance toks [i 1])
   ; removes the first i number of tokens
@@ -295,7 +298,7 @@
 (define (parse-top-level toks)
   ;; parses top level expression from toks
   (define top-level-keywords
-    (set "def" "rule" "enum" "facts" "table" "struct" "union" "demand" ""))
+    (set "def" "rule" "enum" "facts" "table" "struct" "union" "demand" "lattice" ""))
   (match (token->str (peek toks))
     ["def" (parse-def toks #t)]
     [(or "import" "export")
@@ -308,15 +311,17 @@
      (match-define (cons body toks+4) (parse-top-level toks+3))
      (cons (emit-expr `(,import/export ,e0 ,e1 ,body) toks toks+3) toks+4)]
     ["facts"
+     ;; facts accumulate reversed (cons, not append): appending each fact to
+     ;; the end re-copied the whole list, quadratic in the fact count
      (let loop ([toks (advance toks)]
                 [fact-lst '()])
        (if (set-member? top-level-keywords (token->str (peek toks)))
            (let () ;; parse the rest of the top level and emit rule
              (match-define (cons topbody toks+) (parse-top-level toks))
-             (cons (emit-expr `(facts ,@fact-lst ,topbody) toks toks+) toks+))
+             (cons (emit-expr `(facts ,@(reverse fact-lst) ,topbody) toks toks+) toks+))
            (let () ;; gather each fact
              (match-define (cons e toks+) (parse toks))
-             (loop toks+ `(,@fact-lst ,e)))))]
+             (loop toks+ (cons e fact-lst)))))]
     ["demand"
      ;; demand (name in-type ...) answer-type ... -- the input signature
      ;; then answer types, gathered to the next top-level form
@@ -339,18 +344,20 @@
              (if (set-member? top-level-keywords (token->str (peek toks+)))
                  (let () ; parse the rest of the top level and emit rule
                    (match-define (cons topbody toks++) (parse-top-level toks+))
-                   (cons (emit-expr `(rule ,@body0 ,arrow ,@body1 ,topbody) toks toks+) toks++))
+                   (cons (emit-expr `(rule ,@(reverse body0) ,arrow ,@(reverse body1) ,topbody)
+                                    toks toks+)
+                         toks++))
                  (let () ; gather each clause in the second half
                    (match-define (cons e toks++) (parse toks+))
-                   (loop toks++ `(,@body1 ,e)))))
+                   (loop toks++ (cons e body1)))))
            (let () ; gather each clause in the first half
              (match-define (cons e toks++) (parse toks+))
-             (loop toks++ `(,@body0 ,e)))))]
+             (loop toks++ (cons e body0)))))]
     ["let"
      (match-define (cons tag-pat-rhs toks+) (parse-id-then-N toks parse 2))
      (match-define (cons body toks++) (parse-top-level toks+))
      (cons (emit-expr `(,@tag-pat-rhs ,body) toks toks++) toks++)]
-    [(or "include" "run" "union" "struct" "table" "enum")
+    [(or "include" "run" "union" "struct" "table" "enum" "lattice")
      (match-define (cons tag-str toks+) (parse-id-then-N toks parse 1))
      (match-define (cons body toks++) (parse-top-level toks+))
      (cons (emit-expr `(,@tag-str ,body) toks toks++) toks++)]

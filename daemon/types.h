@@ -12,6 +12,7 @@
 #pragma once
 
 #include <cstdint>
+#include <bit>
 
 
 // C++ types
@@ -71,12 +72,68 @@ typedef int8_t s8;
 #define float_decode(x) (std::bit_cast<double>(x))
 
 
-// Struct IDs: 1 11111111111 [14bit struct-id]  [38bit interned struct id (with buckets at bot)] 
+// Struct IDs: 1 11111111111 [14bit struct-id]  [38bit interned struct id (with buckets at bot)]
 #define is_struct(x) ((((x) & 0xfff0000000000000) == 0xfff0000000000000) \
 		      && 0 < (0x3fff & ((x) >> 38)) && (0x3fff & ((x) >> 38)) < 0x3fff)
-#define struct_encode(sid,id) ((u64)(id) | ((u64)(sid) << 38) | structflags) 
+#define struct_encode(sid,id) ((u64)(id) | ((u64)(sid) << 38) | structflags)
 #define decode_struct_id(x) (((u64)x >> 38) & 0x3fff)
 #define decode_struct_perbucketid(x, bucketbits) (((x) & 0x3fffffffff) >> bucketbits)
+
+
+// Lattice payloads (docs/lattices.md §4).  A lattice (map) relation's value
+// column carries one u64 word merged by the lattice's join:
+//   min/max int|float -- the ordinary tagged word, joined by numeric min/max;
+//   count             -- the {0,1,inf} chain as tagged s32 words 1 and 2
+//                        (0 = absence, never stored), joined by max;
+//   flat T            -- the underlying value word, plus the reserved top
+//                        pattern below (join of two distinct values).
+// slog_lat_top is a distinct reserved word, NOT slog_null: null means "drop
+// this delta record" to reorg/intern, top is a real stored value.
+
+#define slog_lat_top 0x7ff0003ffffffffe
+
+#define LAT_NONE  0
+#define LAT_MIN   1
+#define LAT_MAX   2
+#define LAT_COUNT 3
+#define LAT_FLAT  4
+
+// Numeric min/max on tagged words (homogeneous: the type system guarantees a
+// lattice column is all-s32 or all-float).
+inline u64 lat_num_min(u64 a, u64 b)
+{
+  if (is_s32(a) && is_s32(b)) return (s32_decode(a) <= s32_decode(b)) ? a : b;
+  return (float_decode(a) <= float_decode(b)) ? a : b;
+}
+inline u64 lat_num_max(u64 a, u64 b)
+{
+  if (is_s32(a) && is_s32(b)) return (s32_decode(a) >= s32_decode(b)) ? a : b;
+  return (float_decode(a) >= float_decode(b)) ? a : b;
+}
+
+// The join: least upper bound of two present values (absence = bottom is
+// handled by the caller -- a missing key simply takes the contribution).
+inline u64 lat_join(u32 kind, u64 a, u64 b)
+{
+  switch (kind)
+  {
+  case LAT_MIN:   return lat_num_min(a, b);
+  case LAT_MAX:   return lat_num_max(a, b);
+  case LAT_COUNT: return lat_num_max(a, b);
+  case LAT_FLAT:  default: return (a == b) ? a : slog_lat_top;
+  }
+}
+
+// Clamp a contribution into the declared floor/ceiling (Trop+: the published
+// convergence condition surfaced as syntax -- docs/lattices.md §6).  Applied
+// before the join; clamp(join(a,b)) == join(clamp(a),clamp(b)) for min/max.
+inline u64 lat_clamp(u32 kind, bool has_floor, u64 floorw,
+                     bool has_ceil, u64 ceilw, u64 v)
+{
+  if (kind == LAT_MIN && has_floor) return lat_num_max(v, floorw);
+  if (kind == LAT_MAX && has_ceil)  return lat_num_min(v, ceilw);
+  return v;
+}
 
 
 

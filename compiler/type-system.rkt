@@ -106,7 +106,11 @@
           (match (hash-ref rel-env name list)
             [`(,(or 'table 'struct) ,ts ...)
              #:when (= (length args) (length ts))
-             (foldl (lambda (x t env) (hash-set env x t)) env args ts)]
+             ;; lattice-typed columns are transparent to the type system:
+             ;; the variable carries the base type (implicit injection in,
+             ;; unwrap out); lattice-check.rkt owns the use discipline
+             (foldl (lambda (x t env) (hash-set env x (lattice-base-type rel-env t)))
+                    env args ts)]
             [`(enum ,_) env]
             [`(,(or 'table 'struct) ,ts ...)
              (error (format "~a takes ~a columns but is used with ~a in ~a"
@@ -148,7 +152,8 @@
               (hash)
               (hash-keys local-env-proto)))
 
-     (define (type-match? t x)
+     (define (type-match? t0 x)
+       (define t (lattice-base-type rel-env t0))
        (define t* (hash-ref alias-env t (lambda () (set t))))
        (define t+
          (hash-ref alias-env (hash-ref local-env x) (lambda () (set (hash-ref local-env x)))))

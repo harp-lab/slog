@@ -1,0 +1,15 @@
+;; A (max float) lattice with #:ceiling: ascent = numeric growth, and the
+;; ceiling clamp is what makes the doubling rule terminate (without it the
+;; recursion ascends forever -- the warning case).  Only key 1 is doubled;
+;; 2 and 3 keep their raw maxima.  Uses an inline anonymous valuespec.
+
+table (score int float)
+table (dbl int)
+table (peak int (max float #:ceiling 10.0))
+
+facts
+(score 1 2.5) (score 1 7.25) (score 2 3.0) (score 3 1.5)
+(dbl 1)
+
+rule (score K V) --> (peak K V)
+rule (dbl K) (peak K V) --> (peak K (* V 2.0))

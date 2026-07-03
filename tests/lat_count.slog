@@ -1,0 +1,28 @@
+;; Abstract counting (the {0,1,inf} chain).  mu is the global cardinality
+;; measure: every binding event contributes (one) -- idempotent, NOT a
+;; count of derivations -- and only evidence of distinctness raises a key
+;; to (inf).  mucnt threads a per-state count through step transitions via
+;; the abstract increment (cplus C (one)): 1 (+) 1 = inf, non-idempotent
+;; but monotone, the evolution operator distinct from the max merge.
+;; Reading (= C (one)) in-SCC is the classic strong-update bug and a
+;; compile error; the later stratum may branch on it freely.
+
+lattice (card (count))
+table (bind int int)
+table (step int int)
+table (mu int card)
+table (mucnt int int card)
+table (unique int)
+
+facts
+(bind 1 100) (bind 2 100) (bind 3 200)
+(step 1 2) (step 2 3)
+
+rule (bind S A) --> (mu A (one))
+rule (bind S1 A) (bind S2 A) (/= S1 S2) --> (mu A (inf))
+
+rule (bind S A) --> (mucnt S A (one))
+rule (step S S2) (mucnt S A C) --> (mucnt S2 A (cplus C (one)))
+
+;; later stratum: mu closed, mu = (one) certifies a globally unique binding
+rule (mu A C) (= C (one)) --> (unique A)

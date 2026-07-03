@@ -1,0 +1,27 @@
+;; Constant propagation over a diamond CFG: regval maps (label, reg) to a
+;; flat lift of the value union.  The two branches assign different
+;; constants to reg 11, so the join point sees (top); reg 10 stays constant
+;; everywhere.  A later stratum reads the closed map: (= V (top)) is the
+;; is-it-not-a-constant test, legal only once regval is closed in-SCC but
+;; free here; matching V against a known constant works by content.
+
+union (value (vnum int) (vstr str))
+lattice (fv (flat value))
+table (assignc int int value)
+table (flow int int)
+table (regval int int fv)
+table (nonconst int int)
+table (constat int int value)
+
+facts
+(assignc 1 10 (vnum 5))
+(assignc 2 11 (vnum 1))
+(assignc 3 11 (vstr "two"))
+(flow 1 2) (flow 1 3) (flow 2 4) (flow 3 4)
+
+rule (assignc L R K) --> (regval L R K)
+rule (flow L L2) (regval L R V) --> (regval L2 R V)
+
+;; later stratum: regval closed
+rule (regval L R V) (= V (top)) --> (nonconst L R)
+rule (regval L R V) (= V (vnum N)) --> (constat L R (vnum N))

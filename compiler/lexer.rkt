@@ -75,6 +75,10 @@
              [(:: (:or (:/ "A" "Z") (:/ "a" "z") (:/ "0" "9") "_")
                   (:* (:or (:/ "A" "Z") (:/ "a" "z") (:/ "0" "9") "_" "'")))
               (emit-token 'id lexeme)]
+             ; keyword parameters (#:floor, #:ceiling, ...): one id token
+             ; (longest-match beats the generic "#:" operator lexeme below)
+             [(:: "#:" (:+ (:or (:/ "A" "Z") (:/ "a" "z") (:/ "0" "9") "_")))
+              (emit-token 'id lexeme)]
              ; operators; sequences of eveything else between ! and ~
              ["\\" (emit-token 'op lexeme)]
              [(:+ (:& (:/ "!" "~")

@@ -32,10 +32,11 @@
       ""
       (string-append s (repeat s (- n 1)))))
 
-;; Build the comma-separated "v_a0, v_a1, ..." argument list for a primitive
-;; call (prefixed by db at the call site: _prim_NAME(db, <this>)).  "" for none.
-(define (prim-arglist args)
-  (string-join (map (lambda (a) (format "v_~a" a)) args) ", "))
+;; Render a primitive call: _prim_NAME(db, v_a0, ...) -- nullary primitives
+;; (the lattice constants (one)/(inf)/(top)) take only db.
+(define (prim-call f args)
+  (define al (string-join (map (lambda (a) (format "v_~a" a)) args) ", "))
+  (format "_prim_~a(db~a)" f (if (string=? al "") "" (string-append ", " al))))
 
 (define ((emit-lines ind) . lines)
   (define ind-str
@@ -106,6 +107,78 @@
    (format "  s->addTask(phase_intern, new slog::Intern~aTask<~a>(db, db->getRelation(\"~a\"), ~a, b));"
            (if is-struct "Struct" "") N name (u16-array-lit intern-ord))))
 
+;; A lattice (map) relation (docs/lattices.md §4): payload-map indices under
+;; full orderings ending in the value column.  The master (first) ordering's
+;; map is seeded once from iteration-0's delta (the reload/initial facts) and
+;; thereafter maintained by the per-bucket LatticeInternTask -- the merge
+;; point, which also nulls subsumed delta records and rewrites ascending ones
+;; to the post-merge value; secondary maps merge every iteration's (already
+;; merged) delta; delta indices are ordinary full-width sets.
+(define (lat-kind-cpp kind)
+  (match kind
+    ['min "LAT_MIN"] ['max "LAT_MAX"] ['count "LAT_COUNT"] ['flat "LAT_FLAT"]))
+
+;; The canonical spec token carried into the runtime and the on-disk
+;; directory name ("min-int-floor-0", "count", "flat-value"); runslog.rkt's
+;; manifest scan and the daemon's open path parse it back.
+(define (lat-spec-token spec)
+  (string-join (map ~a (flatten spec)) "-"))
+
+(define (add-lattice-decl name arity spec indices)
+  (match-define `(,kind ,rest ...) spec)
+  (define base (and (memq kind '(min max flat)) (car rest)))
+  (define (param key)
+    (for/first ([p (in-list rest)] #:when (and (pair? p) (eq? (car p) key)))
+      (second p)))
+  (define (clamp-word v)
+    (if (eq? base 'float)
+        (format "float_encode(~a)" (exact->inexact v))
+        (format "s32_encode(~a)" v)))
+  (define floorv (param 'floor))
+  (define ceilv (param 'ceiling))
+  (define master (first indices))
+  (string-append
+   ((emit-lines 2)
+    (format "r = db->getRelation(\"~a\");" name)
+    (format "if (r == 0) db->addRelation(\"~a\", ~a);" name arity)
+    (format "else if (r->getArity() != ~a)" arity)
+    "  slog::fatal(\"Relation already exists at incorrect arity.\");"
+    (format "r = db->getRelation(\"~a\");" name)
+    (format "r->setLattice(~a, ~a, ~a, ~a, ~a, \"~a\");"
+            (lat-kind-cpp kind)
+            (if floorv "true" "false") (if floorv (clamp-word floorv) "0")
+            (if ceilv "true" "false") (if ceilv (clamp-word ceilv) "0")
+            (lat-spec-token spec))
+    (apply
+     (emit-lines 2)
+     (for/fold ([lines '()] #:result (reverse lines))
+               ([indx (in-list indices)])
+       (define delta (eq? 'delta (car indx)))
+       (define ind (if delta (cdr indx) indx))
+       (define A (length ind))
+       (define ordering (gensymb 'ord))
+       (define isstatic (if (and (equal? indx master) (not delta)) "true" "false"))
+       (append
+        (if delta
+            (list
+             (format "  s->addTask(phase_write, new slog::WriteTask<~a>(db, r, ~a, true, b), false);"
+                     A (u16-array-lit ind))
+             (format "for (u16 b = 0; b < ~a; ++b)" bucket-count)
+             (format "r->addIndex<~a>(~a, true);" A ordering)
+             (add-ord-decl ordering ind 2))
+            (list
+             (format "  s->addTask(phase_write, new slog::MapWriteTask<~a>(db, r, ~a, b), ~a);"
+                     A (u16-array-lit ind) isstatic)
+             (format "for (u16 b = 0; b < ~a; ++b)" bucket-count)
+             (format "r->addMapIndex<~a>(~a);" A ordering)
+             (add-ord-decl ordering ind 2)))
+        lines))))
+   "\n"
+   ((emit-lines 2)
+    (format "for (u16 b = 0; b < ~a; ++b)" bucket-count)
+    (format "  s->addTask(phase_intern, new slog::LatticeInternTask<~a>(db, db->getRelation(\"~a\"), ~a, b));"
+            arity name (u16-array-lit master)))))
+
 (define (add-rel-decl rel)
   (match rel
     [`(temp ,name ,arity)
@@ -126,7 +199,12 @@
        (error (format "Table ~a does not have any indices." name)))
      (string-append (add-write-task name arity indices #f)
                     "\n"
-                    (add-intern-task name (first indices) #f))]))
+                    (add-intern-task name (first indices) #f))]
+    [`(lattice ,name ,arity ,spec ,indices ...)
+     (when (or (null? indices) (eq? 'delta (car (first indices))))
+       (error (format "Lattice relation ~a must lead with a non-delta (master) index: ~a"
+                      name indices)))
+     (add-lattice-decl name arity spec indices)]))
 
 ;; -----------------------------------------------------------------------
 ;; Rules.
@@ -176,6 +254,49 @@
                      A K (index-name-of op) key A m))
             inner
             ((emit-lines indent) "});"))))]
+    ;; a lattice body read: probe the payload map over the key columns; the
+    ;; continuation binds the free keys plus the current merged value (last var)
+    ;; a semijoin filter: one existence probe on the K bound columns; a
+    ;; miss abandons the current tuple (no future clause could accept it)
+    [`(,(and op `(exists ,name ,ind ,K ,ys ...)) . ,rest)
+     (define A (length ind))
+     (define key (u64-array-lit (append (map (lambda (y) (format "v_~a" y)) ys)
+                                        (make-list (- A K) "0"))))
+     (string-append
+      ((emit-lines indent)
+       (format "if (!slog::exists_probe<~a,~a>(~a, ~a)) return;"
+               A K (index-name-of op) key))
+      (emit-ops rest index-name-of head-fun indent))]
+    [`(,(and op `(join-lat ,name ,ind ,K ,ys ...)) . ,rest)
+     (define KA (sub1 (length ys)))          ; key columns; last var is the value
+     (define vvar (last ys))
+     (define m (gensymb 'm))
+     (define vparam (gensymb 'val))
+     (define bind-free
+       (string-join (append
+                     (for/list ([k (in-range K KA)])
+                       (format "u64 v_~a = ~a[~a];" (list-ref ys k) m k))
+                     (list (format "u64 v_~a = ~a;" vvar vparam)))
+                    " "))
+     (define inner
+       (string-append
+        ((emit-lines (+ indent 2)) bind-free)
+        (emit-ops rest index-name-of head-fun (+ indent 2))))
+     (if (= K 0)
+         (string-append
+          ((emit-lines indent)
+           (format "slog::join_all_lat<~a>(~a, [&](const std::array<u64,~a>& ~a, u64 ~a) {"
+                   KA (index-name-of op) KA m vparam))
+          inner
+          ((emit-lines indent) "});"))
+         (let ([key (u64-array-lit (append (map (lambda (y) (format "v_~a" y)) (take ys K))
+                                           (make-list (- KA K) "0")))])
+           (string-append
+            ((emit-lines indent)
+             (format "slog::join_probe_lat<~a,~a>(~a, ~a, [&](const std::array<u64,~a>& ~a, u64 ~a) {"
+                     KA K (index-name-of op) key KA m vparam))
+            inner
+            ((emit-lines indent) "});"))))]
     [`(,op . ,rest)
      (string-append
       ((emit-lines indent) (emit-straight-op op))
@@ -186,7 +307,7 @@
   (match op
     [`(let ,x ,(? symbol? y)) (format "u64 v_~a = v_~a;" x y)]
     [`(let ,x (,f ,args ...))
-     (format "u64 v_~a = _prim_~a(db, ~a);" x f (prim-arglist args))]
+     (format "u64 v_~a = ~a;" x (prim-call f args))]
     [`(eq ,x ,y) (format "if (v_~a != v_~a) return;" x y)]
     [`(neq ,x ,y) (format "if (v_~a == v_~a) return;" x y)]
     [`(cmp ,fn ,x ,y) (format "if (!_prim_~a(db, v_~a, v_~a)) return;" fn x y)]))
@@ -200,7 +321,7 @@
            (match hop
              [`(let ,x (,f ,args ...))
               ((emit-lines indent)
-               (format "u64 v_~a = _prim_~a(db, ~a);" x f (prim-arglist args)))]
+               (format "u64 v_~a = ~a;" x (prim-call f args)))]
              [`(mkstruct ,name ,ind ,x ,fields ...)
               ((emit-lines indent)
                (format "slog::emit_struct<~a>(head_rel[~a], newbatch[~a], ~a, ~a);"
@@ -217,6 +338,13 @@
               ((emit-lines indent)
                (format "slog::emit_temp<~a>(head_rel[~a], newbatch[~a], ~a);"
                        (length zs) i i
+                       (u64-array-lit (map (lambda (z) (format "v_~a" z)) zs))))]
+             ;; a lattice contribution: nominal order, no dedup (the merge
+             ;; task owns subsumption) -- the emit_temp sink is exactly that
+             [`(emit-lat ,name ,zs ...)
+              ((emit-lines indent)
+               (format "slog::emit_temp<~a>(head_rel[~a], newbatch[~a], ~a);"
+                       (length zs) i i
                        (u64-array-lit (map (lambda (z) (format "v_~a" z)) zs))))]))))
 
 (define ((add-rule dynamic-rels) crule)
@@ -225,9 +353,10 @@
   (define body (crule-body crule))
   (define heads (crule-head crule))
 
-  ;; name the index member for the driver probe and each body join
+  ;; name the index member for the driver probe, each body join, and each
+  ;; semijoin filter's existence probe
   (define join-members
-    (for/list ([op (in-list body)] #:when (eq? (car op) 'join))
+    (for/list ([op (in-list body)] #:when (memq (car op) '(join join-lat exists)))
       (cons op (gensymb (string->symbol (format "~aindex" (second op)))))))
   (define (index-name-of op)
     (cdr (assq op join-members)))
@@ -242,7 +371,7 @@
   ;; heads that emit tuples need an insert batch (let heads do not)
   (define emitting-head-is
     (for/list ([hop (in-list heads)] [i (in-naturals)]
-               #:when (memq (car hop) '(mkstruct emit emit-temp)))
+               #:when (memq (car hop) '(mkstruct emit emit-temp emit-lat)))
       i))
 
   (define task-name (gensymb 'ReadTask))
@@ -258,6 +387,8 @@
                  (format "    head_rel[~a] = db->getRelation(\"~a\");\n" i name)]
                 [`(emit-temp ,name ,_ ...)
                  (format "    head_rel[~a] = db->getRelation(\"~a\");\n" i name)]
+                [`(emit-lat ,name ,_ ...)
+                 (format "    head_rel[~a] = db->getRelation(\"~a\");\n" i name)]
                 [`(emit ,name ,ind ,_ ...)
                  (string-append
                   (format "    head_rel[~a] = db->getRelation(\"~a\");\n" i name)
@@ -272,7 +403,7 @@
      (apply string-append
             (for/list ([om (in-list join-members)])
               (match (car om)
-                [`(join ,name ,ind ,_ ...)
+                [`(,(or 'join 'join-lat 'exists) ,name ,ind ,_ ...)
                  (string-append (index-member name (cdr om) ind #f) "\n")])))))
 
   ;; --- work() body
@@ -385,7 +516,9 @@
       (match (hash-ref dbmanifest name)
         [`(rel ,_ ,arity) `(relation ,name ,arity ,(range arity))]
         [`(struct ,_ ,arity)
-         `(struct ,name ,arity (,@(range 1 arity) 0) ,(range arity))])))
+         `(struct ,name ,arity (,@(range 1 arity) 0) ,(range arity))]
+        [`(lat ,_ ,arity ,spec)
+         `(lattice ,name ,arity ,(cdr spec) ,(range arity))])))
 
   (string-append
    "\n"

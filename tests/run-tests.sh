@@ -37,6 +37,7 @@ if [ ${#TESTS[@]} -eq 0 ]; then
   done
   TESTS+=("examples/tinycfa/0cfa.slog")
   TESTS+=("examples/tinycfa/0cfa-demand.slog")
+  TESTS+=("examples/tinycfa/0cfa-counting.slog")
 fi
 
 if [ "$KEEP_CACHE" -eq 0 ]; then

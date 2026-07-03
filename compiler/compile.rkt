@@ -31,6 +31,7 @@
 (require "simplification.rkt")
 (require "type-system.rkt")
 (require "stratify.rkt")
+(require "lattice-check.rkt")
 (require "join-planning.rkt")
 (require "operationalization.rkt")
 (require "emit-cpp.rkt")
@@ -82,7 +83,11 @@
     (with-output-to-string
      (lambda () (print (list info0 info1 info2 info3
                              daemon-headers-fingerprint
-                             compiler-sources-fingerprint)))))
+                             compiler-sources-fingerprint
+                             ;; codegen-affecting settings: a toggle must
+                             ;; miss the cache rather than reuse a .so
+                             ;; compiled under the other setting
+                             (semijoin-filters-enabled))))))
   (define (job-hash level)
     (substring (bytes->hex-string
                 (sha256 (string->bytes/utf-8 (format "~a:stratum ~a" progstr level))))
@@ -91,8 +96,14 @@
 
   (define all-rules
     (foldl set-union (set) (map last (set->list mods))))
+  ;; lattice declaration occurrence restrictions run before typechecking
+  ;; (a misplaced lattice type should be its own error, not a type error);
+  ;; the monotone-use calculus needs the strata for the same-SCC bit
+  (check-lattice-declarations type-env)
   (define typed (typecheck-all type-env (simplify-all all-rules)))
-  (for/list ([stratum (in-list (stratify-all typed))])
+  (define strata (stratify-all typed))
+  (check-lattice-strata strata type-env)
+  (for/list ([stratum (in-list strata)])
     (list (job-hash (stratum-level stratum)) type-env stratum dbmanifest)))
 
 ;; -----------------------------------------------------------------------

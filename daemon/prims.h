@@ -167,6 +167,27 @@ inline u64 _prim_size(slog::Database* db, u64 v)
   return 0;
 }
 
+
+// Lattice constants and transfers (docs/lattices.md).  The count lattice is
+// the chain 0 < 1 < inf with 0 = absence (never stored), carried as tagged
+// s32 words 1 and 2; its merge is max (idempotent).  cplus is the abstract
+// increment (1 (+) 1 = inf): non-idempotent but monotone in both arguments --
+// the evolution operator, distinct from the merge.  (top) is flat's top.
+inline u64 _prim_one(slog::Database* db) { (void)db; return s32_encode(1); }
+inline u64 _prim_inf(slog::Database* db) { (void)db; return s32_encode(2); }
+inline u64 _prim_top(slog::Database* db) { (void)db; return slog_lat_top; }
+inline u64 _prim_cplus(slog::Database* db, u64 x, u64 y)
+{
+  if (is_s32(x) && is_s32(y))
+  {
+    const s32 n = s32_decode(x) + s32_decode(y);
+    return s32_encode(n >= 2 ? 2 : n);
+  }
+  slog::fatal(std::format("Function 'cplus' requires count values, got: {} and {}",
+                          get_type_name(x), get_type_name(y)));
+  return 0;
+}
+
 #undef SLOG_ARITH
 #undef SLOG_INT2
 #undef SLOG_INT1

@@ -1,0 +1,9 @@
+;; Cross-program lattice persistence: the prerequisite's dist map is not
+;; declared here, so it flows through the manifest as a (lat ...) entry --
+;; the stratum plugins must re-register its payload-map index and merge
+;; task so its rows survive this program's reload cycles intact.
+
+run "lat_run_base.slog"
+
+table (marker int)
+facts (marker 1)

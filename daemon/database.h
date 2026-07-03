@@ -109,6 +109,17 @@ private:
   std::vector<u16> write_leadcols;
   std::vector<s16> leadcol_slot;
   u32 last_slot_leadcols = 0;  // write_leadcols.size() when leadcol_slot was last built
+
+  // Lattice (map) relation metadata (docs/lattices.md): LAT_NONE for plain
+  // relations; the clamp words realize #:floor/#:ceiling.  lat_spec is the
+  // canonical surface token ("min-int-floor-0", "count", "flat-value", ...)
+  // -- carried opaquely into the on-disk directory name so `open` can
+  // re-register the relation as a lattice with the right kind and clamps,
+  // and so the compiler-side manifest scan can reconstruct the valuespec.
+  u32 lattice_kind = LAT_NONE;
+  bool lat_has_floor = false, lat_has_ceil = false;
+  u64 lat_floor = 0, lat_ceil = 0;
+  std::string lat_spec;
   // Per-thread, so the reorg runs in parallel with no races; consumers read
   // across threads (0..thread_count).
   std::vector<std::vector<std::vector<RefVec>>> write_buckets;  // [tid][slot][bucket]
@@ -222,6 +233,80 @@ public:
     return &(intern_allocators[b]);
   }
 
+  // ---- lattice (map) relations: docs/lattices.md ----
+  // A lattice relation's last storage column is the value; its non-delta
+  // indices are payload maps (BTreeMapIndex) merged by the kind's join.
+  void setLattice(u32 kind, bool has_floor, u64 floorw, bool has_ceil, u64 ceilw,
+                  const std::string& spec)
+  {
+    lattice_kind = kind;
+    lat_has_floor = has_floor;
+    lat_floor = floorw;
+    lat_has_ceil = has_ceil;
+    lat_ceil = ceilw;
+    lat_spec = spec;
+  }
+  u32 latticeKind() { return lattice_kind; }
+  bool isLattice() { return lattice_kind != LAT_NONE; }
+  const std::string& latticeSpec() { return lat_spec; }
+
+  // Parse the canonical spec token back into kind + clamps (the inverse of
+  // what the compiler emits into setLattice): "min-int[-floor-V]",
+  // "max-float[-ceiling-V]", "count", "flat-<T>".  Used by the open path.
+  static u32 latKindOfSpec(const std::string& s)
+  {
+    if (s.rfind("min", 0) == 0)   return LAT_MIN;
+    if (s.rfind("max", 0) == 0)   return LAT_MAX;
+    if (s.rfind("count", 0) == 0) return LAT_COUNT;
+    if (s.rfind("flat", 0) == 0)  return LAT_FLAT;
+    fatal("Unrecognized lattice spec token: " + s);
+    return LAT_NONE;
+  }
+  static u64 latClampOfSpec(const std::string& s, const std::string& valstr)
+  {
+    const bool isfloat = s.find("-float") != std::string::npos;
+    return isfloat ? float_encode(std::atof(valstr.c_str()))
+                   : s32_encode(std::atoi(valstr.c_str()));
+  }
+  void setLatticeFromSpec(const std::string& s)
+  {
+    bool hf = false, hc = false;
+    u64 fw = 0, cw = 0;
+    const auto pf = s.find("-floor-");
+    const auto pc = s.find("-ceiling-");
+    if (pf != std::string::npos) { hf = true; fw = latClampOfSpec(s, s.substr(pf + 7)); }
+    if (pc != std::string::npos) { hc = true; cw = latClampOfSpec(s, s.substr(pc + 9)); }
+    setLattice(latKindOfSpec(s), hf, fw, hc, cw, s);
+  }
+
+  // Register a payload-map index (non-delta only).  `ord` is a FULL-length
+  // ordering whose last entry is the value column (storage arity-1), so the
+  // generic cold paths see arity-wide rows; A is the storage arity.  Call
+  // setLattice first: the kind/clamp metadata is copied into each bucket.
+  template <u16 A>
+  void addMapIndex(const std::vector<u16>& ord)
+  {
+    indices[ord] = new Index*[bucket_count];
+    auto& indices_ord = indices[ord];
+    for (u32 i = 0; i < bucket_count; ++i)
+    {
+      auto* idx = new BTreeMapIndex<A - 1>();
+      idx->lat_kind = lattice_kind;
+      idx->lat_has_floor = lat_has_floor;
+      idx->lat_floor = lat_floor;
+      idx->lat_has_ceil = lat_has_ceil;
+      idx->lat_ceil = lat_ceil;
+      indices_ord[i] = idx;
+    }
+    if (!ord.empty())
+    {
+      u16 lead = ord[0];
+      if (std::find(write_leadcols.begin(), write_leadcols.end(), lead)
+	  == write_leadcols.end())
+	write_leadcols.push_back(lead);
+    }
+  }
+
   // Templated on arity A (known by the generated code that calls it) so each
   // bucket gets an arity-specialized BTreeIndex<A>, held behind the generic
   // Index* interface.
@@ -256,7 +341,9 @@ public:
   // Register the identity-ordering index if the relation has no index at
   // all, so the daemon can materialize data it loads itself (an opened or
   // refreshed database with no program yet).  Runtime-constructed via
-  // makeIndex (index.h); a program's own indices arrive later as usual.
+  // makeIndex/makeMapIndex (index.h); a program's own indices arrive later
+  // as usual.  A lattice relation gets a payload map so out-of-band
+  // ingestion merges (setLattice must have been called first).
   void ensureDefaultIndex()
   {
     if (getAnyIndex())
@@ -266,7 +353,10 @@ public:
       ord[c] = c;
     Index** arr = new Index*[bucket_count];
     for (u32 b = 0; b < bucket_count; ++b)
-      arr[b] = makeIndex(arity);
+      arr[b] = isLattice()
+	? makeMapIndex(arity - 1, lattice_kind,
+		       lat_has_floor, lat_floor, lat_has_ceil, lat_ceil)
+	: makeIndex(arity);
     indices[ord] = arr;
     if (std::find(write_leadcols.begin(), write_leadcols.end(), (u16)0)
 	== write_leadcols.end())
@@ -952,6 +1042,8 @@ public:
     }
     else if (is_struct(v))
       return writeStructCSV(v);
+    else if (v == slog_lat_top)
+      return "(top)";              // a flat lattice's top element
     else
     {
       std::cout << "Top 12 bits : " << std::format("{:b}", v >> 52) << std::endl;
@@ -967,7 +1059,8 @@ public:
 			Index* node,
 			const std::vector<u16>& ord,
 			bool is_struct,
-			const std::string& name)
+			const std::string& name,
+			u32 lat_kind = LAT_NONE)
   {
     // rewrite_ord[i] = index-order position of storage column i.
     std::vector<u16> rewrite_ord(ord.size(), 0);
@@ -984,7 +1077,11 @@ public:
       // a 3-cycle ordering used to scramble struct CSV rows here.)
       std::vector<std::string> line(n);
       for (u16 d = 0; d < n; ++d)
-	line[d] = (is_struct && ord[d] == 0) ? name : writeValCSV(t[d]);
+	line[d] = (is_struct && ord[d] == 0) ? name
+	  // a count payload prints as its chain point, not a bare integer
+	  : (lat_kind == LAT_COUNT && ord[d] == n - 1)
+	    ? (s32_decode(t[d]) >= 2 ? "(inf)" : "(one)")
+	    : writeValCSV(t[d]);
 
       if (is_struct)
       {
@@ -1024,7 +1121,8 @@ public:
       Index** allbuckets = rel->getIndex(*ord, false);
       bool is_struct = (rel->getStructId() > 0);
       for (u16 b = 0; b < bucket_count; ++b)
-	writeAllFactsCSV(os, allbuckets[b], *ord, is_struct, name);
+	writeAllFactsCSV(os, allbuckets[b], *ord, is_struct, name,
+			 rel->latticeKind());
       os.close();
     }
   }
@@ -1069,7 +1167,9 @@ public:
   }
 
   // The on-disk directory for one relation under a database directory (in
-  // binary format, structs and tables differ only in filename metadata).
+  // binary format, structs/tables/lattices differ only in filename
+  // metadata; a lattice's spec token rides along so open can re-register
+  // its kind and clamps).
   std::string relationDirBIN(const std::string& db_dir,
 			     const std::string& name, Relation* rel)
   {
@@ -1077,6 +1177,10 @@ public:
       return db_dir + "struct." + name
 	     + ".arity." + std::to_string(rel->getArity())
 	     + ".id." + std::to_string(rel->getStructId()) + "/";
+    if (rel->isLattice())
+      return db_dir + "lat." + name
+	     + ".arity." + std::to_string(rel->getArity())
+	     + ".spec." + rel->latticeSpec() + "/";
     return db_dir + "table." + name
 	   + ".arity." + std::to_string(rel->getArity()) + "/";
   }
@@ -1275,21 +1379,30 @@ public:
 
       std::string name(path);
       bool isstruct = name.find("struct.") != std::string::npos;
-      if (name.find("table.") != std::string::npos || isstruct)
+      bool islat = name.find("/lat.") != std::string::npos;
+      if (name.find("table.") != std::string::npos || isstruct || islat)
       {
 	if (isstruct)
 	  name = name.substr(name.find("struct.")+7);
+	else if (islat)
+	  name = name.substr(name.find("/lat.")+5);
 	else
 	  name = name.substr(name.find("table.")+6);
 
 	std::string arity_ext = name.substr(name.find(".arity.")+7);
 	std::string arity;
+	std::string lat_spec;
 	u32 struct_id = 0;
 	if (isstruct)
 	{
 	  arity = arity_ext.substr(0, arity_ext.find(".id."));
 	  std::string ext = arity_ext.substr(arity_ext.find(".id.")+4) + "/";
 	  struct_id = std::atoi(ext.substr(0, ext.find("/")).c_str());
+	}
+	else if (islat)
+	{
+	  arity = arity_ext.substr(0, arity_ext.find(".spec."));
+	  lat_spec = arity_ext.substr(arity_ext.find(".spec.")+6);
 	}
 	else
 	{
@@ -1305,6 +1418,10 @@ public:
 	Relation* rel = new Relation(name, std::atoi(arity.c_str()), struct_id);
 	relations[name] = rel;
 	rel->initShards(thread_count);
+	// lattice metadata before ensureDefaultIndex, which keys on it to
+	// build a payload map (so ingestDelta merges rather than inserts)
+	if (islat)
+	  rel->setLatticeFromSpec(lat_spec);
 	readRelationFiles(rel, path);
 	// materialize immediately (into a default index) so the database is
 	// queryable/writable before any program arrives; a following stratum

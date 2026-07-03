@@ -1,0 +1,9 @@
+;; db: bench_er
+;; Triangle detection on a random ER graph.  The binary pipeline enumerates
+;; all 2-paths (a->b->c) then checks (a,c); a semijoin filter can only prune
+;; drivers whose `a` has no out-edge, so on a connected ER graph this test
+;; measures pure filter OVERHEAD (expected pruning: none).
+table (edge int int)
+table (tri int int int)
+
+rule (edge A B) (edge B C) (edge A C) --> (tri A B C)

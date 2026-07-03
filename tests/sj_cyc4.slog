@@ -1,0 +1,17 @@
+;; Semijoin-filter correctness: directed 4-cycles.  The future clause
+;; (edge D A) is filtered on A (edge's DESTINATION column) right after the
+;; driver -- exercising the filter-requisitioned (1 0) index ordering that
+;; no join in the program asks for.
+;;
+;;   4-cycles among 1->2->3->4->1 and 1->5->3->4->1 (and rotations that
+;;   share those edges); node 9's dangling out-edge joins nothing.
+
+table (edge int int)
+table (cyc4 int int int int)
+
+facts
+(edge 1 2) (edge 2 3) (edge 3 4) (edge 4 1)
+(edge 1 5) (edge 5 3)
+(edge 9 1)
+
+rule (edge A B) (edge B C) (edge C D) (edge D A) --> (cyc4 A B C D)

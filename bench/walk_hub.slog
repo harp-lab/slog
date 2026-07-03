@@ -1,0 +1,14 @@
+;; db: bench_walk
+;; The hub pathology inside RECURSION: each newly visited node expands
+;; through the hub to every spoke (redge then sedge = n candidates), and
+;; the attributed tree edge (tedge C A W: C is a child of A) keeps only
+;; its real children.  The semijoin filter probes tedge on A right after
+;; the driver, so a leaf's visit costs one probe instead of an n-way
+;; expansion -- and 15/16 of the tree is leaves.  Exercises filters on
+;; every iteration of a fixpoint (tree depth ~4).
+table (redge int int)
+table (sedge int int)
+table (tedge int int int)
+table (visit int)
+
+rule (visit A) (redge A B) (sedge B C) (tedge C A W) --> (visit C)

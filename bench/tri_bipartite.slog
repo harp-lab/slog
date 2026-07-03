@@ -1,0 +1,9 @@
+;; db: bench_bipartite
+;; Triangles on a bipartite graph: the output is EMPTY (no odd cycles), yet
+;; binary joins still enumerate every 2-path.  Prefix-existence filters
+;; CANNOT rescue this case (every node has edges); it demonstrates the gap
+;; that only worst-case-optimal joins close -- documented as a known limit.
+table (edge int int)
+table (tri int int int)
+
+rule (edge A B) (edge B C) (edge A C) --> (tri A B C)

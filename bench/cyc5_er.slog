@@ -1,0 +1,6 @@
+;; db: bench_er_sparse
+;; Directed 5-cycles on a sparser ER graph (5 joins amplify intermediates).
+table (edge int int)
+table (cyc5 int int int int int)
+
+rule (edge A B) (edge B C) (edge C D) (edge D E) (edge E A) --> (cyc5 A B C D E)

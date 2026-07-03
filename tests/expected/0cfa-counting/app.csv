@@ -1,0 +1,8 @@
+ (app (ref "id") (lambda "w" (ref "w"))))
+ (lambda "dummy" (app (ref "id") (lambda "v" (ref "v"))))
+ (lambda "id" (app (lambda "dummy" (app (ref "id") (lambda "v" (ref "v")))) (app (ref "id") (lambda "w" (ref "w")))))
+ (lambda "z" (ref "z")))
+(app
+(app
+(app (ref "id") (lambda "v" (ref "v")))
+(app (ref "id") (lambda "w" (ref "w")))

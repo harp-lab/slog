@@ -19,6 +19,20 @@
 (require "compile.rkt")
 (require "actions.rkt")
 
+;; Reconstruct a canonical lattice valuespec from its on-disk spec token
+;; (the inverse of emit-cpp.rkt's lat-spec-token): "min-int-floor-0" ->
+;; (lattice min int (floor 0)), "count" -> (lattice count), "flat-value" ->
+;; (lattice flat value).
+(define (lat-spec-from-token tok)
+  (match (string-split tok "-")
+    [`("count") `(lattice count)]
+    [`("flat" ,t) `(lattice flat ,(string->symbol t))]
+    [`(,kind ,base) `(lattice ,(string->symbol kind) ,(string->symbol base))]
+    [`(,kind ,base ,param ,v)
+     `(lattice ,(string->symbol kind) ,(string->symbol base)
+               (,(string->symbol param) ,(string->number v)))]
+    [_ (error 'db-manifest "unrecognized lattice spec token on disk: ~a" tok)]))
+
 ;; Scan an input database directory into a manifest of its relations.
 (define (db-manifest-from-name db-name)
   (if db-name
@@ -36,7 +50,14 @@
                        (hash-set man
                                  (string->symbol name)
                                  `(struct ,(string->symbol name) ,(string->number arity)))]
-                      [_ man])]))
+                      [_
+                       (match (regexp-match #px"/lat\\.(\\w+)\\.arity\\.(\\d+)\\.spec\\.([-.'\\w]+)" path+)
+                         [`(,_ ,name ,arity ,tok)
+                          (hash-set man
+                                    (string->symbol name)
+                                    `(lat ,(string->symbol name) ,(string->number arity)
+                                          ,(lat-spec-from-token tok)))]
+                         [_ man])])]))
                (hash)
                (directory-list db-path)))
       (hash)))

@@ -20,3 +20,11 @@
 (define plan-weight-bound (make-parameter 100))
 (define plan-weight-free (make-parameter -35))
 (define plan-weight-enables (make-parameter 20))
+
+;; Semijoin existence filters (operationalization.rkt): before an expanding
+;; join, probe each future clause's relation on its already-bound columns
+;; and prune partial tuples that cannot possibly satisfy it.  The env
+;; toggle exists so benchmarks can compare; its value participates in the
+;; .so cache key (compile.rkt), so flipping it cannot serve stale plugins.
+(define semijoin-filters-enabled
+  (make-parameter (not (getenv "SLOG_NO_SEMIJOIN"))))

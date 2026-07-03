@@ -1,0 +1,17 @@
+;; Shortest path as a lattice map: dist is keyed (src, dst) with a
+;; (min int)-merged cost column.  The graph has a cycle (1 -> 2 -> 3 -> 1),
+;; which diverges as a plain path relation but terminates here because only
+;; improvements propagate.  #:floor 0 = Trop+, silencing the unbounded-
+;; descent warning and guaranteeing termination.
+
+lattice (cost (min int #:floor 0))
+table (edge int int int)
+table (dist int int cost)
+
+facts
+(edge 1 2 10) (edge 2 3 5) (edge 3 1 2)
+(edge 1 3 100) (edge 3 4 1) (edge 2 4 20)
+(edge 1 4 17)
+
+rule (edge X Y W) --> (dist X Y W)
+rule (dist X Y D) (edge Y Z W) --> (dist X Z (+ D W))

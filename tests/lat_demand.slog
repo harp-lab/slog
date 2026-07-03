@@ -1,0 +1,26 @@
+;; Lattices x demand (docs/lattices.md §3.4): a demand whose answer column
+;; carries a lattice type makes the generated _ans table a map keyed by the
+;; demand id -- by the same rule as every other table, no demand-specific
+;; machinery.  mincost is a memoized recursive function over (min int):
+;; the cheapest cost from a node to the goal, on a graph with a cycle.
+;; Answers merge tropically; asks/resumes re-fire as answers improve.
+
+demand (mincost int) (min int #:floor 0)
+table (edge int int int)
+table (goal int)
+table (answer int)
+
+facts
+(edge 1 2 10) (edge 2 3 5) (edge 3 1 2)
+(edge 1 3 100) (edge 3 4 1) (edge 2 4 20)
+(edge 1 4 17)
+(goal 4)
+
+rule (goal G) --> (mincost G 0)
+rule (mincost N (+ W (mincost M))) <-- (edge N M W)
+
+;; seed: constructing the demand IS asking
+facts (mincost 1)
+
+;; later stratum: the final (unwrapped) answer
+rule (mincost 1 C) --> (answer C)

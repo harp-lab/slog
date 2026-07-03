@@ -1,0 +1,11 @@
+;; db: bench_tree
+;; Same-generation on a random tree.  The recursive rule has 3 joins, and in
+;; the version driven by delta-sg the future clause (edge PY Y) has PY bound
+;; right after the driver -- a semijoin filter ("does PY have children?")
+;; prunes sg-pairs ending at leaves BEFORE the expanding (edge PX X) join.
+;; This is the key soundness test for filters under semi-naive recursion.
+table (edge int int)
+table (sg int int)
+
+rule (edge P X) (edge P Y) --> (sg X Y)
+rule (edge PX X) (sg PX PY) (edge PY Y) --> (sg X Y)

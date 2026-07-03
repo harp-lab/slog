@@ -1,0 +1,72 @@
+;; 0CFA with abstract counting (docs/lattices.md §2.3, after Might-Shivers
+;; GammaCFA): alongside the store -- which answers "WHICH values can this
+;; variable hold?" as a plain powerset relation -- the measure mu answers
+;; "HOW MANY concrete bindings does this abstract variable stand for?" on
+;; the chain 0 < 1 < inf ((count): 0 is absence, never stored).  mu(x)=(one)
+;; certifies a globally unique binding: the must-alias fact that licenses
+;; strong updates, super-beta inlining, and abstract-GC precision.
+;;
+;; The rendering is idempotent by construction, NOT a count of derivations:
+;; every binding contributes (one) ((one) merged with (one) is (one)), and
+;; only *evidence of distinctness* -- two different values reaching the same
+;; variable -- forces (inf).
+;;
+;; The soundness discipline is the point: mu(x)=(one) is a downward-closed
+;; test (more merging can raise it to (inf)), so a rule reading it in the
+;; same SCC that still grows mu is a COMPILE ERROR -- the classic
+;; strong-update bug, caught by the type system.  The singleton/polyvariant
+;; reports below live in later strata, where mu is closed and final.
+
+include "types.slog"
+
+union (val lambda)
+table (store str val)
+table (result val)
+
+lattice (card (count))
+table (mu str card)
+table (singleton str)
+table (polyvariant str)
+
+;; ---- the analysis: the same six rules as 0cfa-demand.slog ----
+
+demand (eval expr) val
+
+facts (eval (lambda x eb) (lambda x eb))
+rule (eval (ref x) v) <-- (store x v)
+rule (eval (app ef ea) v)
+ <--
+     (eval ef (lambda x eb))
+     (eval ea va)
+     (eval eb v)
+rule (eval (app ef ea)) (eval ef (lambda x eb)) (eval ea va) --> (store x va)
+
+rule (program e) --> (eval e)
+rule (program e) (eval e v) --> (result v)
+
+;; ---- the test subject ----
+;; let id = (lambda z. z) in (lambda dummy. id (lambda v. v)) (id (lambda w. w))
+;;
+;; id is bound exactly once.  z (id's parameter) is genuinely bound to two
+;; distinct lambdas -- the analysis is RIGHT to say (inf).  dummy receives
+;; whatever (id ...) answers, and since the monovariant store conflates
+;; id's two calls, both lambdas flow there too: honest 0CFA imprecision,
+;; and exactly what a polyvariant analysis (or a strong update licensed by
+;; a mu of (one)) would sharpen.  v and w are never bound at all: mu is 0,
+;; i.e. absent -- dead parameters.
+
+facts
+(program
+ (app (lambda "id" (app (lambda "dummy" (app (ref "id") (lambda "v" (ref "v"))))
+                        (app (ref "id") (lambda "w" (ref "w")))))
+      (lambda "z" (ref "z"))))
+
+;; ---- the counting measure, over the closed store ----
+
+rule (store X V) --> (mu X (one))
+rule (store X V1) (store X V2) (/= V1 V2) --> (mu X (inf))
+
+;; ---- later stratum: mu is final; branching on (one) is now sound ----
+
+rule (mu X C) (= C (one)) --> (singleton X)
+rule (mu X C) (= C (inf)) --> (polyvariant X)
