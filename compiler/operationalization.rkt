@@ -29,9 +29,15 @@
 
 (define (join-cl? cl)
   (match cl
-    [`(syn ,_ ,(or '/= '== 'let) ,_ ...) #f]
+    [`(syn ,_ ,(or '/= '== 'let 'tycheck) ,_ ...) #f]
     [`(syn ,_ ,(? primitive-cmp?) ,_ ,_) #f]
     [_ #t]))
+
+;; A residual type check in head position (type-system.rkt).
+(define (tycheck-cl? cl)
+  (match cl
+    [`(syn ,_ tycheck ,_ ...) #t]
+    [_ #f]))
 
 (define (join-rel cl)
   (match cl
@@ -62,9 +68,16 @@
 (define (build-cprog planned-rules rel-env)
   (define rules0 (set->list planned-rules))
   (match-define (cons constants rules) (globalize-constants rules0))
+  ;; residual checks grow malformed_deduction through their failure path,
+  ;; so it counts as a head relation for scheduling purposes
   (define dynamic-rels
     (for/fold ([acc (set)]) ([rule (in-list rules)])
-      (set-union acc (list->set (map join-rel (filter join-cl? (rule-heads rule)))))))
+      (define heads (rule-heads rule))
+      (set-union acc
+                 (list->set (map join-rel (filter join-cl? heads)))
+                 (if (ormap tycheck-cl? heads)
+                     (set 'malformed_deduction)
+                     (set)))))
   (define selections
     (foldl (add-select-sets rel-env) (seed-select-sets rel-env) rules))
   (define decls (make-rel-decls rel-env selections))
@@ -413,11 +426,33 @@
                                (strip-prov cl))])
           `(probe ,name ,ind ,(set-count sel) ,@(map esc (order-tuple ind tup))))))
 
+  ;; the ground types of a residual check's accept set, lowered to what the
+  ;; runtime can test: a primitive tag or an interned struct's id (every
+  ;; enum member lowers to _enum -- all enum constants share its struct id,
+  ;; so the check is surface-level: "some enum constant", not which one)
+  (define (lower-accepts ts who)
+    (remove-duplicates
+     (for/list ([t (in-list ts)])
+       (match t
+         [(or 'int 'float 'str) t]
+         [_ (match (hash-ref rel-env t #f)
+              [`(struct ,_ ...) `(struct ,t)]
+              [`(enum ,_) `(struct _enum)]
+              [_ (error 'operationalization
+                        "accepted type ~a of a residual check has no runtime tag test in ~a"
+                        t who)])]))))
+
   ;; a head op
   (define (lower-head cl)
     (match cl
       [`(syn ,_ let ,x (syn ,_ ,f ,args ...))
        `(let ,(esc x) (,(esc f) ,@(map esc args)))]
+      [`(syn ,_ tycheck ,y (accept ,ts ...) ,rid ,rel ,colv)
+       ;; the failure path emits into malformed_deduction (4 fields + id)
+       ;; via its master (interning) index, exactly like a mkstruct
+       (define master (master-index-of indices 'malformed_deduction 5 (strip-prov cl)))
+       `(tycheck ,(esc y) (accept ,@(lower-accepts ts (strip-prov cl)))
+                 ,(esc rid) ,(esc rel) ,(esc colv) ,master)]
       [`(syn ,_ = ,x (syn ,_ ,name ,fields ...))
        (define stored (stored-arity name))
        (define master (master-index-of indices name stored (strip-prov cl)))
@@ -483,7 +518,15 @@
                    (cons (lower-op (car cls)) ops)
                    jpos
                    (cdr cls))]))))
+  ;; every tycheck hop goes AHEAD of every emitting hop, whatever the head
+  ;; order upstream: a failed check must abandon the deduction before any
+  ;; sink runs -- in particular before a staging temp emit, whose tuple
+  ;; would otherwise revive the deduction in the follow-up rule.  (Checks
+  ;; read only body-bound and const-bound variables, so hoisting is safe.)
+  (define-values (check-hops emit-hops)
+    (partition (lambda (hop) (eq? 'tycheck (car hop)))
+               (map lower-head (rule-heads rule))))
   `(crule (pre ,@(map lower-op pre-cls))
           ,driver
           (body ,@ops)
-          (head ,@(map lower-head (rule-heads rule)))))
+          (head ,@check-hops ,@emit-hops)))

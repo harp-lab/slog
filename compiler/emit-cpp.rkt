@@ -314,14 +314,49 @@
 
 ;; The innermost continuation: emit each head op.  emit/emit_temp sinks do
 ;; their own dedup + batch flush (operators.h); emit_struct leaves dedup and
-;; id assignment to the intern phase.
-(define ((emit-heads heads) indent)
+;; id assignment to the intern phase.  tycheck hops always precede the
+;; emitting hops (operationalization.rkt), so their guards protect every
+;; sink of the rule; `sid-members` maps a struct name in an accept set to
+;; the task's u32 member holding its runtime struct id.
+(define ((emit-heads heads sid-members) indent)
   (apply string-append
          (for/list ([hop (in-list heads)] [i (in-naturals)])
            (match hop
              [`(let ,x (,f ,args ...))
               ((emit-lines indent)
                (format "u64 v_~a = ~a;" x (prim-call f args)))]
+             ;; a residual type check: if the value's surface tag matches no
+             ;; accepted type, divert -- intern a malformed_deduction struct
+             ;; (rule-location, relation, column, bad value) in place of the
+             ;; deduction and abandon the tuple (`return` = old `continue`)
+             [`(tycheck ,y (accept ,ts ...) ,rid ,rel ,colv ,ind)
+              (define prim-tests
+                (for/list ([t (in-list ts)] #:when (symbol? t))
+                  (format (match t
+                            ['int "is_s32(v_~a)"]
+                            ['float "is_float(v_~a)"]
+                            ['str "is_str(v_~a)"])
+                          y)))
+              (define sid-tests
+                (for/list ([t (in-list ts)] #:unless (symbol? t))
+                  (format "decode_struct_id(v_~a) == ~a"
+                          y (hash-ref sid-members (second t)))))
+              (define struct-test
+                (if (null? sid-tests)
+                    '()
+                    (list (format "(is_struct(v_~a) && (~a))"
+                                  y (string-join sid-tests " || ")))))
+              ((emit-lines indent)
+               (format "if (!(~a))"
+                       (string-join (append prim-tests struct-test) " || "))
+               "{"
+               (format "  slog::emit_struct<5>(head_rel[~a], newbatch[~a], ~a, ~a);"
+                       i i
+                       (u64-array-lit (map (lambda (z) (format "v_~a" z))
+                                           (list rid rel colv y)))
+                       (u16-array-lit ind))
+               "  return;"
+               "}")]
              [`(mkstruct ,name ,ind ,x ,fields ...)
               ((emit-lines indent)
                (format "slog::emit_struct<~a>(head_rel[~a], newbatch[~a], ~a, ~a);"
@@ -368,11 +403,25 @@
   (define static?
     (or (not driver-rel) (not (set-member? dynamic-rels driver-rel))))
 
-  ;; heads that emit tuples need an insert batch (let heads do not)
+  ;; heads that emit tuples need an insert batch (let heads do not); a
+  ;; tycheck's slot batches its failure-path malformed_deduction structs
   (define emitting-head-is
     (for/list ([hop (in-list heads)] [i (in-naturals)]
-               #:when (memq (car hop) '(mkstruct emit emit-temp emit-lat)))
+               #:when (memq (car hop) '(mkstruct emit emit-temp emit-lat tycheck)))
       i))
+
+  ;; runtime struct ids the tycheck accept sets compare against: one u32
+  ;; member per distinct struct name, looked up once at task construction
+  (define sid-members
+    (for/fold ([h (hash)])
+              ([hop (in-list heads)] #:when (eq? 'tycheck (car hop)))
+      (for/fold ([h h]) ([t (in-list (cdr (third hop)))])
+        (match t
+          [`(struct ,n)
+           (if (hash-has-key? h n) h (hash-set h n (gensymb 'sid)))]
+          [_ h]))))
+  (define sid-members-sorted
+    (sort (hash->list sid-members) symbol<? #:key car))
 
   (define task-name (gensymb 'ReadTask))
 
@@ -383,6 +432,8 @@
             (for/list ([hop (in-list heads)] [i (in-naturals)])
               (match hop
                 [`(let ,_ ,_) ""]
+                [`(tycheck ,_ ,_ ,_ ,_ ,_ ,_)
+                 (format "    head_rel[~a] = db->getRelation(\"malformed_deduction\");\n" i)]
                 [`(mkstruct ,name ,_ ,_ ,_ ...)
                  (format "    head_rel[~a] = db->getRelation(\"~a\");\n" i name)]
                 [`(emit-temp ,name ,_ ...)
@@ -404,7 +455,11 @@
             (for/list ([om (in-list join-members)])
               (match (car om)
                 [`(,(or 'join 'join-lat 'exists) ,name ,ind ,_ ...)
-                 (string-append (index-member name (cdr om) ind #f) "\n")])))))
+                 (string-append (index-member name (cdr om) ind #f) "\n")])))
+     (apply string-append
+            (for/list ([p (in-list sid-members-sorted)])
+              (format "    ~a = db->getRelation(\"~a\")->getStructId();\n"
+                      (cdr p) (car p))))))
 
   ;; --- work() body
   (define alloc-batches
@@ -419,7 +474,7 @@
   (define pipeline
     (match driver
       [`(once)
-       (emit-ops body index-name-of (emit-heads heads) 4)]
+       (emit-ops body index-name-of (emit-heads heads sid-members) 4)]
       [`(scan ,name ,xs ...)
        (string-append
         ((emit-lines 4)
@@ -427,7 +482,7 @@
         (apply (emit-lines 6)
                (for/list ([x (in-list xs)] [n (in-naturals)])
                  (format "u64 v_~a = _t[~a];" x n)))
-        (emit-ops body index-name-of (emit-heads heads) 6)
+        (emit-ops body index-name-of (emit-heads heads sid-members) 6)
         ((emit-lines 4) "});"))]
       [`(probe ,name ,ind ,K ,ys ...)
        (define A (length ys))
@@ -449,7 +504,7 @@
                (for/list ([k (in-range K A)])
                  (format "u64 v_~a = ~a[~a];" (list-ref ys k) m k)))
         (if (string=? par-filter "") "" ((emit-lines 6) par-filter))
-        (emit-ops body index-name-of (emit-heads heads) 6)
+        (emit-ops body index-name-of (emit-heads heads sid-members) 6)
         ((emit-lines 4) "});"))]))
 
   ;; a fully-bound probe cannot partition; run it as a single task
@@ -471,6 +526,8 @@
    (if (eq? (car driver) 'probe) "  slog::Index** driver_index;" "")
    (apply string-append
           (map (lambda (om) (format "  slog::Index** ~a;" (cdr om))) join-members))
+   (apply string-append
+          (map (lambda (p) (format "  u32 ~a;" (cdr p))) sid-members-sorted))
    (format "public:")
    (format "  ~a(slog::Database* _db, u16 _b) : db(_db), bucket(_b)" task-name)
    (format "  {")

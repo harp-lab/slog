@@ -36,6 +36,13 @@
     [`(syn ,_ == ,_ ,_) #f]
     [`(syn ,_ ,(? primitive-cmp?) ,_ ,_) #f]
     [`(syn ,_ let ,_ ,_) #f]
+    ;; residual type checks are deliberately INVISIBLE here: their failure
+    ;; path writes malformed_deduction, but counting that as a head would
+    ;; put every checked rule's heads in one SCC (heads of a rule close
+    ;; together), collapsing the program into a single stratum.  Sound
+    ;; because nothing feeds back: malformed_deduction flows only into
+    ;; `error` via the per-stratum wrap rule compile.rkt injects.
+    [`(syn ,_ tycheck ,_ ...) #f]
     [`(syn ,_ = ,_ (syn ,_ const ,_)) #f]
     [`(syn ,_ = ,_ (syn ,_ ,name ,_ ...)) name]
     [`(syn ,_ ,name ,_ ...) name]))

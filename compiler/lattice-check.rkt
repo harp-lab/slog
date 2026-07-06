@@ -91,6 +91,7 @@
     [`(syn ,_ /= ,_ ,_) #f]
     [`(syn ,_ ,(? primitive-cmp?) ,_ ,_) #f]
     [`(syn ,_ let ,_ ,_) #f]
+    [`(syn ,_ tycheck ,_ ...) #f]   ; residual type checks are not joins
     [`(syn ,_ = ,_ (syn ,_ const ,_)) #f]
     [`(syn ,_ = ,x (syn ,_ ,name ,args ...)) (list name (cons x args) #t)]
     [`(syn ,_ ,name ,args ...) (list name args #f)]))

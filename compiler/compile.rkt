@@ -115,9 +115,18 @@
   (cond
     [(file-exists? so-path) proghash]
     [else
-     (define rules (stratum-rules stratum))
+     ;; a stratum whose rules carry residual type checks also gets the
+     ;; error-wrapping rule (malformed_deduction -> error), delta-driven
+     ;; within this stratum's fixpoint: malformed_deduction is marked
+     ;; dynamic since the checks' failure paths grow it every iteration
+     (define base-rules (stratum-rules stratum))
+     (define checked?
+       (for/or ([rule (in-set base-rules)]) (rule-has-tychecks? rule)))
+     (define rules
+       (if checked? (set-add base-rules (error-wrap-rule)) base-rules))
      (define dynamic-rels
-       (for/fold ([acc (set)]) ([rule (in-set rules)])
+       (for/fold ([acc (if checked? (set 'malformed_deduction) (set))])
+                 ([rule (in-set rules)])
          (set-union acc (rule-head-rels rule))))
      (match-define (cons planned rel-env+)
        (plan-all rules (type-env-rels type-env) dynamic-rels))

@@ -176,18 +176,25 @@
   env+)
 
 ;; Builtin declarations seeded into every module's environment: the _enum
-;; struct backing enum constants, and the list constructors that bracket
+;; struct backing enum constants, the list constructors that bracket
 ;; literals desugar to (collections.rkt) -- exactly as if every program
-;; declared `union (list (nil) (cons any list))`.  The names list/cons/nil
-;; are reserved (checked in extract-type-env): user redeclarations would
-;; otherwise hit the generic conflict check with a baffling message.
+;; declared `union (list (nil) (cons any list))` -- and the runtime
+;; type-error machinery (type-system.rkt "Residual dynamic type checks"):
+;; a failed residualized check interns a malformed_deduction struct
+;; (rule-location string, target relation name, 0-based column, the bad
+;; value) and a synthesized rule wraps each one as an (error e) fact.
+;; The names list/cons/nil/error/malformed_deduction are reserved (checked
+;; in extract-type-env): user redeclarations would otherwise hit the
+;; generic conflict check with a baffling message.
 (define base-type-env
   (foldl (lambda (e env) (unify-type-envs env e))
          empty-type-env
          (list (type-env-rel '_enum `(struct str))
                (type-env-rel 'cons `(struct any list))
                (type-env-rel 'nil `(enum nil))
-               (type-env-union 'list (set 'list 'nil 'cons)))))
+               (type-env-union 'list (set 'list 'nil 'cons))
+               (type-env-rel 'malformed_deduction `(struct str str int any))
+               (type-env-rel 'error `(table any)))))
 
 ;; -----------------------------------------------------------------------
 ;; Lattice valuespecs (docs/lattices.md §3).
@@ -303,7 +310,9 @@
   ;; check produces a baffling one.
   (define (check-not-reserved! name)
     (when (collection-builtin? name)
-      (error (format "The name ~a is a builtin list constructor (bracket syntax [x y | t] denotes cons/nil lists); remove the declaration" name))))
+      (error (format "The name ~a is a builtin list constructor (bracket syntax [x y | t] denotes cons/nil lists); remove the declaration" name)))
+    (when (memq name '(error malformed_deduction))
+      (error (format "The name ~a is reserved for the runtime type-error machinery ((error e) facts wrapping malformed_deduction structs); remove the declaration" name))))
 
   (define (extract-type-env ast [env base-type-env])
     (match ast

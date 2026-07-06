@@ -232,6 +232,9 @@
   (match cl
     [`(syn ,_ /= ,x ,y) (set x y)]
     [`(syn ,_ == ,x ,y) (set x y)]
+    ;; a residual type check (type-system.rkt): the checked variable plus
+    ;; the rule-location/relation/column constant variables it reports with
+    [`(syn ,_ tycheck ,y (accept ,_ ...) ,rid ,rel ,col) (set y rid rel col)]
     [`(syn ,_ ,(? primitive-cmp?) ,x ,y) (set x y)]
     [`(syn ,_ let ,x ,(? var? y)) (set x y)]
     [`(syn ,_ let ,x (syn ,_ const ,_)) (set x)]
@@ -244,6 +247,7 @@
   (match cl
     [`(syn ,_ /= ,x ,y) (set x y)]
     [`(syn ,_ == ,x ,y) (set x y)]
+    [`(syn ,_ tycheck ,y (accept ,_ ...) ,rid ,rel ,col) (set y rid rel col)]
     [`(syn ,_ ,(? primitive-cmp?) ,x ,y) (set x y)]
     [`(syn ,_ let ,x ,(? var? y)) (set y)]
     [`(syn ,_ let ,x (syn ,_ const ,_)) (set)]
@@ -263,6 +267,7 @@
   (match cl
     [`(syn ,_ let ,x ,(? var? y)) (set y)]
     [`(syn ,_ let ,x (syn ,_ ,f ,args ...)) (list->set args)]
+    [`(syn ,_ tycheck ,y (accept ,_ ...) ,rid ,rel ,col) (set y rid rel col)]
     [`(syn ,_ = ,x (syn ,_ const ,_)) (set)]
     [`(syn ,_ = ,x (syn ,_ ,name ,xs ...)) (list->set xs)]
     [`(syn ,_ ,name ,xs ...) (list->set xs)]))

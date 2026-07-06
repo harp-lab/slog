@@ -1,0 +1,23 @@
+;; Residual checks, part 2: a failing check mid-fixpoint kills the WHOLE
+;; deduction (every head of the rule for that binding), and checks fire
+;; independently in later strata (each checked stratum gets its own
+;; malformed_deduction -> error wrap rule).
+
+table (todo list)
+table (elem int)
+
+table (raw any)
+table (final str)
+
+facts
+(todo [1 2 "x" 3])
+(raw "ok")
+(raw 7)
+
+;; stratum 1, recursive: walking the list stops AT the bad element --
+;; the failing check on (elem X) also suppresses the (todo T) head, so
+;; the 3 after "x" is never reached
+rule (todo [X T ...]) --> (elem X) (todo T)
+
+;; stratum 2 (elem is closed here): any -> str, 7 is diverted
+rule (elem X) (raw Y) --> (final Y)

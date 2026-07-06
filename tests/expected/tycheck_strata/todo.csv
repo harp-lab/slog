@@ -1,0 +1,3 @@
+(cons "x" (cons 3 (_enum "nil")))   
+(cons 1 (cons 2 (cons "x" (cons 3 (_enum "nil")))))   
+(cons 2 (cons "x" (cons 3 (_enum "nil"))))   

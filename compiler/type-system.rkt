@@ -15,10 +15,28 @@
 ;;     rule interning each used constant is synthesized here, so readers
 ;;     (stratified after the _enum writers) always find the row.
 ;;
+;; Residual dynamic type checks: type-match? deliberately passes two cases
+;; it cannot prove -- an `any`-typed variable flowing into a concretely
+;; typed column, and a union-typed variable whose member set merely
+;; OVERLAPS the column's (e.g. an expr-typed variable into a val column
+;; when val = lambda but expr = lambda|app|ref).  Each such head column
+;; gets a (tycheck y (accept t ...) rid rel col) head clause: a surface-
+;; level tag test compiled just before the rule's emissions.  On failure
+;; the deduction is abandoned and a (malformed_deduction rid rel col y)
+;; struct is emitted instead (the codegen's divert path); a synthesized
+;; per-stratum rule (error-wrap-rule, injected by compile.rkt) wraps each
+;; such struct as an (error e) fact within the same fixpoint.  The checks
+;; are invisible to stratification (stratify.rkt ignores tycheck clauses):
+;; making malformed_deduction a real head of every checked rule would
+;; merge all their heads into one SCC (rule heads close together), i.e.
+;; collapse the program into a single stratum.
+;;
 ;; Type errors raise; the result is a set of typed rules (ir-stack.rkt)
 ;; including the synthetic enum fact rules.
 
-(provide typecheck-rules)
+(provide typecheck-rules
+         error-wrap-rule
+         rule-has-tychecks?)
 
 (require "parser.rkt")
 (require "lexer.rkt")
@@ -203,6 +221,61 @@
                             (hash-ref local-env x void)
                             (strip-prov rule))))))
 
+     ;; ---- residual dynamic type checks -----------------------------------
+     ;; The ground member types of a column/variable type: alias-expand and
+     ;; keep only what a runtime tag test can name -- primitives, structs,
+     ;; and enum members (union names are covered by their members; lattice
+     ;; and listof names resolve through lattice-base-type first).
+     (define (ground-member-types t)
+       (define ts (hash-ref alias-env t (lambda () (set t))))
+       (for/set ([m (in-set ts)]
+                 #:when (or (memq m '(int float str any))
+                            (match (hash-ref rel-env m #f)
+                              [`(struct ,_ ...) #t]
+                              [`(enum ,_) #t]
+                              [_ #f])))
+         m))
+
+     ;; #f when the emission of y into a t0-typed column is statically safe
+     ;; (or inexpressible as a surface tag test); otherwise the sorted list
+     ;; of ground types the column accepts, to residualize as a tycheck.
+     (define (residual-accepts t0 y)
+       (define col-set (ground-member-types (lattice-base-type rel-env t0)))
+       (define var-set (ground-member-types
+                        (lattice-base-type rel-env (hash-ref local-env y))))
+       (if (or (set-member? col-set 'any)
+               (set-empty? col-set)
+               (and (not (set-member? var-set 'any))
+                    (subset? var-set col-set)))
+           #f
+           (sort (set->list col-set) symbol<?)))
+
+     ;; Per head emission clause: (relname col-index var accepts) for each
+     ;; column whose static pass was only by any/overlap.  Constructed ids
+     ;; never need one (their type is the exact struct name), so checks
+     ;; only ever guard body-bound (or computed) variables.
+     (define (head-residual-checks cl)
+       (define (checks-for name ts args)
+         (for/fold ([cs '()] #:result (reverse cs))
+                   ([t (in-list ts)] [y (in-list args)] [i (in-naturals)])
+           (define accepts (residual-accepts t y))
+           (if accepts (cons (list name i y accepts) cs) cs)))
+       (match cl
+         [`(syn ,_ = ,x (syn ,_ ,name ,(? symbol? args) ...))
+          #:when (not (hash-has-key? fun-env name))
+          (match (hash-ref rel-env name #f)
+            [`(struct ,ts ...)
+             #:when (= (length ts) (length args))
+             (checks-for name ts args)]
+            [_ '()])]
+         [`(syn ,_ ,name ,(? symbol? args) ...)
+          (match (hash-ref rel-env name #f)
+            [`(,(or 'table 'struct) ,ts ...)
+             #:when (= (length ts) (length args))
+             (checks-for name ts args)]
+            [_ '()])]
+         [_ '()]))
+
      ;; ---- clause checking + normalization -------------------------------
      (define (check-clause cl)
        (define (check-rel! x name args decl)
@@ -267,11 +340,12 @@
          [_ #f]))
 
      ;; Rewrite enum references into body joins against _enum, collecting
-     ;; the constant strings used.  `body?` only affects nothing here --
-     ;; the produced clauses always join in the body.
-     (define (convert-clauses cls)
-       (for/fold ([kept '()] [extra-body '()] [consts (set)]
-                  #:result (values (reverse kept) (reverse extra-body) consts))
+     ;; the constant strings used (the produced clauses always join in the
+     ;; body); for head clauses additionally collect the residual checks.
+     (define (convert-clauses cls [head? #f])
+       (for/fold ([kept '()] [extra-body '()] [consts (set)] [checks '()]
+                  #:result (values (reverse kept) (reverse extra-body) consts
+                                   (reverse checks)))
                  ([cl (in-list cls)])
          (define s (enum-ref cl))
          (cond
@@ -285,11 +359,83 @@
                     (list* `(syn ,p = ,cx (syn ,p const ,(symbol->string s)))
                            `(syn ,p = ,x (syn ,p _enum ,cx))
                            extra-body)
-                    (set-add consts (symbol->string s)))]
-           [else (values (cons (check-clause cl) kept) extra-body consts)])))
+                    (set-add consts (symbol->string s))
+                    checks)]
+           [else (values (cons (check-clause cl) kept)
+                         extra-body
+                         consts
+                         (if head?
+                             (append (reverse (head-residual-checks cl)) checks)
+                             checks))])))
 
-     (define-values (bodys+ body-extra body-consts) (convert-clauses bodys))
-     (define-values (heads+ head-extra head-consts) (convert-clauses heads))
+     (define-values (bodys+ body-extra body-consts _bchecks)
+       (convert-clauses bodys))
+     (define-values (heads+ head-extra head-consts hchecks)
+       (convert-clauses heads #t))
 
-     (values `(syn ,prov rule ,@body-extra ,@head-extra ,@bodys+ --> ,@heads+)
+     ;; Materialize the residual checks as head-position tycheck clauses,
+     ;; BEFORE the emissions: a failing check must abandon the deduction
+     ;; with no head fired.  The rule-location string and target names ride
+     ;; the ordinary constants machinery (globalized + interned at load).
+     ;; The location keeps only the file's basename (1-based line): absolute
+     ;; paths would make error facts -- and any golden output containing
+     ;; them -- vary with the checkout location.  Same-named files in
+     ;; different directories collide; rel/col disambiguate in practice.
+     (define (basename f)
+       (define p (file-name-from-path (format "~a" f)))
+       (if p (path->string p) (format "~a" f)))
+     (define check-clauses
+       (if (null? hchecks)
+           '()
+           (let ([rid (gensymb '_trid)]
+                 [loc (match prov
+                        [`(prov (token ,_ (pos ,file ,line ,_ ...) ,_) ,_)
+                         (format "~a:~a" (basename file) (add1 line))]
+                        [_ "<unknown>"])])
+             (cons
+              `(syn ,prov = ,rid (syn ,prov const ,loc))
+              (append-map
+               (match-lambda
+                 [(list name col y accepts)
+                  (define relv (gensymb '_trel))
+                  (define colv (gensymb '_tcol))
+                  (list `(syn ,prov = ,relv (syn ,prov const ,(symbol->string name)))
+                        `(syn ,prov = ,colv (syn ,prov const ,col))
+                        `(syn ,prov tycheck ,y (accept ,@accepts) ,rid ,relv ,colv))])
+               hchecks)))))
+
+     (values `(syn ,prov rule ,@body-extra ,@head-extra ,@bodys+
+                   --> ,@check-clauses ,@heads+)
              (set-union body-consts head-consts))]))
+
+;; -----------------------------------------------------------------------
+;; The error-wrapping machinery around the residual checks above.
+
+;; Does any head of this typed rule carry a residualized check?
+(define (rule-has-tychecks? rule)
+  (match rule
+    [`(syn ,_ rule ,bodys ... --> ,heads ...)
+     (for/or ([cl (in-list heads)])
+       (match cl
+         [`(syn ,_ tycheck ,_ ...) #t]
+         [_ #f]))]))
+
+;; The wrap rule compile.rkt injects into every stratum that carries
+;; residual checks: (= e (malformed_deduction r s c v)) --> (error e).
+;; Driven by malformed_deduction's delta (the stratum marks it dynamic),
+;; it wraps each error struct as an (error e) fact within the same
+;; fixpoint, one iteration after the failing deduction -- so a client
+;; watching `error` can react (warn, or kill the run) while the fixpoint
+;; is still going.  Fresh variables per call keep injected copies from
+;; colliding across strata.
+(define (error-wrap-rule)
+  (define p `(prov ,synth-token ,synth-token))
+  (define e (gensymb '_erre))
+  (define r (gensymb '_errr))
+  (define s (gensymb '_errs))
+  (define c (gensymb '_errc))
+  (define v (gensymb '_errv))
+  `(syn ,p rule
+        (syn ,p = ,e (syn ,p malformed_deduction ,r ,s ,c ,v))
+        -->
+        (syn ,p error ,e)))

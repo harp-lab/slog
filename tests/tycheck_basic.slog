@@ -1,0 +1,26 @@
+;; Residual dynamic type checks: emissions the type system passes only via
+;; `any` or partial union overlap get a runtime tag test.  A failing check
+;; diverts the deduction into a (malformed_deduction ruleid rel col badval)
+;; struct, wrapped as an (error e) fact by the synthesized per-stratum rule.
+
+table (raw any)
+table (typed int)
+
+union (expr (lam str) (app expr expr))
+union (val lam)
+
+table (flow expr)
+table (vals val)
+
+facts
+(raw 1)
+(raw 2)
+(raw "oops")
+(flow (lam "x"))
+(flow (app (lam "y") (lam "z")))
+
+;; any -> int: 1 and 2 land, "oops" is diverted
+rule (raw X) --> (typed X)
+
+;; expr -> val (= lam only): the lam lands, the app is diverted
+rule (flow E) --> (vals E)
