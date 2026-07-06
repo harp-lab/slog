@@ -1,0 +1,9 @@
+ (cons 1 (cons 2 (cons 3 (cons 4 (cons 5 (_enum "nil")))))))
+ (cons 2 (cons 3 (cons 4 (cons 5 (_enum "nil"))))))
+ (cons 3 (cons 4 (cons 5 (_enum "nil")))))
+(lst_len
+(lst_len
+(lst_len
+(lst_len (_enum "nil"))
+(lst_len (cons 4 (cons 5 (_enum "nil"))))
+(lst_len (cons 5 (_enum "nil")))

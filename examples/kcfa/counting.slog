@@ -1,0 +1,61 @@
+;; Abstract counting (Might-Shivers GammaCFA) over the k-CFA evidence:
+;; how many concrete frames a context stands for, and how many concrete
+;; bindings an address stands for, on the chain absent < one < inf.
+;; Composes unchanged with higher-order environments -- it reads only the
+;; call/binding events, not the environment maps.
+
+include "interp.slog"
+
+table (many_frames list)
+rule (call_event t2 c1) (call_event t2 c2) (/= c1 c2) --> (many_frames t2)
+rule (call_event t2 c) (many_frames c) --> (many_frames t2)
+
+lattice (card (count))
+table (frame_count list card)
+table (binding_count int list card)
+
+rule (program e) --> (frame_count [] (one))
+rule (call_event t2 c) --> (frame_count t2 (one))
+rule (many_frames t2) --> (frame_count t2 (inf))
+
+rule (binding_event x t2 c) --> (binding_count x t2 (one))
+rule (binding_event x t2 c) (many_frames c) --> (binding_count x t2 (inf))
+rule (binding_event x t2 c1) (binding_event x t2 c2) (/= c1 c2) --> (binding_count x t2 (inf))
+
+;; flow-set cardinality: the weaker value-based measure, for contrast
+table (flow_count int list card)
+rule (store x t v) --> (flow_count x t (one))
+rule (store x t v1) (store x t v2) (/= v1 v2) --> (flow_count x t (inf))
+
+;; ---- later strata: the counts are closed, branching on (one) is sound ----
+
+table (unique_binding int list)      ;; one concrete binding ever: must-alias, strong updates
+table (summarized_binding int list)
+rule (binding_count x t k) (= k (one)) --> (unique_binding x t)
+rule (binding_count x t k) (= k (inf)) --> (summarized_binding x t)
+
+table (singleton_flow int list)
+table (polyvariant_flow int list)
+rule (flow_count x t k) (= k (one)) --> (singleton_flow x t)
+rule (flow_count x t k) (= k (inf)) --> (polyvariant_flow x t)
+
+;; a unique binding holding a singleton flow set: address (x,t) concretely
+;; holds exactly this abstract value
+table (must_value int list val)
+rule (unique_binding x t) (singleton_flow x t) (store x t v) --> (must_value x t v)
+
+;; closure counting: an env-carrying closure can be created at more than
+;; one frame, so count over its birth frames -- one birth in a unique
+;; frame is a unique concrete object; two distinct births, or a birth in
+;; a summarized frame, force inf.
+table (closure_birth val list)
+rule (eval_ans (eval (lambda xs eb) rho t) vc) --> (closure_birth vc t)
+
+table (closure_count val card)
+rule (closure_birth vc t) (frame_count t k) --> (closure_count vc k)
+rule (closure_birth vc t1) (closure_birth vc t2) (/= t1 t2) --> (closure_count vc (inf))
+
+table (unique_closure val)
+table (summarized_closure val)
+rule (closure_count vc k) (= k (one)) --> (unique_closure vc)
+rule (closure_count vc k) (= k (inf)) --> (summarized_closure vc)

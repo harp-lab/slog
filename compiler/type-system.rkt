@@ -72,15 +72,29 @@
                      (cond
                        [(set-member? (set 'A 'B 'C) t)
                         ;; Link the other args (and, for the result type var,
-                        ;; the target x) to this arg's equivalence class.  Skip
-                        ;; the self-link (= y)->y: a computed arg has no direct
-                        ;; type, so a self-alias would loop resolve-local-type.
-                        (foldl (lambda (arg env)
-                                 (if (equal? arg y) env (hash-set env `(= ,arg) y)))
-                               (if (eq? t rett)
-                                   (hash-set env `(= ,x) y)
-                                   env)
-                               args)]
+                        ;; the target x) into this arg's equivalence class.
+                        ;; Alias entries ACCUMULATE symmetrically -- (= v) maps
+                        ;; to the list of every var v was ever linked to, in
+                        ;; both directions -- so resolution is a graph search
+                        ;; that finds a grounded class member regardless of
+                        ;; clause processing order.  (A single-valued hash was
+                        ;; order-dependent: a prim over two computed vars
+                        ;; processed before their grounding lets -- e.g. a
+                        ;; head-side nested call, heads fold first -- formed a
+                        ;; two-cycle that shadowed the groundings.)
+                        (let ([link (lambda (env a b)
+                                      (if (equal? a b)
+                                          env
+                                          (hash-update
+                                           (hash-update env `(= ,a)
+                                                        (lambda (l) (cons b l)) '())
+                                           `(= ,b)
+                                           (lambda (l) (cons a l)) '())))])
+                          (foldl (lambda (arg env) (link env arg y))
+                                 (if (eq? t rett)
+                                     (link env x y)
+                                     env)
+                                 args))]
                        ;; an `any` argument imposes no constraint -- recording
                        ;; it would clobber (and conflict with) the type the
                        ;; variable gets from its relation column
@@ -97,7 +111,13 @@
           (match (hash-ref rel-env name list)
             [`(struct ,ts ...)
              #:when (= (length args) (length ts))
-             (hash-set (foldl (lambda (x t env) (hash-set env x t)) env args ts) x name)]
+             ;; resolve transparent column types (lattice base, (listof T)
+             ;; -> list) exactly as the relation-atom case below does
+             (hash-set (foldl (lambda (x t env)
+                                (hash-set env x (lattice-base-type rel-env t)))
+                              env args ts)
+                       x
+                       name)]
             [`(struct ,ts ...)
              (error (format "Struct ~a takes ~a fields but is used with ~a in ~a"
                             name (length ts) (length args) (strip-prov cl)))]
@@ -119,35 +139,46 @@
              (error (format "Table ~a in ~a is not defined." name (strip-prov cl)))])]))
 
      (define local-env-proto (foldl add-to-local (hash) (append heads bodys)))
-     (define (resolve-local-type sym [seen (set)])
-       (cond
-         [(hash-has-key? local-env-proto sym) (hash-ref local-env-proto sym)]
-         [(set-member? seen sym) (error (format "Circular local-env alias involving ~a" sym))]
-         [else
-          (define alias (hash-ref local-env-proto `(= ,sym) (lambda () #f)))
-          (if alias
-              (resolve-local-type alias (set-add seen sym))
-              (error (format "No local-env for ~a" sym)))]))
+     ;; Resolve a variable to a ground type by breadth-first search over
+     ;; its (symmetric) polymorphic-link class: the first class member
+     ;; with a direct type wins.  A class with no grounded member at all
+     ;; is a genuinely circular computed definition.
+     (define (resolve-local-type sym)
+       (let loop ([frontier (list sym)] [seen (set)])
+         (match frontier
+           ['()
+            (error (format "Cannot infer a type for ~a (circular computed definitions with no ground use)" sym))]
+           [(cons s rest)
+            (cond
+              [(set-member? seen s) (loop rest seen)]
+              [(hash-has-key? local-env-proto s) (hash-ref local-env-proto s)]
+              [else
+               (loop (append rest (hash-ref local-env-proto `(= ,s) '()))
+                     (set-add seen s))])])))
      ;; ---- second pass: connect variables via polymorphic instantiations
      (define local-env
        (foldl (lambda (k env)
                 (match k
                   [`(= ,x)
-                   (let* ([y (hash-ref local-env-proto k)]
-                          [yt (resolve-local-type y)]
-                          [xt (hash-ref local-env-proto x (lambda () #f))])
-                     (cond
-                       [(not xt) (hash-set env x yt)]
-                       [(equal? xt yt) (hash-set env x xt)]
-                       ;; `any` is the universal escape hatch (as in
-                       ;; type-match?): a polymorphic link between any and
-                       ;; a concrete type resolves to the concrete side --
-                       ;; e.g. (+ n 1) where n comes from an any-typed
-                       ;; column (the demand transform's applyN judgments)
-                       [(eq? xt 'any) (hash-set env x yt)]
-                       [(eq? yt 'any) (hash-set env x xt)]
-                       [else
-                        (error (format "Arguments ~a : ~a and ~a : ~a do not match" x xt y yt))]))]
+                   ;; unify x's own direct type (if any) with the resolved
+                   ;; type of every var it was polymorphically linked to.
+                   ;; `any` is the universal escape hatch (as in
+                   ;; type-match?): a polymorphic link between any and a
+                   ;; concrete type resolves to the concrete side -- e.g.
+                   ;; (+ n 1) where n comes from an any-typed column (the
+                   ;; demand transform's applyN judgments).
+                   (define t*
+                     (for/fold ([acc (hash-ref local-env-proto x (lambda () #f))])
+                               ([y (in-list (hash-ref local-env-proto k))])
+                       (define yt (resolve-local-type y))
+                       (cond
+                         [(not acc) yt]
+                         [(equal? acc yt) acc]
+                         [(eq? acc 'any) yt]
+                         [(eq? yt 'any) acc]
+                         [else
+                          (error (format "Arguments ~a : ~a and ~a : ~a do not match" x acc y yt))])))
+                   (hash-set env x t*)]
                   [(? symbol? x) (hash-set env x (hash-ref local-env-proto x))]))
               (hash)
               (hash-keys local-env-proto)))

@@ -1,0 +1,5 @@
+(st_del (pbranch 0 2 (pleaf 1) (pleaf 2)) 2)   (pleaf 1)   
+(st_del (pbranch 0 4 (pbranch 0 2 (pleaf 1) (pleaf 2)) (pleaf 5)) 2)   (pbranch 0 4 (pleaf 1) (pleaf 5))   
+(st_del (pbranch 0 8 (pbranch 0 4 (pbranch 0 2 (pleaf 1) (pleaf 2)) (pleaf 5)) (pleaf 8)) 2)   (pbranch 0 8 (pbranch 0 4 (pleaf 1) (pleaf 5)) (pleaf 8))   
+(st_del (pleaf 2) 2)   (_enum "pempty")   
+(st_del (pleaf 8) 8)   (_enum "pempty")   

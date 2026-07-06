@@ -1,0 +1,7 @@
+(prim "*")
+(prim "+")
+(prim "-")
+(prim "<")
+(prim "=")
+(prim "eq?")
+(prim "not")

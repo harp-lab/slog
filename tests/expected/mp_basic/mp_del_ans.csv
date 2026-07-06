@@ -1,0 +1,3 @@
+(mp_del (mbranch 0 2 (mleaf 1 10) (mleaf 3 30)) 3)   (mleaf 1 10)   
+(mp_del (mbranch 0 4 (mbranch 0 2 (mleaf 1 10) (mleaf 3 30)) (mleaf 7 70)) 3)   (mbranch 0 4 (mleaf 1 10) (mleaf 7 70))   
+(mp_del (mleaf 3 30) 3)   (_enum "mempty")   

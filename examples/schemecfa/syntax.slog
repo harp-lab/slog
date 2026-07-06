@@ -1,0 +1,17 @@
+;; A nine-form Scheme subset.  Binder names must be globally distinct:
+;; the AST is interned, so a shared app/lambda/let subterm would stand
+;; for two concrete evaluation events and skew the counts.
+
+table (program expr)
+
+union (bool (tt) (ff))          ;; true/false are builtin symbol literals
+
+union (expr (num int)
+            (boolean bool)
+            (sym str)
+            (ref str)
+            (lambda list expr)  ;; (lambda [param-names ...] body)
+            (app expr list)     ;; (app operator [argument-exprs ...])
+            (if expr expr expr)
+            (let str expr expr)
+            (letrec str expr expr))

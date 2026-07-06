@@ -1,0 +1,27 @@
+;; puzzle "escargot", 23 clues, row-major.
+include "sudoku.slog"
+
+facts
+(given 0 1)
+(given 5 7)
+(given 7 9)
+(given 10 3)
+(given 13 2)
+(given 17 8)
+(given 20 9)
+(given 21 6)
+(given 24 5)
+(given 29 5)
+(given 30 3)
+(given 33 9)
+(given 37 1)
+(given 40 8)
+(given 44 2)
+(given 45 6)
+(given 50 4)
+(given 54 3)
+(given 61 1)
+(given 64 4)
+(given 71 7)
+(given 74 7)
+(given 78 3)

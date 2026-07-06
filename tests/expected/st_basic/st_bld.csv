@@ -1,0 +1,12 @@
+ (_enum "pempty"))
+ (pbranch 0 4 (pleaf 1) (pleaf 5))
+ (pbranch 0 4 (pleaf 1) (pleaf 5))
+ (pleaf 8))
+ 0
+ 0
+ 8
+ 8
+(st_bld
+(st_bld
+(st_bld 0 2 (pleaf 1) (_enum "pempty"))
+(st_bld 0 4 (pleaf 1) (pleaf 5))

@@ -1,0 +1,8 @@
+(mp_msk 1 1)
+(mp_msk 1 2)
+(mp_msk 1 4)
+(mp_msk 3 2)
+(mp_msk 3 4)
+(mp_msk 5 4)
+(mp_msk 7 2)
+(mp_msk 7 4)

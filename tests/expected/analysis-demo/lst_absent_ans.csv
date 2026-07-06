@@ -1,0 +1,5 @@
+(lst_absent (_enum "nil") "+")   1   
+(lst_absent (_enum "nil") "-")   1   
+(lst_absent (cons "p" (_enum "nil")) "+")   1   
+(lst_absent (cons "q" (_enum "nil")) "-")   1   
+(lst_absent (cons "y" (_enum "nil")) "+")   1   

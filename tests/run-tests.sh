@@ -38,6 +38,10 @@ if [ ${#TESTS[@]} -eq 0 ]; then
   TESTS+=("examples/tinycfa/0cfa.slog")
   TESTS+=("examples/tinycfa/0cfa-demand.slog")
   TESTS+=("examples/tinycfa/0cfa-counting.slog")
+  TESTS+=("examples/tinycfa/mcfa-counting.slog")
+  TESTS+=("examples/schemecfa/schemecfa.slog")
+  TESTS+=("examples/schemecfa/analysis-demo.slog")
+  TESTS+=("examples/kcfa/kcfa.slog")
 fi
 
 if [ "$KEEP_CACHE" -eq 0 ]; then
@@ -56,7 +60,11 @@ for t in "${TESTS[@]}"; do
   expected="tests/expected/$name"
   rm -rf "$outdir"
 
-  if ! timeout 300 racket slog.rkt --no-banner --debug-dir "$outdir" "$t" \
+  # 900s, not 300s: cold clang builds of the map-heavy examples (kcfa's
+  # rules-based Patricia environments generate a large .cpp) run several
+  # minutes; the fixpoints themselves are sub-second.  --keep-cache skips
+  # the rebuild.  The ceiling is a hang backstop, not a perf gate.
+  if ! timeout 900 racket slog.rkt --no-banner --debug-dir "$outdir" "$t" \
        > "$logfile" 2>&1; then
     echo "FAIL $name (run error; see $logfile)"
     FAIL=$((FAIL+1)); FAILED_NAMES+=("$name")

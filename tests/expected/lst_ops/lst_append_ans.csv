@@ -1,0 +1,3 @@
+(lst_append (_enum "nil") (cons 3 (cons 4 (_enum "nil"))))   (cons 3 (cons 4 (_enum "nil")))   
+(lst_append (cons 1 (cons 2 (_enum "nil"))) (cons 3 (cons 4 (_enum "nil"))))   (cons 1 (cons 2 (cons 3 (cons 4 (_enum "nil")))))   
+(lst_append (cons 2 (_enum "nil")) (cons 3 (cons 4 (_enum "nil"))))   (cons 2 (cons 3 (cons 4 (_enum "nil"))))   

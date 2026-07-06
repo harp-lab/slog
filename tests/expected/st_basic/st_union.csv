@@ -1,0 +1,6 @@
+ (pbranch 0 2 (pleaf 1) (pleaf 2)))
+ (pbranch 0 2 (pleaf 1) (pleaf 2)))
+ (pbranch 0 8 (pleaf 5) (pleaf 8))
+ (pleaf 5)
+(st_union
+(st_union

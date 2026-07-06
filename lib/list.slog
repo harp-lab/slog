@@ -1,0 +1,42 @@
+;; Standard list operations over the builtin cons/nil lists (bracket
+;; syntax: [a b c], [x rest ...]).  Demand judgments -- memoized, computed
+;; only for the lists actually asked about.  `include "lib/list.slog"`
+;; to use (docs/primitives.md, Phase 0).
+
+;; append: [1 2] ++ [3] = [1 2 3]
+demand (lst_append list list) list
+facts (lst_append [] r r)
+rule (lst_append [x xs ...] r [x z ...]) <-- (lst_append xs r z)
+
+;; ref: zero-based element access; no answer for an out-of-range index
+demand (lst_ref list int) any
+facts (lst_ref [x xs ...] 0 x)
+rule (lst_ref [x xs ...] n r) <-- (< 0 n) (lst_ref xs (- n 1) r)
+
+;; member: answers 1 when found; absence of an answer = not a member
+demand (lst_member list any) int
+facts (lst_member [x xs ...] x 1)
+rule (lst_member [x xs ...] y r) <-- (/= x y) (lst_member xs y r)
+
+;; len
+demand (lst_len list) int
+facts (lst_len [] 0)
+facts (lst_len [x xs ...] (+ (lst_len xs) 1))
+
+;; take: the first n elements (all of them when the list is shorter)
+demand (lst_take list int) list
+facts (lst_take l 0 [])
+facts (lst_take [] n [])
+rule (lst_take [x xs ...] n [x (lst_take xs (- n 1)) ...]) <-- (< 0 n)
+
+;; absent: answers 1 when y is NOT an element (member's positive complement)
+demand (lst_absent list any) int
+facts (lst_absent [] y 1)
+rule (lst_absent [x xs ...] y r) <-- (/= x y) (lst_absent xs y r)
+
+;; rev (via an accumulator judgment)
+demand (lst_rev_acc list list) list
+facts (lst_rev_acc [] acc acc)
+rule (lst_rev_acc [x xs ...] acc r) <-- (lst_rev_acc xs [x acc ...] r)
+demand (lst_rev list) list
+facts (lst_rev l (lst_rev_acc l []))

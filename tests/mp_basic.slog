@@ -1,0 +1,23 @@
+;; Patricia maps (lib/map.slog): brace literals with k:v pairs, canonicity,
+;; lookup/presence/delete, functional update {k:v m ...}, and left-biased
+;; union.  upd and uni must agree: {1:99 m ...} == (mp_union {1:99} m).
+
+include "../lib/map.slog"
+
+table (canon pmap)
+table (got int int)
+table (has int int)
+table (afterdel pmap)
+table (upd pmap)
+table (uni pmap)
+
+rule (= r {1:10 3:30 7:70}) --> (canon r)
+rule (= r (mp_fromlist [[7 70] [1 10] [3 30]])) --> (canon r)
+rule (= r (mp_fromlist [[3 30] [7 70] [1 10]])) --> (canon r)
+
+rule (canon m) (= v (mp_get m 3)) --> (got 3 v)
+rule (canon m) (= a (mp_has0 m 5)) --> (has 5 a)
+rule (canon m) (= a (mp_has0 m 7)) --> (has 7 a)
+rule (canon m) (= r (mp_del m 3)) --> (afterdel r)
+rule (canon m) (= r {1:99 m ...}) --> (upd r)
+rule (canon m) (= s {1:99}) (= r (mp_union s m)) --> (uni r)

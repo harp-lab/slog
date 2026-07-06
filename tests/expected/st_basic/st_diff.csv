@@ -1,0 +1,7 @@
+ (pbranch 0 4 (pbranch 0 2 (pleaf 1) (pleaf 2)) (pleaf 5))
+ (pbranch 0 8 (pbranch 0 4 (pbranch 0 2 (pleaf 1) (pleaf 2)) (pleaf 5)) (pleaf 8))
+ (pbranch 0 8 (pleaf 2) (pleaf 8)))
+ (pleaf 2))
+(st_diff
+(st_diff
+(st_diff (pleaf 8) (pleaf 8))

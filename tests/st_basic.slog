@@ -1,0 +1,25 @@
+;; Patricia sets (lib/set.slog): brace literals, canonicity, and the ops.
+;; canon is built FOUR ways -- a brace literal, two insertion orders, and
+;; a union of parts -- and must hold exactly ONE row: the trie shape is a
+;; function of the key set alone, so interning gives one id.
+
+include "../lib/set.slog"
+
+table (canon pset)
+table (m int int)
+table (sz int)
+table (afterdel pset)
+table (dif pset)
+table (upd pset)
+
+rule (= r {5 2 8 1}) --> (canon r)
+rule (= r (st_fromlist [5 2 8 1])) --> (canon r)
+rule (= r (st_fromlist [1 8 2 5])) --> (canon r)
+rule (= a {8 5}) (= b {1 2}) (= r (st_union a b)) --> (canon r)
+
+rule (canon s) (= a (st_mem0 s 5)) --> (m 5 a)
+rule (canon s) (= a (st_mem0 s 3)) --> (m 3 a)
+rule (canon s) (= n (st_size s)) --> (sz n)
+rule (canon s) (= r (st_del s 2)) --> (afterdel r)
+rule (canon s) (= o {2 8}) (= r (st_diff s o)) --> (dif r)
+rule (canon s) (= r {7 s ...}) --> (upd r)

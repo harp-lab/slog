@@ -1,0 +1,5 @@
+(_enum "ff")
+(_enum "mempty")
+(_enum "nil")
+(_enum "numval")
+(_enum "tt")

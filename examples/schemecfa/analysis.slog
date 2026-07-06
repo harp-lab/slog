@@ -1,0 +1,36 @@
+;; A client-facing query layer over the raw interpreter evidence: the
+;; resolved call graph, per-site target cardinality, and the verdicts a
+;; compiler pass (devirtualizer, inliner, dead-code) actually consumes.
+;; Nothing here touches the interpreter -- it reads eval/binding/counts.
+
+include "counting.slog"
+
+;; The resolved call graph.  At app-site `site` in frame `c` the operator
+;; is a closure `cv`, so control enters its body in the ticked frame `l`.
+table (call_target expr list val list)   ;; site, caller-ctx, callee-closure, callee-ctx
+rule (eval (app ef es) c)
+     (eval ef c (closure lam cb))
+     (= l (tick (app ef es) c))
+ --> (call_target (app ef es) c (closure lam cb) l)
+
+;; call-graph edges with contexts projected away: which code can run here
+table (site_targets expr lambda)
+rule (call_target site c (closure lam cb) l) --> (site_targets site lam)
+
+;; per-site target cardinality, rendered on the same chain as the counts
+table (target_count expr card)
+table (monomorphic_site expr)     ;; one callee lambda ever: directly devirtualizable
+table (polymorphic_site expr)
+rule (site_targets site lam) --> (target_count site (one))
+rule (site_targets site lam1) (site_targets site lam2) (/= lam1 lam2) --> (target_count site (inf))
+rule (target_count site k) (= k (one)) --> (monomorphic_site site)
+rule (target_count site k) (= k (inf)) --> (polymorphic_site site)
+
+;; the payoff of counting: a monomorphic site whose one callee is a
+;; unique concrete closure can be inlined outright, not merely devirtualized
+table (inlinable_call expr val)
+rule (call_target site c cv l) (monomorphic_site site) (unique_closure cv) --> (inlinable_call site cv)
+
+;; a primitive call site: the operator is always a known primitive here
+table (primitive_site expr str)
+rule (eval (app ef es) c) (eval ef c (prim op)) --> (primitive_site (app ef es) op)

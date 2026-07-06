@@ -1,0 +1,20 @@
+;; (list T) parametric column types -- recorded as (listof T) in the
+;; rel-env, transparent to the checker (resolving to the builtin list
+;; union) -- in table columns, nested (list (list int)), and demand
+;; input positions.
+
+table (input (list int))
+table (pairs (list (list int)))
+table (heads int)
+table (total int)
+
+demand (sum (list int)) int
+facts (sum [] 0)
+facts (sum [x xs ...] (+ (sum xs) x))
+
+facts (input [1 2 3])
+facts (pairs [[1 2] [3 4]])
+
+rule (input [x xs ...]) --> (heads x)
+rule (pairs [[a b] r ...]) --> (heads a)
+rule (input l) (= r (sum l)) --> (total r)

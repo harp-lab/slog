@@ -1,0 +1,12 @@
+ (cons 2 (cons 8 (cons 1 (_enum "nil")))))
+ (cons 8 (cons 2 (cons 5 (_enum "nil")))))
+ 1
+ 5
+(cons
+(cons
+(cons 1 (_enum "nil"))
+(cons 2 (cons 5 (_enum "nil")))
+(cons 2 (cons 8 (cons 1 (_enum "nil"))))
+(cons 5 (_enum "nil"))
+(cons 8 (cons 1 (_enum "nil")))
+(cons 8 (cons 2 (cons 5 (_enum "nil"))))

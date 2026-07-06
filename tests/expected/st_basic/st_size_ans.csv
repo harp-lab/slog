@@ -1,0 +1,7 @@
+(st_size (pbranch 0 2 (pleaf 1) (pleaf 2)))   2   
+(st_size (pbranch 0 4 (pbranch 0 2 (pleaf 1) (pleaf 2)) (pleaf 5)))   3   
+(st_size (pbranch 0 8 (pbranch 0 4 (pbranch 0 2 (pleaf 1) (pleaf 2)) (pleaf 5)) (pleaf 8)))   4   
+(st_size (pleaf 1))   1   
+(st_size (pleaf 2))   1   
+(st_size (pleaf 5))   1   
+(st_size (pleaf 8))   1   

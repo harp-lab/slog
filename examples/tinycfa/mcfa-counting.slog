@@ -1,0 +1,306 @@
+;; 1-m-CFA with GENUINE abstract counting (Might-Shivers GammaCFA), replacing
+;; the flow-set-cardinality measure of 0cfa-counting.slog with a sound count
+;; of CONCRETE BINDINGS per abstract binding.
+;;
+;; -- The analysis: m-CFA (Might-Smaragdakis-Van Horn, "Resolving and
+;; Exploiting the k-CFA Paradox", PLDI 2010), m = 1.  Contexts are the top-m
+;; stack frames; for m = 1 a context is just the call site of the current
+;; function invocation (or (main) for top level).  Environments are FLAT: a
+;; closure is (clo lam birth-ctx), and at invocation every free variable of
+;; the lambda is RE-BOUND -- copied from the closure's birth frame into the
+;; callee's new frame -- alongside the parameter.  So an abstract binding is
+;; a pair (var, ctx), the store is (store var ctx val), and no first-class
+;; environment maps are ever needed.
+;;
+;; -- The measure: mu(x, l) bounds how many concrete bindings the abstract
+;; address (x, l) stands for over the whole run -- (one) certifies a globally
+;; unique concrete binding (flow-insensitive must-alias: the license for
+;; strong update, super-beta with free variables, must-equality of closures).
+;; This is NOT the number of distinct values in the store; muval below
+;; computes that older, weaker measure for side-by-side contrast.
+;;
+;; -- Why counting is expressible in this big-step demand encoding at all:
+;; binding events cannot be counted as facts (set semantics dedups two events
+;; that agree abstractly -- the bug this file exists to fix).  But big-step
+;; CBV gives an invariant: ONE CONCRETE FRAME EVALUATES EACH SYNTACTIC NODE
+;; AT MOST ONCE (repetition only ever goes through a fresh call).  Writing
+;; nu(l) for the number of concrete frames at context l, that invariant gives
+;;
+;;     nu(l)  <=  SUM over abstract callers C of l  of  nu(C)
+;;     mu(x,l)<=  SUM over callers C that bind x at l of  nu(C)
+;;
+;; and on the chain 0 < 1 < inf the saturating sum (+) factors completely
+;; into idempotent evidence: a single caller passes its count through
+;; unchanged, two DISTINCT callers force inf (1 (+) 1 = inf), and a caller
+;; that is itself inf forces inf.  Cycles need no special evolution operator:
+;; a reachable cycle in the context graph must be entered from outside it, so
+;; some node on the cycle sees two distinct callers (its cycle predecessor
+;; and its entry), gets inf, and inf circulates.  The recursion lives in the
+;; plain relation (many l); the lattice merely renders {absent, one, inf}.
+;; This is the GLOBAL (flow-insensitive, GC-less) GammaCFA count exactly;
+;; what a fact fixpoint cannot express is PER-STATE counting with abstract
+;; GC (counts that reset when bindings die) -- that is a trace property and
+;; would need machine states threaded through (docs/lattices.md section 2.3).
+;;
+;; -- Soundness discipline: branching on mu = (one) is a downward-closed read
+;; and lives in later strata, where the counts are closed (compile-enforced).
+;;
+;; -- Caveats: programs must be CLOSED, and no app or lambda SUBTERM may
+;; occur twice (the AST is interned, so two occurrences of one term are one
+;; abstract node; two occurrences inside one frame would be two concrete
+;; events behind one fact and the count would lie low).  Duplicated (ref x)
+;; nodes are harmless -- references allocate nothing.  A real frontend would
+;; label nodes uniquely.  All test programs below keep every binder distinct.
+
+include "types.slog"
+include "freevars.slog"
+
+;; ---- values and contexts ----
+
+union (ctx (main) app)          ;; m = 1: a context IS a call site
+union (val (clo lambda ctx))    ;; flat closure: lambda + birth context
+
+table (store str ctx val)       ;; the abstract binding (x, l) -> values
+table (result val)
+
+;; ---- counting evidence (written by the evaluator, read by the counters) ----
+
+table (callev ctx ctx)          ;; (callev l c): a frame at c creates a frame at l
+table (bindev str ctx ctx)      ;; (bindev x l c): a frame at c binds x at (x, l)
+
+;; ---- the 1-m-CFA evaluator: demand-driven big-step ----
+
+demand (eval expr ctx) val
+
+;; a lambda evaluates to a closure over the frame it is evaluated in; the
+;; flat-env invariant (its free variables are bound in that frame) holds
+;; inductively because invocation re-binds free variables below
+facts (eval (lambda x eb) c (clo (lambda x eb) c))
+
+;; a reference reads the current frame -- parameter or free, it lives here
+rule (eval (ref x) c v) <-- (store x c v)
+
+;; application: the body runs in a fresh frame at the call site itself
+rule (eval (app ef ea) c v)
+ <--
+     (eval ef c (clo (lambda x eb) cb))
+     (eval ea c va)
+     (eval eb (app ef ea) v)
+
+;; invocation effects: bind the parameter in the new frame, and record the
+;; call event and binding event that the counting layer consumes
+rule (eval (app ef ea) c)
+     (eval ef c (clo (lambda x eb) cb))
+     (eval ea c va)
+ -->
+     (store x (app ef ea) va)
+     (callev (app ef ea) c)
+     (bindev x (app ef ea) c)
+
+;; m-CFA re-binding: copy each free variable of the callee from the
+;; closure's birth frame into the new frame -- one more binding event each
+rule (eval (app ef ea) c)
+     (eval ef c (clo (lambda x eb) cb))
+     (eval ea c va)
+     (freevar y (lambda x eb))
+     (store y cb vy)
+ -->
+     (store y (app ef ea) vy)
+     (bindev y (app ef ea) c)
+
+rule (program e) --> (eval e (main))
+rule (program e) (eval e (main) v) --> (result v)
+
+;; ---- the count: nu on frames, mu on bindings ----
+
+;; (many l): the context l may stand for MORE than one concrete frame.
+;; Plain monotone recursion -- this is where 1 (+) 1 = inf lives.
+table (many ctx)
+rule (callev l c1) (callev l c2) (/= c1 c2) --> (many l)
+rule (callev l c) (many c) --> (many l)
+
+lattice (card (count))
+table (nu ctx card)             ;; concrete frames per context: absent/one/inf
+table (mu str ctx card)         ;; concrete bindings per address: absent/one/inf
+
+rule (program e) --> (nu (main) (one))
+rule (callev l c) --> (nu l (one))
+rule (many l) --> (nu l (inf))
+
+rule (bindev x l c) --> (mu x l (one))
+rule (bindev x l c) (many c) --> (mu x l (inf))
+rule (bindev x l c1) (bindev x l c2) (/= c1 c2) --> (mu x l (inf))
+
+;; the OLD measure -- distinct abstract values per address -- kept for
+;; contrast; it bounds nothing about binding multiplicity
+table (muval str ctx card)
+rule (store x l v) --> (muval x l (one))
+rule (store x l v1) (store x l v2) (/= v1 v2) --> (muval x l (inf))
+
+;; ---- later strata: the counts are closed, branching on (one) is sound ----
+
+table (unique str ctx)          ;; mu = one: globally unique concrete binding
+table (rebound str ctx)         ;; mu = inf: address is truly summarizing
+table (mono str ctx)            ;; muval = one: singleton flow set
+table (poly str ctx)
+
+rule (mu x l k) (= k (one)) --> (unique x l)
+rule (mu x l k) (= k (inf)) --> (rebound x l)
+rule (muval x l k) (= k (one)) --> (mono x l)
+rule (muval x l k) (= k (inf)) --> (poly x l)
+
+;; the 2x2 the two measures span (the fourth cell, rebound+poly, is the
+;; uninteresting fully-blurred one):
+table (pinned str ctx)          ;; unique binding, known value: full must-info
+table (valblur str ctx)         ;; unique binding, value only known as a set
+table (bindblur str ctx)        ;; ONE abstract value, MANY concrete bindings:
+                                ;; exactly the case 0cfa-counting.slog misread
+rule (unique x l) (mono x l) --> (pinned x l)
+rule (unique x l) (poly x l) --> (valblur x l)
+rule (rebound x l) (mono x l) --> (bindblur x l)
+
+;; closure cardinality: (clo lam c) is created at most once per frame at c,
+;; so nu(c) bounds how many concrete closures the abstract closure denotes --
+;; must-equality for closures (two references to a uniqueclo closure with
+;; equal free-variable bindings are THE SAME concrete closure)
+table (uniqueclo val)
+table (manyclo val)
+rule (eval_ans (eval (lambda x eb) c) vc) (nu c k) (= k (one)) --> (uniqueclo vc)
+rule (eval_ans (eval (lambda x eb) c) vc) (nu c k) (= k (inf)) --> (manyclo vc)
+
+;; =====================================================================
+;; Test programs.  Sites are named by their app node; every binder in the
+;; file is globally distinct so no subterm is shared within or across
+;; programs (see caveat above).
+;; =====================================================================
+
+;; T1 -- the original complaint, minimal form.  (lambda y1 (y1 y1)) applied
+;; to itself-shaped loop: L0 = the outer app, L1 = (x1 x1), L2 = (y1 y1).
+;; The frame L2 re-enters itself: callers(L2) = {L1, L2}, so nu(L2) = inf
+;; and (y1, L2) is bound infinitely often -- always to the SAME abstract
+;; closure.  Fact-counting sees one store fact; the event count says inf:
+;;   bindblur(y1, L2), pinned(x1, L0), pinned(y1, L1).  No result (loops).
+facts
+(program
+ (app (lambda "x1" (app (ref "x1") (ref "x1")))
+      (lambda "y1" (app (ref "y1") (ref "y1")))))
+
+;; T2 -- two distinct callers, no recursion anywhere: 1 (+) 1 = inf.
+;; f2 = (lambda x2 (g2 g2)) is called at two different sites (with args
+;; v2/w2), so the inner site Lc = (g2 g2) runs in two frames; (i2, Lc) is
+;; bound twice -- both times to the SAME closure (clo (lambda i2) (main)).
+;;   bindblur(i2, Lc) with nu(Lc) = inf; everything else pinned.
+;;   result: (clo (lambda i2 ...) (main)).
+facts
+(program
+ (app (lambda "g2"
+        (app (lambda "f2"
+               (app (lambda "u2" (app (ref "f2") (lambda "w2" (ref "w2"))))
+                    (app (ref "f2") (lambda "v2" (ref "v2")))))
+             (lambda "x2" (app (ref "g2") (ref "g2")))))
+      (lambda "i2" (ref "i2"))))
+
+;; T3 -- allocation inside a loop: the loop body (app (lambda t3 ...)
+;; (lambda d3 ...)) evaluates (lambda d3 ...) once per iteration.  First
+;; iteration runs in frame Lx (unique), later ones in frame Ly (inf), so
+;;   uniqueclo (clo (lambda d3) Lx)   -- the first iteration's closure
+;;   manyclo   (clo (lambda d3) Ly)   -- one abstract closure, infinitely
+;;                                       many concrete ones: the analysis
+;;                                       must NOT claim they are equal.
+;; Also bindblur(y3, Lt), bindblur(y3, Ly); (t3, Lt) is rebound AND poly.
+facts
+(program
+ (app (lambda "x3" (app (ref "x3") (ref "x3")))
+      (lambda "y3" (app (lambda "t3" (app (ref "y3") (ref "y3")))
+                        (lambda "d3" (ref "d3"))))))
+
+;; T4 -- U-combinator recursion (fact-shape): loop = ((lambda s4 (s4 s4))
+;; mk4), then (loop (lambda z4 ...)).  The FIRST invocation's frame Lrun is
+;; provably unique -- pinned(n4, Lrun), pinned(r4, Lrun) -- while the
+;; recursive frame Lap re-enters itself: bindblur(n4, Lap), bindblur(r4,
+;; Lap), bindblur(r4, Lrr).  The recursive (clo (lambda n4) Lrr) is manyclo
+;; (rebuilt every iteration), the pre-loop (clo (lambda n4) Lss) uniqueclo.
+;; Free variable r4 is re-bound across three frames.  No result (loops).
+facts
+(program
+ (app (app (lambda "s4" (app (ref "s4") (ref "s4")))
+           (lambda "r4" (lambda "n4" (app (app (ref "r4") (ref "r4"))
+                                          (ref "n4")))))
+      (lambda "z4" (ref "z4"))))
+
+;; T5 -- the two measures pull APART in both directions, plus abstract
+;; nondeterminism vs concrete multiplicity.  f5 = (lambda x5 (g5 x5)) is
+;; called from two sites, so the shared inner site Lc5 = (g5 x5) conflates
+;; both arguments: (i5, Lc5) is rebound AND poly.  g5 returns i5, so BOTH
+;; closures flow back to each call's result: u5 and p5 each get a UNIQUE
+;; binding holding TWO possible values -- valblur(u5,.), valblur(p5,.):
+;; strong update is licensed while the value stays unknown.  Then p5 (two
+;; abstract closures, both with parameter k5) is invoked ONCE at (p5 n5):
+;; one concrete frame invokes ONE of them, and the count knows it --
+;; pinned(k5, (p5 n5)) despite two lambdas flowing to the operator.
+facts
+(program
+ (app (lambda "g5"
+        (app (lambda "f5"
+               (app (lambda "u5"
+                      (app (lambda "p5" (app (ref "p5")
+                                             (lambda "n5" (ref "n5"))))
+                           (app (ref "f5")
+                                (lambda "k5" (lambda "e5" (ref "e5"))))))
+                    (app (ref "f5") (lambda "k5" (ref "k5")))))
+             (lambda "x5" (app (ref "g5") (ref "x5")))))
+      (lambda "i5" (ref "i5"))))
+
+;; T6 -- per-ADDRESS counting beats per-FRAME counting.  h6 = (lambda q6
+;; (q6 (lambda z6 ...))) is called twice, so its body site Ls6 = (q6 ...)
+;; has two callers: nu(Ls6) = inf.  But the two callers invoke DIFFERENT
+;; lambdas there ((lambda a6) vs (lambda b6)), so each parameter is bound
+;; by only one caller's frames: pinned(a6, Ls6) and pinned(b6, Ls6) even
+;; though the frame count is inf.
+facts
+(program
+ (app (lambda "h6"
+        (app (lambda "d6" (app (ref "h6") (lambda "b6" (ref "b6"))))
+             (app (ref "h6") (lambda "a6" (ref "a6")))))
+      (lambda "q6" (app (ref "q6") (lambda "z6" (ref "z6"))))))
+
+;; T7 -- precision baseline: a curried three-argument chain.  Free variables
+;; propagate two hops (p7 into q7's frame, then p7 and q7 into r7's frame);
+;; every frame is entered once; EVERYTHING is pinned, every closure
+;; uniqueclo, and the result is (clo (lambda c7 ...) (main)).  A sound
+;; counter must not cry inf here.
+facts
+(program
+ (app (app (app (lambda "p7"
+                  (lambda "q7"
+                    (lambda "r7" (app (app (ref "p7") (ref "q7"))
+                                      (ref "r7")))))
+                (lambda "a7" (ref "a7")))
+           (lambda "b7" (ref "b7")))
+      (lambda "c7" (ref "c7"))))
+
+;; T8 -- parameter-name collision across callers.  Two DIFFERENT lambdas
+;; that share the parameter name k8 are invoked at the shared site Ls8 from
+;; two different frames: the single address (k8, Ls8) genuinely receives
+;; two concrete bindings (and two birth-distinct closures of (lambda m8)):
+;; rebound(k8, Ls8) and poly(k8, Ls8) -- correctly fully blurred.
+facts
+(program
+ (app (lambda "h8"
+        (app (lambda "d8" (app (ref "h8")
+                               (lambda "k8" (lambda "e8" (ref "e8")))))
+             (app (ref "h8") (lambda "k8" (ref "k8")))))
+      (lambda "s8" (app (ref "s8") (lambda "m8" (ref "m8"))))))
+
+;; T9 -- two calls of one function in one frame are two DISTINCT addresses
+;; in 1-m-CFA: twice = (lambda f9 (lambda x9 (f9 (f9 x9)))).  The inner and
+;; outer call of f9 each bind s9 exactly once -- pinned(s9, Li9) and
+;; pinned(s9, Lo9) -- where a 0CFA would merge them into one address whose
+;; true count is 2.  Context-sensitivity SHARPENS counts; result is
+;; (clo (lambda z9 ...) (main)).
+facts
+(program
+ (app (app (lambda "f9" (lambda "x9" (app (ref "f9")
+                                          (app (ref "f9") (ref "x9")))))
+           (lambda "s9" (ref "s9")))
+      (lambda "z9" (ref "z9"))))

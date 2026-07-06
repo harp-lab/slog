@@ -1,0 +1,7 @@
+(clo (lambda "c7" (ref "c7")) (_enum "main"))   
+(clo (lambda "e5" (ref "e5")) (app (ref "p5") (lambda "n5" (ref "n5"))))   
+(clo (lambda "e8" (ref "e8")) (app (ref "s8") (lambda "m8" (ref "m8"))))   
+(clo (lambda "i2" (ref "i2")) (_enum "main"))   
+(clo (lambda "n5" (ref "n5")) (app (lambda "p5" (app (ref "p5") (lambda "n5" (ref "n5")))) (app (ref "f5") (lambda "k5" (lambda "e5" (ref "e5"))))))   
+(clo (lambda "z6" (ref "z6")) (app (ref "h6") (lambda "b6" (ref "b6"))))   
+(clo (lambda "z9" (ref "z9")) (_enum "main"))   

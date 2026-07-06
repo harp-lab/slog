@@ -1,0 +1,109 @@
+ (_enum "mempty")
+ (_enum "mempty")
+ (_enum "mempty")
+ (_enum "mempty")
+ (_enum "mempty")
+ (_enum "mempty")
+ (_enum "mempty")
+ (_enum "mempty")
+ (_enum "mempty")
+ (_enum "nil"))
+ (_enum "nil"))
+ (_enum "nil"))
+ (_enum "nil"))
+ (_enum "nil"))
+ (_enum "nil"))
+ (_enum "nil"))
+ (_enum "nil"))
+ (_enum "nil"))
+ (_enum "nil"))
+ (_enum "nil"))
+ (_enum "nil"))
+ (_enum "nil"))
+ (_enum "nil"))
+ (_enum "nil"))
+ (cons (app (ref 0) (cons (sym "A") (_enum "nil"))) (_enum "nil")))
+ (cons (app (ref 0) (cons (sym "B") (_enum "nil"))) (_enum "nil")))
+ (cons (app (ref 10) (cons (sym "P") (_enum "nil"))) (_enum "nil")))
+ (cons (app (ref 10) (cons (sym "Q") (_enum "nil"))) (_enum "nil")))
+ (cons (app (ref 20) (cons (app (primref "-") (cons (ref 21) (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil")))
+ (cons (app (ref 20) (cons (num 5) (_enum "nil"))) (_enum "nil")))
+ (cons (app (ref 3) (cons (num 0) (_enum "nil"))) (_enum "nil")))
+ (cons (app (ref 30) (cons (num 3) (cons (num 4) (_enum "nil")))) (_enum "nil")))
+ (cons (app (ref 30) (cons (num 3) (cons (num 4) (_enum "nil")))) (_enum "nil")))
+ (cons (app (ref 4) (cons (num 0) (_enum "nil"))) (_enum "nil")))
+ (cons (app (ref 40) (cons (app (primref "-") (cons (ref 41) (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil")))
+ (cons (app (ref 40) (cons (num 3) (_enum "nil"))) (_enum "nil")))
+ (mbranch 0 2 (mleaf 0 (_enum "nil")) (mleaf 3 (_enum "nil")))
+ (mbranch 0 4 (mbranch 0 2 (mleaf 0 (_enum "nil")) (mleaf 3 (_enum "nil"))) (mbranch 4 1 (mleaf 4 (_enum "nil")) (mleaf 5 (_enum "nil"))))
+ (mbranch 0 4 (mbranch 0 2 (mleaf 0 (_enum "nil")) (mleaf 3 (_enum "nil"))) (mleaf 4 (_enum "nil")))
+ (mbranch 4 1 (mleaf 4 (_enum "nil")) (mleaf 5 (_enum "nil")))
+ (mbranch 8 4 (mleaf 10 (_enum "nil")) (mleaf 12 (_enum "nil")))
+ (mleaf 0 (_enum "nil"))
+ (mleaf 0 (_enum "nil"))
+ (mleaf 1 (cons (app (ref 0) (cons (sym "A") (_enum "nil"))) (_enum "nil")))
+ (mleaf 1 (cons (app (ref 0) (cons (sym "B") (_enum "nil"))) (_enum "nil")))
+ (mleaf 10 (_enum "nil"))
+ (mleaf 12 (_enum "nil"))
+ (mleaf 20 (_enum "nil"))
+ (mleaf 20 (_enum "nil"))
+ (mleaf 31 (cons (app (ref 30) (cons (num 3) (cons (num 4) (_enum "nil")))) (_enum "nil")))
+ (mleaf 4 (_enum "nil"))
+ (mleaf 4 (_enum "nil"))
+ (mleaf 40 (_enum "nil"))
+ (mleaf 40 (_enum "nil"))
+ 1
+ 1
+ 10
+ 11
+ 11
+ 12
+ 13
+ 13
+ 2
+ 2
+ 20
+ 21
+ 21
+ 3
+ 30
+ 31
+ 32
+ 4
+ 4
+ 40
+ 41
+ 41
+ 5
+ 5
+ 6
+ 6
+ 6
+(mp_put
+(mp_put
+(mp_put
+(mp_put
+(mp_put
+(mp_put
+(mp_put
+(mp_put
+(mp_put
+(mp_put
+(mp_put
+(mp_put
+(mp_put
+(mp_put
+(mp_put
+(mp_put
+(mp_put
+(mp_put
+(mp_put
+(mp_put
+(mp_put
+(mp_put
+(mp_put
+(mp_put
+(mp_put
+(mp_put
+(mp_put
+(mp_put (_enum "mempty") 0 (_enum "nil"))

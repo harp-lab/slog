@@ -1,0 +1,7 @@
+ (mbranch 0 2 (mleaf 1 10) (mleaf 3 30))
+ (mbranch 0 4 (mbranch 0 2 (mleaf 1 10) (mleaf 3 30)) (mleaf 7 70))
+ 3)
+ 3)
+(mp_del
+(mp_del
+(mp_del (mleaf 3 30) 3)

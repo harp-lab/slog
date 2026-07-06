@@ -1,0 +1,148 @@
+ "*"
+ "*"
+ "*"
+ "+"
+ "+"
+ "-"
+ "-"
+ "-"
+ "-"
+ "-"
+ "-"
+ "="
+ "="
+ "="
+ "="
+ "="
+ "="
+ "a"
+ "a"
+ "b"
+ "b"
+ "f"
+ "fac"
+ "fac"
+ "fac"
+ "g"
+ "g"
+ "i"
+ "i"
+ "i"
+ "id"
+ "id"
+ "loop"
+ "loop"
+ "loop"
+ "n"
+ "n"
+ "n"
+ "w"
+ "w"
+ "x"
+ "y"
+ "y"
+ "z"
+ "z"
+ (cons (app (ref "call2") (cons (ref "+") (cons (num 10) (cons (num 20) (_enum "nil"))))) (_enum "nil")))
+ (cons (app (ref "call2") (cons (ref "+") (cons (num 10) (cons (num 20) (_enum "nil"))))) (_enum "nil")))
+ (cons (app (ref "call2") (cons (ref "+") (cons (num 10) (cons (num 20) (_enum "nil"))))) (_enum "nil")))
+ (cons (app (ref "call2") (cons (ref "<") (cons (num 1) (cons (num 2) (_enum "nil"))))) (_enum "nil")))
+ (cons (app (ref "call2") (cons (ref "<") (cons (num 1) (cons (num 2) (_enum "nil"))))) (_enum "nil")))
+ (cons (app (ref "call2") (cons (ref "<") (cons (num 1) (cons (num 2) (_enum "nil"))))) (_enum "nil")))
+ (cons (app (ref "f") (cons (app (ref "f") (cons (ref "x") (_enum "nil"))) (_enum "nil"))) (cons (app (ref "twice") (cons (lambda (cons "y" (_enum "nil")) (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil"))))) (cons (num 5) (_enum "nil")))) (_enum "nil"))))
+ (cons (app (ref "f") (cons (app (ref "f") (cons (ref "x") (_enum "nil"))) (_enum "nil"))) (cons (app (ref "twice") (cons (lambda (cons "y" (_enum "nil")) (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil"))))) (cons (num 5) (_enum "nil")))) (_enum "nil"))))
+ (cons (app (ref "f") (cons (ref "x") (_enum "nil"))) (cons (app (ref "twice") (cons (lambda (cons "y" (_enum "nil")) (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil"))))) (cons (num 5) (_enum "nil")))) (_enum "nil"))))
+ (cons (app (ref "f") (cons (ref "x") (_enum "nil"))) (cons (app (ref "twice") (cons (lambda (cons "y" (_enum "nil")) (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil"))))) (cons (num 5) (_enum "nil")))) (_enum "nil"))))
+ (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil"))))
+ (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil"))))
+ (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil"))))
+ (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil"))))
+ (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil"))))
+ (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "fac") (cons (num 6) (_enum "nil"))) (_enum "nil"))))
+ (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "fac") (cons (num 6) (_enum "nil"))) (_enum "nil"))))
+ (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "fac") (cons (num 6) (_enum "nil"))) (_enum "nil"))))
+ (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "fac") (cons (num 6) (_enum "nil"))) (_enum "nil"))))
+ (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "fac") (cons (num 6) (_enum "nil"))) (_enum "nil"))))
+ (cons (app (ref "fac") (cons (num 6) (_enum "nil"))) (_enum "nil")))
+ (cons (app (ref "fac") (cons (num 6) (_enum "nil"))) (_enum "nil")))
+ (cons (app (ref "fac") (cons (num 6) (_enum "nil"))) (_enum "nil")))
+ (cons (app (ref "fac") (cons (num 6) (_enum "nil"))) (_enum "nil")))
+ (cons (app (ref "fac") (cons (num 6) (_enum "nil"))) (_enum "nil")))
+ (cons (app (ref "id") (cons (ref "w") (_enum "nil"))) (cons (app (ref "wrap") (cons (sym "one") (_enum "nil"))) (_enum "nil"))))
+ (cons (app (ref "id") (cons (ref "w") (_enum "nil"))) (cons (app (ref "wrap") (cons (sym "two") (_enum "nil"))) (_enum "nil"))))
+ (cons (app (ref "loop") (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "loop") (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil"))))
+ (cons (app (ref "loop") (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "loop") (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil"))))
+ (cons (app (ref "loop") (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "loop") (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil"))))
+ (cons (app (ref "loop") (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "loop") (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil"))))
+ (cons (app (ref "loop") (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "loop") (cons (num 3) (_enum "nil"))) (_enum "nil"))))
+ (cons (app (ref "loop") (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "loop") (cons (num 3) (_enum "nil"))) (_enum "nil"))))
+ (cons (app (ref "loop") (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "loop") (cons (num 3) (_enum "nil"))) (_enum "nil"))))
+ (cons (app (ref "loop") (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "loop") (cons (num 3) (_enum "nil"))) (_enum "nil"))))
+ (cons (app (ref "loop") (cons (num 3) (_enum "nil"))) (_enum "nil")))
+ (cons (app (ref "loop") (cons (num 3) (_enum "nil"))) (_enum "nil")))
+ (cons (app (ref "loop") (cons (num 3) (_enum "nil"))) (_enum "nil")))
+ (cons (app (ref "loop") (cons (num 3) (_enum "nil"))) (_enum "nil")))
+ (cons (app (ref "twice") (cons (lambda (cons "y" (_enum "nil")) (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil"))))) (cons (num 5) (_enum "nil")))) (_enum "nil")))
+ (cons (app (ref "twice") (cons (lambda (cons "y" (_enum "nil")) (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil"))))) (cons (num 5) (_enum "nil")))) (_enum "nil")))
+ (cons (app (ref "wrap") (cons (sym "one") (_enum "nil"))) (_enum "nil")))
+ (cons (app (ref "wrap") (cons (sym "one") (_enum "nil"))) (_enum "nil")))
+ (cons (app (ref "wrap") (cons (sym "two") (_enum "nil"))) (_enum "nil")))
+ (cons (app (ref "wrap") (cons (sym "two") (_enum "nil"))) (_enum "nil")))
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup
+(lookup "+" (_enum "nil"))
+(lookup "<" (_enum "nil"))
+(lookup "call2" (_enum "nil"))
+(lookup "eq?" (_enum "nil"))
+(lookup "fac" (_enum "nil"))
+(lookup "loop" (_enum "nil"))
+(lookup "not" (_enum "nil"))
+(lookup "r1" (_enum "nil"))
+(lookup "r2" (_enum "nil"))
+(lookup "s1" (_enum "nil"))
+(lookup "s2" (_enum "nil"))
+(lookup "twice" (_enum "nil"))
+(lookup "wrap" (_enum "nil"))

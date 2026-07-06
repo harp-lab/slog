@@ -1,0 +1,4 @@
+(delta "+" (cons (_enum "numval") (cons (_enum "numval") (_enum "nil"))))   (_enum "numval")   
+(delta "-" (cons (_enum "numval") (cons (_enum "numval") (_enum "nil"))))   (_enum "numval")   
+(delta "<" (cons (_enum "numval") (cons (_enum "numval") (_enum "nil"))))   (boolval (_enum "ff"))   
+(delta "<" (cons (_enum "numval") (cons (_enum "numval") (_enum "nil"))))   (boolval (_enum "tt"))   

@@ -1,0 +1,34 @@
+ (cons 2 (cons 3 (cons 4 (_enum "nil")))))
+ (cons 2 (cons 3 (cons 4 (cons 5 (_enum "nil"))))))
+ (cons 20 (cons 30 (cons 40 (_enum "nil")))))
+ (cons 3 (cons 4 (cons 5 (_enum "nil")))))
+ (cons 30 (cons 40 (_enum "nil"))))
+ 1
+ 1
+ 10
+ 2
+ 20
+(cons
+(cons
+(cons
+(cons
+(cons
+(cons 1 (_enum "nil"))
+(cons 1 (cons 2 (_enum "nil")))
+(cons 1 (cons 2 (cons 3 (_enum "nil"))))
+(cons 2 (_enum "nil"))
+(cons 2 (cons 1 (_enum "nil")))
+(cons 2 (cons 3 (_enum "nil")))
+(cons 2 (cons 3 (cons 4 (_enum "nil"))))
+(cons 3 (_enum "nil"))
+(cons 3 (cons 2 (cons 1 (_enum "nil"))))
+(cons 3 (cons 4 (_enum "nil")))
+(cons 3 (cons 4 (cons 5 (_enum "nil"))))
+(cons 30 (cons 40 (_enum "nil")))
+(cons 4 (_enum "nil"))
+(cons 4 (cons 5 (_enum "nil")))
+(cons 40 (_enum "nil"))
+(cons 5 (_enum "nil"))
+(cons 5 (cons 6 (cons 7 (_enum "nil"))))
+(cons 6 (cons 7 (_enum "nil")))
+(cons 7 (_enum "nil"))

@@ -1,0 +1,8 @@
+(delta "*" (cons (_enum "numval") (cons (_enum "numval") (_enum "nil"))))   (_enum "numval")   
+(delta "+" (cons (_enum "numval") (cons (_enum "numval") (_enum "nil"))))   (_enum "numval")   
+(delta "-" (cons (_enum "numval") (cons (_enum "numval") (_enum "nil"))))   (_enum "numval")   
+(delta "=" (cons (_enum "numval") (cons (_enum "numval") (_enum "nil"))))   (boolval (_enum "ff"))   
+(delta "=" (cons (_enum "numval") (cons (_enum "numval") (_enum "nil"))))   (boolval (_enum "tt"))   
+(delta "eq?" (cons (symval "A") (cons (symval "B") (_enum "nil"))))   (boolval (_enum "ff"))   
+(delta "eq?" (cons (symval "P") (cons (symval "Q") (_enum "nil"))))   (boolval (_enum "ff"))   
+(delta "not" (cons (boolval (_enum "ff")) (_enum "nil")))   (boolval (_enum "tt"))   

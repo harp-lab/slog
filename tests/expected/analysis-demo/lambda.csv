@@ -1,0 +1,15 @@
+ (app (ref "+") (cons (ref "p") (cons (num 1) (_enum "nil")))))
+ (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil")))))
+ (app (ref "-") (cons (ref "q") (cons (num 1) (_enum "nil")))))
+ (app (ref "f") (cons (app (ref "f") (cons (ref "x") (_enum "nil"))) (_enum "nil"))))
+ (cons "c" (cons "t" (cons "e" (_enum "nil"))))
+ (cons "f" (cons "x" (_enum "nil")))
+ (cons "p" (_enum "nil"))
+ (cons "q" (_enum "nil"))
+ (cons "y" (_enum "nil"))
+ (if (ref "c") (ref "t") (ref "e")))
+(lambda
+(lambda
+(lambda
+(lambda
+(lambda

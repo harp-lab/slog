@@ -1,0 +1,37 @@
+;; Free variables of every interned subterm (primitive names included:
+;; they are free references to the global environment).
+
+include "syntax.slog"
+include "../../lib/list.slog"
+
+table (freevar str expr)
+table (freevar_in_args str list)
+table (argument_list list)
+
+rule id = (ref x) --> (freevar x id)
+
+rule id = (app ef es)
+     (freevar x ef) | (freevar_in_args x es)
+ --> (freevar x id)
+
+rule id = (if e1 e2 e3)
+     (freevar x e1) | (freevar x e2) | (freevar x e3)
+ --> (freevar x id)
+
+rule id = (let y er eb) (freevar x er) --> (freevar x id)
+rule id = (let y er eb) (freevar x eb) (/= x y) --> (freevar x id)
+
+rule id = (letrec y er eb)
+     ((freevar x er) | (freevar x eb)) (/= x y)
+ --> (freevar x id)
+
+rule id = (lambda xs eb)
+     (freevar x eb) (lst_absent xs x 1)
+ --> (freevar x id)
+
+;; descend through argument lists
+rule id = (app ef es) --> (argument_list es)
+rule (argument_list [e es ...]) --> (argument_list es)
+rule (argument_list [e es ...])
+     (freevar x e) | (freevar_in_args x es)
+ --> (freevar_in_args x [e es ...])

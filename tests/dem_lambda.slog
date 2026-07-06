@@ -4,7 +4,7 @@
 ;; map2 is two facts: the recursive case calls both its argument closure
 ;; and itself in the answer position.
 
-union (list (nil) (cons int list))
+;; list/cons/nil are builtins now (bracket syntax); no declaration needed
 
 demand (map2 clo list) list
 facts (map2 f (nil) (nil))

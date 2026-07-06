@@ -1,0 +1,11 @@
+;; Contexts (call-time-stamps) are the youngest klimit call sites, as a
+;; list.  (klimit 0) is 0CFA; each increment keeps one more frame of
+;; call history in every environment address.
+
+include "syntax.slog"
+include "../../lib/list.slog"
+
+table (klimit int)
+
+demand (tick expr list) list
+rule (tick site t (lst_take [site t ...] k)) <-- (klimit k)

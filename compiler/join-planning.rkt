@@ -281,26 +281,68 @@
 ;; -----------------------------------------------------------------------
 ;; The greedy scheduler.
 
-;; Emit every guard and computation whose inputs are ground, to a fixpoint.
+;; Emit guards and computations whose inputs are ground, to a fixpoint.
+;; Guards always fire eagerly -- they only prune, which is safe and
+;; beneficial at any point.  Computations are gated by `needed`:
+;;
+;;   'all      -- fire every ground-input compute (the post-join flush,
+;;                and the whole schedule for join-free rules);
+;;   a var set -- fire only computes whose output is in the set and not
+;;                already ground, transitively pulling in computes that
+;;                feed them (the on-demand case: the next join consumes
+;;                the output).
+;;
+;; The gating is a soundness fix, not a heuristic: a compute fired before
+;; a later FILTERING join runs speculatively on rows that join would
+;; reject, and a partial prim can fault on them.  Concretely: a demand
+;; answer rule (+ ans elem) scheduled before the demand-gate join faulted
+;; on an any-typed cons whose element was a nested-list struct -- the
+;; interned (nil) tail is shared between the demanded list and unrelated
+;; nested-list facts, so the reverse-tail cons probe yields foreign rows
+;; the gate exists to discard.  Deferring computes to consumption point
+;; or to the flush means a prim only ever runs on fully-matched rows.
+;;
 ;; A computation whose output is already ground computes into a fresh
-;; variable and asserts equality.  Returns (values emitted ground computes
-;; guards) with the emitted clauses in firing order.
-(define (fire-specials ground computes guards)
-  (let loop ([emitted '()] [ground ground] [computes computes] [guards guards])
+;; variable and asserts equality (a pure filter; in needed-mode it defers
+;; to the flush).  Returns (values emitted ground computes guards) with
+;; the emitted clauses in firing order.
+(define (fire-specials ground computes guards [needed 'all])
+  (let loop ([emitted '()] [ground ground] [computes computes] [guards guards]
+             [needed needed])
     (define g (findf (lambda (cl) (subset? (clause-in-vars cl) ground)) guards))
     (define c (and (not g)
-                   (findf (lambda (cl) (subset? (clause-in-vars cl) ground))
+                   (findf (lambda (cl)
+                            (match-define `(syn ,_ let ,x ,_) cl)
+                            (and (subset? (clause-in-vars cl) ground)
+                                 (or (eq? needed 'all)
+                                     (and (set-member? needed x)
+                                          (not (set-member? ground x))))))
                           computes)))
     (cond
-      [g (loop (cons g emitted) ground computes (remq g guards))]
+      [g (loop (cons g emitted) ground computes (remq g guards) needed)]
       [c
        (match-define `(syn ,prov let ,x ,rhs) c)
        (if (set-member? ground x)
            (let ([x* (gensymb 'chk)])
              (loop (list* `(syn ,prov == ,x ,x*) `(syn ,prov let ,x* ,rhs) emitted)
-                   ground (remq c computes) guards))
-           (loop (cons c emitted) (set-add ground x) (remq c computes) guards))]
-      [else (values (reverse emitted) ground computes guards)])))
+                   ground (remq c computes) guards needed))
+           (loop (cons c emitted) (set-add ground x) (remq c computes) guards
+                 needed))]
+      [(eq? needed 'all) (values (reverse emitted) ground computes guards)]
+      [else
+       ;; feeder expansion: a needed compute whose inputs are not ground
+       ;; makes its inputs needed too (chains of lets resolve on demand)
+       (define needed+
+         (for/fold ([n needed]) ([cl (in-list computes)])
+           (match-define `(syn ,_ let ,x ,_) cl)
+           (if (and (set-member? n x)
+                    (not (set-member? ground x))
+                    (not (subset? (clause-in-vars cl) ground)))
+               (set-union n (clause-in-vars cl))
+               n)))
+       (if (equal? needed+ needed)
+           (values (reverse emitted) ground computes guards)
+           (loop emitted ground computes guards needed+))])))
 
 ;; Score a candidate join at the current frontier: prefer joins probing many
 ;; already-ground columns, reading few new ones, and unblocking guards or
@@ -310,8 +352,11 @@
   (define bound (set-intersect vars ground))
   (define free (set-subtract vars ground))
   (define ground+ (set-union ground vars))
+  ;; only GUARDS count as enabled: computes fire on demand (fire-specials
+  ;; needed-gating), so rewarding a join for making a compute fireable
+  ;; would actively optimize for the speculative firing the gating removes
   (define enabled
-    (for/sum ([sp (in-list (append computes guards))])
+    (for/sum ([sp (in-list guards)])
       (if (and (not (subset? (clause-in-vars sp) ground))
                (subset? (clause-in-vars sp) ground+))
           1
@@ -324,9 +369,15 @@
   (car (sort joins > #:key (lambda (j) (join-score j ground computes guards)))))
 
 ;; Order the full body: driver first (when there is one), then the greedy
-;; interleaving of joins with the guards/computations they unblock.
+;; interleaving of joins with the guards they unblock; computes fire only
+;; when the next join consumes their output, or in the flush after the
+;; last join (see fire-specials).  A join-free rule has nothing that can
+;; reject a row later, so it keeps the fully-eager order.
 ;; Returns (values schedule ground).
 (define (schedule-body driver joins computes guards ground0 rule)
+  ;; the pre phase stays fully eager: nothing row-bound is ground yet, so
+  ;; a fireable compute here has constant inputs only -- it cannot be
+  ;; speculative on rows, and fact rules keep their pre-slot ops
   (define-values (pre ground1 computes1 guards1)
     (fire-specials ground0 computes guards))
   (let loop ([schedule (if driver
@@ -338,23 +389,31 @@
              [joins (remq driver joins)]
              [computes computes1]
              [guards guards1])
-    (define-values (fired ground+ computes+ guards+)
-      (fire-specials ground computes guards))
-    (define schedule+ (append schedule fired))
     (cond
       [(pair? joins)
-       (define next (best-join joins ground+ computes+ guards+))
-       (loop (append schedule+ (list next))
-             (set-union ground+ (clause-vars next))
+       ;; drain guards, pick the join, then fire exactly the computes it
+       ;; consumes (transitively), then the join itself
+       (define-values (fired0 ground0+ computes0+ guards0+)
+         (fire-specials ground computes guards (set)))
+       (define next (best-join joins ground0+ computes0+ guards0+))
+       (define-values (fired1 ground1+ computes1+ guards1+)
+         (fire-specials ground0+ computes0+ guards0+ (clause-vars next)))
+       (loop (append schedule fired0 fired1 (list next))
+             (set-union ground1+ (clause-vars next))
              (remq next joins)
-             computes+
-             guards+)]
-      [(pair? computes+)
-       (error 'plan-stratum
-              "circular let dependencies (cannot order ~a):\n~a"
-              (map strip-prov computes+) (strip-prov rule))]
-      [(pair? guards+)
-       (error 'plan-stratum
-              "guard over variables never bound in body (~a):\n~a"
-              (map strip-prov guards+) (strip-prov rule))]
-      [else (values schedule+ ground+)])))
+             computes1+
+             guards1+)]
+      [else
+       ;; flush: every remaining compute and guard, on fully-matched rows
+       (define-values (fired ground+ computes+ guards+)
+         (fire-specials ground computes guards))
+       (cond
+         [(pair? computes+)
+          (error 'plan-stratum
+                 "circular let dependencies (cannot order ~a):\n~a"
+                 (map strip-prov computes+) (strip-prov rule))]
+         [(pair? guards+)
+          (error 'plan-stratum
+                 "guard over variables never bound in body (~a):\n~a"
+                 (map strip-prov guards+) (strip-prov rule))]
+         [else (values (append schedule fired) ground+)])])))

@@ -1,0 +1,97 @@
+ (app (app (lambda "p7" (lambda "q7" (lambda "r7" (app (app (ref "p7") (ref "q7")) (ref "r7"))))) (lambda "a7" (ref "a7"))) (lambda "b7" (ref "b7")))
+ (app (lambda "f9" (lambda "x9" (app (ref "f9") (app (ref "f9") (ref "x9"))))) (lambda "s9" (ref "s9")))
+ (app (lambda "p7" (lambda "q7" (lambda "r7" (app (app (ref "p7") (ref "q7")) (ref "r7"))))) (lambda "a7" (ref "a7")))
+ (app (lambda "s4" (app (ref "s4") (ref "s4"))) (lambda "r4" (lambda "n4" (app (app (ref "r4") (ref "r4")) (ref "n4")))))
+ (app (ref "f2") (lambda "v2" (ref "v2"))))
+ (app (ref "f5") (lambda "k5" (lambda "e5" (ref "e5")))))
+ (app (ref "f5") (lambda "k5" (ref "k5"))))
+ (app (ref "f9") (ref "x9")))
+ (app (ref "h6") (lambda "a6" (ref "a6"))))
+ (app (ref "h8") (lambda "k8" (ref "k8"))))
+ (app (ref "p7") (ref "q7"))
+ (app (ref "r4") (ref "r4"))
+ (lambda "a7" (ref "a7")))
+ (lambda "b7" (ref "b7")))
+ (lambda "c7" (ref "c7")))
+ (lambda "d3" (ref "d3")))
+ (lambda "d6" (app (ref "h6") (lambda "b6" (ref "b6"))))
+ (lambda "d8" (app (ref "h8") (lambda "k8" (lambda "e8" (ref "e8")))))
+ (lambda "f2" (app (lambda "u2" (app (ref "f2") (lambda "w2" (ref "w2")))) (app (ref "f2") (lambda "v2" (ref "v2")))))
+ (lambda "f5" (app (lambda "u5" (app (lambda "p5" (app (ref "p5") (lambda "n5" (ref "n5")))) (app (ref "f5") (lambda "k5" (lambda "e5" (ref "e5")))))) (app (ref "f5") (lambda "k5" (ref "k5")))))
+ (lambda "f9" (lambda "x9" (app (ref "f9") (app (ref "f9") (ref "x9")))))
+ (lambda "g2" (app (lambda "f2" (app (lambda "u2" (app (ref "f2") (lambda "w2" (ref "w2")))) (app (ref "f2") (lambda "v2" (ref "v2"))))) (lambda "x2" (app (ref "g2") (ref "g2")))))
+ (lambda "g5" (app (lambda "f5" (app (lambda "u5" (app (lambda "p5" (app (ref "p5") (lambda "n5" (ref "n5")))) (app (ref "f5") (lambda "k5" (lambda "e5" (ref "e5")))))) (app (ref "f5") (lambda "k5" (ref "k5"))))) (lambda "x5" (app (ref "g5") (ref "x5")))))
+ (lambda "h6" (app (lambda "d6" (app (ref "h6") (lambda "b6" (ref "b6")))) (app (ref "h6") (lambda "a6" (ref "a6")))))
+ (lambda "h8" (app (lambda "d8" (app (ref "h8") (lambda "k8" (lambda "e8" (ref "e8"))))) (app (ref "h8") (lambda "k8" (ref "k8")))))
+ (lambda "i2" (ref "i2")))
+ (lambda "i5" (ref "i5")))
+ (lambda "k5" (lambda "e5" (ref "e5"))))
+ (lambda "k8" (lambda "e8" (ref "e8"))))
+ (lambda "p5" (app (ref "p5") (lambda "n5" (ref "n5"))))
+ (lambda "p7" (lambda "q7" (lambda "r7" (app (app (ref "p7") (ref "q7")) (ref "r7")))))
+ (lambda "q6" (app (ref "q6") (lambda "z6" (ref "z6")))))
+ (lambda "r4" (lambda "n4" (app (app (ref "r4") (ref "r4")) (ref "n4")))))
+ (lambda "s4" (app (ref "s4") (ref "s4")))
+ (lambda "s8" (app (ref "s8") (lambda "m8" (ref "m8")))))
+ (lambda "s9" (ref "s9")))
+ (lambda "t3" (app (ref "y3") (ref "y3")))
+ (lambda "u2" (app (ref "f2") (lambda "w2" (ref "w2"))))
+ (lambda "u5" (app (lambda "p5" (app (ref "p5") (lambda "n5" (ref "n5")))) (app (ref "f5") (lambda "k5" (lambda "e5" (ref "e5"))))))
+ (lambda "x1" (app (ref "x1") (ref "x1")))
+ (lambda "x2" (app (ref "g2") (ref "g2"))))
+ (lambda "x3" (app (ref "x3") (ref "x3")))
+ (lambda "x5" (app (ref "g5") (ref "x5"))))
+ (lambda "y1" (app (ref "y1") (ref "y1"))))
+ (lambda "y3" (app (lambda "t3" (app (ref "y3") (ref "y3"))) (lambda "d3" (ref "d3")))))
+ (lambda "z4" (ref "z4")))
+ (lambda "z9" (ref "z9")))
+ (ref "f5")
+ (ref "f9")
+ (ref "h8")
+ (ref "n4"))
+ (ref "r7"))
+(app
+(app
+(app
+(app
+(app
+(app
+(app
+(app
+(app
+(app
+(app
+(app
+(app
+(app
+(app
+(app
+(app
+(app
+(app
+(app
+(app
+(app
+(app
+(app
+(app
+(app
+(app (ref "f2") (lambda "v2" (ref "v2")))
+(app (ref "f2") (lambda "w2" (ref "w2")))
+(app (ref "f5") (lambda "k5" (ref "k5")))
+(app (ref "f9") (ref "x9"))
+(app (ref "g2") (ref "g2"))
+(app (ref "g5") (ref "x5"))
+(app (ref "h6") (lambda "a6" (ref "a6")))
+(app (ref "h6") (lambda "b6" (ref "b6")))
+(app (ref "h8") (lambda "k8" (ref "k8")))
+(app (ref "p5") (lambda "n5" (ref "n5")))
+(app (ref "p7") (ref "q7"))
+(app (ref "q6") (lambda "z6" (ref "z6")))
+(app (ref "r4") (ref "r4"))
+(app (ref "s4") (ref "s4"))
+(app (ref "s8") (lambda "m8" (ref "m8")))
+(app (ref "x1") (ref "x1"))
+(app (ref "x3") (ref "x3"))
+(app (ref "y1") (ref "y1"))
+(app (ref "y3") (ref "y3"))

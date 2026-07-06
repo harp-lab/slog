@@ -1,0 +1,18 @@
+ (_enum "dbl")
+ (_enum "dbl")
+ (_enum "dbl")
+ (addk 10)
+ (addk 10)
+ (cons 1 (cons 2 (cons 3 (_enum "nil")))))
+ (cons 1 (cons 2 (cons 3 (_enum "nil")))))
+ (cons 2 (cons 3 (_enum "nil"))))
+ (cons 2 (cons 3 (_enum "nil"))))
+ (cons 3 (_enum "nil")))
+(map
+(map
+(map
+(map
+(map
+(map (_enum "dbl") (_enum "nil"))
+(map (addk 10) (_enum "nil"))
+(map (addk 10) (cons 3 (_enum "nil")))

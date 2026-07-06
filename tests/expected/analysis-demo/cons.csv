@@ -1,0 +1,101 @@
+ "c"
+ (_enum "nil"))
+ (_enum "nil"))
+ (_enum "nil"))
+ (_enum "nil"))
+ (_enum "nil"))
+ (_enum "nil"))
+ (_enum "nil"))
+ (_enum "nil"))
+ (_enum "nil"))
+ (_enum "nil"))
+ (_enum "numval")
+ (app (ref "+") (cons (ref "p") (cons (num 1) (_enum "nil"))))
+ (app (ref "+") (cons (ref "p") (cons (num 1) (_enum "nil"))))
+ (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil"))))
+ (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil"))))
+ (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil"))))
+ (app (ref "-") (cons (ref "q") (cons (num 1) (_enum "nil"))))
+ (app (ref "-") (cons (ref "q") (cons (num 1) (_enum "nil"))))
+ (app (ref "<") (cons (num 1) (cons (num 2) (_enum "nil"))))
+ (app (ref "<") (cons (num 1) (cons (num 2) (_enum "nil"))))
+ (app (ref "chosen") (cons (num 7) (_enum "nil")))
+ (app (ref "f") (cons (app (ref "f") (cons (ref "x") (_enum "nil"))) (_enum "nil")))
+ (app (ref "f") (cons (app (ref "f") (cons (ref "x") (_enum "nil"))) (_enum "nil")))
+ (app (ref "f") (cons (ref "x") (_enum "nil")))
+ (app (ref "f") (cons (ref "x") (_enum "nil")))
+ (app (ref "pick") (cons (app (ref "<") (cons (num 1) (cons (num 2) (_enum "nil")))) (cons (ref "inc") (cons (ref "dec") (_enum "nil")))))
+ (app (ref "twice") (cons (lambda (cons "y" (_enum "nil")) (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil"))))) (cons (num 5) (_enum "nil"))))
+ (boolval (_enum "ff"))
+ (boolval (_enum "tt"))
+ (closure (lambda (cons "p" (_enum "nil")) (app (ref "+") (cons (ref "p") (cons (num 1) (_enum "nil"))))) (_enum "nil"))
+ (closure (lambda (cons "q" (_enum "nil")) (app (ref "-") (cons (ref "q") (cons (num 1) (_enum "nil"))))) (_enum "nil"))
+ (closure (lambda (cons "y" (_enum "nil")) (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil"))))) (_enum "nil"))
+ (cons "t" (cons "e" (_enum "nil"))))
+ (cons (_enum "numval") (_enum "nil")))
+ (cons (_enum "numval") (_enum "nil")))
+ (cons (app (ref "chosen") (cons (num 7) (_enum "nil"))) (_enum "nil")))
+ (cons (app (ref "chosen") (cons (num 7) (_enum "nil"))) (_enum "nil")))
+ (cons (app (ref "f") (cons (app (ref "f") (cons (ref "x") (_enum "nil"))) (_enum "nil"))) (_enum "nil")))
+ (cons (app (ref "f") (cons (ref "x") (_enum "nil"))) (_enum "nil")))
+ (cons (app (ref "twice") (cons (lambda (cons "y" (_enum "nil")) (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil"))))) (cons (num 5) (_enum "nil")))) (_enum "nil")))
+ (cons (app (ref "twice") (cons (lambda (cons "y" (_enum "nil")) (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil"))))) (cons (num 5) (_enum "nil")))) (_enum "nil")))
+ (cons (closure (lambda (cons "p" (_enum "nil")) (app (ref "+") (cons (ref "p") (cons (num 1) (_enum "nil"))))) (_enum "nil")) (cons (closure (lambda (cons "q" (_enum "nil")) (app (ref "-") (cons (ref "q") (cons (num 1) (_enum "nil"))))) (_enum "nil")) (_enum "nil"))))
+ (cons (closure (lambda (cons "p" (_enum "nil")) (app (ref "+") (cons (ref "p") (cons (num 1) (_enum "nil"))))) (_enum "nil")) (cons (closure (lambda (cons "q" (_enum "nil")) (app (ref "-") (cons (ref "q") (cons (num 1) (_enum "nil"))))) (_enum "nil")) (_enum "nil"))))
+ (cons (closure (lambda (cons "q" (_enum "nil")) (app (ref "-") (cons (ref "q") (cons (num 1) (_enum "nil"))))) (_enum "nil")) (_enum "nil")))
+ (cons (num 1) (_enum "nil")))
+ (cons (num 1) (_enum "nil")))
+ (cons (num 1) (_enum "nil")))
+ (cons (num 2) (_enum "nil")))
+ (cons (num 5) (_enum "nil")))
+ (cons (ref "dec") (_enum "nil")))
+ (cons (ref "inc") (cons (ref "dec") (_enum "nil"))))
+ (lambda (cons "y" (_enum "nil")) (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil")))))
+ (num 1)
+ (ref "inc")
+ (ref "p")
+ (ref "q")
+ (ref "y")
+(cons
+(cons
+(cons
+(cons
+(cons
+(cons
+(cons
+(cons
+(cons
+(cons
+(cons
+(cons
+(cons
+(cons
+(cons
+(cons
+(cons
+(cons
+(cons
+(cons
+(cons
+(cons
+(cons
+(cons
+(cons
+(cons
+(cons
+(cons
+(cons
+(cons "e" (_enum "nil"))
+(cons "f" (cons "x" (_enum "nil")))
+(cons "p" (_enum "nil"))
+(cons "q" (_enum "nil"))
+(cons "t" (cons "e" (_enum "nil")))
+(cons "x" (_enum "nil"))
+(cons "y" (_enum "nil"))
+(cons (_enum "numval") (_enum "nil"))
+(cons (num 1) (_enum "nil"))
+(cons (num 2) (_enum "nil"))
+(cons (num 5) (_enum "nil"))
+(cons (num 7) (_enum "nil"))
+(cons (ref "dec") (_enum "nil"))
+(cons (ref "x") (_enum "nil"))

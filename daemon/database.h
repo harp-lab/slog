@@ -27,7 +27,6 @@
 #include <barrier>
 #include <omp.h>
 #include <unordered_map>
-#include <boost/lockfree/queue.hpp>
 #include <boost/functional/hash.hpp>
 #include <boost/unordered_map.hpp>
 
@@ -39,7 +38,6 @@
 #define phase_intern 2
 #define batch_size_max (4*1024-1)
 
-#define big_capacity boost::lockfree::capacity<8*1024>
 
 #define buckethash(x) \
   ((((((x) % 90909) * 16777619u) ^ (((x) >> 16)&0x3ffff)) * 16777619u) % bucket_count)
@@ -750,7 +748,16 @@ private:
   std::unordered_map<std::string, std::filesystem::file_time_type> disk_mtimes;
   // the stratum currently executing (its `every` tasks refill the queues)
   const Stratum* running = nullptr;
-  boost::lockfree::queue<Task*, big_capacity> task_queues[phase_count];
+  // Work distribution: an atomic cursor per phase over the running stratum's
+  // task vectors (once[phase] first -- iteration 0 only -- then every[phase]).
+  // Workers claim tasks by fetch_add; the sentinel resets the cursor after
+  // each phase's barrier for the next iteration.  This replaces a
+  // fixed-capacity boost::lockfree::queue whose unchecked push() SILENTLY
+  // DROPPED every task beyond its 8192 capacity -- large generated strata
+  // (the Patricia set/map library exceeds 9000 read tasks) lost late-
+  // registered rules entirely, converging to wrong fixpoints.
+  std::atomic<u64> task_cursor[phase_count];
+  std::atomic<bool> once_pending[phase_count];
   // Cyclic barriers used to synchronize the worker threads each iteration.
   // Allocated in runProgram once thread_count and tofixpoint are known.
   std::barrier<IterCompletion>* iter_barrier = nullptr;   // resets latest_any_rec
@@ -861,10 +868,14 @@ public:
     return 0;
   }
 
+  // Reset phase `phase` for its next pass: only `every` tasks from here on
+  // (the once tasks were consumed by the first pass), cursor back to zero.
+  // Called single-threaded (sentinel, after the phase barrier); the cursor
+  // is not read again until every thread passes the next iteration barrier.
   void reloadPhaseQueue(u32 phase)
   {
-    for (Task* t : running->every[phase])
-      task_queues[phase].push(t);
+    once_pending[phase] = false;
+    task_cursor[phase] = 0;
   }
   // Union every relation's per-thread send buffers into its delta for the next
   // iteration.  Single-threaded: called from a barrier completion (or before
@@ -894,9 +905,17 @@ public:
 
   void runPhase(u32 phase, bool tofixpoint, bool sentinel)
   {
-    Task* task;
-    while (task_queues[phase].pop(task))
-      task->work();
+    const std::vector<Task*>& once = running->once[phase];
+    const std::vector<Task*>& every = running->every[phase];
+    const u64 n_once = once_pending[phase] ? once.size() : 0;
+    const u64 total = n_once + every.size();
+    for (;;)
+    {
+      const u64 i = task_cursor[phase].fetch_add(1);
+      if (i >= total)
+        break;
+      (i < n_once ? once[i] : every[i - n_once])->work();
+    }
 
     // Workers write to their own shards, so there is no draining to do; the
     // read phase's barrier completion unions the shards into the new delta.
@@ -953,9 +972,8 @@ public:
     running = s;
     for (u32 i = 0; i < phase_count; ++i)
     {
-      for (Task* t : s->once[i])
-        task_queues[i].push(t);
-      reloadPhaseQueue(i);
+      once_pending[i] = true;   // first pass includes the once tasks
+      task_cursor[i] = 0;
     }
 
     // Make sure every relation has a send buffer per worker thread, and a
@@ -987,12 +1005,7 @@ public:
       phase_barrier[i] = nullptr;
     }
 
-    // Drain the queues (the sentinel refilled them at the end of the final
-    // iteration); the tasks belong to the stratum, so no deletion here.
-    Task* task;
-    for (u32 i = 0; i < phase_count; ++i)
-      while (task_queues[i].pop(task))
-        ;
+    // Nothing to drain: cursors are reset per stratum in the loop above.
     running = nullptr;
   }
 

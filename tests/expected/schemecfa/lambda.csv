@@ -1,0 +1,24 @@
+ (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil")))))
+ (app (ref "f") (cons (app (ref "f") (cons (ref "x") (_enum "nil"))) (_enum "nil"))))
+ (app (ref "g") (cons (ref "a") (cons (ref "b") (_enum "nil")))))
+ (app (ref "id") (cons (ref "w") (_enum "nil"))))
+ (cons "f" (cons "x" (_enum "nil")))
+ (cons "g" (cons "a" (cons "b" (_enum "nil"))))
+ (cons "i" (_enum "nil"))
+ (cons "k" (_enum "nil"))
+ (cons "n" (_enum "nil"))
+ (cons "w" (_enum "nil"))
+ (cons "y" (_enum "nil"))
+ (cons "z" (_enum "nil"))
+ (if (app (ref "=") (cons (ref "i") (cons (num 0) (_enum "nil")))) (lambda (cons "k" (_enum "nil")) (ref "k")) (app (ref "loop") (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil")))))
+ (if (app (ref "=") (cons (ref "n") (cons (num 0) (_enum "nil")))) (num 1) (app (ref "*") (cons (ref "n") (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil"))))))
+ (ref "k"))
+ (ref "z"))
+(lambda
+(lambda
+(lambda
+(lambda
+(lambda
+(lambda
+(lambda
+(lambda

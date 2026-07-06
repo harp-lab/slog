@@ -1,0 +1,27 @@
+ "*"
+ "+"
+ "-"
+ "<"
+ "="
+ "eq?"
+ "eq?"
+ "eq?"
+ "not"
+ (cons (_enum "numval") (cons (_enum "numval") (_enum "nil"))))
+ (cons (_enum "numval") (cons (_enum "numval") (_enum "nil"))))
+ (cons (_enum "numval") (cons (_enum "numval") (_enum "nil"))))
+ (cons (_enum "numval") (cons (_enum "numval") (_enum "nil"))))
+ (cons (_enum "numval") (cons (_enum "numval") (_enum "nil"))))
+ (cons (_enum "numval") (cons (boolval (_enum "ff")) (_enum "nil"))))
+ (cons (_enum "numval") (cons (boolval (_enum "tt")) (_enum "nil"))))
+ (cons (boolval (_enum "ff")) (_enum "nil")))
+ (cons (symval "one") (cons (symval "two") (_enum "nil"))))
+(delta
+(delta
+(delta
+(delta
+(delta
+(delta
+(delta
+(delta
+(delta

@@ -1,0 +1,131 @@
+;; The m-CFA abstract interpreter: a demand-driven big-step evaluator
+;; with flat environments -- a closure is code plus birth frame, and
+;; invocation re-binds its free variables into the fresh frame
+;; (Might-Smaragdakis-Van Horn 2010).
+
+include "syntax.slog"
+include "freevars.slog"
+include "context.slog"
+
+union (val (closure lambda list)    ;; code + birth frame
+           (prim str)
+           (numval)                 ;; every integer, one abstract point
+           (boolval bool)
+           (symval str))
+
+table (binding str list val)        ;; the store: (variable, frame) -> value
+table (call_event list list)        ;; (call_event l c): a frame at c spawned a frame at l
+table (binding_event str list list) ;; (binding_event x l c): a frame at c bound (x, l)
+
+demand (eval expr list) val
+demand (eval_args list list) list
+demand (lookup str list) val
+
+;; ---- atoms ----
+
+facts (eval (num n) c (numval))
+facts (eval (boolean b) c (boolval b))
+facts (eval (sym s) c (symval s))
+facts (eval (lambda xs eb) c (closure (lambda xs eb) c))
+facts (eval (ref x) c (lookup x c))
+
+rule (lookup x c v) <-- (binding x c v)
+rule (lookup x c (prim x)) <-- (primitive x)
+
+;; ---- arguments evaluate pointwise ----
+
+facts (eval_args [] c [])
+facts (eval_args [e es ...] c [(eval e c) (eval_args es c) ...])
+
+;; ---- closure application: tick, bind, re-bind frees, run the body ----
+
+rule (eval (app ef es) c v)
+ <--
+     (eval ef c (closure (lambda xs eb) cb))
+     (eval_args es c vs)
+     (eval eb (tick (app ef es) c) v)
+
+rule (eval (app ef es) c)
+     (eval ef c (closure (lambda xs eb) cb))
+     (eval_args es c vs)
+     (= l (tick (app ef es) c))
+ -->
+     (bind_params xs vs l c)
+     (call_event l c)
+
+rule (eval (app ef es) c)
+     (eval ef c (closure (lambda xs eb) cb))
+     (eval_args es c vs)
+     (= l (tick (app ef es) c))
+     (freevar y (lambda xs eb))
+     (binding y cb vy)
+ -->
+     (binding y l vy)
+     (binding_event y l c)
+
+table (bind_params list list list list)   ;; parameters, values, frame, caller
+rule (bind_params [x xs ...] [v vs ...] l c)
+ -->
+     (binding x l v)
+     (binding_event x l c)
+     (bind_params xs vs l c)
+
+;; ---- primitive application ----
+
+rule (eval (app ef es) c v)
+ <-- (eval ef c (prim op)) (eval_args es c vs) (delta op vs v)
+
+;; ---- if: only #f is false, and the untaken branch is never demanded ----
+
+table (scheme_false val)
+facts (scheme_false (boolval (ff)))
+
+demand (select_branch val expr expr) expr
+facts (select_branch (boolval (ff)) e2 e3 e3)
+rule (select_branch tv e2 e3 e2) <-- (scheme_false fv) (/= tv fv)
+
+facts (eval (if e1 e2 e3) c (eval (select_branch (eval e1 c) e2 e3) c))
+
+;; ---- let / letrec bind in the current frame; they differ only in
+;;      scope (freevars.slog) ----
+
+rule (eval (let x er eb) c v) <-- (eval er c vr) (eval eb c v)
+rule (eval (let x er eb) c) (eval er c vr) --> (binding x c vr) (binding_event x c c)
+rule (eval (letrec x er eb) c v) <-- (eval er c vr) (eval eb c v)
+rule (eval (letrec x er eb) c) (eval er c vr) --> (binding x c vr) (binding_event x c c)
+
+;; ---- delta: primitives over abstract values; comparisons on the one
+;;      abstract number answer both ways ----
+
+table (arithmetic_op str)
+table (comparison_op str)
+table (primitive str)
+table (any_bool bool)
+facts (arithmetic_op "+") (arithmetic_op "-") (arithmetic_op "*")
+facts (comparison_op "<") (comparison_op "<=") (comparison_op "=")
+facts (primitive "eq?") (primitive "not")
+facts (any_bool (tt)) (any_bool (ff))
+rule ((arithmetic_op op) | (comparison_op op)) --> (primitive op)
+
+demand (delta str list) val
+rule (delta op [(numval) (numval)] (numval)) <-- (arithmetic_op op)
+rule (delta op [(numval) (numval)] (boolval b)) <-- (comparison_op op) (any_bool b)
+facts (delta "not" [(boolval (ff))] (boolval (tt)))
+rule (delta "not" [v] (boolval (ff))) <-- (scheme_false fv) (/= v fv)
+
+;; eq? is precise exactly where the abstraction is exact
+facts (delta "eq?" [(symval s) (symval s)] (boolval (tt)))
+facts (delta "eq?" [(boolval b) (boolval b)] (boolval (tt)))
+facts (delta "eq?" [(prim op) (prim op)] (boolval (tt)))
+rule (delta "eq?" [v1 v2] (boolval (ff))) <-- (/= v1 v2)
+rule (delta "eq?" [(numval) (numval)] (boolval b)) <-- (any_bool b)
+rule (delta "eq?" [(closure lm cb) (closure lm cb)] (boolval b)) <-- (any_bool b)
+
+;; ---- entry ----
+
+table (program_result val)
+table (reachable_expr expr)
+
+rule (program e) --> (eval e [])
+rule (program e) (eval e [] v) --> (program_result v)
+rule (eval e c) --> (reachable_expr e)

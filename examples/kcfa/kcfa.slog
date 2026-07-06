@@ -1,0 +1,76 @@
+;; True k-CFA with higher-order environments over a small Scheme.
+;; The context depth is data: edit (klimit 1) and rerun; k = 0 is 0CFA.
+;; Variables are integer labels (finite-map keys); the legend for each
+;; program names them.
+
+include "counting.slog"
+
+facts (klimit 1)
+
+;; P1 -- HIGHER-ORDER ENVIRONMENTS (the flagship).  f = (K combinator)
+;; returns a closure capturing x.  g1 and g2 close over the SAME lambda
+;; body but capture DIFFERENT environments (x bound at two distinct call
+;; contexts), so they are two closure values with two distinct captured
+;; maps -- visible in eval_ans.  r1 = "A", r2 = "B", and (eq? r1 r2) is
+;; precisely #f at k = 1.  Legend: f=0, x=1, y=2, g1=3, g2=4, r1=5, r2=6.
+facts
+(program
+ (let 0 (lambda [1] (lambda [2] (ref 1)))
+   (let 3 (app (ref 0) [(sym "A")])
+     (let 4 (app (ref 0) [(sym "B")])
+       (let 5 (app (ref 3) [(num 0)])
+         (let 6 (app (ref 4) [(num 0)])
+           (app (primref "eq?") [(ref 5) (ref 6)])))))))
+
+;; P2 -- context sensitivity through a shared identity.  id is called at
+;; two sites; k = 1 keeps u's two bindings apart so a = "P", b = "Q" and
+;; (eq? a b) is #f.  At k = 0 the two calls merge and eq? blurs to both
+;; booleans.  Legend: id=10, u=11, a=12, b=13.
+facts
+(program
+ (let 10 (lambda [11] (ref 11))
+   (let 12 (app (ref 10) [(sym "P")])
+     (let 13 (app (ref 10) [(sym "Q")])
+       (app (primref "eq?") [(ref 12) (ref 13)])))))
+
+;; P3 -- letrec recursion.  fac refers to itself through its captured
+;; environment (no free-variable rebinding needed).  Comparisons answer
+;; both ways so the recursion runs abstractly; the result is numval.
+;; Legend: fac=20, n=21.
+facts
+(program
+ (letrec 20 (lambda [21]
+              (if (app (primref "=") [(ref 21) (num 0)])
+                  (num 1)
+                  (app (primref "*")
+                       [(ref 21)
+                        (app (ref 20) [(app (primref "-") [(ref 21) (num 1)])])])))
+   (app (ref 20) [(num 5)])))
+
+;; P4 -- branch sensitivity: the test is decided, so (sym "dead") is
+;; never demanded and never appears in reachable_expr.
+facts
+(program
+ (if (app (primref "not") [(boolean (ff))])
+     (sym "live")
+     (sym "dead")))
+
+;; P5 -- a two-parameter (k-ary) primitive wrapper.  Legend: add=30, p=31, q=32.
+facts
+(program
+ (let 30 (lambda [31 32] (app (primref "+") [(ref 31) (ref 32)]))
+   (app (ref 30) [(num 3) (num 4)])))
+
+;; P6 -- closure allocation under recursion.  The escaping (lambda [k])
+;; is created in loop's body frames; the first unwinding's frame is
+;; unique (unique_closure) while the self-looping frame is summarized
+;; (summarized_closure).  With full-environment capture each copy also
+;; carries a distinct captured map (i bound at a different context), so
+;; the two are distinct closure values.  Legend: loop=40, i=41, k=42.
+facts
+(program
+ (letrec 40 (lambda [41]
+              (if (app (primref "=") [(ref 41) (num 0)])
+                  (lambda [42] (ref 42))
+                  (app (ref 40) [(app (primref "-") [(ref 41) (num 1)])])))
+   (app (ref 40) [(num 3)])))

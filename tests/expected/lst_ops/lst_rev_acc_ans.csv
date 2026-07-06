@@ -1,0 +1,4 @@
+(lst_rev_acc (_enum "nil") (cons 3 (cons 2 (cons 1 (_enum "nil")))))   (cons 3 (cons 2 (cons 1 (_enum "nil"))))   
+(lst_rev_acc (cons 1 (cons 2 (cons 3 (_enum "nil")))) (_enum "nil"))   (cons 3 (cons 2 (cons 1 (_enum "nil"))))   
+(lst_rev_acc (cons 2 (cons 3 (_enum "nil"))) (cons 1 (_enum "nil")))   (cons 3 (cons 2 (cons 1 (_enum "nil"))))   
+(lst_rev_acc (cons 3 (_enum "nil")) (cons 2 (cons 1 (_enum "nil"))))   (cons 3 (cons 2 (cons 1 (_enum "nil"))))   

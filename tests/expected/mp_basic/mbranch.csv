@@ -1,0 +1,34 @@
+ (mbranch 0 2 (mleaf 1 10) (mleaf 3 30))
+ (mbranch 0 2 (mleaf 1 10) (mleaf 3 30))
+ (mbranch 0 2 (mleaf 1 99) (mleaf 3 30))
+ (mbranch 0 4 (mbranch 0 2 (mleaf 1 10) (mleaf 3 30)) (mleaf 7 70))
+ (mbranch 0 4 (mleaf 1 10) (mleaf 7 70))
+ (mbranch 0 4 (mleaf 3 30) (mleaf 7 70))
+ (mleaf 1 10))
+ (mleaf 1 99))
+ (mleaf 1 99))
+ (mleaf 3 30))
+ (mleaf 7 70))
+ (mleaf 7 70))
+ 0
+ 0
+ 0
+ 0
+ 0
+ 0
+ 1
+ 1
+ 1
+ 2
+ 4
+ 4
+(mbranch
+(mbranch
+(mbranch
+(mbranch
+(mbranch
+(mbranch
+(mbranch 0 2 (mleaf 1 10) (mleaf 3 30))
+(mbranch 0 2 (mleaf 1 99) (mleaf 3 30))
+(mbranch 0 4 (mleaf 1 10) (mleaf 7 70))
+(mbranch 0 4 (mleaf 3 30) (mleaf 7 70))

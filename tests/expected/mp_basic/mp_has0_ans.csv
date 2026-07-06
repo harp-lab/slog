@@ -1,0 +1,4 @@
+(mp_has0 (mbranch 0 4 (mbranch 0 2 (mleaf 1 10) (mleaf 3 30)) (mleaf 7 70)) 5)   0   
+(mp_has0 (mbranch 0 4 (mbranch 0 2 (mleaf 1 10) (mleaf 3 30)) (mleaf 7 70)) 7)   1   
+(mp_has0 (mleaf 7 70) 5)   0   
+(mp_has0 (mleaf 7 70) 7)   1   

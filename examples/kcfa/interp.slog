@@ -1,0 +1,135 @@
+;; True k-CFA with HIGHER-ORDER environments (Shivers 1991).  An
+;; environment is a finite map from a variable (int) to the context (a
+;; list of call sites) at which it was bound; a variable's address is
+;; that (var, ctx) pair and the store maps addresses to values.  A
+;; closure captures its whole environment, so -- unlike the flat-env
+;; m-CFA -- there is NO free-variable re-binding: free variables are
+;; resolved through the captured map.
+
+include "syntax.slog"
+include "context.slog"
+include "../../lib/map.slog"
+
+union (val (closure lambda pmap)    ;; code + captured environment
+           (prim str)
+           (numval)
+           (boolval bool)
+           (symval str))
+
+table (store int list val)          ;; (store x t v): address (x, t) holds v
+table (call_event list list)        ;; (call_event t2 t): a frame at t spawned one at t2
+table (binding_event int list list) ;; (binding_event x t2 t): a frame at t bound (x, t2)
+
+demand (eval expr pmap list) val
+demand (eval_args list pmap list) list
+demand (lookup int pmap) val
+demand (extend_env pmap list list) pmap
+
+;; ---- atoms ----
+
+facts (eval (num n) rho t (numval))
+facts (eval (boolean b) rho t (boolval b))
+facts (eval (sym s) rho t (symval s))
+facts (eval (lambda xs eb) rho t (closure (lambda xs eb) rho))
+facts (eval (ref x) rho t (lookup x rho))
+rule (eval (primref op) rho t (prim op)) <-- (primitive op)
+
+;; a variable's value: find its binding context in the environment,
+;; then read that address out of the store
+rule (lookup x rho v) <-- (mp_get rho x tx) (store x tx v)
+
+;; ---- arguments evaluate pointwise ----
+
+facts (eval_args [] rho t [])
+facts (eval_args [e es ...] rho t [(eval e rho t) (eval_args es rho t) ...])
+
+;; extend a captured environment with each parameter bound at the new time
+facts (extend_env rho [] t rho)
+facts (extend_env rho [x xs ...] t (extend_env (mp_put rho x t) xs t))
+
+;; ---- closure application: tick, extend the CLOSURE's env, run body ----
+
+rule (eval (app ef es) rho t v)
+ <--
+     (eval ef rho t (closure (lambda xs eb) rhoc))
+     (eval_args es rho t vs)
+     (= t2 (tick (app ef es) t))
+     (eval eb (extend_env rhoc xs t2) t2 v)
+
+rule (eval (app ef es) rho t)
+     (eval ef rho t (closure (lambda xs eb) rhoc))
+     (eval_args es rho t vs)
+     (= t2 (tick (app ef es) t))
+ -->
+     (bind_store xs vs t2 t)
+     (call_event t2 t)
+
+table (bind_store list list list list)   ;; params, values, new-ctx, caller-ctx
+rule (bind_store [x xs ...] [v vs ...] t2 t)
+ -->
+     (store x t2 v)
+     (binding_event x t2 t)
+     (bind_store xs vs t2 t)
+
+;; ---- primitive application ----
+
+rule (eval (app ef es) rho t v)
+ <-- (eval ef rho t (prim op)) (eval_args es rho t vs) (delta op vs v)
+
+;; ---- if: only #f is false, and the untaken branch is never demanded ----
+
+table (scheme_false val)
+facts (scheme_false (boolval (ff)))
+
+demand (select_branch val expr expr) expr
+facts (select_branch (boolval (ff)) e2 e3 e3)
+rule (select_branch tv e2 e3 e2) <-- (scheme_false fv) (/= tv fv)
+
+facts (eval (if e1 e2 e3) rho t (eval (select_branch (eval e1 rho t) e2 e3) rho t))
+
+;; ---- let / letrec bind at the current time; letrec also binds x
+;;      before evaluating its right-hand side ----
+
+rule (eval (let x er eb) rho t v) <-- (eval er rho t vr) (eval eb (mp_put rho x t) t v)
+rule (eval (let x er eb) rho t) (eval er rho t vr) --> (store x t vr) (binding_event x t t)
+
+rule (eval (letrec x er eb) rho t v)
+ <-- (= rho2 (mp_put rho x t)) (eval er rho2 t vr) (eval eb rho2 t v)
+rule (eval (letrec x er eb) rho t)
+     (= rho2 (mp_put rho x t)) (eval er rho2 t vr)
+ --> (store x t vr) (binding_event x t t)
+
+;; ---- delta: primitives over abstract values; comparisons on the one
+;;      abstract number answer both ways ----
+
+table (arithmetic_op str)
+table (comparison_op str)
+table (primitive str)
+table (any_bool bool)
+facts (arithmetic_op "+") (arithmetic_op "-") (arithmetic_op "*")
+facts (comparison_op "<") (comparison_op "<=") (comparison_op "=")
+facts (primitive "eq?") (primitive "not")
+facts (any_bool (tt)) (any_bool (ff))
+rule ((arithmetic_op op) | (comparison_op op)) --> (primitive op)
+
+demand (delta str list) val
+rule (delta op [(numval) (numval)] (numval)) <-- (arithmetic_op op)
+rule (delta op [(numval) (numval)] (boolval b)) <-- (comparison_op op) (any_bool b)
+facts (delta "not" [(boolval (ff))] (boolval (tt)))
+rule (delta "not" [v] (boolval (ff))) <-- (scheme_false fv) (/= v fv)
+
+facts (delta "eq?" [(symval s) (symval s)] (boolval (tt)))
+facts (delta "eq?" [(boolval b) (boolval b)] (boolval (tt)))
+facts (delta "eq?" [(prim op) (prim op)] (boolval (tt)))
+rule (delta "eq?" [v1 v2] (boolval (ff))) <-- (/= v1 v2)
+rule (delta "eq?" [(numval) (numval)] (boolval b)) <-- (any_bool b)
+rule (delta "eq?" [(closure lm rc) (closure lm rc)] (boolval b)) <-- (any_bool b)
+
+;; ---- entry: the empty environment, the empty context ----
+
+table (program_result val)
+table (reachable_expr expr)
+
+rule (program e) --> (eval e (mempty) [])
+rule (program e) (eval e (mempty) [] v) --> (program_result v)
+rule (eval e rho t) --> (reachable_expr e)

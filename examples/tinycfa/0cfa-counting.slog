@@ -1,21 +1,31 @@
-;; 0CFA with abstract counting (docs/lattices.md §2.3, after Might-Shivers
-;; GammaCFA): alongside the store -- which answers "WHICH values can this
-;; variable hold?" as a plain powerset relation -- the measure mu answers
-;; "HOW MANY concrete bindings does this abstract variable stand for?" on
-;; the chain 0 < 1 < inf ((count): 0 is absence, never stored).  mu(x)=(one)
-;; certifies a globally unique binding: the must-alias fact that licenses
-;; strong updates, super-beta inlining, and abstract-GC precision.
+;; 0CFA with a FLOW-SET CARDINALITY measure: alongside the store -- which
+;; answers "WHICH values can this variable hold?" as a plain powerset
+;; relation -- mu renders |store(x)| on the chain 0 < 1 < inf ((count): 0 is
+;; absence, never stored).  mu(x)=(one) means a singleton flow set: exactly
+;; one abstract value ever reaches x -- the license for unique-callee
+;; direct calls and monomorphization, and (absence) marks dead parameters.
+;;
+;; What it is NOT (docs/lattices.md §2.3): Might-Shivers GammaCFA counting,
+;; "HOW MANY concrete bindings does this abstract address stand for?"  Two
+;; binding EVENTS that agree abstractly -- two callsites passing the same
+;; lambda, or one callsite re-executed under recursion -- collapse to one
+;; store fact here, so this mu stays (one) where the true binding count is
+;; inf.  It therefore licenses NO must-alias / strong-update / must-equality
+;; conclusions: distinct concrete closures over one lambda look identical.
+;; The genuine binding count needs event evidence, not value evidence --
+;; see mcfa-counting.slog, which computes it for a 1-m-CFA.
 ;;
 ;; The rendering is idempotent by construction, NOT a count of derivations:
 ;; every binding contributes (one) ((one) merged with (one) is (one)), and
 ;; only *evidence of distinctness* -- two different values reaching the same
 ;; variable -- forces (inf).
 ;;
-;; The soundness discipline is the point: mu(x)=(one) is a downward-closed
-;; test (more merging can raise it to (inf)), so a rule reading it in the
-;; same SCC that still grows mu is a COMPILE ERROR -- the classic
-;; strong-update bug, caught by the type system.  The singleton/polyvariant
-;; reports below live in later strata, where mu is closed and final.
+;; The soundness discipline stands regardless of the measure's reading:
+;; mu(x)=(one) is a downward-closed test (more merging can raise it to
+;; (inf)), so a rule reading it in the same SCC that still grows mu is a
+;; COMPILE ERROR -- the classic strong-update bug, caught by the type
+;; system.  The singleton/polyvariant reports below live in later strata,
+;; where mu is closed and final.
 
 include "types.slog"
 
@@ -51,9 +61,9 @@ rule (program e) (eval e v) --> (result v)
 ;; distinct lambdas -- the analysis is RIGHT to say (inf).  dummy receives
 ;; whatever (id ...) answers, and since the monovariant store conflates
 ;; id's two calls, both lambdas flow there too: honest 0CFA imprecision,
-;; and exactly what a polyvariant analysis (or a strong update licensed by
-;; a mu of (one)) would sharpen.  v and w are never bound at all: mu is 0,
-;; i.e. absent -- dead parameters.
+;; and exactly what a polyvariant analysis would sharpen (mcfa-counting.slog
+;; does).  v and w are never bound at all: mu is 0, i.e. absent -- dead
+;; parameters.
 
 facts
 (program
@@ -61,7 +71,7 @@ facts
                         (app (ref "id") (lambda "w" (ref "w")))))
       (lambda "z" (ref "z"))))
 
-;; ---- the counting measure, over the closed store ----
+;; ---- the cardinality measure, over the closed store ----
 
 rule (store X V) --> (mu X (one))
 rule (store X V1) (store X V2) (/= V1 V2) --> (mu X (inf))

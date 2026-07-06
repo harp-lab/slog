@@ -1,0 +1,20 @@
+;; Bracket list literals and tail patterns over the builtin cons/nil
+;; (collections.rkt desugar): literal facts, head construction, body
+;; deconstruction, the empty list, and coexistence of a top-level |
+;; or-split with a bracket tail in the same rule.
+
+table (input list)
+table (heads int)
+table (tails list)
+table (built list)
+table (isnil int)
+table (edge int int)
+table (swapped list)
+
+facts (input [1 2 3]) (input [])
+facts (edge 1 2)
+
+rule (input [x xs ...]) --> (heads x) (tails xs)
+rule (input l) --> (built [0 l ...])
+rule (input []) --> (isnil 1)
+rule ((edge a b) | (edge b a)) (input [x t ...]) --> (swapped [a b x t ...])

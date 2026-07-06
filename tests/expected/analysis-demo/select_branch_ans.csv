@@ -1,0 +1,2 @@
+(select_branch (boolval (_enum "ff")) (ref "t") (ref "e"))   (ref "e")   
+(select_branch (boolval (_enum "tt")) (ref "t") (ref "e"))   (ref "t")   

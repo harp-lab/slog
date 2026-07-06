@@ -1,0 +1,19 @@
+ (cons 1 (cons 1 (cons 2 (cons 3 (_enum "nil"))))))
+ (cons 1 (cons 2 (cons 3 (_enum "nil")))))
+ (cons 1 (cons 2 (cons 3 (_enum "nil")))))
+ (cons 1 (cons 2 (cons 3 (_enum "nil")))))
+ (cons 2 (cons 1 (cons 2 (cons 3 (_enum "nil"))))))
+ 0
+ 1
+ 1
+ 2
+ 2
+(cons
+(cons
+(cons
+(cons
+(cons
+(cons 0 (_enum "nil"))
+(cons 1 (cons 2 (cons 3 (_enum "nil"))))
+(cons 2 (cons 3 (_enum "nil")))
+(cons 3 (_enum "nil"))

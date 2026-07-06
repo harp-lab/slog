@@ -27,6 +27,7 @@
 (require "utils.rkt")
 (require "ir-shared.rkt")
 (require "demand.rkt")
+(require "collections.rkt")
 
 ;; -----------------------------------------------------------------------
 ;; Entry point: path -> (listof program?), dependencies first, manifests
@@ -174,8 +175,19 @@
     (error (format "The type ~a appears defined as a union and struct!" x)))
   env+)
 
+;; Builtin declarations seeded into every module's environment: the _enum
+;; struct backing enum constants, and the list constructors that bracket
+;; literals desugar to (collections.rkt) -- exactly as if every program
+;; declared `union (list (nil) (cons any list))`.  The names list/cons/nil
+;; are reserved (checked in extract-type-env): user redeclarations would
+;; otherwise hit the generic conflict check with a baffling message.
 (define base-type-env
-  (unify-type-envs empty-type-env (type-env-rel '_enum `(struct str))))
+  (foldl (lambda (e env) (unify-type-envs env e))
+         empty-type-env
+         (list (type-env-rel '_enum `(struct str))
+               (type-env-rel 'cons `(struct any list))
+               (type-env-rel 'nil `(enum nil))
+               (type-env-union 'list (set 'list 'nil 'cons)))))
 
 ;; -----------------------------------------------------------------------
 ;; Lattice valuespecs (docs/lattices.md §3).
@@ -259,6 +271,16 @@
       [(app parse-valuespec-maybe (? list? spec))
        (define g (lattice-anon-name spec))
        (cons g (unify-type-envs env (type-env-rel g spec)))]
+      ;; a parametric list column type: (list T) -- deterministically named,
+      ;; recorded as (listof T) preserving the element type verbatim
+      ;; (docs/primitives.md §8.4); transparent to the checker, resolving to
+      ;; the builtin list union (ir-shared.rkt lattice-base-type).  MUST
+      ;; precede the inline-struct fallback, which would otherwise silently
+      ;; declare a unary struct named `list`.
+      [`(syn ,prov list ,elem-e)
+       (match-define (cons elem env+) (flatten-nested-type env elem-e))
+       (define g (string->symbol (format "_list_~a" elem)))
+       (cons g (unify-type-envs env+ (type-env-rel g `(listof ,elem))))]
       [`(syn ,prov ,name)
        (cons name
              (extract-type-env `(syn ,prov enum (syn ,prov ,name) (syn ,prov top-level))
@@ -275,10 +297,19 @@
            (cons '() env)
            args))
 
+  ;; list/cons/nil are builtin list constructors (bracket literals
+  ;; desugar to them, collections.rkt); reject redeclarations here with
+  ;; a message that names the feature, before the generic conflict
+  ;; check produces a baffling one.
+  (define (check-not-reserved! name)
+    (when (collection-builtin? name)
+      (error (format "The name ~a is a builtin list constructor (bracket syntax [x y | t] denotes cons/nil lists); remove the declaration" name))))
+
   (define (extract-type-env ast [env base-type-env])
     (match ast
       [`(syn ,_ ,(and struct-or-table (or 'table 'struct))
              (syn ,_ ,(? symbol? name) ,args ...) ,body)
+       (check-not-reserved! name)
        (when (null? args)
          (error (format "Table or struct ~a must have at least one column" name)))
        (match-define (cons xs env+) (flatten-nested-types env args))
@@ -286,6 +317,7 @@
                          (unify-type-envs env+ (type-env-rel name `(,struct-or-table ,@xs))))]
 
       [`(syn ,_ union (syn ,_ ,(? symbol? name) ,args ...) ,body)
+       (check-not-reserved! name)
        (match-define (cons xs env+) (flatten-nested-types env args))
        (extract-type-env body
                          (unify-type-envs env+ (type-env-union name (list->set (cons name xs)))))]
@@ -293,6 +325,7 @@
       ;; lattice (name valuespec): declare a lattice value TYPE; relations
       ;; with a lattice-typed (last) column are maps automatically
       [`(syn ,_ lattice (syn ,_ ,(? symbol? name) ,spec-e) ,body)
+       (check-not-reserved! name)
        (define spec (parse-valuespec-maybe spec-e))
        (unless spec
          (error (format "Malformed lattice valuespec for ~a: expected (min int #:floor n), (max T #:ceiling n), (count), or (flat T); got ~a"
@@ -305,6 +338,7 @@
       ;; demand (f in ...) out ...: declare the backing relations -- the
       ;; demand struct itself and its answer table, keyed by the demand
       [`(syn ,_ demand (syn ,_ ,(? symbol? name) ,args ...) ,ans ... ,body)
+       (check-not-reserved! name)
        (when (null? args)
          (error (format "Demand relation ~a must have at least one input column" name)))
        (when (null? ans)
@@ -328,6 +362,8 @@
        ;; blue)`) additionally makes the name a type over its member
        ;; constants -- an alias set, exactly like a union of nullary members
        ;; -- so columns can be declared with the enum's name.
+       (check-not-reserved! name)
+       (for-each check-not-reserved! names)
        (define members (if (null? names) (list name) names))
        (define env+
          (foldl unify-type-envs
@@ -417,8 +453,13 @@
                          (cons (list path toks rules) mods+))]))
               (list base-type-env (hash) '())
               (set->list mods)))
+     ;; Bracket list literals desugar BEFORE the demand transform: the
+     ;; transform or-splits rule bodies (demand.rkt), and a not-yet-
+     ;; reassociated tail pipe inside ([] ...) would be silently split
+     ;; into wrong alternatives (collections.rkt has the full story).
+     (define mods-collections (desugar-collections-mods mods+))
      (define-values (mods-desugared synth-rels clo-members)
-       (desugar-demand-program mods+ demands type-env))
+       (desugar-demand-program mods-collections demands type-env))
      (define type-env+
        (let* ([env (foldl (lambda (name env)
                             (unify-type-envs
@@ -477,7 +518,8 @@
              [`(struct ,xs ...) (hash-set man x `(struct ,x ,(add1 (length xs))))]
              [`(temp ,_ ...) man]
              [`(enum ,name) man]
-             [(? lattice-spec?) man]))
+             [(? lattice-spec?) man]
+             [(? listof-spec?) man]))
          manifest
          (hash-keys rels)))
 

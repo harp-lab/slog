@@ -1,0 +1,169 @@
+;; Finite sets of non-negative ints as big-endian Patricia tries
+;; (Okasaki-Gill, "Fast Mergeable Integer Maps"), built entirely from
+;; demand judgments (docs/primitives.md, Phase 1).
+;;
+;; CANONICAL BY CONSTRUCTION: a Patricia trie's shape is a function of
+;; its key set alone -- insertion order cannot change it -- so struct
+;; interning gives value-equality for free: two equal sets are one
+;; interned id, printed identically, usable as keys.
+;;
+;; Representation: (pempty) | (pleaf k) | (pbranch prefix mask left right)
+;;   mask   = the branching bit (a power of two);
+;;   prefix = the keys' shared bits STRICTLY ABOVE mask (mask and below
+;;            cleared); left holds keys with the mask bit 0.
+;; Elements are ints in [0, 2^30) -- the rules-based helpers use
+;; division to clear low bits, which is only correct for non-negative
+;; keys (full 64-bit generality arrives with the native kernels).
+;;
+;; A Patricia trie is a DECISION structure, so membership is total
+;; without negation: st_mem0 answers 1 (present) or 0 (absent) by
+;; structural recursion -- absence is decidable, which is what makes
+;; difference and insert-if-absent expressible in a monotone language.
+
+union (pset (pempty) (pleaf int) (pbranch int int pset pset))
+
+;; ---- bit helpers ------------------------------------------------------
+;; highest set bit of x >= 1, as a power of two
+demand (st_hsb int) int
+facts (st_hsb 1 1)
+rule (st_hsb x (* 2 (st_hsb (/ x 2)))) <-- (< 1 x)
+
+;; clear mask bit m and everything below it: keep k's bits strictly above
+demand (st_msk int int) int
+facts (st_msk k m (* (/ k (* 2 m)) (* 2 m)))
+
+;; ---- join: two tries with representative keys whose prefixes differ --
+demand (st_join int pset int pset) pset
+rule (st_join p0 t0 p1 t1 (pbranch (st_msk p0 (st_hsb (bxor p0 p1)))
+                                   (st_hsb (bxor p0 p1))
+                                   t0 t1))
+ <-- (< (band p0 (st_hsb (bxor p0 p1))) 1)
+rule (st_join p0 t0 p1 t1 (pbranch (st_msk p0 (st_hsb (bxor p0 p1)))
+                                   (st_hsb (bxor p0 p1))
+                                   t1 t0))
+ <-- (> (band p0 (st_hsb (bxor p0 p1))) 0)
+
+;; ---- insert -----------------------------------------------------------
+demand (st_ins pset int) pset
+facts (st_ins (pempty) k (pleaf k))
+facts (st_ins (pleaf k) k (pleaf k))
+rule (st_ins (pleaf j) k r) <-- (/= j k) (st_join k (pleaf k) j (pleaf j) r)
+rule (st_ins (pbranch p m l r) k (pbranch p m (st_ins l k) r))
+ <-- (= p (st_msk k m)) (< (band k m) 1)
+rule (st_ins (pbranch p m l r) k (pbranch p m l (st_ins r k)))
+ <-- (= p (st_msk k m)) (> (band k m) 0)
+rule (st_ins (pbranch p m l r) k res)
+ <-- (/= p (st_msk k m)) (= t (pbranch p m l r)) (st_join k (pleaf k) p t res)
+
+;; ---- membership -------------------------------------------------------
+;; partial: an answer 1 iff present (absence = no answer)
+demand (st_mem pset int) int
+facts (st_mem (pleaf k) k 1)
+rule (st_mem (pbranch p m l r) k a) <-- (< (band k m) 1) (st_mem l k a)
+rule (st_mem (pbranch p m l r) k a) <-- (> (band k m) 0) (st_mem r k a)
+
+;; total: 1 present / 0 absent, by structural decision
+demand (st_mem0 pset int) int
+facts (st_mem0 (pempty) k 0)
+facts (st_mem0 (pleaf k) k 1)
+rule (st_mem0 (pleaf j) k 0) <-- (/= j k)
+rule (st_mem0 (pbranch p m l r) k 0) <-- (/= p (st_msk k m))
+rule (st_mem0 (pbranch p m l r) k a)
+ <-- (= p (st_msk k m)) (< (band k m) 1) (st_mem0 l k a)
+rule (st_mem0 (pbranch p m l r) k a)
+ <-- (= p (st_msk k m)) (> (band k m) 0) (st_mem0 r k a)
+
+;; ---- smart branch: collapse an empty child (keeps deletion canonical) -
+demand (st_bld int int pset pset) pset
+facts (st_bld p m (pempty) r r)
+facts (st_bld p m l (pempty) l)
+rule (st_bld p m l r (pbranch p m l r))
+ <-- (= e (pempty)) (/= l e) (/= r e)
+
+;; ---- delete -----------------------------------------------------------
+demand (st_del pset int) pset
+facts (st_del (pempty) k (pempty))
+facts (st_del (pleaf k) k (pempty))
+rule (st_del (pleaf j) k (pleaf j)) <-- (/= j k)
+rule (st_del (pbranch p m l r) k (pbranch p m l r)) <-- (/= p (st_msk k m))
+rule (st_del (pbranch p m l r) k res)
+ <-- (= p (st_msk k m)) (< (band k m) 1) (st_bld p m (st_del l k) r res)
+rule (st_del (pbranch p m l r) k res)
+ <-- (= p (st_msk k m)) (> (band k m) 0) (st_bld p m l (st_del r k) res)
+
+;; ---- union ------------------------------------------------------------
+demand (st_union pset pset) pset
+facts (st_union (pempty) t t)
+facts (st_union s (pempty) s)
+rule (st_union (pleaf k) t r) <-- (st_ins t k r)
+rule (st_union s (pleaf k) r) <-- (st_ins s k r)
+;; same prefix and mask: union pointwise
+facts (st_union (pbranch p m l r) (pbranch p m u v)
+                (pbranch p m (st_union l u) (st_union r v)))
+;; s's mask higher (s branches above t): t fits inside one side of s...
+rule (st_union (pbranch p m l r) (pbranch q n u v)
+               (pbranch p m (st_union l (pbranch q n u v)) r))
+ <-- (< n m) (= p (st_msk q m)) (< (band q m) 1)
+rule (st_union (pbranch p m l r) (pbranch q n u v)
+               (pbranch p m l (st_union r (pbranch q n u v))))
+ <-- (< n m) (= p (st_msk q m)) (> (band q m) 0)
+;; ...or not: join the two tries
+rule (st_union (pbranch p m l r) (pbranch q n u v) res)
+ <-- (< n m) (/= p (st_msk q m))
+     (= s (pbranch p m l r)) (= t (pbranch q n u v)) (st_join p s q t res)
+;; t's mask higher: symmetric
+rule (st_union (pbranch p m l r) (pbranch q n u v)
+               (pbranch q n (st_union (pbranch p m l r) u) v))
+ <-- (< m n) (= q (st_msk p n)) (< (band p n) 1)
+rule (st_union (pbranch p m l r) (pbranch q n u v)
+               (pbranch q n u (st_union (pbranch p m l r) v)))
+ <-- (< m n) (= q (st_msk p n)) (> (band p n) 0)
+rule (st_union (pbranch p m l r) (pbranch q n u v) res)
+ <-- (< m n) (/= q (st_msk p n))
+     (= s (pbranch p m l r)) (= t (pbranch q n u v)) (st_join p s q t res)
+;; same mask, different prefix: disjoint ranges, join
+rule (st_union (pbranch p m l r) (pbranch q m u v) res)
+ <-- (/= p q)
+     (= s (pbranch p m l r)) (= t (pbranch q m u v)) (st_join p s q t res)
+
+;; ---- difference (s minus t) ------------------------------------------
+demand (st_diff pset pset) pset
+facts (st_diff s (pempty) s)
+facts (st_diff (pempty) t (pempty))
+rule (st_diff s (pleaf k) r) <-- (st_del s k r)
+rule (st_diff (pleaf k) t (pleaf k)) <-- (st_mem0 t k 0)
+rule (st_diff (pleaf k) t (pempty)) <-- (st_mem0 t k 1)
+;; same prefix/mask: pointwise, collapsing empties
+rule (st_diff (pbranch p m l r) (pbranch p m u v) res)
+ <-- (st_bld p m (st_diff l u) (st_diff r v) res)
+;; s branches higher: subtract t from the side it lives in
+rule (st_diff (pbranch p m l r) (pbranch q n u v) res)
+ <-- (< n m) (= p (st_msk q m)) (< (band q m) 1)
+     (st_bld p m (st_diff l (pbranch q n u v)) r res)
+rule (st_diff (pbranch p m l r) (pbranch q n u v) res)
+ <-- (< n m) (= p (st_msk q m)) (> (band q m) 0)
+     (st_bld p m l (st_diff r (pbranch q n u v)) res)
+rule (st_diff (pbranch p m l r) (pbranch q n u v) (pbranch p m l r))
+ <-- (< n m) (/= p (st_msk q m))
+;; t branches higher: only the side of t sharing s's range matters
+rule (st_diff (pbranch p m l r) (pbranch q n u v) res)
+ <-- (< m n) (= q (st_msk p n)) (< (band p n) 1)
+     (st_diff (pbranch p m l r) u res)
+rule (st_diff (pbranch p m l r) (pbranch q n u v) res)
+ <-- (< m n) (= q (st_msk p n)) (> (band p n) 0)
+     (st_diff (pbranch p m l r) v res)
+rule (st_diff (pbranch p m l r) (pbranch q n u v) (pbranch p m l r))
+ <-- (< m n) (/= q (st_msk p n))
+;; same mask, different prefix: disjoint
+rule (st_diff (pbranch p m l r) (pbranch q m u v) (pbranch p m l r))
+ <-- (/= p q)
+
+;; ---- size, and building from a bracket list ---------------------------
+demand (st_size pset) int
+facts (st_size (pempty) 0)
+facts (st_size (pleaf k) 1)
+facts (st_size (pbranch p m l r) (+ (st_size l) (st_size r)))
+
+demand (st_fromlist list) pset
+facts (st_fromlist [] (pempty))
+facts (st_fromlist [x xs ...] (st_ins (st_fromlist xs) x))

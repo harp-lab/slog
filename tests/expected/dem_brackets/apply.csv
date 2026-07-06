@@ -1,0 +1,6 @@
+(apply (_enum "dbl") 1)
+(apply (_enum "dbl") 2)
+(apply (_enum "dbl") 3)
+(apply (addk 10) 1)
+(apply (addk 10) 2)
+(apply (addk 10) 3)

@@ -1,0 +1,70 @@
+;; ===================================================================
+;; Sudoku with a powerset-lattice candidate set  --  A PROTOTYPE.
+;;
+;; This program DOES NOT RUN on today's slog: it uses the `(ps E)`
+;; powerset lattice, which docs/lattices.md designs (§3.1, the L2 tier)
+;; but has not implemented.  It is written to show what that feature
+;; buys -- and it is dramatic: the eighteen 8-way-join rules of
+;; sudoku.slog collapse to two, because the set of blocked digits per
+;; cell becomes a single VALUE we can name and test as a whole, instead
+;; of a set of rows we must reconstruct with a join.
+;; ===================================================================
+
+;; Digits are a 9-member enum, so "a set of digits" is a (ps digit) value
+;; -- a 9-bit mask under the hood, merged by union.  (ps E requires an
+;; enum element type; that is what makes the universe finite and the
+;; bitmask well-defined.)
+enum (digit d1 d2 d3 d4 d5 d6 d7 d8 d9)
+table (dig digit)                     ;; the 9 members, to range over
+facts (dig d1)(dig d2)(dig d3)(dig d4)(dig d5)(dig d6)(dig d7)(dig d8)(dig d9)
+
+;; ---- geometry: identical to sudoku.slog (int cells 0..80) ----------
+table (idx int)
+facts (idx 0)
+rule (idx I) (< I 80) (= J (+ I 1)) --> (idx J)
+table (cellrc int int int int int)    ;; cell, row, col, band-row, band-col
+rule (idx I) (= R (/ I 9)) (= C (% I 9)) (= BR (/ R 3)) (= BC (/ C 3))
+ --> (cellrc I R C BR BC)
+table (peer int int)
+rule (cellrc A R _ _  _ ) (cellrc B R _ _  _ ) (/= A B) --> (peer A B)
+rule (cellrc A _ C _  _ ) (cellrc B _ C _  _ ) (/= A B) --> (peer A B)
+rule (cellrc A _ _ BR BC) (cellrc B _ _ BR BC) (/= A B) --> (peer A B)
+
+;; ---- the candidate model -------------------------------------------
+;; blk maps each cell to the SET of digits that cannot go there.  Because
+;; the value column is a lattice, blk is a MAP (one row per cell) and
+;; deriving (blk C V) CONTRIBUTES V to that cell's set (union-merged) --
+;; a digit injects as the singleton {V}, exactly as an int injects into a
+;; (min int) column as itself.
+lattice (dset (ps digit))
+table (given  int digit)
+table (solved int digit)
+table (blk    int dset)               ;; MAP: cell -> set of blocked digits
+
+rule (given C V)                   --> (solved C V)
+rule (solved P V) (peer P C)       --> (blk C V)      ;; a solved digit is blocked in every peer
+rule (solved C V) (dig W) (/= W V) --> (blk C W)      ;; ...and every other digit is blocked in that cell
+
+;; ---- NAKED SINGLE, in ONE rule (was nine) --------------------------
+;; (blk C S) binds the WHOLE blocked set at once.  If adding V to it
+;; completes the universe of digits, then every digit *except* V is
+;; already blocked -- V is the only survivor, so it is forced.
+;;   superset? is UPWARD-CLOSED: once S u {V} = (all), more blocking
+;;   cannot undo it, so the calculus admits this read inside the still-
+;;   growing SCC.  `union` is a monotone transfer.  That is the whole
+;;   soundness story -- the same discipline as (min int)'s `<` guard.
+rule (blk C S) (dig V) (superset? (union S V) (all)) --> (solved C V)
+
+;; ---- HIDDEN SINGLE, in ONE rule (was nine) -------------------------
+;; The same shape, transposed to positions.  bpos maps (unit, digit) to
+;; the set of the unit's positions where that digit is blocked; when only
+;; one position is left open, the digit is forced there.  (posn is the
+;; 9-member position enum; unitpos U P C names the cell at position P of
+;; unit U -- static geometry, generated like unitcells in sudoku.slog.)
+enum (posn q0 q1 q2 q3 q4 q5 q6 q7 q8)
+lattice (pset (ps posn))
+table (unitpos int posn int)          ;; unit, position, cell   (generated)
+table (bpos int digit pset)           ;; MAP: (unit,digit) -> set of blocked positions
+
+rule (unitpos U P C) (dig V) (blk C S) (member? V S) --> (bpos U V P)
+rule (bpos U V Sp) (unitpos U P C) (superset? (union Sp P) (all)) --> (solved C V)

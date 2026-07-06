@@ -1,0 +1,20 @@
+;; A small Scheme, same nine forms as examples/schemecfa but with
+;; VARIABLES AS INTEGER LABELS -- finite maps key on ints, so an
+;; environment (var -> context) forces integer variables.  Primitives
+;; are a distinct form (primref) so they never occupy the variable space.
+;; Binder labels must be globally distinct (the AST is interned).
+
+table (program expr)
+
+union (bool (tt) (ff))
+
+union (expr (num int)
+            (boolean bool)
+            (sym str)
+            (ref int)           ;; a variable, by integer label
+            (primref str)       ;; a primitive operator, by name
+            (lambda list expr)  ;; (lambda [param-labels ...] body)
+            (app expr list)     ;; (app operator [argument-exprs ...])
+            (if expr expr expr)
+            (let int expr expr)
+            (letrec int expr expr))

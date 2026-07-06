@@ -1,0 +1,16 @@
+;; The list stdlib (lib/list.slog): append, ref, member, len, rev as
+;; demand judgments over bracket lists.
+
+include "../lib/list.slog"
+
+table (appended list)
+table (third any)
+table (has7 int)
+table (n int)
+table (reversed list)
+
+rule (= r (lst_append [1 2] [3 4])) --> (appended r)
+rule (= r (lst_ref [10 20 30 40] 2)) --> (third r)
+rule (= r (lst_member [5 6 7] 7)) --> (has7 r)
+rule (= r (lst_len [1 2 3 4 5])) --> (n r)
+rule (= r (lst_rev [1 2 3])) --> (reversed r)

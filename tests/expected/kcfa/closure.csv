@@ -1,0 +1,27 @@
+ (_enum "mempty"))
+ (_enum "mempty"))
+ (_enum "mempty"))
+ (lambda (cons 1 (_enum "nil")) (lambda (cons 2 (_enum "nil")) (ref 1)))
+ (lambda (cons 11 (_enum "nil")) (ref 11))
+ (lambda (cons 2 (_enum "nil")) (ref 1))
+ (lambda (cons 2 (_enum "nil")) (ref 1))
+ (lambda (cons 21 (_enum "nil")) (if (app (primref "=") (cons (ref 21) (cons (num 0) (_enum "nil")))) (num 1) (app (primref "*") (cons (ref 21) (cons (app (ref 20) (cons (app (primref "-") (cons (ref 21) (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil"))))))
+ (lambda (cons 31 (cons 32 (_enum "nil"))) (app (primref "+") (cons (ref 31) (cons (ref 32) (_enum "nil")))))
+ (lambda (cons 41 (_enum "nil")) (if (app (primref "=") (cons (ref 41) (cons (num 0) (_enum "nil")))) (lambda (cons 42 (_enum "nil")) (ref 42)) (app (ref 40) (cons (app (primref "-") (cons (ref 41) (cons (num 1) (_enum "nil")))) (_enum "nil")))))
+ (lambda (cons 42 (_enum "nil")) (ref 42))
+ (lambda (cons 42 (_enum "nil")) (ref 42))
+ (mbranch 40 1 (mleaf 40 (_enum "nil")) (mleaf 41 (cons (app (ref 40) (cons (app (primref "-") (cons (ref 41) (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil")))))
+ (mbranch 40 1 (mleaf 40 (_enum "nil")) (mleaf 41 (cons (app (ref 40) (cons (num 3) (_enum "nil"))) (_enum "nil")))))
+ (mleaf 1 (cons (app (ref 0) (cons (sym "A") (_enum "nil"))) (_enum "nil"))))
+ (mleaf 1 (cons (app (ref 0) (cons (sym "B") (_enum "nil"))) (_enum "nil"))))
+ (mleaf 20 (_enum "nil")))
+ (mleaf 40 (_enum "nil")))
+(closure
+(closure
+(closure
+(closure
+(closure
+(closure
+(closure
+(closure
+(closure

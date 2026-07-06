@@ -1,0 +1,5 @@
+1   (cons 1 (cons 2 (_enum "nil")))   
+2   (cons 1 (cons 2 (_enum "nil")))   
+3   (cons 9 (_enum "nil"))   
+4   (cons 1 (cons 2 (_enum "nil")))   
+5   (top)   

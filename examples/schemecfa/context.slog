@@ -1,0 +1,10 @@
+;; Contexts are the youngest mlimit call sites, as a list.  (mlimit 0)
+;; is 0CFA; each increment buys one more frame of call history.
+
+include "syntax.slog"
+include "../../lib/list.slog"
+
+table (mlimit int)
+
+demand (tick expr list) list
+rule (tick site c (lst_take [site c ...] m)) <-- (mlimit m)

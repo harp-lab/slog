@@ -1,0 +1,36 @@
+ (app (primref "eq?") (cons (ref 12) (cons (ref 13) (_enum "nil")))))
+ (app (primref "eq?") (cons (ref 5) (cons (ref 6) (_enum "nil")))))
+ (app (ref 0) (cons (sym "A") (_enum "nil")))
+ (app (ref 0) (cons (sym "B") (_enum "nil")))
+ (app (ref 10) (cons (sym "P") (_enum "nil")))
+ (app (ref 10) (cons (sym "Q") (_enum "nil")))
+ (app (ref 3) (cons (num 0) (_enum "nil")))
+ (app (ref 30) (cons (num 3) (cons (num 4) (_enum "nil")))))
+ (app (ref 4) (cons (num 0) (_enum "nil")))
+ (lambda (cons 1 (_enum "nil")) (lambda (cons 2 (_enum "nil")) (ref 1)))
+ (lambda (cons 11 (_enum "nil")) (ref 11))
+ (lambda (cons 31 (cons 32 (_enum "nil"))) (app (primref "+") (cons (ref 31) (cons (ref 32) (_enum "nil")))))
+ (let 12 (app (ref 10) (cons (sym "P") (_enum "nil"))) (let 13 (app (ref 10) (cons (sym "Q") (_enum "nil"))) (app (primref "eq?") (cons (ref 12) (cons (ref 13) (_enum "nil")))))))
+ (let 13 (app (ref 10) (cons (sym "Q") (_enum "nil"))) (app (primref "eq?") (cons (ref 12) (cons (ref 13) (_enum "nil"))))))
+ (let 3 (app (ref 0) (cons (sym "A") (_enum "nil"))) (let 4 (app (ref 0) (cons (sym "B") (_enum "nil"))) (let 5 (app (ref 3) (cons (num 0) (_enum "nil"))) (let 6 (app (ref 4) (cons (num 0) (_enum "nil"))) (app (primref "eq?") (cons (ref 5) (cons (ref 6) (_enum "nil")))))))))
+ (let 4 (app (ref 0) (cons (sym "B") (_enum "nil"))) (let 5 (app (ref 3) (cons (num 0) (_enum "nil"))) (let 6 (app (ref 4) (cons (num 0) (_enum "nil"))) (app (primref "eq?") (cons (ref 5) (cons (ref 6) (_enum "nil"))))))))
+ (let 5 (app (ref 3) (cons (num 0) (_enum "nil"))) (let 6 (app (ref 4) (cons (num 0) (_enum "nil"))) (app (primref "eq?") (cons (ref 5) (cons (ref 6) (_enum "nil")))))))
+ (let 6 (app (ref 4) (cons (num 0) (_enum "nil"))) (app (primref "eq?") (cons (ref 5) (cons (ref 6) (_enum "nil"))))))
+ 0
+ 10
+ 12
+ 13
+ 3
+ 30
+ 4
+ 5
+ 6
+(let
+(let
+(let
+(let
+(let
+(let
+(let
+(let
+(let

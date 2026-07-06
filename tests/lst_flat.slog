@@ -1,0 +1,27 @@
+;; (flat T) lifts any interned type -- including builtin bracket lists,
+;; with zero list-specific machinery (docs/primitives.md §6.1):
+;; constant propagation where the "constants" are lists.  Nodes 1,2
+;; assign the same list, node 3 a different one; the flow diamond makes
+;; node 4 see agreeing lists (stays constant) and node 5 conflicting
+;; ones (collapses to top).
+
+lattice (fl (flat list))
+table (assign int list)
+table (flow int int)
+table (val int fl)
+table (conflict int)
+table (constant int list)
+
+facts
+(assign 1 [1 2])
+(assign 2 [1 2])
+(assign 3 [9])
+(flow 1 4) (flow 2 4) (flow 2 5) (flow 3 5)
+
+rule (assign L V) --> (val L V)
+rule (flow L L2) (val L V) --> (val L2 V)
+
+;; later stratum: unrestricted reads of the closed lattice -- the top
+;; test, and structural deconstruction of a surviving constant list
+rule (val L V) (= V (top)) --> (conflict L)
+rule (val L V) (= V (cons h t)) --> (constant L V)

@@ -1,0 +1,3 @@
+(lst_ref (cons 10 (cons 20 (cons 30 (cons 40 (_enum "nil"))))) 2)   30   
+(lst_ref (cons 20 (cons 30 (cons 40 (_enum "nil")))) 1)   30   
+(lst_ref (cons 30 (cons 40 (_enum "nil"))) 0)   30   

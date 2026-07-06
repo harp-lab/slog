@@ -1,0 +1,6 @@
+(primref "*")
+(primref "+")
+(primref "-")
+(primref "=")
+(primref "eq?")
+(primref "not")

@@ -1,0 +1,128 @@
+;; Finite maps from non-negative ints to any value, as big-endian
+;; Patricia tries (Okasaki-Gill) built from demand judgments
+;; (docs/primitives.md, Phase 1) -- the map sibling of lib/set.slog
+;; (same canonicity story: keys determine the shape, so equal maps are
+;; one interned id).  Self-contained: its own bit helpers, so including
+;; either lib alone works.
+;;
+;; (mempty) | (mleaf key val) | (mbranch prefix mask left right)
+;; Keys are ints in [0, 2^30); values are any slog value.
+;; mp_put REPLACES on key collision; mp_union is LEFT-biased (the first
+;; argument's value wins), built on mp_put_soft = insert-if-absent,
+;; which the total mp_has0 makes expressible without negation.
+
+union (pmap (mempty) (mleaf int any) (mbranch int int pmap pmap))
+
+;; ---- bit helpers (same as lib/set.slog, mp_-prefixed) -----------------
+demand (mp_hsb int) int
+facts (mp_hsb 1 1)
+rule (mp_hsb x (* 2 (mp_hsb (/ x 2)))) <-- (< 1 x)
+
+demand (mp_msk int int) int
+facts (mp_msk k m (* (/ k (* 2 m)) (* 2 m)))
+
+;; ---- join -------------------------------------------------------------
+demand (mp_join int pmap int pmap) pmap
+rule (mp_join p0 t0 p1 t1 (mbranch (mp_msk p0 (mp_hsb (bxor p0 p1)))
+                                   (mp_hsb (bxor p0 p1))
+                                   t0 t1))
+ <-- (< (band p0 (mp_hsb (bxor p0 p1))) 1)
+rule (mp_join p0 t0 p1 t1 (mbranch (mp_msk p0 (mp_hsb (bxor p0 p1)))
+                                   (mp_hsb (bxor p0 p1))
+                                   t1 t0))
+ <-- (> (band p0 (mp_hsb (bxor p0 p1))) 0)
+
+;; ---- put (replace on collision) ---------------------------------------
+demand (mp_put pmap int any) pmap
+facts (mp_put (mempty) k v (mleaf k v))
+facts (mp_put (mleaf k w) k v (mleaf k v))
+rule (mp_put (mleaf j w) k v r)
+ <-- (/= j k) (mp_join k (mleaf k v) j (mleaf j w) r)
+rule (mp_put (mbranch p m l r) k v (mbranch p m (mp_put l k v) r))
+ <-- (= p (mp_msk k m)) (< (band k m) 1)
+rule (mp_put (mbranch p m l r) k v (mbranch p m l (mp_put r k v)))
+ <-- (= p (mp_msk k m)) (> (band k m) 0)
+rule (mp_put (mbranch p m l r) k v res)
+ <-- (/= p (mp_msk k m)) (= t (mbranch p m l r)) (mp_join k (mleaf k v) p t res)
+
+;; ---- lookup ------------------------------------------------------------
+;; partial: answers the value iff the key is present
+demand (mp_get pmap int) any
+facts (mp_get (mleaf k v) k v)
+rule (mp_get (mbranch p m l r) k v) <-- (< (band k m) 1) (mp_get l k v)
+rule (mp_get (mbranch p m l r) k v) <-- (> (band k m) 0) (mp_get r k v)
+
+;; total presence: 1 present / 0 absent
+demand (mp_has0 pmap int) int
+facts (mp_has0 (mempty) k 0)
+facts (mp_has0 (mleaf k v) k 1)
+rule (mp_has0 (mleaf j v) k 0) <-- (/= j k)
+rule (mp_has0 (mbranch p m l r) k 0) <-- (/= p (mp_msk k m))
+rule (mp_has0 (mbranch p m l r) k a)
+ <-- (= p (mp_msk k m)) (< (band k m) 1) (mp_has0 l k a)
+rule (mp_has0 (mbranch p m l r) k a)
+ <-- (= p (mp_msk k m)) (> (band k m) 0) (mp_has0 r k a)
+
+;; ---- insert-if-absent (the union combinator) ---------------------------
+demand (mp_put_soft pmap int any) pmap
+rule (mp_put_soft t k v t) <-- (mp_has0 t k 1)
+rule (mp_put_soft t k v r) <-- (mp_has0 t k 0) (mp_put t k v r)
+
+;; ---- smart branch + delete ---------------------------------------------
+demand (mp_bld int int pmap pmap) pmap
+facts (mp_bld p m (mempty) r r)
+facts (mp_bld p m l (mempty) l)
+rule (mp_bld p m l r (mbranch p m l r))
+ <-- (= e (mempty)) (/= l e) (/= r e)
+
+demand (mp_del pmap int) pmap
+facts (mp_del (mempty) k (mempty))
+facts (mp_del (mleaf k v) k (mempty))
+rule (mp_del (mleaf j v) k (mleaf j v)) <-- (/= j k)
+rule (mp_del (mbranch p m l r) k (mbranch p m l r)) <-- (/= p (mp_msk k m))
+rule (mp_del (mbranch p m l r) k res)
+ <-- (= p (mp_msk k m)) (< (band k m) 1) (mp_bld p m (mp_del l k) r res)
+rule (mp_del (mbranch p m l r) k res)
+ <-- (= p (mp_msk k m)) (> (band k m) 0) (mp_bld p m l (mp_del r k) res)
+
+;; ---- union (left-biased: the first argument's binding wins) ------------
+demand (mp_union pmap pmap) pmap
+facts (mp_union (mempty) t t)
+facts (mp_union s (mempty) s)
+rule (mp_union (mleaf k v) t r) <-- (mp_put t k v r)                ;; left wins
+rule (mp_union s (mleaf k v) r) <-- (mp_put_soft s k v r)           ;; right only fills gaps
+facts (mp_union (mbranch p m l r) (mbranch p m u v)
+                (mbranch p m (mp_union l u) (mp_union r v)))
+rule (mp_union (mbranch p m l r) (mbranch q n u v)
+               (mbranch p m (mp_union l (mbranch q n u v)) r))
+ <-- (< n m) (= p (mp_msk q m)) (< (band q m) 1)
+rule (mp_union (mbranch p m l r) (mbranch q n u v)
+               (mbranch p m l (mp_union r (mbranch q n u v))))
+ <-- (< n m) (= p (mp_msk q m)) (> (band q m) 0)
+rule (mp_union (mbranch p m l r) (mbranch q n u v) res)
+ <-- (< n m) (/= p (mp_msk q m))
+     (= s (mbranch p m l r)) (= t (mbranch q n u v)) (mp_join p s q t res)
+rule (mp_union (mbranch p m l r) (mbranch q n u v)
+               (mbranch q n (mp_union (mbranch p m l r) u) v))
+ <-- (< m n) (= q (mp_msk p n)) (< (band p n) 1)
+rule (mp_union (mbranch p m l r) (mbranch q n u v)
+               (mbranch q n u (mp_union (mbranch p m l r) v)))
+ <-- (< m n) (= q (mp_msk p n)) (> (band p n) 0)
+rule (mp_union (mbranch p m l r) (mbranch q n u v) res)
+ <-- (< m n) (/= q (mp_msk p n))
+     (= s (mbranch p m l r)) (= t (mbranch q n u v)) (mp_join p s q t res)
+rule (mp_union (mbranch p m l r) (mbranch q m u v) res)
+ <-- (/= p q)
+     (= s (mbranch p m l r)) (= t (mbranch q m u v)) (mp_join p s q t res)
+
+;; ---- size, and building from a bracket list of [key val] pairs ---------
+demand (mp_size pmap) int
+facts (mp_size (mempty) 0)
+facts (mp_size (mleaf k v) 1)
+facts (mp_size (mbranch p m l r) (+ (mp_size l) (mp_size r)))
+
+;; leftmost pair wins on duplicate keys (later puts replace earlier ones,
+;; and the recursion puts the head LAST)
+demand (mp_fromlist list) pmap
+facts (mp_fromlist [] (mempty))
+facts (mp_fromlist [[k v] xs ...] (mp_put (mp_fromlist xs) k v))

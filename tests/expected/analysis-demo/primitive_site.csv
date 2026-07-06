@@ -1,0 +1,4 @@
+(app (ref "+") (cons (ref "p") (cons (num 1) (_enum "nil"))))   "+"   
+(app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil"))))   "+"   
+(app (ref "-") (cons (ref "q") (cons (num 1) (_enum "nil"))))   "-"   
+(app (ref "<") (cons (num 1) (cons (num 2) (_enum "nil"))))   "<"   

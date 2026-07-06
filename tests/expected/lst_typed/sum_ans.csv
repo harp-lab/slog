@@ -1,0 +1,4 @@
+(sum (_enum "nil"))   0   
+(sum (cons 1 (cons 2 (cons 3 (_enum "nil")))))   6   
+(sum (cons 2 (cons 3 (_enum "nil"))))   5   
+(sum (cons 3 (_enum "nil")))   3   

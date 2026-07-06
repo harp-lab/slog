@@ -29,6 +29,8 @@
  ;; lattice value types
  lattice-spec? lattice-spec-kind lattice-spec-base lattice-spec-param
  lattice-base-type rel-lattice-spec rel-lattice-key-arity
+ ;; parametric collection column types (docs/primitives.md)
+ listof-spec?
  ;; clause analysis (typed/planned clause grammar)
  clause-vars clause-in-vars clause-out-vars head-in-vars)
 
@@ -146,7 +148,8 @@
     [`(struct ,ts ...) (length ts)]
     [`(temp ,arity) arity]
     [`(enum ,_) 0]
-    [`(lattice ,_ ...) 0]))
+    [`(lattice ,_ ...) 0]
+    [`(listof ,_) 0]))
 
 ;; -----------------------------------------------------------------------
 ;; Lattice value types (docs/lattices.md).
@@ -180,11 +183,24 @@
               #:when (and (pair? p) (eq? (car p) key)))
     (second p)))
 
+;; A parametric list column type (docs/primitives.md Phase 0): a
+;; deterministically-named rels entry (listof T) that a `(list T)`
+;; column declaration produces (modules.rkt).  Like lattice types it is
+;; transparent to the type system, resolving to the builtin `list`
+;; union; the element type is preserved verbatim for the future typed
+;; phase (§8.4: declaration-level fidelity).
+(define (listof-spec? d)
+  (match d
+    [`(listof ,_) #t]
+    [_ #f]))
+
 ;; Resolve a column type through the rels env: the lattice's base type if
-;; it names a lattice, the type itself otherwise.
+;; it names a lattice, the builtin list union if it names a (listof T),
+;; the type itself otherwise.
 (define (lattice-base-type rel-env t)
   (match (hash-ref rel-env t #f)
     [(? lattice-spec? spec) (lattice-spec-base spec)]
+    [(? listof-spec?) 'list]
     [_ t]))
 
 ;; The valuespec of a map relation: #f unless `name` is a table whose last

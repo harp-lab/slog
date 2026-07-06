@@ -1,0 +1,3 @@
+(mp_get (mbranch 0 2 (mleaf 1 10) (mleaf 3 30)) 3)   30   
+(mp_get (mbranch 0 4 (mbranch 0 2 (mleaf 1 10) (mleaf 3 30)) (mleaf 7 70)) 3)   30   
+(mp_get (mleaf 3 30) 3)   30   

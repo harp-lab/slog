@@ -1,0 +1,3 @@
+(lst_member (cons 5 (cons 6 (cons 7 (_enum "nil")))) 7)   1   
+(lst_member (cons 6 (cons 7 (_enum "nil"))) 7)   1   
+(lst_member (cons 7 (_enum "nil")) 7)   1   

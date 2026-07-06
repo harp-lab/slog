@@ -1,0 +1,3 @@
+(st_diff (pbranch 0 4 (pbranch 0 2 (pleaf 1) (pleaf 2)) (pleaf 5)) (pleaf 2))   (pbranch 0 4 (pleaf 1) (pleaf 5))   
+(st_diff (pbranch 0 8 (pbranch 0 4 (pbranch 0 2 (pleaf 1) (pleaf 2)) (pleaf 5)) (pleaf 8)) (pbranch 0 8 (pleaf 2) (pleaf 8)))   (pbranch 0 4 (pleaf 1) (pleaf 5))   
+(st_diff (pleaf 8) (pleaf 8))   (_enum "pempty")   

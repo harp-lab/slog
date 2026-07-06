@@ -1,0 +1,6 @@
+(app (ref "chosen") (cons (num 7) (_enum "nil")))   (lambda (cons "p" (_enum "nil")) (app (ref "+") (cons (ref "p") (cons (num 1) (_enum "nil")))))   
+(app (ref "chosen") (cons (num 7) (_enum "nil")))   (lambda (cons "q" (_enum "nil")) (app (ref "-") (cons (ref "q") (cons (num 1) (_enum "nil")))))   
+(app (ref "f") (cons (app (ref "f") (cons (ref "x") (_enum "nil"))) (_enum "nil")))   (lambda (cons "y" (_enum "nil")) (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil")))))   
+(app (ref "f") (cons (ref "x") (_enum "nil")))   (lambda (cons "y" (_enum "nil")) (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil")))))   
+(app (ref "pick") (cons (app (ref "<") (cons (num 1) (cons (num 2) (_enum "nil")))) (cons (ref "inc") (cons (ref "dec") (_enum "nil")))))   (lambda (cons "c" (cons "t" (cons "e" (_enum "nil")))) (if (ref "c") (ref "t") (ref "e")))   
+(app (ref "twice") (cons (lambda (cons "y" (_enum "nil")) (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil"))))) (cons (num 5) (_enum "nil"))))   (lambda (cons "f" (cons "x" (_enum "nil"))) (app (ref "f") (cons (app (ref "f") (cons (ref "x") (_enum "nil"))) (_enum "nil"))))   

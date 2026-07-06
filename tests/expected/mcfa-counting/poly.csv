@@ -1,0 +1,6 @@
+"d8"   (app (lambda "d8" (app (ref "h8") (lambda "k8" (lambda "e8" (ref "e8"))))) (app (ref "h8") (lambda "k8" (ref "k8"))))   
+"i5"   (app (ref "g5") (ref "x5"))   
+"k8"   (app (ref "s8") (lambda "m8" (ref "m8")))   
+"p5"   (app (lambda "p5" (app (ref "p5") (lambda "n5" (ref "n5")))) (app (ref "f5") (lambda "k5" (lambda "e5" (ref "e5")))))   
+"t3"   (app (lambda "t3" (app (ref "y3") (ref "y3"))) (lambda "d3" (ref "d3")))   
+"u5"   (app (lambda "u5" (app (lambda "p5" (app (ref "p5") (lambda "n5" (ref "n5")))) (app (ref "f5") (lambda "k5" (lambda "e5" (ref "e5")))))) (app (ref "f5") (lambda "k5" (ref "k5"))))   

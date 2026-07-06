@@ -5,7 +5,7 @@
 ;; ready in the same stage and fire in parallel.
 
 union (clo (addk int) (dbl))
-union (list (nil) (cons int list))
+;; list/cons/nil are builtins now (bracket syntax); no declaration needed
 
 demand (apply clo int) int
 rule (apply (addk k) n r) <-- (= r (+ n k))

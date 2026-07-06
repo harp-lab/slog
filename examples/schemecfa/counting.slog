@@ -1,0 +1,51 @@
+;; Abstract counting (Might-Shivers GammaCFA): how many concrete frames
+;; a context stands for, and how many concrete bindings an address
+;; stands for, on the chain absent < one < inf.  A big-step frame runs
+;; each syntactic node at most once, so counts flow along the event
+;; evidence: two distinct callers, or one caller already at inf, force inf.
+
+include "interp.slog"
+
+table (many_frames list)
+rule (call_event l c1) (call_event l c2) (/= c1 c2) --> (many_frames l)
+rule (call_event l c) (many_frames c) --> (many_frames l)
+
+lattice (card (count))
+table (frame_count list card)
+table (binding_count str list card)
+
+rule (program e) --> (frame_count [] (one))
+rule (call_event l c) --> (frame_count l (one))
+rule (many_frames l) --> (frame_count l (inf))
+
+rule (binding_event x l c) --> (binding_count x l (one))
+rule (binding_event x l c) (many_frames c) --> (binding_count x l (inf))
+rule (binding_event x l c1) (binding_event x l c2) (/= c1 c2) --> (binding_count x l (inf))
+
+;; flow-set cardinality: the weaker value-based measure, for contrast
+table (flow_count str list card)
+rule (binding x l v) --> (flow_count x l (one))
+rule (binding x l v1) (binding x l v2) (/= v1 v2) --> (flow_count x l (inf))
+
+;; ---- later strata: the counts are closed, branching on (one) is sound ----
+
+table (unique_binding str list)     ;; one concrete binding ever: must-alias, strong updates
+table (summarized_binding str list)
+rule (binding_count x l k) (= k (one)) --> (unique_binding x l)
+rule (binding_count x l k) (= k (inf)) --> (summarized_binding x l)
+
+table (singleton_flow str list)
+table (polyvariant_flow str list)
+rule (flow_count x l k) (= k (one)) --> (singleton_flow x l)
+rule (flow_count x l k) (= k (inf)) --> (polyvariant_flow x l)
+
+;; a unique binding holding a singleton flow set: (x, l) concretely
+;; holds exactly this abstract value
+table (must_value str list val)
+rule (unique_binding x l) (singleton_flow x l) (binding x l v) --> (must_value x l v)
+
+;; a closure born in a unique frame is a unique concrete object
+table (unique_closure val)
+table (summarized_closure val)
+rule (eval_ans (eval (lambda xs eb) c) vc) (frame_count c k) (= k (one)) --> (unique_closure vc)
+rule (eval_ans (eval (lambda xs eb) c) vc) (frame_count c k) (= k (inf)) --> (summarized_closure vc)

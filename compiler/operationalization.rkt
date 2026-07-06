@@ -312,7 +312,8 @@
              decls)]
       [`(temp ,arity) (cons `(temp ,name ,arity) decls)]
       [`(enum ,_) decls]
-      [(? lattice-spec?) decls])))
+      [(? lattice-spec?) decls]
+      [(? listof-spec?) decls])))
 
 ;; -----------------------------------------------------------------------
 ;; 5. Rule lowering.

@@ -1,0 +1,4 @@
+(clo (lambda "d3" (ref "d3")) (app (ref "y3") (ref "y3")))   
+(clo (lambda "e8" (ref "e8")) (app (ref "s8") (lambda "m8" (ref "m8"))))   
+(clo (lambda "n4" (app (app (ref "r4") (ref "r4")) (ref "n4"))) (app (ref "r4") (ref "r4")))   
+(clo (lambda "t3" (app (ref "y3") (ref "y3"))) (app (ref "y3") (ref "y3")))   
