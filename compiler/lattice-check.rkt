@@ -68,10 +68,40 @@
        (when (lattice-type? t)
          (error 'lattice-check
                 "(flat ~a): the payload of a flat lattice cannot itself be a lattice type" t))
-       (unless (or (memq t '(int float str any))
+       (unless (or (memq t '(int float str any cset cmap coll))
                    (hash-has-key? rels t)
                    (hash-has-key? aliases t))
          (error 'lattice-check "(flat ~a): type ~a is not declared" t t))]
+      ;; collection lattices (docs/primitives.md §6.1): element/key types are
+      ;; ordinary value types (a still-ascending value has no stable identity,
+      ;; so lattice types are excluded exactly as they are from struct fields
+      ;; and map keys); a map's value spec validates recursively.
+      [`(lattice set ,t)
+       (when (lattice-type? t)
+         (error 'lattice-check
+                "(set ~a): the element type cannot itself be a lattice type" t))
+       (unless (or (memq t '(int float str any cset cmap coll))
+                   (hash-has-key? rels t)
+                   (hash-has-key? aliases t))
+         (error 'lattice-check "(set ~a): type ~a is not declared" t t))]
+      [`(lattice map ,k ,inner)
+       (let check-map ([k k] [inner inner])
+         (when (lattice-type? k)
+           (error 'lattice-check
+                  "(map ~a ...): the key type cannot be a lattice type (an ascending key has no stable identity)" k))
+         (unless (or (memq k '(int float str any cset cmap coll))
+                     (hash-has-key? rels k)
+                     (hash-has-key? aliases k))
+           (error 'lattice-check "(map ~a ...): type ~a is not declared" k k))
+         (match inner
+           [`(map ,k2 ,inner2) (check-map k2 inner2)]
+           [`(,(or 'flat 'set) ,t)
+            (unless (or (memq t '(int float str any cset cmap coll))
+                        (hash-has-key? rels t)
+                        (hash-has-key? aliases t))
+              (error 'lattice-check "(map ... (~a ~a)): type ~a is not declared"
+                     (car inner) t t))]
+           [_ (void)]))]
       [_ (void)]))
   ;; unions may not mix lattice types in
   (for ([(name members) (in-hash aliases)])
@@ -177,28 +207,60 @@
                   (unless (equal? (first t) spec)
                     (die "primitive ~a mixes values of two different lattices ~a and ~a"
                          f spec (first t))))
-                (define ok?
+                ;; the whitelist yields the OUTPUT's spec (#f = not monotone).
+                ;; Position matters: an op monotone in its COLLECTION argument
+                ;; is not monotone in its element/key/value arguments -- a
+                ;; still-ascending value used as an inserted element or key
+                ;; would freeze one snapshot of it into interned content.
+                (define (taint-only-at? . positions)
+                  (for/and ([a (in-list args)] [i (in-naturals)])
+                    (or (memv i positions) (not (hash-has-key? taint a)))))
+                (define out-spec
                   (case kind
                     [(min max)
-                     (match* (f args)
-                       [('+ _) #t]
-                       [('- (list a _)) (hash-has-key? taint a)] ; (- V x) only
-                       [('min _) #t]
-                       [('max _) #t]
-                       [('* (list a b))
-                        ;; multiplier must be a nonnegative literal
-                        (define other (if (hash-has-key? taint a) b a))
-                        (and (not (hash-has-key? taint other))
-                             (let ([v (hash-ref const-env other #f)])
-                               (and (real? v) (>= v 0))))]
-                       [(_ _) #f])]
-                    [(count) (eq? f 'cplus)]
+                     (and (match* (f args)
+                            [('+ _) #t]
+                            [('- (list a _)) (hash-has-key? taint a)] ; (- V x) only
+                            [('min _) #t]
+                            [('max _) #t]
+                            [('* (list a b))
+                             ;; multiplier must be a nonnegative literal
+                             (define other (if (hash-has-key? taint a) b a))
+                             (and (not (hash-has-key? taint other))
+                                  (let ([v (hash-ref const-env other #f)])
+                                    (and (real? v) (>= v 0))))]
+                            [(_ _) #f])
+                          spec)]
+                    [(count) (and (eq? f 'cplus) spec)]
                     [(flat) #f]
+                    ;; sets grow by insert (collection position only: a live
+                    ;; element would be snapshotted) and by union (either
+                    ;; argument -- presence-union is monotone in both, and
+                    ;; unit values make the left bias irrelevant).  cdel/
+                    ;; cdiff shrink: excluded.
+                    [(set)
+                     (and (case f
+                            [(cins) (taint-only-at? 0)]
+                            [(cmerge) #t]
+                            [else #f])
+                          spec)]
+                    ;; maps grow by put, monotone in the MAP position only
+                    ;; (colliding values reconcile at the merge point).
+                    ;; cmerge is EXCLUDED for maps in v1: the prim is
+                    ;; left-biased, so at a colliding key the contribution
+                    ;; carries whichever side arrived first through the
+                    ;; iteration schedule, not the pointwise join -- the
+                    ;; fixpoint would be timing-dependent.  cget is also
+                    ;; deferred (it faults on a not-yet-present key, and the
+                    ;; chas guard is later-stratum only); in-SCC element
+                    ;; access is M2.4's R_has decomposition.
+                    [(map)
+                     (and (eq? f 'cput) (taint-only-at? 0) spec)]
                     [else #f]))
-                (unless ok?
+                (unless out-spec
                   (die "primitive (~a ~a) is not a whitelisted monotone transfer for a still-ascending (~a ...) value"
                        f (string-join (map symbol->string args) " ") kind))
-                (hash-set taint x (list spec 'transfer cl))])]
+                (hash-set taint x (list out-spec 'transfer cl))])]
             [_ taint])))
       (if (equal? taint+ taint) taint (loop taint+))))
 
@@ -343,5 +405,14 @@
            (set-add! warned name)
            (eprintf "lattice-check: warning: relation ~a over ~a is recursive through an arithmetic transfer without #:~a -- termination is the program's obligation (unbounded ~a, the negative-cycle analogue)\n"
                     name spec (if (eq? kind 'min) 'floor 'ceiling)
-                    (if (eq? kind 'min) "descent" "ascent")))]
+                    (if (eq? kind 'min) "descent" "ascent")))
+         ;; growing collections have no static height bound: a single run
+         ;; terminates because the Herbrand universe is finite (§8.1) --
+         ;; admit, but say so once
+         (when (and (memq kind '(set map))
+                    (hash-ref transferred v #f)
+                    (not (set-member? warned name)))
+           (set-add! warned name)
+           (eprintf "lattice-check: warning: relation ~a over ~a grows through in-SCC transfers; it terminates only because the value universe of a run is finite (docs/primitives.md §8.1)\n"
+                    name spec))]
         [_ (void)]))))

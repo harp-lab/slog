@@ -467,6 +467,33 @@ import is rejected cleanly and the daemon continues.
 - **P1 — core merge**: `importDatabaseBIN` (§4), `internStructTuple` factoring,
   `ensureStructIndices`, `import` + `merge-db` verbs, guards §5, id-preserving
   reload for already-interned structs (§7.1). Restrict/flag EDB-vs-IDB per §7.2.
+
+  **STATUS: SHIPPED 2026-07-06** (`Database::importDatabaseBIN`,
+  `Daemon::import`, the `(import db)` action, `import:DB` in
+  send-actions).  As designed (A/B hybrid): a scratch `Database` loads the
+  source (fresh interners reproduce its ids; single-threaded, no strata);
+  schema reconciliation validates everything before any dest mutation;
+  ONE iterative children-first worklist remaps words across all FOUR id
+  spaces — strings re-intern by content, struct instances content-dedup
+  against a host-side map that mirrors `InternStructTask`'s content-key
+  and bucket routing (fresh ids draw from the same per-bucket allocators,
+  so §7.1 id-preservation composes), and **collection nodes rebuild via
+  the dest arena's kernels** (never field-wise — remapped keys change the
+  canonical shape); rows then ingest id-preservingly, lattice payloads
+  joining per key through `BTreeMapIndex::insertTuple` (including
+  `LAT_EXTERN` collection joins).  Deviations from §4: no
+  `ensureStructIndices`/`internStructTuple` factoring — the host-side
+  content map replaces the b-tree master probe entirely (no addIndex
+  clobber risk, guard #5 moot), and dedup for FUTURE rule interns still
+  agrees because fresh ids use InternStructTask's routing + allocators.
+  Import is reachability-driven, so unreferenced source arena nodes are
+  not copied.  Tested: api-tests §8 — `open A; import B` is CSV-identical
+  to the from-scratch fixpoint over the unioned facts across strings,
+  struct dedup, rebuilt string-keyed collections, `(min int)` per-key
+  join, and `(set int)` union; self-merge is a no-op.  §7.2 stands as the
+  honest contract: merge-then-run is a monotone over-approximation.
+  Still open (P2): offline `merge-db` one-shot verb, atomicity
+  (scratch-then-swap), header/fingerprint gating, counts-invalid flag.
 - **P2 — hardening**: header (magic/version/endianness/fingerprint) + reject
   incompatible; atomic offline write + scratch-swap online; gz buffering;
   concurrency-safe iteration; counts-invalid flag (§7.3); mpz/enum guards.

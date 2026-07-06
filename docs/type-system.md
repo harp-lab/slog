@@ -1,5 +1,15 @@
 # The type system: deepening precision without a runtime
 
+> **Groundwork shipped 2026-07-06 with M2.3** (docs/primitives.md): builtin
+> base types `cset`/`cmap` + union `coll` type the arena's collection words
+> within the name-set model; the collection prims carry real (flat)
+> signatures; `(map K V)` in type position records `(mapof K V)` verbatim
+> and resolves transparently to `cmap` (the `(list T)` pattern); `(set T)` /
+> `(map K <valuespec>)` are lattice-role per §4's role-from-type rule; and
+> the §6 residual-check machinery gained the `is_cnode` tag.  Stages 0–2
+> below (type/alias forms, terms + unification, real ∀ schemes enforcing
+> K/V/T parameters) remain the plan on top of this.
+
 **Status:** design (2026-07-05). Motivated by two live pressures — the native
 collection arena (`daemon/arena.h`, `cput`/`cget`/… in `compiler/primitives.rkt`)
 now landing needs a *typed* `(map K V)` / `(set T)` layer to narrow its `any`

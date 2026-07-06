@@ -50,25 +50,29 @@
 
 ;; mods is a list of (list path toks rules) triples (lift-type-envs'
 ;; working shape); rewrite every rule, leaving everything else alone.
-(define (desugar-collections-mods mods)
+;; lib? routes brace literals: #t targets the rules-based Patricia
+;; libraries (st_ins/mp_put over pset/pmap structs -- programs that
+;; include lib/set.slog or lib/map.slog), #f targets the native
+;; collection prims (cmap/cins/cput over arena words).
+(define (desugar-collections-mods mods [lib? #f])
   (for/list ([m (in-list mods)])
     (match-define (list path toks rules) m)
-    (list path toks (for/set ([r (in-set rules)]) (walk-term r)))))
+    (list path toks (for/set ([r (in-set rules)]) (walk-term r lib?)))))
 
 ;; Bottom-up generic walk over syntax nodes.  Provenance lists and
 ;; constants pass through untouched; bare symbols (variables, -->) fall
 ;; to the catch-all.
-(define (walk-term term)
+(define (walk-term term lib?)
   (match term
     [`(syn ,prov const ,_) term]
     [`(syn ,prov ,(? bracket-symbol?) ,args ...)
-     (desugar-bracket prov (map walk-term args))]
+     (desugar-bracket prov (map (lambda (a) (walk-term a lib?)) args))]
     [`(syn ,prov ,(? brace-symbol?) ,args ...)
-     (desugar-brace prov (map walk-term args))]
+     (desugar-brace prov (map (lambda (a) (walk-term a lib?)) args) lib?)]
     [`(syn ,prov ,head ,args ...)
      `(syn ,prov
-           ,(if (symbol? head) head (walk-term head))
-           ,@(map walk-term args))]
+           ,(if (symbol? head) head (walk-term head lib?))
+           ,@(map (lambda (a) (walk-term a lib?)) args))]
     [_ term]))
 
 ;; Extract the extension base from a bracket/brace node's arguments: a
@@ -113,15 +117,20 @@
          elems))
 
 ;; One brace node, arguments already desugared (docs/primitives.md
-;; Phase 1).  A set literal {a b c} folds st_ins over (pempty); a map
-;; literal {a:b c:d} folds mp_put over (mempty); {es base ...} threads
+;; Phase 1 / M2.3).  A set literal {a b c} folds an insert over the empty
+;; collection; a map literal {a:b c:d} folds a put; {es base ...} threads
 ;; an existing collection instead of the empty one -- so {a:b m ...} is
 ;; a functional map update and {x y s ...} inserts x and y into set s.
 ;; Entries and pairs may not mix; the leftmost entry wins on duplicates
-;; (it is applied last).  The judgments come from lib/set.slog /
-;; lib/map.slog, which the program must `include` -- using braces
-;; without them errors as an undeclared type at check time.
-(define (desugar-brace prov args)
+;; (it is applied last).
+;;
+;; Two lowerings, chosen per program (modules.rkt lift-type-envs): with
+;; lib/set.slog / lib/map.slog included (pset/pmap declared), braces
+;; target the rules-based judgments (st_ins/mp_put over pempty/mempty);
+;; otherwise the native collection prims (cins/cput over (cmap), where
+;; a set is a map-to-unit).  Native braces admit the empty {} (one
+;; canonical empty collection); the lib keeps its pempty/mempty split.
+(define (desugar-brace prov args lib?)
   (define (pair-entry a)
     (match a
       [`(syn ,_ ,(? (symbol-named? ":")) ,k ,v) (cons k v)]
@@ -132,22 +141,32 @@
     (error (parse-error
             "The base of a collection extension cannot be a k:v entry: {k:v m ...}"
             (cdr prov))))
-  (when (and (null? entries) (not base))
+  (when (and lib? (null? entries) (not base))
     (error (parse-error
             "An empty {} is ambiguous: write (pempty) for the empty set or (mempty) for the empty map"
             (cdr prov))))
   (define pairs (map pair-entry entries))
+  (define (fold-map put-name empty-term)
+    (foldr (lambda (kv acc)
+             `(syn ,prov ,put-name ,acc ,(car kv) ,(cdr kv)))
+           (or base empty-term)
+           pairs))
+  (define (fold-set ins-name empty-term)
+    (foldr (lambda (e acc) `(syn ,prov ,ins-name ,acc ,e))
+           (or base empty-term)
+           entries))
   (cond
+    [(and (null? entries) (not base))            ; native {}: the empty map
+     `(syn ,prov cmap)]
     [(andmap values pairs)                       ; all k:v -- a map
-     (foldr (lambda (kv acc)
-              `(syn ,prov mp_put ,acc ,(car kv) ,(cdr kv)))
-            (or base `(syn ,prov mempty))
-            pairs)]
+     (if lib?
+         (fold-map 'mp_put `(syn ,prov mempty))
+         (fold-map 'cput `(syn ,prov cmap)))]
     [(ormap values pairs)
      (error (parse-error
              "A brace literal cannot mix set elements and k:v map entries"
              (cdr prov)))]
     [else                                        ; all plain -- a set
-     (foldr (lambda (e acc) `(syn ,prov st_ins ,acc ,e))
-            (or base `(syn ,prov pempty))
-            entries)]))
+     (if lib?
+         (fold-set 'st_ins `(syn ,prov pempty))
+         (fold-set 'cins `(syn ,prov cmap)))]))

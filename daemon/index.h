@@ -18,6 +18,7 @@
 #pragma once
 
 #include "types.h"
+#include "arena.h"   // LatSpec + CollectionArena, for LAT_EXTERN payload joins
 
 // slog's headers (debug.h) define a `debug` object-like macro, which collides
 // with tlx's `static const bool debug` members.  Shield the tlx include from it.
@@ -112,6 +113,11 @@ public:
   u32 lat_kind = LAT_NONE;
   bool lat_has_floor = false, lat_has_ceil = false;
   u64 lat_floor = 0, lat_ceil = 0;
+  // LAT_EXTERN context (set/map valuespecs): the owning relation's parsed
+  // spec tree and the database's collection arena, copied in at registration
+  // like the kind/clamp words.
+  const LatSpec* lat_spec_tree = nullptr;
+  CollectionArena* lat_arena = nullptr;
 
   // ---- hot path (typed; called from generated code and the merge tasks) ----
   iterator lower_bound(const Key& k) { return tree.lower_bound(k); }
@@ -129,7 +135,9 @@ public:
       changed = true;
       return v;
     }
-    u64 n = lat_join(lat_kind, r.first->second, v);
+    u64 n = (lat_kind == LAT_EXTERN)
+          ? lat_arena->merge_spec(r.first->second, v, lat_spec_tree)
+          : lat_join(lat_kind, r.first->second, v);
     changed = (n != r.first->second);
     r.first->second = n;
     return n;
@@ -193,7 +201,8 @@ inline Index* makeIndex(u16 arity)
 // metadata the merge needs.
 template <u16 KA>
 inline Index* makeMapIndexRec(u16 keyarity, u32 kind,
-                              bool hf, u64 fw, bool hc, u64 cw)
+                              bool hf, u64 fw, bool hc, u64 cw,
+                              const LatSpec* spec, CollectionArena* arena)
 {
   if constexpr (KA == 0)
   {
@@ -208,19 +217,24 @@ inline Index* makeMapIndexRec(u16 keyarity, u32 kind,
     idx->lat_floor = fw;
     idx->lat_has_ceil = hc;
     idx->lat_ceil = cw;
+    idx->lat_spec_tree = spec;
+    idx->lat_arena = arena;
     return idx;
   }
   else
-    return makeMapIndexRec<KA - 1>(keyarity, kind, hf, fw, hc, cw);
+    return makeMapIndexRec<KA - 1>(keyarity, kind, hf, fw, hc, cw, spec, arena);
 }
 
 inline Index* makeMapIndex(u16 keyarity, u32 kind,
-                           bool hf, u64 fw, bool hc, u64 cw)
+                           bool hf, u64 fw, bool hc, u64 cw,
+                           const LatSpec* spec = nullptr,
+                           CollectionArena* arena = nullptr)
 {
   if (keyarity == 0 || keyarity > max_daemon_arity)
     fatal("Lattice key arity beyond daemon-side index support ("
           + std::to_string(keyarity) + ")");
-  return makeMapIndexRec<max_daemon_arity>(keyarity, kind, hf, fw, hc, cw);
+  return makeMapIndexRec<max_daemon_arity>(keyarity, kind, hf, fw, hc, cw,
+                                           spec, arena);
 }
 
 }

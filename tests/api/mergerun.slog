@@ -1,0 +1,9 @@
+;; A tiny one-stratum program run AFTER open+import in one session: its
+;; reload dumps and clears every relation, so anything it (and the
+;; compile-time manifest) doesn't re-register depends on the daemon-side
+;; orphan restore.
+
+table (seed int int)
+table (twice int)
+
+rule (seed a b) --> (twice (* 2 a))

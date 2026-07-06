@@ -193,6 +193,13 @@
                (type-env-rel 'cons `(struct any list))
                (type-env-rel 'nil `(enum nil))
                (type-env-union 'list (set 'list 'nil 'cons))
+               ;; native collection base types (docs/primitives.md M2.3):
+               ;; cset/cmap type the arena's canonical collection words
+               ;; (one runtime representation, two static disciplines --
+               ;; cins/cmem on sets, cput/cget/chas on maps); coll is their
+               ;; union for the shared ops (cmerge/cdel/cdiff/csize) and
+               ;; the (cmap) empty-collection seed
+               (type-env-union 'coll (set 'coll 'cset 'cmap))
                (type-env-rel 'malformed_deduction `(struct str str int any))
                (type-env-rel 'error `(table any)))))
 
@@ -231,6 +238,17 @@
          (loop rest (cons (list key v) params))]
         [_ (error (format "Malformed lattice parameters ~a in (~a ...)"
                           (strip-prov kvs) kind))])))
+  ;; nested valuespecs (a map's value spec) may not carry clamps in v1:
+  ;; the composed merge joins leaf values only at key collisions, so an
+  ;; entry contributed once would bypass its clamp -- reject rather than
+  ;; ship subtly different clamp semantics (docs/primitives.md M2.2)
+  (define (reject-nested-clamps! spec ctx)
+    (match spec
+      [`(lattice map ,_ ,inner) (reject-nested-clamps! `(lattice ,@inner) ctx)]
+      [`(lattice ,_ ,_ ,(? pair?) ...+)
+       (error (format "Lattice parameters (#:floor/#:ceiling) are not supported inside ~a: ~a"
+                      ctx spec))]
+      [_ (void)]))
   (match type-e
     [`(syn ,_ ,(and kind (or 'min 'max)) ,(and base (or 'int 'float)) ,kvs ...)
      `(lattice ,kind ,base ,@(parse-params kind base kvs))]
@@ -242,6 +260,28 @@
     [`(syn ,_ flat ,_ ...)
      (error (format "Lattice (flat T) requires a single named type: ~a"
                     (strip-prov type-e)))]
+    ;; collection lattices (docs/primitives.md §6.1): (set T) is an
+    ;; ascending finite set (join = union); (map K <valuespec>) joins
+    ;; pointwise, its value spec joined recursively at colliding keys.
+    ;; (map K V) with V a PLAIN type is NOT a valuespec -- it falls through
+    ;; to the value-role (mapof K V) column handling (§8.4 role routing).
+    [`(syn ,_ set ,(? symbol? t)) `(lattice set ,t)]
+    [`(syn ,_ set ,_ ...)
+     (error (format "Lattice (set T) requires a single named element type: ~a"
+                    (strip-prov type-e)))]
+    [`(syn ,_ map ,(? symbol? k) ,vspec-e)
+     (match (parse-valuespec-maybe vspec-e)
+       [(? list? inner)
+        (reject-nested-clamps! inner "a map value position")
+        `(lattice map ,k ,(cdr inner))]
+       [_ #f])]
+    ;; a compound key type with a VALUESPEC value must not silently fall
+    ;; through to the value-role (mapof ...) reading -- the user asked for
+    ;; a lattice map and would get a plain column
+    [`(syn ,_ map ,k ,vspec-e)
+     #:when (parse-valuespec-maybe vspec-e)
+     (error (format "Lattice (map K <valuespec>) requires a named key type, got: ~a"
+                    (strip-prov k)))]
     [_ #f]))
 
 ;; Deterministic name for an anonymous inline valuespec: the same spec
@@ -288,6 +328,17 @@
        (match-define (cons elem env+) (flatten-nested-type env elem-e))
        (define g (string->symbol (format "_list_~a" elem)))
        (cons g (unify-type-envs env+ (type-env-rel g `(listof ,elem))))]
+      ;; a parametric map VALUE column: (map K V) with V a plain type -- an
+      ;; immutable canonical collection word (cnode), transparent to the
+      ;; builtin cmap base type with K/V preserved verbatim (§8.4).
+      ;; Lattice-role maps -- (map K <valuespec>) -- were claimed by the
+      ;; valuespec hook above; (set T) is always lattice-role (an ascending
+      ;; set), so a value-role set column is declared as plain `cset`.
+      [`(syn ,prov map ,key-e ,val-e)
+       (match-define (cons key env+) (flatten-nested-type env key-e))
+       (match-define (cons val env++) (flatten-nested-type env+ val-e))
+       (define g (string->symbol (format "_map_~a_~a" key val)))
+       (cons g (unify-type-envs env++ (type-env-rel g `(mapof ,key ,val))))]
       [`(syn ,prov ,name)
        (cons name
              (extract-type-env `(syn ,prov enum (syn ,prov ,name) (syn ,prov top-level))
@@ -311,6 +362,8 @@
   (define (check-not-reserved! name)
     (when (collection-builtin? name)
       (error (format "The name ~a is a builtin list constructor (bracket syntax [x y | t] denotes cons/nil lists); remove the declaration" name)))
+    (when (memq name '(cset cmap coll))
+      (error (format "The name ~a is a builtin collection base type (native set/map values, docs/primitives.md M2.3); remove the declaration" name)))
     (when (memq name '(error malformed_deduction))
       (error (format "The name ~a is reserved for the runtime type-error machinery ((error e) facts wrapping malformed_deduction structs); remove the declaration" name))))
 
@@ -337,7 +390,7 @@
        (check-not-reserved! name)
        (define spec (parse-valuespec-maybe spec-e))
        (unless spec
-         (error (format "Malformed lattice valuespec for ~a: expected (min int #:floor n), (max T #:ceiling n), (count), or (flat T); got ~a"
+         (error (format "Malformed lattice valuespec for ~a: expected (min int #:floor n), (max T #:ceiling n), (count), (flat T), (set T), or (map K <valuespec>); got ~a"
                         name (strip-prov spec-e))))
        (extract-type-env body (unify-type-envs env (type-env-rel name spec)))]
       [`(syn ,_ lattice ,rest ...)
@@ -466,7 +519,14 @@
      ;; transform or-splits rule bodies (demand.rkt), and a not-yet-
      ;; reassociated tail pipe inside ([] ...) would be silently split
      ;; into wrong alternatives (collections.rkt has the full story).
-     (define mods-collections (desugar-collections-mods mods+))
+     ;; Brace literals route by target: programs including the rules-based
+     ;; Patricia libraries (pset/pmap declared) keep the lib lowering
+     ;; (st_ins/mp_put); otherwise braces lower to the native collection
+     ;; prims (cmap/cins/cput) -- docs/primitives.md M2.3.
+     (define lib-collections?
+       (or (hash-has-key? (type-env-rels type-env) 'pset)
+           (hash-has-key? (type-env-rels type-env) 'pmap)))
+     (define mods-collections (desugar-collections-mods mods+ lib-collections?))
      (define-values (mods-desugared synth-rels clo-members)
        (desugar-demand-program mods-collections demands type-env))
      (define type-env+
@@ -528,7 +588,8 @@
              [`(temp ,_ ...) man]
              [`(enum ,name) man]
              [(? lattice-spec?) man]
-             [(? listof-spec?) man]))
+             [(? listof-spec?) man]
+             [(? mapof-spec?) man]))
          manifest
          (hash-keys rels)))
 

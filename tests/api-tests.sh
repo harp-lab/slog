@@ -136,6 +136,74 @@ expect "structs-oldf"    "(relation_size oldf 400)"   out/api-structuse.log
 expect "structs-probe5"  "(relation_size probe5 1)"   out/api-structuse.log
 expect "structs-probe5-val" "10" out/api-structuse/probe5.csv
 
+# --- 8. database merge (docs/db-merge.md P1): open A, import B ==
+#        from-scratch fixpoint over the unioned facts, compared by CSV
+#        rendering (ids are database-local; renderings are content).
+#        Fixtures cover all four remapped id spaces: strings, struct
+#        instances (dedup: mk 3+3 with one shared content = 5), collection
+#        words (string-keyed maps, REBUILT on import), a (min int) lattice
+#        (key 3 joins min(30,5)=5) and a (set int) lattice (per-key union).
+rm -rf data/apimrga data/apimrgb data/apimrgexp
+timeout 300 racket slog.rkt --no-banner --out-db apimrga tests/api/mergea.slog \
+  > out/api-mergea.log 2>&1
+timeout 300 racket slog.rkt --no-banner --out-db apimrgb tests/api/mergeb.slog \
+  > out/api-mergeb.log 2>&1
+timeout 300 racket slog.rkt --no-banner --out-db apimrgexp \
+  --debug-dir out/api-mergedexp tests/api/mergeexp.slog \
+  > out/api-mergeexp.log 2>&1
+rm -rf out/api-merged
+timeout 300 racket tests/api/send-actions.rkt \
+  open:apimrga import:apimrgb sizes write-csv:out/api-merged \
+  > out/api-merge.log 2>&1
+expect "merge-mk"   "(relation_size mk 5)" out/api-merge.log
+expect "merge-t"    "(relation_size t 5)"  out/api-merge.log
+expect "merge-d"    "(relation_size d 4)"  out/api-merge.log
+MERGE_DIFF=0
+for f in out/api-mergedexp/*.csv; do
+  b="$(basename "$f")"
+  diff <(LC_ALL=C sort "$f") <(LC_ALL=C sort "out/api-merged/$b") \
+    > /dev/null 2>&1 || MERGE_DIFF=1
+done
+diff <(ls out/api-merged) <(ls out/api-mergedexp) > /dev/null 2>&1 || MERGE_DIFF=1
+if [ "$MERGE_DIFF" -eq 0 ]; then
+  echo "PASS merge-differential"; PASS=$((PASS+1))
+else
+  echo "FAIL merge-differential (merged CSVs differ from from-scratch union)"; FAIL=$((FAIL+1))
+fi
+
+# self-merge is a no-op (everything dedups/joins)
+rm -rf out/api-selfm out/api-adump
+timeout 300 racket tests/api/send-actions.rkt \
+  open:apimrga write-csv:out/api-adump > /dev/null 2>&1
+timeout 300 racket tests/api/send-actions.rkt \
+  open:apimrga import:apimrga write-csv:out/api-selfm > /dev/null 2>&1
+SELF_DIFF=0
+for f in out/api-adump/*.csv; do
+  b="$(basename "$f")"
+  diff <(LC_ALL=C sort "$f") <(LC_ALL=C sort "out/api-selfm/$b") \
+    > /dev/null 2>&1 || SELF_DIFF=1
+done
+if [ "$SELF_DIFF" -eq 0 ]; then
+  echo "PASS merge-self-noop"; PASS=$((PASS+1))
+else
+  echo "FAIL merge-self-noop (self-import changed content)"; FAIL=$((FAIL+1))
+fi
+
+# same-session import-then-run: a relation exclusive to the imported db is
+# unknown to the program AND its compile-time manifest, so it survives the
+# stratum's reload only via runStratum's orphan-relation restore
+rm -rf data/apimrgc
+timeout 300 racket slog.rkt --no-banner --out-db apimrgc tests/api/mergec.slog \
+  > out/api-mergec.log 2>&1
+timeout 300 racket slog.rkt --no-banner -d apimrga tests/api/mergerun.slog \
+  > out/api-mergerun-compile.log 2>&1
+RUNSO="$(grep -oE '/[^ ]*/build/[a-f0-9]+\.so' out/api-mergerun-compile.log | head -1)"
+timeout 300 racket tests/api/send-actions.rkt \
+  "open:apimrga" "import:apimrgc" "so:$RUNSO" sizes \
+  > out/api-importrun.log 2>&1
+expect "importrun-onlyc" "(relation_size onlyc 2)" out/api-importrun.log
+expect "importrun-twice" "(relation_size twice 3)" out/api-importrun.log
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

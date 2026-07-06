@@ -30,7 +30,7 @@
  lattice-spec? lattice-spec-kind lattice-spec-base lattice-spec-param
  lattice-base-type rel-lattice-spec rel-lattice-key-arity
  ;; parametric collection column types (docs/primitives.md)
- listof-spec?
+ listof-spec? mapof-spec?
  ;; clause analysis (typed/planned clause grammar)
  clause-vars clause-in-vars clause-out-vars head-in-vars)
 
@@ -149,7 +149,8 @@
     [`(temp ,arity) arity]
     [`(enum ,_) 0]
     [`(lattice ,_ ...) 0]
-    [`(listof ,_) 0]))
+    [`(listof ,_) 0]
+    [`(mapof ,_ ,_) 0]))
 
 ;; -----------------------------------------------------------------------
 ;; Lattice value types (docs/lattices.md).
@@ -175,7 +176,12 @@
   (match spec
     [`(lattice ,(or 'min 'max) ,base ,_ ...) base]
     [`(lattice count) '$count]
-    [`(lattice flat ,t) t]))
+    [`(lattice flat ,t) t]
+    ;; collection lattices (docs/primitives.md §6.1): the payload word is a
+    ;; canonical collection (cnode) -- typed by the builtin collection base
+    ;; types so the native prims' signatures check contributions
+    [`(lattice set ,_) 'cset]
+    [`(lattice map ,_ ,_) 'cmap]))
 
 ;; A keyword parameter of the spec: (lattice-spec-param spec 'floor) -> 0 | #f
 (define (lattice-spec-param spec key)
@@ -194,13 +200,26 @@
     [`(listof ,_) #t]
     [_ #f]))
 
+;; A parametric map VALUE column type (docs/primitives.md M2.3): (map K V)
+;; with V a plain type declares a (mapof K V) rels entry -- an immutable
+;; canonical collection word.  Transparent like (listof T), resolving to
+;; the builtin cmap base type; K/V preserved verbatim for the typed phase.
+;; (Lattice-role maps -- (map K <valuespec>) -- are (lattice map ...) specs
+;; instead; (set T) is always lattice-role.)
+(define (mapof-spec? d)
+  (match d
+    [`(mapof ,_ ,_) #t]
+    [_ #f]))
+
 ;; Resolve a column type through the rels env: the lattice's base type if
 ;; it names a lattice, the builtin list union if it names a (listof T),
-;; the type itself otherwise.
+;; the builtin cmap base type if it names a (mapof K V), the type itself
+;; otherwise.
 (define (lattice-base-type rel-env t)
   (match (hash-ref rel-env t #f)
     [(? lattice-spec? spec) (lattice-spec-base spec)]
     [(? listof-spec?) 'list]
+    [(? mapof-spec?) 'cmap]
     [_ t]))
 
 ;; The valuespec of a map relation: #f unless `name` is a table whose last

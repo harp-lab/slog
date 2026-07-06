@@ -1,0 +1,2 @@
+;; No declarations at all: opens a stored database and runs terminal
+;; actions against it without constraining any on-disk relation's shape.

@@ -4,9 +4,10 @@
 ;;
 ;;   racket tests/api/send-actions.rkt open:mydb load-rel:otherdb,edge sizes
 ;;
-;; Specs: open:DB | write-db:DB | write-csv:DIR | write-rel:DB,REL
-;;      | write-rel-csv:DIR,REL | load-rel:DB,REL | refresh-rel:DB,REL
-;;      | sizes | so:PATH (send an arbitrary plugin path verbatim)
+;; Specs: open:DB | import:DB | write-db:DB | write-csv:DIR
+;;      | write-rel:DB,REL | write-rel-csv:DIR,REL | load-rel:DB,REL
+;;      | refresh-rel:DB,REL | sizes
+;;      | so:PATH (send an arbitrary plugin path verbatim)
 ;;
 ;; Run from the repository root (build/, data/, daemon/ are relative).
 
@@ -17,6 +18,7 @@
   (match (string-split s ":")
     [(list "sizes") `(sizes)]
     [(list "open" db) `(open ,db)]
+    [(list "import" db) `(import ,db)]
     [(list "write-db" db) `(write-db ,db)]
     [(list "write-csv" dir) `(write-csv ,dir)]
     [(list "write-rel" arg)

@@ -229,7 +229,7 @@
      (define (ground-member-types t)
        (define ts (hash-ref alias-env t (lambda () (set t))))
        (for/set ([m (in-set ts)]
-                 #:when (or (memq m '(int float str any))
+                 #:when (or (memq m '(int float str any cset cmap))
                             (match (hash-ref rel-env m #f)
                               [`(struct ,_ ...) #t]
                               [`(enum ,_) #t]

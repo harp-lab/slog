@@ -90,6 +90,16 @@ public:
     needs_reload = true;
   }
 
+  // Merge a stored database into the live one (docs/db-merge.md): tables
+  // union, lattices join per key, structs dedup by content, collections
+  // re-canonicalize.  The deferred reload then hands the next stratum the
+  // UNION as its iteration-zero delta -- zero pipeline changes.
+  void import(const std::string& db_name)
+  {
+    database->importDatabaseBIN("data/" + db_name + "/");
+    needs_reload = true;
+  }
+
   // Start building a stratum.  If a stratum has run since the last reload,
   // the database reloads NOW -- before the caller registers this stratum's
   // indices and binds tasks to them -- re-staging every relation's contents

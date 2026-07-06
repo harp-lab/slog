@@ -116,7 +116,10 @@
 ;; merged) delta; delta indices are ordinary full-width sets.
 (define (lat-kind-cpp kind)
   (match kind
-    ['min "LAT_MIN"] ['max "LAT_MAX"] ['count "LAT_COUNT"] ['flat "LAT_FLAT"]))
+    ['min "LAT_MIN"] ['max "LAT_MAX"] ['count "LAT_COUNT"] ['flat "LAT_FLAT"]
+    ;; collection lattices (set/map specs): the runtime parses the spec
+    ;; token into a LatSpec tree and joins via the collection arena
+    ['set "LAT_EXTERN"] ['map "LAT_EXTERN"]))
 
 ;; The canonical spec token carried into the runtime and the on-disk
 ;; directory name ("min-int-floor-0", "count", "flat-value"); runslog.rkt's
@@ -144,7 +147,7 @@
     (format "else if (r->getArity() != ~a)" arity)
     "  slog::fatal(\"Relation already exists at incorrect arity.\");"
     (format "r = db->getRelation(\"~a\");" name)
-    (format "r->setLattice(~a, ~a, ~a, ~a, ~a, \"~a\");"
+    (format "r->setLattice(~a, ~a, ~a, ~a, ~a, \"~a\", db->collections());"
             (lat-kind-cpp kind)
             (if floorv "true" "false") (if floorv (clamp-word floorv) "0")
             (if ceilv "true" "false") (if ceilv (clamp-word ceilv) "0")
@@ -335,7 +338,8 @@
                   (format (match t
                             ['int "is_s32(v_~a)"]
                             ['float "is_float(v_~a)"]
-                            ['str "is_str(v_~a)"])
+                            ['str "is_str(v_~a)"]
+                            ['cnode "is_cnode(v_~a)"])
                           y)))
               (define sid-tests
                 (for/list ([t (in-list ts)] #:unless (symbol? t))

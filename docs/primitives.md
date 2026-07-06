@@ -888,10 +888,65 @@ Patricia lib is the largest demand program yet compiled):
   kernel parameterized by the value-join (one kernel: sets, maps, multisets,
   nested maps, products), `leq_fn` from day one (audit + DRed_L), clamp
   no-op arm.
+
+  **STATUS: SHIPPED 2026-07-06.** `daemon/arena.h`: `LatSpec` trees parsed
+  from spec tokens (`parseLatSpecToken`, recursive descent — the runslog
+  manifest inverse mirrors it) + `CollectionArena::merge_spec`/`leq_spec`
+  (`merge_with` pointwise union with `join_leaf` dispatching the child spec
+  at collisions; a set joins as map-to-unit).  `LAT_EXTERN` (`types.h`,
+  whose scalar `lat_join` default is now a fatal, not silently-flat);
+  `BTreeMapIndex` carries the spec tree + arena, copied at all three
+  registration points; `Relation::setLattice` parses the token and owns the
+  tree.  Valuespec surface: `(set T)` and `(map K <valuespec>)`, nesting
+  freely (`map-int-map-str-flat-val` tokens round-trip both re-parsers);
+  **v1 restriction: no `#:floor/#:ceiling` inside nested positions** (a
+  collision-only clamp would be subtly different semantics — rejected at
+  parse).  `leq_spec(a,b) = merge_spec(a,b)==b` (canonical interning makes
+  the one-liner exact).  Demand answers compose free (`(demand (f int)
+  (set int))` needs zero demand.rkt changes).  Golden `lat_set` (in-SCC
+  set union, pointwise-min map, guarded extraction) + on-disk round trip +
+  1.8k merge_spec differential checks in `tests/arena-tests.cpp`.
+
 - **M2.3 — compiler.** Collection-lattice typing (§6.1 composition legality),
   calculus rows (compositional table, §7), merge-sink emission for collection
   columns; c-IR gains the typed `cput`/`cref`/`cmember`/`cmerge` ops (the
   §8.4 contract surface, landing in the phase that needs it).
+
+  **STATUS: SHIPPED 2026-07-06** (the name-set-era version; the full
+  type-terms rewrite is docs/type-system.md Stages 1–2).  Base types
+  `cset`/`cmap` + builtin union `coll` type the arena's words (one runtime
+  representation, two static disciplines); the ten prims got real
+  signatures (`cput : cmap any any -> cmap`, `cins : cset any -> cset`,
+  shared ops over `coll`), so set/map misuse is a static rejection while
+  element types await Stage 2.  `(map K V)` with V a plain type is a
+  VALUE-role column (`(mapof K V)` rels entry, transparent to `cmap`, K/V
+  verbatim per §8.4); `(map K <valuespec>)` and `(set T)` are LATTICE-role
+  (docs/type-system.md §8.5's role-from-type rule; a value-role set column
+  is declared plain `cset`).  The residual head-typecheck machinery gained
+  the `is_cnode` tag (a collection column is runtime-guarded like any
+  other).  Calculus (v1, position-aware — a still-ascending value is only accepted
+  in an op's COLLECTION position, never as an inserted element/key/value):
+  `(lattice set/map ...)` occurrence validation; sets grow in-SCC by
+  `cins` (collection position) and `cmerge` (either side — presence-union
+  is monotone in both and unit values erase the left bias); maps grow by
+  `cput` (map position only).  **Excluded in v1, by adversarial review**:
+  in-SCC `cmerge` on MAPS (the prim is left-biased, so a colliding key's
+  contribution would carry whichever side the iteration schedule delivered
+  first — a timing-dependent fixpoint; a pointwise-joining `cjoin` prim
+  or per-key contributions are the sound spellings) and in-SCC `cget`
+  (§7's monotone-lookup rule is real, but the prim faults on a
+  not-yet-present key and the `chas` guard is later-stratum only — child-
+  spec descent returns when a total lookup exists); `cdel`/`cdiff`
+  excluded (shrinking); membership/size guards stay later-stratum (in-SCC
+  membership is M2.4's `R_has`); finite-universe termination warning.  Brace literals
+  route per program: the rules libs (pset/pmap declared) keep `st_ins`/
+  `mp_put`; otherwise braces lower to native `cins`/`cput`/`(cmap)` — and
+  the native empty `{}` is legal (one canonical empty collection).
+  Merge-sink emission needed NO new codegen: a collection-lattice head
+  rides the existing width-agnostic `emit-lat`/`LatticeInternTask` path.
+  NOT yet: M2.4's `R_has` decomposition; `(ps E)` bitmask specialization;
+  the reaching-defs/abstract-store flagship goldens (M2.5) beyond
+  `lat_set`.
 - **M2.4 — `R_has`.** Relation-key decomposition generated as rules off the
   value-carrying delta (§4.2); an in-SCC enumeration golden.
 - **M2.5 — flagship goldens.** Reaching definitions **with kill**

@@ -75,6 +75,93 @@ u32 fasthash<cnode>(const cnode& n)
 }
 
 
+// A composed lattice spec for LAT_EXTERN columns (docs/primitives.md §6.1):
+// the parsed tree of a "set-T" / "map-K-<spec>" spec token.  Leaf kinds reuse
+// the scalar LAT_* constants (joined by lat_join); SET/MAP are the collection
+// combinators (joined by CollectionArena::merge_spec).  v1 forbids clamps in
+// nested positions, so nodes carry no floor/ceiling.
+#define LATSPEC_SET 100
+#define LATSPEC_MAP 101
+
+class LatSpec
+{
+public:
+  u32 kind;
+  LatSpec* child;   // the value spec of a MAP node
+
+  LatSpec(u32 k, LatSpec* c = nullptr) : kind(k), child(c) {}
+  ~LatSpec() { delete child; }
+};
+
+// Recursive-descent parse of one spec from the dash-split words of a spec
+// token, advancing i.  Type-name words (set elements, map keys, min/max
+// bases, flat payloads) are typing-only and skipped.  Returns nullptr on a
+// malformed suffix (caller fatals with the full token).
+inline LatSpec* parseLatSpecWords(const std::vector<std::string>& w, size_t& i)
+{
+  if (i >= w.size()) return nullptr;
+  const std::string& k = w[i++];
+  if (k == "set")
+  {
+    if (i >= w.size()) return nullptr;
+    ++i;  // element type
+    return new LatSpec(LATSPEC_SET);
+  }
+  if (k == "map")
+  {
+    if (i >= w.size()) return nullptr;
+    ++i;  // key type
+    LatSpec* c = parseLatSpecWords(w, i);
+    if (c == nullptr) return nullptr;
+    return new LatSpec(LATSPEC_MAP, c);
+  }
+  if (k == "min" || k == "max")
+  {
+    if (i >= w.size()) return nullptr;
+    ++i;  // base type (int|float)
+    // v1: no clamps below a collection combinator
+    if (i < w.size() && (w[i] == "floor" || w[i] == "ceiling")) return nullptr;
+    return new LatSpec(k == "min" ? LAT_MIN : LAT_MAX);
+  }
+  if (k == "count")
+    return new LatSpec(LAT_COUNT);
+  if (k == "flat")
+  {
+    if (i >= w.size()) return nullptr;
+    ++i;  // payload type
+    return new LatSpec(LAT_FLAT);
+  }
+  return nullptr;
+}
+
+// Parse a full "set-..."/"map-..." spec token; nullptr if malformed or not
+// fully consumed.
+inline LatSpec* parseLatSpecToken(const std::string& token)
+{
+  std::vector<std::string> w;
+  size_t start = 0;
+  while (start <= token.size())
+  {
+    const size_t dash = token.find('-', start);
+    if (dash == std::string::npos)
+    {
+      w.push_back(token.substr(start));
+      break;
+    }
+    w.push_back(token.substr(start, dash - start));
+    start = dash + 1;
+  }
+  size_t i = 0;
+  LatSpec* s = parseLatSpecWords(w, i);
+  if (s != nullptr && i != w.size())
+  {
+    delete s;
+    return nullptr;
+  }
+  return s;
+}
+
+
 class CollectionArena
 {
 private:
@@ -325,6 +412,126 @@ public:
     const cnode* n = node(t);
     if (n->w[1] == 0) return 1;
     return size(n->w[2]) + size(n->w[3]);
+  }
+
+private:
+  // Join two payload values at a colliding key.  child == nullptr is SET
+  // semantics: values are the unit (s32 1) in well-typed programs, and the
+  // raw unsigned max is commutative/associative/idempotent (and the identity
+  // on equal units), so lawfulness survives even mistyped values.  Otherwise
+  // dispatch the child spec (a scalar lat_join leaf or a nested collection).
+  u64 join_leaf(u64 x, u64 y, const LatSpec* child)
+  {
+    if (child == nullptr) return (x >= y) ? x : y;
+    return merge_spec(x, y, child);
+  }
+
+  // put with JOIN-on-collision (vs put's replace / put_soft's keep):
+  // the single-leaf case of the pointwise union.
+  u64 put_join(u64 t, u64 k, u64 v, const LatSpec* child)
+  {
+    if (t == empty()) return make_leaf(k, v);
+    const cnode* n = node(t);
+    if (n->w[1] == 0)
+    {
+      const u64 j = n->w[0];
+      if (j == k)
+      {
+        const u64 v2 = join_leaf(n->w[2], v, child);
+        return (v2 == n->w[2]) ? t : make_leaf(k, v2);
+      }
+      return join(k, make_leaf(k, v), j, t);
+    }
+    const u64 p = n->w[0], m = n->w[1], l = n->w[2], r = n->w[3];
+    if (mask_up(k, m) != p)
+      return join(k, make_leaf(k, v), p, t);
+    if (zero_bit(k, m))
+    {
+      const u64 l2 = put_join(l, k, v, child);
+      return (l2 == l) ? t : intern4(p, m, l2, r);
+    }
+    const u64 r2 = put_join(r, k, v, child);
+    return (r2 == r) ? t : intern4(p, m, l, r2);
+  }
+
+  // Pointwise union of two tries, colliding values joined by `child`
+  // (docs/primitives.md §6.1 mergeWithKey).  Commutative/associative/
+  // idempotent whenever the leaf join is, so contribution order never
+  // matters; the same case analysis and physical-equality short-circuits
+  // as merge() keep near-equal unions near-O(difference).
+  u64 merge_with(u64 a, u64 b, const LatSpec* child)
+  {
+    const u64 e = empty();
+    if (a == b || b == e) return a;
+    if (a == e) return b;
+    const cnode* na = node(a);
+    const cnode* nb = node(b);
+    if (na->w[1] == 0) return put_join(b, na->w[0], na->w[2], child);
+    if (nb->w[1] == 0) return put_join(a, nb->w[0], nb->w[2], child);
+    const u64 p = na->w[0], m = na->w[1], l = na->w[2], r = na->w[3];
+    const u64 q = nb->w[0], n = nb->w[1], u = nb->w[2], w = nb->w[3];
+    if (m == n && p == q)
+    {
+      const u64 l2 = merge_with(l, u, child), r2 = merge_with(r, w, child);
+      if (l2 == l && r2 == r) return a;
+      if (l2 == u && r2 == w) return b;
+      return intern4(p, m, l2, r2);
+    }
+    if (m > n)
+    {
+      if (mask_up(q, m) != p) return join(p, a, q, b);
+      if (zero_bit(q, m))
+      {
+        const u64 l2 = merge_with(l, b, child);
+        return (l2 == l) ? a : intern4(p, m, l2, r);
+      }
+      const u64 r2 = merge_with(r, b, child);
+      return (r2 == r) ? a : intern4(p, m, l, r2);
+    }
+    if (m < n)
+    {
+      if (mask_up(p, n) != q) return join(p, a, q, b);
+      if (zero_bit(p, n))
+      {
+        const u64 u2 = merge_with(a, u, child);
+        return (u2 == u) ? b : intern4(q, n, u2, w);
+      }
+      const u64 w2 = merge_with(a, w, child);
+      return (w2 == w) ? b : intern4(q, n, u, w2);
+    }
+    return join(p, a, q, b);  // m == n, p != q: disjoint ranges
+  }
+
+public:
+  // The composed lattice join for LAT_EXTERN payloads: join two payload
+  // words under a parsed spec tree.  Collections union pointwise (their
+  // leaf values joined by the child spec); scalar leaves use lat_join.
+  // This is the one kernel behind sets, maps, nested maps, and (via the
+  // scalar leaves) every builtin lattice as a map value (§6.1).
+  // Collection operands are tag-checked: a mistyped word from a corrupt or
+  // foreign database would otherwise ALIAS whatever live collection shares
+  // its low id bits (decode_val is total) -- fail loudly instead, matching
+  // lat_num_min/max's contract on scalar columns.
+  u64 merge_spec(u64 a, u64 b, const LatSpec* s)
+  {
+    switch (s->kind)
+    {
+    case LATSPEC_SET:
+    case LATSPEC_MAP:
+      if (!is_cnode(a) || !is_cnode(b))
+	fatal("Non-collection word in a set/map lattice column");
+      return merge_with(a, b, s->kind == LATSPEC_MAP ? s->child : nullptr);
+    default:
+      return lat_join(s->kind, a, b);
+    }
+  }
+
+  // a ⊑ b under the composed spec.  Canonical interning makes join(a,b)==b
+  // exactly the order test (subset for sets, pointwise for maps, the scalar
+  // order at leaves).  Debug-audit / DRed_L hook (docs/lattices.md §5.5).
+  bool leq_spec(u64 a, u64 b, const LatSpec* s)
+  {
+    return merge_spec(a, b, s) == b;
   }
 
   // In-order (ascending unsigned key) visit of every entry: f(key, val).

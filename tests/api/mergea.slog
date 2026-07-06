@@ -1,0 +1,20 @@
+;; Merge-differential fixture A (docs/db-merge.md P1).  Shared decls with
+;; mergeb/mergeexp; rules derive strictly per-fact, so the union of the two
+;; fixpoints equals the fixpoint over the unioned facts -- which is what
+;; `open A; import B` must reproduce.  Columns exercise every remapped id
+;; space: strings, struct instances, collection words (string-keyed maps,
+;; rebuilt on import), a scalar (min int) lattice, and a (set int) lattice.
+
+union (pr (mk int int))
+table (t str pr cmap)
+lattice (low (min int))
+table (d int low)
+lattice (iset (set int))
+table (r int iset)
+table (seed int int)
+
+facts (seed 1 10) (seed 2 20) (seed 3 30)
+
+rule (seed a b) (= m (cput (cmap) "k" a)) --> (t "X" (mk a b) m)
+rule (seed a b) --> (d a b)
+rule (seed a b) (= s (cins (cins (cmap) a) b)) --> (r 7 s)

@@ -20,10 +20,14 @@
   (define (S . parts) `(syn ,P ,@parts))
 
   ;; Run one rule through the desugar and hand back the rewritten rule.
-  (define (desugar-rule r)
+  ;; Braces route by lowering mode (modules.rkt lift-type-envs): lib? = #t
+  ;; targets the rules-based Patricia libraries (st_ins/mp_put), the
+  ;; default #f targets the native collection prims (cins/cput).
+  (define (desugar-rule r [lib? #f])
     (match-let ([(list (list _ _ rules))
-                 (desugar-collections-mods (list (list "t" '() (set r))))])
+                 (desugar-collections-mods (list (list "t" '() (set r))) lib?)])
       (set-first rules)))
+  (define (desugar-rule/lib r) (desugar-rule r #t))
 
   (define (strip e)
     (match e
@@ -105,37 +109,60 @@
   ;; ---------------------------------------------------------------------
   ;; Brace literals (Phase 1)
 
-  ;; 10. Set literal: {a b} --> (st_ins (st_ins (pempty) b) a)
+  ;; 10. Set literal, lib mode: {a b} --> (st_ins (st_ins (pempty) b) a)
   ;;     (like maps, the leftmost entry is applied last -- for sets the
   ;;     order is semantically irrelevant, the trie is canonical)
   (check-equal?
-   (strip (desugar-rule (S 'rule (S 'in (S '|{}| 'a 'b)) '--> (S 'out 'a))))
+   (strip (desugar-rule/lib (S 'rule (S 'in (S '|{}| 'a 'b)) '--> (S 'out 'a))))
    '(rule (in (st_ins (st_ins (pempty) b) a)) --> (out a)))
+
+  ;; 10n. ...and native mode (the default): cins over (cmap)
+  (check-equal?
+   (strip (desugar-rule (S 'rule (S 'in (S '|{}| 'a 'b)) '--> (S 'out 'a))))
+   '(rule (in (cins (cins (cmap) b) a)) --> (out a)))
 
   ;; 11. Set update: {x s ...} arrives as ({} x (... s)) --> (st_ins s x)
   (check-equal?
-   (strip (desugar-rule
+   (strip (desugar-rule/lib
            (S 'rule (S 'in (S '|{}| 'x (S '... 's))) '--> (S 'out 'x))))
    '(rule (in (st_ins s x)) --> (out x)))
+  (check-equal?
+   (strip (desugar-rule
+           (S 'rule (S 'in (S '|{}| 'x (S '... 's))) '--> (S 'out 'x))))
+   '(rule (in (cins s x)) --> (out x)))
 
   ;; 12. Map literal: {a:b c:d} --> (mp_put (mp_put (mempty) c d) a b)
   ;;     (leftmost entry applied last = wins on duplicate keys)
   (check-equal?
-   (strip (desugar-rule
+   (strip (desugar-rule/lib
            (S 'rule (S 'in (S '|{}| (S ': 'a 'b) (S ': 'c 'd)))
               '--> (S 'out 'a))))
    '(rule (in (mp_put (mp_put (mempty) c d) a b)) --> (out a)))
+  (check-equal?
+   (strip (desugar-rule
+           (S 'rule (S 'in (S '|{}| (S ': 'a 'b) (S ': 'c 'd)))
+              '--> (S 'out 'a))))
+   '(rule (in (cput (cput (cmap) c d) a b)) --> (out a)))
 
   ;; 13. Map update: {a:b m ...} arrives as ({} (: a b) (... m))
+  (check-equal?
+   (strip (desugar-rule/lib
+           (S 'rule (S 'in (S '|{}| (S ': 'a 'b) (S '... 'm)))
+              '--> (S 'out 'a))))
+   '(rule (in (mp_put m a b)) --> (out a)))
   (check-equal?
    (strip (desugar-rule
            (S 'rule (S 'in (S '|{}| (S ': 'a 'b) (S '... 'm)))
               '--> (S 'out 'a))))
-   '(rule (in (mp_put m a b)) --> (out a)))
+   '(rule (in (cput m a b)) --> (out a)))
 
-  ;; 14. Errors: empty {}, mixed entries, multiple bases
+  ;; 14. Errors: empty {} (lib mode only -- native {} is the one canonical
+  ;; empty collection), mixed entries, multiple bases
   (check-dies
-   (lambda () (desugar-rule (S 'rule (S 'in (S '|{}|)) '--> (S 'out 'a)))))
+   (lambda () (desugar-rule/lib (S 'rule (S 'in (S '|{}|)) '--> (S 'out 'a)))))
+  (check-equal?
+   (strip (desugar-rule (S 'rule (S 'in (S '|{}|)) '--> (S 'out 'a))))
+   '(rule (in (cmap)) --> (out a)))
   (check-dies
    (lambda () (desugar-rule
                (S 'rule (S 'in (S '|{}| 'a (S ': 'b 'c))) '--> (S 'out 'a)))))

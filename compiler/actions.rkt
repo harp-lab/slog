@@ -8,6 +8,8 @@
 ;; source and the daemon headers), and send the path.
 ;;
 ;;   (action-so `(open ,db-name))            load data/<db-name>/
+;;   (action-so `(import ,db-name))          merge data/<db-name>/ into the
+;;                                           live db (docs/db-merge.md)
 ;;   (action-so `(write-db ,db-name))        write the database (binary)
 ;;   (action-so `(write-csv ,dir))           write every relation as CSV
 ;;   (action-so `(write-rel ,db-name ,rel))  write one relation (binary)
@@ -27,6 +29,8 @@
   (match spec
     [`(open ,db-name)
      (format "  d->open(\"~a\");\n" db-name)]
+    [`(import ,db-name)
+     (format "  d->import(\"~a\");\n" db-name)]
     [`(write-db ,db-name)
      (format "  d->db()->writeDatabaseBIN(\"~a\");\n" db-name)]
     [`(write-csv ,dir)

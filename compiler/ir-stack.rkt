@@ -283,11 +283,12 @@
        ,(? var?) ,(? var?) ,(? var?) (,(? natural?) ..1)) #t]
     [_ #f]))
 
-;; A runtime-testable type in a lowered accept set: a primitive tag or an
-;; interned struct's id (enum members lower to (struct _enum)).
+;; A runtime-testable type in a lowered accept set: a primitive tag, the
+;; collection-word tag (cset/cmap both lower to the shared cnode test), or
+;; an interned struct's id (enum members lower to (struct _enum)).
 (define (c-accept? t)
   (match t
-    [(or 'int 'float 'str) #t]
+    [(or 'int 'float 'str 'cnode) #t]
     [`(struct ,(? var?)) #t]
     [_ #f]))
 

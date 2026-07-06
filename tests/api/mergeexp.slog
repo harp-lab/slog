@@ -1,0 +1,19 @@
+;; Merge-differential EXPECTED fixture: the union of mergea's and mergeb's
+;; facts computed from scratch.  import(A, B) must produce content-identical
+;; relations (compare CSV renderings, which resolve every interned id
+;; structurally -- ids themselves are database-local and may differ).
+
+union (pr (mk int int))
+table (t str pr cmap)
+lattice (low (min int))
+table (d int low)
+lattice (iset (set int))
+table (r int iset)
+table (seed int int)
+
+facts (seed 1 10) (seed 2 20) (seed 3 30)
+facts (seed 3 5) (seed 4 40)
+
+rule (seed a b) (= m (cput (cmap) "k" a)) --> (t "X" (mk a b) m)
+rule (seed a b) --> (d a b)
+rule (seed a b) (= s (cins (cins (cmap) a) b)) --> (r 7 s)

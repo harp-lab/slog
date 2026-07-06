@@ -326,7 +326,8 @@
       [`(temp ,arity) (cons `(temp ,name ,arity) decls)]
       [`(enum ,_) decls]
       [(? lattice-spec?) decls]
-      [(? listof-spec?) decls])))
+      [(? listof-spec?) decls]
+      [(? mapof-spec?) decls])))
 
 ;; -----------------------------------------------------------------------
 ;; 5. Rule lowering.
@@ -435,6 +436,10 @@
      (for/list ([t (in-list ts)])
        (match t
          [(or 'int 'float 'str) t]
+         ;; the two collection base types share one runtime tag (a cnode
+         ;; word), so the check is surface-level like enums: "some canonical
+         ;; collection", not set-vs-map
+         [(or 'cset 'cmap) 'cnode]
          [_ (match (hash-ref rel-env t #f)
               [`(struct ,_ ...) `(struct ,t)]
               [`(enum ,_) `(struct _enum)]

@@ -1,0 +1,31 @@
+;; Collection lattices (docs/primitives.md M2.2/M2.3): a (set T) column
+;; unions in-SCC -- reach is the ascending reachable-set, seeded with
+;; singletons and grown by contributing successors' still-ascending sets
+;; straight into the value column; a (map K (min int)) column joins
+;; pointwise, so best's colliding keys take the numeric min.  Extraction
+;; (a later stratum) uses the guarded-cget idiom over the closed values.
+
+lattice (intset (set int))
+lattice (dists (map int (min int)))
+
+table (edge int int int)
+table (reach int intset)
+table (best int dists)
+table (got int int)
+table (sz int int)
+
+facts (edge 1 2 10) (edge 2 3 4) (edge 1 3 7) (edge 3 4 1)
+facts (edge 1 2 5)
+
+;; each node reaches its direct successors...
+rule (edge a b w) (= s (cins (cmap) b)) --> (reach a s)
+;; ...and everything they reach (the still-ascending set flows verbatim)
+rule (edge a b w) (reach b s) --> (reach a s)
+
+;; per-source cheapest direct edge, pointwise: 1->2 seeds 10 and 5, min 5
+rule (edge a b w) (= m (cput (cmap) b w)) --> (best a m)
+
+;; later stratum: guarded lookup + sizes over the closed values
+rule (best 1 m) (= h (chas m 2)) (> h 0) (= v (cget m 2)) --> (got 2 v)
+rule (best 1 m) (= h (chas m 9)) (> h 0) (= v (cget m 9)) --> (got 9 v)
+rule (reach a s) (= n (csize s)) --> (sz a n)

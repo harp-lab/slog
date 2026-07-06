@@ -245,6 +245,85 @@ static void concurrency(CollectionArena& A)
       CHECK(roots[t][i] == roots[0][i], "threads disagree on root word");
 }
 
+// merge_spec (docs/primitives.md M2.2): the composed lattice join.
+// Differential against reference models for set-union, pointwise min-map,
+// and nested map-of-min-map; plus algebraic laws and leq_spec.
+static void merge_spec_tests(CollectionArena& A, u64 seed)
+{
+  std::mt19937_64 rng(seed);
+  LatSpec set_spec(LATSPEC_SET);
+  LatSpec min_leaf(LAT_MIN);
+  LatSpec minmap_spec(LATSPEC_MAP, new LatSpec(LAT_MIN));
+  // (map K (map K2 (min int))) -- nested pointwise
+  LatSpec nested_spec(LATSPEC_MAP, new LatSpec(LATSPEC_MAP, new LatSpec(LAT_MIN)));
+
+  for (int round = 0; round < 200; ++round)
+  {
+    // set union vs model
+    std::map<u64,u64> ma, mb;
+    u64 wa = A.empty(), wb = A.empty();
+    const int n = rng() % 24;
+    for (int j = 0; j < n; ++j)
+    {
+      const u64 k = rng() % 64;
+      if (rng() % 2) { ma[k] = s32_encode(1); wa = A.put(wa, k, s32_encode(1)); }
+      else           { mb[k] = s32_encode(1); wb = A.put(wb, k, s32_encode(1)); }
+    }
+    const u64 wu = A.merge_spec(wa, wb, &set_spec);
+    std::map<u64,u64> mu = ma;
+    for (auto& [k, v] : mb) mu.emplace(k, v);
+    CHECK(agrees(A, wu, mu), "set-union merge_spec disagrees with model");
+    CHECK(A.merge_spec(wb, wa, &set_spec) == wu, "set-union not commutative");
+    CHECK(A.merge_spec(wu, wu, &set_spec) == wu, "set-union not idempotent");
+    CHECK(A.leq_spec(wa, wu, &set_spec) && A.leq_spec(wb, wu, &set_spec),
+          "leq_spec: operands not below their union");
+
+    // pointwise min-map vs model
+    std::map<u64,u64> pa, pb;
+    for (int j = 0; j < n; ++j)
+    {
+      const u64 k = rng() % 16;
+      const u64 v = s32_encode((s32)(rng() % 100));
+      auto& target = (rng() % 2) ? pa : pb;
+      auto it = target.emplace(k, v);
+      if (!it.second && s32_decode(v) < s32_decode(it.first->second))
+        it.first->second = v;
+    }
+    // build each side by merging singletons, so min applies inside a side too
+    u64 va = A.empty(), vb = A.empty();
+    for (auto& [k, v] : pa) va = A.merge_spec(va, A.put(A.empty(), k, v), &minmap_spec);
+    for (auto& [k, v] : pb) vb = A.merge_spec(vb, A.put(A.empty(), k, v), &minmap_spec);
+    const u64 vm = A.merge_spec(va, vb, &minmap_spec);
+    std::map<u64,u64> pm = pa;
+    for (auto& [k, v] : pb)
+    {
+      auto it = pm.emplace(k, v);
+      if (!it.second && s32_decode(v) < s32_decode(it.first->second))
+        it.first->second = v;
+    }
+    CHECK(agrees(A, vm, pm), "min-map merge_spec disagrees with model");
+    CHECK(A.merge_spec(vb, va, &minmap_spec) == vm, "min-map not commutative");
+    CHECK(A.leq_spec(va, vm, &minmap_spec), "leq_spec: operand not below min-map join");
+
+    // scalar leaf dispatch
+    const u64 x = s32_encode((s32)(rng() % 50)), y = s32_encode((s32)(rng() % 50));
+    CHECK(A.merge_spec(x, y, &min_leaf)
+            == (s32_decode(x) <= s32_decode(y) ? x : y),
+          "scalar min leaf join wrong");
+
+    // nested: {outer: {inner: min}} joins two levels down
+    const u64 in1 = A.put(A.empty(), 3, s32_encode(9));
+    const u64 in2 = A.put(A.empty(), 3, s32_encode(4));
+    const u64 o1 = A.put(A.empty(), 7, in1);
+    const u64 o2 = A.put(A.empty(), 7, in2);
+    const u64 om = A.merge_spec(o1, o2, &nested_spec);
+    u64 inner_out = 0, leaf_out = 0;
+    CHECK(A.find(om, 7, &inner_out) && A.find(inner_out, 3, &leaf_out)
+            && leaf_out == s32_encode(4),
+          "nested map join did not min at the leaf");
+  }
+}
+
 static void reload(CollectionArena& A)
 {
   // Simulate value.nodes: dump per-partition in iterator order, re-intern in
@@ -280,6 +359,7 @@ int main()
   for (u64 seed = 1; seed <= 5; ++seed)
     differential(A, seed, 600);
   identities(A, 42);
+  merge_spec_tests(A, 77);
   concurrency(A);
   reload(A);
 

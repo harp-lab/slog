@@ -1,7 +1,13 @@
 # Lattice-Valued Relations and Recursive Aggregation
 
-**Status:** L0 + L1 IMPLEMENTED (2026-07-02); L2 (ps/interval/products/lift2)
-and L3 (extern) remain design.
+**Status:** L0 + L1 IMPLEMENTED (2026-07-02); the collection form of the
+extern tier SHIPPED 2026-07-06 — `(set T)` and `(map K <valuespec>)`
+valuespecs join through `LAT_EXTERN` + the composed `merge_spec` kernel on
+the collection arena (docs/primitives.md M2.2/M2.3: spec-token round trip,
+monotone-use rows incl. cget-descends-to-child, `lat_set` golden).  L2
+(ps/interval/products/lift2) and plugin-defined extern joins (§7.1's
+`(extern name)`) remain design; `leq_spec` exists for the §5.5 audits but
+the continuous debug audit is not yet wired.
 **Companions:** `docs/incremental.md` §7A (the incrementality dovetail this design
 tees up), `docs/demand.md` (demand-moded judgments, which lattice answers compose
 with).

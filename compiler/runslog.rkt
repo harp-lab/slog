@@ -22,16 +22,32 @@
 ;; Reconstruct a canonical lattice valuespec from its on-disk spec token
 ;; (the inverse of emit-cpp.rkt's lat-spec-token): "min-int-floor-0" ->
 ;; (lattice min int (floor 0)), "count" -> (lattice count), "flat-value" ->
-;; (lattice flat value).
+;; (lattice flat value), "set-int" -> (lattice set int), "map-str-min-int"
+;; -> (lattice map str (min int)).  Recursive descent over the dash-split
+;; words, mirroring the daemon's parseLatSpecWords (daemon/arena.h) so the
+;; two re-parsers stay in lockstep; composite (map) tokens nest, so the
+;; old arity-of-split match would misparse them.
 (define (lat-spec-from-token tok)
-  (match (string-split tok "-")
-    [`("count") `(lattice count)]
-    [`("flat" ,t) `(lattice flat ,(string->symbol t))]
-    [`(,kind ,base) `(lattice ,(string->symbol kind) ,(string->symbol base))]
-    [`(,kind ,base ,param ,v)
-     `(lattice ,(string->symbol kind) ,(string->symbol base)
-               (,(string->symbol param) ,(string->number v)))]
-    [_ (error 'db-manifest "unrecognized lattice spec token on disk: ~a" tok)]))
+  (define (parse ws)
+    (match ws
+      [`("count" ,rest ...) (cons `(count) rest)]
+      [`("flat" ,t ,rest ...) (cons `(flat ,(string->symbol t)) rest)]
+      [`("set" ,t ,rest ...) (cons `(set ,(string->symbol t)) rest)]
+      [`("map" ,k ,rest ...)
+       (match-define (cons inner rest+) (parse rest))
+       (cons `(map ,(string->symbol k) ,inner) rest+)]
+      [`(,(and kind (or "min" "max")) ,base
+         ,(and param (or "floor" "ceiling")) ,v ,rest ...)
+       (cons `(,(string->symbol kind) ,(string->symbol base)
+               (,(string->symbol param) ,(string->number v)))
+             rest)]
+      [`(,(and kind (or "min" "max")) ,base ,rest ...)
+       (cons `(,(string->symbol kind) ,(string->symbol base)) rest)]
+      [_ (error 'db-manifest "unrecognized lattice spec token on disk: ~a" tok)]))
+  (match-define (cons spec rest) (parse (string-split tok "-")))
+  (unless (null? rest)
+    (error 'db-manifest "unrecognized lattice spec token on disk: ~a" tok))
+  `(lattice ,@spec))
 
 ;; Scan an input database directory into a manifest of its relations.
 ;;

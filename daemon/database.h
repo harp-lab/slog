@@ -28,6 +28,7 @@
 #include <barrier>
 #include <omp.h>
 #include <unordered_map>
+#include <unordered_set>
 #include <boost/functional/hash.hpp>
 #include <boost/unordered_map.hpp>
 
@@ -119,6 +120,11 @@ private:
   bool lat_has_floor = false, lat_has_ceil = false;
   u64 lat_floor = 0, lat_ceil = 0;
   std::string lat_spec;
+  // LAT_EXTERN (set/map) context: the parsed spec tree (owned) and the
+  // database's collection arena, copied into every payload-map bucket at
+  // registration (docs/primitives.md §6.1).
+  LatSpec* lat_spec_tree = nullptr;
+  CollectionArena* lat_arena = nullptr;
   // Per-thread, so the reorg runs in parallel with no races; consumers read
   // across threads (0..thread_count).
   std::vector<std::vector<std::vector<RefVec>>> write_buckets;  // [tid][slot][bucket]
@@ -145,6 +151,7 @@ public:
   ~Relation()
   {
     clearAllIndices();
+    delete lat_spec_tree;
     if (delta)
     {
       for (InsertBatch* ib : *delta)
@@ -235,8 +242,10 @@ public:
   // ---- lattice (map) relations: docs/lattices.md ----
   // A lattice relation's last storage column is the value; its non-delta
   // indices are payload maps (BTreeMapIndex) merged by the kind's join.
+  // For LAT_EXTERN (set/map specs) the token is parsed into a LatSpec tree
+  // and the collection arena rides along to every payload-map bucket.
   void setLattice(u32 kind, bool has_floor, u64 floorw, bool has_ceil, u64 ceilw,
-                  const std::string& spec)
+                  const std::string& spec, CollectionArena* arena = nullptr)
   {
     lattice_kind = kind;
     lat_has_floor = has_floor;
@@ -244,6 +253,17 @@ public:
     lat_has_ceil = has_ceil;
     lat_ceil = ceilw;
     lat_spec = spec;
+    lat_arena = arena;
+    delete lat_spec_tree;
+    lat_spec_tree = nullptr;
+    if (kind == LAT_EXTERN)
+    {
+      if (arena == nullptr)
+	fatal("Collection lattice " + name + " registered without an arena");
+      lat_spec_tree = parseLatSpecToken(spec);
+      if (lat_spec_tree == nullptr)
+	fatal("Malformed collection lattice spec token: " + spec);
+    }
   }
   u32 latticeKind() { return lattice_kind; }
   bool isLattice() { return lattice_kind != LAT_NONE; }
@@ -251,13 +271,15 @@ public:
 
   // Parse the canonical spec token back into kind + clamps (the inverse of
   // what the compiler emits into setLattice): "min-int[-floor-V]",
-  // "max-float[-ceiling-V]", "count", "flat-<T>".  Used by the open path.
+  // "max-float[-ceiling-V]", "count", "flat-<T>", "set-<T>",
+  // "map-<K>-<spec>".  Used by the open path.
   static u32 latKindOfSpec(const std::string& s)
   {
     if (s.rfind("min", 0) == 0)   return LAT_MIN;
     if (s.rfind("max", 0) == 0)   return LAT_MAX;
     if (s.rfind("count", 0) == 0) return LAT_COUNT;
     if (s.rfind("flat", 0) == 0)  return LAT_FLAT;
+    if (s.rfind("set-", 0) == 0 || s.rfind("map-", 0) == 0) return LAT_EXTERN;
     fatal("Unrecognized lattice spec token: " + s);
     return LAT_NONE;
   }
@@ -267,15 +289,22 @@ public:
     return isfloat ? float_encode(std::atof(valstr.c_str()))
                    : s32_encode(std::atoi(valstr.c_str()));
   }
-  void setLatticeFromSpec(const std::string& s)
+  void setLatticeFromSpec(const std::string& s, CollectionArena* arena = nullptr)
   {
+    const u32 kind = latKindOfSpec(s);
     bool hf = false, hc = false;
     u64 fw = 0, cw = 0;
-    const auto pf = s.find("-floor-");
-    const auto pc = s.find("-ceiling-");
-    if (pf != std::string::npos) { hf = true; fw = latClampOfSpec(s, s.substr(pf + 7)); }
-    if (pc != std::string::npos) { hc = true; cw = latClampOfSpec(s, s.substr(pc + 9)); }
-    setLattice(latKindOfSpec(s), hf, fw, hc, cw, s);
+    // clamps exist only on top-level scalar min/max specs; nested tokens
+    // (inside a map value) are forbidden clamps by the compiler, so this
+    // substring scan cannot false-fire for the kinds it runs on
+    if (kind == LAT_MIN || kind == LAT_MAX)
+    {
+      const auto pf = s.find("-floor-");
+      const auto pc = s.find("-ceiling-");
+      if (pf != std::string::npos) { hf = true; fw = latClampOfSpec(s, s.substr(pf + 7)); }
+      if (pc != std::string::npos) { hc = true; cw = latClampOfSpec(s, s.substr(pc + 9)); }
+    }
+    setLattice(kind, hf, fw, hc, cw, s, arena);
   }
 
   // Register a payload-map index (non-delta only).  `ord` is a FULL-length
@@ -295,6 +324,8 @@ public:
       idx->lat_floor = lat_floor;
       idx->lat_has_ceil = lat_has_ceil;
       idx->lat_ceil = lat_ceil;
+      idx->lat_spec_tree = lat_spec_tree;
+      idx->lat_arena = lat_arena;
       indices_ord[i] = idx;
     }
     if (!ord.empty())
@@ -354,7 +385,8 @@ public:
     for (u32 b = 0; b < bucket_count; ++b)
       arr[b] = isLattice()
 	? makeMapIndex(arity - 1, lattice_kind,
-		       lat_has_floor, lat_floor, lat_has_ceil, lat_ceil)
+		       lat_has_floor, lat_floor, lat_has_ceil, lat_ceil,
+		       lat_spec_tree, lat_arena)
 	: makeIndex(arity);
     indices[ord] = arr;
     if (std::find(write_leadcols.begin(), write_leadcols.end(), (u16)0)
@@ -710,9 +742,18 @@ public:
 	if (batch->data[j] == slog_null)
 	  continue;
 	const u64* t = batch->data + j;
-	for (const auto& it : indices)
-	  it.second[buckethash(t[it.first[0]])]->insertTuple(t, it.first.data());
+	insertTupleAllIndices(t);
       }
+  }
+
+  // Insert ONE storage-order tuple into every registered (non-delta) index,
+  // id-preservingly -- the single-row body of ingestDelta, used by the
+  // database merge to materialize remapped rows (lattice payload maps merge
+  // via BTreeMapIndex::insertTuple, plain btrees set-dedup).
+  void insertTupleAllIndices(const u64* t)
+  {
+    for (const auto& it : indices)
+      it.second[buckethash(t[it.first[0]])]->insertTuple(t, it.first.data());
   }
 };
 
@@ -1008,6 +1049,22 @@ public:
   // pipeline stratum can be re-run later (after re-binding -- see daemon.h).
   void runStratum(Stratum* s, bool tofixpoint = true)
   {
+    // Relations the coming stratum did NOT re-register (no program decl and
+    // no compile-time manifest entry -- e.g. relations that exist only in a
+    // database imported at RUNTIME) lost their indices to the reload's
+    // ClearAllIndices; their dumped rows would be promoted to delta at
+    // iteration 0, consumed by no task, and freed -- silent data loss.
+    // Restore them the way loadDatabaseBIN materializes an opened database:
+    // a default index + immediate ingestion.  The next reload dumps them
+    // again, so they survive any number of strata.
+    for (const auto& kv : relations)
+      if (kv.second->getAnyIndex() == 0)
+      {
+	kv.second->ensureDefaultIndex();
+	kv.second->finalizeBatches();
+	kv.second->ingestDelta();
+      }
+
     running = s;
     for (u32 i = 0; i < phase_count; ++i)
     {
@@ -1306,6 +1363,11 @@ public:
       if (!all_digits(idstr)) return false;
       struct_id = (u32)std::atoi(idstr.c_str());
       if (struct_id == 0 || struct_id >= 0x3fff) return false;  // is_struct's 14-bit field
+      // a struct stores its id plus >= 1 content column (declarations
+      // require a column, modules.rkt); an arity-1 struct dir is corrupt
+      // and its empty content prefix would break content-keyed dedup
+      if (kind == "struct" && std::atoi(std::string(tail.substr(0, isplit)).c_str()) < 2)
+	return false;
     }
     else if (kind == "lat")
     {
@@ -1718,7 +1780,7 @@ public:
       // lattice metadata before ensureDefaultIndex, which keys on it to
       // build a payload map (so ingestDelta merges rather than inserts)
       if (kind == "lat")
-	rel->setLatticeFromSpec(lat_spec);
+	rel->setLatticeFromSpec(lat_spec, cnode_arena);
       readRelationFiles(rel, path);
       // materialize immediately (into a default index) so the database is
       // queryable/writable before any program arrives; a following stratum
@@ -1765,6 +1827,297 @@ public:
     rel->ingestDelta();
     disk_mtimes[relname] = dirMTime(rel_dir);
     DEBUG("Loaded relation " << relname << " from " << db_dir);
+  }
+
+  // ---- database merge (docs/db-merge.md P1) --------------------------
+  //
+  // Merge a stored database into this one: tables union, lattices join per
+  // key, struct instances dedup by content, collections re-canonicalize.
+  // The A/B-hybrid design: load the source into a throwaway SCRATCH
+  // Database (its fresh interners reproduce the source's ids exactly, and
+  // its indices give field lookups), then rewrite every source word through
+  // one old-word -> dest-word memo built in dependency order, and ingest
+  // the rewritten rows id-preservingly.
+  //
+  // Four database-local id spaces are remapped (docs/db-merge.md §2):
+  // strings re-intern by content; struct TYPE ids map by relation name;
+  // struct INSTANCES walk children-first through a content-dedup against
+  // the dest (one iterative post-order worklist -- deep cons lists/ASTs
+  // must not recurse natively); collection nodes REBUILD via the dest
+  // arena's kernels, because a Patricia trie's shape is a function of its
+  // key words and field-wise remap of interned keys would be structurally
+  // wrong.  Ints/floats/null/top self-encode and pass through.
+  //
+  // Contract: merge-then-run is a monotone over-approximation (§7.2) --
+  // derived facts from either side persist even if their grounding is
+  // absent in the union.  Schema validation completes before any dest
+  // mutation, so a rejected import leaves this database untouched.
+  void importDatabaseBIN(const std::string& src_dir)
+  {
+    if (!std::filesystem::is_directory(src_dir))
+      fatal("Import: no database directory at " + src_dir);
+
+    // ---- load the source into a scratch database ----
+    Database scratch(1);
+    scratch.loadDatabaseBIN(src_dir);
+
+    // ---- schema reconciliation: validate everything, then create ----
+    for (const auto& kv : scratch.relations)
+    {
+      auto dit = relations.find(kv.first);
+      if (dit == relations.end())
+	continue;
+      Relation* src = kv.second;
+      Relation* dst = dit->second;
+      if (src->getArity() != dst->getArity())
+	fatal("Import: relation " + kv.first + " has arity "
+	      + std::to_string(src->getArity()) + " in the source but "
+	      + std::to_string(dst->getArity()) + " here");
+      if ((src->getStructId() > 0) != (dst->getStructId() > 0)
+	  || src->isLattice() != dst->isLattice())
+	fatal("Import: relation " + kv.first
+	      + " kind (table/struct/lattice) conflicts with the source");
+      if (src->isLattice() && src->latticeSpec() != dst->latticeSpec())
+	fatal("Import: lattice " + kv.first + " spec ("
+	      + src->latticeSpec() + ") conflicts with the registered spec ("
+	      + dst->latticeSpec() + ")");
+    }
+    for (const auto& kv : scratch.relations)
+    {
+      if (relations.find(kv.first) != relations.end())
+	continue;
+      Relation* src = kv.second;
+      if (src->getStructId() > 0)
+	addStruct(kv.first, src->getArity());
+      else
+	addRelation(kv.first, src->getArity());
+      Relation* dst = relations[kv.first];
+      if (src->isLattice())
+	dst->setLatticeFromSpec(src->latticeSpec(), cnode_arena);
+      dst->ensureDefaultIndex();
+    }
+
+    // ---- source-side lookups: struct sid -> dest relation, and per-
+    // instance fields (one forEach pass per struct relation; Index has no
+    // point lookup, so a memo beats per-id scans) ----
+    std::unordered_map<u32, Relation*> src_sid_to_dst;
+    std::unordered_map<u32, std::string> src_sid_name;
+    std::unordered_map<u64, std::vector<u64>> src_fields;  // id word -> nominal row
+    for (const auto& kv : scratch.relations)
+    {
+      Relation* src = kv.second;
+      if (src->getStructId() == 0)
+	continue;
+      src_sid_to_dst[src->getStructId()] = relations[kv.first];
+      src_sid_name[src->getStructId()] = kv.first;
+      forEachNominal(src, [&](const u64* row)
+      {
+	src_fields.emplace(row[0], std::vector<u64>(row, row + src->getArity()));
+      });
+    }
+
+    // ---- dest-side content-dedup maps per struct relation: the same
+    // content-columns key InternStructTask's master scan dedups by, so
+    // import-time dedup and future rule interns agree ----
+    std::unordered_map<Relation*,
+      std::unordered_map<std::vector<u64>, u64,
+			 boost::hash<std::vector<u64>>>> dst_content;
+    for (const auto& kv : scratch.relations)
+    {
+      Relation* dst = relations[kv.first];
+      if (dst->getStructId() == 0 || dst_content.count(dst))
+	continue;
+      auto& cm = dst_content[dst];
+      forEachNominal(dst, [&](const u64* row)
+      {
+	cm.emplace(std::vector<u64>(row + 1, row + dst->getArity()), row[0]);
+      });
+    }
+
+    // Intern one struct instance into the dest by content (dedup against
+    // the map above; fresh ids route by buckethash(first content column) --
+    // InternStructTask's routing -- and draw from that bucket's allocator).
+    const auto internStructTuple =
+      [&](Relation* dst, const std::vector<u64>& fields) -> u64
+    {
+      auto& cm = dst_content[dst];
+      auto hit = cm.find(fields);
+      if (hit != cm.end())
+	return hit->second;
+      const u16 bucket = buckethash(fields[0]);
+      u64* alloc = dst->getInternAlloc(bucket);
+      const u64 idw = struct_encode(dst->getStructId(),
+				    (*alloc << bucket_bits) | bucket);
+      ++(*alloc);
+      u64 row[max_daemon_arity + 1];
+      row[0] = idw;
+      for (size_t c = 0; c < fields.size(); ++c)
+	row[c + 1] = fields[c];
+      dst->insertTupleAllIndices(row);
+      cm.emplace(fields, idw);
+      return idw;
+    };
+
+    // ---- the word remap: one iterative children-first worklist over the
+    // struct-instance/collection-node DAG, memoized in `remap` ----
+    std::unordered_map<u64, u64> remap;
+    std::unordered_set<u64> open;  // cycle guard (corrupt input)
+    const auto self_encoding = [](u64 w)
+    {
+      return is_s32(w) || is_float(w) || w == slog_null || w == slog_lat_top;
+    };
+    const auto importWord = [&](u64 w0) -> u64
+    {
+      if (self_encoding(w0))
+	return w0;
+      std::vector<u64> stack{w0};
+      while (!stack.empty())
+      {
+	const u64 w = stack.back();
+	if (self_encoding(w) || remap.count(w))
+	{
+	  stack.pop_back();
+	  open.erase(w);
+	  continue;
+	}
+	if (is_str(w))
+	{
+	  utf8string* s = scratch.lookup_string(decode_val(w));
+	  if (s == nullptr)
+	    fatal("Import: dangling string id in " + src_dir);
+	  remap[w] = intern_encode(str_intern_tag,
+				   intern_string(new utf8string(s->c_str(),
+								s->byte_size())));
+	  stack.pop_back();
+	  continue;
+	}
+	if (is_struct(w))
+	{
+	  const auto fit = src_fields.find(w);
+	  if (fit == src_fields.end())
+	    fatal("Import: dangling struct instance id in " + src_dir);
+	  const std::vector<u64>& row = fit->second;
+	  bool ready = true;
+	  for (size_t c = 1; c < row.size(); ++c)
+	    if (!self_encoding(row[c]) && !remap.count(row[c]))
+	    {
+	      if (open.count(row[c]))
+		fatal("Import: cyclic struct/collection reference in " + src_dir);
+	      stack.push_back(row[c]);
+	      ready = false;
+	    }
+	  if (!ready)
+	  {
+	    open.insert(w);
+	    continue;
+	  }
+	  const auto dit = src_sid_to_dst.find(decode_struct_id(w));
+	  if (dit == src_sid_to_dst.end())
+	    fatal("Import: struct word carries a type id no source relation "
+		  "declares (corrupt database?) in " + src_dir);
+	  Relation* dst = dit->second;
+	  std::vector<u64> fields(row.size() - 1);
+	  for (size_t c = 1; c < row.size(); ++c)
+	    fields[c - 1] = self_encoding(row[c]) ? row[c] : remap[row[c]];
+	  remap[w] = internStructTuple(dst, fields);
+	  stack.pop_back();
+	  open.erase(w);
+	  continue;
+	}
+	if (is_cnode(w))
+	{
+	  std::vector<std::pair<u64, u64>> entries;
+	  scratch.collections()->foreach(w, [&](u64 k, u64 v)
+	  {
+	    entries.push_back({k, v});
+	  });
+	  bool ready = true;
+	  for (const auto& e : entries)
+	    for (const u64 dep : {e.first, e.second})
+	      if (!self_encoding(dep) && !remap.count(dep))
+	      {
+		if (open.count(dep))
+		  fatal("Import: cyclic struct/collection reference in " + src_dir);
+		stack.push_back(dep);
+		ready = false;
+	      }
+	  if (!ready)
+	  {
+	    open.insert(w);
+	    continue;
+	  }
+	  // REBUILD (never field-wise remap): remapped keys change the
+	  // trie's canonical shape, so fold the remapped entries into the
+	  // dest arena from empty -- content-dedup then unifies equal
+	  // collections across the two databases for free
+	  u64 t = cnode_arena->empty();
+	  for (const auto& e : entries)
+	  {
+	    const u64 k = self_encoding(e.first) ? e.first : remap[e.first];
+	    const u64 v = self_encoding(e.second) ? e.second : remap[e.second];
+	    t = cnode_arena->put(t, k, v);
+	  }
+	  remap[w] = t;
+	  stack.pop_back();
+	  open.erase(w);
+	  continue;
+	}
+	fatal("Import: unsupported interned value class (word tag) in " + src_dir);
+      }
+      return remap[w0];
+    };
+
+    // ---- drive: intern every source struct instance (children first) ----
+    for (const auto& kv : scratch.relations)
+      if (kv.second->getStructId() > 0)
+	forEachNominal(kv.second, [&](const u64* row)
+	{
+	  importWord(row[0]);
+	});
+
+    // ---- rewrite + ingest table and lattice rows (struct relations were
+    // fully materialized above); lattice payload maps merge per key via
+    // insertTuple, including LAT_EXTERN collection joins ----
+    for (const auto& kv : scratch.relations)
+    {
+      Relation* src = kv.second;
+      if (src->getStructId() > 0)
+	continue;
+      Relation* dst = relations[kv.first];
+      const u16 A = src->getArity();
+      u64 row[max_daemon_arity + 1];
+      forEachNominal(src, [&](const u64* srow)
+      {
+	for (u16 c = 0; c < A; ++c)
+	  row[c] = importWord(srow[c]);
+	dst->insertTupleAllIndices(row);
+      });
+    }
+
+    DEBUG("Imported database " << src_dir);
+  }
+
+  // Iterate one relation's tuples in NOMINAL (storage) column order,
+  // whatever ordering its indices use.
+  static void forEachNominal(Relation* rel,
+			     const std::function<void(const u64*)>& f)
+  {
+    const std::vector<u16>* ordp = rel->getAnyIndex();
+    if (ordp == nullptr)
+      return;
+    const std::vector<u16>& ord = *ordp;
+    std::vector<u16> rewrite_ord(ord.size(), 0);
+    for (u16 i = 0; i < ord.size(); ++i)
+      rewrite_ord[ord[i]] = i;
+    Index** buckets = rel->getIndex(ord, false);
+    u64 row[max_daemon_arity + 1];
+    for (u16 b = 0; b < bucket_count; ++b)
+      buckets[b]->forEach([&](const u64* t)
+      {
+	for (u16 c = 0; c < ord.size(); ++c)
+	  row[c] = t[rewrite_ord[c]];
+	f(row);
+      });
   }
 
   // Has the relation's on-disk data changed since this instance last read

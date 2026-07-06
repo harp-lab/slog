@@ -1,0 +1,8 @@
+;; Merge fixture C: carries a relation (onlyc) that mergea and the runner
+;; program never declare -- the regression case for same-session
+;; import-then-run (runStratum's orphan-relation restore must keep it
+;; alive across the reload, since no compile-time manifest can know about
+;; relations imported at runtime).
+
+table (onlyc int int)
+facts (onlyc 1 2) (onlyc 3 4)
