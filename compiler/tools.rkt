@@ -158,6 +158,12 @@
                (match (regexp-match #px"/(\\w+)\\.(\\d+)\\.csv$" (fullpath infile))
                  [`(,_ ,relname ,aritystr)
                   (define arity (string->number aritystr))
+                  ;; the daemon can only load arities 1..32 (and arity 0
+                  ;; would loop forever below reading zero-length tuples)
+                  (unless (and arity (<= 1 arity 32))
+                    (error 'convert-db-folder
+                           "~a: arity ~a out of the loadable range 1..32"
+                           file arity))
                   (define outfolder (format "data/~a/table.~a.arity.~a/" dbname relname arity))
                   (make-directory outfolder)
                   (define outfile (string-append outfolder "0.bin"))

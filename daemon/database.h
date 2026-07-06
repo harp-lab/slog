@@ -13,6 +13,7 @@
 
 #include "slogd.h"
 #include "intern.h"
+#include "arena.h"
 #include "gzfile.h"
 #include "index.h"
 #include <string>
@@ -526,9 +527,24 @@ public:
       delete b;
   }
 
+  // Raise every bucket's intern allocator above the largest per-bucket
+  // instance id seen in ONE just-read file.  ACCUMULATES via max: a
+  // relation's rows arrive as one file per bucket, so overwriting here
+  // would leave the allocators seeded by whichever file happened to be
+  // read last -- a later fresh intern would then re-issue an id an
+  // already-loaded instance owns (silent struct-id collision; db-merge
+  // P0).  Monotone growth is always safe, merely id-space-lossy.
+  void seedInternAllocators(u64 max_id_seen)
+  {
+    for (u32 b = 0; b < bucket_count; ++b)
+      intern_allocators[b] = std::max(intern_allocators[b], max_id_seen+1);
+  }
+
   // read a .bin file
   void readBIN(const std::string& path)
   {
+    if (arity == 0)
+      fatal("Cannot read a zero-arity relation file: " + path);
     std::ifstream file(path);
     u64 i = 0;
     InsertBatch* batch = new InsertBatch();
@@ -538,7 +554,7 @@ public:
     {
       if (struct_id > 0 && i%arity == 0)
       {
-	// This is an id for this struct, so we have to track max_id 
+	// This is an id for this struct, so we have to track max_id
 	batch->data[batch->usage + 0] = word;
 	// Decode just the per-bucket id and accumulate into max_id_seen
 	max_id_seen = std::max(decode_struct_perbucketid(word, bucket_bits), max_id_seen);
@@ -560,31 +576,42 @@ public:
 	}
       }
     }
-    
+
+    if (file.gcount() != 0)
+      fatal("BIN file has a truncated word: " + path);
     if (i % arity > 0)
       fatal("BIN file appears badly formatted!");
 
     this->sendBatch(batch);
 
-    for (u32 i = 0; i < bucket_count; ++i)
-      intern_allocators[i] = max_id_seen+1;
+    if (struct_id > 0 && i > 0)
+      seedInternAllocators(max_id_seen);
   }
 
   // read a .gz file
   void readGzBIN(const std::string& path)
   {
+    if (arity == 0)
+      fatal("Cannot read a zero-arity relation file: " + path);
     GzReadFile file(path);
     u64 i = 0;
     InsertBatch* batch = new InsertBatch();
     u64 word;
     u64 max_id_seen = 0;
-    while (file.read((u8*)(void*)&word, 8))
+    while (true)
     {
+      // read() returns a byte count: 1-7 trailing bytes are a truncated
+      // word (corrupt file), not a value -- fatal rather than ingest it
+      const u32 got = file.read((u8*)(void*)&word, 8);
+      if (got == 0) break;
+      if (got != 8)
+	fatal("Gzipped BIN file has a truncated word: " + path);
+
       if (struct_id > 0 && i%arity == 0)
       {
-	// This is an id for this struct, so we have to track max_id 
+	// This is an id for this struct, so we have to track max_id
 	batch->data[batch->usage + 0] = word;
-	max_id_seen = std::max(word >> 28, max_id_seen);
+	max_id_seen = std::max(decode_struct_perbucketid(word, bucket_bits), max_id_seen);
       }
       else
 	batch->data[batch->usage+(i%arity)] = word;
@@ -603,14 +630,14 @@ public:
 	}
       }
     }
-    
+
     if (i % arity > 0)
       fatal("Gzipped BIN file appears badly formatted!");
 
     this->sendBatch(batch);
 
-    for (u32 i = 0; i < bucket_count; ++i)
-      intern_allocators[i] = max_id_seen+1;
+    if (struct_id > 0 && i > 0)
+      seedInternAllocators(max_id_seen);
   }
 
   // Emit every tuple in `node` into insert batches, in nominal (storage) order.
@@ -768,8 +795,9 @@ private:
   u32 struct_id_max;
   u32 iteration_count;
   InternTable<utf8string>* string_table;
+  CollectionArena* cnode_arena;
 
-  
+
 public:
   Database(u32 _thread_count)
   {
@@ -777,23 +805,30 @@ public:
     iteration_count = 0;
     struct_id_max = 1;
     string_table = new InternTable<utf8string>();
+    cnode_arena = new CollectionArena();
   }
 
   ~Database()
   {
     delete string_table;
+    delete cnode_arena;
     for (auto it : relations)
       delete it.second;
   }
-  
+
   u64 intern_string(utf8string* s)
   {
     return string_table->intern_value(s);
   }
-  
+
   utf8string* lookup_string(u64 v)
   {
     return string_table->lookup_value(v);
+  }
+
+  CollectionArena* collections()
+  {
+    return cnode_arena;
   }
 
   void registerLatestAnyRec(bool _any)
@@ -831,6 +866,10 @@ public:
   void addStruct(const std::string& name, u16 arity)
   {
     // Client code must check that struct does not already exist!
+    // is_struct (types.h) requires 0 < sid < 0x3fff; running past the
+    // 14-bit field would silently encode garbage words
+    if (struct_id_max >= 0x3fff)
+      fatal("Struct type-id space exhausted (14-bit NaN-box field)");
     relations[name] = new Relation(name, arity, struct_id_max++);
     relations[name]->initShards(thread_count);
   }
@@ -1039,7 +1078,28 @@ public:
     return tupstr;
   }
 
-  std::string writeValCSV(u64 v)
+  // Render a collection canonically as {k:v k:v ...}, entries in the trie's
+  // in-order (ascending unsigned key-word) traversal -- deterministic because
+  // the trie shape is a function of content alone.  A set is a map-to-unit,
+  // so set entries print as k:1.  cdepth counts COLLECTION nesting (maps as
+  // values of maps): the mutual recursion with writeValCSV is stack-bounded
+  // only by nesting depth, so fail loudly rather than overflow.
+  std::string writeCNodeCSV(u64 v, u32 cdepth)
+  {
+    if (cdepth > 256)
+      fatal("Collection nesting too deep to render (> 256 levels)");
+    std::string s = "{";
+    bool first = true;
+    cnode_arena->foreach(v, [&](u64 k, u64 val)
+    {
+      if (!first) s += " ";
+      first = false;
+      s += writeValCSV(k, cdepth+1) + ":" + writeValCSV(val, cdepth+1);
+    });
+    return s + "}";
+  }
+
+  std::string writeValCSV(u64 v, u32 cdepth = 0)
   {
     if (is_s32(v))
       return std::to_string(s32_decode(v));
@@ -1055,6 +1115,8 @@ public:
     }
     else if (is_struct(v))
       return writeStructCSV(v);
+    else if (is_cnode(v))
+      return writeCNodeCSV(v, cdepth);
     else if (v == slog_lat_top)
       return "(top)";              // a flat lattice's top element
     else
@@ -1198,6 +1260,142 @@ public:
 	   + ".arity." + std::to_string(rel->getArity()) + "/";
   }
 
+  // Parse one relation-directory FILENAME (never a full path -- an ancestor
+  // directory containing "table." must not misclassify) of the forms
+  //   table.<name>.arity.<A>
+  //   struct.<name>.arity.<A>.id.<SID>
+  //   lat.<name>.arity.<A>.spec.<TOKEN>
+  // Returns false for anything else (value.strings, value.nodes, stray
+  // files).  Prefixes are anchored at position 0; the name/arity split is
+  // on the LAST ".arity." so dotted relation names survive; numeric fields
+  // must be all-digits (atoi's silent 0 turned corrupt names into arity-0
+  // relations); arity is bounded by max_daemon_arity and struct ids by the
+  // 14-bit NaN-box field.  Inverse of relationDirBIN.
+  static bool parseRelationDirName(const std::string& fname,
+				   std::string& kind, std::string& name,
+				   u32& arity, u32& struct_id,
+				   std::string& lat_spec)
+  {
+    const auto all_digits = [](const std::string& s)
+    {
+      if (s.empty()) return false;
+      for (char c : s) if (c < '0' || c > '9') return false;
+      return true;
+    };
+
+    std::string rest;
+    if (fname.rfind("table.", 0) == 0)       { kind = "table";  rest = fname.substr(6); }
+    else if (fname.rfind("struct.", 0) == 0) { kind = "struct"; rest = fname.substr(7); }
+    else if (fname.rfind("lat.", 0) == 0)    { kind = "lat";    rest = fname.substr(4); }
+    else return false;
+
+    const size_t asplit = rest.rfind(".arity.");
+    if (asplit == std::string::npos || asplit == 0) return false;
+    name = rest.substr(0, asplit);
+    std::string tail = rest.substr(asplit + 7);
+
+    struct_id = 0;
+    lat_spec = "";
+    std::string aritystr;
+    if (kind == "struct")
+    {
+      const size_t isplit = tail.find(".id.");
+      if (isplit == std::string::npos) return false;
+      aritystr = tail.substr(0, isplit);
+      const std::string idstr = tail.substr(isplit + 4);
+      if (!all_digits(idstr)) return false;
+      struct_id = (u32)std::atoi(idstr.c_str());
+      if (struct_id == 0 || struct_id >= 0x3fff) return false;  // is_struct's 14-bit field
+    }
+    else if (kind == "lat")
+    {
+      const size_t ssplit = tail.find(".spec.");
+      if (ssplit == std::string::npos) return false;
+      aritystr = tail.substr(0, ssplit);
+      lat_spec = tail.substr(ssplit + 6);
+      if (lat_spec.empty()) return false;
+    }
+    else
+      aritystr = tail;
+
+    if (!all_digits(aritystr)) return false;
+    arity = (u32)std::atoi(aritystr.c_str());
+    if (arity == 0 || arity > max_daemon_arity) return false;
+    return true;
+  }
+
+  // Does this filename CLAIM to be a relation directory?  A claimed name
+  // that then fails parseRelationDirName is a malformed/corrupt/out-of-
+  // bounds entry and must fail LOUDLY -- silently skipping it would make
+  // a whole relation vanish on open (the pre-P0 loader at least fataled
+  // on such dirs when it tried to index them).
+  static bool relationDirPrefixed(const std::string& fname)
+  {
+    return fname.rfind("table.", 0) == 0
+	|| fname.rfind("struct.", 0) == 0
+	|| fname.rfind("lat.", 0) == 0;
+  }
+
+  // Locate `relname`'s directory under db_dir by scanning and parsing
+  // directory names.  The WRITE path constructs the name from in-memory
+  // metadata (relationDirBIN); the READ path cannot, because struct type
+  // ids and lattice spec tokens depend on this daemon's declaration order
+  // -- a directory written by another session may carry a different id, so
+  // reconstruction silently misses it.  Returns "" when absent; fatals on
+  // a shape conflict with the in-memory relation or an ambiguous double
+  // match (two dirs claiming one name).
+  std::string findRelationDirBIN(const std::string& db_dir,
+				 const std::string& relname, Relation* rel)
+  {
+    if (!std::filesystem::is_directory(db_dir))
+      return "";
+    std::string found;
+    for (const auto& entry : std::filesystem::directory_iterator(db_dir))
+    {
+      if (!entry.is_directory()) continue;
+      std::string fname(entry.path().filename());
+      std::string kind, name, lat_spec;
+      u32 arity = 0, struct_id = 0;
+      if (!parseRelationDirName(fname, kind, name, arity, struct_id, lat_spec))
+      {
+	if (relationDirPrefixed(fname))
+	  fatal("Malformed relation directory name: " + fname
+		+ " under " + db_dir);
+	continue;
+      }
+      if (name != relname)
+	continue;
+      if (!found.empty())
+	fatal("Two on-disk directories claim relation " + relname
+	      + " under " + db_dir);
+      if (arity != rel->getArity())
+	fatal("On-disk relation " + relname + " has arity "
+	      + std::to_string(arity) + " but is registered at arity "
+	      + std::to_string(rel->getArity()));
+      if ((kind == "struct") != (rel->getStructId() > 0)
+	  || (kind == "lat") != rel->isLattice())
+	fatal("On-disk relation " + relname + " kind (" + kind
+	      + ") conflicts with its in-memory registration");
+      // A struct dir written under a DIFFERENT type id belongs to another
+      // session's declaration order: its row words carry that foreign id
+      // baked into the 14-bit NaN-box field, so loading them verbatim
+      // would reference the wrong (or no) relation.  Refuse loudly until
+      // import-time remapping exists (docs/db-merge.md P1).
+      if (kind == "struct" && struct_id != rel->getStructId())
+	fatal("On-disk struct " + relname + " has type id "
+	      + std::to_string(struct_id) + " but is registered with id "
+	      + std::to_string(rel->getStructId())
+	      + "; cross-session struct refresh requires id remapping "
+	      + "(docs/db-merge.md)");
+      if (kind == "lat" && lat_spec != rel->latticeSpec())
+	fatal("On-disk lattice " + relname + " spec (" + lat_spec
+	      + ") conflicts with its registered spec ("
+	      + rel->latticeSpec() + ")");
+      found = std::string(entry.path()) + "/";
+    }
+    return found;
+  }
+
 private:
   // Newest write time across a directory's files (::min() if absent/empty).
   static std::filesystem::file_time_type dirMTime(const std::string& dir)
@@ -1230,7 +1428,26 @@ private:
       }
     };
 
+    // wider relations cannot be reopened (parseRelationDirName bounds
+    // arity at max_daemon_arity) -- refuse to write what open must reject
+    if (rel->getArity() > max_daemon_arity)
+      fatal("Cannot persist relation " + name + " of arity "
+	    + std::to_string(rel->getArity())
+	    + " (max " + std::to_string(max_daemon_arity) + ")");
     std::string rel_dir = relationDirBIN(db_dir, name, rel);
+    // a prior session may have stored this relation under a different
+    // struct id or spec token; remove any such stale same-name dir so a
+    // relation never has two on-disk homes (open would fatal on the dup)
+    if (std::filesystem::is_directory(db_dir))
+      for (const auto& entry : std::filesystem::directory_iterator(db_dir))
+      {
+	if (!entry.is_directory()) continue;
+	std::string kind, n2, spec2;
+	u32 a2 = 0, sid2 = 0;
+	if (parseRelationDirName(entry.path().filename(), kind, n2, a2, sid2, spec2)
+	    && n2 == name && std::string(entry.path()) + "/" != rel_dir)
+	  std::filesystem::remove_all(entry.path());
+      }
     std::filesystem::remove_all(rel_dir);
     std::filesystem::create_directory(rel_dir);
 
@@ -1282,6 +1499,43 @@ private:
 		true);
   }
 
+  // Stage tasks (re)writing the collection-node arena into `s`, mirroring
+  // stageStringsWrite: one file per interner partition, each node as 4 raw
+  // little-endian u64 words IN ITERATOR ORDER -- an intern id is a pure
+  // function of content hash + collision-chain position, and a chain lives
+  // wholly inside one partition file, so re-interning each file in order
+  // reproduces every id exactly (child words inside node contents are hashed
+  // without dereferencing, so the argument extends to trees inductively).
+  // Like strings, the arena is append-only, so a full rewrite is always safe.
+  void stageNodesWrite(Stratum& s, const std::string& db_dir)
+  {
+    class WriteNodes : public Task
+    {
+    public:
+      Database* db; u32 i; std::string path;
+      WriteNodes(Database* _db, u32 _i, const std::string& _path)
+	: db(_db), i(_i), path(_path)
+      {}
+      virtual void work()
+      {
+	DBWriteFile file(path);
+	auto table = db->cnode_arena->raw();
+	for (auto it = table->begin(i); it != table->end(); ++it)
+	  file.write((u8*)(*it).w, 32);
+      }
+    };
+
+    std::filesystem::remove_all(db_dir + "value.nodes/");
+    if (cnode_arena->freshCount() == 0)
+      return;  // no collections: leave no (empty) arena dir behind
+    std::filesystem::create_directory(db_dir + "value.nodes/");
+    for (u16 i = 0; i < cnode_arena->raw()->getWritePartitions(); ++i)
+      s.addTask(0,
+		new WriteNodes(this, i,
+			       db_dir + "value.nodes/" + std::to_string(i) + db_out_ext),
+		true);
+  }
+
 public:
   // Write one relation (plus the strings table its rows may reference)
   // under data/<db_name>/, leaving other relations' files untouched.
@@ -1296,6 +1550,7 @@ public:
     Stratum s("write " + relname);
     stageRelationWriteBIN(s, db_dir, relname, rel);
     stageStringsWrite(s, db_dir);
+    stageNodesWrite(s, db_dir);
     runStratum(&s, false);
     disk_mtimes[relname] = dirMTime(relationDirBIN(db_dir, relname, rel));
     DEBUG("Wrote relation " << relname << " to " << db_dir)
@@ -1312,6 +1567,7 @@ public:
       if (!rel.second->isEmpty())
 	stageRelationWriteBIN(s, db_dir, rel.first, rel.second);
     stageStringsWrite(s, db_dir);
+    stageNodesWrite(s, db_dir);
     runStratum(&s, false);
 
     for (auto& rel : relations)
@@ -1331,7 +1587,7 @@ private:
     for (const auto& partfile : std::filesystem::directory_iterator(db_dir+"value.strings"))
     {
       std::string path(partfile.path());
-      bool gz = path.find(".gz") != std::string::npos;
+      bool gz = hasSuffix(std::string(partfile.path().filename()), ".gz");
       if (gz)
       {
 	GzReadFile file(path);
@@ -1363,16 +1619,61 @@ private:
     }
   }
 
+  // (Re)read every collection-node partition under db_dir, re-interning each
+  // 32-byte node record in file order (see stageNodesWrite for why this
+  // reproduces ids).  Idempotent for the same reason loadStringsBIN is:
+  // interning dedups by content.
+  void loadNodesBIN(const std::string& db_dir)
+  {
+    if (!std::filesystem::is_directory(db_dir + "value.nodes"))
+      return;
+    for (const auto& partfile : std::filesystem::directory_iterator(db_dir+"value.nodes"))
+    {
+      std::string path(partfile.path());
+      u64 w[4];
+      if (hasSuffix(std::string(partfile.path().filename()), ".gz"))
+      {
+	GzReadFile file(path);
+	while (true)
+	{
+	  const u32 got = file.read((u8*)w, 32);
+	  if (got == 0) break;
+	  if (got != 32)
+	    fatal("Corrupt collection-node file (truncated record): " + path);
+	  cnode_arena->intern4(w[0], w[1], w[2], w[3]);
+	}
+      }
+      else
+      {
+	std::ifstream file(path, std::ios::binary);
+	while (file.read(reinterpret_cast<char*>(w), 32))
+	  cnode_arena->intern4(w[0], w[1], w[2], w[3]);
+	if (file.gcount() != 0)
+	  fatal("Corrupt collection-node file (truncated record): " + path);
+      }
+    }
+  }
+
   // Read one relation directory's .bin/.gz files into the relation's send
   // shards (staged; not yet indexed).
+  // Route a data file to the right reader by its FILENAME suffix (a ".gz"
+  // substring anywhere in the path -- e.g. in the db name -- must not
+  // reroute plain .bin files through the gzip reader).
+  static bool hasSuffix(const std::string& s, const std::string& suf)
+  {
+    return s.size() >= suf.size()
+	&& s.compare(s.size() - suf.size(), suf.size(), suf) == 0;
+  }
+
   void readRelationFiles(Relation* rel, const std::string& rel_dir)
   {
     for (const auto& p : std::filesystem::directory_iterator(rel_dir))
     {
       std::string path(p.path());
-      if (path.find(".gz") != std::string::npos)
+      std::string fname(p.path().filename());
+      if (hasSuffix(fname, ".gz"))
 	rel->readGzBIN(path);
-      else if (path.find(".bin") != std::string::npos)
+      else if (hasSuffix(fname, ".bin"))
 	rel->readBIN(path);
     }
   }
@@ -1383,67 +1684,49 @@ public:
   void loadDatabaseBIN(const std::string& db_dir)
   {
     loadStringsBIN(db_dir);
+    loadNodesBIN(db_dir);
 
     for (const auto& entry : std::filesystem::directory_iterator(db_dir))
     {
-      std::string path(entry.path());
-      if (path.find("value.strings") != std::string::npos)
+      // relation data lives only in directories parsing as relation dirs
+      // (parseRelationDirName is filename-anchored and validating, so the
+      // interner dirs, stray files, and corrupt names all skip cleanly)
+      if (!entry.is_directory())
 	continue;
-
-      std::string name(path);
-      bool isstruct = name.find("struct.") != std::string::npos;
-      bool islat = name.find("/lat.") != std::string::npos;
-      if (name.find("table.") != std::string::npos || isstruct || islat)
+      std::string path(entry.path());
+      std::string fname(entry.path().filename());
+      std::string kind, name, lat_spec;
+      u32 arity = 0, struct_id = 0;
+      if (!parseRelationDirName(fname, kind, name, arity, struct_id, lat_spec))
       {
-	if (isstruct)
-	  name = name.substr(name.find("struct.")+7);
-	else if (islat)
-	  name = name.substr(name.find("/lat.")+5);
-	else
-	  name = name.substr(name.find("table.")+6);
-
-	std::string arity_ext = name.substr(name.find(".arity.")+7);
-	std::string arity;
-	std::string lat_spec;
-	u32 struct_id = 0;
-	if (isstruct)
-	{
-	  arity = arity_ext.substr(0, arity_ext.find(".id."));
-	  std::string ext = arity_ext.substr(arity_ext.find(".id.")+4) + "/";
-	  struct_id = std::atoi(ext.substr(0, ext.find("/")).c_str());
-	}
-	else if (islat)
-	{
-	  arity = arity_ext.substr(0, arity_ext.find(".spec."));
-	  lat_spec = arity_ext.substr(arity_ext.find(".spec.")+6);
-	}
-	else
-	{
-	  arity_ext += "/";
-	  arity = arity_ext.substr(0, arity_ext.find("/"));
-	}
-	struct_id_max = std::max(struct_id_max, struct_id+1);
-
-	name = name.substr(0, name.find(".arity."));
-	if (relations.find(name) != relations.end())
-	  fatal(name + " appears to be a duplicated relation");
-
-	Relation* rel = new Relation(name, std::atoi(arity.c_str()), struct_id);
-	relations[name] = rel;
-	rel->initShards(thread_count);
-	// lattice metadata before ensureDefaultIndex, which keys on it to
-	// build a payload map (so ingestDelta merges rather than inserts)
-	if (islat)
-	  rel->setLatticeFromSpec(lat_spec);
-	readRelationFiles(rel, path);
-	// materialize immediately (into a default index) so the database is
-	// queryable/writable before any program arrives; a following stratum
-	// re-ingests via the deferred reload (Daemon::open sets it)
-	rel->ensureDefaultIndex();
-	rel->finalizeBatches();
-	rel->ingestDelta();
-	disk_mtimes[name] = dirMTime(path + "/");
+	// a dir CLAIMING to be a relation but failing validation must not
+	// silently vanish (a whole relation's facts would disappear)
+	if (relationDirPrefixed(fname))
+	  fatal("Malformed relation directory name: " + fname
+		+ " under " + db_dir);
+	continue;
       }
+
+      struct_id_max = std::max(struct_id_max, struct_id+1);
+
+      if (relations.find(name) != relations.end())
+	fatal(name + " appears to be a duplicated relation");
+
+      Relation* rel = new Relation(name, arity, struct_id);
+      relations[name] = rel;
+      rel->initShards(thread_count);
+      // lattice metadata before ensureDefaultIndex, which keys on it to
+      // build a payload map (so ingestDelta merges rather than inserts)
+      if (kind == "lat")
+	rel->setLatticeFromSpec(lat_spec);
+      readRelationFiles(rel, path);
+      // materialize immediately (into a default index) so the database is
+      // queryable/writable before any program arrives; a following stratum
+      // re-ingests via the deferred reload (Daemon::open sets it)
+      rel->ensureDefaultIndex();
+      rel->finalizeBatches();
+      rel->ingestDelta();
+      disk_mtimes[name] = dirMTime(path + "/");
     }
 
     DEBUG("Loaded Database at: " << db_dir);
@@ -1457,16 +1740,23 @@ public:
   // wrote them, so refresh from the database this instance opened or wrote.
   void loadRelationBIN(const std::string& db_name, const std::string& relname)
   {
-    Relation* rel = relations[relname];
+    // find(), not operator[] -- the latter would poison the relations map
+    // with a null entry for an unknown name
+    auto rit = relations.find(relname);
+    Relation* rel = (rit == relations.end()) ? 0 : rit->second;
     if (rel == 0)
       fatal("Cannot load unknown relation " + relname);
     std::string db_dir("data/" + db_name + "/");
-    std::string rel_dir = relationDirBIN(db_dir, relname, rel);
-    if (!std::filesystem::is_directory(rel_dir))
-      fatal("No on-disk data for relation " + relname + " at " + rel_dir);
+    // locate by name-scan, not reconstruction: the on-disk struct id /
+    // spec token may differ from this daemon's declaration order
+    std::string rel_dir = findRelationDirBIN(db_dir, relname, rel);
+    if (rel_dir.empty())
+      fatal("No on-disk data for relation " + relname + " under " + db_dir);
 
-    // pick up any strings the on-disk data references (idempotent)
+    // pick up any strings/collection-nodes the on-disk data references
+    // (both idempotent)
     loadStringsBIN(db_dir);
+    loadNodesBIN(db_dir);
 
     rel->clearContents();
     readRelationFiles(rel, rel_dir);
@@ -1481,13 +1771,17 @@ public:
   // or wrote it?  (True for never-synced relations that exist on disk.)
   bool relationChangedOnDisk(const std::string& db_name, const std::string& relname)
   {
-    Relation* rel = relations[relname];
+    // find(), not operator[]: this path returns and keeps running, so a
+    // null entry inserted for an unknown name would poison later iteration
+    // over the relations map
+    auto rit = relations.find(relname);
+    Relation* rel = (rit == relations.end()) ? 0 : rit->second;
     if (rel == 0)
       return false;
-    std::string rel_dir = relationDirBIN("data/" + db_name + "/", relname, rel);
+    std::string rel_dir = findRelationDirBIN("data/" + db_name + "/", relname, rel);
     auto it = disk_mtimes.find(relname);
     if (it == disk_mtimes.end())
-      return std::filesystem::is_directory(rel_dir);
+      return !rel_dir.empty();
     return dirMTime(rel_dir) != it->second;
   }
 

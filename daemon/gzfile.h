@@ -94,20 +94,32 @@ namespace slog
   };
 
   class GzReadFile
-  {    
+  {
   public:
     std::string path;
     std::ifstream file;
     z_stream stream;
-      
+    // Compressed input buffered ACROSS read() calls.  The previous
+    // implementation fed inflate one file byte per iteration with the byte
+    // in a stack local: when inflate filled the caller's buffer from pending
+    // window-match output without consuming the byte, the next call
+    // overwrote next_in and the byte was silently dropped -- repetitive
+    // (well-compressing) data lost rows with no error.  Keeping unconsumed
+    // input in a member buffer makes that impossible (and reads the file in
+    // 16K chunks instead of one byte per inflate call).
+    u8 inbuf[16384];
+    // false once inflate has consumed data past a member's end without
+    // reaching Z_STREAM_END -- input exhaustion in that state = truncation
+    bool at_member_end = true;
+
     GzReadFile(const std::string& _path)
       : path(_path), file(path, std::ios::binary)
     {
       stream.zalloc = Zalloc;
       stream.zfree = Zfree;
       stream.opaque = Z_NULL;
-      stream.next_in = 0;
-      stream.avail_in = Z_NULL;
+      stream.next_in = inbuf;
+      stream.avail_in = 0;
       if (inflateInit2(&stream, 15 + 16) != Z_OK)
 	fatal("inflateInit2 failed when reading file!");
     }
@@ -118,27 +130,47 @@ namespace slog
       file.close();
     }
 
-    
+
     u32 read(u8* buf, u32 len)
     {
-      u8 byte[1];
       stream.next_out = buf;
       stream.avail_out = len;
-      do
+      while (stream.avail_out > 0)
       {
-        if (!file.read((char*)byte, 1))
-	  break;
-        stream.next_in = byte;
-        stream.avail_in = 1;
-	int rcode = inflate(&stream, Z_NO_FLUSH);
-	if (stream.msg != 0)
-	  std::cout << stream.msg << std::endl;
-        if (rcode == Z_DATA_ERROR)
-	  fatal("Error running inflate from libz.");
-        if (rcode == Z_STREAM_END)
+	if (stream.avail_in == 0)
+	{
+	  file.read((char*)inbuf, sizeof(inbuf));
+	  const std::streamsize got = file.gcount();
+	  if (got <= 0)
+	  {
+	    // out of compressed input: mid-member means a truncated file
+	    if (!at_member_end && stream.avail_out < len)
+	      return len - stream.avail_out;  // flush what we produced first
+	    if (!at_member_end)
+	      fatal("Truncated gzip stream: " + path);
+	    break;
+	  }
+	  stream.next_in = inbuf;
+	  stream.avail_in = (u32)got;
+	}
+	const int rcode = inflate(&stream, Z_NO_FLUSH);
+	if (rcode == Z_STREAM_END)
+	{
+	  at_member_end = true;
+	  // support concatenated members: reset keeps next_in/avail_in
 	  inflateReset(&stream);
+	  continue;
+	}
+	if (rcode == Z_OK)
+	{
+	  at_member_end = false;
+	  continue;
+	}
+	if (rcode == Z_BUF_ERROR && stream.avail_in == 0)
+	  continue;  // benign: need more input, loop refills
+	fatal("Error running inflate from libz on " + path
+	      + (stream.msg ? std::string(": ") + stream.msg : ""));
       }
-      while (stream.avail_out > 0);
       return len - stream.avail_out;
     }
   };

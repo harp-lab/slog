@@ -19,6 +19,7 @@
 #include "debug.h"
 #include "utf8string.h"
 #include "intern.h"
+#include "arena.h"
 #include "database.h"
 #include "gzfile.h"
 #include "prims.h"

@@ -52,6 +52,23 @@
            size   (fun any -> int)
            substr (fun str int int -> str)
 
+           ;; collections (docs/primitives.md M2.1): canonical finite maps/
+           ;; sets as interned Patricia-trie values in the daemon's collection
+           ;; arena (daemon/arena.h).  Keys and values are arbitrary words, so
+           ;; everything is `any` until the typed (set T)/(map K V) layer
+           ;; (M2.3) narrows these.  A set is a map-to-unit (cins/cmem).
+           ;; cmerge is left-biased; cget faults on absence (guard with chas).
+           cmap   (fun -> any)
+           cput   (fun any any any -> any)
+           cget   (fun any any -> any)
+           chas   (fun any any -> int)
+           cmerge (fun any any -> any)
+           cdel   (fun any any -> any)
+           cdiff  (fun any any -> any)
+           csize  (fun any -> int)
+           cins   (fun any any -> any)
+           cmem   (fun any any -> int)
+
            ;; lattice constants and transfers (docs/lattices.md).  $count is
            ;; the base type of (count) -- not lexable as a user type name, so
            ;; only these primitives and count-lattice columns inhabit it.

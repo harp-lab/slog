@@ -449,6 +449,16 @@ node relation and **re-canonicalize to stable ids**. A **content-addressed**
 node arena (id derived from a content hash) fixes this at the root and is a
 strong argument for the arena in §9.
 
+> **M2.1 reality check (2026-07-05):** the shipped arena's ids are content
+> hash (26 bits) *plus collision-chain position* -- a pure-content-hash id
+> in a 35-bit budget would hit birthday collisions in the hundreds of
+> thousands of nodes (the same objection that deferred db-merge's north
+> star C).  Reload reproduces ids exactly (in-order re-intern per partition
+> file, `value.nodes/`), so *within one database* the promise above holds;
+> what it does NOT give is cross-DB stability -- merging arenas shifts
+> chain positions, and remapped keys change trie shapes, so db-merge must
+> remap node words and re-canonicalize (see docs/db-merge.md).
+
 ### 8.3 Cache-key determinism
 
 If the desugar introduces demand-like judgments (for AC ops), it must run
@@ -823,6 +833,57 @@ Patricia lib is the largest demand program yet compiled):
   across reload; bench vs the rules-based ops. **D4:** which NaN-box tag
   space collection-node ids live in (the 35-bit intern family vs a reserved
   struct-id family).
+
+  **STATUS: SHIPPED 2026-07-05.** `daemon/arena.h`: `cnode` (4-word Patricia
+  node -- branch `{prefix, mask, left, right}`, leaf `{key, 0, val, 1}`,
+  empty `{0,0,0,0}`) hash-consed in an `InternTable<cnode>`; kernels
+  `put/put_soft/find/merge/del/diff/size/foreach` over **full 64-bit
+  NaN-boxed key words** (string ids, struct ids, floats, nested collection
+  words -- all legal keys/values), with physical-equality short-circuits
+  justified by canonical interning.  **D4 resolved: intern tag 2** (the
+  free 3-bit intern family; `is_cnode`, `types.h`).  A set is a map-to-unit.
+  Ten `any`-typed prims (`cmap cput cget chas cmerge cdel cdiff csize cins
+  cmem`, `prims.h` + `primitives.rkt` -- two-edit registration, every prim
+  already receives `Database*`); `cmerge` is left-biased; `cget` faults on
+  absence and the planner now fires **guard-feeding computes first in the
+  post-join flush** (`join-planning.rkt` `fire-specials`) so
+  `(= h (chas m k)) (> h 0) (= v (cget m k))` genuinely protects it.
+  Rendering: `writeValCSV` prints `{k:v ...}` in canonical (ascending
+  unsigned key-word) order, depth-capped.  Persistence: `value.nodes/`
+  partition files mirroring `value.strings` (32-byte records in iterator
+  order; ids reproduce on in-order reload because an id = 26 content-hash
+  bits + collision-chain position and a chain lives wholly in one partition
+  file -- child words hash without dereferencing, so the argument extends
+  to trees inductively).  Tests: `tests/arena-tests.cpp` (5.8k-check
+  differential vs a reference model, canonicity/shuffle/partition-merge,
+  algebraic identities, 8-thread concurrency, reload-id-reproduction;
+  ASan/TSan clean), `cn_basic` golden, `api-tests.sh` §6 round-trip.
+  **Bench: ~700x** over the rules-based lib (2x1000 inserts + union:
+  36.9ms native vs 26,402ms `lib/set.slog`).
+
+  Findings worth keeping (adversarially reviewed):
+  - **`intern.h` dup-hit id bug (fixed):** the duplicate-hit path computed
+    `i << 26` with `u16 i` promoted to *int* -- sign-extension at chain
+    index >= 32, full wraparound (silent id conflation!) at >= 64.  Fixed
+    with a `u64` widen + a hard 512-entries-per-slot fatal (the 35-bit id
+    budget), which now also protects *string* interning.
+  - **Id semantics, honestly stated:** ids are content-hash *plus
+    collision-order* -- reload-in-order reproduces them exactly, but they
+    are NOT pure content addresses: loading into a non-empty arena or
+    merging DBs shifts collision indices, so cross-DB import must remap
+    node ids and **re-canonicalize tries whose keys are themselves
+    remapped interned words** (db-merge P1 work; §8.2's "content-addressed
+    fixes reload" holds, its cross-DB implications do not).
+  - Accepted spike limits: `csize` truncates to s32; a `writeRelationBIN`
+    into a *foreign* db dir rewrites `value.nodes` from the current arena
+    (same "only stable within the db this instance opened or wrote"
+    contract strings have, `database.h`); collection words can still reach
+    numeric lattice columns via `any` typing -- now a loud fatal in
+    `lat_num_min/max` instead of silent NaN garbage; the ten prim names
+    are not reserved against user relations (same as all prims).
+  - The rules-based libs (`lib/set.slog`, `lib/map.slog`) remain as the
+    semantics reference and differential oracle; M1.4's "arena accel"
+    escape hatch is now real.
 - **M2.2 — merge kernel.** `LAT_EXTERN` + the composed `mergeWithKey`
   kernel parameterized by the value-join (one kernel: sets, maps, multisets,
   nested maps, products), `leq_fn` from day one (audit + DRed_L), clamp

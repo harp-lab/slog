@@ -32,6 +32,21 @@ baked directly into every stored tuple word:
 | `s32` / `float` | the value itself | — | **Yes** — self-encoding, pass through untouched |
 | string (`is_str`) | 35-bit intern id | FNV low-21 bucket + collision **position** in bucket (`intern.h:95-142`) | **No** — order-dependent |
 | struct (`is_struct`) | 14-bit **type** id (bits 51:38) + 38-bit **instance** id (low 5 = bucket, rest = per-bucket counter) | type = declaration-order counter (`addStruct`→`struct_id_max++`); instance = `intern_allocators[bucket]` in `InternStructTask` | **No** — both are per-DB sequences |
+| collection node (`is_cnode`, intern tag 2 — NEW 2026-07-05, `daemon/arena.h`) | 35-bit intern id into the collection arena (`value.nodes/`) | content-hash low-26 bits + collision position, like strings | **No** — order-dependent; AND the node *contents* embed other id-space words |
+
+> **Merge addendum required (2026-07-05):** collection nodes are a FOURTH
+> database-local id space, and they are worse than strings in two ways the
+> staged remap (§4.2) must handle: (a) node contents embed child-node,
+> string, and struct words, so nodes must be remapped **children-first**
+> like struct instances; (b) a Patricia trie's *shape is a function of its
+> key words* — remapping leaf keys (string/struct ids from `dbB`) makes the
+> field-wise-remapped tree non-canonical and structurally wrong for its new
+> keys.  Field-wise remap is therefore UNSOUND for cnodes whose keys are
+> interned words: the import pass must instead extract each trie's
+> (remapped-key, remapped-value) entries and **rebuild the canonical trie
+> via the arena kernels**.  Int/float-keyed tries (self-encoding keys) may
+> ride the cheap path.  Lattice stage-4 ordering: remap+rebuild collections
+> BEFORE any per-key lattice join whose payloads are tree ids.
 
 So merging `dbB` into `dbA` means re-encoding, in *every* `dbB` tuple word:
 its string ids, its struct type ids, and its struct instance ids — while ints
@@ -324,6 +339,29 @@ reloaded via the id-preserving direct-insert path (`ingestDelta`), never re-run
 through `InternStructTask`** — only genuinely new structs produced by rules go
 through the interner.
 
+> **PINNED (2026-07-05): struct ids are stable across open → reload → stratum,
+> by construction.** Mechanism (verified by code + experiment, then refined
+> under adversarial review): the master index's *static* `WriteTask` ingests
+> the reloaded delta **verbatim** (old nonzero ids intact) in phase_write of
+> iteration 0, and the reloaded delta then never reaches `InternStructTask`
+> at all — the read barrier's `finalizeAll()` swaps the delta for the read
+> phase's output *before* phase_intern runs. Only fresh rule-produced rows
+> (id `0`) flow through the interner, deduping by content against the
+> verbatim rows and allocating **above** the loaded ids — which is exactly
+> why the §6 allocator-seeding fix is load-bearing: with per-file overwrite
+> seeding, 8 of 200 fresh structs in the experiment re-issued owned ids, and
+> the referencing table silently collapsed 400 → 392 rows (silent data loss +
+> ambiguous references; no crash). Fixture + regression:
+> `tests/api/structdb.slog`, `tests/api/structuse.slog`, `api-tests.sh` §7.
+> Two consequences for merge P1: (a) imported instances materialized via
+> `ingestDelta` ride the same verbatim-WriteTask path on the next reload, so
+> id preservation holds — provided allocators are seeded ≥ the merged max;
+> (b) **reload does NOT content-canonicalize the master index** — a dbB row
+> imported with content that dbA already holds under a different id would be
+> blind-inserted as a second (content, id) tuple and persist forever, so
+> content-dedup/remap MUST happen at import time (`internStructTuple`), never
+> deferred to "the next reload's intern pass".
+
 ### 7.2 EDB vs IDB and merge-then-run soundness
 
 `writeDatabaseBIN` persists *every* non-empty relation with no input/derived
@@ -393,6 +431,39 @@ import is rejected cleanly and the daemon continues.
 - **P0 — prerequisites** (small, high value on their own): fix per-file allocator
   seeding, `readGzBIN` `word>>28` + short-read, robust dir parsing +
   name-glob `relationDirBIN`, arity bounds, and **empirically verify §7.1**.
+
+  **STATUS: DONE 2026-07-05** (daemon/database.h + gzfile.h + compiler):
+  `seedInternAllocators` accumulates via max across a relation's bucket
+  files (the counter-experiment showed the overwrite bug silently corrupts:
+  see §7.1); `readGzBIN` decodes with `decode_struct_perbucketid`; BOTH
+  readers fatal on truncated trailing words and on arity 0; one validating
+  `parseRelationDirName` (filename-anchored prefixes, LAST-`.arity.` split,
+  all-digits checks, arity ≤ 32, struct id < 0x3fff) now backs the
+  `loadDatabaseBIN` scan, and a name that CLAIMS a relation prefix but
+  fails validation is a loud fatal, not a silent skip; read paths locate
+  dirs via `findRelationDirBIN` (name-scan; fatal on ambiguity, shape
+  conflict, or a struct dir under a FOREIGN type id — cross-session struct
+  refresh stays a loud refusal until P1's remap); the write path removes
+  stale same-name dirs and refuses to persist arity > 32 (open couldn't
+  load it back); `addStruct` fatals at the 14-bit ceiling; `.gz` routing is
+  by filename suffix, not path substring. **`GzReadFile::read` was
+  rewritten** (gzfile.h): the old one-byte-per-inflate loop *stranded
+  unconsumed compressed bytes* whenever pending window-match output filled
+  the caller's buffer — repetitive (well-compressing) data silently lost
+  rows (50k identical words read back as 592 corrupt ones, no error);
+  input is now buffered across calls and a mid-member EOF is a loud
+  truncation fatal. Compiler parity: `db-manifest-from-name`
+  (runslog.rkt) now parses entry basenames with anchored full-charset
+  patterns (was: unanchored `\w+` over the absolute path — apostrophe
+  names vanished from the manifest and their facts were destroyed on
+  reload; ancestor dirs could poison every manifest), validates bounds,
+  and errors on malformed/duplicate names; `convert-db-folder` (tools.rkt)
+  bounds arity to 1..32 (arity-0 CSVs previously hung it forever).
+  §7.1 pinned (see above). NOT yet fixed (P2 as planned): zero-arity
+  persistence (round-trip still drops propositional facts — the readers
+  now refuse rather than SIGFPE), `tools.rkt` string-id scheme,
+  header/atomicity, mtime races, `writeRelationBIN` not co-persisting
+  struct relations its rows reference (partial-write contract).
 - **P1 — core merge**: `importDatabaseBIN` (§4), `internStructTuple` factoring,
   `ensureStructIndices`, `import` + `merge-db` verbs, guards §5, id-preserving
   reload for already-interned structs (§7.1). Restrict/flag EDB-vs-IDB per §7.2.

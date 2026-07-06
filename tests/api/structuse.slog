@@ -1,0 +1,21 @@
+;; db-merge §7.1 probe, run over the opened structdb fixture:
+;;  - oldf extracts fields from EVERY keep row by joining its struct word
+;;    against mk across the open->reload->stratum boundary: exactly one
+;;    match per row iff opened instances kept their ids AND newly interned
+;;    structs did not re-issue an id a loaded instance owns (the per-file
+;;    allocator-seeding bug made fresh ids collide -> oldf > keep).
+;;  - probe5 pins content stability: the old (mk 5 10) must still be
+;;    reachable from its referencing row.
+;; Adds 200 NEW structs (contents disjoint from the fixture's).
+
+union (pr (mk int int))
+table (keep pr)
+table (seed2 int)
+table (oldf int int)
+table (probe5 int)
+
+facts (seed2 200)
+rule (seed2 i) (< i 399) --> (seed2 (+ i 1))
+rule (seed2 i) --> (keep (mk i (+ i 1)))
+rule (keep p) (= p (mk a b)) --> (oldf a b)
+rule (keep p) (= p (mk 5 b)) --> (probe5 b)

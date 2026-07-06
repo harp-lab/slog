@@ -13,6 +13,9 @@
 
 #include <cstdint>
 #include <bit>
+#include <string>
+
+namespace slog { void fatal(const std::string& msg); }  // defined in fatal.h
 
 
 // C++ types
@@ -34,9 +37,10 @@ typedef int8_t s8;
 #define s32_prim_tag 1
 #define enum_prim_tag 2
 
-// Intern-value type tags are 3 bits 
+// Intern-value type tags are 3 bits
 #define str_intern_tag 0
 #define mpz_intern_tag 1
+#define cnode_intern_tag 2
 
 // The top bit determines if its a struct or not when the value is a NaN
 #define NaNflags     0x7ff0000000000000
@@ -61,7 +65,12 @@ typedef int8_t s8;
 #define str_decode(db,x) ((db)->lookup_string(decode_val(x)))
 #define str_encode(db,x) (intern_encode(str_intern_tag,(db)->intern_string(new slog::utf8string(x))))
 
-// s32 
+// cnode -- a collection value: the intern word of a canonical Patricia-trie
+// node in the collection arena (daemon/arena.h).  Equal collections are one
+// word, so raw-word equality/joins/dedup are value semantics for these.
+#define is_cnode(x) (is_intern(x) && decode_type(x) == cnode_intern_tag)
+
+// s32
 #define is_s32(x) (is_prim(x) && decode_type(x) == s32_prim_tag)
 #define s32_encode(v) (prim_encode(s32_prim_tag, (v) & 0xffffffff))
 #define s32_decode(v) ((s32)(u32)(decode_val(v) & 0xffffffff))
@@ -99,16 +108,24 @@ typedef int8_t s8;
 #define LAT_FLAT  4
 
 // Numeric min/max on tagged words (homogeneous: the type system guarantees a
-// lattice column is all-s32 or all-float).
+// lattice column is all-s32 or all-float -- but `any`-typed prim outputs can
+// evade it, so a non-numeric word here fails loudly instead of silently
+// float-decoding an interned id into garbage).
 inline u64 lat_num_min(u64 a, u64 b)
 {
   if (is_s32(a) && is_s32(b)) return (s32_decode(a) <= s32_decode(b)) ? a : b;
-  return (float_decode(a) <= float_decode(b)) ? a : b;
+  if (is_float(a) && is_float(b))
+    return (float_decode(a) <= float_decode(b)) ? a : b;
+  slog::fatal("Non-numeric or mixed-type value in a min/max lattice column");
+  return 0;
 }
 inline u64 lat_num_max(u64 a, u64 b)
 {
   if (is_s32(a) && is_s32(b)) return (s32_decode(a) >= s32_decode(b)) ? a : b;
-  return (float_decode(a) >= float_decode(b)) ? a : b;
+  if (is_float(a) && is_float(b))
+    return (float_decode(a) >= float_decode(b)) ? a : b;
+  slog::fatal("Non-numeric or mixed-type value in a min/max lattice column");
+  return 0;
 }
 
 // The join: least upper bound of two present values (absence = bottom is

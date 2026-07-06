@@ -1,0 +1,58 @@
+;; Native collection prims (daemon/arena.h; docs/primitives.md M2.1):
+;; canonical Patricia-trie maps/sets interned in the collection arena.
+;; canon is built THREE ways -- two insertion orders and a merge of parts --
+;; and must hold exactly ONE row: equal collections are one interned word.
+;; A set is a map-to-unit, so set entries render as k:1.
+
+table (canon any)
+table (m int int)
+table (sz int)
+table (afterdel any)
+table (dif any)
+
+rule (= r (cins (cins (cins (cins (cmap) 5) 2) 8) 1)) --> (canon r)
+rule (= r (cins (cins (cins (cins (cmap) 1) 8) 2) 5)) --> (canon r)
+rule (= a (cins (cins (cmap) 8) 5)) (= b (cins (cins (cmap) 1) 2))
+     (= r (cmerge a b)) --> (canon r)
+
+rule (canon s) (= a (cmem s 5)) --> (m 5 a)
+rule (canon s) (= a (cmem s 3)) --> (m 3 a)
+rule (canon s) (= n (csize s)) --> (sz n)
+rule (canon s) (= r (cdel s 2)) --> (afterdel r)
+rule (canon s) (= o (cins (cins (cmap) 2) 8)) (= r (cdiff s o)) --> (dif r)
+
+;; ---- maps: put replaces, cget/chas, left-biased merge ------------------
+table (env any)
+table (looked str int)
+table (haz str int)
+table (biased any)
+
+rule (= e (cput (cput (cput (cmap) "x" 1) "y" 2) "x" 3)) --> (env e)
+rule (env e) (= v (cget e "x")) --> (looked "x" v)
+rule (env e) (= h (chas e "z")) --> (haz "z" h)
+rule (env e) (= b (cput (cmap) "x" 99)) (= r (cmerge e b)) --> (biased r)
+
+;; ---- mixed-type and struct keys, nested collection values --------------
+union (pr (mk int int))
+table (pairkey pr)
+table (mixed any)
+table (nest any)
+table (nestget int)
+
+rule --> (pairkey (mk 3 4))
+rule (= r (cput (cput (cput (cmap) 1.5 "a") 2 "b") "k" 7)) --> (mixed r)
+rule (pairkey k) (= inner (cput (cmap) 1 2))
+     (= r (cput (cmap) k inner)) --> (nest r)
+rule (nest n) (pairkey k) (= inner (cget n k)) (= v (cget inner 1))
+     --> (nestget v)
+
+;; ---- guarded lookup: the chas guard must prune BEFORE cget fires --------
+;; (the planner fires guard-feeding computes first in the flush, so the
+;; absent-key rule yields no row instead of a daemon fatal)
+table (guarded str int)
+rule (env e) (= h (chas e "x")) (> h 0) (= v (cget e "x")) --> (guarded "x" v)
+rule (env e) (= h (chas e "zz")) (> h 0) (= v (cget e "zz")) --> (guarded "zz" v)
+
+;; ---- the empty collection ----------------------------------------------
+table (emp any int)
+rule (= e (cmap)) (= n (csize e)) --> (emp e n)

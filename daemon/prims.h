@@ -32,6 +32,7 @@ namespace {
     if (is_str(v)) return "str (string)";
     if (is_float(v)) return "float (floating point)";
     if (is_struct(v)) return "struct (structure)";
+    if (is_cnode(v)) return "cmap (collection)";
     return "unknown type";
   }
 }
@@ -166,6 +167,95 @@ inline u64 _prim_size(slog::Database* db, u64 v)
   slog::fatal(std::format("Function 'size' does not support type: {}. Supported types: str", get_type_name(v)));
   return 0;
 }
+
+
+// Collection prims (docs/primitives.md M2.1): canonical finite maps/sets as
+// interned Patricia tries in the per-Database collection arena (arena.h).
+// A collection value is one NaN-boxed word (is_cnode); keys and values are
+// arbitrary slog words.  A set is a map-to-unit: cins/cmem are cput/chas
+// with value 1.  cmerge is LEFT-biased (the first argument's value wins on
+// key collision), mirroring lib/map.slog's mp_union.
+
+#define SLOG_CNODE_ARG(v, OPSTR)                                                \
+  if (!is_cnode(v))                                                             \
+    slog::fatal(std::format("Function '" OPSTR "' requires a collection, got: {}", \
+                            get_type_name(v)));
+
+//  (cmap) -- the empty map/set
+inline u64 _prim_cmap(slog::Database* db)
+{
+  return db->collections()->empty();
+}
+
+//  (cput m k v) -- m with k mapped to v (replaces on collision)
+inline u64 _prim_cput(slog::Database* db, u64 m, u64 k, u64 v)
+{
+  SLOG_CNODE_ARG(m, "cput");
+  return db->collections()->put(m, k, v);
+}
+
+//  (cget m k) -- the value at k; faults if absent (guard with chas)
+inline u64 _prim_cget(slog::Database* db, u64 m, u64 k)
+{
+  SLOG_CNODE_ARG(m, "cget");
+  u64 out = 0;
+  if (!db->collections()->find(m, k, &out))
+    slog::fatal("Function 'cget': key is absent (guard with chas/cmem)");
+  return out;
+}
+
+//  (chas m k) -- 1 if k present, else 0
+inline u64 _prim_chas(slog::Database* db, u64 m, u64 k)
+{
+  SLOG_CNODE_ARG(m, "chas");
+  return s32_encode(db->collections()->find(m, k, 0) ? 1 : 0);
+}
+
+//  (cmerge a b) -- left-biased union
+inline u64 _prim_cmerge(slog::Database* db, u64 a, u64 b)
+{
+  SLOG_CNODE_ARG(a, "cmerge");
+  SLOG_CNODE_ARG(b, "cmerge");
+  return db->collections()->merge(a, b);
+}
+
+//  (cdel m k) -- m without k
+inline u64 _prim_cdel(slog::Database* db, u64 m, u64 k)
+{
+  SLOG_CNODE_ARG(m, "cdel");
+  return db->collections()->del(m, k);
+}
+
+//  (cdiff a b) -- entries of a whose keys are not in b
+inline u64 _prim_cdiff(slog::Database* db, u64 a, u64 b)
+{
+  SLOG_CNODE_ARG(a, "cdiff");
+  SLOG_CNODE_ARG(b, "cdiff");
+  return db->collections()->diff(a, b);
+}
+
+//  (csize m) -- number of entries
+inline u64 _prim_csize(slog::Database* db, u64 m)
+{
+  SLOG_CNODE_ARG(m, "csize");
+  return s32_encode((s32)db->collections()->size(m));
+}
+
+//  (cins s k) -- set insert: (cput s k 1)
+inline u64 _prim_cins(slog::Database* db, u64 s, u64 k)
+{
+  SLOG_CNODE_ARG(s, "cins");
+  return db->collections()->put(s, k, s32_encode(1));
+}
+
+//  (cmem s k) -- set membership: (chas s k)
+inline u64 _prim_cmem(slog::Database* db, u64 s, u64 k)
+{
+  SLOG_CNODE_ARG(s, "cmem");
+  return s32_encode(db->collections()->find(s, k, 0) ? 1 : 0);
+}
+
+#undef SLOG_CNODE_ARG
 
 
 // Lattice constants and transfers (docs/lattices.md).  The count lattice is

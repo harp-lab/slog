@@ -97,6 +97,45 @@ rm -f out/api-fifo
 expect "refresh-changed" "(refreshed edge 1)" out/api-fresh1.log
 expect "refresh-size"    "(relation_size edge 3)" out/api-fresh1.log
 
+# --- 6. collection-arena round trip: rows holding collection words survive
+#        write-db + reopen because value.nodes re-interns in iterator order,
+#        reproducing every node id (daemon/arena.h).  The structural print is
+#        the assertion: it only renders if every id resolves after reload.
+rm -rf data/apicndb
+timeout 300 racket slog.rkt --no-banner --out-db apicndb tests/cn_basic.slog \
+  > out/api-cn-write.log 2>&1
+if [ -d data/apicndb/value.nodes ]; then
+  echo "PASS cn-nodes-dir"; PASS=$((PASS+1))
+else
+  echo "FAIL cn-nodes-dir (no value.nodes written)"; FAIL=$((FAIL+1))
+fi
+timeout 300 racket slog.rkt --no-banner --sizes -d apicndb \
+  --debug-dir out/api-cn-reopen tests/api/noop.slog \
+  > out/api-cn-reopen.log 2>&1
+expect "cn-reopen-size"  "(relation_size canon 1)"  out/api-cn-reopen.log
+expect "cn-reopen-print" "{1:1 2:1 5:1 8:1}"        out/api-cn-reopen/canon.csv
+expect "cn-reopen-nest"  "{(mk 3 4):{1:2}}"         out/api-cn-reopen/nest.csv
+expect "cn-reopen-env"   "{\"y\":2 \"x\":3}"        out/api-cn-reopen/env.csv
+
+# --- 7. struct-id stability across open + stratum (db-merge §7.1): opened
+#        instances keep their ids (the master index's static WriteTask
+#        ingests the reloaded delta verbatim; InternStructTask dedups
+#        against those rows), and NEWLY interned structs allocate above
+#        every loaded id.  The per-file allocator-seeding bug re-issued
+#        owned ids: 8 of 200 new structs collided, silently collapsing
+#        keep to 392 rows and pointing rows at the wrong struct.
+rm -rf data/apistructdb
+timeout 300 racket slog.rkt --no-banner --out-db apistructdb tests/api/structdb.slog \
+  > out/api-structdb.log 2>&1
+timeout 300 racket slog.rkt --no-banner --sizes -d apistructdb \
+  --debug-dir out/api-structuse tests/api/structuse.slog \
+  > out/api-structuse.log 2>&1
+expect "structs-mk"      "(relation_size mk 400)"     out/api-structuse.log
+expect "structs-keep"    "(relation_size keep 400)"   out/api-structuse.log
+expect "structs-oldf"    "(relation_size oldf 400)"   out/api-structuse.log
+expect "structs-probe5"  "(relation_size probe5 1)"   out/api-structuse.log
+expect "structs-probe5-val" "10" out/api-structuse/probe5.csv
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

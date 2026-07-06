@@ -310,14 +310,35 @@
   (let loop ([emitted '()] [ground ground] [computes computes] [guards guards]
              [needed needed])
     (define g (findf (lambda (cl) (subset? (clause-in-vars cl) ground)) guards))
+    (define (fireable? cl)
+      (match-define `(syn ,_ let ,x ,_) cl)
+      (and (subset? (clause-in-vars cl) ground)
+           (or (eq? needed 'all)
+               (and (set-member? needed x)
+                    (not (set-member? ground x))))))
+    ;; In flush mode, among fireable computes prefer one that (transitively)
+    ;; feeds a pending guard, so the guard prunes before unrelated computes
+    ;; run -- this is what lets `(= h (chas m k)) (> h 0) (= v (cget m k))`
+    ;; protect a faultable cget.  Every fireable compute fires in the flush
+    ;; regardless, so the preference is pure reordering: it cannot introduce
+    ;; speculative execution (unlike eager firing in needed mode, which the
+    ;; gating above exists to prevent).
+    (define feeders
+      (and (not g) (eq? needed 'all) (pair? guards)
+           (let close ([vs (for/fold ([s (set)]) ([gd (in-list guards)])
+                             (set-union s (clause-in-vars gd)))])
+             (define vs+
+               (for/fold ([n vs]) ([cl (in-list computes)])
+                 (match-define `(syn ,_ let ,x ,_) cl)
+                 (if (set-member? n x) (set-union n (clause-in-vars cl)) n)))
+             (if (equal? vs+ vs) vs (close vs+)))))
     (define c (and (not g)
-                   (findf (lambda (cl)
-                            (match-define `(syn ,_ let ,x ,_) cl)
-                            (and (subset? (clause-in-vars cl) ground)
-                                 (or (eq? needed 'all)
-                                     (and (set-member? needed x)
-                                          (not (set-member? ground x))))))
-                          computes)))
+                   (or (and feeders
+                            (findf (lambda (cl)
+                                     (match-define `(syn ,_ let ,x ,_) cl)
+                                     (and (set-member? feeders x) (fireable? cl)))
+                                   computes))
+                       (findf fireable? computes))))
     (cond
       [g (loop (cons g emitted) ground computes (remq g guards) needed)]
       [c

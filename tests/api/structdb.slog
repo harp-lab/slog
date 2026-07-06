@@ -1,0 +1,11 @@
+;; db-merge §7.1 fixture: 200 struct instances spread across all intern
+;; buckets, plus a table whose rows reference them by id.  Written with
+;; --out-db; tests/api/structuse.slog reopens it.
+
+union (pr (mk int int))
+table (keep pr)
+table (seed int)
+
+facts (seed 0)
+rule (seed i) (< i 199) --> (seed (+ i 1))
+rule (seed i) --> (keep (mk i (* 2 i)))

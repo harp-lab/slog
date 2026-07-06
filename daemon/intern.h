@@ -102,12 +102,18 @@ private:
 	for (u16 i = 0; i < ptr->size(); ++i)
 	  if (ptr->operator[](i)->operator==(*v))
 	  {
-	    intern |=  i << (5+intern_buckets_bits);
+	    // widen before shifting: u16 promotes to int, and i << 26
+	    // overflows/sign-extends at i >= 32, corrupting the id
+	    intern |= ((u64)i) << (5+intern_buckets_bits);
 	    return intern;
 	  }
-	
+
+	// the chain index has 9 bits of the 35-bit intern-id budget before
+	// it overflows into the type-tag bits (silent id corruption)
+	if (ptr->size() >= 512)
+	  fatal("Intern collision chain overflow (512 entries in one slot)");
 	auto vec = new std::vector<T*>(*ptr);
-	intern |= vec->size() << (5+intern_buckets_bits);
+	intern |= ((u64)vec->size()) << (5+intern_buckets_bits);
 	vec->push_back(v);
 	if (!data[pos].compare_exchange_strong(ptr, vec))
 	{

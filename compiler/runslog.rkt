@@ -34,30 +34,55 @@
     [_ (error 'db-manifest "unrecognized lattice spec token on disk: ~a" tok)]))
 
 ;; Scan an input database directory into a manifest of its relations.
+;;
+;; Parses each entry's BASENAME with anchored patterns, mirroring the
+;; daemon's parseRelationDirName (database.h): matching anywhere in the
+;; absolute path let an ancestor directory (or the db name itself) shaped
+;; like table.X.arity.N shadow real relations, `\w+` names silently dropped
+;; relations whose (legal) names carry apostrophes -- and a dropped
+;; manifest entry destroys that relation's facts on the first reload
+;; (emit-cpp keeps an index alive for exactly the on-disk relations the
+;; program doesn't declare).  The greedy (.+) with an anchored tail splits
+;; on the LAST .arity., like the daemon.  A dir that CLAIMS a relation
+;; prefix but fails validation errors loudly (daemon parity), as does a
+;; duplicate name or an arity the daemon cannot load.
 (define (db-manifest-from-name db-name)
+  (define (arity-ok? n) (and n (<= 1 n 32)))
+  (define (add man name entry fname)
+    (define sym (string->symbol name))
+    (when (hash-has-key? man sym)
+      (error 'db-manifest "two directories claim relation ~a (~a)" name fname))
+    (hash-set man sym entry))
   (if db-name
       (let ([db-path (string-append "data/" db-name "/")])
         (foldl (lambda (path man)
-                 (define path+ (fullpath (normalize-path path (path->complete-path db-path))))
-                 (match (regexp-match #px"/table\\.(\\w+)\\.arity\\.(\\d+)" path+)
+                 (define fname (path->string path))
+                 (match (regexp-match #px"^table\\.(.+)\\.arity\\.([0-9]+)$" fname)
                    [`(,_ ,name ,arity)
-                    (hash-set man
-                              (string->symbol name)
-                              `(rel ,(string->symbol name) ,(string->number arity)))]
+                    #:when (arity-ok? (string->number arity))
+                    (add man name
+                         `(rel ,(string->symbol name) ,(string->number arity))
+                         fname)]
                    [_
-                    (match (regexp-match #px"/struct\\.(\\w+)\\.arity\\.(\\d+)\\.id\\.(\\d+)" path+)
+                    (match (regexp-match #px"^struct\\.(.+)\\.arity\\.([0-9]+)\\.id\\.([0-9]+)$" fname)
                       [`(,_ ,name ,arity ,_)
-                       (hash-set man
-                                 (string->symbol name)
-                                 `(struct ,(string->symbol name) ,(string->number arity)))]
+                       #:when (arity-ok? (string->number arity))
+                       (add man name
+                            `(struct ,(string->symbol name) ,(string->number arity))
+                            fname)]
                       [_
-                       (match (regexp-match #px"/lat\\.(\\w+)\\.arity\\.(\\d+)\\.spec\\.([-.'\\w]+)" path+)
+                       (match (regexp-match #px"^lat\\.(.+)\\.arity\\.([0-9]+)\\.spec\\.([-.'\\w]+)$" fname)
                          [`(,_ ,name ,arity ,tok)
-                          (hash-set man
-                                    (string->symbol name)
-                                    `(lat ,(string->symbol name) ,(string->number arity)
-                                          ,(lat-spec-from-token tok)))]
-                         [_ man])])]))
+                          #:when (arity-ok? (string->number arity))
+                          (add man name
+                               `(lat ,(string->symbol name) ,(string->number arity)
+                                     ,(lat-spec-from-token tok))
+                               fname)]
+                         [_
+                          (when (regexp-match #px"^(table|struct|lat)\\." fname)
+                            (error 'db-manifest
+                                   "malformed relation directory name: ~a" fname))
+                          man])])]))
                (hash)
                (directory-list db-path)))
       (hash)))

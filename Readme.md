@@ -11,13 +11,12 @@ rule (edge X Y) --> (path X Y)
 rule (path X Y) (edge Y Z) --> (path X Z)
 ```
 
-The second rule feeds itself. That is not a bug to avoid; it is the
-point — the engine applies rules until nothing new can be derived, and
-recursion is just a rule that mentions its own conclusion.
+The second rule feeds itself: the engine applies rules until nothing new can be
+derived, and recursion is just a rule that mentions its own conclusion.
 
 A few things distinguish Slog within this family of languages:
 
-- **Programs compile to parallel native code.** Each program becomes a
+- **Programs JIT compile to parallel native code.** Each program becomes a
   specialized C++ plugin, cached, and run by a multithreaded fixpoint
   engine.
 - **Structured values are first-class.** Trees, lists, sets, and maps
