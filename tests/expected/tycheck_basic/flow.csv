@@ -1,0 +1,2 @@
+(app (lam "y") (lam "z"))   
+(lam "x")   

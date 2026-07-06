@@ -80,7 +80,15 @@
 ;; The type checker keeps the same shape but normalizes: primitive calls
 ;; become (let x (f args ...)) clauses, enum references become _enum struct
 ;; patterns plus string constants, and bare struct patterns gain their id
-;; binding (= fresh (name ...)).
+;; binding (= fresh (name ...)).  It also residualizes dynamic type checks
+;; as head-position clauses placed before the emissions they guard:
+;;
+;;   (tycheck y (accept t ...+) rid rel col)
+;;
+;; -- at runtime, if y's surface tag is none of the accepted ground types,
+;; emit (malformed_deduction rid rel col y) instead of the rule's heads
+;; (rid/rel/col are const-bound reporting variables).  Invisible to
+;; stratification; see type-system.rkt.
 
 (define (const-clause? cl)
   (match cl
@@ -121,6 +129,12 @@
 (define (flat-head-clause? cl)
   (or (const-clause? cl) (join-clause? cl)))
 
+(define (tycheck-clause? cl)
+  (match cl
+    [`(syn ,_ tycheck ,(? var?) (accept ,(? symbol?) ..1)
+       ,(? var?) ,(? var?) ,(? var?)) #t]
+    [_ #f]))
+
 (define (flat-rule? r)
   (match r
     [`(syn ,_ rule ,body ... --> ,head ...)
@@ -131,7 +145,9 @@
   (match r
     [`(syn ,_ rule ,body ... --> ,head ...)
      (and (andmap (lambda (cl) (or (flat-body-clause? cl) (let-clause? cl))) body)
-          (andmap (lambda (cl) (or (flat-head-clause? cl) (let-clause? cl))) head))]
+          (andmap (lambda (cl) (or (flat-head-clause? cl) (let-clause? cl)
+                                   (tycheck-clause? cl)))
+                  head))]
     [_ #f]))
 
 ;; -----------------------------------------------------------------------
@@ -172,7 +188,9 @@
     [`(syn ,_ rule ,body ... --> ,head ...)
      (and (andmap (lambda (cl) (or (guard-clause? cl) (let-clause? cl) (join-clause? cl)))
                   body)
-          (andmap (lambda (cl) (or (let-clause? cl) (join-clause? cl))) head))]
+          (andmap (lambda (cl) (or (let-clause? cl) (join-clause? cl)
+                                   (tycheck-clause? cl)))
+                  head))]
     [_ #f]))
 
 ;; -----------------------------------------------------------------------
@@ -203,6 +221,12 @@
 ;;             | (mkstruct name idx x field ...)
 ;;             | (emit name idx x ...)
 ;;             | (emit-temp name x ...)
+;;             | (tycheck x (accept t ...) rid rel col idx)
+;;                 t ::= int | float | str | (struct name)
+;;                 residual type check, always ahead of the emitting hops:
+;;                 if x's tag matches no accepted t, emit the struct
+;;                 (malformed_deduction rid rel col x) -- idx is its master
+;;                 (interning) index -- and abandon the deduction
 
 (define (index? i)
   (match i
@@ -254,6 +278,17 @@
     ;; a lattice contribution, in storage order (keys then value): batched
     ;; with no dedup -- subsumption is decided at the merge (intern) phase
     [`(emit-lat ,(? var?) ,(? var?) ...) #t]
+    ;; a residual type check guarding every emitting hop after it
+    [`(tycheck ,(? var?) (accept ,(? c-accept?) ..1)
+       ,(? var?) ,(? var?) ,(? var?) (,(? natural?) ..1)) #t]
+    [_ #f]))
+
+;; A runtime-testable type in a lowered accept set: a primitive tag or an
+;; interned struct's id (enum members lower to (struct _enum)).
+(define (c-accept? t)
+  (match t
+    [(or 'int 'float 'str) #t]
+    [`(struct ,(? var?)) #t]
     [_ #f]))
 
 (define (crule? r)

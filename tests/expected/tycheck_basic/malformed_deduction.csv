@@ -1,0 +1,10 @@
+ "oops")
+ "tycheck_basic.slog:23"
+ "tycheck_basic.slog:26"
+ "typed"
+ "vals"
+ (app (lam "y") (lam "z")))
+ 0
+ 0
+(malformed_deduction
+(malformed_deduction
