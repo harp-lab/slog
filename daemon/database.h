@@ -26,6 +26,9 @@
 #include <thread>
 #include <atomic>
 #include <barrier>
+#include <chrono>
+#include <mutex>
+#include <unistd.h>
 #include <omp.h>
 #include <unordered_map>
 #include <unordered_set>
@@ -52,12 +55,47 @@ namespace slog
 class Database;
 
   
+// A unit of scheduled work.  work() returns true when the task finished and
+// false when it PAUSED ITSELF mid-scan (the sliceable read-task model,
+// docs/pausing.md §3): a paused task has already flushed its partial output,
+// constructed a continuation copy carrying its resume position, and pushed
+// that copy onto the read phase's paused queue.  Write/intern/internal tasks
+// never pause -- they always return true.
 class Task
 {
 public:
-  virtual void work() = 0;
+  virtual bool work() = 0;
   virtual ~Task() = default;
 };
+
+// Per-invocation slicing context handed to a sliceable read driver
+// (operators.h): pause as soon as `stop` is set (a memory trip or the global
+// deadline) or the steady_clock passes `deadline` (= min(task_start+slice_ms,
+// global_deadline)).  Checked every 128 outer tuples; a vDSO steady_clock
+// read is ~20ns, so the amortized per-tuple cost is well under a nanosecond.
+struct SliceCtx
+{
+  std::chrono::steady_clock::time_point deadline;
+  const std::atomic<bool>* stop;
+};
+
+// Resident set size in bytes, from /proc/self/statm (the honest number, which
+// composes with the SLOG_MEM_MAX cgroup cap).  Field 2 is resident pages.
+inline u64 readRSSbytes()
+{
+  std::ifstream statm("/proc/self/statm");
+  u64 total_pages = 0, resident_pages = 0;
+  if (statm >> total_pages >> resident_pages)
+    return resident_pages * (u64)sysconf(_SC_PAGESIZE);
+  return 0;
+}
+
+// The memory cap (docs/pausing.md §5) is checked against ACTUAL RSS, re-read at
+// the sendBatch choke point about once per this many emitted words (~2 MiB) --
+// a /proc read that rarely is negligible, and reading the true RSS avoids the
+// false trips an emitted-words estimate would cause (re-derivations, non-dedup
+// temps over-count growth).
+#define rss_check_words (256 * 1024)
 
   
 class alignas(8) InsertBatch
@@ -130,7 +168,30 @@ private:
   std::vector<std::vector<std::vector<RefVec>>> write_buckets;  // [tid][slot][bucket]
   std::vector<std::vector<RefVec>> read_buckets;                // [tid][bucket]
 
+  // Per-run accounting bound by Database::continueStratum (docs/pausing.md
+  // §3/§5): every produced batch bumps *rs_emitted by its word count at the
+  // single sendBatch choke point (negligible: one relaxed fetch_add per ~4k
+  // words).  About once per rss_check_words that counter passes, sendBatch
+  // re-reads actual RSS and, if it is at/over rs_memcap, trips the stop flag so
+  // in-flight read tasks pause at their next slice check (a `memory` suspend).
+  // Null/UINT64_MAX outside a budgeted run (internal reload/disk strata).
+  std::atomic<u64>* rs_emitted = nullptr;
+  std::atomic<bool>* rs_stop = nullptr;
+  std::atomic<bool>* rs_memtrip = nullptr;
+  u64 rs_memcap = ~(u64)0;
+
 public:
+  // Bind (or clear) this relation's per-run accounting pointers.  Called for
+  // every relation at each continueStratum call, before the workers spin.
+  void bindRun(std::atomic<u64>* emitted, std::atomic<bool>* stop,
+               std::atomic<bool>* memtrip, u64 memcap)
+  {
+    rs_emitted = emitted;
+    rs_stop = stop;
+    rs_memtrip = memtrip;
+    rs_memcap = memcap;
+  }
+
 
   Relation(std::string _name, u16 _arity, u32 _struct_id)
     : name(_name), arity(_arity),
@@ -553,10 +614,30 @@ public:
   // omp_get_thread_num() yields this worker's stable 0..thread_count-1 index.
   void sendBatch(InsertBatch* b)
   {
-    if (b->usage > 0)
-      send_shards[omp_get_thread_num()].push_back(b);
-    else
+    if (b->usage == 0)
+    {
       delete b;
+      return;
+    }
+    // Memory proxy (docs/pausing.md §3): count emitted words at the single
+    // choke point.  emit() already deduped against the head index before
+    // batching, so this is close to true post-dedup growth; emit_temp/
+    // emit_struct over-estimate, the safe direction for an explosion guard.
+    if (rs_emitted)
+    {
+      // Count emitted words (also the mid-read growth figure), and about once
+      // per rss_check_words re-read the honest RSS to enforce the total cap.
+      // rs_memcap is UINT64_MAX for unbudgeted internal strata, so they never
+      // trip regardless of size.
+      const u64 prev = rs_emitted->fetch_add(b->usage, std::memory_order_relaxed);
+      if (prev / rss_check_words != (prev + b->usage) / rss_check_words
+          && readRSSbytes() >= rs_memcap)
+      {
+        if (rs_memtrip) rs_memtrip->store(true, std::memory_order_relaxed);
+        if (rs_stop)    rs_stop->store(true, std::memory_order_relaxed);
+      }
+    }
+    send_shards[omp_get_thread_num()].push_back(b);
   }
 
   // Raise every bucket's intern allocator above the largest per-bucket
@@ -776,6 +857,13 @@ public:
   // recomputation later (push a delta into a stratum, replay downstream)
   std::vector<std::string> dynamic_rels;
 
+  // Daemon-assigned SCC id = pipeline position at push time (docs/pausing.md
+  // §6): never baked into the .so, so editing a rule cannot churn ids.  The
+  // fixpoint message is cached here so an idempotent continue at the final
+  // fixpoint re-emits it verbatim (§5).
+  u32 scc_id = 0;
+  std::string fixpoint_msg;
+
   Stratum(const std::string& _name) : name(_name) {}
 
   ~Stratum()
@@ -796,45 +884,129 @@ public:
 };
 
 
+// ---- Pausable-fixpoint run state (docs/pausing.md) ------------------------
+
+// Where a (possibly suspended) stratum run resumes.  Encoded explicitly (§9.2)
+// rather than inferred, so runLoop dispatches deterministically at entry.
+enum RunPosition {
+  RUN_FRESH        = 0,   // never started: promote initial delta, run iter 0
+  RUN_AT_BOUNDARY  = 1,   // suspended after a full iteration (clean boundary)
+  RUN_MID_READ     = 2    // suspended mid read-phase (delta NOT finalized)
+};
+
+// The per-iteration decision made once, single-threaded, at the end-of-iter
+// barrier so every worker acts on the same verdict (a split vote would
+// deadlock the next iteration barrier).
+enum NextAction { ACT_CONTINUE = 0, ACT_FIXPOINT = 1, ACT_BOUNDARY_SUSPEND = 2 };
+
+// One bounded unit of work's budget (§5/§10).  0 fields mean "use the default".
+struct RunBudget {
+  u64 max_ms    = 8000;   // wall budget for this continue call
+  u64 slice_ms  = 500;    // per-task slice; effective deadline min(slice,global)
+  u64 mem_bytes = 0;      // TOTAL RSS soft cap; 0 = DEFAULT_MEM_CAP
+};
+
+// Default total-RSS soft cap for a budgeted run (docs/pausing.md §5): a large,
+// graceful ceiling.  When resident memory nears it the read phase pauses with
+// reason `memory`, and the front end aborts cleanly (rather than the systemd
+// SLOG_MEM_MAX cgroup cap OOM-killing the daemon).  Kept below the 4 GiB
+// default cgroup cap so the graceful pause fires first; override via
+// SLOG_MEM_BYTES (the launcher tracks it to ~90% of SLOG_MEM_MAX).
+static constexpr u64 DEFAULT_MEM_CAP = (u64)3840 << 20;   // 3.75 GiB
+
+// The outcome of one continueStratum call.
+struct RunStatus {
+  bool fixpoint;        // reached fixpoint (or an unbudgeted single pass done)
+  RunPosition where;    // when suspended: AT_BOUNDARY | MID_READ
+  const char* reason;   // when suspended: "time" | "memory"
+  u32 iteration;        // iteration count so far
+  u64 new_tuples;       // growth since the stratum started (see continueRun)
+  double ms_call;       // wall time this call
+  double ms_total;      // wall time across all calls for this stratum
+};
+
+// All state of an in-flight (possibly suspended) stratum run.  Grouped in one
+// struct (§8) so a second run context is a cheap future addition; barriers
+// stay as Database members since they are reallocated per call.  A budgeted
+// user stratum and the daemon's internal (reload/disk) strata never overlap --
+// the suspended guardrails refuse anything that would run an internal stratum
+// while a user stratum is parked -- so exactly one run uses this at a time.
+struct RunState {
+  const Stratum* stratum = nullptr;    // the stratum currently (or last) run
+  RunPosition position = RUN_FRESH;
+  bool suspended = false;              // last continueStratum paused it
+  bool tofixpoint = true;              // false: internal single-pass strata
+
+  // Work distribution (was loose Database members): an atomic cursor per phase
+  // over once[phase] (iteration 0 only) then every[phase].
+  std::atomic<u64> task_cursor[phase_count];
+  std::atomic<bool> once_pending[phase_count];
+
+  // Paused read-task continuations (§3): a mutex-guarded queue drained before
+  // the main cursor.  Pauses happen ~2/sec/thread so the lock is uncontended.
+  // paused_head is the claim cursor (claimed continuations are deleted by the
+  // worker that ran them; [head,size) are live).
+  std::mutex paused_mutex[phase_count];
+  std::vector<Task*> paused_tasks[phase_count];
+  u64 paused_head[phase_count] = {0, 0, 0};
+
+  // Per-call budget / slicing (§5).
+  RunBudget budget;
+  std::chrono::steady_clock::time_point global_deadline;
+  u64 slice_ms = 500;
+  u64 mem_cap = ~(u64)0;                       // total RSS cap; ~0 = unbounded
+  std::atomic<bool> stop_requested{false};   // relaxed; polled in slice checks
+  std::atomic<bool> mem_tripped{false};      // the stop was a memory trip
+  std::atomic<u64> emitted_words{0};          // bumped in sendBatch, per call
+
+  // Accumulated across calls for this stratum (idempotent re-emit + messages).
+  u32 iteration_count = 0;
+  double ms_total = 0.0;
+  u64 start_tuples = 0;                        // total tuples at stratum start
+  std::string last_message;                    // cached fixpoint msg (§5)
+
+  // Set by ReadCompletion / EndIterCompletion, read by runLoop after barriers.
+  bool read_suspended = false;
+  NextAction next_action = ACT_CONTINUE;
+};
+
 // std::barrier completion functors (run once, by the last arriving thread,
 // after all threads arrive and before any are released).  Bodies are defined
 // out-of-line below, once Database is complete.  operator() must be noexcept
 // to satisfy std::barrier's requirements.
 struct IterCompletion { Database* db; void operator()() noexcept; };
-struct ReadCompletion { Database* db; bool tofixpoint; void operator()() noexcept; };
+struct ReadCompletion { Database* db; void operator()() noexcept; };
+struct EndIterCompletion { Database* db; void operator()() noexcept; };
 struct NoopCompletion { void operator()() noexcept {} };
 
 class Database
 {
 private:
   friend struct ReadCompletion;
+  friend struct EndIterCompletion;
 
   std::unordered_map<std::string, Relation*> relations;
   std::unordered_map<u32, Relation*> structs_by_id;
   // per-relation on-disk modification times, recorded at each load/write,
   // backing relationChangedOnDisk
   std::unordered_map<std::string, std::filesystem::file_time_type> disk_mtimes;
-  // the stratum currently executing (its `every` tasks refill the queues)
-  const Stratum* running = nullptr;
-  // Work distribution: an atomic cursor per phase over the running stratum's
-  // task vectors (once[phase] first -- iteration 0 only -- then every[phase]).
-  // Workers claim tasks by fetch_add; the sentinel resets the cursor after
-  // each phase's barrier for the next iteration.  This replaces a
+  // All state of the in-flight (possibly suspended) stratum run.  Replaces the
+  // former loose `running`/task_cursor/once_pending/iteration_count members;
+  // the task cursors are still an atomic fetch_add per phase (this replaced a
   // fixed-capacity boost::lockfree::queue whose unchecked push() SILENTLY
-  // DROPPED every task beyond its 8192 capacity -- large generated strata
-  // (the Patricia set/map library exceeds 9000 read tasks) lost late-
-  // registered rules entirely, converging to wrong fixpoints.
-  std::atomic<u64> task_cursor[phase_count];
-  std::atomic<bool> once_pending[phase_count];
+  // DROPPED tasks beyond 8192 -- large generated strata, e.g. the Patricia
+  // set/map library's 9000+ read tasks, lost rules and converged wrong).
+  RunState rs;
   // Cyclic barriers used to synchronize the worker threads each iteration.
-  // Allocated in runProgram once thread_count and tofixpoint are known.
+  // Reallocated per continueStratum call once thread_count is known (they
+  // carry no cross-call state: cyclic, reset after each phase).
   std::barrier<IterCompletion>* iter_barrier = nullptr;   // resets latest_any_rec
   std::barrier<ReadCompletion>* read_barrier = nullptr;   // finalizes phase_read
+  std::barrier<EndIterCompletion>* end_barrier = nullptr; // decides next_action
   std::barrier<NoopCompletion>* phase_barrier[phase_count] = {};
   std::atomic<bool> latest_any_rec;
   u32 thread_count;
   u32 struct_id_max;
-  u32 iteration_count;
   InternTable<utf8string>* string_table;
   CollectionArena* cnode_arena;
 
@@ -843,7 +1015,6 @@ public:
   Database(u32 _thread_count)
   {
     thread_count = _thread_count;
-    iteration_count = 0;
     struct_id_max = 1;
     string_table = new InternTable<utf8string>();
     cnode_arena = new CollectionArena();
@@ -879,7 +1050,44 @@ public:
 
   u32 getIterationCount()
   {
-    return iteration_count;
+    return rs.iteration_count;
+  }
+
+  // ---- pausable-fixpoint accessors (docs/pausing.md) ----
+  // Is a stratum currently suspended (parked, resumable by continueStratum)?
+  bool isSuspended() const { return rs.suspended; }
+  const Stratum* suspendedStratum() const { return rs.suspended ? rs.stratum : nullptr; }
+  // Slice params read by generated read tasks at work()-time (operators.h).
+  std::chrono::steady_clock::time_point runDeadline() const { return rs.global_deadline; }
+  u64 runSliceMs() const { return rs.slice_ms; }
+  const std::atomic<bool>& runStopFlag() const { return rs.stop_requested; }
+
+  // Push a paused read-task continuation onto phase `phase`'s queue, and claim
+  // the next one (nullptr if none).  Both under the phase mutex; pauses are
+  // rare (~2/sec/thread) so contention is irrelevant.
+  void pushPaused(u32 phase, Task* t)
+  {
+    std::lock_guard<std::mutex> lk(rs.paused_mutex[phase]);
+    rs.paused_tasks[phase].push_back(t);
+  }
+  Task* claimPaused(u32 phase)
+  {
+    std::lock_guard<std::mutex> lk(rs.paused_mutex[phase]);
+    if (rs.paused_head[phase] < rs.paused_tasks[phase].size())
+      return rs.paused_tasks[phase][rs.paused_head[phase]++];
+    return nullptr;
+  }
+  // Delete any live (unclaimed) continuations of a phase and reset the queue.
+  // Safe only single-threaded (no worker claiming): the sentinel after a
+  // completed read phase, or at stratum start/teardown.  Claimed continuations
+  // were already deleted by the worker that ran them, so only [head,size) live.
+  void clearPausedPhase(u32 phase)
+  {
+    std::lock_guard<std::mutex> lk(rs.paused_mutex[phase]);
+    for (u64 i = rs.paused_head[phase]; i < rs.paused_tasks[phase].size(); ++i)
+      delete rs.paused_tasks[phase][i];
+    rs.paused_tasks[phase].clear();
+    rs.paused_head[phase] = 0;
   }
 
   u32 getThreadCount()
@@ -954,9 +1162,21 @@ public:
   // is not read again until every thread passes the next iteration barrier.
   void reloadPhaseQueue(u32 phase)
   {
-    once_pending[phase] = false;
-    task_cursor[phase] = 0;
+    rs.once_pending[phase] = false;
+    rs.task_cursor[phase] = 0;
   }
+
+  // Total distinct-tuple count across all relations (for the growth figure in
+  // (paused)/(fixpoint) messages).  A 32-bucket btree-size sum per relation;
+  // computed once per continue call at message time, not on the hot path.
+  u64 totalTuples()
+  {
+    u64 n = 0;
+    for (const auto& kv : relations)
+      n += kv.second->tupleCount();
+    return n;
+  }
+
   // Union every relation's per-thread send buffers into its delta for the next
   // iteration.  Single-threaded: called from a barrier completion (or before
   // the workers start), once all producers for the phase have finished.
@@ -983,80 +1203,147 @@ public:
       kv.second->ensureReorgBuffers(thread_count);
   }
 
-  void runPhase(u32 phase, bool tofixpoint, bool sentinel)
+  // Run one phase to completion (write/intern) or until suspend (read).
+  //
+  // Read phase (sliceable, docs/pausing.md §3): claim paused continuations
+  // first, then the main once/every cursor.  Stop claiming the instant the
+  // stop flag is set (memory trip) or the global deadline passes -- in-flight
+  // tasks in other threads pause at their next slice check, park a
+  // continuation, and re-check the same condition at the top of their claim
+  // loop.  A continuation returning false (paused again for a sub-slice) has
+  // already parked its successor; we delete the consumed continuation either
+  // way.  ReadCompletion decides finalize-vs-suspend once all threads arrive.
+  //
+  // Write/intern phases never check the budget: they are linear in the delta
+  // the read phase produced, which the read-phase memory budget already
+  // bounds (§4).
+  void runPhase(u32 phase, bool sentinel)
   {
-    const std::vector<Task*>& once = running->once[phase];
-    const std::vector<Task*>& every = running->every[phase];
-    const u64 n_once = once_pending[phase] ? once.size() : 0;
+    const std::vector<Task*>& once = rs.stratum->once[phase];
+    const std::vector<Task*>& every = rs.stratum->every[phase];
+    const u64 n_once = rs.once_pending[phase] ? once.size() : 0;
     const u64 total = n_once + every.size();
-    for (;;)
-    {
-      const u64 i = task_cursor[phase].fetch_add(1);
-      if (i >= total)
-        break;
-      (i < n_once ? once[i] : every[i - n_once])->work();
-    }
 
-    // Workers write to their own shards, so there is no draining to do; the
-    // read phase's barrier completion unions the shards into the new delta.
     if (phase == phase_read)
-      read_barrier->arrive_and_wait();
+    {
+      for (;;)
+      {
+        if (rs.stop_requested.load(std::memory_order_relaxed)
+            || std::chrono::steady_clock::now() >= rs.global_deadline)
+          break;                                   // suspend: stop claiming
+        if (Task* c = claimPaused(phase_read))     // parked continuations first
+        {
+          c->work();                               // may park a successor
+          delete c;                                // one-shot continuation
+          continue;
+        }
+        const u64 i = rs.task_cursor[phase].fetch_add(1);
+        if (i >= total)
+          break;                                   // main tasks exhausted
+        (i < n_once ? once[i] : every[i - n_once])->work();
+      }
+      read_barrier->arrive_and_wait();             // ReadCompletion: finalize/suspend
+      if (sentinel && !rs.read_suspended)
+      {
+        reloadPhaseQueue(phase);
+        clearPausedPhase(phase);                   // all consumed; drop dead ptrs
+      }
+    }
     else
+    {
+      for (;;)
+      {
+        const u64 i = rs.task_cursor[phase].fetch_add(1);
+        if (i >= total)
+          break;
+        (i < n_once ? once[i] : every[i - n_once])->work();
+      }
       phase_barrier[phase]->arrive_and_wait();
-
-    if (sentinel)
-      reloadPhaseQueue(phase);
+      if (sentinel)
+        reloadPhaseQueue(phase);
+    }
   }
 
-  static void runLoop(Database* db, bool tofixpoint, u32 tid)
+  // The worker body.  Dispatches on rs.position (§9.2): FRESH promotes the
+  // initial delta and runs from iteration 0; AT_BOUNDARY resumes at the next
+  // iteration's top; MID_READ jumps straight into the in-progress read phase
+  // (skipping the iteration barrier and write phase, whose work already ran).
+  static void runLoop(Database* db, u32 tid)
   {
     const bool sentinel = (tid == 0);
     const u32 nthreads = db->thread_count;
+    RunState& rs = db->rs;
 
-    // Promote the initial db (e.g. facts loaded by open:) into the delta, then
-    // bucketize it for the first write/read phase.  Done by the sentinel alone
-    // (nthreads=1 → all batches land in thread 0's buffers; the other threads'
-    // buffers are empty, which consumers handle by reading across all threads).
-    if (sentinel) { db->finalizeAll(); db->reorgAll(0, 1); }
-
-    db->setLatestAnyRec(true);
-    for (db->iteration_count = 0;
-         db->getLatestAnyRec(); )
+    bool skip_to_read = false;
+    if (rs.position == RUN_FRESH)
     {
-      // Rendezvous to start the iteration; the completion resets the
-      // latest-any-received flag for everyone before they proceed.
-      db->iter_barrier->arrive_and_wait();
-
-      for (u32 i = 0; i < phase_count; ++i)
-        db->runPhase(i, tofixpoint, sentinel);
-
-      if (!tofixpoint) break;
-      if (sentinel) ++db->iteration_count;
-
-      // Bucketize the freshly-produced (and interned) delta for the next
-      // iteration's write/read.  All threads reorg their own slice in parallel,
-      // in the slack between the intern barrier (end of the phase loop) and the
-      // next iteration's iter_barrier, which is the rendezvous guaranteeing it
-      // completes before the next write phase.  Skipped at the fixpoint (the
-      // flag, set during this iteration's read, agrees across all threads).
-      if (db->getLatestAnyRec())
-        db->reorgAll(tid, nthreads);
+      // Promote the initial db (e.g. facts loaded by open:) into the delta and
+      // bucketize it for the first write/read.  Sentinel alone (nthreads=1 →
+      // all batches land in thread 0's buffers); the iter_barrier below is the
+      // rendezvous guaranteeing it completes before any write task runs.
+      if (sentinel) { db->finalizeAll(); db->reorgAll(0, 1); }
+      // ALL threads set the flag (not just sentinel) so none races the loop's
+      // first iteration -- iteration 0 always runs, IterCompletion resets it.
+      db->setLatestAnyRec(true);
     }
+    else if (rs.position == RUN_MID_READ)
+      skip_to_read = true;
+    // RUN_AT_BOUNDARY: latest_any_rec persists true (we boundary-suspend only
+    // when the last iteration grew), so the next iteration runs.
+
+    for (;;)
+    {
+      if (!skip_to_read)
+      {
+        db->iter_barrier->arrive_and_wait();       // IterCompletion: latest=false
+        db->runPhase(phase_write, sentinel);
+      }
+      skip_to_read = false;
+
+      db->runPhase(phase_read, sentinel);          // may suspend mid-read
+      if (rs.read_suspended)
+      {
+        if (sentinel) rs.position = RUN_MID_READ;
+        return;
+      }
+
+      db->runPhase(phase_intern, sentinel);
+
+      // Unbudgeted single pass (internal reload/disk strata): one iteration.
+      if (!rs.tofixpoint)
+      {
+        if (sentinel) rs.position = RUN_FRESH;
+        break;
+      }
+
+      if (sentinel) ++rs.iteration_count;
+      if (db->getLatestAnyRec())
+        db->reorgAll(tid, nthreads);               // bucketize for next iter
+
+      // Decide continue / fixpoint / boundary-suspend ONCE (single-threaded),
+      // so every worker acts on the same verdict (§4 point 2).
+      db->end_barrier->arrive_and_wait();          // EndIterCompletion
+      if (rs.next_action == ACT_FIXPOINT)
+        break;
+      if (rs.next_action == ACT_BOUNDARY_SUSPEND)
+      {
+        if (sentinel) rs.position = RUN_AT_BOUNDARY;
+        return;
+      }
+      // ACT_CONTINUE
+    }
+
+    if (sentinel) { rs.position = RUN_FRESH; rs.suspended = false; }
   }
 
-  // Execute one stratum: run its tasks to fixpoint (or for a single pass).
-  // The stratum owns its tasks and survives the run unchanged, so a resident
-  // pipeline stratum can be re-run later (after re-binding -- see daemon.h).
-  void runStratum(Stratum* s, bool tofixpoint = true)
+  // Restore relations the coming stratum did NOT re-register (no program decl
+  // and no compile-time manifest entry -- e.g. relations that exist only in a
+  // runtime-imported database) whose indices the reload's ClearAllIndices
+  // dropped; their dumped rows would otherwise promote to delta, be consumed
+  // by no task, and be freed (silent data loss).  Materialize like an opened
+  // database: default index + immediate ingestion; the next reload re-dumps.
+  void restoreOrphanRelations()
   {
-    // Relations the coming stratum did NOT re-register (no program decl and
-    // no compile-time manifest entry -- e.g. relations that exist only in a
-    // database imported at RUNTIME) lost their indices to the reload's
-    // ClearAllIndices; their dumped rows would be promoted to delta at
-    // iteration 0, consumed by no task, and freed -- silent data loss.
-    // Restore them the way loadDatabaseBIN materializes an opened database:
-    // a default index + immediate ingestion.  The next reload dumps them
-    // again, so they survive any number of strata.
     for (const auto& kv : relations)
       if (kv.second->getAnyIndex() == 0)
       {
@@ -1064,45 +1351,130 @@ public:
 	kv.second->finalizeBatches();
 	kv.second->ingestDelta();
       }
+  }
 
-    running = s;
-    for (u32 i = 0; i < phase_count; ++i)
+  // Perform one bounded unit of work on stratum `s` (docs/pausing.md §4).
+  // `starting` sets up a fresh run; otherwise this resumes a suspended one.
+  // Returns a RunStatus: either fixpoint reached (or, unbudgeted !tofixpoint,
+  // the single pass done) or suspended (AT_BOUNDARY | MID_READ, reason).
+  RunStatus continueStratum(Stratum* s, RunBudget b, bool starting, bool tofixpoint)
+  {
+    if (starting)
     {
-      once_pending[i] = true;   // first pass includes the once tasks
-      task_cursor[i] = 0;
+      restoreOrphanRelations();
+      rs.stratum = s;
+      rs.position = RUN_FRESH;
+      rs.suspended = false;
+      rs.tofixpoint = tofixpoint;
+      for (u32 i = 0; i < phase_count; ++i)
+      {
+        rs.once_pending[i] = true;   // first pass includes the once tasks
+        rs.task_cursor[i] = 0;
+        clearPausedPhase(i);
+      }
+      rs.iteration_count = 0;
+      rs.ms_total = 0.0;
+      rs.start_tuples = totalTuples();
+      // Every relation gets a send buffer per worker and reorg buffers.
+      for (const auto& kv : relations)
+      {
+        kv.second->initShards(thread_count);
+        kv.second->ensureReorgBuffers(thread_count);
+      }
     }
 
-    // Make sure every relation has a send buffer per worker thread, and a
-    // per-thread set of reorg bucket buffers.
+    // Per-call budget setup (the RSS baseline moves, so the auto memory budget
+    // is a fresh per-call number).  An unbudgeted call (max_ms==0 by our
+    // convention below, or huge) never trips.
+    const auto t0 = std::chrono::steady_clock::now();
+    rs.budget = b;
+    rs.slice_ms = b.slice_ms ? b.slice_ms : 500;
+    // mem_bytes is a TOTAL RSS cap (docs/pausing.md §5), checked against actual
+    // RSS in sendBatch / at each iteration boundary.  0 => DEFAULT_MEM_CAP;
+    // internal/unbudgeted strata pass UINT64_MAX => never trips.
+    rs.mem_cap = b.mem_bytes ? b.mem_bytes : DEFAULT_MEM_CAP;
+    rs.emitted_words.store(0, std::memory_order_relaxed);
+    rs.stop_requested.store(false, std::memory_order_relaxed);
+    rs.mem_tripped.store(false, std::memory_order_relaxed);
+    rs.read_suspended = false;
+    // max_ms==UINT64_MAX (unbudgeted internal strata / run()) => never expires.
+    rs.global_deadline = (b.max_ms == UINT64_MAX)
+      ? std::chrono::steady_clock::time_point::max()
+      : t0 + std::chrono::milliseconds(b.max_ms ? b.max_ms : 8000);
+
+    // Bind every relation's per-run accounting (the memory cap for this call).
     for (const auto& kv : relations)
-    {
-      kv.second->initShards(thread_count);
-      kv.second->ensureReorgBuffers(thread_count);
-    }
+      kv.second->bindRun(&rs.emitted_words, &rs.stop_requested,
+                         &rs.mem_tripped, rs.mem_cap);
 
-    // Allocate the cyclic barriers for this run.
+    // Allocate the cyclic barriers for this call.
     iter_barrier = new std::barrier<IterCompletion>(thread_count, IterCompletion{this});
-    read_barrier = new std::barrier<ReadCompletion>(thread_count, ReadCompletion{this, tofixpoint});
+    read_barrier = new std::barrier<ReadCompletion>(thread_count, ReadCompletion{this});
+    end_barrier  = new std::barrier<EndIterCompletion>(thread_count, EndIterCompletion{this});
     for (u32 i = 0; i < phase_count; ++i)
       phase_barrier[i] = new std::barrier<NoopCompletion>(thread_count, NoopCompletion{});
 
-    // Spin up the worker threads coarsely around the fixpoint loop.  Each
-    // OpenMP thread has a stable id 0..thread_count-1; id 0 is the sentinel.
+    // Spin up the worker threads coarsely around the (resumable) fixpoint loop.
     #pragma omp parallel num_threads(thread_count)
     {
-      runLoop(this, tofixpoint, (u32)omp_get_thread_num());
+      runLoop(this, (u32)omp_get_thread_num());
     }
 
     delete iter_barrier; iter_barrier = nullptr;
     delete read_barrier; read_barrier = nullptr;
+    delete end_barrier;  end_barrier  = nullptr;
     for (u32 i = 0; i < phase_count; ++i)
     {
       delete phase_barrier[i];
       phase_barrier[i] = nullptr;
     }
+    // Clear the per-run accounting so a later out-of-band sendBatch (disk
+    // ingestion) does not touch a stale counter.
+    for (const auto& kv : relations)
+      kv.second->bindRun(nullptr, nullptr, nullptr, 0);
 
-    // Nothing to drain: cursors are reset per stratum in the loop above.
-    running = nullptr;
+    const double ms_call =
+      std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - t0).count() / 1000.0;
+    rs.ms_total += ms_call;
+
+    RunStatus st{};
+    st.iteration = rs.iteration_count;
+    st.ms_call = ms_call;
+    st.ms_total = rs.ms_total;
+    if (rs.position == RUN_FRESH)          // loop exited => fixpoint / pass done
+    {
+      rs.suspended = false;
+      for (u32 i = 0; i < phase_count; ++i) clearPausedPhase(i);
+      st.fixpoint = true;
+      st.new_tuples = totalTuples() - rs.start_tuples;
+      // Internal strata (reload/disk) are stack-local Stratum objects destroyed
+      // right after runStratum returns; drop the pointer so it can't dangle.
+      rs.stratum = nullptr;
+    }
+    else                                   // suspended (AT_BOUNDARY | MID_READ)
+    {
+      rs.suspended = true;
+      st.fixpoint = false;
+      st.where = rs.position;
+      st.reason = rs.mem_tripped.load(std::memory_order_relaxed) ? "memory" : "time";
+      st.new_tuples = (rs.position == RUN_AT_BOUNDARY)
+        ? (totalTuples() - rs.start_tuples)                 // exact at boundary
+        : rs.emitted_words.load(std::memory_order_relaxed); // estimate mid-read
+    }
+    return st;
+  }
+
+  // Execute one stratum to fixpoint (or, tofixpoint=false, one pass),
+  // BLOCKING and unbudgeted -- the daemon's internal reload/disk strata and
+  // the legacy run() path.  A user stratum is instead driven one bounded unit
+  // at a time via continueStratum (daemon.h Daemon::continueRun).
+  void runStratum(Stratum* s, bool tofixpoint = true)
+  {
+    RunBudget unbounded;
+    unbounded.max_ms = UINT64_MAX;
+    unbounded.mem_bytes = UINT64_MAX;   // never trips
+    continueStratum(s, unbounded, true, tofixpoint);
   }
 
   std::string writeStructCSV(u64 v)
@@ -1483,10 +1855,11 @@ private:
 	       const std::vector<u16>* _ord)
 	: db(_db), path(_path), node(_node), ord(_ord)
       {}
-      virtual void work()
+      virtual bool work()
       {
 	DBWriteFile file(path);
 	db->writeAllFactsBIN(file, node, *ord);
+	return true;
       }
     };
 
@@ -1539,7 +1912,7 @@ private:
       WriteStrings(Database* _db, u32 _i, const std::string& _path)
 	: db(_db), i(_i), path(_path)
       {}
-      virtual void work()
+      virtual bool work()
       {
 	DBWriteFile file(path);
 	for (auto it = db->string_table->begin(i); it != db->string_table->end(); ++it)
@@ -1549,6 +1922,7 @@ private:
 	  // if loaded again in this order exactly
 	  file.write((u8*)(*it).c_str(), (*it).size()+1);
 	}
+	return true;
       }
     };
 
@@ -1578,12 +1952,13 @@ private:
       WriteNodes(Database* _db, u32 _i, const std::string& _path)
 	: db(_db), i(_i), path(_path)
       {}
-      virtual void work()
+      virtual bool work()
       {
 	DBWriteFile file(path);
 	auto table = db->cnode_arena->raw();
 	for (auto it = table->begin(i); it != table->end(); ++it)
 	  file.write((u8*)(*it).w, 32);
+	return true;
       }
     };
 
@@ -2156,9 +2531,10 @@ public:
       ReloadBatches(Relation* _rel, u16 _b)
 	: rel(_rel), b(_b)
       {}
-      virtual void work()
+      virtual bool work()
       {
 	rel->reloadInsertBatches(b);
+	return true;
       }
     };
 
@@ -2169,9 +2545,10 @@ public:
       ClearAllIndices(Relation* _rel)
 	: rel(_rel)
       {}
-      virtual void work()
+      virtual bool work()
       {
 	rel->clearAllIndices();
+	return true;
       }
     };
 
@@ -2189,15 +2566,57 @@ public:
 };
 
 
-// Barrier completion bodies (Database is now complete).
+// Barrier completion bodies (Database is now complete).  Each runs once,
+// single-threaded, after all workers arrive and before any are released.
+
 inline void IterCompletion::operator()() noexcept
 {
   db->setLatestAnyRec(false);
 }
 
+// Decide, now that all workers have stopped claiming, whether the read phase
+// COMPLETED (finalize the delta) or SUSPENDED mid-read (keep it -- never
+// finalize a partial read phase, §9.1).  Suspended iff any main task went
+// unclaimed (cursor below total) or any parked continuation is still live.
 inline void ReadCompletion::operator()() noexcept
 {
-  if (tofixpoint) db->finalizeAll();
+  RunState& rs = db->rs;
+  const u64 n_once = rs.once_pending[phase_read]
+                       ? rs.stratum->once[phase_read].size() : 0;
+  const u64 total = n_once + rs.stratum->every[phase_read].size();
+  const bool work_left =
+    rs.task_cursor[phase_read].load() < total
+    || rs.paused_head[phase_read] < rs.paused_tasks[phase_read].size();
+  const bool stopped =
+    rs.stop_requested.load(std::memory_order_relaxed)
+    || std::chrono::steady_clock::now() >= rs.global_deadline;
+  rs.read_suspended = rs.tofixpoint && stopped && work_left;
+  // Finalize only a COMPLETE read phase, and only to-fixpoint (an unbudgeted
+  // single pass leaves its send shards for the next stratum's FRESH promote).
+  if (rs.tofixpoint && !rs.read_suspended)
+    db->finalizeAll();
+}
+
+// After a full iteration: fixpoint (no growth), boundary-suspend (grew but the
+// budget/memory is spent), or continue.  Decided once so all workers agree
+// (§4).  Also re-check the honest RSS here, so memory growth from non-emission
+// sources (index/intern churn) trips the cap at the iteration boundary even if
+// the per-batch check in sendBatch did not.
+inline void EndIterCompletion::operator()() noexcept
+{
+  RunState& rs = db->rs;
+  if (readRSSbytes() >= rs.mem_cap)
+  {
+    rs.mem_tripped.store(true, std::memory_order_relaxed);
+    rs.stop_requested.store(true, std::memory_order_relaxed);
+  }
+  if (!db->getLatestAnyRec())
+    rs.next_action = ACT_FIXPOINT;
+  else if (rs.stop_requested.load(std::memory_order_relaxed)
+           || std::chrono::steady_clock::now() >= rs.global_deadline)
+    rs.next_action = ACT_BOUNDARY_SUSPEND;
+  else
+    rs.next_action = ACT_CONTINUE;
 }
 
 

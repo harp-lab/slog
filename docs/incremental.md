@@ -391,6 +391,13 @@ Net-new work:
 - **Termination keys on presence transitions, not count changes** (`latest_any_rec`,
   l.535) — otherwise a re-derivation that only bumps a count spins the loop. Revisit the
   arity-0 / `reorgDelta` guard from the earlier OOM fix under this new invariant.
+- **Pausing (`docs/pausing.md`) composes for free.** Pausing lives entirely in the read
+  (delta-producing) phase and is *exact* (Regime 1: park a continuation at the outer-loop
+  position, resume there — no redo), while the counting aggregate (where `(nonrec,rec)`
+  and `C` mutate) runs to completion. So a pause only ever leaves un-consumed delta
+  records and never touches the counters — keep it that way (any counting phase that
+  needs pausing must be resumable by an exact cursor, not by discard-and-rerun, since the
+  counters are not idempotent).
 
 ### 6.6 Input protocol — `daemon/slogd.cpp` (command loop l.60-116)
 

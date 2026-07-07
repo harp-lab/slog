@@ -191,13 +191,26 @@
 
       (error "Cannot convert DB directory; it does not exist.")))
 
+;; Parse a memory size ("4G" / "512M" / "1048576") into bytes; #f if unparseable.
+(define (parse-mem-size s)
+  (define m (regexp-match #px"^\\s*([0-9]+)\\s*([KkMmGgTt]?)\\s*$" s))
+  (and m
+       (* (string->number (second m))
+          (case (string-downcase (third m))
+            [("k") 1024] [("m") 1048576] [("g") 1073741824]
+            [("t") 1099511627776] [else 1]))))
+
 ;; Build the argv list for launching the slogd daemon.  By default the daemon
 ;; is wrapped in a transient `systemd-run --user --scope` with a memory cap, so
 ;; a runaway program (e.g. a non-terminating fixpoint) is OOM-killed inside its
 ;; own cgroup instead of taking down the whole login session -- terminal,
 ;; editor, and this process all share the konsole scope otherwise.  Knobs:
-;;   SLOG_MEM_MAX     cap passed to systemd-run's MemoryMax= (default "4G");
-;;                    "none"/"off"/"" disables the cap.
+;;   SLOG_MEM_MAX     hard cgroup cap for systemd-run's MemoryMax= (default
+;;                    "4G"); "none"/"off"/"" disables it.
+;;   SLOG_MEM_BYTES   daemon GRACEFUL soft cap in bytes (docs/pausing.md §5): at
+;;                    this much RSS the run pauses with reason `memory` and the
+;;                    front end aborts cleanly.  Defaults here to ~90% of the
+;;                    hard cap so it fires before the cgroup OOM-kills.
 ;;   SLOG_NO_MEM_CAP  if set non-empty, launch slogd directly (no systemd-run).
 ;; Falls back to a direct launch (with a warning on stderr) when systemd-run is
 ;; not on PATH.  `slogd-exe` is the daemon binary; `extra-args` are appended
@@ -207,6 +220,12 @@
   (define cap (or (getenv "SLOG_MEM_MAX") "4G"))
   (define cap-off? (and (member (string-downcase cap) '("" "none" "off")) #t))
   (define no-cap? (let ([v (getenv "SLOG_NO_MEM_CAP")]) (and v (not (string=? v "")) #t)))
+  ;; Track the daemon soft cap to ~90% of the hard cap unless set explicitly,
+  ;; so the graceful pause always precedes the cgroup kill.
+  (unless (or cap-off? (getenv "SLOG_MEM_BYTES"))
+    (let ([bytes (parse-mem-size cap)])
+      (when bytes
+        (putenv "SLOG_MEM_BYTES" (number->string (quotient (* bytes 9) 10))))))
   (define systemd-run
     (and (not cap-off?) (not no-cap?) (find-executable-path "systemd-run")))
   (cond

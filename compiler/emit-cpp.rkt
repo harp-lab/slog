@@ -315,6 +315,19 @@
     [`(neq ,x ,y) (format "if (v_~a == v_~a) return;" x y)]
     [`(cmp ,fn ,x ,y) (format "if (!_prim_~a(db, v_~a, v_~a)) return;" fn x y)]))
 
+;; Pre-ops run at the top of work() (not inside a driver lambda), so a failing
+;; constant guard aborts the WHOLE task -- and since work() now returns bool
+;; (docs/pausing.md §3), that abort is `return true;` (task finished, produced
+;; nothing), not the tuple-skipping `return;` of a body op.
+(define (emit-pre-op op)
+  (match op
+    [`(let ,x ,(? symbol? y)) (format "u64 v_~a = v_~a;" x y)]
+    [`(let ,x (,f ,args ...))
+     (format "u64 v_~a = ~a;" x (prim-call f args))]
+    [`(eq ,x ,y) (format "if (v_~a != v_~a) return true;" x y)]
+    [`(neq ,x ,y) (format "if (v_~a == v_~a) return true;" x y)]
+    [`(cmp ,fn ,x ,y) (format "if (!_prim_~a(db, v_~a, v_~a)) return true;" fn x y)]))
+
 ;; The innermost continuation: emit each head op.  emit/emit_temp sinks do
 ;; their own dedup + batch flush (operators.h); emit_struct leaves dedup and
 ;; id assignment to the intern phase.  tycheck hops always precede the
@@ -475,14 +488,40 @@
            (map (lambda (i) (format "      head_rel[~a]->sendBatch(newbatch[~a]);\n" i i))
                 emitting-head-is)))
 
+  ;; SLICING (docs/pausing.md §3, Regime 1): every read-phase rule pauses at its
+  ;; OUTER loop and parks a continuation, so pausing is uniform and EXACT (zero
+  ;; redo).  A scan driver (read_delta -- recursive rules, and static rules over
+  ;; a closed relation) resumes at (thread t, ref i); a probe DRIVER with free
+  ;; columns (K<A) resumes from its last match key.  A fully-bound probe (K==A,
+  ;; at most one match) and a fact `once` rule (no joins, fixed output) are
+  ;; bounded, so they run atomically -- there is nothing to slice.
+  (define slice-kind
+    (match driver
+      [`(scan ,_ ...) 'scan]
+      [`(probe ,_ ,_ ,K ,ys ...) (if (< K (length ys)) 'probe 'none)]
+      [`(once) 'none]))
+  (define sliceable? (not (eq? slice-kind 'none)))
+  (define probe-A
+    (match driver [`(probe ,_ ,_ ,_ ,ys ...) (length ys)] [_ 0]))
+
+  ;; Per-invocation slice context (steady-clock deadline = min(slice, global)
+  ;; and the stop flag), shared by the sliceable drivers.
+  (define slice-ctx-setup
+    ((emit-lines 4)
+     "auto _slice_deadline = std::min(db->runDeadline(),"
+     "  std::chrono::steady_clock::now() + std::chrono::milliseconds(db->runSliceMs()));"
+     "slog::SliceCtx _sc{_slice_deadline, &db->runStopFlag()};"))
+
   (define pipeline
     (match driver
       [`(once)
        (emit-ops body index-name-of (emit-heads heads sid-members) 4)]
       [`(scan ,name ,xs ...)
        (string-append
+        slice-ctx-setup
         ((emit-lines 4)
-         "slog::read_delta(outer_rel, bucket, db->getThreadCount(), [&](const u64* _t) {")
+         "u32 _rt = resume_t, _ri = resume_i;"
+         "bool _done = slog::read_delta_sliced(outer_rel, bucket, db->getThreadCount(), _sc, _rt, _ri, [&](const u64* _t) {")
         (apply (emit-lines 6)
                (for/list ([x (in-list xs)] [n (in-naturals)])
                  (format "u64 v_~a = _t[~a];" x n)))
@@ -500,16 +539,29 @@
          (if (pair? free)
              (format "if (buckethash(v_~a) != bucket) return;" (car free))
              ""))
-       (string-append
-        ((emit-lines 4)
-         (format "slog::join_probe<~a,~a>(driver_index, ~a, [&](const std::array<u64,~a>& ~a) {"
-                 A K key A m))
-        (apply (emit-lines 6)
-               (for/list ([k (in-range K A)])
-                 (format "u64 v_~a = ~a[~a];" (list-ref ys k) m k)))
-        (if (string=? par-filter "") "" ((emit-lines 6) par-filter))
-        (emit-ops body index-name-of (emit-heads heads sid-members) 6)
-        ((emit-lines 4) "});"))]))
+       (define bind+body
+         (string-append
+          (apply (emit-lines 6)
+                 (for/list ([k (in-range K A)])
+                   (format "u64 v_~a = ~a[~a];" (list-ref ys k) m k)))
+          (if (string=? par-filter "") "" ((emit-lines 6) par-filter))
+          (emit-ops body index-name-of (emit-heads heads sid-members) 6)))
+       (if (eq? slice-kind 'probe)
+           (string-append
+            slice-ctx-setup
+            ((emit-lines 4)
+             (format "std::array<u64,~a> _rkey = resume_key; bool _hr = has_resume;" A)
+             (format "bool _done = slog::join_probe_sliced<~a,~a>(driver_index, ~a, _sc, _rkey, _hr, [&](const std::array<u64,~a>& ~a) {"
+                     A K key A m))
+            bind+body
+            ((emit-lines 4) "});"))
+           ;; fully bound (K==A): at most one match, nothing to slice
+           (string-append
+            ((emit-lines 4)
+             (format "slog::join_probe<~a,~a>(driver_index, ~a, [&](const std::array<u64,~a>& ~a) {"
+                     A K key A m))
+            bind+body
+            ((emit-lines 4) "});")))]))
 
   ;; a fully-bound probe cannot partition; run it as a single task
   (define nbuckets
@@ -517,6 +569,30 @@
       [`(once) 1]
       [`(probe ,_ ,_ ,K ,ys ...) (if (= (length ys) K) 1 bucket-count)]
       [_ bucket-count]))
+
+  ;; work()'s tail: a sliceable driver that paused (its _done is false) has
+  ;; already flushed its partial batches (send-batches, above) and now parks a
+  ;; continuation copy carrying its resume position -- the canonical task in
+  ;; once[]/every[] is never mutated (§9.3).  Everything else just finishes.
+  (define work-tail
+    (cond
+      [(eq? slice-kind 'scan)
+       ((emit-lines 4)
+        "if (!_done)" "{"
+        (format "  ~a* _cont = new ~a(db, bucket);" task-name task-name)
+        "  _cont->resume_t = _rt; _cont->resume_i = _ri;"
+        "  db->pushPaused(phase_read, _cont);"
+        "  return false;" "}"
+        "return true;")]
+      [(eq? slice-kind 'probe)
+       ((emit-lines 4)
+        "if (!_done)" "{"
+        (format "  ~a* _cont = new ~a(db, bucket);" task-name task-name)
+        "  _cont->resume_key = _rkey; _cont->has_resume = true;"
+        "  db->pushPaused(phase_read, _cont);"
+        "  return false;" "}"
+        "return true;")]
+      [else ((emit-lines 4) "return true;")]))
 
   ((emit-lines 2)
    (format "// ~a" crule)
@@ -528,25 +604,37 @@
    (format "  slog::Index** head_index[~a];" (max 1 (length heads)))
    (if (eq? (car driver) 'scan) "  slog::Relation* outer_rel;" "")
    (if (eq? (car driver) 'probe) "  slog::Index** driver_index;" "")
+   ;; outer-loop resume position; private, but the pause path sets it on a
+   ;; freshly-allocated sibling (same-class access), so no accessor is needed.
+   ;; scan: (thread t, ref i); probe driver: the last match key + a resume flag.
+   (if (eq? slice-kind 'scan) "  u32 resume_t = 0;" "")
+   (if (eq? slice-kind 'scan) "  u32 resume_i = 0;" "")
+   (if (eq? slice-kind 'probe) (format "  std::array<u64,~a> resume_key{};" probe-A) "")
+   (if (eq? slice-kind 'probe) "  bool has_resume = false;" "")
    (apply string-append
           (map (lambda (om) (format "  slog::Index** ~a;" (cdr om))) join-members))
    (apply string-append
           (map (lambda (p) (format "  u32 ~a;" (cdr p))) sid-members-sorted))
    (format "public:")
-   (format "  ~a(slog::Database* _db, u16 _b) : db(_db), bucket(_b)" task-name)
+   ;; index/relation lookups live in bind(db) -- the constructor calls it, and
+   ;; it is the re-binding seam a resident stratum will need to re-run after a
+   ;; reload (docs/pausing.md §8b); a paused continuation re-binds here too.
+   (format "  void bind(slog::Database* db)")
    (format "  {")
    ctor-body
    (format "  }")
-   (format "  virtual void work()")
+   (format "  ~a(slog::Database* _db, u16 _b) : db(_db), bucket(_b) { bind(_db); }" task-name)
+   (format "  virtual bool work()")
    (format "  {")
    ;; pre-ops run before any allocation, so a failing constant guard can
-   ;; abort the whole task with a bare return
-   (apply (emit-lines 4) (map emit-straight-op pre))
+   ;; abort the whole task early (return true = finished, produced nothing)
+   (apply (emit-lines 4) (map emit-pre-op pre))
    (format "    slog::InsertBatch* newbatch[~a];" (max 1 (length heads)))
    alloc-batches
    pipeline
    send-batches
-   (format "    }")
+   work-tail
+   (format "  }")
    (format "  };")
    (format "  for (u16 b = 0; b < ~a; ++b)" nbuckets)
    (format "    s->addTask(phase_read, new ~a(db,b), ~a);"
@@ -596,6 +684,9 @@
    ;; beginStratum first: it performs the deferred between-strata reload, so
    ;; the index registrations below happen against the reloaded database
    (format "  slog::Stratum* s = d->beginStratum(\"~a\");\n" stratum-name)
+   ;; beginStratum returns null (and emits an error) if a stratum is suspended;
+   ;; bail before touching s (docs/pausing.md §4 guardrail)
+   "  if (s == nullptr) return;\n"
    "  slog::Relation* r;\n"
    (apply string-append
           (for/list ([(v g) (in-hash constants)])
@@ -611,5 +702,7 @@
                                          string<? #:key symbol->string))])
             (format "  s->addDynamicRel(\"~a\");\n" rel)))
    "  d->push(s);\n"
-   "  d->run();\n"
+   ;; one bounded unit of work (docs/pausing.md §5); the client drives the
+   ;; continue loop until this stratum's (fixpoint ...) via (continue ...) actions
+   "  d->continueRun();\n"
    "}\n\n"))

@@ -107,11 +107,68 @@
     (list (job-hash (stratum-level stratum)) type-env stratum dbmanifest)))
 
 ;; -----------------------------------------------------------------------
+;; Rule/SCC ids + sidecar manifest (docs/pausing.md §6).
+;;
+;; A rule id is a 31-bit hash of the rule's SOURCE TEXT (not its location --
+;; line shifts must not churn ids), disambiguated by an occurrence counter
+;; among identical duplicate rules.  Computed from the pre-lowering typed rule,
+;; so every split/staged descendant of one source rule shares its id.  Ids are
+;; deliberately NOT baked into the .so (that would couple the .so cache to the
+;; whole program's rule list); the manifest is a plain sidecar next to the
+;; build artifacts that the front end reads to correlate the daemon's SCC id
+;; (= pipeline position, assigned at push) with a stratum's hash-name and its
+;; rules' source -- and, in a later step, to diagnose malformed_deduction rows.
+
+(define (rule-text rule) (format "~s" (strip-prov rule)))
+
+(define (rule-location rule)
+  (match (syn-prov rule)
+    [`(prov (token ,_ (pos ,file ,line ,_ ...) ,_) ,_)
+     (define p (file-name-from-path (format "~a" file)))
+     (format "~a:~a" (if p (path->string p) file) (add1 line))]
+    [_ "<unknown>"]))
+
+(define (rule-id-of text occurrence)
+  (bitwise-and
+   (integer-bytes->integer
+    (subbytes (sha256 (string->bytes/utf-8 (format "~a#~a" text occurrence))) 0 4)
+    #f #t)
+   #x7fffffff))
+
+;; (id location text) per rule of a stratum, occurrence-disambiguated in a
+;; deterministic (text-sorted) order so ids are stable across runs.
+(define (stratum-rule-metas stratum)
+  (define rules (sort (set->list (stratum-rules stratum)) string<? #:key rule-text))
+  (define seen (make-hash))
+  (for/list ([rule (in-list rules)])
+    (define text (rule-text rule))
+    (define occ (hash-ref seen text 0))
+    (hash-set! seen text (add1 occ))
+    (list (rule-id-of text occ) (rule-location rule) text)))
+
+;; Write build/<hash>.meta: this stratum's compile hash, DAG level (one stratum
+;; per level, in pipeline order), and its rules (id -> location + source text).
+;; Refreshed on every compile-job so a cached .so still gets a current manifest.
+(define (write-stratum-manifest proghash stratum)
+  (define meta
+    `(stratum-meta
+      (hash ,proghash)
+      (level ,(stratum-level stratum))
+      (rules
+       ,@(for/list ([m (in-list (stratum-rule-metas stratum))])
+           (match-define (list id loc text) m)
+           `(rule ,id ,loc ,text)))))
+  (with-output-to-file (fullpath (format "build/~a.meta" proghash))
+                       #:exists 'replace
+                       (lambda () (writeln meta))))
+
+;; -----------------------------------------------------------------------
 ;; Back end: build one stratum program (unless its .so is already cached).
 
 (define (compile-job job)
   (match-define (list proghash type-env stratum dbmanifest) job)
   (define so-path (fullpath (format "build/~a.so" proghash)))
+  (write-stratum-manifest proghash stratum)   ; sidecar, even for a cached .so
   (cond
     [(file-exists? so-path) proghash]
     [else
