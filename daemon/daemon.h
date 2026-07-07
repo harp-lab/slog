@@ -35,7 +35,9 @@
 #include "slogd.h"
 
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <string>
 #include <vector>
@@ -60,11 +62,27 @@ private:
   // also leaves the indices intact for any statistics/output plugins that
   // arrive after the final stratum.
   bool needs_reload = false;
+  // Default budget a no-argument continueRun() uses -- both the first unit of
+  // work each stratum plugin requests and any bare (continue) action poll.
+  // Overridable via env (SLOG_MAX_MS / SLOG_SLICE_MS / SLOG_MEM_BYTES) so a
+  // whole run can be driven under a pathological budget (the byte-identical
+  // suspend test) without recompiling any plugin.
+  RunBudget default_budget;
+
+  static u64 envU64(const char* name, u64 fallback)
+  {
+    const char* v = std::getenv(name);
+    if (v == nullptr || v[0] == '\0') return fallback;
+    return (u64)std::strtoull(v, nullptr, 10);
+  }
 
 public:
   Daemon(u32 thread_count, Emit _out)
     : database(new Database(thread_count)), out(std::move(_out))
   {
+    default_budget.max_ms    = envU64("SLOG_MAX_MS", default_budget.max_ms);
+    default_budget.slice_ms  = envU64("SLOG_SLICE_MS", default_budget.slice_ms);
+    default_budget.mem_bytes = envU64("SLOG_MEM_BYTES", default_budget.mem_bytes);
   }
 
   ~Daemon()
@@ -80,12 +98,28 @@ public:
   // Send one message (conventionally an s-expression) back to the client.
   void emit(const std::string& msg) { out(msg); }
 
+  // While a stratum is suspended (docs/pausing.md §4), any action that would
+  // reload or clear indices -- destroying the parked tasks' index bindings and
+  // the staged delta -- is refused; the client must continue to fixpoint
+  // first.  Read-only actions (sizes, lookup, CSV dumps) remain allowed.
+  bool refuseIfSuspended(const char* what)
+  {
+    if (database->isSuspended())
+    {
+      emit(std::string("(error suspended \"") + what
+           + " is refused while a stratum is suspended; continue to fixpoint first\")");
+      return true;
+    }
+    return false;
+  }
+
   // Open a stored database.  Its relations materialize into default indices
   // immediately (queryable/writable by actions before any program runs);
   // the deferred reload then hands the next stratum everything as its
   // iteration-zero delta, exactly as if that stratum had just run.
   void open(const std::string& db_name)
   {
+    if (refuseIfSuspended("open")) return;
     database->loadDatabaseBIN("data/" + db_name + "/");
     needs_reload = true;
   }
@@ -96,6 +130,7 @@ public:
   // UNION as its iteration-zero delta -- zero pipeline changes.
   void import(const std::string& db_name)
   {
+    if (refuseIfSuspended("import")) return;
     database->importDatabaseBIN("data/" + db_name + "/");
     needs_reload = true;
   }
@@ -103,9 +138,17 @@ public:
   // Start building a stratum.  If a stratum has run since the last reload,
   // the database reloads NOW -- before the caller registers this stratum's
   // indices and binds tasks to them -- re-staging every relation's contents
-  // as insert batches for the coming run's iteration zero.
+  // as insert batches for the coming run's iteration zero.  Refused while a
+  // stratum is suspended (the reload would dangle every parked task's bindings
+  // and destroy the staged delta).
   Stratum* beginStratum(const std::string& name)
   {
+    if (database->isSuspended())
+    {
+      emit("(error suspended \"beginStratum is refused while a stratum is "
+           "suspended; continue to fixpoint first\")");
+      return nullptr;
+    }
     if (needs_reload)
     {
       database->reloadInsertBatches();
@@ -114,32 +157,106 @@ public:
     return new Stratum(name);
   }
 
-  // Append a stratum to the pipeline (it runs on the next run()).
-  void push(Stratum* s) { pipeline.push_back(s); }
+  // Persist the database / one relation to disk.  These run an internal
+  // stratum (the parallel BIN writers) that reuses the single RunState, so
+  // they are refused while a user stratum is suspended (§4; continue to
+  // fixpoint first).  CSV writes and (sizes)/(lookup) take no such lock and
+  // stay allowed against the consistent suspended snapshot.
+  void writeDatabaseBIN(const std::string& db_name)
+  {
+    if (refuseIfSuspended("write-db")) return;
+    database->writeDatabaseBIN(db_name);
+  }
+  void writeRelationBIN(const std::string& db_name, const std::string& rel)
+  {
+    if (refuseIfSuspended("write-rel")) return;
+    database->writeRelationBIN(db_name, rel);
+  }
+  // Replace / refresh a relation from disk -- mutates its indices in place, so
+  // also refused while suspended (it would corrupt a parked stratum's delta).
+  void loadRelation(const std::string& db_name, const std::string& rel)
+  {
+    if (refuseIfSuspended("load-rel")) return;
+    database->loadRelationBIN(db_name, rel);
+  }
+  void refreshRelation(const std::string& db_name, const std::string& rel)
+  {
+    if (refuseIfSuspended("refresh-rel")) return;
+    const bool changed = database->refreshRelationBIN(db_name, rel);
+    emit(std::string("(refreshed ") + rel + " " + (changed ? "1" : "0") + ")");
+  }
+
+  // Append a stratum to the pipeline (it runs on the next continueRun),
+  // assigning its SCC id = pipeline position (§6).  A null stratum (a plugin
+  // whose beginStratum was refused while suspended) is ignored.
+  void push(Stratum* s)
+  {
+    if (s == nullptr) return;
+    s->scc_id = (u32)pipeline.size();
+    pipeline.push_back(s);
+  }
 
   // The pipeline so far (run and unrun), in order.
   const std::vector<Stratum*>& strata() const { return pipeline; }
 
-  // Run every not-yet-run stratum, in order, each to fixpoint.  A stratum
-  // plugin is expected to beginStratum/register/push/run as one unit, so
-  // each pending stratum's indices were registered against the freshly
-  // reloaded database.  Each fixpoint reports its iteration count and wall
-  // time -- nothing parses this message; it is for humans and benchmarks.
+  // Perform ONE bounded unit of work (docs/pausing.md §5): start or resume the
+  // frontmost not-yet-fixpointed stratum for at most one budget's worth, then
+  // emit exactly one of
+  //   (fixpoint <scc-id> <name> <iters> <ms-total>)
+  //   (paused <scc-id> <name> <iter> <phase> <new-tuples> <ms-call> <ms-total> <reason>)
+  // <phase> is `iter` (clean boundary) or `read` (mid read-phase suspend).
+  // Idempotent (§5): with nothing unrun and nothing suspended, re-emit the
+  // last stratum's (fixpoint ...) verbatim, or (idle) for an empty pipeline --
+  // so a client's "continue until fixpoint" loop terminates cleanly.
+  //
+  // The no-argument form uses the (env-configurable) default budget, so both
+  // the first unit a plugin requests and a bare (continue) poll respect it.
+  void continueRun() { continueRun(default_budget); }
+  void continueRun(RunBudget b)
+  {
+    const bool suspended = database->isSuspended();
+    if (!suspended && next_unrun >= pipeline.size())
+    {
+      if (pipeline.empty()) emit("(idle)");
+      else emit(pipeline.back()->fixpoint_msg);   // idempotent re-confirm
+      return;
+    }
+
+    Stratum* s = pipeline[next_unrun];             // suspended one or next unrun
+    const RunStatus st = database->continueStratum(s, b, !suspended, true);
+
+    char buf[192];
+    if (st.fixpoint)
+    {
+      ++next_unrun;
+      needs_reload = true;
+      std::snprintf(buf, sizeof(buf), "(fixpoint %u \"%s\" %u %.3f)",
+                    s->scc_id, s->name.c_str(), st.iteration, st.ms_total);
+      s->fixpoint_msg = buf;
+      emit(s->fixpoint_msg);
+    }
+    else
+    {
+      std::snprintf(buf, sizeof(buf),
+                    "(paused %u \"%s\" %u %s %llu %.3f %.3f %s)",
+                    s->scc_id, s->name.c_str(), st.iteration,
+                    st.where == RUN_MID_READ ? "read" : "iter",
+                    (unsigned long long)st.new_tuples,
+                    st.ms_call, st.ms_total, st.reason);
+      emit(buf);
+    }
+  }
+
+  // The legacy blocking loop: continue every not-yet-run stratum to fixpoint,
+  // unbudgeted, emitting one (fixpoint ...) each.  Generated plugins now drive
+  // via continueRun; kept for internal use / compatibility.
   void run()
   {
-    for (; next_unrun < pipeline.size(); ++next_unrun)
-    {
-      const auto t0 = std::chrono::steady_clock::now();
-      database->runStratum(pipeline[next_unrun]);
-      const double ms =
-        std::chrono::duration_cast<std::chrono::microseconds>(
-          std::chrono::steady_clock::now() - t0).count() / 1000.0;
-      needs_reload = true;
-      char stats[64];
-      std::snprintf(stats, sizeof(stats), " %u %.3f)",
-                    database->getIterationCount(), ms);
-      emit("(fixpoint " + pipeline[next_unrun]->name + stats);
-    }
+    RunBudget unbounded;
+    unbounded.max_ms = UINT64_MAX;
+    unbounded.mem_bytes = UINT64_MAX;
+    while (database->isSuspended() || next_unrun < pipeline.size())
+      continueRun(unbounded);
   }
 };
 

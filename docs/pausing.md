@@ -1,7 +1,11 @@
 # Pausable Fixpoints: Bounded Work Units, Suspendable Rules, and a Client-Driven Run Protocol
 
-*Design + sprint plan, 2026-07-06. Status: planned — a single sprint we intend
-to execute soon, all steps landing together.*
+*Design + sprint plan, 2026-07-06. Status: **implemented** (2026-07-06). The
+suspend/resume core, sliced scan driver, `continueRun` API, driver loops,
+actions, and SCC/rule ids landed together and pass a byte-identical
+pathological-budget test. See "Implementation notes" at the end for the two
+scoped-down pieces (probe/once slicing, and wiring the rule id into
+`malformed_deduction`) whose seams are cut but whose full form is deferred.*
 
 ## 1. Goal
 
@@ -425,3 +429,65 @@ executed sprint:
 - **Args side-channel for actions** — if per-value JIT'd lookups get hot.
 - **The stats API** — rule/SCC ids and per-task counters make it cheap; a
   later sprint defines the message surface.
+
+## 13. Implementation notes (what landed 2026-07-06)
+
+We settled on **Regime 1 only**: every read-phase rule pauses at its OUTER loop
+and parks a continuation that resumes at an EXACT position — zero redo, and
+sound without any idempotence assumption (so it stays correct when the counting
+incremental substrate of `incremental.md` lands). Validated by
+`tests/pause-tests.sh`: a 250-edge chain (~63k paths, scan driver) and a
+constant-bound fan-out (40k pairs, probe driver) each suspend repeatedly under a
+pathological budget and produce byte-for-byte the same CSVs as an unbudgeted
+run. Concretely:
+
+- `daemon/database.h`: `Task::work()→bool`; a `RunState` struct (phase cursors,
+  the paused-continuation queue, the `RunBudget`, steady-clock deadline,
+  `stop_requested`/`mem_tripped` flags, the `sendBatch` emitted-words counter,
+  the total-RSS `mem_cap`, and the suspend position enum); `runStratum` split
+  into `continueStratum(RunBudget, starting, tofixpoint)` (the bounded unit)
+  with a blocking unbudgeted `runStratum` wrapper for internal strata;
+  `ReadCompletion` skips `finalizeAll` on a mid-read suspend; `EndIterCompletion`
+  makes the fixpoint/boundary-suspend/continue decision once so all workers
+  agree, and also re-checks RSS there.
+- `daemon/operators.h`: `read_delta_sliced` (scan, resume `(t,i)`) and
+  `join_probe_sliced` (probe driver, resume from last match key), both with the
+  128-tuple `SliceCtx` clock/stop check.
+- `daemon/daemon.h`: `continueRun` with an env-configurable default budget,
+  daemon-assigned SCC ids at push, the `(fixpoint …)`/`(paused …)` messages,
+  idempotent re-emit + `(idle)`, and the suspended guardrails.
+- `compiler/emit-cpp.rkt`: **all** read-phase rules slice via their outer loop —
+  a `scan` driver and a probe driver with free columns get resume-position
+  members, a `bind(db)` method (the re-binding seam), the copy-and-requeue pause
+  path, and `bool work()`. A fully-bound probe (≤1 match) and a fact `once` rule
+  (no joins, fixed output) are bounded, so they run atomically. Plugin tail is
+  `d->push(s); d->continueRun();`.
+- `compiler/actions.rkt`: `(continue [ms [mem]])` and a point-query `(lookup
+  rel v…)`; the daemon also special-cases the literal `(continue)` line.
+- `compiler/{runslog,compile}.rkt`, `daemon/slogd.rkt`: the response-driven
+  continue loop (compile pipelining preserved) whose default is to continue to
+  the final fixpoint; the sidecar manifest `build/<hash>.meta`; console
+  auto-continue.
+
+**Memory cap (§5).** `mem_bytes` is a TOTAL RSS soft cap checked against the
+honest `/proc/self/statm` figure (re-read at the `sendBatch` choke point about
+every 2 MiB, and once per iteration boundary). When RSS reaches it the read
+phase pauses with reason `memory`; the drivers, whose default is to continue to
+fixpoint, treat that as fatal and abort cleanly (a clear "out of memory" error,
+non-zero exit) rather than climbing into the systemd `SLOG_MEM_MAX` cgroup cap
+and being OOM-killed. Defaults: `SLOG_MEM_BYTES` soft cap tracks ~90% of the
+`SLOG_MEM_MAX` hard cap (default 4 GiB → ~3.6 GiB soft), both overridable; a
+run under the cap completes normally.
+
+**Deferred (seams cut).** (1) *Mid-inner (Regime 2) pausing* — interrupting a
+single outer tuple whose inner fan-out alone blows the budget — is not built;
+such a tuple overshoots (rare, and the memory cap still bounds its growth). (2)
+`malformed_deduction` still carries the source-location string, not the int
+rule id; the stable ids + manifest exist, but wiring the id in needs a
+display-time resolver and churns the tycheck goldens.
+
+Also: while suspended the guardrails refuse **binary** DB writes
+(`write-db`/`write-rel`) and reloads (they run internal strata / mutate indices
+that would clobber the single `RunState`); CSV writes, `(sizes)`, and
+`(lookup)` (read-only) remain allowed against the consistent suspended
+snapshot, and a client continues to fixpoint before persisting anyway.

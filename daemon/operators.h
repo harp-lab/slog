@@ -48,6 +48,41 @@ inline void read_delta(Relation* rel, u16 bucket, u32 nthreads, K&& k)
   }
 }
 
+// SOURCE (read_delta), SLICEABLE (docs/pausing.md §3): like read_delta, but
+// pausable at the outer-tuple granularity.  Resumes from (rt,ri) -- thread
+// index rt, ref index ri within that thread's bucket -- and, every 128 outer
+// tuples, consults `sc`: if the stop flag is set or the slice deadline has
+// passed, it writes the NEXT unprocessed position back into (rt,ri) and
+// returns false (paused); the caller flushes its partial batches and parks a
+// continuation carrying (rt,ri).  Returns true once the whole partition is
+// consumed.  Because indices are immutable across the read phase and the delta
+// views stay valid until the (skipped-on-suspend) finalize, (rt,ri) is an
+// exact resume point: no tuple is dropped or reprocessed across a pause.
+template <class K>
+inline bool read_delta_sliced(Relation* rel, u16 bucket, u32 nthreads,
+                              const SliceCtx& sc, u32& rt, u32& ri, K&& k)
+{
+  u32 tick = 0;
+  for (u32 t = rt; t < nthreads; ++t)
+  {
+    RefVec& refs = rel->getReadBucket(t, bucket);
+    const u32 n = (u32)refs.size();
+    for (u32 i = (t == rt ? ri : 0); i < n; ++i)
+    {
+      if (((++tick) & 127u) == 0
+          && (sc.stop->load(std::memory_order_relaxed)
+              || std::chrono::steady_clock::now() >= sc.deadline))
+      {
+        rt = t;
+        ri = i;                       // resume exactly here next time
+        return false;
+      }
+      k(refs[i].batch->data + refs[i].offset);
+    }
+  }
+  return true;
+}
+
 // JOIN (bound prefix): the chosen index orders the join-key columns first, so
 // this literal's already-bound vars are the first K columns of `key` (the
 // remaining A-K slots are 0).  Probe the single bucket holding the lead value
@@ -66,6 +101,40 @@ inline void join_probe(Index** index, const std::array<u64, A>& key, Cont&& k)
       if (m[c] != key[c]) return;       // prefix gone => done (sorted order)
     k(m);
   }
+}
+
+// JOIN DRIVER (bound prefix), SLICEABLE (docs/pausing.md §3): the probe-driver
+// analogue of read_delta_sliced.  Like join_probe, but pausable at the
+// outer-match granularity: resume from the saved match key `rkey` (when
+// has_resume) instead of the prefix key; every 128 visited matches consult
+// `sc`, and on a trip save the about-to-be-processed match into rkey (so it is
+// reprocessed on resume, never skipped) and return false.  Returns true when
+// the K-prefix range is exhausted.  Indices are immutable across the read
+// phase and rkey is >= key within the same bucket (K>=1 for a probe driver),
+// so lower_bound(rkey) is an exact resume point.
+template <u16 A, u16 K, class Cont>
+inline bool join_probe_sliced(Index** index, const std::array<u64, A>& key,
+                              const SliceCtx& sc, std::array<u64, A>& rkey,
+                              bool& has_resume, Cont&& k)
+{
+  auto* idx = static_cast<BTreeIndex<A>*>(index[buckethash(key[0])]);
+  u32 tick = 0;
+  for (auto it = idx->lower_bound(has_resume ? rkey : key); it != idx->end(); ++it)
+  {
+    const std::array<u64, A>& m = *it;
+    for (u16 c = 0; c < K; ++c)
+      if (m[c] != key[c]) return true;      // prefix gone => done (sorted order)
+    if (((++tick) & 127u) == 0
+        && (sc.stop->load(std::memory_order_relaxed)
+            || std::chrono::steady_clock::now() >= sc.deadline))
+    {
+      rkey = m;
+      has_resume = true;
+      return false;                          // resume AT m (reprocess it)
+    }
+    k(m);
+  }
+  return true;
 }
 
 // FILTER (semijoin existence probe): does ANY tuple of the index match the
@@ -226,7 +295,7 @@ public:
     std::vector<u16> ordv(ord.begin(), ord.end());
     root = static_cast<BTreeIndex<A>*>(rel->getIndex(ordv, delta)[bucket]);
   }
-  void work() override
+  bool work() override
   {
     const u16 leadcol = ord[0];
     const u32 nthreads = db->getThreadCount();
@@ -242,6 +311,7 @@ public:
         root->insert(key);
       }
     }
+    return true;
   }
 };
 
@@ -265,7 +335,7 @@ public:
     std::vector<u16> ordv(ord.begin(), ord.end());
     root = static_cast<BTreeIndex<N>*>(rel->getIndex(ordv, false)[bucket]);
   }
-  void work() override
+  bool work() override
   {
     auto& delta = rel->getDelta();
     for (u32 i = 0; i < delta.size(); ++i)
@@ -281,6 +351,7 @@ public:
         else root->insert(key);
       }
     }
+    return true;
   }
 };
 
@@ -304,7 +375,7 @@ public:
     std::vector<u16> ordv(ord.begin(), ord.end());
     root = static_cast<BTreeMapIndex<A - 1>*>(rel->getIndex(ordv, false)[bucket]);
   }
-  void work() override
+  bool work() override
   {
     const u16 leadcol = ord[0];
     const u32 nthreads = db->getThreadCount();
@@ -321,6 +392,7 @@ public:
         root->merge(key, d[ord[A - 1]], changed);
       }
     }
+    return true;
   }
 };
 
@@ -346,7 +418,7 @@ public:
     std::vector<u16> ordv(ord.begin(), ord.end());
     root = static_cast<BTreeMapIndex<N - 1>*>(rel->getIndex(ordv, false)[bucket]);
   }
-  void work() override
+  bool work() override
   {
     auto& delta = rel->getDelta();
     for (u32 i = 0; i < delta.size(); ++i)
@@ -366,6 +438,7 @@ public:
           batch->data[j + ord[N - 1]] = merged;   // value-carrying delta
       }
     }
+    return true;
   }
 };
 
@@ -392,7 +465,7 @@ public:
     intern_alloc = rel->getInternAlloc(bucket);
     struct_id = rel->getStructId();
   }
-  void work() override
+  bool work() override
   {
     auto& delta = rel->getDelta();
     for (u32 i = 0; i < delta.size(); ++i)
@@ -422,6 +495,7 @@ public:
         }
       }
     }
+    return true;
   }
 };
 

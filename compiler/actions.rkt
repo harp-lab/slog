@@ -31,21 +31,59 @@
      (format "  d->open(\"~a\");\n" db-name)]
     [`(import ,db-name)
      (format "  d->import(\"~a\");\n" db-name)]
+    ;; DB/relation writes and reloads go through the Daemon (not straight to
+    ;; the Database) so the suspended guardrail applies (docs/pausing.md §4):
+    ;; they run internal strata / mutate indices that would clobber a parked
+    ;; run.  CSV writes take no such lock and call the Database directly.
     [`(write-db ,db-name)
-     (format "  d->db()->writeDatabaseBIN(\"~a\");\n" db-name)]
+     (format "  d->writeDatabaseBIN(\"~a\");\n" db-name)]
     [`(write-csv ,dir)
      (format "  d->db()->writeDatabaseCSV(\"~a\");\n" dir)]
     [`(write-rel ,db-name ,rel)
-     (format "  d->db()->writeRelationBIN(\"~a\", \"~a\");\n" db-name rel)]
+     (format "  d->writeRelationBIN(\"~a\", \"~a\");\n" db-name rel)]
     [`(write-rel-csv ,dir ,rel)
      (format "  d->db()->writeRelationCSV(\"~a\", \"~a\");\n" dir rel)]
     [`(load-rel ,db-name ,rel)
-     (format "  d->db()->loadRelationBIN(\"~a\", \"~a\");\n" db-name rel)]
+     (format "  d->loadRelation(\"~a\", \"~a\");\n" db-name rel)]
     [`(refresh-rel ,db-name ,rel)
-     (format (string-append
-              "  bool changed = d->db()->refreshRelationBIN(\"~a\", \"~a\");\n"
-              "  d->emit(std::string(\"(refreshed ~a \") + (changed ? \"1\" : \"0\") + \")\");\n")
-             db-name rel rel)]
+     (format "  d->refreshRelation(\"~a\", \"~a\");\n" db-name rel)]
+    ;; One bounded unit of work (docs/pausing.md §5): start or resume the
+    ;; frontmost not-yet-fixpointed stratum.  Bare (continue) uses the daemon's
+    ;; (env-configurable) default budget; the ms / mem forms override it.  The
+    ;; one .so is cached and reused for every poll of a run.
+    [`(continue) "  d->continueRun();\n"]
+    [`(continue ,ms)
+     (format "  d->continueRun(slog::RunBudget{~a});\n" ms)]
+    [`(continue ,ms ,mem)
+     (format "  d->continueRun(slog::RunBudget{~a, 500, ~a});\n" ms mem)]
+    ;; A point-query against the (possibly suspended) database (§8a): does any
+    ;; tuple of `rel` match the given storage-order prefix?  Values are baked
+    ;; into the plugin source (the path-only protocol has no arg channel), so a
+    ;; new query value costs one clang -- but the motivating "poll whether tuple
+    ;; X appeared yet between pauses" repeats the SAME query, compiled once.
+    ;; Read-only, so it is safe against a suspended snapshot.
+    [`(lookup ,rel ,vals ...)
+     (define enc
+       (for/list ([v (in-list vals)])
+         (cond
+           [(string? v) (format "str_encode(db, \"~a\")" v)]
+           [(exact-integer? v) (format "s32_encode(~a)" v)]
+           [(real? v) (format "float_encode(~a)" (exact->inexact v))]
+           [(symbol? v) (format "str_encode(db, \"~a\")" v)]
+           [else (error 'action-so "unsupported lookup value: ~a" v)])))
+     (string-append
+      "  slog::Database* db = d->db();\n"
+      (format "  slog::Relation* r = db->getRelation(\"~a\");\n" rel)
+      (format "  u64 q[] = { ~a };\n" (string-join enc ", "))
+      "  const size_t QN = sizeof(q) / sizeof(q[0]);\n"
+      "  bool found = false;\n"
+      "  if (r) slog::Database::forEachNominal(r, [&](const u64* row) {\n"
+      "    bool eq = true;\n"
+      "    for (size_t c = 0; c < QN; ++c) if (row[c] != q[c]) { eq = false; break; }\n"
+      "    if (eq) found = true;\n"
+      "  });\n"
+      (format "  d->emit(std::string(\"(found ~a \") + (found ? \"1\" : \"0\") + \")\");\n"
+              rel))]
     [`(sizes)
      (string-append
       "  std::vector<std::pair<std::string, slog::Relation*>> rels(\n"

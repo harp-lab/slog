@@ -106,7 +106,13 @@ static int run_stdin(u32 num_threads)
     {
         if (!line.empty() && line.back() == '\r')
             line.pop_back();
-        if (!line.empty())
+        // The literal (continue) does one bounded unit of work (docs/pausing.md
+        // §5) without a plugin, so a driver/console can resume a suspended
+        // stratum with no clang build.  The (continue [ms] [mem]) action .so
+        // still exists for parameterized budgets.
+        if (line == "(continue)")
+            daemon->continueRun();
+        else if (!line.empty())
             run_plugin(daemon, line, so_handles);
     }
 
@@ -183,7 +189,10 @@ static int run_tcp(u32 num_threads, int port)
                 done = true;
                 break;
             }
-            if (!line.empty())
+            // (continue): one bounded unit of work, no plugin (docs/pausing.md §5).
+            if (line == "(continue)")
+                daemon->continueRun();
+            else if (!line.empty())
                 run_plugin(daemon, line, so_handles);
         }
         if (done)
