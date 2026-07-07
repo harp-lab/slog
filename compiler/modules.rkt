@@ -524,7 +524,9 @@
      ;; (st_ins/mp_put); otherwise braces lower to the native collection
      ;; prims (cmap/cins/cput) -- docs/primitives.md M2.3.
      (define lib-collections?
-       (or (hash-has-key? (type-env-rels type-env) 'pset)
+       (or (hash-has-key? (type-env-aliases type-env) 'pset)
+           (hash-has-key? (type-env-aliases type-env) 'pmap)
+           (hash-has-key? (type-env-rels type-env) 'pset)
            (hash-has-key? (type-env-rels type-env) 'pmap)))
      (define mods-collections (desugar-collections-mods mods+ lib-collections?))
      (define-values (mods-desugared synth-rels clo-members)
