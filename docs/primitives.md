@@ -938,7 +938,10 @@ Patricia lib is the largest demand program yet compiled):
   not-yet-present key and the `chas` guard is later-stratum only — child-
   spec descent returns when a total lookup exists); `cdel`/`cdiff`
   excluded (shrinking); membership/size guards stay later-stratum (in-SCC
-  membership is M2.4's `R_has`); finite-universe termination warning.  Brace literals
+  membership is M2.4's `R_has`); finite-universe termination warning.
+  **Both exclusions are scheduled to lift: `docs/finish-collections.md`
+  §A gives cget partial-prim semantics (row-abandon, function-as-relation
+  — restoring the child-spec-descent row), §D the spec-aware `cjoin`.**  Brace literals
   route per program: the rules libs (pset/pmap declared) keep `st_ins`/
   `mp_put`; otherwise braces lower to native `cins`/`cput`/`(cmap)` — and
   the native empty `{}` is legal (one canonical empty collection).
@@ -949,6 +952,13 @@ Patricia lib is the largest demand program yet compiled):
   `lat_set`.
 - **M2.4 — `R_has`.** Relation-key decomposition generated as rules off the
   value-carrying delta (§4.2); an in-SCC enumeration golden.
+
+  **PLANNED — full design in `docs/finish-collections.md` §C** (the wrap-up
+  shot, together with partial prims restoring in-SCC `cget`, the `(schema)`
+  action, and optionally `cjoin`): need-driven name synthesis
+  (`<R>_has`/`<R>_at`), a derived stratify edge, decomposition emitted at
+  the `LatticeInternTask` merge point via an O(change) `foreach_added`
+  tree-diff walk, `R_at` as a lattice table carrying the child valuespec.
 - **M2.5 — flagship goldens.** Reaching definitions **with kill**
   (`intersect` against the static ¬kill mask); an abstract store
   `(map addr (ps val))` variant of the tinycfa analysis; `(ps E)` as the
