@@ -46,21 +46,40 @@
      (format "  d->writeDatabaseSubsetBIN(\"~a\", {~a});\n"
              db-name
              (string-join (for/list ([r (in-list rels)]) (format "\"~a\"" r)) ", "))]
-    ;; Sampled IDB-layer write (docs/db-compression.md P1.2): keep per-fraction
-    ;; of each named relation's tuples with the given seed.  per is baked as a
-    ;; double literal, seed as an unsigned literal (path-only protocol).
-    [`(save-compressed ,db-name ,per ,seed ,rels ..1)
-     (format "  d->writeDatabaseSampledBIN(\"~a\", {~a}, ~a, ~aull);\n"
-             db-name
-             (string-join (for/list ([r (in-list rels)]) (format "\"~a\"" r)) ", ")
-             (exact->inexact per)
-             seed)]
+    ;; Sampled IDB-layer write (docs/db-compression.md P1.2/P2.4).  `rels` is
+    ;; the full IDB set (kept at `per`); `boosted` (a sublist) keeps at `boost`
+    ;; instead -- the productive-seed bias.  Values baked as literals.
+    [`(save-compressed ,db-name ,per ,seed ,boost (boosted ,boosted ...) (rels ,rels ..1))
+     (define (setlit rs) (string-join (for/list ([r (in-list rs)]) (format "\"~a\"" r)) ", "))
+     (format "  d->writeDatabaseSampledBIN(\"~a\", {~a}, ~a, ~aull, {~a}, ~a);\n"
+             db-name (setlit rels) (exact->inexact per) seed
+             (setlit boosted) (exact->inexact boost))]
     [`(write-csv ,dir)
      (format "  d->db()->writeDatabaseCSV(\"~a\");\n" dir)]
+    ;; Serial checkpoint of the current (possibly paused) db (§P2.3).
+    [`(checkpoint ,db-name)
+     (format "  d->checkpointBIN(\"~a\");\n" db-name)]
     [`(write-rel ,db-name ,rel)
      (format "  d->writeRelationBIN(\"~a\", \"~a\");\n" db-name rel)]
     [`(write-rel-csv ,dir ,rel)
      (format "  d->db()->writeRelationCSV(\"~a\", \"~a\");\n" dir rel)]
+    ;; Insert one tuple into a relation (docs/db-compression.md §12,
+    ;; edit-and-propagate): storage-order values baked into the plugin like
+    ;; lookup.  Used to apply a saved db's `edits` on load so replay propagates
+    ;; the change forward.
+    [`(add-tuple ,rel ,vals ...)
+     (define enc
+       (for/list ([v (in-list vals)])
+         (cond
+           [(string? v) (format "str_encode(db, \"~a\")" v)]
+           [(exact-integer? v) (format "s32_encode(~a)" v)]
+           [(real? v) (format "float_encode(~a)" (exact->inexact v))]
+           [(symbol? v) (format "str_encode(db, \"~a\")" v)]
+           [else (error 'action-so "unsupported add-tuple value: ~a" v)])))
+     (string-append
+      "  slog::Database* db = d->db();\n"
+      (format "  std::vector<u64> t = { ~a };\n" (string-join enc ", "))
+      (format "  d->addTuple(\"~a\", t);\n" rel))]
     [`(load-rel ,db-name ,rel)
      (format "  d->loadRelation(\"~a\", \"~a\");\n" db-name rel)]
     [`(refresh-rel ,db-name ,rel)

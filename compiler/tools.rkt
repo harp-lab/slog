@@ -464,8 +464,20 @@
 ;; the target (same-dir rename is atomic on POSIX).  So a concurrent reader --
 ;; e.g. another `racket slog.rkt` compiling the SAME content-addressed stratum
 ;; under run-tests.sh -jN -- never sees a half-written .cpp/.cprog/.meta.
+;; A process-unique temp prefix: make-temporary-file's own uniquifier can still
+;; collide ACROSS concurrent `racket slog.rkt` processes (run-tests.sh -jN),
+;; which surfaced as "open-output-file: file exists".  Prepending a per-process
+;; tag (microsecond clock + a fresh object's hash) makes cross-process temp
+;; names disjoint, so the create never races.
+(define atomic-proc-tag
+  (number->string
+   (bitwise-and (+ (inexact->exact (floor (* 1000000 (current-inexact-milliseconds))))
+                   (eq-hash-code (gensym)))
+                #xffffffffff)))
 (define (call-with-atomic-output path thunk)
-  (define tmp (path->string (make-temporary-file "w~a.tmp" #f (fullpath "build"))))
+  (define tmp (path->string
+               (make-temporary-file (string-append "w" atomic-proc-tag "~a.tmp")
+                                    #f (fullpath "build"))))
   (with-output-to-file tmp #:exists 'replace thunk)
   (rename-file-or-directory tmp path #t))
 

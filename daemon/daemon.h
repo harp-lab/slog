@@ -198,15 +198,39 @@ public:
   // load), struct heap + interners whole.  Same suspended guard.
   void writeDatabaseSampledBIN(const std::string& db_name,
                                const std::unordered_set<std::string>& only,
-                               double per, u64 seed)
+                               double per, u64 seed,
+                               const std::unordered_set<std::string>& boosted,
+                               double boost)
   {
     if (refuseIfSuspended("write-db")) return;
-    database->writeDatabaseBIN(db_name, only, per, seed);
+    database->writeDatabaseBIN(db_name, only, per, seed, boosted, boost);
   }
   void writeRelationBIN(const std::string& db_name, const std::string& rel)
   {
     if (refuseIfSuspended("write-rel")) return;
     database->writeRelationBIN(db_name, rel);
+  }
+  // Checkpoint the current (possibly parked) database to data/<name>/ serially
+  // (docs/db-compression.md §P2.3).  NOT guarded by refuseIfSuspended: the
+  // serial writer uses no RunState, so it is safe to snapshot a fixpoint parked
+  // at a memory pause.  Emits (checkpointed NAME) so the driver can wait for it.
+  void checkpointBIN(const std::string& db_name)
+  {
+    database->writeDatabaseSerialBIN(db_name);
+    emit(std::string("(checkpointed ") + db_name + ")");
+  }
+  // Insert one tuple into a relation out-of-band (docs/db-compression.md §12,
+  // edit-and-propagate): the storage-order words `t` are added to every index,
+  // and needs_reload is set so the next stratum re-dumps it as delta -- a
+  // forward-incremental edit to an input-leaf relation that replay propagates
+  // downstream.  Refused while suspended (it would corrupt a parked delta).
+  void addTuple(const std::string& rel, const std::vector<u64>& t)
+  {
+    if (refuseIfSuspended("add-tuple")) return;
+    slog::Relation* r = database->getRelation(rel);
+    if (!r) { emit(std::string("(error \"add-tuple: no relation ") + rel + "\")"); return; }
+    r->insertTupleAllIndices(t.data());
+    needs_reload = true;
   }
   // Replace / refresh a relation from disk -- mutates its indices in place, so
   // also refused while suspended (it would corrupt a parked stratum's delta).

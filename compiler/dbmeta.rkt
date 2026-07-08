@@ -52,7 +52,10 @@
          read-prog-sexpr
          prog-sexpr-exists?
          write-signature-file
-         read-signature-file)
+         read-signature-file
+         read-edits
+         append-edit!
+         db-has-edits?)
 
 (require "tools.rkt")            ; compiler-sources-fingerprint, call-with-atomic-output
 (require "params.rkt")           ; semijoin-filters-enabled (result-affecting)
@@ -304,6 +307,33 @@
                   [(list (? string? k) (? string? v)) (hash-set h k v)]
                   [_ (meta-fail "malformed prog.sexpr source entry: ~s" p)])))]
        [other (meta-fail "malformed prog.sexpr in ~a: ~s" db-dir other)])]))
+
+;; ---------------------------------------------------------------------------
+;; edits -- ordered EDB mutations applied at a layer's boundary on load (§12).
+;; ---------------------------------------------------------------------------
+;;
+;; The forward-incremental hook: an input-leaf relation can be edited (e.g.
+;; `(add-tuple edge 4 5)`) and the change propagates downstream by re-replay,
+;; because loading always recomputes from origin.  Stored as
+;;   (slog-edits (add-tuple REL v ...) ...)
+
+(define (edits-path db-dir) (build-path db-dir "edits"))
+(define (db-has-edits? db-dir) (file-exists? (edits-path db-dir)))
+
+(define (read-edits db-dir)
+  (define path (edits-path db-dir))
+  (cond
+    [(not (file-exists? path)) '()]
+    [else
+     (match (call-with-input-file path read)
+       [`(slog-edits ,ops ...) ops]
+       [other (meta-fail "malformed edits in ~a: ~s" db-dir other)])]))
+
+(define (append-edit! db-dir op)
+  (define ops (append (read-edits db-dir) (list op)))
+  (call-with-atomic-output
+   (path->string (edits-path db-dir))
+   (lambda () (parameterize ([print-graph #f]) (write `(slog-edits ,@ops))))))
 
 ;; ---------------------------------------------------------------------------
 ;; signature -- the full-coverage content witness (docs/db-compression.md §8/§11)

@@ -279,7 +279,13 @@
 ;; fact body (e.g. `(r (cons 1 nil))`, `(canon {1 2 3})`) -- which clause-rel
 ;; reports by operator name but which are NOT relations -- do not spuriously
 ;; make a ground fact look derived.
-(struct db-partition (idb-rels edb-rels mixed-rels strata-range) #:transparent)
+;; `productive-rels` (docs/db-compression.md §4.4, simplified): IDB relations
+;; that are READ by some rule -- i.e. a fact of theirs immediately participates
+;; in deducing new facts.  The sampler weights these more highly for retention
+;; (a better replay seed) than terminal relations that nothing reads.  A simple
+;; static signal, not a strict firing order.
+(struct db-partition (idb-rels edb-rels mixed-rels strata-range productive-rels)
+  #:transparent)
 
 (define (jobs->db-partition jobs)
   (define rel-names
@@ -290,6 +296,11 @@
       (set-union acc (list->set (hash-keys (fourth job))))))
   (define (derives? rule)
     (not (set-empty? (set-intersect (rule-body-rels rule) rel-names))))
+  ;; relations read by some rule (appear in a body) -- productive-seed candidates
+  (define read-rels
+    (for/fold ([acc (set)]) ([job (in-list jobs)])
+      (for/fold ([acc acc]) ([rule (in-set (stratum-rules (third job)))])
+        (set-union acc (rule-body-rels rule)))))
   (define-values (idb edb-fact levels)
     (for/fold ([idb (set)] [edb (set)] [lvls (set)]) ([job (in-list jobs)])
       (define st (third job))
@@ -313,7 +324,8 @@
   (db-partition (sort (set->list idb) symbol<?)
                 (sort (set->list edb) symbol<?)
                 (sort (set->list (set-intersect idb edb)) symbol<?)
-                (if (null? lvl-list) '(0 . 0) (cons (first lvl-list) (last lvl-list)))))
+                (if (null? lvl-list) '(0 . 0) (cons (first lvl-list) (last lvl-list)))
+                (sort (set->list (set-intersect idb read-rels)) symbol<?)))
 
 (define (opt-mode) (or (getenv "SLOG_OPT") "tiered"))
 

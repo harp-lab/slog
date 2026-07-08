@@ -15,9 +15,12 @@
 
 (provide slog-db-command
          db-load-actions
+         db-load-steps
          db-referenced-by
          db-exists?
-         db-managed?)
+         db-managed?
+         db-chain-has-edits?
+         db-encoding-mismatch)
 
 (require "dbmeta.rkt")
 (require racket/format)
@@ -137,13 +140,71 @@
 (define (db-load-actions name)
   (define m (db-meta-of name))
   (define manifest (if m (db-meta-manifest m) '()))
+  ;; a db's edits (add-tuple ...) apply right after it is opened/imported, so
+  ;; replay of everything above sees the edited input-leaf relation (§12).
+  (define (edits-of n) (read-edits (db-dir n)))
   (cond
-    [(null? manifest) (list `(open ,name))]
+    [(null? manifest) (append (list `(open ,name)) (edits-of name))]
     [else
      (define inputs (map first manifest))
-     (append (list `(open ,(first inputs)))
-             (for/list ([i (in-list (rest inputs))]) `(import ,i))
-             (list `(import ,name)))]))
+     (append
+      (list `(open ,(first inputs))) (edits-of (first inputs))
+      (append-map (lambda (i) (cons `(import ,i) (edits-of i))) (rest inputs))
+      (list `(import ,name)) (edits-of name))]))
+
+;; Recursive load plan for `name` (docs/db-compression.md §10, P2): the whole
+;; input DAG materialised bottom-up.  Each element is either an action spec
+;; (open/import/add-tuple) streamed as a plugin, or `(replay L)` telling the
+;; driver to recompile + run layer L's stored program.  The base (first input)
+;; is opened and recursively materialised; further inputs and this layer are
+;; imported; each db's edits apply right after it lands; a layer with a stored
+;; program is replayed to regenerate dropped facts.  `seen` de-dups diamonds.
+(define (db-load-steps name [seen (set)])
+  (cond
+    [(or (not name) (set-member? seen name)) '()]
+    [else
+     (define seen+ (set-add seen name))
+     (define m (db-meta-of name))
+     (define manifest (if m (db-meta-manifest m) '()))
+     (define e (read-edits (db-dir name)))
+     (define replay (if (prog-sexpr-exists? (db-dir name)) (list `(replay ,name)) '()))
+     (cond
+       [(null? manifest) (append (list `(open ,name)) e)]
+       [else
+        (define inputs (map first manifest))
+        (append
+         (db-load-steps (first inputs) seen+)                          ; base, recursively
+         (append-map (lambda (i) (append (db-load-steps i seen+)       ; extra inputs merged in
+                                         (list `(import ,i))))
+                     (rest inputs))
+         (list `(import ,name)) e replay)])]))
+
+;; Walk the load DAG; return (list db stored-version) for the first database
+;; whose recorded value-encoding-version differs from what this build reads,
+;; else #f (docs/db-compression.md §P2.2).  A derived layer could drop-and-
+;; replay under the new encoding, but a root's bins would need real migration,
+;; so the driver refuses rather than misread words at the wrong offsets.
+(define (db-encoding-mismatch name [seen (set)])
+  (cond
+    [(or (not name) (set-member? seen name)) #f]
+    [else
+     (define m (db-meta-of name))
+     (cond
+       [(and m (not (equal? (db-meta-value-encoding-version m) slog-value-encoding-version)))
+        (list name (db-meta-value-encoding-version m))]
+       [else (for/or ([i (in-list (db-inputs name))])
+               (db-encoding-mismatch i (set-add seen name)))])]))
+
+;; Does `name` or any db in its transitive input DAG carry edits?  A verify
+;; against the stored signature is skipped in that case -- an edit intentionally
+;; changes the content, so the replay legitimately no longer matches (§12).
+(define (db-chain-has-edits? name [seen (set)])
+  (cond
+    [(or (not name) (set-member? seen name)) #f]
+    [(db-has-edits? (db-dir name)) #t]
+    [else
+     (for/or ([i (in-list (db-inputs name))])
+       (db-chain-has-edits? i (set-add seen name)))]))
 
 ;; ---------------------------------------------------------------------------
 ;; `slog db` subcommands
@@ -261,13 +322,27 @@
             (for ([p (in-list (reverse problems))]) (printf "       - ~a\n" p))]))
   (unless (unbox ok) (exit 2)))
 
+;; slog db edit NAME add-tuple REL v...  -- record a forward-incremental edit
+;; to an input-leaf relation (§12).  Applied at load; propagates by re-replay.
+(define (cmd-edit args)
+  (match args
+    [(list-rest name "add-tuple" rel vals)
+     (unless (db-exists? name) (die "no such database: ~a" name))
+     (when (null? vals) (die "usage: slog db edit NAME add-tuple REL v..."))
+     (define parsed (for/list ([v (in-list vals)]) (or (string->number v) (string->symbol v))))
+     (append-edit! (db-dir name) `(add-tuple ,(string->symbol rel) ,@parsed))
+     (printf "recorded edit on ~a: (add-tuple ~a ~a); reload a dependent to propagate\n"
+             name rel (string-join vals " "))]
+    [_ (die "usage: slog db edit NAME add-tuple REL v...")]))
+
 (define (slog-db-command args)
   (match args
-    [(list) (printf "usage: slog db <ls|tree|rm|gc|clear|verify> [args]\n")]
+    [(list) (printf "usage: slog db <ls|tree|rm|gc|clear|verify|edit> [args]\n")]
     [(cons "ls" _) (cmd-ls)]
     [(cons "tree" rest) (cmd-tree rest)]
     [(cons "rm" rest) (cmd-rm rest)]
     [(cons "gc" _) (cmd-gc)]
     [(cons "clear" _) (cmd-clear)]
     [(cons "verify" rest) (cmd-verify rest)]
+    [(cons "edit" rest) (cmd-edit rest)]
     [(cons other _) (die "unknown db subcommand: ~a" other)]))
