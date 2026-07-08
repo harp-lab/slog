@@ -8,7 +8,8 @@
          racket/logging
          "./compiler/params.rkt"
          "./compiler/config.rkt"
-         "./compiler/runslog.rkt")
+         "./compiler/runslog.rkt"
+         "./compiler/dbtool.rkt")
 
 (define EXIT-FILE-NOT-FOUND 1)
 (define EXIT-RUNTIME-ERROR 2)
@@ -83,9 +84,25 @@
 (define (print-version)
   (printf "slog ~a.~a.~a\n" slog-version-major slog-version-minor slog-version-revision))
 
+;; Parse a --per value: a percentage (e.g. 60) or a fraction (e.g. 0.6),
+;; normalised to a fraction in (0,1].  The IDB sampler (P1.2) keeps this
+;; fraction of derived tuples; the rest are recomputed by replay on load.
+(define (parse-per s)
+  (define n (string->number s))
+  (unless (and n (real? n) (> n 0))
+    (die EXIT-RUNTIME-ERROR "--per expects a positive number (percent or fraction), got ~a" s))
+  (min 1.0 (if (> n 1) (/ n 100.0) (exact->inexact n))))
+
 (define (run-slog* slog-path
                    #:db-name [db-name #f]
                    #:out-db [out-db #f]
+                   #:out-db-compressed [out-db-compressed #f]
+                   #:per [per 'auto]
+                   #:flatten? [flatten? #f]
+                   #:strict? [strict? #f]
+                   #:bias [bias #f]
+                   #:reoptimise? [reoptimise? #f]
+                   #:force? [force? #f]
                    #:debug-dir [debug-dir #f]
                    #:show-banner? [show-banner? #t]
                    #:verbose? [verbose? #f]
@@ -101,6 +118,18 @@
 
   (define slog-file (validate-slog-file slog-path))
   (define-values (out-db* debug-dir*) (validate-and-prepare-paths out-db debug-dir))
+  (when out-db-compressed
+    (ensure-dir! "data"))
+  ;; Immutability guard (docs/db-compression.md §7): a referenced database is
+  ;; frozen -- overwriting it would silently change every dependent's
+  ;; provenance.  Refuse unless --force (which leaves dependents stale).
+  (define save-target (or out-db-compressed out-db))
+  (when (and save-target (not force?))
+    (define deps (db-referenced-by save-target))
+    (unless (null? deps)
+      (die EXIT-RUNTIME-ERROR
+           "refusing to overwrite database ~a: it is an input to ~a.\n  Use --force to override (dependents become stale), or `slog db rm` them first."
+           save-target (string-join deps ", "))))
 
   (when verbose?
     (fprintf (current-error-port) "Processing file: ~a\n" slog-file)
@@ -120,15 +149,35 @@
                                 (if (exn:fail:contract? e) "Contract violation" "Runtime error")))
                      (exit EXIT-RUNTIME-ERROR))])
 
-    (slog-run-file (path->string slog-file) db-name out-db* debug-dir* sizes?)
+    (slog-run-file (path->string slog-file) db-name out-db* debug-dir* sizes?
+                   #:compressed out-db-compressed
+                   #:per per
+                   #:flatten? flatten?
+                   #:strict? strict?
+                   #:bias bias
+                   #:reoptimise? reoptimise?)
 
     (when verbose?
       (fprintf (current-error-port) "Execution completed successfully.\n"))))
 
 (module+ main
+  (define argv (current-command-line-arguments))
+  ;; `slog db <subcommand> ...` -- database DAG management.  Dispatched before
+  ;; command-line (which would bind "db" to the .slog-file positional).
+  (when (and (positive? (vector-length argv))
+             (equal? (vector-ref argv 0) "db"))
+    (slog-db-command (cdr (vector->list argv)))
+    (exit 0))
   (define show-banner? #t)
   (define db-name #f)
   (define out-db #f)
+  (define out-db-compressed #f)
+  (define per 'auto)  ; --per overrides; else the driver auto-picks from replay cost
+  (define flatten? #f)
+  (define strict? #f)
+  (define bias #f)
+  (define reoptimise? #f)
+  (define force? #f)
   (define debug-dir #f)
   (define print-version? #f)
   (define show-help? #f)
@@ -145,6 +194,23 @@
       "Logical DB name to use for the run (a directory under /data)"
       (set! db-name name)]
      [("--out-db") name "Write the final database as data/<name>/ (loadable later with -d)" (set! out-db name)]
+     [("--out-db-compressed")
+      name
+      "Write a recompute-on-load compressed database as data/<name>/ (+ EDB root data/<name>.edb/)"
+      (set! out-db-compressed name)]
+     [("--per")
+      pct
+      "Retention % of derived facts for --out-db-compressed (default: auto from replay cost)"
+      (set! per (parse-per pct))]
+     [("--flatten") "With --out-db-compressed: write one self-contained root (no program/manifest)"
+      (set! flatten? #t)]
+     [("--bias")
+      how
+      "Sample-order bias for --out-db-compressed: uniform (default) | productivity"
+      (set! bias how)]
+     [("--strict") "Treat a load-time drift mismatch as an error, not a warning" (set! strict? #t)]
+     [("--reoptimise") "Force re-emission of cached strata on a compressed load" (set! reoptimise? #t)]
+     [("--force") "Overwrite a referenced database anyway (dependents become stale)" (set! force? #t)]
      [("--debug-dir")
       path
       "Directory to write debug dumps / traces (created if missing)"
@@ -161,6 +227,13 @@
         (run-slog* slog-file
                    #:db-name db-name
                    #:out-db out-db
+                   #:out-db-compressed out-db-compressed
+                   #:per per
+                   #:flatten? flatten?
+                   #:strict? strict?
+                   #:bias bias
+                   #:reoptimise? reoptimise?
+                   #:force? force?
                    #:debug-dir debug-dir
                    #:show-banner? show-banner?
                    #:verbose? verbose?

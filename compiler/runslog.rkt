@@ -18,6 +18,28 @@
 (require "tools.rkt")
 (require "compile.rkt")
 (require "actions.rkt")
+(require "dbmeta.rkt")
+(require "dbtool.rkt")
+(require "parser.rkt")   ; current-source-capture (P1.1)
+
+;; When set (during a replay layer), a memory pause checkpoints the partial db
+;; to this name instead of a bare abort (docs/db-compression.md §P2.3).
+(define current-checkpoint (make-parameter #f))
+
+;; Simple auto-per (docs/db-compression.md §13.1, deliberately coarse): pick a
+;; retention `per` from how expensive the database was to compute from origin
+;; (total replay fixpoint wall-time).  A cheap db compresses hard -- keep a
+;; fraction, replay is cheap; an expensive one is kept whole so its load is an
+;; immediate fixpoint.  The smooth size-aware clamp of §13.1 is left for later.
+(define auto-per-expensive-ms 500.0)
+(define auto-per-min 0.5)
+(define (auto-per wall-ms)
+  (if (>= wall-ms auto-per-expensive-ms) 1.0 auto-per-min))
+
+;; Seed for the IDB sampler's content-hash keep (P1.2); recorded in the layer
+;; META so a kept-set is reproducible.  Fixed for now (any subset is a valid
+;; seed -- the sample is a witness, not needed for reconstruction, §2a).
+(define compressed-rng-seed 0)
 
 ;; Reconstruct a canonical lattice valuespec from its on-disk spec token
 ;; (the inverse of emit-cpp.rkt's lat-spec-token): "min-int-floor-0" ->
@@ -103,6 +125,29 @@
                (directory-list db-path)))
       (hash)))
 
+;; Union the on-disk relation manifests across a database's whole input DAG
+;; (docs/db-compression.md P1.4): a program loaded atop a compressed database
+;; must see every relation the reconstituted db holds -- its own IDB layer AND
+;; the EDB root / inputs it links -- so emit-cpp keeps them all alive across
+;; reloads.  Falls back to the single-dir manifest for a plain (unlinked) db.
+(define (db-full-manifest name [seen (set)])
+  (cond
+    [(or (not name) (set-member? seen name)) (hash)]
+    [else
+     (define dir (string-append "data/" name))
+     (define inputs
+       (if (db-meta-file-exists? dir)
+           (map first (db-meta-manifest (read-db-meta dir)))
+           '()))
+     (for/fold ([m (db-manifest-from-name name)]) ([i (in-list inputs)])
+       (for/fold ([m m]) ([(k v) (in-hash (db-full-manifest i (set-add seen name)))])
+         (hash-set m k v)))]))
+
+;; If `name` is a compressed database that stored its deriving program, return
+;; (cons entry sources-hash) so a load recompiles+replays it (P1.4); else #f.
+(define (compressed-replay-plan name)
+  (and name (read-prog-sexpr (string-append "data/" name))))
+
 ;; Compile slog-path and run every stratum plugin through a fresh slogd,
 ;; optionally against input database db-name, optionally writing the final
 ;; database (binary) to out-db and/or (CSV) to debug-out-path, optionally
@@ -111,11 +156,29 @@
                        [db-name #f]
                        [out-db #f]
                        [debug-out-path #f]
-                       [report-sizes? #f])
+                       [report-sizes? #f]
+                       #:compressed [compressed #f]  ; --out-db-compressed NAME
+                       #:per [per 1.0]
+                       #:flatten? [flatten? #f]
+                       #:strict? [strict? #f]
+                       #:bias [bias #f]
+                       #:reoptimise? [reoptimise? #f])
   ;; Working directories used by the compiler and daemon (relative to cwd).
   (make-directory* "build")
   (make-directory* "out")
-  (define dbmanifest (db-manifest-from-name db-name))
+  ;; The query compiles against the FULL DAG manifest so it sees an opened
+  ;; compressed db's EDB root as well as its IDB layer (P1.4); a plain db's full
+  ;; manifest is just its own directory.
+  (define dbmanifest (if db-name (db-full-manifest db-name) (hash)))
+  ;; A compressed save while -d loaded an input chains atop it: the loaded db
+  ;; becomes this layer's base input (materialised recursively on load), rather
+  ;; than snapshotting a fresh EDB root of it (docs/db-compression.md §7.1).
+  (define chained-input (and (or compressed) db-name))
+  ;; A LINKED compressed save (docs/db-compression.md P0.5/P0.6) splits the
+  ;; iteration-0 facts into their own first stratum so the EDB root can be
+  ;; snapshotted before any rule derives.  --flatten writes a single
+  ;; self-contained root instead (today's --out-db + META), needing no split.
+  (define linked-compressed? (and compressed (not flatten?)))
   (define tiered? (not (member (or (getenv "SLOG_OPT") "tiered") '("0" "2"))))
   (ensure-slogd-exists)
   (define-values (sp out in err) (apply subprocess #f #f #f (slogd-argv "daemon/slogd")))
@@ -146,6 +209,9 @@
   ;; query (safe against even a suspended snapshot).
   (define dump-errors-so (delay (action-so `(dump-rel error))))
   (define warned-errors (make-hash))
+  ;; Total fixpoint wall-time of this run, summed from the daemon's (fixpoint
+  ;; ... ms) replies -- the recompute cost that feeds auto-per (§13.1).
+  (define wall-ms-box (box 0.0))
 
   ;; Force-kill the daemon if compilation or the run errors out after launch,
   ;; rather than leaving it orphaned (blocked reading stdin or mid-fixpoint).
@@ -156,18 +222,39 @@
                     (subprocess-kill sp #t)
                     (raise e))])
 
-    ;; Issue the database load FIRST, before compiling: loadDatabaseBIN is
-    ;; single-threaded, so sending (open ...) now lets the load overlap the
-    ;; Racket front end, codegen, AND every clang build below
-    ;; (docs/fast-compile.md).
+    ;; The load plan (dbtool.rkt db-load-steps) materialises the whole input DAG
+    ;; bottom-up: open the base root, then for each layer import its sample,
+    ;; apply its edits, and `(replay NAME)` its program (regenerating dropped
+    ;; facts).  A plain db is a single (open); a compressed chain is the full
+    ;; recursive sequence (docs/db-compression.md §10, P2 recursive DAG).
+    ;; Refuse a database written under an incompatible value encoding (§P2.2):
+    ;; its bin words would be read at the wrong offsets.
     (when db-name
-      (send-plugin (action-so `(open ,db-name))))
+      (define mm (db-encoding-mismatch db-name))
+      (when mm
+        (error (format (string-append
+                        "database ~a was written with value-encoding v~a but this build reads v~a.\n"
+                        "  Re-encode its root bins (or drop-and-replay derived layers) to migrate.")
+                       (first mm) (second mm) slog-value-encoding-version))))
+    (define load-steps (if db-name (db-load-steps db-name) '()))
+    ;; Send the leading open BEFORE compiling: loadDatabaseBIN is single-
+    ;; threaded, so the load overlaps the Racket front end + codegen below
+    ;; (docs/fast-compile.md).  The rest run after the drive loop is defined.
+    (define leading-open?
+      (and (pair? load-steps) (eq? (car (first load-steps)) 'open)))
+    (when leading-open? (send-plugin (action-so (first load-steps))))
+    (define rest-load-steps (if leading-open? (rest load-steps) load-steps))
 
     ;; Plan every stratum and kick off its build(s) on the parallel pool: tiered
     ;; mode runs each stratum at -O0 immediately and hot-swaps to a background
     ;; -O2 build when ready.  The daemon is already loading the input DB (if any)
     ;; while this runs.
-    (define strata (compile-strata slog-path dbmanifest))
+    ;; For a linked compressed save, capture the program's source closure while
+    ;; compiling so it can be stored as prog.sexpr and replayed on load (P1.1).
+    (define src-capture (and linked-compressed? (make-hash)))
+    (define-values (strata partition edb-boundary)
+      (parameterize ([current-source-capture src-capture])
+        (compile-strata slog-path dbmanifest #:split-facts? linked-compressed?)))
 
     ;; Response-driven pipeline walk (docs/pausing.md §7, docs/fast-compile.md §5).
     ;; Each stratum plugin performs ONE bounded unit of work and answers with
@@ -216,10 +303,12 @@
         (define line (read-line out))
         (cond
           [(eof-object? line) #f]
-          [(regexp-match? #px"^\\(fixpoint " line)
-           (displayln line)
-           (check-errors! "at fixpoint")   ; per-stratum; daemon idle -> query safe
-           #t]
+          [(regexp-match #px"^\\(fixpoint [0-9]+ \"[^\"]*\" [0-9]+ ([0-9.]+)\\)" line)
+           => (lambda (m)
+                (set-box! wall-ms-box (+ (unbox wall-ms-box) (string->number (cadr m))))
+                (displayln line)
+                (check-errors! "at fixpoint")   ; per-stratum; daemon idle -> query safe
+                #t)]
           [(regexp-match? #px"^\\(paused " line)
            (displayln line)
            (cond
@@ -228,10 +317,27 @@
              ;; hard cgroup cap by continuing, so abort GRACEFULLY instead of
              ;; OOM-crashing (docs/pausing.md §5).
              [(regexp-match? #px"memory\\)\\s*$" line)
-              (error (format (string-append
-                              "out of memory: the run reached the memory cap "
-                              "(configure with SLOG_MEM_BYTES / SLOG_MEM_MAX).\n  ~a")
-                             line))]
+              (cond
+                ;; During a replay, checkpoint the partial db before aborting so
+                ;; the (possibly huge) progress is not lost (§P2.3); wait for the
+                ;; serial write to finish before we tear the daemon down.
+                [(current-checkpoint)
+                 => (lambda (ckpt)
+                      (send-plugin (action-so `(checkpoint ,ckpt)))
+                      (let wait ()
+                        (define l (read-line out))
+                        (unless (or (eof-object? l) (regexp-match? #px"^\\(checkpointed " l))
+                          (displayln l) (wait)))
+                      (error (format (string-append
+                                      "out of memory during replay: checkpointed the partial "
+                                      "database to data/~a/.\n  Resume/inspect with `-d ~a`, or "
+                                      "raise SLOG_MEM_MAX and reload.\n  ~a")
+                                     ckpt ckpt line)))]
+                [else
+                 (error (format (string-append
+                                 "out of memory: the run reached the memory cap "
+                                 "(configure with SLOG_MEM_BYTES / SLOG_MEM_MAX).\n  ~a")
+                                line))])]
              ;; -O2 is ready and we haven't swapped yet: get to a clean boundary,
              ;; then hand the daemon the -O2 .so to hot-swap in.
              [(and upgradeable? (not swapped?) (file-exists? o2))
@@ -247,12 +353,136 @@
            (error (format "Daemon reported an error: ~a" line))]
           [else (displayln line) (poll swapped?)])))
 
-    (for ([sb (in-list strata)])
+    ;; Consume the daemon's (sig NAME count checksum) lines up to (sig-end),
+    ;; returning a hash NAME -> (count . checksum) (P1.3/P1.5).
+    (define (read-signature!)
+      (let loop ([acc (hash)])
+        (define line (read-line out))
+        (cond
+          [(eof-object? line) acc]
+          [(regexp-match #px"^\\(sig ([^ ]+) ([0-9]+) ([0-9a-f]+)\\)$" line)
+           => (lambda (m)
+                (loop (hash-set acc (string->symbol (second m))
+                                (cons (string->number (third m)) (fourth m)))))]
+          [(regexp-match? #px"^\\(sig-end\\)$" line) acc]
+          [else (displayln line) (loop acc)])))
+
+    ;; Replay one compressed layer (docs/db-compression.md §10, P1.4): recompile
+    ;; its stored program from prog.sexpr under the CURRENT compiler (the
+    ;; original files may be gone/changed -- the source override supplies them)
+    ;; and run its strata atop the already-materialised inputs + imported sample,
+    ;; regenerating any facts dropped by sampling.  At per=100% the sample is the
+    ;; whole IDB, so the fixpoint derives nothing new -- a self-verifying load.
+    (define (replay-layer! lname)
+      (define plan (read-prog-sexpr (string-append "data/" lname)))
+      (when plan
+        (match-define (cons r-entry r-sources) plan)
+        (define-values (r-strata _rp _rb)
+          (parameterize ([current-source-override r-sources])
+            (compile-strata r-entry (db-full-manifest lname) #:split-facts? #f)))
+        ;; a memory pause during this layer's replay checkpoints to
+        ;; data/<lname>.checkpoint/ rather than aborting outright (§P2.3)
+        (parameterize ([current-checkpoint (string-append lname ".checkpoint")])
+          (for ([sb (in-list r-strata)])
+            (match-define (cons so tag) ((sbuild-runnable sb)))
+            (send-plugin so)
+            (drive-stratum! sb tag)))))
+
+    ;; PHASE R -- materialise the loaded input DAG bottom-up: process the load
+    ;; steps (imports + edits + per-layer replays).  Runs BEFORE the query
+    ;; strata so the query sees the fully reconstituted database.
+    (for ([step (in-list rest-load-steps)])
+      (match step
+        [`(replay ,lname) (replay-layer! lname)]
+        [_ (send-plugin (action-so step))]))
+
+    ;; Verify the loaded db reproduced its stored content signature (P1.5): drift
+    ;; is a compiler change, nondeterminism, or a compression bug.  Skipped when
+    ;; an input-leaf edit is in play -- the edit intentionally changes the
+    ;; content, so the replay legitimately no longer matches (§12).
+    (when db-name
+      (let* ([ddir (string-append "data/" db-name)]
+             [stored-sig (and (not (db-chain-has-edits? db-name))
+                              (read-signature-file ddir))])
+        (when stored-sig
+          (define meta (read-db-meta ddir))
+          (define idb (db-meta-idb-rels meta))
+          (unless (null? idb)
+            (send-plugin (action-so `(signature ,@idb)))
+            (report-drift db-name stored-sig (read-signature!) meta strict?)))))
+
+    ;; Whether this save writes its own fresh EDB root (data/<name>.edb): yes for
+    ;; a from-scratch program's iteration-0 facts (edb-boundary >= 1), or a
+    ;; from-scratch program with no facts and no chained input; no when chaining
+    ;; atop a -d input (that input IS the base -- linked in the manifest).
+    (define root-snapshot?
+      (and linked-compressed?
+           (or (> edb-boundary 0) (not chained-input))))
+    ;; With no facts stratum (edb-boundary 0) and no chained input, snapshot the
+    ;; (possibly empty) root right after the open, before any stratum runs.
+    (when (and linked-compressed? (= edb-boundary 0) (not chained-input))
+      (send-plugin (action-so `(write-db ,(string-append compressed ".edb")))))
+    ;; Capture the EDB struct heap at the boundary so the layer write dedups
+    ;; against the root's structs (§4.2 `closure \ input_heap`).  Only when the
+    ;; root is a fresh pure-EDB snapshot loaded VERBATIM on replay -- a chained
+    ;; input is REPLAYED (fresh struct ids), so its heap can't be dedup'd
+    ;; against by id; those layers stay closure-complete.
+    (when (and linked-compressed? (= edb-boundary 0) (not chained-input))
+      (send-plugin (action-so `(capture-edb-heap))))
+
+    (for ([sb (in-list strata)] [i (in-naturals)])
       (match-define (cons so tag) ((sbuild-runnable sb)))  ; blocks until built
       (send-plugin so)
-      (drive-stratum! sb tag))
+      (drive-stratum! sb tag)
+      ;; After the facts stratum fixpoints (its output is the pure iteration-0
+      ;; EDB), snapshot the root before any derived tuple exists (P0.5).  A
+      ;; silent write-db emits no line, so it cannot desync the next stratum's
+      ;; handshake; the daemon processes it in stdin order before that stratum.
+      (when (and linked-compressed? (> edb-boundary 0) (= (add1 i) edb-boundary))
+        (send-plugin (action-so `(write-db ,(string-append compressed ".edb"))))
+        ;; dedup only against a verbatim from-scratch root, not a replayed input
+        (when (not chained-input)
+          (send-plugin (action-so `(capture-edb-heap))))))
+
+    ;; Capture the full-IDB content signature BEFORE the (possibly sampled)
+    ;; layer write, so a load can verify the replay reproduced it (P1.3).
+    (define captured-sig #f)
+    (when (and linked-compressed? (not (null? (db-partition-idb-rels partition))))
+      (send-plugin (action-so `(signature ,@(db-partition-idb-rels partition))))
+      (set! captured-sig (read-signature!)))
+
+    ;; Resolve the retention target now that the run's total recompute cost is
+    ;; known: an explicit --per wins; otherwise auto-pick from wall-time (§13.1).
+    (define per* (if (eq? per 'auto) (auto-per (unbox wall-ms-box)) per))
+    (when (and linked-compressed? (eq? per 'auto))
+      (eprintf "  [auto-per ~a: recompute ~ams -> per=~a%]\n"
+               compressed (~r (unbox wall-ms-box) #:precision 0) (~r (* 100 per*) #:precision 0)))
 
     ;; At the final fixpoint the terminal actions run (each emits its own lines).
+    (cond
+      ;; --out-db-compressed --flatten: one self-contained root (§7.3).
+      [(and compressed flatten?)
+       (send-plugin (action-so `(write-db ,compressed)))]
+      ;; --out-db-compressed (linked): the IDB layer; the root was snapshotted
+      ;; above.  per*<1.0 samples the IDB tuples (dropped ones recomputed by
+      ;; replay on load); per*=1.0 stores them whole.  An empty IDB writes no
+      ;; relation dir (its META-only dir is created below), since these verbs
+      ;; require >=1 relation.
+      [(and linked-compressed? (not (null? (db-partition-idb-rels partition))))
+       ;; --bias productivity keeps relations read by some rule (productive
+       ;; seeds) at a higher fraction than the rest (§4.4); default is uniform.
+       (define bias-productivity?
+         (and bias (member bias '("productivity" "productive")) #t))
+       (define boosted (if bias-productivity? (db-partition-productive-rels partition) '()))
+       (define boost (if bias-productivity? (min 1.0 (* 2.0 per*)) per*))
+       (send-plugin
+        (action-so (if (< per* 1.0)
+                       `(save-compressed ,compressed ,per* ,compressed-rng-seed ,boost
+                                         (boosted ,@boosted)
+                                         (rels ,@(db-partition-idb-rels partition)))
+                       `(write-db-subset ,compressed
+                                         ,@(db-partition-idb-rels partition)))))]
+      [else (void)])
     (when out-db
       (send-plugin (action-so `(write-db ,out-db))))
     (when debug-out-path
@@ -271,4 +501,104 @@
     (close-input-port err)
     (subprocess-wait sp)
     (when (> (subprocess-status sp) 0)
-      (error "Something went wrong running the daemon!"))))
+      (error "Something went wrong running the daemon!"))
+    ;; The daemon has materialised every data directory; now stamp their META
+    ;; headers (P0.5/P0.6).  Done here (post-exit) so the dirs exist and no
+    ;; mid-run synchronisation is needed.
+    (when compressed
+      (write-compressed-metas compressed flatten? partition per* slog-path src-capture captured-sig
+                              chained-input root-snapshot? (unbox wall-ms-box)))))
+
+;; Compare a stored content signature to the freshly replayed one and report
+;; drift (docs/db-compression.md §11).  compiler-stamp attribution: a newer
+;; compiler likely means an intended semantic change; the SAME stamp means
+;; nondeterminism or a compression bug -- a louder alarm.  --strict turns any
+;; mismatch into an error.
+(define (report-drift name stored live meta strict?)
+  (define rels (sort (set->list (set-union (list->set (hash-keys stored))
+                                           (list->set (hash-keys live))))
+                     symbol<?))
+  (define diffs
+    (for/list ([r (in-list rels)]
+               #:unless (equal? (hash-ref stored r #f) (hash-ref live r #f)))
+      (match-define (cons sc _) (hash-ref stored r (cons 0 "")))
+      (match-define (cons lc _) (hash-ref live r (cons 0 "")))
+      (format "    ~a: stored ~a tuple(s) -> replay ~a~a"
+              r sc lc (if (= sc lc) " (same count, content changed)" ""))))
+  (cond
+    [(null? diffs)
+     (eprintf "verified ~a: replay matches stored signature (~a relations)\n"
+              name (hash-count stored))]
+    [else
+     (define same? (equal? (db-meta-compiler-stamp meta) (current-compiler-stamp)))
+     (define msg
+       (string-append
+        (if same?
+            (format "signature drift in ~a under the SAME compiler -- nondeterminism or a compression bug:" name)
+            (format "signature drift in ~a on a newer compiler (~a -> ~a) -- likely an intended semantic change:"
+                    name (db-meta-compiler-stamp meta) (current-compiler-stamp)))
+        "\n" (string-join diffs "\n")))
+     (if strict? (error msg) (eprintf "Warning: ~a\n" msg))]))
+
+;; Write the META header(s) for a compressed/flattened save (docs/db-
+;; compression.md P0.5/P0.6).  --flatten yields one self-contained root;
+;; a linked compressed save yields a pure-EDB root (data/<name>.edb) plus an
+;; IDB layer (data/<name>) whose manifest links the root by (name stamp).  At
+;; P0 `per` is always 1.0 (no sampler yet), so the layer holds the full IDB and
+;; a load is open-root + import-layer (no replay) -- content-equal to the
+;; uncompressed db.
+;; A manifest entry (name stamp): the current stamp is read from the input's
+;; own META (or #f for a plain/legacy db without one).
+(define (manifest-entry name)
+  (define dir (string-append "data/" name))
+  (list name (and (db-meta-file-exists? dir)
+                  (db-meta-stamp (read-db-meta dir)))))
+
+(define (write-compressed-metas name flatten? partition per entry sources sig
+                                chained-input root-snapshot? wall-ms)
+  (define cstamp (current-compiler-stamp))
+  (define idb (db-partition-idb-rels partition))
+  (define edb (db-partition-edb-rels partition))
+  (define range (db-partition-strata-range partition))
+  (cond
+    [flatten?
+     (define dir (string-append "data/" name))
+     (unless (directory-exists? dir) (make-directory* dir))
+     (define m0 (make-db-meta #:kind 'flat #:pure-edb? #f #:manifest '()
+                              #:per 1.0 #:strata range #:compiler-stamp cstamp
+                              #:idb-rels idb #:edb-rels edb))
+     (write-db-meta (hash-set m0 'stamp (compute-db-stamp m0 #:db-dir dir)) dir)]
+    [else
+     ;; The layer's manifest links, in load order: the chained -d input (if any,
+     ;; materialised recursively) then this save's own fresh EDB root (if it
+     ;; snapshotted one).  A from-scratch save links just its root.
+     (define root-name (string-append name ".edb"))
+     (define root-entry
+       (and root-snapshot?
+            (let* ([root-dir (string-append "data/" root-name)]
+                   [_ (unless (directory-exists? root-dir) (make-directory* root-dir))]
+                   [rm0 (make-db-meta #:kind 'root #:pure-edb? #t #:manifest '()
+                                      #:per 1.0 #:compiler-stamp cstamp
+                                      #:idb-rels '() #:edb-rels edb)]
+                   [root-stamp (compute-db-stamp rm0 #:db-dir root-dir)])
+              (write-db-meta (hash-set rm0 'stamp root-stamp) root-dir)
+              (list root-name root-stamp))))
+     (define manifest
+       (append (if chained-input (list (manifest-entry chained-input)) '())
+               (if root-entry (list root-entry) '())))
+     (define dir (string-append "data/" name))
+     (unless (directory-exists? dir) (make-directory* dir))
+     ;; Store the program source so a load recompiles+replays it (P1.1/§9).
+     (when (and sources (positive? (hash-count sources)))
+       (write-prog-sexpr dir entry sources))
+     ;; Store the full-IDB content signature for load-time verification (P1.3).
+     (when (and sig (positive? (hash-count sig)))
+       (write-signature-file dir sig))
+     (define lm0 (make-db-meta #:kind 'compressed #:pure-edb? #f
+                               #:manifest manifest
+                               #:per per #:rng-seed compressed-rng-seed
+                               #:strata range #:compiler-stamp cstamp
+                               #:fixpoint-wall-ms (inexact->exact (round wall-ms))
+                               #:idb-rels idb #:edb-rels edb))
+     (write-db-meta (hash-set lm0 'stamp (compute-db-stamp lm0 #:prog-fingerprint cstamp))
+                    dir)]))

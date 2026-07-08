@@ -4,7 +4,9 @@
 program as source and are recomputed from origin on load, keeping only a target
 percentage of the derived facts. 2026-07-07, rev 6 (finished design).*
 
-**Status: design only. No code written.** Sibling of `db-merge.md`,
+**Status: P0+P1+P2 implemented (2026-07-07), forward-incremental only.** The only
+unbuilt pieces are the §14 content-addressed struct id and DRed^c backward
+incrementality — both explicitly optional. Sibling of `db-merge.md`,
 `incremental.md`, `pausing.md`. This document is meant to be self-contained: if we
 pick the work up months from now, everything we reasoned through should be here —
 the model, the theory that constrains it, the on-disk format, the load algorithm,
@@ -767,6 +769,38 @@ Goal: the uniform format, the immutable DAG, and crash safety — with **no**
 recompute yet (P0 can still produce and load `per = 100 %` dbs, which behave like
 today's `--out-db`/`-d` plus a `META` and a signature).
 
+> **IMPLEMENTED 2026-07-07.** All six tasks below shipped and are verified by a
+> content-equality harness (uncompressed `--out-db` vs. the compressed
+> round-trip) across tables, structs, native collections, lattices, library
+> collections with shared substructure, and a mixed relation — all byte-equal.
+> New files: `compiler/dbmeta.rkt` (P0.2), `compiler/dbtool.rkt` (P0.3).
+> Notes / deviations from the plan as written:
+> - **All `daemon/database.h` line numbers in this doc are stale (~+50 drift).**
+>   Re-anchor by symbol name (`writeDatabaseBIN` is at ~2047, `importWord` at
+>   ~2395, `seedInternAllocators` at ~671, `loadDatabaseBIN` at ~2172, etc.).
+> - **P0.5 uses a dedicated facts stratum** (the chosen general approach, not the
+>   "write before the first stratum" mechanism §7.1 sketched, which is wrong
+>   because inline `facts` are lowered to body-less rules and don't exist
+>   pre-stratum). `compile-strata #:split-facts?` pulls every iteration-0 rule
+>   (body reads no declared relation) into a level-0 stratum run first; the
+>   driver snapshots the pure EDB after it. Level-preserving for the real strata,
+>   and correct even for a relation grounded by both facts and rules (verified).
+> - **Struct instances are heap:** a filtered (IDB-layer) write always also
+>   writes every struct relation (`getStructId() > 0`), like `value.strings`/
+>   `value.nodes`, so each kept directory is closure-complete and `import` never
+>   dangles (§4.1). `value.strings`/`value.nodes` are likewise written whole in
+>   both root and layer at P0 (self-contained; P1's sampler trims the heap).
+> - **Load at `per = 100 %` is open-root + import-layer (no replay):**
+>   `dbtool.rkt`'s `db-load-actions` drives it; struct id-convergence rides the
+>   existing `importDatabaseBIN` content-dedup (no 400→392 regression observed).
+>   The recursive replay driver + `prog.sexpr` + `signature` are P1 (§17).
+> - **`--per < 100 %` is accepted but clamped to 100 %** with a warning (no
+>   sampler yet). `--bias`/`--strict`/`--reoptimise` are parsed but inert at P0.
+> - Pre-existing flakiness surfaced: `call-with-atomic-output` (tools.rkt) can
+>   hit a `make-temporary-file` name collision under heavy concurrent cold
+>   compiles (`run-tests.sh -j6` fresh cache); harmless at `-j4`/warm and
+>   unrelated to compression — worth a unique-per-process temp name later.
+
 - **P0.1 — Atomic db writes.** Change `writeDatabaseBIN` (database.h:1996) to write
   into `data/<name>.tmp/` then `std::filesystem::rename` over `data/<name>/`;
   never `remove_all` the live target. *Files:* database.h. *Depends:* none.
@@ -803,6 +837,46 @@ today's `--out-db`; `slog db` manages the DAG safely.
 ## 17. P1 — the recompute engine
 
 Goal: real compression + recompute-on-load + verification, gated by tests.
+
+> **IMPLEMENTED 2026-07-07** (P1.1–P1.5 + P1.7; P1.6 folded into the signature).
+> Real compression works: `--per 20` stores ~1/6 of reach's derived tuples on
+> disk and a load regenerates all of them; the oracle-diff harness
+> (`tests/compression/run.sh`) confirms content-equality against the
+> uncompressed run at `per ∈ {100,90,60,20}` across tables, structs, native
+> collections, lattices, demand functions, and library collections. Notes /
+> deviations:
+> - **P1.1 stores raw source, replayed via a source-override parameter**
+>   (`parser.rkt` `current-source-override`/`current-source-capture`,
+>   `source-key`; `modules.rkt` `source-available?`).  prog.sexpr = entry +
+>   canonical-path→source map (dbmeta.rkt).  The full parse→lift→…→emit pipeline
+>   re-runs on load, so compiler changes ARE observed (the §9 goal); relative
+>   includes resolve because the entry is stored absolute and the resolver only
+>   touches the filesystem to normalise paths, which tolerates absent files.
+>   Assumes no symlinks in the source tree and the same working directory at
+>   save and load.
+> - **P1.4 replay is a driver phase, not a separate `recompute.rkt`.**  `-d NAME`
+>   on a compressed db opens the root, imports the IDB sample, then recompiles
+>   prog.sexpr (`#:split-facts? #f`) and runs its strata — atop the FULL DAG
+>   manifest (`db-full-manifest`) so the program sees root+layer.  Runs before
+>   any query strata.  The manifest DAG resolution is single-level (nested
+>   compressed inputs would need recursion — not yet exercised).
+> - **P1.2 sampler is per-tuple content-hash keep, not coverage-accumulation.**
+>   Each IDB table/lattice tuple survives iff FNV-1a(storage words, seed) falls
+>   in the lowest `per` of the hash space (order-independent, seeded, recorded in
+>   META `rng-seed`); struct/string/cnode heap is kept WHOLE (closure-complete).
+>   Any subset is a valid seed (§2a), so this satisfies correctness.  P2 adds
+>   sound struct-heap trimming (see §18); the coverage-budget-over-facts+heap
+>   variant (§4.2) is the remaining refinement.
+> - **P1.3 signature reuses the CSV value decoder** (`writeValCSV`): per IDB
+>   relation, (count, XOR of FNV-1a over each tuple's canonical id-free rendered
+>   text) — commutative, comparable across id reassignment.  Stored over the
+>   FULL IDB at save (before sampling) in `data/<name>/signature`.
+> - **P1.5 verify runs on every compressed load**: recompute the signature after
+>   replay, compare, attribute via `compiler-stamp` (same ⇒ nondeterminism/bug,
+>   newer ⇒ likely intended), warn-only default / `--strict` errors.  The
+>   `kept ⊆ replay` check and `--diff` example tuples are not yet wired.
+> - **P1.6** content-equality is the signature comparison; the harness (P1.7)
+>   also does a direct per-relation CSV diff via an empty "dump" loader.
 
 - **P1.1 — s-expr program-tree (de)serialiser.** Serialise the transitive
   include/run source closure into one self-contained `prog.sexpr` (entry, per-file
@@ -842,6 +916,64 @@ Goal: real compression + recompute-on-load + verification, gated by tests.
 and the harness enforces it in CI.
 
 ## 18. P2 and north-star
+
+> **IMPLEMENTED 2026-07-07** (P2.1–P2.4 + heap trimming), forward-incremental
+> only.  Deferred: DRed^c backward incrementality and the §14 content-addressed
+> struct id (see below).  Notes / deviations:
+> - **Heap trimming (sound, struct-only).**  When `per<1.0` the IDB layer keeps
+>   only the struct instances reachable from the kept table/lattice facts (plus
+>   every struct any collection node references, since cnodes are written
+>   whole); dropped-fact-only structs are regenerated by replay.  Sound because
+>   struct ids load back **verbatim**.  Strings and cnodes stay whole -- they
+>   re-intern by insertion order (id = content-hash + collision-chain position),
+>   so trimming would shift a kept value's id and corrupt the facts that
+>   reference it; trimming them needs §14.  (`daemon/database.h` `markKeptStructs`
+>   + `writeAllFactsBIN` `keep_ids`.)  Verified: ex_eval per=30 drops struct
+>   words 40→9, 0cfa per=20 stays content-equal (struct id-convergence holds).
+> - **Input-heap struct dedup (`closure \ input_heap`, §4.2).**  A from-scratch
+>   layer does not re-store the struct instances its verbatim-opened EDB root
+>   already holds: `(capture-edb-heap)` at the boundary records them, the layer
+>   write subtracts them, and `importDatabaseBIN(..., passthrough=true)` (used by
+>   the `import-layer` action) passes a trimmed same-lineage struct id through to
+>   the root instead of fataling.  ONLY for from-scratch saves -- a chained input
+>   is REPLAYED with fresh struct ids, so its heap can't be dedup'd by id; chained
+>   layers stay closure-complete.  Cuts ex_eval's struct bytes 640→320 at per=100.
+>   General db-merge is unaffected (passthrough defaults off; its sources must be
+>   closure-complete).
+> - **Forward-incremental edit-and-propagate (P2.1).**  `edits` files hold
+>   `(add-tuple REL v…)`; `slog db edit NAME add-tuple REL v…` records one; on
+>   load a db's edits apply right after it is opened/imported (a daemon
+>   `add-tuple` → `insertTupleAllIndices` + `needs_reload`), so replay propagates
+>   the change FORWARD through every dependent layer.  Verified through a 2-layer
+>   chain: editing the deep root's `edge` grew `path` 6→10 and `twohop` 3→6.  The
+>   drift verify is skipped when the load chain carries edits.  Backward
+>   maintenance (DRed^c) is deliberately NOT built.
+> - **Recursive manifest DAG.**  `db-load-steps` materialises the whole input
+>   DAG bottom-up (open base root → per layer: import sample, apply edits,
+>   `(replay L)`).  A compressed save under `-d INPUT` chains atop INPUT (links
+>   it in the manifest) rather than snapshotting a fresh root.
+> - **P2.2 encoding migration = detection + refuse.**  A load walks the DAG and
+>   refuses any db whose `value-encoding-version` differs from this build's
+>   (`db-encoding-mismatch`); with only v1 in existence there is nothing to
+>   re-encode yet, so the migration transform itself is a stub the check gates.
+> - **P2.3 checkpoint-on-pause.**  A memory pause DURING a replay serially
+>   checkpoints the partial db to `data/<layer>.checkpoint/` (a new
+>   `writeDatabaseSerialBIN` that uses no Stratum/RunState, so it is safe against
+>   the parked run -- the parallel writer is not) then aborts with a resume hint,
+>   instead of losing the progress.  A pause during the top-level query still
+>   aborts as before.
+> - **P2.4 = auto-`per` default + productive-seed bias.**  `--per` now defaults
+>   to `auto`: the driver sums the run's fixpoint wall-time and picks
+>   `per = auto-per(ms)` -- a coarse two-level rule (cheap ⇒ compress to
+>   `per_min=0.5`, expensive ≥500ms ⇒ keep whole; the smooth size-aware clamp of
+>   §13.1 is left for later), recorded in META's `fixpoint-wall-ms`.  `--bias
+>   productivity` weights IDB relations READ by some rule (their facts
+>   immediately deduce new facts) at a higher keep fraction (`boost = min(1,
+>   2·per)`) than terminal relations; default is uniform.  Both are simple,
+>   non-strict static signals (`compile.rkt` `productive-rels`); refine later.
+> - **§14 content-addressed struct ids** (would let strings/cnodes trim and make
+>   recompute byte-reproducible) and **DRed^c** remain the only unbuilt pieces --
+>   both explicitly optional here.
 
 - **P2.1 — edit-and-propagate.** `edits` file format + apply-on-load + stale
   propagation across the DAG; `slog db edit`. *Files:* `dbmeta.rkt`, `dbtool.rkt`,

@@ -32,18 +32,61 @@
      (format "  d->open(\"~a\");\n" db-name)]
     [`(import ,db-name)
      (format "  d->import(\"~a\");\n" db-name)]
+    ;; Merge a compressed layer, passing trimmed same-lineage struct refs
+    ;; through to the verbatim-loaded root/input (docs/db-compression.md §4.2).
+    [`(import-layer ,db-name)
+     (format "  d->importLayer(\"~a\");\n" db-name)]
     ;; DB/relation writes and reloads go through the Daemon (not straight to
     ;; the Database) so the suspended guardrail applies (docs/pausing.md §4):
     ;; they run internal strata / mutate indices that would clobber a parked
     ;; run.  CSV writes take no such lock and call the Database directly.
     [`(write-db ,db-name)
      (format "  d->writeDatabaseBIN(\"~a\");\n" db-name)]
+    ;; Write only the named relations (docs/db-compression.md P0.5): an EDB-root
+    ;; snapshot or an IDB-layer save.  Callers must pass a NON-EMPTY list -- an
+    ;; empty relation set means "write all" to the daemon (the single-arg
+    ;; write-db delegates via an empty filter), so the driver never emits this
+    ;; verb with zero relations.
+    [`(write-db-subset ,db-name ,rels ..1)
+     (format "  d->writeDatabaseSubsetBIN(\"~a\", {~a});\n"
+             db-name
+             (string-join (for/list ([r (in-list rels)]) (format "\"~a\"" r)) ", "))]
+    ;; Sampled IDB-layer write (docs/db-compression.md P1.2/P2.4).  `rels` is
+    ;; the full IDB set (kept at `per`); `boosted` (a sublist) keeps at `boost`
+    ;; instead -- the productive-seed bias.  Values baked as literals.
+    [`(save-compressed ,db-name ,per ,seed ,boost (boosted ,boosted ...) (rels ,rels ..1))
+     (define (setlit rs) (string-join (for/list ([r (in-list rs)]) (format "\"~a\"" r)) ", "))
+     (format "  d->writeDatabaseSampledBIN(\"~a\", {~a}, ~a, ~aull, {~a}, ~a);\n"
+             db-name (setlit rels) (exact->inexact per) seed
+             (setlit boosted) (exact->inexact boost))]
     [`(write-csv ,dir)
      (format "  d->db()->writeDatabaseCSV(\"~a\");\n" dir)]
+    ;; Serial checkpoint of the current (possibly paused) db (§P2.3).
+    [`(checkpoint ,db-name)
+     (format "  d->checkpointBIN(\"~a\");\n" db-name)]
+    ;; Snapshot the EDB struct heap so the next layer write dedups against it (§4.2).
+    [`(capture-edb-heap) "  d->captureEDBHeap();\n"]
     [`(write-rel ,db-name ,rel)
      (format "  d->writeRelationBIN(\"~a\", \"~a\");\n" db-name rel)]
     [`(write-rel-csv ,dir ,rel)
      (format "  d->db()->writeRelationCSV(\"~a\", \"~a\");\n" dir rel)]
+    ;; Insert one tuple into a relation (docs/db-compression.md §12,
+    ;; edit-and-propagate): storage-order values baked into the plugin like
+    ;; lookup.  Used to apply a saved db's `edits` on load so replay propagates
+    ;; the change forward.
+    [`(add-tuple ,rel ,vals ...)
+     (define enc
+       (for/list ([v (in-list vals)])
+         (cond
+           [(string? v) (format "str_encode(db, \"~a\")" v)]
+           [(exact-integer? v) (format "s32_encode(~a)" v)]
+           [(real? v) (format "float_encode(~a)" (exact->inexact v))]
+           [(symbol? v) (format "str_encode(db, \"~a\")" v)]
+           [else (error 'action-so "unsupported add-tuple value: ~a" v)])))
+     (string-append
+      "  slog::Database* db = d->db();\n"
+      (format "  std::vector<u64> t = { ~a };\n" (string-join enc ", "))
+      (format "  d->addTuple(\"~a\", t);\n" rel))]
     [`(load-rel ,db-name ,rel)
      (format "  d->loadRelation(\"~a\", \"~a\");\n" db-name rel)]
     [`(refresh-rel ,db-name ,rel)
@@ -104,6 +147,22 @@
       "    ++n;\n"
       "  });\n"
       "  d->emit(std::string(\"(dumpdone \") + std::to_string(n) + \")\");\n")]
+    ;; Per-relation id-free content signature (docs/db-compression.md P1.3):
+    ;; emit one `(sig NAME count checksum)` per named relation, then `(sig-end)`.
+    ;; Read-only, so it is safe against a suspended snapshot.
+    [`(signature ,rels ..1)
+     (string-append
+      "  slog::Database* db = d->db();\n"
+      (format "  const char* sigrels[] = { ~a };\n"
+              (string-join (for/list ([r (in-list rels)]) (format "\"~a\"" r)) ", "))
+      "  for (auto nm : sigrels) {\n"
+      "    slog::Relation* r = db->getRelation(nm);\n"
+      "    if (!r) continue;\n"
+      "    auto sg = db->signatureOf(r);\n"
+      "    d->emit(\"(sig \" + std::string(nm) + \" \" + std::to_string(sg.first)\n"
+      "            + \" \" + std::format(\"{:016x}\", sg.second) + \")\");\n"
+      "  }\n"
+      "  d->emit(\"(sig-end)\");\n")]
     [`(sizes)
      (string-append
       "  std::vector<std::pair<std::string, slog::Relation*>> rels(\n"
