@@ -43,56 +43,55 @@ static inline bool is_num(u64 v) { return is_s32(v) || is_float(v); }
 static inline double to_double(u64 v) { return is_s32(v) ? (double)s32_decode(v) : float_decode(v); }
 
 
+// The prim dispatchers below flag a runtime error (docs/type-errors.md) instead
+// of aborting the daemon: on bad data they call db->setPendingError(...) and
+// return slog_error, which the generated code turns into an (error (error_spec
+// ...)) fact and uses to abandon the deduction.  ERR_NAN is detected by the
+// float kernels returning slog_error (float_encode of a NaN, types.h); ERR_TYPE
+// covers an `any`-typed operand of the wrong kind.
+
 // Binary numeric op: int kernel when both s32, else promote to double.
 #define SLOG_ARITH(NAME, S32K, FLTK, OPSTR)                                     \
   inline u64 NAME(slog::Database* db, u64 x, u64 y) {                           \
     if (is_s32(x) && is_s32(y)) return S32K(db, x, y);                          \
-    if (is_num(x) && is_num(y)) return FLTK(to_double(x), to_double(y));        \
-    slog::fatal(std::format("Function '" OPSTR "' does not support types: {} and {}", \
-                            get_type_name(x), get_type_name(y)));               \
-    return 0; }
+    if (is_num(x) && is_num(y)) { u64 r = FLTK(to_double(x), to_double(y));     \
+      if (r == slog_error) db->setPendingError(slog::ERR_NAN, OPSTR, x, y);     \
+      return r; }                                                              \
+    db->setPendingError(slog::ERR_TYPE, OPSTR, x, y); return slog_error; }
 
 // Binary integer-only op (bitwise / shifts).
 #define SLOG_INT2(NAME, S32K, OPSTR)                                            \
   inline u64 NAME(slog::Database* db, u64 x, u64 y) {                           \
     if (is_s32(x) && is_s32(y)) return S32K(db, x, y);                          \
-    slog::fatal(std::format("Function '" OPSTR "' requires integers, got: {} and {}", \
-                            get_type_name(x), get_type_name(y)));               \
-    return 0; }
+    db->setPendingError(slog::ERR_TYPE, OPSTR, x, y); return slog_error; }
 
 // Unary integer-only op.
 #define SLOG_INT1(NAME, S32K, OPSTR)                                            \
   inline u64 NAME(slog::Database* db, u64 x) {                                  \
     if (is_s32(x)) return S32K(db, x);                                          \
-    slog::fatal(std::format("Function '" OPSTR "' requires an integer, got: {}", \
-                            get_type_name(x)));                                 \
-    return 0; }
+    db->setPendingError(slog::ERR_TYPE, OPSTR, x, 0); return slog_error; }
 
 // Unary numeric op with distinct int/float kernels.
 #define SLOG_NUM1(NAME, S32K, FLTK, OPSTR)                                      \
   inline u64 NAME(slog::Database* db, u64 x) {                                  \
     if (is_s32(x)) return S32K(db, x);                                          \
     if (is_float(x)) return FLTK(float_decode(x));                             \
-    slog::fatal(std::format("Function '" OPSTR "' requires a number, got: {}", \
-                            get_type_name(x)));                                 \
-    return 0; }
+    db->setPendingError(slog::ERR_TYPE, OPSTR, x, 0); return slog_error; }
 
 // Unary float-math op (any numeric arg promoted to double).
 #define SLOG_FMATH(NAME, FLTK, OPSTR)                                           \
   inline u64 NAME(slog::Database* db, u64 x) {                                  \
-    if (is_num(x)) return FLTK(to_double(x));                                   \
-    slog::fatal(std::format("Function '" OPSTR "' requires a number, got: {}", \
-                            get_type_name(x)));                                 \
-    return 0; }
+    if (is_num(x)) { u64 r = FLTK(to_double(x));                                \
+      if (r == slog_error) db->setPendingError(slog::ERR_NAN, OPSTR, x, 0);     \
+      return r; }                                                              \
+    db->setPendingError(slog::ERR_TYPE, OPSTR, x, 0); return slog_error; }
 
 // Ordering comparison (returns 1/0); int compare when both s32, else double.
 #define SLOG_CMP(NAME, OP, OPSTR)                                               \
   inline u64 NAME(slog::Database* db, u64 x, u64 y) {                           \
     if (is_s32(x) && is_s32(y)) return (s32_decode(x) OP s32_decode(y)) ? 1 : 0; \
     if (is_num(x) && is_num(y)) return (to_double(x) OP to_double(y)) ? 1 : 0;  \
-    slog::fatal(std::format("Comparison '" OPSTR "' does not support types: {} and {}", \
-                            get_type_name(x), get_type_name(y)));               \
-    return 0; }
+    db->setPendingError(slog::ERR_TYPE, OPSTR, x, y); return slog_error; }
 
 
 //  (+ x y) -- s32, float, or string concatenation
@@ -100,11 +99,14 @@ inline u64 _prim__0002b(slog::Database* db, u64 x, u64 y)
 {
   if (is_s32(x) && is_s32(y)) return _prim_s32__0002b_unsafe(db, x, y);
   if (is_str(x) && is_str(y)) return _prim_str__0002b_unsafe(db, x, y);
-  if (is_num(x) && is_num(y)) return _prim_float__0002b_unsafe(to_double(x), to_double(y));
-
-  slog::fatal(std::format("Function '+' does not support types: {} and {}. Supported: s32+s32, float+float, str+str",
-                          get_type_name(x), get_type_name(y)));
-  return 0;
+  if (is_num(x) && is_num(y))
+  {
+    u64 r = _prim_float__0002b_unsafe(to_double(x), to_double(y));
+    if (r == slog_error) db->setPendingError(slog::ERR_NAN, "+", x, y);
+    return r;
+  }
+  db->setPendingError(slog::ERR_TYPE, "+", x, y);
+  return slog_error;
 }
 
 SLOG_ARITH(_prim__0002d, _prim_s32__0002d_unsafe, _prim_float__0002d_unsafe, "-")
@@ -145,17 +147,25 @@ SLOG_CMP(_prim_ge, >=, ">=")
 inline u64 _prim_tofloat(slog::Database* db, u64 x)
 {
   if (is_num(x)) return float_encode(to_double(x));
-  slog::fatal(std::format("Function 'tofloat' requires a number, got: {}", get_type_name(x)));
-  return 0;
+  db->setPendingError(slog::ERR_TYPE, "tofloat", x, 0);
+  return slog_error;
 }
 
 //  (toint x) -- float->int (truncating) (or int identity)
 inline u64 _prim_toint(slog::Database* db, u64 x)
 {
   if (is_s32(x)) return x;
-  if (is_float(x)) return s32_encode((s32)float_decode(x));
-  slog::fatal(std::format("Function 'toint' requires a number, got: {}", get_type_name(x)));
-  return 0;
+  if (is_float(x))
+  {
+    double d = float_decode(x);
+    // Casting a non-finite (+-inf) or out-of-s32-range double to s32 is UB
+    // (yields INT_MIN and, with -ffast-math-like flags, worse).  Flag it.
+    if (!(d >= -2147483648.0 && d <= 2147483647.0))
+    { db->setPendingError(slog::ERR_TOINT, "toint", x, 0); return slog_error; }
+    return s32_encode((s32)d);
+  }
+  db->setPendingError(slog::ERR_TYPE, "toint", x, 0);
+  return slog_error;
 }
 
 
@@ -163,9 +173,8 @@ inline u64 _prim_toint(slog::Database* db, u64 x)
 inline u64 _prim_size(slog::Database* db, u64 v)
 {
   if (is_str(v)) return _prim_str_size_unsafe(db, v);
-
-  slog::fatal(std::format("Function 'size' does not support type: {}. Supported types: str", get_type_name(v)));
-  return 0;
+  db->setPendingError(slog::ERR_TYPE, "size", v, 0);
+  return slog_error;
 }
 
 

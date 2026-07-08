@@ -46,12 +46,23 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <poll.h>
+#include <cerrno>
 
 // Constants
 namespace {
-    constexpr u32 DEFAULT_NUM_THREADS = 6;
     constexpr u32 MIN_THREADS = 1;
     constexpr u32 MAX_THREADS = 256;
+    // Dynamic default worker-thread count: one fewer than the machine's
+    // processor count, leaving headroom for the OS (and, when the compiler
+    // driver launches us, the concurrent Racket build pool).  Overridable with
+    // -t, and -- via the front end's slog config system -- SLOG_THREADS, which
+    // the driver turns into an explicit -t (compiler/tools.rkt slogd-argv).
+    // omp_get_num_procs() returns the processor count OpenMP will actually use.
+    u32 default_num_threads() {
+        int np = omp_get_num_procs();
+        u32 d = (np > 1) ? (u32)(np - 1) : 1u;
+        return std::min(std::max(d, MIN_THREADS), MAX_THREADS);
+    }
 }
 
 // Out-of-line definitions of the runtime index factories (declared in index.h).
@@ -193,10 +204,15 @@ static int run_tcp(u32 num_threads, int port)
             continue;
         }
         else if (ret < 0)
+        {
+            if (errno == EINTR) continue;   // interrupted by a signal; retry
             break;
+        }
 
         int valread = read(sock, buffer, sizeof(buffer));
 
+        if (valread < 0 && errno == EINTR)
+            continue;                        // interrupted by a signal; retry
         if (valread <= 0)
             break;
 
@@ -232,11 +248,20 @@ static int run_tcp(u32 num_threads, int port)
         if (done)
             break;
 
-        // The console's EOF path sends a bare (close) with no newline.
-        if (inbuf.find("(close)") != std::string::npos)
+        // The console's EOF path may send a bare (close) with no trailing
+        // newline.  Match only when the ENTIRE residual buffer is exactly
+        // (close) (trimmed) -- a substring find would let any data payload
+        // containing "(close)" (e.g. an over-long line) tear down the session.
         {
-            send_bye(sock);
-            break;
+            size_t a = inbuf.find_first_not_of(" \t\r\n");
+            size_t b = inbuf.find_last_not_of(" \t\r\n");
+            std::string trimmed = (a == std::string::npos)
+                                    ? std::string() : inbuf.substr(a, b - a + 1);
+            if (trimmed == "(close)")
+            {
+                send_bye(sock);
+                break;
+            }
         }
     }
 
@@ -249,7 +274,7 @@ static int run_tcp(u32 num_threads, int port)
 
 int main(int argc, char* argv[])
 {
-    u32 num_threads = DEFAULT_NUM_THREADS;
+    u32 num_threads = default_num_threads();
     int port = -1;
 
     for (int i = 1; i < argc; ++i)
@@ -260,6 +285,11 @@ int main(int argc, char* argv[])
         else if (std::strcmp(argv[i], "-p") == 0 && i + 1 < argc)
             port = std::atoi(argv[++i]);
     }
+
+    // Honor the requested team size exactly: the fixpoint's std::barrier is
+    // sized to thread_count, so a runtime that silently hands back fewer
+    // threads (OMP_DYNAMIC=true) would deadlock at the first barrier.
+    omp_set_dynamic(0);
 
     if (port >= 0)
         return run_tcp(num_threads, port);

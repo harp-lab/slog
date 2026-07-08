@@ -87,8 +87,8 @@ not `--keep-cache`, when in doubt.
 - **`--sizes` is the first profiler.** A relation with wildly more rows
   than you expected usually points at the rule deriving too much —
   often a missing join variable.
-- The daemon prints `(fixpoint <stratum> <iterations> <ms>)` per
-  stratum: many iterations means long dependency chains; long
+- The daemon prints `(fixpoint <scc-id> "<name>" <iterations> <ms>)`
+  per stratum: many iterations means long dependency chains; long
   milliseconds with few iterations means heavy joins.
 
 ## Cheat sheet
@@ -101,6 +101,6 @@ not `--keep-cache`, when in doubt.
 | `--out-db N` / `-d N` | save / load `data/N/` |
 | `--no-banner`, `-v`, `--version` | quiet, verbose, version |
 | `build/` | plugin cache; deleting it just forces recompiles |
-| `(fixpoint s n ms)` | daemon's per-stratum report: iterations and time |
+| `(fixpoint id "name" n ms)` | daemon's per-stratum report: scc-id, name, iterations, time |
 | `./tests/run-tests.sh [--keep-cache] [--update] [files]` | golden tests |
 | `raco test tests/unit/` | compiler unit tests |

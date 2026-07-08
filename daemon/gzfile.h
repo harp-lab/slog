@@ -45,14 +45,19 @@ namespace slog
   }
 
   class GzWriteFile
-  {    
+  {
   public:
     std::ofstream file;
     z_stream stream;
-      
+    // Per-INSTANCE: a process-global static here is a data race under the
+    // parallel per-relation DB writer (torn/corrupt .gz, silent fact loss).
+    u8 outbuf[16384];
+
     GzWriteFile(const std::string& path)
       : file(path, std::ios::binary)
     {
+      if (!file.is_open())
+	fatal("Could not open file for writing: " + path);
       stream.zalloc = Zalloc;
       stream.zfree = Zfree;
       stream.opaque = Z_NULL;
@@ -62,7 +67,6 @@ namespace slog
 
     ~GzWriteFile()
     {
-      static u8 outbuf[16384];
       stream.next_in = Z_NULL;
       stream.avail_in = 0;
       do
@@ -79,7 +83,6 @@ namespace slog
 
     void write(u8* buf, u32 len)
     {
-      static u8 outbuf[16384];	
       stream.next_in = buf;
       stream.avail_in = len;
       do
@@ -115,6 +118,8 @@ namespace slog
     GzReadFile(const std::string& _path)
       : path(_path), file(path, std::ios::binary)
     {
+      if (!file.is_open())
+	fatal("Could not open file for reading: " + path);
       stream.zalloc = Zalloc;
       stream.zfree = Zfree;
       stream.opaque = Z_NULL;
@@ -184,6 +189,8 @@ namespace slog
     BinWriteFile(const std::string& _path)
       : path(_path), file(path, std::ios::binary)
     {
+      if (!file.is_open())
+	fatal("Could not open file for writing: " + path);
     }
 
     ~BinWriteFile()
@@ -197,29 +204,10 @@ namespace slog
     }
   };
 
-  class BinReadFile
-  {    
-  public:
-    std::string path;
-    std::ifstream file;
-      
-    BinReadFile(const std::string& _path)
-      : path(_path), file(path, std::ios::binary)
-    {
-    }
+  // (The former BinReadFile was dead -- the real .bin read path uses readBIN's
+  // raw std::ifstream -- and its read() returned a bool, not the byte count its
+  // sibling classes' callers expect.  Removed.)
 
-    ~BinReadFile()
-    {
-      file.close();
-    }
-
-    
-    u32 read(u8* buf, u32 len)
-    {
-      return (bool)file.read((char*)buf,len);
-    }
-  };
-  
 } // namespace slog
 
 

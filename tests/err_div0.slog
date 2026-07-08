@@ -1,0 +1,8 @@
+;; Runtime error: integer division by zero produces an (error (div_by_zero ...))
+;; fact instead of crashing the daemon; the deduction (bad) is abandoned.
+table (d int)
+table (bad int)
+facts
+(d 0)
+(d 4)
+rule (d X) (= Y (/ 100 X)) --> (bad Y)

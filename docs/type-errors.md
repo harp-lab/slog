@@ -94,11 +94,80 @@ relation's non-empty delta (including `malformed_deduction`'s) already
 extends the fixpoint, and the builtins are declared in every stratum so
 their write/intern tasks are always in place.
 
+## 4b. Runtime primitive errors (the `error_spec` family)
+
+The head residual check above catches a *type* that flows to the wrong
+column.  A second class of error is a **prim that hits bad data** at
+runtime — the same escape hatch (`any`, union overlap) plus data-derived
+conditions the type system can't see:
+
+| arm | prim(s) | trigger |
+|-----|---------|---------|
+| `(div_by_zero loc x)`        | `/`                | integer divide by zero |
+| `(modulo_by_zero loc x)`     | `%`                | integer modulo by zero |
+| `(int_overflow loc x y)`     | `/` `%`            | `INT_MIN / -1` (signed-overflow UB) |
+| `(nan_result loc op x)`      | float ops (`sqrt`, `/`, …) | result is NaN (unrepresentable in the NaN-box) |
+| `(toint_range loc x)`        | `toint`            | argument is `±inf` / out of s32 range |
+| `(type_mismatch loc op x y)` | any arith/cmp/etc. | an `any`-typed operand of the wrong kind |
+
+These, together with `malformed_deduction`, are the arms of a reserved
+`union error_spec` (modules.rkt), and all surface through the same
+`error` table:
+
+    rule (error (div_by_zero L X))     --> ...     ;; react in-language
+    rule (error (nan_result L Op X))   --> ...
+
+**Mechanism.**  A fallible prim no longer `fatal`s the (shared) daemon.
+On bad data it records the kind + operands via
+`Database::setPendingError` and returns the reserved `slog_error`
+sentinel (daemon/types.h).  The generated code checks for the sentinel
+right after each prim call/guard and, if seen, calls
+`slog::emit_pending_error(db, "file:line")` — which interns the matching
+`error_spec` arm (tagged with the rule's basename:line) via the
+per-thread `emit_error_struct` path (operators.h) — then abandons the
+deduction (`return`, exactly like a failed `tycheck`).  A per-stratum
+wrap rule per producible arm (`(= e (arm …)) --> (error e)`,
+compile.rkt) lifts it into `error`, delta-driven within the same
+fixpoint.  A stratum wires these only if it uses a fallible prim
+(`rule-has-fallible-prims?`); a pure-Datalog stratum pays nothing.
+
+Because the arms are content-interned structs, a hot rule failing the
+same way a million times yields one row.
+
+**Driver policy (compiler/runslog.rkt).**  The default `slog.rkt` run drives
+every stratum to fixpoint and only ever hard-stops on the memory cap (a
+`(paused … memory)` becomes a graceful out-of-memory abort); a time/slice
+pause just continues.  As each stratum reaches fixpoint the driver dumps the
+`error` relation (a read-only `(dump-rel error)` action) and prints a
+`WARNING: runtime error surfaced …` line to stdout for every error fact not
+seen before (deduped by content across strata, since `error` persists and is
+reloaded between strata).  So the default is **warn-and-continue**: errors are
+surfaced but never stop the run short of the resource cap.  A program can still
+react in-language by reading `(error …)`; a future client can make the policy
+configurable (e.g. stop-on-first-error) since the facts are delta-driven and
+visible mid-run.
+
+**When a check is added.**  A residual check guards a head emission whose
+variable's *inferred* type is not provably a subset of the column's accepted
+set (only `any`, or a partial union overlap).  A variable's type comes from its
+source — a body relation column, a constant, or a prim result — **not** from the
+head column it is emitted into: a head column/field is a sink, so a value
+computed as `any`/union and emitted into a concrete column is checked rather
+than silently retyped to the column (compiler/type-system.rkt add-to-local
+seeds body clauses as sources and skips sink-seeding for head columns).
+
 ## 5. Limits (v1)
 
 - **Surface-level only.**  The guard tests the value's tag — primitive
   kind or struct id — not its contents.  A well-tagged struct with a
   malformed field was caught (or diverted) when *it* was interned.
+- **`type_mismatch` is coarse.**  It fires from any prim on an
+  any-typed operand of the wrong kind; it names the op and operands but
+  not the expected type.  `nan_result` reports one representative
+  operand (`op`, `x`), not both for a binary op.  Deep struct-render
+  overflow and internal-invariant violations (BIN import corruption,
+  unknown lattice kind) remain hard `fatal`s — they are bugs/corruption,
+  not user data errors, and the render path is outside the fixpoint.
 - **Enum members are indistinct.**  All enum constants share the `_enum`
   struct, so a column typed by an enum checks "is some enum constant",
   not which one.

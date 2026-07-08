@@ -2,9 +2,7 @@
 
 (provide parse-port
          parse-file
-         verbose-print-ast
          parse-error
-         parse-error-delim
          syn->filename)
 
 (require "lexer.rkt")
@@ -21,21 +19,6 @@
       (string-append " " (whitespace (- n 1)))))
 
 (define module-toks (hash))
-(define (parse-error-delim msg tok0 tok1)
-  (match tok0
-    [`(token ,t (pos ,m ,_ ...) ,p1)
-     (define mtoks (hash-ref module-toks m))
-     (define toks0
-       (let loop ([toks mtoks])
-         (if (equal? (car toks) tok0)
-             toks
-             (loop (cdr toks)))))
-     (define toks1
-       (let loop ([toks toks0])
-         (if (equal? (car toks) tok1)
-             toks
-             (loop (cdr toks)))))
-     (parse-error msg toks0 toks1)]))
 (define (parse-error msg toks [after-toks '()])
   (newline)
   ; Pretty-prints an error message
@@ -97,16 +80,6 @@
       (advance toks)
       (parse-error (format "expected '~a'" str) toks)))
 
-(define (verbose-print-ast e)
-  ; dumps a preorder traversal pretty-printing of an AST to STDOUT
-  (match e
-    [`(module ,name ,toks
-        ,ast)
-     (verbose-print-ast ast)]
-    [`(syn (prov ,rest ...) const ,e0) (pretty-print e)]
-    [`(syn (prov ,rest ...) ,tag ,es ...)
-     (pretty-print `(syn (prov ,@rest) ,tag ,(map strip-prov es)))
-     (void (map verbose-print-ast es))]))
 
 (define (emit-expr expr before-toks after-toks)
   ; emits a provenance-tagged expression
@@ -279,7 +252,7 @@
   (define toks+1 (advance toks)) ; always 'def'
   (match-define (cons pattern-e toks+2) (parse toks+1))
   (match-define (cons w-or-b toks+3) (parse toks+2))
-  (if (equal? (last w-or-b) 'when)
+  (if (and (pair? w-or-b) (equal? (last w-or-b) 'when))
       (let ()
         (match-define (cons guard-e toks+4) (parse toks+3))
         (match-define (cons body-e toks+5) (parse toks+4))

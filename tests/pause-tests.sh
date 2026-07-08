@@ -58,14 +58,17 @@ if [ "$BI" -eq 1 ]; then ok "byte-identical-under-pathological-budget"
 else bad "byte-identical-under-pathological-budget"; fi
 
 # --- 2. probe-driver slicing: byte-identical under a pathological budget -----
-# A constant-bound driver (r 5 X) fans out over an inner (r 5 W) -> 40k pairs,
-# so the OUTER probe loop pauses and resumes from its last match key.
+# A constant-bound driver (r 5 X) fans out over an inner (r 5 W) -> 250k pairs,
+# so the OUTER probe loop pauses and resumes from its last match key.  (500,
+# not 200: at 200/40k-pairs the join sometimes finishes within the 2ms budget
+# below on a fast machine, so the pause was observed only ~40% of the time --
+# a flaky test.  250k pairs reliably exceeds 2ms.)
 PFX=out/pause_probe.slog
 {
   echo "table (r int int)"
   echo "table (pair int int)"
   echo "facts"
-  for i in $(seq 1 200); do echo "(r 5 $i)"; done
+  for i in $(seq 1 500); do echo "(r 5 $i)"; done
   echo "rule (r 5 X) (r 5 W) --> (pair X W)"
 } > "$PFX"
 rm -rf out/pp-u out/pp-b

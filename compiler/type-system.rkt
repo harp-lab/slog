@@ -36,12 +36,16 @@
 
 (provide typecheck-rules
          error-wrap-rule
-         rule-has-tychecks?)
+         error-wrap-rule-for-arm
+         prim-error-arms
+         rule-has-tychecks?
+         rule-has-fallible-prims?)
 
 (require "parser.rkt")
 (require "lexer.rkt")
 (require "utils.rkt")
 (require "ir-shared.rkt")
+(require "primitives.rkt")   ; prim-fun-env (which heads are value prims)
 
 ;; -----------------------------------------------------------------------
 ;; Pass driver: check every rule, then intern every enum constant the
@@ -73,7 +77,13 @@
     [`(syn ,prov rule ,bodys ... --> ,heads ...)
 
      ;; ---- first pass: immediate variable types --------------------------
-     (define (add-to-local cl env)
+     ;; `head?` marks a HEAD clause: a variable emitted into a relation column
+     ;; or struct field there is a SINK, not a source of its own type -- seeding
+     ;; from the sink column would hide a needed residual check (an any/union
+     ;; value silently entering a concrete column).  So for heads we still record
+     ;; genuine sources (a constructed id's name, a prim-computed var) but NOT the
+     ;; column/field type of an emitted variable.
+     (define (add-to-local head? cl env)
        (match cl
          [`(syn ,_ /= ,x ,y) env]
          [`(syn ,_ ,(? primitive-cmp?) ,x ,y) env]
@@ -130,10 +140,14 @@
             [`(struct ,ts ...)
              #:when (= (length args) (length ts))
              ;; resolve transparent column types (lattice base, (listof T)
-             ;; -> list) exactly as the relation-atom case below does
-             (hash-set (foldl (lambda (x t env)
-                                (hash-set env x (lattice-base-type rel-env t)))
-                              env args ts)
+             ;; -> list) exactly as the relation-atom case below does.  In a HEAD
+             ;; construction the fields are sinks (skip seeding); the constructed
+             ;; id `x` is a genuine source (its type is the struct name), always.
+             (hash-set (if head?
+                           env
+                           (foldl (lambda (x t env)
+                                    (hash-set env x (lattice-base-type rel-env t)))
+                                  env args ts))
                        x
                        name)]
             [`(struct ,ts ...)
@@ -146,9 +160,13 @@
              #:when (= (length args) (length ts))
              ;; lattice-typed columns are transparent to the type system:
              ;; the variable carries the base type (implicit injection in,
-             ;; unwrap out); lattice-check.rkt owns the use discipline
-             (foldl (lambda (x t env) (hash-set env x (lattice-base-type rel-env t)))
-                    env args ts)]
+             ;; unwrap out); lattice-check.rkt owns the use discipline.
+             ;; In a HEAD atom the columns are sinks -- do NOT source a type from
+             ;; them, so an any/union value emitted here gets its residual check.
+             (if head?
+                 env
+                 (foldl (lambda (x t env) (hash-set env x (lattice-base-type rel-env t)))
+                        env args ts))]
             [`(enum ,_) env]
             [`(,(or 'table 'struct) ,ts ...)
              (error (format "~a takes ~a columns but is used with ~a in ~a"
@@ -156,7 +174,13 @@
             [_
              (error (format "Table ~a in ~a is not defined." name (strip-prov cl)))])]))
 
-     (define local-env-proto (foldl add-to-local (hash) (append heads bodys)))
+     ;; Seed body clauses first (full type sources), THEN head clauses with the
+     ;; sink rule above -- so a variable computed in the body and emitted into a
+     ;; concrete head column resolves to its computed type, not the sink column's.
+     (define local-env-proto
+       (foldl (lambda (cl env) (add-to-local #t cl env))
+              (foldl (lambda (cl env) (add-to-local #f cl env)) (hash) bodys)
+              heads))
      ;; Resolve a variable to a ground type by breadth-first search over
      ;; its (symmetric) polymorphic-link class: the first class member
      ;; with a direct type wins.  A class with no grounded member at all
@@ -429,13 +453,44 @@
 ;; is still going.  Fresh variables per call keep injected copies from
 ;; colliding across strata.
 (define (error-wrap-rule)
+  (error-wrap-rule-for-arm 'malformed_deduction))
+
+;; Field arity of each error_spec arm (matches modules.rkt base-type-env).
+(define error-arm-arity
+  (hash 'malformed_deduction 4 'div_by_zero 2 'modulo_by_zero 2
+        'int_overflow 3 'nan_result 3 'toint_range 2 'type_mismatch 4))
+
+;; The runtime-prim error arms (all except malformed_deduction, which is the
+;; head residual-check arm gated separately by rule-has-tychecks?).
+(define prim-error-arms
+  '(div_by_zero modulo_by_zero int_overflow nan_result toint_range type_mismatch))
+
+;; Generalized wrap rule for one error_spec arm:
+;;   (= e (<arm> f0 f1 ...)) --> (error e)
+;; injected per-stratum (compile.rkt) so a produced error_spec surfaces as an
+;; (error e) fact, delta-driven within the same fixpoint.  Fresh vars per call.
+(define (error-wrap-rule-for-arm arm)
   (define p `(prov ,synth-token ,synth-token))
   (define e (gensymb '_erre))
-  (define r (gensymb '_errr))
-  (define s (gensymb '_errs))
-  (define c (gensymb '_errc))
-  (define v (gensymb '_errv))
+  (define vs (for/list ([_ (in-range (hash-ref error-arm-arity arm))]) (gensymb '_errf)))
   `(syn ,p rule
-        (syn ,p = ,e (syn ,p malformed_deduction ,r ,s ,c ,v))
+        (syn ,p = ,e (syn ,p ,arm ,@vs))
         -->
         (syn ,p error ,e)))
+
+;; Does this typed rule use any fallible prim -- a value-producing primitive
+;; (prim-fun-env) let-bound, or an ordering-comparison guard -- so its stratum
+;; must wire the runtime-error arms + wrap rules?
+(define (rule-has-fallible-prims? rule)
+  (let walk ([e rule])
+    (match e
+      ;; a value prim, let-bound (post-simplification form) or =-bound
+      [`(syn ,_ ,(or 'let '=) ,_ (syn ,_ ,(? symbol? f) ,_ ...))
+       #:when (hash-has-key? prim-fun-env f)
+       #t]
+      ;; an ordering-comparison guard
+      [`(syn ,_ ,(? symbol? h) ,_ ,_)
+       #:when (primitive-cmp? h)
+       #t]
+      [`(syn ,_ ,_ ,es ...) (ormap walk es)]
+      [_ #f])))

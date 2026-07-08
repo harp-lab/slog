@@ -1,6 +1,10 @@
 # First-Class Finite Sets, Maps, and Lists
 
-**Status:** design / brainstorm (2026-07-03). Nothing implemented. This doc
+**Status:** largely IMPLEMENTED as of 2026-07 — finite sets, maps, and lists
+ship as first-class values (see `lib/{set,map,list}.slog`, the `cset`/`cmap`/
+`cnode` collection machinery in the daemon, and tutorial chapters 5 and 7); the
+per-section `STATUS: SHIPPED` markers in the body reflect what has landed. This
+doc records the original design and the architectural tension. It
 lays out the data structures, the compiler/daemon touch-points, the
 index-generation and splice semantics, and — most importantly — the one
 architectural tension that decides how ambitious the feature can be. It builds

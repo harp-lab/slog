@@ -266,6 +266,53 @@ inline void emit_struct(Relation* head_rel, InsertBatch*& nb,
   }
 }
 
+// SINK (runtime-error struct): like emit_struct, but self-contained -- it owns a
+// fresh batch and flushes it immediately.  Called from a rule body's
+// runtime-error path (a fallible prim returned slog_error), which has no
+// per-invocation batch slot of its own.  Errors are rare, so a batch per call is
+// fine.  Thread-safe: sendBatch appends to the calling thread's send shard.
+template <u16 A>
+inline void emit_error_struct(Relation* rel,
+                              const std::array<u64, A - 1>& fields,
+                              const std::array<u16, A>& head_ord)
+{
+  InsertBatch* nb = new InsertBatch();
+  emit_struct<A>(rel, nb, fields, head_ord);
+  rel->sendBatch(nb);
+}
+
+// Turn the calling worker's pending runtime error (a fallible prim returned
+// slog_error) into the matching (error_spec ...) arm struct, tagged with the
+// reporting rule's `loc` (docs/type-errors.md).  The master ordering for an
+// arity-A struct is {1..A-1, 0} (id column last).  If an arm relation is somehow
+// absent (a producible-arm miss in compile.rkt), fail loudly rather than
+// null-deref -- degrading to the pre-error-fact behavior.
+inline void emit_pending_error(Database* db, const char* loc)
+{
+  const PendingError& pe = db->currentPendingError();
+  const u64 vloc = str_encode(db, loc);
+  auto rel = [&](const char* n) {
+    Relation* r = db->getRelation(n);
+    if (!r) fatal(std::string("runtime error in an unregistered arm relation: ") + n);
+    return r;
+  };
+  switch (pe.kind)
+  {
+    case ERR_DIV0:
+      emit_error_struct<3>(rel("div_by_zero"),    {vloc, pe.a}, {1, 2, 0}); break;
+    case ERR_MOD0:
+      emit_error_struct<3>(rel("modulo_by_zero"), {vloc, pe.a}, {1, 2, 0}); break;
+    case ERR_INT_OVF:
+      emit_error_struct<4>(rel("int_overflow"),   {vloc, pe.a, pe.b}, {1, 2, 3, 0}); break;
+    case ERR_NAN:
+      emit_error_struct<4>(rel("nan_result"),     {vloc, str_encode(db, pe.op), pe.a}, {1, 2, 3, 0}); break;
+    case ERR_TOINT:
+      emit_error_struct<3>(rel("toint_range"),    {vloc, pe.a}, {1, 2, 0}); break;
+    case ERR_TYPE:
+      emit_error_struct<5>(rel("type_mismatch"),  {vloc, str_encode(db, pe.op), pe.a, pe.b}, {1, 2, 3, 4, 0}); break;
+  }
+}
+
 
 // ---------------------------------------------------------------------------
 // Write- and intern-phase tasks.  Unlike read-phase rules (each a bespoke

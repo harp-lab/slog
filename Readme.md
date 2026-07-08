@@ -33,7 +33,7 @@ A few things distinguish Slog within this family of languages:
 
 ## First steps
 
-You need Racket (with the `graph` and `sha` packages), `clang++` with
+You need Racket (with the `sha` package), `clang++` with
 OpenMP (`libomp-dev`), boost headers, and zlib. From the repository
 root, put this in `reach.slog`:
 

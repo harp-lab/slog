@@ -13,6 +13,8 @@ See http://bjoern.hoehrmann.de/utf-8/decoder/dfa/ for details.
 */
 
 
+#pragma once
+
 #include "types.h"
 
 
@@ -36,6 +38,9 @@ static const u8 utf8d[] = {
 
 u32 inline utf8decode(u32* state, u32* codep, u32 byte)
 {
+  // Callers pass a (signed) char; a byte >= 0x80 sign-extends to ~0xffffffc3,
+  // which would index utf8d[] ~4.29e9 out of bounds (SEGV).  Mask to 8 bits.
+  byte &= 0xffu;
   u32 type = utf8d[byte];
 
   *codep = (*state != 0) ?

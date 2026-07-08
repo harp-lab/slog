@@ -220,7 +220,11 @@
                     [(min max)
                      (and (match* (f args)
                             [('+ _) #t]
-                            [('- (list a _)) (hash-has-key? taint a)] ; (- V x) only
+                            ;; (- V x): monotone in the minuend, but ANTITONE in
+                            ;; the subtrahend -- so the subtrahend must NOT itself
+                            ;; be a still-ascending lattice value.
+                            [('- (list a b)) (and (hash-has-key? taint a)
+                                                   (not (hash-has-key? taint b)))]
                             [('min _) #t]
                             [('max _) #t]
                             [('* (list a b))

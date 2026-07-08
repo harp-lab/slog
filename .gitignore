@@ -3,6 +3,11 @@
 out/*
 build/*
 data/*
+# Config system (config/Config.md and config/default-config.slog ARE tracked):
+config/config.slog
+config/system.slog
+config/*.tmp
+config/cache/
 */compiled/*
 .claude/settings.local.json
 .claude/worktrees/

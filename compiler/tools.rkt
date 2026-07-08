@@ -18,10 +18,27 @@
 (require "utils.rkt")
 (require racket/runtime-path)
 (require racket/future)   ; processor-count
+(require racket/random)   ; crypto-random-bytes
 (require sha)
 
 (define-runtime-path daemon-dir "../daemon")
 (define-runtime-path compiler-dir ".")
+
+;; Cross-process-safe temp file in build/.  Racket's make-temporary-file has a
+;; TOCTOU window across SEPARATE `racket slog.rkt` processes (run-tests.sh -jN
+;; compiling the same content-addressed stratum concurrently), which surfaces as
+;; "open-output-file: file exists".  We give every process a unique OS-entropy
+;; salt so its temp names live in a disjoint namespace (no cross-process
+;; collision is possible), and retry on the residual filesystem-exists race.
+;; `template` must contain one ~a (e.g. "w~a.tmp").
+(define build-temp-salt (bytes->hex-string (crypto-random-bytes 6)))
+(define (build-tempfile template)
+  (let retry ([n 0])
+    (with-handlers ([exn:fail:filesystem?
+                     (lambda (e) (if (< n 32) (retry (add1 n)) (raise e)))])
+      (path->string
+       (make-temporary-file (string-append build-temp-salt "-" template)
+                            #f (fullpath "build"))))))
 
 (define (fingerprint-dir dir rx)
   (apply string-append
@@ -222,8 +239,26 @@
 ;; Falls back to a direct launch (with a warning on stderr) when systemd-run is
 ;; not on PATH.  `slogd-exe` is the daemon binary; `extra-args` are appended
 ;; after it (e.g. "-p" PORT for the interactive TCP console).
+;; Worker-thread count the driver asks the daemon for.  SLOG_THREADS overrides
+;; (the slog config system sets it); otherwise default to one fewer than the
+;; detected processor count, leaving headroom for the OS and this driver's own
+;; parallel build pool (build-parallelism below).  An explicit -t already in
+;; extra-args still wins (we don't add a second one).
+(define (slog-thread-count)
+  (define env (getenv "SLOG_THREADS"))
+  (define n (and env (string->number (string-trim env))))
+  (if (and n (exact-integer? n) (>= n 1))
+      n
+      (max 1 (sub1 (processor-count)))))
+
 (define (slogd-argv slogd-exe . extra-args)
   (define slogd (path->string (path->complete-path slogd-exe)))
+  ;; Inject the dynamic thread default as an explicit -t unless the caller
+  ;; already specified one.
+  (define extra-args*
+    (if (member "-t" extra-args)
+        extra-args
+        (list* "-t" (number->string (slog-thread-count)) extra-args)))
   (define cap (or (getenv "SLOG_MEM_MAX") "4G"))
   (define cap-off? (and (member (string-downcase cap) '("" "none" "off")) #t))
   (define no-cap? (let ([v (getenv "SLOG_NO_MEM_CAP")]) (and v (not (string=? v "")) #t)))
@@ -241,11 +276,11 @@
             "--user" "--scope" "--quiet"
             "-p" (string-append "MemoryMax=" cap)
             "-p" "MemorySwapMax=0"
-            slogd extra-args)]
+            slogd extra-args*)]
     [else
      (when (and (not cap-off?) (not no-cap?))
        (eprintf "warning: systemd-run not found on PATH; launching slogd without a ~a memory cap\n" cap))
-     (cons slogd extra-args)]))
+     (cons slogd extra-args*)]))
 
 ;; The daemon binary is STALE if missing or older than any daemon source (.h or
 ;; .cpp).  A stale slogd is not merely a perf issue: generated .so's inline the
@@ -366,7 +401,7 @@
                   (lambda ()
                     (display "#include \"../daemon/daemon.h\"\n")
                     (display "#include \"../daemon/operators.h\"\n"))))
-              (define tmp (path->string (make-temporary-file "pch~a.tmp" #f (fullpath "build"))))
+              (define tmp (build-tempfile "pch~a.tmp"))
               (define logport (open-output-file (string-append tmp ".log") #:exists 'replace))
               (define-values (sp out in err)
                 (apply subprocess logport #f logport the-cxx-path
@@ -394,7 +429,7 @@
 (define (compile-one cpp-paths so-path opt pch)
   (unless the-cxx-path
     (error "For reasons unknown, no C++ compiler has been found in PATH."))
-  (define tmp (path->string (make-temporary-file "so~a.tmp" #f (fullpath "build"))))
+  (define tmp (build-tempfile "so~a.tmp"))
   (define log-path (string-append tmp ".log"))
   (define logport (open-output-file log-path #:exists 'replace))
   (define argv
@@ -438,8 +473,24 @@
 ;; work immediately in a pool thread and returns a thunk that blocks until it is
 ;; done (re-raising any error), so the driver can force stratum k's build in
 ;; pipeline order while k+1.. build behind it.
-(define build-parallelism (max 1 (processor-count)))
-(define build-sem (make-semaphore build-parallelism))
+;; Parallel clang build pool size.  SLOG_BUILD_JOBS overrides (useful on shared
+;; / CI machines); otherwise use the full processor count.  Resolved lazily on
+;; first build so the slog config system (which sets SLOG_BUILD_JOBS after module
+;; load) is honored.
+(define (build-parallelism)
+  (let* ([env (getenv "SLOG_BUILD_JOBS")]
+         [n (and env (string->number (string-trim env)))])
+    (max 1 (if (and n (exact-integer? n) (>= n 1)) n (processor-count)))))
+(define build-sem-box (box #f))
+(define build-sem-init-lock (make-semaphore 1))
+(define (build-sem)
+  (or (unbox build-sem-box)
+      (call-with-semaphore build-sem-init-lock
+        (lambda ()
+          (or (unbox build-sem-box)
+              (let ([s (make-semaphore (build-parallelism))])
+                (set-box! build-sem-box s)
+                s))))))
 (define (pooled-eager thunk)
   (define result (box #f))
   (define err (box #f))
@@ -447,7 +498,7 @@
   (thread
    (lambda ()
      (with-handlers ([(lambda (_) #t) (lambda (e) (set-box! err e))])
-       (call-with-semaphore build-sem (lambda () (set-box! result (thunk)))))
+       (call-with-semaphore (build-sem) (lambda () (set-box! result (thunk)))))
      (semaphore-post done)))
   (lambda ()
     (semaphore-wait done)
@@ -465,7 +516,7 @@
 ;; e.g. another `racket slog.rkt` compiling the SAME content-addressed stratum
 ;; under run-tests.sh -jN -- never sees a half-written .cpp/.cprog/.meta.
 (define (call-with-atomic-output path thunk)
-  (define tmp (path->string (make-temporary-file "w~a.tmp" #f (fullpath "build"))))
+  (define tmp (build-tempfile "w~a.tmp"))
   (with-output-to-file tmp #:exists 'replace thunk)
   (rename-file-or-directory tmp path #t))
 
@@ -474,7 +525,7 @@
 ;; the -O0 .so at that path never sees a torn file), cleaning the temp either way.
 (define (o2-build-command cpp-paths so-path)
   (define pchp (ensure-pch "-O2"))
-  (define tmp (path->string (make-temporary-file "o2~a.tmp" #f (fullpath "build"))))
+  (define tmp (build-tempfile "o2~a.tmp"))
   (define argv (append (list the-cxx-path)
                        (if (list? cpp-paths) cpp-paths (list cpp-paths))
                        (base-cxx-flags "-O2")
@@ -494,10 +545,10 @@
 ;; land in the cache for next time.
 (define (spawn-detached-o2-batch commands)
   (when (pair? commands)
-    (define jobfile (path->string (make-temporary-file "o2jobs~a.sh" #f (fullpath "build"))))
+    (define jobfile (build-tempfile "o2jobs~a.sh"))
     (with-output-to-file jobfile #:exists 'replace
       (lambda () (for ([c (in-list commands)]) (displayln c))))
-    (define k (max 1 (quotient build-parallelism 2)))
+    (define k (max 1 (quotient (build-parallelism) 2)))
     ;; read -r (no quote processing) each line; eval it; cap concurrency with
     ;; bash's wait -n.  Passed verbatim as bash's -c arg (no outer shell), so the
     ;; jobfile lines' own single-quoting is the only quoting that matters.

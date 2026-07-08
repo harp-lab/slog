@@ -32,7 +32,7 @@
          strata? stratum? stratum-level stratum-rules
          planned-rule?
          cprog? cprog-dynamic-rels cprog-constants cprog-decls cprog-rules
-         crule? crule-pre crule-driver crule-body crule-head)
+         crule? crule-pre crule-driver crule-body crule-head crule-loc)
 
 (require "ir-shared.rkt")
 
@@ -294,11 +294,14 @@
 
 (define (crule? r)
   (match r
-    [`(crule (pre ,pre ...) ,driver (body ,body ...) (head ,head ...))
+    ;; trailing `loc` = the rule's "file:line" (or #f), baked by emit-cpp into
+    ;; any runtime-error (error_spec ...) this rule reports (docs/type-errors.md)
+    [`(crule (pre ,pre ...) ,driver (body ,body ...) (head ,head ...) ,loc)
      (and (andmap c-op? pre)
           (c-driver? driver)
           (andmap c-op? body)
-          (andmap c-head-op? head))]
+          (andmap c-head-op? head)
+          (or (string? loc) (not loc)))]
     [_ #f]))
 
 (define (cprog? p)
@@ -315,3 +318,4 @@
 (define (crule-driver r) (third r))
 (define (crule-body r) (cdr (fourth r)))
 (define (crule-head r) (cdr (fifth r)))
+(define (crule-loc r) (sixth r))

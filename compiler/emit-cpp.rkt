@@ -38,6 +38,21 @@
   (define al (string-join (map (lambda (a) (format "v_~a" a)) args) ", "))
   (format "_prim_~a(db~a)" f (if (string=? al "") "" (string-append ", " al))))
 
+;; The reporting location ("file:line") of the crule currently being emitted,
+;; baked into any runtime-error (error_spec ...) it reports.  Bound per crule in
+;; add-rule.
+(define current-rule-loc (make-parameter "<unknown>"))
+
+;; A fallible prim returns slog_error on bad data (div/mod by 0, INT_MIN, NaN,
+;; toint out of range, an any-typed type mismatch).  This is the check emitted
+;; right after such a call: record the pending (error_spec ...) for this rule and
+;; abandon the deduction.  `ret` is the abandon statement for the context
+;; ("return;" for a body/head op, "return true;" for a pre-op that aborts the
+;; whole task).  Emitted as one line (valid C++; whitespace is insignificant).
+(define (prim-error-check var ret)
+  (format "if (v_~a == slog_error) { slog::emit_pending_error(db, \"~a\"); ~a }"
+          var (escape-c-string-literal (current-rule-loc)) ret))
+
 (define ((emit-lines ind) . lines)
   (define ind-str
     (if debug-mode
@@ -310,10 +325,15 @@
   (match op
     [`(let ,x ,(? symbol? y)) (format "u64 v_~a = v_~a;" x y)]
     [`(let ,x (,f ,args ...))
-     (format "u64 v_~a = ~a;" x (prim-call f args))]
+     (string-append (format "u64 v_~a = ~a;\n" x (prim-call f args))
+                    (prim-error-check x "return;"))]
     [`(eq ,x ,y) (format "if (v_~a != v_~a) return;" x y)]
     [`(neq ,x ,y) (format "if (v_~a == v_~a) return;" x y)]
-    [`(cmp ,fn ,x ,y) (format "if (!_prim_~a(db, v_~a, v_~a)) return;" fn x y)]))
+    [`(cmp ,fn ,x ,y)
+     (define t (gensymb 'cmpr))
+     (string-append (format "u64 v_~a = _prim_~a(db, v_~a, v_~a);\n" t fn x y)
+                    (prim-error-check t "return;") "\n"
+                    (format "if (!v_~a) return;" t))]))
 
 ;; Pre-ops run at the top of work() (not inside a driver lambda), so a failing
 ;; constant guard aborts the WHOLE task -- and since work() now returns bool
@@ -323,10 +343,15 @@
   (match op
     [`(let ,x ,(? symbol? y)) (format "u64 v_~a = v_~a;" x y)]
     [`(let ,x (,f ,args ...))
-     (format "u64 v_~a = ~a;" x (prim-call f args))]
+     (string-append (format "u64 v_~a = ~a;\n" x (prim-call f args))
+                    (prim-error-check x "return true;"))]
     [`(eq ,x ,y) (format "if (v_~a != v_~a) return true;" x y)]
     [`(neq ,x ,y) (format "if (v_~a == v_~a) return true;" x y)]
-    [`(cmp ,fn ,x ,y) (format "if (!_prim_~a(db, v_~a, v_~a)) return true;" fn x y)]))
+    [`(cmp ,fn ,x ,y)
+     (define t (gensymb 'cmpr))
+     (string-append (format "u64 v_~a = _prim_~a(db, v_~a, v_~a);\n" t fn x y)
+                    (prim-error-check t "return true;") "\n"
+                    (format "if (!v_~a) return true;" t))]))
 
 ;; The innermost continuation: emit each head op.  emit/emit_temp sinks do
 ;; their own dedup + batch flush (operators.h); emit_struct leaves dedup and
@@ -340,7 +365,8 @@
            (match hop
              [`(let ,x (,f ,args ...))
               ((emit-lines indent)
-               (format "u64 v_~a = ~a;" x (prim-call f args)))]
+               (format "u64 v_~a = ~a;" x (prim-call f args))
+               (prim-error-check x "return;"))]
              ;; a residual type check: if the value's surface tag matches no
              ;; accepted type, divert -- intern a malformed_deduction struct
              ;; (rule-location, relation, column, bad value) in place of the
@@ -400,6 +426,7 @@
                        (u64-array-lit (map (lambda (z) (format "v_~a" z)) zs))))]))))
 
 (define ((add-rule dynamic-rels) crule)
+ (parameterize ([current-rule-loc (or (crule-loc crule) "<unknown>")])
   (define pre (crule-pre crule))
   (define driver (crule-driver crule))
   (define body (crule-body crule))
@@ -639,7 +666,7 @@
    (format "  for (u16 b = 0; b < ~a; ++b)" nbuckets)
    (format "    s->addTask(phase_read, new ~a(db,b), ~a);"
            task-name
-           (if static? "true" "false"))))
+           (if static? "true" "false")))))
 
 ;; -----------------------------------------------------------------------
 ;; Whole-program emission.
@@ -703,7 +730,7 @@
     (apply string-append
            (for/list ([(v g) (in-hash constants)])
              (match v
-               [(? string?) (format "  v_~a = str_encode(db,\"~a\");\n" g v)]
+               [(? string?) (format "  v_~a = str_encode(db,\"~a\");\n" g (escape-c-string-literal v))]
                [(? exact-integer?) (format "  v_~a = s32_encode(~a);\n" g v)]
                [(? inexact-real?) (format "  v_~a = float_encode(~a);\n" g v)]))))
   (define rel-decls

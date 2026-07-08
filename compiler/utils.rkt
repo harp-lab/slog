@@ -3,6 +3,7 @@
 (provide fnv
          fullpath
          escape-id-for-C
+         escape-c-string-literal
          bucket-count
          gensymb)
 
@@ -72,7 +73,32 @@
   (define (escape-one s)
     (if (or (equal? s "_") (string-contains? alphanum-pool s))
         s
-        (let ([pad "00000"]
-              [hex (number->string (char->integer (string-ref s 0)) 16)])
-          (string-append "_" (substring pad 0 (- 5 (string-length hex))) hex))))
+        (let ([hex (number->string (char->integer (string-ref s 0)) 16)])
+          ;; Pad to at least 5 hex digits, but never negative: a supplementary-
+          ;; plane code point (>= U+100000) has 6 hex digits and must not
+          ;; underflow the substring width.
+          (string-append "_" (make-string (max 0 (- 5 (string-length hex))) #\0) hex))))
   (string->symbol (apply string-append (map escape-one lst))))
+
+;; Escape a Racket string so it can be safely interpolated into a C++ narrow
+;; string literal ("..."):  \\ and " must be escaped; newline/CR/tab and other
+;; ASCII control bytes become octal escapes (fixed 3 digits -> unambiguous).
+;; Non-ASCII code points (>= U+0080) are left as-is: the source is written UTF-8
+;; and raw high bytes are valid literal content (the daemon interns them
+;; byte-for-byte).  Without this, an embedded " / newline breaks the clang build
+;; and a backslash silently interns the WRONG value (e.g. "\\t" -> a tab).
+(define (escape-c-string-literal s)
+  (apply string-append
+    (for/list ([c (in-string s)])
+      (case c
+        [(#\\) "\\\\"]
+        [(#\") "\\\""]
+        [(#\newline) "\\n"]
+        [(#\return) "\\r"]
+        [(#\tab) "\\t"]
+        [else
+         (define n (char->integer c))
+         (if (or (< n #x20) (= n #x7f))
+             (let ([o (number->string n 8)])
+               (string-append "\\" (make-string (- 3 (string-length o)) #\0) o))
+             (string c))]))))

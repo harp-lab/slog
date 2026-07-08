@@ -7,6 +7,7 @@
          racket/system
          racket/logging
          "./compiler/params.rkt"
+         "./compiler/config.rkt"
          "./compiler/runslog.rkt")
 
 (define EXIT-FILE-NOT-FOUND 1)
@@ -89,6 +90,11 @@
                    #:show-banner? [show-banner? #t]
                    #:verbose? [verbose? #f]
                    #:sizes? [sizes? #f])
+
+  ;; Resolve the slog config database (config/*.slog) and populate SLOG_* defaults
+  ;; BEFORE anything spawns the daemon or picks an opt mode.  Best-effort; an
+  ;; explicit SLOG_* / CLI flag always wins (see compiler/config.rkt).
+  (load-config!)
 
   (when show-banner?
     (ascii-art-banner))

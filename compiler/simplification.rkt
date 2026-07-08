@@ -96,7 +96,9 @@
        (define cx (gensymb '_tconst))
        (cons cx (cons `(syn ,prov = ,cx (syn ,prov const ,v)) clauses))]
       [`(syn ,prov /= ,_ ...)
-       (error (parse-error "Inequality is not permitted as a subclause" (second prov)))]
+       ;; parse-error wants a token LIST (it does (first toks)) and already
+       ;; exits, so pass (cdr prov) -- the tokens -- and drop the dead (error ...).
+       (parse-error "Inequality is not permitted as a subclause" (cdr prov))]
       [`(syn ,prov & ,scls ...)
        #:when (> (length scls) 0)
        (match-define (cons xs clauses+)

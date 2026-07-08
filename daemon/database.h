@@ -1027,6 +1027,13 @@ struct ReadCompletion { Database* db; void operator()() noexcept; };
 struct EndIterCompletion { Database* db; void operator()() noexcept; };
 struct NoopCompletion { void operator()() noexcept {} };
 
+// Runtime-error kinds a fallible prim can flag instead of aborting the daemon
+// (docs/type-errors.md).  The prim records one via Database::setPendingError and
+// returns slog_error; the generated code then calls slog::emit_pending_error
+// (operators.h) to turn it into an (error (error_spec ...)) fact.
+enum ErrorKind : u32 { ERR_DIV0, ERR_MOD0, ERR_INT_OVF, ERR_NAN, ERR_TOINT, ERR_TYPE };
+struct PendingError { u32 kind = 0; const char* op = ""; u64 a = 0; u64 b = 0; };
+
 class Database
 {
 private:
@@ -1057,6 +1064,10 @@ private:
   u32 struct_id_max;
   InternTable<utf8string>* string_table;
   CollectionArena* cnode_arena;
+  // Per-worker "last runtime error" slot: a fallible prim writes it via
+  // setPendingError before returning slog_error, and emit_pending_error reads
+  // this thread's slot to build the (error_spec ...).  One per thread => no lock.
+  std::vector<PendingError> pending_errors;
 
 
 public:
@@ -1066,7 +1077,16 @@ public:
     struct_id_max = 1;
     string_table = new InternTable<utf8string>();
     cnode_arena = new CollectionArena();
+    // Sized to the OMP team (read-phase workers use 0..thread_count-1); at least
+    // one for single-threaded / out-of-region use.
+    pending_errors.resize(thread_count ? thread_count : 1);
   }
+
+  // Record the calling worker's runtime error (called from a fallible prim).
+  void setPendingError(u32 kind, const char* op, u64 a, u64 b)
+  { pending_errors[omp_get_thread_num()] = PendingError{kind, op, a, b}; }
+  const PendingError& currentPendingError()
+  { return pending_errors[omp_get_thread_num()]; }
 
   ~Database()
   {
@@ -1078,7 +1098,13 @@ public:
 
   u64 intern_string(utf8string* s)
   {
-    return string_table->intern_value(s);
+    u64 id = string_table->intern_value(s);
+    // On a duplicate hit the table keeps the pre-existing utf8string and never
+    // takes ownership of our candidate, so free it (mirrors arena.h intern4).
+    // Otherwise every duplicate string production (+, substr, reload/merge)
+    // leaks an unbounded number of utf8strings on the hot path.
+    if (string_table->lookup_value(id) != s) delete s;
+    return id;
   }
 
   utf8string* lookup_string(u64 v)
@@ -1528,7 +1554,7 @@ public:
     continueStratum(s, unbounded, true, tofixpoint);
   }
 
-  std::string writeStructCSV(u64 v)
+  std::string writeStructCSV(u64 v, u32 cdepth = 0)
   {
     // We use std::string because we don't care about codepoints here and need mutability
     u64 struct_id = decode_struct_id(v);
@@ -1539,7 +1565,10 @@ public:
     for (u16 i = 0; i < ord.size(); ++i)
       rewrite_ord[ord[i]] = i;
     Index* node = rel->getIndex(ord, false)[buckethash(v)];
-    u64 tuple[256] = {0};
+    // Heap, not a 2KB `u64 tuple[256]` stack frame: with the frame shrunk the
+    // recursion (below, cdepth+1) tolerates far deeper struct/list values before
+    // the writeValCSV depth guard trips.
+    std::vector<u64> tuple(ord.size(), 0);
 
     // The lookup index leads with the id column (ord[0]==0); find the tuple
     // whose id == v (unique) and copy its columns (in index order).
@@ -1550,9 +1579,9 @@ public:
 	  tuple[i] = t[i];
     });
 
-    // Write tuple out in nominal order
+    // Write tuple out in nominal order (fields nest one level deeper)
     for (u16 i = 1; i < rewrite_ord.size(); ++i)
-      tupstr += writeValCSV(tuple[rewrite_ord[i]]) + " ";
+      tupstr += writeValCSV(tuple[rewrite_ord[i]], cdepth+1) + " ";
 
     tupstr[tupstr.size()-1] = ')';
     return tupstr;
@@ -1566,8 +1595,8 @@ public:
   // only by nesting depth, so fail loudly rather than overflow.
   std::string writeCNodeCSV(u64 v, u32 cdepth)
   {
-    if (cdepth > 256)
-      fatal("Collection nesting too deep to render (> 256 levels)");
+    // (Total value-nesting depth is bounded by the guard in writeValCSV, which
+    // every recursion here passes back through.)
     std::string s = "{";
     bool first = true;
     cnode_arena->foreach(v, [&](u64 k, u64 val)
@@ -1581,6 +1610,10 @@ public:
 
   std::string writeValCSV(u64 v, u32 cdepth = 0)
   {
+    // Bound the struct/collection render recursion so a pathologically deep
+    // value (e.g. a ~4000-deep cons list) fails cleanly instead of SIGSEGV.
+    if (cdepth > 4096)
+      fatal("Value nesting too deep to render (> 4096 levels)");
     if (is_s32(v))
       return std::to_string(s32_decode(v));
     else if (is_str(v))
@@ -1594,7 +1627,7 @@ public:
       return s;
     }
     else if (is_struct(v))
-      return writeStructCSV(v);
+      return writeStructCSV(v, cdepth);
     else if (is_cnode(v))
       return writeCNodeCSV(v, cdepth);
     else if (v == slog_lat_top)
@@ -1971,7 +2004,7 @@ private:
 	  // By saving it *in order* according to the iterator
 	  // these strings will end up with the same intern ids
 	  // if loaded again in this order exactly
-	  file.write((u8*)(*it).c_str(), (*it).size()+1);
+	  file.write((u8*)(*it).c_str(), (*it).byte_size()+1);  // byte, not codepoint, count (+NUL)
 	}
 	return true;
       }
@@ -2080,29 +2113,28 @@ private:
       {
 	GzReadFile file(path);
 	u8 byte = 0;
+	std::string str;
+	// Each record is content bytes terminated by a NUL; intern at every NUL
+	// (including an empty accumulator, so "" round-trips instead of
+	// swallowing the next record and shifting later intern ids).
 	while (file.read(&byte, 1))
 	{
-	  std::string str;
-	  if (byte) str += (char)byte;
-	  while(file.read(&byte, 1)
-	      && byte > 0)
-	    str += (char)byte;
-	  intern_string(new utf8string(str));
+	  if (byte == 0) { intern_string(new utf8string(str)); str.clear(); }
+	  else str += (char)byte;
 	}
+	if (!str.empty()) intern_string(new utf8string(str));  // unterminated tail (defensive)
       }
       else
       {
 	std::ifstream file(path, std::ios::binary);
 	u8 byte = 0;
+	std::string str;
 	while (file.read(reinterpret_cast<char*>(&byte), 1))
 	{
-	  std::string str;
-	  if (byte) str += (char)byte;
-	  while(file.read(reinterpret_cast<char*>(&byte), 1)
-		&& byte > 0)
-	    str += (char)byte;
-	  intern_string(new utf8string(str));
+	  if (byte == 0) { intern_string(new utf8string(str)); str.clear(); }
+	  else str += (char)byte;
 	}
+	if (!str.empty()) intern_string(new utf8string(str));  // unterminated tail (defensive)
       }
     }
   }

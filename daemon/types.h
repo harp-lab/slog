@@ -48,6 +48,11 @@ typedef int8_t s8;
 #define structflags  0xfff0000000000000
 #define typetopmask  0xffffffc000000000
 #define slog_null    0x7ff0003fffffffff
+// Reserved sentinel a fallible prim returns instead of aborting the daemon: the
+// generated code checks for it right after the call and, if seen, records an
+// (error (error_spec ...)) fact and abandons the deduction (docs/type-errors.md).
+// Distinct from slog_null ("drop this delta record") and slog_lat_top.
+#define slog_error   0x7ff0003ffffffffd
 
 
 // We use a NaN-based IEEE-754 Binary64 encoding of non-float values
@@ -77,7 +82,19 @@ typedef int8_t s8;
 
 // float
 #define is_float(x) ((((x) & NaNflags) != NaNflags) || (0 == ((x) & 0x000fffffffffffff)))
-#define float_encode(x) (std::bit_cast<u64>(x))
+// The NaN-box reuses the IEEE NaN space for tagged (interned/struct/prim)
+// values, so a genuine NaN result is unrepresentable: it fails is_float and a
+// negative NaN even reads as a struct id, aborting CSV export.  Reject it at the
+// point of production (sqrt(neg), 0.0/0.0, fmod(x,0), ...) with a clean
+// diagnostic rather than storing a corrupt word.  (+-inf is fine: mantissa 0.)
+inline u64 float_encode(double x)
+{
+  // NaN is unrepresentable in the NaN-box; return the reserved sentinel so the
+  // calling prim dispatcher records an ERR_NAN (error_spec ...) and abandons the
+  // deduction (prims.h) rather than storing a corrupt word.  (+-inf is fine.)
+  if (x != x) return slog_error;
+  return std::bit_cast<u64>(x);
+}
 #define float_decode(x) (std::bit_cast<double>(x))
 
 

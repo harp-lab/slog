@@ -28,7 +28,14 @@ inline u64 _prim_s32__0002d_unsafe(slog::Database* db, u64 x, u64 y)
 
 inline u64 _prim_s32__0002f_unsafe(slog::Database* db, u64 x, u64 y)
 { //  (/ s32 s32)
-  return s32_encode(s32_decode(x) / s32_decode(y));
+  s32 a = s32_decode(x), b = s32_decode(y);
+  // A data-derived zero divisor would SIGFPE-kill the whole (shared) daemon;
+  // INT_MIN/-1 is signed-overflow UB.  Record an (error_spec ...) and abandon
+  // the deduction (via slog_error) instead of aborting.
+  if (b == 0) { db->setPendingError(slog::ERR_DIV0, "/", x, y); return slog_error; }
+  if (b == -1 && a == (-2147483647 - 1))
+  { db->setPendingError(slog::ERR_INT_OVF, "/", x, y); return slog_error; }
+  return s32_encode(a / b);
 }
 
 inline u64 _prim_s32__0002a_unsafe(slog::Database* db, u64 x, u64 y)
@@ -38,7 +45,11 @@ inline u64 _prim_s32__0002a_unsafe(slog::Database* db, u64 x, u64 y)
 
 inline u64 _prim_s32__00025_unsafe(slog::Database* db, u64 x, u64 y)
 { //  (% s32 s32)
-  return s32_encode(s32_decode(x) % s32_decode(y));
+  s32 a = s32_decode(x), b = s32_decode(y);
+  if (b == 0) { db->setPendingError(slog::ERR_MOD0, "%", x, y); return slog_error; }
+  if (b == -1 && a == (-2147483647 - 1))
+  { db->setPendingError(slog::ERR_INT_OVF, "%", x, y); return slog_error; }
+  return s32_encode(a % b);
 }
 
 inline u64 _prim_s32_neg_unsafe(slog::Database* db, u64 x)

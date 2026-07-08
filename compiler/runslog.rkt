@@ -137,6 +137,15 @@
   ;; off the critical path entirely.
   (define continue-so (delay (action-so `(continue))))
   (define continue-boundary-so (delay (action-so `(continue-boundary))))
+  ;; Error-fact watch (docs/type-errors.md): the default run policy is to drive
+  ;; every stratum to fixpoint (hard-stopping only on the memory cap, below), but
+  ;; to WARN on stdout as runtime-error facts surface.  We dump the reserved
+  ;; `error` relation at each stratum fixpoint and warn on any fact not seen
+  ;; before -- `error` is cumulative and reloaded across strata, so dedup by
+  ;; content avoids re-warning.  The dump action is a read-only, single-round
+  ;; query (safe against even a suspended snapshot).
+  (define dump-errors-so (delay (action-so `(dump-rel error))))
+  (define warned-errors (make-hash))
 
   ;; Force-kill the daemon if compilation or the run errors out after launch,
   ;; rather than leaving it orphaned (blocked reading stdin or mid-fixpoint).
@@ -178,6 +187,28 @@
     ;; Builds are already in flight on the pool; forcing stratum k's runnable
     ;; blocks only on k, while k+1.. build behind it.  A declaration-only program
     ;; has no strata.
+    ;; Dump `error` and warn (stdout) on any fact not warned about yet.  One
+    ;; send + read-until-sentinel; the dump action never calls continueRun, so it
+    ;; emits no (paused|fixpoint) and its lines arrive before anything else.
+    (define (check-errors! where)
+      (send-plugin (force dump-errors-so))
+      (let drain ()
+        (define l (read-line out))
+        (cond
+          [(eof-object? l) (void)]
+          [(regexp-match? #px"^\\(dumpdone " l) (void)]   ; sentinel: stop reading
+          [else
+           (define m (regexp-match #px"^\\(dumprow (.*)\\)\\s*$" l))
+           (cond
+             [m
+              (define fact (cadr m))
+              (unless (hash-has-key? warned-errors fact)
+                (hash-set! warned-errors fact #t)
+                (printf "WARNING: runtime error surfaced (~a): ~a\n" where fact)
+                (flush-output))]
+             [else (displayln l)])              ; defensive: unexpected line
+           (drain)])))
+
     (define (drive-stratum! sb tag)  ; poll one stratum to fixpoint; #t unless eof
       (define o2 (sbuild-o2-path sb))
       (define upgradeable? (and tiered? (eq? tag 'o0) o2))
@@ -185,7 +216,10 @@
         (define line (read-line out))
         (cond
           [(eof-object? line) #f]
-          [(regexp-match? #px"^\\(fixpoint " line) (displayln line) #t]
+          [(regexp-match? #px"^\\(fixpoint " line)
+           (displayln line)
+           (check-errors! "at fixpoint")   ; per-stratum; daemon idle -> query safe
+           #t]
           [(regexp-match? #px"^\\(paused " line)
            (displayln line)
            (cond

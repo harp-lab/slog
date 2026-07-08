@@ -6,20 +6,19 @@
 ;; module, into the builtin cons/nil constructors:
 ;;
 ;;   [a b c]     -->  (cons a (cons b (cons c (nil))))
-;;   [a b | T]   -->  (cons a (cons b T))
+;;   [a b t ...] -->  (cons a (cons b t))    ; postfix ... extends list t
 ;;   []          -->  (nil)
 ;;
-;; The parser leaves brackets as ([] e ...) application nodes, and `|`
-;; is an ordinary infix operator binding its two neighbours -- so a tail
-;; pattern arrives as ([] a (| b T)): the pipe wraps only the LAST
-;; element.  This pass reassociates exactly that shape -- a 2-ary pipe
-;; in the bracket's final argument -- into a cons tail.  A pipe anywhere
-;; else in the bracket's spine is an error HERE, deliberately: if it
-;; survived to an or-split (simplification, or the demand transform's
-;; split before scheduling), split-or-clauses recurses into every
-;; subterm and would silently cartesian-split the rule into wrong
-;; alternatives.  A pipe strictly inside an element subterm keeps the
-;; language's uniform nested-| or-split meaning and passes through.
+;; The parser leaves brackets as ([] e ...) application nodes.  A tail
+;; extension is written as a postfix ... on the FINAL element, which
+;; parses as ([] a b (... t)); split-extension pulls that base out.  The
+;; older `| T` tail syntax was REMOVED (triple-overloaded and neighbour-
+;; binding); a `|` anywhere in the bracket's spine now errors loudly HERE,
+;; deliberately: if it survived to an or-split (simplification, or the
+;; demand transform's split before scheduling), split-or-clauses recurses
+;; into every subterm and would silently cartesian-split the rule into
+;; wrong alternatives.  A pipe strictly inside an element subterm keeps
+;; the language's uniform nested-| or-split meaning and passes through.
 ;;
 ;; PLACEMENT (load-bearing, not stylistic): called from lift-type-envs
 ;; (modules.rkt) BEFORE the demand transform, so no (| ...) remains

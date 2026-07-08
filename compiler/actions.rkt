@@ -23,6 +23,7 @@
 (provide action-so)
 
 (require "tools.rkt")
+(require "utils.rkt")
 (require sha)
 
 (define (action-body spec)
@@ -71,10 +72,10 @@
      (define enc
        (for/list ([v (in-list vals)])
          (cond
-           [(string? v) (format "str_encode(db, \"~a\")" v)]
+           [(string? v) (format "str_encode(db, \"~a\")" (escape-c-string-literal v))]
            [(exact-integer? v) (format "s32_encode(~a)" v)]
            [(real? v) (format "float_encode(~a)" (exact->inexact v))]
-           [(symbol? v) (format "str_encode(db, \"~a\")" v)]
+           [(symbol? v) (format "str_encode(db, \"~a\")" (escape-c-string-literal (symbol->string v)))]
            [else (error 'action-so "unsupported lookup value: ~a" v)])))
      (string-append
       "  slog::Database* db = d->db();\n"
@@ -89,6 +90,20 @@
       "  });\n"
       (format "  d->emit(std::string(\"(found ~a \") + (found ? \"1\" : \"0\") + \")\");\n"
               rel))]
+    ;; Dump every tuple of `rel` (rendered like a CSV value) as one
+    ;; (dumprow <value>) line, terminated by (dumpdone <n>).  Read-only, so it
+    ;; is safe against a suspended snapshot; used by the driver's error-fact
+    ;; watch (compiler/runslog.rkt) to warn on newly-surfaced (error ...) facts.
+    [`(dump-rel ,rel)
+     (string-append
+      "  slog::Database* db = d->db();\n"
+      (format "  slog::Relation* r = db->getRelation(\"~a\");\n" rel)
+      "  size_t n = 0;\n"
+      "  if (r) slog::Database::forEachNominal(r, [&](const u64* row) {\n"
+      "    d->emit(std::string(\"(dumprow \") + db->writeValCSV(row[0]) + \")\");\n"
+      "    ++n;\n"
+      "  });\n"
+      "  d->emit(std::string(\"(dumpdone \") + std::to_string(n) + \")\");\n")]
     [`(sizes)
      (string-append
       "  std::vector<std::pair<std::string, slog::Relation*>> rels(\n"

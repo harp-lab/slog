@@ -23,6 +23,17 @@
 (require "utils.rkt")
 (require "params.rkt")
 (require "ir-shared.rkt")
+(require "type-system.rkt")   ; rule-has-fallible-prims?, prim-error-arms
+
+;; The rule's "basename:line" (1-based), baked into any runtime-error
+;; (error_spec ...) it reports.  Mirrors compile.rkt's rule-location; basename
+;; (not absolute path) so error facts don't vary with the checkout location.
+(define (rule-loc-string rule)
+  (match rule
+    [`(syn (prov (token ,_ (pos ,file ,line ,_ ...) ,_) ,_ ...) ,_ ...)
+     (define p (file-name-from-path (format "~a" file)))
+     (format "~a:~a" (if p (path->string p) file) (add1 line))]
+    [_ "<unknown>"]))
 
 ;; -----------------------------------------------------------------------
 ;; Clause views shared by the steps below.
@@ -77,6 +88,13 @@
                  (list->set (map join-rel (filter join-cl? heads)))
                  (if (ormap tycheck-cl? heads)
                      (set 'malformed_deduction)
+                     (set))
+                 ;; runtime-error arms are grown through a fallible prim's
+                 ;; side channel (emit_pending_error), not as rule heads, so
+                 ;; -- like malformed_deduction -- they must be marked dynamic
+                 ;; for the injected wrap rules (arm -> error) to see the delta.
+                 (if (rule-has-fallible-prims? rule)
+                     (list->set prim-error-arms)
                      (set)))))
   (define selections
     (foldl (add-select-sets rel-env) (seed-select-sets rel-env) rules))
@@ -534,4 +552,5 @@
   `(crule (pre ,@(map lower-op pre-cls))
           ,driver
           (body ,@ops)
-          (head ,@check-hops ,@emit-hops)))
+          (head ,@check-hops ,@emit-hops)
+          ,(rule-loc-string rule)))

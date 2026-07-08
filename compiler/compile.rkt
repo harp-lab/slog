@@ -179,10 +179,19 @@
   (define base-rules (stratum-rules stratum))
   (define checked?
     (for/or ([rule (in-set base-rules)]) (rule-has-tychecks? rule)))
+  ;; strata using a fallible prim also wire the runtime-error arms (docs/type-
+  ;; errors.md): a prim that hits bad data records an error_spec, wrapped to
+  ;; (error e) by the injected per-arm rules below, delta-driven in this fixpoint.
+  (define has-prims?
+    (for/or ([rule (in-set base-rules)]) (rule-has-fallible-prims? rule)))
+  (define active-arms
+    (append (if checked?   '(malformed_deduction) '())
+            (if has-prims? prim-error-arms        '())))
   (define rules
-    (if checked? (set-add base-rules (error-wrap-rule)) base-rules))
+    (for/fold ([rs base-rules]) ([arm (in-list active-arms)])
+      (set-add rs (error-wrap-rule-for-arm arm))))
   (define dynamic-rels
-    (for/fold ([acc (if checked? (set 'malformed_deduction) (set))])
+    (for/fold ([acc (list->set active-arms)])
               ([rule (in-set rules)])
       (set-union acc (rule-head-rels rule))))
   (match-define (cons planned rel-env+)

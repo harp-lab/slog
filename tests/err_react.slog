@@ -1,0 +1,10 @@
+;; A user rule reacts to an error fact in-language: catch the location of any
+;; division-by-zero error.  (Demonstrates the (error (error_spec ...)) surface.)
+table (d int)
+table (q int)
+table (caught str)
+facts
+(d 0)
+(d 5)
+rule (d X) (= Y (/ 10 X)) --> (q Y)
+rule (error (div_by_zero L A)) --> (caught L)

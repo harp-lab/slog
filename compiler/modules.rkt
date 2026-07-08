@@ -200,7 +200,24 @@
                ;; union for the shared ops (cmerge/cdel/cdiff/csize) and
                ;; the (cmap) empty-collection seed
                (type-env-union 'coll (set 'coll 'cset 'cmap))
+               ;; Runtime-error facts (docs/type-errors.md): a fallible prim that
+               ;; hits bad data (div/mod by 0, INT_MIN overflow, NaN, toint out of
+               ;; range, an `any`-typed type mismatch) records one of these
+               ;; error_spec arms in place of the deduction; a per-stratum rule
+               ;; wraps each as (error e), delta-driven within the same fixpoint.
+               ;; malformed_deduction (the head residual-check failure) is the
+               ;; seventh arm.  All arm names are reserved.
                (type-env-rel 'malformed_deduction `(struct str str int any))
+               (type-env-rel 'div_by_zero         `(struct str any))
+               (type-env-rel 'modulo_by_zero      `(struct str any))
+               (type-env-rel 'int_overflow        `(struct str any any))
+               (type-env-rel 'nan_result          `(struct str str any))
+               (type-env-rel 'toint_range         `(struct str any))
+               (type-env-rel 'type_mismatch       `(struct str str any any))
+               (type-env-union 'error_spec
+                               (set 'error_spec 'malformed_deduction 'div_by_zero
+                                    'modulo_by_zero 'int_overflow 'nan_result
+                                    'toint_range 'type_mismatch))
                (type-env-rel 'error `(table any)))))
 
 ;; -----------------------------------------------------------------------
@@ -364,8 +381,10 @@
       (error (format "The name ~a is a builtin list constructor (bracket syntax [x y | t] denotes cons/nil lists); remove the declaration" name)))
     (when (memq name '(cset cmap coll))
       (error (format "The name ~a is a builtin collection base type (native set/map values, docs/primitives.md M2.3); remove the declaration" name)))
-    (when (memq name '(error malformed_deduction))
-      (error (format "The name ~a is reserved for the runtime type-error machinery ((error e) facts wrapping malformed_deduction structs); remove the declaration" name))))
+    (when (memq name '(error error_spec malformed_deduction div_by_zero
+                       modulo_by_zero int_overflow nan_result toint_range
+                       type_mismatch))
+      (error (format "The name ~a is reserved for the runtime type-error machinery ((error (error_spec ...)) facts); remove the declaration" name))))
 
   (define (extract-type-env ast [env base-type-env])
     (match ast

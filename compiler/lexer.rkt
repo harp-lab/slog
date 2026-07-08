@@ -68,8 +68,13 @@
              [(:: "\"" (:* (:or (:: "\\" any-char) (char-complement (:or "\"")))) "\"")
               ; not sure of the right way to process escape sequences but this works for now
               (emit-token 'str (string-append "\"" (with-input-from-string lexeme read) "\""))]
-             ; numbers
-             [(:or (:: (:* (:/ "0" "9")) "." (:+ (:/ "0" "9"))) (:+ (:/ "0" "9")))
+             ; numbers -- an optional leading '-' is part of the literal ONLY
+             ; when digits (or .digits) follow immediately, so `-5`/`-1.0` are
+             ; negative literals while a bare `-` (before a space/paren, as in
+             ; `(- a b)`) still lexes as the operator below.  Longest-match makes
+             ; `-5` beat the `-` operator lexeme.  (No space-less infix like
+             ; `1-2` exists in the language -- arithmetic is s-expr `(- 1 2)`.)
+             [(:: (:? "-") (:or (:: (:* (:/ "0" "9")) "." (:+ (:/ "0" "9"))) (:+ (:/ "0" "9"))))
               (emit-token 'num lexeme)]
              ; identifiers
              [(:: (:or (:/ "A" "Z") (:/ "a" "z") (:/ "0" "9") "_")
