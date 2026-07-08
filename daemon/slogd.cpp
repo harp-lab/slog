@@ -54,6 +54,34 @@ namespace {
     constexpr u32 MAX_THREADS = 256;
 }
 
+// Out-of-line definitions of the runtime index factories (declared in index.h).
+// Keeping the 1..32 arity dispatch ladders here means they are instantiated
+// exactly once -- in this daemon binary -- instead of in every generated plugin
+// .so (which otherwise paid to instantiate BTreeIndex<1..32> and
+// BTreeMapIndex<1..32> even though it only ever uses a handful of arities).
+// Plugins resolve these through slogd's exported dynamic symbols (the Makefile
+// links slogd with -rdynamic).  See docs/fast-compile.md §7.1.
+namespace slog {
+Index* makeIndex(u16 arity)
+{
+  if (arity == 0 || arity > max_daemon_arity)
+    fatal("Relation arity beyond daemon-side index support ("
+          + std::to_string(arity) + ")");
+  return makeIndexRec<max_daemon_arity>(arity);
+}
+
+Index* makeMapIndex(u16 keyarity, u32 kind,
+                    bool hf, u64 fw, bool hc, u64 cw,
+                    const LatSpec* spec, CollectionArena* arena)
+{
+  if (keyarity == 0 || keyarity > max_daemon_arity)
+    fatal("Lattice key arity beyond daemon-side index support ("
+          + std::to_string(keyarity) + ")");
+  return makeMapIndexRec<max_daemon_arity>(keyarity, kind, hf, fw, hc, cw,
+                                           spec, arena);
+}
+}
+
 static void send_msg(int sock, const std::string& msg)
 {
     send(sock, msg.c_str(), msg.length(), 0);
@@ -112,6 +140,8 @@ static int run_stdin(u32 num_threads)
         // still exists for parameterized budgets.
         if (line == "(continue)")
             daemon->continueRun();
+        else if (line == "(continue-boundary)")
+            daemon->continueToBoundary();
         else if (!line.empty())
             run_plugin(daemon, line, so_handles);
     }
@@ -190,8 +220,12 @@ static int run_tcp(u32 num_threads, int port)
                 break;
             }
             // (continue): one bounded unit of work, no plugin (docs/pausing.md §5).
+            // (continue-boundary): the same but stop at the next iteration
+            // boundary (docs/fast-compile.md §4), the hot-swap-safe stop point.
             if (line == "(continue)")
                 daemon->continueRun();
+            else if (line == "(continue-boundary)")
+                daemon->continueToBoundary();
             else if (!line.empty())
                 run_plugin(daemon, line, so_handles);
         }

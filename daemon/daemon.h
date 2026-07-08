@@ -145,6 +145,24 @@ public:
   {
     if (database->isSuspended())
     {
+      // Hot-swap upgrade (docs/fast-compile.md §4): a freshly-compiled plugin
+      // for the SAME stratum, arriving while that stratum is parked at a clean
+      // iteration boundary, replaces the currently-running (e.g. -O0) one.  Hand
+      // back the LIVE Stratum with its task lists emptied; the caller then
+      // re-registers the identical relations (addRelation guarded), indices
+      // (addIndex idempotent), and tasks, and its trailing continueRun resumes
+      // the fixpoint with the new code.  No reload happens -- the staged delta
+      // and every index stay live, and the replacement's tasks bind() to them.
+      const Stratum* susp = database->suspendedStratum();
+      if (susp && susp->name == name
+          && database->suspendPosition() == RUN_AT_BOUNDARY)
+      {
+        Stratum* s = const_cast<Stratum*>(susp);
+        s->clearForUpgrade();
+        return s;
+      }
+      // Any other suspended state -- a different stratum, or a mid-read park
+      // whose continuations point into the old .so -- is not swappable.
       emit("(error suspended \"beginStratum is refused while a stratum is "
            "suspended; continue to fixpoint first\")");
       return nullptr;
@@ -192,6 +210,10 @@ public:
   void push(Stratum* s)
   {
     if (s == nullptr) return;
+    // Idempotent: a hot-swap upgrade plugin re-pushes the SAME Stratum object
+    // beginStratum handed back (docs/fast-compile.md §4).  Re-adding it would
+    // duplicate it in the pipeline and churn scc_id / next_unrun; skip.
+    for (Stratum* p : pipeline) if (p == s) return;
     s->scc_id = (u32)pipeline.size();
     pipeline.push_back(s);
   }
@@ -212,6 +234,20 @@ public:
   // The no-argument form uses the (env-configurable) default budget, so both
   // the first unit a plugin requests and a bare (continue) poll respect it.
   void continueRun() { continueRun(default_budget); }
+
+  // Continue, but force a suspend at the next clean iteration boundary (the only
+  // hot-swap-safe stop point) regardless of the time budget -- docs/fast-compile
+  // §4.  The tiered-compilation driver polls this (via a (continue-boundary)
+  // action) to bring a mid-read-paused stratum to RUN_AT_BOUNDARY before sending
+  // the -O2 replacement .so.  Uses the default (env-configurable) budget so a
+  // memory trip still wins and aborts as usual.
+  void continueToBoundary()
+  {
+    RunBudget b = default_budget;
+    b.stop_at_boundary = true;
+    continueRun(b);
+  }
+
   void continueRun(RunBudget b)
   {
     const bool suspended = database->isSuspended();

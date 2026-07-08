@@ -61,7 +61,7 @@ public:
 };
 
 template <>
-u32 fasthash<cnode>(const cnode& n)
+inline u32 fasthash<cnode>(const cnode& n)
 {
   // FNV-1a over the 32 raw bytes (the scheme fasthash<utf8string> uses)
   u32 hash = 2166136261u;

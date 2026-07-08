@@ -188,13 +188,13 @@ inline Index* makeIndexRec(u16 arity)
                         : makeIndexRec<A - 1>(arity);
 }
 
-inline Index* makeIndex(u16 arity)
-{
-  if (arity == 0 || arity > max_daemon_arity)
-    fatal("Relation arity beyond daemon-side index support ("
-          + std::to_string(arity) + ")");
-  return makeIndexRec<max_daemon_arity>(arity);
-}
+// Defined out-of-line in slogd.cpp (not inline here) so the 1..32 arity ladder
+// is instantiated ONCE in the daemon binary rather than in every generated
+// plugin .so.  Plugins reach it through the daemon's exported symbols (slogd is
+// linked -rdynamic); generated code instantiates only the specific arities it
+// uses via Relation::addIndex<A>.  Measured: this alone cut a median stratum's
+// clang -O2 from ~10s to ~4.6s (docs/fast-compile.md §7.1).
+Index* makeIndex(u16 arity);
 
 // Runtime payload-map construction (lattice relations opened from disk with
 // no program loaded): keyarity = storage arity - 1, plus the lattice
@@ -225,16 +225,11 @@ inline Index* makeMapIndexRec(u16 keyarity, u32 kind,
     return makeMapIndexRec<KA - 1>(keyarity, kind, hf, fw, hc, cw, spec, arena);
 }
 
-inline Index* makeMapIndex(u16 keyarity, u32 kind,
-                           bool hf, u64 fw, bool hc, u64 cw,
-                           const LatSpec* spec = nullptr,
-                           CollectionArena* arena = nullptr)
-{
-  if (keyarity == 0 || keyarity > max_daemon_arity)
-    fatal("Lattice key arity beyond daemon-side index support ("
-          + std::to_string(keyarity) + ")");
-  return makeMapIndexRec<max_daemon_arity>(keyarity, kind, hf, fw, hc, cw,
-                                           spec, arena);
-}
+// Out-of-line in slogd.cpp (see makeIndex above): the payload-map arity ladder
+// is instantiated once in the daemon, not in every plugin.
+Index* makeMapIndex(u16 keyarity, u32 kind,
+                    bool hf, u64 fw, bool hc, u64 cw,
+                    const LatSpec* spec = nullptr,
+                    CollectionArena* arena = nullptr);
 
 }

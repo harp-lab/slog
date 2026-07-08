@@ -104,7 +104,10 @@ expect "idle-idempotent" "(idle)" out/pause-idle.log
 # them under SLOG_MAX_MS=1 (every stratum suspends on its first unit) WITHOUT
 # continuing, followed by a mutating (open) -- refused -- and a read-only
 # (lookup) -- allowed against the suspended snapshot.
-mapfile -t SOS < <(grep -oE 'build/[a-f0-9]+\.so' out/pause-unb.log | grep -v 'action-' | sort -u)
+# Stratum plugins the driver sent: in tiered mode these are the -O0 artifacts
+# (build/<hash>.O0.so); a cached run sends the plain build/<hash>.so.  Either
+# form is a valid stratum plugin to replay.
+mapfile -t SOS < <(grep -oE 'build/[a-f0-9]+(\.O0)?\.so' out/pause-unb.log | grep -v 'action-' | sort -u)
 OPEN_SO=$(racket -e '(require (file "'"$PWD"'/compiler/actions.rkt")) (displayln (action-so (list (quote open) "pause_nodb")))' 2>/dev/null)
 LOOKUP_SO=$(racket -e '(require (file "'"$PWD"'/compiler/actions.rkt")) (displayln (action-so (list (quote lookup) (quote path) 1 2)))' 2>/dev/null)
 if [ "${#SOS[@]}" -ge 1 ] && [ -n "$OPEN_SO" ] && [ -n "$LOOKUP_SO" ]; then

@@ -644,10 +644,28 @@
 ;; -----------------------------------------------------------------------
 ;; Whole-program emission.
 
-;; Render one stratum's plugin: its slog_plugin() builds the Stratum object
-;; (relations/indices registered on the database; write/read/intern tasks
-;; and dynamic-relation metadata on the stratum), pushes it onto the
-;; daemon's pipeline, and runs everything not yet run.
+;; A large stratum's read-phase rules are split across this many translation
+;; units so clang builds them in parallel (docs/fast-compile.md §6): the -O2
+;; optimizer costs ~0.4s/rule and does not parallelize within one TU.  Strata at
+;; or below this many rules stay a single TU (no splitting overhead) -- the vast
+;; majority.  Both optimization tiers read the same .cpp files, so the O0 and O2
+;; task registration order is identical (required for the hot swap).
+(define chunk-size 48)
+
+(define (chunk-list lst n)
+  (if (<= (length lst) n) (list lst) (cons (take lst n) (chunk-list (drop lst n) n))))
+
+;; Render one stratum's plugin.  Returns EITHER a single C++ string (one TU, the
+;; common case) or, for a large stratum, a list of (suffix . contents) pairs:
+;; the spine (suffix "") plus part TUs "p1".."pN", all linked into one .so.
+;;
+;; The spine's slog_plugin() builds the Stratum object (relations/indices on the
+;; database; write/intern tasks + dynamic-rel metadata on the stratum), then
+;; calls each part's slog_rules_<hash>_K(db, s) to register that chunk's
+;; read-phase tasks, then pushes and runs.  A rule's emitted code references only
+;; `s`, `db`, and the interned-constant globals `v_<g>` (everything else arrives
+;; through the header include), so a part TU needs only the includes plus
+;; `extern u64 v_<g>;` -- the single definition of each lives in the spine.
 (define (write-cpp cprog dbmanifest stratum-name)
   (define dynamic-rels (cprog-dynamic-rels cprog))
   (define constants (cprog-constants cprog))
@@ -669,40 +687,85 @@
         [`(lat ,_ ,arity ,spec)
          `(lattice ,name ,arity ,(cdr spec) ,(range arity))])))
 
-  (string-append
-   "\n"
-   "#include \"../daemon/daemon.h\"\n"
-   "#include \"../daemon/operators.h\"\n"
-   "\n\n"
-   ;; constants as global variables, initialized in slog_plugin
-   (apply string-append
-          (for/list ([(v g) (in-hash constants)])
-            (format "u64 v_~a;\n" g)))
-   "\n\n"
-   "extern \"C\" void slog_plugin(slog::Daemon* d)\n{\n"
-   "  slog::Database* db = d->db();\n"
-   ;; beginStratum first: it performs the deferred between-strata reload, so
-   ;; the index registrations below happen against the reloaded database
-   (format "  slog::Stratum* s = d->beginStratum(\"~a\");\n" stratum-name)
-   ;; beginStratum returns null (and emits an error) if a stratum is suspended;
-   ;; bail before touching s (docs/pausing.md §4 guardrail)
-   "  if (s == nullptr) return;\n"
-   "  slog::Relation* r;\n"
-   (apply string-append
-          (for/list ([(v g) (in-hash constants)])
-            (match v
-              [(? string?) (format "  v_~a = str_encode(db,\"~a\");\n" g v)]
-              [(? exact-integer?) (format "  v_~a = s32_encode(~a);\n" g v)]
-              [(? inexact-real?) (format "  v_~a = float_encode(~a);\n" g v)])))
-   (apply string-append (map add-rel-decl (append decls manifest-decls)))
-   (apply string-append (map (add-rule dynamic-rels) crules))
-   ;; stratum metadata: the relations this stratum's rules grow
-   (apply string-append
-          (for/list ([rel (in-list (sort (set->list dynamic-rels)
-                                         string<? #:key symbol->string))])
-            (format "  s->addDynamicRel(\"~a\");\n" rel)))
-   "  d->push(s);\n"
-   ;; one bounded unit of work (docs/pausing.md §5); the client drives the
-   ;; continue loop until this stratum's (fixpoint ...) via (continue ...) actions
-   "  d->continueRun();\n"
-   "}\n\n"))
+  (define include-block
+    (string-append "\n"
+                   "#include \"../daemon/daemon.h\"\n"
+                   "#include \"../daemon/operators.h\"\n"
+                   "\n\n"))
+  ;; the single definitions (spine) and the matching extern declarations (parts)
+  (define const-defs
+    (apply string-append
+           (for/list ([(v g) (in-hash constants)]) (format "u64 v_~a;\n" g))))
+  (define const-externs
+    (apply string-append
+           (for/list ([(v g) (in-hash constants)]) (format "extern u64 v_~a;\n" g))))
+  (define const-init
+    (apply string-append
+           (for/list ([(v g) (in-hash constants)])
+             (match v
+               [(? string?) (format "  v_~a = str_encode(db,\"~a\");\n" g v)]
+               [(? exact-integer?) (format "  v_~a = s32_encode(~a);\n" g v)]
+               [(? inexact-real?) (format "  v_~a = float_encode(~a);\n" g v)]))))
+  (define rel-decls
+    (apply string-append (map add-rel-decl (append decls manifest-decls))))
+  (define dynrel-meta
+    (apply string-append
+           (for/list ([rel (in-list (sort (set->list dynamic-rels)
+                                          string<? #:key symbol->string))])
+             (format "  s->addDynamicRel(\"~a\");\n" rel))))
+  (define emit-rule (add-rule dynamic-rels))
+  (define (part-fn k) (format "slog_rules_~a_~a" stratum-name k))
+
+  ;; slog_plugin's body, given the block that registers the read tasks (inline
+  ;; for one TU; a sequence of part-function calls when split).
+  (define (plugin-body register-reads)
+    (string-append
+     "extern \"C\" void slog_plugin(slog::Daemon* d)\n{\n"
+     "  slog::Database* db = d->db();\n"
+     ;; beginStratum first: it performs the deferred between-strata reload, so
+     ;; the index registrations below happen against the reloaded database
+     (format "  slog::Stratum* s = d->beginStratum(\"~a\");\n" stratum-name)
+     ;; null (and an emitted error) if a stratum is suspended and this is not a
+     ;; hot-swap upgrade; bail before touching s (docs/pausing.md §4 guardrail)
+     "  if (s == nullptr) return;\n"
+     "  slog::Relation* r;\n"
+     const-init
+     rel-decls
+     register-reads
+     dynrel-meta
+     "  d->push(s);\n"
+     ;; one bounded unit of work (docs/pausing.md §5); the client drives the
+     ;; continue loop until this stratum's (fixpoint ...) via (continue ...) actions
+     "  d->continueRun();\n"
+     "}\n\n"))
+
+  (cond
+    ;; Single TU (the common case): read tasks emitted inline in slog_plugin.
+    [(<= (length crules) chunk-size)
+     (string-append include-block const-defs "\n\n"
+                    (plugin-body (apply string-append (map emit-rule crules))))]
+    ;; Split: spine + part TUs (docs/fast-compile.md §6).
+    [else
+     (define chunks (chunk-list crules chunk-size))
+     (define nparts (length chunks))
+     (define fwd-decls
+       (apply string-append
+              (for/list ([k (in-range 1 (add1 nparts))])
+                (format "void ~a(slog::Database* db, slog::Stratum* s);\n" (part-fn k)))))
+     (define calls
+       (apply string-append
+              (for/list ([k (in-range 1 (add1 nparts))])
+                (format "  ~a(db, s);\n" (part-fn k)))))
+     (define spine
+       (cons ""
+             (string-append include-block const-defs "\n" fwd-decls "\n\n"
+                            (plugin-body calls))))
+     (define parts
+       (for/list ([chunk (in-list chunks)] [k (in-naturals 1)])
+         (cons (format "p~a" k)
+               (string-append include-block const-externs "\n\n"
+                              (format "void ~a(slog::Database* db, slog::Stratum* s)\n{\n"
+                                      (part-fn k))
+                              (apply string-append (map emit-rule chunk))
+                              "}\n\n"))))
+     (cons spine parts)]))

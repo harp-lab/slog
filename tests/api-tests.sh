@@ -197,7 +197,9 @@ timeout 300 racket slog.rkt --no-banner --out-db apimrgc tests/api/mergec.slog \
   > out/api-mergec.log 2>&1
 timeout 300 racket slog.rkt --no-banner -d apimrga tests/api/mergerun.slog \
   > out/api-mergerun-compile.log 2>&1
-RUNSO="$(grep -oE '/[^ ]*/build/[a-f0-9]+\.so' out/api-mergerun-compile.log | head -1)"
+# The stratum plugin the driver sent: tiered mode logs the -O0 artifact
+# (build/<hash>.O0.so), a cached run the plain build/<hash>.so; either replays.
+RUNSO="$(grep -oE '/[^ ]*/build/[a-f0-9]+(\.O0)?\.so' out/api-mergerun-compile.log | head -1)"
 timeout 300 racket tests/api/send-actions.rkt \
   "open:apimrga" "import:apimrgc" "so:$RUNSO" sizes \
   > out/api-importrun.log 2>&1

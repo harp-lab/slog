@@ -3,7 +3,12 @@
 (provide convert-db-folder
          delete-folder
          build-so
-         finish-jit
+         compile-one
+         ensure-pch
+         pooled-eager
+         o2-build-command
+         spawn-detached-o2-batch
+         call-with-atomic-output
          fullpath
          ensure-slogd-exists
          slogd-argv
@@ -12,6 +17,8 @@
 
 (require "utils.rkt")
 (require racket/runtime-path)
+(require racket/future)   ; processor-count
+(require sha)
 
 (define-runtime-path daemon-dir "../daemon")
 (define-runtime-path compiler-dir ".")
@@ -240,83 +247,273 @@
        (eprintf "warning: systemd-run not found on PATH; launching slogd without a ~a memory cap\n" cap))
      (cons slogd extra-args)]))
 
+;; The daemon binary is STALE if missing or older than any daemon source (.h or
+;; .cpp).  A stale slogd is not merely a perf issue: generated .so's inline the
+;; daemon's data-structure layouts (wrong offsets if headers changed) and, since
+;; makeIndex/makeMapIndex moved out-of-line, resolve those symbols from slogd's
+;; exported dynamic table -- an old slogd built before that change lacks them, so
+;; a plugin's orphan-restore path would fail at runtime.  Rebuild rather than
+;; only-when-absent (the Makefile's own slogd: slogd.cpp $(HEADERS) rule agrees).
+(define (slogd-stale?)
+  (define exe "daemon/slogd")
+  (or (not (file-exists? exe))
+      (let ([m (file-or-directory-modify-seconds exe)])
+        (for/or ([f (in-list (directory-list daemon-dir))]
+                 #:when (and (regexp-match? #rx"\\.(h|cpp)$" (path->string f))
+                             (file-exists? (build-path daemon-dir f))))
+          (> (file-or-directory-modify-seconds (build-path daemon-dir f)) m)))))
+
 (define (ensure-slogd-exists)
-  (when (not (file-exists? "daemon/slogd"))
+  (when (slogd-stale?)
+    ;; Redirect make's stdout+stderr to a log file (NOT closed pipes -- closing
+    ;; the read end mid-build SIGPIPEs the compiler and fails the build); surface
+    ;; the log on failure.
+    (make-directory* (fullpath "build"))
+    (define log-path (fullpath "build/slogd-build.log"))
+    (define logport (open-output-file log-path #:exists 'replace))
     (define-values (sp out in err)
-      (subprocess #f #f #f (find-executable-path "make") "-C" "daemon"))
-    (close-input-port out)
+      (subprocess logport #f logport (find-executable-path "make") "-C" "daemon"))
     (close-output-port in)
-    (close-input-port err)
     (subprocess-wait sp)
+    (close-output-port logport)
     (when (> (subprocess-status sp) 0)
-      (error "Something went wrong compiling the daemon!"))))
+      (error (format "Something went wrong compiling the daemon!\n~a"
+                     (file->string log-path))))))
 
-(define (build-so cpp-path
-                  [so-path (fullpath "build/temp.so")]
-                  ;; Must match the daemon's compiler (daemon/Makefile uses
-                  ;; clang++) so the .so and daemon share one OpenMP runtime --
-                  ;; the .so calls omp_get_thread_num().
-                  [cxx-path (or (find-executable-path "clang++")
-                                (find-executable-path "c++"))])
-  (unless cxx-path
-    (error "For reasons unknown, no C++ compiler has been found in PATH."))
+;; The C++ compiler used for every generated .so.  Must match the daemon's
+;; (daemon/Makefile uses clang++) so the .so and daemon share one OpenMP
+;; runtime -- the .so calls omp_get_thread_num().
+(define the-cxx-path
+  (or (find-executable-path "clang++") (find-executable-path "c++")))
 
-  ;; Get system-specific flags like the Makefile does
-  (define uname-s (string-trim (with-output-to-string (lambda () (system "uname -s")))))
-  (define extra-flags
+;; System-specific link/include flags, computed once (each shells out).
+(define extra-cxx-flags
+  (let ([uname-s (string-trim (with-output-to-string (lambda () (system "uname -s"))))])
     (cond
       [(string=? uname-s "Darwin")
        (define brew-prefix (string-trim (with-output-to-string (lambda () (system "brew --prefix")))))
        (list (format "-I~a/include" brew-prefix) (format "-L~a/lib" brew-prefix) "-lz")]
-      [(string=? uname-s "Linux") (list "-lz")]
-      [else (list "-lz")]))
+      [else (list "-lz")])))
 
+;; Debug info is off by default (measured ~30% of a stratum's clang time,
+;; docs/fast-compile.md §7.3); set SLOG_DEBUG=1 to emit -g.
+(define (debug-build?)
+  (let ([v (getenv "SLOG_DEBUG")]) (and v (not (string=? v "")) #t)))
+
+;; The compile flags shared by strata, actions, and the precompiled header.
+;; `opt` is a string like "-O0"/"-O2".  -ffp-contract=off (matched by the
+;; daemon Makefile) keeps float primitives bit-identical across the daemon and
+;; every plugin -- and across an -O0 plugin and its -O2 hot-swap replacement
+;; (docs/fast-compile.md §7.5).  -Idaemon lets the vendored tlx headers'
+;; internal <tlx/...> includes resolve.
+(define (base-cxx-flags opt)
+  (append (list "-std=c++20" "-fPIC" "-Idaemon" "-fopenmp" "-ffp-contract=off"
+                "-ferror-limit=1" opt)
+          (if (debug-build?) (list "-g") '())))
+
+;; ---- precompiled header (docs/fast-compile.md §7.2) --------------------
+;; The daemon headers parse in ~2.4s per TU; a PCH cuts that to ~0.5s.  One PCH
+;; per (daemon-headers-fingerprint x opt x debug), built lazily into build/ and
+;; reused.  Best-effort: any failure returns #f and builds fall back to plain
+;; header inclusion.  clang PCHs are opt/flag-sensitive, so the key encodes opt
+;; and -g, and the fingerprint invalidates it when a daemon header changes.
+
+(define pch-build-lock (make-semaphore 1))
+(define daemon-fp8
+  (substring (bytes->hex-string
+              (sha256 (string->bytes/utf-8 daemon-headers-fingerprint)))
+             0 8))
+(define (pch-path opt)
+  (fullpath (format "build/slog-~a-~a~a.pch"
+                    daemon-fp8 (substring opt 1) (if (debug-build?) "g" ""))))
+
+;; Newest mtime among the daemon headers (computed once; headers do not change
+;; mid-run).  clang validates a consumed PCH by its inputs' mtimes, so a PCH
+;; older than any header is rejected -- even when the header's CONTENT is
+;; unchanged (a git checkout / touch bumps mtime only).  Since our PCH cache key
+;; is content-based (daemon_fp8), such a mtime-only bump would otherwise reuse a
+;; now-rejected PCH and wedge every compile; we rebuild it instead.
+(define daemon-headers-newest-mtime
+  (apply max 0
+         (for/list ([f (in-list (directory-list daemon-dir))]
+                    #:when (and (regexp-match? #rx"\\.h$" (path->string f))
+                                (file-exists? (build-path daemon-dir f))))
+           (file-or-directory-modify-seconds (build-path daemon-dir f)))))
+(define (pch-fresh? p)
+  (and (file-exists? p)
+       (>= (file-or-directory-modify-seconds p) daemon-headers-newest-mtime)))
+
+;; Compile umbrella (daemon.h + operators.h) to a PCH for `opt`; return the path
+;; or #f if the PCH could not be built.  Idempotent and concurrency-safe.
+(define (ensure-pch opt)
+  (define p (pch-path opt))
+  (cond
+    [(pch-fresh? p) p]
+    [else
+     (call-with-semaphore pch-build-lock
+       (lambda ()
+         (cond
+           [(pch-fresh? p) p]        ; another thread just (re)built it
+           [else
+            (with-handlers ([exn:fail? (lambda (_) #f)])
+              (define umbrella (fullpath "build/slog-pch-umbrella.hpp"))
+              ;; Write ONCE and never rewrite: clang invalidates a PCH when its
+              ;; source header's mtime changes, so if the -O0 and -O2 ensure-pch
+              ;; calls both rewrote this the first-built PCH would go stale.
+              ;; (Serialized by pch-build-lock, so the file-exists? test is safe.)
+              (unless (file-exists? umbrella)
+                (with-output-to-file umbrella #:exists 'replace
+                  (lambda ()
+                    (display "#include \"../daemon/daemon.h\"\n")
+                    (display "#include \"../daemon/operators.h\"\n"))))
+              (define tmp (path->string (make-temporary-file "pch~a.tmp" #f (fullpath "build"))))
+              (define logport (open-output-file (string-append tmp ".log") #:exists 'replace))
+              (define-values (sp out in err)
+                (apply subprocess logport #f logport the-cxx-path
+                       "-x" "c++-header" umbrella
+                       (append (base-cxx-flags opt) (list (format "-o~a" tmp)))))
+              (close-output-port in)
+              (subprocess-wait sp)
+              (close-output-port logport)
+              (delete-file* (string-append tmp ".log"))
+              (cond
+                [(= 0 (subprocess-status sp))
+                 (rename-file-or-directory tmp p #t)
+                 p]
+                [else (delete-file* tmp) #f]))])))]))
+
+(define (delete-file* p) (when (file-exists? p) (with-handlers ([exn:fail? void]) (delete-file p))))
+
+;; ---- compiling one .cpp into one .so ----------------------------------
+;; A single clang++ invocation, redirecting stdout+stderr to a per-build log
+;; file so many can run concurrently without a shared pipe filling and
+;; deadlocking (docs/fast-compile.md §5).  Compiles to a unique temp then
+;; atomically renames onto so-path, so a concurrent daemon that has already
+;; dlopen'd an older so-path (the -O0->-O2 upgrade case) never sees a torn file.
+;; Returns (values success? log-string).
+(define (compile-one cpp-paths so-path opt pch)
+  (unless the-cxx-path
+    (error "For reasons unknown, no C++ compiler has been found in PATH."))
+  (define tmp (path->string (make-temporary-file "so~a.tmp" #f (fullpath "build"))))
+  (define log-path (string-append tmp ".log"))
+  (define logport (open-output-file log-path #:exists 'replace))
+  (define argv
+    (append (list the-cxx-path)
+            (if (list? cpp-paths) cpp-paths (list cpp-paths))
+            (base-cxx-flags opt)
+            (if pch (list "-include-pch" pch) '())
+            (list "-shared" (format "-o~a" tmp))
+            extra-cxx-flags))
   (define-values (sp out in err)
-    (apply subprocess
-           #f
-           #f
-           #f
-           cxx-path
-           cpp-path
-           "-std=c++20"
-           "-fPIC"
-           ;; daemon dir on the include path so the vendored tlx headers'
-           ;; internal <tlx/...> includes resolve (database.h -> index.h -> tlx).
-           "-Idaemon"
-           ;; The .so calls Relation::sendBatch, which uses omp_get_thread_num(),
-           ;; so it must link the same OpenMP runtime as the daemon.
-           "-fopenmp"
-           "-fmax-errors=1"
-           "-shared"
-           "-g"
-           ;; Operator templates fuse into one tight loop only once inlined;
-           ;; at -O0 each push operator would be a separate call per tuple.
-           "-O2"
-           (format "-o~a" so-path)
-           extra-flags))
-  (let loop () ; echo (debug) output from daemon
-    (define s (read-line err))
-    (when (not (eof-object? s))
-      (display s)
-      (newline)
-      (loop)))
-  (close-input-port out)
+    (apply subprocess logport #f logport argv))
   (close-output-port in)
-  (close-input-port err)
   (subprocess-wait sp)
-  (when (> (subprocess-status sp) 0)
-    (error "Something went wrong running c++!"))
+  (close-output-port logport)
+  (define log (file->string log-path))
+  (delete-file* log-path)
+  (define ok? (= 0 (subprocess-status sp)))
+  (if ok?
+      (rename-file-or-directory tmp so-path #t)
+      (delete-file* tmp))
+  (values ok? log))
+
+;; Synchronous build of one .cpp (or list of .cpp TUs linked into one .so).
+;; `opt` defaults to -O2 (the historical behavior); the tiered driver passes an
+;; explicit level.  `pch` is 'auto (build/reuse a PCH), #f (none), or a path.
+(define (build-so cpp-path
+                  [so-path (fullpath "build/temp.so")]
+                  #:opt [opt "-O2"]
+                  #:pch [pch 'auto])
+  (define pchp (cond [(eq? pch 'auto) (ensure-pch opt)] [else pch]))
+  (define-values (ok? log) (compile-one cpp-path so-path opt pchp))
+  ;; Only surface the clang log on failure -- on success it is at most warnings,
+  ;; and echoing it from a parallel build pool would interleave noisily on the
+  ;; console (and never touches the daemon protocol pipe regardless).
+  (unless ok? (error (format "Something went wrong running c++!\n~a" log)))
   so-path)
 
-(define (finish-jit lazy-pair)
-  (match lazy-pair
-    ['() '()]
-    [(cons (? string? phash) fut) (cons (fullpath (format "build/~a.so" phash)) fut)]
-    [(cons (list phash cprog cpp) fut)
-     (define cpp-path (fullpath (format "build/~a.cpp" phash)))
-     (with-output-to-file cpp-path #:exists 'replace (lambda () (display cpp)))
-     (with-output-to-file (fullpath (format "build/~a.cprog" phash))
-                          #:exists 'replace
-                          (lambda () (pretty-write cprog)))
-     (define so-path (build-so cpp-path (fullpath (format "build/~a.so" phash))))
-     (cons so-path fut)]))
+;; ---- bounded parallel build pool (docs/fast-compile.md §5) --------------
+;; Eager clang builds run concurrently, capped at the core count so a program's
+;; strata compile in parallel instead of one-at-a-time.  pooled-eager starts the
+;; work immediately in a pool thread and returns a thunk that blocks until it is
+;; done (re-raising any error), so the driver can force stratum k's build in
+;; pipeline order while k+1.. build behind it.
+(define build-parallelism (max 1 (processor-count)))
+(define build-sem (make-semaphore build-parallelism))
+(define (pooled-eager thunk)
+  (define result (box #f))
+  (define err (box #f))
+  (define done (make-semaphore 0))
+  (thread
+   (lambda ()
+     (with-handlers ([(lambda (_) #t) (lambda (e) (set-box! err e))])
+       (call-with-semaphore build-sem (lambda () (set-box! result (thunk)))))
+     (semaphore-post done)))
+  (lambda ()
+    (semaphore-wait done)
+    (semaphore-post done)            ; re-postable: force may be called again
+    (when (unbox err) (raise (unbox err)))
+    (unbox result)))
+
+;; Minimal POSIX single-quoting for one shell word (coercing paths to strings).
+(define (sh-q x)
+  (define s (if (path? x) (path->string x) (format "~a" x)))
+  (string-append "'" (regexp-replace* #rx"'" s "'\\\\''") "'"))
+
+;; Atomically (re)write a file: emit to a unique temp in build/ then rename over
+;; the target (same-dir rename is atomic on POSIX).  So a concurrent reader --
+;; e.g. another `racket slog.rkt` compiling the SAME content-addressed stratum
+;; under run-tests.sh -jN -- never sees a half-written .cpp/.cprog/.meta.
+(define (call-with-atomic-output path thunk)
+  (define tmp (path->string (make-temporary-file "w~a.tmp" #f (fullpath "build"))))
+  (with-output-to-file tmp #:exists 'replace thunk)
+  (rename-file-or-directory tmp path #t))
+
+;; The shell command for one background -O2 build: compile to a unique temp,
+;; then atomically rename it onto so-path (so a daemon that has already dlopen'd
+;; the -O0 .so at that path never sees a torn file), cleaning the temp either way.
+(define (o2-build-command cpp-paths so-path)
+  (define pchp (ensure-pch "-O2"))
+  (define tmp (path->string (make-temporary-file "o2~a.tmp" #f (fullpath "build"))))
+  (define argv (append (list the-cxx-path)
+                       (if (list? cpp-paths) cpp-paths (list cpp-paths))
+                       (base-cxx-flags "-O2")
+                       (if pchp (list "-include-pch" pchp) '())
+                       (list "-shared" (format "-o~a" tmp))
+                       extra-cxx-flags))
+  (string-append "nice -n 10 " (string-join (map sh-q argv) " ")
+                 " && mv -f " (sh-q tmp) " " (sh-q so-path)
+                 " ; rm -f " (sh-q tmp)))
+
+;; Run all background -O2 builds as ONE detached, bounded-parallel job
+;; (docs/fast-compile.md §2/§7).  A per-stratum detached process would let a
+;; many-stratum program spawn unbounded concurrent clang -O2's (memory pressure,
+;; no cgroup bound); instead a single detached bash driver runs the commands from
+;; a jobfile at most (cores/2) at a time.  Detached, so it outlives this driver
+;; (a Racket subprocess is not killed when its parent exits) and the .so's still
+;; land in the cache for next time.
+(define (spawn-detached-o2-batch commands)
+  (when (pair? commands)
+    (define jobfile (path->string (make-temporary-file "o2jobs~a.sh" #f (fullpath "build"))))
+    (with-output-to-file jobfile #:exists 'replace
+      (lambda () (for ([c (in-list commands)]) (displayln c))))
+    (define k (max 1 (quotient build-parallelism 2)))
+    ;; read -r (no quote processing) each line; eval it; cap concurrency with
+    ;; bash's wait -n.  Passed verbatim as bash's -c arg (no outer shell), so the
+    ;; jobfile lines' own single-quoting is the only quoting that matters.
+    (define script
+      (string-append
+       "K=" (number->string k) "\n"
+       "while IFS= read -r c; do\n"
+       "  eval \"$c\" &\n"
+       "  while [ \"$(jobs -rp | wc -l)\" -ge \"$K\" ]; do wait -n 2>/dev/null || wait; done\n"
+       "done < " (sh-q jobfile) "\n"
+       "wait\n"
+       "rm -f " (sh-q jobfile) "\n"))
+    (define devnull-out (open-output-file "/dev/null" #:exists 'append))
+    (define devnull-in (open-input-file "/dev/null"))
+    (define-values (sp o i e)
+      (subprocess devnull-out devnull-in devnull-out "/bin/bash" "-c" script))
+    (close-output-port devnull-out)
+    (close-input-port devnull-in)
+    (void)))

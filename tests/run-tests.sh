@@ -19,14 +19,32 @@ cd "$(dirname "$0")/.."
 
 UPDATE=0
 KEEP_CACHE=0
+# Run tests concurrently (docs/fast-compile.md §7): each test has its own out
+# dir, log, and daemon, and shares only the content-addressed build/ cache
+# (writes are temp+atomic-rename, so concurrent builds of the same hash are
+# safe).  Default a few in flight; override with -jN / --jobs N.
+JOBS="${SLOG_TEST_JOBS:-4}"
 TESTS=()
 for arg in "$@"; do
   case "$arg" in
     --update)     UPDATE=1 ;;
     --keep-cache) KEEP_CACHE=1 ;;
+    -j*)          JOBS="${arg#-j}" ;;
+    --jobs)       ;;                 # value handled below
+    [0-9]*)       JOBS="$arg" ;;     # bare number after --jobs
     *)            TESTS+=("$arg") ;;
   esac
 done
+[ -z "$JOBS" ] && JOBS=4
+
+# Tests compile at -O0 (fast, no background -O2): correctness is
+# optimization-independent, and -O0 runtime is fine at test scale.  A caller
+# can still export SLOG_OPT=2 to exercise the optimized path.
+export SLOG_OPT="${SLOG_OPT:-0}"
+
+# Build the daemon ONCE up front so the concurrent tests below don't race
+# `make` (each test's ensure-slogd-exists then finds it fresh and skips).
+make -C daemon >/dev/null 2>&1 || { echo "daemon build failed"; exit 1; }
 
 if [ ${#TESTS[@]} -eq 0 ]; then
   for t in tests/*.slog; do
@@ -48,12 +66,15 @@ if [ "$KEEP_CACHE" -eq 0 ]; then
   rm -rf build
 fi
 mkdir -p build out
+RESULTS="$(mktemp -d)"
+trap 'rm -rf "$RESULTS"' EXIT
 
-PASS=0
-FAIL=0
-FAILED_NAMES=()
-
-for t in "${TESTS[@]}"; do
+# Run one test: compile+run, then compare to (or update) its golden.  Writes a
+# single result line to $RESULTS/<name> ("PASS"/"UPDATED"/"FAIL <reason>") and
+# prints its own diagnostics; the parent aggregates.  Safe to run concurrently.
+run_one_test() {
+  local t="$1"
+  local name outdir logfile expected
   name="$(basename "$t" .slog)"
   outdir="out/test-$name"
   logfile="out/test-$name.log"
@@ -67,31 +88,27 @@ for t in "${TESTS[@]}"; do
   if ! timeout 900 racket slog.rkt --no-banner --debug-dir "$outdir" "$t" \
        > "$logfile" 2>&1; then
     echo "FAIL $name (run error; see $logfile)"
-    FAIL=$((FAIL+1)); FAILED_NAMES+=("$name")
-    continue
+    echo "FAIL run-error" > "$RESULTS/$name"; return
   fi
 
   if [ "$UPDATE" -eq 1 ]; then
-    rm -rf "$expected"
-    mkdir -p "$expected"
+    rm -rf "$expected"; mkdir -p "$expected"
     for csv in "$outdir"/*.csv; do
       [ -e "$csv" ] || continue
       LC_ALL=C sort "$csv" > "$expected/$(basename "$csv")"
     done
-    echo "UPDATED $name"
-    continue
+    echo "UPDATED $name"; echo "UPDATED" > "$RESULTS/$name"; return
   fi
 
   if [ ! -d "$expected" ]; then
     echo "FAIL $name (no golden dir $expected; run with --update)"
-    FAIL=$((FAIL+1)); FAILED_NAMES+=("$name")
-    continue
+    echo "FAIL no-golden" > "$RESULTS/$name"; return
   fi
 
-  ok=1
+  local ok=1
   # every expected file must match, and no unexpected relations may appear
   for want in "$expected"/*.csv; do
-    rel="$(basename "$want")"
+    local rel; rel="$(basename "$want")"
     if [ ! -e "$outdir/$rel" ]; then
       echo "  $name: missing relation $rel"; ok=0; continue
     fi
@@ -103,19 +120,33 @@ for t in "${TESTS[@]}"; do
   done
   for got in "$outdir"/*.csv; do
     [ -e "$got" ] || continue
-    rel="$(basename "$got")"
+    local rel; rel="$(basename "$got")"
     if [ ! -e "$expected/$rel" ]; then
       echo "  $name: unexpected non-empty relation $rel"; ok=0
     fi
   done
 
-  if [ "$ok" -eq 1 ]; then
-    echo "PASS $name"
-    PASS=$((PASS+1))
-  else
-    echo "FAIL $name"
-    FAIL=$((FAIL+1)); FAILED_NAMES+=("$name")
-  fi
+  if [ "$ok" -eq 1 ]; then echo "PASS $name"; echo "PASS" > "$RESULTS/$name"
+  else echo "FAIL $name"; echo "FAIL mismatch" > "$RESULTS/$name"; fi
+}
+
+# Dispatch up to $JOBS tests concurrently.
+running=0
+for t in "${TESTS[@]}"; do
+  run_one_test "$t" &
+  running=$((running+1))
+  if [ "$running" -ge "$JOBS" ]; then wait -n 2>/dev/null || wait; running=$((running-1)); fi
+done
+wait
+
+PASS=0; FAIL=0; FAILED_NAMES=()
+for t in "${TESTS[@]}"; do
+  name="$(basename "$t" .slog)"
+  read -r status _ < "$RESULTS/$name" 2>/dev/null || status="FAIL"
+  case "$status" in
+    PASS|UPDATED) PASS=$((PASS+1)) ;;
+    *)            FAIL=$((FAIL+1)); FAILED_NAMES+=("$name") ;;
+  esac
 done
 
 echo

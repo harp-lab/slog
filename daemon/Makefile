@@ -11,13 +11,21 @@
 # machine, ensure the matching libomp-<ver>-dev for your clang is installed.
 CXX = clang++
 OMPFLAGS ?= -fopenmp
-CXXFLAGS ?= -O2 -Wall -std=c++20 -pthread -I.
+# -ffp-contract=off: match the flag generated plugin .so's are built with
+# (compiler/tools.rkt) so float primitives contract FMA identically across the
+# daemon and every plugin -- and, critically, identically between an -O0 plugin
+# and its -O2 hot-swap replacement (docs/fast-compile.md §7.5).
+CXXFLAGS ?= -O2 -Wall -std=c++20 -pthread -I. -ffp-contract=off
+# -rdynamic exports the daemon's symbols (notably slog::makeIndex/makeMapIndex,
+# now defined out-of-line in slogd.cpp) into the dynamic symbol table so dlopen'd
+# plugins resolve them instead of instantiating the arity ladders themselves.
+LDFLAGS ?= -rdynamic
 LDLIBS = -lz -ldl
 
 HEADERS = $(wildcard *.h)
 
 slogd: slogd.cpp $(HEADERS)
-	$(CXX) $(CXXFLAGS) $(OMPFLAGS) -o slogd slogd.cpp $(LDLIBS)
+	$(CXX) $(CXXFLAGS) $(OMPFLAGS) $(LDFLAGS) -o slogd slogd.cpp $(LDLIBS)
 
 test: slogd
 	printf '(close)\n' | racket slogd.rkt

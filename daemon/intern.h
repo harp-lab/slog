@@ -37,7 +37,7 @@ namespace slog
 
 template <typename T> u32 fasthash(const T& str);
 template <>
-u32 fasthash<slog::utf8string>(const slog::utf8string& str)
+inline u32 fasthash<slog::utf8string>(const slog::utf8string& str)
 {
   u32 hash = 2166136261u;
   const char* cstr = str.c_str();

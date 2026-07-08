@@ -308,6 +308,15 @@ public:
   void setLattice(u32 kind, bool has_floor, u64 floorw, bool has_ceil, u64 ceilw,
                   const std::string& spec, CollectionArena* arena = nullptr)
   {
+    // Idempotent re-registration (hot-swap upgrade, docs/fast-compile.md §4):
+    // if this relation is ALREADY this exact lattice, keep the existing spec
+    // tree.  Freeing and reallocating it here would strand the live
+    // BTreeMapIndex buckets -- which cache a raw lat_spec_tree pointer and are
+    // NOT rebuilt when addMapIndex finds the ordering already present (its
+    // idempotence guard) -- on freed memory, a use-after-free on the next merge.
+    // (On a normal between-strata reload the indices are cleared, so addMapIndex
+    // does rebuild the buckets; only the no-reload swap path hits this.)
+    if (lattice_kind == kind && lat_spec == spec) return;
     lattice_kind = kind;
     lat_has_floor = has_floor;
     lat_floor = floorw;
@@ -375,6 +384,10 @@ public:
   template <u16 A>
   void addMapIndex(const std::vector<u16>& ord)
   {
+    // Idempotent, like addIndex: a hot-swap upgrade re-requisitions the same
+    // payload-map index the running lattice stratum already built; re-creating
+    // it would replace the live merged map with an empty one.
+    if (indices.count(ord)) return;
     indices[ord] = new Index*[bucket_count];
     auto& indices_ord = indices[ord];
     for (u32 i = 0; i < bucket_count; ++i)
@@ -405,6 +418,14 @@ public:
   void addIndex(const std::vector<u16>& ord, bool delta)
   {
     auto& tbl = delta ? deltaindices : indices;
+    // Idempotent: re-registering an existing ordering is a no-op.  A hot-swap
+    // upgrade (docs/fast-compile.md §4) re-runs a stratum plugin against the
+    // live database, so the replacement plugin requisitions the same indices
+    // the running one already built -- without this guard the second `new
+    // Index*[]` would leak the arrays and, worse, replace the LIVE master index
+    // (all its tuples) with empty buckets.  Also prevents a latent duplicate
+    // write_leadcols entry.
+    if (tbl.count(ord)) return;
     tbl[ord] = new Index*[bucket_count];
     auto& indices_ord = tbl[ord];
     for (u32 i = 0; i < bucket_count; ++i)
@@ -881,6 +902,26 @@ public:
   }
 
   void addDynamicRel(const std::string& r) { dynamic_rels.push_back(r); }
+
+  // Empty this stratum's task lists and metadata so a freshly-compiled plugin
+  // for the SAME stratum can re-register them (docs/fast-compile.md §4, the
+  // -O0 -> -O2 hot swap).  Deleting the old task objects runs their destructors,
+  // whose code lives in the old plugin's .so -- which stays dlopen'd for the
+  // process lifetime (slogd.cpp never dlcloses mid-run), so this is safe.  Only
+  // valid at a clean iteration boundary, where no read-task continuations are
+  // parked (the caller enforces RUN_AT_BOUNDARY); the relations, indices, and
+  // the staged/bucketized delta they hold are untouched.
+  void clearForUpgrade()
+  {
+    for (u16 p = 0; p < phase_count; ++p)
+    {
+      for (Task* t : once[p]) delete t;
+      for (Task* t : every[p]) delete t;
+      once[p].clear();
+      every[p].clear();
+    }
+    dynamic_rels.clear();
+  }
 };
 
 
@@ -904,6 +945,13 @@ struct RunBudget {
   u64 max_ms    = 8000;   // wall budget for this continue call
   u64 slice_ms  = 500;    // per-task slice; effective deadline min(slice,global)
   u64 mem_bytes = 0;      // TOTAL RSS soft cap; 0 = DEFAULT_MEM_CAP
+  // Force a suspend at the next clean iteration boundary regardless of time
+  // budget (docs/fast-compile.md §4): the tiered-compilation driver drives to
+  // RUN_AT_BOUNDARY -- the only state where a stratum's .so can be hot-swapped
+  // to its -O2 build -- via a (continue-boundary) action.  Appended last so the
+  // existing positional RunBudget{ms} / RunBudget{ms,slice,mem} brace-inits in
+  // actions.rkt stay correct.
+  bool stop_at_boundary = false;
 };
 
 // Default total-RSS soft cap for a budgeted run (docs/pausing.md §5): a large,
@@ -1057,6 +1105,9 @@ public:
   // Is a stratum currently suspended (parked, resumable by continueStratum)?
   bool isSuspended() const { return rs.suspended; }
   const Stratum* suspendedStratum() const { return rs.suspended ? rs.stratum : nullptr; }
+  // Where a suspended stratum is parked (RUN_AT_BOUNDARY | RUN_MID_READ) -- the
+  // hot-swap upgrade (daemon.h beginStratum) is permitted only at a boundary.
+  RunPosition suspendPosition() const { return rs.position; }
   // Slice params read by generated read tasks at work()-time (operators.h).
   std::chrono::steady_clock::time_point runDeadline() const { return rs.global_deadline; }
   u64 runSliceMs() const { return rs.slice_ms; }
@@ -2612,7 +2663,8 @@ inline void EndIterCompletion::operator()() noexcept
   }
   if (!db->getLatestAnyRec())
     rs.next_action = ACT_FIXPOINT;
-  else if (rs.stop_requested.load(std::memory_order_relaxed)
+  else if (rs.budget.stop_at_boundary
+           || rs.stop_requested.load(std::memory_order_relaxed)
            || std::chrono::steady_clock::now() >= rs.global_deadline)
     rs.next_action = ACT_BOUNDARY_SUSPEND;
   else

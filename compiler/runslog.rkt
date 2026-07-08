@@ -116,10 +116,7 @@
   (make-directory* "build")
   (make-directory* "out")
   (define dbmanifest (db-manifest-from-name db-name))
-  (define compiled (finish-jit (compile-path slog-path dbmanifest)))
-  ;; The (continue) action .so is built once and reused for every poll of
-  ;; every stratum (docs/pausing.md §5); it uses the daemon's default budget.
-  (define continue-so (action-so `(continue)))
+  (define tiered? (not (member (or (getenv "SLOG_OPT") "tiered") '("0" "2"))))
   (ensure-slogd-exists)
   (define-values (sp out in err) (apply subprocess #f #f #f (slogd-argv "daemon/slogd")))
   (define (send-plugin path)
@@ -133,72 +130,111 @@
               (let loop ()
                 (define s (read-line err))
                 (unless (eof-object? s) (displayln s) (loop))))))
+  ;; Action .so's for polling (docs/pausing.md §5), built lazily and memoized:
+  ;; (continue) uses the default budget; (continue-boundary) drives to the next
+  ;; clean iteration boundary (the only hot-swap-safe stop point).  A program
+  ;; whose strata each fixpoint within one budget never pauses, so these stay
+  ;; off the critical path entirely.
+  (define continue-so (delay (action-so `(continue))))
+  (define continue-boundary-so (delay (action-so `(continue-boundary))))
 
-  (when db-name
-    (send-plugin (action-so `(open ,db-name))))
+  ;; Force-kill the daemon if compilation or the run errors out after launch,
+  ;; rather than leaving it orphaned (blocked reading stdin or mid-fixpoint).
+  (with-handlers
+      ([exn:fail? (lambda (e)
+                    (with-handlers ([exn:fail? void])
+                      (unless (port-closed? in) (close-output-port in)))
+                    (subprocess-kill sp #t)
+                    (raise e))])
 
-  ;; Response-driven pipeline walk (docs/pausing.md §7).  Each stratum plugin
-  ;; performs ONE bounded unit of work and answers with exactly one line, so
-  ;; the loop is a tight synchronous handshake -- send, then read: a (paused
-  ;; ...) is answered with a (continue) action, a (fixpoint ...) advances to
-  ;; the next stratum, an (error ...) aborts.  A single outstanding line means
-  ;; the daemon's stdout can never build up, so no reader thread is needed.
-  ;;
-  ;; Compilation stays pipelined: the moment stratum k's .so is sent, k+1's
-  ;; clang is forced on a background thread so it overlaps the daemon executing
-  ;; k; only SENDING k+1 waits for k's fixpoint (beginStratum would refuse it
-  ;; mid-suspend anyway).  A declaration-only program compiles to no strata.
-  (define (drive-stratum!)   ; poll one stratum to its fixpoint; #t unless eof
-    (let poll ()
-      (define line (read-line out))
-      (cond
-        [(eof-object? line) #f]
-        [(regexp-match? #px"^\\(fixpoint " line) (displayln line) #t]
-        [(regexp-match? #px"^\\(paused " line)
-         (displayln line)
-         (cond
-           ;; A `memory` pause means the run reached the memory cap; in the
-           ;; default continue-to-fixpoint mode we can only climb toward the
-           ;; hard cgroup cap by continuing, so abort GRACEFULLY instead of
-           ;; OOM-crashing (docs/pausing.md §5).  A `time` pause just continues.
-           [(regexp-match? #px"memory\\)\\s*$" line)
-            (error (format (string-append
-                            "out of memory: the run reached the memory cap "
-                            "(configure with SLOG_MEM_BYTES / SLOG_MEM_MAX).\n  ~a")
-                           line))]
-           [else (send-plugin continue-so) (poll)])]
-        [(regexp-match? #px"^\\(error " line)
-         (displayln line)
-         (error (format "Daemon reported an error: ~a" line))]
-        [else (displayln line) (poll)])))
+    ;; Issue the database load FIRST, before compiling: loadDatabaseBIN is
+    ;; single-threaded, so sending (open ...) now lets the load overlap the
+    ;; Racket front end, codegen, AND every clang build below
+    ;; (docs/fast-compile.md).
+    (when db-name
+      (send-plugin (action-so `(open ,db-name))))
 
-  (let loop ([compiled compiled])
-    (unless (null? compiled)
-      (send-plugin (car compiled))
-      (define next-box (box '()))
-      (define ct (thread (lambda ()
-                           (set-box! next-box (finish-jit (touch (cdr compiled)))))))
-      (drive-stratum!)
-      (thread-wait ct)
-      (loop (unbox next-box))))
+    ;; Plan every stratum and kick off its build(s) on the parallel pool: tiered
+    ;; mode runs each stratum at -O0 immediately and hot-swaps to a background
+    ;; -O2 build when ready.  The daemon is already loading the input DB (if any)
+    ;; while this runs.
+    (define strata (compile-strata slog-path dbmanifest))
 
-  ;; At the final fixpoint the terminal actions run (each emits its own lines).
-  (when out-db
-    (send-plugin (action-so `(write-db ,out-db))))
-  (when debug-out-path
-    (send-plugin (action-so `(write-csv ,debug-out-path))))
-  (when report-sizes?
-    (send-plugin (action-so `(sizes))))
-  (close-output-port in)
-  (let loop () ;; echo any remaining output from daemon (terminal actions)
-    (define s (read-line out))
-    (when (not (eof-object? s))
-      (display s)
-      (newline)
-      (loop)))
-  (thread-wait err-thread)
-  (close-input-port out)
-  (close-input-port err)
-  (subprocess-wait sp)
-  (when (> (subprocess-status sp) 0)
-    (error "Something went wrong running the daemon!")))
+    ;; Response-driven pipeline walk (docs/pausing.md §7, docs/fast-compile.md §5).
+    ;; Each stratum plugin performs ONE bounded unit of work and answers with
+    ;; exactly one line, so the loop is a tight synchronous handshake -- send,
+    ;; then read: a (paused ...) is answered with a (continue) action, a
+    ;; (fixpoint ...) advances to the next stratum, an (error ...) aborts.  A
+    ;; single outstanding line means the daemon's stdout can never build up.
+    ;;
+    ;; Tiered hot swap: when a stratum was launched from its -O0 build and the
+    ;; background -O2 build has since materialized (build/<hash>.so, written
+    ;; atomically), reach a clean iteration boundary via (continue-boundary) and
+    ;; then send the -O2 .so -- the daemon replaces the running stratum's tasks
+    ;; in place (daemon.h beginStratum upgrade) and resumes with the optimized
+    ;; code.  A stratum that fixpoints before -O2 is ready just runs at -O0 (and
+    ;; the -O2 .so is cached for next time).
+    ;;
+    ;; Builds are already in flight on the pool; forcing stratum k's runnable
+    ;; blocks only on k, while k+1.. build behind it.  A declaration-only program
+    ;; has no strata.
+    (define (drive-stratum! sb tag)  ; poll one stratum to fixpoint; #t unless eof
+      (define o2 (sbuild-o2-path sb))
+      (define upgradeable? (and tiered? (eq? tag 'o0) o2))
+      (let poll ([swapped? #f])
+        (define line (read-line out))
+        (cond
+          [(eof-object? line) #f]
+          [(regexp-match? #px"^\\(fixpoint " line) (displayln line) #t]
+          [(regexp-match? #px"^\\(paused " line)
+           (displayln line)
+           (cond
+             ;; A `memory` pause means the run reached the memory cap; in the
+             ;; default continue-to-fixpoint mode we can only climb toward the
+             ;; hard cgroup cap by continuing, so abort GRACEFULLY instead of
+             ;; OOM-crashing (docs/pausing.md §5).
+             [(regexp-match? #px"memory\\)\\s*$" line)
+              (error (format (string-append
+                              "out of memory: the run reached the memory cap "
+                              "(configure with SLOG_MEM_BYTES / SLOG_MEM_MAX).\n  ~a")
+                             line))]
+             ;; -O2 is ready and we haven't swapped yet: get to a clean boundary,
+             ;; then hand the daemon the -O2 .so to hot-swap in.
+             [(and upgradeable? (not swapped?) (file-exists? o2))
+              (cond
+                [(regexp-match? #px"^\\(paused [^ ]+ \"[^\"]*\" [0-9]+ iter " line)
+                 (send-plugin o2)
+                 (eprintf "  [upgraded ~a to -O2]\n" (sbuild-hash sb))
+                 (poll #t)]
+                [else (send-plugin (force continue-boundary-so)) (poll #f)])]
+             [else (send-plugin (force continue-so)) (poll swapped?)])]
+          [(regexp-match? #px"^\\(error " line)
+           (displayln line)
+           (error (format "Daemon reported an error: ~a" line))]
+          [else (displayln line) (poll swapped?)])))
+
+    (for ([sb (in-list strata)])
+      (match-define (cons so tag) ((sbuild-runnable sb)))  ; blocks until built
+      (send-plugin so)
+      (drive-stratum! sb tag))
+
+    ;; At the final fixpoint the terminal actions run (each emits its own lines).
+    (when out-db
+      (send-plugin (action-so `(write-db ,out-db))))
+    (when debug-out-path
+      (send-plugin (action-so `(write-csv ,debug-out-path))))
+    (when report-sizes?
+      (send-plugin (action-so `(sizes))))
+    (close-output-port in)
+    (let loop () ;; echo any remaining output from daemon (terminal actions)
+      (define s (read-line out))
+      (when (not (eof-object? s))
+        (display s)
+        (newline)
+        (loop)))
+    (thread-wait err-thread)
+    (close-input-port out)
+    (close-input-port err)
+    (subprocess-wait sp)
+    (when (> (subprocess-status sp) 0)
+      (error "Something went wrong running the daemon!"))))

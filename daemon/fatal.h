@@ -15,7 +15,7 @@
 
 namespace slog
 {
-  void fatal(const std::string& msg)
+  inline void fatal(const std::string& msg)
   {
     std::cout << "Fatal Error" << std::endl << msg << std::endl;
     exit(1);

@@ -52,6 +52,11 @@
     ;; (env-configurable) default budget; the ms / mem forms override it.  The
     ;; one .so is cached and reused for every poll of a run.
     [`(continue) "  d->continueRun();\n"]
+    ;; Continue only to the next clean iteration boundary (docs/fast-compile.md
+    ;; §4): the tiered-compilation driver polls this to bring a stratum to
+    ;; RUN_AT_BOUNDARY before hot-swapping its .so to the -O2 build.  A distinct
+    ;; head (not `(continue boundary)`) so it can't be shadowed by (continue ,ms).
+    [`(continue-boundary) "  d->continueToBoundary();\n"]
     [`(continue ,ms)
      (format "  d->continueRun(slog::RunBudget{~a});\n" ms)]
     [`(continue ,ms ,mem)
@@ -120,5 +125,8 @@
   (unless (file-exists? so-path)
     (define cpp-path (fullpath (format "build/action-~a.cpp" h)))
     (with-output-to-file cpp-path #:exists 'replace (lambda () (display src)))
-    (build-so cpp-path so-path))
+    ;; Actions are tiny and include a different header set (daemon.h + STL, no
+    ;; operators.h), so the strata PCH would not match; build without one.  They
+    ;; compile at -O0 -- an action does no hot inner loop worth optimizing.
+    (build-so cpp-path so-path #:opt "-O0" #:pch #f))
   so-path)

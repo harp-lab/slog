@@ -19,11 +19,12 @@
 ;;
 ;; Compiled strata are cached in build/ keyed by a hash of the program
 ;; sources, the type environment, the manifest, the daemon headers (the .so
-;; inlines daemon data-structure layouts), and the stratum level.  Compiles
-;; run in a chain of futures so the daemon can execute stratum k while
-;; stratum k+1 compiles.
+;; inlines daemon data-structure layouts), and the stratum level -- but NOT the
+;; optimization level, so an -O0 build and its -O2 hot-swap replacement share
+;; one cache slot (docs/fast-compile.md).  Builds run on a bounded parallel pool
+;; (tools.rkt) so a program's strata compile concurrently and overlap the run.
 
-(provide compile-path)
+(provide compile-strata (struct-out sbuild))
 
 (require "params.rkt")
 (require "utils.rkt")
@@ -38,7 +39,6 @@
 (require "ir-shared.rkt")
 (require "ir-stack.rkt")
 (require "tools.rkt")
-(require racket/future)
 (require sha)
 
 ;; -----------------------------------------------------------------------
@@ -158,51 +158,111 @@
        ,@(for/list ([m (in-list (stratum-rule-metas stratum))])
            (match-define (list id loc text) m)
            `(rule ,id ,loc ,text)))))
-  (with-output-to-file (fullpath (format "build/~a.meta" proghash))
-                       #:exists 'replace
-                       (lambda () (writeln meta))))
+  (call-with-atomic-output (fullpath (format "build/~a.meta" proghash))
+                           (lambda () (writeln meta))))
 
 ;; -----------------------------------------------------------------------
-;; Back end: build one stratum program (unless its .so is already cached).
+;; Back end: emit one stratum's C++ translation unit(s).
+;;
+;; Runs the per-stratum Racket passes (plan -> lower -> emit) and writes the
+;; generated source to build/.  Returns the list of .cpp paths making up the
+;; stratum (one for a small stratum; a spine + several parts for a large one,
+;; docs/fast-compile.md §6).  The .so is NOT built here -- compile-strata below
+;; schedules that on the parallel pool at the appropriate optimization level(s).
 
-(define (compile-job job)
+(define (emit-stratum-cpp job)
   (match-define (list proghash type-env stratum dbmanifest) job)
-  (define so-path (fullpath (format "build/~a.so" proghash)))
-  (write-stratum-manifest proghash stratum)   ; sidecar, even for a cached .so
-  (cond
-    [(file-exists? so-path) proghash]
-    [else
-     ;; a stratum whose rules carry residual type checks also gets the
-     ;; error-wrapping rule (malformed_deduction -> error), delta-driven
-     ;; within this stratum's fixpoint: malformed_deduction is marked
-     ;; dynamic since the checks' failure paths grow it every iteration
-     (define base-rules (stratum-rules stratum))
-     (define checked?
-       (for/or ([rule (in-set base-rules)]) (rule-has-tychecks? rule)))
-     (define rules
-       (if checked? (set-add base-rules (error-wrap-rule)) base-rules))
-     (define dynamic-rels
-       (for/fold ([acc (if checked? (set 'malformed_deduction) (set))])
-                 ([rule (in-set rules)])
-         (set-union acc (rule-head-rels rule))))
-     (match-define (cons planned rel-env+)
-       (plan-all rules (type-env-rels type-env) dynamic-rels))
-     (define cprog (lower-all planned rel-env+))
-     (list proghash cprog (write-cpp cprog dbmanifest proghash))]))
+  ;; a stratum whose rules carry residual type checks also gets the
+  ;; error-wrapping rule (malformed_deduction -> error), delta-driven within
+  ;; this stratum's fixpoint: malformed_deduction is marked dynamic since the
+  ;; checks' failure paths grow it every iteration
+  (define base-rules (stratum-rules stratum))
+  (define checked?
+    (for/or ([rule (in-set base-rules)]) (rule-has-tychecks? rule)))
+  (define rules
+    (if checked? (set-add base-rules (error-wrap-rule)) base-rules))
+  (define dynamic-rels
+    (for/fold ([acc (if checked? (set 'malformed_deduction) (set))])
+              ([rule (in-set rules)])
+      (set-union acc (rule-head-rels rule))))
+  (match-define (cons planned rel-env+)
+    (plan-all rules (type-env-rels type-env) dynamic-rels))
+  (define cprog (lower-all planned rel-env+))
+  ;; atomic writes: run-tests.sh -jN can compile the SAME content-addressed
+  ;; stratum in two processes at once, and a torn .cpp/.cprog read would break a
+  ;; concurrent clang (docs/fast-compile.md §8)
+  (call-with-atomic-output (fullpath (format "build/~a.cprog" proghash))
+                           (lambda () (pretty-write cprog)))
+  (define emitted (write-cpp cprog dbmanifest proghash))
+  ;; write-cpp returns either one string (a single TU) or a list of
+  ;; (suffix . contents) pairs -- the spine (suffix "") plus part TUs.
+  (define tus (if (string? emitted) (list (cons "" emitted)) emitted))
+  (for/list ([tu (in-list tus)])
+    (match-define (cons suffix contents) tu)
+    (define path
+      (fullpath (format "build/~a~a.cpp" proghash
+                        (if (string=? suffix "") "" (string-append "." suffix)))))
+    (call-with-atomic-output path (lambda () (display contents)))
+    path))
 
 ;; -----------------------------------------------------------------------
-;; Entry point: returns a touched FutureStream
-;;    (or '() (cons compiled FutureStream))
-;; where compiled is a hash string (cached) or (list hash cprog cpp-string);
-;; tools.rkt's finish-jit turns either into a build/<hash>.so path.
+;; Tiered compilation entry point (docs/fast-compile.md).
+;;
+;; Returns the program's strata in pipeline order as `sbuild` records the driver
+;; (runslog.rkt) consumes.  Building is scheduled here so it overlaps the run:
+;;
+;;   runnable -- a thunk that BLOCKS until a runnable .so exists and returns
+;;               (cons so-path tag), tag in {o0, o2}.  Eager builds are already
+;;               in flight on the pool when this returns, so forcing stratum k
+;;               in order still lets k+1.. build behind it.
+;;   o2-path  -- build/<hash>.so, the hot-swap upgrade target the driver polls
+;;               for (via file-exists?), or #f when no upgrade will appear.
+;;
+;; SLOG_OPT selects the regime:
+;;   tiered (default) -- run the eager -O0 build now; a detached -O2 build fills
+;;                       build/<hash>.so in the background and the driver
+;;                       hot-swaps to it mid-run when ready (and it is cached for
+;;                       next time regardless).
+;;   0                -- -O0 only (fast compiles, no upgrade); the test suite.
+;;   2                -- block for -O2 and run only that; benchmarks / today's
+;;                       behavior.  A previously-built build/<hash>.so is always
+;;                       preferred in every mode (a re-run is pure -O2).
 
-(define (compile-path path dbmanifest)
-  (define jobs
-    (append-map program->jobs (load-program-list path dbmanifest)))
-  (define (compile-future lst)
-    (if (null? lst)
-        (future (lambda () '()))
-        (future (lambda ()
-                  (let ([rest (compile-future (cdr lst))])
-                    (cons (compile-job (car lst)) rest))))))
-  (touch (compile-future jobs)))
+(struct sbuild (hash o2-path runnable))
+
+(define (opt-mode) (or (getenv "SLOG_OPT") "tiered"))
+
+(define (compile-strata path dbmanifest)
+  (define mode (opt-mode))
+  (define jobs (append-map program->jobs (load-program-list path dbmanifest)))
+  ;; background -O2 build commands (tiered mode), launched as ONE bounded batch
+  ;; after all strata are planned so concurrency is capped (docs/fast-compile.md §7)
+  (define o2-cmds '())
+  (define strata
+    (for/list ([job (in-list jobs)])
+      (match-define (list proghash _te stratum _dm) job)
+      (write-stratum-manifest proghash stratum)  ; sidecar, even for a cached .so
+      (define o2so (fullpath (format "build/~a.so" proghash)))
+      (define o0so (fullpath (format "build/~a.O0.so" proghash)))
+      (cond
+        ;; Optimized artifact already cached: always the best thing to run.
+        [(file-exists? o2so)
+         (sbuild proghash o2so (lambda () (cons o2so 'o2)))]
+        ;; -O0-only mode with a warm -O0 artifact: reuse it, no upgrade.
+        [(and (equal? mode "0") (file-exists? o0so))
+         (sbuild proghash #f (lambda () (cons o0so 'o0)))]
+        [else
+         (define cpps (emit-stratum-cpp job))   ; write .cpp(s) now (fast, main thread)
+         (case mode
+           [("2")
+            (sbuild proghash o2so
+                    (pooled-eager (lambda () (build-so cpps o2so #:opt "-O2") (cons o2so 'o2))))]
+           [("0")
+            (sbuild proghash #f
+                    (pooled-eager (lambda () (build-so cpps o0so #:opt "-O0") (cons o0so 'o0))))]
+           [else ; tiered: eager -O0 to run now, queue a background -O2 to swap in / cache
+            (set! o2-cmds (cons (o2-build-command cpps o2so) o2-cmds))
+            (sbuild proghash o2so
+                    (pooled-eager (lambda () (build-so cpps o0so #:opt "-O0") (cons o0so 'o0))))])])))
+  (spawn-detached-o2-batch (reverse o2-cmds))
+  strata)
