@@ -24,7 +24,7 @@
 ;; one cache slot (docs/fast-compile.md).  Builds run on a bounded parallel pool
 ;; (tools.rkt) so a program's strata compile concurrently and overlap the run.
 
-(provide compile-strata (struct-out sbuild))
+(provide compile-strata (struct-out sbuild) (struct-out db-partition))
 
 (require "params.rkt")
 (require "utils.rkt")
@@ -73,7 +73,17 @@
 ;; generated names that differ run to run, while the front end's output is
 ;; a pure function of these inputs.
 
-(define (program->jobs prog)
+;; program->jobs returns (cons jobs facts-stratum?).  When #:split-facts? is
+;; set (a compressed save, docs/db-compression.md P0.5), the program's
+;; iteration-0 rules -- those whose body reads no declared relation, i.e. facts
+;; and constant/primitive-computed ground tuples -- are pulled into a dedicated
+;; level-0 "facts stratum" run strictly first, with every real stratum bumped
+;; up one level.  This is level-preserving for the real strata (an iter0 rule
+;; contributes no dependency edge, so removing it changes no SCC) and lets the
+;; driver snapshot the pure iteration-0 EDB after that one stratum, before any
+;; derived tuple exists -- correct even for a relation grounded by BOTH facts
+;; and rules.  facts-stratum? is #t iff a non-empty facts stratum was prepended.
+(define (program->jobs prog #:split-facts? [split-facts? #f])
   (match-define `(program ,type-env ,mods ,dbmanifest) prog)
   (define info0 (sort (hash->list (type-env-aliases type-env)) symbol<? #:key car))
   (define info1 (sort (hash->list (type-env-rels type-env)) symbol<? #:key car))
@@ -87,7 +97,11 @@
                              ;; codegen-affecting settings: a toggle must
                              ;; miss the cache rather than reuse a .so
                              ;; compiled under the other setting
-                             (semijoin-filters-enabled))))))
+                             (semijoin-filters-enabled)
+                             ;; the facts split changes stratum rule sets, so
+                             ;; it must key the cache (else a split and a
+                             ;; non-split build would share a .so slot)
+                             split-facts?)))))
   (define (job-hash level)
     (substring (bytes->hex-string
                 (sha256 (string->bytes/utf-8 (format "~a:stratum ~a" progstr level))))
@@ -101,10 +115,27 @@
   ;; the monotone-use calculus needs the strata for the same-SCC bit
   (check-lattice-declarations type-env)
   (define typed (typecheck-all type-env (simplify-all all-rules)))
-  (define strata (stratify-all typed))
-  (check-lattice-strata strata type-env)
-  (for/list ([stratum (in-list strata)])
-    (list (job-hash (stratum-level stratum)) type-env stratum dbmanifest)))
+  (define full-strata (stratify-all typed))
+  ;; check the ORIGINAL stratification (a superset that keeps iter0 rules in
+  ;; place); the split only moves body-less rules, which can never violate the
+  ;; monotone-use calculus, so passing here implies the split is safe too.
+  (check-lattice-strata full-strata type-env)
+  (define rel-names (list->set (hash-keys (type-env-rels type-env))))
+  (define (iter0? rule) (set-empty? (set-intersect (rule-body-rels rule) rel-names)))
+  (define fact-rules
+    (if split-facts? (list->set (filter iter0? (set->list typed))) (set)))
+  (define facts? (not (set-empty? fact-rules)))
+  (define strata
+    (cond
+      [(not facts?) full-strata]
+      [else
+       (define rest-strata (stratify-all (set-subtract typed fact-rules)))
+       (cons `(stratum 0 ,fact-rules)
+             (for/list ([s (in-list rest-strata)])
+               `(stratum ,(add1 (stratum-level s)) ,(stratum-rules s))))]))
+  (cons (for/list ([stratum (in-list strata)])
+          (list (job-hash (stratum-level stratum)) type-env stratum dbmanifest))
+        facts?))
 
 ;; -----------------------------------------------------------------------
 ;; Rule/SCC ids + sidecar manifest (docs/pausing.md §6).
@@ -230,11 +261,75 @@
 
 (struct sbuild (hash o2-path runnable))
 
+;; -----------------------------------------------------------------------
+;; Whole-program IDB/EDB partition (docs/db-compression.md §6, P0.4).
+;;
+;; Computed from the typed strata: a rule whose body reads at least one
+;; DECLARED relation derives its head relations (IDB); a rule that reads none
+;; produces iteration-0 / ground content -- literal facts, or values computed
+;; from constants and primitives -- so its heads are EDB/base.  Relations of
+;; the linked input manifest are EDB too (provided on load, never re-derived).
+;; A relation grounded by facts AND extended by a real rule is `mixed`: it
+;; lands in BOTH sets (its facts live in the iteration-0 EDB root, its derived
+;; extension in the IDB layer; §6).  `strata-range` is (lo . hi) over the
+;; actual stratum levels present.
+;;
+;; `derives?` intersects a rule's body relations with the set of declared
+;; relations, so struct constructors and collection/arithmetic primitives in a
+;; fact body (e.g. `(r (cons 1 nil))`, `(canon {1 2 3})`) -- which clause-rel
+;; reports by operator name but which are NOT relations -- do not spuriously
+;; make a ground fact look derived.
+(struct db-partition (idb-rels edb-rels mixed-rels strata-range) #:transparent)
+
+(define (jobs->db-partition jobs)
+  (define rel-names
+    (for/fold ([acc (set)]) ([job (in-list jobs)])
+      (set-union acc (list->set (hash-keys (type-env-rels (second job)))))))
+  (define input-rels
+    (for/fold ([acc (set)]) ([job (in-list jobs)])
+      (set-union acc (list->set (hash-keys (fourth job))))))
+  (define (derives? rule)
+    (not (set-empty? (set-intersect (rule-body-rels rule) rel-names))))
+  (define-values (idb edb-fact levels)
+    (for/fold ([idb (set)] [edb (set)] [lvls (set)]) ([job (in-list jobs)])
+      (define st (third job))
+      (for/fold ([idb idb] [edb edb] [lvls (set-add lvls (stratum-level st))])
+                ([rule (in-set (stratum-rules st))])
+        (if (derives? rule)
+            (values (set-union idb (rule-head-rels rule)) edb lvls)
+            (values idb (set-union edb (rule-head-rels rule)) lvls)))))
+  (define edb (set-union edb-fact input-rels))
+  (define lvl-list (sort (set->list levels) <))
+  (when (getenv "SLOG_DEBUG_PARTITION")
+    (eprintf "  [partition] declared-rels: ~a\n" (sort (set->list rel-names) symbol<?))
+    (for ([job (in-list jobs)])
+      (for ([rule (in-set (stratum-rules (third job)))])
+        (eprintf "    L~a ~a  head=~a body=~a bodyrels=~a\n"
+                 (stratum-level (third job))
+                 (if (derives? rule) 'IDB 'EDB)
+                 (sort (set->list (rule-head-rels rule)) symbol<?)
+                 (sort (set->list (rule-body-rels rule)) symbol<?)
+                 (sort (set->list (set-intersect (rule-body-rels rule) rel-names)) symbol<?)))))
+  (db-partition (sort (set->list idb) symbol<?)
+                (sort (set->list edb) symbol<?)
+                (sort (set->list (set-intersect idb edb)) symbol<?)
+                (if (null? lvl-list) '(0 . 0) (cons (first lvl-list) (last lvl-list)))))
+
 (define (opt-mode) (or (getenv "SLOG_OPT") "tiered"))
 
-(define (compile-strata path dbmanifest)
+;; Returns (values strata partition edb-boundary).  edb-boundary is the number
+;; of leading strata whose combined output is the iteration-0 EDB root (P0.5):
+;; 1 when the first program contributed a facts stratum, else 0.  The driver
+;; drives that many strata, snapshots the root, then drives the rest.
+(define (compile-strata path dbmanifest #:split-facts? [split-facts? #f])
   (define mode (opt-mode))
-  (define jobs (append-map program->jobs (load-program-list path dbmanifest)))
+  (define per-program
+    (for/list ([prog (in-list (load-program-list path dbmanifest))])
+      (program->jobs prog #:split-facts? split-facts?)))
+  (define jobs (append-map car per-program))
+  (define edb-boundary
+    (if (and split-facts? (pair? per-program) (cdr (first per-program))) 1 0))
+  (define partition (jobs->db-partition jobs))
   ;; background -O2 build commands (tiered mode), launched as ONE bounded batch
   ;; after all strata are planned so concurrency is capped (docs/fast-compile.md §7)
   (define o2-cmds '())
@@ -265,4 +360,4 @@
             (sbuild proghash o2so
                     (pooled-eager (lambda () (build-so cpps o0so #:opt "-O0") (cons o0so 'o0))))])])))
   (spawn-detached-o2-batch (reverse o2-cmds))
-  strata)
+  (values strata partition edb-boundary))

@@ -4,7 +4,7 @@
 program as source and are recomputed from origin on load, keeping only a target
 percentage of the derived facts. 2026-07-07, rev 6 (finished design).*
 
-**Status: design only. No code written.** Sibling of `db-merge.md`,
+**Status: P0 implemented (2026-07-07). P1/P2 design only.** Sibling of `db-merge.md`,
 `incremental.md`, `pausing.md`. This document is meant to be self-contained: if we
 pick the work up months from now, everything we reasoned through should be here —
 the model, the theory that constrains it, the on-disk format, the load algorithm,
@@ -766,6 +766,38 @@ unification are worth the change, not before shipping compression.
 Goal: the uniform format, the immutable DAG, and crash safety — with **no**
 recompute yet (P0 can still produce and load `per = 100 %` dbs, which behave like
 today's `--out-db`/`-d` plus a `META` and a signature).
+
+> **IMPLEMENTED 2026-07-07.** All six tasks below shipped and are verified by a
+> content-equality harness (uncompressed `--out-db` vs. the compressed
+> round-trip) across tables, structs, native collections, lattices, library
+> collections with shared substructure, and a mixed relation — all byte-equal.
+> New files: `compiler/dbmeta.rkt` (P0.2), `compiler/dbtool.rkt` (P0.3).
+> Notes / deviations from the plan as written:
+> - **All `daemon/database.h` line numbers in this doc are stale (~+50 drift).**
+>   Re-anchor by symbol name (`writeDatabaseBIN` is at ~2047, `importWord` at
+>   ~2395, `seedInternAllocators` at ~671, `loadDatabaseBIN` at ~2172, etc.).
+> - **P0.5 uses a dedicated facts stratum** (the chosen general approach, not the
+>   "write before the first stratum" mechanism §7.1 sketched, which is wrong
+>   because inline `facts` are lowered to body-less rules and don't exist
+>   pre-stratum). `compile-strata #:split-facts?` pulls every iteration-0 rule
+>   (body reads no declared relation) into a level-0 stratum run first; the
+>   driver snapshots the pure EDB after it. Level-preserving for the real strata,
+>   and correct even for a relation grounded by both facts and rules (verified).
+> - **Struct instances are heap:** a filtered (IDB-layer) write always also
+>   writes every struct relation (`getStructId() > 0`), like `value.strings`/
+>   `value.nodes`, so each kept directory is closure-complete and `import` never
+>   dangles (§4.1). `value.strings`/`value.nodes` are likewise written whole in
+>   both root and layer at P0 (self-contained; P1's sampler trims the heap).
+> - **Load at `per = 100 %` is open-root + import-layer (no replay):**
+>   `dbtool.rkt`'s `db-load-actions` drives it; struct id-convergence rides the
+>   existing `importDatabaseBIN` content-dedup (no 400→392 regression observed).
+>   The recursive replay driver + `prog.sexpr` + `signature` are P1 (§17).
+> - **`--per < 100 %` is accepted but clamped to 100 %** with a warning (no
+>   sampler yet). `--bias`/`--strict`/`--reoptimise` are parsed but inert at P0.
+> - Pre-existing flakiness surfaced: `call-with-atomic-output` (tools.rkt) can
+>   hit a `make-temporary-file` name collision under heavy concurrent cold
+>   compiles (`run-tests.sh -j6` fresh cache); harmless at `-j4`/warm and
+>   unrelated to compression — worth a unique-per-process temp name later.
 
 - **P0.1 — Atomic db writes.** Change `writeDatabaseBIN` (database.h:1996) to write
   into `data/<name>.tmp/` then `std::filesystem::rename` over `data/<name>/`;

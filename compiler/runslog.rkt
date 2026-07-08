@@ -18,6 +18,8 @@
 (require "tools.rkt")
 (require "compile.rkt")
 (require "actions.rkt")
+(require "dbmeta.rkt")
+(require "dbtool.rkt")
 
 ;; Reconstruct a canonical lattice valuespec from its on-disk spec token
 ;; (the inverse of emit-cpp.rkt's lat-spec-token): "min-int-floor-0" ->
@@ -111,11 +113,22 @@
                        [db-name #f]
                        [out-db #f]
                        [debug-out-path #f]
-                       [report-sizes? #f])
+                       [report-sizes? #f]
+                       #:compressed [compressed #f]  ; --out-db-compressed NAME
+                       #:per [per 1.0]
+                       #:flatten? [flatten? #f]
+                       #:strict? [strict? #f]
+                       #:bias [bias #f]
+                       #:reoptimise? [reoptimise? #f])
   ;; Working directories used by the compiler and daemon (relative to cwd).
   (make-directory* "build")
   (make-directory* "out")
   (define dbmanifest (db-manifest-from-name db-name))
+  ;; A LINKED compressed save (docs/db-compression.md P0.5/P0.6) splits the
+  ;; iteration-0 facts into their own first stratum so the EDB root can be
+  ;; snapshotted before any rule derives.  --flatten writes a single
+  ;; self-contained root instead (today's --out-db + META), needing no split.
+  (define linked-compressed? (and compressed (not flatten?)))
   (define tiered? (not (member (or (getenv "SLOG_OPT") "tiered") '("0" "2"))))
   (ensure-slogd-exists)
   (define-values (sp out in err) (apply subprocess #f #f #f (slogd-argv "daemon/slogd")))
@@ -151,14 +164,19 @@
     ;; single-threaded, so sending (open ...) now lets the load overlap the
     ;; Racket front end, codegen, AND every clang build below
     ;; (docs/fast-compile.md).
+    ;; A plain database is a single (open); a compressed one is a manifest-
+    ;; driven open-root + import-layer sequence (dbtool.rkt db-load-actions).
+    ;; At per=100% this reconstitutes the exact database with no replay.
     (when db-name
-      (send-plugin (action-so `(open ,db-name))))
+      (for ([act (in-list (db-load-actions db-name))])
+        (send-plugin (action-so act))))
 
     ;; Plan every stratum and kick off its build(s) on the parallel pool: tiered
     ;; mode runs each stratum at -O0 immediately and hot-swaps to a background
     ;; -O2 build when ready.  The daemon is already loading the input DB (if any)
     ;; while this runs.
-    (define strata (compile-strata slog-path dbmanifest))
+    (define-values (strata partition edb-boundary)
+      (compile-strata slog-path dbmanifest #:split-facts? linked-compressed?))
 
     ;; Response-driven pipeline walk (docs/pausing.md §7, docs/fast-compile.md §5).
     ;; Each stratum plugin performs ONE bounded unit of work and answers with
@@ -213,12 +231,35 @@
            (error (format "Daemon reported an error: ~a" line))]
           [else (displayln line) (poll swapped?)])))
 
-    (for ([sb (in-list strata)])
+    ;; A linked compressed save with no facts stratum (edb-boundary 0) snapshots
+    ;; the root right after the open, before any stratum runs (the EDB is then
+    ;; just the -d input, or empty for a from-scratch program with no facts).
+    (when (and linked-compressed? (= edb-boundary 0))
+      (send-plugin (action-so `(write-db ,(string-append compressed ".edb")))))
+
+    (for ([sb (in-list strata)] [i (in-naturals)])
       (match-define (cons so tag) ((sbuild-runnable sb)))  ; blocks until built
       (send-plugin so)
-      (drive-stratum! sb tag))
+      (drive-stratum! sb tag)
+      ;; After the facts stratum fixpoints (its output is the pure iteration-0
+      ;; EDB), snapshot the root before any derived tuple exists (P0.5).  A
+      ;; silent write-db emits no line, so it cannot desync the next stratum's
+      ;; handshake; the daemon processes it in stdin order before that stratum.
+      (when (and linked-compressed? (> edb-boundary 0) (= (add1 i) edb-boundary))
+        (send-plugin (action-so `(write-db ,(string-append compressed ".edb"))))))
 
     ;; At the final fixpoint the terminal actions run (each emits its own lines).
+    (cond
+      ;; --out-db-compressed --flatten: one self-contained root (§7.3).
+      [(and compressed flatten?)
+       (send-plugin (action-so `(write-db ,compressed)))]
+      ;; --out-db-compressed (linked): the IDB layer; the root was snapshotted
+      ;; above.  An empty IDB writes no relation dir (its META-only dir is
+      ;; created below), since write-db-subset requires >=1 relation.
+      [(and linked-compressed? (not (null? (db-partition-idb-rels partition))))
+       (send-plugin (action-so `(write-db-subset ,compressed
+                                                 ,@(db-partition-idb-rels partition))))]
+      [else (void)])
     (when out-db
       (send-plugin (action-so `(write-db ,out-db))))
     (when debug-out-path
@@ -237,4 +278,47 @@
     (close-input-port err)
     (subprocess-wait sp)
     (when (> (subprocess-status sp) 0)
-      (error "Something went wrong running the daemon!"))))
+      (error "Something went wrong running the daemon!"))
+    ;; The daemon has materialised every data directory; now stamp their META
+    ;; headers (P0.5/P0.6).  Done here (post-exit) so the dirs exist and no
+    ;; mid-run synchronisation is needed.
+    (when compressed
+      (write-compressed-metas compressed flatten? partition per))))
+
+;; Write the META header(s) for a compressed/flattened save (docs/db-
+;; compression.md P0.5/P0.6).  --flatten yields one self-contained root;
+;; a linked compressed save yields a pure-EDB root (data/<name>.edb) plus an
+;; IDB layer (data/<name>) whose manifest links the root by (name stamp).  At
+;; P0 `per` is always 1.0 (no sampler yet), so the layer holds the full IDB and
+;; a load is open-root + import-layer (no replay) -- content-equal to the
+;; uncompressed db.
+(define (write-compressed-metas name flatten? partition per)
+  (define cstamp (current-compiler-stamp))
+  (define idb (db-partition-idb-rels partition))
+  (define edb (db-partition-edb-rels partition))
+  (define range (db-partition-strata-range partition))
+  (cond
+    [flatten?
+     (define dir (string-append "data/" name))
+     (unless (directory-exists? dir) (make-directory* dir))
+     (define m0 (make-db-meta #:kind 'flat #:pure-edb? #f #:manifest '()
+                              #:per 1.0 #:strata range #:compiler-stamp cstamp
+                              #:idb-rels idb #:edb-rels edb))
+     (write-db-meta (hash-set m0 'stamp (compute-db-stamp m0 #:db-dir dir)) dir)]
+    [else
+     (define root-name (string-append name ".edb"))
+     (define root-dir (string-append "data/" root-name))
+     (unless (directory-exists? root-dir) (make-directory* root-dir))
+     (define rm0 (make-db-meta #:kind 'root #:pure-edb? #t #:manifest '()
+                               #:per 1.0 #:compiler-stamp cstamp
+                               #:idb-rels '() #:edb-rels edb))
+     (define root-stamp (compute-db-stamp rm0 #:db-dir root-dir))
+     (write-db-meta (hash-set rm0 'stamp root-stamp) root-dir)
+     (define dir (string-append "data/" name))
+     (unless (directory-exists? dir) (make-directory* dir))
+     (define lm0 (make-db-meta #:kind 'compressed #:pure-edb? #f
+                               #:manifest (list (list root-name root-stamp))
+                               #:per per #:strata range #:compiler-stamp cstamp
+                               #:idb-rels idb #:edb-rels edb))
+     (write-db-meta (hash-set lm0 'stamp (compute-db-stamp lm0 #:prog-fingerprint cstamp))
+                    dir)]))

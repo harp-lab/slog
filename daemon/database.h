@@ -2044,22 +2044,67 @@ public:
     DEBUG("Wrote relation " << relname << " to " << db_dir)
   }
 
+  // Write the whole database to data/<db_name>/ ATOMICALLY: build the complete
+  // tree in a sibling data/<db_name>.tmp/ first, then swap it into place with
+  // renames.  A crash/kill anywhere during the (multi-threaded, many-file)
+  // write can no longer leave the live database half-written or destroyed --
+  // the old contents survive intact in data/<db_name>.old/ until the swap
+  // finishes, and the final rename onto the live name is a single atomic
+  // metadata op.  All output nests under one directory, so one top-level
+  // rename covers every relation/bucket/interner file (docs/db-compression.md
+  // P0.1).  Siblings share the data/ filesystem, so the renames stay atomic.
   void writeDatabaseBIN(const std::string& db_name)
   {
+    writeDatabaseBIN(db_name, std::unordered_set<std::string>{});
+  }
+
+  // Filtered variant: when `only` is non-empty, write ONLY those relations
+  // (docs/db-compression.md P0.4/P0.5 -- an EDB root writes its base relations,
+  // an IDB layer its derived ones).  The interner partitions (value.strings/,
+  // value.nodes/) are always written whole, so every kept relation's heap
+  // closure is present and each directory loads self-contained; P1's closure
+  // sampler trims the heap to what is actually referenced.
+  void writeDatabaseBIN(const std::string& db_name,
+                        const std::unordered_set<std::string>& only)
+  {
+    // A filtered write ALWAYS keeps struct relations: struct instances are
+    // content-addressed heap (like value.strings/value.nodes), and a kept
+    // table/lattice tuple may reference a struct in another relation.  Writing
+    // the whole struct heap keeps every kept dir closure-complete so importing
+    // it never hits a dangling struct id (docs/db-compression.md §4.1).
+    auto keep = [&](const std::string& name, Relation* rel) {
+      return only.empty() || only.count(name) || rel->getStructId() > 0;
+    };
     std::string db_dir("data/"+db_name+"/");
-    std::filesystem::remove_all(db_dir);
-    std::filesystem::create_directories(db_dir);
+    std::string tmp_dir("data/"+db_name+".tmp/");
+    std::string old_dir("data/"+db_name+".old/");
+    // Clear any residue left by a previously-crashed write, then build fresh
+    // into the tmp tree -- never touching the live db_dir yet.
+    std::filesystem::remove_all(tmp_dir);
+    std::filesystem::remove_all(old_dir);
+    std::filesystem::create_directories(tmp_dir);
 
     Stratum s("write " + db_name);
     for (auto& rel : relations)
-      if (!rel.second->isEmpty())
-	stageRelationWriteBIN(s, db_dir, rel.first, rel.second);
-    stageStringsWrite(s, db_dir);
-    stageNodesWrite(s, db_dir);
+      if (!rel.second->isEmpty() && keep(rel.first, rel.second))
+	stageRelationWriteBIN(s, tmp_dir, rel.first, rel.second);
+    stageStringsWrite(s, tmp_dir);
+    stageNodesWrite(s, tmp_dir);
     runStratum(&s, false);
 
+    // Swap: move the current db aside (if any), rename the fully-built tmp
+    // onto the live name, then drop the old copy.  Between the two renames the
+    // old database survives in old_dir, so the live name is never observed
+    // empty; the rename onto db_dir happens only once db_dir does not exist.
+    if (std::filesystem::exists(db_dir))
+      std::filesystem::rename(db_dir, old_dir);
+    std::filesystem::rename(tmp_dir, db_dir);
+    std::filesystem::remove_all(old_dir);
+
+    // mtimes are read from the now-live db_dir (post-swap): rename preserves
+    // file mtimes, and dirMTime would stat non-existent paths pre-swap.
     for (auto& rel : relations)
-      if (!rel.second->isEmpty())
+      if (!rel.second->isEmpty() && keep(rel.first, rel.second))
 	disk_mtimes[rel.first] = dirMTime(relationDirBIN(db_dir, rel.first, rel.second));
     DEBUG("Wrote Database " << db_name)
   }

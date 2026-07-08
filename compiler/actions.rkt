@@ -37,6 +37,15 @@
     ;; run.  CSV writes take no such lock and call the Database directly.
     [`(write-db ,db-name)
      (format "  d->writeDatabaseBIN(\"~a\");\n" db-name)]
+    ;; Write only the named relations (docs/db-compression.md P0.5): an EDB-root
+    ;; snapshot or an IDB-layer save.  Callers must pass a NON-EMPTY list -- an
+    ;; empty relation set means "write all" to the daemon (the single-arg
+    ;; write-db delegates via an empty filter), so the driver never emits this
+    ;; verb with zero relations.
+    [`(write-db-subset ,db-name ,rels ..1)
+     (format "  d->writeDatabaseSubsetBIN(\"~a\", {~a});\n"
+             db-name
+             (string-join (for/list ([r (in-list rels)]) (format "\"~a\"" r)) ", "))]
     [`(write-csv ,dir)
      (format "  d->db()->writeDatabaseCSV(\"~a\");\n" dir)]
     [`(write-rel ,db-name ,rel)

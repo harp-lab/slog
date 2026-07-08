@@ -185,6 +185,14 @@ public:
     if (refuseIfSuspended("write-db")) return;
     database->writeDatabaseBIN(db_name);
   }
+  // Write only the named relations (docs/db-compression.md P0.5): an EDB-root
+  // snapshot or an IDB-layer save.  Same suspended guard as the full write.
+  void writeDatabaseSubsetBIN(const std::string& db_name,
+                              const std::unordered_set<std::string>& only)
+  {
+    if (refuseIfSuspended("write-db")) return;
+    database->writeDatabaseBIN(db_name, only);
+  }
   void writeRelationBIN(const std::string& db_name, const std::string& rel)
   {
     if (refuseIfSuspended("write-rel")) return;
