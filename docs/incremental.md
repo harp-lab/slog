@@ -1,6 +1,12 @@
 # Fully Incremental Slog: Insertion and Deletion of Input Facts
 
-**Status:** design / pre-implementation
+**Status:** design / pre-implementation. Revised 2026-07-08 against the current
+codebase: the compiler now HAS SCC stratification (the 2026-07 rewrite), the
+read phase is push-operator based, pausing and lattices L0+L1 are shipped, and
+db-compression (recompute-on-load, `docs/db-compression.md`) is fully shipped
+forward-incremental — §8A below pins the composition contract with it. Code
+anchors throughout were re-verified 2026-07-08; M2's scope shrank accordingly
+(§6.4, §9).
 **Goal:** make slog programs incrementally maintainable in *both* directions — a stream
 of insertions **and deletions** of EDB (input) facts is applied to a materialised
 database and every derived relation/struct is updated to exactly the least-fixpoint it
@@ -308,8 +314,19 @@ Two layers, and the split is what preserves "compile each rule once":
 
 ### 6.1 Data structures — `daemon/index.h`, `daemon/database.h`
 
+*(anchors 2026-07-08: `BTreeIndex<A>` over `tlx::btree_set<array<u64,A>>` is
+index.h:61; the map-valued `BTreeMapIndex<KA>` over `tlx::btree_map<array<u64,KA>,
+u64>` ALREADY EXISTS at index.h:104 — built for lattices, it is the working
+precedent for a value-carrying master index and for §7A.7's "extensible
+index-value slot". A relation's index arrays live in `Relation::indices`
+(database.h:128) with a parallel `deltaindices` table (database.h:129), selected
+by `getIndex(ord, delta)` (database.h:506); per-bucket
+`intern_allocators`/`getInternAlloc`/`getStructId` at database.h:138/298/263.)*
+
 - Master index value changes from a set element to a mapped value:
   - relations: `btree_map<std::array<u64,A>, Count>` where `struct Count { s64 nonrec; s64 rec; };`
+    — mechanically, a `BTreeMapIndex`-style index with a struct value instead of
+    the lattice's single `u64` payload word.
   - structs: value `struct SCount { u64 id; s64 nonrec; s64 rec; };` — **`id` stays in
     the value so it survives over-delete/reseed** (see §7).
   - Counters live in the **value**, never in the key (else the same tuple at two counts
@@ -323,19 +340,43 @@ Two layers, and the split is what preserves "compile each rule once":
 
 ### 6.2 Operators — `daemon/operators.h`
 
-- `read_delta` (l.40), `join_probe` (l.59), `join_all` (l.76): **unchanged** — sign-agnostic.
-- `emit` (l.94): replace the set-semantics "if head exists, skip; else scatter" with a
-  **counting, signed** producer that records `(tuple, sign)` tagged with the rule's
-  static rec/nonrec bit into the batch — **no emit-time dedup-skip** (we must count
-  re-derivations of existing tuples).
-- `emit_struct` (l.133): same, but the id slot stays a placeholder (interning owns id).
-- `InternTask` (l.203) → **counting aggregator** implementing §4.4: sum per-tuple signed
+*(re-anchored 2026-07-08 to the push-operator refactor; the read phase is now a
+family of fused template operators with pausable `_sliced` variants, and the
+lattice path already ships a value-carrying merge task — both work in our
+favour.)*
+
+- Read phase — **unchanged, sign-agnostic**: `read_delta` (l.40) /
+  `read_delta_sliced` (l.62, pausing), `join_probe` (l.94) / `join_probe_sliced`
+  (l.116), `exists_probe` (l.148, semijoin filter), `join_all` (l.166),
+  `join_probe_lat` (l.182), `join_all_lat` (l.196). The `_sliced` variants are
+  where pausing lives — and ONLY here, which is what keeps §6.5's
+  pausing-composes-for-free claim true.
+- `emit` (l.214): today it **dedup-skips at emit time** (`head_index->contains`)
+  — replace with a **counting, signed** producer that records `(tuple, sign)`
+  tagged with the rule's static rec/nonrec bit into the batch — **no emit-time
+  dedup-skip** (we must count re-derivations of existing tuples). Removing this
+  skip is also why the exact-once delta convention becomes load-bearing (§8/§8A:
+  a double-fired instantiation was harmless under set semantics, it corrupts
+  counts).
+- `emit_temp` (l.232): temps are stratum-transient plumbing (no persistence) —
+  sign-agnostic, likely unchanged.
+- `emit_struct` (l.253): same signed treatment, but the id slot stays a 0
+  placeholder — `InternStructTask` owns dedup + id (already true today, by
+  design comment at l.248-251).
+- `InternTask` (l.371) → **counting aggregator** implementing §4.4: sum per-tuple signed
   contributions, update `(nonrec, rec)`, apply the polarity-selected propagation
   predicate (over-delete + `C` on negative; push Δ⁺ on positive).
-- `InternStructTask` (l.241): same aggregation, preserving `id`; presence 0→+ allocates
-  id only for genuinely new content; presence →0 tombstones (does not recycle id).
+- `InternStructTask` (l.497): same aggregation, preserving `id`; presence 0→+ allocates
+  id only for genuinely new content (content-dedup via `lower_bound` on content
+  columns, l.525-532; id mint at l.537); presence →0 tombstones (does not
+  recycle id).
+- Lattice tasks `MapWriteTask` (l.411) and `LatticeInternTask` (l.454) already
+  implement value-carrying merge with change-splitting (subsumed contributions
+  nulled, ascending values rewritten in place and propagated) — the §7A.7
+  "value-carrying delta" hook is half-built; DRed_L (docs/lattices.md) slots in
+  at M7.
 - **New generic task: `ReseedTask<A>`** — §4.2 scan of `C`.
-- `WriteTask` (l.164): learn to *remove* index entries (reseed's `rec==0` deletes and the
+- `WriteTask` (l.331): learn to *remove* index entries (reseed's `rec==0` deletes and the
   final sweep), not only insert.
 
 ### 6.3 Codegen — `compiler/emit-cpp.rkt`
@@ -343,67 +384,118 @@ Two layers, and the split is what preserves "compile each rule once":
 - Emit `emit` → the counting/signed producer, parameterised by the rule's static
   `IS_REC` bit and a phase-supplied sign.
 - Instantiate the new generic tasks (`ReseedTask<A>`, counting `InternTask`) per relation/
-  bucket alongside the existing `WriteTask`/`InternTask` wiring (l.48-88).
+  bucket alongside the existing `WriteTask`/`InternTask`/`InternStructTask`
+  registration (the `addTask`/`addIndex` wiring; read tasks register at
+  emit-cpp.rkt:667 with the `static?` once-only flag from :447).
 - No per-rule deletion variant is emitted — the negative phase reuses the same
-  per-position semi-naïve delta-join variants already generated for insertion.
+  per-position semi-naïve delta-join variants already generated for insertion
+  (join-planning.rkt picks the delta-driven clause per version; the planner is
+  the 2026-07 staging/scheduling/versions rewrite).
 
-### 6.4 New compiler pass — `compiler/operationalization.rkt` / `join-planning.rkt`
+### 6.4 Compiler pass — `compiler/stratify.rkt` (mostly built) + tagging (net-new)
 
-**Current state (baseline — what exists today).** There is **no SCC / stratification
-analysis anywhere in the compiler.** Within a single program, *all* rules compile into one
-global fixpoint and the daemon runs them together to quiescence (`compile.rkt:121-138`).
-The only decomposition is at **module (`require`/include) granularity**: the include tree
-is flattened by `preorder-traversal` (`compile.rkt:51-54`) into a linear list of separate
-programs, each compiled to its own `.so` and run to fixpoint in dependency order with
-`reload:` between them (`runslog.rkt:145-152`; the manifest is threaded forward by
-`add-manifests`, `compile.rkt:77-82`). This is programmer-authored staging, not computed
-strata. The only static/dynamic notion is **binary**: `dynamic-rels` = every relation
-appearing in any rule head (`add-dynamic-rels`, `compile.rkt:99-107,132`); a read-task is
-emitted **static** (run once) iff its first body relation is not a dynamic-rel (pure EDB),
-else **dynamic** (iterate) — `emit-cpp.rkt:411`, mirrored by the first-non-delta-index
-`isstatic` at `emit-cpp.rkt:67`. This bit is baked into the emitted C++ (`isstatic` arg to
-`addTask`/`addIndex`); the daemon has no SCC/stratum concept of its own.
+**Current state (baseline — REWRITTEN 2026-07-08; the earlier version of this
+section predated the 2026-07 compiler rewrite and described a compiler with no
+stratification at all).** The compiler now HAS genuine SCC stratification:
 
-This binary is **too coarse for DRed^c**: it cannot distinguish a body predicate that
-shares the head's SCC (→ `rec`) from one in a strictly lower stratum (→ `nonrec`) — both
-are just "dynamic" today. M2 must therefore add genuine SCC + topological stratification
-from scratch. Reusable: the *plumbing pattern* — `dynamic-rels` shows exactly how a
-compile-time relation-set is computed in `compile.rkt` and threaded into `emit-cpp.rkt`'s
-`(add-rule dynamic-rels)` closure; the rec/nonrec tag rides the same path. The
-module-reload pipeline is also a working precedent for sequencing stages through one
-daemon, should we later want strata run as ordered sub-fixpoints.
+- `compiler/stratify.rkt`: `stratify-rules` builds the rule dependency graph
+  (body→head edges, plus all-pairs among a rule's own heads so co-heads land in
+  one SCC), runs Tarjan (`tarjan-scc-ids`, :68), condenses, and assigns
+  `scc-level = 1 + max(pred levels)` (:145). Rules are grouped into **one
+  stratum per DAG level** — independent same-level SCCs are merged (:163).
+  `rule-head-rels` / `rule-body-rels` (:53/:57) expose per-rule relation sets.
+- `compiler/compile.rkt`: `compile-strata` (:345) drives it — **one stratum →
+  one `.so`**, run in topological order by the driver with a daemon reload
+  between strata (`beginStratum`/`needs_reload`, daemon.h:153/:64). A
+  `#:split-facts?` mode pulls iteration-0 (body-less) rules into a level-0
+  facts stratum (db-compression P0.5). `jobs->db-partition` (:299) already
+  computes the per-run `idb-rels`/`edb-rels`/`mixed-rels`/`strata-range`/
+  `productive-rels` partition.
+- Per-stratum, `dynamic-rels` = the union of the stratum's own head relations
+  (operationalization.rkt:84 → join-planning.rkt `dynamic?` :102 →
+  emit-cpp.rkt `static?` :447): a read task whose driver clause reads only
+  lower-stratum relations is registered once-only; others iterate.
 
-Net-new work:
+**The useful structural fact:** because an inter-SCC dependency edge forces a
+strictly greater level, two SCCs merged into one stratum are mutually
+unreachable — so *a rule's body relation lies in the same stratum iff it lies in
+the same SCC*. Hence the DRed^c classification needs no new analysis:
 
-- Build the rule dependency graph, compute **SCCs**, assign **strata** in topological
-  order.
-- Tag each rule **recursive** (a body predicate shares the head's SCC) or
-  **non-recursive** (all body predicates in earlier strata). This single bit drives
-  `emit`'s counter choice and the aggregate's barrier.
-- Emit stratum ids and processing order into the manifest the driver consumes.
+> a rule is **recursive** (bumps `rec`) iff some body relation ∈ its stratum's
+> `dynamic-rels`; else **non-recursive** (bumps `nonrec`). Body-less/facts
+> rules and EDB ingestion are `nonrec` by definition.
 
-### 6.5 Driver — `daemon/database.h` fixpoint loop (l.728-749)
+What remains for M2 is therefore **tagging and threading, not analysis**:
+
+- Expose the per-rule rec/nonrec bit (and, for §7A's monotonicity checks, the
+  per-body-clause same-SCC bit) as an explicit IR attribute — today the
+  information exists only implicitly via `dynamic-rels` membership at emit time.
+- Thread the bit into `emit`'s counter choice and the aggregate's barrier
+  (§6.2), and into the stratum manifest the driver consumes.
+- The daemon still has no SCC/stratum concept of its own beyond the resident
+  stratum pipeline; the `Stratum::dynamic_rels` seam comment
+  (database.h:877-879) and the daemon.h header note (:22-26, "re-running an old
+  stratum requires re-binding") mark exactly where the three-phase driver (§4,
+  §6.5) attaches. That re-binding work is shared with db-compression's
+  edit-and-propagate ambition (db-compression.md §12) — build it once.
+
+### 6.5 Driver — `daemon/database.h` fixpoint loop
+
+*(re-anchored 2026-07-08: the per-stratum fixpoint is `runLoop` (database.h:1348)
+with `runPhase` per phase (:1329) — write → read (suspendable) → intern →
+`reorgAll` per iteration; the budgeted outer entry is `continueStratum` (:1437),
+driven by `Daemon::continueRun` (daemon.h:291); `reorgDelta` is Relation-level
+at :557; termination is `latest_any_rec` (:1062), set by `finalizeAll` on any
+non-empty fresh delta and consumed by `EndIterCompletion` (:3037) → ACT_FIXPOINT
+when nothing new; deferred reloads run through `reloadInsertBatches` (:2957) /
+`beginStratum` (daemon.h:153).)*
 
 - Generalise the phase loop to carry a **polarity** and run the three-phase, per-stratum
   schedule of §4.
 - Between negative-phase iterations, accumulate the delta into `C` instead of merging
-  into the main index; between positive-phase iterations, merge as today (`reorgDelta`).
-- **Termination keys on presence transitions, not count changes** (`latest_any_rec`,
-  l.535) — otherwise a re-derivation that only bumps a count spins the loop. Revisit the
+  into the main index; between positive-phase iterations, merge as today
+  (`finalizeAll`/`reorgAll`).
+- **Termination keys on presence transitions, not count changes** — the invariant
+  maps directly onto `latest_any_rec`: `finalizeAll` must register only tuples
+  whose PRESENCE changed (the §4.4 aggregate already pushes only those into the
+  outgoing delta, so the existing "non-empty new delta" test keeps working) —
+  otherwise a re-derivation that only bumps a count spins the loop. Revisit the
   arity-0 / `reorgDelta` guard from the earlier OOM fix under this new invariant.
-- **Pausing (`docs/pausing.md`) composes for free.** Pausing lives entirely in the read
-  (delta-producing) phase and is *exact* (Regime 1: park a continuation at the outer-loop
-  position, resume there — no redo), while the counting aggregate (where `(nonrec,rec)`
-  and `C` mutate) runs to completion. So a pause only ever leaves un-consumed delta
-  records and never touches the counters — keep it that way (any counting phase that
-  needs pausing must be resumable by an exact cursor, not by discard-and-rerun, since the
-  counters are not idempotent).
+- **Pausing (`docs/pausing.md`, now shipped) composes for free.** Pausing lives
+  entirely in the read (delta-producing) phase — precisely the `_sliced`
+  operators of §6.2 plus `ReadCompletion`'s mid-read suspend (:3013) — and is
+  *exact* (park a continuation at the outer-loop position, resume there — no
+  redo), while the counting aggregate (where `(nonrec,rec)` and `C` mutate) runs
+  to completion. So a pause only ever leaves un-consumed delta records and never
+  touches the counters — keep it that way (any counting phase that needs pausing
+  must be resumable by an exact cursor, not by discard-and-rerun, since the
+  counters are not idempotent). One NEW caveat since checkpoint-on-pause
+  shipped: `writeDatabaseSerialBIN` (:2377) checkpoints a paused PARTIAL
+  database; a partial fixpoint's counters are not reconstructible from its
+  tuples, so once counting lands a checkpoint must either persist the counters
+  or be treated as witness-only on resume (replay from EDB re-establishes
+  counts) — see §8A.
 
-### 6.6 Input protocol — `daemon/slogd.cpp` (command loop l.60-116)
+### 6.6 Input protocol — `daemon/slogd.cpp` + `compiler/actions.rkt`
 
-- Add signed-fact commands (e.g. `+<tuple>` / `-<tuple>`, or a signed batch) that feed
-  the per-thread delta shards with a sign.
+*(re-anchored 2026-07-08: the daemon protocol is one plugin path per line —
+`run_stdin` (slogd.cpp:137) / `run_tcp` (:170); every verb beyond
+`continue`/`continue-boundary`/`close` is a compiled action plugin from
+`actions.rkt`. A positive single-fact path ALREADY exists: the `add-tuple`
+action (actions.rkt:77) → `Daemon::addTuple` (daemon.h:240) →
+`insertTupleAllIndices` + `needs_reload`, built for db-compression's
+edit-and-propagate.)*
+
+- Extend the `add-tuple` action family with a **sign** (`del-tuple`, or a signed
+  batch action) feeding per-thread delta shards rather than direct index
+  insertion — the existing action-plugin path is the natural transport; no new
+  wire protocol is needed.
 - Batch a set of changes and run one three-phase sweep per batch.
+- db-compression's `edits` files (`(add-tuple REL v…)`, applied at layer
+  boundaries on load) become the persistent face of the same mechanism: once
+  DRed^c exists, `(del REL v…)` edits stop requiring full downstream re-replay
+  (db-compression.md §12) and instead drive a negative sweep through the
+  resident strata.
 
 ---
 
@@ -428,6 +520,13 @@ Net-new work:
 > point here: value-change deltas should travel as replacement *pairs*
 > `(key, old, new)` so ⊑-increasing changes route through the monotone phase
 > (IncA/DRed_L "change splitting") instead of the negative fixpoint.
+> *2026-07-08: lattices L0+L1 are now SHIPPED* — `BTreeMapIndex` (index.h:104),
+> `LatticeInternTask`/`MapWriteTask` (operators.h:454/:411), and the batch
+> change-splitting behaviour (subsumed contributions nulled, ascending values
+> rewritten in place and propagated) exist in the runtime, as do the extern
+> set/map collection lattices (arena.h `merge_spec`). The §7A.7 "extensible
+> index-value slot" and "value-carrying delta" hooks are therefore half-built
+> already; M6/M7 extend working machinery rather than introducing it.
 
 Aggregation is deferred past the first incremental milestones (M0–M4 do plain recursion),
 but the substrate must **anticipate** it, because the mechanism that makes recursive
@@ -565,11 +664,18 @@ Even though aggregation ships later, these choices in the early milestones avoid
 
 ## 8. Known caveats to design in now
 
-- **Semi-naïve delta convention.** Negative propagation must respect the standard
-  "delta-in-one-position against the pre-deletion state" convention, or two deleted
-  supporters of one derivation double-decrement the consequence. slog already generates
-  the per-position delta-join variants for insertion; the negative phase reuses them, but
-  the **driver must sequence old/new state consistently.**
+- **Semi-naïve delta convention — now load-bearing in BOTH directions.** Negative
+  propagation must respect the standard "delta-in-one-position against the
+  pre-deletion state" convention, or two deleted supporters of one derivation
+  double-decrement the consequence. slog already generates the per-position
+  delta-join variants for insertion; the negative phase reuses them, but the
+  **driver must sequence old/new state consistently.** The positive direction has
+  the same requirement once counting lands: **iteration 0 (delta = the whole
+  reloaded database) must fire each rule instantiation EXACTLY once.** Under set
+  semantics a double-fire was absorbed by dedup and invisible; under counting it
+  permanently corrupts counters. This is the headline M0 test (§10) — verify the
+  2026-07 join planner's per-position versions partition instantiations exactly
+  at the reload/iteration-0 boundary, not just mid-run.
 - **Termination invariant** (§6.5): presence transitions, not count changes.
 - **Struct id stability** (§7).
 - **`C` lifecycle correctness:** after the positive phase, any candidate still at `(0,0)`
@@ -579,23 +685,108 @@ Even though aggregation ships later, these choices in the early milestones avoid
 
 ---
 
+## 8A. Composition contract with db-compression (added 2026-07-08)
+
+`docs/db-compression.md` shipped (2026-07-07) with loading defined as
+**always-replay-from-origin**, and its layers may drop derived tuples from disk.
+This section pins how that composes with DRed^c — the constraints are real but
+all favourable.
+
+### 8A.1 Dropped tuples on disk do NOT thwart incrementality
+
+`(nonrec, rec)` are a deterministic function of `(EDB + edits, program)`: the
+least fixpoint is deterministic, and the counters count one-step derivations
+from it, which semi-naïve enumerates exactly once. So **any load path that
+replays to fixpoint under a counting engine ends with exact counters**, no
+matter how much was dropped on disk. Compression drops tuples, never
+information — "load, replay, counts established, fully incremental from there"
+is the operating model. Deletion **edits** compose the same way: today they are
+sound via full re-replay (db-compression.md §12); under DRed^c they become the
+negative input batches of §4.
+
+### 8A.2 The one soundness trap: never ingest the kept sample as counted presence
+
+A compressed load imports each layer's kept sample before replaying. Under
+counting, a kept tuple ingested with any positive count is corrupted forever —
+replay re-derives it and adds the true counts *on top*. Worse than imprecise: a
+spurious `nonrec > 0` makes the fact **permanently undeletable** (the §4.1
+barrier protects it from every future negative sweep). The contract:
+
+- kept **table/lattice tuples** are ingested as *witness only* — they do not
+  enter the live set with counts; replay re-derives and counts them. (Their
+  seeding value was always marginal — db-compression.md §13: seeds never reduce
+  join work, only rounds.)
+- kept **struct-heap rows** are ingested as **tombstones** — id preserved,
+  counters zero, absent-until-rederived. This is *exactly* the §7 tombstone
+  shape DRed^c needs anyway: `InternStructTask` content-matches the tombstone,
+  reuses its id, and bumps its counters — id stability and count correctness
+  from one mechanism.
+
+### 8A.3 `per = 100 %` loads come out incremental-ready for free
+
+The `per=100%` "immediate fixpoint self-check" fires every rule once over the
+full database and derives nothing new — under counting, **that single round IS
+the count computation** (one-step derivations from the fixpoint). Expensive
+layers kept whole therefore pay nothing extra to become DRed^c-ready. Corollary:
+a `--trust` load that skips the check would leave counters at zero — trust-mode
+and incremental-readiness are mutually exclusive unless counters are persisted
+(defer; if ever done, gate on `compiler-stamp` match, since counters are
+invalidated by any semantic compiler change even when the tuple set is not).
+
+### 8A.4 Checkpoints need a count story
+
+`writeDatabaseSerialBIN` checkpoints a paused PARTIAL database
+(db-compression.md P2.3). Partial-fixpoint counters are not reconstructible from
+the tuple set, so when counting lands either (a) the checkpoint format persists
+counters, or (b) a resumed checkpoint is treated as witness/tombstones per §8A.2
+and the replay restarts from the EDB (monotonicity makes any subset a sound
+seed; only the count-establishing work is repeated). Decide at M0.
+
+### 8A.5 Mutual payoffs
+
+- **DRed^c gives the compression DAG O(change) edits:** edit-and-propagate stops
+  re-replaying dependent layers and instead drives one three-phase sweep through
+  the resident strata. The "re-firing an old resident stratum needs index
+  re-binding" caveat (db-compression.md §12) is exactly the §6.5 driver work —
+  build it once.
+- **Compression gives DRed^c its struct-id reclamation pass:** §7 says
+  tombstoned ids are never recycled online; a compressed save+reload compacts
+  them for free (count-zero tombstones are not saved; replay re-mints densely).
+- **The compression harness gives the count oracle:** `tests/compression/run.sh`
+  already content-diffs a compressed load against a from-scratch run; extending
+  it to also diff *counters* tests the whole §8A contract in one shot (§10).
+
+---
+
 ## 9. Phased implementation plan
 
 Each milestone is independently testable and delivers value before the next.
 
 1. **M0 — Signed-count substrate.** `Count`/`SCount` index values; signed deltas;
    counting `emit`/`InternTask` with presence-transition propagation. Insertion still
-   monotone, but now counter-based. Verify identical results to today plus correct counts.
-2. **M1 — Bidirectional input protocol.** `+`/`-` commands into delta shards
-   (`slogd.cpp`). Deltas can be negative.
-3. **M2 — Stratification + rec/nonrec tagging.** New compiler pass; strata/tags in the
-   manifest; `emit` targets the right counter. No behaviour change yet for insertion.
+   monotone, but now counter-based. Verify identical results to today plus correct
+   counts — headline tests: **iteration-0 exact-once firing** (§8) and the
+   **compressed-load count oracle** (§8A.5, §10). The §8A.2 witness/tombstone
+   ingestion rule for compressed loads and the §8A.4 checkpoint decision land
+   here too — they define what "load a saved db under counting" means.
+2. **M1 — Bidirectional input protocol.** Signed variants of the existing
+   `add-tuple` action (§6.6) feeding delta shards. Deltas can be negative.
+3. **M2 — rec/nonrec tagging (stratification EXISTS since the 2026-07 rewrite).**
+   Expose the per-rule bit (body relation ∈ stratum's `dynamic-rels` ⟺ same-SCC,
+   §6.4) and the per-body-clause same-SCC bit as IR attributes; thread into
+   `emit`'s counter choice and the manifest. No behaviour change yet for
+   insertion. *Was "build SCC + topological stratification from scratch"; now
+   tagging + threading only.*
 4. **M3 — Non-recursive deletion.** For acyclic strata, signed counting is sound and
    complete both directions. Ship full incrementality for non-recursive programs. Big,
    safe milestone.
 5. **M4 — Recursive deletion (DRed^c).** Candidate set `C`, negative fixpoint with the
-   `nonrec>0` barrier, `ReseedTask`, three-phase driver. This is the hard milestone.
-6. **M5 — Struct GC discipline.** Tombstoning, id stability, (optional) safe reclamation.
+   `nonrec>0` barrier, `ReseedTask`, three-phase driver (incl. the resident-stratum
+   index re-binding shared with db-compression edit-and-propagate, §8A.5). This is
+   the hard milestone.
+6. **M5 — Struct GC discipline.** Tombstoning, id stability, (optional) safe
+   reclamation — noting §8A.5: a compressed save+reload already compacts
+   tombstoned ids, so online reclamation can stay "never".
 7. **M6 — Stratified aggregation** (§7A Tier 1). `COUNT`/`SUM`/`AVG` via `(count,sum)`;
    `MIN`/`MAX` via a per-group sorted multiset; value changes as `retract-old+insert-new`.
    Fully precise deletion; no new recursion machinery. Requires only the M2 strata + the
@@ -622,6 +813,16 @@ recompute after a randomised insert/delete sequence:
   handled).
 - Diamond + chain (§5.2): over-delete then one-step re-found, plus a `(0,0)` relearn.
 - SCC collapse: delete the single edge bridging two strongly-connected blobs.
+- **Iteration-0 exact-once (M0 headline, §8):** run a program whose rules have
+  multiple same-relation body clauses through a save → load → reload cycle
+  (delta = whole db at reload) and assert every tuple's counts equal the
+  from-scratch run's counts — a double-fired instantiation shows up as an
+  inflated count even though the tuple SET matches.
+- **Compressed-load count oracle (§8A.5):** extend `tests/compression/run.sh` to
+  diff per-tuple counts (not just content) between a compressed load at each
+  `per` and the from-scratch oracle — this exercises the §8A.2 witness/tombstone
+  ingestion rule, id-preserving tombstone resurrection, and count regeneration
+  in one harness.
 - **Differential fuzzing:** random `±tuple` streams vs. full recompute, across programs
   with structs and multiple strata.
 

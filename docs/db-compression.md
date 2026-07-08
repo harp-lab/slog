@@ -4,9 +4,12 @@
 program as source and are recomputed from origin on load, keeping only a target
 percentage of the derived facts. 2026-07-07, rev 6 (finished design).*
 
-**Status: P0+P1+P2 implemented (2026-07-07), forward-incremental only.** The only
-unbuilt pieces are the §14 content-addressed struct id and DRed^c backward
-incrementality — both explicitly optional. Sibling of `db-merge.md`,
+**Status: P0+P1+P2 implemented (2026-07-07), forward-incremental only; hardened
+2026-07-08** (edited-chain signature re-baseline §11.2, no-seed full-replay
+verify `slog db verify --replay` §11.1, loud replay disk-fallback warning, §5.3
+error-watch question resolved). The only unbuilt pieces are the §14
+content-addressed struct id and DRed^c backward incrementality — both explicitly
+optional. Sibling of `db-merge.md`,
 `incremental.md`, `pausing.md`. This document is meant to be self-contained: if we
 pick the work up months from now, everything we reasoned through should be here —
 the model, the theory that constrains it, the on-disk format, the load algorithm,
@@ -335,9 +338,18 @@ fine because we compare by content (§4, §8).
 
 The premise holds for monotone rules; watch:
 
-- **`(error e)` watches that kill the fixpoint** (MEMORY roadmap): early
-  termination can make even the *logical* set timing-dependent → mark reachable
-  relations `per = 100 %` (never compressed).
+- **`(error e)` watches that kill the fixpoint.** *Resolved 2026-07-08 — not an
+  issue under the shipped semantics.* The `(error (error_spec …))` runtime-error
+  facts (2026-07) are ordinary monotone facts: the driver's watch
+  (`runslog.rkt` `check-errors!`) dumps the reserved `error` relation at each
+  stratum fixpoint and **warns without stopping**, so the fixpoint always
+  completes and the logical set stays deterministic (`error` included — it
+  compresses like any relation). A daemon-level `(error …)` reply aborts the
+  run *before* any save action fires, so a partial (timing-dependent) database
+  is never written. `META`'s `full-store-rels` therefore stays **reserved**: it
+  becomes live only if a hard-stop error mode (terminate-on-first-error) is
+  added, at which point relations reachable from error rules must be forced to
+  `per = 100 %` as originally planned.
 - **Lattices**: the converged value is order-independent iff the merge is
   commutative/associative — true by kind; confirm the collection-arena
   (`LAT_EXTERN`, `intern4`) path (open Q, §21).
@@ -402,7 +414,15 @@ object store.
   fixing for plain `--out-db` too.
 
 New tooling: a `slog db` command — `ls`/`tree` (show the DAG, `per`, sizes,
-staleness), `rm [--cascade]`, `gc`, `clear`, `verify`.
+staleness), `rm [--cascade]`, `gc`, `clear`, `verify [--replay]`.
+
+> **Known wart (2026-07-08): `gc` vs. an in-flight save.** META headers are
+> stamped by the driver post-exit (P0.5 note), so a freshly written `.edb` root
+> is unreferenced for a short window; a concurrent `slog db gc` will collect it
+> and break the save's layer. data/ management assumes a single writer — don't
+> run `gc` while a save is in flight (observed once as a harness race). The
+> clean fix, if it ever matters, is stamping the root's META at snapshot time
+> instead of post-exit.
 
 ### 7.1 Every input is a bin database first
 
@@ -483,6 +503,8 @@ data/<name>/
                       #    per; heap = closure of what is kept minus what a linked input has, §4)
   signature           # per IDB relation: (count, commutative-content-checksum) over the FULL
                       #   IDB, computed at SAVE before dropping — full-coverage integrity
+  signature.edited    # drift baseline for an EDITED chain (§11.2), keyed by a digest of the
+                      #   chain's load recipe incl. edit ops; written by the first post-edit load
 ```
 
 **`META` fields** (a keyed s-expr; version everything):
@@ -629,6 +651,36 @@ Report per relation the count delta and direction (more / fewer / changed);
 kept sample, full on request). After confirming a change is correct, **re-save** the
 db to re-baseline its `signature` + `compiler-stamp` to the new compiler — so the
 warning fires once per real change, not every load.
+
+### 11.1 The seeded-sample blind spot, and the full-replay verify (added 2026-07-08)
+
+The default load **seeds** the kept sample before replaying (§10), and replay is
+monotone — so a change that *removes* a kept tuple is invisible: the seeded tuple
+survives the union, and the signature (computed over that union) still matches.
+Only removals of *dropped* tuples surface as a count deficit. The blind spot
+therefore scales with `per`: at `per = 100 %` **every** removal is masked and the
+"self-verifying" load only detects *additions*.
+
+The strong check is **`slog db verify NAME --replay`**: it loads the chain with
+`db-load-steps #:seed? #f` — no layer's kept sample is imported — so every replay
+must re-derive its whole IDB from the EDB, and removals show up as drift
+(verified by test: a recipe weakened to derive 3 of 6 `path` tuples passes the
+seeded load silently and fails the `--replay` verify loudly). It is strict by
+default (drift ⇒ non-zero exit) and composes with the edited-chain baseline of
+§11.2. Run it after compiler upgrades or before trusting an old archive; the
+seeded verify remains the cheap every-load check.
+
+### 11.2 Edited chains re-baseline instead of skipping verification (added 2026-07-08)
+
+An edit legitimately changes content, so the save-time `signature` no longer
+applies — but skipping verification entirely (the original P2.1 behaviour) left
+edited chains with **no** integrity check. Now the driver re-baselines: the first
+load after a new edit stores the replayed signature in `signature.edited`, keyed
+by a digest of the chain's whole load recipe including every edit op
+(`db-chain-edits-digest`). Subsequent loads verify against that baseline exactly
+like the unedited path; a further edit anywhere in the chain changes the digest
+and forces one fresh re-baseline load. Cost: exactly one unverified load per
+edit, instead of an unverified chain forever.
 
 ---
 
@@ -853,7 +905,11 @@ Goal: real compression + recompute-on-load + verification, gated by tests.
 >   includes resolve because the entry is stored absolute and the resolver only
 >   touches the filesystem to normalise paths, which tolerates absent files.
 >   Assumes no symlinks in the source tree and the same working directory at
->   save and load.
+>   save and load.  Since 2026-07-08 a divergence is LOUD rather than silent:
+>   if a replay's source lookup misses the stored override and falls through
+>   to disk (`parser.rkt` `parse-file`), the driver warns that the result may
+>   not correspond to the saved recipe (catches symlink/moved-tree/incomplete-
+>   capture cases at their point of impact).
 > - **P1.4 replay is a driver phase, not a separate `recompute.rkt`.**  `-d NAME`
 >   on a compressed db opens the root, imports the IDB sample, then recompiles
 >   prog.sexpr (`#:split-facts? #f`) and runs its strata — atop the FULL DAG
@@ -874,7 +930,9 @@ Goal: real compression + recompute-on-load + verification, gated by tests.
 > - **P1.5 verify runs on every compressed load**: recompute the signature after
 >   replay, compare, attribute via `compiler-stamp` (same ⇒ nondeterminism/bug,
 >   newer ⇒ likely intended), warn-only default / `--strict` errors.  The
->   `kept ⊆ replay` check and `--diff` example tuples are not yet wired.
+>   `kept ⊆ replay` check is subsumed (2026-07-08) by the stronger
+>   `slog db verify NAME --replay` no-seed verify (§11.1), which detects
+>   removals the seeded load masks; `--diff` example tuples remain unwired.
 > - **P1.6** content-equality is the signature comparison; the harness (P1.7)
 >   also does a direct per-relation CSV diff via an empty "dump" loader.
 
@@ -945,9 +1003,11 @@ and the harness enforces it in CI.
 >   load a db's edits apply right after it is opened/imported (a daemon
 >   `add-tuple` → `insertTupleAllIndices` + `needs_reload`), so replay propagates
 >   the change FORWARD through every dependent layer.  Verified through a 2-layer
->   chain: editing the deep root's `edge` grew `path` 6→10 and `twohop` 3→6.  The
->   drift verify is skipped when the load chain carries edits.  Backward
->   maintenance (DRed^c) is deliberately NOT built.
+>   chain: editing the deep root's `edge` grew `path` 6→10 and `twohop` 3→6.
+>   Since 2026-07-08 the drift verify is NO LONGER skipped on an edited chain:
+>   the first post-edit load re-baselines to `signature.edited` and later loads
+>   verify against it (§11.2).  Backward maintenance (DRed^c) is deliberately
+>   NOT built.
 > - **Recursive manifest DAG.**  `db-load-steps` materialises the whole input
 >   DAG bottom-up (open base root → per layer: import sample, apply edits,
 >   `(replay L)`).  A compressed save under `-d INPUT` chains atop INPUT (links

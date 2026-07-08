@@ -53,6 +53,8 @@
          prog-sexpr-exists?
          write-signature-file
          read-signature-file
+         write-edited-signature-file
+         read-edited-signature-file
          read-edits
          append-edit!
          db-has-edits?)
@@ -369,6 +371,44 @@
              (hash-set h k (cons count checksum))]
             [_ (meta-fail "malformed signature row: ~s" r)]))]
        [other (meta-fail "malformed signature in ~a: ~s" db-dir other)])]))
+
+;; signature.edited -- the drift baseline for an EDITED chain (§11/§12).  An
+;; edit legitimately changes content, so the save-time `signature` no longer
+;; applies.  Instead of skipping verification entirely (the pre-P2.1 behaviour
+;; -- an observability hole), the first load after a new edit RE-BASELINES:
+;; it stores the freshly replayed signature keyed by a digest of the chain's
+;; whole edit recipe (dbtool.rkt db-chain-edits-digest).  Later loads verify
+;; against it as usual; a further edit anywhere in the chain changes the
+;; digest and forces a fresh re-baseline (one unverified load per edit).
+
+(define (edited-sig-path db-dir) (build-path db-dir "signature.edited"))
+
+(define (write-edited-signature-file db-dir digest sig)
+  (define sexpr
+    `(slog-signature-edited
+      (edits-digest ,digest)
+      ,@(for/list ([k (in-list (sort (hash-keys sig) symbol<?))])
+          (match-define (cons count checksum) (hash-ref sig k))
+          (list k count checksum))))
+  (call-with-atomic-output
+   (path->string (edited-sig-path db-dir))
+   (lambda () (parameterize ([print-graph #f]) (write sexpr)))))
+
+;; Returns (cons edits-digest sig-hash), or #f when no baseline is stored.
+(define (read-edited-signature-file db-dir)
+  (define path (edited-sig-path db-dir))
+  (cond
+    [(not (file-exists? path)) #f]
+    [else
+     (match (call-with-input-file path read)
+       [`(slog-signature-edited (edits-digest ,(? string? digest)) ,rows ...)
+        (cons digest
+              (for/fold ([h (hash)]) ([r (in-list rows)])
+                (match r
+                  [(list (? symbol? k) (? exact-nonnegative-integer? count) (? string? checksum))
+                   (hash-set h k (cons count checksum))]
+                  [_ (meta-fail "malformed signature.edited row: ~s" r)])))]
+       [other (meta-fail "malformed signature.edited in ~a: ~s" db-dir other)])]))
 
 ;; Compute a database's content/version stamp (§7): a short hash over its
 ;; identity -- input links, retention, stratum range, compiler + encoding

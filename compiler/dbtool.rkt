@@ -20,10 +20,12 @@
          db-exists?
          db-managed?
          db-chain-has-edits?
+         db-chain-edits-digest
          db-encoding-mismatch)
 
 (require "dbmeta.rkt")
 (require racket/format)
+(require sha)
 
 (define DATA "data")
 
@@ -159,7 +161,14 @@
 ;; is opened and recursively materialised; further inputs and this layer are
 ;; imported; each db's edits apply right after it lands; a layer with a stored
 ;; program is replayed to regenerate dropped facts.  `seen` de-dups diamonds.
-(define (db-load-steps name [seen (set)])
+;;
+;; #:seed? #f (a FULL-replay verify, `slog db verify NAME --replay`) skips
+;; importing the kept sample of any layer whose program will be replayed, so
+;; the replay must re-derive the whole IDB from the EDB.  A seeded load is
+;; monotone -- a kept tuple the current compiler no longer derives silently
+;; survives (§11 blind spot); an unseeded replay surfaces exactly those
+;; removals.  Layers with no stored program (pure merges) still import.
+(define (db-load-steps name [seen (set)] #:seed? [seed? #t])
   (cond
     [(or (not name) (set-member? seen name)) '()]
     [else
@@ -172,12 +181,24 @@
        [(null? manifest) (append (list `(open ,name)) e)]
        [else
         (define inputs (map first manifest))
+        (define import-self
+          (if (and (not seed?) (pair? replay)) '() (list `(import-layer ,name))))
         (append
-         (db-load-steps (first inputs) seen+)                          ; base, recursively
-         (append-map (lambda (i) (append (db-load-steps i seen+)       ; extra inputs merged in
-                                         (list `(import-layer ,i))))
+         (db-load-steps (first inputs) seen+ #:seed? seed?)            ; base, recursively
+         (append-map (lambda (i) (append (db-load-steps i seen+ #:seed? seed?)
+                                         (list `(import-layer ,i))))   ; extra inputs merged in
                      (rest inputs))
-         (list `(import-layer ,name)) e replay)])]))
+         import-self e replay)])]))
+
+;; A short digest of `name`'s effective load recipe -- the full load plan with
+;; its inline edit ops.  signature.edited (dbmeta.rkt) is keyed by this: an
+;; edit added anywhere in the chain changes the digest, invalidating the
+;; edited-chain drift baseline until the next load re-baselines it.  Always
+;; digests the seeded plan so the key is independent of the verify mode.
+(define (db-chain-edits-digest name)
+  (substring (bytes->hex-string
+              (sha256 (string->bytes/utf-8 (format "~s" (db-load-steps name)))))
+             0 16))
 
 ;; Walk the load DAG; return (list db stored-version) for the first database
 ;; whose recorded value-encoding-version differs from what this build reads,
@@ -295,8 +316,18 @@
        (delete-directory/files (build-path DATA e)))
      (printf "cleared ~a/\n" DATA)]))
 
-(define (cmd-verify names0)
-  (define names (if (pair? names0) names0 (all-db-names)))
+;; `slog db verify [NAME...] [--replay]`.  The static pass checks the DAG
+;; (META readable, inputs present, staleness, acyclicity).  --replay
+;; additionally loads each named compressed db WITHOUT seeding its kept sample
+;; (db-load-steps #:seed? #f) and replays from the EDB, comparing the result
+;; against the stored signature -- the strong check that also surfaces
+;; REMOVALS a seeded load masks (§11 blind spot).  Driven by the
+;; replay-verify callback slog.rkt supplies (the driver lives in runslog.rkt,
+;; which requires this module).
+(define (cmd-verify names0 #:replay-verify [replay-verify #f])
+  (define replay? (and (member "--replay" names0) #t))
+  (define names1 (filter (lambda (a) (not (string-prefix? a "--"))) names0))
+  (define names (if (pair? names1) names1 (all-db-names)))
   (define ok (box #t))
   (when (dag-has-cycle?)
     (set-box! ok #f)
@@ -320,6 +351,21 @@
       [else (set-box! ok #f)
             (printf "FAIL ~a\n" n)
             (for ([p (in-list (reverse problems))]) (printf "       - ~a\n" p))]))
+  (when replay?
+    (unless replay-verify
+      (die "--replay verify needs the run driver; invoke as `slog db verify ... --replay`"))
+    (for ([n (in-list names)])
+      (cond
+        ;; only compressed layers have a signature to replay against
+        [(not (read-signature-file (db-dir n)))
+         (printf "skip ~a (--replay: no stored signature)\n" n)]
+        [else
+         (with-handlers ([exn:fail?
+                          (lambda (e)
+                            (set-box! ok #f)
+                            (printf "FAIL ~a (full replay): ~a\n" n (exn-message e)))])
+           (replay-verify n)
+           (printf "ok   ~a (full replay verify)\n" n))])))
   (unless (unbox ok) (exit 2)))
 
 ;; slog db edit NAME add-tuple REL v...  -- record a forward-incremental edit
@@ -335,7 +381,7 @@
              name rel (string-join vals " "))]
     [_ (die "usage: slog db edit NAME add-tuple REL v...")]))
 
-(define (slog-db-command args)
+(define (slog-db-command args #:replay-verify [replay-verify #f])
   (match args
     [(list) (printf "usage: slog db <ls|tree|rm|gc|clear|verify|edit> [args]\n")]
     [(cons "ls" _) (cmd-ls)]
@@ -343,6 +389,6 @@
     [(cons "rm" rest) (cmd-rm rest)]
     [(cons "gc" _) (cmd-gc)]
     [(cons "clear" _) (cmd-clear)]
-    [(cons "verify" rest) (cmd-verify rest)]
+    [(cons "verify" rest) (cmd-verify rest #:replay-verify replay-verify)]
     [(cons "edit" rest) (cmd-edit rest)]
     [(cons other _) (die "unknown db subcommand: ~a" other)]))

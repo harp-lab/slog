@@ -166,7 +166,10 @@
   ;; command-line (which would bind "db" to the .slog-file positional).
   (when (and (positive? (vector-length argv))
              (equal? (vector-ref argv 0) "db"))
-    (slog-db-command (cdr (vector->list argv)))
+    ;; `verify --replay` needs the run driver (runslog.rkt), which dbtool
+    ;; cannot require (it is required BY runslog) -- so it is injected here.
+    (slog-db-command (cdr (vector->list argv))
+                     #:replay-verify (lambda (name) (slog-verify-replay name)))
     (exit 0))
   (define show-banner? #t)
   (define db-name #f)

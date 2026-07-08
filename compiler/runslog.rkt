@@ -13,6 +13,7 @@
 ;; Compilation runs ahead in a future while the daemon executes.
 
 (provide slog-run-file
+         slog-verify-replay
          db-manifest-from-name)
 
 (require "tools.rkt")
@@ -162,7 +163,8 @@
                        #:flatten? [flatten? #f]
                        #:strict? [strict? #f]
                        #:bias [bias #f]
-                       #:reoptimise? [reoptimise? #f])
+                       #:reoptimise? [reoptimise? #f]
+                       #:no-seed? [no-seed? #f])     ; full-replay verify (§11)
   ;; Working directories used by the compiler and daemon (relative to cwd).
   (make-directory* "build")
   (make-directory* "out")
@@ -236,7 +238,8 @@
                         "database ~a was written with value-encoding v~a but this build reads v~a.\n"
                         "  Re-encode its root bins (or drop-and-replay derived layers) to migrate.")
                        (first mm) (second mm) slog-value-encoding-version))))
-    (define load-steps (if db-name (db-load-steps db-name) '()))
+    (define load-steps
+      (if db-name (db-load-steps db-name #:seed? (not no-seed?)) '()))
     ;; Send the leading open BEFORE compiling: loadDatabaseBIN is single-
     ;; threaded, so the load overlaps the Racket front end + codegen below
     ;; (docs/fast-compile.md).  The rest run after the drive loop is defined.
@@ -397,19 +400,42 @@
         [_ (send-plugin (action-so step))]))
 
     ;; Verify the loaded db reproduced its stored content signature (P1.5): drift
-    ;; is a compiler change, nondeterminism, or a compression bug.  Skipped when
-    ;; an input-leaf edit is in play -- the edit intentionally changes the
-    ;; content, so the replay legitimately no longer matches (§12).
+    ;; is a compiler change, nondeterminism, or a compression bug.  An EDITED
+    ;; chain verifies against its re-baselined signature.edited (keyed by a
+    ;; digest of the chain's whole edit recipe): the first load after a new edit
+    ;; establishes the baseline, later loads verify against it (§11/§12).
+    ;;
+    ;; Seeded-sample blind spot (§11): kept tuples are imported BEFORE replay,
+    ;; so a change that would REMOVE a kept tuple is masked by the monotone
+    ;; seed (at per=100% every removal is).  A no-seed? load (`slog db verify
+    ;; NAME --replay`) skips the seeding so replay re-derives everything from
+    ;; the EDB and removals surface in the comparison.
     (when db-name
       (let* ([ddir (string-append "data/" db-name)]
-             [stored-sig (and (not (db-chain-has-edits? db-name))
-                              (read-signature-file ddir))])
-        (when stored-sig
-          (define meta (read-db-meta ddir))
-          (define idb (db-meta-idb-rels meta))
-          (unless (null? idb)
-            (send-plugin (action-so `(signature ,@idb)))
-            (report-drift db-name stored-sig (read-signature!) meta strict?)))))
+             [meta (and (db-meta-file-exists? ddir) (read-db-meta ddir))]
+             [idb (if meta (db-meta-idb-rels meta) '())]
+             [label (if no-seed? "full replay" "replay")])
+        (when (and meta (pair? idb))
+          (cond
+            [(not (db-chain-has-edits? db-name))
+             (define stored-sig (read-signature-file ddir))
+             (when stored-sig
+               (send-plugin (action-so `(signature ,@idb)))
+               (report-drift db-name stored-sig (read-signature!) meta strict?
+                             #:label label))]
+            [else
+             (define digest (db-chain-edits-digest db-name))
+             (define baseline (read-edited-signature-file ddir))
+             (send-plugin (action-so `(signature ,@idb)))
+             (define live (read-signature!))
+             (cond
+               [(and baseline (equal? (car baseline) digest))
+                (report-drift db-name (cdr baseline) live meta strict?
+                              #:label (string-append label " (edited-chain baseline)"))]
+               [else
+                (write-edited-signature-file ddir digest live)
+                (eprintf "re-baselined ~a: stored the edited-chain signature (~a relations); drift detection resumes next load\n"
+                         db-name (hash-count live))])]))))
 
     ;; Whether this save writes its own fresh EDB root (data/<name>.edb): yes for
     ;; a from-scratch program's iteration-0 facts (edb-boundary >= 1), or a
@@ -514,7 +540,7 @@
 ;; compiler likely means an intended semantic change; the SAME stamp means
 ;; nondeterminism or a compression bug -- a louder alarm.  --strict turns any
 ;; mismatch into an error.
-(define (report-drift name stored live meta strict?)
+(define (report-drift name stored live meta strict? #:label [label "replay"])
   (define rels (sort (set->list (set-union (list->set (hash-keys stored))
                                            (list->set (hash-keys live))))
                      symbol<?))
@@ -527,8 +553,8 @@
               r sc lc (if (= sc lc) " (same count, content changed)" ""))))
   (cond
     [(null? diffs)
-     (eprintf "verified ~a: replay matches stored signature (~a relations)\n"
-              name (hash-count stored))]
+     (eprintf "verified ~a: ~a matches stored signature (~a relations)\n"
+              name label (hash-count stored))]
     [else
      (define same? (equal? (db-meta-compiler-stamp meta) (current-compiler-stamp)))
      (define msg
@@ -539,6 +565,28 @@
                     name (db-meta-compiler-stamp meta) (current-compiler-stamp)))
         "\n" (string-join diffs "\n")))
      (if strict? (error msg) (eprintf "Warning: ~a\n" msg))]))
+
+;; Full-replay verification of a stored compressed database (`slog db verify
+;; NAME --replay`).  Loads NAME with #:no-seed? -- the kept IDB samples along
+;; the chain are NOT imported, so every replay must re-derive its whole IDB
+;; from the EDB -- and compares the result against the stored signature (or
+;; the edited-chain baseline).  This is the STRONG integrity check: a seeded
+;; load is monotone and masks removals (§11); this one surfaces them.  The
+;; query program is an empty loader; strict? makes any drift an error.
+(define (slog-verify-replay name #:strict? [strict? #t])
+  (define ddir (string-append "data/" name))
+  (unless (read-signature-file ddir)
+    (error (format "database ~a has no stored signature to verify against (not a compressed layer?)"
+                   name)))
+  (define tmp (make-temporary-file "slog-verify-~a.slog"))
+  (dynamic-wind
+   void
+   (lambda ()
+     (call-with-output-file tmp #:exists 'truncate
+       (lambda (p) (fprintf p ";; verify loader\n")))
+     (slog-run-file (path->string tmp) name #f #f #f
+                    #:no-seed? #t #:strict? strict?))
+   (lambda () (when (file-exists? tmp) (delete-file tmp)))))
 
 ;; Write the META header(s) for a compressed/flattened save (docs/db-
 ;; compression.md P0.5/P0.6).  --flatten yields one self-contained root;

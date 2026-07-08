@@ -430,6 +430,14 @@
     [(and ov (hash-has-key? ov key))
      (parse-source filename (hash-ref ov key))]
     [else
+     ;; During a replay (override set) every source should come from the
+     ;; stored program; falling through to DISK means the stored closure is
+     ;; incomplete or path resolution diverged (symlink / moved tree / cwd),
+     ;; so the replay may silently compile sources that differ from the
+     ;; recipe -- say so loudly rather than let drift pass unattributed.
+     (when ov
+       (eprintf "Warning: replay is reading ~a from disk -- it is not in the stored program (prog.sexpr); the result may not correspond to the saved recipe\n"
+                key))
      (define src (file->string filename))
      (define cap (current-source-capture))
      (when cap (hash-set! cap key src))
