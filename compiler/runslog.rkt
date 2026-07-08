@@ -26,6 +26,16 @@
 ;; to this name instead of a bare abort (docs/db-compression.md §P2.3).
 (define current-checkpoint (make-parameter #f))
 
+;; Simple auto-per (docs/db-compression.md §13.1, deliberately coarse): pick a
+;; retention `per` from how expensive the database was to compute from origin
+;; (total replay fixpoint wall-time).  A cheap db compresses hard -- keep a
+;; fraction, replay is cheap; an expensive one is kept whole so its load is an
+;; immediate fixpoint.  The smooth size-aware clamp of §13.1 is left for later.
+(define auto-per-expensive-ms 500.0)
+(define auto-per-min 0.5)
+(define (auto-per wall-ms)
+  (if (>= wall-ms auto-per-expensive-ms) 1.0 auto-per-min))
+
 ;; Seed for the IDB sampler's content-hash keep (P1.2); recorded in the layer
 ;; META so a kept-set is reproducible.  Fixed for now (any subset is a valid
 ;; seed -- the sample is a witness, not needed for reconstruction, §2a).
@@ -190,6 +200,9 @@
   ;; off the critical path entirely.
   (define continue-so (delay (action-so `(continue))))
   (define continue-boundary-so (delay (action-so `(continue-boundary))))
+  ;; Total fixpoint wall-time of this run, summed from the daemon's (fixpoint
+  ;; ... ms) replies -- the recompute cost that feeds auto-per (§13.1).
+  (define wall-ms-box (box 0.0))
 
   ;; Force-kill the daemon if compilation or the run errors out after launch,
   ;; rather than leaving it orphaned (blocked reading stdin or mid-fixpoint).
@@ -259,7 +272,10 @@
         (define line (read-line out))
         (cond
           [(eof-object? line) #f]
-          [(regexp-match? #px"^\\(fixpoint " line) (displayln line) #t]
+          [(regexp-match #px"^\\(fixpoint [0-9]+ \"[^\"]*\" [0-9]+ ([0-9.]+)\\)" line)
+           => (lambda (m)
+                (set-box! wall-ms-box (+ (unbox wall-ms-box) (string->number (cadr m))))
+                (displayln line) #t)]
           [(regexp-match? #px"^\\(paused " line)
            (displayln line)
            (cond
@@ -373,6 +389,13 @@
     ;; (possibly empty) root right after the open, before any stratum runs.
     (when (and linked-compressed? (= edb-boundary 0) (not chained-input))
       (send-plugin (action-so `(write-db ,(string-append compressed ".edb")))))
+    ;; Capture the EDB struct heap at the boundary so the layer write dedups
+    ;; against the root's structs (§4.2 `closure \ input_heap`).  Only when the
+    ;; root is a fresh pure-EDB snapshot loaded VERBATIM on replay -- a chained
+    ;; input is REPLAYED (fresh struct ids), so its heap can't be dedup'd
+    ;; against by id; those layers stay closure-complete.
+    (when (and linked-compressed? (= edb-boundary 0) (not chained-input))
+      (send-plugin (action-so `(capture-edb-heap))))
 
     (for ([sb (in-list strata)] [i (in-naturals)])
       (match-define (cons so tag) ((sbuild-runnable sb)))  ; blocks until built
@@ -383,7 +406,10 @@
       ;; silent write-db emits no line, so it cannot desync the next stratum's
       ;; handshake; the daemon processes it in stdin order before that stratum.
       (when (and linked-compressed? (> edb-boundary 0) (= (add1 i) edb-boundary))
-        (send-plugin (action-so `(write-db ,(string-append compressed ".edb"))))))
+        (send-plugin (action-so `(write-db ,(string-append compressed ".edb"))))
+        ;; dedup only against a verbatim from-scratch root, not a replayed input
+        (when (not chained-input)
+          (send-plugin (action-so `(capture-edb-heap))))))
 
     ;; Capture the full-IDB content signature BEFORE the (possibly sampled)
     ;; layer write, so a load can verify the replay reproduced it (P1.3).
@@ -392,14 +418,21 @@
       (send-plugin (action-so `(signature ,@(db-partition-idb-rels partition))))
       (set! captured-sig (read-signature!)))
 
+    ;; Resolve the retention target now that the run's total recompute cost is
+    ;; known: an explicit --per wins; otherwise auto-pick from wall-time (§13.1).
+    (define per* (if (eq? per 'auto) (auto-per (unbox wall-ms-box)) per))
+    (when (and linked-compressed? (eq? per 'auto))
+      (eprintf "  [auto-per ~a: recompute ~ams -> per=~a%]\n"
+               compressed (~r (unbox wall-ms-box) #:precision 0) (~r (* 100 per*) #:precision 0)))
+
     ;; At the final fixpoint the terminal actions run (each emits its own lines).
     (cond
       ;; --out-db-compressed --flatten: one self-contained root (§7.3).
       [(and compressed flatten?)
        (send-plugin (action-so `(write-db ,compressed)))]
       ;; --out-db-compressed (linked): the IDB layer; the root was snapshotted
-      ;; above.  per<1.0 samples the IDB tuples (dropped ones recomputed by
-      ;; replay on load); per=1.0 stores them whole.  An empty IDB writes no
+      ;; above.  per*<1.0 samples the IDB tuples (dropped ones recomputed by
+      ;; replay on load); per*=1.0 stores them whole.  An empty IDB writes no
       ;; relation dir (its META-only dir is created below), since these verbs
       ;; require >=1 relation.
       [(and linked-compressed? (not (null? (db-partition-idb-rels partition))))
@@ -408,10 +441,10 @@
        (define bias-productivity?
          (and bias (member bias '("productivity" "productive")) #t))
        (define boosted (if bias-productivity? (db-partition-productive-rels partition) '()))
-       (define boost (if bias-productivity? (min 1.0 (* 2.0 per)) per))
+       (define boost (if bias-productivity? (min 1.0 (* 2.0 per*)) per*))
        (send-plugin
-        (action-so (if (< per 1.0)
-                       `(save-compressed ,compressed ,per ,compressed-rng-seed ,boost
+        (action-so (if (< per* 1.0)
+                       `(save-compressed ,compressed ,per* ,compressed-rng-seed ,boost
                                          (boosted ,@boosted)
                                          (rels ,@(db-partition-idb-rels partition)))
                        `(write-db-subset ,compressed
@@ -440,8 +473,8 @@
     ;; headers (P0.5/P0.6).  Done here (post-exit) so the dirs exist and no
     ;; mid-run synchronisation is needed.
     (when compressed
-      (write-compressed-metas compressed flatten? partition per slog-path src-capture captured-sig
-                              chained-input root-snapshot?))))
+      (write-compressed-metas compressed flatten? partition per* slog-path src-capture captured-sig
+                              chained-input root-snapshot? (unbox wall-ms-box)))))
 
 ;; Compare a stored content signature to the freshly replayed one and report
 ;; drift (docs/db-compression.md §11).  compiler-stamp attribution: a newer
@@ -489,7 +522,7 @@
                   (db-meta-stamp (read-db-meta dir)))))
 
 (define (write-compressed-metas name flatten? partition per entry sources sig
-                                chained-input root-snapshot?)
+                                chained-input root-snapshot? wall-ms)
   (define cstamp (current-compiler-stamp))
   (define idb (db-partition-idb-rels partition))
   (define edb (db-partition-edb-rels partition))
@@ -532,6 +565,7 @@
                                #:manifest manifest
                                #:per per #:rng-seed compressed-rng-seed
                                #:strata range #:compiler-stamp cstamp
+                               #:fixpoint-wall-ms (inexact->exact (round wall-ms))
                                #:idb-rels idb #:edb-rels edb))
      (write-db-meta (hash-set lm0 'stamp (compute-db-stamp lm0 #:prog-fingerprint cstamp))
                     dir)]))

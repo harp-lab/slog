@@ -1786,6 +1786,34 @@ public:
       file.write((u8*)(void*)wordbuf, pos << 3);
   }
 
+  // Struct-instance ids present at the EDB boundary of a compressed save --
+  // the "input heap" the linked root/inputs already store, which a layer must
+  // NOT re-store (docs/db-compression.md §4.2 `closure \ input_heap`).  Set by
+  // the driver via (capture-edb-heap) after inputs+facts are materialised and
+  // before any IDB derives; a fresh daemon starts it empty.
+  std::unordered_set<u64> edb_heap_structs;
+
+  // All struct-instance id words currently in the database (storage col 0).
+  std::unordered_set<u64> allStructIds()
+  {
+    std::unordered_set<u64> ids;
+    for (auto& kv : relations)
+    {
+      Relation* rel = kv.second;
+      if (rel->getStructId() == 0 || rel->isEmpty()) continue;
+      const std::vector<u16>* ord = rel->getAnyIndex();
+      if (!ord) continue;
+      const u16 n = (u16)ord->size();
+      std::vector<u16> rw(n, 0);
+      for (u16 i = 0; i < n; ++i) rw[(*ord)[i]] = i;
+      Index** bk = rel->getIndex(*ord, false);
+      for (u16 b = 0; b < bucket_count; ++b)
+	bk[b]->forEach([&](const u64* t) { ids.insert(t[rw[0]]); });
+    }
+    return ids;
+  }
+  void captureEDBHeap() { edb_heap_structs = allStructIds(); }
+
   // Compute the set of struct-instance id words that MUST be kept when the IDB
   // is sampled at `per` (docs/db-compression.md §4.1, P2 heap trimming): the
   // referential closure of every kept table/lattice fact, plus every struct
@@ -2252,13 +2280,23 @@ public:
       if (!only.empty() && !only.count(name)) return 1.0;
       return boosted.count(name) ? boost : per;
     };
-    // When sampling, compute which struct instances survive (reachable from the
-    // kept facts + all cnodes); struct relations write only those.
+    // The struct instances the LAYER writes.  When sampling, restrict to the
+    // closure reachable from kept facts (+ cnodes); ALWAYS subtract the EDB
+    // heap (structs the linked root/input already stores, captured at the EDB
+    // boundary) so they are not stored twice (docs/db-compression.md §4.2
+    // `closure \ input_heap`).  Only a filtered LAYER write dedups -- a full
+    // write (only empty: --flatten / --out-db) stays self-contained.
     bool trimming = (per < 1.0 || boost < 1.0);
-    std::unordered_set<u64> kept_structs =
-      trimming ? markKeptStructs(only, per, seed, boosted, boost) : std::unordered_set<u64>{};
+    bool dedup = !only.empty() && !edb_heap_structs.empty();
+    std::unordered_set<u64> layer_structs;
+    if (trimming || dedup)
+    {
+      std::unordered_set<u64> marked =
+        trimming ? markKeptStructs(only, per, seed, boosted, boost) : allStructIds();
+      for (u64 s : marked) if (!edb_heap_structs.count(s)) layer_structs.insert(s);
+    }
     auto keepIdsOf = [&](Relation* rel) -> const std::unordered_set<u64>* {
-      return (trimming && rel->getStructId() > 0) ? &kept_structs : nullptr;
+      return ((trimming || dedup) && rel->getStructId() > 0) ? &layer_structs : nullptr;
     };
     std::string db_dir("data/"+db_name+"/");
     std::string tmp_dir("data/"+db_name+".tmp/");
@@ -2564,10 +2602,25 @@ public:
   // derived facts from either side persist even if their grounding is
   // absent in the union.  Schema validation completes before any dest
   // mutation, so a rejected import leaves this database untouched.
+  // passthrough_input_heap (docs/db-compression.md §4.2): when a compressed
+  // LAYER is loaded, its heap was trimmed of the structs its verbatim-opened
+  // root/input already provides -- so a struct id the source lacks but the DEST
+  // already holds (same id lineage) is passed through unchanged rather than
+  // fataled as dangling.  Off for a general db-merge, whose sources must be
+  // closure-complete.
   void importDatabaseBIN(const std::string& src_dir)
+  {
+    importDatabaseBIN(src_dir, false);
+  }
+  void importDatabaseBIN(const std::string& src_dir, bool passthrough_input_heap)
   {
     if (!std::filesystem::is_directory(src_dir))
       fatal("Import: no database directory at " + src_dir);
+
+    // Struct ids the dest already holds (the verbatim-loaded input heap), for
+    // passthrough of trimmed same-lineage references.
+    std::unordered_set<u64> dest_struct_ids =
+      passthrough_input_heap ? allStructIds() : std::unordered_set<u64>{};
 
     // ---- load the source into a scratch database ----
     Database scratch(1);
@@ -2707,7 +2760,17 @@ public:
 	{
 	  const auto fit = src_fields.find(w);
 	  if (fit == src_fields.end())
+	  {
+	    // Trimmed same-lineage reference the dest (verbatim root) provides:
+	    // pass the id through unchanged (§4.2 input-heap dedup).
+	    if (passthrough_input_heap && dest_struct_ids.count(w))
+	    {
+	      remap[w] = w;
+	      stack.pop_back();
+	      continue;
+	    }
 	    fatal("Import: dangling struct instance id in " + src_dir);
+	  }
 	  const std::vector<u64>& row = fit->second;
 	  bool ready = true;
 	  for (size_t c = 1; c < row.size(); ++c)

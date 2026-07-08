@@ -31,6 +31,10 @@
      (format "  d->open(\"~a\");\n" db-name)]
     [`(import ,db-name)
      (format "  d->import(\"~a\");\n" db-name)]
+    ;; Merge a compressed layer, passing trimmed same-lineage struct refs
+    ;; through to the verbatim-loaded root/input (docs/db-compression.md §4.2).
+    [`(import-layer ,db-name)
+     (format "  d->importLayer(\"~a\");\n" db-name)]
     ;; DB/relation writes and reloads go through the Daemon (not straight to
     ;; the Database) so the suspended guardrail applies (docs/pausing.md §4):
     ;; they run internal strata / mutate indices that would clobber a parked
@@ -59,6 +63,8 @@
     ;; Serial checkpoint of the current (possibly paused) db (§P2.3).
     [`(checkpoint ,db-name)
      (format "  d->checkpointBIN(\"~a\");\n" db-name)]
+    ;; Snapshot the EDB struct heap so the next layer write dedups against it (§4.2).
+    [`(capture-edb-heap) "  d->captureEDBHeap();\n"]
     [`(write-rel ,db-name ,rel)
      (format "  d->writeRelationBIN(\"~a\", \"~a\");\n" db-name rel)]
     [`(write-rel-csv ,dir ,rel)

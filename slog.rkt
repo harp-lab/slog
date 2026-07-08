@@ -96,7 +96,7 @@
                    #:db-name [db-name #f]
                    #:out-db [out-db #f]
                    #:out-db-compressed [out-db-compressed #f]
-                   #:per [per 1.0]
+                   #:per [per 'auto]
                    #:flatten? [flatten? #f]
                    #:strict? [strict? #f]
                    #:bias [bias #f]
@@ -166,7 +166,7 @@
   (define db-name #f)
   (define out-db #f)
   (define out-db-compressed #f)
-  (define per 1.0)
+  (define per 'auto)  ; --per overrides; else the driver auto-picks from replay cost
   (define flatten? #f)
   (define strict? #f)
   (define bias #f)
@@ -194,7 +194,7 @@
       (set! out-db-compressed name)]
      [("--per")
       pct
-      "Target retention % of derived facts for --out-db-compressed (P0: full only)"
+      "Retention % of derived facts for --out-db-compressed (default: auto from replay cost)"
       (set! per (parse-per pct))]
      [("--flatten") "With --out-db-compressed: write one self-contained root (no program/manifest)"
       (set! flatten? #t)]

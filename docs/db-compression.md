@@ -930,6 +930,16 @@ and the harness enforces it in CI.
 >   reference it; trimming them needs §14.  (`daemon/database.h` `markKeptStructs`
 >   + `writeAllFactsBIN` `keep_ids`.)  Verified: ex_eval per=30 drops struct
 >   words 40→9, 0cfa per=20 stays content-equal (struct id-convergence holds).
+> - **Input-heap struct dedup (`closure \ input_heap`, §4.2).**  A from-scratch
+>   layer does not re-store the struct instances its verbatim-opened EDB root
+>   already holds: `(capture-edb-heap)` at the boundary records them, the layer
+>   write subtracts them, and `importDatabaseBIN(..., passthrough=true)` (used by
+>   the `import-layer` action) passes a trimmed same-lineage struct id through to
+>   the root instead of fataling.  ONLY for from-scratch saves -- a chained input
+>   is REPLAYED with fresh struct ids, so its heap can't be dedup'd by id; chained
+>   layers stay closure-complete.  Cuts ex_eval's struct bytes 640→320 at per=100.
+>   General db-merge is unaffected (passthrough defaults off; its sources must be
+>   closure-complete).
 > - **Forward-incremental edit-and-propagate (P2.1).**  `edits` files hold
 >   `(add-tuple REL v…)`; `slog db edit NAME add-tuple REL v…` records one; on
 >   load a db's edits apply right after it is opened/imported (a daemon
@@ -952,11 +962,15 @@ and the harness enforces it in CI.
 >   the parked run -- the parallel writer is not) then aborts with a resume hint,
 >   instead of losing the progress.  A pause during the top-level query still
 >   aborts as before.
-> - **P2.4 productive-seed bias = simple `--bias productivity`.**  Weights IDB
->   relations that are READ by some rule (their facts immediately deduce new
->   facts) at a higher keep fraction (`boost = min(1, 2·per)`) than terminal
->   relations; default is uniform.  A static, non-strict signal (`compile.rkt`
->   `productive-rels`); refine later.
+> - **P2.4 = auto-`per` default + productive-seed bias.**  `--per` now defaults
+>   to `auto`: the driver sums the run's fixpoint wall-time and picks
+>   `per = auto-per(ms)` -- a coarse two-level rule (cheap ⇒ compress to
+>   `per_min=0.5`, expensive ≥500ms ⇒ keep whole; the smooth size-aware clamp of
+>   §13.1 is left for later), recorded in META's `fixpoint-wall-ms`.  `--bias
+>   productivity` weights IDB relations READ by some rule (their facts
+>   immediately deduce new facts) at a higher keep fraction (`boost = min(1,
+>   2·per)`) than terminal relations; default is uniform.  Both are simple,
+>   non-strict static signals (`compile.rkt` `productive-rels`); refine later.
 > - **§14 content-addressed struct ids** (would let strings/cnodes trim and make
 >   recompute byte-reproducible) and **DRed^c** remain the only unbuilt pieces --
 >   both explicitly optional here.

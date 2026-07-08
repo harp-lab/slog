@@ -175,9 +175,9 @@
         (append
          (db-load-steps (first inputs) seen+)                          ; base, recursively
          (append-map (lambda (i) (append (db-load-steps i seen+)       ; extra inputs merged in
-                                         (list `(import ,i))))
+                                         (list `(import-layer ,i))))
                      (rest inputs))
-         (list `(import ,name)) e replay)])]))
+         (list `(import-layer ,name)) e replay)])]))
 
 ;; Walk the load DAG; return (list db stored-version) for the first database
 ;; whose recorded value-encoding-version differs from what this build reads,

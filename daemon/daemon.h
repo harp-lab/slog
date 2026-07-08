@@ -134,6 +134,15 @@ public:
     database->importDatabaseBIN("data/" + db_name + "/");
     needs_reload = true;
   }
+  // Merge a compressed LAYER (docs/db-compression.md §4.2): like import, but its
+  // heap was trimmed of structs the verbatim-opened root already holds, so
+  // dangling same-lineage refs pass through to the dest instead of fataling.
+  void importLayer(const std::string& db_name)
+  {
+    if (refuseIfSuspended("import")) return;
+    database->importDatabaseBIN("data/" + db_name + "/", true);
+    needs_reload = true;
+  }
 
   // Start building a stratum.  If a stratum has run since the last reload,
   // the database reloads NOW -- before the caller registers this stratum's
@@ -219,6 +228,10 @@ public:
     database->writeDatabaseSerialBIN(db_name);
     emit(std::string("(checkpointed ") + db_name + ")");
   }
+  // Snapshot the current struct heap as the EDB boundary of a compressed save
+  // (docs/db-compression.md §4.2): the following layer write will not re-store
+  // these input structs.  Read-only; safe between strata.
+  void captureEDBHeap() { database->captureEDBHeap(); }
   // Insert one tuple into a relation out-of-band (docs/db-compression.md §12,
   // edit-and-propagate): the storage-order words `t` are added to every index,
   // and needs_reload is set so the next stratum re-dumps it as delta -- a
