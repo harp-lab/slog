@@ -20,6 +20,12 @@
 (require "actions.rkt")
 (require "dbmeta.rkt")
 (require "dbtool.rkt")
+(require "parser.rkt")   ; current-source-capture (P1.1)
+
+;; Seed for the IDB sampler's content-hash keep (P1.2); recorded in the layer
+;; META so a kept-set is reproducible.  Fixed for now (any subset is a valid
+;; seed -- the sample is a witness, not needed for reconstruction, §2a).
+(define compressed-rng-seed 0)
 
 ;; Reconstruct a canonical lattice valuespec from its on-disk spec token
 ;; (the inverse of emit-cpp.rkt's lat-spec-token): "min-int-floor-0" ->
@@ -105,6 +111,29 @@
                (directory-list db-path)))
       (hash)))
 
+;; Union the on-disk relation manifests across a database's whole input DAG
+;; (docs/db-compression.md P1.4): a program loaded atop a compressed database
+;; must see every relation the reconstituted db holds -- its own IDB layer AND
+;; the EDB root / inputs it links -- so emit-cpp keeps them all alive across
+;; reloads.  Falls back to the single-dir manifest for a plain (unlinked) db.
+(define (db-full-manifest name [seen (set)])
+  (cond
+    [(or (not name) (set-member? seen name)) (hash)]
+    [else
+     (define dir (string-append "data/" name))
+     (define inputs
+       (if (db-meta-file-exists? dir)
+           (map first (db-meta-manifest (read-db-meta dir)))
+           '()))
+     (for/fold ([m (db-manifest-from-name name)]) ([i (in-list inputs)])
+       (for/fold ([m m]) ([(k v) (in-hash (db-full-manifest i (set-add seen name)))])
+         (hash-set m k v)))]))
+
+;; If `name` is a compressed database that stored its deriving program, return
+;; (cons entry sources-hash) so a load recompiles+replays it (P1.4); else #f.
+(define (compressed-replay-plan name)
+  (and name (read-prog-sexpr (string-append "data/" name))))
+
 ;; Compile slog-path and run every stratum plugin through a fresh slogd,
 ;; optionally against input database db-name, optionally writing the final
 ;; database (binary) to out-db and/or (CSV) to debug-out-path, optionally
@@ -123,7 +152,11 @@
   ;; Working directories used by the compiler and daemon (relative to cwd).
   (make-directory* "build")
   (make-directory* "out")
-  (define dbmanifest (db-manifest-from-name db-name))
+  ;; The query compiles against the FULL DAG manifest so it sees an opened
+  ;; compressed db's EDB root as well as its IDB layer (P1.4); a plain db's full
+  ;; manifest is just its own directory.
+  (define dbmanifest (if db-name (db-full-manifest db-name) (hash)))
+  (define replay-plan (compressed-replay-plan db-name))
   ;; A LINKED compressed save (docs/db-compression.md P0.5/P0.6) splits the
   ;; iteration-0 facts into their own first stratum so the EDB root can be
   ;; snapshotted before any rule derives.  --flatten writes a single
@@ -175,8 +208,12 @@
     ;; mode runs each stratum at -O0 immediately and hot-swaps to a background
     ;; -O2 build when ready.  The daemon is already loading the input DB (if any)
     ;; while this runs.
+    ;; For a linked compressed save, capture the program's source closure while
+    ;; compiling so it can be stored as prog.sexpr and replayed on load (P1.1).
+    (define src-capture (and linked-compressed? (make-hash)))
     (define-values (strata partition edb-boundary)
-      (compile-strata slog-path dbmanifest #:split-facts? linked-compressed?))
+      (parameterize ([current-source-capture src-capture])
+        (compile-strata slog-path dbmanifest #:split-facts? linked-compressed?)))
 
     ;; Response-driven pipeline walk (docs/pausing.md §7, docs/fast-compile.md §5).
     ;; Each stratum plugin performs ONE bounded unit of work and answers with
@@ -231,6 +268,48 @@
            (error (format "Daemon reported an error: ~a" line))]
           [else (displayln line) (poll swapped?)])))
 
+    ;; Consume the daemon's (sig NAME count checksum) lines up to (sig-end),
+    ;; returning a hash NAME -> (count . checksum) (P1.3/P1.5).
+    (define (read-signature!)
+      (let loop ([acc (hash)])
+        (define line (read-line out))
+        (cond
+          [(eof-object? line) acc]
+          [(regexp-match #px"^\\(sig ([^ ]+) ([0-9]+) ([0-9a-f]+)\\)$" line)
+           => (lambda (m)
+                (loop (hash-set acc (string->symbol (second m))
+                                (cons (string->number (third m)) (fourth m)))))]
+          [(regexp-match? #px"^\\(sig-end\\)$" line) acc]
+          [else (displayln line) (loop acc)])))
+
+    ;; PHASE R -- recompute-on-load replay (docs/db-compression.md P1.4).  When
+    ;; -d opened a compressed database that stored its deriving program,
+    ;; recompile that program from prog.sexpr under the CURRENT compiler (the
+    ;; original files may be gone/changed -- the source override supplies them)
+    ;; and run its strata atop the opened root + imported IDB sample.  This
+    ;; regenerates any facts dropped by sampling; at per=100% the sample is the
+    ;; whole IDB, so the fixpoint derives nothing new -- a self-verifying load.
+    ;; Runs BEFORE the query strata so the query sees the reconstituted db.
+    (when replay-plan
+      (match-define (cons r-entry r-sources) replay-plan)
+      (define-values (r-strata _rp _rb)
+        (parameterize ([current-source-override r-sources])
+          (compile-strata r-entry dbmanifest #:split-facts? #f)))
+      (for ([sb (in-list r-strata)])
+        (match-define (cons so tag) ((sbuild-runnable sb)))
+        (send-plugin so)
+        (drive-stratum! sb tag))
+      ;; Verify the replay reproduced the stored content signature (P1.5): drift
+      ;; is a compiler change, nondeterminism, or a compression bug.
+      (let* ([ddir (string-append "data/" db-name)]
+             [stored-sig (read-signature-file ddir)])
+        (when stored-sig
+          (define meta (read-db-meta ddir))
+          (define idb (db-meta-idb-rels meta))
+          (unless (null? idb)
+            (send-plugin (action-so `(signature ,@idb)))
+            (report-drift db-name stored-sig (read-signature!) meta strict?)))))
+
     ;; A linked compressed save with no facts stratum (edb-boundary 0) snapshots
     ;; the root right after the open, before any stratum runs (the EDB is then
     ;; just the -d input, or empty for a from-scratch program with no facts).
@@ -248,17 +327,30 @@
       (when (and linked-compressed? (> edb-boundary 0) (= (add1 i) edb-boundary))
         (send-plugin (action-so `(write-db ,(string-append compressed ".edb"))))))
 
+    ;; Capture the full-IDB content signature BEFORE the (possibly sampled)
+    ;; layer write, so a load can verify the replay reproduced it (P1.3).
+    (define captured-sig #f)
+    (when (and linked-compressed? (not (null? (db-partition-idb-rels partition))))
+      (send-plugin (action-so `(signature ,@(db-partition-idb-rels partition))))
+      (set! captured-sig (read-signature!)))
+
     ;; At the final fixpoint the terminal actions run (each emits its own lines).
     (cond
       ;; --out-db-compressed --flatten: one self-contained root (§7.3).
       [(and compressed flatten?)
        (send-plugin (action-so `(write-db ,compressed)))]
       ;; --out-db-compressed (linked): the IDB layer; the root was snapshotted
-      ;; above.  An empty IDB writes no relation dir (its META-only dir is
-      ;; created below), since write-db-subset requires >=1 relation.
+      ;; above.  per<1.0 samples the IDB tuples (dropped ones recomputed by
+      ;; replay on load); per=1.0 stores them whole.  An empty IDB writes no
+      ;; relation dir (its META-only dir is created below), since these verbs
+      ;; require >=1 relation.
       [(and linked-compressed? (not (null? (db-partition-idb-rels partition))))
-       (send-plugin (action-so `(write-db-subset ,compressed
-                                                 ,@(db-partition-idb-rels partition))))]
+       (send-plugin
+        (action-so (if (< per 1.0)
+                       `(save-compressed ,compressed ,per ,compressed-rng-seed
+                                         ,@(db-partition-idb-rels partition))
+                       `(write-db-subset ,compressed
+                                         ,@(db-partition-idb-rels partition)))))]
       [else (void)])
     (when out-db
       (send-plugin (action-so `(write-db ,out-db))))
@@ -283,7 +375,38 @@
     ;; headers (P0.5/P0.6).  Done here (post-exit) so the dirs exist and no
     ;; mid-run synchronisation is needed.
     (when compressed
-      (write-compressed-metas compressed flatten? partition per))))
+      (write-compressed-metas compressed flatten? partition per slog-path src-capture captured-sig))))
+
+;; Compare a stored content signature to the freshly replayed one and report
+;; drift (docs/db-compression.md §11).  compiler-stamp attribution: a newer
+;; compiler likely means an intended semantic change; the SAME stamp means
+;; nondeterminism or a compression bug -- a louder alarm.  --strict turns any
+;; mismatch into an error.
+(define (report-drift name stored live meta strict?)
+  (define rels (sort (set->list (set-union (list->set (hash-keys stored))
+                                           (list->set (hash-keys live))))
+                     symbol<?))
+  (define diffs
+    (for/list ([r (in-list rels)]
+               #:unless (equal? (hash-ref stored r #f) (hash-ref live r #f)))
+      (match-define (cons sc _) (hash-ref stored r (cons 0 "")))
+      (match-define (cons lc _) (hash-ref live r (cons 0 "")))
+      (format "    ~a: stored ~a tuple(s) -> replay ~a~a"
+              r sc lc (if (= sc lc) " (same count, content changed)" ""))))
+  (cond
+    [(null? diffs)
+     (eprintf "verified ~a: replay matches stored signature (~a relations)\n"
+              name (hash-count stored))]
+    [else
+     (define same? (equal? (db-meta-compiler-stamp meta) (current-compiler-stamp)))
+     (define msg
+       (string-append
+        (if same?
+            (format "signature drift in ~a under the SAME compiler -- nondeterminism or a compression bug:" name)
+            (format "signature drift in ~a on a newer compiler (~a -> ~a) -- likely an intended semantic change:"
+                    name (db-meta-compiler-stamp meta) (current-compiler-stamp)))
+        "\n" (string-join diffs "\n")))
+     (if strict? (error msg) (eprintf "Warning: ~a\n" msg))]))
 
 ;; Write the META header(s) for a compressed/flattened save (docs/db-
 ;; compression.md P0.5/P0.6).  --flatten yields one self-contained root;
@@ -292,7 +415,7 @@
 ;; P0 `per` is always 1.0 (no sampler yet), so the layer holds the full IDB and
 ;; a load is open-root + import-layer (no replay) -- content-equal to the
 ;; uncompressed db.
-(define (write-compressed-metas name flatten? partition per)
+(define (write-compressed-metas name flatten? partition per entry sources sig)
   (define cstamp (current-compiler-stamp))
   (define idb (db-partition-idb-rels partition))
   (define edb (db-partition-edb-rels partition))
@@ -316,9 +439,16 @@
      (write-db-meta (hash-set rm0 'stamp root-stamp) root-dir)
      (define dir (string-append "data/" name))
      (unless (directory-exists? dir) (make-directory* dir))
+     ;; Store the program source so a load recompiles+replays it (P1.1/§9).
+     (when (and sources (positive? (hash-count sources)))
+       (write-prog-sexpr dir entry sources))
+     ;; Store the full-IDB content signature for load-time verification (P1.3).
+     (when (and sig (positive? (hash-count sig)))
+       (write-signature-file dir sig))
      (define lm0 (make-db-meta #:kind 'compressed #:pure-edb? #f
                                #:manifest (list (list root-name root-stamp))
-                               #:per per #:strata range #:compiler-stamp cstamp
+                               #:per per #:rng-seed compressed-rng-seed
+                               #:strata range #:compiler-stamp cstamp
                                #:idb-rels idb #:edb-rels edb))
      (write-db-meta (hash-set lm0 'stamp (compute-db-stamp lm0 #:prog-fingerprint cstamp))
                     dir)]))

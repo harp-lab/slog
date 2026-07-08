@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+#
+# db-compression oracle-diff harness (docs/db-compression.md §19, P1.7).
+#
+# For each program and each coverage `per`, save a compressed database, reload
+# it (which recompiles prog.sexpr and REPLAYS to regenerate any sampled-out
+# derived tuples), and assert the reloaded database is CONTENT-EQUAL, relation
+# by relation, to an uncompressed --out-db of the same program (the oracle).
+#
+#   tests/compression/run.sh                 # default program set, per {100,90,60,20}
+#   tests/compression/run.sh PROG...         # explicit programs
+#   PERS="100 50" tests/compression/run.sh   # override coverage points
+#
+# Correctness must hold at EVERY per: the kept sample is only a witness/seed,
+# so replay from origin must reproduce the full least fixpoint regardless of
+# how many derived tuples were dropped.
+set -u
+cd "$(dirname "$0")/../.."
+export SLOG_OPT="${SLOG_OPT:-0}"          # -O0: correctness is optimisation-independent
+EMPTY="$(mktemp -d)/empty.slog"; printf ';; dump loader\n' > "$EMPTY"
+PERS="${PERS:-100 90 60 20}"
+
+PROGS=("$@")
+if [ ${#PROGS[@]} -eq 0 ]; then
+  PROGS=(tests/reach.slog tests/grandparent.slog tests/ex_eval.slog tests/ex_peano.slog
+         tests/cn_basic.slog tests/mp_basic.slog tests/lst_basic.slog tests/st_basic.slog
+         tests/nested.slog tests/lat_sssp.slog tests/lat_count.slog tests/lat_constprop.slog
+         tests/dem_fib.slog tests/dem_stlc.slog tests/enum_basic.slog)
+fi
+
+pass=0; fail=0; failed=()
+dump() { # dump db $1 to dir $2 via the empty loader (replays a compressed db)
+  rm -rf "$2"; racket slog.rkt --no-banner -d "$1" --debug-dir "$2" "$EMPTY" >/dev/null 2>&1
+}
+for prog in "${PROGS[@]}"; do
+  name="$(basename "$prog" .slog)"
+  [ -f "$prog" ] || { echo "SKIP $name (no such file)"; continue; }
+  # oracle: uncompressed, dumped once
+  rm -rf "data/${name}_o" "data/${name}_o.edb"
+  racket slog.rkt --no-banner --out-db "${name}_o" "$prog" >/dev/null 2>&1
+  dump "${name}_o" "out/cmp_o_$name"
+  ocount=$(ls "out/cmp_o_$name"/*.csv 2>/dev/null | wc -l)
+  if [ "$ocount" -eq 0 ]; then
+    echo "FAIL $name (oracle produced no relations -- cannot verify)"
+    fail=$((fail+1)); failed+=("$name/oracle")
+    rm -rf "data/${name}_o" "data/${name}_o.edb" "out/cmp_o_$name"; continue
+  fi
+  for per in $PERS; do
+    rm -rf "data/${name}_c" "data/${name}_c.edb"
+    racket slog.rkt --no-banner --out-db-compressed "${name}_c" --per "$per" "$prog" >/dev/null 2>&1
+    dump "${name}_c" "out/cmp_c_$name"
+    ok=1
+    if [ ! -d "out/cmp_c_$name" ]; then ok=0; echo "  FAIL $name per=$per (replay produced no dump)";
+    else
+      for f in "out/cmp_o_$name"/*.csv; do
+        r="$(basename "$f" .csv)"
+        if ! diff <(sort "out/cmp_o_$name/$r.csv") <(sort "out/cmp_c_$name/$r.csv" 2>/dev/null) >/dev/null 2>&1; then
+          ok=0; echo "  FAIL $name per=$per: relation $r differs (oracle=$(wc -l <"out/cmp_o_$name/$r.csv") replay=$(wc -l <"out/cmp_c_$name/$r.csv" 2>/dev/null))"
+        fi
+      done
+    fi
+    if [ $ok -eq 1 ]; then pass=$((pass+1)); echo "  ok   $name per=$per ($(ls "out/cmp_o_$name"/*.csv|wc -l) relations)"; else fail=$((fail+1)); failed+=("$name/$per"); fi
+    rm -rf "data/${name}_c" "data/${name}_c.edb" "out/cmp_c_$name"
+  done
+  rm -rf "data/${name}_o" "data/${name}_o.edb" "out/cmp_o_$name"
+done
+echo
+echo "$pass passed, $fail failed"
+[ $fail -gt 0 ] && { echo "failed: ${failed[*]}"; exit 1; }
+exit 0

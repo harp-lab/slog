@@ -46,6 +46,15 @@
      (format "  d->writeDatabaseSubsetBIN(\"~a\", {~a});\n"
              db-name
              (string-join (for/list ([r (in-list rels)]) (format "\"~a\"" r)) ", "))]
+    ;; Sampled IDB-layer write (docs/db-compression.md P1.2): keep per-fraction
+    ;; of each named relation's tuples with the given seed.  per is baked as a
+    ;; double literal, seed as an unsigned literal (path-only protocol).
+    [`(save-compressed ,db-name ,per ,seed ,rels ..1)
+     (format "  d->writeDatabaseSampledBIN(\"~a\", {~a}, ~a, ~aull);\n"
+             db-name
+             (string-join (for/list ([r (in-list rels)]) (format "\"~a\"" r)) ", ")
+             (exact->inexact per)
+             seed)]
     [`(write-csv ,dir)
      (format "  d->db()->writeDatabaseCSV(\"~a\");\n" dir)]
     [`(write-rel ,db-name ,rel)
@@ -98,6 +107,22 @@
       "  });\n"
       (format "  d->emit(std::string(\"(found ~a \") + (found ? \"1\" : \"0\") + \")\");\n"
               rel))]
+    ;; Per-relation id-free content signature (docs/db-compression.md P1.3):
+    ;; emit one `(sig NAME count checksum)` per named relation, then `(sig-end)`.
+    ;; Read-only, so it is safe against a suspended snapshot.
+    [`(signature ,rels ..1)
+     (string-append
+      "  slog::Database* db = d->db();\n"
+      (format "  const char* sigrels[] = { ~a };\n"
+              (string-join (for/list ([r (in-list rels)]) (format "\"~a\"" r)) ", "))
+      "  for (auto nm : sigrels) {\n"
+      "    slog::Relation* r = db->getRelation(nm);\n"
+      "    if (!r) continue;\n"
+      "    auto sg = db->signatureOf(r);\n"
+      "    d->emit(\"(sig \" + std::string(nm) + \" \" + std::to_string(sg.first)\n"
+      "            + \" \" + std::format(\"{:016x}\", sg.second) + \")\");\n"
+      "  }\n"
+      "  d->emit(\"(sig-end)\");\n")]
     [`(sizes)
      (string-append
       "  std::vector<std::pair<std::string, slog::Relation*>> rels(\n"

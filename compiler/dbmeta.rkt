@@ -47,7 +47,12 @@
          db-meta-file-exists?
          current-compiler-stamp
          result-affecting-env
-         compute-db-stamp)
+         compute-db-stamp
+         write-prog-sexpr
+         read-prog-sexpr
+         prog-sexpr-exists?
+         write-signature-file
+         read-signature-file)
 
 (require "tools.rkt")            ; compiler-sources-fingerprint, call-with-atomic-output
 (require "params.rkt")           ; semijoin-filters-enabled (result-affecting)
@@ -259,6 +264,81 @@
      (for/sum ([f (in-directory p)] #:when (file-exists? f)) (file-size f))]
     [(file-exists? p) (file-size p)]
     [else 0]))
+
+;; ---------------------------------------------------------------------------
+;; prog.sexpr -- the stored program source (docs/db-compression.md §9, P1.1)
+;; ---------------------------------------------------------------------------
+;;
+;; One self-contained s-expr capturing the entry path plus the raw source of
+;; every file in the transitive include/run closure, keyed by canonical path
+;; (parser.rkt source-key).  Recompiled under the CURRENT compiler on load, so
+;; compiler changes are observed and drift is caught -- see §9.
+
+(define (prog-path db-dir) (build-path db-dir "prog.sexpr"))
+(define (prog-sexpr-exists? db-dir) (file-exists? (prog-path db-dir)))
+
+;; sources : hash (canonical-path-string -> source-text).  Written sorted for a
+;; stable, diffable file.
+(define (write-prog-sexpr db-dir entry sources)
+  (define sexpr
+    `(slog-prog
+      (entry ,entry)
+      (sources
+       ,@(for/list ([k (in-list (sort (hash-keys sources) string<?))])
+           (list k (hash-ref sources k))))))
+  (call-with-atomic-output
+   (path->string (prog-path db-dir))
+   (lambda () (parameterize ([print-graph #f]) (write sexpr)))))
+
+;; Returns (cons entry sources-hash), or #f when the db has no stored program.
+(define (read-prog-sexpr db-dir)
+  (define path (prog-path db-dir))
+  (cond
+    [(not (file-exists? path)) #f]
+    [else
+     (match (call-with-input-file path read)
+       [`(slog-prog (entry ,entry) (sources ,pairs ...))
+        (cons entry
+              (for/fold ([h (hash)]) ([p (in-list pairs)])
+                (match p
+                  [(list (? string? k) (? string? v)) (hash-set h k v)]
+                  [_ (meta-fail "malformed prog.sexpr source entry: ~s" p)])))]
+       [other (meta-fail "malformed prog.sexpr in ~a: ~s" db-dir other)])]))
+
+;; ---------------------------------------------------------------------------
+;; signature -- the full-coverage content witness (docs/db-compression.md §8/§11)
+;; ---------------------------------------------------------------------------
+;;
+;; A hash (relation-name-symbol -> (count . checksum-hex-string)) over the FULL
+;; IDB at save (before sampling).  On load, the replayed IDB's signature must
+;; match; a mismatch is drift (compiler change, nondeterminism, or a bug).
+
+(define (sig-path db-dir) (build-path db-dir "signature"))
+
+(define (write-signature-file db-dir sig)
+  (define sexpr
+    `(slog-signature
+      ,@(for/list ([k (in-list (sort (hash-keys sig) symbol<?))])
+          (match-define (cons count checksum) (hash-ref sig k))
+          (list k count checksum))))
+  (call-with-atomic-output
+   (path->string (sig-path db-dir))
+   (lambda () (parameterize ([print-graph #f]) (write sexpr)))))
+
+;; Returns the signature hash, or #f if the db has none.
+(define (read-signature-file db-dir)
+  (define path (sig-path db-dir))
+  (cond
+    [(not (file-exists? path)) #f]
+    [else
+     (match (call-with-input-file path read)
+       [`(slog-signature ,rows ...)
+        (for/fold ([h (hash)]) ([r (in-list rows)])
+          (match r
+            [(list (? symbol? k) (? exact-nonnegative-integer? count) (? string? checksum))
+             (hash-set h k (cons count checksum))]
+            [_ (meta-fail "malformed signature row: ~s" r)]))]
+       [other (meta-fail "malformed signature in ~a: ~s" db-dir other)])]))
 
 ;; Compute a database's content/version stamp (§7): a short hash over its
 ;; identity -- input links, retention, stratum range, compiler + encoding

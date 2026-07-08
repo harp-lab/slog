@@ -47,6 +47,14 @@
 (define (load-program-tree path [seen-run (set)] [seen-inc (set)])
   (include-module path (parse-file path) seen-run seen-inc))
 
+;; An include/run target is available if it is on disk OR provided by the
+;; source override (P1.1) -- so a stored program's closure resolves during a
+;; recompute-on-load replay even when the original files are gone.
+(define (source-available? p)
+  (define ov (current-source-override))
+  (or (and ov (hash-has-key? ov (source-key p)))
+      (file-exists? p)))
+
 (define (program-merge-run p0 p1)
   (match p0
     [`(program ,reqs ,mods) `(program (,@reqs ,p1) ,mods)]))
@@ -82,7 +90,7 @@
             (program-merge-include prog (load-program-tree inc-path seen-run seen-inc)))
           (organize-module `(module ,path ,toks
                               ,ast-sans-directives))
-          (filter (lambda (p) (and (file-exists? p) (not (set-member? seen-inc p))))
+          (filter (lambda (p) (and (source-available? p) (not (set-member? seen-inc p))))
                   (map (lambda (p) (fullpath (normalize-path p rel-dir)))
                        (set->list inc-paths)))))
        (foldl (lambda (run-path prog)
@@ -92,7 +100,7 @@
                 ;; a fresh include-set: each program's includes are its own
                 (program-merge-run prog (load-program-tree rp seen-run (set))))
               this-prog
-              (filter file-exists?
+              (filter source-available?
                       (map (lambda (p) (normalize-path p rel-dir)) run-paths)))])))
 
 ;; -----------------------------------------------------------------------

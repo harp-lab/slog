@@ -836,6 +836,46 @@ today's `--out-db`; `slog db` manages the DAG safely.
 
 Goal: real compression + recompute-on-load + verification, gated by tests.
 
+> **IMPLEMENTED 2026-07-07** (P1.1–P1.5 + P1.7; P1.6 folded into the signature).
+> Real compression works: `--per 20` stores ~1/6 of reach's derived tuples on
+> disk and a load regenerates all of them; the oracle-diff harness
+> (`tests/compression/run.sh`) confirms content-equality against the
+> uncompressed run at `per ∈ {100,90,60,20}` across tables, structs, native
+> collections, lattices, demand functions, and library collections. Notes /
+> deviations:
+> - **P1.1 stores raw source, replayed via a source-override parameter**
+>   (`parser.rkt` `current-source-override`/`current-source-capture`,
+>   `source-key`; `modules.rkt` `source-available?`).  prog.sexpr = entry +
+>   canonical-path→source map (dbmeta.rkt).  The full parse→lift→…→emit pipeline
+>   re-runs on load, so compiler changes ARE observed (the §9 goal); relative
+>   includes resolve because the entry is stored absolute and the resolver only
+>   touches the filesystem to normalise paths, which tolerates absent files.
+>   Assumes no symlinks in the source tree and the same working directory at
+>   save and load.
+> - **P1.4 replay is a driver phase, not a separate `recompute.rkt`.**  `-d NAME`
+>   on a compressed db opens the root, imports the IDB sample, then recompiles
+>   prog.sexpr (`#:split-facts? #f`) and runs its strata — atop the FULL DAG
+>   manifest (`db-full-manifest`) so the program sees root+layer.  Runs before
+>   any query strata.  The manifest DAG resolution is single-level (nested
+>   compressed inputs would need recursion — not yet exercised).
+> - **P1.2 sampler is per-tuple content-hash keep, not coverage-accumulation.**
+>   Each IDB table/lattice tuple survives iff FNV-1a(storage words, seed) falls
+>   in the lowest `per` of the hash space (order-independent, seeded, recorded in
+>   META `rng-seed`); struct/string/cnode heap is kept WHOLE (closure-complete).
+>   Any subset is a valid seed (§2a), so this satisfies correctness; the
+>   coverage-budget-over-facts+heap algorithm and heap trimming (§4.2) are a
+>   disk-efficiency refinement still to do.
+> - **P1.3 signature reuses the CSV value decoder** (`writeValCSV`): per IDB
+>   relation, (count, XOR of FNV-1a over each tuple's canonical id-free rendered
+>   text) — commutative, comparable across id reassignment.  Stored over the
+>   FULL IDB at save (before sampling) in `data/<name>/signature`.
+> - **P1.5 verify runs on every compressed load**: recompute the signature after
+>   replay, compare, attribute via `compiler-stamp` (same ⇒ nondeterminism/bug,
+>   newer ⇒ likely intended), warn-only default / `--strict` errors.  The
+>   `kept ⊆ replay` check and `--diff` example tuples are not yet wired.
+> - **P1.6** content-equality is the signature comparison; the harness (P1.7)
+>   also does a direct per-relation CSV diff via an empty "dump" loader.
+
 - **P1.1 — s-expr program-tree (de)serialiser.** Serialise the transitive
   include/run source closure into one self-contained `prog.sexpr` (entry, per-file
   source, tree edges, env); deserialise into a program-list the compiler consumes

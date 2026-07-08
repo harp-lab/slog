@@ -193,6 +193,16 @@ public:
     if (refuseIfSuspended("write-db")) return;
     database->writeDatabaseBIN(db_name, only);
   }
+  // Sampled IDB-layer write (docs/db-compression.md P1.2): keep only a
+  // per-fraction of each named relation's tuples (dropped ones recomputed on
+  // load), struct heap + interners whole.  Same suspended guard.
+  void writeDatabaseSampledBIN(const std::string& db_name,
+                               const std::unordered_set<std::string>& only,
+                               double per, u64 seed)
+  {
+    if (refuseIfSuspended("write-db")) return;
+    database->writeDatabaseBIN(db_name, only, per, seed);
+  }
   void writeRelationBIN(const std::string& db_name, const std::string& rel)
   {
     if (refuseIfSuspended("write-rel")) return;

@@ -84,17 +84,13 @@
   (printf "slog ~a.~a.~a\n" slog-version-major slog-version-minor slog-version-revision))
 
 ;; Parse a --per value: a percentage (e.g. 60) or a fraction (e.g. 0.6),
-;; normalised to a fraction in [0,1].  At P0 there is no sampler, so any value
-;; below 1.0 is clamped up to 1.0 (store-everything) with a warning.
+;; normalised to a fraction in (0,1].  The IDB sampler (P1.2) keeps this
+;; fraction of derived tuples; the rest are recomputed by replay on load.
 (define (parse-per s)
   (define n (string->number s))
   (unless (and n (real? n) (> n 0))
     (die EXIT-RUNTIME-ERROR "--per expects a positive number (percent or fraction), got ~a" s))
-  (define frac (min 1.0 (if (> n 1) (/ n 100.0) (exact->inexact n))))
-  (when (< frac 1.0)
-    (fprintf (current-error-port)
-             "Warning: --per ~a: fractional retention is not implemented yet (P0); storing the full database (per=100%).\n" s))
-  1.0)
+  (min 1.0 (if (> n 1) (/ n 100.0) (exact->inexact n))))
 
 (define (run-slog* slog-path
                    #:db-name [db-name #f]

@@ -2,6 +2,10 @@
 
 (provide parse-port
          parse-file
+         parse-source
+         source-key
+         current-source-override
+         current-source-capture
          verbose-print-ast
          parse-error
          parse-error-delim
@@ -9,6 +13,29 @@
 
 (require "lexer.rkt")
 (require "ir-shared.rkt")
+
+;; Recompute-on-load source plumbing (docs/db-compression.md P1.1).
+;;
+;; A saved database stores the *source* of its deriving program so a load can
+;; recompile+replay it under the CURRENT compiler even if the original files
+;; have changed or vanished.  Two parameters give parse-file that hook without
+;; threading through the whole module resolver:
+;;   current-source-override : #f, or a hash (source-key -> source-string).  When
+;;     set, parse-file reads a module's text from the hash instead of the disk.
+;;   current-source-capture  : #f, or a mutable hash.  When set, parse-file
+;;     records every (source-key -> text) it reads, snapshotting a closure.
+;; Keys are a pure (no-filesystem) canonicalisation of the path so save-time and
+;; load-time lookups agree without touching absent files (symlink-free tree).
+(define current-source-override (make-parameter #f))
+(define current-source-capture (make-parameter #f))
+
+(define (source-key filename)
+  (path->string (simplify-path (path->complete-path filename) #f)))
+
+;; Parse a module from an in-memory source string (filename is used only for
+;; token source positions / error context).
+(define (parse-source filename source)
+  (parse-port filename (open-input-string source)))
 
 (define (syn->filename ast)
   (match ast
@@ -420,6 +447,17 @@
          ,file-ast)
       (parse-error "End of file expected." real-toks residual-toks)))
 
-; Parses a module from a filename
+; Parses a module from a filename, honouring the source override/capture
+; parameters (P1.1): read the text from the override hash if present, otherwise
+; from disk (recording it in the capture hash when capturing).
 (define (parse-file filename)
-  (with-input-from-file filename (lambda () (parse-port filename (current-input-port)))))
+  (define key (source-key filename))
+  (define ov (current-source-override))
+  (cond
+    [(and ov (hash-has-key? ov key))
+     (parse-source filename (hash-ref ov key))]
+    [else
+     (define src (file->string filename))
+     (define cap (current-source-capture))
+     (when cap (hash-set! cap key src))
+     (parse-source filename src)]))

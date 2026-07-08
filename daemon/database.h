@@ -1657,6 +1657,47 @@ public:
     });
   }
 
+  // Per-relation content signature (docs/db-compression.md §8/§11, P1.3):
+  // (count, id-free checksum).  The checksum XOR-combines an FNV-1a hash of
+  // each tuple's CANONICAL rendered text -- storage-column order, with
+  // writeValCSV decoding struct/string/cnode ids to their content -- so it is
+  // order-independent (commutative XOR) and comparable across runs that
+  // reassign ids.  Computed over the FULL relation at save (before sampling)
+  // and recomputed after replay to detect drift.
+  std::pair<u64,u64> signatureOf(Relation* rel)
+  {
+    u64 count = 0, checksum = 0;
+    const std::vector<u16>* ordp = rel->getAnyIndex();
+    if (!ordp) return {0, 0};
+    const std::vector<u16>& ord = *ordp;
+    const u16 n = (u16)ord.size();
+    std::vector<u16> rewrite_ord(n, 0);
+    for (u16 i = 0; i < n; ++i) rewrite_ord[ord[i]] = i;
+    const bool is_struct = (rel->getStructId() > 0);
+    const std::string name = rel->getName();
+    const u32 lat_kind = rel->latticeKind();
+    Index** allbuckets = rel->getIndex(ord, false);
+    for (u16 b = 0; b < bucket_count; ++b)
+      allbuckets[b]->forEach([&](const u64* t)
+      {
+	std::vector<std::string> line(n);
+	for (u16 d = 0; d < n; ++d)
+	  line[d] = (is_struct && ord[d] == 0) ? name
+	    : (lat_kind == LAT_COUNT && ord[d] == n - 1)
+	      ? (s32_decode(t[d]) >= 2 ? "(inf)" : "(one)")
+	      : writeValCSV(t[d]);
+	u64 h = 1469598103934665603ull;
+	for (u16 i = 0; i < n; ++i)
+	{
+	  for (unsigned char ch : line[rewrite_ord[i]]) { h ^= ch; h *= 1099511628211ull; }
+	  h ^= 0x1f; h *= 1099511628211ull;   // column separator
+	}
+	checksum ^= h;   // commutative: tuple/bucket order irrelevant
+	++count;
+      });
+    return {count, checksum};
+  }
+
   // Write one relation's rows to <dir>/<name>.csv.
   void writeRelationCSV(const std::string& dir, const std::string& name)
   {
@@ -1695,9 +1736,24 @@ public:
   }
 
   // Emit every tuple in nominal (storage) order as little-endian u64 words.
+  // Deterministic, order-independent per-tuple sampling for a compressed save
+  // (docs/db-compression.md §4.2, P1.2): keep a tuple iff an FNV-1a hash of its
+  // storage words (with the recorded seed) falls in the lowest `frac` of the
+  // hash space.  Content-hashed so which tuples survive is independent of btree
+  // order and reproducible from (seed, per) in META.  frac>=1 keeps everything.
+  static inline bool sampleKeep(const u64* w, u16 n, double frac, u64 seed)
+  {
+    if (frac >= 1.0) return true;
+    if (frac <= 0.0) return false;
+    u64 h = 1469598103934665603ull ^ seed;
+    for (u16 i = 0; i < n; ++i) { h ^= w[i]; h *= 1099511628211ull; }
+    return (h % 1000000ull) < (u64)(frac * 1000000.0);
+  }
+
   void writeAllFactsBIN(DBWriteFile& file,
 			Index* node,
-			const std::vector<u16>& ord)
+			const std::vector<u16>& ord,
+			double frac = 1.0, u64 seed = 0)
   {
     const u16 n = (u16)ord.size();
     std::vector<u16> rewrite_ord(n, 0);     // rewrite_ord[i] = index pos of storage col i
@@ -1710,6 +1766,7 @@ public:
     {
       for (u16 i = 0; i < n; ++i)
 	wordbuf[pos + i] = t[rewrite_ord[i]];
+      if (!sampleKeep(&wordbuf[pos], n, frac, seed)) return;  // dropped: recomputed on load
       pos += n;
       if (pos + n > 1280)
       {
@@ -1895,21 +1952,22 @@ private:
   // Stage per-bucket tasks writing one relation's .bin files into `s`,
   // replacing whatever the relation's directory held before.
   void stageRelationWriteBIN(Stratum& s, const std::string& db_dir,
-			     const std::string& name, Relation* rel)
+			     const std::string& name, Relation* rel,
+			     double frac = 1.0, u64 seed = 0)
   {
     class WriteRel : public Task
     {
     public:
       Database* db; std::string path; Index* node;
-      const std::vector<u16>* ord;
+      const std::vector<u16>* ord; double frac; u64 seed;
       WriteRel(Database* _db, const std::string& _path, Index* _node,
-	       const std::vector<u16>* _ord)
-	: db(_db), path(_path), node(_node), ord(_ord)
+	       const std::vector<u16>* _ord, double _frac, u64 _seed)
+	: db(_db), path(_path), node(_node), ord(_ord), frac(_frac), seed(_seed)
       {}
       virtual bool work()
       {
 	DBWriteFile file(path);
-	db->writeAllFactsBIN(file, node, *ord);
+	db->writeAllFactsBIN(file, node, *ord, frac, seed);
 	return true;
       }
     };
@@ -1945,7 +2003,7 @@ private:
       for (u16 b = 0; b < bucket_count; ++b)
 	s.addTask(0,
 		  new WriteRel(this, rel_dir+std::format("{}",b)+db_out_ext,
-			       allbuckets[b], ord),
+			       allbuckets[b], ord, frac, seed),
 		  true);
     }
   }
@@ -2058,14 +2116,24 @@ public:
     writeDatabaseBIN(db_name, std::unordered_set<std::string>{});
   }
 
-  // Filtered variant: when `only` is non-empty, write ONLY those relations
-  // (docs/db-compression.md P0.4/P0.5 -- an EDB root writes its base relations,
-  // an IDB layer its derived ones).  The interner partitions (value.strings/,
-  // value.nodes/) are always written whole, so every kept relation's heap
-  // closure is present and each directory loads self-contained; P1's closure
-  // sampler trims the heap to what is actually referenced.
   void writeDatabaseBIN(const std::string& db_name,
                         const std::unordered_set<std::string>& only)
+  {
+    writeDatabaseBIN(db_name, only, 1.0, 0);
+  }
+
+  // Filtered + sampled variant (docs/db-compression.md P0.4/P0.5/P1.2).  When
+  // `only` is non-empty, write ONLY those relations (an EDB root writes its
+  // base relations, an IDB layer its derived ones).  When per<1.0, each IDB
+  // table/lattice in `only` keeps only a per-fraction of its tuples (chosen by
+  // content hash + seed); the dropped tuples are regenerated by replay on load.
+  // Struct relations are heap and always written whole, and the interner
+  // partitions (value.strings/, value.nodes/) too, so every kept directory is
+  // closure-complete and loads self-contained (§4.1); P1 will further trim the
+  // heap to the sampled facts' closure.
+  void writeDatabaseBIN(const std::string& db_name,
+                        const std::unordered_set<std::string>& only,
+                        double per, u64 seed)
   {
     // A filtered write ALWAYS keeps struct relations: struct instances are
     // content-addressed heap (like value.strings/value.nodes), and a kept
@@ -2074,6 +2142,13 @@ public:
     // it never hits a dangling struct id (docs/db-compression.md §4.1).
     auto keep = [&](const std::string& name, Relation* rel) {
       return only.empty() || only.count(name) || rel->getStructId() > 0;
+    };
+    // Sampling fraction per relation: an IDB table/lattice target is sampled at
+    // `per`; struct-heap and non-target relations are written whole.
+    auto fracOf = [&](const std::string& name, Relation* rel) -> double {
+      if (per >= 1.0 || rel->getStructId() > 0) return 1.0;
+      if (!only.empty() && !only.count(name)) return 1.0;
+      return per;
     };
     std::string db_dir("data/"+db_name+"/");
     std::string tmp_dir("data/"+db_name+".tmp/");
@@ -2087,7 +2162,8 @@ public:
     Stratum s("write " + db_name);
     for (auto& rel : relations)
       if (!rel.second->isEmpty() && keep(rel.first, rel.second))
-	stageRelationWriteBIN(s, tmp_dir, rel.first, rel.second);
+	stageRelationWriteBIN(s, tmp_dir, rel.first, rel.second,
+			      fracOf(rel.first, rel.second), seed);
     stageStringsWrite(s, tmp_dir);
     stageNodesWrite(s, tmp_dir);
     runStratum(&s, false);
