@@ -124,13 +124,18 @@
 (define (stage-rule rule add-temp!)
   (match rule
     [`(syn ,prov rule ,bodys ... --> ,heads ...)
-     ;; fresh ids constructed by this rule's heads
+     ;; fresh values produced by this rule's heads: constructed ids AND
+     ;; head-compute (prim let) outputs -- a construction consuming a prim
+     ;; result (e.g. (lall (cins ...)), a brace literal nested in a head
+     ;; field) must stage AFTER the compute, exactly like one consuming a
+     ;; fresh id.  Both clause shapes bind (fourth cl).
      (define new-ids
        (for/fold ([ids (set)]) ([cl (in-list heads)]
-                                #:when (construction-cl? cl))
+                                #:when (or (construction-cl? cl)
+                                           (compute-cl? cl)))
          (when (set-member? ids (construction-id cl))
            (error 'plan-stratum
-                  "value unification (two head constructions binding ~a) is not supported:\n~a"
+                  "value unification (two head constructions/computations binding ~a) is not supported:\n~a"
                   (construction-id cl) (strip-prov rule)))
          (set-add ids (construction-id cl))))
 
@@ -144,9 +149,13 @@
        [else
         ;; Constructions the residue needs, replayed as body joins of the
         ;; follow-up rule (content lookup finds the interned id).  A replay's
-        ;; arguments become needed in turn.
+        ;; arguments become needed in turn.  Residual COMPUTE outputs are
+        ;; bound in the follow-up too (the let re-runs there); an IMMEDIATE
+        ;; compute's output is not replayable -- it stays `needed` and is
+        ;; carried by value through the temp.
         (define residual-bound
-          (for/set ([cl (in-list residual)] #:when (construction-cl? cl))
+          (for/set ([cl (in-list residual)] #:when (or (construction-cl? cl)
+                                                       (compute-cl? cl)))
             (construction-id cl)))
         (define immediate-constructions (filter construction-cl? immediate))
         (define-values (replays needed)
