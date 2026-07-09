@@ -147,6 +147,15 @@
      (cond
        [(null? residual) (list rule)]
        [else
+        ;; No immediate head means EVERY head clause consumes a fresh id, so
+        ;; the follow-up rule would keep these exact heads and staging can
+        ;; never make progress: a dependency cycle among head constructions/
+        ;; computes (the head-side analogue of schedule-body's circular-let
+        ;; check below).
+        (when (null? immediate)
+          (error 'plan-stratum
+                 "circular dependencies among head constructions/computations (cannot stage ~a):\n~a"
+                 (map strip-prov residual) (strip-prov rule)))
         ;; Constructions the residue needs, replayed as body joins of the
         ;; follow-up rule (content lookup finds the interned id).  A replay's
         ;; arguments become needed in turn.  Residual COMPUTE outputs are
