@@ -206,6 +206,76 @@ timeout 300 racket tests/api/send-actions.rkt \
 expect "importrun-onlyc" "(relation_size onlyc 2)" out/api-importrun.log
 expect "importrun-twice" "(relation_size twice 3)" out/api-importrun.log
 
+# --- 9. keep-alive hardening + (schema) (docs/finish-collections.md §B)
+# 9a. an imported-exclusive relation survives TWO chained strata: each
+#     beginStratum reloads (dump + clear all indices), so onlyc must ride
+#     orphan-restore -> dump -> orphan-restore across both runs
+timeout 300 racket tests/api/send-actions.rkt \
+  "open:apimrga" "import:apimrgc" "so:$RUNSO" "so:$RUNSO" sizes \
+  > out/api-chain2.log 2>&1
+expect "chain2-onlyc" "(relation_size onlyc 2)" out/api-chain2.log
+expect "chain2-twice" "(relation_size twice 3)" out/api-chain2.log
+
+# 9b. a post-import-run write-db PERSISTS the orphan (writeDatabaseBIN sees
+#     its restored index), and a fresh daemon reopens it with correct sizes
+rm -rf data/apichain
+timeout 300 racket tests/api/send-actions.rkt \
+  "open:apimrga" "import:apimrgc" "so:$RUNSO" "write-db:apichain" \
+  > out/api-chainw.log 2>&1
+timeout 300 racket tests/api/send-actions.rkt \
+  open:apichain sizes > out/api-chainr.log 2>&1
+expect "chainw-onlyc" "(relation_size onlyc 2)" out/api-chainr.log
+expect "chainw-twice" "(relation_size twice 3)" out/api-chainr.log
+
+# 9c. (schema) after open+import lists the UNION with correct kinds/specs
+#     (struct ids are session-local, so mk's sid is not pinned)
+timeout 300 racket tests/api/send-actions.rkt \
+  open:apimrga import:apimrgc schema > out/api-schema.log 2>&1
+expect "schema-table"  "(schema-rel table t 3)"      out/api-schema.log
+expect "schema-seed"   "(schema-rel table seed 2)"   out/api-schema.log
+expect "schema-onlyc"  "(schema-rel table onlyc 2)"  out/api-schema.log
+expect "schema-minlat" "(schema-rel lat d 2 min-int)" out/api-schema.log
+expect "schema-setlat" "(schema-rel lat r 2 set-int)" out/api-schema.log
+expect "schema-struct" "(schema-rel struct mk 3"      out/api-schema.log
+expect "schema-end"    "(schema-end)"                 out/api-schema.log
+
+# 9d. the parsed schema manifest of the live session equals what a directory
+#     scan reads back from a write-db'd copy (schema-manifest.rkt)
+rm -rf data/apischemadb
+if timeout 300 racket tests/api/schema-manifest.rkt apimrga apimrgc apischemadb \
+     > out/api-schemaman.log 2>&1; then
+  echo "PASS schema-manifest"; PASS=$((PASS+1))
+else
+  echo "FAIL schema-manifest (see out/api-schemaman.log)"; FAIL=$((FAIL+1))
+fi
+
+# --- 10. sequence-arena round trip (docs/sequences.md §8): rows holding
+#         sequence words survive write-db + reopen because value.seq
+#         re-interns records in iterator order, reproducing every node id
+#         (daemon/seq.h).  The structural print is the assertion: it only
+#         renders if every id resolves after reload.  PARAMS carries the
+#         chunker format version (§8.2).
+rm -rf data/apiseqdb
+timeout 300 racket slog.rkt --no-banner --out-db apiseqdb tests/seq_io.slog \
+  > out/api-seq-write.log 2>&1
+if [ -f data/apiseqdb/value.seq/PARAMS ]; then
+  echo "PASS seq-params"; PASS=$((PASS+1))
+else
+  echo "FAIL seq-params (no value.seq/PARAMS written)"; FAIL=$((FAIL+1))
+fi
+timeout 300 racket slog.rkt --no-banner --sizes -d apiseqdb \
+  --debug-dir out/api-seq-reopen tests/api/noop.slog \
+  > out/api-seq-reopen.log 2>&1
+expect "seq-reopen-size"  "(relation_size canon 1)"        out/api-seq-reopen.log
+expect "seq-reopen-print" "[1 2 3 5 8]"                    out/api-seq-reopen/canon.csv
+expect "seq-reopen-nest"  "[[1 2] [\"x\" 3.5] []]"         out/api-seq-reopen/nest.csv
+expect "seq-reopen-bsz"   "80"                             out/api-seq-reopen/bsz.csv
+# a tag-4 rope column survives the round trip (byte-leaf/byte-branch
+# records re-intern in order; the root id resolves and renders whole)
+expect "seq-reopen-rope"  "0123456789abcdefghij0123456789abcdefghij" \
+                                                           out/api-seq-reopen/doc.csv
+expect "seq-reopen-dsz"   "320"                            out/api-seq-reopen/dsz.csv
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

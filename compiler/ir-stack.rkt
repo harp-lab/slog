@@ -53,12 +53,14 @@
 ;; A source file plus its transitive `include`s becomes one program; its
 ;; `run` directives contribute predecessor programs, linearized into a list
 ;; (dependencies first).  Each program carries the merged type environment
-;; of its modules and the manifest of relations already present in the
-;; database when it starts (from the input DB and all earlier programs).
+;; of its modules, the manifest of relations already present in the
+;; database when it starts (from the input DB and all earlier programs),
+;; and its decomp-env -- the M2.4 decomposition registry
+;; (derived-name -> (base-name set|map), modules.rkt synthesis).
 
 (define (program? p)
   (match p
-    [`(program ,(? type-env?) ,(? set? mods) ,(? hash?)) #t]
+    [`(program ,(? type-env?) ,(? set? mods) ,(? hash?) ,(? hash?)) #t]
     [_ #f]))
 
 (define (program-list? ps)
@@ -123,8 +125,23 @@
     [`(syn ,_ == ,(? var?) ,(? var?)) #t]
     [_ (flat-guard-clause? cl)]))
 
+;; A neutral sequence-pattern clause (collections.rkt; docs/sequences.md
+;; §5.1): flat-level ONLY -- seq-expand.rkt lowers every one onto ordinary
+;; clauses before typechecking, so the typed level never sees them.
+(define (seq-pat-item? it)
+  (match it
+    [`(,(or 'elem 'splice) ,(? var?)) #t]
+    [`(elemc ,(? slog-literal?)) #t]
+    [_ #f]))
+
+(define (seq-pat-clause? cl)
+  (match cl
+    [`(syn ,_ seq-pat ,(? var?) ,(? seq-pat-item?) ...) #t]
+    [_ #f]))
+
 (define (flat-body-clause? cl)
-  (or (flat-guard-clause? cl) (const-clause? cl) (join-clause? cl)))
+  (or (flat-guard-clause? cl) (const-clause? cl) (join-clause? cl)
+      (seq-pat-clause? cl)))
 
 (define (flat-head-clause? cl)
   (or (const-clause? cl) (join-clause? cl)))
@@ -202,6 +219,8 @@
 ;;   cprog   ::= (cprog dyn-rels constants (decl ...) (crule ...))
 ;;   decl    ::= (relation name arity idx ...)   idx ::= (col ...+)
 ;;             | (struct name arity idx ...)           | (delta col ...+)
+;;             | (lattice name arity spec decomp idx ...)
+;;                 decomp ::= #f | (decomp name set|map)   [M2.4]
 ;;             | (temp name arity)
 ;;   crule   ::= (crule (pre op ...) driver (body op ...) (head hop ...))
 ;;   driver  ::= (scan name x ...)          read the relation's delta
@@ -214,10 +233,17 @@
 ;;                                          (x ... are exactly the K key
 ;;                                          vars, in index-prefix order)
 ;;             | (let x y) | (let x (f y ...))
+;;             | (letp x (f y ...))   partial prim (prim-partial?): the call
+;;                                    takes a trailing bool* ok; !ok abandons
+;;                                    the current tuple (absence, not error)
+;;             | (cjoin x spec a b)   spec-aware pointwise join (§D): the
+;;                                    collection-lattice spec (sans `lattice`
+;;                                    head) is baked in; emitted as a
+;;                                    merge_spec call under its parsed tree
 ;;             | (eq x y) | (neq x y) | (cmp fn x y)
 ;; K counts the join's bound columns; the index orders those first, so the
 ;; probe key is the tuple's first K variables and the rest bind fresh.
-;;   hop     ::= (let x (f y ...))
+;;   hop     ::= (let x (f y ...)) | (letp x (f y ...)) | (cjoin x spec a b)
 ;;             | (mkstruct name idx x field ...)
 ;;             | (emit name idx x ...)
 ;;             | (emit-temp name x ...)
@@ -241,13 +267,25 @@
     ;; a lattice (map) relation: keys -> merged value (last storage column);
     ;; the spec is the valuespec sans its `lattice` head, e.g. (min int (floor 0));
     ;; non-delta indices are payload maps registered under full orderings that
-    ;; end in the value column, delta indices are ordinary full-width sets
-    [`(lattice ,(? var?) ,(? natural?) (,(? var?) ,_ ...) ,(? index?) ..1) #t]
+    ;; end in the value column, delta indices are ordinary full-width sets.
+    ;; The decomp slot is the M2.4 decomposition target: #f, or
+    ;; (decomp <derived-name> set|map) registered on the master merge tasks
+    ;; (docs/primitives.md §4.2)
+    [`(lattice ,(? var?) ,(? natural?) (,(? var?) ,_ ...) ,decomp ,(? index?) ..1)
+     (match decomp
+       [#f #t]
+       [`(decomp ,(? var?) ,(or 'set 'map)) #t]
+       [_ #f])]
     [`(temp ,(? var?) ,(? natural?)) #t]
     ;; an extern relation's oracle binding (docs/smt.md): registers the
     ;; daemon-side dispatch/harvest tasks against the (already-declared)
     ;; demand struct and its answer table
     [`(oracle ,(? var?) ,(? var?) ,(? var?)) #t]
+    ;; a sequence-occurrence feeding registration (docs/sequences.md §5.3):
+    ;; one SeqIndexTask walking the named base relation's sequence-typed
+    ;; storage columns into $seq_at/$seq_atr.  Emitted after all relation
+    ;; decls (build-cprog appends it) so the getRelation lookups succeed.
+    [`(seqindex ,(? var?) (,(? natural?) ..1)) #t]
     [_ #f]))
 
 (define (c-op? op)
@@ -261,6 +299,10 @@
     [`(join-lat ,(? var?) (,(? natural?) ..1) ,(? natural?) ,(? var?) ...) #t]
     [`(let ,(? var?) ,(? var?)) #t]
     [`(let ,(? var?) (,(? var?) ,(? var?) ...)) #t]
+    ;; a partial prim's let: same shape, row-abandoning failure channel
+    [`(letp ,(? var?) (,(? var?) ,(? var?) ...)) #t]
+    ;; the spec-aware pointwise join (§D)
+    [`(cjoin ,(? var?) (,(? var?) ,_ ...) ,(? var?) ,(? var?)) #t]
     [`(eq ,(? var?) ,(? var?)) #t]
     [`(neq ,(? var?) ,(? var?)) #t]
     [`(cmp ,(? var?) ,(? var?) ,(? var?)) #t]
@@ -276,6 +318,8 @@
 (define (c-head-op? op)
   (match op
     [`(let ,(? var?) (,(? var?) ,(? var?) ...)) #t]
+    [`(letp ,(? var?) (,(? var?) ,(? var?) ...)) #t]
+    [`(cjoin ,(? var?) (,(? var?) ,_ ...) ,(? var?) ,(? var?)) #t]
     [`(mkstruct ,(? var?) (,(? natural?) ..1) ,(? var?) ,(? var?) ...) #t]
     [`(emit ,(? var?) (,(? natural?) ..1) ,(? var?) ...) #t]
     [`(emit-temp ,(? var?) ,(? var?) ...) #t]
@@ -288,11 +332,12 @@
     [_ #f]))
 
 ;; A runtime-testable type in a lowered accept set: a primitive tag, the
-;; collection-word tag (cset/cmap both lower to the shared cnode test), or
-;; an interned struct's id (enum members lower to (struct _enum)).
+;; collection-word tag (cset/cmap both lower to the shared cnode test),
+;; the sequence-word tag (cseq lowers to seq), or an interned struct's id
+;; (enum members lower to (struct _enum)).
 (define (c-accept? t)
   (match t
-    [(or 'int 'float 'str 'cnode) #t]
+    [(or 'int 'float 'str 'cnode 'seq) #t]
     [`(struct ,(? var?)) #t]
     [_ #f]))
 

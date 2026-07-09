@@ -1,6 +1,1 @@
-(lst_len (_enum "nil"))   0   
-(lst_len (cons 1 (cons 2 (cons 3 (cons 4 (cons 5 (_enum "nil")))))))   5   
-(lst_len (cons 2 (cons 3 (cons 4 (cons 5 (_enum "nil"))))))   4   
-(lst_len (cons 3 (cons 4 (cons 5 (_enum "nil")))))   3   
-(lst_len (cons 4 (cons 5 (_enum "nil"))))   2   
-(lst_len (cons 5 (_enum "nil")))   1   
+(lst_len [1 2 3 4 5])   5   

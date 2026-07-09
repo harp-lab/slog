@@ -172,7 +172,7 @@ struct SmtPrinter
     // Leaves.
     if (name == "_enum" && fields.size() == 1 && is_str(fields[0]))
     {
-      const std::string e = str_decode(db, fields[0])->cpp_str();
+      const std::string e = db->decodeString(fields[0]);
       if (e == "ltrue")       out = Node{"true", SMT_BOOL, true};
       else if (e == "lfalse") out = Node{"false", SMT_BOOL, true};
       else return fail("unknown constant (" + e + ") in a formula");
@@ -192,7 +192,7 @@ struct SmtPrinter
       if (fields.size() != 1 || !is_str(fields[0]))
         return fail("(" + name + " ...) expects one string field (the variable name)");
       const bool isInt = (name == "iv");
-      const std::string orig = str_decode(db, fields[0])->cpp_str();
+      const std::string orig = db->decodeString(fields[0]);
       const std::string vn = mangle(isInt ? "i_" : "b_", orig);
       declares.insert("(declare-const " + vn + (isInt ? " Int)" : " Bool)"));
       if (vars_seen.insert(vn).second)
@@ -439,7 +439,7 @@ struct SmtGroundEval
 
     if (name == "_enum" && fields.size() == 1 && is_str(fields[0]))
     {
-      const std::string e = str_decode(db, fields[0])->cpp_str();
+      const std::string e = db->decodeString(fields[0]);
       is_bool = true;
       if (e == "ltrue") return 1;
       if (e == "lfalse") return 0;

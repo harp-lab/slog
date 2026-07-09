@@ -19,6 +19,9 @@
 ;;                                           reports (refreshed <rel> 0|1)
 ;;   (action-so `(sizes))                    report (relation_size <rel> <n>)
 ;;                                           for every indexed relation
+;;   (action-so `(schema))                   report (schema-rel <kind> ...)
+;;                                           for every non-empty relation of
+;;                                           the LIVE db, then (schema-end)
 
 (provide action-so)
 
@@ -174,7 +177,35 @@
       "  for (auto& kv : rels)\n"
       "    if (kv.second->getAnyIndex())\n"
       "      d->emit(\"(relation_size \" + kv.first + \" \"\n"
-      "              + std::to_string(kv.second->tupleCount()) + \")\");\n")]))
+      "              + std::to_string(kv.second->tupleCount()) + \")\");\n")]
+    ;; Schema truth from the LIVE db (docs/finish-collections.md §B): one
+    ;; s-expr per relation, name-sorted, then (schema-end) -- exactly the
+    ;; information relation directory names carry (kind, arity, struct id,
+    ;; lattice spec token), but including imports and prior programs.  Skips
+    ;; index-free (temp/mid-reload) and EMPTY relations, mirroring what
+    ;; writeDatabaseBIN persists, so the parsed manifest of a session equals
+    ;; db-manifest-from-name of a write-db'd copy (the front-end hook is
+    ;; runslog.rkt's db-manifest-from-schema-lines: compile against the
+    ;; session instead of a directory scan).  Read-only; safe when suspended.
+    [`(schema)
+     (string-append
+      "  std::vector<std::pair<std::string, slog::Relation*>> rels(\n"
+      "      d->db()->getRelations().begin(), d->db()->getRelations().end());\n"
+      "  std::sort(rels.begin(), rels.end());\n"
+      "  for (auto& kv : rels)\n"
+      "  {\n"
+      "    slog::Relation* r = kv.second;\n"
+      "    if (!r->getAnyIndex() || r->isEmpty()) continue;\n"
+      "    if (r->getStructId() > 0)\n"
+      "      d->emit(\"(schema-rel struct \" + kv.first + \" \" + std::to_string(r->getArity())\n"
+      "              + \" \" + std::to_string(r->getStructId()) + \")\");\n"
+      "    else if (r->isLattice())\n"
+      "      d->emit(\"(schema-rel lat \" + kv.first + \" \" + std::to_string(r->getArity())\n"
+      "              + \" \" + r->latticeSpec() + \")\");\n"
+      "    else\n"
+      "      d->emit(\"(schema-rel table \" + kv.first + \" \" + std::to_string(r->getArity()) + \")\");\n"
+      "  }\n"
+      "  d->emit(\"(schema-end)\");\n")]))
 
 (define (action-source spec)
   (string-append

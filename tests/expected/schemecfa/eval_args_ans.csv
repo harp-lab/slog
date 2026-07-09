@@ -1,81 +1,81 @@
-(eval_args (_enum "nil") (_enum "nil"))   (_enum "nil")   
-(eval_args (_enum "nil") (cons (app (ref "call2") (cons (ref "+") (cons (num 10) (cons (num 20) (_enum "nil"))))) (_enum "nil")))   (_enum "nil")   
-(eval_args (_enum "nil") (cons (app (ref "call2") (cons (ref "<") (cons (num 1) (cons (num 2) (_enum "nil"))))) (_enum "nil")))   (_enum "nil")   
-(eval_args (_enum "nil") (cons (app (ref "f") (cons (app (ref "f") (cons (ref "x") (_enum "nil"))) (_enum "nil"))) (cons (app (ref "twice") (cons (lambda (cons "y" (_enum "nil")) (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil"))))) (cons (num 5) (_enum "nil")))) (_enum "nil"))))   (_enum "nil")   
-(eval_args (_enum "nil") (cons (app (ref "f") (cons (ref "x") (_enum "nil"))) (cons (app (ref "twice") (cons (lambda (cons "y" (_enum "nil")) (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil"))))) (cons (num 5) (_enum "nil")))) (_enum "nil"))))   (_enum "nil")   
-(eval_args (_enum "nil") (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil"))))   (_enum "nil")   
-(eval_args (_enum "nil") (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "fac") (cons (num 6) (_enum "nil"))) (_enum "nil"))))   (_enum "nil")   
-(eval_args (_enum "nil") (cons (app (ref "fac") (cons (num 6) (_enum "nil"))) (_enum "nil")))   (_enum "nil")   
-(eval_args (_enum "nil") (cons (app (ref "loop") (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "loop") (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil"))))   (_enum "nil")   
-(eval_args (_enum "nil") (cons (app (ref "loop") (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "loop") (cons (num 3) (_enum "nil"))) (_enum "nil"))))   (_enum "nil")   
-(eval_args (_enum "nil") (cons (app (ref "loop") (cons (num 3) (_enum "nil"))) (_enum "nil")))   (_enum "nil")   
-(eval_args (_enum "nil") (cons (app (ref "twice") (cons (lambda (cons "y" (_enum "nil")) (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil"))))) (cons (num 5) (_enum "nil")))) (_enum "nil")))   (_enum "nil")   
-(eval_args (_enum "nil") (cons (app (ref "wrap") (cons (sym "one") (_enum "nil"))) (_enum "nil")))   (_enum "nil")   
-(eval_args (_enum "nil") (cons (app (ref "wrap") (cons (sym "two") (_enum "nil"))) (_enum "nil")))   (_enum "nil")   
-(eval_args (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil")) (cons (app (ref "loop") (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "loop") (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil"))))   (cons (_enum "numval") (_enum "nil"))   
-(eval_args (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil")) (cons (app (ref "loop") (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "loop") (cons (num 3) (_enum "nil"))) (_enum "nil"))))   (cons (_enum "numval") (_enum "nil"))   
-(eval_args (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil")) (cons (app (ref "loop") (cons (num 3) (_enum "nil"))) (_enum "nil")))   (cons (_enum "numval") (_enum "nil"))   
-(eval_args (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil")) (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil"))))   (cons (_enum "numval") (_enum "nil"))   
-(eval_args (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil")) (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "fac") (cons (num 6) (_enum "nil"))) (_enum "nil"))))   (cons (_enum "numval") (_enum "nil"))   
-(eval_args (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil")) (cons (app (ref "fac") (cons (num 6) (_enum "nil"))) (_enum "nil")))   (cons (_enum "numval") (_enum "nil"))   
-(eval_args (cons (app (ref "f") (cons (ref "x") (_enum "nil"))) (_enum "nil")) (cons (app (ref "twice") (cons (lambda (cons "y" (_enum "nil")) (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil"))))) (cons (num 5) (_enum "nil")))) (_enum "nil")))   (cons (_enum "numval") (_enum "nil"))   
-(eval_args (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil")) (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil"))))   (cons (_enum "numval") (_enum "nil"))   
-(eval_args (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil")) (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "fac") (cons (num 6) (_enum "nil"))) (_enum "nil"))))   (cons (_enum "numval") (_enum "nil"))   
-(eval_args (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil")) (cons (app (ref "fac") (cons (num 6) (_enum "nil"))) (_enum "nil")))   (cons (_enum "numval") (_enum "nil"))   
-(eval_args (cons (boolean (_enum "ff")) (_enum "nil")) (_enum "nil"))   (cons (boolval (_enum "ff")) (_enum "nil"))   
-(eval_args (cons (lambda (cons "y" (_enum "nil")) (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil"))))) (cons (num 5) (_enum "nil"))) (_enum "nil"))   (cons (closure (lambda (cons "y" (_enum "nil")) (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil"))))) (_enum "nil")) (cons (_enum "numval") (_enum "nil")))   
-(eval_args (cons (num 0) (_enum "nil")) (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil"))))   (cons (_enum "numval") (_enum "nil"))   
-(eval_args (cons (num 0) (_enum "nil")) (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "fac") (cons (num 6) (_enum "nil"))) (_enum "nil"))))   (cons (_enum "numval") (_enum "nil"))   
-(eval_args (cons (num 0) (_enum "nil")) (cons (app (ref "fac") (cons (num 6) (_enum "nil"))) (_enum "nil")))   (cons (_enum "numval") (_enum "nil"))   
-(eval_args (cons (num 0) (_enum "nil")) (cons (app (ref "loop") (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "loop") (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil"))))   (cons (_enum "numval") (_enum "nil"))   
-(eval_args (cons (num 0) (_enum "nil")) (cons (app (ref "loop") (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "loop") (cons (num 3) (_enum "nil"))) (_enum "nil"))))   (cons (_enum "numval") (_enum "nil"))   
-(eval_args (cons (num 0) (_enum "nil")) (cons (app (ref "loop") (cons (num 3) (_enum "nil"))) (_enum "nil")))   (cons (_enum "numval") (_enum "nil"))   
-(eval_args (cons (num 1) (_enum "nil")) (cons (app (ref "f") (cons (app (ref "f") (cons (ref "x") (_enum "nil"))) (_enum "nil"))) (cons (app (ref "twice") (cons (lambda (cons "y" (_enum "nil")) (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil"))))) (cons (num 5) (_enum "nil")))) (_enum "nil"))))   (cons (_enum "numval") (_enum "nil"))   
-(eval_args (cons (num 1) (_enum "nil")) (cons (app (ref "f") (cons (ref "x") (_enum "nil"))) (cons (app (ref "twice") (cons (lambda (cons "y" (_enum "nil")) (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil"))))) (cons (num 5) (_enum "nil")))) (_enum "nil"))))   (cons (_enum "numval") (_enum "nil"))   
-(eval_args (cons (num 1) (_enum "nil")) (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil"))))   (cons (_enum "numval") (_enum "nil"))   
-(eval_args (cons (num 1) (_enum "nil")) (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "fac") (cons (num 6) (_enum "nil"))) (_enum "nil"))))   (cons (_enum "numval") (_enum "nil"))   
-(eval_args (cons (num 1) (_enum "nil")) (cons (app (ref "fac") (cons (num 6) (_enum "nil"))) (_enum "nil")))   (cons (_enum "numval") (_enum "nil"))   
-(eval_args (cons (num 1) (_enum "nil")) (cons (app (ref "loop") (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "loop") (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil"))))   (cons (_enum "numval") (_enum "nil"))   
-(eval_args (cons (num 1) (_enum "nil")) (cons (app (ref "loop") (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "loop") (cons (num 3) (_enum "nil"))) (_enum "nil"))))   (cons (_enum "numval") (_enum "nil"))   
-(eval_args (cons (num 1) (_enum "nil")) (cons (app (ref "loop") (cons (num 3) (_enum "nil"))) (_enum "nil")))   (cons (_enum "numval") (_enum "nil"))   
-(eval_args (cons (num 1) (cons (num 2) (_enum "nil"))) (_enum "nil"))   (cons (_enum "numval") (cons (_enum "numval") (_enum "nil")))   
-(eval_args (cons (num 10) (cons (num 20) (_enum "nil"))) (_enum "nil"))   (cons (_enum "numval") (cons (_enum "numval") (_enum "nil")))   
-(eval_args (cons (num 2) (_enum "nil")) (_enum "nil"))   (cons (_enum "numval") (_enum "nil"))   
-(eval_args (cons (num 20) (_enum "nil")) (_enum "nil"))   (cons (_enum "numval") (_enum "nil"))   
-(eval_args (cons (num 3) (_enum "nil")) (_enum "nil"))   (cons (_enum "numval") (_enum "nil"))   
-(eval_args (cons (num 5) (_enum "nil")) (_enum "nil"))   (cons (_enum "numval") (_enum "nil"))   
-(eval_args (cons (num 6) (_enum "nil")) (_enum "nil"))   (cons (_enum "numval") (_enum "nil"))   
-(eval_args (cons (ref "+") (cons (num 10) (cons (num 20) (_enum "nil")))) (_enum "nil"))   (cons (prim "+") (cons (_enum "numval") (cons (_enum "numval") (_enum "nil"))))   
-(eval_args (cons (ref "<") (cons (num 1) (cons (num 2) (_enum "nil")))) (_enum "nil"))   (cons (prim "<") (cons (_enum "numval") (cons (_enum "numval") (_enum "nil"))))   
-(eval_args (cons (ref "a") (cons (ref "b") (_enum "nil"))) (cons (app (ref "call2") (cons (ref "+") (cons (num 10) (cons (num 20) (_enum "nil"))))) (_enum "nil")))   (cons (_enum "numval") (cons (_enum "numval") (_enum "nil")))   
-(eval_args (cons (ref "a") (cons (ref "b") (_enum "nil"))) (cons (app (ref "call2") (cons (ref "<") (cons (num 1) (cons (num 2) (_enum "nil"))))) (_enum "nil")))   (cons (_enum "numval") (cons (_enum "numval") (_enum "nil")))   
-(eval_args (cons (ref "b") (_enum "nil")) (cons (app (ref "call2") (cons (ref "+") (cons (num 10) (cons (num 20) (_enum "nil"))))) (_enum "nil")))   (cons (_enum "numval") (_enum "nil"))   
-(eval_args (cons (ref "b") (_enum "nil")) (cons (app (ref "call2") (cons (ref "<") (cons (num 1) (cons (num 2) (_enum "nil"))))) (_enum "nil")))   (cons (_enum "numval") (_enum "nil"))   
-(eval_args (cons (ref "i") (cons (num 0) (_enum "nil"))) (cons (app (ref "loop") (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "loop") (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil"))))   (cons (_enum "numval") (cons (_enum "numval") (_enum "nil")))   
-(eval_args (cons (ref "i") (cons (num 0) (_enum "nil"))) (cons (app (ref "loop") (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "loop") (cons (num 3) (_enum "nil"))) (_enum "nil"))))   (cons (_enum "numval") (cons (_enum "numval") (_enum "nil")))   
-(eval_args (cons (ref "i") (cons (num 0) (_enum "nil"))) (cons (app (ref "loop") (cons (num 3) (_enum "nil"))) (_enum "nil")))   (cons (_enum "numval") (cons (_enum "numval") (_enum "nil")))   
-(eval_args (cons (ref "i") (cons (num 1) (_enum "nil"))) (cons (app (ref "loop") (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "loop") (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil"))))   (cons (_enum "numval") (cons (_enum "numval") (_enum "nil")))   
-(eval_args (cons (ref "i") (cons (num 1) (_enum "nil"))) (cons (app (ref "loop") (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "loop") (cons (num 3) (_enum "nil"))) (_enum "nil"))))   (cons (_enum "numval") (cons (_enum "numval") (_enum "nil")))   
-(eval_args (cons (ref "i") (cons (num 1) (_enum "nil"))) (cons (app (ref "loop") (cons (num 3) (_enum "nil"))) (_enum "nil")))   (cons (_enum "numval") (cons (_enum "numval") (_enum "nil")))   
-(eval_args (cons (ref "n") (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil"))) (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil"))))   (cons (_enum "numval") (cons (_enum "numval") (_enum "nil")))   
-(eval_args (cons (ref "n") (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil"))) (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "fac") (cons (num 6) (_enum "nil"))) (_enum "nil"))))   (cons (_enum "numval") (cons (_enum "numval") (_enum "nil")))   
-(eval_args (cons (ref "n") (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil"))) (cons (app (ref "fac") (cons (num 6) (_enum "nil"))) (_enum "nil")))   (cons (_enum "numval") (cons (_enum "numval") (_enum "nil")))   
-(eval_args (cons (ref "n") (cons (num 0) (_enum "nil"))) (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil"))))   (cons (_enum "numval") (cons (_enum "numval") (_enum "nil")))   
-(eval_args (cons (ref "n") (cons (num 0) (_enum "nil"))) (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "fac") (cons (num 6) (_enum "nil"))) (_enum "nil"))))   (cons (_enum "numval") (cons (_enum "numval") (_enum "nil")))   
-(eval_args (cons (ref "n") (cons (num 0) (_enum "nil"))) (cons (app (ref "fac") (cons (num 6) (_enum "nil"))) (_enum "nil")))   (cons (_enum "numval") (cons (_enum "numval") (_enum "nil")))   
-(eval_args (cons (ref "n") (cons (num 1) (_enum "nil"))) (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil"))))   (cons (_enum "numval") (cons (_enum "numval") (_enum "nil")))   
-(eval_args (cons (ref "n") (cons (num 1) (_enum "nil"))) (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "fac") (cons (num 6) (_enum "nil"))) (_enum "nil"))))   (cons (_enum "numval") (cons (_enum "numval") (_enum "nil")))   
-(eval_args (cons (ref "n") (cons (num 1) (_enum "nil"))) (cons (app (ref "fac") (cons (num 6) (_enum "nil"))) (_enum "nil")))   (cons (_enum "numval") (cons (_enum "numval") (_enum "nil")))   
-(eval_args (cons (ref "r1") (cons (ref "r2") (_enum "nil"))) (_enum "nil"))   (cons (_enum "numval") (cons (boolval (_enum "ff")) (_enum "nil")))   
-(eval_args (cons (ref "r1") (cons (ref "r2") (_enum "nil"))) (_enum "nil"))   (cons (_enum "numval") (cons (boolval (_enum "tt")) (_enum "nil")))   
-(eval_args (cons (ref "r2") (_enum "nil")) (_enum "nil"))   (cons (boolval (_enum "ff")) (_enum "nil"))   
-(eval_args (cons (ref "r2") (_enum "nil")) (_enum "nil"))   (cons (boolval (_enum "tt")) (_enum "nil"))   
-(eval_args (cons (ref "s1") (cons (ref "s2") (_enum "nil"))) (_enum "nil"))   (cons (symval "one") (cons (symval "two") (_enum "nil")))   
-(eval_args (cons (ref "s2") (_enum "nil")) (_enum "nil"))   (cons (symval "two") (_enum "nil"))   
-(eval_args (cons (ref "w") (_enum "nil")) (cons (app (ref "wrap") (cons (sym "one") (_enum "nil"))) (_enum "nil")))   (cons (symval "one") (_enum "nil"))   
-(eval_args (cons (ref "w") (_enum "nil")) (cons (app (ref "wrap") (cons (sym "two") (_enum "nil"))) (_enum "nil")))   (cons (symval "two") (_enum "nil"))   
-(eval_args (cons (ref "x") (_enum "nil")) (cons (app (ref "twice") (cons (lambda (cons "y" (_enum "nil")) (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil"))))) (cons (num 5) (_enum "nil")))) (_enum "nil")))   (cons (_enum "numval") (_enum "nil"))   
-(eval_args (cons (ref "y") (cons (num 1) (_enum "nil"))) (cons (app (ref "f") (cons (app (ref "f") (cons (ref "x") (_enum "nil"))) (_enum "nil"))) (cons (app (ref "twice") (cons (lambda (cons "y" (_enum "nil")) (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil"))))) (cons (num 5) (_enum "nil")))) (_enum "nil"))))   (cons (_enum "numval") (cons (_enum "numval") (_enum "nil")))   
-(eval_args (cons (ref "y") (cons (num 1) (_enum "nil"))) (cons (app (ref "f") (cons (ref "x") (_enum "nil"))) (cons (app (ref "twice") (cons (lambda (cons "y" (_enum "nil")) (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil"))))) (cons (num 5) (_enum "nil")))) (_enum "nil"))))   (cons (_enum "numval") (cons (_enum "numval") (_enum "nil")))   
-(eval_args (cons (sym "one") (_enum "nil")) (_enum "nil"))   (cons (symval "one") (_enum "nil"))   
-(eval_args (cons (sym "two") (_enum "nil")) (_enum "nil"))   (cons (symval "two") (_enum "nil"))   
+(eval_args [(app (ref "-") [(ref "i") (num 1)])] [(app (ref "loop") [(app (ref "-") [(ref "i") (num 1)])]) (app (ref "loop") [(app (ref "-") [(ref "i") (num 1)])])])   [(_enum "numval")]   
+(eval_args [(app (ref "-") [(ref "i") (num 1)])] [(app (ref "loop") [(app (ref "-") [(ref "i") (num 1)])]) (app (ref "loop") [(num 3)])])   [(_enum "numval")]   
+(eval_args [(app (ref "-") [(ref "i") (num 1)])] [(app (ref "loop") [(num 3)])])   [(_enum "numval")]   
+(eval_args [(app (ref "-") [(ref "n") (num 1)])] [(app (ref "fac") [(app (ref "-") [(ref "n") (num 1)])]) (app (ref "fac") [(app (ref "-") [(ref "n") (num 1)])])])   [(_enum "numval")]   
+(eval_args [(app (ref "-") [(ref "n") (num 1)])] [(app (ref "fac") [(app (ref "-") [(ref "n") (num 1)])]) (app (ref "fac") [(num 6)])])   [(_enum "numval")]   
+(eval_args [(app (ref "-") [(ref "n") (num 1)])] [(app (ref "fac") [(num 6)])])   [(_enum "numval")]   
+(eval_args [(app (ref "f") [(ref "x")])] [(app (ref "twice") [(lambda ["y"] (app (ref "+") [(ref "y") (num 1)])) (num 5)])])   [(_enum "numval")]   
+(eval_args [(app (ref "fac") [(app (ref "-") [(ref "n") (num 1)])])] [(app (ref "fac") [(app (ref "-") [(ref "n") (num 1)])]) (app (ref "fac") [(app (ref "-") [(ref "n") (num 1)])])])   [(_enum "numval")]   
+(eval_args [(app (ref "fac") [(app (ref "-") [(ref "n") (num 1)])])] [(app (ref "fac") [(app (ref "-") [(ref "n") (num 1)])]) (app (ref "fac") [(num 6)])])   [(_enum "numval")]   
+(eval_args [(app (ref "fac") [(app (ref "-") [(ref "n") (num 1)])])] [(app (ref "fac") [(num 6)])])   [(_enum "numval")]   
+(eval_args [(boolean (_enum "ff"))] [])   [(boolval (_enum "ff"))]   
+(eval_args [(lambda ["y"] (app (ref "+") [(ref "y") (num 1)])) (num 5)] [])   [(closure (lambda ["y"] (app (ref "+") [(ref "y") (num 1)])) []) (_enum "numval")]   
+(eval_args [(num 0)] [(app (ref "fac") [(app (ref "-") [(ref "n") (num 1)])]) (app (ref "fac") [(app (ref "-") [(ref "n") (num 1)])])])   [(_enum "numval")]   
+(eval_args [(num 0)] [(app (ref "fac") [(app (ref "-") [(ref "n") (num 1)])]) (app (ref "fac") [(num 6)])])   [(_enum "numval")]   
+(eval_args [(num 0)] [(app (ref "fac") [(num 6)])])   [(_enum "numval")]   
+(eval_args [(num 0)] [(app (ref "loop") [(app (ref "-") [(ref "i") (num 1)])]) (app (ref "loop") [(app (ref "-") [(ref "i") (num 1)])])])   [(_enum "numval")]   
+(eval_args [(num 0)] [(app (ref "loop") [(app (ref "-") [(ref "i") (num 1)])]) (app (ref "loop") [(num 3)])])   [(_enum "numval")]   
+(eval_args [(num 0)] [(app (ref "loop") [(num 3)])])   [(_enum "numval")]   
+(eval_args [(num 1) (num 2)] [])   [(_enum "numval") (_enum "numval")]   
+(eval_args [(num 1)] [(app (ref "f") [(app (ref "f") [(ref "x")])]) (app (ref "twice") [(lambda ["y"] (app (ref "+") [(ref "y") (num 1)])) (num 5)])])   [(_enum "numval")]   
+(eval_args [(num 1)] [(app (ref "f") [(ref "x")]) (app (ref "twice") [(lambda ["y"] (app (ref "+") [(ref "y") (num 1)])) (num 5)])])   [(_enum "numval")]   
+(eval_args [(num 1)] [(app (ref "fac") [(app (ref "-") [(ref "n") (num 1)])]) (app (ref "fac") [(app (ref "-") [(ref "n") (num 1)])])])   [(_enum "numval")]   
+(eval_args [(num 1)] [(app (ref "fac") [(app (ref "-") [(ref "n") (num 1)])]) (app (ref "fac") [(num 6)])])   [(_enum "numval")]   
+(eval_args [(num 1)] [(app (ref "fac") [(num 6)])])   [(_enum "numval")]   
+(eval_args [(num 1)] [(app (ref "loop") [(app (ref "-") [(ref "i") (num 1)])]) (app (ref "loop") [(app (ref "-") [(ref "i") (num 1)])])])   [(_enum "numval")]   
+(eval_args [(num 1)] [(app (ref "loop") [(app (ref "-") [(ref "i") (num 1)])]) (app (ref "loop") [(num 3)])])   [(_enum "numval")]   
+(eval_args [(num 1)] [(app (ref "loop") [(num 3)])])   [(_enum "numval")]   
+(eval_args [(num 10) (num 20)] [])   [(_enum "numval") (_enum "numval")]   
+(eval_args [(num 2)] [])   [(_enum "numval")]   
+(eval_args [(num 20)] [])   [(_enum "numval")]   
+(eval_args [(num 3)] [])   [(_enum "numval")]   
+(eval_args [(num 5)] [])   [(_enum "numval")]   
+(eval_args [(num 6)] [])   [(_enum "numval")]   
+(eval_args [(ref "+") (num 10) (num 20)] [])   [(prim "+") (_enum "numval") (_enum "numval")]   
+(eval_args [(ref "<") (num 1) (num 2)] [])   [(prim "<") (_enum "numval") (_enum "numval")]   
+(eval_args [(ref "a") (ref "b")] [(app (ref "call2") [(ref "+") (num 10) (num 20)])])   [(_enum "numval") (_enum "numval")]   
+(eval_args [(ref "a") (ref "b")] [(app (ref "call2") [(ref "<") (num 1) (num 2)])])   [(_enum "numval") (_enum "numval")]   
+(eval_args [(ref "b")] [(app (ref "call2") [(ref "+") (num 10) (num 20)])])   [(_enum "numval")]   
+(eval_args [(ref "b")] [(app (ref "call2") [(ref "<") (num 1) (num 2)])])   [(_enum "numval")]   
+(eval_args [(ref "i") (num 0)] [(app (ref "loop") [(app (ref "-") [(ref "i") (num 1)])]) (app (ref "loop") [(app (ref "-") [(ref "i") (num 1)])])])   [(_enum "numval") (_enum "numval")]   
+(eval_args [(ref "i") (num 0)] [(app (ref "loop") [(app (ref "-") [(ref "i") (num 1)])]) (app (ref "loop") [(num 3)])])   [(_enum "numval") (_enum "numval")]   
+(eval_args [(ref "i") (num 0)] [(app (ref "loop") [(num 3)])])   [(_enum "numval") (_enum "numval")]   
+(eval_args [(ref "i") (num 1)] [(app (ref "loop") [(app (ref "-") [(ref "i") (num 1)])]) (app (ref "loop") [(app (ref "-") [(ref "i") (num 1)])])])   [(_enum "numval") (_enum "numval")]   
+(eval_args [(ref "i") (num 1)] [(app (ref "loop") [(app (ref "-") [(ref "i") (num 1)])]) (app (ref "loop") [(num 3)])])   [(_enum "numval") (_enum "numval")]   
+(eval_args [(ref "i") (num 1)] [(app (ref "loop") [(num 3)])])   [(_enum "numval") (_enum "numval")]   
+(eval_args [(ref "n") (app (ref "fac") [(app (ref "-") [(ref "n") (num 1)])])] [(app (ref "fac") [(app (ref "-") [(ref "n") (num 1)])]) (app (ref "fac") [(app (ref "-") [(ref "n") (num 1)])])])   [(_enum "numval") (_enum "numval")]   
+(eval_args [(ref "n") (app (ref "fac") [(app (ref "-") [(ref "n") (num 1)])])] [(app (ref "fac") [(app (ref "-") [(ref "n") (num 1)])]) (app (ref "fac") [(num 6)])])   [(_enum "numval") (_enum "numval")]   
+(eval_args [(ref "n") (app (ref "fac") [(app (ref "-") [(ref "n") (num 1)])])] [(app (ref "fac") [(num 6)])])   [(_enum "numval") (_enum "numval")]   
+(eval_args [(ref "n") (num 0)] [(app (ref "fac") [(app (ref "-") [(ref "n") (num 1)])]) (app (ref "fac") [(app (ref "-") [(ref "n") (num 1)])])])   [(_enum "numval") (_enum "numval")]   
+(eval_args [(ref "n") (num 0)] [(app (ref "fac") [(app (ref "-") [(ref "n") (num 1)])]) (app (ref "fac") [(num 6)])])   [(_enum "numval") (_enum "numval")]   
+(eval_args [(ref "n") (num 0)] [(app (ref "fac") [(num 6)])])   [(_enum "numval") (_enum "numval")]   
+(eval_args [(ref "n") (num 1)] [(app (ref "fac") [(app (ref "-") [(ref "n") (num 1)])]) (app (ref "fac") [(app (ref "-") [(ref "n") (num 1)])])])   [(_enum "numval") (_enum "numval")]   
+(eval_args [(ref "n") (num 1)] [(app (ref "fac") [(app (ref "-") [(ref "n") (num 1)])]) (app (ref "fac") [(num 6)])])   [(_enum "numval") (_enum "numval")]   
+(eval_args [(ref "n") (num 1)] [(app (ref "fac") [(num 6)])])   [(_enum "numval") (_enum "numval")]   
+(eval_args [(ref "r1") (ref "r2")] [])   [(_enum "numval") (boolval (_enum "ff"))]   
+(eval_args [(ref "r1") (ref "r2")] [])   [(_enum "numval") (boolval (_enum "tt"))]   
+(eval_args [(ref "r2")] [])   [(boolval (_enum "ff"))]   
+(eval_args [(ref "r2")] [])   [(boolval (_enum "tt"))]   
+(eval_args [(ref "s1") (ref "s2")] [])   [(symval "one") (symval "two")]   
+(eval_args [(ref "s2")] [])   [(symval "two")]   
+(eval_args [(ref "w")] [(app (ref "wrap") [(sym "one")])])   [(symval "one")]   
+(eval_args [(ref "w")] [(app (ref "wrap") [(sym "two")])])   [(symval "two")]   
+(eval_args [(ref "x")] [(app (ref "twice") [(lambda ["y"] (app (ref "+") [(ref "y") (num 1)])) (num 5)])])   [(_enum "numval")]   
+(eval_args [(ref "y") (num 1)] [(app (ref "f") [(app (ref "f") [(ref "x")])]) (app (ref "twice") [(lambda ["y"] (app (ref "+") [(ref "y") (num 1)])) (num 5)])])   [(_enum "numval") (_enum "numval")]   
+(eval_args [(ref "y") (num 1)] [(app (ref "f") [(ref "x")]) (app (ref "twice") [(lambda ["y"] (app (ref "+") [(ref "y") (num 1)])) (num 5)])])   [(_enum "numval") (_enum "numval")]   
+(eval_args [(sym "one")] [])   [(symval "one")]   
+(eval_args [(sym "two")] [])   [(symval "two")]   
+(eval_args [] [(app (ref "call2") [(ref "+") (num 10) (num 20)])])   []   
+(eval_args [] [(app (ref "call2") [(ref "<") (num 1) (num 2)])])   []   
+(eval_args [] [(app (ref "f") [(app (ref "f") [(ref "x")])]) (app (ref "twice") [(lambda ["y"] (app (ref "+") [(ref "y") (num 1)])) (num 5)])])   []   
+(eval_args [] [(app (ref "f") [(ref "x")]) (app (ref "twice") [(lambda ["y"] (app (ref "+") [(ref "y") (num 1)])) (num 5)])])   []   
+(eval_args [] [(app (ref "fac") [(app (ref "-") [(ref "n") (num 1)])]) (app (ref "fac") [(app (ref "-") [(ref "n") (num 1)])])])   []   
+(eval_args [] [(app (ref "fac") [(app (ref "-") [(ref "n") (num 1)])]) (app (ref "fac") [(num 6)])])   []   
+(eval_args [] [(app (ref "fac") [(num 6)])])   []   
+(eval_args [] [(app (ref "loop") [(app (ref "-") [(ref "i") (num 1)])]) (app (ref "loop") [(app (ref "-") [(ref "i") (num 1)])])])   []   
+(eval_args [] [(app (ref "loop") [(app (ref "-") [(ref "i") (num 1)])]) (app (ref "loop") [(num 3)])])   []   
+(eval_args [] [(app (ref "loop") [(num 3)])])   []   
+(eval_args [] [(app (ref "twice") [(lambda ["y"] (app (ref "+") [(ref "y") (num 1)])) (num 5)])])   []   
+(eval_args [] [(app (ref "wrap") [(sym "one")])])   []   
+(eval_args [] [(app (ref "wrap") [(sym "two")])])   []   
+(eval_args [] [])   []   

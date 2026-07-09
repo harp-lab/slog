@@ -1,1 +1,1 @@
-(cons (cons 1 (cons 2 (_enum "nil"))) (cons (cons 3 (cons 4 (_enum "nil"))) (_enum "nil")))   
+[[1 2] [3 4]]   

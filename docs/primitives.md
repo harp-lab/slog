@@ -103,6 +103,18 @@ copies whole arrays (no subtree sharing) — fine only for tiny frozen sets.
 
 ### 2.2 Sequences → BOTH: cons `(list T)` and strict radix-balanced `(vec T)`, as siblings
 
+> **SUPERSEDED (2026-07-08, docs/sequences.md — S1 SHIPPED).**  The
+> cons/(vec T) compromise below is retired: `[T]` is now ONE type backed by
+> a content-defined-chunked Merkle tree ("prolly tree") in its own arena —
+> canonical (the same gate) with expected-O(log n) point AND bulk ops,
+> which dissolves the mutual-exclusion premise this section reasons from
+> (boundaries become a function of CONTENT, so relaxed balance is not
+> needed for cheap concat).  The builtin cons/nil union is gone (names
+> stay reserved); the cons library survives as the differential oracle
+> (tests/oracle/list-cons.slog).  This section stays as the design record
+> of why the two canonical position-keyed representations were mirror
+> images — the argument that motivated the chunked escape.
+
 First, the disqualification that stands regardless: **canonicity and cheap
 concat are mutually exclusive for balanced sequence trees.** RRB-trees get
 O(log n) concat/split *precisely by relaxing balance*, admitting multiple shapes
@@ -943,26 +955,54 @@ Patricia lib is the largest demand program yet compiled):
   spec descent returns when a total lookup exists); `cdel`/`cdiff`
   excluded (shrinking); membership/size guards stay later-stratum (in-SCC
   membership is M2.4's `R_has`); finite-universe termination warning.
-  **Both exclusions are scheduled to lift: `docs/finish-collections.md`
-  §A gives cget partial-prim semantics (row-abandon, function-as-relation
-  — restoring the child-spec-descent row), §D the spec-aware `cjoin`.**  Brace literals
+  **Both exclusions LIFTED 2026-07-08 (`docs/finish-collections.md` §A/§D,
+  executed): `cget` is a PARTIAL prim** — `prim-partial?`
+  (compiler/primitives.rkt) marks it, lowering emits a `letp` c-op whose
+  call takes a trailing `bool* ok` and whose failure abandons the row
+  (absence = failed match against a virtual relation; type errors stay
+  fatal), and the calculus regained the map-kind child-spec-descent row
+  (goldens `cn_getp`, `lat_nested`) — **and `cjoin` is the spec-aware
+  pointwise join**: typed like `cmerge` but lowered to a dedicated
+  `(cjoin x spec a b)` c-op from a per-rule var→spec scan (planned bodies
+  are schedule-ordered, so one pass resolves chains), emitted as a
+  `merge_spec` call under a once-per-site parsed spec tree; whitelisted
+  in-SCC for set (union) and map (pointwise, both positions) kinds
+  (golden `lat_cjoin`).  Brace literals
   route per program: the rules libs (pset/pmap declared) keep `st_ins`/
   `mp_put`; otherwise braces lower to native `cins`/`cput`/`(cmap)` — and
   the native empty `{}` is legal (one canonical empty collection).
   Merge-sink emission needed NO new codegen: a collection-lattice head
   rides the existing width-agnostic `emit-lat`/`LatticeInternTask` path.
-  NOT yet: M2.4's `R_has` decomposition; `(ps E)` bitmask specialization;
-  the reaching-defs/abstract-store flagship goldens (M2.5) beyond
-  `lat_set`.
-- **M2.4 — `R_has`.** Relation-key decomposition generated as rules off the
+  NOT yet: `(ps E)` bitmask specialization; the reaching-defs/
+  abstract-store flagship goldens (M2.5) beyond `lat_set`.
+- **M2.4 — `R_has`.** Relation-key decomposition generated off the
   value-carrying delta (§4.2); an in-SCC enumeration golden.
 
-  **PLANNED — full design in `docs/finish-collections.md` §C** (the wrap-up
-  shot, together with partial prims restoring in-SCC `cget`, the `(schema)`
-  action, and optionally `cjoin`): need-driven name synthesis
-  (`<R>_has`/`<R>_at`), a derived stratify edge, decomposition emitted at
-  the `LatticeInternTask` merge point via an O(change) `foreach_added`
-  tree-diff walk, `R_at` as a lattice table carrying the child valuespec.
+  **STATUS: SHIPPED 2026-07-08** (`docs/finish-collections.md` §C,
+  executed).  Need-driven synthesis by name (modules.rkt): using an
+  undeclared `<R>_has` (`<R>_at`) over a set-kind (map-kind)
+  collection-lattice table R synthesizes `R_has(k̄, elem)` — a PLAIN
+  monotone relation — or `R_at(k̄, key, v)` — itself a lattice table whose
+  value column carries the map's child valuespec (pointwise by
+  construction; nested maps compose) — and records `derived → (base kind)`
+  in the program's decomp-env (threaded through the program tuple; a user
+  decl wins, no use = zero cost).  Stratify gains the derived edge
+  R → R_has; the derived name is DYNAMIC in every stratum (its rows ride
+  the publish path one iteration late, so readers get delta-driven
+  versions even where the base is closed).  Runtime: the base's
+  `LatticeInternTask` walks each ascent's (old, new) payload pair with the
+  arena's `foreach_added` tree-diff — O(change) via shared-subtree pruning
+  — and publishes rows through the reusable `RowPublisher` shards path
+  (which sequences S1's `SeqIndexTask` will reuse); the master (once)
+  `MapWriteTask` carries the same target, so iteration 0 re-derives the
+  decomposition from reloaded/imported content — a dedup'd no-op when
+  up to date, and exactly what makes a foreign or stale base self-heal on
+  first use.  Persistence/merge generic (both are ordinary relations).
+  Goldens `lat_rhas` (gated reachability — in-SCC membership, chained
+  gates), `lat_rat` (pointwise minima in-SCC + cross-strata, nested
+  (map int (set int)) composition); unit tests for synthesis/interception/
+  edges in tests/unit/decomp-tests.rkt; `foreach_added` differential
+  checks in tests/arena-tests.cpp.
 - **M2.5 — flagship goldens.** Reaching definitions **with kill**
   (`intersect` against the static ¬kill mask); an abstract store
   `(map addr (ps val))` variant of the tinycfa analysis; `(ps E)` as the

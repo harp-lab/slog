@@ -31,7 +31,7 @@
      void
      (lambda ()
        (with-output-to-file f #:exists 'replace (lambda () (display src)))
-       (match-define `((program ,type-env ,mods ,_))
+       (match-define `((program ,type-env ,mods ,_ ,_))
          (load-program-list (path->string f) (hash)))
        (define all-rules (foldl set-union (set) (map last (set->list mods))))
        (define typed

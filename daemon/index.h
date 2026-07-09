@@ -126,15 +126,21 @@ public:
 
   // Clamp and join one contribution; returns the stored (merged) value and
   // sets `changed` iff the payload ascended (fresh key or strict growth).
-  u64 merge(const Key& k, u64 v, bool& changed)
+  // When `oldw` is given it receives the PRE-merge payload word, or 0 for a
+  // fresh key (0 is never a stored payload word) -- the (old, new) pair the
+  // M2.4 decomposition's foreach_added tree-diff walks (docs/primitives.md
+  // §4.2/§8.5).
+  u64 merge(const Key& k, u64 v, bool& changed, u64* oldw = nullptr)
   {
     v = lat_clamp(lat_kind, lat_has_floor, lat_floor, lat_has_ceil, lat_ceil, v);
     auto r = tree.insert2(k, v);
     if (r.second)
     {
+      if (oldw) *oldw = 0;
       changed = true;
       return v;
     }
+    if (oldw) *oldw = r.first->second;
     u64 n = (lat_kind == LAT_EXTERN)
           ? lat_arena->merge_spec(r.first->second, v, lat_spec_tree)
           : lat_join(lat_kind, r.first->second, v);

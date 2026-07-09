@@ -1,15 +1,9 @@
- (cons 1 (cons 8 (cons 2 (cons 5 (_enum "nil"))))))
- (cons 2 (cons 5 (_enum "nil"))))
- (cons 2 (cons 8 (cons 1 (_enum "nil")))))
- (cons 5 (cons 2 (cons 8 (cons 1 (_enum "nil"))))))
- (cons 8 (cons 1 (_enum "nil"))))
- (cons 8 (cons 2 (cons 5 (_enum "nil")))))
-(st_fromlist
-(st_fromlist
-(st_fromlist
-(st_fromlist
-(st_fromlist
-(st_fromlist
-(st_fromlist (_enum "nil"))
-(st_fromlist (cons 1 (_enum "nil")))
-(st_fromlist (cons 5 (_enum "nil")))
+(st_fromlist [1 8 2 5])
+(st_fromlist [1])
+(st_fromlist [2 5])
+(st_fromlist [2 8 1])
+(st_fromlist [5 2 8 1])
+(st_fromlist [5])
+(st_fromlist [8 1])
+(st_fromlist [8 2 5])
+(st_fromlist [])

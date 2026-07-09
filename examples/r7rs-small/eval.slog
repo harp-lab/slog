@@ -1,0 +1,35 @@
+
+
+include "syntax.slog"
+
+
+union (K (CallK E Ctx)
+         (ArgK [D] [E] Ctx K))
+union (S (Eval E Ctx K)
+         (Appl D [D])
+         (Ret K [D]))
+
+table (kstore E Ctx K)
+
+table (vstore str Ctx D) 
+demand (lookup str Ctx) D
+rule (lookup x ctx d) <-- (vstore x ctx d)
+
+
+demand (step S) S 
+
+       
+facts ;; Eval rules and stepping
+      (step (Eval (App app ef eas) ctx k)
+            (Eval ef ctx (ArgK [] eas ctx k)))
+      (step (Eval lam=(Lam _ _ _) ctx k)
+            (Ret k [(Clo lam ctx)]))
+      (step (Eval (X p x) ctx K)
+            (Ret k [(lookup x ctx)])) 
+
+      ;; Ret rules and continuations
+      (step ...)
+
+
+
+

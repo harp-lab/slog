@@ -33,6 +33,7 @@ namespace {
     if (is_float(v)) return "float (floating point)";
     if (is_struct(v)) return "struct (structure)";
     if (is_cnode(v)) return "cmap (collection)";
+    if (is_seq(v)) return "cseq (sequence)";
     return "unknown type";
   }
 }
@@ -41,6 +42,12 @@ namespace {
 static inline bool is_num(u64 v) { return is_s32(v) || is_float(v); }
 // Decode any numeric value to double (promoting s32).
 static inline double to_double(u64 v) { return is_s32(v) ? (double)s32_decode(v) : float_decode(v); }
+
+// Sequence and rope-string prims (docs/sequences.md): canonical [T] lists
+// and tag-4 rope strings in the per-Database sequence arena (daemon/seq.h).
+// Included here (before the dispatchers) so + and size can route to the
+// representation-aware kernels.
+#include "seq_prims.h"
 
 
 // The prim dispatchers below flag a runtime error (docs/type-errors.md) instead
@@ -94,11 +101,11 @@ static inline double to_double(u64 v) { return is_s32(v) ? (double)s32_decode(v)
     db->setPendingError(slog::ERR_TYPE, OPSTR, x, y); return slog_error; }
 
 
-//  (+ x y) -- s32, float, or string concatenation
+//  (+ x y) -- s32, float, or string concatenation (mono or rope)
 inline u64 _prim__0002b(slog::Database* db, u64 x, u64 y)
 {
   if (is_s32(x) && is_s32(y)) return _prim_s32__0002b_unsafe(db, x, y);
-  if (is_str(x) && is_str(y)) return _prim_str__0002b_unsafe(db, x, y);
+  if (is_str(x) && is_str(y)) return _prim_str_concat(db, x, y);
   if (is_num(x) && is_num(y))
   {
     u64 r = _prim_float__0002b_unsafe(to_double(x), to_double(y));
@@ -169,10 +176,13 @@ inline u64 _prim_toint(slog::Database* db, u64 x)
 }
 
 
-//  (size x) -- length of a string
+//  (size x) -- length of a string (codepoints, either representation) or
+//  a sequence (elements)
 inline u64 _prim_size(slog::Database* db, u64 v)
 {
-  if (is_str(v)) return _prim_str_size_unsafe(db, v);
+  if (is_mono_str(v)) return _prim_str_size_unsafe(db, v);
+  if (is_rope(v)) return s32_encode((s32)db->sequences()->cp_len(v));
+  if (is_seq(v)) return s32_encode((s32)db->sequences()->len(v));
   db->setPendingError(slog::ERR_TYPE, "size", v, 0);
   return slog_error;
 }
@@ -203,13 +213,20 @@ inline u64 _prim_cput(slog::Database* db, u64 m, u64 k, u64 v)
   return db->collections()->put(m, k, v);
 }
 
-//  (cget m k) -- the value at k; faults if absent (guard with chas)
-inline u64 _prim_cget(slog::Database* db, u64 m, u64 k)
+//  (cget m k) -- the value at k.  PARTIAL (compiler/primitives.rkt
+//  prim-partial?): an absent key is missing *data*, not a bug -- set *ok =
+//  false and the generated letp check abandons the row (a failed match
+//  against a virtual relation; no chas guard needed).  A non-collection m
+//  STAYS fatal: partiality is for absent data, not for type errors.
+inline u64 _prim_cget(slog::Database* db, u64 m, u64 k, bool* ok)
 {
   SLOG_CNODE_ARG(m, "cget");
   u64 out = 0;
   if (!db->collections()->find(m, k, &out))
-    slog::fatal("Function 'cget': key is absent (guard with chas/cmem)");
+  {
+    *ok = false;
+    return 0;
+  }
   return out;
 }
 

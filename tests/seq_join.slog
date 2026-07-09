@@ -1,0 +1,27 @@
+;; Inverted occurrence joins (docs/sequences.md §5.3): a pattern with a
+;; GROUND anchor gets a redundant $seq_at/$seq_atr probe the planner may
+;; schedule first, binding the list from its content.  Rows are published
+;; by the daemon's SeqIndexTask with a one-iteration lag; the delta-driven
+;; version refires, so iteration-0 lists still match.
+
+table (doc (list int))
+table (starts7 (list int))
+table (ends9 (list int))
+table (third3 (list int))
+
+facts (doc [7 1 2]) (doc [3 7 9]) (doc [1 2 3]) (doc [2 7 9]) (doc [7])
+facts (doc [])
+
+rule (doc l) (= l [7 xs ...]) --> (starts7 l)
+rule (doc l) (= l [xs ... 9]) --> (ends9 l)
+rule (doc l) (= l [_ _ 3 _ ...]) --> (third3 l)
+
+;; bound-VARIABLE anchor: the probe value comes from another relation
+table (want int)
+table (startw (list int))
+facts (want 7) (want 3)
+rule (want v) (doc l) (= l [v xs ...]) --> (startw l)
+
+;; MULTI-anchor: two fixed positions probe $seq_at twice, joined on the list
+table (pair79 (list int))
+rule (doc l) (= l [_ 7 9]) --> (pair79 l)

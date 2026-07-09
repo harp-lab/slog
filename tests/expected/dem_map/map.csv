@@ -3,16 +3,16 @@
  (_enum "dbl")
  (addk 10)
  (addk 10)
- (cons 1 (cons 2 (cons 3 (_enum "nil")))))
- (cons 1 (cons 2 (cons 3 (_enum "nil")))))
- (cons 2 (cons 3 (_enum "nil"))))
- (cons 2 (cons 3 (_enum "nil"))))
- (cons 3 (_enum "nil")))
+ (ccons 1 (ccons 2 (ccons 3 (_enum "cnil")))))
+ (ccons 1 (ccons 2 (ccons 3 (_enum "cnil")))))
+ (ccons 2 (ccons 3 (_enum "cnil"))))
+ (ccons 2 (ccons 3 (_enum "cnil"))))
+ (ccons 3 (_enum "cnil")))
 (map
 (map
 (map
 (map
 (map
-(map (_enum "dbl") (_enum "nil"))
-(map (addk 10) (_enum "nil"))
-(map (addk 10) (cons 3 (_enum "nil")))
+(map (_enum "dbl") (_enum "cnil"))
+(map (addk 10) (_enum "cnil"))
+(map (addk 10) (ccons 3 (_enum "cnil")))

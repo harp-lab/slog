@@ -1,13 +1,13 @@
- (_enum "nil"))
- (_enum "nil"))
- (_enum "nil"))
- (_enum "nil"))
- (_enum "nil"))
- (lambda (cons "c" (cons "t" (cons "e" (_enum "nil")))) (if (ref "c") (ref "t") (ref "e")))
- (lambda (cons "f" (cons "x" (_enum "nil"))) (app (ref "f") (cons (app (ref "f") (cons (ref "x") (_enum "nil"))) (_enum "nil"))))
- (lambda (cons "p" (_enum "nil")) (app (ref "+") (cons (ref "p") (cons (num 1) (_enum "nil")))))
- (lambda (cons "q" (_enum "nil")) (app (ref "-") (cons (ref "q") (cons (num 1) (_enum "nil")))))
- (lambda (cons "y" (_enum "nil")) (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil")))))
+ (lambda ["c" "t" "e"] (if (ref "c") (ref "t") (ref "e")))
+ (lambda ["f" "x"] (app (ref "f") [(app (ref "f") [(ref "x")])]))
+ (lambda ["p"] (app (ref "+") [(ref "p") (num 1)]))
+ (lambda ["q"] (app (ref "-") [(ref "q") (num 1)]))
+ (lambda ["y"] (app (ref "+") [(ref "y") (num 1)]))
+ [])
+ [])
+ [])
+ [])
+ [])
 (closure
 (closure
 (closure

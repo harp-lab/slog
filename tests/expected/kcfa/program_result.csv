@@ -1,5 +1,5 @@
 (_enum "numval")   
 (boolval (_enum "ff"))   
-(closure (lambda (cons 42 (_enum "nil")) (ref 42)) (mbranch 40 1 (mleaf 40 (_enum "nil")) (mleaf 41 (cons (app (ref 40) (cons (app (primref "-") (cons (ref 41) (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil")))))   
-(closure (lambda (cons 42 (_enum "nil")) (ref 42)) (mbranch 40 1 (mleaf 40 (_enum "nil")) (mleaf 41 (cons (app (ref 40) (cons (num 3) (_enum "nil"))) (_enum "nil")))))   
+(closure (lambda [42] (ref 42)) (mbranch 40 1 (mleaf 40 []) (mleaf 41 [(app (ref 40) [(app (primref "-") [(ref 41) (num 1)])])])))   
+(closure (lambda [42] (ref 42)) (mbranch 40 1 (mleaf 40 []) (mleaf 41 [(app (ref 40) [(num 3)])])))   
 (symval "live")   

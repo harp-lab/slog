@@ -1,31 +1,11 @@
- "c")
- "e")
- "e")
- "f")
- "t")
- "t")
- "x")
- (cons "c" (cons "t" (cons "e" (_enum "nil"))))
- (cons "c" (cons "t" (cons "e" (_enum "nil"))))
- (cons "c" (cons "t" (cons "e" (_enum "nil"))))
- (cons "f" (cons "x" (_enum "nil")))
- (cons "f" (cons "x" (_enum "nil")))
- (cons "t" (cons "e" (_enum "nil")))
- (cons "t" (cons "e" (_enum "nil")))
-(lst_absent
-(lst_absent
-(lst_absent
-(lst_absent
-(lst_absent
-(lst_absent
-(lst_absent
-(lst_absent (_enum "nil") "+")
-(lst_absent (_enum "nil") "-")
-(lst_absent (cons "e" (_enum "nil")) "e")
-(lst_absent (cons "p" (_enum "nil")) "+")
-(lst_absent (cons "p" (_enum "nil")) "p")
-(lst_absent (cons "q" (_enum "nil")) "-")
-(lst_absent (cons "q" (_enum "nil")) "q")
-(lst_absent (cons "x" (_enum "nil")) "x")
-(lst_absent (cons "y" (_enum "nil")) "+")
-(lst_absent (cons "y" (_enum "nil")) "y")
+(lst_absent ["c" "t" "e"] "c")
+(lst_absent ["c" "t" "e"] "e")
+(lst_absent ["c" "t" "e"] "t")
+(lst_absent ["f" "x"] "f")
+(lst_absent ["f" "x"] "x")
+(lst_absent ["p"] "+")
+(lst_absent ["p"] "p")
+(lst_absent ["q"] "-")
+(lst_absent ["q"] "q")
+(lst_absent ["y"] "+")
+(lst_absent ["y"] "y")

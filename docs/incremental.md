@@ -1,4 +1,4 @@
-# Fully Incremental Slog: Insertion and Deletion of Input Facts
+# Fully Incremental Slog: Sessions, Insertion, and Deletion of Input Facts
 
 **Status:** design / pre-implementation. Revised 2026-07-08 against the current
 codebase: the compiler now HAS SCC stratification (the 2026-07 rewrite), the
@@ -7,15 +7,683 @@ db-compression (recompute-on-load, `docs/db-compression.md`) is fully shipped
 forward-incremental — §8A below pins the composition contract with it. Code
 anchors throughout were re-verified 2026-07-08; M2's scope shrank accordingly
 (§6.4, §9).
+**Second revision, 2026-07-08 (same day):** restructured around the workflows.
+A new §0 defines the *incremental-session model* and **Phase 0** — full
+*forward* incrementality with **no counters**: streaming input batches into a
+live or reloaded fixpoint, deletion by bounded recompute, stratified negation
+(currently absent from the language — a gating sub-phase), relation
+rename/drop between pipeline segments, hot-linking existing databases into a
+running program, and the delta-layer IO that saves, loads, and continues a fed
+session as a new linked `data/` database. The DRed^c core (§1–§8A) is
+unchanged in substance and becomes Phases 1–2 (§9); external docs' references
+to §1, §6.1, §7A, and milestones M0–M7 remain valid.
 **Goal:** make slog programs incrementally maintainable in *both* directions — a stream
 of insertions **and deletions** of EDB (input) facts is applied to a materialised
 database and every derived relation/struct is updated to exactly the least-fixpoint it
 would have had if the new input had been loaded from scratch, without recomputing from
-scratch.
+scratch — and make the *session* (the growing pipeline of programs, batches,
+renames, and links) a first-class, saveable, resumable object.
 
-This document captures the full design worked out in discussion: the theory that
-constrains it, the algorithm we chose (DRed^c), and — concretely — every change we
-expect to make and where it lands in the codebase.
+This document captures the full design worked out in discussion: the workflows
+and session model (§0), the theory that constrains deletion (§1–§5), the
+algorithm we chose for it (DRed^c), and — concretely — every change we expect
+to make and where it lands in the codebase.
+
+---
+
+## 0. The incremental-session model, and Phase 0: forward incrementality first
+
+*(added 2026-07-08, 2nd revision; all code anchors verified against the tree
+the same day)*
+
+This section is the result of stepping back from the DRed^c machinery and
+asking what workflows the feature must actually serve. Two observations drive
+the restructuring:
+
+1. **Most of the user-visible value needs no counters.** Streaming *positive*
+   batches into a monotone fixpoint is ordinary semi-naïve continuation.
+   Deletion and non-monotone updates are *sound today* via bounded recompute
+   (clear the affected downstream strata and re-run them — the same reasoning
+   that made db-compression's edit-and-propagate "sound for free",
+   db-compression.md §12), just not O(change). Counters (Phase 1) and DRed^c
+   (Phase 2) then *shrink the granularity* of that recompute — they are
+   performance refinements of a semantics Phase 0 already delivers (§0.11).
+2. **The IO story is the actual product.** A session — programs, batches,
+   renames, links — must be a saveable, replayable, extendable object. The
+   db-compression DAG (`META` manifests, `prog.sexpr`, signatures,
+   `db-load-steps`) is 80 % of that object already; Phase 0 finishes it by
+   making *increments* first-class recipe steps with a bin-file
+   representation, rather than an afterthought bolted onto `edits`.
+
+One gap gates everything: **the language has no negation.** `~` is lexed to a
+`'not` token (lexer.rkt:60) that no parser rule consumes (parse-atom,
+parser.rkt:130-191, errors on it; it is in neither the operator table
+:381-394 nor the keyword set :397-398); stratify.rkt:20-22 states outright
+that stratification is currently an optimisation, not a semantic requirement.
+Aggregation exists only as lattices — which is the *right* foundation
+(monotone-use calculus, lattice-check.rkt) — but the classical
+`~(foo x 1)`-style stratified guard, its safety checks, and its runtime
+antijoin are all missing. The incremental driver needs negation's *polarity
+metadata* (which downstream edges are non-monotone) even to route a batch, so
+shoring this up is sub-phase **0.A**, first (§0.8).
+
+### 0.1 The workflows (W1–W9)
+
+A slog pipeline is a long sequence of SCC-strata arising from any mix of: SCC
+condensation of one program (stratify.rkt), user-level `run` sequencing over
+modules (linearize-programs / thread-manifests, modules.rkt:744-797), and a
+new program run atop a loaded DB whose chain embeds its own programs
+(db-compression §10). The session model must make all of these ordinary:
+
+- **W1 — run & stream.** Run a program from scratch; at fixpoint, feed
+  batches of new input facts into any relation; each batch updates the
+  fixpoint without a from-scratch rerun.
+- **W2 — load & stream.** `-d NAME` a saved chain (replay-from-origin), then
+  W1 against the reconstituted fixpoint. Loading and running-from-scratch
+  must land in the *same* streamable state.
+- **W3 — save a fed session.** A save after increments **always** creates a
+  NEW `data/X` layer linked to the old chain — ancestors are never mutated
+  (copy-on-write over the immutable DAG, db-compression §7). The increments
+  are stored *inside X* as bin-file deltas plus recipe metadata recording
+  where in the program tree each batch applies (§0.4, §0.10) — even when the
+  target relation lives "way up" the chain.
+- **W4 — move & continue.** Load X on another machine/day, stream more, save
+  again. Chains grow; every link stays replayable and verifiable.
+- **W5 — pipeline by rename.** Rename or drop relations between pipeline
+  segments, so program A's `foo` *becomes* program B's `bar` — one relation,
+  one copy, no `(bar x) <-- (foo x)` prop rule (§0.7).
+- **W6 — hot-link.** Attach an existing DB **with its full program chain**
+  to a live session: "all tuples of relation X over there are, from this
+  point on, also tuples of relation Z here" (§0.9).
+- **W7 — freeze.** Cut a chain: materialise and write a plain root with no
+  history. `--flatten` exists at save time (db-compression §7.3,
+  runslog.rkt:651-657 writes `#:kind 'flat`); Phase 0 adds the missing
+  `slog db freeze` verb for freezing an *existing* chain (§0.10).
+- **W8 — front-end editing.** An editor watches source changes and submits
+  deletions + insertions of AST facts; the session absorbs them. (Phase 0 by
+  bounded recompute; Phases 1–2 make it precise. Whether the front end must
+  split delete/insert into two batches: **no** — §0.6.)
+- **W9 — self-unrolling pipelines & time travel.** A program that *extends
+  its own pipeline*: e.g. a program analysis framed as a refinement loop —
+  run the analysis, declaratively compute (atop the results) where and how
+  to refine precision, materialise the refinement, run the same analysis
+  again — unrolled some small N× into the pipeline. Requirements this
+  forces: the **same cached `.so`s must be instantiable at many pipeline
+  positions without recompiling** (name resolution must be positional, not
+  baked in — §0.5's version environment), and the result must be
+  **introspectable across time** — "show me relation R as it stood at
+  pipeline point 24" is a lookup, not a replay (§0.4).
+
+### 0.2 A session is a recipe of anchored steps; a save is a delta layer
+
+The unifying mental model — an event-sourced database, where events carry an
+*anchor* into the pipeline:
+
+> A **session** = a base chain (possibly empty) + a **recipe**: the ordered
+> pipeline of steps `run <program-segment>`, `rename R S`, `drop R`,
+> `link <db> <name-map>` — plus, attached to any **pipeline point P** in
+> that pipeline (a stratum/segment boundary), signed **batches**
+> `batch ± <rel> <payload> @P`. The resident daemon holds the
+> *materialisation* of the pipeline; the driver (runslog.rkt) holds the
+> recipe. **Saving serialises the recipe** (with its batch payloads and
+> program sources) as one new `data/X` layer whose manifest links the base
+> chain — loading a DB is therefore always loading a whole
+> DB-plus-programming-session and building atop it. **Loading replays the
+> recipe** with the *same* machinery used live, so load-and-continue is one
+> code path (§0.10), exactly as db-compression made load = replay.
+
+**Mutation semantics within a live session (decided 2026-07-08).** Batches
+are *attachments to pipeline points*, not a layered edit history:
+
+- The session holds, per (pipeline point P, relation), a signed batch set.
+  Ad-hoc updates issued later against the same P **mutate that set in
+  place**: adding tuple T at P and then retracting T *at the same P*
+  collapse to nothing — the pair is simply absent from any subsequent save.
+- An add of T anchored at P and a delete of T anchored at a **later** point
+  P′ do *not* collapse: both are recorded and both are saved — they mean "T
+  exists in the pipeline from P up to P′", which is a genuine semantic
+  content of the session (readers between P and P′ see T; readers after P′
+  don't).
+- There is **no intra-session version history of the edits themselves** —
+  no undo layers, no per-edit provenance beyond the collapsed batch sets.
+  Layered, stratified history arises exactly one way: **save, then load,
+  then keep working** — each save is an immutable layer, and the next
+  session's batches anchor into the loaded pipeline (which may reach back
+  into ancestor layers' pipeline points; the anchor is saved with the new
+  layer, ancestors untouched).
+
+This subsumes and extends what already exists:
+
+- A db-compression layer is the special case "recipe = one `run` step" (plus
+  `edits`). A pure merge is "recipe = empty" with a 2-entry manifest (§7.2
+  there). A **pure-batch layer** — increments saved with no new program — is
+  "recipe = batches only": manifest → base, empty program. All uniform.
+- The shipped `edits` file (`(add-tuple REL v…)`, applied on load right
+  after its layer opens — dbtool.rkt:147, runslog load steps) is the
+  degenerate batch step: inline payload, anchored at the layer's entry
+  point. Phase 0 grows it into the `recipe` file (§0.10) rather than
+  inventing a parallel mechanism; the in-place `edits`-on-an-ancestor verb
+  (`slog db edit` + stale-propagation) survives as the *mutate-history*
+  operation, distinct from the normal append-only flow (same "reproduce vs.
+  mutate are different verbs" honesty note as db-compression §12).
+- Immutability, staleness, `gc`, atomic writes, signatures, drift
+  attribution: inherited unchanged from db-compression §7/§11.
+
+### 0.3 Batches: one abstraction, three transports
+
+A **batch** is `(sign, target-relation, payload)` anchored at a pipeline
+point (§0.2, §0.4). Payloads have three transports, chosen by size — but
+they are *one* concept, and two of the three already reduce to existing
+machinery:
+
+1. **Inline (small, ≲ 2k tuples).** Values baked as literals into a generated
+   action plugin — the `add-tuple` path (actions.rkt:83-95 →
+   `Daemon::addTuple`, daemon.h:253-260) generalised to
+   `(add-batch REL ((v …) …))` and `(del-batch REL ((v …) …))`. This is the
+   W8/editor case. The .so bake cost is fine at this scale (it is how inline
+   `facts` already work); past a few thousand tuples it is not (the known
+   ~10k inline-facts ceiling) — bulk client data enters via transport 3
+   (CSV→root conversion, or an existing DB).
+2. **Bin-backed (bulk, layer-owned).** The payload is an ordinary **mini bin
+   database** — a directory written by the daemon's canonical writer,
+   closure-complete, carrying its own `value.strings`/`value.nodes`.
+   Applying it = `importDatabaseBIN` (database.h:2760-3022), whose
+   children-first content remap already solves all four id spaces. Stored
+   inside the saving layer as `delta.<k>/` (§0.10). The daemon is the only
+   producer of these (client-side bin writers are deliberately NOT a goal):
+   they arise at save time — consolidating a long session's accumulated
+   inline batches into one payload — or by embedding a converted CSV root
+   the user doesn't want as a standing link.
+3. **Linked-DB (huge / provenance-bearing).** The payload is a *reference*
+   to an existing `data/` database (and hence its whole chain), plus a
+   name-map: `(link DB ((X Z) …))`. Same import machinery with a rename map
+   (§0.9); the manifest records the edge so replay rebuilds it recursively
+   (db-load-steps, dbtool.rkt:171-191, is already recursive and memoised).
+
+Rules of the road:
+
+- **Batches apply at stratum boundaries only.** `open`/`import`/`add-tuple`
+  are already refused mid-suspend (refuseIfSuspended, daemon.h:115-124);
+  batches inherit that. With pausing shipped, boundaries are frequent; a
+  batch arriving mid-fixpoint queues (driver-side) until the next boundary.
+- **A batch may mix signs and relations at the API** (a front-end
+  convenience); the *driver* folds it into the per-(point, relation) signed
+  batch sets, applying §0.2's same-point collapse (§0.6). The on-disk
+  recipe stores the collapsed, decomposed form.
+- **Under Phase 1 counting, batch application points become exact-once
+  boundaries** — the same §8 discipline as iteration-0. Design the staging
+  path now so a batch's tuples enter the delta exactly once (no double-stage
+  on the reload path), or Phase 1 inherits corrupted counts.
+
+### 0.4 Relations across time: version chains and anchors (rewritten 2026-07-08)
+
+*(The first draft of this section claimed batch position normalizes away
+entirely — "a relation completes in exactly one stratum". That is true
+within ONE stratified program segment (all rules heading R condense into
+R's SCC, so one segment gives R one completion point) but FALSE across a
+pipeline: `run` sequencing, a new program atop a loaded DB, and
+mid-pipeline imports all let a later segment write R again, and strata in
+between read the earlier content. Position matters — at exactly the
+granularity of those update events.)*
+
+**The model: a relation name denotes a chain of versions.** Along the
+pipeline, `R` is really `R@1, R@2, R@3, …`, delimited by **update events**:
+
+- a program segment whose rules have head `R` (each segment writing R
+  contributes exactly one version — within a segment, one completion point);
+- a merge/`link` importing into `R` at a boundary (§0.9);
+- an ad-hoc batch point `@P` targeting `R` (§0.2);
+- `(drop R)` — *severs* the chain: a later (re-)declaration of `R` starts a
+  fresh, empty chain under the same name;
+- `(rename R S)` — pure *rebinding*: `S`'s first version IS `R`'s last
+  version (same physical object, zero data movement); `R` is unbound after.
+
+**Semantics = desugaring; implementation = environment.** The *meaning* of
+the pipeline is the one big stratified program obtained by α-renaming the
+versions apart and inserting an implicit inheritance rule
+`R@(k+1) ⊇ R@k` at each boundary (omitted where a drop severed the chain).
+We deliberately do **not** implement it that way — no gensym, no
+recompile-per-instance (that would defeat the `.so` cache and W9's
+same-program-at-many-points unrolling). Instead the daemon keeps a
+**version environment** (§0.5): physical relations keyed by version, and a
+per-pipeline-position map name→version that generated code's by-name
+lookups resolve through at plugin-bind time.
+
+**What survives of the old normalization claim** (now correctly scoped):
+*within one version's span*, where exactly a batch anchors is immaterial to
+the final fixpoint — so the anchor's real granularity is
+**(relation, version)**. And version boundaries are *source/recipe-level*
+facts — which segments write R is fixed by rule heads in source plus recipe
+events, never by how the compiler condenses SCCs within a segment — so
+**version ordinals are stable across recompiles** and are what the saved
+recipe stores. No stored SCC indices (they are positional and drift); the
+rule-id sets in META `strata` remain the diagnostic cross-check.
+
+**Addressing (decided).** The user-facing handle is a **pipeline point**:
+"give me `R` at point P=24". Imprecise addresses resolve under the hood to
+the last write at-or-before P — if R was last updated at 17 and not again
+until 29, `R@24 ≡ R@17`. The default, address-free query means "latest
+version". Dropped or renamed-away names remain addressable at old points
+(their versions persist in the old part of the pipeline — nothing is
+discarded). Phase 0 exposes this as API/actions (versioned `lookup` /
+`dump-rel` / `sizes`, and a pipeline-introspection action so a front end
+can (re)discover the pipeline map from a live daemon rather than only from
+compiling); richer surface syntax and human-readable point naming are
+deliberately deferred — reserve the API seams, don't overbuild (per
+discussion 2026-07-08).
+
+**Materialisation policy (decided).** A boundary creates a new physical
+version **only for relations actually written at it**; untouched names
+alias their predecessor version in the environment (`R@24` *is* `R@17` —
+logical identity, no copy, no storage). When R *is* written at a boundary,
+the new version is a **full physical copy** of the predecessor's master
+index (plus the update) — deliberately NOT an overlay/passthrough over the
+old version, because reads-through-layers would make every join potentially
+a multi-version join and demand new codegen. Future-work note (explicitly
+parked): copy-on-write / layered master indices and delta-over-base
+representations, if unrolled workflows make eager copies too heavy.
+
+**Counts per version (Phase 1 forward-pointer).** Under the desugared
+semantics the inheritance rule gives every inherited tuple one `nonrec`
+derivation in the new version, so each version's `(nonrec, rec)` are
+self-contained — and version boundaries become hard `nonrec>0` barriers:
+a future DRed^c sweep triggered in one segment can never tunnel into an
+earlier version. The version structure is what makes Phase 2's deletion
+*local* — bounded per-segment sweeps instead of whole-pipeline ones.
+
+### 0.5 The runtime: the version environment, re-entry modes, and the monotonicity cone
+
+**The version environment (new, daemon-side — the load-bearing piece).**
+The physical registry keys relations by **version id**; per pipeline
+position, an environment maps name → version. Today's single global
+name→Relation map (database.h:1086) becomes the environment of the *latest*
+position. Generated code already resolves relations **by name at
+registration time** (`getRelation("R")` during plugin bind — the identity
+invariant db-merge pinned), so the change is confined to bind time: when a
+stratum plugin is pushed at pipeline position P, its lookups resolve
+through P's environment. Consequences, all deliberate:
+
+- **The same cached `.so` is instantiable at many pipeline positions with
+  no recompilation** — each push binds the versions current at its
+  position. This is what W9's self-unrolling pipelines require, and why we
+  reject the desugaring implementation (gensym'd `R_3` baked into generated
+  code would force a rebuild per instance).
+- **Rename/drop are environment operations** (§0.7): a rename rebinds a
+  name to an existing version; a drop unbinds it. No physical rekeying, no
+  data movement; old versions stay registered and addressable (§0.4).
+- **Run time is untouched** — after bind, tasks hold direct pointers as
+  today; the environment is consulted only at push/bind and by the
+  versioned query actions.
+- The front end mirrors the environment from the recipe it compiled, and a
+  **pipeline-introspection action** lets it re-derive the map from a live
+  daemon (needed after loading a saved session it didn't build).
+
+The rest of the substrate is closer than it looks: strata stay resident
+after running (daemon.h:18-27); re-sending a stratum's cached `.so` path
+re-registers its tasks, and `beginStratum` (daemon.h:163-195) performs the
+deferred whole-DB reload — every relation re-staged as the new stratum's
+iteration-0 delta (reloadInsertBatches, database.h:3074-3114). `add-tuple`
+already sets `needs_reload`. What's missing is captured in two places: the
+"re-running an old stratum needs its task `Index**` bindings re-bound"
+caveat (daemon.h:24-27) and pausing.md §12's deliberately-cut `bind()` seam.
+
+**Cone analysis (compiler+driver-side, new).** Over the **version graph**
+(rule dependency edges within segments + inheritance edges between
+versions, §0.4): `cone(R@k)` = everything reachable from version k of R —
+the later versions of R itself and every dependent relation-version. Plus a
+per-edge **monotone bit**: an edge is non-monotone if it is a negation read
+(§0.8) or a read of a lattice-valued relation across the re-entry boundary
+(an ascended value can invalidate downstream facts derived from the old
+value — precise change-splitting across strata is DRed_L, deferred to M7;
+Phase 0 is conservative). The per-segment half comes from the stratified
+condensation and is exported in the stratum sidecar manifest
+(write-stratum-manifest, compile.rkt:194-204); the cross-segment half is
+recipe-level and lives in the driver.
+
+**Three re-entry modes.** All are framed against the version model: a batch
+anchored at `R@k` first updates that version's master index (for an
+alias-only boundary this *creates* the physical version: copy predecessor,
+apply batch — §0.4's materialisation rule), then propagates through
+`cone(R@k)` by one of:
+
+1. **Replay-entry (exists today; O(data-in-cone); sound for monotone
+   cones).** Re-push the cached `.so` of each cone stratum in topological
+   order; each `beginStratum` re-stages everything as iteration-0 delta;
+   every rule re-fires; set-semantics dedup absorbs the old, the new
+   propagates. These are precisely the mechanics that already carry
+   edit-and-propagate's full re-replay — Phase 0's contribution is
+   **cone-limiting** (skip strata outside the cone) and skipping the
+   recompile (the `.so` cache makes re-push cheap). The pipeline vector
+   grows with each re-push (scc_id = position at push, daemon.h:296-305);
+   fine functionally, curbed later by the bind()-reuse path.
+2. **Clear-and-rerun (small additions; sound for EVERYTHING — deletions and
+   non-monotone cones).** As (1), but first **rebuild the anchored version
+   without the retracted tuples** (copy predecessor, minus deletes, plus
+   adds) and **clear the downstream cone versions** (per-relation
+   `clearIndices` — contents only, registrations persist). Then re-run the
+   suffix. Everything below/outside the cone is final throughout, so this
+   is a from-scratch run of a pipeline *suffix* — the true fixpoint of the
+   edited input, retraction included, by the same argument that made
+   replay-deletion sound (db-compression §12). Struct relations cleared in
+   the cone re-mint ids on re-derivation; every referent of those ids is
+   itself in the cone (it got the id via a join downstream of the struct
+   relation), so no dangling ids — and allocators stay monotone (never
+   reuse), with a compressed save+reload compacting them eventually
+   (§8A.5).
+3. **Delta-entry (O(change) — the default we are building toward).** Stage
+   *only the batch* as the re-entered stratum's iteration-0 delta (a
+   delta-preserving variant of the reload) and let semi-naïve run. Within
+   R's *own* segment this works with today's compiled versions (R is
+   dynamic there — per-position delta versions exist). The catch, stated
+   plainly: **for downstream strata there is no compiled entry point that
+   accepts "just the new R tuples."** For body relations from earlier
+   strata the compiler assumes they are finished and emits a single
+   run-once variant scanning the whole relation — so when a batch later
+   lands in R, the only compiled paths downstream either rescan everything
+   (mode 1/2) or don't fire at all; feeding a delta to a variant whose
+   fixed driver is a different body relation silently under-derives
+   (verified against the planner's dynamic-rels → `static?` flow,
+   operationalization.rkt:84 → emit-cpp.rkt:447). The fix is to **also
+   emit delta-driven variants for cross-stratum body relations** — the
+   same trick semi-naïve already uses within an SCC, extended across
+   stratum boundaries. **Since the fully incremental workflow is the
+   product default (decided 2026-07-08), these variants are the default,
+   not opt-in** — no `(stream R)`-style declaration. The extra read-task
+   compile cost (real: docs/fast-compile.md's task-count analysis) is an
+   engineering problem with known levers: compile the delta-variant flavor
+   of a stratum **lazily**, the first time a batch actually targets one of
+   its inputs (it is just another cached artifact — `build/<hash>.so` today,
+   `build/<hash>.delta.so` then), tiered -O0/-O2, and an opt-out flag for
+   one-shot batch runs that will never see an increment. Under counting
+   (Phase 1) this mode stops being optional: modes 1–2's re-firing is
+   absorbed by set dedup today but would double-count — by M0, delta-entry
+   is the required path for streamed batches.
+
+**Routing rule (the whole driver policy):** positive batch + all-monotone
+cone → delta-entry when the flavor is compiled, replay-entry until then;
+anything with a negative sign or a non-monotone edge in the cone →
+clear-and-rerun of the affected cone. All three end with the strata's
+`(fixpoint)` handshake and compose with pausing budgets unchanged
+(`continueRun`, daemon.h:337-370).
+
+**Memory posture (decided).** The whole pipeline — every materialised
+version's master index — is **held in memory by default**; that is what
+makes "new input anywhere, low-latency recompute" the default workflow.
+Secondary/join indices are kept only for versions that live strata read and
+are rebuildable on demand; disk spill for cold versions is a flagged later
+optimisation, not a Phase 0 concern.
+
+### 0.6 Deletion in Phase 0, and "must the front end split batches?"
+
+Under the version model a **pipeline-point deletion is a forward
+operation**: "delete T at P" defines the content of the version *at P*
+(predecessor minus T) — it never reaches back into earlier versions, whose
+readers correctly keep seeing T (§0.2's add-at-P/delete-at-P′ semantics).
+Materialising it is §0.5 mode 2: rebuild the anchored version without T,
+clear the downstream cone, re-run the suffix. Sound with zero counting
+machinery, at stratum granularity.
+
+Phase 0 scope, stated precisely: the headline deliverable is **additions
+anchored anywhere** (per the 2026-07-08 decision), but the recipe format,
+the collapse rules (§0.2), and the batch actions are **sign-complete from
+day one** — they must be, for the same-point collapse semantics to be
+well-defined — and since clear-and-rerun is being built anyway for
+non-monotone *positive* cones, negative batches ride the same path at no
+extra machinery. What Phase 0 does NOT attempt is *precise* (sub-cone)
+deletion; the DRed^c phases keep the same driver and routing, replacing
+"clear the cone" with "run the three-phase negative/reseed/positive sweep
+over it" — deletions get cheaper, not different, and version boundaries
+bound each sweep (§0.4's barrier property).
+
+The W8 question — must an editor submit "delete these AST facts" then
+"insert these" as two ordered updates? **No.** A mixed batch at one anchor
+is fine at the API. Phase 0: the driver folds it into the point's batch set
+(collapsing same-point add/delete pairs), rebuilds the version once, reruns
+the cone once — no phasing exists to violate. Phases 1–2: the *engine*
+imposes the phasing internally (the §4 sweep runs its negative fixpoint,
+reseed, then positive fixpoint over whatever the batch contained); the
+input protocol stays "a set of signed tuples". Front ends may still find
+two batches natural; the semantics is identical either way, and identical
+to one batch.
+
+### 0.7 Renames and drops between segments
+
+The motivating case (W5): program A produces `foo`; program B consumes
+`bar`. Today you keep both relations and a prop rule — double storage, an
+extra join, and a spurious stratum edge. Instead: **`(rename foo bar)` as a
+recipe step between segments** — one relation, whose *name changes at a
+pipeline point*; `(drop baz)` similarly ends a relation's visibility (and
+reclaims its memory).
+
+Semantics and checks (rewritten for the version model — renames get
+*simpler* under it, not more complex):
+
+- **Both are environment operations on the version chain (§0.4, §0.5) —
+  zero data movement.** `(rename R S)` rebinds: `S`'s first version IS
+  `R`'s last version (the same physical master index); `R` is unbound
+  after. `(drop R)` unbinds: the name is free, but R's versions persist in
+  the old part of the pipeline, addressable at old points (§0.4) — "kept,
+  not destroyed" is the invariant. A later segment (re-)declaring `R`
+  starts a **fresh, empty version chain** under that name (a severed
+  boundary — no inheritance rule).
+- A rename/drop sits *between* pipeline segments, where the relation's
+  current version is complete (its stratum has run). After a drop, later
+  reads of `R` are compile errors (until/unless re-declared).
+- **Checks come free from manifest threading.** Programs already compile
+  against a threaded manifest (thread-manifests, modules.rkt:792-797;
+  update-manifest's arity/kind conflict fatals :756-790). A rename step
+  transforms the manifest (move R's schema entry to S); a drop deletes it.
+  Later segments' references then resolve — or fail loudly — with no new
+  analysis. Stratified-negation interactions (a later `~S`, or `~R` after a
+  drop) are caught by the same resolution.
+- **Implementation: compiler-threaded AND daemon-visible.** The
+  compile-time half is the manifest transform above. The runtime half is
+  the environment update (§0.5): `(rename-rel R S)` / `(drop-rel R)`
+  actions mutate the *current-position* name→version map — NOT a rekey of
+  a global physical registry (the first draft of this section said "rekey
+  the relations map"; under versions that is wrong — old bindings at old
+  positions must keep resolving). Already-bound strata are unaffected
+  (they hold direct pointers). Mind restoreOrphanRelations
+  (database.h:1484-1499), which resurrects import-only relations — a
+  dropped binding must not qualify. The daemon seeing the rename keeps the
+  `(schema)` action and **saved directory names** aligned with the visible
+  schema — a save after a rename writes the final materialisation under
+  `table.bar.…/`, and a fresh load of that layer needs no alias table.
+- **Recipe + replay:** both ops are recorded as anchored recipe steps and
+  re-applied at the same position on load. This *is* db-compression §12's
+  designed-but-unbuilt `(rename R S)` / `(drop R)` edit ops — build once,
+  serve both the in-place `edits` path and the session recipe.
+
+### 0.8 Sub-phase 0.A: stratified negation, and hardening aggregation
+
+Why this gates Phase 0 rather than trailing it: (a) the routing rule (§0.5)
+needs per-edge polarity — which does not exist because negation does not
+exist; (b) adding negation *after* streaming ships would silently break the
+"all cones are monotone" assumption baked into a counterless driver; (c) the
+stratification checks negation forces are the same checks aggregation should
+already have been getting.
+
+**Current state (verified 2026-07-08):** `~` lexes to `'not` (lexer.rkt:60),
+nothing consumes it; stratify.rkt builds positive-only edges
+(body→head + co-head all-pairs, :115-141), Tarjan-condenses (:68-103),
+levels (:145-158), merges same-level SCCs (:161-173) — no polarity, no
+rejection, and its header (:20-22) documents stratification as purely an
+optimisation. No runtime antijoin exists; the semijoin work added only the
+positive `exists_probe` (operators.h:140-159). Aggregation is lattices-only
+(min/max/count/flat/set/map valuespecs, modules.rkt:305-338) with a real
+monotone-use calculus that runs per-stratum after stratification
+(lattice-check.rkt:137-147, in-SCC monotonicity enforcement :185-366) — but
+unbounded-recursion termination is a warning, not an error (:390-435), and
+none of it is exercised by a single `~` test (`grep '~' tests/*.slog` is
+empty).
+
+**The build (design):**
+
+- **Syntax.** `~(rel a b …)` as a body atom only — the `'not` token prefixed
+  to an ordinary clause; constants (`~(foo x 1)`), wildcards (`~(foo x _)`),
+  and lattice-relation keys (`~(best k)` = "no value at key k") all
+  permitted. No head negation; no `!`/`not` synonyms.
+- **Safety (range restriction).** Every variable of a negated atom must be
+  bound by a positive body atom (or be a constant/wildcard). Checked in the
+  front end with source provenance.
+- **Stratification becomes semantic.** Edges carry polarity; after
+  condensation, any negative edge with both endpoints in one SCC is a
+  compile error ("negation through recursion — not stratified", naming the
+  rule and cycle). Nothing else changes: a cross-SCC negative edge already
+  forces `level(head) ≥ level(body)+1` like any edge, and same-level merged
+  SCCs are mutually unreachable, so *negated relations are always closed
+  (strictly lower stratum) at read time* — exactly the property the runtime
+  leans on. Update the stratify.rkt header: stratification is now
+  load-bearing.
+- **Runtime = negated semijoin.** A negated atom compiles to an
+  **`absent_probe`** — the one-line negation of `exists_probe`
+  (operators.h:140-159) — placed after the positive join has bound its
+  variables, with index requisition on the negated relation for the
+  bound-column prefix riding the same flow the semijoin filters added
+  (operationalization.rkt:210-283). Because the negated relation is closed,
+  the probe always targets a full (never delta) index and needs no
+  semi-naïve versions. This is deliberately the *smallest possible* runtime
+  footprint for negation.
+- **Aggregation hardening.** The lattice calculus already implements
+  "Tier-1 stratified aggregation falls out free" (docs/lattices.md §5.3;
+  §7A.6 here). 0.A adds: negation-over-lattice-keys (above); polarity
+  awareness in lattice-check (a negated read is a non-monotone read —
+  in-SCC cases are already excluded by the stratification error, so this is
+  bookkeeping, plus tests); and a decision recorded here: the
+  unbounded-min/max recursion **warning stays a warning** (it is a
+  termination heuristic, not a soundness issue — same stance as
+  lattice-check today).
+- **Polarity metadata out the back.** Per relation: `cone(R)` and the
+  monotone bit per cone edge (negation edges; lattice-read edges per §0.5),
+  written into the stratum sidecar manifests for the driver. This is also
+  M2's "per-body-clause same-SCC bit" (§6.4) arriving early — tag the IR
+  once, serve both consumers.
+- **Incrementality interaction, stated plainly:** a positive batch into R
+  where some downstream rule reads `~R` is a *non-monotone* update (new
+  facts can retract derived ones). The routing rule (§0.5) already handles
+  it — that cone is clear-and-rerun. Under Phase 2, negation slots into
+  DRed^c as signed propagation through absent_probe with flipped sign
+  (standard DRed treatment); nothing in 0.A's design forecloses it.
+
+### 0.9 Hot-linking a database into a live session
+
+W6, made precise: `(link DB ((X Z) …)) @P` as a recipe step means "the
+relations X… of `data/DB` — a database with its own chain and programs — are
+imported, under names Z…, as a positive batch anchored at pipeline point P"
+(creating a new version of each Z there, like any other update event, §0.4).
+
+- **Mechanism = import with a name-map.** `importDatabaseBIN` already
+  reconciles schema by name and content-remaps all four id spaces
+  (database.h:2779-2812, 2883-2992); the name-map is a parameter it doesn't
+  take yet — and it is precisely db-merge.md's designed-but-unshipped
+  rename/`#:prefix` conflict policy (:125-130), generalised. One new
+  parameter serves both features. A relation filter (import only X…) rides
+  along.
+- **Provenance.** The manifest records the link edge (name + stamp), so the
+  DAG knows `data/DB` is now an input: `slog db tree` shows it, staleness
+  applies to it, `gc`/`rm` respect it, and **replay materialises DB's chain
+  recursively** (db-load-steps already recurses and memoises diamonds)
+  before importing at the recorded position.
+- **Downstream, it's just a batch** into Z — routed by §0.5 like any other
+  (monotone cone → replay/delta-entry; non-monotone → clear-and-rerun).
+- **Honesty note inherited from db-merge §7.2:** a linked DB's facts arrive
+  as *facts* — merge-then-run is a monotone over-approximation; if the link
+  target's grounding later changes upstream in ITS chain, propagation into
+  *this* session is by that chain's staleness + re-replay, composing with
+  edit-and-propagate. (Under Phase 2, a re-replayed link diffs old→new into
+  signed batches instead.)
+
+### 0.10 On disk: the delta layer, freeze, and the counters-ready format
+
+The layer format (db-compression §8) grows three things:
+
+```
+data/<name>/
+  META                # + fields: recipe? (bool), counted? (Phase 1)
+  recipe              # NEW — the session's pipeline steps + anchored batches
+                      #   (supersedes `edits` for this layer's own history;
+                      #   `edits` remains the mutate-an-ancestor verb):
+                      #     (run <segment-id>)                   → prog.sexpr segment
+                      #     (rename R S) | (drop R)              → at their pipeline position
+                      #     (batch + REL @P (inline (v …) …))    → small, baked
+                      #     (batch - REL @P (inline (v …) …))
+                      #     (batch + REL @P (bin delta.3))       → bulk, bin-backed
+                      #     (link DB ((X Z) …) @P)
+                      #   @P = the anchor: a pipeline point, stored robustly as
+                      #   (relation, version-ordinal) / boundary event (§0.4) —
+                      #   never a raw SCC index; P may reach back into ANCESTOR
+                      #   layers' pipelines (back-insertion, this layer's key
+                      #   power) — ancestors themselves are never touched.
+                      #   Batches are stored COLLAPSED (§0.2): same-point
+                      #   add/delete pairs are absent; adds and deletes at
+                      #   different points both persist.
+  delta.<k>/          # NEW — the k-th bin-backed payload: a self-contained
+                      #   mini bin-db (canonical writer; own value.strings/
+                      #   value.nodes; closure-complete), applied by import
+  prog.sexpr          # may now hold MULTIPLE segments (entry per run step)
+  <relation dirs>, signature, signature.edited   # as today
+```
+
+- **Stored vs. recomputed: intermediate versions are NOT stored.** A save
+  writes the recipe (with anchors + payloads) and, per policy, the
+  materialisation of each relation's **final** version. Every intermediate
+  version is derivable — load replays the recipe and rebuilds the whole
+  versioned pipeline in memory, after which point-addressed queries (§0.4)
+  work exactly as they did live. This is the same store-the-recipe-not-the-
+  derivation bet db-compression already made, applied to time as well as to
+  tuples. (If introspection-heavy workflows later want *warm* old versions
+  on load without replay, persisting selected intermediate versions is a
+  compatible extension — a `per`-like knob over time; parked.)
+- **Load = replay the recipe with the live machinery.** `db-load-steps`
+  gains the new step kinds; each executes exactly as it would in a live
+  session (materialise version → route → fixpoint). One code path for W1 vs
+  W2, by construction. The recipe digest (extending `db-chain-edits-digest`,
+  §11.2's re-baseline machinery) covers batch payload hashes, anchors,
+  renames, and links, so drift verification composes unchanged: the layer's
+  `signature` is computed over its post-recipe fixpoint at save and checked
+  after replay.
+- **What a pure-batch layer keeps.** Its "IDB" for sampling/signature
+  purposes = the relations its anchored cones recomputed (they now differ
+  from every ancestor's signature); unchanged relations are the ancestors'
+  problem. `per` applies to that cone set as usual. (Detail to pin at
+  implementation: signature scope = cone rels + target rels; inherit
+  ancestors' signatures for the rest.)
+- **Default policy shift (accepted 2026-07-08): databases are incremental
+  by default.** The normal save keeps master indices whole
+  (`per = 100 %` for session saves — auto-`per` compression remains an
+  explicit opt-in for archival layers), and — once Phase 1 lands — persists
+  the two counters with them: a per-bucket sidecar `k.counts.bin` (two s64
+  per tuple, in `0.bin` tuple order) beside each `k.bin`, gated by META
+  `counted?` + `compiler-stamp` (counters are invalid across semantic
+  compiler changes even when the tuple set isn't — §8A.3, now revised from
+  "defer" to "planned default"). A stamp-matching `per=100` load then skips
+  even the count-establishing round: **load → immediately streamable and
+  incrementally maintainable**. Roots need no counts file (EDB counts are
+  definitionally `(1,0)`).
+- **Freeze.** `--flatten` at save time exists; add `slog db freeze NAME
+  [--as NEW]` = load/replay the chain, `writeDatabaseBIN` the
+  materialisation as a standalone root (`kind 'flat`), no manifest, no
+  recipe — the sanctioned way to cut history (share data without its
+  recipe), accepting it can no longer be replayed, edited through, or
+  hot-linked *as a chain*.
+
+### 0.11 The granularity ladder (how Phases 1–2 refine Phase 0)
+
+The three phases are one design at three recompute granularities — the
+driver, routing rule, recipe, and IO built in Phase 0 are permanent:
+
+| | update handled by | granularity | new machinery |
+|---|---|---|---|
+| **Phase 0** | semi-naïve append (monotone) / clear-and-rerun cone (else) | stratum | version chains + environment, re-entry, cone metadata, anchored batches, recipe IO, negation |
+| **Phase 1** (M0–M3) | signed counts; deletion precise where non-recursive | tuple (acyclic) | Count/SCount values (per version), signed emit/aggregate, persisted counters |
+| **Phase 2** (M4–M7) | DRed^c 3-phase per segment, bounded by version barriers | tuple (general) | candidate set C, reseed, barrier; lattice/rank unification |
+
+Reading the table bottom-up is the implementation dependency; reading it
+top-down is the user experience: behaviour is fixed from Phase 0 on, and
+each phase only makes updates cheaper. In particular Phase 0's
+clear-and-rerun *is* the "resident-stratum re-binding" work item that §6.5
+and §8A.5 already identified as shared with db-compression — after Phase 0
+it exists, and DRed^c's three-phase driver (§4) drops into the same seam.
 
 ---
 
@@ -489,7 +1157,10 @@ edit-and-propagate.)*
 - Extend the `add-tuple` action family with a **sign** (`del-tuple`, or a signed
   batch action) feeding per-thread delta shards rather than direct index
   insertion — the existing action-plugin path is the natural transport; no new
-  wire protocol is needed.
+  wire protocol is needed. *(2nd revision: this is Phase 0's batch protocol,
+  §0.3 — inline `add-batch`/`del-batch` plugins for small payloads,
+  import-of-a-mini-bin-db for bulk, link-with-name-map for whole databases.
+  Phase 1/2 change what the daemon does with a batch, not how it arrives.)*
 - Batch a set of changes and run one three-phase sweep per batch.
 - db-compression's `edits` files (`(add-tuple REL v…)`, applied at layer
   boundaries on load) become the persistent face of the same mechanism: once
@@ -729,9 +1400,18 @@ full database and derives nothing new — under counting, **that single round IS
 the count computation** (one-step derivations from the fixpoint). Expensive
 layers kept whole therefore pay nothing extra to become DRed^c-ready. Corollary:
 a `--trust` load that skips the check would leave counters at zero — trust-mode
-and incremental-readiness are mutually exclusive unless counters are persisted
-(defer; if ever done, gate on `compiler-stamp` match, since counters are
-invalidated by any semantic compiler change even when the tuple set is not).
+and incremental-readiness are mutually exclusive unless counters are persisted.
+
+*(Revised 2026-07-08, 2nd revision: counter persistence is now the PLANNED
+DEFAULT, not deferred — §0.10. Databases are incremental by default; session
+saves keep master indices whole and, once Phase 1 lands, write a per-bucket
+`k.counts.bin` sidecar (two s64 per tuple, in tuple order) beside each
+`k.bin`, gated by META `counted?` + a `compiler-stamp` match — counters are
+invalidated by any semantic compiler change even when the tuple set is not,
+in which case the load falls back to the count-establishing replay round.
+Roots synthesise `(1,0)` and store nothing. This makes a stamp-matching
+`per=100` load immediately streamable with zero replay — the trust-mode
+corollary above dissolves for such loads.)*
 
 ### 8A.4 Checkpoints need a count story
 
@@ -758,51 +1438,259 @@ seed; only the count-establishing work is repeated). Decide at M0.
 
 ---
 
-## 9. Phased implementation plan
+## 9. Phased implementation plan (restructured 2026-07-08, 2nd revision)
 
-Each milestone is independently testable and delivers value before the next.
+Three phases (§0.11 is the one-table summary). **Phase 0** ships the
+user-visible incremental workflows with no counting machinery and builds the
+substrate — stratified negation, stratum re-entry, batch transport, recipe
+IO — that Phases 1–2 then make precise. The milestone names **M0–M7 are
+preserved** inside Phases 1–2 (external docs reference them). Every
+sub-milestone is independently testable and delivers value before the next.
+
+### Phase 0 — Forward-incremental sessions (design: §0)
+
+**0.A — Stratified negation + aggregation hardening (first; gates the rest — §0.8).**
+
+- *A1 — parse `~`.* Consume the existing `'not` token (lexer.rkt:60) in
+  `parse-atom` (parser.rkt:130-191) as a body-atom prefix; AST clause gains a
+  polarity; constants/wildcards/lattice-key forms allowed; no head negation.
+- *A2 — safety check.* Negated-atom variables must be positively bound;
+  front-end pass with source provenance.
+- *A3 — semantic stratification.* Polarity on dependency edges
+  (stratify.rkt:115-141); after Tarjan condensation reject intra-SCC negative
+  edges with rule/cycle provenance; update the header claim at
+  stratify.rkt:20-22 (stratification is now load-bearing).
+- *A4 — operationalize.* Negated atom → filter c-op after its vars are bound,
+  mirroring the semijoin-filter flow (operationalization.rkt:210-283), with
+  index requisition on the negated relation's bound prefix.
+- *A5 — runtime.* `absent_probe` = negated `exists_probe`
+  (operators.h:140-159) + its emit-cpp case. Always against a full index
+  (negated relations are closed), never sliced, no semi-naïve versions.
+- *A6 — aggregation hardening.* Negation-over-lattice-keys; polarity
+  bookkeeping in lattice-check; record the keep-the-warning decision for
+  unbounded min/max recursion (lattice-check.rkt:390-435).
+- *A7 — polarity/cone metadata.* Per relation: downstream cone + per-edge
+  monotone bit (negation edges; conservative lattice-read edges, §0.5), into
+  the stratum sidecar manifest (write-stratum-manifest, compile.rkt:194-204).
+  Doubles as M2's per-body-clause same-SCC bit — tag the IR once.
+- *A8 — tests.* `neg_*` goldens (set difference, complement-guarded
+  reachability, `~(foo x 1)` constant patterns, wildcards, negation over
+  lattice keys); rejection units (negation in an SCC; unsafe negated var);
+  a `~` + increments case reserved for 0.B's harness.
+
+**0.B — The version substrate, stratum re-entry & the increment driver (§0.4, §0.5).**
+
+- *B0 — version registry + environment (the load-bearing new piece).*
+  Physical relations keyed by version; per-pipeline-position name→version
+  map; `getRelation`-by-name resolves through the environment of the
+  position being bound (today's global map, database.h:1086, becomes the
+  latest-position environment). Alias-if-unchanged / full-copy-if-written
+  materialisation (§0.4); version creation on first write at a boundary
+  (copy predecessor ± batch). Same cached `.so` bindable at many positions
+  (the W9 requirement). Versioned addressing resolves "R at P" to the last
+  write ≤ P.
+- *B1 — cone-limited replay-entry.* Driver-side: apply batch to the anchored
+  version, re-push cached cone-strata `.so`s in topological order (mechanics
+  exist: beginStratum/reloadInsertBatches, daemon.h:163-195,
+  database.h:3074-3114); skip strata outside the cone using A7 + recipe-level
+  cone metadata.
+- *B2 — per-relation clear + clear-and-rerun.* `clearIndices` on one
+  version (contents only, registrations persist); version rebuild minus
+  retracted tuples; driver orchestration "rebuild anchor version, clear cone
+  versions, then B1". Mind restoreOrphanRelations (database.h:1484-1499) and
+  struct relations in the cone (§0.5 mode 2's id argument).
+- *B3 — re-entry hygiene.* Either the pausing.md §12 `bind()` re-bind seam
+  (reuse resident task objects; pipeline stops growing) or idempotent
+  re-registration on re-push with old-task clearing — pick after measuring
+  B1's pipeline-growth cost.
+- *B4 — routing rule in runslog.rkt.* positive+monotone → delta-entry when
+  compiled, replay-entry until then; else clear-and-rerun; queue batches to
+  stratum boundaries (refuseIfSuspended semantics); fold incoming updates
+  into per-(point, relation) batch sets with same-point collapse (§0.2);
+  compose with pausing budgets.
+- *B5 — delta-entry (O(change)), default-on, lazily compiled.* Delta-
+  preserving reload variant (stage only the batch, not the whole DB);
+  delta-driven variants for cross-stratum body relations (join planner:
+  dynamic-rels ∪ inputs) compiled as a separate cached flavor
+  (`build/<hash>.delta.so`) **on first increment targeting that stratum's
+  inputs** — no surface declaration, fully-incremental is the default; an
+  opt-out flag for one-shot batch runs. Required (not optional) by Phase 1 —
+  replay-entry's re-fire is dedup-absorbed today but would double-count.
+- *B6 — exact-once staging discipline.* One entry path for a batch's tuples
+  into delta (no double-stage across reload), asserted by test now, load-
+  bearing at M0 (§0.3, §8).
+
+**0.C — Batch protocol, anchors & the session recipe (§0.2–§0.4).**
+
+- *C1 — actions.* `(add-batch REL @P ((v…)…))`, `(del-batch REL @P …)`
+  (multi-tuple add-tuple generalisation, actions.rkt:83-95, plus the anchor);
+  `(import-delta DIR [(X Z)…] @P)` = import a mini bin-db as a batch payload;
+  **versioned queries**: `lookup`/`dump-rel`/`sizes` gain an optional
+  pipeline-point argument, plus a pipeline-introspection action (dump the
+  point→(name→version) map) so a front end can re-derive the pipeline from a
+  live daemon (§0.4 — API seams now, surface syntax later).
+- *C2 — recipe format.* `recipe` file + dbmeta.rkt (de)serialisers; steps as
+  §0.10 with anchors stored as (relation, version-ordinal)/boundary events;
+  digest extension of `db-chain-edits-digest` covering payload hashes and
+  anchors.
+- *C3 — session log + collapse.* The driver maintains per-(point, relation)
+  signed batch sets, collapsing same-point add/delete pairs live (§0.2);
+  save serialises the collapsed sets. Optional informational
+  observed-stratum field per batch.
+- *C4 — bulk path.* Document + test CSV→root→link for bulk client data; fix
+  the inline threshold (~2k) above which the driver refuses inline transport.
+- *C5 — payload placement.* Bin payloads written/moved into the saving
+  layer's `delta.<k>/`; relative references from `recipe`.
+
+**0.D — Renames, drops, hot-links (§0.7, §0.9).**
+
+- *D1 — daemon actions.* `(rename-rel R S)` / `(drop-rel R)` as
+  **environment operations** (§0.5, §0.7): rebind/unbind the name in the
+  current-position map — NOT a rekey of the physical registry (old versions
+  at old positions must keep resolving); dropped bindings exempt from
+  restoreOrphanRelations resurrection; both refuse-if-suspended; `(schema)`
+  reflects the current environment.
+- *D2 — manifest ops.* Rename/drop transforms in update-manifest threading
+  (modules.rkt:756-797); later-segment resolution errors come free.
+- *D3 — recipe + replay,* shared with db-compression §12's `(rename R S)`/
+  `(drop R)` edit ops — one implementation for both.
+- *D4 — import name-map.* Optional rename-map + relation-filter parameters on
+  `importDatabaseBIN` (database.h:2760-3022) — also discharges db-merge's
+  unshipped conflict policy (db-merge.md :125-130).
+- *D5 — `(link DB map)` step.* Manifest edge recording; recursive
+  materialisation on replay (db-load-steps recursion, dbtool.rkt:171-191);
+  routed downstream as a batch.
+
+**0.E — Session save/load/freeze + the workflow harness (§0.10).**
+
+- *E1 — delta-layer save.* Save-after-increments always creates a new linked
+  layer (extend write-compressed-metas, runslog.rkt:644-692); pure-batch
+  layers (empty program) supported; signature scope = cone/target relations;
+  default `per=100` for session saves.
+- *E2 — load = replay the recipe* with the live streaming machinery (extend
+  db-load-steps + the runslog step loop, runslog.rkt:404-425), **rebuilding
+  the versioned pipeline in memory** so point-addressed queries and further
+  anchored batches work identically post-load (§0.10's "loading a DB is
+  loading a session"); verify via recipe digest + signatures (§11.2
+  machinery).
+- *E3 — `slog db freeze NAME [--as NEW]`* (load, write flat root).
+- *E4 — the workflow harness* (tests, §10): stream-equivalence fuzzer with
+  anchored/back-inserted batches, save/load/continue chains, collapse-rule
+  and versioned-query cases, rename/link/negation-cone cases, api-tests.sh
+  keep-alive additions.
+
+**Phase 0 exit criterion:** for every harness program, any split of its EDB
+into base + randomly-interleaved signed batches **anchored at arbitrary
+pipeline points, including points inside ancestor layers** — applied live
+(W1), applied after a load (W2), saved mid-stream and resumed elsewhere
+(W3/W4), routed through a rename (W5) or a hot-link (W6) — produces a
+database content-equal to the from-scratch run on the equivalent
+desugared/edited program, with every saved link verifiable, point-addressed
+queries resolving correctly (last-write-≤-P), same-point add/delete pairs
+absent from saves, and `slog db freeze` cutting an equal flat copy (W7).
+
+### Phase 1 — The counting substrate & precise non-recursive deletion (M0–M3)
 
 1. **M0 — Signed-count substrate.** `Count`/`SCount` index values; signed deltas;
    counting `emit`/`InternTask` with presence-transition propagation. Insertion still
    monotone, but now counter-based. Verify identical results to today plus correct
-   counts — headline tests: **iteration-0 exact-once firing** (§8) and the
-   **compressed-load count oracle** (§8A.5, §10). The §8A.2 witness/tombstone
-   ingestion rule for compressed loads and the §8A.4 checkpoint decision land
-   here too — they define what "load a saved db under counting" means.
-2. **M1 — Bidirectional input protocol.** Signed variants of the existing
-   `add-tuple` action (§6.6) feeding delta shards. Deltas can be negative.
-3. **M2 — rec/nonrec tagging (stratification EXISTS since the 2026-07 rewrite).**
-   Expose the per-rule bit (body relation ∈ stratum's `dynamic-rels` ⟺ same-SCC,
-   §6.4) and the per-body-clause same-SCC bit as IR attributes; thread into
-   `emit`'s counter choice and the manifest. No behaviour change yet for
-   insertion. *Was "build SCC + topological stratification from scratch"; now
-   tagging + threading only.*
+   counts — headline tests: **iteration-0 exact-once firing** (§8, and 0.B6's
+   staging discipline) and the **compressed-load count oracle** (§8A.5, §10).
+   The §8A.2 witness/tombstone ingestion rule for compressed loads and the
+   §8A.4 checkpoint decision land here too — they define what "load a saved
+   db under counting" means. Phase 0's replay-entry mode is retired for
+   streamed batches in favour of delta-entry (0.B5) — re-firing over the
+   whole DB double-counts.
+2. **M1 — Bidirectional input protocol.** The Phase 0 batch actions (0.C1)
+   gain signed *semantics*: negative payloads feed delta shards instead of
+   triggering clear-and-rerun. The wire/recipe format does not change.
+   **M1.5 — persisted counters** (§0.10, §8A.3 revised): `k.counts.bin`
+   sidecars, META `counted?`, compiler-stamp gating, fallback recount round.
+3. **M2 — rec/nonrec tagging (stratification EXISTS since the 2026-07 rewrite;
+   the same-SCC/polarity IR attribute EXISTS since 0.A7).** Thread the
+   per-rule bit into `emit`'s counter choice and the manifest. No behaviour
+   change yet for insertion. *Was "build SCC + topological stratification
+   from scratch"; now tagging + threading only, partly discharged by 0.A7.*
 4. **M3 — Non-recursive deletion.** For acyclic strata, signed counting is sound and
-   complete both directions. Ship full incrementality for non-recursive programs. Big,
-   safe milestone.
+   complete both directions. The §0.5 routing rule sends deletions with
+   acyclic cones down the counting path instead of clear-and-rerun. Ship full
+   incrementality for non-recursive programs. Big, safe milestone.
+
+### Phase 2 — Recursive deletion & aggregation (M4–M7)
+
 5. **M4 — Recursive deletion (DRed^c).** Candidate set `C`, negative fixpoint with the
-   `nonrec>0` barrier, `ReseedTask`, three-phase driver (incl. the resident-stratum
-   index re-binding shared with db-compression edit-and-propagate, §8A.5). This is
-   the hard milestone.
+   `nonrec>0` barrier, `ReseedTask`, three-phase driver. The resident-stratum
+   re-entry/re-binding it needs (§6.5, §8A.5) **exists after Phase 0** — the
+   three-phase sweep drops into the 0.B seam. This is the hard milestone.
 6. **M5 — Struct GC discipline.** Tombstoning, id stability, (optional) safe
    reclamation — noting §8A.5: a compressed save+reload already compacts
    tombstoned ids, so online reclamation can stay "never".
 7. **M6 — Stratified aggregation** (§7A Tier 1). `COUNT`/`SUM`/`AVG` via `(count,sum)`;
    `MIN`/`MAX` via a per-group sorted multiset; value changes as `retract-old+insert-new`.
    Fully precise deletion; no new recursion machinery. Requires only the M2 strata + the
-   §7A.7 hooks.
+   §7A.7 hooks (and composes with 0.A's negation checks — a non-stable
+   aggregate is admitted exactly where a negation would be).
 8. **M7 — Recursive monotonic aggregation** (§7A Tier 2). User-declared stable
    semiring/semilattice; lattice-valued relations; rank-precise foundedness sharing the
    same rank-rebuild path. This is where `(nonrec,rec)` optionally generalises to a full
-   tropical rank (§7A.4). Tier 3 rejection of non-stable recursive aggregates lands here
-   too, as a compile-time diagnostic.
+   tropical rank (§7A.4), and where DRed_L retires §0.5's conservative
+   "lattice reads are non-monotone edges" cone rule. Tier 3 rejection of
+   non-stable recursive aggregates lands here too, as a compile-time
+   diagnostic.
 
-The M0–M4 substrate should already carry the §7A.7 forward-compatibility hooks so M6/M7
-are additive, not a rewrite.
+The Phase 0–M4 substrate should already carry the §7A.7 forward-compatibility
+hooks so M6/M7 are additive, not a rewrite.
 
 ---
 
 ## 10. Testing strategy
+
+### Phase 0: the workflow harness (no counters to check yet — content is the oracle)
+
+Everything below is oracle-diff against a from-scratch run on the final EDB,
+in the style of `tests/compression/run.sh`:
+
+- **Stream-equivalence fuzzer (the core Phase 0 test).** For each harness
+  program: split its EDB into base + k batches; anchor batches at random
+  pipeline points (not just "now" — including back-insertions into earlier
+  points and, in chained runs, into ancestor layers' pipelines) via each
+  transport (inline / mini-bin / link), positive first, deletions once 0.B2
+  lands; assert final content-equality with the from-scratch run on the
+  equivalent edited input. Fuzz over (program, split, anchors, batch order,
+  transport, thread count).
+- **Version semantics.** (a) add T at P, delete T at the same P → absent
+  from the save and from every version (collapse, §0.2); (b) add T at P,
+  delete T at P′>P → readers between P and P′ see T's consequences, readers
+  after P′ don't, and BOTH steps appear in the save; (c) point-addressed
+  queries: R updated at 17 and 29 → `R@24 ≡ R@17`, default query = latest;
+  (d) a dropped/renamed-away name remains addressable at old points; a
+  re-declared name starts an empty chain.
+- **`.so` reuse across positions (W9 seed test).** Push the same cached
+  stratum `.so` at two pipeline positions with different environments
+  (post-rename); assert each instance binds its position's versions and no
+  recompile occurred (cache hit observed).
+- **Save/load/continue chains (W3/W4).** Run → stream → save → load →
+  stream → save → load; assert each load's replay verifies (recipe digest +
+  signatures), the final content matches one straight-line run, and
+  point-addressed queries answer identically before the save and after the
+  load (the rebuilt pipeline, §0.10). Include a pure-batch layer (no new
+  program) and a back-inserted anchor into an ancestor layer in the chain.
+- **Negation cone correctness.** A `~R`-guarded program fed positive batches
+  into R: derived facts must *retract* (clear-and-rerun routing); the same
+  program under a batch into an unrelated relation must NOT rerun the
+  negation cone (cone-limiting observed via the daemon's fixpoint traces).
+- **Rename/drop pipelining (W5).** A-produces-foo → `(rename foo bar)` →
+  B-consumes-bar, live and through a save/load; a post-rename re-declaration
+  of `foo` is a fresh relation; a read of a dropped name is a compile error.
+- **Hot-link (W6).** Link an old DB's X as Z mid-session; content oracle;
+  `slog db tree` shows the edge; replay materialises the linked chain.
+- **Freeze (W7).** `slog db freeze` output is content-equal to the chain's
+  materialisation and loads with no replay.
+- **Exact-once staging (0.B6, forward-compat for M0).** Assert a batch's
+  tuples enter delta staging exactly once across the reload path — checked
+  now by instrumentation, load-bearing under counting later.
+
+### Phases 1–2: the literature's counterexamples
 
 The literature's counterexamples are the test suite. Each must match a from-scratch batch
 recompute after a randomised insert/delete sequence:

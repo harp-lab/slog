@@ -138,6 +138,13 @@
        (match-define (cons x clauses+) (simplify-subclause scl0 clauses))
        (match-define (cons y clauses++) (simplify-subclause scl1 clauses+))
        (cons `(syn ,prov /= ,x ,y) clauses++)]
+      ;; a neutral sequence-pattern clause (collections.rkt, docs/sequences.md
+      ;; §5.1): already flat -- its items hold only variables/constants (the
+      ;; desugar hoisted nested terms) -- so it passes through whole.  The
+      ;; wildcard replacement below reaches its items generically (they are
+      ;; plain list structure), and seq-expand.rkt treats __-vars as dead.
+      [`(syn ,prov seq-pat ,_ ...)
+       (cons cl clauses)]
       [`(syn ,prov ,name ,scls ...)
        #:when (not (set-member? (set '= '&) name))
        (match-define (cons xs clauses+)

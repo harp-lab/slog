@@ -2,20 +2,14 @@
  "+"
  "-"
  "="
- "eq?"
- "eq?"
- "not"
- (cons (_enum "numval") (cons (_enum "numval") (_enum "nil"))))
- (cons (_enum "numval") (cons (_enum "numval") (_enum "nil"))))
- (cons (_enum "numval") (cons (_enum "numval") (_enum "nil"))))
- (cons (_enum "numval") (cons (_enum "numval") (_enum "nil"))))
- (cons (boolval (_enum "ff")) (_enum "nil")))
- (cons (symval "A") (cons (symval "B") (_enum "nil"))))
- (cons (symval "P") (cons (symval "Q") (_enum "nil"))))
+ [(_enum "numval") (_enum "numval")])
+ [(_enum "numval") (_enum "numval")])
+ [(_enum "numval") (_enum "numval")])
+ [(_enum "numval") (_enum "numval")])
 (delta
 (delta
 (delta
 (delta
-(delta
-(delta
-(delta
+(delta "eq?" [(symval "A") (symval "B")])
+(delta "eq?" [(symval "P") (symval "Q")])
+(delta "not" [(boolval (_enum "ff"))])

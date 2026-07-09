@@ -1,0 +1,12 @@
+
+
+struct (P string int int int int)
+
+       
+union (E (Lam P [X] [E])
+         (App P E [E])
+         (Apply P E [E])
+         (X P str))
+
+
+

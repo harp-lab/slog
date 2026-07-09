@@ -1,21 +1,3 @@
- (cons (app (ref "+") (cons (ref "p") (cons (num 1) (_enum "nil")))) (cons (app (ref "chosen") (cons (num 7) (_enum "nil"))) (_enum "nil")))
- (cons (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil")))) (cons (app (ref "f") (cons (app (ref "f") (cons (ref "x") (_enum "nil"))) (_enum "nil"))) (_enum "nil")))
- (cons (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil")))) (cons (app (ref "f") (cons (ref "x") (_enum "nil"))) (_enum "nil")))
- (cons (app (ref "-") (cons (ref "q") (cons (num 1) (_enum "nil")))) (cons (app (ref "chosen") (cons (num 7) (_enum "nil"))) (_enum "nil")))
- (cons (app (ref "<") (cons (num 1) (cons (num 2) (_enum "nil")))) (_enum "nil"))
- (cons (app (ref "chosen") (cons (num 7) (_enum "nil"))) (_enum "nil"))
- (cons (app (ref "chosen") (cons (num 7) (_enum "nil"))) (_enum "nil"))
- (cons (app (ref "f") (cons (app (ref "f") (cons (ref "x") (_enum "nil"))) (_enum "nil"))) (_enum "nil"))
- (cons (app (ref "f") (cons (app (ref "f") (cons (ref "x") (_enum "nil"))) (_enum "nil"))) (cons (app (ref "twice") (cons (lambda (cons "y" (_enum "nil")) (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil"))))) (cons (num 5) (_enum "nil")))) (_enum "nil")))
- (cons (app (ref "f") (cons (ref "x") (_enum "nil"))) (_enum "nil"))
- (cons (app (ref "f") (cons (ref "x") (_enum "nil"))) (cons (app (ref "twice") (cons (lambda (cons "y" (_enum "nil")) (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil"))))) (cons (num 5) (_enum "nil")))) (_enum "nil")))
- (cons (app (ref "pick") (cons (app (ref "<") (cons (num 1) (cons (num 2) (_enum "nil")))) (cons (ref "inc") (cons (ref "dec") (_enum "nil"))))) (_enum "nil"))
- (cons (app (ref "twice") (cons (lambda (cons "y" (_enum "nil")) (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil"))))) (cons (num 5) (_enum "nil")))) (_enum "nil"))
- (cons (app (ref "twice") (cons (lambda (cons "y" (_enum "nil")) (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil"))))) (cons (num 5) (_enum "nil")))) (_enum "nil"))
- 0)
- 0)
- 0)
- 0)
  1)
  1)
  1)
@@ -26,6 +8,16 @@
  1)
  1)
  1)
+ [(app (ref "+") [(ref "p") (num 1)]) (app (ref "chosen") [(num 7)])]
+ [(app (ref "+") [(ref "y") (num 1)]) (app (ref "f") [(app (ref "f") [(ref "x")])])]
+ [(app (ref "+") [(ref "y") (num 1)]) (app (ref "f") [(ref "x")])]
+ [(app (ref "-") [(ref "q") (num 1)]) (app (ref "chosen") [(num 7)])]
+ [(app (ref "<") [(num 1) (num 2)])]
+ [(app (ref "chosen") [(num 7)])]
+ [(app (ref "f") [(app (ref "f") [(ref "x")])]) (app (ref "twice") [(lambda ["y"] (app (ref "+") [(ref "y") (num 1)])) (num 5)])]
+ [(app (ref "f") [(ref "x")]) (app (ref "twice") [(lambda ["y"] (app (ref "+") [(ref "y") (num 1)])) (num 5)])]
+ [(app (ref "pick") [(app (ref "<") [(num 1) (num 2)]) (ref "inc") (ref "dec")])]
+ [(app (ref "twice") [(lambda ["y"] (app (ref "+") [(ref "y") (num 1)])) (num 5)])]
 (lst_take
 (lst_take
 (lst_take
@@ -36,8 +28,3 @@
 (lst_take
 (lst_take
 (lst_take
-(lst_take
-(lst_take
-(lst_take
-(lst_take
-(lst_take (_enum "nil") 0)

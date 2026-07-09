@@ -1,0 +1,10 @@
+ (ccons "a" (ccons 2 (ccons "b" (ccons 2.5 (ccons "a" (_enum "cnil")))))))
+ (ccons 1 (ccons 2 (ccons 3 (ccons 4 (ccons 5 (ccons 6 (ccons 7 (ccons 8 (ccons 9 (ccons 10 (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil"))))))))))))))))))))))))
+ (ccons 3 (ccons 1 (ccons 2 (_enum "cnil")))))
+ (ccons [1 2] (ccons [] (ccons [3] (ccons [1 2] (_enum "cnil"))))))
+(ol_rev
+(ol_rev
+(ol_rev
+(ol_rev
+(ol_rev (_enum "cnil"))
+(ol_rev (ccons 5 (_enum "cnil")))

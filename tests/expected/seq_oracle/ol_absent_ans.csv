@@ -1,0 +1,105 @@
+(ol_absent (_enum "cnil") "b")   1   
+(ol_absent (_enum "cnil") 2)   1   
+(ol_absent (_enum "cnil") 99)   1   
+(ol_absent (_enum "cnil") [1 2])   1   
+(ol_absent (ccons "a" (_enum "cnil")) 99)   1   
+(ol_absent (ccons "a" (_enum "cnil")) [1 2])   1   
+(ol_absent (ccons "a" (ccons 2 (ccons "b" (ccons 2.5 (ccons "a" (_enum "cnil")))))) 99)   1   
+(ol_absent (ccons "a" (ccons 2 (ccons "b" (ccons 2.5 (ccons "a" (_enum "cnil")))))) [1 2])   1   
+(ol_absent (ccons "b" (ccons 2.5 (ccons "a" (_enum "cnil")))) 99)   1   
+(ol_absent (ccons "b" (ccons 2.5 (ccons "a" (_enum "cnil")))) [1 2])   1   
+(ol_absent (ccons 1 (ccons 2 (_enum "cnil"))) "b")   1   
+(ol_absent (ccons 1 (ccons 2 (_enum "cnil"))) 99)   1   
+(ol_absent (ccons 1 (ccons 2 (_enum "cnil"))) [1 2])   1   
+(ol_absent (ccons 1 (ccons 2 (ccons 3 (ccons 4 (ccons 5 (ccons 6 (ccons 7 (ccons 8 (ccons 9 (ccons 10 (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil"))))))))))))))))))))))) "b")   1   
+(ol_absent (ccons 1 (ccons 2 (ccons 3 (ccons 4 (ccons 5 (ccons 6 (ccons 7 (ccons 8 (ccons 9 (ccons 10 (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil"))))))))))))))))))))))) 99)   1   
+(ol_absent (ccons 1 (ccons 2 (ccons 3 (ccons 4 (ccons 5 (ccons 6 (ccons 7 (ccons 8 (ccons 9 (ccons 10 (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil"))))))))))))))))))))))) [1 2])   1   
+(ol_absent (ccons 10 (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil")))))))))))))) "b")   1   
+(ol_absent (ccons 10 (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil")))))))))))))) 99)   1   
+(ol_absent (ccons 10 (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil")))))))))))))) [1 2])   1   
+(ol_absent (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil"))))))))))))) "b")   1   
+(ol_absent (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil"))))))))))))) 99)   1   
+(ol_absent (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil"))))))))))))) [1 2])   1   
+(ol_absent (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil")))))))))))) "b")   1   
+(ol_absent (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil")))))))))))) 99)   1   
+(ol_absent (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil")))))))))))) [1 2])   1   
+(ol_absent (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil"))))))))))) "b")   1   
+(ol_absent (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil"))))))))))) 99)   1   
+(ol_absent (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil"))))))))))) [1 2])   1   
+(ol_absent (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil")))))))))) "b")   1   
+(ol_absent (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil")))))))))) 99)   1   
+(ol_absent (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil")))))))))) [1 2])   1   
+(ol_absent (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil"))))))))) "b")   1   
+(ol_absent (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil"))))))))) 99)   1   
+(ol_absent (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil"))))))))) [1 2])   1   
+(ol_absent (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil")))))))) "b")   1   
+(ol_absent (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil")))))))) 99)   1   
+(ol_absent (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil")))))))) [1 2])   1   
+(ol_absent (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil"))))))) "b")   1   
+(ol_absent (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil"))))))) 99)   1   
+(ol_absent (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil"))))))) [1 2])   1   
+(ol_absent (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil")))))) "b")   1   
+(ol_absent (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil")))))) 99)   1   
+(ol_absent (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil")))))) [1 2])   1   
+(ol_absent (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil"))))) "b")   1   
+(ol_absent (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil"))))) 99)   1   
+(ol_absent (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil"))))) [1 2])   1   
+(ol_absent (ccons 2 (_enum "cnil")) "b")   1   
+(ol_absent (ccons 2 (_enum "cnil")) 99)   1   
+(ol_absent (ccons 2 (_enum "cnil")) [1 2])   1   
+(ol_absent (ccons 2 (ccons "b" (ccons 2.5 (ccons "a" (_enum "cnil"))))) 99)   1   
+(ol_absent (ccons 2 (ccons "b" (ccons 2.5 (ccons "a" (_enum "cnil"))))) [1 2])   1   
+(ol_absent (ccons 2 (ccons 3 (ccons 4 (ccons 5 (ccons 6 (ccons 7 (ccons 8 (ccons 9 (ccons 10 (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil")))))))))))))))))))))) "b")   1   
+(ol_absent (ccons 2 (ccons 3 (ccons 4 (ccons 5 (ccons 6 (ccons 7 (ccons 8 (ccons 9 (ccons 10 (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil")))))))))))))))))))))) 99)   1   
+(ol_absent (ccons 2 (ccons 3 (ccons 4 (ccons 5 (ccons 6 (ccons 7 (ccons 8 (ccons 9 (ccons 10 (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil")))))))))))))))))))))) [1 2])   1   
+(ol_absent (ccons 2.5 (ccons "a" (_enum "cnil"))) 99)   1   
+(ol_absent (ccons 2.5 (ccons "a" (_enum "cnil"))) [1 2])   1   
+(ol_absent (ccons 20 (ccons 21 (ccons 22 (_enum "cnil")))) "b")   1   
+(ol_absent (ccons 20 (ccons 21 (ccons 22 (_enum "cnil")))) 99)   1   
+(ol_absent (ccons 20 (ccons 21 (ccons 22 (_enum "cnil")))) [1 2])   1   
+(ol_absent (ccons 21 (ccons 22 (_enum "cnil"))) "b")   1   
+(ol_absent (ccons 21 (ccons 22 (_enum "cnil"))) 99)   1   
+(ol_absent (ccons 21 (ccons 22 (_enum "cnil"))) [1 2])   1   
+(ol_absent (ccons 22 (_enum "cnil")) "b")   1   
+(ol_absent (ccons 22 (_enum "cnil")) 99)   1   
+(ol_absent (ccons 22 (_enum "cnil")) [1 2])   1   
+(ol_absent (ccons 3 (ccons 1 (ccons 2 (_enum "cnil")))) "b")   1   
+(ol_absent (ccons 3 (ccons 1 (ccons 2 (_enum "cnil")))) 99)   1   
+(ol_absent (ccons 3 (ccons 1 (ccons 2 (_enum "cnil")))) [1 2])   1   
+(ol_absent (ccons 3 (ccons 4 (ccons 5 (ccons 6 (ccons 7 (ccons 8 (ccons 9 (ccons 10 (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil"))))))))))))))))))))) "b")   1   
+(ol_absent (ccons 3 (ccons 4 (ccons 5 (ccons 6 (ccons 7 (ccons 8 (ccons 9 (ccons 10 (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil"))))))))))))))))))))) 99)   1   
+(ol_absent (ccons 3 (ccons 4 (ccons 5 (ccons 6 (ccons 7 (ccons 8 (ccons 9 (ccons 10 (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil"))))))))))))))))))))) [1 2])   1   
+(ol_absent (ccons 4 (ccons 5 (ccons 6 (ccons 7 (ccons 8 (ccons 9 (ccons 10 (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil")))))))))))))))))))) "b")   1   
+(ol_absent (ccons 4 (ccons 5 (ccons 6 (ccons 7 (ccons 8 (ccons 9 (ccons 10 (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil")))))))))))))))))))) 99)   1   
+(ol_absent (ccons 4 (ccons 5 (ccons 6 (ccons 7 (ccons 8 (ccons 9 (ccons 10 (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil")))))))))))))))))))) [1 2])   1   
+(ol_absent (ccons 5 (_enum "cnil")) "b")   1   
+(ol_absent (ccons 5 (_enum "cnil")) 2)   1   
+(ol_absent (ccons 5 (_enum "cnil")) 99)   1   
+(ol_absent (ccons 5 (_enum "cnil")) [1 2])   1   
+(ol_absent (ccons 5 (ccons 6 (ccons 7 (ccons 8 (ccons 9 (ccons 10 (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil"))))))))))))))))))) "b")   1   
+(ol_absent (ccons 5 (ccons 6 (ccons 7 (ccons 8 (ccons 9 (ccons 10 (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil"))))))))))))))))))) 99)   1   
+(ol_absent (ccons 5 (ccons 6 (ccons 7 (ccons 8 (ccons 9 (ccons 10 (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil"))))))))))))))))))) [1 2])   1   
+(ol_absent (ccons 6 (ccons 7 (ccons 8 (ccons 9 (ccons 10 (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil")))))))))))))))))) "b")   1   
+(ol_absent (ccons 6 (ccons 7 (ccons 8 (ccons 9 (ccons 10 (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil")))))))))))))))))) 99)   1   
+(ol_absent (ccons 6 (ccons 7 (ccons 8 (ccons 9 (ccons 10 (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil")))))))))))))))))) [1 2])   1   
+(ol_absent (ccons 7 (ccons 8 (ccons 9 (ccons 10 (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil"))))))))))))))))) "b")   1   
+(ol_absent (ccons 7 (ccons 8 (ccons 9 (ccons 10 (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil"))))))))))))))))) 99)   1   
+(ol_absent (ccons 7 (ccons 8 (ccons 9 (ccons 10 (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil"))))))))))))))))) [1 2])   1   
+(ol_absent (ccons 8 (ccons 9 (ccons 10 (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil")))))))))))))))) "b")   1   
+(ol_absent (ccons 8 (ccons 9 (ccons 10 (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil")))))))))))))))) 99)   1   
+(ol_absent (ccons 8 (ccons 9 (ccons 10 (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil")))))))))))))))) [1 2])   1   
+(ol_absent (ccons 9 (ccons 10 (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil"))))))))))))))) "b")   1   
+(ol_absent (ccons 9 (ccons 10 (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil"))))))))))))))) 99)   1   
+(ol_absent (ccons 9 (ccons 10 (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil"))))))))))))))) [1 2])   1   
+(ol_absent (ccons [1 2] (_enum "cnil")) "b")   1   
+(ol_absent (ccons [1 2] (_enum "cnil")) 2)   1   
+(ol_absent (ccons [1 2] (_enum "cnil")) 99)   1   
+(ol_absent (ccons [1 2] (ccons [] (ccons [3] (ccons [1 2] (_enum "cnil"))))) "b")   1   
+(ol_absent (ccons [1 2] (ccons [] (ccons [3] (ccons [1 2] (_enum "cnil"))))) 2)   1   
+(ol_absent (ccons [1 2] (ccons [] (ccons [3] (ccons [1 2] (_enum "cnil"))))) 99)   1   
+(ol_absent (ccons [3] (ccons [1 2] (_enum "cnil"))) "b")   1   
+(ol_absent (ccons [3] (ccons [1 2] (_enum "cnil"))) 2)   1   
+(ol_absent (ccons [3] (ccons [1 2] (_enum "cnil"))) 99)   1   
+(ol_absent (ccons [] (ccons [3] (ccons [1 2] (_enum "cnil")))) "b")   1   
+(ol_absent (ccons [] (ccons [3] (ccons [1 2] (_enum "cnil")))) 2)   1   
+(ol_absent (ccons [] (ccons [3] (ccons [1 2] (_enum "cnil")))) 99)   1   

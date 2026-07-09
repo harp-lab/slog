@@ -41,6 +41,13 @@ typedef int8_t s8;
 #define str_intern_tag 0
 #define mpz_intern_tag 1
 #define cnode_intern_tag 2
+// Sequence nodes (docs/sequences.md §1.3): tag 3 = a canonical chunked-Merkle
+// sequence node (root or interior) in the sequence arena (daemon/seq.h).
+// Tag 4 is RESERVED for S2 rope-string roots (a rope's INTERIOR nodes are
+// ordinary tag-3 words; only a string value's root is tagged 4, keeping
+// is_str a pure bit test over tags {0,4}).
+#define seq_intern_tag 3
+#define strrope_intern_tag 4
 
 // The top bit determines if its a struct or not when the value is a NaN
 #define NaNflags     0x7ff0000000000000
@@ -65,15 +72,34 @@ typedef int8_t s8;
 #define is_prim(x) (((x) & typetopmask) == NaNflags && (7 & ((x) >> 35)) > 0)
 #define is_intern(x) (((x) & typetopmask) == internflags)
 
-// str
-#define is_str(x) (is_intern(x) && decode_type(x) == str_intern_tag)
+// str -- TWO representations, one type (docs/sequences.md §6): strings of
+// <= SEQ_BLEAF_MAX bytes are monolithic tag-0 interns (the utf8string
+// table); longer strings are tag-4 ROPES (roots of byte trees in the
+// sequence arena; interior nodes are ordinary tag-3 words).  The split is
+// a pure function of content length, so canonicity holds across it --
+// PROVIDED every producer normalizes (Database::encodeString) and every
+// consumer dispatches (Database::decodeString / the rope-aware kernels).
+// is_str stays a pure bit test over tags {0, 4}.
+#define is_mono_str(x) (is_intern(x) && decode_type(x) == str_intern_tag)
+#define is_rope(x) (is_intern(x) && decode_type(x) == strrope_intern_tag)
+#define is_str(x) (is_mono_str(x) || is_rope(x))
+// MONOLITHIC strings only -- rope words would alias an unrelated table
+// slot; sites that can see arbitrary strings use Database::decodeString.
 #define str_decode(db,x) ((db)->lookup_string(decode_val(x)))
+// Short internal constants only (op names, "file:line" locations) -- can
+// never exceed the threshold; arbitrary content uses Database::encodeString.
 #define str_encode(db,x) (intern_encode(str_intern_tag,(db)->intern_string(new slog::utf8string(x))))
 
 // cnode -- a collection value: the intern word of a canonical Patricia-trie
 // node in the collection arena (daemon/arena.h).  Equal collections are one
 // word, so raw-word equality/joins/dedup are value semantics for these.
 #define is_cnode(x) (is_intern(x) && decode_type(x) == cnode_intern_tag)
+
+// seq -- a sequence value: the intern word of a canonical content-defined-
+// chunked Merkle-tree node in the sequence arena (daemon/seq.h).  Chunking is
+// a pure function of content, so equal sequences are one word: raw-word
+// equality/joins/dedup are value semantics for these too (docs/sequences.md).
+#define is_seq(x) (is_intern(x) && decode_type(x) == seq_intern_tag)
 
 // s32
 #define is_s32(x) (is_prim(x) && decode_type(x) == s32_prim_tag)

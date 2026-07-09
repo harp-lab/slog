@@ -240,6 +240,13 @@
     ['_ (values (set) (set))]
     [(? symbol? x) (values (set x) (set))]
     [`(syn ,_ const ,_) (values (set) (set))]
+    ;; seq-pat items (collections.rkt): raw (elem x)/(splice x)/(elemc v)
+    ;; lists inside a neutral sequence-pattern clause.  Like a relation
+    ;; match, the clause over-approximates as binding all its variables
+    ;; (whichever direction the expansion picks, the vars ground together).
+    [`(,(or 'elem 'splice) ,(? symbol? x))
+     (if (eq? x '_) (values (set) (set)) (values (set x) (set)))]
+    [`(elemc ,_) (values (set) (set))]
     [`(syn ,_ ,(? symbol? f) ,args ...)
      (if (hash-has-key? fun-env f)
          (values (set) (terms-all-vars args))

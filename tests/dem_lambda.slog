@@ -2,16 +2,15 @@
 ;; (capturing its free variables) answering the synthesized global applyN
 ;; judgment; a bound variable in call position dispatches to applyN.
 ;; map2 is two facts: the recursive case calls both its argument closure
-;; and itself in the answer position.
-
-;; list/cons/nil are builtins now (bracket syntax); no declaration needed
+;; and itself in the answer position -- inside bracket construction, so
+;; value-position calls compose with sequence patterns.
 
 demand (map2 clo list) list
-facts (map2 f (nil) (nil))
-facts (map2 f (cons x xs) (cons (f x) (map2 f xs)))
+facts (map2 f [] [])
+facts (map2 f [x xs ...] [(f x) (map2 f xs) ...])
 
 table (input list)
-facts (input (cons 1 (cons 2 (cons 3 (nil)))))
+facts (input [1 2 3])
 
 ;; a lambda capturing k from the rule
 table (kv int)

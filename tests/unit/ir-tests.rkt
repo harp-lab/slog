@@ -46,13 +46,14 @@
   ;; Level 1: program / program-list
 
   (test-case "program? / program-list?"
-    (define prog `(program ,empty-type-env ,(set) ,(hash)))
+    (define prog `(program ,empty-type-env ,(set) ,(hash) ,(hash)))
     (check-true (program? prog))
     (check-true (program-list? (list prog prog)))
     (check-true (program-list? '()))
-    (check-false (program? `(program (,(hash) ,(hash)) ,(set) ,(hash)))) ; 2-part type-env
-    (check-false (program? `(program ,empty-type-env () ,(hash))))       ; mods not a set
-    (check-false (program? `(program ,empty-type-env ,(set) ,(list))))   ; manifest not a hash
+    (check-false (program? `(program (,(hash) ,(hash)) ,(set) ,(hash) ,(hash)))) ; 2-part type-env
+    (check-false (program? `(program ,empty-type-env () ,(hash) ,(hash))))       ; mods not a set
+    (check-false (program? `(program ,empty-type-env ,(set) ,(list) ,(hash))))   ; manifest not a hash
+    (check-false (program? `(program ,empty-type-env ,(set) ,(hash))))  ; missing decomp-env
     (check-false (program-list? prog))          ; one program is not a program list
     (check-false (program-list? (list prog 'x))))
 
@@ -171,10 +172,13 @@
               (head (let w (plus s s))
                     (mkstruct pair (1 2 3) i w x)
                     (emit out (1 2) i w)
-                    (emit-temp t1 i))))
+                    (emit-temp t1 i))
+              "t.slog:1"))
     (check-true (crule? cr))
-    (check-true (crule? '(crule (pre) (once) (body) (head))))       ; fact rule
-    (check-true (crule? '(crule (pre) (scan edge x y) (body) (head (emit out (1 2) x y)))))
+    (check-true (crule? '(crule (pre) (once) (body) (head) #f)))    ; fact rule, no loc
+    (check-true (crule? '(crule (pre) (scan edge x y) (body) (head (emit out (1 2) x y)) "t.slog:2")))
+    ;; the trailing loc ("file:line" or #f, docs/type-errors.md) is required
+    (check-false (crule? '(crule (pre) (once) (body) (head))))
     (check-equal? (crule-pre cr) '((let cc five)))
     (check-equal? (crule-driver cr) '(probe edge (1 2) 1 x y))
     (check-equal? (crule-body cr)
@@ -184,16 +188,16 @@
                   '((let w (plus s s)) (mkstruct pair (1 2 3) i w x)
                     (emit out (1 2) i w) (emit-temp t1 i)))
     ;; rejections
-    (check-false (crule? '(crule (pre) (body) (head))))             ; missing driver
-    (check-false (crule? '(crule (pre) (join e (1) 1 x) (body) (head)))) ; join is not a driver
-    (check-false (crule? '(crule (pre) (probe e () 0 x) (body) (head)))) ; empty index
-    (check-false (crule? '(crule (pre) (scan e x) (body (join f (1) x)) (head)))) ; join missing K
-    (check-false (crule? '(crule (pre) (scan e x) (body) (head (let x y)))))      ; head alias let
-    (check-false (crule? '(crule (pre) (scan e x) (body) (head (join f (1) 1 x))))) ; join in head
-    (check-false (crule? '(crule (pre (emit out (1) x)) (scan e x) (body) (head))))) ; emit in pre
+    (check-false (crule? '(crule (pre) (body) (head) #f)))          ; missing driver
+    (check-false (crule? '(crule (pre) (join e (1) 1 x) (body) (head) #f))) ; join is not a driver
+    (check-false (crule? '(crule (pre) (probe e () 0 x) (body) (head) #f))) ; empty index
+    (check-false (crule? '(crule (pre) (scan e x) (body (join f (1) x)) (head) #f))) ; join missing K
+    (check-false (crule? '(crule (pre) (scan e x) (body) (head (let x y)) #f)))      ; head alias let
+    (check-false (crule? '(crule (pre) (scan e x) (body) (head (join f (1) 1 x)) #f))) ; join in head
+    (check-false (crule? '(crule (pre (emit out (1) x)) (scan e x) (body) (head) #f)))) ; emit in pre
 
   (test-case "cprog? and accessors"
-    (define cr '(crule (pre) (scan edge x y) (body) (head (emit out (1 2) x y))))
+    (define cr '(crule (pre) (scan edge x y) (body) (head (emit out (1 2) x y)) "t.slog:3"))
     (define decls '((relation edge 2 (1 2) (delta 1))
                     (relation out 2 (1 2))
                     (struct pair 3 (1 2 3 0) (0 1 2 3))
@@ -211,7 +215,7 @@
     (check-false (cprog? `(cprog ,(set) ,(hash)
                                  ((temp t1))                       ; temp missing arity
                                  ())))
-    (check-false (cprog? `(cprog ,(set) ,(hash) ,decls ((crule (pre) (body) (head))))))
+    (check-false (cprog? `(cprog ,(set) ,(hash) ,decls ((crule (pre) (body) (head) #f)))))
     (check-false (cprog? `(cprog () ,(hash) ,decls ())))           ; dyn-rels not a set
     (check-false (cprog? `(cprog ,(set) ,(hash) ,decls ,cr))))     ; rules not a list
 

@@ -1,0 +1,39 @@
+;; Merge interaction test: the two non-rule-head dynamic-relation channels
+;; at once, in ONE recursive stratum.  reach_has grows through the base's
+;; merge tasks (M2.4 decomposition, docs/finish-collections.md §C) and the
+;; oracle's answer table grows through the harvest side channel
+;; (docs/smt.md) -- BOTH must be marked dynamic by the planner/lowering or
+;; a static reader runs at iteration 0 and misses the mid-fixpoint delta,
+;; stalling the chain below (each hop needs the previous hop's answer).
+
+include "../lib/smt.slog"
+
+lattice (iset (set int))
+
+table (src int)
+table (edge int int)
+table (sedge int int int)      ;; a -> b, gated on (ic g) < (ic 3) being sat
+table (reach int iset)
+
+facts (src 1)
+facts (edge 1 2)
+facts (sedge 2 3 1)            ;; 1 < 3 is sat: opens once 2 is reached
+facts (sedge 3 4 5)            ;; 5 < 3 is unsat: never opens
+facts (edge 4 9)               ;; unreachable -- 4 is never reached
+
+;; each source reaches itself
+rule (src s) (= r (cins (cmap) s)) --> (reach s r)
+
+;; plain step via the decomposition, in the same SCC
+rule (reach_has s a) (edge a b) (= r (cins (cmap) b)) --> (reach s r)
+
+;; oracle-gated step: fires only when the mock solver proves the guard sat,
+;; with the demand itself only constructed once a is already reached
+rule (reach_has s a) (sedge a b g) (= (sat) (smt_check (llt (ic g) (ic 3))))
+     (= r (cins (cmap) b)) --> (reach s r)
+
+;; later stratum: closed values
+table (rsize int int)
+table (final int int)
+rule (reach s r) (= n (csize r)) --> (rsize s n)
+rule (reach_has s a) --> (final s a)

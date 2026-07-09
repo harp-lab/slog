@@ -15,6 +15,18 @@
 ;; checking; and a manifest of relations already present in the database is
 ;; threaded through the list so each program declares what it inherits.
 ;;
+;; M2.4 decomposition synthesis (docs/primitives.md §4.2) also happens here:
+;; using an undeclared name `<R>_has` (`<R>_at`) where R is a set-kind
+;; (map-kind) collection-lattice table synthesizes its declaration --
+;; deterministic, no gensym, pre-cache-key like every decl -- and records R
+;; as decomposed in the program's decomp-env, a parallel hash
+;;   derived-name -> (base-name set|map)
+;; threaded alongside the type env (program tuple, ir-stack.rkt).  Consumers:
+;; stratify (the R -> R_has edge), the planner/operationalization/emit
+;; (dynamic-rel marking + registering the decomp target on the base
+;; relation's merge tasks).  A user declaring their own `foo_has` wins: no
+;; interception, no decomposition.  No use -> no decl -> zero cost.
+;;
 ;; A `demand (f in ...) out ...` declaration turns into its two backing
 ;; relations here -- struct (f in ...) and table (f_ans f out ...) -- and,
 ;; once each program's modules are merged, the demand transform
@@ -184,10 +196,9 @@
   env+)
 
 ;; Builtin declarations seeded into every module's environment: the _enum
-;; struct backing enum constants, the list constructors that bracket
-;; literals desugar to (collections.rkt) -- exactly as if every program
-;; declared `union (list (nil) (cons any list))` -- and the runtime
-;; type-error machinery (type-system.rkt "Residual dynamic type checks"):
+;; struct backing enum constants, the native collection/sequence base
+;; types, and the runtime type-error machinery (type-system.rkt "Residual
+;; dynamic type checks"):
 ;; a failed residualized check interns a malformed_deduction struct
 ;; (rule-location string, target relation name, 0-based column, the bad
 ;; value) and a synthesized rule wraps each one as an (error e) fact.
@@ -205,9 +216,19 @@
   (foldl (lambda (e env) (unify-type-envs env e))
          empty-type-env
          (list (type-env-rel '_enum `(struct str))
-               (type-env-rel 'cons `(struct any list))
-               (type-env-rel 'nil `(enum nil))
-               (type-env-union 'list (set 'list 'nil 'cons))
+               ;; native sequence base type (docs/sequences.md §3.3): cseq
+               ;; types the arena's canonical chunked-Merkle sequence words;
+               ;; (list T) / [T] columns resolve to it transparently
+               ;; (ir-shared.rkt lattice-base-type).  The builtin cons/nil/
+               ;; list union is RETIRED (D2) -- brackets now denote native
+               ;; sequences -- but the three names stay reserved
+               ;; (check-not-reserved! below) to avoid silently changing the
+               ;; meaning of programs that declared them.
+               (type-env-union 'cseq (set 'cseq))
+               ;; bare `list` in a column type = (list any): the untyped
+               ;; sequence column older programs use; resolves to cseq like
+               ;; every (listof T) entry
+               (type-env-rel 'list `(listof any))
                ;; native collection base types (docs/primitives.md M2.3):
                ;; cset/cmap type the arena's canonical collection words
                ;; (one runtime representation, two static disciplines --
@@ -357,13 +378,21 @@
       ;; a parametric list column type: (list T) -- deterministically named,
       ;; recorded as (listof T) preserving the element type verbatim
       ;; (docs/primitives.md §8.4); transparent to the checker, resolving to
-      ;; the builtin list union (ir-shared.rkt lattice-base-type).  MUST
-      ;; precede the inline-struct fallback, which would otherwise silently
-      ;; declare a unary struct named `list`.
+      ;; the builtin cseq base type (ir-shared.rkt lattice-base-type;
+      ;; docs/sequences.md §3.3).  MUST precede the inline-struct fallback,
+      ;; which would otherwise silently declare a unary struct named `list`.
       [`(syn ,prov list ,elem-e)
        (match-define (cons elem env+) (flatten-nested-type env elem-e))
        (define g (string->symbol (format "_list_~a" elem)))
        (cons g (unify-type-envs env+ (type-env-rel g `(listof ,elem))))]
+      ;; [T] in type position: sugar for (list T) (docs/sequences.md D11)
+      [`(syn ,prov ,(? (lambda (s) (and (symbol? s)
+                                        (equal? "[]" (symbol->string s)))))
+             ,elem-es ...)
+       (unless (= 1 (length elem-es))
+         (error (format "A [T] column type takes exactly one element type: ~a"
+                        (strip-prov type-e))))
+       (flatten-nested-type env `(syn ,prov list ,(car elem-es)))]
       ;; a parametric map VALUE column: (map K V) with V a plain type -- an
       ;; immutable canonical collection word (cnode), transparent to the
       ;; builtin cmap base type with K/V preserved verbatim (§8.4).
@@ -391,15 +420,16 @@
            (cons '() env)
            args))
 
-  ;; list/cons/nil are builtin list constructors (bracket literals
-  ;; desugar to them, collections.rkt); reject redeclarations here with
-  ;; a message that names the feature, before the generic conflict
-  ;; check produces a baffling one.
+  ;; list/cons/nil stay reserved even though the builtin cons list is
+  ;; retired (D2, docs/sequences.md §9): a user declaration would silently
+  ;; change the meaning of older programs.  Reject redeclarations here with
+  ;; a message that names the feature, before the generic conflict check
+  ;; produces a baffling one.
   (define (check-not-reserved! name)
     (when (collection-builtin? name)
-      (error (format "The name ~a is a builtin list constructor (bracket syntax [x y | t] denotes cons/nil lists); remove the declaration" name)))
-    (when (memq name '(cset cmap coll))
-      (error (format "The name ~a is a builtin collection base type (native set/map values, docs/primitives.md M2.3); remove the declaration" name)))
+      (error (format "The name ~a is reserved (bracket syntax [x y ...] denotes native sequences, docs/sequences.md); remove the declaration" name)))
+    (when (memq name '(cset cmap coll cseq))
+      (error (format "The name ~a is a builtin collection/sequence base type (docs/primitives.md M2.3, docs/sequences.md); remove the declaration" name)))
     (when (memq name '(error error_spec malformed_deduction div_by_zero
                        modulo_by_zero int_overflow nan_result toint_range
                        type_mismatch smt_bad_formula))
@@ -637,7 +667,8 @@
            (hash-has-key? (type-env-aliases type-env) 'pmap)
            (hash-has-key? (type-env-rels type-env) 'pset)
            (hash-has-key? (type-env-rels type-env) 'pmap)))
-     (define mods-collections (desugar-collections-mods mods+ lib-collections?))
+     (define mods-collections
+       (desugar-collections-mods mods+ lib-collections? demands))
      ;; oracle-owned answer relations must not be answered by rules; checked
      ;; pre-desugar so the message names the offending SOURCE rule
      (check-extern-rules type-env mods-collections)
@@ -659,13 +690,68 @@
        (for/set ([m (in-list mods-desugared)])
          (match-define (list path toks rules) m)
          `(module ,path ,toks ,rules)))
-     `(program ,(map lift-type-envs reqs) ,type-env+ ,mods++)]))
+     ;; M2.4 need-driven decomposition synthesis (header comment above):
+     ;; scan the desugared rules for undeclared `<R>_has`/`<R>_at` names over
+     ;; a matching collection-lattice base and synthesize their declarations.
+     (define-values (type-env++ decomp-env)
+       (synthesize-decompositions mods++ type-env+))
+     `(program ,(map lift-type-envs reqs) ,type-env++ ,mods++ ,decomp-env)]))
+
+;; Every operator-position name of every rule (relation atoms, struct
+;; patterns, prim calls -- conservative: an undeclared non-relation name is a
+;; type error anyway, so over-collection cannot mis-fire the synthesis).
+(define (rules-used-names mods)
+  (for*/fold ([names (set)])
+             ([m (in-set mods)] [rule (in-set (last m))])
+    (let walk ([e rule] [names names])
+      (match e
+        [`(syn ,_ ,(? symbol? h) ,rest ...)
+         (foldl walk (set-add names h) rest)]
+        [(? list?) (foldl walk names e)]
+        [_ names]))))
+
+;; The synthesis itself: for each used-but-undeclared `<R>_has` (`<R>_at`)
+;; whose base R is a set-kind (map-kind) collection-lattice table, declare
+;;   R_has : (table k̄ elem)            -- a PLAIN monotone relation
+;;   R_at  : (table k̄ key <childlat>)  -- itself a lattice table whose value
+;;                                        column carries the map's child
+;;                                        valuespec (pointwise by construction;
+;;                                        nested maps compose)
+;; and record derived -> (base kind).  Names are processed sorted for
+;; deterministic env construction; the child lattice type reuses the
+;; deterministic anon-valuespec naming (lattice-anon-name), unifying with an
+;; identical inline declaration if the program already has one.
+(define (synthesize-decompositions mods type-env)
+  (define used (rules-used-names mods))
+  (for/fold ([env type-env] [denv (hash)])
+            ([name (in-list (sort (set->list used) symbol<?))])
+    (define m
+      (and (not (hash-has-key? (type-env-rels type-env) name))
+           (regexp-match #px"^(.+)_(has|at)$" (symbol->string name))))
+    (define base (and m (string->symbol (second m))))
+    (define spec (and base (rel-lattice-spec (type-env-rels type-env) base)))
+    (match* ((and m (third m)) spec)
+      [("has" `(lattice set ,t))
+       (match-define `(table ,ts ...) (hash-ref (type-env-rels type-env) base))
+       (values (unify-type-envs env (type-env-rel name `(table ,@(drop-right ts 1) ,t)))
+               (hash-set denv name (list base 'set)))]
+      [("at" `(lattice map ,k ,inner))
+       (match-define `(table ,ts ...) (hash-ref (type-env-rels type-env) base))
+       (define g (lattice-anon-name `(lattice ,@inner)))
+       (define env+g
+         (if (hash-has-key? (type-env-rels env) g)
+             env
+             (unify-type-envs env (type-env-rel g `(lattice ,@inner)))))
+       (values (unify-type-envs env+g (type-env-rel name `(table ,@(drop-right ts 1) ,k ,g)))
+               (hash-set denv name (list base 'map)))]
+      [(_ _) (values env denv)])))
 
 ;; Dependencies-first (post-order) linearization of the run tree.
 (define (linearize-programs prog)
   (match prog
-    [`(program ,reqs ,type-env ,mods)
-     (foldr append `((program ,type-env ,mods)) (map linearize-programs reqs))]))
+    [`(program ,reqs ,type-env ,mods ,decomps)
+     (foldr append `((program ,type-env ,mods ,decomps))
+            (map linearize-programs reqs))]))
 
 ;; -----------------------------------------------------------------------
 ;; Manifests: each program is compiled against the manifest of relations
@@ -710,7 +796,7 @@
 
 (define (thread-manifests prog-lst manifest)
   (match prog-lst
-    [`((program ,type-env ,mods) ,more ...)
-     `((program ,type-env ,mods ,manifest)
+    [`((program ,type-env ,mods ,decomps) ,more ...)
+     `((program ,type-env ,mods ,manifest ,decomps)
        ,@(thread-manifests more (update-manifest type-env manifest)))]
     ['() '()]))

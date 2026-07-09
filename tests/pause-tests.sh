@@ -17,6 +17,17 @@ set -u
 cd "$(dirname "$0")/.."
 mkdir -p build out data
 export SLOG_NO_MEM_CAP=1
+# Pin the -O0 tier: pause coverage is TIMING-based (a read task must outlive
+# its slice), and a warm -O2 cache makes these tiny fixtures finish inside
+# one budget unit -- no mid-read pause, and the guardrail section's replay
+# then never suspends at all.  SLOG_OPT=0 alone doesn't suffice (a cached
+# plain build/<hash>.so is preferred in every mode), so drop_o2 below also
+# removes the fixtures' plain .so's, forcing the .O0 artifacts.
+export SLOG_OPT=0
+drop_o2() {  # drop_o2 <log>: remove the plain -O2 .so of every stratum in log
+  grep -oE 'build/[a-f0-9]+' "$1" 2>/dev/null | sort -u \
+    | while read -r h; do rm -f "$h.so"; done
+}
 
 PASS=0; FAIL=0
 ok()   { echo "PASS $1"; PASS=$((PASS+1)); }
@@ -39,6 +50,8 @@ FX=out/pause_chain.slog
 
 # --- 1. byte-identical: unbudgeted vs a pathological time budget ------------
 rm -rf out/pause-unb out/pause-bud
+racket slog.rkt --no-banner --debug-dir out/pause-unb "$FX" > out/pause-unb.log 2>&1
+drop_o2 out/pause-unb.log   # re-run on the .O0 tier (see header)
 racket slog.rkt --no-banner --debug-dir out/pause-unb "$FX" > out/pause-unb.log 2>&1
 SLOG_MAX_MS=3 racket slog.rkt --no-banner --debug-dir out/pause-bud "$FX" > out/pause-bud.log 2>&1
 
@@ -73,6 +86,7 @@ PFX=out/pause_probe.slog
 } > "$PFX"
 rm -rf out/pp-u out/pp-b
 racket slog.rkt --no-banner --debug-dir out/pp-u "$PFX" > out/pp-u.log 2>&1
+drop_o2 out/pp-u.log
 SLOG_MAX_MS=2 racket slog.rkt --no-banner --debug-dir out/pp-b "$PFX" > out/pp-b.log 2>&1
 expect_rx "probe-pause-observed" '\(paused ' out/pp-b.log
 if diff <(LC_ALL=C sort out/pp-u/pair.csv) <(LC_ALL=C sort out/pp-b/pair.csv) >/dev/null 2>&1
@@ -110,7 +124,9 @@ expect "idle-idempotent" "(idle)" out/pause-idle.log
 # Stratum plugins the driver sent: in tiered mode these are the -O0 artifacts
 # (build/<hash>.O0.so); a cached run sends the plain build/<hash>.so.  Either
 # form is a valid stratum plugin to replay.
-mapfile -t SOS < <(grep -oE 'build/[a-f0-9]+(\.O0)?\.so' out/pause-unb.log | grep -v 'action-' | sort -u)
+# PIPELINE order, first appearance (sort -u orders by hash text -- replaying
+# strata out of order gives trivial fixpoints that never suspend)
+mapfile -t SOS < <(grep -oE 'build/[a-f0-9]+(\.O0)?\.so' out/pause-unb.log | grep -v 'action-' | awk '!seen[$0]++')
 OPEN_SO=$(racket -e '(require (file "'"$PWD"'/compiler/actions.rkt")) (displayln (action-so (list (quote open) "pause_nodb")))' 2>/dev/null)
 LOOKUP_SO=$(racket -e '(require (file "'"$PWD"'/compiler/actions.rkt")) (displayln (action-so (list (quote lookup) (quote path) 1 2)))' 2>/dev/null)
 if [ "${#SOS[@]}" -ge 1 ] && [ -n "$OPEN_SO" ] && [ -n "$LOOKUP_SO" ]; then

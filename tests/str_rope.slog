@@ -1,0 +1,30 @@
+;; Rope strings (docs/sequences.md §6): repeated concatenation crosses the
+;; monolithic threshold into tag-4 ropes; equal content interns to ONE
+;; word regardless of association (canonicity -- the (= a b) joins only
+;; hold on identical words); substr slices across chunk boundaries in
+;; codepoints, small results re-normalizing to monoliths; size is O(1)
+;; codepoints either way.
+
+table (grow int str)
+table (sz int int)
+table (probe str)
+table (agree int)
+
+facts (grow 0 "abcdefghij")
+rule (grow n s) (< n 7) --> (grow (+ n 1) (+ s s))
+rule (grow n s) --> (sz n (size s))
+
+;; association-independence: ((s+s)+s) and (s+(s+s)) must be ONE word,
+;; at rope scale (n=6: 640 chars) -- checked by unifying the two results
+rule (grow 6 s) (= a (+ (+ s s) s)) (= a (+ s (+ s s))) --> (agree 1)
+
+;; a rope substr equal to the whole is the SAME word; a small mid slice
+;; re-normalizes to a monolith and still joins its literal spelling
+rule (grow 7 s) (= s2 (substr s 0 (size s))) (= s2 s) --> (agree 2)
+rule (grow 7 s) --> (probe (substr s 637 647))
+
+;; mixed-representation concat: mono + rope; the empty mono side is the
+;; identity (the SAME word -- checked by unification)
+rule (grow 7 s) (= t (+ "HEAD:" s)) --> (sz 100 (size t))
+rule (grow 7 s) (= t2 (+ "" s)) (= t2 s) (= t3 (+ s "")) (= t3 s)
+ --> (agree 3)

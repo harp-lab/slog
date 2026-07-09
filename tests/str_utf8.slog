@@ -1,0 +1,33 @@
+;; UTF-8 discipline (docs/sequences.md §6): surface indexing is CODEPOINTS
+;; over both representations; byte-leaf boundaries snap to codepoint
+;; starts, so multibyte characters never split -- exercised by growing a
+;; multibyte seed past the threshold and slicing/indexing across leaves.
+
+table (seed str)
+table (grow int str)
+table (cps int int)
+table (ch int str)
+table (mid str)
+table (at int)
+table (has int int)
+
+facts (seed "héllo wörld €42 🎉")
+
+rule (seed s) --> (grow 0 s)
+rule (grow n s) (< n 5) --> (grow (+ n 1) (+ s s))
+rule (grow n s) --> (cps n (size s))
+
+;; schar at multibyte positions, small and rope-sized
+rule (seed s) --> (ch 1 (schar s 1))        ;; é
+rule (seed s) --> (ch 12 (schar s 12))      ;; €
+rule (seed s) --> (ch 16 (schar s 16))      ;; the emoji
+rule (grow 5 s) --> (ch 100 (schar s 443))  ;; deep inside the rope (an é)
+rule (grow 5 s) --> (ch 999 (schar s 544))  ;; out of range: PARTIAL, no row
+
+;; a rope substr crossing leaf boundaries, multibyte-aligned
+rule (grow 5 s) --> (mid (substr s 240 260))
+
+;; sidx/shas: codepoint index of a needle inside the rope
+rule (grow 5 s) (= i (sidx s "€42")) --> (at i)
+rule (grow 5 s) --> (has 1 (shas s "🎉"))
+rule (grow 5 s) --> (has 2 (shas s "absent!"))

@@ -1,0 +1,15 @@
+ (ccons 12 (ccons 13 (_enum "cnil"))))
+ (ccons 2 (ccons 3 (_enum "cnil"))))
+ (ccons 4 (ccons 6 (_enum "cnil"))))
+ 1
+ 11
+ 2
+(ccons
+(ccons
+(ccons
+(ccons 12 (ccons 13 (_enum "cnil")))
+(ccons 13 (_enum "cnil"))
+(ccons 2 (ccons 3 (_enum "cnil")))
+(ccons 3 (_enum "cnil"))
+(ccons 4 (ccons 6 (_enum "cnil")))
+(ccons 6 (_enum "cnil"))

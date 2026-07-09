@@ -1,0 +1,26 @@
+;; Sequence-arena IO round trip (docs/sequences.md §8): rows holding
+;; sequence words survive write-db + reopen because value.seq re-interns
+;; records in iterator order, reproducing every node id.  Nested lists
+;; exercise child-before-parent id reproduction (child words are hashed
+;; without dereferencing, so the argument extends to trees inductively).
+
+table (canon (list int))
+table (nest (list any))
+table (big (list int))
+table (bsz int)
+
+facts (canon [1 2 3 5 8])
+facts (nest [[1 2] ["x" 3.5] []])
+
+;; a multi-level tree (forces branch nodes, not just one leaf)
+rule (canon l) --> (big [l ... l ... l ... l ... l ... l ... l ... l ...
+                         l ... l ... l ... l ... l ... l ... l ... l ...])
+rule (big b) (= n (llen b)) --> (bsz n)
+
+;; a rope string column: byte-leaf/byte-branch records round-trip through
+;; value.seq and the tag-4 root resolves after reload (rendering asserts it)
+table (doc str)
+table (dsz int)
+rule (canon _) (= s0 (+ "0123456789" "abcdefghij"))
+     (= s1 (+ s0 s0)) (= s2 (+ s1 s1)) (= s3 (+ s2 s2)) (= s4 (+ s3 s3))
+ --> (doc s4) (dsz (size s4))

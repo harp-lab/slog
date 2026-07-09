@@ -1,42 +1,59 @@
 #lang racket
 
-;; Collection literal desugaring (docs/primitives.md; Phase 0: lists).
+;; Collection and sequence literal desugaring (docs/primitives.md;
+;; docs/sequences.md §4-5).
 ;;
-;; Rewrites bracket list literals/patterns, in every rule of every
-;; module, into the builtin cons/nil constructors:
+;; BRACKETS denote canonical [T] sequences.  A bracket in a rule -- head or
+;; body, atom argument or nested expression -- rewrites to a fresh
+;; deterministic variable plus one NEUTRAL seq-pat clause in the rule body:
 ;;
-;;   [a b c]     -->  (cons a (cons b (cons c (nil))))
-;;   [a b t ...] -->  (cons a (cons b t))    ; postfix ... extends list t
-;;   []          -->  (nil)
+;;   (foo [a xs ... b])  ==>  (foo $seq0)
+;;                            + (seq-pat $seq0 (elem a) (splice xs) (elem b))
 ;;
-;; The parser leaves brackets as ([] e ...) application nodes.  A tail
-;; extension is written as a postfix ... on the FINAL element, which
-;; parses as ([] a b (... t)); split-extension pulls that base out.  The
-;; older `| T` tail syntax was REMOVED (triple-overloaded and neighbour-
-;; binding); a `|` anywhere in the bracket's spine now errors loudly HERE,
-;; deliberately: if it survived to an or-split (simplification, or the
-;; demand transform's split before scheduling), split-or-clauses recurses
-;; into every subterm and would silently cartesian-split the rule into
-;; wrong alternatives.  A pipe strictly inside an element subterm keeps
-;; the language's uniform nested-| or-split meaning and passes through.
+;; `...` is a postfix operator marking its element as a SPLICE (it binds or
+;; supplies a subsequence).  Splices may appear at any position and, in
+;; construction direction, in any number; the pattern-direction restrictions
+;; (at most two, non-adjacent, D12 support) are enforced at expansion time
+;; (seq-expand.rkt), where bindedness is known -- the desugar cannot know
+;; whether a bracket destructures or constructs (§5.1: bindedness is a
+;; scheduling fact), so the clause is direction-neutral and the expansion
+;; pass (post-simplification, pre-typecheck) lowers it onto prims, builds,
+;; or occurrence joins.
 ;;
-;; PLACEMENT (load-bearing, not stylistic): called from lift-type-envs
-;; (modules.rkt) BEFORE the demand transform, so no (| ...) remains
-;; inside a ([] ...) by the time either or-split site runs.  Like the
-;; demand transform, this runs before the .so cache key is computed
-;; (program->jobs hashes the rewritten module rules), so it must be
-;; deterministic run to run: no gensym -- and none is needed, since the
-;; rewrite introduces only the fixed builtin names cons/nil (seeded in
-;; modules.rkt base-type-env alongside _enum).
+;; seq-pat item grammar (raw lists, not syn nodes -- expansion owns them):
+;;   (elem x)    -- x a variable (or _ wildcard, gensym'd by simplification)
+;;   (elemc v)   -- a constant element (raw scalar)
+;;   (splice x)  -- x a variable (or _)
+;; Nested element/splice TERMS (struct patterns, prim calls, nested
+;; brackets) hoist into ordinary (= $seqeN <term>) clauses, keeping items
+;; flat; the hoisted clause is itself neutral (a body destructure or a
+;; construction, decided downstream).
+;;
+;; Fresh variables are DETERMINISTIC (no gensym -- this runs before the .so
+;; cache key is computed): a per-rule counter over a reserved prefix in
+;; traversal order.
+;;
+;; A `|` in a bracket's spine still errors loudly HERE (the removed legacy
+;; tail syntax); a pipe strictly inside an element subterm keeps the
+;; language's uniform nested-| or-split meaning and passes through.
+;; PLACEMENT (load-bearing): called from lift-type-envs (modules.rkt)
+;; BEFORE the demand transform and both or-split sites.
+;;
+;; BRACES (collections) are untouched by the sequences work: {a b} / {k:v}
+;; lower to the native collection prims (cins/cput over (cmap)) or, when
+;; the rules-based Patricia libraries are included (pset/pmap declared), to
+;; st_ins/mp_put (docs/primitives.md M2.3).
 
 (require "parser.rkt")
 
 (provide desugar-collections-mods
-         collection-builtin?)
+         collection-builtin?
+         bracket-symbol?
+         ellipsis-symbol?)
 
-;; The reserved builtin names (docs/primitives.md §12 D5): bracket
-;; syntax denotes these, so user declarations of them are rejected
-;; (modules.rkt) rather than silently conflicting.
+;; Reserved names (docs/sequences.md D2): the builtin cons list is retired,
+;; but user declarations of these would silently change older programs'
+;; meaning, so they stay rejected (modules.rkt check-not-reserved!).
 (define (collection-builtin? name)
   (set-member? (set 'list 'cons 'nil) name))
 
@@ -49,71 +66,155 @@
 
 ;; mods is a list of (list path toks rules) triples (lift-type-envs'
 ;; working shape); rewrite every rule, leaving everything else alone.
-;; lib? routes brace literals: #t targets the rules-based Patricia
-;; libraries (st_ins/mp_put over pset/pmap structs -- programs that
-;; include lib/set.slog or lib/map.slog), #f targets the native
-;; collection prims (cmap/cins/cput over arena words).
-(define (desugar-collections-mods mods [lib? #f])
+;; `demands` (name -> (in-arity . ans-arity)) routes HEAD brackets: a
+;; demand-moded head's INPUT columns are pattern context (they destructure
+;; the demanded value), everything else in a head constructs.
+(define (desugar-collections-mods mods [lib? #f] [demands (hash)])
   (for/list ([m (in-list mods)])
     (match-define (list path toks rules) m)
-    (list path toks (for/set ([r (in-set rules)]) (walk-term r lib?)))))
+    (list path toks (for/set ([r (in-set rules)])
+                      (desugar-rule r lib? demands)))))
 
-;; Bottom-up generic walk over syntax nodes.  Provenance lists and
-;; constants pass through untouched; bare symbols (variables, -->) fall
-;; to the catch-all.
-(define (walk-term term lib?)
+;; -----------------------------------------------------------------------
+;; Per-rule bracket rewriting.
+;;
+;; Rules arrive normalized as (syn prov rule bodys ... --> heads ...)
+;; (extract-rules, modules.rkt; facts are body-less rules).  Two walking
+;; modes (docs/sequences.md §4.2):
+;;
+;;   PATTERN mode -- body clauses, and the INPUT columns of a full-arity
+;;   demand-moded head (they match the demanded value).  A bracket becomes
+;;   a fresh deterministic variable plus one neutral seq-pat clause in the
+;;   rule body; nested element terms hoist to (= $seqeN <term>) BODY
+;;   clauses (destructures).
+;;
+;;   CONSTRUCTION mode -- every other head position.  A bracket lowers IN
+;;   PLACE to a nested lempty/lpush/lcat prim chain, so its element terms
+;;   stay head-side: simplification flattens them into head constructions,
+;;   exactly as nested struct terms always flattened.  (Hoisting them to
+;;   the body would turn constructions into empty-relation joins.)
+
+(define (desugar-rule rule lib? demands)
+  (match rule
+    [`(syn ,prov rule ,clauses ...)
+     (define-values (bodys arrow-heads) (splitf-at clauses
+                                                   (lambda (c) (not (eq? c '-->)))))
+     (define heads (cdr arrow-heads))
+     (define counter (box 0))
+     (define extra (box '()))   ; collected body clauses, reverse order
+     (define (fresh! stem)
+       (define n (unbox counter))
+       (set-box! counter (add1 n))
+       (string->symbol (format "$~a~a" stem n)))
+     (define (collect! cl) (set-box! extra (cons cl (unbox extra))))
+     (define (pat t) (walk-pattern t lib? fresh! collect!))
+     (define (con t) (walk-construction t lib? fresh! collect!))
+     (define (walk-head cl)
+       (match cl
+         ;; a full-arity demand-moded judgment head: input columns match
+         ;; the demanded value (pattern), answer columns construct
+         [`(syn ,p ,(? symbol? name) ,args ...)
+          #:when (match (hash-ref demands name #f)
+                   [(cons nd na) (= (length args) (+ nd na))]
+                   [_ #f])
+          (match-define (cons nd _na) (hash-ref demands name))
+          `(syn ,p ,name
+                ,@(map pat (take args nd))
+                ,@(map con (drop args nd)))]
+         [_ (con cl)]))
+     (define bodys+ (map pat bodys))
+     (define heads+ (map walk-head heads))
+     `(syn ,prov rule ,@bodys+ ,@(reverse (unbox extra)) --> ,@heads+)]
+    [_ rule]))
+
+;; PATTERN mode: brackets become fresh vars + collected seq-pat clauses;
+;; braces lower in place (pure expressions); everything else recurses.
+(define (walk-pattern term lib? fresh! collect!)
   (match term
     [`(syn ,prov const ,_) term]
     [`(syn ,prov ,(? bracket-symbol?) ,args ...)
-     (desugar-bracket prov (map (lambda (a) (walk-term a lib?)) args))]
+     (desugar-bracket prov (map (lambda (a) (walk-pattern a lib? fresh! collect!))
+                                args)
+                      fresh! collect!)]
     [`(syn ,prov ,(? brace-symbol?) ,args ...)
-     (desugar-brace prov (map (lambda (a) (walk-term a lib?)) args) lib?)]
+     (desugar-brace prov (map (lambda (a) (walk-pattern a lib? fresh! collect!))
+                              args)
+                    lib?)]
     [`(syn ,prov ,head ,args ...)
      `(syn ,prov
-           ,(if (symbol? head) head (walk-term head lib?))
-           ,@(map (lambda (a) (walk-term a lib?)) args))]
+           ,(if (symbol? head) head (walk-pattern head lib? fresh! collect!))
+           ,@(map (lambda (a) (walk-pattern a lib? fresh! collect!)) args))]
     [_ term]))
 
-;; Extract the extension base from a bracket/brace node's arguments: a
-;; postfix ... on the FINAL element -- [x y t ...] extends list t;
-;; {x y s ...} inserts into set s; {k:v m ...} updates map m.  The
-;; postfix parses as (... t) wrapping only the last element, has no
-;; other meaning in the language, and is inert to the or-splitter --
-;; which is why it replaced the earlier | tail syntax (triple-overloaded
-;; and neighbor-binding).  A pipe in the spine still errors loudly here:
-;; letting it through would hand split-or-clauses a silent cartesian
-;; split.  Returns (values elems base-or-#f).
-(define (split-extension prov args what example)
-  (define (spine-pipe? a)
-    (match a [`(syn ,_ ,(? pipe-symbol?) ,_ ...) #t] [_ #f]))
-  (define (spine-ellipsis? a)
-    (match a [`(syn ,_ ,(? ellipsis-symbol?) ,_ ...) #t] [_ #f]))
-  (for ([a (in-list args)])
-    (when (spine-pipe? a)
-      (error (parse-error
-              (format "The | tail syntax was replaced by a postfix ...: ~a" example)
-              (cdr prov)))))
-  (for ([a (in-list (if (null? args) '() (drop-right args 1)))])
-    (when (spine-ellipsis? a)
-      (error (parse-error
-              (format "A ~a extension base t... must come last: ~a" what example)
-              (cdr prov)))))
-  (match args
-    [`(,init ... (syn ,pprov ,(? ellipsis-symbol?) ,t))
-     (values init t)]
-    [`(,init ... (syn ,pprov ,(? ellipsis-symbol?) ,_ ...))
-     (error (parse-error
-             (format "Malformed ~a extension base: ~a" what example)
-             (cdr pprov)))]
-    [_ (values args #f)]))
+;; CONSTRUCTION mode: brackets lower in place to lempty/lpush/lcat chains
+;; (splices concatenate); nested brackets recurse in construction mode.
+(define (walk-construction term lib? fresh! collect!)
+  (match term
+    [`(syn ,prov const ,_) term]
+    [`(syn ,prov ,(? bracket-symbol?) ,args ...)
+     (for ([a (in-list args)])
+       (match a
+         [`(syn ,_ ,(? pipe-symbol?) ,_ ...)
+          (error (parse-error
+                  "The | tail syntax was replaced by a postfix ...: [x y t ...]"
+                  (cdr prov)))]
+         [_ (void)]))
+     (for/fold ([acc `(syn ,prov lempty)]) ([a (in-list args)])
+       (match a
+         [`(syn ,pprov ,(? ellipsis-symbol?) ,t)
+          `(syn ,pprov lcat ,acc ,(walk-construction t lib? fresh! collect!))]
+         [`(syn ,pprov ,(? ellipsis-symbol?) ,_ ...)
+          (error (parse-error "Malformed splice: postfix ... takes one element"
+                              (cdr pprov)))]
+         [_ `(syn ,prov lpush ,acc
+                   ,(walk-construction a lib? fresh! collect!))]))]
+    [`(syn ,prov ,(? brace-symbol?) ,args ...)
+     (desugar-brace prov (map (lambda (a)
+                                (walk-construction a lib? fresh! collect!))
+                              args)
+                    lib?)]
+    [`(syn ,prov ,head ,args ...)
+     `(syn ,prov
+           ,(if (symbol? head) head (walk-construction head lib? fresh! collect!))
+           ,@(map (lambda (a) (walk-construction a lib? fresh! collect!)) args))]
+    [_ term]))
 
-;; One bracket node, arguments already desugared: [a b] a literal,
-;; [a b t ...] consing onto tail t.
-(define (desugar-bracket prov args)
-  (define-values (elems tail) (split-extension prov args "list" "[x y t ...]"))
-  (foldr (lambda (e acc) `(syn ,prov cons ,e ,acc))
-         (or tail `(syn ,prov nil))
-         elems))
+;; One bracket node (arguments already walked): produce the fresh list
+;; variable and collect its neutral seq-pat clause.
+(define (desugar-bracket prov args fresh! collect!)
+  ;; the legacy `| tail` spine syntax stays a loud error (letting it
+  ;; through would hand split-or-clauses a silent cartesian split)
+  (for ([a (in-list args)])
+    (match a
+      [`(syn ,_ ,(? pipe-symbol?) ,_ ...)
+       (error (parse-error
+               "The | tail syntax was replaced by a postfix ...: [x y t ...]"
+               (cdr prov)))]
+      [_ (void)]))
+  (define (item-of a)
+    (match a
+      ;; splice: postfix ... marks its element as a subsequence
+      [`(syn ,pprov ,(? ellipsis-symbol?) ,t)
+       (match t
+         [(? symbol? x) `(splice ,x)]
+         [_ (let ([v (fresh! 'seqe)])
+              (collect! `(syn ,pprov = ,v ,t))
+              `(splice ,v))])]
+      [`(syn ,pprov ,(? ellipsis-symbol?) ,_ ...)
+       (error (parse-error "Malformed splice: postfix ... takes one element"
+                           (cdr pprov)))]
+      ;; element: a variable, a constant, or a hoisted term
+      [(? symbol? x) `(elem ,x)]
+      [`(syn ,_ const ,v) `(elemc ,v)]
+      [`(syn ,pprov ,_ ...)
+       (let ([v (fresh! 'seqe)])
+         (collect! `(syn ,pprov = ,v ,a))
+         `(elem ,v))]
+      [_ (error (parse-error "Malformed bracket element" (cdr prov)))]))
+  (define items (map item-of args))
+  (define lvar (fresh! 'seq))
+  (collect! `(syn ,prov seq-pat ,lvar ,@items))
+  lvar)
 
 ;; One brace node, arguments already desugared (docs/primitives.md
 ;; Phase 1 / M2.3).  A set literal {a b c} folds an insert over the empty
@@ -130,12 +231,35 @@
 ;; a set is a map-to-unit).  Native braces admit the empty {} (one
 ;; canonical empty collection); the lib keeps its pempty/mempty split.
 (define (desugar-brace prov args lib?)
+  (define (spine-pipe! a)
+    (match a
+      [`(syn ,_ ,(? pipe-symbol?) ,_ ...)
+       (error (parse-error
+               "The | tail syntax was replaced by a postfix ...: {x y s ...}"
+               (cdr prov)))]
+      [_ (void)]))
+  (for ([a (in-list args)]) (spine-pipe! a))
+  (define (split-extension args)
+    (for ([a (in-list (if (null? args) '() (drop-right args 1)))])
+      (match a
+        [`(syn ,_ ,(? ellipsis-symbol?) ,_ ...)
+         (error (parse-error
+                 "A collection extension base t... must come last: {x y s ...}"
+                 (cdr prov)))]
+        [_ (void)]))
+    (match args
+      [`(,init ... (syn ,pprov ,(? ellipsis-symbol?) ,t))
+       (values init t)]
+      [`(,init ... (syn ,pprov ,(? ellipsis-symbol?) ,_ ...))
+       (error (parse-error
+               "Malformed collection extension base: {x y s ...}"
+               (cdr pprov)))]
+      [_ (values args #f)]))
   (define (pair-entry a)
     (match a
       [`(syn ,_ ,(? (symbol-named? ":")) ,k ,v) (cons k v)]
       [_ #f]))
-  (define-values (entries base)
-    (split-extension prov args "collection" "{x y s ...} / {k:v m ...}"))
+  (define-values (entries base) (split-extension args))
   (when (and base (pair-entry base))
     (error (parse-error
             "The base of a collection extension cannot be a k:v entry: {k:v m ...}"

@@ -1,5 +1,4 @@
- (cons 1 (cons 2 (cons 3 (_enum "nil")))))
-(sum
-(sum (_enum "nil"))
-(sum (cons 2 (cons 3 (_enum "nil"))))
-(sum (cons 3 (_enum "nil")))
+(sum [1 2 3])
+(sum [2 3])
+(sum [3])
+(sum [])

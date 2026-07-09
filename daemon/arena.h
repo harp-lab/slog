@@ -548,6 +548,62 @@ public:
     foreach(n->w[2], f);
     foreach(n->w[3], f);
   }
+
+  // Tree-diff visit (docs/primitives.md §8.5, the M2.4 decomposition walk):
+  // f(key, val) for every entry of `newt` NOT present with an equal value in
+  // `oldt`.  Physically-shared subtrees are pruned at the first word compare
+  // (canonical interning: equal subtrees are ALWAYS one word), so walking a
+  // merge's (old, new) pair costs O(change), not O(size) -- the free deltas
+  // the lattice decomposition (R_has / R_at) rides on.  A fresh key's old
+  // side is the empty word.  Purely structural: no LatSpec needed, and
+  // correct for arbitrary trie pairs (monotone old <= new is not assumed).
+  template <typename F>
+  void foreach_added(u64 oldt, u64 newt, F f)
+  {
+    if (oldt == newt || newt == empty()) return;   // shared subtree: no change
+    if (oldt == empty())
+    {
+      foreach(newt, f);
+      return;
+    }
+    const cnode* nn = node(newt);
+    if (nn->w[1] == 0)                             // new is one leaf
+    {
+      u64 out;
+      if (!find(oldt, nn->w[0], &out) || out != nn->w[2])
+        f(nn->w[0], nn->w[2]);
+      return;
+    }
+    const cnode* no = node(oldt);
+    if (no->w[1] == 0)                             // old is one leaf
+    {
+      const u64 ok = no->w[0], ov = no->w[2];
+      foreach(newt, [&](u64 k, u64 v) { if (k != ok || v != ov) f(k, v); });
+      return;
+    }
+    const u64 p = no->w[0], m = no->w[1], l = no->w[2], r = no->w[3];
+    const u64 q = nn->w[0], n = nn->w[1], u = nn->w[2], w = nn->w[3];
+    if (m == n && p == q)                          // same range: diff both sides
+    {
+      foreach_added(l, u, f);
+      foreach_added(r, w, f);
+      return;
+    }
+    if (m > n)                                     // old branches higher
+    {
+      if (mask_up(q, m) != p) { foreach(newt, f); return; }   // disjoint: all new
+      foreach_added(zero_bit(q, m) ? l : r, newt, f);         // new inside one side
+      return;
+    }
+    if (m < n)                                     // new branches higher
+    {
+      if (mask_up(p, n) != q) { foreach(newt, f); return; }   // disjoint: all new
+      if (zero_bit(p, n)) { foreach_added(oldt, u, f); foreach(w, f); }
+      else                { foreach(u, f); foreach_added(oldt, w, f); }
+      return;
+    }
+    foreach(newt, f);                              // m == n, p != q: disjoint
+  }
 };
 
 

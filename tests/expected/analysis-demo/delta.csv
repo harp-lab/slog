@@ -1,9 +1,9 @@
  "+"
  "-"
  "<"
- (cons (_enum "numval") (cons (_enum "numval") (_enum "nil"))))
- (cons (_enum "numval") (cons (_enum "numval") (_enum "nil"))))
- (cons (_enum "numval") (cons (_enum "numval") (_enum "nil"))))
+ [(_enum "numval") (_enum "numval")])
+ [(_enum "numval") (_enum "numval")])
+ [(_enum "numval") (_enum "numval")])
 (delta
 (delta
 (delta

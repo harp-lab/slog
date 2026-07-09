@@ -1,0 +1,2 @@
+(smt_check (llt (ic 1) (ic 3)))
+(smt_check (llt (ic 5) (ic 3)))

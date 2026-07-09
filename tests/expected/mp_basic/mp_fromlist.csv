@@ -1,13 +1,7 @@
- (cons (cons 1 (cons 10 (_enum "nil"))) (_enum "nil")))
- (cons (cons 1 (cons 10 (_enum "nil"))) (cons (cons 3 (cons 30 (_enum "nil"))) (_enum "nil"))))
- (cons (cons 3 (cons 30 (_enum "nil"))) (_enum "nil")))
- (cons (cons 3 (cons 30 (_enum "nil"))) (cons (cons 7 (cons 70 (_enum "nil"))) (cons (cons 1 (cons 10 (_enum "nil"))) (_enum "nil")))))
- (cons (cons 7 (cons 70 (_enum "nil"))) (cons (cons 1 (cons 10 (_enum "nil"))) (_enum "nil"))))
- (cons (cons 7 (cons 70 (_enum "nil"))) (cons (cons 1 (cons 10 (_enum "nil"))) (cons (cons 3 (cons 30 (_enum "nil"))) (_enum "nil")))))
-(mp_fromlist
-(mp_fromlist
-(mp_fromlist
-(mp_fromlist
-(mp_fromlist
-(mp_fromlist
-(mp_fromlist (_enum "nil"))
+(mp_fromlist [[1 10] [3 30]])
+(mp_fromlist [[1 10]])
+(mp_fromlist [[3 30] [7 70] [1 10]])
+(mp_fromlist [[3 30]])
+(mp_fromlist [[7 70] [1 10] [3 30]])
+(mp_fromlist [[7 70] [1 10]])
+(mp_fromlist [])

@@ -314,6 +314,145 @@ inline void emit_pending_error(Database* db, const char* loc)
 }
 
 
+// SINK (runtime arity): batch rows in nominal (storage) order into a
+// relation's send shards, flushing at capacity -- the rows-into-shards
+// publish path.  Rows pushed here ride the NORMAL write/intern pipeline next
+// iteration (the one-iteration lag structs have), so semi-naive refire is
+// native.  Shared by the M2.4 lattice-decomposition targets
+// (MapWriteTask/LatticeInternTask below) and, later, sequence occurrence
+// indexing (docs/sequences.md §5.3 SeqIndexTask).  Thread-safe like any
+// sink: sendBatch appends to the calling worker's own shard.  A publisher
+// constructed with rel == nullptr must simply never receive a row.
+class RowPublisher
+{
+  Relation* rel;
+  u16 arity;
+  InsertBatch* nb;
+public:
+  RowPublisher(Relation* _rel, u16 _arity) : rel(_rel), arity(_arity), nb(nullptr) {}
+  ~RowPublisher() { flush(); }
+  void row(const u64* vals)
+  {
+    if (nb == nullptr) nb = new InsertBatch();
+    u64* d = nb->data + nb->usage;
+    for (u16 c = 0; c < arity; ++c)
+      d[c] = vals[c];
+    nb->usage += arity;
+    if (nb->usage + arity >= batch_size_max)
+      flush();
+  }
+  void flush()
+  {
+    if (nb)
+    {
+      rel->sendBatch(nb);   // deletes empty batches itself
+      nb = nullptr;
+    }
+  }
+};
+
+// Emit the decomposition rows for one ascended collection-lattice key
+// (docs/primitives.md §4.2, M2.4): every entry of `neww` not equal in `oldw`
+// -- the foreach_added tree-diff, O(change) via shared-subtree pruning --
+// becomes one row of the decomp target: (k̄, elem) for a set kind (R_has),
+// (k̄, key, value-word) for a map kind (R_at).  `tuple` is the base row in
+// STORAGE order (its key columns are 0..nkeys-1; the lattice value column is
+// last by declaration).  A fresh key passes oldw = 0, translated here to the
+// empty collection.
+inline void emit_decomp_rows(CollectionArena* arena, RowPublisher& pub,
+                             const u64* tuple, u16 nkeys, bool map_kind,
+                             u64 oldw, u64 neww)
+{
+  u64 row[max_daemon_arity + 2];
+  for (u16 c = 0; c < nkeys; ++c)
+    row[c] = tuple[c];
+  arena->foreach_added(oldw ? oldw : arena->empty(), neww, [&](u64 k, u64 v) {
+    row[nkeys] = k;
+    if (map_kind)
+      row[nkeys + 1] = v;
+    pub.row(row);
+  });
+}
+
+
+// SEQ-INDEX (docs/sequences.md §5.3): maintain the inverted occurrence
+// relations $seq_at (val pos list) / $seq_atr (val rpos list) for one fed
+// relation -- a relation with sequence-typed columns.  Each iteration's
+// delta is scanned (the round-robin read views, every row exactly once);
+// an unseen sequence id walks its leaves once, publishing one row per
+// element into the occurrence relations' send shards -- the normal
+// write/intern pipeline, so rows land in the NEXT iteration's delta (the
+// one-iteration lag structs and the M2.4 decomposition ride; semi-naive
+// versions driven by the occurrence delta refire dependents, so nothing is
+// lost to the lag).  At iteration 0 the delta IS the reloaded/imported
+// base (beginStratum re-stages everything), so a fresh stratum's task
+// re-publishes the whole resident content -- dedup'd downstream by the
+// occurrence relation's own intern task, this is a no-op when already
+// published, and exactly the re-derivation that heals an imported base.
+// The published set is per-task (per stratum .so): re-walks across strata
+// cost probes, not duplicate rows.  Runs as ONE task instance per fed
+// relation (phase_write); the arena is re-entrant so leaf walks are safe
+// alongside the other write tasks.
+class SeqIndexTask : public Task
+{
+  Database* db;
+  Relation* rel;
+  std::vector<u16> cols;   // sequence-typed storage columns of rel
+  Relation* at_rel;        // $seq_at, or null when this stratum lacks it
+  Relation* atr_rel;       // $seq_atr, likewise
+  std::unordered_set<u64> published;
+public:
+  SeqIndexTask(Database* _db, Relation* _rel, const std::vector<u16>& _cols,
+               Relation* _at, Relation* _atr)
+    : db(_db), rel(_rel), cols(_cols), at_rel(_at), atr_rel(_atr) {}
+  bool work() override
+  {
+    if (rel == nullptr || (at_rel == nullptr && atr_rel == nullptr))
+      return true;
+    RowPublisher at_pub(at_rel, 3);
+    RowPublisher atr_pub(atr_rel, 3);
+    SequenceArena* ar = db->sequences();
+    const u32 nthreads = db->getThreadCount();
+    for (u16 b = 0; b < bucket_count; ++b)
+      for (u32 t = 0; t < nthreads; ++t)
+      {
+        RefVec& refs = rel->getReadBucket(t, b);
+        const u32 n = (u32)refs.size();
+        for (u32 r = 0; r < n; ++r)
+        {
+          const u64* d = refs[r].batch->data + refs[r].offset;
+          for (u16 ci = 0; ci < cols.size(); ++ci)
+          {
+            const u64 w = d[cols[ci]];
+            if (!is_seq(w) || !published.insert(w).second)
+              continue;
+            const u64 len = ar->len(w);
+            u64 row[3];
+            row[2] = w;
+            u64 pos = 0;
+            ar->foreach(w, [&](u64 v)
+            {
+              row[0] = v;
+              if (at_rel)
+              {
+                row[1] = s32_encode((s32)pos);
+                at_pub.row(row);
+              }
+              if (atr_rel)
+              {
+                row[1] = s32_encode((s32)(len - 1 - pos));
+                atr_pub.row(row);
+              }
+              ++pos;
+            });
+          }
+        }
+      }
+    return true;
+  }
+};
+
+
 // ---------------------------------------------------------------------------
 // Write- and intern-phase tasks.  Unlike read-phase rules (each a bespoke
 // operator chain), these are single-stage scan->sink, identical across every
@@ -407,6 +546,14 @@ public:
 // result is independent of row order within the delta -- values only ascend,
 // so every map converges to the master's payload without reading it.  A is
 // the storage arity; ord is the index's full ordering (value column last).
+//
+// The MASTER (once) instance may carry the M2.4 decomposition target
+// (docs/primitives.md §4.2): at iteration 0 the map is rebuilt from empty, so
+// every reloaded/imported entry diffs against bottom and the WHOLE base
+// content re-emits into `decomp` -- dedup'd by its intern task against its
+// own reloaded rows, this is a no-op for a decomposition that already ran,
+// and exactly the re-derivation that makes an imported (or stale) base
+// consistent on first use.  Ascents after iteration 0 are LatticeInternTask's.
 template <u16 A>
 class MapWriteTask : public Task
 {
@@ -415,9 +562,13 @@ class MapWriteTask : public Task
   u16 bucket;
   std::array<u16, A> ord;
   BTreeMapIndex<A - 1>* root;
+  Relation* decomp;
+  bool decomp_map;
 public:
-  MapWriteTask(Database* _db, Relation* _rel, const std::array<u16, A>& _ord, u16 _b)
-    : db(_db), rel(_rel), bucket(_b), ord(_ord)
+  MapWriteTask(Database* _db, Relation* _rel, const std::array<u16, A>& _ord, u16 _b,
+               Relation* _decomp = nullptr, bool _decomp_map = false)
+    : db(_db), rel(_rel), bucket(_b), ord(_ord),
+      decomp(_decomp), decomp_map(_decomp_map)
   {
     std::vector<u16> ordv(ord.begin(), ord.end());
     root = static_cast<BTreeMapIndex<A - 1>*>(rel->getIndex(ordv, false)[bucket]);
@@ -426,7 +577,7 @@ public:
   {
     const u16 leadcol = ord[0];
     const u32 nthreads = db->getThreadCount();
-    bool changed = false;
+    RowPublisher pub(decomp, (u16)(A - 1 + (decomp_map ? 2 : 1)));
     for (u32 t = 0; t < nthreads; ++t)
     {
       RefVec& refs = rel->getWriteBucket(t, leadcol, bucket);
@@ -436,7 +587,12 @@ public:
         const u64* d = refs[r].batch->data + refs[r].offset;
         std::array<u64, A - 1> key;
         for (u16 c = 0; c + 1 < A; ++c) key[c] = d[ord[c]];
-        root->merge(key, d[ord[A - 1]], changed);
+        bool changed = false;
+        u64 oldw = 0;
+        const u64 merged = root->merge(key, d[ord[A - 1]], changed,
+                                       decomp ? &oldw : nullptr);
+        if (decomp && changed)
+          emit_decomp_rows(root->lat_arena, pub, d, A - 1, decomp_map, oldw, merged);
       }
     }
     return true;
@@ -450,6 +606,16 @@ public:
 // an ascending one has its payload word REWRITTEN in place to the merged
 // value, so downstream rules join against the post-merge value, never the raw
 // contribution (the value-carrying delta).
+//
+// M2.4 decomposition (docs/primitives.md §4.2): when `decomp` is set (the
+// base is a decomposed collection-lattice table), each ascent walks the
+// (old, new) payload pair with foreach_added -- O(change) via shared-subtree
+// pruning -- and publishes one decomp row per added entry: (k̄, elem) into
+// R_has (set kind), (k̄, key, value-word) into R_at (map kind, its own
+// LatticeInternTask merging per (k̄,key) by the child spec).  Rows ride the
+// normal write/intern pipeline next iteration, so each element, once
+// present, stays -- the monotone facts that make in-SCC membership and
+// enumeration sound.
 template <u16 N>
 class LatticeInternTask : public Task
 {
@@ -458,9 +624,13 @@ class LatticeInternTask : public Task
   u16 bucket;
   std::array<u16, N> ord;      // master ordering: key columns, value last
   BTreeMapIndex<N - 1>* root;
+  Relation* decomp;
+  bool decomp_map;
 public:
-  LatticeInternTask(Database* _db, Relation* _rel, const std::array<u16, N>& _ord, u16 _b)
-    : db(_db), rel(_rel), bucket(_b), ord(_ord)
+  LatticeInternTask(Database* _db, Relation* _rel, const std::array<u16, N>& _ord, u16 _b,
+                    Relation* _decomp = nullptr, bool _decomp_map = false)
+    : db(_db), rel(_rel), bucket(_b), ord(_ord),
+      decomp(_decomp), decomp_map(_decomp_map)
   {
     std::vector<u16> ordv(ord.begin(), ord.end());
     root = static_cast<BTreeMapIndex<N - 1>*>(rel->getIndex(ordv, false)[bucket]);
@@ -468,6 +638,7 @@ public:
   bool work() override
   {
     auto& delta = rel->getDelta();
+    RowPublisher pub(decomp, (u16)(N - 1 + (decomp_map ? 2 : 1)));
     for (u32 i = 0; i < delta.size(); ++i)
     {
       InsertBatch* batch = delta[i];
@@ -478,11 +649,18 @@ public:
         std::array<u64, N - 1> key;
         for (u16 c = 0; c + 1 < N; ++c) key[c] = batch->data[j + ord[c]];
         bool changed = false;
-        const u64 merged = root->merge(key, batch->data[j + ord[N - 1]], changed);
+        u64 oldw = 0;
+        const u64 merged = root->merge(key, batch->data[j + ord[N - 1]], changed,
+                                       decomp ? &oldw : nullptr);
         if (!changed)
           batch->data[j] = slog_null;             // subsumed: no propagation
         else
+        {
+          if (decomp)
+            emit_decomp_rows(root->lat_arena, pub, batch->data + j, N - 1,
+                             decomp_map, oldw, merged);
           batch->data[j + ord[N - 1]] = merged;   // value-carrying delta
+        }
       }
     }
     return true;

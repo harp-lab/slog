@@ -190,12 +190,14 @@
               #:when (and (pair? p) (eq? (car p) key)))
     (second p)))
 
-;; A parametric list column type (docs/primitives.md Phase 0): a
-;; deterministically-named rels entry (listof T) that a `(list T)`
-;; column declaration produces (modules.rkt).  Like lattice types it is
-;; transparent to the type system, resolving to the builtin `list`
-;; union; the element type is preserved verbatim for the future typed
-;; phase (§8.4: declaration-level fidelity).
+;; A parametric list column type: a deterministically-named rels entry
+;; (listof T) that a `(list T)` (or `[T]`) column declaration produces
+;; (modules.rkt).  Like lattice types it is transparent to the type
+;; system, resolving to the builtin `cseq` base type -- a canonical
+;; chunked-Merkle sequence word (docs/sequences.md §3.3; the cons-union
+;; resolution retired with the builtin cons list) -- with the element
+;; type preserved verbatim for the future typed phase (§8.4:
+;; declaration-level fidelity).
 (define (listof-spec? d)
   (match d
     [`(listof ,_) #t]
@@ -213,13 +215,19 @@
     [_ #f]))
 
 ;; Resolve a column type through the rels env: the lattice's base type if
-;; it names a lattice, the builtin list union if it names a (listof T),
+;; it names a lattice, the builtin cseq base type if it names a (listof T),
 ;; the builtin cmap base type if it names a (mapof K V), the type itself
 ;; otherwise.
 (define (lattice-base-type rel-env t)
   (match (hash-ref rel-env t #f)
-    [(? lattice-spec? spec) (lattice-spec-base spec)]
-    [(? listof-spec?) 'list]
+    [(? lattice-spec? spec)
+     ;; a flat lattice's payload may itself need resolution -- e.g.
+     ;; (flat list) resolves list -> cseq (the (listof any) seed) -- so
+     ;; recurse; termination: payloads cannot be lattice types
+     ;; (lattice-check) and every other arm is a fixed point
+     (define b (lattice-spec-base spec))
+     (if (eq? b t) b (lattice-base-type rel-env b))]
+    [(? listof-spec?) 'cseq]
     [(? mapof-spec?) 'cmap]
     [_ t]))
 

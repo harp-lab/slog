@@ -1,6 +1,23 @@
 # Finishing first-class collections: the wrap-up shot
 
-*Plan (2026-07-06, agreed with Tom).  Status: PLANNED, not yet executed.
+*Plan (2026-07-06, agreed with Tom).  **Status: EXECUTED 2026-07-08 — all
+four items landed, §D included (the friction it was gated on collapsed:
+schedule-ordered planned bodies make the var→spec scan one pass, and a
+function-local static holds the parsed spec, so no emitter threading).
+§5 subset + unit/arena/api all green; docs/primitives.md M2.3/M2.4 status
+blocks carry the landed details.**  Post-plan finding worth keeping: a
+decomp-derived name must be DYNAMIC in EVERY stratum, not only where its
+base ascends — the master (once) MapWriteTask re-derives the decomposition
+from reloaded/imported content at iteration 0 and those rows land in
+iteration 1's delta, so a static reader would miss them (caught by the
+foreign-db seeding check; that seeding is also what makes an imported base
+without decomp rows self-heal on first use).
+SCHEDULING (agreed with Tom 2026-07-08): this doc executes to COMPLETION
+**before** sequences Phase S1 (docs/sequences.md §11) — §A's `letp`
+mechanism and §C's decomposition-publish plumbing are S1 dependencies
+(S1's `SeqIndexTask` reuses the `RowPublisher` shards path in
+daemon/operators.h), and building them here first keeps S1 focused on
+sequences proper.  Two forward-pointers are marked in §A and §C below.*
 This document is written to be executed in ONE clean session: every item
 carries its design decisions, exact touch points, and acceptance tests, so
 no re-derivation is needed.  Read docs/primitives.md (M2.1–M2.3 status
@@ -38,7 +55,10 @@ demand-style.
 **Design decisions (final):**
 - Registry: a new exported set `prim-partial?` in `compiler/primitives.rkt`
   (do NOT change the `(fun ...)` signature shape — zero consumer churn).
-  Initially `{cget}`; `substr`/parsing prims can join later.
+  Initially `{cget}`; `substr`/parsing prims can join later.  (Sequences
+  S1 adds `lref`/`lset`/`lins`/`ldel`/`lidx`, S2 adds `sidx`/`schar`/
+  `s2i`/`s2f` — registry entries only, mechanism unchanged;
+  docs/sequences.md §3.)
 - Typed level unchanged: typecheck still normalizes to `let`; the planner
   (needed-gating, guard-feeders, flush) operates on typed `let`s and needs
   **zero changes** — partiality is consulted only at lowering.
@@ -139,6 +159,10 @@ element, once present, stays; Datalog draws only monotone conclusions.
   into `decomp`'s send shards (emit_temp-style, nominal order) and ride
   the NORMAL write/intern pipeline next iteration — the same
   one-iteration lag structs have; semi-naive refire is native.
+  **Build the rows-into-shards publish path as a small reusable helper,
+  not inline in LatticeInternTask**: sequences S1's `SeqIndexTask`
+  (docs/sequences.md §5.3) publishes occurrence rows through the identical
+  mechanism, and should reuse this helper rather than re-derive it.
   For `R_at`, emit (k̄, key, value-word); its own LatticeInternTask
   merges per (k̄,key) by the child spec — machinery already exists.
 - **Codegen**: `emit-cpp.rkt` `add-lattice-decl` registers the

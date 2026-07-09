@@ -1,1 +1,1 @@
-(app (ref "chosen") (cons (num 7) (_enum "nil")))   
+(app (ref "chosen") [(num 7)])   

@@ -1,18 +1,8 @@
- (_enum "dbl")
- (_enum "dbl")
- (_enum "dbl")
- (addk 10)
- (addk 10)
- (cons 1 (cons 2 (cons 3 (_enum "nil")))))
- (cons 1 (cons 2 (cons 3 (_enum "nil")))))
- (cons 2 (cons 3 (_enum "nil"))))
- (cons 2 (cons 3 (_enum "nil"))))
- (cons 3 (_enum "nil")))
-(map
-(map
-(map
-(map
-(map
-(map (_enum "dbl") (_enum "nil"))
-(map (addk 10) (_enum "nil"))
-(map (addk 10) (cons 3 (_enum "nil")))
+(map (_enum "dbl") [1 2 3])
+(map (_enum "dbl") [2 3])
+(map (_enum "dbl") [3])
+(map (_enum "dbl") [])
+(map (addk 10) [1 2 3])
+(map (addk 10) [2 3])
+(map (addk 10) [3])
+(map (addk 10) [])

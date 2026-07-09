@@ -1,16 +1,9 @@
-(lst_absent (_enum "nil") "*")   1   
-(lst_absent (_enum "nil") "+")   1   
-(lst_absent (_enum "nil") "-")   1   
-(lst_absent (_enum "nil") "=")   1   
-(lst_absent (_enum "nil") "fac")   1   
-(lst_absent (_enum "nil") "id")   1   
-(lst_absent (_enum "nil") "loop")   1   
-(lst_absent (cons "i" (_enum "nil")) "-")   1   
-(lst_absent (cons "i" (_enum "nil")) "=")   1   
-(lst_absent (cons "i" (_enum "nil")) "loop")   1   
-(lst_absent (cons "n" (_enum "nil")) "*")   1   
-(lst_absent (cons "n" (_enum "nil")) "-")   1   
-(lst_absent (cons "n" (_enum "nil")) "=")   1   
-(lst_absent (cons "n" (_enum "nil")) "fac")   1   
-(lst_absent (cons "w" (_enum "nil")) "id")   1   
-(lst_absent (cons "y" (_enum "nil")) "+")   1   
+(lst_absent ["i"] "-")   1   
+(lst_absent ["i"] "=")   1   
+(lst_absent ["i"] "loop")   1   
+(lst_absent ["n"] "*")   1   
+(lst_absent ["n"] "-")   1   
+(lst_absent ["n"] "=")   1   
+(lst_absent ["n"] "fac")   1   
+(lst_absent ["w"] "id")   1   
+(lst_absent ["y"] "+")   1   

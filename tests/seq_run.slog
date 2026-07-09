@@ -1,0 +1,29 @@
+;; Floating-run patterns (docs/sequences.md §5.2): two splices around a
+;; contiguous run, lowered onto the synthesized position enumerator
+;; ($seq_posdem/$seq_pos) -- fan-out = every matching position.  Covers
+;; free-element runs (all adjacent pairs), ground runs, mixed anchors
+;; ([a ... b c ...]), the membership nicety, and splice binding.
+
+table (doc (list int))
+table (pairs int int)          ;; all adjacent pairs across all docs
+table (after12 (list int))     ;; the tail strictly after a [1 2] run
+table (contains5 (list int))   ;; membership via the lmem nicety
+table (mid (list int))         ;; [a ... b c ...]: between first and last
+
+facts (doc [1 2 3 1 2]) (doc [5 1 2]) (doc [7]) (doc []) (doc [7 8 9])
+
+rule (doc l) (= l [_ ... x y _ ...]) --> (pairs x y)
+rule (doc l) (= l [_ ... 1 2 ys ...]) --> (after12 ys)
+rule (doc l) (= l [_ ... 5 _ ...]) --> (contains5 l)
+rule (doc l) (= l [a m ... b]) --> (mid m)
+
+;; run-element occurrence probe: a GROUND run element ($seq_at pos ties
+;; back to the enumerator's run start via (- pk k))
+table (adj7 int)
+rule (doc l) (= l [_ ... 7 y _ ...]) --> (adj7 y)
+
+;; ...and a BOUND-variable run element
+table (key int)
+table (adjkey int int)
+facts (key 1) (key 8)
+rule (key k) (doc l) (= l [_ ... k y _ ...]) --> (adjkey k y)

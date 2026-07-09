@@ -1,24 +1,27 @@
 ;; Defunctionalized higher-order code: closure structs in a union, one
 ;; apply judgment dispatching on the tag, and map as non-tail recursion
-;; over cons-lists.  Base cases of judgments are facts with pattern
+;; over EXPLICIT user-declared cons cells (the retired-builtin idiom,
+;; docs/sequences.md D2 -- structural recursion over structs stays fully
+;; supported; brackets now denote native sequences, tested by
+;; dem_brackets).  Base cases of judgments are facts with pattern
 ;; variables (the gate binds them).  Both asks in the recursive rule are
 ;; ready in the same stage and fire in parallel.
 
 union (clo (addk int) (dbl))
-;; list/cons/nil are builtins now (bracket syntax); no declaration needed
+union (clist (cnil) (ccons any clist))
 
 demand (apply clo int) int
 rule (apply (addk k) n r) <-- (= r (+ n k))
 rule (apply (dbl) n r) <-- (= r (+ n n))
 
-demand (map clo list) list
-facts (map f (nil) (nil))
-rule (map f (cons x xs) (cons y ys)) <-- (apply f x y) (map f xs ys)
+demand (map clo clist) clist
+facts (map f (cnil) (cnil))
+rule (map f (ccons x xs) (ccons y ys)) <-- (apply f x y) (map f xs ys)
 
-table (input list)
-table (bumped list)
-table (doubled list)
-facts (input (cons 1 (cons 2 (cons 3 (nil)))))
+table (input clist)
+table (bumped clist)
+table (doubled clist)
+facts (input (ccons 1 (ccons 2 (ccons 3 (cnil)))))
 
 rule (input l) (map (addk 10) l r) --> (bumped r)
 rule (input l) (map (dbl) l r) --> (doubled r)

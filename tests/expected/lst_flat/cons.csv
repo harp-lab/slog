@@ -1,3 +1,0 @@
-(cons 1 (cons 2 (_enum "nil")))
-(cons 2 (_enum "nil"))
-(cons 9 (_enum "nil"))

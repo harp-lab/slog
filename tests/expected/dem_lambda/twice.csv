@@ -1,1 +1,1 @@
-(cons 3 (cons 5 (cons 7 (_enum "nil"))))   
+[3 5 7]   

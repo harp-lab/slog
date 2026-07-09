@@ -1,34 +1,34 @@
-"a"   (cons (app (ref "call2") (cons (ref "+") (cons (num 10) (cons (num 20) (_enum "nil"))))) (_enum "nil"))   
-"a"   (cons (app (ref "call2") (cons (ref "<") (cons (num 1) (cons (num 2) (_enum "nil"))))) (_enum "nil"))   
-"b"   (cons (app (ref "call2") (cons (ref "+") (cons (num 10) (cons (num 20) (_enum "nil"))))) (_enum "nil"))   
-"b"   (cons (app (ref "call2") (cons (ref "<") (cons (num 1) (cons (num 2) (_enum "nil"))))) (_enum "nil"))   
-"call2"   (_enum "nil")   
-"f"   (cons (app (ref "twice") (cons (lambda (cons "y" (_enum "nil")) (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil"))))) (cons (num 5) (_enum "nil")))) (_enum "nil"))   
-"fac"   (_enum "nil")   
-"fac"   (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "fac") (cons (num 6) (_enum "nil"))) (_enum "nil")))   
-"fac"   (cons (app (ref "fac") (cons (num 6) (_enum "nil"))) (_enum "nil"))   
-"g"   (cons (app (ref "call2") (cons (ref "+") (cons (num 10) (cons (num 20) (_enum "nil"))))) (_enum "nil"))   
-"g"   (cons (app (ref "call2") (cons (ref "<") (cons (num 1) (cons (num 2) (_enum "nil"))))) (_enum "nil"))   
-"i"   (cons (app (ref "loop") (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "loop") (cons (num 3) (_enum "nil"))) (_enum "nil")))   
-"i"   (cons (app (ref "loop") (cons (num 3) (_enum "nil"))) (_enum "nil"))   
-"id"   (_enum "nil")   
-"id"   (cons (app (ref "wrap") (cons (sym "one") (_enum "nil"))) (_enum "nil"))   
-"id"   (cons (app (ref "wrap") (cons (sym "two") (_enum "nil"))) (_enum "nil"))   
-"loop"   (_enum "nil")   
-"loop"   (cons (app (ref "loop") (cons (app (ref "-") (cons (ref "i") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "loop") (cons (num 3) (_enum "nil"))) (_enum "nil")))   
-"loop"   (cons (app (ref "loop") (cons (num 3) (_enum "nil"))) (_enum "nil"))   
-"n"   (cons (app (ref "fac") (cons (app (ref "-") (cons (ref "n") (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref "fac") (cons (num 6) (_enum "nil"))) (_enum "nil")))   
-"n"   (cons (app (ref "fac") (cons (num 6) (_enum "nil"))) (_enum "nil"))   
-"r1"   (_enum "nil")   
-"r2"   (_enum "nil")   
-"s1"   (_enum "nil")   
-"s2"   (_enum "nil")   
-"twice"   (_enum "nil")   
-"w"   (cons (app (ref "wrap") (cons (sym "one") (_enum "nil"))) (_enum "nil"))   
-"w"   (cons (app (ref "wrap") (cons (sym "two") (_enum "nil"))) (_enum "nil"))   
-"wrap"   (_enum "nil")   
-"x"   (cons (app (ref "twice") (cons (lambda (cons "y" (_enum "nil")) (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil"))))) (cons (num 5) (_enum "nil")))) (_enum "nil"))   
-"y"   (cons (app (ref "f") (cons (app (ref "f") (cons (ref "x") (_enum "nil"))) (_enum "nil"))) (cons (app (ref "twice") (cons (lambda (cons "y" (_enum "nil")) (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil"))))) (cons (num 5) (_enum "nil")))) (_enum "nil")))   
-"y"   (cons (app (ref "f") (cons (ref "x") (_enum "nil"))) (cons (app (ref "twice") (cons (lambda (cons "y" (_enum "nil")) (app (ref "+") (cons (ref "y") (cons (num 1) (_enum "nil"))))) (cons (num 5) (_enum "nil")))) (_enum "nil")))   
-"z"   (cons (app (ref "id") (cons (ref "w") (_enum "nil"))) (cons (app (ref "wrap") (cons (sym "one") (_enum "nil"))) (_enum "nil")))   
-"z"   (cons (app (ref "id") (cons (ref "w") (_enum "nil"))) (cons (app (ref "wrap") (cons (sym "two") (_enum "nil"))) (_enum "nil")))   
+"a"   [(app (ref "call2") [(ref "+") (num 10) (num 20)])]   
+"a"   [(app (ref "call2") [(ref "<") (num 1) (num 2)])]   
+"b"   [(app (ref "call2") [(ref "+") (num 10) (num 20)])]   
+"b"   [(app (ref "call2") [(ref "<") (num 1) (num 2)])]   
+"call2"   []   
+"f"   [(app (ref "twice") [(lambda ["y"] (app (ref "+") [(ref "y") (num 1)])) (num 5)])]   
+"fac"   [(app (ref "fac") [(app (ref "-") [(ref "n") (num 1)])]) (app (ref "fac") [(num 6)])]   
+"fac"   [(app (ref "fac") [(num 6)])]   
+"fac"   []   
+"g"   [(app (ref "call2") [(ref "+") (num 10) (num 20)])]   
+"g"   [(app (ref "call2") [(ref "<") (num 1) (num 2)])]   
+"i"   [(app (ref "loop") [(app (ref "-") [(ref "i") (num 1)])]) (app (ref "loop") [(num 3)])]   
+"i"   [(app (ref "loop") [(num 3)])]   
+"id"   [(app (ref "wrap") [(sym "one")])]   
+"id"   [(app (ref "wrap") [(sym "two")])]   
+"id"   []   
+"loop"   [(app (ref "loop") [(app (ref "-") [(ref "i") (num 1)])]) (app (ref "loop") [(num 3)])]   
+"loop"   [(app (ref "loop") [(num 3)])]   
+"loop"   []   
+"n"   [(app (ref "fac") [(app (ref "-") [(ref "n") (num 1)])]) (app (ref "fac") [(num 6)])]   
+"n"   [(app (ref "fac") [(num 6)])]   
+"r1"   []   
+"r2"   []   
+"s1"   []   
+"s2"   []   
+"twice"   []   
+"w"   [(app (ref "wrap") [(sym "one")])]   
+"w"   [(app (ref "wrap") [(sym "two")])]   
+"wrap"   []   
+"x"   [(app (ref "twice") [(lambda ["y"] (app (ref "+") [(ref "y") (num 1)])) (num 5)])]   
+"y"   [(app (ref "f") [(app (ref "f") [(ref "x")])]) (app (ref "twice") [(lambda ["y"] (app (ref "+") [(ref "y") (num 1)])) (num 5)])]   
+"y"   [(app (ref "f") [(ref "x")]) (app (ref "twice") [(lambda ["y"] (app (ref "+") [(ref "y") (num 1)])) (num 5)])]   
+"z"   [(app (ref "id") [(ref "w")]) (app (ref "wrap") [(sym "one")])]   
+"z"   [(app (ref "id") [(ref "w")]) (app (ref "wrap") [(sym "two")])]   

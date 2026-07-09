@@ -1,9 +1,1 @@
- (cons 10 (cons 20 (cons 30 (cons 40 (_enum "nil")))))
- (cons 20 (cons 30 (cons 40 (_enum "nil"))))
- (cons 30 (cons 40 (_enum "nil")))
- 0)
- 1)
- 2)
-(lst_ref
-(lst_ref
-(lst_ref
+(lst_ref [10 20 30 40] 2)

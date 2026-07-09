@@ -18,3 +18,17 @@ facts (seed 1 10) (seed 2 20) (seed 3 30)
 rule (seed a b) (= m (cput (cmap) "k" a)) --> (t "X" (mk a b) m)
 rule (seed a b) --> (d a b)
 rule (seed a b) (= s (cins (cins (cmap) a) b)) --> (r 7 s)
+
+;; sequences: the fifth remapped id space (docs/sequences.md §8.4) --
+;; string elements force remap, nesting forces child-first rebuild,
+;; the shared row checks cross-db dedup after re-chunking
+table (q (list any))
+rule (seed a b) --> (q ["s" a [b] []])
+
+;; rope strings: the tag-4 arm of the import remap (materialize + rebuild
+;; in the dest arena; the shared seed row dedups across databases)
+table (q2 str)
+rule (seed a b)
+     (= p "0123456789012345678901234567890123456789012345678901234567890123")
+     (= s (+ (+ (+ p p) (+ p p)) (i2s a)))
+ --> (q2 s)

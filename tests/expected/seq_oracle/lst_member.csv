@@ -1,0 +1,32 @@
+ "b")
+ 2)
+ 99)
+ [1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22]
+ [1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22]
+ [1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22]
+ [1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22]
+ [1 2])
+(lst_member
+(lst_member
+(lst_member
+(lst_member
+(lst_member ["a" 2 "b" 2.5 "a"] "b")
+(lst_member ["a" 2 "b" 2.5 "a"] 2)
+(lst_member ["a" 2 "b" 2.5 "a"] 99)
+(lst_member ["a" 2 "b" 2.5 "a"] [1 2])
+(lst_member [3 1 2] "b")
+(lst_member [3 1 2] 2)
+(lst_member [3 1 2] 99)
+(lst_member [3 1 2] [1 2])
+(lst_member [5] "b")
+(lst_member [5] 2)
+(lst_member [5] 99)
+(lst_member [5] [1 2])
+(lst_member [[1 2] [] [3] [1 2]] "b")
+(lst_member [[1 2] [] [3] [1 2]] 2)
+(lst_member [[1 2] [] [3] [1 2]] 99)
+(lst_member [[1 2] [] [3] [1 2]] [1 2])
+(lst_member [] "b")
+(lst_member [] 2)
+(lst_member [] 99)
+(lst_member [] [1 2])

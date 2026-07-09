@@ -14,7 +14,8 @@
 
 (provide slog-run-file
          slog-verify-replay
-         db-manifest-from-name)
+         db-manifest-from-name
+         db-manifest-from-schema-lines)
 
 (require "tools.rkt")
 (require "compile.rkt")
@@ -125,6 +126,30 @@
                (hash)
                (directory-list db-path)))
       (hash)))
+
+;; Parse the lines a `(schema)` action emits (compiler/actions.rkt) into the
+;; SAME manifest hash db-manifest-from-name produces -- schema truth from the
+;; LIVE daemon (imports and prior programs included), so a front end can
+;; compile against the session instead of a directory scan
+;; (docs/finish-collections.md §B; CLI orchestration comes later with merge
+;; P2's offline verb).  Non-schema lines (and the (schema-end) sentinel) are
+;; skipped, so the caller can hand over a whole session transcript.  A
+;; struct's id is session-local and manifests never carry it; the arity is
+;; the STORED arity (fields + id), exactly like the directory name's.
+(define (db-manifest-from-schema-lines lines)
+  (for/fold ([man (hash)]) ([l (in-list lines)])
+    (match (regexp-match #px"^\\(schema-rel (table|struct|lat) ([^ ]+) ([0-9]+)(?: ([^ )]+))?\\)\\s*$" l)
+      [`(,_ "table" ,name ,arity ,_)
+       (define sym (string->symbol name))
+       (hash-set man sym `(rel ,sym ,(string->number arity)))]
+      [`(,_ "struct" ,name ,arity ,_)
+       (define sym (string->symbol name))
+       (hash-set man sym `(struct ,sym ,(string->number arity)))]
+      [`(,_ "lat" ,name ,arity ,tok)
+       (define sym (string->symbol name))
+       (hash-set man sym `(lat ,sym ,(string->number arity)
+                               ,(lat-spec-from-token tok)))]
+      [#f man])))
 
 ;; Union the on-disk relation manifests across a database's whole input DAG
 ;; (docs/db-compression.md P1.4): a program loaded atop a compressed database

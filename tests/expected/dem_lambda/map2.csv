@@ -1,22 +1,16 @@
- (_enum "nil"))
- (_lam54764x19x33 10)
- (_lam54764x19x33 10)
- (_lam54764x19x33 10)
- (_lam54764x23x19 (_enum "_lam54764x27x19") (_enum "_lam54764x27x40"))
- (_lam54764x23x19 (_enum "_lam54764x27x19") (_enum "_lam54764x27x40"))
- (_lam54764x23x19 (_enum "_lam54764x27x19") (_enum "_lam54764x27x40"))
- (_lam54764x23x19 (_enum "_lam54764x27x19") (_enum "_lam54764x27x40"))
- (cons 1 (cons 2 (cons 3 (_enum "nil")))))
- (cons 1 (cons 2 (cons 3 (_enum "nil")))))
- (cons 2 (cons 3 (_enum "nil"))))
- (cons 2 (cons 3 (_enum "nil"))))
- (cons 3 (_enum "nil")))
- (cons 3 (_enum "nil")))
+ (_lam54764x22x19 (_enum "_lam54764x26x19") (_enum "_lam54764x26x40"))
+ (_lam54764x22x19 (_enum "_lam54764x26x19") (_enum "_lam54764x26x40"))
+ (_lam54764x22x19 (_enum "_lam54764x26x19") (_enum "_lam54764x26x40"))
+ (_lam54764x22x19 (_enum "_lam54764x26x19") (_enum "_lam54764x26x40"))
+ [1 2 3])
+ [2 3])
+ [3])
+ [])
 (map2
 (map2
 (map2
 (map2
-(map2
-(map2
-(map2
-(map2 (_lam54764x19x33 10) (_enum "nil"))
+(map2 (_lam54764x18x33 10) [1 2 3])
+(map2 (_lam54764x18x33 10) [2 3])
+(map2 (_lam54764x18x33 10) [3])
+(map2 (_lam54764x18x33 10) [])

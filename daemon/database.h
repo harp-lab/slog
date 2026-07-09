@@ -14,6 +14,7 @@
 #include "slogd.h"
 #include "intern.h"
 #include "arena.h"
+#include "seq.h"
 #include "gzfile.h"
 #include "index.h"
 #include <string>
@@ -1106,6 +1107,7 @@ private:
   u32 struct_id_max;
   InternTable<utf8string>* string_table;
   CollectionArena* cnode_arena;
+  SequenceArena* seq_arena;
   // External oracle work (docs/smt.md): set by the Daemon when the oracle
   // registry exists; consulted by ReadCompletion/EndIterCompletion so a
   // stratum's fixpoint waits for outstanding answers.
@@ -1123,6 +1125,7 @@ public:
     struct_id_max = 1;
     string_table = new InternTable<utf8string>();
     cnode_arena = new CollectionArena();
+    seq_arena = new SequenceArena();
     // Sized to the OMP team (read-phase workers use 0..thread_count-1); at least
     // one for single-threaded / out-of-region use.
     pending_errors.resize(thread_count ? thread_count : 1);
@@ -1138,6 +1141,7 @@ public:
   {
     delete string_table;
     delete cnode_arena;
+    delete seq_arena;
     for (auto it : relations)
       delete it.second;
   }
@@ -1161,6 +1165,43 @@ public:
   CollectionArena* collections()
   {
     return cnode_arena;
+  }
+
+  SequenceArena* sequences()
+  {
+    return seq_arena;
+  }
+
+  // The string-representation normalization keystone (docs/sequences.md
+  // §6): a string VALUE's representation is a pure function of its byte
+  // length -- <= SEQ_BLEAF_MAX bytes intern monolithically (tag 0), longer
+  // content becomes a tag-4 rope (a byte tree in the sequence arena).
+  // EVERY producer of a string word from raw bytes must come through here
+  // (a rope is never built for a small result, a large result is never
+  // interned monolithically), or equal content forks into two words and
+  // raw-word equality silently breaks.
+  u64 encodeString(const std::string& s)
+  {
+    if (s.size() <= SEQ_BLEAF_MAX)
+      return intern_encode(str_intern_tag, intern_string(new utf8string(s)));
+    const u64 root = seq_arena->build_bytes((const u8*)s.data(), s.size());
+    return intern_encode(strrope_intern_tag, decode_val(root));
+  }
+
+  // Representation-dispatching read (output boundaries and byte-level
+  // kernels; O(len) for ropes -- leaf-granular access stays in seq.h).
+  std::string decodeString(u64 w)
+  {
+    if (is_rope(w))
+    {
+      std::string out;
+      seq_arena->materialize(w, out);
+      return out;
+    }
+    utf8string* s = lookup_string(decode_val(w));
+    if (s == nullptr)
+      fatal("Dangling string id");
+    return s->cpp_str();
   }
 
   void registerLatestAnyRec(bool _any)
@@ -1255,7 +1296,13 @@ public:
 
   Relation* getRelation(const std::string& name)
   {
-    return relations[name];
+    // find, not operator[]: a lookup of an undeclared name (e.g. the
+    // generated SeqIndexTask registration probing for "$seq_atr" in a
+    // stratum that never declared it) must NOT plant a null entry in the
+    // map -- restoreOrphanRelations and the statistics walks iterate
+    // `relations` and dereference every value.
+    auto it = relations.find(name);
+    return it == relations.end() ? nullptr : it->second;
   }
 
   // All relations by name (iterate + Relation::tupleCount for statistics).
@@ -1481,7 +1528,7 @@ public:
   void restoreOrphanRelations()
   {
     for (const auto& kv : relations)
-      if (kv.second->getAnyIndex() == 0)
+      if (kv.second != nullptr && kv.second->getAnyIndex() == 0)
       {
 	kv.second->ensureDefaultIndex();
 	kv.second->finalizeBatches();
@@ -1667,6 +1714,23 @@ public:
     return s + "}";
   }
 
+  // Render a sequence as [a b c], elements in order -- deterministic because
+  // the chunked tree is a function of content alone (docs/sequences.md §2).
+  // cdepth counts value nesting exactly as collections do; the mutual
+  // recursion with writeValCSV is bounded by its depth guard.
+  std::string writeSeqCSV(u64 v, u32 cdepth)
+  {
+    std::string s = "[";
+    bool first = true;
+    seq_arena->foreach(v, [&](u64 w)
+    {
+      if (!first) s += " ";
+      first = false;
+      s += writeValCSV(w, cdepth+1);
+    });
+    return s + "]";
+  }
+
   std::string writeValCSV(u64 v, u32 cdepth = 0)
   {
     // Bound the struct/collection render recursion so a pathologically deep
@@ -1676,7 +1740,7 @@ public:
     if (is_s32(v))
       return std::to_string(s32_decode(v));
     else if (is_str(v))
-      return std::string("\"") + str_decode(this,v)->cpp_str() + "\"";
+      return std::string("\"") + decodeString(v) + "\"";   // mono or rope
     else if (is_float(v))
     {
       // Shortest round-trippable form, but keep floats visually distinct from
@@ -1689,6 +1753,8 @@ public:
       return writeStructCSV(v, cdepth);
     else if (is_cnode(v))
       return writeCNodeCSV(v, cdepth);
+    else if (is_seq(v))
+      return writeSeqCSV(v, cdepth);
     else if (v == slog_lat_top)
       return "(top)";              // a flat lattice's top element
     else
@@ -2323,6 +2389,54 @@ private:
 		true);
   }
 
+  // Stage tasks (re)writing the sequence arena into `s` (docs/sequences.md
+  // §8.1), mirroring stageNodesWrite: one file per interner partition,
+  // records in iterator order so re-interning reproduces ids (the same
+  // chain-position argument; child words hash without dereferencing).
+  // Records are length-prefixed by their header -- u8 kind, u16 count,
+  // payload words -- since byte-leaf payloads (S2) may contain NULs.  A
+  // PARAMS sidecar carries the chunker format version (§8.2): the ids are a
+  // function of the chunking constants, so a loader under different
+  // constants must fatal rather than silently mix canonical forms.
+  void stageSeqWrite(Stratum& s, const std::string& db_dir)
+  {
+    class WriteSeq : public Task
+    {
+    public:
+      Database* db; u32 i; std::string path;
+      WriteSeq(Database* _db, u32 _i, const std::string& _path)
+	: db(_db), i(_i), path(_path)
+      {}
+      virtual bool work()
+      {
+	DBWriteFile file(path);
+	auto table = db->seq_arena->raw();
+	for (auto it = table->begin(i); it != table->end(); ++it)
+	{
+	  const seqnode& nd = *it;
+	  file.write((u8*)&nd.kind, 1);
+	  file.write((u8*)&nd.n, 2);
+	  file.write((u8*)nd.w, 8 * seqnode::payload_words(nd.kind, nd.n));
+	}
+	return true;
+      }
+    };
+
+    std::filesystem::remove_all(db_dir + "value.seq/");
+    if (seq_arena->freshCount() == 0)
+      return;  // no sequences: leave no (empty) arena dir behind
+    std::filesystem::create_directory(db_dir + "value.seq/");
+    {
+      std::ofstream params(db_dir + "value.seq/PARAMS");
+      params << "seq-format " << (u32)SEQ_FORMAT_VERSION << "\n";
+    }
+    for (u16 i = 0; i < seq_arena->raw()->getWritePartitions(); ++i)
+      s.addTask(0,
+		new WriteSeq(this, i,
+			     db_dir + "value.seq/" + std::to_string(i) + db_out_ext),
+		true);
+  }
+
 public:
   // Write one relation (plus the strings table its rows may reference)
   // under data/<db_name>/, leaving other relations' files untouched.
@@ -2338,6 +2452,7 @@ public:
     stageRelationWriteBIN(s, db_dir, relname, rel);
     stageStringsWrite(s, db_dir);
     stageNodesWrite(s, db_dir);
+    stageSeqWrite(s, db_dir);
     runStratum(&s, false);
     disk_mtimes[relname] = dirMTime(relationDirBIN(db_dir, relname, rel));
     DEBUG("Wrote relation " << relname << " to " << db_dir)
@@ -2437,6 +2552,7 @@ public:
 			      keepIdsOf(rel.second));
     stageStringsWrite(s, tmp_dir);
     stageNodesWrite(s, tmp_dir);
+    stageSeqWrite(s, tmp_dir);
     runStratum(&s, false);
 
     // Swap: move the current db aside (if any), rename the fully-built tmp
@@ -2502,6 +2618,26 @@ public:
 	DBWriteFile file(tmp_dir + "value.nodes/" + std::to_string(i) + db_out_ext);
 	for (auto it = table->begin(i); it != table->end(); ++it)
 	  file.write((u8*)(*it).w, 32);
+      }
+    }
+    if (seq_arena->freshCount() > 0)
+    {
+      std::filesystem::create_directory(tmp_dir + "value.seq/");
+      {
+	std::ofstream params(tmp_dir + "value.seq/PARAMS");
+	params << "seq-format " << (u32)SEQ_FORMAT_VERSION << "\n";
+      }
+      auto table = seq_arena->raw();
+      for (u16 i = 0; i < table->getWritePartitions(); ++i)
+      {
+	DBWriteFile file(tmp_dir + "value.seq/" + std::to_string(i) + db_out_ext);
+	for (auto it = table->begin(i); it != table->end(); ++it)
+	{
+	  const seqnode& nd = *it;
+	  file.write((u8*)&nd.kind, 1);
+	  file.write((u8*)&nd.n, 2);
+	  file.write((u8*)nd.w, 8 * seqnode::payload_words(nd.kind, nd.n));
+	}
       }
     }
     if (std::filesystem::exists(db_dir)) std::filesystem::rename(db_dir, old_dir);
@@ -2587,6 +2723,72 @@ private:
     }
   }
 
+  // (Re)read every sequence-node partition under db_dir (docs/sequences.md
+  // §8.1): records re-intern in file order, reproducing ids exactly as
+  // loadNodesBIN does.  Record framing is the header itself -- u8 kind,
+  // u16 count, payload words -- and a PARAMS sidecar carries the chunker
+  // format version; a mismatch means every canonical id would differ, so
+  // fail loudly (§8.2; rebuild-on-load belongs to db-compression's replay).
+  void loadSeqBIN(const std::string& db_dir)
+  {
+    if (!std::filesystem::is_directory(db_dir + "value.seq"))
+      return;
+    {
+      std::ifstream params(db_dir + "value.seq/PARAMS");
+      std::string tag;
+      u32 ver = 0;
+      if (!(params >> tag >> ver) || tag != "seq-format")
+	fatal("Corrupt value.seq/PARAMS (missing format version): " + db_dir);
+      if (ver != (u32)SEQ_FORMAT_VERSION)
+	fatal(std::format("value.seq format version {} does not match this "
+			  "daemon's {} (chunker constants are canonical-form "
+			  "format; see docs/sequences.md §8.2): {}",
+			  ver, (u32)SEQ_FORMAT_VERSION, db_dir));
+    }
+    for (const auto& partfile : std::filesystem::directory_iterator(db_dir+"value.seq"))
+    {
+      std::string path(partfile.path());
+      if (std::string(partfile.path().filename()) == "PARAMS")
+	continue;
+      const auto readAll = [&](auto readf)
+      {
+	u8 kind = 0;
+	u16 n = 0;
+	u64 payload[512];
+	while (true)
+	{
+	  const u32 gk = readf((u8*)&kind, 1);
+	  if (gk == 0) break;
+	  if (readf((u8*)&n, 2) != 2)
+	    fatal("Corrupt sequence-node file (truncated header): " + path);
+	  if (kind > SEQ_BRANCH_BYTES
+	      // byte leaves may exceed the max by the UTF-8 snap slack (§1.2)
+	      || (kind == SEQ_LEAF_BYTES && n > SEQ_BLEAF_MAX + 3)
+	      || (kind != SEQ_LEAF_BYTES && n > SEQ_BRANCH_MAX))
+	    fatal("Corrupt sequence-node file (bad record header): " + path);
+	  const u32 m = seqnode::payload_words(kind, n);
+	  if (readf((u8*)payload, 8 * m) != 8 * m)
+	    fatal("Corrupt sequence-node file (truncated record): " + path);
+	  seq_arena->intern_node(new seqnode(kind, n, payload));
+	}
+      };
+      if (hasSuffix(std::string(partfile.path().filename()), ".gz"))
+      {
+	GzReadFile file(path);
+	readAll([&](u8* buf, u32 len) { return file.read(buf, len); });
+      }
+      else
+      {
+	std::ifstream file(path, std::ios::binary);
+	readAll([&](u8* buf, u32 len) -> u32
+	{
+	  file.read(reinterpret_cast<char*>(buf), len);
+	  return (u32)file.gcount();
+	});
+      }
+    }
+  }
+
   // Read one relation directory's .bin/.gz files into the relation's send
   // shards (staged; not yet indexed).
   // Route a data file to the right reader by its FILENAME suffix (a ".gz"
@@ -2618,6 +2820,7 @@ public:
   {
     loadStringsBIN(db_dir);
     loadNodesBIN(db_dir);
+    loadSeqBIN(db_dir);
 
     for (const auto& entry : std::filesystem::directory_iterator(db_dir))
     {
@@ -2690,6 +2893,7 @@ public:
     // (both idempotent)
     loadStringsBIN(db_dir);
     loadNodesBIN(db_dir);
+    loadSeqBIN(db_dir);
 
     rel->clearContents();
     readRelationFiles(rel, rel_dir);
@@ -2866,14 +3070,26 @@ public:
 	  open.erase(w);
 	  continue;
 	}
-	if (is_str(w))
+	if (is_mono_str(w))
 	{
 	  utf8string* s = scratch.lookup_string(decode_val(w));
 	  if (s == nullptr)
 	    fatal("Import: dangling string id in " + src_dir);
-	  remap[w] = intern_encode(str_intern_tag,
-				   intern_string(new utf8string(s->c_str(),
-								s->byte_size())));
+	  // encodeString, not intern_string: a legacy over-threshold monolith
+	  // re-canonicalizes to a rope on import (docs/sequences.md §6 --
+	  // import IS the migration path for pre-rope databases)
+	  remap[w] = encodeString(std::string(s->c_str(), s->byte_size()));
+	  stack.pop_back();
+	  continue;
+	}
+	if (is_rope(w))
+	{
+	  // rope bytes are content (no child words to remap): materialize
+	  // from the source arena and normalize-build in the dest -- dedup
+	  // unifies equal strings across the two databases for free
+	  std::string bytes;
+	  scratch.sequences()->materialize(w, bytes);
+	  remap[w] = encodeString(bytes);
 	  stack.pop_back();
 	  continue;
 	}
@@ -2954,6 +3170,36 @@ public:
 	    t = cnode_arena->put(t, k, v);
 	  }
 	  remap[w] = t;
+	  stack.pop_back();
+	  open.erase(w);
+	  continue;
+	}
+	if (is_seq(w))
+	{
+	  // sequences are the fifth id space (docs/sequences.md §8.4):
+	  // REBUILD from the remapped element stream -- remapped element
+	  // words move chunk boundaries, so re-chunk via build(); dedup
+	  // unifies equal sequences across the two databases for free
+	  std::vector<u64> elems;
+	  scratch.sequences()->to_vector(w, elems);
+	  bool ready = true;
+	  for (const u64 dep : elems)
+	    if (!self_encoding(dep) && !remap.count(dep))
+	    {
+	      if (open.count(dep))
+		fatal("Import: cyclic struct/collection reference in " + src_dir);
+	      stack.push_back(dep);
+	      ready = false;
+	    }
+	  if (!ready)
+	  {
+	    open.insert(w);
+	    continue;
+	  }
+	  for (size_t i = 0; i < elems.size(); ++i)
+	    if (!self_encoding(elems[i]))
+	      elems[i] = remap[elems[i]];
+	  remap[w] = seq_arena->build(elems.data(), elems.size());
 	  stack.pop_back();
 	  open.erase(w);
 	  continue;

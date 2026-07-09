@@ -23,5 +23,7 @@ rule (flow L L2) (val L V) --> (val L2 V)
 
 ;; later stratum: unrestricted reads of the closed lattice -- the top
 ;; test, and structural deconstruction of a surviving constant list
+;; (a nonempty bracket pattern; (top) is not a sequence word, so the
+;; pattern's partial aslst entry MATCH-FAILS it, docs/sequences.md §5.2)
 rule (val L V) (= V (top)) --> (conflict L)
-rule (val L V) (= V (cons h t)) --> (constant L V)
+rule (val L V) (= V [h t ...]) --> (constant L V)

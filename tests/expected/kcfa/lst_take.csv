@@ -1,40 +1,3 @@
- (cons (app (primref "*") (cons (ref 21) (cons (app (ref 20) (cons (app (primref "-") (cons (ref 21) (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil")))) (cons (app (ref 20) (cons (app (primref "-") (cons (ref 21) (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil")))
- (cons (app (primref "*") (cons (ref 21) (cons (app (ref 20) (cons (app (primref "-") (cons (ref 21) (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil")))) (cons (app (ref 20) (cons (num 5) (_enum "nil"))) (_enum "nil")))
- (cons (app (primref "+") (cons (ref 31) (cons (ref 32) (_enum "nil")))) (cons (app (ref 30) (cons (num 3) (cons (num 4) (_enum "nil")))) (_enum "nil")))
- (cons (app (primref "-") (cons (ref 21) (cons (num 1) (_enum "nil")))) (cons (app (ref 20) (cons (app (primref "-") (cons (ref 21) (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil")))
- (cons (app (primref "-") (cons (ref 21) (cons (num 1) (_enum "nil")))) (cons (app (ref 20) (cons (num 5) (_enum "nil"))) (_enum "nil")))
- (cons (app (primref "-") (cons (ref 41) (cons (num 1) (_enum "nil")))) (cons (app (ref 40) (cons (app (primref "-") (cons (ref 41) (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil")))
- (cons (app (primref "-") (cons (ref 41) (cons (num 1) (_enum "nil")))) (cons (app (ref 40) (cons (num 3) (_enum "nil"))) (_enum "nil")))
- (cons (app (primref "=") (cons (ref 21) (cons (num 0) (_enum "nil")))) (cons (app (ref 20) (cons (app (primref "-") (cons (ref 21) (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil")))
- (cons (app (primref "=") (cons (ref 21) (cons (num 0) (_enum "nil")))) (cons (app (ref 20) (cons (num 5) (_enum "nil"))) (_enum "nil")))
- (cons (app (primref "=") (cons (ref 41) (cons (num 0) (_enum "nil")))) (cons (app (ref 40) (cons (app (primref "-") (cons (ref 41) (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil")))
- (cons (app (primref "=") (cons (ref 41) (cons (num 0) (_enum "nil")))) (cons (app (ref 40) (cons (num 3) (_enum "nil"))) (_enum "nil")))
- (cons (app (primref "eq?") (cons (ref 12) (cons (ref 13) (_enum "nil")))) (_enum "nil"))
- (cons (app (primref "eq?") (cons (ref 5) (cons (ref 6) (_enum "nil")))) (_enum "nil"))
- (cons (app (primref "not") (cons (boolean (_enum "ff")) (_enum "nil"))) (_enum "nil"))
- (cons (app (ref 0) (cons (sym "A") (_enum "nil"))) (_enum "nil"))
- (cons (app (ref 0) (cons (sym "B") (_enum "nil"))) (_enum "nil"))
- (cons (app (ref 10) (cons (sym "P") (_enum "nil"))) (_enum "nil"))
- (cons (app (ref 10) (cons (sym "Q") (_enum "nil"))) (_enum "nil"))
- (cons (app (ref 20) (cons (app (primref "-") (cons (ref 21) (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil"))
- (cons (app (ref 20) (cons (app (primref "-") (cons (ref 21) (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref 20) (cons (app (primref "-") (cons (ref 21) (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil")))
- (cons (app (ref 20) (cons (app (primref "-") (cons (ref 21) (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref 20) (cons (num 5) (_enum "nil"))) (_enum "nil")))
- (cons (app (ref 20) (cons (num 5) (_enum "nil"))) (_enum "nil"))
- (cons (app (ref 20) (cons (num 5) (_enum "nil"))) (_enum "nil"))
- (cons (app (ref 3) (cons (num 0) (_enum "nil"))) (_enum "nil"))
- (cons (app (ref 30) (cons (num 3) (cons (num 4) (_enum "nil")))) (_enum "nil"))
- (cons (app (ref 30) (cons (num 3) (cons (num 4) (_enum "nil")))) (_enum "nil"))
- (cons (app (ref 4) (cons (num 0) (_enum "nil"))) (_enum "nil"))
- (cons (app (ref 40) (cons (app (primref "-") (cons (ref 41) (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil"))
- (cons (app (ref 40) (cons (app (primref "-") (cons (ref 41) (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref 40) (cons (app (primref "-") (cons (ref 41) (cons (num 1) (_enum "nil")))) (_enum "nil"))) (_enum "nil")))
- (cons (app (ref 40) (cons (app (primref "-") (cons (ref 41) (cons (num 1) (_enum "nil")))) (_enum "nil"))) (cons (app (ref 40) (cons (num 3) (_enum "nil"))) (_enum "nil")))
- (cons (app (ref 40) (cons (num 3) (_enum "nil"))) (_enum "nil"))
- (cons (app (ref 40) (cons (num 3) (_enum "nil"))) (_enum "nil"))
- 0)
- 0)
- 0)
- 0)
- 0)
  1)
  1)
  1)
@@ -54,14 +17,25 @@
  1)
  1)
  1)
- 1)
- 1)
- 1)
- 1)
- 1)
- 1)
- 1)
- 1)
+ [(app (primref "*") [(ref 21) (app (ref 20) [(app (primref "-") [(ref 21) (num 1)])])]) (app (ref 20) [(app (primref "-") [(ref 21) (num 1)])])]
+ [(app (primref "*") [(ref 21) (app (ref 20) [(app (primref "-") [(ref 21) (num 1)])])]) (app (ref 20) [(num 5)])]
+ [(app (primref "+") [(ref 31) (ref 32)]) (app (ref 30) [(num 3) (num 4)])]
+ [(app (primref "-") [(ref 21) (num 1)]) (app (ref 20) [(app (primref "-") [(ref 21) (num 1)])])]
+ [(app (primref "-") [(ref 21) (num 1)]) (app (ref 20) [(num 5)])]
+ [(app (primref "-") [(ref 41) (num 1)]) (app (ref 40) [(app (primref "-") [(ref 41) (num 1)])])]
+ [(app (primref "-") [(ref 41) (num 1)]) (app (ref 40) [(num 3)])]
+ [(app (primref "=") [(ref 21) (num 0)]) (app (ref 20) [(app (primref "-") [(ref 21) (num 1)])])]
+ [(app (primref "=") [(ref 21) (num 0)]) (app (ref 20) [(num 5)])]
+ [(app (primref "=") [(ref 41) (num 0)]) (app (ref 40) [(app (primref "-") [(ref 41) (num 1)])])]
+ [(app (primref "=") [(ref 41) (num 0)]) (app (ref 40) [(num 3)])]
+ [(app (primref "eq?") [(ref 12) (ref 13)])]
+ [(app (primref "eq?") [(ref 5) (ref 6)])]
+ [(app (primref "not") [(boolean (_enum "ff"))])]
+ [(app (ref 20) [(app (primref "-") [(ref 21) (num 1)])]) (app (ref 20) [(app (primref "-") [(ref 21) (num 1)])])]
+ [(app (ref 20) [(app (primref "-") [(ref 21) (num 1)])]) (app (ref 20) [(num 5)])]
+ [(app (ref 30) [(num 3) (num 4)])]
+ [(app (ref 40) [(app (primref "-") [(ref 41) (num 1)])]) (app (ref 40) [(app (primref "-") [(ref 41) (num 1)])])]
+ [(app (ref 40) [(app (primref "-") [(ref 41) (num 1)])]) (app (ref 40) [(num 3)])]
 (lst_take
 (lst_take
 (lst_take
@@ -81,17 +55,11 @@
 (lst_take
 (lst_take
 (lst_take
-(lst_take
-(lst_take
-(lst_take
-(lst_take
-(lst_take
-(lst_take
-(lst_take
-(lst_take
-(lst_take
-(lst_take
-(lst_take
-(lst_take
-(lst_take
-(lst_take (_enum "nil") 0)
+(lst_take [(app (ref 0) [(sym "A")])] 1)
+(lst_take [(app (ref 0) [(sym "B")])] 1)
+(lst_take [(app (ref 10) [(sym "P")])] 1)
+(lst_take [(app (ref 10) [(sym "Q")])] 1)
+(lst_take [(app (ref 20) [(num 5)])] 1)
+(lst_take [(app (ref 3) [(num 0)])] 1)
+(lst_take [(app (ref 4) [(num 0)])] 1)
+(lst_take [(app (ref 40) [(num 3)])] 1)
