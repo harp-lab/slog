@@ -1,0 +1,3 @@
+ (ic 10))
+ (lite (lgt (ic 5) (ic 3)) (ic 10) (ic 20))
+(leq

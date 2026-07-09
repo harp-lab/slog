@@ -1,0 +1,3 @@
+ (_enum "lfalse")
+ (_enum "ltrue"))
+(limplies

@@ -1,0 +1,3 @@
+"ground-sat"   (_enum "sat")   {}   
+"ground-unsat"   (_enum "unsat")   {}   
+"symbolic"   (_enum "unknown")   {}   

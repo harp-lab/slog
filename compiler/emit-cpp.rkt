@@ -199,6 +199,13 @@
 
 (define (add-rel-decl rel)
   (match rel
+    ;; an extern relation's oracle binding (docs/smt.md): registers the
+    ;; dispatch/harvest tasks against the (already-declared) demand struct
+    ;; and its answer table.  Emitted after all relation decls (build-cprog
+    ;; appends it) so the getRelation lookups inside bindOracle succeed.
+    [`(oracle ,oname ,drel ,arel)
+     ((emit-lines 2)
+      (format "d->bindOracle(s, \"~a\", \"~a\", \"~a\");" oname drel arel))]
     [`(temp ,name ,arity)
      ((emit-lines 2)
       (format "r = db->getRelation(\"~a\");" name)

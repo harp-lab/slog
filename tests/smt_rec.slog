@@ -1,0 +1,11 @@
+;; In-SCC recursion through the oracle (docs/smt.md): each answer gates the
+;; construction of the NEXT formula, so demands arrive one fixpoint iteration
+;; at a time -- exercising repeated dispatch/harvest rounds inside a single
+;; stratum.  Counts up while (ic N) < (ic 4) is sat; 4 < 4 is unsat and stops.
+
+include "../lib/smt.slog"
+
+table (count int)
+facts (count 0)
+rule (count N) (= (sat) (smt_check (llt (ic N) (ic 4)))) (= M (+ N 1))
+  --> (count M)

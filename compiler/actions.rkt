@@ -53,12 +53,15 @@
              (string-join (for/list ([r (in-list rels)]) (format "\"~a\"" r)) ", "))]
     ;; Sampled IDB-layer write (docs/db-compression.md P1.2/P2.4).  `rels` is
     ;; the full IDB set (kept at `per`); `boosted` (a sublist) keeps at `boost`
-    ;; instead -- the productive-seed bias.  Values baked as literals.
-    [`(save-compressed ,db-name ,per ,seed ,boost (boosted ,boosted ...) (rels ,rels ..1))
+    ;; instead -- the productive-seed bias; `pinned` (a sublist, docs/smt.md
+    ;; §15) keeps at 1.0 and seeds the heap-trimming roots -- oracle-fed rows
+    ;; replay cannot re-derive.  Values baked as literals.
+    [`(save-compressed ,db-name ,per ,seed ,boost (boosted ,boosted ...)
+                       (pinned ,pinned ...) (rels ,rels ..1))
      (define (setlit rs) (string-join (for/list ([r (in-list rs)]) (format "\"~a\"" r)) ", "))
-     (format "  d->writeDatabaseSampledBIN(\"~a\", {~a}, ~a, ~aull, {~a}, ~a);\n"
+     (format "  d->writeDatabaseSampledBIN(\"~a\", {~a}, ~a, ~aull, {~a}, ~a, {~a});\n"
              db-name (setlit rels) (exact->inexact per) seed
-             (setlit boosted) (exact->inexact boost))]
+             (setlit boosted) (exact->inexact boost) (setlit pinned))]
     [`(write-csv ,dir)
      (format "  d->db()->writeDatabaseCSV(\"~a\");\n" dir)]
     ;; Serial checkpoint of the current (possibly paused) db (§P2.3).

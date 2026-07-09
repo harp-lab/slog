@@ -99,8 +99,25 @@
   (define selections
     (foldl (add-select-sets rel-env) (seed-select-sets rel-env) rules))
   (define decls (make-rel-decls rel-env selections))
+  ;; extern oracle bindings (docs/smt.md): a stratum whose rules write the
+  ;; demand struct gets the daemon-side dispatch/harvest registration,
+  ;; emitted AFTER every relation decl so bindOracle's lookups succeed
+  (define oracle-decls
+    (sort (for/list ([(k decl) (in-hash rel-env)]
+                     #:when (and (pair? decl) (eq? 'oracle (car decl))
+                                 (set-member? dynamic-rels (third decl))))
+            `(oracle ,(second decl) ,(third decl) ,(fourth decl)))
+          symbol<? #:key third))
+  ;; the bound answer tables grow via the oracle's harvest side channel (no
+  ;; rule head), so mark them dynamic -- mirrors the pre-planning extension
+  ;; in compile.rkt (the planner already staged rules accordingly); this set
+  ;; drives the static?-task flags and the stratum's addDynamicRel metadata.
+  ;; smt_bad_formula grows via the dispatcher's side channel likewise.
+  (define dynamic-rels+
+    (for/fold ([acc dynamic-rels]) ([d (in-list oracle-decls)])
+      (set-add (set-add acc (fourth d)) 'smt_bad_formula)))
   (define crules (map (lower-rule rel-env selections) rules))
-  `(cprog ,dynamic-rels ,constants ,decls ,crules))
+  `(cprog ,dynamic-rels+ ,constants ,(append decls oracle-decls) ,crules))
 
 ;; -----------------------------------------------------------------------
 ;; 1. Constants.
@@ -343,6 +360,7 @@
              decls)]
       [`(temp ,arity) (cons `(temp ,name ,arity) decls)]
       [`(enum ,_) decls]
+      [`(oracle ,_ ...) decls]   ; bindings are emitted by build-cprog per stratum
       [(? lattice-spec?) decls]
       [(? listof-spec?) decls]
       [(? mapof-spec?) decls])))

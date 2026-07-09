@@ -298,7 +298,7 @@
 (define (parse-top-level toks)
   ;; parses top level expression from toks
   (define top-level-keywords
-    (set "def" "rule" "enum" "facts" "table" "struct" "union" "demand" "lattice" ""))
+    (set "def" "rule" "enum" "facts" "table" "struct" "union" "demand" "extern" "lattice" ""))
   (match (token->str (peek toks))
     ["def" (parse-def toks #t)]
     [(or "import" "export")
@@ -331,6 +331,19 @@
            (let ()
              (match-define (cons topbody toks++) (parse-top-level toks+))
              (cons (emit-expr `(demand ,@sig-lst ,topbody) toks toks++) toks++))
+           (let ()
+             (match-define (cons e toks++) (parse toks+))
+             (loop toks++ `(,@sig-lst ,e)))))]
+    ["extern"
+     ;; extern <oracle> (name in-type) answer-type -- an oracle-backed demand
+     ;; relation (docs/smt.md): declared like demand, answered by the named
+     ;; daemon-side oracle instead of rules; gathered like demand
+     (let loop ([toks+ (advance toks)]
+                [sig-lst '()])
+       (if (set-member? top-level-keywords (token->str (peek toks+)))
+           (let ()
+             (match-define (cons topbody toks++) (parse-top-level toks+))
+             (cons (emit-expr `(extern ,@sig-lst ,topbody) toks toks++) toks++))
            (let ()
              (match-define (cons e toks++) (parse toks+))
              (loop toks++ `(,@sig-lst ,e)))))]

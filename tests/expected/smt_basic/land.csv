@@ -1,0 +1,3 @@
+ (llt (ic 1) (ic 2))
+ (lnot (_enum "lfalse")))
+(land

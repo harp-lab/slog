@@ -1,0 +1,2 @@
+(smt_qsat (lle (ic 2) (ic 2)))   1   
+(smt_qsat (llt (ic 2) (ic 1)))   2   

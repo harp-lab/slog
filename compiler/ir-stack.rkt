@@ -244,6 +244,10 @@
     ;; end in the value column, delta indices are ordinary full-width sets
     [`(lattice ,(? var?) ,(? natural?) (,(? var?) ,_ ...) ,(? index?) ..1) #t]
     [`(temp ,(? var?) ,(? natural?)) #t]
+    ;; an extern relation's oracle binding (docs/smt.md): registers the
+    ;; daemon-side dispatch/harvest tasks against the (already-declared)
+    ;; demand struct and its answer table
+    [`(oracle ,(? var?) ,(? var?) ,(? var?)) #t]
     [_ #f]))
 
 (define (c-op? op)

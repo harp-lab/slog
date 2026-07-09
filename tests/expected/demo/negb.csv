@@ -1,0 +1,5 @@
+(lge (iv "p1_y") (ic 0))   (lnot (lge (iv "p1_y") (ic 0)))   
+(lgt (ic 1) (ic 2))   (lnot (lgt (ic 1) (ic 2)))   
+(lle (lmul (ic 3) (ic 3)) (ic 10))   (lnot (lle (lmul (ic 3) (ic 3)) (ic 10)))   
+(llt (iv "p1_x") (ic 0))   (lnot (llt (iv "p1_x") (ic 0)))   
+(lne (iv "p2_d") (ic 0))   (lnot (lne (iv "p2_d") (ic 0)))   

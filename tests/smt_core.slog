@@ -1,0 +1,17 @@
+;; Unsat cores under the mock backend (docs/smt.md §15): every ground-false
+;; conjunct of a (lall S) root is blamed (each alone refutes the set), true
+;; conjuncts are exonerated, and without a ground-false member the mock
+;; answers unknown with an empty core.  Cores ride back as first-class csets.
+
+include "../lib/smt.slog"
+
+table (probe str verdict cset)
+rule (smt_core (lall {(llt (ic 5) (ic 3)) (lgt (ic 1) (ic 2)) (llt (ic 1) (ic 2))}) V S)
+  --> (probe "two-blamed" V S)
+rule (smt_core (lall {(llt (ic 1) (ic 2))}) V S)
+  --> (probe "all-true" V S)
+rule (smt_core (lall {(llt (iv "x") (ic 3))}) V S)
+  --> (probe "symbolic" V S)
+
+table (blame_count str int)
+rule (probe ID V S) (= N (csize S)) --> (blame_count ID N)

@@ -1,0 +1,16 @@
+;; Oracle-answer pinning test program (docs/smt.md §15, driven by
+;; tests/compression/smt-pin-test.sh): symbolic probes whose verdicts come
+;; from whichever solver ran at SAVE time, plus a malformed formula whose
+;; (error (smt_bad_formula ...)) fact must also survive compression.
+
+include "../../lib/smt.slog"
+
+table (probe int verdict)
+rule (= V (smt_check (llt (iv "a") (ic 1)))) --> (probe 1 V)
+rule (= V (smt_check (llt (iv "a") (ic 2)))) --> (probe 2 V)
+rule (= V (smt_check (land (llt (iv "a") (ic 3)) (lgt (iv "b") (ic 0))))) --> (probe 3 V)
+
+table (badp verdict)
+rule (= V (smt_check (lall {(ltrue) (ic 1)}))) --> (badp V)
+table (caught str)
+rule (badp V) (error (smt_bad_formula R F)) --> (caught R)

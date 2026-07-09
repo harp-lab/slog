@@ -1,0 +1,3 @@
+(_enum "sat")
+(_enum "unknown")
+(_enum "unsat")

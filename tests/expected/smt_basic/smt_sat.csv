@@ -1,0 +1,3 @@
+(land (llt (ic 1) (ic 2)) (lnot (_enum "lfalse")))   
+(lle (lmul (ic 3) (ic 3)) (lsub (ic 20) (ic 10)))   
+(lor (_enum "lfalse") (limplies (_enum "lfalse") (_enum "ltrue")))   

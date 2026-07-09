@@ -1,0 +1,16 @@
+;; Malformed formulas surface as (error (smt_bad_formula reason F)) facts
+;; (docs/smt.md §12) AND answer (unknown) -- the fallible-prim pattern, so
+;; programs can react in-language.  An integer as a set-conjunction member
+;; slips past typing (cset elements are untyped) and fails serialization.
+;;
+;; The reaction rule reads `probe` too: wrap rules are invisible to
+;; stratification (stratify.rkt), so an error-watching rule must depend on
+;; the producing computation to be scheduled after it.
+
+include "../lib/smt.slog"
+
+table (probe verdict)
+rule (= V (smt_check (lall {(ltrue) (ic 1)}))) --> (probe V)
+
+table (caught str)
+rule (probe V) (error (smt_bad_formula R F)) --> (caught R)

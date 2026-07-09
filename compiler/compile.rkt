@@ -215,16 +215,40 @@
   ;; (error e) by the injected per-arm rules below, delta-driven in this fixpoint.
   (define has-prims?
     (for/or ([rule (in-set base-rules)]) (rule-has-fallible-prims? rule)))
+  ;; strata that write an extern demand struct dispatch to its oracle, whose
+  ;; serialize failures record (smt_bad_formula reason formula) facts
+  ;; (docs/smt.md §12) -- wire that arm + wrap rule exactly like the others
+  (define base-heads
+    (for/fold ([acc (set)]) ([rule (in-set base-rules)])
+      (set-union acc (rule-head-rels rule))))
+  (define has-oracle?
+    (for/or ([(k decl) (in-hash (type-env-rels type-env))])
+      (and (pair? decl) (eq? 'oracle (car decl))
+           (set-member? base-heads (third decl)))))
   (define active-arms
-    (append (if checked?   '(malformed_deduction) '())
-            (if has-prims? prim-error-arms        '())))
+    (append (if checked?    '(malformed_deduction) '())
+            (if has-prims?  prim-error-arms        '())
+            (if has-oracle? '(smt_bad_formula)     '())))
   (define rules
     (for/fold ([rs base-rules]) ([arm (in-list active-arms)])
       (set-add rs (error-wrap-rule-for-arm arm))))
-  (define dynamic-rels
+  (define dynamic-rels0
     (for/fold ([acc (list->set active-arms)])
               ([rule (in-set rules)])
       (set-union acc (rule-head-rels rule))))
+  ;; an extern relation's answer table grows through the oracle's harvest
+  ;; task -- a side channel, not a rule head -- so, exactly like the
+  ;; malformed_deduction/error arms above, it must be marked dynamic in any
+  ;; stratum that writes the demand struct, or the planner would treat it as
+  ;; closed and rules joining it would never see answers arriving
+  ;; mid-fixpoint (docs/smt.md)
+  (define dynamic-rels
+    (for/fold ([acc dynamic-rels0])
+              ([(k decl) (in-hash (type-env-rels type-env))])
+      (if (and (pair? decl) (eq? 'oracle (car decl))
+               (set-member? dynamic-rels0 (third decl)))
+          (set-add acc (fourth decl))
+          acc)))
   (match-define (cons planned rel-env+)
     (plan-all rules (type-env-rels type-env) dynamic-rels))
   (define cprog (lower-all planned rel-env+))
@@ -293,7 +317,14 @@
 ;; in deducing new facts.  The sampler weights these more highly for retention
 ;; (a better replay seed) than terminal relations that nothing reads.  A simple
 ;; static signal, not a strict firing order.
-(struct db-partition (idb-rels edb-rels mixed-rels strata-range productive-rels)
+;; `pinned-rels` (docs/smt.md §15): oracle-fed relations -- the extern answer
+;; tables plus the smt_bad_formula error structs -- written by NO rule (a
+;; daemon-side oracle produces their rows mid-run), so a compressed save must
+;; store them VERBATIM and unsampled: replay cannot re-derive them, and
+;; re-ingesting them is what keeps the oracle from being re-queried (the
+;; dispatch task treats loaded answers as already-answered demands).
+(struct db-partition (idb-rels edb-rels mixed-rels strata-range productive-rels
+                      pinned-rels)
   #:transparent)
 
 (define (jobs->db-partition jobs)
@@ -330,11 +361,26 @@
                  (sort (set->list (rule-head-rels rule)) symbol<?)
                  (sort (set->list (rule-body-rels rule)) symbol<?)
                  (sort (set->list (set-intersect (rule-body-rels rule) rel-names)) symbol<?)))))
+  ;; oracle-fed relations (see the struct comment): the extern answer tables
+  ;; from the (oracle ...) rel-env entries, plus the smt_bad_formula arm when
+  ;; any oracle exists (its rows come from the dispatcher's side channel)
+  (define oracle-pinned
+    (for*/fold ([acc (set)])
+               ([job (in-list jobs)]
+                [(k decl) (in-hash (type-env-rels (second job)))])
+      (if (and (pair? decl) (eq? 'oracle (car decl)))
+          (set-add acc (fourth decl))
+          acc)))
+  (define pinned
+    (if (set-empty? oracle-pinned)
+        '()
+        (sort (set->list (set-add oracle-pinned 'smt_bad_formula)) symbol<?)))
   (db-partition (sort (set->list idb) symbol<?)
                 (sort (set->list edb) symbol<?)
                 (sort (set->list (set-intersect idb edb)) symbol<?)
                 (if (null? lvl-list) '(0 . 0) (cons (first lvl-list) (last lvl-list)))
-                (sort (set->list (set-intersect idb read-rels)) symbol<?)))
+                (sort (set->list (set-intersect idb read-rels)) symbol<?)
+                pinned))
 
 (define (opt-mode) (or (getenv "SLOG_OPT") "tiered"))
 

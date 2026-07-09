@@ -1,0 +1,28 @@
+;; Real-solver end-to-end (run by tests/smt-solver-tests.sh when z3 is
+;; available): variable formulas with genuine sat/unsat answers, including a
+;; shared-variable contradiction the mock cannot decide.
+
+include "../../lib/smt.slog"
+
+table (probe str verdict)
+rule (= V (smt_check (land (llt (iv "x") (ic 3)) (llt (ic 5) (iv "x")))))
+  --> (probe "contradiction" V)
+rule (= V (smt_check (land (llt (iv "x") (ic 3)) (llt (ic 1) (iv "x")))))
+  --> (probe "satisfiable" V)
+rule (= V (smt_check (limplies (land (bv "p") (bv "q")) (bv "p"))))
+  --> (probe "tautology" V)
+rule (= V (smt_check (lnot (limplies (land (bv "p") (bv "q")) (bv "p")))))
+  --> (probe "negated-tautology" V)
+
+;; |y| < 0 is unsatisfiable: ite reasoning
+rule (= V (smt_check (llt (lite (lge (iv "y") (ic 0)) (iv "y") (lsub (ic 0) (iv "y")))
+                          (ic 0))))
+  --> (probe "abs-negative" V)
+
+;; a symbolic set conjunction: w<3 and w>5 over the SAME variable
+rule (= V (smt_check (lall {(llt (iv "w") (ic 3)) (lgt (iv "w") (ic 5))})))
+  --> (probe "set-contradiction" V)
+
+;; nonlinear (exercises QF_NIA logic inference): r*r = 2 has no int solution
+rule (= V (smt_check (leq (lmul (iv "r") (iv "r")) (ic 2))))
+  --> (probe "sqrt2" V)

@@ -1,0 +1,3 @@
+(smt_qmodel (lgt (ic 1) (ic 2)))
+(smt_qmodel (llt (ic 1) (ic 2)))
+(smt_qmodel (llt (iv "x") (ic 3)))

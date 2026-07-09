@@ -1,0 +1,3 @@
+ (lmul (ic 3) (ic 3))
+ (lsub (ic 20) (ic 10)))
+(lle

@@ -1,0 +1,12 @@
+"p1_check"   {(llt (iv "p1_x") (ic 0)):1 (leq (iv "p1_y") (lsub (ic 0) (iv "p1_x"))):1}   
+"p1_check"   {(lnot (llt (iv "p1_x") (ic 0))):1 (leq (iv "p1_y") (iv "p1_x")):1}   
+"p1_end"   {(llt (iv "p1_x") (ic 0)):1 (lge (iv "p1_y") (ic 0)):1 (leq (iv "p1_y") (lsub (ic 0) (iv "p1_x"))):1}   
+"p1_end"   {(lnot (llt (iv "p1_x") (ic 0))):1 (lge (iv "p1_y") (ic 0)):1 (leq (iv "p1_y") (iv "p1_x")):1}   
+"p1_neg"   {(llt (iv "p1_x") (ic 0)):1}   
+"p1_pos"   {(lnot (llt (iv "p1_x") (ic 0))):1}   
+"p1_start"   {}   
+"p2_end"   {(lne (iv "p2_d") (ic 0)):1}   
+"p2_start"   {}   
+"p3_b"   {(lle (lmul (ic 3) (ic 3)) (ic 10)):1}   
+"p3_end"   {(lle (lmul (ic 3) (ic 3)) (ic 10)):1 (lgt (ic 1) (ic 2)):1}   
+"p3_start"   {}   

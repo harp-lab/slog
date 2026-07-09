@@ -1,0 +1,4 @@
+ (iv "p1_y")
+ (lsub (ic 0) (iv "p1_x")))
+(leq
+(leq (iv "p1_y") (iv "p1_x"))

@@ -1,0 +1,85 @@
+;; examples/verify -- lifting dynamic checks to static facts (docs/smt.md).
+;;
+;; The motivating use of the SMT oracle: a forward path-condition analysis
+;; over a tiny passive-form (each variable assigned once) branching IR.  At
+;; every dynamic check we accumulate the OVER-APPROXIMATE condition of each
+;; error path (the path condition plus the check's negation); a check whose
+;; error paths are jointly UNSATISFIABLE can never fire at runtime, so it is
+;; statically elidable.  Absence of proof (sat or unknown) keeps the check --
+;; the sound default falls out of the verdict matching.
+;;
+;; Three features compose here:
+;;   - path conditions are canonical CSETS of atomic formulas: extension is
+;;     cins, and order-insensitivity means one semantic condition is one
+;;     interned value (and at most one solver query) however it was reached;
+;;   - the per-check error conditions accumulate in a (set any) LATTICE
+;;     column, so all paths merge into ONE disjunction -- and because the
+;;     querying rules read that column from a LATER stratum, they see only
+;;     the final merged set: stratification does "wait until all paths are
+;;     known" for free, with no negation or aggregation construct;
+;;   - one (smt_check (lany ES)) per check decides it.
+;;
+;; The IR: a label maps to one instruction; conditions/expressions ARE the
+;; SMT vocabulary (a real frontend would translate its expression language).
+;;   (asgn X E N)      x := e (passive: one assignment per variable), goto N
+;;   (branch C LT LF)  if c goto LT else LF
+;;   (check ID C N)    dynamic check ID: c must hold, then goto N
+;;   (halt)
+;; Loops are out of scope for this demo (they would havoc assigned
+;; variables at the loop head via fresh versions).
+
+include "../../lib/smt.slog"
+
+union (instr (asgn str iexpr str)
+             (branch formula str str)
+             (check str formula str)
+             (halt))
+table (stmt str instr)
+table (entry str)
+
+;; Condition negations, materialized ONCE per branch/check condition.  A
+;; struct nested in a BODY position is a content lookup (it must already
+;; exist; docs/demand.md "asking is constructing" is heads-only), so derived
+;; formulas like (lnot c) are built in a head here and joined below.
+table (negb formula formula)
+rule (stmt L (branch C LT LF)) --> (negb C (lnot C))
+rule (stmt L (check ID C N))   --> (negb C (lnot C))
+
+;; ... and likewise the assignment equations x = e.
+table (eqf str iexpr formula)
+rule (stmt L (asgn X E N)) --> (eqf X E (leq (iv X) E))
+
+;; Reachable (label, path-condition) pairs; a path condition is a cset of
+;; atomic formulas.  An assignment contributes the equation x = e; a branch
+;; forks on c / (lnot c); a PASSING check contributes its condition.
+table (pc str cset)
+rule (entry L) --> (pc L (cmap))
+rule (pc L S) (stmt L (asgn X E N)) (eqf X E Q) (= S2 (cins S Q))
+  --> (pc N S2)
+rule (pc L S) (stmt L (branch C LT LF)) (negb C NC)
+     (= ST (cins S C)) (= SF (cins S NC))
+  --> (pc LT ST) (pc LF SF)
+rule (pc L S) (stmt L (check ID C N)) (= S2 (cins S C))
+  --> (pc N S2)
+
+;; The per-path error formula (path condition AND the check's negation),
+;; materialized in a head; then merged per check across ALL paths by set
+;; union: each path contributes the singleton {perr}.
+table (perr str formula)
+rule (pc L S) (stmt L (check ID C N)) (negb C NC) (= SE (cins S NC))
+  --> (perr ID (lall SE))
+
+lattice (fset (set any))
+table (check_err str fset)
+rule (perr ID E) (= E1 (cins (cmap) E)) --> (check_err ID E1)
+
+;; Decided strictly AFTER the fixpoint above (check_err has closed): one
+;; query per check over the disjunction of its error paths.
+table (check_status str verdict)
+rule (check_err ID ES) (= V (smt_check (lany ES))) --> (check_status ID V)
+
+table (elidable str)   ;; proven: no execution can fail this check
+table (kept str)       ;; sat (genuinely reachable) or unknown (no proof)
+rule (check_err ID ES) (= (unsat) (smt_check (lany ES))) --> (elidable ID)
+rule (check_status ID (sat))     --> (kept ID)
+rule (check_status ID (unknown)) --> (kept ID)

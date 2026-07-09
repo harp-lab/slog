@@ -1,0 +1,3 @@
+ "non-boolean member of (lall ...)"
+ (lall {(ic 1):1 (_enum "ltrue"):1}))
+(smt_bad_formula

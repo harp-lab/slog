@@ -29,13 +29,17 @@
 
 ;; setting name -> the env var the toolchain already consults for it.
 (define setting->env
-  (hash "threads"    "SLOG_THREADS"
-        "build_jobs" "SLOG_BUILD_JOBS"
-        "opt"        "SLOG_OPT"
-        "max_ms"     "SLOG_MAX_MS"
-        "slice_ms"   "SLOG_SLICE_MS"
-        "mem_max"    "SLOG_MEM_MAX"
-        "mem_bytes"  "SLOG_MEM_BYTES"))
+  (hash "threads"     "SLOG_THREADS"
+        "build_jobs"  "SLOG_BUILD_JOBS"
+        "opt"         "SLOG_OPT"
+        "max_ms"      "SLOG_MAX_MS"
+        "slice_ms"    "SLOG_SLICE_MS"
+        "mem_max"     "SLOG_MEM_MAX"
+        "mem_bytes"   "SLOG_MEM_BYTES"
+        ;; external SMT oracle (docs/smt.md): the solver chain
+        ;; ("z3:500,cvc5:2000" | "mock") and the worker-pool size
+        "smt_solvers" "SLOG_SMT_SOLVERS"
+        "oracle_procs" "SLOG_ORACLE_PROCS"))
 
 ;; ---- entry point --------------------------------------------------------
 ;; Called once, early, from slog.rkt.  Best-effort: any failure falls back to

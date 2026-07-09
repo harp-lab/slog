@@ -53,6 +53,10 @@ public:
 private:
   Database* database;
   Emit out;
+  // External oracles (docs/smt.md): built-in implementations register here;
+  // the registry doubles as the Database's ExternalWork so a stratum's
+  // fixpoint waits for outstanding answers.
+  OracleRegistry* oracle_registry;
   std::vector<Stratum*> pipeline;
   size_t next_unrun = 0;
   // Set after each run; consumed by beginStratum.  The reload (dump every
@@ -83,6 +87,11 @@ public:
     default_budget.max_ms    = envU64("SLOG_MAX_MS", default_budget.max_ms);
     default_budget.slice_ms  = envU64("SLOG_SLICE_MS", default_budget.slice_ms);
     default_budget.mem_bytes = envU64("SLOG_MEM_BYTES", default_budget.mem_bytes);
+    oracle_registry = new OracleRegistry();
+    oracle_registry->registerOracle("smt", new SmtOracle());
+    oracle_registry->registerOracle("smtmodel", new SmtOracle(SMT_MODE_MODEL));
+    oracle_registry->registerOracle("smtcore", new SmtOracle(SMT_MODE_CORE));
+    database->setExternalWork(oracle_registry);
   }
 
   ~Daemon()
@@ -90,6 +99,7 @@ public:
     for (Stratum* s : pipeline)
       delete s;
     delete database;
+    delete oracle_registry;
   }
 
   // The database, exposing the full storage/disk API to plugins.
@@ -204,15 +214,18 @@ public:
   }
   // Sampled IDB-layer write (docs/db-compression.md P1.2): keep only a
   // per-fraction of each named relation's tuples (dropped ones recomputed on
-  // load), struct heap + interners whole.  Same suspended guard.
+  // load), struct heap + interners whole.  `pinned` relations (docs/smt.md
+  // §15: oracle-fed rows replay cannot re-derive) keep everything and seed
+  // the heap-trimming roots.  Same suspended guard.
   void writeDatabaseSampledBIN(const std::string& db_name,
                                const std::unordered_set<std::string>& only,
                                double per, u64 seed,
                                const std::unordered_set<std::string>& boosted,
-                               double boost)
+                               double boost,
+                               const std::unordered_set<std::string>& pinned = {})
   {
     if (refuseIfSuspended("write-db")) return;
-    database->writeDatabaseBIN(db_name, only, per, seed, boosted, boost);
+    database->writeDatabaseBIN(db_name, only, per, seed, boosted, boost, pinned);
   }
   void writeRelationBIN(const std::string& db_name, const std::string& rel)
   {
@@ -257,6 +270,24 @@ public:
     if (refuseIfSuspended("refresh-rel")) return;
     const bool changed = database->refreshRelationBIN(db_name, rel);
     emit(std::string("(refreshed ") + rel + " " + (changed ? "1" : "0") + ")");
+  }
+
+  // Bind an extern demand relation to its oracle for one stratum (docs/
+  // smt.md): the generated plugin calls this for every stratum that writes
+  // the demand struct.  Registers the dispatch and harvest tasks; the
+  // binding itself (answered set, completion queue) lives in the registry
+  // and persists across strata and hot swaps.
+  void bindOracle(Stratum* s, const std::string& oracle_name,
+                  const std::string& demand_rel, const std::string& ans_rel)
+  {
+    Relation* drel = database->getRelation(demand_rel);
+    Relation* arel = database->getRelation(ans_rel);
+    if (drel == nullptr || arel == nullptr)
+      fatal("bindOracle: relations " + demand_rel + " / " + ans_rel
+            + " must be registered first");
+    OracleBinding* b = oracle_registry->bind(oracle_name, demand_rel, ans_rel);
+    s->addTask(phase_read, new OracleDispatchTask(database, oracle_registry, b, drel, arel));
+    s->addTask(phase_read, new OracleHarvestTask(database, oracle_registry, b, arel));
   }
 
   // Append a stratum to the pipeline (it runs on the next continueRun),

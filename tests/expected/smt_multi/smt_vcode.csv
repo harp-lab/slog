@@ -1,0 +1,3 @@
+0   (_enum "unknown")   
+1   (_enum "sat")   
+2   (_enum "unsat")   

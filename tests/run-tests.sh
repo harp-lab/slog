@@ -42,6 +42,12 @@ done
 # can still export SLOG_OPT=2 to exercise the optimized path.
 export SLOG_OPT="${SLOG_OPT:-0}"
 
+# Pin the SMT oracle to its deterministic mock backend (docs/smt.md) so the
+# smt_* goldens never depend on an installed solver or the user's configured
+# chain (config/config.slog could set smt_solvers).  The solver-path tests
+# live in tests/smt-solver-tests.sh instead.
+export SLOG_SMT_SOLVERS=mock
+
 # Build the daemon ONCE up front so the concurrent tests below don't race
 # `make` (each test's ensure-slogd-exists then finds it fresh and skips).
 make -C daemon >/dev/null 2>&1 || { echo "daemon build failed"; exit 1; }
@@ -60,6 +66,7 @@ if [ ${#TESTS[@]} -eq 0 ]; then
   TESTS+=("examples/schemecfa/schemecfa.slog")
   TESTS+=("examples/schemecfa/analysis-demo.slog")
   TESTS+=("examples/kcfa/kcfa.slog")
+  TESTS+=("examples/verify/demo.slog")
 fi
 
 if [ "$KEEP_CACHE" -eq 0 ]; then

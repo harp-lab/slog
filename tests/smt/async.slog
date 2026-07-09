@@ -1,0 +1,17 @@
+;; Async oracle plumbing (run by tests/smt-solver-tests.sh with the scripted
+;; slow-sat solver): variable formulas the mock could never decide all come
+;; back sat through the worker pool, the fixpoint's in-flight wait, and the
+;; harvest path; a later stratum re-asks one formula (interned => no second
+;; solver call) plus a fresh one.  The runner asserts the solver was invoked
+;; exactly once per DISTINCT formula.
+
+include "../../lib/smt.slog"
+
+table (probe int verdict)
+rule (= V (smt_check (llt (iv "a") (ic 1)))) --> (probe 1 V)
+rule (= V (smt_check (llt (iv "a") (ic 2)))) --> (probe 2 V)
+rule (= V (smt_check (llt (iv "a") (ic 3)))) --> (probe 3 V)
+
+table (later int verdict)
+rule (probe 1 V) (= W (smt_check (llt (iv "a") (ic 1)))) --> (later 1 W)
+rule (probe 1 V) (= W (smt_check (llt (iv "a") (ic 4)))) --> (later 4 W)

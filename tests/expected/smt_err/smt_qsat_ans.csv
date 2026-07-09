@@ -1,0 +1,1 @@
+(smt_qsat (lall {(ic 1):1 (_enum "ltrue"):1}))   0   

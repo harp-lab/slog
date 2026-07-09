@@ -1,0 +1,1 @@
+(leq (ladd (ic 2) (ic 2)) (ic 5))

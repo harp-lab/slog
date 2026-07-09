@@ -1,0 +1,1 @@
+(smt_check (lall {(ic 1):1 (_enum "ltrue"):1}))   (_enum "unknown")   

@@ -1,0 +1,5 @@
+ "p1_check")
+ "p1_y"
+ (lsub (ic 0) (iv "p1_x"))
+(asgn
+(asgn "p1_y" (iv "p1_x") "p1_check")

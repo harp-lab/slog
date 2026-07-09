@@ -1,0 +1,5 @@
+(smt_check (llt (ic 0) (ic 4)))
+(smt_check (llt (ic 1) (ic 4)))
+(smt_check (llt (ic 2) (ic 4)))
+(smt_check (llt (ic 3) (ic 4)))
+(smt_check (llt (ic 4) (ic 4)))

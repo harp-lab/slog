@@ -1,0 +1,31 @@
+;; Demo programs for the check-lifting analysis (verify.slog, docs/smt.md).
+;;
+;; p1 -- abs: y is non-negative on BOTH branches, so the "abs-nonneg" check's
+;;       two error paths are jointly unsat: elidable under a real solver
+;;       (tests/smt-solver-tests.sh), unknown->kept under the mock backend.
+;; p2 -- an unconstrained divisor: the "div-nonzero" error path (d = 0) is
+;;       satisfiable; the check is genuinely needed and stays.
+;; p3 -- ground checks the mock backend itself decides: "const-ok"
+;;       (9 <= 10; error path unsat => elided even in the golden run) and
+;;       "const-bad" (1 > 2 fails on every run => sat, kept).
+
+include "verify.slog"
+
+;; p1: if x < 0 then y := 0 - x else y := x; check y >= 0
+facts (entry "p1_start")
+facts (stmt "p1_start" (branch (llt (iv "p1_x") (ic 0)) "p1_neg" "p1_pos"))
+facts (stmt "p1_neg"   (asgn "p1_y" (lsub (ic 0) (iv "p1_x")) "p1_check"))
+facts (stmt "p1_pos"   (asgn "p1_y" (iv "p1_x") "p1_check"))
+facts (stmt "p1_check" (check "abs-nonneg" (lge (iv "p1_y") (ic 0)) "p1_end"))
+facts (stmt "p1_end"   (halt))
+
+;; p2: check d /= 0 with d unconstrained
+facts (entry "p2_start")
+facts (stmt "p2_start" (check "div-nonzero" (lne (iv "p2_d") (ic 0)) "p2_end"))
+facts (stmt "p2_end"   (halt))
+
+;; p3: two constant checks in sequence
+facts (entry "p3_start")
+facts (stmt "p3_start" (check "const-ok" (lle (lmul (ic 3) (ic 3)) (ic 10)) "p3_b"))
+facts (stmt "p3_b"     (check "const-bad" (lgt (ic 1) (ic 2)) "p3_end"))
+facts (stmt "p3_end"   (halt))

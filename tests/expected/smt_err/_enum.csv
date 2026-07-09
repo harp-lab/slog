@@ -1,0 +1,4 @@
+(_enum "ltrue")
+(_enum "sat")
+(_enum "unknown")
+(_enum "unsat")

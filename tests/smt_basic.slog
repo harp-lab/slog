@@ -1,0 +1,26 @@
+;; SMT oracle basics under the deterministic mock backend (docs/smt.md):
+;; ground formulas decide sat/unsat, a free variable answers unknown, and
+;; the partial-style guard (= (unsat) (smt_check F)) fires only on proof.
+
+include "../lib/smt.slog"
+
+table (probe str verdict)
+rule (= V (smt_check (land (llt (ic 1) (ic 2)) (lnot (lfalse)))))
+  --> (probe "true-conj" V)
+rule (= V (smt_check (leq (ladd (ic 2) (ic 2)) (ic 5))))
+  --> (probe "bad-sum" V)
+rule (= V (smt_check (llt (iv "x") (ic 3))))
+  --> (probe "free-var" V)
+rule (= V (smt_check (lor (lfalse) (limplies (lfalse) (ltrue)))))
+  --> (probe "vacuous" V)
+rule (= V (smt_check (lle (lmul (ic 3) (ic 3)) (lsub (ic 20) (ic 10)))))
+  --> (probe "nine-le-ten" V)
+
+;; acting only on unsat: the same interned formula as "bad-sum" (one solve)
+table (elidable str)
+rule (= (unsat) (smt_check (leq (ladd (ic 2) (ic 2)) (ic 5))))
+  --> (elidable "bad-sum-check")
+
+;; the sound default: an unknown never fires sat/unsat guards
+rule (= (unsat) (smt_check (llt (iv "x") (ic 3))))
+  --> (elidable "must-not-appear")

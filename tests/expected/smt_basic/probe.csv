@@ -1,0 +1,5 @@
+"bad-sum"   (_enum "unsat")   
+"free-var"   (_enum "unknown")   
+"nine-le-ten"   (_enum "sat")   
+"true-conj"   (_enum "sat")   
+"vacuous"   (_enum "sat")   

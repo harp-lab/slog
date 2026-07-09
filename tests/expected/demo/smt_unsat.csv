@@ -1,0 +1,1 @@
+(lany {(lall {(lnot (lle (lmul (ic 3) (ic 3)) (ic 10))):1}):1})   

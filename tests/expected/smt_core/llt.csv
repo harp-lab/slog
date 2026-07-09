@@ -1,0 +1,3 @@
+(llt (ic 1) (ic 2))
+(llt (ic 5) (ic 3))
+(llt (iv "x") (ic 3))

@@ -1,0 +1,5 @@
+(smt_check (land (llt (ic 1) (ic 2)) (lnot (_enum "lfalse"))))   (_enum "sat")   
+(smt_check (leq (ladd (ic 2) (ic 2)) (ic 5)))   (_enum "unsat")   
+(smt_check (lle (lmul (ic 3) (ic 3)) (lsub (ic 20) (ic 10))))   (_enum "sat")   
+(smt_check (llt (iv "x") (ic 3)))   (_enum "unknown")   
+(smt_check (lor (_enum "lfalse") (limplies (_enum "lfalse") (_enum "ltrue"))))   (_enum "sat")   

@@ -1,0 +1,5 @@
+(smt_qsat (llt (ic 0) (ic 4)))   1   
+(smt_qsat (llt (ic 1) (ic 4)))   1   
+(smt_qsat (llt (ic 2) (ic 4)))   1   
+(smt_qsat (llt (ic 3) (ic 4)))   1   
+(smt_qsat (llt (ic 4) (ic 4)))   2   

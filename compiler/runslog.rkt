@@ -413,7 +413,11 @@
     (when db-name
       (let* ([ddir (string-append "data/" db-name)]
              [meta (and (db-meta-file-exists? ddir) (read-db-meta ddir))]
-             [idb (if meta (db-meta-idb-rels meta) '())]
+             ;; pinned oracle relations are part of the stored signature
+             ;; (loaded verbatim; a missing pin must surface as drift)
+             [idb (if meta (append (db-meta-idb-rels meta)
+                                   (db-meta-pinned-rels meta))
+                      '())]
              [label (if no-seed? "full replay" "replay")])
         (when (and meta (pair? idb))
           (cond
@@ -472,9 +476,14 @@
 
     ;; Capture the full-IDB content signature BEFORE the (possibly sampled)
     ;; layer write, so a load can verify the replay reproduced it (P1.3).
+    ;; Pinned oracle relations (docs/smt.md §15) are signed too: they are
+    ;; loaded verbatim, so a corrupted or missing pin surfaces as drift.
+    (define signed-rels
+      (append (db-partition-idb-rels partition)
+              (db-partition-pinned-rels partition)))
     (define captured-sig #f)
-    (when (and linked-compressed? (not (null? (db-partition-idb-rels partition))))
-      (send-plugin (action-so `(signature ,@(db-partition-idb-rels partition))))
+    (when (and linked-compressed? (not (null? signed-rels)))
+      (send-plugin (action-so `(signature ,@signed-rels)))
       (set! captured-sig (read-signature!)))
 
     ;; Resolve the retention target now that the run's total recompute cost is
@@ -494,20 +503,25 @@
       ;; replay on load); per*=1.0 stores them whole.  An empty IDB writes no
       ;; relation dir (its META-only dir is created below), since these verbs
       ;; require >=1 relation.
-      [(and linked-compressed? (not (null? (db-partition-idb-rels partition))))
+      [(and linked-compressed? (not (null? signed-rels)))
        ;; --bias productivity keeps relations read by some rule (productive
        ;; seeds) at a higher fraction than the rest (§4.4); default is uniform.
        (define bias-productivity?
          (and bias (member bias '("productivity" "productive")) #t))
        (define boosted (if bias-productivity? (db-partition-productive-rels partition) '()))
        (define boost (if bias-productivity? (min 1.0 (* 2.0 per*)) per*))
+       ;; Pinned oracle relations ride the layer UNSAMPLED (docs/smt.md §15):
+       ;; they are in the written set AND named pinned, which forces their
+       ;; keep-fraction to 1.0 and makes their rows heap-trimming seed roots
+       ;; (so the demand structs + formula DAGs they reference survive).
+       (define pinned (db-partition-pinned-rels partition))
        (send-plugin
         (action-so (if (< per* 1.0)
                        `(save-compressed ,compressed ,per* ,compressed-rng-seed ,boost
                                          (boosted ,@boosted)
-                                         (rels ,@(db-partition-idb-rels partition)))
-                       `(write-db-subset ,compressed
-                                         ,@(db-partition-idb-rels partition)))))]
+                                         (pinned ,@pinned)
+                                         (rels ,@signed-rels))
+                       `(write-db-subset ,compressed ,@signed-rels))))]
       [else (void)])
     (when out-db
       (send-plugin (action-so `(write-db ,out-db))))
@@ -647,6 +661,7 @@
                                #:per per #:rng-seed compressed-rng-seed
                                #:strata range #:compiler-stamp cstamp
                                #:fixpoint-wall-ms (inexact->exact (round wall-ms))
-                               #:idb-rels idb #:edb-rels edb))
+                               #:idb-rels idb #:edb-rels edb
+                               #:pinned-rels (db-partition-pinned-rels partition)))
      (write-db-meta (hash-set lm0 'stamp (compute-db-stamp lm0 #:prog-fingerprint cstamp))
                     dir)]))

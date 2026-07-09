@@ -1,0 +1,11 @@
+;; Model queries under the mock backend (docs/smt.md §14): ground formulas
+;; decide with the EMPTY assignment ({} plus verdict), symbolic ones answer
+;; unknown; the model map rides the answer as a first-class cmap.  Callers
+;; use the full-arity idiom (multi-answer demands have no value position).
+
+include "../lib/smt.slog"
+
+table (probe str verdict cmap)
+rule (smt_model (llt (ic 1) (ic 2)) V M) --> (probe "ground-sat" V M)
+rule (smt_model (lgt (ic 1) (ic 2)) V M) --> (probe "ground-unsat" V M)
+rule (smt_model (llt (iv "x") (ic 3)) V M) --> (probe "symbolic" V M)

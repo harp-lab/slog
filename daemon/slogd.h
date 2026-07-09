@@ -21,6 +21,8 @@
 #include "intern.h"
 #include "arena.h"
 #include "database.h"
+#include "oracle.h"
+#include "smt.h"
 #include "gzfile.h"
 #include "prims.h"
 

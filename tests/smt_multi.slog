@@ -1,0 +1,12 @@
+;; Cross-stratum oracle use (docs/smt.md): a later stratum re-asks a formula
+;; an earlier stratum already solved (the same interned demand -- answered
+;; once, joined from the persisted answer) and also asks a fresh one.
+
+include "../lib/smt.slog"
+
+table (layer1 verdict)
+rule (= V (smt_check (llt (ic 2) (ic 1)))) --> (layer1 V)
+
+table (layer2 str verdict)
+rule (layer1 V) (= W (smt_check (llt (ic 2) (ic 1)))) --> (layer2 "again" W)
+rule (layer1 V) (= W (smt_check (lle (ic 2) (ic 2)))) --> (layer2 "fresh" W)

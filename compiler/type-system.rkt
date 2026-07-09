@@ -458,7 +458,8 @@
 ;; Field arity of each error_spec arm (matches modules.rkt base-type-env).
 (define error-arm-arity
   (hash 'malformed_deduction 4 'div_by_zero 2 'modulo_by_zero 2
-        'int_overflow 3 'nan_result 3 'toint_range 2 'type_mismatch 4))
+        'int_overflow 3 'nan_result 3 'toint_range 2 'type_mismatch 4
+        'smt_bad_formula 2))
 
 ;; The runtime-prim error arms (all except malformed_deduction, which is the
 ;; head residual-check arm gated separately by rule-has-tychecks?).

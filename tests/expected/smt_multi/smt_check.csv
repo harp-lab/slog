@@ -1,0 +1,2 @@
+(smt_check (lle (ic 2) (ic 2)))
+(smt_check (llt (ic 2) (ic 1)))

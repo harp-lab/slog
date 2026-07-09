@@ -150,7 +150,8 @@
     [`(enum ,_) 0]
     [`(lattice ,_ ...) 0]
     [`(listof ,_) 0]
-    [`(mapof ,_ ,_) 0]))
+    [`(mapof ,_ ,_) 0]
+    [`(oracle ,_ ...) 0]))    ; an extern relation's binding entry (docs/smt.md)
 
 ;; -----------------------------------------------------------------------
 ;; Lattice value types (docs/lattices.md).

@@ -1,0 +1,108 @@
+;; lib/smt.slog -- first-class SMT formulas + the solver oracle (docs/smt.md).
+;;
+;; Formulas are ordinary interned struct values: build them like any other
+;; data, then ask the oracle through the demand relation
+;;
+;;   (smt_check F)  ->  (sat) | (unsat) | (unknown)
+;;
+;; The idiomatic partial checks are value-position calls matching a verdict:
+;;
+;;   rule (error-path S F) (= (unsat) (smt_check F)) --> (check-elidable S)
+;;
+;; `unknown` covers solver timeout/failure and the mock backend's non-ground
+;; formulas; the sound default is to act only on (sat)/(unsat) matches, so
+;; absence of proof keeps the dynamic check.  Post-hoc enumeration views
+;; (smt_sat F) / (smt_unsat F) / (smt_unknown F) hold for every CHECKED
+;; formula (they do not themselves ask).
+;;
+;; Answers are ordinary facts: persisted, reloaded, and replayed like inputs
+;; discovered during evaluation -- a formula is solved once, ever, per
+;; database lineage.  The solver chain is configured via the config system
+;; (setting_str "smt_solvers" "z3:500,cvc5:2000") or SLOG_SMT_SOLVERS; the
+;; default "mock" decides ground formulas deterministically and answers
+;; (unknown) otherwise, with no solver install needed.
+;;
+;; v1 vocabulary: quantifier-free linear integer arithmetic + booleans.
+
+;; integer terms
+union (iexpr (iv str)              ;; integer variable, named by string
+             (ic int)              ;; integer constant
+             (ladd iexpr iexpr)
+             (lsub iexpr iexpr)
+             (lmul iexpr iexpr)
+             (lite formula iexpr iexpr))   ;; if-then-else on terms
+
+;; formulas (booleans)
+union (formula (bv str)            ;; boolean variable, named by string
+               (ltrue)
+               (lfalse)
+               (llt iexpr iexpr)
+               (lle iexpr iexpr)
+               (lgt iexpr iexpr)
+               (lge iexpr iexpr)
+               (leq iexpr iexpr)    ;; integer equality
+               (lne iexpr iexpr)    ;; integer disequality
+               (land formula formula)
+               (lor formula formula)
+               (lnot formula)
+               (limplies formula formula)
+               ;; n-ary conjunction/disjunction over a canonical SET of
+               ;; formulas -- the path-condition idiom: sets are
+               ;; order-insensitive and deduped, so one semantic condition
+               ;; is one interned formula (and one solver query) no matter
+               ;; how the analysis accumulated it.  (lall (cmap)) is true,
+               ;; (lany (cmap)) is false.
+               (lall cset)
+               (lany cset))
+
+enum (verdict sat unsat unknown)
+
+;; The oracle-backed relation: the daemon serializes each demanded formula to
+;; SMT-LIB 2, runs the configured solver chain, and answers a code word
+;; (0 unknown | 1 sat | 2 unsat).  Oracle-owned: rules cannot answer it.
+extern smt (smt_qsat formula) int
+
+;; The user-facing wrapper: codes become verdict values.
+demand (smt_check formula) verdict
+table (smt_vcode int verdict)
+facts (smt_vcode 0 (unknown)) (smt_vcode 1 (sat)) (smt_vcode 2 (unsat))
+rule (= C (smt_qsat F)) (smt_vcode C V) --> (smt_check F V)
+
+;; Enumeration views over everything checked (post-hoc; asking is smt_check's
+;; job).  The (f_ans (f x) v) content-join is the documented demand escape
+;; hatch (docs/demand.md).
+table (smt_sat formula)
+table (smt_unsat formula)
+table (smt_unknown formula)
+rule (smt_check_ans (smt_check F) (sat))     --> (smt_sat F)
+rule (smt_check_ans (smt_check F) (unsat))   --> (smt_unsat F)
+rule (smt_check_ans (smt_check F) (unknown)) --> (smt_unknown F)
+
+;; Models (docs/smt.md §14): (smt_model F) answers the verdict and, when
+;; (sat), ONE satisfying assignment as a map from variable-name strings to
+;; values (booleans as 0/1; empty for a variable-free formula, and empty on
+;; unsat/unknown).  The raw oracle answers a cmap carrying the code word
+;; under "@status" plus the assignment; the wrapper splits it.  Multi-answer
+;; demands have no value position -- use the full-arity idiom:
+;;   rule ... (smt_model F V M) (= X (cget M "x")) ... --> ...
+;; NOTE: model VALUES come from whichever solver answered; unlike verdicts
+;; they are not canonical across solver versions (docs/smt.md Q3/Q7 caveats
+;; apply doubly to models under replay).
+extern smtmodel (smt_qmodel formula) cmap
+demand (smt_model formula) verdict cmap
+rule (= M0 (smt_qmodel F)) (= C (cget M0 "@status")) (smt_vcode C V)
+     (= M (cdel M0 "@status"))
+  --> (smt_model F V M)
+
+;; Unsat cores (docs/smt.md §15): for a conjunction-set root (lall S),
+;; (smt_core (lall S)) answers the verdict and, on (unsat), the SUBSET of S
+;; the solver blamed -- the conjuncts jointly unsatisfiable -- as a cset
+;; (empty on sat/unknown; for a non-lall root the core is {root}).  Solver
+;; cores are sound but not guaranteed minimal, and like models they are
+;; solver-chosen.  Full-arity idiom:
+;;   rule ... (smt_core (lall S) V CORE) (= 1 (cmem CORE C)) ... --> ...
+extern smtcore (smt_qcore formula) cmap
+demand (smt_core formula) verdict cset
+rule (= M0 (smt_qcore F)) (= C (cget M0 "@status")) (smt_vcode C V)
+     (= S (cdel M0 "@status"))
+  --> (smt_core F V S)

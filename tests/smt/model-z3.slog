@@ -1,0 +1,16 @@
+;; Real-solver model extraction (run by tests/smt-solver-tests.sh): the
+;; constraints force x = 5 and p = true, so the model map is deterministic
+;; and its values flow back into ordinary relations via cget.
+
+include "../../lib/smt.slog"
+
+table (probe str verdict cmap)
+rule (smt_model (land (land (lle (iv "x") (ic 5)) (lge (iv "x") (ic 5)))
+                      (bv "p"))
+     V M)
+  --> (probe "forced" V M)
+
+table (xval int)
+rule (probe "forced" (sat) M) (= X (cget M "x")) --> (xval X)
+table (pval int)
+rule (probe "forced" (sat) M) (= P (cget M "p")) --> (pval P)

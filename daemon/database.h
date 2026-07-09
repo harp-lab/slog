@@ -79,6 +79,26 @@ struct SliceCtx
   const std::atomic<bool>* stop;
 };
 
+// External asynchronous work whose answers become facts (docs/smt.md): the
+// oracle registry (oracle.h) implements this, and the fixpoint machinery
+// consults it -- a stratum is NOT at fixpoint while requests are outstanding
+// (submitted but not yet harvested into the database as answer facts).
+// EndIterCompletion blocks on waitHarvestable when the delta is empty but
+// work is outstanding, then continues the iteration loop so the harvest
+// task can emit the completed answers as the next delta.
+class ExternalWork
+{
+public:
+  virtual ~ExternalWork() = default;
+  // Requests submitted and not yet harvested into facts.
+  virtual u64 outstanding() = 0;
+  // Block until at least one completed answer awaits harvest; false when the
+  // deadline passes or the run's stop flag trips first.  Runs single-threaded
+  // inside a barrier completion, so it must be noexcept.
+  virtual bool waitHarvestable(std::chrono::steady_clock::time_point deadline,
+                               const std::atomic<bool>& stop) noexcept = 0;
+};
+
 // Resident set size in bytes, from /proc/self/statm (the honest number, which
 // composes with the SLOG_MEM_MAX cgroup cap).  Field 2 is resident pages.
 inline u64 readRSSbytes()
@@ -248,6 +268,14 @@ public:
       delete [] it.second;
     }
     deltaindices.clear();
+
+    // The master/lookup ordering memos cache "some ordering registered in
+    // `indices`" (getMasterIndex/getLookupIndex); they must not outlive the
+    // registrations.  A stale memo could name an ordering only an EARLIER
+    // stratum requisitioned (e.g. a 0-leading join index like (0 2 1)) --
+    // the next getIndex through it then fatals during CSV/BIN export.
+    struct_master_index.clear();
+    struct_lookup_index.clear();
   }
 
   u16 getArity()
@@ -508,15 +536,23 @@ public:
     if (delta)
     {
       if (!deltaindices.contains(ord))
-	fatal("Index does not exist.");
+	fatal("Index does not exist: " + name + (delta ? " delta ord (" : " ord (")
+	      + ordString(ord) + ")");
       return deltaindices[ord];
     }
     else
     {
       if (!indices.contains(ord))
-	fatal("Index does not exist.");
+	fatal("Index does not exist: " + name + " ord (" + ordString(ord) + ")");
       return indices[ord];
     }
+  }
+
+  static std::string ordString(const std::vector<u16>& ord)
+  {
+    std::string s;
+    for (u16 c : ord) s += (s.empty() ? "" : " ") + std::to_string(c);
+    return s;
   }
 
   std::vector<InsertBatch*>& getDelta()
@@ -1016,6 +1052,12 @@ struct RunState {
   // Set by ReadCompletion / EndIterCompletion, read by runLoop after barriers.
   bool read_suspended = false;
   NextAction next_action = ACT_CONTINUE;
+  // Snapshot of Database::externalPending() taken once per iteration (in
+  // ReadCompletion, single-threaded) so every worker makes the SAME
+  // reorg-on-empty-delta decision below -- a live read could flip between
+  // threads as oracle answers land, leaving some threads' bucket views stale
+  // (dangling refs into freed delta batches).
+  bool external_pending = false;
 };
 
 // std::barrier completion functors (run once, by the last arriving thread,
@@ -1064,6 +1106,10 @@ private:
   u32 struct_id_max;
   InternTable<utf8string>* string_table;
   CollectionArena* cnode_arena;
+  // External oracle work (docs/smt.md): set by the Daemon when the oracle
+  // registry exists; consulted by ReadCompletion/EndIterCompletion so a
+  // stratum's fixpoint waits for outstanding answers.
+  ExternalWork* external_work = nullptr;
   // Per-worker "last runtime error" slot: a fallible prim writes it via
   // setPendingError before returning slog_error, and emit_pending_error reads
   // this thread's slot to build the (error_spec ...).  One per thread => no lock.
@@ -1120,6 +1166,13 @@ public:
   void registerLatestAnyRec(bool _any)
   {
     if (_any) latest_any_rec = _any;
+  }
+
+  // ---- external oracle work (docs/smt.md) ----
+  void setExternalWork(ExternalWork* w) { external_work = w; }
+  bool externalPending()
+  {
+    return external_work != nullptr && external_work->outstanding() > 0;
   }
 
   u32 getIterationCount()
@@ -1394,7 +1447,13 @@ public:
       }
 
       if (sentinel) ++rs.iteration_count;
-      if (db->getLatestAnyRec())
+      // Also reorg on a NON-growing iteration with oracle answers outstanding
+      // (rs.external_pending, snapshotted in ReadCompletion so all threads
+      // agree): the wait below may ACT_CONTINUE into another iteration, whose
+      // write tasks would otherwise read stale bucket views -- dangling refs
+      // into the delta batches finalize just freed.  Reorging an empty delta
+      // just clears the views.
+      if (db->getLatestAnyRec() || rs.external_pending)
         db->reorgAll(tid, nthreads);               // bucketize for next iter
 
       // Decide continue / fixpoint / boundary-suspend ONCE (single-threaded),
@@ -1858,11 +1917,16 @@ public:
   std::unordered_set<u64> markKeptStructs(const std::unordered_set<std::string>& idb,
                                           double per, u64 seed,
                                           const std::unordered_set<std::string>& boosted,
-                                          double boost)
+                                          double boost,
+                                          const std::unordered_set<std::string>& pinned = {})
   {
     // per-relation keep fraction (productive-seed bias, §4.4): boosted
-    // relations keep more, matching the sampled write's fracOf.
-    auto fracFor = [&](const std::string& name) { return boosted.count(name) ? boost : per; };
+    // relations keep more, matching the sampled write's fracOf.  Pinned
+    // oracle relations (docs/smt.md §15) keep EVERYTHING: every answer row's
+    // demand-struct id (and its transitive formula DAG) must survive the
+    // trim, or the verbatim-loaded rows would dangle on import.
+    auto fracFor = [&](const std::string& name)
+    { return pinned.count(name) ? 1.0 : boosted.count(name) ? boost : per; };
     // id word -> its field words, for every struct instance (storage col 0 =
     // id, cols 1.. = fields).
     std::unordered_map<u64, std::vector<u64>> fields;
@@ -1916,6 +1980,25 @@ public:
 	  if (!sampleKeep(row, n, frac, seed)) return;
 	  for (u16 i = 0; i < n; ++i) push_if_struct(row[i]);
 	});
+    }
+
+    // Seed every instance of a pinned STRUCT relation (smt_bad_formula):
+    // its rows are oracle-produced, so nothing the partition can see
+    // references them (the error-wrap rule is injected per stratum, not
+    // partition-visible) -- they root themselves, and replay re-derives the
+    // (error e) wrappers from their reloaded delta.
+    for (auto& kv : relations)
+    {
+      Relation* rel = kv.second;
+      if (rel->getStructId() == 0 || rel->isEmpty() || !pinned.count(kv.first))
+        continue;
+      const std::vector<u16>* ord = rel->getAnyIndex();
+      if (!ord) continue;
+      std::vector<u16> rw(ord->size(), 0);
+      for (u16 i = 0; i < (u16)ord->size(); ++i) rw[(*ord)[i]] = i;
+      Index** bk = rel->getIndex(*ord, false);
+      for (u16 b = 0; b < bucket_count; ++b)
+        bk[b]->forEach([&](const u64* t) { push_if_struct(t[rw[0]]); });
     }
 
     // Seed from every collection node: cnodes are written whole, so any struct
@@ -2301,16 +2384,21 @@ public:
                         const std::unordered_set<std::string>& only,
                         double per, u64 seed,
                         const std::unordered_set<std::string>& boosted,
-                        double boost)
+                        double boost,
+                        const std::unordered_set<std::string>& pinned = {})
   {
     // A filtered write ALWAYS keeps struct relations (as struct heap); when
     // sampling they are trimmed to the reachable closure via keep_ids below.
     auto keep = [&](const std::string& name, Relation* rel) {
       return only.empty() || only.count(name) || rel->getStructId() > 0;
     };
+    // Pinned oracle relations (docs/smt.md §15) are never sampled: their
+    // rows come from an external solver, so replay cannot recompute a
+    // dropped one -- they are the "inputs discovered during evaluation".
     auto fracOf = [&](const std::string& name, Relation* rel) -> double {
       if (rel->getStructId() > 0) return 1.0;
       if (!only.empty() && !only.count(name)) return 1.0;
+      if (pinned.count(name)) return 1.0;
       return boosted.count(name) ? boost : per;
     };
     // The struct instances the LAYER writes.  When sampling, restrict to the
@@ -2325,7 +2413,8 @@ public:
     if (trimming || dedup)
     {
       std::unordered_set<u64> marked =
-        trimming ? markKeptStructs(only, per, seed, boosted, boost) : allStructIds();
+        trimming ? markKeptStructs(only, per, seed, boosted, boost, pinned)
+                 : allStructIds();
       for (u64 s : marked) if (!edb_heap_structs.count(s)) layer_structs.insert(s);
     }
     auto keepIdsOf = [&](Relation* rel) -> const std::unordered_set<u64>* {
@@ -3013,6 +3102,9 @@ inline void IterCompletion::operator()() noexcept
 inline void ReadCompletion::operator()() noexcept
 {
   RunState& rs = db->rs;
+  // One per-iteration snapshot of outstanding oracle work, so every worker
+  // makes the same reorg decision (runLoop) -- see RunState::external_pending.
+  rs.external_pending = db->externalPending();
   const u64 n_once = rs.once_pending[phase_read]
                        ? rs.stratum->once[phase_read].size() : 0;
   const u64 total = n_once + rs.stratum->every[phase_read].size();
@@ -3043,7 +3135,22 @@ inline void EndIterCompletion::operator()() noexcept
     rs.stop_requested.store(true, std::memory_order_relaxed);
   }
   if (!db->getLatestAnyRec())
-    rs.next_action = ACT_FIXPOINT;
+  {
+    // No growth -- but not fixpoint while oracle answers are outstanding
+    // (docs/smt.md): block (bounded by the budget) for the next completed
+    // answer, then run another iteration so the harvest task emits it as
+    // delta.  All other workers are parked at this barrier; only the oracle
+    // pool threads progress, so this wait deadlocks nothing.  A deadline or
+    // stop trip suspends at the (clean) boundary instead; the demands stay
+    // as facts and re-dispatch is idempotent, so resuming is always safe.
+    if (db->externalPending() && rs.tofixpoint)
+      rs.next_action =
+        db->external_work->waitHarvestable(rs.global_deadline, rs.stop_requested)
+          ? ACT_CONTINUE
+          : ACT_BOUNDARY_SUSPEND;
+    else
+      rs.next_action = ACT_FIXPOINT;
+  }
   else if (rs.budget.stop_at_boundary
            || rs.stop_requested.load(std::memory_order_relaxed)
            || std::chrono::steady_clock::now() >= rs.global_deadline)

@@ -1,0 +1,11 @@
+;; Real-solver unsat core (run by tests/smt-solver-tests.sh): {x<3, x>5, p}
+;; blames the arithmetic contradiction, not the innocent boolean.
+
+include "../../lib/smt.slog"
+
+table (probe str verdict cset)
+rule (smt_core (lall {(llt (iv "x") (ic 3)) (lgt (iv "x") (ic 5)) (bv "p")}) V S)
+  --> (probe "contra" V S)
+
+table (blamed int)
+rule (probe "contra" (unsat) S) (= N (csize S)) --> (blamed N)

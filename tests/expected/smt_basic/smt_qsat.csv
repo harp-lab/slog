@@ -1,0 +1,9 @@
+ (land (llt (ic 1) (ic 2)) (lnot (_enum "lfalse"))))
+ (leq (ladd (ic 2) (ic 2)) (ic 5)))
+ (lle (lmul (ic 3) (ic 3)) (lsub (ic 20) (ic 10))))
+ (lor (_enum "lfalse") (limplies (_enum "lfalse") (_enum "ltrue"))))
+(smt_qsat
+(smt_qsat
+(smt_qsat
+(smt_qsat
+(smt_qsat (llt (iv "x") (ic 3)))

@@ -1,0 +1,31 @@
+;; Cset conjunction/disjunction + extended vocabulary under the mock backend
+;; (docs/smt.md §3.3): (lall S)/(lany S) render canonical formula sets as
+;; n-ary and/or, with sound short-circuiting in the mock (one ground-false
+;; conjunct refutes the set even beside a symbolic member); (lite c a b),
+;; lgt/lge/lne; empty-set edges; and set canonicalization -- the same
+;; conjuncts accumulated in different orders are ONE interned formula.
+
+include "../lib/smt.slog"
+
+table (probe str verdict)
+rule (= V (smt_check (lall {(llt (ic 1) (ic 2)) (lle (ic 2) (ic 2))})))
+  --> (probe "all-true" V)
+rule (= V (smt_check (lall {(llt (ic 1) (ic 2)) (lgt (ic 1) (ic 2))})))
+  --> (probe "one-false" V)
+rule (= V (smt_check (lall {(lgt (ic 1) (ic 2)) (llt (iv "x") (ic 3))})))
+  --> (probe "false-and-sym" V)
+rule (= V (smt_check (lall {(llt (ic 1) (ic 2)) (llt (iv "x") (ic 3))})))
+  --> (probe "true-and-sym" V)
+rule (= V (smt_check (lany {(llt (ic 1) (ic 2)) (llt (iv "x") (ic 3))})))
+  --> (probe "any-true" V)
+rule (= V (smt_check (lall (cmap)))) --> (probe "empty-all" V)
+rule (= V (smt_check (lany (cmap)))) --> (probe "empty-any" V)
+rule (= V (smt_check (leq (lite (lgt (ic 5) (ic 3)) (ic 10) (ic 20)) (ic 10))))
+  --> (probe "ite-then" V)
+rule (= V (smt_check (lne (ic 3) (ic 4)))) --> (probe "distinct" V)
+
+;; canonicalization: two accumulation orders, one interned formula -- the
+;; golden shows both rows carrying the SAME set value
+table (same int formula)
+rule --> (same 1 (lall {(llt (ic 1) (ic 2)) (lne (ic 3) (ic 4))}))
+rule --> (same 2 (lall {(lne (ic 3) (ic 4)) (llt (ic 1) (ic 2))}))

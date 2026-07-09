@@ -40,6 +40,7 @@
          db-meta-full-store-rels
          db-meta-idb-rels
          db-meta-edb-rels
+         db-meta-pinned-rels
          db-meta->sexpr
          sexpr->db-meta
          write-db-meta
@@ -109,6 +110,10 @@
 ;;   fixpoint-wall-ms : recorded replay cost (§13 heuristic), 0 if unknown
 ;;   full-store-rels  : relations forced to per=100% (nondeterministic, §5.3)
 ;;   idb-rels/edb-rels: the stratum-boundary partition (§6, P0.4)
+;;   pinned-rels      : oracle-fed relations preserved VERBATIM (docs/smt.md
+;;                      §15): written by no rule, so replay cannot re-derive
+;;                      them -- stored unsampled, used as heap-trim roots,
+;;                      and re-ingested (never re-queried) on load
 (define (make-db-meta
          #:kind [kind 'root]
          #:pure-edb? [pure-edb? #t]
@@ -124,6 +129,7 @@
          #:full-store-rels [full-store-rels '()]
          #:idb-rels [idb-rels '()]
          #:edb-rels [edb-rels '()]
+         #:pinned-rels [pinned-rels '()]
          #:extra [extra '()])          ; extra ((key . value) ...) for forward-compat
   (define base
     (hash 'magic slog-db-magic
@@ -142,7 +148,8 @@
           'fixpoint-wall-ms fixpoint-wall-ms
           'full-store-rels full-store-rels
           'idb-rels idb-rels
-          'edb-rels edb-rels))
+          'edb-rels edb-rels
+          'pinned-rels pinned-rels))
   (for/fold ([m base]) ([kv (in-list extra)])
     (hash-set m (car kv) (cdr kv))))
 
@@ -164,6 +171,7 @@
 (define (db-meta-full-store-rels m) (db-meta-ref m 'full-store-rels '()))
 (define (db-meta-idb-rels m) (db-meta-ref m 'idb-rels '()))
 (define (db-meta-edb-rels m) (db-meta-ref m 'edb-rels '()))
+(define (db-meta-pinned-rels m) (db-meta-ref m 'pinned-rels '()))
 
 ;; ---------------------------------------------------------------------------
 ;; Serialisation.  A META file is a single top-level form:

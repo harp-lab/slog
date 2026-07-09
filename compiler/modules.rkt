@@ -177,7 +177,7 @@
        #:when (and (= (length fields0) (length fields1))
                    (andmap types-unify? fields0 fields1))
        (void)]
-      [_ (error (format "Type declarations ~a and ~a conflict" t0 t1))]))
+      [_ (error (format "Type declarations for ~a conflict: ~a vs ~a" name t0 t1))]))
   (for ([x (in-set (set-intersect (list->set (hash-keys (type-env-aliases env+)))
                                   (list->set (hash-keys (type-env-rels env+)))))])
     (error (format "The type ~a appears defined as a union and struct!" x)))
@@ -194,6 +194,13 @@
 ;; The names list/cons/nil/error/malformed_deduction are reserved (checked
 ;; in extract-type-env): user redeclarations would otherwise hit the
 ;; generic conflict check with a baffling message.
+;; The rels-env key holding an extern relation's oracle binding entry
+;; (oracle <oracle-name> <demand-rel> <ans-rel>): a reserved spelling no
+;; user identifier can collide with, so the entry rides the ordinary rel
+;; environment (and thus the compile cache key) without new plumbing.
+(define (oracle-entry-name name)
+  (string->symbol (format "$oracle$~a" name)))
+
 (define base-type-env
   (foldl (lambda (e env) (unify-type-envs env e))
          empty-type-env
@@ -222,10 +229,14 @@
                (type-env-rel 'nan_result          `(struct str str any))
                (type-env-rel 'toint_range         `(struct str any))
                (type-env-rel 'type_mismatch       `(struct str str any any))
+               ;; an extern oracle demand whose payload does not serialize
+               ;; (docs/smt.md §12): (reason, the offending formula value);
+               ;; the oracle answers unknown alongside recording this
+               (type-env-rel 'smt_bad_formula     `(struct str any))
                (type-env-union 'error_spec
                                (set 'error_spec 'malformed_deduction 'div_by_zero
                                     'modulo_by_zero 'int_overflow 'nan_result
-                                    'toint_range 'type_mismatch))
+                                    'toint_range 'type_mismatch 'smt_bad_formula))
                (type-env-rel 'error `(table any)))))
 
 ;; -----------------------------------------------------------------------
@@ -391,7 +402,7 @@
       (error (format "The name ~a is a builtin collection base type (native set/map values, docs/primitives.md M2.3); remove the declaration" name)))
     (when (memq name '(error error_spec malformed_deduction div_by_zero
                        modulo_by_zero int_overflow nan_result toint_range
-                       type_mismatch))
+                       type_mismatch smt_bad_formula))
       (error (format "The name ~a is reserved for the runtime type-error machinery ((error (error_spec ...)) facts); remove the declaration" name))))
 
   (define (extract-type-env ast [env base-type-env])
@@ -445,6 +456,36 @@
        (error (format "Malformed demand declaration: expected demand (name in-type ...) answer-type ..., got ~a"
                       (strip-prov `(demand ,@(drop-right rest 1)))))]
 
+      ;; extern <oracle> (f in-type) int: an oracle-backed demand relation
+      ;; (docs/smt.md).  Declares exactly what `demand` would -- the interned
+      ;; demand struct plus its answer table -- and additionally records an
+      ;; (oracle <name> <f> <f_ans>) binding entry that codegen turns into
+      ;; the daemon-side dispatch/harvest task registration for every stratum
+      ;; writing the demand struct.  The oracle owns the answer table: rules
+      ;; answering it are rejected (check-extern-rules below).  v1 keeps the
+      ;; daemon side trivially generic: one input column, one `int` answer
+      ;; (the oracle's code word); lib rules translate codes to enums.
+      [`(syn ,_ extern ,(? symbol? oname) (syn ,_ ,(? symbol? name) ,args ...) ,ans ... ,body)
+       (check-not-reserved! name)
+       (unless (= 1 (length args))
+         (error (format "Extern relation ~a must have exactly one input column (v1)" name)))
+       (unless (and (= 1 (length ans)) (memq (car ans) '(int cmap cset)))
+         (error (format "Extern relation ~a must declare exactly one answer column of type int, cmap, or cset (the oracle's code word or a materialized collection; lib rules translate -- see lib/smt.slog)" name)))
+       (match-define (cons xs env+) (flatten-nested-types env args))
+       (extract-type-env
+        body
+        (unify-type-envs
+         env+
+         (unify-type-envs
+          (type-env-rel name `(struct ,@xs))
+          (unify-type-envs
+           (type-env-rel (demand-ans-name name) `(table ,name ,(car ans)))
+           (type-env-rel (oracle-entry-name name)
+                         `(oracle ,oname ,name ,(demand-ans-name name)))))))]
+      [`(syn ,_ extern ,rest ...)
+       (error (format "Malformed extern declaration: expected extern <oracle> (name in-type) int, got ~a"
+                      (strip-prov `(extern ,@(drop-right rest 1)))))]
+
       [`(syn ,_ enum (syn ,_ ,name ,(? symbol? names) ...) ,body)
        ;; A bare nullary constructor (`enum (halt)`, via a union member) is
        ;; itself a constant.  A named enumeration (`enum (color red green
@@ -497,6 +538,14 @@
                   (not (equal? entry (hash-ref demands name))))
          (error (format "Demand relation ~a is declared twice with different signatures" name)))
        (extract-demands body (hash-set demands name entry))]
+      ;; an extern relation is demand-moded exactly like `demand`: callers
+      ;; desugar through the same transform, only the answerer differs
+      [`(syn ,_ extern ,(? symbol? _) (syn ,_ ,(? symbol? name) ,args ...) ,ans ... ,body)
+       (define entry (cons (length args) (length ans)))
+       (when (and (hash-has-key? demands name)
+                  (not (equal? entry (hash-ref demands name))))
+         (error (format "Demand relation ~a is declared twice with different signatures" name)))
+       (extract-demands body (hash-set demands name entry))]
       [_ (extract-demands (last ast) demands)]))
 
   (match module-ast
@@ -510,6 +559,39 @@
 
 ;; -----------------------------------------------------------------------
 ;; Lifting and linearization.
+
+;; The oracle owns an extern relation's answers: reject any rule that would
+;; answer it in-language -- a full-arity head occurrence of the demand
+;; relation (the demand transform would turn it into an answer rule) or a
+;; direct head on its answer table.  Bare input-arity head occurrences (asks)
+;; stay legal.  Runs over the merged view, pre-desugar.
+(define (check-extern-rules type-env mods)
+  (define externs   ; demand-rel -> (cons full-arity ans-rel)
+    (for/hash ([(k decl) (in-hash (type-env-rels type-env))]
+               #:when (and (pair? decl) (eq? 'oracle (car decl))))
+      (match-define `(oracle ,_ ,drel ,arel) decl)
+      (define in-arity
+        (match (hash-ref (type-env-rels type-env) drel)
+          [`(struct ,ts ...) (length ts)]))
+      (values drel (cons (add1 in-arity) arel))))
+  (unless (hash-empty? externs)
+    (for* ([m (in-list mods)]
+           [rule (in-set (third m))])
+      (match rule
+        [`(syn ,_ rule ,bodys ... --> ,heads ...)
+         (for ([h (in-list heads)])
+           (match h
+             [`(syn ,_ ,(? symbol? name) ,args ...)
+              (define ext (hash-ref externs name #f))
+              (when (and ext (= (length args) (car ext)))
+                (error (format "Extern relation ~a is answered by its oracle; remove the answering rule ~a"
+                               name (strip-prov rule))))
+              (for ([(drel ext) (in-hash externs)])
+                (when (eq? name (cdr ext))
+                  (error (format "Answer table ~a of extern relation ~a is oracle-owned; remove the rule ~a"
+                                 name drel (strip-prov rule)))))]
+             [_ (void)]))]
+        [_ (void)]))))
 
 ;; Merge two demand registries, requiring agreeing signatures.
 (define (unify-demands d0 d1)
@@ -556,6 +638,9 @@
            (hash-has-key? (type-env-rels type-env) 'pset)
            (hash-has-key? (type-env-rels type-env) 'pmap)))
      (define mods-collections (desugar-collections-mods mods+ lib-collections?))
+     ;; oracle-owned answer relations must not be answered by rules; checked
+     ;; pre-desugar so the message names the offending SOURCE rule
+     (check-extern-rules type-env mods-collections)
      (define-values (mods-desugared synth-rels clo-members)
        (desugar-demand-program mods-collections demands type-env))
      (define type-env+
@@ -616,6 +701,7 @@
              [`(struct ,xs ...) (hash-set man x `(struct ,x ,(add1 (length xs))))]
              [`(temp ,_ ...) man]
              [`(enum ,name) man]
+             [`(oracle ,_ ...) man]   ; extern binding entry: not a relation
              [(? lattice-spec?) man]
              [(? listof-spec?) man]
              [(? mapof-spec?) man]))

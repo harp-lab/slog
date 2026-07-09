@@ -1,0 +1,10 @@
+ {(lnot (lge (iv "p1_y") (ic 0))):1 (llt (iv "p1_x") (ic 0)):1 (leq (iv "p1_y") (lsub (ic 0) (iv "p1_x"))):1})
+ {(lnot (lgt (ic 1) (ic 2))):1 (lle (lmul (ic 3) (ic 3)) (ic 10)):1})
+ {(lnot (lle (lmul (ic 3) (ic 3)) (ic 10))):1})
+ {(lnot (llt (iv "p1_x") (ic 0))):1 (lnot (lge (iv "p1_y") (ic 0))):1 (leq (iv "p1_y") (iv "p1_x")):1})
+ {(lnot (lne (iv "p2_d") (ic 0))):1})
+(lall
+(lall
+(lall
+(lall
+(lall

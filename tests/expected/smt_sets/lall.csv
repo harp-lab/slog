@@ -1,0 +1,11 @@
+ {(llt (ic 1) (ic 2)):1 (lgt (ic 1) (ic 2)):1})
+ {(llt (ic 1) (ic 2)):1 (lle (ic 2) (ic 2)):1})
+ {(llt (iv "x") (ic 3)):1 (lgt (ic 1) (ic 2)):1})
+ {(llt (iv "x") (ic 3)):1 (llt (ic 1) (ic 2)):1})
+ {(lne (ic 3) (ic 4)):1 (llt (ic 1) (ic 2)):1})
+(lall
+(lall
+(lall
+(lall
+(lall
+(lall {})
