@@ -15,6 +15,18 @@
 ;; checking; and a manifest of relations already present in the database is
 ;; threaded through the list so each program declares what it inherits.
 ;;
+;; M2.4 decomposition synthesis (docs/primitives.md §4.2) also happens here:
+;; using an undeclared name `<R>_has` (`<R>_at`) where R is a set-kind
+;; (map-kind) collection-lattice table synthesizes its declaration --
+;; deterministic, no gensym, pre-cache-key like every decl -- and records R
+;; as decomposed in the program's decomp-env, a parallel hash
+;;   derived-name -> (base-name set|map)
+;; threaded alongside the type env (program tuple, ir-stack.rkt).  Consumers:
+;; stratify (the R -> R_has edge), the planner/operationalization/emit
+;; (dynamic-rel marking + registering the decomp target on the base
+;; relation's merge tasks).  A user declaring their own `foo_has` wins: no
+;; interception, no decomposition.  No use -> no decl -> zero cost.
+;;
 ;; A `demand (f in ...) out ...` declaration turns into its two backing
 ;; relations here -- struct (f in ...) and table (f_ans f out ...) -- and,
 ;; once each program's modules are merged, the demand transform
@@ -574,13 +586,68 @@
        (for/set ([m (in-list mods-desugared)])
          (match-define (list path toks rules) m)
          `(module ,path ,toks ,rules)))
-     `(program ,(map lift-type-envs reqs) ,type-env+ ,mods++)]))
+     ;; M2.4 need-driven decomposition synthesis (header comment above):
+     ;; scan the desugared rules for undeclared `<R>_has`/`<R>_at` names over
+     ;; a matching collection-lattice base and synthesize their declarations.
+     (define-values (type-env++ decomp-env)
+       (synthesize-decompositions mods++ type-env+))
+     `(program ,(map lift-type-envs reqs) ,type-env++ ,mods++ ,decomp-env)]))
+
+;; Every operator-position name of every rule (relation atoms, struct
+;; patterns, prim calls -- conservative: an undeclared non-relation name is a
+;; type error anyway, so over-collection cannot mis-fire the synthesis).
+(define (rules-used-names mods)
+  (for*/fold ([names (set)])
+             ([m (in-set mods)] [rule (in-set (last m))])
+    (let walk ([e rule] [names names])
+      (match e
+        [`(syn ,_ ,(? symbol? h) ,rest ...)
+         (foldl walk (set-add names h) rest)]
+        [(? list?) (foldl walk names e)]
+        [_ names]))))
+
+;; The synthesis itself: for each used-but-undeclared `<R>_has` (`<R>_at`)
+;; whose base R is a set-kind (map-kind) collection-lattice table, declare
+;;   R_has : (table k̄ elem)            -- a PLAIN monotone relation
+;;   R_at  : (table k̄ key <childlat>)  -- itself a lattice table whose value
+;;                                        column carries the map's child
+;;                                        valuespec (pointwise by construction;
+;;                                        nested maps compose)
+;; and record derived -> (base kind).  Names are processed sorted for
+;; deterministic env construction; the child lattice type reuses the
+;; deterministic anon-valuespec naming (lattice-anon-name), unifying with an
+;; identical inline declaration if the program already has one.
+(define (synthesize-decompositions mods type-env)
+  (define used (rules-used-names mods))
+  (for/fold ([env type-env] [denv (hash)])
+            ([name (in-list (sort (set->list used) symbol<?))])
+    (define m
+      (and (not (hash-has-key? (type-env-rels type-env) name))
+           (regexp-match #px"^(.+)_(has|at)$" (symbol->string name))))
+    (define base (and m (string->symbol (second m))))
+    (define spec (and base (rel-lattice-spec (type-env-rels type-env) base)))
+    (match* ((and m (third m)) spec)
+      [("has" `(lattice set ,t))
+       (match-define `(table ,ts ...) (hash-ref (type-env-rels type-env) base))
+       (values (unify-type-envs env (type-env-rel name `(table ,@(drop-right ts 1) ,t)))
+               (hash-set denv name (list base 'set)))]
+      [("at" `(lattice map ,k ,inner))
+       (match-define `(table ,ts ...) (hash-ref (type-env-rels type-env) base))
+       (define g (lattice-anon-name `(lattice ,@inner)))
+       (define env+g
+         (if (hash-has-key? (type-env-rels env) g)
+             env
+             (unify-type-envs env (type-env-rel g `(lattice ,@inner)))))
+       (values (unify-type-envs env+g (type-env-rel name `(table ,@(drop-right ts 1) ,k ,g)))
+               (hash-set denv name (list base 'map)))]
+      [(_ _) (values env denv)])))
 
 ;; Dependencies-first (post-order) linearization of the run tree.
 (define (linearize-programs prog)
   (match prog
-    [`(program ,reqs ,type-env ,mods)
-     (foldr append `((program ,type-env ,mods)) (map linearize-programs reqs))]))
+    [`(program ,reqs ,type-env ,mods ,decomps)
+     (foldr append `((program ,type-env ,mods ,decomps))
+            (map linearize-programs reqs))]))
 
 ;; -----------------------------------------------------------------------
 ;; Manifests: each program is compiled against the manifest of relations
@@ -624,7 +691,7 @@
 
 (define (thread-manifests prog-lst manifest)
   (match prog-lst
-    [`((program ,type-env ,mods) ,more ...)
-     `((program ,type-env ,mods ,manifest)
+    [`((program ,type-env ,mods ,decomps) ,more ...)
+     `((program ,type-env ,mods ,manifest ,decomps)
        ,@(thread-manifests more (update-manifest type-env manifest)))]
     ['() '()]))

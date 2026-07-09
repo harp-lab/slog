@@ -52,17 +52,17 @@
   (-> type-env? set? (set/c typed-rule?))
   (typecheck-rules type-env rules))
 
-(define/contract (stratify-all rules)
-  (-> set? strata?)
-  (stratify-rules rules))
+(define/contract (stratify-all rules [extra-edges (set)])
+  (->* (set?) (set?) strata?)
+  (stratify-rules rules extra-edges))
 
 (define/contract (plan-all rules rel-env dynamic-rels)
   (-> set? hash? set? (cons/c (set/c planned-rule?) hash?))
   (plan-stratum rules rel-env dynamic-rels))
 
-(define/contract (lower-all planned-rules rel-env)
-  (-> set? hash? cprog?)
-  (build-cprog planned-rules rel-env))
+(define/contract (lower-all planned-rules rel-env decomps)
+  (-> set? hash? hash? cprog?)
+  (build-cprog planned-rules rel-env decomps))
 
 ;; -----------------------------------------------------------------------
 ;; Front end: a program to its list of stratum jobs.
@@ -84,14 +84,18 @@
 ;; derived tuple exists -- correct even for a relation grounded by BOTH facts
 ;; and rules.  facts-stratum? is #t iff a non-empty facts stratum was prepended.
 (define (program->jobs prog #:split-facts? [split-facts? #f])
-  (match-define `(program ,type-env ,mods ,dbmanifest) prog)
+  (match-define `(program ,type-env ,mods ,dbmanifest ,decomps) prog)
   (define info0 (sort (hash->list (type-env-aliases type-env)) symbol<? #:key car))
   (define info1 (sort (hash->list (type-env-rels type-env)) symbol<? #:key car))
   (define info2 (sort (set->list mods) string<? #:key second))
   (define info3 (sort (hash->list dbmanifest) symbol<? #:key car))
+  ;; the M2.4 decomposition registry changes codegen (merge-task decomp
+  ;; targets) without necessarily changing the rels env (a user decl toggling
+  ;; the synthesis off), so it keys the cache too
+  (define info4 (sort (hash->list decomps) symbol<? #:key car))
   (define progstr
     (with-output-to-string
-     (lambda () (print (list info0 info1 info2 info3
+     (lambda () (print (list info0 info1 info2 info3 info4
                              daemon-headers-fingerprint
                              compiler-sources-fingerprint
                              ;; codegen-affecting settings: a toggle must
@@ -115,11 +119,18 @@
   ;; the monotone-use calculus needs the strata for the same-SCC bit
   (check-lattice-declarations type-env)
   (define typed (typecheck-all type-env (simplify-all all-rules)))
-  (define full-strata (stratify-all typed))
+  ;; the M2.4 decomposition's derived dependency edges: R -> R_has as if a
+  ;; rule read R and wrote R_has (the base's merge tasks do exactly that), so
+  ;; a derived relation closes no earlier than its base -- and shares its SCC
+  ;; when some rule feeds R_has back into R (in-SCC enumeration)
+  (define decomp-edges
+    (for/set ([(derived info) (in-hash decomps)])
+      (cons (first info) derived)))
+  (define full-strata (stratify-all typed decomp-edges))
   ;; check the ORIGINAL stratification (a superset that keeps iter0 rules in
   ;; place); the split only moves body-less rules, which can never violate the
   ;; monotone-use calculus, so passing here implies the split is safe too.
-  (check-lattice-strata full-strata type-env)
+  (check-lattice-strata full-strata type-env decomps)
   (define rel-names (list->set (hash-keys (type-env-rels type-env))))
   (define (iter0? rule) (set-empty? (set-intersect (rule-body-rels rule) rel-names)))
   (define fact-rules
@@ -129,12 +140,12 @@
     (cond
       [(not facts?) full-strata]
       [else
-       (define rest-strata (stratify-all (set-subtract typed fact-rules)))
+       (define rest-strata (stratify-all (set-subtract typed fact-rules) decomp-edges))
        (cons `(stratum 0 ,fact-rules)
              (for/list ([s (in-list rest-strata)])
                `(stratum ,(add1 (stratum-level s)) ,(stratum-rules s))))]))
   (cons (for/list ([stratum (in-list strata)])
-          (list (job-hash (stratum-level stratum)) type-env stratum dbmanifest))
+          (list (job-hash (stratum-level stratum)) type-env stratum dbmanifest decomps))
         facts?))
 
 ;; -----------------------------------------------------------------------
@@ -202,7 +213,7 @@
 ;; schedules that on the parallel pool at the appropriate optimization level(s).
 
 (define (emit-stratum-cpp job)
-  (match-define (list proghash type-env stratum dbmanifest) job)
+  (match-define (list proghash type-env stratum dbmanifest decomps) job)
   ;; a stratum whose rules carry residual type checks also gets the
   ;; error-wrapping rule (malformed_deduction -> error), delta-driven within
   ;; this stratum's fixpoint: malformed_deduction is marked dynamic since the
@@ -221,13 +232,23 @@
   (define rules
     (for/fold ([rs base-rules]) ([arm (in-list active-arms)])
       (set-add rs (error-wrap-rule-for-arm arm))))
-  (define dynamic-rels
+  (define head-dynamic-rels
     (for/fold ([acc (list->set active-arms)])
               ([rule (in-set rules)])
       (set-union acc (rule-head-rels rule))))
+  ;; a decomposed base's derived relation (R_has/R_at) is dynamic in EVERY
+  ;; stratum, not just where the base ascends: the base's master (once)
+  ;; MapWriteTask re-derives the decomposition from the reloaded/imported
+  ;; content at iteration 0, and those rows ride the publish path into
+  ;; iteration 1's delta -- a static reader would run at iteration 0 and
+  ;; miss them (the foreign-db seeding case).  The PLANNER must treat the
+  ;; derived name as dynamic so readers get a delta-driven version.
+  (define dynamic-rels
+    (for/fold ([acc head-dynamic-rels]) ([(derived _info) (in-hash decomps)])
+      (set-add acc derived)))
   (match-define (cons planned rel-env+)
     (plan-all rules (type-env-rels type-env) dynamic-rels))
-  (define cprog (lower-all planned rel-env+))
+  (define cprog (lower-all planned rel-env+ decomps))
   ;; atomic writes: run-tests.sh -jN can compile the SAME content-addressed
   ;; stratum in two processes at once, and a torn .cpp/.cprog read would break a
   ;; concurrent clang (docs/fast-compile.md §8)
@@ -310,7 +331,7 @@
     (for/fold ([acc (set)]) ([job (in-list jobs)])
       (for/fold ([acc acc]) ([rule (in-set (stratum-rules (third job)))])
         (set-union acc (rule-body-rels rule)))))
-  (define-values (idb edb-fact levels)
+  (define-values (idb0 edb-fact levels)
     (for/fold ([idb (set)] [edb (set)] [lvls (set)]) ([job (in-list jobs)])
       (define st (third job))
       (for/fold ([idb idb] [edb edb] [lvls (set-add lvls (stratum-level st))])
@@ -318,6 +339,12 @@
         (if (derives? rule)
             (values (set-union idb (rule-head-rels rule)) edb lvls)
             (values idb (set-union edb (rule-head-rels rule)) lvls)))))
+  ;; a decomposition target (R_has/R_at) heads no rule but is derived data by
+  ;; construction (grown from its base by the merge tasks): IDB
+  (define idb
+    (for*/fold ([acc idb0]) ([job (in-list jobs)]
+                             [(derived info) (in-hash (fifth job))])
+      (set-add acc derived)))
   (define edb (set-union edb-fact input-rels))
   (define lvl-list (sort (set->list levels) <))
   (when (getenv "SLOG_DEBUG_PARTITION")
@@ -356,7 +383,7 @@
   (define o2-cmds '())
   (define strata
     (for/list ([job (in-list jobs)])
-      (match-define (list proghash _te stratum _dm) job)
+      (match-define (list proghash _te stratum _dm _dc) job)
       (write-stratum-manifest proghash stratum)  ; sidecar, even for a cached .so
       (define o2so (fullpath (format "build/~a.so" proghash)))
       (define o0so (fullpath (format "build/~a.O0.so" proghash)))

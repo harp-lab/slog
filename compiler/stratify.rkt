@@ -104,13 +104,20 @@
 
 ;; -----------------------------------------------------------------------
 ;; Stratification driver: typed rules -> (listof (stratum level rules)).
+;;
+;; `extra-edges` are derived dependencies with no rule of their own -- today
+;; the M2.4 decomposition edge R -> R_has (as if a rule read R and wrote
+;; R_has; compile.rkt passes them from the program's decomp-env).  They keep
+;; a decomposed relation's derived facts from closing before their base, and
+;; complete the cycle when a rule reads R_has and writes back into R (the
+;; in-SCC enumeration case: R and R_has share an SCC).
 
-(define (stratify-rules rules)
+(define (stratify-rules rules [extra-edges (set)])
   (define rule-list (set->list rules))
 
   ;; the dependency graph over relation names
   (define edges ; set of (from . to), from body to head and among heads
-    (for*/fold ([es (set)]) ([rule (in-list rule-list)])
+    (for*/fold ([es extra-edges]) ([rule (in-list rule-list)])
       (define heads (set->list (rule-head-rels rule)))
       (define bodys (set->list (rule-body-rels rule)))
       (for*/fold ([es (set-union
@@ -122,7 +129,9 @@
         (set-add es (cons b h)))))
   (define nodes
     (sort (set->list
-           (for/fold ([ns (set)]) ([rule (in-list rule-list)])
+           (for/fold ([ns (for/fold ([ns (set)]) ([e (in-set extra-edges)])
+                            (set-add (set-add ns (car e)) (cdr e)))])
+                     ([rule (in-list rule-list)])
              (set-union ns (rule-head-rels rule) (rule-body-rels rule))))
           symbol<?))
   (define succ-map

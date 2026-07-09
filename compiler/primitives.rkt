@@ -1,6 +1,7 @@
 #lang racket
 
-(provide prim-fun-env)
+(provide prim-fun-env
+         prim-partial?)
 
 ;; The environment of built-in *value-producing* primitives (used as
 ;; `(= r (op args ...))`, i.e. let-bound).  Polymorphic type vars A/B/C are the
@@ -68,6 +69,13 @@
            cget   (fun cmap any -> any)
            chas   (fun cmap any -> int)
            cmerge (fun coll coll -> coll)
+           ;; spec-aware pointwise join (docs/finish-collections.md §D):
+           ;; typed here like cmerge, but NOT dispatched through prims.h --
+           ;; the runtime call needs the collection-lattice spec, which no
+           ;; word carries, so operationalization lowers it to a dedicated
+           ;; (cjoin x spec a b) c-op from a per-rule var->spec scan and
+           ;; emit-cpp calls merge_spec under the parsed spec tree
+           cjoin  (fun coll coll -> coll)
            cdel   (fun coll any -> coll)
            cdiff  (fun coll coll -> coll)
            csize  (fun coll -> int)
@@ -83,3 +91,18 @@
            inf   (fun -> $count)
            cplus (fun $count $count -> $count)
            top   (fun -> any))))
+
+;; PARTIAL prims: prims with a "no answer for this input" case that is absent
+;; *data*, not a bug -- `cget` on a missing key.  Partiality is an attribute
+;; consulted only at lowering (operationalization.rkt): a partial prim's let
+;; becomes a `letp` c-op whose emitted call takes a trailing `bool* ok`
+;; (daemon/prims.h) and whose failure abandons the row, exactly like a failed
+;; join against a virtual relation -- absence = failed match.  Type errors
+;; (e.g. a non-cnode map argument) STAY fatal in the runtime dispatcher.
+;; Typed level and planner are untouched: partiality changes only the c-op.
+;; (Sequences S1/S2 add lref/lset/lins/ldel/lidx and sidx/schar/s2i/s2f here;
+;; registry entries only, mechanism unchanged -- docs/sequences.md §3.)
+(define prim-partial-set (set 'cget))
+
+(define (prim-partial? f)
+  (set-member? prim-partial-set f))

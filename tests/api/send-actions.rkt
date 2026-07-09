@@ -6,7 +6,7 @@
 ;;
 ;; Specs: open:DB | import:DB | write-db:DB | write-csv:DIR
 ;;      | write-rel:DB,REL | write-rel-csv:DIR,REL | load-rel:DB,REL
-;;      | refresh-rel:DB,REL | sizes
+;;      | refresh-rel:DB,REL | sizes | schema
 ;;      | so:PATH (send an arbitrary plugin path verbatim)
 ;;
 ;; Run from the repository root (build/, data/, daemon/ are relative).
@@ -17,6 +17,7 @@
 (define (parse-spec s)
   (match (string-split s ":")
     [(list "sizes") `(sizes)]
+    [(list "schema") `(schema)]
     [(list "open" db) `(open ,db)]
     [(list "import" db) `(import ,db)]
     [(list "write-db" db) `(write-db ,db)]

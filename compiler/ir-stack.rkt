@@ -53,12 +53,14 @@
 ;; A source file plus its transitive `include`s becomes one program; its
 ;; `run` directives contribute predecessor programs, linearized into a list
 ;; (dependencies first).  Each program carries the merged type environment
-;; of its modules and the manifest of relations already present in the
-;; database when it starts (from the input DB and all earlier programs).
+;; of its modules, the manifest of relations already present in the
+;; database when it starts (from the input DB and all earlier programs),
+;; and its decomp-env -- the M2.4 decomposition registry
+;; (derived-name -> (base-name set|map), modules.rkt synthesis).
 
 (define (program? p)
   (match p
-    [`(program ,(? type-env?) ,(? set? mods) ,(? hash?)) #t]
+    [`(program ,(? type-env?) ,(? set? mods) ,(? hash?) ,(? hash?)) #t]
     [_ #f]))
 
 (define (program-list? ps)
@@ -202,6 +204,8 @@
 ;;   cprog   ::= (cprog dyn-rels constants (decl ...) (crule ...))
 ;;   decl    ::= (relation name arity idx ...)   idx ::= (col ...+)
 ;;             | (struct name arity idx ...)           | (delta col ...+)
+;;             | (lattice name arity spec decomp idx ...)
+;;                 decomp ::= #f | (decomp name set|map)   [M2.4]
 ;;             | (temp name arity)
 ;;   crule   ::= (crule (pre op ...) driver (body op ...) (head hop ...))
 ;;   driver  ::= (scan name x ...)          read the relation's delta
@@ -214,10 +218,17 @@
 ;;                                          (x ... are exactly the K key
 ;;                                          vars, in index-prefix order)
 ;;             | (let x y) | (let x (f y ...))
+;;             | (letp x (f y ...))   partial prim (prim-partial?): the call
+;;                                    takes a trailing bool* ok; !ok abandons
+;;                                    the current tuple (absence, not error)
+;;             | (cjoin x spec a b)   spec-aware pointwise join (§D): the
+;;                                    collection-lattice spec (sans `lattice`
+;;                                    head) is baked in; emitted as a
+;;                                    merge_spec call under its parsed tree
 ;;             | (eq x y) | (neq x y) | (cmp fn x y)
 ;; K counts the join's bound columns; the index orders those first, so the
 ;; probe key is the tuple's first K variables and the rest bind fresh.
-;;   hop     ::= (let x (f y ...))
+;;   hop     ::= (let x (f y ...)) | (letp x (f y ...)) | (cjoin x spec a b)
 ;;             | (mkstruct name idx x field ...)
 ;;             | (emit name idx x ...)
 ;;             | (emit-temp name x ...)
@@ -241,8 +252,15 @@
     ;; a lattice (map) relation: keys -> merged value (last storage column);
     ;; the spec is the valuespec sans its `lattice` head, e.g. (min int (floor 0));
     ;; non-delta indices are payload maps registered under full orderings that
-    ;; end in the value column, delta indices are ordinary full-width sets
-    [`(lattice ,(? var?) ,(? natural?) (,(? var?) ,_ ...) ,(? index?) ..1) #t]
+    ;; end in the value column, delta indices are ordinary full-width sets.
+    ;; The decomp slot is the M2.4 decomposition target: #f, or
+    ;; (decomp <derived-name> set|map) registered on the master merge tasks
+    ;; (docs/primitives.md §4.2)
+    [`(lattice ,(? var?) ,(? natural?) (,(? var?) ,_ ...) ,decomp ,(? index?) ..1)
+     (match decomp
+       [#f #t]
+       [`(decomp ,(? var?) ,(or 'set 'map)) #t]
+       [_ #f])]
     [`(temp ,(? var?) ,(? natural?)) #t]
     [_ #f]))
 
@@ -257,6 +275,10 @@
     [`(join-lat ,(? var?) (,(? natural?) ..1) ,(? natural?) ,(? var?) ...) #t]
     [`(let ,(? var?) ,(? var?)) #t]
     [`(let ,(? var?) (,(? var?) ,(? var?) ...)) #t]
+    ;; a partial prim's let: same shape, row-abandoning failure channel
+    [`(letp ,(? var?) (,(? var?) ,(? var?) ...)) #t]
+    ;; the spec-aware pointwise join (§D)
+    [`(cjoin ,(? var?) (,(? var?) ,_ ...) ,(? var?) ,(? var?)) #t]
     [`(eq ,(? var?) ,(? var?)) #t]
     [`(neq ,(? var?) ,(? var?)) #t]
     [`(cmp ,(? var?) ,(? var?) ,(? var?)) #t]
@@ -272,6 +294,8 @@
 (define (c-head-op? op)
   (match op
     [`(let ,(? var?) (,(? var?) ,(? var?) ...)) #t]
+    [`(letp ,(? var?) (,(? var?) ,(? var?) ...)) #t]
+    [`(cjoin ,(? var?) (,(? var?) ,_ ...) ,(? var?) ,(? var?)) #t]
     [`(mkstruct ,(? var?) (,(? natural?) ..1) ,(? var?) ,(? var?) ...) #t]
     [`(emit ,(? var?) (,(? natural?) ..1) ,(? var?) ...) #t]
     [`(emit-temp ,(? var?) ,(? var?) ...) #t]

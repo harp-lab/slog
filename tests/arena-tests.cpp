@@ -324,6 +324,85 @@ static void merge_spec_tests(CollectionArena& A, u64 seed)
   }
 }
 
+// foreach_added (docs/primitives.md §8.5, the M2.4 decomposition walk):
+// differential against the model definition -- every entry of `new` whose
+// (key, value) pair is not in `old` -- over adversarial key pairs, both
+// arbitrary trie pairs and the monotone old-then-grown pairs the lattice
+// merge point actually produces.
+static std::vector<std::pair<u64,u64>> added_of(CollectionArena& A, u64 o, u64 n)
+{
+  std::vector<std::pair<u64,u64>> out;
+  A.foreach_added(o, n, [&](u64 k, u64 v) { out.push_back({k, v}); });
+  std::sort(out.begin(), out.end());
+  return out;
+}
+
+static void foreach_added_tests(CollectionArena& A, u64 seed, int rounds)
+{
+  std::mt19937_64 rng(seed);
+  for (int i = 0; i < rounds; ++i)
+  {
+    // an arbitrary base and an arbitrary (overlapping) second trie
+    std::map<u64,u64> om, nm;
+    const int n0 = rng() % 24, n1 = rng() % 24;
+    for (int j = 0; j < n0; ++j) om[gen_key(rng)] = s32_encode((s32)(rng() % 5));
+    // new = a mutation of old: some shared keys (same and changed values),
+    // some fresh -- the shared prefix exercises the subtree pruning
+    nm = om;
+    for (int j = 0; j < n1; ++j)
+    {
+      const u64 k = (rng() % 2 && !om.empty())
+                      ? std::next(om.begin(), rng() % om.size())->first
+                      : gen_key(rng);
+      switch (rng() % 3)
+      {
+      case 0: nm[k] = s32_encode((s32)(rng() % 5)); break;   // set/replace
+      case 1: nm.erase(k); break;                            // drop (non-monotone)
+      case 2: nm[k] = s32_encode(7); break;
+      }
+    }
+    std::vector<u64> oks, nks;
+    for (auto& [k, v] : om) oks.push_back(k);
+    for (auto& [k, v] : nm) nks.push_back(k);
+    const u64 ot = build(A, om, oks);
+    const u64 nt = build(A, nm, nks);
+
+    std::vector<std::pair<u64,u64>> expect;
+    for (auto& [k, v] : nm)
+    {
+      auto it = om.find(k);
+      if (it == om.end() || it->second != v) expect.push_back({k, v});
+    }
+    std::sort(expect.begin(), expect.end());
+    CHECK(added_of(A, ot, nt) == expect, "foreach_added disagrees with model");
+
+    // identities: no self-diff, everything from empty, nothing into empty
+    CHECK(added_of(A, nt, nt).empty(), "foreach_added(t,t) not empty");
+    CHECK(added_of(A, A.empty(), nt).size() == nm.size(),
+          "foreach_added(empty,t) misses entries");
+    CHECK(added_of(A, ot, A.empty()).empty(), "foreach_added(t,empty) not empty");
+
+    // the monotone pair the merge point produces: new = old (+) delta
+    LatSpec set_spec(LATSPEC_SET);
+    const u64 grown = A.merge_spec(ot, nt, &set_spec);
+    std::map<u64,u64> gm = nm;
+    for (auto& [k, v] : om)
+    {
+      auto it = gm.find(k);
+      if (it == gm.end()) gm[k] = v;
+      else it->second = std::max(it->second, v);   // set-kind leaf join: raw max
+    }
+    std::vector<std::pair<u64,u64>> gexpect;
+    for (auto& [k, v] : gm)
+    {
+      auto it = om.find(k);
+      if (it == om.end() || it->second != v) gexpect.push_back({k, v});
+    }
+    std::sort(gexpect.begin(), gexpect.end());
+    CHECK(added_of(A, ot, grown) == gexpect, "foreach_added wrong on merge ascent");
+  }
+}
+
 static void reload(CollectionArena& A)
 {
   // Simulate value.nodes: dump per-partition in iterator order, re-intern in
@@ -360,6 +439,7 @@ int main()
     differential(A, seed, 600);
   identities(A, 42);
   merge_spec_tests(A, 77);
+  foreach_added_tests(A, 123, 400);
   concurrency(A);
   reload(A);
 

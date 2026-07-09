@@ -27,15 +27,18 @@
      void
      (lambda ()
        (with-output-to-file f #:exists 'replace (lambda () (display src)))
-       (match-define `((program ,type-env ,mods ,_))
+       (match-define `((program ,type-env ,mods ,_ ,decomps))
          (load-program-list (path->string f) (hash)))
        (define all-rules (foldl set-union (set) (map last (set->list mods))))
        (check-lattice-declarations type-env)
        (define typed
          (typecheck-rules type-env
                           (foldl simplify-rule (set) (set->list all-rules))))
-       (define strata (stratify-rules typed))
-       (check-lattice-strata strata type-env))
+       (define decomp-edges
+         (for/set ([(derived info) (in-hash decomps)])
+           (cons (first info) derived)))
+       (define strata (stratify-rules typed decomp-edges))
+       (check-lattice-strata strata type-env decomps))
      (lambda () (delete-file f))))
 
   (define-syntax-rule (accepts name src)

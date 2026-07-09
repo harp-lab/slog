@@ -1,0 +1,35 @@
+;; Spec-aware pointwise join (docs/finish-collections.md §D): cjoin
+;; materializes the join of two collection-lattice VALUES under their
+;; declared spec -- unlike the left-biased cmerge, colliding map keys
+;; reconcile by the child spec (min here), so it is monotone in both
+;; arguments and admitted in-SCC by the calculus.  The spec is resolved at
+;; lowering from the rule's lattice-column reads and baked into the call.
+
+lattice (dm (map int (min int)))
+
+table (ma int dm)
+table (mb int dm)
+table (mc int dm)
+
+rule (= x (cput (cput (cmap) 1 5) 2 9)) --> (ma 1 x)
+rule (= y (cput (cput (cmap) 1 3) 3 7)) --> (mb 1 y)
+
+;; in-SCC: pointwise-join the still-ascending ma with the closed mb, feed
+;; the result back through mc into ma -- converges to the pointwise minima
+rule (ma k x) (mb k y) (= z (cjoin x y)) --> (mc k z)
+rule (mc k z) --> (ma k z)
+
+;; cross-strata: join two CLOSED map values, then extract
+table (usz int int)
+table (got int int int)
+rule (mc k z) (mb k y) (= u (cjoin z y)) (= n (csize u)) --> (usz k n)
+rule (mc k z) (= h (chas z 2)) (> h 0) (= v (cget z 2)) --> (got k 2 v)
+
+;; set kind: cjoin is plain union under (set int)
+lattice (is (set int))
+table (sa int is)
+table (sb int is)
+table (sc int)
+rule (= a (cins (cins (cmap) 1) 2)) --> (sa 1 a)
+rule (= b (cins (cins (cmap) 2) 3)) --> (sb 1 b)
+rule (sa k a) (sb k b) (= u (cjoin a b)) (= n (csize u)) --> (sc n)

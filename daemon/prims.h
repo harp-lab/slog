@@ -203,13 +203,20 @@ inline u64 _prim_cput(slog::Database* db, u64 m, u64 k, u64 v)
   return db->collections()->put(m, k, v);
 }
 
-//  (cget m k) -- the value at k; faults if absent (guard with chas)
-inline u64 _prim_cget(slog::Database* db, u64 m, u64 k)
+//  (cget m k) -- the value at k.  PARTIAL (compiler/primitives.rkt
+//  prim-partial?): an absent key is missing *data*, not a bug -- set *ok =
+//  false and the generated letp check abandons the row (a failed match
+//  against a virtual relation; no chas guard needed).  A non-collection m
+//  STAYS fatal: partiality is for absent data, not for type errors.
+inline u64 _prim_cget(slog::Database* db, u64 m, u64 k, bool* ok)
 {
   SLOG_CNODE_ARG(m, "cget");
   u64 out = 0;
   if (!db->collections()->find(m, k, &out))
-    slog::fatal("Function 'cget': key is absent (guard with chas/cmem)");
+  {
+    *ok = false;
+    return 0;
+  }
   return out;
 }
 

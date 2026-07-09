@@ -126,14 +126,22 @@
     [`(syn ,_ = ,x (syn ,_ ,name ,args ...)) (list name (cons x args) #t)]
     [`(syn ,_ ,name ,args ...) (list name args #f)]))
 
-(define (check-lattice-strata strata type-env)
+;; `decomp-env` (modules.rkt, M2.4): derived-name -> (base set|map).  A
+;; decomposed relation's derived facts grow exactly when its base ascends, so
+;; the derived name is still-ascending in any stratum where the base is --
+;; R_at (an ordinary lattice table) must get the monotone-use discipline
+;; there; R_has is a plain relation and needs nothing new.
+(define (check-lattice-strata strata type-env [decomp-env (hash)])
   (define rel-env (type-env-rels type-env))
   (define (spec-of name) (rel-lattice-spec rel-env name))
   (for ([stratum (in-list strata)])
     (define rules (set->list (stratum-rules stratum)))
-    (define dynamic-rels
+    (define head-rels
       (for/fold ([acc (set)]) ([rule (in-list rules)])
         (set-union acc (rule-head-rels rule))))
+    (define dynamic-rels
+      (for/fold ([acc head-rels]) ([(derived info) (in-hash decomp-env)])
+        (if (set-member? head-rels (first info)) (set-add acc derived) acc)))
     (for ([rule (in-list rules)])
       (check-rule rule rel-env spec-of dynamic-rels))
     (warn-unbounded-recursion rules rel-env spec-of dynamic-rels)))
@@ -240,12 +248,13 @@
                     ;; sets grow by insert (collection position only: a live
                     ;; element would be snapshotted) and by union (either
                     ;; argument -- presence-union is monotone in both, and
-                    ;; unit values make the left bias irrelevant).  cdel/
-                    ;; cdiff shrink: excluded.
+                    ;; unit values make the left bias irrelevant; cjoin is
+                    ;; the same union under the spec).  cdel/cdiff shrink:
+                    ;; excluded.
                     [(set)
                      (and (case f
                             [(cins) (taint-only-at? 0)]
-                            [(cmerge) #t]
+                            [(cmerge cjoin) #t]
                             [else #f])
                           spec)]
                     ;; maps grow by put, monotone in the MAP position only
@@ -254,12 +263,26 @@
                     ;; left-biased, so at a colliding key the contribution
                     ;; carries whichever side arrived first through the
                     ;; iteration schedule, not the pointwise join -- the
-                    ;; fixpoint would be timing-dependent.  cget is also
-                    ;; deferred (it faults on a not-yet-present key, and the
-                    ;; chas guard is later-stratum only); in-SCC element
-                    ;; access is M2.4's R_has decomposition.
+                    ;; fixpoint would be timing-dependent.  cget descends to
+                    ;; the CHILD spec: on a still-ascending map, a key's value
+                    ;; only ascends in the child lattice once present, and
+                    ;; cget is partial (letp: absent now -> derive nothing;
+                    ;; the rule refires when the map ascends) -- monotone in
+                    ;; the map position only, a tainted KEY would be an
+                    ;; equality probe on a live value.  Whole-collection
+                    ;; enumeration is M2.4's R_has/R_at decomposition.
                     [(map)
-                     (and (eq? f 'cput) (taint-only-at? 0) spec)]
+                     (case f
+                       [(cput) (and (taint-only-at? 0) spec)]
+                       [(cget) (and (taint-only-at? 0)
+                                    (match spec
+                                      [`(lattice map ,_ ,inner) `(lattice ,@inner)]
+                                      [_ #f]))]
+                       ;; cjoin IS the pointwise join -- unlike the
+                       ;; left-biased cmerge it reconciles colliding keys by
+                       ;; the child spec, so it is monotone in both arguments
+                       [(cjoin) spec]
+                       [else #f])]
                     [else #f]))
                 (unless out-spec
                   (die "primitive (~a ~a) is not a whitelisted monotone transfer for a still-ascending (~a ...) value"

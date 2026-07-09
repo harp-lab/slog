@@ -1,0 +1,24 @@
+;; Partial cget (docs/finish-collections.md §A): a computed prim's "no
+;; answer" channel is row-abandonment, not a fatal.  cget is registered
+;; partial (compiler/primitives.rkt prim-partial?), so an absent key lowers
+;; to a letp whose failed ok-check silently drops the deduction -- a failed
+;; match against a virtual relation, exactly like mp_get.  Before this, the
+;; unguarded absent-key rule below was a guaranteed daemon fatal.
+
+table (env any)
+table (got str int)
+table (sum int)
+
+rule (= e (cput (cput (cmap) "x" 1) "y" 2)) --> (env e)
+
+;; present key, no chas guard: value flows
+rule (env e) (= v (cget e "x")) --> (got "x" v)
+
+;; ABSENT key, no chas guard: the row is dropped, deriving nothing
+rule (env e) (= v (cget e "zz")) --> (got "zz" v)
+
+;; absent key mid-computation: the whole deduction (including the +) aborts
+rule (env e) (= v (cget e "nope")) (= s (+ v 10)) --> (sum s)
+
+;; present key feeding a downstream compute still works
+rule (env e) (= v (cget e "y")) (= s (+ v 10)) --> (sum s)

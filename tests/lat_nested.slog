@@ -1,0 +1,38 @@
+;; In-SCC cget (docs/finish-collections.md §A): a (map int (min int))
+;; column read MID-ASCENT via cget, the result flowing through a `+`
+;; transfer into a (min int) lattice table in the same SCC.  The monotone-
+;; use calculus admits it by child-spec descent: on a still-ascending map a
+;; key's value only ascends in the child lattice once present, and cget is
+;; partial -- absent now derives nothing, and the rule refires when the map
+;; ascends (the value-carrying delta).  The cycle back into the map is
+;; closed by an upward-closed guard ((< v 8)): the tainted value GATES new
+;; keys, it does not flow into interned map content (the position rule).
+
+lattice (dmap (map int (min int)))
+lattice (mind (min int))
+
+table (edge int int int)
+table (node int)
+table (best int dmap)
+table (short int int mind)
+
+facts (edge 1 2 3) (edge 1 2 5) (edge 2 3 4) (edge 3 4 1)
+facts (node 1) (node 2) (node 3) (node 4)
+
+;; seed: per-source direct edges, joined pointwise (1->2 seeds 3 and 5, min 3)
+rule (edge a b w) (= m (cput (cmap) b w)) --> (best a m)
+
+;; relax: read the successor's still-ascending map, cget each node's current
+;; bound (absent -> nothing; refires as best ascends), add the edge weight,
+;; contribute into the (min int) column
+rule (edge a b w) (best b m) (node c) (= d (cget m c)) (= d2 (+ w d))
+     --> (short a c d2)
+
+;; gate: a cheap-enough still-ascending bound admits the target's successors
+;; into the source's map (plain edge weights -- the tainted v only guards)
+rule (short a c v) (< v 8) (edge c e w2) (= m2 (cput (cmap) e w2))
+     --> (best a m2)
+
+;; later stratum: the values are closed; any use is legal
+table (bsz int int)
+rule (best a m) (= n (csize m)) --> (bsz a n)

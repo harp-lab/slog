@@ -1,0 +1,37 @@
+;; M2.4 R_has decomposition, the in-SCC enumeration flagship
+;; (docs/finish-collections.md §C, docs/primitives.md §4.2): using the
+;; undeclared name reach_has over reach : (..., (set int)) synthesizes a
+;; PLAIN monotone relation reach_has(src, elem) grown by reach's merge
+;; tasks -- each element, once present, stays, so Datalog draws only
+;; monotone conclusions from it.  GATED reachability is exactly what v1
+;; could not express: an edge (gedge a b g) fires only when g is already
+;; reached MID-FIXPOINT, and the chain below needs the gate to open twice.
+
+lattice (iset (set int))
+
+table (src int)
+table (edge int int)
+table (gedge int int int)      ;; a -> b, gated on g being reached
+table (reach int iset)         ;; source -> its ascending reached-set
+
+facts (src 1)
+facts (edge 1 2) (edge 2 3)
+facts (gedge 3 4 2)            ;; 3 -> 4 opens once 2 is reached
+facts (gedge 1 5 4)            ;; 1 -> 5 opens once 4 is reached (chained!)
+facts (gedge 1 6 9)            ;; never: 9 is unreachable
+
+;; each source reaches itself
+rule (src s) (= r (cins (cmap) s)) --> (reach s r)
+
+;; ungated step: membership via the decomposition, in the same SCC
+rule (reach_has s a) (edge a b) (= r (cins (cmap) b)) --> (reach s r)
+
+;; gated step: fires only when the gate g is ALREADY in the ascending set
+rule (reach_has s a) (reach_has s g) (gedge a b g) (= r (cins (cmap) b))
+     --> (reach s r)
+
+;; later stratum: closed values -- set size and a plain dump of the elements
+table (rsize int int)
+table (final int int)
+rule (reach s r) (= n (csize r)) --> (rsize s n)
+rule (reach_has s a) --> (final s a)

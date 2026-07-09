@@ -53,6 +53,33 @@
   (format "if (v_~a == slog_error) { slog::emit_pending_error(db, \"~a\"); ~a }"
           var (escape-c-string-literal (current-rule-loc)) ret))
 
+;; A PARTIAL prim call (a letp c-op): the runtime convention (prims.h) is a
+;; trailing `bool* ok` parameter -- absent data sets *ok = false and the row is
+;; abandoned with `ret`, the same return-semantics cmp guards have.  Absence is
+;; not an error: no error fact, just a failed match against a virtual relation.
+(define (partial-prim-call x f args ret)
+  (define ok (gensymb 'ok))
+  (define al (string-join (map (lambda (a) (format "v_~a" a)) args) ", "))
+  (string-append
+   (format "bool ~a = true;\n" ok)
+   (format "u64 v_~a = _prim_~a(db~a, &~a);\n"
+           x f (if (string=? al "") "" (string-append ", " al)) ok)
+   (format "if (!~a) ~a" ok ret)))
+
+;; The spec-aware pointwise join (a cjoin c-op, docs/finish-collections.md
+;; §D): parse the baked spec token ONCE per call site into a function-local
+;; static (magic-statics init is thread-safe, and the per-bucket instances
+;; of one rule share the site), then join the two payload words under it.
+;; merge_spec tag-checks its collection operands and fatals on a mistyped
+;; word -- the cplus contract, not the row-abandon channel.
+(define (cjoin-call x spec a b)
+  (define sv (gensymb 'spec))
+  (string-append
+   (format "static const slog::LatSpec* ~a = slog::parseLatSpecToken(\"~a\");\n"
+           sv (lat-spec-token spec))
+   (format "if (~a == nullptr) slog::fatal(\"cjoin: malformed spec token\");\n" sv)
+   (format "u64 v_~a = db->collections()->merge_spec(v_~a, v_~a, ~a);" x a b sv)))
+
 (define ((emit-lines ind) . lines)
   (define ind-str
     (if debug-mode
@@ -142,7 +169,7 @@
 (define (lat-spec-token spec)
   (string-join (map ~a (flatten spec)) "-"))
 
-(define (add-lattice-decl name arity spec indices)
+(define (add-lattice-decl name arity spec decomp indices)
   (match-define `(,kind ,rest ...) spec)
   (define base (and (memq kind '(min max flat)) (car rest)))
   (define (param key)
@@ -155,6 +182,17 @@
   (define floorv (param 'floor))
   (define ceilv (param 'ceiling))
   (define master (first indices))
+  ;; M2.4 decomposition target (docs/primitives.md §4.2): extra constructor
+  ;; args for the MASTER merge tasks -- the once MapWriteTask (iteration-0
+  ;; re-derivation from the reloaded/imported base) and the LatticeInternTask
+  ;; (per-ascent O(change) deltas).  The target relation is registered before
+  ;; this decl runs: decls emit in descending name order and "<R>_has"/
+  ;; "<R>_at" extends (sorts after) "<R>".
+  (define decomp-args
+    (match decomp
+      [`(decomp ,target ,dkind)
+       (format ", db->getRelation(\"~a\"), ~a" target (if (eq? dkind 'map) "true" "false"))]
+      [#f ""]))
   (string-append
    ((emit-lines 2)
     (format "r = db->getRelation(\"~a\");" name)
@@ -185,8 +223,10 @@
              (format "r->addIndex<~a>(~a, true);" A ordering)
              (add-ord-decl ordering ind 2))
             (list
-             (format "  s->addTask(phase_write, new slog::MapWriteTask<~a>(db, r, ~a, b), ~a);"
-                     A (u16-array-lit ind) isstatic)
+             (format "  s->addTask(phase_write, new slog::MapWriteTask<~a>(db, r, ~a, b~a), ~a);"
+                     A (u16-array-lit ind)
+                     (if (equal? isstatic "true") decomp-args "")
+                     isstatic)
              (format "for (u16 b = 0; b < ~a; ++b)" bucket-count)
              (format "r->addMapIndex<~a>(~a);" A ordering)
              (add-ord-decl ordering ind 2)))
@@ -194,8 +234,8 @@
    "\n"
    ((emit-lines 2)
     (format "for (u16 b = 0; b < ~a; ++b)" bucket-count)
-    (format "  s->addTask(phase_intern, new slog::LatticeInternTask<~a>(db, db->getRelation(\"~a\"), ~a, b));"
-            arity name (u16-array-lit master)))))
+    (format "  s->addTask(phase_intern, new slog::LatticeInternTask<~a>(db, db->getRelation(\"~a\"), ~a, b~a));"
+            arity name (u16-array-lit master) decomp-args))))
 
 (define (add-rel-decl rel)
   (match rel
@@ -218,11 +258,11 @@
      (string-append (add-write-task name arity indices #f)
                     "\n"
                     (add-intern-task name (first indices) #f))]
-    [`(lattice ,name ,arity ,spec ,indices ...)
+    [`(lattice ,name ,arity ,spec ,decomp ,indices ...)
      (when (or (null? indices) (eq? 'delta (car (first indices))))
        (error (format "Lattice relation ~a must lead with a non-delta (master) index: ~a"
                       name indices)))
-     (add-lattice-decl name arity spec indices)]))
+     (add-lattice-decl name arity spec decomp indices)]))
 
 ;; -----------------------------------------------------------------------
 ;; Rules.
@@ -327,6 +367,8 @@
     [`(let ,x (,f ,args ...))
      (string-append (format "u64 v_~a = ~a;\n" x (prim-call f args))
                     (prim-error-check x "return;"))]
+    [`(letp ,x (,f ,args ...)) (partial-prim-call x f args "return;")]
+    [`(cjoin ,x ,spec ,a ,b) (cjoin-call x spec a b)]
     [`(eq ,x ,y) (format "if (v_~a != v_~a) return;" x y)]
     [`(neq ,x ,y) (format "if (v_~a == v_~a) return;" x y)]
     [`(cmp ,fn ,x ,y)
@@ -345,6 +387,8 @@
     [`(let ,x (,f ,args ...))
      (string-append (format "u64 v_~a = ~a;\n" x (prim-call f args))
                     (prim-error-check x "return true;"))]
+    [`(letp ,x (,f ,args ...)) (partial-prim-call x f args "return true;")]
+    [`(cjoin ,x ,spec ,a ,b) (cjoin-call x spec a b)]
     [`(eq ,x ,y) (format "if (v_~a != v_~a) return true;" x y)]
     [`(neq ,x ,y) (format "if (v_~a == v_~a) return true;" x y)]
     [`(cmp ,fn ,x ,y)
@@ -367,6 +411,10 @@
               ((emit-lines indent)
                (format "u64 v_~a = ~a;" x (prim-call f args))
                (prim-error-check x "return;"))]
+             [`(letp ,x (,f ,args ...))
+              ((emit-lines indent) (partial-prim-call x f args "return;"))]
+             [`(cjoin ,x ,spec ,a ,b)
+              ((emit-lines indent) (cjoin-call x spec a b))]
              ;; a residual type check: if the value's surface tag matches no
              ;; accepted type, divert -- intern a malformed_deduction struct
              ;; (rule-location, relation, column, bad value) in place of the
@@ -476,6 +524,8 @@
             (for/list ([hop (in-list heads)] [i (in-naturals)])
               (match hop
                 [`(let ,_ ,_) ""]
+                [`(letp ,_ ,_) ""]
+                [`(cjoin ,_ ,_ ,_ ,_) ""]
                 [`(tycheck ,_ ,_ ,_ ,_ ,_ ,_)
                  (format "    head_rel[~a] = db->getRelation(\"malformed_deduction\");\n" i)]
                 [`(mkstruct ,name ,_ ,_ ,_ ...)
@@ -711,8 +761,11 @@
         [`(rel ,_ ,arity) `(relation ,name ,arity ,(range arity))]
         [`(struct ,_ ,arity)
          `(struct ,name ,arity (,@(range 1 arity) 0) ,(range arity))]
+        ;; a manifest lattice keeps no decomp target: a decomposed base is
+        ;; always program-declared (the synthesis requires its declaration),
+        ;; so it never reaches this keep-alive path
         [`(lat ,_ ,arity ,spec)
-         `(lattice ,name ,arity ,(cdr spec) ,(range arity))])))
+         `(lattice ,name ,arity ,(cdr spec) #f ,(range arity))])))
 
   (define include-block
     (string-append "\n"

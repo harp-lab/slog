@@ -1,0 +1,46 @@
+;; M2.4 R_at decomposition (docs/finish-collections.md §C): using the
+;; undeclared name best_at over best : (int, (map int (min int)))
+;; synthesizes best_at(src, key, v) -- ITSELF a lattice table whose value
+;; column carries the map's child valuespec, so it converges to the
+;; pointwise minima (pointwise semantics by construction).  Read both
+;; in-SCC (the relax rule, monotone-use discipline applying to v) and
+;; cross-strata (the extraction below).
+
+lattice (dm (map int (min int)))
+lattice (mind (min int))
+
+table (edge int int int)
+table (best int dm)            ;; source -> (node -> min cost)
+table (bound int int mind)     ;; (source, node) -> min cost via a successor
+
+facts (edge 1 2 3) (edge 1 2 7) (edge 2 3 4) (edge 3 4 1)
+
+;; seed: direct edges, pointwise (1->2 contributes 3 and 7; best keeps 3,
+;; and best_at (1,2) converges to 3 through its own child-spec merge)
+rule (edge a b w) (= m (cput (cmap) b w)) --> (best a m)
+
+;; in-SCC: enumerate the successor's still-ascending map via best_at and
+;; relax through the + transfer into the (min int) column of bound
+rule (edge a b w) (best_at b c d) (= d2 (+ w d)) --> (bound a c d2)
+
+;; gate: a cheap-enough still-ascending bound admits the target's direct
+;; edges into the source's map (plain weights; the tainted v only guards) --
+;; closing the cycle best -> best_at -> bound -> best in ONE SCC
+rule (bound a c v) (< v 8) (edge c e w2) (= m (cput (cmap) e w2))
+     --> (best a m)
+
+;; later stratum: the pointwise minima are closed; any use is legal
+table (final int int int)
+rule (best_at a k v) --> (final a k v)
+
+;; nested composition: a (map int (set int)) column decomposes to an R_at
+;; whose value column is itself a (set int) lattice.  The inner set is built
+;; in its map-to-unit form (cput .. 1 = cins): simplification unifies the two
+;; identical (cmap) subterms into ONE variable, which must then type as cmap
+;; in both uses -- mixing cins and cput over a shared empty cannot.
+lattice (nm (map int (set int)))
+table (tags int nm)
+table (tsz int int int)
+rule (edge a b w) (= s (cput (cput (cmap) w 1) b 1)) (= m (cput (cmap) b s))
+     --> (tags a m)
+rule (tags_at a k s) (= n (csize s)) --> (tsz a k n)

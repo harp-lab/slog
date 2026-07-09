@@ -23,6 +23,7 @@
 (require "utils.rkt")
 (require "params.rkt")
 (require "ir-shared.rkt")
+(require "primitives.rkt")    ; prim-partial? (letp lowering)
 (require "type-system.rkt")   ; rule-has-fallible-prims?, prim-error-arms
 
 ;; The rule's "basename:line" (1-based), baked into any runtime-error
@@ -72,16 +73,17 @@
 ;;
 ;; planned-rules  set of planned rules (one stratum)
 ;; rel-env        relation declarations, including this stratum's temps
+;; decomp-env     M2.4 decomposition registry: derived -> (base set|map)
 ;;
 ;; Returns a cprog.  The dynamic-relation set (heads of this stratum's
 ;; rules) determines which read tasks re-run every iteration versus once.
 
-(define (build-cprog planned-rules rel-env)
+(define (build-cprog planned-rules rel-env [decomp-env (hash)])
   (define rules0 (set->list planned-rules))
   (match-define (cons constants rules) (globalize-constants rules0))
   ;; residual checks grow malformed_deduction through their failure path,
   ;; so it counts as a head relation for scheduling purposes
-  (define dynamic-rels
+  (define head-dynamic-rels
     (for/fold ([acc (set)]) ([rule (in-list rules)])
       (define heads (rule-heads rule))
       (set-union acc
@@ -96,9 +98,18 @@
                  (if (rule-has-fallible-prims? rule)
                      (list->set prim-error-arms)
                      (set)))))
+  ;; a decomposed relation's derived facts (R_has/R_at) are grown through the
+  ;; base's merge tasks, not as rule heads -- and in EVERY stratum: the master
+  ;; (once) MapWriteTask re-derives them from the reloaded content at
+  ;; iteration 0, landing them in iteration 1's delta, so rules they drive
+  ;; must re-run each iteration even where the base is closed (a static
+  ;; reader would miss the freshly-seeded rows; compile.rkt has the story)
+  (define dynamic-rels
+    (for/fold ([acc head-dynamic-rels]) ([(derived _info) (in-hash decomp-env)])
+      (set-add acc derived)))
   (define selections
     (foldl (add-select-sets rel-env) (seed-select-sets rel-env) rules))
-  (define decls (make-rel-decls rel-env selections))
+  (define decls (make-rel-decls rel-env selections decomp-env))
   (define crules (map (lower-rule rel-env selections) rules))
   `(cprog ,dynamic-rels ,constants ,decls ,crules))
 
@@ -303,7 +314,12 @@
 ;; -----------------------------------------------------------------------
 ;; 4. Relation declarations.
 
-(define (make-rel-decls rel-env indices)
+(define (make-rel-decls rel-env indices [decomp-env (hash)])
+  ;; inverted decomp registry: base -> (decomp derived set|map), the slot a
+  ;; decomposed base's lattice decl carries into emission (M2.4)
+  (define decomp-of
+    (for/hash ([(derived info) (in-hash decomp-env)])
+      (values (first info) `(decomp ,derived ,(second info)))))
   (for/fold ([decls '()]) ([name (in-list (sort (hash-keys rel-env) symbol<?))])
     (define decl (hash-ref rel-env name))
     (define arity (rel-decl-arity decl))
@@ -332,7 +348,8 @@
        (define all (sort (set->list (indices-of indices name arity))
                          (lambda (a b) (string<? (~a a) (~a b)))))
        (define deltas (set->list (indices-of indices `(delta ,name) arity)))
-       (cons `(lattice ,name ,arity ,(cdr spec) ,@all
+       (cons `(lattice ,name ,arity ,(cdr spec) ,(hash-ref decomp-of name #f)
+                       ,@all
                        ,@(map (lambda (i) `(delta ,@i)) deltas))
              decls)]
       [`(table ,_ ...)
@@ -390,14 +407,54 @@
       [`(struct ,_ ...) #t]
       [_ #f]))
 
-  ;; a non-join body op
-  (define (lower-op cl)
+  ;; var -> collection-lattice spec (sans the `lattice` head), for cjoin
+  ;; lowering (docs/finish-collections.md §D).  Seeded by every body join
+  ;; over a lattice relation (its value variable carries that relation's
+  ;; spec) and extended through cjoin lets IN SCHEDULE ORDER -- planned
+  ;; bodies are ordered, and head computes run after, so one left-to-right
+  ;; pass resolves chains without a fixpoint.  This is lattice-check's seed
+  ;; scan without the dynamic-rels filter: lowering needs the spec of any
+  ;; lattice-column read, closed or still-ascending.
+  (define (cjoin-spec-env rule)
+    (define seed
+      (for/fold ([env (hash)]) ([cl (in-list (rule-body rule))])
+        (define spec (and (join-cl? cl) (rel-lattice-spec rel-env (join-rel cl))))
+        (if (memq (and spec (second spec)) '(set map))
+            (hash-set env (last (join-tuple cl)) (cdr spec))
+            env)))
+    (for/fold ([env seed]) ([cl (in-list (append (rule-body rule) (rule-heads rule)))])
+      (match cl
+        [`(syn ,_ let ,x (syn ,_ cjoin ,a ,b))
+         (define sa (hash-ref env a #f))
+         (define sb (hash-ref env b #f))
+         (unless (or sa sb)
+           (error 'operationalization
+                  "(cjoin ~a ~a): neither argument's collection-lattice spec is known -- cjoin needs an argument bound from a (set ...)/(map ...) lattice value column\n  in rule: ~a"
+                  a b (strip-prov rule)))
+         (when (and sa sb (not (equal? sa sb)))
+           (error 'operationalization
+                  "(cjoin ~a ~a): arguments carry different lattice specs ~a and ~a\n  in rule: ~a"
+                  a b sa sb (strip-prov rule)))
+         (hash-set env x (or sa sb))]
+        [_ env])))
+
+  ;; a non-join body op; spec-env backs the cjoin lowering
+  (define (lower-op cl spec-env)
     (match cl
       [`(syn ,_ /= ,x ,y) `(neq ,(esc x) ,(esc y))]
       [`(syn ,_ == ,x ,y) `(eq ,(esc x) ,(esc y))]
       [`(syn ,_ ,(? primitive-cmp? op) ,x ,y)
        `(cmp ,(cmp-prim-name op) ,(esc x) ,(esc y))]
       [`(syn ,_ let ,x ,(? var? y)) `(let ,(esc x) ,(esc y))]
+      ;; the spec-aware pointwise join (§D): a dedicated c-op carrying the
+      ;; spec resolved above (cjoin-spec-env guarantees it exists)
+      [`(syn ,_ let ,x (syn ,_ cjoin ,a ,b))
+       `(cjoin ,(esc x) ,(hash-ref spec-env x) ,(esc a) ,(esc b))]
+      ;; a PARTIAL prim (prim-partial?, primitives.rkt): lower to letp -- the
+      ;; emitted call carries a trailing bool* ok, and !ok abandons the row
+      ;; (absence = failed match against a virtual relation)
+      [`(syn ,_ let ,x (syn ,_ ,(? prim-partial? f) ,args ...))
+       `(letp ,(esc x) (,(esc f) ,@(map esc args)))]
       [`(syn ,_ let ,x (syn ,_ ,f ,args ...))
        `(let ,(esc x) (,(esc f) ,@(map esc args)))]))
 
@@ -465,9 +522,13 @@
                         "accepted type ~a of a residual check has no runtime tag test in ~a"
                         t who)])]))))
 
-  ;; a head op
-  (define (lower-head cl)
+  ;; a head op; spec-env backs the cjoin lowering, exactly as in lower-op
+  (define (lower-head cl spec-env)
     (match cl
+      [`(syn ,_ let ,x (syn ,_ cjoin ,a ,b))
+       `(cjoin ,(esc x) ,(hash-ref spec-env x) ,(esc a) ,(esc b))]
+      [`(syn ,_ let ,x (syn ,_ ,(? prim-partial? f) ,args ...))
+       `(letp ,(esc x) (,(esc f) ,@(map esc args)))]
       [`(syn ,_ let ,x (syn ,_ ,f ,args ...))
        `(let ,(esc x) (,(esc f) ,@(map esc args)))]
       [`(syn ,_ tycheck ,y (accept ,ts ...) ,rid ,rel ,colv)
@@ -508,6 +569,7 @@
 
   ;; split the body: everything before the first join is a pre-op
   (define bodys (rule-body rule))
+  (define spec-env (cjoin-spec-env rule))
   (define sj-filters (semijoin-filters bodys rel-env))
   (define-values (pre-cls rest) (splitf-at bodys (lambda (cl) (not (join-cl? cl)))))
   (define pre-ground
@@ -538,7 +600,7 @@
             [else
              (loop driver
                    (set-union ground (clause-out-vars (car cls)))
-                   (cons (lower-op (car cls)) ops)
+                   (cons (lower-op (car cls) spec-env) ops)
                    jpos
                    (cdr cls))]))))
   ;; every tycheck hop goes AHEAD of every emitting hop, whatever the head
@@ -548,8 +610,8 @@
   ;; read only body-bound and const-bound variables, so hoisting is safe.)
   (define-values (check-hops emit-hops)
     (partition (lambda (hop) (eq? 'tycheck (car hop)))
-               (map lower-head (rule-heads rule))))
-  `(crule (pre ,@(map lower-op pre-cls))
+               (map (lambda (cl) (lower-head cl spec-env)) (rule-heads rule))))
+  `(crule (pre ,@(map (lambda (cl) (lower-op cl spec-env)) pre-cls))
           ,driver
           (body ,@ops)
           (head ,@check-hops ,@emit-hops)
