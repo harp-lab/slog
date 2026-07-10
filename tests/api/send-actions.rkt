@@ -20,6 +20,7 @@
     [(list "schema") `(schema)]
     [(list "open" db) `(open ,db)]
     [(list "import" db) `(import ,db)]
+    [(list "import-layer" db) `(import-layer ,db)]
     [(list "write-db" db) `(write-db ,db)]
     [(list "write-csv" dir) `(write-csv ,dir)]
     [(list "write-rel" arg)

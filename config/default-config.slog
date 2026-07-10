@@ -47,3 +47,11 @@ rule
 (setting_int "max_ms" 8000)
 (setting_int "slice_ms" 500)
 (setting_str "mem_max" "4G")
+
+;; --- tiered compilation --------------------------------------------------
+;; Seconds before an in-flight background -O2 build's claim marker
+;; (build/<hash>.so.building) is presumed abandoned by a dead builder and
+;; reclaimed; also the per-build wall-clock timeout (docs/fast-compile.md §13).
+;; 15 min is ~9x the largest observed full -O2 build, so a live build is never
+;; reclaimed out from under itself.
+rule (setting_int "o2_reclaim_secs" 900)

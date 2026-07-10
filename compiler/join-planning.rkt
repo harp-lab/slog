@@ -112,7 +112,44 @@
     (for/fold ([acc (set)]) ([rule (in-set rules)])
       (for/fold ([acc acc]) ([staged (in-list (stage-rule rule add-temp!))])
         (match-define (cons staged-rule statics) staged)
-        (set-union acc (plan-rule-versions staged-rule dynamic? temp? statics)))))
+        (define versions (plan-rule-versions staged-rule dynamic? temp? statics))
+        ;; SEEDED RE-ENTRY version (the staging-replay bug, 2026-07-10): a
+        ;; staged rule with pruned (static) joins relies on this stratum's
+        ;; own construction order -- statics' rows always land in FULL
+        ;; before any driver's delta.  A stratum started over EXTERNALLY
+        ;; SEEDED content (compression replay, open/import, frozen ground
+        ;; DBs) violates that: sampling can make any pruned position the
+        ;; last to arrive, and no variant fires.  So each such rule also
+        ;; gets one no-delta version over FULL indices, run every
+        ;; iteration only in seeded runs (addTaskSeeded; set-semantics
+        ;; re-fires dedup away).  Temp-DRIVEN follow-ups are exempt: a
+        ;; temp row is only ever produced in-run, co-emitted with (or
+        ;; after) everything its statics need, so its timing invariant
+        ;; survives seeding.
+        (define needs-seeded?
+          (and (pair? statics)
+               (match staged-rule
+                 [`(syn ,_ rule ,bodys ... --> ,heads ...)
+                  (and
+                   ;; temp-driven follow-ups are exempt: a temp row is only
+                   ;; ever produced in-run, co-emitted with (or after)
+                   ;; everything its statics need
+                   (not (for/or ([cl (in-list bodys)])
+                          (and (join-cl? cl) (temp? (join-rel cl)))))
+                   ;; lattice heads have no emit-side dedup (subsumption
+                   ;; belongs to the merge task), so a seeded re-fire would
+                   ;; register fresh delta forever -- excluded (v1 gap:
+                   ;; sampled staged-lattice ground facts; docs/stats.md)
+                   (not (for/or ([cl (in-list heads)])
+                          (match cl
+                            [`(syn ,_ ,(? symbol? name) ,_ ...)
+                             (and (rel-lattice-spec rel-env name) #t)]
+                            [_ #f]))))])))
+        (set-union acc versions
+                    (if needs-seeded?
+                        (plan-rule-versions staged-rule dynamic? temp? '()
+                                            #:seeded? #t)
+                        (set))))))
   (cons planned (unbox rel-env-box)))
 
 ;; -----------------------------------------------------------------------
@@ -264,7 +301,8 @@
 ;; -----------------------------------------------------------------------
 ;; 2 & 3. Scheduling and version generation for one staged rule.
 
-(define (plan-rule-versions rule dynamic? temp? [statics '()])
+(define (plan-rule-versions rule dynamic? temp? [statics '()]
+                            #:seeded? [seeded? #f])
   (match rule
     [`(syn ,prov rule ,bodys ... --> ,heads ...)
      ;; constants (from body or head) ground their variables up front
@@ -317,13 +355,18 @@
                   (string-join (map symbol->string
                                     (sort (set->list missing) symbol<?)) ", ")
                   (strip-prov rule))))
-       `(syn ,prov rule ,@const-lets ,@body-schedule
+       `(syn ,prov ,(if seeded? 'seeded-rule 'rule) ,@const-lets ,@body-schedule
              --> ,@head-rest))
 
      (define temp-joins (filter (lambda (cl) (temp? (join-rel cl))) driver-joins))
      (define dynamic-joins (filter (lambda (cl) (dynamic? (join-rel cl))) driver-joins))
      (define drivers
        (cond
+         ;; the seeded re-entry version (plan-stratum): ONE full-index
+         ;; evaluation scheduled around the best-scoring join; no delta
+         ;; position at all (operationalization keys off the seeded-rule
+         ;; tag and lowers the first join like any other)
+         [seeded? (list (best-join joins const-vars computes guards))]
          ;; a temp join must drive (temps have no indices to probe), and its
          ;; delta subsumes its siblings' (they were emitted together)
          [(pair? temp-joins) (list (car temp-joins))]

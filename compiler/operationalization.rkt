@@ -62,11 +62,23 @@
     [`(syn ,_ = ,x (syn ,_ ,name ,xs ...)) (cons x xs)]
     [`(syn ,_ ,name ,xs ...) xs]))
 
+;; A `seeded-rule` is a staged rule's SEEDED RE-ENTRY version (the
+;; staging-replay bug, docs/db-compression.md): identical semantics, but
+;; every join probes FULL indices (no delta anywhere) and the generated
+;; task registers via addTaskSeeded -- the daemon runs it each iteration
+;; only when the stratum starts over externally seeded content (an
+;; open/import preceded), restoring semi-naive completeness exactly where
+;; staging's pruned delta variants lose it.
+(define (seeded-rule? rule)
+  (match rule [`(syn ,_ seeded-rule ,_ ...) #t] [_ #f]))
+
 (define (rule-body rule)
-  (match rule [`(syn ,_ rule ,bodys ... --> ,heads ...) bodys]))
+  (match rule
+    [`(syn ,_ ,(or 'rule 'seeded-rule) ,bodys ... --> ,heads ...) bodys]))
 
 (define (rule-heads rule)
-  (match rule [`(syn ,_ rule ,bodys ... --> ,heads ...) heads]))
+  (match rule
+    [`(syn ,_ ,(or 'rule 'seeded-rule) ,bodys ... --> ,heads ...) heads]))
 
 ;; -----------------------------------------------------------------------
 ;; The pass driver.
@@ -109,7 +121,8 @@
       (set-add acc derived)))
   (define selections
     (foldl (add-select-sets rel-env) (seed-select-sets rel-env) rules))
-  (define decls (make-rel-decls rel-env selections decomp-env))
+  ;; (decls are built AFTER rule lowering: which orderings are seeded-only
+  ;; is decided from the indices crules actually reference)
   ;; extern oracle bindings (docs/smt.md): a stratum whose rules write the
   ;; demand struct gets the daemon-side dispatch/harvest registration,
   ;; emitted AFTER every relation decl so bindOracle's lookups succeed
@@ -166,8 +179,44 @@
     (for/fold ([acc dynamic-rels+]) ([occ (in-list seq-occ-present)])
       (set-add acc occ)))
   (define crules (map (lower-rule rel-env selections) rules))
+  ;; Gate an ordering's WriteTask behind addTaskSeeded only if EVERY
+  ;; reference to it comes from a seeded re-entry crule.  Attribution must
+  ;; happen POST-lowering: find-index resolves prefix SETS, so a live
+  ;; rule's selection {0,1} can land on the ordering (1 0 2) that only a
+  ;; seeded rule requisitioned -- selection-level attribution once gated
+  ;; an index a live rule probes (empty in fresh runs: silent
+  ;; under-derivation).  Delta indices are never gated.
+  (define seeded-used
+    (for*/set ([cr (in-list crules)]
+               #:when (equal? (third cr) `(seeded))          ; crule-driver
+               [ref (in-list (crule-index-refs cr))])
+      ref))
+  (define live-used
+    (for*/set ([cr (in-list crules)]
+               #:unless (equal? (third cr) `(seeded))        ; crule-driver
+               [ref (in-list (crule-index-refs cr))])
+      ref))
+  (define gate-inds (set-subtract seeded-used live-used))
+  (define decls (make-rel-decls rel-env selections decomp-env gate-inds))
   `(cprog ,dynamic-rels++ ,constants ,(append decls oracle-decls seq-decls)
           ,crules))
+
+;; every full-index ordering a crule's ops reference, as (name . ordering)
+(define (crule-index-refs cr)
+  (define (op-refs op)
+    (match op
+      [`(join ,name ,ind ,_ ,_ ...) (list (cons name ind))]
+      [`(join-lat ,name ,ind ,_ ,_ ...) (list (cons name ind))]
+      [`(exists ,name ,ind ,_ ,_ ...) (list (cons name ind))]
+      [`(mkstruct ,name ,ind ,_ ,_ ...) (list (cons name ind))]
+      [`(emit ,name ,ind ,_ ...) (list (cons name ind))]
+      [`(tycheck ,_ ,_ ,_ ,_ ,_ ,ind) (list (cons 'malformed_deduction ind))]
+      [_ '()]))
+  ;; positional crule accessors (ir-stack.rkt owns the named ones; requiring
+  ;; it here would be a cycle): (crule (pre ...) driver (body ...) (head ...) loc)
+  (append (append-map op-refs (cdr (second cr)))
+          (append-map op-refs (cdr (fourth cr)))
+          (append-map op-refs (cdr (fifth cr)))))
 
 ;; -----------------------------------------------------------------------
 ;; 1. Constants.
@@ -181,7 +230,7 @@
              #:result (cons (car acc) (reverse (cdr acc))))
             ([rule (in-list rules)])
     (match-define (cons constants rules+) acc)
-    (match-define `(syn ,prov rule ,cls ...) rule)
+    (match-define `(syn ,prov ,(and tag (or 'rule 'seeded-rule)) ,cls ...) rule)
     (define-values (constants+ cls+)
       (for/fold ([constants constants] [out '()]
                  #:result (values constants (reverse out)))
@@ -192,7 +241,7 @@
            (values (hash-set constants v g)
                    (cons `(syn ,p let ,x ,g) out))]
           [_ (values constants (cons cl out))])))
-    (cons constants+ (cons `(syn ,prov rule ,@cls+) rules+))))
+    (cons constants+ (cons `(syn ,prov ,tag ,@cls+) rules+))))
 
 ;; -----------------------------------------------------------------------
 ;; Semijoin filters (Yannakakis-style lookahead pruning).
@@ -326,11 +375,14 @@
 (define ((add-select-sets rel-env) rule ss)
   (define bodys (rule-body rule))
   (define sj-filters (semijoin-filters bodys rel-env))
+  ;; a seeded-rule has NO delta driver: its first join selects on the FULL
+  ;; index like any other
+  (define seeded? (seeded-rule? rule))
   (for/fold ([ground (set)] [jpos 0] [ss ss] #:result ss)
             ([cl (in-list bodys)])
     (cond
       [(join-cl? cl)
-       (define first? (= jpos 0))
+       (define first? (and (= jpos 0) (not seeded?)))
        (define tup (join-tuple cl))
        (define lat-value-pos
          (and (rel-lattice-spec rel-env (join-rel cl)) (sub1 (length tup))))
@@ -370,7 +422,14 @@
 ;; -----------------------------------------------------------------------
 ;; 4. Relation declarations.
 
-(define (make-rel-decls rel-env indices [decomp-env (hash)])
+(define (make-rel-decls rel-env indices [decomp-env (hash)]
+                        [gate-inds (set)])
+  ;; an ordering referenced ONLY by seeded re-entry crules (build-cprog):
+  ;; tag it so its WriteTask is gated like the tasks that read it
+  (define (mark-seeded-only name arity inds)
+    (map (lambda (i)
+           (if (set-member? gate-inds (cons name i)) `(seeded-only ,@i) i))
+         inds))
   ;; inverted decomp registry: base -> (decomp derived set|map), the slot a
   ;; decomposed base's lattice decl carries into emission (M2.4)
   (define decomp-of
@@ -388,7 +447,9 @@
        ;; seed-select-sets guarantees both exist:
        ;;   (set)  -> (1 ... n 0)  = master/interning, and
        ;;   (set 0)-> (0 1 ... n)  = lookup
-       (define others (set->list (set-subtract all (set master lookup))))
+       (define others
+         (mark-seeded-only name stored
+                           (set->list (set-subtract all (set master lookup)))))
        (define deltas (set->list (indices-of indices `(delta ,name) stored)))
        (cons `(struct ,name ,stored
                 ,master ,lookup ,@others
@@ -409,7 +470,13 @@
                        ,@(map (lambda (i) `(delta ,@i)) deltas))
              decls)]
       [`(table ,_ ...)
-       (define all (set->list (indices-of indices name arity)))
+       ;; the FIRST ordering is the intern master (add-write-task's isstatic
+       ;; + add-intern-task read it): keep a live ordering first
+       (define all
+         (sort (mark-seeded-only name arity
+                                 (set->list (indices-of indices name arity)))
+               (lambda (a b) (and (not (eq? (car a) 'seeded-only))
+                                  (eq? (car b) 'seeded-only)))))
        (define deltas (set->list (indices-of indices `(delta ,name) arity)))
        (cons `(relation ,name ,arity ,@all
                         ,@(map (lambda (i) `(delta ,@i)) deltas))
@@ -635,33 +702,57 @@
     (for/fold ([g (set)]) ([cl (in-list pre-cls)])
       (set-union g (clause-out-vars cl))))
   (define-values (driver ops)
-    (if (null? rest)
-        (values `(once) '())                      ; fact rule: no joins;
-        ;; its ops all land in `pre` (below), which the emitter runs before
-        ;; allocating batches -- so a failing constant guard aborts cleanly
-        (let loop ([driver (lower-driver (car rest) pre-ground)]
-                   [ground (set-union pre-ground (clause-vars (car rest)))]
-                   [ops '()]
-                   [jpos 1]
-                   [cls (cdr rest)])
-          (cond
-            [(null? cls) (values driver (reverse ops))]
-            [(join-cl? (car cls))
-             (define filter-ops
-               (map lower-filter (hash-ref sj-filters jpos '())))
-             (loop driver
-                   (set-union ground (clause-vars (car cls)))
-                   (append (reverse (lower-join (car cls) ground))
-                           (reverse filter-ops)
-                           ops)
-                   (add1 jpos)
-                   (cdr cls))]
-            [else
-             (loop driver
-                   (set-union ground (clause-out-vars (car cls)))
-                   (cons (lower-op (car cls) spec-env) ops)
-                   jpos
-                   (cdr cls))]))))
+    (cond
+      [(null? rest)
+       (values `(once) '())                      ; fact rule: no joins;
+       ;; its ops all land in `pre` (below), which the emitter runs before
+       ;; allocating batches -- so a failing constant guard aborts cleanly
+       ]
+      [(seeded-rule? rule)
+       ;; seeded re-entry version: NO delta anywhere -- every join (the
+       ;; first included) probes the FULL index, and the task reruns each
+       ;; iteration of an externally-seeded stratum (addTaskSeeded)
+       (let loop ([ground pre-ground] [ops '()] [jpos 0] [cls rest])
+         (cond
+           [(null? cls) (values `(seeded) (reverse ops))]
+           [(join-cl? (car cls))
+            (define filter-ops
+              (map lower-filter (hash-ref sj-filters jpos '())))
+            (loop (set-union ground (clause-vars (car cls)))
+                  (append (reverse (lower-join (car cls) ground))
+                          (reverse filter-ops)
+                          ops)
+                  (add1 jpos)
+                  (cdr cls))]
+           [else
+            (loop (set-union ground (clause-out-vars (car cls)))
+                  (cons (lower-op (car cls) spec-env) ops)
+                  jpos
+                  (cdr cls))]))]
+      [else
+       (let loop ([driver (lower-driver (car rest) pre-ground)]
+                  [ground (set-union pre-ground (clause-vars (car rest)))]
+                  [ops '()]
+                  [jpos 1]
+                  [cls (cdr rest)])
+         (cond
+           [(null? cls) (values driver (reverse ops))]
+           [(join-cl? (car cls))
+            (define filter-ops
+              (map lower-filter (hash-ref sj-filters jpos '())))
+            (loop driver
+                  (set-union ground (clause-vars (car cls)))
+                  (append (reverse (lower-join (car cls) ground))
+                          (reverse filter-ops)
+                          ops)
+                  (add1 jpos)
+                  (cdr cls))]
+           [else
+            (loop driver
+                  (set-union ground (clause-out-vars (car cls)))
+                  (cons (lower-op (car cls) spec-env) ops)
+                  jpos
+                  (cdr cls))]))]))
   ;; every tycheck hop goes AHEAD of every emitting hop, whatever the head
   ;; order upstream: a failed check must abandon the deduction before any
   ;; sink runs -- in particular before a staging temp emit, whose tuple

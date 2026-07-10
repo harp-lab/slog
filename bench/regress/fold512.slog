@@ -1,0 +1,18 @@
+;; Serial-chain (fold) demand recursion over a wide list: one new suffix
+;; demand per fixpoint iteration -- depth n frontier.
+union (R (Rf int))
+union (A (Ad int))
+
+;; (ramp b w) = [(Rf b) .. (Rf b+w-1)], built in log depth (construction
+;; direction, identical in both benchmark variants)
+demand (ramp int int) [R]
+rule (ramp b 1 [(Rf b)])
+rule (ramp b w [(ramp b h)... (ramp b2 h)...])
+ <-- (> w 1) (= h (/ w 2)) (= b2 (+ b h))
+
+demand (fold [R]) [A]
+rule (fold [] [])
+rule (fold [(Rf x) rs...] [(Ad x) (fold rs)...])
+
+table (out [A])
+rule (out (fold l)) <-- (= l (ramp 0 512))

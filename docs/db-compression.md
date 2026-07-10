@@ -1082,6 +1082,45 @@ The uncompressed run is always the oracle; wire a fuzzer over
 `(program, per, thread-count, seed, bias)` where every compressed+replayed load
 must content-match it.
 
+## 19A. The staging-replay bug and its two fixes (2026-07-10)
+
+Replay's soundness premise — "re-running the program over any seed
+superset regenerates every dropped derived tuple" — implicitly assumes
+full semi-naive variant coverage: a delta variant on every body position
+that could be the LAST to arrive.  Head-const staging (2026-07-09,
+join-planning `stage-rule`) deliberately prunes that coverage for staged
+construction rules: earlier-stage replays become STATICS with no delta
+versions, justified by an in-run timing proof ("rows land in FULL before
+any driver's delta").  A partially-sampled seed falsifies the proof's
+premise — a seeded trigger's only delta fires at iteration 0, before
+unsampled prerequisites exist; when a prerequisite is rebuilt later,
+no variant fires — so ground facts (and anything downstream) silently
+failed to regenerate (dem_stlc at per=20, ~40% of seeds).  Two fixes:
+
+1. **Ground rules are EDB** (`compile.rkt ground-fact-rules`): the
+   two-level fixpoint classifies a rule as ground when its only declared
+   reads are constant-class relations (those headed exclusively by strict
+   facts — in practice `_enum`, which every ground struct tree's enum
+   leaves join).  Ground heads land in the facts stratum and the `.edb`
+   root, saved WHOLE: ground rows are origin (literally program text),
+   and storing them beats replaying them through a staged cascade.
+2. **Seeded re-entry tasks** (`seeded-rule` versions, `addTaskSeeded`):
+   every staged rule with pruned statics — except temp-driven follow-ups,
+   whose trigger is only ever produced in-run co-emitted with what their
+   statics need, and lattice-headed rules (no emit-side dedup; a v1 gap)
+   — also compiles ONE no-delta version over FULL indices.  The daemon
+   registers those tasks (and the WriteTasks of indices only they
+   requisition) only when the database was externally seeded
+   (open/import/frozen imports), and they rerun each iteration:
+   set-semantics re-fires dedup away, with `emit_struct_checked` probing
+   the master index so re-emissions of known structs don't hold the
+   fixpoint open.  Fresh runs are bit-identical and pay nothing.
+
+The residual exact-once caveat: seeded tasks re-fire instantiations
+(sets absorb them); DRed^c counting must replace this with true
+partitioned variants at the M0 boundary — the fire audit (docs/stats.md)
+is the tool that will prove that property.
+
 ## 20. Risks & tricky parts, at a glance
 
 1. **Sample facts, keep heap closure** (§4.1); id convergence within a lineage

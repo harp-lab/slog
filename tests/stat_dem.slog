@@ -1,0 +1,15 @@
+;; Exact-once fire audit over DEMAND machinery (docs/stats.md): a linear
+;; demand chain (count 3) -> (count 2) -> (count 1) -> (count 0), with a
+;; prim-computed key so the supplementary transform engages.  Hand
+;; verification: the step rule at :12 has exactly one satisfying body
+;; assignment per demanded n>0 -- THREE instantiations total across all
+;; its delta variants; its ask/sup rules likewise fire once per such n;
+;; the base rule fires once ((count 0) demanded once); the driver rule at
+;; :15 asks once and resumes once.  stats-tests.sh asserts the split.
+
+demand (count int) int
+rule (count 0 0)
+rule (count n (+ 1 (count m))) <-- (> n 0) (= m (- n 1))
+
+table (out int)
+rule (out (count 3))

@@ -20,6 +20,7 @@
 #include "index.h"
 #include <string>
 #include <vector>
+#include <set>
 #include <cstdlib>
 #include <fstream>
 #include <format>
@@ -167,6 +168,9 @@ private:
   //     (consumed by WriteTask of indices keyed on that column),
   //   - read_buckets[b] = an even round-robin split (consumed by ReadTask).
   std::vector<u16> write_leadcols;
+  // full-index orderings maintained only in externally-seeded runs (the
+  // staging-replay fix); getAnyIndex skips them (see addIndex)
+  std::set<std::vector<u16>> seeded_orderings;
   std::vector<s16> leadcol_slot;
   u32 last_slot_leadcols = 0;  // write_leadcols.size() when leadcol_slot was last built
 
@@ -445,8 +449,14 @@ public:
   // bucket gets an arity-specialized BTreeIndex<A>, held behind the generic
   // Index* interface.
   template <u16 A>
-  void addIndex(const std::vector<u16>& ord, bool delta)
+  void addIndex(const std::vector<u16>& ord, bool delta, bool seeded_only = false)
   {
+    // A seeded-only ordering (the staging-replay fix) is maintained only in
+    // externally-seeded runs -- record it so getAnyIndex (reload staging,
+    // dumps, saves, tuple counts) never treats its possibly-empty buckets
+    // as the relation's authoritative contents.
+    if (seeded_only && !delta)
+      seeded_orderings.insert(ord);
     auto& tbl = delta ? deltaindices : indices;
     // Idempotent: re-registering an existing ordering is a no-op.  A hot-swap
     // upgrade (docs/fast-compile.md §4) re-runs a stratum plugin against the
@@ -474,11 +484,17 @@ public:
 
   const std::vector<u16>* getAnyIndex()
   {
-    // for writing, reloading (cannot be a delta)
+    // for writing, reloading (cannot be a delta).  Skip seeded-only
+    // orderings: in a fresh run their buckets are never maintained, and
+    // staging a reload from one would silently DROP the relation's rows.
+    for (const auto& it : indices)
+      if (seeded_orderings.find(it.first) == seeded_orderings.end())
+        return &(it.first);
     for (const auto& it : indices)
       return &(it.first);
     return 0;
   }
+
 
   // Register the identity-ordering index if the relation has no index at
   // all, so the daemon can materialize data it loads itself (an opened or
@@ -909,9 +925,15 @@ public:
   std::string name;
   // once[phase] tasks run only in the stratum's first iteration (facts,
   // rules over closed relations, initial index ingestion); every[phase]
-  // tasks run each iteration until fixpoint.
+  // tasks run each iteration until fixpoint.  seeded[phase] tasks (the
+  // staging-replay fix, docs/db-compression.md) also run each iteration,
+  // but ONLY when the run began over externally seeded content (an
+  // open/import preceded): they are the no-delta re-evaluations of staged
+  // rules whose pruned delta variants assume this stratum's own
+  // construction order -- an assumption partial seeding violates.
   std::vector<Task*> once[phase_count];
   std::vector<Task*> every[phase_count];
+  std::vector<Task*> seeded[phase_count];
   // relations this stratum's rules grow -- the seam for incremental
   // recomputation later (push a delta into a stratum, replay downstream)
   std::vector<std::string> dynamic_rels;
@@ -931,12 +953,18 @@ public:
     {
       for (Task* t : once[p]) delete t;
       for (Task* t : every[p]) delete t;
+      for (Task* t : seeded[p]) delete t;
     }
   }
 
   void addTask(u16 phase, Task* task, bool once_only = false)
   {
     (once_only ? once[phase] : every[phase]).push_back(task);
+  }
+
+  void addTaskSeeded(u16 phase, Task* task)
+  {
+    seeded[phase].push_back(task);
   }
 
   void addDynamicRel(const std::string& r) { dynamic_rels.push_back(r); }
@@ -955,8 +983,10 @@ public:
     {
       for (Task* t : once[p]) delete t;
       for (Task* t : every[p]) delete t;
+      for (Task* t : seeded[p]) delete t;
       once[p].clear();
       every[p].clear();
+      seeded[p].clear();
     }
     dynamic_rels.clear();
   }
@@ -1022,6 +1052,10 @@ struct RunState {
   RunPosition position = RUN_FRESH;
   bool suspended = false;              // last continueStratum paused it
   bool tofixpoint = true;              // false: internal single-pass strata
+  // The run began over externally seeded content (an open/import preceded
+  // anywhere in this session): include the stratum's seeded[phase] tasks
+  // (the staging-replay fix) in every iteration.
+  bool seeded_run = false;
 
   // Work distribution (was loose Database members): an atomic cursor per phase
   // over once[phase] (iteration 0 only) then every[phase].
@@ -1523,8 +1557,18 @@ public:
   {
     const std::vector<Task*>& once = rs.stratum->once[phase];
     const std::vector<Task*>& every = rs.stratum->every[phase];
+    const std::vector<Task*>& seeded = rs.stratum->seeded[phase];
     const u64 n_once = rs.once_pending[phase] ? once.size() : 0;
-    const u64 total = n_once + every.size();
+    const u64 n_every = every.size();
+    // seeded re-entry tasks (staging-replay fix): every iteration, but only
+    // in runs over externally seeded content
+    const u64 n_seed = rs.seeded_run ? seeded.size() : 0;
+    const u64 total = n_once + n_every + n_seed;
+    const auto task_at = [&](u64 i) -> Task* {
+      if (i < n_once) return once[i];
+      if (i - n_once < n_every) return every[i - n_once];
+      return seeded[i - n_once - n_every];
+    };
 
     if (phase == phase_read)
     {
@@ -1542,7 +1586,7 @@ public:
         const u64 i = rs.task_cursor[phase].fetch_add(1);
         if (i >= total)
           break;                                   // main tasks exhausted
-        (i < n_once ? once[i] : every[i - n_once])->work();
+        task_at(i)->work();
       }
       read_barrier->arrive_and_wait();             // ReadCompletion: finalize/suspend
       if (sentinel && !rs.read_suspended)
@@ -1558,7 +1602,7 @@ public:
         const u64 i = rs.task_cursor[phase].fetch_add(1);
         if (i >= total)
           break;
-        (i < n_once ? once[i] : every[i - n_once])->work();
+        task_at(i)->work();
       }
       phase_barrier[phase]->arrive_and_wait();
       if (sentinel)
@@ -1674,6 +1718,7 @@ public:
       rs.position = RUN_FRESH;
       rs.suspended = false;
       rs.tofixpoint = tofixpoint;
+      rs.seeded_run = externally_seeded;
       for (u32 i = 0; i < phase_count; ++i)
       {
         rs.once_pending[i] = true;   // first pass includes the once tasks
@@ -2006,8 +2051,117 @@ public:
     }
   }
 
+  // ---- Runtime statistics (docs/stats.md) --------------------------------
+  // Generated read tasks tally rule INSTANTIATIONS (one per satisfying body
+  // assignment, pre-dedup; multi-head rules count once) into fire_counts via
+  // bumpFires; at each stratum fixpoint the daemon publishes them as
+  // $stat_fires rows plus one $stat_fixpoint row, and writeDatabaseCSV
+  // prefixes a $stat_size snapshot.  The tables are daemon-owned (no
+  // compiler declaration; no rules read them), EXCLUDED from BIN saves
+  // (per-run diagnostics with timing rows -- keeping compression
+  // replay/verify and db-merge deterministic) and from the golden-test
+  // comparison (run-tests.sh).  SLOG_NO_STATS=1 disables publication; the
+  // counting itself is a task-local increment plus one map merge per task
+  // invocation, unmeasurable against join work.  Exact-once significance
+  // (docs/incremental.md §8): per-rule fire totals are the observable the
+  // M0 iteration-0 audit compares -- under correct per-position delta
+  // partitioning, a fresh run's totals equal the instantiation count.
+  std::mutex stats_mx;
+  std::map<std::pair<std::string, std::string>, u64> fire_counts;
+
+  // The database has received content from OUTSIDE the pipeline's own
+  // strata (open/import/frozen ground DBs): strata run from here on must
+  // include their seeded[phase] re-entry tasks (the staging-replay fix) --
+  // staged rules' pruned delta variants assume rows only ever arrive via
+  // their own stratum's construction order, which seeding violates.
+  bool externally_seeded = false;
+
+  static bool statsEnabled()
+  {
+    return std::getenv("SLOG_NO_STATS") == nullptr;
+  }
+
+  void bumpFires(const char* rule_loc, const char* variant, u64 n)
+  {
+    std::lock_guard<std::mutex> g(stats_mx);
+    fire_counts[{rule_loc, variant}] += n;
+  }
+
+  Relation* ensureStatsRelation(const std::string& name, u32 arity)
+  {
+    auto it = relations.find(name);
+    if (it != relations.end()) return it->second;
+    Relation* rel = new Relation(name, arity, 0);
+    relations[name] = rel;
+    rel->initShards(thread_count);
+    rel->ensureDefaultIndex();
+    return rel;
+  }
+
+  // Append rows and materialize immediately (the loadDatabaseBIN
+  // discipline) so output actions after the final stratum see them without
+  // another reload; the deferred reload re-stages them for later strata.
+  void statsRows(Relation* rel, u32 arity,
+                 const std::vector<std::vector<u64>>& rows)
+  {
+    if (rows.empty()) return;
+    InsertBatch* batch = new InsertBatch();
+    for (const auto& row : rows)
+    {
+      for (u32 i = 0; i < arity; ++i)
+        batch->data[batch->usage + i] = row[i];
+      batch->usage += arity;
+      if (batch->usage + arity > batch_size_max)
+      {
+        rel->sendBatch(batch);
+        batch = new InsertBatch();
+      }
+    }
+    rel->sendBatch(batch);
+    rel->finalizeBatches();
+    rel->ingestDelta();
+  }
+
+  void publishStratumStats(u32 scc, const std::string& name, u32 iters,
+                           double ms)
+  {
+    if (!statsEnabled()) return;
+    // $stat_fixpoint(scc, stratum, iterations, microseconds)
+    statsRows(ensureStatsRelation("$stat_fixpoint", 4), 4,
+              {{encodeInt((s64)scc), encodeString(name),
+                encodeInt((s64)iters), encodeInt((s64)(ms * 1000.0))}});
+    std::map<std::pair<std::string, std::string>, u64> drained;
+    {
+      std::lock_guard<std::mutex> g(stats_mx);
+      drained.swap(fire_counts);
+    }
+    if (drained.empty()) return;
+    std::vector<std::vector<u64>> rows;
+    for (const auto& kv : drained)
+      rows.push_back({encodeString(kv.first.first),
+                      encodeString(kv.first.second),
+                      encodeInt((s64)kv.second)});
+    statsRows(ensureStatsRelation("$stat_fires", 3), 3, rows);
+  }
+
+  // $stat_size(relation, tuples), as of the CSV dump (the stats tables
+  // themselves are skipped; machinery relations like $seq_*/$sup* are
+  // included -- their sizes are exactly what a user tuning a program wants).
+  void publishSizeStats()
+  {
+    if (!statsEnabled()) return;
+    std::vector<std::vector<u64>> rows;
+    for (auto& rel : relations)
+      if (rel.first.rfind("$stat_", 0) != 0 && !rel.second->isEmpty())
+        rows.push_back({encodeString(rel.first),
+                        encodeInt((s64)rel.second->tupleCount())});
+    statsRows(ensureStatsRelation("$stat_size", 2), 2, rows);
+  }
+
   void writeDatabaseCSV(const std::string& db_dir)
   {
+    publishSizeStats();
+
     std::filesystem::remove_all(db_dir);
     std::filesystem::create_directory(db_dir);
 
@@ -2673,7 +2827,11 @@ public:
   {
     // A filtered write ALWAYS keeps struct relations (as struct heap); when
     // sampling they are trimmed to the reachable closure via keep_ids below.
+    // The $stat_* diagnostics never persist (docs/stats.md): their timing
+    // rows are nondeterministic, which would break replay/verify drift
+    // checks and db-merge determinism.
     auto keep = [&](const std::string& name, Relation* rel) {
+      if (name.rfind("$stat_", 0) == 0) return false;
       return only.empty() || only.count(name) || rel->getStructId() > 0;
     };
     // Pinned oracle relations (docs/smt.md §15) are never sampled: their
@@ -3058,6 +3216,7 @@ public:
   // (the first stratum run ingests them as its iteration-zero delta).
   void loadDatabaseBIN(const std::string& db_dir)
   {
+    externally_seeded = true;
     loadStringsBIN(db_dir);
     loadNodesBIN(db_dir);
     loadSeqBIN(db_dir);
@@ -3183,6 +3342,7 @@ public:
   {
     if (!std::filesystem::is_directory(src_dir))
       fatal("Import: no database directory at " + src_dir);
+    externally_seeded = true;
 
     // Struct ids the dest already holds (the verbatim-loaded input heap), for
     // passthrough of trimmed same-lineage references.
@@ -3609,7 +3769,9 @@ inline void ReadCompletion::operator()() noexcept
   rs.external_pending = db->externalPending();
   const u64 n_once = rs.once_pending[phase_read]
                        ? rs.stratum->once[phase_read].size() : 0;
-  const u64 total = n_once + rs.stratum->every[phase_read].size();
+  const u64 n_seed = rs.seeded_run
+                       ? rs.stratum->seeded[phase_read].size() : 0;
+  const u64 total = n_once + rs.stratum->every[phase_read].size() + n_seed;
   const bool work_left =
     rs.task_cursor[phase_read].load() < total
     || rs.paused_head[phase_read] < rs.paused_tasks[phase_read].size();

@@ -362,6 +362,11 @@ public:
     {
       ++next_unrun;
       needs_reload = true;
+      // runtime statistics (docs/stats.md): one $stat_fixpoint row and this
+      // stratum's accumulated $stat_fires rows, materialized immediately so
+      // output actions after the final stratum see them
+      database->publishStratumStats(s->scc_id, s->name, st.iteration,
+                                    st.ms_total);
       std::snprintf(buf, sizeof(buf), "(fixpoint %u \"%s\" %u %.3f)",
                     s->scc_id, s->name.c_str(), st.iteration, st.ms_total);
       s->fixpoint_msg = buf;

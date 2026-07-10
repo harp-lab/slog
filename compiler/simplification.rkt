@@ -161,6 +161,24 @@
       ['_ (gensymb '__)]
       [(? list?) (map handle-wild-card v)]
       [_ v]))
+  ;; A `_` in a HEAD value position is an unbound fresh variable emitted into a
+  ;; column -- meaningless, and if left alone it survives handle-wild-card as a
+  ;; gensym that dies much later as a locationless `hash-ref '__gNNN`
+  ;; (docs/build-issues-notes.md §5).  Reject it here, at the source, with the
+  ;; offending head clause's location.  Walks only value positions (never prov),
+  ;; and `_` in a value position is always a wildcard, so this cannot reject a
+  ;; valid program -- at worst it misses a case and the old error stands.
+  (define (val-has-wild? v)
+    (match v
+      ['_ #t]
+      [`(syn ,_ const ,_) #f]
+      [`(syn ,_ ,_name ,args ...) (ormap val-has-wild? args)]  ; nested constructor
+      [_ #f]))
+  (define (head-clause-wild? cl)
+    (match cl
+      [`(syn ,_ = ,_lhs ,rhs) (val-has-wild? rhs)]   ; hoisted head-side binding
+      [`(syn ,_ ,_rel ,args ...) (ormap val-has-wild? args)]
+      [_ #f]))
   (define (static-unify-rule rule)
     (match rule
       [`(syn ,prov rule ,bodys ... --> ,heads ...)
@@ -191,6 +209,14 @@
     [`(syn ,prov rule ,bodys ... --> ,heads ...)
      (define all-bodies (split-or-clauses bodys))
      ;; 2. simplify all heads and bodys (flatten all nested structure)
+     ;; check the RAW head clauses (they still carry the parser's provs, so the
+     ;; snippet renders cleanly; the simplified ones' rebuilt provs do not)
+     (for ([cl (in-list heads)] #:when (head-clause-wild? cl))
+       (match cl
+         [`(syn ,hprov ,_ ...)
+          (parse-error
+           "`_` wildcard in a head/conclusion is unbound; name the variable (and bind it in the body) or drop the column"
+           (cdr hprov))]))
      (define heads+ (handle-wild-card (foldl simplify-clause '() heads)))
      (foldl (lambda (bodys rules)
               ;; 3. handle-wild-card: replace _ with a unique (gensymb '__)

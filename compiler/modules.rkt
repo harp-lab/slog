@@ -114,6 +114,18 @@
            [_ (list ast '() (set))]))
        (match-define (list ast-sans-directives run-paths inc-paths)
          (strip-directives ast))
+       ;; Resolve each include to its on-disk (or source-override, or lib/)
+       ;; path.  A target that resolves to nothing is dropped -- but WARN first
+       ;; (docs/build-issues-notes.md §1): a silently-dropped include makes its
+       ;; declarations vanish and surfaces later as a baffling cascade of
+       ;; "relation/struct X is not defined" for things you clearly included.
+       (define resolved-incs
+         (for/list ([raw (in-list (set->list inc-paths))])
+           (cons raw (resolve-include raw rel-dir))))
+       (for ([ri (in-list resolved-incs)])
+         (unless (source-available? (cdr ri))
+           (eprintf "warning: include ~s not found (searched ~a and the compiler's lib/); ignoring it -- its declarations will be missing\n"
+                    (car ri) (path->string (path->complete-path rel-dir)))))
        (define this-prog
          (foldl
           (lambda (inc-path prog)
@@ -121,8 +133,14 @@
           (organize-module `(module ,path ,toks
                               ,ast-sans-directives))
           (filter (lambda (p) (and (source-available? p) (not (set-member? seen-inc p))))
-                  (map (lambda (p) (resolve-include p rel-dir))
-                       (set->list inc-paths)))))
+                  (map cdr resolved-incs))))
+       ;; Same for `run` targets (no lib/ fallback): warn on a dropped one.
+       (define resolved-runs
+         (for/list ([raw (in-list run-paths)])
+           (cons raw (normalize-path raw rel-dir))))
+       (for ([rr (in-list resolved-runs)])
+         (unless (source-available? (cdr rr))
+           (eprintf "warning: run target ~s not found; ignoring it\n" (car rr))))
        (foldl (lambda (run-path prog)
                 (define rp (fullpath run-path))
                 (when (set-member? seen-run rp)
@@ -130,8 +148,7 @@
                 ;; a fresh include-set: each program's includes are its own
                 (program-merge-run prog (load-program-tree rp seen-run (set))))
               this-prog
-              (filter source-available?
-                      (map (lambda (p) (normalize-path p rel-dir)) run-paths)))])))
+              (filter source-available? (map cdr resolved-runs)))])))
 
 ;; -----------------------------------------------------------------------
 ;; Type environments: construction and merging.

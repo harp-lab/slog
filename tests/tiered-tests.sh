@@ -19,19 +19,28 @@ set -u
 cd "$(dirname "$0")/.."
 mkdir -p build out
 export SLOG_NO_MEM_CAP=1
+# These tests assert on a fixed stratum structure (a facts stratum at level 0
+# and a recursive stratum at level 1).  Ground-fact freezing (docs/freeze.md)
+# would peel the >512-node edge facts into a static DB and collapse that
+# structure, so disable it here -- freeze is exercised by its own suite.
+export SLOG_NO_FREEZE=1
 
 PASS=0; FAIL=0
 ok()  { echo "PASS $1"; PASS=$((PASS+1)); }
 bad() { echo "FAIL $1"; FAIL=$((FAIL+1)); }
 
-# identical set of sorted CSVs between two debug-dirs?
+# identical set of sorted CSVs between two debug-dirs?  The $stat_* relations
+# are per-run diagnostics (fixpoint timings, fire counts) that legitimately
+# differ across optimization regimes, so they are excluded -- exactly as the
+# golden suite does (tests/run-tests.sh, docs/stats.md).
 same_csvs() {
   local a="$1" b="$2"
-  diff <(cd "$a" && ls *.csv 2>/dev/null | sort) \
-       <(cd "$b" && ls *.csv 2>/dev/null | sort) >/dev/null 2>&1 || return 1
+  diff <(cd "$a" && ls *.csv 2>/dev/null | grep -v '^\$stat_' | sort) \
+       <(cd "$b" && ls *.csv 2>/dev/null | grep -v '^\$stat_' | sort) >/dev/null 2>&1 || return 1
   local f
   for f in "$a"/*.csv; do
     [ -e "$f" ] || continue
+    case "$(basename "$f")" in '$stat_'*) continue ;; esac
     diff <(LC_ALL=C sort "$f") <(LC_ALL=C sort "$b/$(basename "$f")") >/dev/null 2>&1 || return 1
   done
   return 0
@@ -145,6 +154,60 @@ if [ -n "$LREC" ] && [ -f "build/$LREC.cpp" ]; then
 else
   bad "lattice-swap-setup (rec stratum=$LREC)"
 fi
+
+# --- 4. tiered reuses a cached -O0 (no recompile) + claim suppresses -O2 ----
+# docs/fast-compile.md §13: a prior run that left only <hash>.O0.so must, in
+# tiered mode, run that -O0 as-is (no re-emit, no rebuild) rather than fall
+# through to a fresh -O0 build; and a live claim marker must stop the run from
+# spawning a background -O2.
+REUSE=out/tiered_reuse.slog
+{
+  echo "table (a int)"; echo "table (b int)"
+  echo "rule (a 1) (a 2) (a 3)"
+  echo "rule (a X) --> (b X)"
+} > "$REUSE"
+rm -rf build out/reuse-o0 out/reuse-ti; mkdir -p build
+# prior run leaving only <hash>.O0.so (SLOG_OPT=0 never builds <hash>.so)
+SLOG_OPT=0 racket slog.rkt --no-banner --debug-dir out/reuse-o0 "$REUSE" >/dev/null 2>&1
+# pre-claim every -O2 (fresh marker) so the tiered run cannot spawn a background
+# build, and stamp a reference mtime -- a rebuilt .O0.so would be newer than it.
+for f in build/*.O0.so; do [ -e "$f" ] && touch "${f%.O0.so}.so.building"; done
+sleep 1; touch out/reuse-stamp; sleep 1
+racket slog.rkt --no-banner --debug-dir out/reuse-ti "$REUSE" >/dev/null 2>&1   # tiered
+reuse_ok=1
+# no .O0.so rebuilt after the stamp (all present ones are this program's)
+[ -n "$(find build -name '*.O0.so' -newer out/reuse-stamp -print -quit)" ] && reuse_ok=0
+# claim marker suppressed OUR -O2: none of this program's hashes got a <hash>.so.
+# (Scoped per-hash so a still-running background -O2 from an earlier test that
+# lands its own unrelated <hash>.so cannot trip this check.)
+for f in build/*.O0.so; do
+  [ -e "$f" ] || continue
+  [ -e "${f%.O0.so}.so" ] && reuse_ok=0
+done
+if [ "$reuse_ok" = 1 ] && same_csvs out/reuse-o0 out/reuse-ti
+then ok "tiered-reuses-cached-O0-and-claim-suppresses-O2"
+else bad "tiered-reuses-cached-O0-and-claim-suppresses-O2"; fi
+
+# --- 5. claim marker: single-flight + stale reclaim (unit) -----------------
+# try-claim-o2! is the cross-process mutex: a fresh claim wins, a second (live)
+# claim is refused, and a marker older than the reclaim window is reclaimed.
+cat > out/o2-claim-test.rkt <<'EOF'
+#lang racket
+(require "../compiler/tools.rkt")
+(define p (fullpath "build/claimtest.so"))
+(define marker (string-append p ".building"))
+(when (file-exists? marker) (delete-file marker))
+(define r1 (try-claim-o2! p))                 ; fresh -> claimed
+(define r2 (try-claim-o2! p))                 ; still fresh -> refused
+(file-or-directory-modify-seconds marker (- (current-seconds) 100000)) ; backdate past 900s
+(define r3 (try-claim-o2! p))                 ; stale -> reclaimed
+(define held (file-exists? marker))
+(clear-o2-marker! p)
+(exit (if (and r1 (not r2) r3 held (not (file-exists? marker))) 0 1))
+EOF
+if racket out/o2-claim-test.rkt >/dev/null 2>&1
+then ok "o2-claim-single-flight-and-stale-reclaim"
+else bad "o2-claim-single-flight-and-stale-reclaim"; fi
 
 echo
 echo "$PASS passed, $FAIL failed"

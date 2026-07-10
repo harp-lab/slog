@@ -1,0 +1,13 @@
+;; Exact-once fire audit (docs/stats.md; docs/incremental.md §8): on this
+;; 4-edge chain the instantiation counts are hand-computable -- the copy
+;; rule has one satisfying assignment per edge (4) and the transitive rule
+;; one per (path(x,y), edge(y,z)) pair: y=2 gives 1, y=3 gives 2, y=4
+;; gives 3, so 6 -- and semi-naive evaluation must fire each EXACTLY once.
+;; stats-tests.sh asserts the $stat_fires rows against these numbers.
+
+table (edge int int)
+table (path int int)
+
+rule (edge 1 2) (edge 2 3) (edge 3 4) (edge 4 5)
+rule (path x y) <-- (edge x y)
+rule (path x z) <-- (path x y) (edge y z)

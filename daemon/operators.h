@@ -266,6 +266,32 @@ inline void emit_struct(Relation* head_rel, InsertBatch*& nb,
   }
 }
 
+// SINK (seeded-task struct): like emit_struct, but probe the master
+// (content-ordered) index first and SKIP instances the database already
+// holds.  A seeded re-entry task (the staging-replay fix) re-evaluates its
+// whole join every iteration; without this check its re-emissions of known
+// structs would count as fresh delta at every finalize and hold the
+// stratum's fixpoint open forever.  (Table `emit` sinks already dedup
+// against their head index; temps never appear in seeded heads -- a
+// reest-driven stage binds only re-establishable values, so its residue
+// carries nothing -- and lattice-headed rules are excluded from seeded
+// planning.)  `fields` arrive in master-content order, so the probe key is
+// fields plus a zero id slot.
+template <u16 A>
+inline void emit_struct_checked(Relation* head_rel, Index** master,
+                                InsertBatch*& nb,
+                                const std::array<u64, A - 1>& fields,
+                                const std::array<u16, A>& head_ord)
+{
+  std::array<u64, A> key;
+  for (u16 j = 0; j < A - 1; ++j)
+    key[j] = fields[j];
+  key[A - 1] = 0;
+  if (exists_probe<A, A - 1>(master, key))
+    return;
+  emit_struct<A>(head_rel, nb, fields, head_ord);
+}
+
 // SINK (runtime-error struct): like emit_struct, but self-contained -- it owns a
 // fresh batch and flushes it immediately.  Called from a rule body's
 // runtime-error path (a fallible prim returned slog_error), which has no

@@ -1,0 +1,17 @@
+;; Divide-and-conquer (D16 split) demand recursion over the same wide
+;; list: each iteration doubles the demand frontier -- depth log n.
+union (R (Rf int))
+union (A (Ad int))
+
+demand (ramp int int) [R]
+rule (ramp b 1 [(Rf b)])
+rule (ramp b w [(ramp b h)... (ramp b2 h)...])
+ <-- (> w 1) (= h (/ w 2)) (= b2 (+ b h))
+
+demand (split [R]) [A]
+rule (split [] [])
+rule (split [(Rf x)] [(Ad x)])
+rule (split [rs0... rs1...] [(split rs0)... (split rs1)...])
+
+table (out [A])
+rule (out (split l)) <-- (= l (ramp 0 512))

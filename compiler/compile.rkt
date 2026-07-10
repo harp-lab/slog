@@ -170,9 +170,8 @@
         (eprintf "warning: relation ~a carries a sequence column and grows recursively (stratum ~a) while occurrence indexing is active -- its occurrence rows can reach O(lists x elements); prefer the bound direction or restructure (docs/sequences.md §5.3)\n"
                  r (stratum-level s)))))
   (define rel-names (list->set (hash-keys (type-env-rels type-env+))))
-  (define (iter0? rule) (set-empty? (set-intersect (rule-body-rels rule) rel-names)))
   (define fact-rules
-    (if split-facts? (list->set (filter iter0? (set->list typed))) (set)))
+    (if split-facts? (ground-fact-rules typed rel-names) (set)))
   (define facts? (not (set-empty? fact-rules)))
   (define strata
     (cond
@@ -394,6 +393,34 @@
                       pinned-rels)
   #:transparent)
 
+;; Ground (EDB) rules, TWO levels (docs/db-compression.md P0.5; the
+;; staging-replay bug, 2026-07-10).  Strict facts read no declared
+;; relation; a ground struct tree's rule ALSO reads the enum-constant
+;; table (its (tint)/(mt) leaves desugar to _enum joins), which used to
+;; misclassify it as derived -- so its rows were sampled, and re-deriving
+;; them through head-const staging's pruned delta variants is unsound
+;; under partial seeds.  Ground = strict facts plus rules whose only
+;; declared-relation reads are CONSTANT-CLASS relations: those headed
+;; exclusively by strict facts (in practice _enum).  Two levels suffice:
+;; a source-bodiless rule can only acquire constant-class reads.  Ground
+;; rows are origin data (they are literally program text) -- storing them
+;; whole is both sound and smaller than replaying them.
+(define (ground-fact-rules rules rel-names)
+  (define (body-reads rule) (set-intersect (rule-body-rels rule) rel-names))
+  (define strict
+    (for/set ([r (in-set rules)] #:when (set-empty? (body-reads r))) r))
+  (define strict-heads
+    (for/fold ([acc (set)]) ([r (in-set strict)])
+      (set-union acc (rule-head-rels r))))
+  (define tainted    ; anything a non-strict rule heads is not constant-class
+    (for/fold ([acc (set)]) ([r (in-set rules)]
+                             #:when (not (set-member? strict r)))
+      (set-union acc (rule-head-rels r))))
+  (define constant-rels (set-subtract strict-heads tainted))
+  (for/set ([r (in-set rules)]
+            #:when (subset? (body-reads r) constant-rels))
+    r))
+
 (define (jobs->db-partition jobs)
   (define rel-names
     (for/fold ([acc (set)]) ([job (in-list jobs)])
@@ -401,8 +428,11 @@
   (define input-rels
     (for/fold ([acc (set)]) ([job (in-list jobs)])
       (set-union acc (list->set (hash-keys (fourth job))))))
-  (define (derives? rule)
-    (not (set-empty? (set-intersect (rule-body-rels rule) rel-names))))
+  (define all-rules
+    (for/fold ([acc (set)]) ([job (in-list jobs)])
+      (set-union acc (stratum-rules (third job)))))
+  (define ground (ground-fact-rules all-rules rel-names))
+  (define (derives? rule) (not (set-member? ground rule)))
   ;; relations read by some rule (appear in a body) -- productive-seed candidates
   (define read-rels
     (for/fold ([acc (set)]) ([job (in-list jobs)])
@@ -467,6 +497,9 @@
 ;; drives that many strata, snapshots the root, then drives the rest.
 (define (compile-strata path dbmanifest #:split-facts? [split-facts? #f])
   (define mode (opt-mode))
+  ;; tiered = the default regime (anything but the explicit -O0-only / -O2-only
+  ;; knobs); mirrors runslog.rkt's driver-side test.
+  (define tiered? (not (member mode '("0" "2"))))
   (define per-program
     (for/list ([prog (in-list (load-program-list path dbmanifest))])
       (program->jobs prog #:split-facts? split-facts?)))
@@ -502,10 +535,23 @@
       (cond
         ;; Optimized artifact already cached: always the best thing to run.
         [(file-exists? o2so)
+         (clear-o2-marker! o2so)   ; any leftover in-flight marker is moot now
          (sbuild proghash o2so (lambda () (cons o2so 'o2)))]
         ;; -O0-only mode with a warm -O0 artifact: reuse it, no upgrade.
         [(and (equal? mode "0") (file-exists? o0so))
          (sbuild proghash #f (lambda () (cons o0so 'o0)))]
+        ;; TIERED with a warm -O0 artifact but no -O2 yet (e.g. a prior run
+        ;; exited before the background -O2 landed): run the cached -O0 NOW --
+        ;; no re-emit, no -O0 rebuild -- and queue the background -O2 only if we
+        ;; can claim it (docs/fast-compile.md §13).  The .cpp TUs persist in
+        ;; build/, so the O2 command reads them back; fall back to a fresh emit
+        ;; only if they were removed.
+        [(and tiered? (file-exists? o0so))
+         (define cpps0 (stratum-tu-paths proghash))
+         (define cpps (if (null? cpps0) (emit-stratum-cpp job) cpps0))
+         (when (try-claim-o2! o2so)
+           (set! o2-cmds (cons (o2-build-command cpps o2so) o2-cmds)))
+         (sbuild proghash o2so (lambda () (cons o0so 'o0)))]
         [else
          (define cpps (emit-stratum-cpp job))   ; write .cpp(s) now (fast, main thread)
          (case mode
@@ -516,7 +562,10 @@
             (sbuild proghash #f
                     (pooled-eager (lambda () (build-so cpps o0so #:opt "-O0") (cons o0so 'o0))))]
            [else ; tiered: eager -O0 to run now, queue a background -O2 to swap in / cache
-            (set! o2-cmds (cons (o2-build-command cpps o2so) o2-cmds))
+            ;; claim-gate the -O2 so concurrent/successive runs that all miss the
+            ;; -O2 don't each spawn one (docs/fast-compile.md §13)
+            (when (try-claim-o2! o2so)
+              (set! o2-cmds (cons (o2-build-command cpps o2so) o2-cmds)))
             (sbuild proghash o2so
                     (pooled-eager (lambda () (build-so cpps o0so #:opt "-O0") (cons o0so 'o0))))])])))
   (spawn-detached-o2-batch (reverse o2-cmds))

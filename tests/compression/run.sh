@@ -25,12 +25,18 @@ if [ ${#PROGS[@]} -eq 0 ]; then
   PROGS=(tests/reach.slog tests/grandparent.slog tests/ex_eval.slog tests/ex_peano.slog
          tests/cn_basic.slog tests/mp_basic.slog tests/lst_basic.slog tests/st_basic.slog
          tests/nested.slog tests/lat_sssp.slog tests/lat_count.slog tests/lat_constprop.slog
-         tests/dem_fib.slog tests/dem_stlc.slog tests/enum_basic.slog)
+         tests/dem_fib.slog tests/dem_stlc.slog tests/enum_basic.slog
+         tests/stage_derived.slog)
 fi
 
 pass=0; fail=0; failed=()
 dump() { # dump db $1 to dir $2 via the empty loader (replays a compressed db)
-  rm -rf "$2"; racket slog.rkt --no-banner -d "$1" --debug-dir "$2" "$EMPTY" >/dev/null 2>&1
+  rm -rf "$2"
+  if ! racket slog.rkt --no-banner -d "$1" --debug-dir "$2" "$EMPTY" \
+       > "out/dump-$(basename "$2").log" 2>&1; then
+    echo "  DUMP-ERROR $1 (see out/dump-$(basename "$2").log):"
+    tail -3 "out/dump-$(basename "$2").log" | sed 's/^/    /'
+  fi
 }
 for prog in "${PROGS[@]}"; do
   name="$(basename "$prog" .slog)"

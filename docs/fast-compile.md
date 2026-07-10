@@ -306,3 +306,44 @@ run is wrapped so any error force-kills the daemon rather than orphaning it.
 `loadDatabaseBIN` itself is still serial — parallelizing it is the next lever
 for large-input-DB latency, and belongs with the runtime engine work (the index
 data-structure migration), not compilation, which is now at a polished plateau.
+
+## 13. Cached-O0 reuse, single-flight -O2, durable detach (2026-07-10)
+
+Three incremental hardenings closing gaps in the §2 model as originally shipped.
+All are **tiered-mode only** (`SLOG_OPT=0`/`2` are unchanged).
+
+**Cached -O0 is now actually reused.** §2's artifact-selection step 2 ("`<hash>.O0.so`
+exists → use it now, respawn the -O2") was implemented only for `SLOG_OPT=0`;
+tiered mode always fell through to re-emit the `.cpp` and rebuild -O0 from
+scratch even when a warm `<hash>.O0.so` sat in the cache. So a run that exited
+before its background -O2 landed paid the full -O0 recompile next time (and
+re-queued the -O2). `compile-strata` now has a tiered branch: `<hash>.O0.so`
+present and `<hash>.so` absent → run the cached -O0 immediately (no re-emit, no
+rebuild) and queue only the -O2. The generated `.cpp` TUs persist in `build/`
+(nothing deletes them), so the -O2 command reads them back via
+`stratum-tu-paths` (spine `<hash>.cpp` + parts `<hash>.pK.cpp`); a fresh emit is
+the fallback if they were removed.
+
+**Single-flight -O2 via a claim marker.** Nothing recorded that a background -O2
+for a hash was already in flight, so two runs of the same program (or
+`run-tests.sh -jN`) that both miss `<hash>.so` each spawned the expensive -O2 —
+`temp+rename` kept them from corrupting each other, but it was Nx wasted clang.
+Now a background -O2 is queued only if `try-claim-o2!` wins an atomic `O_EXCL`
+create of a sidecar marker `build/<hash>.so.building`. The marker is
+**deliberately a separate file** from the canonical `<hash>.so`: an empty file
+at the canonical name would be `dlopen`'d by the hot swap and would satisfy the
+"-O2 cached" branch — both crashes. A marker older than the reclaim window (or
+unreadable) is presumed abandoned by a dead builder (crash / kill / reboot),
+reclaimed, and rebuilt; the residual reclaim race only ever costs a duplicate
+build, never correctness (temp+rename). The build command removes the marker on
+both success and failure, and a `timeout` bounds a wedged clang so it can't hold
+the slot until the marker goes stale. The reclaim window / build timeout is the
+`o2_reclaim_secs` config setting (`SLOG_O2_RECLAIM_SECS`, default **900s** = 15
+min, ~9x the largest observed full -O2 build).
+
+**Durable detach.** The background batch (`spawn-detached-o2-batch`) is now
+launched under `setsid` (when present) so it leads its own session — a terminal
+SIGHUP after `slog` returns (closing the window) can no longer take it down, so
+the -O2 builds reliably outlive the driver and land in the cache, up to their
+per-build `timeout`. (The prior code relied on a Racket subprocess merely not
+being killed by its parent, which does not survive a session HUP.)

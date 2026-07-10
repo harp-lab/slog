@@ -1,0 +1,17 @@
+;; A DERIVED rule with chained head constructions: the inner arrow feeds
+;; the outer, so head-const staging splits it and the follow-up stage is
+;; driven by a struct delta with pruned static replays.  Under a sampled
+;; save (compression per<100), a kept (seen ...) row can pin the arrow
+;; structs in the heap while the (wrap ...) row itself is dropped -- the
+;; follow-up's only delta then never fires on replay and wrap would stay
+;; lost.  The seeded re-entry tasks (staging-replay fix) must regenerate
+;; it: tests/compression/run.sh loops this program.
+
+union (ty (tint) (arrow ty ty))
+table (src int)
+table (wrap ty)
+table (seen ty)
+
+rule (src 1) (src 2) (src 3)
+rule (wrap (arrow (arrow (tint) (tint)) (tint))) <-- (src x)
+rule (seen t) <-- (wrap t)

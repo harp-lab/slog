@@ -202,7 +202,9 @@
 
 (define (planned-rule? r)
   (match r
-    [`(syn ,_ rule ,body ... --> ,head ...)
+    ;; seeded-rule: a staged rule's seeded re-entry version (join-planning
+    ;; plan-stratum) -- same clause grammar, full-index lowering downstream
+    [`(syn ,_ ,(or 'rule 'seeded-rule) ,body ... --> ,head ...)
      (and (andmap (lambda (cl) (or (guard-clause? cl) (let-clause? cl) (join-clause? cl)))
                   body)
           (andmap (lambda (cl) (or (let-clause? cl) (join-clause? cl)
@@ -257,6 +259,9 @@
 (define (index? i)
   (match i
     [`(delta ,(? natural?) ..1) #t]
+    ;; requisitioned ONLY by seeded re-entry rules: its WriteTask registers
+    ;; via addTaskSeeded, so fresh runs skip its maintenance
+    [`(seeded-only ,(? natural?) ..1) #t]
     [`(,(? natural?) ..1) #t]
     [_ #f]))
 
@@ -313,6 +318,10 @@
     [`(scan ,(? var?) ,(? var?) ...) #t]
     [`(probe ,(? var?) (,(? natural?) ..1) ,(? natural?) ,(? var?) ...) #t]
     [`(once) #t]
+    ;; a staged rule's seeded re-entry task: no delta anywhere -- every
+    ;; join in `body` reads a FULL index; runs each iteration only when
+    ;; the stratum began over externally seeded content
+    [`(seeded) #t]
     [_ #f]))
 
 (define (c-head-op? op)

@@ -43,6 +43,10 @@
 ;; add-rule.
 (define current-rule-loc (make-parameter "<unknown>"))
 
+;; unkeyed-scan warnings already issued this compile, keyed (loc . relation)
+;; -- one per site, not one per delta variant
+(define warned-scans (mutable-set))
+
 ;; A fallible prim returns slog_error on bad data (div/mod by 0, INT_MIN, NaN,
 ;; toint out of range, an any-typed type mismatch).  This is the check emitted
 ;; right after such a call: record the pending (error_spec ...) for this rule and
@@ -126,16 +130,25 @@
     (for/fold ([lines '()] #:result (reverse lines))
               ([indx (in-list indices)])
       (define delta (eq? 'delta (car indx)))
-      (define ind (if delta (cdr indx) indx))
+      ;; seeded-only ordering: requisitioned exclusively by seeded re-entry
+      ;; rules, so its WriteTask is gated the same way -- fresh runs never
+      ;; pay its per-iteration maintenance (the reload re-stages the whole
+      ;; database, so a seeded run's iteration 0 ingests the full content)
+      (define seeded-only (eq? 'seeded-only (car indx)))
+      (define ind (if (or delta seeded-only) (cdr indx) indx))
       (define A (length ind))  ;; composite-key arity = ordering length
       (define ordering (gensymb 'ord))
       (define isstatic (if (and (equal? indx (car indices)) (not delta)) "true" "false"))
       (append
        (list
-        (format "  s->addTask(phase_write, new slog::WriteTask<~a>(db, r, ~a, ~a, b), ~a);"
-                A (u16-array-lit ind) (if delta "true" "false") isstatic)
+        (if seeded-only
+            (format "  s->addTaskSeeded(phase_write, new slog::WriteTask<~a>(db, r, ~a, false, b));"
+                    A (u16-array-lit ind))
+            (format "  s->addTask(phase_write, new slog::WriteTask<~a>(db, r, ~a, ~a, b), ~a);"
+                    A (u16-array-lit ind) (if delta "true" "false") isstatic))
         (format "for (u16 b = 0; b < ~a; ++b)" bucket-count)
-        (format "r->addIndex<~a>(~a, ~a);" A ordering (if delta "true" "false"))
+        (format "r->addIndex<~a>(~a, ~a~a);" A ordering (if delta "true" "false")
+                (if seeded-only ", true" ""))
         (add-ord-decl ordering ind 2))
        lines)))))
 
@@ -424,7 +437,7 @@
 ;; emitting hops (operationalization.rkt), so their guards protect every
 ;; sink of the rule; `sid-members` maps a struct name in an accept set to
 ;; the task's u32 member holding its runtime struct id.
-(define ((emit-heads heads sid-members) indent)
+(define ((emit-heads heads sid-members [seeded? #f]) indent)
   (apply string-append
          (for/list ([hop (in-list heads)] [i (in-naturals)])
            (match hop
@@ -473,11 +486,20 @@
                "  return;"
                "}")]
              [`(mkstruct ,name ,ind ,x ,fields ...)
-              ((emit-lines indent)
-               (format "slog::emit_struct<~a>(head_rel[~a], newbatch[~a], ~a, ~a);"
-                       (length ind) i i
-                       (u64-array-lit (map (lambda (z) (format "v_~a" z)) fields))
-                       (u16-array-lit ind)))]
+              ;; a seeded re-entry task re-fires every iteration: skip
+              ;; instances the master index already holds, or the
+              ;; re-emissions would read as fresh delta forever
+              (if seeded?
+                  ((emit-lines indent)
+                   (format "slog::emit_struct_checked<~a>(head_rel[~a], head_index[~a], newbatch[~a], ~a, ~a);"
+                           (length ind) i i i
+                           (u64-array-lit (map (lambda (z) (format "v_~a" z)) fields))
+                           (u16-array-lit ind)))
+                  ((emit-lines indent)
+                   (format "slog::emit_struct<~a>(head_rel[~a], newbatch[~a], ~a, ~a);"
+                           (length ind) i i
+                           (u64-array-lit (map (lambda (z) (format "v_~a" z)) fields))
+                           (u16-array-lit ind))))]
              [`(emit ,name ,ind ,zs ...)
               ((emit-lines indent)
                (format "slog::emit<~a>(head_rel[~a], head_index[~a], newbatch[~a], ~a, ~a);"
@@ -515,9 +537,48 @@
   (define driver-rel
     (match driver
       [`(once) #f]
+      [`(seeded) #f]
       [`(,_ ,name ,_ ...) name]))
+  (define seeded? (eq? (car driver) 'seeded))
   (define static?
     (or (not driver-rel) (not (set-member? dynamic-rels driver-rel))))
+
+  ;; an unkeyed join over a co-recursive relation inside a delta variant
+  ;; re-scans it every iteration -- the computed-key smell whose demand-rule
+  ;; instances the supplementary transform fixes (docs/demand.md §5).
+  ;; Demand-machinery drivers (f_ans / $-synthesized) are exempt: their
+  ;; residual scans are the semantically-required broadcasts.
+  (unless (or static?
+              (not driver-rel)
+              (regexp-match? #rx"_ans$" (symbol->string driver-rel))
+              (string-prefix? (symbol->string driver-rel) "$"))
+    (for ([op (in-list body)])
+      (match op
+        [`(,(or 'join 'join-lat) ,jname ,_ 0 ,_ ...)
+         #:when (and (set-member? dynamic-rels jname)
+                     (not (set-member? warned-scans
+                                       (cons (current-rule-loc) jname))))
+         (set-add! warned-scans (cons (current-rule-loc) jname))
+         (eprintf "warning: a delta variant of the rule at ~a joins ~a with no bound column -- an unkeyed scan EVERY iteration; key it through a column, a demand judgment, or a materialized edge table (docs/demand.md 5)\n"
+                  (current-rule-loc) jname)]
+        [_ (void)])))
+
+  ;; runtime statistics (docs/stats.md): _fires counts this task's
+  ;; INSTANTIATIONS (satisfying body assignments; multi-head rules count
+  ;; once) and flushes before both exits, so sliced/paused invocations
+  ;; accumulate.  Same-driver variants of one rule share a key: totals per
+  ;; rule are the exact-once audit's unit (docs/incremental.md §8).
+  (define variant-tag
+    (match driver
+      [`(once) "once"]
+      [`(seeded) "seeded"]
+      [`(,_ ,name ,_ ...)
+       (format "~a:~a" (if static? "all" "delta") name)]))
+  (define fires-flush
+    ((emit-lines 4)
+     (format "if (_fires) db->bumpFires(\"~a\", \"~a\", _fires);"
+             (escape-c-string-literal (current-rule-loc))
+             (escape-c-string-literal variant-tag))))
 
   ;; heads that emit tuples need an insert batch (let heads do not); a
   ;; tycheck's slot batches its failure-path malformed_deduction structs
@@ -552,8 +613,14 @@
                 [`(cjoin ,_ ,_ ,_ ,_) ""]
                 [`(tycheck ,_ ,_ ,_ ,_ ,_ ,_)
                  (format "    head_rel[~a] = db->getRelation(\"malformed_deduction\");\n" i)]
-                [`(mkstruct ,name ,_ ,_ ,_ ...)
-                 (format "    head_rel[~a] = db->getRelation(\"~a\");\n" i name)]
+                [`(mkstruct ,name ,ind ,_ ,_ ...)
+                 (if seeded?
+                     ;; the checked sink probes the master index
+                     (string-append
+                      (format "    head_rel[~a] = db->getRelation(\"~a\");\n" i name)
+                      (index-member name (format "head_index[~a]" i) ind #f)
+                      "\n")
+                     (format "    head_rel[~a] = db->getRelation(\"~a\");\n" i name))]
                 [`(emit-temp ,name ,_ ...)
                  (format "    head_rel[~a] = db->getRelation(\"~a\");\n" i name)]
                 [`(emit-lat ,name ,_ ...)
@@ -568,7 +635,8 @@
         (format "    outer_rel = db->getRelation(\"~a\");\n" name)]
        [`(probe ,name ,ind ,_ ...)
         (string-append (index-member name "driver_index" ind #t) "\n")]
-       [`(once) ""])
+       [`(once) ""]
+       [`(seeded) ""])
      (apply string-append
             (for/list ([om (in-list join-members)])
               (match (car om)
@@ -600,7 +668,8 @@
     (match driver
       [`(scan ,_ ...) 'scan]
       [`(probe ,_ ,_ ,K ,ys ...) (if (< K (length ys)) 'probe 'none)]
-      [`(once) 'none]))
+      [`(once) 'none]
+      [`(seeded) 'none]))
   (define sliceable? (not (eq? slice-kind 'none)))
   (define probe-A
     (match driver [`(probe ,_ ,_ ,_ ,ys ...) (length ys)] [_ 0]))
@@ -613,10 +682,15 @@
      "  std::chrono::steady_clock::now() + std::chrono::milliseconds(db->runSliceMs()));"
      "slog::SliceCtx _sc{_slice_deadline, &db->runStopFlag()};"))
 
+  (define count+heads
+    (let ([hf (emit-heads heads sid-members seeded?)])
+      (lambda (indent)
+        (string-append ((emit-lines indent) "++_fires;") (hf indent)))))
+
   (define pipeline
     (match driver
-      [`(once)
-       (emit-ops body index-name-of (emit-heads heads sid-members) 4)]
+      [`(,(or 'once 'seeded))
+       (emit-ops body index-name-of count+heads 4)]
       [`(scan ,name ,xs ...)
        (string-append
         slice-ctx-setup
@@ -626,7 +700,7 @@
         (apply (emit-lines 6)
                (for/list ([x (in-list xs)] [n (in-naturals)])
                  (format "u64 v_~a = _t[~a];" x n)))
-        (emit-ops body index-name-of (emit-heads heads sid-members) 6)
+        (emit-ops body index-name-of count+heads 6)
         ((emit-lines 4) "});"))]
       [`(probe ,name ,ind ,K ,ys ...)
        (define A (length ys))
@@ -646,7 +720,7 @@
                  (for/list ([k (in-range K A)])
                    (format "u64 v_~a = ~a[~a];" (list-ref ys k) m k)))
           (if (string=? par-filter "") "" ((emit-lines 6) par-filter))
-          (emit-ops body index-name-of (emit-heads heads sid-members) 6)))
+          (emit-ops body index-name-of count+heads 6)))
        (if (eq? slice-kind 'probe)
            (string-append
             slice-ctx-setup
@@ -668,6 +742,7 @@
   (define nbuckets
     (match driver
       [`(once) 1]
+      [`(seeded) 1]
       [`(probe ,_ ,_ ,K ,ys ...) (if (= (length ys) K) 1 bucket-count)]
       [_ bucket-count]))
 
@@ -730,17 +805,23 @@
    ;; pre-ops run before any allocation, so a failing constant guard can
    ;; abort the whole task early (return true = finished, produced nothing)
    (apply (emit-lines 4) (map emit-pre-op pre))
+   (format "    u64 _fires = 0;")
    (format "    slog::InsertBatch* newbatch[~a];" (max 1 (length heads)))
    alloc-batches
    pipeline
    send-batches
+   fires-flush
    work-tail
    (format "  }")
    (format "  };")
    (format "  for (u16 b = 0; b < ~a; ++b)" nbuckets)
-   (format "    s->addTask(phase_read, new ~a(db,b), ~a);"
-           task-name
-           (if static? "true" "false")))))
+   (if (eq? (car driver) 'seeded)
+       ;; seeded re-entry task: reruns every iteration, but ONLY when the
+       ;; stratum begins over externally seeded content (daemon gate)
+       (format "    s->addTaskSeeded(phase_read, new ~a(db,b));" task-name)
+       (format "    s->addTask(phase_read, new ~a(db,b), ~a);"
+               task-name
+               (if static? "true" "false"))))))
 
 ;; -----------------------------------------------------------------------
 ;; Whole-program emission.

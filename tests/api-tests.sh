@@ -161,10 +161,12 @@ expect "merge-d"    "(relation_size d 4)"  out/api-merge.log
 MERGE_DIFF=0
 for f in out/api-mergedexp/*.csv; do
   b="$(basename "$f")"
+  case "$b" in '$stat_'*) continue ;; esac   # per-run diagnostics (docs/stats.md)
   diff <(LC_ALL=C sort "$f") <(LC_ALL=C sort "out/api-merged/$b") \
     > /dev/null 2>&1 || MERGE_DIFF=1
 done
-diff <(ls out/api-merged) <(ls out/api-mergedexp) > /dev/null 2>&1 || MERGE_DIFF=1
+diff <(ls out/api-merged | grep -v '^\$stat_') \
+     <(ls out/api-mergedexp | grep -v '^\$stat_') > /dev/null 2>&1 || MERGE_DIFF=1
 if [ "$MERGE_DIFF" -eq 0 ]; then
   echo "PASS merge-differential"; PASS=$((PASS+1))
 else

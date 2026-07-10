@@ -8,6 +8,9 @@
          pooled-eager
          o2-build-command
          spawn-detached-o2-batch
+         try-claim-o2!
+         clear-o2-marker!
+         stratum-tu-paths
          call-with-atomic-output
          fullpath
          ensure-slogd-exists
@@ -561,29 +564,94 @@
   (with-output-to-file tmp #:exists 'replace thunk)
   (rename-file-or-directory tmp path #t))
 
+;; ---- background -O2 claim marker (docs/fast-compile.md §13) -------------
+;; Exactly one background -O2 build per stratum hash should run at a time across
+;; ALL concurrent/successive `slog` processes -- otherwise two runs that both
+;; miss build/<hash>.so each spawn the (expensive) -O2, wasting Nx clang.  A
+;; sidecar marker build/<hash>.so.building records "a build is in flight"; it is
+;; DELIBERATELY a separate file from the canonical <hash>.so (an empty file at
+;; the canonical name would be dlopen'd by the hot swap and satisfy the "-O2
+;; cached" cache branch -- both crashes).
+(define (o2-marker-path so-path) (string-append so-path ".building"))
+
+;; Seconds before an in-flight build's marker is presumed abandoned by a dead
+;; builder (crash / kill / reboot) and reclaimed -- and the per-build timeout.
+;; From the config system (SLOG_O2_RECLAIM_SECS), default 15 min.
+(define (o2-reclaim-seconds)
+  (let* ([env (getenv "SLOG_O2_RECLAIM_SECS")]
+         [n (and env (string->number (string-trim env)))])
+    (if (and n (real? n) (> n 0)) (inexact->exact (floor n)) 900)))
+
+;; A marker older than the reclaim window (or unreadable) is presumed stale.
+(define (o2-marker-stale? marker)
+  (with-handlers ([exn:fail? (λ (_) #t)])
+    (> (- (current-seconds) (file-or-directory-modify-seconds marker))
+       (o2-reclaim-seconds))))
+
+;; Try to claim the right to build so-path's -O2 in the background.  Returns #t
+;; iff THIS process now holds the marker (nobody else is building it); #f if a
+;; live builder already owns it.  The atomic O_EXCL create (#:exists 'error) is
+;; the cross-process mutex; the mtime window reclaims a dead builder's marker.
+;; (A residual race on stale reclaim only ever costs a duplicate build, never
+;; correctness -- the build itself is temp+rename safe.)
+(define (try-claim-o2! so-path)
+  (define marker (o2-marker-path so-path))
+  (define (create!)
+    (with-handlers ([exn:fail:filesystem? (λ (_) #f)])
+      (call-with-output-file marker #:exists 'error
+        (λ (p) (fprintf p "~a\n" (current-seconds))))
+      #t))
+  (cond
+    [(create!) #t]
+    [(o2-marker-stale? marker) (delete-file* marker) (create!)]
+    [else #f]))
+
+;; Best-effort marker cleanup, e.g. once <hash>.so is present (the claim is moot).
+(define (clear-o2-marker! so-path) (delete-file* (o2-marker-path so-path)))
+
+;; The generated C++ TUs for a stratum hash, read back from build/: the spine
+;; build/<hash>.cpp plus any part TUs build/<hash>.pK.cpp (docs/fast-compile.md
+;; §6).  Used when a cached -O0 .so lets us skip re-emitting yet we still need
+;; the sources to launch the background -O2.  Sorted so the spine leads; empty
+;; if none are present (caller falls back to a fresh emit).
+(define (stratum-tu-paths proghash)
+  (define builddir (fullpath "build"))
+  (define rx (regexp (format "^~a(\\.p[0-9]+)?\\.cpp$" (regexp-quote proghash))))
+  (sort (for/list ([f (in-list (directory-list builddir))]
+                   #:when (regexp-match? rx (path->string f)))
+          (path->string (build-path builddir f)))
+        string<?))
+
 ;; The shell command for one background -O2 build: compile to a unique temp,
 ;; then atomically rename it onto so-path (so a daemon that has already dlopen'd
-;; the -O0 .so at that path never sees a torn file), cleaning the temp either way.
+;; the -O0 .so at that path never sees a torn file), cleaning the temp AND the
+;; claim marker (docs/fast-compile.md §13) either way.  A `timeout` bounds a
+;; wedged clang so it cannot hold the claim slot until the marker goes stale.
 (define (o2-build-command cpp-paths so-path)
   (define pchp (ensure-pch "-O2"))
   (define tmp (build-tempfile "o2~a.tmp"))
+  (define marker (o2-marker-path so-path))
   (define argv (append (list the-cxx-path)
                        (if (list? cpp-paths) cpp-paths (list cpp-paths))
                        (base-cxx-flags "-O2")
                        (if pchp (list "-include-pch" pchp) '())
                        (list "-shared" (format "-o~a" tmp))
                        extra-cxx-flags))
-  (string-append "nice -n 10 " (string-join (map sh-q argv) " ")
+  (define to-prefix
+    (if (find-executable-path "timeout") (format "timeout ~a " (o2-reclaim-seconds)) ""))
+  (string-append "nice -n 10 " to-prefix (string-join (map sh-q argv) " ")
                  " && mv -f " (sh-q tmp) " " (sh-q so-path)
-                 " ; rm -f " (sh-q tmp)))
+                 " ; rm -f " (sh-q tmp) " " (sh-q marker)))
 
 ;; Run all background -O2 builds as ONE detached, bounded-parallel job
-;; (docs/fast-compile.md §2/§7).  A per-stratum detached process would let a
+;; (docs/fast-compile.md §2/§7/§13).  A per-stratum detached process would let a
 ;; many-stratum program spawn unbounded concurrent clang -O2's (memory pressure,
 ;; no cgroup bound); instead a single detached bash driver runs the commands from
-;; a jobfile at most (cores/2) at a time.  Detached, so it outlives this driver
-;; (a Racket subprocess is not killed when its parent exits) and the .so's still
-;; land in the cache for next time.
+;; a jobfile at most (cores/2) at a time.  Launched under `setsid` (when
+;; available) so it leads its OWN session -- a terminal SIGHUP when the user
+;; closes the window after `slog` returns can no longer take it down, so the -O2
+;; builds durably outlive this driver and land in the cache for next time (each
+;; is `timeout`-bounded per o2-build-command).
 (define (spawn-detached-o2-batch commands)
   (when (pair? commands)
     (define jobfile (build-tempfile "o2jobs~a.sh"))
@@ -604,8 +672,11 @@
        "rm -f " (sh-q jobfile) "\n"))
     (define devnull-out (open-output-file "/dev/null" #:exists 'append))
     (define devnull-in (open-input-file "/dev/null"))
+    (define setsid-exe (find-executable-path "setsid"))
     (define-values (sp o i e)
-      (subprocess devnull-out devnull-in devnull-out "/bin/bash" "-c" script))
+      (if setsid-exe
+          (subprocess devnull-out devnull-in devnull-out setsid-exe "/bin/bash" "-c" script)
+          (subprocess devnull-out devnull-in devnull-out "/bin/bash" "-c" script)))
     (close-output-port devnull-out)
     (close-input-port devnull-in)
     (void)))
