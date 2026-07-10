@@ -1,0 +1,2 @@
+(center (circle (pt 2 4) 1))   (pt 2 4)   
+(center (rect (pt 0 0) (pt 4 6)))   (pt 2 3)   

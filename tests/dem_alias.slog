@@ -1,0 +1,27 @@
+;; x=(pattern) aliases inside judgment occurrences: the alias names the
+;; matched sub-term in place and binds alongside the pattern's variables
+;; (simplification's nested-= flattening lifts it out of the gate or
+;; answer join).  Also: a value-position call written call-first,
+;; (f a) = x, works like (= x (f a)).
+
+struct (pt int int)
+union (shape (circle pt int)
+             (rect pt pt))
+
+;; alias in a judgment head's input pattern: the gate binds both p and
+;; the pattern's fields
+demand (center shape) pt
+rule (center (circle p=(pt _ _) _) p) <--
+rule (center (rect (pt x0 y0) (pt x1 y1)) (pt (/ (+ x0 x1) 2) (/ (+ y0 y1) 2))) <--
+
+table (shapes shape)
+facts (shapes (circle (pt 2 4) 1)) (shapes (rect (pt 0 0) (pt 4 6)))
+
+;; alias in a body occurrence's answer pattern: binds the answer AND its
+;; parts at once
+table (centerx shape pt int)
+rule (shapes s) (center s c=(pt x _)) --> (centerx s c x)
+
+;; call-first value position under =
+table (centery shape int)
+rule (shapes s) (center s) = (pt _ y) --> (centery s y)

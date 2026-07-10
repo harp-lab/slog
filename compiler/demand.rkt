@@ -210,7 +210,10 @@
      (validate-term! (fourth cl) ctx rule)]
     [_ (validate-term! cl ctx rule #t)]))
 
-;; Judgment arguments exclude clause-level connectives.
+;; Judgment arguments exclude clause-level connectives, except the alias
+;; form x=(pattern ...): it names the matched sub-term in place, and
+;; simplification's nested-= flattening lifts it out of the gate or
+;; answer join it lands in, binding x alongside the pattern's variables.
 (define (validate-judgment-args! args name rule)
   (define (bad-connective e)
     (match e
@@ -219,14 +222,19 @@
       [_ #f]))
   (let walk ([es args])
     (for ([e (in-list es)])
-      (define s (bad-connective e))
-      (when s
-        (error 'demand
-               "~a is not allowed inside the judgment occurrence of ~a, in\n~a"
-               s name (strip-prov rule)))
       (match e
-        [`(syn ,_ ,(? symbol?) ,sub ...) (walk sub)]
-        [_ (void)]))))
+        [`(syn ,_ = ,(? symbol? x) ,(and pat `(syn ,_ ,(? symbol?) ,_ ...)))
+         #:when (not (eq? x '_))
+         (walk (list pat))]
+        [_
+         (define s (bad-connective e))
+         (when s
+           (error 'demand
+                  "~a is not allowed inside the judgment occurrence of ~a, in\n~a"
+                  s name (strip-prov rule)))
+         (match e
+           [`(syn ,_ ,(? symbol?) ,sub ...) (walk sub)]
+           [_ (void)])]))))
 
 ;; -----------------------------------------------------------------------
 ;; Variable analysis over pre-simplification terms.  Bare symbols in
