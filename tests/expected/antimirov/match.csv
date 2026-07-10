@@ -1,0 +1,7 @@
+"(a|ab)*"   ""   
+"(a|ab)*"   "aab"   
+"(a|ab)*"   "abaab"   
+"(a|ab)*"   "abab"   
+"(a|b)*abb"   "aababb"   
+"(a|b)*abb"   "abb"   
+"(a|b)*abb"   "babb"   

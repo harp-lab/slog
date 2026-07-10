@@ -1,0 +1,2 @@
+(_enum "eps")   
+(star (alt (chr "a") (cat (chr "a") (chr "b"))))   

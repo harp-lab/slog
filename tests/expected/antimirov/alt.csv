@@ -1,0 +1,2 @@
+(alt (chr "a") (cat (chr "a") (chr "b")))
+(alt (chr "a") (chr "b"))

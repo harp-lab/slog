@@ -1,0 +1,16 @@
+ (_enum "eps")
+ (_enum "eps")
+ (_enum "eps")
+ (cat (chr "a") (cat (chr "b") (chr "b"))))
+ (cat (chr "b") (chr "b")))
+ (chr "b")
+ (star (alt (chr "a") (cat (chr "a") (chr "b")))))
+ (star (alt (chr "a") (cat (chr "a") (chr "b")))))
+ (star (alt (chr "a") (chr "b")))
+ (star (alt (chr "a") (chr "b"))))
+(mkcat
+(mkcat
+(mkcat
+(mkcat
+(mkcat
+(mkcat (_enum "eps") (chr "b"))

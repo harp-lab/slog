@@ -1,0 +1,2 @@
+"(a|ab)*"   (star (alt (chr "a") (cat (chr "a") (chr "b"))))   
+"(a|b)*abb"   (cat (star (alt (chr "a") (chr "b"))) (cat (chr "a") (cat (chr "b") (chr "b"))))   

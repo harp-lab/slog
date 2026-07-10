@@ -1,0 +1,120 @@
+ (cat (chr "b") (chr "b"))
+ (cat (chr "b") (chr "b"))
+ (cat (chr "b") (chr "b"))
+ (cat (chr "b") (chr "b"))
+ (cat (chr "b") (star (alt (chr "a") (cat (chr "a") (chr "b")))))
+ (cat (chr "b") (star (alt (chr "a") (cat (chr "a") (chr "b")))))
+ (cat (chr "b") (star (alt (chr "a") (cat (chr "a") (chr "b")))))
+ (cat (chr "b") (star (alt (chr "a") (cat (chr "a") (chr "b")))))
+ (cat (chr "b") (star (alt (chr "a") (cat (chr "a") (chr "b")))))
+ (cat (chr "b") (star (alt (chr "a") (cat (chr "a") (chr "b")))))
+ (cat (chr "b") (star (alt (chr "a") (cat (chr "a") (chr "b")))))
+ (cat (star (alt (chr "a") (chr "b"))) (cat (chr "a") (cat (chr "b") (chr "b"))))
+ (cat (star (alt (chr "a") (chr "b"))) (cat (chr "a") (cat (chr "b") (chr "b"))))
+ (cat (star (alt (chr "a") (chr "b"))) (cat (chr "a") (cat (chr "b") (chr "b"))))
+ (cat (star (alt (chr "a") (chr "b"))) (cat (chr "a") (cat (chr "b") (chr "b"))))
+ (cat (star (alt (chr "a") (chr "b"))) (cat (chr "a") (cat (chr "b") (chr "b"))))
+ (cat (star (alt (chr "a") (chr "b"))) (cat (chr "a") (cat (chr "b") (chr "b"))))
+ (cat (star (alt (chr "a") (chr "b"))) (cat (chr "a") (cat (chr "b") (chr "b"))))
+ (cat (star (alt (chr "a") (chr "b"))) (cat (chr "a") (cat (chr "b") (chr "b"))))
+ (cat (star (alt (chr "a") (chr "b"))) (cat (chr "a") (cat (chr "b") (chr "b"))))
+ (cat (star (alt (chr "a") (chr "b"))) (cat (chr "a") (cat (chr "b") (chr "b"))))
+ (cat (star (alt (chr "a") (chr "b"))) (cat (chr "a") (cat (chr "b") (chr "b"))))
+ (cat (star (alt (chr "a") (chr "b"))) (cat (chr "a") (cat (chr "b") (chr "b"))))
+ (cat (star (alt (chr "a") (chr "b"))) (cat (chr "a") (cat (chr "b") (chr "b"))))
+ (star (alt (chr "a") (cat (chr "a") (chr "b"))))
+ (star (alt (chr "a") (cat (chr "a") (chr "b"))))
+ (star (alt (chr "a") (cat (chr "a") (chr "b"))))
+ (star (alt (chr "a") (cat (chr "a") (chr "b"))))
+ (star (alt (chr "a") (cat (chr "a") (chr "b"))))
+ (star (alt (chr "a") (cat (chr "a") (chr "b"))))
+ (star (alt (chr "a") (cat (chr "a") (chr "b"))))
+ (star (alt (chr "a") (cat (chr "a") (chr "b"))))
+ (star (alt (chr "a") (cat (chr "a") (chr "b"))))
+ (star (alt (chr "a") (cat (chr "a") (chr "b"))))
+ (star (alt (chr "a") (cat (chr "a") (chr "b"))))
+ (star (alt (chr "a") (cat (chr "a") (chr "b"))))
+ (star (alt (chr "a") (cat (chr "a") (chr "b"))))
+ ["a" "a" "b" "a" "b" "b"])
+ ["a" "a" "b" "a" "b" "b"])
+ ["a" "a" "b"])
+ ["a" "a" "b"])
+ ["a" "b" "a" "a" "b"])
+ ["a" "b" "a" "a" "b"])
+ ["a" "b" "a" "b" "b"])
+ ["a" "b" "a" "b" "b"])
+ ["a" "b" "a" "b" "b"])
+ ["a" "b" "a" "b" "b"])
+ ["a" "b" "a" "b"])
+ ["a" "b" "a" "b"])
+ ["a" "b" "b"])
+ ["a" "b" "b"])
+ ["a" "b"])
+ ["a" "b"])
+ ["a" "b"])
+ ["b" "a" "a" "b"])
+ ["b" "a" "a" "b"])
+ ["b" "a" "a" "b"])
+ ["b" "a" "a" "b"])
+ ["b" "a" "b" "b"])
+ ["b" "a" "b" "b"])
+ ["b" "a" "b" "b"])
+ ["b" "a" "b" "b"])
+ ["b" "a" "b"])
+ ["b" "a" "b"])
+ ["b" "a" "b"])
+ ["b" "a" "b"])
+ ["b" "b"])
+ ["b" "b"])
+ ["b" "b"])
+ ["b"])
+ ["b"])
+ ["b"])
+ [])
+ [])
+(run
+(run
+(run
+(run
+(run
+(run
+(run
+(run
+(run
+(run
+(run
+(run
+(run
+(run
+(run
+(run
+(run
+(run
+(run
+(run
+(run
+(run
+(run
+(run
+(run
+(run
+(run
+(run
+(run
+(run
+(run
+(run
+(run
+(run
+(run
+(run
+(run
+(run (_enum "eps") [])
+(run (cat (chr "b") (chr "b")) ["a" "b"])
+(run (cat (chr "b") (chr "b")) ["b" "b"])
+(run (cat (chr "b") (chr "b")) ["b"])
+(run (chr "b") ["a" "a" "b"])
+(run (chr "b") ["a" "b" "b"])
+(run (chr "b") ["a" "b"])
+(run (chr "b") ["b"])
+(run (chr "b") [])

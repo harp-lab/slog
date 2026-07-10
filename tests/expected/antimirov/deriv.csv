@@ -1,0 +1,48 @@
+ "a")
+ "a")
+ "a")
+ "a")
+ "a")
+ "a")
+ "b")
+ "b")
+ "b")
+ "b")
+ "b")
+ "b")
+ (alt (chr "a") (cat (chr "a") (chr "b")))
+ (alt (chr "a") (cat (chr "a") (chr "b")))
+ (cat (chr "a") (cat (chr "b") (chr "b")))
+ (cat (chr "a") (cat (chr "b") (chr "b")))
+ (cat (chr "b") (star (alt (chr "a") (cat (chr "a") (chr "b")))))
+ (cat (chr "b") (star (alt (chr "a") (cat (chr "a") (chr "b")))))
+ (cat (star (alt (chr "a") (chr "b"))) (cat (chr "a") (cat (chr "b") (chr "b"))))
+ (cat (star (alt (chr "a") (chr "b"))) (cat (chr "a") (cat (chr "b") (chr "b"))))
+ (star (alt (chr "a") (cat (chr "a") (chr "b"))))
+ (star (alt (chr "a") (cat (chr "a") (chr "b"))))
+ (star (alt (chr "a") (chr "b")))
+ (star (alt (chr "a") (chr "b")))
+(deriv
+(deriv
+(deriv
+(deriv
+(deriv
+(deriv
+(deriv
+(deriv
+(deriv
+(deriv
+(deriv
+(deriv
+(deriv (_enum "eps") "a")
+(deriv (_enum "eps") "b")
+(deriv (alt (chr "a") (chr "b")) "a")
+(deriv (alt (chr "a") (chr "b")) "b")
+(deriv (cat (chr "a") (chr "b")) "a")
+(deriv (cat (chr "a") (chr "b")) "b")
+(deriv (cat (chr "b") (chr "b")) "a")
+(deriv (cat (chr "b") (chr "b")) "b")
+(deriv (chr "a") "a")
+(deriv (chr "a") "b")
+(deriv (chr "b") "a")
+(deriv (chr "b") "b")

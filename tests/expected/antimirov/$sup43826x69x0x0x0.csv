@@ -1,0 +1,4 @@
+(deriv (alt (chr "a") (cat (chr "a") (chr "b"))) "a")   "a"   (chr "a")   (cat (chr "a") (chr "b"))   
+(deriv (alt (chr "a") (cat (chr "a") (chr "b"))) "b")   "b"   (chr "a")   (cat (chr "a") (chr "b"))   
+(deriv (alt (chr "a") (chr "b")) "a")   "a"   (chr "a")   (chr "b")   
+(deriv (alt (chr "a") (chr "b")) "b")   "b"   (chr "a")   (chr "b")   

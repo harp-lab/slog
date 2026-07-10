@@ -1,0 +1,3 @@
+ (alt (chr "a") (cat (chr "a") (chr "b"))))
+(star
+(star (alt (chr "a") (chr "b")))

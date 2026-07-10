@@ -1,0 +1,139 @@
+;; Regular-expression matching by Antimirov partial derivatives --
+;; and the NFA it induces, materialized as three relations.
+;;
+;; The derivative of a regex r by a character c is "what remains to be
+;; matched after reading c".  Brzozowski's derivative returns ONE
+;; regex, but the derivatives only stay finite up to associativity/
+;; commutativity/idempotence of alternation, so real implementations
+;; haul in smart constructors and canonical sets of terms.  Antimirov's
+;; partial derivative sidesteps all of it by returning a SET of
+;; residuals:
+;;
+;;     d_c(c)       = { eps }
+;;     d_c(c')      = { }                                  (c' /= c)
+;;     d_c(r + s)   = d_c(r)  U  d_c(s)
+;;     d_c(r . s)   = d_c(r) . s   U   d_c(s) when nullable(r)
+;;     d_c(r*)      = d_c(r) . r*
+;;
+;; and these sets stay finite with no canonicalization at all.
+;;
+;; The point of this file: in Slog those sets are never built.  A
+;; demand may answer zero, one, or many times -- so U is two clauses
+;; for one call, { } is a clause that doesn't match, and "for each
+;; residual" is just asking.  Antimirov's set algebra dissolves into
+;; the relational semantics, and what remains below is the five lines
+;; of math, one clause each.
+
+;; ---------------------------------------------------------------- syntax
+;; Regexes are ordinary structured values: interned once, compared in
+;; O(1), usable as keys.  Both facts below lean on that constantly.
+
+union (re (eps)          ;; matches only ""
+          (chr str)      ;; one codepoint
+          (cat re re)    ;; concatenation
+          (alt re re)    ;; alternation
+          (star re))     ;; Kleene star
+
+;; ------------------------------------------------------------- nullable
+;; Does r match the empty string?  Total -- always answers 0 or 1 --
+;; because a regex is a finished value we can inspect structurally.
+;; AND is *, OR is max.
+
+demand (nullable re) int
+rule (nullable (eps) 1)
+rule (nullable (chr c) 0)
+rule (nullable (star r) 1)
+rule (nullable (cat r s) (* (nullable r) (nullable s)))
+rule (nullable (alt r s) (max (nullable r) (nullable s)))
+
+;; ---------------------------------------------------------------- mkcat
+;; Antimirov's residuals live in "linear form": the . in d_c(r).s is
+;; concatenation with the unit law applied, eps.s = s.  One structural
+;; case analysis -- and the only smart constructor the whole
+;; construction needs.
+
+demand (mkcat re re) re
+rule (mkcat (eps) s s)
+rule (mkcat (chr c) s (cat (chr c) s))
+rule (mkcat (cat a b) s (cat (cat a b) s))
+rule (mkcat (alt a b) s (cat (alt a b) s))
+rule (mkcat (star a) s (cat (star a) s))
+
+;; ---------------------------------------------------------------- deriv
+;; The five equations, one clause each.  The two alt clauses answer
+;; the same call: that IS the union.  No clause matches (chr c') for
+;; c' /= c, or (eps): that IS the empty set.
+
+demand (deriv re str) re
+rule (deriv (chr c) c (eps))
+rule (deriv (alt r s) c (deriv r c))
+rule (deriv (alt r s) c (deriv s c))
+rule (deriv (cat r s) c (mkcat (deriv r c) s))
+rule  (deriv (cat r s) c (deriv s c)) <-- (= n (nullable r)) (< 0 n)
+rule (deriv (star r) c (mkcat (deriv r c) (star r)))
+
+;; -------------------------------------------------------------- matcher
+;; NFA simulation in two clauses: out of input, accept iff nullable;
+;; otherwise step every residual at once (deriv's answers fan out, and
+;; a dead branch is silent).  Memoization keys each state by the WHOLE
+;; remaining input -- free, because suffixes are canonical interned
+;; sequences: [b b] is one value however it was reached.
+
+demand (run re (list str)) int
+rule (run r [] (nullable r))
+rule (run r [c cs ...] (run (deriv r c) cs))
+
+table (query str re)     ;; a named regex
+table (subject str)      ;; input strings, tried against every query
+table (match str str)    ;; (match name s): s is in the language
+
+rule (query nm r) (subject s)
+     (= v (run r (ssplit s ""))) (< 0 v)
+ --> (match nm s)
+
+;; ------------------------------------------------------------- automaton
+;; The matcher above never named an automaton, but one was implicit:
+;; iterate deriv over the alphabet instead of over an input and the
+;; NFA materializes as facts -- states are regexes (readable in the
+;; CSV as "what remains to match"), and hash-consing deduplicates them
+;; behind our backs.  Antimirov's theorem says this closes off at no
+;; more states than character occurrences in the query, + 1; count
+;; state.csv and check.
+
+table (frag re)          ;; subterms of the queries...
+table (alpha str)        ;; ...and every character they mention
+rule (query nm r) --> (frag r)
+rule (frag (cat r s)) --> (frag r) (frag s)
+rule (frag (alt r s)) --> (frag r) (frag s)
+rule (frag (star r)) --> (frag r)
+rule (frag (chr c)) --> (alpha c)
+
+table (state re)
+table (nfa re str re)
+table (accepting re)
+rule (query nm r) --> (state r)
+rule (state r) (alpha c) (= r2 (deriv r c)) --> (nfa r c r2) (state r2)
+rule (state r) (= n (nullable r)) (< 0 n) --> (accepting r)
+
+;; ---------------------------------------------------------------- inputs
+;; The textbook (a|b)*abb, whose 4-state NFA appears verbatim in
+;; nfa.csv -- note the start state's a-edge back to ITSELF next to its
+;; a-edge forward: interning made the self-loop literal, d_a(r0) has
+;; r0 as one of its residuals.  And (a|ab)*, where matching must
+;; speculate: "aab" only works if the first a is a token and the
+;; second begins ab.
+
+rule (query "(a|b)*abb"
+  (cat (star (alt (chr "a") (chr "b")))
+       (cat (chr "a") (cat (chr "b") (chr "b")))))
+
+rule (query "(a|ab)*"
+  (star (alt (chr "a") (cat (chr "a") (chr "b")))))
+
+rule (subject "abb")
+rule (subject "babb")
+rule (subject "abab")
+rule (subject "aababb")
+rule (subject "aab")
+rule (subject "abaab")
+rule (subject "")

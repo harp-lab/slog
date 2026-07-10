@@ -1,0 +1,30 @@
+(run (_enum "eps") [])   1   
+(run (cat (chr "b") (chr "b")) ["b" "b"])   1   
+(run (cat (chr "b") (chr "b")) ["b"])   0   
+(run (cat (chr "b") (star (alt (chr "a") (cat (chr "a") (chr "b"))))) ["b" "a" "a" "b"])   1   
+(run (cat (chr "b") (star (alt (chr "a") (cat (chr "a") (chr "b"))))) ["b" "a" "b"])   1   
+(run (cat (chr "b") (star (alt (chr "a") (cat (chr "a") (chr "b"))))) ["b"])   1   
+(run (cat (star (alt (chr "a") (chr "b"))) (cat (chr "a") (cat (chr "b") (chr "b")))) ["a" "a" "b" "a" "b" "b"])   0   
+(run (cat (star (alt (chr "a") (chr "b"))) (cat (chr "a") (cat (chr "b") (chr "b")))) ["a" "a" "b" "a" "b" "b"])   1   
+(run (cat (star (alt (chr "a") (chr "b"))) (cat (chr "a") (cat (chr "b") (chr "b")))) ["a" "a" "b"])   0   
+(run (cat (star (alt (chr "a") (chr "b"))) (cat (chr "a") (cat (chr "b") (chr "b")))) ["a" "b" "a" "a" "b"])   0   
+(run (cat (star (alt (chr "a") (chr "b"))) (cat (chr "a") (cat (chr "b") (chr "b")))) ["a" "b" "a" "b" "b"])   0   
+(run (cat (star (alt (chr "a") (chr "b"))) (cat (chr "a") (cat (chr "b") (chr "b")))) ["a" "b" "a" "b" "b"])   1   
+(run (cat (star (alt (chr "a") (chr "b"))) (cat (chr "a") (cat (chr "b") (chr "b")))) ["a" "b" "a" "b"])   0   
+(run (cat (star (alt (chr "a") (chr "b"))) (cat (chr "a") (cat (chr "b") (chr "b")))) ["a" "b" "b"])   0   
+(run (cat (star (alt (chr "a") (chr "b"))) (cat (chr "a") (cat (chr "b") (chr "b")))) ["a" "b" "b"])   1   
+(run (cat (star (alt (chr "a") (chr "b"))) (cat (chr "a") (cat (chr "b") (chr "b")))) ["a" "b"])   0   
+(run (cat (star (alt (chr "a") (chr "b"))) (cat (chr "a") (cat (chr "b") (chr "b")))) ["b" "a" "a" "b"])   0   
+(run (cat (star (alt (chr "a") (chr "b"))) (cat (chr "a") (cat (chr "b") (chr "b")))) ["b" "a" "b" "b"])   0   
+(run (cat (star (alt (chr "a") (chr "b"))) (cat (chr "a") (cat (chr "b") (chr "b")))) ["b" "a" "b" "b"])   1   
+(run (cat (star (alt (chr "a") (chr "b"))) (cat (chr "a") (cat (chr "b") (chr "b")))) ["b" "a" "b"])   0   
+(run (cat (star (alt (chr "a") (chr "b"))) (cat (chr "a") (cat (chr "b") (chr "b")))) ["b" "b"])   0   
+(run (cat (star (alt (chr "a") (chr "b"))) (cat (chr "a") (cat (chr "b") (chr "b")))) ["b"])   0   
+(run (cat (star (alt (chr "a") (chr "b"))) (cat (chr "a") (cat (chr "b") (chr "b")))) [])   0   
+(run (chr "b") ["b"])   1   
+(run (chr "b") [])   0   
+(run (star (alt (chr "a") (cat (chr "a") (chr "b")))) ["a" "a" "b"])   1   
+(run (star (alt (chr "a") (cat (chr "a") (chr "b")))) ["a" "b" "a" "a" "b"])   1   
+(run (star (alt (chr "a") (cat (chr "a") (chr "b")))) ["a" "b" "a" "b"])   1   
+(run (star (alt (chr "a") (cat (chr "a") (chr "b")))) ["a" "b"])   1   
+(run (star (alt (chr "a") (cat (chr "a") (chr "b")))) [])   1   

@@ -1,0 +1,9 @@
+(nullable (_enum "eps"))   1   
+(nullable (cat (chr "a") (cat (chr "b") (chr "b"))))   0   
+(nullable (cat (chr "b") (chr "b")))   0   
+(nullable (cat (chr "b") (star (alt (chr "a") (cat (chr "a") (chr "b"))))))   0   
+(nullable (cat (star (alt (chr "a") (chr "b"))) (cat (chr "a") (cat (chr "b") (chr "b")))))   0   
+(nullable (chr "a"))   0   
+(nullable (chr "b"))   0   
+(nullable (star (alt (chr "a") (cat (chr "a") (chr "b")))))   1   
+(nullable (star (alt (chr "a") (chr "b"))))   1   
