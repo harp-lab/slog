@@ -82,8 +82,8 @@ not `--keep-cache`, when in doubt.
 
 - **Slow first run, fast after** — that's clang compiling; normal. Big
   programs generate big C++; the cache means you pay once.
-- **Huge inline `facts` blocks** compile into the program itself. Load
-  bulk data from a saved database instead (chapter 9).
+- **Huge inline blocks of ground rules** compile into the program
+  itself. Load bulk data from a saved database instead (chapter 9).
 - **`--sizes` is the first profiler.** A relation with wildly more rows
   than you expected usually points at the rule deriving too much —
   often a missing join variable.

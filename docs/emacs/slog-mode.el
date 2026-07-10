@@ -90,7 +90,7 @@ The Slog libraries write the arrow one space in under the `rule' keyword, e.g.
 
 (defface slog-keyword-face
   '((t :inherit font-lock-keyword-face))
-  "Face for top-level and inline keywords (rule, facts, demand, when, ...)."
+  "Face for top-level and inline keywords (rule, demand, when, ...)."
   :group 'slog)
 
 (defface slog-arrow-face
@@ -169,7 +169,7 @@ i.e. the first symbol after an opening `('."
 ;;;; ------------------------------------------------------------------ ;;;;
 
 (defconst slog-top-level-keywords
-  '("def" "rule" "facts" "table" "struct" "union" "demand" "extern"
+  '("def" "rule" "table" "struct" "union" "demand" "extern"
     "lattice" "enum" "import" "export" "include" "run" "let")
   "Keywords that begin a top-level form (indented to column 0).")
 
@@ -284,7 +284,7 @@ merge operators.")
 
       ;; --- generic clause head: the first identifier after an open paren
       ;; that no earlier rule has already coloured.  This lights up relation
-      ;; and struct-constructor names in facts, rule bodies and heads.  It is
+      ;; and struct-constructor names in rule bodies and heads.  It is
       ;; LAST and non-overriding, so primitives/keywords/types keep their
       ;; own faces.
       ("(\\s-*\\([a-zA-Z_][a-zA-Z0-9_']*\\)"
@@ -337,7 +337,7 @@ When the arrow/keyword stands alone on its line, its own column is kept."
   "Return the column at which clauses of the enclosing top-level form align.
 This is the column of the first clause on the form's keyword line, e.g. 5 for
 a `rule (head ...)' line -- so every body and head clause of the rule lines up
-there.  When the keyword stands alone on its line (the usual `facts' layout)
+there.  When the keyword stands alone on its line (the usual ground-rule layout)
 the keyword's own column (normally 0) is used instead."
   (save-excursion
     (beginning-of-line)

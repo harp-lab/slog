@@ -8,7 +8,7 @@ table (in str any)
 table (out str box)
 table (oks str)
 
-facts
+rule
 (in "a" (ok))
 (in "b" (bad))
 

@@ -8,7 +8,7 @@ table (seed int)
 table (grow int)
 table (big int)
 
-facts
+rule
 (grow 7)
 
 rule (grow X) (= Y (+ X 5)) --> (big Y)

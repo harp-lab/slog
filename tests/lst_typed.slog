@@ -9,11 +9,11 @@ table (heads int)
 table (total int)
 
 demand (sum (list int)) int
-facts (sum [] 0)
-facts (sum [x xs ...] (+ (sum xs) x))
+rule (sum [] 0)
+rule (sum [x xs ...] (+ (sum xs) x))
 
-facts (input [1 2 3])
-facts (pairs [[1 2] [3 4]])
+rule (input [1 2 3])
+rule (pairs [[1 2] [3 4]])
 
 rule (input [x xs ...]) --> (heads x)
 rule (pairs [[a b] r ...]) --> (heads a)

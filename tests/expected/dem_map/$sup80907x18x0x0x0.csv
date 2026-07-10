@@ -1,0 +1,6 @@
+(map (_enum "dbl") (ccons 1 (ccons 2 (ccons 3 (_enum "cnil")))))   (_enum "dbl")   1   (ccons 2 (ccons 3 (_enum "cnil")))   
+(map (_enum "dbl") (ccons 2 (ccons 3 (_enum "cnil"))))   (_enum "dbl")   2   (ccons 3 (_enum "cnil"))   
+(map (_enum "dbl") (ccons 3 (_enum "cnil")))   (_enum "dbl")   3   (_enum "cnil")   
+(map (addk 10) (ccons 1 (ccons 2 (ccons 3 (_enum "cnil")))))   (addk 10)   1   (ccons 2 (ccons 3 (_enum "cnil")))   
+(map (addk 10) (ccons 2 (ccons 3 (_enum "cnil"))))   (addk 10)   2   (ccons 3 (_enum "cnil"))   
+(map (addk 10) (ccons 3 (_enum "cnil")))   (addk 10)   3   (_enum "cnil")   

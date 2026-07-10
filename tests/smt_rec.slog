@@ -6,6 +6,6 @@
 include "../lib/smt.slog"
 
 table (count int)
-facts (count 0)
+rule (count 0)
 rule (count N) (= (sat) (smt_check (llt (ic N) (ic 4)))) (= M (+ N 1))
   --> (count M)

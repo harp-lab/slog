@@ -10,7 +10,7 @@ table (g3 int int int)   ;; (< X 3) before joins; (> Z Y) before f binds Z
 table (h int int)        ;; guard after both joins
 table (cmpcalc int int)  ;; Y < X*X
 
-facts
+rule
 (e 1 2)
 (e 2 3)
 (e 3 4)

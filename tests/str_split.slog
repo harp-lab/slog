@@ -12,7 +12,7 @@ table (nums str int)
 table (fls str float)
 table (render int str)
 
-facts (csv "alpha,beta,,delta")
+rule (csv "alpha,beta,,delta")
 
 rule (csv s) --> (fields (ssplit s ","))
 rule (csv s) (fields f) --> (rejoined (sjoin f ","))
@@ -23,10 +23,10 @@ rule (csv _) --> (chars (ssplit "a€b" ""))
 
 ;; parses: hits produce rows, misses produce NOTHING (partiality)
 table (cand str)
-facts (cand "42") (cand "-7") (cand "9999999999") (cand "12x") (cand "")
+rule (cand "42") (cand "-7") (cand "9999999999") (cand "12x") (cand "")
 rule (cand s) (= n (s2i s)) --> (nums s n)
 table (fcand str)
-facts (fcand "2.5") (fcand "-0.125") (fcand "1e3") (fcand "no")
+rule (fcand "2.5") (fcand "-0.125") (fcand "1e3") (fcand "no")
 rule (fcand s) (= x (s2f s)) --> (fls s x)
 
 rule (csv _) --> (render 1 (i2s -13))

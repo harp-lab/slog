@@ -9,8 +9,8 @@ table (nest (list any))
 table (big (list int))
 table (bsz int)
 
-facts (canon [1 2 3 5 8])
-facts (nest [[1 2] ["x" 3.5] []])
+rule (canon [1 2 3 5 8])
+rule (nest [[1 2] ["x" 3.5] []])
 
 ;; a multi-level tree (forces branch nodes, not just one leaf)
 rule (canon l) --> (big [l ... l ... l ... l ... l ... l ... l ... l ...

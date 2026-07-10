@@ -181,7 +181,7 @@ machinery:
    `Daemon::addTuple`, daemon.h:253-260) generalised to
    `(add-batch REL ((v …) …))` and `(del-batch REL ((v …) …))`. This is the
    W8/editor case. The .so bake cost is fine at this scale (it is how inline
-   `facts` already work); past a few thousand tuples it is not (the known
+   ground rules already work); past a few thousand tuples it is not (the known
    ~10k inline-facts ceiling) — bulk client data enters via transport 3
    (CSV→root conversion, or an existing DB).
 2. **Bin-backed (bulk, layer-owned).** The payload is an ordinary **mini bin
@@ -1349,6 +1349,13 @@ Even though aggregation ships later, these choices in the early milestones avoid
   at the reload/iteration-0 boundary, not just mid-run.
 - **Termination invariant** (§6.5): presence transitions, not count changes.
 - **Struct id stability** (§7).
+- **Demand supplementaries are DRed-transparent** (2026-07-10,
+  docs/demand.md §5): the `$sup...` relations the demand transform emits
+  for unkeyable answer-return joins are ordinary derived tables with
+  ordinary rules — they take counters, retract, and re-derive like any
+  relation, and their deletion deltas run the same keyed plans that make
+  derivation cheap.  No special-casing anywhere in DRed^c; on
+  compression replay they regenerate (derived, never pinned).
 - **`C` lifecycle correctness:** after the positive phase, any candidate still at `(0,0)`
   that was not rebuilt is physically removed; anything rebuilt has a positive count and
   stays. (In the reseed formulation of §4.2, `rec==0` candidates are removed at reseed

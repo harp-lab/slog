@@ -19,7 +19,7 @@ table (bigger pset)
 table (present int)
 table (n int)
 
-facts (s {5 2 8})
+rule (s {5 2 8})
 
 rule (s x) --> (bigger {7 x ...})
 rule (s x) (= a (st_mem0 x 5)) --> (present a)
@@ -88,7 +88,7 @@ include "lib/map.slog"
 table (m pmap)
 table (v int)
 
-facts (m {1:10 3:30})
+rule (m {1:10 3:30})
 
 rule (m x) --> (updated {1:99 x ...})
 rule (m x) (= w (mp_get x 3)) --> (v w)

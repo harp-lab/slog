@@ -8,7 +8,7 @@ table (tok int str)
 table (len int)
 table (accepted int)
 
-facts
+rule
 (tok 0 "(") (tok 1 "n") (tok 2 "+") (tok 3 "n") (tok 4 ")") (tok 5 "*") (tok 6 "n")
 (len 7)
 
@@ -25,5 +25,5 @@ rule (parse "F" i (+ i 1)) <-- (tok i "n")
 rule (parse "F" i (+ j 1)) <-- (tok i "(") (parse "E" (+ i 1) j) (tok j ")")
 
 ;; seed: constructing the demand struct IS asking
-facts (parse "E" 0)
+rule (parse "E" 0)
 rule (parse "E" 0 n) (len n) --> (accepted n)

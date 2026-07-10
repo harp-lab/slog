@@ -9,7 +9,7 @@ table (holds box)
 table (unbox int)
 table (final int)
 
-facts
+rule
 (n 0)
 
 ;; stratum 1: recursive, bounded

@@ -27,7 +27,7 @@ table (o3 int int)
 table (h int)
 table (q int)
 
-facts
+rule
 (a 1)
 (a 10)
 (b 2)

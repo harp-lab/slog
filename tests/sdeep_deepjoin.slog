@@ -9,7 +9,7 @@ table (right dnode)
 table (agree int str str)
 table (neq dnode dnode)
 
-facts
+rule
 (left (dnode (dleaf 1) "l1"))
 (left (dnode (dleaf 2) "l2"))
 (right (dnode (dleaf 1) "r1"))

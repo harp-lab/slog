@@ -7,7 +7,7 @@ table (reach int int)
 table (samecycle int int)
 table (from1 int)
 
-facts
+rule
 (edge 1 2)
 (edge 2 3)
 (edge 3 1)

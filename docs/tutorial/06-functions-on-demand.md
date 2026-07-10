@@ -65,14 +65,14 @@ list-sum, in full:
 ```
 demand (sum list) int
 
-facts (sum [] 0)
-facts (sum [x xs ...] (+ (sum xs) x))
+rule (sum [] 0)
+rule (sum [x xs ...] (+ (sum xs) x))
 ```
 
 Two clauses: the sum of the empty list is 0; the sum of `[x xs ...]`
 is `x` plus the sum of the rest. (Base cases with variables in them are
-written as `facts` — patterns to be answered when a matching demand
-appears.) That's the entire implementation; memoization included.
+written as body-less rules — patterns to be answered when a matching
+demand appears.) That's the entire implementation; memoization included.
 
 ## Passing functions around
 
@@ -80,8 +80,8 @@ Slog programs can contain `lambda` terms, which become ordinary values:
 
 ```
 demand (map2 clo list) list
-facts (map2 f [] [])
-facts (map2 f [x xs ...] [(f x) (map2 f xs) ...])
+rule (map2 f [] [])
+rule (map2 f [x xs ...] [(f x) (map2 f xs) ...])
 
 table (out list)
 rule (= r (map2 (lambda (n) (* n 10)) [1 2 3])) --> (out r)
@@ -99,7 +99,7 @@ rules are the textbook inference rules) for how far this goes.
 |---|---|---|
 | declare | `demand (fib int) int` | inputs, then answer type; computed only when asked |
 | define | `rule (fib n (+ (fib (- n 1)) (fib (- n 2)))) <-- (< 1 n)` | conclusion-first reads like a definition; nested calls = their answers |
-| base case | `facts (sum [] 0)` | pattern-facts answer matching demands |
+| base case | `rule (sum [] 0)` | body-less rules answer matching demands |
 | call | `(= r (fib 10))` in any rule body | ask + bind the answer |
 | multiple answers | — | a demand may answer zero, one, or many times; absence = failure |
 | memoization | — | each distinct call computed once, automatically |

@@ -10,7 +10,7 @@ table (nrem int int int)    ;; (-A) % B
 table (dquot int int int)   ;; A / (-B)
 table (drem int int int)    ;; A % (-B)
 
-facts
+rule
 (d 7 2)
 (d 9 4)
 (d 8 2)

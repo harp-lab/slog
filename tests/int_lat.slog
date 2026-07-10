@@ -15,7 +15,7 @@ table (seed int int)
 table (peak int mx)
 table (low int mn)
 
-facts
+rule
 (seed 1 5)
 (seed 2 7)
 (seed 3 0)

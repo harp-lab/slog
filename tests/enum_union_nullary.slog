@@ -7,7 +7,7 @@ table (lamp str light)
 table (lit str)
 table (dark str)
 
-facts
+rule
 (lamp "porch" (on))
 (lamp "cellar" (off))
 (lamp "hall" (on))

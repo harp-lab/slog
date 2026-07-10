@@ -14,7 +14,7 @@ table (mu int card)
 table (mucnt int int card)
 table (unique int)
 
-facts
+rule
 (bind 1 100) (bind 2 100) (bind 3 200)
 (step 1 2) (step 2 3)
 

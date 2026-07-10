@@ -98,7 +98,7 @@
      ";; Detected system facts, included by config/default-config.slog.\n"
      "table (sys_cores int)\n"
      "table (sys_ram_mb int)\n"
-     "facts\n"
+     "rule\n"
      (format "(sys_cores ~a)\n" cores)
      (format "(sys_ram_mb ~a)\n" ram)))
   (define f (build-path config-dir "system.slog"))

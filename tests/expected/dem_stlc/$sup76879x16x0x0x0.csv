@@ -1,0 +1,4 @@
+(ck (_enum "mt") (app (lam "f" (arrow (_enum "tint") (_enum "tint")) (app (var "f") (num 1))) (lam "x" (_enum "tint") (var "x"))))   (lam "f" (arrow (_enum "tint") (_enum "tint")) (app (var "f") (num 1)))   (lam "x" (_enum "tint") (var "x"))   (_enum "mt")   
+(ck (_enum "mt") (app (num 3) (num 4)))   (num 3)   (num 4)   (_enum "mt")   
+(ck (ext (_enum "mt") "f" (arrow (_enum "tint") (_enum "tint"))) (app (var "f") (num 1)))   (var "f")   (num 1)   (ext (_enum "mt") "f" (arrow (_enum "tint") (_enum "tint")))   
+(ck (ext (ext (_enum "mt") "x" (_enum "tint")) "y" (arrow (_enum "tint") (_enum "tint"))) (app (var "y") (var "x")))   (var "y")   (var "x")   (ext (ext (_enum "mt") "x" (_enum "tint")) "y" (arrow (_enum "tint") (_enum "tint")))   

@@ -19,7 +19,7 @@ table (dup int int)
 table (tri int int int)
 table (allsame int)
 
-facts
+rule
 (edge 1 1)
 (edge 1 2)
 (edge 2 2)

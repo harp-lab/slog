@@ -12,7 +12,7 @@ union (val lam)
 table (flow expr)
 table (vals val)
 
-facts
+rule
 (raw 1)
 (raw 2)
 (raw "oops")

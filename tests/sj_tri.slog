@@ -17,7 +17,7 @@ table (sedge int int)
 table (tedge int int int)
 table (tri int int int)
 
-facts
+rule
 (redge 1 2) (redge 3 2) (redge 6 2) (redge 7 2)
 (sedge 2 4) (sedge 2 5)
 (tedge 4 1 7) (tedge 5 3 9) (tedge 8 6 1)

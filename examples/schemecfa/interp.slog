@@ -23,19 +23,19 @@ demand (lookup str list) val
 
 ;; ---- atoms ----
 
-facts (eval (num n) c (numval))
-facts (eval (boolean b) c (boolval b))
-facts (eval (sym s) c (symval s))
-facts (eval (lambda xs eb) c (closure (lambda xs eb) c))
-facts (eval (ref x) c (lookup x c))
+rule (eval (num n) c (numval))
+rule (eval (boolean b) c (boolval b))
+rule (eval (sym s) c (symval s))
+rule (eval (lambda xs eb) c (closure (lambda xs eb) c))
+rule (eval (ref x) c (lookup x c))
 
 rule (lookup x c v) <-- (binding x c v)
 rule (lookup x c (prim x)) <-- (primitive x)
 
 ;; ---- arguments evaluate pointwise ----
 
-facts (eval_args [] c [])
-facts (eval_args [e es ...] c [(eval e c) (eval_args es c) ...])
+rule (eval_args [] c [])
+rule (eval_args [e es ...] c [(eval e c) (eval_args es c) ...])
 
 ;; ---- closure application: tick, bind, re-bind frees, run the body ----
 
@@ -78,13 +78,13 @@ rule (eval (app ef es) c v)
 ;; ---- if: only #f is false, and the untaken branch is never demanded ----
 
 table (scheme_false val)
-facts (scheme_false (boolval (ff)))
+rule (scheme_false (boolval (ff)))
 
 demand (select_branch val expr expr) expr
-facts (select_branch (boolval (ff)) e2 e3 e3)
+rule (select_branch (boolval (ff)) e2 e3 e3)
 rule (select_branch tv e2 e3 e2) <-- (scheme_false fv) (/= tv fv)
 
-facts (eval (if e1 e2 e3) c (eval (select_branch (eval e1 c) e2 e3) c))
+rule (eval (if e1 e2 e3) c (eval (select_branch (eval e1 c) e2 e3) c))
 
 ;; ---- let / letrec bind in the current frame; they differ only in
 ;;      scope (freevars.slog) ----
@@ -101,22 +101,22 @@ table (arithmetic_op str)
 table (comparison_op str)
 table (primitive str)
 table (any_bool bool)
-facts (arithmetic_op "+") (arithmetic_op "-") (arithmetic_op "*")
-facts (comparison_op "<") (comparison_op "<=") (comparison_op "=")
-facts (primitive "eq?") (primitive "not")
-facts (any_bool (tt)) (any_bool (ff))
+rule (arithmetic_op "+") (arithmetic_op "-") (arithmetic_op "*")
+rule (comparison_op "<") (comparison_op "<=") (comparison_op "=")
+rule (primitive "eq?") (primitive "not")
+rule (any_bool (tt)) (any_bool (ff))
 rule ((arithmetic_op op) | (comparison_op op)) --> (primitive op)
 
 demand (delta str list) val
 rule (delta op [(numval) (numval)] (numval)) <-- (arithmetic_op op)
 rule (delta op [(numval) (numval)] (boolval b)) <-- (comparison_op op) (any_bool b)
-facts (delta "not" [(boolval (ff))] (boolval (tt)))
+rule (delta "not" [(boolval (ff))] (boolval (tt)))
 rule (delta "not" [v] (boolval (ff))) <-- (scheme_false fv) (/= v fv)
 
 ;; eq? is precise exactly where the abstraction is exact
-facts (delta "eq?" [(symval s) (symval s)] (boolval (tt)))
-facts (delta "eq?" [(boolval b) (boolval b)] (boolval (tt)))
-facts (delta "eq?" [(prim op) (prim op)] (boolval (tt)))
+rule (delta "eq?" [(symval s) (symval s)] (boolval (tt)))
+rule (delta "eq?" [(boolval b) (boolval b)] (boolval (tt)))
+rule (delta "eq?" [(prim op) (prim op)] (boolval (tt)))
 rule (delta "eq?" [v1 v2] (boolval (ff))) <-- (/= v1 v2)
 rule (delta "eq?" [(numval) (numval)] (boolval b)) <-- (any_bool b)
 rule (delta "eq?" [(closure lm cb) (closure lm cb)] (boolval b)) <-- (any_bool b)

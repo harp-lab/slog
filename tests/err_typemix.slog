@@ -3,7 +3,7 @@
 ;; the well-typed row (21+1) still fires.
 table (thing any)
 table (incremented int)
-facts
+rule
 (thing 21)
 (thing "oops")
 rule (thing X) (= Y (+ X 1)) --> (incremented Y)

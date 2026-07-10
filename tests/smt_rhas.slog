@@ -15,11 +15,11 @@ table (edge int int)
 table (sedge int int int)      ;; a -> b, gated on (ic g) < (ic 3) being sat
 table (reach int iset)
 
-facts (src 1)
-facts (edge 1 2)
-facts (sedge 2 3 1)            ;; 1 < 3 is sat: opens once 2 is reached
-facts (sedge 3 4 5)            ;; 5 < 3 is unsat: never opens
-facts (edge 4 9)               ;; unreachable -- 4 is never reached
+rule (src 1)
+rule (edge 1 2)
+rule (sedge 2 3 1)            ;; 1 < 3 is sat: opens once 2 is reached
+rule (sedge 3 4 5)            ;; 5 < 3 is unsat: never opens
+rule (edge 4 9)               ;; unreachable -- 4 is never reached
 
 ;; each source reaches itself
 rule (src s) (= r (cins (cmap) s)) --> (reach s r)

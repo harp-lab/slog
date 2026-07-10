@@ -41,7 +41,7 @@ root, put this in `reach.slog`:
 table (edge int int)
 table (path int int)
 
-facts
+rule
 (edge 1 2)
 (edge 2 3)
 (edge 3 4)
@@ -86,7 +86,7 @@ table (eval expr stack)
 table (ret val stack)
 table (result val)
 
-facts (program (app (lambda "id" (ref "id")) (lambda "y" (ref "y"))))
+rule (program (app (lambda "id" (ref "id")) (lambda "y" (ref "y"))))
 ```
 
 Then the machine — each rule is one transition:

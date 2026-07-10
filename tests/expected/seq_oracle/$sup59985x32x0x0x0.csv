@@ -1,0 +1,6 @@
+(ol_member (ccons "a" (ccons 2 (ccons "b" (ccons 2.5 (ccons "a" (_enum "cnil")))))) "b")   "a"   (ccons 2 (ccons "b" (ccons 2.5 (ccons "a" (_enum "cnil")))))   "b"   
+(ol_member (ccons "a" (ccons 2 (ccons "b" (ccons 2.5 (ccons "a" (_enum "cnil")))))) 2)   "a"   (ccons 2 (ccons "b" (ccons 2.5 (ccons "a" (_enum "cnil")))))   2   
+(ol_member (ccons 1 (ccons 2 (_enum "cnil"))) 2)   1   (ccons 2 (_enum "cnil"))   2   
+(ol_member (ccons 1 (ccons 2 (ccons 3 (ccons 4 (ccons 5 (ccons 6 (ccons 7 (ccons 8 (ccons 9 (ccons 10 (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil"))))))))))))))))))))))) 2)   1   (ccons 2 (ccons 3 (ccons 4 (ccons 5 (ccons 6 (ccons 7 (ccons 8 (ccons 9 (ccons 10 (ccons 11 (ccons 12 (ccons 13 (ccons 14 (ccons 15 (ccons 16 (ccons 17 (ccons 18 (ccons 19 (ccons 20 (ccons 21 (ccons 22 (_enum "cnil"))))))))))))))))))))))   2   
+(ol_member (ccons 2 (ccons "b" (ccons 2.5 (ccons "a" (_enum "cnil"))))) "b")   2   (ccons "b" (ccons 2.5 (ccons "a" (_enum "cnil"))))   "b"   
+(ol_member (ccons 3 (ccons 1 (ccons 2 (_enum "cnil")))) 2)   3   (ccons 1 (ccons 2 (_enum "cnil")))   2   

@@ -4,14 +4,14 @@
 ;; the answer position of a judgment's own head -- one-rule fib.
 
 demand (sq int) int
-facts (sq n (* n n))     ;; a judgment fact: the gate binds n
+rule (sq n (* n n))     ;; a judgment fact: the gate binds n
 
 demand (fib int) int
 rule (fib n n) <-- (< n 2)
 rule (fib n (+ (fib (- n 1)) (fib (- n 2)))) <-- (< 1 n)
 
 table (n int)
-facts (n 4) (n 9)
+rule (n 4) (n 9)
 
 ;; composition through an = binding: r = sq(fib(x))
 table (sqfib int int)

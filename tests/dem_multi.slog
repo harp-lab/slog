@@ -5,7 +5,7 @@
 
 demand (split int) int int
 table (num int)
-facts (num 1) (num 2) (num 3)
+rule (num 1) (num 2) (num 3)
 
 rule (split n a b) <-- (num a) (num b) (= n (+ a b))
 

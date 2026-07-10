@@ -7,4 +7,4 @@ table (seen int)
 
 rule (half n m) (seen n) <-- (= m (/ n 2))
 
-facts (half 8) (half 12)
+rule (half 8) (half 12)

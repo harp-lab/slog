@@ -2,7 +2,7 @@ struct (pair int int)
 table (in int int)
 table (out pair)
 
-facts
+rule
 (in 1 2)
 (in 3 4)
 (in 1 2)

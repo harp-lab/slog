@@ -72,9 +72,9 @@ The second run never re-parsed the data — it opened the saved database
 and ran only the new rules against it. Chain `--out-db` onto that run
 too and you have a pipeline of programs, each building on the last.
 This is the right way to work with *large* inputs generally: loading a
-binary database is far faster than compiling a huge `facts` block
-(inline facts are compiled into the program itself, which is fine for
-hundreds of rows and unwise for hundreds of thousands).
+binary database is far faster than compiling a huge block of ground
+rules (inline facts are compiled into the program itself, which is fine
+for hundreds of rows and unwise for hundreds of thousands).
 
 CSV output (`--debug-dir`) is for eyeballing; binary databases
 (`--out-db`/`-d`) are for data.
@@ -89,4 +89,4 @@ CSV output (`--debug-dir`) is for eyeballing; binary databases
 | save | `racket slog.rkt --out-db mydb prog.slog` | write `data/mydb/` |
 | load | `racket slog.rkt -d mydb next.slog` | start from a saved database |
 | inspect | `--debug-dir out/d` / `--sizes` | CSVs per relation / row counts |
-| big data | — | prefer binary databases over giant inline `facts` blocks |
+| big data | — | prefer binary databases over giant blocks of inline ground rules |

@@ -11,8 +11,8 @@ table (isnil int)
 table (edge int int)
 table (swapped list)
 
-facts (input [1 2 3]) (input [])
-facts (edge 1 2)
+rule (input [1 2 3]) (input [])
+rule (edge 1 2)
 
 rule (input [x xs ...]) --> (heads x) (tails xs)
 rule (input l) --> (built [0 l ...])

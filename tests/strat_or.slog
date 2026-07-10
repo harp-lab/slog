@@ -7,7 +7,7 @@ table (b int)
 table (c int)
 table (d int)
 
-facts
+rule
 (src 1)
 (src 2)
 

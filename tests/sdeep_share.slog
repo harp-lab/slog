@@ -1,5 +1,5 @@
 ;; Dedup of struct content across construction routes: a struct written
-;; literally in a facts block vs the same content built from a primitive
+;; literally in a ground rule vs the same content built from a primitive
 ;; computation must intern to the same id.  Also: the same inner struct
 ;; used twice inside one parent.
 
@@ -15,7 +15,7 @@ table (given2 fbox)
 table (computed fbox)
 table (fsame fbox)
 
-facts
+rule
 (viafact (mid3 (leaf3 1) (leaf3 1)))
 (given2 (fbox 1.5))
 

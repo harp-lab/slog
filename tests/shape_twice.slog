@@ -9,7 +9,7 @@ table (parent str str)
 table (gp str str)
 table (ggp str str)
 
-facts
+rule
 (parent "ann" "bob")
 (parent "bob" "cid")
 (parent "cid" "dee")

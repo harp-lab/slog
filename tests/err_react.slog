@@ -3,7 +3,7 @@
 table (d int)
 table (q int)
 table (caught str)
-facts
+rule
 (d 0)
 (d 5)
 rule (d X) (= Y (/ 10 X)) --> (q Y)

@@ -9,7 +9,7 @@ table (circles circle)
 table (circ_r int)
 table (empty_seen int)
 
-facts
+rule
 (drawn (circle 3))
 (drawn (square 4))
 (drawn (circle 5))

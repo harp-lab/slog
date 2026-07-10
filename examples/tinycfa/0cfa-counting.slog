@@ -42,7 +42,7 @@ table (polyvariant str)
 
 demand (eval expr) val
 
-facts (eval (lambda x eb) (lambda x eb))
+rule (eval (lambda x eb) (lambda x eb))
 rule (eval (ref x) v) <-- (store x v)
 rule (eval (app ef ea) v)
  <--
@@ -65,7 +65,7 @@ rule (program e) (eval e v) --> (result v)
 ;; does).  v and w are never bound at all: mu is 0, i.e. absent -- dead
 ;; parameters.
 
-facts
+rule
 (program
  (app (lambda "id" (app (lambda "dummy" (app (ref "id") (lambda "v" (ref "v"))))
                         (app (ref "id") (lambda "w" (ref "w")))))

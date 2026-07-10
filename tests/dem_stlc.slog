@@ -7,20 +7,20 @@ union (tenv (mt) (ext tenv str ty))
 union (tm (num int) (var str) (lam str ty tm) (app tm tm))
 
 demand (lookup tenv str) ty
-facts (lookup (ext env x t) x t)
+rule (lookup (ext env x t) x t)
 rule (lookup (ext env y _) x t) <-- (/= x y) (lookup env x t)
 
 demand (ck tenv tm) ty
-facts (ck env (num i) (tint))
-facts (ck env (var x) (lookup env x))
-facts (ck env (lam x t1 e) (arrow t1 (ck (ext env x t1) e)))
+rule (ck env (num i) (tint))
+rule (ck env (var x) (lookup env x))
+rule (ck env (lam x t1 e) (arrow t1 (ck (ext env x t1) e)))
 rule (ck env (app e1 e2) t2)
  <--
      (ck env e1 (arrow t1 t2))
      (ck env e2 t1)
 
 table (prog tm)
-facts
+rule
 (prog (app (lam "f" (arrow (tint) (tint)) (app (var "f") (num 1)))
            (lam "x" (tint) (var "x"))))
 (prog (app (num 3) (num 4)))

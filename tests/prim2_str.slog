@@ -10,7 +10,7 @@ table (bang str str)        ;; A ++ "!"
 table (pre str str)         ;; substr S 0 5
 table (suf str str)         ;; substr S 6 11 (end = size, both readings agree)
 
-facts
+rule
 (w "foo" "bar")
 (w "" "xyz")
 (w "a" "a")

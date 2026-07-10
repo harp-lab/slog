@@ -7,7 +7,7 @@ enum (color red green blue)
 table (fav str color)
 table (redfans str)
 
-facts
+rule
 (fav "tom" (red))
 (fav "amy" (green))
 

@@ -38,8 +38,8 @@ $EDITOR config/config.slog
 
 ```
 include "default-config.slog"
-facts (override_int "threads" 4)
-facts (override_str "opt" "2")
+rule (override_int "threads" 4)
+rule (override_str "opt" "2")
 ```
 
 Or delete the `include` line and define the `setting_int` / `setting_str`

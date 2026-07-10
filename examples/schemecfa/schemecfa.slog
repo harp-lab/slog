@@ -3,13 +3,13 @@
 
 include "counting.slog"
 
-facts (mlimit 2)
+rule (mlimit 2)
 
 ;; P1 -- factorial.  Comparisons on the abstract number answer both
 ;; ways, so the recursion runs forever abstractly; m = 2 keeps the top
 ;; two unwindings' frames unique (unique_binding on n there), then the
 ;; self-loop frame [rec rec] goes to inf (summarized_binding).
-facts
+rule
 (program
  (letrec "fac"
    (lambda ["n"]
@@ -23,7 +23,7 @@ facts
 ;; P2 -- two-parameter higher-order call: twice applies its argument
 ;; closure at two distinct sites, so each site is its own frame and
 ;; every binding in the program stays unique.
-facts
+rule
 (program
  (let "twice"
    (lambda ["f" "x"] (app (ref "f") [(app (ref "f") [(ref "x")])]))
@@ -36,7 +36,7 @@ facts
 ;; the program's one polyvariant_flow address (< yields both booleans),
 ;; yet it is still a unique_binding.  eq? of a number and a boolean is
 ;; precisely false.
-facts
+rule
 (program
  (let "call2"
    (lambda ["g" "a" "b"] (app (ref "g") [(ref "a") (ref "b")]))
@@ -48,7 +48,7 @@ facts
 ;; app inside it; m = 2 still separates id's frames, so each symbol
 ;; stays a must_value and the eq? is precisely false.  With (mlimit 1)
 ;; the two flows merge and the result blurs to both booleans.
-facts
+rule
 (program
  (let "id" (lambda ["z"] (ref "z"))
    (let "wrap" (lambda ["w"] (app (ref "id") [(ref "w")]))
@@ -58,7 +58,7 @@ facts
 
 ;; P5 -- branch sensitivity: the test is decided, so the dead branch
 ;; never shows up in reachable_expr.
-facts
+rule
 (program
  (if (app (ref "not") [(boolean (ff))])
      (sym "live")
@@ -67,7 +67,7 @@ facts
 ;; P6 -- closure allocation under recursion: the escaping lambda is
 ;; born in three abstract frames; the first two are unique concrete
 ;; objects (unique_closure), the self-loop frame's is summarized.
-facts
+rule
 (program
  (letrec "loop"
    (lambda ["i"]

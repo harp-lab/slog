@@ -75,7 +75,7 @@ demand (eval expr ctx) val
 ;; a lambda evaluates to a closure over the frame it is evaluated in; the
 ;; flat-env invariant (its free variables are bound in that frame) holds
 ;; inductively because invocation re-binds free variables below
-facts (eval (lambda x eb) c (clo (lambda x eb) c))
+rule (eval (lambda x eb) c (clo (lambda x eb) c))
 
 ;; a reference reads the current frame -- parameter or free, it lives here
 rule (eval (ref x) c v) <-- (store x c v)
@@ -180,7 +180,7 @@ rule (eval_ans (eval (lambda x eb) c) vc) (nu c k) (= k (inf)) --> (manyclo vc)
 ;; and (y1, L2) is bound infinitely often -- always to the SAME abstract
 ;; closure.  Fact-counting sees one store fact; the event count says inf:
 ;;   bindblur(y1, L2), pinned(x1, L0), pinned(y1, L1).  No result (loops).
-facts
+rule
 (program
  (app (lambda "x1" (app (ref "x1") (ref "x1")))
       (lambda "y1" (app (ref "y1") (ref "y1")))))
@@ -191,7 +191,7 @@ facts
 ;; bound twice -- both times to the SAME closure (clo (lambda i2) (main)).
 ;;   bindblur(i2, Lc) with nu(Lc) = inf; everything else pinned.
 ;;   result: (clo (lambda i2 ...) (main)).
-facts
+rule
 (program
  (app (lambda "g2"
         (app (lambda "f2"
@@ -208,7 +208,7 @@ facts
 ;;                                       many concrete ones: the analysis
 ;;                                       must NOT claim they are equal.
 ;; Also bindblur(y3, Lt), bindblur(y3, Ly); (t3, Lt) is rebound AND poly.
-facts
+rule
 (program
  (app (lambda "x3" (app (ref "x3") (ref "x3")))
       (lambda "y3" (app (lambda "t3" (app (ref "y3") (ref "y3")))
@@ -221,7 +221,7 @@ facts
 ;; Lap), bindblur(r4, Lrr).  The recursive (clo (lambda n4) Lrr) is manyclo
 ;; (rebuilt every iteration), the pre-loop (clo (lambda n4) Lss) uniqueclo.
 ;; Free variable r4 is re-bound across three frames.  No result (loops).
-facts
+rule
 (program
  (app (app (lambda "s4" (app (ref "s4") (ref "s4")))
            (lambda "r4" (lambda "n4" (app (app (ref "r4") (ref "r4"))
@@ -238,7 +238,7 @@ facts
 ;; abstract closures, both with parameter k5) is invoked ONCE at (p5 n5):
 ;; one concrete frame invokes ONE of them, and the count knows it --
 ;; pinned(k5, (p5 n5)) despite two lambdas flowing to the operator.
-facts
+rule
 (program
  (app (lambda "g5"
         (app (lambda "f5"
@@ -257,7 +257,7 @@ facts
 ;; lambdas there ((lambda a6) vs (lambda b6)), so each parameter is bound
 ;; by only one caller's frames: pinned(a6, Ls6) and pinned(b6, Ls6) even
 ;; though the frame count is inf.
-facts
+rule
 (program
  (app (lambda "h6"
         (app (lambda "d6" (app (ref "h6") (lambda "b6" (ref "b6"))))
@@ -269,7 +269,7 @@ facts
 ;; every frame is entered once; EVERYTHING is pinned, every closure
 ;; uniqueclo, and the result is (clo (lambda c7 ...) (main)).  A sound
 ;; counter must not cry inf here.
-facts
+rule
 (program
  (app (app (app (lambda "p7"
                   (lambda "q7"
@@ -284,7 +284,7 @@ facts
 ;; two different frames: the single address (k8, Ls8) genuinely receives
 ;; two concrete bindings (and two birth-distinct closures of (lambda m8)):
 ;; rebound(k8, Ls8) and poly(k8, Ls8) -- correctly fully blurred.
-facts
+rule
 (program
  (app (lambda "h8"
         (app (lambda "d8" (app (ref "h8")
@@ -298,7 +298,7 @@ facts
 ;; pinned(s9, Lo9) -- where a 0CFA would merge them into one address whose
 ;; true count is 2.  Context-sensitivity SHARPENS counts; result is
 ;; (clo (lambda z9 ...) (main)).
-facts
+rule
 (program
  (app (app (lambda "f9" (lambda "x9" (app (ref "f9")
                                           (app (ref "f9") (ref "x9")))))

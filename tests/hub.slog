@@ -1,7 +1,7 @@
 table (edge int int)
 table (path int int)
 
-facts
+rule
 (edge 0 1)
 (edge 1 0)
 (edge 0 2)

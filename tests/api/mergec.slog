@@ -5,4 +5,4 @@
 ;; relations imported at runtime).
 
 table (onlyc int int)
-facts (onlyc 1 2) (onlyc 3 4)
+rule (onlyc 1 2) (onlyc 3 4)

@@ -11,7 +11,7 @@ table (vals float)
 table (inner tag)
 table (fourth float)
 
-facts
+rule
 (in 1 "alpha" 1.5)
 (in 2 "beta" 2.25)
 

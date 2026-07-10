@@ -2,7 +2,7 @@
 ;; fact instead of crashing the daemon; the deduction (bad) is abandoned.
 table (d int)
 table (bad int)
-facts
+rule
 (d 0)
 (d 4)
 rule (d X) (= Y (/ 100 X)) --> (bad Y)

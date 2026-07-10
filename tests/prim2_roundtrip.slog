@@ -8,7 +8,7 @@ table (rti int int)       ;; N -> toint(tofloat(N)) : identity on ints
 table (rtf float float)   ;; F -> tofloat(toint(F)) : truncation
 table (tineg float int)   ;; toint of a negative float truncates toward zero
 
-facts
+rule
 (i 0)
 (i 7)
 (i 123456)

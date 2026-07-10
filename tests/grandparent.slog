@@ -1,7 +1,7 @@
 table (parent int int)
 table (grandparent int int)
 
-facts
+rule
 (parent 1 2)
 (parent 2 3)
 (parent 3 4)

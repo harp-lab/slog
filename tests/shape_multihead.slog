@@ -16,7 +16,7 @@ table (t2 int int)
 table (t3 pr)
 table (t4 int int int)
 
-facts
+rule
 (src 1 2)
 (src 3 4)
 

@@ -9,11 +9,11 @@ union (tree leaf node)
 
 demand (parse2 int) int tree
 table (tok2 int str)
-facts (tok2 0 "a") (tok2 1 "a") (tok2 2 "a")
+rule (tok2 0 "a") (tok2 1 "a") (tok2 2 "a")
 
 rule (parse2 i (+ i 1) (leaf i)) <-- (tok2 i "a")
 rule (parse2 i k (node t1 t2)) <-- (parse2 i j t1) (parse2 j k t2)
 
-facts (parse2 0)
+rule (parse2 0)
 table (full tree)
 rule (parse2 0 3 t) --> (full t)

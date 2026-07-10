@@ -8,7 +8,7 @@ table (c int)
 table (d int)
 table (e int)
 
-facts
+rule
 (a 1)
 (a 2)
 

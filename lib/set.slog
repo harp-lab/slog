@@ -25,12 +25,12 @@ union (pset (pempty) (pleaf int) (pbranch int int pset pset))
 ;; ---- bit helpers ------------------------------------------------------
 ;; highest set bit of x >= 1, as a power of two
 demand (st_hsb int) int
-facts (st_hsb 1 1)
+rule (st_hsb 1 1)
 rule (st_hsb x (* 2 (st_hsb (/ x 2)))) <-- (< 1 x)
 
 ;; clear mask bit m and everything below it: keep k's bits strictly above
 demand (st_msk int int) int
-facts (st_msk k m (* (/ k (* 2 m)) (* 2 m)))
+rule (st_msk k m (* (/ k (* 2 m)) (* 2 m)))
 
 ;; ---- join: two tries with representative keys whose prefixes differ --
 demand (st_join int pset int pset) pset
@@ -45,8 +45,8 @@ rule (st_join p0 t0 p1 t1 (pbranch (st_msk p0 (st_hsb (bxor p0 p1)))
 
 ;; ---- insert -----------------------------------------------------------
 demand (st_ins pset int) pset
-facts (st_ins (pempty) k (pleaf k))
-facts (st_ins (pleaf k) k (pleaf k))
+rule (st_ins (pempty) k (pleaf k))
+rule (st_ins (pleaf k) k (pleaf k))
 rule (st_ins (pleaf j) k r) <-- (/= j k) (st_join k (pleaf k) j (pleaf j) r)
 rule (st_ins (pbranch p m l r) k (pbranch p m (st_ins l k) r))
  <-- (= p (st_msk k m)) (< (band k m) 1)
@@ -58,14 +58,14 @@ rule (st_ins (pbranch p m l r) k res)
 ;; ---- membership -------------------------------------------------------
 ;; partial: an answer 1 iff present (absence = no answer)
 demand (st_mem pset int) int
-facts (st_mem (pleaf k) k 1)
+rule (st_mem (pleaf k) k 1)
 rule (st_mem (pbranch p m l r) k a) <-- (< (band k m) 1) (st_mem l k a)
 rule (st_mem (pbranch p m l r) k a) <-- (> (band k m) 0) (st_mem r k a)
 
 ;; total: 1 present / 0 absent, by structural decision
 demand (st_mem0 pset int) int
-facts (st_mem0 (pempty) k 0)
-facts (st_mem0 (pleaf k) k 1)
+rule (st_mem0 (pempty) k 0)
+rule (st_mem0 (pleaf k) k 1)
 rule (st_mem0 (pleaf j) k 0) <-- (/= j k)
 rule (st_mem0 (pbranch p m l r) k 0) <-- (/= p (st_msk k m))
 rule (st_mem0 (pbranch p m l r) k a)
@@ -75,15 +75,15 @@ rule (st_mem0 (pbranch p m l r) k a)
 
 ;; ---- smart branch: collapse an empty child (keeps deletion canonical) -
 demand (st_bld int int pset pset) pset
-facts (st_bld p m (pempty) r r)
-facts (st_bld p m l (pempty) l)
+rule (st_bld p m (pempty) r r)
+rule (st_bld p m l (pempty) l)
 rule (st_bld p m l r (pbranch p m l r))
  <-- (= e (pempty)) (/= l e) (/= r e)
 
 ;; ---- delete -----------------------------------------------------------
 demand (st_del pset int) pset
-facts (st_del (pempty) k (pempty))
-facts (st_del (pleaf k) k (pempty))
+rule (st_del (pempty) k (pempty))
+rule (st_del (pleaf k) k (pempty))
 rule (st_del (pleaf j) k (pleaf j)) <-- (/= j k)
 rule (st_del (pbranch p m l r) k (pbranch p m l r)) <-- (/= p (st_msk k m))
 rule (st_del (pbranch p m l r) k res)
@@ -93,12 +93,12 @@ rule (st_del (pbranch p m l r) k res)
 
 ;; ---- union ------------------------------------------------------------
 demand (st_union pset pset) pset
-facts (st_union (pempty) t t)
-facts (st_union s (pempty) s)
+rule (st_union (pempty) t t)
+rule (st_union s (pempty) s)
 rule (st_union (pleaf k) t r) <-- (st_ins t k r)
 rule (st_union s (pleaf k) r) <-- (st_ins s k r)
 ;; same prefix and mask: union pointwise
-facts (st_union (pbranch p m l r) (pbranch p m u v)
+rule (st_union (pbranch p m l r) (pbranch p m u v)
                 (pbranch p m (st_union l u) (st_union r v)))
 ;; s's mask higher (s branches above t): t fits inside one side of s...
 rule (st_union (pbranch p m l r) (pbranch q n u v)
@@ -128,8 +128,8 @@ rule (st_union (pbranch p m l r) (pbranch q m u v) res)
 
 ;; ---- difference (s minus t) ------------------------------------------
 demand (st_diff pset pset) pset
-facts (st_diff s (pempty) s)
-facts (st_diff (pempty) t (pempty))
+rule (st_diff s (pempty) s)
+rule (st_diff (pempty) t (pempty))
 rule (st_diff s (pleaf k) r) <-- (st_del s k r)
 rule (st_diff (pleaf k) t (pleaf k)) <-- (st_mem0 t k 0)
 rule (st_diff (pleaf k) t (pempty)) <-- (st_mem0 t k 1)
@@ -160,10 +160,10 @@ rule (st_diff (pbranch p m l r) (pbranch q m u v) (pbranch p m l r))
 
 ;; ---- size, and building from a bracket list ---------------------------
 demand (st_size pset) int
-facts (st_size (pempty) 0)
-facts (st_size (pleaf k) 1)
-facts (st_size (pbranch p m l r) (+ (st_size l) (st_size r)))
+rule (st_size (pempty) 0)
+rule (st_size (pleaf k) 1)
+rule (st_size (pbranch p m l r) (+ (st_size l) (st_size r)))
 
 demand (st_fromlist list) pset
-facts (st_fromlist [] (pempty))
-facts (st_fromlist [x xs ...] (st_ins (st_fromlist xs) x))
+rule (st_fromlist [] (pempty))
+rule (st_fromlist [x xs ...] (st_ins (st_fromlist xs) x))

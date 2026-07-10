@@ -9,13 +9,13 @@ rule (apply (addk k) n r) <-- (= r (+ n k))
 rule (apply (dbl) n r) <-- (= r (+ n n))
 
 demand (map clo list) list
-facts (map f [] [])
+rule (map f [] [])
 rule (map f [x xs ...] [y ys ...]) <-- (apply f x y) (map f xs ys)
 
 table (input list)
 table (bumped list)
 table (doubled list)
-facts (input [1 2 3])
+rule (input [1 2 3])
 
 rule (input l) (map (addk 10) l r) --> (bumped r)
 rule (input l) (map (dbl) l r) --> (doubled r)

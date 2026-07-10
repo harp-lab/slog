@@ -7,7 +7,7 @@ table (eb int int)
 table (reacha int)
 table (reachb int)
 
-facts
+rule
 (ea 1 2)
 (ea 3 4)
 (ea 5 6)

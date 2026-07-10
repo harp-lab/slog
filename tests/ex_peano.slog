@@ -14,7 +14,7 @@ table (padd nat nat nat)
 table (sum int int int)
 table (check str)
 
-facts
+rule
 (count 0)
 (num 0 (z))
 

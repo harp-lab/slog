@@ -8,7 +8,7 @@ table (consec int int)   ;; rows of p with Y = X+1
 table (dbl int int)      ;; rows of p with Y = 2*X
 table (fixp int int)     ;; X where X+1 = 2*X
 
-facts
+rule
 (p 0 1)
 (p 1 2)
 (p 2 4)

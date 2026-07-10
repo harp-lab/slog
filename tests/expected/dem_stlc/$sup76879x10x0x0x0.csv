@@ -1,0 +1,1 @@
+(lookup (ext (ext (_enum "mt") "x" (_enum "tint")) "y" (arrow (_enum "tint") (_enum "tint"))) "x")   (ext (_enum "mt") "x" (_enum "tint"))   "x"   "y"   

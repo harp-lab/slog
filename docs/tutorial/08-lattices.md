@@ -12,14 +12,14 @@ lattice (cost (min int #:floor 0))
 table (edge int int int)
 table (dist int cost)          ;; a MAP: node ⟼ least cost
 
-facts
+rule
 (edge 1 2 4)
 (edge 1 3 1)
 (edge 3 2 2)
 (edge 2 4 5)
 (edge 4 1 1)
 
-facts (dist 1 0)
+rule (dist 1 0)
 rule (dist X C) (edge X Y W) --> (dist Y (+ C W))
 ```
 

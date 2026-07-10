@@ -16,7 +16,7 @@ union (expr (lambda str expr) (app expr expr) (ref str))
 union (val lambda)
 table (program expr)
 
-facts (program (app (lambda "id" (ref "id")) (lambda "y" (ref "y"))))
+rule (program (app (lambda "id" (ref "id")) (lambda "y" (ref "y"))))
 ```
 
 Our test subject is `(λid. id)(λy. y)`: apply the identity function to
@@ -34,7 +34,7 @@ demand (eval expr) val
 table (store str val)
 table (result val)
 
-facts (eval (lambda x eb) (lambda x eb))
+rule (eval (lambda x eb) (lambda x eb))
 rule (eval (ref x) v) <-- (store x v)
 rule (eval (app ef ea) v) <-- (eval ef (lambda x eb)) (eval ea va) (eval eb v)
 rule (eval (app ef ea)) (eval ef (lambda x eb)) (eval ea va) --> (store x va)

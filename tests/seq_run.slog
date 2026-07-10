@@ -10,7 +10,7 @@ table (after12 (list int))     ;; the tail strictly after a [1 2] run
 table (contains5 (list int))   ;; membership via the lmem nicety
 table (mid (list int))         ;; [a ... b c ...]: between first and last
 
-facts (doc [1 2 3 1 2]) (doc [5 1 2]) (doc [7]) (doc []) (doc [7 8 9])
+rule (doc [1 2 3 1 2]) (doc [5 1 2]) (doc [7]) (doc []) (doc [7 8 9])
 
 rule (doc l) (= l [_ ... x y _ ...]) --> (pairs x y)
 rule (doc l) (= l [_ ... 1 2 ys ...]) --> (after12 ys)
@@ -25,5 +25,5 @@ rule (doc l) (= l [_ ... 7 y _ ...]) --> (adj7 y)
 ;; ...and a BOUND-variable run element
 table (key int)
 table (adjkey int int)
-facts (key 1) (key 8)
+rule (key 1) (key 8)
 rule (key k) (doc l) (= l [_ ... k y _ ...]) --> (adjkey k y)

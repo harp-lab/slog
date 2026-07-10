@@ -65,7 +65,7 @@ extern smt (smt_qsat formula) int
 ;; The user-facing wrapper: codes become verdict values.
 demand (smt_check formula) verdict
 table (smt_vcode int verdict)
-facts (smt_vcode 0 (unknown)) (smt_vcode 1 (sat)) (smt_vcode 2 (unsat))
+rule (smt_vcode 0 (unknown)) (smt_vcode 1 (sat)) (smt_vcode 2 (unsat))
 rule (= C (smt_qsat F)) (smt_vcode C V) --> (smt_check F V)
 
 ;; Enumeration views over everything checked (post-hoc; asking is smt_check's

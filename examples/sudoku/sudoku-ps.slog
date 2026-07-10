@@ -16,11 +16,11 @@
 ;; bitmask well-defined.)
 enum (digit d1 d2 d3 d4 d5 d6 d7 d8 d9)
 table (dig digit)                     ;; the 9 members, to range over
-facts (dig d1)(dig d2)(dig d3)(dig d4)(dig d5)(dig d6)(dig d7)(dig d8)(dig d9)
+rule (dig d1)(dig d2)(dig d3)(dig d4)(dig d5)(dig d6)(dig d7)(dig d8)(dig d9)
 
 ;; ---- geometry: identical to sudoku.slog (int cells 0..80) ----------
 table (idx int)
-facts (idx 0)
+rule (idx 0)
 rule (idx I) (< I 80) (= J (+ I 1)) --> (idx J)
 table (cellrc int int int int int)    ;; cell, row, col, band-row, band-col
 rule (idx I) (= R (/ I 9)) (= C (% I 9)) (= BR (/ R 3)) (= BC (/ C 3))

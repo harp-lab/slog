@@ -10,7 +10,7 @@ table (both node int int)
 table (samepair node)
 table (lefts int)
 
-facts
+rule
 (t (node (leaf2 1) (leaf2 2)))
 (t (node (leaf2 3) (leaf2 3)))
 

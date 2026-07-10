@@ -11,11 +11,11 @@
 
 ;; ---- the 81 cell indices 0..80, and the 9 digits, as counting chains ----
 table (idx int)
-facts (idx 0)
+rule (idx 0)
 rule (idx I) (< I 80) (= J (+ I 1)) --> (idx J)
 
 table (digit int)
-facts (digit 1)
+rule (digit 1)
 rule (digit D) (< D 9) (= E (+ D 1)) --> (digit E)
 
 ;; ---- coordinates of each cell.  row = i/9, col = i%9.  The 3x3 box is
@@ -41,7 +41,7 @@ rule (cellrc A _ _ BR BC) (cellrc B _ _ BR BC) (/= A B) --> (peer A B)   ;; same
 ;; 9 columns, 9 boxes).  Generated: grouping 9 cells into one tuple
 ;; is an aggregation, which a monotone language cannot derive.
 table (unitcells int int int int int int int int int int)
-facts
+rule
 (unitcells 0 0 1 2 3 4 5 6 7 8)
 (unitcells 1 9 10 11 12 13 14 15 16 17)
 (unitcells 2 18 19 20 21 22 23 24 25 26)

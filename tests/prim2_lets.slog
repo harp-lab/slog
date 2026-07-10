@@ -6,7 +6,7 @@ table (chain int int int)   ;; (A, B=A+1, C=B*B)
 table (ooo int int)         ;; lets textually reversed: C=B*B before B=A+2
 table (bounded int int)     ;; keep only C=(A+1)^2 < 30
 
-facts
+rule
 (n 0)
 (n 1)
 (n 2)

@@ -5,7 +5,7 @@ table (flag str any)
 table (yes str)
 table (inverted str any)
 
-facts
+rule
 (flag "a" true)
 (flag "b" false)
 

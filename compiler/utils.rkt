@@ -47,7 +47,7 @@
 
 ;; Monotonic counter so generated names are guaranteed unique within a compile.
 ;; (The random suffix alone collides via the birthday paradox once a program has
-;; a few hundred generated names -- e.g. a large `facts` block.)
+;; a few hundred generated names -- e.g. a large block of ground rules.)
 (define gensymb-counter 0)
 
 (define (gensymb s)

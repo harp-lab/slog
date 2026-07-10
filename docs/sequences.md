@@ -347,17 +347,17 @@ splice-anywhere is symmetric between patterns and construction.
     idiom (`(work l), (= l [a ... b ...]) --> (work a) (work b)` builds a
     canonical partition tree that terminates by dedup).
 
-    **Recipe for demand recursion over splits** (measured 2026-07-09): the
-    ask direction is log-depth and cheap, but if the recursive ANSWER rule
-    keeps the split inside the pattern, the child-answer delta direction
-    has no index from a slice back to its parent (computed keys have no
-    inverse) — the planner rescans demands and re-slices per pair
-    (~O(n²) lslice kernel calls; 512-wide: 299s).  Materialize the split
-    as a table — `(halves l a b) <-- (work l) (= l [a ... b ...])` — and
-    recurse on the columns of `halves`: the upward joins become indexed
-    column joins (512-wide: 44ms, 6800x; 140x faster than the equivalent
-    fold with 50x fewer fixpoint rounds).  A future slice-decomposition
-    index (the decomp-edges seam, §7) could make the direct form as fast.
+    **Demand recursion over splits is automatically keyed** (2026-07-10):
+    a slice is a computed key with no inverse index, so the child-answer
+    delta direction of a recursive answer rule would rescan demands
+    re-slicing per pair (~O(n²) lslice kernel calls; 512-wide: 299s,
+    measured 2026-07-09).  The demand transform now detects exactly this
+    (and any prim-computed or pattern-field demand key) and emits a
+    supplementary relation — the by-hand fix's `(halves l a b) <--
+    (work l) (= l [a ... b ...])` table, generated as `$sup...` — keying
+    every answer-return join (512-wide: 22ms, identical results;
+    docs/demand.md §5, "supplementaries").  Writing the halves table by
+    hand is no longer needed.
 
   **Direction asymmetry (D16, documented not fixed):** head-side
   `[xs ... ys ...]` concatenates, body-side splits — so cat-of-split is
@@ -530,8 +530,8 @@ direction collapses to a single `lmem` guard — no enumerator, no fan-out.
 The cons-era pattern path — brackets → `cons`/`nil` struct terms → struct
 joins — is deleted from `collections.rkt` (the brace path is untouched).
 `lib/list.slog`'s recursive demand judgments are replaced by thin demand
-wrappers over the native prims (one `facts` line each, e.g.
-`facts (lst_append a b (lcat a b))`) so every existing call site — they are
+wrappers over the native prims (one body-less `rule` line each, e.g.
+`rule (lst_append a b (lcat a b))`) so every existing call site — they are
 relational atoms, not computes — keeps working verbatim, now memoized-native
 instead of O(n) rules.  The cons-based library moves to
 `tests/oracle/list-cons.slog` (renamed constructors, user-declared union) as

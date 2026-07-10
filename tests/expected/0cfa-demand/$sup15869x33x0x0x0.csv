@@ -1,0 +1,4 @@
+(app (ref "y") (ref "y"))   (ref "y")   
+(lambda "y" (app (ref "y") (app (ref "y") (ref "y"))))   (lambda "x" (app (ref "x") (ref "x")))   
+(ref "x")   (ref "x")   
+(ref "y")   (ref "y")   

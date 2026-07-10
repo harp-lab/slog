@@ -1,7 +1,7 @@
 ;; puzzle "hid_a", 17 clues, row-major.
 include "sudoku.slog"
 
-facts
+rule
 (given 14 3)
 (given 16 8)
 (given 17 5)

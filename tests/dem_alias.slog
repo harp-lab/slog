@@ -15,7 +15,7 @@ rule (center (circle p=(pt _ _) _) p) <--
 rule (center (rect (pt x0 y0) (pt x1 y1)) (pt (/ (+ x0 x1) 2) (/ (+ y0 y1) 2))) <--
 
 table (shapes shape)
-facts (shapes (circle (pt 2 4) 1)) (shapes (rect (pt 0 0) (pt 4 6)))
+rule (shapes (circle (pt 2 4) 1)) (shapes (rect (pt 0 0) (pt 4 6)))
 
 ;; alias in a body occurrence's answer pattern: binds the answer AND its
 ;; parts at once

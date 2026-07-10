@@ -21,7 +21,7 @@ table (pmax int)     ;; 2147483648
 table (bigger int)   ;; guard straddling the boundary
 table (roundtrip int) ;; contraction rejoins the seed fact
 
-facts
+rule
 (maxi 2147483647)
 
 rule (maxi M) (= R (+ M 1)) --> (padd R)

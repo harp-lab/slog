@@ -12,13 +12,13 @@ result `C2`. Weighted graph, path costs:
 table (edge int int int)     ;; from, to, weight
 table (dist int int)         ;; node, cost of some path from node 1
 
-facts
+rule
 (edge 1 2 4)
 (edge 1 3 1)
 (edge 3 2 2)
 (edge 2 4 5)
 
-facts (dist 1 0)
+rule (dist 1 0)
 rule (dist X C) (edge X Y W) (= C2 (+ C W)) --> (dist Y C2)
 ```
 
@@ -74,7 +74,7 @@ Strings support `+` (concatenation), `(size s)` (length), and
 table (name str)
 table (greeting str)
 
-facts (name "ada") (name "vera")
+rule (name "ada") (name "vera")
 
 rule (name N) (= G (+ "hello, " N)) --> (greeting G)
 ```

@@ -10,7 +10,7 @@ rule (sq n r) <-- (= r (* n n))
 table (want int)
 table (got int int)
 table (allans int)
-facts (want 5) (want 7)
+rule (want 5) (want 7)
 
 rule (want n) --> (sq n)
 rule (sq_ans (sq n) r) --> (got n r)

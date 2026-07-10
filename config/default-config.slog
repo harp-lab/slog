@@ -40,10 +40,10 @@ rule (sys_cores N) --> (setting_int "build_jobs" N)
 ;; --- optimization mode ---------------------------------------------------
 ;; "tiered" = fast -O0 first run + background -O2 hot-swap; "0" = -O0 only;
 ;; "2" = -O2 only.
-facts (setting_str "opt" "tiered")
+rule (setting_str "opt" "tiered")
 
 ;; --- fixpoint pause budgets (ms) and memory cap -------------------------
-facts
+rule
 (setting_int "max_ms" 8000)
 (setting_int "slice_ms" 500)
 (setting_str "mem_max" "4G")

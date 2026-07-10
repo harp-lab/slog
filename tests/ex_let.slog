@@ -15,7 +15,7 @@ table (ev expr env int)
 table (lookup env str int)
 table (res str int)
 
-facts
+rule
 (root "p1" (elet "x" (lit 3) (add (ref "x") (ref "x"))))
 (root "p2" (elet "x" (lit 2) (elet "y" (add (ref "x") (lit 10)) (add (ref "x") (ref "y")))))
 (root "p3" (elet "x" (lit 1) (elet "x" (add (ref "x") (lit 5)) (ref "x"))))

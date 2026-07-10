@@ -219,4 +219,4 @@ table (t int fc)")
     #rx"struct"
     "lattice (cost (min int))
 demand (f cost) int
-facts (f 3 4)"))
+rule (f 3 4)"))

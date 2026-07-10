@@ -14,11 +14,11 @@ table (edge int int)
 table (gedge int int int)      ;; a -> b, gated on g being reached
 table (reach int iset)         ;; source -> its ascending reached-set
 
-facts (src 1)
-facts (edge 1 2) (edge 2 3)
-facts (gedge 3 4 2)            ;; 3 -> 4 opens once 2 is reached
-facts (gedge 1 5 4)            ;; 1 -> 5 opens once 4 is reached (chained!)
-facts (gedge 1 6 9)            ;; never: 9 is unreachable
+rule (src 1)
+rule (edge 1 2) (edge 2 3)
+rule (gedge 3 4 2)            ;; 3 -> 4 opens once 2 is reached
+rule (gedge 1 5 4)            ;; 1 -> 5 opens once 4 is reached (chained!)
+rule (gedge 1 6 9)            ;; never: 9 is unreachable
 
 ;; each source reaches itself
 rule (src s) (= r (cins (cmap) s)) --> (reach s r)

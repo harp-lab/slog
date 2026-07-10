@@ -42,7 +42,7 @@ FX=out/pause_chain.slog
 {
   echo "table (edge int int)"
   echo "table (path int int)"
-  echo "facts"
+  echo "rule"
   for i in $(seq 1 250); do echo "(edge $i $((i+1)))"; done
   echo "rule (edge X Y) --> (path X Y)"
   echo "rule (path X Y) (edge Y Z) --> (path X Z)"
@@ -80,7 +80,7 @@ PFX=out/pause_probe.slog
 {
   echo "table (r int int)"
   echo "table (pair int int)"
-  echo "facts"
+  echo "rule"
   for i in $(seq 1 500); do echo "(r 5 $i)"; done
   echo "rule (r 5 X) (r 5 W) --> (pair X W)"
 } > "$PFX"

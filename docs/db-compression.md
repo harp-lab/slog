@@ -63,7 +63,7 @@ grow over time:
   and enormous to *store*. Abstract-interpretation outputs (kcfa/schemecfa) blow
   up similarly.
 - **Load time.** Loading a large binary database, and especially compiling a huge
-  inline `facts` block, is slow. The tutorial already warns that inline facts are
+  inline block of ground rules, is slow. The tutorial already warns that inline facts are
   "unwise for hundreds of thousands" of rows.
 
 ### 1.2 The goal
@@ -377,8 +377,8 @@ database is a **subsequence of strata**:
 - **At save**, a layer's **IDB = the union of head relations over its stratum
   range**; its **EDB = the merged input manifest** (§7.2). Coverage `per` applies
   only to IDB; EDB is always whole.
-- The awkward mixed case — a relation both grounded by `facts` and derived by
-  rules in the same layer — resolves by the boundary definition: `facts` land in
+- The awkward mixed case — a relation both grounded by body-less rules and derived by
+  other rules in the same layer — resolves by the boundary definition: those ground rows land in
   the base layer's EDB *snapshot* (§7.1, the iteration-0 state before rules fire);
   the derived extension is the deriving stratum's IDB. No post-hoc un-mixing.
 
@@ -430,7 +430,7 @@ A compressed database's EDB is always a materialised bin db it links to. Two cas
 at save:
 
 - **Chained run (`-d X`)**: the EDB already *is* the bin db `data/X` — link it.
-- **From-scratch run (inline `facts`)**: the EDB is the **iteration-0 snapshot**,
+- **From-scratch run (inline ground rules)**: the EDB is the **iteration-0 snapshot**,
   the database state after facts are ingested but before any rule fires (§6).
   Materialise *that* as a pure-EDB root bin db, then link the compressed layer to
   it.
@@ -832,7 +832,7 @@ today's `--out-db`/`-d` plus a `META` and a signature).
 >   ~2395, `seedInternAllocators` at ~671, `loadDatabaseBIN` at ~2172, etc.).
 > - **P0.5 uses a dedicated facts stratum** (the chosen general approach, not the
 >   "write before the first stratum" mechanism §7.1 sketched, which is wrong
->   because inline `facts` are lowered to body-less rules and don't exist
+>   because inline facts are body-less rules and don't exist
 >   pre-stratum). `compile-strata #:split-facts?` pulls every iteration-0 rule
 >   (body reads no declared relation) into a level-0 stratum run first; the
 >   driver snapshots the pure EDB after it. Level-preserving for the real strata,

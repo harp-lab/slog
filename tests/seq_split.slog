@@ -8,7 +8,7 @@ table (doc (list int))
 table (halves (list int) (list int))
 table (inner int (list int) (list int) int)
 
-facts (doc [1 2 3 4]) (doc [1 2 3 4 5]) (doc [0]) (doc [])
+rule (doc [1 2 3 4]) (doc [1 2 3 4 5]) (doc [0]) (doc [])
 
 rule (doc l) (= l [xs ... ys ...]) --> (halves xs ys)
 rule (doc l) (= l [a bs ... cs ... d]) --> (inner a bs cs d)

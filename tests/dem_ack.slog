@@ -4,7 +4,7 @@
 ;; asks (the inner answer must arrive before the outer demand exists).
 
 demand (ack int int) int
-facts (ack 0 n (+ n 1))
+rule (ack 0 n (+ n 1))
 rule (ack m 0 (ack (- m 1) 1)) <-- (< 0 m)
 rule (ack m n (ack (- m 1) (ack m (- n 1)))) <-- (< 0 m) (< 0 n)
 

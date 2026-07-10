@@ -6,4 +6,4 @@
 run "lat_run_base.slog"
 
 table (marker int)
-facts (marker 1)
+rule (marker 1)

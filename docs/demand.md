@@ -45,7 +45,7 @@ Exactly two ordinary relations back it:
 
 - **`parse`** — `struct (parse str int)`, the demand itself. There is no
   separate call relation: *asking is constructing*; the struct's extent
-  is the set of all demands. Seeding is a fact: `facts (parse "E" 0)`.
+  is the set of all demands. Seeding is a fact: `rule (parse "E" 0)`.
 - **`parse_ans`** — `table (parse_ans parse int)`: answers keyed by the
   demand (the key column's type is the demand struct itself).
 
@@ -86,19 +86,19 @@ rule (fib n n) <-- (< n 2)
 rule (fib n (+ (fib (- n 1)) (fib (- n 2)))) <-- (< 1 n)
 
 demand (ack int int) int
-facts (ack 0 n (+ n 1))
+rule (ack 0 n (+ n 1))
 rule (ack m 0 (ack (- m 1) 1)) <-- (< 0 m)
 rule (ack m n (ack (- m 1) (ack m (- n 1)))) <-- (< 0 m) (< 0 n)
 ```
 
 Memoization is interning: each distinct demand is one fact, computed
 once, shared by every asker. Base cases of judgments are naturally facts
-with pattern variables — the gate binds them: `facts (map2 f (nil) (nil))`,
-or equivalently an arrowless rule, `rule (map2 f (nil) (nil))` — a rule
-with no `-->`/`<--` before the next top-level form is all heads over an
-implicit empty body. Prefer one arrowless `rule` per gated fact: a
-multi-fact `facts` block is ONE rule, so its judgment heads' gates all
-join in a single body (they gate jointly).
+with pattern variables — the gate binds them: `rule (map2 f (nil) (nil))`,
+an arrowless rule (a rule with no `-->`/`<--` before the next top-level
+form is all heads over an implicit empty body). Prefer one arrowless
+`rule` per gated fact: grouping several heads under a single `rule` makes
+them ONE rule, so their judgment heads' gates all join in a single body
+(they gate jointly).
 
 ## 4. Lambdas and first-class calls
 
@@ -132,11 +132,11 @@ query results.
 
 ```
 demand (map2 clo list) list
-facts (map2 f (nil) (nil))
-facts (map2 f (cons x xs) (cons (f x) (map2 f xs)))
+rule (map2 f (nil) (nil))
+rule (map2 f (cons x xs) (cons (f x) (map2 f xs)))
 
 demand (compose clo clo) clo
-facts (compose f g (lambda (x) (f (g x))))
+rule (compose f g (lambda (x) (f (g x))))
 
 rule (kv k) (input l) (= r (map2 (lambda (n) (* n k)) l)) --> (scaled r)
 ```
@@ -178,11 +178,39 @@ error** naming the unbound variables.
 
 Deliberate behaviors:
 
-- **Resume by replay.** Live variables are recovered from the demand
-  structs by content (interning makes reconstruction a lookup), so no
-  continuation relation is generated; suspended state is first-class and
-  queryable. Factoring shared prefixes through continuation structs is a
-  future planner optimization.
+- **Resume by replay, supplementaries where replay can't be keyed**
+  (2026-07-10). Live variables are recovered from the demand structs by
+  content (interning makes reconstruction a lookup) — sound always, and
+  *keyed* exactly when every step from the answer's key back to the
+  caller's context runs through relation columns (atoms, fully-bound
+  struct terms, other answer tables, all of which carry requisitionable
+  indexes). It degrades to an ask-table scan in the Δ-answer join
+  variants when the caller's context is reachable only backwards through
+  a **prim** (a slice, arithmetic — functions have no inverse index) or
+  through the **fields of a partially-bound pattern** (no field-inverse
+  index exists). For each ask stage containing such a judgment the
+  transform emits the classic supplementary relation
+  (Beeri–Ramakrishnan): `rule <stage prefix> --> ($sup<pos>x<alt>x<stage>
+  carried...)`, where `carried` = the stage's *strictly* ground variables
+  (the scheduler's seq-pat "vars ground together" over-approximation must
+  not leak into columns — a dangling pattern's vars are not values). The
+  sup atom joins the main rule **additively** — implied by the clauses
+  beside it, least model unchanged, one-iteration lag refired by its own
+  delta (the occurrence-probe discipline) — and every Δ-answer variant
+  probes it on demand-argument columns instead of scanning. Ask rules and
+  successor sups **ride the chain** (`$sup_i + clauses-since` replaces
+  the raw prefix; clauses whose variables all ride in the sup are
+  subsumed, those still holding unresolved variables are retained), so
+  the prefix's scan variants are not duplicated per rule. Judgments with
+  variable-free demand args are exempt: their answer return is
+  semantically a broadcast — no key exists. Sup columns are `any` (the
+  applyN precedent): join keys, never patterns, and hence outside
+  sequence-occurrence feeding. Measured (512-wide list benchmarks,
+  2026-07-10): a divide-and-conquer split's answer stratum 299s → 22ms
+  with identical output; the equivalent fold 6.2s → 0.76s; the r7rs
+  analyzer's ask-table scans over `step` eliminated entirely (remaining
+  scans are the semantically-required config-style broadcasts and the
+  1-row seed).
 - **Self-ask elision** (the left-recursion case): an ask identical to one
   of the rule's own gates is dropped; static unification later collapses
   the equal-content matches.
@@ -220,9 +248,9 @@ rules are the textbook inference rules —
 
 ```
 demand (ck tenv tm) ty
-facts (ck env (num i) (tint))
-facts (ck env (var x) (lookup env x))
-facts (ck env (lam x t1 e) (arrow t1 (ck (ext env x t1) e)))
+rule (ck env (num i) (tint))
+rule (ck env (var x) (lookup env x))
+rule (ck env (lam x t1 e) (arrow t1 (ck (ext env x t1) e)))
 rule (ck env (app e1 e2) t2) <-- (ck env e1 (arrow t1 t2)) (ck env e2 t1)
 ```
 
@@ -241,7 +269,7 @@ many demands are reachable):
 
 ```
 demand (eval expr) val
-facts (eval (lambda x eb) (lambda x eb))
+rule (eval (lambda x eb) (lambda x eb))
 rule (eval (ref x) v) <-- (store x v)
 rule (eval (app ef ea) v) <-- (eval ef (lambda x eb)) (eval ea va) (eval eb v)
 rule (eval (app ef ea)) (eval ef (lambda x eb)) (eval ea va) --> (store x va)

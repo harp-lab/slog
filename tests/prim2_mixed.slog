@@ -8,7 +8,7 @@ table (mx2 any any any)
 table (small any)
 table (ltv any any)
 
-facts
+rule
 (v 2)
 (v 2.5)
 

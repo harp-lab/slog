@@ -8,7 +8,7 @@ lattice (cost (min int #:floor 0))
 table (edge int int int)
 table (dist int int cost)
 
-facts
+rule
 (edge 2 1 2)
 
 rule (= W (neg 5)) --> (edge 1 2 W)

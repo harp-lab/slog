@@ -6,21 +6,21 @@
 ;; value-position calls compose with sequence patterns.
 
 demand (map2 clo list) list
-facts (map2 f [] [])
-facts (map2 f [x xs ...] [(f x) (map2 f xs) ...])
+rule (map2 f [] [])
+rule (map2 f [x xs ...] [(f x) (map2 f xs) ...])
 
 table (input list)
-facts (input [1 2 3])
+rule (input [1 2 3])
 
 ;; a lambda capturing k from the rule
 table (kv int)
-facts (kv 10)
+rule (kv 10)
 table (scaled list)
 rule (kv k) (input l) (= r (map2 (lambda (n) (* n k)) l)) --> (scaled r)
 
 ;; closures as answers: compose returns a lambda capturing two closures
 demand (compose clo clo) clo
-facts (compose f g (lambda (x) (f (g x))))
+rule (compose f g (lambda (x) (f (g x))))
 
 table (twice list)
 rule (input l)

@@ -9,7 +9,7 @@ table (isred str)
 table (isgreen str)
 table (verdict str any)
 
-facts
+rule
 (item "a" (red))
 (item "b" (green))
 (item "c" (red))

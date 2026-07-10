@@ -8,7 +8,7 @@ table (tonum nat int)
 table (isthree nat)
 table (pred nat nat)
 
-facts
+rule
 (tonum (zero) 0)
 
 ;; grow nesting one level per step, up to depth 3

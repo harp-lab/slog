@@ -8,7 +8,7 @@ table (fsts int)
 table (both int int)
 table (rebuilt pair)
 
-facts
+rule
 (mk (pair 1 2))
 (mk (pair 3 4))
 

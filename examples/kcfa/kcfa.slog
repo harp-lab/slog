@@ -5,7 +5,7 @@
 
 include "counting.slog"
 
-facts (klimit 1)
+rule (klimit 1)
 
 ;; P1 -- HIGHER-ORDER ENVIRONMENTS (the flagship).  f = (K combinator)
 ;; returns a closure capturing x.  g1 and g2 close over the SAME lambda
@@ -13,7 +13,7 @@ facts (klimit 1)
 ;; contexts), so they are two closure values with two distinct captured
 ;; maps -- visible in eval_ans.  r1 = "A", r2 = "B", and (eq? r1 r2) is
 ;; precisely #f at k = 1.  Legend: f=0, x=1, y=2, g1=3, g2=4, r1=5, r2=6.
-facts
+rule
 (program
  (let 0 (lambda [1] (lambda [2] (ref 1)))
    (let 3 (app (ref 0) [(sym "A")])
@@ -26,7 +26,7 @@ facts
 ;; two sites; k = 1 keeps u's two bindings apart so a = "P", b = "Q" and
 ;; (eq? a b) is #f.  At k = 0 the two calls merge and eq? blurs to both
 ;; booleans.  Legend: id=10, u=11, a=12, b=13.
-facts
+rule
 (program
  (let 10 (lambda [11] (ref 11))
    (let 12 (app (ref 10) [(sym "P")])
@@ -37,7 +37,7 @@ facts
 ;; environment (no free-variable rebinding needed).  Comparisons answer
 ;; both ways so the recursion runs abstractly; the result is numval.
 ;; Legend: fac=20, n=21.
-facts
+rule
 (program
  (letrec 20 (lambda [21]
               (if (app (primref "=") [(ref 21) (num 0)])
@@ -49,14 +49,14 @@ facts
 
 ;; P4 -- branch sensitivity: the test is decided, so (sym "dead") is
 ;; never demanded and never appears in reachable_expr.
-facts
+rule
 (program
  (if (app (primref "not") [(boolean (ff))])
      (sym "live")
      (sym "dead")))
 
 ;; P5 -- a two-parameter (k-ary) primitive wrapper.  Legend: add=30, p=31, q=32.
-facts
+rule
 (program
  (let 30 (lambda [31 32] (app (primref "+") [(ref 31) (ref 32)]))
    (app (ref 30) [(num 3) (num 4)])))
@@ -67,7 +67,7 @@ facts
 ;; (summarized_closure).  With full-environment capture each copy also
 ;; carries a distinct captured map (i bound at a different context), so
 ;; the two are distinct closure values.  Legend: loop=40, i=41, k=42.
-facts
+rule
 (program
  (letrec 40 (lambda [41]
               (if (app (primref "=") [(ref 41) (num 0)])

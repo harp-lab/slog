@@ -17,7 +17,7 @@ table (result val)
 demand (eval expr) val
 
 ;; a lambda evaluates to itself
-facts (eval (lambda x eb) (lambda x eb))
+rule (eval (lambda x eb) (lambda x eb))
 
 ;; a reference evaluates to whatever its variable holds
 rule (eval (ref x) v) <-- (store x v)

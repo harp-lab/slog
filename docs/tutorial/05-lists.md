@@ -12,7 +12,7 @@ table (heads int)
 table (tails list)
 table (extended list)
 
-facts (input [1 2 3])
+rule (input [1 2 3])
 
 rule (input [x xs ...]) --> (heads x) (tails xs)
 rule (input l) --> (extended [0 l ...])

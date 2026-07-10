@@ -7,6 +7,6 @@ rule (inc n m) <-- (= m (+ n 1))
 
 table (start int)
 table (result int int)
-facts (start 3) (start 10)
+rule (start 3) (start 10)
 
 rule (start n) (inc n m) --> (result n m)

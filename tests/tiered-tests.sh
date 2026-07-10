@@ -40,7 +40,7 @@ same_csvs() {
 # --- 1. byte-identical across -O2 / -O0 / tiered ----------------------------
 CHAIN=out/tiered_chain.slog
 {
-  echo "table (edge int int)"; echo "table (path int int)"; echo "facts"
+  echo "table (edge int int)"; echo "table (path int int)"; echo "rule"
   for i in $(seq 1 400); do echo "(edge $i $((i+1)))"; done
   echo "rule (edge X Y) --> (path X Y)"
   echo "rule (path X Y) (edge Y Z) --> (path X Z)"
@@ -52,7 +52,7 @@ FLT=out/tiered_flt.slog
   echo "table (fin float)"
   echo "table (fsq float float)"
   echo "table (big float)"
-  echo "facts (fin 1.5) (fin 2.25) (fin 3.125) (fin 10.5) (fin 0.5)"
+  echo "rule (fin 1.5) (fin 2.25) (fin 3.125) (fin 10.5) (fin 0.5)"
   echo "rule (fin X) --> (fsq X (* X X))"
   echo "rule (fsq X Y) (> Y 5.0) --> (big Y)"
 } > "$FLT"
@@ -110,7 +110,7 @@ LSET=out/tiered_lset.slog
   echo "table (edge int int)"
   echo "table (reach int rset)"
   echo "table (sz int int)"
-  echo -n "facts"; for i in $(seq 1 120); do echo -n " (edge $i $((i+1)))"; done; echo
+  echo -n "rule"; for i in $(seq 1 120); do echo -n " (edge $i $((i+1)))"; done; echo
   echo "rule (edge a b) (= s (cins (cmap) b)) --> (reach a s)"
   echo "rule (edge a b) (reach b s) --> (reach a s)"
   echo "rule (reach a s) (= n (csize s)) --> (sz a n)"

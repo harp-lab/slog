@@ -15,13 +15,13 @@ rule (apply (addk k) n r) <-- (= r (+ n k))
 rule (apply (dbl) n r) <-- (= r (+ n n))
 
 demand (map clo clist) clist
-facts (map f (cnil) (cnil))
+rule (map f (cnil) (cnil))
 rule (map f (ccons x xs) (ccons y ys)) <-- (apply f x y) (map f xs ys)
 
 table (input clist)
 table (bumped clist)
 table (doubled clist)
-facts (input (ccons 1 (ccons 2 (ccons 3 (cnil)))))
+rule (input (ccons 1 (ccons 2 (ccons 3 (cnil)))))
 
 rule (input l) (map (addk 10) l r) --> (bumped r)
 rule (input l) (map (dbl) l r) --> (doubled r)

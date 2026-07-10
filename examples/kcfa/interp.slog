@@ -27,11 +27,11 @@ demand (extend_env pmap list list) pmap
 
 ;; ---- atoms ----
 
-facts (eval (num n) rho t (numval))
-facts (eval (boolean b) rho t (boolval b))
-facts (eval (sym s) rho t (symval s))
-facts (eval (lambda xs eb) rho t (closure (lambda xs eb) rho))
-facts (eval (ref x) rho t (lookup x rho))
+rule (eval (num n) rho t (numval))
+rule (eval (boolean b) rho t (boolval b))
+rule (eval (sym s) rho t (symval s))
+rule (eval (lambda xs eb) rho t (closure (lambda xs eb) rho))
+rule (eval (ref x) rho t (lookup x rho))
 rule (eval (primref op) rho t (prim op)) <-- (primitive op)
 
 ;; a variable's value: find its binding context in the environment,
@@ -40,12 +40,12 @@ rule (lookup x rho v) <-- (mp_get rho x tx) (store x tx v)
 
 ;; ---- arguments evaluate pointwise ----
 
-facts (eval_args [] rho t [])
-facts (eval_args [e es ...] rho t [(eval e rho t) (eval_args es rho t) ...])
+rule (eval_args [] rho t [])
+rule (eval_args [e es ...] rho t [(eval e rho t) (eval_args es rho t) ...])
 
 ;; extend a captured environment with each parameter bound at the new time
-facts (extend_env rho [] t rho)
-facts (extend_env rho [x xs ...] t (extend_env (mp_put rho x t) xs t))
+rule (extend_env rho [] t rho)
+rule (extend_env rho [x xs ...] t (extend_env (mp_put rho x t) xs t))
 
 ;; ---- closure application: tick, extend the CLOSURE's env, run body ----
 
@@ -79,13 +79,13 @@ rule (eval (app ef es) rho t v)
 ;; ---- if: only #f is false, and the untaken branch is never demanded ----
 
 table (scheme_false val)
-facts (scheme_false (boolval (ff)))
+rule (scheme_false (boolval (ff)))
 
 demand (select_branch val expr expr) expr
-facts (select_branch (boolval (ff)) e2 e3 e3)
+rule (select_branch (boolval (ff)) e2 e3 e3)
 rule (select_branch tv e2 e3 e2) <-- (scheme_false fv) (/= tv fv)
 
-facts (eval (if e1 e2 e3) rho t (eval (select_branch (eval e1 rho t) e2 e3) rho t))
+rule (eval (if e1 e2 e3) rho t (eval (select_branch (eval e1 rho t) e2 e3) rho t))
 
 ;; ---- let / letrec bind at the current time; letrec also binds x
 ;;      before evaluating its right-hand side ----
@@ -106,21 +106,21 @@ table (arithmetic_op str)
 table (comparison_op str)
 table (primitive str)
 table (any_bool bool)
-facts (arithmetic_op "+") (arithmetic_op "-") (arithmetic_op "*")
-facts (comparison_op "<") (comparison_op "<=") (comparison_op "=")
-facts (primitive "eq?") (primitive "not")
-facts (any_bool (tt)) (any_bool (ff))
+rule (arithmetic_op "+") (arithmetic_op "-") (arithmetic_op "*")
+rule (comparison_op "<") (comparison_op "<=") (comparison_op "=")
+rule (primitive "eq?") (primitive "not")
+rule (any_bool (tt)) (any_bool (ff))
 rule ((arithmetic_op op) | (comparison_op op)) --> (primitive op)
 
 demand (delta str list) val
 rule (delta op [(numval) (numval)] (numval)) <-- (arithmetic_op op)
 rule (delta op [(numval) (numval)] (boolval b)) <-- (comparison_op op) (any_bool b)
-facts (delta "not" [(boolval (ff))] (boolval (tt)))
+rule (delta "not" [(boolval (ff))] (boolval (tt)))
 rule (delta "not" [v] (boolval (ff))) <-- (scheme_false fv) (/= v fv)
 
-facts (delta "eq?" [(symval s) (symval s)] (boolval (tt)))
-facts (delta "eq?" [(boolval b) (boolval b)] (boolval (tt)))
-facts (delta "eq?" [(prim op) (prim op)] (boolval (tt)))
+rule (delta "eq?" [(symval s) (symval s)] (boolval (tt)))
+rule (delta "eq?" [(boolval b) (boolval b)] (boolval (tt)))
+rule (delta "eq?" [(prim op) (prim op)] (boolval (tt)))
 rule (delta "eq?" [v1 v2] (boolval (ff))) <-- (/= v1 v2)
 rule (delta "eq?" [(numval) (numval)] (boolval b)) <-- (any_bool b)
 rule (delta "eq?" [(closure lm rc) (closure lm rc)] (boolval b)) <-- (any_bool b)

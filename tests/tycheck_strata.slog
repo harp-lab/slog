@@ -9,7 +9,7 @@ table (elem int)
 table (raw any)
 table (final str)
 
-facts
+rule
 (todo [1 2 "x" 3])
 (raw "ok")
 (raw 7)

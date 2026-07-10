@@ -9,48 +9,48 @@ union (clist (cnil) (ccons any clist))
 
 ;; native [T] -> clist (structural conversion, recursion over the pattern)
 demand (ol_fromlst list) clist
-facts (ol_fromlst [] (cnil))
-facts (ol_fromlst [x xs ...] (ccons x (ol_fromlst xs)))
+rule (ol_fromlst [] (cnil))
+rule (ol_fromlst [x xs ...] (ccons x (ol_fromlst xs)))
 
 ;; clist -> native [T]
 demand (ol_tolst clist) list
-facts (ol_tolst (cnil) [])
+rule (ol_tolst (cnil) [])
 rule (ol_tolst (ccons x xs) [x z ...]) <-- (ol_tolst xs z)
 
 ;; append
 demand (ol_append clist clist) clist
-facts (ol_append (cnil) r r)
+rule (ol_append (cnil) r r)
 rule (ol_append (ccons x xs) r (ccons x z)) <-- (ol_append xs r z)
 
 ;; ref: zero-based; no answer out of range
 demand (ol_ref clist int) any
-facts (ol_ref (ccons x xs) 0 x)
+rule (ol_ref (ccons x xs) 0 x)
 rule (ol_ref (ccons x xs) n r) <-- (< 0 n) (ol_ref xs (- n 1) r)
 
 ;; member: 1 when found
 demand (ol_member clist any) int
-facts (ol_member (ccons x xs) x 1)
+rule (ol_member (ccons x xs) x 1)
 rule (ol_member (ccons x xs) y r) <-- (/= x y) (ol_member xs y r)
 
 ;; len
 demand (ol_len clist) int
-facts (ol_len (cnil) 0)
-facts (ol_len (ccons x xs) (+ (ol_len xs) 1))
+rule (ol_len (cnil) 0)
+rule (ol_len (ccons x xs) (+ (ol_len xs) 1))
 
 ;; take
 demand (ol_take clist int) clist
-facts (ol_take l 0 (cnil))
-facts (ol_take (cnil) n (cnil))
+rule (ol_take l 0 (cnil))
+rule (ol_take (cnil) n (cnil))
 rule (ol_take (ccons x xs) n (ccons x (ol_take xs (- n 1)))) <-- (< 0 n)
 
 ;; absent: 1 when NOT an element
 demand (ol_absent clist any) int
-facts (ol_absent (cnil) y 1)
+rule (ol_absent (cnil) y 1)
 rule (ol_absent (ccons x xs) y r) <-- (/= x y) (ol_absent xs y r)
 
 ;; rev
 demand (ol_rev_acc clist clist) clist
-facts (ol_rev_acc (cnil) acc acc)
+rule (ol_rev_acc (cnil) acc acc)
 rule (ol_rev_acc (ccons x xs) acc r) <-- (ol_rev_acc xs (ccons x acc) r)
 demand (ol_rev clist) clist
-facts (ol_rev l (ol_rev_acc l (cnil)))
+rule (ol_rev l (ol_rev_acc l (cnil)))

@@ -1,0 +1,6 @@
+[1 2 3]   (map (_enum "dbl") [1 2 3])   (_enum "dbl")   1   [2 3]   
+[1 2 3]   (map (addk 10) [1 2 3])   (addk 10)   1   [2 3]   
+[2 3]   (map (_enum "dbl") [2 3])   (_enum "dbl")   2   [3]   
+[2 3]   (map (addk 10) [2 3])   (addk 10)   2   [3]   
+[3]   (map (_enum "dbl") [3])   (_enum "dbl")   3   []   
+[3]   (map (addk 10) [3])   (addk 10)   3   []   

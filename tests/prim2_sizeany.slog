@@ -7,7 +7,7 @@ table (w any)
 table (len any int)
 table (catlen any int)
 
-facts
+rule
 (w "foo")
 (w "")
 (w "hello world")

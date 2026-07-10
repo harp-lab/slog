@@ -6,7 +6,7 @@
 table (go int)
 table (big int)
 
-facts
+rule
 (go 100000000)
 
 rule (go X) (= R (* X X)) --> (big R)

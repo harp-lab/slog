@@ -10,7 +10,7 @@ table (sz int int)
 table (probe str)
 table (agree int)
 
-facts (grow 0 "abcdefghij")
+rule (grow 0 "abcdefghij")
 rule (grow n s) (< n 7) --> (grow (+ n 1) (+ s s))
 rule (grow n s) --> (sz n (size s))
 

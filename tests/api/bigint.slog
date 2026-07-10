@@ -4,7 +4,7 @@
 table (biglit int)
 table (bigsq int)
 
-facts
+rule
 (biglit 123456789012345678901234567890)
 
 rule (biglit B) (= R (* B B)) --> (bigsq R)

@@ -6,7 +6,7 @@ table (m0 int)
 table (m1 int)
 table (m2 int)
 
-facts
+rule
 (m0 0)
 
 rule (m0 N) (< N 10) (= M (+ N 1)) --> (m1 M)

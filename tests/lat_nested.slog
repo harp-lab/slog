@@ -16,8 +16,8 @@ table (node int)
 table (best int dmap)
 table (short int int mind)
 
-facts (edge 1 2 3) (edge 1 2 5) (edge 2 3 4) (edge 3 4 1)
-facts (node 1) (node 2) (node 3) (node 4)
+rule (edge 1 2 3) (edge 1 2 5) (edge 2 3 4) (edge 3 4 1)
+rule (node 1) (node 2) (node 3) (node 4)
 
 ;; seed: per-source direct edges, joined pointwise (1->2 seeds 3 and 5, min 3)
 rule (edge a b w) (= m (cput (cmap) b w)) --> (best a m)

@@ -14,7 +14,7 @@ table (start int)
 table (rev int int)
 table (two int int)
 
-facts
+rule
 (edge 1 2)
 (edge 2 3)
 (edge 3 4)

@@ -12,7 +12,7 @@ looks like this:
 ```
 table (prereq str str)
 
-facts
+rule
 (prereq "cs1" "cs2")
 (prereq "cs2" "algorithms")
 (prereq "cs2" "systems")

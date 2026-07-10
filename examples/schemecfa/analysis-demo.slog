@@ -4,11 +4,11 @@
 
 include "analysis.slog"
 
-facts (mlimit 1)
+rule (mlimit 1)
 
 ;; twice applies f at two sites; the argument closure is the only callee
 ;; at each, so both are monomorphic and (m=1) inlinable.
-facts
+rule
 (program
  (let "twice"
    (lambda ["f" "x"] (app (ref "f") [(app (ref "f") [(ref "x")])]))
@@ -18,7 +18,7 @@ facts
 ;; pick returns one of two lambdas under an UNKNOWN condition ((< 1 2)
 ;; abstracts to both booleans), so both flow to `chosen`; the single
 ;; call site (chosen 7) is polymorphic -- two target lambdas.
-facts
+rule
 (program
  (let "inc" (lambda ["p"] (app (ref "+") [(ref "p") (num 1)]))
    (let "dec" (lambda ["q"] (app (ref "-") [(ref "q") (num 1)]))

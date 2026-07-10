@@ -8,12 +8,12 @@
 
 ;; append: [1 2] ++ [3] = [1 2 3]
 demand (lst_append list list) list
-facts (lst_append a b (lcat a b))
+rule (lst_append a b (lcat a b))
 
 ;; ref: zero-based element access; no answer for an out-of-range index
 ;; (lref is partial -- absence is data, docs/sequences.md §3.2)
 demand (lst_ref list int) any
-facts (lst_ref l n (lref l n))
+rule (lst_ref l n (lref l n))
 
 ;; member: answers 1 when found; absence of an answer = not a member
 demand (lst_member list any) int
@@ -21,12 +21,12 @@ rule (lst_member l y 1) <-- (= m (lmem l y)) (< 0 m)
 
 ;; len
 demand (lst_len list) int
-facts (lst_len l (llen l))
+rule (lst_len l (llen l))
 
 ;; take: the first n elements (all of them when the list is shorter;
 ;; lslice clamps)
 demand (lst_take list int) list
-facts (lst_take l n (lslice l 0 n))
+rule (lst_take l n (lslice l 0 n))
 
 ;; absent: answers 1 when y is NOT an element (member's positive complement)
 demand (lst_absent list any) int
@@ -34,9 +34,9 @@ rule (lst_absent l y 1) <-- (= m (lmem l y)) (< m 1)
 
 ;; rev
 demand (lst_rev list) list
-facts (lst_rev l (lrev l))
+rule (lst_rev l (lrev l))
 
 ;; rev-append (the old accumulator judgment, kept for compatibility):
 ;; (lst_rev_acc l acc) = (lcat (lrev l) acc)
 demand (lst_rev_acc list list) list
-facts (lst_rev_acc l acc (lcat (lrev l) acc))
+rule (lst_rev_acc l acc (lcat (lrev l) acc))

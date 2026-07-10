@@ -15,11 +15,11 @@ union (pmap (mempty) (mleaf int any) (mbranch int int pmap pmap))
 
 ;; ---- bit helpers (same as lib/set.slog, mp_-prefixed) -----------------
 demand (mp_hsb int) int
-facts (mp_hsb 1 1)
+rule (mp_hsb 1 1)
 rule (mp_hsb x (* 2 (mp_hsb (/ x 2)))) <-- (< 1 x)
 
 demand (mp_msk int int) int
-facts (mp_msk k m (* (/ k (* 2 m)) (* 2 m)))
+rule (mp_msk k m (* (/ k (* 2 m)) (* 2 m)))
 
 ;; ---- join -------------------------------------------------------------
 demand (mp_join int pmap int pmap) pmap
@@ -34,8 +34,8 @@ rule (mp_join p0 t0 p1 t1 (mbranch (mp_msk p0 (mp_hsb (bxor p0 p1)))
 
 ;; ---- put (replace on collision) ---------------------------------------
 demand (mp_put pmap int any) pmap
-facts (mp_put (mempty) k v (mleaf k v))
-facts (mp_put (mleaf k w) k v (mleaf k v))
+rule (mp_put (mempty) k v (mleaf k v))
+rule (mp_put (mleaf k w) k v (mleaf k v))
 rule (mp_put (mleaf j w) k v r)
  <-- (/= j k) (mp_join k (mleaf k v) j (mleaf j w) r)
 rule (mp_put (mbranch p m l r) k v (mbranch p m (mp_put l k v) r))
@@ -48,14 +48,14 @@ rule (mp_put (mbranch p m l r) k v res)
 ;; ---- lookup ------------------------------------------------------------
 ;; partial: answers the value iff the key is present
 demand (mp_get pmap int) any
-facts (mp_get (mleaf k v) k v)
+rule (mp_get (mleaf k v) k v)
 rule (mp_get (mbranch p m l r) k v) <-- (< (band k m) 1) (mp_get l k v)
 rule (mp_get (mbranch p m l r) k v) <-- (> (band k m) 0) (mp_get r k v)
 
 ;; total presence: 1 present / 0 absent
 demand (mp_has0 pmap int) int
-facts (mp_has0 (mempty) k 0)
-facts (mp_has0 (mleaf k v) k 1)
+rule (mp_has0 (mempty) k 0)
+rule (mp_has0 (mleaf k v) k 1)
 rule (mp_has0 (mleaf j v) k 0) <-- (/= j k)
 rule (mp_has0 (mbranch p m l r) k 0) <-- (/= p (mp_msk k m))
 rule (mp_has0 (mbranch p m l r) k a)
@@ -70,14 +70,14 @@ rule (mp_put_soft t k v r) <-- (mp_has0 t k 0) (mp_put t k v r)
 
 ;; ---- smart branch + delete ---------------------------------------------
 demand (mp_bld int int pmap pmap) pmap
-facts (mp_bld p m (mempty) r r)
-facts (mp_bld p m l (mempty) l)
+rule (mp_bld p m (mempty) r r)
+rule (mp_bld p m l (mempty) l)
 rule (mp_bld p m l r (mbranch p m l r))
  <-- (= e (mempty)) (/= l e) (/= r e)
 
 demand (mp_del pmap int) pmap
-facts (mp_del (mempty) k (mempty))
-facts (mp_del (mleaf k v) k (mempty))
+rule (mp_del (mempty) k (mempty))
+rule (mp_del (mleaf k v) k (mempty))
 rule (mp_del (mleaf j v) k (mleaf j v)) <-- (/= j k)
 rule (mp_del (mbranch p m l r) k (mbranch p m l r)) <-- (/= p (mp_msk k m))
 rule (mp_del (mbranch p m l r) k res)
@@ -87,11 +87,11 @@ rule (mp_del (mbranch p m l r) k res)
 
 ;; ---- union (left-biased: the first argument's binding wins) ------------
 demand (mp_union pmap pmap) pmap
-facts (mp_union (mempty) t t)
-facts (mp_union s (mempty) s)
+rule (mp_union (mempty) t t)
+rule (mp_union s (mempty) s)
 rule (mp_union (mleaf k v) t r) <-- (mp_put t k v r)                ;; left wins
 rule (mp_union s (mleaf k v) r) <-- (mp_put_soft s k v r)           ;; right only fills gaps
-facts (mp_union (mbranch p m l r) (mbranch p m u v)
+rule (mp_union (mbranch p m l r) (mbranch p m u v)
                 (mbranch p m (mp_union l u) (mp_union r v)))
 rule (mp_union (mbranch p m l r) (mbranch q n u v)
                (mbranch p m (mp_union l (mbranch q n u v)) r))
@@ -117,12 +117,12 @@ rule (mp_union (mbranch p m l r) (mbranch q m u v) res)
 
 ;; ---- size, and building from a bracket list of [key val] pairs ---------
 demand (mp_size pmap) int
-facts (mp_size (mempty) 0)
-facts (mp_size (mleaf k v) 1)
-facts (mp_size (mbranch p m l r) (+ (mp_size l) (mp_size r)))
+rule (mp_size (mempty) 0)
+rule (mp_size (mleaf k v) 1)
+rule (mp_size (mbranch p m l r) (+ (mp_size l) (mp_size r)))
 
 ;; leftmost pair wins on duplicate keys (later puts replace earlier ones,
 ;; and the recursion puts the head LAST)
 demand (mp_fromlist list) pmap
-facts (mp_fromlist [] (mempty))
-facts (mp_fromlist [[k v] xs ...] (mp_put (mp_fromlist xs) k v))
+rule (mp_fromlist [] (mempty))
+rule (mp_fromlist [[k v] xs ...] (mp_put (mp_fromlist xs) k v))

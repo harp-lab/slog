@@ -3,6 +3,6 @@
 
 table (p int)
 
-facts
+rule
 (p 1)
 (p 2)

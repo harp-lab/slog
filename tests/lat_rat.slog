@@ -13,7 +13,7 @@ table (edge int int int)
 table (best int dm)            ;; source -> (node -> min cost)
 table (bound int int mind)     ;; (source, node) -> min cost via a successor
 
-facts (edge 1 2 3) (edge 1 2 7) (edge 2 3 4) (edge 3 4 1)
+rule (edge 1 2 3) (edge 1 2 7) (edge 2 3 4) (edge 3 4 1)
 
 ;; seed: direct edges, pointwise (1->2 contributes 3 and 7; best keeps 3,
 ;; and best_at (1,2) converges to 3 through its own child-spec merge)

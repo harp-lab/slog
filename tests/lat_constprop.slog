@@ -13,7 +13,7 @@ table (regval int int fv)
 table (nonconst int int)
 table (constat int int value)
 
-facts
+rule
 (assignc 1 10 (vnum 5))
 (assignc 2 11 (vnum 1))
 (assignc 3 11 (vstr "two"))

@@ -4,7 +4,7 @@
 include "types.slog"
 
 
-facts
+rule
   (program (lambda "x" (ref "x")))
   (program
    (app (lambda "x" (app (ref "x") (ref "x")))

@@ -6,7 +6,7 @@ table (b int)
 table (c int)
 table (o int)
 
-facts
+rule
 (a 1)
 (b 2)
 (c 3)

@@ -46,7 +46,7 @@ table (term expr)
 table (sub expr)
 table (hasmul int)
 
-facts (term (add (num 1) (mul (num 2) (num 3))))
+rule (term (add (num 1) (mul (num 2) (num 3))))
 
 rule (term e) --> (sub e)
 rule (sub (add a b)) --> (sub a) (sub b)
@@ -54,7 +54,7 @@ rule (sub (mul a b)) --> (sub a) (sub b)
 rule (sub (mul _ _)) --> (hasmul 1)
 ```
 
-In the `facts` block, `(add (num 1) (mul (num 2) (num 3)))` **builds**
+In the body-less rule, `(add (num 1) (mul (num 2) (num 3)))` **builds**
 the tree `1 + 2×3`. In the rule bodies, the same syntax **matches**: the
 pattern `(add a b)` fires only on `sub` rows holding an `add`, binding
 `a` and `b` to its two children. Construction and destruction are the
@@ -113,6 +113,6 @@ cheap, use them freely."
 | tagged choice | `union (expr (num int) (add expr expr))` | one of several constructors; recursive types allowed |
 | named constants | `enum (color red green blue)` | `(red)` etc.; usable as a column type |
 | nullary members | `union (stack (halt) (frame expr stack))` | a union arm with no fields is a constant |
-| build | `--> (out (point 3 4))` | constructors in heads (and in `facts`) create values |
+| build | `--> (out (point 3 4))` | constructors in heads (body-less or not) create values |
 | match | `rule (in (point x _)) --> ...` | constructors in bodies destructure; wildcards fine |
 | nest | `(add (num 1) (num 2))` | values nest arbitrarily; each distinct value stored once |

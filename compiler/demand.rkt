@@ -516,10 +516,11 @@
      ;; alternatives split first: each grounds its own variables, and a
      ;; call inside one alternative must not constrain the others
      (append*
-      (for/list ([alt (in-list (set->list (split-or-clauses bodys)))])
-        (rewrite-alternative prov alt heads ctx rule bound)))]))
+      (for/list ([alt (in-list (set->list (split-or-clauses bodys)))]
+                 [alt-idx (in-naturals)])
+        (rewrite-alternative prov alt heads ctx rule bound alt-idx)))]))
 
-(define (rewrite-alternative prov bodys0 heads0 ctx rule bound)
+(define (rewrite-alternative prov bodys0 heads0 ctx rule bound alt-idx)
   ;; phases V/L then C on this alternative
   (define bodys1 (for/list ([cl (in-list bodys0)]) (vl-clause cl ctx bound)))
   (define heads1 (for/list ([cl (in-list heads0)]) (vl-clause cl ctx bound)))
@@ -604,9 +605,10 @@
             (match-define (list p name _ aargs) parts)
             (cons `(syn ,p ,(demand-ans-name name) ,dvar ,@aargs)
                   (loop rest (cdr js)))])))
-     (define main-rule `(syn ,prov rule ,@main-body --> ,@main-heads))
-
-     ;; ask rules, scheduled by groundness in parallel stages
+     ;; ask rules, scheduled by groundness in parallel stages; stages whose
+     ;; answer-return join cannot be keyed also emit a supplementary
+     ;; relation, whose atom joins the main rule additively (see
+     ;; schedule-asks)
      (define gate-keys
        (for/set ([j (in-list head-js)])
          (match-define (list _ name dargs _) (cdr j))
@@ -615,21 +617,150 @@
        (append gates
                (filter-map (lambda (occ) (and (not (second occ)) (car occ)))
                            body-occs)))
-     (define asks
-       (schedule-asks prov non-judgment-clauses body-js gate-keys fun-env rule))
+     (define-values (asks sup-atoms)
+       (schedule-asks prov non-judgment-clauses body-js gate-keys fun-env rule
+                      ctx alt-idx))
+     (define main-rule
+       `(syn ,prov rule ,@main-body ,@sup-atoms --> ,@main-heads))
 
      (cons main-rule asks)]))
 
 ;; -----------------------------------------------------------------------
-;; Ask scheduling.  Returns the list of ask rules.
+;; Ask scheduling.  Returns (values ask+sup-rules sup-atoms).
+;;
+;; SUPPLEMENTARY RELATIONS (docs/demand.md).  The main rule resumes a body
+;; judgment by RECONSTRUCTION: a delta on f_ans binds the demand id, the
+;; match clause decomposes it, and the rest of the host body re-derives
+;; the caller's context.  Reconstruction is keyed exactly when every step
+;; runs backwards through relation columns (atoms, struct patterns, other
+;; answer tables); it degrades to an ask-table SCAN when the caller's
+;; context is reachable only through a primitive (a slice, arithmetic --
+;; functions have no inverse index) or through the fields of the demanded
+;; pattern itself.  For each ask stage containing such a judgment we emit
+;; the classic supplementary (Beeri-Ramakrishnan):
+;;
+;;   rule <stage prefix> --> ($sup<pos>x<alt>x<stage> carried ...)
+;;
+;; -- the same body as the stage's ask rules -- and join the sup atom
+;; ADDITIVELY in the main rule.  It is implied by the clauses beside it,
+;; so the least model is unchanged (the occurrence-probe lag discipline:
+;; the sup lands an iteration later and its delta refires the rule), and
+;; every delta-f_ans variant can now probe the sup on demand-argument
+;; columns instead of scanning.  `carried` = the stage's ground variables
+;; still needed downstream, sorted for determinism; cardinality is one
+;; row per caller binding -- tuples the downward pass enumerates anyway.
+;; Judgments whose demand args have no variables are exempt (their answer
+;; return is semantically a broadcast; a sup adds no key).  Column types
+;; are `any` (the applyN precedent): sup columns are join keys, never
+;; patterns, so they also stay out of sequence-occurrence feeding.
 
-(define (schedule-asks prov clauses body-js gate-keys fun-env rule)
+(define (sup-rel-name prov alt-idx stage-idx)
+  (match-define `(prov ,ltok ,_) prov)
+  (define pos (token->pos ltok))
+  (string->symbol (format "$sup~ax~ax~ax~ax~a"
+                          (modulo (fnv (format "~a" (pos->file pos))) 100000)
+                          (pos->startline pos)
+                          (pos->startcol pos)
+                          alt-idx stage-idx)))
+
+(define (seq-item-var it)
+  (match it
+    [`(,(or 'elem 'splice) ,(? symbol? x)) #:when (not (eq? x '_)) x]
+    [_ #f]))
+
+;; Simulate the delta-f_ans return join for body judgment j: saturate the
+;; clauses a planner could fire KEYED starting from what the answer row
+;; binds (the demand id, its decomposed inputs, the answer columns).  #t
+;; iff a relational clause is left unfireable -- the plan would scan.
+(define (return-join-scans? j body-js clauses fun-env)
+  (match-define (cons dvar (list _ _name dargs aargs)) j)
+  (define other-cls
+    (append clauses
+            (append*
+             (for/list ([j2 (in-list body-js)] #:unless (eq? j2 j))
+               (match-define (cons dv (list p n da aa)) j2)
+               (list `(syn ,p = ,dv (syn ,p ,n ,@da))
+                     `(syn ,p ,(demand-ans-name n) ,dv ,@aa))))))
+  ;; -> new bindings if cl can fire keyed under B, else #f
+  (define (fire cl B)
+    (match cl
+      [`(syn ,_ = ,(? symbol? x) (syn ,_ const ,_))
+       (if (eq? x '_) (set) (set x))]
+      [`(syn ,_ = ,(? symbol? x) ,(? symbol? y))
+       (and (or (set-member? B x) (set-member? B y))
+            (list->set (remq* '(_) (list x y))))]
+      [`(syn ,_ = ,(? symbol? x) (syn ,_ ,(? symbol? f) ,args ...))
+       (cond
+         [(hash-has-key? fun-env f)              ; a prim: forward only
+          (and (subset? (terms-all-vars args) B)
+               (if (eq? x '_) (set) (set x)))]
+         [else                                   ; struct/judgment term
+          (define-values (bound needed) (terms-match-vars args fun-env))
+          (cond
+            [(and (not (eq? x '_)) (set-member? B x)) bound]  ; decompose
+            [(subset? (set-union bound needed) B)             ; construct
+             (if (eq? x '_) (set) (set x))]
+            [else #f])])]
+      [`(syn ,_ seq-pat ,(? symbol? l) ,items ...)
+       (define ivars (list->set (filter-map seq-item-var items)))
+       (cond
+         [(set-member? B l) ivars]
+         [(subset? ivars B) (set l)]
+         [else #f])]
+      [`(syn ,_ ,(? (lambda (s) (and (symbol? s)
+                                     (or (special-head? s)
+                                         (primitive-cmp? s)))))
+             ,_ ...)
+       (set)]                                    ; checks bind nothing
+      [`(syn ,_ ,(? symbol?) ,args ...)          ; a relational atom
+       ;; a COLUMN keys a probe only whole: a constant, a bound top-level
+       ;; variable, or a fully-constructible term.  A bound variable
+       ;; buried in a partial struct pattern does not (no field-inverse
+       ;; index exists; the planner scans and decomposes).
+       (define keyed?
+         (for/or ([a (in-list args)])
+           (match a
+             [`(syn ,_ const ,_) #t]
+             [(? symbol? x) (set-member? B x)]
+             [`(syn ,_ ,_ ...) (subset? (terms-all-vars a) B)]
+             [_ #f])))
+       (and keyed? (terms-all-vars args))]
+      [_ (set)]))
+  (define B0
+    (set-remove
+     (set-add (set-union (terms-all-vars dargs) (terms-all-vars aargs)) dvar)
+     '_))
+  (define (scan-shaped? cl)
+    (match cl
+      [`(syn ,_ = ,_ (syn ,_ ,(? symbol? f) ,_ ...))
+       (not (hash-has-key? fun-env f))]          ; stuck gate/decomposition
+      [`(syn ,_ seq-pat ,_ ...) #t]
+      [`(syn ,_ = ,_ ...) #f]                    ; a stuck prim compute
+      [`(syn ,_ ,(? (lambda (s) (and (symbol? s)
+                                     (or (special-head? s)
+                                         (primitive-cmp? s)))))
+             ,_ ...) #f]
+      [`(syn ,_ ,(? symbol?) ,_ ...) #t]         ; stuck atom
+      [_ #f]))
+  (let loop ([B B0] [cls other-cls])
+    (define-values (B+ rest fired?)
+      (for/fold ([B2 B] [rest '()] [fired? #f]) ([cl (in-list cls)])
+        (match (fire cl B)
+          [#f (values B2 (cons cl rest) fired?)]
+          [new (values (set-union B2 (set-remove new '_)) rest #t)])))
+    (cond
+      [fired? (loop B+ (reverse rest))]
+      [else (ormap scan-shaped? cls)])))
+
+(define (schedule-asks prov clauses body-js gate-keys fun-env rule
+                       ctx alt-idx)
   (define pending0
     (for/list ([cl (in-list clauses)])
       (match-define (cons needs grounds) (clause-mode cl fun-env))
       (list cl needs grounds)))
   (let stage ([pending pending0] [included '()] [G (set)]
-              [waiting body-js] [asks '()])
+              [waiting body-js] [asks '()] [sup-atoms '()] [stage-idx 0]
+              [prev-sup #f] [since '()])
     (define-values (pending+ included+ G+)
       (let fix ([pending pending] [included included] [G G])
         (define-values (ready blocked)
@@ -645,6 +776,13 @@
                    (match-define (list _ _ dargs _) (cdr j))
                    (subset? (terms-all-vars dargs) G+))
                  waiting))
+    ;; the CHAINED prefix: once a supplementary exists, later ask and sup
+    ;; rules ride it -- its atom plus the clauses included since --
+    ;; instead of re-carrying (and re-scanning, in their answer-delta
+    ;; variants) the whole raw prefix
+    (define since+ (append since (drop included+ (length included))))
+    (define effective-prefix
+      (if prev-sup (cons prev-sup since+) included+))
     (cond
       [(null? ready-js)
        (unless (null? blocked-js)
@@ -657,8 +795,86 @@
                 (sort (set->list (set-subtract (terms-all-vars dargs) G+))
                       symbol<?)
                 (strip-prov rule) name (demand-ans-name name)))
-       (reverse asks)]
+       (values (reverse asks) (reverse sup-atoms))]
       [else
+       ;; this stage's supplementary, when some ready judgment's return
+       ;; join would scan (variable-free demand args exempt: broadcast)
+       (define triggers?
+         (for/or ([j (in-list ready-js)])
+           (match-define (list _ _ dargs _) (cdr j))
+           (and (not (set-empty? (set-remove (terms-all-vars dargs) '_)))
+                (return-join-scans? j body-js clauses fun-env))))
+       (define-values (sup-rules sup-atom)
+         (cond
+           [(not triggers?) (values '() #f)]
+           [else
+            (define sname (sup-rel-name prov alt-idx stage-idx))
+            ;; carry the whole ground set: the return variant must re-key
+            ;; not only the downstream clauses but the prefix's own atoms
+            ;; (a prim-computed key cannot re-derive its inputs backwards).
+            ;; STRICT groundness only: the scheduler's seq-pat
+            ;; over-approximation ("pattern vars ground together") must not
+            ;; leak into carried columns -- a dangling pattern's vars are
+            ;; not values (seq-expand DROPS the copy; carrying them would
+            ;; make it live and force its D12 error).  Everything else
+            ;; grounds as scheduled (atoms and struct patterns enumerate;
+            ;; lists are values, not a finite store).
+            (define strict
+              (let loop ([G (set)])
+                (define G2
+                  (for/fold ([G G]) ([cl (in-list included+)])
+                    (match cl
+                      [`(syn ,_ seq-pat ,(? symbol? l) ,items ...)
+                       (define ivars
+                         (list->set (filter-map seq-item-var items)))
+                       (define constructible?
+                         (andmap (lambda (it)
+                                   (match it
+                                     [`(elemc ,_) #t]
+                                     [`(,(or 'elem 'splice) ,(? symbol? x))
+                                      (not (eq? x '_))]
+                                     [_ #f]))
+                                 items))
+                       (cond
+                         [(set-member? G l) (set-union G ivars)]
+                         [(and constructible? (subset? ivars G))
+                          (set-add G l)]
+                         [else G])]
+                      [_ (match-define (cons needs grounds)
+                           (clause-mode cl fun-env))
+                         (if (subset? needs G) (set-union G grounds) G)])))
+                (if (equal? G2 G) G (loop G2))))
+            (define carried
+              (sort (set->list (set-remove (set-intersect G+ strict) '_))
+                    symbol<?))
+            (cond
+              [(null? carried) (values '() #f)]
+              [else
+               (set-box! (ctx-rels ctx)
+                         (hash-set (unbox (ctx-rels ctx))
+                                   sname
+                                   `(table ,@(make-list (length carried) 'any))))
+               (values (list `(syn ,prov rule ,@effective-prefix
+                                   --> (syn ,prov ,sname ,@carried)))
+                       `(syn ,prov ,sname ,@carried))])]))
+       ;; after a sup, the chain keeps only clauses NOT subsumed by the
+       ;; carried columns: a clause whose variables all ride in the sup is
+       ;; re-established by the probe, but one still holding unresolved
+       ;; variables (a pattern awaiting a later answer -- the scheduler's
+       ;; over-approximation admits these early) must stay to bind them
+       (define chained-since
+         (cond
+           [(not sup-atom) since+]
+           [else
+            (define carried-set
+              (list->set (match sup-atom [`(syn ,_ ,_ ,vs ...) vs])))
+            (filter (lambda (cl)
+                      (not (subset? (terms-all-vars cl) carried-set)))
+                    since+)]))
+       ;; ask rules ride this stage's supplementary when it exists (their
+       ;; bodies otherwise duplicate the prefix -- and its answer-delta
+       ;; scan variants -- once per judgment)
+       (define ask-body (if sup-atom (list sup-atom) effective-prefix))
        (define new-asks
          (for/list ([j (in-list ready-js)]
                     #:unless (set-member?
@@ -666,17 +882,25 @@
                               (match-let ([(list _ name dargs _) (cdr j)])
                                 (cons name (strip-prov dargs)))))
            (match-define (list p name dargs _) (cdr j))
-           `(syn ,prov rule ,@included+ --> (syn ,p ,name ,@dargs))))
-       (define-values (included++ G++)
-         (for/fold ([included included+] [G G+]) ([j (in-list ready-js)])
-           (match-define (cons dvar (list p name dargs aargs)) j)
-           (define match-cl `(syn ,p = ,dvar (syn ,p ,name ,@dargs)))
-           (define ans-cl `(syn ,p ,(demand-ans-name name) ,dvar ,@aargs))
+           `(syn ,prov rule ,@ask-body --> (syn ,p ,name ,@dargs))))
+       (define resume-pairs
+         (append*
+          (for/list ([j (in-list ready-js)])
+            (match-define (cons dvar (list p name dargs aargs)) j)
+            (list `(syn ,p = ,dvar (syn ,p ,name ,@dargs))
+                  `(syn ,p ,(demand-ans-name name) ,dvar ,@aargs)))))
+       (define included++ (append included+ resume-pairs))
+       (define G++
+         (for/fold ([G G+]) ([j (in-list ready-js)])
+           (match-define (cons dvar (list _ _n _da aargs)) j)
            (define-values (bound _needed) (terms-match-vars aargs fun-env))
-           (values (append included (list match-cl ans-cl))
-                   (set-union G (set-add bound dvar)))))
+           (set-union G (set-add bound dvar))))
        (stage pending+ included++ G++ blocked-js
-              (append (reverse new-asks) asks))])))
+              (append (reverse new-asks) sup-rules asks)
+              (if sup-atom (cons sup-atom sup-atoms) sup-atoms)
+              (add1 stage-idx)
+              (or sup-atom prev-sup)
+              (append chained-since resume-pairs))])))
 
 ;; -----------------------------------------------------------------------
 ;; Unit tests: the transform is pure syntax -> syntax; shapes are checked
@@ -749,14 +973,38 @@
    (set '(rule (n x) (< x (const 9)) --> (f x))
         '(rule (n x) (< x (const 9)) (= _d0 (f x)) (f_ans _d0 y) --> (out y))))
 
-  ;; a computation feeding a demand argument schedules before the ask
+  ;; a computation feeding a demand argument schedules before the ask --
+  ;; and, being prim-computed, the key cannot be reconstructed from a
+  ;; returning answer: the stage emits its supplementary, joined
+  ;; additively in the main rule (the recursion case above pins the
+  ;; converse: answer-column-chained keys emit NO supplementary)
   (check-equal?
    (run1 (rule* (list (S 'n 'x) (S '= 'x1 (S '+ 'x (S 'const 1))) (S 'f 'x1 'y))
                 (list (S 'out 'y)))
          demands1)
-   (set '(rule (n x) (= x1 (+ x (const 1))) --> (f x1))
-        '(rule (n x) (= x1 (+ x (const 1))) (= _d0 (f x1)) (f_ans _d0 y)
+   (set '(rule ($sup94702x1x1x0x0 x x1) --> (f x1))
+        '(rule (n x) (= x1 (+ x (const 1))) --> ($sup94702x1x1x0x0 x x1))
+        '(rule (n x) (= x1 (+ x (const 1)))
+               (= _d0 (f x1)) (f_ans _d0 y) ($sup94702x1x1x0x0 x x1)
                --> (out y))))
+
+  ;; chained prim-computed keys: each stage carries its own supplementary
+  ;; (stage 1's prefix includes stage 0's resume pair)
+  (let ([out (run1 (rule* (list (S 'n 'x)
+                                (S '= 'x1 (S '+ 'x (S 'const 1)))
+                                (S 'f 'x1 'y)
+                                (S '= 'y1 (S '+ 'y (S 'const 1)))
+                                (S 'f 'y1 'z))
+                          (list (S 'out 'z)))
+                   demands1)])
+    (define sups
+      (for/set ([r (in-set out)]
+                #:when (match r
+                         [`(rule ,_ ... --> (,(? symbol? h) ,_ ...))
+                          (string-prefix? (symbol->string h) "$sup")]
+                         [_ #f]))
+        r))
+    (check-equal? (set-count sups) 2))
 
   ;; multi-answer judgments
   (check-equal?

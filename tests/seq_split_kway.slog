@@ -9,7 +9,7 @@ table (thirds (list int) (list int) (list int))
 table (midthird (list int))
 table (rebuilt (list int))
 
-facts (doc [1 2 3 4 5 6 7]) (doc [1 2]) (doc [])
+rule (doc [1 2 3 4 5 6 7]) (doc [1 2]) (doc [])
 
 rule (doc l) (= l [as ... bs ... cs ...]) --> (thirds as bs cs)
 rule (doc l) (= l [_ ... bs ... _ ...]) --> (midthird bs)

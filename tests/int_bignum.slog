@@ -13,7 +13,7 @@ table (bigneg int)
 table (bigabs int)
 table (bigcmp int)
 
-facts
+rule
 (fact 0 1)
 (biglit 123456789012345678901234567890)
 

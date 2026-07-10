@@ -15,7 +15,7 @@ Here is a complete Slog program describing part of a family:
 ```
 table (parent str str)
 
-facts
+rule
 (parent "vera" "ada")
 (parent "ada" "haskell")
 (parent "ada" "miranda")
@@ -27,8 +27,11 @@ Two things are happening:
   table in a spreadsheet, named `parent`, with two columns, both
   holding strings. A relation is a *set of rows*: no duplicates, no
   order.
-- The `facts` block **asserts rows**: Vera is a parent of Ada; Ada is a
-  parent of Haskell and of Miranda.
+- The `rule` with no body **asserts rows**: Vera is a parent of Ada; Ada
+  is a parent of Haskell and of Miranda. A rule whose clauses are all
+  heads — nothing before the next top-level form to act as a condition —
+  simply states that those rows hold. These ground rules are what other
+  systems call *facts*.
 
 That's the whole program. No `main`, no statements. Save it as
 `family.slog` and run it from the repository root:
@@ -112,7 +115,7 @@ scripting.
 | Form | Example | Meaning |
 |---|---|---|
 | declare a relation | `table (parent str str)` | a named set of rows; columns are typed (`str`, `int`, `float`, ...) |
-| assert facts | `facts (parent "a" "b") (parent "b" "c")` | add rows; one `facts` block can hold many |
+| assert facts | `rule (parent "a" "b") (parent "b" "c")` | a body-less rule adds rows; it can hold many |
 | a rule | `rule (parent X Y) (parent Y Z) --> (grandparent X Z)` | left patterns all match ⇒ right holds |
 | variables | `X`, `y`, `thing` | any name in a rule; repeated = same value |
 | comments | `;; like this` | to end of line |

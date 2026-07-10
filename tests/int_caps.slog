@@ -8,7 +8,7 @@ table (nope int)
 table (nope2 int)
 table (ok int)
 
-facts
+rule
 (go 1)
 
 ;; 2^100000 needs ~100000 bits: pow's precheck trips the cap

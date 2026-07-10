@@ -9,7 +9,7 @@ table (saw_true str)
 table (saw_false str)
 table (saw_red str)
 
-facts
+rule
 (obs "x" true)
 (obs "y" (red))
 (obs "z" false)

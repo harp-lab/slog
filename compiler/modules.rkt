@@ -577,9 +577,6 @@
       [`(syn ,prov rule ,body0 ... <-- ,body1 ... ,topbody)
        (extract-rules topbody (set-add rules `(syn ,prov rule ,@body1 --> ,@body0)))]
 
-      [`(syn ,prov facts ,facts ... ,topbody)
-       (extract-rules topbody (set-add rules `(syn ,prov rule --> ,@facts)))]
-
       ;; skip over defs, funs, etc
       [_ (extract-rules (last ast) rules)]))
 

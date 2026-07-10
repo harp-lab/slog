@@ -436,7 +436,7 @@ Alternatives considered for the declaration site, for the record:
 
 ### 3.3 Reserved behavior worth stating
 
-- `facts (dist 3 7 10)` — contributions, like any head.
+- `rule (dist 3 7 10)` — contributions, like any head.
 - A map relation in a body at full arity is the only read form. There is no
   bare-arity "key exists" form in v1 (write `(R k̄ _)`; the wildcard binds the
   value and discards it — the calculus treats a discarded value as unused, so

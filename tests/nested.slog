@@ -3,7 +3,7 @@ struct (foo bar int)
 table (in int int)
 table (out foo)
 
-facts
+rule
 (in 1 2)
 (in 3 4)
 

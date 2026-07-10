@@ -5,7 +5,7 @@
 table (p int int)
 table (q int int)
 
-facts
+rule
 (p 1 2)
 (p 3 4)
 (p 1 3)

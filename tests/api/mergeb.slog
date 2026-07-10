@@ -10,7 +10,7 @@ lattice (iset (set int))
 table (r int iset)
 table (seed int int)
 
-facts (seed 2 20) (seed 3 5) (seed 4 40)
+rule (seed 2 20) (seed 3 5) (seed 4 40)
 
 rule (seed a b) (= m (cput (cmap) "k" a)) --> (t "X" (mk a b) m)
 rule (seed a b) --> (d a b)

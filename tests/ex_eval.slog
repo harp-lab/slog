@@ -10,7 +10,7 @@ table (prog str expr)
 table (val expr int)
 table (answer str int)
 
-facts
+rule
 (prog "e1" (plus (lit 2) (times (lit 3) (lit 4))))
 (prog "e2" (times (plus (lit 1) (lit 2)) (plus (lit 3) (lit 4))))
 (prog "e3" (lit 7))

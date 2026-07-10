@@ -14,7 +14,7 @@ table (seed2 int)
 table (oldf int int)
 table (probe5 int)
 
-facts (seed2 200)
+rule (seed2 200)
 rule (seed2 i) (< i 399) --> (seed2 (+ i 1))
 rule (seed2 i) --> (keep (mk i (+ i 1)))
 rule (keep p) (= p (mk a b)) --> (oldf a b)

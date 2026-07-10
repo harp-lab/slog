@@ -298,7 +298,7 @@
 (define (parse-top-level toks)
   ;; parses top level expression from toks
   (define top-level-keywords
-    (set "def" "rule" "enum" "facts" "table" "struct" "union" "demand" "extern" "lattice" ""))
+    (set "def" "rule" "enum" "table" "struct" "union" "demand" "extern" "lattice" ""))
   (match (token->str (peek toks))
     ["def" (parse-def toks #t)]
     [(or "import" "export")
@@ -310,18 +310,6 @@
      (match-define (cons e1 toks+3) (parse (advance toks+2)))
      (match-define (cons body toks+4) (parse-top-level toks+3))
      (cons (emit-expr `(,import/export ,e0 ,e1 ,body) toks toks+3) toks+4)]
-    ["facts"
-     ;; facts accumulate reversed (cons, not append): appending each fact to
-     ;; the end re-copied the whole list, quadratic in the fact count
-     (let loop ([toks (advance toks)]
-                [fact-lst '()])
-       (if (set-member? top-level-keywords (token->str (peek toks)))
-           (let () ;; parse the rest of the top level and emit rule
-             (match-define (cons topbody toks+) (parse-top-level toks))
-             (cons (emit-expr `(facts ,@(reverse fact-lst) ,topbody) toks toks+) toks+))
-           (let () ;; gather each fact
-             (match-define (cons e toks+) (parse toks))
-             (loop toks+ (cons e fact-lst)))))]
     ["demand"
      ;; demand (name in-type ...) answer-type ... -- the input signature
      ;; then answer types, gathered to the next top-level form

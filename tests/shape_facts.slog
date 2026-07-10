@@ -1,4 +1,4 @@
-;; Two 'facts' blocks with many facts of mixed relations (str and int
+;; Two ground rule blocks with many facts of mixed relations (str and int
 ;; columns interleaved across relations), consumed by simple rules.
 ;; Also reuses one relation twice in a body (mutual likes).
 ;;
@@ -17,7 +17,7 @@ table (adult str)
 table (mutual str str)
 table (bignum int)
 
-facts
+rule
 (person "amy" 34)
 (person "bob" 12)
 (likes "amy" "bob")
@@ -28,7 +28,7 @@ facts
 (likes "amy" "cat")
 (num 3)
 
-facts
+rule
 (num 4)
 (person "dan" 40)
 

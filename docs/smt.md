@@ -355,9 +355,9 @@ Via the dogfooded config program → env vars, per the established pattern
 (compiler/config.rkt `setting->env`):
 
 ```
-facts (setting_str "smt_solvers" "z3:500,cvc5:2000")   → SLOG_SMT_SOLVERS
-facts (setting_int "smt_procs" 4)                      → SLOG_SMT_PROCS
-facts (setting_str "smt_logic" "QF_LIA")               → SLOG_SMT_LOGIC (opt)
+rule (setting_str "smt_solvers" "z3:500,cvc5:2000")   → SLOG_SMT_SOLVERS
+rule (setting_int "smt_procs" 4)                      → SLOG_SMT_PROCS
+rule (setting_str "smt_logic" "QF_LIA")               → SLOG_SMT_LOGIC (opt)
 ```
 
 Daemon ctor reads them like the budget fields. `SLOG_SMT_SOLVERS=mock` for

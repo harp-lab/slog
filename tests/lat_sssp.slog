@@ -8,7 +8,7 @@ lattice (cost (min int #:floor 0))
 table (edge int int int)
 table (dist int int cost)
 
-facts
+rule
 (edge 1 2 10) (edge 2 3 5) (edge 3 1 2)
 (edge 1 3 100) (edge 3 4 1) (edge 2 4 20)
 (edge 1 4 17)

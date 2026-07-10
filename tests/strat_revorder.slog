@@ -7,7 +7,7 @@ table (b int)
 table (c int)
 table (d int)
 
-facts
+rule
 (a 1)
 
 rule (c X) (= Y (+ X 1)) --> (d Y)

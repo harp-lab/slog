@@ -6,7 +6,7 @@ table (t str)
 table (mid24 str str)   ;; substr S 2 4
 table (mid13 str str)   ;; substr S 1 3
 
-facts
+rule
 (t "abcdef")
 (t "hello")
 

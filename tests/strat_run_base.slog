@@ -5,7 +5,7 @@
 table (seed int)
 table (grow int)
 
-facts
+rule
 (seed 1)
 (seed 2)
 

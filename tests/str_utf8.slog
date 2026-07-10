@@ -11,7 +11,7 @@ table (mid str)
 table (at int)
 table (has int int)
 
-facts (seed "héllo wörld €42 🎉")
+rule (seed "héllo wörld €42 🎉")
 
 rule (seed s) --> (grow 0 s)
 rule (grow n s) (< n 5) --> (grow (+ n 1) (+ s s))

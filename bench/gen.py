@@ -4,7 +4,7 @@
 Writes each graph directly as a slog binary database under data/bench_*/
 (the daemon's BIN format: data/<db>/table.<name>.arity.<A>/0.bin holding
 raw little-endian u64 words, arity words per tuple, s32-encoded) -- inline
-`facts` blocks funnel every fact through one compiled rule, which is fine
+ground rules funnel every fact through one compiled rule, which is fine
 for tests but not for hundred-thousand-edge graphs.  Query programs run
 against these with `racket slog.rkt -d bench_<graph> ...`.
 
