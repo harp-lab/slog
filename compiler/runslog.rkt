@@ -280,7 +280,7 @@
     ;; For a linked compressed save, capture the program's source closure while
     ;; compiling so it can be stored as prog.sexpr and replayed on load (P1.1).
     (define src-capture (and linked-compressed? (make-hash)))
-    (define-values (strata partition edb-boundary)
+    (define-values (strata partition edb-boundary frozen-dirs)
       (parameterize ([current-source-capture src-capture])
         (compile-strata slog-path dbmanifest #:split-facts? linked-compressed?)))
 
@@ -405,7 +405,7 @@
       (define plan (read-prog-sexpr (string-append "data/" lname)))
       (when plan
         (match-define (cons r-entry r-sources) plan)
-        (define-values (r-strata _rp _rb)
+        (define-values (r-strata _rp _rb _rfrozen)
           (parameterize ([current-source-override r-sources])
             (compile-strata r-entry (db-full-manifest lname) #:split-facts? #f)))
         ;; a memory pause during this layer's replay checkpoints to
@@ -423,6 +423,13 @@
       (match step
         [`(replay ,lname) (replay-layer! lname)]
         [_ (send-plugin (action-so step))]))
+
+    ;; Link the program's frozen ground facts (freeze.rkt): import each
+    ;; content-addressed build/frozen/<hash> database before stratum 0 --
+    ;; the deferred reload hands the first stratum their rows as its
+    ;; iteration-zero delta, exactly as a -d input's facts arrive.
+    (for ([dir (in-list frozen-dirs)])
+      (send-plugin (action-so `(import-path ,dir))))
 
     ;; Verify the loaded db reproduced its stored content signature (P1.5): drift
     ;; is a compiler change, nondeterminism, or a compression bug.  An EDITED

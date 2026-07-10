@@ -35,6 +35,10 @@
      (format "  d->open(\"~a\");\n" db-name)]
     [`(import ,db-name)
      (format "  d->import(\"~a\");\n" db-name)]
+    ;; Merge a database by PATH (no data/ prefix): the compiler's frozen
+    ;; ground-fact databases under build/frozen/ (freeze.rkt).
+    [`(import-path ,dir)
+     (format "  d->importPath(\"~a\");\n" dir)]
     ;; Merge a compressed layer, passing trimmed same-lineage struct refs
     ;; through to the verbatim-loaded root/input (docs/db-compression.md §4.2).
     [`(import-layer ,db-name)

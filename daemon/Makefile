@@ -27,10 +27,17 @@ HEADERS = $(wildcard *.h)
 slogd: slogd.cpp $(HEADERS)
 	$(CXX) $(CXXFLAGS) $(OMPFLAGS) $(LDFLAGS) -o slogd slogd.cpp $(LDLIBS)
 
+# The freezer: a fact stream on stdin -> a static .bin database (freeze.cpp).
+# Links the same headers as slogd so every value encodes through the one
+# canonical implementation (strings/ints/sequences/struct interning).  Built
+# on demand by the compiler driver (tools.rkt), not by the default target.
+slog-freeze: freeze.cpp $(HEADERS)
+	$(CXX) $(CXXFLAGS) $(OMPFLAGS) -o slog-freeze freeze.cpp $(LDLIBS)
+
 test: slogd
 	printf '(close)\n' | racket slogd.rkt
 
 clean:
-	rm -f slogd
+	rm -f slogd slog-freeze
 
 .PHONY: test clean

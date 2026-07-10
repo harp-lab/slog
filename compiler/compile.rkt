@@ -41,6 +41,7 @@
 (require "ir-shared.rkt")
 (require "ir-stack.rkt")
 (require "tools.rkt")
+(require "freeze.rkt")
 (require sha)
 
 ;; -----------------------------------------------------------------------
@@ -75,18 +76,26 @@
 ;; generated names that differ run to run, while the front end's output is
 ;; a pure function of these inputs.
 
-;; program->jobs returns (cons jobs facts-stratum?).  When #:split-facts? is
-;; set (a compressed save, docs/db-compression.md P0.5), the program's
-;; iteration-0 rules -- those whose body reads no declared relation, i.e. facts
-;; and constant/primitive-computed ground tuples -- are pulled into a dedicated
-;; level-0 "facts stratum" run strictly first, with every real stratum bumped
-;; up one level.  This is level-preserving for the real strata (an iter0 rule
-;; contributes no dependency edge, so removing it changes no SCC) and lets the
-;; driver snapshot the pure iteration-0 EDB after that one stratum, before any
-;; derived tuple exists -- correct even for a relation grounded by BOTH facts
-;; and rules.  facts-stratum? is #t iff a non-empty facts stratum was prepended.
+;; program->jobs returns (list jobs facts-stratum? frozen).  When
+;; #:split-facts? is set (a compressed save, docs/db-compression.md P0.5), the
+;; program's iteration-0 rules -- those whose body reads no declared relation,
+;; i.e. facts and constant/primitive-computed ground tuples -- are pulled into
+;; a dedicated level-0 "facts stratum" run strictly first, with every real
+;; stratum bumped up one level.  This is level-preserving for the real strata
+;; (an iter0 rule contributes no dependency edge, so removing it changes no
+;; SCC) and lets the driver snapshot the pure iteration-0 EDB after that one
+;; stratum, before any derived tuple exists -- correct even for a relation
+;; grounded by BOTH facts and rules.  facts-stratum? is #t iff a non-empty
+;; facts stratum was prepended.  frozen is #f, or (cons hash stream): the
+;; program's big ground rules peeled into a fact stream (freeze.rkt) for
+;; compile-strata to render as a static database the driver links in.
 (define (program->jobs prog #:split-facts? [split-facts? #f])
-  (match-define `(program ,type-env ,mods ,dbmanifest ,decomps) prog)
+  (match-define `(program ,type-env ,mods0 ,dbmanifest ,decomps) prog)
+  ;; peel BEFORE the cache key: a peeled program's rule set (and so its
+  ;; stratum hashes) differs from the unpeeled one's, and the frozen
+  ;; database is content-addressed separately (freeze.rkt)
+  (define-values (mods frozen)
+    (peel-ground-facts mods0 type-env #:enabled? (not split-facts?)))
   (define info0 (sort (hash->list (type-env-aliases type-env)) symbol<? #:key car))
   (define info1 (sort (hash->list (type-env-rels type-env)) symbol<? #:key car))
   (define info2 (sort (set->list mods) string<? #:key second))
@@ -173,9 +182,10 @@
        (cons `(stratum 0 ,fact-rules)
              (for/list ([s (in-list rest-strata)])
                `(stratum ,(add1 (stratum-level s)) ,(stratum-rules s))))]))
-  (cons (for/list ([stratum (in-list strata)])
+  (list (for/list ([stratum (in-list strata)])
           (list (job-hash (stratum-level stratum)) type-env+ stratum dbmanifest decomps))
-        facts?))
+        facts?
+        frozen))
 
 ;; -----------------------------------------------------------------------
 ;; Rule/SCC ids + sidecar manifest (docs/pausing.md §6).
@@ -460,9 +470,25 @@
   (define per-program
     (for/list ([prog (in-list (load-program-list path dbmanifest))])
       (program->jobs prog #:split-facts? split-facts?)))
-  (define jobs (append-map car per-program))
+  (define jobs (append-map first per-program))
   (define edb-boundary
-    (if (and split-facts? (pair? per-program) (cdr (first per-program))) 1 0))
+    (if (and split-facts? (pair? per-program) (second (first per-program))) 1 0))
+  ;; Render each program's peeled ground rules (freeze.rkt) as a static
+  ;; database under build/frozen/<hash>/ -- content-addressed, so a repeat
+  ;; compile reuses it; the stream itself sits alongside for debugging.
+  ;; The driver imports these before stratum 0.
+  (define frozen-dirs
+    (for/list ([fz (in-list (filter-map third per-program))])
+      (match-define (cons h stream) fz)
+      (define dir (format "build/frozen/~a" h))
+      (unless (directory-exists? (fullpath dir))
+        (make-directory* (fullpath "build/frozen"))
+        (call-with-output-file (fullpath (string-append dir ".facts"))
+          #:exists 'replace
+          (lambda (o) (display stream o)))
+        (run-freezer (fullpath dir) stream)
+        (printf "(frozen ~a)\n" dir))
+      dir))
   (define partition (jobs->db-partition jobs))
   ;; background -O2 build commands (tiered mode), launched as ONE bounded batch
   ;; after all strata are planned so concurrency is capped (docs/fast-compile.md §7)
@@ -494,4 +520,4 @@
             (sbuild proghash o2so
                     (pooled-eager (lambda () (build-so cpps o0so #:opt "-O0") (cons o0so 'o0))))])])))
   (spawn-detached-o2-batch (reverse o2-cmds))
-  (values strata partition edb-boundary))
+  (values strata partition edb-boundary frozen-dirs))

@@ -21,3 +21,4 @@ slogd
 *.nix
 .history/
 .vscode/
+slog-freeze

@@ -11,6 +11,8 @@
          call-with-atomic-output
          fullpath
          ensure-slogd-exists
+         ensure-slog-freeze-exists
+         run-freezer
          slogd-argv
          daemon-headers-fingerprint
          compiler-sources-fingerprint)
@@ -314,6 +316,42 @@
     (when (> (subprocess-status sp) 0)
       (error (format "Something went wrong compiling the daemon!\n~a"
                      (file->string log-path))))))
+
+;; The freezer (daemon/freeze.cpp): renders a fact stream to a static .bin
+;; database.  Built on demand through make (which no-ops when fresh -- the
+;; target depends on freeze.cpp + every daemon header).
+(define (ensure-slog-freeze-exists)
+  (make-directory* (fullpath "build"))
+  (define log-path (fullpath "build/freeze-build.log"))
+  (define logport (open-output-file log-path #:exists 'replace))
+  (define-values (sp out in err)
+    (subprocess logport #f logport (find-executable-path "make")
+                "-C" "daemon" "slog-freeze"))
+  (close-output-port in)
+  (subprocess-wait sp)
+  (close-output-port logport)
+  (when (> (subprocess-status sp) 0)
+    (error (format "Something went wrong compiling slog-freeze!\n~a"
+                   (file->string log-path)))))
+
+;; Run the freezer: stream (a string) on stdin, database written to dir
+;; (tmp+rename inside, so a crashed freeze never leaves a partial db under
+;; a content-addressed name).  The freezer prints one summary line at exit,
+;; after consuming all of stdin, so writing the whole stream first cannot
+;; deadlock.
+(define (run-freezer dir stream)
+  (ensure-slog-freeze-exists)
+  (define-values (sp out in err)
+    (subprocess #f #f #f (fullpath "daemon/slog-freeze") dir))
+  (display stream in)
+  (close-output-port in)
+  (define outs (port->string out))
+  (define errs (port->string err))
+  (close-input-port out)
+  (close-input-port err)
+  (subprocess-wait sp)
+  (unless (zero? (subprocess-status sp))
+    (error (format "slog-freeze failed for ~a:\n~a~a" dir outs errs))))
 
 ;; The C++ compiler used for every generated .so.  Must match the daemon's
 ;; (daemon/Makefile uses clang++) so the .so and daemon share one OpenMP

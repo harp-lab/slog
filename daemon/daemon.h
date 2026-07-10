@@ -144,6 +144,16 @@ public:
     database->importDatabaseBIN("data/" + db_name + "/");
     needs_reload = true;
   }
+  // Merge a stored database by PATH (no data/ prefix): the driver links the
+  // compiler's frozen ground-fact databases (build/frozen/<hash>) before
+  // stratum 0; the deferred reload hands the next stratum their rows as its
+  // iteration-zero delta.
+  void importPath(const std::string& dir)
+  {
+    if (refuseIfSuspended("import")) return;
+    database->importDatabaseBIN(dir + "/");
+    needs_reload = true;
+  }
   // Merge a compressed LAYER (docs/db-compression.md §4.2): like import, but its
   // heap was trimmed of structs the verbatim-opened root already holds, so
   // dangling same-lineage refs pass through to the dest instead of fataling.

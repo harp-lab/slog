@@ -2751,9 +2751,17 @@ public:
   // `-d <name>.checkpoint` resumes from it.
   void writeDatabaseSerialBIN(const std::string& db_name)
   {
-    std::string db_dir("data/"+db_name+"/");
-    std::string tmp_dir("data/"+db_name+".tmp/");
-    std::string old_dir("data/"+db_name+".old/");
+    writeDatabaseSerialBINDir("data/" + db_name);
+  }
+  // The same single-threaded whole-db write rooted at an arbitrary
+  // directory (no data/ prefix): the freezer (slog-freeze) writes
+  // content-addressed databases under build/frozen/.
+  void writeDatabaseSerialBINDir(std::string db_root)
+  {
+    while (!db_root.empty() && db_root.back() == '/') db_root.pop_back();
+    std::string db_dir(db_root + "/");
+    std::string tmp_dir(db_root + ".tmp/");
+    std::string old_dir(db_root + ".old/");
     std::filesystem::remove_all(tmp_dir);
     std::filesystem::remove_all(old_dir);
     std::filesystem::create_directories(tmp_dir);
@@ -2831,7 +2839,7 @@ public:
     if (std::filesystem::exists(db_dir)) std::filesystem::rename(db_dir, old_dir);
     std::filesystem::rename(tmp_dir, db_dir);
     std::filesystem::remove_all(old_dir);
-    DEBUG("Checkpointed Database " << db_name)
+    DEBUG("Checkpointed Database " << db_dir)
   }
 
 private:
