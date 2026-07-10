@@ -350,22 +350,33 @@
     ["rule"
      (let loop ([toks+ (advance toks)]
                 [body0 '()])
-       (define arrow (string->symbol (token->str (peek toks+))))
-       (if (or (eq? arrow '-->) (eq? arrow '<--))
-           (let loop ([toks+ (advance toks+)]
-                      [body1 '()])
-             (if (set-member? top-level-keywords (token->str (peek toks+)))
-                 (let () ; parse the rest of the top level and emit rule
-                   (match-define (cons topbody toks++) (parse-top-level toks+))
-                   (cons (emit-expr `(rule ,@(reverse body0) ,arrow ,@(reverse body1) ,topbody)
-                                    toks toks+)
-                         toks++))
-                 (let () ; gather each clause in the second half
-                   (match-define (cons e toks++) (parse toks+))
-                   (loop toks++ (cons e body1)))))
-           (let () ; gather each clause in the first half
-             (match-define (cons e toks++) (parse toks+))
-             (loop toks++ (cons e body0)))))]
+       (define next (token->str (peek toks+)))
+       (define arrow (string->symbol next))
+       (cond
+         [(or (eq? arrow '-->) (eq? arrow '<--))
+          (let loop ([toks+ (advance toks+)]
+                     [body1 '()])
+            (if (set-member? top-level-keywords (token->str (peek toks+)))
+                (let () ; parse the rest of the top level and emit rule
+                  (match-define (cons topbody toks++) (parse-top-level toks+))
+                  (cons (emit-expr `(rule ,@(reverse body0) ,arrow ,@(reverse body1) ,topbody)
+                                   toks toks+)
+                        toks++))
+                (let () ; gather each clause in the second half
+                  (match-define (cons e toks++) (parse toks+))
+                  (loop toks++ (cons e body1)))))]
+         ;; the next top-level form arrives before any arrow: a head-only
+         ;; rule -- the empty body is implicit, every clause a head (one
+         ;; ground fact, or several heads gated/grouped together)
+         [(set-member? top-level-keywords next)
+          (when (null? body0)
+            (parse-error "Expected at least one clause in rule" toks))
+          (match-define (cons topbody toks++) (parse-top-level toks+))
+          (cons (emit-expr `(rule --> ,@(reverse body0) ,topbody) toks toks+)
+                toks++)]
+         [else ; gather each clause in the first half
+          (match-define (cons e toks++) (parse toks+))
+          (loop toks++ (cons e body0))]))]
     ["let"
      (match-define (cons tag-pat-rhs toks+) (parse-id-then-N toks parse 2))
      (match-define (cons body toks++) (parse-top-level toks+))

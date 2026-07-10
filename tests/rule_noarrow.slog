@@ -1,0 +1,20 @@
+;; Arrowless rules: a rule with no --> / <-- before the next top-level
+;; form is all heads over an implicit empty body -- one ground fact,
+;; several grouped heads, or gated judgment facts with effect heads.
+
+table (edge int int)
+rule (edge 1 2)
+rule (edge 2 3) (edge 3 4)      ;; several ground heads in one rule
+
+table (path int int)
+rule (path x y) <-- (edge x y)
+rule (path x z) <-- (edge x y) (path y z)
+
+;; a judgment fact plus an effect head, grouped arrowless: the gate
+;; binds n for both heads
+demand (dub int) int
+table (asked int)
+rule (dub n (+ n n)) (asked n)
+
+table (out int int)
+rule (out n (dub n)) <-- (edge n _)

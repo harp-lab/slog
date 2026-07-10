@@ -93,7 +93,12 @@ rule (ack m n (ack (- m 1) (ack m (- n 1)))) <-- (< 0 m) (< 0 n)
 
 Memoization is interning: each distinct demand is one fact, computed
 once, shared by every asker. Base cases of judgments are naturally facts
-with pattern variables — the gate binds them: `facts (map2 f (nil) (nil))`.
+with pattern variables — the gate binds them: `facts (map2 f (nil) (nil))`,
+or equivalently an arrowless rule, `rule (map2 f (nil) (nil))` — a rule
+with no `-->`/`<--` before the next top-level form is all heads over an
+implicit empty body. Prefer one arrowless `rule` per gated fact: a
+multi-fact `facts` block is ONE rule, so its judgment heads' gates all
+join in a single body (they gate jointly).
 
 ## 4. Lambdas and first-class calls
 
