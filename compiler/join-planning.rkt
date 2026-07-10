@@ -111,17 +111,23 @@
   (define planned
     (for/fold ([acc (set)]) ([rule (in-set rules)])
       (for/fold ([acc acc]) ([staged (in-list (stage-rule rule add-temp!))])
-        (set-union acc (plan-rule-versions staged dynamic? temp?)))))
+        (match-define (cons staged-rule statics) staged)
+        (set-union acc (plan-rule-versions staged-rule dynamic? temp? statics)))))
   (cons planned (unbox rel-env-box)))
 
 ;; -----------------------------------------------------------------------
 ;; 1. Head staging.
 ;;
-;; Returns the list of rules replacing `rule`: the parent with only its
-;; immediate heads (plus a temp head when needed), followed by the staged
-;; follow-up rules.
+;; Returns the list of rules replacing `rule`, each as (cons rule statics):
+;; the parent with only its immediate heads (plus a temp head when needed),
+;; followed by the staged follow-up rules.  `statics` are body joins whose
+;; rows are guaranteed present in FULL by the time any driver's delta
+;; arrives -- clauses re-established from an earlier stage, and all but one
+;; of a stage's sibling replays (they are co-emitted, so one delta subsumes
+;; the others, the same argument temps make) -- and must not spawn
+;; delta-driven versions of their own.
 
-(define (stage-rule rule add-temp!)
+(define (stage-rule rule add-temp! [statics '()])
   (match rule
     [`(syn ,prov rule ,bodys ... --> ,heads ...)
      ;; fresh values produced by this rule's heads: constructed ids AND
@@ -145,7 +151,7 @@
      (define-values (immediate residual) (partition immediate? heads))
 
      (cond
-       [(null? residual) (list rule)]
+       [(null? residual) (list (cons rule statics))]
        [else
         ;; No immediate head means EVERY head clause consumes a fresh id, so
         ;; the follow-up rule would keep these exact heads and staging can
@@ -183,16 +189,53 @@
                                  (list->set (construction-args next))))
                 (values replays needed))))
 
-        ;; constants in scope re-establish themselves in the follow-up rule
-        (define consts (filter const-cl? bodys))
-        (define const-vars (for/set ([cl (in-list consts)]) (fourth cl)))
-        (define carried (sort (set->list (set-subtract needed const-vars))
+        ;; Clauses that re-establish themselves in the follow-up rule
+        ;; instead of riding the temp: constants, and struct content-joins
+        ;; whose inputs are all themselves re-establishable -- a replay
+        ;; copied from an earlier stage re-finds its interned row by
+        ;; content, chaining down to constants.  Without the chaining, an
+        ;; id referenced across two or more stages rides every intervening
+        ;; temp by value, and a ground tree's temp width grows with its
+        ;; node count.  A ground fact's constants are HEAD clauses (always
+        ;; immediate -- they consume nothing), so seed from those too.
+        (define-values (reest reest-vars)
+          (let loop ([kept '()]
+                     [vars (set)]
+                     [pending (append bodys (filter const-cl? immediate))])
+            (define-values (new rest)
+              (partition
+               (lambda (cl)
+                 (match cl
+                   [`(syn ,_ = ,(? symbol?) (syn ,_ const ,_)) #t]
+                   [`(syn ,_ = ,(? symbol?) (syn ,_ ,(? symbol?) ,args ...))
+                    (for/and ([a (in-list args)]) (set-member? vars a))]
+                   [_ #f]))
+               pending))
+            (if (null? new)
+                (values kept vars)
+                (loop (append kept new)
+                      (for/fold ([vars vars]) ([cl (in-list new)])
+                        (set-add vars (fourth cl)))
+                      rest))))
+        (define carried (sort (set->list (set-subtract needed reest-vars))
                               symbol<?))
-        (define sub-consts
-          (let ([used (set-union needed
-                                 (apply set-union (set)
-                                        (map clause-vars (append replays residual))))])
-            (filter (lambda (cl) (set-member? used (fourth cl))) consts)))
+        ;; the copied subset: re-establishable clauses whose output the
+        ;; follow-up uses, pulled in transitively (a copied join's inputs
+        ;; need their own binders copied too)
+        (define sub-reest
+          (let loop ([used (set-union needed
+                                      (apply set-union (set)
+                                             (map clause-vars (append replays residual))))]
+                     [kept '()]
+                     [pending reest])
+            (define-values (new rest)
+              (partition (lambda (cl) (set-member? used (fourth cl))) pending))
+            (if (null? new)
+                kept
+                (loop (for/fold ([used used]) ([cl (in-list new)])
+                        (set-union used (clause-vars cl)))
+                      (append kept new)
+                      rest))))
 
         (define-values (parent-heads sub-body-front)
           (if (null? carried)
@@ -206,13 +249,22 @@
 
         (define parent `(syn ,prov rule ,@bodys --> ,@parent-heads))
         (define follow-up
-          `(syn ,prov rule ,@sub-consts ,@sub-body-front ,@replays --> ,@residual))
-        (cons parent (stage-rule follow-up add-temp!))])]))
+          `(syn ,prov rule ,@sub-reest ,@sub-body-front ,@replays --> ,@residual))
+        ;; the copies never drive; of the sibling replays one delta
+        ;; subsumes the rest (co-emitted with it) -- but only when nothing
+        ;; else drives: with a temp the temp drives and every replay row
+        ;; already exists when it fires, without one the first replay's
+        ;; delta *is* the arrival signal for its co-emitted siblings
+        (define follow-statics
+          (append (filter (lambda (cl) (not (const-cl? cl))) sub-reest)
+                  (if (pair? replays) (cdr replays) '())))
+        (cons (cons parent statics)
+              (stage-rule follow-up add-temp! follow-statics))])]))
 
 ;; -----------------------------------------------------------------------
 ;; 2 & 3. Scheduling and version generation for one staged rule.
 
-(define (plan-rule-versions rule dynamic? temp?)
+(define (plan-rule-versions rule dynamic? temp? [statics '()])
   (match rule
     [`(syn ,prov rule ,bodys ... --> ,heads ...)
      ;; constants (from body or head) ground their variables up front
@@ -224,12 +276,21 @@
      ;; normalize repeated variables within body joins: (edge x x) becomes
      ;; (edge x x*) plus an equality guard, so downstream never sees a join
      ;; binding the same variable twice
+     (define body-joins (filter join-cl? bodys))
      (define-values (joins eq-guards)
        (for/fold ([joins '()] [eqs '()]
                   #:result (values (reverse joins) eqs))
-                 ([cl (in-list (filter join-cl? bodys))])
+                 ([cl (in-list body-joins)])
          (define-values (cl+ eqs+) (dedup-join-vars cl))
          (values (cons cl+ joins) (append eqs+ eqs))))
+     ;; joins staging marked static (stage-rule) are guaranteed present in
+     ;; FULL before any driver's delta arrives: they join in every version
+     ;; but never drive one
+     (define driver-joins
+       (for/list ([cl0 (in-list body-joins)]
+                  [cl+ (in-list joins)]
+                  #:unless (member cl0 statics))
+         cl+))
 
      (define computes (filter compute-cl? bodys))
      (define guards (append (filter guard-cl? bodys) eq-guards))
@@ -259,8 +320,8 @@
        `(syn ,prov rule ,@const-lets ,@body-schedule
              --> ,@head-rest))
 
-     (define temp-joins (filter (lambda (cl) (temp? (join-rel cl))) joins))
-     (define dynamic-joins (filter (lambda (cl) (dynamic? (join-rel cl))) joins))
+     (define temp-joins (filter (lambda (cl) (temp? (join-rel cl))) driver-joins))
+     (define dynamic-joins (filter (lambda (cl) (dynamic? (join-rel cl))) driver-joins))
      (define drivers
        (cond
          ;; a temp join must drive (temps have no indices to probe), and its

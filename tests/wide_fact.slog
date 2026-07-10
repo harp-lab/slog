@@ -1,0 +1,21 @@
+;; A single ground fact whose nested construction mentions more distinct
+;; constants (33) than the daemon's 32-column index ladder.  Head staging
+;; re-establishes constants in each follow-up rule rather than carrying
+;; them as temp columns, so the staging temps stay narrow no matter how
+;; wide the fact is.
+
+struct (l8 int int int int int int int int)
+struct (n2 l8 l8)
+struct (n4 n2 n2)
+table (wide str n4)
+
+facts (wide "w"
+            (n4 (n2 (l8 1 2 3 4 5 6 7 8)
+                    (l8 9 10 11 12 13 14 15 16))
+                (n2 (l8 17 18 19 20 21 22 23 24)
+                    (l8 25 26 27 28 29 30 31 32))))
+
+;; read a corner back out through the joins
+table (corner int int)
+rule (wide tag (n4 (n2 (l8 a _ _ _ _ _ _ _) _) (n2 _ (l8 _ _ _ _ _ _ _ b))))
+ --> (corner a b)

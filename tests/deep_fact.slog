@@ -1,0 +1,13 @@
+;; One ground fact holding a 63-node tree (32 leaves): head staging
+;; re-establishes support chains by content in each follow-up (chained
+;; replays), so no staging temp carries the tree's ids or literals.
+
+union (T (Lf int) (Nd T T))
+table (t T)
+rule (t (Nd (Nd (Nd (Nd (Nd (Lf 1) (Lf 2)) (Nd (Lf 3) (Lf 4))) (Nd (Nd (Lf 5) (Lf 6)) (Nd (Lf 7) (Lf 8)))) (Nd (Nd (Nd (Lf 9) (Lf 10)) (Nd (Lf 11) (Lf 12))) (Nd (Nd (Lf 13) (Lf 14)) (Nd (Lf 15) (Lf 16))))) (Nd (Nd (Nd (Nd (Lf 17) (Lf 18)) (Nd (Lf 19) (Lf 20))) (Nd (Nd (Lf 21) (Lf 22)) (Nd (Lf 23) (Lf 24)))) (Nd (Nd (Nd (Lf 25) (Lf 26)) (Nd (Lf 27) (Lf 28))) (Nd (Nd (Lf 29) (Lf 30)) (Nd (Lf 31) (Lf 32)))))))
+
+;; leftmost and rightmost leaves, read back through the joins
+table (corners int int)
+rule (corners a b)
+ <-- (t (Nd (Nd (Nd (Nd (Nd (Lf a) _) _) _) _)
+          (Nd _ (Nd _ (Nd _ (Nd _ (Lf b)))))))

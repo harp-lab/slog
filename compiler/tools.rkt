@@ -341,9 +341,12 @@
 ;; every plugin -- and across an -O0 plugin and its -O2 hot-swap replacement
 ;; (docs/fast-compile.md §7.5).  -Idaemon lets the vendored tlx headers'
 ;; internal <tlx/...> includes resolve.
+;; -fbracket-depth: emitted read phases nest one brace scope per join, so a
+;; staged ground tree's biggest stage nests O(level width) deep -- clang's
+;; default cap is 256, hit by a few hundred nodes per level.
 (define (base-cxx-flags opt)
   (append (list "-std=c++20" "-fPIC" "-Idaemon" "-fopenmp" "-ffp-contract=off"
-                "-ferror-limit=1" opt)
+                "-ferror-limit=1" "-fbracket-depth=4096" opt)
           (if (debug-build?) (list "-g") '())))
 
 ;; ---- precompiled header (docs/fast-compile.md §7.2) --------------------
