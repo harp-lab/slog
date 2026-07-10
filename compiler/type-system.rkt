@@ -226,10 +226,17 @@
               (hash-keys local-env-proto)))
 
      (define (type-match? t0 x)
+       ;; Union MEMBERS resolve through lattice-base-type too: a union may
+       ;; name a (listof T)/(map K V)/lattice member -- e.g. union (Ctx
+       ;; [Exp]) as a named alias of a sequence type -- and values of such
+       ;; a member are typed by the base type (cseq/cmap), so the overlap
+       ;; test must compare member sets at base types.
+       (define (expand-members t)
+         (for/set ([m (in-set (hash-ref alias-env t (lambda () (set t))))])
+           (lattice-base-type rel-env m)))
        (define t (lattice-base-type rel-env t0))
-       (define t* (hash-ref alias-env t (lambda () (set t))))
-       (define t+
-         (hash-ref alias-env (hash-ref local-env x) (lambda () (set (hash-ref local-env x)))))
+       (define t* (expand-members t))
+       (define t+ (expand-members (lattice-base-type rel-env (hash-ref local-env x))))
        ;; `any` is the escape hatch in either direction: a column declared
        ;; any accepts every value, and a variable whose inferred type is any
        ;; (e.g. an argument of (size x), typed (fun any -> int)) satisfies
@@ -251,7 +258,9 @@
      ;; and enum members (union names are covered by their members; lattice
      ;; and listof names resolve through lattice-base-type first).
      (define (ground-member-types t)
-       (define ts (hash-ref alias-env t (lambda () (set t))))
+       (define ts
+         (for/set ([m (in-set (hash-ref alias-env t (lambda () (set t))))])
+           (lattice-base-type rel-env m)))
        (for/set ([m (in-set ts)]
                  #:when (or (memq m '(int float str any cset cmap cseq))
                             (match (hash-ref rel-env m #f)
