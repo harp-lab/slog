@@ -1,0 +1,9 @@
+"body"   {"inner":1 "outer":1}   
+"else"   {"inner":1 "outer":1}   
+"entry"   {}   
+"exit"   {}   
+"inner"   {"inner":1 "outer":1}   
+"join"   {"inner":1 "outer":1}   
+"latch"   {"outer":1}   
+"outer"   {"outer":1}   
+"then"   {"inner":1 "outer":1}   

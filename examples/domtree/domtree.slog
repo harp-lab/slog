@@ -1,0 +1,131 @@
+;; Dominators, the dominator tree, and natural loops -- the classic
+;; control-flow trio at the heart of every optimizing compiler -- as
+;; one forward fixpoint over canonical sets, in ~15 rules.
+;;
+;; A node d DOMINATES n when EVERY path from the entry to n passes
+;; through d.  That "every" is the interesting part: rules only ever
+;; add facts, so a for-all-paths property can't be stated directly.
+;; The move is to grow the complement -- a witness (nd d n) says
+;; "entry reaches n while avoiding d", i.e. d does NOT dominate n --
+;; and then read absence from the finished witness set as a positive
+;; fact: cmem on a closed canonical set answers 0.  Where the textbook
+;; algorithm intersects shrinking dominator sets and warns you not to
+;; look until convergence, here the sets only grow, and the "don't
+;; look yet" is not a comment but a stratum boundary the compiler
+;; infers and enforces.
+;;
+;; Where examples/regex is all demand -- backward, on-request,
+;; memoized -- this file is all convergence: ascending (set str)
+;; lattice columns, closed by the engine, then measured, compared,
+;; and joined ON as ordinary values.
+
+;; ------------------------------------------------------------------ CFG
+;; Blocks are named by strings; the graph is just edges plus a
+;; designated entry.
+
+table (edge str str)
+table (entry str)
+table (node str)
+rule (edge a b) --> (node a) (node b)
+
+table (reached str)
+rule (entry e) --> (reached e)
+rule (reached p) (edge p n) --> (reached n)
+
+;; -------------------------------------------------- who does NOT dominate
+;; (nd d n): entry reaches n along a path avoiding d.  Plain
+;; transitive closure, one excluded node at a time -- the entry is
+;; reached by the empty path (which avoids everything else), and each
+;; step may pass any node but d.
+
+table (nd str str)
+rule (entry e) (node d) (/= d e) --> (nd d e)
+rule (nd d p) (edge p n) (/= n d) --> (nd d n)
+
+;; Collect each node's witnesses into ONE canonical set value.  A
+;; (set str) lattice column merges by union, so the singletons below
+;; accumulate; seeding every reachable node with the empty set keeps
+;; "no non-dominators" distinct from "not reachable at all".
+
+lattice (nodeset (set str))
+table (ndset str nodeset)
+rule (reached n) (= s (cmap)) --> (ndset n s)
+rule (nd d n) (= s (cins (cmap) d)) --> (ndset n s)
+
+;; ------------------------------------------------------------ dominators
+;; d dominates n  <=>  d is not a witness against n.  cmem is total --
+;; it answers 0 for an absent element -- so universal quantification
+;; over paths lands as one membership test on a closed set.  This rule
+;; only depends on ndset, so the compiler schedules it after that
+;; fixpoint; inspecting the set while it was still growing would be
+;; rejected by the lattice-soundness check.
+
+table (dom str str)
+rule (ndset n s) (node d) (= m (cmem s d)) (< m 1) --> (dom d n)
+
+;; ... and re-collected as sets, for the extraction below.
+table (domset str nodeset)
+rule (dom d n) (= s (cins (cmap) d)) --> (domset n s)
+
+;; -------------------------------------------------------- dominator tree
+;; The dominators of n form a chain, so n's immediate dominator is the
+;; unique d whose dominators are EXACTLY n's minus n itself.  Equal
+;; contents means equal interned value, so "exactly" is an O(1)
+;; comparison -- the classic algorithm's argmin-over-the-chain becomes
+;; a single join on a set-valued column.
+
+table (idom str str)
+rule (domset n s) (= t (cdel s n)) (domset d t) (/= d n) --> (idom n d)
+
+;; --------------------------------------------------------- natural loops
+;; A back edge jumps to one of its own dominators; the natural loop of
+;; a back edge a->h is h plus everything that reaches a without
+;; crossing h.  Reverse reachability, stopped at the header.
+
+table (backedge str str)
+rule (edge a h) (dom h a) --> (backedge a h)
+
+table (loop str str)             ;; (loop h n): n is in the loop headed h
+rule (backedge a h) --> (loop h h) (loop h a)
+rule (loop h n) (/= n h) (edge p n) --> (loop h p)
+
+;; Nesting depth: how many loops contain each node -- one more union
+;; set, closed and then measured a stratum later.
+
+table (loopsof str nodeset)
+rule (reached n) (= s (cmap)) --> (loopsof n s)
+rule (loop h n) (= s (cins (cmap) h)) --> (loopsof n s)
+
+table (depth str int)
+rule (loopsof n s) (= k (csize s)) --> (depth n k)
+
+;; ----------------------------------------------------------------- input
+;; A doubly nested loop whose inner body is an if/else diamond:
+;;
+;;   entry
+;;   while (...) {            # outer
+;;     while (...) {          # inner
+;;       ...                  # body
+;;       if (...) ... else ...  # then | else, meeting at join
+;;     }
+;;     ...                    # latch
+;;   }
+;;   exit
+;;
+;; Worth checking in the output: idom of "join" is "body" -- neither
+;; branch of the diamond dominates the join point; back edges
+;; join->inner and latch->outer are found from dominance alone; and
+;; depth reads 0/1/2 exactly as the indentation above suggests.
+
+rule (entry "entry")
+rule (edge "entry" "outer")
+rule (edge "outer" "inner")
+rule (edge "outer" "exit")
+rule (edge "inner" "body")
+rule (edge "inner" "latch")
+rule (edge "body" "then")
+rule (edge "body" "else")
+rule (edge "then" "join")
+rule (edge "else" "join")
+rule (edge "join" "inner")
+rule (edge "latch" "outer")

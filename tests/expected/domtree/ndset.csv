@@ -1,0 +1,9 @@
+"body"   {"latch":1 "join":1 "then":1 "else":1 "exit":1}   
+"else"   {"latch":1 "join":1 "then":1 "exit":1}   
+"entry"   {"latch":1 "inner":1 "join":1 "then":1 "else":1 "exit":1 "outer":1 "body":1}   
+"exit"   {"latch":1 "inner":1 "join":1 "then":1 "else":1 "body":1}   
+"inner"   {"latch":1 "join":1 "then":1 "else":1 "exit":1 "body":1}   
+"join"   {"latch":1 "then":1 "else":1 "exit":1}   
+"latch"   {"join":1 "then":1 "else":1 "exit":1 "body":1}   
+"outer"   {"latch":1 "inner":1 "join":1 "then":1 "else":1 "exit":1 "body":1}   
+"then"   {"latch":1 "join":1 "else":1 "exit":1}   

@@ -68,6 +68,7 @@ if [ ${#TESTS[@]} -eq 0 ]; then
   TESTS+=("examples/kcfa/kcfa.slog")
   TESTS+=("examples/verify/demo.slog")
   TESTS+=("examples/regex/antimirov.slog")
+  TESTS+=("examples/domtree/domtree.slog")
 fi
 
 if [ "$KEEP_CACHE" -eq 0 ]; then
