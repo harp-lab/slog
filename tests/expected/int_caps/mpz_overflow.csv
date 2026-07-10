@@ -1,0 +1,10 @@
+ "int_caps.slog:15"
+ "int_caps.slog:17"
+ "pow"
+ "shl"
+ 1
+ 100000)
+ 2
+ 70000)
+(mpz_overflow
+(mpz_overflow

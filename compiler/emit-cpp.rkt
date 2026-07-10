@@ -444,7 +444,9 @@
               (define prim-tests
                 (for/list ([t (in-list ts)] #:when (symbol? t))
                   (format (match t
-                            ['int "is_s32(v_~a)"]
+                            ;; int spans both representations (s32 prim or
+                            ;; interned mpz bignum, docs/primitives.md §14)
+                            ['int "is_int(v_~a)"]
                             ['float "is_float(v_~a)"]
                             ['str "is_str(v_~a)"]
                             ['cnode "is_cnode(v_~a)"]
@@ -809,7 +811,20 @@
                ;; intern as a rope, or it forks from computed equal content
                ;; (the docs/sequences.md §6 normalization keystone)
                [(? string?) (format "  v_~a = db->encodeString(\"~a\");\n" g (escape-c-string-literal v))]
-               [(? exact-integer?) (format "  v_~a = s32_encode(~a);\n" g v)]
+               ;; out-of-s32-range literals intern as bignums at plugin load,
+               ;; mirroring the string arm above for the same reason: they
+               ;; must dedup with computed equal values (primitives.md §14.2)
+               [(? exact-integer?)
+                (if (and (>= v (- (expt 2 31))) (< v (expt 2 31)))
+                    (format "  v_~a = s32_encode(~a);\n" g v)
+                    ;; a literal the caps reject would otherwise smuggle
+                    ;; slog_error into facts as a stored word -- fail loudly
+                    (format (string-append
+                             "  v_~a = db->encodeIntLiteral(\"~a\");\n"
+                             "  if (v_~a == slog_error) slog::fatal(\"bignum literal"
+                             " exceeds the mpz caps (SLOG_MPZ_MAX_BITS /"
+                             " SLOG_MPZ_TABLE_BYTES)\");\n")
+                            g v g))]
                [(? inexact-real?) (format "  v_~a = float_encode(~a);\n" g v)]))))
   (define rel-decls
     (apply string-append (map add-rel-decl (append decls manifest-decls))))

@@ -327,8 +327,8 @@
     (cond
       [(string=? uname-s "Darwin")
        (define brew-prefix (string-trim (with-output-to-string (lambda () (system "brew --prefix")))))
-       (list (format "-I~a/include" brew-prefix) (format "-L~a/lib" brew-prefix) "-lz")]
-      [else (list "-lz")])))
+       (list (format "-I~a/include" brew-prefix) (format "-L~a/lib" brew-prefix) "-lz" "-lgmp")]
+      [else (list "-lz" "-lgmp")])))
 
 ;; Debug info is off by default (measured ~30% of a stratum's clang time,
 ;; docs/fast-compile.md §7.3); set SLOG_DEBUG=1 to emit -g.

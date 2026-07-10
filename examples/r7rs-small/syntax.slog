@@ -1,12 +1,32 @@
 
 
-struct (P string int int int int)
+;; Expression provenance (filepath row col endrow endcol)
+struct (Pr str int int int int)
 
+;; Constants
+union (ConstVal (ConstInt int)
+                (ConstFloat float)
+                (ConstStr str)
+                (ConstBool bool))
+
+;; The Source Language
+union (Exp ;; iterating toward (much of) r7rs-small
+
+       (Lam Pr [Ref] [Exp])
+       (Ref Pr str)
+       (Const Pr ConstVal)
        
-union (E (Lam P [X] [E])
-         (App P E [E])
-         (Apply P E [E])
-         (X P str))
+       (App Pr Exp [Exp])
+       (Apply Pr Exp [Exp])
+       
+       (If Pr Exp Exp Exp)
 
+       )
+
+
+
+demand (freevars Exp str)
+rule (freevars (If _ e0 e1 e2) x) <-- (freevars (or e0 e1 e2) x)
+rule (freevars (App _ e es) x) <-- 
 
 

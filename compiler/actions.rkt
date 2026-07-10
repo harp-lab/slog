@@ -85,7 +85,11 @@
        (for/list ([v (in-list vals)])
          (cond
            [(string? v) (format "str_encode(db, \"~a\")" v)]
-           [(exact-integer? v) (format "s32_encode(~a)" v)]
+           [(exact-integer? v)
+            ;; bignum literals intern via the normalization keystone (§14.2)
+            (if (and (>= v (- (expt 2 31))) (< v (expt 2 31)))
+                (format "s32_encode(~a)" v)
+                (format "db->encodeIntLiteral(\"~a\")" v))]
            [(real? v) (format "float_encode(~a)" (exact->inexact v))]
            [(symbol? v) (format "str_encode(db, \"~a\")" v)]
            [else (error 'action-so "unsupported add-tuple value: ~a" v)])))
@@ -122,7 +126,10 @@
        (for/list ([v (in-list vals)])
          (cond
            [(string? v) (format "str_encode(db, \"~a\")" (escape-c-string-literal v))]
-           [(exact-integer? v) (format "s32_encode(~a)" v)]
+           [(exact-integer? v)
+            (if (and (>= v (- (expt 2 31))) (< v (expt 2 31)))
+                (format "s32_encode(~a)" v)
+                (format "db->encodeIntLiteral(\"~a\")" v))]
            [(real? v) (format "float_encode(~a)" (exact->inexact v))]
            [(symbol? v) (format "str_encode(db, \"~a\")" (escape-c-string-literal (symbol->string v)))]
            [else (error 'action-so "unsupported lookup value: ~a" v)])))

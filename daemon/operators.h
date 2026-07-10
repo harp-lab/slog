@@ -310,6 +310,13 @@ inline void emit_pending_error(Database* db, const char* loc)
       emit_error_struct<3>(rel("toint_range"),    {vloc, pe.a}, {1, 2, 0}); break;
     case ERR_TYPE:
       emit_error_struct<5>(rel("type_mismatch"),  {vloc, str_encode(db, pe.op), pe.a, pe.b}, {1, 2, 3, 4, 0}); break;
+    // The two bignum caps (docs/primitives.md §14.4): per-value overflow
+    // carries the operands; the whole-table trip is near-global (location +
+    // op only), so set semantics dedup a storm to a handful of facts.
+    case ERR_MPZ_OVF:
+      emit_error_struct<5>(rel("mpz_overflow"),   {vloc, str_encode(db, pe.op), pe.a, pe.b}, {1, 2, 3, 4, 0}); break;
+    case ERR_MPZ_TABLE:
+      emit_error_struct<3>(rel("mpz_table_overflow"), {vloc, str_encode(db, pe.op)}, {1, 2, 0}); break;
   }
 }
 

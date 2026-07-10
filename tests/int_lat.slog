@@ -1,0 +1,28 @@
+;; Bignum payloads in numeric lattices (docs/primitives.md §14.5): the
+;; (max int)/(min int) joins compare exactly across representations --
+;; mixed s32/bignum keys, negative bignums (sign decides), and two-bignum
+;; compares (mpz_cmp).  Hand-verified:
+;;   peak 1: max(5, 2^40) = 1099511627776
+;;   peak 2: max(-2^40, 7) = 7
+;;   peak 3: max(10^20, 10^21) = 1000000000000000000000
+;;   low  1: min(5, 2^40) = 5
+;;   low  2: min(-2^40, 7) = -1099511627776
+;;   low  3: min(10^20, 10^21) = 100000000000000000000
+
+lattice (mx (max int))
+lattice (mn (min int))
+table (seed int int)
+table (peak int mx)
+table (low int mn)
+
+facts
+(seed 1 5)
+(seed 2 7)
+(seed 3 0)
+
+rule (seed 1 V) --> (peak 1 V) (low 1 V)
+rule (seed 1 V) (= B (shl 1 40)) --> (peak 1 B) (low 1 B)
+rule (seed 2 V) --> (peak 2 V) (low 2 V)
+rule (seed 2 V) (= B (neg (shl 1 40))) --> (peak 2 B) (low 2 B)
+rule (seed 3 V) (= B (pow 10 20)) --> (peak 3 B) (low 3 B)
+rule (seed 3 V) (= B (pow 10 21)) --> (peak 3 B) (low 3 B)

@@ -25,10 +25,12 @@
 #include "float_prims.h"
 
 #include <format>
+#include <cmath>
 
 namespace {
   const char* get_type_name(u64 v) {
-    if (is_s32(v)) return "s32 (32-bit integer)";
+    if (is_s32(v)) return "int (32-bit integer)";
+    if (is_mpz(v)) return "int (big integer)";
     if (is_str(v)) return "str (string)";
     if (is_float(v)) return "float (floating point)";
     if (is_struct(v)) return "struct (structure)";
@@ -38,10 +40,16 @@ namespace {
   }
 }
 
-// A numeric value is either an immediate s32 or a NaN-boxed double.
-static inline bool is_num(u64 v) { return is_s32(v) || is_float(v); }
-// Decode any numeric value to double (promoting s32).
-static inline double to_double(u64 v) { return is_s32(v) ? (double)s32_decode(v) : float_decode(v); }
+// A numeric value is an int (s32 or interned mpz) or a NaN-boxed double.
+static inline bool is_num(u64 v) { return is_int(v) || is_float(v); }
+// Decode any numeric value to double (promoting ints; a bignum rounds --
+// same loss as any int->float conversion, docs/primitives.md §14.3).
+static inline double to_double(slog::Database* db, u64 v)
+{
+  if (is_s32(v)) return (double)s32_decode(v);
+  if (is_mpz(v)) return mpz_get_d(db->lookup_mpz(decode_val(v))->get());
+  return float_decode(v);
+}
 
 // Sequence and rope-string prims (docs/sequences.md): canonical [T] lists
 // and tag-4 rope strings in the per-Database sequence arena (daemon/seq.h).
@@ -57,58 +65,65 @@ static inline double to_double(u64 v) { return is_s32(v) ? (double)s32_decode(v)
 // float kernels returning slog_error (float_encode of a NaN, types.h); ERR_TYPE
 // covers an `any`-typed operand of the wrong kind.
 
-// Binary numeric op: int kernel when both s32, else promote to double.
-#define SLOG_ARITH(NAME, S32K, FLTK, OPSTR)                                     \
+// Binary numeric op: exact int kernel when both int, else promote to double.
+#define SLOG_ARITH(NAME, INTK, FLTK, OPSTR)                                     \
   inline u64 NAME(slog::Database* db, u64 x, u64 y) {                           \
-    if (is_s32(x) && is_s32(y)) return S32K(db, x, y);                          \
-    if (is_num(x) && is_num(y)) { u64 r = FLTK(to_double(x), to_double(y));     \
+    if (is_int(x) && is_int(y)) return INTK(db, x, y);                          \
+    if (is_num(x) && is_num(y)) { u64 r = FLTK(to_double(db, x), to_double(db, y)); \
       if (r == slog_error) db->setPendingError(slog::ERR_NAN, OPSTR, x, y);     \
       return r; }                                                              \
     db->setPendingError(slog::ERR_TYPE, OPSTR, x, y); return slog_error; }
 
 // Binary integer-only op (bitwise / shifts).
-#define SLOG_INT2(NAME, S32K, OPSTR)                                            \
+#define SLOG_INT2(NAME, INTK, OPSTR)                                            \
   inline u64 NAME(slog::Database* db, u64 x, u64 y) {                           \
-    if (is_s32(x) && is_s32(y)) return S32K(db, x, y);                          \
+    if (is_int(x) && is_int(y)) return INTK(db, x, y);                          \
     db->setPendingError(slog::ERR_TYPE, OPSTR, x, y); return slog_error; }
 
 // Unary integer-only op.
-#define SLOG_INT1(NAME, S32K, OPSTR)                                            \
+#define SLOG_INT1(NAME, INTK, OPSTR)                                            \
   inline u64 NAME(slog::Database* db, u64 x) {                                  \
-    if (is_s32(x)) return S32K(db, x);                                          \
+    if (is_int(x)) return INTK(db, x);                                          \
     db->setPendingError(slog::ERR_TYPE, OPSTR, x, 0); return slog_error; }
 
 // Unary numeric op with distinct int/float kernels.
-#define SLOG_NUM1(NAME, S32K, FLTK, OPSTR)                                      \
+#define SLOG_NUM1(NAME, INTK, FLTK, OPSTR)                                      \
   inline u64 NAME(slog::Database* db, u64 x) {                                  \
-    if (is_s32(x)) return S32K(db, x);                                          \
+    if (is_int(x)) return INTK(db, x);                                          \
     if (is_float(x)) return FLTK(float_decode(x));                             \
     db->setPendingError(slog::ERR_TYPE, OPSTR, x, 0); return slog_error; }
 
 // Unary float-math op (any numeric arg promoted to double).
 #define SLOG_FMATH(NAME, FLTK, OPSTR)                                           \
   inline u64 NAME(slog::Database* db, u64 x) {                                  \
-    if (is_num(x)) { u64 r = FLTK(to_double(x));                                \
+    if (is_num(x)) { u64 r = FLTK(to_double(db, x));                            \
       if (r == slog_error) db->setPendingError(slog::ERR_NAN, OPSTR, x, 0);     \
       return r; }                                                              \
     db->setPendingError(slog::ERR_TYPE, OPSTR, x, 0); return slog_error; }
 
-// Ordering comparison (returns 1/0); int compare when both s32, else double.
+// Ordering comparison (returns 1/0): exact over ints (either representation,
+// Database::cmpInt); an int/float mix compares exactly too (mpz_cmp_d -- no
+// 2^53 loss), and float/float falls back to double.
 #define SLOG_CMP(NAME, OP, OPSTR)                                               \
   inline u64 NAME(slog::Database* db, u64 x, u64 y) {                           \
-    if (is_s32(x) && is_s32(y)) return (s32_decode(x) OP s32_decode(y)) ? 1 : 0; \
-    if (is_num(x) && is_num(y)) return (to_double(x) OP to_double(y)) ? 1 : 0;  \
+    if (is_int(x) && is_int(y)) return (db->cmpInt(x, y) OP 0) ? 1 : 0;         \
+    if (is_num(x) && is_num(y)) {                                               \
+      if (is_mpz(x)) return (mpz_cmp_d(db->lookup_mpz(decode_val(x))->get(),    \
+                                       float_decode(y)) OP 0) ? 1 : 0;          \
+      if (is_mpz(y)) return (0 OP mpz_cmp_d(db->lookup_mpz(decode_val(y))->get(), \
+                                            float_decode(x))) ? 1 : 0;          \
+      return (to_double(db, x) OP to_double(db, y)) ? 1 : 0; }                  \
     db->setPendingError(slog::ERR_TYPE, OPSTR, x, y); return slog_error; }
 
 
-//  (+ x y) -- s32, float, or string concatenation (mono or rope)
+//  (+ x y) -- int, float, or string concatenation (mono or rope)
 inline u64 _prim__0002b(slog::Database* db, u64 x, u64 y)
 {
-  if (is_s32(x) && is_s32(y)) return _prim_s32__0002b_unsafe(db, x, y);
+  if (is_int(x) && is_int(y)) return _prim_int__0002b_unsafe(db, x, y);
   if (is_str(x) && is_str(y)) return _prim_str_concat(db, x, y);
   if (is_num(x) && is_num(y))
   {
-    u64 r = _prim_float__0002b_unsafe(to_double(x), to_double(y));
+    u64 r = _prim_float__0002b_unsafe(to_double(db, x), to_double(db, y));
     if (r == slog_error) db->setPendingError(slog::ERR_NAN, "+", x, y);
     return r;
   }
@@ -116,23 +131,23 @@ inline u64 _prim__0002b(slog::Database* db, u64 x, u64 y)
   return slog_error;
 }
 
-SLOG_ARITH(_prim__0002d, _prim_s32__0002d_unsafe, _prim_float__0002d_unsafe, "-")
-SLOG_ARITH(_prim__0002a, _prim_s32__0002a_unsafe, _prim_float__0002a_unsafe, "*")
-SLOG_ARITH(_prim__0002f, _prim_s32__0002f_unsafe, _prim_float__0002f_unsafe, "/")
-SLOG_ARITH(_prim__00025, _prim_s32__00025_unsafe, _prim_float__00025_unsafe, "%")
-SLOG_ARITH(_prim_min,    _prim_s32_min_unsafe,    _prim_float_min_unsafe,    "min")
-SLOG_ARITH(_prim_max,    _prim_s32_max_unsafe,    _prim_float_max_unsafe,    "max")
-SLOG_ARITH(_prim_pow,    _prim_s32_pow_unsafe,    _prim_float_pow_unsafe,    "pow")
+SLOG_ARITH(_prim__0002d, _prim_int__0002d_unsafe, _prim_float__0002d_unsafe, "-")
+SLOG_ARITH(_prim__0002a, _prim_int__0002a_unsafe, _prim_float__0002a_unsafe, "*")
+SLOG_ARITH(_prim__0002f, _prim_int__0002f_unsafe, _prim_float__0002f_unsafe, "/")
+SLOG_ARITH(_prim__00025, _prim_int__00025_unsafe, _prim_float__00025_unsafe, "%")
+SLOG_ARITH(_prim_min,    _prim_int_min_unsafe,    _prim_float_min_unsafe,    "min")
+SLOG_ARITH(_prim_max,    _prim_int_max_unsafe,    _prim_float_max_unsafe,    "max")
+SLOG_ARITH(_prim_pow,    _prim_int_pow_unsafe,    _prim_float_pow_unsafe,    "pow")
 
-SLOG_NUM1(_prim_neg, _prim_s32_neg_unsafe, _prim_float_neg_unsafe, "neg")
-SLOG_NUM1(_prim_abs, _prim_s32_abs_unsafe, _prim_float_abs_unsafe, "abs")
+SLOG_NUM1(_prim_neg, _prim_int_neg_unsafe, _prim_float_neg_unsafe, "neg")
+SLOG_NUM1(_prim_abs, _prim_int_abs_unsafe, _prim_float_abs_unsafe, "abs")
 
-SLOG_INT2(_prim_band, _prim_s32_band_unsafe, "band")
-SLOG_INT2(_prim_bor,  _prim_s32_bor_unsafe,  "bor")
-SLOG_INT2(_prim_bxor, _prim_s32_bxor_unsafe, "bxor")
-SLOG_INT2(_prim_shl,  _prim_s32_shl_unsafe,  "shl")
-SLOG_INT2(_prim_shr,  _prim_s32_shr_unsafe,  "shr")
-SLOG_INT1(_prim_bnot, _prim_s32_bnot_unsafe, "bnot")
+SLOG_INT2(_prim_band, _prim_int_band_unsafe, "band")
+SLOG_INT2(_prim_bor,  _prim_int_bor_unsafe,  "bor")
+SLOG_INT2(_prim_bxor, _prim_int_bxor_unsafe, "bxor")
+SLOG_INT2(_prim_shl,  _prim_int_shl_unsafe,  "shl")
+SLOG_INT2(_prim_shr,  _prim_int_shr_unsafe,  "shr")
+SLOG_INT1(_prim_bnot, _prim_int_bnot_unsafe, "bnot")
 
 SLOG_FMATH(_prim_sqrt,  _prim_float_sqrt_unsafe,  "sqrt")
 SLOG_FMATH(_prim_sin,   _prim_float_sin_unsafe,   "sin")
@@ -150,26 +165,33 @@ SLOG_CMP(_prim_gt, >,  ">")
 SLOG_CMP(_prim_ge, >=, ">=")
 
 
-//  (tofloat x) -- int->float (or float identity)
+//  (tofloat x) -- int->float (or float identity; a bignum rounds)
 inline u64 _prim_tofloat(slog::Database* db, u64 x)
 {
-  if (is_num(x)) return float_encode(to_double(x));
+  if (is_num(x)) return float_encode(to_double(db, x));
   db->setPendingError(slog::ERR_TYPE, "tofloat", x, 0);
   return slog_error;
 }
 
-//  (toint x) -- float->int (truncating) (or int identity)
+//  (toint x) -- float->int (truncating) (or int identity).  An out-of-s32-
+//  range integral double now promotes to a bignum (docs/primitives.md §14.3);
+//  ERR_TOINT remains only for non-finite (+-inf) inputs.
 inline u64 _prim_toint(slog::Database* db, u64 x)
 {
-  if (is_s32(x)) return x;
+  if (is_int(x)) return x;
   if (is_float(x))
   {
     double d = float_decode(x);
-    // Casting a non-finite (+-inf) or out-of-s32-range double to s32 is UB
-    // (yields INT_MIN and, with -ffast-math-like flags, worse).  Flag it.
-    if (!(d >= -2147483648.0 && d <= 2147483647.0))
+    if (!std::isfinite(d))
     { db->setPendingError(slog::ERR_TOINT, "toint", x, 0); return slog_error; }
-    return s32_encode((s32)d);
+    if (d >= -2147483648.0 && d <= 2147483647.0)
+      return s32_encode((s32)d);
+    mpz_t z;
+    mpz_init(z);
+    mpz_set_d(z, d);   // truncates toward zero, exact for |d| >= 2^53
+    const u64 w = db->encodeMpz(z, "toint", x, slog_null);
+    mpz_clear(z);
+    return w;
   }
   db->setPendingError(slog::ERR_TYPE, "toint", x, 0);
   return slog_error;

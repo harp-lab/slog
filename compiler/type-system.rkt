@@ -459,12 +459,14 @@
 (define error-arm-arity
   (hash 'malformed_deduction 4 'div_by_zero 2 'modulo_by_zero 2
         'int_overflow 3 'nan_result 3 'toint_range 2 'type_mismatch 4
+        'mpz_overflow 4 'mpz_table_overflow 2
         'smt_bad_formula 2))
 
 ;; The runtime-prim error arms (all except malformed_deduction, which is the
 ;; head residual-check arm gated separately by rule-has-tychecks?).
 (define prim-error-arms
-  '(div_by_zero modulo_by_zero int_overflow nan_result toint_range type_mismatch))
+  '(div_by_zero modulo_by_zero int_overflow nan_result toint_range type_mismatch
+    mpz_overflow mpz_table_overflow))
 
 ;; Generalized wrap rule for one error_spec arm:
 ;;   (= e (<arm> f0 f1 ...)) --> (error e)

@@ -48,6 +48,14 @@ baked directly into every stored tuple word:
 > ride the cheap path.  Lattice stage-4 ordering: remap+rebuild collections
 > BEFORE any per-key lattice join whose payloads are tree ids.
 
+> **Bignum addendum (2026-07-09, docs/primitives.md §14):** interned mpz
+> bignums (intern tag 1, `value.mpz/`) are another content-addressed
+> database-local id space — but a LEAF one like strings, not a rebuild one:
+> only s32-range ints stay self-encoding, and an out-of-range int word
+> re-interns by value into the destination (the `is_mpz` arm of
+> `importDatabaseBIN`'s remap, next to the `is_mono_str` arm).  Already
+> handled in the shipped import pass, alongside sequence-node rebuild.
+
 So merging `dbB` into `dbA` means re-encoding, in *every* `dbB` tuple word:
 its string ids, its struct type ids, and its struct instance ids — while ints
 and floats ride through unchanged.

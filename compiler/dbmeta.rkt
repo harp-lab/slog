@@ -80,7 +80,10 @@
 ;; means root EDB bins must be migrated (decode-old/encode-new) and derived
 ;; layers dropped-and-replayed.  Kept here on the compiler side; must move in
 ;; lockstep with any daemon/types.h value-encoding change.
-(define slog-value-encoding-version 1)
+;; v2 (2026-07-09): sentinels relocated from prim tag 7 into the s32 spare
+;; payload bits (tag-1 payloads >= 2^32); interned mpz bigints (intern tag 1).
+;; Hard break from v1 by design -- clear data/, regenerate (primitives.md §14.1).
+(define slog-value-encoding-version 2)
 
 ;; ---------------------------------------------------------------------------
 ;; The META value: an immutable hash symbol -> value, with typed accessors.

@@ -69,7 +69,9 @@ struct OracleResult
 {
   s32 code = 0;                                        // the code word
   bool is_map = false;                                 // materialize as cmap
-  std::vector<std::pair<std::string, s64>> entries;    // string-keyed payload
+  // String-keyed payload; values are canonical decimal strings so solver
+  // bignums survive to encodeIntLiteral intact (docs/primitives.md §14.7)
+  std::vector<std::pair<std::string, std::string>> entries;
   // Raw-WORD-keyed payload (unsat cores: the member formulas' struct refs,
   // valid within this run's database; carried through the request text and
   // back, never dereferenced off the stratum).
@@ -422,7 +424,14 @@ public:
     u64 m = arena->put(arena->empty(), str_encode(db, "@status"),
                        s32_encode(r.code));
     for (const auto& e : r.entries)
-      m = arena->put(m, str_encode(db, e.first), s32_encode((s32)e.second));
+    {
+      // exact: a solver bignum interns via the normalization keystone
+      // (an s32-range value stays the s32 word); a cap trip or malformed
+      // numeral must not put slog_error INTO the map -- skip the entry
+      const u64 w = db->encodeIntLiteral(e.second, "smtmodel");
+      if (w == slog_error) continue;
+      m = arena->put(m, str_encode(db, e.first), w);
+    }
     for (const auto& e : r.word_entries)
       m = arena->put(m, e.first, s32_encode((s32)e.second));
     return m;

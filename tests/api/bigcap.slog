@@ -1,0 +1,12 @@
+;; Whole-table cap fixture (tests/api-tests.sh runs this under a tiny
+;; SLOG_MPZ_TABLE_BYTES): the computed bignum cannot intern, so the run
+;; converges with an (error (mpz_table_overflow ...)) fact and no big row.
+;; Computed (not literal) on purpose: a cap-tripped LITERAL fatals at load.
+
+table (go int)
+table (big int)
+
+facts
+(go 100000000)
+
+rule (go X) (= R (* X X)) --> (big R)

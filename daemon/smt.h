@@ -130,6 +130,16 @@ struct SmtPrinter
     return (x < 0) ? "(- " + std::to_string(-(s64)x) + ")" : std::to_string(x);
   }
 
+  // Either int representation as an SMT numeral: bignums render via their
+  // exact decimal (docs/primitives.md §14.7); negatives need the (- n) form.
+  std::string intLitWord(u64 w)
+  {
+    if (is_s32(w)) return intLit(s32_decode(w));
+    slog::mpz_val* m = db->lookup_mpz(decode_val(w));
+    const std::string dec = m->dec_str();
+    return m->negative() ? "(- " + dec.substr(1) + ")" : dec;
+  }
+
   // Wrap a rendered compound body in a define-fun alias (one per distinct
   // node: linear output on hash-consed DAGs) and memoize.
   bool defineNode(u64 v, const std::string& body, SmtSort sort, bool is_const,
@@ -155,9 +165,9 @@ struct SmtPrinter
       return true;
     }
 
-    if (is_s32(v))     // a raw int reaching a term position (any-typed hole)
+    if (is_int(v))     // a raw int reaching a term position (any-typed hole)
     {
-      out = Node{intLit(s32_decode(v)), SMT_INT, true};
+      out = Node{intLitWord(v), SMT_INT, true};
       memo[v] = out;
       return true;
     }
@@ -181,9 +191,9 @@ struct SmtPrinter
     }
     if (name == "ic")
     {
-      if (fields.size() != 1 || !is_s32(fields[0]))
+      if (fields.size() != 1 || !is_int(fields[0]))
         return fail("(ic ...) expects one integer field");
-      out = Node{intLit(s32_decode(fields[0])), SMT_INT, true};
+      out = Node{intLitWord(fields[0]), SMT_INT, true};
       memo[v] = out;
       return true;
     }
@@ -431,6 +441,9 @@ struct SmtGroundEval
   {
     is_bool = false;
     if (depth > 4096) return std::nullopt;
+    // s32 only, deliberately: the mock evaluates in s64, so a bignum word
+    // (is_mpz) falls through to unknown rather than wrapping -- sound, and
+    // the real-solver path renders bignums exactly (docs/primitives.md §14.7)
     if (is_s32(v)) return (s64)s32_decode(v);
     if (!is_struct(v)) return std::nullopt;
     std::string name;
@@ -796,10 +809,13 @@ inline s32 smtRunRound(const std::vector<std::string>& names,
 // Parse a model query's (get-value ...) response: for each `; slogvar
 // <mangled> <original>` line of the REQUEST, find "(<mangled> <value>)" in
 // the response and record (original, value); values are integers, (- n),
-// or true/false (as 1/0).  Free function so the unit battery can feed it
-// canned solver output.
+// or true/false (as "1"/"0").  Values stay CANONICAL DECIMAL STRINGS so
+// solver bignums survive intact -- the harvest materializes them through
+// Database::encodeIntLiteral (docs/primitives.md §14.7; a strtoll here used
+// to silently truncate a >2^31 model value).  Free function so the unit
+// battery can feed it canned solver output.
 inline void smtParseModel(const std::string& request, const std::string& response,
-                          std::vector<std::pair<std::string, s64>>& entries)
+                          std::vector<std::pair<std::string, std::string>>& entries)
 {
   std::stringstream ls(request);
   std::string line;
@@ -825,18 +841,16 @@ inline void smtParseModel(const std::string& request, const std::string& respons
       while (p < response.size() && response[p] == ' ') ++p;
     }
     if (response.compare(p, 4, "true") == 0)
-      entries.emplace_back(original, 1);
+      entries.emplace_back(original, "1");
     else if (response.compare(p, 5, "false") == 0)
-      entries.emplace_back(original, 0);
+      entries.emplace_back(original, "0");
     else
     {
       size_t q = p;
       while (q < response.size() && isdigit((unsigned char)response[q])) ++q;
       if (q > p)
-      {
-        const s64 v = (s64)std::strtoll(response.c_str() + p, nullptr, 10);
-        entries.emplace_back(original, neg ? -v : v);
-      }
+        entries.emplace_back(original, (neg ? "-" : "")
+                                       + response.substr(p, q - p));
     }
   }
 }

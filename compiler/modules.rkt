@@ -250,6 +250,12 @@
                (type-env-rel 'nan_result          `(struct str str any))
                (type-env-rel 'toint_range         `(struct str any))
                (type-env-rel 'type_mismatch       `(struct str str any any))
+               ;; the two bignum caps (docs/primitives.md §14.4): a result
+               ;; exceeding SLOG_MPZ_MAX_BITS (loc, op, operands), and the
+               ;; whole-table SLOG_MPZ_TABLE_BYTES trip (loc, op) -- near-
+               ;; global by design so a storm dedups to a handful of facts
+               (type-env-rel 'mpz_overflow        `(struct str str any any))
+               (type-env-rel 'mpz_table_overflow  `(struct str str))
                ;; an extern oracle demand whose payload does not serialize
                ;; (docs/smt.md §12): (reason, the offending formula value);
                ;; the oracle answers unknown alongside recording this
@@ -257,7 +263,8 @@
                (type-env-union 'error_spec
                                (set 'error_spec 'malformed_deduction 'div_by_zero
                                     'modulo_by_zero 'int_overflow 'nan_result
-                                    'toint_range 'type_mismatch 'smt_bad_formula))
+                                    'toint_range 'type_mismatch 'mpz_overflow
+                                    'mpz_table_overflow 'smt_bad_formula))
                (type-env-rel 'error `(table any)))))
 
 ;; -----------------------------------------------------------------------
@@ -432,7 +439,8 @@
       (error (format "The name ~a is a builtin collection/sequence base type (docs/primitives.md M2.3, docs/sequences.md); remove the declaration" name)))
     (when (memq name '(error error_spec malformed_deduction div_by_zero
                        modulo_by_zero int_overflow nan_result toint_range
-                       type_mismatch smt_bad_formula))
+                       type_mismatch mpz_overflow mpz_table_overflow
+                       smt_bad_formula))
       (error (format "The name ~a is reserved for the runtime type-error machinery ((error (error_spec ...)) facts); remove the declaration" name))))
 
   (define (extract-type-env ast [env base-type-env])

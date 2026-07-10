@@ -1,0 +1,19 @@
+;; The per-value bignum cap (docs/primitives.md §14.4): a result whose size
+;; precheck exceeds SLOG_MPZ_MAX_BITS (default 65536) records an
+;; (error (mpz_overflow ...)) fact and abandons the deduction -- the daemon
+;; never allocates the huge value.  Results under the cap are unaffected.
+
+table (go int)
+table (nope int)
+table (nope2 int)
+table (ok int)
+
+facts
+(go 1)
+
+;; 2^100000 needs ~100000 bits: pow's precheck trips the cap
+rule (go X) (= R (pow 2 100000)) --> (nope R)
+;; shl's precheck likewise (1 shifted 70000 needs ~70001 bits)
+rule (go X) (= R (shl 1 70000)) --> (nope2 R)
+;; well under the cap: 2^100 computes exactly
+rule (go X) (= R (pow 2 100)) --> (ok R)

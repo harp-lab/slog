@@ -20,7 +20,7 @@ CXXFLAGS ?= -O2 -Wall -std=c++20 -pthread -I. -ffp-contract=off
 # now defined out-of-line in slogd.cpp) into the dynamic symbol table so dlopen'd
 # plugins resolve them instead of instantiating the arity ladders themselves.
 LDFLAGS ?= -rdynamic
-LDLIBS = -lz -ldl
+LDLIBS = -lz -ldl -lgmp
 
 HEADERS = $(wildcard *.h)
 

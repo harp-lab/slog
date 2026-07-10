@@ -276,6 +276,30 @@ expect "seq-reopen-rope"  "0123456789abcdefghij0123456789abcdefghij" \
                                                            out/api-seq-reopen/doc.csv
 expect "seq-reopen-dsz"   "320"                            out/api-seq-reopen/dsz.csv
 
+# --- 11. bignum round trip (docs/primitives.md §14.6): rows holding mpz
+#         words survive write-db + reopen because value.mpz re-interns its
+#         length-prefixed records in iterator order, reproducing every id.
+#         Exact decimal renderings are the assertion.
+rm -rf data/apibigdb
+timeout 300 racket slog.rkt --no-banner --out-db apibigdb tests/api/bigint.slog \
+  > out/api-big-write.log 2>&1
+timeout 300 racket slog.rkt --no-banner --sizes -d apibigdb \
+  --debug-dir out/api-big-reopen tests/api/noop.slog \
+  > out/api-big-reopen.log 2>&1
+expect "big-reopen-lit" "123456789012345678901234567890" \
+                                                   out/api-big-reopen/biglit.csv
+expect "big-reopen-sq" "15241578753238836750495351562536198787501905199875019052100" \
+                                                   out/api-big-reopen/bigsq.csv
+
+# --- 12. the whole-table bignum cap (docs/primitives.md §14.4): under a tiny
+#         SLOG_MPZ_TABLE_BYTES no bignum interns -- the fixpoint still
+#         converges, with a deduped (error (mpz_table_overflow ...)) fact in
+#         place of the big row.
+timeout 300 env SLOG_MPZ_TABLE_BYTES=16 racket slog.rkt --no-banner --sizes \
+  tests/api/bigcap.slog > out/api-bigcap.log 2>&1
+expect "big-tablecap-error" "(relation_size mpz_table_overflow 1)" out/api-bigcap.log
+expect "big-tablecap-no-row" "(relation_size big 0)" out/api-bigcap.log
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

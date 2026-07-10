@@ -3,33 +3,85 @@
 include "syntax.slog"
 
 
-union (K (CallK E Ctx)
-         (ArgK [D] [E] Ctx K))
-union (S (Eval E Ctx K)
+;; Continuations
+union (K (ArgK [D] [Exp] Ctx K)
+         (AppK Exp K)
+         (KAddr Exp Ctx))
+
+;; States
+union (S ;; Have reached an expression to evaluate
+         (Eval Exp Ctx K)
+         ;; Have reached an application of a dataflow on a list of dataflows 
          (Appl D [D])
+         ;; Returning to a continuation with a list of dataflow args
          (Ret K [D]))
 
-table (kstore E Ctx K)
+;; Values: an eval state that originates a value, or other value source
+union (Val (Clo Exp Ctx)
+           (Constant Exp))
 
-table (vstore str Ctx D) 
+;; Store
+table (kstore Exp Ctx K)
+table (vstore D Val) 
+
+;; Lookup
 demand (lookup str Ctx) D
 rule (lookup x ctx d) <-- (vstore x ctx d)
 
+;; Data flows
+union (D Val (RefAddr str Ctx))
+table (dataflow D D)
+rule (dataflow d0 d1) <-- (vstore d0 _) (dataflow d0 d) (dataflow d d1)  
+demand (lookup D) Val
+rule (lookup d v) <-- (vstore d0 v) (dataflow d0 d)
+table (dataflow_list [D] [D])
+rule (dataflow_list [d0 ds...] [d0' ds'...])
+ --> (dataflow_list ds ds') (dataflow d0 d0')
+     
+;; Contexts
+union (Ctx [Exp])
+demand (tick Ctx Exp Ctx)
+facts (tick [] e [e]) (tick [e0] e1 [e1 e0]) (tick [e1 e0] e2 [e2 e1 e0])
+      (tick [e2 e1 e0] e3 [e3 e2 e1])
 
-demand (step S) S 
+;; Injecting a basic value into the store (@itself)
+demand (construct Val Val)
+rule (construct v v) (vstore v v) <--
 
-       
-facts ;; Eval rules and stepping
-      (step (Eval (App app ef eas) ctx k)
-            (Eval ef ctx (ArgK [] eas ctx k)))
-      (step (Eval lam=(Lam _ _ _) ctx k)
-            (Ret k [(Clo lam ctx)]))
-      (step (Eval (X p x) ctx K)
-            (Ret k [(lookup x ctx)])) 
+;; Parameter Addresses
+demand (param_addrs [Exp] Ctx [D])
+facts (param_addrs [] ctx [])
+      (param_addrs [(Ref _ x) es...] ctx [(RefAddr x ctx) (param_addrs es ctx)...])
 
-      ;; Ret rules and continuations
-      (step ...)
+;; Evaluation
+demand (step S) S
 
+facts ;; Simple eval/ret rules and basic stepping
+      (step (Eval (App _ ef eas) ctx k)
+            (Eval ef ctx (ArgK [] eas ctx (AppK k))))
+      (step (Eval e=(Lam _ _ _) ctx k)
+            (Ret k [(construct (Clo e ctx))]))
+      (step (Eval e=(Const _ _) ctx k)
+            (Ret k [(construct (Constant e))]))
+      ;; Return rules
+      (step (Ret (ArgK ds [arg0 args...] ctx k) [d])
+            (Eval arg0 ctx (ArgK [ds... d] args ctx k)))
+      (step (Ret (ArgK [df ds...] [] ctx (AppK e k)) [d])
+            (Appl e df [ds... d] ctx k))
+
+;; Return from a function
+rule (step (Ret (KAddr e ctx) ds) (Ret k ds))
+ <-- (kstore (KAddr e ctx) k)
+
+;; Apply rules
+rule (step (Appl e fd argds ctx k)
+           (Eval body ctx' (KAddr body ctx')))
+     (dataflow_list argds (param_addrs params ctx'))
+     (dataflow_free (freevars body) )
+ <-- (lookup fd (Clo (Lam _ params body) lamctx))
+     (tick ctx e ctx')
+ 
+      
 
 
 

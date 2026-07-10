@@ -39,7 +39,11 @@
         ;; external SMT oracle (docs/smt.md): the solver chain
         ;; ("z3:500,cvc5:2000" | "mock") and the worker-pool size
         "smt_solvers" "SLOG_SMT_SOLVERS"
-        "oracle_procs" "SLOG_ORACLE_PROCS"))
+        "oracle_procs" "SLOG_ORACLE_PROCS"
+        ;; bignum caps (docs/primitives.md §14.4): per-value bit cap and the
+        ;; whole-table approximate byte cap
+        "mpz_max_bits"    "SLOG_MPZ_MAX_BITS"
+        "mpz_table_bytes" "SLOG_MPZ_TABLE_BYTES"))
 
 ;; ---- entry point --------------------------------------------------------
 ;; Called once, early, from slog.rkt.  Best-effort: any failure falls back to

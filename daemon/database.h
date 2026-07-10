@@ -13,6 +13,7 @@
 
 #include "slogd.h"
 #include "intern.h"
+#include "mpz.h"
 #include "arena.h"
 #include "seq.h"
 #include "gzfile.h"
@@ -1074,7 +1075,8 @@ struct NoopCompletion { void operator()() noexcept {} };
 // (docs/type-errors.md).  The prim records one via Database::setPendingError and
 // returns slog_error; the generated code then calls slog::emit_pending_error
 // (operators.h) to turn it into an (error (error_spec ...)) fact.
-enum ErrorKind : u32 { ERR_DIV0, ERR_MOD0, ERR_INT_OVF, ERR_NAN, ERR_TOINT, ERR_TYPE };
+enum ErrorKind : u32 { ERR_DIV0, ERR_MOD0, ERR_INT_OVF, ERR_NAN, ERR_TOINT, ERR_TYPE,
+                       ERR_MPZ_OVF, ERR_MPZ_TABLE };
 struct PendingError { u32 kind = 0; const char* op = ""; u64 a = 0; u64 b = 0; };
 
 class Database
@@ -1106,6 +1108,13 @@ private:
   u32 thread_count;
   u32 struct_id_max;
   InternTable<utf8string>* string_table;
+  InternTable<mpz_val>* mpz_table;
+  // Whole-table approximate byte counter + the two bignum caps
+  // (docs/primitives.md §14.4); the check-then-add race can overshoot by one
+  // in-flight value per thread -- an approximation by design.
+  std::atomic<u64> mpz_table_bytes{0};
+  u64 mpz_max_bits;
+  u64 mpz_table_max;
   CollectionArena* cnode_arena;
   SequenceArena* seq_arena;
   // External oracle work (docs/smt.md): set by the Daemon when the oracle
@@ -1124,7 +1133,14 @@ public:
     thread_count = _thread_count;
     struct_id_max = 1;
     string_table = new InternTable<utf8string>();
+    mpz_table = new InternTable<mpz_val>();
+    const char* mb = std::getenv("SLOG_MPZ_MAX_BITS");
+    mpz_max_bits = (mb && mb[0]) ? std::strtoull(mb, nullptr, 10) : 65536;
+    const char* tb = std::getenv("SLOG_MPZ_TABLE_BYTES");
+    mpz_table_max = (tb && tb[0]) ? std::strtoull(tb, nullptr, 10)
+                                  : (((u64)1) << 30);
     cnode_arena = new CollectionArena();
+    cnode_arena->mpz_table = mpz_table;   // int-exact lattice compares
     seq_arena = new SequenceArena();
     // Sized to the OMP team (read-phase workers use 0..thread_count-1); at least
     // one for single-threaded / out-of-region use.
@@ -1140,6 +1156,7 @@ public:
   ~Database()
   {
     delete string_table;
+    delete mpz_table;
     delete cnode_arena;
     delete seq_arena;
     for (auto it : relations)
@@ -1160,6 +1177,30 @@ public:
   utf8string* lookup_string(u64 v)
   {
     return string_table->lookup_value(v);
+  }
+
+  u64 intern_mpz(mpz_val* m)
+  {
+    const u64 bytes = m->approx_bytes();
+    u64 id = mpz_table->intern_value(m);
+    // Duplicate hit: the table keeps the pre-existing value and never takes
+    // ownership of our candidate (mirrors intern_string).
+    if (mpz_table->lookup_value(id) != m)
+      delete m;
+    else
+      mpz_table_bytes.fetch_add(bytes, std::memory_order_relaxed);
+    return id;
+  }
+
+  mpz_val* lookup_mpz(u64 v)
+  {
+    return mpz_table->lookup_value(v);
+  }
+
+  // The per-value bignum cap, for kernels that presize (pow/shl prechecks).
+  u64 mpzMaxBits() const
+  {
+    return mpz_max_bits;
   }
 
   CollectionArena* collections()
@@ -1203,6 +1244,90 @@ public:
       fatal("Dangling string id");
     return s->cpp_str();
   }
+
+  // The exact-integer normalization keystone (docs/primitives.md §14.2),
+  // exactly parallel to encodeString above: an integer VALUE's representation
+  // is a pure function of its magnitude -- [-2^31, 2^31) is ALWAYS the s32
+  // prim word, everything else ALWAYS an interned mpz (daemon/mpz.h).  EVERY
+  // producer of an int word from a computation must come through
+  // encodeInt/encodeMpz/encodeIntLiteral, or equal values fork into two words
+  // and raw-word equality silently breaks.  The (op, ea, eb) triple feeds the
+  // error fact if a bignum cap trips (§14.4).
+  u64 encodeInt(s64 v, const char* op = "int",
+                u64 ea = slog_null, u64 eb = slog_null)
+  {
+    if (v >= (s64)INT32_MIN && v <= (s64)INT32_MAX)
+      return s32_encode((s32)v);
+    return internMpzWord(new mpz_val(v), op, ea, eb);
+  }
+
+  // From a GMP temporary the caller retains/clears (prim kernels).
+  u64 encodeMpz(mpz_srcptr z, const char* op = "int",
+                u64 ea = slog_null, u64 eb = slog_null)
+  {
+    if (mpz_cmp_si(z, (long)INT32_MIN) >= 0
+        && mpz_cmp_si(z, (long)INT32_MAX) <= 0)
+      return s32_encode((s32)mpz_get_si(z));
+    if (mpz_sizeinbase(z, 2) > mpz_max_bits)
+    {
+      setPendingError(ERR_MPZ_OVF, op, ea, eb);
+      return slog_error;
+    }
+    return internMpzWord(new mpz_val(z), op, ea, eb);
+  }
+
+  // Arbitrary-precision decimal (source literals, s2i, SMT numerals).
+  u64 encodeIntLiteral(const std::string& dec, const char* op = "int",
+                       u64 ea = slog_null, u64 eb = slog_null)
+  {
+    mpz_t z;
+    if (mpz_init_set_str(z, dec.c_str(), 10) != 0)
+    {
+      mpz_clear(z);
+      setPendingError(ERR_TYPE, op, ea, eb);
+      return slog_error;
+    }
+    u64 w = encodeMpz(z, op, ea, eb);
+    mpz_clear(z);
+    return w;
+  }
+
+  // Output-boundary rendering for either int representation.
+  std::string decodeIntString(u64 w)
+  {
+    if (is_s32(w))
+      return std::to_string(s32_decode(w));
+    mpz_val* m = lookup_mpz(decode_val(w));
+    if (m == nullptr)
+      fatal("Dangling mpz id");
+    return m->dec_str();
+  }
+
+  // Exact tri-compare over int words in either representation (guards,
+  // min/max, lattice numeric joins).  Floats are NOT handled here (the prim
+  // dispatchers promote before comparing).
+  int cmpInt(u64 x, u64 y)
+  {
+    return cmp_int_words(mpz_table, x, y);
+  }
+
+private:
+  // Table-cap gate + intern + tag.  Once the byte cap is exceeded NO new mpz
+  // is ever learned: every attempt records the error fact instead (set
+  // semantics dedup it), while already-interned bignums keep working.
+  u64 internMpzWord(mpz_val* m, const char* op, u64 ea, u64 eb)
+  {
+    if (mpz_table_bytes.load(std::memory_order_relaxed) + m->approx_bytes()
+        > mpz_table_max)
+    {
+      delete m;
+      setPendingError(ERR_MPZ_TABLE, op, ea, eb);
+      return slog_error;
+    }
+    return intern_encode(mpz_intern_tag, intern_mpz(m));
+  }
+
+public:
 
   void registerLatestAnyRec(bool _any)
   {
@@ -1737,8 +1862,8 @@ public:
     // value (e.g. a ~4000-deep cons list) fails cleanly instead of SIGSEGV.
     if (cdepth > 4096)
       fatal("Value nesting too deep to render (> 4096 levels)");
-    if (is_s32(v))
-      return std::to_string(s32_decode(v));
+    if (is_int(v))
+      return decodeIntString(v);                           // s32 or bignum
     else if (is_str(v))
       return std::string("\"") + decodeString(v) + "\"";   // mono or rope
     else if (is_float(v))
@@ -2437,6 +2562,49 @@ private:
 		true);
   }
 
+  // Stage tasks (re)writing the mpz bignum table (docs/primitives.md §14.6),
+  // mirroring stageStringsWrite -- but records are LENGTH-PREFIXED (u32
+  // record length, then the canonical sign+magnitude serialization from
+  // mpz_val::write_bytes): magnitude bytes can contain NULs, so the strings'
+  // NUL framing is unusable.  Iterator order reproduces ids on re-intern,
+  // exactly as for strings.
+  void stageMpzWrite(Stratum& s, const std::string& db_dir)
+  {
+    class WriteMpz : public Task
+    {
+    public:
+      Database* db; u32 i; std::string path;
+      WriteMpz(Database* _db, u32 _i, const std::string& _path)
+	: db(_db), i(_i), path(_path)
+      {}
+      virtual bool work()
+      {
+	DBWriteFile file(path);
+	std::vector<u8> buf;
+	for (auto it = db->mpz_table->begin(i); it != db->mpz_table->end(); ++it)
+	{
+	  const mpz_val& v = *it;
+	  const u32 len = 1 + v.byte_size();
+	  buf.resize(len);
+	  v.write_bytes(buf.data());
+	  file.write((u8*)&len, 4);
+	  file.write(buf.data(), len);
+	}
+	return true;
+      }
+    };
+
+    std::filesystem::remove_all(db_dir + "value.mpz/");
+    if (!(mpz_table->begin() != mpz_table->end()))
+      return;  // no bignums: leave no (empty) table dir behind
+    std::filesystem::create_directory(db_dir + "value.mpz/");
+    for (u16 i = 0; i < mpz_table->getWritePartitions(); ++i)
+      s.addTask(0,
+		new WriteMpz(this, i,
+			     db_dir + "value.mpz/" + std::to_string(i) + db_out_ext),
+		true);
+  }
+
 public:
   // Write one relation (plus the strings table its rows may reference)
   // under data/<db_name>/, leaving other relations' files untouched.
@@ -2453,6 +2621,7 @@ public:
     stageStringsWrite(s, db_dir);
     stageNodesWrite(s, db_dir);
     stageSeqWrite(s, db_dir);
+    stageMpzWrite(s, db_dir);
     runStratum(&s, false);
     disk_mtimes[relname] = dirMTime(relationDirBIN(db_dir, relname, rel));
     DEBUG("Wrote relation " << relname << " to " << db_dir)
@@ -2553,6 +2722,7 @@ public:
     stageStringsWrite(s, tmp_dir);
     stageNodesWrite(s, tmp_dir);
     stageSeqWrite(s, tmp_dir);
+    stageMpzWrite(s, tmp_dir);
     runStratum(&s, false);
 
     // Swap: move the current db aside (if any), rename the fully-built tmp
@@ -2607,7 +2777,7 @@ public:
     {
       DBWriteFile file(tmp_dir + "value.strings/" + std::to_string(i) + db_out_ext);
       for (auto it = string_table->begin(i); it != string_table->end(); ++it)
-	file.write((u8*)(*it).c_str(), (*it).size()+1);
+	file.write((u8*)(*it).c_str(), (*it).byte_size()+1);  // bytes, not codepoints
     }
     if (cnode_arena->freshCount() > 0)
     {
@@ -2637,6 +2807,24 @@ public:
 	  file.write((u8*)&nd.kind, 1);
 	  file.write((u8*)&nd.n, 2);
 	  file.write((u8*)nd.w, 8 * seqnode::payload_words(nd.kind, nd.n));
+	}
+      }
+    }
+    if (mpz_table->begin() != mpz_table->end())
+    {
+      std::filesystem::create_directory(tmp_dir + "value.mpz/");
+      std::vector<u8> buf;
+      for (u16 i = 0; i < mpz_table->getWritePartitions(); ++i)
+      {
+	DBWriteFile file(tmp_dir + "value.mpz/" + std::to_string(i) + db_out_ext);
+	for (auto it = mpz_table->begin(i); it != mpz_table->end(); ++it)
+	{
+	  const mpz_val& v = *it;
+	  const u32 len = 1 + v.byte_size();
+	  buf.resize(len);
+	  v.write_bytes(buf.data());
+	  file.write((u8*)&len, 4);
+	  file.write(buf.data(), len);
 	}
       }
     }
@@ -2684,6 +2872,50 @@ private:
 	  else str += (char)byte;
 	}
 	if (!str.empty()) intern_string(new utf8string(str));  // unterminated tail (defensive)
+      }
+    }
+  }
+
+  // (Re)read every mpz-bignum partition under db_dir (docs/primitives.md
+  // §14.6): length-prefixed records (u32 length, sign byte, LSB-first
+  // magnitude bytes) re-intern in file order, reproducing ids exactly as
+  // loadStringsBIN does.  Idempotent: interning dedups by content.
+  void loadMpzBIN(const std::string& db_dir)
+  {
+    if (!std::filesystem::is_directory(db_dir + "value.mpz"))
+      return;
+    for (const auto& partfile : std::filesystem::directory_iterator(db_dir+"value.mpz"))
+    {
+      std::string path(partfile.path());
+      const auto readAll = [&](auto readf)
+      {
+	u32 len = 0;
+	std::vector<u8> buf;
+	while (true)
+	{
+	  const u32 gl = readf((u8*)&len, 4);
+	  if (gl == 0) break;
+	  if (gl != 4 || len < 2)
+	    fatal("Corrupt mpz file (bad record length): " + path);
+	  buf.resize(len);
+	  if (readf(buf.data(), len) != len)
+	    fatal("Corrupt mpz file (truncated record): " + path);
+	  intern_mpz(new mpz_val(buf.data() + 1, len - 1, buf[0] == 1));
+	}
+      };
+      if (hasSuffix(std::string(partfile.path().filename()), ".gz"))
+      {
+	GzReadFile file(path);
+	readAll([&](u8* p, u32 n) { return file.read(p, n); });
+      }
+      else
+      {
+	std::ifstream file(path, std::ios::binary);
+	readAll([&](u8* p, u32 n) -> u32
+	{
+	  file.read(reinterpret_cast<char*>(p), n);
+	  return (u32)file.gcount();
+	});
       }
     }
   }
@@ -2821,6 +3053,7 @@ public:
     loadStringsBIN(db_dir);
     loadNodesBIN(db_dir);
     loadSeqBIN(db_dir);
+    loadMpzBIN(db_dir);
 
     for (const auto& entry : std::filesystem::directory_iterator(db_dir))
     {
@@ -2889,11 +3122,12 @@ public:
     if (rel_dir.empty())
       fatal("No on-disk data for relation " + relname + " under " + db_dir);
 
-    // pick up any strings/collection-nodes the on-disk data references
-    // (both idempotent)
+    // pick up any strings/collection-nodes/bignums the on-disk data
+    // references (all idempotent)
     loadStringsBIN(db_dir);
     loadNodesBIN(db_dir);
     loadSeqBIN(db_dir);
+    loadMpzBIN(db_dir);
 
     rel->clearContents();
     readRelationFiles(rel, rel_dir);
@@ -3090,6 +3324,20 @@ public:
 	  std::string bytes;
 	  scratch.sequences()->materialize(w, bytes);
 	  remap[w] = encodeString(bytes);
+	  stack.pop_back();
+	  continue;
+	}
+	if (is_mpz(w))
+	{
+	  // a bignum is a LEAF like a string: re-intern by value into the
+	  // dest (content-hash ids are per-database).  encodeMpz keeps the
+	  // canonicalization invariant; an in-range value cannot occur (it
+	  // would never have been interned by the source), and the caps do
+	  // not apply to values that already existed in a database.
+	  mpz_val* m = scratch.lookup_mpz(decode_val(w));
+	  if (m == nullptr)
+	    fatal("Import: dangling mpz id in " + src_dir);
+	  remap[w] = intern_encode(mpz_intern_tag, intern_mpz(new mpz_val(m->get())));
 	  stack.pop_back();
 	  continue;
 	}

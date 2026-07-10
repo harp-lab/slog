@@ -1,0 +1,10 @@
+;; Bignum persistence fixture (tests/api-tests.sh): a literal bignum and a
+;; computed one, saved and reopened to prove value.mpz/ round-trips exactly.
+
+table (biglit int)
+table (bigsq int)
+
+facts
+(biglit 123456789012345678901234567890)
+
+rule (biglit B) (= R (* B B)) --> (bigsq R)

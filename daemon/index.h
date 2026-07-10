@@ -132,7 +132,13 @@ public:
   // §4.2/§8.5).
   u64 merge(const Key& k, u64 v, bool& changed, u64* oldw = nullptr)
   {
-    v = lat_clamp(lat_kind, lat_has_floor, lat_floor, lat_has_ceil, lat_ceil, v);
+    // lat_arena is the owning Database's collection arena for EVERY lattice
+    // relation (setLattice callers all pass it); it carries the mpz table
+    // the int-exact compare needs for bignum payloads.
+    slog::InternTable<slog::mpz_val>* mt = lat_arena ? lat_arena->mpzTable()
+                                                     : nullptr;
+    v = lat_clamp(lat_kind, lat_has_floor, lat_floor, lat_has_ceil, lat_ceil,
+                  v, mt);
     auto r = tree.insert2(k, v);
     if (r.second)
     {
@@ -143,7 +149,7 @@ public:
     if (oldw) *oldw = r.first->second;
     u64 n = (lat_kind == LAT_EXTERN)
           ? lat_arena->merge_spec(r.first->second, v, lat_spec_tree)
-          : lat_join(lat_kind, r.first->second, v);
+          : lat_join(lat_kind, r.first->second, v, mt);
     changed = (n != r.first->second);
     r.first->second = n;
     return n;

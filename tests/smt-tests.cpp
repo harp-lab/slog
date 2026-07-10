@@ -309,17 +309,24 @@ int main()
 
   // ---- model machinery (docs/smt.md §14) ----
   {
-    // canned response parsing: ints, negatives, booleans, name unmangling
+    // canned response parsing: ints, negatives, bignums, booleans, name
+    // unmangling; values are canonical decimal STRINGS (primitives.md §14.7)
     const std::string req =
-      "; slogvar i_x x\n; slogvar i_y y\n; slogvar b_p p?q\n(check-sat)\n";
-    const std::string resp = "sat\n((i_x 5)\n (i_y (- 3))\n (b_p true))\n";
-    std::vector<std::pair<std::string, s64>> entries;
+      "; slogvar i_x x\n; slogvar i_y y\n; slogvar i_z z\n"
+      "; slogvar b_p p?q\n(check-sat)\n";
+    const std::string resp =
+      "sat\n((i_x 5)\n (i_y (- 3))\n"
+      " (i_z 123456789012345678901234567890)\n (b_p true))\n";
+    std::vector<std::pair<std::string, std::string>> entries;
     smtParseModel(req, resp, entries);
-    CHECK("model parses three vars", entries.size() == 3);
-    CHECK("model int", entries[0].first == "x" && entries[0].second == 5);
-    CHECK("model negative", entries[1].first == "y" && entries[1].second == -3);
+    CHECK("model parses four vars", entries.size() == 4);
+    CHECK("model int", entries[0].first == "x" && entries[0].second == "5");
+    CHECK("model negative", entries[1].first == "y" && entries[1].second == "-3");
+    CHECK("model bignum survives exactly",
+          entries[2].first == "z"
+          && entries[2].second == "123456789012345678901234567890");
     CHECK("model bool as 1 under original name",
-          entries[2].first == "p?q" && entries[2].second == 1);
+          entries[3].first == "p?q" && entries[3].second == "1");
   }
   {
     // model-mode rendering: produce-models, slogvar reverse map, get-value
@@ -463,13 +470,13 @@ int main()
       CHECK("z3 model render", model_oracle.serialize(&h.db, f, out, err));
       OracleResult r = model_oracle.solve(out);
       CHECK("z3 model sat", r.code == 1 && r.is_map);
-      s64 vx = -1, vp = -1;
+      std::string vx = "?", vp = "?";
       for (const auto& e : r.entries)
       {
         if (e.first == "modx") vx = e.second;
         if (e.first == "modp") vp = e.second;
       }
-      CHECK("z3 model values", vx == 5 && vp == 1);
+      CHECK("z3 model values", vx == "5" && vp == "1");
     }
     {
       // a real unsat core: {x<3, x>5, p} blames the two arithmetic

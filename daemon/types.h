@@ -33,9 +33,12 @@ typedef int8_t s8;
 
 // Slog types
 
-// Primitive type tags are 3 bits and non-zero
+// Primitive type tags are 3 bits and non-zero.  Only tag 1 (s32) is in use;
+// tags 2-7 are free for future prim types (35-bit payloads each).  The s32
+// payload uses 32 of the 35 bits; tag-1 payloads >= 2^32 are RESERVED
+// INTERNAL SPACE (excluded from is_s32 by the high-bit mask) -- the three
+// sentinel words below live at the very top of that region.
 #define s32_prim_tag 1
-#define enum_prim_tag 2
 
 // Intern-value type tags are 3 bits
 #define str_intern_tag 0
@@ -51,15 +54,18 @@ typedef int8_t s8;
 
 // The top bit determines if its a struct or not when the value is a NaN
 #define NaNflags     0x7ff0000000000000
-#define internflags  0x7fffffc000000000 
+#define internflags  0x7fffffc000000000
 #define structflags  0xfff0000000000000
 #define typetopmask  0xffffffc000000000
-#define slog_null    0x7ff0003fffffffff
+// The three sentinels are tag-1 (s32) prim words with payload >= 2^32 --
+// inside the reserved internal region the is_s32 mask excludes, at its top.
+// (Encoding version 2; they lived at the top of prim tag 7 in version 1.)
+#define slog_null    0x7ff0000fffffffff
 // Reserved sentinel a fallible prim returns instead of aborting the daemon: the
 // generated code checks for it right after the call and, if seen, records an
 // (error (error_spec ...)) fact and abandons the deduction (docs/type-errors.md).
 // Distinct from slog_null ("drop this delta record") and slog_lat_top.
-#define slog_error   0x7ff0003ffffffffd
+#define slog_error   0x7ff0000ffffffffd
 
 
 // We use a NaN-based IEEE-754 Binary64 encoding of non-float values
@@ -101,8 +107,18 @@ typedef int8_t s8;
 // equality/joins/dedup are value semantics for these too (docs/sequences.md).
 #define is_seq(x) (is_intern(x) && decode_type(x) == seq_intern_tag)
 
-// s32
-#define is_s32(x) (is_prim(x) && decode_type(x) == s32_prim_tag)
+// s32 -- the payload high-bit mask excludes the reserved internal region
+// (tag-1 payloads >= 2^32: the sentinels and future internal words)
+#define is_s32(x) (is_prim(x) && decode_type(x) == s32_prim_tag \
+                   && (((x) & 0x0000000700000000) == 0))
+
+// mpz -- an exact integer OUTSIDE the s32 range: the intern word of a
+// canonical GMP bignum (daemon/mpz.h).  The int TYPE spans both
+// representations (docs/primitives.md §14): a value in [-2^31, 2^31) is
+// ALWAYS the s32 prim word, anything else ALWAYS an interned mpz --
+// PROVIDED every producer normalizes through Database::encodeInt/encodeMpz.
+#define is_mpz(x) (is_intern(x) && decode_type(x) == mpz_intern_tag)
+#define is_int(x) (is_s32(x) || is_mpz(x))
 #define s32_encode(v) (prim_encode(s32_prim_tag, (v) & 0xffffffff))
 #define s32_decode(v) ((s32)(u32)(decode_val(v) & 0xffffffff))
 
@@ -142,7 +158,7 @@ inline u64 float_encode(double x)
 // slog_lat_top is a distinct reserved word, NOT slog_null: null means "drop
 // this delta record" to reorg/intern, top is a real stored value.
 
-#define slog_lat_top 0x7ff0003ffffffffe
+#define slog_lat_top 0x7ff0000ffffffffe
 
 #define LAT_NONE   0
 #define LAT_MIN    1
@@ -154,68 +170,9 @@ inline u64 float_encode(double x)
 // through the scalar lat_join below.
 #define LAT_EXTERN 5
 
-// Numeric min/max on tagged words (homogeneous: the type system guarantees a
-// lattice column is all-s32 or all-float -- but `any`-typed prim outputs can
-// evade it, so a non-numeric word here fails loudly instead of silently
-// float-decoding an interned id into garbage).
-inline u64 lat_num_min(u64 a, u64 b)
-{
-  if (is_s32(a) && is_s32(b)) return (s32_decode(a) <= s32_decode(b)) ? a : b;
-  if (is_float(a) && is_float(b))
-  {
-    // decoded ties (+0.0 vs -0.0) canonicalize by raw word, so the stored
-    // value never depends on contribution order (the join must stay
-    // commutative at the WORD level: canonical collections intern payload
-    // words into content-addressed identity)
-    const double da = float_decode(a), db = float_decode(b);
-    if (da == db) return (a <= b) ? a : b;
-    return (da < db) ? a : b;
-  }
-  slog::fatal("Non-numeric or mixed-type value in a min/max lattice column");
-  return 0;
-}
-inline u64 lat_num_max(u64 a, u64 b)
-{
-  if (is_s32(a) && is_s32(b)) return (s32_decode(a) >= s32_decode(b)) ? a : b;
-  if (is_float(a) && is_float(b))
-  {
-    const double da = float_decode(a), db = float_decode(b);
-    if (da == db) return (a <= b) ? a : b;
-    return (da > db) ? a : b;
-  }
-  slog::fatal("Non-numeric or mixed-type value in a min/max lattice column");
-  return 0;
-}
-
-// The join: least upper bound of two present values (absence = bottom is
-// handled by the caller -- a missing key simply takes the contribution).
-// A kind this switch doesn't know must FAIL, not silently take the flat
-// arm: flat equality-merge on collection payloads would escalate any two
-// distinct sets to top instead of unioning them.
-inline u64 lat_join(u32 kind, u64 a, u64 b)
-{
-  switch (kind)
-  {
-  case LAT_MIN:   return lat_num_min(a, b);
-  case LAT_MAX:   return lat_num_max(a, b);
-  case LAT_COUNT: return lat_num_max(a, b);
-  case LAT_FLAT:  return (a == b) ? a : slog_lat_top;
-  default:
-    slog::fatal("lat_join: unknown or extern lattice kind reached the scalar join");
-    return 0;
-  }
-}
-
-// Clamp a contribution into the declared floor/ceiling (Trop+: the published
-// convergence condition surfaced as syntax -- docs/lattices.md §6).  Applied
-// before the join; clamp(join(a,b)) == join(clamp(a),clamp(b)) for min/max.
-inline u64 lat_clamp(u32 kind, bool has_floor, u64 floorw,
-                     bool has_ceil, u64 ceilw, u64 v)
-{
-  if (kind == LAT_MIN && has_floor) return lat_num_max(v, floorw);
-  if (kind == LAT_MAX && has_ceil)  return lat_num_min(v, ceilw);
-  return v;
-}
+// The scalar lattice joins (lat_num_min/max, lat_join, lat_clamp) live in
+// mpz.h: their int arms compare bignums exactly through the mpz intern table,
+// which is not a complete type here.
 
 
 

@@ -1,5 +1,7 @@
 ;; ssplit/sjoin bridge strings and [str] lists (docs/sequences.md §6);
-;; s2i/s2f are PARTIAL (unparsable input = no row), i2s/f2s total.
+;; s2i/s2f are PARTIAL (MALFORMED input = no row), i2s/f2s total.  Since
+;; exact ints (docs/primitives.md §14), s2i's magnitude is unbounded:
+;; "9999999999" parses to a bignum; only format errors abandon.
 
 table (csv str)
 table (fields (list str))

@@ -31,8 +31,14 @@
   if (!is_seq(v))                                                               \
     slog::fatal(std::format("Function '" OPSTR "' requires a sequence, got: {}", \
                             get_type_name(v)));
+// An mpz index is well-typed but definitionally out of range (|v| >= 2^31):
+// normalize it BY SIGN to a saturating s32 so the kernel's existing clamp /
+// partial-abandon path fires instead of a daemon fatal.
 #define SLOG_SEQ_INT(v, OPSTR)                                                  \
-  if (!is_s32(v))                                                               \
+  if (is_mpz(v))                                                                \
+    v = db->lookup_mpz(decode_val(v))->negative() ? s32_encode(-1)              \
+                                                  : s32_encode(2147483647);     \
+  else if (!is_s32(v))                                                          \
     slog::fatal(std::format("Function '" OPSTR "' requires an int index, got: {}", \
                             get_type_name(v)));
 #define SLOG_SEQ_CNODE(v, OPSTR)                                                \
@@ -245,8 +251,13 @@ inline u64 _prim_cvals(slog::Database* db, u64 m)
   if (!is_str(v))                                                               \
     slog::fatal(std::format("Function '" OPSTR "' requires a string, got: {}",  \
                             get_type_name(v)));
+// Same sign-saturating normalization as SLOG_SEQ_INT (indices only; value-
+// consuming ops like i2s test is_int directly).
 #define SLOG_STR_INT(v, OPSTR)                                                  \
-  if (!is_s32(v))                                                               \
+  if (is_mpz(v))                                                                \
+    v = db->lookup_mpz(decode_val(v))->negative() ? s32_encode(-1)              \
+                                                  : s32_encode(2147483647);     \
+  else if (!is_s32(v))                                                          \
     slog::fatal(std::format("Function '" OPSTR "' requires an int, got: {}",    \
                             get_type_name(v)));
 
@@ -460,16 +471,31 @@ inline u64 _prim_s2i(slog::Database* db, u64 s, bool* ok)
     *ok = false;
     return 0;
   }
-  errno = 0;
-  char* end = nullptr;
-  const long long v = strtoll(t.c_str(), &end, 10);
-  if (errno != 0 || end != t.c_str() + t.size()
-      || v < INT32_MIN || v > INT32_MAX)
+  // Strict decimal syntax (optional minus + digits); mpz_set_str is looser
+  // (it skips whitespace), so validate by hand before parsing.  Magnitude is
+  // unbounded (docs/primitives.md §14.3): encodeIntLiteral canonicalizes
+  // (s32 when it fits, interned mpz otherwise).
+  const size_t d0 = (t[0] == '-') ? 1 : 0;
+  if (t.size() == d0)
   {
     *ok = false;
     return 0;
   }
-  return s32_encode((s32)v);
+  for (size_t i = d0; i < t.size(); ++i)
+    if (t[i] < '0' || t[i] > '9')
+    {
+      *ok = false;
+      return 0;
+    }
+  const u64 w = db->encodeIntLiteral(t, "s2i", s, slog_null);
+  if (w == slog_error)
+  {
+    // a cap trip (a preposterously long digit string): abandon the row like
+    // any partial miss -- the pending error is not emitted on this path
+    *ok = false;
+    return 0;
+  }
+  return w;
 }
 
 //  (s2f s) -- parse to float.  PARTIAL (a NaN literal is unrepresentable
@@ -504,8 +530,11 @@ inline u64 _prim_s2f(slog::Database* db, u64 s, bool* ok)
 //  (shortest round-trippable, ".0" suffix on integer-valued doubles)
 inline u64 _prim_i2s(slog::Database* db, u64 n)
 {
-  SLOG_STR_INT(n, "i2s");
-  return db->encodeString(std::to_string(s32_decode(n)));
+  // n is a VALUE, not an index: render either int representation exactly
+  if (!is_int(n))
+    slog::fatal(std::format("Function 'i2s' requires an int, got: {}",
+                            get_type_name(n)));
+  return db->encodeString(db->decodeIntString(n));
 }
 
 inline u64 _prim_f2s(slog::Database* db, u64 x)

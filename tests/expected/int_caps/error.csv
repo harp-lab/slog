@@ -1,0 +1,2 @@
+(mpz_overflow "int_caps.slog:15" "pow" 2 100000)   
+(mpz_overflow "int_caps.slog:17" "shl" 1 70000)   

@@ -1,0 +1,32 @@
+;; Bignums in anger (docs/primitives.md §14): exact factorial through a
+;; recursive fixpoint, i2s/s2i round-trip at full precision, big literals,
+;; bignum guards, and canonicity (one value derived two ways dedups to one
+;; row because both routes produce the same interned word).
+;; 25! = 15511210043330985984000000 (verified independently).
+
+table (fact int int)
+table (fact25 str)
+table (parsed int)
+table (canon int)
+table (biglit int)
+table (bigneg int)
+table (bigabs int)
+table (bigcmp int)
+
+facts
+(fact 0 1)
+(biglit 123456789012345678901234567890)
+
+rule (fact N F) (< N 25) (= M (+ N 1)) (= G (* M F)) --> (fact M G)
+rule (fact 25 F) (= S (i2s F)) --> (fact25 S)
+rule (fact25 S) (= X (s2i S)) --> (parsed X)
+
+;; the same value by two routes -> ONE row (canonical single word)
+rule (fact 0 F) (= A (pow 10 20)) --> (canon A)
+rule (fact 0 F) (= B (* (pow 10 10) (pow 10 10))) --> (canon B)
+
+rule (biglit B) (= N (neg B)) --> (bigneg N)
+rule (bigneg N) (= A (abs N)) --> (bigabs A)
+
+;; a guard comparing two bignums
+rule (biglit B) (> B (pow 10 29)) --> (bigcmp B)

@@ -1036,3 +1036,271 @@ Patricia lib is the largest demand program yet compiled):
   RRB-Trees (the non-canonicity that disqualifies them here).
 - **Kapur–Narendran**, NP-completeness of set unification/matching; **Maude/Eker**
   AC bipartite matching (why we restrict rather than unify).
+
+
+## 14. Exact integers — auto-promoting s32 ⇄ interned mpz
+
+**STATUS: SHIPPED 2026-07-09** — all milestones landed same-day. Files:
+`daemon/mpz.h` (new: `mpz_val`, `fasthash`, `cmp_int_words`, the relocated
+scalar lattice joins), `daemon/int_prims.h` (full rewrite: s64 fast paths +
+GMP kernels), `daemon/types.h` (sentinel relocation, `is_s32` mask,
+`is_mpz`/`is_int`), `daemon/database.h` (table + keystone encoders + caps +
+`value.mpz/` stage/load/serial + import leaf arm + CSV), `daemon/prims.h`
+(dispatch over `is_int`), `daemon/seq_prims.h` (index-guard sign-saturation,
+`s2i`/`i2s` bignum), `daemon/operators.h` + `compiler/modules.rkt` +
+`type-system.rkt` (the two new error arms), `emit-cpp.rkt` (tycheck arm,
+literal split + cap-fatal), `actions.rkt`, `config.rkt` (cap settings),
+`dbmeta.rkt` (v2), `tools.rkt`/`daemon/Makefile` (`-lgmp`).  Tests:
+`int_promote`/`int_bignum`/`int_caps`/`int_lat` goldens (all rows
+hand-verified), api-tests §11 bignum round-trip + §12 table cap, smt-tests
+bignum parse case + `bigmodel-z3.slog` (solver 10^20 round-trips exactly).
+Notes vs the plan: `i2s` takes the value through `is_int` directly (the
+index-guard saturation would corrupt it); the SMT mock deliberately answers
+unknown on bignum formulas (s64 evaluator, documented in smt.h); a
+cap-tripped LITERAL fatals at plugin load (a stored `slog_error` word would
+otherwise corrupt facts); the serial checkpoint's string writer had a latent
+codepoints-vs-bytes truncation bug (multibyte content), fixed in passing;
+`ERR_INT_OVF`/`int_overflow` remain declared but no kernel emits them now
+(INT_MIN edge cases promote instead).
+
+### Original plan (2026-07-09), decisions resolved inline
+
+**Goal.** `int` becomes *exact, unbounded* integers with ONE canonical word per
+value: a value in `[-2^31, 2^31)` is ALWAYS the s32 prim word; anything outside
+is ALWAYS an interned GMP bignum under `mpz_intern_tag` (types.h:42, reserved
+since day one). Arithmetic never wraps: s32 kernels promote on overflow, mpz
+kernels contract when the result fits. The small/big split is a pure function
+of the value — the same **two representations, one type** keystone as
+mono/rope strings (types.h:75-91) — so raw-word equality/joins/dedup remain
+value semantics, and the small-int common path pays nothing new.
+
+### 14.1 Prerequisite encoding refactor (no semantics): sentinel relocation
+
+The s32 prim payload uses 32 of its 35 bits (`s32_encode` masks, types.h:106).
+The upper-3-bit region — tag-1 payloads in `[2^32, 2^35)`, ~30G words — becomes
+**reserved internal space**, and the three sentinels move to its top:
+
+```
+slog_null     0x7ff0003fffffffff  →  0x7ff0000fffffffff   (tag-1 payload 2^35-1)
+slog_lat_top  0x7ff0003ffffffffe  →  0x7ff0000ffffffffe
+slog_error    0x7ff0003ffffffffd  →  0x7ff0000ffffffffd
+```
+
+- `is_s32` gains one mask test:
+  `is_prim(x) && decode_type(x)==s32_prim_tag && !((x) & 0x0000000700000000)`.
+  Every consumer inherits it through the macro; the both-s32 fast paths in
+  prims.h are otherwise unchanged.
+- Freed by this + deleting the dead `enum_prim_tag` define (types.h:38, zero
+  uses — enums lower to the `_enum` struct): **prim tags 2–7 fully free**
+  (35-bit payloads each); intern tags 5–7 already free.
+- **Disk impact.** `slog_lat_top` is a real stored value (FLAT join result,
+  types.h:202 → `BTreeMapIndex` payload, index.h:146 → raw u64 in
+  `writeAllFactsBIN`, database.h:1931-1944). `slog_null`/`slog_error` are
+  confirmed transient (dedup markers / abandoned deductions; never reach the
+  stored btree). **RESOLVED (D-int.3): hard break** — bump
+  `slog-value-encoding-version` 1→2 (dbmeta.rkt:83, enforced
+  runslog.rkt:263-265, dbtool.rkt:203-217); no legacy translate arm. v1 DBs
+  are invalidated: clear `data/` and regenerate what matters. IO upgrades
+  fully with the encoding, every time.
+- The import `self_encoding` allowlist (database.h:3057) references the
+  macros — it moves automatically. Generated `.so`s compare `slog_error` by
+  name (emit-cpp.rkt:53) and daemon headers are in the cache fingerprint, so
+  stale plugins recompile automatically.
+
+### 14.2 The keystone: `encodeInt` / `encodeMpz` normalization
+
+`daemon/mpz.h` (new): an immutable `mpz_val` wrapper (holds `mpz_t`;
+`operator==` via `mpz_cmp`; canonical byte serialization = sign byte + u32
+limb-byte count + little-endian `mpz_export` bytes, used by BOTH the disk
+format and `fasthash<mpz_val>` — intern.h:38-51 pattern, which the table
+REQUIRES). `InternTable<mpz_val>` is instantiated as-is: lock-free CAS,
+content-hash ids, the dup-path id-wrap fix (intern.h:105-108) inherited;
+interned values are immutable so parallel prim calls are safe. **No allocator
+seeding** — like strings, ids are content-derived, not counters.
+
+Database (mirroring database.h:1108-1163, 1183-1205):
+
+- `intern_mpz` (with the duplicate-delete guard) / `lookup_mpz`;
+- `u64 encodeInt(s64 v)` — fits s32 → `s32_encode`, else intern;
+- `u64 encodeMpz(mpz_srcptr z)` — fits s32 → `s32_encode(mpz_get_si)`, else
+  cap check (§14.4) then intern. **Invariant: no interned mpz ever lies in
+  `[-2^31, 2^31)`** — this is what makes word equality = value equality;
+- `u64 encodeIntLiteral(const char* dec)` — `mpz_set_str` → `encodeMpz`
+  (literals, `s2i`, SMT numerals).
+- `is_mpz(x)` / `is_int(x) = is_s32(x) || is_mpz(x)` in types.h.
+- `cmp_int(db,a,b)` exact tri-compare: both-s32 → s64 compare; one mpz → its
+  **sign decides** (by the invariant its magnitude exceeds every s32); both →
+  `mpz_cmp`. mpz-vs-float uses `mpz_cmp_d` (exact, no 2^53 loss).
+
+### 14.3 Prim semantics (prims.h dispatch + kernels)
+
+- `+ - *` both-s32: compute in **s64** (can't overflow), `encodeInt` — silent
+  wrap is gone. Any-mpz int arm: GMP kernel → `encodeMpz` contraction.
+- `/ %`: div0/mod0 errors unchanged; the `INT_MIN/-1` `ERR_INT_OVF` arms
+  (int_prims.h:35-51) are **retired** — the result promotes to mpz `2^31`.
+  mpz uses `mpz_tdiv_q/r` (matches C truncated division).
+- `pow`: negative exponent → 0 (unchanged); size precheck
+  `bits(base)·exp` vs cap, then `mpz_pow_ui`.
+- Bitwise `band bor bxor bnot`: extend to mpz via GMP's two's-complement
+  semantics (`mpz_and/ior/xor/com`). `shl` becomes true `×2^k` (the `&31`
+  mask drops; cap prechecks `bits+k`); `shr` = arithmetic shift
+  (`mpz_fdiv_q_2exp`). Ints are integers, not 32-bit bitvectors (D-int.2).
+- Comparisons `SLOG_CMP` (prims.h:97-101): int-exact arms via `cmp_int`
+  before the double fallback; guards, `min/max`, all inherit.
+- Mixed int/float arithmetic: promote to double as today (`to_double` gains an
+  mpz arm via `mpz_get_d`; lossy ≥2^53, same as any int→float, documented).
+- `toint`: out-of-s32-range integral doubles now promote (`mpz_set_d`) —
+  `ERR_TOINT` retires for magnitude, stays for NaN/±inf.
+- `s2i` parses arbitrary decimals via `encodeIntLiteral`; `i2s` via
+  `mpz_get_str` (seq_prims.h:460-509).
+- Length/count producers (`size llen csize chas cmem sidx …`) stay s32
+  producers (bounded by construction). Seq/str **index-consuming** kernels
+  (`SLOG_SEQ_INT`, seq_prims.h:35, 249): an mpz index is definitionally
+  out-of-bounds — take the kernel's existing OOB result, not a fatal.
+- `$count` chain (`one/inf/cplus`) untouched (tagged s32 words 1/2).
+- Error-arm registration: every mpz-producing prim (`+ - * pow shl s2i toint
+  …`) becomes faultable via the caps (§14.4); each needs the new
+  `mpz_overflow`/`mpz_table_overflow` arm relations registered the same way
+  `/ %` get `div_by_zero` (operators.h:296 `rel()` fatals if unregistered),
+  plus the two new `ErrorKind`s appended at database.h:1077 and their arms in
+  `emit_pending_error` (operators.h:290-314).
+
+### 14.4 The growth caps (RESOLVED D-int.1: two caps, both config-tunable)
+
+Unbounded growth in a fixpoint is a real divergence vector (`(* x x)` doubles
+bits per iteration). Two independent caps, enforced centrally in `encodeMpz`,
+both wired through the dogfooded config system (config/*.slog → `setting->env`
+in config.rkt → `envU64` in the Daemon ctor, daemon.h:76-89):
+
+- **Per-value cap** — `SLOG_MPZ_MAX_BITS`, default **65536** (~19.7k decimal
+  digits). Prechecks in `pow`/`shl` (`bits(base)·exp`, `bits+k`) so we never
+  allocate a huge result just to reject it. Exceeding →
+  `setPendingError(ERR_MPZ_OVF, …)` → `slog_error` → the deduction is
+  abandoned and an `(error (mpz_overflow …))` fact is recorded instead of any
+  other fact — exactly the div-by-zero mechanism (emit-cpp.rkt:53 check,
+  operators.h:290-314 arm dispatch).
+- **Whole-table cap** — `SLOG_MPZ_TABLE_BYTES`, default **~1GB**. The
+  Database keeps an atomic approximate byte counter (limb bytes + entry
+  overhead), bumped only on interning a NEW value (dup hits are free; the
+  atomic check may overshoot by one in-flight value per thread — it is an
+  approximation by design). Once exceeded, NO new mpz is ever learned: every
+  interning attempt fails with `ERR_MPZ_TABLE` → `(error
+  (mpz_table_overflow …))`. Set semantics dedup the emissions — the fixpoint
+  converges with one such fact per rule location that tripped it, and all
+  already-interned bignums keep working.
+
+Two new `ErrorKind`s (append-only, database.h:1077) + two new arm relations
+(`mpz_overflow`, `mpz_table_overflow`) registered compiler-side like
+`div_by_zero`/`int_overflow`. Two new config settings (`mpz_max_bits`,
+`mpz_table_bytes`) added to config.rkt's `setting->env` map and the default
+config.
+
+### 14.5 Lattices
+
+`lat_num_min/max` (types.h:161-188) gain int-exact compare via `cmp_int` —
+which needs the table, so `BTreeMapIndex` carries a `Database*` (set where
+`lat_kind`/clamps are wired, index.h:113-115, database.h:425); `lat_join`/
+`lat_clamp` thread it. LAT_COUNT and LAT_FLAT unchanged (FLAT's top is just
+the relocated constant). `#:floor/#:ceiling` spec tokens stay s32-range
+(database.h:389 `latClampOfSpec`); revisit only if a use case appears.
+
+### 14.6 Persistence, import, compression — the leaf pattern
+
+mpz is a **leaf** (no child words): strings' lifecycle, never cnode/seq
+rebuild.
+
+- **Save**: `value.mpz/` (8 partitions), records **length-prefixed** per
+  §14.2's serialization — NUL framing is unusable, limb bytes contain 0x00;
+  mirror `stageSeqWrite` (database.h:2401-2438) not `stageStringsWrite`.
+  Call sites: `writeRelationBIN` :2453-2455, `writeDatabaseBIN` :2553-2555,
+  plus an inline block in the serial checkpoint path `writeDatabaseSerialBIN`
+  :2605-2611 (checkpoint-on-pause).
+- **Load**: `loadMpzBIN` (gz + plain arms, re-intern in file order ⇒ ids
+  reproduce) from `loadDatabaseBIN` :2821-2823 and `loadRelationBIN`
+  :2894-2896.
+- **Import/merge** (`importDatabaseBIN`): one leaf arm mirroring
+  `is_mono_str` (database.h:3073-3084) — `scratch.lookup_mpz` →
+  `remap[w] = encodeMpz(...)`. NOT self-encoding (content-hash ids are
+  per-DB); do not touch the :3057 allowlist; removes the :3207 catch-all
+  fatal. docs/db-merge.md: mpz joins strings as a content-addressed leaf
+  space (contrast cnodes/seqs = rebuild spaces).
+- **Compression**: zero new code — leaf heaps ride whole, never trimmed
+  (database.h:2494 rationale); replay re-interns via `encodeMpz` and
+  converges by content like strings (db-compression.md §4.3). SMT pinning
+  unaffected (pinned answers are facts; their words remap like any fact).
+
+### 14.7 SMT bridge (fixes a live truncation gap)
+
+- Word→numeral: `render`/`intLit` (smt.h:128-162, 182-189) get an mpz arm via
+  `mpz_get_str` decimal.
+- Numeral→word: `smtParseModel`/`smtParseCore` (smt.h:801-876) currently
+  `strtoll` → and `materialize` (oracle.h:417-429) **truncates to s32**.
+  Keep the digit string, materialize via `encodeIntLiteral` — solver-returned
+  bignums round-trip exactly now.
+- `SmtGroundEval` (smt.h:430-449) evaluates in s64; extend to mpz or bail to
+  the solver on overflow (either is sound; bail is smaller).
+
+### 14.8 Compiler surface
+
+- **Literals**: parser already yields exact bignums, unchecked (parser.rkt:
+  139-141) — today 2^31..2^63 literals silently wrap and ≥2^64 breaks the C++
+  build. The const-init arm (emit-cpp.rkt:812; also :181, actions.rkt:88,125)
+  splits: in-range → `s32_encode(v)`; big → `db->encodeMpz("<decimal>")`,
+  mirroring the string arm at :811 and for the same reason (must dedup with
+  computed values). Negative literals already lex (lexer.rkt:71-78).
+- **tycheck**: the `'int` accept arm (emit-cpp.rkt:447) becomes
+  `(is_s32(v) || is_mpz(v))`. Surface type stays `int`
+  (type-system.rkt:91 unchanged).
+- **dbtool** (bulk binary-DB writer): tools.rkt:137-141 is the
+  "BigInt prims not supported yet" gate. Supporting it means mirroring the
+  intern-id function over §14.2's serialization in Racket (as tools.rkt:125
+  does for strings) + writing `value.mpz/`. D-int.4: defer (keep a clean
+  error) — bulk bigint ingestion can land separately; the id-function
+  round-trip test is the acceptance gate when it does.
+- **Version**: `slog-value-encoding-version` → 2 (§14.1, one bump covers
+  both changes).
+- **Build**: `-lgmp` in daemon Makefile `LDLIBS` and in the plugin flag list
+  (tools.rkt:325-331 `extra-cxx-flags`). gmp dev confirmed installed
+  (multiarch include path; `libgmp.so` present).
+
+### 14.9 Decision points — ALL RESOLVED 2026-07-09
+
+- **D-int.1 — caps**: per-value 65536 bits + whole-table ~1GB approximate
+  byte counter, both config-tunable; distinct `mpz_overflow` /
+  `mpz_table_overflow` error facts (§14.4).
+- **D-int.2 — bitwise on bignums**: true-math view (GMP two's-complement;
+  `shl` promotes exactly).
+- **D-int.3 — legacy DBs**: hard break; version 1→2, clear `data/`,
+  regenerate. IO upgrades fully with every encoding change.
+- **D-int.4 — dbtool bigint ingestion**: deferred (clean error stays at
+  tools.rkt:141; follow-up gated on a Racket/C++ id round-trip test).
+
+### 14.10 Milestones (one day) + tests
+
+- **M-int.0** sentinel move + `is_s32` mask + version bump (hard break, no
+  translate) + delete `enum_prim_tag`; lockstep tools.rkt/dbmeta; clear
+  `data/`. Pure refactor — curated suite subset must stay green with zero
+  golden drift.
+- **M-int.1** `mpz.h` (`mpz_val`, fasthash, kernels) + table + Database
+  encode/decode + table byte counter + `-lgmp` both builds.
+- **M-int.2** prims: s64 fast paths + GMP kernels + contraction; `cmp_int`
+  arms in `SLOG_CMP`/`min`/`max`; `toint`/`s2i`/`i2s`; both caps + the two
+  new ErrorKinds/arm relations + config settings + error-arm registration
+  for newly-faultable prims.
+- **M-int.3** lattice `cmp_int` (thread `Database*` into `BTreeMapIndex`);
+  tycheck arm; literal emission split.
+- **M-int.4** persistence: `value.mpz/` stage/load/serial-checkpoint +
+  import leaf arm.
+- **M-int.5** SMT numerals both directions.
+- **M-int.6** goldens + unit battery.
+
+Goldens (`int_*`): promote at every boundary op (`+ - * pow shl` at
+±(2^31-1)); contract back down (`/ - abs`) and prove re-canonicalization;
+canonicity via two derivation routes of the same bignum deduping to one row;
+factorial/fib exactness through `i2s`; guards straddling the boundary;
+min/max lattice over bignums; big literals (pos/neg); `s2i`/`i2s` round-trip;
+per-value cap → `mpz_overflow` fact; table cap (tiny `SLOG_MPZ_TABLE_BYTES`)
+→ one deduped `mpz_table_overflow` fact + fixpoint still converges; save/load
+round-trip; import differential (api-tests §8 pattern); compression replay
+verify; SMT model with a >2^32 numeral. Unit battery beside the
+lat/collection ones in tests/unit.

@@ -30,7 +30,7 @@ note "unit battery (tests/smt-tests.cpp)"
 mkdir -p build
 CXX="${CXX:-clang++}"
 if "$CXX" -O1 -Wall -std=c++20 -pthread -fopenmp -Idaemon \
-      tests/smt-tests.cpp -o build/smt-tests -lz 2>&1 | head -5; then
+      tests/smt-tests.cpp -o build/smt-tests -lz -lgmp 2>&1 | head -5; then
   Z3BIN="${SMT_TEST_Z3:-$(command -v z3 || true)}"
   if [ -n "$Z3BIN" ]; then
     SMT_TEST_Z3="$Z3BIN" ./build/smt-tests || fail "unit battery"
@@ -120,6 +120,24 @@ else
     [ "$FAILED" -eq 0 ] && echo "   ok: model values {x:5, p:1} flowed back through cget"
   else
     tail -5 "$OUT.log"; fail "model: run error (see $OUT.log)"
+  fi
+
+  # ---- 2b'. bignum model round-trip under z3 (primitives.md §14.7) ---------
+  note "bignum model under z3 (tests/smt/bigmodel-z3.slog)"
+  OUT=out/test-smt-bigmodel-z3
+  rm -rf "$OUT"
+  if SLOG_SMT_SOLVERS="$Z3BIN:8000" \
+       timeout 300 racket slog.rkt --no-banner --debug-dir "$OUT" \
+       tests/smt/bigmodel-z3.slog > "$OUT.log" 2>&1; then
+    grep -q '"bigforced" *(_enum "sat")' "$OUT/probe.csv" 2>/dev/null \
+      || fail "bigmodel: forced probe should be sat"
+    grep -q '^100000000000000000000' "$OUT/xval.csv" 2>/dev/null \
+      || fail "bigmodel: x should be 10^20 (got: $(cat "$OUT/xval.csv" 2>/dev/null))"
+    grep -q '^1' "$OUT/xok.csv" 2>/dev/null \
+      || fail "bigmodel: x should equal (pow 10 20) exactly"
+    [ "$FAILED" -eq 0 ] && echo "   ok: solver bignum 10^20 round-tripped exactly through the model map"
+  else
+    tail -5 "$OUT.log"; fail "bigmodel: run error (see $OUT.log)"
   fi
 
   # ---- 2c. unsat-core extraction under z3 -----------------------------------

@@ -1,0 +1,19 @@
+;; Bignum model round-trip under a real solver (docs/primitives.md §14.7):
+;; the constraints force x = 10^20 (far beyond s32), so the solver's numeral
+;; must survive parse + materialize exactly and flow back through cget.
+;; (The s32-truncating parse this replaces would have returned garbage.)
+
+include "../../lib/smt.slog"
+
+table (probe str verdict cmap)
+rule (smt_model (land (lle (iv "x") (ic 100000000000000000000))
+                      (lge (iv "x") (ic 100000000000000000000)))
+     V M)
+  --> (probe "bigforced" V M)
+
+table (xval int)
+rule (probe "bigforced" (sat) M) (= X (cget M "x")) --> (xval X)
+
+;; exact equality against an independently computed bignum
+table (xok int)
+rule (xval X) (= X (pow 10 20)) --> (xok 1)

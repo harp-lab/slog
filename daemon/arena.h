@@ -31,6 +31,7 @@
 #include "types.h"
 #include "utf8string.h"
 #include "intern.h"
+#include "mpz.h"     // cmp_int_words + the scalar lat_join for merge_spec leaves
 #include <bit>
 #include <atomic>
 
@@ -522,9 +523,16 @@ public:
 	fatal("Non-collection word in a set/map lattice column");
       return merge_with(a, b, s->kind == LATSPEC_MAP ? s->child : nullptr);
     default:
-      return lat_join(s->kind, a, b);
+      return lat_join(s->kind, a, b, mpz_table);
     }
   }
+
+  // The owning Database's mpz intern table (set at construction there), so
+  // scalar min/max leaves inside composed lattice payloads -- and the
+  // BTreeMapIndex merges that reach this arena via lat_arena -- can compare
+  // bignum words exactly.
+  InternTable<mpz_val>* mpz_table = nullptr;
+  InternTable<mpz_val>* mpzTable() { return mpz_table; }
 
   // a ⊑ b under the composed spec.  Canonical interning makes join(a,b)==b
   // exactly the order test (subset for sets, pointwise for maps, the scalar
