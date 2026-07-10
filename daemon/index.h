@@ -185,7 +185,7 @@ public:
 // its arities statically and instantiates BTreeIndex<A> directly; the
 // daemon (opening a stored database with no program loaded, say) does not,
 // so it dispatches over a bounded set of pre-instantiated arities.
-constexpr u16 max_daemon_arity = 32;
+constexpr u16 max_daemon_arity = 64;
 
 template <u16 A>
 inline Index* makeIndexRec(u16 arity)
