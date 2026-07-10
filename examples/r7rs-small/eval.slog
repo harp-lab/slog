@@ -1,18 +1,24 @@
 
 
 include "syntax.slog"
+include "list.slog"
 
+
+;; Contexts: the top m call sites of the stack (m = (config "m"))
+union (Ctx [Exp])
 
 ;; Continuations
 union (K (ArgK [D] [Exp] Ctx K)
          (AppK Exp K)
-         (KAddr Exp Ctx))
+         (IfK Exp Exp Ctx K)
+         (KAddr Exp Ctx)
+         (Halt))
 
 ;; States
 union (S ;; Have reached an expression to evaluate
          (Eval Exp Ctx K)
-         ;; Have reached an application of a dataflow on a list of dataflows 
-         (Appl D [D])
+         ;; Have reached an application of a dataflow on a list of dataflows
+         (Appl Exp D [D] Ctx K)
          ;; Returning to a continuation with a list of dataflow args
          (Ret K [D]))
 
@@ -22,66 +28,138 @@ union (Val (Clo Exp Ctx)
 
 ;; Store
 table (kstore Exp Ctx K)
-table (vstore D Val) 
-
-;; Lookup
-demand (lookup str Ctx) D
-rule (lookup x ctx d) <-- (vstore x ctx d)
+table (vstore D Val)
 
 ;; Data flows
 union (D Val (RefAddr str Ctx))
 table (dataflow D D)
-rule (dataflow d0 d1) <-- (vstore d0 _) (dataflow d0 d) (dataflow d d1)  
+rule (dataflow d0 d1) <-- (vstore d0 _) (dataflow d0 d) (dataflow d d1)
+
+;; Lookup: chase a dataflow back to the value sources feeding it
 demand (lookup D) Val
+rule (lookup d v) <-- (vstore d v)
 rule (lookup d v) <-- (vstore d0 v) (dataflow d0 d)
+
+;; Connect two lists of dataflows, pointwise
 table (dataflow_list [D] [D])
 rule (dataflow_list [d0 ds...] [d0' ds'...])
  --> (dataflow_list ds ds') (dataflow d0 d0')
-     
-;; Contexts
-union (Ctx [Exp])
-demand (tick Ctx Exp Ctx)
-facts (tick [] e [e]) (tick [e0] e1 [e1 e0]) (tick [e1 e0] e2 [e2 e1 e0])
-      (tick [e2 e1 e0] e3 [e3 e2 e1])
+
+;; Connect a variable's address across two contexts
+table (dataflow_free str Ctx Ctx)
+rule (dataflow_free x ctx ctx')
+ --> (dataflow (RefAddr x ctx) (RefAddr x ctx'))
+
+
+;; Tunable analysis parameters, read in-rule as a nested (config "name") call
+demand (config str) int
+rule (config "m" 3)
+
+;; Tick a context: push the call site, keep the youngest m frames
+;; (lst_take clamps, so a stack shorter than m passes through whole)
+demand (tick Ctx Exp) Ctx
+rule (tick ctx e (lst_take [e ctx ...] (config "m")))
 
 ;; Injecting a basic value into the store (@itself)
-demand (construct Val Val)
-rule (construct v v) (vstore v v) <--
+demand (construct Val) Val
+rule (construct v v) (vstore v v)
 
 ;; Parameter Addresses
-demand (param_addrs [Exp] Ctx [D])
-facts (param_addrs [] ctx [])
-      (param_addrs [(Ref _ x) es...] ctx [(RefAddr x ctx) (param_addrs es ctx)...])
+demand (param_addrs [Ref] Ctx) [D]
+rule (param_addrs [] ctx [])
+rule (param_addrs [(Ref _ x)] ctx [(RefAddr x ctx)])
+rule (param_addrs [ps0... ps1...] ctx [(param_addrs ps0 ctx)... (param_addrs ps1 ctx)...])
+
 
 ;; Evaluation
 demand (step S) S
 
-facts ;; Simple eval/ret rules and basic stepping
-      (step (Eval (App _ ef eas) ctx k)
-            (Eval ef ctx (ArgK [] eas ctx (AppK k))))
-      (step (Eval e=(Lam _ _ _) ctx k)
-            (Ret k [(construct (Clo e ctx))]))
-      (step (Eval e=(Const _ _) ctx k)
-            (Ret k [(construct (Constant e))]))
-      ;; Return rules
-      (step (Ret (ArgK ds [arg0 args...] ctx k) [d])
-            (Eval arg0 ctx (ArgK [ds... d] args ctx k)))
-      (step (Ret (ArgK [df ds...] [] ctx (AppK e k)) [d])
-            (Appl e df [ds... d] ctx k))
+;; Simple eval rules
+rule (step (Eval e=(App _ ef eas) ctx k)
+           (Eval ef ctx (ArgK [] eas ctx (AppK e k))))
+rule (step (Eval e=(Lam _ _ _) ctx k)
+           (Ret k [(construct (Clo e ctx))]))
+rule (step (Eval e=(Const _ _) ctx k)
+           (Ret k [(construct (Constant e))]))
+rule (step (Eval (Ref _ x) ctx k)
+           (Ret k [(RefAddr x ctx)]))
+rule (step (Eval (If _ e0 e1 e2) ctx k)
+           (Eval e0 ctx (IfK e1 e2 ctx k)))
 
-;; Return from a function
+;; Return rules
+rule (step (Ret (ArgK ds [arg0 args...] ctx k) [d])
+           (Eval arg0 ctx (ArgK [ds... d] args ctx k)))
+rule (step (Ret (ArgK [df ds...] [] ctx (AppK e k)) [d])
+           (Appl e df [ds... d] ctx k))
+rule (step (Ret (ArgK [] [] ctx (AppK e k)) [df])
+           (Appl e df [] ctx k))
+rule (step (Ret (IfK e1 e2 ctx k) [_])
+           (Eval e1 ctx k))
+rule (step (Ret (IfK e1 e2 ctx k) [_])
+           (Eval e2 ctx k))
+
+;; Return from a function body to its stored continuations
 rule (step (Ret (KAddr e ctx) ds) (Ret k ds))
- <-- (kstore (KAddr e ctx) k)
+ <-- (kstore e ctx k)
 
-;; Apply rules
+;; Apply rule: step to the body in the ticked context, flowing arguments
+;; into the parameter addresses there
 rule (step (Appl e fd argds ctx k)
            (Eval body ctx' (KAddr body ctx')))
-     (dataflow_list argds (param_addrs params ctx'))
-     (dataflow_free (freevars body) )
- <-- (lookup fd (Clo (Lam _ params body) lamctx))
-     (tick ctx e ctx')
- 
-      
+     (kstore body ctx' k)
+     (dataflow_list argds (param_addrs ps ctx'))
+ <-- (lookup fd (Clo lam=(Lam _ ps [body]) lamctx))
+     (= ctx' (tick ctx e))
+
+;; ...and rebind each free variable of the applied lambda into the new
+;; context.  A separate rule: a lambda may be closed, and a head's nested
+;; (freevars lam) call gates every head of its rule on an answer existing.
+rule (dataflow_free (freevars lam) lamctx ctx')
+ <-- (step (Appl e fd _ ctx _))
+     (lookup fd (Clo lam lamctx))
+     (= ctx' (tick ctx e))
+
+
+;; Run the analysis over an injected program
+table (program Exp)
+table (reach S)
+rule (reach (Eval e [] (Halt))) <-- (program e)
+rule (reach s') <-- (reach s) (step s s')
+
+;; Client views: values reaching the top level, and the call graph
+table (result Val)
+rule (result v) <-- (reach (Ret (Halt) [d])) (lookup d v)
+
+table (calls Exp Exp)
+rule (calls e lam) <-- (reach (Appl e fd _ _ _)) (lookup fd (Clo lam _))
+
+
+;; ((lambda (x) x) (lambda (y) y))
+rule (program
+      (App (Pr "id-id" 1 0 1 31)
+           (Lam (Pr "id-id" 1 1 1 15) [(Ref (Pr "id-id" 1 9 1 10) "x")]
+                [(Ref (Pr "id-id" 1 12 1 13) "x")])
+           [(Lam (Pr "id-id" 1 16 1 30) [(Ref (Pr "id-id" 1 24 1 25) "y")]
+                 [(Ref (Pr "id-id" 1 27 1 28) "y")])]))
+
+;; ((lambda (id) ((lambda (u) (id #f)) (id #t))) (lambda (z) z))
+;; m = 3 keeps the two calls to id apart: only #f reaches the top level
+rule (program
+      (App (Pr "poly" 1 0 1 61)
+           (Lam (Pr "poly" 1 1 1 45) [(Ref (Pr "poly" 1 9 1 11) "id")]
+                [(App (Pr "poly" 1 14 1 44)
+                      (Lam (Pr "poly" 1 15 1 34) [(Ref (Pr "poly" 1 23 1 24) "u")]
+                           [(App (Pr "poly" 1 27 1 33)
+                                 (Ref (Pr "poly" 1 28 1 30) "id")
+                                 [(Const (Pr "poly" 1 31 1 33) (ConstBool (False)))])])
+                      [(App (Pr "poly" 1 35 1 43)
+                            (Ref (Pr "poly" 1 36 1 38) "id")
+                            [(Const (Pr "poly" 1 39 1 42) (ConstBool (True)))])])])
+           [(Lam (Pr "poly" 1 46 1 60) [(Ref (Pr "poly" 1 54 1 55) "z")]
+                 [(Ref (Pr "poly" 1 57 1 58) "z")])]))
+
+
+
 
 
 

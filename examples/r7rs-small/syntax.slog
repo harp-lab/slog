@@ -3,11 +3,14 @@
 ;; Expression provenance (filepath row col endrow endcol)
 struct (Pr str int int int int)
 
+;; Booleans (there is no builtin bool base type; an enum union)
+union (Bool (True) (False))
+
 ;; Constants
 union (ConstVal (ConstInt int)
                 (ConstFloat float)
                 (ConstStr str)
-                (ConstBool bool))
+                (ConstBool Bool))
 
 ;; The Source Language
 union (Exp ;; iterating toward (much of) r7rs-small
@@ -15,18 +18,31 @@ union (Exp ;; iterating toward (much of) r7rs-small
        (Lam Pr [Ref] [Exp])
        (Ref Pr str)
        (Const Pr ConstVal)
-       
+
        (App Pr Exp [Exp])
        (Apply Pr Exp [Exp])
-       
+
        (If Pr Exp Exp Exp)
+       (Set Pr Ref Exp)
+       (Begin Pr [Exp])
 
        )
 
 
+;; Free variables, on demand: (freevars e) answers each free x in e
+demand (freevars Exp) str
+demand (freevars_list [Exp]) str   ;; free in some expression of the list
+demand (not_bound [Ref] str) Bool  ;; (True) iff x is not among the params
 
-demand (freevars Exp str)
-rule (freevars (If _ e0 e1 e2) x) <-- (freevars (or e0 e1 e2) x)
-rule (freevars (App _ e es) x) <-- 
+rule (freevars (Ref _ x) x)
+rule (freevars (If _ e0 e1 e2) x) <-- (freevars (e0 | e1 | e2) x)
+rule (freevars (App _ ef es) x) <-- (freevars ef x) | (freevars_list es x)
+rule (freevars (Apply _ ef es) x) <-- (freevars ef x) | (freevars_list es x)
+rule (freevars (Set _ r e) x) <-- (freevars r x) | (freevars e x)
+rule (freevars (Begin _ es) x) <-- (freevars_list es x)
+rule (freevars (Lam _ ps body) x) <-- (freevars_list body x) (not_bound ps x (True))
 
+rule (freevars_list [e es...] x) <-- (freevars e x) | (freevars_list es x)
 
+rule (not_bound [] x (True))
+rule (not_bound [(Ref _ y) ps...] x r) <-- (/= x y) (not_bound ps x r)
