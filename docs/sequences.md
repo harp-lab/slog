@@ -307,6 +307,10 @@ Bare `...` (a gap with no name) does not parse and stays that way.
                      a = everything before, c = everything after
 [xs ... a b ys ...]  floating run: contiguous a,b occur somewhere
 [_ _ c _ ...]        positional: third element is c, length ≥ 4
+[xs ... ys ...]      deterministic halves (D16): xs gets ceil(n/2)
+[as ... bs ... cs ...]  deterministic thirds, longer slices first
+[a bs ... cs ... d]  peel first/last, halve the middle
+[as ... x bs ... cs ...]  x floats (fan-out); the right extent halves
 ```
 
 **D1 RESOLVED (Tom, 2026-07-08): postfix confirmed.**  `[a b ... c]`
@@ -322,15 +326,33 @@ splice-anywhere is symmetric between patterns and construction.
   any positions** — it is just concatenation.  `[a xs ... b ys ... c]`
   lowers to `lcat` chains over `lbuild` segments.  Adjacent splices are fine
   in heads (`[xs ... ys ...]` = `lcat xs ys`).
-- **Bodies** (patterns): **at most two splices, and no two adjacent.**
-  Two adjacent splices (`[xs ... ys ... ]` as a pattern) make the split
-  ambiguous — rejected with a provenance error naming the restriction.
-  Three or more splices (subsequence matching, fan-out O(n^{k-1})) are
-  rejected in v1 with an error; polynomial and possible later (§7).
-  Every body pattern therefore normalizes to:
-  `prefix-anchor  [splice₁]  floating-run  [splice₂]  suffix-anchor`
-  where any of the five parts may be empty and the floating run exists only
-  when both splices do.
+- **Bodies** (patterns): **any number of splices, any positions** (D16,
+  Tom 2026-07-09; the v1 at-most-two/non-adjacent restriction is lifted).
+  Every body pattern normalizes to
+  `pre  B₁ r₁ B₂ r₂ ... r_{m-1} Bₘ  post`
+  — maximal blocks `Bᵢ` of adjacent splices separated by non-empty fixed
+  runs `rᵢ`, fixed elements outside.  Two orthogonal mechanisms:
+  - **Runs float** (the established two-splice semantics, now per run):
+    each needed run joins the position enumerator, placements ordered
+    left-to-right; fan-out = every placement.  Two or more floating runs
+    in one pattern are legal but **warn at compile time** — O(n^r)
+    placements per list.
+  - **Blocks split deterministically**: a block of k adjacent splices
+    over an extent of m elements binds k slices sized ⌊m/k⌋+1 (the first
+    m mod k of them) then ⌊m/k⌋ — longer slices first, a pure function of
+    the list value (boundary c at `lo + ⌈c·m/k⌉`).  `[xs ... ys ...]`
+    halves favoring the left: `[0]` gives `xs=[0]`, `ys=[]`.  No
+    enumerator, no fan-out — the split composes freely with demand and
+    incremental maintenance, and is the intended workload-partitioning
+    idiom (`(work l), (= l [a ... b ...]) --> (work a) (work b)` builds a
+    canonical partition tree that terminates by dedup).
+
+  **Direction asymmetry (D16, documented not fixed):** head-side
+  `[xs ... ys ...]` concatenates, body-side splits — so cat-of-split is
+  the identity but split-of-cat is not on unbalanced inputs.  A
+  fully-bound body occurrence checks "xs, ys *are* the halves", not
+  "l = lcat(xs, ys)".  Bindedness already picks the direction (§5.1);
+  this is the same stance, stated for splits.
 
 The desugar (`collections.rkt`) validates these rules pre-cache-key,
 gensym-free, and emits the typed pattern clause of §5.1.  The or-split
@@ -483,8 +505,9 @@ which is what makes need-driven generation sound.
 | single splice, any position | llen guard + lref anchors + lslice | `$seq_at`/`$seq_atr` probes on ground anchors → bind L |
 | two splices (floating run) | demand enumerator join + anchors + slices | `$seq_at` probe(s) on run elems + pos-adjacency guards → bind L |
 | membership `[xs ... e ys ...]`, e ground | enumerator (all positions) or `lmem` guard if position unused | `$seq_at` select `{val}` → bind L |
+| adjacent splices `[xs ... ys ...]` (block of k) | deterministic k-way split of the extent — llen arithmetic + k lslices, longer first (D16); O(1) placements | `$seq_at`/`$seq_atr` probes on fixed pre/post anchors → bind L, then split |
+| ≥2 floating runs (`[_ ... x _ ... y _ ...]`) | one enumerator join per run + left-to-right `<=` chain; O(n^r) placements — **compile warning** | run-element `$seq_at` probes per run → bind L |
 | nothing ground/bound constrains the list | — | **STATIC ERROR** (D12, Tom 2026-07-08): matching would enumerate every list in the database.  Any ground or already-bound element anywhere in the pattern restores support (probe `$seq_at` on it); a length-only pattern (`[_ _]`, list unbound) is likewise unconstrained and errors. |
-| ≥3 splices / adjacent splices | REJECTED with provenance error (v1) | same |
 
 One asymmetric nicety worth implementing: when a membership pattern's
 position and splices are all dead (`[_ ... e _ ...]` style), the bound
@@ -585,9 +608,12 @@ Stated once so S1/S2 leave the right seams and no more:
    or similar) reuse seq-pat classification wholesale once a surface syntax
    is chosen; the classification table (§5.4) is already
    representation-agnostic.  No surface commitment now.
-4. **≥3 splices** (subsequence matching): polynomial, fan-out O(n^{k-1});
-   the §4.2 normalizer already computes the general shape — lifting the
-   restriction is planner work, not representation work.
+4. **≥3 splices** (subsequence matching): **LIFTED 2026-07-09 (D16)** —
+   the seq-expand emitter now segments any splice shape into floating
+   runs (one enumerator join each, O(n^r) placements, warned at r≥2) and
+   deterministic adjacent-splice block splits (§4.2).  What remains teed
+   up is only the native fan-out enumerator c-op of item 1 replacing the
+   rules-based `$seq_pos` lowering.
 5. **Ordered indices for other prims** (ints/floats already order correctly
    as words within a type; the gap is only content-ordering for interned
    values) — same IndexSpec seam.

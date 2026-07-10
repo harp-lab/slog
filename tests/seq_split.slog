@@ -1,0 +1,14 @@
+;; Deterministic adjacent-splice splits (docs/sequences.md §4.2, D16):
+;; [xs ... ys ...] halves a bound list favoring the left ([0] gives
+;; xs=[0] ys=[]; [] gives [] []), and fixed elements peel off the ends
+;; first ([a bs ... cs ... d] needs length >= 2, then halves the middle).
+;; A pure function of the list -- no enumerator, no fan-out.
+
+table (doc (list int))
+table (halves (list int) (list int))
+table (inner int (list int) (list int) int)
+
+facts (doc [1 2 3 4]) (doc [1 2 3 4 5]) (doc [0]) (doc [])
+
+rule (doc l) (= l [xs ... ys ...]) --> (halves xs ys)
+rule (doc l) (= l [a bs ... cs ... d]) --> (inner a bs cs d)

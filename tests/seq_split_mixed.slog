@@ -1,0 +1,14 @@
+;; Floating runs combined with deterministic block splits (D16): the run
+;; anchors placements (enumerator fan-out, one row per placement), and
+;; each side's splice block splits its extent deterministically.  Also
+;; exercises TWO floating runs in one pattern (ordered pairs; compiles
+;; with the O(n^r) warning).
+
+table (doc (list int))
+table (afterx (list int) (list int) (list int))
+table (pair2 int int)
+
+facts (doc [9 1 2 3]) (doc [1 9 2 9 3])
+
+rule (doc l) (= l [as ... 9 bs ... cs ...]) --> (afterx as bs cs)
+rule (doc l) (= l [_ ... x _ ... y _ ...]) --> (pair2 x y)

@@ -49,10 +49,19 @@
 ;; decomp-edges; compile.rkt warns when a fed relation grows recursively
 ;; (§5.3 defense (b)).
 ;;
-;; FLOATING RUNS lower onto the synthesized position enumerator
-;; ($seq_posdem/$seq_pos) with per-host ask rules; the membership nicety
-;; [_ ... e _ ...] (dead splices, single bound/ground run element)
-;; collapses to an lmem guard instead.
+;; PATTERN SHAPES (D16).  A pattern's items segment as
+;;   pre  B1 r1 B2 ... r_{m-1} Bm  post
+;; -- maximal blocks Bi of adjacent splices separated by non-empty fixed
+;; runs ri, with fixed prefix/suffix outside.  Runs FLOAT: each needed run
+;; joins the position enumerator ($seq_posdem/$seq_pos, per-host ask
+;; rules), placements ordered left-to-right by <=-guards; fan-out = every
+;; placement (>=2 floating runs warn: O(n^r) placements per list).
+;; Blocks split DETERMINISTICALLY: k adjacent splices over an extent of m
+;; elements bind slices sized floor(m/k)+1 (the first m mod k) then
+;; floor(m/k) -- longer first, a pure function of the list; [xs ... ys ...]
+;; halves favoring the left.  The membership nicety [_ ... e _ ...] (dead
+;; splices, single bound/ground run element) collapses to an lmem guard
+;; instead.
 
 (require "utils.rkt")
 (require "ir-shared.rkt")
@@ -299,18 +308,18 @@
      ;; ---- emission ------------------------------------------------------
      ;; Per seq-pat: main clauses (the host rule's full lowering) and base
      ;; clauses (the ask-safe subset: length guard + anchors, no enumerator
-     ;; join) plus, for a floating run, its run length j.  Ask rules demand
-     ;; the position enumerator from everything EXCEPT the enumerator joins
-     ;; themselves (no demand cycles between floating runs in one rule).
+     ;; join) plus, for each floating run, its run length j.  Ask rules
+     ;; demand the position enumerator from everything EXCEPT the enumerator
+     ;; joins themselves (no demand cycles between floating runs in a rule).
      (define parts
        (for/list ([sp (in-list sps)])
          (define-values (p l items) (sp-parts sp))
          (match (hash-ref directions sp)
            ['pattern
-            (define-values (main base run-j)
+            (define-values (main base run-js)
               (emit-pattern p l items rule rels atom-cseq-bound
                             used-occ used-outside-pattern? bound0))
-            (list main base (and run-j (list p l run-j)))]
+            (list main base (and (pair? run-js) (list p l run-js)))]
            ['construction
             (define cls (emit-construction p l items))
             (list cls cls #f)]
@@ -319,12 +328,14 @@
        `(syn ,prov rule ,@others ,@(append* (map first parts)) --> ,@heads))
      (define common (append* (map second parts)))
      (define asks
-       (for/list ([part (in-list parts)] #:when (third part))
-         (match-define (list p l j) (third part))
-         (define cj (gensymb '$sqc))
-         `(syn ,p rule ,@others ,@common
-               (syn ,p = ,cj (syn ,p const ,j))
-               --> (syn ,p $seq_posdem ,l ,cj))))
+       (append*
+        (for/list ([part (in-list parts)] #:when (third part))
+          (match-define (list p l js) (third part))
+          (for/list ([j (in-list (remove-duplicates js))])
+            (define cj (gensymb '$sqc))
+            `(syn ,p rule ,@others ,@common
+                  (syn ,p = ,cj (syn ,p const ,j))
+                  --> (syn ,p $seq_posdem ,l ,cj))))))
      (when (pair? asks)
        (set-add! pos-provs prov))
      (cons host asks)]
@@ -363,10 +374,37 @@
                    (cons `(syn ,p = ,target (syn ,p lcat ,acc ,x)) cls))])]))]))
 
 ;; -----------------------------------------------------------------------
-;; Pattern direction (§5.2): the list var is bound.  Returns three values:
-;; the full clause list, the ask-safe base subset (length guard + anchors),
-;; and the floating run's length j (#f unless the pattern needs the
-;; position enumerator).
+;; Pattern direction (§5.2): the list var is bound.  Items segment as
+;;
+;;     pre  B1 r1 B2 r2 ... r_{m-1} Bm  post
+;;
+;; where the Bi are MAXIMAL blocks of adjacent splices, the ri are the
+;; (necessarily non-empty) fixed-element runs between them, and pre/post
+;; are the fixed elements outside the blocks.  Two orthogonal mechanisms
+;; (D16):
+;;
+;;   * runs FLOAT: each needed run joins the position enumerator
+;;     ($seq_pos), placements ordered left-to-right by <=-guards -- the
+;;     fan-out over placements IS the semantics.  A run is SKIPPED (no
+;;     enumerator join) when its elements are all dead and neither
+;;     adjacent block has a live splice; its length then matters only
+;;     through the arity guard and its neighbors' slack constants.  Two
+;;     or more floating runs warn: O(n^r) placements per list.
+;;   * blocks split DETERMINISTICALLY: a block of k splices over an
+;;     extent of mid elements binds k slices sized floor(mid/k)+1 (the
+;;     first mid mod k of them) then floor(mid/k) -- longer slices first,
+;;     a pure function of the list.  Boundary c (1..k-1) sits at
+;;     lo + ceil(c*mid/k) = lo + (c*mid + k-1)/k (truncated non-negative
+;;     division).  k=1 degenerates to the classic single lslice, and
+;;     [xs ... ys ...] halves favoring the left ([0] gives xs=[0] ys=[]).
+;;
+;; Construction direction is untouched (splices concatenate, any shape),
+;; so cat-of-split is the identity but split-of-cat is not on unbalanced
+;; inputs -- the direction asymmetry documented at §4.2.
+;;
+;; Returns three values: the full clause list, the ask-safe base subset
+;; (length guard + fixed pre/post anchors), and the list of run lengths j
+;; that joined the enumerator (each needs a $seq_posdem ask rule).
 
 (define (emit-pattern p l0 items rule rels atom-cseq-bound used-occ
                       used-outside-pattern? bound0)
@@ -377,24 +415,13 @@
   ;; test first by data dependency.
   (define l (gensymb '$sql))
   (define entry (list `(syn ,p = ,l (syn ,p aslst ,l0))))
-  (define n-items (length items))
-  (define splice-idxs
-    (for/list ([it (in-list items)] [i (in-naturals)]
-               #:when (match it [`(splice ,_) #t] [_ #f]))
-      i))
-  (define n-splices (length splice-idxs))
-  ;; pattern-direction restrictions (§4.2): at most two splices, no two
-  ;; adjacent (an ambiguous split), enforced HERE where direction is known
-  (when (> n-splices 2)
-    (error 'seq-expand
-           "a bracket pattern may bind at most two splices (v1, §4.2) in\n~a"
-           (strip-prov rule)))
-  (when (and (= n-splices 2)
-             (= (second splice-idxs) (add1 (first splice-idxs))))
-    (error 'seq-expand
-           "two adjacent splices in a bracket pattern make the split ambiguous in\n~a"
-           (strip-prov rule)))
 
+  (define (splice-item? it) (match it [`(splice ,_) #t] [_ #f]))
+  (define (splice-live? it)
+    ;; dead or never-read splices materialize no slice (D13)
+    (match it
+      [`(splice ,x) (and (not (dead-var? x)) (used-outside-pattern? x))]
+      [_ #f]))
   (define (elem-live? it)
     (match it
       [`(elem ,x) (not (dead-var? x))]
@@ -415,182 +442,229 @@
     (define c (gensymb '$sqc))
     (values c `(syn ,p = ,c (syn ,p const ,i))))
 
+  ;; ---- segmentation ----------------------------------------------------
+  (define-values (pre rest0)
+    (splitf-at items (lambda (it) (not (splice-item? it)))))
+  (define-values (rblocks rruns post)
+    (let loop ([rest rest0] [blocks '()] [runs '()])
+      (if (null? rest)
+          (values blocks runs '())
+          (let*-values ([(blk after-blk) (splitf-at rest splice-item?)]
+                        [(fixed after-fixed)
+                         (splitf-at after-blk
+                                    (lambda (it) (not (splice-item? it))))])
+            (if (null? after-fixed)
+                (values (cons blk blocks) runs fixed)
+                (loop after-fixed (cons blk blocks) (cons fixed runs)))))))
+  (define blocks (reverse rblocks))
+  (define runs (reverse rruns))          ; m-1 of them, each non-empty
+  (define m (length blocks))
+  (define run-js (map length runs))
+  (define n-fixed (+ (length pre) (apply + run-js) (length post)))
+
+  ;; ---- base: entry + length guard + fixed pre/post anchors -------------
+  (define nv (gensymb '$sqn))
+  (define-values (kv kcl) (constv n-fixed))
+  (define len-cls
+    (if (zero? m)
+        ;; exact arity: llen computed into the const-bound var (==-check)
+        (list kcl `(syn ,p = ,kv (syn ,p llen ,l)))
+        (list `(syn ,p = ,nv (syn ,p llen ,l))
+              kcl
+              `(syn ,p >= ,nv ,kv))))
+  (define pre-cls
+    (for/fold ([acc '()]) ([it (in-list pre)] [i (in-naturals)]
+                           #:when (elem-live? it))
+      (define-values (cv ccl) (constv i))
+      (append acc (cons ccl (lref-clause it cv)))))
+  (define post-cls
+    (for/fold ([acc '()]) ([it (in-list post)] [j (in-naturals)]
+                           #:when (elem-live? it))
+      ;; element j of post sits (|post| - j) from the end
+      (define-values (cv ccl) (constv (- (length post) j)))
+      (define pv (gensymb '$sqp))
+      (append acc
+              (list ccl `(syn ,p = ,pv (syn ,p - ,nv ,cv)))
+              (lref-clause it pv))))
+  (define base (append entry len-cls pre-cls post-cls))
+  (define (assist)
+    (occurrence-assist p l0 items rule rels atom-cseq-bound used-occ bound0))
+
   (cond
     ;; ---- no splice: exact arity ----------------------------------------
-    [(zero? n-splices)
-     (define-values (lenv lencl) (constv n-items))
-     (define base
-       (append
-        entry
-        (list lencl `(syn ,p = ,lenv (syn ,p llen ,l)))
-        (for/fold ([acc '()]) ([it (in-list items)] [i (in-naturals)]
-                               #:when (elem-live? it))
-          (define-values (cv ccl) (constv i))
-          (append acc (cons ccl (lref-clause it cv))))))
-     (values (append base
-                     (occurrence-assist p l0 items rule rels atom-cseq-bound
-                                        used-occ bound0))
-             base #f)]
+    [(zero? m)
+     (values (append base (assist)) base '())]
 
-    ;; ---- one splice: prefix + suffix anchors ---------------------------
-    [(= n-splices 1)
-     (define si (first splice-idxs))
-     (define pre (take items si))
-     (define post (drop items (add1 si)))
-     (define spv (item-var (list-ref items si)))
-     (define nv (gensymb '$sqn))
-     (define-values (kv kcl) (constv (+ (length pre) (length post))))
-     (define base
-       (append entry
-               (list `(syn ,p = ,nv (syn ,p llen ,l))
-                     kcl
-                     `(syn ,p >= ,nv ,kv))))
-     (define pre-cls
-       (for/fold ([acc '()]) ([it (in-list pre)] [i (in-naturals)]
-                              #:when (elem-live? it))
-         (define-values (cv ccl) (constv i))
-         (append acc (cons ccl (lref-clause it cv)))))
-     (define post-cls
-       (for/fold ([acc '()]) ([it (in-list post)] [j (in-naturals)]
-                              #:when (elem-live? it))
-         ;; element j of post sits (|post| - j) from the end
-         (define-values (cv ccl) (constv (- (length post) j)))
-         (define pv (gensymb '$sqp))
-         (append acc
-                 (list ccl
-                       `(syn ,p = ,pv (syn ,p - ,nv ,cv)))
-                 (lref-clause it pv))))
-     (define splice-cls
-       (if (or (dead-var? spv) (not (used-outside-pattern? spv)))
-           '()   ; dead or never-read splice: no slice materialized (D13)
-           (let-values ([(av acl) (constv (length pre))]
-                        [(pcv pccl) (constv (length post))])
-             (define bv (gensymb '$sqp))
-             (list acl pccl
-                   `(syn ,p = ,bv (syn ,p - ,nv ,pcv))
-                   `(syn ,p = ,spv (syn ,p lslice ,l ,av ,bv))))))
-     (define base+ (append base pre-cls post-cls))
-     (values (append base+ splice-cls
-                     (occurrence-assist p l0 items rule rels atom-cseq-bound
-                                        used-occ bound0))
-             base+ #f)]
+    ;; ---- membership nicety [_ ... e _ ...]: all splices dead, no
+    ;; pre/post, single-element run that is ground or bound -> lmem guard
+    [(and (= m 2) (null? pre) (null? post)
+          (not (ormap splice-live? (append* blocks)))
+          (= 1 (length (first runs)))
+          (match (first (first runs))
+            [`(elemc ,_) #t]
+            [`(elem ,x) (and (not (dead-var? x)) (set-member? bound0 x))]
+            [_ #f]))
+     (define-values (ev ecl)
+       (match (first (first runs))
+         [`(elemc ,v) (let ([c (gensymb '$sqc)])
+                        (values c (list `(syn ,p = ,c (syn ,p const ,v)))))]
+         [`(elem ,x) (values x '())]))
+     (define-values (onev onecl) (constv 1))
+     ;; the inverted membership probe (§5.4): $seq_at on the element with
+     ;; a FREE position -- "which lists contain e" -- binding L from
+     ;; content when the planner prefers that over scanning the atom
+     (define mem-probe
+       (if (set-member? atom-cseq-bound l0)
+           (let ([pv (gensymb '$sqo)])
+             (set-add! used-occ '$seq_at)
+             (list `(syn ,p $seq_at ,ev ,pv ,l0)))
+           '()))
+     (values (append base ecl
+                     (list onecl `(syn ,p = ,onev (syn ,p lmem ,l ,ev)))
+                     mem-probe)
+             base '())]
 
-    ;; ---- two splices: a floating run -----------------------------------
+    ;; ---- general: floating runs between deterministic block splits ------
     [else
-     (define s1 (first splice-idxs))
-     (define s2 (second splice-idxs))
-     (define pre (take items s1))
-     (define run (take (drop items (add1 s1)) (- s2 s1 1)))
-     (define post (drop items (add1 s2)))
-     (define sp1 (item-var (list-ref items s1)))
-     (define sp2 (item-var (list-ref items s2)))
-     (define splices-dead?
-       (and (or (dead-var? sp1) (not (used-outside-pattern? sp1)))
-            (or (dead-var? sp2) (not (used-outside-pattern? sp2)))))
-     (define nv (gensymb '$sqn))
-     (define-values (kv kcl)
-       (constv (+ (length pre) (length run) (length post))))
-     (define base
-       (append entry
-               (list `(syn ,p = ,nv (syn ,p llen ,l))
-                     kcl
-                     `(syn ,p >= ,nv ,kv))))
-     (cond
-       ;; membership nicety: [_ ... e _ ...] -- dead splices, single-element
-       ;; run that is ground or bound, no anchors -> one lmem guard
-       [(and splices-dead? (null? pre) (null? post) (= 1 (length run))
-             (match (first run)
-               [`(elemc ,_) #t]
-               [`(elem ,x) (and (not (dead-var? x)) (used-outside-pattern? x))]
-               [_ #f]))
-        (define-values (ev ecl)
-          (match (first run)
-            [`(elemc ,v) (let ([c (gensymb '$sqc)])
-                           (values c (list `(syn ,p = ,c (syn ,p const ,v)))))]
-            [`(elem ,x) (values x '())]))
-        (define-values (onev onecl) (constv 1))
-        ;; the inverted membership probe (§5.4): $seq_at on the element with
-        ;; a FREE position -- "which lists contain e" -- binding L from
-        ;; content when the planner prefers that over scanning the atom
-        (define mem-probe
-          (if (and (set-member? atom-cseq-bound l)
-                   (match (first run)
-                     [`(elemc ,_) #t]
-                     [`(elem ,x) (set-member? bound0 x)]
-                     [_ #f]))
-              (let ([pv (gensymb '$sqo)])
-                (set-add! used-occ '$seq_at)
-                (list `(syn ,p $seq_at ,ev ,pv ,l)))
-              '()))
-        (define cls (append base ecl
-                            (list onecl
-                                  `(syn ,p = ,onev (syn ,p lmem ,l ,ev)))
-                            mem-probe))
-        (values cls base #f)]
-       ;; run entirely dead and splices dead: only the length constrains
-       [(and splices-dead? (null? pre) (null? post)
-             (not (ormap elem-live? run)))
-        (values base base #f)]
-       ;; the general floating run: join the position enumerator's answers
-       ;; -- ($seq_pos l j pos) for every run start -- then check anchors,
-       ;; run elements at pos+k, and slice the two splices.  Fan-out = the
-       ;; matching positions, which IS the pattern's semantics.  The
-       ;; enumerator is demanded by a synthesized ask rule (expand-rule);
-       ;; memoization gives each distinct (l, j) one enumeration ever.
-       [else
-        (define j (length run))
-        (define-values (cjv cjcl) (constv j))
-        (define posv (gensymb '$sqp))
-        (define-values (cprev cprecl) (constv (length pre)))
-        (define-values (cpostv cpostcl) (constv (length post)))
-        (define pjv (gensymb '$sqp))    ; pos + j
-        (define limv (gensymb '$sqp))   ; n - |post|
-        (define pre-cls
-          (for/fold ([acc '()]) ([it (in-list pre)] [i (in-naturals)]
-                                 #:when (elem-live? it))
-            (define-values (cv ccl) (constv i))
-            (append acc (cons ccl (lref-clause it cv)))))
-        (define post-cls
-          (for/fold ([acc '()]) ([it (in-list post)] [jj (in-naturals)]
-                                 #:when (elem-live? it))
-            (define-values (cv ccl) (constv (- (length post) jj)))
-            (define pv (gensymb '$sqp))
-            (append acc
-                    (list ccl `(syn ,p = ,pv (syn ,p - ,nv ,cv)))
-                    (lref-clause it pv))))
-        (define run-cls
-          (for/fold ([acc '()]) ([it (in-list run)] [k (in-naturals)]
-                                 #:when (elem-live? it))
-            (define-values (ckv ckcl) (constv k))
-            (define pkv (gensymb '$sqp))
-            (append acc
-                    (list ckcl `(syn ,p = ,pkv (syn ,p + ,posv ,ckv)))
-                    (lref-clause it pkv))))
-        (define splice1-cls
-          (if (or (dead-var? sp1) (not (used-outside-pattern? sp1)))
-              '()
-              (list `(syn ,p = ,sp1 (syn ,p lslice ,l ,cprev ,posv)))))
-        (define splice2-cls
-          (if (or (dead-var? sp2) (not (used-outside-pattern? sp2)))
-              '()
-              (list `(syn ,p = ,sp2 (syn ,p lslice ,l ,pjv ,limv)))))
-        (define base+ (append base pre-cls post-cls))
-        (values (append base+
-                        (list cjcl
-                              `(syn ,p $seq_pos ,l ,cjv ,posv)
-                              cprecl
-                              `(syn ,p >= ,posv ,cprev)
-                              cpostcl
-                              `(syn ,p = ,pjv (syn ,p + ,posv ,cjv))
-                              `(syn ,p = ,limv (syn ,p - ,nv ,cpostv))
-                              `(syn ,p <= ,pjv ,limv))
-                        run-cls splice1-cls splice2-cls
-                        (occurrence-assist p l0 items rule rels
-                                           atom-cseq-bound used-occ bound0)
-                        (run-occurrence-assist p l0 run posv rule rels
-                                               atom-cseq-bound used-occ
-                                               bound0))
-                base+ j)])]))
+     (define block-live?*
+       (for/list ([b (in-list blocks)]) (ormap splice-live? b)))
+     ;; a run joins the enumerator when its content is checkable or a
+     ;; neighboring block needs its position for a live slice
+     (define needed?*
+       (for/list ([r (in-list runs)] [i (in-naturals)])
+         (or (ormap elem-live? r)
+             (list-ref block-live?* i)
+             (list-ref block-live?* (add1 i)))))
+     (define n-needed (for/sum ([x (in-list needed?*)]) (if x 1 0)))
+     (when (>= n-needed 2)
+       (eprintf "warning: a bracket pattern floats ~a runs -- O(n^~a) enumerated placements per list; anchor or restructure if the relation is large (docs/sequences.md §4.2) in\n~a\n"
+                n-needed n-needed (strip-prov rule)))
+
+     ;; enumerator joins + run-element checks, one per needed run
+     (define run-pos (make-vector (sub1 m) #f))   ; i -> (posv . endv)
+     (define needed-js '())
+     (define run-cls
+       (for/fold ([acc '()]) ([r (in-list runs)] [i (in-naturals)]
+                              #:when (list-ref needed?* i))
+         (define j (list-ref run-js i))
+         (set! needed-js (cons j needed-js))
+         (define-values (cjv cjcl) (constv j))
+         (define posv (gensymb '$sqp))
+         (define endv (gensymb '$sqp))              ; pos + j
+         (vector-set! run-pos i (cons posv endv))
+         (define elem-cls
+           (for/fold ([acc2 '()]) ([it (in-list r)] [k (in-naturals)]
+                                   #:when (elem-live? it))
+             (define-values (ckv ckcl) (constv k))
+             (define pkv (gensymb '$sqp))
+             (append acc2
+                     (list ckcl `(syn ,p = ,pkv (syn ,p + ,posv ,ckv)))
+                     (lref-clause it pkv))))
+         (append acc
+                 (list cjcl
+                       `(syn ,p $seq_pos ,l ,cjv ,posv)
+                       `(syn ,p = ,endv (syn ,p + ,posv ,cjv)))
+                 elem-cls
+                 (run-occurrence-assist p l0 r posv rule rels
+                                        atom-cseq-bound used-occ bound0))))
+
+     ;; left-to-right placement order: chain <=-guards between consecutive
+     ;; needed runs; skipped runs and the fixed prefix/suffix ride as
+     ;; constant slack
+     (define order-cls
+       (let loop ([i 0] [prev #f] [slack (length pre)] [cls '()])
+         (cond
+           [(> i (- m 2))
+            ;; close: the last enumerated run leaves room for the suffix
+            (append cls
+                    (if prev
+                        (let-values ([(cv ccl)
+                                      (constv (+ slack (length post)))])
+                          (define limv (gensymb '$sqp))
+                          (list ccl
+                                `(syn ,p = ,limv (syn ,p - ,nv ,cv))
+                                `(syn ,p <= ,prev ,limv)))
+                        '()))]
+           [(not (list-ref needed?* i))
+            (loop (add1 i) prev (+ slack (list-ref run-js i)) cls)]
+           [else
+            (match-define (cons posv endv) (vector-ref run-pos i))
+            (define lb-cls
+              (cond
+                [prev
+                 (if (zero? slack)
+                     (list `(syn ,p <= ,prev ,posv))
+                     (let-values ([(cv ccl) (constv slack)])
+                       (define lbv (gensymb '$sqp))
+                       (list ccl
+                             `(syn ,p = ,lbv (syn ,p + ,prev ,cv))
+                             `(syn ,p <= ,lbv ,posv))))]
+                [(zero? slack) '()]   ; $seq_pos already gives pos >= 0
+                [else (let-values ([(cv ccl) (constv slack)])
+                        (list ccl `(syn ,p >= ,posv ,cv)))]))
+            (loop (add1 i) endv 0 (append cls lb-cls))])))
+
+     ;; deterministic block splits (live blocks only; a live block's
+     ;; neighboring runs are needed by construction, so their position
+     ;; vars exist)
+     (define split-cls
+       (for/fold ([acc '()]) ([blk (in-list blocks)] [i (in-naturals)]
+                              #:when (list-ref block-live?* i))
+         (define k (length blk))
+         (define-values (lov lo-cls)
+           (if (zero? i)
+               (let-values ([(cv ccl) (constv (length pre))])
+                 (values cv (list ccl)))
+               (values (cdr (vector-ref run-pos (sub1 i))) '())))
+         (define-values (hiv hi-cls)
+           (if (= i (sub1 m))
+               (let-values ([(cv ccl) (constv (length post))])
+                 (define hv (gensymb '$sqp))
+                 (values hv (list ccl `(syn ,p = ,hv (syn ,p - ,nv ,cv)))))
+               (values (car (vector-ref run-pos i)) '())))
+         (define live?s (map splice-live? blk))
+         ;; boundary c (1..k-1) is materialized only when an adjacent
+         ;; slice is live
+         (define boundary?*
+           (for/list ([c (in-range 1 k)])
+             (or (list-ref live?s (sub1 c)) (list-ref live?s c))))
+         (define bvars (make-vector (add1 k) #f))
+         (vector-set! bvars 0 lov)
+         (vector-set! bvars k hiv)
+         (define midv (gensymb '$sqm))
+         (define-values (ckv ckcl) (constv k))
+         (define-values (km1v km1cl) (constv (sub1 k)))
+         (define mid-cls
+           (if (ormap values boundary?*)
+               (list `(syn ,p = ,midv (syn ,p - ,hiv ,lov)) ckcl km1cl)
+               '()))
+         (define b-cls
+           (for/fold ([acc2 '()]) ([c (in-range 1 k)]
+                                   #:when (list-ref boundary?* (sub1 c)))
+             (define-values (ccv cccl) (constv c))
+             (define t1 (gensymb '$sqm))
+             (define t2 (gensymb '$sqm))
+             (define t3 (gensymb '$sqm))
+             (define bv (gensymb '$sqp))
+             (vector-set! bvars c bv)
+             (append acc2
+                     (list cccl
+                           `(syn ,p = ,t1 (syn ,p * ,ccv ,midv))
+                           `(syn ,p = ,t2 (syn ,p + ,t1 ,km1v))
+                           `(syn ,p = ,t3 (syn ,p / ,t2 ,ckv))
+                           `(syn ,p = ,bv (syn ,p + ,lov ,t3))))))
+         (define slice-cls
+           (for/fold ([acc2 '()]) ([it (in-list blk)] [c (in-naturals)]
+                                   #:when (splice-live? it))
+             (append acc2
+                     (list `(syn ,p = ,(item-var it)
+                                 (syn ,p lslice ,l ,(vector-ref bvars c)
+                                      ,(vector-ref bvars (add1 c))))))))
+         (append acc lo-cls hi-cls mid-cls b-cls slice-cls)))
+
+     (values (append base run-cls order-cls split-cls (assist))
+             base
+             (reverse needed-js))]))
 
 ;; -----------------------------------------------------------------------
 ;; The inverted-join assist (§5.3): a redundant occurrence join on a GROUND

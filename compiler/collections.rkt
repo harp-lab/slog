@@ -11,11 +11,13 @@
 ;;                            + (seq-pat $seq0 (elem a) (splice xs) (elem b))
 ;;
 ;; `...` is a postfix operator marking its element as a SPLICE (it binds or
-;; supplies a subsequence).  Splices may appear at any position and, in
-;; construction direction, in any number; the pattern-direction restrictions
-;; (at most two, non-adjacent, D12 support) are enforced at expansion time
-;; (seq-expand.rkt), where bindedness is known -- the desugar cannot know
-;; whether a bracket destructures or constructs (§5.1: bindedness is a
+;; supplies a subsequence).  Splices may appear at any position and in any
+;; number, both directions (D16): construction concatenates; pattern
+;; direction floats fixed runs between splice blocks and splits each block
+;; of adjacent splices deterministically (longer slices first).  The
+;; lowering (and the D12 nothing-constrains check) happens at expansion
+;; time (seq-expand.rkt), where bindedness is known -- the desugar cannot
+;; know whether a bracket destructures or constructs (§5.1: bindedness is a
 ;; scheduling fact), so the clause is direction-neutral and the expansion
 ;; pass (post-simplification, pre-typecheck) lowers it onto prims, builds,
 ;; or occurrence joins.

@@ -1,0 +1,16 @@
+;; k-way deterministic splits (D16): a block of k adjacent splices binds
+;; slices sized floor(m/k)+1 (the first m mod k of them) then floor(m/k)
+;; -- longer slices first.  Dead splices skip their slice (D13) but keep
+;; the split geometry; head-side splices concatenate, so rebuilding from
+;; the thirds is the identity.
+
+table (doc (list int))
+table (thirds (list int) (list int) (list int))
+table (midthird (list int))
+table (rebuilt (list int))
+
+facts (doc [1 2 3 4 5 6 7]) (doc [1 2]) (doc [])
+
+rule (doc l) (= l [as ... bs ... cs ...]) --> (thirds as bs cs)
+rule (doc l) (= l [_ ... bs ... _ ...]) --> (midthird bs)
+rule (thirds as bs cs) --> (rebuilt [as ... bs ... cs ...])
