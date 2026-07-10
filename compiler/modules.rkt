@@ -4,7 +4,9 @@
 ;; the pipeline compiles.
 ;;
 ;;   - `include "file"` merges another file's modules (and type declarations)
-;;     into the current program.
+;;     into the current program.  Relative paths resolve against the including
+;;     file's directory, then fall back to the compiler's lib/ directory
+;;     (so `include "list.slog"` works from anywhere).
 ;;   - `run "file"` names a prerequisite program: it is compiled separately
 ;;     and runs to fixpoint first, its database feeding this program.
 ;;
@@ -35,6 +37,7 @@
 
 (provide load-program-list)
 
+(require racket/runtime-path)
 (require "parser.rkt")
 (require "utils.rkt")
 (require "ir-shared.rkt")
@@ -66,6 +69,21 @@
   (define ov (current-source-override))
   (or (and ov (hash-has-key? ov (source-key p)))
       (file-exists? p)))
+
+;; An include path resolves relative to the including file's directory; a
+;; relative path with no source there falls back to the compiler's sibling
+;; lib/ directory, so the standard helpers are `include "list.slog"` from
+;; anywhere.  The local candidate wins when both exist, and an unavailable
+;; path stays local so the caller's availability filter behaves as before.
+(define-runtime-path stdlib-dir "../lib")
+(define (resolve-include p rel-dir)
+  (define local (fullpath (normalize-path p rel-dir)))
+  (cond
+    [(source-available? local) local]
+    [(or (absolute-path? p) (not (directory-exists? stdlib-dir))) local]
+    [else
+     (define stdlib (fullpath (normalize-path p stdlib-dir)))
+     (if (source-available? stdlib) stdlib local)]))
 
 (define (program-merge-run p0 p1)
   (match p0
@@ -103,7 +121,7 @@
           (organize-module `(module ,path ,toks
                               ,ast-sans-directives))
           (filter (lambda (p) (and (source-available? p) (not (set-member? seen-inc p))))
-                  (map (lambda (p) (fullpath (normalize-path p rel-dir)))
+                  (map (lambda (p) (resolve-include p rel-dir))
                        (set->list inc-paths)))))
        (foldl (lambda (run-path prog)
                 (define rp (fullpath run-path))
