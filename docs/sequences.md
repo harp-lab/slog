@@ -347,6 +347,18 @@ splice-anywhere is symmetric between patterns and construction.
     idiom (`(work l), (= l [a ... b ...]) --> (work a) (work b)` builds a
     canonical partition tree that terminates by dedup).
 
+    **Recipe for demand recursion over splits** (measured 2026-07-09): the
+    ask direction is log-depth and cheap, but if the recursive ANSWER rule
+    keeps the split inside the pattern, the child-answer delta direction
+    has no index from a slice back to its parent (computed keys have no
+    inverse) — the planner rescans demands and re-slices per pair
+    (~O(n²) lslice kernel calls; 512-wide: 299s).  Materialize the split
+    as a table — `(halves l a b) <-- (work l) (= l [a ... b ...])` — and
+    recurse on the columns of `halves`: the upward joins become indexed
+    column joins (512-wide: 44ms, 6800x; 140x faster than the equivalent
+    fold with 50x fewer fixpoint rounds).  A future slice-decomposition
+    index (the decomp-edges seam, §7) could make the direct form as fast.
+
   **Direction asymmetry (D16, documented not fixed):** head-side
   `[xs ... ys ...]` concatenates, body-side splits — so cat-of-split is
   the identity but split-of-cat is not on unbalanced inputs.  A
