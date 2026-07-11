@@ -177,8 +177,8 @@ they are *one* concept, and two of the three already reduce to existing
 machinery:
 
 1. **Inline (small, ≲ 2k tuples).** Values baked as literals into a generated
-   action plugin — the `add-tuple` path (actions.rkt:83-95 →
-   `Daemon::addTuple`, daemon.h:253-260) generalised to
+   action plugin — the `add-tuple` path (actions.rkt `(add-tuple …)` →
+   `Daemon::addTuple`) generalised to
    `(add-batch REL ((v …) …))` and `(del-batch REL ((v …) …))`. This is the
    W8/editor case. The .so bake cost is fine at this scale (it is how inline
    ground rules already work); past a few thousand tuples it is not (the known
@@ -296,7 +296,7 @@ earlier version. The version structure is what makes Phase 2's deletion
 **The version environment (new, daemon-side — the load-bearing piece).**
 The physical registry keys relations by **version id**; per pipeline
 position, an environment maps name → version. Today's single global
-name→Relation map (database.h:1086) becomes the environment of the *latest*
+name→Relation map (`Database::relations`) becomes the environment of the *latest*
 position. Generated code already resolves relations **by name at
 registration time** (`getRelation("R")` during plugin bind — the identity
 invariant db-merge pinned), so the change is confined to bind time: when a
@@ -320,12 +320,12 @@ through P's environment. Consequences, all deliberate:
 
 The rest of the substrate is closer than it looks: strata stay resident
 after running (daemon.h:18-27); re-sending a stratum's cached `.so` path
-re-registers its tasks, and `beginStratum` (daemon.h:163-195) performs the
+re-registers its tasks, and `beginStratum` (daemon.h) performs the
 deferred whole-DB reload — every relation re-staged as the new stratum's
-iteration-0 delta (reloadInsertBatches, database.h:3074-3114). `add-tuple`
+iteration-0 delta (`Database::reloadInsertBatches`). `add-tuple`
 already sets `needs_reload`. What's missing is captured in two places: the
 "re-running an old stratum needs its task `Index**` bindings re-bound"
-caveat (daemon.h:24-27) and pausing.md §12's deliberately-cut `bind()` seam.
+caveat (daemon.h header comment) and pausing.md §12's deliberately-cut `bind()` seam.
 
 **Cone analysis (compiler+driver-side, new).** Over the **version graph**
 (rule dependency edges within segments + inheritance edges between
@@ -354,7 +354,7 @@ apply batch — §0.4's materialisation rule), then propagates through
    edit-and-propagate's full re-replay — Phase 0's contribution is
    **cone-limiting** (skip strata outside the cone) and skipping the
    recompile (the `.so` cache makes re-push cheap). The pipeline vector
-   grows with each re-push (scc_id = position at push, daemon.h:296-305);
+   grows with each re-push (scc_id = position at push, `Daemon::push`);
    fine functionally, curbed later by the bind()-reuse path.
 2. **Clear-and-rerun (small additions; sound for EVERYTHING — deletions and
    non-monotone cones).** As (1), but first **rebuild the anchored version
@@ -383,7 +383,7 @@ apply batch — §0.4's materialisation rule), then propagates through
    (mode 1/2) or don't fire at all; feeding a delta to a variant whose
    fixed driver is a different body relation silently under-derives
    (verified against the planner's dynamic-rels → `static?` flow,
-   operationalization.rkt:84 → emit-cpp.rkt:447). The fix is to **also
+   operationalization.rkt `split-old-marks` → emit-cpp.rkt `static?`). The fix is to **also
    emit delta-driven variants for cross-stratum body relations** — the
    same trick semi-naïve already uses within an SCC, extended across
    stratum boundaries. **Since the fully incremental workflow is the
@@ -404,7 +404,7 @@ cone → delta-entry when the flavor is compiled, replay-entry until then;
 anything with a negative sign or a non-monotone edge in the cone →
 clear-and-rerun of the affected cone. All three end with the strata's
 `(fixpoint)` handshake and compose with pausing budgets unchanged
-(`continueRun`, daemon.h:337-370).
+(`continueRun`, daemon.h).
 
 **Memory posture (decided).** The whole pipeline — every materialised
 version's master index — is **held in memory by default**; that is what
@@ -412,6 +412,108 @@ makes "new input anywhere, low-latency recompute" the default workflow.
 Secondary/join indices are kept only for versions that live strata read and
 are rebuildable on demand; disk spill for cold versions is a flagged later
 optimisation, not a Phase 0 concern.
+
+#### 0.5.1 B0+B1 as built (2026-07-11): the version substrate & cone-limited replay-entry
+
+What shipped, and the decisions the design left open:
+
+- **The latest map stays.** `Database::relations` remains the name→Relation
+  map every run-loop walk (finalize/reorg/reload/orphan-restore), save, and
+  default `getRelation` uses — it is now defined as *the latest
+  environment*, non-owning. Ownership moved to `rel_registry` (every
+  physical version ever, creation-ordered); `rel_bindings` holds per-name
+  chains of `{pos, Relation*}` binding events. Every registration site
+  funnels through `Database::registerRelation` (addRelation/addStruct/
+  loadDatabaseBIN/ensureStatsRelation/newVersion), so the three structures
+  cannot drift. Old versions leave `relations` at a boundary and thereby
+  leave every run/save/reload path for free — no filtering anywhere.
+- **Positions are boundary-event counts, not SCC ids.** A monotone counter
+  (`Database::pipeline_pos`): each `open`/`import`/`import-path`/
+  `import-layer`, each `begin-segment`, and each fresh stratum occupies the
+  current position and advances it (`Daemon::push` stamps
+  `Stratum::pipeline_pos`; the hot-swap re-push path neither stamps nor
+  advances). Distinct positions per event keep a segment boundary from
+  shadowing the load it follows at the same position. Version ordinals per
+  name (= index in its chain) stay recipe-stable as §0.4 requires.
+- **Boundaries are driver-announced.** The daemon cannot infer a segment's
+  write-set from a path-only `.so` push, and versioning per *writing
+  stratum* would be wrong anyway (side channels like `error` are written by
+  many strata of one segment). So the driver sends a `begin-segment`
+  action naming the segment's writes: the union of its strata's `.meta`
+  `dynamic-rels` (the manifests' first consumer) plus the relation names of
+  its frozen ground-fact databases (their import follows the boundary —
+  frozen rows are segment writes). runslog emits it when running atop a
+  `-d` input and before each replayed layer's strata; fresh runs skip the
+  no-op. The daemon replies `(segment P N)`; every driver reader tolerates
+  the extra line.
+- **`newVersion` copy mechanics.** Registration copy: arity, struct id
+  VERBATIM (downstream rows embed it; `structs_by_id` memo follows the
+  latest version), lattice spec re-registered via
+  `setLatticeFromSpec(spec, cnode_arena)`, and per-bucket
+  `intern_allocators` copied verbatim (both versions mint from one id
+  space — a fresh allocator would collide with ids the predecessor
+  issued). Content copy: `ensureDefaultIndex` + `forEachNominal` →
+  `insertTupleAllIndices` — id-preserving, lattice payload maps merge.
+  The copy lands in the default identity index and is normalized by the
+  next reload's dump+clear+restage exactly like an opened database; the
+  predecessor's indices are never touched. Copies only settled (indexed)
+  content — boundaries sit between strata where deltas are drained.
+- **Addressing shipped with B0** (pulled forward from C1, API-seams-now):
+  `getRelationAt(name, P)` (last binding ≤ P) under a `(pipeline)`
+  introspection action — `(pipeline (pos P) (rel NAME (v ORD POS SIZE) …)
+  …)` — plus `(sizes-at P)` and `(dump-rel REL P)` action variants.
+  `Database::bind_pos` (set via `setBindPosition`) makes `getRelation`
+  resolve positionally at plugin-bind time; **no consumer yet** — B1's
+  guard sidesteps it, B2's positional re-binding consumes it.
+- **B1 — cone-limited replay-entry (same day).** The session driver's
+  `reenter` op: after a latest-anchored batch (`add-tuple`), re-push the
+  cached `.so` of each cone stratum in pipeline order; each `beginStratum`
+  re-stages the whole DB as iteration-0 delta, indices re-register from
+  scratch (the reload had cleared registrations — exactly why re-push works
+  where resident-task reuse would dangle), set-dedup absorbs, the batch
+  propagates. The daemon needed nothing beyond introspection — the re-push
+  mechanics existed; B1's content is *driver policy*:
+  - **Cone assembly** chains the `.meta` `reads`/`dynamic-rels` manifests
+    (A7's cone consumer): S is in cone(R) iff it reads R or a relation a
+    cone stratum below produced.
+  - **Anchor filter.** Only strata bound *at-or-after the target's last
+    binding position* are candidates — earlier strata read a predecessor
+    version and must not re-fire. `(pipeline)` introspection now carries
+    per-stratum bind positions (`(strata (s SCC POS "NAME") …)`) so the
+    driver reads this live instead of mirroring the event counter.
+  - **Latest-binding soundness guard.** A re-pushed stratum binds the
+    LATEST environment, which equals its own position's environment only
+    if nothing it touches (reads or writes) was rebound after it; the
+    driver refuses otherwise (positional re-binding + boundary
+    re-materialisation is clear-and-rerun's job, B2). Likewise any
+    neg/lat edge into the cone refuses toward B2 (the §0.5 routing rule's
+    non-monotone arm).
+  - **Re-entry pushes open NO version boundary** (no begin-segment): a
+    latest-anchored batch updates the current version in place — its span
+    extends to now (§0.2/§0.4); re-derived tuples belong to the same
+    versions.
+  - Non-cone relations survive the re-entry reload via
+    `restoreOrphanRelations` (indices cleared, content re-materialised
+    from their own dumped shards) — the keep-alive discipline api-tests §9
+    already pinned.
+- **Known imprecisions, accepted for B0:** un-anchored `add-tuple` and all
+  imports mutate the *current tip* in place (a batch/link as its own
+  version event arrives with 0.C/0.D); during a chain load, a layer's
+  sample import + edits run before its `begin-segment`, so they land in
+  the predecessor versions — final content is unchanged (the copy + replay
+  dedup absorb it), and precise per-layer addressing on loads is 0.E2's
+  recipe rebuild. Multi-`run` programs compile to one segment (recipe
+  granularity, 0.C).
+- **Tests:** `tests/session-tests.sh` (driven by
+  `tests/api/session-drive.rkt`, the embryo of 0.B4's routing driver) —
+  two-segment chains over plain tables with positional sizes/dumps; a
+  struct+lattice session (id stability through copied allocators, payload
+  ascent isolated to the new version) diffed against the from-scratch
+  union-program oracle; cone-limiting over independent components (exactly
+  one stratum re-fires); the cross-segment anchor filter (segment 1's path
+  stratum stays parked while segment 2's absorbs the batch); and the
+  rebound guard refusing toward B2. The whole compression battery
+  regression-covers replayed-layer boundaries.
 
 ### 0.6 Deletion in Phase 0, and "must the front end split batches?"
 
@@ -484,7 +586,7 @@ Semantics and checks (rewritten for the version model — renames get
   the relations map"; under versions that is wrong — old bindings at old
   positions must keep resolving). Already-bound strata are unaffected
   (they hold direct pointers). Mind restoreOrphanRelations
-  (database.h:1484-1499), which resurrects import-only relations — a
+  (`restoreOrphanRelations`, database.h), which resurrects import-only relations — a
   dropped binding must not qualify. The daemon seeing the rename keeps the
   `(schema)` action and **saved directory names** aligned with the visible
   schema — a save after a rename writes the final materialisation under
@@ -1129,7 +1231,7 @@ favour.)*
 - Instantiate the new generic tasks (`ReseedTask<A>`, counting `InternTask`) per relation/
   bucket alongside the existing `WriteTask`/`InternTask`/`InternStructTask`
   registration (the `addTask`/`addIndex` wiring; read tasks register at
-  emit-cpp.rkt:667 with the `static?` once-only flag from :447).
+  emit-cpp.rkt (`addTask`/`addTaskSeeded` registration) with the `static?` once-only flag).
 - No per-rule deletion variant is emitted — the negative phase reuses the same
   per-position semi-naïve delta-join variants already generated for insertion
   (join-planning.rkt picks the delta-driven clause per version; the planner is
@@ -1564,23 +1666,28 @@ SHIPPED 2026-07-11 — all eight items done; see §0.8.1 for as-built decisions.
 **0.B — The version substrate, stratum re-entry & the increment driver (§0.4, §0.5).**
 
 - *B0 — version registry + environment (the load-bearing new piece).*
+  **SHIPPED 2026-07-11 — see §0.5.1 for as-built decisions.**
   Physical relations keyed by version; per-pipeline-position name→version
   map; `getRelation`-by-name resolves through the environment of the
-  position being bound (today's global map, database.h:1086, becomes the
-  latest-position environment). Alias-if-unchanged / full-copy-if-written
-  materialisation (§0.4); version creation on first write at a boundary
-  (copy predecessor ± batch). Same cached `.so` bindable at many positions
-  (the W9 requirement). Versioned addressing resolves "R at P" to the last
-  write ≤ P.
-- *B1 — cone-limited replay-entry.* Driver-side: apply batch to the anchored
+  position being bound (the former global map is now the latest-position
+  environment; ownership in `rel_registry`, chains in `rel_bindings`).
+  Alias-if-unchanged / full-copy-if-written materialisation (§0.4); version
+  creation at driver-announced `begin-segment` boundaries (copy
+  predecessor; anchored-batch materialisation lands with 0.C). Same cached
+  `.so` bindable at many positions (the W9 requirement — `bind_pos` exists,
+  B1 wires it). Versioned addressing resolves "R at P" to the last write
+  ≤ P (`(pipeline)`, `(sizes-at P)`, `(dump-rel R P)` actions).
+- *B1 — cone-limited replay-entry.* **SHIPPED 2026-07-11 — see §0.5.1.**
+  Driver-side: apply batch to the anchored
   version, re-push cached cone-strata `.so`s in topological order (mechanics
-  exist: beginStratum/reloadInsertBatches, daemon.h:163-195,
-  database.h:3074-3114); skip strata outside the cone using A7 + recipe-level
-  cone metadata.
+  exist: `beginStratum`/`reloadInsertBatches`); skip strata outside the cone using A7 + recipe-level
+  cone metadata. *(As built: cone + anchor filter + latest-binding/monotone
+  guards in the session driver's `reenter`; guarded cases route to B2;
+  promotion into runslog's batch flow is B4.)*
 - *B2 — per-relation clear + clear-and-rerun.* `clearIndices` on one
   version (contents only, registrations persist); version rebuild minus
   retracted tuples; driver orchestration "rebuild anchor version, clear cone
-  versions, then B1". Mind restoreOrphanRelations (database.h:1484-1499) and
+  versions, then B1". Mind `restoreOrphanRelations` and
   struct relations in the cone (§0.5 mode 2's id argument).
 - *B3 — re-entry hygiene.* Either the pausing.md §12 `bind()` re-bind seam
   (reuse resident task objects; pipeline stops growing) or idempotent
@@ -1606,7 +1713,7 @@ SHIPPED 2026-07-11 — all eight items done; see §0.8.1 for as-built decisions.
 **0.C — Batch protocol, anchors & the session recipe (§0.2–§0.4).**
 
 - *C1 — actions.* `(add-batch REL @P ((v…)…))`, `(del-batch REL @P …)`
-  (multi-tuple add-tuple generalisation, actions.rkt:83-95, plus the anchor);
+  (multi-tuple add-tuple generalisation in actions.rkt, plus the anchor);
   `(import-delta DIR [(X Z)…] @P)` = import a mini bin-db as a batch payload;
   **versioned queries**: `lookup`/`dump-rel`/`sizes` gain an optional
   pipeline-point argument, plus a pipeline-introspection action (dump the

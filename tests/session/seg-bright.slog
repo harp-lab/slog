@@ -1,0 +1,9 @@
+;; Session fixture (docs/incremental.md B1 guard): a second segment that
+;; REWRITES bright (only).  A later batch into color would put cone.slog's
+;; bright stratum in the cone -- but bright was rebound after it, so
+;; latest-env replay-entry must refuse (clear-and-rerun, 0.B2).
+
+table (color int)
+table (bright int)
+
+rule (bright 9)

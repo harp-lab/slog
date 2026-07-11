@@ -25,6 +25,7 @@
 ;; (tools.rkt) so a program's strata compile concurrently and overlap the run.
 
 (provide compile-strata (struct-out sbuild) (struct-out db-partition)
+         stratum-meta-dynamic-rels   ; segment write-sets (incremental B0)
          program->jobs)   ; tooling/debug: inspect a program's stratum jobs
 
 (require "params.rkt")
@@ -349,7 +350,9 @@
 ;; R's cone iff R is read here or produced by a cone stratum below; the cone
 ;; is MONOTONE iff every edge along the way is a plain `pos` -- any `neg`/`lat`
 ;; edge routes that cone to clear-and-rerun rather than delta re-entry.
-;; No consumer parses this yet (the Phase-0 driver, 0.B, will).
+;; Consumers so far: the driver unions `dynamic-rels` into each segment's
+;; write-set for the daemon's begin-segment version boundary (B0, below);
+;; the reads/cone half still awaits the re-entry driver (0.B1).
 (define (write-stratum-manifest proghash stratum type-env decomps)
   (define-values (_rules dynamic-rels)
     (stratum-rules+dynamic stratum type-env decomps))
@@ -378,6 +381,23 @@
                   (neg-body ,@neg-body) (lat-body ,@lat-body))))))
   (call-with-atomic-output (fullpath (format "build/~a.meta" proghash))
                            (lambda () (writeln meta))))
+
+;; Read back one stratum's build/<hash>.meta and return its `dynamic-rels`
+;; (the relations the stratum produces) as a list of symbols -- the driver
+;; unions these into a segment write-set for the daemon's begin-segment
+;; version boundary (docs/incremental.md §0.4-§0.5, B0).  A missing or
+;; malformed manifest yields '() -- conservative for content (an unannounced
+;; write lands in the predecessor version in place; final fixpoints are
+;; unchanged, only versioned addressing loses precision for that name).
+(define (stratum-meta-dynamic-rels proghash)
+  (define p (fullpath (format "build/~a.meta" proghash)))
+  (with-handlers ([exn:fail? (lambda (_) '())])
+    (match (call-with-input-file p read)
+      [`(stratum-meta ,fields ...)
+       (match (assq 'dynamic-rels fields)
+         [`(dynamic-rels ,rels ...) rels]
+         [_ '()])]
+      [_ '()])))
 
 ;; -----------------------------------------------------------------------
 ;; Back end: emit one stratum's C++ translation unit(s).

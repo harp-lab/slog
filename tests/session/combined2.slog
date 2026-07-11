@@ -1,0 +1,15 @@
+;; From-scratch oracle for base2.slog + seg2b.slog run as one session.
+
+struct (pair int int)
+lattice (cost (min int #:floor 0))
+table (in int int)
+table (out pair)
+table (edge int int int)
+table (dist int int cost)
+
+rule (in 1 2) (in 3 4) (in 5 6)
+rule (edge 1 2 10) (edge 2 3 5) (edge 1 2 4)
+
+rule (in X Y) --> (out (pair X Y))
+rule (edge X Y W) --> (dist X Y W)
+rule (dist X Y D) (edge Y Z W) --> (dist X Z (+ D W))

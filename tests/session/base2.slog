@@ -1,0 +1,19 @@
+;; Session fixture (docs/incremental.md B0), segment 1: a struct relation
+;; (interned ids must stay stable across the version copy), a scalar
+;; min-lattice (payload maps must copy through the boundary), and plain
+;; tables.  seg2b.slog runs atop this in one live session; combined2.slog
+;; is the from-scratch oracle of the union.
+
+struct (pair int int)
+lattice (cost (min int #:floor 0))
+table (in int int)
+table (out pair)
+table (edge int int int)
+table (dist int int cost)
+
+rule (in 1 2) (in 3 4)
+rule (edge 1 2 10) (edge 2 3 5)
+
+rule (in X Y) --> (out (pair X Y))
+rule (edge X Y W) --> (dist X Y W)
+rule (dist X Y D) (edge Y Z W) --> (dist X Z (+ D W))

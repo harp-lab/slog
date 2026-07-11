@@ -131,6 +131,11 @@ public:
   {
     if (refuseIfSuspended("open")) return;
     database->loadDatabaseBIN("data/" + db_name + "/");
+    // A boundary event (docs/incremental.md §0.4/B0): the loaded relations
+    // registered at the position just consumed; advancing here keeps a
+    // following segment boundary's rebinds from shadowing them at the same
+    // position (versioned addressing resolves last-binding-<=-P).
+    database->advancePosition();
     needs_reload = true;
   }
 
@@ -142,6 +147,7 @@ public:
   {
     if (refuseIfSuspended("import")) return;
     database->importDatabaseBIN("data/" + db_name + "/");
+    database->advancePosition();   // boundary event (§0.4/B0), as in open
     needs_reload = true;
   }
   // Merge a stored database by PATH (no data/ prefix): the driver links the
@@ -152,6 +158,7 @@ public:
   {
     if (refuseIfSuspended("import")) return;
     database->importDatabaseBIN(dir + "/");
+    database->advancePosition();   // boundary event (§0.4/B0), as in open
     needs_reload = true;
   }
   // Merge a compressed LAYER (docs/db-compression.md §4.2): like import, but its
@@ -161,6 +168,7 @@ public:
   {
     if (refuseIfSuspended("import")) return;
     database->importDatabaseBIN("data/" + db_name + "/", true);
+    database->advancePosition();   // boundary event (§0.4/B0), as in open
     needs_reload = true;
   }
 
@@ -311,7 +319,63 @@ public:
     // duplicate it in the pipeline and churn scc_id / next_unrun; skip.
     for (Stratum* p : pipeline) if (p == s) return;
     s->scc_id = (u32)pipeline.size();
+    // A fresh stratum is a boundary event (docs/incremental.md §0.4/B0): it
+    // occupied the current version-environment position while registering
+    // (its getRelation binds resolved there); record it and advance.  The
+    // hot-swap re-push above never reaches here, so an upgrade neither moves
+    // the counter nor rebinds positions.
+    s->pipeline_pos = database->currentPosition();
+    database->advancePosition();
     pipeline.push_back(s);
+  }
+
+  // Segment boundary (docs/incremental.md §0.4-§0.5, B0): the driver
+  // announces the relation names the upcoming segment's rules write.  Each
+  // already-bound written name is rebound to a NEW physical version (full
+  // copy of its predecessor -- the implicit inheritance rule R@(k+1) ⊇ R@k);
+  // untouched names keep (alias) their current version.  Old versions stay
+  // registered and positionally addressable but leave every run/save/reload
+  // path.  The boundary itself consumes one pipeline position, so queries at
+  // the pre-boundary position still see the predecessors.
+  void beginSegment(const std::vector<std::string>& writes)
+  {
+    if (refuseIfSuspended("begin-segment")) return;
+    u32 versioned = 0;
+    for (const std::string& name : writes)
+      if (database->newVersion(name) != nullptr)
+        ++versioned;
+    const u32 pos = database->currentPosition();
+    database->advancePosition();
+    // A boundary that versioned nothing is still an event (the driver
+    // mirrors the position counter deterministically); re-staging is only
+    // needed when a copy actually replaced a bound version.
+    if (versioned > 0)
+      needs_reload = true;
+    emit("(segment " + std::to_string(pos) + " " + std::to_string(versioned) + ")");
+  }
+
+  // Emit the pipeline introspection line (docs/incremental.md §0.4):
+  //   (pipeline (pos P) (strata (s SCC POS "NAME") ...)
+  //             (rel NAME (v ORD POS SIZE) ...) ...)
+  // strata carry their bind positions so a driver can compute which strata
+  // sit at-or-after a version's boundary (the B1 cone filter) without
+  // mirroring the event counter.
+  void emitPipeline()
+  {
+    std::string s = "(pipeline (pos "
+                  + std::to_string(database->currentPosition()) + ") (strata";
+    for (Stratum* st : pipeline)
+      s += " (s " + std::to_string(st->scc_id) + " "
+         + std::to_string(st->pipeline_pos) + " \"" + st->name + "\")";
+    s += ")" + database->relChainsSexpr() + ")";
+    emit(s);
+  }
+
+  // Versioned sizes (§0.4 addressing): every relation resolved at position P
+  // (last write at-or-before P; absent names simply don't appear).
+  void emitSizesAt(u32 pos)
+  {
+    emit(database->sizesAt(pos));
   }
 
   // The pipeline so far (run and unrun), in order.

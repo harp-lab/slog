@@ -15,7 +15,9 @@
 (provide slog-run-file
          slog-verify-replay
          db-manifest-from-name
-         db-manifest-from-schema-lines)
+         db-manifest-from-schema-lines
+         db-full-manifest
+         segment-write-set)   ; session drivers (incremental B0)
 
 (require "tools.rkt")
 (require "compile.rkt")
@@ -178,6 +180,28 @@
 ;; optionally against input database db-name, optionally writing the final
 ;; database (binary) to out-db and/or (CSV) to debug-out-path, optionally
 ;; reporting every relation's tuple count.
+;; The write-set of one compiled program segment (docs/incremental.md
+;; §0.4-§0.5, B0): the union of its strata's manifest dynamic-rels plus the
+;; relation names of any frozen ground-fact databases it links (freeze.rkt --
+;; those rows are this segment's writes too).  The driver announces it via a
+;; begin-segment action so the daemon opens a version boundary -- rebinding
+;; each already-bound written name to a new physical version -- before the
+;; segment's strata (or frozen imports) bind.
+(define (segment-write-set strata frozen-dirs)
+  (define names (make-hash))
+  (for ([sb (in-list strata)])
+    (for ([r (in-list (stratum-meta-dynamic-rels (sbuild-hash sb)))])
+      (hash-set! names r #t)))
+  ;; greedy (.+) with an anchored tail splits on the LAST .arity., like the
+  ;; daemon and db-manifest-from-name above
+  (for ([dir (in-list frozen-dirs)])
+    (when (directory-exists? dir)
+      (for ([p (in-list (directory-list dir))])
+        (define m (regexp-match #px"^(?:table|struct|lat)\\.(.+)\\.arity\\.[0-9]+"
+                                (path->string p)))
+        (when m (hash-set! names (string->symbol (cadr m)) #t)))))
+  (sort (hash-keys names) symbol<?))
+
 (define (slog-run-file slog-path
                        [db-name #f]
                        [out-db #f]
@@ -417,6 +441,16 @@
         (define-values (r-strata _rp _rb _rfrozen)
           (parameterize ([current-source-override r-sources])
             (compile-strata r-entry (db-full-manifest lname) #:split-facts? #f)))
+        ;; Each replayed layer is its own pipeline segment (docs/incremental.md
+        ;; §0.4, B0): open a version boundary for its write-set -- an open
+        ;; always precedes replays, so predecessors exist to version.  (The
+        ;; layer's sample import and edits ran BEFORE this boundary and land
+        ;; in the predecessor versions in place; final content is unchanged,
+        ;; and precise per-layer addressing on loads arrives with the recipe
+        ;; rebuild, 0.E2.)
+        (let ([ws (segment-write-set r-strata '())])
+          (when (pair? ws)
+            (send-plugin (action-so `(begin-segment ,@ws)))))
         ;; a memory pause during this layer's replay checkpoints to
         ;; data/<lname>.checkpoint/ rather than aborting outright (§P2.3)
         (parameterize ([current-checkpoint (string-append lname ".checkpoint")])
@@ -433,6 +467,19 @@
       (match step
         [`(replay ,lname) (replay-layer! lname)]
         [_ (send-plugin (action-so step))]))
+
+    ;; Version boundary for this program segment (docs/incremental.md §0.4,
+    ;; B0): atop a loaded database, announce the segment's write-set so the
+    ;; daemon rebinds each already-bound written relation to a NEW physical
+    ;; version before the segment binds -- the predecessor versions stay
+    ;; positionally addressable.  The frozen ground facts below are segment
+    ;; writes too, so the boundary precedes their import.  On a fresh daemon
+    ;; nothing is bound; skip the no-op action.  The daemon replies
+    ;; (segment P N), tolerated by every reader below.
+    (when db-name
+      (let ([ws (segment-write-set strata frozen-dirs)])
+        (when (pair? ws)
+          (send-plugin (action-so `(begin-segment ,@ws))))))
 
     ;; Link the program's frozen ground facts (freeze.rkt): import each
     ;; content-addressed build/frozen/<hash> database before stratum 0 --

@@ -334,6 +334,16 @@ public:
     return &(intern_allocators[b]);
   }
 
+  // Carry the predecessor version's per-bucket struct-id allocators into this
+  // (successor) version verbatim (docs/incremental.md §0.4/B0): ids minted by
+  // the new version must not collide with ids the old version issued -- both
+  // versions' rows share one id space, and downstream tuples embed the ids.
+  void copyInternAllocatorsFrom(const Relation& pred)
+  {
+    for (u32 b = 0; b < bucket_count; ++b)
+      intern_allocators[b] = pred.intern_allocators[b];
+  }
+
   // ---- lattice (map) relations: docs/lattices.md ----
   // A lattice relation's last storage column is the value; its non-delta
   // indices are payload maps (BTreeMapIndex) merged by the kind's join.
@@ -943,6 +953,11 @@ public:
   // fixpoint message is cached here so an idempotent continue at the final
   // fixpoint re-emits it verbatim (§5).
   u32 scc_id = 0;
+  // Boundary-event position this stratum was bound at (docs/incremental.md
+  // §0.4/B0): the version-environment position its getRelation lookups
+  // resolved through.  Distinct from scc_id once re-entry pushes exist -- a
+  // re-pushed stratum lands at a new pipeline slot but binds an OLD position.
+  u32 pipeline_pos = 0;
   std::string fixpoint_msg;
 
   Stratum(const std::string& _name) : name(_name) {}
@@ -1119,7 +1134,30 @@ private:
   friend struct ReadCompletion;
   friend struct EndIterCompletion;
 
+  // The LATEST version environment: name -> current physical relation.  All
+  // run-loop walks (finalize/reorg/reload/orphans), saves, and default
+  // resolution go through this map -- old versions never participate.
   std::unordered_map<std::string, Relation*> relations;
+  // ---- incremental sessions (docs/incremental.md §0.4-§0.5, B0) ----
+  // A name denotes a CHAIN of physical versions delimited by boundary events
+  // (segments that rewrite it, imports, anchored batches).  rel_registry owns
+  // every physical relation ever registered, in creation order; rel_bindings
+  // records, per name, at which pipeline position each version became
+  // current (`pos` = the boundary-event counter below, NOT an SCC id --
+  // ordinals are stable across recompiles, §0.4).  `relations` above always
+  // mirrors each chain's last entry.  rel==nullptr marks a drop (0.D).
+  struct RelBinding { u32 pos; Relation* rel; };
+  std::vector<Relation*> rel_registry;
+  std::unordered_map<std::string, std::vector<RelBinding>> rel_bindings;
+  // Monotone boundary-event counter: each open/import, segment boundary, and
+  // fresh stratum occupies the current position and advances it (Daemon::push
+  // / Daemon::beginSegment).  Versioned addressing "R at P" resolves to the
+  // last binding at-or-before P.
+  u32 pipeline_pos = 0;
+  // The environment getRelation resolves through: -1 = the latest map (the
+  // default); >= 0 = bind-time resolution at that position, set around a
+  // re-entry push so a cached .so re-binds an OLD position's versions (B1).
+  s64 bind_pos = -1;
   std::unordered_map<u32, Relation*> structs_by_id;
   // per-relation on-disk modification times, recorded at each load/write,
   // backing relationChangedOnDisk
@@ -1193,8 +1231,10 @@ public:
     delete mpz_table;
     delete cnode_arena;
     delete seq_arena;
-    for (auto it : relations)
-      delete it.second;
+    // rel_registry owns every physical version ever registered (the
+    // `relations` map holds only the latest, non-owning).
+    for (Relation* r : rel_registry)
+      delete r;
   }
 
   u64 intern_string(utf8string* s)
@@ -1435,11 +1475,24 @@ public:
     latest_any_rec = _any;
   }
 
+  // Register a freshly-constructed physical relation as `name`'s current
+  // version at the current pipeline position: every registration site
+  // (addRelation/addStruct/loadDatabaseBIN/ensureStatsRelation/newVersion)
+  // funnels through here so ownership (rel_registry), the binding chain, and
+  // the latest map stay consistent (docs/incremental.md §0.4-§0.5, B0).
+  Relation* registerRelation(const std::string& name, Relation* r)
+  {
+    r->initShards(thread_count);
+    rel_registry.push_back(r);
+    rel_bindings[name].push_back({pipeline_pos, r});
+    relations[name] = r;
+    return r;
+  }
+
   void addRelation(const std::string& name, u16 arity)
   {
     // Client code must check that relation does not already exist!
-    relations[name] = new Relation(name, arity, 0);
-    relations[name]->initShards(thread_count);
+    registerRelation(name, new Relation(name, arity, 0));
   }
 
   void addStruct(const std::string& name, u16 arity)
@@ -1449,12 +1502,57 @@ public:
     // 14-bit field would silently encode garbage words
     if (struct_id_max >= 0x3fff)
       fatal("Struct type-id space exhausted (14-bit NaN-box field)");
-    relations[name] = new Relation(name, arity, struct_id_max++);
-    relations[name]->initShards(thread_count);
+    registerRelation(name, new Relation(name, arity, struct_id_max++));
+  }
+
+  // ---- version boundaries (docs/incremental.md §0.4-§0.5, B0) ----
+
+  u32 currentPosition() { return pipeline_pos; }
+  void advancePosition() { ++pipeline_pos; }
+  // -1 = latest (default); >= 0 = resolve getRelation at that position (set
+  // around a re-entry push, B1).
+  void setBindPosition(s64 p) { bind_pos = p; }
+  s64 bindPosition() { return bind_pos; }
+
+  // Create the next version of `name`: a new physical Relation carrying the
+  // registration-level identity (arity, struct id VERBATIM -- downstream
+  // rows embed it, lattice spec, intern allocators) plus a full copy of the
+  // predecessor's indexed contents (§0.4's materialisation rule: full copy,
+  // deliberately not an overlay).  The predecessor leaves the latest map --
+  // runs, saves, and reloads no longer touch it -- but stays owned and
+  // positionally addressable through the binding chain.  Copies only settled
+  // (indexed) content; callers sit at stratum boundaries where deltas are
+  // drained.  Returns nullptr if `name` is unbound (a first write registers
+  // normally at push time instead).
+  Relation* newVersion(const std::string& name)
+  {
+    auto it = relations.find(name);
+    if (it == relations.end())
+      return nullptr;
+    Relation* old = it->second;
+    Relation* nv = new Relation(name, old->getArity(), old->getStructId());
+    nv->initShards(thread_count);
+    if (old->isLattice())
+      nv->setLatticeFromSpec(old->latticeSpec(), cnode_arena);
+    nv->copyInternAllocatorsFrom(*old);
+    nv->ensureDefaultIndex();
+    forEachNominal(old, [&](const u64* row)
+    {
+      nv->insertTupleAllIndices(row);
+    });
+    registerRelation(name, nv);
+    // the by-id memo must follow the latest version
+    if (nv->getStructId() > 0)
+      structs_by_id[nv->getStructId()] = nv;
+    return nv;
   }
 
   Relation* getRelation(const std::string& name)
   {
+    // Bind-time positional resolution (B1 re-entry): resolve through the
+    // environment of the position being bound instead of the latest map.
+    if (bind_pos >= 0)
+      return getRelationAt(name, (u32)bind_pos);
     // find, not operator[]: a lookup of an undeclared name (e.g. the
     // generated SeqIndexTask registration probing for "$seq_atr" in a
     // stratum that never declared it) must NOT plant a null entry in the
@@ -1462,6 +1560,74 @@ public:
     // `relations` and dereference every value.
     auto it = relations.find(name);
     return it == relations.end() ? nullptr : it->second;
+  }
+
+  // Versioned addressing (§0.4): the version of `name` current at pipeline
+  // position `pos` -- the last binding at-or-before it.  nullptr when the
+  // first binding is later than `pos` (or the name was never bound).
+  Relation* getRelationAt(const std::string& name, u32 pos)
+  {
+    auto it = rel_bindings.find(name);
+    if (it == rel_bindings.end())
+      return nullptr;
+    Relation* r = nullptr;
+    for (const RelBinding& b : it->second)
+    {
+      if (b.pos > pos) break;
+      r = b.rel;
+    }
+    return r;
+  }
+
+  u64 relationSizeAt(const std::string& name, u32 pos)
+  {
+    Relation* r = getRelationAt(name, pos);
+    return r ? r->tupleCount() : 0;
+  }
+
+  // The version-chains fragment of the (pipeline) introspection action:
+  //   " (rel NAME (v ORDINAL POS SIZE) ...) ..."
+  // sorted by name for a deterministic wire form.  Daemon::emitPipeline
+  // wraps it with the position counter and the strata list; a front end
+  // re-derives the point->(name->version) map from the whole (§0.4).
+  std::string relChainsSexpr()
+  {
+    std::map<std::string, const std::vector<RelBinding>*> sorted;
+    for (const auto& kv : rel_bindings)
+      sorted[kv.first] = &kv.second;
+    std::string s;
+    for (const auto& kv : sorted)
+    {
+      s += " (rel " + kv.first;
+      u32 ord = 0;
+      for (const RelBinding& b : *kv.second)
+      {
+        s += " (v " + std::to_string(ord++) + " " + std::to_string(b.pos)
+	   + " " + std::to_string(b.rel ? b.rel->tupleCount() : 0) + ")";
+      }
+      s += ")";
+    }
+    return s;
+  }
+
+  // Versioned sizes (§0.4 addressing), one line:
+  //   (sizes-at P (NAME SIZE) ...)
+  // each name resolved to its version current at position P; names first
+  // bound after P are absent.  Name-sorted for a deterministic wire form.
+  std::string sizesAt(u32 pos)
+  {
+    std::map<std::string, u64> sorted;
+    for (const auto& kv : rel_bindings)
+    {
+      Relation* r = getRelationAt(kv.first, pos);
+      if (r != nullptr && r->getAnyIndex())
+        sorted[kv.first] = r->tupleCount();
+    }
+    std::string s = "(sizes-at " + std::to_string(pos);
+    for (const auto& kv : sorted)
+      s += " (" + kv.first + " " + std::to_string(kv.second) + ")";
+    s += ")";
+    return s;
   }
 
   // All relations by name (iterate + Relation::tupleCount for statistics).
@@ -2091,9 +2257,7 @@ public:
   {
     auto it = relations.find(name);
     if (it != relations.end()) return it->second;
-    Relation* rel = new Relation(name, arity, 0);
-    relations[name] = rel;
-    rel->initShards(thread_count);
+    Relation* rel = registerRelation(name, new Relation(name, arity, 0));
     rel->ensureDefaultIndex();
     return rel;
   }
@@ -3248,9 +3412,7 @@ public:
       if (relations.find(name) != relations.end())
 	fatal(name + " appears to be a duplicated relation");
 
-      Relation* rel = new Relation(name, arity, struct_id);
-      relations[name] = rel;
-      rel->initShards(thread_count);
+      Relation* rel = registerRelation(name, new Relation(name, arity, struct_id));
       // lattice metadata before ensureDefaultIndex, which keys on it to
       // build a payload map (so ingestDelta merges rather than inserts)
       if (kind == "lat")

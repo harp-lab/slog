@@ -1,0 +1,17 @@
+;; Session fixture (docs/incremental.md B1): two independent components in
+;; one program -- edge/path and color/bright.  A batch into edge must
+;; re-enter ONLY path's stratum (cone(edge) excludes bright); the test
+;; counts re-run strata and checks bright is untouched.
+
+table (edge int int)
+table (path int int)
+table (color int)
+table (bright int)
+
+rule (edge 1 2) (edge 2 3)
+rule (color 7)
+
+rule (edge X Y) --> (path X Y)
+rule (path X Y) (edge Y Z) --> (path X Z)
+
+rule (color X) --> (bright X)

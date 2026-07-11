@@ -101,6 +101,23 @@
       "  slog::Database* db = d->db();\n"
       (format "  std::vector<u64> t = { ~a };\n" (string-join enc ", "))
       (format "  d->addTuple(\"~a\", t);\n" rel))]
+    ;; Segment boundary (docs/incremental.md §0.4-§0.5, B0): announce the
+    ;; relation names the upcoming program segment writes, so the daemon
+    ;; rebinds each already-bound one to a NEW physical version (full copy of
+    ;; its predecessor) before the segment's strata bind.  Names never bound
+    ;; are no-ops (they register normally at push).  Replies (segment P N).
+    [`(begin-segment ,rels ...)
+     (format "  d->beginSegment({~a});\n"
+             (string-join (for/list ([r (in-list rels)]) (format "\"~a\"" r)) ", "))]
+    ;; Version-chain introspection (§0.4): one
+    ;;   (pipeline (pos P) (rel NAME (v ORD POS SIZE) ...) ...)
+    ;; line, so a front end can (re)derive the point->(name->version) map
+    ;; from a live daemon.  Read-only; safe when suspended.
+    [`(pipeline) "  d->emitPipeline();\n"]
+    ;; Versioned sizes (§0.4 addressing): one (sizes-at P (NAME SIZE) ...)
+    ;; line with every name resolved at position P.  Read-only.
+    [`(sizes-at ,pos)
+     (format "  d->emitSizesAt(~a);\n" pos)]
     [`(load-rel ,db-name ,rel)
      (format "  d->loadRelation(\"~a\", \"~a\");\n" db-name rel)]
     [`(refresh-rel ,db-name ,rel)
@@ -158,6 +175,19 @@
      (string-append
       "  slog::Database* db = d->db();\n"
       (format "  slog::Relation* r = db->getRelation(\"~a\");\n" rel)
+      "  size_t n = 0;\n"
+      "  if (r) slog::Database::forEachNominal(r, [&](const u64* row) {\n"
+      "    d->emit(std::string(\"(dumprow \") + db->writeValCSV(row[0]) + \")\");\n"
+      "    ++n;\n"
+      "  });\n"
+      "  d->emit(std::string(\"(dumpdone \") + std::to_string(n) + \")\");\n")]
+    ;; Versioned dump (docs/incremental.md §0.4): the relation's version
+    ;; current at pipeline position `pos` -- same (dumprow ...)/(dumpdone N)
+    ;; protocol as the unversioned form.  Read-only.
+    [`(dump-rel ,rel ,pos)
+     (string-append
+      "  slog::Database* db = d->db();\n"
+      (format "  slog::Relation* r = db->getRelationAt(\"~a\", ~a);\n" rel pos)
       "  size_t n = 0;\n"
       "  if (r) slog::Database::forEachNominal(r, [&](const u64* row) {\n"
       "    d->emit(std::string(\"(dumprow \") + db->writeValCSV(row[0]) + \")\");\n"

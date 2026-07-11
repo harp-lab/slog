@@ -1,0 +1,18 @@
+;; Session fixture (docs/incremental.md B0), segment 2 atop base2.slog:
+;; re-derives (pair 1 2) -- must dedup to the id the base minted (allocator
+;; continuity through the copy), adds (pair 5 6), and improves edge 1->2 so
+;; the dist lattice values ascend in the new version only.
+
+struct (pair int int)
+lattice (cost (min int #:floor 0))
+table (in int int)
+table (out pair)
+table (edge int int int)
+table (dist int int cost)
+
+rule (in 1 2) (in 5 6)
+rule (edge 1 2 4)
+
+rule (in X Y) --> (out (pair X Y))
+rule (edge X Y W) --> (dist X Y W)
+rule (dist X Y D) (edge Y Z W) --> (dist X Z (+ D W))
