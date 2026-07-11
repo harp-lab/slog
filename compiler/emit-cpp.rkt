@@ -26,6 +26,7 @@
 (require "params.rkt")
 (require "ir-shared.rkt")
 (require "ir-stack.rkt")
+(require sha)   ; content-hashed cluster names + stable bucketing (P2)
 
 (define (repeat s n)
   (if (= n 0)
@@ -70,6 +71,22 @@
          (set-box! counter (add1 (unbox counter)))
          (hash-set! seen tok c)
          c]))))
+
+;; ---- content-hashed clusters + stable bucketing (P2 Phase 3) ----------------
+;; A large stratum's rules are partitioned into clusters compiled to
+;; content-addressed .o's (tools.rkt) and linked into one .so.  Two requirements:
+;;  * a cluster's emitted text is a pure function of ITS rules (naming it by that
+;;    text's hash lets an unchanged cluster's .o be reused across stratum
+;;    versions / configs / edits); and
+;;  * the rule->cluster assignment is STABLE under unrelated edits, so a one-rule
+;;    change re-hashes only its own cluster(s), not all of them.
+;; Full-line `//` debug comments carry gensym'd crule renderings that vary run to
+;; run but do not affect the compiled .o, so they are stripped before hashing.
+(define (strip-line-comments text)
+  (regexp-replace* #px"(?m:^[ \t]*//[^\n]*\n)" text ""))
+(define (content-hash text)
+  (substring (bytes->hex-string (sha256 (string->bytes/utf-8 (strip-line-comments text)))) 0 16))
+(define (next-pow2 n) (let loop ([p 1]) (if (>= p n) p (loop (* p 2)))))
 
 ;; Render a primitive call: _prim_NAME(db, v_a0, ...) -- nullary primitives
 ;; (the lattice constants (one)/(inf)/(top)) take only db.
@@ -988,13 +1005,21 @@
   ;; the interned-constant global names -- the only value symbols shared across
   ;; TUs, so canonicalize-vrefs must leave them alone (P2)
   (define const-names (for/list ([(v g) (in-hash constants)]) g))
+  ;; A cluster externs only the constants IT references (found in its body text),
+  ;; not all of them -- otherwise editing any one constant would change every
+  ;; cluster's extern block and defeat the per-.o cache (P2).
+  (define (used-const-externs body)
+    (define present (list->set (regexp-match* #px"\\bv_[A-Za-z0-9_]+" body)))
+    (apply string-append
+           (for/list ([g (in-list (sort const-names symbol<?))]
+                      #:when (set-member? present (format "v_~a" g)))
+             (format "extern u64 v_~a;\n" g))))
   (define dynrel-meta
     (apply string-append
            (for/list ([rel (in-list (sort (set->list dynamic-rels)
                                           string<? #:key symbol->string))])
              (format "  s->addDynamicRel(\"~a\");\n" rel))))
   (define emit-rule (add-rule dynamic-rels))
-  (define (part-fn k) (format "slog_rules_~a_~a" stratum-name k))
 
   ;; slog_plugin's body, given the block that registers the read tasks (inline
   ;; for one TU; a sequence of part-function calls when split).
@@ -1035,30 +1060,47 @@
      (tu (lambda ()
            (string-append include-block const-defs "\n\n"
                           (plugin-body (apply string-append (map emit-rule crules))))))]
-    ;; Split: spine + part TUs (docs/fast-compile.md §6).
+    ;; Split: spine + content-addressed cluster TUs (docs/fast-compile.md P2).
     [else
-     (define chunks (chunk-list crules chunk-size))
-     (define nparts (length chunks))
+     ;; per-crule identity: the crule emitted ALONE (fresh counter, canonicalized,
+     ;; comments stripped) -- position-independent, so bucketing is stable.
+     (define (crule-id cr)
+       (content-hash (canonicalize-vrefs
+                      (parameterize ([emit-local-counter (box 0)]) (emit-rule cr))
+                      const-names)))
+     (define id+crs (for/list ([cr (in-list crules)]) (cons (crule-id cr) cr)))
+     ;; bucket by hash mod a power-of-2 N ~= crules/chunk-size: a changed rule
+     ;; touches only its own bucket; N shifts only at power-of-2 boundaries.
+     (define nbuckets (max 1 (next-pow2 (ceiling (/ (length crules) chunk-size)))))
+     (define buckets
+       (for/fold ([bs (hash)]) ([ic (in-list id+crs)])
+         (hash-update bs (modulo (string->number (car ic) 16) nbuckets)
+                      (lambda (l) (cons ic l)) '())))
+     ;; each non-empty bucket -> one cluster: its rules ordered by id (stable),
+     ;; named by the hash of its emitted body so an unchanged cluster reuses its
+     ;; content-addressed .o across stratum versions (tools.rkt does the caching).
+     (define clusters
+       (for/list ([b (in-list (sort (hash-keys buckets) <))])
+         (define ics (sort (hash-ref buckets b) string<? #:key car))
+         (define body (tu (lambda () (apply string-append
+                                            (map (lambda (ic) (emit-rule (cdr ic))) ics)))))
+         (define fn (format "slog_rules_c~a" (content-hash body)))
+         (cons fn
+               (string-append include-block (used-const-externs body) "\n\n"
+                              (format "void ~a(slog::Database* db, slog::Stratum* s)\n{\n" fn)
+                              body "}\n\n"))))
      (define fwd-decls
        (apply string-append
-              (for/list ([k (in-range 1 (add1 nparts))])
-                (format "void ~a(slog::Database* db, slog::Stratum* s);\n" (part-fn k)))))
+              (for/list ([c (in-list clusters)])
+                (format "void ~a(slog::Database* db, slog::Stratum* s);\n" (car c)))))
      (define calls
        (apply string-append
-              (for/list ([k (in-range 1 (add1 nparts))])
-                (format "  ~a(db, s);\n" (part-fn k)))))
+              (for/list ([c (in-list clusters)]) (format "  ~a(db, s);\n" (car c)))))
      (define spine
        (cons ""
              (tu (lambda ()
                    (string-append include-block const-defs "\n" fwd-decls "\n\n"
                                   (plugin-body calls))))))
-     (define parts
-       (for/list ([chunk (in-list chunks)] [k (in-naturals 1)])
-         (cons (format "p~a" k)
-               (tu (lambda ()
-                     (string-append include-block const-externs "\n\n"
-                                    (format "void ~a(slog::Database* db, slog::Stratum* s)\n{\n"
-                                            (part-fn k))
-                                    (apply string-append (map emit-rule chunk))
-                                    "}\n\n"))))))
-     (cons spine parts)]))
+     (cons spine
+           (for/list ([c (in-list clusters)] [k (in-naturals 1)])
+             (cons (format "p~a" k) (cdr c))))]))
