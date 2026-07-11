@@ -413,7 +413,7 @@ Secondary/join indices are kept only for versions that live strata read and
 are rebuildable on demand; disk spill for cold versions is a flagged later
 optimisation, not a Phase 0 concern.
 
-#### 0.5.1 0.B+0.C as built (2026-07-11): version substrate, re-entry modes, routing, delta-entry, anchors
+#### 0.5.1 0.B–0.D as built (2026-07-11): version substrate, re-entry, routing, delta-entry, anchors, renames
 
 What shipped, and the decisions the design left open:
 
@@ -678,6 +678,47 @@ What shipped, and the decisions the design left open:
   - **Guarded holes:** anchored replay across an import-delta step
     refuses (the walk cannot re-order an import; 0.E2's recipe rebuild
     owns it), as do anchors preceding every version of their relation.
+- **0.D — renames, drops, hot-links (same day).** Environment operations
+  on the binding chains, exactly as §0.7 prescribed -- zero data movement:
+  - **D1.** `renameRelation` rebinds (S's first version IS R's last
+    physical object; a nullptr marker severs R's chain) and
+    `dropRelation` unbinds; both are boundary events, refuse `$`-machinery
+    names, and old versions keep resolving positionally.  The `(pipeline)`
+    introspection marks unbindings with size -1 -- the walk's lineage
+    severance signal.  A later re-declaration lands past the marker as a
+    fresh, empty, uninherited chain, for free (`registerRelation` just
+    appends).  Saves need nothing: they key directories by the CURRENT
+    map key, and `(schema)` reflects the environment by construction.
+  - **D2.** Session segments compile against the LIVE `(schema)` manifest
+    once the session has any state (`db-manifest-from-schema-lines`, the
+    seam built for exactly this) -- renames, drops, imports, and prior
+    segments all reflected; a consumer segment declares the schema of
+    what it reads (as every cross-segment consumer does today) and the
+    daemon resolves the name to the renamed object.  W5 stands: one
+    relation, one copy, no propagation rule.
+  - **The walk is rename/drop-aware.**  Pass 1 merges rename events into
+    the forward scan and TRANSLATES the affected set across the boundary
+    (post-rename strata read the successor name).  Pass 2 became
+    WRITER-DRIVEN while at it (cleaner than chain-scanning): each re-run
+    stratum's affected heads resolve to the versions it writes at its
+    position; continuations refresh, fresh bindings (first registration
+    or first-after-drop) clear, rename-target bindings never rebuild
+    (pure aliases -- the object rebuilds under its writer's chain), and a
+    rebuilt version's logged batches re-apply under EVERY name that
+    anchors to it, following rename aliases.  A tip batch whose cone
+    trips the rebound guard (something a cone stratum touches was renamed
+    after it -- latest-env re-push would resolve the old name to nothing)
+    DIVERTS to the walk: positional re-binding is rename-immune.
+  - **D3.** `slog db edit NAME rename-rel R S` / `drop-rel R` store the
+    ACTION SPECS as edit ops -- the load-step loop streams them like any
+    edit, one implementation with db-compression §12's verbs.
+  - **D5.** `session-link!` = the import machinery recorded as a
+    `(link DB map)` recipe step -- a REFERENCE, never copied by
+    `externalize-recipe-payloads` (which matches only `import-delta`
+    steps); recursive re-materialisation on load is 0.E2's recipe replay.
+  - Anchored replay across a link/import still refuses (0.E2); manifest
+    rename/drop transforms for INTRA-program `run` sequencing remain
+    deferred with the rest of the surface syntax.
 - **Known imprecisions, accepted for B0:** un-anchored `add-tuple` and all
   imports mutate the *current tip* in place (a batch/link as its own
   version event arrives with 0.C/0.D); during a chain load, a layer's
@@ -1928,7 +1969,13 @@ wiring lands with 0.E as planned.**
 - *C5 — payload placement.* Bin payloads written/moved into the saving
   layer's `delta.<k>/`; relative references from `recipe`.
 
-**0.D — Renames, drops, hot-links (§0.7, §0.9).**
+**0.D — Renames, drops, hot-links (§0.7, §0.9).
+SHIPPED 2026-07-11 — see §0.5.1 (D1 environment ops + severance markers,
+D2 live-schema manifests, D3 shared edit verbs, D5 link steps, and the
+rename/drop-aware anchored walk); D4's rename-map landed with 0.C's
+import-delta.  Intra-program manifest transforms (D2's modules.rkt half)
+defer with surface syntax; recursive link materialisation on load is
+0.E2.**
 
 - *D1 — daemon actions.* `(rename-rel R S)` / `(drop-rel R)` as
   **environment operations** (§0.5, §0.7): rebind/unbind the name in the

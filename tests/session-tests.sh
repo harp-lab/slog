@@ -397,6 +397,68 @@ timeout 300 racket -e '
 expect "c2-roundtrip" "recipe-roundtrip-ok" out/sess-c-recipe.log
 expect "c5-placement" "recipe-placement-ok" out/sess-c-recipe.log
 
+# --- 0.D: renames, drops, hot-links ------------------------------------------
+# W5, the rename pipeline: base produces path; (rename-rel path reach)
+# rebinds it (zero data movement); a consumer segment reads reach.  A tip
+# batch into reach logs at the rename binding; a batch anchored into
+# segment 1's edge then walks the suffix -- the pre-rename path stratum
+# re-runs positionally, the rename TRANSLATES the affected set (the
+# consumer re-runs), and the alias re-apply restores the reach batch after
+# path@v0's clear: reach = 10+1, endp = {2,3,4,5,91}.
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/session/base.slog \
+  rename-rel:path,reach \
+  run:tests/session/consumer.slog \
+  dump-rel:endp \
+  batch+:reach,90,91 flush \
+  abatch+:1,edge,4,5 flush \
+  dump-rel:reach dump-rel:endp recipe \
+  > out/sess-d-rename.log 2>&1
+expect "d-renamed"        "(renamed path reach 1)" out/sess-d-rename.log
+expect "d-endp-initial"   "(dumpdone 3)" out/sess-d-rename.log
+expect "d-walk-translates" "(route anchored edge 1 2)" out/sess-d-rename.log
+expect "d-alias-reapply"  "(added reach 1)" out/sess-d-rename.log
+expect "d-reach-final"    "(dumpdone 11)" out/sess-d-rename.log
+expect "d-endp-final"     "(dumpdone 5)" out/sess-d-rename.log
+expect "d-recipe-rename"  "(rename-rel path reach)" out/sess-d-rename.log
+
+# drop + re-declare: the dropped lineage stays positionally addressable
+# (path 6 at position 2); the re-declaration is a severed fresh chain
+# (1 row); (schema) reflects the current environment
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/session/base.slog \
+  drop-rel:path \
+  run:tests/session/redecl.slog \
+  sizes-at:2 dump-rel:path \
+  > out/sess-d-drop.log 2>&1
+expect    "d-dropped"     "(dropped path 1)" out/sess-d-drop.log
+expect_re "d-old-lineage" '\(sizes-at 2 .*\(path 6\)' out/sess-d-drop.log
+expect    "d-fresh-chain" "(dumpdone 1)" out/sess-d-drop.log
+
+# hot-link (D5): same merge machinery as import-delta, recorded as a LINK
+# step (payload stays a reference; externalisation leaves it alone)
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/session/base.slog \
+  link:sess_cpay \
+  dump-rel:path recipe \
+  > out/sess-d-link.log 2>&1
+expect "d-link-cone"   "(import-delta data/sess_cpay 1)" out/sess-d-link.log
+expect "d-link-result" "(dumpdone 9)" out/sess-d-link.log
+expect "d-link-recipe" '(link "sess_cpay" ())' out/sess-d-link.log
+
+# D3: rename as an EDIT on a stored database -- one implementation with
+# the batch edits (the op IS the action spec, streamed on load)
+rm -rf data/sess_dedit
+timeout 600 racket slog.rkt --no-banner --out-db sess_dedit tests/session/base.slog \
+  > out/sess-d-edit0.log 2>&1
+timeout 300 racket slog.rkt db edit sess_dedit rename-rel path reach \
+  > out/sess-d-edit1.log 2>&1
+expect "d-edit-recorded" "recorded edit on sess_dedit: (rename-rel path reach)" out/sess-d-edit1.log
+timeout 600 racket slog.rkt --no-banner --sizes -d sess_dedit tests/api/noop.slog \
+  > out/sess-d-edit2.log 2>&1
+expect     "d-edit-applied" "(relation_size reach 6)" out/sess-d-edit2.log
+expect_not "d-edit-no-old"  "(relation_size path" out/sess-d-edit2.log
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -76,6 +76,17 @@
      `(import-delta ,dir ,(for/list ([r (in-list renames)])
                             (match-define (list a b) (string-split r "="))
                             (list (string->symbol a) (string->symbol b))))]
+    ;; environment operations (0.D): rename-rel:R,S | drop-rel:R
+    [(list "rename-rel" arg)
+     (match-define (list from to) (string-split arg ","))
+     `(rename-rel ,from ,to)]
+    [(list "drop-rel" rel) `(drop-rel ,rel)]
+    ;; hot-link a stored database (0.D5): link:DB[,SRC=DST...]
+    [(list "link" arg)
+     (match-define (cons db renames) (string-split arg ","))
+     `(link ,db ,(for/list ([r (in-list renames)])
+                   (match-define (list a b) (string-split r "="))
+                   (list (string->symbol a) (string->symbol b))))]
     [(list "reenter" rel) `(reenter ,(string->symbol rel))]
     [(list "rerun" rel) `(rerun ,(string->symbol rel))]
     [_ (error 'session-drive "unrecognized op: ~a" s)]))
@@ -102,6 +113,9 @@
       [`(batch ,sign ,anchor ,rel ,tuple)
        (session-batch! s sign rel tuple #:at anchor)]
       [`(import-delta ,dir ,renames) (session-import-delta! s dir renames)]
+      [`(link ,db ,renames) (session-link! s db renames)]
+      [`(rename-rel ,from ,to) (session-rename! s from to)]
+      [`(drop-rel ,rel) (session-drop! s rel)]
       [`(flush) (session-flush! s)]
       [`(add-tuple ,rel ,vals ...)
        (session-action! s `(add-tuple ,rel ,@vals))]

@@ -1,0 +1,10 @@
+;; Session fixture (docs/incremental.md 0.D, W5): consumes `reach` -- the
+;; renamed lineage of base.slog's `path`.  One relation, one copy, no
+;; propagation rule: the rename rebound the name; this segment declares
+;; the schema it reads (as every cross-segment consumer does) and the
+;; daemon resolves it to the renamed object.
+
+table (reach int int)
+table (endp int)
+
+rule (reach X Y) --> (endp Y)

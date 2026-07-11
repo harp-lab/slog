@@ -1,0 +1,7 @@
+;; Session fixture (0.D): re-declares `path` after a drop -- a severed,
+;; fresh chain under the old name (§0.4/§0.7); the dropped lineage stays
+;; positionally addressable.
+
+table (path int int)
+
+rule (path 77 78)

@@ -46,6 +46,9 @@
          session-run!
          session-batch!
          session-import-delta!
+         session-link!          ; hot-link a data/ DB (0.D5)
+         session-rename!        ; environment operations (0.D1)
+         session-drop!
          session-flush!
          session-log            ; the collapsed applied-batch log (C2/C3)
          session-recipe         ; ordered steps + anchored batches (§0.10)
@@ -81,7 +84,7 @@
 ;;             guard (anchored replay across an import is 0.E).
 (struct session (sp out in err-thread [db #:mutable]
                  [strata-info #:mutable] pending applied [imports #:mutable]
-                 [steps #:mutable] echo)
+                 [steps #:mutable] [renames #:mutable] echo)
   #:transparent)
 
 (define (make-session #:echo [echo displayln])
@@ -93,7 +96,7 @@
               (let loop ()
                 (define s (read-line err))
                 (unless (eof-object? s) (eprintf "~a\n" s) (loop))))))
-  (session sp out in err-thread #f '() (make-hash) (make-hash) '() '() echo))
+  (session sp out in err-thread #f '() (make-hash) (make-hash) '() '() '() echo))
 
 ;; The collapsed applied-batch log, serialisation-ready (C2): a list of
 ;; (batch REL POS ((+ v ...) ...) ((- v ...) ...)) sorted by (pos, rel).
@@ -121,9 +124,9 @@
     ,@(for/list ([entry (in-list (session-log s))])
         (match-define `(batch ,rel ,pos ,adds ,dels) entry)
         (define ord
-          (or (for/last ([b (in-list (hash-ref chains rel '()))]
-                         #:when (<= (cdr b) pos))
-                (car b))
+          (or (for/first ([b (in-list (hash-ref chains rel '()))]
+                          #:when (and (= (second b) pos) (not (third b))))
+                (first b))
               0))
         `(batch ,rel (v ,ord) ,adds ,dels))))
 
@@ -168,13 +171,65 @@
   (set-session-steps! s (cons `(open ,db) (session-steps s)))
   (session-action! s `(open ,db)))
 
+;; The live schema as a compile manifest (0.D2): one (schema) round trip
+;; parsed by runslog's db-manifest-from-schema-lines.
+(define (session-schema-manifest s)
+  (send-plugin! s (action-so `(schema)))
+  (define lines
+    (let loop ([acc '()])
+      (define line (read-line (session-out s)))
+      (cond
+        [(eof-object? line) (reverse acc)]
+        [(regexp-match? #px"^\\(schema-end\\)" line) (reverse acc)]
+        [else (loop (cons line acc))])))
+  (db-manifest-from-schema-lines lines))
+
+;; Rename / drop between segments (docs/incremental.md §0.7, 0.D1):
+;; environment operations, zero data movement.  The rename is recorded
+;; with its position so the anchored walk can translate its affected set
+;; across the boundary and re-apply a version's batches under aliasing
+;; names; drops need no driver record -- the chains' severance markers
+;; carry them.
+(define (session-rename! s from to)
+  ;; normalize to symbols: the affected-set walk and the recipe both key
+  ;; relations symbolically
+  (define from* (if (symbol? from) from (string->symbol from)))
+  (define to* (if (symbol? to) to (string->symbol to)))
+  (define-values (cur _sp _ch) (introspect! s))
+  (session-action! s `(rename-rel ,from* ,to*))
+  (define line (read-line (session-out s)))
+  (unless (and (string? line) (regexp-match? #px" 1\\)\\s*$" line))
+    (error 'session (format "rename-rel ~a -> ~a refused: ~a" from* to* line)))
+  (echo! s line)
+  (set-session-steps! s (cons `(rename-rel ,from* ,to*) (session-steps s)))
+  (set-session-renames! s (cons (list from* to* cur) (session-renames s))))
+
+(define (session-drop! s rel)
+  (define rel* (if (symbol? rel) rel (string->symbol rel)))
+  (session-action! s `(drop-rel ,rel*))
+  (define line (read-line (session-out s)))
+  (unless (and (string? line) (regexp-match? #px" 1\\)\\s*$" line))
+    (error 'session (format "drop-rel ~a refused: ~a" rel* line)))
+  (echo! s line)
+  (set-session-steps! s (cons `(drop-rel ,rel*) (session-steps s))))
+
 ;; Run one program segment atop the session (docs/incremental.md §0.4):
 ;; open a version boundary for its write-set, import its frozen ground
 ;; facts, then drive each stratum to fixpoint, recording its manifest for
 ;; later cone assembly.
 (define (session-run! s prog)
   (set-session-steps! s (cons `(run ,prog) (session-steps s)))
-  (define manifest (if (session-db s) (db-full-manifest (session-db s)) (hash)))
+  ;; Segments compile against the LIVE schema once the session has any
+  ;; state (0.D2): renames, drops, imports, and prior segments' relations
+  ;; are all reflected, so later-segment resolution errors come free --
+  ;; a program reading a dropped name simply finds no declaration.
+  (define manifest
+    (cond
+      [(or (pair? (session-strata-info s)) (pair? (session-imports s))
+           (pair? (session-renames s)))
+       (session-schema-manifest s)]
+      [(session-db s) (db-full-manifest (session-db s))]
+      [else (hash)]))
   (define-values (strata partition edb-boundary frozen-dirs)
     (compile-strata prog manifest #:split-facts? #f))
   (define ws (segment-write-set strata frozen-dirs))
@@ -209,12 +264,24 @@
 ;; tip routing (replay-entry / clear-and-rerun; the import merged in place,
 ;; so delta-entry does not apply).  `renames` maps source->dest names.
 (define (session-import-delta! s dir [renames '()])
+  (import-merge! s dir renames `(import-delta ,dir ,renames)))
+
+;; Hot-link a stored database into the live session (docs/incremental.md
+;; §0.9, 0.D5): same import machinery and downstream routing as a bulk
+;; payload, but the recipe records a LINK step -- the payload is a
+;; reference to data/<db> (and its chain), never copied into the saving
+;; layer (externalize-recipe-payloads leaves link steps alone); 0.E2's
+;; load re-materialises it recursively.
+(define (session-link! s db [renames '()])
+  (import-merge! s (string-append "data/" db) renames `(link ,db ,renames)))
+
+(define (import-merge! s dir renames step)
   (define-values (cur _sp0 _ch0) (introspect! s))
   (session-action! s `(import-delta ,dir ,renames))
   ;; the import occupies position `cur` (it advances the counter, like open)
   (set-session-imports! s (cons (list dir renames cur)
                                 (session-imports s)))
-  (set-session-steps! s (cons `(import-delta ,dir ,renames) (session-steps s)))
+  (set-session-steps! s (cons step (session-steps s)))
   ;; target rels: the payload's relation dirs (renamed), same scan as
   ;; frozen dirs use
   (define targets
@@ -268,12 +335,14 @@
                (match-define `(rel ,name ,vs ...) r)
                (values name
                        (for/list ([v (in-list vs)])
-                         (match-define `(v ,ord ,pos ,_sz) v)
-                         (cons ord pos)))))]
+                         ;; size -1 = an unbinding marker (drop / rename
+                         ;; source): lineage severance for the walk (0.D)
+                         (match-define `(v ,ord ,pos ,sz) v)
+                         (list ord pos (= sz -1))))))]
     [x (error 'session (format "unparseable (pipeline) reply: ~a" x))]))
 
 (define (chain-positions chains rel)
-  (map cdr (hash-ref chains rel '())))
+  (map second (hash-ref chains rel '())))
 
 ;; cone(target) closure over candidate entries (cons pos sinfo), in
 ;; pipeline order; monotone? = #f if any edge INTO the cone is neg/lat.
@@ -350,18 +419,20 @@
   (define chain (hash-ref chains rel '()))
   (when (null? chain)
     (error 'session (format "batch targets unknown relation ~a" rel)))
-  (cond
-    [(eq? anchor 'tip)
-     (match-define (cons ord pos) (last chain))
-     (values ord pos #t)]
-    [else
-     (define hit
-       (for/last ([b (in-list chain)] #:when (<= (cdr b) anchor)) b))
-     (unless hit
-       (error 'session
-              (format "batch anchored at ~a precedes every version of ~a (first binding at ~a)"
-                      anchor rel (cdr (first chain)))))
-     (values (car hit) (cdr hit) (equal? hit (last chain)))]))
+  (define hit
+    (if (eq? anchor 'tip)
+        (last chain)
+        (for/last ([b (in-list chain)] #:when (<= (second b) anchor)) b)))
+  (unless hit
+    (error 'session
+           (format "batch anchored at ~a precedes every version of ~a (first binding at ~a)"
+                   anchor rel (second (first chain)))))
+  (when (third hit)
+    (error 'session
+           (format "~a is unbound ~a (dropped or renamed away); anchor before the severance or use the successor name"
+                   rel (if (eq? anchor 'tip) "at the tip" (format "at ~a" anchor)))))
+  (match-define (list ord pos _d) hit)
+  (values ord pos (equal? hit (last chain))))
 
 (define (session-flush! s)
   (define pending (session-pending s))
@@ -383,13 +454,22 @@
                         (hash-count (third g)) (second g) inline-batch-max))))
      (define-values (_cur strata-pos chains) (introspect! s))
      ;; split by resolved anchor: groups whose anchor resolves to the
-     ;; LATEST version take the tip routing; older versions take the walk
+     ;; LATEST version take the tip routing; older versions take the walk.
+     ;; A tip group whose cone trips the rebound guard (something a cone
+     ;; stratum touches was renamed/rebound after it -- latest-env re-push
+     ;; would resolve the old name to nothing) diverts to the walk too:
+     ;; positional re-binding is rename-immune (0.D).
      (define-values (tip-groups old-groups)
        (for/fold ([tips '()] [olds '()])
                  ([g (in-list groups)])
          (match-define (list anchor rel per-rel) g)
          (define-values (ord bind-pos last?) (resolve-anchor chains rel anchor))
-         (if last?
+         (define tip-ok?
+           (and last?
+                (with-handlers ([exn:fail? (lambda (_e) #f)])
+                  (cone-of s rel strata-pos chains)
+                  #t)))
+         (if tip-ok?
              (values (cons (list rel bind-pos per-rel) tips) olds)
              (values tips (cons (list rel ord bind-pos per-rel) olds)))))
      ;; anchored walks first (they may rebuild latest versions), ascending
@@ -488,15 +568,20 @@
 ;; (its rebuild is the in-place batch apply).
 (define (anchored-walk! s group strata-pos chains)
   (match-define (list rel ord bind-pos per-rel) group)
-  ;; guard: the walk cannot re-order an import event (0.E's recipe rebuild)
+  ;; guard: the walk cannot re-order an import/link event (0.E's rebuild)
   (for ([im (in-list (session-imports s))])
     (when (> (third im) bind-pos)
       (error 'session
-             (format "batch anchored at ~a precedes an import-delta of ~a: anchored replay across imports is 0.E's recipe rebuild"
+             (format "batch anchored at ~a precedes an import/link of ~a: anchored replay across imports is 0.E's recipe rebuild"
                      bind-pos (first im)))))
   (define adds (for/list ([(t sg) (in-hash per-rel)] #:when (eq? sg '+)) t))
   (define dels (for/list ([(t sg) (in-hash per-rel)] #:when (eq? sg '-)) t))
-  ;; 1. apply to the anchored version, in place; log at its binding
+  ;; 1. apply to the anchored version in place; log at its binding.  If
+  ;; the version's writer re-runs below, the rebuild wipes and the log
+  ;; re-applies -- the §0.5 mode-2 "copy predecessor ± batch"; if not (a
+  ;; fresh binding anchored at its writer's own position), this apply IS
+  ;; the version rebuild and writer-derived deletions keep the
+  ;; replay-deletion caveat.
   (when (pair? adds)
     (session-action! s `(add-batch ,rel ,bind-pos (,@adds)))
     (read-one-line! s)
@@ -505,62 +590,105 @@
     (session-action! s `(del-batch ,rel ,bind-pos (,@dels)))
     (read-one-line! s)
     (log-applied! s rel bind-pos dels '-))
-  ;; 2. pass 1: affected + re-run sets, forward over strata by position
+  ;; 2. pass 1: affected + re-run sets -- forward over strata AND rename
+  ;; events in position order; renames translate the affected set across
+  ;; the boundary (post-rename strata read the successor name).  Side
+  ;; channels never propagate (heads are pure rule heads).
   (define strata+pos
     (sort (for/list ([info (in-list (session-strata-info s))] [scc (in-naturals)])
             (cons (hash-ref strata-pos scc 0) info))
           < #:key car))
-  (define-values (affected rerun-sos)
-    (for/fold ([affected (set rel)] [rerun (set)])
-              ([sp (in-list strata+pos)])
-      (match-define (cons pos info) sp)
+  (define rename-events   ; (list from to pos), ascending, post-anchor only
+    (sort (filter (lambda (rn) (> (third rn) bind-pos)) (session-renames s))
+          < #:key third))
+  (define-values (affected rerun)
+    (let loop ([sps strata+pos] [rns rename-events]
+               [affected (set rel)] [rerun '()])
       (cond
-        [(<= pos bind-pos) (values affected rerun)]
-        [(or (for/or ([r (in-list (map car (sinfo-reads info)))])
-               (set-member? affected r))
-             (for/or ([h (in-list (sinfo-heads info))])
-               (set-member? affected h)))
-         (values (for/fold ([a affected]) ([h (in-list (sinfo-heads info))])
-                   (set-add a h))
-                 (set-add rerun (sinfo-so info)))]
-        [else (values affected rerun)])))
-  ;; 3. pass 2: position-ordered rebuild/re-apply/re-run events
+        [(and (null? sps) (null? rns)) (values affected (reverse rerun))]
+        [(and (pair? rns)
+              (or (null? sps) (< (third (car rns)) (car (car sps)))))
+         (match-define (list from to _p) (car rns))
+         (loop sps (cdr rns)
+               (if (set-member? affected from) (set-add affected to) affected)
+               rerun)]
+        [else
+         (match-define (cons pos info) (car sps))
+         (cond
+           [(<= pos bind-pos) (loop (cdr sps) rns affected rerun)]
+           [(or (for/or ([r (in-list (map car (sinfo-reads info)))])
+                  (set-member? affected r))
+                (for/or ([h (in-list (sinfo-heads info))])
+                  (set-member? affected h)))
+            (loop (cdr sps) rns
+                  (for/fold ([a affected]) ([h (in-list (sinfo-heads info))])
+                    (set-add a h))
+                  (cons (car sps) rerun))]
+           [else (loop (cdr sps) rns affected rerun)])])))
+  ;; 3. pass 2, WRITER-DRIVEN: each re-run stratum's affected heads
+  ;; resolve to the versions it writes at its position; each rebuilds
+  ;; exactly once, right before the stratum -- an inheritance continuation
+  ;; refreshes (re-copy predecessor + re-seed allocators), a fresh binding
+  ;; (first registration, or first after a drop) clears.  Rename-target
+  ;; bindings are pure aliases and never rebuild.  A rebuilt version's
+  ;; logged batches re-apply under EVERY name that anchors to it
+  ;; (following rename aliases) before the writer runs.
+  (define rename-targets   ; (cons to pos) -> #t
+    (for/hash ([rn (in-list (session-renames s))])
+      (values (cons (second rn) (third rn)) #t)))
+  (define (chain-binding-at r p)
+    (for/last ([b (in-list (hash-ref chains r '()))] #:when (<= (second b) p)) b))
+  ;; every (name . binding-pos) that aliases the version bound as (h, bpos):
+  ;; h itself, plus rename successors whose source resolved to this binding
+  (define (alias-anchors h bpos)
+    (let grow ([name h] [pos bpos] [acc (list (cons h bpos))])
+      (for/fold ([acc acc]) ([rn (in-list (session-renames s))])
+        (match-define (list from to rpos) rn)
+        (define src
+          (and (equal? from name)
+               (for/last ([b (in-list (hash-ref chains from '()))]
+                          #:when (and (< (second b) rpos) (not (third b))))
+                 b)))
+        (if (and src (= (second src) pos))
+            (grow to rpos (cons (cons to rpos) acc))
+            acc))))
+  (define rebuilt (mutable-set))
   (define events '())   ; (list pos tie thunk)
-  (for ([(r chain) (in-hash chains)]
-        #:when (set-member? affected r))
-    (for ([b (in-list chain)])
-      (match-define (cons bord bpos) b)
-      ;; every affected binding at/after the anchor EXCEPT the anchored
-      ;; version itself rebuilds; ordinal 0 has no predecessor to copy
-      (when (and (>= bpos bind-pos)
-                 (not (and (eq? r rel) (<= bord ord))))
+  (for ([sp (in-list rerun)])
+    (match-define (cons pos info) sp)
+    (for ([h (in-list (sinfo-heads info))] #:when (set-member? affected h))
+      (define b (chain-binding-at h pos))
+      (when (and b (not (third b))
+                 (not (hash-ref rename-targets (cons h (second b)) #f))
+                 (not (set-member? rebuilt (cons h (first b)))))
+        (set-add! rebuilt (cons h (first b)))
+        (match-define (list bord bpos _d) b)
+        (define chain (hash-ref chains h '()))
+        (define continuation?
+          (and (> bord 0) (not (third (list-ref chain (sub1 bord))))))
         (set! events
-              (cons (list bpos 0
+              (cons (list pos 0
                           (lambda ()
-                            (if (zero? bord)
-                                (session-action! s `(clear-rel-at ,r ,bpos))
+                            (if continuation?
                                 (begin
-                                  (session-action! s `(refresh-version ,r ,bord))
-                                  (read-one-line! s)))))
-                    events)))
-      ;; logged batches at a rebuilt version re-apply right after it
-      (when (and (>= bpos bind-pos)
-                 (not (and (eq? r rel) (<= bord ord))))
-        (define-values (ladds ldels) (logged-batches-at s r bpos))
-        (when (or (pair? ladds) (pair? ldels))
-          (set! events
-                (cons (list bpos 1
-                            (lambda ()
+                                  (session-action! s `(refresh-version ,h ,bord))
+                                  (read-one-line! s))
+                                (session-action! s `(clear-rel-at ,h ,bpos)))))
+                    events))
+        (define anchors (alias-anchors h bpos))
+        (set! events
+              (cons (list pos 1
+                          (lambda ()
+                            (for ([a (in-list anchors)])
+                              (define-values (ladds ldels)
+                                (logged-batches-at s (car a) (cdr a)))
                               (when (pair? ladds)
-                                (session-action! s `(add-batch ,r ,bpos (,@ladds)))
+                                (session-action! s `(add-batch ,(car a) ,(cdr a) (,@ladds)))
                                 (read-one-line! s))
                               (when (pair? ldels)
-                                (session-action! s `(del-batch ,r ,bpos (,@ldels)))
-                                (read-one-line! s))))
-                      events))))))
-  (for ([sp (in-list strata+pos)]
-        #:when (set-member? rerun-sos (sinfo-so (cdr sp))))
-    (match-define (cons pos info) sp)
+                                (session-action! s `(del-batch ,(car a) ,(cdr a) (,@ldels)))
+                                (read-one-line! s)))))
+                    events))))
     (set! events
           (cons (list pos 2
                       (lambda ()
@@ -574,7 +702,7 @@
                        (and (= (first a) (first b))
                             (< (second a) (second b)))))))
   (echo! s (format "(route anchored ~a ~a ~a)"
-                   rel bind-pos (set-count rerun-sos)))
+                   rel bind-pos (length rerun)))
   (for ([e (in-list ordered)])
     ((third e))))
 

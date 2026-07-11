@@ -175,6 +175,13 @@
              (string-join (for/list ([r (in-list renames)])
                             (format "{\"~a\", \"~a\"}" (first r) (second r)))
                           ", "))]
+    ;; Rename / drop between segments (docs/incremental.md §0.7, 0.D1):
+    ;; environment operations on the version chains, zero data movement.
+    ;; Replies (renamed R S 0|1) / (dropped R 0|1).
+    [`(rename-rel ,from ,to)
+     (format "  d->renameRel(\"~a\", \"~a\");\n" from to)]
+    [`(drop-rel ,rel)
+     (format "  d->dropRel(\"~a\");\n" rel)]
     ;; Segment boundary (docs/incremental.md §0.4-§0.5, B0): announce the
     ;; relation names the upcoming program segment writes, so the daemon
     ;; rebinds each already-bound one to a NEW physical version (full copy of

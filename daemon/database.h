@@ -1655,6 +1655,39 @@ public:
     return nv;
   }
 
+  // ---- renames and drops (docs/incremental.md §0.7, 0.D1) ----
+  // Environment operations on the version chains -- zero data movement.
+  // A rename rebinds: S's first version IS R's last (the same physical
+  // object; a nullptr marker severs R's chain).  A drop unbinds: the name
+  // frees, the versions persist and stay positionally addressable, and a
+  // later re-declaration starts a fresh empty chain (no inheritance --
+  // registerRelation appends past the marker).  Both are boundary events.
+
+  bool renameRelation(const std::string& from, const std::string& to)
+  {
+    auto it = relations.find(from);
+    if (it == relations.end() || relations.find(to) != relations.end())
+      return false;
+    Relation* r = it->second;
+    relations.erase(it);
+    relations[to] = r;
+    rel_bindings[from].push_back({pipeline_pos, nullptr});
+    rel_bindings[to].push_back({pipeline_pos, r});
+    advancePosition();
+    return true;
+  }
+
+  bool dropRelation(const std::string& name)
+  {
+    auto it = relations.find(name);
+    if (it == relations.end())
+      return false;
+    relations.erase(it);
+    rel_bindings[name].push_back({pipeline_pos, nullptr});
+    advancePosition();
+    return true;
+  }
+
   Relation* getRelation(const std::string& name)
   {
     // Bind-time positional resolution (B1 re-entry): resolve through the
@@ -1710,8 +1743,12 @@ public:
       u32 ord = 0;
       for (const RelBinding& b : *kv.second)
       {
+        // size -1 marks an unbinding (a drop, or a rename's severed
+        // source): the driver's anchored walk reads it as lineage
+        // severance (0.D)
         s += " (v " + std::to_string(ord++) + " " + std::to_string(b.pos)
-	   + " " + std::to_string(b.rel ? b.rel->tupleCount() : 0) + ")";
+	   + " " + (b.rel ? std::to_string(b.rel->tupleCount())
+	                  : std::string("-1")) + ")";
       }
       s += ")";
     }

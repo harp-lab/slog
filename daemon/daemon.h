@@ -464,6 +464,30 @@ public:
     r->sendBatch(b);
   }
 
+  // Rename / drop as ENVIRONMENT operations (docs/incremental.md §0.7,
+  // 0.D1): rebind or unbind the name in the current-position map -- never
+  // a rekey of the physical registry, so old versions at old positions
+  // keep resolving.  A rename's target must be unbound; machinery names
+  // ($-prefixed: stats, sequence-occurrence, demand internals) are owned
+  // by the daemon/compiler and refuse.  Replies (renamed R S 0|1) /
+  // (dropped R 0|1); (schema) reflects the new environment for free.
+  void renameRel(const std::string& from, const std::string& to)
+  {
+    if (refuseIfSuspended("rename-rel")) return;
+    const bool ok = (from[0] != '$') && (to[0] != '$')
+                    && database->renameRelation(from, to);
+    if (ok) needs_reload = true;
+    emit(std::string("(renamed ") + from + " " + to + " " + (ok ? "1" : "0") + ")");
+  }
+
+  void dropRel(const std::string& name)
+  {
+    if (refuseIfSuspended("drop-rel")) return;
+    const bool ok = (name[0] != '$') && database->dropRelation(name);
+    if (ok) needs_reload = true;
+    emit(std::string("(dropped ") + name + " " + (ok ? "1" : "0") + ")");
+  }
+
   // Import a mini bin-database as a bulk batch payload (0.C1, transport 2
   // of §0.3): importDatabaseBIN with an optional name-map -- the first
   // real caller of its rename parameter (the D4 seam).  Tip-anchored:

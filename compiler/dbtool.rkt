@@ -379,7 +379,21 @@
      (append-edit! (db-dir name) `(add-tuple ,(string->symbol rel) ,@parsed))
      (printf "recorded edit on ~a: (add-tuple ~a ~a); reload a dependent to propagate\n"
              name rel (string-join vals " "))]
-    [_ (die "usage: slog db edit NAME add-tuple REL v...")]))
+    ;; Rename/drop edit ops (docs/incremental.md 0.D3; one implementation
+    ;; with db-compression §12's edit verbs): stored as the ACTION SPECS
+    ;; themselves, so the load-step loop streams them like any edit -- the
+    ;; daemon applies the environment operation right after the layer opens.
+    [(list name "rename-rel" from to)
+     (unless (db-exists? name) (die "no such database: ~a" name))
+     (append-edit! (db-dir name) `(rename-rel ,(string->symbol from) ,(string->symbol to)))
+     (printf "recorded edit on ~a: (rename-rel ~a ~a); reload a dependent to propagate\n"
+             name from to)]
+    [(list name "drop-rel" rel)
+     (unless (db-exists? name) (die "no such database: ~a" name))
+     (append-edit! (db-dir name) `(drop-rel ,(string->symbol rel)))
+     (printf "recorded edit on ~a: (drop-rel ~a); reload a dependent to propagate\n"
+             name rel)]
+    [_ (die "usage: slog db edit NAME <add-tuple REL v...|rename-rel R S|drop-rel R>")]))
 
 (define (slog-db-command args #:replay-verify [replay-verify #f])
   (match args
