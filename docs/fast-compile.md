@@ -384,7 +384,23 @@ touched clusters recompile and the (cheap) spine relinks. Measured: editing one
 rule in a 200-rule split stratum recompiled 5 of 17 `.o`s (the edited rule's
 old+new bucket + the two strata's spines); the rest were cache hits.
 
-Applies to the eager `-O0`/foreground paths (`compile-one`); the detached
-background `-O2` batch still compiles `.cpp`→`.so` directly (a follow-up could
-route it through the same `.o` cache). The `build/o/` cache is not yet GC'd —
-`rm -rf build/o` to reclaim; content-addressing makes stale entries inert.
+Both the eager `-O0`/foreground paths (`compile-one`) and the detached
+background `-O2` batch (`o2-build-command`) go through this `.o` cache, so an
+`-O2` rebuild after an edit/sweep also recompiles only the changed clusters.
+
+**Granular in-run O0→O2 upgrade.** Because a cluster's `-O0` and `-O2` objects
+are semantically identical, the stratum `.so` can be linked from each cluster's
+*best-available* `.o`. The tiered driver does exactly that: at every fixpoint
+boundary it relinks the best-available mix and hot-swaps it in whenever more
+clusters have reached `-O2` (`make-upgrade` in compile.rkt → the sbuild
+`upgrade` field → `drive-stratum!`), reusing `beginStratum`'s twin
+re-registration (no daemon change), just invoked a few more times. So `-O2` is
+fed in as fast as clang produces it — cluster-by-cluster on a cold giant
+stratum, and straight to full `-O2` at the first boundary when the `.o`s are
+already cached (edit/sweep). When all clusters are `-O2` the mix is the full
+`-O2` build.
+
+**GC.** `build/o/` is evicted once per process (best-effort) on BOTH age
+(entries unused longer than `SLOG_O_CACHE_MAX_AGE_DAYS`, default 4) and a size
+cap (`SLOG_O_CACHE_MAX_MB`, default 768; oldest-first). A cache hit touches the
+`.o`, so mtime is last-use; content-addressing makes an evicted entry inert.
