@@ -414,7 +414,8 @@
           (for ([sb (in-list r-strata)])
             (match-define (cons so tag) ((sbuild-runnable sb)))
             (send-plugin so)
-            (drive-stratum! sb tag)))))
+            (unless (drive-stratum! sb tag)
+              (error "daemon output ended (EOF) mid-stratum during replay -- the daemon died or went silent"))))))
 
     ;; PHASE R -- materialise the loaded input DAG bottom-up: process the load
     ;; steps (imports + edits + per-layer replays).  Runs BEFORE the query
@@ -495,7 +496,11 @@
     (for ([sb (in-list strata)] [i (in-naturals)])
       (match-define (cons so tag) ((sbuild-runnable sb)))  ; blocks until built
       (send-plugin so)
-      (drive-stratum! sb tag)
+      ;; EOF here means the daemon died or went silent BEFORE this stratum's
+      ;; fixpoint: erroring (rather than sailing on to the terminal actions)
+      ;; is what keeps a half-run from masquerading as a successful one
+      (unless (drive-stratum! sb tag)
+        (error "daemon output ended (EOF) mid-stratum -- the daemon died or went silent"))
       ;; After the facts stratum fixpoints (its output is the pure iteration-0
       ;; EDB), snapshot the root before any derived tuple exists (P0.5).  A
       ;; silent write-db emits no line, so it cannot desync the next stratum's
@@ -567,6 +572,10 @@
       (when (not (eof-object? s))
         (display s)
         (newline)
+        ;; a terminal action's failure (e.g. a save plugin that would not
+        ;; load) must not be swallowed into an exit-0 run
+        (when (regexp-match? #px"^\\(error " s)
+          (error (format "Daemon reported an error during terminal actions: ~a" s)))
         (loop)))
     (thread-wait err-thread)
     (close-input-port out)
@@ -574,6 +583,15 @@
     (subprocess-wait sp)
     (when (> (subprocess-status sp) 0)
       (error "Something went wrong running the daemon!"))
+    ;; A requested save must EXIST and be non-empty after a clean exit: the
+    ;; write-db action has no confirmation handshake, so this is the seam
+    ;; where a silently-skipped or empty save would otherwise become a
+    ;; successful-looking run (the empty-save flake, 2026-07-10).
+    (for ([dbn (in-list (filter values (list out-db compressed)))])
+      (define d (fullpath (format "data/~a" dbn)))
+      (unless (and (directory-exists? d)
+                   (pair? (directory-list d)))
+        (error (format "save verification failed: data/~a is missing or empty after a clean daemon exit" dbn))))
     ;; The daemon has materialised every data directory; now stamp their META
     ;; headers (P0.5/P0.6).  Done here (post-exit) so the dirs exist and no
     ;; mid-run synchronisation is needed.

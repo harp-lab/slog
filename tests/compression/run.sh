@@ -43,17 +43,31 @@ for prog in "${PROGS[@]}"; do
   [ -f "$prog" ] || { echo "SKIP $name (no such file)"; continue; }
   # oracle: uncompressed, dumped once
   rm -rf "data/${name}_o" "data/${name}_o.edb"
-  racket slog.rkt --no-banner --out-db "${name}_o" "$prog" >/dev/null 2>&1
+  racket slog.rkt --no-banner --out-db "${name}_o" "$prog" \
+    > "out/save-${name}_o.log" 2>&1
+  st=$?
+  [ $st -ne 0 ] && echo "  SAVE-ERROR ${name}_o exit=$st (out/save-${name}_o.log)"
   dump "${name}_o" "out/cmp_o_$name"
   ocount=$(ls "out/cmp_o_$name"/*.csv 2>/dev/null | wc -l)
   if [ "$ocount" -eq 0 ]; then
     echo "FAIL $name (oracle produced no relations -- cannot verify)"
+    # preserve the evidence: the save tree, both logs, the dump output
+    fdir="out/forensics-$name-$$-$RANDOM"
+    mkdir -p "$fdir"
+    cp -r "data/${name}_o" "$fdir/db" 2>/dev/null
+    cp -r "data/${name}_o.tmp" "$fdir/db.tmp" 2>/dev/null
+    cp "out/save-${name}_o.log" "$fdir/save.log" 2>/dev/null
+    cp "out/dump-cmp_o_$name.log" "$fdir/dump.log" 2>/dev/null
+    echo "  forensics preserved: $fdir"
     fail=$((fail+1)); failed+=("$name/oracle")
     rm -rf "data/${name}_o" "data/${name}_o.edb" "out/cmp_o_$name"; continue
   fi
   for per in $PERS; do
     rm -rf "data/${name}_c" "data/${name}_c.edb"
-    racket slog.rkt --no-banner --out-db-compressed "${name}_c" --per "$per" "$prog" >/dev/null 2>&1
+    racket slog.rkt --no-banner --out-db-compressed "${name}_c" --per "$per" "$prog" \
+      > "out/save-${name}_c.log" 2>&1
+    st=$?
+    [ $st -ne 0 ] && echo "  SAVE-ERROR ${name}_c per=$per exit=$st (out/save-${name}_c.log)"
     dump "${name}_c" "out/cmp_c_$name"
     ok=1
     if [ ! -d "out/cmp_c_$name" ]; then ok=0; echo "  FAIL $name per=$per (replay produced no dump)";
