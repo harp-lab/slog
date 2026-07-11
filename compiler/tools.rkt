@@ -8,6 +8,8 @@
          pooled-eager
          o2-build-command
          spawn-detached-o2-batch
+         o-cache-path
+         link-os
          try-claim-o2!
          clear-o2-marker!
          stratum-tu-paths
@@ -561,6 +563,23 @@
                                (if (debug-build?) "g" "")))))
              0 32))
 
+;; The content-addressed .o path for `cpp` at `opt` (whether or not it exists).
+;; The granular O0->O2 upgrade (compile.rkt/runslog.rkt) uses this to find which
+;; clusters' -O2 objects have landed and relink a best-available mix.
+(define (o-cache-path cpp opt)
+  (fullpath (format "build/o/~a.o" (o-cache-key cpp opt))))
+
+;; Link a set of .o's into one .so (temp + atomic rename).  Returns (values ok?
+;; log).  Used by compile-one and by the granular relink.
+(define (link-os o-paths so-path opt)
+  (define tmp (build-tempfile "so~a.tmp"))
+  (define argv (append (list the-cxx-path)
+                       (base-cxx-flags opt)
+                       o-paths
+                       (list "-shared" (format "-o~a" tmp))
+                       extra-cxx-flags))
+  (run-cxx argv tmp so-path))
+
 ;; Ensure build/o/<key>.o exists for `cpp` at `opt`; compile on a cache miss.
 ;; Returns (list o-path ok? log); o-path is #f on a compile failure.
 (define (build-o cpp opt pch)
@@ -592,14 +611,7 @@
   (cond
     [failed (values #f (third failed))]   ; a TU failed to compile
     [else
-     (define o-paths (map first results))   ; strings (fullpath)
-     (define tmp (build-tempfile "so~a.tmp"))
-     (define argv (append (list the-cxx-path)
-                          (base-cxx-flags opt)
-                          o-paths
-                          (list "-shared" (format "-o~a" tmp))
-                          extra-cxx-flags))
-     (run-cxx argv tmp so-path)]))
+     (link-os (map first results) so-path opt)]))   ; o-paths are strings (fullpath)
 
 ;; Synchronous build of one .cpp (or list of .cpp TUs linked into one .so).
 ;; `opt` defaults to -O2 (the historical behavior); the tiered driver passes an

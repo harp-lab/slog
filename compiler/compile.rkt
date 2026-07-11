@@ -390,7 +390,35 @@
 ;;                       behavior.  A previously-built build/<hash>.so is always
 ;;                       preferred in every mode (a re-run is pure -O2).
 
-(struct sbuild (hash o2-path runnable))
+(struct sbuild (hash o2-path runnable upgrade))
+
+;; Granular O0->O2 upgrade (docs/fast-compile.md §14): given this stratum's TU
+;; .cpp paths, return a closure the driver calls at each fixpoint boundary.  It
+;; relinks the best-available mix -- each cluster's -O2 .o if the background has
+;; produced it, else its -O0 .o -- into a fresh .so, but ONLY when more clusters
+;; are now -O2 than the one currently loaded.  Any mix is correct (the .o's are
+;; semantically identical); when all are -O2 the mix is the full -O2 build.  The
+;; per-TU .o paths are content-addressed and fixed, so they are computed once;
+;; each boundary is then just file-exists? checks + (on progress) one cheap link.
+;; Returns (list mix-so-or-#f n-o2 total).
+(define (make-upgrade proghash cpps)
+  (define pairs
+    (for/list ([cpp (in-list cpps)])
+      (cons (o-cache-path cpp "-O0") (o-cache-path cpp "-O2"))))
+  (define total (length pairs))
+  (lambda (loaded-o2)
+    (define bests
+      (for/list ([p (in-list pairs)])
+        (if (file-exists? (cdr p)) (cons (cdr p) #t) (cons (car p) #f))))
+    (define n-o2 (for/sum ([b (in-list bests)] #:when (cdr b)) 1))
+    (cond
+      [(> n-o2 loaded-o2)
+       ;; a distinct path per relink: dlopen will not reload an already-loaded
+       ;; path, and n-o2 strictly increases across relinks
+       (define mix (fullpath (format "build/~a.mix~a.so" proghash n-o2)))
+       (define-values (ok? _log) (link-os (map car bests) mix "-O0"))
+       (list (and ok? mix) n-o2 total)]
+      [else (list #f loaded-o2 total)])))
 
 ;; -----------------------------------------------------------------------
 ;; Whole-program IDB/EDB partition (docs/db-compression.md §6, P0.4).
@@ -568,10 +596,10 @@
         ;; Optimized artifact already cached: always the best thing to run.
         [(file-exists? o2so)
          (clear-o2-marker! o2so)   ; any leftover in-flight marker is moot now
-         (sbuild proghash o2so (lambda () (cons o2so 'o2)))]
+         (sbuild proghash o2so (lambda () (cons o2so 'o2)) #f)]
         ;; -O0-only mode with a warm -O0 artifact: reuse it, no upgrade.
         [(and (equal? mode "0") (file-exists? o0so))
-         (sbuild proghash #f (lambda () (cons o0so 'o0)))]
+         (sbuild proghash #f (lambda () (cons o0so 'o0)) #f)]
         ;; TIERED with a warm -O0 artifact but no -O2 yet (e.g. a prior run
         ;; exited before the background -O2 landed): run the cached -O0 NOW --
         ;; no re-emit, no -O0 rebuild -- and queue the background -O2 only if we
@@ -583,22 +611,26 @@
          (define cpps (if (null? cpps0) (emit-stratum-cpp job) cpps0))
          (when (try-claim-o2! o2so)
            (set! o2-cmds (cons (o2-build-command cpps o2so) o2-cmds)))
-         (sbuild proghash o2so (lambda () (cons o0so 'o0)))]
+         (sbuild proghash o2so (lambda () (cons o0so 'o0)) (make-upgrade proghash cpps))]
         [else
          (define cpps (emit-stratum-cpp job))   ; write .cpp(s) now (fast, main thread)
          (case mode
            [("2")
             (sbuild proghash o2so
-                    (pooled-eager (lambda () (build-so cpps o2so #:opt "-O2") (cons o2so 'o2))))]
+                    (pooled-eager (lambda () (build-so cpps o2so #:opt "-O2") (cons o2so 'o2)))
+                    #f)]
            [("0")
             (sbuild proghash #f
-                    (pooled-eager (lambda () (build-so cpps o0so #:opt "-O0") (cons o0so 'o0))))]
-           [else ; tiered: eager -O0 to run now, queue a background -O2 to swap in / cache
+                    (pooled-eager (lambda () (build-so cpps o0so #:opt "-O0") (cons o0so 'o0)))
+                    #f)]
+           [else ; tiered: eager -O0 to run now, then upgrade cluster-by-cluster to
+                 ;; -O2 as the background fills the .o cache (docs/fast-compile.md §14)
             ;; claim-gate the -O2 so concurrent/successive runs that all miss the
             ;; -O2 don't each spawn one (docs/fast-compile.md §13)
             (when (try-claim-o2! o2so)
               (set! o2-cmds (cons (o2-build-command cpps o2so) o2-cmds)))
             (sbuild proghash o2so
-                    (pooled-eager (lambda () (build-so cpps o0so #:opt "-O0") (cons o0so 'o0))))])])))
+                    (pooled-eager (lambda () (build-so cpps o0so #:opt "-O0") (cons o0so 'o0)))
+                    (make-upgrade proghash cpps))])])))
   (spawn-detached-o2-batch (reverse o2-cmds))
   (values strata partition edb-boundary frozen-dirs))

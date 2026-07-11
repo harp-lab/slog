@@ -173,16 +173,19 @@ SLOG_OPT=0 racket slog.rkt --no-banner --debug-dir out/reuse-o0 "$REUSE" >/dev/n
 # build, and stamp a reference mtime -- a rebuilt .O0.so would be newer than it.
 for f in build/*.O0.so; do [ -e "$f" ] && touch "${f%.O0.so}.so.building"; done
 sleep 1; touch out/reuse-stamp; sleep 1
-racket slog.rkt --no-banner --debug-dir out/reuse-ti "$REUSE" >/dev/null 2>&1   # tiered
+racket slog.rkt --no-banner --debug-dir out/reuse-ti "$REUSE" > out/reuse-ti.log 2>&1   # tiered
 reuse_ok=1
-# no .O0.so rebuilt after the stamp (all present ones are this program's)
-[ -n "$(find build -name '*.O0.so' -newer out/reuse-stamp -print -quit)" ] && reuse_ok=0
-# claim marker suppressed OUR -O2: none of this program's hashes got a <hash>.so.
-# (Scoped per-hash so a still-running background -O2 from an earlier test that
-# lands its own unrelated <hash>.so cannot trip this check.)
-for f in build/*.O0.so; do
-  [ -e "$f" ] || continue
-  [ -e "${f%.O0.so}.so" ] && reuse_ok=0
+# Check ONLY this program's own stratum hashes (from its fixpoint lines; stable
+# across opt levels).  build/ is shared and durably-detached -O2 builds from
+# earlier fixtures keep landing unrelated <hash>.so/.O0.so, so a build-wide glob
+# would false-fail.
+RHASHES="$(grep -oE '\(fixpoint [0-9]+ "[a-f0-9]+"' out/reuse-ti.log | grep -oE '[a-f0-9]{6,}' | sort -u)"
+[ -z "$RHASHES" ] && reuse_ok=0
+for h in $RHASHES; do
+  # -O0 reused, not rebuilt after the stamp
+  [ -n "$(find build -name "$h.O0.so" -newer out/reuse-stamp -print -quit)" ] && reuse_ok=0
+  # claim marker suppressed OUR -O2 for this stratum (no canonical <hash>.so)
+  [ -e "build/$h.so" ] && reuse_ok=0
 done
 if [ "$reuse_ok" = 1 ] && same_csvs out/reuse-o0 out/reuse-ti
 then ok "tiered-reuses-cached-O0-and-claim-suppresses-O2"

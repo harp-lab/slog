@@ -325,9 +325,9 @@
            (drain)])))
 
     (define (drive-stratum! sb tag)  ; poll one stratum to fixpoint; #t unless eof
-      (define o2 (sbuild-o2-path sb))
-      (define upgradeable? (and tiered? (eq? tag 'o0) o2))
-      (let poll ([swapped? #f])
+      (define upgrade (sbuild-upgrade sb))
+      (define upgradeable? (and tiered? (eq? tag 'o0) upgrade))
+      (let poll ([loaded 0])   ; # clusters currently loaded at -O2 (0 = all -O0)
         (define line (read-line out))
         (cond
           [(eof-object? line) #f]
@@ -366,20 +366,29 @@
                                  "out of memory: the run reached the memory cap "
                                  "(configure with SLOG_MEM_BYTES / SLOG_MEM_MAX).\n  ~a")
                                 line))])]
-             ;; -O2 is ready and we haven't swapped yet: get to a clean boundary,
-             ;; then hand the daemon the -O2 .so to hot-swap in.
-             [(and upgradeable? (not swapped?) (file-exists? o2))
+             ;; Granular O0->O2 (docs/fast-compile.md §14): at a clean iteration
+             ;; boundary, relink a best-available O0/O2 mix and hot-swap it in
+             ;; whenever more clusters have reached -O2.  Any mix is sound (the
+             ;; .o's are semantically identical); when all are -O2 the mix is the
+             ;; full -O2 build.  A mid-read pause first drives to a boundary (the
+             ;; only swap-safe point); the swap reuses beginStratum's twin
+             ;; re-registration exactly as the whole-.so swap did.
+             [upgradeable?
               (cond
                 [(regexp-match? #px"^\\(paused [^ ]+ \"[^\"]*\" [0-9]+ iter " line)
-                 (send-plugin o2)
-                 (eprintf "  [upgraded ~a to -O2]\n" (sbuild-hash sb))
-                 (poll #t)]
-                [else (send-plugin (force continue-boundary-so)) (poll #f)])]
-             [else (send-plugin (force continue-so)) (poll swapped?)])]
+                 (match-define (list mix n-o2 total) (upgrade loaded))
+                 (cond
+                   [mix
+                    (send-plugin mix)
+                    (eprintf "  [upgraded ~a: ~a/~a clusters -O2]\n" (sbuild-hash sb) n-o2 total)
+                    (poll n-o2)]
+                   [else (send-plugin (force continue-so)) (poll loaded)])]
+                [else (send-plugin (force continue-boundary-so)) (poll loaded)])]
+             [else (send-plugin (force continue-so)) (poll loaded)])]
           [(regexp-match? #px"^\\(error " line)
            (displayln line)
            (error (format "Daemon reported an error: ~a" line))]
-          [else (displayln line) (poll swapped?)])))
+          [else (displayln line) (poll loaded)])))
 
     ;; Consume the daemon's (sig NAME count checksum) lines up to (sig-end),
     ;; returning a hash NAME -> (count . checksum) (P1.3/P1.5).
