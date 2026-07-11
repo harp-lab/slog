@@ -105,6 +105,14 @@
           (not (primitive-cmp? name)))]
     [_ #f]))
 
+;; a planner-marked "old" join: $oldjoin wrapping a join clause (exact
+;; semi-naive, docs/incremental.md §6/§8).  Legal only at the planned level;
+;; operationalization strips the mark and lowers it to join_probe_old.
+(define (old-join-clause? cl)
+  (match cl
+    [`(syn ,_ $oldjoin ,inner) (join-clause? inner)]
+    [_ #f]))
+
 (define (let-clause? cl)
   (match cl
     [`(syn ,_ let ,(? var?) ,(? var?)) #t]
@@ -205,7 +213,8 @@
     ;; seeded-rule: a staged rule's seeded re-entry version (join-planning
     ;; plan-stratum) -- same clause grammar, full-index lowering downstream
     [`(syn ,_ ,(or 'rule 'seeded-rule) ,body ... --> ,head ...)
-     (and (andmap (lambda (cl) (or (guard-clause? cl) (let-clause? cl) (join-clause? cl)))
+     (and (andmap (lambda (cl) (or (guard-clause? cl) (let-clause? cl) (join-clause? cl)
+                                   (old-join-clause? cl)))
                   body)
           (andmap (lambda (cl) (or (let-clause? cl) (join-clause? cl)
                                    (tycheck-clause? cl)))
@@ -296,6 +305,9 @@
 (define (c-op? op)
   (match op
     [`(join ,(? var?) (,(? natural?) ..1) ,(? natural?) ,(? var?) ...) #t]
+    ;; exact semi-naive R_old join (docs/incremental.md §6/§8): a full index,
+    ;; K bound cols, then the SAME-ordering delta index to exclude against
+    [`(join-old ,(? var?) (,(? natural?) ..1) ,(? natural?) (,(? natural?) ..1) ,(? var?) ...) #t]
     ;; a semijoin filter: existence probe of a future clause's relation on
     ;; the K currently-bound columns (which the index orders first)
     [`(exists ,(? var?) (,(? natural?) ..1) ,(? natural?) ,(? var?) ..1) #t]

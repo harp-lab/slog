@@ -32,6 +32,45 @@
       ""
       (string-append s (repeat s (- n 1)))))
 
+;; ---- deterministic emit-local names + value-ref canonicalization (P2) -------
+;; For the per-.o cache (docs/fast-compile.md P2) a translation unit's generated
+;; text must be a pure function of its rules -- byte-reproducible across runs --
+;; so its .o can be content-addressed and reused.  Two sources of run-to-run
+;; noise are removed:
+;;  (1) emit-local names.  The C++ locals emit mints (index orderings, ReadTask
+;;      classes, temp vars) were (gensymb ...), whose random suffix + global
+;;      counter varied every run.  `elocal` replaces them with a per-TU
+;;      monotonic counter (reset per translation unit in write-cpp): same rules
+;;      -> same names.  Monotonic within a TU (never per-rule) so two rules'
+;;      locals cannot collide in a shared C++ scope.
+;;  (2) value-var references.  Every value flows as `v_<name>`, and the <name>s
+;;      carried in from earlier passes are gensym'd (run-varying).  Nothing else
+;;      in the emitted code begins with `v_`, and the interned-constant globals
+;;      (the ONLY cross-TU value symbols) have content-derived names, so
+;;      `canonicalize-vrefs` renames every OTHER `v_<name>` to `v_c<k>` in
+;;      first-occurrence order, leaving the constant globals (given) untouched.
+(define emit-local-counter (make-parameter (box 0)))
+(define (elocal prefix-sym)
+  (define b (emit-local-counter))
+  (define n (unbox b))
+  (set-box! b (add1 n))
+  (string->symbol (string-append (symbol->string prefix-sym) (number->string n))))
+
+(define (canonicalize-vrefs text const-names)
+  (define keep (list->set (map (lambda (g) (format "v_~a" g)) const-names)))
+  (define seen (make-hash))
+  (define counter (box 0))
+  (regexp-replace* #px"\\bv_[A-Za-z0-9_]+" text
+    (lambda (tok)
+      (cond
+        [(set-member? keep tok) tok]
+        [(hash-ref seen tok #f) => values]
+        [else
+         (define c (format "v_c~a" (unbox counter)))
+         (set-box! counter (add1 (unbox counter)))
+         (hash-set! seen tok c)
+         c]))))
+
 ;; Render a primitive call: _prim_NAME(db, v_a0, ...) -- nullary primitives
 ;; (the lattice constants (one)/(inf)/(top)) take only db.
 (define (prim-call f args)
@@ -62,7 +101,7 @@
 ;; abandoned with `ret`, the same return-semantics cmp guards have.  Absence is
 ;; not an error: no error fact, just a failed match against a virtual relation.
 (define (partial-prim-call x f args ret)
-  (define ok (gensymb 'ok))
+  (define ok (elocal 'ok))
   (define al (string-join (map (lambda (a) (format "v_~a" a)) args) ", "))
   (string-append
    (format "bool ~a = true;\n" ok)
@@ -77,7 +116,7 @@
 ;; merge_spec tag-checks its collection operands and fatals on a mistyped
 ;; word -- the cplus contract, not the row-abandon channel.
 (define (cjoin-call x spec a b)
-  (define sv (gensymb 'spec))
+  (define sv (elocal 'spec))
   (string-append
    (format "static const slog::LatSpec* ~a = slog::parseLatSpecToken(\"~a\");\n"
            sv (lat-spec-token spec))
@@ -137,7 +176,7 @@
       (define seeded-only (eq? 'seeded-only (car indx)))
       (define ind (if (or delta seeded-only) (cdr indx) indx))
       (define A (length ind))  ;; composite-key arity = ordering length
-      (define ordering (gensymb 'ord))
+      (define ordering (elocal 'ord))
       (define isstatic (if (and (equal? indx (car indices)) (not delta)) "true" "false"))
       (append
        (list
@@ -225,7 +264,7 @@
        (define delta (eq? 'delta (car indx)))
        (define ind (if delta (cdr indx) indx))
        (define A (length ind))
-       (define ordering (gensymb 'ord))
+       (define ordering (elocal 'ord))
        (define isstatic (if (and (equal? indx master) (not delta)) "true" "false"))
        (append
         (if delta
@@ -303,8 +342,8 @@
 
 ;; A member declaration + constructor lookup for one index.
 (define (index-member name member ind delta)
-  (define ord-name (gensymb 'ord))
-  (define rel-name (gensymb 'readrel))
+  (define ord-name (elocal 'ord))
+  (define rel-name (elocal 'readrel))
   (string-append "    "
                  (add-ord-decl ord-name ind)
                  (format "    slog::Relation* ~a = db->getRelation(\"~a\");\n" rel-name name)
@@ -314,13 +353,13 @@
 ;; Emit the ops of a rule body (after the driver), innermost continuation
 ;; last.  Each join op opens a nested continuation lambda; other ops are
 ;; straight-line statements.  `index-name-of` maps a join op to its member.
-(define (emit-ops ops index-name-of head-fun indent)
+(define (emit-ops ops index-name-of delta-name-of head-fun indent)
   (match ops
     ['() (head-fun indent)]
     [`(,(and op `(join ,name ,ind ,K ,ys ...)) . ,rest)
      (define A (length ys))
      (define free (drop ys K))
-     (define m (gensymb 'm))
+     (define m (elocal 'm))
      (define bind-free
        (string-join (for/list ([k (in-range K A)])
                       (format "u64 v_~a = ~a[~a];" (list-ref ys k) m k))
@@ -328,7 +367,7 @@
      (define inner
        (string-append
         (if (string=? bind-free "") "" ((emit-lines (+ indent 2)) bind-free))
-        (emit-ops rest index-name-of head-fun (+ indent 2))))
+        (emit-ops rest index-name-of delta-name-of head-fun (+ indent 2))))
      (if (= K 0)
          ;; no bound prefix: cartesian scan over every bucket of the index
          (string-append
@@ -346,6 +385,34 @@
                      A K (index-name-of op) key A m))
             inner
             ((emit-lines indent) "});"))))]
+    ;; JOIN against R_old = full - current delta (exact semi-naive, §6/§8): like
+    ;; `join`, but excludes matches present in the same-ordering delta index
+    [`(,(and op `(join-old ,name ,ind ,K ,dind ,ys ...)) . ,rest)
+     (define A (length ys))
+     (define m (elocal 'm))
+     (define bind-free
+       (string-join (for/list ([k (in-range K A)])
+                      (format "u64 v_~a = ~a[~a];" (list-ref ys k) m k))
+                    " "))
+     (define inner
+       (string-append
+        (if (string=? bind-free "") "" ((emit-lines (+ indent 2)) bind-free))
+        (emit-ops rest index-name-of delta-name-of head-fun (+ indent 2))))
+     (if (= K 0)
+         (string-append
+          ((emit-lines indent)
+           (format "slog::join_all_old<~a>(~a, ~a, [&](const std::array<u64,~a>& ~a) {"
+                   A (index-name-of op) (delta-name-of op) A m))
+          inner
+          ((emit-lines indent) "});"))
+         (let ([key (u64-array-lit (append (map (lambda (y) (format "v_~a" y)) (take ys K))
+                                           (make-list (- A K) "0")))])
+           (string-append
+            ((emit-lines indent)
+             (format "slog::join_probe_old<~a,~a>(~a, ~a, ~a, [&](const std::array<u64,~a>& ~a) {"
+                     A K (index-name-of op) (delta-name-of op) key A m))
+            inner
+            ((emit-lines indent) "});"))))]
     ;; a lattice body read: probe the payload map over the key columns; the
     ;; continuation binds the free keys plus the current merged value (last var)
     ;; a semijoin filter: one existence probe on the K bound columns; a
@@ -358,12 +425,12 @@
       ((emit-lines indent)
        (format "if (!slog::exists_probe<~a,~a>(~a, ~a)) return;"
                A K (index-name-of op) key))
-      (emit-ops rest index-name-of head-fun indent))]
+      (emit-ops rest index-name-of delta-name-of head-fun indent))]
     [`(,(and op `(join-lat ,name ,ind ,K ,ys ...)) . ,rest)
      (define KA (sub1 (length ys)))          ; key columns; last var is the value
      (define vvar (last ys))
-     (define m (gensymb 'm))
-     (define vparam (gensymb 'val))
+     (define m (elocal 'm))
+     (define vparam (elocal 'val))
      (define bind-free
        (string-join (append
                      (for/list ([k (in-range K KA)])
@@ -373,7 +440,7 @@
      (define inner
        (string-append
         ((emit-lines (+ indent 2)) bind-free)
-        (emit-ops rest index-name-of head-fun (+ indent 2))))
+        (emit-ops rest index-name-of delta-name-of head-fun (+ indent 2))))
      (if (= K 0)
          (string-append
           ((emit-lines indent)
@@ -392,7 +459,7 @@
     [`(,op . ,rest)
      (string-append
       ((emit-lines indent) (emit-straight-op op))
-      (emit-ops rest index-name-of head-fun indent))]))
+      (emit-ops rest index-name-of delta-name-of head-fun indent))]))
 
 ;; Straight-line (non-join) ops; `return` skips the current tuple.
 (define (emit-straight-op op)
@@ -406,7 +473,7 @@
     [`(eq ,x ,y) (format "if (v_~a != v_~a) return;" x y)]
     [`(neq ,x ,y) (format "if (v_~a == v_~a) return;" x y)]
     [`(cmp ,fn ,x ,y)
-     (define t (gensymb 'cmpr))
+     (define t (elocal 'cmpr))
      (string-append (format "u64 v_~a = _prim_~a(db, v_~a, v_~a);\n" t fn x y)
                     (prim-error-check t "return;") "\n"
                     (format "if (!v_~a) return;" t))]))
@@ -426,7 +493,7 @@
     [`(eq ,x ,y) (format "if (v_~a != v_~a) return true;" x y)]
     [`(neq ,x ,y) (format "if (v_~a == v_~a) return true;" x y)]
     [`(cmp ,fn ,x ,y)
-     (define t (gensymb 'cmpr))
+     (define t (elocal 'cmpr))
      (string-append (format "u64 v_~a = _prim_~a(db, v_~a, v_~a);\n" t fn x y)
                     (prim-error-check t "return true;") "\n"
                     (format "if (!v_~a) return true;" t))]))
@@ -529,10 +596,16 @@
   ;; name the index member for the driver probe, each body join, and each
   ;; semijoin filter's existence probe
   (define join-members
-    (for/list ([op (in-list body)] #:when (memq (car op) '(join join-lat exists)))
-      (cons op (gensymb (string->symbol (format "~aindex" (second op)))))))
+    (for/list ([op (in-list body)] #:when (memq (car op) '(join join-lat exists join-old)))
+      (cons op (elocal (string->symbol (format "~aindex" (second op)))))))
+  ;; a join-old op needs a SECOND member for the delta index it excludes against
+  (define join-old-delta-members
+    (for/list ([op (in-list body)] #:when (eq? (car op) 'join-old))
+      (cons op (elocal (string->symbol (format "~adelta" (second op)))))))
   (define (index-name-of op)
     (cdr (assq op join-members)))
+  (define (delta-name-of op)
+    (cdr (assq op join-old-delta-members)))
 
   (define driver-rel
     (match driver
@@ -554,7 +627,7 @@
               (string-prefix? (symbol->string driver-rel) "$"))
     (for ([op (in-list body)])
       (match op
-        [`(,(or 'join 'join-lat) ,jname ,_ 0 ,_ ...)
+        [`(,(or 'join 'join-lat 'join-old) ,jname ,_ 0 ,_ ...)
          #:when (and (set-member? dynamic-rels jname)
                      (not (set-member? warned-scans
                                        (cons (current-rule-loc) jname))))
@@ -595,12 +668,12 @@
       (for/fold ([h h]) ([t (in-list (cdr (third hop)))])
         (match t
           [`(struct ,n)
-           (if (hash-has-key? h n) h (hash-set h n (gensymb 'sid)))]
+           (if (hash-has-key? h n) h (hash-set h n (elocal 'sid)))]
           [_ h]))))
   (define sid-members-sorted
     (sort (hash->list sid-members) symbol<? #:key car))
 
-  (define task-name (gensymb 'ReadTask))
+  (define task-name (elocal 'ReadTask))
 
   ;; --- constructor body: look up head relations/indices and join indices
   (define ctor-body
@@ -641,7 +714,11 @@
             (for/list ([om (in-list join-members)])
               (match (car om)
                 [`(,(or 'join 'join-lat 'exists) ,name ,ind ,_ ...)
-                 (string-append (index-member name (cdr om) ind #f) "\n")])))
+                 (string-append (index-member name (cdr om) ind #f) "\n")]
+                [`(join-old ,name ,ind ,_ ,dind ,_ ...)
+                 (string-append
+                  (index-member name (cdr om) ind #f) "\n"
+                  (index-member name (delta-name-of (car om)) dind #t) "\n")])))
      (apply string-append
             (for/list ([p (in-list sid-members-sorted)])
               (format "    ~a = db->getRelation(\"~a\")->getStructId();\n"
@@ -690,7 +767,7 @@
   (define pipeline
     (match driver
       [`(,(or 'once 'seeded))
-       (emit-ops body index-name-of count+heads 4)]
+       (emit-ops body index-name-of delta-name-of count+heads 4)]
       [`(scan ,name ,xs ...)
        (string-append
         slice-ctx-setup
@@ -700,12 +777,12 @@
         (apply (emit-lines 6)
                (for/list ([x (in-list xs)] [n (in-naturals)])
                  (format "u64 v_~a = _t[~a];" x n)))
-        (emit-ops body index-name-of count+heads 6)
+        (emit-ops body index-name-of delta-name-of count+heads 6)
         ((emit-lines 4) "});"))]
       [`(probe ,name ,ind ,K ,ys ...)
        (define A (length ys))
        (define free (drop ys K))
-       (define m (gensymb 'm))
+       (define m (elocal 'm))
        (define key (u64-array-lit (append (map (lambda (y) (format "v_~a" y)) (take ys K))
                                           (make-list (- A K) "0"))))
        ;; the probe key is shared by all bucket tasks, so partition the
@@ -720,7 +797,7 @@
                  (for/list ([k (in-range K A)])
                    (format "u64 v_~a = ~a[~a];" (list-ref ys k) m k)))
           (if (string=? par-filter "") "" ((emit-lines 6) par-filter))
-          (emit-ops body index-name-of count+heads 6)))
+          (emit-ops body index-name-of delta-name-of count+heads 6)))
        (if (eq? slice-kind 'probe)
            (string-append
             slice-ctx-setup
@@ -788,7 +865,8 @@
    (if (eq? slice-kind 'probe) (format "  std::array<u64,~a> resume_key{};" probe-A) "")
    (if (eq? slice-kind 'probe) "  bool has_resume = false;" "")
    (apply string-append
-          (map (lambda (om) (format "  slog::Index** ~a;" (cdr om))) join-members))
+          (map (lambda (om) (format "  slog::Index** ~a;" (cdr om)))
+               (append join-members join-old-delta-members)))
    (apply string-append
           (map (lambda (p) (format "  u32 ~a;" (cdr p))) sid-members-sorted))
    (format "public:")
@@ -907,8 +985,9 @@
                              " SLOG_MPZ_TABLE_BYTES)\");\n")
                             g v g))]
                [(? inexact-real?) (format "  v_~a = float_encode(~a);\n" g v)]))))
-  (define rel-decls
-    (apply string-append (map add-rel-decl (append decls manifest-decls))))
+  ;; the interned-constant global names -- the only value symbols shared across
+  ;; TUs, so canonicalize-vrefs must leave them alone (P2)
+  (define const-names (for/list ([(v g) (in-hash constants)]) g))
   (define dynrel-meta
     (apply string-append
            (for/list ([rel (in-list (sort (set->list dynamic-rels)
@@ -920,6 +999,10 @@
   ;; slog_plugin's body, given the block that registers the read tasks (inline
   ;; for one TU; a sequence of part-function calls when split).
   (define (plugin-body register-reads)
+    ;; computed here (not eagerly) so its index-ordering elocals fall under the
+    ;; caller's per-TU emit-local-counter (P2 determinism)
+    (define rel-decls
+      (apply string-append (map add-rel-decl (append decls manifest-decls))))
     (string-append
      "extern \"C\" void slog_plugin(slog::Daemon* d)\n{\n"
      "  slog::Database* db = d->db();\n"
@@ -940,11 +1023,18 @@
      "  d->continueRun();\n"
      "}\n\n"))
 
+  ;; Each translation unit is emitted under a FRESH per-TU emit-local-counter
+  ;; (deterministic names) and then value-ref-canonicalized, so its text is a
+  ;; pure function of its rules -- byte-reproducible, hence content-addressable
+  ;; for the per-.o cache (P2).  `tu` wraps both.
+  (define (tu thunk) (canonicalize-vrefs (parameterize ([emit-local-counter (box 0)]) (thunk))
+                                         const-names))
   (cond
     ;; Single TU (the common case): read tasks emitted inline in slog_plugin.
     [(<= (length crules) chunk-size)
-     (string-append include-block const-defs "\n\n"
-                    (plugin-body (apply string-append (map emit-rule crules))))]
+     (tu (lambda ()
+           (string-append include-block const-defs "\n\n"
+                          (plugin-body (apply string-append (map emit-rule crules))))))]
     ;; Split: spine + part TUs (docs/fast-compile.md §6).
     [else
      (define chunks (chunk-list crules chunk-size))
@@ -959,14 +1049,16 @@
                 (format "  ~a(db, s);\n" (part-fn k)))))
      (define spine
        (cons ""
-             (string-append include-block const-defs "\n" fwd-decls "\n\n"
-                            (plugin-body calls))))
+             (tu (lambda ()
+                   (string-append include-block const-defs "\n" fwd-decls "\n\n"
+                                  (plugin-body calls))))))
      (define parts
        (for/list ([chunk (in-list chunks)] [k (in-naturals 1)])
          (cons (format "p~a" k)
-               (string-append include-block const-externs "\n\n"
-                              (format "void ~a(slog::Database* db, slog::Stratum* s)\n{\n"
-                                      (part-fn k))
-                              (apply string-append (map emit-rule chunk))
-                              "}\n\n"))))
+               (tu (lambda ()
+                     (string-append include-block const-externs "\n\n"
+                                    (format "void ~a(slog::Database* db, slog::Stratum* s)\n{\n"
+                                            (part-fn k))
+                                    (apply string-append (map emit-rule chunk))
+                                    "}\n\n"))))))
      (cons spine parts)]))

@@ -217,46 +217,39 @@
 
 ;; (id location text) per rule of a stratum, occurrence-disambiguated in a
 ;; deterministic (text-sorted) order so ids are stable across runs.
-(define (stratum-rule-metas stratum)
+(define (stratum-rule-metas stratum dynamic-rels)
   (define rules (sort (set->list (stratum-rules stratum)) string<? #:key rule-text))
   (define seen (make-hash))
   (for/list ([rule (in-list rules)])
     (define text (rule-text rule))
     (define occ (hash-ref seen text 0))
     (hash-set! seen text (add1 occ))
-    (list (rule-id-of text occ) (rule-location rule) text)))
+    ;; docs/incremental.md §6.4/§7A.7: a body relation lies in the head's SCC
+    ;; iff it is produced WITHIN this stratum (i.e. is dynamic), so a rule is
+    ;; recursive -- would bump `rec` rather than `nonrec` under DRed^c counting
+    ;; -- iff any of its body relations is dynamic.  The bit exists only
+    ;; implicitly today (via dynamic-rels membership at emit time); exposing it
+    ;; per rule now lets the incremental driver's routing/cone logic and M2's
+    ;; counter tagging read it straight off the manifest ("tag the IR once").
+    (define same-scc-body
+      (sort (set->list (set-intersect (rule-body-rels rule) dynamic-rels))
+            symbol<?))
+    (list (rule-id-of text occ) (rule-location rule) text
+          (pair? same-scc-body) same-scc-body)))
 
-;; Write build/<hash>.meta: this stratum's compile hash, DAG level (one stratum
-;; per level, in pipeline order), and its rules (id -> location + source text).
-;; Refreshed on every compile-job so a cached .so still gets a current manifest.
-(define (write-stratum-manifest proghash stratum)
-  (define meta
-    `(stratum-meta
-      (hash ,proghash)
-      (level ,(stratum-level stratum))
-      (rules
-       ,@(for/list ([m (in-list (stratum-rule-metas stratum))])
-           (match-define (list id loc text) m)
-           `(rule ,id ,loc ,text)))))
-  (call-with-atomic-output (fullpath (format "build/~a.meta" proghash))
-                           (lambda () (writeln meta))))
-
-;; -----------------------------------------------------------------------
-;; Back end: emit one stratum's C++ translation unit(s).
-;;
-;; Runs the per-stratum Racket passes (plan -> lower -> emit) and writes the
-;; generated source to build/.  Returns the list of .cpp paths making up the
-;; stratum (one for a small stratum; a spine + several parts for a large one,
-;; docs/fast-compile.md §6).  The .so is NOT built here -- compile-strata below
-;; schedules that on the parallel pool at the appropriate optimization level(s).
-
-(define (emit-stratum-cpp job)
-  (match-define (list proghash type-env stratum dbmanifest decomps) job)
+;; A stratum's augmented rule set (base rules + the error/oracle arm rules its
+;; residual checks require) and its dynamic-rels -- the relations produced
+;; WITHIN this stratum (head rels plus the decomp/oracle/seq side channels that
+;; re-derive from reloaded content at iteration 0).  Shared by the back end
+;; (emit-stratum-cpp) and the sidecar manifest (write-stratum-manifest) so a
+;; rule's recursive/non-recursive classification (docs/incremental.md §6.4) is
+;; computed one way.  Returns (values rules dynamic-rels).
+(define (stratum-rules+dynamic stratum type-env decomps)
+  (define base-rules (stratum-rules stratum))
   ;; a stratum whose rules carry residual type checks also gets the
   ;; error-wrapping rule (malformed_deduction -> error), delta-driven within
   ;; this stratum's fixpoint: malformed_deduction is marked dynamic since the
   ;; checks' failure paths grow it every iteration
-  (define base-rules (stratum-rules stratum))
   (define checked?
     (for/or ([rule (in-set base-rules)]) (rule-has-tychecks? rule)))
   ;; strata using a fallible prim also wire the runtime-error arms (docs/type-
@@ -315,6 +308,45 @@
     (for/fold ([acc oracle-dynamic-rels])
               ([occ (in-list '($seq_at $seq_atr))])
       (if (hash-has-key? (type-env-rels type-env) occ) (set-add acc occ) acc)))
+  (values rules dynamic-rels))
+
+;; Write build/<hash>.meta: this stratum's compile hash, DAG level (one stratum
+;; per level, in pipeline order), the relations it produces (dynamic-rels), and
+;; its rules (id -> location + source text + recursive bit + same-SCC body
+;; rels).  Refreshed on every compile-job so a cached .so still gets a current
+;; manifest.  No consumer parses this yet; the fields anticipate the incremental
+;; driver's per-segment cone/polarity metadata (docs/incremental.md §0.5, A7).
+(define (write-stratum-manifest proghash stratum type-env decomps)
+  (define-values (_rules dynamic-rels)
+    (stratum-rules+dynamic stratum type-env decomps))
+  (define meta
+    `(stratum-meta
+      (hash ,proghash)
+      (level ,(stratum-level stratum))
+      (dynamic-rels ,@(sort (set->list dynamic-rels) symbol<?))
+      (rules
+       ,@(for/list ([m (in-list (stratum-rule-metas stratum dynamic-rels))])
+           (match-define (list id loc text rec? same-scc) m)
+           `(rule ,id ,loc ,text (rec ,rec?) (same-scc-body ,@same-scc))))))
+  (call-with-atomic-output (fullpath (format "build/~a.meta" proghash))
+                           (lambda () (writeln meta))))
+
+;; -----------------------------------------------------------------------
+;; Back end: emit one stratum's C++ translation unit(s).
+;;
+;; Runs the per-stratum Racket passes (plan -> lower -> emit) and writes the
+;; generated source to build/.  Returns the list of .cpp paths making up the
+;; stratum (one for a small stratum; a spine + several parts for a large one,
+;; docs/fast-compile.md §6).  The .so is NOT built here -- compile-strata below
+;; schedules that on the parallel pool at the appropriate optimization level(s).
+
+(define (emit-stratum-cpp job)
+  (match-define (list proghash type-env stratum dbmanifest decomps) job)
+  ;; the augmented rule set (+ error/oracle arms) and the relations produced
+  ;; within this stratum, both from stratum-rules+dynamic -- shared with the
+  ;; sidecar manifest so recursive/non-recursive classification is derived once.
+  (define-values (rules dynamic-rels)
+    (stratum-rules+dynamic stratum type-env decomps))
   (match-define (cons planned rel-env+)
     (plan-all rules (type-env-rels type-env) dynamic-rels))
   (define cprog (lower-all planned rel-env+ decomps))
@@ -529,7 +561,7 @@
   (define strata
     (for/list ([job (in-list jobs)])
       (match-define (list proghash _te stratum _dm _dc) job)
-      (write-stratum-manifest proghash stratum)  ; sidecar, even for a cached .so
+      (write-stratum-manifest proghash stratum _te _dc)  ; sidecar, even for a cached .so
       (define o2so (fullpath (format "build/~a.so" proghash)))
       (define o0so (fullpath (format "build/~a.O0.so" proghash)))
       (cond

@@ -1,0 +1,25 @@
+;; Exact-once fire audit with MULTIPLE same-relation body clauses
+;; (docs/stats.md; docs/incremental.md §6/§8/§10): transitive closure by a
+;; SELF-join -- path(x,z) <-- path(x,y) path(y,z) -- so the recursive rule
+;; reads `path` in TWO body positions.  Exact semi-naive drives one delta
+;; variant per position and probes the position ORDERED AFTER the driver
+;; against R_old = FULL - current delta (join_probe_old), so each satisfying
+;; (path(x,y), path(y,z)) pair fires EXACTLY once -- not once per delta variant
+;; it appears in.  Before that fix a self-join over-fired (14 here fresh, 20 on
+;; a whole-DB reload delta); now fresh AND reload both hit the hand count below,
+;; which is what DRed^c counting will rely on.  stats-tests.sh asserts both.
+;;
+;; Hand verification on the 4-edge chain 1->2->3->4->5:
+;;   :14 facts rule -> fires once.
+;;   :15 copy rule (path x y <-- edge x y) -> one per edge = 4.
+;;   :16 self-join rule -> once per (path(x,y), path(y,z)) join pair.  path is
+;;   the full closure {(i,j): 1<=i<j<=5} (10 tuples); the pair count is
+;;   sum over the join key y of end(y)*start(y):
+;;     y=2: 1*3=3   y=3: 2*2=4   y=4: 3*1=3   (y=1,5 contribute 0)  = 10.
+
+table (edge int int)
+table (path int int)
+
+rule (edge 1 2) (edge 2 3) (edge 3 4) (edge 4 5)
+rule (path x y) <-- (edge x y)
+rule (path x z) <-- (path x y) (path y z)

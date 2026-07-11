@@ -102,6 +102,7 @@
   (define (dynamic? name)
     (or (set-member? dynamic-rels name) (set-member? temps name)))
   (define (temp? name) (set-member? temps name))
+  (define (lattice? name) (and (rel-lattice-spec rel-env name) #t))
 
   (define rel-env-box (box rel-env))
   (define (add-temp! name arity)
@@ -113,7 +114,7 @@
      (with-rule-context rule (lambda ()
       (for/fold ([acc acc]) ([staged (in-list (stage-rule rule add-temp!))])
         (match-define (cons staged-rule statics) staged)
-        (define versions (plan-rule-versions staged-rule dynamic? temp? statics))
+        (define versions (plan-rule-versions staged-rule dynamic? temp? lattice? statics))
         ;; SEEDED RE-ENTRY version (the staging-replay bug, 2026-07-10): a
         ;; staged rule with pruned (static) joins relies on this stratum's
         ;; own construction order -- statics' rows always land in FULL
@@ -148,7 +149,7 @@
                             [_ #f]))))])))
         (set-union acc versions
                     (if needs-seeded?
-                        (plan-rule-versions staged-rule dynamic? temp? '()
+                        (plan-rule-versions staged-rule dynamic? temp? lattice? '()
                                             #:seeded? #t)
                         (set))))))))
   (cons planned (unbox rel-env-box)))
@@ -302,7 +303,7 @@
 ;; -----------------------------------------------------------------------
 ;; 2 & 3. Scheduling and version generation for one staged rule.
 
-(define (plan-rule-versions rule dynamic? temp? [statics '()]
+(define (plan-rule-versions rule dynamic? temp? lattice? [statics '()]
                             #:seeded? [seeded? #f])
   (match rule
     [`(syn ,prov rule ,bodys ... --> ,heads ...)
@@ -343,7 +344,11 @@
                                                  (not (const-cl? cl))))
                                heads))
 
-     (define (make-version driver)
+     ;; `old-clauses` are the dynamic body joins this version must probe
+     ;; against R_old = FULL - current delta rather than FULL (exact
+     ;; semi-naive, docs/incremental.md §6/§8): they get wrapped with
+     ;; $oldjoin, which operationalization lowers to join_probe_old.
+     (define (make-version driver old-clauses)
        (define-values (body-schedule ground)
          (schedule-body driver joins computes+ guards const-vars rule))
        ;; every variable a head emits must be ground by now
@@ -356,30 +361,47 @@
                   (string-join (map symbol->string
                                     (sort (set->list missing) symbol<?)) ", ")
                   (strip-prov rule))))
-       `(syn ,prov ,(if seeded? 'seeded-rule 'rule) ,@const-lets ,@body-schedule
+       (define marked
+         (for/list ([cl (in-list body-schedule)])
+           (if (memq cl old-clauses)
+               `(syn ,(cadr cl) $oldjoin ,cl)
+               cl)))
+       `(syn ,prov ,(if seeded? 'seeded-rule 'rule) ,@const-lets ,@marked
              --> ,@head-rest))
 
      (define temp-joins (filter (lambda (cl) (temp? (join-rel cl))) driver-joins))
      (define dynamic-joins (filter (lambda (cl) (dynamic? (join-rel cl))) driver-joins))
-     (define drivers
+     ;; exact semi-naive applies the R_old/full split only when EVERY dynamic
+     ;; join is a table relation: lattice-valued recursion has its own
+     ;; change-splitting story (M7), so a rule with any dynamic lattice join
+     ;; keeps the current all-FULL behavior (no old-clauses marked).
+     (define exact-old?
+       (not (for/or ([cl (in-list dynamic-joins)]) (lattice? (join-rel cl)))))
+     ;; each version as (cons driver old-clauses)
+     (define driver+olds
        (cond
          ;; the seeded re-entry version (plan-stratum): ONE full-index
          ;; evaluation scheduled around the best-scoring join; no delta
          ;; position at all (operationalization keys off the seeded-rule
          ;; tag and lowers the first join like any other)
-         [seeded? (list (best-join joins const-vars computes guards))]
+         [seeded? (list (cons (best-join joins const-vars computes guards) '()))]
          ;; a temp join must drive (temps have no indices to probe), and its
          ;; delta subsumes its siblings' (they were emitted together)
-         [(pair? temp-joins) (list (car temp-joins))]
-         [(pair? dynamic-joins) dynamic-joins]
+         [(pair? temp-joins) (list (cons (car temp-joins) '()))]
+         ;; one delta-driven version per dynamic join; version i drives the
+         ;; i-th dynamic join and treats the ones ORDERED AFTER it as R_old,
+         ;; so each satisfying assignment fires in exactly one version
+         [(pair? dynamic-joins)
+          (for/list ([d (in-list dynamic-joins)] [i (in-naturals)])
+            (cons d (if exact-old? (drop dynamic-joins (add1 i)) '())))]
          ;; all joins read closed relations: one version, run once over the
          ;; reloaded database (pick the best-scoring driver)
          [(pair? joins)
-          (list (best-join joins const-vars computes guards))]
+          (list (cons (best-join joins const-vars computes guards) '()))]
          ;; no joins at all: a fact rule
-         [else (list #f)]))
+         [else (list (cons #f '()))]))
 
-     (for/set ([d (in-list drivers)]) (make-version d))]))
+     (for/set ([p (in-list driver+olds)]) (make-version (car p) (cdr p)))]))
 
 ;; Rewrite a join clause so no variable repeats, returning the clause and
 ;; the equality guards that restore the constraint.

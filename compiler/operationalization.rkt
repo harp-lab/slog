@@ -25,6 +25,7 @@
 (require "ir-shared.rkt")
 (require "primitives.rkt")    ; prim-partial? (letp lowering)
 (require "type-system.rkt")   ; rule-has-fallible-prims?, prim-error-arms
+(require sha)                 ; content-derived constant global names (P2)
 
 ;; The rule's "basename:line" (1-based), baked into any runtime-error
 ;; (error_spec ...) it reports.  Mirrors compile.rkt's rule-location; basename
@@ -79,6 +80,25 @@
 (define (rule-heads rule)
   (match rule
     [`(syn ,_ ,(or 'rule 'seeded-rule) ,bodys ... --> ,heads ...) heads]))
+
+;; The planner marks a dynamic body join ORDERED AFTER the delta driver (in the
+;; rule's fixed dynamic-clause order) with $oldjoin: exact semi-naive must probe
+;; it against R_old = FULL - current delta, not FULL, or an assignment whose
+;; premises are all new this round double-fires (docs/incremental.md §6/§8).
+;; Recover those positions (0-based over body JOIN clauses; the driver is 0 and
+;; is never marked) and strip the wrappers so the rest of the pass sees plain
+;; clauses.  Returns (values plain-bodys old-join-positions).
+(define (split-old-marks bodys)
+  (let loop ([cls bodys] [out '()] [jpos 0] [olds (set)])
+    (cond
+      [(null? cls) (values (reverse out) olds)]
+      [else
+       (match (car cls)
+         [`(syn ,_ $oldjoin ,inner)
+          (loop (cdr cls) (cons inner out) (add1 jpos) (set-add olds jpos))]
+         [cl
+          (loop (cdr cls) (cons cl out)
+                (if (join-cl? cl) (add1 jpos) jpos) olds)])])))
 
 ;; -----------------------------------------------------------------------
 ;; The pass driver.
@@ -212,6 +232,9 @@
   (define (op-refs op)
     (match op
       [`(join ,name ,ind ,_ ,_ ...) (list (cons name ind))]
+      ;; join-old's FULL index (the delta index it also references is never
+      ;; seeded-gated); record it so a live old-join keeps its full ordering
+      [`(join-old ,name ,ind ,_ ,_ ,_ ...) (list (cons name ind))]
       [`(join-lat ,name ,ind ,_ ,_ ...) (list (cons name ind))]
       [`(exists ,name ,ind ,_ ,_ ...) (list (cons name ind))]
       [`(mkstruct ,name ,ind ,_ ,_ ...) (list (cons name ind))]
@@ -231,6 +254,19 @@
 ;; generated code declares each g as a global and initializes it at load
 ;; time (interning strings, NaN-boxing numbers).
 
+;; Content-derived global name for an interned constant VALUE.  Was
+;; (gensymb 'const), which varied run to run and made the file-scope v_<name>
+;; symbol -- the cross-TU interface a .o exports/imports -- non-reproducible,
+;; blocking per-cluster .o caching (docs/fast-compile.md P2).  A 24-hex sha256 of
+;; the value's printed form: same value -> same name (the v->g map still dedups
+;; within a program), distinct values -> distinct name w.h.p.  All-alphanumeric
+;; after the `const` prefix (escape-id-for-C doubles `_`, so we avoid it).
+(define (const-global-name v)
+  (string->symbol
+   (string-append
+    "const"
+    (substring (bytes->hex-string (sha256 (string->bytes/utf-8 (format "~s" v)))) 0 24))))
+
 (define (globalize-constants rules)
   (for/fold ([acc (cons (hash) '())]
              #:result (cons (car acc) (reverse (cdr acc))))
@@ -243,7 +279,7 @@
                 ([cl (in-list cls)])
         (match cl
           [`(syn ,p let ,x (syn ,_ const ,v))
-           (define g (hash-ref constants v (lambda () (gensymb 'const))))
+           (define g (hash-ref constants v (lambda () (const-global-name v))))
            (values (hash-set constants v g)
                    (cons `(syn ,p let ,x ,g) out))]
           [_ (values constants (cons cl out))])))
@@ -379,7 +415,7 @@
 ;; a ground value becomes an equality check after the probe (lower-join).
 ;; Delta indices are ordinary full-width sets, so drivers are unrestricted.
 (define ((add-select-sets rel-env) rule ss)
-  (define bodys (rule-body rule))
+  (define-values (bodys old-positions) (split-old-marks (rule-body rule)))
   (define sj-filters (semijoin-filters bodys rel-env))
   ;; a seeded-rule has NO delta driver: its first join selects on the FULL
   ;; index like any other
@@ -399,14 +435,19 @@
        (define ss0
          (for/fold ([ss ss]) ([f (in-list (hash-ref sj-filters jpos '()))])
            (add-select-set ss (first f) (second f))))
+       (define selv (if lat-value-pos (set-remove sel lat-value-pos) sel))
        (define ss+
          (cond
            [(and first? (set-empty? sel)) ss0]                   ; delta scan
            [first? (add-select-set ss0 `(delta ,(join-rel cl)) sel)]
-           [else (add-select-set ss0 (join-rel cl)
-                                 (if lat-value-pos
-                                     (set-remove sel lat-value-pos)
-                                     sel))]))
+           [else
+            ;; an old join (R_old = full - delta) additionally needs a delta
+            ;; index of the SAME ordering as its full index for the membership
+            ;; exclusion, so join_probe_old can test a match directly
+            (let ([ss1 (add-select-set ss0 (join-rel cl) selv)])
+              (if (set-member? old-positions jpos)
+                  (add-select-set ss1 `(delta ,(join-rel cl)) selv)
+                  ss1))]))
        (values (set-union ground (clause-vars cl)) (add1 jpos) ss+)]
       [else
        (values (set-union ground (clause-out-vars cl)) jpos ss)])))
@@ -521,7 +562,13 @@
              (set->list (indices-of indices name stored)))
       (error 'operationalization "no master index for struct ~a in ~a" name who)))
 
-(define ((lower-rule rel-env indices) rule)
+(define ((lower-rule rel-env indices) rule0)
+  ;; strip the planner's $oldjoin marks up front and rebuild a plain rule, so
+  ;; cjoin-spec-env / semijoin-filters / body-splitting all see ordinary
+  ;; clauses; `old-positions` (0-based over body joins) drives join-old below.
+  (match-define `(syn ,rprov ,rtag ,rbodys0 ... --> ,rheads ...) rule0)
+  (define-values (plain-bodys old-positions) (split-old-marks rbodys0))
+  (define rule `(syn ,rprov ,rtag ,@plain-bodys --> ,@rheads))
   (define (rel-arity name)
     (rel-decl-arity (hash-ref rel-env name)))
   (define (stored-arity name)                      ; struct tuples carry an id
@@ -617,6 +664,27 @@
       [else
        (define ind (find-index indices name (stored-arity name) sel (strip-prov cl)))
        (list `(join ,name ,ind ,(set-count sel) ,@(map esc (order-tuple ind tup))))]))
+
+  ;; an OLD join (exact semi-naive, docs/incremental.md §6/§8): probe the full
+  ;; index like lower-join, but against R_old = full - current delta.  The full
+  ;; index `ind` and the delta index `dind` share an ordering (same sel), so at
+  ;; runtime a match in `ind` order tests directly against `dind`.  Old joins
+  ;; are never lattice (the planner excludes lattice recursion), so no lat path.
+  (define (lower-join-old cl ground)
+    (define name (join-rel cl))
+    (define tup (join-tuple cl))
+    (define sel
+      (for/set ([x (in-list tup)] [i (in-naturals)]
+                #:when (set-member? ground x))
+        i))
+    ;; full and delta indices MUST share an ordering (so a full-index match
+    ;; tests directly against the delta index).  find-index can return a
+    ;; prefix-compatible-but-different ordering when several exist, so pin the
+    ;; canonical index-for-selection ordering -- add-select-sets requisitioned
+    ;; exactly it for both the full (`name`) and the delta (`(delta name)`).
+    (define ord (index-for-selection sel (list->set (range (stored-arity name)))))
+    (list `(join-old ,name ,ord ,(set-count sel) ,ord
+                     ,@(map esc (order-tuple ord tup)))))
 
   ;; the driver: scan the raw delta, or probe the delta index
   (define (lower-driver cl ground)
@@ -746,9 +814,13 @@
            [(join-cl? (car cls))
             (define filter-ops
               (map lower-filter (hash-ref sj-filters jpos '())))
+            (define join-ops
+              (if (set-member? old-positions jpos)
+                  (lower-join-old (car cls) ground)
+                  (lower-join (car cls) ground)))
             (loop driver
                   (set-union ground (clause-vars (car cls)))
-                  (append (reverse (lower-join (car cls) ground))
+                  (append (reverse join-ops)
                           (reverse filter-ops)
                           ops)
                   (add1 jpos)

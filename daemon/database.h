@@ -3338,11 +3338,21 @@ public:
   {
     importDatabaseBIN(src_dir, false);
   }
-  void importDatabaseBIN(const std::string& src_dir, bool passthrough_input_heap)
+  // `rename` (opt-in) maps a SOURCE relation name to the destination name it
+  // imports into; any source relation absent from the map passes through under
+  // its own name (docs/incremental.md §0.9 hot-link name-map; db-merge.md
+  // rename/#:prefix conflict policy).  An empty map == today's by-name import.
+  void importDatabaseBIN(const std::string& src_dir, bool passthrough_input_heap,
+                         const std::unordered_map<std::string, std::string>& rename = {})
   {
     if (!std::filesystem::is_directory(src_dir))
       fatal("Import: no database directory at " + src_dir);
     externally_seeded = true;
+    // source name -> destination name (identity for relations not in `rename`)
+    const auto dest_name = [&](const std::string& s) -> const std::string& {
+      auto it = rename.find(s);
+      return it == rename.end() ? s : it->second;
+    };
 
     // Struct ids the dest already holds (the verbatim-loaded input heap), for
     // passthrough of trimmed same-lineage references.
@@ -3356,7 +3366,7 @@ public:
     // ---- schema reconciliation: validate everything, then create ----
     for (const auto& kv : scratch.relations)
     {
-      auto dit = relations.find(kv.first);
+      auto dit = relations.find(dest_name(kv.first));
       if (dit == relations.end())
 	continue;
       Relation* src = kv.second;
@@ -3376,14 +3386,14 @@ public:
     }
     for (const auto& kv : scratch.relations)
     {
-      if (relations.find(kv.first) != relations.end())
+      if (relations.find(dest_name(kv.first)) != relations.end())
 	continue;
       Relation* src = kv.second;
       if (src->getStructId() > 0)
-	addStruct(kv.first, src->getArity());
+	addStruct(dest_name(kv.first), src->getArity());
       else
-	addRelation(kv.first, src->getArity());
-      Relation* dst = relations[kv.first];
+	addRelation(dest_name(kv.first), src->getArity());
+      Relation* dst = relations[dest_name(kv.first)];
       if (src->isLattice())
 	dst->setLatticeFromSpec(src->latticeSpec(), cnode_arena);
       dst->ensureDefaultIndex();
@@ -3400,8 +3410,8 @@ public:
       Relation* src = kv.second;
       if (src->getStructId() == 0)
 	continue;
-      src_sid_to_dst[src->getStructId()] = relations[kv.first];
-      src_sid_name[src->getStructId()] = kv.first;
+      src_sid_to_dst[src->getStructId()] = relations[dest_name(kv.first)];
+      src_sid_name[src->getStructId()] = dest_name(kv.first);
       forEachNominal(src, [&](const u64* row)
       {
 	src_fields.emplace(row[0], std::vector<u64>(row, row + src->getArity()));
@@ -3416,7 +3426,7 @@ public:
 			 boost::hash<std::vector<u64>>>> dst_content;
     for (const auto& kv : scratch.relations)
     {
-      Relation* dst = relations[kv.first];
+      Relation* dst = relations[dest_name(kv.first)];
       if (dst->getStructId() == 0 || dst_content.count(dst))
 	continue;
       auto& cm = dst_content[dst];
@@ -3641,7 +3651,7 @@ public:
       Relation* src = kv.second;
       if (src->getStructId() > 0)
 	continue;
-      Relation* dst = relations[kv.first];
+      Relation* dst = relations[dest_name(kv.first)];
       const u16 A = src->getArity();
       u64 row[max_daemon_arity + 1];
       forEachNominal(src, [&](const u64* srow)

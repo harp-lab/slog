@@ -173,6 +173,52 @@ inline void join_all(Index** index, Cont&& k)
   }
 }
 
+// JOIN against R_old = FULL - current delta (docs/incremental.md §6/§8: exact
+// semi-naive).  For a dynamic body clause ordered AFTER the delta driver, a
+// plain full-index probe double-fires any assignment whose premises are ALL
+// new this round (it fires once per new premise, once per driving variant).
+// The fix: probe the full index exactly like join_probe, but skip every match
+// that is also in the relation's CURRENT delta -- so each assignment fires in
+// exactly one variant (the one driving its last-in-order new clause).  `delta`
+// is a delta index of the SAME ordering as `full`, so a full-index match `m`
+// (whose lead column equals the bound key's) tests directly, in the same
+// bucket.  At iteration 0 (reload: delta = whole DB) R_old is empty, so only
+// the no-old variant fires -- the reload double-count collapses to exact too.
+template <u16 A, u16 K, class Cont>
+inline void join_probe_old(Index** full, Index** delta,
+                           const std::array<u64, A>& key, Cont&& k)
+{
+  auto* fidx = static_cast<BTreeIndex<A>*>(full[buckethash(key[0])]);
+  auto* didx = static_cast<BTreeIndex<A>*>(delta[buckethash(key[0])]);
+  for (auto it = fidx->lower_bound(key); it != fidx->end(); ++it)
+  {
+    const std::array<u64, A>& m = *it;
+    for (u16 c = 0; c < K; ++c)
+      if (m[c] != key[c]) return;         // prefix gone => done (sorted order)
+    if (didx->contains(m)) continue;      // in the current delta => not R_old
+    k(m);
+  }
+}
+
+// JOIN (cartesian, no bound prefix) against R_old: join_all's every-bucket scan
+// with the same current-delta exclusion (a variable-disjoint dynamic clause
+// ordered after the driver).
+template <u16 A, class Cont>
+inline void join_all_old(Index** full, Index** delta, Cont&& k)
+{
+  for (u16 b = 0; b < bucket_count; ++b)
+  {
+    auto* fidx = static_cast<BTreeIndex<A>*>(full[b]);
+    for (auto it = fidx->begin(); it != fidx->end(); ++it)
+    {
+      const std::array<u64, A>& m = *it;
+      if (static_cast<BTreeIndex<A>*>(delta[buckethash(m[0])])->contains(m))
+        continue;
+      k(m);
+    }
+  }
+}
+
 // JOIN over a lattice (payload-map) index, bound key prefix: like join_probe
 // over the KA key columns, but each match additionally hands the continuation
 // the key's current merged value -- k(const std::array<u64,KA>& keys, u64 val).
