@@ -347,3 +347,44 @@ SIGHUP after `slog` returns (closing the window) can no longer take it down, so
 the -O2 builds reliably outlive the driver and land in the cache, up to their
 per-build `timeout`. (The prior code relied on a Racket subprocess merely not
 being killed by its parent, which does not survive a session HUP.)
+
+## 14. Content-addressed per-cluster `.o` cache (P2, 2026-07-10)
+
+The tiered work amortizes *re-runs* of an identical program; this makes
+*iterative edits and per-config sweeps* incremental for large strata, so one big
+mutually-recursive SCC no longer fully recompiles on every change. Three layers:
+
+**Byte-reproducible codegen (the prerequisite).** For a cluster's `.o` to be
+content-addressed and reused, its generated `.cpp` must be a pure function of its
+rules — identical across runs. Three sources of run-to-run noise were removed:
+(a) interned-constant global names are derived from the constant *value*
+(`operationalization.rkt` `const-global-name`), not a gensym — they are the only
+value symbols shared across TUs, so they must be stable; (b) emit-local names
+(index orderings, ReadTask classes, temps) come from a per-TU monotonic counter
+(`emit-cpp.rkt` `elocal`), not gensym; (c) every value reference `v_<name>` is
+renamed to positional `v_c<k>` (`canonicalize-vrefs`), constants excepted. The
+result is byte-identical modulo full-line `//` debug comments, which do not
+affect the object and are stripped before hashing.
+
+**Stable bucketed clusters.** A large stratum's crules are partitioned by
+`sha(crule's own canonicalized text) mod N`, `N` a power-of-2 ≈ `crules/48`. This
+is stable under unrelated edits: a changed rule moves only between its old and
+new bucket (`N` shifts only at power-of-2 boundaries). Each cluster's function is
+named `slog_rules_c<H>` where `H` hashes the cluster body, so an unchanged
+cluster keeps its identity across stratum versions / configs. Each cluster
+`extern`s only the constants **it** uses (not all), so editing one constant does
+not perturb every cluster.
+
+**Per-`.o` content cache + relink.** `compile-one` compiles each TU `.cpp` to a
+`.o` in `build/o/`, keyed by comment-stripped content + opt + daemon-header
+fingerprint; a cache hit skips clang. The `.o`s are linked into the stratum
+`.so` (one `ld`, few dlopens — loading stays coarse). On an edit the stratum
+`.so` cache misses (its hash changed) but most cluster `.o`s hit, so only the 1–2
+touched clusters recompile and the (cheap) spine relinks. Measured: editing one
+rule in a 200-rule split stratum recompiled 5 of 17 `.o`s (the edited rule's
+old+new bucket + the two strata's spines); the rest were cache hits.
+
+Applies to the eager `-O0`/foreground paths (`compile-one`); the detached
+background `-O2` batch still compiles `.cpp`→`.so` directly (a follow-up could
+route it through the same `.o` cache). The `build/o/` cache is not yet GC'd —
+`rm -rf build/o` to reclaim; content-addressing makes stale entries inert.
