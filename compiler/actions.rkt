@@ -29,6 +29,28 @@
 (require "utils.rkt")
 (require sha)
 
+;; Shared value encoder for tuple-carrying actions (add/del/stage/lookup):
+;; strings/symbols intern, small ints NaN-box, bignums normalize through the
+;; daemon's keystone, floats encode.  Values are baked as literals -- the
+;; path-only protocol has no argument channel.
+(define (encode-val who v)
+  (cond
+    [(string? v) (format "str_encode(db, \"~a\")" (escape-c-string-literal v))]
+    [(exact-integer? v)
+     (if (and (>= v (- (expt 2 31))) (< v (expt 2 31)))
+         (format "s32_encode(~a)" v)
+         (format "db->encodeIntLiteral(\"~a\")" v))]
+    [(real? v) (format "float_encode(~a)" (exact->inexact v))]
+    [(symbol? v) (format "str_encode(db, \"~a\")" (escape-c-string-literal (symbol->string v)))]
+    [else (error 'action-so "unsupported ~a value: ~a" who v)]))
+
+;; A C++ initializer list of encoded tuples: {{...}, {...}, ...}
+(define (encode-tuples who tuples)
+  (string-join
+   (for/list ([t (in-list tuples)])
+     (format "{ ~a }" (string-join (for/list ([v (in-list t)]) (encode-val who v)) ", ")))
+   ", "))
+
 (define (action-body spec)
   (match spec
     [`(open ,db-name)
@@ -85,40 +107,19 @@
     ;; lookup.  Used to apply a saved db's `edits` on load so replay propagates
     ;; the change forward.
     [`(add-tuple ,rel ,vals ...)
-     (define enc
-       (for/list ([v (in-list vals)])
-         (cond
-           [(string? v) (format "str_encode(db, \"~a\")" v)]
-           [(exact-integer? v)
-            ;; bignum literals intern via the normalization keystone (§14.2)
-            (if (and (>= v (- (expt 2 31))) (< v (expt 2 31)))
-                (format "s32_encode(~a)" v)
-                (format "db->encodeIntLiteral(\"~a\")" v))]
-           [(real? v) (format "float_encode(~a)" (exact->inexact v))]
-           [(symbol? v) (format "str_encode(db, \"~a\")" v)]
-           [else (error 'action-so "unsupported add-tuple value: ~a" v)])))
      (string-append
       "  slog::Database* db = d->db();\n"
-      (format "  std::vector<u64> t = { ~a };\n" (string-join enc ", "))
+      (format "  std::vector<u64> t = { ~a };\n"
+              (string-join (for/list ([v (in-list vals)]) (encode-val 'add-tuple v)) ", "))
       (format "  d->addTuple(\"~a\", t);\n" rel))]
     ;; Retract one tuple (docs/incremental.md §0.6, B2): the version-rebuild
     ;; half of clear-and-rerun; the driver clears + re-runs the cone after.
     ;; Same value encoding as add-tuple.  Replies (deleted REL 0|1).
     [`(del-tuple ,rel ,vals ...)
-     (define enc
-       (for/list ([v (in-list vals)])
-         (cond
-           [(string? v) (format "str_encode(db, \"~a\")" v)]
-           [(exact-integer? v)
-            (if (and (>= v (- (expt 2 31))) (< v (expt 2 31)))
-                (format "s32_encode(~a)" v)
-                (format "db->encodeIntLiteral(\"~a\")" v))]
-           [(real? v) (format "float_encode(~a)" (exact->inexact v))]
-           [(symbol? v) (format "str_encode(db, \"~a\")" v)]
-           [else (error 'action-so "unsupported del-tuple value: ~a" v)])))
      (string-append
       "  slog::Database* db = d->db();\n"
-      (format "  std::vector<u64> t = { ~a };\n" (string-join enc ", "))
+      (format "  std::vector<u64> t = { ~a };\n"
+              (string-join (for/list ([v (in-list vals)]) (encode-val 'del-tuple v)) ", "))
       (format "  d->delTuple(\"~a\", t);\n" rel))]
     ;; Empty one relation's latest version, registrations kept (§0.5 mode 2/
     ;; B2): sent for each cone-written relation before the cone re-push.
@@ -128,21 +129,52 @@
     ;; 0.B5/B6 exact-once): the delta-entry re-push's iteration-0 delta.
     ;; Same value encoding as add-tuple.
     [`(stage-tuple ,rel ,vals ...)
-     (define enc
-       (for/list ([v (in-list vals)])
-         (cond
-           [(string? v) (format "str_encode(db, \"~a\")" v)]
-           [(exact-integer? v)
-            (if (and (>= v (- (expt 2 31))) (< v (expt 2 31)))
-                (format "s32_encode(~a)" v)
-                (format "db->encodeIntLiteral(\"~a\")" v))]
-           [(real? v) (format "float_encode(~a)" (exact->inexact v))]
-           [(symbol? v) (format "str_encode(db, \"~a\")" v)]
-           [else (error 'action-so "unsupported stage-tuple value: ~a" v)])))
      (string-append
       "  slog::Database* db = d->db();\n"
-      (format "  std::vector<u64> t = { ~a };\n" (string-join enc ", "))
+      (format "  std::vector<u64> t = { ~a };\n"
+              (string-join (for/list ([v (in-list vals)]) (encode-val 'stage-tuple v)) ", "))
       (format "  d->stageTuple(\"~a\", t);\n" rel))]
+    ;; ---- the 0.C1 batch actions (docs/incremental.md §0.3 transport 1) ----
+    ;; Multi-tuple inline batches, values baked as literals.  `pos` is the
+    ;; anchor: -1 = the latest version (tip), else the version current at
+    ;; that pipeline position (apply-only -- the session driver owns
+    ;; propagation).  Reply (added REL n) / (deleted REL nfound).
+    [`(add-batch ,rel ,pos (,tuples ...))
+     (string-append
+      "  slog::Database* db = d->db();\n"
+      (format "  std::vector<std::vector<u64>> ts = { ~a };\n"
+              (encode-tuples 'add-batch tuples))
+      (format "  d->addBatchAt(\"~a\", ~a, ts);\n" rel pos))]
+    [`(del-batch ,rel ,pos (,tuples ...))
+     (string-append
+      "  slog::Database* db = d->db();\n"
+      (format "  std::vector<std::vector<u64>> ts = { ~a };\n"
+              (encode-tuples 'del-batch tuples))
+      (format "  d->delBatchAt(\"~a\", ~a, ts);\n" rel pos))]
+    ;; Multi-tuple staging (0.B5's exact-once path, one plugin per flush).
+    [`(stage-batch ,rel (,tuples ...))
+     (string-append
+      "  slog::Database* db = d->db();\n"
+      (format "  std::vector<std::vector<u64>> ts = { ~a };\n"
+              (encode-tuples 'stage-batch tuples))
+      (format "  d->stageBatch(\"~a\", ts);\n" rel))]
+    ;; Positional re-entry arm (0.C): the NEXT stratum push binds and
+    ;; restages the P-environment instead of the latest.
+    [`(bind-at ,pos)
+     (format "  d->bindAt(~a);\n" pos)]
+    ;; Positional clear + inheritance-boundary refresh (0.C, the anchored
+    ;; clear-and-rerun's primitives).
+    [`(clear-rel-at ,rel ,pos)
+     (format "  d->clearRelationAt(\"~a\", ~a);\n" rel pos)]
+    [`(refresh-version ,rel ,ord)
+     (format "  d->refreshVersion(\"~a\", ~a);\n" rel ord)]
+    ;; Import a mini bin-database as a bulk batch payload (§0.3 transport 2),
+    ;; with an optional source->dest name-map.  Tip-anchored.
+    [`(import-delta ,dir (,renames ...))
+     (format "  d->importDelta(\"~a\", {~a});\n" dir
+             (string-join (for/list ([r (in-list renames)])
+                            (format "{\"~a\", \"~a\"}" (first r) (second r)))
+                          ", "))]
     ;; Segment boundary (docs/incremental.md §0.4-§0.5, B0): announce the
     ;; relation names the upcoming program segment writes, so the daemon
     ;; rebinds each already-bound one to a NEW physical version (full copy of
@@ -185,21 +217,11 @@
     ;; X appeared yet between pauses" repeats the SAME query, compiled once.
     ;; Read-only, so it is safe against a suspended snapshot.
     [`(lookup ,rel ,vals ...)
-     (define enc
-       (for/list ([v (in-list vals)])
-         (cond
-           [(string? v) (format "str_encode(db, \"~a\")" (escape-c-string-literal v))]
-           [(exact-integer? v)
-            (if (and (>= v (- (expt 2 31))) (< v (expt 2 31)))
-                (format "s32_encode(~a)" v)
-                (format "db->encodeIntLiteral(\"~a\")" v))]
-           [(real? v) (format "float_encode(~a)" (exact->inexact v))]
-           [(symbol? v) (format "str_encode(db, \"~a\")" (escape-c-string-literal (symbol->string v)))]
-           [else (error 'action-so "unsupported lookup value: ~a" v)])))
      (string-append
       "  slog::Database* db = d->db();\n"
       (format "  slog::Relation* r = db->getRelation(\"~a\");\n" rel)
-      (format "  u64 q[] = { ~a };\n" (string-join enc ", "))
+      (format "  u64 q[] = { ~a };\n"
+              (string-join (for/list ([v (in-list vals)]) (encode-val 'lookup v)) ", "))
       "  const size_t QN = sizeof(q) / sizeof(q[0]);\n"
       "  bool found = false;\n"
       "  if (r) slog::Database::forEachNominal(r, [&](const u64* row) {\n"
@@ -209,6 +231,23 @@
       "  });\n"
       (format "  d->emit(std::string(\"(found ~a \") + (found ? \"1\" : \"0\") + \")\");\n"
               rel))]
+    ;; Versioned point-query (docs/incremental.md §0.4, 0.C1): the same
+    ;; prefix probe against the version of `rel` current at position P.
+    [`(lookup-at ,rel ,pos ,vals ...)
+     (string-append
+      "  slog::Database* db = d->db();\n"
+      (format "  slog::Relation* r = db->getRelationAt(\"~a\", ~a);\n" rel pos)
+      (format "  u64 q[] = { ~a };\n"
+              (string-join (for/list ([v (in-list vals)]) (encode-val 'lookup-at v)) ", "))
+      "  const size_t QN = sizeof(q) / sizeof(q[0]);\n"
+      "  bool found = false;\n"
+      "  if (r) slog::Database::forEachNominal(r, [&](const u64* row) {\n"
+      "    bool eq = true;\n"
+      "    for (size_t c = 0; c < QN; ++c) if (row[c] != q[c]) { eq = false; break; }\n"
+      "    if (eq) found = true;\n"
+      "  });\n"
+      (format "  d->emit(std::string(\"(found-at ~a ~a \") + (found ? \"1\" : \"0\") + \")\");\n"
+              rel pos))]
     ;; Dump every tuple of `rel` (rendered like a CSV value) as one
     ;; (dumprow <value>) line, terminated by (dumpdone <n>).  Read-only, so it
     ;; is safe against a suspended snapshot; used by the driver's error-fact

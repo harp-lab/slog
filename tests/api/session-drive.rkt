@@ -40,6 +40,7 @@
     [(list "open" db) `(open ,db)]
     [(list "run" prog) `(run ,prog)]
     [(list "pipeline") `(pipeline)]
+    [(list "recipe") `(recipe)]
     [(list "sizes") `(sizes)]
     [(list "schema") `(schema)]
     [(list "flush") `(flush)]
@@ -58,10 +59,23 @@
      `(del-tuple ,rel ,@(map num-or-str vals))]
     [(list "batch+" arg)
      (match-define (cons rel vals) (string-split arg ","))
-     `(batch + ,(string->symbol rel) ,(map num-or-str vals))]
+     `(batch + tip ,(string->symbol rel) ,(map num-or-str vals))]
     [(list "batch-" arg)
      (match-define (cons rel vals) (string-split arg ","))
-     `(batch - ,(string->symbol rel) ,(map num-or-str vals))]
+     `(batch - tip ,(string->symbol rel) ,(map num-or-str vals))]
+    ;; anchored batches (0.C): abatch+:P,rel,v,..  -- anchor at position P
+    [(list "abatch+" arg)
+     (match-define (list* p rel vals) (string-split arg ","))
+     `(batch + ,(string->number p) ,(string->symbol rel) ,(map num-or-str vals))]
+    [(list "abatch-" arg)
+     (match-define (list* p rel vals) (string-split arg ","))
+     `(batch - ,(string->number p) ,(string->symbol rel) ,(map num-or-str vals))]
+    ;; bulk bin-db payload (0.C1): import-delta:DIR[,SRC=DST...]
+    [(list "import-delta" arg)
+     (match-define (cons dir renames) (string-split arg ","))
+     `(import-delta ,dir ,(for/list ([r (in-list renames)])
+                            (match-define (list a b) (string-split r "="))
+                            (list (string->symbol a) (string->symbol b))))]
     [(list "reenter" rel) `(reenter ,(string->symbol rel))]
     [(list "rerun" rel) `(rerun ,(string->symbol rel))]
     [_ (error 'session-drive "unrecognized op: ~a" s)]))
@@ -84,7 +98,10 @@
     (match op
       [`(open ,db) (session-open! s db)]
       [`(run ,prog) (session-run! s prog)]
-      [`(batch ,sign ,rel ,tuple) (session-batch! s sign rel tuple)]
+      [`(batch ,sign tip ,rel ,tuple) (session-batch! s sign rel tuple)]
+      [`(batch ,sign ,anchor ,rel ,tuple)
+       (session-batch! s sign rel tuple #:at anchor)]
+      [`(import-delta ,dir ,renames) (session-import-delta! s dir renames)]
       [`(flush) (session-flush! s)]
       [`(add-tuple ,rel ,vals ...)
        (session-action! s `(add-tuple ,rel ,@vals))]
@@ -93,6 +110,7 @@
       [`(reenter ,rel) (session-reenter! s rel)]
       [`(rerun ,rel) (session-rerun! s rel)]
       [`(pipeline) (session-action! s `(pipeline) echo-one-line)]
+      [`(recipe) (writeln (session-recipe s))]
       [`(sizes-at ,p) (session-action! s `(sizes-at ,p) echo-one-line)]
       [`(dump-rel ,rel) (session-action! s `(dump-rel ,rel)
                                          (echo-until #px"^\\(dumpdone "))]

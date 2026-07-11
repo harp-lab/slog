@@ -1,0 +1,9 @@
+;; Session fixture (docs/incremental.md 0.C4, the bulk path): edge starts
+;; empty and arrives as a frozen bin-db payload via import-delta -- 3000
+;; rows, far past the inline-transport ceiling.  node keeps the downstream
+;; cone linear so the test stays fast.
+
+table (edge int int)
+table (node int)
+
+rule (edge X Y) --> (node X)

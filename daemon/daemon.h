@@ -72,6 +72,11 @@ private:
   // whole run can be driven under a pathological budget (the byte-identical
   // suspend test) without recompiling any plugin.
   RunBudget default_budget;
+  // Pending positional re-entry (docs/incremental.md §0.5, 0.C): set by a
+  // (bind-at P) action, consumed by the NEXT fresh beginStratum -- that
+  // stratum restages and binds the P-environment instead of the latest;
+  // push() resets the database's bind position after registration.
+  s64 pending_bind_pos = -1;
 
   static u64 envU64(const char* name, u64 fallback)
   {
@@ -204,12 +209,32 @@ public:
            "suspended; continue to fixpoint first\")");
       return nullptr;
     }
-    if (needs_reload)
+    if (pending_bind_pos >= 0)
+    {
+      // Positional re-entry (0.C): restage the P-environment as the coming
+      // stratum's iteration-0 delta and resolve its registrations there.
+      // needs_reload stays armed -- the next NORMAL push still restages
+      // the latest environment as usual.
+      database->reloadInsertBatchesAt((u32)pending_bind_pos);
+      database->setBindPosition(pending_bind_pos);
+      pending_bind_pos = -1;
+    }
+    else if (needs_reload)
     {
       database->reloadInsertBatches();
       needs_reload = false;
     }
     return new Stratum(name);
+  }
+
+  // Arm the next fresh beginStratum to bind at pipeline position P
+  // (docs/incremental.md §0.5, 0.C): the driver sends this immediately
+  // before re-pushing a cached stratum .so of an earlier pipeline segment,
+  // so its getRelation registrations resolve through P's environment.
+  void bindAt(u32 pos)
+  {
+    if (refuseIfSuspended("bind-at")) return;
+    pending_bind_pos = (s64)pos;
   }
 
   // Delta-entry variant (docs/incremental.md §0.5 mode 3, 0.B5): NO reload
@@ -348,6 +373,111 @@ public:
     needs_reload = true;
   }
 
+  // Positional clear (0.C): empty the version of `rel` current at pipeline
+  // position P -- the anchored clear-and-rerun's per-version clear.
+  void clearRelationAt(const std::string& rel, u32 pos)
+  {
+    if (refuseIfSuspended("clear-rel-at")) return;
+    slog::Relation* r = database->getRelationAt(rel, pos);
+    if (!r) { emit(std::string("(error \"clear-rel-at: no version of ") + rel + "\")"); return; }
+    r->clearContents();
+  }
+
+  // Re-materialise an inheritance boundary (0.C): version `ordinal` of
+  // `rel` := a fresh copy of version ordinal-1 (contents + re-seeded
+  // intern allocators).  Sent by the driver's anchored suffix walk for
+  // each later binding of an affected relation, before re-running the
+  // segment that wrote it.  Replies (refreshed-version REL ORD 0|1).
+  void refreshVersion(const std::string& rel, u32 ordinal)
+  {
+    if (refuseIfSuspended("refresh-version")) return;
+    const bool ok = database->refreshVersion(rel, ordinal);
+    emit(std::string("(refreshed-version ") + rel + " " + std::to_string(ordinal)
+         + " " + (ok ? "1" : "0") + ")");
+  }
+
+  // Batch applies (0.C, the C1 actions' backend).  `pos < 0` = the latest
+  // version (tip batches); otherwise the version current at position P
+  // (anchored batches -- apply-only: the driver owns propagation).
+  // Plain tables only, as del-tuple: lattice keys have no tuple-retraction
+  // semantics and struct rows are interned derivations, not inputs.
+  void addBatchAt(const std::string& rel, s64 pos,
+                  const std::vector<std::vector<u64>>& ts)
+  {
+    if (refuseIfSuspended("add-batch")) return;
+    slog::Relation* r = (pos < 0) ? database->getRelation(rel)
+                                  : database->getRelationAt(rel, (u32)pos);
+    if (!r) { emit(std::string("(error \"add-batch: no relation ") + rel + "\")"); return; }
+    if (r->isLattice() || r->getStructId() > 0)
+    {
+      emit(std::string("(error \"add-batch: ") + rel
+           + " is a lattice/struct relation; batch inputs, not derivations\")");
+      return;
+    }
+    for (const auto& t : ts)
+      r->insertTupleAllIndices(t.data());
+    if (pos < 0)
+      needs_reload = true;
+    emit(std::string("(added ") + rel + " " + std::to_string(ts.size()) + ")");
+  }
+
+  void delBatchAt(const std::string& rel, s64 pos,
+                  const std::vector<std::vector<u64>>& ts)
+  {
+    if (refuseIfSuspended("del-batch")) return;
+    slog::Relation* r = (pos < 0) ? database->getRelation(rel)
+                                  : database->getRelationAt(rel, (u32)pos);
+    if (!r) { emit(std::string("(error \"del-batch: no relation ") + rel + "\")"); return; }
+    if (r->isLattice() || r->getStructId() > 0)
+    {
+      emit(std::string("(error \"del-batch: ") + rel
+           + " is a lattice/struct relation; batch inputs, not derivations\")");
+      return;
+    }
+    const u32 found = r->removeTuples(ts);
+    if (pos < 0)
+      needs_reload = true;
+    emit(std::string("(deleted ") + rel + " " + std::to_string(found) + ")");
+  }
+
+  // Multi-tuple staging (0.C): the delta-entry flush's batch enters the
+  // pending send-shards in one action -- same exact-once path as
+  // stageTuple, one plugin instead of one per tuple.
+  void stageBatch(const std::string& rel,
+                  const std::vector<std::vector<u64>>& ts)
+  {
+    if (refuseIfSuspended("stage-batch")) return;
+    slog::Relation* r = database->getRelation(rel);
+    if (!r) { emit(std::string("(error \"stage-batch: no relation ") + rel + "\")"); return; }
+    InsertBatch* b = new InsertBatch();
+    for (const auto& t : ts)
+    {
+      if (b->usage + t.size() > batch_size_max)
+      {
+        r->sendBatch(b);
+        b = new InsertBatch();
+      }
+      for (size_t i = 0; i < t.size(); ++i)
+        b->data[b->usage + i] = t[i];
+      b->usage += (u32)t.size();
+    }
+    r->sendBatch(b);
+  }
+
+  // Import a mini bin-database as a bulk batch payload (0.C1, transport 2
+  // of §0.3): importDatabaseBIN with an optional name-map -- the first
+  // real caller of its rename parameter (the D4 seam).  Tip-anchored:
+  // merges into the LATEST versions; anchored bin payloads arrive with
+  // the recipe protocol.
+  void importDelta(const std::string& dir,
+                   const std::unordered_map<std::string, std::string>& name_map)
+  {
+    if (refuseIfSuspended("import-delta")) return;
+    database->importDatabaseBIN(dir + "/", false, name_map);
+    database->advancePosition();   // boundary event (§0.4/B0), as in open
+    needs_reload = true;
+  }
+
   // Replace / refresh a relation from disk -- mutates its indices in place, so
   // also refused while suspended (it would corrupt a parked stratum's delta).
   void loadRelation(const std::string& db_name, const std::string& rel)
@@ -404,6 +534,9 @@ public:
     for (size_t i = 0; i < next_unrun && i < pipeline.size(); ++i)
       if (pipeline[i]->name == s->name)
         pipeline[i]->clearForUpgrade();
+    // Registration is over: resolution returns to the latest environment
+    // (a positional bind-at covers exactly one beginStratum..push window).
+    database->setBindPosition(-1);
     s->scc_id = (u32)pipeline.size();
     // A fresh stratum is a boundary event (docs/incremental.md §0.4/B0): it
     // occupied the current version-environment position while registering

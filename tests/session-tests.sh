@@ -33,6 +33,13 @@ expect_re() { # name expected-regex file
     echo "FAIL $1 (no match for '$2' in $3)"; FAIL=$((FAIL+1))
   fi
 }
+expect_not() { # name unexpected-substring file
+  if grep -qF "$2" "$3"; then
+    echo "FAIL $1 (unexpected '$2' in $3)"; FAIL=$((FAIL+1))
+  else
+    echo "PASS $1"; PASS=$((PASS+1))
+  fi
+}
 
 # Tests compile at -O0 (fast, no background -O2/hot-swap; session-drive.rkt
 # has no upgrade logic).  Correctness is optimization-independent.
@@ -126,7 +133,7 @@ timeout 600 racket tests/api/session-drive.rkt \
   run:tests/session/cone.slog run:tests/session/seg-bright.slog \
   add-tuple:color,8 reenter:color \
   > out/sess-b1g.log 2>&1
-expect "b1-rebound-guard" "latest-env re-entry is unsound here" out/sess-b1g.log
+expect "b1-rebound-guard" "tip re-entry is unsound here" out/sess-b1g.log
 
 # --- B2: deletions + clear-and-rerun ---------------------------------------
 # Plain deletion: retract edge (2 3), clear-and-rerun cone(edge) -- path
@@ -242,6 +249,153 @@ expect "b5-closure-exact" "(dumpdone 21)" out/sess-b5.log
 # appear.
 expect_re "b6-exact-once-base" '"base.slog:9"[[:space:]]+"all:edge"[[:space:]]+1\b' "out/sess-b5-csv/\$stat_fires.csv"
 expect_re "b6-exact-once-rec"  '"base.slog:14"[[:space:]]+"all:edge"[[:space:]]+3\b' "out/sess-b5-csv/\$stat_fires.csv"
+
+# --- 0.C: anchored batches (back-insertion) --------------------------------
+# An add anchored INSIDE segment 1's version (position 1, edge@v0): the
+# anchored walk applies it to v0, re-runs segment 1's path stratum
+# positionally, refreshes both inheritance boundaries, and re-runs
+# segment 2 -- the OLD environment shows the back-inserted state
+# (edge 4 / path 10 at position 2) and the tip closes to C(6,2) = 15,
+# content-equal to the from-scratch run with the edge in segment 1.
+rm -rf out/sess-c-anchored-csv out/sess-c-oracle-csv
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/session/base.slog run:tests/session/seg2.slog \
+  abatch+:1,edge,0,1 flush \
+  sizes-at:2 dump-rel:path write-csv:out/sess-c-anchored-csv \
+  > out/sess-c-add.log 2>&1
+expect    "c-anchored-route" "(route anchored edge 1 3)" out/sess-c-add.log
+expect_re "c-anchored-old"   '\(sizes-at 2 .*\(edge 4\).*\(path 10\)' out/sess-c-add.log
+expect    "c-anchored-tip"   "(dumpdone 15)" out/sess-c-add.log
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/session/base01.slog run:tests/session/seg2.slog \
+  write-csv:out/sess-c-oracle-csv \
+  > out/sess-c-oracle.log 2>&1
+for rel in edge path; do
+  if diff <(sort "out/sess-c-anchored-csv/$rel.csv" 2>/dev/null) \
+          <(sort "out/sess-c-oracle-csv/$rel.csv" 2>/dev/null) >/dev/null 2>&1; then
+    echo "PASS c-anchored-oracle-$rel"; PASS=$((PASS+1))
+  else
+    echo "FAIL c-anchored-oracle-$rel (back-inserted session != from-scratch)"; FAIL=$((FAIL+1))
+  fi
+done
+
+# anchored DELETION: edge (2 3) removed from segment 1's version -- the
+# old environment shrinks (edge 2 / path 2) and the tip rebuilds to the
+# 4-path closure over {1-2, 3-4, 4-5}
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/session/base.slog run:tests/session/seg2.slog \
+  abatch-:1,edge,2,3 flush \
+  sizes-at:2 dump-rel:path \
+  > out/sess-c-del.log 2>&1
+expect    "c-adel-applied" "(deleted edge 1)" out/sess-c-del.log
+expect_re "c-adel-old"     '\(sizes-at 2 .*\(edge 2\).*\(path 2\)' out/sess-c-del.log
+expect    "c-adel-tip"     "(dumpdone 4)" out/sess-c-del.log
+
+# a rebuilt boundary RE-APPLIES the logged tip batch: tip flush adds
+# edge (5 6) (delta route), then the anchored walk refreshes edge@v1
+# (wiping it) and the log restores it -- the 21-path closure over the
+# 0..6 chain holds ONLY if the re-application happened
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/session/base.slog run:tests/session/seg2.slog \
+  batch+:edge,5,6 flush \
+  abatch+:1,edge,0,1 flush \
+  dump-rel:path recipe \
+  > out/sess-c-reapply.log 2>&1
+expect "c-reapply-tip"    "(dumpdone 21)" out/sess-c-reapply.log
+# the recipe carries both batches at ordinal anchors (§0.4: never raw
+# positions) alongside the run steps
+expect "c-recipe-run"     '(run "tests/session/base.slog")' out/sess-c-reapply.log
+expect "c-recipe-tipb"    "(batch edge (v 1) ((5 6)) ())" out/sess-c-reapply.log
+expect "c-recipe-anchb"   "(batch edge (v 0) ((0 1)) ())" out/sess-c-reapply.log
+
+# log collapse (§0.2): an add flushed and then deleted at the same
+# version leaves NO trace in the recipe
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/session/base.slog \
+  batch+:edge,9,9 flush \
+  batch-:edge,9,9 flush \
+  recipe dump-rel:path \
+  > out/sess-c-collapse.log 2>&1
+expect     "c-collapse-content" "(dumpdone 6)" out/sess-c-collapse.log
+expect_not "c-collapse-recipe"  "(9 9)" out/sess-c-collapse.log
+
+# --- 0.C1: import-delta (bulk bin payload, transport 2) ---------------------
+# a mini bin-db payload merges at the tip and its targets' cones re-run;
+# the name-map (edge2 -> edge) is the D4 rename parameter's first caller
+rm -rf data/sess_cpay data/sess_cpay2
+timeout 600 racket slog.rkt --no-banner --out-db sess_cpay tests/session/payload.slog \
+  > out/sess-cpay.log 2>&1
+timeout 600 racket slog.rkt --no-banner --out-db sess_cpay2 tests/session/payload2.slog \
+  > out/sess-cpay2.log 2>&1
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/session/base.slog \
+  import-delta:data/sess_cpay \
+  dump-rel:path \
+  > out/sess-c-imp.log 2>&1
+expect "c-import-cone"   "(import-delta data/sess_cpay 1)" out/sess-c-imp.log
+expect "c-import-result" "(dumpdone 9)" out/sess-c-imp.log
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/session/base.slog \
+  import-delta:data/sess_cpay2,edge2=edge \
+  dump-rel:path \
+  > out/sess-c-impmap.log 2>&1
+expect "c-import-mapped" "(dumpdone 9)" out/sess-c-impmap.log
+
+# --- 0.C4: the inline-transport ceiling --------------------------------------
+# past the threshold the driver refuses inline batches, pointing at the
+# bin-payload path (threshold shrunk via env for the test)
+SLOG_INLINE_MAX=2 timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/session/base.slog \
+  batch+:edge,50,51 batch+:edge,51,52 batch+:edge,52,53 flush \
+  > out/sess-c-limit.log 2>&1
+expect "c-inline-limit" "exceeds 2: write a bin database" out/sess-c-limit.log
+
+# --- 0.C4: the bulk path (fact stream -> freezer -> import-delta) -----------
+# 3000 edges -- far past the inline ceiling -- enter as a frozen mini
+# bin-db (the documented external-producer stream, docs/freeze.md §3) and
+# merge in one import; the linear downstream cone re-runs once.
+rm -rf out/sess-c-bulk-db
+{
+  echo '(table edge 2)'
+  for i in $(seq 100 3099); do echo "(edge $i $((i+1)))"; done
+} > out/sess-c-bulk.facts
+timeout 600 racket -e '
+(require "compiler/tools.rkt" racket/file)
+(run-freezer "out/sess-c-bulk-db" (file->string "out/sess-c-bulk.facts"))
+(displayln "frozen-ok")' > out/sess-c-bulk.log 2>&1
+expect "c4-freeze" "frozen-ok" out/sess-c-bulk.log
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/session/bulk.slog \
+  import-delta:out/sess-c-bulk-db \
+  dump-rel:node \
+  > out/sess-c-bulkimp.log 2>&1
+expect "c4-bulk-cone"   "(import-delta out/sess-c-bulk-db 1)" out/sess-c-bulkimp.log
+expect "c4-bulk-result" "(dumpdone 3000)" out/sess-c-bulkimp.log
+
+# --- 0.C2: recipe (de)serialisers + digest -----------------------------------
+timeout 300 racket -e '
+(require "compiler/dbmeta.rkt" racket/file)
+(define r1 `(slog-recipe (run "a.slog") (batch edge (v 0) ((1 2)) ())))
+(define r2 `(slog-recipe (run "a.slog") (batch edge (v 1) ((1 2)) ())))
+(write-recipe "out" r1)
+(unless (equal? (read-recipe "out") r1) (error (quote roundtrip)))
+(when (equal? (recipe-digest r1) (recipe-digest r2)) (error (quote digest)))
+(displayln "recipe-roundtrip-ok")
+;; C5: payload externalisation into delta.<k>/ + relative reference
+(make-directory* "out/c5-payload") (make-directory* "out/c5-layer")
+(call-with-output-file "out/c5-payload/x.bin" #:exists (quote replace)
+  (lambda (o) (write-bytes #"abc" o)))
+(define r3 (externalize-recipe-payloads
+            `(slog-recipe (run "a.slog") (import-delta "out/c5-payload" ()))
+            "out/c5-layer"))
+(unless (equal? r3 `(slog-recipe (run "a.slog") (import-delta (delta 0) ())))
+  (error (quote externalize) "~s" r3))
+(unless (file-exists? "out/c5-layer/delta.0/x.bin") (error (quote payload-copy)))
+(unless (equal? (recipe-payload-dir "out/c5-layer" `(delta 0)) "out/c5-layer/delta.0")
+  (error (quote payload-resolve)))
+(displayln "recipe-placement-ok")' > out/sess-c-recipe.log 2>&1
+expect "c2-roundtrip" "recipe-roundtrip-ok" out/sess-c-recipe.log
+expect "c5-placement" "recipe-placement-ok" out/sess-c-recipe.log
 
 echo
 echo "$PASS passed, $FAIL failed"

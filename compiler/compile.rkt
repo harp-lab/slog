@@ -369,11 +369,20 @@
           (hash-update! kinds r (lambda (s) (set-add s 'neg)) (set))))
       (for/list ([r (in-list (sort (hash-keys kinds) symbol<?))])
         `(,r ,@(sort (set->list (hash-ref kinds r)) symbol<?)))))
+  ;; pure rule heads, WITHOUT the diagnostic side channels dynamic-rels
+  ;; carries (error arms, $seq_*, malformed_deduction, oracle tables): the
+  ;; anchored-replay walk (0.C, compiler/session.rkt) propagates its
+  ;; affected set through these -- side channels would make every stratum
+  ;; look affected by every other
+  (define heads
+    (for/fold ([acc (set)]) ([rule (in-set (stratum-rules stratum))])
+      (set-union acc (rule-head-rels rule))))
   (define meta
     `(stratum-meta
       (hash ,proghash)
       (level ,(stratum-level stratum))
       (dynamic-rels ,@(sort (set->list dynamic-rels) symbol<?))
+      (heads ,@(sort (set->list heads) symbol<?))
       (reads ,@reads)
       (rules
        ,@(for/list ([m (in-list rule-metas)])
@@ -391,15 +400,18 @@
 ;; write lands in the predecessor version in place; final fixpoints are
 ;; unchanged, only versioned addressing loses precision for that name).
 (define (stratum-meta-dynamic-rels proghash)
-  (define-values (dyn _reads) (read-stratum-meta proghash))
+  (define-values (dyn _reads _heads) (read-stratum-meta proghash))
   dyn)
 
-;; Both manifest halves at once: (values dynamic-rels reads) where reads is
-;; the ((REL KIND ...) ...) polarity entries -- the session driver's cone
-;; input (compiler/session.rkt).
+;; The manifest fields the session driver consumes: (values dynamic-rels
+;; reads heads) -- reads is the ((REL KIND ...) ...) polarity entries
+;; (cone input), heads the pure rule heads (the anchored walk's affected
+;; propagation; side-channel-free).  Metas regenerate on every compile
+;; job, so a missing `heads` (a stale pre-0.C meta) degrades to '() only
+;; transiently.
 (define (read-stratum-meta proghash)
   (define p (fullpath (format "build/~a.meta" proghash)))
-  (with-handlers ([exn:fail? (lambda (_) (values '() '()))])
+  (with-handlers ([exn:fail? (lambda (_) (values '() '() '()))])
     (match (call-with-input-file p read)
       [`(stratum-meta ,fields ...)
        (values (match (assq 'dynamic-rels fields)
@@ -407,8 +419,11 @@
                  [_ '()])
                (match (assq 'reads fields)
                  [`(reads ,entries ...) entries]
+                 [_ '()])
+               (match (assq 'heads fields)
+                 [`(heads ,rels ...) rels]
                  [_ '()]))]
-      [_ (values '() '())])))
+      [_ (values '() '() '())])))
 
 ;; -----------------------------------------------------------------------
 ;; Back end: emit one stratum's C++ translation unit(s).

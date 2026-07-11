@@ -58,7 +58,13 @@
          read-edited-signature-file
          read-edits
          append-edit!
-         db-has-edits?)
+         db-has-edits?
+         write-recipe          ; the session recipe (incremental 0.C2)
+         read-recipe
+         db-has-recipe?
+         recipe-digest
+         externalize-recipe-payloads   ; payload placement (0.C5)
+         recipe-payload-dir)
 
 (require "tools.rkt")            ; compiler-sources-fingerprint, call-with-atomic-output
 (require "params.rkt")           ; semijoin-filters-enabled (result-affecting)
@@ -320,6 +326,92 @@
                   [(list (? string? k) (? string? v)) (hash-set h k v)]
                   [_ (meta-fail "malformed prog.sexpr source entry: ~s" p)])))]
        [other (meta-fail "malformed prog.sexpr in ~a: ~s" db-dir other)])]))
+
+;; ---------------------------------------------------------------------------
+;; recipe -- the session's pipeline steps + anchored batches
+;; (docs/incremental.md §0.10, 0.C2).
+;; ---------------------------------------------------------------------------
+;;
+;; A session = an ordered list of steps (open/run/import-delta; renames,
+;; drops, and links join with 0.D) plus signed batches anchored at
+;; (relation, version-ordinal) -- ordinals, never raw pipeline positions,
+;; so the anchors survive recompiles (§0.4).  Stored as
+;;   (slog-recipe
+;;     (open DB) | (run PROG) | (import-delta DIR ((X Z) ...))
+;;     (batch REL (v ORD) ((v ...) ...) ((v ...) ...))   ; adds, dels
+;;     ...)
+;; The batch entries are the COLLAPSED log (§0.2): same-point add/delete
+;; pairs are already absent.  Consumed by 0.E's delta-layer save/load;
+;; produced live by compiler/session.rkt's session-recipe.
+
+(define (recipe-path db-dir) (build-path db-dir "recipe"))
+(define (db-has-recipe? db-dir) (file-exists? (recipe-path db-dir)))
+
+(define (write-recipe db-dir recipe)
+  (match recipe
+    [`(slog-recipe ,_ ...) (void)]
+    [other (meta-fail "not a recipe: ~s" other)])
+  (call-with-atomic-output
+   (path->string (recipe-path db-dir))
+   (lambda () (parameterize ([print-graph #f]) (write recipe)))))
+
+(define (read-recipe db-dir)
+  (define path (recipe-path db-dir))
+  (cond
+    [(not (file-exists? path)) #f]
+    [else
+     (match (call-with-input-file path read)
+       [(and r `(slog-recipe ,_ ...)) r]
+       [other (meta-fail "malformed recipe in ~a: ~s" db-dir other)])]))
+
+;; Digest of a recipe's semantic content (the db-chain-edits-digest of the
+;; session world): covers step order, anchors, and inline payloads
+;; verbatim; a bin payload (import-delta) contributes its directory's
+;; content digest (names + bytes, the root-stamp machinery) so editing a
+;; payload in place surfaces as a digest change, with the bare path as the
+;; fallback for an unreadable/absent directory.
+(define (recipe-digest recipe)
+  (match-define `(slog-recipe ,steps ...) recipe)
+  (define resolved
+    (for/list ([st (in-list steps)])
+      (match st
+        [`(import-delta ,dir ,renames)
+         `(import-delta ,(with-handlers ([exn:fail? (lambda (_) dir)])
+                           (dir-content-digest dir))
+                        ,renames)]
+        [_ st])))
+  (substring (bytes->hex-string
+              (sha256 (string->bytes/utf-8 (format "~s" resolved))))
+             0 16))
+
+;; Payload placement (0.C5): copy each import-delta payload database into
+;; the saving layer's delta.<k>/ and rewrite its step to the RELATIVE
+;; reference (import-delta (delta k) renames) -- the layer owns its
+;; payloads (ancestors immutable, the chain self-contained); the load side
+;; (0.E2) joins the layer dir back on when replaying.  Returns the
+;; rewritten recipe; k assignment is step-ordered, so re-externalising a
+;; regenerated session is deterministic.
+(define (externalize-recipe-payloads recipe layer-dir)
+  (match-define `(slog-recipe ,steps ...) recipe)
+  (define k (box 0))
+  `(slog-recipe
+    ,@(for/list ([st (in-list steps)])
+        (match st
+          [`(import-delta ,(? string? dir) ,renames)
+           (define i (unbox k))
+           (set-box! k (add1 i))
+           (define dst (build-path layer-dir (format "delta.~a" i)))
+           (when (directory-exists? dst) (delete-directory/files dst))
+           (copy-directory/files dir dst)
+           `(import-delta (delta ,i) ,renames)]
+          [_ st]))))
+
+;; The load-side inverse: resolve a step's (delta k) payload reference
+;; against its layer directory.
+(define (recipe-payload-dir layer-dir ref)
+  (match ref
+    [`(delta ,k) (path->string (build-path layer-dir (format "delta.~a" k)))]
+    [(? string? dir) dir]))
 
 ;; ---------------------------------------------------------------------------
 ;; edits -- ordered EDB mutations applied at a layer's boundary on load (§12).

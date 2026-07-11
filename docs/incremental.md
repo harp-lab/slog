@@ -413,7 +413,7 @@ Secondary/join indices are kept only for versions that live strata read and
 are rebuildable on demand; disk spill for cold versions is a flagged later
 optimisation, not a Phase 0 concern.
 
-#### 0.5.1 0.B as built (2026-07-11): version substrate, re-entry modes, routing, delta-entry
+#### 0.5.1 0.B+0.C as built (2026-07-11): version substrate, re-entry modes, routing, delta-entry, anchors
 
 What shipped, and the decisions the design left open:
 
@@ -607,6 +607,77 @@ What shipped, and the decisions the design left open:
   exact O(change) counts — a double-staged batch would double the
   once-variant fires and the pinned counts could not appear. This is the
   discipline M0's counters inherit (§0.3, §8).
+- **0.C — anchored batches, the session log, and the recipe (same day).**
+  The piece 0.B's guards refused toward, now built:
+  - **C0, the positional machinery.** The run loops (finalize/reorg/
+    buffers/accounting/orphan-restore) walk the whole VERSION REGISTRY,
+    not just the latest environment -- closed versions cost a few
+    empty-vector checks per iteration, and a positionally re-entered
+    stratum's old-version reads/writes participate exactly like current
+    ones. `(bind-at P)` arms one beginStratum..push window: the reload
+    runs positionally (`reloadInsertBatchesAt` restages the
+    P-environment -- each name resolved at P -- leaving later versions
+    untouched; `needs_reload` stays armed for the next normal push) and
+    registrations resolve through P. `refreshVersion(rel, ord)`
+    re-materialises an inheritance boundary: clear, re-copy the
+    predecessor, and RE-SEED the intern allocators from it -- without the
+    re-seed, re-derivation downstream of a rebuilt predecessor mints ids
+    the old copy already handed out (cross-version collision).
+  - **C1 actions**: `(add-batch REL P ((v…)…))` / `(del-batch …)`
+    (multi-tuple, one plugin per batch; P = -1 for the tip, else the
+    version current at P; apply-only -- the driver owns propagation;
+    lattice/struct targets refused), `(stage-batch …)` (the exact-once
+    staging path, batched), `(bind-at P)`, `(clear-rel-at REL P)`,
+    `(refresh-version REL ORD)`, `(lookup-at REL P v…)`, and
+    `(import-delta DIR ((X Z)…))` -- the first real caller of
+    importDatabaseBIN's rename map (the D4 seam), tip-anchored, advancing
+    the position counter like open.
+  - **C3, the anchored walk** (`compiler/session.rkt`). Anchors resolve
+    against the live chains: an anchor at the LATEST version routes
+    through the tip rule (delta/reenter/rerun, unchanged); an older
+    version takes the walk -- apply the batch to the anchored version in
+    place, then replay the pipeline suffix over the edited history.  Two
+    passes: (1) forward over strata by position, growing the affected set
+    through manifest HEADS -- a new `.meta` field, pure rule heads,
+    because `dynamic-rels`' diagnostic side channels would make every
+    stratum affected by every other -- with a stratum re-running iff it
+    reads OR heads an affected relation; (2) position-ordered events,
+    bindings < batch re-applies < strata at equal positions: an affected
+    relation's binding at/after the anchor rebuilds (ordinal 0 clears,
+    ordinal k>0 refreshes -- the anchored version itself is exempt, its
+    rebuild IS the batch apply), logged batches at a rebuilt version
+    re-apply right after its rebuild (span semantics: a batch anchored in
+    a version belongs to the whole span, so it re-applies at the
+    version's binding, not its wall-clock arrival), and re-run strata go
+    bind-at + re-push.  Multiple anchored groups walk separately in
+    ascending anchor order (simple over clever; they compose).  Deleting
+    an independently re-derivable row keeps the replay-deletion caveat.
+  - **The session log** (`session-applied`): per-(relation,
+    version-binding) signed tuple sets with live same-point collapse --
+    an add flushed and later deleted at the same version vanishes from
+    the log entirely (§0.2's "absent from any subsequent save", tested);
+    the walk's re-application draws from exactly this log, which is what
+    makes rebuilt boundaries keep their batches.
+  - **C2, the recipe.** `session-recipe` = the ordered open/run/
+    import-delta steps + the collapsed batch entries anchored as
+    `(batch REL (v ORDINAL) adds dels)` -- ordinals resolved against the
+    live chains at serialisation, never raw positions (§0.4 stability).
+    dbmeta.rkt gains `write-recipe`/`read-recipe`/`db-has-recipe?` and
+    `recipe-digest` (covers step order, anchors, inline payloads
+    verbatim, and bin payloads by directory content digest).  0.E1 wires
+    it into the layer save.
+  - **C4+C5.** The inline transport refuses > `inline-batch-max` (2048,
+    env-overridable) tuples per (anchor, relation) per flush, pointing at
+    the bulk door: a fact stream (docs/freeze.md §3, the external-
+    producer contract) -> `slog-freeze` -> mini bin-db ->
+    `session-import-delta!` (tested at 3000 rows).
+    `externalize-recipe-payloads` copies payload dirs into a saving
+    layer's `delta.<k>/` and rewrites their steps to relative
+    `(delta k)` references; `recipe-payload-dir` is the load-side
+    inverse.
+  - **Guarded holes:** anchored replay across an import-delta step
+    refuses (the walk cannot re-order an import; 0.E2's recipe rebuild
+    owns it), as do anchors preceding every version of their relation.
 - **Known imprecisions, accepted for B0:** un-anchored `add-tuple` and all
   imports mutate the *current tip* in place (a batch/link as its own
   version event arrives with 0.C/0.D); during a chain load, a layer's
@@ -1832,7 +1903,10 @@ SHIPPED 2026-07-11 — all eight items done; see §0.8.1 for as-built decisions.
   pinned fire-audit counts of a delta flush), load-
   bearing at M0 (§0.3, §8).
 
-**0.C — Batch protocol, anchors & the session recipe (§0.2–§0.4).**
+**0.C — Batch protocol, anchors & the session recipe (§0.2–§0.4).
+SHIPPED 2026-07-11 — see §0.5.1 for as-built decisions (anchored walk,
+positional machinery, heads manifest field, log collapse); C2's save/load
+wiring lands with 0.E as planned.**
 
 - *C1 — actions.* `(add-batch REL @P ((v…)…))`, `(del-batch REL @P …)`
   (multi-tuple add-tuple generalisation in actions.rkt, plus the anchor);

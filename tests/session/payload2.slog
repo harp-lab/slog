@@ -1,0 +1,6 @@
+;; import-delta payload with a foreign relation name -- the session maps
+;; edge2 -> edge on import (the D4 name-map's first real caller).
+
+table (edge2 int int)
+
+rule (edge2 5 6) (edge2 6 7)

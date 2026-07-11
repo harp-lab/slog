@@ -945,6 +945,41 @@ public:
     return true;
   }
 
+  // Multi-tuple retraction (docs/incremental.md 0.C batch actions): ONE
+  // dump-filter-rebuild for the whole set, not one per tuple.  Returns how
+  // many of the given tuples were present.
+  u32 removeTuples(const std::vector<std::vector<u64>>& ts)
+  {
+    auto ordptr = getAnyIndex();
+    if (ordptr == nullptr || ts.empty())
+      return 0;
+    const std::vector<u16>& ord = *ordptr;
+    std::vector<u16> rewrite_ord(ord.size(), 0);
+    for (u16 i = 0; i < ord.size(); ++i)
+      rewrite_ord[ord[i]] = i;
+    std::set<std::vector<u64>> drop(ts.begin(), ts.end());
+    std::vector<u64> kept;
+    u32 found = 0;
+    Index** buckets = getIndex(ord, false);
+    for (u16 b = 0; b < bucket_count; ++b)
+      buckets[b]->forEach([&](const u64* r)
+      {
+	std::vector<u64> row(arity);
+	for (u16 c = 0; c < arity; ++c)
+	  row[c] = r[rewrite_ord[c]];
+	if (drop.count(row))
+	  ++found;
+	else
+	  kept.insert(kept.end(), row.begin(), row.end());
+      });
+    if (found == 0)
+      return 0;
+    clearContents();
+    for (size_t i = 0; i < kept.size(); i += arity)
+      insertTupleAllIndices(kept.data() + i);
+    return found;
+  }
+
   // Drop every tuple while KEEPING the index registrations (contrast
   // clearAllIndices, which removes the indices themselves): empties each
   // index bucket, the pending delta, and the send shards.  Used to refresh
@@ -1755,10 +1790,17 @@ public:
   // Union every relation's per-thread send buffers into its delta for the next
   // iteration.  Single-threaded: called from a barrier completion (or before
   // the workers start), once all producers for the phase have finished.
+  //
+  // The run loops walk the whole VERSION REGISTRY, not just the latest
+  // environment (docs/incremental.md 0.C): a positionally re-entered
+  // stratum (bind-at) reads and writes OLD versions, which must finalize/
+  // reorg/account exactly like current ones.  Closed versions carry empty
+  // shards and deltas, so their per-iteration cost is a few empty-vector
+  // checks.
   void finalizeAll()
   {
-    for (const auto& kv : relations)
-      registerLatestAnyRec(kv.second->finalizeBatches());
+    for (Relation* r : rel_registry)
+      registerLatestAnyRec(r->finalizeBatches());
   }
 
   // Rebuild every relation's bucketized delta views (Stage B).  Single-threaded
@@ -1767,15 +1809,15 @@ public:
   // Each thread reorgs its own slice into its own buffers (parallel, race-free).
   void reorgAll(u32 tid, u32 nthreads)
   {
-    for (const auto& kv : relations)
-      kv.second->reorgDelta(tid, nthreads);
+    for (Relation* r : rel_registry)
+      r->reorgDelta(tid, nthreads);
   }
 
   // Size every relation's per-thread bucket buffers (single-threaded).
   void ensureReorgBuffers()
   {
-    for (const auto& kv : relations)
-      kv.second->ensureReorgBuffers(thread_count);
+    for (Relation* r : rel_registry)
+      r->ensureReorgBuffers(thread_count);
   }
 
   // Run one phase to completion (write/intern) or until suspend (read).
@@ -1935,12 +1977,15 @@ public:
   // database: default index + immediate ingestion; the next reload re-dumps.
   void restoreOrphanRelations()
   {
-    for (const auto& kv : relations)
-      if (kv.second != nullptr && kv.second->getAnyIndex() == 0)
+    // registry-wide (0.C): a positional reload clears OLD versions too,
+    // and the ones the re-entered stratum does not re-register must
+    // re-materialise the same way -- they stay positionally addressable.
+    for (Relation* r : rel_registry)
+      if (r != nullptr && r->getAnyIndex() == 0)
       {
-	kv.second->ensureDefaultIndex();
-	kv.second->finalizeBatches();
-	kv.second->ingestDelta();
+	r->ensureDefaultIndex();
+	r->finalizeBatches();
+	r->ingestDelta();
       }
   }
 
@@ -1967,11 +2012,12 @@ public:
       rs.iteration_count = 0;
       rs.ms_total = 0.0;
       rs.start_tuples = totalTuples();
-      // Every relation gets a send buffer per worker and reorg buffers.
-      for (const auto& kv : relations)
+      // Every relation gets a send buffer per worker and reorg buffers --
+      // registry-wide (0.C): positional re-entry writes old versions too.
+      for (Relation* r : rel_registry)
       {
-        kv.second->initShards(thread_count);
-        kv.second->ensureReorgBuffers(thread_count);
+        r->initShards(thread_count);
+        r->ensureReorgBuffers(thread_count);
       }
     }
 
@@ -1994,10 +2040,11 @@ public:
       ? std::chrono::steady_clock::time_point::max()
       : t0 + std::chrono::milliseconds(b.max_ms ? b.max_ms : 8000);
 
-    // Bind every relation's per-run accounting (the memory cap for this call).
-    for (const auto& kv : relations)
-      kv.second->bindRun(&rs.emitted_words, &rs.stop_requested,
-                         &rs.mem_tripped, rs.mem_cap);
+    // Bind every relation's per-run accounting (the memory cap for this
+    // call) -- registry-wide (0.C), so positional writes count too.
+    for (Relation* r : rel_registry)
+      r->bindRun(&rs.emitted_words, &rs.stop_requested,
+                 &rs.mem_tripped, rs.mem_cap);
 
     // Allocate the cyclic barriers for this call.
     iter_barrier = new std::barrier<IterCompletion>(thread_count, IterCompletion{this});
@@ -2022,8 +2069,8 @@ public:
     }
     // Clear the per-run accounting so a later out-of-band sendBatch (disk
     // ingestion) does not touch a stale counter.
-    for (const auto& kv : relations)
-      kv.second->bindRun(nullptr, nullptr, nullptr, 0);
+    for (Relation* r : rel_registry)
+      r->bindRun(nullptr, nullptr, nullptr, 0);
 
     const double ms_call =
       std::chrono::duration_cast<std::chrono::microseconds>(
@@ -3950,7 +3997,10 @@ public:
     return true;
   }
 
-  void reloadInsertBatches()
+  // Dump the given relations' contents into their own send shards (the
+  // next run's iteration-0 delta) and clear their indices -- the shared
+  // core of the whole-DB reload and its positional variant (0.C).
+  void reloadRelations(const std::vector<Relation*>& rels, const char* sname)
   {
     class ReloadBatches : public Task
     {
@@ -3980,16 +4030,67 @@ public:
       }
     };
 
-    Stratum s("reload");
-    for (auto& p : relations)
+    Stratum s(sname);
+    for (Relation* r : rels)
     {
       // Should be parallelized
       for (u16 b = 0; b < bucket_count; ++b)
-	s.addTask(0, new ReloadBatches(p.second, b), true);
-      s.addTask(1, new ClearAllIndices(p.second), true);
+	s.addTask(0, new ReloadBatches(r, b), true);
+      s.addTask(1, new ClearAllIndices(r), true);
     }
 
     runStratum(&s, false);
+  }
+
+  void reloadInsertBatches()
+  {
+    std::vector<Relation*> rels;
+    for (auto& p : relations)
+      rels.push_back(p.second);
+    reloadRelations(rels, "reload");
+  }
+
+  // Positional variant (docs/incremental.md §0.5, 0.C): restage the
+  // environment at position P -- each name resolved to its version current
+  // at P -- so a re-entered stratum bound at P starts from its own
+  // position's content as its iteration-0 delta.  Versions outside the
+  // P-environment (later rebindings') are untouched; cleared P-versions
+  // the stratum does not re-register are re-materialised by the
+  // registry-wide restoreOrphanRelations.
+  void reloadInsertBatchesAt(u32 pos)
+  {
+    std::vector<Relation*> rels;
+    for (const auto& kv : rel_bindings)
+    {
+      Relation* r = getRelationAt(kv.first, pos);
+      if (r != nullptr)
+	rels.push_back(r);
+    }
+    reloadRelations(rels, "reload@P");
+  }
+
+  // Re-materialise the inheritance boundary R@ord := copy of R@(ord-1)
+  // (docs/incremental.md §0.4, 0.C): clear the version's contents
+  // (registrations persist), re-copy the predecessor's rows, and re-seed
+  // the intern allocators from the predecessor -- after an anchored batch
+  // rebuilt R@(ord-1), re-derivation downstream must mint above everything
+  // the rebuilt predecessor issued, or ids collide across versions.
+  bool refreshVersion(const std::string& name, u32 ordinal)
+  {
+    auto it = rel_bindings.find(name);
+    if (it == rel_bindings.end() || ordinal == 0 || ordinal >= it->second.size())
+      return false;
+    Relation* pred = it->second[ordinal - 1].rel;
+    Relation* v = it->second[ordinal].rel;
+    if (pred == nullptr || v == nullptr)
+      return false;
+    v->clearContents();
+    v->copyInternAllocatorsFrom(*pred);
+    forEachNominal(pred, [&](const u64* row)
+    {
+      v->insertTupleAllIndices(row);
+    });
+    return true;
   }
 };
 

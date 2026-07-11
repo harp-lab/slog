@@ -1,0 +1,22 @@
+;; From-scratch oracle for the anchored back-insertion test: base.slog as
+;; if (edge 0 1) had been in segment 1 all along.
+
+table (edge int int)
+table (path int int)
+
+rule
+(edge 0 1)
+(edge 1 2)
+(edge 2 3)
+(edge 3 4)
+
+rule
+(edge X Y)
+-->
+(path X Y)
+
+rule
+(path X Y)
+(edge Y Z)
+-->
+(path X Z)

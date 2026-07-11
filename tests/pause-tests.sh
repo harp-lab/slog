@@ -67,9 +67,16 @@ expect_rx "boundary-suspend"  '\(paused .* iter ' out/pause-bud.log
 BI=1
 for f in out/pause-unb/*.csv; do
   b="$(basename "$f")"
+  # $stat_fixpoint carries wall-clock microseconds -- inherently different
+  # between an unbudgeted and a budgeted run; excluded here exactly as the
+  # stats tables are excluded from goldens (docs/stats.md).  This was the
+  # section's long-standing intermittent failure (previously misread as a
+  # concurrent-build flake; verified 2026-07-11 on stock master).
+  case "$b" in \$stat_*) continue ;; esac
   diff <(LC_ALL=C sort "$f") <(LC_ALL=C sort "out/pause-bud/$b") >/dev/null 2>&1 || BI=0
 done
-diff <(ls out/pause-unb) <(ls out/pause-bud) >/dev/null 2>&1 || BI=0
+diff <(ls out/pause-unb | grep -v '^\$stat_') \
+     <(ls out/pause-bud | grep -v '^\$stat_') >/dev/null 2>&1 || BI=0
 if [ "$BI" -eq 1 ]; then ok "byte-identical-under-pathological-budget"
 else bad "byte-identical-under-pathological-budget"; fi
 
