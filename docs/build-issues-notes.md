@@ -257,30 +257,42 @@ Re-assessed against the current tree; reproduced on `~/scheme-slog-compile`.
 - **§1 silent include — FIXED.** `compiler/modules.rkt` now warns
   `include "X" not found (searched … and lib/); ignoring it` (and the same for
   `run` targets). The #6 ask.
-- **§5 head wildcard — FIXED.** A `_` in a head/conclusion (including nested in a
-  constructed term) is now rejected at simplify time with the offending rule's
-  location, instead of surfacing as `hash-ref '__gNNN`. The other §5 items:
-  interior-wildcard `col=pattern` in a body no longer reproduces (works in the
-  current tree); cross-file `union` extension and the general "source location on
-  every `lower-all` contract failure" are still open (see below).
+- **§5 source locations on internal errors (#1) — LARGELY FIXED.** Two parts:
+  (a) A `_` in a head/conclusion (including nested in a constructed term) is
+  rejected at simplify time with the rule's location, instead of `hash-ref
+  '__gNNN`. (b) Any *unbound variable* (named too, not just wildcards) now
+  surfaces as `internal error while compiling the rule at file:line -- often an
+  unbound variable: …` — a `with-rule-context` wrapper (compiler/ir-shared.rkt)
+  attaches the rule's source location to the `exn:fail:contract` (hash-ref /
+  IR-contract) failures raised in typecheck / planning / lowering. It catches
+  ONLY contract failures, so intentional user errors (undeclared relation, arity
+  mismatch, type clash — raised via `error` as plain `exn:fail`) keep their own
+  clear messages. Interior-wildcard `col=pattern` in a body and cross-file
+  `union` extension no longer reproduce in the current tree. Remaining polish:
+  the located snippet from `parse-error` is sparse and 0-indexed for mid-pipeline
+  provs (message + line are the actionable parts).
+- **§6 the silent `/=` failure (#2) — FIXED (verified) + regression test.** Does
+  NOT reproduce as a plain "/= in a recursive SCC". Confirmed on the *actual
+  analyzer*: patching `interp.slog`'s If-then rule back to the report's exact
+  buggy form `(/= dat (DBool (False)))` inside the recursive `step`/`lookup`
+  demand SCC, then running `(if 5 1 2)`, takes the then-branch correctly —
+  identical to the bound-variable workaround. Fixed by intervening demand/planner
+  work. Locked in by `tests/dem_neq_literal.slog`. The report's workaround
+  (binding the literal from a ground fact) is no longer necessary.
 - **§2 pkill cache poisoning — mechanism closed.** `.cpp/.cprog/.meta` are now
   written via temp+atomic-rename and `.so` via temp+rename (2026-07-07), so an
   interrupted build can no longer leave a half-written artifact. The residual is
-  the *diagnostic*: a malformed `cprog` (from a genuine compiler/frontend issue)
-  still fails the coarse `cprog?` contract with no rule context — same root as §5.
+  the diagnostic, now improved: a malformed `cprog` fails an `exn:fail:contract`,
+  which `with-rule-context` (§5) names with the rule's location during lowering.
 - **§4 masked build error — masking resolved.** `compile-one` reads the build log
   *before* deleting it and `build-so` raises with the clang stderr, so the real
   error is surfaced (no more secondary missing-`.tmp.log`). The underlying
   "oracle *action* plugin fails to build at scale" is unverified here (needs the
   full symbolic analyzer + z3) and remains open.
 
-Still open / needs discussion: **§5 general source-location on internal contract
-failures** (a diagnostics pass threading rule spans, plus a few more parse-time
-checks), **§6 the silent `/=` failure** (does NOT reproduce as a plain
-"/= in a recursive SCC" — a single-level constructed literal filters correctly
-in both recursive and non-recursive strata; the analyzer's case is narrower —
-a *demand* SCC comparing against a *nested nullary-constructor* literal — and
-needs a faithful minimal repro extracted from `interp.slog`), and the deeper
-**large-SCC / large-workflow** story (one giant mutually-recursive stratum still
-costs a full O0 build the first time and a ~5-min O2; the real lever is helping
-users split SCCs and/or shrinking big-stratum codegen).
+Still open / needs discussion: the deeper **large-SCC / large-workflow** story —
+one giant mutually-recursive stratum still costs a full O0 build the first time
+and a ~5-min O2; the build-system fixes amortize *re-runs* but not the first
+build or a per-configuration sweep. The real levers are on the analysis/codegen
+side: helping users split one big SCC, and/or shrinking big-stratum codegen (the
+per-rule fused operator chains the O2 optimizer chews).

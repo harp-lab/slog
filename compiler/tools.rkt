@@ -488,12 +488,36 @@
   (close-output-port in)
   (subprocess-wait sp)
   (close-output-port logport)
-  (define log (file->string log-path))
-  (delete-file* log-path)
-  (define ok? (= 0 (subprocess-status sp)))
-  (if ok?
-      (rename-file-or-directory tmp so-path #t)
-      (delete-file* tmp))
+  (define status (subprocess-status sp))
+  (define ok? (= 0 status))
+  ;; Read the per-build log DEFENSIVELY.  A concurrent build-pool job (or a
+  ;; detached -O2 build) can unlink this tempfile out from under us; the old
+  ;; naive (file->string) then raised a bare `open-input-file: no such file`
+  ;; that MASKED the real clang error (docs/build-issues-notes.md §4).  If the
+  ;; log is missing/empty on failure we still report the exit status and the
+  ;; exact command, so a build failure is never a mystery.
+  (define raw-log
+    (if (file-exists? log-path)
+        (with-handlers ([exn:fail? (lambda (e)
+                                     (format "<build log ~a unreadable: ~a>"
+                                             log-path (exn-message e)))])
+          (file->string log-path))
+        ""))
+  (define log
+    (if ok?
+        raw-log
+        (string-append
+         (if (string=? (string-trim raw-log) "")
+             (format "<no compiler output captured at ~a -- the log was missing or empty (most likely a build/ tempfile race with a concurrent or detached -O2 build); the clang command still ran and failed>\n"
+                     log-path)
+             raw-log)
+         (format "\n[c++ exited with status ~a]\n[command: ~a]\n"
+                 status (string-join argv " ")))))
+  ;; On success clean up; on FAILURE keep the log (and drop only the broken
+  ;; object) so the failing translation unit and its output can be inspected.
+  (cond
+    [ok?  (delete-file* log-path) (rename-file-or-directory tmp so-path #t)]
+    [else (delete-file* tmp)])
   (values ok? log))
 
 ;; Synchronous build of one .cpp (or list of .cpp TUs linked into one .so).

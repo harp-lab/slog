@@ -1,0 +1,37 @@
+;; Regression: a `/=` guard against a CONSTRUCTED (nested union-member) literal,
+;; evaluated INSIDE a recursive demand SCC, must fire (docs/build-issues-notes.md
+;; §6).  An external analyzer once hit this silently producing nothing and had to
+;; work around it by binding the literal from a ground fact and comparing
+;; variables.  This asserts the two forms agree -- both filter the #f value out.
+;;
+;; normA compares against the literal `(DBool (False))` directly; normB compares
+;; against the same value bound from a ground fact (`fdat`).  `Wrap` makes the
+;; demand relation recurse, so the guard runs inside a multi-iteration fixpoint.
+
+union (Bool (True) (False))
+union (Datum (DBool Bool) (DInt int) (Wrap Datum))
+
+;; version A: `/=` against a nested union-member literal, inside the recursion
+demand (normA Datum) Datum
+rule (normA (DBool b) (DBool b))
+rule (normA (DInt n) (DInt n))
+rule (normA (Wrap d) r) <-- (normA d r) (/= r (DBool (False)))
+
+;; version B: the same, comparing against a ground-bound variable (the old
+;; workaround) -- must produce identical results
+table (fdat Datum)
+rule (fdat (DBool (False)))
+demand (normB Datum) Datum
+rule (normB (DBool b) (DBool b))
+rule (normB (DInt n) (DInt n))
+rule (normB (Wrap d) r) <-- (normB d r) (fdat fd) (/= r fd)
+
+;; drive both on a truthy value (kept) and on #f (filtered by the guard)
+table (outA Datum)
+rule (outA r) <-- (normA (Wrap (DBool (True)))  r)
+rule (outA r) <-- (normA (Wrap (DInt 7))        r)
+rule (outA r) <-- (normA (Wrap (DBool (False))) r)   ;; guard drops this one
+table (outB Datum)
+rule (outB r) <-- (normB (Wrap (DBool (True)))  r)
+rule (outB r) <-- (normB (Wrap (DInt 7))        r)
+rule (outB r) <-- (normB (Wrap (DBool (False))) r)   ;; guard drops this one

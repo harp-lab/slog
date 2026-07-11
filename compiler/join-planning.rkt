@@ -110,6 +110,7 @@
 
   (define planned
     (for/fold ([acc (set)]) ([rule (in-set rules)])
+     (with-rule-context rule (lambda ()
       (for/fold ([acc acc]) ([staged (in-list (stage-rule rule add-temp!))])
         (match-define (cons staged-rule statics) staged)
         (define versions (plan-rule-versions staged-rule dynamic? temp? statics))
@@ -149,7 +150,7 @@
                     (if needs-seeded?
                         (plan-rule-versions staged-rule dynamic? temp? '()
                                             #:seeded? #t)
-                        (set))))))
+                        (set))))))))
   (cons planned (unbox rel-env-box)))
 
 ;; -----------------------------------------------------------------------

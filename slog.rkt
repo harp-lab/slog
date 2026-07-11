@@ -66,6 +66,47 @@
   (fprintf (current-error-port) "Error: ~a\n" (apply format fmt args))
   (exit code))
 
+;; Several distinct *user* mistakes surface as the same opaque INTERNAL error
+;; with no source location (docs/build-issues-notes.md §5).  Until the passes
+;; carry the offending rule through, recognize the message and print an
+;; actionable hint at the top-level error boundary.  Purely additive: a message
+;; we do not recognize gets no hint.
+(define (slog-error-hint msg)
+  (cond
+    ;; If `with-rule-context` (compiler/ir-shared.rkt) already re-raised with the
+    ;; rule's source location, its message carries the original opaque text
+    ;; (hash-ref / lower-all) as a suffix -- do NOT also print a locationless
+    ;; hint, or every located error gets a redundant second paragraph.  The
+    ;; located message is strictly better; stand down when it fired.
+    [(regexp-match? #rx"internal error while compiling the rule at" msg) #f]
+    [(and (regexp-match? #rx"hash-ref: no value found" msg)
+          (regexp-match? #rx"'__" msg))
+     (string-append
+      "the failing key names an UNBOUND variable (the `__` prefix means the\n"
+      "  compiler renamed a `_` wildcard).  Usual causes:\n"
+      "    * a `_` wildcard in a HEAD position -- every head variable must be\n"
+      "      bound by the body, so name it and bind it, e.g. a head\n"
+      "      (foo (Quote _ d)) becomes (foo (Quote pr d)) with `pr` bound below;\n"
+      "    * a `x=(Ctor _ ...)` capture with interior wildcards in a BODY atom --\n"
+      "      write an explicit variable pattern (Ctor a b) instead of `x=`.\n"
+      "  The offending rule is not yet localized by the pass that fails.")]
+    [(regexp-match? #rx"lower-all: broke its own contract" msg)
+     (string-append
+      "the lowering pass produced a malformed program.  Two known causes:\n"
+      "    * a STALE build cache from an interrupted build (e.g. after pkill) --\n"
+      "      clear it:  rm -f build/*.cprog build/*.cpp build/*.so build/*.meta\n"
+      "                       build/*.O0.so\n"
+      "    * EXTENDING a `union` across modules (adding an arm to a union that an\n"
+      "      included file already declared) -- declare ALL of a union's arms in\n"
+      "      one place; cross-file union extension is not supported.")]
+    [(and (regexp-match? #rx"open-input-file" msg)
+          (regexp-match? #rx"\\.tmp\\.log" msg))
+     (string-append
+      "a plugin build failed and its build log had already been unlinked when the\n"
+      "  error path tried to read it (a build/ tempfile race).  Retry, or run with\n"
+      "  SLOG_OPT=0 to disable the background -O2 builds that race.")]
+    [else #f]))
+
 (define (validate-slog-file slog-path)
   (define slog-file (path->complete-path (expand-tilde slog-path)))
   (cond
@@ -143,6 +184,9 @@
   (with-handlers ([exn:fail?
                    (λ (e)
                      (fprintf (current-error-port) "Slog execution failed: ~a\n" (exn-message e))
+                     (let ([hint (slog-error-hint (exn-message e))])
+                       (when hint
+                         (fprintf (current-error-port) "\nHint: ~a\n" hint)))
                      (when verbose?
                        (fprintf (current-error-port)
                                 "Additional details: ~a\n"

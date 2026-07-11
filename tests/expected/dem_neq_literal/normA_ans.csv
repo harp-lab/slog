@@ -1,0 +1,5 @@
+(normA (DBool (_enum "False")))   (DBool (_enum "False"))   
+(normA (DBool (_enum "True")))   (DBool (_enum "True"))   
+(normA (DInt 7))   (DInt 7)   
+(normA (Wrap (DBool (_enum "True"))))   (DBool (_enum "True"))   
+(normA (Wrap (DInt 7)))   (DInt 7)   

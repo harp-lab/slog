@@ -1,0 +1,3 @@
+(Wrap (DBool (_enum "False")))
+(Wrap (DBool (_enum "True")))
+(Wrap (DInt 7))

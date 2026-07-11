@@ -17,7 +17,7 @@
 
 (provide
  ;; provenance
- syn? syn-prov strip-prov
+ syn? syn-prov strip-prov rule-location-string with-rule-context
  ;; atoms
  var? slog-literal?
  ;; primitive operators
@@ -52,6 +52,36 @@
   (match e
     [`(syn ,prov ,_ ...) prov]
     [_ (error 'syn-prov "not a syn form: ~a" e)]))
+
+;; "basename:line" (1-based) for a rule/clause syn form, else "<unknown>".
+;; The source position lives in the first delimiting token of the prov.
+(define (rule-location-string form)
+  (match form
+    [`(syn (prov (token ,_ (pos ,file ,line ,_ ...) ,_ ...) ,_ ...) ,_ ...)
+     (define p (file-name-from-path (format "~a" file)))
+     (format "~a:~a" (if p (path->string p) file) (add1 line))]
+    [_ "<unknown>"]))
+
+;; Run `thunk`; if it raises a CONTRACT failure, re-raise with the rule's source
+;; location prefixed.  A per-rule internal failure -- classically an unbound
+;; variable surfacing deep in typecheck/planning/lowering as a locationless
+;; `hash-ref: no value found '<var>`, or a pass output breaking its own IR
+;; contract -- then names the offending rule instead of forcing a bisection
+;; (docs/build-issues-notes.md §5).  We catch only exn:fail:contract, NOT plain
+;; exn:fail: intentional user-facing errors (undeclared relation, arity mismatch,
+;; type clash, ...) are raised via `error` as exn:fail and must keep their own
+;; clear messages, not be relabelled "internal error".
+(define (with-rule-context rule thunk)
+  (with-handlers
+      ([exn:fail:contract?
+        (lambda (e)
+          (error (format
+                  (string-append
+                   "internal error while compiling the rule at ~a -- this is often "
+                   "an unbound variable (one used in a head or computation that no "
+                   "body clause binds):\n  ~a")
+                  (rule-location-string rule) (exn-message e))))])
+    (thunk)))
 
 ;; Strip provenance wrappers from any (possibly nested) value, for display,
 ;; hashing, and structural checks.

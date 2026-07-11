@@ -178,7 +178,13 @@
   (define dynamic-rels++
     (for/fold ([acc dynamic-rels+]) ([occ (in-list seq-occ-present)])
       (set-add acc occ)))
-  (define crules (map (lower-rule rel-env selections) rules))
+  ;; Lower each rule with its source location attached to any failure (an
+  ;; unbound variable otherwise dies deep in lowering as a locationless
+  ;; `hash-ref: no value found`; docs/build-issues-notes.md §5).
+  (define lower-one (lower-rule rel-env selections))
+  (define crules
+    (for/list ([rule (in-list rules)])
+      (with-rule-context rule (lambda () (lower-one rule)))))
   ;; Gate an ordering's WriteTask behind addTaskSeeded only if EVERY
   ;; reference to it comes from a seeded re-entry crule.  Attribution must
   ;; happen POST-lowering: find-index resolves prefix SETS, so a live
