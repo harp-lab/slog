@@ -463,62 +463,102 @@
 
 (define (delete-file* p) (when (file-exists? p) (with-handlers ([exn:fail? void]) (delete-file p))))
 
-;; ---- compiling one .cpp into one .so ----------------------------------
-;; A single clang++ invocation, redirecting stdout+stderr to a per-build log
-;; file so many can run concurrently without a shared pipe filling and
-;; deadlocking (docs/fast-compile.md §5).  Compiles to a unique temp then
-;; atomically renames onto so-path, so a concurrent daemon that has already
-;; dlopen'd an older so-path (the -O0->-O2 upgrade case) never sees a torn file.
-;; Returns (values success? log-string).
-(define (compile-one cpp-paths so-path opt pch)
-  (unless the-cxx-path
-    (error "For reasons unknown, no C++ compiler has been found in PATH."))
-  (define tmp (build-tempfile "so~a.tmp"))
-  (define log-path (string-append tmp ".log"))
-  (define logport (open-output-file log-path #:exists 'replace))
-  (define argv
-    (append (list the-cxx-path)
-            (if (list? cpp-paths) cpp-paths (list cpp-paths))
-            (base-cxx-flags opt)
-            (if pch (list "-include-pch" pch) '())
-            (list "-shared" (format "-o~a" tmp))
-            extra-cxx-flags))
-  (define-values (sp out in err)
-    (apply subprocess logport #f logport argv))
-  (close-output-port in)
-  (subprocess-wait sp)
-  (close-output-port logport)
-  (define status (subprocess-status sp))
-  (define ok? (= 0 status))
-  ;; Read the per-build log DEFENSIVELY.  A concurrent build-pool job (or a
-  ;; detached -O2 build) can unlink this tempfile out from under us; the old
-  ;; naive (file->string) then raised a bare `open-input-file: no such file`
-  ;; that MASKED the real clang error (docs/build-issues-notes.md §4).  If the
-  ;; log is missing/empty on failure we still report the exit status and the
-  ;; exact command, so a build failure is never a mystery.
-  (define raw-log
+;; ---- compiling .cpp TU(s) into one .so, via a content-addressed .o cache ----
+;; Each TU .cpp is compiled to a .o cached in build/o/ keyed by its
+;; comment-stripped content + opt + daemon-header fingerprint (docs/fast-compile.md
+;; P2); the .o's are then linked into the .so.  An unchanged cluster's .o is
+;; reused across stratum versions / configs / edits, so an edit recompiles only
+;; the clusters that actually changed and relinks (cheap).  emit-cpp names each
+;; cluster function by its content hash, so identical clusters produce identical
+;; .cpp content -> identical .o key -> a hit even across different strata.
+;;
+;; Reads a per-build log DEFENSIVELY (docs/build-issues-notes.md §4): a concurrent
+;; job can unlink the tempfile, and on failure we still surface the exit status +
+;; the exact command so a build failure is never a mystery.
+(define (read-build-log log-path ok? status argv)
+  (define raw
     (if (file-exists? log-path)
         (with-handlers ([exn:fail? (lambda (e)
                                      (format "<build log ~a unreadable: ~a>"
                                              log-path (exn-message e)))])
           (file->string log-path))
         ""))
-  (define log
-    (if ok?
-        raw-log
-        (string-append
-         (if (string=? (string-trim raw-log) "")
-             (format "<no compiler output captured at ~a -- the log was missing or empty (most likely a build/ tempfile race with a concurrent or detached -O2 build); the clang command still ran and failed>\n"
-                     log-path)
-             raw-log)
-         (format "\n[c++ exited with status ~a]\n[command: ~a]\n"
-                 status (string-join argv " ")))))
-  ;; On success clean up; on FAILURE keep the log (and drop only the broken
-  ;; object) so the failing translation unit and its output can be inspected.
+  (if ok?
+      raw
+      (string-append
+       (if (string=? (string-trim raw) "")
+           (format "<no compiler output captured at ~a -- the log was missing or empty (most likely a build/ tempfile race); the clang command still ran and failed>\n"
+                   log-path)
+           raw)
+       (format "\n[c++ exited with status ~a]\n[command: ~a]\n"
+               status (string-join (map ~a argv) " ")))))   ; argv may hold path objects
+
+;; Run one clang invocation `argv` producing `dest` (a temp), redirecting output
+;; to a per-run log; atomically rename temp->dest on success.  Returns (values
+;; ok? log).  `tmp-template` and `dest` are threaded so both .o and .so builds
+;; share this.
+(define (run-cxx argv tmp dest)
+  (define log-path (string-append tmp ".log"))
+  (define logport (open-output-file log-path #:exists 'replace))
+  (define-values (sp out in err) (apply subprocess logport #f logport argv))
+  (close-output-port in)
+  (subprocess-wait sp)
+  (close-output-port logport)
+  (define status (subprocess-status sp))
+  (define ok? (= 0 status))
+  (define log (read-build-log log-path ok? status argv))
   (cond
-    [ok?  (delete-file* log-path) (rename-file-or-directory tmp so-path #t)]
-    [else (delete-file* tmp)])
+    [ok?  (delete-file* log-path) (rename-file-or-directory tmp dest #t)]
+    [else (delete-file* tmp)])   ; keep the log on failure for inspection
   (values ok? log))
+
+;; Content-addressed cache key for one TU's .o: its comment-stripped source (the
+;; crule debug comments are non-reproducible but do not affect the object) plus
+;; the opt level, daemon-header fingerprint, and -g flag.
+(define (o-cache-key cpp opt)
+  (define content (file->string cpp))
+  (define stripped (regexp-replace* #px"(?m:^[ \t]*//[^\n]*\n)" content ""))
+  (substring (bytes->hex-string
+              (sha256 (string->bytes/utf-8
+                       (format "~a\0~a\0~a\0~a" stripped opt daemon-fp8
+                               (if (debug-build?) "g" "")))))
+             0 32))
+
+;; Ensure build/o/<key>.o exists for `cpp` at `opt`; compile on a cache miss.
+;; Returns (list o-path ok? log); o-path is #f on a compile failure.
+(define (build-o cpp opt pch)
+  (make-directory* (fullpath "build/o"))
+  (define o-path (fullpath (format "build/o/~a.o" (o-cache-key cpp opt))))
+  (cond
+    [(file-exists? o-path) (list o-path #t "")]            ; cache hit: no clang
+    [else
+     (define tmp (build-tempfile "o~a.o.tmp"))
+     (define argv (append (list the-cxx-path)
+                          (base-cxx-flags opt)
+                          (if pch (list "-include-pch" pch) '())
+                          (list "-c" cpp (format "-o~a" tmp))))
+     (define-values (ok? log) (run-cxx argv tmp o-path))
+     (list (and ok? o-path) ok? log)]))
+
+;; Compile every TU .cpp to a cached .o, then link the .o's into so-path.
+;; Returns (values success? log-string).
+(define (compile-one cpp-paths so-path opt pch)
+  (unless the-cxx-path
+    (error "For reasons unknown, no C++ compiler has been found in PATH."))
+  (define cpps (if (list? cpp-paths) cpp-paths (list cpp-paths)))
+  (define results (map (lambda (cpp) (build-o cpp opt pch)) cpps))
+  (define failed (findf (lambda (r) (not (second r))) results))
+  (cond
+    [failed (values #f (third failed))]   ; a TU failed to compile
+    [else
+     (define o-paths (map first results))   ; strings (fullpath)
+     (define tmp (build-tempfile "so~a.tmp"))
+     (define argv (append (list the-cxx-path)
+                          (base-cxx-flags opt)
+                          o-paths
+                          (list "-shared" (format "-o~a" tmp))
+                          extra-cxx-flags))
+     (run-cxx argv tmp so-path)]))
 
 ;; Synchronous build of one .cpp (or list of .cpp TUs linked into one .so).
 ;; `opt` defaults to -O2 (the historical behavior); the tiered driver passes an
