@@ -25,7 +25,7 @@
 (define-runtime-path slog-main "../slog.rkt")
 
 ;; Bump to invalidate every cache when the settings schema / env mapping changes.
-(define SCHEMA-VERSION "2")
+(define SCHEMA-VERSION "3")
 
 ;; setting name -> the env var the toolchain already consults for it.
 (define setting->env
@@ -35,6 +35,11 @@
         ;; tiered compilation: seconds before an in-flight background -O2 build's
         ;; claim marker is presumed abandoned by a dead builder (docs/fast-compile.md §13)
         "o2_reclaim_secs" "SLOG_O2_RECLAIM_SECS"
+        ;; build/o content-addressed .o cache GC (docs/fast-compile.md §14):
+        ;; evict entries unused longer than N days, and keep the cache under a
+        ;; byte cap (evicting oldest first)
+        "o_cache_max_age_days" "SLOG_O_CACHE_MAX_AGE_DAYS"
+        "o_cache_max_mb"       "SLOG_O_CACHE_MAX_MB"
         "max_ms"      "SLOG_MAX_MS"
         "slice_ms"    "SLOG_SLICE_MS"
         "mem_max"     "SLOG_MEM_MAX"

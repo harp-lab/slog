@@ -55,3 +55,10 @@ rule
 ;; 15 min is ~9x the largest observed full -O2 build, so a live build is never
 ;; reclaimed out from under itself.
 rule (setting_int "o2_reclaim_secs" 900)
+
+;; --- build/o .o cache GC (docs/fast-compile.md §14) ----------------------
+;; The content-addressed per-cluster .o cache is evicted on BOTH age (entries
+;; unused longer than this many days) and a total-size cap (MB; oldest first).
+rule
+(setting_int "o_cache_max_age_days" 4)
+(setting_int "o_cache_max_mb" 768)

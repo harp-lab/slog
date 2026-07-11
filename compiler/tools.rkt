@@ -512,6 +512,43 @@
     [else (delete-file* tmp)])   ; keep the log on failure for inspection
   (values ok? log))
 
+;; ---- build/o content-addressed .o cache: GC (docs/fast-compile.md §14) --------
+;; Evict on BOTH age and a size cap, once per process (lazy).  Entries are
+;; touched on a cache hit, so mtime is last-use; content-addressing makes an
+;; evicted .o inert (recompiled only if needed again).  Knobs come from the
+;; config system (SLOG_O_CACHE_MAX_AGE_DAYS default 4, SLOG_O_CACHE_MAX_MB 768).
+(define (env-num name default)
+  (let* ([v (getenv name)] [n (and v (string->number (string-trim v)))])
+    (if (and n (real? n) (>= n 0)) n default)))
+(define o-cache-gc-done (box #f))
+(define (gc-o-cache!)
+  (unless (unbox o-cache-gc-done)
+    (set-box! o-cache-gc-done #t)
+    (define dir (fullpath "build/o"))
+    (when (directory-exists? dir)
+      (with-handlers ([exn:fail? void])           ; GC is best-effort
+        (define max-age (* 86400 (env-num "SLOG_O_CACHE_MAX_AGE_DAYS" 4)))
+        (define max-bytes (* 1024 1024 (env-num "SLOG_O_CACHE_MAX_MB" 768)))
+        (define now (current-seconds))
+        (define entries               ; (path mtime size), only .o files
+          (for/list ([f (in-list (directory-list dir))]
+                     #:when (regexp-match? #rx"\\.o$" (path->string f)))
+            (define p (build-path dir f))
+            (list p (file-or-directory-modify-seconds p) (file-size p))))
+        ;; 1. age: drop anything unused longer than the window
+        (define live
+          (for/list ([e (in-list entries)])
+            (cond [(> (- now (second e)) max-age) (delete-file* (first e)) #f]
+                  [else e])))
+        (define kept (filter values live))
+        ;; 2. size cap: evict oldest (by mtime) until under the byte cap
+        (when (> (for/sum ([e (in-list kept)]) (third e)) max-bytes)
+          (let loop ([sorted (sort kept < #:key second)]
+                     [t (for/sum ([e (in-list kept)]) (third e))])
+            (when (and (> t max-bytes) (pair? sorted))
+              (delete-file* (first (car sorted)))
+              (loop (cdr sorted) (- t (third (car sorted)))))))))))
+
 ;; Content-addressed cache key for one TU's .o: its comment-stripped source (the
 ;; crule debug comments are non-reproducible but do not affect the object) plus
 ;; the opt level, daemon-header fingerprint, and -g flag.
@@ -528,9 +565,13 @@
 ;; Returns (list o-path ok? log); o-path is #f on a compile failure.
 (define (build-o cpp opt pch)
   (make-directory* (fullpath "build/o"))
+  (gc-o-cache!)
   (define o-path (fullpath (format "build/o/~a.o" (o-cache-key cpp opt))))
   (cond
-    [(file-exists? o-path) (list o-path #t "")]            ; cache hit: no clang
+    [(file-exists? o-path)                                 ; cache hit: no clang
+     (with-handlers ([exn:fail? void])                     ; touch: mtime = last use
+       (file-or-directory-modify-seconds o-path (current-seconds)))
+     (list o-path #t "")]
     [else
      (define tmp (build-tempfile "o~a.o.tmp"))
      (define argv (append (list the-cxx-path)
@@ -693,19 +734,43 @@
 ;; wedged clang so it cannot hold the claim slot until the marker goes stale.
 (define (o2-build-command cpp-paths so-path)
   (define pchp (ensure-pch "-O2"))
-  (define tmp (build-tempfile "o2~a.tmp"))
+  (define cpps (if (list? cpp-paths) cpp-paths (list cpp-paths)))
   (define marker (o2-marker-path so-path))
-  (define argv (append (list the-cxx-path)
-                       (if (list? cpp-paths) cpp-paths (list cpp-paths))
-                       (base-cxx-flags "-O2")
-                       (if pchp (list "-include-pch" pchp) '())
-                       (list "-shared" (format "-o~a" tmp))
-                       extra-cxx-flags))
+  (make-directory* (fullpath "build/o"))
+  (gc-o-cache!)
+  (define so-tmp (build-tempfile "o2~a.tmp"))
+  ;; Mirror the eager path's content-addressed .o cache at -O2 (docs/fast-compile
+  ;; §14): compile each cluster's -O2 .o only on a cache miss, then link.  So an
+  ;; -O2 rebuild after an edit/sweep recompiles only the changed clusters (the
+  ;; rest are cache hits shared with prior -O2 builds), and the eager path's
+  ;; granular relink (Stage 2) reads these same .o's as they land.
+  (define o-paths
+    (for/list ([cpp (in-list cpps)])
+      (fullpath (format "build/o/~a.o" (o-cache-key cpp "-O2")))))
+  (define compile-lines
+    (for/list ([cpp (in-list cpps)] [o (in-list o-paths)])
+      (define otmp (build-tempfile "o2o~a.o.tmp"))
+      (define cargv (append (list the-cxx-path) (base-cxx-flags "-O2")
+                            (if pchp (list "-include-pch" pchp) '())
+                            (list "-c" cpp (format "-o~a" otmp))))
+      (string-append "if [ -f " (sh-q o) " ]; then touch " (sh-q o) "; else "
+                     (string-join (map sh-q cargv) " ")
+                     " && mv -f " (sh-q otmp) " " (sh-q o) " || exit 1; fi")))
+  (define link-argv (append (list the-cxx-path) (base-cxx-flags "-O2") o-paths
+                            (list "-shared" (format "-o~a" so-tmp)) extra-cxx-flags))
+  (define link-line
+    (string-append (string-join (map sh-q link-argv) " ")
+                   " && mv -f " (sh-q so-tmp) " " (sh-q so-path)))
+  ;; Emit the compile+link sequence to a script file rather than one giant quoted
+  ;; command -- avoids nested-quoting hazards and keeps `nice`/`timeout` wrapping
+  ;; the whole build.
+  (define script (build-tempfile "o2build~a.sh"))
+  (call-with-atomic-output script
+    (lambda () (for ([l (in-list compile-lines)]) (displayln l)) (displayln link-line)))
   (define to-prefix
     (if (find-executable-path "timeout") (format "timeout ~a " (o2-reclaim-seconds)) ""))
-  (string-append "nice -n 10 " to-prefix (string-join (map sh-q argv) " ")
-                 " && mv -f " (sh-q tmp) " " (sh-q so-path)
-                 " ; rm -f " (sh-q tmp) " " (sh-q marker)))
+  (string-append "nice -n 10 " to-prefix "bash " (sh-q script)
+                 " ; rm -f " (sh-q so-tmp) " " (sh-q marker) " " (sh-q script)))
 
 ;; Run all background -O2 builds as ONE detached, bounded-parallel job
 ;; (docs/fast-compile.md §2/§7/§13).  A per-stratum detached process would let a
