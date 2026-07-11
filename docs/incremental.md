@@ -527,6 +527,18 @@ What shipped, and the decisions the design left open:
   - The **reserved `~` + increments case (0.A8)** is now covered: a
     monotone ADD through a negation shrinks the complement, a deletion
     grows it; `reenter` refuses the neg cone toward `rerun`.
+- **B3 — re-entry hygiene: decided for idempotent re-registration + husk
+  clearing (same day).** `Daemon::push` now frees the task objects of any
+  already-run same-name (= same content hash) stratum the push supersedes
+  — its bindings dangle at the next reload anyway and it never re-runs —
+  leaving a cheap husk (name/scc_id/fixpoint_msg; task destructors live in
+  the retained `.so`, the hot-swap safety argument). Long-lived sessions
+  hold live tasks only for each stratum's latest incarnation. The
+  pausing.md §12 `bind()`-reuse seam (no pipeline growth at all) stays
+  parked: re-entry cost is dominated by the whole-DB reload — B5's target
+  — not task re-construction, so reuse buys little and costs a re-bind
+  pass on every write/intern task class. Validated by a 30-cycle
+  add-tuple/reenter stress (exact closure content throughout).
 - **Known imprecisions, accepted for B0:** un-anchored `add-tuple` and all
   imports mutate the *current tip* in place (a batch/link as its own
   version event arrives with 0.C/0.D); during a chain load, a layer's
@@ -1723,10 +1735,12 @@ SHIPPED 2026-07-11 — all eight items done; see §0.8.1 for as-built decisions.
   Struct relations in the cone re-mint ids as designed. *(Guard-failing
   anchors — positional re-binding + boundary re-materialisation — deferred
   to 0.C where anchored batches make them expressible.)*
-- *B3 — re-entry hygiene.* Either the pausing.md §12 `bind()` re-bind seam
+- *B3 — re-entry hygiene.* **SHIPPED 2026-07-11 — see §0.5.1.** Either the pausing.md §12 `bind()` re-bind seam
   (reuse resident task objects; pipeline stops growing) or idempotent
   re-registration on re-push with old-task clearing — pick after measuring
-  B1's pipeline-growth cost.
+  B1's pipeline-growth cost. *(Decided: re-registration + husk clearing in
+  `Daemon::push`; the reload, not registration, dominates re-entry, so
+  bind()-reuse stays parked.)*
 - *B4 — routing rule in runslog.rkt.* positive+monotone → delta-entry when
   compiled, replay-entry until then; else clear-and-rerun; queue batches to
   stratum boundaries (refuseIfSuspended semantics); fold incoming updates

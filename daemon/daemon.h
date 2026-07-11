@@ -355,6 +355,20 @@ public:
     // beginStratum handed back (docs/fast-compile.md §4).  Re-adding it would
     // duplicate it in the pipeline and churn scc_id / next_unrun; skip.
     for (Stratum* p : pipeline) if (p == s) return;
+    // Re-entry hygiene (docs/incremental.md 0.B3): a re-push of an
+    // already-RUN stratum (same name = same content hash) supersedes it.
+    // Free the dead predecessor's task objects now -- their index bindings
+    // dangle at the next reload anyway and it never re-runs (next_unrun is
+    // past it) -- leaving a cheap husk (name/scc_id/fixpoint_msg).  Task
+    // destructors live in the retained .so (never dlclosed mid-run), so
+    // deletion is safe: the hot-swap argument.  Long-lived sessions thus
+    // hold live tasks only for each stratum's LATEST incarnation; the
+    // pausing.md §12 bind()-reuse seam (no pipeline growth at all) stays
+    // parked unless task re-construction ever shows up in profiles --
+    // the reload, not registration, dominates re-entry (B5's target).
+    for (size_t i = 0; i < next_unrun && i < pipeline.size(); ++i)
+      if (pipeline[i]->name == s->name)
+        pipeline[i]->clearForUpgrade();
     s->scc_id = (u32)pipeline.size();
     // A fresh stratum is a boundary event (docs/incremental.md §0.4/B0): it
     // occupied the current version-environment position while registering
