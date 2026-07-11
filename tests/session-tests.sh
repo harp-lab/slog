@@ -26,6 +26,13 @@ expect() { # name expected-substring file
     echo "FAIL $1 (missing '$2' in $3)"; FAIL=$((FAIL+1))
   fi
 }
+expect_re() { # name expected-regex file
+  if grep -qE "$2" "$3"; then
+    echo "PASS $1"; PASS=$((PASS+1))
+  else
+    echo "FAIL $1 (no match for '$2' in $3)"; FAIL=$((FAIL+1))
+  fi
+}
 
 # Tests compile at -O0 (fast, no background -O2/hot-swap; session-drive.rkt
 # has no upgrade logic).  Correctness is optimization-independent.
@@ -170,9 +177,10 @@ expect "b2-out-minus"   "(dumpdone 1)" out/sess-b2s.log
 expect "b2-out-content" "(dumprow (pair 1 2))" out/sess-b2s.log
 expect "b2-dist-kept"   "(dist 3)" out/sess-b2s.log
 
-# --- B4: the routing rule (compiler/session.rkt flush) ---------------------
-# Queued signed batches route per §0.5: all-adds + monotone cone ->
-# replay-entry ("(route reenter N)"); a same-point add/delete pair
+# --- B4+B5: the routing rule (compiler/session.rkt flush) -------------------
+# Queued signed batches route per §0.5: all-adds + a SINGLE-stratum
+# monotone cone -> delta-entry ("(route delta 1)", the lazily-compiled
+# build/<hash>_delta.O0.so, O(change)); a same-point add/delete pair
 # collapses to an empty flush ("(flush 0)", content untouched); a deletion
 # routes the union cone through clear-and-rerun ("(route rerun N M)").
 timeout 600 racket tests/api/session-drive.rkt \
@@ -181,7 +189,7 @@ timeout 600 racket tests/api/session-drive.rkt \
   batch+:edge,7,8 batch-:edge,7,8 flush dump-rel:edge \
   batch-:edge,1,2 flush dump-rel:path \
   > out/sess-b4.log 2>&1
-expect "b4-route-reenter" "(route reenter 1)" out/sess-b4.log
+expect "b4-route-delta"   "(route delta 1)" out/sess-b4.log
 expect "b4-add-applied"   "(dumpdone 10)" out/sess-b4.log
 expect "b4-collapse"      "(flush 0)" out/sess-b4.log
 expect "b4-collapse-kept" "(dumpdone 4)" out/sess-b4.log
@@ -195,6 +203,45 @@ timeout 600 racket tests/api/session-drive.rkt \
   > out/sess-b4n.log 2>&1
 expect "b4-neg-route"  "(route rerun 2 " out/sess-b4n.log
 expect "b4-neg-result" "(dumpdone 2)" out/sess-b4n.log
+
+# a MULTI-stratum monotone cone stays on replay-entry (boundary-delta
+# capture between cone strata is M0's presence-transition machinery)
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/session/twohop.slog \
+  batch+:edge,3,4 flush dump-rel:endpoint \
+  > out/sess-b4m.log 2>&1
+expect "b4-multihop-replay" "(route reenter 2)" out/sess-b4m.log
+expect "b4-multihop-result" "(dumpdone 3)" out/sess-b4m.log
+
+# --- B5 repeated delta-entry + B6 exact-once staging ------------------------
+# Three consecutive delta flushes extend the chain 1..4 to 1..7; each must
+# route delta (live indices survive beginStratumDelta across flushes; B3's
+# husk-clearing frees each superseded delta incarnation) and the closure
+# must be exact: C(7,2) = 21 paths.
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/session/base.slog \
+  batch+:edge,4,5 flush \
+  batch+:edge,5,6 flush \
+  batch+:edge,6,7 flush \
+  dump-rel:path write-csv:out/sess-b5-csv \
+  > out/sess-b5.log 2>&1
+expect "b5-repeat-delta" "(route delta 1)" out/sess-b5.log
+if [ "$(grep -cF '(route delta 1)' out/sess-b5.log)" = "3" ]; then
+  echo "PASS b5-all-three-delta"; PASS=$((PASS+1))
+else
+  echo "FAIL b5-all-three-delta (expected 3 delta routes)"; FAIL=$((FAIL+1))
+fi
+expect "b5-closure-exact" "(dumpdone 21)" out/sess-b5.log
+
+# B6 -- exact-once staging discipline (§0.3, §8; the M0 prerequisite): the
+# FIRST delta flush's fire audit must show the batch fired each rule
+# exactly the O(change) number of times -- edge->path once (the one new
+# edge), the recursive rule 3 times (the three paths reaching node 4).  A
+# double-staged batch (insert + restage, or two shard entries) would fire
+# the once-variants twice per tuple and these exact counts would not
+# appear.
+expect_re "b6-exact-once-base" '"base.slog:9"[[:space:]]+"all:edge"[[:space:]]+1\b' "out/sess-b5-csv/\$stat_fires.csv"
+expect_re "b6-exact-once-rec"  '"base.slog:14"[[:space:]]+"all:edge"[[:space:]]+3\b' "out/sess-b5-csv/\$stat_fires.csv"
 
 echo
 echo "$PASS passed, $FAIL failed"

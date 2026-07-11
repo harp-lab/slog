@@ -481,6 +481,39 @@ public:
     for (u32 i = 0; i < bucket_count; ++i)
       indices_ord[i] = new BTreeIndex<A>();
 
+    // Backfill a newly-registered full ordering from the relation's
+    // existing content (docs/incremental.md 0.B5): a delta-entry re-push
+    // registers fresh join orderings against a LIVE database -- no reload
+    // will restage content into them, so an empty-but-registered index
+    // would silently under-derive.  No-op on the common paths: after a
+    // reload (or on first registration) there is nothing indexed to copy.
+    if (!delta && !seeded_only && !ord.empty())
+    {
+      const std::vector<u16>* src = nullptr;
+      for (const auto& it : indices)
+	if (it.first != ord
+	    && seeded_orderings.find(it.first) == seeded_orderings.end())
+	{
+	  src = &it.first;
+	  break;
+	}
+      if (src != nullptr)
+      {
+	Index** srcarr = indices[*src];
+	std::vector<u16> rewrite(src->size(), 0);
+	for (u16 i = 0; i < src->size(); ++i)
+	  rewrite[(*src)[i]] = i;
+	for (u16 b = 0; b < bucket_count; ++b)
+	  srcarr[b]->forEach([&](const u64* t)
+	  {
+	    u64 row[max_daemon_arity + 1];
+	    for (u16 c = 0; c < arity; ++c)
+	      row[c] = t[rewrite[c]];
+	    indices_ord[buckethash(row[ord[0]])]->insertTuple(row, ord.data());
+	  });
+      }
+    }
+
     // Record this index's leading column so reorg hash-buckets the delta by it.
     // WriteTask (delta or not) partitions tuples by buckethash(data[ord[0]]).
     if (!ord.empty())

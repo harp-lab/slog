@@ -120,8 +120,10 @@
   (for ([sb (in-list strata)])
     (match-define (cons so _tag) ((sbuild-runnable sb)))
     (define-values (dyn reads) (read-stratum-meta (sbuild-hash sb)))
+    ;; entry = (list so dynamic-rels reads delta-thunk); the thunk builds
+    ;; the stratum's delta-entry flavor lazily (0.B5)
     (set-session-strata-info! s (append (session-strata-info s)
-                                        (list (list so dyn reads))))
+                                        (list (list so dyn reads (sbuild-delta sb)))))
     (send-plugin! s so)
     (drive-to-fixpoint! s)))
 
@@ -156,13 +158,14 @@
                          pos))))]
     [x (error 'session (format "unparseable (pipeline) reply: ~a" x))]))
 
-;; cone(target) closure over candidate entries (list so dyn reads pos), in
-;; pipeline order; monotone? = #f if any edge INTO the cone is neg/lat.
+;; cone(target) closure over candidate entries (list so dyn reads delta
+;; pos), in pipeline order; monotone? = #f if any edge INTO the cone is
+;; neg/lat.
 (define (cone-closure candidates target)
   (let loop ([infos candidates] [wave (set target)] [acc '()] [mono? #t])
     (match infos
       ['() (values (reverse acc) mono?)]
-      [(cons (and info (list _so dyn reads _pos)) rest)
+      [(cons (and info (list _so dyn reads _delta _pos)) rest)
        (define hit-kinds
          (for*/list ([entry (in-list reads)]
                      #:when (set-member? wave (car entry))
@@ -192,21 +195,14 @@
       (append info (list (hash-ref strata-pos scc 0)))))
   (define-values (cone mono?) (cone-closure candidates rel))
   (for ([info (in-list cone)])
-    (match-define (list _so dyn reads pos) info)
+    (match-define (list _so dyn reads _delta pos) info)
     (for ([r (in-sequences (in-list dyn) (in-list (map car reads)))])
       (when (for/or ([p (in-list (hash-ref chains r '()))]) (> p pos))
         (error 'session
                (format "~a was rebound after a cone stratum (pos ~a): latest-env re-entry is unsound here; anchored replay is 0.C" r pos)))))
   (values cone mono?))
 
-;; Would the delta-entry flavor of these cone strata be available?  0.B5
-;; compiles build/<hash>.delta.so lazily on first increment; until then
-;; the answer is always #f and positive/monotone batches take replay-entry
-;; (§0.5's routing rule, "delta-entry when compiled, replay-entry until
-;; then").
-(define (delta-flavor-available? cone) #f)
-
-;; ---- flush: apply pending batches + route (the 0.B4 policy) --------------
+;; ---- flush: route, apply pending batches, propagate (the 0.B4 policy) ----
 
 (define (session-flush! s)
   (define pending (session-pending s))
@@ -219,44 +215,63 @@
      (hash-clear! pending)
      (echo! s "(flush 0)")]
     [else
-     ;; 1. apply every tuple edit (collapsed sets)
-     (define any-del? #f)
-     (for ([r (in-list nonempty)])
-       (for ([(tuple sign) (in-hash (hash-ref pending r))])
-         (cond
-           [(eq? sign '+) (session-action! s `(add-tuple ,r ,@tuple))]
-           [else (set! any-del? #t)
-                 (session-action! s `(del-tuple ,r ,@tuple))
-                 (read-one-line! s)])))   ; (deleted REL 0|1)
-     (hash-clear! pending)
-     ;; 2. one introspection snapshot; union the per-relation cones
+     ;; 1. ROUTE FIRST (cones depend on targets, not edit contents; the
+     ;;    rebound guard fires before anything mutates): one introspection
+     ;;    snapshot, union the per-relation cones in pipeline order
      (define-values (strata-pos chains) (introspect! s))
+     (define any-del?
+       (for*/or ([r (in-list nonempty)]
+                 [(tuple sign) (in-hash (hash-ref pending r))])
+         (eq? sign '-)))
      (define union-mono? (not any-del?))
      (define union-sos (mutable-set))
-     (define cone-entries '())
      (for ([r (in-list nonempty)])
        (define-values (cone mono?) (cone-of s r strata-pos chains))
        (unless mono? (set! union-mono? #f))
        (for ([info (in-list cone)])
-         (unless (set-member? union-sos (first info))
-           (set-add! union-sos (first info))
-           (set! cone-entries (cons info cone-entries)))))
-     ;; keep pipeline order (strata-info order) over the union
+         (set-add! union-sos (first info))))
      (define union-cone
        (for/list ([info (in-list (session-strata-info s))]
                   #:when (set-member? union-sos (first info)))
          info))
-     ;; 3. route (§0.5): delta-entry > replay-entry for monotone adds;
-     ;;    clear-and-rerun otherwise
+     ;; delta-entry eligibility (§0.5 mode 3): monotone adds whose union
+     ;; cone is a SINGLE stratum -- the batch stages as that stratum's
+     ;; iteration-0 delta and semi-naïve runs O(change).  Multi-stratum
+     ;; cones stay on replay-entry until boundary-delta capture exists
+     ;; (novel derivations of one cone stratum are not observable as the
+     ;; next one's delta pre-M0; presence transitions make them so).
+     (define delta-eligible? (and union-mono? (= 1 (length union-cone))))
+     ;; 2+3. apply the collapsed edits and propagate, per route
+     (define (apply-edits! #:stage-adds? [stage-adds? #f])
+       (for ([r (in-list nonempty)])
+         (for ([(tuple sign) (in-hash (hash-ref pending r))])
+           (cond
+             [(eq? sign '+)
+              (session-action! s (if stage-adds?
+                                     `(stage-tuple ,r ,@tuple)
+                                     `(add-tuple ,r ,@tuple)))]
+             [else
+              (session-action! s `(del-tuple ,r ,@tuple))
+              (read-one-line! s)])))   ; (deleted REL 0|1)
+       (hash-clear! pending))
      (cond
-       [(and union-mono? (delta-flavor-available? union-cone))
-        (error 'session "delta-entry flavor routing is 0.B5")]
+       [delta-eligible?
+        ;; the flavor builds lazily on this first increment ("delta-entry
+        ;; when compiled" -- here compilation IS the first increment's
+        ;; cost, cached for every later flush)
+        (define delta-so ((fourth (first union-cone))))
+        (apply-edits! #:stage-adds? #t)
+        (echo! s "(route delta 1)")
+        (send-plugin! s delta-so)
+        (drive-to-fixpoint! s)]
        [union-mono?
+        (apply-edits!)
         (echo! s (format "(route reenter ~a)" (length union-cone)))
         (for ([info (in-list union-cone)])
           (send-plugin! s (first info))
           (drive-to-fixpoint! s))]
        [else
+        (apply-edits!)
         ;; clear cone-written relations, EXCEPT those also written by
         ;; non-cone strata (shared diagnostic side channels: their
         ;; out-of-cone content cannot re-derive; stale in-cone diagnostic

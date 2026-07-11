@@ -212,6 +212,41 @@ public:
     return new Stratum(name);
   }
 
+  // Delta-entry variant (docs/incremental.md §0.5 mode 3, 0.B5): NO reload
+  // -- the staged batch (stageTuple) is the coming run's entire iteration-0
+  // delta, and every live index (registrations AND contents) survives into
+  // it; needs_reload stays armed for the next NORMAL push.  Same suspended
+  // guardrail; no hot-swap interplay (the delta flavor is a distinct
+  // stratum name, so an upgrade never matches it).
+  Stratum* beginStratumDelta(const std::string& name)
+  {
+    if (database->isSuspended())
+    {
+      emit("(error suspended \"beginStratumDelta is refused while a stratum "
+           "is suspended; continue to fixpoint first\")");
+      return nullptr;
+    }
+    return new Stratum(name);
+  }
+
+  // Stage one storage-order tuple as pending delta WITHOUT touching the
+  // full indices (docs/incremental.md §0.3, 0.B5/B6): the tuple enters the
+  // next run's iteration-0 delta EXACTLY ONCE, through the same send-shard
+  // path rule emissions use; the delta run's write phase then integrates
+  // it into every full index.  This is the exact-once staging discipline
+  // Phase 1's counters inherit -- an insert-plus-restage would double it.
+  void stageTuple(const std::string& rel, const std::vector<u64>& t)
+  {
+    if (refuseIfSuspended("stage-tuple")) return;
+    slog::Relation* r = database->getRelation(rel);
+    if (!r) { emit(std::string("(error \"stage-tuple: no relation ") + rel + "\")"); return; }
+    InsertBatch* b = new InsertBatch();
+    for (size_t i = 0; i < t.size(); ++i)
+      b->data[i] = t[i];
+    b->usage = (u32)t.size();
+    r->sendBatch(b);
+  }
+
   // Persist the database / one relation to disk.  These run an internal
   // stratum (the parallel BIN writers) that reuses the single RunState, so
   // they are refused while a user stratum is suspended (§4; continue to

@@ -421,30 +421,74 @@
 
 (define (emit-stratum-cpp job)
   (match-define (list proghash type-env stratum dbmanifest decomps) job)
+  ;; the delta-entry flavor (docs/incremental.md 0.B5) writes its own
+  ;; artifact family; "_delta" (not ".delta") because the name also becomes
+  ;; the daemon stratum name and rides into generated identifiers
+  (define hash-name
+    (if (delta-entry-flavor) (string-append proghash "_delta") proghash))
   ;; the augmented rule set (+ error/oracle arms) and the relations produced
   ;; within this stratum, both from stratum-rules+dynamic -- shared with the
   ;; sidecar manifest so recursive/non-recursive classification is derived once.
   (define-values (rules dynamic-rels)
     (stratum-rules+dynamic stratum type-env decomps))
+  ;; Delta-entry flavor (§0.5 mode 3): plan with the stratum's positive
+  ;; table/struct INPUTS marked dynamic too -- the planner then emits
+  ;; per-position delta-driven versions for them (the compiled entry point
+  ;; that accepts "just the new tuples"), replacing the run-once full
+  ;; scans; their delta indices/write-tasks follow from the same generic
+  ;; requisition flow.  build-cprog's dynamic set stays head-based, so the
+  ;; input-driven read tasks register ONCE -- exact, since an input's
+  ;; delta is nonempty only at iteration 0.  Lattice-valued reads stay
+  ;; static (the routing rule never delta-enters a lat cone), and negated
+  ;; reads never drive (guards, not drivers).
+  (define plan-dynamic
+    (if (not (delta-entry-flavor))
+        dynamic-rels
+        (for*/fold ([acc dynamic-rels])
+                   ([rule (in-set rules)]
+                    [r (in-set (rule-body-pos-rels rule))]
+                    #:unless (set-member? dynamic-rels r))
+          (match (hash-ref (type-env-rels type-env) r #f)
+            [`(struct ,_ ...) (set-add acc r)]
+            [`(table ,_ ...)
+             (if (rel-lattice-spec (type-env-rels type-env) r) acc (set-add acc r))]
+            [_ acc]))))
   (match-define (cons planned rel-env+)
-    (plan-all rules (type-env-rels type-env) dynamic-rels))
+    (plan-all rules (type-env-rels type-env) plan-dynamic))
   (define cprog (lower-all planned rel-env+ decomps))
   ;; atomic writes: run-tests.sh -jN can compile the SAME content-addressed
   ;; stratum in two processes at once, and a torn .cpp/.cprog read would break a
   ;; concurrent clang (docs/fast-compile.md §8)
-  (call-with-atomic-output (fullpath (format "build/~a.cprog" proghash))
+  (call-with-atomic-output (fullpath (format "build/~a.cprog" hash-name))
                            (lambda () (pretty-write cprog)))
-  (define emitted (write-cpp cprog dbmanifest proghash))
+  (define emitted (write-cpp cprog dbmanifest hash-name))
   ;; write-cpp returns either one string (a single TU) or a list of
   ;; (suffix . contents) pairs -- the spine (suffix "") plus part TUs.
   (define tus (if (string? emitted) (list (cons "" emitted)) emitted))
   (for/list ([tu (in-list tus)])
     (match-define (cons suffix contents) tu)
     (define path
-      (fullpath (format "build/~a~a.cpp" proghash
+      (fullpath (format "build/~a~a.cpp" hash-name
                         (if (string=? suffix "") "" (string-append "." suffix)))))
     (call-with-atomic-output path (lambda () (display contents)))
     path))
+
+;; Build (or reuse) the delta-entry flavor of one stratum job
+;; (docs/incremental.md §0.5 mode 3, 0.B5), returning its .so path.
+;; Compiled LAZILY -- the session driver calls this on the first increment
+;; that targets the stratum's inputs ("delta-entry when compiled,
+;; replay-entry until then") -- and cached as build/<hash>_delta.O0.so.
+;; -O0 only for now: an increment's latency is dominated by the fixpoint,
+;; and the artifact caches; the tiered/-O2 plumbing can adopt the flavor
+;; later if profiles ask.
+(define (ensure-delta-so job)
+  (match-define (list proghash _te _st _dm _dc) job)
+  (define so (fullpath (format "build/~a_delta.O0.so" proghash)))
+  (unless (file-exists? so)
+    (define cpps (parameterize ([delta-entry-flavor #t])
+                   (emit-stratum-cpp job)))
+    (build-so cpps so #:opt "-O0"))
+  so)
 
 ;; -----------------------------------------------------------------------
 ;; Tiered compilation entry point (docs/fast-compile.md).
@@ -469,7 +513,10 @@
 ;;                       behavior.  A previously-built build/<hash>.so is always
 ;;                       preferred in every mode (a re-run is pure -O2).
 
-(struct sbuild (hash o2-path runnable upgrade))
+(struct sbuild (hash o2-path runnable upgrade delta))
+;; `delta` -- a thunk returning the delta-entry flavor's .so path, building
+;; it on first call (ensure-delta-so; docs/incremental.md 0.B5).  The
+;; session driver forces it only when the routing rule picks delta-entry.
 
 ;; Granular O0->O2 upgrade (docs/fast-compile.md §14): given this stratum's TU
 ;; .cpp paths, return a closure the driver calls at each fixpoint boundary.  It
@@ -683,10 +730,12 @@
         ;; Optimized artifact already cached: always the best thing to run.
         [(file-exists? o2so)
          (clear-o2-marker! o2so)   ; any leftover in-flight marker is moot now
-         (sbuild proghash o2so (lambda () (cons o2so 'o2)) #f)]
+         (sbuild proghash o2so (lambda () (cons o2so 'o2)) #f
+                 (lambda () (ensure-delta-so job)))]
         ;; -O0-only mode with a warm -O0 artifact: reuse it, no upgrade.
         [(and (equal? mode "0") (file-exists? o0so))
-         (sbuild proghash #f (lambda () (cons o0so 'o0)) #f)]
+         (sbuild proghash #f (lambda () (cons o0so 'o0)) #f
+                 (lambda () (ensure-delta-so job)))]
         ;; TIERED with a warm -O0 artifact but no -O2 yet (e.g. a prior run
         ;; exited before the background -O2 landed): run the cached -O0 NOW --
         ;; no re-emit, no -O0 rebuild -- and queue the background -O2 only if we
@@ -698,18 +747,19 @@
          (define cpps (if (null? cpps0) (emit-stratum-cpp job) cpps0))
          (when (try-claim-o2! o2so)
            (set! o2-cmds (cons (o2-build-command cpps o2so) o2-cmds)))
-         (sbuild proghash o2so (lambda () (cons o0so 'o0)) (make-upgrade proghash cpps))]
+         (sbuild proghash o2so (lambda () (cons o0so 'o0)) (make-upgrade proghash cpps)
+                 (lambda () (ensure-delta-so job)))]
         [else
          (define cpps (emit-stratum-cpp job))   ; write .cpp(s) now (fast, main thread)
          (case mode
            [("2")
             (sbuild proghash o2so
                     (pooled-eager (lambda () (build-so cpps o2so #:opt "-O2") (cons o2so 'o2)))
-                    #f)]
+                    #f (lambda () (ensure-delta-so job)))]
            [("0")
             (sbuild proghash #f
                     (pooled-eager (lambda () (build-so cpps o0so #:opt "-O0") (cons o0so 'o0)))
-                    #f)]
+                    #f (lambda () (ensure-delta-so job)))]
            [else ; tiered: eager -O0 to run now, then upgrade cluster-by-cluster to
                  ;; -O2 as the background fills the .o cache (docs/fast-compile.md §14)
             ;; claim-gate the -O2 so concurrent/successive runs that all miss the
@@ -718,6 +768,7 @@
               (set! o2-cmds (cons (o2-build-command cpps o2so) o2-cmds)))
             (sbuild proghash o2so
                     (pooled-eager (lambda () (build-so cpps o0so #:opt "-O0") (cons o0so 'o0)))
-                    (make-upgrade proghash cpps))])])))
+                    (make-upgrade proghash cpps)
+                    (lambda () (ensure-delta-so job)))])])))
   (spawn-detached-o2-batch (reverse o2-cmds))
   (values strata partition edb-boundary frozen-dirs))

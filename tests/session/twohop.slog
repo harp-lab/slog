@@ -1,0 +1,15 @@
+;; Session fixture (docs/incremental.md B4/B5): a two-stratum monotone
+;; cone -- endpoint reads path reads edge.  A batch into edge must route
+;; through replay-entry (multi-stratum cones stay off delta-entry until
+;; boundary-delta capture, M0), re-firing both strata.
+
+table (edge int int)
+table (path int int)
+table (endpoint int)
+
+rule (edge 1 2) (edge 2 3)
+
+rule (edge X Y) --> (path X Y)
+rule (path X Y) (edge Y Z) --> (path X Z)
+
+rule (path X Y) --> (endpoint Y)

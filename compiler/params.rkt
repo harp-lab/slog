@@ -28,3 +28,12 @@
 ;; .so cache key (compile.rkt), so flipping it cannot serve stale plugins.
 (define semijoin-filters-enabled
   (make-parameter (not (getenv "SLOG_NO_SEMIJOIN"))))
+
+;; Delta-entry flavor (docs/incremental.md §0.5 mode 3, 0.B5): when set, a
+;; stratum is re-planned with its positive table/struct INPUTS marked
+;; dynamic -- per-position delta-driven versions replace the run-once full
+;; scans -- and its plugin registers under beginStratumDelta (no reload:
+;; the staged batch IS iteration-0's delta).  Emitted to distinct
+;; build/<hash>_delta.* artifacts by ensure-delta-so (compile.rkt); never
+;; on for the base artifacts, so it needs no cache-key entry.
+(define delta-entry-flavor (make-parameter #f))

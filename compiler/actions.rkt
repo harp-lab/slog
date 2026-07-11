@@ -124,6 +124,25 @@
     ;; B2): sent for each cone-written relation before the cone re-push.
     [`(clear-rel ,rel)
      (format "  d->clearRelation(\"~a\");\n" rel)]
+    ;; Stage one tuple as pending delta only (docs/incremental.md §0.3,
+    ;; 0.B5/B6 exact-once): the delta-entry re-push's iteration-0 delta.
+    ;; Same value encoding as add-tuple.
+    [`(stage-tuple ,rel ,vals ...)
+     (define enc
+       (for/list ([v (in-list vals)])
+         (cond
+           [(string? v) (format "str_encode(db, \"~a\")" v)]
+           [(exact-integer? v)
+            (if (and (>= v (- (expt 2 31))) (< v (expt 2 31)))
+                (format "s32_encode(~a)" v)
+                (format "db->encodeIntLiteral(\"~a\")" v))]
+           [(real? v) (format "float_encode(~a)" (exact->inexact v))]
+           [(symbol? v) (format "str_encode(db, \"~a\")" v)]
+           [else (error 'action-so "unsupported stage-tuple value: ~a" v)])))
+     (string-append
+      "  slog::Database* db = d->db();\n"
+      (format "  std::vector<u64> t = { ~a };\n" (string-join enc ", "))
+      (format "  d->stageTuple(\"~a\", t);\n" rel))]
     ;; Segment boundary (docs/incremental.md §0.4-§0.5, B0): announce the
     ;; relation names the upcoming program segment writes, so the daemon
     ;; rebinds each already-bound one to a NEW physical version (full copy of

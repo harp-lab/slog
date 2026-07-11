@@ -1092,8 +1092,12 @@
      "extern \"C\" void slog_plugin(slog::Daemon* d)\n{\n"
      "  slog::Database* db = d->db();\n"
      ;; beginStratum first: it performs the deferred between-strata reload, so
-     ;; the index registrations below happen against the reloaded database
-     (format "  slog::Stratum* s = d->beginStratum(\"~a\");\n" stratum-name)
+     ;; the index registrations below happen against the reloaded database.
+     ;; The delta-entry flavor (docs/incremental.md 0.B5) registers under
+     ;; beginStratumDelta instead: NO reload -- the staged batch is the
+     ;; coming run's whole iteration-0 delta, and every live index survives.
+     (format "  slog::Stratum* s = d->beginStratum~a(\"~a\");\n"
+             (if (delta-entry-flavor) "Delta" "") stratum-name)
      ;; null (and an emitted error) if a stratum is suspended and this is not a
      ;; hot-swap upgrade; bail before touching s (docs/pausing.md §4 guardrail)
      "  if (s == nullptr) return;\n"

@@ -413,7 +413,7 @@ Secondary/join indices are kept only for versions that live strata read and
 are rebuildable on demand; disk spill for cold versions is a flagged later
 optimisation, not a Phase 0 concern.
 
-#### 0.5.1 B0–B4 as built (2026-07-11): version substrate, re-entry modes, routing
+#### 0.5.1 0.B as built (2026-07-11): version substrate, re-entry modes, routing, delta-entry
 
 What shipped, and the decisions the design left open:
 
@@ -564,6 +564,49 @@ What shipped, and the decisions the design left open:
   - Anchors are tip-only in Phase-0-B4; the recipe protocol (0.C) adds
     point arguments, and the rebound guard already refuses the cases
     that need them.
+- **B5 — delta-entry, single-hop first (same day).** The flavor is one
+  planner seam plus one daemon seam:
+  - **Compiler:** under the `delta-entry-flavor` parameter,
+    `emit-stratum-cpp` re-plans the same job with the stratum's positive
+    table/struct INPUTS added to the planner's dynamic set — the existing
+    version machinery then emits per-position delta-driven variants for
+    them (with the exact-semi-naïve `R_old` splits), replacing the
+    run-once full scans; their delta indices and write tasks follow from
+    the generic requisition flow. `build-cprog`'s dynamic set stays
+    head-based, so input-driven read tasks register ONCE — exact, an
+    input's delta is nonempty only at iteration 0. The plugin registers
+    under `beginStratumDelta`; artifacts are `build/<hash>_delta.*`
+    (underscore: the name rides into the daemon stratum name), -O0,
+    compiled by `ensure-delta-so` LAZILY on the first increment ("delta-
+    entry when compiled" — the first increment pays the compile, cached
+    thereafter). Every `sbuild` carries the thunk.
+  - **Daemon:** `beginStratumDelta` = no reload, every live index
+    (registrations AND contents) survives, `needs_reload` stays armed for
+    the next normal push; `stageTuple` = the batch enters the pending
+    send-shards ONLY (→ iteration-0 delta; the run's write phase
+    integrates it into full — the B6 exact-once path); and `addIndex` now
+    **backfills a newly-registered full ordering from existing content**
+    — a delta re-push registers fresh join orderings against a live
+    database with no reload to populate them; an empty-but-registered
+    index would silently under-derive. (No-op on all pre-existing paths:
+    post-reload registrations find nothing indexed.)
+  - **Routing:** `session-flush!` delta-enters when the union cone is a
+    SINGLE stratum (all-adds + monotone). Multi-stratum cones stay on
+    replay-entry: one cone stratum's novel derivations are not observable
+    as the next one's delta pre-M0 — boundary capture is exactly M0's
+    presence-transition machinery, so chaining lands there rather than
+    growing a parallel set-semantics mechanism now.
+  - Verified O(change): the fire audit of a one-edge increment into the
+    TC fixture shows the copy rule firing exactly once and the recursive
+    rule exactly 3× (the three new join pairs); three consecutive delta
+    flushes keep exact closure content with live indices surviving across
+    `beginStratumDelta` boundaries.
+- **B6 — exact-once staging, asserted (same day).** One entry path:
+  `stageTuple` → send-shards → iteration-0 delta (never insert-plus-
+  restage). The test pins the delta flush's `$stat_fires` rows to the
+  exact O(change) counts — a double-staged batch would double the
+  once-variant fires and the pinned counts could not appear. This is the
+  discipline M0's counters inherit (§0.3, §8).
 - **Known imprecisions, accepted for B0:** un-anchored `add-tuple` and all
   imports mutate the *current tip* in place (a batch/link as its own
   version event arrives with 0.C/0.D); during a chain load, a layer's
@@ -1773,16 +1816,20 @@ SHIPPED 2026-07-11 — all eight items done; see §0.8.1 for as-built decisions.
   stratum boundaries (refuseIfSuspended semantics); fold incoming updates
   into per-(point, relation) batch sets with same-point collapse (§0.2);
   compose with pausing budgets.
-- *B5 — delta-entry (O(change)), default-on, lazily compiled.* Delta-
+- *B5 — delta-entry (O(change)), default-on, lazily compiled.* **SHIPPED
+  2026-07-11 (single-hop; see §0.5.1) — multi-stratum chaining rides M0's
+  presence transitions.** Delta-
   preserving reload variant (stage only the batch, not the whole DB);
   delta-driven variants for cross-stratum body relations (join planner:
   dynamic-rels ∪ inputs) compiled as a separate cached flavor
-  (`build/<hash>.delta.so`) **on first increment targeting that stratum's
+  (`build/<hash>_delta.O0.so` as built) **on first increment targeting that stratum's
   inputs** — no surface declaration, fully-incremental is the default; an
   opt-out flag for one-shot batch runs. Required (not optional) by Phase 1 —
   replay-entry's re-fire is dedup-absorbed today but would double-count.
-- *B6 — exact-once staging discipline.* One entry path for a batch's tuples
-  into delta (no double-stage across reload), asserted by test now, load-
+- *B6 — exact-once staging discipline.* **SHIPPED 2026-07-11 — see
+  §0.5.1.** One entry path for a batch's tuples
+  into delta (no double-stage across reload), asserted by test now (the
+  pinned fire-audit counts of a delta flush), load-
   bearing at M0 (§0.3, §8).
 
 **0.C — Batch protocol, anchors & the session recipe (§0.2–§0.4).**
