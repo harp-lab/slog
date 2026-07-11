@@ -872,6 +872,46 @@ public:
     }
   }
 
+  // Retract one storage-order tuple from every registered index (docs/
+  // incremental.md §0.6, B2 -- the "version rebuild minus retracted tuples"
+  // half of clear-and-rerun).  The btrees have no point-delete, so dump the
+  // master's rows minus the tuple, clear contents, re-insert -- O(relation)
+  // by design for Phase 0; the counting substrate (M0) replaces presence
+  // rebuilds with counter decrements.  Returns whether the tuple was found.
+  bool removeTuple(const u64* t)
+  {
+    auto ordptr = getAnyIndex();
+    if (ordptr == nullptr)
+      return false;
+    const std::vector<u16>& ord = *ordptr;
+    std::vector<u16> rewrite_ord(ord.size(), 0);
+    for (u16 i = 0; i < ord.size(); ++i)
+      rewrite_ord[ord[i]] = i;
+    std::vector<u64> kept;
+    bool found = false;
+    Index** buckets = getIndex(ord, false);
+    for (u16 b = 0; b < bucket_count; ++b)
+      buckets[b]->forEach([&](const u64* r)
+      {
+	u64 row[max_daemon_arity + 1];
+	for (u16 c = 0; c < arity; ++c)
+	  row[c] = r[rewrite_ord[c]];
+	bool eq = true;
+	for (u16 c = 0; c < arity; ++c)
+	  if (row[c] != t[c]) { eq = false; break; }
+	if (eq)
+	  found = true;
+	else
+	  kept.insert(kept.end(), row, row + arity);
+      });
+    if (!found)
+      return false;
+    clearContents();
+    for (size_t i = 0; i < kept.size(); i += arity)
+      insertTupleAllIndices(kept.data() + i);
+    return true;
+  }
+
   // Drop every tuple while KEEPING the index registrations (contrast
   // clearAllIndices, which removes the indices themselves): empties each
   // index bucket, the pending delta, and the send shards.  Used to refresh

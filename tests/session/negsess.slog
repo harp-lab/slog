@@ -1,0 +1,18 @@
+;; Session fixture (docs/incremental.md B2): reachability with a negation
+;; consumer -- unreached counts nodes NOT path-reachable from 1.  The
+;; reserved "~ + increments" case (0.A8): a monotone ADD into edge SHRINKS
+;; unreached, so replay-entry must refuse (neg cone edge) and
+;; clear-and-rerun must recompute the complement.
+
+table (edge int int)
+table (path int int)
+table (node int)
+table (unreached int)
+
+rule (node 1) (node 2) (node 3) (node 4) (node 5)
+rule (edge 1 2) (edge 2 3)
+
+rule (edge X Y) --> (path X Y)
+rule (path X Y) (edge Y Z) --> (path X Z)
+
+rule (node X) ~(path 1 X) --> (unreached X)

@@ -276,6 +276,43 @@ public:
     r->insertTupleAllIndices(t.data());
     needs_reload = true;
   }
+  // Retract one tuple out-of-band (docs/incremental.md §0.6, B2): the
+  // "rebuild the anchored version minus retracted tuples" half of
+  // clear-and-rerun -- the driver clears + re-runs the cone afterward.
+  // Plain tables only: a lattice key has no tuple-retraction semantics
+  // (values re-derive only by re-run) and struct rows are interned
+  // derivations, not inputs.  Replies (deleted REL 0|1).
+  void delTuple(const std::string& rel, const std::vector<u64>& t)
+  {
+    if (refuseIfSuspended("del-tuple")) return;
+    slog::Relation* r = database->getRelation(rel);
+    if (!r) { emit(std::string("(error \"del-tuple: no relation ") + rel + "\")"); return; }
+    if (r->isLattice() || r->getStructId() > 0)
+    {
+      emit(std::string("(error \"del-tuple: ") + rel
+           + " is a lattice/struct relation; retract inputs, not derivations\")");
+      return;
+    }
+    const bool found = r->removeTuple(t.data());
+    needs_reload = true;
+    emit(std::string("(deleted ") + rel + " " + (found ? "1" : "0") + ")");
+  }
+
+  // Empty one relation's LATEST version -- contents only, registrations
+  // persist (docs/incremental.md §0.5 mode 2 / B2): the driver clears each
+  // cone-written relation before re-pushing the cone's strata, so the
+  // re-run's iteration-0 reload stages base + batch without the stale
+  // derivations.  Cleared struct relations re-mint ids on re-derivation;
+  // intern allocators persist (monotone, never reused).
+  void clearRelation(const std::string& rel)
+  {
+    if (refuseIfSuspended("clear-rel")) return;
+    slog::Relation* r = database->getRelation(rel);
+    if (!r) { emit(std::string("(error \"clear-rel: no relation ") + rel + "\")"); return; }
+    r->clearContents();
+    needs_reload = true;
+  }
+
   // Replace / refresh a relation from disk -- mutates its indices in place, so
   // also refused while suspended (it would corrupt a parked stratum's delta).
   void loadRelation(const std::string& db_name, const std::string& rel)

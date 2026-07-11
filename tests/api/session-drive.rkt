@@ -56,7 +56,12 @@
      (match-define (cons rel vals) (string-split arg ","))
      `(add-tuple ,rel ,@(for/list ([v (in-list vals)])
                           (or (string->number v) v)))]
+    [(list "del-tuple" arg)
+     (match-define (cons rel vals) (string-split arg ","))
+     `(del-tuple ,rel ,@(for/list ([v (in-list vals)])
+                          (or (string->number v) v)))]
     [(list "reenter" rel) `(reenter ,(string->symbol rel))]
+    [(list "rerun" rel) `(rerun ,(string->symbol rel))]
     [_ (error 'session-drive "unrecognized op: ~a" s)]))
 
 ;; Read one stratum's build/<hash>.meta: (values dynamic-rels reads) where
@@ -143,6 +148,55 @@
   ;; per-stratum (list so-path dynamic-rels reads) of every run: segment so
   ;; far, in pipeline order -- the reenter op's cone input
   (define strata-info '())
+  ;; Live introspection: (values scc->pos rel->binding-positions) from one
+  ;; (pipeline) round trip.
+  (define (introspect!)
+    (send-plugin (action-so `(pipeline)))
+    (define pline (read-line out))
+    (when (eof-object? pline) (error 'session-drive "daemon EOF at introspection"))
+    (displayln pline)
+    (match (read (open-input-string pline))
+      [`(pipeline ,_ (strata ,ss ...) ,rels ...)
+       (values (for/hash ([s (in-list ss)])
+                 (match-define `(s ,scc ,pos ,_name) s)
+                 (values scc pos))
+               (for/hash ([r (in-list rels)])
+                 (match-define `(rel ,name ,vs ...) r)
+                 (values name
+                         (for/list ([v (in-list vs)])
+                           (match-define `(v ,_ ,pos ,_sz) v)
+                           pos))))]
+      [x (error 'session-drive "unparseable (pipeline) reply: ~a" x)]))
+  ;; cone(rel) for a latest-anchored batch: anchor at the target's last
+  ;; binding, candidates = strata bound at-or-after it (earlier strata read
+  ;; a PREDECESSOR version and must not re-fire; strata-info index = scc --
+  ;; both count fresh pushes in order, and re-entry pushes land at higher
+  ;; sccs, deliberately absent from strata-info), then the read-closure.
+  ;; The rebound guard applies to BOTH re-entry modes: a re-pushed stratum
+  ;; binds the LATEST environment, which equals its own position's
+  ;; environment only if nothing it touches (reads or writes) was rebound
+  ;; after it -- positional re-binding + boundary re-materialisation
+  ;; arrives with anchored batches (0.C).
+  (define (cone-of! rel)
+    (define-values (strata-pos chains) (introspect!))
+    (define anchor
+      (let ([c (hash-ref chains rel '())])
+        (if (null? c) 0 (last c))))
+    (define candidates
+      (for/list ([info (in-list strata-info)] [scc (in-naturals)]
+                 #:when (>= (hash-ref strata-pos scc 0) anchor))
+        (append info (list (hash-ref strata-pos scc 0)))))
+    (define-values (cone mono?) (cone-strata candidates rel))
+    (for ([info (in-list cone)])
+      (match-define (list _so dyn reads pos) info)
+      (for ([r (in-sequences (in-list dyn) (in-list (map car reads)))])
+        (define rebound
+          (for/or ([p (in-list (hash-ref chains r '()))]) (> p pos)))
+        (when rebound
+          (error 'session-drive
+                 "~a was rebound after a cone stratum (pos ~a): latest-env re-entry is unsound here; anchored replay is 0.C"
+                 r pos))))
+    (values cone mono?))
   (for ([op (in-list ops)])
     (match op
       [`(open ,db)
@@ -166,59 +220,44 @@
          (drive-to-fixpoint!))]
       [`(add-tuple ,rel ,vals ...)
        (send-plugin (action-so `(add-tuple ,rel ,@vals)))]
+      [`(del-tuple ,rel ,vals ...)
+       (send-plugin (action-so `(del-tuple ,rel ,@vals)))
+       (read-one-line!)]   ; (deleted REL 0|1)
       [`(reenter ,rel)
-       ;; Live introspection: the target's anchored-version position (last
-       ;; binding = the version an un-anchored batch updated) and every
-       ;; stratum's bind position.
-       (send-plugin (action-so `(pipeline)))
-       (define pline (read-line out))
-       (when (eof-object? pline) (error 'session-drive "daemon EOF at reenter"))
-       (displayln pline)
-       (define-values (strata-pos chains)
-         (match (read (open-input-string pline))
-           [`(pipeline ,_ (strata ,ss ...) ,rels ...)
-            (values (for/hash ([s (in-list ss)])
-                      (match-define `(s ,scc ,pos ,_name) s)
-                      (values scc pos))
-                    (for/hash ([r (in-list rels)])
-                      (match-define `(rel ,name ,vs ...) r)
-                      (values name
-                              (for/list ([v (in-list vs)])
-                                (match-define `(v ,_ ,pos ,_sz) v)
-                                pos))))]
-           [x (error 'session-drive "unparseable (pipeline) reply: ~a" x)]))
-       (define anchor
-         (let ([c (hash-ref chains rel '())])
-           (if (null? c) 0 (last c))))
-       ;; Candidates: strata bound at-or-after the anchored version's
-       ;; boundary -- earlier strata read a PREDECESSOR version and are
-       ;; untouched by a latest-anchored batch.  (strata-info index = scc:
-       ;; both count fresh pushes in order; re-entry pushes land at higher
-       ;; sccs and are deliberately absent from strata-info.)
-       (define candidates
-         (for/list ([info (in-list strata-info)] [scc (in-naturals)]
-                    #:when (>= (hash-ref strata-pos scc 0) anchor))
-           (append info (list (hash-ref strata-pos scc 0)))))
-       (define-values (cone mono?) (cone-strata candidates rel))
+       ;; Replay-entry (0.B1): sound only for an all-monotone cone.
+       (define-values (cone mono?) (cone-of! rel))
        (unless mono?
          (error 'session-drive
-                "non-monotone cone for ~a (neg/lat edge): clear-and-rerun is 0.B2"
+                "non-monotone cone for ~a (neg/lat edge): use rerun (clear-and-rerun, 0.B2)"
                 rel))
-       ;; Latest-binding soundness guard: a re-pushed stratum binds the
-       ;; LATEST environment, which equals its own position's environment
-       ;; only if nothing it touches (reads or writes) was rebound after
-       ;; it.  A later rebinding needs positional re-binding + boundary
-       ;; re-materialisation -- clear-and-rerun territory (0.B2).
-       (for ([info (in-list cone)])
-         (match-define (list _so dyn reads pos) info)
-         (for ([r (in-sequences (in-list dyn) (in-list (map car reads)))])
-           (define rebound
-             (for/or ([p (in-list (hash-ref chains r '()))]) (> p pos)))
-           (when rebound
-             (error 'session-drive
-                    "~a was rebound after a cone stratum (pos ~a): latest-env replay-entry is unsound here; clear-and-rerun is 0.B2"
-                    r pos))))
        (printf "(reenter ~a ~a)\n" rel (length cone))
+       (for ([info (in-list cone)])
+         (send-plugin (first info))
+         (drive-to-fixpoint!))]
+      [`(rerun ,rel)
+       ;; Clear-and-rerun (0.B2): sound for everything the rebound guard
+       ;; admits -- deletions and non-monotone cones included.  Clear each
+       ;; cone-written relation (latest version, contents only), then
+       ;; re-push the cone; the re-run's iteration-0 reload stages
+       ;; base + batch without the stale derivations, so the suffix runs
+       ;; from scratch.  Relations also written by NON-cone strata (the
+       ;; shared diagnostic side channels: error, $seq_*, ...) are exempt
+       ;; from clearing -- their out-of-cone content cannot re-derive;
+       ;; stale in-cone diagnostic rows are accepted for Phase 0.
+       (define-values (cone _mono?) (cone-of! rel))
+       (define cone-sos (for/set ([i (in-list cone)]) (first i)))
+       (define cone-dyn
+         (for*/set ([i (in-list cone)] [d (in-list (second i))]) d))
+       (define noncone-dyn
+         (for*/set ([i (in-list strata-info)]
+                    #:unless (set-member? cone-sos (first i))
+                    [d (in-list (second i))])
+           d))
+       (define clear-set
+         (sort (set->list (set-subtract cone-dyn noncone-dyn)) symbol<?))
+       (for ([r (in-list clear-set)])
+         (send-plugin (action-so `(clear-rel ,r))))
+       (printf "(rerun ~a ~a ~a)\n" rel (length cone) (length clear-set))
        (for ([info (in-list cone)])
          (send-plugin (first info))
          (drive-to-fixpoint!))]

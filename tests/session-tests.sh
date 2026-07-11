@@ -113,13 +113,62 @@ expect "b1m-cone-anchored" "(reenter edge 1)" out/sess-b1m.log
 expect "b1m-path-grown"    "(dumpdone 15)" out/sess-b1m.log
 
 # A batch into color puts cone.slog's bright stratum in the cone, but a
-# later segment REWROTE bright -- latest-env replay-entry is unsound there
-# and must refuse, naming clear-and-rerun (0.B2).
+# later segment REWROTE bright -- latest-env re-entry is unsound there and
+# must refuse (positional/anchored replay arrives with 0.C).
 timeout 600 racket tests/api/session-drive.rkt \
   run:tests/session/cone.slog run:tests/session/seg-bright.slog \
   add-tuple:color,8 reenter:color \
   > out/sess-b1g.log 2>&1
-expect "b1-rebound-guard" "clear-and-rerun is 0.B2" out/sess-b1g.log
+expect "b1-rebound-guard" "latest-env re-entry is unsound here" out/sess-b1g.log
+
+# --- B2: deletions + clear-and-rerun ---------------------------------------
+# Plain deletion: retract edge (2 3), clear-and-rerun cone(edge) -- path
+# rebuilds from scratch over the suffix: {(1,2),(3,4)} only.
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/session/base.slog \
+  del-tuple:edge,2,3 rerun:edge \
+  dump-rel:path \
+  > out/sess-b2d.log 2>&1
+expect "b2-deleted"    "(deleted edge 1)" out/sess-b2d.log
+expect "b2-del-cone"   "(rerun edge 1 " out/sess-b2d.log
+expect "b2-path-minus" "(dumpdone 2)" out/sess-b2d.log
+
+# Negation cone (the reserved "~ + increments" case, 0.A8): unreached =
+# nodes NOT path-reachable from 1.  A monotone ADD shrinks it (3 -> 2), a
+# deletion grows it (2 -> 4); both route through clear-and-rerun (the cone
+# holds a neg edge), and each re-run recomputes the complement exactly.
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/session/negsess.slog \
+  dump-rel:unreached \
+  add-tuple:edge,3,4 rerun:edge dump-rel:unreached \
+  del-tuple:edge,2,3 rerun:edge dump-rel:unreached \
+  > out/sess-b2n.log 2>&1
+expect "b2-neg-initial" "(dumpdone 3)" out/sess-b2n.log
+expect "b2-neg-cone"    "(rerun edge 2 " out/sess-b2n.log
+expect "b2-neg-shrunk"  "(dumpdone 2)" out/sess-b2n.log
+expect "b2-neg-grown"   "(dumpdone 4)" out/sess-b2n.log
+
+# replay-entry must refuse the negation cone and point at rerun
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/session/negsess.slog \
+  add-tuple:edge,4,5 reenter:edge \
+  > out/sess-b2r.log 2>&1
+expect "b2-neg-refusal" "use rerun (clear-and-rerun, 0.B2)" out/sess-b2r.log
+
+# Structs in the cone (§0.5 mode 2's id note): retract (in 3 4) -- the
+# out/pair stratum clears and re-derives; pair re-mints ids (allocators
+# monotone, registrations kept) and out's rows still resolve their struct
+# ids (content rendering proves no dangling references).  dist is outside
+# cone(in) and must survive untouched.
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/session/base2.slog \
+  del-tuple:in,3,4 rerun:in \
+  dump-rel:out dump-rel:pair sizes-at:99 \
+  > out/sess-b2s.log 2>&1
+expect "b2-struct-cone" "(rerun in 1 " out/sess-b2s.log
+expect "b2-out-minus"   "(dumpdone 1)" out/sess-b2s.log
+expect "b2-out-content" "(dumprow (pair 1 2))" out/sess-b2s.log
+expect "b2-dist-kept"   "(dist 3)" out/sess-b2s.log
 
 echo
 echo "$PASS passed, $FAIL failed"

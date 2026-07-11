@@ -101,6 +101,29 @@
       "  slog::Database* db = d->db();\n"
       (format "  std::vector<u64> t = { ~a };\n" (string-join enc ", "))
       (format "  d->addTuple(\"~a\", t);\n" rel))]
+    ;; Retract one tuple (docs/incremental.md §0.6, B2): the version-rebuild
+    ;; half of clear-and-rerun; the driver clears + re-runs the cone after.
+    ;; Same value encoding as add-tuple.  Replies (deleted REL 0|1).
+    [`(del-tuple ,rel ,vals ...)
+     (define enc
+       (for/list ([v (in-list vals)])
+         (cond
+           [(string? v) (format "str_encode(db, \"~a\")" v)]
+           [(exact-integer? v)
+            (if (and (>= v (- (expt 2 31))) (< v (expt 2 31)))
+                (format "s32_encode(~a)" v)
+                (format "db->encodeIntLiteral(\"~a\")" v))]
+           [(real? v) (format "float_encode(~a)" (exact->inexact v))]
+           [(symbol? v) (format "str_encode(db, \"~a\")" v)]
+           [else (error 'action-so "unsupported del-tuple value: ~a" v)])))
+     (string-append
+      "  slog::Database* db = d->db();\n"
+      (format "  std::vector<u64> t = { ~a };\n" (string-join enc ", "))
+      (format "  d->delTuple(\"~a\", t);\n" rel))]
+    ;; Empty one relation's latest version, registrations kept (§0.5 mode 2/
+    ;; B2): sent for each cone-written relation before the cone re-push.
+    [`(clear-rel ,rel)
+     (format "  d->clearRelation(\"~a\");\n" rel)]
     ;; Segment boundary (docs/incremental.md §0.4-§0.5, B0): announce the
     ;; relation names the upcoming program segment writes, so the daemon
     ;; rebinds each already-bound one to a NEW physical version (full copy of

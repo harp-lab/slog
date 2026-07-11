@@ -413,7 +413,7 @@ Secondary/join indices are kept only for versions that live strata read and
 are rebuildable on demand; disk spill for cold versions is a flagged later
 optimisation, not a Phase 0 concern.
 
-#### 0.5.1 B0+B1 as built (2026-07-11): the version substrate & cone-limited replay-entry
+#### 0.5.1 B0–B2 as built (2026-07-11): version substrate, replay-entry, clear-and-rerun
 
 What shipped, and the decisions the design left open:
 
@@ -496,6 +496,37 @@ What shipped, and the decisions the design left open:
     `restoreOrphanRelations` (indices cleared, content re-materialised
     from their own dumped shards) — the keep-alive discipline api-tests §9
     already pinned.
+- **B2 — deletions + clear-and-rerun (same day).** Primitives:
+  `Relation::removeTuple` (dump-filter-rebuild — btrees have no
+  point-delete; O(relation) by design until M0's counters) under a
+  `(del-tuple REL v…)` action, refused for lattice/struct relations
+  (retract inputs, not derivations); `(clear-rel REL)` = `clearContents`
+  on the latest version — contents only, registrations and intern
+  allocators persist. Driver `rerun` op: same cone/anchor/rebound-guard as
+  `reenter` but ignoring the monotone bit — clear each cone-written
+  relation, then re-push the cone; the re-run's iteration-0 reload stages
+  base ± batch without the stale derivations, so the suffix runs from
+  scratch (the mode-2 soundness argument). Decisions:
+  - **Clear-set = cone `dynamic-rels` minus relations also written by
+    non-cone strata** — the shared diagnostic side channels (`error`,
+    `$seq_*`, …) must not lose their out-of-cone content; stale in-cone
+    diagnostic rows are accepted for Phase 0. A *genuine* IDB relation
+    with writers in and out of the cone implies a cross-segment rebinding,
+    which the rebound guard already refused.
+  - **When the rebound guard passes, every cone head's version IS latest**
+    (nothing a cone stratum touches was rebound after it) — so
+    latest-environment re-push is exact and B0's `bind_pos` stays
+    unconsumed. The guard-failing case (batches anchored at old points
+    under later rewrites) needs positional re-binding, a position-aware
+    reload variant, and boundary re-materialisation — deferred to 0.C's
+    anchored batches, where it first becomes expressible.
+  - **Struct relations in the cone** re-mint ids on re-derivation exactly
+    as §0.5 mode 2 prescribes (allocators monotone through
+    `clearContents`); referents are themselves in the cone, so content
+    stays closed (asserted by rendering).
+  - The **reserved `~` + increments case (0.A8)** is now covered: a
+    monotone ADD through a negation shrinks the complement, a deletion
+    grows it; `reenter` refuses the neg cone toward `rerun`.
 - **Known imprecisions, accepted for B0:** un-anchored `add-tuple` and all
   imports mutate the *current tip* in place (a batch/link as its own
   version event arrives with 0.C/0.D); during a chain load, a layer's
@@ -1684,11 +1715,14 @@ SHIPPED 2026-07-11 — all eight items done; see §0.8.1 for as-built decisions.
   cone metadata. *(As built: cone + anchor filter + latest-binding/monotone
   guards in the session driver's `reenter`; guarded cases route to B2;
   promotion into runslog's batch flow is B4.)*
-- *B2 — per-relation clear + clear-and-rerun.* `clearIndices` on one
+- *B2 — per-relation clear + clear-and-rerun.* **SHIPPED 2026-07-11 — see
+  §0.5.1.** `clearContents` on one
   version (contents only, registrations persist); version rebuild minus
-  retracted tuples; driver orchestration "rebuild anchor version, clear cone
-  versions, then B1". Mind `restoreOrphanRelations` and
-  struct relations in the cone (§0.5 mode 2's id argument).
+  retracted tuples (`del-tuple`/`removeTuple`); driver orchestration
+  "rebuild anchor version, clear cone versions, then B1" (`rerun` op).
+  Struct relations in the cone re-mint ids as designed. *(Guard-failing
+  anchors — positional re-binding + boundary re-materialisation — deferred
+  to 0.C where anchored batches make them expressible.)*
 - *B3 — re-entry hygiene.* Either the pausing.md §12 `bind()` re-bind seam
   (reuse resident task objects; pipeline stops growing) or idempotent
   re-registration on re-push with old-task clearing — pick after measuring
