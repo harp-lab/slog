@@ -51,9 +51,9 @@
   (-> set? (set/c flat-rule?))
   (foldl simplify-rule (set) (set->list rules)))
 
-(define/contract (typecheck-all type-env rules)
-  (-> type-env? set? (set/c typed-rule?))
-  (typecheck-rules type-env rules))
+(define/contract (typecheck-all type-env rules [decomps (hash)])
+  (->* (type-env? set?) (hash?) (set/c typed-rule?))
+  (typecheck-rules type-env rules decomps))
 
 (define/contract (stratify-all rules [extra-edges (set)])
   (->* (set?) (set?) strata?)
@@ -151,7 +151,7 @@
   ;; stratification edges (base -> occurrence, decomp-edges style).
   (define-values (expanded type-env+ seq-edges)
     (expand-seq-patterns (simplify-all all-rules) type-env))
-  (define typed (typecheck-all type-env+ expanded))
+  (define typed (typecheck-all type-env+ expanded decomps))
   ;; the M2.4 decomposition's derived dependency edges: R -> R_has as if a
   ;; rule read R and wrote R_has (the base's merge tasks do exactly that), so
   ;; a derived relation closes no earlier than its base -- and shares its SCC
@@ -229,9 +229,10 @@
     #f #t)
    #x7fffffff))
 
-;; (id location text) per rule of a stratum, occurrence-disambiguated in a
-;; deterministic (text-sorted) order so ids are stable across runs.
-(define (stratum-rule-metas stratum dynamic-rels)
+;; (id location text rec? same-scc neg-body lat-body) per rule of a stratum,
+;; occurrence-disambiguated in a deterministic (text-sorted) order so ids are
+;; stable across runs.
+(define (stratum-rule-metas stratum dynamic-rels rel-env)
   (define rules (sort (set->list (stratum-rules stratum)) string<? #:key rule-text))
   (define seen (make-hash))
   (for/list ([rule (in-list rules)])
@@ -248,8 +249,18 @@
     (define same-scc-body
       (sort (set->list (set-intersect (rule-body-rels rule) dynamic-rels))
             symbol<?))
+    ;; per-edge polarity (§0.8 A7 / §0.5): the rule's negated reads, and its
+    ;; lattice-valued reads (reading a merged value is conservatively a
+    ;; non-monotone edge -- a positive batch below can retract the value a
+    ;; derivation consumed)
+    (define neg-body (sort (set->list (rule-body-neg-rels rule)) symbol<?))
+    (define lat-body
+      (sort (for/list ([r (in-set (rule-body-pos-rels rule))]
+                       #:when (rel-lattice-spec rel-env r))
+              r)
+            symbol<?))
     (list (rule-id-of text occ) (rule-location rule) text
-          (pair? same-scc-body) same-scc-body)))
+          (pair? same-scc-body) same-scc-body neg-body lat-body)))
 
 ;; A stratum's augmented rule set (base rules + the error/oracle arm rules its
 ;; residual checks require) and its dynamic-rels -- the relations produced
@@ -325,23 +336,46 @@
   (values rules dynamic-rels))
 
 ;; Write build/<hash>.meta: this stratum's compile hash, DAG level (one stratum
-;; per level, in pipeline order), the relations it produces (dynamic-rels), and
-;; its rules (id -> location + source text + recursive bit + same-SCC body
-;; rels).  Refreshed on every compile-job so a cached .so still gets a current
-;; manifest.  No consumer parses this yet; the fields anticipate the incremental
-;; driver's per-segment cone/polarity metadata (docs/incremental.md §0.5, A7).
+;; per level, in pipeline order), the relations it produces (dynamic-rels), its
+;; reads with per-edge polarity, and its rules (id -> location + source text +
+;; recursive bit + same-SCC body rels + negated/lattice reads).  Refreshed on
+;; every compile-job so a cached .so still gets a current manifest.
+;;
+;; The `reads` field is the incremental driver's cone/polarity input
+;; (docs/incremental.md §0.5, §0.8 A7): one entry per body-read relation with
+;; its edge kinds -- `pos` (some rule reads it positively), `neg` (some rule
+;; negates it), `lat` (some rule reads its merged lattice value; conservatively
+;; non-monotone).  cone(R) falls out by chaining manifests: stratum S is in
+;; R's cone iff R is read here or produced by a cone stratum below; the cone
+;; is MONOTONE iff every edge along the way is a plain `pos` -- any `neg`/`lat`
+;; edge routes that cone to clear-and-rerun rather than delta re-entry.
+;; No consumer parses this yet (the Phase-0 driver, 0.B, will).
 (define (write-stratum-manifest proghash stratum type-env decomps)
   (define-values (_rules dynamic-rels)
     (stratum-rules+dynamic stratum type-env decomps))
+  (define rel-env (type-env-rels type-env))
+  (define rule-metas (stratum-rule-metas stratum dynamic-rels rel-env))
+  ;; per-relation edge kinds, aggregated over the stratum's rules
+  (define reads
+    (let ([kinds (make-hash)])   ; rel -> set of 'pos/'neg/'lat
+      (for ([rule (in-set (stratum-rules stratum))])
+        (for ([r (in-set (rule-body-pos-rels rule))])
+          (hash-update! kinds r (lambda (s) (set-add s (if (rel-lattice-spec rel-env r) 'lat 'pos))) (set)))
+        (for ([r (in-set (rule-body-neg-rels rule))])
+          (hash-update! kinds r (lambda (s) (set-add s 'neg)) (set))))
+      (for/list ([r (in-list (sort (hash-keys kinds) symbol<?))])
+        `(,r ,@(sort (set->list (hash-ref kinds r)) symbol<?)))))
   (define meta
     `(stratum-meta
       (hash ,proghash)
       (level ,(stratum-level stratum))
       (dynamic-rels ,@(sort (set->list dynamic-rels) symbol<?))
+      (reads ,@reads)
       (rules
-       ,@(for/list ([m (in-list (stratum-rule-metas stratum dynamic-rels))])
-           (match-define (list id loc text rec? same-scc) m)
-           `(rule ,id ,loc ,text (rec ,rec?) (same-scc-body ,@same-scc))))))
+       ,@(for/list ([m (in-list rule-metas)])
+           (match-define (list id loc text rec? same-scc neg-body lat-body) m)
+           `(rule ,id ,loc ,text (rec ,rec?) (same-scc-body ,@same-scc)
+                  (neg-body ,@neg-body) (lat-body ,@lat-body))))))
   (call-with-atomic-output (fullpath (format "build/~a.meta" proghash))
                            (lambda () (writeln meta))))
 
@@ -481,6 +515,13 @@
 ;; whole is both sound and smaller than replaying them.
 (define (ground-fact-rules rules rel-names)
   (define (body-reads rule) (set-intersect (rule-body-rels rule) rel-names))
+  ;; a rule with a NEGATED read is never ground (§0.8): pulling it into the
+  ;; level-0 facts stratum would race its absent probe (a once task at
+  ;; iteration 0) against the facts' own iteration-0 writes -- positive
+  ;; constant-class reads are safe there (monotone: delta-driven versions
+  ;; catch rows landing later in the fixpoint), a negative read is not.
+  ;; Its heads are genuinely derived content: IDB, regenerated by replay.
+  (define (negation-free? rule) (set-empty? (rule-body-neg-rels rule)))
   (define strict
     (for/set ([r (in-set rules)] #:when (set-empty? (body-reads r))) r))
   (define strict-heads
@@ -492,7 +533,8 @@
       (set-union acc (rule-head-rels r))))
   (define constant-rels (set-subtract strict-heads tainted))
   (for/set ([r (in-set rules)]
-            #:when (subset? (body-reads r) constant-rels))
+            #:when (and (negation-free? r)
+                        (subset? (body-reads r) constant-rels)))
     r))
 
 (define (jobs->db-partition jobs)

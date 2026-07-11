@@ -143,6 +143,14 @@
      (define tokstr (token->str tok))
      (cons (emit-expr `(const ,(substring tokstr 1 (- (string-length tokstr) 1))) toks (advance toks))
            (advance toks))]
+    ;; `~atom` -- stratified negation of a body atom (docs/incremental.md
+    ;; §0.8): the 'not token prefixes an ordinary clause, producing
+    ;; (syn prov ~ <atom>).  Form/position restrictions (body only, no
+    ;; nesting, ...) are enforced downstream (simplification.rkt), where
+    ;; body/head context exists.
+    ['not
+     (match-define (cons e0 toks+) (parse-atom (advance toks)))
+     (cons (emit-expr `(~ ,e0) toks toks+) toks+)]
     #;['op
        #:when (equal? "|" (token->str tok))
        (parse-bracketed-then

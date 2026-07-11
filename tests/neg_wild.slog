@@ -1,0 +1,35 @@
+;; negated atoms with wildcards (docs/incremental.md 0.8): a `_` column is
+;; unconstrained (projected away -- the probe keys only the bound columns);
+;; an all-wildcard atom tests relation emptiness (K = 0, every bucket); a
+;; constant-keyed negation in a fact rule exercises the pre-position absent
+;; probe (it runs before the driver, aborting the whole task on a match).
+table (g int int)
+table (h int)
+table (nothing int)
+table (nog int)
+table (emptyflag int)
+
+rule
+(g 1 10) (g 1 20) (g 3 30)
+(h 1) (h 2) (h 3)
+
+rule
+(h X)
+~(g X _)
+-->
+(nog X)
+
+rule
+~(h 99)
+-->
+(emptyflag 1)
+
+rule
+~(nothing _)
+-->
+(emptyflag 2)
+
+rule
+~(h _)
+-->
+(emptyflag 3)

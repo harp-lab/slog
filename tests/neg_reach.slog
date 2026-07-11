@@ -1,0 +1,24 @@
+;; stratified negation inside a RECURSIVE rule (docs/incremental.md 0.8):
+;; reachability that avoids blocked nodes.  The negated relation (blocked)
+;; is closed below the reach SCC, so the absent probe rides every
+;; delta-driven version of the recursive rule against a stable full index.
+table (edge int int)
+table (blocked int)
+table (reach int int)
+
+rule
+(edge 1 2) (edge 2 3) (edge 3 4) (edge 2 5) (edge 5 6)
+(blocked 3)
+
+rule
+(edge X Y)
+~(blocked Y)
+-->
+(reach X Y)
+
+rule
+(reach X Y)
+(edge Y Z)
+~(blocked Z)
+-->
+(reach X Z)

@@ -47,6 +47,7 @@
 ;; st_ins/mp_put (docs/primitives.md M2.3).
 
 (require "parser.rkt")
+(require "ir-shared.rkt")   ; neg-symbol? (negated atoms, docs/incremental.md §0.8)
 
 (provide desugar-collections-mods
          collection-builtin?
@@ -134,6 +135,20 @@
 (define (walk-pattern term lib? fresh! collect!)
   (match term
     [`(syn ,prov const ,_) term]
+    ;; a negated body atom (docs/incremental.md §0.8): a bracket/brace
+    ;; inside it would desugar into a POSITIVE clause (a seq-pat / a build
+    ;; chain), silently weakening the negation to "the collection exists
+    ;; and is absent" -- reject here, where the literal is still visible
+    ;; (simplification rejects the other nested forms)
+    [`(syn ,prov ,(? neg-symbol?) ,args ...)
+     (for ([a (in-list args)])
+       (let check ([e a])
+         (match e
+           [`(syn ,_ ,(? (lambda (s) (or (bracket-symbol? s) (brace-symbol? s)))) ,_ ...)
+            (parse-error "collection/sequence literals cannot appear under ~ (negation); bind the collection positively and negate over the variable" (cdr prov))]
+           [`(syn ,_ ,es ...) (for-each check es)]
+           [_ (void)])))
+     term]
     [`(syn ,prov ,(? bracket-symbol?) ,args ...)
      (desugar-bracket prov (map (lambda (a) (walk-pattern a lib? fresh! collect!))
                                 args)

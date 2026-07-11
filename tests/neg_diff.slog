@@ -1,0 +1,15 @@
+;; stratified negation (docs/incremental.md 0.8): set difference --
+;; onlya = a minus b, via a negated body atom over a closed relation
+table (a int)
+table (b int)
+table (onlya int)
+
+rule
+(a 1) (a 2) (a 3) (a 4)
+(b 2) (b 4) (b 5)
+
+rule
+(a X)
+~(b X)
+-->
+(onlya X)

@@ -104,4 +104,50 @@
   (test-case "rule with no head relations is rejected"
     (define bad (R (list (S 'a 'x)) (list (S '= 'y (S 'const 1)))))
     (check-exn #rx"derives nothing"
-               (lambda () (stratify-rules (set bad))))))
+               (lambda () (stratify-rules (set bad)))))
+
+  ;; ---------------------------------------------------------------------
+  ;; 7. Polarity (docs/incremental.md 0.8, A3).  A negated body atom
+  ;;    (syn P ~ (syn P q x)) contributes a NEGATIVE edge: cross-SCC it
+  ;;    stratifies like any edge (level(head) >= level(body)+1); inside an
+  ;;    SCC it is a compile error naming the rule and cycle.
+
+  (define (N . parts) (S '~ (apply S parts)))    ; a negated atom clause
+
+  (test-case "negated read is a body dependency; rule-body-rels sees through ~"
+    (define r (R (list (S 'a 'x) (N 'b 'x)) (list (S 'c 'x))))
+    (check-equal? (rule-body-rels r) (set 'a 'b))
+    (check-equal? (rule-body-neg-rels r) (set 'b))
+    (check-equal? (rule-body-pos-rels r) (set 'a)))
+
+  (test-case "a relation read both ways is in both pos and neg sets"
+    (define r (R (list (S 'b 'x) (N 'b 'y)) (list (S 'c 'x))))
+    (check-equal? (rule-body-pos-rels r) (set 'b))
+    (check-equal? (rule-body-neg-rels r) (set 'b)))
+
+  (test-case "cross-SCC negation stratifies below its reader"
+    ;; a -> b (positive), then c derives from a while negating b:
+    ;; the negative edge b -> c forces level(c) > level(b), like any edge
+    (define r-ab (R (list (S 'a 'x)) (list (S 'b 'x))))
+    (define r-neg (R (list (S 'a 'x) (N 'b 'x)) (list (S 'c 'x))))
+    (define strata (stratify-rules (set r-ab r-neg)))
+    (check-equal? (level-of strata r-ab) 1)
+    (check-equal? (level-of strata r-neg) 2))
+
+  (test-case "self-negation through recursion is rejected"
+    (define bad (R (list (S 'p 'x) (N 'q 'x)) (list (S 'q 'x))))
+    (check-exn #rx"negation through recursion -- not stratified"
+               (lambda () (stratify-rules (set bad)))))
+
+  (test-case "mutual-cycle negation is rejected, naming the cycle"
+    (define r1 (R (list (S 'p 'x) (N 'q 'x)) (list (S 'r 'x))))
+    (define r2 (R (list (S 'r 'x)) (list (S 'q 'x))))
+    (check-exn #rx"cycle: q r"
+               (lambda () (stratify-rules (set r1 r2)))))
+
+  (test-case "negation against an extra-edges cycle is rejected"
+    ;; extra-edges (decomp/seq style) close the cycle: rule reads ~d and
+    ;; writes e; the extra edge e -> d makes {d,e} one SCC
+    (define r (R (list (S 'a 'x) (N 'd 'x)) (list (S 'e 'x))))
+    (check-exn #rx"negation through recursion"
+               (lambda () (stratify-rules (set r) (set (cons 'e 'd)))))))

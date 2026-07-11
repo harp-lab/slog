@@ -1,0 +1,17 @@
+;; negation keyed by an interned struct id (docs/incremental.md 0.8): the
+;; struct is bound POSITIVELY (negating a struct pattern itself is
+;; rejected); the negated atom then probes a plain table on the id.
+struct (pair int int)
+table (cand pair)
+table (seen pair)
+table (fresh pair)
+
+rule
+(cand (pair 1 2)) (cand (pair 3 4))
+(seen (pair 1 2))
+
+rule
+(cand P)
+~(seen P)
+-->
+(fresh P)

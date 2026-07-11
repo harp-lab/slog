@@ -17,13 +17,22 @@
 ;; already closed, so the driver can run each stratum program to fixpoint in
 ;; sequence, reloading the database between them.
 ;;
-;; There is no negation in the language, so stratification is not needed for
-;; semantics; it buys smaller fixpoints (only a stratum's own rules iterate)
-;; and lets rules over closed relations run once as static tasks.
+;; Stratification is LOAD-BEARING (docs/incremental.md §0.8): edges carry
+;; polarity, and a negative edge (a rule reading ~B and writing H) whose
+;; endpoints share an SCC is a compile error -- negation through recursion
+;; is not stratifiable.  A cross-SCC negative edge needs nothing extra: like
+;; any edge it forces level(H) >= level(B)+1, and same-level merged SCCs are
+;; mutually unreachable, so a negated relation is always CLOSED (strictly
+;; lower stratum) at read time -- exactly the property the runtime's absent
+;; probe leans on.  Beyond semantics, stratification still buys smaller
+;; fixpoints (only a stratum's own rules iterate) and lets rules over closed
+;; relations run once as static tasks.
 
 (provide stratify-rules
          rule-head-rels
-         rule-body-rels)
+         rule-body-rels
+         rule-body-neg-rels
+         rule-body-pos-rels)
 
 (require "ir-shared.rkt")
 
@@ -45,6 +54,9 @@
     [`(syn ,_ tycheck ,_ ...) #f]
     [`(syn ,_ = ,_ (syn ,_ const ,_)) #f]
     [`(syn ,_ = ,_ (syn ,_ ,name ,_ ...)) name]
+    ;; a negated atom reads its relation like any body atom (the edge it
+    ;; contributes is NEGATIVE; see rule-body-neg-rels)
+    [(? neg-clause?) (neg-rel cl)]
     [`(syn ,_ ,name ,_ ...) name]))
 
 (define (clauses-rels cls)
@@ -57,6 +69,19 @@
 (define (rule-body-rels rule)
   (match rule
     [`(syn ,_ rule ,bodys ... --> ,heads ...) (clauses-rels bodys)]))
+
+;; The NEGATED subset of a rule's body reads (polarity; §0.8), and its
+;; complement over positive clauses only -- a relation can appear in both
+;; (read positively in one clause, negated in another).
+(define (rule-body-neg-rels rule)
+  (match rule
+    [`(syn ,_ rule ,bodys ... --> ,heads ...)
+     (list->set (map neg-rel (filter neg-clause? bodys)))]))
+
+(define (rule-body-pos-rels rule)
+  (match rule
+    [`(syn ,_ rule ,bodys ... --> ,heads ...)
+     (clauses-rels (filter (lambda (cl) (not (neg-clause? cl))) bodys))]))
 
 ;; -----------------------------------------------------------------------
 ;; Tarjan's strongly-connected-components algorithm.
@@ -127,6 +152,15 @@
                          (cons h0 h1)))])
                  ([b (in-list bodys)] [h (in-list heads)])
         (set-add es (cons b h)))))
+  ;; NEGATIVE edges (§0.8): (list from to rule) per negated body read, kept
+  ;; separately (with provenance) for the post-condensation rejection below.
+  ;; Every negative edge is also in `edges` (rule-body-rels includes negated
+  ;; reads), so leveling needs nothing extra.
+  (define neg-edges
+    (for*/list ([rule (in-list rule-list)]
+                [b (in-set (rule-body-neg-rels rule))]
+                [h (in-set (rule-head-rels rule))])
+      (list b h rule)))
   (define nodes
     (sort (set->list
            (for/fold ([ns (for/fold ([ns (set)]) ([e (in-set extra-edges)])
@@ -141,6 +175,24 @@
     (sort (hash-ref succ-map v '()) symbol<?))
 
   (define scc-of (tarjan-scc-ids nodes succs))
+
+  ;; semantic stratification (§0.8): a negative edge inside one SCC means
+  ;; some rule's negated read can still grow while its head derives --
+  ;; negation through recursion, not stratifiable.  Name the rule and the
+  ;; cycle's relations (the members of the offending SCC).
+  (for ([e (in-list neg-edges)])
+    (match-define (list b h rule) e)
+    (when (= (hash-ref scc-of b) (hash-ref scc-of h))
+      (define cycle-rels
+        (sort (for/list ([n (in-list nodes)]
+                         #:when (= (hash-ref scc-of n) (hash-ref scc-of b)))
+                n)
+              symbol<?))
+      (error 'stratify
+             "negation through recursion -- not stratified: the rule at ~a negates ~a, but ~a and ~a are mutually recursive (cycle: ~a)\n  in rule: ~a"
+             (rule-location-string rule) b b h
+             (string-join (map symbol->string cycle-rels) " ")
+             (strip-prov rule))))
 
   ;; condensation edges and levels: level(scc) = 1 + max level of preds
   (define preds-of ; scc id -> set of predecessor scc ids

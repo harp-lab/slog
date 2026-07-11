@@ -158,6 +158,62 @@ inline bool exists_probe(Index** index, const std::array<u64, A>& key)
   return true;
 }
 
+// FILTER (negated atom, docs/incremental.md §0.8): does NO tuple of the index
+// match the K-column bound prefix?  The negation of exists_probe -- except
+// K == 0 (an all-wildcard negation = emptiness test), where the bound prefix
+// names no bucket: tuples are hash-partitioned by their lead column, so
+// emptiness must consult every bucket.  Always probes a FULL index of a
+// CLOSED (strictly-lower-stratum) relation -- never a delta, never sliced --
+// so the answer is stable across the reading stratum's iterations.
+template <u16 A, u16 K>
+inline bool absent_probe(Index** index, const std::array<u64, A>& key)
+{
+  if constexpr (K == 0)
+  {
+    for (u16 b = 0; b < bucket_count; ++b)
+    {
+      auto* idx = static_cast<BTreeIndex<A>*>(index[b]);
+      if (idx->begin() != idx->end())
+        return false;
+    }
+    return true;
+  }
+  else
+    return !exists_probe<A, K>(index, key);
+}
+
+// FILTER (negation over lattice keys, §0.8): does the payload map hold NO
+// entry under the K-bound key prefix ("no value at key k")?  K == 0 asks
+// whether the map is empty.  Same closed-relation/full-index contract as
+// absent_probe; KA is the map's key width (the ordering's trailing value
+// column is not part of the key array).
+template <u16 KA, u16 K>
+inline bool absent_probe_lat(Index** index, const std::array<u64, KA>& key)
+{
+  if constexpr (K == 0)
+  {
+    for (u16 b = 0; b < bucket_count; ++b)
+    {
+      auto* idx = static_cast<BTreeMapIndex<KA>*>(index[b]);
+      if (idx->begin() != idx->end())
+        return false;
+    }
+    return true;
+  }
+  else
+  {
+    auto* idx = static_cast<BTreeMapIndex<KA>*>(index[buckethash(key[0])]);
+    auto it = idx->lower_bound(key);
+    if (it == idx->end())
+      return true;
+    const std::array<u64, KA>& m = it->first;
+    for (u16 c = 0; c < K; ++c)
+      if (m[c] != key[c])
+        return true;
+    return false;
+  }
+}
+
 // JOIN (no bound prefix == cartesian): this literal shares no variable with the
 // grounded set.  Tuples are hash-partitioned by their lead column across all
 // buckets, so a cartesian scan must visit every bucket and every tuple.  Calls

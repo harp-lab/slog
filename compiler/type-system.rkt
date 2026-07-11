@@ -51,12 +51,12 @@
 ;; Pass driver: check every rule, then intern every enum constant the
 ;; program mentions via one synthetic fact rule each.
 
-(define (typecheck-rules type-env rules)
+(define (typecheck-rules type-env rules [decomp-env (hash)])
   (define-values (checked enum-consts)
     (for/fold ([acc (set)] [consts (set)])
               ([rule (in-set rules)])
       (define-values (rule+ consts+)
-        (with-rule-context rule (lambda () ((typecheck-rule type-env) rule))))
+        (with-rule-context rule (lambda () ((typecheck-rule type-env decomp-env) rule))))
       (values (set-add acc rule+) (set-union consts consts+))))
   (define synth-prov `(prov ,synth-token ,synth-token))
   (for/fold ([acc checked]) ([s (in-set enum-consts)])
@@ -70,12 +70,47 @@
 ;; -----------------------------------------------------------------------
 ;; Per-rule checking.  Returns (values rule+ enum-constant-strings).
 
-(define ((typecheck-rule type-env) rule)
+(define ((typecheck-rule type-env [decomp-env (hash)]) rule)
   (define alias-env (type-env-aliases type-env))
   (define rel-env (type-env-rels type-env))
   (define fun-env (type-env-funs type-env))
   (match rule
     [`(syn ,prov rule ,bodys ... --> ,heads ...)
+
+     ;; ---- negated atoms: safety, i.e. range restriction (§0.8, A2) ------
+     ;; Every non-wildcard variable of a negated body atom must be bound by
+     ;; a positive clause: the absent probe only filters, it binds nothing.
+     ;; Binders are body relation atoms and struct patterns (all their
+     ;; vars), constants, and computation outputs (body- or head-side --
+     ;; the planner schedules head computes into the body).  Guards and
+     ;; other negated atoms bind nothing.
+     (define positively-bound
+       (set-union
+        (for/fold ([acc (set)]) ([cl (in-list bodys)])
+          (match cl
+            [`(syn ,_ /= ,_ ,_) acc]
+            [`(syn ,_ ,(? primitive-cmp?) ,_ ,_) acc]
+            [(? neg-clause?) acc]
+            [`(syn ,_ = ,x (syn ,_ const ,_)) (set-add acc x)]
+            [`(syn ,_ = ,x (syn ,_ ,name ,(? symbol? args) ...))
+             (if (hash-has-key? fun-env name)
+                 (set-add acc x)                       ; a prim binds its output
+                 (set-union acc (list->set (cons x args))))]
+            [`(syn ,_ ,name ,(? symbol? args) ...) (set-union acc (list->set args))]
+            [_ acc]))
+        (for/fold ([acc (set)]) ([cl (in-list heads)])
+          (match cl
+            [`(syn ,_ = ,x (syn ,_ ,name ,(? symbol? args) ...))
+             #:when (hash-has-key? fun-env name)
+             (set-add acc x)]
+            [_ acc]))))
+     (for ([cl (in-list bodys)] #:when (neg-clause? cl))
+       (for ([x (in-list (neg-args cl))]
+             #:unless (or (neg-wildcard-var? x)
+                          (set-member? positively-bound x)))
+         (error (format "unsafe negation at ~a: variable ~a of ~a is not bound by any positive body clause (a negated atom can only check values, not bind them)\n  in rule: ~a"
+                        (rule-location-string rule) x
+                        (strip-prov (neg-inner cl)) (strip-prov rule)))))
 
      ;; ---- first pass: immediate variable types --------------------------
      ;; `head?` marks a HEAD clause: a variable emitted into a relation column
@@ -88,6 +123,10 @@
        (match cl
          [`(syn ,_ /= ,x ,y) env]
          [`(syn ,_ ,(? primitive-cmp?) ,x ,y) env]
+         ;; a negated atom sources no types: its variables are typed by
+         ;; their positive binders (safety above guarantees those exist);
+         ;; wildcard columns have no type of their own
+         [(? neg-clause?) env]
          [`(syn ,_ = ,x (syn ,_ const ,(? string?))) (hash-set env x 'str)]
          [`(syn ,_ = ,x (syn ,_ const ,(? exact-integer?))) (hash-set env x 'int)]
          [`(syn ,_ = ,x (syn ,_ const ,(? inexact-real?))) (hash-set env x 'float)]
@@ -353,6 +392,54 @@
           (if (eq? 'struct (first (hash-ref rel-env name (lambda () '(rel)))))
               `(syn ,prov = ,(gensymb '_) ,cl)
               cl)]
+         ;; a negated body atom (docs/incremental.md §0.8): the target must
+         ;; be a plain or lattice TABLE whose content at stratum start is
+         ;; complete via rule-level closure.  Structs/enums are interned
+         ;; content (existence is an evaluation artifact); side-channel-grown
+         ;; relations (error/arms, oracle answer tables, decomposition
+         ;; targets, sequence-occurrence indices) land their re-derived rows
+         ;; in iteration 1's delta on a seeded run, so a static absent probe
+         ;; at iteration 0 would observe false absence -- all rejected.
+         ;; Lattice tables are negated on their KEY columns only ("no value
+         ;; at this key"); wildcard columns skip the type test (they have no
+         ;; positive binder to type them).
+         [`(syn ,prov ~ (syn ,iprov ,(? symbol? name) ,(? symbol? args) ...))
+          (define (die fmt . fargs)
+            (error (format "~a\n  in: ~a" (apply format fmt fargs) (strip-prov cl))))
+          (when (hash-has-key? fun-env name)
+            (die "primitive ~a cannot be negated (negation applies to relation atoms)" name))
+          (define oracle-ans-rels
+            (for/set ([(k decl) (in-hash rel-env)]
+                      #:when (and (pair? decl) (eq? 'oracle (car decl))))
+              (fourth decl)))
+          (define (check-neg-args! ts what)
+            (unless (= (length ts) (length args))
+              (die "negated atom over ~a takes ~a ~acolumns, got ~a"
+                   name (length ts) what (length args)))
+            (for ([t (in-list ts)] [x (in-list args)]
+                  #:unless (neg-wildcard-var? x))
+              (type-match? t x))
+            cl)
+          (cond
+            [(eq? name 'error)
+             (die "the error channel cannot be negated: error facts grow through a side channel invisible to stratification")]
+            [(memq name '($seq_at $seq_atr))
+             (die "the sequence-occurrence relation ~a cannot be negated: its rows re-derive through a side channel (iteration 1's delta on a seeded run), so absence at stratum start is not meaningful" name)]
+            [(set-member? oracle-ans-rels name)
+             (die "oracle answer table ~a cannot be negated: answers arrive through the oracle's side channel, absence is not observable" name)]
+            [(hash-has-key? decomp-env name)
+             (die "decomposition relation ~a cannot be negated: its rows re-derive through the base's merge tasks (a side channel), so absence at stratum start is not meaningful" name)]
+            [else
+             (match (hash-ref rel-env name (lambda () (die "Relation ~a was never declared" name)))
+               [`(table ,ts ...)
+                #:when (rel-lattice-spec rel-env name)
+                (check-neg-args! (drop-right ts 1) "key ")]
+               [`(table ,ts ...) (check-neg-args! ts "")]
+               [`(struct ,_ ...)
+                (die "struct ~a cannot be negated: interned existence is an evaluation artifact, not a fact -- negate a relation over its id instead" name)]
+               [`(enum ,_)
+                (die "enum ~a cannot be negated" name)]
+               [_ (die "~a is not a relation; ~~ applies to relation atoms" name)])])]
          [_ (error (format "Unrecognized clause ~a" cl))]))
 
      ;; An enum reference: (= x (red)) with red a declared enum member, or a

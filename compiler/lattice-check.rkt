@@ -123,6 +123,9 @@
     [`(syn ,_ let ,_ ,_) #f]
     [`(syn ,_ tycheck ,_ ...) #f]   ; residual type checks are not joins
     [`(syn ,_ = ,_ (syn ,_ const ,_)) #f]
+    ;; a negated atom is not a positive join: it binds nothing and seeds no
+    ;; taint (its polarity discipline is check-rule's dedicated pass below)
+    [(? neg-clause?) #f]
     [`(syn ,_ = ,x (syn ,_ ,name ,args ...)) (list name (cons x args) #t)]
     [`(syn ,_ ,name ,args ...) (list name args #f)]))
 
@@ -368,6 +371,18 @@
       [_ (void)]))
   (for ([cl (in-list bodys)]) (check-join cl #f))
   (for ([cl (in-list heads)]) (check-join cl #t))
+
+  ;; ---- negated atoms: polarity bookkeeping (§0.8, A6) ------------------
+  ;; A negated read is a NON-MONOTONE use.  Negating a still-ascending
+  ;; relation is already a stratification error (stratify.rkt), so what
+  ;; remains is the value flow INTO the probe: a still-ascending lattice
+  ;; value used as a negated atom's key would let the probe's answer flip
+  ;; as the value ascends -- not upward-closed, same reasoning as the
+  ;; join-key ban above.
+  (for ([cl (in-list bodys)] #:when (neg-clause? cl))
+    (for ([a (in-list (neg-args cl))] #:when (tainted a))
+      (die "still-ascending lattice value ~a cannot key a negated atom (~a): the probe's answer could flip as the value ascends"
+           a (neg-rel cl))))
 
   ;; a tainted variable seeded by one read but read again in another body
   ;; join is caught above; what remains is (top) landing somewhere sensible:

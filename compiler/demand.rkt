@@ -208,6 +208,18 @@
                name (strip-prov rule))]
        [_ (void)])
      (validate-term! (fourth cl) ctx rule)]
+    ;; a negated demand-moded judgment has no meaning: answers are grown
+    ;; lazily on demand, so "no answer" is an evaluation artifact, not a
+    ;; fact about the relation (docs/incremental.md §0.8)
+    [`(syn ,_ ~ ,inner ,_ ...)
+     (match inner
+       [`(syn ,_ ,(? symbol? name) ,_ ...)
+        #:when (ctx-demand ctx name)
+        (error 'demand
+               "demand-moded relation ~a cannot be negated: absence of a lazily-grown answer is not observable, in\n~a"
+               name (strip-prov rule))]
+       [_ (void)])
+     (validate-term! inner ctx rule)]
     [_ (validate-term! cl ctx rule #t)]))
 
 ;; Judgment arguments exclude clause-level connectives, except the alias
@@ -218,7 +230,7 @@
   (define (bad-connective e)
     (match e
       [`(syn ,_ ,(? symbol? s) ,_ ...)
-       (and (or (memq s '(& = /= ==)) (equal? "|" (symbol->string s))) s)]
+       (and (or (memq s '(& = /= == ~)) (equal? "|" (symbol->string s))) s)]
       [_ #f]))
   (let walk ([es args])
     (for ([e (in-list es)])
@@ -292,6 +304,9 @@
     [`(syn ,_ /= ,args ...) (cons (terms-all-vars args) (set))]
     [`(syn ,_ == ,args ...) (cons (terms-all-vars args) (set))]
     [`(syn ,_ ,(? primitive-cmp?) ,args ...) (cons (terms-all-vars args) (set))]
+    ;; a negated atom is a pure check, like a guard: it needs its (non-
+    ;; wildcard) variables ground and binds nothing (docs/incremental.md §0.8)
+    [`(syn ,_ ~ ,args ...) (cons (terms-all-vars args) (set))]
     [`(syn ,_ = ,(? symbol? x) (syn ,_ const ,_))
      (cons (set) (if (eq? x '_) (set) (set x)))]
     [`(syn ,_ = ,(? symbol? x) ,(? symbol? y))
@@ -458,6 +473,24 @@
       [_ e]))
   (define (walk-clause cl)
     (match cl
+      ;; a negated atom: no demand machinery may operate under ~ -- a
+      ;; nested demand-arity call would extract into a positive body
+      ;; occurrence, silently weakening the negation (and a negated
+      ;; judgment itself is meaningless: absence of a lazily-grown answer
+      ;; is not observable).  Reject with the real story rather than let
+      ;; extraction mangle the clause into a downstream parse error.
+      [`(syn ,p ~ ,args ...)
+       (let check ([es args])
+         (for ([e (in-list es)])
+           (match e
+             [`(syn ,_ ,(? symbol? f) ,iargs ...)
+              (when (ctx-demand ctx f)
+                (error 'demand
+                       "demand-moded relation ~a cannot appear under ~~ (negation): absence of a lazily-grown answer is not observable, in\n~a"
+                       f (strip-prov rule)))
+              (check iargs)]
+             [_ (void)])))
+       cl]
       ;; (= x (f a ...)) binds the answer, like a primitive computation
       [`(syn ,p = ,(? symbol? x) ,(app (lambda (e) (call-parts ctx e))
                                        (list f args na)))
@@ -712,6 +745,10 @@
                                          (primitive-cmp? s)))))
              ,_ ...)
        (set)]                                    ; checks bind nothing
+      ;; a negated atom: fires (as a pure check) once its variables are
+      ;; ground; binds nothing
+      [`(syn ,_ ~ ,args ...)
+       (and (subset? (terms-all-vars args) B) (set))]
       [`(syn ,_ ,(? symbol?) ,args ...)          ; a relational atom
        ;; a COLUMN keys a probe only whole: a constant, a bound top-level
        ;; variable, or a fully-constructible term.  A bound variable
@@ -740,6 +777,7 @@
                                      (or (special-head? s)
                                          (primitive-cmp? s)))))
              ,_ ...) #f]
+      [`(syn ,_ ~ ,_ ...) #f]                    ; a stuck check, not a scan
       [`(syn ,_ ,(? symbol?) ,_ ...) #t]         ; stuck atom
       [_ #f]))
   (let loop ([B B0] [cls other-cls])

@@ -1,0 +1,17 @@
+;; negation over lattice keys (docs/incremental.md 0.8): ~(best X) takes
+;; the KEY columns only and means "no value at key X" -- an absence probe
+;; of the closed lattice relation's payload map.
+lattice (low (min int))
+table (best int low)
+table (k int)
+table (nobest int)
+
+rule
+(best 1 10) (best 1 5) (best 2 7)
+(k 1) (k 2) (k 3)
+
+rule
+(k X)
+~(best X)
+-->
+(nobest X)

@@ -34,7 +34,13 @@ if [ ${#PROGS[@]} -eq 0 ]; then
          # and widens the concurrent-build tempfile-race window; deep_fact
          # covers freeze x compression.)
          tests/seq_join.slog tests/seq_split_mixed.slog tests/str_rope.slog
-         tests/lat_set.slog tests/lat_cjoin.slog tests/deep_fact.slog)
+         tests/lat_set.slog tests/lat_cjoin.slog tests/deep_fact.slog
+         # 2026-07-11: stratified negation x compression (0.A, docs/
+         # incremental.md 0.8).  neg_wild is load-bearing: its ~(h _)
+         # emptiness rule caught ground-fact-rules classifying a negation-
+         # bearing rule into the level-0 facts stratum (a non-monotone read
+         # racing the facts' own iteration-0 writes on replay).
+         tests/neg_reach.slog tests/neg_wild.slog)
 fi
 
 pass=0; fail=0; failed=()

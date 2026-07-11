@@ -99,6 +99,39 @@ whether the two costs differ by exactly one, rather than defining
 anything. One form, two readings, chosen by what's already known — this
 falls out of the way rules work rather than being a special feature.
 
+## Negation: `~(pattern)`
+
+A body atom prefixed with `~` matches when **no** fact matches the
+pattern — set difference, "unless", "is missing":
+
+```
+table (person str)
+table (parent str str)
+table (childless str)
+
+rule (person P) ~(parent P _) --> (childless P)
+```
+
+`~(parent P _)` reads "P is the parent of nobody": the `_` wildcard
+leaves that column unconstrained, and constants are fine too
+(`~(flag X "on")`). Two rules keep negation meaningful:
+
+- **Every variable under `~` must be bound by a positive pattern.** A
+  negated atom can only *check* values, never produce them — "some X
+  that isn't in `q`" is not a well-defined set on its own.
+- **No negation through recursion.** A rule can't negate a relation it
+  (directly or transitively) helps derive — the compiler stratifies the
+  program so a negated relation is always *finished* before any rule
+  reads its absence, and rejects programs where that's impossible
+  ("negation through recursion — not stratified").
+
+Only whole relation atoms can be negated: to ask about structured data,
+bind it positively first and negate over the variable
+(`(= P (pair X Y)) ~(seen P)`), and negate each alternative separately
+(`~A ~B`, never `~(A | B)` — which would mean "neither" anyway).
+For a lattice (map) relation, negate on its key columns: `~(best K)`
+means "no value at key K".
+
 ## Cheat sheet
 
 | Form | Example | Meaning |
@@ -111,4 +144,5 @@ falls out of the way rules work rather than being a special feature.
 | string ops | `(+ s1 s2)`, `(size s)`, `(substr s 0 3)` | concat, length, slice `[start,end)` |
 | comparison guards | `(< x y) (<= x y) (> x y) (>= x y)` | filter matches |
 | not-equal | `(/= x y)` | filter; the only disequality |
+| negation | `~(parent P _)` | filter: no matching fact exists (vars must be bound positively) |
 | negatives | `(neg 3)` | there are no negative literals |

@@ -1,0 +1,23 @@
+;; negated atoms with constant patterns (docs/incremental.md 0.8):
+;; ~(f X 1) and ~(flag X "on") -- constants lift into positive const
+;; clauses and key the absent probe alongside the bound variable.
+table (f int int)
+table (flag int str)
+table (out int)
+table (outs int)
+
+rule
+(f 1 1) (f 2 5) (f 3 1)
+(flag 1 "on") (flag 2 "off")
+
+rule
+(f X Y)
+~(f X 1)
+-->
+(out X)
+
+rule
+(f X Y)
+~(flag X "on")
+-->
+(outs X)

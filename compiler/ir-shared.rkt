@@ -31,6 +31,8 @@
  lattice-base-type rel-lattice-spec rel-lattice-key-arity
  ;; parametric collection column types (docs/primitives.md)
  listof-spec? mapof-spec?
+ ;; negated body atoms (docs/incremental.md §0.8)
+ neg-symbol? neg-clause? neg-inner neg-rel neg-args neg-wildcard-var?
  ;; clause analysis (typed/planned clause grammar)
  clause-vars clause-in-vars clause-out-vars head-in-vars)
 
@@ -278,6 +280,48 @@
     [_ #f]))
 
 ;; -----------------------------------------------------------------------
+;; Negated body atoms (docs/incremental.md §0.8, sub-phase 0.A).
+;;
+;; A body clause (syn prov ~ (syn prov2 name x ...)) is the stratified
+;; negation of a relation atom: "no tuple of `name` matches".  From the
+;; flat level on, every argument is a plain variable -- constants were
+;; lifted into positive const clauses and `_` wildcards gensym'd to
+;; `__`-prefixed variables (the established dead-var convention,
+;; seq-expand.rkt).  A wildcard-derived variable appears nowhere else, so
+;; it is an unconstrained (projected-away) column of the probe; every
+;; other variable must be positively bound (safety, type-system.rkt).
+;; Negated atoms bind nothing: they schedule like guards (fire once their
+;; inputs are ground, only prune) and lower to an absent probe against a
+;; CLOSED relation (stratification guarantees strictly-lower stratum).
+
+(define (neg-symbol? s) (eq? s '~))
+
+;; The flat-level-and-later shape: inner args all plain variables.  Passes
+;; that run BEFORE simplification (demand, collections) match the raw
+;; (syn _ ~ inner) frame themselves -- there the inner atom may still
+;; carry constants and `_` wildcards.
+(define (neg-clause? cl)
+  (match cl
+    [`(syn ,_ ,(? neg-symbol?) (syn ,_ ,(? var?) ,(? var?) ...)) #t]
+    [_ #f]))
+
+(define (neg-inner cl) (fourth cl))
+
+(define (neg-rel cl)
+  (match (neg-inner cl)
+    [`(syn ,_ ,name ,_ ...) name]))
+
+(define (neg-args cl)
+  (match (neg-inner cl)
+    [`(syn ,_ ,_ ,args ...) args]))
+
+;; A wildcard-derived (dead) variable: `_` gensyms to a `__`-prefixed name
+;; in simplification; inside a negated atom these are the unconstrained
+;; columns (not inputs, not outputs -- dead by construction).
+(define (neg-wildcard-var? x)
+  (and (symbol? x) (string-prefix? (symbol->string x) "__")))
+
+;; -----------------------------------------------------------------------
 ;; Clause variable analysis
 ;;
 ;; Over the clause grammar shared by the typed and planned levels (see
@@ -299,6 +343,7 @@
     [`(syn ,_ let ,x (syn ,_ ,f ,args ...)) (list->set (cons x args))]
     [`(syn ,_ = ,x (syn ,_ const ,_)) (set x)]
     [`(syn ,_ = ,x (syn ,_ ,name ,xs ...)) (list->set (cons x xs))]
+    [(? neg-clause?) (list->set (neg-args cl))]
     [`(syn ,_ ,name ,xs ...) (list->set xs)]))
 
 (define (clause-in-vars cl)
@@ -311,6 +356,13 @@
     [`(syn ,_ let ,x (syn ,_ const ,_)) (set)]
     [`(syn ,_ let ,x (syn ,_ ,f ,args ...)) (list->set args)]
     [`(syn ,_ = ,x (syn ,_ const ,_)) (set)]
+    ;; A negated atom is a pure filter: every non-wildcard variable is an
+    ;; input (must be positively bound before the absent probe can run);
+    ;; wildcard-derived variables are unconstrained columns, not inputs.
+    [(? neg-clause?)
+     (for/set ([x (in-list (neg-args cl))]
+               #:unless (neg-wildcard-var? x))
+       x)]
     ;; Join clauses require nothing: an index scan/probe can ground all
     ;; of their columns.
     [`(syn ,_ = ,x (syn ,_ ,name ,xs ...)) (set)]

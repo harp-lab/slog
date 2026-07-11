@@ -14,6 +14,7 @@
 
 (require "utils.rkt")
 (require "parser.rkt")
+(require "ir-shared.rkt")   ; neg-symbol? (negated atoms, docs/incremental.md §0.8)
 
 (provide simplify-rule split-or-clauses)
 
@@ -33,6 +34,18 @@
     ;; one-element application whose head is the or expression: unwrap it
     [`(syn ,_ (syn ,prov ,(? or-symbol? pipe) ,cls ...))
      (split-or-clauses `(syn ,prov ,pipe ,@cls))]
+    ;; a negated atom passes through WHOLE: the generic walk below would
+    ;; distribute an inner | into alternative rules -- i.e. read ~(A|B) as
+    ;; ~A OR ~B, violating De Morgan (~(A|B) = ~A AND ~B).  Negating an
+    ;; alternative is rejected outright; write the conjunction ~A ~B.
+    [`(syn ,prov ,(? neg-symbol?) ,inner ...)
+     (let contains-or? ([e inner])
+       (match e
+         [`(syn ,_ ,(? or-symbol?) ,_ ...)
+          (parse-error "| alternatives cannot appear under ~ (negation): ~(A | B) means neither -- write the two negated atoms ~A ~B" (cdr prov))]
+         [(? list?) (for-each contains-or? e)]
+         [_ (void)]))
+     (set cl)]
     [`(,cl0 ,cls ...)
      (foldl
       (lambda (cl0v acc)
@@ -95,6 +108,9 @@
       [`(syn ,prov const ,v)
        (define cx (gensymb '_tconst))
        (cons cx (cons `(syn ,prov = ,cx (syn ,prov const ,v)) clauses))]
+      ;; a negated atom nested inside another term has no value to lift
+      [`(syn ,prov ,(? neg-symbol?) ,_ ...)
+       (parse-error "~ (negation) may only appear as a whole body clause" (cdr prov))]
       [`(syn ,prov /= ,_ ...)
        ;; parse-error wants a token LIST (it does (first toks)) and already
        ;; exits, so pass (cdr prov) -- the tokens -- and drop the dead (error ...).
@@ -138,6 +154,34 @@
        (match-define (cons x clauses+) (simplify-subclause scl0 clauses))
        (match-define (cons y clauses++) (simplify-subclause scl1 clauses+))
        (cons `(syn ,prov /= ,x ,y) clauses++)]
+      ;; a negated body atom ~(name arg ...): args may only be variables,
+      ;; constants, and `_` wildcards (docs/incremental.md §0.8) -- constants
+      ;; lift into positive const clauses (safe: they always ground), and
+      ;; wildcards stay `_` here so step 3's generic walk gensyms them to
+      ;; the __-prefixed dead-var convention, marking the probe's
+      ;; unconstrained columns.  Nested patterns are rejected: their
+      ;; positive reading ("the struct exists AND is absent from the
+      ;; relation") diverges from the intended pure negation -- bind them
+      ;; positively first.
+      [`(syn ,prov ,(? neg-symbol? tilde) ,scl)
+       (match scl
+         [`(syn ,iprov ,(? neg-symbol?) ,_ ...)
+          (parse-error "double negation (~~) is not supported" (cdr prov))]
+         [`(syn ,iprov ,(? symbol? name) ,iargs ...)
+          #:when (not (set-member? (set '= '/= '== '&) name))
+          (define-values (xs clauses+)
+            (for/fold ([xs '()] [clauses clauses]
+                       #:result (values (reverse xs) clauses))
+                      ([a (in-list iargs)])
+              (match a
+                [(? symbol? x) (values (cons x xs) clauses)]  ; a var, or `_`
+                [`(syn ,cprov const ,v)
+                 (define cx (gensymb '_tconst))
+                 (values (cons cx xs)
+                         (cons `(syn ,cprov = ,cx (syn ,cprov const ,v)) clauses))]
+                [_ (parse-error "only variables, constants, and `_` wildcards may appear under ~ (negation) -- bind a nested pattern positively first" (cdr prov))])))
+          (cons `(syn ,prov ,tilde (syn ,iprov ,name ,@xs)) clauses+)]
+         [_ (parse-error "~ (negation) must be applied to a relation atom, e.g. ~(edge x y)" (cdr prov))])]
       ;; a neutral sequence-pattern clause (collections.rkt, docs/sequences.md
       ;; §5.1): already flat -- its items hold only variables/constants (the
       ;; desugar hoisted nested terms) -- so it passes through whole.  The
@@ -217,6 +261,13 @@
           (parse-error
            "`_` wildcard in a head/conclusion is unbound; name the variable (and bind it in the body) or drop the column"
            (cdr hprov))]))
+     ;; no head negation (docs/incremental.md §0.8): ~ is a body-only filter
+     (for ([cl (in-list heads)])
+       (match cl
+         [`(syn ,hprov ,(? neg-symbol?) ,_ ...)
+          (parse-error "negation (~) is not permitted in a rule head/conclusion"
+                       (cdr hprov))]
+         [_ (void)]))
      (define heads+ (handle-wild-card (foldl simplify-clause '() heads)))
      (foldl (lambda (bodys rules)
               ;; 3. handle-wild-card: replace _ with a unique (gensymb '__)

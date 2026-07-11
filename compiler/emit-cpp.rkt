@@ -453,6 +453,30 @@
        (format "if (!slog::exists_probe<~a,~a>(~a, ~a)) return;"
                A K (index-name-of op) key))
       (emit-ops rest index-name-of delta-name-of head-fun indent))]
+    ;; a negated atom (docs/incremental.md §0.8): one absence probe on the
+    ;; K bound columns of the CLOSED relation's full index; a match
+    ;; abandons the current tuple.  K = 0 is the emptiness test.
+    [`(,(and op `(absent ,name ,ind ,K ,ys ...)) . ,rest)
+     (define A (length ind))
+     (define key (u64-array-lit (append (map (lambda (y) (format "v_~a" y)) ys)
+                                        (make-list (- A K) "0"))))
+     (string-append
+      ((emit-lines indent)
+       (format "if (!slog::absent_probe<~a,~a>(~a, ~a)) return;"
+               A K (index-name-of op) key))
+      (emit-ops rest index-name-of delta-name-of head-fun indent))]
+    ;; negation over lattice keys: absence probe of the payload map under
+    ;; the K-bound key prefix ("no value at key k"); the ordering's last
+    ;; column is the merged value, so the map's key width is A-1
+    [`(,(and op `(absent-lat ,name ,ind ,K ,ys ...)) . ,rest)
+     (define KA (sub1 (length ind)))
+     (define key (u64-array-lit (append (map (lambda (y) (format "v_~a" y)) ys)
+                                        (make-list (- KA K) "0"))))
+     (string-append
+      ((emit-lines indent)
+       (format "if (!slog::absent_probe_lat<~a,~a>(~a, ~a)) return;"
+               KA K (index-name-of op) key))
+      (emit-ops rest index-name-of delta-name-of head-fun indent))]
     [`(,(and op `(join-lat ,name ,ind ,K ,ys ...)) . ,rest)
      (define KA (sub1 (length ys)))          ; key columns; last var is the value
      (define vvar (last ys))
@@ -508,9 +532,23 @@
 ;; Pre-ops run at the top of work() (not inside a driver lambda), so a failing
 ;; constant guard aborts the WHOLE task -- and since work() now returns bool
 ;; (docs/pausing.md §3), that abort is `return true;` (task finished, produced
-;; nothing), not the tuple-skipping `return;` of a body op.
-(define (emit-pre-op op)
+;; nothing), not the tuple-skipping `return;` of a body op.  `index-name-of`
+;; resolves the index member of a pre-position absent probe (a negation whose
+;; key is all-constant or all-wildcard fires before the driver).
+(define (emit-pre-op op [index-name-of #f])
   (match op
+    [`(absent ,name ,ind ,K ,ys ...)
+     (define A (length ind))
+     (define key (u64-array-lit (append (map (lambda (y) (format "v_~a" y)) ys)
+                                        (make-list (- A K) "0"))))
+     (format "if (!slog::absent_probe<~a,~a>(~a, ~a)) return true;"
+             A K (index-name-of op) key)]
+    [`(absent-lat ,name ,ind ,K ,ys ...)
+     (define KA (sub1 (length ind)))
+     (define key (u64-array-lit (append (map (lambda (y) (format "v_~a" y)) ys)
+                                        (make-list (- KA K) "0"))))
+     (format "if (!slog::absent_probe_lat<~a,~a>(~a, ~a)) return true;"
+             KA K (index-name-of op) key)]
     [`(let ,x ,(? symbol? y)) (format "u64 v_~a = v_~a;" x y)]
     [`(let ,x (,f ,args ...))
      (string-append (format "u64 v_~a = ~a;\n" x (prim-call f args))
@@ -620,10 +658,14 @@
   (define body (crule-body crule))
   (define heads (crule-head crule))
 
-  ;; name the index member for the driver probe, each body join, and each
-  ;; semijoin filter's existence probe
+  ;; name the index member for the driver probe, each body join, each
+  ;; semijoin filter's existence probe, and each negated atom's absence
+  ;; probe -- absent ops can also sit in the PRE slot (a negation whose key
+  ;; is all-constant or all-wildcard runs before the driver), so scan both
   (define join-members
-    (for/list ([op (in-list body)] #:when (memq (car op) '(join join-lat exists join-old)))
+    (for/list ([op (in-list (append pre body))]
+               #:when (memq (car op) '(join join-lat exists join-old
+                                       absent absent-lat)))
       (cons op (elocal (string->symbol (format "~aindex" (second op)))))))
   ;; a join-old op needs a SECOND member for the delta index it excludes against
   (define join-old-delta-members
@@ -740,7 +782,7 @@
      (apply string-append
             (for/list ([om (in-list join-members)])
               (match (car om)
-                [`(,(or 'join 'join-lat 'exists) ,name ,ind ,_ ...)
+                [`(,(or 'join 'join-lat 'exists 'absent 'absent-lat) ,name ,ind ,_ ...)
                  (string-append (index-member name (cdr om) ind #f) "\n")]
                 [`(join-old ,name ,ind ,_ ,dind ,_ ...)
                  (string-append
@@ -909,7 +951,7 @@
    (format "  {")
    ;; pre-ops run before any allocation, so a failing constant guard can
    ;; abort the whole task early (return true = finished, produced nothing)
-   (apply (emit-lines 4) (map emit-pre-op pre))
+   (apply (emit-lines 4) (map (lambda (op) (emit-pre-op op index-name-of)) pre))
    (format "    u64 _fires = 0;")
    (format "    slog::InsertBatch* newbatch[~a];" (max 1 (length heads)))
    alloc-batches

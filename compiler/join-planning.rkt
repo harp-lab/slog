@@ -62,8 +62,13 @@
     [`(syn ,_ ,(? primitive-cmp?) ,_ ,_) #t]
     [_ #f]))
 
+;; Negated atoms (docs/incremental.md §0.8) schedule EXACTLY like guards:
+;; they fire once their (non-wildcard) variables are ground, they only
+;; prune, and they never drive a version -- the negated relation is closed
+;; (strictly lower stratum, stratify.rkt), so there is no delta to ride.
 (define (join-cl? cl)
-  (and (not (const-cl? cl)) (not (compute-cl? cl)) (not (guard-cl? cl))))
+  (and (not (const-cl? cl)) (not (compute-cl? cl)) (not (guard-cl? cl))
+       (not (neg-clause? cl))))
 
 ;; A head struct construction (= x (name args ...)); returns (values x args)
 ;; or #f.
@@ -333,7 +338,8 @@
          cl+))
 
      (define computes (filter compute-cl? bodys))
-     (define guards (append (filter guard-cl? bodys) eq-guards))
+     (define guards (append (filter guard-cl? bodys) (filter neg-clause? bodys)
+                            eq-guards))
 
      ;; Head computations join the body's compute pool: the scheduler runs
      ;; them once their inputs ground, and -- crucially -- if their output

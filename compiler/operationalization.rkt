@@ -42,7 +42,7 @@
 
 (define (join-cl? cl)
   (match cl
-    [`(syn ,_ ,(or '/= '== 'let 'tycheck) ,_ ...) #f]
+    [`(syn ,_ ,(or '/= '== 'let 'tycheck '~) ,_ ...) #f]
     [`(syn ,_ ,(? primitive-cmp?) ,_ ,_) #f]
     [_ #t]))
 
@@ -237,6 +237,8 @@
       [`(join-old ,name ,ind ,_ ,_ ,_ ...) (list (cons name ind))]
       [`(join-lat ,name ,ind ,_ ,_ ...) (list (cons name ind))]
       [`(exists ,name ,ind ,_ ,_ ...) (list (cons name ind))]
+      [`(absent ,name ,ind ,_ ,_ ...) (list (cons name ind))]
+      [`(absent-lat ,name ,ind ,_ ,_ ...) (list (cons name ind))]
       [`(mkstruct ,name ,ind ,_ ,_ ...) (list (cons name ind))]
       [`(emit ,name ,ind ,_ ...) (list (cons name ind))]
       [`(tycheck ,_ ,_ ,_ ,_ ,_ ,ind) (list (cons 'malformed_deduction ind))]
@@ -450,7 +452,20 @@
                   ss1))]))
        (values (set-union ground (clause-vars cl)) (add1 jpos) ss+)]
       [else
-       (values (set-union ground (clause-out-vars cl)) jpos ss)])))
+       ;; a negated atom (§0.8) probes the negated relation's FULL index on
+       ;; its bound (non-wildcard) columns -- requisition an index ordering
+       ;; them first, exactly like a semijoin filter's.  For a lattice
+       ;; relation the atom carries KEY columns only, and the value column
+       ;; (highest, never selected) lands last: the payload-map layout.
+       (define ss+
+         (if (neg-clause? cl)
+             (add-select-set ss (neg-rel cl)
+                             (for/set ([x (in-list (neg-args cl))]
+                                       [i (in-naturals)]
+                                       #:unless (neg-wildcard-var? x))
+                               i))
+             ss))
+       (values (set-union ground (clause-out-vars cl)) jpos ss+)])))
 
 ;; -----------------------------------------------------------------------
 ;; 3. Indices: one per select set, selected columns (sorted) first, the
@@ -767,6 +782,25 @@
     (define K (set-count sel))
     `(exists ,name ,ind ,K ,@(map esc (order-tuple (take ind K) tup))))
 
+  ;; a negated atom (docs/incremental.md §0.8): absence probe of the CLOSED
+  ;; negated relation on its bound (non-wildcard) columns, which the
+  ;; requisitioned index orders first; wildcard columns are simply not in
+  ;; the key (K = 0 tests emptiness).  Scheduling (join-planning) placed the
+  ;; clause after its binders, so the key variables are ground here.  A
+  ;; lattice atom carries KEY columns only and probes the payload map.
+  (define (lower-absent cl)
+    (define name (neg-rel cl))
+    (define args (neg-args cl))
+    (define sel
+      (for/set ([x (in-list args)] [i (in-naturals)]
+                #:unless (neg-wildcard-var? x))
+        i))
+    (define ind (find-index indices name (stored-arity name) sel
+                            (format "negated atom on ~a" name)))
+    (define K (set-count sel))
+    (define op (if (rel-lattice-spec rel-env name) 'absent-lat 'absent))
+    `(,op ,name ,ind ,K ,@(map esc (order-tuple (take ind K) args))))
+
   ;; split the body: everything before the first join is a pre-op
   (define bodys (rule-body rule))
   (define spec-env (cjoin-spec-env rule))
@@ -798,6 +832,11 @@
                           ops)
                   (add1 jpos)
                   (cdr cls))]
+           [(neg-clause? (car cls))
+            (loop ground
+                  (cons (lower-absent (car cls)) ops)
+                  jpos
+                  (cdr cls))]
            [else
             (loop (set-union ground (clause-out-vars (car cls)))
                   (cons (lower-op (car cls) spec-env) ops)
@@ -825,6 +864,12 @@
                           ops)
                   (add1 jpos)
                   (cdr cls))]
+           [(neg-clause? (car cls))
+            (loop driver
+                  ground
+                  (cons (lower-absent (car cls)) ops)
+                  jpos
+                  (cdr cls))]
            [else
             (loop driver
                   (set-union ground (clause-out-vars (car cls)))
@@ -839,7 +884,11 @@
   (define-values (check-hops emit-hops)
     (partition (lambda (hop) (eq? 'tycheck (car hop)))
                (map (lambda (cl) (lower-head cl spec-env)) (rule-heads rule))))
-  `(crule (pre ,@(map (lambda (cl) (lower-op cl spec-env)) pre-cls))
+  `(crule (pre ,@(map (lambda (cl)
+                        (if (neg-clause? cl)
+                            (lower-absent cl)
+                            (lower-op cl spec-env)))
+                      pre-cls))
           ,driver
           (body ,@ops)
           (head ,@check-hops ,@emit-hops)

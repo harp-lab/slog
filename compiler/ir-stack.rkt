@@ -77,7 +77,12 @@
 ;;                      | (= x (const v))
 ;;                      | (= x (name x ...))     struct pattern / prim call
 ;;                      | (name x ...)           relation pattern
-;;   flat head clause ::= all but /= and cmp guards
+;;                      | (~ (name x ...))       negated relation atom
+;;                                               (stratified negation, §0.8:
+;;                                               args all vars -- constants
+;;                                               lifted positively, wildcards
+;;                                               __-gensym'd; body only)
+;;   flat head clause ::= all but /= and cmp guards and negated atoms
 ;;
 ;; The type checker keeps the same shape but normalizes: primitive calls
 ;; become (let x (f args ...)) clauses, enum references become _enum struct
@@ -149,7 +154,7 @@
 
 (define (flat-body-clause? cl)
   (or (flat-guard-clause? cl) (const-clause? cl) (join-clause? cl)
-      (seq-pat-clause? cl)))
+      (seq-pat-clause? cl) (neg-clause? cl)))
 
 (define (flat-head-clause? cl)
   (or (const-clause? cl) (join-clause? cl)))
@@ -214,7 +219,7 @@
     ;; plan-stratum) -- same clause grammar, full-index lowering downstream
     [`(syn ,_ ,(or 'rule 'seeded-rule) ,body ... --> ,head ...)
      (and (andmap (lambda (cl) (or (guard-clause? cl) (let-clause? cl) (join-clause? cl)
-                                   (old-join-clause? cl)))
+                                   (old-join-clause? cl) (neg-clause? cl)))
                   body)
           (andmap (lambda (cl) (or (let-clause? cl) (join-clause? cl)
                                    (tycheck-clause? cl)))
@@ -243,6 +248,15 @@
 ;;                                          index matches the K bound cols
 ;;                                          (x ... are exactly the K key
 ;;                                          vars, in index-prefix order)
+;;             | (absent name idx K x ...)  negated atom (§0.8): prune the
+;;                                          tuple when some tuple of the
+;;                                          (closed) relation's full index
+;;                                          matches the K bound cols; K = 0
+;;                                          tests relation emptiness
+;;             | (absent-lat name idx K x ...)  negation over lattice keys:
+;;                                          prune when the payload map holds
+;;                                          any entry under the K-bound
+;;                                          key prefix
 ;;             | (let x y) | (let x (f y ...))
 ;;             | (letp x (f y ...))   partial prim (prim-partial?): the call
 ;;                                    takes a trailing bool* ok; !ok abandons
@@ -311,6 +325,13 @@
     ;; a semijoin filter: existence probe of a future clause's relation on
     ;; the K currently-bound columns (which the index orders first)
     [`(exists ,(? var?) (,(? natural?) ..1) ,(? natural?) ,(? var?) ..1) #t]
+    ;; a negated atom (docs/incremental.md §0.8): absence probe of a CLOSED
+    ;; relation on the K bound columns (the index orders them first);
+    ;; K = 0 tests emptiness.  Prunes the tuple when a match EXISTS.
+    [`(absent ,(? var?) (,(? natural?) ..1) ,(? natural?) ,(? var?) ...) #t]
+    ;; its lattice form: key-prefix absence probe of the payload map
+    ;; ("no value at key k"); the vars are the K bound key columns
+    [`(absent-lat ,(? var?) (,(? natural?) ..1) ,(? natural?) ,(? var?) ...) #t]
     ;; a lattice body read: probe the payload map on the key prefix; the vars
     ;; are the key columns in index order plus, last, the bound merged value
     [`(join-lat ,(? var?) (,(? natural?) ..1) ,(? natural?) ,(? var?) ...) #t]
