@@ -170,6 +170,32 @@ expect "b2-out-minus"   "(dumpdone 1)" out/sess-b2s.log
 expect "b2-out-content" "(dumprow (pair 1 2))" out/sess-b2s.log
 expect "b2-dist-kept"   "(dist 3)" out/sess-b2s.log
 
+# --- B4: the routing rule (compiler/session.rkt flush) ---------------------
+# Queued signed batches route per §0.5: all-adds + monotone cone ->
+# replay-entry ("(route reenter N)"); a same-point add/delete pair
+# collapses to an empty flush ("(flush 0)", content untouched); a deletion
+# routes the union cone through clear-and-rerun ("(route rerun N M)").
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/session/base.slog \
+  batch+:edge,4,5 flush dump-rel:path \
+  batch+:edge,7,8 batch-:edge,7,8 flush dump-rel:edge \
+  batch-:edge,1,2 flush dump-rel:path \
+  > out/sess-b4.log 2>&1
+expect "b4-route-reenter" "(route reenter 1)" out/sess-b4.log
+expect "b4-add-applied"   "(dumpdone 10)" out/sess-b4.log
+expect "b4-collapse"      "(flush 0)" out/sess-b4.log
+expect "b4-collapse-kept" "(dumpdone 4)" out/sess-b4.log
+expect "b4-route-rerun"   "(route rerun 1 " out/sess-b4.log
+expect "b4-del-applied"   "(dumpdone 6)" out/sess-b4.log
+
+# a monotone ADD whose cone crosses a negation still routes to rerun
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/session/negsess.slog \
+  batch+:edge,3,4 flush dump-rel:unreached \
+  > out/sess-b4n.log 2>&1
+expect "b4-neg-route"  "(route rerun 2 " out/sess-b4n.log
+expect "b4-neg-result" "(dumpdone 2)" out/sess-b4n.log
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

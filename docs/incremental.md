@@ -413,7 +413,7 @@ Secondary/join indices are kept only for versions that live strata read and
 are rebuildable on demand; disk spill for cold versions is a flagged later
 optimisation, not a Phase 0 concern.
 
-#### 0.5.1 B0–B2 as built (2026-07-11): version substrate, replay-entry, clear-and-rerun
+#### 0.5.1 B0–B4 as built (2026-07-11): version substrate, re-entry modes, routing
 
 What shipped, and the decisions the design left open:
 
@@ -539,6 +539,31 @@ What shipped, and the decisions the design left open:
   — not task re-construction, so reuse buys little and costs a re-bind
   pass on every write/intern task class. Validated by a 30-cycle
   add-tuple/reenter stress (exact closure content throughout).
+- **B4 — the routing rule lives in `compiler/session.rkt` (same day),**
+  not inside `slog-run-file` — sessions are a different lifecycle than the
+  one-shot batch run, and the module is the seam both the CLI harness
+  (`tests/api/session-drive.rkt`, now a thin shell) and a future
+  interactive front end drive. `make-session`/`session-open!`/
+  `session-run!`/`session-batch!`/`session-flush!`/`session-close!`:
+  - **Batch sets + collapse (§0.2):** `session-batch!` queues signed
+    tuples per (tip, relation); a same-point opposite-signed pair
+    collapses to nothing in the pending set; re-queuing a sign is
+    idempotent. Batches apply only between fixpoints (the driver is
+    synchronous, so refuseIfSuspended semantics compose trivially), and
+    pausing composes through the same one-line-per-unit
+    `(paused …)`→`(continue)` loop as runslog.
+  - **`session-flush!` = the §0.5 routing rule:** apply all collapsed
+    edits, take ONE introspection snapshot, union the per-relation cones
+    (deduped, pipeline-ordered); all-adds + all-monotone union →
+    replay-entry (`(route reenter N)`), with the delta-entry branch
+    stubbed on `delta-flavor-available?` (always `#f` until 0.B5 —
+    "delta-entry when compiled, replay-entry until then"); any deletion
+    or neg/lat edge routes the whole union through clear-and-rerun
+    (`(route rerun N M)`) — sound for everything, so mixing per-relation
+    modes inside one flush is never attempted.
+  - Anchors are tip-only in Phase-0-B4; the recipe protocol (0.C) adds
+    point arguments, and the rebound guard already refuses the cases
+    that need them.
 - **Known imprecisions, accepted for B0:** un-anchored `add-tuple` and all
   imports mutate the *current tip* in place (a batch/link as its own
   version event arrives with 0.C/0.D); during a chain load, a layer's
@@ -1741,7 +1766,9 @@ SHIPPED 2026-07-11 — all eight items done; see §0.8.1 for as-built decisions.
   B1's pipeline-growth cost. *(Decided: re-registration + husk clearing in
   `Daemon::push`; the reload, not registration, dominates re-entry, so
   bind()-reuse stays parked.)*
-- *B4 — routing rule in runslog.rkt.* positive+monotone → delta-entry when
+- *B4 — routing rule in runslog.rkt.* **SHIPPED 2026-07-11 — see §0.5.1
+  (placed in `compiler/session.rkt`, the session-lifecycle module, rather
+  than the one-shot `slog-run-file`).** positive+monotone → delta-entry when
   compiled, replay-entry until then; else clear-and-rerun; queue batches to
   stratum boundaries (refuseIfSuspended semantics); fold incoming updates
   into per-(point, relation) batch sets with same-point collapse (§0.2);

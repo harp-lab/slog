@@ -26,6 +26,7 @@
 
 (provide compile-strata (struct-out sbuild) (struct-out db-partition)
          stratum-meta-dynamic-rels   ; segment write-sets (incremental B0)
+         read-stratum-meta           ; cone/polarity input (incremental B4)
          program->jobs)   ; tooling/debug: inspect a program's stratum jobs
 
 (require "params.rkt")
@@ -390,14 +391,24 @@
 ;; write lands in the predecessor version in place; final fixpoints are
 ;; unchanged, only versioned addressing loses precision for that name).
 (define (stratum-meta-dynamic-rels proghash)
+  (define-values (dyn _reads) (read-stratum-meta proghash))
+  dyn)
+
+;; Both manifest halves at once: (values dynamic-rels reads) where reads is
+;; the ((REL KIND ...) ...) polarity entries -- the session driver's cone
+;; input (compiler/session.rkt).
+(define (read-stratum-meta proghash)
   (define p (fullpath (format "build/~a.meta" proghash)))
-  (with-handlers ([exn:fail? (lambda (_) '())])
+  (with-handlers ([exn:fail? (lambda (_) (values '() '()))])
     (match (call-with-input-file p read)
       [`(stratum-meta ,fields ...)
-       (match (assq 'dynamic-rels fields)
-         [`(dynamic-rels ,rels ...) rels]
-         [_ '()])]
-      [_ '()])))
+       (values (match (assq 'dynamic-rels fields)
+                 [`(dynamic-rels ,rels ...) rels]
+                 [_ '()])
+               (match (assq 'reads fields)
+                 [`(reads ,entries ...) entries]
+                 [_ '()]))]
+      [_ (values '() '())])))
 
 ;; -----------------------------------------------------------------------
 ;; Back end: emit one stratum's C++ translation unit(s).
