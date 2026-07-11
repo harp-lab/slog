@@ -596,7 +596,17 @@
     ;; write-db action has no confirmation handshake, so this is the seam
     ;; where a silently-skipped or empty save would otherwise become a
     ;; successful-looking run (the empty-save flake, 2026-07-10).
-    (for ([dbn (in-list (filter values (list out-db compressed)))])
+    ;; EXCEPTION: a linked compressed save whose IDB partition is empty asks the
+    ;; daemon to write only the EDB root (data/<name>.edb) -- e.g. a single
+    ;; non-recursive derivation over ground facts (grandparent, nested), whose
+    ;; derived relation is classified wholly as EDB (ground-fact-rules).  The
+    ;; layer dir (data/<name>) is then a legitimate META-only dir created by
+    ;; write-compressed-metas below, NOT the daemon's to write, so it must not
+    ;; be required here (write-compressed-metas raises if IT fails to create it).
+    (define verify-compressed?
+      (and compressed (or flatten? (not (null? signed-rels)))))
+    (for ([dbn (in-list (append (if out-db (list out-db) '())
+                                (if verify-compressed? (list compressed) '())))])
       (define d (fullpath (format "data/~a" dbn)))
       (unless (and (directory-exists? d)
                    (pair? (directory-list d)))

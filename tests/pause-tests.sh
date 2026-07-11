@@ -34,6 +34,9 @@ ok()   { echo "PASS $1"; PASS=$((PASS+1)); }
 bad()  { echo "FAIL $1"; FAIL=$((FAIL+1)); }
 expect()     { if grep -qF "$2" "$3"; then ok "$1"; else echo "  (missing '$2' in $3)"; bad "$1"; fi; }
 expect_rx()  { if grep -qE "$2" "$3"; then ok "$1"; else echo "  (no match /$2/ in $3)"; bad "$1"; fi; }
+# negated fixed-string check (was USED at the memory-cap section but never
+# defined -- so `memory-no-oomcrash` silently did nothing, 2026-07-11)
+expect_not() { if grep -qF "$2" "$3"; then echo "  (unexpected '$2' in $3)"; bad "$1"; else ok "$1"; fi; }
 
 # A chain of 250 edges -> ~63000 transitive paths: the recursive `path` rule's
 # scan driver iterates far past the 128-tuple slice check, so a small time
@@ -138,6 +141,33 @@ if [ "${#SOS[@]}" -ge 1 ] && [ -n "$OPEN_SO" ] && [ -n "$LOOKUP_SO" ]; then
 else
   bad "guardrail-setup (could not build .so paths)"
 fi
+
+# --- 5. pausing x compression-replay (docs/incremental.md W2/§6.5/§8A) -------
+# Incremental "load & stream" (W2) resumes a fixpoint from a compressed DB's
+# prog.sexpr REPLAY.  Reloading under a pathological time budget forces mid-read
+# / boundary suspends DURING that replay; because pausing is exact, the
+# reconstructed content must be byte-identical to an unbudgeted reload -- the
+# invariant a resumable incremental load leans on.  (per=60 so replay actually
+# regenerates dropped tuples; the 63k-path chain reliably outlives a 3ms slice.)
+rm -rf data/pause_c data/pause_c.edb out/pcr-unb out/pcr-bud
+racket slog.rkt --no-banner --out-db-compressed pause_c --per 60 "$FX" > out/pause-csave.log 2>&1
+drop_o2 out/pause-csave.log
+CLOADER=out/pause_loader.slog; printf ';; empty replay loader\n' > "$CLOADER"
+# unbudgeted reload (oracle); prime then drop -O2 so the budgeted reload is -O0
+racket slog.rkt --no-banner -d pause_c --debug-dir out/pcr-unb "$CLOADER" > out/pcr-unb.log 2>&1
+drop_o2 out/pcr-unb.log
+racket slog.rkt --no-banner -d pause_c --debug-dir out/pcr-unb "$CLOADER" > out/pcr-unb.log 2>&1
+SLOG_MAX_MS=3 racket slog.rkt --no-banner -d pause_c --debug-dir out/pcr-bud "$CLOADER" > out/pcr-bud.log 2>&1
+expect_rx "creplay-pause-observed" '\(paused ' out/pcr-bud.log
+CRBI=1
+for f in out/pcr-unb/*.csv; do
+  b="$(basename "$f")"; case "$b" in '$stat_'*) continue ;; esac
+  diff <(LC_ALL=C sort "$f") <(LC_ALL=C sort "out/pcr-bud/$b") >/dev/null 2>&1 || CRBI=0
+done
+diff <(ls out/pcr-unb | grep -v '^\$stat_') <(ls out/pcr-bud | grep -v '^\$stat_') >/dev/null 2>&1 || CRBI=0
+if [ "$CRBI" -eq 1 ]; then ok "compression-replay-pause-byte-identical"
+else bad "compression-replay-pause-byte-identical"; fi
+rm -rf data/pause_c data/pause_c.edb
 
 echo
 echo "$PASS passed, $FAIL failed"

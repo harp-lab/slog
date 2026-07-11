@@ -74,7 +74,12 @@ when it is head-only and every head is a ground assertion into a plain
 (non-lattice) table or a struct — the latter is a ground *ask*, since a
 demand is its struct.  Gated judgment facts never qualify (their pattern
 variables are gate-bound); neither does anything containing a variable,
-a primitive computation, or a lattice-valued column (v1).
+a primitive computation, or a lattice-valued column (v1).  One "primitive
+computation" is treated as data: a **ground sequence literal** — a `[e …]`
+bracket lowers (before peel) to a nested `lempty`/`lpush`/`lcat` chain
+(collections.rkt), which `seq-ctor?`/`seq->elem-strings` recognize and render
+back to the `[e …]` stream form, so dumped ASTs full of lists freeze instead of
+falling to the rule path (docs/freeze-list-peel-gap.md).
 
 When a program's peelable rules total at least `SLOG_FREEZE_MIN` term
 nodes (default 512; `SLOG_NO_FREEZE` disables), they are all removed from

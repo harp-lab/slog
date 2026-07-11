@@ -91,6 +91,20 @@
 ;; compile-strata to render as a static database the driver links in.
 (define (program->jobs prog #:split-facts? [split-facts? #f])
   (match-define `(program ,type-env ,mods0 ,dbmanifest ,decomps) prog)
+  ;; Robustness lint (docs/bug-daemon-crash-shape-car.md): the compiler mints
+  ;; value-reference C++ locals as `v_<var>` and shares that textual namespace
+  ;; with any relation/struct/lattice/enum whose name begins with `v_`.  Such
+  ;; names are supported now (emit-cpp's canonicalize-vrefs keeps declared names
+  ;; verbatim), but the overlap is a latent trap -- it SILENTLY mis-compiled in
+  ;; split strata before that fix (a per-TU rename desynchronised the daemon
+  ;; relation names -> null Relation* -> segfault).  Warn once per declared name.
+  (for ([name (in-list (sort (hash-keys (type-env-rels type-env)) symbol<?))]
+        #:when (regexp-match? #rx"^v_" (symbol->string name)))
+    (eprintf (string-append
+              "warning: name `~a` begins with `v_`, the prefix the compiler uses"
+              " for value references -- supported, but the shared namespace is"
+              " fragile; prefer another prefix (docs/bug-daemon-crash-shape-car.md)\n")
+             name))
   ;; peel BEFORE the cache key: a peeled program's rule set (and so its
   ;; stratum hashes) differs from the unpeeled one's, and the frozen
   ;; database is content-addressed separately (freeze.rkt)

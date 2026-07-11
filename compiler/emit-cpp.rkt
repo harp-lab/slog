@@ -57,8 +57,18 @@
   (set-box! b (add1 n))
   (string->symbol (string-append (symbol->string prefix-sym) (number->string n))))
 
-(define (canonicalize-vrefs text const-names)
-  (define keep (list->set (map (lambda (g) (format "v_~a" g)) const-names)))
+;; `keep-names` are daemon-registered NAMES (relations/structs/lattices/temps)
+;; that occur as STRING LITERALS in getRelation/addRelation/addStruct/... .  A
+;; name beginning with `v_` (e.g. a user table `v_maybelist`) matches the
+;; value-ref regex, so without protection it would be renumbered to a per-TU
+;; `v_cN` -- and since numbering restarts per TU, a split stratum's spine would
+;; addRelation one name while a cluster getRelation's a different one, yielding a
+;; null Relation* and a segfault binding the read task's index at stratum load.
+;; Kept verbatim, these names stay identical across TUs (they are already
+;; deterministic, so this does not reintroduce run-variance).
+(define (canonicalize-vrefs text const-names keep-names)
+  (define keep (list->set (append (map (lambda (g) (format "v_~a" g)) const-names)
+                                  keep-names)))
   (define seen (make-hash))
   (define counter (box 0))
   (regexp-replace* #px"\\bv_[A-Za-z0-9_]+" text
@@ -1005,6 +1015,14 @@
   ;; the interned-constant global names -- the only value symbols shared across
   ;; TUs, so canonicalize-vrefs must leave them alone (P2)
   (define const-names (for/list ([(v g) (in-hash constants)]) g))
+  ;; Every daemon-registered name this stratum emits (relations, structs,
+  ;; lattices, temps, oracle/seqindex bases).  canonicalize-vrefs must leave
+  ;; these string literals untouched so a `v_`-prefixed name (a user table like
+  ;; v_maybelist) resolves to the SAME name in the declaring spine TU and in the
+  ;; cluster TUs that read/write it -- otherwise getRelation returns null and the
+  ;; daemon segfaults at stratum load (canonicalize-vrefs comment).
+  (define rel-name-tokens
+    (for/list ([d (in-list (append decls manifest-decls))]) (symbol->string (second d))))
   ;; A cluster externs only the constants IT references (found in its body text),
   ;; not all of them -- otherwise editing any one constant would change every
   ;; cluster's extern block and defeat the per-.o cache (P2).
@@ -1053,7 +1071,7 @@
   ;; pure function of its rules -- byte-reproducible, hence content-addressable
   ;; for the per-.o cache (P2).  `tu` wraps both.
   (define (tu thunk) (canonicalize-vrefs (parameterize ([emit-local-counter (box 0)]) (thunk))
-                                         const-names))
+                                         const-names rel-name-tokens))
   (cond
     ;; Single TU (the common case): read tasks emitted inline in slog_plugin.
     [(<= (length crules) chunk-size)
@@ -1067,7 +1085,7 @@
      (define (crule-id cr)
        (content-hash (canonicalize-vrefs
                       (parameterize ([emit-local-counter (box 0)]) (emit-rule cr))
-                      const-names)))
+                      const-names rel-name-tokens)))
      (define id+crs (for/list ([cr (in-list crules)]) (cons (crule-id cr) cr)))
      ;; bucket by hash mod a power-of-2 N ~= crules/chunk-size: a changed rule
      ;; touches only its own bucket; N shifts only at power-of-2 boundaries.

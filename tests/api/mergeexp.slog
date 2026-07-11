@@ -31,3 +31,19 @@ rule (seed a b)
      (= p "0123456789012345678901234567890123456789012345678901234567890123")
      (= s (+ (+ (+ p p) (+ p p)) (i2s a)))
  --> (q2 s)
+
+;; bignum (mpz) values: the value.mpz remapped id space (docs/primitives.md
+;; §14).  (* <30-digit literal> a) interns a distinct GMP mpz per key, so an
+;; import must re-intern + REMAP each mpz word into the dest interner; shared
+;; seed keys dedup the value across databases, disjoint keys grow it.  The
+;; merge-differential diff (api-tests.sh §8) then covers mpz remap for free.
+table (bigv int int)
+rule (seed a b) (= v (* 123456789012345678901234567890 a)) --> (bigv a v)
+
+;; demand relation: the demand transform's interned key-structs (dsq n) and
+;; answer table (dsq_ans) are a further struct-id space the import must remap;
+;; shared seed keys dedup the demanded struct + answer, disjoint keys grow it.
+demand (dsq int) int
+rule (dsq n r) <-- (= r (* n n))
+table (dsqres int int)
+rule (seed a b) (dsq a r) --> (dsqres a r)

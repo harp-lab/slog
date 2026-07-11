@@ -26,7 +26,15 @@ if [ ${#PROGS[@]} -eq 0 ]; then
          tests/cn_basic.slog tests/mp_basic.slog tests/lst_basic.slog tests/st_basic.slog
          tests/nested.slog tests/lat_sssp.slog tests/lat_count.slog tests/lat_constprop.slog
          tests/dem_fib.slog tests/dem_stlc.slog tests/enum_basic.slog
-         tests/stage_derived.slog)
+         tests/stage_derived.slog
+         # 2026-07-10: close the sequence / collection-lattice / freeze x
+         # compression gaps -- the delta-layer save (docs/incremental.md 0.E)
+         # reuses this exact struct-heap-trim + sample + prog.sexpr-replay DAG.
+         # (frozen_fact deliberately omitted: its 1023-node cold build is slow
+         # and widens the concurrent-build tempfile-race window; deep_fact
+         # covers freeze x compression.)
+         tests/seq_join.slog tests/seq_split_mixed.slog tests/str_rope.slog
+         tests/lat_set.slog tests/lat_cjoin.slog tests/deep_fact.slog)
 fi
 
 pass=0; fail=0; failed=()
@@ -74,6 +82,13 @@ for prog in "${PROGS[@]}"; do
     else
       for f in "out/cmp_o_$name"/*.csv; do
         r="$(basename "$f" .csv)"
+        # $stat_* are per-run daemon diagnostics (docs/stats.md), deliberately
+        # outside the persistence contract: $stat_fixpoint carries timing
+        # (nondeterministic) and $stat_fires counts instantiations, which a
+        # replay legitimately re-fires over the whole reloaded DB -- both differ
+        # oracle-vs-replay by design, so comparing them here is a false failure.
+        # Content correctness is the real oracle; matches run-tests.sh policy.
+        case "$r" in '$stat_'*) continue ;; esac
         if ! diff <(sort "out/cmp_o_$name/$r.csv") <(sort "out/cmp_c_$name/$r.csv" 2>/dev/null) >/dev/null 2>&1; then
           ok=0; echo "  FAIL $name per=$per: relation $r differs (oracle=$(wc -l <"out/cmp_o_$name/$r.csv") replay=$(wc -l <"out/cmp_c_$name/$r.csv" 2>/dev/null))"
         fi

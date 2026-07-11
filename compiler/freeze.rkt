@@ -37,6 +37,30 @@
 (define (bracket-sym? h)
   (and (symbol? h) (equal? (symbol->string h) "[]")))
 
+;; A construction-position bracket `[e ...]` is lowered, BEFORE the peel pass
+;; runs, to a nested lempty/lpush/lcat prim chain (collections.rkt
+;; walk-construction: lpush appends an element, lcat splices a subsequence,
+;; lempty is the base).  In a head-only GROUND rule such a chain is just a
+;; ground sequence literal, so recognize it here -- otherwise any ground fact
+;; carrying a list (e.g. an extracted program AST full of [Clause]/[Ref]/[Exp])
+;; is deemed non-peelable and falls to the rule path, whose per-join brace
+;; nesting overflows codegen at scale (docs/freeze-list-peel-gap.md).
+(define (seq-ctor? h) (and (symbol? h) (and (memq h '(lempty lpush lcat)) #t)))
+
+;; Flatten a ground lempty/lpush/lcat chain to its element renderings, in order,
+;; so the emitter can write it back as the `[e ...]` stream form the freezer
+;; already ingests (docs/freeze.md §3).  Mutually recursive with term->string
+;; (an element may itself be a nested sequence or struct).
+(define (seq->elem-strings e rel-env decls)
+  (match e
+    [`(syn ,_ lempty) '()]
+    [`(syn ,_ lpush ,acc ,elem)
+     (append (seq->elem-strings acc rel-env decls)
+             (list (term->string elem rel-env decls)))]
+    [`(syn ,_ lcat ,acc ,sub)
+     (append (seq->elem-strings acc rel-env decls)
+             (seq->elem-strings sub rel-env decls))]))
+
 ;; -----------------------------------------------------------------------
 ;; Classification: (peelable-heads rule rel-env) -> (cons node-count heads)
 ;; when the rule is head-only and every head is a ground assertion into a
@@ -55,6 +79,8 @@
            [`(syn ,_ ,(? symbol? h) ,args ...)
             (cond
               [(bracket-sym? h) (for-each term! args)]
+              ;; a desugared bracket: a ground sequence literal (see seq-ctor?)
+              [(seq-ctor? h) (for-each term! args)]
               [else
                (match (hash-ref rel-env h #f)
                  [`(struct ,ts ...)
@@ -110,6 +136,11 @@
      (format "[~a]" (string-join
                      (for/list ([a (in-list args)])
                        (term->string a rel-env decls))))]
+    ;; a desugared bracket (lempty/lpush/lcat chain): render as the `[e ...]`
+    ;; stream form -- bit-identical to a bracket, since both intern through the
+    ;; same sequence kernels (docs/freeze.md §3)
+    [`(syn ,_ ,(? seq-ctor?) ,_ ...)
+     (format "[~a]" (string-join (seq->elem-strings e rel-env decls)))]
     [`(syn ,_ ,(? symbol? h) ,args ...)
      (match (hash-ref rel-env h)
        [`(enum ,_) (hash-set! decls h '(enum))]

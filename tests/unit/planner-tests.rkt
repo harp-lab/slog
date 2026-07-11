@@ -54,13 +54,19 @@
 
   ;; clause-in-vars / clause-vars treat a const-let's literal as a variable,
   ;; so special-case (let x (const v)) when replaying a schedule.
+  ;; An $oldjoin wrapper (the exact-semi-naive R_old marker, join-planning.rkt)
+  ;; binds variables exactly like the join it wraps -- it only narrows WHICH
+  ;; tuples are scanned (FULL - delta), not the var in/out behaviour -- so the
+  ;; ordering replay treats it transparently as its inner clause.
   (define (cl-in-vars cl)
     (match cl
       [`(syn ,_ let ,_ (syn ,_ const ,_)) (set)]
+      [`(syn ,_ $oldjoin ,inner) (cl-in-vars inner)]
       [_ (clause-in-vars cl)]))
   (define (cl-vars cl)
     (match cl
       [`(syn ,_ let ,x (syn ,_ const ,_)) (set x)]
+      [`(syn ,_ $oldjoin ,inner) (cl-vars inner)]
       [_ (clause-vars cl)]))
 
   ;; Replay a planned rule: every body clause's inputs must be ground by the
@@ -110,8 +116,12 @@
     (define planned (plan1 r (set 'e 'f 'out2)))
     (check-equal? (set-count planned) 2)
     (for ([p (in-set planned)]) (check-well-ordered p))
+    ;; Exact semi-naive (join-planning.rkt): the two dynamic joins are ordered
+    ;; canonically e,f; the e-driven version reads f as R_old ($oldjoin) so the
+    ;; (e-delta, f-delta) instantiation is counted once -- in the f-driven
+    ;; version, which reads e at FULL.  (Was the pre-$oldjoin all-FULL shape.)
     (check-equal? (for/set ([p (in-set planned)]) (strip-prov p))
-                  (set '(rule (e x y) (f y z) --> (out2 x z))
+                  (set '(rule (e x y) ($oldjoin (f y z)) --> (out2 x z))
                        '(rule (f y z) (e x y) --> (out2 x z)))))
 
   ;; ---------------------------------------------------------------------
