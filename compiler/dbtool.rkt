@@ -25,7 +25,6 @@
 
 (require "dbmeta.rkt")
 (require racket/format)
-(require sha)
 
 (define DATA "data")
 
@@ -195,10 +194,11 @@
 ;; edit added anywhere in the chain changes the digest, invalidating the
 ;; edited-chain drift baseline until the next load re-baselines it.  Always
 ;; digests the seeded plan so the key is independent of the verify mode.
+;; Same digest core as recipe-digest (dbmeta.rkt steps-digest, E1a) --
+;; byte-identical to the former inline sha256 for plans without
+;; import-delta steps, so existing signature.edited baselines stay valid.
 (define (db-chain-edits-digest name)
-  (substring (bytes->hex-string
-              (sha256 (string->bytes/utf-8 (format "~s" (db-load-steps name)))))
-             0 16))
+  (steps-digest (db-load-steps name)))
 
 ;; Walk the load DAG; return (list db stored-version) for the first database
 ;; whose recorded value-encoding-version differs from what this build reads,
@@ -368,8 +368,12 @@
            (printf "ok   ~a (full replay verify)\n" n))])))
   (unless (unbox ok) (exit 2)))
 
-;; slog db edit NAME add-tuple REL v...  -- record a forward-incremental edit
-;; to an input-leaf relation (§12).  Applied at load; propagates by re-replay.
+;; slog db edit NAME <op> ...  -- record a forward-incremental edit on an
+;; existing layer (§12).  Applied at load; propagates by re-replay.  The op
+;; vocabulary IS the recipe step grammar's mutation subset (dbmeta.rkt
+;; edit-step?, E1a): edits are recipe fragments attached to an ancestor,
+;; stored as the action specs themselves so the load-step loop streams
+;; them like any step -- one grammar, one applier, one digest.
 (define (cmd-edit args)
   (match args
     [(list-rest name "add-tuple" rel vals)
@@ -379,10 +383,14 @@
      (append-edit! (db-dir name) `(add-tuple ,(string->symbol rel) ,@parsed))
      (printf "recorded edit on ~a: (add-tuple ~a ~a); reload a dependent to propagate\n"
              name rel (string-join vals " "))]
-    ;; Rename/drop edit ops (docs/incremental.md 0.D3; one implementation
-    ;; with db-compression §12's edit verbs): stored as the ACTION SPECS
-    ;; themselves, so the load-step loop streams them like any edit -- the
-    ;; daemon applies the environment operation right after the layer opens.
+    ;; del-tuple is in the shared grammar (sign-complete, §0.6) but NOT yet
+    ;; recordable here: a negative edit invalidates every DOWNSTREAM layer's
+    ;; kept sample (a seeded replay would monotonically resurrect derived
+    ;; facts -- the §11.1 blind spot, weaponized).  0.E2 adds the rule
+    ;; "layers downstream of a negative step replay unseeded"; until then,
+    ;; refuse loudly rather than corrupt silently.
+    [(list-rest _name "del-tuple" _rest)
+     (die "del-tuple edits are not yet supported: downstream layers' kept samples would mask the retraction under a seeded load (docs/incremental.md 0.E2's unseeded-downstream rule); edit the source data or re-derive the chain instead")]
     [(list name "rename-rel" from to)
      (unless (db-exists? name) (die "no such database: ~a" name))
      (append-edit! (db-dir name) `(rename-rel ,(string->symbol from) ,(string->symbol to)))

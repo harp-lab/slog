@@ -62,7 +62,10 @@
          write-recipe          ; the session recipe (incremental 0.C2)
          read-recipe
          db-has-recipe?
+         recipe-step?          ; ONE step grammar for recipe + edits (E1a)
+         edit-step?
          recipe-digest
+         steps-digest          ; the shared digest core (E1a)
          externalize-recipe-payloads   ; payload placement (0.C5)
          recipe-payload-dir)
 
@@ -329,27 +332,66 @@
 
 ;; ---------------------------------------------------------------------------
 ;; recipe -- the session's pipeline steps + anchored batches
-;; (docs/incremental.md §0.10, 0.C2).
+;; (docs/incremental.md §0.10, 0.C2; step grammar unified with `edits`
+;; per E1a, 2026-07-11).
 ;; ---------------------------------------------------------------------------
 ;;
-;; A session = an ordered list of steps (open/run/import-delta; renames,
-;; drops, and links join with 0.D) plus signed batches anchored at
+;; A session = an ordered list of steps plus signed batches anchored at
 ;; (relation, version-ordinal) -- ordinals, never raw pipeline positions,
-;; so the anchors survive recompiles (§0.4).  Stored as
+;; so the anchors survive recompiles (§0.4).  ONE step grammar serves both
+;; the recipe and the `edits` file (an edits file is a recipe FRAGMENT
+;; attached to an existing layer -- same spellings, same applier, same
+;; digest core):
 ;;   (slog-recipe
-;;     (open DB) | (run PROG) | (import-delta DIR ((X Z) ...))
-;;     (batch REL (v ORD) ((v ...) ...) ((v ...) ...))   ; adds, dels
+;;     (open DB) | (run PROG)
+;;     (import-delta DIR ((X Z) ...))        ; DIR may be (delta k) post-
+;;                                           ;   externalisation (0.C5)
+;;     (link DB ((X Z) ...))                 ; reference, never copied (0.D5)
+;;     (rename-rel R S) | (drop-rel R)       ; environment ops (0.D1)
+;;     (add-tuple REL v ...) | (del-tuple REL v ...)   ; inline single-tuple
+;;                                           ;   steps, anchored at entry --
+;;                                           ;   the degenerate batch (§0.2)
+;;     (batch REL (v ORD) ((v ...) ...) ((v ...) ...)) ; adds, dels
 ;;     ...)
 ;; The batch entries are the COLLAPSED log (§0.2): same-point add/delete
 ;; pairs are already absent.  Consumed by 0.E's delta-layer save/load;
 ;; produced live by compiler/session.rkt's session-recipe.
+
+;; The shared step grammar.  `recipe-step?` admits every session event;
+;; `edit-step?` is the mutation subset an `edits` fragment may contain
+;; (opening a db or running a segment inside an ancestor's edit appendix
+;; makes no sense -- those are layer-level recipe steps).
+(define (recipe-step? st)
+  (match st
+    [`(open ,(? string?)) #t]
+    [`(run ,_) #t]
+    [_ (edit-step? st)]))
+
+(define (edit-step? st)
+  (define (rename-map? rs)
+    (and (list? rs)
+         (for/and ([r (in-list rs)])
+           (match r [(list _ _) #t] [_ #f]))))
+  (match st
+    [`(import-delta ,(or (? string?) `(delta ,(? exact-nonnegative-integer?)))
+                    ,(? rename-map?)) #t]
+    [`(link ,(? string?) ,(? rename-map?)) #t]
+    [`(rename-rel ,(? symbol?) ,(? symbol?)) #t]
+    [`(drop-rel ,(? symbol?)) #t]
+    [`(add-tuple ,(? symbol?) ,_ ...) #t]
+    [`(del-tuple ,(? symbol?) ,_ ...) #t]
+    [`(batch ,(? symbol?) (v ,(? exact-nonnegative-integer?)) ,(? list?) ,(? list?)) #t]
+    [_ #f]))
 
 (define (recipe-path db-dir) (build-path db-dir "recipe"))
 (define (db-has-recipe? db-dir) (file-exists? (recipe-path db-dir)))
 
 (define (write-recipe db-dir recipe)
   (match recipe
-    [`(slog-recipe ,_ ...) (void)]
+    [`(slog-recipe ,steps ...)
+     (for ([st (in-list steps)])
+       (unless (recipe-step? st)
+         (meta-fail "unknown recipe step (grammar in dbmeta.rkt): ~s" st)))]
     [other (meta-fail "not a recipe: ~s" other)])
   (call-with-atomic-output
    (path->string (recipe-path db-dir))
@@ -364,14 +406,15 @@
        [(and r `(slog-recipe ,_ ...)) r]
        [other (meta-fail "malformed recipe in ~a: ~s" db-dir other)])]))
 
-;; Digest of a recipe's semantic content (the db-chain-edits-digest of the
-;; session world): covers step order, anchors, and inline payloads
-;; verbatim; a bin payload (import-delta) contributes its directory's
-;; content digest (names + bytes, the root-stamp machinery) so editing a
-;; payload in place surfaces as a digest change, with the bare path as the
-;; fallback for an unreadable/absent directory.
-(define (recipe-digest recipe)
-  (match-define `(slog-recipe ,steps ...) recipe)
+;; THE digest core, shared by every step-list digest (E1a: one digest
+;; mechanism): covers step order, anchors, and inline payloads verbatim; a
+;; bin payload (import-delta) contributes its directory's content digest
+;; (names + bytes, the root-stamp machinery) so editing a payload in place
+;; surfaces as a digest change, with the bare path as the fallback for an
+;; unreadable/absent directory.  Used by recipe-digest here and by
+;; dbtool.rkt's db-chain-edits-digest (which digests a whole chain's load
+;; plan, inline edit steps included).
+(define (steps-digest steps)
   (define resolved
     (for/list ([st (in-list steps)])
       (match st
@@ -383,6 +426,12 @@
   (substring (bytes->hex-string
               (sha256 (string->bytes/utf-8 (format "~s" resolved))))
              0 16))
+
+;; Digest of a recipe's semantic content (the db-chain-edits-digest of the
+;; session world).
+(define (recipe-digest recipe)
+  (match-define `(slog-recipe ,steps ...) recipe)
+  (steps-digest steps))
 
 ;; Payload placement (0.C5): copy each import-delta payload database into
 ;; the saving layer's delta.<k>/ and rewrite its step to the RELATIVE
@@ -435,6 +484,11 @@
        [other (meta-fail "malformed edits in ~a: ~s" db-dir other)])]))
 
 (define (append-edit! db-dir op)
+  ;; One grammar with the recipe (E1a): an edits file is a recipe fragment,
+  ;; restricted to the mutation subset -- reject anything else here rather
+  ;; than let a second vocabulary grow.
+  (unless (edit-step? op)
+    (meta-fail "not an edit step (grammar in dbmeta.rkt): ~s" op))
   (define ops (append (read-edits db-dir) (list op)))
   (call-with-atomic-output
    (path->string (edits-path db-dir))

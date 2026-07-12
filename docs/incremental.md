@@ -166,6 +166,18 @@ This subsumes and extends what already exists:
   (`slog db edit` + stale-propagation) survives as the *mutate-history*
   operation, distinct from the normal append-only flow (same "reproduce vs.
   mutate are different verbs" honesty note as db-compression §12).
+  **Unification pinned (2026-07-11; lands with 0.E):** there is ONE event
+  grammar — the recipe step. An `edits` file is a *recipe fragment attached
+  to an existing layer*, never a second vocabulary: the same step spellings
+  (`(add-tuple …)` / `(del-tuple …)` / `(rename-rel R S)` / `(drop-rel R)` /
+  batch steps), one (de)serialiser + one applier (dbmeta.rkt + the load-step
+  loop), and one digest — `recipe-digest` subsumes `db-chain-edits-digest`,
+  so an edit anywhere in a chain invalidates downstream verification
+  baselines (and any future cached count state) through a single mechanism.
+  The two verbs differ only in *where the fragment attaches* (a new layer's
+  own recipe vs. an ancestor's edits appendix), never in format or applier.
+  The 0.D dbtool verbs already store action-spec spellings; 0.E finishes the
+  convergence rather than letting a parallel grammar calcify.
 - Immutability, staleness, `gc`, atomic writes, signatures, drift
   attribution: inherited unchanged from db-compression §7/§11.
 
@@ -726,7 +738,10 @@ What shipped, and the decisions the design left open:
   the predecessor versions — final content is unchanged (the copy + replay
   dedup absorb it), and precise per-layer addressing on loads is 0.E2's
   recipe rebuild. Multi-`run` programs compile to one segment (recipe
-  granularity, 0.C).
+  granularity, 0.C). **These stop being harmless at Phase 1** — the EDB
+  input bit is per-version (§8B.5), so *which version received an input
+  contribution* becomes semantics, not bookkeeping; 0.E0 retires all
+  three before counting leans on them.
 - **Tests:** `tests/session-tests.sh` (driven by
   `tests/api/session-drive.rkt`, the embryo of 0.B4's routing driver) —
   two-segment chains over plain tables with positional sizes/dumps; a
@@ -999,19 +1014,21 @@ The layer format (db-compression §8) grows three things:
 
 ```
 data/<name>/
-  META                # + fields: recipe? (bool), counted? (Phase 1)
-  recipe              # NEW — the session's pipeline steps + anchored batches
-                      #   (supersedes `edits` for this layer's own history;
-                      #   `edits` remains the mutate-an-ancestor verb):
-                      #     (run <segment-id>)                   → prog.sexpr segment
-                      #     (rename R S) | (drop R)              → at their pipeline position
-                      #     (batch + REL @P (inline (v …) …))    → small, baked
-                      #     (batch - REL @P (inline (v …) …))
-                      #     (batch + REL @P (bin delta.3))       → bulk, bin-backed
-                      #     (link DB ((X Z) …) @P)
-                      #   @P = the anchor: a pipeline point, stored robustly as
-                      #   (relation, version-ordinal) / boundary event (§0.4) —
-                      #   never a raw SCC index; P may reach back into ANCESTOR
+  META                # + field: recipe? (bool).  (`counted?` retired — §8B.3:
+                      #   counts never touch disk)
+  recipe              # NEW — the session's pipeline steps + anchored batches.
+                      #   ONE step grammar with `edits` (E1a, dbmeta.rkt
+                      #   recipe-step?/edit-step?; an edits file is a recipe
+                      #   FRAGMENT attached to an existing layer).  As built:
+                      #     (open DB) | (run <segment>)          → prog.sexpr segment
+                      #     (rename-rel R S) | (drop-rel R)      → environment ops (0.D1)
+                      #     (add-tuple REL v …) | (del-tuple …)  → inline entry-anchored
+                      #     (batch REL (v ORD) (adds …) (dels …))→ anchored, collapsed
+                      #     (import-delta DIR|(delta k) ((X Z) …)) → bulk, bin-backed
+                      #     (link DB ((X Z) …))                  → reference to data/DB
+                      #   The batch anchor is (relation, version-ordinal) — §0.4:
+                      #   ordinals are recipe-stable; raw positions never
+                      #   serialise.  Anchors may reach back into ANCESTOR
                       #   layers' pipelines (back-insertion, this layer's key
                       #   power) — ancestors themselves are never touched.
                       #   Batches are stored COLLAPSED (§0.2): same-point
@@ -1020,6 +1037,7 @@ data/<name>/
   delta.<k>/          # NEW — the k-th bin-backed payload: a self-contained
                       #   mini bin-db (canonical writer; own value.strings/
                       #   value.nodes; closure-complete), applied by import
+                      #   (externalize-recipe-payloads/recipe-payload-dir, 0.C5)
   prog.sexpr          # may now hold MULTIPLE segments (entry per run step)
   <relation dirs>, signature, signature.edited   # as today
 ```
@@ -1051,15 +1069,17 @@ data/<name>/
 - **Default policy shift (accepted 2026-07-08): databases are incremental
   by default.** The normal save keeps master indices whole
   (`per = 100 %` for session saves — auto-`per` compression remains an
-  explicit opt-in for archival layers), and — once Phase 1 lands — persists
-  the two counters with them: a per-bucket sidecar `k.counts.bin` (two s64
-  per tuple, in `0.bin` tuple order) beside each `k.bin`, gated by META
-  `counted?` + `compiler-stamp` (counters are invalid across semantic
-  compiler changes even when the tuple set isn't — §8A.3, now revised from
-  "defer" to "planned default"). A stamp-matching `per=100` load then skips
-  even the count-establishing round: **load → immediately streamable and
-  incrementally maintainable**. Roots need no counts file (EDB counts are
-  definitionally `(1,0)`).
+  explicit opt-in for archival layers). *(Re-revised 2026-07-11, §8B:
+  counters are NOT persisted after all — counts are session-ephemeral
+  cache, recomputed lazily by the count round on the first retraction that
+  needs them. The earlier `k.counts.bin` + META `counted?` +
+  compiler-stamp-gating design is retired to "optional future accelerator"
+  status: it only ever saved one count round on a `per=100`
+  load-then-immediately-retract, and its gating complexity — counts are
+  compiled-plan-relative, §8B.3 — vanishes entirely when counts never
+  touch disk. Every load is a plain set-semantics load; incrementality is
+  healed on demand. Roots and frozen ground facts synthesise the input
+  bit + `(0,0)`, §8B.5 — no counts file was ever needed for them.)*
 - **Freeze.** `--flatten` at save time exists; add `slog db freeze NAME
   [--as NEW]` = load/replay the chain, `writeDatabaseBIN` the
   materialisation as a standalone root (`kind 'flat`), no manifest, no
@@ -1075,8 +1095,8 @@ driver, routing rule, recipe, and IO built in Phase 0 are permanent:
 | | update handled by | granularity | new machinery |
 |---|---|---|---|
 | **Phase 0** | semi-naïve append (monotone) / clear-and-rerun cone (else) | stratum | version chains + environment, re-entry, cone metadata, anchored batches, recipe IO, negation |
-| **Phase 1** (M0–M3) | signed counts; deletion precise where non-recursive | tuple (acyclic) | Count/SCount values (per version), signed emit/aggregate, persisted counters |
-| **Phase 2** (M4–M7) | DRed^c 3-phase per segment, bounded by version barriers | tuple (general) | candidate set C, reseed, barrier; lattice/rank unification |
+| **Phase 1** (M0–M3) | signed counts; deletion precise where non-recursive | tuple (acyclic) | sidecar count indices + count round (§8B), signed emit/aggregate in the `_delta`/`_count` flavors, EDB input bit |
+| **Phase 2** (M6, M4–M5, M7) | stratified aggregates precise (M6), then DRed^c 3-phase per segment, bounded by version barriers | tuple (general) | contributor state in the sidecar seam; candidate set C, reseed, barrier; lattice/rank unification |
 
 Reading the table bottom-up is the implementation dependency; reading it
 top-down is the user experience: behaviour is fixed from Phase 0 on, and
@@ -1391,16 +1411,35 @@ index-value slot". A relation's index arrays live in `Relation::indices`
 by `getIndex(ord, delta)` (database.h:506); per-bucket
 `intern_allocators`/`getInternAlloc`/`getStructId` at database.h:138/298/263.)*
 
-- Master index value changes from a set element to a mapped value:
-  - relations: `btree_map<std::array<u64,A>, Count>` where `struct Count { s64 nonrec; s64 rec; };`
-    — mechanically, a `BTreeMapIndex`-style index with a struct value instead of
-    the lattice's single `u64` payload word.
-  - structs: value `struct SCount { u64 id; s64 nonrec; s64 rec; };` — **`id` stays in
-    the value so it survives over-delete/reseed** (see §7).
-  - Counters live in the **value**, never in the key (else the same tuple at two counts
-    becomes two keys and dedup/probe ordering breaks). Use **signed** `s64`: negative
-    weights must exist *in transit* during propagation.
-- Delta/probe indices that don't need counts can stay sets.
+**The sidecar decision (2026-07-11, §8B): the master indices do NOT
+change.** Counts live in a per-(relation, version) **sidecar count index**,
+lazily materialised (§8B.2), mechanically a `BTreeMapIndex`-style map. (The
+pre-§8B sketch here converted the master indices themselves to
+`btree_map<tuple, Count{s64,s64}>` / `SCount{id,s64,s64}` values — retired:
+it put counting on the hot path of every run and made "uncounted" an
+unrepresentable state.)
+
+- **tables** — `btree_map<std::array<u64,A>, u64>` keyed by the full tuple:
+  one extra index's worth of memory, paid only for counted versions.
+  (Row-pointer keying was considered and rejected: btree reorgs move rows.)
+- **structs** — `btree_map<u64, u64>` keyed by the struct id: 2 words per
+  counted row. Id stability across over-delete/reseed comes free — the id
+  IS the key; the master row is tombstoned in place, never rekeyed (§7).
+- **the packed u64 value** is `input(1) | nonrec(31) | rec(32)` with
+  under/overflow asserts. Stored counters are never negative — signs travel
+  on delta records (§3.2) — so an underflow assert is a free corruption
+  detector, and saturation is a loud fatal rather than a silent wrap
+  (widen if a workload ever trips it). The `input` bit is §8B.5's
+  set-semantics EDB flag. Counters live in the value, never the key (the
+  one constraint shared with the retired sketch: a tuple at two counts
+  must not become two keys).
+- **the value slot stays extensible** per §7A.7: a lattice-keyed relation's
+  sidecar later carries per-key contributor state (M6) in the same seam.
+- **every existing index stays a set** — master, secondary, delta, probe —
+  with zero hot-path change.
+- The consistency invariant the sidecar buys into: *a version's count map,
+  when materialised, covers exactly its live tuples* — maintained at the
+  `_delta`/sweep merge points, asserted by the count oracle (§10).
 - Add, per relation, a handle for the transient candidate set `C` (§3.4) — reuse the
   existing `deltaindices` machinery; populated only in the negative phase.
 - Relation gains: stratum id and, per index, the rule-derived rec/nonrec tag needed by
@@ -1425,9 +1464,23 @@ favour.)*
   dedup-skip** (we must count re-derivations of existing tuples). Removing this
   skip is also why the exact-once delta convention becomes load-bearing (§8/§8A:
   a double-fired instantiation was harmless under set semantics, it corrupts
-  counts).
-- `emit_temp` (l.232): temps are stratum-transient plumbing (no persistence) —
-  sign-agnostic, likely unchanged.
+  counts). *(Narrowed 2026-07-11: the counting producer exists ONLY in the
+  `_delta` and `_count` flavors — §8B.1. The normal and seeded flavors keep
+  today's dedup-skipping `emit` forever; full runs and replays never count,
+  so the hot path is untouched and the exact-once burden falls only on the
+  flavors built for it.)*
+- `emit_temp` (l.232): **corrected 2026-07-11 — "likely unchanged" was
+  wrong.** `emit_temp` itself does no dedup (verified, operators.h), but
+  temp relations are btree SETS: same-row instantiations collapse at the
+  temp's write phase, and a cross-iteration re-derivation of an existing
+  temp row never re-fires the follow-up rules. Counts downstream of a temp
+  would therefore be multiplicity-collapsed at the temp — corrupt from the
+  first temp-split rule. Under §8B counts are plan-relative anyway (§8B.3),
+  so the fix is one of: temps in the counted flavors carry sidecar counters
+  like any relation and participate in sweeps (bag-transparent
+  pass-throughs), or the `_count`/`_delta` planner avoids temp
+  decomposition for counted rules. Decide at M0; a temp-split rule is a
+  headline M0 test.
 - `emit_struct` (l.253): same signed treatment, but the id slot stays a 0
   placeholder — `InternStructTask` owns dedup + id (already true today, by
   design comment at l.248-251).
@@ -1746,7 +1799,18 @@ Even though aggregation ships later, these choices in the early milestones avoid
   semantics a double-fire was absorbed by dedup and invisible; under counting it
   permanently corrupts counters. This is the headline M0 test (§10) — verify the
   2026-07 join planner's per-position versions partition instantiations exactly
-  at the reload/iteration-0 boundary, not just mid-run.
+  at the reload/iteration-0 boundary, not just mid-run. *(Narrowed 2026-07-11
+  by §8B: loads and replays never count, so the iteration-0 exact-once burden
+  applies only to the counted flavors — the `_count` round is exact-once BY
+  CONSTRUCTION (one all-full variant per rule, fired once), and `_delta`
+  inherits 0.B6's staged-exactly-once discipline. The seeded re-entry tasks
+  (db-compression §19A), which re-fire instantiations by design, stay
+  set-semantics-only and never meet a counter.)*
+- **Side-channel-grown relations and the EDB input bit** — see §8B.4/§8B.5:
+  `error` counts normally via signed guard emission; value-keyed side tables
+  (`$seq_at`/`$seq_atr`, `R_has`/`R_at`, extern-oracle answers) follow
+  heap/memo liveness and are never counted or swept; input-ness is an
+  explicit per-(tuple, version) bit with set semantics.
 - **Termination invariant** (§6.5): presence transitions, not count changes.
 - **Struct id stability** (§7).
 - **Demand supplementaries are DRed-transparent** (2026-07-10,
@@ -1782,52 +1846,45 @@ is the operating model. Deletion **edits** compose the same way: today they are
 sound via full re-replay (db-compression.md §12); under DRed^c they become the
 negative input batches of §4.
 
-### 8A.2 The one soundness trap: never ingest the kept sample as counted presence
+### 8A.2 The one soundness trap: never ingest stored counts
 
-A compressed load imports each layer's kept sample before replaying. Under
-counting, a kept tuple ingested with any positive count is corrupted forever —
-replay re-derives it and adds the true counts *on top*. Worse than imprecise: a
+A kept tuple ingested with any positive count is corrupted forever — replay
+re-derives it and adds the true counts *on top*. Worse than imprecise: a
 spurious `nonrec > 0` makes the fact **permanently undeletable** (the §4.1
-barrier protects it from every future negative sweep). The contract:
+barrier protects it from every future negative sweep).
 
-- kept **table/lattice tuples** are ingested as *witness only* — they do not
-  enter the live set with counts; replay re-derives and counts them. (Their
-  seeding value was always marginal — db-compression.md §13: seeds never reduce
-  join work, only rounds.)
-- kept **struct-heap rows** are ingested as **tombstones** — id preserved,
-  counters zero, absent-until-rederived. This is *exactly* the §7 tombstone
-  shape DRed^c needs anyway: `InternStructTask` content-matches the tombstone,
-  reuses its id, and bumps its counters — id stability and count correctness
-  from one mechanism.
+**Resolution (2026-07-11, §8B): no load path ingests counts, ever.** Replay
+stays set-semantics — kept rows seed exactly as today, ids converge by
+content-dedup — and counts are established afterwards by the count round.
+(An earlier revision of this section designed special witness/tombstone
+ingestion modes for kept table tuples and struct-heap rows; under §8B they
+are never built. A kept struct row the replay did not re-derive simply ends
+the count round at `(0,0)`, which IS the §7 tombstone — id preserved,
+`InternStructTask` content-matches it and reuses the id on any future
+re-derivation; a kept table tuple at `(0,0)` is reported as drift, §8B.6.)
 
-### 8A.3 `per = 100 %` loads come out incremental-ready for free
+### 8A.3 `per = 100 %` loads: the verify round IS the count round
 
 The `per=100%` "immediate fixpoint self-check" fires every rule once over the
 full database and derives nothing new — under counting, **that single round IS
-the count computation** (one-step derivations from the fixpoint). Expensive
-layers kept whole therefore pay nothing extra to become DRed^c-ready. Corollary:
-a `--trust` load that skips the check would leave counters at zero — trust-mode
-and incremental-readiness are mutually exclusive unless counters are persisted.
+the count computation** (one-step derivations from the fixpoint). This
+observation is what generalised into §8B's `_count` flavor: the same
+one-round shape, runnable at ANY settled fixpoint, seeded or not. Expensive
+layers kept whole pay nothing extra to become DRed^c-ready when counted
+eagerly — and by default not even that: counts are established lazily on the
+first retraction (§8B.2), so a `--trust` load that skips the self-check is
+simply an uncounted load like every other. *(A 2026-07-08 revision planned
+persisted `k.counts.bin` counters with compiler-stamp gating; retired
+2026-07-11 — counts never touch disk, §0.10/§8B.3.)*
 
-*(Revised 2026-07-08, 2nd revision: counter persistence is now the PLANNED
-DEFAULT, not deferred — §0.10. Databases are incremental by default; session
-saves keep master indices whole and, once Phase 1 lands, write a per-bucket
-`k.counts.bin` sidecar (two s64 per tuple, in tuple order) beside each
-`k.bin`, gated by META `counted?` + a `compiler-stamp` match — counters are
-invalidated by any semantic compiler change even when the tuple set is not,
-in which case the load falls back to the count-establishing replay round.
-Roots synthesise `(1,0)` and store nothing. This makes a stamp-matching
-`per=100` load immediately streamable with zero replay — the trust-mode
-corollary above dissolves for such loads.)*
-
-### 8A.4 Checkpoints need a count story
+### 8A.4 Checkpoints: resolved — no count story needed
 
 `writeDatabaseSerialBIN` checkpoints a paused PARTIAL database
-(db-compression.md P2.3). Partial-fixpoint counters are not reconstructible from
-the tuple set, so when counting lands either (a) the checkpoint format persists
-counters, or (b) a resumed checkpoint is treated as witness/tombstones per §8A.2
-and the replay restarts from the EDB (monotonicity makes any subset a sound
-seed; only the count-establishing work is repeated). Decide at M0.
+(db-compression.md P2.3), and partial-fixpoint counters are not
+reconstructible from the tuple set. Resolved 2026-07-11 by §8B: no
+checkpoint ever persists counters because no path does — a resumed replay
+completes under set semantics and counts heal lazily afterwards. No
+partial-count format ever exists.
 
 ### 8A.5 Mutual payoffs
 
@@ -1842,6 +1899,237 @@ seed; only the count-establishing work is repeated). Decide at M0.
 - **The compression harness gives the count oracle:** `tests/compression/run.sh`
   already content-diffs a compressed load against a from-scratch run; extending
   it to also diff *counters* tests the whole §8A contract in one shot (§10).
+
+---
+
+## 8B. The count-round architecture: counts are a recomputable cache (decided 2026-07-11)
+
+*(This section supersedes the persistence/ingestion halves of §8A — §8A.2's
+witness/tombstone ingestion modes, §8A.3's persisted-counter default, and
+§8A.4's open checkpoint question — and restructures M0/M1 in §9. §8A.1's
+determinism theorem is its foundation. Worked out in discussion 2026-07-11,
+resolving "does intensional compression block full incrementality?": no —
+reframed correctly, they are the same feature.)*
+
+The organising principle, one level up from §8A.1:
+
+> **A database is (inputs, program, anchored batches). Everything else —
+> tuples, versions, counts, indices, `.so`s — is cache: droppable,
+> recomputable, verifiable.** Compression drops tuple-cache; lazy counting
+> drops count-cache; a load rebuilds exactly as much cache as the session
+> needs.
+
+`(nonrec, rec)` are a pure function of the *settled fixpoint*:
+`count(t)` = one-step derivations of `t` from currently-present facts under
+the compiled plan, plus `t`'s input bit (§8B.5). Nothing about HOW the
+fixpoint was reached — seeded, parallel, replayed from a compressed chain,
+merged, checkpoint-resumed, hand-fed — appears in that definition. So counts
+never need to be protected through compression, persisted across saves, or
+threaded through construction paths; they are established on demand, from
+the materialisation, by one primitive.
+
+### 8B.1 The count round, and the four flavors
+
+**The count round:** at any settled fixpoint, fire each rule exactly once
+over FULL indices — no deltas, no iterations, no propagation — with a
+counting emit that bumps each consequence's counter by the rule's static
+rec/nonrec tag (plus signed error emission for faulting guards, §8B.4).
+Exact-once holds **by construction** (one all-full variant per rule; no
+semi-naïve partitioning proof required — this sidesteps the §19A seeded-
+task re-fire problem entirely). Honest cost: the work equals the total
+one-step instantiation volume at fixpoint ≈ the join work of one full
+evaluation, compressed into a single embarrassingly-parallel round (no
+fixpoint rounds, no restaging, no insert/dedup churn). Per-version counts:
+run it under `bind-at P` (0.C0). It coincides with the `per=100`
+"immediate fixpoint self-check" (§8A.3) and can compute the signature in
+the same pass — verify closure, verify signature, establish counts: one
+sweep, three results.
+
+Compiled flavors — only one is new, and the hot path is untouched:
+
+| flavor | semantics | counting? |
+|---|---|---|
+| normal | set; dedup-skipping `emit` | never |
+| seeded (db-compression §19A) | set; re-fires absorbed by dedup | never |
+| `_delta` (0.B5) | O(change) increments | YES — counting emit + §4.4 aggregate (M1) |
+| `_count` (NEW, M0) | one all-full, fire-once variant per rule | YES — establish/heal/verify |
+
+Full runs and replays **never count**. `emit`'s dedup-skip stays; master
+indices stay sets; the §19A seeded re-entry tasks never meet a counter; the
+M0 risk surface shrinks to the two flavors built for counting, both of
+which are separate lazily-compiled cached artifacts on the `ensure-delta-so`
+pattern (`build/<hash>_count.O0.so`).
+
+### 8B.2 Lazy counting: `counted` is a per-(relation, version) state
+
+`settled` and `counted` are orthogonal per-(relation, version) states,
+exposed by `(pipeline)` introspection, healed by one verb (a
+`(recount REL@P …)` / count-round action — the same primitive serving
+loads, lazy establishment, save-time verification, and the test oracle).
+The protocol:
+
+- Sessions and loads run set-semantics by default; nothing is counted.
+  Loads in particular stay exactly as shipped: seeded, parallel,
+  forward-semi-naïve replay — seeding is retained in full (this is what
+  the witness/tombstone ingestion design of §8A.2 gave up trying to have).
+- The FIRST retraction (or explicit recount) whose cone touches uncounted
+  versions triggers the heal: count-round the cone's versions, then apply
+  the retraction through the counting machinery. From then on the `_delta`
+  flavor maintains those relations' counts through every subsequent batch.
+- The §0.5 routing rule gains one arm: *retraction into an uncounted cone →
+  count-round-then-sweep OR clear-and-rerun, whichever the cost model
+  prefers* (count-round cost ~ cone's full instantiation volume, amortised
+  over all future retractions; clear-and-rerun cost ~ one suffix replay,
+  paid per retraction). Genuinely tunable, per workload, forever — this is
+  the "efficient repair task the system does in batch, tunable and
+  available for any database".
+- Version boundaries never copy counts: the inheritance rule gives every
+  inherited tuple one `nonrec` in the NEW version (§0.4), so a fresh
+  boundary version is born *settled but uncounted* and heals lazily like
+  everything else. `newVersion`'s copy mechanics (§0.5.1) are untouched.
+- Memory: a counted table version costs ~one extra (full-tuple-keyed)
+  index; a counted struct relation costs 2 words per row (§6.1 revision).
+  Paid only where retraction actually flows.
+
+### 8B.3 Counts are plan-relative — and never touch disk
+
+Instantiation multiplicity depends on the OPERATIONALIZED plan, not the
+logical program: or-splits, temp decomposition (§6.2), demand `$sup`
+chains, projection choices. That is fine for DRed^c — it needs only that
+`+` and `−` route through the SAME plans so contributions cancel exactly —
+but it has two consequences:
+
+- **Counts are session-ephemeral; they are never persisted.** (Decision
+  2026-07-11, retiring §0.10's `k.counts.bin` / META `counted?` /
+  compiler-stamp-gating design.) Since counts never cross a save,
+  recompiling stored source under a changed compiler — the whole point of
+  the source-not-plans storage bet (db-compression §9) — is a non-issue:
+  new session, new plans, counts healed lazily against them. Nothing about
+  counting argues for persisting compiled plans alongside source. The
+  retired sidecar-persistence design remains available as a pure
+  accelerator if a "`per=100` load, then immediately retract" workload
+  ever measures as hot; it is not the default and needs its stamp gating
+  back if ever revived.
+- **The cross-flavor count contract (the load-bearing invariant):** within
+  one session, `_count` and `_delta` (and any future counted-fresh-run
+  mode) must enumerate identical instantiation multiplicities. Semijoin
+  filters are safe today — `exists_probe` gates rows *before* join
+  expansion, never replacing enumeration — and that is now a **maintained
+  invariant**, not an accident: any future planner optimisation that
+  collapses enumeration (early-out on first match, dedup projection)
+  must be fenced out of the counted flavors. Headline M0 test: per-tuple
+  counts of (count round; then N delta increments) ≡ (batch run of the
+  union; then count round), with the fire audit (docs/stats.md) as the
+  instrument.
+
+### 8B.4 Side-channel-grown relations: two classes, no third
+
+*(Replaces the earlier conservative "exclude them all from counting"
+position; discussed and decided 2026-07-11.)*
+
+- **Instantiation-deterministic side emissions — `error` — count
+  normally.** A guard fault is a deterministic function of the
+  instantiation, so error rows take signed emission in the
+  `_count`/`_delta` flavors: the count round re-encounters each fault
+  exactly once and counts it; a negative sweep re-encounters it under
+  sign −1 and decrements. Engineering: the error sink in counted flavors
+  carries the phase sign (the fault aborts the instantiation as today —
+  only the error row's sign is new).
+- **Value-keyed side tables — `$seq_at`/`$seq_atr`, `R_has`/`R_at`
+  decompositions, extern-oracle answer tables — are NEVER counted or
+  swept.** Their rows are functions of interned VALUES (a sequence's
+  occurrence rows, a collection's membership rows, a formula's answer),
+  not of rule derivations; the value heap is monotone-with-tombstones
+  (§7), so these rows follow **heap liveness**: reachable only through
+  live ids bound by live facts, harmless tombstone-like residue once the
+  last referent retracts, compacted at the next save exactly like struct
+  tombstones (§8A.5). **Required check at M0** (the analogue of 0.A's
+  negation rejections for this class): verify every read of a value-keyed
+  side table is id-anchored — an *unanchored* scan of `$seq_at`/`R_has`
+  could observe residue rows for dead values and re-derive from them. If
+  any unanchored read form exists, it must be rejected or the residue
+  compacted eagerly.
+- **SMT oracle answers specifically are monotone memo-INPUTS, not derived
+  facts** (consistent with compression's pinning: answers = inputs
+  discovered during evaluation, zero re-queries on replay). When a
+  call-struct's count reaches zero, the DEMAND retracts normally and every
+  downstream join retracts with it — but the answer row stays. Three
+  reasons, each sufficient: (a) DRed's over-delete/re-derive churn would
+  otherwise re-query the solver on every sweep touching a call, blocking
+  the positive phase on solver latency; (b) a re-query can return a
+  DIFFERENT model/unsat-core — auto-retract-and-re-derive makes the
+  fixpoint non-confluent and breaks drift verification; (c) an answer is
+  a truth about the formula, valid whether or not anything currently
+  demands it — semantically an input, not a derivation. Reclamation is an
+  explicit GC verb ("forget answers whose formula id has no live
+  referent"), run at save/compaction if ever, never by the sweep.
+- `$stat_*` diagnostic tables stay excluded from everything, as today.
+
+### 8B.5 The EDB input bit: inputs are sets, not counts
+
+`(nonrec, rec)` alone cannot express the decided input semantics — *"you
+cannot delete facts that did not already exist; deletions are retractions;
+facts cannot go negative; re-adding an existing input is a no-op;
+overlapping imports do not make a tuple doubly present."* `nonrec`
+conflates "input here" with "derived by lower-strata rules", so input-ness
+is an explicit per-(tuple, version) BIT (the packed sidecar value's top
+bit, §6.1 revision), with set semantics enforced at apply time:
+
+- `add-batch`/`add-tuple`/`import`/`link` SET the bit — idempotently: a
+  second overlapping import is a per-tuple no-op, never `nonrec+1`;
+- `del-batch`/`del-tuple` require the bit (or inheritance-presence, below)
+  and CLEAR it. Retracting an input that rules still support leaves the
+  fact present — and the system now says so precisely: *"retracted as
+  input; remains derivable"* — the principled answer to 0.C3's
+  replay-deletion caveat;
+- deleting a derived-only fact is refused with an error naming it derived;
+  deleting an absent fact is refused (`removeTuple` already reports
+  found/not-found — surface it as the error);
+- an anchored deletion of an INHERITED tuple (present in the predecessor
+  version) removes the inheritance `nonrec` contribution (§0.4); legality
+  is checked against the predecessor's content;
+- `importDatabaseBIN` under counting must set input bits **including for
+  tuples already present as derived-only** — its set-union insert cannot
+  express that today; a real M0 seam (per-tuple "was it new?" feedback
+  from the write phase, or a sidecar-aware ingest path);
+- presence: `present(t) := input ∨ nonrec + rec > 0`. Roots and frozen
+  ground facts synthesise `input=1, (0,0)` — no counts file needed;
+- headline tests: double-import idempotence; retract-absent refused;
+  retract-derived-only refused; retract-input-still-derivable reports and
+  retains.
+
+### 8B.6 Drift under seeded replay: what counting fixes, what it cannot
+
+A `per<100` load seeds the kept sample and replays; the fixpoint computed
+is that of `EDB ∪ seeds`. In the normal case seeds ⊆ true fixpoint and
+everything is exact. And since the program is SAVED with the database
+(prog.sexpr — source, db-compression §9), program-side drift is
+impossible by construction; a stale seed can only arise from (a) a
+**compiler semantic change** reinterpreting the stored source, (b) an
+**upstream edit** — after a negative edit anywhere below, every dependent
+layer's kept sample was computed for a different EDB and may contain
+no-longer-derivable rows (which is why 0.E2 pins the rule *layers
+downstream of a negative step replay UNSEEDED*; positive edits are
+monotone-safe), or (c) a §5.3 **nondeterminism escape**. Rare, but when
+one happens:
+
+- an **isolated** stale seed ends the count round at `(0,0)` — REPORT it
+  as drift (warn-only default; strict fails). This turns part of
+  db-compression §11.1's silent seeded blind spot into a per-tuple,
+  every-count-round diagnostic;
+- but **mutually-supporting stale seeds survive count-positive**: seed
+  both rows of `R(y,x) :- R(x,y)` after the EDB fact that founded them is
+  gone, and each still has one one-step derivation — from the other.
+  Monotone replay from a seed SUPERSET cannot un-derive them, and the
+  count round measures the drifted fixpoint it is given, not the true
+  one. So `(0,0)`-reporting is a partial detector; `slog db verify
+  --replay` (no-seed, §11.1) remains the strong check. Do NOT auto-delete
+  `(0,0)` rows to "heal" drift — deleting them would not remove
+  count-positive junk derived FROM them;
+- counts computed over a drifted fixpoint are internally coherent —
+  consistent with the materialisation they annotate — so incremental
+  maintenance stays sound *relative to it*: garbage in, coherent garbage
+  out, loudly attributed by the §11 machinery.
 
 ---
 
@@ -1994,23 +2282,86 @@ defer with surface syntax; recursive link materialisation on load is
   materialisation on replay (db-load-steps recursion, dbtool.rkt:171-191);
   routed downstream as a batch.
 
-**0.E — Session save/load/freeze + the workflow harness (§0.10).**
+**0.E — Session save/load/freeze + the workflow harness (§0.10).
+STARTING 2026-07-11 (0.A–0.D shipped); E1a's grammar+digest half landed
+the same day. This is the milestone that makes "a DB on disk = a saved
+session" literally true — and the last one before Phase 1, so its
+anchoring discipline (E0) is built to Phase-1 spec, not B0 slack.**
 
-- *E1 — delta-layer save.* Save-after-increments always creates a new linked
-  layer (extend write-compressed-metas, runslog.rkt:644-692); pure-batch
-  layers (empty program) supported; signature scope = cone/target relations;
-  default `per=100` for session saves.
-- *E2 — load = replay the recipe* with the live streaming machinery (extend
-  db-load-steps + the runslog step loop, runslog.rkt:404-425), **rebuilding
-  the versioned pipeline in memory** so point-addressed queries and further
-  anchored batches work identically post-load (§0.10's "loading a DB is
-  loading a session"); verify via recipe digest + signatures (§11.2
-  machinery).
-- *E3 — `slog db freeze NAME [--as NEW]`* (load, write flat root).
-- *E4 — the workflow harness* (tests, §10): stream-equivalence fuzzer with
-  anchored/back-inserted batches, save/load/continue chains, collapse-rule
-  and versioned-query cases, rename/link/negation-cone cases, api-tests.sh
-  keep-alive additions.
+- *E0 — anchoring tightened before counting leans on it (pinned
+  2026-07-11).* The 0.B-era imprecisions ("known imprecisions, accepted
+  for B0" — §0.5.1) are content-neutral under set semantics but become
+  semantically load-bearing under Phase 1: the EDB input bit is
+  per-VERSION (§8B.5), so *which version received an input contribution*
+  must be well-defined for every input event. Concretely:
+  (a) **chain-load ordering** — a layer's sample import and edits
+  currently run before its `begin-segment` and land in predecessor
+  versions; the E2 step executor issues the boundary first, then applies
+  sample/edits into the layer's own versions;
+  (b) **imports/links become position-addressable recipe events** like
+  batches (an optional anchor argument on `import-delta`/`link`,
+  daemon-side via the C1 `bind-at` machinery), retiring the tip-only
+  restriction and the anchored-walk-across-import refusal (§0.5.1's
+  guarded hole — the walk re-orders around imports by replaying the
+  RECIPE, which knows the import's position, rather than refusing);
+  (c) **multi-`run` programs record one recipe step per segment** (the
+  0.C granularity note): `slog-run-file`'s program list maps to `(run …)`
+  steps 1:1, each with its own `begin-segment`;
+  (d) **un-anchored `add-tuple` is defined as tip-anchored** and logged
+  like a session batch, so no input event exists outside the log.
+- *E1a — recipe/edits unification (§0.2).* **Grammar + digest SHIPPED
+  2026-07-11:** ONE step vocabulary in dbmeta.rkt (`recipe-step?`, with
+  `edit-step?` its mutation subset — open/run are layer-level only),
+  validated by both `write-recipe` and `append-edit!`; `steps-digest` is
+  the single digest core (recipe-digest = steps-digest of the steps;
+  dbtool's `db-chain-edits-digest` = steps-digest of the load plan,
+  byte-compatible with existing `signature.edited` baselines). `slog db
+  edit` refuses `del-tuple` with a pointer at E2's unseeded-downstream
+  rule (below) — recordable once that rule exists, not before. REMAINING
+  for E2: the single step APPLIER — the load-step executor treats an
+  edits file as an inline recipe fragment (same code path), and the
+  del-tuple refusal lifts.
+- *E1 — delta-layer save.* `session-save!` (session.rkt) + the runslog
+  save path share one implementation: write the materialisation
+  (per=100 default for session saves — relation dirs via the existing
+  canonical writer), then `externalize-recipe-payloads` →`write-recipe`,
+  META `recipe?` + manifest link to the base chain (a `link` step also
+  records a manifest edge, so `slog db tree`/staleness/gc see it —
+  §0.9). Pure-batch layers (no new program) supported; signature scope =
+  cone/target relations, ancestors' signatures inherited for the rest
+  (§0.10); extend write-compressed-metas (runslog.rkt:644-692).
+- *E2 — load = replay the recipe* with the live session machinery
+  (extend db-load-steps + the runslog step loop, runslog.rkt:404-425):
+  each step executes exactly as it did live — `begin-segment` per run
+  step (E0a), batch steps through anchor resolution (ordinals → the
+  rebuilt chains) and the C1 batch actions, `import-delta` payloads via
+  `recipe-payload-dir`, `link` recursing into the referenced chain
+  (db-load-steps recursion) — **rebuilding the versioned pipeline in
+  memory** so point-addressed queries and further anchored batches work
+  identically post-load (§0.10's "loading a DB is loading a session").
+  Verify via recipe digest + signatures (§11.2 machinery). **New rule,
+  pinned 2026-07-11: layers downstream of a NEGATIVE step (del-tuple /
+  del-batch / negative edit) replay UNSEEDED** — their kept samples were
+  computed for a different EDB, and a seeded (monotone) replay would
+  silently resurrect retracted derivations (§8B.6's drift source (b);
+  the §11.1 blind spot weaponized). Positive-only chains keep full
+  seeding. This is also what makes `slog db edit … del-tuple` safe to
+  accept.
+- *E3 — `slog db freeze NAME [--as NEW]`* (load/replay the chain, write
+  the materialisation as a standalone flat root — no manifest, no
+  recipe; the sanctioned history cut, §0.10/W7).
+- *E4 — the workflow harness* (tests, §10): stream-equivalence fuzzer
+  with anchored/back-inserted batches over every transport;
+  save/load/continue chains (W3/W4) incl. a pure-batch layer and a
+  back-inserted anchor into an ancestor layer; collapse-rule and
+  versioned-query cases; rename/link/negation-cone cases; **recipe
+  round-trip through a rename** (a batch anchored pre-rename must
+  re-anchor to the same version — ordinals resolved through severance
+  markers and alias bindings — and re-apply under the alias on load);
+  the **unseeded-downstream rule** (a del edit below a compressed layer:
+  seeded load of that layer must be refused/skipped, content oracle
+  confirms the retraction propagated); the W9 `.so`-reuse-across-
+  positions case; api-tests.sh keep-alive additions.
 
 **Phase 0 exit criterion:** for every harness program, any split of its EDB
 into base + randomly-interleaved signed batches **anchored at arbitrary
@@ -2024,21 +2375,34 @@ absent from saves, and `slog db freeze` cutting an equal flat copy (W7).
 
 ### Phase 1 — The counting substrate & precise non-recursive deletion (M0–M3)
 
-1. **M0 — Signed-count substrate.** `Count`/`SCount` index values; signed deltas;
-   counting `emit`/`InternTask` with presence-transition propagation. Insertion still
-   monotone, but now counter-based. Verify identical results to today plus correct
-   counts — headline tests: **iteration-0 exact-once firing** (§8, and 0.B6's
-   staging discipline) and the **compressed-load count oracle** (§8A.5, §10).
-   The §8A.2 witness/tombstone ingestion rule for compressed loads and the
-   §8A.4 checkpoint decision land here too — they define what "load a saved
-   db under counting" means. Phase 0's replay-entry mode is retired for
-   streamed batches in favour of delta-entry (0.B5) — re-firing over the
-   whole DB double-counts.
-2. **M1 — Bidirectional input protocol.** The Phase 0 batch actions (0.C1)
-   gain signed *semantics*: negative payloads feed delta shards instead of
-   triggering clear-and-rerun. The wire/recipe format does not change.
-   **M1.5 — persisted counters** (§0.10, §8A.3 revised): `k.counts.bin`
-   sidecars, META `counted?`, compiler-stamp gating, fallback recount round.
+1. **M0 — The count round + sidecar substrate (§8B; hot path untouched).**
+   *(Rewritten 2026-07-11 from "Signed-count substrate" — the master-index
+   conversion and load-time ingestion rules are retired, §6.1/§8A notes.)*
+   Per-(relation, version) sidecar count indices (tables: full-tuple-keyed
+   map; structs: id-keyed map; packed `input|nonrec|rec` value with
+   under/overflow asserts); the `_count` compiled flavor (one all-full,
+   fire-once variant per rule, counting emit, signed error emission, no
+   propagation — exact-once by construction; lazily compiled and cached
+   like `_delta`); the `(recount …)` action + `counted` introspection
+   state (§8B.2); the EDB input bit with set-semantics enforcement
+   (§8B.5); the temps decision (§6.2); the value-keyed side-table
+   anchoredness check (§8B.4). Normal/seeded flavors are NOT touched.
+   Headline tests: the **cross-flavor count contract** (§8B.3), the
+   **compressed-load count oracle** (§8A.5, §10), a **temp-split rule**,
+   and **input set-semantics** (double-import idempotence, retract-absent
+   refused, retract-derived refused).
+2. **M1 — Signed delta maintenance.** The `_delta` flavor (0.B5) gains the
+   counting emit + §4.4 aggregate with presence-transition propagation
+   (multi-stratum delta chaining rides exactly these transitions — the
+   hook 0.B5 left for M0). The Phase 0 batch actions (0.C1) gain signed
+   *semantics*: negative payloads feed delta shards under §8B.2's
+   lazy-heal routing instead of always triggering clear-and-rerun. 0.B6's
+   exact-once staging is load-bearing HERE (not at load — §8's narrowed
+   caveat). The wire/recipe format does not change. Phase 0's replay-entry
+   mode is retired for streamed batches into *counted* relations —
+   re-firing over the whole DB double-counts; uncounted relations may
+   keep using it. *(M1.5 — persisted counters — is RETIRED: counts never
+   touch disk, §0.10/§8B.3.)*
 3. **M2 — rec/nonrec tagging (stratification EXISTS since the 2026-07 rewrite;
    the same-SCC/polarity IR attribute EXISTS since 0.A7).** Thread the
    per-rule bit into `emit`'s counter choice and the manifest. No behaviour
@@ -2046,23 +2410,46 @@ absent from saves, and `slog db freeze` cutting an equal flat copy (W7).
    from scratch"; now tagging + threading only, partly discharged by 0.A7.*
 4. **M3 — Non-recursive deletion.** For acyclic strata, signed counting is sound and
    complete both directions. The §0.5 routing rule sends deletions with
-   acyclic cones down the counting path instead of clear-and-rerun. Ship full
-   incrementality for non-recursive programs. Big, safe milestone.
+   acyclic cones down the counting path instead of clear-and-rerun — under
+   §8B.2's lazy-heal protocol (count-round the cone first if uncounted, or
+   fall back to clear-and-rerun by cost). Ship full incrementality for
+   non-recursive programs. Big, safe milestone.
 
-### Phase 2 — Recursive deletion & aggregation (M4–M7)
+### Phase 2 — Aggregation & recursive deletion (M6 first, then M4–M5, M7)
 
-5. **M4 — Recursive deletion (DRed^c).** Candidate set `C`, negative fixpoint with the
-   `nonrec>0` barrier, `ReseedTask`, three-phase driver. The resident-stratum
-   re-entry/re-binding it needs (§6.5, §8A.5) **exists after Phase 0** — the
-   three-phase sweep drops into the 0.B seam. This is the hard milestone.
-6. **M5 — Struct GC discipline.** Tombstoning, id stability, (optional) safe
-   reclamation — noting §8A.5: a compressed save+reload already compacts
-   tombstoned ids, so online reclamation can stay "never".
-7. **M6 — Stratified aggregation** (§7A Tier 1). `COUNT`/`SUM`/`AVG` via `(count,sum)`;
+*(Order DECIDED 2026-07-11: **M6 runs before M4.** M6 — stratified
+aggregation / Tier-1 lattice deletion — depends only on the M2/M3
+substrate plus §7A.7's sidecar-value extensibility (per-key contributor
+state in the same sidecar seam), not on M4's DRed^c sweep. And every
+lattice read is a conservative non-monotone cone edge until lattices are
+handled (§0.5), so for lattice-heavy workloads (0cfa-counting, the
+counting/ΓCFA analyses) most retraction cones stay on clear-and-rerun no
+matter how good M4 is — while plain-table/struct workloads (kcfa
+reachability, demand pipelines: `f_ans`/`$sup` are ordinary relations) are
+covered by M3+M4 without M6. "Precise deletion for everything
+acyclic-or-stratified, including aggregates" is the broader, earlier win;
+M4 — the hard milestone — lands on a more mature substrate. Milestone
+NAMES keep their external references; only the order changes. A cone-shape
+audit of the examples (what fraction of plausible retraction cones crosses
+a lattice read vs. a recursive-table SCC) remains worth running before M6
+starts, to size it.)*
+
+5. **M6 — Stratified aggregation** (§7A Tier 1). `COUNT`/`SUM`/`AVG` via `(count,sum)`;
    `MIN`/`MAX` via a per-group sorted multiset; value changes as `retract-old+insert-new`.
    Fully precise deletion; no new recursion machinery. Requires only the M2 strata + the
    §7A.7 hooks (and composes with 0.A's negation checks — a non-stable
-   aggregate is admitted exactly where a negation would be).
+   aggregate is admitted exactly where a negation would be). Per-group
+   contributor state rides the §6.1 sidecar's extensible value slot;
+   downstream propagation of a value change is a pair of ordinary signed
+   deltas, precise through acyclic cones (M3) and falling back to
+   clear-and-rerun through recursive ones until M4.
+6. **M4 — Recursive deletion (DRed^c).** Candidate set `C`, negative fixpoint with the
+   `nonrec>0` barrier, `ReseedTask`, three-phase driver. The resident-stratum
+   re-entry/re-binding it needs (§6.5, §8A.5) **exists after Phase 0** — the
+   three-phase sweep drops into the 0.B seam. This is the hard milestone.
+7. **M5 — Struct GC discipline.** Tombstoning, id stability, (optional) safe
+   reclamation — noting §8A.5: a compressed save+reload already compacts
+   tombstoned ids, so online reclamation can stay "never".
 8. **M7 — Recursive monotonic aggregation** (§7A Tier 2). User-declared stable
    semiring/semilattice; lattice-valued relations; rank-precise foundedness sharing the
    same rank-rebuild path. This is where `(nonrec,rec)` optionally generalises to a full
@@ -2071,8 +2458,9 @@ absent from saves, and `slog db freeze` cutting an equal flat copy (W7).
    non-stable recursive aggregates lands here too, as a compile-time
    diagnostic.
 
-The Phase 0–M4 substrate should already carry the §7A.7 forward-compatibility
-hooks so M6/M7 are additive, not a rewrite.
+The Phase 0–M3 substrate should already carry the §7A.7 forward-compatibility
+hooks so M6 (now immediately next after M3), M4, and M7 are additive, not a
+rewrite.
 
 ---
 
@@ -2134,16 +2522,30 @@ recompute after a randomised insert/delete sequence:
   handled).
 - Diamond + chain (§5.2): over-delete then one-step re-found, plus a `(0,0)` relearn.
 - SCC collapse: delete the single edge bridging two strongly-connected blobs.
-- **Iteration-0 exact-once (M0 headline, §8):** run a program whose rules have
-  multiple same-relation body clauses through a save → load → reload cycle
-  (delta = whole db at reload) and assert every tuple's counts equal the
-  from-scratch run's counts — a double-fired instantiation shows up as an
-  inflated count even though the tuple SET matches.
+- **The cross-flavor count contract (M0 headline, §8B.3):** per-tuple counts
+  of (count round; then N delta increments) ≡ (batch run of the union; then
+  count round), on programs with multiple same-relation body clauses,
+  or-splits, and temp-split rules — fire audit (`$stat_fires`) as the
+  instrument. Subsumes the old "iteration-0 exact-once" headline for loads
+  (the `_count` flavor is exact-once by construction); the exact-once burden
+  that remains live is `_delta`'s staged-once discipline (0.B6, M1).
+- **Temp-split multiplicity (M0, §6.2):** a rule the planner decomposes
+  through a temp, with two instantiations collapsing to one temp row —
+  counts downstream must match the from-scratch oracle under whichever
+  temps decision (counted temps vs. no-temp counted plans) M0 takes.
+- **Input set-semantics (M0, §8B.5):** double-import idempotence
+  (overlapping imports at one boundary → one input bit, one retraction
+  fully deletes); retract-absent refused; retract-derived-only refused;
+  retract-input-still-derivable retains and reports.
 - **Compressed-load count oracle (§8A.5):** extend `tests/compression/run.sh` to
   diff per-tuple counts (not just content) between a compressed load at each
-  `per` and the from-scratch oracle — this exercises the §8A.2 witness/tombstone
-  ingestion rule, id-preserving tombstone resurrection, and count regeneration
-  in one harness.
+  `per` (+ count round) and the from-scratch oracle (+ count round) — this
+  exercises seeded-replay-then-count, id-preserving `(0,0)` struct
+  tombstones, and `(0,0)` table-drift reporting in one harness.
+- **Lazy-heal routing (M1/M3, §8B.2):** first retraction into an uncounted
+  cone triggers exactly one count round over it (observable via `(pipeline)`
+  `counted` state + stats), and subsequent retractions skip straight to the
+  counting path.
 - **Differential fuzzing:** random `±tuple` streams vs. full recompute, across programs
   with structs and multiple strata.
 
