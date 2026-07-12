@@ -300,10 +300,12 @@ public:
                                double per, u64 seed,
                                const std::unordered_set<std::string>& boosted,
                                double boost,
-                               const std::unordered_set<std::string>& pinned = {})
+                               const std::unordered_set<std::string>& pinned = {},
+                               bool accel = false)
   {
     if (refuseIfSuspended("write-db")) return;
-    database->writeDatabaseBIN(db_name, only, per, seed, boosted, boost, pinned);
+    database->writeDatabaseBIN(db_name, only, per, seed, boosted, boost, pinned,
+                               accel);
   }
   void writeRelationBIN(const std::string& db_name, const std::string& rel)
   {
@@ -354,6 +356,7 @@ public:
       return;
     }
     const bool found = r->removeTuple(t.data());
+    database->accelInvalidate(rel);   // §4.4.5: retracted rows must not reseed
     needs_reload = true;
     emit(std::string("(deleted ") + rel + " " + (found ? "1" : "0") + ")");
   }
@@ -370,6 +373,7 @@ public:
     slog::Relation* r = database->getRelation(rel);
     if (!r) { emit(std::string("(error \"clear-rel: no relation ") + rel + "\")"); return; }
     r->clearContents();
+    database->accelInvalidate(rel);   // stale sidecar rows must not reseed
     needs_reload = true;
   }
 
@@ -381,6 +385,7 @@ public:
     slog::Relation* r = database->getRelationAt(rel, pos);
     if (!r) { emit(std::string("(error \"clear-rel-at: no version of ") + rel + "\")"); return; }
     r->clearContents();
+    database->accelInvalidate(rel);   // stale sidecar rows must not reseed
   }
 
   // Re-materialise an inheritance boundary (0.C): version `ordinal` of
@@ -435,6 +440,7 @@ public:
       return;
     }
     const u32 found = r->removeTuples(ts);
+    database->accelInvalidate(rel);   // §4.4.5: retracted rows must not reseed
     if (pos < 0)
       needs_reload = true;
     emit(std::string("(deleted ") + rel + " " + std::to_string(found) + ")");

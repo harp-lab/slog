@@ -2100,7 +2100,10 @@ bit, §6.1 revision), with set semantics enforced at apply time:
 
 ### 8B.6 Drift under seeded replay: what counting fixes, what it cannot
 
-A `per<100` load seeds the kept sample and replays; the fixpoint computed
+A `per<100` load seeds the kept sample and replays (plus the accel/
+round-structured seeds, db-compression §4.4 v2 — more kept rows on the same
+import path, invalidated daemon-side on any retraction/rename/clear, so
+everything below applies to them unchanged); the fixpoint computed
 is that of `EDB ∪ seeds`. In the normal case seeds ⊆ true fixpoint and
 everything is exact. And since the program is SAVED with the database
 (prog.sexpr — source, db-compression §9), program-side drift is

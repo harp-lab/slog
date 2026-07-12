@@ -337,6 +337,74 @@
       (if (hash-has-key? (type-env-rels type-env) occ) (set-add acc occ) acc)))
   (values rules dynamic-rels))
 
+;; db-compression.md §4.4 v2: pick this stratum's ACCELERATOR-SEED relations --
+;; the relations whose per-round deltas the daemon samples into the seed
+;; sidecar for compressed saves.  A stratum merges every same-level SCC, so
+;; classification is per SCC (Tarjan over the stratum-local subgraph of
+;; dynamic rels -- body->head edges plus the head-merge edges, mirroring
+;; stratify.rkt's global graph):
+;;   tier 3  SCC contains a lattice-valued relation (a kept value truncates
+;;           the key's whole ascending chain: merge no-ops make no delta)
+;;   tier 2  some recursive rule is LINEAR (exactly one same-SCC body
+;;           OCCURRENCE): a complete kept round-layer hard-cuts chains,
+;;           because a linear rule's dynamic antecedent sits at round r-1
+;;   tier 1  recursive but every recursive rule is nonlinear -- doubling
+;;           fronts stay shallow, not worth the disk
+;;   tier 0  non-recursive -- replays in O(strata) rounds
+;; Only tiers >= 2 sample.  The SCC graph runs over ALL dynamic rels (a
+;; recursion threading a struct or side-channel rel must not fall apart),
+;; but only plain persistable table/lattice rels are EMITTED: no structs
+;; (instances ride the kept heap closure), no $-prefixed/side-channel/
+;; oracle/decomp-derived rels (re-derived, not verbatim-ingestable).
+(define (stratum-accel-rels stratum dynamic-rels type-env decomps)
+  (define rel-env (type-env-rels type-env))
+  (define nodes (sort (set->list dynamic-rels) symbol<?))
+  (define succs-h (make-hash))
+  (define (add-edge! a b)
+    (when (and (set-member? dynamic-rels a) (set-member? dynamic-rels b)
+               (not (eq? a b)))
+      (hash-update! succs-h a (lambda (l) (cons b l)) '())))
+  (for ([rule (in-set (stratum-rules stratum))])
+    (define heads (set->list (rule-head-rels rule)))
+    (for ([b (in-list (rule-body-rel-occurrences rule))])
+      (for ([h (in-list heads)]) (add-edge! b h)))
+    (for* ([h1 (in-list heads)] [h2 (in-list heads)]) (add-edge! h1 h2)))
+  (define scc-of
+    (tarjan-scc-ids nodes (lambda (v) (hash-ref succs-h v '()))))
+  ;; per-SCC recursion shape from the rules (an SCC of merged heads with no
+  ;; body feedback is NOT recursive, so |SCC|>1 alone proves nothing)
+  (define recursive (make-hash))   ; scc-id -> #t
+  (define linear    (make-hash))   ; scc-id -> #t
+  (for ([rule (in-set (stratum-rules stratum))])
+    (define heads (set->list (rule-head-rels rule)))
+    (when (pair? heads)
+      (define scc (hash-ref scc-of (first heads) #f))
+      (when scc
+        (define same-scc-occs
+          (for/sum ([b (in-list (rule-body-rel-occurrences rule))])
+            (if (equal? (hash-ref scc-of b #f) scc) 1 0)))
+        (when (>= same-scc-occs 1)
+          (hash-set! recursive scc #t)
+          (when (= same-scc-occs 1) (hash-set! linear scc #t))))))
+  (define lattice-scc (make-hash)) ; scc-id -> #t
+  (for ([r (in-list nodes)])
+    (when (rel-lattice-spec rel-env r)
+      (hash-set! lattice-scc (hash-ref scc-of r) #t)))
+  (define (tier scc)
+    (cond [(not (hash-ref recursive scc #f)) 0]
+          [(hash-ref lattice-scc scc #f)     3]
+          [(hash-ref linear scc #f)          2]
+          [else                              1]))
+  (sort (for/list ([r (in-list nodes)]
+                   #:when (>= (tier (hash-ref scc-of r)) 2)
+                   #:when (not (regexp-match? #rx"^[$]" (symbol->string r)))
+                   #:when (not (hash-has-key? decomps r))
+                   #:when (match (hash-ref rel-env r #f)
+                            [`(table ,_ ...) #t]
+                            [_ #f]))
+          r)
+        symbol<?))
+
 ;; Write build/<hash>.meta: this stratum's compile hash, DAG level (one stratum
 ;; per level, in pipeline order), the relations it produces (dynamic-rels), its
 ;; reads with per-edge polarity, and its rules (id -> location + source text +
@@ -382,6 +450,7 @@
       (hash ,proghash)
       (level ,(stratum-level stratum))
       (dynamic-rels ,@(sort (set->list dynamic-rels) symbol<?))
+      (accel-rels ,@(stratum-accel-rels stratum dynamic-rels type-env decomps))
       (heads ,@(sort (set->list heads) symbol<?))
       (reads ,@reads)
       (rules
@@ -476,7 +545,8 @@
   ;; concurrent clang (docs/fast-compile.md §8)
   (call-with-atomic-output (fullpath (format "build/~a.cprog" hash-name))
                            (lambda () (pretty-write cprog)))
-  (define emitted (write-cpp cprog dbmanifest hash-name))
+  (define accel-rels (stratum-accel-rels stratum dynamic-rels type-env decomps))
+  (define emitted (write-cpp cprog dbmanifest hash-name #:accel-rels accel-rels))
   ;; write-cpp returns either one string (a single TU) or a list of
   ;; (suffix . contents) pairs -- the spine (suffix "") plus part TUs.
   (define tus (if (string? emitted) (list (cons "" emitted)) emitted))

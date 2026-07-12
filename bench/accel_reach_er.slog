@@ -1,0 +1,7 @@
+;; db: bench_accel_er -- honest negative: ER, ~log-n rounds
+table (edge int int)
+table (src int)
+table (reach int)
+
+rule (src X) --> (reach X)
+rule (reach X) (edge X Y) --> (reach Y)

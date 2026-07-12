@@ -32,7 +32,9 @@
          rule-head-rels
          rule-body-rels
          rule-body-neg-rels
-         rule-body-pos-rels)
+         rule-body-pos-rels
+         rule-body-rel-occurrences
+         tarjan-scc-ids)
 
 (require "ir-shared.rkt")
 
@@ -82,6 +84,14 @@
   (match rule
     [`(syn ,_ rule ,bodys ... --> ,heads ...)
      (clauses-rels (filter (lambda (cl) (not (neg-clause? cl))) bodys))]))
+
+;; Body relation reads WITH occurrence multiplicity (rule-body-rels dedups):
+;; the linear-vs-nonlinear recursion test (db-compression.md §4.4 v2) needs to
+;; distinguish path(x,y),path(y,z) (two same-SCC occurrences) from
+;; path(x,y),edge(y,z) (one), which sets can't.
+(define (rule-body-rel-occurrences rule)
+  (match rule
+    [`(syn ,_ rule ,bodys ... --> ,heads ...) (filter-map clause-rel bodys)]))
 
 ;; -----------------------------------------------------------------------
 ;; Tarjan's strongly-connected-components algorithm.

@@ -86,11 +86,12 @@
     ;; §15) keeps at 1.0 and seeds the heap-trimming roots -- oracle-fed rows
     ;; replay cannot re-derive.  Values baked as literals.
     [`(save-compressed ,db-name ,per ,seed ,boost (boosted ,boosted ...)
-                       (pinned ,pinned ...) (rels ,rels ..1))
+                       (pinned ,pinned ...) (rels ,rels ..1) (accel ,accel))
      (define (setlit rs) (string-join (for/list ([r (in-list rs)]) (format "\"~a\"" r)) ", "))
-     (format "  d->writeDatabaseSampledBIN(\"~a\", {~a}, ~a, ~aull, {~a}, ~a, {~a});\n"
+     (format "  d->writeDatabaseSampledBIN(\"~a\", {~a}, ~a, ~aull, {~a}, ~a, {~a}, ~a);\n"
              db-name (setlit rels) (exact->inexact per) seed
-             (setlit boosted) (exact->inexact boost) (setlit pinned))]
+             (setlit boosted) (exact->inexact boost) (setlit pinned)
+             (if (zero? accel) "false" "true"))]
     [`(write-csv ,dir)
      (format "  d->db()->writeDatabaseCSV(\"~a\");\n" dir)]
     ;; Serial checkpoint of the current (possibly paused) db (§P2.3).

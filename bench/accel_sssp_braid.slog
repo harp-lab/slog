@@ -1,0 +1,8 @@
+;; db: bench_accel_braid -- SSSP down the weighted braid (min-int lattice)
+lattice (cost (min int #:floor 0))
+table (edge3 int int int)
+table (src int)
+table (dist int cost)
+
+rule (src X) --> (dist X 0)
+rule (dist X D) (edge3 X Y W) --> (dist Y (+ D W))

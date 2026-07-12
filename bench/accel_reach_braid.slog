@@ -1,0 +1,7 @@
+;; db: bench_accel_braid -- single-source reach down a braided DAG
+table (edge int int)
+table (src int)
+table (reach int)
+
+rule (src X) --> (reach X)
+rule (reach X) (edge X Y) --> (reach Y)

@@ -40,7 +40,14 @@ if [ ${#PROGS[@]} -eq 0 ]; then
          # emptiness rule caught ground-fact-rules classifying a negation-
          # bearing rule into the level-0 facts stratum (a non-monotone read
          # racing the facts' own iteration-0 writes on replay).
-         tests/neg_reach.slog tests/neg_wild.slog)
+         tests/neg_reach.slog tests/neg_wild.slog
+         # 2026-07-11: accelerator-seed sidecar (docs/db-compression.md §4.4
+         # v2).  These are the only battery programs whose fixpoints run deep
+         # enough (>= SLOG_ACCEL_MIN_ROUNDS) for compressed saves to write
+         # accel/ -- they exercise sidecar recording, the struct-closure
+         # union, verbatim accel ingest through the layer import, and (lat
+         # variant) lattice dedup-by-key + merge-ingest, at every per.
+         tests/accel_chain.slog tests/accel_lat_chain.slog)
 fi
 
 pass=0; fail=0; failed=()

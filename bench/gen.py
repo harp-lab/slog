@@ -175,6 +175,45 @@ def main():
     write_bin_db("bench_bipartite",
                  {"edge": (2, bipartite_random(rng, 2000, 2000, 500000))})
 
+    # -- accel: seed-sidecar round-count benches (db-compression.md §4.4 v2) --
+    # braid: W x C grid, K random forward edges per node into the next column.
+    # Long diameter (C rounds) but exponentially-growing ancestor cones, so
+    # ANY seed sample (even the uniform witness) cuts replay to ~log rounds --
+    # the accel-parity shape.  Fat rounds (~W rows) engage the 10% rate.
+    rng = random.Random(7)
+    W, C, K = 1000, 700, 3
+    e2, e3 = [], []
+    for c in range(C - 1):
+        base, nxt = c * W, (c + 1) * W
+        for r in range(W):
+            for _ in range(K):
+                v = nxt + rng.randrange(W)
+                e2.append((base + r, v))
+                e3.append((base + r, v, 1 + rng.randrange(10)))
+    write_bin_db("bench_accel_braid",
+                 {"edge": (2, e2), "edge3": (3, e3),
+                  "src": (1, [(r,) for r in range(W)])})
+
+    # broom: fat ER core + 10 long thin chains (3000 each) hanging off it --
+    # the long-thin-tail shape where the accel sidecar beats the uniform
+    # witness ~20x in replay rounds (per-independent: rounds kept whole).
+    rng = random.Random(11)
+    edges = list(er_graph(rng, 20000, 100000))
+    nid = 20000
+    for _ in range(10):
+        prev = rng.randrange(20000)
+        for _ in range(3000):
+            edges.append((prev, nid)); prev = nid; nid += 1
+    write_bin_db("bench_accel_broom",
+                 {"edge": (2, edges), "src": (1, [(0,)])})
+
+    # er honest-negative: ~9 rounds, the SLOG_ACCEL_MIN_ROUNDS gate keeps
+    # accel/ absent entirely.
+    rng = random.Random(11)
+    write_bin_db("bench_accel_er",
+                 {"edge": (2, er_graph(rng, 50000, 500000)),
+                  "src": (1, [(0,)])})
+
 
 if __name__ == "__main__":
     main()

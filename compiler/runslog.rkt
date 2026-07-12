@@ -608,12 +608,16 @@
        ;; keep-fraction to 1.0 and makes their rows heap-trimming seed roots
        ;; (so the demand structs + formula DAGs they reference survive).
        (define pinned (db-partition-pinned-rels partition))
+       ;; accelerator seeds (§4.4 v2) ride every sampled save: the daemon's
+       ;; recording kill-switch (SLOG_ACCEL=0) and its per-stratum
+       ;; min-rounds gate decide whether accel/ actually materialises
        (send-plugin
         (action-so (if (< per* 1.0)
                        `(save-compressed ,compressed ,per* ,compressed-rng-seed ,boost
                                          (boosted ,@boosted)
                                          (pinned ,@pinned)
-                                         (rels ,@signed-rels))
+                                         (rels ,@signed-rels)
+                                         (accel 1))
                        `(write-db-subset ,compressed ,@signed-rels))))]
       [else (void)])
     (when out-db
@@ -778,6 +782,11 @@
                                #:strata range #:compiler-stamp cstamp
                                #:fixpoint-wall-ms (inexact->exact (round wall-ms))
                                #:idb-rels idb #:edb-rels edb
-                               #:pinned-rels (db-partition-pinned-rels partition)))
+                               #:pinned-rels (db-partition-pinned-rels partition)
+                               ;; accelerator seeds present? (§4.4 v2) -- the
+                               ;; daemon writes accel/ only when a stratum
+                               ;; cleared the min-rounds gate
+                               #:extra `((accel . ,(directory-exists?
+                                                    (string-append dir "/accel"))))))
      (write-db-meta (hash-set lm0 'stamp (compute-db-stamp lm0 #:prog-fingerprint cstamp))
                     dir)]))

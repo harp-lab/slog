@@ -1055,6 +1055,10 @@ public:
   // relations this stratum's rules grow -- the seam for incremental
   // recomputation later (push a delta into a stratum, replay downstream)
   std::vector<std::string> dynamic_rels;
+  // accelerator-seed relations (docs/db-compression.md §4.4 v2): the
+  // compiler's per-SCC tier scoring picked these (linear-recursive or
+  // lattice SCCs) for per-round delta sampling into the seed sidecar
+  std::vector<std::string> accel_rels;
 
   // Daemon-assigned SCC id = pipeline position at push time (docs/pausing.md
   // §6): never baked into the .so, so editing a rule cannot churn ids.  The
@@ -1091,6 +1095,7 @@ public:
   }
 
   void addDynamicRel(const std::string& r) { dynamic_rels.push_back(r); }
+  void addAccelRel(const std::string& r) { accel_rels.push_back(r); }
 
   // Empty this stratum's task lists and metadata so a freshly-compiled plugin
   // for the SAME stratum can re-register them (docs/fast-compile.md §4, the
@@ -1112,6 +1117,7 @@ public:
       seeded[p].clear();
     }
     dynamic_rels.clear();
+    accel_rels.clear();   // the replacement plugin re-adds them
   }
 };
 
@@ -1319,6 +1325,17 @@ public:
     const char* tb = std::getenv("SLOG_MPZ_TABLE_BYTES");
     mpz_table_max = (tb && tb[0]) ? std::strtoull(tb, nullptr, 10)
                                   : (((u64)1) << 30);
+    // accelerator-seed sidecar knobs (docs/db-compression.md §4.4.2)
+    const char* ae = std::getenv("SLOG_ACCEL");
+    accel_enabled = !(ae && ae[0] == '0');
+    const char* arf = std::getenv("SLOG_ACCEL_RATE");
+    if (arf && arf[0]) accel_rate = std::strtod(arf, nullptr);
+    const char* aq = std::getenv("SLOG_ACCEL_QUOTA");
+    if (aq && aq[0]) accel_quota = std::strtoull(aq, nullptr, 10);
+    const char* am = std::getenv("SLOG_ACCEL_MB");
+    if (am && am[0]) accel_cap_bytes = std::strtoull(am, nullptr, 10) << 20;
+    const char* ar = std::getenv("SLOG_ACCEL_MIN_ROUNDS");
+    if (ar && ar[0]) accel_min_rounds = std::strtoull(ar, nullptr, 10);
     cnode_arena = new CollectionArena();
     cnode_arena->mpz_table = mpz_table;   // int-exact lattice compares
     seq_arena = new SequenceArena();
@@ -1674,6 +1691,10 @@ public:
     rel_bindings[from].push_back({pipeline_pos, nullptr});
     rel_bindings[to].push_back({pipeline_pos, r});
     advancePosition();
+    // sidecar rows recorded under either name are no longer trustworthy
+    // seeds (§4.4.5: a rename severs; a re-declared name is a fresh chain)
+    accelInvalidate(from);
+    accelInvalidate(to);
     return true;
   }
 
@@ -1685,6 +1706,7 @@ public:
     relations.erase(it);
     rel_bindings[name].push_back({pipeline_pos, nullptr});
     advancePosition();
+    accelInvalidate(name);   // dropped rows must not resurrect as seeds
     return true;
   }
 
@@ -2035,6 +2057,13 @@ public:
     if (starting)
     {
       restoreOrphanRelations();
+      // a fresh run of a stratum that already recorded sidecar rounds is a
+      // RE-ENTRY (session batches): its round numbering restarts, so bump
+      // the generation the new rounds record under (§4.4.5)
+      {
+        auto it = accel_sidecar.find(s->name);
+        if (it != accel_sidecar.end()) ++it->second.generation;
+      }
       rs.stratum = s;
       rs.position = RUN_FRESH;
       rs.suspended = false;
@@ -2584,7 +2613,8 @@ public:
                                           double per, u64 seed,
                                           const std::unordered_set<std::string>& boosted,
                                           double boost,
-                                          const std::unordered_set<std::string>& pinned = {})
+                                          const std::unordered_set<std::string>& pinned = {},
+                                          bool include_accel = false)
   {
     // per-relation keep fraction (productive-seed bias, §4.4): boosted
     // relations keep more, matching the sampled write's fracOf.  Pinned
@@ -2667,6 +2697,18 @@ public:
         bk[b]->forEach([&](const u64* t) { push_if_struct(t[rw[0]]); });
     }
 
+    // Seed from the accelerator sidecar's rows (§4.4 v2): they are written
+    // as extra kept records, so their referenced struct trees must survive
+    // the trim exactly like the content-hash witness's.
+    if (include_accel)
+      for (auto& skv : accel_sidecar)
+      {
+        if (skv.second.rounds_seen < accel_min_rounds) continue;
+        for (auto& rkv : skv.second.rels)
+          for (const AccelRound& r : rkv.second.rounds)
+            for (u64 w : r.rows) push_if_struct(w);
+      }
+
     // Seed from every collection node: cnodes are written whole, so any struct
     // appearing in a node's four words must survive.
     if (cnode_arena->freshCount() > 0)
@@ -2679,6 +2721,268 @@ public:
 
     drain();
     return marked;
+  }
+
+  // ---- Accelerator-seed sidecar (docs/db-compression.md §4.4 v2) -----------
+  //
+  // During a stratum fixpoint, sample each accel relation's per-round delta
+  // into an in-memory sidecar; a compressed save writes it under accel/ as
+  // extra kept records.  What a seed buys is ROUNDS, not work (kept tuples
+  // content-dedup, every instantiation still fires once on replay), so the
+  // policy cuts derivation chains evenly: a round whose delta is small is
+  // kept WHOLE (a complete layer = a hard cut -- a linear rule's dynamic
+  // antecedent sits at exactly round r-1, so replay depth resets to zero
+  // there); a fat round keeps an evenly-spaced `rate` sample.  Lives on the
+  // Database (not Stratum/RunState): survives the O0->O2 hot-swap reload and
+  // budget slices.  All mutation is single-threaded (EndIterCompletion
+  // barrier callback, between-strata actions, the save path) -- no locks.
+  struct AccelRound
+  {
+    u32 generation;             // fresh-run counter for the stratum (re-entry)
+    u32 round;                  // rs.iteration_count when recorded (1-based)
+    bool complete;              // whole delta kept: a hard layer cut
+    std::vector<u64> rows;      // storage-order rows, flat, stride = arity
+  };
+  struct AccelRel
+  {
+    u32 arity = 0;
+    bool lattice = false;
+    std::vector<AccelRound> rounds;
+  };
+  struct AccelStratum
+  {
+    u32 generation = 0;         // bumped on each fresh (re-entered) run
+    u32 stride = 1;             // decimation: record rounds % stride == 0
+    u32 rounds_seen = 0;        // deepest round observed (the save gate)
+    u64 bytes = 0;              // row-word bytes retained
+    std::map<std::string, AccelRel> rels;   // ordered: deterministic writes
+  };
+  std::map<std::string, AccelStratum> accel_sidecar;  // stratum name -> buffer
+  // knobs (env, read in the ctor): docs/db-compression.md §4.4.2
+  bool   accel_enabled = true;      // SLOG_ACCEL=0 disables recording
+  double accel_rate = 0.10;         // SLOG_ACCEL_RATE: fat-round sample rate
+  u64    accel_quota = 64;          // SLOG_ACCEL_QUOTA: whole-round floor (rows)
+  u64    accel_cap_bytes = 64ull << 20;  // SLOG_ACCEL_MB: per-stratum cap
+  u64    accel_min_rounds = 16;     // SLOG_ACCEL_MIN_ROUNDS: save gate
+
+  // Called once per iteration, single-threaded, from EndIterCompletion (all
+  // workers parked at the barrier; the round's delta is finalized, interned,
+  // and idle).  Round 0 (reloaded/imported content) never reaches this hook:
+  // the pre-loop promote precedes the iteration counter.
+  void accelRecordRound()
+  {
+    const Stratum* s = rs.stratum;
+    if (!accel_enabled || s == nullptr || s->accel_rels.empty()) return;
+    AccelStratum& as = accel_sidecar[s->name];
+    const u32 round = rs.iteration_count;
+    if (round > as.rounds_seen) as.rounds_seen = round;
+    if (round % as.stride != 0) return;          // decimated away up front
+    for (const std::string& rname : s->accel_rels)
+    {
+      auto rit = relations.find(rname);
+      if (rit == relations.end()) continue;
+      Relation* rel = rit->second;
+      const u16 arity = rel->getArity();
+      if (arity == 0) continue;
+      auto& delta = rel->getDelta();
+      // pass 1: live (non-null) row count
+      u64 live = 0;
+      for (InsertBatch* b : delta)
+        for (u64 j = 0; j + arity <= b->usage; j += arity)
+          if (b->data[j] != slog_null) ++live;
+      if (live == 0) continue;
+      // kept = min(live, max(quota, ceil(rate*live))), clamped so one round
+      // can never eat more than a quarter of the byte cap
+      u64 want = (u64)std::ceil(accel_rate * (double)live);
+      if (want < accel_quota) want = accel_quota;
+      if (want > live) want = live;
+      const u64 round_row_cap = accel_cap_bytes / 8 / arity / 4;
+      if (want > round_row_cap) want = round_row_cap;
+      if (want == 0) continue;
+      AccelRel& ar = as.rels[rname];
+      ar.arity = arity;
+      ar.lattice = rel->isLattice();
+      AccelRound rec;
+      rec.generation = as.generation;
+      rec.round = round;
+      rec.complete = (want == live);
+      rec.rows.reserve(want * arity);
+      // pass 2: Bresenham-even pick of `want` among `live`
+      u64 k = 0;
+      for (InsertBatch* b : delta)
+        for (u64 j = 0; j + arity <= b->usage; j += arity)
+        {
+          if (b->data[j] == slog_null) continue;
+          if (((k + 1) * want) / live > (k * want) / live)
+            rec.rows.insert(rec.rows.end(), &b->data[j], &b->data[j] + arity);
+          ++k;
+        }
+      as.bytes += rec.rows.size() * 8;
+      ar.rounds.push_back(std::move(rec));
+    }
+    // over the cap: decimate by halving -- drop every other retained round
+    // (whole rounds only; a half layer is a leaky cut), spacing stays even
+    while (as.bytes > accel_cap_bytes && as.stride < (1u << 20))
+    {
+      as.stride *= 2;
+      u64 bytes = 0;
+      for (auto& kv : as.rels)
+      {
+        auto& rounds = kv.second.rounds;
+        std::vector<AccelRound> kept;
+        for (AccelRound& r : rounds)
+          if (r.round % as.stride == 0)
+          { bytes += r.rows.size() * 8; kept.push_back(std::move(r)); }
+        rounds = std::move(kept);
+      }
+      as.bytes = bytes;
+    }
+  }
+
+  // A mutation the sidecar cannot see through (deleted/cleared/renamed rows
+  // would resurrect as seeds on replay): drop the relation's buffers.
+  void accelInvalidate(const std::string& rname)
+  {
+    for (auto& kv : accel_sidecar)
+    {
+      auto it = kv.second.rels.find(rname);
+      if (it == kv.second.rels.end()) continue;
+      for (const AccelRound& r : it->second.rounds)
+        kv.second.bytes -= r.rows.size() * 8;
+      kv.second.rels.erase(it);
+    }
+  }
+
+  // Write the sidecar under <tmp_dir>accel/ as ordinary relation dirs (the
+  // canonical on-disk row format, storage order) plus a manifest.sexpr of
+  // round provenance.  Only strata whose fixpoint ran deep enough to matter
+  // are written (accel_min_rounds); rows merge across gated strata per
+  // relation; a lattice relation dedups by key keeping the LATEST recorded
+  // (post-merge) value -- any value <= the final one is a sound seed, and
+  // the latest retained round sits closest to final.
+  void writeAccelBIN(const std::string& tmp_dir,
+                     const std::unordered_set<std::string>& only)
+  {
+    // per-relation merged rows across gated strata
+    std::map<std::string, std::vector<u64>> out_rows;
+    bool any = false;
+    for (auto& skv : accel_sidecar)
+    {
+      AccelStratum& as = skv.second;
+      if (as.rounds_seen < accel_min_rounds) continue;
+      for (auto& rkv : as.rels)
+      {
+        const std::string& rname = rkv.first;
+        AccelRel& ar = rkv.second;
+        if (!only.empty() && !only.count(rname)) continue;
+        auto rit = relations.find(rname);
+        if (rit == relations.end()) continue;
+        if (rit->second->getArity() != ar.arity) continue;
+        std::vector<u64>& out = out_rows[rname];
+        if (!ar.lattice)
+        {
+          for (const AccelRound& r : ar.rounds)
+            out.insert(out.end(), r.rows.begin(), r.rows.end());
+        }
+        else
+        {
+          // key = all but the last storage column; later rounds overwrite
+          std::unordered_map<std::vector<u64>, std::vector<u64>,
+                             boost::hash<std::vector<u64>>> latest;
+          for (const AccelRound& r : ar.rounds)
+            for (size_t j = 0; j + ar.arity <= r.rows.size(); j += ar.arity)
+              latest[std::vector<u64>(&r.rows[j], &r.rows[j] + ar.arity - 1)]
+                = std::vector<u64>(&r.rows[j], &r.rows[j] + ar.arity);
+          for (auto& kv : latest)
+            out.insert(out.end(), kv.second.begin(), kv.second.end());
+        }
+        if (!out.empty()) any = true;
+      }
+    }
+    if (!any) return;
+    const std::string adir = tmp_dir + "accel/";
+    std::filesystem::create_directory(adir);
+    for (auto& kv : out_rows)
+    {
+      if (kv.second.empty()) continue;
+      Relation* rel = relations[kv.first];
+      std::string rel_dir = relationDirBIN(adir, kv.first, rel);
+      std::filesystem::create_directory(rel_dir);
+      DBWriteFile file(rel_dir + "0" + db_out_ext);
+      file.write((u8*)kv.second.data(), kv.second.size() * 8);
+    }
+    std::ofstream manifest(adir + "manifest.sexpr");
+    for (auto& skv : accel_sidecar)
+    {
+      AccelStratum& as = skv.second;
+      if (as.rounds_seen < accel_min_rounds) continue;
+      manifest << "(accel-stratum \"" << skv.first << "\""
+               << " (generation " << as.generation << ")"
+               << " (rounds-seen " << as.rounds_seen << ")"
+               << " (stride " << as.stride << ")\n";
+      for (auto& rkv : as.rels)
+      {
+        if (!out_rows.count(rkv.first)) continue;
+        manifest << "  (rel " << rkv.first << " (arity " << rkv.second.arity
+                 << ")" << (rkv.second.lattice ? " (lattice)" : "")
+                 << " (rounds";
+        for (const AccelRound& r : rkv.second.rounds)
+          manifest << " (" << r.generation << " " << r.round << " "
+                   << (r.complete ? 1 : 0) << " "
+                   << (r.rows.size() / rkv.second.arity) << ")";
+        manifest << "))\n";
+      }
+      manifest << ")\n";
+    }
+  }
+
+  // Ingest a database's accel/ seeds (if present): extra kept records in the
+  // db's own id space, appended into the already-loaded relations (or
+  // registered fresh if the content-hash witness kept zero rows of one).
+  // Rides every load path: open ingests directly; import/importLayer load
+  // into a scratch db first, so the remap pass carries accel rows exactly
+  // like kept rows.  The --replay no-seed verify skips the layer import
+  // entirely, so it skips these too.
+  void loadAccelBIN(const std::string& db_dir)
+  {
+    const std::string adir = db_dir + "accel/";
+    if (!std::filesystem::is_directory(adir)) return;
+    for (const auto& entry : std::filesystem::directory_iterator(adir))
+    {
+      if (!entry.is_directory()) continue;   // manifest.sexpr
+      std::string path(entry.path());
+      std::string fname(entry.path().filename());
+      std::string kind, name, lat_spec;
+      u32 arity = 0, struct_id = 0;
+      if (!parseRelationDirName(fname, kind, name, arity, struct_id, lat_spec))
+      {
+        if (relationDirPrefixed(fname))
+          fatal("Malformed accel relation directory name: " + fname
+                + " under " + adir);
+        continue;
+      }
+      Relation* rel;
+      auto it = relations.find(name);
+      if (it == relations.end())
+      {
+        struct_id_max = std::max(struct_id_max, struct_id + 1);
+        rel = registerRelation(name, new Relation(name, arity, struct_id));
+        if (kind == "lat")
+          rel->setLatticeFromSpec(lat_spec, cnode_arena);
+      }
+      else
+      {
+        rel = it->second;
+        if (rel->getArity() != arity)
+          fatal("accel relation " + name + " arity "
+                + std::to_string(arity) + " conflicts with loaded arity "
+                + std::to_string(rel->getArity()));
+      }
+      readRelationFiles(rel, path);
+      rel->ensureDefaultIndex();
+      rel->finalizeBatches();
+      rel->ingestDelta();
+    }
   }
 
   // The on-disk directory for one relation under a database directory (in
@@ -3144,7 +3448,8 @@ public:
                         double per, u64 seed,
                         const std::unordered_set<std::string>& boosted,
                         double boost,
-                        const std::unordered_set<std::string>& pinned = {})
+                        const std::unordered_set<std::string>& pinned = {},
+                        bool accel_out = false)
   {
     // A filtered write ALWAYS keeps struct relations (as struct heap); when
     // sampling they are trimmed to the reachable closure via keep_ids below.
@@ -3176,7 +3481,8 @@ public:
     if (trimming || dedup)
     {
       std::unordered_set<u64> marked =
-        trimming ? markKeptStructs(only, per, seed, boosted, boost, pinned)
+        trimming ? markKeptStructs(only, per, seed, boosted, boost, pinned,
+                                   accel_out)
                  : allStructIds();
       for (u64 s : marked) if (!edb_heap_structs.count(s)) layer_structs.insert(s);
     }
@@ -3203,6 +3509,8 @@ public:
     stageSeqWrite(s, tmp_dir);
     stageMpzWrite(s, tmp_dir);
     runStratum(&s, false);
+    if (accel_out)
+      writeAccelBIN(tmp_dir, only);   // §4.4 v2: round-structured seeds
 
     // Swap: move the current db aside (if any), rename the fully-built tmp
     // onto the live name, then drop the old copy.  Between the two renames the
@@ -3583,6 +3891,10 @@ public:
       rel->ingestDelta();
       disk_mtimes[name] = dirMTime(path + "/");
     }
+
+    // accelerator seeds (§4.4 v2): extra kept records under accel/, same id
+    // space -- appended into the relations just loaded
+    loadAccelBIN(db_dir);
 
     DEBUG("Loaded Database at: " << db_dir);
   }
@@ -4176,6 +4488,9 @@ inline void ReadCompletion::operator()() noexcept
 inline void EndIterCompletion::operator()() noexcept
 {
   RunState& rs = db->rs;
+  // sample this round's delta into the accelerator-seed sidecar (§4.4 v2):
+  // single-threaded here (all workers parked), delta finalized+interned+idle
+  db->accelRecordRound();
   if (readRSSbytes() >= rs.mem_cap)
   {
     rs.mem_tripped.store(true, std::memory_order_relaxed);
