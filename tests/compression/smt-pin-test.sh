@@ -34,6 +34,10 @@ for per in 100 60; do
   ok=1
   for f in out/smtpin_save/*.csv; do
     r="$(basename "$f")"
+    # $stat_* are per-run daemon diagnostics outside the persistence
+    # contract (docs/stats.md): timing is nondeterministic and a seeded
+    # replay fires differently by design.  Same exclusion as run.sh.
+    case "$r" in '$stat_'*) continue ;; esac
     if ! diff <(LC_ALL=C sort "$f") <(LC_ALL=C sort "out/smtpin_load/$r" 2>/dev/null) >/dev/null 2>&1; then
       ok=0; echo "  FAIL per=$per: relation $r differs after reload"
     fi
