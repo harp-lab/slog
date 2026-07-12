@@ -114,3 +114,82 @@ joins every caller by design).
 - `tests/stats-tests.sh`, `tests/stat_*.slog`,
   `tests/stats-expected/` — the audit.
 - `bench/regress.sh`, `bench/regress/` — the gate.
+
+## 6. Plan: tiers, new tables, and the naming migration (2026-07-11)
+
+The v1 tables are a floor, not a ceiling.  A lot of the runtime's own
+per-iteration bookkeeping is *already computed* and then discarded --
+`$stat_fixpoint` keeps only the final `(iterations, µs)` pair, but the
+per-iteration delta magnitude (it drives fixpoint detection) and the
+per-iteration wall time (`ms_call`, surfaced today only on pauses --
+`RunStatus`, database.h) are recomputed every round and thrown away.
+The plan below surfaces the cheap ones and puts the expensive ones
+behind a tier.
+
+### 6.1 The two-axis doctrine every new stat obeys
+
+1. **Where the counter lives** decides whether it costs a recompile:
+   - *daemon-side* stats (timing, sizes, per-iteration delta, reorg
+     counts, memory/RSS, interner/index metadata) publish at existing
+     barriers with pure runtime gating -- **no codegen, not in the .so
+     cache key**;
+   - *codegen-side* counters (per-rule net-new/dedup, per-join probe
+     counts, phase timing) hook the generated read task like the
+     `_fires` counter and therefore **must be in the .so cache hash**
+     (precedent: `SLOG_NO_SEMIJOIN` is in the key, `SLOG_OPT` is not).
+2. **Determinism** decides testability: *deterministic counts* (fires,
+   net-new, probes, per-iteration delta) are auditable -- two identical
+   runs must match, `stats-tests.sh`-style -- and *resource metrics*
+   (any wall time, RSS) are nondeterministic and join the
+   golden-excluded set.  This mirrors the existing fires-vs-timing
+   split; it is not a new category.
+
+### 6.2 Tiers: `SLOG_STATS=off|basic|full` (default `basic`)
+
+`SLOG_NO_STATS=1` remains as the hard off (kept for compatibility;
+equivalent to `off`).  The counting increments stay live regardless; the
+tier gates *publication and codegen*.
+
+- **`off`** -- publish nothing.
+- **`basic`** (default; = v1 behavior + the free daemon-side tables) --
+  all publication is O(iterations) or O(dump), all counters O(1) per
+  task.  Safe for production.  Adds to the v1 three:
+
+  | table | columns | when | class |
+  |---|---|---|---|
+  | `stats.iter` | scc `int`, iteration `int`, delta-tuples `int`, µs `int` | each iteration | delta count = deterministic; µs = metric |
+  | `stats.mem` | scc `int`, peak-rss `int`, total-tuples `int` | each fixpoint | metric (RSS from `/proc/self/status`, one read) |
+  | `stats.interner` | strings `int`, struct-instances `int`, arena-nodes `int`, cnodes `int` | each fixpoint | the four id spaces (io-serialization); deterministic sizes |
+  | `stats.index` | relation `str`, index-spec `str`, tuples `int` | at dump | deterministic; index/secondary inventory |
+
+  (`stats.iter` and `stats.mem` are cheap enough to argue for
+  always-on; leaving them tier-gated only to keep `basic` opt-in-able.)
+- **`full`** (debug; participates in the cache hash) -- adds codegen-side
+  counters:
+
+  | table | columns | value |
+  |---|---|---|
+  | `stats.work` | rule-loc `str`, variant `str`, fires `int`, net-new `int` | fires:net-new = work amplification; net-new nearly free (emit sink already knows novelty) |
+  | `stats.probes` | rule-loc `str`, variant `str`, probes `int`, matched `int` | quantifies the §4 unkeyed-scan warning |
+  | `stats.phase` | scc `int`, iteration `int`, read-µs, write-µs, intern-µs, reorg-µs | where the time went; a few clock reads/iter |
+
+### 6.3 Naming migration
+
+v1 ships `$stat_fires`/`$stat_fixpoint`/`$stat_size`.  When real
+namespaces land (docs/weaving.md §3) these become
+`stats.fires`/`stats.fixpoint`/`stats.sizes` in the reserved,
+non-persistent `stats` namespace, and the `$stat_`-prefix filter in
+`writeDatabaseBIN` becomes a *namespace policy* ("`stats.*` is
+ephemeral + golden-excluded") rather than a string prefix.  Until then,
+new tables keep the `$stat_` prefix so they inherit the save/golden
+exclusion for free.  The tables above are written with their eventual
+`stats.` names to fix the target.
+
+### 6.4 First slice (zero recompile, highest value)
+
+`stats.iter` + `stats.mem`: both daemon-side, both answer the "how many
+rounds, how big each, how much memory" question that recurs in
+compression/seed-accelerator tuning (broom's 3009->6 rounds is a
+`stats.iter` story) and mem-cap tuning (`SLOG_MEM_MAX`).  No codegen, no
+cache-key change, no new test category -- the delta count is auditable
+like fires, the µs/RSS ride the existing golden-exclusion.
