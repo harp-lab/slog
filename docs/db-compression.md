@@ -326,11 +326,15 @@ consequences, in order of importance:
 
 #### 4.4.2 The mechanism: a per-round quota reservoir (the seed sidecar)
 
-One runtime rule realises the whole policy. For each **selected SCC** (below),
-at the end-of-round delta reorg, copy up to **q** rows of that round's delta
-union (all the SCC's IDB relations together) into an in-memory **seed
-sidecar**, tagged with the round number. Recording is always on for selected
-SCCs (it is O(q)/round); whether to *write* the sidecar is decided at save.
+One runtime rule realises the whole policy. For each relation of a **selected
+SCC** (below), at the end-of-round delta reorg, copy that round's delta into
+an in-memory **seed sidecar**, tagged with the round number — **whole if it is
+small** (≤ the `q` floor: a complete layer, a hard cut), **else a `rate`
+sample of it** (default 10 %, decided 2026-07-11 — fat rounds get proportional
+probabilistic cover). The quota is **per relation** (not shared across the
+SCC): a size-skewed SCC cannot starve a small member relation's cut points,
+at slightly more disk than a shared pool. Recording is always on for selected
+SCCs (it is O(kept)/round); whether to *write* the sidecar is decided at save.
 
 - **Thin rounds fall under quota → kept whole → complete layer cuts** (hard
   resets, lemma 1). The long tail is retained nearly complete — the "suffix
@@ -358,10 +362,11 @@ inputs). Score each SCC:
 | 1 | recursive, all recursive rules ≥2 same-SCC occurrences | doubling fronts, shallow — skip by default |
 | 0 | non-recursive | replays in O(strata) rounds — never seed |
 
-Default: sidecars for tiers ≥ 2 (`SLOG_SEED_TIERS` widens). Select at **SCC
-granularity, not relation** — in a mutual recursion chains alternate relations
-round by round, so a single-relation sidecar covers only every k-th cut point;
-the quota spans the SCC's per-round delta union.
+Default: sidecars for tiers ≥ 2 (`SLOG_SEED_TIERS` widens). **Selection** is
+at SCC granularity (every IDB relation of a qualifying SCC gets a sidecar — in
+a mutual recursion chains alternate relations round by round, so covering only
+one member relation would cover only every k-th cut point); the **quota** is
+per relation within it (see above).
 
 **Lattice variant — same reservoir, different materialisation.** For lattice
 relations the sidecar stores KEY WORDS only (an entry whenever a key's value
@@ -371,15 +376,26 @@ Intermediate values are never stored; "late finishers" (ends of long
 relaxation chains — the valuable keys) land in late round buffers
 automatically, and decimation keeps them evenly spaced.
 
-**Sampling must be O(q), not O(|delta|).** The sidecar has NO statistical role
-(the witness keeps that job, §4.4.3), so cheap biased sampling is fine: read
-⌈q/B⌉ rows from B arbitrary delta buckets and stop.
+**Sampling cost is two O(|delta|) passes** (count live rows, then a
+Bresenham-even pick), run single-threaded at the iteration barrier — the same
+order of work as the delta reorg the loop already does each round; measured
+~15µs/round on thin deltas, ~180µs on ~3000-emission rounds (§4.4.5). The
+sidecar has NO statistical role (the witness keeps that job, §4.4.3), so the
+even pick needs no randomness.
 
-Knobs: `SLOG_SEED_QUOTA` (q, default ≈ 64 rows/round), `SLOG_SEED_SIDECAR_MB`
-(byte cap incl. estimated closure, default 64), `SLOG_SEED_TIERS` (default 2).
-`--accel on|off|auto` at save; `auto` writes the sidecar only for strata whose
-recorded fixpoint ran ≥ `accel_min_rounds` (default ≈ 64) — below that, replay
-is round-cheap and the sidecar is dead weight (§13).
+Knobs (as built; all daemon-side env): `SLOG_ACCEL=0` (recording kill
+switch), `SLOG_ACCEL_RATE` (fat-round sample rate, default 0.10),
+`SLOG_ACCEL_QUOTA` (whole-round floor `q`, default 64 rows — the keep rule is
+`min(live, max(q, ceil(rate·live)))`, additionally clamped so one round never
+eats over a quarter of the cap), `SLOG_ACCEL_MB` (per-stratum byte cap,
+default 64), `SLOG_ACCEL_MIN_ROUNDS` (default 16). Every sampled save
+(`per < 100 %`) requests the sidecar; it is *written* only for strata whose
+recorded fixpoint ran ≥ `SLOG_ACCEL_MIN_ROUNDS` rounds — below that, replay
+is round-cheap and the sidecar is dead weight (§13); with rate-sampling a
+shallow fat stratum would otherwise write 10 % of everything for nothing.
+META records `accel #t/#f` (whether accel/ materialised). Tier widening
+(`SLOG_SEED_TIERS` in the v2 draft) is NOT built — tiers ≥ 2 are fixed in
+the compiler's scorer (`stratum-accel-rels`, compile.rkt).
 
 #### 4.4.3 Two files, two roles: witness vs. accelerator
 
@@ -387,14 +403,20 @@ The §4.2 content-hash kept set stays exactly as shipped and keeps the
 **integrity/drift** role: uniform, order-independent, content-stable across
 saves. Round-structured selection churns under program edits (rounds shift),
 so it must NOT share the witness's file or its drift comparison. The
-accelerator is a separate `accel/` group of relation dirs (same canonical
-writer, heap closure accumulated into the db-level
-`value.strings`/`value.nodes` like any kept fact, §4.1) plus
-`accel/manifest.sexpr`: per group `(scc generation round-range complete? rows)`.
-Round tags cost nothing to keep and are exactly the provenance-lite timestamps
-DRed^c will want on seeds later (consistent with incremental.md §8B — counts
-regenerate and are never persisted; round tags are static provenance, not
-counted state). Load ingests `witness ∪ accel` identically (any-subset
+accelerator is a separate `accel/` subtree of ordinary relation dirs (same
+row format, storage order; heap closure joins the db-level
+`value.strings`/`value.nodes`/struct trim via markKeptStructs, §4.1) plus
+`accel/manifest.sexpr`. *(As built 2026-07-11: ONE merged dir per relation —
+rows from all retained rounds of all gated strata concatenated; a lattice
+relation dedups by key keeping the latest recorded post-merge value. The
+manifest records, per stratum, `(generation, round, complete?, rows)` for
+every retained round — per-ROW round attribution is deferred. Storage
+grouping cannot affect replay: the layer-cut property is per-round
+completeness at record time, not on-disk adjacency.)* Round metadata costs
+nothing to keep and is exactly the provenance-lite timestamping DRed^c will
+want on seeds later (consistent with incremental.md §8B — counts regenerate
+and are never persisted; round tags are static provenance, not counted
+state). Load ingests `witness ∪ accel` identically (any-subset
 soundness, §2a); the `--replay` no-seed verify ignores both; drift compares
 the witness only. `per` continues to denominate the witness alone — total
 disk = witness(`per`) + accel(cap).
@@ -412,7 +434,7 @@ disk = witness(`per`) + accel(cap).
 - Multi-dynamic rules leak cuts (lemma 1) — accepted; mixed SCCs still profit
   through their linear rules.
 
-#### 4.4.5 Pinned details & pre-sprint spikes
+#### 4.4.5 As-built details (shipped 2026-07-11; see §18.1 for the map)
 
 Pinned (2026-07-11):
 
@@ -427,22 +449,38 @@ Pinned (2026-07-11):
 - Exclusions: temps (never persisted), `$stat_*` (already excluded from
   saves), side-channel/oracle rels (SMT answers are memo-*inputs* saved whole
   — pinned doctrine), `full-store-rels` (already 100 %).
-- Rows are copied as raw u64 words at reorg; the save-time writer runs normal
-  closure-completion over them (§4.1). Byte cap counts row words + an
-  estimated closure share; exact bytes are known at save and can shrink the
-  written set further (whole-round drops).
+- Rows are copied as raw u64 words at the iteration barrier
+  (`EndIterCompletion` — single-threaded, delta finalized+interned+idle);
+  the save-time writer runs normal closure-completion over them (§4.1).
+  Note the sampled delta is the round's raw EMISSIONS: rows that a later
+  write-phase insert dedups away are still genuine derived tuples of the
+  least fixpoint, so sampling them is sound — just mildly redundant.
+- **Retraction safety is by invalidation, not filtering**: `del-tuple`,
+  `del-batch`, `clear-rel(-at)`, `rename`, and `drop` call
+  `accelInvalidate(rel)` — a mutated relation's sidecar buffers are dropped
+  wholesale, so a deleted tuple can never resurrect as a seed on replay.
+  Fresh single-program runs (the common save) never pay this.
 
-Spikes to run before building (§18.1 P3.0):
+Spike results (all closed 2026-07-11):
 
-1. **Lattice seeding soundness under staged rules** (the §19A lattice-headed
-   exemption): a long-chain lattice program saved at low `per` + accel must
-   replay to the exact fixpoint. If the v1 gap bites, tier 3 falls back to
-   tier-2 handling until fixed.
-2. **Reorg hook cost**: confirm O(q) bucket-stride sampling adds < 1 % on a
-   fat-round fixpoint (bench/regress.sh gate).
-3. **Round histograms on examples/** (tinycfa, kcfa, schemecfa, sudoku, deep
-   chains): sanity-check q, cap, and `accel_min_rounds` defaults against real
-   tail shapes.
+1. **Lattice seeding soundness**: accel_lat_chain (150-round min-int chain)
+   is content-equal at per ∈ {100,60,20,5} with accel seeds — the §19A
+   lattice-headed exemption does not bite (accel rows enter as ordinary
+   iteration-0 delta through the same import path as kept rows).
+2. **Hook cost**: ~15µs/round on 10-row deltas (broom), ~180µs/round on
+   ~3000-emission rounds (braid) — visible only against an O0
+   per-round-overhead-dominated fixpoint (≲25 % there, noise elsewhere);
+   two O(|delta|) passes, same order as the reorg the loop already does.
+3. **Round-shape findings** (bench, 2026-07-11): on wide-ancestor-cone data
+   (ER, braided DAGs) the uniform witness ALONE collapses replay (701→10
+   rounds at per=10; parity with accel even at per=2 — exponential ancestor
+   cones make any seed set a log-depth cut), confirming §4.4.1's
+   uniform-baseline claim. Differentiation appears exactly where predicted:
+   thin/chain-shaped data (broom: ER core + 10×3000 chains) replays 3009→6
+   rounds with accel vs 27 (per=10) and **117 (per=2)** without — ~20× and
+   per-independent, since the sidecar is drawn per-round, not per-fraction.
+   SSSP braid (tier 3): 1400→123 vs 177. ER honest-negative: 9 rounds, gate
+   keeps accel/ absent.
 
 Footnote — the shipped static fan-out bias (P2.4 `--bias productivity`,
 `compile.rkt` `productive-rels`): under exact-once it buys only slightly
@@ -643,11 +681,13 @@ data/<name>/
                       #   IDB, computed at SAVE before dropping — full-coverage integrity
   signature.edited    # drift baseline for an EDITED chain (§11.2), keyed by a digest of the
                       #   chain's load recipe incl. edit ops; written by the first post-edit load
-  accel/              # OPTIONAL round-structured accelerator seeds (§4.4): group dirs in the
-                      #   kept-records relation-dir format + manifest.sexpr per group
-                      #   (scc generation round-range complete? rows); ingested as extra seeds
-                      #   on load, EXCLUDED from drift comparison; heap closure lives in the
-                      #   db-level value.strings/value.nodes like all kept facts
+  accel/              # OPTIONAL round-structured accelerator seeds (§4.4 v2): one merged
+                      #   relation dir per sampled rel (kept-records format, storage order)
+                      #   + manifest.sexpr of per-stratum round provenance
+                      #   (generation round complete? rows); ingested as extra seeds on
+                      #   load (open + import both), EXCLUDED from drift comparison; heap
+                      #   closure lives in the db-level value.strings/value.nodes/struct
+                      #   dirs like all kept facts
 ```
 
 **`META` fields** (a keyed s-expr; version everything):
@@ -1204,14 +1244,36 @@ and the harness enforces it in CI.
   instead of aborting (runslog.rkt:164). *Files:* `recompute.rkt`, pausing plumbing.
 - **P2.4 — `per` heuristic + productive-seed bias.** Wire §13.1 and §4.4 after
   benchmarking on `examples/`. *Files:* `compile.rkt` (bias scores from the rule
-  graph), sampler (P1.2), driver.
+  graph), sampler (P1.2), driver. *(Shipped against §4.4 v1; the bias is
+  superseded by §4.4 v2 — see §18.1 P3.)*
 - **North-star** — content-addressed struct ids (§14; operators.h:490) and DRed^c
   (`incremental.md`). Neither blocks shipping compression.
 
-### 18.1 P3 — round-structured accelerator seeds (sprint plan, 2026-07-11)
+### 18.1 P3 — round-structured accelerator seeds (SHIPPED 2026-07-11)
 
-Design pinned in §4.4 v2. A short sprint, ordered so each task is independently
-landable:
+> **Shipped 2026-07-11, same-day sprint.** The map of what landed where:
+> - **Compiler**: `stratum-accel-rels` (compile.rkt) — per-SCC tier scoring
+>   over the stratum-local Tarjan subgraph (`tarjan-scc-ids` +
+>   `rule-body-rel-occurrences` now exported from stratify.rkt); emitted as
+>   `s->addAccelRel("…")` beside the dynamic-rel manifest (emit-cpp.rkt) and
+>   as `(accel-rels …)` in build/<hash>.meta. Tiers ≥ 2 fixed; per-relation
+>   quota (decided over the SCC-shared pool: a size-skewed SCC cannot starve
+>   a small member's cut points).
+> - **Daemon**: `Stratum::accel_rels`; `Database::accel_sidecar` +
+>   `accelRecordRound` (hooked in `EndIterCompletion`), decimation-by-halving
+>   under `SLOG_ACCEL_MB`, generation bump in `continueStratum(starting)`,
+>   `accelInvalidate` on delete/clear/rename/drop; `writeAccelBIN` inside
+>   `writeDatabaseBIN(accel_out)` with `markKeptStructs(include_accel)`
+>   closure union; `loadAccelBIN` at the end of `loadDatabaseBIN`, so
+>   open AND the scratch-db import/remap path both carry accel rows — zero
+>   driver load changes, and `--replay` no-seed skips accel with the layer.
+> - **Driver**: save-compressed action carries `(accel 1)`; META `accel
+>   #t/#f` by directory existence (runslog.rkt `#:extra`).
+> - **Tests**: tests/accel_chain.slog + tests/accel_lat_chain.slog in the
+>   compression battery (the only battery programs deep enough to clear the
+>   gate); measured on bench_accel_{braid,broom,er} (§4.4.5 spike results).
+
+The original sprint plan, for the record:
 
 - **P3.0 — spikes first** (§4.4.5): lattice-seeding soundness under the §19A
   lattice-headed exemption; reorg-hook overhead (< 1 % on fat rounds); round
@@ -1264,16 +1326,17 @@ heap, monotone over-approximation, compiler drift. Dedicated harnesses in
   derived layers drop-and-replay correctly.
 - **Bias A/B.** `--bias productivity` vs. uniform on deep vs. shallow benchmarks;
   measure rounds + wall-time to decide if §4.4 earns its keep.
-- **Accelerator seeds (§4.4 v2 / §18.1).** (a) Round-trip content-equality with
-  `--accel` at `per ∈ {5,10,20}%`, incl. a long-chain lattice case (the §19A
-  exemption is the suspected soft spot); (b) **witness stability**: toggling
-  `--accel` must not change the witness kept-set nor any drift verdict;
-  (c) decimation invariants unit battery — even spacing preserved at every
-  halving, whole-round drops only, suffix coalescing correct at group
-  boundaries, generation-tagged re-entry rounds decimated globally;
-  (d) round-count assertions: deep-chain and SSSP-lattice replays with accel
-  converge in ~(retained-gap) rounds, not ~(original-depth); dense-TC (the
-  honest negative) must not regress wall-time > 1–2 %.
+- **Accelerator seeds (§4.4 v2 / §18.1).** Status 2026-07-11:
+  (a) round-trip content-equality DONE — tests/accel_chain.slog +
+  tests/accel_lat_chain.slog in the battery's default set, green at
+  `per ∈ {100,60,20,5}%` incl. the long-chain lattice case (the §19A
+  exemption did not bite); (b) **witness stability** VERIFIED manually
+  (kept dirs byte-identical under `SLOG_ACCEL=0/1`, `accel/` absent under 0)
+  — not yet an automated assertion; (c) decimation invariants unit battery —
+  OPEN (decimation is exercised only when a run exceeds `SLOG_ACCEL_MB`;
+  cover with a tiny-cap env run); (d) round-count measurements DONE on
+  bench_accel_{braid,broom,er} (§4.4.5 spike results; bench/accel_*.slog +
+  bench/gen.py) — not yet wired as automated regress assertions.
 
 The uncompressed run is always the oracle; wire a fuzzer over
 `(program, per, thread-count, seed, bias, accel)` where every
@@ -1428,4 +1491,5 @@ each holding `0.bin` (or `.bin.gz`) of native-endian `u64` tuple words
   changed" into "the compiler changed" vs. "nondeterminism/bug."
 - **Honest limit: `per ∈ (0,100)` trades disk for witness, not proportional load
   time** (§13). The real load-time levers are DAG-layer choice (keep expensive
-  layers at 100 %) and, marginally, the productive-seed bias.
+  layers at 100 %) and, for round-dominated strata, the §4.4 v2 seed sidecar
+  (which superseded the marginal productive-seed bias, 2026-07-11).

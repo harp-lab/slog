@@ -995,7 +995,7 @@
 ;; `s`, `db`, and the interned-constant globals `v_<g>` (everything else arrives
 ;; through the header include), so a part TU needs only the includes plus
 ;; `extern u64 v_<g>;` -- the single definition of each lives in the spine.
-(define (write-cpp cprog dbmanifest stratum-name)
+(define (write-cpp cprog dbmanifest stratum-name #:accel-rels [accel-rels '()])
   (define dynamic-rels (cprog-dynamic-rels cprog))
   (define constants (cprog-constants cprog))
   (define decls (cprog-decls cprog))
@@ -1079,6 +1079,13 @@
            (for/list ([rel (in-list (sort (set->list dynamic-rels)
                                           string<? #:key symbol->string))])
              (format "  s->addDynamicRel(\"~a\");\n" rel))))
+  ;; accelerator-seed relations (db-compression.md §4.4 v2): the daemon
+  ;; samples these rels' per-round deltas into the seed sidecar; declared
+  ;; per-stratum exactly like the dynamic-rel manifest above
+  (define accelrel-meta
+    (apply string-append
+           (for/list ([rel (in-list accel-rels)])
+             (format "  s->addAccelRel(\"~a\");\n" rel))))
   (define emit-rule (add-rule dynamic-rels))
 
   ;; slog_plugin's body, given the block that registers the read tasks (inline
@@ -1106,6 +1113,7 @@
      rel-decls
      register-reads
      dynrel-meta
+     accelrel-meta
      "  d->push(s);\n"
      ;; one bounded unit of work (docs/pausing.md §5); the client drives the
      ;; continue loop until this stratum's (fixpoint ...) via (continue ...) actions
