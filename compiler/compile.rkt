@@ -700,10 +700,17 @@
 
 (define (opt-mode) (or (getenv "SLOG_OPT") "tiered"))
 
-;; Returns (values strata partition edb-boundary).  edb-boundary is the number
-;; of leading strata whose combined output is the iteration-0 EDB root (P0.5):
-;; 1 when the first program contributed a facts stratum, else 0.  The driver
-;; drives that many strata, snapshots the root, then drives the rest.
+;; Returns (values strata partition edb-boundary frozen-dirs groups).
+;; edb-boundary is the number of leading strata whose combined output is the
+;; iteration-0 EDB root (P0.5): 1 when the first program contributed a facts
+;; stratum, else 0.  The driver drives that many strata, snapshots the root,
+;; then drives the rest.
+;; `groups` (incremental 0.E0c) maps the flat strata list back onto the
+;; program list: one (cons stratum-count frozen-dirs) entry per program of
+;; the run tree, in pipeline order -- the driver opens one version boundary
+;; (begin-segment) per group, so a multi-`run` program's segments version
+;; their writes separately (the §0.4 model) instead of compiling to one
+;; segment, and each program's frozen ground facts import at ITS boundary.
 (define (compile-strata path dbmanifest #:split-facts? [split-facts? #f])
   (define mode (opt-mode))
   ;; tiered = the default regime (anything but the explicit -O0-only / -O2-only
@@ -718,19 +725,25 @@
   ;; Render each program's peeled ground rules (freeze.rkt) as a static
   ;; database under build/frozen/<hash>/ -- content-addressed, so a repeat
   ;; compile reuses it; the stream itself sits alongside for debugging.
-  ;; The driver imports these before stratum 0.
-  (define frozen-dirs
-    (for/list ([fz (in-list (filter-map third per-program))])
-      (match-define (cons h stream) fz)
-      (define dir (format "build/frozen/~a" h))
-      (unless (directory-exists? (fullpath dir))
-        (make-directory* (fullpath "build/frozen"))
-        (call-with-output-file (fullpath (string-append dir ".facts"))
-          #:exists 'replace
-          (lambda (o) (display stream o)))
-        (run-freezer (fullpath dir) stream)
-        (printf "(frozen ~a)\n" dir))
-      dir))
+  ;; The driver imports these at each program's segment boundary (E0c).
+  (define per-program-frozen
+    (for/list ([pp (in-list per-program)])
+      (match (third pp)
+        [#f '()]
+        [(cons h stream)
+         (define dir (format "build/frozen/~a" h))
+         (unless (directory-exists? (fullpath dir))
+           (make-directory* (fullpath "build/frozen"))
+           (call-with-output-file (fullpath (string-append dir ".facts"))
+             #:exists 'replace
+             (lambda (o) (display stream o)))
+           (run-freezer (fullpath dir) stream)
+           (printf "(frozen ~a)\n" dir))
+         (list dir)])))
+  (define frozen-dirs (append* per-program-frozen))
+  (define groups
+    (for/list ([pp (in-list per-program)] [fds (in-list per-program-frozen)])
+      (cons (length (first pp)) fds)))
   (define partition (jobs->db-partition jobs))
   ;; background -O2 build commands (tiered mode), launched as ONE bounded batch
   ;; after all strata are planned so concurrency is capped (docs/fast-compile.md §7)
@@ -786,4 +799,4 @@
                     (make-upgrade proghash cpps)
                     (lambda () (ensure-delta-so job)))])])))
   (spawn-detached-o2-batch (reverse o2-cmds))
-  (values strata partition edb-boundary frozen-dirs))
+  (values strata partition edb-boundary frozen-dirs groups))

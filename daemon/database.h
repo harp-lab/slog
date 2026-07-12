@@ -3661,8 +3661,14 @@ public:
   // imports into; any source relation absent from the map passes through under
   // its own name (docs/incremental.md §0.9 hot-link name-map; db-merge.md
   // rename/#:prefix conflict policy).  An empty map == today's by-name import.
+  // `at_pos` (opt-in, incremental 0.E0b): >= 0 resolves every destination
+  // relation POSITIONALLY -- the payload lands in the versions current at
+  // that pipeline position (an anchored import; the driver owns propagating
+  // it through the suffix), and may not introduce new relations (a fresh
+  // registration cannot exist at an old position).
   void importDatabaseBIN(const std::string& src_dir, bool passthrough_input_heap,
-                         const std::unordered_map<std::string, std::string>& rename = {})
+                         const std::unordered_map<std::string, std::string>& rename = {},
+                         s64 at_pos = -1)
   {
     if (!std::filesystem::is_directory(src_dir))
       fatal("Import: no database directory at " + src_dir);
@@ -3671,6 +3677,15 @@ public:
     const auto dest_name = [&](const std::string& s) -> const std::string& {
       auto it = rename.find(s);
       return it == rename.end() ? s : it->second;
+    };
+    // destination lookup: the latest environment, or the at_pos environment
+    // for an anchored import (nullptr when unbound either way)
+    const auto dest_rel = [&](const std::string& s) -> Relation* {
+      const std::string& d = dest_name(s);
+      if (at_pos >= 0)
+        return getRelationAt(d, (u32)at_pos);
+      auto it = relations.find(d);
+      return it == relations.end() ? nullptr : it->second;
     };
 
     // Struct ids the dest already holds (the verbatim-loaded input heap), for
@@ -3685,11 +3700,10 @@ public:
     // ---- schema reconciliation: validate everything, then create ----
     for (const auto& kv : scratch.relations)
     {
-      auto dit = relations.find(dest_name(kv.first));
-      if (dit == relations.end())
+      Relation* dst = dest_rel(kv.first);
+      if (dst == nullptr)
 	continue;
       Relation* src = kv.second;
-      Relation* dst = dit->second;
       if (src->getArity() != dst->getArity())
 	fatal("Import: relation " + kv.first + " has arity "
 	      + std::to_string(src->getArity()) + " in the source but "
@@ -3705,8 +3719,13 @@ public:
     }
     for (const auto& kv : scratch.relations)
     {
-      if (relations.find(dest_name(kv.first)) != relations.end())
+      if (dest_rel(kv.first) != nullptr)
 	continue;
+      if (at_pos >= 0)
+	fatal("Import: anchored import (at position "
+	      + std::to_string(at_pos) + ") may not introduce relation "
+	      + dest_name(kv.first)
+	      + " -- a fresh registration cannot exist at an old position");
       Relation* src = kv.second;
       if (src->getStructId() > 0)
 	addStruct(dest_name(kv.first), src->getArity());
@@ -3729,7 +3748,7 @@ public:
       Relation* src = kv.second;
       if (src->getStructId() == 0)
 	continue;
-      src_sid_to_dst[src->getStructId()] = relations[dest_name(kv.first)];
+      src_sid_to_dst[src->getStructId()] = dest_rel(kv.first);
       src_sid_name[src->getStructId()] = dest_name(kv.first);
       forEachNominal(src, [&](const u64* row)
       {
@@ -3745,7 +3764,7 @@ public:
 			 boost::hash<std::vector<u64>>>> dst_content;
     for (const auto& kv : scratch.relations)
     {
-      Relation* dst = relations[dest_name(kv.first)];
+      Relation* dst = dest_rel(kv.first);
       if (dst->getStructId() == 0 || dst_content.count(dst))
 	continue;
       auto& cm = dst_content[dst];
@@ -3970,7 +3989,7 @@ public:
       Relation* src = kv.second;
       if (src->getStructId() > 0)
 	continue;
-      Relation* dst = relations[dest_name(kv.first)];
+      Relation* dst = dest_rel(kv.first);
       const u16 A = src->getArity();
       u64 row[max_daemon_arity + 1];
       forEachNominal(src, [&](const u64* srow)

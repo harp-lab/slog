@@ -9,6 +9,10 @@
          "./compiler/params.rkt"
          "./compiler/config.rkt"
          "./compiler/runslog.rkt"
+         ;; requiring the session driver installs runslog's recipe-chain
+         ;; loader (docs/incremental.md 0.E2): -d chains holding a saved
+         ;; session replay their recipes through the live session machinery
+         "./compiler/session.rkt"
          "./compiler/dbtool.rkt")
 
 (define EXIT-FILE-NOT-FOUND 1)
@@ -210,10 +214,11 @@
   ;; command-line (which would bind "db" to the .slog-file positional).
   (when (and (positive? (vector-length argv))
              (equal? (vector-ref argv 0) "db"))
-    ;; `verify --replay` needs the run driver (runslog.rkt), which dbtool
-    ;; cannot require (it is required BY runslog) -- so it is injected here.
+    ;; `verify --replay` and `freeze` need the run driver (runslog.rkt),
+    ;; which dbtool cannot require (it is required BY runslog) -- injected.
     (slog-db-command (cdr (vector->list argv))
-                     #:replay-verify (lambda (name) (slog-verify-replay name)))
+                     #:replay-verify (lambda (name) (slog-verify-replay name))
+                     #:freeze (lambda (name target) (slog-db-freeze name target)))
     (exit 0))
   (define show-banner? #t)
   (define db-name #f)

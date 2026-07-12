@@ -18,8 +18,12 @@
 ;;   flush              apply pending batches + route by the §0.5 rule:
 ;;                      all-adds + monotone cone -> replay-entry (delta-
 ;;                      entry once 0.B5 lands); else clear-and-rerun
-;;   add-tuple:REL,V,.. immediate insert (latest version, in place)
-;;   del-tuple:REL,V,.. immediate retraction (rebuild minus tuple)
+;;   add-tuple:REL,V,.. immediate insert (latest version, in place; logged
+;;                      at the tip binding -- 0.E0d)
+;;   del-tuple:REL,V,.. immediate retraction (rebuild minus tuple; logged)
+;;   save:NAME          serialise the session as a new data/NAME layer
+;;                      (materialisation + recipe + sources + META, 0.E1)
+;;   aimport-delta:P,DIR[,SRC=DST..]  import anchored at position P (0.E0b)
 ;;   reenter:REL        direct replay-entry (refuses non-monotone cones)
 ;;   rerun:REL          direct clear-and-rerun
 ;;   pipeline           version chains + strata positions
@@ -76,6 +80,14 @@
      `(import-delta ,dir ,(for/list ([r (in-list renames)])
                             (match-define (list a b) (string-split r "="))
                             (list (string->symbol a) (string->symbol b))))]
+    ;; anchored bulk payload (0.E0b): aimport-delta:P,DIR[,SRC=DST...]
+    [(list "aimport-delta" arg)
+     (match-define (list* p dir renames) (string-split arg ","))
+     `(import-delta-at ,(string->number p) ,dir
+                       ,(for/list ([r (in-list renames)])
+                          (match-define (list a b) (string-split r "="))
+                          (list (string->symbol a) (string->symbol b))))]
+    [(list "save" name) `(save ,name)]
     ;; environment operations (0.D): rename-rel:R,S | drop-rel:R
     [(list "rename-rel" arg)
      (match-define (list from to) (string-split arg ","))
@@ -113,14 +125,17 @@
       [`(batch ,sign ,anchor ,rel ,tuple)
        (session-batch! s sign rel tuple #:at anchor)]
       [`(import-delta ,dir ,renames) (session-import-delta! s dir renames)]
+      [`(import-delta-at ,p ,dir ,renames)
+       (session-import-delta! s dir renames #:at p)]
       [`(link ,db ,renames) (session-link! s db renames)]
       [`(rename-rel ,from ,to) (session-rename! s from to)]
       [`(drop-rel ,rel) (session-drop! s rel)]
       [`(flush) (session-flush! s)]
+      [`(save ,name) (session-save! s name)]
       [`(add-tuple ,rel ,vals ...)
-       (session-action! s `(add-tuple ,rel ,@vals))]
+       (session-add-tuple! s (string->symbol rel) vals)]
       [`(del-tuple ,rel ,vals ...)
-       (session-action! s `(del-tuple ,rel ,@vals) echo-one-line)]
+       (session-del-tuple! s (string->symbol rel) vals)]
       [`(reenter ,rel) (session-reenter! s rel)]
       [`(rerun ,rel) (session-rerun! s rel)]
       [`(pipeline) (session-action! s `(pipeline) echo-one-line)]

@@ -1,0 +1,11 @@
+;; Facts-only input for the unseeded-downstream test (0.E2/0.E4): the
+;; edges enter the chain as DATA (a plain --out-db root), not as program
+;; text, so retracting one via a del edit is a genuine input retraction
+;; -- nothing in any stored program re-derives it.
+
+table (edge int int)
+
+rule
+(edge 1 2)
+(edge 2 3)
+(edge 3 4)

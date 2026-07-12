@@ -169,12 +169,20 @@
     [`(refresh-version ,rel ,ord)
      (format "  d->refreshVersion(\"~a\", ~a);\n" rel ord)]
     ;; Import a mini bin-database as a bulk batch payload (§0.3 transport 2),
-    ;; with an optional source->dest name-map.  Tip-anchored.
+    ;; with an optional source->dest name-map.  Tip-anchored; the 3-argument
+    ;; form (0.E0b) anchors the payload at a pipeline position (apply-only,
+    ;; like add-batch -- the driver owns propagation).
     [`(import-delta ,dir (,renames ...))
      (format "  d->importDelta(\"~a\", {~a});\n" dir
              (string-join (for/list ([r (in-list renames)])
                             (format "{\"~a\", \"~a\"}" (first r) (second r)))
                           ", "))]
+    [`(import-delta ,dir (,renames ...) ,pos)
+     (format "  d->importDelta(\"~a\", {~a}, ~a);\n" dir
+             (string-join (for/list ([r (in-list renames)])
+                            (format "{\"~a\", \"~a\"}" (first r) (second r)))
+                          ", ")
+             pos)]
     ;; Rename / drop between segments (docs/incremental.md §0.7, 0.D1):
     ;; environment operations on the version chains, zero data movement.
     ;; Replies (renamed R S 0|1) / (dropped R 0|1).

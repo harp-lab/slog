@@ -1,0 +1,17 @@
+;; Rules-only closure program for the unseeded-downstream test: consumes
+;; `edge` from the loaded input database (no ground facts of its own, so
+;; an input retraction below cannot be resurrected by replaying it).
+
+table (edge int int)
+table (path int int)
+
+rule
+(edge X Y)
+-->
+(path X Y)
+
+rule
+(path X Y)
+(edge Y Z)
+-->
+(path X Z)

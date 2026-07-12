@@ -425,7 +425,7 @@ Secondary/join indices are kept only for versions that live strata read and
 are rebuildable on demand; disk spill for cold versions is a flagged later
 optimisation, not a Phase 0 concern.
 
-#### 0.5.1 0.B–0.D as built (2026-07-11): version substrate, re-entry, routing, delta-entry, anchors, renames
+#### 0.5.1 0.B–0.E as built (2026-07-11): version substrate, re-entry, routing, delta-entry, anchors, renames, session IO
 
 What shipped, and the decisions the design left open:
 
@@ -731,17 +731,99 @@ What shipped, and the decisions the design left open:
   - Anchored replay across a link/import still refuses (0.E2); manifest
     rename/drop transforms for INTRA-program `run` sequencing remain
     deferred with the rest of the surface syntax.
-- **Known imprecisions, accepted for B0:** un-anchored `add-tuple` and all
-  imports mutate the *current tip* in place (a batch/link as its own
-  version event arrives with 0.C/0.D); during a chain load, a layer's
-  sample import + edits run before its `begin-segment`, so they land in
-  the predecessor versions — final content is unchanged (the copy + replay
-  dedup absorb it), and precise per-layer addressing on loads is 0.E2's
-  recipe rebuild. Multi-`run` programs compile to one segment (recipe
-  granularity, 0.C). **These stop being harmless at Phase 1** — the EDB
-  input bit is per-version (§8B.5), so *which version received an input
-  contribution* becomes semantics, not bookkeeping; 0.E0 retires all
-  three before counting leans on them.
+- **The B0-era imprecisions are RETIRED (0.E0, same day)** — every input
+  event now lands in a well-defined version, as Phase 1's per-version
+  input bit (§8B.5) requires:
+  - *(E0a)* a replayed layer's version boundary opens FIRST; its kept-
+    sample import and edits ride *inside* the grouped `(replay L own)`
+    load step and apply after it, landing in the layer's own versions
+    (both executors: runslog's legacy loop and the session executor);
+  - *(E0b)* imports/links are position-addressable: `session-import-delta!`
+    / `session-link!` take `#:at`, the daemon's `importDelta` gained a
+    positional arm (resolve destinations via `getRelationAt`, apply-only,
+    no position consumed — like `add-batch`; may not introduce new
+    relations), recipe steps are position-stamped so a back-anchored
+    import serialises into its pipeline place, and the anchored walk
+    RE-APPLIES logged imports positionally instead of refusing across
+    them (monotone merges: idempotent where nothing was rebuilt,
+    restorative where something was);
+  - *(E0c)* one `begin-segment` per PROGRAM of the run tree
+    (`compile-strata` returns per-program groups; session-run! and the
+    one-shot driver both boundary per group, each group's frozen ground
+    facts importing at ITS boundary — an earlier segment no longer sees a
+    later one's ground facts). The *recipe* still records one `(run PROG)`
+    step per `session-run!` call: batch anchors are (relation, ordinal),
+    and replay re-derives the same per-program boundaries from the same
+    step, so step granularity is immaterial to anchoring — 1:1 step
+    recording waits for surface syntax;
+  - *(E0d)* un-anchored `add-tuple`/`del-tuple` are tip-anchored LOGGED
+    events (`session-add-tuple!`/`session-del-tuple!` → the batch log at
+    the target's current binding): no input event exists outside the log.
+- **0.E — session save/load/freeze + the harness (same day).** The IO
+  milestone: a DB on disk = a saved session, literally.
+  - **E1, the save (`session-save!`).** One new `data/X` layer: the FULL
+    materialisation (the canonical writer via `(write-db …)`, per=100 —
+    the §0.10 session default; sampling for session layers stays parked),
+    the recipe (`session-recipe` steps in (position, arrival) order plus
+    the collapsed batch log, payloads externalised into `delta.<k>/`),
+    the segment source closure as `prog.sexpr` (captured per
+    `session-run!` compile), a signature over the TOUCHED relations —
+    segment write-sets, cone heads, batch/import/rename targets,
+    `$`-machinery filtered (its contents are route-dependent: a
+    `$stat_fires` row differs between a delta-entry and a replay-entry
+    of the same batch) — and a META (`kind compressed`, `recipe? #t`,
+    `idb-rels` = touched so the existing `-d` verification block signs
+    exactly them, stamp keyed by the recipe digest) whose manifest links
+    the base chain plus any hot-link edges.  Pure-batch layers (recipe =
+    open + batches, no program) fall out.
+  - **E2, the load.** `db-load-steps` emits `(replay-recipe L)` for
+    recipe layers; the session executor (`session-open!` →
+    `session-execute-load-steps!`) runs EVERY step kind with the live
+    machinery — opens, layer imports, edits (the E1a single applier:
+    every edit step is a logged tip event), prog.sexpr replays (ported
+    from runslog, E0a order), and recipe replays: run steps recompile
+    from the stored sources against the base's manifest (then live
+    schema), import steps resolve their `delta.<k>` payloads, batch
+    entries resolve their ordinal anchors against the rebuilt chains and
+    flush through the LIVE routing — tip applies route normally,
+    back-inserted anchors take the walk.  **A recipe layer always
+    replays unseeded from its base**: its stored dirs are a signature
+    witness, never a seed — importing the final materialisation first
+    would pollute the rebuilt predecessor versions (and deletion is
+    trivially sound on this path).  The one-shot driver delegates any
+    recipe-bearing chain's WHOLE load plan to this executor through
+    `set-recipe-chain-loader!` (session.rkt installs it; slog.rkt
+    requires session.rkt), driving a session facade over its own daemon
+    connection — one code path for W1 and W2, and the facade's cone
+    bookkeeping sees every stratum push (strata-info is scc-keyed;
+    `next-scc` mirrors the daemon's pipeline length across re-pushes).
+  - **E2, the unseeded-downstream rule (as refined).** Once a NEGATIVE
+    *edit* step streams anywhere below, every later prog-layer replays
+    UNSEEDED — including the edited layer itself (its own sample was
+    computed pre-edit; the edit applies at its boundary before its
+    replay).  Recipe-internal deletions do NOT unseed descendants:
+    recipes are immutable parts of their layer, so a descendant's sample
+    was computed against the post-recipe fixpoint — only the mutable
+    `edits` appendix can invalidate an existing dependent.  `slog db
+    edit … del-tuple` is accordingly now recordable (E1a's refusal
+    lifted), and `db-chain-edits-digest` folds recipe digests in (one
+    mechanism: an edit OR a differing recipe anywhere invalidates
+    downstream `signature.edited` baselines; grouped replay steps are
+    flattened back to the legacy stream order first, so existing
+    baselines stay byte-valid).
+  - **E3, `slog db freeze NAME [--as NEW] [--force]`.** Load/replay the
+    chain (recipe layers included, via the hook), write the
+    materialisation as a plain root, strip chain artifacts
+    (recipe/prog.sexpr/signatures/edits/delta.k), stamp a flat META.
+    In place (via temp dir + swap; refused with dependents unless
+    --force) or as a copy.
+  - **Scope pins:** `session-link!` refuses CHAINED targets (the import
+    reads the target's dirs as stored, which for a chain is partial —
+    freeze it first or `-d` it as the session's base); recursive link
+    re-materialisation stays deferred with that refusal.  Inherited
+    (replayed-ancestor) batch-log entries live in a separate log:
+    re-applied by walks (an own entry for the same (version, tuple)
+    overrides — it came later), never re-serialised by a save.
 - **Tests:** `tests/session-tests.sh` (driven by
   `tests/api/session-drive.rkt`, the embryo of 0.B4's routing driver) —
   two-segment chains over plain tables with positional sizes/dumps; a
@@ -2283,10 +2365,14 @@ defer with surface syntax; recursive link materialisation on load is
   routed downstream as a batch.
 
 **0.E — Session save/load/freeze + the workflow harness (§0.10).
-STARTING 2026-07-11 (0.A–0.D shipped); E1a's grammar+digest half landed
-the same day. This is the milestone that makes "a DB on disk = a saved
-session" literally true — and the last one before Phase 1, so its
-anchoring discipline (E0) is built to Phase-1 spec, not B0 slack.**
+SHIPPED 2026-07-11 (all of E0–E4; see §0.5.1's 0.E block for as-built
+decisions — recipe layers replay unseeded-from-base, negative EDITS
+(not recipe dels) trigger downstream unseeding, `(run …)` recipe steps
+stay 1:1 with session-run! calls while boundaries are per-program, and
+hot-links of chained targets refuse toward freeze). This is the
+milestone that makes "a DB on disk = a saved session" literally true —
+and the last one before Phase 1, so its anchoring discipline (E0) is
+built to Phase-1 spec, not B0 slack.**
 
 - *E0 — anchoring tightened before counting leans on it (pinned
   2026-07-11).* The 0.B-era imprecisions ("known imprecisions, accepted
@@ -2309,6 +2395,11 @@ anchoring discipline (E0) is built to Phase-1 spec, not B0 slack.**
   steps 1:1, each with its own `begin-segment`;
   (d) **un-anchored `add-tuple` is defined as tip-anchored** and logged
   like a session batch, so no input event exists outside the log.
+  *SHIPPED 2026-07-11 — (a), (b), (d) as designed; (c) as-built: the
+  BOUNDARIES are per-program (compile-strata's group return; live and
+  replay share the code, so ordinal anchors are stable), while the recipe
+  keeps one `(run …)` step per session-run! call — see §0.5.1's E0
+  entry.*
 - *E1a — recipe/edits unification (§0.2).* **Grammar + digest SHIPPED
   2026-07-11:** ONE step vocabulary in dbmeta.rkt (`recipe-step?`, with
   `edit-step?` its mutation subset — open/run are layer-level only),
@@ -2317,51 +2408,71 @@ anchoring discipline (E0) is built to Phase-1 spec, not B0 slack.**
   dbtool's `db-chain-edits-digest` = steps-digest of the load plan,
   byte-compatible with existing `signature.edited` baselines). `slog db
   edit` refuses `del-tuple` with a pointer at E2's unseeded-downstream
-  rule (below) — recordable once that rule exists, not before. REMAINING
-  for E2: the single step APPLIER — the load-step executor treats an
-  edits file as an inline recipe fragment (same code path), and the
-  del-tuple refusal lifts.
-- *E1 — delta-layer save.* `session-save!` (session.rkt) + the runslog
-  save path share one implementation: write the materialisation
+  rule (below) — recordable once that rule exists, not before.
+  **COMPLETED with E2 (same day):** the single step APPLIER exists — the
+  session executor's `apply-edit-step!` runs every edit spelling as a
+  logged tip event (one grammar, one applier, one digest), and the
+  del-tuple refusal is lifted.
+- *E1 — delta-layer save.* **SHIPPED 2026-07-11 — see §0.5.1.**
+  `session-save!` (session.rkt) shares the runslog save pieces
+  (`manifest-entry`, the dbmeta writers): write the materialisation
   (per=100 default for session saves — relation dirs via the existing
   canonical writer), then `externalize-recipe-payloads` →`write-recipe`,
   META `recipe?` + manifest link to the base chain (a `link` step also
   records a manifest edge, so `slog db tree`/staleness/gc see it —
   §0.9). Pure-batch layers (no new program) supported; signature scope =
-  cone/target relations, ancestors' signatures inherited for the rest
-  (§0.10); extend write-compressed-metas (runslog.rkt:644-692).
-- *E2 — load = replay the recipe* with the live session machinery
-  (extend db-load-steps + the runslog step loop, runslog.rkt:404-425):
-  each step executes exactly as it did live — `begin-segment` per run
-  step (E0a), batch steps through anchor resolution (ordinals → the
-  rebuilt chains) and the C1 batch actions, `import-delta` payloads via
-  `recipe-payload-dir`, `link` recursing into the referenced chain
-  (db-load-steps recursion) — **rebuilding the versioned pipeline in
-  memory** so point-addressed queries and further anchored batches work
-  identically post-load (§0.10's "loading a DB is loading a session").
-  Verify via recipe digest + signatures (§11.2 machinery). **New rule,
-  pinned 2026-07-11: layers downstream of a NEGATIVE step (del-tuple /
-  del-batch / negative edit) replay UNSEEDED** — their kept samples were
-  computed for a different EDB, and a seeded (monotone) replay would
-  silently resurrect retracted derivations (§8B.6's drift source (b);
-  the §11.1 blind spot weaponized). Positive-only chains keep full
-  seeding. This is also what makes `slog db edit … del-tuple` safe to
-  accept.
-- *E3 — `slog db freeze NAME [--as NEW]`* (load/replay the chain, write
+  cone/target relations ($-machinery excluded), ancestors' signatures
+  inherited for the rest (§0.10).
+- *E2 — load = replay the recipe* with the live session machinery.
+  **SHIPPED 2026-07-11 — see §0.5.1's E2 entry.** `db-load-steps` emits
+  `(replay-recipe L)`; the session executor runs every step exactly as
+  it did live — `begin-segment` per program (E0a/E0c), batch steps
+  through anchor resolution (ordinals → the rebuilt chains) and the
+  live flush routing, `import-delta` payloads via `recipe-payload-dir`
+  — **rebuilding the versioned pipeline in memory** so point-addressed
+  queries and further anchored batches work identically post-load
+  (§0.10's "loading a DB is loading a session").  The one-shot driver
+  delegates recipe-bearing chains wholesale through
+  `set-recipe-chain-loader!`.  Verify via recipe digest + signatures
+  (§11.2 machinery).  **The unseeded rule, as refined:** layers
+  downstream of a NEGATIVE EDIT replay UNSEEDED — including the edited
+  layer itself — because their kept samples were computed for a
+  different EDB and a seeded (monotone) replay would silently resurrect
+  retracted derivations (§8B.6's drift source (b); the §11.1 blind spot
+  closed).  Recipe-internal deletions do NOT unseed descendants
+  (recipes are immutable, so descendants sampled the post-recipe
+  fixpoint); recipe layers themselves always replay unseeded from their
+  base (their dirs are witness, not seed).  Positive-only chains keep
+  full seeding.  This is what makes `slog db edit … del-tuple` safe to
+  accept — for DATA-fed inputs: retracting a tuple that is a stored
+  program's own ground fact re-derives on replay (it is
+  program-supported — already the §8B.5 "retracted as input; remains
+  derivable" answer, which Phase 1 merely makes reportable).
+  *(Deferred with a loud guard: hot-links of CHAINED targets —
+  the recursive link re-materialisation — refuse toward `freeze`.)*
+- *E3 — `slog db freeze NAME [--as NEW] [--force]`.* **SHIPPED
+  2026-07-11:** load/replay the chain (recipe layers included), write
   the materialisation as a standalone flat root — no manifest, no
-  recipe; the sanctioned history cut, §0.10/W7).
-- *E4 — the workflow harness* (tests, §10): stream-equivalence fuzzer
-  with anchored/back-inserted batches over every transport;
+  recipe, chain artifacts stripped; in-place via temp-dir + swap
+  (refused with dependents unless --force), or a copy via --as.  The
+  sanctioned history cut, §0.10/W7.
+- *E4 — the workflow harness.* **SHIPPED 2026-07-11** (tests/
+  session-tests.sh §0.E block + the stream-equivalence fuzzer,
+  tests/api/stream-fuzz.rkt): randomized base/batch splits with
+  interleaved deletions oracle-diffed against from-scratch runs;
   save/load/continue chains (W3/W4) incl. a pure-batch layer and a
-  back-inserted anchor into an ancestor layer; collapse-rule and
-  versioned-query cases; rename/link/negation-cone cases; **recipe
-  round-trip through a rename** (a batch anchored pre-rename must
-  re-anchor to the same version — ordinals resolved through severance
-  markers and alias bindings — and re-apply under the alias on load);
-  the **unseeded-downstream rule** (a del edit below a compressed layer:
-  seeded load of that layer must be refused/skipped, content oracle
-  confirms the retraction propagated); the W9 `.so`-reuse-across-
-  positions case; api-tests.sh keep-alive additions.
+  back-inserted anchor into an ancestor layer (a deletion overriding an
+  inherited add at the same version); **recipe round-trip through a
+  rename** (a batch anchored pre-rename re-anchors to the same version
+  — ordinals resolved through severance markers and alias bindings —
+  and re-applies under the alias on load); the **unseeded-downstream
+  rule** (a del edit below a compressed layer: the dependent replays
+  unseeded and the content oracle confirms the retraction propagated);
+  anchored imports (E0b) and per-program boundaries (E0c); freeze
+  equality on both an edited chain and a session chain; the one-shot
+  `-d`-atop-a-session hook.  W9 `.so`-reuse-across-positions is
+  exercised by every recipe load (the same cached `.so`s re-bind at
+  fresh pipeline positions) and by the walk's positional re-pushes.
 
 **Phase 0 exit criterion:** for every harness program, any split of its EDB
 into base + randomly-interleaved signed batches **anchored at arbitrary

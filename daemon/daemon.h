@@ -490,16 +490,23 @@ public:
 
   // Import a mini bin-database as a bulk batch payload (0.C1, transport 2
   // of §0.3): importDatabaseBIN with an optional name-map -- the first
-  // real caller of its rename parameter (the D4 seam).  Tip-anchored:
-  // merges into the LATEST versions; anchored bin payloads arrive with
-  // the recipe protocol.
+  // real caller of its rename parameter (the D4 seam).  `pos < 0` (the
+  // default) merges into the LATEST versions and is a boundary event like
+  // open; `pos >= 0` is an ANCHORED import (0.E0b): the payload lands in
+  // the versions current at that position, apply-only -- the driver owns
+  // propagation (the anchored walk), and no position is consumed (like
+  // add-batch, it updates a version in place rather than opening one).
   void importDelta(const std::string& dir,
-                   const std::unordered_map<std::string, std::string>& name_map)
+                   const std::unordered_map<std::string, std::string>& name_map,
+                   s64 pos = -1)
   {
     if (refuseIfSuspended("import-delta")) return;
-    database->importDatabaseBIN(dir + "/", false, name_map);
-    database->advancePosition();   // boundary event (§0.4/B0), as in open
-    needs_reload = true;
+    database->importDatabaseBIN(dir + "/", false, name_map, pos);
+    if (pos < 0)
+    {
+      database->advancePosition();   // boundary event (§0.4/B0), as in open
+      needs_reload = true;
+    }
   }
 
   // Replace / refresh a relation from disk -- mutates its indices in place, so

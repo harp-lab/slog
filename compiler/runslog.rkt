@@ -14,10 +14,13 @@
 
 (provide slog-run-file
          slog-verify-replay
+         slog-db-freeze              ; `slog db freeze` backend (incremental E3)
          db-manifest-from-name
          db-manifest-from-schema-lines
          db-full-manifest
-         segment-write-set)   ; session drivers (incremental B0)
+         segment-write-set           ; session drivers (incremental B0)
+         manifest-entry              ; shared save-path piece (session-save!, E1)
+         set-recipe-chain-loader!)   ; installed by compiler/session.rkt (E2)
 
 (require "tools.rkt")
 (require "compile.rkt")
@@ -29,6 +32,17 @@
 ;; When set (during a replay layer), a memory pause checkpoints the partial db
 ;; to this name instead of a bare abort (docs/db-compression.md §P2.3).
 (define current-checkpoint (make-parameter #f))
+
+;; The recipe-chain loader (docs/incremental.md 0.E2): a chain containing a
+;; saved SESSION layer (a `recipe` file) loads through the live session
+;; machinery -- anchored batches, imports, renames, the suffix walk -- which
+;; lives in compiler/session.rkt.  That module requires THIS one, so the
+;; dependency is inverted through a hook: session.rkt installs its loader at
+;; instantiation (slog.rkt and the session drivers require it); a bare
+;; runslog user hitting a recipe chain gets a loud pointer instead of a
+;; silent partial load.  Signature: (loader in-port out-port load-steps).
+(define recipe-chain-loader (box #f))
+(define (set-recipe-chain-loader! f) (set-box! recipe-chain-loader f))
 
 ;; Simple auto-per (docs/db-compression.md §13.1, deliberately coarse): pick a
 ;; retention `per` from how expensive the database was to compute from origin
@@ -289,11 +303,19 @@
                        (first mm) (second mm) slog-value-encoding-version))))
     (define load-steps
       (if db-name (db-load-steps db-name #:seed? (not no-seed?)) '()))
+    ;; A chain holding a saved SESSION (recipe layer) loads wholesale through
+    ;; the session machinery (0.E2) -- its anchored batches and imports need
+    ;; the live driver, and the session must see every stratum push to keep
+    ;; its cone bookkeeping aligned -- so the leading-open overlap is skipped.
+    (define recipe-chain?
+      (for/or ([st (in-list load-steps)])
+        (match st [`(replay-recipe ,_) #t] [_ #f])))
     ;; Send the leading open BEFORE compiling: loadDatabaseBIN is single-
     ;; threaded, so the load overlaps the Racket front end + codegen below
     ;; (docs/fast-compile.md).  The rest run after the drive loop is defined.
     (define leading-open?
-      (and (pair? load-steps) (eq? (car (first load-steps)) 'open)))
+      (and (not recipe-chain?)
+           (pair? load-steps) (eq? (car (first load-steps)) 'open)))
     (when leading-open? (send-plugin (action-so (first load-steps))))
     (define rest-load-steps (if leading-open? (rest load-steps) load-steps))
 
@@ -304,7 +326,7 @@
     ;; For a linked compressed save, capture the program's source closure while
     ;; compiling so it can be stored as prog.sexpr and replayed on load (P1.1).
     (define src-capture (and linked-compressed? (make-hash)))
-    (define-values (strata partition edb-boundary frozen-dirs)
+    (define-values (strata partition edb-boundary frozen-dirs groups)
       (parameterize ([current-source-capture src-capture])
         (compile-strata slog-path dbmanifest #:split-facts? linked-compressed?)))
 
@@ -434,59 +456,79 @@
     ;; and run its strata atop the already-materialised inputs + imported sample,
     ;; regenerating any facts dropped by sampling.  At per=100% the sample is the
     ;; whole IDB, so the fixpoint derives nothing new -- a self-verifying load.
-    (define (replay-layer! lname)
+    (define (replay-layer! lname own-steps)
       (define plan (read-prog-sexpr (string-append "data/" lname)))
-      (when plan
-        (match-define (cons r-entry r-sources) plan)
-        (define-values (r-strata _rp _rb _rfrozen)
-          (parameterize ([current-source-override r-sources])
-            (compile-strata r-entry (db-full-manifest lname) #:split-facts? #f)))
-        ;; Each replayed layer is its own pipeline segment (docs/incremental.md
-        ;; §0.4, B0): open a version boundary for its write-set -- an open
-        ;; always precedes replays, so predecessors exist to version.  (The
-        ;; layer's sample import and edits ran BEFORE this boundary and land
-        ;; in the predecessor versions in place; final content is unchanged,
-        ;; and precise per-layer addressing on loads arrives with the recipe
-        ;; rebuild, 0.E2.)
-        (let ([ws (segment-write-set r-strata '())])
-          (when (pair? ws)
-            (send-plugin (action-so `(begin-segment ,@ws)))))
-        ;; a memory pause during this layer's replay checkpoints to
-        ;; data/<lname>.checkpoint/ rather than aborting outright (§P2.3)
-        (parameterize ([current-checkpoint (string-append lname ".checkpoint")])
-          (for ([sb (in-list r-strata)])
-            (match-define (cons so tag) ((sbuild-runnable sb)))
-            (send-plugin so)
-            (unless (drive-stratum! sb tag)
-              (error "daemon output ended (EOF) mid-stratum during replay -- the daemon died or went silent"))))))
+      (define (apply-own!)
+        (for ([st (in-list own-steps)])
+          (send-plugin (action-so st))))
+      (cond
+        [plan
+         (match-define (cons r-entry r-sources) plan)
+         (define-values (r-strata _rp _rb _rfrozen _rgroups)
+           (parameterize ([current-source-override r-sources])
+             (compile-strata r-entry (db-full-manifest lname) #:split-facts? #f)))
+         ;; Each replayed layer is its own pipeline segment (docs/incremental.md
+         ;; §0.4, B0): open a version boundary for its write-set -- an open
+         ;; always precedes replays, so predecessors exist to version.  The
+         ;; layer's OWN steps -- its kept-sample import and its edits, riding
+         ;; inside the grouped (replay L own) step -- apply AFTER the boundary
+         ;; (0.E0a), so they land in the layer's own versions rather than the
+         ;; predecessors', as Phase 1's per-version input bit requires.
+         (let ([ws (segment-write-set r-strata '())])
+           (when (pair? ws)
+             (send-plugin (action-so `(begin-segment ,@ws)))))
+         (apply-own!)
+         ;; a memory pause during this layer's replay checkpoints to
+         ;; data/<lname>.checkpoint/ rather than aborting outright (§P2.3)
+         (parameterize ([current-checkpoint (string-append lname ".checkpoint")])
+           (for ([sb (in-list r-strata)])
+             (match-define (cons so tag) ((sbuild-runnable sb)))
+             (send-plugin so)
+             (unless (drive-stratum! sb tag)
+               (error "daemon output ended (EOF) mid-stratum during replay -- the daemon died or went silent"))))]
+        [else (apply-own!)]))
 
     ;; PHASE R -- materialise the loaded input DAG bottom-up: process the load
     ;; steps (imports + edits + per-layer replays).  Runs BEFORE the query
-    ;; strata so the query sees the fully reconstituted database.
-    (for ([step (in-list rest-load-steps)])
-      (match step
-        [`(replay ,lname) (replay-layer! lname)]
-        [_ (send-plugin (action-so step))]))
+    ;; strata so the query sees the fully reconstituted database.  A chain
+    ;; holding a saved session delegates the WHOLE plan to the session
+    ;; machinery (0.E2): recipe layers re-run segments and re-apply anchored
+    ;; batches/imports/renames exactly as they happened live, and the session
+    ;; needs to see every stratum push (cone bookkeeping), not just its own.
+    (cond
+      [recipe-chain?
+       (define loader (unbox recipe-chain-loader))
+       (unless loader
+         (error (string-append
+                 "the input chain contains a saved session (a recipe layer), which loads "
+                 "through the session driver; require compiler/session.rkt (slog.rkt and the "
+                 "session tools do) so its recipe replayer is installed")))
+       (loader in out load-steps)]
+      [else
+       (for ([step (in-list rest-load-steps)])
+         (match step
+           [`(replay ,lname ,own) (replay-layer! lname own)]
+           [`(batch ,_ ...) (error "a stored batch edit step needs the session loader (compiler/session.rkt)")]
+           [_ (send-plugin (action-so step))]))])
 
-    ;; Version boundary for this program segment (docs/incremental.md §0.4,
-    ;; B0): atop a loaded database, announce the segment's write-set so the
-    ;; daemon rebinds each already-bound written relation to a NEW physical
-    ;; version before the segment binds -- the predecessor versions stay
-    ;; positionally addressable.  The frozen ground facts below are segment
-    ;; writes too, so the boundary precedes their import.  On a fresh daemon
-    ;; nothing is bound; skip the no-op action.  The daemon replies
-    ;; (segment P N), tolerated by every reader below.
-    (when db-name
-      (let ([ws (segment-write-set strata frozen-dirs)])
-        (when (pair? ws)
-          (send-plugin (action-so `(begin-segment ,@ws))))))
-
-    ;; Link the program's frozen ground facts (freeze.rkt): import each
-    ;; content-addressed build/frozen/<hash> database before stratum 0 --
-    ;; the deferred reload hands the first stratum their rows as its
-    ;; iteration-zero delta, exactly as a -d input's facts arrive.
-    (for ([dir (in-list frozen-dirs)])
-      (send-plugin (action-so `(import-path ,dir))))
+    ;; Version boundaries, one per program segment (docs/incremental.md §0.4
+    ;; B0, per-segment since E0c): announce each program's write-set so the
+    ;; daemon rebinds its already-bound written relations to NEW physical
+    ;; versions before that segment's strata bind -- predecessor versions
+    ;; stay positionally addressable.  A segment's frozen ground facts are
+    ;; its writes too, so they import right after ITS boundary (not all up
+    ;; front): under the version model an earlier segment must not see a
+    ;; later one's ground facts.  On a fresh daemon the first segment's
+    ;; boundary is a no-op (nothing bound yet) and is skipped; later
+    ;; segments of a multi-`run` program always announce.  The daemon
+    ;; replies (segment P N), tolerated by every reader below.
+    (define (begin-group! g-strata g-frozen first?)
+      (when (or db-name (not first?))
+        (let ([ws (segment-write-set g-strata g-frozen)])
+          (when (pair? ws)
+            (send-plugin (action-so `(begin-segment ,@ws))))))
+      (for ([dir (in-list g-frozen)])
+        (send-plugin (action-so `(import-path ,dir)))))
 
     ;; Verify the loaded db reproduced its stored content signature (P1.5): drift
     ;; is a compiler change, nondeterminism, or a compression bug.  An EDITED
@@ -549,23 +591,30 @@
     (when (and linked-compressed? (= edb-boundary 0) (not chained-input))
       (send-plugin (action-so `(capture-edb-heap))))
 
-    (for ([sb (in-list strata)] [i (in-naturals)])
-      (match-define (cons so tag) ((sbuild-runnable sb)))  ; blocks until built
-      (send-plugin so)
-      ;; EOF here means the daemon died or went silent BEFORE this stratum's
-      ;; fixpoint: erroring (rather than sailing on to the terminal actions)
-      ;; is what keeps a half-run from masquerading as a successful one
-      (unless (drive-stratum! sb tag)
-        (error "daemon output ended (EOF) mid-stratum -- the daemon died or went silent"))
-      ;; After the facts stratum fixpoints (its output is the pure iteration-0
-      ;; EDB), snapshot the root before any derived tuple exists (P0.5).  A
-      ;; silent write-db emits no line, so it cannot desync the next stratum's
-      ;; handshake; the daemon processes it in stdin order before that stratum.
-      (when (and linked-compressed? (> edb-boundary 0) (= (add1 i) edb-boundary))
-        (send-plugin (action-so `(write-db ,(string-append compressed ".edb"))))
-        ;; dedup only against a verbatim from-scratch root, not a replayed input
-        (when (not chained-input)
-          (send-plugin (action-so `(capture-edb-heap))))))
+    (let run-groups ([gs groups] [remaining strata] [i 0])
+      (match gs
+        ['() (void)]
+        [(cons (cons n g-frozen) more)
+         (define g-strata (take remaining n))
+         (begin-group! g-strata g-frozen (zero? i))
+         (for ([sb (in-list g-strata)] [gi (in-naturals i)])
+           (match-define (cons so tag) ((sbuild-runnable sb)))  ; blocks until built
+           (send-plugin so)
+           ;; EOF here means the daemon died or went silent BEFORE this stratum's
+           ;; fixpoint: erroring (rather than sailing on to the terminal actions)
+           ;; is what keeps a half-run from masquerading as a successful one
+           (unless (drive-stratum! sb tag)
+             (error "daemon output ended (EOF) mid-stratum -- the daemon died or went silent"))
+           ;; After the facts stratum fixpoints (its output is the pure iteration-0
+           ;; EDB), snapshot the root before any derived tuple exists (P0.5).  A
+           ;; silent write-db emits no line, so it cannot desync the next stratum's
+           ;; handshake; the daemon processes it in stdin order before that stratum.
+           (when (and linked-compressed? (> edb-boundary 0) (= (add1 gi) edb-boundary))
+             (send-plugin (action-so `(write-db ,(string-append compressed ".edb"))))
+             ;; dedup only against a verbatim from-scratch root, not a replayed input
+             (when (not chained-input)
+               (send-plugin (action-so `(capture-edb-heap))))))
+         (run-groups more (drop remaining n) (+ i n))]))
 
     ;; Capture the full-IDB content signature BEFORE the (possibly sampled)
     ;; layer write, so a load can verify the replay reproduced it (P1.3).
@@ -716,6 +765,23 @@
        (lambda (p) (fprintf p ";; verify loader\n")))
      (slog-run-file (path->string tmp) name #f #f #f
                     #:no-seed? #t #:strict? strict?))
+   (lambda () (when (file-exists? tmp) (delete-file tmp)))))
+
+;; The `slog db freeze` backend (docs/incremental.md §0.10/W7, E3): load and
+;; replay NAME's whole chain (recipe layers included, via the session hook)
+;; with an empty query program, then write the full materialisation as a
+;; plain database data/<target> -- the flat-root data; the caller (dbtool's
+;; cmd-freeze) strips chain artifacts, stamps the flat META, and swaps for
+;; an in-place freeze.
+(define (slog-db-freeze name target)
+  (define tmp (make-temporary-file "slog-freeze-~a.slog"))
+  (dynamic-wind
+   void
+   (lambda ()
+     (call-with-output-file tmp #:exists 'truncate
+       (lambda (p) (fprintf p ";; freeze loader\n")))
+     (make-directory* (string-append "data/" target))
+     (slog-run-file (path->string tmp) name target #f #f))
    (lambda () (when (file-exists? tmp) (delete-file tmp)))))
 
 ;; Write the META header(s) for a compressed/flattened save (docs/db-

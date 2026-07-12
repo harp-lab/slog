@@ -322,7 +322,10 @@ expect_not "c-collapse-recipe"  "(9 9)" out/sess-c-collapse.log
 # --- 0.C1: import-delta (bulk bin payload, transport 2) ---------------------
 # a mini bin-db payload merges at the tip and its targets' cones re-run;
 # the name-map (edge2 -> edge) is the D4 rename parameter's first caller
-rm -rf data/sess_cpay data/sess_cpay2
+# sess_lnk (the W6 round-trip below) records a manifest link edge to
+# sess_cpay, so a stale copy from a prior run would trip the overwrite
+# guard here -- clear the dependent first
+rm -rf data/sess_cpay data/sess_cpay2 data/sess_lnk
 timeout 600 racket slog.rkt --no-banner --out-db sess_cpay tests/session/payload.slog \
   > out/sess-cpay.log 2>&1
 timeout 600 racket slog.rkt --no-banner --out-db sess_cpay2 tests/session/payload2.slog \
@@ -458,6 +461,238 @@ timeout 600 racket slog.rkt --no-banner --sizes -d sess_dedit tests/api/noop.slo
   > out/sess-d-edit2.log 2>&1
 expect     "d-edit-applied" "(relation_size reach 6)" out/sess-d-edit2.log
 expect_not "d-edit-no-old"  "(relation_size path" out/sess-d-edit2.log
+
+# --- 0.E0c: per-program version boundaries in a multi-`run` program ---------
+# strat_run2_main chains two `run` prerequisites; each program of the run
+# tree gets its OWN begin-segment, so the pipeline versions their writes
+# separately (three segments: p-facts, q, r+main).
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/strat_run2_main.slog \
+  pipeline dump-rel:r \
+  > out/sess-e0c.log 2>&1
+expect "e0c-result" "(dumpdone 2)" out/sess-e0c.log
+if [ "$(grep -oE '\(segment [0-9]+ [0-9]+\)' out/sess-e0c.log | wc -l)" -ge "2" ]; then
+  echo "PASS e0c-per-program-segments"; PASS=$((PASS+1))
+else
+  echo "FAIL e0c-per-program-segments (expected >=2 segment boundaries)"; FAIL=$((FAIL+1))
+fi
+
+# --- 0.E1 + 0.E2: save a fed session; load = replay the recipe (W3) ---------
+# A session (two segments + a tip batch + an anchored back-insertion) saves
+# as data/sess_e1; loading it replays the recipe -- the tip content AND the
+# versioned pipeline (point-addressed queries) both reconstruct.
+rm -rf data/sess_e1 data/sess_e4 data/sess_e4f data/sess_bi \
+       out/sess-e1-csv out/sess-e2-csv
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/session/base.slog run:tests/session/seg2.slog \
+  batch+:edge,5,6 flush \
+  abatch+:1,edge,0,1 flush \
+  save:sess_e1 \
+  dump-rel:path write-csv:out/sess-e1-csv \
+  > out/sess-e1.log 2>&1
+expect "e1-saved"    "(saved sess_e1 4)" out/sess-e1.log
+expect "e1-live-tip" "(dumpdone 21)" out/sess-e1.log
+timeout 600 racket tests/api/session-drive.rkt \
+  open:sess_e1 \
+  dump-rel:path sizes-at:2 write-csv:out/sess-e2-csv \
+  > out/sess-e2.log 2>&1
+expect    "e2-replayed" "(replayed-recipe sess_e1 4)" out/sess-e2.log
+expect    "e2-tip"      "(dumpdone 21)" out/sess-e2.log
+expect_re "e2-old-env"  '\(sizes-at 2 .*\(edge 4\).*\(path 10\)' out/sess-e2.log
+for rel in edge path; do
+  if diff <(sort "out/sess-e1-csv/$rel.csv" 2>/dev/null) \
+          <(sort "out/sess-e2-csv/$rel.csv" 2>/dev/null) >/dev/null 2>&1; then
+    echo "PASS e2-load-oracle-$rel"; PASS=$((PASS+1))
+  else
+    echo "FAIL e2-load-oracle-$rel (loaded session != saved session)"; FAIL=$((FAIL+1))
+  fi
+done
+
+# --- W4: move & continue -- load, stream more, save again --------------------
+# sess_e1 (0..6 chain, 21 paths) + edge (7 8)... wait, 6->7 extends the
+# chain: closure over 0..7 = C(8,2) = 28.  The second save chains atop the
+# first (its manifest links sess_e1); loading THAT replays both recipes.
+rm -rf data/sess_e4
+timeout 600 racket tests/api/session-drive.rkt \
+  open:sess_e1 \
+  batch+:edge,6,7 flush \
+  save:sess_e4 \
+  dump-rel:path \
+  > out/sess-e4a.log 2>&1
+expect "e4-continued" "(dumpdone 28)" out/sess-e4a.log
+timeout 600 racket tests/api/session-drive.rkt \
+  open:sess_e4 \
+  dump-rel:path recipe \
+  > out/sess-e4b.log 2>&1
+expect "e4-chain-replayed" "(replayed-recipe sess_e4 " out/sess-e4b.log
+expect "e4-chain-tip"      "(dumpdone 28)" out/sess-e4b.log
+
+# --- W2 + pure-batch layer: open a COMPRESSED chain and stream into it ------
+# The session's open materialises the whole chain with the live machinery
+# (root + boundary + seeded replay), so a batch right after the load
+# delta-routes through the replayed strata; the save is a PURE-BATCH layer
+# (no new program -- recipe = one open + one batch).
+rm -rf data/sess_w2 data/sess_w2.edb data/sess_pb
+timeout 600 racket slog.rkt --no-banner --out-db-compressed sess_w2 --per 100 \
+  tests/session/base.slog > out/sess-w2-save.log 2>&1
+timeout 600 racket tests/api/session-drive.rkt \
+  open:sess_w2 \
+  batch+:edge,4,5 flush \
+  dump-rel:path \
+  save:sess_pb \
+  > out/sess-w2.log 2>&1
+expect "w2-route-delta" "(route delta 1)" out/sess-w2.log
+expect "w2-grown"       "(dumpdone 10)" out/sess-w2.log
+expect "pb-saved"       "(saved sess_pb 2)" out/sess-w2.log
+timeout 600 racket tests/api/session-drive.rkt \
+  open:sess_pb dump-rel:path \
+  > out/sess-pb.log 2>&1
+expect "pb-loaded" "(dumpdone 10)" out/sess-pb.log
+
+# --- back-insertion into an ANCESTOR layer's pipeline (the exit criterion) --
+# A batch anchored INSIDE sess_e1's replayed pipeline (position 1, edge@v0)
+# DELETES the ancestor's own back-inserted (0 1): the walk re-applies the
+# inherited add and the session's del at the same version -- del wins (it
+# came later) -- and the suffix rebuilds to the 1..6 closure (15 paths).
+# Saving and reloading preserves the layered semantics.
+rm -rf data/sess_bi
+timeout 600 racket tests/api/session-drive.rkt \
+  open:sess_e1 \
+  abatch-:1,edge,0,1 flush \
+  dump-rel:path save:sess_bi \
+  > out/sess-bi.log 2>&1
+expect "bi-walked" "(route anchored edge 1 " out/sess-bi.log
+expect "bi-tip"    "(dumpdone 15)" out/sess-bi.log
+timeout 600 racket tests/api/session-drive.rkt \
+  open:sess_bi dump-rel:path \
+  > out/sess-bi2.log 2>&1
+expect "bi-loaded" "(dumpdone 15)" out/sess-bi2.log
+
+# --- recipe round-trip through a rename (E4) ---------------------------------
+# A batch anchored pre-rename must re-anchor to the same version on load
+# (ordinals resolve through severance markers and alias bindings) and
+# re-apply under the alias: reach = 10+1 batch row, endp = {2..5, 91}.
+rm -rf data/sess_ren
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/session/base.slog \
+  rename-rel:path,reach \
+  run:tests/session/consumer.slog \
+  batch+:reach,90,91 flush \
+  abatch+:1,edge,4,5 flush \
+  save:sess_ren \
+  dump-rel:reach dump-rel:endp \
+  > out/sess-ren.log 2>&1
+expect "ren-live-reach" "(dumpdone 11)" out/sess-ren.log
+expect "ren-live-endp"  "(dumpdone 5)" out/sess-ren.log
+timeout 600 racket tests/api/session-drive.rkt \
+  open:sess_ren dump-rel:reach dump-rel:endp \
+  > out/sess-ren2.log 2>&1
+expect "ren-loaded-reach" "(dumpdone 11)" out/sess-ren2.log
+expect "ren-loaded-endp"  "(dumpdone 5)" out/sess-ren2.log
+
+# --- 0.E0b: anchored imports -- the walk no longer refuses across them -------
+# A payload (edges 5-6, 6-7) anchored INSIDE segment 1 (position 1): the
+# positional import lands in edge@v0 and the suffix walk re-runs both
+# segments -- the old environment shows the payload (edge 5, path 9) and
+# the tip closes over the 1..7 chain (21 paths).
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/session/base.slog run:tests/session/seg2.slog \
+  aimport-delta:1,data/sess_cpay \
+  sizes-at:2 dump-rel:path \
+  > out/sess-e0b.log 2>&1
+expect    "e0b-anchored"  "(import-delta-at data/sess_cpay 1)" out/sess-e0b.log
+expect_re "e0b-old-env"   '\(sizes-at 2 .*\(edge 5\).*\(path 9\)' out/sess-e0b.log
+expect    "e0b-tip"       "(dumpdone 21)" out/sess-e0b.log
+
+# --- 0.E2: the unseeded-downstream rule (del edits propagate on load) --------
+# The edges enter as DATA (a plain root; tests/session/edges.slog), the
+# closure as a rules-only compressed layer atop it.  A del-tuple edit on
+# the root: the layer's kept sample was computed for the pre-edit EDB, so
+# it replays UNSEEDED -- path re-derives from the edited edge set
+# ({1-2, 3-4}: 2 paths) instead of the monotone seed resurrecting the
+# retracted rows.  (A del of a PROGRAM ground fact is different: replay
+# re-derives it -- program-supported, the §8B.5 "retracted as input;
+# remains derivable" answer -- so del edits target data-fed inputs.)
+rm -rf data/sess_uns data/sess_uns_in
+timeout 600 racket slog.rkt --no-banner --out-db sess_uns_in tests/session/edges.slog \
+  > out/sess-uns-in.log 2>&1
+timeout 600 racket slog.rkt --no-banner --out-db-compressed sess_uns --per 100 \
+  -d sess_uns_in tests/session/tcrules.slog > out/sess-uns-save.log 2>&1
+timeout 300 racket slog.rkt db edit sess_uns_in del-tuple edge 2 3 \
+  > out/sess-uns-edit.log 2>&1
+expect "uns-recorded" "recorded edit on sess_uns_in: (del-tuple edge 2 3)" out/sess-uns-edit.log
+timeout 600 racket slog.rkt --no-banner --sizes -d sess_uns tests/api/noop.slog \
+  > out/sess-uns.log 2>&1
+expect "uns-edge-edited"    "(relation_size edge 2)" out/sess-uns.log
+expect "uns-path-rederived" "(relation_size path 2)" out/sess-uns.log
+
+# --- 0.E3: slog db freeze -- cut a chain to a standalone flat root -----------
+# Freezing the edited chain materialises the post-edit fixpoint (path 2)
+# with no manifest/recipe/program; the frozen copy loads as a plain root.
+rm -rf data/sess_frozen
+timeout 600 racket slog.rkt db freeze sess_uns --as sess_frozen \
+  > out/sess-freeze.log 2>&1
+expect "freeze-cut" "froze sess_uns as sess_frozen" out/sess-freeze.log
+timeout 600 racket slog.rkt --no-banner --sizes -d sess_frozen tests/api/noop.slog \
+  > out/sess-freeze2.log 2>&1
+expect "freeze-content" "(relation_size path 2)" out/sess-freeze2.log
+if [ -f data/sess_frozen/META ] && grep -q "kind flat" data/sess_frozen/META \
+   && [ ! -f data/sess_frozen/prog.sexpr ] && [ ! -f data/sess_frozen/recipe ]; then
+  echo "PASS freeze-flat-meta"; PASS=$((PASS+1))
+else
+  echo "FAIL freeze-flat-meta (expected flat META, no prog/recipe)"; FAIL=$((FAIL+1))
+fi
+
+# freezing a SESSION chain cuts its recipe history too
+rm -rf data/sess_e4f
+timeout 600 racket slog.rkt db freeze sess_e4 --as sess_e4f \
+  > out/sess-freeze3.log 2>&1
+timeout 600 racket slog.rkt --no-banner --sizes -d sess_e4f tests/api/noop.slog \
+  > out/sess-freeze4.log 2>&1
+expect "freeze-session-content" "(relation_size path 28)" out/sess-freeze4.log
+
+# --- W6 round-trip: a hot-link step saved and replayed -----------------------
+# A base-less session with a link: the manifest carries the link edge (for
+# tree/staleness/gc) but the load must NOT open it as a base chain -- the
+# recipe's own (open ...) step (absent here) names the base; the link step
+# re-imports at its position during replay.
+rm -rf data/sess_lnk
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/session/base.slog \
+  link:sess_cpay \
+  save:sess_lnk dump-rel:path \
+  > out/sess-lnk.log 2>&1
+expect "lnk-live" "(dumpdone 9)" out/sess-lnk.log
+timeout 600 racket tests/api/session-drive.rkt \
+  open:sess_lnk dump-rel:path \
+  > out/sess-lnk2.log 2>&1
+expect "lnk-loaded" "(dumpdone 9)" out/sess-lnk2.log
+
+# --- 0.E4: the stream-equivalence fuzzer -------------------------------------
+# Random base/batch splits with interleaved deletions, streamed flush by
+# flush, oracle-diffed against a from-scratch run on the equivalent edited
+# EDB (docs/incremental.md §10's core Phase 0 test); seed 2 also saves the
+# fed session and replays it in a fresh daemon (W3/W4).
+rm -rf data/sess_fuzz2
+for seed in 1 2; do
+  save=""
+  [ "$seed" = "2" ] && save="sess_fuzz2"
+  if timeout 900 racket tests/api/stream-fuzz.rkt $seed $save \
+       > "out/sess-fuzz-$seed.log" 2>&1 \
+     && grep -q "fuzz-ok $seed" "out/sess-fuzz-$seed.log"; then
+    echo "PASS e4-fuzz-$seed"; PASS=$((PASS+1))
+  else
+    echo "FAIL e4-fuzz-$seed (see out/sess-fuzz-$seed.log)"; FAIL=$((FAIL+1))
+  fi
+done
+
+# --- one-shot -d atop a saved session (the runslog hook) ---------------------
+# `slog -d sess_e1 seg3` runs a NEW one-shot program over the replayed
+# session -- the recipe chain loads through the session hook, then the
+# program runs as an ordinary segment atop it.
+timeout 600 racket slog.rkt --no-banner --sizes -d sess_e1 tests/api/noop.slog \
+  > out/sess-dhook.log 2>&1
+expect "dhook-loaded" "(relation_size path 21)" out/sess-dhook.log
 
 echo
 echo "$PASS passed, $FAIL failed"
