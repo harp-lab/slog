@@ -18,6 +18,7 @@
 #include "seq.h"
 #include "gzfile.h"
 #include "index.h"
+#include "counts.h"
 #include <string>
 #include <vector>
 #include <set>
@@ -174,6 +175,19 @@ private:
   std::vector<s16> leadcol_slot;
   u32 last_slot_leadcols = 0;  // write_leadcols.size() when leadcol_slot was last built
 
+  // DRed^c count sidecar (docs/incremental.md §6.1/§8B): per-bucket map from
+  // the count key (the full tuple in storage order for tables; the id column
+  // alone for structs) to the packed counter word (counts.h).  A separate
+  // member, deliberately NOT an entry in `indices`: counts are
+  // session-ephemeral cache, so every generic walker -- saves, dumps,
+  // getAnyIndex, reload staging -- must never see it.  Bucketing follows the
+  // operators' convention: buckethash(key[0]).  Null until a count round
+  // first materialises it (§8B.2's lazy protocol).
+  Index** count_sidecar = nullptr;
+  // Established/healed by a count round; orthogonal to settledness (§8B.2).
+  // A fresh version is born uncounted (never copied across newVersion).
+  bool counted = false;
+
   // Lattice (map) relation metadata (docs/lattices.md): LAT_NONE for plain
   // relations; the clamp words realize #:floor/#:ceiling.  lat_spec is the
   // canonical surface token ("min-int-floor-0", "count", "flat-value", ...)
@@ -282,6 +296,65 @@ public:
     // the next getIndex through it then fatals during CSV/BIN export.
     struct_master_index.clear();
     struct_lookup_index.clear();
+
+    // Registration teardown invalidates the count invariant ("a version's
+    // count map covers exactly its live tuples", §6.1) with everything else.
+    clearCounts();
+  }
+
+  // ---- DRed^c count sidecar (docs/incremental.md §6.1/§8B.2) ----
+
+  // The sidecar's key arity: tables key counts by the full tuple; struct
+  // relations by the id column alone (id stability across over-delete/
+  // reseed comes free -- the id IS the key, §6.1).
+  u16 countKeyArity()
+  {
+    return struct_id == 0 ? arity : (u16)1;
+  }
+
+  // Idempotent, like addIndex: a re-requisition across a reload/hot-swap
+  // must not replace live counters.  Constructed through the daemon's
+  // runtime map-index ladder -- the sidecar is driven only by the counted
+  // flavors and the recount driver, never by set-semantics hot paths, so
+  // nothing here needs plugin-side template instantiation.
+  Index** ensureCountSidecar()
+  {
+    if (count_sidecar)
+      return count_sidecar;
+    count_sidecar = new Index*[bucket_count];
+    for (u32 b = 0; b < bucket_count; ++b)
+      count_sidecar[b] = makeMapIndex(countKeyArity(), LAT_NONE,
+                                      false, 0, false, 0);
+    return count_sidecar;
+  }
+
+  Index** getCountSidecar()
+  {
+    return count_sidecar;
+  }
+
+  bool isCounted()
+  {
+    return counted;
+  }
+
+  void setCounted(bool c)
+  {
+    counted = c;
+  }
+
+  // Drop count state entirely -- the cheap "uncounted" transition; §8B.2's
+  // lazy protocol re-establishes on demand from the materialisation.
+  void clearCounts()
+  {
+    if (count_sidecar)
+    {
+      for (u16 b = 0; b < bucket_count; ++b)
+	delete count_sidecar[b];
+      delete [] count_sidecar;
+      count_sidecar = nullptr;
+    }
+    counted = false;
   }
 
   u16 getArity()
@@ -992,6 +1065,9 @@ public:
     for (const auto& it : deltaindices)
       for (u16 b = 0; b < bucket_count; ++b)
 	it.second[b]->clear();
+    // Contents gone => counts gone ("covers exactly its live tuples", §6.1);
+    // the lazy protocol re-establishes them on demand.
+    clearCounts();
     for (InsertBatch* ib : *delta)
       delete ib;
     delta->clear();

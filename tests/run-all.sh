@@ -17,7 +17,7 @@
 #   tests/run-all.sh --list       # print the harness names and exit
 #
 # Harness names (also = full execution order):
-#   unit diag stats arena seq golden api tiered pause session compression smt-pin smt-solver
+#   unit diag stats arena seq counts golden api tiered pause session compression smt-pin smt-solver
 #
 # Gating: `smt-solver` self-skips its z3 leg when z3 is not on PATH.  `golden`
 # clears build/ by default (correctness is cache-independent), so it is ordered
@@ -49,12 +49,13 @@ run_harness() {
     smt-solver)  bash tests/smt-solver-tests.sh ;;
     arena)       "$CXX" -O2 -Wall -std=c++20 -pthread -Idaemon tests/arena-tests.cpp -o build/arena-tests -lgmp && ./build/arena-tests ;;
     seq)         "$CXX" -O2 -Wall -std=c++20 -pthread -Idaemon tests/seq-tests.cpp   -o build/seq-tests   -lgmp && ./build/seq-tests ;;
+    counts)      "$CXX" -O2 -Wall -std=c++20 -pthread -Idaemon tests/counts-tests.cpp -o build/counts-tests -lgmp && ./build/counts-tests ;;
     *)           echo "run-all: unknown harness '$1'" >&2; return 2 ;;
   esac
 }
 
-ALL=(unit diag stats arena seq golden api tiered pause session compression smt-pin smt-solver)
-QUICK=(unit diag stats arena seq)
+ALL=(unit diag stats arena seq counts golden api tiered pause session compression smt-pin smt-solver)
+QUICK=(unit diag stats arena seq counts)
 
 case "${1:-}" in
   --list)  printf '%s\n' "${ALL[@]}"; exit 0 ;;
