@@ -1561,8 +1561,58 @@ favour.)*
   so the fix is one of: temps in the counted flavors carry sidecar counters
   like any relation and participate in sweeps (bag-transparent
   pass-throughs), or the `_count`/`_delta` planner avoids temp
-  decomposition for counted rules. Decide at M0; a temp-split rule is a
-  headline M0 test.
+  decomposition for counted rules.
+  **DECIDED 2026-07-11 (the M0 temps decision): counted plans keep temp
+  staging but make temps instantiation-injective — bag-transparency with
+  sets, no counters.** In the counted planner mode, a staging temp carries
+  the parent's FULL enumeration signature — every body-join variable,
+  including the `__`-gensym'd wildcard variables (already distinct per
+  occurrence, D13) — instead of the `carried = needed − reest-vars`
+  residue projection (`stage-rule`, join-planning.rkt). Distinct
+  enumerated instantiations are distinct full bindings (clause args are
+  variables/constants of the binding; relations are sets), so temp rows
+  are in bijection with parent instantiations: the write-phase
+  set-collapse can absorb only a duplicate fire of the SAME instantiation
+  — which is precisely what the exact-once discipline (0.B6) wants
+  absorbed — and can no longer collapse multiplicity. Consequences:
+  - Temps carry NO sidecar counters and need no value propagation. The
+    read phase stays sign-agnostic and §4.4's presence-transition rule is
+    untouched. (This is why the sidecar-counter alternative was rejected:
+    a temp count change with no presence transition would need
+    DRed_L-style value-carrying propagation — M7 machinery — at M0.)
+  - The widening also closes a SECOND collapse site: the no-temp staging
+    shape (`carried = ∅` — follow-up driven by a replayed construction's
+    delta, where same-content parent instantiations collapse at the
+    struct relation, e.g. `[(g (f 5))] <-- (E x y)`). With any non-empty
+    body the widened carried set is non-empty, so counted plans always
+    get a temp; fact rules (empty body) keep the no-temp shape,
+    correctly, at multiplicity 1.
+  - The follow-up adds no multiplicity of its own: re-established
+    clauses chain down to constants (instantiation-independent) and
+    content-join replays are functional given ground inputs, so
+    follow-up instantiations stay 1:1 with temp rows. Residue-needed
+    compute outputs stay carried by value, as today.
+  - Both counted flavors share this ONE plan shape, so the §8B.3
+    cross-flavor contract holds by construction ("same plans"), not by
+    argument. The count round runs staged chains stage-ordered (parents
+    before follow-ups, rebuilding the wide temps — temps are
+    session-scratch and flavor-private); still fire-once per rule, with
+    parallelism within stage levels.
+  - Cost: wide temps exist only in the counted flavors' cached `.so`s;
+    normal/seeded keep narrow temps and reest chaining. Width is O(body
+    vars) per stage, growing ~1 id per chained stage. The deep chains
+    reest chaining was built for do not reach counted plans:
+    ground-fact rules are EDB-classified (db-compression §19A) and
+    ≥512-node trees are freeze-peeled.
+  *(Parked as a later count-round optimisation, not rejected: unstaging
+  `_count` entirely — at a settled fixpoint every construction is
+  interned, so the original rule can run as one all-full version with
+  content-join lookups, truly single-round with no temp state. Sound by
+  the same injectivity argument, but it introduces a second plan shape;
+  revisit only if count-round temp materialisation measures as hot.)*
+  A temp-split rule stays a headline M0 test: two instantiations
+  collapsing to one NARROW temp row must show exact downstream counts
+  under the widened plan.
 - `emit_struct` (l.253): same signed treatment, but the id slot stays a 0
   placeholder — `InternStructTask` owns dedup + id (already true today, by
   design comment at l.248-251).
@@ -2499,7 +2549,8 @@ absent from saves, and `slog db freeze` cutting an equal flat copy (W7).
    propagation — exact-once by construction; lazily compiled and cached
    like `_delta`); the `(recount …)` action + `counted` introspection
    state (§8B.2); the EDB input bit with set-semantics enforcement
-   (§8B.5); the temps decision (§6.2); the value-keyed side-table
+   (§8B.5); instantiation-injective wide temps in counted plans (the
+   temps decision, DECIDED 2026-07-11 — §6.2); the value-keyed side-table
    anchoredness check (§8B.4). Normal/seeded flavors are NOT touched.
    Headline tests: the **cross-flavor count contract** (§8B.3), the
    **compressed-load count oracle** (§8A.5, §10), a **temp-split rule**,
@@ -2644,9 +2695,12 @@ recompute after a randomised insert/delete sequence:
   (the `_count` flavor is exact-once by construction); the exact-once burden
   that remains live is `_delta`'s staged-once discipline (0.B6, M1).
 - **Temp-split multiplicity (M0, §6.2):** a rule the planner decomposes
-  through a temp, with two instantiations collapsing to one temp row —
-  counts downstream must match the from-scratch oracle under whichever
-  temps decision (counted temps vs. no-temp counted plans) M0 takes.
+  through a temp, with two instantiations collapsing to one NARROW temp
+  row — counts downstream must match the from-scratch oracle under the
+  widened (instantiation-injective) counted plan. Include the second
+  collapse site: a `carried = ∅` rule (`[(g (f 5))] <-- (E x y)`) whose
+  follow-up would ride the construction's delta, and a wildcard case
+  (two rows differing only in a `_` column = two derivations).
 - **Input set-semantics (M0, §8B.5):** double-import idempotence
   (overlapping imports at one boundary → one input bit, one retraction
   fully deletes); retract-absent refused; retract-derived-only refused;
