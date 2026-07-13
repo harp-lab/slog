@@ -1012,6 +1012,12 @@ public:
   }
   bool work() override
   {
+    // Already counted (a previous walk, closed by markCounted): folding
+    // this round's re-derivations would double every counter, so the
+    // exact contributions are DROPPED.  The flag only flips at the end
+    // of a whole walk, never mid-round (§8B.2, M0.3).
+    if (rel->isCounted())
+      return true;
     auto& delta = rel->getDelta();
     for (u32 i = 0; i < delta.size(); ++i)
     {
@@ -1050,6 +1056,8 @@ public:
   }
   bool work() override
   {
+    if (rel->isCounted())   // see CountTask: never fold onto a closed walk
+      return true;
     auto& delta = rel->getDelta();
     for (u32 i = 0; i < delta.size(); ++i)
     {

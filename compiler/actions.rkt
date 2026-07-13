@@ -301,17 +301,40 @@
       "  for (slog::Relation* r : d->db()->allVersions())\n"
       "    if (r) r->clearCounts();\n"
       "  d->emit(\"(counts-cleared)\");\n")]
+    ;; Close one count-round walk (docs/incremental.md §8B.2, M0.3): the
+    ;; named relations' sidecar-bearing versions become `counted`; any
+    ;; OTHER sidecar-bearing version this walk touched holds partial
+    ;; contributions (a writer stratum sat outside the walk) and has its
+    ;; count state dropped instead -- unless an earlier walk already
+    ;; closed it.  Replies (marked-counted).
+    [`(mark-counted ,rels ...)
+     (string-append
+      (format "  std::set<std::string> mc = { ~a };\n"
+              (string-join (for/list ([r (in-list rels)]) (format "\"~a\"" r)) ", "))
+      "  d->db()->markCounted(mc);\n"
+      "  d->emit(\"(marked-counted)\");\n")]
+    ;; The per-(relation, version) counted state (§8B.2), one
+    ;; (count-state (cnt NAME ORD 0|1) ...) line; lattices, index-free
+    ;; versions, severed bindings, and $-diagnostics are omitted.
+    [`(count-state)
+     "  d->emit(d->db()->countStateSexpr());\n"]
     ;; Dump one relation's count sidecar (docs/incremental.md §8B, M0): one
     ;; (countrow REL v.. IN NR RC) line per counted key -- the sidecar key
     ;; rendered like CSV values (tables: the full tuple in storage order;
     ;; structs: the id, which renders as content), then the decoded input
     ;; bit and (nonrec, rec) counters -- terminated by (countdone REL n).
     ;; An uncounted relation reports (countdone REL -1).  Read-only; the
-    ;; count oracle and the M0 test batteries key on these lines.
-    [`(dump-counts ,rel)
+    ;; count oracle and the M0 test batteries key on these lines.  The
+    ;; two-argument form resolves the version current at pipeline position
+    ;; POS (§0.4 addressing) -- the per-version counts a positional
+    ;; recount established (M0.3).
+    [`(dump-counts ,rel ,pos ...)
      (string-append
       "  slog::Database* db = d->db();\n"
-      (format "  slog::Relation* r = db->getRelation(\"~a\");\n" rel)
+      (if (null? pos)
+          (format "  slog::Relation* r = db->getRelation(\"~a\");\n" rel)
+          (format "  slog::Relation* r = db->getRelationAt(\"~a\", ~a);\n"
+                  rel (car pos)))
       "  if (!r || !r->getCountSidecar())\n"
       (format "  { d->emit(\"(countdone ~a -1)\"); return; }\n" rel)
       "  slog::Index** side = r->getCountSidecar();\n"

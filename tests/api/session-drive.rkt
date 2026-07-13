@@ -101,9 +101,25 @@
                    (list (string->symbol a) (string->symbol b))))]
     [(list "reenter" rel) `(reenter ,(string->symbol rel))]
     [(list "rerun" rel) `(rerun ,(string->symbol rel))]
-    ;; the count round + sidecar dump (docs/incremental.md §8B, M0)
-    [(list "recount") `(recount)]
-    [(list "dump-counts" rel) `(dump-counts ,rel)]
+    ;; the count round + sidecar introspection (docs/incremental.md §8B, M0)
+    ;;   recount            whole pipeline (tip), lazy
+    ;;   recount:REL        REL's counting cone (tip), lazy
+    ;;   recount-at:P[,REL] per-version counts bound at position P
+    ;;   recount-force      drop all count state, then whole pipeline
+    ;;   count-state        the per-(relation, version) counted flags
+    ;;   dump-counts:REL[,P]  sidecar contents (optionally at position P)
+    [(list "recount") `(recount #f #f #f)]
+    [(list "recount" rel) `(recount ,(string->symbol rel) #f #f)]
+    [(list "recount-at" arg)
+     (match (string-split arg ",")
+       [(list pp) `(recount #f ,(string->number pp) #f)]
+       [(list pp rel) `(recount ,(string->symbol rel) ,(string->number pp) #f)])]
+    [(list "recount-force") `(recount #f #f #t)]
+    [(list "count-state") `(count-state)]
+    [(list "dump-counts" arg)
+     (match (string-split arg ",")
+       [(list rel) `(dump-counts ,rel)]
+       [(list rel pp) `(dump-counts ,rel ,(string->number pp))])]
     [_ (error 'session-drive "unrecognized op: ~a" s)]))
 
 ;; response readers for the query actions
@@ -141,9 +157,13 @@
        (session-del-tuple! s (string->symbol rel) vals)]
       [`(reenter ,rel) (session-reenter! s rel)]
       [`(rerun ,rel) (session-rerun! s rel)]
-      [`(recount) (session-recount! s)]
+      [`(recount ,rel ,at ,force?)
+       (session-recount! s #:rel rel #:at at #:force? force?)]
+      [`(count-state) (session-action! s `(count-state) echo-one-line)]
       [`(dump-counts ,rel) (session-action! s `(dump-counts ,rel)
                                             (echo-until #px"^\\(countdone "))]
+      [`(dump-counts ,rel ,pp) (session-action! s `(dump-counts ,rel ,pp)
+                                                (echo-until #px"^\\(countdone "))]
       [`(pipeline) (session-action! s `(pipeline) echo-one-line)]
       [`(recipe) (writeln (session-recipe s))]
       [`(sizes-at ,p) (session-action! s `(sizes-at ,p) echo-one-line)]

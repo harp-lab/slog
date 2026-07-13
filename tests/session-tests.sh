@@ -744,6 +744,56 @@ timeout 600 racket tests/api/session-drive.rkt \
 expect "cnt-lat-out"     "(countrow out (pair 1 2) 0 1 0)" out/sess-counts-lat.log
 expect "cnt-lat-skip"    "(countdone dist -1)" out/sess-counts-lat.log
 
+# --- M0.3: counted state, laziness, invalidation, positional/cone walks ------
+# (docs/incremental.md 8B.2)  A walk marks `counted` per (relation,
+# version); a second recount is fully lazy (runs 0 of 2); a delta-entry
+# flush INVALIDATES the touched cone (kind-less batches at finalize), and
+# the healed counts see the new edge's derivations -- path (1 4) has TWO
+# rec derivations through edge (3 4).
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/session/counts_tc.slog recount count-state recount \
+  batch+:edge,3,4 flush recount dump-counts:path \
+  > out/sess-counts-m03a.log 2>&1
+expect "m03-counted"   "(cnt edge 0 1)" out/sess-counts-m03a.log
+expect "m03-lazy"      "(recount 0 2 2)" out/sess-counts-m03a.log
+expect "m03-heal-new"  "(countrow path 1 4 0 0 2)" out/sess-counts-m03a.log
+expect "m03-heal-old"  "(countrow path 1 3 0 1 1)" out/sess-counts-m03a.log
+
+# Per-version walks: seg1's strata re-pushed under bind-at 2 count the OLD
+# versions (single rule copies -> 1s); the tip walk then counts the new
+# versions under BOTH segments' rule copies (2s: duplicate rules each
+# contribute a derivation), and the old versions' counted state SURVIVES
+# the tip walk's close.
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/session/base.slog run:tests/session/seg2.slog \
+  recount-at:2 dump-counts:path,2 recount dump-counts:path count-state \
+  > out/sess-counts-m03b.log 2>&1
+expect "m03-old-copy"  "(countrow path 1 2 0 1 0)" out/sess-counts-m03b.log
+expect "m03-old-rec"   "(countrow path 1 4 0 0 1)" out/sess-counts-m03b.log
+expect "m03-old-done"  "(countdone path 6)" out/sess-counts-m03b.log
+expect "m03-tip-copy"  "(countrow path 1 2 0 2 0)" out/sess-counts-m03b.log
+expect "m03-tip-rec"   "(countrow path 1 5 0 0 2)" out/sess-counts-m03b.log
+expect "m03-tip-done"  "(countdone path 10)" out/sess-counts-m03b.log
+expect "m03-both-vers" "(cnt path 0 1) (cnt path 1 1)" out/sess-counts-m03b.log
+
+# Cone recount: only g's writer stratum runs (1 of 2); e stays honestly
+# uncounted -- its facts stratum sat outside the walk, so it got no
+# sidecar and the close does not mark it.
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/session/counts_struct.slog recount:g dump-counts:g dump-counts:e \
+  > out/sess-counts-m03c.log 2>&1
+expect "m03-cone-ran"  "(recount 1 0 2)" out/sess-counts-m03c.log
+expect "m03-cone-g"    "(countrow g (h 2) 0 2 0)" out/sess-counts-m03c.log
+expect "m03-cone-e"    "(countdone e -1)" out/sess-counts-m03c.log
+
+# Error arms count (8B.4: instantiation-deterministic) and close with the
+# walk that covers their writer stratum.
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/err_div0.slog recount dump-counts:div_by_zero count-state \
+  > out/sess-counts-m03d.log 2>&1
+expect "m03-arm-row"   " 100) 0 1 0)" out/sess-counts-m03d.log
+expect "m03-arm-state" "(cnt div_by_zero 0 1)" out/sess-counts-m03d.log
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

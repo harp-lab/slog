@@ -2609,6 +2609,58 @@ absent from saves, and `slog db freeze` cutting an equal flat copy (W7).
    >   temps would report 1, wide temps report 2), deep_fact ground
    >   trees, neg_reach through absent probes, lattice skip + lattice
    >   READS (lat_constprop hand-checked), double-recount idempotence.
+
+   > **STATUS: M0.3 SHIPPED 2026-07-12** — the recount verb family, the
+   > `counted` per-(relation, version) state, and count invalidation.
+   > - **`counted` state + walk protocol (§8B.2)**: `(count-state)`
+   >   introspection emits `(cnt NAME ORD 0|1)` per countable version
+   >   (lattices, index-free, severed, `$`-names omitted).  A walk closes
+   >   with `(mark-counted N…)`: exactly the relations ALL of whose
+   >   writer strata ran-or-were-skipped become counted; a sidecar-
+   >   bearing version NOT named (a cross-stratum error arm whose other
+   >   writer sat outside a cone walk) holds partial contributions and is
+   >   dropped instead — partial junk must never be folded onto.
+   >   `CountTask`/`CountStructTask` skip counted relations (never fold
+   >   onto a closed walk), so driver-side laziness is an optimization,
+   >   never load-bearing.
+   > - **Invalidation (the trustworthiness half)**: a KIND-LESS batch at
+   >   `finalizeBatches` — delta-entry increments, staged payloads,
+   >   reload restaging, normal-run emissions — drops the receiving
+   >   relation's count state (kind-tagged count contributions never
+   >   invalidate, or a round would erase itself); `insertTupleAllIndices`
+   >   (add-tuple edits, imports, links, version copies) likewise.
+   >   Conservative by design: counts are recomputable cache.
+   > - **Verbs** (`session-recount!`): whole-pipeline tip walk (lazy: a
+   >   stratum skips when every relation it writes is counted at the
+   >   walk position); `#:rel R` — R's COUNTING cone = downstream
+   >   closure plus every stratum WRITING into it (a relation's own
+   >   counts come from its writers; `cone-closure` alone is the
+   >   re-entry cone and misses non-reading writers); `#:at P` — the
+   >   pipeline prefix (strata bound at-or-before P) re-pushed under
+   >   `bind-at P`, which `beginStratumDelta` now honors WITHOUT the
+   >   positional reload; `#:force?` drops all count state first.
+   >   `(dump-counts REL P)` reads a positional sidecar.
+   > - **Consistency note**: a version not rebound after P has identical
+   >   counts at P and at the tip, BECAUSE the anchored-walk discipline
+   >   rebuilds (rebinds) every cone relation of any upstream change —
+   >   so one physical version never needs two count states.
+   > - **v1 limits**: a walk crossing a severance (a selected stratum
+   >   referencing a name dropped/renamed at the bind position) is
+   >   refused — recount before the severance or under the successor
+   >   name (rename-translating walks compose at M3); re-entered strata
+   >   count where their first push bound; versions whose writer strata
+   >   are not in the live pipeline (flat opens without recipe replay)
+   >   cannot be positionally recounted; temps that acquired default
+   >   indices via orphan restore appear in `(count-state)` as inert
+   >   noise.
+   > - **Tests**: session-tests.sh M0.3 battery — counted flags after a
+   >   walk; full laziness (`(recount 0 2 2)`); invalidation via a
+   >   delta-entry flush then exact heal (path (1 4) gains its second
+   >   rec derivation through the new edge); per-version walks (old
+   >   versions at 1s under seg-1's rules, tip at 2s under both
+   >   segments' duplicate rule copies, old state surviving the tip
+   >   close); cone walk (writer-only stratum runs, outside relation
+   >   honestly uncounted); error arms counted and closed (§8B.4).
    Per-(relation, version) sidecar count indices (tables: full-tuple-keyed
    map; structs: id-keyed map; packed `input|nonrec|rec` value with
    under/overflow asserts); the `_count` compiled flavor (one all-full,

@@ -789,6 +789,22 @@ public:
       delete ib;
     delta->clear();
 
+    // Count invalidation (docs/incremental.md §8B.2, M0.3): a KIND-LESS
+    // batch is ordinary set-semantics content headed for the indices --
+    // delta-entry increments, stage-tuple payloads, reload restaging, rule
+    // emissions of a normal run -- so this relation's counts no longer
+    // cover exactly its live tuples.  Kind-tagged batches are the count
+    // round's own contributions and never invalidate (or a count round
+    // would erase itself).  Conservative (a batch that fully dedups away
+    // still clears) but counts are recomputable cache, so over-clearing
+    // only costs a re-establishment.
+    bool mutated = false;
+    for (auto& shard : send_shards)
+      for (InsertBatch* ib : shard)
+        if (ib->kind == cnt_kind_none) { mutated = true; break; }
+    if (mutated)
+      clearCounts();
+
     for (auto& shard : send_shards)
     {
       for (InsertBatch* ib : shard)
@@ -1104,9 +1120,13 @@ public:
   // Insert ONE storage-order tuple into every registered (non-delta) index,
   // id-preservingly -- the single-row body of ingestDelta, used by the
   // database merge to materialize remapped rows (lattice payload maps merge
-  // via BTreeMapIndex::insertTuple, plain btrees set-dedup).
+  // via BTreeMapIndex::insertTuple, plain btrees set-dedup).  A direct
+  // content mutation, so it drops count state (§8B.2's invalidation --
+  // add-tuple edits, imports, links, version copies; a no-op when
+  // uncounted, so the per-row cost in bulk loops is one null check).
   void insertTupleAllIndices(const u64* t)
   {
+    clearCounts();
     for (const auto& it : indices)
       it.second[buckethash(t[it.first[0]])]->insertTuple(t, it.first.data());
   }
@@ -1855,6 +1875,57 @@ public:
       }
       s += ")";
     }
+    return s;
+  }
+
+  // Close one count-round walk (docs/incremental.md §8B.2, M0.3).  A walk
+  // materialises count sidecars exactly on the relations its CountTasks
+  // bound (whichever versions the walk's bind position resolved), so
+  // sidecar presence identifies the walk's touched versions.  The driver
+  // passes the names whose WRITER STRATA all ran (or were skipped as
+  // already-counted): those become `counted`; a sidecar-bearing version
+  // NOT named holds partial contributions -- some contributing stratum
+  // was outside the walk (a cone recount and a cross-stratum error arm,
+  // say) -- and partial junk must not survive to be folded ONTO by the
+  // next walk, so its count state is dropped instead.
+  void markCounted(const std::set<std::string>& names)
+  {
+    for (Relation* r : rel_registry)
+      if (r != nullptr && r->getCountSidecar() != nullptr)
+      {
+        if (names.count(r->getName()))
+          r->setCounted(true);
+        else if (!r->isCounted())   // counted by an earlier walk: keep
+          r->clearCounts();
+      }
+  }
+
+  // The per-(relation, version) counted state (§8B.2), one line:
+  //   (count-state (cnt NAME ORD 0|1) ...)
+  // mirroring relChainsSexpr's ordinals.  Lattice-valued relations are
+  // omitted (uncountable until M6), as are index-free versions (temps,
+  // mid-reload husks), severed bindings, and $-diagnostics -- the driver
+  // treats absent names as "nothing to count here".
+  std::string countStateSexpr()
+  {
+    std::map<std::string, const std::vector<RelBinding>*> sorted;
+    for (const auto& kv : rel_bindings)
+      if (kv.first[0] != '$')
+        sorted[kv.first] = &kv.second;
+    std::string s = "(count-state";
+    for (const auto& kv : sorted)
+    {
+      u32 ord = 0;
+      for (const RelBinding& b : *kv.second)
+      {
+        const u32 o = ord++;
+        if (b.rel == nullptr || !b.rel->getAnyIndex() || b.rel->isLattice())
+          continue;
+        s += " (cnt " + kv.first + " " + std::to_string(o) + " "
+           + (b.rel->isCounted() ? "1" : "0") + ")";
+      }
+    }
+    s += ")";
     return s;
   }
 

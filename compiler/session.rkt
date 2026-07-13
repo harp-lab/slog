@@ -204,25 +204,134 @@
                                 (sbuild-delta sb) (sbuild-count sb))))))
   (send-stratum! s so))
 
-;; The count round (docs/incremental.md §8B.1, M0): run every stratum's
-;; _count flavor over the resident settled fixpoint, in pipeline order.
-;; Each flavor fires its rules exactly once over FULL indices (staged
-;; chains stage-ordered through their wide temps) and folds per-tuple
-;; (input | nonrec | rec) contributions into the relations' count
-;; sidecars; nothing is inserted, so the resident content is untouched.
-;; M0.2 scope: the LATEST environment over the whole pipeline -- the
-;; anchored (recount REL@P) verb, `counted` state, and cost-based routing
-;; land with M0.3.
-(define (session-recount! s)
-  (define infos (session-strata-info s))
-  ;; drop all count state first: counts are recomputable cache (§8B.2), so
-  ;; re-establishment-by-rebuild makes the verb idempotent -- a second
-  ;; (recount) reproduces, never doubles.  (M0.3's `counted` state turns
-  ;; this into per-(relation, version) laziness instead of a full redo.)
-  (session-action! s `(clear-counts) read-one-line-quiet!)
-  (echo! s (format "(recount ~a)" (length infos)))
-  (for ([p (in-list infos)])
-    (send-stratum! s ((sinfo-count (cdr p))))))
+;; The count round (docs/incremental.md §8B.1-§8B.2, M0.2+M0.3): run the
+;; _count flavor of a selection of strata over the resident settled
+;; fixpoint, in pipeline order.  Each flavor fires its rules exactly once
+;; over FULL indices (staged chains stage-ordered through their wide
+;; temps) and folds per-tuple (input | nonrec | rec) contributions into
+;; the relations' count sidecars; nothing is inserted, so the resident
+;; content is untouched.
+;;
+;;   (session-recount! s)              whole pipeline, tip environment
+;;   (session-recount! s #:rel R)      R's counting cone: R's downstream
+;;                                     closure plus every stratum WRITING
+;;                                     into it (a retraction sweep needs
+;;                                     counts on everything it may delete
+;;                                     from, and a relation's own counts
+;;                                     come from its writers)
+;;   (session-recount! s #:at P)       per-version counts: the pipeline
+;;                                     prefix (strata bound at-or-before
+;;                                     P), each re-pushed under bind-at P
+;;                                     (registrations resolve through P's
+;;                                     environment; no reload)
+;;   (session-recount! s #:force? #t)  drop ALL count state first
+;;
+;; Laziness (§8B.2): a stratum is SKIPPED when every relation it writes is
+;; already `counted` at the walk's position -- its contributions are in
+;; the sidecars.  The daemon's CountTask carries the same check per
+;; relation (a closed walk never gets folded onto), so driver-side
+;; skipping is an optimization, never load-bearing.  The walk closes with
+;; (mark-counted N...): exactly the relations ALL of whose writer strata
+;; ran or were skipped become `counted`; a sidecar-bearing relation not
+;; named (a cross-stratum error arm whose other writer sat outside a cone
+;; walk, say) holds partial contributions and its state is dropped.
+;;
+;; v1 limits (documented in the M0 STATUS block): a walk crossing a
+;; severance (a selected stratum referencing a name dropped/renamed at
+;; the bind position) is refused -- recount before the severance, or at
+;; the successor name; re-entered strata count where their first push
+;; bound.
+(define (session-recount! s #:rel [rel #f] #:at [at #f] #:force? [force? #f])
+  (when force?
+    (session-action! s `(clear-counts) read-one-line-quiet!))
+  (define-values (_cur strata-pos chains) (introspect! s))
+  (define p (or at +inf.0))
+  (define entries                       ; (list pos sinfo), pipeline order
+    (for/list ([e (in-list (session-strata-info s))]
+               #:when (<= (hash-ref strata-pos (car e) 0) p))
+      (list (hash-ref strata-pos (car e) 0) (cdr e))))
+  ;; the counting cone: downstream closure of rel, then pull in every
+  ;; prefix stratum that WRITES a wave relation
+  (define wave
+    (and rel
+         (let-values ([(cone _mono)
+                       (cone-closure (for/list ([e (in-list entries)])
+                                       (cons (first e) (second e)))
+                                     rel)])
+           (for*/fold ([w (set rel)])
+                      ([info (in-list cone)] [d (in-list (sinfo-dyn info))])
+             (set-add w d)))))
+  (define selected
+    (for/list ([e (in-list entries)]
+               #:when (or (not wave)
+                          (for/or ([d (in-list (sinfo-dyn (second e)))])
+                            (set-member? wave d))))
+      e))
+  ;; severance guard: every name a selected stratum touches must resolve
+  ;; live at the bind position
+  (for* ([e (in-list selected)]
+         [n (in-sequences (in-list (sinfo-dyn (second e)))
+                          (in-list (map car (sinfo-reads (second e)))))])
+    (define chain (hash-ref chains n '()))
+    (define hit (for/last ([b (in-list chain)] #:when (<= (second b) p)) b))
+    (when (and hit (third hit))
+      (error 'session
+             (format "recount: ~a is severed (dropped or renamed) at ~a; recount before the severance or under the successor name"
+                     n (if at at "the tip")))))
+  ;; laziness: skip strata whose written relations are all counted at the
+  ;; walk position ('none = uncountable/unknown there -- nothing to fold)
+  (define cstate (query-count-state! s))
+  (define (counted-at n)
+    (define chain (hash-ref chains n '()))
+    (define hit (for/last ([b (in-list chain)] #:when (<= (second b) p)) b))
+    (cond
+      [(or (not hit) (third hit)) 'none]
+      [else (match (assv (first hit) (hash-ref cstate n '()))
+              [#f 'none]
+              [(cons _ c) c])]))
+  (define-values (to-run skipped)
+    (partition (lambda (e)
+                 (or force?
+                     (for/or ([d (in-list (sinfo-dyn (second e)))])
+                       (eq? #f (counted-at d)))))
+               selected))
+  (echo! s (format "(recount ~a ~a ~a)"
+                   (length to-run) (length skipped) (length entries)))
+  (for ([e (in-list to-run)])
+    (when at (session-action! s `(bind-at ,at)))
+    (send-stratum! s ((sinfo-count (second e)))))
+  ;; close the walk: markable = written by NO stratum outside
+  ;; selected-or-skipped (within the prefix)
+  (when (pair? to-run)
+    (define covered (list->seteq (map second (append to-run skipped))))
+    (define markable
+      (sort
+       (set->list
+        (for*/fold ([acc (set)])
+                   ([e (in-list selected)] [d (in-list (sinfo-dyn (second e)))])
+          (if (for/or ([e2 (in-list entries)]
+                       #:unless (set-member? covered (second e2)))
+                (memq d (sinfo-dyn (second e2))))
+              acc
+              (set-add acc d))))
+       symbol<?))
+    (session-action! s `(mark-counted ,@markable) read-one-line-quiet!)))
+
+;; The per-(relation, version) counted state (§8B.2): name -> list of
+;; (ord . counted?), from the (count-state) introspection action.
+;; Lattices, index-free versions, severed bindings, and $-diagnostics are
+;; absent by construction.
+(define (query-count-state! s)
+  (session-action! s `(count-state))
+  (define line (read-line (session-out s)))
+  (when (eof-object? line) (error 'session "daemon EOF at count-state"))
+  (echo! s line)
+  (match (read (open-input-string line))
+    [`(count-state ,es ...)
+     (for/fold ([h (hash)]) ([e (in-list es)])
+       (match-define `(cnt ,name ,ord ,flag) e)
+       (hash-update h name (lambda (l) (cons (cons ord (= flag 1)) l)) '()))]
+    [x (error 'session (format "unparseable (count-state) reply: ~a" x))]))
 
 ;; consume one response line without echoing (internal protocol chatter)
 (define (read-one-line-quiet! out)

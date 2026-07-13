@@ -251,6 +251,17 @@ public:
            "is suspended; continue to fixpoint first\")");
       return nullptr;
     }
+    if (pending_bind_pos >= 0)
+    {
+      // Positional count round (docs/incremental.md §8B.2, M0.3): resolve
+      // this plugin's registrations through P's environment WITHOUT the
+      // positional reload beginStratum performs -- old versions keep their
+      // indices resident, and a count round needs no iteration-0 delta.
+      // push() returns resolution to the latest environment, exactly as
+      // for a positional beginStratum.
+      database->setBindPosition(pending_bind_pos);
+      pending_bind_pos = -1;
+    }
     return new Stratum(name);
   }
 
