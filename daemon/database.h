@@ -126,8 +126,13 @@ class alignas(8) InsertBatch
 {
 public:
   u64 usage;
+  // Contribution kind (counts.h cnt_kind_*): 0 for ordinary set-semantics
+  // batches; the counted flavors' sinks tag their batches so the counting
+  // write tasks know which counter each row bumps (docs/incremental.md
+  // §8B.1).  Batches are per-(task, head), hence kind-homogeneous.
+  u8 kind;
   u64 data[batch_size_max];
-  InsertBatch() : usage(0) { }
+  InsertBatch() : usage(0), kind(0) { }
 };
 
 // A lightweight reference to a single tuple inside a delta batch: the batch and
@@ -1877,6 +1882,15 @@ public:
   const std::unordered_map<std::string, Relation*>& getRelations()
   {
     return relations;
+  }
+
+  // Every physical relation version ever registered, in creation order
+  // (the owning registry; entries may be null after drops).  Read-only
+  // walks -- e.g. dropping all count state before a count round
+  // (docs/incremental.md §8B.2).
+  const std::vector<Relation*>& allVersions()
+  {
+    return rel_registry;
   }
 
   // Distinct-tuple count of a relation; 0 if unknown or index-free.

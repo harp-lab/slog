@@ -505,11 +505,14 @@
 
 (define (emit-stratum-cpp job)
   (match-define (list proghash type-env stratum dbmanifest decomps) job)
-  ;; the delta-entry flavor (docs/incremental.md 0.B5) writes its own
-  ;; artifact family; "_delta" (not ".delta") because the name also becomes
-  ;; the daemon stratum name and rides into generated identifiers
+  ;; the delta-entry/_count flavors (docs/incremental.md 0.B5/§8B.1) write
+  ;; their own artifact families; "_delta"/"_count" (not ".delta") because
+  ;; the name also becomes the daemon stratum name and rides into generated
+  ;; identifiers
   (define hash-name
-    (if (delta-entry-flavor) (string-append proghash "_delta") proghash))
+    (cond [(delta-entry-flavor) (string-append proghash "_delta")]
+          [(count-flavor) (string-append proghash "_count")]
+          [else proghash]))
   ;; the augmented rule set (+ error/oracle arms) and the relations produced
   ;; within this stratum, both from stratum-rules+dynamic -- shared with the
   ;; sidecar manifest so recursive/non-recursive classification is derived once.
@@ -525,18 +528,27 @@
   ;; delta is nonempty only at iteration 0.  Lattice-valued reads stay
   ;; static (the routing rule never delta-enters a lat cone), and negated
   ;; reads never drive (guards, not drivers).
+  ;;
+  ;; _count flavor (§8B.1): plan with an EMPTY dynamic set -- every rule
+  ;; becomes one all-full fire-once version (temp-driven follow-ups aside)
+  ;; -- while the TRUE head-based set rides in the count-mode value for the
+  ;; rec/nonrec classification (§6.4).
   (define plan-dynamic
-    (if (not (delta-entry-flavor))
-        dynamic-rels
-        (for*/fold ([acc dynamic-rels])
-                   ([rule (in-set rules)]
-                    [r (in-set (rule-body-pos-rels rule))]
-                    #:unless (set-member? dynamic-rels r))
-          (match (hash-ref (type-env-rels type-env) r #f)
-            [`(struct ,_ ...) (set-add acc r)]
-            [`(table ,_ ...)
-             (if (rel-lattice-spec (type-env-rels type-env) r) acc (set-add acc r))]
-            [_ acc]))))
+    (cond
+      [(count-flavor) (set)]
+      [(not (delta-entry-flavor)) dynamic-rels]
+      [else
+       (for*/fold ([acc dynamic-rels])
+                  ([rule (in-set rules)]
+                   [r (in-set (rule-body-pos-rels rule))]
+                   #:unless (set-member? dynamic-rels r))
+         (match (hash-ref (type-env-rels type-env) r #f)
+           [`(struct ,_ ...) (set-add acc r)]
+           [`(table ,_ ...)
+            (if (rel-lattice-spec (type-env-rels type-env) r) acc (set-add acc r))]
+           [_ acc]))]))
+  (parameterize ([count-flavor (and (count-flavor)
+                                    (count-mode dynamic-rels (make-hash)))])
   (match-define (cons planned rel-env+)
     (plan-all rules (type-env-rels type-env) plan-dynamic))
   (define cprog (lower-all planned rel-env+ decomps))
@@ -556,7 +568,7 @@
       (fullpath (format "build/~a~a.cpp" hash-name
                         (if (string=? suffix "") "" (string-append "." suffix)))))
     (call-with-atomic-output path (lambda () (display contents)))
-    path))
+    path)))
 
 ;; Build (or reuse) the delta-entry flavor of one stratum job
 ;; (docs/incremental.md §0.5 mode 3, 0.B5), returning its .so path.
@@ -571,6 +583,23 @@
   (define so (fullpath (format "build/~a_delta.O0.so" proghash)))
   (unless (file-exists? so)
     (define cpps (parameterize ([delta-entry-flavor #t])
+                   (emit-stratum-cpp job)))
+    (build-so cpps so #:opt "-O0"))
+  so)
+
+;; Build (or reuse) the `_count` flavor of one stratum job (docs/
+;; incremental.md §8B.1, M0): the count-round plugin -- one all-full
+;; fire-once version per rule with counting sinks into the count sidecar.
+;; Compiled LAZILY on the first (recount ...) touching the stratum, cached
+;; as build/<hash>_count.O0.so; -O0 for the same reason as the delta
+;; flavor (a count round is one embarrassingly-parallel pass; the artifact
+;; caches).  emit-stratum-cpp swaps the parameter's #t for the full
+;; count-mode value once the stratum's dynamic set is in hand.
+(define (ensure-count-so job)
+  (match-define (list proghash _te _st _dm _dc) job)
+  (define so (fullpath (format "build/~a_count.O0.so" proghash)))
+  (unless (file-exists? so)
+    (define cpps (parameterize ([count-flavor #t])
                    (emit-stratum-cpp job)))
     (build-so cpps so #:opt "-O0"))
   so)
@@ -598,10 +627,12 @@
 ;;                       behavior.  A previously-built build/<hash>.so is always
 ;;                       preferred in every mode (a re-run is pure -O2).
 
-(struct sbuild (hash o2-path runnable upgrade delta))
+(struct sbuild (hash o2-path runnable upgrade delta count))
 ;; `delta` -- a thunk returning the delta-entry flavor's .so path, building
 ;; it on first call (ensure-delta-so; docs/incremental.md 0.B5).  The
 ;; session driver forces it only when the routing rule picks delta-entry.
+;; `count` -- likewise for the `_count` flavor (ensure-count-so, §8B.1 M0);
+;; forced by the recount driver.
 
 ;; Granular O0->O2 upgrade (docs/fast-compile.md §14): given this stratum's TU
 ;; .cpp paths, return a closure the driver calls at each fixpoint boundary.  It
@@ -829,11 +860,13 @@
         [(file-exists? o2so)
          (clear-o2-marker! o2so)   ; any leftover in-flight marker is moot now
          (sbuild proghash o2so (lambda () (cons o2so 'o2)) #f
-                 (lambda () (ensure-delta-so job)))]
+                 (lambda () (ensure-delta-so job))
+                 (lambda () (ensure-count-so job)))]
         ;; -O0-only mode with a warm -O0 artifact: reuse it, no upgrade.
         [(and (equal? mode "0") (file-exists? o0so))
          (sbuild proghash #f (lambda () (cons o0so 'o0)) #f
-                 (lambda () (ensure-delta-so job)))]
+                 (lambda () (ensure-delta-so job))
+                 (lambda () (ensure-count-so job)))]
         ;; TIERED with a warm -O0 artifact but no -O2 yet (e.g. a prior run
         ;; exited before the background -O2 landed): run the cached -O0 NOW --
         ;; no re-emit, no -O0 rebuild -- and queue the background -O2 only if we
@@ -846,18 +879,21 @@
          (when (try-claim-o2! o2so)
            (set! o2-cmds (cons (o2-build-command cpps o2so) o2-cmds)))
          (sbuild proghash o2so (lambda () (cons o0so 'o0)) (make-upgrade proghash cpps)
-                 (lambda () (ensure-delta-so job)))]
+                 (lambda () (ensure-delta-so job))
+                 (lambda () (ensure-count-so job)))]
         [else
          (define cpps (emit-stratum-cpp job))   ; write .cpp(s) now (fast, main thread)
          (case mode
            [("2")
             (sbuild proghash o2so
                     (pooled-eager (lambda () (build-so cpps o2so #:opt "-O2") (cons o2so 'o2)))
-                    #f (lambda () (ensure-delta-so job)))]
+                    #f (lambda () (ensure-delta-so job))
+                 (lambda () (ensure-count-so job)))]
            [("0")
             (sbuild proghash #f
                     (pooled-eager (lambda () (build-so cpps o0so #:opt "-O0") (cons o0so 'o0)))
-                    #f (lambda () (ensure-delta-so job)))]
+                    #f (lambda () (ensure-delta-so job))
+                 (lambda () (ensure-count-so job)))]
            [else ; tiered: eager -O0 to run now, then upgrade cluster-by-cluster to
                  ;; -O2 as the background fills the .o cache (docs/fast-compile.md §14)
             ;; claim-gate the -O2 so concurrent/successive runs that all miss the
@@ -867,6 +903,7 @@
             (sbuild proghash o2so
                     (pooled-eager (lambda () (build-so cpps o0so #:opt "-O0") (cons o0so 'o0)))
                     (make-upgrade proghash cpps)
-                    (lambda () (ensure-delta-so job)))])])))
+                    (lambda () (ensure-delta-so job))
+                 (lambda () (ensure-count-so job)))])])))
   (spawn-detached-o2-batch (reverse o2-cmds))
   (values strata partition edb-boundary frozen-dirs groups))

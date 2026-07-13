@@ -32,7 +32,8 @@
          strata? stratum? stratum-level stratum-rules
          planned-rule?
          cprog? cprog-dynamic-rels cprog-constants cprog-decls cprog-rules
-         crule? crule-pre crule-driver crule-body crule-head crule-loc)
+         crule? crule-pre crule-driver crule-body crule-head crule-loc
+         crule-kind)
 
 (require "ir-shared.rkt")
 
@@ -238,7 +239,9 @@
 ;;             | (lattice name arity spec decomp idx ...)
 ;;                 decomp ::= #f | (decomp name set|map)   [M2.4]
 ;;             | (temp name arity)
-;;   crule   ::= (crule (pre op ...) driver (body op ...) (head hop ...))
+;;   crule   ::= (crule (pre op ...) driver (body op ...) (head hop ...) loc kind)
+;;                 loc  ::= "file:line" | #f
+;;                 kind ::= #f | input | nonrec | rec     [_count flavor, §6.4]
 ;;   driver  ::= (scan name x ...)          read the relation's delta
 ;;             | (probe name idx K x ...)   probe the relation's delta index
 ;;             | (once)                     fact rule: run at startup only
@@ -386,13 +389,17 @@
 (define (crule? r)
   (match r
     ;; trailing `loc` = the rule's "file:line" (or #f), baked by emit-cpp into
-    ;; any runtime-error (error_spec ...) this rule reports (docs/type-errors.md)
-    [`(crule (pre ,pre ...) ,driver (body ,body ...) (head ,head ...) ,loc)
+    ;; any runtime-error (error_spec ...) this rule reports (docs/type-errors.md);
+    ;; `kind` = the rule's counting classification (docs/incremental.md §6.4),
+    ;; #f outside the _count flavor: 'input | 'nonrec | 'rec selects which
+    ;; sidecar counter the counting sinks bump
+    [`(crule (pre ,pre ...) ,driver (body ,body ...) (head ,head ...) ,loc ,kind)
      (and (andmap c-op? pre)
           (c-driver? driver)
           (andmap c-op? body)
           (andmap c-head-op? head)
-          (or (string? loc) (not loc)))]
+          (or (string? loc) (not loc))
+          (and (memq kind '(#f input nonrec rec)) #t))]
     [_ #f]))
 
 (define (cprog? p)
@@ -410,3 +417,4 @@
 (define (crule-body r) (cdr (fourth r)))
 (define (crule-head r) (cdr (fifth r)))
 (define (crule-loc r) (sixth r))
+(define (crule-kind r) (seventh r))

@@ -131,6 +131,21 @@ static void add_tests()
   u64 wm = cnt_add(cnt_pack(false, cnt_nonrec_max - 1, cnt_rec_max - 1), 1, 1);
   CHECK(cnt_nonrec(wm) == cnt_nonrec_max && cnt_rec(wm) == cnt_rec_max,
         "counters reach field maxima");
+
+  // cnt_apply (the counting tasks' fold, M0.2): inputs SET the bit --
+  // idempotent set semantics, never arithmetic (§8B.5) -- and the
+  // derivation kinds bump exactly their own counter.
+  u64 wa = cnt_apply(0, cnt_kind_input);
+  CHECK(cnt_input(wa) && cnt_nonrec(wa) == 0 && cnt_rec(wa) == 0,
+        "apply input sets the bit only");
+  CHECK(cnt_apply(wa, cnt_kind_input) == wa, "re-applying input is a no-op");
+  wa = cnt_apply(cnt_apply(wa, cnt_kind_nonrec), cnt_kind_rec);
+  CHECK(cnt_input(wa) && cnt_nonrec(wa) == 1 && cnt_rec(wa) == 1,
+        "apply nonrec/rec bump their counters");
+  // a kind-less (set-semantics) batch reaching a counting task is a
+  // flavor mix-up: loud fatal
+  CHECK(dies_fatally([]() { (void)cnt_apply(0, cnt_kind_none); }),
+        "apply on a kind-less batch is fatal");
 }
 
 static void fatal_tests()

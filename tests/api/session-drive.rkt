@@ -101,6 +101,9 @@
                    (list (string->symbol a) (string->symbol b))))]
     [(list "reenter" rel) `(reenter ,(string->symbol rel))]
     [(list "rerun" rel) `(rerun ,(string->symbol rel))]
+    ;; the count round + sidecar dump (docs/incremental.md §8B, M0)
+    [(list "recount") `(recount)]
+    [(list "dump-counts" rel) `(dump-counts ,rel)]
     [_ (error 'session-drive "unrecognized op: ~a" s)]))
 
 ;; response readers for the query actions
@@ -138,6 +141,9 @@
        (session-del-tuple! s (string->symbol rel) vals)]
       [`(reenter ,rel) (session-reenter! s rel)]
       [`(rerun ,rel) (session-rerun! s rel)]
+      [`(recount) (session-recount! s)]
+      [`(dump-counts ,rel) (session-action! s `(dump-counts ,rel)
+                                            (echo-until #px"^\\(countdone "))]
       [`(pipeline) (session-action! s `(pipeline) echo-one-line)]
       [`(recipe) (writeln (session-recipe s))]
       [`(sizes-at ,p) (session-action! s `(sizes-at ,p) echo-one-line)]

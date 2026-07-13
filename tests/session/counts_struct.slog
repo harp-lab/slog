@@ -1,0 +1,22 @@
+;; Count-round fixture (docs/incremental.md §6.2, M0): the TEMP-SPLIT case.
+;; The rule stages through a temp ((h Y) is interned before (g id) can
+;; emit); the two instantiations (e 1 2) and (e 2 2) agree on Y, so a
+;; NARROW residue temp {Y} would collapse them to one row and undercount g.
+;; The counted flavor's instantiation-injective wide temp {X, Y} keeps
+;; both.  Hand-verified sidecar contents after (recount):
+;;   e rows      -> input=1 (0,0)
+;;   h (h 2)     -> (nonrec 2, rec 0)   (one interned instance, two derivations)
+;;   g ((h 2))   -> (nonrec 2, rec 0)   (both instantiations reach the residue)
+
+table (e int int)
+struct (h int)
+table (g h)
+
+rule
+(e 1 2)
+(e 2 2)
+
+rule
+(e X Y)
+-->
+(g (h Y))

@@ -146,12 +146,19 @@
   ;; extern oracle bindings (docs/smt.md): a stratum whose rules write the
   ;; demand struct gets the daemon-side dispatch/harvest registration,
   ;; emitted AFTER every relation decl so bindOracle's lookups succeed
+  ;; The _count flavor registers NO oracle bindings (§8B.4: answers are
+  ;; monotone memo-inputs -- the count round must never re-query a solver;
+  ;; the demand structs themselves count as ordinary struct heads) and no
+  ;; sequence-occurrence feeding (§8B.4: value-keyed side tables are never
+  ;; counted, and their rows are already published in the resident db).
   (define oracle-decls
-    (sort (for/list ([(k decl) (in-hash rel-env)]
-                     #:when (and (pair? decl) (eq? 'oracle (car decl))
-                                 (set-member? head-dynamic-rels (third decl))))
-            `(oracle ,(second decl) ,(third decl) ,(fourth decl)))
-          symbol<? #:key third))
+    (if (count-flavor)
+        '()
+        (sort (for/list ([(k decl) (in-hash rel-env)]
+                         #:when (and (pair? decl) (eq? 'oracle (car decl))
+                                     (set-member? head-dynamic-rels (third decl))))
+                `(oracle ,(second decl) ,(third decl) ,(fourth decl)))
+              symbol<? #:key third)))
   ;; the bound answer tables grow via the oracle's harvest side channel (no
   ;; rule head), so mark them dynamic -- mirrors the pre-planning extension
   ;; in compile.rkt (the planner already staged rules accordingly); this set
@@ -169,7 +176,7 @@
   (define seq-occ-present
     (filter (lambda (n) (hash-has-key? rel-env n)) '($seq_at $seq_atr)))
   (define seq-decls
-    (if (null? seq-occ-present)
+    (if (or (null? seq-occ-present) (count-flavor))
         '()
         (for/fold ([acc '()] #:result (reverse acc))
                   ([name (in-list (sort (hash-keys rel-env) symbol<?))])
@@ -222,7 +229,12 @@
                #:unless (equal? (third cr) `(seeded))        ; crule-driver
                [ref (in-list (crule-index-refs cr))])
       ref))
-  (define gate-inds (set-subtract seeded-used live-used))
+  ;; In the _count flavor the seeded PLAN SHAPE is reused for the fire-once
+  ;; all-full rules (join-planning), so their orderings are LIVE indices --
+  ;; registered normally and backfilled from resident content (database.h
+  ;; addIndex); nothing is gated seeded-only.
+  (define gate-inds
+    (if (count-flavor) (set) (set-subtract seeded-used live-used)))
   (define decls (make-rel-decls rel-env selections decomp-env gate-inds))
   `(cprog ,dynamic-rels++ ,constants ,(append decls oracle-decls seq-decls)
           ,crules))
@@ -884,6 +896,17 @@
   (define-values (check-hops emit-hops)
     (partition (lambda (hop) (eq? 'tycheck (car hop)))
                (map (lambda (cl) (lower-head cl spec-env)) (rule-heads rule))))
+  ;; The rule's counting classification (docs/incremental.md §6.4), #f
+  ;; outside the _count flavor.  Keyed by prov: staged sub-rules and all
+  ;; versions of one rule share the original rule's prov, so the whole
+  ;; chain inherits one classification (recorded by plan-stratum).
+  (define count-kind
+    (let ([cm (count-flavor)])
+      (and cm (hash-ref (count-mode-kinds cm) (syn-prov rule)
+                        (lambda ()
+                          (error 'lower-rule
+                                 "count flavor: no classification recorded for the rule at ~a"
+                                 (rule-loc-string rule)))))))
   `(crule (pre ,@(map (lambda (cl)
                         (if (neg-clause? cl)
                             (lower-absent cl)
@@ -892,4 +915,5 @@
           ,driver
           (body ,@ops)
           (head ,@check-hops ,@emit-hops)
-          ,(rule-loc-string rule)))
+          ,(rule-loc-string rule)
+          ,count-kind))

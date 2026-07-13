@@ -694,6 +694,56 @@ timeout 600 racket slog.rkt --no-banner --sizes -d sess_e1 tests/api/noop.slog \
   > out/sess-dhook.log 2>&1
 expect "dhook-loaded" "(relation_size path 21)" out/sess-dhook.log
 
+# --- M0.2: the _count flavor / count round (docs/incremental.md 8B.1) --------
+# TC over a graph with one redundantly-derivable edge: hand-verified
+# per-tuple (input | nonrec | rec) sidecar contents after (recount) -- the
+# ground facts carry the EDB input bit (8B.5), the copy rule contributes
+# nonrec, and the recursive rule's single fixpoint instantiation
+# contributes rec to exactly (path 1 3).  A second (recount) must
+# reproduce, not double (counts are recomputable cache, 8B.2).
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/session/counts_tc.slog recount recount \
+  dump-counts:edge dump-counts:path \
+  > out/sess-counts-tc.log 2>&1
+expect "cnt-edge-input"  "(countrow edge 1 2 1 0 0)" out/sess-counts-tc.log
+expect "cnt-edge-count"  "(countdone edge 3)" out/sess-counts-tc.log
+expect "cnt-path-copy"   "(countrow path 1 2 0 1 0)" out/sess-counts-tc.log
+expect "cnt-path-copy2"  "(countrow path 2 3 0 1 0)" out/sess-counts-tc.log
+expect "cnt-path-rec"    "(countrow path 1 3 0 1 1)" out/sess-counts-tc.log
+expect "cnt-path-count"  "(countdone path 3)" out/sess-counts-tc.log
+
+# The TEMP-SPLIT headline case (the 6.2 temps decision): two instantiations
+# agreeing on the staged construction's only input -- a narrow residue temp
+# would collapse them to one row and report (g (h 2)) at nonrec 1; the
+# instantiation-injective wide temp must keep both.
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/session/counts_struct.slog recount \
+  dump-counts:e dump-counts:h dump-counts:g \
+  > out/sess-counts-st.log 2>&1
+expect "cnt-e-input"     "(countrow e 2 2 1 0 0)" out/sess-counts-st.log
+expect "cnt-h-two"       "(countrow h (h 2) 0 2 0)" out/sess-counts-st.log
+expect "cnt-g-two"       "(countrow g (h 2) 0 2 0)" out/sess-counts-st.log
+
+# Ground struct trees (staged replay chains + synthesized-const temps) and
+# negation (absent probes over closed strata) through the count round; a
+# lattice relation stays uncounted (countdone -1) until M6.
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/deep_fact.slog recount dump-counts:corners dump-counts:t \
+  > out/sess-counts-tree.log 2>&1
+expect "cnt-tree-corners" "(countrow corners 1 32 0 1 0)" out/sess-counts-tree.log
+expect_re "cnt-tree-root" "^\\(countrow t \\(Nd .* 1 0 0\\)$" out/sess-counts-tree.log
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/neg_reach.slog recount dump-counts:reach \
+  > out/sess-counts-neg.log 2>&1
+expect "cnt-neg-nonrec"  "(countrow reach 1 2 0 1 0)" out/sess-counts-neg.log
+expect "cnt-neg-rec"     "(countrow reach 1 6 0 0 1)" out/sess-counts-neg.log
+expect "cnt-neg-count"   "(countdone reach 7)" out/sess-counts-neg.log
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/session/base2.slog recount dump-counts:out dump-counts:dist \
+  > out/sess-counts-lat.log 2>&1
+expect "cnt-lat-out"     "(countrow out (pair 1 2) 0 1 0)" out/sess-counts-lat.log
+expect "cnt-lat-skip"    "(countdone dist -1)" out/sess-counts-lat.log
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

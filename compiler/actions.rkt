@@ -291,6 +291,44 @@
       "    ++n;\n"
       "  });\n"
       "  d->emit(std::string(\"(dumpdone \") + std::to_string(n) + \")\");\n")]
+    ;; Drop ALL count state (docs/incremental.md §8B.2): counts are
+    ;; session-ephemeral recomputable cache, so the cheap "uncounted"
+    ;; transition is deletion -- the recount driver clears before a round
+    ;; so re-establishment is idempotent-by-rebuild.  Registry-wide: old
+    ;; versions' sidecars are stale the same way the latest's are.
+    [`(clear-counts)
+     (string-append
+      "  for (slog::Relation* r : d->db()->allVersions())\n"
+      "    if (r) r->clearCounts();\n"
+      "  d->emit(\"(counts-cleared)\");\n")]
+    ;; Dump one relation's count sidecar (docs/incremental.md §8B, M0): one
+    ;; (countrow REL v.. IN NR RC) line per counted key -- the sidecar key
+    ;; rendered like CSV values (tables: the full tuple in storage order;
+    ;; structs: the id, which renders as content), then the decoded input
+    ;; bit and (nonrec, rec) counters -- terminated by (countdone REL n).
+    ;; An uncounted relation reports (countdone REL -1).  Read-only; the
+    ;; count oracle and the M0 test batteries key on these lines.
+    [`(dump-counts ,rel)
+     (string-append
+      "  slog::Database* db = d->db();\n"
+      (format "  slog::Relation* r = db->getRelation(\"~a\");\n" rel)
+      "  if (!r || !r->getCountSidecar())\n"
+      (format "  { d->emit(\"(countdone ~a -1)\"); return; }\n" rel)
+      "  slog::Index** side = r->getCountSidecar();\n"
+      "  const u16 ka = r->countKeyArity();\n"
+      "  size_t n = 0;\n"
+      "  for (u16 b = 0; b < bucket_count; ++b)\n"
+      "    side[b]->forEach([&](const u64* row) {\n"
+      (format "      std::string line = \"(countrow ~a\";\n" rel)
+      "      for (u16 c = 0; c < ka; ++c) line += \" \" + db->writeValCSV(row[c]);\n"
+      "      const u64 w = row[ka];\n"
+      "      line += std::string(\" \") + (slog::cnt_input(w) ? \"1\" : \"0\")\n"
+      "            + \" \" + std::to_string(slog::cnt_nonrec(w))\n"
+      "            + \" \" + std::to_string(slog::cnt_rec(w)) + \")\";\n"
+      "      d->emit(line);\n"
+      "      ++n;\n"
+      "    });\n"
+      (format "  d->emit(std::string(\"(countdone ~a \") + std::to_string(n) + \")\");\n" rel))]
     ;; Per-relation id-free content signature (docs/db-compression.md P1.3):
     ;; emit one `(sig NAME count checksum)` per named relation, then `(sig-end)`.
     ;; Read-only, so it is safe against a suspended snapshot.

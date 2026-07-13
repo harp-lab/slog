@@ -114,12 +114,63 @@
     (set-add! temps name)
     (set-box! rel-env-box (hash-set (unbox rel-env-box) name `(temp ,arity))))
 
+  ;; Count-flavor classification (docs/incremental.md §6.4/§8B.5, M0): a
+  ;; rule is recursive iff some positive body relation is produced by its
+  ;; own stratum (the count-mode carries the TRUE head-based dynamic set --
+  ;; the planning `dynamic?` above is empty in this flavor); body-less
+  ;; ground rules are inputs.  Recorded per ORIGINAL rule keyed by prov:
+  ;; staged sub-rules share the parent's prov, so a whole staged chain
+  ;; inherits one classification (a consequence's counter is the logical
+  ;; rule's, whichever stage emits it).  Distinct synthesized rules sharing
+  ;; a prov that disagree degrade to 'rec -- sound for DRed^c (it only
+  ;; weakens the nonrec barrier, never correctness).
+  (define (count-classify! rule)
+    (define cm (count-flavor))
+    (when cm
+      (match-define `(syn ,prov rule ,bodys ... --> ,_ ...) rule)
+      (define joins (filter join-cl? bodys))
+      (define kind
+        (cond
+          [(and (null? joins) (not (ormap neg-clause? bodys))) 'input]
+          [(for/or ([cl (in-list joins)])
+             (set-member? (count-mode-dynamic-rels cm) (join-rel cl)))
+           'rec]
+          [else 'nonrec]))
+      (define kinds (count-mode-kinds cm))
+      (define k0 (hash-ref kinds prov #f))
+      (when (and k0 (not (eq? k0 kind)))
+        (eprintf "warning: rules at one source location classify both ~a and ~a for counting; degrading to rec (docs/incremental.md 6.4)\n"
+                 k0 kind))
+      (hash-set! kinds prov (if (and k0 (not (eq? k0 kind))) 'rec kind))))
+
+  ;; Count-flavor version selection (§8B.1): a temp-driven follow-up plans
+  ;; normally (its temp is the only dynamic clause, so it gets exactly the
+  ;; one temp-driven version, registered every iteration -- it fires once,
+  ;; on the round its temp delta arrives); any other rule with joins plans
+  ;; as the SEEDED all-full shape (the first join selects on the FULL
+  ;; index; emit-cpp registers it once in this flavor); fact rules keep the
+  ;; driverless once shape.  Exactly one version per staged rule ->
+  ;; fire-once by construction.
+  (define (plan-versions-counted staged-rule statics)
+    (match-define `(syn ,_ rule ,bodys ... --> ,_ ...) staged-rule)
+    (define joins (filter join-cl? bodys))
+    (define temp-driven?
+      (for/or ([cl (in-list joins)]) (temp? (join-rel cl))))
+    (if (and (pair? joins) (not temp-driven?))
+        (plan-rule-versions staged-rule dynamic? temp? lattice? statics
+                            #:seeded? #t)
+        (plan-rule-versions staged-rule dynamic? temp? lattice? statics)))
+
   (define planned
     (for/fold ([acc (set)]) ([rule (in-set rules)])
      (with-rule-context rule (lambda ()
+      (count-classify! rule)
       (for/fold ([acc acc]) ([staged (in-list (stage-rule rule add-temp!))])
         (match-define (cons staged-rule statics) staged)
-        (define versions (plan-rule-versions staged-rule dynamic? temp? lattice? statics))
+        (define versions
+          (if (count-flavor)
+              (plan-versions-counted staged-rule statics)
+              (plan-rule-versions staged-rule dynamic? temp? lattice? statics)))
         ;; SEEDED RE-ENTRY version (the staging-replay bug, 2026-07-10): a
         ;; staged rule with pruned (static) joins relies on this stratum's
         ;; own construction order -- statics' rows always land in FULL
@@ -134,7 +185,8 @@
         ;; after) everything its statics need, so its timing invariant
         ;; survives seeding.
         (define needs-seeded?
-          (and (pair? statics)
+          (and (not (count-flavor))   ; fire-once flavor: no re-entry versions
+               (pair? statics)
                (match staged-rule
                  [`(syn ,_ rule ,bodys ... --> ,heads ...)
                   (and
@@ -261,8 +313,32 @@
                       (for/fold ([vars vars]) ([cl (in-list new)])
                         (set-add vars (fourth cl)))
                       rest))))
-        (define carried (sort (set->list (set-subtract needed reest-vars))
-                              symbol<?))
+        ;; Counted plans (docs/incremental.md §6.2, the 2026-07-11 temps
+        ;; decision): the temp carries the parent's FULL enumeration
+        ;; signature -- every body-join variable (wildcards are already
+        ;; gensym'd distinct per occurrence), plus the residue values that
+        ;; ride by value today -- so temp rows are in bijection with parent
+        ;; instantiations and the write-phase set-collapse can absorb only
+        ;; duplicate fires of the SAME instantiation, never multiplicity.
+        ;; Re-establishable vars stay OFF the temp even here: they chain
+        ;; down to constants, so they hold the same value in every
+        ;; instantiation -- excluding them cannot merge two distinct
+        ;; instantiations -- and carrying one would hand the follow-up a
+        ;; const-pre-bound temp column, which the scheduler would turn
+        ;; into a (nonexistent) temp delta-index probe.
+        (define carried
+          (sort (set->list
+                 (if (count-flavor)
+                     (set-subtract
+                      (set-union
+                       (apply set-union (set)
+                              (map (lambda (cl)
+                                     (list->set (filter symbol? (join-tuple cl))))
+                                   (filter join-cl? bodys)))
+                       needed)
+                      reest-vars)
+                     (set-subtract needed reest-vars)))
+                symbol<?))
         ;; the copied subset: re-establishable clauses whose output the
         ;; follow-up uses, pulled in transitively (a copied join's inputs
         ;; need their own binders copied too)
@@ -281,15 +357,29 @@
                       (append kept new)
                       rest))))
 
+        ;; Counted plans NEVER take the no-temp shape (§6.2: a follow-up
+        ;; driven by a replayed construction's delta relies on the head
+        ;; relation's write pipeline, which the _count flavor does not run
+        ;; -- head emissions are count contributions, not inserts, so no
+        ;; delta would ever drive it).  When nothing needs carrying (a
+        ;; ground chain to constants, e.g. [(g (nil))]), carry one
+        ;; synthesized constant: the arity-1 temp's single row fires the
+        ;; follow-up exactly once, at multiplicity 1.
+        (define-values (carried+ extra-consts)
+          (if (and (count-flavor) (null? carried))
+              (let ([dv (gensymb 'cntone)])
+                (values (list dv) `((syn ,prov = ,dv (syn ,prov const 0)))))
+              (values carried '())))
         (define-values (parent-heads sub-body-front)
-          (if (null? carried)
+          (if (null? carried+)
               ;; nothing to carry: the follow-up is driven by a replayed
               ;; construction's delta alone
               (values immediate '())
               (let ([temp (gensymb 'temp)])
-                (add-temp! temp (length carried))
-                (values (cons `(syn ,prov ,temp ,@carried) immediate)
-                        `((syn ,prov ,temp ,@carried))))))
+                (add-temp! temp (length carried+))
+                (values (append (cons `(syn ,prov ,temp ,@carried+) immediate)
+                                extra-consts)
+                        `((syn ,prov ,temp ,@carried+))))))
 
         (define parent `(syn ,prov rule ,@bodys --> ,@parent-heads))
         (define follow-up

@@ -76,4 +76,32 @@ inline bool cnt_present(u64 w)
   return cnt_input(w) || cnt_nonrec(w) + cnt_rec(w) > 0;
 }
 
+// Per-batch contribution kind (docs/incremental.md §8B.1): rows produced by
+// the counted flavors travel through the ordinary send-shard/delta transport,
+// tagged on their InsertBatch with the emitting rule's static classification
+// (§6.4: recursive iff some body relation is in the rule's own stratum;
+// body-less ground rules are inputs, §8B.5).  Batches are per-(task, head)
+// so a batch is always kind-homogeneous; `none` marks ordinary set-semantics
+// batches, which must never reach a counting task.
+constexpr u8 cnt_kind_none = 0;
+constexpr u8 cnt_kind_input = 1;
+constexpr u8 cnt_kind_nonrec = 2;
+constexpr u8 cnt_kind_rec = 3;
+
+// Fold one contribution of `kind` into a stored counter word: inputs SET the
+// bit (set semantics -- idempotent, never arithmetic, §8B.5); derivations
+// bump their counter.
+inline u64 cnt_apply(u64 w, u8 kind)
+{
+  switch (kind)
+  {
+    case cnt_kind_input: return cnt_set_input(w);
+    case cnt_kind_nonrec: return cnt_add(w, 1, 0);
+    case cnt_kind_rec: return cnt_add(w, 0, 1);
+  }
+  fatal("cnt_apply on a kind-less batch: a set-semantics row reached a "
+        "counting task (flavor mix-up)");
+  return w;
+}
+
 }

@@ -449,6 +449,134 @@ inline void emit_pending_error(Database* db, const char* loc)
 }
 
 
+// ---------------------------------------------------------------------------
+// Counting sinks (docs/incremental.md §8B.1/§6.2, the `_count` flavor).
+//
+// The count round fires each rule exactly once over FULL indices at a
+// SETTLED fixpoint, so every emission is a re-derivation of a tuple the
+// database already holds: these sinks do NO dedup-skip (each instantiation
+// is one contribution) and never insert -- rows ride the ordinary
+// send-shard/delta transport, tagged with the rule's contribution kind on
+// the batch, and the CountTask/CountStructTask write phase folds them into
+// the relation's count sidecar (database.h).  An emission ABSENT from the
+// master index means the fixpoint was not settled (or a §5.3 nondeterminism
+// escape) -- counting it would corrupt the sidecar, so it is a loud fatal,
+// the same corruption-detector stance as cnt_add's underflow.
+// ---------------------------------------------------------------------------
+
+// SINK (counted relation head): like emit, but a closure CHECK instead of a
+// dedup SKIP, and the batch carries `kind`.
+template <u16 A>
+inline void emit_count(Relation* head_rel, Index** head_index, u8 kind,
+                       InsertBatch*& nb, const std::array<u64, A>& zs,
+                       const std::array<u16, A>& head_ord)
+{
+  if (!static_cast<BTreeIndex<A>*>(head_index[buckethash(zs[0])])->contains(zs))
+    fatal("count round derived a tuple absent from " + head_rel->getName()
+          + " -- the fixpoint is not settled (docs/incremental.md 8B.1)");
+  nb->kind = kind;
+  u64* d = nb->data + nb->usage;
+  for (u16 j = 0; j < A; ++j)
+    d[head_ord[j]] = zs[j];
+  nb->usage += A;
+  if (nb->usage + A >= batch_size_max)
+  {
+    head_rel->sendBatch(nb);
+    nb = new InsertBatch();
+    nb->kind = kind;
+  }
+}
+
+// SINK (counted struct head): at a settled fixpoint the instance is already
+// interned, so resolve its id NOW by content (the read phase never mutates
+// indices, so this probe is safe) and emit the full storage-order row --
+// id in place, not the 0 placeholder -- letting CountStructTask bucket by
+// the id, the struct sidecar's key (§6.1).  `fields` arrive in
+// master-content order exactly as for emit_struct_checked.
+template <u16 A>
+inline void emit_struct_count(Relation* head_rel, Index** master, u8 kind,
+                              InsertBatch*& nb,
+                              const std::array<u64, A - 1>& fields,
+                              const std::array<u16, A>& head_ord)
+{
+  // Nullary constructions never lower to mkstruct sites (they intern as
+  // plugin-load constants), and an empty content prefix would probe the
+  // wrong bucket here -- keep that assumption loud.
+  static_assert(A >= 2, "emit_struct_count: nullary struct head");
+  std::array<u64, A> key;
+  for (u16 j = 0; j < A - 1; ++j)
+    key[j] = fields[j];
+  key[A - 1] = 0;
+  u64 id = 0;
+  bool found = false;
+  join_probe<A, A - 1>(master, key, [&](const std::array<u64, A>& m)
+  {
+    id = m[A - 1];
+    found = true;
+  });
+  if (!found)
+    fatal("count round derived an uninterned " + head_rel->getName()
+          + " instance -- the fixpoint is not settled (docs/incremental.md 8B.1)");
+  nb->kind = kind;
+  u64* d = nb->data + nb->usage;
+  d[head_ord[A - 1]] = id;
+  for (u16 j = 0; j < A - 1; ++j)
+    d[head_ord[j]] = fields[j];
+  nb->usage += A;
+  if (nb->usage + A >= batch_size_max)
+  {
+    head_rel->sendBatch(nb);
+    nb = new InsertBatch();
+    nb->kind = kind;
+  }
+}
+
+// SINK (counted runtime-error struct): §8B.4 -- a guard fault is a
+// deterministic function of the instantiation, so error rows count like any
+// derivation.  Self-contained batch like emit_error_struct.
+template <u16 A>
+inline void emit_error_struct_count(Relation* rel, u8 kind,
+                                    const std::array<u64, A - 1>& fields,
+                                    const std::array<u16, A>& head_ord)
+{
+  InsertBatch* nb = new InsertBatch();
+  emit_struct_count<A>(rel, rel->getIndex(rel->getMasterIndex(), false),
+                       kind, nb, fields, head_ord);
+  rel->sendBatch(nb);
+}
+
+// The counted flavor's emit_pending_error: same arm dispatch, counting sinks.
+inline void emit_pending_error_count(Database* db, const char* loc, u8 kind)
+{
+  const PendingError& pe = db->currentPendingError();
+  const u64 vloc = str_encode(db, loc);
+  auto rel = [&](const char* n) {
+    Relation* r = db->getRelation(n);
+    if (!r) fatal(std::string("runtime error in an unregistered arm relation: ") + n);
+    return r;
+  };
+  switch (pe.kind)
+  {
+    case ERR_DIV0:
+      emit_error_struct_count<3>(rel("div_by_zero"),    kind, {vloc, pe.a}, {1, 2, 0}); break;
+    case ERR_MOD0:
+      emit_error_struct_count<3>(rel("modulo_by_zero"), kind, {vloc, pe.a}, {1, 2, 0}); break;
+    case ERR_INT_OVF:
+      emit_error_struct_count<4>(rel("int_overflow"),   kind, {vloc, pe.a, pe.b}, {1, 2, 3, 0}); break;
+    case ERR_NAN:
+      emit_error_struct_count<4>(rel("nan_result"),     kind, {vloc, str_encode(db, pe.op), pe.a}, {1, 2, 3, 0}); break;
+    case ERR_TOINT:
+      emit_error_struct_count<3>(rel("toint_range"),    kind, {vloc, pe.a}, {1, 2, 0}); break;
+    case ERR_TYPE:
+      emit_error_struct_count<5>(rel("type_mismatch"),  kind, {vloc, str_encode(db, pe.op), pe.a, pe.b}, {1, 2, 3, 4, 0}); break;
+    case ERR_MPZ_OVF:
+      emit_error_struct_count<5>(rel("mpz_overflow"),   kind, {vloc, str_encode(db, pe.op), pe.a, pe.b}, {1, 2, 3, 4, 0}); break;
+    case ERR_MPZ_TABLE:
+      emit_error_struct_count<3>(rel("mpz_table_overflow"), kind, {vloc, str_encode(db, pe.op)}, {1, 2, 0}); break;
+  }
+}
+
+
 // SINK (runtime arity): batch rows in nominal (storage) order into a
 // relation's send shards, flushing at capacity -- the rows-into-shards
 // publish path.  Rows pushed here ride the NORMAL write/intern pipeline next
@@ -853,6 +981,86 @@ public:
           for (u16 c = 0; c < N; ++c) key[c] = batch->data[j + ord[c]];
           root->insert(key);
         }
+      }
+    }
+    return true;
+  }
+};
+
+// COUNT (table, docs/incremental.md §8B.1/§6.1): fold this iteration's delta
+// -- kind-tagged contribution rows from the counting sinks, never nulled
+// (the _count flavor registers no intern task for counted heads) -- into one
+// bucket of the relation's count sidecar.  The sidecar keys tables by the
+// FULL tuple in storage order, bucketed by buckethash(storage column 0), so
+// each per-bucket task owns its map exclusively (no races).  Registered
+// every iteration at phase_intern: contributions emitted by iteration k's
+// read phase are finalized into the delta phase_intern consumes in the same
+// iteration, so each is folded exactly once.  A kind-less batch reaching a
+// counted head is a flavor mix-up and fatals in cnt_apply.
+template <u16 A>
+class CountTask : public Task
+{
+  Database* db;
+  Relation* rel;
+  u16 bucket;
+  BTreeMapIndex<A>* side;
+public:
+  CountTask(Database* _db, Relation* _rel, u16 _b)
+    : db(_db), rel(_rel), bucket(_b)
+  {
+    side = static_cast<BTreeMapIndex<A>*>(rel->ensureCountSidecar()[_b]);
+  }
+  bool work() override
+  {
+    auto& delta = rel->getDelta();
+    for (u32 i = 0; i < delta.size(); ++i)
+    {
+      InsertBatch* batch = delta[i];
+      for (u32 j = 0; j < batch->usage; j += A)
+      {
+        if (buckethash(batch->data[j]) != bucket || batch->data[j] == slog_null)
+          continue;
+        std::array<u64, A> key;
+        for (u16 c = 0; c < A; ++c) key[c] = batch->data[j + c];
+        auto r = side->tree.insert2(key, 0);
+        r.first->second = cnt_apply(r.first->second, batch->kind);
+      }
+    }
+    return true;
+  }
+};
+
+// COUNT (struct): as CountTask, but the sidecar keys structs by the id
+// column alone (§6.1) -- the counting sink resolved each row's id at emit
+// time (emit_struct_count), so storage column 0 carries the real id and
+// bucketing by it matches the sidecar's convention.  `A` is the storage
+// arity (row stride); the key is 1-wide.
+template <u16 A>
+class CountStructTask : public Task
+{
+  Database* db;
+  Relation* rel;
+  u16 bucket;
+  BTreeMapIndex<1>* side;
+public:
+  CountStructTask(Database* _db, Relation* _rel, u16 _b)
+    : db(_db), rel(_rel), bucket(_b)
+  {
+    side = static_cast<BTreeMapIndex<1>*>(rel->ensureCountSidecar()[_b]);
+  }
+  bool work() override
+  {
+    auto& delta = rel->getDelta();
+    for (u32 i = 0; i < delta.size(); ++i)
+    {
+      InsertBatch* batch = delta[i];
+      for (u32 j = 0; j < batch->usage; j += A)
+      {
+        if (buckethash(batch->data[j]) != bucket || batch->data[j] == slog_null)
+          continue;
+        std::array<u64, 1> key = { batch->data[j] };
+        auto r = side->tree.insert2(key, 0);
+        r.first->second = cnt_apply(r.first->second, batch->kind);
       }
     }
     return true;

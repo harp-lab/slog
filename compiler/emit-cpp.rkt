@@ -26,6 +26,7 @@
 (require "params.rkt")
 (require "ir-shared.rkt")
 (require "ir-stack.rkt")
+(require (only-in "type-system.rkt" prim-error-arms))  ; counted-head arms (_count)
 (require sha)   ; content-hashed cluster names + stable bucketing (P2)
 
 (define (repeat s n)
@@ -109,6 +110,14 @@
 ;; add-rule.
 (define current-rule-loc (make-parameter "<unknown>"))
 
+;; The counting classification of the crule currently being emitted (the
+;; _count flavor, docs/incremental.md §8B.1): #f outside the flavor, else
+;; 'input | 'nonrec | 'rec.  Bound per crule in add-rule; selects the
+;; counting sinks and which sidecar counter their batches bump.
+(define current-rule-kind (make-parameter #f))
+
+(define (cnt-kind-cpp kind) (format "slog::cnt_kind_~a" kind))
+
 ;; unkeyed-scan warnings already issued this compile, keyed (loc . relation)
 ;; -- one per site, not one per delta variant
 (define warned-scans (mutable-set))
@@ -120,8 +129,12 @@
 ;; ("return;" for a body/head op, "return true;" for a pre-op that aborts the
 ;; whole task).  Emitted as one line (valid C++; whitespace is insignificant).
 (define (prim-error-check var ret)
-  (format "if (v_~a == slog_error) { slog::emit_pending_error(db, \"~a\"); ~a }"
-          var (escape-c-string-literal (current-rule-loc)) ret))
+  (define k (current-rule-kind))
+  (format "if (v_~a == slog_error) { slog::emit_pending_error~a(db, \"~a\"~a); ~a }"
+          var (if k "_count" "")
+          (escape-c-string-literal (current-rule-loc))
+          (if k (string-append ", " (cnt-kind-cpp k)) "")
+          ret))
 
 ;; A PARTIAL prim call (a letp c-op): the runtime convention (prims.h) is a
 ;; trailing `bool* ok` parameter -- absent data sets *ok = false and the row is
@@ -206,27 +219,62 @@
       (define ordering (elocal 'ord))
       (define isstatic (if (and (equal? indx (car indices)) (not delta)) "true" "false"))
       (append
-       (list
-        (if seeded-only
-            (format "  s->addTaskSeeded(phase_write, new slog::WriteTask<~a>(db, r, ~a, false, b));"
-                    A (u16-array-lit ind))
-            (format "  s->addTask(phase_write, new slog::WriteTask<~a>(db, r, ~a, ~a, b), ~a);"
-                    A (u16-array-lit ind) (if delta "true" "false") isstatic))
-        (format "for (u16 b = 0; b < ~a; ++b)" bucket-count)
-        (format "r->addIndex<~a>(~a, ~a~a);" A ordering (if delta "true" "false")
-                (if seeded-only ", true" ""))
-        (add-ord-decl ordering ind 2))
+       (cond
+         ;; count flavor (§8B.1): full orderings register (idempotent; a
+         ;; fresh one is backfilled from resident content, database.h
+         ;; addIndex) but get NO WriteTask -- head emissions are count
+         ;; contributions folded by CountTask, never index inserts.  Delta/
+         ;; seeded-only orderings should not be requisitioned by counted
+         ;; plans at all; skip defensively.
+         [(count-flavor)
+          (if (or delta seeded-only)
+              '()
+              (list
+               (format "r->addIndex<~a>(~a, false);" A ordering)
+               (add-ord-decl ordering ind 2)))]
+         [else
+          (list
+           (if seeded-only
+               (format "  s->addTaskSeeded(phase_write, new slog::WriteTask<~a>(db, r, ~a, false, b));"
+                       A (u16-array-lit ind))
+               (format "  s->addTask(phase_write, new slog::WriteTask<~a>(db, r, ~a, ~a, b), ~a);"
+                       A (u16-array-lit ind) (if delta "true" "false") isstatic))
+           (format "for (u16 b = 0; b < ~a; ++b)" bucket-count)
+           (format "r->addIndex<~a>(~a, ~a~a);" A ordering (if delta "true" "false")
+                   (if seeded-only ", true" ""))
+           (add-ord-decl ordering ind 2))])
        lines)))))
 
 ;; The interning task for a relation's master index (its first index, already
 ;; created by add-write-task): a per-bucket generic slog::InternTask<N> (set
 ;; semantics) or InternStructTask<N> (content dedup + id assignment).
-(define (add-intern-task name intern-ord is-struct)
+;;
+;; The _count flavor (docs/incremental.md §8B.1) registers a counting task
+;; INSTEAD when the relation is a counted head -- kind-tagged contribution
+;; rows fold into the count sidecar; nothing is deduped, nulled, or
+;; inserted -- and nothing at all for read-only relations (their deltas
+;; stay empty in a no-reload count round).
+(define (add-intern-task name intern-ord is-struct #:counted? [counted? #f]
+                         #:arity [arity #f])
   (define N (length intern-ord))
-  ((emit-lines 2)
-   (format "for (u16 b = 0; b < ~a; ++b)" bucket-count)
-   (format "  s->addTask(phase_intern, new slog::Intern~aTask<~a>(db, db->getRelation(\"~a\"), ~a, b));"
-           (if is-struct "Struct" "") N name (u16-array-lit intern-ord))))
+  (cond
+    [(count-flavor)
+     (cond
+       [(not counted?) ""]
+       [(and (not is-struct) (zero? arity))
+        (error 'emit-cpp
+               "count flavor: arity-0 (propositional) counted head ~a is not yet supported (docs/incremental.md M0)"
+               name)]
+       [else
+        ((emit-lines 2)
+         (format "for (u16 b = 0; b < ~a; ++b)" bucket-count)
+         (format "  s->addTask(phase_intern, new slog::Count~aTask<~a>(db, db->getRelation(\"~a\"), b), false);"
+                 (if is-struct "Struct" "") arity name))])]
+    [else
+     ((emit-lines 2)
+      (format "for (u16 b = 0; b < ~a; ++b)" bucket-count)
+      (format "  s->addTask(phase_intern, new slog::Intern~aTask<~a>(db, db->getRelation(\"~a\"), ~a, b));"
+              (if is-struct "Struct" "") N name (u16-array-lit intern-ord)))]))
 
 ;; A lattice (map) relation (docs/lattices.md §4): payload-map indices under
 ;; full orderings ending in the value column.  The master (first) ordering's
@@ -294,29 +342,45 @@
        (define ordering (elocal 'ord))
        (define isstatic (if (and (equal? indx master) (not delta)) "true" "false"))
        (append
-        (if delta
-            (list
-             (format "  s->addTask(phase_write, new slog::WriteTask<~a>(db, r, ~a, true, b), false);"
-                     A (u16-array-lit ind))
-             (format "for (u16 b = 0; b < ~a; ++b)" bucket-count)
-             (format "r->addIndex<~a>(~a, true);" A ordering)
-             (add-ord-decl ordering ind 2))
-            (list
-             (format "  s->addTask(phase_write, new slog::MapWriteTask<~a>(db, r, ~a, b~a), ~a);"
-                     A (u16-array-lit ind)
-                     (if (equal? isstatic "true") decomp-args "")
-                     isstatic)
-             (format "for (u16 b = 0; b < ~a; ++b)" bucket-count)
-             (format "r->addMapIndex<~a>(~a);" A ordering)
-             (add-ord-decl ordering ind 2)))
+        (cond
+          ;; count flavor: payload maps register (idempotent -- live merged
+          ;; maps survive) for the flavor's join-lat reads; NO merge/write
+          ;; tasks and no delta indices (lattice heads are uncounted until
+          ;; M6 and emit nothing in this flavor).
+          [(count-flavor)
+           (if delta
+               '()
+               (list
+                (format "r->addMapIndex<~a>(~a);" A ordering)
+                (add-ord-decl ordering ind 2)))]
+          [delta
+           (list
+            (format "  s->addTask(phase_write, new slog::WriteTask<~a>(db, r, ~a, true, b), false);"
+                    A (u16-array-lit ind))
+            (format "for (u16 b = 0; b < ~a; ++b)" bucket-count)
+            (format "r->addIndex<~a>(~a, true);" A ordering)
+            (add-ord-decl ordering ind 2))]
+          [else
+           (list
+            (format "  s->addTask(phase_write, new slog::MapWriteTask<~a>(db, r, ~a, b~a), ~a);"
+                    A (u16-array-lit ind)
+                    (if (equal? isstatic "true") decomp-args "")
+                    isstatic)
+            (format "for (u16 b = 0; b < ~a; ++b)" bucket-count)
+            (format "r->addMapIndex<~a>(~a);" A ordering)
+            (add-ord-decl ordering ind 2))])
         lines))))
    "\n"
-   ((emit-lines 2)
-    (format "for (u16 b = 0; b < ~a; ++b)" bucket-count)
-    (format "  s->addTask(phase_intern, new slog::LatticeInternTask<~a>(db, db->getRelation(\"~a\"), ~a, b~a));"
-            arity name (u16-array-lit master) decomp-args))))
+   (if (count-flavor)
+       ""
+       ((emit-lines 2)
+        (format "for (u16 b = 0; b < ~a; ++b)" bucket-count)
+        (format "  s->addTask(phase_intern, new slog::LatticeInternTask<~a>(db, db->getRelation(\"~a\"), ~a, b~a));"
+                arity name (u16-array-lit master) decomp-args)))))
 
-(define (add-rel-decl rel)
+;; `counted-heads` (the _count flavor): relations whose emissions are count
+;; contributions -- rule heads plus the runtime-error arms; empty otherwise.
+(define ((add-rel-decl [counted-heads (set)]) rel)
   (match rel
     ;; an extern relation's oracle binding (docs/smt.md): registers the
     ;; dispatch/harvest tasks against the (already-declared) demand struct
@@ -351,13 +415,17 @@
        (error (format "Struct ~a does not have required indices in ~a" name indices)))
      (string-append (add-write-task name arity indices #t)
                     "\n"
-                    (add-intern-task name (first indices) #t))]
+                    (add-intern-task name (first indices) #t
+                                     #:counted? (set-member? counted-heads name)
+                                     #:arity arity))]
     [`(relation ,name ,arity ,indices ...)
      (when (null? indices)
        (error (format "Table ~a does not have any indices." name)))
      (string-append (add-write-task name arity indices #f)
                     "\n"
-                    (add-intern-task name (first indices) #f))]
+                    (add-intern-task name (first indices) #f
+                                     #:counted? (set-member? counted-heads name)
+                                     #:arity arity))]
     [`(lattice ,name ,arity ,spec ,decomp ,indices ...)
      (when (or (null? indices) (eq? 'delta (car (first indices))))
        (error (format "Lattice relation ~a must lead with a non-delta (master) index: ~a"
@@ -610,49 +678,82 @@
                (format "if (!(~a))"
                        (string-join (append prim-tests struct-test) " || "))
                "{"
-               (format "  slog::emit_struct<5>(head_rel[~a], newbatch[~a], ~a, ~a);"
-                       i i
-                       (u64-array-lit (map (lambda (z) (format "v_~a" z))
-                                           (list rid rel colv y)))
-                       (u16-array-lit ind))
+               ;; a failed check is instantiation-deterministic (§8B.4), so
+               ;; the count flavor counts the malformed_deduction row too
+               (if (current-rule-kind)
+                   (format "  slog::emit_struct_count<5>(head_rel[~a], head_index[~a], ~a, newbatch[~a], ~a, ~a);"
+                           i i (cnt-kind-cpp (current-rule-kind)) i
+                           (u64-array-lit (map (lambda (z) (format "v_~a" z))
+                                               (list rid rel colv y)))
+                           (u16-array-lit ind))
+                   (format "  slog::emit_struct<5>(head_rel[~a], newbatch[~a], ~a, ~a);"
+                           i i
+                           (u64-array-lit (map (lambda (z) (format "v_~a" z))
+                                               (list rid rel colv y)))
+                           (u16-array-lit ind)))
                "  return;"
                "}")]
              [`(mkstruct ,name ,ind ,x ,fields ...)
-              ;; a seeded re-entry task re-fires every iteration: skip
-              ;; instances the master index already holds, or the
-              ;; re-emissions would read as fresh delta forever
-              (if seeded?
+              (cond
+                ;; count flavor (§8B.1): resolve the interned id by content
+                ;; and count the contribution; never inserts
+                [(current-rule-kind)
+                 ((emit-lines indent)
+                  (format "slog::emit_struct_count<~a>(head_rel[~a], head_index[~a], ~a, newbatch[~a], ~a, ~a);"
+                          (length ind) i i (cnt-kind-cpp (current-rule-kind)) i
+                          (u64-array-lit (map (lambda (z) (format "v_~a" z)) fields))
+                          (u16-array-lit ind)))]
+                ;; a seeded re-entry task re-fires every iteration: skip
+                ;; instances the master index already holds, or the
+                ;; re-emissions would read as fresh delta forever
+                [seeded?
+                 ((emit-lines indent)
+                  (format "slog::emit_struct_checked<~a>(head_rel[~a], head_index[~a], newbatch[~a], ~a, ~a);"
+                          (length ind) i i i
+                          (u64-array-lit (map (lambda (z) (format "v_~a" z)) fields))
+                          (u16-array-lit ind)))]
+                [else
+                 ((emit-lines indent)
+                  (format "slog::emit_struct<~a>(head_rel[~a], newbatch[~a], ~a, ~a);"
+                          (length ind) i i
+                          (u64-array-lit (map (lambda (z) (format "v_~a" z)) fields))
+                          (u16-array-lit ind)))])]
+             [`(emit ,name ,ind ,zs ...)
+              (if (current-rule-kind)
+                  ;; count flavor: closure-check instead of dedup-skip
                   ((emit-lines indent)
-                   (format "slog::emit_struct_checked<~a>(head_rel[~a], head_index[~a], newbatch[~a], ~a, ~a);"
-                           (length ind) i i i
-                           (u64-array-lit (map (lambda (z) (format "v_~a" z)) fields))
+                   (format "slog::emit_count<~a>(head_rel[~a], head_index[~a], ~a, newbatch[~a], ~a, ~a);"
+                           (length zs) i i (cnt-kind-cpp (current-rule-kind)) i
+                           (u64-array-lit (map (lambda (z) (format "v_~a" z)) zs))
                            (u16-array-lit ind)))
                   ((emit-lines indent)
-                   (format "slog::emit_struct<~a>(head_rel[~a], newbatch[~a], ~a, ~a);"
-                           (length ind) i i
-                           (u64-array-lit (map (lambda (z) (format "v_~a" z)) fields))
+                   (format "slog::emit<~a>(head_rel[~a], head_index[~a], newbatch[~a], ~a, ~a);"
+                           (length zs) i i i
+                           (u64-array-lit (map (lambda (z) (format "v_~a" z)) zs))
                            (u16-array-lit ind))))]
-             [`(emit ,name ,ind ,zs ...)
-              ((emit-lines indent)
-               (format "slog::emit<~a>(head_rel[~a], head_index[~a], newbatch[~a], ~a, ~a);"
-                       (length zs) i i i
-                       (u64-array-lit (map (lambda (z) (format "v_~a" z)) zs))
-                       (u16-array-lit ind)))]
              [`(emit-temp ,name ,zs ...)
               ((emit-lines indent)
                (format "slog::emit_temp<~a>(head_rel[~a], newbatch[~a], ~a);"
                        (length zs) i i
                        (u64-array-lit (map (lambda (z) (format "v_~a" z)) zs))))]
              ;; a lattice contribution: nominal order, no dedup (the merge
-             ;; task owns subsumption) -- the emit_temp sink is exactly that
+             ;; task owns subsumption) -- the emit_temp sink is exactly that.
+             ;; The count flavor emits NOTHING here: lattice-valued heads are
+             ;; uncounted until M6 (docs/incremental.md §7A/§8B), and firing
+             ;; the merge machinery off count-round re-derivations would be
+             ;; pure waste against an already-merged resident map.
              [`(emit-lat ,name ,zs ...)
-              ((emit-lines indent)
-               (format "slog::emit_temp<~a>(head_rel[~a], newbatch[~a], ~a);"
-                       (length zs) i i
-                       (u64-array-lit (map (lambda (z) (format "v_~a" z)) zs))))]))))
+              (if (current-rule-kind)
+                  ((emit-lines indent)
+                   "// lattice head: uncounted in the _count flavor (M6)")
+                  ((emit-lines indent)
+                   (format "slog::emit_temp<~a>(head_rel[~a], newbatch[~a], ~a);"
+                           (length zs) i i
+                           (u64-array-lit (map (lambda (z) (format "v_~a" z)) zs)))))]))))
 
 (define ((add-rule dynamic-rels) crule)
- (parameterize ([current-rule-loc (or (crule-loc crule) "<unknown>")])
+ (parameterize ([current-rule-loc (or (crule-loc crule) "<unknown>")]
+                [current-rule-kind (crule-kind crule)])
   (define pre (crule-pre crule))
   (define driver (crule-driver crule))
   (define body (crule-body crule))
@@ -753,11 +854,18 @@
                 [`(let ,_ ,_) ""]
                 [`(letp ,_ ,_) ""]
                 [`(cjoin ,_ ,_ ,_ ,_) ""]
-                [`(tycheck ,_ ,_ ,_ ,_ ,_ ,_)
-                 (format "    head_rel[~a] = db->getRelation(\"malformed_deduction\");\n" i)]
+                [`(tycheck ,_ ,_ ,_ ,_ ,_ ,ind)
+                 ;; the counting sink resolves the malformed_deduction id by
+                 ;; content, so it needs the master index bound too
+                 (if (current-rule-kind)
+                     (string-append
+                      (format "    head_rel[~a] = db->getRelation(\"malformed_deduction\");\n" i)
+                      (index-member 'malformed_deduction (format "head_index[~a]" i) ind #f)
+                      "\n")
+                     (format "    head_rel[~a] = db->getRelation(\"malformed_deduction\");\n" i))]
                 [`(mkstruct ,name ,ind ,_ ,_ ...)
-                 (if seeded?
-                     ;; the checked sink probes the master index
+                 (if (or seeded? (current-rule-kind))
+                     ;; the checked/counting sinks probe the master index
                      (string-append
                       (format "    head_rel[~a] = db->getRelation(\"~a\");\n" i name)
                       (index-member name (format "head_index[~a]" i) ind #f)
@@ -962,13 +1070,19 @@
    (format "  }")
    (format "  };")
    (format "  for (u16 b = 0; b < ~a; ++b)" nbuckets)
-   (if (eq? (car driver) 'seeded)
-       ;; seeded re-entry task: reruns every iteration, but ONLY when the
-       ;; stratum begins over externally seeded content (daemon gate)
-       (format "    s->addTaskSeeded(phase_read, new ~a(db,b));" task-name)
-       (format "    s->addTask(phase_read, new ~a(db,b), ~a);"
-               task-name
-               (if static? "true" "false"))))))
+   (cond
+     ;; count flavor (§8B.1): the seeded PLAN SHAPE (all-full joins) is the
+     ;; fire-once count round -- registered ONCE, not gated on seeding
+     [(and (eq? (car driver) 'seeded) (current-rule-kind))
+      (format "    s->addTask(phase_read, new ~a(db,b), true);" task-name)]
+     ;; seeded re-entry task: reruns every iteration, but ONLY when the
+     ;; stratum begins over externally seeded content (daemon gate)
+     [(eq? (car driver) 'seeded)
+      (format "    s->addTaskSeeded(phase_read, new ~a(db,b));" task-name)]
+     [else
+      (format "    s->addTask(phase_read, new ~a(db,b), ~a);"
+              task-name
+              (if static? "true" "false"))]))))
 
 ;; -----------------------------------------------------------------------
 ;; Whole-program emission.
@@ -1081,11 +1195,33 @@
              (format "  s->addDynamicRel(\"~a\");\n" rel))))
   ;; accelerator-seed relations (db-compression.md §4.4 v2): the daemon
   ;; samples these rels' per-round deltas into the seed sidecar; declared
-  ;; per-stratum exactly like the dynamic-rel manifest above
+  ;; per-stratum exactly like the dynamic-rel manifest above.  NEVER in the
+  ;; _count flavor: its per-round deltas are count contributions, and
+  ;; sampling those as replay seeds would corrupt the accel sidecar.
   (define accelrel-meta
-    (apply string-append
-           (for/list ([rel (in-list accel-rels)])
-             (format "  s->addAccelRel(\"~a\");\n" rel))))
+    (if (count-flavor)
+        ""
+        (apply string-append
+               (for/list ([rel (in-list accel-rels)])
+                 (format "  s->addAccelRel(\"~a\");\n" rel)))))
+  ;; _count flavor: the counted heads -- every crule sink target (emit/
+  ;; mkstruct heads, tycheck's malformed_deduction) plus the declared
+  ;; runtime-error arms (a fallible prim's side channel, §8B.4) -- get a
+  ;; CountTask/CountStructTask in place of their intern task.
+  (define counted-heads
+    (if (not (count-flavor))
+        (set)
+        (let ([declared (for/set ([d (in-list decls)]) (second d))])
+          (for*/fold ([acc (for/set ([a (in-list prim-error-arms)]
+                                     #:when (set-member? declared a))
+                             a)])
+                     ([cr (in-list crules)]
+                      [hop (in-list (crule-head cr))])
+            (match hop
+              [`(mkstruct ,name ,_ ,_ ,_ ...) (set-add acc name)]
+              [`(emit ,name ,_ ,_ ...) (set-add acc name)]
+              [`(tycheck ,_ ,_ ,_ ,_ ,_ ,_) (set-add acc 'malformed_deduction)]
+              [_ acc])))))
   (define emit-rule (add-rule dynamic-rels))
 
   ;; slog_plugin's body, given the block that registers the read tasks (inline
@@ -1094,7 +1230,8 @@
     ;; computed here (not eagerly) so its index-ordering elocals fall under the
     ;; caller's per-TU emit-local-counter (P2 determinism)
     (define rel-decls
-      (apply string-append (map add-rel-decl (append decls manifest-decls))))
+      (apply string-append
+             (map (add-rel-decl counted-heads) (append decls manifest-decls))))
     (string-append
      "extern \"C\" void slog_plugin(slog::Daemon* d)\n{\n"
      "  slog::Database* db = d->db();\n"
@@ -1103,8 +1240,13 @@
      ;; The delta-entry flavor (docs/incremental.md 0.B5) registers under
      ;; beginStratumDelta instead: NO reload -- the staged batch is the
      ;; coming run's whole iteration-0 delta, and every live index survives.
+     ;; The _count flavor (§8B.1) shares beginStratumDelta: the count round
+     ;; runs OVER the resident settled fixpoint (a reload would both count
+     ;; the restaged rows and leave the full indices empty at iteration 0's
+     ;; read); fresh orderings are backfilled at registration.
      (format "  slog::Stratum* s = d->beginStratum~a(\"~a\");\n"
-             (if (delta-entry-flavor) "Delta" "") stratum-name)
+             (if (or (delta-entry-flavor) (count-flavor)) "Delta" "")
+             stratum-name)
      ;; null (and an emitted error) if a stratum is suspended and this is not a
      ;; hot-swap upgrade; bail before touching s (docs/pausing.md §4 guardrail)
      "  if (s == nullptr) return;\n"

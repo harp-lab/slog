@@ -1568,7 +1568,13 @@ favour.)*
   the parent's FULL enumeration signature — every body-join variable,
   including the `__`-gensym'd wildcard variables (already distinct per
   occurrence, D13) — instead of the `carried = needed − reest-vars`
-  residue projection (`stage-rule`, join-planning.rkt). Distinct
+  residue projection (`stage-rule`, join-planning.rkt). *(As-built
+  refinement, 2026-07-12: reest-vars stay excluded even from the widened
+  set — they chain to constants, hence are instantiation-CONSTANT, so
+  excluding them cannot merge two distinct instantiations; and carrying
+  one gives the follow-up a const-pre-bound temp column, which the
+  scheduler lowers into a probe of the temp's nonexistent delta index.
+  carried_count = (join-vars ∪ needed) − reest-vars.)* Distinct
   enumerated instantiations are distinct full bindings (clause args are
   variables/constants of the binding; relations are sets), so temp rows
   are in bijection with parent instantiations: the write-phase
@@ -2542,6 +2548,67 @@ absent from saves, and `slog db freeze` cutting an equal flat copy (W7).
 1. **M0 — The count round + sidecar substrate (§8B; hot path untouched).**
    *(Rewritten 2026-07-11 from "Signed-count substrate" — the master-index
    conversion and load-time ingestion rules are retired, §6.1/§8A notes.)*
+
+   > **STATUS: M0.1 + M0.2 SHIPPED 2026-07-12.**
+   > *M0.1* — `daemon/counts.h` packed `input(1)|nonrec(31)|rec(32)` word
+   > (fatal under/overflow) + `Relation::count_sidecar` (per-bucket
+   > `BTreeMapIndex`, NOT in `indices` so saves/dumps/reloads never see
+   > it; lazy, dropped with contents) + `tests/counts-tests.cpp`.
+   > *M0.2* — the `_count` compiled flavor, end to end.  As built:
+   > - **Plan shape**: `count-flavor` parameterizes one compilation
+   >   (`ensure-count-so` → `build/<hash>_count.O0.so`, the
+   >   `ensure-delta-so` pattern).  Planned with an EMPTY dynamic set;
+   >   every rule with joins reuses the SEEDED plan shape (all-full first
+   >   join) but registers ONCE; temp-driven follow-ups keep their normal
+   >   temp-scan version (registered every-iteration — they fire exactly
+   >   once, on the round their temp delta arrives); fact rules keep the
+   >   driverless once shape.  Fire-once by construction; staged chains
+   >   run stage-ordered across iterations, exactly §8B.1.
+   > - **Entry**: registers under `beginStratumDelta` (no reload — the
+   >   round runs OVER the resident settled fixpoint); fresh join
+   >   orderings ride `addIndex`'s 0.B5 backfill.
+   > - **Transport**: counting sinks (`emit_count`/`emit_struct_count`,
+   >   operators.h) do a closure CHECK instead of a dedup skip (an
+   >   absent consequence = unsettled fixpoint = loud fatal) and tag
+   >   their `InsertBatch` with the rule's kind; per-bucket
+   >   `CountTask`/`CountStructTask` (phase_intern, replacing the intern
+   >   tasks) fold each iteration's delta into the sidecar.  Struct ids
+   >   resolve at EMIT time by content (read phase never mutates
+   >   indices), so the struct sidecar keys/buckets by id as pinned.
+   > - **Kinds** (§6.4/§8B.5): classified per ORIGINAL rule at plan time
+   >   — `input` for ground rules (sink sets the EDB bit, idempotent),
+   >   `rec` iff some positive body relation is head-produced by the
+   >   stratum, else `nonrec` — keyed by prov (staged sub-rules inherit;
+   >   same-prov disagreement degrades to `rec`, sound), threaded as a
+   >   7th `crule` slot.
+   > - **Temps decision, refined as-built** (§6.2 note): carried =
+   >   (body-join vars ∪ needed) MINUS reest-vars — re-establishable
+   >   vars are instantiation-CONSTANT (they chain to constants), so
+   >   excluding them preserves the bijection, and carrying one hands
+   >   the follow-up a const-pre-bound temp column that the scheduler
+   >   would lower into a (nonexistent) temp delta-index probe (caught
+   >   by deep_fact's replay chains).  Counted plans NEVER take the
+   >   no-temp shape: with nothing to carry, a synthesized-const
+   >   arity-1 temp fires the follow-up exactly once (`[(g (nil))]`).
+   > - **Exclusions**: lattice heads emit nothing (M6; payload maps
+   >   register, merge tasks don't); oracle bindings and seq-occurrence
+   >   feeding are not registered (§8B.4); accel-seed sampling is
+   >   suppressed (count deltas must never become replay seeds); error
+   >   arms + malformed_deduction COUNT via `emit_pending_error_count`
+   >   (§8B.4 instantiation-deterministic).  Arity-0 counted heads are
+   >   refused at compile (loud, M0 punt).
+   > - **Driver (M0.2 scope)**: `session-recount!` clears all count
+   >   state (`(clear-counts)` action) then runs every stratum's flavor
+   >   in pipeline order over the LATEST environment — idempotent by
+   >   rebuild; `(dump-counts REL)` renders the sidecar for tests/the
+   >   oracle.  Per-version anchoring (`bind-at`), the `counted`
+   >   per-(relation, version) state, and cost-based lazy-heal routing
+   >   are M0.3.
+   > - **Tests**: session-tests.sh M0.2 battery — hand-verified TC
+   >   (input/nonrec/rec split), the temp-split headline case (narrow
+   >   temps would report 1, wide temps report 2), deep_fact ground
+   >   trees, neg_reach through absent probes, lattice skip + lattice
+   >   READS (lat_constprop hand-checked), double-recount idempotence.
    Per-(relation, version) sidecar count indices (tables: full-tuple-keyed
    map; structs: id-keyed map; packed `input|nonrec|rec` value with
    under/overflow asserts); the `_count` compiled flavor (one all-full,

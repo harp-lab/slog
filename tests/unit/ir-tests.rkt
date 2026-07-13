@@ -173,12 +173,15 @@
                     (mkstruct pair (1 2 3) i w x)
                     (emit out (1 2) i w)
                     (emit-temp t1 i))
-              "t.slog:1"))
+              "t.slog:1" #f))
     (check-true (crule? cr))
-    (check-true (crule? '(crule (pre) (once) (body) (head) #f)))    ; fact rule, no loc
-    (check-true (crule? '(crule (pre) (scan edge x y) (body) (head (emit out (1 2) x y)) "t.slog:2")))
-    ;; the trailing loc ("file:line" or #f, docs/type-errors.md) is required
+    (check-true (crule? '(crule (pre) (once) (body) (head) #f #f)))    ; fact rule, no loc
+    (check-true (crule? '(crule (pre) (scan edge x y) (body) (head (emit out (1 2) x y)) "t.slog:2" #f)))
+    ;; a counting classification (the _count flavor, docs/incremental.md 6.4)
+    (check-true (crule? '(crule (pre) (seeded) (body) (head (emit out (1 2) x y)) "t.slog:2" rec)))
+    ;; the trailing loc ("file:line" or #f) and kind (#f outside _count) are required
     (check-false (crule? '(crule (pre) (once) (body) (head))))
+    (check-false (crule? '(crule (pre) (once) (body) (head) #f)))
     (check-equal? (crule-pre cr) '((let cc five)))
     (check-equal? (crule-driver cr) '(probe edge (1 2) 1 x y))
     (check-equal? (crule-body cr)
@@ -188,16 +191,16 @@
                   '((let w (plus s s)) (mkstruct pair (1 2 3) i w x)
                     (emit out (1 2) i w) (emit-temp t1 i)))
     ;; rejections
-    (check-false (crule? '(crule (pre) (body) (head) #f)))          ; missing driver
-    (check-false (crule? '(crule (pre) (join e (1) 1 x) (body) (head) #f))) ; join is not a driver
-    (check-false (crule? '(crule (pre) (probe e () 0 x) (body) (head) #f))) ; empty index
-    (check-false (crule? '(crule (pre) (scan e x) (body (join f (1) x)) (head) #f))) ; join missing K
-    (check-false (crule? '(crule (pre) (scan e x) (body) (head (let x y)) #f)))      ; head alias let
-    (check-false (crule? '(crule (pre) (scan e x) (body) (head (join f (1) 1 x)) #f))) ; join in head
-    (check-false (crule? '(crule (pre (emit out (1) x)) (scan e x) (body) (head) #f)))) ; emit in pre
+    (check-false (crule? '(crule (pre) (body) (head) #f #f)))          ; missing driver
+    (check-false (crule? '(crule (pre) (join e (1) 1 x) (body) (head) #f #f))) ; join is not a driver
+    (check-false (crule? '(crule (pre) (probe e () 0 x) (body) (head) #f #f))) ; empty index
+    (check-false (crule? '(crule (pre) (scan e x) (body (join f (1) x)) (head) #f #f))) ; join missing K
+    (check-false (crule? '(crule (pre) (scan e x) (body) (head (let x y)) #f #f)))      ; head alias let
+    (check-false (crule? '(crule (pre) (scan e x) (body) (head (join f (1) 1 x)) #f #f))) ; join in head
+    (check-false (crule? '(crule (pre (emit out (1) x)) (scan e x) (body) (head) #f #f)))) ; emit in pre
 
   (test-case "cprog? and accessors"
-    (define cr '(crule (pre) (scan edge x y) (body) (head (emit out (1 2) x y)) "t.slog:3"))
+    (define cr '(crule (pre) (scan edge x y) (body) (head (emit out (1 2) x y)) "t.slog:3" #f))
     (define decls '((relation edge 2 (1 2) (delta 1))
                     (relation out 2 (1 2))
                     (struct pair 3 (1 2 3 0) (0 1 2 3))

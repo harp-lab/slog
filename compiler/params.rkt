@@ -37,3 +37,24 @@
 ;; build/<hash>_delta.* artifacts by ensure-delta-so (compile.rkt); never
 ;; on for the base artifacts, so it needs no cache-key entry.
 (define delta-entry-flavor (make-parameter #f))
+
+;; The `_count` flavor (docs/incremental.md §8B.1/§6.2, M0): the count-round
+;; plugin.  Every rule is planned as ONE all-full fire-once version (the
+;; seeded-rule plan shape, registered once) with counting sinks in place of
+;; the dedup-skipping emits; staging temps are widened to the parent's full
+;; enumeration signature (instantiation-injective, the 2026-07-11 temps
+;; decision); registers under beginStratumDelta (no reload -- the count
+;; round runs OVER the resident settled fixpoint; fresh join orderings are
+;; backfilled by addIndex).  Value is #f, or a `count-mode`:
+;;   dynamic-rels -- the stratum's true (head-based) dynamic set, used ONLY
+;;                   to classify rules rec/nonrec (§6.4); the plan itself
+;;                   runs with an empty dynamic set (all-full joins).
+;;   kinds        -- mutable hash, rule prov -> 'input|'nonrec|'rec, written
+;;                   by plan-stratum and read at lowering (all within one
+;;                   emit-stratum-cpp dynamic extent).  Staged sub-rules
+;;                   share the original rule's prov, so the whole chain
+;;                   inherits its classification.
+;; Emitted to distinct build/<hash>_count.* artifacts by ensure-count-so
+;; (compile.rkt); never on for the base artifacts -> no cache-key entry.
+(struct count-mode (dynamic-rels kinds) #:transparent)
+(define count-flavor (make-parameter #f))

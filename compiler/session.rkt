@@ -72,6 +72,7 @@
          session-log            ; the collapsed applied-batch log (C2/C3)
          session-recipe         ; ordered steps + anchored batches (§0.10)
          session-action!        ; low-level: one action + a reader
+         session-recount!       ; the count round over the pipeline (M0)
          session-reenter!       ; direct replay-entry (tests/tools)
          session-rerun!         ; direct clear-and-rerun (tests/tools)
          session-close!
@@ -93,9 +94,9 @@
   (or (string->number (or (getenv "SLOG_INLINE_MAX") "")) 2048))
 
 ;; One stratum's driver-side record: its cached .so, manifest
-;; dynamic-rels/reads/heads, and the thunk that lazily builds its
-;; delta-entry flavor (0.B5).
-(struct sinfo (so dyn reads heads delta) #:transparent)
+;; dynamic-rels/reads/heads, and the thunks that lazily build its
+;; delta-entry (0.B5) and _count (§8B.1, M0) flavors.
+(struct sinfo (so dyn reads heads delta count) #:transparent)
 
 ;; One live session.
 ;;   strata-info : list of (cons scc sinfo), oldest first -- scc is the
@@ -199,8 +200,33 @@
   (set-session-strata-info!
    s (append (session-strata-info s)
              (list (cons (session-next-scc s)
-                         (sinfo so dyn reads heads (sbuild-delta sb))))))
+                         (sinfo so dyn reads heads
+                                (sbuild-delta sb) (sbuild-count sb))))))
   (send-stratum! s so))
+
+;; The count round (docs/incremental.md §8B.1, M0): run every stratum's
+;; _count flavor over the resident settled fixpoint, in pipeline order.
+;; Each flavor fires its rules exactly once over FULL indices (staged
+;; chains stage-ordered through their wide temps) and folds per-tuple
+;; (input | nonrec | rec) contributions into the relations' count
+;; sidecars; nothing is inserted, so the resident content is untouched.
+;; M0.2 scope: the LATEST environment over the whole pipeline -- the
+;; anchored (recount REL@P) verb, `counted` state, and cost-based routing
+;; land with M0.3.
+(define (session-recount! s)
+  (define infos (session-strata-info s))
+  ;; drop all count state first: counts are recomputable cache (§8B.2), so
+  ;; re-establishment-by-rebuild makes the verb idempotent -- a second
+  ;; (recount) reproduces, never doubles.  (M0.3's `counted` state turns
+  ;; this into per-(relation, version) laziness instead of a full redo.)
+  (session-action! s `(clear-counts) read-one-line-quiet!)
+  (echo! s (format "(recount ~a)" (length infos)))
+  (for ([p (in-list infos)])
+    (send-stratum! s ((sinfo-count (cdr p))))))
+
+;; consume one response line without echoing (internal protocol chatter)
+(define (read-one-line-quiet! out)
+  (void (read-line out)))
 
 ;; Send one action and hand its response stream to `read!` (called with
 ;; the session's output port; may read as many lines as the action's
