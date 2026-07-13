@@ -1,16 +1,13 @@
 # Lattice-Valued Relations and Recursive Aggregation
 
-**Status:** L0 + L1 IMPLEMENTED (2026-07-02); the collection form of the
-extern tier SHIPPED 2026-07-06 — `(set T)` and `(map K <valuespec>)`
-valuespecs join through `LAT_EXTERN` + the composed `merge_spec` kernel on
-the collection arena (docs/primitives.md M2.2/M2.3: spec-token round trip,
-position-aware monotone-use rows, `lat_set` golden).  **The closing shot
-is planned in `docs/finish-collections.md`**: partial prims (restoring
-in-SCC `cget` with child-spec descent), M2.4 `R_has`/`R_at` decomposition
-(in-SCC membership/enumeration), the `(schema)` action, optional `cjoin`.
-L2 (ps/interval/products/lift2) and plugin-defined extern joins (§7.1's
-`(extern name)`) remain design; `leq_spec` exists for the §5.5 audits but
-the continuous debug audit is not yet wired.
+**Status:** L0, L1, and the collection tier are implemented. Scalar, count,
+flat, set, and recursive map value specifications ship with partial primitive
+handling, `R_has`/`R_at` decomposition, the `(schema)` action, and spec-aware
+`cjoin`. The collection wrap-up landed 2026-07-08; see
+`docs/finish-collections.md` for its implementation record. L2
+(ps/interval/products/lift2) and plugin-defined extern joins (§7.1's `(extern
+name)`) remain designs; `leq_spec` exists for the §5.5 audits but the
+continuous debug audit is not yet wired.
 **Companions:** `docs/incremental.md` §7A (the incrementality dovetail this design
 tees up), `docs/demand.md` (demand-moded judgments, which lattice answers compose
 with).

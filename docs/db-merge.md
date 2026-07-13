@@ -3,9 +3,11 @@
 *Design + IO-improvement plan for loading one database and merging a second into
 it, then running further rules over the union. 2026-07-03.*
 
-Status: **design only.** No code written. This doc records the recommended
-approach, the alternatives weighed, the correctness guards it depends on, and
-the pre-existing IO bugs that must be fixed first.
+Status: **P1 core merge shipped 2026-07-06.** Online `import` remaps strings,
+structs, bignums, and canonical collections, then unions tables and joins
+lattice rows. P2 hardening and the offline merge command remain designs.
+Sections 1–9 preserve the original plan; section 10 records what shipped and
+where it differs.
 
 ---
 

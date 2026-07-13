@@ -1,9 +1,10 @@
 # SMT formulas and external oracles
 
-Status: **Phase 1 implemented** (2026-07-08) -- basic integration end to end:
-vocabulary + `extern` declarations + oracle runtime + z3/cvc5/mock backends +
-tests.  §1-§11 below are the original design; see §12 for what shipped and
-where v1 deviates.
+Status: **Phase 2c implemented** (2026-07-08): formula sets, logic inference,
+persistent solver processes, racing, models, error facts, unsat cores, and
+compressed-database pinning all shipped after the initial oracle integration.
+Sections 1–11 preserve the original design. Sections 12–15 record the shipped
+stages and their deviations.
 
 ## 1. Motivation
 

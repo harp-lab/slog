@@ -26,21 +26,17 @@ costs nothing on a warm run.
 
 ## Reconfiguring
 
-Copy the template and edit your copy:
+`config/config.slog` is not created by default. Create it when you need local
+overrides. A small config normally includes the defaults and adds only the
+values it changes:
 
-```sh
-cp config/default-config.slog config/config.slog   # optional: config.slog ships pre-made
-$EDITOR config/config.slog
-```
-
-`config.slog` `include`s the defaults; to override a single setting, add an
-`override_int` / `override_str` fact (these win over the computed defaults):
-
-```
+```slog
 include "default-config.slog"
 rule (override_int "threads" 4)
 rule (override_str "opt" "2")
 ```
+
+`override_int` and `override_str` win over the computed defaults.
 
 Or delete the `include` line and define the `setting_int` / `setting_str`
 database yourself for full control.
@@ -64,9 +60,17 @@ dynamic defaults, e.g. threads = cores − 1, still apply).
 | `threads` | `SLOG_THREADS` | cores − 1 |
 | `build_jobs` | `SLOG_BUILD_JOBS` | cores |
 | `opt` | `SLOG_OPT` | `tiered` |
+| `o2_reclaim_secs` | `SLOG_O2_RECLAIM_SECS` | `900` |
+| `o_cache_max_age_days` | `SLOG_O_CACHE_MAX_AGE_DAYS` | `4` |
+| `o_cache_max_mb` | `SLOG_O_CACHE_MAX_MB` | `768` |
 | `max_ms` | `SLOG_MAX_MS` | `8000` |
 | `slice_ms` | `SLOG_SLICE_MS` | `500` |
 | `mem_max` | `SLOG_MEM_MAX` | `4G` |
+| `mem_bytes` | `SLOG_MEM_BYTES` | about 90% of `mem_max` when parseable |
+| `smt_solvers` | `SLOG_SMT_SOLVERS` | `mock` |
+| `oracle_procs` | `SLOG_ORACLE_PROCS` | `4` |
+| `mpz_max_bits` | `SLOG_MPZ_MAX_BITS` | `65536` |
+| `mpz_table_bytes` | `SLOG_MPZ_TABLE_BYTES` | `1073741824` |
 
 > Setting names and string values must not contain spaces (settings are read
 > back from space-separated CSV).

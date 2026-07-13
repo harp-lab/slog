@@ -1,124 +1,106 @@
-# 1. Getting started
+# 1. Run a Slog program
 
-Suppose you know a language like Java or Python. You are used to
-telling the computer *what to do*: create a variable, loop over a
-list, call a function, return. A Slog program contains none of those
-things. It contains statements about *what is true*, and running it
-means the computer works out everything else that must be true.
+This tutorial assumes you have programmed in a language such as Java. In
+Java, you usually describe a sequence of operations. In Slog, you describe
+facts and rules, and the runtime finds all facts that follow.
 
-That probably sounds abstract, so let's make it concrete immediately.
+We will start with a graph. Save this as `reach.slog` in the repository root:
 
-## A program that is only data
-
-Here is a complete Slog program describing part of a family:
-
-```
-table (parent str str)
+```slog
+table (edge str str)
+table (path str str)
 
 rule
-(parent "vera" "ada")
-(parent "ada" "haskell")
-(parent "ada" "miranda")
+(edge "a" "b")
+(edge "b" "c")
+(edge "c" "d")
+
+rule (edge X Y) --> (path X Y)
+rule (path X Y) (edge Y Z) --> (path X Z)
 ```
 
-Two things are happening:
+`table` declares a relation. You can think of a relation as a named set of rows
+with typed columns. `edge` and `path` each have two string columns.
 
-- `table (parent str str)` **declares a relation** — think of it as a
-  table in a spreadsheet, named `parent`, with two columns, both
-  holding strings. A relation is a *set of rows*: no duplicates, no
-  order.
-- The `rule` with no body **asserts rows**: Vera is a parent of Ada; Ada
-  is a parent of Haskell and of Miranda. A rule whose clauses are all
-  heads — nothing before the next top-level form to act as a condition —
-  simply states that those rows hold. These ground rules are what other
-  systems call *facts*.
+The first `rule` has no conditions, so it states three facts. The next two
+rules say:
 
-That's the whole program. No `main`, no statements. Save it as
-`family.slog` and run it from the repository root:
+- Every edge is a path.
+- If there is a path from `X` to `Y` and an edge from that same `Y` to `Z`,
+  there is a path from `X` to `Z`.
 
-```
-$ racket slog.rkt --debug-dir out/family family.slog
-```
+Names such as `X`, `Y`, and `Z` are variables. Repeating a variable means the
+value must be the same in each place.
 
-The first run takes a little while — Slog compiles your program to
-native code (and caches it, so the second run is instant). The
-`--debug-dir` flag asks for the final contents of every relation as a
-`.csv` file in that directory:
+Run the program from the repository root:
 
-```
-$ cat out/family/parent.csv
-"vera"   "ada"
-"ada"   "haskell"
-"ada"   "miranda"
+```console
+$ racket slog.rkt --no-banner --sizes --debug-dir out/reach reach.slog
+(relation_size edge 3)
+(relation_size path 6)
 ```
 
-The output is just what we put in. Fair enough — we haven't asked for
-anything to be *computed* yet.
+The first run compiles the rules to native code. Slog caches that code under
+`build/`, so the next run is normally much faster.
 
-## The first rule
+`--sizes` prints the number of rows in each relation. This is often the first
+sanity check to make. `--debug-dir` writes each nonempty relation:
 
-Add two lines to the program:
-
-```
-table (grandparent str str)
-
-rule (parent X Y) (parent Y Z) --> (grandparent X Z)
-```
-
-Read the rule aloud, right to left around the arrow: *whenever
-everything on the left holds, the thing on the right holds too*. On the
-left there are two **patterns**: `(parent X Y)` and `(parent Y Z)`.
-`X`, `Y`, and `Z` are **variables**, and one variable used twice must
-stand for the same value both times. So the rule says: if X is a parent
-of Y, and *that same* Y is a parent of Z, then X is a grandparent of Z.
-
-```
-$ racket slog.rkt --debug-dir out/family family.slog
-$ cat out/family/grandparent.csv
-"vera"   "haskell"
-"vera"   "miranda"
+```console
+$ sort out/reach/path.csv
+"a"   "b"
+"a"   "c"
+"a"   "d"
+"b"   "c"
+"b"   "d"
+"c"   "d"
 ```
 
-Slog found every pair of rows in `parent` that line up through a shared
-middle person, and derived a `grandparent` row for each. You didn't
-write a loop over the rows; you described the *shape* of the situation,
-and the engine found every instance of it.
+Relations are sets, so their rows have no meaningful order. Sorting is useful
+when reading or comparing output.
 
-That inversion — describing shapes instead of writing loops — is the
-whole game. The next chapter is about how far it goes.
+## Read a rule
 
-## What just happened, honestly
+This rule is a join, much like a SQL join or two nested loops in Java:
 
-A fair question from a Java programmer: "so it ran my rule once over
-the data?" Almost. It ran your rule until **nothing new appeared**. With
-one non-recursive rule that's a single pass, but rules are allowed to
-build on each other's results — and on their own. When rules feed each
-other, Slog keeps going until the set of facts stops growing. That
-final, stable set of facts is the program's result. (The technical name
-is a *fixpoint*, and you'll see in the next chapter why it's so
-useful.)
-
-Two more useful flags before moving on. `--sizes` prints how many rows
-each relation ended with — the quickest sanity check there is:
-
-```
-$ racket slog.rkt --sizes family.slog
-(relation_size grandparent 2)
-(relation_size parent 3)
+```slog
+rule (path X Y) (edge Y Z) --> (path X Z)
 ```
 
-And `--no-banner` suppresses the startup banner, which you'll want when
-scripting.
+Slog tries every compatible pair of `path` and `edge` rows. The shared `Y`
+must match. Each match produces a candidate `(path X Z)` row. Duplicate rows
+collapse because a relation is a set.
 
-## Cheat sheet
+The rule is also recursive because it reads and writes `path`. Slog does not
+make just one pass. It keeps processing new rows until an iteration produces
+nothing new. That stable state is called a fixpoint.
 
-| Form | Example | Meaning |
-|---|---|---|
-| declare a relation | `table (parent str str)` | a named set of rows; columns are typed (`str`, `int`, `float`, ...) |
-| assert facts | `rule (parent "a" "b") (parent "b" "c")` | a body-less rule adds rows; it can hold many |
-| a rule | `rule (parent X Y) (parent Y Z) --> (grandparent X Z)` | left patterns all match ⇒ right holds |
-| variables | `X`, `y`, `thing` | any name in a rule; repeated = same value |
-| comments | `;; like this` | to end of line |
-| run a program | `racket slog.rkt --debug-dir out/d prog.slog` | compile (cached), run to fixpoint, write CSVs |
-| row counts | `racket slog.rkt --sizes prog.slog` | print `(relation_size name n)` per relation |
-| quiet | `--no-banner` | suppress the banner |
+Recursion does not guarantee termination by itself. This example terminates
+because it can only produce pairs of the four node names. A rule that keeps
+creating larger integers or deeper structures may keep running until you stop
+it or it reaches the memory limit.
+
+## Make a small prediction
+
+Add another edge:
+
+```slog
+rule (edge "d" "a")
+```
+
+Before running again, predict the size of `path`. The graph is now a cycle, so
+every one of the four nodes can reach every node, including itself. The answer
+should be 16. Checking a small result you can work out by hand is a good way to
+test a rule before giving it a large data set.
+
+## What to remember
+
+- A relation is a set of typed rows.
+- A body-less `rule` states facts.
+- Clauses on the left of `-->` are conditions. Clauses on the right are
+  conclusions.
+- Repeated variables connect clauses.
+- Slog runs recursive rules to a fixpoint.
+- Use `--sizes` for row counts and `--debug-dir` to inspect relation contents.
+
+Next: [rules and data](02-rules-and-data.md).
