@@ -52,6 +52,12 @@ public:
   // arity-generic escape hatch for the daemon itself (out-of-band ingestion);
   // generated code uses the typed insert below.
   virtual void insertTuple(const u64* t, const u16* ord) = 0;
+  virtual bool removeTuple(const u64* t, const u16* ord) = 0;
+  // Payload-map cold path used by transactional count foundation seeding and
+  // coverage audits.  Plain set indices return false/refuse; BTreeMapIndex
+  // interprets `key` in its own (identity for count sidecars) key order.
+  virtual bool getPayload(const u64*, u16, u64&) const { return false; }
+  virtual bool setPayload(const u64*, u16, u64) { return false; }
 };
 
 
@@ -89,6 +95,14 @@ public:
     for (u16 c = 0; c < A; ++c)
       k[c] = t[ord[c]];
     tree.insert(k);
+  }
+  bool removeTuple(const u64* t, const u16* ord) override
+  {
+    Key k;
+    for (u16 c = 0; c < A; ++c) k[c] = t[ord[c]];
+    if (tree.find(k) == tree.end()) return false;
+    tree.erase(k);
+    return true;
   }
 };
 
@@ -177,6 +191,33 @@ public:
       k[c] = t[ord[c]];
     bool changed = false;
     merge(k, t[ord[KA]], changed);
+  }
+  bool removeTuple(const u64* t, const u16* ord) override
+  {
+    Key k;
+    for (u16 c = 0; c < KA; ++c) k[c] = t[ord[c]];
+    if (tree.find(k) == tree.end()) return false;
+    tree.erase(k);
+    return true;
+  }
+  bool getPayload(const u64* key, u16 n, u64& value) const override
+  {
+    if (n != KA) return false;
+    Key k;
+    for (u16 c = 0; c < KA; ++c) k[c] = key[c];
+    auto it = tree.find(k);
+    if (it == tree.end()) return false;
+    value = it->second;
+    return true;
+  }
+  bool setPayload(const u64* key, u16 n, u64 value) override
+  {
+    if (n != KA) return false;
+    Key k;
+    for (u16 c = 0; c < KA; ++c) k[c] = key[c];
+    auto r = tree.insert2(k, value);
+    r.first->second = value;
+    return true;
   }
 };
 

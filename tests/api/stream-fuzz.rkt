@@ -9,13 +9,10 @@
 ;;
 ;;   racket tests/api/stream-fuzz.rkt SEED [SAVE-NAME]
 ;;
-;; Generation discipline: adds draw from a fresh pool (an edge is never
-;; re-added once retired), and deletions target currently-present input
-;; edges at the tip.  Re-adding a previously-deleted BASE fact is
-;; deliberately not generated: under Phase 0 set semantics a same-version
-;; add/delete pair collapses out of the log while the base fact remains
-;; independently re-derivable -- the documented replay-deletion caveat,
-;; resolved precisely by Phase 1's per-version input bit (§8B.5).
+;; Generation discipline: all editable EDB, including the initial six edges,
+;; enters through the session input API.  Program-source facts are program
+;; support, not editable input.  Adds draw from a fresh pool and deletions
+;; target currently-direct assertions at the tip.
 ;;
 ;; Prints "fuzz-ok SEED" on success; exits 1 with a diff on divergence.
 
@@ -47,13 +44,14 @@ EOF
   (call-with-output-file path #:exists 'replace
     (lambda (o)
       (displayln rules o)
-      (newline o)
-      (displayln "rule" o)
-      (for ([e (in-list (sort es (lambda (a b)
-                                   (or (< (car a) (car b))
-                                       (and (= (car a) (car b))
-                                            (< (cdr a) (cdr b)))))))])
-        (fprintf o "(edge ~a ~a)\n" (car e) (cdr e))))))
+      (unless (null? es)
+        (newline o)
+        (displayln "rule" o)
+        (for ([e (in-list (sort es (lambda (a b)
+                                     (or (< (car a) (car b))
+                                         (and (= (car a) (car b))
+                                              (< (cdr a) (cdr b)))))))])
+          (fprintf o "(edge ~a ~a)\n" (car e) (cdr e)))))))
 
 ;; a random edge set over 8 nodes: 6 base edges + a fresh-add pool
 (define nodes 8)
@@ -87,7 +85,7 @@ EOF
 
 (define base-prog (format "out/fuzz-~a-base.slog" seed))
 (define oracle-prog (format "out/fuzz-~a-oracle.slog" seed))
-(write-prog base-prog base-edges)
+(write-prog base-prog '())
 (write-prog oracle-prog (set->list model))
 
 ;; dump one relation's rendered rows, sorted
@@ -116,6 +114,9 @@ EOF
   (run-session!
    (lambda (s)
      (session-run! s base-prog)
+     (for ([e (in-list base-edges)])
+       (session-batch! s '+ 'edge (list (car e) (cdr e))))
+     (session-flush! s)
      (for ([f (in-list flushes)])
        (match-define (list adds dels) f)
        (for ([e (in-list adds)]) (session-batch! s '+ 'edge (list (car e) (cdr e))))

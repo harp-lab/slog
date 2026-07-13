@@ -365,6 +365,13 @@
   (match st
     [`(open ,(? string?)) #t]
     [`(run ,_) #t]
+    [`(run ,_ (version-events ,tables ...))
+     (for/and ([table (in-list tables)])
+       (and (list? table)
+            (for/and ([entry (in-list table)])
+              (match entry
+                [`(,(? symbol?) ,(? string?)) #t]
+                [_ #f]))))]
     [_ (edit-step? st)]))
 
 (define (edit-step? st)
@@ -378,9 +385,23 @@
     [`(link ,(? string?) ,(? rename-map?)) #t]
     [`(rename-rel ,(? symbol?) ,(? symbol?)) #t]
     [`(drop-rel ,(? symbol?)) #t]
+    [`(inject-version ,(? symbol?) ,(? string?)) #t]
     [`(add-tuple ,(? symbol?) ,_ ...) #t]
     [`(del-tuple ,(? symbol?) ,_ ...) #t]
     [`(batch ,(? symbol?) (v ,(? exact-nonnegative-integer?)) ,(? list?) ,(? list?)) #t]
+    [`(overlay ,(? symbol?) (v ,(? exact-nonnegative-integer?)) ,rows)
+     (and (list? rows)
+          (for/and ([row (in-list rows)])
+            (match row
+              [`(,(or 'direct 'mask 'none) ,(? list?)) #t]
+              [_ #f])))]
+    [`(overlay ,(? symbol?) (key ,(? string?))
+               (v ,(? exact-nonnegative-integer?)) ,rows)
+     (and (list? rows)
+          (for/and ([row (in-list rows)])
+            (match row
+              [`(,(or 'direct 'mask 'none) ,(? list?)) #t]
+              [_ #f])))]
     [_ #f]))
 
 (define (recipe-path db-dir) (build-path db-dir "recipe"))

@@ -1,0 +1,15 @@
+;; Struct/lattice fixture with API-fed `in`. The weighted graph remains
+;; immutable program support because this test edits only `in`.
+
+struct (pair int int)
+lattice (cost (min int #:floor 0))
+table (in int int)
+table (out pair)
+table (edge int int int)
+table (dist int int cost)
+
+rule (edge 1 2 10) (edge 2 3 5)
+
+rule (in X Y) --> (out (pair X Y))
+rule (edge X Y W) --> (dist X Y W)
+rule (dist X Y D) (edge Y Z W) --> (dist X Z (+ D W))

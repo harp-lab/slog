@@ -118,7 +118,8 @@
   ;; rule is recursive iff some positive body relation is produced by its
   ;; own stratum (the count-mode carries the TRUE head-based dynamic set --
   ;; the planning `dynamic?` above is empty in this flavor); body-less
-  ;; ground rules are inputs.  Recorded per ORIGINAL rule keyed by prov:
+  ;; ground rules are non-recursive program support.  Recorded per ORIGINAL
+  ;; rule keyed by prov:
   ;; staged sub-rules share the parent's prov, so a whole staged chain
   ;; inherits one classification (a consequence's counter is the logical
   ;; rule's, whichever stage emits it).  Distinct synthesized rules sharing
@@ -131,7 +132,10 @@
       (define joins (filter join-cl? bodys))
       (define kind
         (cond
-          [(and (null? joins) (not (ormap neg-clause? bodys))) 'input]
+          ;; Program ground facts are rule support, not JIT/data input.
+          ;; Their removal is a program-version change; semantic direct input
+          ;; is seeded from the VersionInstance ledger by the count epoch.
+          [(and (null? joins) (not (ormap neg-clause? bodys))) 'nonrec]
           [(for/or ([cl (in-list joins)])
              (set-member? (count-mode-dynamic-rels cm) (join-rel cl)))
            'rec]
@@ -168,7 +172,7 @@
       (for/fold ([acc acc]) ([staged (in-list (stage-rule rule add-temp!))])
         (match-define (cons staged-rule statics) staged)
         (define versions
-          (if (count-flavor)
+          (if (and (count-flavor) (not (maintenance-flavor)))
               (plan-versions-counted staged-rule statics)
               (plan-rule-versions staged-rule dynamic? temp? lattice? statics)))
         ;; SEEDED RE-ENTRY version (the staging-replay bug, 2026-07-10): a
@@ -440,11 +444,12 @@
                                                  (not (const-cl? cl))))
                                heads))
 
-     ;; `old-clauses` are the dynamic body joins this version must probe
-     ;; against R_old = FULL - current delta rather than FULL (exact
-     ;; semi-naive, docs/incremental.md §6/§8): they get wrapped with
-     ;; $oldjoin, which operationalization lowers to join_probe_old.
-     (define (make-version driver old-clauses)
+     ;; Positive maintenance assigns an instantiation to its rightmost new
+     ;; occurrence: N before, delta at the driver, O=N-delta after.  Negative
+     ;; maintenance assigns it to its leftmost deleted occurrence with the
+     ;; same positional shape but O=N+delta after.  The wrappers lower to the
+     ;; corresponding runtime index views.
+     (define (make-version driver marked-clauses)
        (define-values (body-schedule ground)
          (schedule-body driver joins computes+ guards const-vars rule))
        ;; every variable a head emits must be ground by now
@@ -459,9 +464,12 @@
                   (strip-prov rule))))
        (define marked
          (for/list ([cl (in-list body-schedule)])
-           (if (memq cl old-clauses)
-               `(syn ,(cadr cl) $oldjoin ,cl)
-               cl)))
+           (cond
+             [(and (pair? marked-clauses) (memq cl marked-clauses))
+              `(syn ,(cadr cl)
+                    ,(if (negative-maintenance-flavor?) '$newjoin '$oldjoin)
+                    ,cl)]
+             [else cl])))
        `(syn ,prov ,(if seeded? 'seeded-rule 'rule) ,@const-lets ,@marked
              --> ,@head-rest))
 
@@ -484,9 +492,9 @@
          ;; a temp join must drive (temps have no indices to probe), and its
          ;; delta subsumes its siblings' (they were emitted together)
          [(pair? temp-joins) (list (cons (car temp-joins) '()))]
-         ;; one delta-driven version per dynamic join; version i drives the
-         ;; i-th dynamic join and treats the ones ORDERED AFTER it as R_old,
-         ;; so each satisfying assignment fires in exactly one version
+         ;; one delta-driven version per dynamic join.  The joins ordered
+         ;; after the driver use the sign-specific exact view: R_old for +,
+         ;; R_pre=FULL union delta for -.
          [(pair? dynamic-joins)
           (for/list ([d (in-list dynamic-joins)] [i (in-naturals)])
             (cons d (if exact-old? (drop dynamic-joins (add1 i)) '())))]

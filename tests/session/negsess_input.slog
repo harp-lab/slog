@@ -1,0 +1,14 @@
+;; Negation session fixture with API-fed edges. Nodes remain immutable
+;; source-program support; only edge is edited by the tests.
+
+table (edge int int)
+table (path int int)
+table (node int)
+table (unreached int)
+
+rule (node 1) (node 2) (node 3) (node 4) (node 5)
+
+rule (edge X Y) --> (path X Y)
+rule (path X Y) (edge Y Z) --> (path X Z)
+
+rule (node X) ~(path 1 X) --> (unreached X)

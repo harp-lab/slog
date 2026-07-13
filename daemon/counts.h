@@ -4,9 +4,10 @@
  * (docs/incremental.md §6.1/§8B): input(1) | nonrec(31) | rec(32).
  *
  *   - `input` is the EDB set-semantics bit (§8B.5): the tuple was asserted
- *     as an input to this version (batch, import, link, ground fact, freeze
- *     root).  Inputs are sets, not counts -- re-adding is a no-op, so the
- *     bit never participates in arithmetic.
+ *     as an input to this version (root, batch, import, link, or flat
+ *     freeze).  Inputs are sets, not counts -- re-adding is a no-op, so the
+ *     bit never participates in arithmetic.  Program ground facts are
+ *     non-recursive rule support, not input.
  *   - `nonrec`/`rec` count one-step derivations by rules tagged
  *     non-recursive/recursive for the head's stratum (§3.1).  Stored
  *     counters are never negative -- signs travel on delta records -- so an
@@ -71,6 +72,17 @@ inline u64 cnt_add(u64 w, s64 dnonrec, s64 drec)
   return (w & cnt_input_bit) | ((u64)nr << cnt_nonrec_shift) | (u64)rc;
 }
 
+inline bool cnt_try_add(u64 w, s64 dnonrec, s64 drec, u64& out)
+{
+  const s64 nr = (s64)cnt_nonrec(w) + dnonrec;
+  const s64 rc = (s64)cnt_rec(w) + drec;
+  if (nr < 0 || rc < 0
+      || (u64)nr > cnt_nonrec_max || (u64)rc > cnt_rec_max)
+    return false;
+  out = (w & cnt_input_bit) | ((u64)nr << cnt_nonrec_shift) | (u64)rc;
+  return true;
+}
+
 inline bool cnt_present(u64 w)
 {
   return cnt_input(w) || cnt_nonrec(w) + cnt_rec(w) > 0;
@@ -80,13 +92,18 @@ inline bool cnt_present(u64 w)
 // the counted flavors travel through the ordinary send-shard/delta transport,
 // tagged on their InsertBatch with the emitting rule's static classification
 // (§6.4: recursive iff some body relation is in the rule's own stratum;
-// body-less ground rules are inputs, §8B.5).  Batches are per-(task, head)
+// body-less ground rules are non-recursive program support, §8B.5).  Batches
+// are per-(task, head)
 // so a batch is always kind-homogeneous; `none` marks ordinary set-semantics
 // batches, which must never reach a counting task.
 constexpr u8 cnt_kind_none = 0;
 constexpr u8 cnt_kind_input = 1;
 constexpr u8 cnt_kind_nonrec = 2;
 constexpr u8 cnt_kind_rec = 3;
+// A presence signal staged between M1 strata.  It is read as a premise but
+// is not itself a support contribution; MaintainTask consumes it after the
+// read phase without touching the sidecar.
+constexpr u8 cnt_kind_premise = 4;
 
 // Fold one contribution of `kind` into a stored counter word: inputs SET the
 // bit (set semantics -- idempotent, never arithmetic, §8B.5); derivations
@@ -102,6 +119,31 @@ inline u64 cnt_apply(u64 w, u8 kind)
   fatal("cnt_apply on a kind-less batch: a set-semantics row reached a "
         "counting task (flavor mix-up)");
   return w;
+}
+
+inline bool cnt_try_apply(u64 w, u8 kind, u64& out)
+{
+  switch (kind)
+  {
+    case cnt_kind_input: out = cnt_set_input(w); return true;
+    case cnt_kind_nonrec: return cnt_try_add(w, 1, 0, out);
+    case cnt_kind_rec: return cnt_try_add(w, 0, 1, out);
+  }
+  return false;
+}
+
+inline bool cnt_try_apply_signed(u64 w, u8 kind, s8 sign, u64& out)
+{
+  if (sign != 1 && sign != -1) return false;
+  switch (kind)
+  {
+    case cnt_kind_input:
+      out = sign > 0 ? cnt_set_input(w) : cnt_clear_input(w);
+      return true;
+    case cnt_kind_nonrec: return cnt_try_add(w, sign, 0, out);
+    case cnt_kind_rec: return cnt_try_add(w, 0, sign, out);
+  }
+  return false;
 }
 
 }

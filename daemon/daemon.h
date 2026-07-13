@@ -59,6 +59,15 @@ private:
   OracleRegistry* oracle_registry;
   std::vector<Stratum*> pipeline;
   size_t next_unrun = 0;
+  // Recount and other observational maintenance strata execute through the
+  // normal scheduler but are not semantic pipeline events.  They must not
+  // advance positions, appear as writers, or perturb later VersionKeys.
+  bool next_push_transient = false;
+  Stratum* transient_run = nullptr;
+  // Unlike a transient recount plugin, delta/replay maintenance retains its
+  // legacy numeric pipeline position.  This flag keeps it out of semantic
+  // writer ownership while preserving old position-addressed recipes.
+  bool next_push_maintenance = false;
   // Set after each run; consumed by beginStratum.  The reload (dump every
   // relation to insert batches, CLEAR all indices) must happen before the
   // next stratum registers its indices and binds its tasks to them -- so it
@@ -77,6 +86,7 @@ private:
   // stratum restages and binds the P-environment instead of the latest;
   // push() resets the database's bind position after registration.
   s64 pending_bind_pos = -1;
+  std::vector<std::pair<std::string, u64>> pending_bind_versions;
 
   static u64 envU64(const char* name, u64 fallback)
   {
@@ -101,6 +111,7 @@ public:
 
   ~Daemon()
   {
+    if (transient_run) delete transient_run;
     for (Stratum* s : pipeline)
       delete s;
     delete database;
@@ -136,6 +147,9 @@ public:
   {
     if (refuseIfSuspended("open")) return;
     database->loadDatabaseBIN("data/" + db_name + "/");
+    // A flat/root open is semantic input.  Recipe/compressed derived layers
+    // use importLayer/replay instead and therefore do not take this path.
+    database->markLatestRelationsDirect();
     // A boundary event (docs/incremental.md §0.4/B0): the loaded relations
     // registered at the position just consumed; advancing here keeps a
     // following segment boundary's rebinds from shadowing them at the same
@@ -151,7 +165,7 @@ public:
   void import(const std::string& db_name)
   {
     if (refuseIfSuspended("import")) return;
-    database->importDatabaseBIN("data/" + db_name + "/");
+    database->importDatabaseBIN("data/" + db_name + "/", false, {}, -1, true);
     database->advancePosition();   // boundary event (§0.4/B0), as in open
     needs_reload = true;
   }
@@ -217,7 +231,9 @@ public:
       // the latest environment as usual.
       database->reloadInsertBatchesAt((u32)pending_bind_pos);
       database->setBindPosition(pending_bind_pos);
+      database->setBindVersions(pending_bind_versions);
       pending_bind_pos = -1;
+      pending_bind_versions.clear();
     }
     else if (needs_reload)
     {
@@ -235,6 +251,37 @@ public:
   {
     if (refuseIfSuspended("bind-at")) return;
     pending_bind_pos = (s64)pos;
+    pending_bind_versions.clear();
+  }
+
+  // Rebind one historical stratum instance by exact VersionId.  The numeric
+  // position is retained only for compiler-local relations absent from the
+  // recorded semantic read/write maps.
+  void bindInstance(u32 pos,
+                    const std::vector<std::pair<std::string, u64>>& bindings)
+  {
+    if (refuseIfSuspended("bind-instance")) return;
+    pending_bind_pos = (s64)pos;
+    pending_bind_versions = bindings;
+  }
+
+  void armTransientStratum()
+  {
+    if (refuseIfSuspended("transient-stratum")) return;
+    if (transient_run != nullptr)
+    {
+      emit("(error \"a transient stratum is already active\")");
+      return;
+    }
+    next_push_transient = true;
+    emit("(transient-armed)");
+  }
+
+  void armMaintenanceStratum()
+  {
+    if (refuseIfSuspended("maintenance-stratum")) return;
+    next_push_maintenance = true;
+    emit("(maintenance-armed)");
   }
 
   // Delta-entry variant (docs/incremental.md §0.5 mode 3, 0.B5): NO reload
@@ -260,7 +307,9 @@ public:
       // push() returns resolution to the latest environment, exactly as
       // for a positional beginStratum.
       database->setBindPosition(pending_bind_pos);
+      database->setBindVersions(pending_bind_versions);
       pending_bind_pos = -1;
+      pending_bind_versions.clear();
     }
     return new Stratum(name);
   }
@@ -346,7 +395,7 @@ public:
     if (refuseIfSuspended("add-tuple")) return;
     slog::Relation* r = database->getRelation(rel);
     if (!r) { emit(std::string("(error \"add-tuple: no relation ") + rel + "\")"); return; }
-    r->insertTupleAllIndices(t.data());
+    r->addInput(t.data());
     needs_reload = true;
   }
   // Retract one tuple out-of-band (docs/incremental.md §0.6, B2): the
@@ -366,7 +415,16 @@ public:
            + " is a lattice/struct relation; retract inputs, not derivations\")");
       return;
     }
-    const bool found = r->removeTuple(t.data());
+    Relation::InputOutcome o = r->classifyDeleteInput(t.data());
+    if (o == Relation::INPUT_DERIVED_ONLY || o == Relation::INPUT_ABSENT)
+    {
+      emit(std::string("(error \"del-tuple: tuple in ") + rel
+           + (o == Relation::INPUT_DERIVED_ONLY
+                ? " is derived-only\")" : " is absent\")"));
+      return;
+    }
+    r->deleteInput(t.data());
+    const bool found = true;
     database->accelInvalidate(rel);   // §4.4.5: retracted rows must not reseed
     needs_reload = true;
     emit(std::string("(deleted ") + rel + " " + (found ? "1" : "0") + ")");
@@ -431,7 +489,7 @@ public:
       return;
     }
     for (const auto& t : ts)
-      r->insertTupleAllIndices(t.data());
+      r->addInput(t.data());
     if (pos < 0)
       needs_reload = true;
     emit(std::string("(added ") + rel + " " + std::to_string(ts.size()) + ")");
@@ -450,11 +508,168 @@ public:
            + " is a lattice/struct relation; batch inputs, not derivations\")");
       return;
     }
-    const u32 found = r->removeTuples(ts);
+    // Preflight makes a mixed batch atomic with respect to input legality.
+    for (const auto& t : ts)
+    {
+      Relation::InputOutcome o = r->classifyDeleteInput(t.data());
+      if (o == Relation::INPUT_DERIVED_ONLY || o == Relation::INPUT_ABSENT)
+      {
+        emit(std::string("(error \"del-batch: tuple in ") + rel
+             + (o == Relation::INPUT_DERIVED_ONLY
+                  ? " is derived-only\")" : " is absent\")"));
+        return;
+      }
+    }
+    u32 found = 0;
+    for (const auto& t : ts)
+    {
+      r->deleteInput(t.data());
+      ++found;
+    }
     database->accelInvalidate(rel);   // §4.4.5: retracted rows must not reseed
     if (pos < 0)
       needs_reload = true;
     emit(std::string("(deleted ") + rel + " " + std::to_string(found) + ")");
+  }
+
+  void emitInputStates(const std::string& rel, s64 pos,
+                       const std::vector<std::vector<u64>>& ts)
+  {
+    Relation* r = (pos < 0) ? database->getRelation(rel)
+                            : database->getRelationAt(rel, (u32)pos);
+    if (!r)
+    {
+      emit(std::string("(error \"input-state: no relation ") + rel + "\")");
+      return;
+    }
+    for (size_t i = 0; i < ts.size(); ++i)
+    {
+      const u64* t = ts[i].data();
+      emit("(inputstate " + std::to_string(i) + " "
+           + (r->isDirectInput(t) ? "1" : "0") + " "
+           + (r->isInheritanceMasked(t) ? "1" : "0") + " "
+           + (r->hasInheritedBaseline(t) ? "1" : "0") + " "
+           + (r->hasLiveTuple(t) ? "1" : "0") + ")");
+    }
+    emit("(inputstate-done " + std::to_string(ts.size()) + ")");
+  }
+
+  void setOverlayAt(const std::string& rel, s64 pos,
+                    const std::vector<std::pair<u8, std::vector<u64>>>& rows)
+  {
+    if (refuseIfSuspended("set-overlay")) return;
+    Relation* r = (pos < 0) ? database->getRelation(rel)
+                            : database->getRelationAt(rel, (u32)pos);
+    if (!r)
+    {
+      emit(std::string("(error \"set-overlay: no relation ") + rel + "\")");
+      return;
+    }
+    if (r->isLattice() || r->getStructId() > 0)
+    {
+      emit(std::string("(error \"set-overlay: ") + rel
+           + " is a lattice/struct relation\")");
+      return;
+    }
+    for (const auto& row : rows)
+      r->setInputOverlay(row.second.data(), row.first);
+    database->accelInvalidate(rel);
+    if (pos < 0) needs_reload = true;
+    emit("(overlay-set " + rel + " " + std::to_string(rows.size()) + ")");
+  }
+
+  // M1 certified positive edit: preserve the VersionId and its established
+  // support sidecar, set direct input support, and journal a premise only
+  // when membership actually crosses 0->1 (a derived-live row is support-only).
+  void setOverlayPositive(const std::string& rel,
+                          const std::vector<std::vector<u64>>& rows)
+  {
+    if (refuseIfSuspended("set-overlay-positive")) return;
+    Relation* r = database->getRelation(rel);
+    if (!r)
+    {
+      emit(std::string("(error \"set-overlay-positive: no relation ") + rel + "\")");
+      return;
+    }
+    u32 applied = 0;
+    for (const auto& row : rows)
+      if (database->applyPositiveInput(r, row.data())) ++applied;
+    database->accelInvalidate(rel);
+    emit("(overlay-positive " + rel + " " + std::to_string(applied)
+         + " " + std::to_string(rows.size()) + ")");
+  }
+
+  void setOverlayNegative(const std::string& rel,
+                          const std::vector<std::vector<u64>>& rows)
+  {
+    if (refuseIfSuspended("set-overlay-negative")) return;
+    Relation* r = database->getRelation(rel);
+    if (!r)
+    {
+      emit(std::string("(error \"set-overlay-negative: no relation ") + rel + "\")");
+      return;
+    }
+    u32 applied = 0;
+    for (const auto& row : rows)
+      if (database->applyNegativeInput(r, row.data())) ++applied;
+    database->accelInvalidate(rel);
+    emit("(overlay-negative " + rel + " " + std::to_string(applied)
+         + " " + std::to_string(rows.size()) + ")");
+  }
+
+  void stageUpdateTransitions(const std::vector<std::string>& names, s8 sign = 1)
+  {
+    if (refuseIfSuspended("stage-update-transitions")) return;
+    database->stageUpdateTransitions(names, sign);
+    emit("(transitions-staged " + std::to_string((s32)sign) + " "
+         + std::to_string(names.size()) + ")");
+  }
+
+  void emitUpdateCountsValid()
+  {
+    emit(database->updateCountsValid() ? "(update-counts-valid 1)"
+                                       : "(update-counts-valid 0)");
+  }
+
+  void beginUpdateEpoch(u64 expected)
+  {
+    if (refuseIfSuspended("begin-update")) return;
+    std::string why;
+    const bool ok = database->beginUpdateEpoch(expected, why);
+    emit(ok ? ("(update-begun " + std::to_string(expected) + ")")
+            : (std::string("(error \"begin-update: ") + why + "\")"));
+  }
+
+  void commitUpdateEpoch()
+  {
+    if (refuseIfSuspended("commit-update")) return;
+    std::string why;
+    const bool counts_ok = database->commitUpdateEpoch(why);
+    if (!why.empty())
+      emit(std::string("(error \"commit-update: ") + why + "\")");
+    else
+      emit("(update-committed "
+           + std::to_string(database->getUpdateEpochId()) + " "
+           + (counts_ok ? "counts-valid" : "counts-invalid") + ")");
+  }
+
+  void abortUpdateEpoch()
+  {
+    database->abortUpdateEpoch();
+    emit("(update-aborted)");
+  }
+
+  void emitUpdateEpoch()
+  {
+    emit("(update-epoch " + std::to_string(database->getUpdateEpochId())
+         + (database->updateActive() ? " active)" : " settled)"));
+  }
+
+  void exerciseSignedUnderflow()
+  {
+    emit(database->exerciseSignedUnderflow()
+           ? "(signed-underflow-recovered)"
+           : "(error \"signed underflow was accepted\")");
   }
 
   // Multi-tuple staging (0.C): the delta-entry flush's batch enters the
@@ -518,7 +733,7 @@ public:
                    s64 pos = -1)
   {
     if (refuseIfSuspended("import-delta")) return;
-    database->importDatabaseBIN(dir + "/", false, name_map, pos);
+    database->importDatabaseBIN(dir + "/", false, name_map, pos, true);
     if (pos < 0)
     {
       database->advancePosition();   // boundary event (§0.4/B0), as in open
@@ -581,10 +796,50 @@ public:
     // the reload, not registration, dominates re-entry (B5's target).
     for (size_t i = 0; i < next_unrun && i < pipeline.size(); ++i)
       if (pipeline[i]->name == s->name)
-        pipeline[i]->clearForUpgrade();
+        pipeline[i]->clearTasksForHusk();
+    s->semantic_instance = !next_push_transient && !next_push_maintenance;
+    next_push_maintenance = false;
+    // Capture the exact output instances BEFORE positional resolution is
+    // reset.  Several strata may name the same version; aliases do not mint
+    // another id.
+    for (const std::string& name : s->read_rels)
+    {
+      Relation* r = database->getRelation(name);
+      if (r != nullptr)
+        s->read_versions.push_back({name, r->getVersionId()});
+    }
+    for (const std::string& name : s->dynamic_rels)
+    {
+      Relation* r = database->getRelation(name);
+      if (r != nullptr)
+      {
+        s->write_versions.push_back({name, r->getVersionId()});
+        s->addWriteVersionId(r->getVersionId());
+      }
+    }
+    auto unique_bindings = [](auto& bindings)
+    {
+      std::sort(bindings.begin(), bindings.end());
+      bindings.erase(std::unique(bindings.begin(), bindings.end()), bindings.end());
+    };
+    unique_bindings(s->read_versions);
+    unique_bindings(s->write_versions);
+    std::sort(s->write_version_ids.begin(), s->write_version_ids.end());
+    s->write_version_ids.erase(
+      std::unique(s->write_version_ids.begin(), s->write_version_ids.end()),
+      s->write_version_ids.end());
     // Registration is over: resolution returns to the latest environment
     // (a positional bind-at covers exactly one beginStratum..push window).
     database->setBindPosition(-1);
+    database->clearBindVersions();
+    if (next_push_transient)
+    {
+      next_push_transient = false;
+      s->scc_id = (u32)pipeline.size();
+      s->pipeline_pos = database->currentPosition();
+      transient_run = s;
+      return;
+    }
     s->scc_id = (u32)pipeline.size();
     // A fresh stratum is a boundary event (docs/incremental.md §0.4/B0): it
     // occupied the current version-environment position while registering
@@ -592,6 +847,12 @@ public:
     // hot-swap re-push above never reaches here, so an upgrade neither moves
     // the counter nor rebinds positions.
     s->pipeline_pos = database->currentPosition();
+    if (s->semantic_instance)
+      for (u64 vid : s->write_version_ids)
+      {
+        Relation* r = database->getRelationByVersionId(vid);
+        if (r != nullptr) r->addSemanticWriter(s->scc_id);
+      }
     database->advancePosition();
     pipeline.push_back(s);
   }
@@ -606,11 +867,26 @@ public:
   // the pre-boundary position still see the predecessors.
   void beginSegment(const std::vector<std::string>& writes)
   {
+    std::vector<std::pair<std::string, std::string>> keyed;
+    for (const std::string& name : writes) keyed.push_back({name, ""});
+    beginSegment(keyed);
+  }
+
+  void beginSegment(const std::vector<std::pair<std::string, std::string>>& writes)
+  {
     if (refuseIfSuspended("begin-segment")) return;
     u32 versioned = 0;
-    for (const std::string& name : writes)
-      if (database->newVersion(name) != nullptr)
-        ++versioned;
+    for (const auto& write : writes)
+    {
+      const std::string& name = write.first;
+      const std::string& key = write.second;
+      if (database->getRelation(name) != nullptr)
+      {
+        if (database->newVersion(name, key) != nullptr) ++versioned;
+      }
+      else
+        database->planVersionKey(name, key);
+    }
     const u32 pos = database->currentPosition();
     database->advancePosition();
     // A boundary that versioned nothing is still an event (the driver
@@ -619,6 +895,32 @@ public:
     if (versioned > 0)
       needs_reload = true;
     emit("(segment " + std::to_string(pos) + " " + std::to_string(versioned) + ")");
+  }
+
+  // JIT event-time input injection: create a successor version at the current
+  // tip without adding a rule writer.  Existing-slot edits continue to use
+  // add/del-batch-at.  Historical insertion requires rebuilding a recipe
+  // branch and is deliberately not faked by appending a tip binding.
+  void injectVersion(const std::string& name, const std::string& version_key)
+  {
+    if (refuseIfSuspended("inject-version")) return;
+    if (database->hasVersionKey(version_key))
+    {
+      emit(std::string("(error \"inject-version: duplicate VersionKey ")
+           + version_key + "\")");
+      return;
+    }
+    Relation* r = database->newVersion(name, version_key);
+    if (r == nullptr)
+    {
+      emit(std::string("(error \"inject-version: no relation ") + name + "\")");
+      return;
+    }
+    const u32 pos = database->currentPosition();
+    database->advancePosition();
+    needs_reload = true;
+    emit("(injected " + name + " " + std::to_string(pos) + " "
+         + std::to_string(r->getVersionId()) + ")");
   }
 
   // Emit the pipeline introspection line (docs/incremental.md §0.4):
@@ -630,12 +932,82 @@ public:
   void emitPipeline()
   {
     std::string s = "(pipeline (pos "
-                  + std::to_string(database->currentPosition()) + ") (strata";
+                  + std::to_string(database->currentPosition())
+                  + ") (evaluation \"" + database->getEvaluationId()
+                  + "\") (update-epoch "
+                  + std::to_string(database->getUpdateEpochId())
+                  + ") (strata";
     for (Stratum* st : pipeline)
+    {
       s += " (s " + std::to_string(st->scc_id) + " "
-         + std::to_string(st->pipeline_pos) + " \"" + st->name + "\")";
-    s += ")" + database->relChainsSexpr() + ")";
+         + std::to_string(st->pipeline_pos) + " \"" + st->name + "\" (kind "
+         + (st->semantic_instance ? "semantic" : "maintenance") + ") (reads";
+      for (const auto& binding : st->read_versions)
+        s += " (" + binding.first + " " + std::to_string(binding.second) + ")";
+      s += ") (write-map";
+      for (const auto& binding : st->write_versions)
+        s += " (" + binding.first + " " + std::to_string(binding.second) + ")";
+      s += ") (writes";
+      for (u64 vid : st->write_version_ids)
+        s += " " + std::to_string(vid);
+      s += "))";
+    }
+    s += ")" + database->versionIdsSexpr() + database->relChainsSexpr() + ")";
     emit(s);
+  }
+
+  void setEvaluationId(const std::string& id)
+  {
+    database->setEvaluationId(id);
+    emit("(evaluation-set)");
+  }
+
+  void beginCountEpoch(const std::vector<u64>& vids)
+  {
+    if (refuseIfSuspended("begin-count-epoch")) return;
+    std::string why;
+    const bool ok = database->beginCountEpoch(vids, why);
+    emit(ok ? "(count-epoch-begun)"
+            : (std::string("(error \"count epoch: ") + why + "\")"));
+  }
+
+  void commitCountEpoch(const std::vector<u64>& vids)
+  {
+    if (refuseIfSuspended("commit-count-epoch")) return;
+    std::string why;
+    const bool ok = database->commitCountEpoch(vids, why);
+    emit(ok ? "(count-epoch-committed)"
+            : (std::string("(error \"count epoch: ") + why + "\")"));
+  }
+
+  void abortCountEpoch(const std::vector<u64>& vids)
+  {
+    database->abortCountEpoch(vids);
+    emit("(count-epoch-aborted)");
+  }
+
+  void coverCountWriter(u32 scc)
+  {
+    if (refuseIfSuspended("cover-count-writer")) return;
+    Stratum* found = nullptr;
+    for (Stratum* st : pipeline)
+      if (st != nullptr && st->scc_id == scc)
+      {
+        found = st;
+        break;
+      }
+    if (found == nullptr || !found->semantic_instance)
+    {
+      emit(std::string("(error \"count writer ") + std::to_string(scc)
+           + " is not a semantic stratum instance\")");
+      return;
+    }
+    for (u64 vid : found->write_version_ids)
+    {
+      Relation* r = database->getRelationByVersionId(vid);
+      if (r != nullptr) r->coverCountWriter(scc);
+    }
+    emit(std::string("(count-writer-covered ") + std::to_string(scc) + ")");
   }
 
   // Versioned sizes (§0.4 addressing): every relation resolved at position P
@@ -678,30 +1050,39 @@ public:
   void continueRun(RunBudget b)
   {
     const bool suspended = database->isSuspended();
-    if (!suspended && next_unrun >= pipeline.size())
+    if (!suspended && transient_run == nullptr && next_unrun >= pipeline.size())
     {
       if (pipeline.empty()) emit("(idle)");
       else emit(pipeline.back()->fixpoint_msg);   // idempotent re-confirm
       return;
     }
 
-    Stratum* s = pipeline[next_unrun];             // suspended one or next unrun
+    const bool transient = transient_run != nullptr;
+    Stratum* s = transient ? transient_run : pipeline[next_unrun];
     const RunStatus st = database->continueStratum(s, b, !suspended, true);
 
     char buf[192];
     if (st.fixpoint)
     {
-      ++next_unrun;
-      needs_reload = true;
-      // runtime statistics (docs/stats.md): one $stat_fixpoint row and this
-      // stratum's accumulated $stat_fires rows, materialized immediately so
-      // output actions after the final stratum see them
-      database->publishStratumStats(s->scc_id, s->name, st.iteration,
-                                    st.ms_total);
+      if (!transient)
+      {
+        ++next_unrun;
+        needs_reload = true;
+        // runtime statistics (docs/stats.md): one $stat_fixpoint row and this
+        // stratum's accumulated $stat_fires rows, materialized immediately so
+        // output actions after the final stratum see them
+        database->publishStratumStats(s->scc_id, s->name, st.iteration,
+                                      st.ms_total);
+      }
       std::snprintf(buf, sizeof(buf), "(fixpoint %u \"%s\" %u %.3f)",
                     s->scc_id, s->name.c_str(), st.iteration, st.ms_total);
       s->fixpoint_msg = buf;
       emit(s->fixpoint_msg);
+      if (transient)
+      {
+        transient_run = nullptr;
+        delete s;
+      }
     }
     else
     {

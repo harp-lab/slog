@@ -40,6 +40,28 @@ expect_not() { # name unexpected-substring file
     echo "PASS $1"; PASS=$((PASS+1))
   fi
 }
+versioned_count_oracle() { # name session-log
+  local name="$1" log="$2" prefix="out/${1}-versioned-oracle"
+  grep '^[(]pipeline ' "$log" | tail -1 > "${prefix}.pipeline"
+  grep '^[(]inputledger' "$log" > "${prefix}.ledger"
+  local oracle_args=()
+  while read -r h; do oracle_args+=("build/${h}_count.cprog"); done < <(
+    grep -oE '\(s [0-9]+ [0-9]+ "[0-9a-f]{8}" \(kind semantic\)' \
+      "${prefix}.pipeline" \
+      | sed -E 's/.*"([0-9a-f]{8})".*/\1/' | awk '!seen[$0]++'
+  )
+  if racket tests/api/count-ir-oracle.rkt --versioned \
+       "${prefix}.pipeline" "${prefix}.ledger" "${oracle_args[@]}" \
+       > "${prefix}.expected" 2> "${prefix}.err" \
+     && grep -E '^\(vcountrow ' "$log" | sort -u > "${prefix}.actual" \
+     && sort -u "${prefix}.expected" > "${prefix}.expected.sorted" \
+     && diff "${prefix}.actual" "${prefix}.expected.sorted" \
+          > "${prefix}.diff"; then
+    echo "PASS $name"; PASS=$((PASS+1))
+  else
+    echo "FAIL $name (see ${prefix}.{diff,err})"; FAIL=$((FAIL+1))
+  fi
+}
 
 # Tests compile at -O0 (fast, no background -O2/hot-swap; session-drive.rkt
 # has no upgrade logic).  Correctness is optimization-independent.
@@ -139,11 +161,12 @@ expect "b1-rebound-guard" "tip re-entry is unsound here" out/sess-b1g.log
 # Plain deletion: retract edge (2 3), clear-and-rerun cone(edge) -- path
 # rebuilds from scratch over the suffix: {(1,2),(3,4)} only.
 timeout 600 racket tests/api/session-drive.rkt \
-  run:tests/session/base.slog \
+  run:tests/session/base_input.slog \
+  batch+:edge,1,2 batch+:edge,2,3 batch+:edge,3,4 flush \
   del-tuple:edge,2,3 rerun:edge \
   dump-rel:path \
   > out/sess-b2d.log 2>&1
-expect "b2-deleted"    "(deleted edge 1)" out/sess-b2d.log
+expect "b2-deleted"    "(overlay-set edge 1)" out/sess-b2d.log
 expect "b2-del-cone"   "(rerun edge 1 " out/sess-b2d.log
 expect "b2-path-minus" "(dumpdone 2)" out/sess-b2d.log
 
@@ -152,7 +175,8 @@ expect "b2-path-minus" "(dumpdone 2)" out/sess-b2d.log
 # deletion grows it (2 -> 4); both route through clear-and-rerun (the cone
 # holds a neg edge), and each re-run recomputes the complement exactly.
 timeout 600 racket tests/api/session-drive.rkt \
-  run:tests/session/negsess.slog \
+  run:tests/session/negsess_input.slog \
+  batch+:edge,1,2 batch+:edge,2,3 flush \
   dump-rel:unreached \
   add-tuple:edge,3,4 rerun:edge dump-rel:unreached \
   del-tuple:edge,2,3 rerun:edge dump-rel:unreached \
@@ -175,7 +199,8 @@ expect "b2-neg-refusal" "use rerun (clear-and-rerun, 0.B2)" out/sess-b2r.log
 # ids (content rendering proves no dangling references).  dist is outside
 # cone(in) and must survive untouched.
 timeout 600 racket tests/api/session-drive.rkt \
-  run:tests/session/base2.slog \
+  run:tests/session/base2_input.slog \
+  batch+:in,1,2 batch+:in,3,4 flush \
   del-tuple:in,3,4 rerun:in \
   dump-rel:out dump-rel:pair sizes-at:99 \
   > out/sess-b2s.log 2>&1
@@ -185,18 +210,18 @@ expect "b2-out-content" "(dumprow (pair 1 2))" out/sess-b2s.log
 expect "b2-dist-kept"   "(dist 3)" out/sess-b2s.log
 
 # --- B4+B5: the routing rule (compiler/session.rkt flush) -------------------
-# Queued signed batches route per §0.5: all-adds + a SINGLE-stratum
-# monotone cone -> delta-entry ("(route delta 1)", the lazily-compiled
-# build/<hash>_delta.O0.so, O(change)); a same-point add/delete pair
+# Queued signed batches route per §0.5/M1: certified positive plain-table
+# cones use support maintenance; a same-point add/delete pair
 # collapses to an empty flush ("(flush 0)", content untouched); a deletion
 # routes the union cone through clear-and-rerun ("(route rerun N M)").
 timeout 600 racket tests/api/session-drive.rkt \
-  run:tests/session/base.slog \
+  run:tests/session/base_input.slog \
+  batch+:edge,1,2 batch+:edge,2,3 batch+:edge,3,4 flush \
   batch+:edge,4,5 flush dump-rel:path \
   batch+:edge,7,8 batch-:edge,7,8 flush dump-rel:edge \
   batch-:edge,1,2 flush dump-rel:path \
   > out/sess-b4.log 2>&1
-expect "b4-route-delta"   "(route delta 1)" out/sess-b4.log
+expect "b4-route-delta"   "(route maintain 1)" out/sess-b4.log
 expect "b4-add-applied"   "(dumpdone 10)" out/sess-b4.log
 expect "b4-collapse"      "(flush 0)" out/sess-b4.log
 expect "b4-collapse-kept" "(dumpdone 4)" out/sess-b4.log
@@ -211,19 +236,17 @@ timeout 600 racket tests/api/session-drive.rkt \
 expect "b4-neg-route"  "(route rerun 2 " out/sess-b4n.log
 expect "b4-neg-result" "(dumpdone 2)" out/sess-b4n.log
 
-# a MULTI-stratum monotone cone stays on replay-entry (boundary-delta
-# capture between cone strata is M0's presence-transition machinery)
+# a MULTI-stratum monotone cone chains update-local presence transitions
 timeout 600 racket tests/api/session-drive.rkt \
   run:tests/session/twohop.slog \
   batch+:edge,3,4 flush dump-rel:endpoint \
   > out/sess-b4m.log 2>&1
-expect "b4-multihop-replay" "(route reenter 2)" out/sess-b4m.log
+expect "b4-multihop-replay" "(route maintain 2)" out/sess-b4m.log
 expect "b4-multihop-result" "(dumpdone 3)" out/sess-b4m.log
 
 # --- B5 repeated delta-entry + B6 exact-once staging ------------------------
-# Three consecutive delta flushes extend the chain 1..4 to 1..7; each must
-# route delta (live indices survive beginStratumDelta across flushes; B3's
-# husk-clearing frees each superseded delta incarnation) and the closure
+# Three consecutive maintained flushes extend the chain 1..4 to 1..7; live
+# indices and support sidecars survive each update and the closure
 # must be exact: C(7,2) = 21 paths.
 timeout 600 racket tests/api/session-drive.rkt \
   run:tests/session/base.slog \
@@ -231,14 +254,20 @@ timeout 600 racket tests/api/session-drive.rkt \
   batch+:edge,5,6 flush \
   batch+:edge,6,7 flush \
   dump-rel:path write-csv:out/sess-b5-csv \
+  dump-counts:path recount-force dump-counts:path \
   > out/sess-b5.log 2>&1
-expect "b5-repeat-delta" "(route delta 1)" out/sess-b5.log
-if [ "$(grep -cF '(route delta 1)' out/sess-b5.log)" = "3" ]; then
+expect "b5-repeat-delta" "(route maintain 1)" out/sess-b5.log
+if [ "$(grep -cF '(route maintain 1)' out/sess-b5.log)" = "3" ]; then
   echo "PASS b5-all-three-delta"; PASS=$((PASS+1))
 else
   echo "FAIL b5-all-three-delta (expected 3 delta routes)"; FAIL=$((FAIL+1))
 fi
 expect "b5-closure-exact" "(dumpdone 21)" out/sess-b5.log
+if [ "$(grep -cF '(countrow path 1 7 0 0 1)' out/sess-b5.log)" = "2" ]; then
+  echo "PASS b5-repeated-support-counts"; PASS=$((PASS+1))
+else
+  echo "FAIL b5-repeated-support-counts (maintained count differs from recount)"; FAIL=$((FAIL+1))
+fi
 
 # B6 -- exact-once staging discipline (§0.3, §8; the M0 prerequisite): the
 # FIRST delta flush's fire audit must show the batch fired each rule
@@ -263,7 +292,7 @@ timeout 600 racket tests/api/session-drive.rkt \
   abatch+:1,edge,0,1 flush \
   sizes-at:2 dump-rel:path write-csv:out/sess-c-anchored-csv \
   > out/sess-c-add.log 2>&1
-expect    "c-anchored-route" "(route anchored edge 1 3)" out/sess-c-add.log
+expect    "c-anchored-route" "(route anchored edge 1 4)" out/sess-c-add.log
 expect_re "c-anchored-old"   '\(sizes-at 2 .*\(edge 4\).*\(path 10\)' out/sess-c-add.log
 expect    "c-anchored-tip"   "(dumpdone 15)" out/sess-c-add.log
 timeout 600 racket tests/api/session-drive.rkt \
@@ -283,11 +312,13 @@ done
 # old environment shrinks (edge 2 / path 2) and the tip rebuilds to the
 # 4-path closure over {1-2, 3-4, 4-5}
 timeout 600 racket tests/api/session-drive.rkt \
-  run:tests/session/base.slog run:tests/session/seg2.slog \
+  run:tests/session/base_input.slog \
+  batch+:edge,1,2 batch+:edge,2,3 batch+:edge,3,4 flush \
+  run:tests/session/seg2.slog \
   abatch-:1,edge,2,3 flush \
   sizes-at:2 dump-rel:path \
   > out/sess-c-del.log 2>&1
-expect    "c-adel-applied" "(deleted edge 1)" out/sess-c-del.log
+expect    "c-adel-applied" "(overlay-set edge 1)" out/sess-c-del.log
 expect_re "c-adel-old"     '\(sizes-at 2 .*\(edge 2\).*\(path 2\)' out/sess-c-del.log
 expect    "c-adel-tip"     "(dumpdone 4)" out/sess-c-del.log
 
@@ -304,9 +335,9 @@ timeout 600 racket tests/api/session-drive.rkt \
 expect "c-reapply-tip"    "(dumpdone 21)" out/sess-c-reapply.log
 # the recipe carries both batches at ordinal anchors (§0.4: never raw
 # positions) alongside the run steps
-expect "c-recipe-run"     '(run "tests/session/base.slog")' out/sess-c-reapply.log
-expect "c-recipe-tipb"    "(batch edge (v 1) ((5 6)) ())" out/sess-c-reapply.log
-expect "c-recipe-anchb"   "(batch edge (v 0) ((0 1)) ())" out/sess-c-reapply.log
+expect "c-recipe-run"     '(run "tests/session/base.slog" (version-events' out/sess-c-reapply.log
+expect "c-recipe-tipb"    "(v 1) ((direct (5 6)))" out/sess-c-reapply.log
+expect "c-recipe-anchb"   "(v 0) ((direct (0 1)))" out/sess-c-reapply.log
 
 # log collapse (§0.2): an add flushed and then deleted at the same
 # version leaves NO trace in the recipe
@@ -333,10 +364,11 @@ timeout 600 racket slog.rkt --no-banner --out-db sess_cpay2 tests/session/payloa
 timeout 600 racket tests/api/session-drive.rkt \
   run:tests/session/base.slog \
   import-delta:data/sess_cpay \
-  dump-rel:path \
+  dump-rel:path recount pipeline input-ledger dump-all-counts \
   > out/sess-c-imp.log 2>&1
 expect "c-import-cone"   "(import-delta data/sess_cpay 1)" out/sess-c-imp.log
 expect "c-import-result" "(dumpdone 9)" out/sess-c-imp.log
+versioned_count_oracle "m04-import-ir-oracle" out/sess-c-imp.log
 timeout 600 racket tests/api/session-drive.rkt \
   run:tests/session/base.slog \
   import-delta:data/sess_cpay2,edge2=edge \
@@ -415,15 +447,16 @@ timeout 600 racket tests/api/session-drive.rkt \
   dump-rel:endp \
   batch+:reach,90,91 flush \
   abatch+:1,edge,4,5 flush \
-  dump-rel:reach dump-rel:endp recipe \
+  dump-rel:reach dump-rel:endp recount pipeline input-ledger dump-all-counts recipe \
   > out/sess-d-rename.log 2>&1
 expect "d-renamed"        "(renamed path reach 1)" out/sess-d-rename.log
 expect "d-endp-initial"   "(dumpdone 3)" out/sess-d-rename.log
-expect "d-walk-translates" "(route anchored edge 1 2)" out/sess-d-rename.log
-expect "d-alias-reapply"  "(added reach 1)" out/sess-d-rename.log
+expect "d-walk-translates" "(route anchored edge 1 3)" out/sess-d-rename.log
+expect "d-alias-reapply"  "(overlay-set reach 1)" out/sess-d-rename.log
 expect "d-reach-final"    "(dumpdone 11)" out/sess-d-rename.log
 expect "d-endp-final"     "(dumpdone 5)" out/sess-d-rename.log
 expect "d-recipe-rename"  "(rename-rel path reach)" out/sess-d-rename.log
+versioned_count_oracle "m04-rename-ir-oracle" out/sess-d-rename.log
 
 # drop + re-declare: the dropped lineage stays positionally addressable
 # (path 6 at position 2); the re-declaration is a severed fresh chain
@@ -432,22 +465,24 @@ timeout 600 racket tests/api/session-drive.rkt \
   run:tests/session/base.slog \
   drop-rel:path \
   run:tests/session/redecl.slog \
-  sizes-at:2 dump-rel:path \
+  sizes-at:2 dump-rel:path recount pipeline input-ledger dump-all-counts \
   > out/sess-d-drop.log 2>&1
 expect    "d-dropped"     "(dropped path 1)" out/sess-d-drop.log
 expect_re "d-old-lineage" '\(sizes-at 2 .*\(path 6\)' out/sess-d-drop.log
 expect    "d-fresh-chain" "(dumpdone 1)" out/sess-d-drop.log
+versioned_count_oracle "m04-drop-redeclare-ir-oracle" out/sess-d-drop.log
 
 # hot-link (D5): same merge machinery as import-delta, recorded as a LINK
 # step (payload stays a reference; externalisation leaves it alone)
 timeout 600 racket tests/api/session-drive.rkt \
   run:tests/session/base.slog \
   link:sess_cpay \
-  dump-rel:path recipe \
+  dump-rel:path recount pipeline input-ledger dump-all-counts recipe \
   > out/sess-d-link.log 2>&1
 expect "d-link-cone"   "(import-delta data/sess_cpay 1)" out/sess-d-link.log
 expect "d-link-result" "(dumpdone 9)" out/sess-d-link.log
 expect "d-link-recipe" '(link "sess_cpay" ())' out/sess-d-link.log
+versioned_count_oracle "m04-link-ir-oracle" out/sess-d-link.log
 
 # D3: rename as an EDIT on a stored database -- one implementation with
 # the batch edits (the op IS the action spec, streamed on load)
@@ -541,7 +576,7 @@ timeout 600 racket tests/api/session-drive.rkt \
   dump-rel:path \
   save:sess_pb \
   > out/sess-w2.log 2>&1
-expect "w2-route-delta" "(route delta 1)" out/sess-w2.log
+expect "w2-route-delta" "(route maintain 1)" out/sess-w2.log
 expect "w2-grown"       "(dumpdone 10)" out/sess-w2.log
 expect "pb-saved"       "(saved sess_pb 2)" out/sess-w2.log
 timeout 600 racket tests/api/session-drive.rkt \
@@ -586,9 +621,11 @@ expect "ren-live-reach" "(dumpdone 11)" out/sess-ren.log
 expect "ren-live-endp"  "(dumpdone 5)" out/sess-ren.log
 timeout 600 racket tests/api/session-drive.rkt \
   open:sess_ren dump-rel:reach dump-rel:endp \
+  recount pipeline input-ledger dump-all-counts \
   > out/sess-ren2.log 2>&1
 expect "ren-loaded-reach" "(dumpdone 11)" out/sess-ren2.log
 expect "ren-loaded-endp"  "(dumpdone 5)" out/sess-ren2.log
+versioned_count_oracle "m04-rename-load-oracle" out/sess-ren2.log
 
 # --- 0.E0b: anchored imports -- the walk no longer refuses across them -------
 # A payload (edges 5-6, 6-7) anchored INSIDE segment 1 (position 1): the
@@ -636,6 +673,10 @@ expect "freeze-cut" "froze sess_uns as sess_frozen" out/sess-freeze.log
 timeout 600 racket slog.rkt --no-banner --sizes -d sess_frozen tests/api/noop.slog \
   > out/sess-freeze2.log 2>&1
 expect "freeze-content" "(relation_size path 2)" out/sess-freeze2.log
+timeout 600 racket tests/api/session-drive.rkt \
+  open:sess_frozen recount pipeline input-ledger dump-all-counts \
+  > out/sess-freeze-counts.log 2>&1
+versioned_count_oracle "m04-freeze-root-oracle" out/sess-freeze-counts.log
 if [ -f data/sess_frozen/META ] && grep -q "kind flat" data/sess_frozen/META \
    && [ ! -f data/sess_frozen/prog.sexpr ] && [ ! -f data/sess_frozen/recipe ]; then
   echo "PASS freeze-flat-meta"; PASS=$((PASS+1))
@@ -664,9 +705,10 @@ timeout 600 racket tests/api/session-drive.rkt \
   > out/sess-lnk.log 2>&1
 expect "lnk-live" "(dumpdone 9)" out/sess-lnk.log
 timeout 600 racket tests/api/session-drive.rkt \
-  open:sess_lnk dump-rel:path \
+  open:sess_lnk dump-rel:path recount pipeline input-ledger dump-all-counts \
   > out/sess-lnk2.log 2>&1
 expect "lnk-loaded" "(dumpdone 9)" out/sess-lnk2.log
+versioned_count_oracle "m04-link-load-oracle" out/sess-lnk2.log
 
 # --- 0.E4: the stream-equivalence fuzzer -------------------------------------
 # Random base/batch splits with interleaved deletions, streamed flush by
@@ -697,20 +739,40 @@ expect "dhook-loaded" "(relation_size path 21)" out/sess-dhook.log
 # --- M0.2: the _count flavor / count round (docs/incremental.md 8B.1) --------
 # TC over a graph with one redundantly-derivable edge: hand-verified
 # per-tuple (input | nonrec | rec) sidecar contents after (recount) -- the
-# ground facts carry the EDB input bit (8B.5), the copy rule contributes
-# nonrec, and the recursive rule's single fixpoint instantiation
+# ground facts are nonrecursive PROGRAM support (not API-editable input), the
+# copy rule contributes nonrec, and the recursive rule's single fixpoint instantiation
 # contributes rec to exactly (path 1 3).  A second (recount) must
 # reproduce, not double (counts are recomputable cache, 8B.2).
 timeout 600 racket tests/api/session-drive.rkt \
   run:tests/session/counts_tc.slog recount recount \
   dump-counts:edge dump-counts:path \
   > out/sess-counts-tc.log 2>&1
-expect "cnt-edge-input"  "(countrow edge 1 2 1 0 0)" out/sess-counts-tc.log
+expect "cnt-edge-fact"   "(countrow edge 1 2 0 1 0)" out/sess-counts-tc.log
 expect "cnt-edge-count"  "(countdone edge 3)" out/sess-counts-tc.log
 expect "cnt-path-copy"   "(countrow path 1 2 0 1 0)" out/sess-counts-tc.log
 expect "cnt-path-copy2"  "(countrow path 2 3 0 1 0)" out/sess-counts-tc.log
 expect "cnt-path-rec"    "(countrow path 1 3 0 1 1)" out/sess-counts-tc.log
 expect "cnt-path-count"  "(countdone path 3)" out/sess-counts-tc.log
+
+# M0.4d's independent oracle: interpret the canonical count IR in Racket over
+# a from-scratch least fixpoint, then diff every edge/path support word with
+# the daemon sidecars.  The interpreter shares no runtime count machinery.
+oracle_args=()
+while read -r h; do oracle_args+=("build/${h}_count.cprog"); done < <(
+  grep -oE '\(s [0-9]+ [0-9]+ "[0-9a-f]{8}"' out/sess-counts-tc.log \
+    | sed -E 's/.*"([0-9a-f]{8})"/\1/' | awk '!seen[$0]++'
+)
+if racket tests/api/count-ir-oracle.rkt "${oracle_args[@]}" \
+     > out/sess-counts-oracle.log 2>&1 \
+   && grep -E '^\(countrow (edge|path) ' out/sess-counts-tc.log | sort -u \
+        > out/sess-counts-runtime.sorted \
+   && sort -u out/sess-counts-oracle.log > out/sess-counts-oracle.sorted \
+   && diff out/sess-counts-runtime.sorted out/sess-counts-oracle.sorted \
+        > out/sess-counts-oracle.diff; then
+  echo "PASS m04-count-ir-oracle"; PASS=$((PASS+1))
+else
+  echo "FAIL m04-count-ir-oracle (see out/sess-counts-oracle.diff/.log)"; FAIL=$((FAIL+1))
+fi
 
 # The TEMP-SPLIT headline case (the 6.2 temps decision): two instantiations
 # agreeing on the staged construction's only input -- a narrow residue temp
@@ -720,7 +782,7 @@ timeout 600 racket tests/api/session-drive.rkt \
   run:tests/session/counts_struct.slog recount \
   dump-counts:e dump-counts:h dump-counts:g \
   > out/sess-counts-st.log 2>&1
-expect "cnt-e-input"     "(countrow e 2 2 1 0 0)" out/sess-counts-st.log
+expect "cnt-e-fact"      "(countrow e 2 2 0 1 0)" out/sess-counts-st.log
 expect "cnt-h-two"       "(countrow h (h 2) 0 2 0)" out/sess-counts-st.log
 expect "cnt-g-two"       "(countrow g (h 2) 0 2 0)" out/sess-counts-st.log
 
@@ -731,18 +793,23 @@ timeout 600 racket tests/api/session-drive.rkt \
   run:tests/deep_fact.slog recount dump-counts:corners dump-counts:t \
   > out/sess-counts-tree.log 2>&1
 expect "cnt-tree-corners" "(countrow corners 1 32 0 1 0)" out/sess-counts-tree.log
-expect_re "cnt-tree-root" "^\\(countrow t \\(Nd .* 1 0 0\\)$" out/sess-counts-tree.log
+expect_re "cnt-tree-root" "^\\(countrow t \\(Nd .* 0 1 0\\)$" out/sess-counts-tree.log
 timeout 600 racket tests/api/session-drive.rkt \
   run:tests/neg_reach.slog recount dump-counts:reach \
+  pipeline input-ledger dump-all-counts \
   > out/sess-counts-neg.log 2>&1
 expect "cnt-neg-nonrec"  "(countrow reach 1 2 0 1 0)" out/sess-counts-neg.log
 expect "cnt-neg-rec"     "(countrow reach 1 6 0 0 1)" out/sess-counts-neg.log
 expect "cnt-neg-count"   "(countdone reach 7)" out/sess-counts-neg.log
+versioned_count_oracle "m04-negation-ir-oracle" out/sess-counts-neg.log
 timeout 600 racket tests/api/session-drive.rkt \
   run:tests/session/base2.slog recount dump-counts:out dump-counts:dist \
+  count-capabilities pipeline input-ledger dump-all-counts \
   > out/sess-counts-lat.log 2>&1
 expect "cnt-lat-out"     "(countrow out (pair 1 2) 0 1 0)" out/sess-counts-lat.log
 expect "cnt-lat-skip"    "(countdone dist -1)" out/sess-counts-lat.log
+expect_re "m04-cap-lattice" '\(cap dist 0 [0-9]+ \(recount no\) \(precise-delete no\) \(fallback clear-rerun\) \(reason lattice-fallback\)\)' out/sess-counts-lat.log
+versioned_count_oracle "m04-lattice-boundary-oracle" out/sess-counts-lat.log
 
 # --- M0.3: counted state, laziness, invalidation, positional/cone walks ------
 # (docs/incremental.md 8B.2)  A walk marks `counted` per (relation,
@@ -767,24 +834,349 @@ expect "m03-heal-old"  "(countrow path 1 3 0 1 1)" out/sess-counts-m03a.log
 timeout 600 racket tests/api/session-drive.rkt \
   run:tests/session/base.slog run:tests/session/seg2.slog \
   recount-at:2 dump-counts:path,2 recount dump-counts:path count-state \
+  pipeline input-ledger dump-all-counts \
   > out/sess-counts-m03b.log 2>&1
 expect "m03-old-copy"  "(countrow path 1 2 0 1 0)" out/sess-counts-m03b.log
 expect "m03-old-rec"   "(countrow path 1 4 0 0 1)" out/sess-counts-m03b.log
 expect "m03-old-done"  "(countdone path 6)" out/sess-counts-m03b.log
 expect "m03-tip-copy"  "(countrow path 1 2 0 2 0)" out/sess-counts-m03b.log
-expect "m03-tip-rec"   "(countrow path 1 5 0 0 2)" out/sess-counts-m03b.log
+expect "m03-tip-rec"   "(countrow path 1 5 0 0 1)" out/sess-counts-m03b.log
 expect "m03-tip-done"  "(countdone path 10)" out/sess-counts-m03b.log
 expect "m03-both-vers" "(cnt path 0 1) (cnt path 1 1)" out/sess-counts-m03b.log
+versioned_count_oracle "m04-version-barrier-oracle" out/sess-counts-m03b.log
 
-# Cone recount: only g's writer stratum runs (1 of 2); e stays honestly
-# uncounted -- its facts stratum sat outside the walk, so it got no
-# sidecar and the close does not mark it.
+# Correctness-first relation recount currently closes the whole VersionId
+# prefix transactionally; partial cones return only after writer closure is
+# represented over exact VersionIds.
 timeout 600 racket tests/api/session-drive.rkt \
   run:tests/session/counts_struct.slog recount:g dump-counts:g dump-counts:e \
+  count-capabilities pipeline input-ledger dump-all-counts \
   > out/sess-counts-m03c.log 2>&1
-expect "m03-cone-ran"  "(recount 1 0 2)" out/sess-counts-m03c.log
+expect "m03-cone-ran"  "(recount 2 0 2 rel=g)" out/sess-counts-m03c.log
 expect "m03-cone-g"    "(countrow g (h 2) 0 2 0)" out/sess-counts-m03c.log
-expect "m03-cone-e"    "(countdone e -1)" out/sess-counts-m03c.log
+expect "m03-cone-e"    "(countrow e 2 2 0 1 0)" out/sess-counts-m03c.log
+expect_re "m04-cap-struct" '\(cap h 0 [0-9]+ \(recount yes\) \(precise-delete no\) \(fallback clear-rerun\) \(reason struct-diagnostic\)\)' out/sess-counts-m03c.log
+versioned_count_oracle "m04-struct-ir-oracle" out/sess-counts-m03c.log
+
+# --- M0.4: stable instances, input overlays, transactional recount ---------
+# Program facts are not editable input. Injection creates a distinct input-
+# only successor slot; edits then target that slot. A following explicit
+# rules-only program event consumes the new slot and creates its own downstream
+# output version--injection never silently retargets the historical writer.
+# Deleting inherited data installs a mask, while a fresh assertion is direct
+# input support.
+rm -rf data/sess_m04
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/counts_tc.slog \
+  inject-version:edge,m04-edge \
+  batch+:edge,2,3 batch-:edge,1,2 batch+:edge,4,5 flush \
+  run:tests/session/tcrules.slog \
+  pipeline count-capabilities dump-rel:edge dump-rel:path \
+  recount dump-counts:edge dump-counts:path \
+  pipeline input-ledger dump-all-counts \
+  save:sess_m04 recipe \
+  > out/sess-m04.log 2>&1
+expect_re "m04-two-versions" '\(rel edge \(v 0 [0-9]+ 3\) \(v 1 [0-9]+ 3\)\)' out/sess-m04.log
+expect_re "m04-downstream-version" '\(rel path \(v 0 [0-9]+ 3\) \(v 1 [0-9]+ [0-9]+\)\)' out/sess-m04.log
+expect_re "m04-read-map" '\(kind semantic\) \(reads \(edge [0-9]+\) \(path [0-9]+\)\)' out/sess-m04.log
+expect "m04-stable-key"  '"m04-edge" (schema 2 0 set)' out/sess-m04.log
+expect_re "m04-cap-table" '\(cap edge 1 [0-9]+ \(recount yes\) \(precise-delete conditional\) \(fallback clear-rerun\) \(reason table-recount\)\)' out/sess-m04.log
+expect "m04-input-count" "(countrow edge 4 5 1 0 0)" out/sess-m04.log
+expect "m04-inherit-count" "(countrow edge 2 3 0 1 0)" out/sess-m04.log
+expect_not "m04-mask-absent" "(countrow edge 1 2" out/sess-m04.log
+expect "m04-reopened-derivation" "(countrow path 4 5 0 1 0)" out/sess-m04.log
+expect "m04-overlay-recipe" '(overlay edge (key "m04-edge") (v 1) ((direct (4 5)) (mask (1 2))))' out/sess-m04.log
+versioned_count_oracle "m04-injected-version-oracle" out/sess-m04.log
+expect "m04-meta-format" "(version-format 1)" data/sess_m04/META
+expect "m04-meta-schema" "(schema (2 0 set))" data/sess_m04/META
+
+# Replay resolves the VersionKey first (the ordinal is diagnostic fallback),
+# reproduces direct/mask state, and recounts the same foundations.
+timeout 900 racket tests/api/session-drive.rkt \
+  open:sess_m04 dump-rel:edge dump-rel:path recount \
+  dump-counts:edge dump-counts:path pipeline \
+  input-ledger dump-all-counts \
+  > out/sess-m04-load.log 2>&1
+expect "m04-load-size" "(dumpdone 3)" out/sess-m04-load.log
+expect "m04-load-key" '"m04-edge" (schema 2 0 set)' out/sess-m04-load.log
+expect "m04-load-input" "(countrow edge 4 5 1 0 0)" out/sess-m04-load.log
+expect_not "m04-load-mask" "(countrow edge 1 2" out/sess-m04-load.log
+expect "m04-load-derivation" "(countrow path 4 5 0 1 0)" out/sess-m04-load.log
+versioned_count_oracle "m04-load-version-oracle" out/sess-m04-load.log
+
+# A failed recount publishes nothing, leaves the semantic pipeline at the same
+# position, and a forced retry succeeds from fresh scratch sidecars.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/counts_tc.slog recount dump-counts:path \
+  recount-fail:1 dump-counts:path recount-force dump-counts:path pipeline \
+  > out/sess-m04-txn.log 2>&1
+expect "m04-txn-abort" "(count-epoch-aborted)" out/sess-m04-txn.log
+expect "m04-txn-failure" "(recount-failed 1" out/sess-m04-txn.log
+expect "m04-txn-retry" "(count-epoch-committed)" out/sess-m04-txn.log
+expect "m04-txn-position" "(pipeline (pos 3)" out/sess-m04-txn.log
+if [ "$(grep -cF '(countrow path 1 3 0 1 1)' out/sess-m04-txn.log)" -eq 3 ]; then
+  echo "PASS m04-txn-preserved"; PASS=$((PASS+1))
+else
+  echo "FAIL m04-txn-preserved (committed counts changed across abort/retry)"; FAIL=$((FAIL+1))
+fi
+
+# Writer coverage is structural, not inferred from tuple presence: omitting a
+# semantic writer makes commit fail even when another support keeps every live
+# tuple positive, and the last committed map remains readable.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/counts_tc.slog recount recount-omit:1 dump-counts:path \
+  > out/sess-m04-writers.log 2>&1
+expect "m04-writer-audit" "semantic writer coverage mismatch" out/sess-m04-writers.log
+expect "m04-writer-abort" "(count-epoch-aborted)" out/sess-m04-writers.log
+expect "m04-writer-preserved" "(countrow path 1 3 0 1 1)" out/sess-m04-writers.log
+
+# A test-width ceiling forces the production overflow invalidation path.  The
+# scratch epoch aborts, the last committed nonrec=2 word remains visible, and
+# restoring the full-width ceiling permits a clean retry without changing set
+# content.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/counts_struct.slog recount dump-counts:h \
+  count-test-max:1 recount-try dump-counts:h dump-rel:g \
+  count-test-max:4294967295 recount-force dump-counts:h \
+  > out/sess-m04-overflow.log 2>&1
+expect "m04-overflow-invalid" "count arithmetic overflow/underflow or kind mismatch" out/sess-m04-overflow.log
+expect "m04-overflow-abort" "(count-epoch-aborted)" out/sess-m04-overflow.log
+if [ "$(grep -cF '(countrow h (h 2) 0 2 0)' out/sess-m04-overflow.log)" -eq 3 ]; then
+  echo "PASS m04-overflow-preserved"; PASS=$((PASS+1))
+else
+  echo "FAIL m04-overflow-preserved (committed count changed across overflow/retry)"; FAIL=$((FAIL+1))
+fi
+expect "m04-overflow-content" "(dumpdone 1)" out/sess-m04-overflow.log
+
+# --- M1: positive signed maintenance --------------------------------------
+# Multiple strata consume an update-local transition journal; maintained
+# support counts must equal an independent forced recount at revision 1.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/twohop.slog batch+:edge,3,4 flush \
+  dump-counts:path dump-counts:endpoint count-state \
+  recount-force dump-counts:path dump-counts:endpoint \
+  > out/sess-m1-multistratum.log 2>&1
+expect "m1-route" "(route maintain 2)" out/sess-m1-multistratum.log
+expect "m1-revision" "(update-committed 1 counts-valid)" out/sess-m1-multistratum.log
+expect "m1-count-revision" "(rev path 0 1)" out/sess-m1-multistratum.log
+if [ "$(grep -cF '(countrow path 1 4 0 0 1)' out/sess-m1-multistratum.log)" -eq 2 ] \
+   && [ "$(grep -cF '(countrow endpoint 4 0 3 0)' out/sess-m1-multistratum.log)" -eq 2 ]; then
+  echo "PASS m1-maintained-equals-recount"; PASS=$((PASS+1))
+else
+  echo "FAIL m1-maintained-equals-recount"; FAIL=$((FAIL+1))
+fi
+
+# Simultaneous deltas in two body relations plus two occurrences of the same
+# relation: every newly enabled pair appears once and downstream multiplicity
+# is preserved (hit(1) and hit(2) each have two supports).
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m1_occurrence.slog \
+  batch+:a,2 batch+:b,2 flush \
+  dump-rel:selfp dump-rel:cross dump-counts:hit recount-force dump-counts:hit \
+  > out/sess-m1-occurrence.log 2>&1
+expect "m1-occ-route" "(route maintain 2)" out/sess-m1-occurrence.log
+expect "m1-self-count" "(dumpdone 4)" out/sess-m1-occurrence.log
+expect "m1-cross-count" "(dumpdone 4)" out/sess-m1-occurrence.log
+if [ "$(grep -cF '(countrow hit 1 0 2 0)' out/sess-m1-occurrence.log)" -eq 2 ] \
+   && [ "$(grep -cF '(countrow hit 2 0 2 0)' out/sess-m1-occurrence.log)" -eq 2 ]; then
+  echo "PASS m1-occurrence-counts"; PASS=$((PASS+1))
+else
+  echo "FAIL m1-occurrence-counts"; FAIL=$((FAIL+1))
+fi
+
+# Adding direct support to a row already live by derivation is support-only:
+# set the input bit, but do not manufacture a 0->1 premise transition.  The
+# recursive path relation remains three rows and its complete support word
+# agrees with recount.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/counts_tc.slog batch+:path,1,3 flush \
+  dump-rel:path dump-counts:path recount-force dump-counts:path \
+  > out/sess-m1-support-only.log 2>&1
+expect "m1-support-only-route" "(route maintain 1)" out/sess-m1-support-only.log
+expect "m1-support-only-content" "(dumpdone 3)" out/sess-m1-support-only.log
+if [ "$(grep -cF '(countrow path 1 3 1 1 1)' out/sess-m1-support-only.log)" -eq 2 ]; then
+  echo "PASS m1-support-only-counts"; PASS=$((PASS+1))
+else
+  echo "FAIL m1-support-only-counts"; FAIL=$((FAIL+1))
+fi
+
+# Count establishment itself is an optimization gate.  If a test-width limit
+# makes the private recount epoch fail before mutation, the update remains
+# usable, takes the legacy set route, commits one revision, and produces the
+# correct closure.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/counts_tc.slog count-test-max:0 \
+  batch+:edge,3,4 flush update-epoch dump-rel:path \
+  > out/sess-m1-establish-fallback.log 2>&1
+expect "m1-establish-refused" "(maintenance-unavailable recount" out/sess-m1-establish-fallback.log
+expect "m1-establish-route" "(route delta 1)" out/sess-m1-establish-fallback.log
+expect "m1-establish-revision" "(update-epoch 1 settled)" out/sess-m1-establish-fallback.log
+expect "m1-establish-content" "(dumpdone 6)" out/sess-m1-establish-fallback.log
+
+# Optimistic revision checks reject stale writers.  Signed underflow takes the
+# same recoverable invalidation path as maintenance overflow: set content stays
+# intact, counts become unestablished, and a recount heals them.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/counts_tc.slog recount \
+  begin-update:0 signed-underflow commit-update begin-update:0 update-epoch \
+  dump-rel:path count-state recount-force dump-counts:path \
+  > out/sess-m1-revision-failure.log 2>&1
+expect "m1-underflow-recovered" "(signed-underflow-recovered)" out/sess-m1-revision-failure.log
+expect "m1-underflow-invalidates" "(update-committed 1 counts-invalid)" out/sess-m1-revision-failure.log
+expect "m1-stale-refused" "stale expected revision 0; current revision is 1" out/sess-m1-revision-failure.log
+expect "m1-failure-content" "(dumpdone 3)" out/sess-m1-revision-failure.log
+expect "m1-failure-healed" "(countrow path 1 3 0 1 1)" out/sess-m1-revision-failure.log
+
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/counts_tc.slog recount count-test-max:1 \
+  batch+:edge,3,4 flush dump-rel:path count-state \
+  count-test-max:4294967295 recount-force dump-counts:path \
+  > out/sess-m1-overflow.log 2>&1
+expect "m1-overflow-fallback" "(update-committed 1 counts-invalid)" out/sess-m1-overflow.log
+expect "m1-overflow-content" "(dumpdone 6)" out/sess-m1-overflow.log
+expect "m1-overflow-healed" "(countrow path 1 4 0 0 2)" out/sess-m1-overflow.log
+
+# Plain injection remains input-only.  The explicit inject-and-reopen API
+# applies that input without retargeting historical writers, then creates
+# stable inherited output slots and new semantic writer maps.
+rm -rf data/sess_m1_reopen
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/counts_tc.slog \
+  inject-reopen:edge,m1-reopen,tests/session/tcrules.slog,4,5 \
+  dump-rel:edge dump-rel:path \
+  batch+:edge,5,6 flush dump-rel:path dump-counts:path \
+  recount-force dump-counts:path pipeline save:sess_m1_reopen \
+  > out/sess-m1-reopen.log 2>&1
+expect "m1-reopen-input-only" "(route anchored edge 3 0)" out/sess-m1-reopen.log
+expect "m1-reopen-revisions" "(update-committed 2 counts-valid)" out/sess-m1-reopen.log
+expect "m1-reopen-content" "(dumpdone 4)" out/sess-m1-reopen.log
+expect "m1-reopen-maintained" "(route maintain 1)" out/sess-m1-reopen.log
+expect "m1-reopen-grown" "(dumpdone 6)" out/sess-m1-reopen.log
+if [ "$(grep -cF '(countrow path 4 6 0 0 1)' out/sess-m1-reopen.log)" -eq 2 ]; then
+  echo "PASS m1-reopen-counts"; PASS=$((PASS+1))
+else
+  echo "FAIL m1-reopen-counts"; FAIL=$((FAIL+1))
+fi
+expect_re "m1-reopen-writer-map" '\(kind semantic\) \(reads \(edge [0-9]+\) \(path [0-9]+\)\) \(write-map \(path [0-9]+\)\)' out/sess-m1-reopen.log
+expect "m1-reopen-input-policy" "(kind input-injection-inherit)" data/sess_m1_reopen/META
+expect "m1-reopen-output-policy" "(kind program-inherit)" data/sess_m1_reopen/META
+
+# Counts are cache only, so replay the saved explicit topology event in a
+# fresh EvaluationId and independently reconstruct every VersionId's support.
+timeout 900 racket tests/api/session-drive.rkt \
+  open:sess_m1_reopen dump-rel:path recount pipeline input-ledger dump-all-counts \
+  > out/sess-m1-reopen-load.log 2>&1
+expect "m1-reopen-load-content" "(dumpdone 6)" out/sess-m1-reopen-load.log
+expect "m1-reopen-load-key" '"m1-reopen" (schema 2 0 set)' out/sess-m1-reopen-load.log
+versioned_count_oracle "m1-reopen-load-oracle" out/sess-m1-reopen-load.log
+
+# --- M3: acyclic signed deletion -------------------------------------------
+# Shared support, a repeated body occurrence, and a downstream stratum use the
+# negative exact partition.  First -a(1) is support-only for p(1) because b(1)
+# remains, but removes the three pair rows involving 1.  The next mixed flush
+# removes b(1), adds a(3), and must settle as one revision after - then +.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m3_acyclic.slog \
+  batch+:a,1 batch+:a,2 batch+:b,1 flush \
+  batch-:a,1 flush \
+  dump-rel:p dump-rel:q dump-rel:pair dump-counts:p dump-counts:pair \
+  recount-force dump-counts:p dump-counts:pair \
+  batch-:b,1 batch+:a,3 flush \
+  dump-rel:p dump-rel:q dump-rel:pair dump-counts:p dump-counts:pair \
+  recount-force dump-counts:p dump-counts:pair \
+  > out/sess-m3-acyclic.log 2>&1
+expect "m3-negative-route" "(route maintain-negative 2)" out/sess-m3-acyclic.log
+expect "m3-mixed-positive" "(route maintain-positive 2)" out/sess-m3-acyclic.log
+expect "m3-counts-valid" "(update-committed 3 counts-valid)" out/sess-m3-acyclic.log
+if [ "$(grep -cF '(dumpdone 2)' out/sess-m3-acyclic.log)" -eq 4 ] \
+   && [ "$(grep -cF '(dumpdone 1)' out/sess-m3-acyclic.log)" -eq 1 ] \
+   && [ "$(grep -cF '(dumpdone 4)' out/sess-m3-acyclic.log)" -eq 1 ]; then
+  echo "PASS m3-set-content"; PASS=$((PASS+1))
+else
+  echo "FAIL m3-set-content"; FAIL=$((FAIL+1))
+fi
+if [ "$(grep -cF '(countrow pair 2 2 0 1 0)' out/sess-m3-acyclic.log)" -eq 4 ] \
+   && [ "$(grep -cF '(countrow pair 2 3 0 1 0)' out/sess-m3-acyclic.log)" -eq 2 ] \
+   && [ "$(grep -cF '(countrow pair 3 2 0 1 0)' out/sess-m3-acyclic.log)" -eq 2 ] \
+   && [ "$(grep -cF '(countrow pair 3 3 0 1 0)' out/sess-m3-acyclic.log)" -eq 2 ]; then
+  echo "PASS m3-maintained-equals-recount"; PASS=$((PASS+1))
+else
+  echo "FAIL m3-maintained-equals-recount"; FAIL=$((FAIL+1))
+fi
+
+# Inherited foundation support takes the same counted path: the successor's
+# -a(1) installs a mask and removes its synthetic nonrec support, without
+# mutating the predecessor VersionId.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m3_acyclic.slog batch+:a,1 flush \
+  inject-reopen:a,m3-inherit,tests/session/m3_acyclic.slog,3 \
+  batch-:a,1 flush dump-rel:a input-ledger dump-counts:a \
+  recount-force dump-counts:a \
+  > out/sess-m3-inherit.log 2>&1
+expect "m3-inherit-route" "(route maintain-negative 2)" out/sess-m3-inherit.log
+expect "m3-inherit-mask" "(inputledger mask" out/sess-m3-inherit.log
+expect "m3-inherit-content" "(dumpdone 1)" out/sess-m3-inherit.log
+if [ "$(grep -cF '(countrow a 3 1 0 0)' out/sess-m3-inherit.log)" -eq 2 ]; then
+  echo "PASS m3-inherit-counts"; PASS=$((PASS+1))
+else
+  echo "FAIL m3-inherit-counts"; FAIL=$((FAIL+1))
+fi
+
+# A recursive producer is not admitted by the acyclicity certificate.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/base_input.slog \
+  batch+:edge,1,2 batch+:edge,2,3 flush \
+  batch-:edge,1,2 flush dump-rel:path \
+  > out/sess-m3-cycle-fallback.log 2>&1
+expect "m3-cycle-fallback" "(route rerun 1 1)" out/sess-m3-cycle-fallback.log
+expect "m3-cycle-content" "(dumpdone 1)" out/sess-m3-cycle-fallback.log
+
+# Random legal signed streams (including mixed batches and delete/re-add
+# cycles) are diffed against fresh recomputation; the fuzzer also compares
+# every maintained derived counter with a forced recount.
+for seed in 3101 3102; do
+  if timeout 900 racket tests/api/acyclic-stream-fuzz.rkt $seed \
+       > "out/sess-m3-fuzz-$seed.log" 2>&1 \
+     && grep -q "m3-fuzz-ok $seed" "out/sess-m3-fuzz-$seed.log"; then
+    echo "PASS m3-fuzz-$seed"; PASS=$((PASS+1))
+  else
+    echo "FAIL m3-fuzz-$seed (see out/sess-m3-fuzz-$seed.log)"; FAIL=$((FAIL+1))
+  fi
+done
+
+# Source-program facts are derived-only to the input API, and persistent keys
+# cannot collide within one evaluation.
+if timeout 900 racket tests/api/session-drive.rkt \
+     run:tests/session/counts_tc.slog batch-:edge,1,2 flush \
+     > out/sess-m04-derived.log 2>&1; then
+  echo "FAIL m04-derived-refusal"; FAIL=$((FAIL+1))
+else
+  expect "m04-derived-refusal" "derived-only" out/sess-m04-derived.log
+fi
+if timeout 900 racket tests/api/session-drive.rkt \
+     run:tests/session/counts_tc.slog \
+     inject-version:edge,m04-duplicate inject-version:edge,m04-duplicate \
+     > out/sess-m04-duplicate.log 2>&1; then
+  echo "FAIL m04-key-collision"; FAIL=$((FAIL+1))
+else
+  expect "m04-key-collision" "duplicate VersionKey" out/sess-m04-duplicate.log
+fi
+
+# Two replay evaluations share persistent VersionKeys but have distinct
+# EvaluationIds; numeric VersionIds are scoped by those EvaluationIds.
+timeout 900 racket tests/api/session-drive.rkt open:sess_m04 pipeline \
+  > out/sess-m04-eval-a.log 2>&1
+timeout 900 racket tests/api/session-drive.rkt open:sess_m04 pipeline \
+  > out/sess-m04-eval-b.log 2>&1
+eval_a=$(sed -n 's/.*(evaluation "\([^"]*\)").*/\1/p' out/sess-m04-eval-a.log | tail -1)
+eval_b=$(sed -n 's/.*(evaluation "\([^"]*\)").*/\1/p' out/sess-m04-eval-b.log | tail -1)
+if [ -n "$eval_a" ] && [ -n "$eval_b" ] && [ "$eval_a" != "$eval_b" ]; then
+  echo "PASS m04-evaluation-isolation"; PASS=$((PASS+1))
+else
+  echo "FAIL m04-evaluation-isolation"; FAIL=$((FAIL+1))
+fi
+expect "m04-eval-a-key" '"m04-edge" (schema 2 0 set)' out/sess-m04-eval-a.log
+expect "m04-eval-b-key" '"m04-edge" (schema 2 0 set)' out/sess-m04-eval-b.log
 
 # Error arms count (8B.4: instantiation-deterministic) and close with the
 # walk that covers their writer stratum.

@@ -11,7 +11,8 @@
  *     presence transitions (present <-> absent at exactly the §8B.5
  *     predicate);
  *   - under/overflow are LOUD FATALS (forked children; exit code checked)
- *     -- the free corruption detector §6.1 promises;
+ *     in the assertion-oriented primitive, while M1's signed try-fold reports
+ *     the same failures recoverably without saturation;
  *   - the sidecar index shape: BTreeMapIndex<KA> driven directly (insert2 +
  *     cnt_add read-modify-write, the counting emit's access pattern),
  *     forEach materialisation of key+counter rows, per-bucket independence
@@ -103,8 +104,8 @@ static void pack_tests()
         "set_input leaves counters");
   CHECK(!cnt_input(cnt_clear_input(cnt_set_input(w))), "clear_input clears");
 
-  // The input bit alone is presence (§8B.5: roots/frozen ground facts are
-  // input=1,(0,0)).
+  // The input bit alone is presence (§8B.5: direct root/API/import support
+  // is input=1,(0,0)).
   CHECK(cnt_present(cnt_pack(true, 0, 0)), "input-only presence");
 }
 
@@ -146,6 +147,49 @@ static void add_tests()
   // flavor mix-up: loud fatal
   CHECK(dies_fatally([]() { (void)cnt_apply(0, cnt_kind_none); }),
         "apply on a kind-less batch is fatal");
+}
+
+// M1's maintenance fold is recoverable: signed arithmetic reports failure
+// without publishing a wrapped/saturated word.  The driver can then preserve
+// authoritative set content, invalidate the count cache, and recount.
+static void signed_try_tests()
+{
+  u64 out = 99;
+  CHECK(cnt_try_apply_signed(0, cnt_kind_input, 1, out)
+        && cnt_input(out), "signed input addition sets direct support");
+  CHECK(cnt_try_apply_signed(cnt_pack(true, 2, 3), cnt_kind_input, -1, out)
+        && !cnt_input(out) && cnt_nonrec(out) == 2 && cnt_rec(out) == 3,
+        "signed input removal preserves rule support");
+
+  CHECK(cnt_try_apply_signed(cnt_pack(false, 2, 3), cnt_kind_nonrec, 1, out)
+        && cnt_nonrec(out) == 3 && cnt_rec(out) == 3,
+        "signed nonrec addition changes only nonrec");
+  CHECK(cnt_try_apply_signed(cnt_pack(false, 2, 3), cnt_kind_rec, 1, out)
+        && cnt_nonrec(out) == 2 && cnt_rec(out) == 4,
+        "signed rec addition changes only rec");
+  CHECK(cnt_try_apply_signed(cnt_pack(false, 2, 3), cnt_kind_nonrec, -1, out)
+        && cnt_nonrec(out) == 1 && cnt_rec(out) == 3,
+        "signed nonrec decrement succeeds in range");
+  CHECK(cnt_try_apply_signed(cnt_pack(false, 2, 3), cnt_kind_rec, -1, out)
+        && cnt_nonrec(out) == 2 && cnt_rec(out) == 2,
+        "signed rec decrement succeeds in range");
+
+  CHECK(!cnt_try_apply_signed(0, cnt_kind_nonrec, -1, out),
+        "recoverable nonrec underflow is refused");
+  CHECK(!cnt_try_apply_signed(0, cnt_kind_rec, -1, out),
+        "recoverable rec underflow is refused");
+  CHECK(!cnt_try_apply_signed(cnt_pack(false, cnt_nonrec_max, 0),
+                              cnt_kind_nonrec, 1, out),
+        "recoverable nonrec overflow is refused");
+  CHECK(!cnt_try_apply_signed(cnt_pack(false, 0, cnt_rec_max),
+                              cnt_kind_rec, 1, out),
+        "recoverable rec overflow is refused");
+  CHECK(!cnt_try_apply_signed(0, cnt_kind_rec, 0, out),
+        "zero sign is refused");
+  CHECK(!cnt_try_apply_signed(0, cnt_kind_premise, 1, out),
+        "premise rows are not support contributions");
+  CHECK(!cnt_try_apply_signed(0, cnt_kind_none, 1, out),
+        "kind-less rows are not support contributions");
 }
 
 static void fatal_tests()
@@ -285,6 +329,7 @@ int main()
 {
   pack_tests();
   add_tests();
+  signed_try_tests();
   fatal_tests();
   sidecar_tests();
   relation_tests();

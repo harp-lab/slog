@@ -119,6 +119,13 @@
     [`(syn ,_ $oldjoin ,inner) (join-clause? inner)]
     [_ #f]))
 
+;; Planner-marked pre-state join for negative maintenance.  Operationally the
+;; live FULL index is the post-deletion N view, so O is FULL union delta.
+(define (new-join-clause? cl)
+  (match cl
+    [`(syn ,_ $newjoin ,inner) (join-clause? inner)]
+    [_ #f]))
+
 (define (let-clause? cl)
   (match cl
     [`(syn ,_ let ,(? var?) ,(? var?)) #t]
@@ -220,7 +227,8 @@
     ;; plan-stratum) -- same clause grammar, full-index lowering downstream
     [`(syn ,_ ,(or 'rule 'seeded-rule) ,body ... --> ,head ...)
      (and (andmap (lambda (cl) (or (guard-clause? cl) (let-clause? cl) (join-clause? cl)
-                                   (old-join-clause? cl) (neg-clause? cl)))
+                                   (old-join-clause? cl) (new-join-clause? cl)
+                                   (neg-clause? cl)))
                   body)
           (andmap (lambda (cl) (or (let-clause? cl) (join-clause? cl)
                                    (tycheck-clause? cl)))
@@ -325,6 +333,8 @@
     ;; exact semi-naive R_old join (docs/incremental.md §6/§8): a full index,
     ;; K bound cols, then the SAME-ordering delta index to exclude against
     [`(join-old ,(? var?) (,(? natural?) ..1) ,(? natural?) (,(? natural?) ..1) ,(? var?) ...) #t]
+    ;; negative exact partition: FULL union current delta (pre-state O)
+    [`(join-new ,(? var?) (,(? natural?) ..1) ,(? natural?) (,(? natural?) ..1) ,(? var?) ...) #t]
     ;; a semijoin filter: existence probe of a future clause's relation on
     ;; the K currently-bound columns (which the index orders first)
     [`(exists ,(? var?) (,(? natural?) ..1) ,(? natural?) ,(? var?) ..1) #t]

@@ -1,7 +1,7 @@
 ;; Count-round fixture (docs/incremental.md §8B, M0): transitive closure
 ;; over a tiny graph with one redundantly-derivable edge.  Hand-verified
 ;; sidecar contents after (recount):
-;;   edge rows              -> input=1 (0,0)      (ground facts, §8B.5)
+;;   edge rows              -> input=0 (1,0)      (program facts, §8B.5)
 ;;   path (1 2), (2 3)      -> (nonrec 1, rec 0)  (copy rule only)
 ;;   path (1 3)             -> (nonrec 1, rec 1)  (copy rule + edge(1,2)*path(2,3))
 

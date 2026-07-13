@@ -453,6 +453,7 @@
       (accel-rels ,@(stratum-accel-rels stratum dynamic-rels type-env decomps))
       (heads ,@(sort (set->list heads) symbol<?))
       (reads ,@reads)
+      (acyclic ,(andmap (lambda (m) (not (fourth m))) rule-metas))
       (rules
        ,@(for/list ([m (in-list rule-metas)])
            (match-define (list id loc text rec? same-scc neg-body lat-body) m)
@@ -469,18 +470,18 @@
 ;; write lands in the predecessor version in place; final fixpoints are
 ;; unchanged, only versioned addressing loses precision for that name).
 (define (stratum-meta-dynamic-rels proghash)
-  (define-values (dyn _reads _heads) (read-stratum-meta proghash))
+  (define-values (dyn _reads _heads _acyclic?) (read-stratum-meta proghash))
   dyn)
 
 ;; The manifest fields the session driver consumes: (values dynamic-rels
-;; reads heads) -- reads is the ((REL KIND ...) ...) polarity entries
+;; reads heads acyclic?) -- reads is the ((REL KIND ...) ...) polarity entries
 ;; (cone input), heads the pure rule heads (the anchored walk's affected
 ;; propagation; side-channel-free).  Metas regenerate on every compile
 ;; job, so a missing `heads` (a stale pre-0.C meta) degrades to '() only
 ;; transiently.
 (define (read-stratum-meta proghash)
   (define p (fullpath (format "build/~a.meta" proghash)))
-  (with-handlers ([exn:fail? (lambda (_) (values '() '() '()))])
+  (with-handlers ([exn:fail? (lambda (_) (values '() '() '() #f))])
     (match (call-with-input-file p read)
       [`(stratum-meta ,fields ...)
        (values (match (assq 'dynamic-rels fields)
@@ -491,8 +492,11 @@
                  [_ '()])
                (match (assq 'heads fields)
                  [`(heads ,rels ...) rels]
-                 [_ '()]))]
-      [_ (values '() '() '())])))
+                 [_ '()])
+               (match (assq 'acyclic fields)
+                 [`(acyclic ,v) (eq? v #t)]
+                 [_ #f]))]
+      [_ (values '() '() '() #f)])))
 
 ;; -----------------------------------------------------------------------
 ;; Back end: emit one stratum's C++ translation unit(s).
@@ -510,7 +514,9 @@
   ;; the name also becomes the daemon stratum name and rides into generated
   ;; identifiers
   (define hash-name
-    (cond [(delta-entry-flavor) (string-append proghash "_delta")]
+    (cond [(negative-maintenance-flavor?) (string-append proghash "_maint3neg")]
+          [(maintenance-flavor) (string-append proghash "_maint1")]
+          [(delta-entry-flavor) (string-append proghash "_delta")]
           [(count-flavor) (string-append proghash "_count")]
           [else proghash]))
   ;; the augmented rule set (+ error/oracle arms) and the relations produced
@@ -535,8 +541,8 @@
   ;; rec/nonrec classification (§6.4).
   (define plan-dynamic
     (cond
-      [(count-flavor) (set)]
-      [(not (delta-entry-flavor)) dynamic-rels]
+      [(and (count-flavor) (not (maintenance-flavor))) (set)]
+      [(not (or (delta-entry-flavor) (maintenance-flavor))) dynamic-rels]
       [else
        (for*/fold ([acc dynamic-rels])
                   ([rule (in-set rules)]
@@ -604,6 +610,34 @@
     (build-so cpps so #:opt "-O0"))
   so)
 
+;; M1 positive signed-maintenance flavor: exact delta occurrence partitions
+;; plus support-counting sinks and presence-transition interning.  It is a
+;; distinct artifact family because neither the old set-only `_delta` plugin
+;; nor the fire-once `_count` plugin has these semantics.
+(define (ensure-maintenance-so job)
+  (match-define (list proghash _te _st _dm _dc) job)
+  (define so (fullpath (format "build/~a_maint1.O0.so" proghash)))
+  (unless (file-exists? so)
+    (define cpps (parameterize ([maintenance-flavor 'positive]
+                                [count-flavor #t])
+                   (emit-stratum-cpp job)))
+    (build-so cpps so #:opt "-O0"))
+  so)
+
+;; M3 acyclic negative maintenance: the dual exact occurrence partition and
+;; -1 support sinks.  Semijoin lookahead is disabled because its FULL-only
+;; probe would omit the delta half of a negative pre-state union view.
+(define (ensure-negative-maintenance-so job)
+  (match-define (list proghash _te _st _dm _dc) job)
+  (define so (fullpath (format "build/~a_maint3neg.O0.so" proghash)))
+  (unless (file-exists? so)
+    (define cpps (parameterize ([maintenance-flavor 'negative]
+                                [count-flavor #t]
+                                [semijoin-filters-enabled #f])
+                   (emit-stratum-cpp job)))
+    (build-so cpps so #:opt "-O0"))
+  so)
+
 ;; -----------------------------------------------------------------------
 ;; Tiered compilation entry point (docs/fast-compile.md).
 ;;
@@ -627,7 +661,8 @@
 ;;                       behavior.  A previously-built build/<hash>.so is always
 ;;                       preferred in every mode (a re-run is pure -O2).
 
-(struct sbuild (hash o2-path runnable upgrade delta count))
+(struct sbuild (hash o2-path runnable upgrade delta count maintenance
+                     negative-maintenance))
 ;; `delta` -- a thunk returning the delta-entry flavor's .so path, building
 ;; it on first call (ensure-delta-so; docs/incremental.md 0.B5).  The
 ;; session driver forces it only when the routing rule picks delta-entry.
@@ -861,12 +896,16 @@
          (clear-o2-marker! o2so)   ; any leftover in-flight marker is moot now
          (sbuild proghash o2so (lambda () (cons o2so 'o2)) #f
                  (lambda () (ensure-delta-so job))
-                 (lambda () (ensure-count-so job)))]
+                 (lambda () (ensure-count-so job))
+                 (lambda () (ensure-maintenance-so job))
+                 (lambda () (ensure-negative-maintenance-so job)))]
         ;; -O0-only mode with a warm -O0 artifact: reuse it, no upgrade.
         [(and (equal? mode "0") (file-exists? o0so))
          (sbuild proghash #f (lambda () (cons o0so 'o0)) #f
                  (lambda () (ensure-delta-so job))
-                 (lambda () (ensure-count-so job)))]
+                 (lambda () (ensure-count-so job))
+                 (lambda () (ensure-maintenance-so job))
+                 (lambda () (ensure-negative-maintenance-so job)))]
         ;; TIERED with a warm -O0 artifact but no -O2 yet (e.g. a prior run
         ;; exited before the background -O2 landed): run the cached -O0 NOW --
         ;; no re-emit, no -O0 rebuild -- and queue the background -O2 only if we
@@ -880,7 +919,9 @@
            (set! o2-cmds (cons (o2-build-command cpps o2so) o2-cmds)))
          (sbuild proghash o2so (lambda () (cons o0so 'o0)) (make-upgrade proghash cpps)
                  (lambda () (ensure-delta-so job))
-                 (lambda () (ensure-count-so job)))]
+                 (lambda () (ensure-count-so job))
+                 (lambda () (ensure-maintenance-so job))
+                 (lambda () (ensure-negative-maintenance-so job)))]
         [else
          (define cpps (emit-stratum-cpp job))   ; write .cpp(s) now (fast, main thread)
          (case mode
@@ -888,12 +929,16 @@
             (sbuild proghash o2so
                     (pooled-eager (lambda () (build-so cpps o2so #:opt "-O2") (cons o2so 'o2)))
                     #f (lambda () (ensure-delta-so job))
-                 (lambda () (ensure-count-so job)))]
+                 (lambda () (ensure-count-so job))
+                 (lambda () (ensure-maintenance-so job))
+                 (lambda () (ensure-negative-maintenance-so job)))]
            [("0")
             (sbuild proghash #f
                     (pooled-eager (lambda () (build-so cpps o0so #:opt "-O0") (cons o0so 'o0)))
                     #f (lambda () (ensure-delta-so job))
-                 (lambda () (ensure-count-so job)))]
+                 (lambda () (ensure-count-so job))
+                 (lambda () (ensure-maintenance-so job))
+                 (lambda () (ensure-negative-maintenance-so job)))]
            [else ; tiered: eager -O0 to run now, then upgrade cluster-by-cluster to
                  ;; -O2 as the background fills the .o cache (docs/fast-compile.md §14)
             ;; claim-gate the -O2 so concurrent/successive runs that all miss the
@@ -904,6 +949,8 @@
                     (pooled-eager (lambda () (build-so cpps o0so #:opt "-O0") (cons o0so 'o0)))
                     (make-upgrade proghash cpps)
                     (lambda () (ensure-delta-so job))
-                 (lambda () (ensure-count-so job)))])])))
+                    (lambda () (ensure-count-so job))
+                    (lambda () (ensure-maintenance-so job))
+                    (lambda () (ensure-negative-maintenance-so job)))])])))
   (spawn-detached-o2-batch (reverse o2-cmds))
   (values strata partition edb-boundary frozen-dirs groups))

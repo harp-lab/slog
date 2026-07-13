@@ -87,18 +87,22 @@
 ;; premises are all new this round double-fires (docs/incremental.md §6/§8).
 ;; Recover those positions (0-based over body JOIN clauses; the driver is 0 and
 ;; is never marked) and strip the wrappers so the rest of the pass sees plain
-;; clauses.  Returns (values plain-bodys old-join-positions).
-(define (split-old-marks bodys)
-  (let loop ([cls bodys] [out '()] [jpos 0] [olds (set)])
+;; clauses.  Returns (values plain-bodys old-positions new-positions).
+(define (split-exact-marks bodys)
+  (let loop ([cls bodys] [out '()] [jpos 0] [olds (set)] [news (set)])
     (cond
-      [(null? cls) (values (reverse out) olds)]
+      [(null? cls) (values (reverse out) olds news)]
       [else
        (match (car cls)
          [`(syn ,_ $oldjoin ,inner)
-          (loop (cdr cls) (cons inner out) (add1 jpos) (set-add olds jpos))]
+          (loop (cdr cls) (cons inner out) (add1 jpos)
+                (set-add olds jpos) news)]
+         [`(syn ,_ $newjoin ,inner)
+          (loop (cdr cls) (cons inner out) (add1 jpos)
+                olds (set-add news jpos))]
          [cl
           (loop (cdr cls) (cons cl out)
-                (if (join-cl? cl) (add1 jpos) jpos) olds)])])))
+                (if (join-cl? cl) (add1 jpos) jpos) olds news)])])))
 
 ;; -----------------------------------------------------------------------
 ;; The pass driver.
@@ -246,7 +250,8 @@
       [`(join ,name ,ind ,_ ,_ ...) (list (cons name ind))]
       ;; join-old's FULL index (the delta index it also references is never
       ;; seeded-gated); record it so a live old-join keeps its full ordering
-      [`(join-old ,name ,ind ,_ ,_ ,_ ...) (list (cons name ind))]
+      [`(,(or 'join-old 'join-new) ,name ,ind ,_ ,_ ,_ ...)
+       (list (cons name ind))]
       [`(join-lat ,name ,ind ,_ ,_ ...) (list (cons name ind))]
       [`(exists ,name ,ind ,_ ,_ ...) (list (cons name ind))]
       [`(absent ,name ,ind ,_ ,_ ...) (list (cons name ind))]
@@ -429,7 +434,8 @@
 ;; a ground value becomes an equality check after the probe (lower-join).
 ;; Delta indices are ordinary full-width sets, so drivers are unrestricted.
 (define ((add-select-sets rel-env) rule ss)
-  (define-values (bodys old-positions) (split-old-marks (rule-body rule)))
+  (define-values (bodys old-positions new-positions)
+    (split-exact-marks (rule-body rule)))
   (define sj-filters (semijoin-filters bodys rel-env))
   ;; a seeded-rule has NO delta driver: its first join selects on the FULL
   ;; index like any other
@@ -459,7 +465,8 @@
             ;; index of the SAME ordering as its full index for the membership
             ;; exclusion, so join_probe_old can test a match directly
             (let ([ss1 (add-select-set ss0 (join-rel cl) selv)])
-              (if (set-member? old-positions jpos)
+              (if (or (set-member? old-positions jpos)
+                      (set-member? new-positions jpos))
                   (add-select-set ss1 `(delta ,(join-rel cl)) selv)
                   ss1))]))
        (values (set-union ground (clause-vars cl)) (add1 jpos) ss+)]
@@ -590,11 +597,12 @@
       (error 'operationalization "no master index for struct ~a in ~a" name who)))
 
 (define ((lower-rule rel-env indices) rule0)
-  ;; strip the planner's $oldjoin marks up front and rebuild a plain rule, so
+  ;; strip the planner's exact-view marks up front and rebuild a plain rule, so
   ;; cjoin-spec-env / semijoin-filters / body-splitting all see ordinary
-  ;; clauses; `old-positions` (0-based over body joins) drives join-old below.
+  ;; clauses; the position sets drive join-old/join-new below.
   (match-define `(syn ,rprov ,rtag ,rbodys0 ... --> ,rheads ...) rule0)
-  (define-values (plain-bodys old-positions) (split-old-marks rbodys0))
+  (define-values (plain-bodys old-positions new-positions)
+    (split-exact-marks rbodys0))
   (define rule `(syn ,rprov ,rtag ,@plain-bodys --> ,@rheads))
   (define (rel-arity name)
     (rel-decl-arity (hash-ref rel-env name)))
@@ -711,6 +719,20 @@
     ;; exactly it for both the full (`name`) and the delta (`(delta name)`).
     (define ord (index-for-selection sel (list->set (range (stored-arity name)))))
     (list `(join-old ,name ,ord ,(set-count sel) ,ord
+                     ,@(map esc (order-tuple ord tup)))))
+
+  ;; Negative exact partition's pre-state O view.  The live FULL index is the
+  ;; post-deletion N view, so FULL union the current delta reconstructs O.
+  (define (lower-join-new cl ground)
+    (define name (join-rel cl))
+    (define tup (join-tuple cl))
+    (define sel
+      (for/set ([x (in-list tup)] [i (in-naturals)]
+                #:when (set-member? ground x))
+        i))
+    (define ord
+      (index-for-selection sel (list->set (range (stored-arity name)))))
+    (list `(join-new ,name ,ord ,(set-count sel) ,ord
                      ,@(map esc (order-tuple ord tup)))))
 
   ;; the driver: scan the raw delta, or probe the delta index
@@ -866,9 +888,12 @@
             (define filter-ops
               (map lower-filter (hash-ref sj-filters jpos '())))
             (define join-ops
-              (if (set-member? old-positions jpos)
-                  (lower-join-old (car cls) ground)
-                  (lower-join (car cls) ground)))
+              (cond
+                [(set-member? old-positions jpos)
+                 (lower-join-old (car cls) ground)]
+                [(set-member? new-positions jpos)
+                 (lower-join-new (car cls) ground)]
+                [else (lower-join (car cls) ground)]))
             (loop driver
                   (set-union ground (clause-vars (car cls)))
                   (append (reverse join-ops)

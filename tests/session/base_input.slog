@@ -1,0 +1,16 @@
+;; The base transitive-closure rules with no source-program EDB. Session
+;; deletion tests feed edge through the JIT API so its assertions are editable.
+
+table (edge int int)
+table (path int int)
+
+rule
+(edge X Y)
+-->
+(path X Y)
+
+rule
+(path X Y)
+(edge Y Z)
+-->
+(path X Z)

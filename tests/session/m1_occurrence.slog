@@ -1,0 +1,28 @@
+;; M1 exact positive-occurrence partition fixture.  One flush adds to both
+;; inputs.  The self join and the two-relation join must enumerate each newly
+;; enabled instantiation exactly once, including the all-new combinations.
+
+table (a int)
+table (b int)
+table (selfp int int)
+table (cross int int)
+table (hit int)
+
+rule (a 1) (b 1)
+
+rule
+(a X)
+(a Y)
+-->
+(selfp X Y)
+
+rule
+(a X)
+(b Y)
+-->
+(cross X Y)
+
+rule
+(selfp X Y)
+-->
+(hit X)

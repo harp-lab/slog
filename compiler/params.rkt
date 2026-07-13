@@ -38,6 +38,17 @@
 ;; on for the base artifacts, so it needs no cache-key entry.
 (define delta-entry-flavor (make-parameter #f))
 
+;; Signed support maintenance.  This is paired with `count-flavor`'s
+;; count-mode value so planning/lowering retain rule support classifications
+;; and instantiation-injective staging temps, but unlike the `_count` recount
+;; flavor it uses ordinary exact delta variants and maintains live indices.
+;; Values are #f, 'positive (M1), or 'negative (M3).  The negative flavor has
+;; the dual exact partition and emits -1 contributions.
+(define maintenance-flavor (make-parameter #f))
+
+(define (negative-maintenance-flavor?)
+  (eq? (maintenance-flavor) 'negative))
+
 ;; The `_count` flavor (docs/incremental.md §8B.1/§6.2, M0): the count-round
 ;; plugin.  Every rule is planned as ONE all-full fire-once version (the
 ;; seeded-rule plan shape, registered once) with counting sinks in place of

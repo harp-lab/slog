@@ -131,8 +131,12 @@ public:
   // write tasks know which counter each row bumps (docs/incremental.md
   // §8B.1).  Batches are per-(task, head), hence kind-homogeneous.
   u8 kind;
+  // Signed premise/contribution polarity.  M1 executes +1 only, but the
+  // transport and arithmetic are already honest for the recoverable negative
+  // path used by underflow tests and by later deletion milestones.
+  s8 sign;
   u64 data[batch_size_max];
-  InsertBatch() : usage(0), kind(0) { }
+  InsertBatch() : usage(0), kind(0), sign(1) { }
 };
 
 // A lightweight reference to a single tuple inside a delta batch: the batch and
@@ -154,6 +158,22 @@ private:
   std::string name;
   u16 arity;
   u32 struct_id;
+  // M0.4a identity: a Relation is one materialized version instance.  Names
+  // are bindings only; this id survives rename aliases and is never reused
+  // within the daemon.  `predecessor_version_id == 0` denotes a root slot.
+  u64 version_id = 0;
+  u64 predecessor_version_id = 0;
+  Relation* predecessor_relation = nullptr;
+  // Persistent slot key when the driver supplied one.  Legacy/opened
+  // relations receive a runtime fallback until recipe migration resolves it.
+  std::string version_key;
+  std::string evaluation_id;
+  bool compiler_temporary = false;
+  // Evaluation-local semantic input ledger (M0.4b).  Direct assertions are
+  // local to this slot.  An inheritance mask suppresses the predecessor's
+  // single set-valued contribution without mutating the predecessor.
+  std::unordered_set<std::vector<u64>, boost::hash<std::vector<u64>>> direct_inputs;
+  std::unordered_set<std::vector<u64>, boost::hash<std::vector<u64>>> inheritance_masks;
   std::unordered_map<std::vector<u16>, Index**, boost::hash<std::vector<u16>>> indices;
   std::unordered_map<std::vector<u16>, Index**, boost::hash<std::vector<u16>>> deltaindices;
   std::vector<u16> struct_master_index;
@@ -189,9 +209,23 @@ private:
   // operators' convention: buckethash(key[0]).  Null until a count round
   // first materialises it (§8B.2's lazy protocol).
   Index** count_sidecar = nullptr;
+  Index** count_epoch_sidecar = nullptr;
+  bool count_epoch_active = false;
+  std::atomic<bool> count_epoch_valid{true};
+  // Authoritative M0.4 semantic-writer ownership.  Pipeline maintenance
+  // incarnations (delta entry, replay, recount) never enter this set.  A
+  // private count epoch records which original writer instances completed;
+  // commit requires exact coverage, not merely positive live tuples.
+  std::set<u32> semantic_writer_ids;
+  std::set<u32> count_epoch_writer_ids;
+  // Test-only effective field ceiling.  The packed representation remains
+  // full width; lowering this lets acceptance tests force the real
+  // invalidate/abort path without manufacturing billions of derivations.
+  u64 count_test_max = cnt_rec_max;
   // Established/healed by a count round; orthogonal to settledness (§8B.2).
   // A fresh version is born uncounted (never copied across newVersion).
   bool counted = false;
+  u64 counted_revision = 0;
 
   // Lattice (map) relation metadata (docs/lattices.md): LAT_NONE for plain
   // relations; the clamp words realize #:floor/#:ceiling.  lat_spec is the
@@ -226,6 +260,202 @@ private:
   u64 rs_memcap = ~(u64)0;
 
 public:
+  void setVersionIdentity(u64 id, Relation* pred, const std::string& key,
+                          const std::string& eval)
+  {
+    version_id = id;
+    predecessor_relation = pred;
+    predecessor_version_id = pred ? pred->getVersionId() : 0;
+    version_key = key;
+    evaluation_id = eval;
+  }
+  u64 getVersionId() const { return version_id; }
+  u64 getPredecessorVersionId() const { return predecessor_version_id; }
+  const std::string& getVersionKey() const { return version_key; }
+  const std::string& getEvaluationId() const { return evaluation_id; }
+  void setEvaluationId(const std::string& id) { evaluation_id = id; }
+  void markCompilerTemporary() { compiler_temporary = true; }
+  bool isCompilerTemporary() const { return compiler_temporary; }
+
+  std::vector<u64> tupleKey(const u64* t) const
+  {
+    return std::vector<u64>(t, t + arity);
+  }
+
+  bool hasLiveTuple(const u64* t)
+  {
+    auto ordptr = getAnyIndex();
+    if (ordptr == nullptr) return false;
+    const std::vector<u16>& ord = *ordptr;
+    std::vector<u16> rewrite_ord(ord.size(), 0);
+    for (u16 i = 0; i < ord.size(); ++i) rewrite_ord[ord[i]] = i;
+    bool found = false;
+    Index** buckets = getIndex(ord, false);
+    for (u16 b = 0; b < bucket_count && !found; ++b)
+      buckets[b]->forEach([&](const u64* r)
+      {
+        if (found) return;
+        for (u16 c = 0; c < arity; ++c)
+          if (r[rewrite_ord[c]] != t[c]) return;
+        found = true;
+      });
+    return found;
+  }
+
+  bool hasLiveCountKey(const u64* key)
+  {
+    if (struct_id == 0) return hasLiveTuple(key);
+    bool found = false;
+    forEachLiveNominal([&](const u64* row)
+    {
+      if (row[0] == key[0]) found = true;
+    });
+    return found;
+  }
+
+  void forEachLiveNominal(const std::function<void(const u64*)>& f)
+  {
+    auto ordptr = getAnyIndex();
+    if (ordptr == nullptr) return;
+    const std::vector<u16>& ord = *ordptr;
+    std::vector<u16> rewrite_ord(ord.size(), 0);
+    for (u16 i = 0; i < ord.size(); ++i) rewrite_ord[ord[i]] = i;
+    Index** buckets = getIndex(ord, false);
+    for (u16 b = 0; b < bucket_count; ++b)
+      buckets[b]->forEach([&](const u64* r)
+      {
+        u64 row[max_daemon_arity + 1];
+        for (u16 c = 0; c < arity; ++c) row[c] = r[rewrite_ord[c]];
+        f(row);
+      });
+  }
+
+  bool isDirectInput(const u64* t) const
+  {
+    return direct_inputs.count(tupleKey(t)) != 0;
+  }
+  const auto& directInputRows() const { return direct_inputs; }
+  const auto& inheritanceMaskRows() const { return inheritance_masks; }
+
+  bool isInheritanceMasked(const u64* t) const
+  {
+    return inheritance_masks.count(tupleKey(t)) != 0;
+  }
+
+  bool isActivelyInherited(const u64* t)
+  {
+    return !isInheritanceMasked(t) && hasInheritedBaseline(t);
+  }
+
+
+  bool hasInheritedBaseline(const u64* t)
+  {
+    return predecessor_relation != nullptr
+        && predecessor_relation->hasLiveTuple(t);
+  }
+
+  enum InputOutcome {
+    INPUT_ASSERTED,
+    INPUT_ALREADY_DIRECT,
+    INPUT_INHERITED_NOOP,
+    INPUT_MASK_CLEARED,
+    INPUT_DIRECT_REMOVED,
+    INPUT_INHERITANCE_MASKED,
+    INPUT_DERIVED_ONLY,
+    INPUT_ABSENT
+  };
+
+  // Ordinary JIT add has set semantics relative to the slot baseline.
+  // Source imports pass force_direct=true so their rows remain explicit
+  // direct support even when also inherited/derived.
+  InputOutcome addInput(const u64* t, bool force_direct = false)
+  {
+    const std::vector<u64> k = tupleKey(t);
+    if (direct_inputs.count(k)) return INPUT_ALREADY_DIRECT;
+    if (!force_direct && inheritance_masks.erase(k) != 0)
+    {
+      insertTupleAllIndices(t);
+      return INPUT_MASK_CLEARED;
+    }
+    if (!force_direct && isActivelyInherited(t))
+      return INPUT_INHERITED_NOOP;
+    direct_inputs.insert(k);
+    insertTupleAllIndices(t);
+    return INPUT_ASSERTED;
+  }
+
+  InputOutcome classifyDeleteInput(const u64* t)
+  {
+    if (isDirectInput(t)) return INPUT_DIRECT_REMOVED;
+    if (isActivelyInherited(t)) return INPUT_INHERITANCE_MASKED;
+    return hasLiveTuple(t) ? INPUT_DERIVED_ONLY : INPUT_ABSENT;
+  }
+
+  InputOutcome deleteInput(const u64* t)
+  {
+    const InputOutcome o = classifyDeleteInput(t);
+    const std::vector<u64> k = tupleKey(t);
+    if (o == INPUT_DIRECT_REMOVED)
+    {
+      direct_inputs.erase(k);
+      if (!isActivelyInherited(t)) removeTuple(t);
+    }
+    else if (o == INPUT_INHERITANCE_MASKED)
+    {
+      inheritance_masks.insert(k);
+      removeTuple(t);
+    }
+    return o;
+  }
+
+  // Install the authoritative normalized overlay state for one tuple.
+  // 0 = neither direct nor masked, 1 = direct, 2 = inheritance mask.
+  // This is the persistence/replay primitive; ordinary +/- input commands
+  // are normalized against the current baseline before reaching it.
+  void setInputOverlay(const u64* t, u8 state)
+  {
+    const std::vector<u64> k = tupleKey(t);
+    direct_inputs.erase(k);
+    inheritance_masks.erase(k);
+    if (state == 1)
+    {
+      direct_inputs.insert(k);
+      insertTupleAllIndices(t);
+    }
+    else if (state == 2)
+    {
+      inheritance_masks.insert(k);
+      removeTuple(t);
+    }
+    else if (predecessor_relation != nullptr
+             && predecessor_relation->hasLiveTuple(t))
+      insertTupleAllIndices(t);
+    else
+      removeTuple(t);
+    clearCounts();
+  }
+
+  void markAllLiveDirect()
+  {
+    auto ordptr = getAnyIndex();
+    if (ordptr == nullptr) return;
+    const std::vector<u16>& ord = *ordptr;
+    std::vector<u16> rewrite_ord(ord.size(), 0);
+    for (u16 i = 0; i < ord.size(); ++i) rewrite_ord[ord[i]] = i;
+    Index** buckets = getIndex(ord, false);
+    for (u16 b = 0; b < bucket_count; ++b)
+      buckets[b]->forEach([&](const u64* r)
+      {
+        std::vector<u64> k(arity);
+        for (u16 c = 0; c < arity; ++c) k[c] = r[rewrite_ord[c]];
+        direct_inputs.insert(std::move(k));
+      });
+  }
+
+  const auto& directInputs() const { return direct_inputs; }
+  const auto& inheritanceMasks() const { return inheritance_masks; }
+  Relation* predecessorRelation() const { return predecessor_relation; }
+
   // Bind (or clear) this relation's per-run accounting pointers.  Called for
   // every relation at each continueStratum call, before the workers spin.
   void bindRun(std::atomic<u64>* emitted, std::atomic<bool>* stop,
@@ -324,13 +554,14 @@ public:
   // nothing here needs plugin-side template instantiation.
   Index** ensureCountSidecar()
   {
-    if (count_sidecar)
-      return count_sidecar;
-    count_sidecar = new Index*[bucket_count];
+    Index**& target = count_epoch_active ? count_epoch_sidecar : count_sidecar;
+    if (target)
+      return target;
+    target = new Index*[bucket_count];
     for (u32 b = 0; b < bucket_count; ++b)
-      count_sidecar[b] = makeMapIndex(countKeyArity(), LAT_NONE,
-                                      false, 0, false, 0);
-    return count_sidecar;
+      target[b] = makeMapIndex(countKeyArity(), LAT_NONE,
+                               false, 0, false, 0);
+    return target;
   }
 
   Index** getCountSidecar()
@@ -343,6 +574,251 @@ public:
     return counted;
   }
 
+  bool isCountEpochActive() const { return count_epoch_active; }
+  void invalidateCountEpoch() { count_epoch_valid.store(false); }
+  void addSemanticWriter(u32 id) { semantic_writer_ids.insert(id); }
+  const std::set<u32>& semanticWriters() const { return semantic_writer_ids; }
+  void coverCountWriter(u32 id)
+  {
+    if (count_epoch_active && semantic_writer_ids.count(id))
+      count_epoch_writer_ids.insert(id);
+  }
+  void setCountTestMax(u64 n)
+  {
+    count_test_max = std::min(n, cnt_rec_max);
+  }
+  bool tryApplyCount(u64 word, u8 kind, u64& out)
+  {
+    if (!cnt_try_apply(word, kind, out)) return false;
+    return cnt_nonrec(out) <= std::min(count_test_max, cnt_nonrec_max)
+        && cnt_rec(out) <= count_test_max;
+  }
+
+  bool tryApplyCountSigned(u64 word, u8 kind, s8 sign, u64& out)
+  {
+    if (!cnt_try_apply_signed(word, kind, sign, out)) return false;
+    return cnt_nonrec(out) <= std::min(count_test_max, cnt_nonrec_max)
+        && cnt_rec(out) <= count_test_max;
+  }
+
+  u64 getCountedRevision() const { return counted_revision; }
+  void setCountedRevision(u64 revision) { counted_revision = revision; }
+
+  // Add direct input support while preserving an already certified sidecar.
+  // The tuple may be absent (a 0->1 membership transition) or already live by
+  // rule support (support-only, no premise transition).  The ordinary overlay
+  // primitive remains conservative for every other state change.
+  bool setInputOverlayPositive(const u64* t, bool& became_live)
+  {
+    if (!counted || count_sidecar == nullptr) return false;
+    const std::vector<u64> k = tupleKey(t);
+    if (direct_inputs.count(k) || isActivelyInherited(t)) return false;
+    const bool was_live = hasLiveTuple(t);
+    const u16 b = buckethash(t[0]);
+    u64 word = 0;
+    count_sidecar[b]->getPayload(t, countKeyArity(), word);
+    // A certified sidecar must agree with authoritative membership before the
+    // update.  Refuse instead of manufacturing a transition from drift.
+    if (cnt_present(word) != was_live) return false;
+    u64 next = word;
+    if (!tryApplyCountSigned(word, cnt_kind_input, 1, next)) return false;
+    if (cnt_present(next))
+    {
+      if (!count_sidecar[b]->setPayload(t, countKeyArity(), next)) return false;
+    }
+    else
+    {
+      std::vector<u16> identity(countKeyArity());
+      for (u16 c = 0; c < countKeyArity(); ++c) identity[c] = c;
+      if (!count_sidecar[b]->removeTuple(t, identity.data())) return false;
+    }
+    inheritance_masks.erase(k);
+    direct_inputs.insert(k);
+    if (!was_live) insertTupleAllIndicesPreservingCounts(t);
+    became_live = !was_live;
+    return true;
+  }
+
+  // Remove exactly one legal foundation support while preserving a certified
+  // sidecar.  Direct input clears the input bit; inherited input installs a
+  // mask and removes the synthetic non-recursive contribution.  Only a true
+  // 1->0 transition leaves the live indices and becomes negative delta.
+  bool setInputOverlayNegative(const u64* t, bool& became_absent)
+  {
+    if (!counted || count_sidecar == nullptr) return false;
+    const std::vector<u64> k = tupleKey(t);
+    const bool direct = direct_inputs.count(k) != 0;
+    const bool inherited = !direct && isActivelyInherited(t);
+    if (!direct && !inherited) return false;
+    const bool was_live = hasLiveTuple(t);
+    const u16 b = buckethash(t[0]);
+    u64 word = 0;
+    if (!count_sidecar[b]->getPayload(t, countKeyArity(), word)) return false;
+    if (cnt_present(word) != was_live) return false;
+    u64 next = word;
+    const u8 kind = direct ? cnt_kind_input : cnt_kind_nonrec;
+    if (!tryApplyCountSigned(word, kind, -1, next)) return false;
+    if (cnt_present(next))
+    {
+      if (!count_sidecar[b]->setPayload(t, countKeyArity(), next)) return false;
+    }
+    else
+    {
+      std::vector<u16> identity(countKeyArity());
+      for (u16 c = 0; c < countKeyArity(); ++c) identity[c] = c;
+      if (!count_sidecar[b]->removeTuple(t, identity.data())) return false;
+    }
+    if (direct)
+      direct_inputs.erase(k);
+    else
+      inheritance_masks.insert(k);
+    became_absent = was_live && !cnt_present(next);
+    if (became_absent && !removeTupleAllIndicesPreservingCounts(t)) return false;
+    return true;
+  }
+
+  static void deleteCountArray(Index**& side)
+  {
+    if (!side) return;
+    for (u16 b = 0; b < bucket_count; ++b) delete side[b];
+    delete [] side;
+    side = nullptr;
+  }
+
+  void applyCountFoundation(const u64* key, u8 kind)
+  {
+    Index** side = ensureCountSidecar();
+    const u16 ka = countKeyArity();
+    const u16 b = buckethash(key[0]);
+    u64 word = 0;
+    side[b]->getPayload(key, ka, word);
+    u64 next = word;
+    if (!tryApplyCount(word, kind, next))
+    {
+      invalidateCountEpoch();
+      return;
+    }
+    word = next;
+    if (!side[b]->setPayload(key, ka, word))
+      fatal("count sidecar payload operation failed for " + name);
+  }
+
+  bool beginCountEpoch()
+  {
+    if (isLattice() || arity == 0 || getAnyIndex() == nullptr)
+      return false;
+    deleteCountArray(count_epoch_sidecar);
+    count_epoch_active = true;
+    count_epoch_valid.store(true);
+    count_epoch_writer_ids.clear();
+    ensureCountSidecar();
+    for (const std::vector<u64>& row : direct_inputs)
+      applyCountFoundation(row.data(), cnt_kind_input);
+    if (predecessor_relation != nullptr)
+      predecessor_relation->forEachLiveNominal([&](const u64* row)
+      {
+        if (!isInheritanceMasked(row))
+          applyCountFoundation(row, cnt_kind_nonrec);
+      });
+    return true;
+  }
+
+  bool countEpochCoverage(std::string& why)
+  {
+    if (!count_epoch_active || count_epoch_sidecar == nullptr)
+    {
+      why = "no active count epoch";
+      return false;
+    }
+    if (!count_epoch_valid.load())
+    {
+      why = "count arithmetic overflow/underflow or kind mismatch";
+      return false;
+    }
+    if (count_epoch_writer_ids != semantic_writer_ids)
+    {
+      why = "semantic writer coverage mismatch";
+      return false;
+    }
+    bool ok = true;
+    forEachLiveNominal([&](const u64* row)
+    {
+      if (!ok) return;
+      const u16 b = buckethash(row[0]);
+      u64 word = 0;
+      if (!count_epoch_sidecar[b]->getPayload(row, countKeyArity(), word)
+          || !cnt_present(word))
+      {
+        ok = false;
+        why = "live tuple has no positive semantic support";
+      }
+    });
+    if (!ok) return false;
+    for (u16 b = 0; b < bucket_count && ok; ++b)
+      count_epoch_sidecar[b]->forEach([&](const u64* row)
+      {
+        if (ok && !hasLiveCountKey(row))
+        {
+          ok = false;
+          why = "count sidecar contains an absent table tuple";
+        }
+      });
+    return ok;
+  }
+
+  bool committedCountCoverage(std::string& why)
+  {
+    if (!counted || count_sidecar == nullptr) return true;
+    bool ok = true;
+    forEachLiveNominal([&](const u64* row)
+    {
+      if (!ok) return;
+      u64 word = 0;
+      const u16 b = buckethash(row[0]);
+      if (!count_sidecar[b]->getPayload(row, countKeyArity(), word)
+          || !cnt_present(word))
+      {
+        ok = false;
+        why = "live tuple has no positive maintained support";
+      }
+    });
+    for (u16 b = 0; b < bucket_count && ok; ++b)
+      count_sidecar[b]->forEach([&](const u64* row)
+      {
+        if (ok && !hasLiveCountKey(row))
+        {
+          ok = false;
+          why = "maintained support exists for an absent tuple";
+        }
+      });
+    return ok;
+  }
+
+  bool commitCountEpoch(std::string& why)
+  {
+    if (!countEpochCoverage(why))
+    {
+      abortCountEpoch();
+      return false;
+    }
+    deleteCountArray(count_sidecar);
+    count_sidecar = count_epoch_sidecar;
+    count_epoch_sidecar = nullptr;
+    count_epoch_active = false;
+    count_epoch_valid.store(true);
+    count_epoch_writer_ids.clear();
+    counted = true;
+    return true;
+  }
+
+  void abortCountEpoch()
+  {
+    deleteCountArray(count_epoch_sidecar);
+    count_epoch_active = false;
+    count_epoch_valid.store(true);
+    count_epoch_writer_ids.clear();
+  }
+
   void setCounted(bool c)
   {
     counted = c;
@@ -352,14 +828,13 @@ public:
   // lazy protocol re-establishes on demand from the materialisation.
   void clearCounts()
   {
-    if (count_sidecar)
-    {
-      for (u16 b = 0; b < bucket_count; ++b)
-	delete count_sidecar[b];
-      delete [] count_sidecar;
-      count_sidecar = nullptr;
-    }
+    deleteCountArray(count_sidecar);
+    deleteCountArray(count_epoch_sidecar);
+    count_epoch_active = false;
+    count_epoch_valid.store(true);
+    count_epoch_writer_ids.clear();
     counted = false;
+    counted_revision = 0;
   }
 
   u16 getArity()
@@ -1127,8 +1602,30 @@ public:
   void insertTupleAllIndices(const u64* t)
   {
     clearCounts();
+    insertTupleAllIndicesPreservingCounts(t);
+  }
+
+  // M1's certified positive-input path has already updated the sidecar in
+  // the same transaction, so its physical index insert must not trigger the
+  // conservative generic invalidation above.
+  void insertTupleAllIndicesPreservingCounts(const u64* t)
+  {
     for (const auto& it : indices)
       it.second[buckethash(t[it.first[0]])]->insertTuple(t, it.first.data());
+  }
+
+  bool removeTupleAllIndicesPreservingCounts(const u64* t)
+  {
+    bool found = false;
+    bool complete = true;
+    for (const auto& it : indices)
+    {
+      const bool removed = it.second[buckethash(t[it.first[0]])]
+                             ->removeTuple(t, it.first.data());
+      found = found || removed;
+      complete = complete && removed;
+    }
+    return found && complete;
   }
 };
 
@@ -1156,6 +1653,18 @@ public:
   // relations this stratum's rules grow -- the seam for incremental
   // recomputation later (push a delta into a stratum, replay downstream)
   std::vector<std::string> dynamic_rels;
+  // Relation names read by the canonical operational program, plus their
+  // exact evaluation-local bindings captured at the original push.
+  std::vector<std::string> read_rels;
+  std::vector<std::pair<std::string, u64>> read_versions;
+  std::vector<std::pair<std::string, u64>> write_versions;
+  // Exact output version instances captured at this push's bind environment
+  // (M0.4a).  Recount/provenance uses ids, never Relation::getName().
+  std::vector<u64> write_version_ids;
+  // Semantic program instances own derivation support.  Delta/replay/count
+  // incarnations are maintenance executions and must never become another
+  // writer merely because they were pushed through the scheduler.
+  bool semantic_instance = true;
   // accelerator-seed relations (docs/db-compression.md §4.4 v2): the
   // compiler's per-SCC tier scoring picked these (linear-recursive or
   // lattice SCCs) for per-round delta sampling into the seed sidecar
@@ -1196,6 +1705,8 @@ public:
   }
 
   void addDynamicRel(const std::string& r) { dynamic_rels.push_back(r); }
+  void addReadRel(const std::string& r) { read_rels.push_back(r); }
+  void addWriteVersionId(u64 v) { write_version_ids.push_back(v); }
   void addAccelRel(const std::string& r) { accel_rels.push_back(r); }
 
   // Empty this stratum's task lists and metadata so a freshly-compiled plugin
@@ -1218,7 +1729,27 @@ public:
       seeded[p].clear();
     }
     dynamic_rels.clear();
+    read_rels.clear();
+    read_versions.clear();
+    write_versions.clear();
+    write_version_ids.clear();
     accel_rels.clear();   // the replacement plugin re-adds them
+  }
+
+  // A replay incarnation supersedes executable tasks but not historical
+  // topology: the old StratumInstance remains an immutable record of the
+  // VersionIds it originally wrote.
+  void clearTasksForHusk()
+  {
+    for (u16 p = 0; p < phase_count; ++p)
+    {
+      for (Task* t : once[p]) delete t;
+      for (Task* t : every[p]) delete t;
+      for (Task* t : seeded[p]) delete t;
+      once[p].clear();
+      every[p].clear();
+      seeded[p].clear();
+    }
   }
 };
 
@@ -1369,6 +1900,32 @@ private:
   // / Daemon::beginSegment).  Versioned addressing "R at P" resolves to the
   // last binding at-or-before P.
   u32 pipeline_pos = 0;
+  u64 next_version_id = 1;
+  std::string evaluation_id = "runtime-evaluation";
+  // M1 settled-state identity.  VersionId identifies a materialized slot;
+  // UpdateEpochId identifies which settled contents/counts of those slots a
+  // reply describes.  A JIT edit is an optimistic transaction over exactly
+  // one expected revision.
+  u64 update_epoch_id = 0;
+  bool update_epoch_active = false;
+  std::atomic<bool> update_epoch_valid{true};
+  // A stratum may maintain several head relations in parallel.  Their
+  // MaintainTasks all intern presence transitions here, so both the outer
+  // VersionId map and each per-version set require one update-local lock.
+  std::mutex update_transition_mutex;
+  std::unordered_map<u64,
+    std::unordered_set<std::vector<u64>, boost::hash<std::vector<u64>>>>
+      update_transitions;
+  std::unordered_map<u64,
+    std::unordered_set<std::vector<u64>, boost::hash<std::vector<u64>>>>
+      update_negative_transitions;
+  std::unordered_map<std::string, std::string> planned_version_keys;
+  std::unordered_map<std::string, u64> version_key_ids;
+  // Exact per-name VersionId environment for one plugin registration.  This
+  // is the recount/replay authority; bind_pos remains a compatibility
+  // fallback for compiler-local temporaries that have no semantic VersionId
+  // in the original stratum instance.
+  std::unordered_map<std::string, u64> bind_versions;
   // The environment getRelation resolves through: -1 = the latest map (the
   // default); >= 0 = bind-time resolution at that position, set around a
   // re-entry push so a cached .so re-binds an OLD position's versions (B1).
@@ -1415,6 +1972,165 @@ private:
 
 
 public:
+
+  u64 getUpdateEpochId() const { return update_epoch_id; }
+  bool updateActive() const { return update_epoch_active; }
+
+  bool beginUpdateEpoch(u64 expected, std::string& why)
+  {
+    if (update_epoch_active)
+    {
+      why = "another update is already active";
+      return false;
+    }
+    if (expected != update_epoch_id)
+    {
+      why = "stale expected revision " + std::to_string(expected)
+          + "; current revision is " + std::to_string(update_epoch_id);
+      return false;
+    }
+    update_epoch_active = true;
+    update_epoch_valid = true;
+    {
+      std::lock_guard<std::mutex> lk(update_transition_mutex);
+      update_transitions.clear();
+      update_negative_transitions.clear();
+    }
+    return true;
+  }
+
+  void invalidateUpdateCounts() { update_epoch_valid = false; }
+
+  bool exerciseSignedUnderflow()
+  {
+    u64 out = 0;
+    const bool recovered = !cnt_try_apply_signed(0, cnt_kind_rec, -1, out);
+    if (recovered && update_epoch_active) update_epoch_valid = false;
+    return recovered;
+  }
+
+  bool updateCountsValid() const { return update_epoch_valid; }
+
+  void recordUpdateTransition(Relation* rel, const u64* row, s8 sign)
+  {
+    if (!update_epoch_active || rel == nullptr) return;
+    std::lock_guard<std::mutex> lk(update_transition_mutex);
+    auto& journal = sign < 0 ? update_negative_transitions : update_transitions;
+    journal[rel->getVersionId()].insert(
+      std::vector<u64>(row, row + rel->getArity()));
+  }
+
+  bool applyPositiveInput(Relation* rel, const u64* row)
+  {
+    bool became_live = false;
+    if (!update_epoch_active || rel == nullptr
+        || !rel->setInputOverlayPositive(row, became_live))
+    {
+      update_epoch_valid = false;
+      return false;
+    }
+    if (became_live) recordUpdateTransition(rel, row, 1);
+    return true;
+  }
+
+  bool applyNegativeInput(Relation* rel, const u64* row)
+  {
+    bool became_absent = false;
+    if (!update_epoch_active || rel == nullptr
+        || !rel->setInputOverlayNegative(row, became_absent))
+    {
+      update_epoch_valid = false;
+      return false;
+    }
+    if (became_absent) recordUpdateTransition(rel, row, -1);
+    return true;
+  }
+
+  // Stage this update's distinct 0->1 transitions as premise-only batches for
+  // the next maintenance stratum.  Each downstream stratum is run once, so a
+  // journal row is staged at most once for that consumer even though it stays
+  // available to later strata until commit.
+  void stageUpdateTransitions(const std::vector<std::string>& names, s8 sign = 1)
+  {
+    std::lock_guard<std::mutex> lk(update_transition_mutex);
+    auto& journal = sign < 0 ? update_negative_transitions : update_transitions;
+    for (const std::string& name : names)
+    {
+      Relation* rel = getRelation(name);
+      if (rel == nullptr) continue;
+      auto it = journal.find(rel->getVersionId());
+      if (it == journal.end()) continue;
+      InsertBatch* b = new InsertBatch();
+      b->kind = cnt_kind_premise;
+      b->sign = sign;
+      for (const std::vector<u64>& row : it->second)
+      {
+        if (b->usage + row.size() > batch_size_max)
+        {
+          rel->sendBatch(b);
+          b = new InsertBatch();
+          b->kind = cnt_kind_premise;
+          b->sign = sign;
+        }
+        for (u64 v : row) b->data[b->usage++] = v;
+      }
+      rel->sendBatch(b);
+    }
+  }
+
+  bool commitUpdateEpoch(std::string& why)
+  {
+    if (!update_epoch_active)
+    {
+      why = "no active update";
+      return false;
+    }
+    if (update_epoch_valid)
+      for (Relation* r : rel_registry)
+        if (r && !r->committedCountCoverage(why))
+        {
+          update_epoch_valid = false;
+          break;
+        }
+    ++update_epoch_id;
+    // Arithmetic failure never prevents the set fixpoint from settling: the
+    // maintenance interner uses the live master index as membership authority.
+    // Counts are merely invalidated so the next certified route recounts.
+    if (!update_epoch_valid)
+    {
+      for (Relation* r : rel_registry) if (r) r->clearCounts();
+    }
+    else
+    {
+      for (Relation* r : rel_registry)
+        if (r && r->isCounted()) r->setCountedRevision(update_epoch_id);
+    }
+    update_epoch_active = false;
+    {
+      std::lock_guard<std::mutex> lk(update_transition_mutex);
+      update_transitions.clear();
+      update_negative_transitions.clear();
+    }
+    // Coverage failure is a committed set update with invalidated cache, not
+    // a failed update transaction.  Reserve `why` for protocol refusal before
+    // mutation (the no-active case above).
+    why.clear();
+    return update_epoch_valid;
+  }
+
+  void abortUpdateEpoch()
+  {
+    // Abort is protocol cleanup, not data rollback.  Callers use it only
+    // before applying mutations; once content changes, they must settle via
+    // fallback and commit so revision identity remains truthful.
+    update_epoch_active = false;
+    {
+      std::lock_guard<std::mutex> lk(update_transition_mutex);
+      update_transitions.clear();
+      update_negative_transitions.clear();
+    }
+    update_epoch_valid = true;
+  }
   Database(u32 _thread_count)
   {
     thread_count = _thread_count;
@@ -1706,19 +2422,70 @@ public:
   // (addRelation/addStruct/loadDatabaseBIN/ensureStatsRelation/newVersion)
   // funnels through here so ownership (rel_registry), the binding chain, and
   // the latest map stay consistent (docs/incremental.md §0.4-§0.5, B0).
-  Relation* registerRelation(const std::string& name, Relation* r)
+  Relation* registerRelation(const std::string& name, Relation* r,
+                             Relation* predecessor = nullptr,
+                             const std::string& version_key = "")
   {
+    const u64 vid = next_version_id++;
+    std::string chosen_key = version_key;
+    if (chosen_key.empty())
+    {
+      auto pit = planned_version_keys.find(name);
+      if (pit != planned_version_keys.end())
+      {
+        chosen_key = pit->second;
+        planned_version_keys.erase(pit);
+      }
+    }
+    r->setVersionIdentity(vid, predecessor,
+                          chosen_key.empty()
+                            ? (std::string("runtime-") + std::to_string(vid))
+                            : chosen_key,
+                          evaluation_id);
+    const std::string& assigned_key = r->getVersionKey();
+    auto kit = version_key_ids.find(assigned_key);
+    if (kit != version_key_ids.end())
+      fatal("duplicate VersionKey " + assigned_key + " in one evaluation");
+    version_key_ids[assigned_key] = vid;
     r->initShards(thread_count);
     rel_registry.push_back(r);
-    rel_bindings[name].push_back({pipeline_pos, r});
+    // A positional maintenance/replay plugin can declare compiler-local
+    // temps that did not exist in the original set-semantics flavor.  They
+    // belong to that plugin's historical environment, not to the wall-clock
+    // tip (otherwise its own subsequent getRelation-at-P returns null).
+    const u32 registration_pos = bind_pos >= 0 ? (u32)bind_pos : pipeline_pos;
+    rel_bindings[name].push_back({registration_pos, r});
     relations[name] = r;
     return r;
+  }
+
+  void planVersionKey(const std::string& name, const std::string& key)
+  {
+    if (!key.empty()) planned_version_keys[name] = key;
+  }
+
+  void setEvaluationId(const std::string& id)
+  {
+    evaluation_id = id;
+    for (Relation* r : rel_registry) if (r) r->setEvaluationId(id);
+  }
+  const std::string& getEvaluationId() const { return evaluation_id; }
+  bool hasVersionKey(const std::string& key) const
+  {
+    return version_key_ids.find(key) != version_key_ids.end();
   }
 
   void addRelation(const std::string& name, u16 arity)
   {
     // Client code must check that relation does not already exist!
     registerRelation(name, new Relation(name, arity, 0));
+  }
+
+  void addTempRelation(const std::string& name, u16 arity)
+  {
+    Relation* r = new Relation(name, arity, 0);
+    r->markCompilerTemporary();
+    registerRelation(name, r);
   }
 
   void addStruct(const std::string& name, u16 arity)
@@ -1739,6 +2506,12 @@ public:
   // around a re-entry push, B1).
   void setBindPosition(s64 p) { bind_pos = p; }
   s64 bindPosition() { return bind_pos; }
+  void setBindVersions(const std::vector<std::pair<std::string, u64>>& bindings)
+  {
+    bind_versions.clear();
+    for (const auto& b : bindings) bind_versions[b.first] = b.second;
+  }
+  void clearBindVersions() { bind_versions.clear(); }
 
   // Create the next version of `name`: a new physical Relation carrying the
   // registration-level identity (arity, struct id VERBATIM -- downstream
@@ -1750,7 +2523,8 @@ public:
   // (indexed) content; callers sit at stratum boundaries where deltas are
   // drained.  Returns nullptr if `name` is unbound (a first write registers
   // normally at push time instead).
-  Relation* newVersion(const std::string& name)
+  Relation* newVersion(const std::string& name,
+                       const std::string& version_key = "")
   {
     auto it = relations.find(name);
     if (it == relations.end())
@@ -1766,7 +2540,7 @@ public:
     {
       nv->insertTupleAllIndices(row);
     });
-    registerRelation(name, nv);
+    registerRelation(name, nv, old, version_key);
     // the by-id memo must follow the latest version
     if (nv->getStructId() > 0)
       structs_by_id[nv->getStructId()] = nv;
@@ -1813,6 +2587,9 @@ public:
 
   Relation* getRelation(const std::string& name)
   {
+    auto bit = bind_versions.find(name);
+    if (bit != bind_versions.end())
+      return getRelationByVersionId(bit->second);
     // Bind-time positional resolution (B1 re-entry): resolve through the
     // environment of the position being bound instead of the latest map.
     if (bind_pos >= 0)
@@ -1841,6 +2618,22 @@ public:
       r = b.rel;
     }
     return r;
+  }
+
+  Relation* getRelationByVersionId(u64 vid)
+  {
+    for (Relation* r : rel_registry)
+      if (r != nullptr && r->getVersionId() == vid)
+        return r;
+    return nullptr;
+  }
+
+  void markLatestRelationsDirect()
+  {
+    for (const auto& kv : relations)
+      if (kv.second != nullptr && !kv.second->isLattice()
+          && kv.second->getStructId() == 0)
+        kv.second->markAllLiveDirect();
   }
 
   u64 relationSizeAt(const std::string& name, u32 pos)
@@ -1878,6 +2671,35 @@ public:
     return s;
   }
 
+  // Identity companion to relChainsSexpr.  Kept separate so the legacy
+  // `(rel ... (v ORD POS SIZE))` wire shape remains readable by older tools.
+  // Alias bindings legitimately repeat one VersionId under another name.
+  std::string versionIdsSexpr()
+  {
+    std::map<std::string, const std::vector<RelBinding>*> sorted;
+    for (const auto& kv : rel_bindings)
+      sorted[kv.first] = &kv.second;
+    std::string s = " (version-ids";
+    for (const auto& kv : sorted)
+    {
+      u32 ord = 0;
+      for (const RelBinding& b : *kv.second)
+      {
+        const u32 o = ord++;
+        if (b.rel == nullptr) continue;
+        s += " (vid " + kv.first + " " + std::to_string(o) + " "
+           + std::to_string(b.rel->getVersionId()) + " "
+           + std::to_string(b.rel->getPredecessorVersionId()) + " \""
+           + b.rel->getVersionKey() + "\" (schema "
+           + std::to_string(b.rel->getArity()) + " "
+           + std::to_string(b.rel->getStructId()) + " "
+           + (b.rel->isLattice() ? "lattice" : "set") + "))";
+      }
+    }
+    s += ")";
+    return s;
+  }
+
   // Close one count-round walk (docs/incremental.md §8B.2, M0.3).  A walk
   // materialises count sidecars exactly on the relations its CountTasks
   // bound (whichever versions the walk's bind position resolved), so
@@ -1900,6 +2722,73 @@ public:
       }
   }
 
+  bool beginCountEpoch(const std::vector<u64>& vids, std::string& why)
+  {
+    std::vector<Relation*> begun;
+    for (u64 vid : vids)
+    {
+      Relation* r = getRelationByVersionId(vid);
+      if (r == nullptr || !r->beginCountEpoch())
+      {
+        why = "version " + std::to_string(vid) + " is not count-capable";
+        for (Relation* x : begun) x->abortCountEpoch();
+        return false;
+      }
+      begun.push_back(r);
+    }
+    return true;
+  }
+
+  bool commitCountEpoch(const std::vector<u64>& vids, std::string& why)
+  {
+    // Audit every target before publishing any sidecar.
+    for (u64 vid : vids)
+    {
+      Relation* r = getRelationByVersionId(vid);
+      if (r == nullptr || !r->countEpochCoverage(why))
+      {
+        for (u64 v2 : vids)
+        {
+          Relation* x = getRelationByVersionId(v2);
+          if (x) x->abortCountEpoch();
+        }
+        return false;
+      }
+    }
+    for (u64 vid : vids)
+    {
+      Relation* r = getRelationByVersionId(vid);
+      // Coverage was audited above; commit cannot fail now.
+      std::string ignored;
+      r->commitCountEpoch(ignored);
+      r->setCountedRevision(update_epoch_id);
+    }
+    cleanupUncommittedCounts();
+    return true;
+  }
+
+  void abortCountEpoch(const std::vector<u64>& vids)
+  {
+    for (u64 vid : vids)
+    {
+      Relation* r = getRelationByVersionId(vid);
+      if (r) r->abortCountEpoch();
+    }
+    cleanupUncommittedCounts();
+  }
+
+  // Count plugins can requisition sidecars for ephemeral/compiler-only
+  // relations outside the semantic VersionId target set.  Such maps are
+  // necessarily partial and must never survive a transaction boundary.
+  // Previously committed semantic maps are retained.
+  void cleanupUncommittedCounts()
+  {
+    for (Relation* r : rel_registry)
+      if (r != nullptr && !r->isCounted() && !r->isCountEpochActive()
+          && r->getCountSidecar() != nullptr)
+        r->clearCounts();
+  }
+
   // The per-(relation, version) counted state (§8B.2), one line:
   //   (count-state (cnt NAME ORD 0|1) ...)
   // mirroring relChainsSexpr's ordinals.  Lattice-valued relations are
@@ -1919,10 +2808,82 @@ public:
       for (const RelBinding& b : *kv.second)
       {
         const u32 o = ord++;
-        if (b.rel == nullptr || !b.rel->getAnyIndex() || b.rel->isLattice())
+        if (b.rel == nullptr || b.rel->isCompilerTemporary()
+            || !b.rel->getAnyIndex() || b.rel->isLattice())
           continue;
         s += " (cnt " + kv.first + " " + std::to_string(o) + " "
            + (b.rel->isCounted() ? "1" : "0") + ")";
+      }
+    }
+    // Keep legacy `(cnt ...)` records byte-compatible, then attach revision
+    // identity in a companion group so existing clients can ignore it.
+    s += " (revisions";
+    for (const auto& kv : sorted)
+    {
+      u32 ord = 0;
+      for (const RelBinding& b : *kv.second)
+      {
+        const u32 o = ord++;
+        if (b.rel == nullptr || b.rel->isCompilerTemporary()
+            || !b.rel->getAnyIndex() || b.rel->isLattice())
+          continue;
+        s += " (rev " + kv.first + " " + std::to_string(o) + " "
+           + std::to_string(b.rel->getCountedRevision()) + ")";
+      }
+    }
+    s += "))";
+    return s;
+  }
+
+  // Explicit per-VersionId capability report.  Recount capability is
+  // separate from precise deletion: ordinary tables can establish counts,
+  // structs are diagnostic-only until identity/liveness split in M5, and
+  // lattices/nullary/index-free versions remain on named fallback paths.
+  std::string countCapabilitiesSexpr()
+  {
+    std::map<std::string, const std::vector<RelBinding>*> sorted;
+    for (const auto& kv : rel_bindings)
+      if (!kv.first.empty() && kv.first[0] != '$')
+        sorted[kv.first] = &kv.second;
+    std::string s = "(count-capabilities";
+    for (const auto& kv : sorted)
+    {
+      u32 ord = 0;
+      for (const RelBinding& b : *kv.second)
+      {
+        const u32 o = ord++;
+        if (b.rel == nullptr || b.rel->isCompilerTemporary()) continue;
+        const char* recount = "yes";
+        const char* precise = "conditional";
+        const char* reason = "table-recount";
+        if (b.rel->getArity() == 0)
+        {
+          recount = "no";
+          precise = "no";
+          reason = "nullary-fallback";
+        }
+        else if (b.rel->isLattice())
+        {
+          recount = "no";
+          precise = "no";
+          reason = "lattice-fallback";
+        }
+        else if (!b.rel->getAnyIndex())
+        {
+          recount = "no";
+          precise = "no";
+          reason = "index-free";
+        }
+        else if (b.rel->getStructId() != 0)
+        {
+          precise = "no";
+          reason = "struct-diagnostic";
+        }
+        s += " (cap " + kv.first + " " + std::to_string(o) + " "
+           + std::to_string(b.rel->getVersionId()) + " (recount " + recount
+           + ") (precise-delete " + precise
+           + ") (fallback clear-rerun) (reason " + reason
+           + "))";
       }
     }
     s += ")";
@@ -4141,7 +5102,7 @@ public:
   // registration cannot exist at an old position).
   void importDatabaseBIN(const std::string& src_dir, bool passthrough_input_heap,
                          const std::unordered_map<std::string, std::string>& rename = {},
-                         s64 at_pos = -1)
+                         s64 at_pos = -1, bool as_direct_input = false)
   {
     if (!std::filesystem::is_directory(src_dir))
       fatal("Import: no database directory at " + src_dir);
@@ -4470,6 +5431,8 @@ public:
 	for (u16 c = 0; c < A; ++c)
 	  row[c] = importWord(srow[c]);
 	dst->insertTupleAllIndices(row);
+	if (as_direct_input && !dst->isLattice() && dst->getStructId() == 0)
+	  dst->addInput(row, true);
       });
     }
 
@@ -4617,8 +5580,11 @@ public:
     v->copyInternAllocatorsFrom(*pred);
     forEachNominal(pred, [&](const u64* row)
     {
-      v->insertTupleAllIndices(row);
+      if (!v->isInheritanceMasked(row))
+        v->insertTupleAllIndices(row);
     });
+    for (const std::vector<u64>& row : v->directInputs())
+      v->insertTupleAllIndices(row.data());
     return true;
   }
 };
@@ -4703,7 +5669,3 @@ inline void EndIterCompletion::operator()() noexcept
 
 
 }; // namespace slog
-
-
-
-

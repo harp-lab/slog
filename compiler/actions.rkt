@@ -51,6 +51,10 @@
      (format "{ ~a }" (string-join (for/list ([v (in-list t)]) (encode-val who v)) ", ")))
    ", "))
 
+(define (encode-tuple who tuple)
+  (format "{ ~a }"
+          (string-join (for/list ([v (in-list tuple)]) (encode-val who v)) ", ")))
+
 (define (action-body spec)
   (match spec
     [`(open ,db-name)
@@ -152,6 +156,52 @@
       (format "  std::vector<std::vector<u64>> ts = { ~a };\n"
               (encode-tuples 'del-batch tuples))
       (format "  d->delBatchAt(\"~a\", ~a, ts);\n" rel pos))]
+    [`(input-state ,rel ,pos (,tuples ...))
+     (string-append
+      "  slog::Database* db = d->db();\n"
+      (format "  std::vector<std::vector<u64>> ts = { ~a };\n"
+              (encode-tuples 'input-state tuples))
+      (format "  d->emitInputStates(\"~a\", ~a, ts);\n" rel pos))]
+    [`(set-overlay ,rel ,pos (,rows ...))
+     (define states (hash 'none 0 'direct 1 'mask 2))
+     (define encoded
+       (for/list ([row (in-list rows)])
+         (match-define `(,state ,tuple) row)
+         (format "{~a, ~a}" (hash-ref states state)
+                 (encode-tuple 'set-overlay tuple))))
+     (string-append
+      "  slog::Database* db = d->db();\n"
+      (format "  std::vector<std::pair<u8, std::vector<u64>>> rows = { ~a };\n"
+              (string-join encoded ", "))
+      (format "  d->setOverlayAt(\"~a\", ~a, rows);\n" rel pos))]
+    [`(set-overlay-positive ,rel (,tuples ...))
+     (string-append
+      "  slog::Database* db = d->db();\n"
+      (format "  std::vector<std::vector<u64>> ts = { ~a };\n"
+              (encode-tuples 'set-overlay-positive tuples))
+      (format "  d->setOverlayPositive(\"~a\", ts);\n" rel))]
+    [`(set-overlay-negative ,rel (,tuples ...))
+     (string-append
+      "  slog::Database* db = d->db();\n"
+      (format "  std::vector<std::vector<u64>> ts = { ~a };\n"
+              (encode-tuples 'set-overlay-negative tuples))
+      (format "  d->setOverlayNegative(\"~a\", ts);\n" rel))]
+    [`(stage-update-transitions signed ,sign ,rels ...)
+     (format "  d->stageUpdateTransitions(std::vector<std::string>{~a}, ~a);\n"
+             (string-join (for/list ([r (in-list rels)])
+                            (format "\"~a\"" r)) ", ") sign)]
+    ;; Compatibility spelling for M1 callers predating explicit polarity.
+    [`(stage-update-transitions ,rels ...)
+     (format "  d->stageUpdateTransitions(std::vector<std::string>{~a}, 1);\n"
+             (string-join (for/list ([r (in-list rels)])
+                            (format "\"~a\"" r)) ", "))]
+    [`(begin-update ,expected)
+     (format "  d->beginUpdateEpoch(~a);\n" expected)]
+    [`(commit-update) "  d->commitUpdateEpoch();\n"]
+    [`(abort-update) "  d->abortUpdateEpoch();\n"]
+    [`(update-epoch) "  d->emitUpdateEpoch();\n"]
+    [`(update-counts-valid) "  d->emitUpdateCountsValid();\n"]
+    [`(exercise-signed-underflow) "  d->exerciseSignedUnderflow();\n"]
     ;; Multi-tuple staging (0.B5's exact-once path, one plugin per flush).
     [`(stage-batch ,rel (,tuples ...))
      (string-append
@@ -163,6 +213,18 @@
     ;; restages the P-environment instead of the latest.
     [`(bind-at ,pos)
      (format "  d->bindAt(~a);\n" pos)]
+    [`(bind-instance ,pos (,bindings ...))
+     (format "  d->bindInstance(~a, std::vector<std::pair<std::string, u64>>{~a});\n"
+             pos
+             (string-join
+              (for/list ([b (in-list bindings)])
+                (match-define `(,name ,vid) b)
+                (format "{\"~a\", ~a}" name vid))
+              ", "))]
+    [`(transient-stratum)
+     "  d->armTransientStratum();\n"]
+    [`(maintenance-stratum)
+     "  d->armMaintenanceStratum();\n"]
     ;; Positional clear + inheritance-boundary refresh (0.C, the anchored
     ;; clear-and-rerun's primitives).
     [`(clear-rel-at ,rel ,pos)
@@ -196,14 +258,33 @@
     ;; rebinds each already-bound one to a NEW physical version (full copy of
     ;; its predecessor) before the segment's strata bind.  Names never bound
     ;; are no-ops (they register normally at push).  Replies (segment P N).
+    [`(begin-segment/keyed (,pairs ...))
+     (format "  d->beginSegment(std::vector<std::pair<std::string, std::string>>{~a});\n"
+             (string-join
+              (for/list ([p (in-list pairs)])
+                (match-define `(,r ,key) p)
+                (format "{\"~a\", \"~a\"}"
+                        (escape-c-string-literal (~a r))
+                        (escape-c-string-literal key)))
+              ", "))]
     [`(begin-segment ,rels ...)
-     (format "  d->beginSegment({~a});\n"
+     (format "  d->beginSegment(std::vector<std::string>{~a});\n"
              (string-join (for/list ([r (in-list rels)]) (format "\"~a\"" r)) ", "))]
-    ;; Version-chain introspection (§0.4): one
-    ;;   (pipeline (pos P) (rel NAME (v ORD POS SIZE) ...) ...)
-    ;; line, so a front end can (re)derive the point->(name->version) map
-    ;; from a live daemon.  Read-only; safe when suspended.
+    ;; Create an input-only successor relation version at the JIT tip.  This
+    ;; is distinct from editing the currently selected VersionId.
+    [`(inject-version ,rel ,version-key)
+     (format "  d->injectVersion(\"~a\", \"~a\");\n"
+             (escape-c-string-literal (~a rel))
+             (escape-c-string-literal version-key))]
+    ;; Version-chain introspection (§0.4/M1): one line containing pipeline
+    ;; position, EvaluationId, settled UpdateEpochId, exact stratum bindings,
+    ;; VersionIds/VersionKeys, and the per-name version chains.  A front end
+    ;; can rederive the point->(name->version) map from a live daemon.
+    ;; Read-only; safe when suspended.
     [`(pipeline) "  d->emitPipeline();\n"]
+    [`(set-evaluation ,id)
+     (format "  d->setEvaluationId(\"~a\");\n"
+             (escape-c-string-literal id))]
     ;; Versioned sizes (§0.4 addressing): one (sizes-at P (NAME SIZE) ...)
     ;; line with every name resolved at position P.  Read-only.
     [`(sizes-at ,pos)
@@ -301,6 +382,17 @@
       "  for (slog::Relation* r : d->db()->allVersions())\n"
       "    if (r) r->clearCounts();\n"
       "  d->emit(\"(counts-cleared)\");\n")]
+    [`(begin-count-epoch ,vids ...)
+     (format "  d->beginCountEpoch({~a});\n"
+             (string-join (map number->string vids) ", "))]
+    [`(commit-count-epoch ,vids ...)
+     (format "  d->commitCountEpoch({~a});\n"
+             (string-join (map number->string vids) ", "))]
+    [`(abort-count-epoch ,vids ...)
+     (format "  d->abortCountEpoch({~a});\n"
+             (string-join (map number->string vids) ", "))]
+    [`(cover-count-writer ,scc)
+     (format "  d->coverCountWriter(~a);\n" scc)]
     ;; Close one count-round walk (docs/incremental.md §8B.2, M0.3): the
     ;; named relations' sidecar-bearing versions become `counted`; any
     ;; OTHER sidecar-bearing version this walk touched holds partial
@@ -318,6 +410,57 @@
     ;; versions, severed bindings, and $-diagnostics are omitted.
     [`(count-state)
      "  d->emit(d->db()->countStateSexpr());\n"]
+    [`(count-capabilities)
+     "  d->emit(d->db()->countCapabilitiesSexpr());\n"]
+    [`(count-test-max ,n)
+     (format
+      (string-append
+       "  for (slog::Relation* r : d->db()->allVersions())\n"
+       "    if (r) r->setCountTestMax(~a);\n"
+       "  d->emit(\"(count-test-max ~a)\");\n")
+      n n)]
+    [`(input-ledger)
+     (string-append
+      "  slog::Database* db = d->db();\n"
+      "  size_t n = 0;\n"
+      "  for (slog::Relation* r : db->allVersions())\n"
+      "  {\n"
+      "    if (!r || r->isCompilerTemporary()) continue;\n"
+      "    for (const auto& row : r->directInputRows())\n"
+      "    {\n"
+      "      std::string line = \"(inputledger direct \" + std::to_string(r->getVersionId()) + \" \" + r->getName();\n"
+      "      for (u64 v : row) line += \" \" + db->writeValCSV(v);\n"
+      "      d->emit(line + \")\"); ++n;\n"
+      "    }\n"
+      "    for (const auto& row : r->inheritanceMaskRows())\n"
+      "    {\n"
+      "      std::string line = \"(inputledger mask \" + std::to_string(r->getVersionId()) + \" \" + r->getName();\n"
+      "      for (u64 v : row) line += \" \" + db->writeValCSV(v);\n"
+      "      d->emit(line + \")\"); ++n;\n"
+      "    }\n"
+      "  }\n"
+      "  d->emit(std::string(\"(inputledger-done \" ) + std::to_string(n) + \")\");\n")]
+    [`(dump-all-counts)
+     (string-append
+      "  slog::Database* db = d->db();\n"
+      "  size_t nr = 0;\n"
+      "  for (slog::Relation* r : db->allVersions())\n"
+      "  {\n"
+      "    if (!r || r->isCompilerTemporary() || !r->isCounted() || !r->getCountSidecar()) continue;\n"
+      "    slog::Index** side = r->getCountSidecar();\n"
+      "    const u16 ka = r->countKeyArity();\n"
+      "    for (u16 b = 0; b < bucket_count; ++b)\n"
+      "      side[b]->forEach([&](const u64* row) {\n"
+      "        std::string line = \"(vcountrow \" + std::to_string(r->getVersionId());\n"
+      "        for (u16 c = 0; c < ka; ++c) line += \" \" + db->writeValCSV(row[c]);\n"
+      "        const u64 w = row[ka];\n"
+      "        line += \" \" + std::to_string(slog::cnt_input(w) ? 1 : 0);\n"
+      "        line += \" \" + std::to_string(slog::cnt_nonrec(w));\n"
+      "        line += \" \" + std::to_string(slog::cnt_rec(w)) + \")\";\n"
+      "        d->emit(line); ++nr;\n"
+      "      });\n"
+      "  }\n"
+      "  d->emit(std::string(\"(vcountdone \" ) + std::to_string(nr) + \")\");\n")]
     ;; Dump one relation's count sidecar (docs/incremental.md §8B, M0): one
     ;; (countrow REL v.. IN NR RC) line per counted key -- the sidecar key
     ;; rendered like CSV values (tables: the full tuple in storage order;

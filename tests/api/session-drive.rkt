@@ -61,6 +61,16 @@
     [(list "del-tuple" arg)
      (match-define (cons rel vals) (string-split arg ","))
      `(del-tuple ,rel ,@(map num-or-str vals))]
+    [(list "inject-version" arg)
+     (match (string-split arg ",")
+       [(list rel) `(inject-version ,(string->symbol rel) #f)]
+       [(list rel key) `(inject-version ,(string->symbol rel) ,key)])]
+    [(list "inject+" arg)
+     (match-define (cons rel vals) (string-split arg ","))
+     `(inject+ ,(string->symbol rel) ,(map num-or-str vals))]
+    [(list "inject-reopen" arg)
+     (match-define (list* rel key prog vals) (string-split arg ","))
+     `(inject-reopen ,(string->symbol rel) ,key ,prog ,(map num-or-str vals))]
     [(list "batch+" arg)
      (match-define (cons rel vals) (string-split arg ","))
      `(batch + tip ,(string->symbol rel) ,(map num-or-str vals))]
@@ -115,7 +125,19 @@
        [(list pp) `(recount #f ,(string->number pp) #f)]
        [(list pp rel) `(recount ,(string->symbol rel) ,(string->number pp) #f)])]
     [(list "recount-force") `(recount #f #f #t)]
+    [(list "recount-try") `(recount-try)]
+    [(list "recount-fail" n) `(recount-fail ,(string->number n))]
+    [(list "recount-omit" n) `(recount-omit ,(string->number n))]
     [(list "count-state") `(count-state)]
+    [(list "count-capabilities") `(count-capabilities)]
+    [(list "count-test-max" n) `(count-test-max ,(string->number n))]
+    [(list "update-epoch") `(update-epoch)]
+    [(list "begin-update" n) `(begin-update ,(string->number n))]
+    [(list "commit-update") `(commit-update)]
+    [(list "abort-update") `(abort-update)]
+    [(list "signed-underflow") `(exercise-signed-underflow)]
+    [(list "input-ledger") `(input-ledger)]
+    [(list "dump-all-counts") `(dump-all-counts)]
     [(list "dump-counts" arg)
      (match (string-split arg ",")
        [(list rel) `(dump-counts ,rel)]
@@ -155,11 +177,48 @@
        (session-add-tuple! s (string->symbol rel) vals)]
       [`(del-tuple ,rel ,vals ...)
        (session-del-tuple! s (string->symbol rel) vals)]
+      [`(inject-version ,rel ,key)
+       (session-inject-version! s rel #:key key)]
+      [`(inject+ ,rel ,tuple)
+       (session-inject-batch! s rel (list tuple))]
+      [`(inject-reopen ,rel ,key ,prog ,tuple)
+       (session-inject-and-reopen! s rel prog (list tuple) #:key key)]
       [`(reenter ,rel) (session-reenter! s rel)]
       [`(rerun ,rel) (session-rerun! s rel)]
       [`(recount ,rel ,at ,force?)
        (session-recount! s #:rel rel #:at at #:force? force?)]
+      [`(recount-try)
+       (with-handlers ([exn:fail?
+                        (lambda (e)
+                          (displayln `(recount-rejected ,(exn-message e))))])
+         (session-recount! s #:force? #t))]
+      [`(recount-fail ,n)
+       (with-handlers ([exn:fail?
+                        (lambda (e)
+                          (displayln `(recount-failed ,n ,(exn-message e))))])
+         (session-recount! s #:force? #t #:fail-after n))]
+      [`(recount-omit ,n)
+       (with-handlers ([exn:fail?
+                        (lambda (e)
+                          (displayln `(recount-omitted ,n ,(exn-message e))))])
+         (session-recount! s #:force? #t #:omit-writer n))]
       [`(count-state) (session-action! s `(count-state) echo-one-line)]
+      [`(count-capabilities)
+       (session-action! s `(count-capabilities) echo-one-line)]
+      [`(count-test-max ,n)
+       (session-action! s `(count-test-max ,n) echo-one-line)]
+      [`(update-epoch) (session-action! s `(update-epoch) echo-one-line)]
+      [`(begin-update ,n) (session-action! s `(begin-update ,n) echo-one-line)]
+      [`(commit-update) (session-action! s `(commit-update) echo-one-line)]
+      [`(abort-update) (session-action! s `(abort-update) echo-one-line)]
+      [`(exercise-signed-underflow)
+       (session-action! s `(exercise-signed-underflow) echo-one-line)]
+      [`(input-ledger)
+       (session-action! s `(input-ledger)
+                        (echo-until #px"^\\(inputledger-done "))]
+      [`(dump-all-counts)
+       (session-action! s `(dump-all-counts)
+                        (echo-until #px"^\\(vcountdone "))]
       [`(dump-counts ,rel) (session-action! s `(dump-counts ,rel)
                                             (echo-until #px"^\\(countdone "))]
       [`(dump-counts ,rel ,pp) (session-action! s `(dump-counts ,rel ,pp)

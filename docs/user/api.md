@@ -135,7 +135,12 @@ so later replay does not depend on the current filesystem contents.
 
 ```racket
 (session-batch! s sign relation tuple #:at [anchor 'tip])
+(session-edit-batch! s sign relation tuple #:at [anchor 'tip])
 ```
+
+The two names are aliases. `session-edit-batch!` emphasizes that this edits
+the overlay of the selected existing VersionInstance; it does not allocate a
+new relation version.
 
 - `sign` is `'+` or `'-`.
 - `relation` is normally a symbol.
@@ -160,15 +165,27 @@ Apply and propagate all queued groups with:
 
 Flush chooses a route from compiler manifests:
 
-- A small all-add update with a single monotone downstream stratum can enter
-  through a generated delta plugin.
-- A larger monotone cone re-enters its strata in order.
-- A deletion, negation dependency, lattice-sensitive edge, or other
-  non-monotone case clears affected derived relations and reruns the cone.
+- A positive edit whose entire cone is made of capability-certified,
+  positive-arity plain tables lazily establishes support counts and enters
+  the `_maint1` path. Presence transitions chain through recursive SCCs and
+  multiple downstream strata; support contributions are retained even for
+  heads that were already present.
+- An unsupported single-stratum positive update may use the legacy set-only
+  delta plugin. Other monotone cones re-enter their strata in order.
+- A direct or inherited deletion whose entire cone is counted, acyclic, and
+  made of positive-arity plain tables enters the `_maint3neg` path. It
+  propagates only true-to-false presence changes. A mixed flush runs this
+  negative phase before its `_maint1` positive phase and commits once.
+- A deletion through recursion, negation, structs, nullary relations,
+  lattice-sensitive edges, or other unsupported topology clears affected
+  derived relations and reruns the cone.
 - A back-anchored update walks versioned suffixes at their recorded positions.
 
-The goal is result equivalence with rerunning the affected program history,
-not mutation of arbitrary derived rows in place.
+Every nonempty flush is serialized as one optimistic update epoch. The daemon
+refuses a stale expected revision before applying any mutation and advances
+the revision when the set result settles. If count establishment or support
+arithmetic cannot be certified, the permanent set-semantics fallback remains
+available; count caches never override relation content.
 
 Each anchor/relation group is limited by `inline-batch-max`, normally 2048:
 
@@ -212,18 +229,67 @@ line:
 A response has this general form:
 
 ```text
-(pipeline (pos 2)
-  (rel edge (v 0 0 3) (v 1 1 4))
-  (rel path (v 0 0 6) (v 1 1 10)))
+(pipeline
+  (pos 2)
+  (evaluation "eval-...")
+  (update-epoch 3)
+  (strata (s 0 1 "..." (kind semantic)
+             (reads (edge 12)) (write-map (path 18)) (writes 18)))
+  (version-ids
+    (vid edge 0 12 0 "v1:..." (schema 2 0 set))
+    (vid path 1 18 4 "v1:..." (schema 2 0 set)))
+  (rel edge (v 0 1 3))
+  (rel path (v 0 1 6) (v 1 4 10)))
 ```
 
-Each `(v ORD POS SIZE)` is one physical version. A severed binding from a drop
-or rename is marked in the full protocol. Recipe serialization converts raw
-anchors to stable per-relation version ordinals, because compiler changes may
-shift absolute pipeline positions.
+The current protocol also includes an evaluation ID, global update epoch,
+exact stratum read/write VersionId maps, persistent VersionKeys, predecessor
+VersionIds, and schemas. Each `(rel NAME (v ORD POS SIZE) ...)` group describes
+one name's physical versions. A severed binding from a drop or rename is
+marked in the full protocol. Recipe serialization resolves raw anchors to
+persistent VersionKeys (while retaining legacy ordinal compatibility),
+because compiler changes may shift absolute pipeline positions.
 
 An anchor before a relation's first binding is an error. An update aimed at a
 name that has been dropped or renamed away at that position is also refused.
+
+### Edit versus inject
+
+Editing and injecting are deliberately distinct JIT operations:
+
+```racket
+;; Existing slot: VersionId and VersionKey stay fixed; flush advances only the
+;; settled update revision.
+(session-edit-batch! s '+ 'edge '(4 5))
+(session-flush! s)
+
+;; New input-only successor: returns position, runtime VersionId, VersionKey.
+(define-values (pos vid key)
+  (session-inject-version! s 'edge #:key "editor-edge-2"))
+```
+
+Plain injection inherits the current tip into a distinct input-only successor.
+It never retargets historical program writers, so queued edits on that slot
+settle as anchored input changes until an explicit program event reopens the
+pipeline. `session-inject-batch!` is a convenience that injects and applies an
+input batch but retains those input-only semantics.
+
+Use the explicit topology helper when the new input version should feed a new
+program segment:
+
+```racket
+(session-inject-and-reopen!
+ s 'edge "graph-rules.slog" '((4 5)) '()
+ #:key "editor-edge-3"
+ #:output-policy 'inherit)
+```
+
+The helper first settles the input-only successor and its additions/deletions,
+then runs a new semantic program event. New output slots have stable
+VersionKeys, explicit semantic writer maps, and the shipped `'inherit` policy.
+A later positive edit can use `_maint1` through this version edge. Fresh,
+history-free output policy is intentionally not inferred and is not yet
+accepted by the helper.
 
 ## Link and import data
 
@@ -285,8 +351,9 @@ These methods exist mainly for tests and specialized tools. `session-flush!`
 is the policy entry point.
 
 A deleted row that a rerun can independently derive will reappear. Precise
-support counting and deletion without recomputation is not the current session
-model; clear-and-rerun is the correctness path.
+positive support maintenance is available on the certified M1 surface, but
+deletion without recomputation is not yet enabled; clear-and-rerun remains the
+deletion correctness path.
 
 ## Save and inspect a recipe
 
@@ -340,9 +407,18 @@ lattice. It runs count-flavored rule plugins over settled content without
 changing relation rows.
 
 - No keyword: count the whole current pipeline.
-- `#:rel`: count the target's relevant writer/downstream cone.
+- `#:rel`: request relation-scoped establishment; the current
+  correctness-first implementation closes the containing pipeline prefix.
 - `#:at`: count the environment at a pipeline position.
-- `#:force? #t`: clear existing count state before rebuilding.
+- `#:force? #t`: build and atomically replace even an already-closed count
+  epoch.
+
+Positive `_maint1` and acyclic negative `_maint3neg` flushes invoke this
+establishment lazily. Committed count state is stamped with the settled update
+revision. Overflow, underflow, or coverage failure invalidates the cache while
+preserving the authoritative set result; a later recount can rebuild it.
+Retractions outside the certified acyclic plain-table surface still route to
+clear-and-rerun.
 
 Low-level `dump-counts`, `count-state`, and related actions expose the result
 for tests. Client applications should not yet treat the sidecar layout as a

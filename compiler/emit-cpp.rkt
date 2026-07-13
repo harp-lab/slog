@@ -226,7 +226,7 @@
          ;; contributions folded by CountTask, never index inserts.  Delta/
          ;; seeded-only orderings should not be requisitioned by counted
          ;; plans at all; skip defensively.
-         [(count-flavor)
+         [(and (count-flavor) (not (maintenance-flavor)))
           (if (or delta seeded-only)
               '()
               (list
@@ -258,7 +258,7 @@
                          #:arity [arity #f])
   (define N (length intern-ord))
   (cond
-    [(count-flavor)
+    [(and (count-flavor) (not (maintenance-flavor)))
      (cond
        [(not counted?) ""]
        [(and (not is-struct) (zero? arity))
@@ -270,6 +270,14 @@
          (format "for (u16 b = 0; b < ~a; ++b)" bucket-count)
          (format "  s->addTask(phase_intern, new slog::Count~aTask<~a>(db, db->getRelation(\"~a\"), b), false);"
                  (if is-struct "Struct" "") arity name))])]
+    [(and (maintenance-flavor) counted?)
+     (when (or is-struct (zero? arity))
+       (error 'emit-cpp
+              "M1 maintenance supports positive-arity plain-table heads only: ~a"
+              name))
+     ((emit-lines 2)
+      (format "s->addTask(phase_intern, new slog::MaintainTask<~a>(db, db->getRelation(\"~a\"), ~a, 0));"
+              N name (u16-array-lit intern-ord)))]
     [else
      ((emit-lines 2)
       (format "for (u16 b = 0; b < ~a; ++b)" bucket-count)
@@ -347,7 +355,7 @@
           ;; maps survive) for the flavor's join-lat reads; NO merge/write
           ;; tasks and no delta indices (lattice heads are uncounted until
           ;; M6 and emit nothing in this flavor).
-          [(count-flavor)
+          [(and (count-flavor) (not (maintenance-flavor)))
            (if delta
                '()
                (list
@@ -371,7 +379,7 @@
             (add-ord-decl ordering ind 2))])
         lines))))
    "\n"
-   (if (count-flavor)
+   (if (and (count-flavor) (not (maintenance-flavor)))
        ""
        ((emit-lines 2)
         (format "for (u16 b = 0; b < ~a; ++b)" bucket-count)
@@ -406,7 +414,7 @@
     [`(temp ,name ,arity)
      ((emit-lines 2)
       (format "r = db->getRelation(\"~a\");" name)
-      (format "if (r == 0) db->addRelation(\"~a\", ~a);" name arity)
+      (format "if (r == 0) db->addTempRelation(\"~a\", ~a);" name arity)
       (format "else if (r->getArity() != ~a) slog::fatal(\"Temp rel arity mismatch.\");" arity))]
     [`(struct ,name ,arity ,indices ...)
      (when (or (not (> (length indices) 1))
@@ -482,7 +490,8 @@
             ((emit-lines indent) "});"))))]
     ;; JOIN against R_old = full - current delta (exact semi-naive, §6/§8): like
     ;; `join`, but excludes matches present in the same-ordering delta index
-    [`(,(and op `(join-old ,name ,ind ,K ,dind ,ys ...)) . ,rest)
+    [`(,(and op `(,(and join-kind (or 'join-old 'join-new))
+                   ,name ,ind ,K ,dind ,ys ...)) . ,rest)
      (define A (length ys))
      (define m (elocal 'm))
      (define bind-free
@@ -493,19 +502,20 @@
        (string-append
         (if (string=? bind-free "") "" ((emit-lines (+ indent 2)) bind-free))
         (emit-ops rest index-name-of delta-name-of head-fun (+ indent 2))))
+     (define suffix (if (eq? join-kind 'join-new) "new" "old"))
      (if (= K 0)
          (string-append
           ((emit-lines indent)
-           (format "slog::join_all_old<~a>(~a, ~a, [&](const std::array<u64,~a>& ~a) {"
-                   A (index-name-of op) (delta-name-of op) A m))
+           (format "slog::join_all_~a<~a>(~a, ~a, [&](const std::array<u64,~a>& ~a) {"
+                   suffix A (index-name-of op) (delta-name-of op) A m))
           inner
           ((emit-lines indent) "});"))
          (let ([key (u64-array-lit (append (map (lambda (y) (format "v_~a" y)) (take ys K))
                                            (make-list (- A K) "0")))])
            (string-append
             ((emit-lines indent)
-             (format "slog::join_probe_old<~a,~a>(~a, ~a, ~a, [&](const std::array<u64,~a>& ~a) {"
-                     A K (index-name-of op) (delta-name-of op) key A m))
+             (format "slog::join_probe_~a<~a,~a>(~a, ~a, ~a, [&](const std::array<u64,~a>& ~a) {"
+                     suffix A K (index-name-of op) (delta-name-of op) key A m))
             inner
             ((emit-lines indent) "});"))))]
     ;; a lattice body read: probe the payload map over the key columns; the
@@ -695,6 +705,9 @@
                "}")]
              [`(mkstruct ,name ,ind ,x ,fields ...)
               (cond
+                [(maintenance-flavor)
+                 (error 'emit-cpp
+                        "M1 maintenance does not support struct heads: ~a" name)]
                 ;; count flavor (§8B.1): resolve the interned id by content
                 ;; and count the contribution; never inserts
                 [(current-rule-kind)
@@ -720,12 +733,22 @@
                           (u16-array-lit ind)))])]
              [`(emit ,name ,ind ,zs ...)
               (if (current-rule-kind)
-                  ;; count flavor: closure-check instead of dedup-skip
-                  ((emit-lines indent)
-                   (format "slog::emit_count<~a>(head_rel[~a], head_index[~a], ~a, newbatch[~a], ~a, ~a);"
-                           (length zs) i i (cnt-kind-cpp (current-rule-kind)) i
-                           (u64-array-lit (map (lambda (z) (format "v_~a" z)) zs))
-                           (u16-array-lit ind)))
+                  (if (maintenance-flavor)
+                      ;; Every newly-enabled instantiation is a contribution;
+                      ;; MaintainTask later turns only 0->1 support changes
+                      ;; into membership delta.
+                      ((emit-lines indent)
+                       (format "slog::emit_maint<~a>(head_rel[~a], ~a, ~a, newbatch[~a], ~a, ~a);"
+                               (length zs) i (cnt-kind-cpp (current-rule-kind))
+                               (if (negative-maintenance-flavor?) -1 1) i
+                               (u64-array-lit (map (lambda (z) (format "v_~a" z)) zs))
+                               (u16-array-lit ind)))
+                      ;; recount flavor: closure-check instead of dedup-skip
+                      ((emit-lines indent)
+                       (format "slog::emit_count<~a>(head_rel[~a], head_index[~a], ~a, newbatch[~a], ~a, ~a);"
+                               (length zs) i i (cnt-kind-cpp (current-rule-kind)) i
+                               (u64-array-lit (map (lambda (z) (format "v_~a" z)) zs))
+                               (u16-array-lit ind))))
                   ((emit-lines indent)
                    (format "slog::emit<~a>(head_rel[~a], head_index[~a], newbatch[~a], ~a, ~a);"
                            (length zs) i i i
@@ -765,12 +788,13 @@
   ;; is all-constant or all-wildcard runs before the driver), so scan both
   (define join-members
     (for/list ([op (in-list (append pre body))]
-               #:when (memq (car op) '(join join-lat exists join-old
+               #:when (memq (car op) '(join join-lat exists join-old join-new
                                        absent absent-lat)))
       (cons op (elocal (string->symbol (format "~aindex" (second op)))))))
   ;; a join-old op needs a SECOND member for the delta index it excludes against
   (define join-old-delta-members
-    (for/list ([op (in-list body)] #:when (eq? (car op) 'join-old))
+    (for/list ([op (in-list body)]
+               #:when (memq (car op) '(join-old join-new)))
       (cons op (elocal (string->symbol (format "~adelta" (second op)))))))
   (define (index-name-of op)
     (cdr (assq op join-members)))
@@ -797,7 +821,7 @@
               (string-prefix? (symbol->string driver-rel) "$"))
     (for ([op (in-list body)])
       (match op
-        [`(,(or 'join 'join-lat 'join-old) ,jname ,_ 0 ,_ ...)
+        [`(,(or 'join 'join-lat 'join-old 'join-new) ,jname ,_ 0 ,_ ...)
          #:when (and (set-member? dynamic-rels jname)
                      (not (set-member? warned-scans
                                        (cons (current-rule-loc) jname))))
@@ -892,7 +916,7 @@
               (match (car om)
                 [`(,(or 'join 'join-lat 'exists 'absent 'absent-lat) ,name ,ind ,_ ...)
                  (string-append (index-member name (cdr om) ind #f) "\n")]
-                [`(join-old ,name ,ind ,_ ,dind ,_ ...)
+                [`(,(or 'join-old 'join-new) ,name ,ind ,_ ,dind ,_ ...)
                  (string-append
                   (index-member name (cdr om) ind #f) "\n"
                   (index-member name (delta-name-of (car om)) dind #t) "\n")])))
@@ -1193,6 +1217,25 @@
            (for/list ([rel (in-list (sort (set->list dynamic-rels)
                                           string<? #:key symbol->string))])
              (format "  s->addDynamicRel(\"~a\");\n" rel))))
+  ;; Canonical operational-IR reads, recorded on the runtime stratum instance
+  ;; so historical recount can rebind by exact VersionId rather than by a
+  ;; reconstructed name/position environment.
+  (define read-rels
+    (for/fold ([acc (set)]) ([cr (in-list crules)])
+      (define with-driver
+        (match (crule-driver cr)
+          [`(,(or 'scan 'probe) ,name ,_ ...) (set-add acc name)]
+          [_ acc]))
+      (for/fold ([a with-driver]) ([op (in-list (append (crule-pre cr)
+                                                        (crule-body cr)))])
+        (if (memq (car op) '(join join-old join-new join-lat exists absent absent-lat))
+            (set-add a (second op))
+            a))))
+  (define readrel-meta
+    (apply string-append
+           (for/list ([rel (in-list (sort (set->list read-rels)
+                                          string<? #:key symbol->string))])
+             (format "  s->addReadRel(\"~a\");\n" rel))))
   ;; accelerator-seed relations (db-compression.md §4.4 v2): the daemon
   ;; samples these rels' per-round deltas into the seed sidecar; declared
   ;; per-stratum exactly like the dynamic-rel manifest above.  NEVER in the
@@ -1212,9 +1255,11 @@
     (if (not (count-flavor))
         (set)
         (let ([declared (for/set ([d (in-list decls)]) (second d))])
-          (for*/fold ([acc (for/set ([a (in-list prim-error-arms)]
-                                     #:when (set-member? declared a))
-                             a)])
+          (for*/fold ([acc (if (maintenance-flavor)
+                               (set)
+                               (for/set ([a (in-list prim-error-arms)]
+                                         #:when (set-member? declared a))
+                                 a))])
                      ([cr (in-list crules)]
                       [hop (in-list (crule-head cr))])
             (match hop
@@ -1245,7 +1290,8 @@
      ;; the restaged rows and leave the full indices empty at iteration 0's
      ;; read); fresh orderings are backfilled at registration.
      (format "  slog::Stratum* s = d->beginStratum~a(\"~a\");\n"
-             (if (or (delta-entry-flavor) (count-flavor)) "Delta" "")
+             (if (or (delta-entry-flavor) (count-flavor)
+                     (maintenance-flavor)) "Delta" "")
              stratum-name)
      ;; null (and an emitted error) if a stratum is suspended and this is not a
      ;; hot-swap upgrade; bail before touching s (docs/pausing.md §4 guardrail)
@@ -1254,6 +1300,7 @@
      const-init
      rel-decls
      register-reads
+     readrel-meta
      dynrel-meta
      accelrel-meta
      "  d->push(s);\n"

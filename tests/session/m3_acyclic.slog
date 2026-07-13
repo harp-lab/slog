@@ -1,0 +1,29 @@
+;; M3 acyclic deletion: shared support, repeated occurrences, and a second
+;; downstream stratum.  Inputs are supplied through the JIT overlay API.
+
+table (a int)
+table (b int)
+table (p int)
+table (q int)
+table (pair int int)
+
+rule
+(a X)
+-->
+(p X)
+
+rule
+(b X)
+-->
+(p X)
+
+rule
+(a X)
+(a Y)
+-->
+(pair X Y)
+
+rule
+(p X)
+-->
+(q X)

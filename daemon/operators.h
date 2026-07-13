@@ -275,6 +275,45 @@ inline void join_all_old(Index** full, Index** delta, Cont&& k)
   }
 }
 
+// Negative exact partition pre-state view O = N union DeltaMinus.  FULL is
+// the post-deletion N view; the delta index retains the removed witnesses.
+template <u16 A, u16 K, class Cont>
+inline void join_probe_new(Index** full, Index** delta,
+                           const std::array<u64, A>& key, Cont&& k)
+{
+  auto* fidx = static_cast<BTreeIndex<A>*>(full[buckethash(key[0])]);
+  auto* didx = static_cast<BTreeIndex<A>*>(delta[buckethash(key[0])]);
+  for (auto it = fidx->lower_bound(key); it != fidx->end(); ++it)
+  {
+    const std::array<u64, A>& m = *it;
+    bool match = true;
+    for (u16 c = 0; c < K; ++c) if (m[c] != key[c]) { match = false; break; }
+    if (!match) break;
+    k(m);
+  }
+  for (auto it = didx->lower_bound(key); it != didx->end(); ++it)
+  {
+    const std::array<u64, A>& m = *it;
+    bool match = true;
+    for (u16 c = 0; c < K; ++c) if (m[c] != key[c]) { match = false; break; }
+    if (!match) break;
+    if (!fidx->contains(m)) k(m);
+  }
+}
+
+template <u16 A, class Cont>
+inline void join_all_new(Index** full, Index** delta, Cont&& k)
+{
+  for (u16 b = 0; b < bucket_count; ++b)
+  {
+    auto* fidx = static_cast<BTreeIndex<A>*>(full[b]);
+    auto* didx = static_cast<BTreeIndex<A>*>(delta[b]);
+    for (auto it = fidx->begin(); it != fidx->end(); ++it) k(*it);
+    for (auto it = didx->begin(); it != didx->end(); ++it)
+      if (!fidx->contains(*it)) k(*it);
+  }
+}
+
 // JOIN over a lattice (payload-map) index, bound key prefix: like join_probe
 // over the KA key columns, but each match additionally hands the continuation
 // the key's current merged value -- k(const std::array<u64,KA>& keys, u64 val).
@@ -463,6 +502,30 @@ inline void emit_pending_error(Database* db, const char* loc)
 // escape) -- counting it would corrupt the sidecar, so it is a loud fatal,
 // the same corruption-detector stance as cnt_add's underflow.
 // ---------------------------------------------------------------------------
+
+// M1 signed support contribution.  Unlike emit_count this deliberately does
+// not probe or skip the live index: a head that is already present still gains
+// one support, while an absent head becomes a presence transition only after
+// MaintainTask folds the contribution.
+template <u16 A>
+inline void emit_maint(Relation* head_rel, u8 kind, s8 sign,
+                       InsertBatch*& nb, const std::array<u64, A>& zs,
+                       const std::array<u16, A>& head_ord)
+{
+  (void)head_rel;
+  nb->kind = kind;
+  nb->sign = sign;
+  u64* d = nb->data + nb->usage;
+  for (u16 j = 0; j < A; ++j) d[head_ord[j]] = zs[j];
+  nb->usage += A;
+  if (nb->usage + A >= batch_size_max)
+  {
+    head_rel->sendBatch(nb);
+    nb = new InsertBatch();
+    nb->kind = kind;
+    nb->sign = sign;
+  }
+}
 
 // SINK (counted relation head): like emit, but a closure CHECK instead of a
 // dedup SKIP, and the batch carries `kind`.
@@ -737,9 +800,10 @@ class WriteTask : public Task
   u16 bucket;
   std::array<u16, A> ord;
   BTreeIndex<A>* root;
+  bool is_delta;
 public:
   WriteTask(Database* _db, Relation* _rel, const std::array<u16, A>& _ord, bool delta, u16 _b)
-    : db(_db), rel(_rel), bucket(_b), ord(_ord)
+    : db(_db), rel(_rel), bucket(_b), ord(_ord), is_delta(delta)
   {
     std::vector<u16> ordv(ord.begin(), ord.end());
     root = static_cast<BTreeIndex<A>*>(rel->getIndex(ordv, delta)[bucket]);
@@ -754,6 +818,7 @@ public:
       const u32 n = (u32)refs.size();
       for (u32 r = 0; r < n; ++r)
       {
+        if (!is_delta && refs[r].batch->sign < 0) continue;
         const u64* d = refs[r].batch->data + refs[r].offset;
         std::array<u64, A> key;
         for (u16 c = 0; c < A; ++c) key[c] = d[ord[c]];
@@ -1016,7 +1081,7 @@ public:
     // this round's re-derivations would double every counter, so the
     // exact contributions are DROPPED.  The flag only flips at the end
     // of a whole walk, never mid-round (§8B.2, M0.3).
-    if (rel->isCounted())
+    if (rel->isCounted() && !rel->isCountEpochActive())
       return true;
     auto& delta = rel->getDelta();
     for (u32 i = 0; i < delta.size(); ++i)
@@ -1029,9 +1094,113 @@ public:
         std::array<u64, A> key;
         for (u16 c = 0; c < A; ++c) key[c] = batch->data[j + c];
         auto r = side->tree.insert2(key, 0);
-        r.first->second = cnt_apply(r.first->second, batch->kind);
+        u64 next = 0;
+        if (!rel->tryApplyCount(r.first->second, batch->kind, next))
+          rel->invalidateCountEpoch();
+        else
+          r.first->second = next;
       }
     }
+    return true;
+  }
+};
+
+// M1 positive maintenance interner.  Contribution multiplicity is folded
+// into the sidecar, but the ordinary delta retained for the next iteration
+// contains exactly one row iff membership crossed in the batch's direction.
+// A single task per relation owns the sidecar and all master buckets; signed
+// maintenance is latency-oriented and this avoids cross-ordering index races
+// while keeping the read phase fully parallel.
+template <u16 A>
+class MaintainTask : public Task
+{
+  Database* db;
+  Relation* rel;
+  std::array<u16, A> ord;
+  Index** roots;
+  Index** side;
+public:
+  MaintainTask(Database* _db, Relation* _rel,
+               const std::array<u16, A>& _ord, u16)
+    : db(_db), rel(_rel), ord(_ord)
+  {
+    std::vector<u16> ordv(ord.begin(), ord.end());
+    roots = rel->getIndex(ordv, false);
+    side = rel->ensureCountSidecar();
+  }
+  bool work() override
+  {
+    auto& delta = rel->getDelta();
+    for (InsertBatch* batch : delta)
+      for (u32 j = 0; j < batch->usage; j += A)
+      {
+        u64* row = batch->data + j;
+        if (row[0] == slog_null) continue;
+        if (batch->kind == cnt_kind_premise)
+        {
+          // The premise already drove this iteration and was installed in
+          // the live index before the maintenance plugin began.
+          row[0] = slog_null;
+          continue;
+        }
+        std::array<u64, A> key;
+        for (u16 c = 0; c < A; ++c) key[c] = row[ord[c]];
+        BTreeIndex<A>* root = static_cast<BTreeIndex<A>*>(
+          roots[buckethash(key[0])]);
+        const bool was_live = root->contains(key);
+
+        u64 word = 0;
+        const u16 cb = buckethash(row[0]);
+        side[cb]->getPayload(row, A, word);
+        u64 next = word;
+        const bool ok = rel->isCounted()
+                     && rel->tryApplyCountSigned(word, batch->kind,
+                                                 batch->sign, next);
+        if (ok && cnt_present(next))
+          side[cb]->setPayload(row, A, next);
+        else if (ok)
+        {
+          std::array<u64, A> countkey;
+          for (u16 c = 0; c < A; ++c) countkey[c] = row[c];
+          static_cast<BTreeMapIndex<A>*>(side[cb])->tree.erase(countkey);
+        }
+        else
+          db->invalidateUpdateCounts();
+
+        if (batch->sign < 0)
+        {
+          if (!ok)
+            row[0] = slog_null;
+          else if (!was_live || cnt_present(word) != was_live)
+          {
+            db->invalidateUpdateCounts();
+            row[0] = slog_null;
+          }
+          else if (cnt_present(next))
+            row[0] = slog_null;       // support-only loss
+          else
+          {
+            if (!rel->removeTupleAllIndicesPreservingCounts(row))
+            {
+              db->invalidateUpdateCounts();
+              row[0] = slog_null;
+            }
+            else
+            {
+              db->recordUpdateTransition(rel, row, -1);
+              // Retain exactly one false-transition row as next iteration's
+              // negative delta.  Full WriteTasks skip negative batches.
+            }
+          }
+        }
+        else if (was_live)
+          row[0] = slog_null;
+        else
+        {
+          root->insert(key);
+          db->recordUpdateTransition(rel, row, 1);
+        }
+      }
     return true;
   }
 };
@@ -1056,7 +1225,7 @@ public:
   }
   bool work() override
   {
-    if (rel->isCounted())   // see CountTask: never fold onto a closed walk
+    if (rel->isCounted() && !rel->isCountEpochActive())
       return true;
     auto& delta = rel->getDelta();
     for (u32 i = 0; i < delta.size(); ++i)
@@ -1068,7 +1237,11 @@ public:
           continue;
         std::array<u64, 1> key = { batch->data[j] };
         auto r = side->tree.insert2(key, 0);
-        r.first->second = cnt_apply(r.first->second, batch->kind);
+        u64 next = 0;
+        if (!rel->tryApplyCount(r.first->second, batch->kind, next))
+          rel->invalidateCountEpoch();
+        else
+          r.first->second = next;
       }
     }
     return true;

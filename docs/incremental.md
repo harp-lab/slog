@@ -2,20 +2,25 @@
 
 ## Status and reading contract
 
-**Status, 2026-07-12:** this is the normative semantics, architecture, and
+**Status, 2026-07-13:** this is the normative semantics, architecture, and
 active implementation plan for incremental Slog.
 
 Phase 0 is shipped: stratified negation, resident forward-incremental
 sessions, relation versions, anchored batches, rename/drop, recipe
-save/load, and bounded clear-and-rerun deletion. M0.1 through M0.3 are also
-shipped: the packed count word, count sidecars, the count-round compiler
-flavor, recount walks, counted state, and invalidation.
+save/load, and bounded clear-and-rerun deletion. M0.1 through M0.4 are also
+implemented: version identities, semantic input overlays, exact historical
+bindings, transactional recount, the new persistence format, arithmetic
+abort/retry, and an independent versioned operational-IR count oracle.
 
-Those milestones established useful machinery, but the first M0.3
-version-aware recount design does not yet implement the version semantics in
-this document. **M0.4 is therefore a correctness gate before M1.** No signed
-maintenance or precise deletion should build on the current count walk until
-M0.4 passes.
+M0.4's exit audit is complete for the capability-certified recount surface.
+M1 is also shipped for positive edits through capability-certified plain-table
+cones, including recursive SCCs, multiple downstream strata, and explicit
+inject-and-reopen version edges. M3 is shipped for direct and inherited
+retractions through capability-certified acyclic plain-table cones, including
+mixed negative/positive flushes and multiple downstream strata. Recursive
+SCCs, negation, lattices, structs, nullary relations, and every unsupported
+version topology still take the permanent clear-and-rerun path. M6L,
+stratified lattice-contributor deletion, is next in the planned sequence.
 
 Shipped details, known deviations, and test evidence live in
 [incremental-status.md](incremental-status.md). Git history preserves the
@@ -214,6 +219,30 @@ Batches have three transports:
 3. linked database references for provenance-bearing inputs.
 
 All transports reduce to the same normalized input-overlay operation.
+
+The JIT API exposes two intentionally different operations:
+
+- **edit a slot:** change the overlay of an existing VersionInstance; its
+  VersionId and VersionKey do not change;
+- **inject a slot:** allocate a new input-only successor VersionInstance with
+  a fresh VersionId and persistent VersionKey, inherit the current tip as its
+  predecessor, then apply input edits to the successor.
+
+Injection is not syntactic sugar for editing the tip. It creates a distinct
+time-travel/query target and a distinct count owner. Live injection currently
+targets the JIT tip; injecting into history means constructing a descendant
+recipe branch, so the old evaluation is never retroactively renumbered.
+
+Plain injection is deliberately **input-only**. It does not silently retarget
+an already-recorded semantic stratum or mutate its historical read map. To
+derive downstream facts from the new slot, append an explicit program/reopen
+event. `session-inject-and-reopen!` packages those two semantic operations: it
+first settles the injected input-only successor, then appends the requested
+program event. Its recipe serializes the reopened semantic instances and
+stable output VersionKeys; it is not a maintenance re-push. The shipped policy
+makes every reopened output a successor that inherits predecessor presence.
+A history-free recomputation is a different branch/fresh-output policy and is
+not yet exposed by this helper.
 
 ### 0.4 Relation versions and environments
 
@@ -536,6 +565,13 @@ A count change with no relevant membership transition does not normally
 propagate. Recursive negative maintenance is the exception: losing the last
 foundation can over-delete a tuple even while rec remains positive.
 
+Transition interning is shared runtime state. Distinct head-maintenance tasks
+may publish transitions concurrently, so insertion into the sign-separated,
+VersionId-keyed journals must be linearizable. A downstream stratum stages an
+immutable view only after the producing stratum's task barrier. The update's
+validity bit is likewise atomic: arithmetic or coverage failure from any head
+invalidates the whole counted result.
+
 ### 3.3 Count epochs
 
 Count establishment is transactional.
@@ -574,10 +610,10 @@ Fix a deterministic order over body **occurrences**, not merely relation
 names. Let O be the pre-update relation and N the post-update relation.
 
 For a positive batch, every newly enabled rule instantiation is assigned to
-its leftmost newly present body occurrence i:
+its rightmost newly present body occurrence i:
 
 ~~~text
-O before i  ×  DeltaPlus at i  ×  N after i
+N before i  ×  DeltaPlus at i  ×  O after i
 ~~~
 
 For a negative batch, every lost rule instantiation is assigned to its
@@ -588,11 +624,17 @@ N before i  ×  DeltaMinus at i  ×  O after i
 ~~~
 
 This partition applies to repeated relation occurrences and self-joins.
-It is the normative meaning of old/full/delta variants. Tests must exercise
-simultaneous changes in multiple occurrences. During a negative round, the
-current DeltaMinus remains physically readable for its driving occurrence;
-the `N` view is implemented as FULL minus the current DeltaMinus, while `O`
-still includes it. Earlier negative rounds have already left FULL.
+The opposite positive ownership convention (`O / DeltaPlus / N`, leftmost
+new) would also be exact, but mixing conventions inside one flavor would not
+be. The formulas above are the normative meaning of the current
+old/full/delta variants. Tests must exercise simultaneous changes in multiple
+occurrences. The partition defines logical views, not a required physical
+layout. M3 materializes `N` in FULL immediately, retains each true-to-false
+row in the negative delta index, and implements `O` after the driver as the
+duplicate-free union `FULL union DeltaMinus`. Thus a deleted row remains
+readable only where the partition requires old-state membership. M4T may use
+a candidate layout during over-deletion, but must expose the same logical `N`
+and `O` views.
 
 ### 4.2 Version-local count establishment
 
@@ -642,7 +684,11 @@ For an acyclic counted cone:
 4. use §4.1 to decrement consequences exactly once;
 5. propagate only true-to-false presence transitions.
 
-No candidate set is needed because rec is zero in an acyclic SCC.
+Rows whose support remains positive are support-only decrements: they do not
+enter DeltaMinus and do not wake downstream rules. A zero count is represented
+by absence of a sidecar entry, and the corresponding row must be absent from
+every live index before the phase can report counts valid. No candidate set is
+needed because rec is zero in an acyclic SCC.
 
 ### 4.5 Recursive negative fixpoint
 
@@ -781,7 +827,7 @@ The sidecar coverage invariant is:
 
 ### 6.2 Operators
 
-The signed read path is not wholly sign-agnostic.
+The target signed read path is not wholly sign-agnostic.
 
 - Delta records expose their premise sign to generated pipelines.
 - Counting head records carry contribution kind and sign.
@@ -793,20 +839,25 @@ The signed read path is not wholly sign-agnostic.
 - M4N adds negated-body-driven operators.
 
 Normal and seeded set-semantic flavors keep their existing dedup behavior.
+M1 exercises the positive sign through `_maint1`; M3 preserves the negative
+sign through `_maint3neg` temps and false-transition scheduling. Candidate
+over-deletion and reseed scheduling remain M4 obligations.
 
 ### 6.3 Code generation
 
-Retain four flavor families:
+Retain six flavor families:
 
 - normal set semantics;
 - seeded replay set semantics;
-- counted delta maintenance;
+- legacy positive set-only delta entry;
+- counted positive maintenance (`_maint1` for the M1 contract);
+- counted acyclic negative maintenance (`_maint3neg` for M3); and
 - full count establishment.
 
-The two counted flavors must share logical rule classification and
-instantiation multiplicity. They may use different driver versions, but temp
-decomposition, guards, errors, or-splits, and projection must not collapse a
-derivation in only one flavor.
+The counted flavors must share logical rule classification and instantiation
+multiplicity. They may use different driver versions, but temp decomposition,
+guards, errors, or-splits, and projection must not collapse a derivation in
+only one flavor.
 
 ### 6.4 Recursive/non-recursive classification
 
@@ -1041,19 +1092,22 @@ those rule contributions with semantic foundation from VersionRecords.
 |---|---|---:|
 | normal | set-semantics construction | no |
 | seeded/replay | set-semantics reconstruction | no |
-| `_delta` | signed incremental maintenance | yes, from M1 |
+| `_delta` | legacy positive set-only delta entry | no |
+| `_maint1` | signed-support positive maintenance | yes |
 | `_count` | full one-step enumeration | yes |
 
-`_count` and `_delta` must agree on operationalized instantiation
-multiplicity. `_count` uses an all-full plan; `_delta` uses the exact
-occurrence partitions of §4.1. Neither optimization may replace enumeration
-with an existence shortcut in counted code.
+`_count` and `_maint1` must agree on operationalized instantiation
+multiplicity. `_count` uses an all-full plan; `_maint1` uses the exact
+positive occurrence partitions of §4.1. Neither optimization may replace
+enumeration with an existence shortcut in counted code. `_delta` remains a
+set-semantics compatibility flavor and is not a count oracle.
 
 #### 8B.2 Lazy counting, epochs, and coverage
 
-`settled` and `counted` are independent per VersionId. The first precise
-deletion into an eligible uncounted cone establishes counts or routes to
-clear-and-rerun.
+`settled` and `counted` are independent per VersionId. The first maintained
+positive edit into an eligible uncounted cone establishes counts or routes to
+clear-and-rerun. A future precise deletion has the same precondition before
+its negative phase begins.
 
 A correct count-establishment walk:
 
@@ -1071,11 +1125,13 @@ invalidates the affected counted cone; it does not try to patch a count round
 that was in flight.
 
 During signed maintenance, underflow indicates stale/corrupt support and
-overflow exceeds the version's count capability. In either case, invalidate
-the cone and rebuild its set materialization from the authoritative final
-overlay, then leave it uncounted (or recount with a wider/spill
-representation). Saturation is forbidden because a later decrement could not
-recover the true zero transition.
+overflow exceeds the version's count capability. In M1's positive-only path,
+the set insertion result remains authoritative: invalidate count caches and
+leave the graph uncounted until recount. Once negative maintenance is enabled,
+the affected cone must instead rebuild its set materialization from the
+authoritative final overlay before it can be called settled. Saturation is
+forbidden because a later decrement could not recover the true zero
+transition.
 
 The current sidecar and count compiler flavor are useful substrate. M0.4
 changes version attribution, adds complete foundation seeding, and makes the
@@ -1106,7 +1162,7 @@ relation, and multiple writer strata.
 For small fixtures, a deliberately slow reference enumerator joins the
 canonical operational IR over the settled versioned materialization and
 classifies each head contribution. That is the independent count oracle.
-Comparing `_delta` with a fresh `_count` round is a broader consistency test,
+Comparing `_maint1` with a fresh `_count` round is a broader consistency test,
 not a substitute for validating `_count` itself.
 
 #### 8B.4 Side-channel-grown relations
@@ -1183,9 +1239,9 @@ Shipped:
 Explicit remaining limitations:
 
 - direct link of a chained target is refused;
-- input-log normalization is not yet baseline aware;
 - eager version copies may be expensive;
-- precise negative maintenance has not shipped.
+- historical slot injection requires a descendant recipe rebuild; and
+- precise negative maintenance is limited to M3's acyclic plain-table cones.
 
 ### M0 — count establishment
 
@@ -1193,83 +1249,81 @@ Shipped implementation substrate:
 
 - **M0.1:** packed direct/nonrec/rec word and sidecar;
 - **M0.2:** full count flavor and counting tasks;
-- **M0.3:** count-state introspection, lazy walks, invalidation.
+- **M0.3:** count-state introspection, lazy walks, invalidation;
+- **M0.4a:** evaluation-local VersionIds, persistent VersionKeys and
+  descriptors, exact stratum read/write bindings, and JIT successor
+  injection;
+- **M0.4b:** baseline-aware direct/mask overlays, normalized recipes, and
+  ground program facts classified as non-recursive support;
+- **M0.4c:** explicit-VersionId scratch epochs, historical exact binding,
+  authoritative semantic-writer coverage, explicit capability reporting,
+  all-target audit/commit/abort, arithmetic invalidation, and failure retry;
+- **M0.4d:** the default versioned META/recipe format, legacy ordinal fallback,
+  save/load overlay round trips, EvaluationId isolation, and an independent
+  alpha-renamed canonical-IR support-count oracle over the version and
+  persistence matrix.
 
-**M0.4 — correctness closure; next and blocking**
+**M0.4 — complete (2026-07-12)**
 
-Land M0.4 as four gates. Each gate must preserve the Phase-0 content oracle;
-M1 waits for all four.
+The exit audit covers every currently recount-capable VersionId in the
+relational, recursive, repeated-version, struct-diagnostic, negation, and
+lattice-boundary fixtures, including injection, inheritance, masks,
+rename/drop/redeclare, import/link, freeze, and save/load. The oracle fails
+loudly on canonical IR outside its implemented surface, so a future relation
+kind or operation cannot acquire count capability merely by falling through.
 
-**M0.4a — identity and writer topology**
+Writer-set equality is structural, not inferred from tuple presence. Count
+epochs commit all targets or none; injected writer failure and test-width
+overflow preserve the last committed counts and set content, and a clean
+retry starts from empty scratch state. Underflow is not reachable in a
+positive recount. M1 exercises its recoverable cache-invalidation path
+directly; M3 exercises real user-driven decrements.
 
-1. Add LayerId, event/output-slot IDs, VersionDescriptor, EvaluationId,
-   VersionInstance, and VersionId.
-2. Make segment creation return explicit VersionIds and associate every
-   runtime stratum instance with exact read/write VersionId maps captured from
-   its original bind environment. A numeric bind position remains diagnostic,
-   not the recount authority.
-3. Add the new-version META/recipe representation for LayerId, event IDs,
-   serialized output-slot tables, and VersionKey behind an opt-in writer; do
-   not switch the default format yet.
-4. Key counted state and diagnostics by VersionId; keep names/ordinals only
-   as lookup and display data.
-5. Test repeated program instances, several SCC strata writing one slot,
-   rename/drop/redeclare, and compiler SCC regrouping.
-
-**M0.4b — semantic input ledger**
-
-1. Represent direct assertions and inheritance masks per VersionInstance.
-2. Normalize every action/import/link against its baseline and serialize the
-   normalized overlay.
-3. Seed roots, imports, links, and one-per-tuple inheritance with their proper
-   provenance.
-4. Reclassify program ground facts as non-recursive program support.
-5. Run the overlay matrix through live/save/load/freeze before changing count
-   establishment.
-
-**M0.4c — version-local transactional recount**
-
-1. Make count tasks target explicit VersionIds.
-2. Recount only each version's recorded writers at their original
-   environments.
-3. Build direct, inheritance, nonrec, and rec support in a private epoch.
-4. Audit writer completeness, closure, live-tuple coverage, and drift, then
-   commit atomically; retry from an injected failure.
-5. Support arity zero or enforce an explicit fallback capability.
-6. Keep struct versions non-certified for precise deletion until M5 can
-   distinguish live membership from intern tombstones; diagnostic recounts
-   may still be compared with the oracle.
-7. Replace fatal/saturating arithmetic behavior with an invalidation and
-   set-rebuild result; test using deliberately tiny counter fields.
-
-**M0.4d — persistence and oracle gate**
-
-1. Add the legacy DAG compatibility-ID map and name/ordinal resolver, then
-   switch the new-format writer on by default.
-2. Round-trip new and legacy roots, recipe chains, ancestor anchors, imports,
-   links, renames, drops, and freeze.
-3. Replace the duplicate-historical-rule test with §5.1 and diff every
-   countable VersionId against a slow reference enumeration of the canonical
-   operational IR over the from-scratch desugared-version materialization.
-4. Verify two descendant evaluations of one ancestor slot remain runtime-
-   isolated.
-
-**Exit:** every counted version matches a from-scratch count of the desugared
-versioned pipeline, including inheritance, and live/save/load input overlays
-are identical.
+**Exit evidence:** the session workflow, versioned oracle, persistence,
+writer-omission, failure/retry, and overflow tests pass together. This
+certifies recount establishment; M3 separately certifies its precise-deletion
+surface.
 
 ### M1 — positive signed maintenance
 
-1. Give delta records a premise sign and contribution records kind plus sign.
-2. Make counted delta plans use instantiation-injective temps.
-3. Implement the positive partition in §4.1.
-4. Chain presence transitions across multiple strata and version inheritance
-   edges.
-5. Keep all retractions on clear-and-rerun.
-6. Merge the remaining old M2 tagging/threading work here.
+**M1 — complete (2026-07-13)**
 
-**Exit:** after arbitrary positive batches, maintained counts equal a forced
-fresh recount of the same version graph.
+Shipped:
+
+- an evaluation-local `UpdateEpochId`, distinct from VersionId and VersionKey,
+  with optimistic expected-revision admission and revision-stamped count
+  state;
+- signed contribution metadata (`support kind`, `sign`) and a dedicated
+  `_maint1` flavor, while preserving `_delta` as the legacy set-only flavor;
+- instantiation-injective counted temps and exact positive occurrence
+  partitions, including simultaneous changes, self-joins, and repeated
+  occurrences of one relation;
+- an update-local VersionId-keyed transition journal that carries only
+  absent-to-present tuples between SCC/stratum executions, while every rule
+  contribution and direct-input assertion still updates support when its row
+  is already live, without manufacturing a presence transition;
+- positive maintenance across recursive SCCs, multiple strata, repeated
+  flushes, and explicit inherited version edges for capability-certified
+  positive-arity plain tables;
+- an input-only `inject-version` operation and a separate
+  `inject-and-reopen` semantic event whose new program outputs record explicit
+  inheritance policy and semantic writer maps; and
+- recoverable arithmetic/coverage failure: correct set content is retained,
+  count caches are invalidated, and a later recount heals them. Stale expected
+  revisions are refused before mutation.
+
+The public routing boundary is deliberately narrower than the internal signed
+representation. User retractions do not enter `_maint1`; certified acyclic
+ones enter `_maint3neg`, while recursive negative propagation belongs to M4.
+Structs, nullary relations, lattices, negation, and fallible diagnostic-head
+cones also remain on fallback.
+
+**Exit evidence:** for positive existing-slot edits and explicit inherited
+reopen edges in the certified surface, maintained set content, support
+components, and settled revisions equal a forced fresh version-local recount.
+Forced overflow and signed underflow preserve set content, invalidate counts,
+and recover after recount. Every retraction and unsupported topology still
+routes to clear-and-rerun.
 
 ### M2 — retired as a separate milestone
 
@@ -1279,15 +1333,38 @@ note only.
 
 ### M3 — acyclic deletion
 
-1. Implement baseline-aware direct/inherited retraction.
-2. Implement the negative exact partition in §4.1.
-3. Maintain non-recursive counts and false-presence signals.
-4. Route only positive-body, plain-table/struct-free, acyclic cones here.
-5. Keep negation, lattices, recursive SCCs, and unsupported arities on
-   clear-and-rerun.
+**M3 — complete (2026-07-13)**
 
-**Exit:** differential signed-stream fuzzing matches from-scratch recompute
-for acyclic programs and every legal/illegal input transition.
+Shipped:
+
+- baseline-aware removal of direct support and inherited support masks, with
+  positive and negative transition journals separated by exact VersionId and
+  synchronized across parallel head-maintenance tasks;
+- a dedicated `_maint3neg` flavor implementing the negative occurrence
+  partition `N before / DeltaMinus driver / O after`, including self-joins and
+  repeated relation occurrences;
+- checked negative non-recursive support maintenance, immediate point removal
+  from every live index at zero support, and zero-sidecar-key removal;
+- topological negative propagation across multiple acyclic strata, followed
+  by the existing M1 positive phase for mixed flushes, all in one update
+  epoch;
+- manifest-level acyclicity certificates and routing restricted to counted,
+  positive-body, positive-arity plain-table cones; and
+- recovery through the normalized-overlay clear-and-rerun path if admission,
+  arithmetic, or coverage validation fails. Recursive SCCs, negation,
+  lattices, structs, nullary relations, and unsupported version topology never
+  enter `_maint3neg`.
+
+The user-visible capability is deliberately reported as conditional: table
+storage supports point deletion, but the whole version cone must also satisfy
+the topology and rule-kind certificate.
+
+**Exit evidence:** deterministic cases cover support-only deletion, last-
+support deletion, repeated occurrences, downstream propagation, mixed
+negative/positive batches, inherited masks after inject-and-reopen, and
+recursive fallback. Seeded differential signed-stream fuzzing compares every
+materialized relation with a fresh unseeded recomputation and compares
+maintained support rows with a forced recount after every flush.
 
 ### M6L — existing lattice relations, stratified deletion
 
@@ -1349,7 +1426,7 @@ consistency check:
    recipe;
 2. count equality with slow enumeration of canonical operational-IR rule
    instantiations; and
-3. maintained `_delta` counts equal a forced fresh, version-local `_count`
+3. maintained `_maint1` counts equal a forced fresh, version-local `_count`
    round.
 
 Required suites:
@@ -1367,8 +1444,13 @@ Required suites:
   and inheritance.
 - **Count transaction:** interrupt or fail a recount after one writer, retry,
   and compare with a fresh daemon.
-- **Count arithmetic:** force underflow and overflow with test-width counters;
-  assert no epoch commits and fallback content matches the oracle.
+- **Count arithmetic:** force recount overflow with test-width counters; once
+  signed decrements exist, force underflow too. Assert no invalid epoch commits
+  and fallback content matches the oracle.
+- **JIT mutation modes:** an edit preserves VersionId/VersionKey and advances
+  only the settled revision; injection allocates a new input VersionId/key;
+  inject-and-reopen records explicit downstream output slots, inheritance
+  policy, and semantic writers.
 - **Exact partitions:** simultaneous changes to two relations, two
   occurrences of one relation, self-joins, cartesian joins, or-splits,
   wildcards, and staged temps.

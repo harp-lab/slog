@@ -19,9 +19,11 @@
 ;;                    the tip); same-point add/delete pairs collapse in the
 ;;                    pending set (§0.2)
 ;;   session-flush! = apply the pending sets and propagate:
-;;     tip anchors, by the §0.5 routing rule -- all-adds + single-stratum
-;;       monotone cone -> delta-entry (lazily compiled flavor); all-adds +
-;;       monotone -> replay-entry; else clear-and-rerun;
+;;     tip anchors, by the §0.5/M1 routing rule -- capability-certified
+;;       positive plain-table cones -> counted `_maint1` across every affected
+;;       stratum; unsupported single-stratum positives may use legacy
+;;       delta-entry, other monotone cones use replay-entry, and every
+;;       retraction/non-monotone cone uses clear-and-rerun;
 ;;     old anchors (a version with later rebindings), by the ANCHORED WALK
 ;;       (§0.4-§0.6): apply the batch to the anchored version, then replay
 ;;       the pipeline suffix -- refresh each affected inheritance boundary
@@ -61,6 +63,10 @@
          session-open!
          session-run!
          session-batch!
+         session-edit-batch!
+         session-inject-version!
+         session-inject-batch!
+         session-inject-and-reopen!
          session-add-tuple!     ; immediate tip apply, LOGGED (0.E0d)
          session-del-tuple!
          session-import-delta!
@@ -95,8 +101,10 @@
 
 ;; One stratum's driver-side record: its cached .so, manifest
 ;; dynamic-rels/reads/heads, and the thunks that lazily build its
-;; delta-entry (0.B5) and _count (§8B.1, M0) flavors.
-(struct sinfo (so dyn reads heads delta count) #:transparent)
+;; legacy delta-entry (0.B5), `_count` (§8B.1/M0), and `_maint1` (M1)
+;; flavors.
+(struct sinfo (so dyn reads heads acyclic? delta count maintenance
+                  negative-maintenance) #:transparent)
 
 ;; One live session.
 ;;   strata-info : list of (cons scc sinfo), oldest first -- scc is the
@@ -104,7 +112,9 @@
 ;;             mirrors the daemon's pipeline length: every stratum .so this
 ;;             session sends advances it, fresh pushes and re-pushes alike,
 ;;             so the ids stay aligned however many re-entries happen).
-;;   pending : anchor -> rel -> tuple -> '+/'-   (anchor = 'tip | position)
+;;   pending : anchor -> rel -> tuple -> chronological +/- command list
+;;             (anchor = 'tip | position); normalization happens against
+;;             the daemon's authoritative VersionInstance overlay at flush
 ;;   applied : (cons rel version-binding-pos) -> tuple -> '+/'-  -- the
 ;;             session's OWN collapsed batch log (§0.2): what a save
 ;;             serialises, and what the anchored walk re-applies when it
@@ -133,8 +143,15 @@
                  [strata-info #:mutable] [next-scc #:mutable]
                  pending applied inherited
                  [imports #:mutable] [steps #:mutable] [renames #:mutable]
-                 touched sources [replaying? #:mutable] echo)
+                 touched sources [replaying? #:mutable] echo
+                 [layer-id #:mutable] evaluation-id [next-event #:mutable]
+                 [descriptors #:mutable] compat-keys input-only)
   #:transparent)
+
+(define (fresh-runtime-id prefix)
+  (format "~a-~x-~x-~x-~x"
+          prefix (inexact->exact (floor (current-inexact-milliseconds)))
+          (random 1000000000) (random 1000000000) (random 1000000000)))
 
 (define (make-session #:echo [echo displayln])
   (ensure-slogd-exists)
@@ -145,8 +162,14 @@
               (let loop ()
                 (define s (read-line err))
                 (unless (eof-object? s) (eprintf "~a\n" s) (loop))))))
-  (session sp out in err-thread #f '() 0 (make-hash) (make-hash) (make-hash)
-           '() '() '() (make-hash) (make-hash) #f echo))
+  (define s
+    (session sp out in err-thread #f '() 0 (make-hash) (make-hash) (make-hash)
+             '() '() '() (make-hash) (make-hash) #f echo
+             (fresh-runtime-id "layer") (fresh-runtime-id "eval") 0 '()
+             (make-hash) (make-hash)))
+  (session-action! s `(set-evaluation ,(session-evaluation-id s))
+                   read-one-line-quiet!)
+  s)
 
 ;; A session facade over an existing daemon connection (the one-shot
 ;; driver's, for recipe-chain loads -- runslog's recipe-chain-loader hook).
@@ -154,7 +177,11 @@
 ;; with whatever the connection already pushed.
 (define (make-session-over in-port out-port #:echo [echo displayln])
   (define s (session #f out-port in-port #f #f '() 0 (make-hash) (make-hash)
-                     (make-hash) '() '() '() (make-hash) (make-hash) #f echo))
+                     (make-hash) '() '() '() (make-hash) (make-hash) #f echo
+                     (fresh-runtime-id "layer") (fresh-runtime-id "eval") 0 '()
+                     (make-hash) (make-hash)))
+  (session-action! s `(set-evaluation ,(session-evaluation-id s))
+                   read-one-line-quiet!)
   (define-values (_cur strata-pos _chains) (introspect! s))
   (set-session-next-scc! s (hash-count strata-pos))
   s)
@@ -192,130 +219,144 @@
   (send-plugin! s so)
   (drive-to-fixpoint! s))
 
+;; Maintenance strata use the same bounded execution protocol without
+;; becoming pipeline events.  In particular, recount must not make a later
+;; JIT injection's identity depend on whether someone inspected counts first.
+(define (send-transient-stratum! s so)
+  (session-action! s `(transient-stratum))
+  (define armed (read-line (session-out s)))
+  (unless (equal? armed "(transient-armed)")
+    (error 'session (format "could not arm transient stratum: ~a" armed)))
+  (send-plugin! s so)
+  (drive-to-fixpoint! s))
+
+;; Delta/replay incarnations retain legacy numeric pipeline positions but are
+;; explicitly non-semantic: they cannot acquire writer ownership or become a
+;; second recount source merely because maintenance re-executed a program.
+(define (send-maintenance-stratum! s so)
+  (session-action! s `(maintenance-stratum))
+  (define armed (read-line (session-out s)))
+  (unless (equal? armed "(maintenance-armed)")
+    (error 'session (format "could not arm maintenance stratum: ~a" armed)))
+  (send-stratum! s so))
+
 ;; Send one FRESH stratum (recording its manifest info for cone assembly)
 ;; and drive it.
 (define (push-sbuild! s sb)
   (match-define (cons so _tag) ((sbuild-runnable sb)))
-  (define-values (dyn reads heads) (read-stratum-meta (sbuild-hash sb)))
+  (define-values (dyn reads heads acyclic?)
+    (read-stratum-meta (sbuild-hash sb)))
   (set-session-strata-info!
    s (append (session-strata-info s)
              (list (cons (session-next-scc s)
-                         (sinfo so dyn reads heads
-                                (sbuild-delta sb) (sbuild-count sb))))))
+                         (sinfo so dyn reads heads acyclic?
+                                (sbuild-delta sb) (sbuild-count sb)
+                                (sbuild-maintenance sb)
+                                (sbuild-negative-maintenance sb))))))
   (send-stratum! s so))
 
-;; The count round (docs/incremental.md §8B.1-§8B.2, M0.2+M0.3): run the
-;; _count flavor of a selection of strata over the resident settled
-;; fixpoint, in pipeline order.  Each flavor fires its rules exactly once
-;; over FULL indices (staged chains stage-ordered through their wide
-;; temps) and folds per-tuple (input | nonrec | rec) contributions into
-;; the relations' count sidecars; nothing is inserted, so the resident
-;; content is untouched.
+;; The count round (docs/incremental.md §8B.1-§8B.2, M0.4c): rebuild a
+;; VERSION-LOCAL count state in scratch sidecars, audit its coverage, then
+;; publish the whole target set atomically.  Each _count flavor fires its
+;; rules exactly once over FULL indices and folds contributions into the
+;; scratch sidecar selected by the exact VersionId captured when its
+;; original stratum instance was pushed.  Nothing is inserted, so the
+;; resident content is untouched.
 ;;
-;;   (session-recount! s)              whole pipeline, tip environment
-;;   (session-recount! s #:rel R)      R's counting cone: R's downstream
-;;                                     closure plus every stratum WRITING
-;;                                     into it (a retraction sweep needs
-;;                                     counts on everything it may delete
-;;                                     from, and a relation's own counts
-;;                                     come from its writers)
-;;   (session-recount! s #:at P)       per-version counts: the pipeline
-;;                                     prefix (strata bound at-or-before
-;;                                     P), each re-pushed under bind-at P
-;;                                     (registrations resolve through P's
-;;                                     environment; no reload)
-;;   (session-recount! s #:force? #t)  drop ALL count state first
+;;   (session-recount! s)              whole pipeline through the tip
+;;   (session-recount! s #:rel R)      same correctness-first prefix walk;
+;;                                     R is retained as the future cone API
+;;   (session-recount! s #:at P)       whole pipeline prefix through P
+;;   (session-recount! s #:force? #t)  replace even an already-closed walk
 ;;
-;; Laziness (§8B.2): a stratum is SKIPPED when every relation it writes is
-;; already `counted` at the walk's position -- its contributions are in
-;; the sidecars.  The daemon's CountTask carries the same check per
-;; relation (a closed walk never gets folded onto), so driver-side
-;; skipping is an optimization, never load-bearing.  The walk closes with
-;; (mark-counted N...): exactly the relations ALL of whose writer strata
-;; ran or were skipped become `counted`; a sidecar-bearing relation not
-;; named (a cross-stratum error arm whose other writer sat outside a cone
-;; walk, say) holds partial contributions and its state is dropped.
+;; A prefix walk deliberately runs each selected stratum at ITS ORIGINAL
+;; bind position, rather than resolving every plugin through one common
+;; tip environment.  That is the crucial distinction when a relation is
+;; renamed, rebound, or reopened by several SCCs: every contribution lands
+;; on the VersionId actually written by that stratum instance.
 ;;
-;; v1 limits (documented in the M0 STATUS block): a walk crossing a
-;; severance (a selected stratum referencing a name dropped/renamed at
-;; the bind position) is refused -- recount before the severance, or at
-;; the successor name; re-entered strata count where their first push
-;; bound.
-(define (session-recount! s #:rel [rel #f] #:at [at #f] #:force? [force? #f])
-  (when force?
-    (session-action! s `(clear-counts) read-one-line-quiet!))
-  (define-values (_cur strata-pos chains) (introspect! s))
-  (define p (or at +inf.0))
-  (define entries                       ; (list pos sinfo), pipeline order
+;; Laziness is all-or-nothing for the transaction: if every count-capable
+;; version in the prefix is already closed, no plugin runs.  Otherwise all
+;; prefix strata run into fresh scratch maps.  A plugin/coverage failure
+;; aborts every scratch map and preserves all previously committed maps.
+;; The optional relation cone can be restored later once its closure is
+;; expressed over VersionIds and complete writer sets; a full prefix is
+;; intentionally preferable to publishing a plausible partial count map.
+(define (session-recount! s #:rel [rel #f] #:at [at #f] #:force? [force? #f]
+                          #:fail-after [fail-after #f]
+                          #:omit-writer [omit-writer #f])
+  (define-values (cur sinstances chains vinfo) (introspect-identities! s))
+  (define p (or at cur))
+  (when (> p cur)
+    (error 'session (format "recount position ~a is past pipeline tip ~a" p cur)))
+  ;; Original stratum instances in prefix order.  `sinstances` also gives
+  ;; their exact write VersionIds, but activating every count-capable
+  ;; prefix version covers program inputs and inheritance-only successors
+  ;; that have no writer stratum of their own.
+  (define entries
     (for/list ([e (in-list (session-strata-info s))]
-               #:when (<= (hash-ref strata-pos (car e) 0) p))
-      (list (hash-ref strata-pos (car e) 0) (cdr e))))
-  ;; the counting cone: downstream closure of rel, then pull in every
-  ;; prefix stratum that WRITES a wave relation
-  (define wave
-    (and rel
-         (let-values ([(cone _mono)
-                       (cone-closure (for/list ([e (in-list entries)])
-                                       (cons (first e) (second e)))
-                                     rel)])
-           (for*/fold ([w (set rel)])
-                      ([info (in-list cone)] [d (in-list (sinfo-dyn info))])
-             (set-add w d)))))
-  (define selected
-    (for/list ([e (in-list entries)]
-               #:when (or (not wave)
-                          (for/or ([d (in-list (sinfo-dyn (second e)))])
-                            (set-member? wave d))))
-      e))
-  ;; severance guard: every name a selected stratum touches must resolve
-  ;; live at the bind position
-  (for* ([e (in-list selected)]
-         [n (in-sequences (in-list (sinfo-dyn (second e)))
-                          (in-list (map car (sinfo-reads (second e)))))])
-    (define chain (hash-ref chains n '()))
-    (define hit (for/last ([b (in-list chain)] #:when (<= (second b) p)) b))
-    (when (and hit (third hit))
-      (error 'session
-             (format "recount: ~a is severed (dropped or renamed) at ~a; recount before the severance or under the successor name"
-                     n (if at at "the tip")))))
-  ;; laziness: skip strata whose written relations are all counted at the
-  ;; walk position ('none = uncountable/unknown there -- nothing to fold)
+               #:do [(define si (hash-ref sinstances (car e) #f))]
+               #:when (and si (<= (first si) p)))
+      (list (car e) (first si) (cdr e) (second si) (third si))))
   (define cstate (query-count-state! s))
-  (define (counted-at n)
-    (define chain (hash-ref chains n '()))
-    (define hit (for/last ([b (in-list chain)] #:when (<= (second b) p)) b))
-    (cond
-      [(or (not hit) (third hit)) 'none]
-      [else (match (assv (first hit) (hash-ref cstate n '()))
-              [#f 'none]
-              [(cons _ c) c])]))
-  (define-values (to-run skipped)
-    (partition (lambda (e)
-                 (or force?
-                     (for/or ([d (in-list (sinfo-dyn (second e)))])
-                       (eq? #f (counted-at d)))))
-               selected))
-  (echo! s (format "(recount ~a ~a ~a)"
-                   (length to-run) (length skipped) (length entries)))
-  (for ([e (in-list to-run)])
-    (when at (session-action! s `(bind-at ,at)))
-    (send-stratum! s ((sinfo-count (second e)))))
-  ;; close the walk: markable = written by NO stratum outside
-  ;; selected-or-skipped (within the prefix)
-  (when (pair? to-run)
-    (define covered (list->seteq (map second (append to-run skipped))))
-    (define markable
-      (sort
-       (set->list
-        (for*/fold ([acc (set)])
-                   ([e (in-list selected)] [d (in-list (sinfo-dyn (second e)))])
-          (if (for/or ([e2 (in-list entries)]
-                       #:unless (set-member? covered (second e2)))
-                (memq d (sinfo-dyn (second e2))))
-              acc
-              (set-add acc d))))
-       symbol<?))
-    (session-action! s `(mark-counted ,@markable) read-one-line-quiet!)))
+  ;; VersionId -> counted?, de-duplicated across rename aliases.  A false
+  ;; observation wins (aliases should agree, but this makes disagreement
+  ;; conservatively force a rebuild).
+  (define target-state (make-hash))
+  (for* ([(name states) (in-hash cstate)]
+         [oc (in-list states)])
+    (define ord (car oc))
+    (define binding
+      (and (< ord (length (hash-ref chains name '())))
+           (list-ref (hash-ref chains name) ord)))
+    (define vi (hash-ref vinfo (cons name ord) #f))
+    (when (and binding vi (<= (second binding) p))
+      (define vid (first vi))
+      (hash-set! target-state vid
+                 (and (cdr oc) (hash-ref target-state vid #t)))))
+  (define vids (sort (hash-keys target-state) <))
+  (define closed?
+    (and (pair? vids)
+         (for/and ([vid (in-list vids)]) (hash-ref target-state vid))))
+  (define run? (and (pair? vids) (or force? (not closed?))))
+  (echo! s (format "(recount ~a ~a ~a~a)"
+                   (if run? (length entries) 0)
+                   (if run? 0 (length entries))
+                   (length entries)
+                   (if rel (format " rel=~a" rel) "")))
+  (when run?
+    (define (epoch-action! spec expected)
+      (session-action! s spec)
+      (define line (read-line (session-out s)))
+      (when (eof-object? line) (error 'session "daemon EOF during count epoch"))
+      (echo! s line)
+      (define reply (read (open-input-string line)))
+      (match reply
+        [`(error ,why) (error 'session why)]
+        [(== expected) (void)]
+        [_ (error 'session (format "unexpected count-epoch reply: ~a" reply))]))
+    (epoch-action! `(begin-count-epoch ,@vids) '(count-epoch-begun))
+    (with-handlers
+        ([exn:fail?
+          (lambda (e)
+            (with-handlers ([exn:fail? void])
+              (epoch-action! `(abort-count-epoch ,@vids) '(count-epoch-aborted)))
+            (raise e))])
+      (for ([e (in-list entries)] [writer-n (in-naturals 1)])
+        ;; Resolve this count plugin through its historical environment;
+        ;; its CountTasks then select the active scratch sidecars of the
+        ;; exact versions registered by that original stratum instance.
+        (define exact-bindings
+          (remove-duplicates (append (fourth e) (fifth e)) equal?))
+        (session-action! s `(bind-instance ,(second e) ,exact-bindings))
+        (send-transient-stratum! s ((sinfo-count (third e))))
+        (unless (and omit-writer (= omit-writer writer-n))
+          (epoch-action! `(cover-count-writer ,(first e))
+                         `(count-writer-covered ,(first e))))
+        (when (and fail-after (= fail-after writer-n))
+          (error 'session (format "injected recount failure after ~a writers"
+                                  fail-after))))
+      (epoch-action! `(commit-count-epoch ,@vids) '(count-epoch-committed)))))
 
 ;; The per-(relation, version) counted state (§8B.2): name -> list of
 ;; (ord . counted?), from the (count-state) introspection action.
@@ -329,9 +370,53 @@
   (match (read (open-input-string line))
     [`(count-state ,es ...)
      (for/fold ([h (hash)]) ([e (in-list es)])
-       (match-define `(cnt ,name ,ord ,flag) e)
-       (hash-update h name (lambda (l) (cons (cons ord (= flag 1)) l)) '()))]
+       (match e
+         [`(cnt ,name ,ord ,flag)
+          (hash-update h name (lambda (l) (cons (cons ord (= flag 1)) l)) '())]
+         [`(revisions ,_ ...) h]))]
     [x (error 'session (format "unparseable (count-state) reply: ~a" x))]))
+
+(define (query-update-epoch! s)
+  (session-action! s `(update-epoch))
+  (define line (read-line (session-out s)))
+  (when (eof-object? line) (error 'session "daemon EOF at update-epoch"))
+  (echo! s line)
+  (match (read (open-input-string line))
+    [`(update-epoch ,revision settled) revision]
+    [`(update-epoch ,revision active) revision]
+    [x (error 'session (format "unparseable update-epoch reply: ~a" x))]))
+
+(define (query-update-counts-valid! s)
+  (session-action! s `(update-counts-valid))
+  (define line (read-line (session-out s)))
+  (when (eof-object? line) (error 'session "daemon EOF at update-counts-valid"))
+  (echo! s line)
+  (match (read (open-input-string line))
+    [`(update-counts-valid ,flag) (= flag 1)]
+    [x (error 'session (format "unparseable update-counts-valid reply: ~a" x))]))
+
+;; Latest-version M1 capability: only positive-arity plain tables.  The native
+;; report deliberately distinguishes this from merely being recount-capable
+;; (structs can be diagnostically recounted but cannot yet maintain liveness).
+(define (query-positive-capabilities! s chains)
+  (session-action! s `(count-capabilities))
+  (define line (read-line (session-out s)))
+  (when (eof-object? line) (error 'session "daemon EOF at count-capabilities"))
+  (echo! s line)
+  (match (read (open-input-string line))
+    [`(count-capabilities ,caps ...)
+     (for/hash ([c (in-list caps)]
+                #:when
+                (match c
+                  [`(cap ,name ,ord ,_vid ,fields ...)
+                   (define chain (hash-ref chains name '()))
+                   (and (member '(recount yes) fields)
+                        (member '(reason table-recount) fields)
+                        (pair? chain) (= ord (first (last chain))))]
+                  [_ #f]))
+       (match-define `(cap ,name ,_ ...) c)
+       (values name #t))]
+    [x (error 'session (format "unparseable count-capabilities reply: ~a" x))]))
 
 ;; consume one response line without echoing (internal protocol chatter)
 (define (read-one-line-quiet! out)
@@ -373,21 +458,21 @@
       (unless (eq? #\$ (string-ref (symbol->string r*) 0))
         (hash-set! (session-touched s) r* #t)))))
 
-;; The collapsed applied-batch log, serialisation-ready (C2): a list of
-;; (batch REL POS ((+ v ...) ...) ((- v ...) ...)) sorted by (pos, rel).
-;; The session's OWN batches only -- inherited (replayed-ancestor) entries
-;; belong to the ancestors' recipes.
+;; The normalized applied-overlay log, serialization-ready: a list of
+;; (overlay REL POS ((direct|mask|none (v ...)) ...)), sorted by (pos, rel).
+;; `none` is retained as an explicit descendant override of ancestor state.
 (define (session-log s)
   (for/list ([key (in-list (sort (hash-keys (session-applied s))
                                  (lambda (a b)
                                    (or (< (cdr a) (cdr b))
                                        (and (= (cdr a) (cdr b))
-                                            (symbol<? (car a) (car b)))))))])
+                                            (symbol<? (car a) (car b)))))))]
+             #:when (positive? (hash-count (hash-ref (session-applied s) key))))
     (define per (hash-ref (session-applied s) key))
-    (define (side sign)
-      (sort (for/list ([(t sg) (in-hash per)] #:when (eq? sg sign)) t)
+    (define rows
+      (sort (for/list ([(t state) (in-hash per)]) `(,state ,t))
             (lambda (a b) (string<? (~a a) (~a b)))))
-    `(batch ,(car key) ,(cdr key) ,(side '+) ,(side '-))))
+    `(overlay ,(car key) ,(cdr key) ,rows)))
 
 ;; The session as a recipe (docs/incremental.md §0.10, C2): the recorded
 ;; steps in (position, arrival) order -- so a back-anchored import sits at
@@ -396,7 +481,7 @@
 ;; recompiles (§0.4); raw positions are not, so they are resolved against
 ;; the live chains here and never serialised.
 (define (session-recipe s)
-  (define-values (_cur _sp chains) (introspect! s))
+  (define-values (_cur _si chains vinfo) (introspect-identities! s))
   (define ordered-steps
     (map third (sort (reverse (session-steps s))
                      (lambda (a b)
@@ -406,13 +491,31 @@
   `(slog-recipe
     ,@ordered-steps
     ,@(for/list ([entry (in-list (session-log s))])
-        (match-define `(batch ,rel ,pos ,adds ,dels) entry)
+        (match-define `(overlay ,rel ,pos ,rows) entry)
         (define ord
           (or (for/first ([b (in-list (hash-ref chains rel '()))]
                           #:when (and (= (second b) pos) (not (third b))))
                 (first b))
               0))
-        `(batch ,rel (v ,ord) ,adds ,dels))))
+        (define key
+          (match (hash-ref vinfo (cons rel ord) #f)
+            [(list _vid _pred k _schema)
+             (if (regexp-match? #px"^runtime-" k)
+                 (hash-ref!
+                  (session-compat-keys s) (cons rel ord)
+                  (lambda ()
+                    (second
+                     (first (allocate-version-event! s (list rel)
+                                                     'legacy-compatibility)))))
+                 k)]
+            [_
+             (hash-ref!
+              (session-compat-keys s) (cons rel ord)
+              (lambda ()
+                (second
+                 (first (allocate-version-event! s (list rel)
+                                                 'legacy-compatibility)))))]))
+        `(overlay ,rel (key ,key) (v ,ord) ,rows))))
 
 ;; ---- opening: chain loads through the live machinery (0.E2) ---------------
 
@@ -453,11 +556,16 @@
     [`(del-tuple ,rel ,vs ...) (apply-tuples! s rel '() (list vs))]
     [`(rename-rel ,from ,to) (session-rename! s from to)]
     [`(drop-rel ,r) (session-drop! s r)]
+    [`(inject-version ,r ,key) (session-inject-version! s r #:key key)]
     [`(import-delta ,dir ,renames) (session-import-delta! s dir renames)]
     [`(link ,db ,renames) (session-link! s db renames)]
     [`(batch ,rel (v ,ord) ,adds ,dels)
      (queue-anchored-batch! s rel ord adds dels)
      (session-flush! s)]
+    [`(overlay ,rel (v ,ord) ,rows)
+     (apply-anchored-overlay! s rel #f ord rows)]
+    [`(overlay ,rel (key ,key) (v ,ord) ,rows)
+     (apply-anchored-overlay! s rel key ord rows)]
     [x (error 'session (format "unknown load/edit step: ~a" x))]))
 
 ;; Immediate tip apply of signed tuples, LOGGED at the target's current
@@ -468,14 +576,20 @@
   (define rel* (if (symbol? rel) rel (string->symbol rel)))
   (define-values (_cur _sp chains) (introspect! s))
   (define-values (_ord bind-pos _last?) (resolve-anchor chains rel* 'tip))
-  (when (pair? adds)
-    (session-action! s `(add-batch ,rel* -1 (,@adds)))
+  (define commands (make-hash))
+  (for ([t (in-list adds)]) (hash-update! commands t (lambda (xs) (cons '+ xs)) '()))
+  (for ([t (in-list dels)]) (hash-update! commands t (lambda (xs) (cons '- xs)) '()))
+  (define normalized (normalize-pending! s rel* bind-pos commands))
+  (define rows
+    (for/list ([(t change) (in-hash normalized)]) `(,(first change) ,t)))
+  (when (pair? rows)
+    (session-action! s `(set-overlay ,rel* -1 (,@rows)))
     (read-one-line! s)
-    (log-applied! s rel* bind-pos adds '+))
-  (when (pair? dels)
-    (session-action! s `(del-batch ,rel* -1 (,@dels)))
-    (read-one-line! s)
-    (log-applied! s rel* bind-pos dels '-))
+    (for ([state '(direct mask none)])
+      (log-applied! s rel* bind-pos
+                    (for/list ([row (in-list rows)] #:when (eq? (first row) state))
+                      (second row))
+                    state)))
   (touch! s (list rel*)))
 
 (define (session-add-tuple! s rel tuple) (apply-tuples! s rel (list tuple) '()))
@@ -538,10 +652,16 @@
       (match st
         [`(open ,_db) (void)]   ; the manifest link already materialised the base
         [`(run ,prog) (session-run! s prog)]
+        [`(run ,prog (version-events ,tables ...))
+         (session-run! s prog #:version-events tables)]
         [`(import-delta ,ref ,renames)
          (session-import-delta! s (recipe-payload-dir dir ref) renames)]
         [`(batch ,rel (v ,ord) ,adds ,dels)
          (queue-anchored-batch! s rel ord adds dels)]
+        [`(overlay ,rel (v ,ord) ,rows)
+         (apply-anchored-overlay! s rel #f ord rows)]
+        [`(overlay ,rel (key ,key) (v ,ord) ,rows)
+         (apply-anchored-overlay! s rel key ord rows)]
         [_ (apply-edit-step! s st)]))
     (session-flush! s))
   (echo! s (format "(replayed-recipe ~a ~a)" lname (length steps))))
@@ -564,6 +684,45 @@
   (define anchor (if (equal? hit (last chain)) 'tip (second hit)))
   (for ([t (in-list adds)]) (session-batch! s '+ rel* t #:at anchor))
   (for ([t (in-list dels)]) (session-batch! s '- rel* t #:at anchor)))
+
+;; New-format normalized overlay replay.  Unlike legacy +/- batches this is
+;; absolute VersionInstance state and therefore needs no baseline inference.
+(define (apply-anchored-overlay! s rel key ord rows)
+  (define rel* (if (symbol? rel) rel (string->symbol rel)))
+  (define-values (_cur _si chains vinfo) (introspect-identities! s))
+  (define chosen
+    (and key
+         (or (for/first ([(nk vi) (in-hash vinfo)]
+                         #:when (and (equal? (third vi) key) (eq? (car nk) rel*))) nk)
+             (for/first ([(nk vi) (in-hash vinfo)]
+                         #:when (equal? (third vi) key)) nk))))
+  (define anchor-name (if chosen (car chosen) rel*))
+  (define anchor-ord (if chosen (cdr chosen) ord))
+  (define chain (hash-ref chains anchor-name '()))
+  (define hit
+    (for/first ([b (in-list chain)]
+                #:when (and (= (first b) anchor-ord) (not (third b)))) b))
+  (unless hit
+    (error 'session
+           (format "overlay anchor ~a key ~a (legacy v ~a) was not rebuilt"
+                   rel* key ord)))
+  (define-values (_cur2 strata-pos _chains2) (introspect! s))
+  (session-action! s `(set-overlay ,anchor-name ,(second hit) (,@rows)))
+  (read-one-line! s)
+  (for ([state '(direct mask none)])
+    (log-applied! s anchor-name (second hit)
+                  (for/list ([row (in-list rows)] #:when (eq? (first row) state))
+                    (second row))
+                  state))
+  (touch! s (list anchor-name))
+  (define safe-tip?
+    (and (equal? hit (last chain))
+         (with-handlers ([exn:fail? (lambda (_e) #f)])
+           (cone-of s anchor-name strata-pos chains)
+           #t)))
+  (if safe-tip?
+      (session-rerun! s anchor-name)
+      (walk-suffix! s (second hit) (set anchor-name) strata-pos chains)))
 
 ;; The live schema as a compile manifest (0.D2): one (schema) round trip
 ;; parsed by runslog's db-manifest-from-schema-lines.
@@ -616,8 +775,18 @@
 ;; stratum to fixpoint, recording its manifest for later cone assembly.
 ;; Sources are captured for the save's prog.sexpr (unless replaying
 ;; ancestor history, whose sources belong to the ancestor layers).
-(define (session-run! s prog)
-  (record-step! s `(run ,prog))
+(define (allocate-version-event! s writes kind)
+  (define event (session-next-event s))
+  (set-session-next-event! s (add1 event))
+  (define rows
+    (for/list ([rel (in-list (sort (remove-duplicates writes) symbol<?))]
+               [slot (in-naturals)])
+      (define key (format "v1:~a:~a:~a" (session-layer-id s) event slot))
+      (list rel key event slot kind)))
+  (set-session-descriptors! s (append (session-descriptors s) rows))
+  (for/list ([row (in-list rows)]) (take row 2)))
+
+(define (session-run! s prog #:version-events [supplied-events #f])
   ;; Segments compile against the LIVE schema once the session has any
   ;; state (0.D2): renames, drops, imports, and prior segments' relations
   ;; are all reflected, so later-segment resolution errors come free --
@@ -633,33 +802,139 @@
     (parameterize ([current-source-capture
                     (and (not (session-replaying? s)) (session-sources s))])
       (compile-strata prog manifest #:split-facts? #f)))
-  (let run-groups ([gs groups] [remaining strata])
+  (define group-write-sets
+    (let loop ([gs groups] [remaining strata] [out '()])
+      (match gs
+        ['() (reverse out)]
+        [(cons (cons n g-frozen) more)
+         (define g-strata (take remaining n))
+         (loop more (drop remaining n)
+               (cons (segment-write-set g-strata g-frozen) out))])))
+  (define version-events
+    (or supplied-events
+        (for/list ([ws (in-list group-write-sets)])
+          (allocate-version-event! s ws 'program-inherit))))
+  (unless (= (length version-events) (length groups))
+    (error 'session "recipe supplied ~a version events for ~a program groups"
+           (length version-events) (length groups)))
+  (record-step! s `(run ,prog (version-events ,@version-events)))
+  (let run-groups ([gs groups] [remaining strata] [ves version-events])
     (match gs
       ['() (void)]
       [(cons (cons n g-frozen) more)
        (define g-strata (take remaining n))
        (define ws (segment-write-set g-strata g-frozen))
        (when (pair? ws)
-         (session-action! s `(begin-segment ,@ws))
+         (session-action! s `(begin-segment/keyed ,(car ves)))
          (read-one-line! s))   ; (segment P N)
        (touch! s ws)
        (for ([dir (in-list g-frozen)])
          (session-action! s `(import-path ,dir)))
        (for ([sb (in-list g-strata)])
          (push-sbuild! s sb))
-       (run-groups more (drop remaining n))])))
+       (run-groups more (drop remaining n) (cdr ves))]))
+  ;; Running a program is the explicit semantic reopen event for any
+  ;; input-only successors accumulated since the prior program event.
+  (hash-clear! (session-input-only s)))
 
-;; Queue one signed tuple against an anchor: 'tip (default, the current
-;; pipeline point) or a pipeline position.  A pending opposite-signed entry
-;; for the same tuple at the same anchor collapses to nothing (§0.2);
-;; re-queuing the same sign is idempotent.
+;; Queue one signed tuple against an anchor.  Commands remain ordered until
+;; flush: `+,-` is a mask on inherited input while `-,+` clears one, so the
+;; old syntactic cancellation was not baseline-correct.
 (define (session-batch! s sign rel tuple #:at [anchor 'tip])
+  (unless (memq sign '(+ -))
+    (error 'session "batch sign must be + or -"))
   (define per-anchor (hash-ref! (session-pending s) anchor make-hash))
   (define per-rel (hash-ref! per-anchor rel make-hash))
-  (match (hash-ref per-rel tuple #f)
-    [#f (hash-set! per-rel tuple sign)]
-    [(== sign) (void)]
-    [_ (hash-remove! per-rel tuple)]))
+  (hash-update! per-rel tuple (lambda (commands) (cons sign commands)) '()))
+
+;; Explicit existing-slot edit spelling.  Keep session-batch! as the
+;; compatibility alias used by the current harness and recipe reader.
+(define session-edit-batch! session-batch!)
+
+;; Create a distinct input-only successor slot at the current JIT tip.  An
+;; earlier pipeline point requires a recipe-branch rebuild; refusing it keeps
+;; event-time semantics honest.
+(define (session-inject-version! s rel #:key [key #f] #:at [anchor 'tip])
+  (unless (eq? anchor 'tip)
+    (error 'session "inject-version currently requires the JIT tip; rebuild a recipe branch for historical injection"))
+  (define rel* (if (symbol? rel) rel (string->symbol rel)))
+  (when (and key
+             (not (and (string? key)
+                       (regexp-match? #px"^[A-Za-z0-9._:-]+$" key))))
+    (error 'session
+           "VersionKey must be a non-empty portable identifier (letters, digits, '.', '_', ':', '-')"))
+  ;; Descriptor allocation precedes the daemon request so the chosen key is
+  ;; explicit in both places.  Admission can still fail (notably a stale
+  ;; expected revision or duplicate key), so retain a pre-request checkpoint
+  ;; and publish the descriptor only with a successfully created VersionId.
+  (define old-next-event (session-next-event s))
+  (define old-descriptors (session-descriptors s))
+  (define (rollback-descriptor!)
+    (set-session-next-event! s old-next-event)
+    (set-session-descriptors! s old-descriptors))
+  (define k
+    (cond
+      [key
+       (unless (session-replaying? s)
+         (define event (session-next-event s))
+         (set-session-next-event! s (add1 event))
+         (set-session-descriptors!
+          s (append (session-descriptors s)
+                    (list (list rel* key event 0 'input-injection-inherit)))))
+       key]
+      [else (second (first (allocate-version-event! s (list rel*)
+                                                   'input-injection-inherit)))]))
+  (define expected (query-update-epoch! s))
+  (session-action! s `(begin-update ,expected))
+  (define begun (read-line (session-out s)))
+  (unless (equal? begun (format "(update-begun ~a)" expected))
+    (rollback-descriptor!)
+    (error 'session (format "could not begin injection at revision ~a: ~a"
+                            expected begun)))
+  (echo! s begun)
+  (session-action! s `(inject-version ,rel* ,k))
+  (define line (read-line (session-out s)))
+  (unless (and (string? line) (regexp-match? #px"^\\(injected " line))
+    (session-action! s `(abort-update) read-one-line-quiet!)
+    (rollback-descriptor!)
+    (error 'session (format "inject-version ~a refused: ~a" rel* line)))
+  (echo! s line)
+  (hash-set! (session-input-only s) rel* k)
+  (session-action! s `(commit-update))
+  (define committed (read-line (session-out s)))
+  (unless (and (string? committed)
+               (regexp-match? #px"^\\(update-committed " committed))
+    (error 'session (format "could not commit injection: ~a" committed)))
+  (echo! s committed)
+  (record-step! s `(inject-version ,rel* ,k))
+  (touch! s (list rel*))
+  (match (read (open-input-string line))
+    [`(injected ,_ ,pos ,vid) (values pos vid k)]))
+
+(define (session-inject-batch! s rel adds [dels '()] #:key [key #f])
+  (define-values (pos vid k) (session-inject-version! s rel #:key key))
+  (for ([t (in-list adds)]) (session-edit-batch! s '+ rel t #:at 'tip))
+  (for ([t (in-list dels)]) (session-edit-batch! s '- rel t #:at 'tip))
+  (session-flush! s)
+  (values pos vid k))
+
+;; Explicit topology event: create an input successor, apply its overlay while
+;; it is still input-only, then run a new semantic program event.  session-run!
+;; allocates stable VersionKeys for every output and its current boundary
+;; policy is explicit inheritance; a future fresh-output policy must be added
+;; as a distinct spelling rather than inferred from ordinary injection.
+(define (session-inject-and-reopen! s rel prog [adds '()] [dels '()]
+                                    #:key [key #f]
+                                    #:output-policy [policy 'inherit])
+  (unless (eq? policy 'inherit)
+    (error 'session
+           "inject-and-reopen currently supports only explicit inherited output slots"))
+  (define-values (pos vid k) (session-inject-version! s rel #:key key))
+  (for ([t (in-list adds)]) (session-edit-batch! s '+ rel t #:at 'tip))
+  (for ([t (in-list dels)]) (session-edit-batch! s '- rel t #:at 'tip))
+  (when (or (pair? adds) (pair? dels)) (session-flush! s))
+  (session-run! s prog)
+  (values pos vid k))
 
 ;; Import a mini bin-database as a bulk batch payload (§0.3 transport 2)
 ;; and propagate through its target relations' cones.  `renames` maps
@@ -728,7 +1003,7 @@
          (cdr p)))
      (echo! s (format "(import-delta ~a ~a)" dir (length union-cone)))
      (for ([info (in-list union-cone)])
-       (send-stratum! s (sinfo-so info)))]
+       (send-maintenance-stratum! s (sinfo-so info)))]
     [else
      ;; anchored import (0.E0b): positional apply, then the suffix walk
      (session-action! s `(import-delta ,dir ,renames ,anchor))
@@ -736,7 +1011,12 @@
                                    (session-imports s)))
      (record-step! s step #:at anchor)
      (echo! s (format "(import-delta-at ~a ~a)" dir anchor))
-     (walk-suffix! s anchor targets strata-pos chains)]))
+     ;; An import anchor is an event position: the import occurs after the
+     ;; stratum at `anchor`, so only the strict suffix is replayed.  This is
+     ;; deliberately different from an overlay anchored to a VersionInstance
+     ;; binding, whose equal-position writer must see the overlay.
+     (walk-suffix! s anchor targets strata-pos chains
+                   #:include-anchor? #f)]))
 
 ;; ---- cone assembly (docs/incremental.md §0.5) ----------------------------
 
@@ -748,10 +1028,12 @@
   (when (eof-object? pline) (error 'session "daemon EOF at introspection"))
   (echo! s pline)
   (match (read (open-input-string pline))
-    [`(pipeline (pos ,cur) (strata ,ss ...) ,rels ...)
+    [`(pipeline (pos ,cur) (evaluation ,_eval) (update-epoch ,_revision)
+                (strata ,ss ...)
+                (version-ids ,vis ...) ,rels ...)
      (values cur
              (for/hash ([st (in-list ss)])
-               (match-define `(s ,scc ,pos ,_name) st)
+               (match-define `(s ,scc ,pos ,_name ,_fields ...) st)
                (values scc pos))
              (for/hash ([r (in-list rels)])
                (match-define `(rel ,name ,vs ...) r)
@@ -762,6 +1044,39 @@
                          (match-define `(v ,ord ,pos ,sz) v)
                          (list ord pos (= sz -1))))))]
     [x (error 'session (format "unparseable (pipeline) reply: ~a" x))]))
+
+;; Identity-rich view used by M0.4 recount.  `vinfo` maps (name . ordinal)
+;; to (version-id predecessor-id version-key schema); `sinfo*` maps the original
+;; daemon SCC id to (bind-position read-map write-map write-VersionIds).
+(define (introspect-identities! s)
+  (session-action! s `(pipeline))
+  (define pline (read-line (session-out s)))
+  (when (eof-object? pline) (error 'session "daemon EOF at introspection"))
+  (echo! s pline)
+  (match (read (open-input-string pline))
+    [`(pipeline (pos ,cur) (evaluation ,_eval) (update-epoch ,_revision)
+                (strata ,ss ...)
+                (version-ids ,vis ...) ,rels ...)
+     (define sinstances
+       (for/hash ([st (in-list ss)])
+         (match-define `(s ,scc ,pos ,_name
+                           (kind ,kind)
+                           (reads ,reads ...) (write-map ,writes ...)
+                           (writes ,vids ...)) st)
+         (values scc (list pos reads writes vids kind))))
+     (define vinfo
+       (for/hash ([vi (in-list vis)])
+         (match-define `(vid ,name ,ord ,vid ,pred ,key (schema ,arity ,sid ,storage)) vi)
+         (values (cons name ord) (list vid pred key (list arity sid storage)))))
+     (define chains
+       (for/hash ([r (in-list rels)])
+         (match-define `(rel ,name ,vs ...) r)
+         (values name
+                 (for/list ([v (in-list vs)])
+                   (match-define `(v ,ord ,pos ,sz) v)
+                   (list ord pos (= sz -1))))))
+     (values cur sinstances chains vinfo)]
+    [x (error 'session (format "unparseable identity pipeline reply: ~a" x))]))
 
 (define (chain-positions chains rel)
   (map second (hash-ref chains rel '())))
@@ -814,33 +1129,87 @@
                (format "~a was rebound after a cone stratum (pos ~a): tip re-entry is unsound here; anchor the batch at the version instead" r pos)))))
   (values cone mono?))
 
-;; ---- the applied-batch log (C3) ------------------------------------------
+;; ---- the applied input-overlay log (M0.4b) -------------------------------
 
-;; Record applied signed tuples against (rel, version-binding-pos), with
-;; live same-point collapse (§0.2): an add and delete of one tuple at one
-;; version annihilate in the log -- absent from saves and replays.  While
-;; replaying ancestor history the entries land in the INHERITED log
-;; (re-applied by walks, never re-serialised).
-(define (log-applied! s rel bind-pos tuples sign)
+;; Record the normalized final state for each touched tuple at one physical
+;; version: direct, inheritance mask, or neither.  `none` is meaningful when
+;; it overrides an ancestor layer's direct/mask state, so it is retained.
+(define (log-applied! s rel bind-pos tuples state)
   (define store (if (session-replaying? s) (session-inherited s) (session-applied s)))
   (define per (hash-ref! store (cons rel bind-pos) make-hash))
   (for ([t (in-list tuples)])
-    (match (hash-ref per t #f)
-      [#f (hash-set! per t sign)]
-      [(== sign) (void)]
-      [_ (hash-remove! per t)])))
+    (cond
+      [(and (eq? state 'none)
+            (or (session-replaying? s)
+                (not (hash-has-key?
+                      (hash-ref (session-inherited s) (cons rel bind-pos) (hash))
+                      t))))
+       (hash-remove! per t)]
+      [else (hash-set! per t state)])))
 
-;; The signed set at one (rel, version-binding): inherited entries merged
-;; under the session's OWN (an own entry for the same tuple overrides --
-;; it happened later).
-(define (logged-batches-at s rel bind-pos)
+;; The normalized overlay at one (rel, version-binding): inherited entries
+;; merged under the session's OWN state for the same tuple.
+(define (logged-overlays-at s rel bind-pos)
   (define merged (make-hash))
   (for ([store (in-list (list (session-inherited s) (session-applied s)))])
     (define per (hash-ref store (cons rel bind-pos) #f))
     (when per
-      (for ([(t sg) (in-hash per)]) (hash-set! merged t sg))))
-  (values (for/list ([(t sg) (in-hash merged)] #:when (eq? sg '+)) t)
-          (for/list ([(t sg) (in-hash merged)] #:when (eq? sg '-)) t)))
+      (for ([(t state) (in-hash per)]) (hash-set! merged t state))))
+  (for/list ([(t state) (in-hash merged)]) `(,state ,t)))
+
+;; Query the authoritative per-VersionInstance overlay for a tuple list.
+;; Each result is (direct? masked? predecessor-present? live?).
+(define (query-input-states! s rel bind-pos tuples)
+  (session-action! s `(input-state ,rel ,bind-pos (,@tuples)))
+  (let loop ([states (make-hash)])
+    (define line (read-line (session-out s)))
+    (when (eof-object? line) (error 'session "daemon EOF at input-state"))
+    (match (read (open-input-string line))
+      [`(inputstate ,i ,d ,m ,pred ,live)
+       (hash-set! states i (map (lambda (x) (= x 1)) (list d m pred live)))
+       (loop states)]
+      [`(inputstate-done ,n)
+       (unless (= n (length tuples))
+         (error 'session "short input-state response"))
+       (for/list ([i (in-range n)])
+         (hash-ref states i
+                   (lambda () (error 'session "missing input-state row ~a" i))))]
+      [`(error ,why) (error 'session why)]
+      [x (error 'session (format "bad input-state response: ~a" x))])))
+
+;; Reduce each tuple's ordered +/- commands against its actual baseline.
+;; Result values are (state negative-membership? positive-membership?), where
+;; state is the normalized direct/mask/none overlay to persist.
+(define (normalize-pending! s rel bind-pos per-rel)
+  (define tuples (hash-keys per-rel))
+  (define states (query-input-states! s rel bind-pos tuples))
+  (for/fold ([out (make-hash)])
+            ([t (in-list tuples)] [initial (in-list states)])
+    (match-define (list d0 m0 pred? live?) initial)
+    (define d d0)
+    (define m m0)
+    (for ([sign (in-list (reverse (hash-ref per-rel t)))])
+      (case sign
+        [(+)
+         (cond [d (void)]
+               [m (set! m #f)]
+               [pred? (void)]
+               [else (set! d #t)])]
+        [(-)
+         (cond [d (set! d #f)]
+               [(and pred? (not m)) (set! m #t)]
+               [else
+                (error 'session
+                       (format "cannot retract ~a from ~a: tuple is ~a"
+                               t rel (if live? "derived-only" "absent")))])]))
+    (unless (and (equal? d d0) (equal? m m0))
+      (define before? (or d0 (and pred? (not m0))))
+      (define after? (or d (and pred? (not m))))
+      (hash-set! out t
+                 (list (cond [d 'direct] [m 'mask] [else 'none])
+                       (and before? (not after?))
+                       (and after? (not before?)))))
+    out))
 
 ;; ---- flush: route, apply pending batches, propagate ----------------------
 
@@ -867,23 +1236,46 @@
 
 (define (session-flush! s)
   (define pending (session-pending s))
-  ;; collect (anchor rel tuples-hash), dropping empties
-  (define groups
+  ;; Collect raw command sequences, dropping empties.
+  (define raw-groups
     (for*/list ([(anchor per-anchor) (in-hash pending)]
                 [(rel per-rel) (in-hash per-anchor)]
                 #:when (positive? (hash-count per-rel)))
       (list anchor rel (hash-copy per-rel))))
   (hash-clear! pending)
   (cond
-    [(null? groups) (echo! s "(flush 0)")]
+    [(null? raw-groups) (echo! s "(flush 0)")]
     [else
      ;; the inline-transport ceiling (§0.3/C4)
-     (for ([g (in-list groups)])
+     (for ([g (in-list raw-groups)])
        (when (> (hash-count (third g)) inline-batch-max)
          (error 'session
                 (format "inline batch of ~a tuples for ~a exceeds ~a: write a bin database and session-import-delta! it (or link it as a -d input)"
                         (hash-count (third g)) (second g) inline-batch-max))))
      (define-values (_cur strata-pos chains) (introspect! s))
+     ;; Resolve and normalize before mutating anything.  Thus a derived-only
+     ;; or absent retraction rejects the whole flush with the prior overlay
+     ;; intact, and inherited +/- sequences keep their baseline semantics.
+     (define groups
+       (filter
+        values
+        (for/list ([g (in-list raw-groups)])
+          (match-define (list anchor rel per-rel) g)
+          (define-values (ord bind-pos last?) (resolve-anchor chains rel anchor))
+          (define normalized (normalize-pending! s rel bind-pos per-rel))
+          (and (positive? (hash-count normalized))
+               (list anchor rel ord bind-pos last? normalized)))))
+     ;; Serialize the complete logical edit (possibly several anchors and
+     ;; strata) against one expected settled revision.  The daemon rejects a
+     ;; stale writer before any mutation is applied.
+     (when (pair? groups)
+       (define expected (query-update-epoch! s))
+       (session-action! s `(begin-update ,expected))
+       (define begun (read-line (session-out s)))
+       (unless (equal? begun (format "(update-begun ~a)" expected))
+         (error 'session (format "could not begin update at revision ~a: ~a"
+                                 expected begun)))
+       (echo! s begun))
      ;; split by resolved anchor: groups whose anchor resolves to the
      ;; LATEST version take the tip routing; older versions take the walk.
      ;; A tip group whose cone trips the rebound guard (something a cone
@@ -893,10 +1285,10 @@
      (define-values (tip-groups old-groups)
        (for/fold ([tips '()] [olds '()])
                  ([g (in-list groups)])
-         (match-define (list anchor rel per-rel) g)
-         (define-values (ord bind-pos last?) (resolve-anchor chains rel anchor))
+         (match-define (list anchor rel ord bind-pos last? per-rel) g)
          (define tip-ok?
            (and last?
+                (not (hash-has-key? (session-input-only s) rel))
                 (with-handlers ([exn:fail? (lambda (_e) #f)])
                   (cone-of s rel strata-pos chains)
                   #t)))
@@ -909,20 +1301,25 @@
      (when (pair? tip-groups)
        (tip-flush! s tip-groups strata-pos chains))
      (when (and (null? tip-groups) (null? old-groups))
-       (echo! s "(flush 0)"))]))
+       (echo! s "(flush 0)"))
+     (when (pair? groups)
+       (session-action! s `(commit-update))
+       (define committed (read-line (session-out s)))
+       (unless (and (string? committed)
+                    (regexp-match? #px"^\\(update-committed " committed))
+         (error 'session (format "could not commit update: ~a" committed)))
+       (echo! s committed))]))
 
-;; Tip routing (0.B4/0.B5): delta-entry for a single-stratum all-monotone
-;; all-adds union cone; replay-entry for monotone adds; clear-and-rerun
-;; otherwise.
+;; Tip routing: M1 positive maintenance for certified plain-table cones; M3
+;; negative-then-positive maintenance for their acyclic subset; legacy
+;; delta/replay for unsupported monotone cones; clear-and-rerun for every
+;; unsupported retraction or non-monotone edge.
 (define (tip-flush! s tip-groups strata-pos chains)
-  (define any-del?
-    (for*/or ([g (in-list tip-groups)] [(t sg) (in-hash (third g))])
-      (eq? sg '-)))
-  (define union-mono? (not any-del?))
+  (define topology-mono? #t)
   (define union-sos (mutable-set))
   (for ([g (in-list tip-groups)])
     (define-values (cone mono?) (cone-of s (first g) strata-pos chains))
-    (unless mono? (set! union-mono? #f))
+    (unless mono? (set! topology-mono? #f))
     (for ([info (in-list cone)])
       (set-add! union-sos (sinfo-so info))))
   (define union-cone
@@ -932,62 +1329,217 @@
   (touch! s (for*/list ([info (in-list union-cone)]
                         [h (in-list (sinfo-heads info))])
               h))
-  (define delta-eligible? (and union-mono? (= 1 (length union-cone))))
-  ;; apply the collapsed edits (multi-tuple actions), logging each set at
-  ;; its target's version binding
-  (define (apply-edits! #:stage-adds? [stage-adds? #f])
+  (define (positive-change? change)
+    (and (eq? (first change) 'direct) (third change)))
+  (define (negative-change? change)
+    (or (eq? (first change) 'mask)
+        (and (eq? (first change) 'none) (not (third change)))))
+  (define has-positive?
+    (for*/or ([g (in-list tip-groups)] [(_t change) (in-hash (third g))])
+      (positive-change? change)))
+  (define has-negative?
+    (for*/or ([g (in-list tip-groups)] [(_t change) (in-hash (third g))])
+      (negative-change? change)))
+  (define precise-shape?
+    (and topology-mono?
+         (for*/and ([g (in-list tip-groups)]
+                    [(_t change) (in-hash (third g))])
+           (or (positive-change? change) (negative-change? change)))))
+  (define positive-shape? (and precise-shape? has-positive? (not has-negative?)))
+  (define maintenance-names
+    (remove-duplicates
+     (append (map first tip-groups)
+             (append-map sinfo-dyn union-cone)
+             (for*/list ([info (in-list union-cone)]
+                         [entry (in-list (sinfo-reads info))]
+                         #:when (member 'pos (cdr entry)))
+               (car entry)))))
+  (define caps (and precise-shape?
+                    (query-positive-capabilities! s chains)))
+  (define structurally-certified?
+    (and caps (for/and ([r (in-list maintenance-names)])
+                (hash-ref caps r #f))))
+  ;; Establish counts lazily before touching content.  Recount is itself
+  ;; transactional and version-local; a warm sidecar makes this a cheap state
+  ;; check on later flushes.  Establishment failure is not an update failure:
+  ;; the count epoch has published nothing and no edit has been applied yet,
+  ;; so retain set semantics by selecting the legacy delta/re-entry route.
+  (define recount-ready?
+    (and structurally-certified?
+         (with-handlers
+             ([exn:fail?
+               (lambda (e)
+                 (echo! s (format "(maintenance-unavailable recount ~s)"
+                                  (exn-message e)))
+                 #f)])
+           (session-recount! s)
+           #t)))
+  (define cstate (and recount-ready? (query-count-state! s)))
+  (define counts-certified?
+    (and cstate
+         (for/and ([r (in-list maintenance-names)])
+           (define chain (hash-ref chains r '()))
+           (and (pair? chain)
+                (let* ([ord (first (last chain))]
+                       [row (assoc ord (hash-ref cstate r '()))])
+                  (and row (cdr row)))))))
+  (define m1-eligible?
+    (and positive-shape? structurally-certified? counts-certified?))
+  (define m3-eligible?
+    (and structurally-certified? counts-certified? has-negative?
+         (for/and ([info (in-list union-cone)]) (sinfo-acyclic? info))))
+
+  ;; The old set-only delta route remains a fallback for unsupported shapes.
+  (define delta-eligible?
+    (and positive-shape? (= 1 (length union-cone))))
+  (define (apply-edits! #:stage-direct? [stage-direct? #f])
     (for ([g (in-list tip-groups)])
       (match-define (list rel bind-pos per-rel) g)
-      (define adds (for/list ([(t sg) (in-hash per-rel)] #:when (eq? sg '+)) t))
-      (define dels (for/list ([(t sg) (in-hash per-rel)] #:when (eq? sg '-)) t))
+      (define rows
+        (for/list ([(t change) (in-hash per-rel)])
+          `(,(first change) ,t)))
       (touch! s (list rel))
-      (when (pair? adds)
-        (if stage-adds?
-            (session-action! s `(stage-batch ,rel (,@adds)))
-            (begin (session-action! s `(add-batch ,rel -1 (,@adds)))
-                   (read-one-line! s)))
-        (log-applied! s rel bind-pos adds '+))
-      (when (pair? dels)
-        (session-action! s `(del-batch ,rel -1 (,@dels)))
-        (read-one-line! s)
-        (log-applied! s rel bind-pos dels '-))))
+      (session-action! s `(set-overlay ,rel -1 (,@rows)))
+      (read-one-line! s)
+      (when stage-direct?
+        (session-action! s
+                         `(stage-batch ,rel
+                                       (,@(for/list ([row (in-list rows)])
+                                            (second row))))))
+      (for ([state '(direct mask none)])
+        (log-applied! s rel bind-pos
+                      (for/list ([row (in-list rows)] #:when (eq? (first row) state))
+                        (second row))
+                      state))))
+  (define positive-apply-ok? #t)
+  (define (apply-positive-edits!)
+    (for ([g (in-list tip-groups)])
+      (match-define (list rel bind-pos per-rel) g)
+      (define tuples
+        (for/list ([(t change) (in-hash per-rel)] #:when (positive-change? change)) t))
+      (when (pair? tuples)
+        (touch! s (list rel))
+        (session-action! s `(set-overlay-positive ,rel (,@tuples)))
+        (define reply (read-line (session-out s)))
+        (unless (equal? reply
+                        (format "(overlay-positive ~a ~a ~a)"
+                                rel (length tuples) (length tuples)))
+          (set! positive-apply-ok? #f))
+        (echo! s reply)
+        (log-applied! s rel bind-pos tuples 'direct))))
+  (define negative-apply-ok? #t)
+  (define (apply-negative-edits!)
+    (for ([g (in-list tip-groups)])
+      (match-define (list rel bind-pos per-rel) g)
+      (define rows
+        (for/list ([(t change) (in-hash per-rel)] #:when (negative-change? change))
+          (list t change)))
+      (define tuples (map first rows))
+      (when (pair? tuples)
+        (touch! s (list rel))
+        (session-action! s `(set-overlay-negative ,rel (,@tuples)))
+        (define reply (read-line (session-out s)))
+        (unless (equal? reply
+                        (format "(overlay-negative ~a ~a ~a)"
+                                rel (length tuples) (length tuples)))
+          (set! negative-apply-ok? #f))
+        (echo! s reply)
+        (for ([state '(mask none)])
+          (log-applied! s rel bind-pos
+                        (for/list ([row (in-list rows)]
+                                   #:when (eq? (first (second row)) state))
+                          (first row))
+                        state)))))
+  (define (run-maintenance-phase! sign get-so)
+    (for ([info (in-list union-cone)])
+      (define reads
+        (remove-duplicates
+         (for/list ([entry (in-list (sinfo-reads info))]
+                    #:when (member 'pos (cdr entry)))
+           (car entry))))
+      (when (pair? reads)
+        (session-action! s `(stage-update-transitions signed ,sign ,@reads))
+        (read-one-line! s))
+      (send-maintenance-stratum! s (get-so info))))
+  (define (rerun-cone!)
+    ;; clear cone-written relations, EXCEPT those also written by non-cone
+    ;; strata (shared diagnostic side channels)
+    (define cone-dyn
+      (for*/set ([info (in-list union-cone)] [d (in-list (sinfo-dyn info))]) d))
+    (define noncone-dyn
+      (for*/set ([p (in-list (session-strata-info s))]
+                 #:unless (set-member? union-sos (sinfo-so (cdr p)))
+                 [d (in-list (sinfo-dyn (cdr p)))])
+        d))
+    (define clear-set
+      (sort (set->list (set-subtract cone-dyn noncone-dyn)) symbol<?))
+    (for ([r (in-list clear-set)])
+      (session-action! s `(clear-rel ,r)))
+    (echo! s (format "(route rerun ~a ~a)" (length union-cone) (length clear-set)))
+    (for ([info (in-list union-cone)])
+      (send-maintenance-stratum! s (sinfo-so info))))
   (cond
+    [m3-eligible?
+     (apply-negative-edits!)
+     (cond
+       [negative-apply-ok?
+        (echo! s (format "(route maintain-negative ~a)" (length union-cone)))
+        (run-maintenance-phase! -1
+                                (lambda (info) ((sinfo-negative-maintenance info))))
+        (cond
+          [(query-update-counts-valid! s)
+           (when has-positive?
+             (apply-positive-edits!)
+             (if positive-apply-ok?
+                 (begin
+                   (echo! s (format "(route maintain-positive ~a)"
+                                    (length union-cone)))
+                   (run-maintenance-phase!
+                    1 (lambda (info) ((sinfo-maintenance info)))))
+                 (begin
+                   (echo! s "(maintenance-unavailable positive-input)")
+                   (apply-edits!)
+                   (rerun-cone!))))]
+          [else
+           ;; Arithmetic failure leaves the epoch private.  Install the already
+           ;; normalized target overlay generically and rebuild before commit.
+           (apply-edits!)
+           (rerun-cone!)])]
+       [else
+        (echo! s "(maintenance-unavailable negative-input)")
+        (apply-edits!)
+        (rerun-cone!)])]
+    [m1-eligible?
+     (apply-positive-edits!)
+     (if positive-apply-ok?
+         (begin
+           (echo! s (format "(route maintain ~a)" (length union-cone)))
+           (run-maintenance-phase! 1 (lambda (info) ((sinfo-maintenance info)))))
+         (begin
+           (echo! s "(maintenance-unavailable positive-input)")
+           (apply-edits!)
+           (rerun-cone!)))]
     [delta-eligible?
      (define delta-so ((sinfo-delta (first union-cone))))
-     (apply-edits! #:stage-adds? #t)
+     (apply-edits! #:stage-direct? #t)
      (echo! s "(route delta 1)")
-     (send-stratum! s delta-so)]
-    [union-mono?
+     (send-maintenance-stratum! s delta-so)]
+    [(and topology-mono? (not has-negative?))
      (apply-edits!)
      (echo! s (format "(route reenter ~a)" (length union-cone)))
      (for ([info (in-list union-cone)])
-       (send-stratum! s (sinfo-so info)))]
+       (send-maintenance-stratum! s (sinfo-so info)))]
     [else
      (apply-edits!)
-     ;; clear cone-written relations, EXCEPT those also written by
-     ;; non-cone strata (shared diagnostic side channels)
-     (define cone-dyn
-       (for*/set ([info (in-list union-cone)] [d (in-list (sinfo-dyn info))]) d))
-     (define noncone-dyn
-       (for*/set ([p (in-list (session-strata-info s))]
-                  #:unless (set-member? union-sos (sinfo-so (cdr p)))
-                  [d (in-list (sinfo-dyn (cdr p)))])
-         d))
-     (define clear-set
-       (sort (set->list (set-subtract cone-dyn noncone-dyn)) symbol<?))
-     (for ([r (in-list clear-set)])
-       (session-action! s `(clear-rel ,r)))
-     (echo! s (format "(route rerun ~a ~a)" (length union-cone) (length clear-set)))
-     (for ([info (in-list union-cone)])
-       (send-stratum! s (sinfo-so info)))]))
+     (rerun-cone!)]))
 
 ;; The ANCHORED walk (0.C, §0.4-§0.6): one old-anchored (rel, version)
 ;; batch group -- apply to the anchored version in place, then replay the
 ;; pipeline suffix over the edited history (walk-suffix!).
 (define (anchored-walk! s group strata-pos chains)
   (match-define (list rel ord bind-pos per-rel) group)
-  (define adds (for/list ([(t sg) (in-hash per-rel)] #:when (eq? sg '+)) t))
-  (define dels (for/list ([(t sg) (in-hash per-rel)] #:when (eq? sg '-)) t))
+  (define rows
+    (for/list ([(t change) (in-hash per-rel)]) `(,(first change) ,t)))
   ;; 1. apply to the anchored version in place; log at its binding.  If
   ;; the version's writer re-runs below, the rebuild wipes and the log
   ;; re-applies -- the §0.5 mode-2 "copy predecessor ± batch"; if not (a
@@ -995,14 +1547,13 @@
   ;; the version rebuild and writer-derived deletions keep the
   ;; replay-deletion caveat.
   (touch! s (list rel))
-  (when (pair? adds)
-    (session-action! s `(add-batch ,rel ,bind-pos (,@adds)))
-    (read-one-line! s)
-    (log-applied! s rel bind-pos adds '+))
-  (when (pair? dels)
-    (session-action! s `(del-batch ,rel ,bind-pos (,@dels)))
-    (read-one-line! s)
-    (log-applied! s rel bind-pos dels '-))
+  (session-action! s `(set-overlay ,rel ,bind-pos (,@rows)))
+  (read-one-line! s)
+  (for ([state '(direct mask none)])
+    (log-applied! s rel bind-pos
+                  (for/list ([row (in-list rows)] #:when (eq? (first row) state))
+                    (second row))
+                  state))
   (walk-suffix! s bind-pos (set rel) strata-pos chains
                 #:announce (lambda (n)
                              (echo! s (format "(route anchored ~a ~a ~a)"
@@ -1030,7 +1581,8 @@
 ;; registration).  The anchored version itself is exempt (its rebuild is
 ;; the in-place batch apply).
 (define (walk-suffix! s bind-pos affected0 strata-pos chains
-                      #:announce [announce void])
+                      #:announce [announce void]
+                      #:include-anchor? [include-anchor? #t])
   (define strata+pos
     (sort (for/list ([p (in-list (session-strata-info s))])
             (cons (hash-ref strata-pos (car p) 0) (cdr p)))
@@ -1052,7 +1604,14 @@
         [else
          (match-define (cons pos info) (car sps))
          (cond
-           [(<= pos bind-pos) (loop (cdr sps) rns affected rerun)]
+           ;; A relation first declared by a reader/writer stratum is bound at
+           ;; that stratum's own position.  An input overlay anchored to that
+           ;; binding is logically visible before the stratum runs, so the
+           ;; equal-position stratum belongs to the replay suffix.
+           [(if include-anchor?
+                (< pos bind-pos)
+                (<= pos bind-pos))
+            (loop (cdr sps) rns affected rerun)]
            [(or (for/or ([r (in-list (map car (sinfo-reads info)))])
                   (set-member? affected r))
                 (for/or ([h (in-list (sinfo-heads info))])
@@ -1114,20 +1673,16 @@
               (cons (list pos 1
                           (lambda ()
                             (for ([a (in-list anchors)])
-                              (define-values (ladds ldels)
-                                (logged-batches-at s (car a) (cdr a)))
-                              (when (pair? ladds)
-                                (session-action! s `(add-batch ,(car a) ,(cdr a) (,@ladds)))
-                                (read-one-line! s))
-                              (when (pair? ldels)
-                                (session-action! s `(del-batch ,(car a) ,(cdr a) (,@ldels)))
+                              (define rows (logged-overlays-at s (car a) (cdr a)))
+                              (when (pair? rows)
+                                (session-action! s `(set-overlay ,(car a) ,(cdr a) (,@rows)))
                                 (read-one-line! s)))))
                     events))))
     (set! events
           (cons (list pos 2
                       (lambda ()
                         (session-action! s `(bind-at ,pos))
-                        (send-stratum! s (sinfo-so info))))
+                        (send-maintenance-stratum! s (sinfo-so info))))
                 events)))
   ;; logged imports past the anchor re-apply at their positions (0.E0b)
   (for ([im (in-list (session-imports s))]
@@ -1159,7 +1714,7 @@
            (format "non-monotone cone for ~a (neg/lat edge): use rerun (clear-and-rerun, 0.B2)" rel)))
   (echo! s (format "(reenter ~a ~a)" rel (length cone)))
   (for ([info (in-list cone)])
-    (send-stratum! s (sinfo-so info))))
+    (send-maintenance-stratum! s (sinfo-so info))))
 
 (define (session-rerun! s rel)
   (define-values (_cur strata-pos chains) (introspect! s))
@@ -1176,7 +1731,7 @@
     (session-action! s `(clear-rel ,r)))
   (echo! s (format "(rerun ~a ~a ~a)" rel (length cone) (length clear-set)))
   (for ([info (in-list cone)])
-    (send-stratum! s (sinfo-so info))))
+    (send-maintenance-stratum! s (sinfo-so info))))
 
 ;; ---- save: one new delta layer (0.E1) -------------------------------------
 
@@ -1228,7 +1783,7 @@
   (define recipe (externalize-recipe-payloads (session-recipe s) dir))
   (write-recipe dir recipe)
   (define run-entries
-    (for/list ([st (in-list (cdr recipe))] #:when (match st [`(run ,_) #t] [_ #f]))
+    (for/list ([st (in-list (cdr recipe))] #:when (match st [`(run ,_ ,_ ...) #t] [_ #f]))
       (second st)))
   (when (positive? (hash-count (session-sources s)))
     (write-prog-sexpr dir (if (pair? run-entries) (first run-entries) "session")
@@ -1242,11 +1797,33 @@
   (define manifest
     (append (if (session-db s) (list (manifest-entry (session-db s))) '())
             (for/list ([db (in-list link-dbs)]) (manifest-entry db))))
+  (define-values (_vcur _vsi _vchains vvinfo) (introspect-identities! s))
+  (define id->key
+    (for/hash ([(nk vi) (in-hash vvinfo)]) (values (first vi) (third vi))))
+  (define descriptor-table
+    (for/list ([row (in-list (session-descriptors s))])
+      (match-define (list rel key event slot kind) row)
+      (define live
+        (for/first ([(nk vi) (in-hash vvinfo)] #:when (equal? (third vi) key)) vi))
+      `(version-descriptor ,key
+                           (event ,event) (slot ,slot) (kind ,kind)
+                           (name ,rel)
+                           (schema ,(and live (fourth live)))
+                           (predecessor ,(and live
+                                              (positive? (second live))
+                                              (hash-ref id->key (second live) #f))))))
+  (define compatibility-map
+    (for/list ([(anchor key) (in-hash (session-compat-keys s))])
+      `(legacy-anchor ,(car anchor) ,(cdr anchor) ,key)))
   (define m0 (make-db-meta #:kind 'compressed #:pure-edb? #f
                            #:manifest manifest #:per 1.0
                            #:compiler-stamp (current-compiler-stamp)
                            #:idb-rels touched #:edb-rels '()
-                           #:extra (list (cons 'recipe? #t))))
+                           #:extra (list (cons 'recipe? #t)
+                                         (cons 'version-format 1)
+                                         (cons 'layer-id (session-layer-id s))
+                                         (cons 'version-descriptors descriptor-table)
+                                         (cons 'legacy-version-map compatibility-map))))
   (write-db-meta (hash-set m0 'stamp
                            (compute-db-stamp m0 #:prog-fingerprint (recipe-digest recipe)))
                  dir)
