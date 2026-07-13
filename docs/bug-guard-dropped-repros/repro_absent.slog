@@ -1,0 +1,13 @@
+include "/home/tom/slog/lib/list.slog"
+demand (step int) int
+table (reach int)
+rule (reach 0)
+rule (reach r) <-- (reach s) (step s r)
+rule (step 0 10)
+rule (step 0 11)
+rule (step 0 12)
+table (shape [int])
+rule (shape [10 11])
+;; RULE UNDER TEST -- in the recursive step SCC. Should step ONLY 12 (absent from
+;; shape) to 1012.  BUG: (lst_absent sp n 1) dropped -> 10,11 fire too.
+rule (step n (+ n 1000)) <-- (reach n) (< n 100) (shape sp) (lst_absent sp n 1)

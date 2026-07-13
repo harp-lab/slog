@@ -518,8 +518,21 @@
       [`(syn ,p ,(? symbol? h) ,args ...) `(syn ,p ,h ,@(map walk-term args))]
       [_ cl]))
   (define bodys+ (filter values (map walk-clause bodys)))
+  ;; extractions from the HEADS: their fresh answer variable flows only into
+  ;; the head (an "output" occurrence).  Such an occurrence must be demanded
+  ;; EXACTLY when the rule fires -- gated by every body guard -- not
+  ;; over-approximated like a body query, or a demanded relation with a
+  ;; side-effecting co-head (interp `construct`: (vstore v v)) fires spuriously
+  ;; whenever the guard-independent prefix holds
+  ;; (docs/bug-guard-dropped-step-scc.md).  Snapshot the extraction list before
+  ;; walking heads; the tail is head-derived, each ending in its answer var.
+  (define n-body-extracted (length extracted))
   (define heads+ (filter values (map walk-clause heads)))
-  (values (append bodys+ extracted) heads+))
+  (define head-out-vars
+    (for/set ([cl (in-list (drop extracted n-body-extracted))]
+              #:when (symbol? (last cl)))
+      (last cl)))
+  (values (append bodys+ extracted) heads+ head-out-vars))
 
 ;; -----------------------------------------------------------------------
 ;; Per-rule rewriting.
@@ -557,7 +570,7 @@
   ;; phases V/L then C on this alternative
   (define bodys1 (for/list ([cl (in-list bodys0)]) (vl-clause cl ctx bound)))
   (define heads1 (for/list ([cl (in-list heads0)]) (vl-clause cl ctx bound)))
-  (define-values (bodys heads) (extract-calls bodys1 heads1 ctx rule))
+  (define-values (bodys heads head-out-vars) (extract-calls bodys1 heads1 ctx rule))
 
   (define fun-env (type-env-funs (ctx-type-env ctx)))
 
@@ -650,9 +663,21 @@
        (append gates
                (filter-map (lambda (occ) (and (not (second occ)) (car occ)))
                            body-occs)))
+     ;; OUTPUT judgments: those whose answer flows only into the head (a call
+     ;; extracted out of a head term).  Their ask must be gated by every body
+     ;; guard, so schedule-asks defers them until all guards are scheduled
+     ;; (docs/bug-guard-dropped-step-scc.md).
+     (define output-dvars
+       (for/set ([j (in-list body-js)]
+                 #:when (let ([aargs (fourth (cdr j))])
+                          (and (pair? aargs)
+                               (for/and ([a (in-list aargs)])
+                                 (and (symbol? a)
+                                      (set-member? head-out-vars a))))))
+         (car j)))
      (define-values (asks sup-atoms)
        (schedule-asks prov non-judgment-clauses body-js gate-keys fun-env rule
-                      ctx alt-idx))
+                      ctx alt-idx output-dvars))
      (define main-rule
        `(syn ,prov rule ,@main-body ,@sup-atoms --> ,@main-heads))
 
@@ -791,7 +816,12 @@
       [else (ormap scan-shaped? cls)])))
 
 (define (schedule-asks prov clauses body-js gate-keys fun-env rule
-                       ctx alt-idx)
+                       ctx alt-idx [output-dvars (set)])
+  ;; an OUTPUT judgment's answer flows only into the head; its demand (and
+  ;; any side-effecting co-head it triggers) must fire EXACTLY when the rule
+  ;; fires, so it is deferred until every guard judgment is scheduled and its
+  ;; ask rides a prefix carrying the guards' resumes (bug-guard-dropped-...).
+  (define (output-j? j) (set-member? output-dvars (car j)))
   (define pending0
     (for/list ([cl (in-list clauses)])
       (match-define (cons needs grounds) (clause-mode cl fun-env))
@@ -809,11 +839,23 @@
                  (append included (map first ready))
                  (for/fold ([G G]) ([p (in-list ready)])
                    (set-union G (third p)))))))
-    (define-values (ready-js blocked-js)
+    (define-values (ready-js0 blocked-js0)
       (partition (lambda (j)
                    (match-define (list _ _ dargs _) (cdr j))
                    (subset? (terms-all-vars dargs) G+))
                  waiting))
+    ;; defer OUTPUT judgments while any guard judgment is still waiting: an
+    ;; output must be gated by every guard, so it may only be asked from a
+    ;; prefix that already carries all guard resumes.  Deadlock-free: guards
+    ;; never depend on an output's answer (it flows only to the head), so a
+    ;; held-back output never blocks a guard.
+    (define guards-waiting?
+      (for/or ([j (in-list waiting)]) (not (output-j? j))))
+    (define-values (ready-js blocked-js)
+      (if guards-waiting?
+          (values (filter (lambda (j) (not (output-j? j))) ready-js0)
+                  (append blocked-js0 (filter output-j? ready-js0)))
+          (values ready-js0 blocked-js0)))
     ;; the CHAINED prefix: once a supplementary exists, later ask and sup
     ;; rules ride it -- its atom plus the clauses included since --
     ;; instead of re-carrying (and re-scanning, in their answer-delta
@@ -824,7 +866,12 @@
     (cond
       [(null? ready-js)
        (unless (null? blocked-js)
-         (match-define (list _ name dargs _) (cdr (first blocked-js)))
+         ;; report a genuinely-ungroundable judgment, preferring a guard over
+         ;; a merely-deferred output (whose args are already ground)
+         (define culprit
+           (or (findf (lambda (j) (not (output-j? j))) blocked-js)
+               (first blocked-js)))
+         (match-define (list _ name dargs _) (cdr culprit))
          (error 'demand
                 (string-append
                  "cannot ground the demand arguments of ~a (unbound: ~a) in\n~a\n"

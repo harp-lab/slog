@@ -1,0 +1,36 @@
+;; Regression: a demand-call in a rule HEAD must be demanded EXACTLY when the
+;; rule fires -- gated by every body guard -- even when the guard is itself a
+;; demand-moded relation.  A demanded relation with a side-effecting co-head
+;; (here `mk` writes `store`, as interp.slog's `construct` writes `vstore`) makes
+;; over-demand observable: before the fix the head call `(mk ...)` was asked from
+;; a supplementary relation that excluded the demand-guard's answer, so its store
+;; side effect fired for states whose guard was unsatisfied.
+;; See docs/bug-guard-dropped-step-scc.md.
+
+union (St (Start int) (Ap int int) (Done int))
+
+;; a constructor-style demand relation: demanding it has a STORE side effect
+table (store int)
+demand (mk int) int
+rule (mk v v) (store v)
+
+;; a DEMAND-MODED guard (the shape that used to be dropped; a plain table guard
+;; always gated correctly)
+table (okt int)
+rule (okt 1)
+demand (okq int) int
+rule (okq n 1) <-- (okt n)
+
+demand (step St) St
+table (reach St)
+rule (reach (Start 0))
+rule (reach s') <-- (reach s) (step s s')
+
+;; op 1 is ok, op 2 is NOT ok
+rule (step (Start 0) (Ap 1 0))
+rule (step (Start 0) (Ap 2 0))
+
+;; head builds (mk (+ op 700)); the demand for mk must be gated by (okq op 1).
+;; op=1 fires  -> store must contain 701, reach must contain (Done 701).
+;; op=2 fails  -> store must NOT contain 702, reach must NOT contain (Done 702).
+rule (step (Ap op k) (Done (mk (+ op 700)))) <-- (okq op 1)

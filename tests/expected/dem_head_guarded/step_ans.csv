@@ -1,0 +1,3 @@
+(step (Ap 1 0))   (Done 701)   
+(step (Start 0))   (Ap 1 0)   
+(step (Start 0))   (Ap 2 0)   

@@ -1,0 +1,16 @@
+table (appl int int [int])
+rule (appl 100 1 [10 20])
+rule (appl 200 2 [30 40])
+demand (opval int) int
+rule (opval 1 50)
+rule (opval 2 99)
+;; fire for a 2-elem-arglist appl whose operator value is 99. Should be {200}.
+;; BUG: (opval op 99) dropped with the [a b] pattern -> site 100 fires too.
+table (fired2 int)
+rule (fired2 site) <-- (appl site op [a b]) (opval op 99)
+;; control: SAME guard but 1-element pattern [a] -- expected to behave correctly.
+table (appl1 int int [int])
+rule (appl1 300 1 [10])
+rule (appl1 400 2 [30])
+table (fired1 int)
+rule (fired1 site) <-- (appl1 site op [a]) (opval op 99)

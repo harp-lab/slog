@@ -1,0 +1,4 @@
+(step (Ap 1 0))
+(step (Ap 2 0))
+(step (Done 701))
+(step (Start 0))
