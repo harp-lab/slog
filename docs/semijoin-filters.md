@@ -71,13 +71,14 @@ saves it.
 A filter needs an index of the future clause's relation whose ordering
 leads with the filter's bound columns.  Each filter's column set is fed
 into the same select-set machinery joins use (`add-select-sets`), so the
-index is created, deduplicated against existing orderings, written by the
-standard per-iteration `WriteTask`s, and reloaded across strata like any
-other.  For 2-ary relations the filter selections usually coincide with an
+selection is folded into a compatible prefix chain when possible; the
+resulting index is written by the standard per-iteration `WriteTask`s and
+reloaded across strata like any other.  For 2-ary relations the filter
+selections usually coincide with an
 ordering some join already demanded; the typical genuinely-new cost is a
-destination-keyed `(1 0)` ordering for cyclic queries.  (indices.rkt's
-min-chain-cover can fold these into existing chains if index count ever
-matters.)
+destination-keyed `(1 0)` ordering for cyclic queries.  Operationalization's
+greedy prefix-chain packer folds subset-compatible filter and join selections
+into one ordering.
 
 ## 5. Soundness under semi-naive evaluation
 

@@ -3,14 +3,13 @@
 ;; Operationalization: lower one stratum's planned rules to the c-program
 ;; (see ir-stack.rkt) that emit-cpp.rkt renders as C++.
 ;;
-;; Four steps, each a fold over the planned rules:
+;; Four logical stages:
 ;;   1. globalize constants -- each distinct literal becomes one global
 ;;      variable, initialized once at program load;
 ;;   2. collect select sets -- for every join, the set of columns it probes
 ;;      with (against the delta index for drivers, the full index otherwise);
-;;   3. choose indices -- naively, one index per select set: the selected
-;;      columns (sorted) first, the rest after, deduplicated per relation
-;;      (indices.rkt has the min-chain-cover machinery for doing better);
+;;   3. choose indices -- greedily pack subset-related select sets into
+;;      prefix chains, then assemble one deterministic ordering per chain;
 ;;   4. lower each rule -- resolve every join to a concrete index, reorder
 ;;      its tuple to match, and split the body into pre-ops / driver / ops.
 ;;
@@ -143,8 +142,9 @@
   (define dynamic-rels
     (for/fold ([acc head-dynamic-rels]) ([(derived _info) (in-hash decomp-env)])
       (set-add acc derived)))
-  (define selections
-    (foldl (add-select-sets rel-env) (seed-select-sets rel-env) rules))
+  (define needs
+    (foldl (add-select-sets rel-env) (seed-selection-needs rel-env) rules))
+  (define indices (choose-indices rel-env needs))
   ;; (decls are built AFTER rule lowering: which orderings are seeded-only
   ;; is decided from the indices crules actually reference)
   ;; extern oracle bindings (docs/smt.md): a stratum whose rules write the
@@ -212,17 +212,16 @@
   ;; Lower each rule with its source location attached to any failure (an
   ;; unbound variable otherwise dies deep in lowering as a locationless
   ;; `hash-ref: no value found`; docs/build-issues-notes.md §5).
-  (define lower-one (lower-rule rel-env selections))
+  (define lower-one (lower-rule rel-env indices))
   (define crules
     (for/list ([rule (in-list rules)])
       (with-rule-context rule (lambda () (lower-one rule)))))
   ;; Gate an ordering's WriteTask behind addTaskSeeded only if EVERY
   ;; reference to it comes from a seeded re-entry crule.  Attribution must
-  ;; happen POST-lowering: find-index resolves prefix SETS, so a live
-  ;; rule's selection {0,1} can land on the ordering (1 0 2) that only a
-  ;; seeded rule requisitioned -- selection-level attribution once gated
-  ;; an index a live rule probes (empty in fresh runs: silent
-  ;; under-derivation).  Delta indices are never gated.
+  ;; happen POST-lowering: several select sets can share one packed ordering,
+  ;; so selection-level attribution could gate an index that a live rule also
+  ;; probes (empty in fresh runs: silent under-derivation).  Delta indices are
+  ;; never gated.
   (define seeded-used
     (for*/set ([cr (in-list crules)]
                #:when (equal? (third cr) `(seeded))          ; crule-driver
@@ -239,7 +238,7 @@
   ;; addIndex); nothing is gated seeded-only.
   (define gate-inds
     (if (count-flavor) (set) (set-subtract seeded-used live-used)))
-  (define decls (make-rel-decls rel-env selections decomp-env gate-inds))
+  (define decls (make-rel-decls rel-env indices decomp-env gate-inds))
   `(cprog ,dynamic-rels++ ,constants ,(append decls oracle-decls seq-decls)
           ,crules))
 
@@ -405,20 +404,39 @@
 ;; -----------------------------------------------------------------------
 ;; 2. Select sets: relation (or (delta relation)) -> set of column sets.
 
+;; same-order maps relation -> select sets constrained by exact semi-naive
+;; joins.  Their full and delta probes must use the identical complete tuple
+;; ordering so the runtime can test full-index matches directly in delta.
+(struct selection-needs (by-key same-order) #:transparent)
+
 ;; Every struct needs its interning master index (content columns first, the
 ;; id column -- storage 0 -- last) and its lookup index (id first); every
 ;; table needs at least one index to exist in (and be reloadable from).
-(define (seed-select-sets rel-env)
-  (for/fold ([ss (hash)]) ([(name decl) (in-hash rel-env)])
-    (match decl
-      [`(struct ,ts ...)
-       (hash-set ss name (set (list->set (range 1 (add1 (length ts))))
-                              (set 0)))]
-      [`(table ,ts ...) (hash-set ss name (set (set)))]
-      [_ ss])))                                   ; temps and enums: none
+(define (seed-selection-needs rel-env)
+  (selection-needs
+   (for/fold ([ss (hash)]) ([(name decl) (in-hash rel-env)])
+     (match decl
+       [`(struct ,ts ...)
+        (hash-set ss name (set (list->set (range 1 (add1 (length ts))))
+                               (set 0)))]
+       [`(table ,ts ...) (hash-set ss name (set (set)))]
+       [_ ss]))                                   ; temps and enums: none
+   (hash)))
 
-(define (add-select-set ss key columns)
-  (hash-update ss key (lambda (s) (set-add s columns)) (set)))
+(define (add-select-set needs key columns)
+  (struct-copy selection-needs needs
+               [by-key (hash-update (selection-needs-by-key needs) key
+                                    (lambda (s) (set-add s columns))
+                                    (set))]))
+
+(define (add-same-order-selection needs name columns)
+  (struct-copy selection-needs
+               (add-select-set (add-select-set needs name columns)
+                               `(delta ,name) columns)
+               [same-order
+                (hash-update (selection-needs-same-order needs) name
+                             (lambda (sels) (set-add sels columns))
+                             (set))]))
 
 ;; Walk one rule's body in schedule order, recording each join's probe
 ;; columns.  The first join is the driver: a probing driver hits the DELTA
@@ -433,14 +451,14 @@
 ;; the calculus guarantees the value variable is unground, and cross-stratum
 ;; a ground value becomes an equality check after the probe (lower-join).
 ;; Delta indices are ordinary full-width sets, so drivers are unrestricted.
-(define ((add-select-sets rel-env) rule ss)
+(define ((add-select-sets rel-env) rule needs)
   (define-values (bodys old-positions new-positions)
     (split-exact-marks (rule-body rule)))
   (define sj-filters (semijoin-filters bodys rel-env))
   ;; a seeded-rule has NO delta driver: its first join selects on the FULL
   ;; index like any other
   (define seeded? (seeded-rule? rule))
-  (for/fold ([ground (set)] [jpos 0] [ss ss] #:result ss)
+  (for/fold ([ground (set)] [jpos 0] [needs needs] #:result needs)
             ([cl (in-list bodys)])
     (cond
       [(join-cl? cl)
@@ -452,53 +470,207 @@
          (for/set ([x (in-list tup)] [i (in-naturals)]
                    #:when (set-member? ground x))
            i))
-       (define ss0
-         (for/fold ([ss ss]) ([f (in-list (hash-ref sj-filters jpos '()))])
-           (add-select-set ss (first f) (second f))))
+       (define needs0
+         (for/fold ([needs needs]) ([f (in-list (hash-ref sj-filters jpos '()))])
+           (add-select-set needs (first f) (second f))))
        (define selv (if lat-value-pos (set-remove sel lat-value-pos) sel))
-       (define ss+
+       (define needs+
          (cond
-           [(and first? (set-empty? sel)) ss0]                   ; delta scan
-           [first? (add-select-set ss0 `(delta ,(join-rel cl)) sel)]
+           [(and first? (set-empty? sel)) needs0]                ; delta scan
+           [first? (add-select-set needs0 `(delta ,(join-rel cl)) sel)]
            [else
-            ;; an old join (R_old = full - delta) additionally needs a delta
-            ;; index of the SAME ordering as its full index for the membership
-            ;; exclusion, so join_probe_old can test a match directly
-            (let ([ss1 (add-select-set ss0 (join-rel cl) selv)])
-              (if (or (set-member? old-positions jpos)
-                      (set-member? new-positions jpos))
-                  (add-select-set ss1 `(delta ,(join-rel cl)) selv)
-                  ss1))]))
-       (values (set-union ground (clause-vars cl)) (add1 jpos) ss+)]
+            ;; An exact old/new join additionally needs a delta index with the
+            ;; SAME complete ordering as its full index.
+            (if (or (set-member? old-positions jpos)
+                    (set-member? new-positions jpos))
+                (add-same-order-selection needs0 (join-rel cl) selv)
+                (add-select-set needs0 (join-rel cl) selv))]))
+       (values (set-union ground (clause-vars cl)) (add1 jpos) needs+)]
       [else
        ;; a negated atom (§0.8) probes the negated relation's FULL index on
        ;; its bound (non-wildcard) columns -- requisition an index ordering
        ;; them first, exactly like a semijoin filter's.  For a lattice
        ;; relation the atom carries KEY columns only, and the value column
        ;; (highest, never selected) lands last: the payload-map layout.
-       (define ss+
+       (define needs+
          (if (neg-clause? cl)
-             (add-select-set ss (neg-rel cl)
+             (add-select-set needs (neg-rel cl)
                              (for/set ([x (in-list (neg-args cl))]
                                        [i (in-naturals)]
                                        #:unless (neg-wildcard-var? x))
                                i))
-             ss))
-       (values (set-union ground (clause-out-vars cl)) jpos ss+)])))
+             needs))
+       (values (set-union ground (clause-out-vars cl)) jpos needs+)])))
 
 ;; -----------------------------------------------------------------------
-;; 3. Indices: one per select set, selected columns (sorted) first, the
-;; rest after.  Orderings are derived on demand from the selections and
-;; deduplicated per relation by the set they land in.
+;; 3. Indices: greedy prefix-chain packing.
+;;
+;; A lexicographic index covers every select set equal to the set of its
+;; first K columns.  Consequently, one ordering covers a chain
+;;   S0 ⊂ S1 ⊂ ... ⊂ Sn
+;; by placing S0 first, then each successive set difference, then the
+;; unselected columns.  We greedily build those chains largest-to-smallest:
+;; put a selection below the tightest chain minimum that contains it, or
+;; start a new chain.  This deterministic heuristic favors predictable compile
+;; time while eliminating the common one-index-per-selection redundancy.
 
-(define (index-for-selection sel all-columns)
-  (append (sort (set->list sel) <)
-          (sort (set->list (set-subtract all-columns sel)) <)))
+(struct index-plan (orderings assignments) #:transparent)
 
-;; The full index orderings for a relation of the given arity.
-(define (indices-of selections key arity)
-  (for/set ([sel (in-set (hash-ref selections key (set)))])
-    (index-for-selection sel (list->set (range arity)))))
+(define (lexicographic<? xs ys)
+  (cond
+    [(null? xs) (pair? ys)]
+    [(null? ys) #f]
+    [(< (car xs) (car ys)) #t]
+    [(> (car xs) (car ys)) #f]
+    [else (lexicographic<? (cdr xs) (cdr ys))]))
+
+(define (selection-columns sel)
+  (sort (set->list sel) <))
+
+;; Largest selections first; numeric column order breaks equal-size ties.
+(define (selection-larger<? a b)
+  (cond
+    [(> (set-count a) (set-count b)) #t]
+    [(< (set-count a) (set-count b)) #f]
+    [else (lexicographic<? (selection-columns a) (selection-columns b))]))
+
+;; Prefer the smallest compatible chain minimum (best fit), then its column
+;; order.  `chain` is stored largest-to-smallest, so its minimum is last.
+(define (chain-tighter<? a b)
+  (define amin (last a))
+  (define bmin (last b))
+  (cond
+    [(< (set-count amin) (set-count bmin)) #t]
+    [(> (set-count amin) (set-count bmin)) #f]
+    [else (lexicographic<? (selection-columns amin)
+                           (selection-columns bmin))]))
+
+(define (assemble-index chain arity)
+  (define all-columns (list->set (range arity)))
+  (define-values (prefix seen)
+    (for/fold ([prefix '()] [seen (set)])
+              ([sel (in-list (reverse chain))])
+      (define fresh (sort (set->list (set-subtract sel seen)) <))
+      (values (append prefix fresh) (set-union seen sel))))
+  (append prefix (sort (set->list (set-subtract all-columns seen)) <)))
+
+;; Pack selections that are not already served by a fixed ordering.  Returns
+;; both the distinct orderings and the exact selection -> ordering assignment.
+(define (pack-unfixed-selections selections arity)
+  (define chains
+    (for/fold ([chains '()])
+              ([sel (in-list (sort (set->list selections)
+                                   selection-larger<?))])
+      (define compatible
+        (filter (lambda (chain)
+                  (define minimum (last chain))
+                  (and (< (set-count sel) (set-count minimum))
+                       (subset? sel minimum)))
+                chains))
+      (if (null? compatible)
+          (cons (list sel) chains)
+          (let ([best (first (sort compatible chain-tighter<?))])
+            (cons (append best (list sel)) (remove best chains))))))
+  (for/fold ([orderings (set)] [assignments (hash)])
+            ([chain (in-list chains)])
+    (define ordering (assemble-index chain arity))
+    (values (set-add orderings ordering)
+            (for/fold ([assignments assignments])
+                      ([sel (in-list chain)])
+              (hash-set assignments sel ordering)))))
+
+(define (ordering-covers? ordering sel)
+  (equal? (list->set (take ordering (set-count sel))) sel))
+
+;; Fixed assignments are used only for exact semi-naive delta probes: their
+;; complete ordering must equal the full index's ordering.  Other selections
+;; first reuse any fixed ordering that already covers them, then the remainder
+;; is greedily packed as usual.
+(define (pack-selections selections arity [fixed (hash)])
+  (for ([(sel ordering) (in-hash fixed)])
+    (unless (and (set-member? selections sel)
+                 (= (length ordering) arity)
+                 (ordering-covers? ordering sel))
+      (error 'operationalization
+             "fixed index ~a does not cover selection ~a" ordering sel)))
+  (define fixed-orderings (list->set (hash-values fixed)))
+  (define assignments
+    (for/fold ([assignments fixed])
+              ([sel (in-list (sort (set->list selections)
+                                   selection-larger<?))])
+      (cond
+        [(hash-has-key? assignments sel) assignments]
+        [else
+         (define candidates
+           (sort (filter (lambda (ordering) (ordering-covers? ordering sel))
+                         (set->list fixed-orderings))
+                 lexicographic<?))
+         (if (null? candidates)
+             assignments
+             (hash-set assignments sel (first candidates)))])))
+  (define uncovered
+    (for/set ([sel (in-set selections)]
+              #:unless (hash-has-key? assignments sel))
+      sel))
+  (define-values (more-orderings more-assignments)
+    (pack-unfixed-selections uncovered arity))
+  (values (set-union fixed-orderings more-orderings)
+          (for/fold ([assignments assignments])
+                    ([(sel ordering) (in-hash more-assignments)])
+            (hash-set assignments sel ordering))))
+
+(define (greedy-index-orderings selections arity)
+  (define-values (orderings _assignments)
+    (pack-selections selections arity))
+  orderings)
+
+(module+ test-support
+  (provide greedy-index-orderings))
+
+(define (stored-arity-for-decl decl)
+  (match decl
+    [`(struct ,_ ...) (add1 (rel-decl-arity decl))]
+    [_ (rel-decl-arity decl)]))
+
+;; Build full plans first, then delta plans.  Exact old/new select sets pin
+;; their delta assignment to the full assignment chosen by the greedy packer.
+(define (choose-indices rel-env needs)
+  (define selections (selection-needs-by-key needs))
+  (define orderings (make-hash))
+  (define assignments (make-hash))
+  (define names (sort (hash-keys rel-env) symbol<?))
+  (for ([name (in-list names)])
+    (define sels (hash-ref selections name (set)))
+    (unless (set-empty? sels)
+      (define arity (stored-arity-for-decl (hash-ref rel-env name)))
+      (define-values (ords asns) (pack-selections sels arity))
+      (hash-set! orderings name ords)
+      (hash-set! assignments name asns)))
+  (for ([name (in-list names)])
+    (define key `(delta ,name))
+    (define sels (hash-ref selections key (set)))
+    (unless (set-empty? sels)
+      (define arity (stored-arity-for-decl (hash-ref rel-env name)))
+      (define full-assignments (hash-ref assignments name (hash)))
+      (define fixed
+        (for/hash ([sel (in-set
+                         (hash-ref (selection-needs-same-order needs)
+                                   name (set)))])
+          (values sel
+                  (hash-ref full-assignments sel
+                            (lambda ()
+                              (error 'operationalization
+                                     "exact selection ~a missing full index for ~a"
+                                     sel name))))))
+      (define-values (ords asns) (pack-selections sels arity fixed))
+      (hash-set! orderings key ords)
+      (hash-set! assignments key asns)))
+  (index-plan
+   (for/hash ([(key value) (in-hash orderings)]) (values key value))
+   (for/hash ([(key value) (in-hash assignments)]) (values key value))))
+
+(define (index-orderings-of plan key)
+  (hash-ref (index-plan-orderings plan) key (set)))
 
 ;; -----------------------------------------------------------------------
 ;; 4. Relation declarations.
@@ -507,10 +679,20 @@
                         [gate-inds (set)])
   ;; an ordering referenced ONLY by seeded re-entry crules (build-cprog):
   ;; tag it so its WriteTask is gated like the tasks that read it
-  (define (mark-seeded-only name arity inds)
+  (define (mark-seeded-only name inds)
     (map (lambda (i)
            (if (set-member? gate-inds (cons name i)) `(seeded-only ,@i) i))
          inds))
+  (define (seeded-only-index? index)
+    (and (pair? index) (eq? 'seeded-only (car index))))
+  (define (declaration-index<? a b)
+    (define a-seeded? (seeded-only-index? a))
+    (define b-seeded? (seeded-only-index? b))
+    (cond
+      [(and (not a-seeded?) b-seeded?) #t] ; a live master must remain first
+      [(and a-seeded? (not b-seeded?)) #f]
+      [else (lexicographic<? (if a-seeded? (cdr a) a)
+                             (if b-seeded? (cdr b) b))]))
   ;; inverted decomp registry: base -> (decomp derived set|map), the slot a
   ;; decomposed base's lattice decl carries into emission (M2.4)
   (define decomp-of
@@ -522,16 +704,23 @@
     (match decl
       [`(struct ,_ ...)
        (define stored (add1 arity))    ; fields + id column
-       (define all (indices-of indices name stored))
-       (define master (findf (lambda (i) (= 0 (last i))) (set->list all)))
-       (define lookup (findf (lambda (i) (= 0 (first i))) (set->list all)))
-       ;; seed-select-sets guarantees both exist:
-       ;;   (set)  -> (1 ... n 0)  = master/interning, and
-       ;;   (set 0)-> (0 1 ... n)  = lookup
+       (define all (index-orderings-of indices name))
+       (define master
+         (find-index indices name (list->set (range 1 stored))
+                     (format "master declaration for ~a" name)))
+       (define lookup
+         (find-index indices name (set 0)
+                     (format "lookup declaration for ~a" name)))
+       ;; seed-selection-needs guarantees both exist:
+       ;;   (set 1 ... n) -> (... 0) = master/interning, and
+       ;;   (set 0)       -> (0 ...) = lookup
        (define others
-         (mark-seeded-only name stored
-                           (set->list (set-subtract all (set master lookup)))))
-       (define deltas (set->list (indices-of indices `(delta ,name) stored)))
+         (sort (mark-seeded-only
+                name (set->list (set-subtract all (set master lookup))))
+               declaration-index<?))
+       (define deltas
+         (sort (set->list (index-orderings-of indices `(delta ,name)))
+               lexicographic<?))
        (cons `(struct ,name ,stored
                 ,master ,lookup ,@others
                 ,@(map (lambda (i) `(delta ,@i)) deltas))
@@ -541,24 +730,40 @@
        ;; a lattice (map) relation: every non-delta ordering ends in the
        ;; value column automatically (it is the highest storage column and
        ;; never selected), which is the layout the payload-map index wants;
-       ;; the first index is the merge task's master
+       ;; the empty-selection assignment is the merge task's master
        (define spec (rel-lattice-spec rel-env name))
-       (define all (sort (set->list (indices-of indices name arity))
-                         (lambda (a b) (string<? (~a a) (~a b)))))
-       (define deltas (set->list (indices-of indices `(delta ,name) arity)))
+       (define master
+         (find-index indices name (set)
+                     (format "master declaration for ~a" name)))
+       (define all
+         (cons master
+               (sort (set->list
+                      (set-remove (index-orderings-of indices name) master))
+                     lexicographic<?)))
+       (define deltas
+         (sort (set->list (index-orderings-of indices `(delta ,name)))
+               lexicographic<?))
        (cons `(lattice ,name ,arity ,(cdr spec) ,(hash-ref decomp-of name #f)
                        ,@all
                        ,@(map (lambda (i) `(delta ,@i)) deltas))
              decls)]
       [`(table ,_ ...)
-       ;; the FIRST ordering is the intern master (add-write-task's isstatic
-       ;; + add-intern-task read it): keep a live ordering first
+       ;; The empty-selection assignment is the intern master
+       ;; (add-write-task's isstatic + add-intern-task read it).  It is a
+       ;; mandatory live index; only secondary orderings may be seeded-only.
+       (define master
+         (find-index indices name (set)
+                     (format "master declaration for ~a" name)))
        (define all
-         (sort (mark-seeded-only name arity
-                                 (set->list (indices-of indices name arity)))
-               (lambda (a b) (and (not (eq? (car a) 'seeded-only))
-                                  (eq? (car b) 'seeded-only)))))
-       (define deltas (set->list (indices-of indices `(delta ,name) arity)))
+         (cons master
+               (sort (mark-seeded-only
+                      name
+                      (set->list
+                       (set-remove (index-orderings-of indices name) master)))
+                     declaration-index<?)))
+       (define deltas
+         (sort (set->list (index-orderings-of indices `(delta ,name)))
+               lexicographic<?))
        (cons `(relation ,name ,arity ,@all
                         ,@(map (lambda (i) `(delta ,@i)) deltas))
              decls)]
@@ -579,22 +784,20 @@
 (define (order-tuple ind tup)
   (map (lambda (p) (list-ref tup p)) ind))
 
-;; Find an index of `key` whose leading columns are exactly `sel`.
-(define (find-index indices key arity sel who)
-  (define candidates
-    (filter (lambda (ind)
-              (equal? (list->set (take ind (set-count sel))) sel))
-            (set->list (indices-of indices key arity))))
-  (when (null? candidates)
-    (error 'operationalization "no ~a index with prefix ~a for ~a" key sel who))
-  (car candidates))
+;; The packer records an explicit assignment for every selection.  Keeping
+;; lowering on that map makes output deterministic even when several packed
+;; orderings could cover the same select set.
+(define (find-index indices key sel who)
+  (hash-ref (hash-ref (index-plan-assignments indices) key (hash)) sel
+            (lambda ()
+              (error 'operationalization
+                     "no ~a index assigned to selection ~a for ~a"
+                     key sel who))))
 
-;; A struct's master (interning) index: content columns first, id last.
-;; Guaranteed to exist by seed-select-sets.
+;; A struct's master selection is every content column (storage 1..n), which
+;; seed-selection-needs guarantees is assigned to an id-last ordering.
 (define (master-index-of indices name stored who)
-  (or (findf (lambda (ind) (= 0 (last ind)))
-             (set->list (indices-of indices name stored)))
-      (error 'operationalization "no master index for struct ~a in ~a" name who)))
+  (find-index indices name (list->set (range 1 stored)) who))
 
 (define ((lower-rule rel-env indices) rule0)
   ;; strip the planner's exact-view marks up front and rebuild a plain rule, so
@@ -689,7 +892,7 @@
        (define vvar (last tup))
        (define value-ground? (set-member? ground vvar))
        (define vvar+ (if value-ground? (gensymb 'latchk) vvar))
-       (define ind (find-index indices name (stored-arity name) sel (strip-prov cl)))
+       (define ind (find-index indices name sel (strip-prov cl)))
        ;; the ordering ends in the value column; the op's vars are the key
        ;; columns in index order with the bound value variable last
        (define keytup (order-tuple (take ind (sub1 (length ind))) tup))
@@ -697,8 +900,18 @@
                         ,@(map esc keytup) ,(esc vvar+))
              (if value-ground? (list `(eq ,(esc vvar) ,(esc vvar+))) '()))]
       [else
-       (define ind (find-index indices name (stored-arity name) sel (strip-prov cl)))
+       (define ind (find-index indices name sel (strip-prov cl)))
        (list `(join ,name ,ind ,(set-count sel) ,@(map esc (order-tuple ind tup))))]))
+
+  ;; Exact semi-naive old/new probes need identical full and delta orderings.
+  (define (exact-index name sel who)
+    (define full (find-index indices name sel who))
+    (define delta (find-index indices `(delta ,name) sel who))
+    (unless (equal? full delta)
+      (error 'operationalization
+             "exact full/delta indices differ for ~a selection ~a in ~a: ~a vs ~a"
+             name sel who full delta))
+    full)
 
   ;; an OLD join (exact semi-naive, docs/incremental.md §6/§8): probe the full
   ;; index like lower-join, but against R_old = full - current delta.  The full
@@ -712,12 +925,7 @@
       (for/set ([x (in-list tup)] [i (in-naturals)]
                 #:when (set-member? ground x))
         i))
-    ;; full and delta indices MUST share an ordering (so a full-index match
-    ;; tests directly against the delta index).  find-index can return a
-    ;; prefix-compatible-but-different ordering when several exist, so pin the
-    ;; canonical index-for-selection ordering -- add-select-sets requisitioned
-    ;; exactly it for both the full (`name`) and the delta (`(delta name)`).
-    (define ord (index-for-selection sel (list->set (range (stored-arity name)))))
+    (define ord (exact-index name sel (strip-prov cl)))
     (list `(join-old ,name ,ord ,(set-count sel) ,ord
                      ,@(map esc (order-tuple ord tup)))))
 
@@ -730,8 +938,7 @@
       (for/set ([x (in-list tup)] [i (in-naturals)]
                 #:when (set-member? ground x))
         i))
-    (define ord
-      (index-for-selection sel (list->set (range (stored-arity name)))))
+    (define ord (exact-index name sel (strip-prov cl)))
     (list `(join-new ,name ,ord ,(set-count sel) ,ord
                      ,@(map esc (order-tuple ord tup)))))
 
@@ -745,8 +952,7 @@
         i))
     (if (set-empty? sel)
         `(scan ,name ,@(map esc tup))
-        (let ([ind (find-index indices `(delta ,name) (stored-arity name) sel
-                               (strip-prov cl))])
+        (let ([ind (find-index indices `(delta ,name) sel (strip-prov cl))])
           `(probe ,name ,ind ,(set-count sel) ,@(map esc (order-tuple ind tup))))))
 
   ;; the ground types of a residual check's accept set, lowered to what the
@@ -783,7 +989,8 @@
       [`(syn ,_ tycheck ,y (accept ,ts ...) ,rid ,rel ,colv)
        ;; the failure path emits into malformed_deduction (4 fields + id)
        ;; via its master (interning) index, exactly like a mkstruct
-       (define master (master-index-of indices 'malformed_deduction 5 (strip-prov cl)))
+       (define master
+         (master-index-of indices 'malformed_deduction 5 (strip-prov cl)))
        `(tycheck ,(esc y) (accept ,@(lower-accepts ts (strip-prov cl)))
                  ,(esc rid) ,(esc rel) ,(esc colv) ,master)]
       [`(syn ,_ = ,x (syn ,_ ,name ,fields ...))
@@ -803,15 +1010,14 @@
        ;; subsumption is decided by the merge (intern) task
        `(emit-lat ,name ,@(map esc xs))]
       [`(syn ,_ ,name ,xs ...)
-       (define ind (find-index indices name (rel-arity name) (set)
-                               (strip-prov cl)))
+       (define ind (find-index indices name (set) (strip-prov cl)))
        `(emit ,name ,ind ,@(map esc (order-tuple ind xs)))]))
 
   ;; a semijoin filter: existence probe of the future clause's relation on
   ;; its bound columns, which the requisitioned index orders first
   (define (lower-filter f)
     (match-define (list name sel tup) f)
-    (define ind (find-index indices name (stored-arity name) sel
+    (define ind (find-index indices name sel
                             (format "semijoin filter on ~a" name)))
     (define K (set-count sel))
     `(exists ,name ,ind ,K ,@(map esc (order-tuple (take ind K) tup))))
@@ -829,7 +1035,7 @@
       (for/set ([x (in-list args)] [i (in-naturals)]
                 #:unless (neg-wildcard-var? x))
         i))
-    (define ind (find-index indices name (stored-arity name) sel
+    (define ind (find-index indices name sel
                             (format "negated atom on ~a" name)))
     (define K (set-count sel))
     (define op (if (rel-lattice-spec rel-env name) 'absent-lat 'absent))

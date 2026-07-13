@@ -22,9 +22,8 @@ cons-backed `[T]` as the blessed sequence type.  It builds on docs/primitives.md
 canonicity gate, §2/§4.2/§9), docs/finish-collections.md (§A partial prims —
 a hard dependency, see §3.2), docs/db-compression.md (the IO dovetail, §8),
 and docs/incremental.md (the signed-record obligation, §5.6).  All compiler
-touch points below were verified against the tree on 2026-07-08; note that
-`indices.rkt`/min-chain-cover referenced by older docs DO NOT EXIST — index
-requisition lives in `operationalization.rkt` (one index per select set).*
+touch points below were verified against the tree on 2026-07-13; index
+requisition and greedy prefix-chain packing live in `operationalization.rkt`.*
 
 **One-paragraph summary.**  One sequence type `[T]` (surface type `(list T)`),
 backed by a content-defined-chunked, hash-consed Merkle tree ("prolly-tree" /
@@ -462,10 +461,10 @@ which is what makes need-driven generation sound.
   Membership needs no third relation: a probe on `$seq_at` with select
   `{val}` (ordering led by val, list next — the bucket-skew rule: lead with
   the high-cardinality column, never pos) answers "which lists contain e";
-  `operationalization.rkt`'s one-index-per-select-set requisition
-  (`:234-301`) derives that ordering from the join's select set with zero
-  new machinery.  `$seq_atr` is co-populated in the same walk; it is only
-  declared/fed when some suffix-anchored inverted pattern exists.
+  `operationalization.rkt` requisitions that selection and folds it into a
+  compatible prefix chain with zero new machinery.  `$seq_atr` is
+  co-populated in the same walk; it is only declared/fed when some
+  suffix-anchored inverted pattern exists.
 
 - **Planner integration.**  A `seq-pat` whose list var is not yet bound at
   its schedule point — or where `join-score` prefers the inverted order —

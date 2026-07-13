@@ -241,7 +241,7 @@ costs sane. Ordered from cheapest:
    genuinely needs a materialized index is the *inverted* join: "which
    collections contain `e` / have `v` at position `p`?" (collection **unbound**).
    These are the generated relations, indexed by the existing machinery
-   (`BTreeIndex`, select-sets, `find-index`, `join_probe`, min-chain-cover —
+   (`BTreeIndex`, select-sets, greedy prefix-chain packing, `join_probe` —
    no new read-side runtime):
 
    | pattern | decomposition relation | probe |
@@ -252,7 +252,8 @@ costs sane. Ordered from cheapest:
 
    The `(lists c d [...])` intuition is exactly this, generalized: per-`(pos,val)`
    occurrence rows + planner intersection on the shared collection id, with
-   min-chain-cover fusing hot multi-position patterns into composite orderings.
+   greedy prefix-chain packing fusing compatible patterns into composite
+   orderings.
    Same scheme for all kinds. Because these tables are the expensive point of
    the spectrum (§5), they are generated **need-driven** — only for the
    kind/pattern shapes actually joined on, like semijoin index requisition.
@@ -697,8 +698,9 @@ Each phase is independently useful and independently shippable.
     lattices) — the native kernel must dispatch to it.
 13. **Bucket skew** — lead structural indices with the high-cardinality value
     column, never `pos`.
-14. **Index proliferation** — one ordering per partial-groundness shape; lean on
-    min-chain-cover (`indices.rkt`).
+14. **Index proliferation** — one selection per partial-groundness shape; rely
+    on operationalization's greedy prefix-chain packing to share compatible
+    selections.
 15. **Value-unification restriction** (`join-planning.rkt:131-134`) blocks two
     head constructions binding one id — design merges as single constructions.
 16. **Merge verification** — Okasaki–Gill had a 2017 bug; property-test the union.
