@@ -1,0 +1,13 @@
+include "/home/tom/scheme-slog-compile/prims.slog"
+
+;; BUG 2 PROBE: a step-SCC rule matching Appl with a 2-element arg-list [ka la]
+;; and a lookup guard for the "assoc" primitive.  The program below never calls
+;; assoc and no (PrimOp "assoc") value is ever created, so this must NEVER fire.
+rule (step (Appl e fd [ka la] ctx k) (Ret k [(construct (Opaque (Pr "BUG2-FIRED" 1 1 1 1)))]))
+ <-- (lookup fd (PrimOp "assoc"))
+
+;; Program:  (null? (cons 1 2))   -- null?/cons are shape_prims; no opaque result expected.
+rule (program
+  (App (Pr "t" 1 1 1 20) (Prim (NoPr) 2 "null?")
+    [(App (Pr "t" 1 1 1 15) (Prim (NoPr) 2 "cons")
+       [(Quote (NoPr) (DInt 1)) (Quote (NoPr) (DInt 2))])]))
