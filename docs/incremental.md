@@ -18,9 +18,13 @@ cones, including recursive SCCs, multiple downstream strata, and explicit
 inject-and-reopen version edges. M3 is shipped for direct and inherited
 retractions through capability-certified acyclic plain-table cones, including
 mixed negative/positive flushes and multiple downstream strata. Recursive
-SCCs, negation, lattices, structs, nullary relations, and every unsupported
-version topology still take the permanent clear-and-rerun path. M6L,
-stratified lattice-contributor deletion, is next in the planned sequence.
+SCCs, negation, structs, nullary relations, and every unsupported version
+topology still take the permanent clear-and-rerun path. M6L's first two slices
+are implemented: contributor state for acyclic root lattice producers is
+recounted transactionally, signed edits repair affected visible keys, and a
+closed old-to-new replacement propagates through acyclic positive plain-table
+consumers. Recursive producers or consumers, negation, downstream lattice
+writers, inheritance, and historical edits still fall back.
 
 Shipped details, known deviations, and test evidence live in
 [incremental-status.md](incremental-status.md). Git history preserves the
@@ -1374,6 +1378,20 @@ strictly lower-stratum use, backed by the hidden contributor-set relation of
 an acyclic/plain-table contributor cone is precise; a recursive producer
 continues through fallback until M4T/M4S supplies its foundedness maintenance.
 
+The initial admission ladder, contributor-cache lifecycle, replacement
+transport, and executable fixture are pinned in
+[m6l-contract.md](m6l-contract.md). Leaf repair and downstream stratified
+propagation are shipped; every unlisted shape retains clear-and-rerun.
+
+**Current slice:** root, acyclic, positive plain-table producers and their
+acyclic positive plain-table consumers are implemented. The contributor
+sidecar is established in a private count epoch, audited by reduction against
+the visible payload map, and maintained by affected-key repair. Repairs are
+coalesced per `(VersionId, key)` across the complete update epoch, then the
+entry value is staged through the negative consumer pass and the final value
+through the positive pass. `lattice-contributor-state` exposes certification
+separately from legacy `count-state`.
+
 **Exit:** precise deletion through stratified lattice cones; recursive lattice
 cones still fall back.
 
@@ -1387,6 +1405,16 @@ Implement §4.5–§4.7:
 - reseed;
 - positive rebuild;
 - version-local scheduling.
+
+**Next implementation milestone.** Start with a deliberately narrow vertical
+slice: a counted, positive-arity, positive-only recursive plain-table SCC
+reached by a tip-local direct edit. Pin the symmetric unfounded cycle and the
+over-delete/refound diamond before adding the candidate lifecycle. The first
+slice retains clear-and-rerun for structs, lattices, negation, inheritance,
+historical edits, and every uncertified downstream shape. Reuse M3's exact
+negative occurrence partition and M1's counted positive rebuild; add only the
+candidate-removal, foundation-barrier, and reseed semantics that recursion
+requires.
 
 **Exit:** the literature's recursive counterexamples and randomized cyclic
 graphs match full recompute.

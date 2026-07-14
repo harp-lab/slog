@@ -320,5 +320,8 @@ $ tests/run-all.sh unit golden api
 
 The full sequence includes Racket unit tests, diagnostics, runtime statistics,
 C++ arena/sequence/count tests, goldens, API tests, tiered compilation,
-pausing, sessions, compression, SMT pinning, and optional real-solver checks.
-The real Z3 leg skips itself when Z3 is unavailable.
+pausing, sessions, focused incremental concurrency/pause/performance stress,
+compression, SMT pinning, and optional real-solver checks. The focused
+incremental gate can be run alone with
+`tests/run-all.sh incremental-stress`. The real Z3 leg skips itself when Z3 is
+unavailable.

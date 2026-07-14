@@ -171,6 +171,7 @@ docs/user/     user guide and reference
 ```
 
 For a quick regression run, use `tests/run-tests.sh`. The full test entry point
-is `tests/run-all.sh`; it also covers unit and integration suites.
+is `tests/run-all.sh`; it also covers unit, integration, and focused
+incremental stress suites.
 
 See [License.md](License.md) for license information.

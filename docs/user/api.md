@@ -176,9 +176,15 @@ Flush chooses a route from compiler manifests:
   made of positive-arity plain tables enters the `_maint3neg` path. It
   propagates only true-to-false presence changes. A mixed flush runs this
   negative phase before its `_maint1` positive phase and commits once.
+- An acyclic positive plain-table producer may write a root lattice. The M6L
+  route retains losing `(key, payload)` contributors, repairs the visible
+  joined value after signed edits, and propagates its coalesced old/final pair
+  through acyclic positive plain-table consumers. Direct lattice edits,
+  recursive consumers, negation, and downstream lattice writers are not
+  admitted.
 - A deletion through recursion, negation, structs, nullary relations,
-  lattice-sensitive edges, or other unsupported topology clears affected
-  derived relations and reruns the cone.
+  unsupported lattice topology, or other unsupported topology clears
+  affected derived relations and reruns the cone.
 - A back-anchored update walks versioned suffixes at their recorded positions.
 
 Every nonempty flush is serialized as one optimistic update epoch. The daemon
@@ -351,9 +357,12 @@ These methods exist mainly for tests and specialized tools. `session-flush!`
 is the policy entry point.
 
 A deleted row that a rerun can independently derive will reappear. Precise
-positive support maintenance is available on the certified M1 surface, but
-deletion without recomputation is not yet enabled; clear-and-rerun remains the
-deletion correctness path.
+positive support maintenance is available on the certified M1 surface, and
+precise deletion is available on M3's counted acyclic plain-table surface and
+M6L's acyclic root lattice plus stratified plain-table-consumer surface.
+Recursive or negated lattice cones, downstream lattice writers, structs,
+nullary relations, historical edits, and other unsupported deletion cones
+still use clear-and-rerun as their correctness path.
 
 ## Save and inspect a recipe
 
@@ -370,7 +379,7 @@ position and relation. Replayed ancestor batches are not duplicated.
 
 This returns an s-expression beginning with `slog-recipe`. It contains ordered
 open/run/import/link/rename/drop steps plus signed batches anchored by stable
-version ordinal.
+VersionKey. Legacy ordinal recipes remain readable for compatibility.
 
 Save a managed layer:
 
@@ -421,8 +430,11 @@ Retractions outside the certified acyclic plain-table surface still route to
 clear-and-rerun.
 
 Low-level `dump-counts`, `count-state`, and related actions expose the result
-for tests. Client applications should not yet treat the sidecar layout as a
-stable public data model.
+for tests. M6L lattice maintenance uses the same packed support word for
+full `(key..., payload)` contributors, but reports certification separately as
+`(lattice-contributor-state (lcnt NAME ORD 0|1) ...)`; legacy `count-state`
+remains table/struct-only. Client applications should not yet treat either
+sidecar layout as a stable public data model.
 
 ## Low-level actions
 

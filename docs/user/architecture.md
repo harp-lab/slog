@@ -346,14 +346,22 @@ The compiler writes a sidecar manifest for each stratum with dynamic reads,
 heads, and monotonicity-relevant dependencies. Session updates use these
 manifests to compute a downstream cone.
 
-Add-only monotone changes can enter through staged delta or replay. Deletions
-and non-monotone dependencies clear affected derived versions and rerun their
-suffix. Anchored changes temporarily bind strata to the environment at an old
-position and replay later events in order.
+Capability-certified positive plain-table changes use counted maintenance,
+including across recursive SCCs. Counted acyclic plain-table deletions use the
+signed M3 path. M6L extends that machinery to an acyclic root lattice by
+counting full `(key, payload)` contributors, repairing the joined payload for
+affected keys, and propagating one coalesced old/final replacement through
+acyclic positive plain-table consumers. Unsupported changes--including
+recursive lattice producers or consumers, negation, downstream lattice
+writers, structs, nullary relations, and lattice inheritance--clear affected
+derived versions and rerun their suffix. Anchored
+changes temporarily bind strata to the environment at an old position and
+replay later events in order.
 
-The save format records stable version ordinals and a recipe rather than
-serializing only today's final name bindings. A later loader can reproduce the
-history through the same session machinery.
+The save format records persistent VersionKeys and a recipe rather than
+serializing only today's final name bindings. Legacy ordinal recipes remain
+readable. A later loader can reproduce the history through the same session
+machinery.
 
 ## Errors and observability
 

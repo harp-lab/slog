@@ -1,6 +1,6 @@
 # Incremental Slog implementation ledger
 
-**Reviewed:** 2026-07-13 against the M3 implementation worktree
+**Reviewed:** 2026-07-13 after M6L stratified-repair slices 1–2
 **Normative design:** `docs/incremental.md`
 
 This file records what the tree currently implements and where it differs
@@ -12,15 +12,45 @@ semantics and this file identifies migration work.
 
 The implementation is green under the current regression gates:
 
-- session workflow harness: 256/256;
+- session workflow harness: 275/275;
 - native count checks: 177/177;
-- quick harness: unit 130/130, diagnostics 14/14, stats, arena, sequence, and
-  counts all pass; and
+- quick harness: unit 137/137, diagnostics 14/14, stats, arena, sequence, and
+  counts all pass;
+- focused incremental stress: M3 and M6L signed-stream oracles pass with 1,
+  2, and 8 workers; the M3 product and M6L replacement workloads survive
+  forced pause/resume; the M6L 240-key report measured 118.692 ms cold versus
+  69.882 ms warm (0.5888), with 479 contributor rows; and
 - all modified Racket modules compile with `raco make`.
 
-These tests satisfy the M0.4, M1, and M3 exit audits described below. They
-establish count reconstruction, version/input semantics, and precise signed
-support maintenance for the certified positive and acyclic-negative surfaces.
+These tests satisfy the M0.4, M1, M3, and first two M6L exit audits described
+below. They establish count reconstruction, version/input semantics, precise
+signed support maintenance, and stratified lattice replacement propagation on
+their certified surfaces.
+
+## Resume point
+
+Begin a future incremental-maintenance review with this ledger, then read the
+M4T milestone and §4.5–§4.7 in `docs/incremental.md`. The narrower
+`docs/m6l-contract.md` records the completed lattice admission boundary; it is
+not the next implementation queue.
+
+The next milestone is **M4T, recursive deletion for positive plain tables**.
+Its first reviewable vertical slice should:
+
+1. pin a focused M4T contract and failing fixtures for an unfounded symmetric
+   cycle and an over-deleted-but-refounded diamond;
+2. admit only counted, positive-arity, positive-only recursive plain-table
+   SCCs reached by a tip-local direct edit, retaining clear-and-rerun for
+   structs, lattices, negation, inheritance, and historical edits;
+3. add a VersionId-local candidate set, negative-round removal, a foundation
+   barrier, reseed, and the existing counted positive rebuild;
+4. compare every settled result and sidecar with a fresh recomputation, then
+   add multi-worker and forced-pause coverage; and
+5. expand admission only after the narrow route is independently certified.
+
+The handoff gates are `tests/run-all.sh --quick`, `tests/run-all.sh session`,
+and `tests/run-all.sh incremental-stress`. The complete orchestrator remains
+the arc-end gate.
 
 ## Shipped implementation
 
@@ -57,8 +87,9 @@ support maintenance for the certified positive and acyclic-negative surfaces.
   structs, with checked arithmetic. Sidecars are not ordinary indices and do
   not persist.
 - **M0.2:** lazily compiled `_count` flavors enumerate all-full rule plans,
-  including wide temp paths and deterministic error emissions. Lattice writes
-  and nullary counted heads are excluded.
+  including wide temp paths and deterministic error emissions. Legacy count
+  establishment remains table/struct-only; M6L can explicitly add root
+  lattice contributor targets. Nullary counted heads remain excluded.
 - **M0.3:** `session-recount!`, count invalidation, per-binding counted flags,
   positional/cone walks, lazy skipping, and count dumps are shipped.
 - **M0.4a — identity/topology:** the daemon assigns monotone VersionIds within
@@ -106,9 +137,11 @@ support maintenance for the certified positive and acyclic-negative surfaces.
   only its input bit and emits no false premise transition. This works across
   recursive SCCs, multiple strata, repeated relation occurrences,
   simultaneous body deltas, and inherited successor versions.
-- **Capability and fallback:** only positive-arity plain-table cones with
-  positive reads and plain-table heads enter `_maint1`. Retractions, negation,
-  structs, nullary relations, lattices, and diagnostic/fallible cones retain
+- **Capability and fallback:** positive-arity plain-table cones with positive
+  reads and plain-table heads enter `_maint1`; M6L additionally admits its
+  certified root lattice head and acyclic positive plain-table consumers.
+  Negation, structs, nullary relations, recursive lattice consumers,
+  downstream lattice writers, and diagnostic/fallible cones retain
   clear-and-rerun semantics.
 - **Injection semantics:** low-level injection remains an input-only successor
   and never retargets historical writers. `session-inject-and-reopen!` applies
@@ -145,10 +178,39 @@ support maintenance for the certified positive and acyclic-negative surfaces.
   interning is synchronized because maintenance tasks for distinct head
   relations run concurrently; the shared update-valid flag is atomic.
 - **Capability and fallback:** compiler metadata certifies whether each
-  stratum is acyclic. Only counted positive-body, positive-arity plain-table
-  cones enter M3. Admission mismatch, arithmetic drift, recursion, negation,
-  structs, lattices, nullary relations, and unsupported version topology use
-  the normalized-overlay clear-and-rerun path.
+  stratum is acyclic. Counted positive-body, positive-arity plain-table cones
+  enter M3; M6L adds an acyclic root contributor sink plus stratified
+  plain-table consumers. Admission mismatch, arithmetic drift, recursive
+  lattice strata, negation, downstream lattice writers, structs, nullary
+  relations, and unsupported version topology use the normalized-overlay
+  clear-and-rerun path.
+
+### M6L slices 1–2 — acyclic lattice repair and stratified propagation
+
+- **Contributor state:** lattice `_count` sinks retain every emitted
+  `(key..., payload)` contributor in the existing packed support sidecar.
+  Commit reduces those rows by the declared lattice join and requires exact
+  agreement with the resident payload map. Contributor certification is
+  recomputable, version-local, and separately observable through
+  `lattice-contributor-state`; it is never persisted as semantic truth.
+- **Signed repair:** lattice maintenance sinks fold signed contributor support,
+  intern affected keys, recompute each key once, and replace or remove the
+  visible payload across every registered map ordering. Losing, winning,
+  final, duplicate, and mixed remove/add cases retain live/count coverage.
+- **Admission:** the route requires a root lattice produced inside an acyclic
+  positive plain-table cone and no direct lattice edit. Acyclic positive
+  plain-table consumers may read the closed lattice value; recursive
+  producers/consumers, negation, downstream lattice writers, inheritance, and
+  historical edits remain on clear-and-rerun.
+- **Replacement transport:** repairs are coalesced by `(VersionId, key)` for
+  the complete update epoch. Producer negative and positive phases settle
+  first; consumers then receive only the epoch-entry row negatively and the
+  final row positively. Read-only lattice deltas bypass ordinary merge tasks,
+  so staged old rows never mutate the resident payload map.
+- **Compatibility:** ordinary `count-state` and explicit legacy recounts stay
+  table/struct-only. Conditional capability reporting uses
+  `(reason lattice-contributor-recount)`; topology, not storage class, decides
+  leaf versus stratified admission.
 
 Legacy labels retained by code comments and tests map as follows:
 
@@ -172,6 +234,7 @@ Primary anchors:
   bindings, sidecars, and count tasks; and
 - `tests/session-tests.sh`, `tests/api/count-ir-oracle.rkt`,
   `tests/api/stream-fuzz.rkt`, `tests/api/acyclic-stream-fuzz.rkt`,
+  `tests/api/lattice-stream-fuzz.rkt`, `tests/incremental-stress.sh`, and
   `tests/counts-tests.cpp` — present regression coverage.
 
 ## Known limitations and deviations
@@ -189,9 +252,14 @@ These remain explicit capability boundaries or future correctness work.
 3. **Precise negation maintenance is absent.** Current absent probes implement
    set construction. M4N still needs anti-delta variants and transition
    scheduling.
-4. **Chained hot-links remain refused.** Freeze the target first or load it as
+4. **Recursive lattice repair is not enabled.** Contributor repair and
+   old-to-new propagation are precise for certified root/acyclic producers and
+   stratified acyclic plain-table consumers. Recursive producer/consumer
+   regression remains M4T/M7 fallback work; negation and downstream lattice
+   writers are also excluded.
+5. **Chained hot-links remain refused.** Freeze the target first or load it as
    a base chain.
-5. **Low-level injection is intentionally input-only.** `inject-version`
+6. **Low-level injection is intentionally input-only.** `inject-version`
    creates a distinct successor and overlay target but does not silently
    retarget historical rule writers. Derivation requires the explicit
    `inject-and-reopen` semantic event; only its explicit inheritance policy is
@@ -239,9 +307,20 @@ explicit recursive program that must route to clear-and-rerun.
 The signed-stream differential harness generates legal ordered edits over two
 inputs, compares every input and derived relation with a fresh unseeded
 session, and forces recounts to compare derived support rows after each flush.
-The M3 surface is therefore closed. The planned next milestone is M6L for
-stratified lattice-contributor deletion; M4T remains the separate recursive
-plain-table deletion milestone.
+The M3 surface is therefore closed. M6L stratified repair now builds on it;
+M4T remains the separate recursive plain-table deletion milestone.
+
+## M6L slices 1–2 audit — implemented
+
+The deterministic fixture covers a losing contributor, winning regression,
+final-key removal, duplicate support, a mixed negative/positive flush, and a
+forced contributor recount. The stratified fixture additionally proves a
+mixed update publishes no intermediate payload, maintains its downstream
+table, and reproduces both sidecars under forced recount. Randomized streams
+compare every flush with a fresh unseeded clear-and-rerun session under one,
+two, and eight workers; forced pause/resume and cold-versus-warm contributor
+reporting are separate gates. A recursive-consumer fixture remains on the
+named fallback route.
 
 ### M3 retrospective and forward implications
 
