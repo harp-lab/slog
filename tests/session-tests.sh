@@ -1403,6 +1403,82 @@ timeout 600 racket tests/api/session-drive.rkt \
 expect "m03-arm-row"   " 100) 0 1 0)" out/sess-counts-m03d.log
 expect "m03-arm-state" "(cnt div_by_zero 0 1)" out/sess-counts-m03d.log
 
+# --- M4T pins: recursive-deletion fixtures (docs/m4t-contract.md) -----------
+# The executable fixtures assert today's fallback route together with the
+# oracle content and forced-recount sidecars the precise sweep must
+# reproduce when these pins flip.  Positive edits into the same cones
+# already take counted maintenance.
+
+# §5.2 symmetric cycle: proof counting alone would strand both tuples.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4t_symmetric_cycle.slog \
+  batch+:r0,1,2 flush dump-rel:r recount dump-counts:r \
+  batch-:r0,1,2 flush dump-rel:r recount-force dump-counts:r \
+  > out/sess-m4t-cycle.log 2>&1
+expect "m4t-cycle-positive-maintained" "(route maintain 1)" out/sess-m4t-cycle.log
+expect "m4t-cycle-copy-counts" "(countrow r 1 2 0 1 1)" out/sess-m4t-cycle.log
+expect "m4t-cycle-swap-counts" "(countrow r 2 1 0 0 1)" out/sess-m4t-cycle.log
+expect "m4t-cycle-fallback" "(route rerun 1 1)" out/sess-m4t-cycle.log
+expect "m4t-cycle-emptied" "(dumpdone 0)" out/sess-m4t-cycle.log
+expect "m4t-cycle-zero-counted" "(countdone r 0)" out/sess-m4t-cycle.log
+
+# §5.3 over-delete and refound: path(1,4) keeps a surviving derivation
+# (rec 2 -> 1) and path(1,5)'s only support returns with it.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4t_diamond.slog \
+  batch+:edge,1,2 batch+:edge,2,4 batch+:edge,1,3 batch+:edge,3,4 \
+  batch+:edge,4,5 flush \
+  dump-rel:path recount dump-counts:path \
+  batch-:edge,1,2 flush dump-rel:path recount-force dump-counts:path \
+  > out/sess-m4t-diamond.log 2>&1
+expect "m4t-diamond-before" "(dumpdone 9)" out/sess-m4t-diamond.log
+expect "m4t-diamond-two-routes" "(countrow path 1 4 0 0 2)" out/sess-m4t-diamond.log
+expect "m4t-diamond-fallback" "(route rerun 1 1)" out/sess-m4t-diamond.log
+expect "m4t-diamond-after" "(dumpdone 8)" out/sess-m4t-diamond.log
+expect "m4t-diamond-refound" "(countrow path 1 4 0 0 1)" out/sess-m4t-diamond.log
+expect "m4t-diamond-relearn" "(countrow path 1 5 0 0 1)" out/sess-m4t-diamond.log
+
+# Repeated occurrences: closure by self-join over the swept relation; the
+# cut cycle strands only three rows, one founded purely recursively.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4t_selfjoin.slog \
+  batch+:r0,1,2 batch+:r0,2,3 batch+:r0,3,1 flush \
+  dump-rel:r recount dump-counts:r \
+  batch-:r0,1,2 flush dump-rel:r recount-force dump-counts:r \
+  > out/sess-m4t-selfjoin.log 2>&1
+expect "m4t-selfjoin-before" "(dumpdone 9)" out/sess-m4t-selfjoin.log
+expect "m4t-selfjoin-dense" "(countrow r 2 1 0 0 3)" out/sess-m4t-selfjoin.log
+expect "m4t-selfjoin-fallback" "(route rerun 1 1)" out/sess-m4t-selfjoin.log
+expect "m4t-selfjoin-after" "(dumpdone 3)" out/sess-m4t-selfjoin.log
+expect "m4t-selfjoin-reseed" "(countrow r 2 1 0 0 1)" out/sess-m4t-selfjoin.log
+expect "m4t-selfjoin-copy1" "(countrow r 2 3 0 1 0)" out/sess-m4t-selfjoin.log
+expect "m4t-selfjoin-copy2" "(countrow r 3 1 0 1 0)" out/sess-m4t-selfjoin.log
+
+# Two SCC strata over an acyclic bridge: net transitions must cross both
+# boundaries; positive maintenance already spans the same three strata.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4t_bridge.slog \
+  batch+:edge1,1,2 batch+:edge1,2,1 flush \
+  dump-rel:path1 dump-rel:path2 recount dump-counts:path2 \
+  batch-:edge1,2,1 flush dump-rel:path1 dump-rel:path2 \
+  recount-force dump-counts:path2 \
+  > out/sess-m4t-bridge.log 2>&1
+expect "m4t-bridge-positive-maintained" "(route maintain 3)" out/sess-m4t-bridge.log
+expect "m4t-bridge-before" "(countrow path2 1 2 0 1 2)" out/sess-m4t-bridge.log
+expect "m4t-bridge-fallback" "(route rerun 3 3)" out/sess-m4t-bridge.log
+expect "m4t-bridge-after" "(countrow path2 1 2 0 1 0)" out/sess-m4t-bridge.log
+expect "m4t-bridge-content" "(countdone path2 1)" out/sess-m4t-bridge.log
+
+# An edit that targets a recursive head itself stays outside the M4T slice
+# permanently: overlay presence semantics are not foundation semantics.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4t_diamond.slog \
+  batch+:path,7,8 flush dump-rel:path \
+  batch-:path,7,8 flush dump-rel:path \
+  > out/sess-m4t-headedit.log 2>&1
+expect "m4t-headedit-fallback" "(route rerun 1 1)" out/sess-m4t-headedit.log
+expect "m4t-headedit-empty" "(dumpdone 0)" out/sess-m4t-headedit.log
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

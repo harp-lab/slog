@@ -1,0 +1,21 @@
+;; M4T §5.2 unfounded symmetric cycle: r(1,2) and r(2,1) support each other
+;; recursively, so pure proof counting leaves both rec counts positive after
+;; the direct input is retracted.  Precise deletion must over-delete the pair
+;; and reseed neither.  Input arrives through the JIT overlay API.
+;;
+;; Hand-verified sidecar contents after r0(1,2) is fed and counted:
+;;   r (1 2) -> (input 0, nonrec 1, rec 1)   copy rule + swap of r(2,1)
+;;   r (2 1) -> (input 0, nonrec 0, rec 1)   swap of r(1,2) only
+
+table (r0 int int)
+table (r int int)
+
+rule
+(r0 X Y)
+-->
+(r X Y)
+
+rule
+(r X Y)
+-->
+(r Y X)

@@ -1,0 +1,24 @@
+;; M4T §5.3 over-delete and refound: transitive closure over a diamond with a
+;; tail.  With edges 1-2, 2-4, 1-3, 3-4, 4-5 fed through the overlay API,
+;; deleting edge(1,2) over-deletes path(1,4) (its rec drops 2 -> 1 while its
+;; foundation is already zero), which in turn drags path(1,5) to rec 0.  The
+;; sweep must reseed path(1,4) from its surviving 1-3-4 derivation and then
+;; relearn path(1,5) during the positive rebuild, since its only support
+;; returns with the reseeded premise.
+;;
+;; Same rules as base_input.slog; kept separate so the M4T pins stay
+;; independent of the M3 fallback fixtures.
+
+table (edge int int)
+table (path int int)
+
+rule
+(edge X Y)
+-->
+(path X Y)
+
+rule
+(path X Y)
+(edge Y Z)
+-->
+(path X Z)

@@ -1,0 +1,21 @@
+;; M4T repeated occurrences: closure by self-join over the swept relation.
+;; With the 3-cycle r0(1,2), r0(2,3), r0(3,1) the closure is all nine pairs.
+;; Deleting r0(1,2) leaves only r(2,3), r(3,1), r(2,1): the sweep must
+;; over-delete rec-founded survivors like r(2,1) (its foundation is zero and
+;; it loses derivations through dying rows) and reseed them from surviving
+;; recursive support, while the round-indexed partition keeps every lost
+;; (r, r) instantiation decremented exactly once across rounds.
+
+table (r0 int int)
+table (r int int)
+
+rule
+(r0 X Y)
+-->
+(r X Y)
+
+rule
+(r X Y)
+(r Y Z)
+-->
+(r X Z)

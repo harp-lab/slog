@@ -1,0 +1,38 @@
+;; M4T bridge: two recursive SCC strata joined through an acyclic bridge
+;; stratum.  A deletion in the first closure must settle that SCC completely
+;; (sweep, reseed, rebuild) before its net transitions cross the bridge, and
+;; the downstream SCC then runs its own sweep from those transitions.
+;; Reseeded or relearned tuples are net-unchanged and must not reach the
+;; bridge in either journal.
+
+table (edge1 int int)
+table (path1 int int)
+table (edge2 int int)
+table (path2 int int)
+
+rule
+(edge1 X Y)
+-->
+(path1 X Y)
+
+rule
+(path1 X Y)
+(edge1 Y Z)
+-->
+(path1 X Z)
+
+rule
+(path1 X Y)
+-->
+(edge2 X Y)
+
+rule
+(edge2 X Y)
+-->
+(path2 X Y)
+
+rule
+(path2 X Y)
+(edge2 Y Z)
+-->
+(path2 X Z)
