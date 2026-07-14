@@ -47,8 +47,6 @@
 (st_join 2 (pleaf 2) 1 (pleaf 1))
 (st_join 2 (pleaf 2) 5 (pleaf 5))
 (st_join 2 (pleaf 2) 8 (pleaf 8))
-(st_join 5 (pleaf 5) 1 (pleaf 1))
 (st_join 7 (pleaf 7) 5 (pleaf 5))
 (st_join 8 (pleaf 8) 1 (pleaf 1))
-(st_join 8 (pleaf 8) 2 (pleaf 2))
 (st_join 8 (pleaf 8) 5 (pleaf 5))
