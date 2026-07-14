@@ -1515,15 +1515,150 @@ else
   echo "FAIL m4t-mixed-maintained-equals-recount"; FAIL=$((FAIL+1))
 fi
 
-# An edit that targets a recursive head itself stays outside the M4T slice
-# permanently: overlay presence semantics are not foundation semantics.
+# --- M4T slice 2: recursive-head edits and inheritance admission -----------
+# An edit targeting a recursive head takes the foundation-aware overlay verb
+# (docs/m4t-contract.md): a zero-rec direct row degenerates to the ordinary
+# presence loss inside the sweep epoch.
 timeout 900 racket tests/api/session-drive.rkt \
   run:tests/session/m4t_diamond.slog \
   batch+:path,7,8 flush dump-rel:path \
   batch-:path,7,8 flush dump-rel:path \
   > out/sess-m4t-headedit.log 2>&1
-expect "m4t-headedit-fallback" "(route rerun 1 1)" out/sess-m4t-headedit.log
+expect "m4t-headedit-verb" "(overlay-negative-dred path 1 1)" out/sess-m4t-headedit.log
+expect "m4t-headedit-route" "(route maintain-recursive-negative 1)" out/sess-m4t-headedit.log
+expect "m4t-headedit-discard" "(dred-reseeded 0 1)" out/sess-m4t-headedit.log
+expect "m4t-headedit-settled" "(update-committed 2 counts-valid)" out/sess-m4t-headedit.log
 expect "m4t-headedit-empty" "(dumpdone 0)" out/sess-m4t-headedit.log
+
+# Deleting a direct assertion on a derived recursive head row: foundation
+# loss with rec 2 enters candidacy at apply time; the sweep drags path(1,5)
+# to zero, reseed restores path(1,4) from surviving recursive support, and
+# the rebuild relearns path(1,5).  Content is unchanged.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4t_diamond.slog \
+  batch+:edge,1,2 batch+:edge,2,4 batch+:edge,1,3 batch+:edge,3,4 \
+  batch+:edge,4,5 flush \
+  batch+:path,1,4 flush \
+  batch-:path,1,4 flush dump-rel:path dump-counts:path \
+  recount-force dump-counts:path \
+  > out/sess-m4t-headreseed.log 2>&1
+expect "m4t-headreseed-verb" "(overlay-negative-dred path 1 1)" out/sess-m4t-headreseed.log
+expect "m4t-headreseed-sweep" "(route maintain-recursive-negative 1)" out/sess-m4t-headreseed.log
+expect "m4t-headreseed-reseed" "(dred-reseeded 1 1)" out/sess-m4t-headreseed.log
+expect "m4t-headreseed-rebuild" "(route maintain-positive 1)" out/sess-m4t-headreseed.log
+expect "m4t-headreseed-settled" "(update-committed 3 counts-valid)" out/sess-m4t-headreseed.log
+expect "m4t-headreseed-content" "(dumpdone 9)" out/sess-m4t-headreseed.log
+if [ "$(grep -cF '(countrow path 1 4 0 0 2)' out/sess-m4t-headreseed.log)" -eq 2 ] \
+   && [ "$(grep -cF '(countrow path 1 5 0 0 1)' out/sess-m4t-headreseed.log)" -eq 2 ]; then
+  echo "PASS m4t-headreseed-maintained-equals-recount"; PASS=$((PASS+1))
+else
+  echo "FAIL m4t-headreseed-maintained-equals-recount"; FAIL=$((FAIL+1))
+fi
+
+# The unfounded pair via a head edit: r(5,6) direct feeds r(6,5), which
+# recursively feeds r(5,6) back.  Presence semantics would strand both on
+# positive rec; the foundation-aware verb over-deletes r(5,6) and the sweep
+# collapses the pair with nothing reseeded.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4t_symmetric_cycle.slog \
+  batch+:r,5,6 flush dump-rel:r recount dump-counts:r \
+  batch-:r,5,6 flush dump-rel:r dump-counts:r \
+  recount-force dump-counts:r \
+  > out/sess-m4t-headcycle.log 2>&1
+expect "m4t-headcycle-before-direct" "(countrow r 5 6 1 0 1)" out/sess-m4t-headcycle.log
+expect "m4t-headcycle-before-swap" "(countrow r 6 5 0 0 1)" out/sess-m4t-headcycle.log
+expect "m4t-headcycle-verb" "(overlay-negative-dred r 1 1)" out/sess-m4t-headcycle.log
+expect "m4t-headcycle-sweep" "(route maintain-recursive-negative 1)" out/sess-m4t-headcycle.log
+expect "m4t-headcycle-discards" "(dred-reseeded 0 2)" out/sess-m4t-headcycle.log
+expect "m4t-headcycle-settled" "(update-committed 2 counts-valid)" out/sess-m4t-headcycle.log
+expect "m4t-headcycle-emptied" "(dumpdone 0)" out/sess-m4t-headcycle.log
+if [ "$(grep -cF '(countdone r 0)' out/sess-m4t-headcycle.log)" -eq 2 ]; then
+  echo "PASS m4t-headcycle-zero-counted"; PASS=$((PASS+1))
+else
+  echo "FAIL m4t-headcycle-zero-counted"; FAIL=$((FAIL+1))
+fi
+
+# Inheritance/version edges (foundation contract): masking an actively
+# inherited edge tuple at the reopened tip sweeps the successor SCC, but
+# every inherited path row keeps its inheritance nonrec as foundation --
+# support-only decrements, no candidates, content intact.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4t_diamond.slog \
+  batch+:edge,1,2 batch+:edge,2,4 batch+:edge,1,3 batch+:edge,3,4 \
+  batch+:edge,4,5 flush \
+  inject-reopen:edge,m4t-inherit,tests/session/m4t_diamond.slog,9,10 \
+  batch-:edge,1,2 flush dump-rel:path input-ledger dump-counts:path \
+  recount-force dump-counts:path \
+  > out/sess-m4t-inherit.log 2>&1
+expect "m4t-inherit-verb" "(overlay-negative edge 1 1)" out/sess-m4t-inherit.log
+expect "m4t-inherit-sweep" "(route maintain-recursive-negative 1)" out/sess-m4t-inherit.log
+expect "m4t-inherit-barrier" "(dred-reseeded 0 0)" out/sess-m4t-inherit.log
+expect "m4t-inherit-settled" "(update-committed 4 counts-valid)" out/sess-m4t-inherit.log
+expect "m4t-inherit-mask" "(inputledger mask" out/sess-m4t-inherit.log
+expect "m4t-inherit-content" "(dumpdone 10)" out/sess-m4t-inherit.log
+if [ "$(grep -cF '(countrow path 1 2 0 1 0)' out/sess-m4t-inherit.log)" -eq 2 ] \
+   && [ "$(grep -cF '(countdone path 10)' out/sess-m4t-inherit.log)" -eq 2 ]; then
+  echo "PASS m4t-inherit-maintained-equals-recount"; PASS=$((PASS+1))
+else
+  echo "FAIL m4t-inherit-maintained-equals-recount"; FAIL=$((FAIL+1))
+fi
+
+# Version-copy contract at the head: masking an actively inherited row of
+# the recursive head removes exactly the inheritance contribution; the
+# candidate reseeds from surviving successor-local recursive support and
+# the mask persists while presence returns through derivation.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4t_diamond.slog \
+  batch+:edge,1,2 batch+:edge,2,4 batch+:edge,1,3 batch+:edge,3,4 \
+  batch+:edge,4,5 flush \
+  inject-reopen:edge,m4t-inherit,tests/session/m4t_diamond.slog,9,10 \
+  batch-:path,1,4 flush dump-rel:path input-ledger dump-counts:path \
+  recount-force dump-counts:path \
+  > out/sess-m4t-inherit-head.log 2>&1
+expect "m4t-inherit-head-verb" "(overlay-negative-dred path 1 1)" out/sess-m4t-inherit-head.log
+expect "m4t-inherit-head-sweep" "(route maintain-recursive-negative 1)" out/sess-m4t-inherit-head.log
+expect "m4t-inherit-head-reseed" "(dred-reseeded 1 0)" out/sess-m4t-inherit-head.log
+expect "m4t-inherit-head-rebuild" "(route maintain-positive 1)" out/sess-m4t-inherit-head.log
+expect "m4t-inherit-head-settled" "(update-committed 4 counts-valid)" out/sess-m4t-inherit-head.log
+expect "m4t-inherit-head-mask" "(inputledger mask" out/sess-m4t-inherit-head.log
+expect "m4t-inherit-head-content" "(dumpdone 10)" out/sess-m4t-inherit-head.log
+if [ "$(grep -cF '(countrow path 1 4 0 0 2)' out/sess-m4t-inherit-head.log)" -eq 2 ] \
+   && [ "$(grep -cF '(countrow path 1 5 0 1 1)' out/sess-m4t-inherit-head.log)" -eq 2 ]; then
+  echo "PASS m4t-inherit-head-maintained-equals-recount"; PASS=$((PASS+1))
+else
+  echo "FAIL m4t-inherit-head-maintained-equals-recount"; FAIL=$((FAIL+1))
+fi
+
+# Clear-and-rerun preserves the input baseline: a direct assertion on a
+# derived relation is input, not a rule consequence, and must survive the
+# cone clear (§0.6).  Before the fix, rerun silently dropped path(9,9).
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/base_input.slog \
+  batch+:edge,1,2 batch+:path,9,9 flush dump-rel:path \
+  rerun:edge dump-rel:path recount dump-counts:path \
+  > out/sess-rerun-baseline.log 2>&1
+expect "rerun-baseline-before" "(dumpdone 2)" out/sess-rerun-baseline.log
+expect "rerun-baseline-direct-kept" "(countrow path 9 9 1 0 0)" out/sess-rerun-baseline.log
+expect "rerun-baseline-counted" "(countdone path 2)" out/sess-rerun-baseline.log
+if [ "$(grep -cF '(dumpdone 2)' out/sess-rerun-baseline.log)" -eq 2 ]; then
+  echo "PASS rerun-baseline-preserved"; PASS=$((PASS+1))
+else
+  echo "FAIL rerun-baseline-preserved"; FAIL=$((FAIL+1))
+fi
+
+# A mid-cone version edge (a cone stratum's relation rebound after it) is
+# NOT admitted: the rebound guard diverts the tip batch to the anchored
+# walk, which settles the correct successor content.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4t_diamond.slog \
+  batch+:edge,1,2 batch+:edge,2,4 batch+:edge,1,3 batch+:edge,3,4 \
+  batch+:edge,4,5 flush \
+  run:tests/session/m4t_diamond.slog \
+  batch-:edge,1,2 flush dump-rel:path \
+  > out/sess-m4t-midcone.log 2>&1
+expect "m4t-midcone-anchored" "(route anchored edge 1 2)" out/sess-m4t-midcone.log
+expect_not "m4t-midcone-no-sweep" "(route maintain-recursive-negative" out/sess-m4t-midcone.log
+expect "m4t-midcone-content" "(dumpdone 8)" out/sess-m4t-midcone.log
 
 echo
 echo "$PASS passed, $FAIL failed"

@@ -180,8 +180,10 @@ Flush chooses a route from compiler manifests:
   SCCs enters the `_maint4neg` sweep (docs/m4t-contract.md): candidates are
   over-deleted on foundation loss, reseeded when recursive support through
   live premises survives the negative fixpoint, and relearned by the
-  positive phase otherwise. Edits that target a recursive head relation
-  itself, and cones with version inheritance, are not admitted.
+  positive phase otherwise. Edits targeting a recursive head relation take
+  a foundation-aware apply that enters candidacy directly; inherited chains
+  ride the same route, with mid-cone version edges diverted to the anchored
+  walk.
 - An acyclic positive plain-table producer may write a root lattice. The M6L
   route retains losing `(key, payload)` contributors, repairs the visible
   joined value after signed edits, and propagates its coalesced old/final pair
@@ -365,11 +367,11 @@ is the policy entry point.
 A deleted row that a rerun can independently derive will reappear. Precise
 positive support maintenance is available on the certified M1 surface, and
 precise deletion is available on M3's counted acyclic plain-table surface,
-M4T's recursive plain-table surface for tip-local edits, and
+M4T's recursive plain-table surface for tip-local edits (including edits
+targeting recursive heads and inherited chains), and
 M6L's acyclic root lattice plus stratified plain-table-consumer surface.
 Recursive or negated lattice cones, downstream lattice writers, structs,
-nullary relations, edits targeting recursive heads, historical edits, and
-other unsupported deletion cones
+nullary relations, historical edits, and other unsupported deletion cones
 still use clear-and-rerun as their correctness path.
 
 ## Save and inspect a recipe

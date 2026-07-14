@@ -1,11 +1,13 @@
 #lang racket
 
 ;; M4T scheduling stress: force a large recursive counted deletion through
-;; pause/resume boundaries.  K disjoint diamonds-with-tails lose their upper
-;; route in one flush, so the sweep over-deletes K rec-positive candidates,
-;; reseed restores them, and the rebuild relearns K tails -- all while
-;; SLOG_MAX_MS forces suspensions.  Run with small SLOG_MAX_MS and explicit
-;; SLOG_THREADS.
+;; pause/resume boundaries.  K disjoint diamonds-with-tails each lose one
+;; support in a single flush: odd diamonds lose their upper edge route, and
+;; even diamonds lose a direct assertion on the recursive head itself (the
+;; foundation-aware overlay verb, M4T slice 2).  Either way the sweep
+;; over-deletes a rec-positive candidate, reseed restores it, and the
+;; rebuild relearns the tail -- all while SLOG_MAX_MS forces suspensions.
+;; Run with small SLOG_MAX_MS and explicit SLOG_THREADS.
 
 (require "../../compiler/session.rkt")
 
@@ -31,9 +33,12 @@
   (when (eof-object? line) (error 'recursive-pause-stress "daemon EOF"))
   line)
 
-;; Diamond i (vertices 5i..5i+4): a->b->d, a->c->d, tail d->e.  Deleting
-;; a->b over-deletes path(a,d) (rec 2 -> 1, no foundation), which drags
-;; path(a,e) to zero; reseed restores the first, relearn the second.
+;; Diamond i (vertices 5i..5i+4): a->b->d, a->c->d, tail d->e.  An odd
+;; diamond deletes a->b: path(a,b) reaches zero, path(a,d) is over-deleted
+;; (rec 2 -> 1, no foundation) and reseeded, path(a,e) is relearned.  An
+;; even diamond instead deletes a direct assertion on path(a,d) itself:
+;; the head edit over-deletes it (rec 2 survives), reseed restores it, and
+;; path(a,e) is relearned; its edges and content are unchanged.
 (define (v i off) (+ (* 5 i) off))
 (define all-edges
   (append*
@@ -41,6 +46,8 @@
      (list (list (v i 0) (v i 1)) (list (v i 1) (v i 3))
            (list (v i 0) (v i 2)) (list (v i 2) (v i 3))
            (list (v i 3) (v i 4))))))
+(define even-count (quotient (+ k 1) 2))
+(define odd-count (- k even-count))
 
 (define s (make-session #:echo record!))
 (dynamic-wind
@@ -52,9 +59,19 @@
      (for ([e (in-list chunk)])
        (session-batch! s '+ 'edge e))
      (session-flush! s))
+   ;; Direct assertions on already-derived head rows for the even diamonds:
+   ;; no content change, but the later retraction must take the
+   ;; foundation-aware verb.
+   (for ([chunk (in-slice 2000 (for/list ([i (in-range k)] #:when (even? i))
+                                 (list (v i 0) (v i 3))))])
+     (for ([t (in-list chunk)])
+       (session-batch! s '+ 'path t))
+     (session-flush! s))
    (set! transcript '())
    (for ([i (in-range k)])
-     (session-batch! s '- 'edge (list (v i 0) (v i 1))))
+     (if (even? i)
+         (session-batch! s '- 'path (list (v i 0) (v i 3)))
+         (session-batch! s '- 'edge (list (v i 0) (v i 1)))))
    (session-flush! s)
 
    (define chronological (reverse transcript))
@@ -73,7 +90,11 @@
      (for/first ([line (in-list chronological)]
                  #:when (regexp-match? #px"^\\(dred-reseeded " line))
        line))
-   (unless (equal? reseed-line (format "(dred-reseeded ~a ~a)" k (* 2 k)))
+   ;; Every diamond reseeds its path(a,d); an odd diamond also discards
+   ;; path(a,b) and path(a,e), an even one discards only path(a,e).
+   (unless (equal? reseed-line
+                   (format "(dred-reseeded ~a ~a)"
+                           k (+ (* 2 odd-count) even-count)))
      (error 'recursive-pause-stress "unexpected reseed report: ~s" reseed-line))
    (unless (for/or ([line (in-list chronological)])
              (regexp-match? #px"^\\(route maintain-positive " line))
@@ -96,8 +117,8 @@
           (match-define `(,name ,size) row)
           (values name size))]
        [x (error 'recursive-pause-stress "bad sizes reply: ~s" x)]))
-   (unless (and (= (hash-ref sizes 'edge -1) (* 4 k))
-                (= (hash-ref sizes 'path -1) (* 8 k)))
+   (unless (and (= (hash-ref sizes 'edge -1) (- (* 5 k) odd-count))
+                (= (hash-ref sizes 'path -1) (- (* 9 k) odd-count)))
      (error 'recursive-pause-stress "wrong settled sizes: ~s" sizes))
 
    ;; A fresh version-local count round must accept the maintained contents.

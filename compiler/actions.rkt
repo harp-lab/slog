@@ -209,6 +209,14 @@
       (format "  std::vector<std::vector<u64>> ts = { ~a };\n"
               (encode-tuples 'set-overlay-negative tuples))
       (format "  d->setOverlayNegative(\"~a\", ts);\n" rel))]
+    ;; M4T head edits (docs/m4t-contract.md): foundation-aware retraction
+    ;; for relations dynamic in a recursive stratum of the maintained cone.
+    [`(set-overlay-negative-dred ,rel (,tuples ...))
+     (string-append
+      "  slog::Database* db = d->db();\n"
+      (format "  std::vector<std::vector<u64>> ts = { ~a };\n"
+              (encode-tuples 'set-overlay-negative-dred tuples))
+      (format "  d->setOverlayNegativeDred(\"~a\", ts);\n" rel))]
     [`(stage-update-transitions signed ,sign ,rels ...)
      (format "  d->stageUpdateTransitions(std::vector<std::string>{~a}, ~a);\n"
              (string-join (for/list ([r (in-list rels)])

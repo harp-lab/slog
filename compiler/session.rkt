@@ -1489,23 +1489,18 @@
   (define m3-eligible?
     (and structurally-certified? counts-certified? has-negative?
          (for/and ([info (in-list union-cone)]) (sinfo-acyclic? info))))
-  ;; M4T slice 1 (docs/m4t-contract.md): a plain-table cone mixing certified
-  ;; acyclic strata with recursive SCC strata takes the DRed sweep, provided
-  ;; no edited relation is itself dynamic in a recursive stratum (overlay
-  ;; presence semantics equal foundation semantics only for rows without
-  ;; recursive support) and every touched relation binds a single version
-  ;; (inheritance/version edges keep clear-and-rerun until certified).
+  ;; M4T (docs/m4t-contract.md): a plain-table cone mixing certified acyclic
+  ;; strata with recursive SCC strata takes the DRed sweep.  An edit whose
+  ;; target is dynamic in a recursive stratum uses the foundation-aware
+  ;; overlay verb (slice 2), and multi-version chains are admissible because
+  ;; cone-of's rebound guard already diverts any mid-cone version edge to the
+  ;; anchored walk -- on the tip route, inherited support is a stable nonrec
+  ;; barrier that can never enter candidacy without an explicit mask edit.
   (define m4t-eligible?
     (and structurally-certified? counts-certified? has-negative?
          (null? lattice-names)
          (for/or ([info (in-list union-cone)])
-           (not (sinfo-acyclic? info)))
-         (for/and ([r (in-list maintenance-names)])
-           (= 1 (length (hash-ref chains r '()))))
-         (not (for*/or ([g (in-list tip-groups)]
-                        [info (in-list union-cone)]
-                        #:unless (sinfo-acyclic? info))
-                (and (member (first g) (sinfo-dyn info)) #t)))))
+           (not (sinfo-acyclic? info)))))
   (define m6l2-eligible?
     (and structurally-certified? counts-certified?
          (pair? lattice-names) (pair? lattice-consumer-cone)))
@@ -1549,7 +1544,11 @@
         (echo! s reply)
         (log-applied! s rel bind-pos tuples 'direct))))
   (define negative-apply-ok? #t)
-  (define (apply-negative-edits!)
+  ;; `dred-names` (M4T, docs/m4t-contract.md): relations dynamic in a
+  ;; recursive stratum of the maintained cone take the foundation-aware
+  ;; retraction verb -- presence semantics would leave a row live on
+  ;; recursive support that the sweep may prove unfounded.
+  (define (apply-negative-edits! #:dred-names [dred-names '()])
     (for ([g (in-list tip-groups)])
       (match-define (list rel bind-pos per-rel) g)
       (define rows
@@ -1558,10 +1557,15 @@
       (define tuples (map first rows))
       (when (pair? tuples)
         (touch! s (list rel))
-        (session-action! s `(set-overlay-negative ,rel (,@tuples)))
+        (define dred? (and (member rel dred-names) #t))
+        (session-action! s `(,(if dred?
+                                  'set-overlay-negative-dred
+                                  'set-overlay-negative)
+                             ,rel (,@tuples)))
         (define reply (read-line (session-out s)))
         (unless (equal? reply
-                        (format "(overlay-negative ~a ~a ~a)"
+                        (format "(~a ~a ~a ~a)"
+                                (if dred? "overlay-negative-dred" "overlay-negative")
                                 rel (length tuples) (length tuples)))
           (set! negative-apply-ok? #f))
         (echo! s reply)
@@ -1713,7 +1717,16 @@
      ;; batch, since reseeded rows are absent-to-present transitions.
      (define settled? #t)
      (define reseeded 0)
-     (apply-negative-edits!)
+     ;; Edits targeting a relation dynamic in a recursive stratum take the
+     ;; foundation-aware verb: foundation loss with surviving rec enters
+     ;; candidacy at apply time and the sweep decides reseed or discard.
+     (define head-edited
+       (for/list ([g (in-list tip-groups)]
+                  #:when (for/or ([info (in-list union-cone)]
+                                  #:unless (sinfo-acyclic? info))
+                           (member (first g) (sinfo-dyn info))))
+         (first g)))
+     (apply-negative-edits! #:dred-names head-edited)
      (if negative-apply-ok?
          (begin
            (echo! s (format "(route maintain-recursive-negative ~a)"

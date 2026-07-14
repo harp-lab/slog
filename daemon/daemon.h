@@ -442,6 +442,10 @@ public:
     slog::Relation* r = database->getRelation(rel);
     if (!r) { emit(std::string("(error \"clear-rel: no relation ") + rel + "\")"); return; }
     r->clearContents();
+    // Rule derivations are gone until the rerun, but the input baseline
+    // (direct assertions, unmasked inheritance) is not a rule consequence
+    // and must survive the clear (§0.6).
+    r->rematerializeInputBaseline();
     database->accelInvalidate(rel);   // stale sidecar rows must not reseed
     needs_reload = true;
   }
@@ -614,6 +618,27 @@ public:
       if (database->applyNegativeInput(r, row.data())) ++applied;
     database->accelInvalidate(rel);
     emit("(overlay-negative " + rel + " " + std::to_string(applied)
+         + " " + std::to_string(rows.size()) + ")");
+  }
+
+  // M4T (docs/m4t-contract.md): foundation-aware retraction for relations
+  // dynamic in a recursive stratum of the maintained cone.
+  void setOverlayNegativeDred(const std::string& rel,
+                              const std::vector<std::vector<u64>>& rows)
+  {
+    if (refuseIfSuspended("set-overlay-negative-dred")) return;
+    Relation* r = database->getRelation(rel);
+    if (!r)
+    {
+      emit(std::string("(error \"set-overlay-negative-dred: no relation ")
+           + rel + "\")");
+      return;
+    }
+    u32 applied = 0;
+    for (const auto& row : rows)
+      if (database->applyNegativeInputDred(r, row.data())) ++applied;
+    database->accelInvalidate(rel);
+    emit("(overlay-negative-dred " + rel + " " + std::to_string(applied)
          + " " + std::to_string(rows.size()) + ")");
   }
 

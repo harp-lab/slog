@@ -780,6 +780,75 @@ public:
     return true;
   }
 
+  // M4T head edits (docs/m4t-contract.md): remove one legal foundation
+  // support with FOUNDATION-aware staging.  For a relation dynamic in a
+  // recursive stratum, presence semantics are unsound: a row losing its
+  // last foundation while rec > 0 must enter candidacy -- removed from
+  // every live index with its sidecar entry retained -- rather than stay
+  // live on recursive support that may be unfounded.  Foundation loss
+  // with rec = 0 degenerates to the ordinary presence loss, and a loss
+  // that leaves another foundation is a support-only decrement.
+  bool setInputOverlayNegativeDred(const u64* t, bool& removed)
+  {
+    removed = false;
+    if (!counted || count_sidecar == nullptr) return false;
+    const std::vector<u64> k = tupleKey(t);
+    const bool direct = direct_inputs.count(k) != 0;
+    const bool inherited = !direct && isActivelyInherited(t);
+    if (!direct && !inherited) return false;
+    const bool was_live = hasLiveTuple(t);
+    const u16 b = buckethash(t[0]);
+    u64 word = 0;
+    if (!count_sidecar[b]->getPayload(t, countKeyArity(), word)) return false;
+    if (cnt_present(word) != was_live) return false;
+    u64 next = word;
+    const u8 kind = direct ? cnt_kind_input : cnt_kind_nonrec;
+    if (!tryApplyCountSigned(word, kind, -1, next)) return false;
+    if (cnt_foundation(next))
+    {
+      if (!count_sidecar[b]->setPayload(t, countKeyArity(), next)) return false;
+    }
+    else if (cnt_present(next))
+    {
+      // Over-deletion: the candidate keeps its entry (rec > 0) while
+      // leaving the live indices; the sweep decides reseed or discard.
+      if (!count_sidecar[b]->setPayload(t, countKeyArity(), next)) return false;
+      if (was_live && !removeTupleAllIndicesPreservingCounts(t)) return false;
+      removed = was_live;
+    }
+    else
+    {
+      std::vector<u16> identity(countKeyArity());
+      for (u16 c = 0; c < countKeyArity(); ++c) identity[c] = c;
+      if (!count_sidecar[b]->removeTuple(t, identity.data())) return false;
+      if (was_live && !removeTupleAllIndicesPreservingCounts(t)) return false;
+      removed = was_live;
+    }
+    if (direct)
+      direct_inputs.erase(k);
+    else
+      inheritance_masks.insert(k);
+    return true;
+  }
+
+  // Re-materialise the §0.3 input baseline after a clear: actively
+  // inherited predecessor rows plus direct assertions.  Rule-derived rows
+  // return through re-derivation, but the baseline is input, not a rule
+  // consequence -- a clear-and-rerun that omits it silently drops direct
+  // assertions on derived relations (docs/incremental.md §0.6: rebuild
+  // from the already-normalized target overlay).
+  void rematerializeInputBaseline()
+  {
+    if (predecessor_relation != nullptr)
+      predecessor_relation->forEachLiveNominal([&](const u64* row)
+      {
+        if (!isInheritanceMasked(row))
+          insertTupleAllIndices(row);
+      });
+    for (const std::vector<u64>& row : direct_inputs)
+      insertTupleAllIndices(row.data());
+  }
+
   // M4T reseed step (docs/m4t-contract.md) for one journaled candidate: if
   // surviving support remains in the retained sidecar entry, reinsert the
   // row into every live index; a candidate with no entry reached zero and
@@ -2238,6 +2307,23 @@ public:
       return false;
     }
     if (became_absent) recordUpdateTransition(rel, row, -1);
+    return true;
+  }
+
+  // M4T head edits: foundation-aware variant for relations dynamic in a
+  // recursive stratum.  Journals every row that left the live indices --
+  // zero-support deletions and over-deleted candidates alike -- so the
+  // sweep stages them and the reseed scan finds them.
+  bool applyNegativeInputDred(Relation* rel, const u64* row)
+  {
+    bool removed = false;
+    if (!update_epoch_active || rel == nullptr
+        || !rel->setInputOverlayNegativeDred(row, removed))
+    {
+      update_epoch_valid = false;
+      return false;
+    }
+    if (removed) recordUpdateTransition(rel, row, -1);
     return true;
   }
 

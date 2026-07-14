@@ -1,21 +1,33 @@
 # M4T recursive plain-table deletion contract
 
-**Status:** implemented contract for the first M4T vertical slice
-(2026-07-13). `incremental.md` §4.5–§4.7 remains normative; this file pins
-the narrower admission, candidate lifecycle, and round discipline needed to
-implement recursive deletion without weakening fallback. The convention
-follows `m6l-contract.md`: everything not explicitly admitted stays on
-clear-and-rerun.
+**Status:** implemented contract for the M4T vertical slices (slice 1
+2026-07-13, slice 2 2026-07-14). `incremental.md` §4.5–§4.7 remains
+normative; this file pins the admission, candidate lifecycle, and round
+discipline needed to implement recursive deletion without weakening
+fallback. The convention follows `m6l-contract.md`: everything not
+explicitly admitted stays on clear-and-rerun.
 
 As built, the sweep is the `_maint4neg` flavor (M3's negative partition
 with the maintenance interner in DRed mode), the reseed is the
 `dred-reseed` daemon action reporting `(dred-reseeded R D)`, and the
-rebuild is the unmodified M1 positive walk. Implementation exposed one
-latent substrate bug this contract now depends on having fixed: maintained
-point mutations must cover every registered non-seeded full ordering, not
-only the running flavor's master, or another flavor's ordering silently
-goes stale and the sweep's all-orderings removal (or any later reader)
-sees partial content.
+rebuild is the unmodified M1 positive walk. Slice 2 adds the
+foundation-aware overlay verb `set-overlay-negative-dred` (reply
+`(overlay-negative-dred R n n)`) for edits whose target relation is
+dynamic in a recursive stratum, and admits multi-version chains on the
+tip route.
+
+Implementation exposed two latent substrate bugs this contract now
+depends on having fixed:
+
+1. maintained point mutations must cover every registered non-seeded full
+   ordering, not only the running flavor's master, or another flavor's
+   ordering silently goes stale and the sweep's all-orderings removal (or
+   any later reader) sees partial content; and
+2. clear-and-rerun must re-materialize the cleared relations' input
+   baseline (direct assertions and unmasked inheritance) — the baseline
+   is input, not a rule consequence, and re-derivation alone silently
+   drops direct assertions on derived relations (§0.6's normalized
+   overlay promise; `Relation::rematerializeInputBaseline`).
 
 ## Semantic state
 
@@ -151,16 +163,25 @@ staging; it is out of scope for this slice.
 
 ## Admission ladder
 
-Slice 1 admits one shape:
+Slices 1+2 admit:
 
 1. a counted, positive-arity, positive-only plain-table cone whose strata
    are each either certified acyclic (M3 machinery) or a certified
    recursive plain-table SCC (this contract), in any topological mix;
-2. reached by a tip-local direct edit — an overlay change to an existing
-   tip VersionInstance with no inheritance edge inside the cone;
-3. where no edited relation is dynamic in a recursive stratum: the overlay
-   apply uses presence semantics, which is only equivalent to foundation
-   semantics for rows without recursive support;
+2. reached by a tip-local edit. Multi-version chains are admissible:
+   `cone-of`'s rebound guard diverts any cone containing a mid-cone
+   version edge (a relation rebound after a cone stratum) to the anchored
+   walk, so on the tip route every inherited contribution is a stable
+   nonrec barrier owned by a settled predecessor — it can leave only
+   through an explicit mask edit, never through the sweep;
+3. edits may target a relation dynamic in a recursive stratum: the apply
+   uses the foundation-aware verb, whose fold is exactly the sweep's —
+   support-only decrement while another foundation survives; candidacy
+   (row leaves live indices, journaled −1, sidecar entry retained) on
+   foundation loss with `rec > 0`; ordinary presence loss at zero. Edit
+   candidates enter the epoch's journal before the walk begins, so
+   staging, dead-candidate absorption, reseed, and relearn treat them
+   like any sweep-staged candidate;
 4. with no lattice relation, negation edge, struct relation, nullary
    relation, diagnostic/fallible head, or unsupported side-channel kind
    anywhere in the cone.
@@ -171,8 +192,8 @@ else falls back by name:
 
 - structs (M5/M4S), lattices anywhere in the cone (M6L/M7 own their
   shapes), negation (M4N), nullary relations;
-- inherited successors and historical/back-anchored edits;
-- edits targeting a recursive head relation;
+- mid-cone version edges (rebound guard → anchored walk) and
+  historical/back-anchored edits (anchored walk);
 - uncounted or capability-uncertified cones;
 - arithmetic, coverage, or writer failure mid-epoch, which invalidates the
   cache and completes through the normalized-overlay clear-and-rerun path
@@ -198,9 +219,20 @@ correctness and route reporting, then flipped to the precise route:
   the swept relation exercise the round-indexed partition, and a
   rec-founded survivor (`r(2,1)` after the cycle is cut) is over-deleted
   and reseeded from surviving recursive support.
+- slice 2, head edits: a zero-rec direct deletion degenerating to plain
+  presence loss inside the sweep epoch; a direct deletion of a
+  derived-and-asserted row (candidacy at apply, reseed from surviving
+  recursive support, downstream relearn); and the unfounded pair fed by a
+  direct head assertion, which presence semantics would strand;
+- slice 2, inheritance: masking an inherited input tuple at a reopened
+  tip (successor sweep runs; every inherited row is a support-only
+  barrier; nothing reseeds); masking an inherited row of the recursive
+  head itself (candidacy, reseed from successor-local recursive support,
+  mask persists while presence returns through derivation); and the
+  clear-and-rerun input-baseline regression;
 - named fallback fixtures: lattice in the cone, negation over an SCC
-  member, an edit targeting a recursive head, an inherited successor, and
-  a historical anchor.
+  member, a mid-cone version edge (rebound guard → anchored walk), and a
+  historical anchor.
 
 Every case compares settled content and every support component with a
 fresh recomputation plus forced recount, per §10's two oracles and the
@@ -221,4 +253,7 @@ Randomized hardening mirrors M3/M6L: warm maintained sessions over cyclic
 graphs for ten epochs against independent fresh recount oracles under one,
 two, and eight workers, with forced pauses attributed to the sweep and
 rebuild phases and at least one case crossing the runtime split-batch
-boundary.
+boundary. Since slice 2 the stream also toggles one direct assertion on
+the recursive head per flush (only rows the stream asserted are ever
+retracted), and the forced-pause epoch mixes head-row and edge deletions
+in a single sweep.

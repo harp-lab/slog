@@ -3,10 +3,13 @@
 ;; M4T signed-stream differential oracle (docs/m4t-contract.md).  Random edge
 ;; toggles over a small vertex universe drive a recursive transitive closure
 ;; plus an acyclic downstream consumer that reads the swept relation twice.
-;; The warm maintained session's content and support sidecars after every
-;; flush must equal a fresh run over that normalized EDB with a forced
-;; recount.  Cycles, unfounded regions, reseeds, relearns, and the
-;; cancelling downstream cascade all arise from the random stream.
+;; Each flush also toggles one direct assertion on the recursive head itself
+;; (foundation-aware overlay, M4T slice 2): only rows this stream directly
+;; asserted are ever retracted, so every retraction is overlay-legal.  The
+;; warm maintained session's content and support sidecars after every flush
+;; must equal a fresh run over that normalized EDB with a forced recount.
+;; Cycles, unfounded regions, reseeds, relearns, head-edit candidacy, and
+;; the cancelling downstream cascade all arise from the random stream.
 
 (require "../../compiler/session.rkt")
 
@@ -32,16 +35,29 @@ EOF
 (define initial (list->set (take (shuffle universe) 6)))
 
 (define-values (flushes reverse-models _final-model)
-  (for/fold ([fs '()] [models (list initial)] [present initial])
+  (for/fold ([fs '()]
+             [models (list (cons initial (set)))]
+             [present (cons initial (set))])
             ([_ (in-range 10)])
+    (match-define (cons edges heads) present)
     (define touched (take (shuffle universe) (+ 2 (random 4))))
-    (define ops
+    (define edge-ops
       (for/list ([f (in-list touched)])
-        (list (if (set-member? present f) '- '+) f)))
+        (list (if (set-member? edges f) '- '+) 'edge f)))
+    ;; One direct toggle on the recursive head per flush: retract only rows
+    ;; this stream asserted, so the overlay op is always legal regardless of
+    ;; what the rules currently derive.
+    (define h (car (shuffle universe)))
+    (define head-ops
+      (list (list (if (set-member? heads h) '- '+) 'path h)))
+    (define ops (append edge-ops head-ops))
     (define next
       (for/fold ([p present]) ([op (in-list ops)])
-        (if (eq? (first op) '+) (set-add p (second op))
-            (set-remove p (second op)))))
+        (match-define (list sign rel f) op)
+        (match-define (cons e ph) p)
+        (if (eq? rel 'edge)
+            (cons (if (eq? sign '+) (set-add e f) (set-remove e f)) ph)
+            (cons e (if (eq? sign '+) (set-add ph f) (set-remove ph f))))))
     (values (cons ops fs) (cons next models) next)))
 (define stream (reverse flushes))
 (define models (reverse reverse-models))
@@ -106,24 +122,28 @@ EOF
      (capture!)
      (for ([ops (in-list stream)])
        (for ([op (in-list ops)])
-         (define f (second op))
-         (session-batch! s (first op) 'edge (list (car f) (cdr f))))
+         (match-define (list sign rel f) op)
+         (session-batch! s sign rel (list (car f) (cdr f))))
        (session-flush! s)
        (capture!))
      (reverse snapshots))))
 
 (define oracle
   (for/list ([model (in-list models)])
+    (match-define (cons edge-model head-model) model)
     (with-session
      (lambda (s)
        (session-run! s base-prog)
-       (define path (format "out/m4t-oracle-~a-edge.rows" seed))
-       (call-with-output-file path #:exists 'replace
-         (lambda (out)
-           (for ([fact (in-set model)])
-             (fprintf out "~a ~a\n" (car fact) (cdr fact)))))
-       (session-action! s `(set-overlay-int-file edge ,path 2)
-                        (lambda (out) (void (read-line out))))
+       (define (seed-overlay! rel facts suffix)
+         (define path (format "out/m4t-oracle-~a-~a.rows" seed suffix))
+         (call-with-output-file path #:exists 'replace
+           (lambda (out)
+             (for ([fact (in-set facts)])
+               (fprintf out "~a ~a\n" (car fact) (cdr fact)))))
+         (session-action! s `(set-overlay-int-file ,rel ,path 2)
+                          (lambda (out) (void (read-line out)))))
+       (seed-overlay! 'edge edge-model "edge")
+       (seed-overlay! 'path head-model "path")
        (session-rerun! s 'edge)
        (session-recount! s #:force? #t)
        (list (snapshot s) (derived-counts s))))))

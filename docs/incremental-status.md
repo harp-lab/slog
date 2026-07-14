@@ -1,6 +1,6 @@
 # Incremental Slog implementation ledger
 
-**Reviewed:** 2026-07-14 after the M4T slice 1 checkpoint
+**Reviewed:** 2026-07-14 after the M4T slice 2 checkpoint
 **Normative design:** `docs/incremental.md`
 
 This file records what the tree currently implements and where it differs
@@ -42,17 +42,17 @@ Begin a future incremental-maintenance review with this ledger, then read
 `docs/m4t-contract.md` (implemented) and §4.5–§4.7 in `docs/incremental.md`.
 `docs/m6l-contract.md` records the completed lattice admission boundary.
 
-M4T slice 1 is shipped. The remaining implementation queue, in the decided
-order, is:
+M4T slices 1 and 2 are shipped; the milestone's table surface is complete.
+Edits may target recursive head relations (foundation-aware overlay), and
+multi-version chains ride the tip route because the rebound guard already
+diverts mid-cone version edges to the anchored walk. Only historical
+anchors remain outside M4T, permanently owned by the anchored walk. The
+remaining implementation queue, in the decided order, is:
 
-1. **M4T admission growth** as needed: inheritance/version edges in a
-   recursive deletion cone (their foundation and version-copy contracts need
-   dedicated tests first) and foundation-aware overlay semantics so edits may
-   target recursive head relations.
-2. **M5 — separate struct intern identity from live membership**, the
+1. **M5 — separate struct intern identity from live membership**, the
    prerequisite for struct-capable deletion; then **M4S** admits struct
    relations into the DRed capability set.
-3. **M4N — precise stratified negation**, then **M7 — recursive
+2. **M4N — precise stratified negation**, then **M7 — recursive
    lattice/rank repair**.
 
 The handoff gates are `tests/run-all.sh --quick`, `tests/run-all.sh session`,
@@ -259,6 +259,31 @@ the arc-end gate.
   — a latent bug that M3's fixtures never exposed because no multi-column
   head was ever read through a second ordering.
 
+### M4T slice 2 — recursive-head edits and inheritance admission
+
+- **Foundation-aware overlay:** `set-overlay-negative-dred`
+  (`Relation::setInputOverlayNegativeDred`) applies retractions to
+  relations dynamic in a recursive cone stratum with the sweep's own fold:
+  support-only decrement while another foundation survives; candidacy on
+  foundation loss with `rec > 0` (row leaves live indices, journaled −1,
+  sidecar entry retained); ordinary presence loss at zero. The session's
+  M4T route selects the verb per edited relation; every other route keeps
+  the presence-semantics verb, which is equivalent outside recursive
+  strata.
+- **Inheritance admission:** the single-version-chain gate is gone.
+  `cone-of`'s rebound guard already diverts mid-cone version edges to the
+  anchored walk, so on the tip route inherited support is a settled
+  predecessor's stable nonrec contribution: it never enters candidacy
+  without an explicit mask edit, and masking an inherited recursive-head
+  row composes with candidacy and reseed (the mask persists while
+  presence returns through derivation).
+- **Substrate fix:** clear-and-rerun re-materializes the cleared
+  relations' input baseline (`Relation::rematerializeInputBaseline`:
+  unmasked predecessor rows plus direct assertions), mirroring the
+  anchored walk's `refreshVersion`. Before the fix, a fallback rerun
+  silently dropped direct assertions on derived relations and the next
+  count epoch aborted on the orphaned sidecar seed.
+
 Legacy labels retained by code comments and tests map as follows:
 
 - **A1–A8:** parse, safety, stratification, operationalization, runtime
@@ -294,11 +319,12 @@ These remain explicit capability boundaries or future correctness work.
    Struct counts are diagnostic only until M5 separates tombstoned identity
    from join-visible membership.
 2. **Recursive signed deletion is tip-local and plain-table only.** M4T
-   slice 1 handles counted recursive plain-table cones reached by a
-   tip-local direct edit. Edits targeting a recursive head relation itself
-   (overlay presence semantics are not foundation semantics), inheritance
-   or version edges inside a recursive deletion cone, and historical
-   anchors keep clear-and-rerun.
+   handles counted recursive plain-table cones reached by any tip-local
+   edit, including edits targeting the recursive head (foundation-aware
+   overlay verb) and multi-version chains (inherited support is a stable
+   nonrec barrier on the tip route). Mid-cone version edges divert to the
+   anchored walk via the rebound guard; historical anchors keep the
+   anchored walk permanently.
 3. **Precise negation maintenance is absent.** Current absent probes implement
    set construction. M4N still needs anti-delta variants and transition
    scheduling.
@@ -378,14 +404,25 @@ reseeds, relearns, and inserts a genuinely new edge in one revision. An
 edit targeting the recursive head itself pins the named fallback.
 
 Randomized recursive signed streams (`tests/api/recursive-stream-fuzz.rkt`)
-toggle edges over a dense cyclic universe for ten flushes and compare every
-flush's content and support sidecars — including an acyclic downstream
-consumer reading the swept relation twice — against fresh rerun-plus-forced-
-recount sessions; the stress harness runs independent seeds under one, two,
-and eight workers. A forced-pause epoch (`recursive-pause-stress.rkt`, 800
-diamonds under `SLOG_MAX_MS=1`) crosses several pause/resume boundaries
-inside the sweep/reseed/rebuild epoch and settles counts-valid with exact
-reseed counts and sizes.
+toggle edges over a dense cyclic universe for ten flushes — plus, since
+slice 2, one direct assertion toggle on the recursive head per flush — and
+compare every flush's content and support sidecars — including an acyclic
+downstream consumer reading the swept relation twice — against fresh
+rerun-plus-forced-recount sessions; the stress harness runs independent
+seeds under one, two, and eight workers. A forced-pause epoch
+(`recursive-pause-stress.rkt`, 800 diamonds under `SLOG_MAX_MS=1`) mixes
+head-row and edge deletions in one revision, crosses several pause/resume
+boundaries inside the sweep/reseed/rebuild epoch, and settles counts-valid
+with exact reseed counts and sizes.
+
+Slice 2's deterministic fixtures pin: the zero-rec head deletion
+degenerating inside the sweep epoch, the derived-and-asserted head
+deletion (candidacy at apply, reseed, downstream relearn), the unfounded
+pair fed by a direct head assertion, the inherited-input mask whose
+successor sweep finds only support-only barriers, the inherited head-row
+mask that reseeds from successor-local recursive support, the mid-cone
+version edge diverting to the anchored walk, and the clear-and-rerun
+input-baseline regression.
 
 ## M6L slices 1–2 audit — implemented
 
@@ -441,6 +478,14 @@ closed while work moves to M4T.
   rebuild. M3's immediate zero-support point deletion is useful substrate, not
   a foundedness algorithm. M6L similarly needs contributor identity per key,
   rather than treating the currently visible lattice payload as a tuple count.
+- **The input baseline is not a rule consequence.** Clear-and-rerun must
+  re-materialize direct assertions and unmasked inheritance for every
+  cleared relation before re-derivation; re-running rules alone quietly
+  loses input rows on derived relations, and the loss only surfaces when a
+  later count epoch finds the overlay-seeded sidecar key absent. The
+  anchored walk's `refreshVersion` always knew this; the tip rerun did
+  not. Any new "clear then rebuild" path must start from the normalized
+  overlay, not from an empty relation.
 - **Every registered ordering is somebody's authority.** M4T's all-orderings
   removal exposed that M1's maintenance inserts populated only the running
   flavor's master ordering, leaving the semantic stratum's differently

@@ -17,13 +17,15 @@ M1 is also shipped for positive edits through capability-certified plain-table
 cones, including recursive SCCs, multiple downstream strata, and explicit
 inject-and-reopen version edges. M3 is shipped for direct and inherited
 retractions through capability-certified acyclic plain-table cones, including
-mixed negative/positive flushes and multiple downstream strata. M4T's first
-slice is shipped: tip-local retractions through counted positive plain-table
-cones mixing acyclic strata with recursive SCCs run the DRed sweep, reseed,
-and rebuild of §4.5–§4.7. Edits targeting recursive heads, inheritance and
-historical anchors, negation, structs, lattice cones, nullary relations, and
-every unsupported version topology still take the permanent clear-and-rerun
-path. M6L's first two slices
+mixed negative/positive flushes and multiple downstream strata. M4T is
+shipped for its full table surface: tip-local retractions through counted
+positive plain-table cones mixing acyclic strata with recursive SCCs run the
+DRed sweep, reseed, and rebuild of §4.5–§4.7, including edits targeting the
+recursive head itself (foundation-aware overlay) and multi-version chains
+(the rebound guard diverts mid-cone version edges to the anchored walk).
+Historical anchors stay on the anchored walk; negation, structs, lattice
+cones, nullary relations, and every unsupported version topology still take
+the permanent clear-and-rerun path. M6L's first two slices
 are implemented: contributor state for acyclic root lattice producers is
 recounted transactionally, signed edits repair affected visible keys, and a
 closed old-to-new replacement propagates through acyclic positive plain-table
@@ -863,7 +865,9 @@ Normal and seeded set-semantic flavors keep their existing dedup behavior.
 M1 exercises the positive sign through `_maint1`; M3 preserves the negative
 sign through `_maint3neg` temps and false-transition scheduling. M4T's
 `_maint4neg` adds candidate over-deletion, dead-candidate folds, and the
-reseed step between the phase walks.
+reseed step between the phase walks; its foundation-aware overlay verb
+applies the same fold to direct edits of relations dynamic in a recursive
+stratum.
 
 ### 6.3 Code generation
 
@@ -1463,10 +1467,22 @@ flushes settle precisely with maintained sidecars equal to forced fresh
 recounts; randomized cyclic signed streams and a forced-pause epoch match
 independent fresh oracles.
 
-**Remaining M4T work:** admission for inheritance/version edges and
-historical anchors once their foundation contracts have dedicated tests,
-plus perspective for edits targeting recursive heads (foundation-aware
-overlay semantics).
+**Slice 2 — complete (2026-07-14).** Edits targeting a recursive head take
+the foundation-aware overlay verb (`set-overlay-negative-dred`): the apply
+itself performs the sweep's fold, so a row losing its last foundation with
+surviving `rec` enters candidacy at apply time and the epoch's journal,
+reseed, and relearn treat it like any sweep-staged candidate. Multi-version
+chains are admitted on the tip route: the rebound guard already diverts
+mid-cone version edges to the anchored walk, leaving inherited support as a
+settled predecessor's stable nonrec barrier — removable only by an explicit
+mask edit, which composes with candidacy and reseed. Two substrate fixes
+ride the milestone: all-orderings maintained mutations (slice 1) and
+clear-and-rerun re-materializing the input baseline of cleared relations
+(slice 2, `Relation::rematerializeInputBaseline`).
+
+**Remaining outside M4T:** historical anchors are permanently owned by the
+anchored walk; struct, lattice, negation, and nullary shapes belong to
+M5/M4S, M6L/M7, and M4N.
 
 ### M5, then M4S — struct identity and recursive struct deletion
 
