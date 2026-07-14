@@ -72,8 +72,6 @@
 (mp_put (_enum "mempty") 30 [])
 (mp_put (_enum "mempty") 40 [])
 (mp_put (mleaf 0 []) 3 [])
-(mp_put (mleaf 0 []) 4 [])
 (mp_put (mleaf 10 []) 12 [])
 (mp_put (mleaf 12 []) 13 [])
 (mp_put (mleaf 4 []) 5 [])
-(mp_put (mleaf 4 []) 6 [])

@@ -79,7 +79,5 @@
 (mbranch
 (mbranch
 (mbranch 0 2 (mleaf 0 []) (mleaf 3 []))
-(mbranch 0 4 (mleaf 0 []) (mleaf 4 []))
 (mbranch 4 1 (mleaf 4 []) (mleaf 5 []))
-(mbranch 4 2 (mleaf 4 []) (mleaf 6 []))
 (mbranch 8 4 (mleaf 10 []) (mleaf 12 []))

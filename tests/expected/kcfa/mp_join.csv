@@ -69,6 +69,4 @@
 (mp_join
 (mp_join
 (mp_join 3 (mleaf 3 []) 0 (mleaf 0 []))
-(mp_join 4 (mleaf 4 []) 0 (mleaf 0 []))
 (mp_join 5 (mleaf 5 []) 4 (mleaf 4 []))
-(mp_join 6 (mleaf 6 []) 4 (mleaf 4 []))

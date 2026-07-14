@@ -1,4 +1,4 @@
-(smt_check (lany {(lall {(lnot (lge (iv "p1_y") (ic 0))):1 (lnot (llt (iv "p1_x") (ic 0))):1 (leq (iv "p1_y") (iv "p1_x")):1}):1 (lall {(lnot (lge (iv "p1_y") (ic 0))):1 (llt (iv "p1_x") (ic 0)):1 (leq (iv "p1_y") (lsub (ic 0) (iv "p1_x"))):1}):1}))   (_enum "unknown")   
+(smt_check (lany {(lall {(lnot (lge (iv "p1_y") (ic 0))):1 (llt (iv "p1_x") (ic 0)):1 (leq (iv "p1_y") (lsub (ic 0) (iv "p1_x"))):1}):1 (lall {(lnot (llt (iv "p1_x") (ic 0))):1 (lnot (lge (iv "p1_y") (ic 0))):1 (leq (iv "p1_y") (iv "p1_x")):1}):1}))   (_enum "unknown")   
 (smt_check (lany {(lall {(lnot (lgt (ic 1) (ic 2))):1 (lle (lmul (ic 3) (ic 3)) (ic 10)):1}):1}))   (_enum "sat")   
 (smt_check (lany {(lall {(lnot (lle (lmul (ic 3) (ic 3)) (ic 10))):1}):1}))   (_enum "unsat")   
 (smt_check (lany {(lall {(lnot (lne (iv "p2_d") (ic 0))):1}):1}))   (_enum "unknown")   
