@@ -1,11 +1,21 @@
 # M4T recursive plain-table deletion contract
 
-**Status:** implementation contract for the first M4T vertical slice.
-`incremental.md` §4.5–§4.7 remains normative; this file pins the narrower
-admission, candidate lifecycle, and round discipline needed to implement
-recursive deletion without weakening fallback. The convention follows
-`m6l-contract.md`: everything not explicitly admitted stays on
+**Status:** implemented contract for the first M4T vertical slice
+(2026-07-13). `incremental.md` §4.5–§4.7 remains normative; this file pins
+the narrower admission, candidate lifecycle, and round discipline needed to
+implement recursive deletion without weakening fallback. The convention
+follows `m6l-contract.md`: everything not explicitly admitted stays on
 clear-and-rerun.
+
+As built, the sweep is the `_maint4neg` flavor (M3's negative partition
+with the maintenance interner in DRed mode), the reseed is the
+`dred-reseed` daemon action reporting `(dred-reseeded R D)`, and the
+rebuild is the unmodified M1 positive walk. Implementation exposed one
+latent substrate bug this contract now depends on having fixed: maintained
+point mutations must cover every registered non-seeded full ordering, not
+only the running flavor's master, or another flavor's ordering silently
+goes stale and the sweep's all-orderings removal (or any later reader)
+sees partial content.
 
 ## Semantic state
 

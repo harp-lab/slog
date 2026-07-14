@@ -17,9 +17,13 @@ M1 is also shipped for positive edits through capability-certified plain-table
 cones, including recursive SCCs, multiple downstream strata, and explicit
 inject-and-reopen version edges. M3 is shipped for direct and inherited
 retractions through capability-certified acyclic plain-table cones, including
-mixed negative/positive flushes and multiple downstream strata. Recursive
-SCCs, negation, structs, nullary relations, and every unsupported version
-topology still take the permanent clear-and-rerun path. M6L's first two slices
+mixed negative/positive flushes and multiple downstream strata. M4T's first
+slice is shipped: tip-local retractions through counted positive plain-table
+cones mixing acyclic strata with recursive SCCs run the DRed sweep, reseed,
+and rebuild of §4.5–§4.7. Edits targeting recursive heads, inheritance and
+historical anchors, negation, structs, lattice cones, nullary relations, and
+every unsupported version topology still take the permanent clear-and-rerun
+path. M6L's first two slices
 are implemented: contributor state for acyclic root lattice producers is
 recounted transactionally, signed edits repair affected visible keys, and a
 closed old-to-new replacement propagates through acyclic positive plain-table
@@ -160,10 +164,10 @@ position, relation display name, or hash-table order. A program event can
 therefore have several SCC writer instances for one output slot without
 changing its VersionKey.
 
-New saves should anchor batches by VersionKey. For diagnostics they may also
-record the visible name and ordinal. Legacy recipes using a relation name and
-version ordinal remain readable and are resolved to a VersionKey during
-replay.
+Batches are anchored by VersionKey. Diagnostics may also record the visible
+name and ordinal, but neither participates in replay. A recipe without stable
+keys is rejected; there are no legacy databases that justify a translation
+path.
 
 A VersionKey is a stable **slot identity**, not a content hash. A descendant
 recipe may attach an override to an ancestor slot, so the same VersionKey can
@@ -473,9 +477,8 @@ signature
 The recipe is authoritative. Final relation directories are replay witnesses
 and optional seeds, never the source of version identity or counts.
 
-New recipe events carry stable event IDs and VersionKeys. The loader accepts
-legacy name/ordinal anchors and translates them while replaying their binding
-chains.
+Recipe events carry stable event IDs and VersionKeys. The loader requires
+them; name/ordinal chains are diagnostic views only.
 
 Intermediate versions are rebuilt by replay and remain addressable in memory.
 Counts never touch disk. A load starts uncounted and establishes count cache
@@ -858,18 +861,21 @@ The target signed read path is not wholly sign-agnostic.
 
 Normal and seeded set-semantic flavors keep their existing dedup behavior.
 M1 exercises the positive sign through `_maint1`; M3 preserves the negative
-sign through `_maint3neg` temps and false-transition scheduling. Candidate
-over-deletion and reseed scheduling remain M4 obligations.
+sign through `_maint3neg` temps and false-transition scheduling. M4T's
+`_maint4neg` adds candidate over-deletion, dead-candidate folds, and the
+reseed step between the phase walks.
 
 ### 6.3 Code generation
 
-Retain six flavor families:
+Retain seven flavor families:
 
 - normal set semantics;
 - seeded replay set semantics;
 - legacy positive set-only delta entry;
 - counted positive maintenance (`_maint1` for the M1 contract);
-- counted acyclic negative maintenance (`_maint3neg` for M3); and
+- counted acyclic negative maintenance (`_maint3neg` for M3);
+- counted recursive negative maintenance (`_maint4neg` for M4T, the same
+  partition with the DRed merge policy); and
 - full count establishment.
 
 The counted flavors must share logical rule classification and instantiation
@@ -1276,8 +1282,8 @@ Shipped implementation substrate:
 - **M0.4c:** explicit-VersionId scratch epochs, historical exact binding,
   authoritative semantic-writer coverage, explicit capability reporting,
   all-target audit/commit/abort, arithmetic invalidation, and failure retry;
-- **M0.4d:** the default versioned META/recipe format, legacy ordinal fallback,
-  save/load overlay round trips, EvaluationId isolation, and an independent
+- **M0.4d:** the default versioned META/recipe format, save/load overlay round
+  trips, EvaluationId isolation, and an independent
   alpha-renamed canonical-IR support-count oracle over the version and
   persistence matrix.
 
@@ -1429,18 +1435,38 @@ Implement §4.5–§4.7:
 - positive rebuild;
 - version-local scheduling.
 
-**Next implementation milestone.** Start with a deliberately narrow vertical
-slice: a counted, positive-arity, positive-only recursive plain-table SCC
-reached by a tip-local direct edit. Pin the symmetric unfounded cycle and the
-over-delete/refound diamond before adding the candidate lifecycle. The first
-slice retains clear-and-rerun for structs, lattices, negation, inheritance,
-historical edits, and every uncertified downstream shape. Reuse M3's exact
-negative occurrence partition and M1's counted positive rebuild; add only the
-candidate-removal, foundation-barrier, and reseed semantics that recursion
-requires.
+**Slice 1 — complete (2026-07-13).** The admission, candidate lifecycle,
+round discipline, and phase schedule are pinned in
+[m4t-contract.md](m4t-contract.md). Shipped:
 
-**Exit:** the literature's recursive counterexamples and randomized cyclic
-graphs match full recompute.
+- a `_maint4neg` sweep flavor sharing M3's leftmost-deleted-occurrence
+  partition, with the maintenance interner in DRed mode: over-deletion on
+  foundation loss with the sidecar entry retained, dead candidates
+  absorbing later decrements without re-staging, and retained transition
+  rows driving the next round to the negative fixpoint;
+- candidate state carried by the epoch's negative journal plus retained
+  sidecar entries — no separate candidate structure;
+- a reseed step between the phase walks that restores `rec > 0` candidates
+  into every live ordering and journals them as positive transitions, so
+  the existing M1 fixpoint performs the rebuild and relearn;
+- routing that admits counted, single-version, tip-edited plain-table cones
+  mixing acyclic strata (M3 machinery) with recursive SCCs, while edits
+  targeting recursive heads, inheritance, lattices, negation, structs, and
+  nullary relations keep clear-and-rerun; and
+- cross-flavor ordering maintenance: maintained point mutations now cover
+  every registered non-seeded full ordering, fixing a latent M1 bug where
+  a flavor's inserts left other flavors' orderings stale.
+
+**Exit evidence:** the symmetric unfounded cycle, over-delete/refound
+diamond with relearn tail, self-join closure, two-SCC bridge, and mixed
+flushes settle precisely with maintained sidecars equal to forced fresh
+recounts; randomized cyclic signed streams and a forced-pause epoch match
+independent fresh oracles.
+
+**Remaining M4T work:** admission for inheritance/version edges and
+historical anchors once their foundation contracts have dedicated tests,
+plus perspective for edits targeting recursive heads (foundation-aware
+overlay semantics).
 
 ### M5, then M4S — struct identity and recursive struct deletion
 

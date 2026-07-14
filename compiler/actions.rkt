@@ -222,6 +222,13 @@
      (format "  d->stageLatticeReplacements(std::vector<std::string>{~a}, ~a);\n"
              (string-join (for/list ([r (in-list rels)])
                             (format "\"~a\"" r)) ", ") sign)]
+    ;; M4T reseed (docs/m4t-contract.md): restore rec>0 candidates of the
+    ;; named swept relations after the negative walk, journaling survivors
+    ;; as positive transitions; reply (dred-reseeded R D).
+    [`(dred-reseed ,rels ...)
+     (format "  d->dredReseed(std::vector<std::string>{~a});\n"
+             (string-join (for/list ([r (in-list rels)])
+                            (format "\"~a\"" r)) ", "))]
     [`(begin-update ,expected)
      (format "  d->beginUpdateEpoch(~a);\n" expected)]
     [`(commit-update) "  d->commitUpdateEpoch();\n"]

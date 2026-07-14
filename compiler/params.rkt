@@ -42,12 +42,18 @@
 ;; count-mode value so planning/lowering retain rule support classifications
 ;; and instantiation-injective staging temps, but unlike the `_count` recount
 ;; flavor it uses ordinary exact delta variants and maintains live indices.
-;; Values are #f, 'positive (M1), or 'negative (M3).  The negative flavor has
-;; the dual exact partition and emits -1 contributions.
+;; Values are #f, 'positive (M1), 'negative (M3), or 'negative-rec (M4T).
+;; Both negative flavors share the dual exact partition and -1 contributions;
+;; 'negative-rec additionally puts the maintenance interner in DRed mode
+;; (docs/m4t-contract.md): over-delete on foundation loss with the sidecar
+;; entry retained, and dead candidates absorb later decrements.
 (define maintenance-flavor (make-parameter #f))
 
 (define (negative-maintenance-flavor?)
-  (eq? (maintenance-flavor) 'negative))
+  (memq (maintenance-flavor) '(negative negative-rec)))
+
+(define (dred-maintenance-flavor?)
+  (eq? (maintenance-flavor) 'negative-rec))
 
 ;; The `_count` flavor (docs/incremental.md §8B.1/§6.2, M0): the count-round
 ;; plugin.  Every rule is planned as ONE all-full fire-once version (the

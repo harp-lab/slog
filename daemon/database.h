@@ -780,6 +780,28 @@ public:
     return true;
   }
 
+  // M4T reseed step (docs/m4t-contract.md) for one journaled candidate: if
+  // surviving support remains in the retained sidecar entry, reinsert the
+  // row into every live index; a candidate with no entry reached zero and
+  // stays absent.  Reseed adds no support contribution -- the surviving
+  // counters are already exact.  Idempotent for an already-live row.
+  bool dredReseedRow(const u64* t, bool& restored)
+  {
+    restored = false;
+    if (!counted || count_sidecar == nullptr) return false;
+    if (hasLiveTuple(t)) return true;
+    const u16 b = buckethash(t[0]);
+    u64 word = 0;
+    if (!count_sidecar[b]->getPayload(t, countKeyArity(), word))
+      return true;
+    // A retained entry must still carry support; a stored zero would give
+    // absence two representations and corrupt the coverage audit.
+    if (!cnt_present(word)) return false;
+    insertTupleAllIndicesPreservingCounts(t);
+    restored = true;
+    return true;
+  }
+
   static void deleteCountArray(Index**& side)
   {
     if (!side) return;
@@ -1719,10 +1741,22 @@ public:
   // M1's certified positive-input path has already updated the sidecar in
   // the same transaction, so its physical index insert must not trigger the
   // conservative generic invalidation above.
+  //
+  // Both maintained point mutations cover every registered full ordering,
+  // not just the running flavor's master: distinct flavors legitimately
+  // requisition distinct orderings on one resident relation (e.g. a
+  // semantic (0 1) beside a maintenance (1 0)), and a maintained flush must
+  // leave them all authoritative for whichever stratum reads them next.
+  // Seeded-only orderings are excluded on both sides -- they are maintained
+  // only in externally-seeded runs and are never authoritative content.
   void insertTupleAllIndicesPreservingCounts(const u64* t)
   {
     for (const auto& it : indices)
+    {
+      if (seeded_orderings.find(it.first) != seeded_orderings.end())
+        continue;
       it.second[buckethash(t[it.first[0]])]->insertTuple(t, it.first.data());
+    }
   }
 
   bool removeTupleAllIndicesPreservingCounts(const u64* t)
@@ -1731,6 +1765,8 @@ public:
     bool complete = true;
     for (const auto& it : indices)
     {
+      if (seeded_orderings.find(it.first) != seeded_orderings.end())
+        continue;
       const bool removed = it.second[buckethash(t[it.first[0]])]
                              ->removeTuple(t, it.first.data());
       found = found || removed;
@@ -2234,6 +2270,52 @@ public:
         for (u64 v : row) b->data[b->usage++] = v;
       }
       rel->sendBatch(b);
+    }
+  }
+
+  // M4T reseed (docs/m4t-contract.md §4.6): after the negative walk settles,
+  // restore every over-deleted candidate whose recursive support survived
+  // and leave the rest absent.  Candidates are exactly this epoch's
+  // negative-journal rows for the named (swept) relations; each survivor
+  // enters the positive journal so the M1 rebuild and downstream consumers
+  // stage it like any other absent-to-present transition.
+  void dredReseedCandidates(const std::vector<std::string>& names,
+                            u64& reseeded, u64& discarded)
+  {
+    reseeded = 0;
+    discarded = 0;
+    if (!update_epoch_active)
+    {
+      update_epoch_valid = false;
+      return;
+    }
+    for (const std::string& name : names)
+    {
+      Relation* rel = getRelation(name);
+      if (rel == nullptr) continue;
+      std::vector<std::vector<u64>> rows;
+      {
+        std::lock_guard<std::mutex> lk(update_transition_mutex);
+        auto it = update_negative_transitions.find(rel->getVersionId());
+        if (it == update_negative_transitions.end()) continue;
+        rows.assign(it->second.begin(), it->second.end());
+      }
+      for (const std::vector<u64>& row : rows)
+      {
+        bool restored = false;
+        if (!rel->dredReseedRow(row.data(), restored))
+        {
+          update_epoch_valid = false;
+          continue;
+        }
+        if (restored)
+        {
+          recordUpdateTransition(rel, row.data(), 1);
+          ++reseeded;
+        }
+        else
+          ++discarded;
+      }
     }
   }
 

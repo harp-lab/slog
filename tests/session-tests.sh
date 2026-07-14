@@ -212,8 +212,9 @@ expect "b2-dist-kept"   "(dist 3)" out/sess-b2s.log
 # --- B4+B5: the routing rule (compiler/session.rkt flush) -------------------
 # Queued signed batches route per §0.5/M1: certified positive plain-table
 # cones use support maintenance; a same-point add/delete pair
-# collapses to an empty flush ("(flush 0)", content untouched); a deletion
-# routes the union cone through clear-and-rerun ("(route rerun N M)").
+# collapses to an empty flush ("(flush 0)", content untouched); since M4T a
+# deletion into this recursive cone takes the DRed sweep rather than
+# clear-and-rerun (docs/m4t-contract.md).
 timeout 600 racket tests/api/session-drive.rkt \
   run:tests/session/base_input.slog \
   batch+:edge,1,2 batch+:edge,2,3 batch+:edge,3,4 flush \
@@ -225,7 +226,8 @@ expect "b4-route-delta"   "(route maintain 1)" out/sess-b4.log
 expect "b4-add-applied"   "(dumpdone 10)" out/sess-b4.log
 expect "b4-collapse"      "(flush 0)" out/sess-b4.log
 expect "b4-collapse-kept" "(dumpdone 4)" out/sess-b4.log
-expect "b4-route-rerun"   "(route rerun 1 " out/sess-b4.log
+expect "b4-route-sweep"   "(route maintain-recursive-negative 1)" out/sess-b4.log
+expect "b4-del-settled"   "(update-committed 3 counts-valid)" out/sess-b4.log
 expect "b4-del-applied"   "(dumpdone 6)" out/sess-b4.log
 
 # a monotone ADD whose cone crosses a negation still routes to rerun
@@ -1123,13 +1125,14 @@ else
   echo "FAIL m3-inherit-counts"; FAIL=$((FAIL+1))
 fi
 
-# A recursive producer is not admitted by the acyclicity certificate.
+# A recursive producer is not admitted by M3's acyclicity certificate; since
+# M4T it takes the recursive sweep instead of clear-and-rerun.
 timeout 900 racket tests/api/session-drive.rkt \
   run:tests/session/base_input.slog \
   batch+:edge,1,2 batch+:edge,2,3 flush \
   batch-:edge,1,2 flush dump-rel:path \
   > out/sess-m3-cycle-fallback.log 2>&1
-expect "m3-cycle-fallback" "(route rerun 1 1)" out/sess-m3-cycle-fallback.log
+expect "m3-cycle-recursive-route" "(route maintain-recursive-negative 1)" out/sess-m3-cycle-fallback.log
 expect "m3-cycle-content" "(dumpdone 1)" out/sess-m3-cycle-fallback.log
 
 # Random legal signed streams (including mixed batches and delete/re-add
@@ -1403,13 +1406,12 @@ timeout 600 racket tests/api/session-drive.rkt \
 expect "m03-arm-row"   " 100) 0 1 0)" out/sess-counts-m03d.log
 expect "m03-arm-state" "(cnt div_by_zero 0 1)" out/sess-counts-m03d.log
 
-# --- M4T pins: recursive-deletion fixtures (docs/m4t-contract.md) -----------
-# The executable fixtures assert today's fallback route together with the
-# oracle content and forced-recount sidecars the precise sweep must
-# reproduce when these pins flip.  Positive edits into the same cones
-# already take counted maintenance.
+# --- M4T slice 1: recursive plain-table deletion (docs/m4t-contract.md) -----
+# Each fixture settles on the precise sweep/reseed/rebuild route and its
+# maintained sidecar must equal a forced fresh recount.
 
-# §5.2 symmetric cycle: proof counting alone would strand both tuples.
+# §5.2 symmetric cycle: proof counting alone would strand both tuples; the
+# sweep over-deletes the pair and reseeds neither.
 timeout 900 racket tests/api/session-drive.rkt \
   run:tests/session/m4t_symmetric_cycle.slog \
   batch+:r0,1,2 flush dump-rel:r recount dump-counts:r \
@@ -1418,56 +1420,100 @@ timeout 900 racket tests/api/session-drive.rkt \
 expect "m4t-cycle-positive-maintained" "(route maintain 1)" out/sess-m4t-cycle.log
 expect "m4t-cycle-copy-counts" "(countrow r 1 2 0 1 1)" out/sess-m4t-cycle.log
 expect "m4t-cycle-swap-counts" "(countrow r 2 1 0 0 1)" out/sess-m4t-cycle.log
-expect "m4t-cycle-fallback" "(route rerun 1 1)" out/sess-m4t-cycle.log
+expect "m4t-cycle-sweep" "(route maintain-recursive-negative 1)" out/sess-m4t-cycle.log
+expect "m4t-cycle-discards" "(dred-reseeded 0 2)" out/sess-m4t-cycle.log
+expect "m4t-cycle-settled" "(update-committed 2 counts-valid)" out/sess-m4t-cycle.log
 expect "m4t-cycle-emptied" "(dumpdone 0)" out/sess-m4t-cycle.log
 expect "m4t-cycle-zero-counted" "(countdone r 0)" out/sess-m4t-cycle.log
 
 # §5.3 over-delete and refound: path(1,4) keeps a surviving derivation
-# (rec 2 -> 1) and path(1,5)'s only support returns with it.
+# (rec 2 -> 1) and is reseeded; path(1,5) reaches zero and is relearned
+# from the reseeded premise during the positive rebuild.
 timeout 900 racket tests/api/session-drive.rkt \
   run:tests/session/m4t_diamond.slog \
   batch+:edge,1,2 batch+:edge,2,4 batch+:edge,1,3 batch+:edge,3,4 \
   batch+:edge,4,5 flush \
   dump-rel:path recount dump-counts:path \
-  batch-:edge,1,2 flush dump-rel:path recount-force dump-counts:path \
+  batch-:edge,1,2 flush dump-rel:path dump-counts:path \
+  recount-force dump-counts:path \
   > out/sess-m4t-diamond.log 2>&1
 expect "m4t-diamond-before" "(dumpdone 9)" out/sess-m4t-diamond.log
 expect "m4t-diamond-two-routes" "(countrow path 1 4 0 0 2)" out/sess-m4t-diamond.log
-expect "m4t-diamond-fallback" "(route rerun 1 1)" out/sess-m4t-diamond.log
+expect "m4t-diamond-sweep" "(route maintain-recursive-negative 1)" out/sess-m4t-diamond.log
+expect "m4t-diamond-reseed" "(dred-reseeded 1 2)" out/sess-m4t-diamond.log
+expect "m4t-diamond-rebuild" "(route maintain-positive 1)" out/sess-m4t-diamond.log
+expect "m4t-diamond-settled" "(update-committed 2 counts-valid)" out/sess-m4t-diamond.log
 expect "m4t-diamond-after" "(dumpdone 8)" out/sess-m4t-diamond.log
-expect "m4t-diamond-refound" "(countrow path 1 4 0 0 1)" out/sess-m4t-diamond.log
-expect "m4t-diamond-relearn" "(countrow path 1 5 0 0 1)" out/sess-m4t-diamond.log
+if [ "$(grep -cF '(countrow path 1 4 0 0 1)' out/sess-m4t-diamond.log)" -eq 2 ] \
+   && [ "$(grep -cF '(countrow path 1 5 0 0 1)' out/sess-m4t-diamond.log)" -ge 2 ]; then
+  echo "PASS m4t-diamond-maintained-equals-recount"; PASS=$((PASS+1))
+else
+  echo "FAIL m4t-diamond-maintained-equals-recount"; FAIL=$((FAIL+1))
+fi
 
 # Repeated occurrences: closure by self-join over the swept relation; the
-# cut cycle strands only three rows, one founded purely recursively.
+# cut cycle strands three rows, one (r(2,1)) founded purely recursively and
+# restored by reseed from surviving recursive support.
 timeout 900 racket tests/api/session-drive.rkt \
   run:tests/session/m4t_selfjoin.slog \
   batch+:r0,1,2 batch+:r0,2,3 batch+:r0,3,1 flush \
   dump-rel:r recount dump-counts:r \
-  batch-:r0,1,2 flush dump-rel:r recount-force dump-counts:r \
+  batch-:r0,1,2 flush dump-rel:r dump-counts:r \
+  recount-force dump-counts:r \
   > out/sess-m4t-selfjoin.log 2>&1
 expect "m4t-selfjoin-before" "(dumpdone 9)" out/sess-m4t-selfjoin.log
 expect "m4t-selfjoin-dense" "(countrow r 2 1 0 0 3)" out/sess-m4t-selfjoin.log
-expect "m4t-selfjoin-fallback" "(route rerun 1 1)" out/sess-m4t-selfjoin.log
+expect "m4t-selfjoin-sweep" "(route maintain-recursive-negative 1)" out/sess-m4t-selfjoin.log
+expect "m4t-selfjoin-reseeds" "(dred-reseeded 1 6)" out/sess-m4t-selfjoin.log
+expect "m4t-selfjoin-settled" "(update-committed 2 counts-valid)" out/sess-m4t-selfjoin.log
 expect "m4t-selfjoin-after" "(dumpdone 3)" out/sess-m4t-selfjoin.log
-expect "m4t-selfjoin-reseed" "(countrow r 2 1 0 0 1)" out/sess-m4t-selfjoin.log
-expect "m4t-selfjoin-copy1" "(countrow r 2 3 0 1 0)" out/sess-m4t-selfjoin.log
-expect "m4t-selfjoin-copy2" "(countrow r 3 1 0 1 0)" out/sess-m4t-selfjoin.log
+if [ "$(grep -cF '(countrow r 2 1 0 0 1)' out/sess-m4t-selfjoin.log)" -eq 2 ] \
+   && [ "$(grep -cF '(countrow r 2 3 0 1 0)' out/sess-m4t-selfjoin.log)" -eq 2 ] \
+   && [ "$(grep -cF '(countrow r 3 1 0 1 0)' out/sess-m4t-selfjoin.log)" -eq 2 ]; then
+  echo "PASS m4t-selfjoin-maintained-equals-recount"; PASS=$((PASS+1))
+else
+  echo "FAIL m4t-selfjoin-maintained-equals-recount"; FAIL=$((FAIL+1))
+fi
 
-# Two SCC strata over an acyclic bridge: net transitions must cross both
-# boundaries; positive maintenance already spans the same three strata.
+# Two SCC strata over an acyclic bridge: both sweeps run inside one
+# topological negative walk and the cancelling cascade crosses the bridge.
 timeout 900 racket tests/api/session-drive.rkt \
   run:tests/session/m4t_bridge.slog \
   batch+:edge1,1,2 batch+:edge1,2,1 flush \
   dump-rel:path1 dump-rel:path2 recount dump-counts:path2 \
-  batch-:edge1,2,1 flush dump-rel:path1 dump-rel:path2 \
+  batch-:edge1,2,1 flush dump-rel:path1 dump-rel:path2 dump-counts:path2 \
   recount-force dump-counts:path2 \
   > out/sess-m4t-bridge.log 2>&1
 expect "m4t-bridge-positive-maintained" "(route maintain 3)" out/sess-m4t-bridge.log
 expect "m4t-bridge-before" "(countrow path2 1 2 0 1 2)" out/sess-m4t-bridge.log
-expect "m4t-bridge-fallback" "(route rerun 3 3)" out/sess-m4t-bridge.log
-expect "m4t-bridge-after" "(countrow path2 1 2 0 1 0)" out/sess-m4t-bridge.log
-expect "m4t-bridge-content" "(countdone path2 1)" out/sess-m4t-bridge.log
+expect "m4t-bridge-sweep" "(route maintain-recursive-negative 3)" out/sess-m4t-bridge.log
+expect "m4t-bridge-discards" "(dred-reseeded 0 6)" out/sess-m4t-bridge.log
+expect "m4t-bridge-settled" "(update-committed 2 counts-valid)" out/sess-m4t-bridge.log
+if [ "$(grep -cF '(countrow path2 1 2 0 1 0)' out/sess-m4t-bridge.log)" -eq 2 ]; then
+  echo "PASS m4t-bridge-maintained-equals-recount"; PASS=$((PASS+1))
+else
+  echo "FAIL m4t-bridge-maintained-equals-recount"; FAIL=$((FAIL+1))
+fi
+
+# Mixed signs in one epoch: the sweep, reseed, and a genuinely new edge all
+# settle in one revision; path(2,5) ends with copy AND recursive support.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4t_diamond.slog \
+  batch+:edge,1,2 batch+:edge,2,4 batch+:edge,1,3 batch+:edge,3,4 \
+  batch+:edge,4,5 flush \
+  batch-:edge,1,2 batch+:edge,2,5 flush dump-rel:path dump-counts:path \
+  recount-force dump-counts:path \
+  > out/sess-m4t-mixed.log 2>&1
+expect "m4t-mixed-sweep" "(route maintain-recursive-negative 1)" out/sess-m4t-mixed.log
+expect "m4t-mixed-reseed" "(dred-reseeded 1 2)" out/sess-m4t-mixed.log
+expect "m4t-mixed-rebuild" "(route maintain-positive 1)" out/sess-m4t-mixed.log
+expect "m4t-mixed-settled" "(update-committed 2 counts-valid)" out/sess-m4t-mixed.log
+expect "m4t-mixed-content" "(dumpdone 8)" out/sess-m4t-mixed.log
+if [ "$(grep -cF '(countrow path 2 5 0 1 1)' out/sess-m4t-mixed.log)" -eq 2 ]; then
+  echo "PASS m4t-mixed-maintained-equals-recount"; PASS=$((PASS+1))
+else
+  echo "FAIL m4t-mixed-maintained-equals-recount"; FAIL=$((FAIL+1))
+fi
 
 # An edit that targets a recursive head itself stays outside the M4T slice
 # permanently: overlay presence semantics are not foundation semantics.

@@ -88,6 +88,14 @@ inline bool cnt_present(u64 w)
   return cnt_input(w) || cnt_nonrec(w) + cnt_rec(w) > 0;
 }
 
+// foundation(t) := input | nonrec > 0 (§3.1).  The M4T sweep over-deletes on
+// foundation loss even while rec stays positive: recursive support alone may
+// be an unfounded cycle, which only the candidate/reseed protocol can decide.
+inline bool cnt_foundation(u64 w)
+{
+  return cnt_input(w) || cnt_nonrec(w) > 0;
+}
+
 // Per-batch contribution kind (docs/incremental.md §8B.1): rows produced by
 // the counted flavors travel through the ordinary send-shard/delta transport,
 // tagged on their InsertBatch with the emitting rule's static classification

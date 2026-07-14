@@ -633,6 +633,15 @@ public:
          + std::to_string(names.size()) + ")");
   }
 
+  void dredReseed(const std::vector<std::string>& names)
+  {
+    if (refuseIfSuspended("dred-reseed")) return;
+    u64 reseeded = 0, discarded = 0;
+    database->dredReseedCandidates(names, reseeded, discarded);
+    emit("(dred-reseeded " + std::to_string(reseeded) + " "
+         + std::to_string(discarded) + ")");
+  }
+
   void emitUpdateCountsValid()
   {
     emit(database->updateCountsValid() ? "(update-counts-valid 1)"

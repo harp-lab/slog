@@ -276,8 +276,9 @@
               "M1 maintenance supports positive-arity plain-table heads only: ~a"
               name))
      ((emit-lines 2)
-      (format "s->addTask(phase_intern, new slog::MaintainTask<~a>(db, db->getRelation(\"~a\"), ~a, 0));"
-              N name (u16-array-lit intern-ord)))]
+      (format "s->addTask(phase_intern, new slog::MaintainTask<~a>(db, db->getRelation(\"~a\"), ~a, 0, ~a));"
+              N name (u16-array-lit intern-ord)
+              (if (dred-maintenance-flavor?) "true" "false")))]
     [else
      ((emit-lines 2)
       (format "for (u16 b = 0; b < ~a; ++b)" bucket-count)

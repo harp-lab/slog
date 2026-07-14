@@ -514,7 +514,8 @@
   ;; the name also becomes the daemon stratum name and rides into generated
   ;; identifiers
   (define hash-name
-    (cond [(negative-maintenance-flavor?) (string-append proghash "_maint3neg")]
+    (cond [(dred-maintenance-flavor?) (string-append proghash "_maint4neg")]
+          [(negative-maintenance-flavor?) (string-append proghash "_maint3neg")]
           [(maintenance-flavor) (string-append proghash "_maint1")]
           [(delta-entry-flavor) (string-append proghash "_delta")]
           [(count-flavor) (string-append proghash "_count")]
@@ -604,7 +605,7 @@
 ;; stratum names and `.cprog` paths remain stable.  emit-stratum-cpp swaps the
 ;; parameter's #t for the full count-mode value once the stratum's dynamic set
 ;; is in hand.
-(define incremental-flavor-abi "m6l2-v1")
+(define incremental-flavor-abi "m4t-v1")
 
 (define (ensure-count-so job)
   (match-define (list proghash _te _st _dm _dc) job)
@@ -649,6 +650,24 @@
     (build-so cpps so #:opt "-O0"))
   so)
 
+;; M4T recursive negative maintenance (docs/m4t-contract.md): the same dual
+;; exact partition, with the maintenance interner in DRed mode so a
+;; recursive stratum's sweep over-deletes on foundation loss, retains dead
+;; candidates' sidecar entries, and lets retained transition rows drive the
+;; next round until the negative fixpoint.
+(define (ensure-recursive-negative-maintenance-so job)
+  (match-define (list proghash _te _st _dm _dc) job)
+  (define so
+    (fullpath (format "build/~a_maint4neg.~a.O0.so"
+                      proghash incremental-flavor-abi)))
+  (unless (file-exists? so)
+    (define cpps (parameterize ([maintenance-flavor 'negative-rec]
+                                [count-flavor #t]
+                                [semijoin-filters-enabled #f])
+                   (emit-stratum-cpp job)))
+    (build-so cpps so #:opt "-O0"))
+  so)
+
 ;; -----------------------------------------------------------------------
 ;; Tiered compilation entry point (docs/fast-compile.md).
 ;;
@@ -673,7 +692,7 @@
 ;;                       preferred in every mode (a re-run is pure -O2).
 
 (struct sbuild (hash o2-path runnable upgrade delta count maintenance
-                     negative-maintenance))
+                     negative-maintenance recursive-negative-maintenance))
 ;; `delta` -- a thunk returning the delta-entry flavor's .so path, building
 ;; it on first call (ensure-delta-so; docs/incremental.md 0.B5).  The
 ;; session driver forces it only when the routing rule picks delta-entry.
@@ -909,14 +928,16 @@
                  (lambda () (ensure-delta-so job))
                  (lambda () (ensure-count-so job))
                  (lambda () (ensure-maintenance-so job))
-                 (lambda () (ensure-negative-maintenance-so job)))]
+                 (lambda () (ensure-negative-maintenance-so job))
+                 (lambda () (ensure-recursive-negative-maintenance-so job)))]
         ;; -O0-only mode with a warm -O0 artifact: reuse it, no upgrade.
         [(and (equal? mode "0") (file-exists? o0so))
          (sbuild proghash #f (lambda () (cons o0so 'o0)) #f
                  (lambda () (ensure-delta-so job))
                  (lambda () (ensure-count-so job))
                  (lambda () (ensure-maintenance-so job))
-                 (lambda () (ensure-negative-maintenance-so job)))]
+                 (lambda () (ensure-negative-maintenance-so job))
+                 (lambda () (ensure-recursive-negative-maintenance-so job)))]
         ;; TIERED with a warm -O0 artifact but no -O2 yet (e.g. a prior run
         ;; exited before the background -O2 landed): run the cached -O0 NOW --
         ;; no re-emit, no -O0 rebuild -- and queue the background -O2 only if we
@@ -932,7 +953,8 @@
                  (lambda () (ensure-delta-so job))
                  (lambda () (ensure-count-so job))
                  (lambda () (ensure-maintenance-so job))
-                 (lambda () (ensure-negative-maintenance-so job)))]
+                 (lambda () (ensure-negative-maintenance-so job))
+                 (lambda () (ensure-recursive-negative-maintenance-so job)))]
         [else
          (define cpps (emit-stratum-cpp job))   ; write .cpp(s) now (fast, main thread)
          (case mode
@@ -942,14 +964,16 @@
                     #f (lambda () (ensure-delta-so job))
                  (lambda () (ensure-count-so job))
                  (lambda () (ensure-maintenance-so job))
-                 (lambda () (ensure-negative-maintenance-so job)))]
+                 (lambda () (ensure-negative-maintenance-so job))
+                 (lambda () (ensure-recursive-negative-maintenance-so job)))]
            [("0")
             (sbuild proghash #f
                     (pooled-eager (lambda () (build-so cpps o0so #:opt "-O0") (cons o0so 'o0)))
                     #f (lambda () (ensure-delta-so job))
                  (lambda () (ensure-count-so job))
                  (lambda () (ensure-maintenance-so job))
-                 (lambda () (ensure-negative-maintenance-so job)))]
+                 (lambda () (ensure-negative-maintenance-so job))
+                 (lambda () (ensure-recursive-negative-maintenance-so job)))]
            [else ; tiered: eager -O0 to run now, then upgrade cluster-by-cluster to
                  ;; -O2 as the background fills the .o cache (docs/fast-compile.md §14)
             ;; claim-gate the -O2 so concurrent/successive runs that all miss the
@@ -962,6 +986,7 @@
                     (lambda () (ensure-delta-so job))
                     (lambda () (ensure-count-so job))
                     (lambda () (ensure-maintenance-so job))
-                    (lambda () (ensure-negative-maintenance-so job)))])])))
+                    (lambda () (ensure-negative-maintenance-so job))
+                 (lambda () (ensure-recursive-negative-maintenance-so job)))])])))
   (spawn-detached-o2-batch (reverse o2-cmds))
   (values strata partition edb-boundary frozen-dirs groups))

@@ -104,7 +104,8 @@
 ;; legacy delta-entry (0.B5), `_count` (§8B.1/M0), and `_maint1` (M1)
 ;; flavors.
 (struct sinfo (so dyn reads heads acyclic? delta count maintenance
-                  negative-maintenance) #:transparent)
+                  negative-maintenance recursive-negative-maintenance)
+  #:transparent)
 
 ;; One live session.
 ;;   strata-info : list of (cons scc sinfo), oldest first -- scc is the
@@ -252,7 +253,8 @@
                          (sinfo so dyn reads heads acyclic?
                                 (sbuild-delta sb) (sbuild-count sb)
                                 (sbuild-maintenance sb)
-                                (sbuild-negative-maintenance sb))))))
+                                (sbuild-negative-maintenance sb)
+                                (sbuild-recursive-negative-maintenance sb))))))
   (send-stratum! s so))
 
 ;; The count round (docs/incremental.md §8B.1-§8B.2, M0.4c): rebuild a
@@ -1487,6 +1489,23 @@
   (define m3-eligible?
     (and structurally-certified? counts-certified? has-negative?
          (for/and ([info (in-list union-cone)]) (sinfo-acyclic? info))))
+  ;; M4T slice 1 (docs/m4t-contract.md): a plain-table cone mixing certified
+  ;; acyclic strata with recursive SCC strata takes the DRed sweep, provided
+  ;; no edited relation is itself dynamic in a recursive stratum (overlay
+  ;; presence semantics equal foundation semantics only for rows without
+  ;; recursive support) and every touched relation binds a single version
+  ;; (inheritance/version edges keep clear-and-rerun until certified).
+  (define m4t-eligible?
+    (and structurally-certified? counts-certified? has-negative?
+         (null? lattice-names)
+         (for/or ([info (in-list union-cone)])
+           (not (sinfo-acyclic? info)))
+         (for/and ([r (in-list maintenance-names)])
+           (= 1 (length (hash-ref chains r '()))))
+         (not (for*/or ([g (in-list tip-groups)]
+                        [info (in-list union-cone)]
+                        #:unless (sinfo-acyclic? info))
+                (and (member (first g) (sinfo-dyn info)) #t)))))
   (define m6l2-eligible?
     (and structurally-certified? counts-certified?
          (pair? lattice-names) (pair? lattice-consumer-cone)))
@@ -1685,6 +1704,61 @@
         (echo! s "(maintenance-unavailable negative-input)")
         (apply-edits!)
         (rerun-cone!)])]
+    [m4t-eligible?
+     ;; M4T (docs/m4t-contract.md): the ordinary topological negative walk,
+     ;; with each recursive stratum swept by the DRed flavor; then reseed the
+     ;; rec>0 candidates once the WHOLE walk settles (every journaled row is
+     ;; still absent from FULL while downstream stages its DeltaMinus); then
+     ;; the existing M1 positive phase rebuilds -- even for a negative-only
+     ;; batch, since reseeded rows are absent-to-present transitions.
+     (define settled? #t)
+     (define reseeded 0)
+     (apply-negative-edits!)
+     (if negative-apply-ok?
+         (begin
+           (echo! s (format "(route maintain-recursive-negative ~a)"
+                            (length union-cone)))
+           (run-maintenance-phase!
+            union-cone -1
+            (lambda (info)
+              (if (sinfo-acyclic? info)
+                  ((sinfo-negative-maintenance info))
+                  ((sinfo-recursive-negative-maintenance info))))))
+         (begin
+           (set! settled? #f)
+           (echo! s "(maintenance-unavailable negative-input)")))
+     (when (and settled? (not (query-update-counts-valid! s)))
+       (set! settled? #f))
+     (when settled?
+       (define swept
+         (remove-duplicates
+          (for*/list ([info (in-list union-cone)]
+                      #:unless (sinfo-acyclic? info)
+                      [d (in-list (sinfo-dyn info))])
+            d)))
+       (session-action! s `(dred-reseed ,@swept))
+       (define reply (read-line (session-out s)))
+       (echo! s reply)
+       (match (regexp-match #px"^\\(dred-reseeded (\\d+) (\\d+)\\)$" reply)
+         [(list _ r _) (set! reseeded (string->number r))]
+         [_ (set! settled? #f)])
+       (when (and settled? (not (query-update-counts-valid! s)))
+         (set! settled? #f)))
+     (when (and settled? (or (> reseeded 0) has-positive?))
+       (when has-positive? (apply-positive-edits!))
+       (if positive-apply-ok?
+           (begin
+             (echo! s (format "(route maintain-positive ~a)"
+                              (length union-cone)))
+             (run-maintenance-phase!
+              union-cone 1 (lambda (info) ((sinfo-maintenance info))))
+             (unless (query-update-counts-valid! s) (set! settled? #f)))
+           (begin
+             (set! settled? #f)
+             (echo! s "(maintenance-unavailable positive-input)"))))
+     (unless settled?
+       (apply-edits!)
+       (rerun-cone!))]
     [m1-eligible?
      (apply-positive-edits!)
      (if positive-apply-ok?

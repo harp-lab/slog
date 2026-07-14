@@ -50,6 +50,34 @@ else
   bad "m3-pause-resume (see $log)"
 fi
 
+# M4T slice 1: independent recursive signed-stream oracles per worker count.
+# Random edge toggles over a dense cyclic universe drive sweeps, reseeds,
+# relearns, and the cancelling downstream cascade; every flush is diffed
+# (content and sidecars) against a fresh rerun plus forced recount.
+for spec in 1:6101 2:6102 8:6108; do
+  threads="${spec%%:*}"
+  seed="${spec##*:}"
+  log="out/m4t-stress-t${threads}-s${seed}.log"
+  if SLOG_THREADS="$threads" timeout 1200 \
+       racket tests/api/recursive-stream-fuzz.rkt "$seed" > "$log" 2>&1 \
+     && grep -qF "m4t-fuzz-ok $seed" "$log"; then
+    ok "m4t-fuzz-t${threads}-s${seed}"
+  else
+    bad "m4t-fuzz-t${threads}-s${seed} (see $log)"
+  fi
+done
+
+# Force one sweep/reseed/rebuild epoch across pause/resume boundaries.
+log="out/m4t-pause-stress.log"
+if SLOG_THREADS=4 SLOG_MAX_MS=1 timeout 1200 \
+     racket tests/api/recursive-pause-stress.rkt > "$log" 2>&1 \
+   && grep -qF "m4t-pause-stress-ok" "$log"; then
+  ok "m4t-pause-resume"
+  grep -F "m4t-pause-stress-ok" "$log"
+else
+  bad "m4t-pause-resume (see $log)"
+fi
+
 # M6L slice 2: each worker count gets an independent signed contributor stream
 # diffed after every flush against a fresh unseeded one-shot session.
 for spec in 1:5101 2:5102 8:5108; do

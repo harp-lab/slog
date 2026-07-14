@@ -1154,6 +1154,13 @@ public:
 // A single task per relation owns the sidecar and all master buckets; signed
 // maintenance is latency-oriented and this avoids cross-ordering index races
 // while keeping the read phase fully parallel.
+//
+// With `dred` set (the M4T sweep, docs/m4t-contract.md) the negative fold
+// policy changes in exactly two ways: a live row is over-deleted on
+// FOUNDATION loss rather than presence loss (its sidecar entry survives
+// while rec > 0), and a row absent from the live indices that still owns a
+// sidecar entry is a dead candidate that legally absorbs further decrements
+// without re-staging or invalidating.
 template <u16 A>
 class MaintainTask : public Task
 {
@@ -1162,10 +1169,11 @@ class MaintainTask : public Task
   std::array<u16, A> ord;
   Index** roots;
   Index** side;
+  bool dred;
 public:
   MaintainTask(Database* _db, Relation* _rel,
-               const std::array<u16, A>& _ord, u16)
-    : db(_db), rel(_rel), ord(_ord)
+               const std::array<u16, A>& _ord, u16, bool _dred = false)
+    : db(_db), rel(_rel), ord(_ord), dred(_dred)
   {
     std::vector<u16> ordv(ord.begin(), ord.end());
     roots = rel->getIndex(ordv, false);
@@ -1214,12 +1222,20 @@ public:
         {
           if (!ok)
             row[0] = slog_null;
+          else if (dred && !was_live)
+          {
+            // Dead candidate: over-deleted earlier this epoch with its
+            // sidecar entry retained.  The fold above already absorbed the
+            // decrement (a missing entry underflows into !ok instead).  It
+            // never re-stages -- each tuple enters candidacy at most once.
+            row[0] = slog_null;
+          }
           else if (!was_live || cnt_present(word) != was_live)
           {
             db->invalidateUpdateCounts();
             row[0] = slog_null;
           }
-          else if (cnt_present(next))
+          else if (dred ? cnt_foundation(next) : cnt_present(next))
             row[0] = slog_null;       // support-only loss
           else
           {
@@ -1240,7 +1256,10 @@ public:
           row[0] = slog_null;
         else
         {
-          root->insert(key);
+          // Every registered non-seeded ordering, not just this flavor's
+          // master: other flavors' orderings must stay authoritative
+          // (matching removeTupleAllIndicesPreservingCounts on the way out).
+          rel->insertTupleAllIndicesPreservingCounts(row);
           db->recordUpdateTransition(rel, row, 1);
         }
       }

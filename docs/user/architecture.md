@@ -348,12 +348,18 @@ manifests to compute a downstream cone.
 
 Capability-certified positive plain-table changes use counted maintenance,
 including across recursive SCCs. Counted acyclic plain-table deletions use the
-signed M3 path. M6L extends that machinery to an acyclic root lattice by
+signed M3 path. Counted plain-table cones containing recursive SCCs use the
+M4T path for tip-local deletions: a DRed sweep over-deletes each stratum on
+foundation loss, a reseed restores candidates with surviving recursive
+support, and the positive phase rebuilds the rest. M6L extends that machinery
+to an acyclic root lattice by
 counting full `(key, payload)` contributors, repairing the joined payload for
 affected keys, and propagating one coalesced old/final replacement through
-acyclic positive plain-table consumers. Unsupported changes--including
-recursive lattice producers or consumers, negation, downstream lattice
-writers, structs, nullary relations, and lattice inheritance--clear affected
+acyclic positive plain-table consumers. Unsupported changes--including edits
+targeting recursive head relations, recursive lattice producers or consumers,
+negation, downstream lattice
+writers, structs, nullary relations, and version inheritance in a recursive
+deletion cone--clear affected
 derived versions and rerun their suffix. Anchored
 changes temporarily bind strata to the environment at an old position and
 replay later events in order.

@@ -1,6 +1,6 @@
 # Incremental Slog implementation ledger
 
-**Reviewed:** 2026-07-13 after the M6L slices 1–2 hardening checkpoint
+**Reviewed:** 2026-07-14 after the M4T slice 1 checkpoint
 **Normative design:** `docs/incremental.md`
 
 This file records what the tree currently implements and where it differs
@@ -38,24 +38,22 @@ batch limit.
 
 ## Resume point
 
-Begin a future incremental-maintenance review with this ledger, then read the
-M4T milestone and §4.5–§4.7 in `docs/incremental.md`. The narrower
-`docs/m6l-contract.md` records the completed lattice admission boundary; it is
-not the next implementation queue.
+Begin a future incremental-maintenance review with this ledger, then read
+`docs/m4t-contract.md` (implemented) and §4.5–§4.7 in `docs/incremental.md`.
+`docs/m6l-contract.md` records the completed lattice admission boundary.
 
-The next milestone is **M4T, recursive deletion for positive plain tables**.
-Its first reviewable vertical slice should:
+M4T slice 1 is shipped. The remaining implementation queue, in the decided
+order, is:
 
-1. pin a focused M4T contract and failing fixtures for an unfounded symmetric
-   cycle and an over-deleted-but-refounded diamond;
-2. admit only counted, positive-arity, positive-only recursive plain-table
-   SCCs reached by a tip-local direct edit, retaining clear-and-rerun for
-   structs, lattices, negation, inheritance, and historical edits;
-3. add a VersionId-local candidate set, negative-round removal, a foundation
-   barrier, reseed, and the existing counted positive rebuild;
-4. compare every settled result and sidecar with a fresh recomputation, then
-   add multi-worker and forced-pause coverage; and
-5. expand admission only after the narrow route is independently certified.
+1. **M4T admission growth** as needed: inheritance/version edges in a
+   recursive deletion cone (their foundation and version-copy contracts need
+   dedicated tests first) and foundation-aware overlay semantics so edits may
+   target recursive head relations.
+2. **M5 — separate struct intern identity from live membership**, the
+   prerequisite for struct-capable deletion; then **M4S** admits struct
+   relations into the DRed capability set.
+3. **M4N — precise stratified negation**, then **M7 — recursive
+   lattice/rank repair**.
 
 The handoff gates are `tests/run-all.sh --quick`, `tests/run-all.sh session`,
 and `tests/run-all.sh incremental-stress`. The complete orchestrator remains
@@ -221,6 +219,46 @@ the arc-end gate.
   `(reason lattice-contributor-recount)`; topology, not storage class, decides
   leaf versus stratified admission.
 
+### M4T slice 1 — recursive plain-table deletion
+
+- **Sweep flavor:** `_maint4neg` shares M3's leftmost-deleted-occurrence
+  partition and signed sinks; only the maintenance interner changes, to DRed
+  mode. A live row is over-deleted on FOUNDATION loss (`direct or nonrec>0`)
+  rather than presence loss, keeping its sidecar entry while any support
+  remains; a row absent from live indices that still owns an entry is a dead
+  candidate absorbing later decrements without re-staging or invalidating.
+  The retained false-transition rows drive the next round through the
+  ordinary fixpoint loop, so rounds, N = FULL, and O = FULL ∪ DeltaMinus come
+  from machinery M3 already shipped.
+- **Candidate state:** the epoch's negative journal plus retained sidecar
+  entries; there is no separate candidate structure. Each tuple enters
+  candidacy at most once because staging requires live membership.
+- **Reseed:** the `dred-reseed` action scans the swept relations' journal
+  rows after the complete negative walk; survivors (`rec > 0`) are reinserted
+  into every live ordering and journaled +1 so the unmodified M1 positive
+  walk performs the rebuild, including relearning zero-count candidates from
+  reseeded premises. Reply: `(dred-reseeded R D)`.
+- **Schedule:** M3's cone-wide negative-then-positive walk with reseed
+  between the phases. Downstream strata stage their DeltaMinus while every
+  journaled row is still absent from FULL — staging a reseeded row while
+  live would double-decrement self-join partitions — and the positive walk
+  runs whenever reseed restored anything, even for negative-only batches. A
+  tuple restored by reseed or relearn reaches downstream in both journals as
+  an exact cancelling cascade.
+- **Routing:** counted, single-version, tip-edited plain-table cones mixing
+  certified acyclic strata (running `_maint3neg`) and recursive SCC strata
+  (running `_maint4neg`), with no lattice in the cone and no edited relation
+  dynamic in a recursive stratum. Fully acyclic cones keep the M3 route.
+  Route messages: `(route maintain-recursive-negative N)`, the reseed
+  report, and the existing positive-walk message.
+- **Substrate fix:** maintained point mutations (`MaintainTask` inserts,
+  `insertTupleAllIndicesPreservingCounts`,
+  `removeTupleAllIndicesPreservingCounts`) now cover every registered
+  non-seeded full ordering. Previously M1 inserts touched only the running
+  flavor's master ordering, silently leaving other flavors' orderings stale
+  — a latent bug that M3's fixtures never exposed because no multi-column
+  head was ever read through a second ordering.
+
 Legacy labels retained by code comments and tests map as follows:
 
 - **A1–A8:** parse, safety, stratification, operationalization, runtime
@@ -255,10 +293,12 @@ These remain explicit capability boundaries or future correctness work.
    both the content-to-ID intern dictionary and live relational membership.
    Struct counts are diagnostic only until M5 separates tombstoned identity
    from join-visible membership.
-2. **Recursive signed deletion is not enabled.** M3 handles acyclic table
-   cones. Recursive SCCs still require M4T's candidate over-deletion,
-   foundation barrier, reseed, and positive rebuild; pure proof counting would
-   retain unfounded cycles.
+2. **Recursive signed deletion is tip-local and plain-table only.** M4T
+   slice 1 handles counted recursive plain-table cones reached by a
+   tip-local direct edit. Edits targeting a recursive head relation itself
+   (overlay presence semantics are not foundation semantics), inheritance
+   or version edges inside a recursive deletion cone, and historical
+   anchors keep clear-and-rerun.
 3. **Precise negation maintenance is absent.** Current absent probes implement
    set construction. M4N still needs anti-delta variants and transition
    scheduling.
@@ -324,6 +364,29 @@ now attributes the pause to the negative maintenance phase itself. The M3
 surface is therefore closed. M6L stratified repair now builds on it; M4T
 remains the separate recursive plain-table deletion milestone.
 
+## M4T slice 1 audit — implemented
+
+Deterministic fixtures settle on the precise route with maintained sidecars
+equal to forced fresh recounts: the §5.2 symmetric unfounded cycle (both
+tuples over-deleted, neither reseeded), the §5.3 diamond with tail
+(`path(1,4)` reseeded from surviving recursive support, `path(1,5)`
+relearned by the rebuild), closure by self-join over the swept relation
+(repeated occurrences across multi-driver rounds; a purely recursively
+founded survivor reseeds), a two-SCC bridge whose sweeps both run inside
+one topological negative walk, and a mixed-sign epoch that deletes,
+reseeds, relearns, and inserts a genuinely new edge in one revision. An
+edit targeting the recursive head itself pins the named fallback.
+
+Randomized recursive signed streams (`tests/api/recursive-stream-fuzz.rkt`)
+toggle edges over a dense cyclic universe for ten flushes and compare every
+flush's content and support sidecars — including an acyclic downstream
+consumer reading the swept relation twice — against fresh rerun-plus-forced-
+recount sessions; the stress harness runs independent seeds under one, two,
+and eight workers. A forced-pause epoch (`recursive-pause-stress.rkt`, 800
+diamonds under `SLOG_MAX_MS=1`) crosses several pause/resume boundaries
+inside the sweep/reseed/rebuild epoch and settles counts-valid with exact
+reseed counts and sizes.
+
 ## M6L slices 1–2 audit — implemented
 
 The deterministic matrix covers losing, winning, final-key, duplicate,
@@ -378,6 +441,15 @@ closed while work moves to M4T.
   rebuild. M3's immediate zero-support point deletion is useful substrate, not
   a foundedness algorithm. M6L similarly needs contributor identity per key,
   rather than treating the currently visible lattice payload as a tuple count.
+- **Every registered ordering is somebody's authority.** M4T's all-orderings
+  removal exposed that M1's maintenance inserts populated only the running
+  flavor's master ordering, leaving the semantic stratum's differently
+  permuted ordering silently stale. Distinct flavors legitimately requisition
+  distinct orderings on one resident relation; a maintained mutation must
+  cover them all (seeded-only orderings excepted), or the next stratum to
+  read a stale one under-derives without any error. Fixture relations whose
+  multi-column heads are never read back masked this for two milestones —
+  new fixtures should include a head that is also a join input.
 
 ## Migration and compatibility
 
