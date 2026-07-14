@@ -3,7 +3,8 @@
 ;; M3 signed-stream differential oracle.  Every editable a/b fact enters via
 ;; the JIT overlay, flushes freely mix legal additions and retractions, and the
 ;; acyclic closure after every flush must equal a fresh run over that
-;; normalized EDB.  Maintained sidecars are also checked against forced recount.
+;; normalized EDB.  The maintained session stays warm for the complete stream;
+;; separate fresh sessions establish the comparison sidecars.
 
 (require "../../compiler/session.rkt")
 
@@ -30,12 +31,12 @@ EOF
           (for/list ([x (in-range 7)]) (cons 'b x))))
 (define initial (list->set (take (shuffle universe) 5)))
 
-;; Five batches of distinct toggles.  Sampling from the whole universe allows
+;; Ten batches of distinct toggles.  Sampling from the whole universe allows
 ;; delete/re-add cycles across batches while each batch still has one final op
 ;; per tuple after normalization.
 (define-values (flushes reverse-models _final-model)
   (for/fold ([fs '()] [models (list initial)] [present initial])
-            ([_ (in-range 5)])
+            ([_ (in-range 10)])
     (define touched (take (shuffle universe) (+ 2 (random 4))))
     (define ops
       (for/list ([f (in-list touched)])
@@ -112,13 +113,10 @@ EOF
      (define (capture! step)
        (define result (snapshot s))
        (define maintained (derived-counts s))
-       (session-recount! s #:force? #t)
-       (define recounted (derived-counts s))
-       (unless (equal? maintained recounted)
-         (eprintf "m3-count-fuzz-FAIL seed ~a step ~a\n  maintained: ~s\n  recounted:  ~s\n"
-                  seed step maintained recounted)
-         (exit 1))
-       (set! snapshots (cons result snapshots)))
+       ;; A same-session force recount would refresh the cache before the next
+       ;; edit and hide accumulated maintenance drift.  Keep this session warm
+       ;; and compare it with the fresh recount below instead.
+       (set! snapshots (cons (list result maintained) snapshots)))
      (for ([f (in-set initial)])
        (session-batch! s '+ (car f) (list (cdr f))))
      (session-flush! s)
@@ -132,11 +130,21 @@ EOF
      (reverse snapshots))))
 
 (define oracle
-  (for/list ([model (in-list models)] [step (in-naturals)])
-    (define oracle-prog (format "out/m3-fuzz-~a-oracle-~a.slog" seed step))
-    (write-prog oracle-prog model)
+  (for/list ([model (in-list models)])
     (with-session
-     (lambda (s) (session-run! s oracle-prog) (snapshot s)))))
+     (lambda (s)
+       (session-run! s base-prog)
+       (for ([rel '(a b)])
+         (define path (format "out/m3-oracle-~a-~a.rows" seed rel))
+         (call-with-output-file path #:exists 'replace
+           (lambda (out)
+             (for ([fact (in-set model)] #:when (eq? (car fact) rel))
+               (fprintf out "~a\n" (cdr fact)))))
+         (session-action! s `(set-overlay-int-file ,rel ,path 1)
+                          (lambda (out) (void (read-line out)))))
+       (session-rerun! s 'a)
+       (session-recount! s #:force? #t)
+       (list (snapshot s) (derived-counts s))))))
 
 (unless (equal? streamed oracle)
   (eprintf "m3-fuzz-FAIL seed ~a\n  streamed: ~s\n  oracle:   ~s\n"

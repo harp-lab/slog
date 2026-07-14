@@ -1,0 +1,9 @@
+;; Unsupported boundary: the lattice head is recursive.
+
+lattice (cost (min int))
+
+table (offer int int)
+table (best int cost)
+
+rule (offer K V) --> (best K V)
+rule (best K V) --> (best K V)

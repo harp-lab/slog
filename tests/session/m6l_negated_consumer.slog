@@ -1,0 +1,13 @@
+;; Unsupported boundary: absence of a closed lattice key is consumed through
+;; stratified negation.
+
+lattice (cost (min int))
+
+table (offer int int)
+table (key int)
+table (best int cost)
+table (missing int)
+
+rule (key 1)
+rule (offer K V) --> (best K V)
+rule (key K) ~(best K) --> (missing K)

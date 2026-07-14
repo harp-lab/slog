@@ -41,6 +41,9 @@
    (session-run! s prog)
    (for ([x (in-range n)]) (session-batch! s '+ 'a (list x)))
    (session-flush! s)
+   ;; Ignore cold-path pauses; the assertion below must be satisfied by the
+   ;; negative maintenance update itself.
+   (set! transcript '())
    (for ([x (in-range removed)]) (session-batch! s '- 'a (list x)))
    (session-flush! s)
 
@@ -64,12 +67,19 @@
      (error 'acyclic-pause-stress "wrong settled sizes: ~s" sizes))
 
    (unless (for/or ([line (in-list transcript)])
-             (regexp-match? #px"^\\(paused " line))
-     (error 'acyclic-pause-stress
-            "time budget did not force a pause; increase N or lower SLOG_MAX_MS"))
-   (unless (for/or ([line (in-list transcript)])
              (regexp-match? #px"^\\(route maintain-negative " line))
      (error 'acyclic-pause-stress "negative update did not enter M3"))
+   (define chronological (reverse transcript))
+   (define negative-start
+     (for/first ([line (in-list chronological)] [i (in-naturals)]
+                 #:when (regexp-match? #px"^\\(route maintain-negative " line))
+       i))
+   (unless (and negative-start
+                (for/or ([line (in-list chronological)] [i (in-naturals)])
+                  (and (> i negative-start)
+                       (regexp-match? #px"^\\(paused " line))))
+     (error 'acyclic-pause-stress
+            "negative maintenance did not pause; increase N or lower SLOG_MAX_MS"))
 
    ;; A fresh version-local count round must accept the maintained contents.
    (session-recount! s #:force? #t)

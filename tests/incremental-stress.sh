@@ -13,6 +13,16 @@ FAIL=0
 ok() { echo "PASS $1"; PASS=$((PASS+1)); }
 bad() { echo "FAIL $1"; FAIL=$((FAIL+1)); }
 
+# Transaction abort, writer audit, maintenance overflow fallback, recount
+# healing, and next-epoch journal hygiene are lattice-specific lifecycle gates.
+log="out/m6l-recovery.log"
+if timeout 1200 racket tests/api/lattice-recovery.rkt > "$log" 2>&1 \
+   && grep -qF "m6l-recovery-ok" "$log"; then
+  ok "m6l-recovery"
+else
+  bad "m6l-recovery (see $log)"
+fi
+
 # One independent signed-stream oracle per representative worker count.  The
 # ordinary session gate retains its fixed 3101/3102 seeds; these vary both
 # scheduling and edit streams.

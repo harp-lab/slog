@@ -1224,6 +1224,143 @@ timeout 900 racket tests/api/session-drive.rkt \
 expect "m6l2-recursive-fallback" "(route rerun 2 2)" out/sess-m6l-recursive-fallback.log
 expect_not "m6l2-recursive-not-admitted" "maintain-lattice-consumers" out/sess-m6l-recursive-fallback.log
 
+# A net contributor change that returns to the epoch-entry payload must emit no
+# consumer replacement.  The same fixture also pins absent->present and
+# present->absent propagation instead of relying on random streams to hit them.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m6l_stratified.slog \
+  batch+:offer,1,5 flush dump-counts:reported \
+  batch-:offer,1,5 batch+:alias,1,5 flush dump-counts:best dump-counts:reported \
+  batch-:alias,1,5 flush dump-counts:best dump-counts:reported \
+  batch+:offer,1,5 flush dump-counts:best dump-counts:reported \
+  > out/sess-m6l-transitions.log 2>&1
+expect_not "m6l2-transition-no-rerun" "(route rerun" out/sess-m6l-transitions.log
+expect "m6l2-transition-absent" "(countdone reported 0)" out/sess-m6l-transitions.log
+if [ "$(grep -cF '(countrow reported 1 5 0 1 0)' out/sess-m6l-transitions.log)" -eq 3 ] \
+   && [ "$(grep -cF '(update-committed ' out/sess-m6l-transitions.log)" -eq 4 ]; then
+  echo "PASS m6l2-net-no-change-and-presence"; PASS=$((PASS+1))
+else
+  echo "FAIL m6l2-net-no-change-and-presence"; FAIL=$((FAIL+1))
+fi
+
+# Scalar lattice kinds share one producer stratum.  This makes the journal
+# VersionId-local while exercising max regression and flat top->constant repair.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m6l_shapes.slog \
+  batch+:imax,1,5 batch+:imax,1,9 batch+:iflat,1,5 batch+:iflat,1,9 flush \
+  dump-tuples:peak dump-tuples:constant lattice-contributor-state \
+  batch-:imax,1,9 batch-:iflat,1,9 flush \
+  dump-tuples:peak dump-tuples:constant dump-counts:peak dump-counts:constant \
+  lattice-contributor-state recount-lattices-force \
+  dump-counts:peak dump-counts:constant \
+  > out/sess-m6l-shapes.log 2>&1
+expect_not "m6l-shapes-no-rerun" "(route rerun" out/sess-m6l-shapes.log
+expect "m6l-shapes-max" "(tuplerow 1 9)" out/sess-m6l-shapes.log
+expect "m6l-shapes-flat-top" "(tuplerow 1 (top))" out/sess-m6l-shapes.log
+expect "m6l-shapes-max-regress" "(countrow peak 1 5 0 1 0)" out/sess-m6l-shapes.log
+expect "m6l-shapes-flat-regress" "(countrow constant 1 5 0 1 0)" out/sess-m6l-shapes.log
+expect "m6l-shapes-certified-max" "(lcnt peak 0 1)" out/sess-m6l-shapes.log
+expect "m6l-shapes-certified-flat" "(lcnt constant 0 1)" out/sess-m6l-shapes.log
+
+# Multi-column keys and reversed consumers force more than one payload-map
+# ordering.  Both live maps and both table sidecars must follow 5->9 repair.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m6l_orderings.slog \
+  batch+:offer,1,2,9 batch+:offer,1,2,5 batch+:offer,2,1,7 flush \
+  batch-:offer,1,2,5 flush \
+  dump-tuples:best dump-tuples:forward dump-tuples:reverse \
+  dump-counts:best dump-counts:forward dump-counts:reverse \
+  recount-lattices-force dump-counts:best dump-counts:forward dump-counts:reverse \
+  > out/sess-m6l-orderings.log 2>&1
+expect_not "m6l-orderings-no-rerun" "(route rerun" out/sess-m6l-orderings.log
+expect "m6l-orderings-best" "(tuplerow 1 2 9)" out/sess-m6l-orderings.log
+expect "m6l-orderings-forward" "(countrow forward 1 2 9 0 1 0)" out/sess-m6l-orderings.log
+expect "m6l-orderings-reverse" "(countrow reverse 2 1 9 0 1 0)" out/sess-m6l-orderings.log
+
+# More than one producer stratum settles before the closed lattice reaches its
+# consumer.  The mixed update's producer intermediate (9) is never published.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m6l_multistratum.slog \
+  batch+:source,1,9 batch+:source,1,5 flush \
+  dump-tuples:best dump-tuples:reported \
+  batch-:source,1,5 batch+:source,1,3 flush \
+  dump-tuples:best dump-tuples:reported dump-counts:best dump-counts:reported \
+  recount-lattices-force dump-counts:best dump-counts:reported \
+  > out/sess-m6l-multistratum.log 2>&1
+expect "m6l-multi-negative-producers" "(route maintain-lattice-producers-negative 2)" out/sess-m6l-multistratum.log
+expect "m6l-multi-positive-producers" "(route maintain-lattice-producers-positive 2)" out/sess-m6l-multistratum.log
+expect "m6l-multi-consumer" "(route maintain-lattice-consumers-positive 1)" out/sess-m6l-multistratum.log
+expect_not "m6l-multi-no-intermediate" "(tuplerow 1 9)" out/sess-m6l-multistratum.log
+expect "m6l-multi-final" "(countrow reported 1 3 0 1 0)" out/sess-m6l-multistratum.log
+
+# Contributor state is cache, not persistence truth.  A saved root session
+# reopens uncounted, establishes its writers, and can then repair precisely.
+rm -rf data/sess_m6l_reopen
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m6l_stratified.slog \
+  batch+:offer,1,9 batch+:alias,1,5 flush save:sess_m6l_reopen \
+  > out/sess-m6l-save.log 2>&1
+timeout 900 racket tests/api/session-drive.rkt \
+  open:sess_m6l_reopen lattice-contributor-state \
+  batch-:alias,1,5 flush dump-tuples:best dump-tuples:reported \
+  dump-counts:best dump-counts:reported lattice-contributor-state \
+  > out/sess-m6l-open.log 2>&1
+expect "m6l-open-starts-uncounted" "(lcnt best 0 0)" out/sess-m6l-open.log
+expect "m6l-open-repair-route" "(route maintain-lattice-consumers-negative 1)" out/sess-m6l-open.log
+expect "m6l-open-final" "(tuplerow 1 9)" out/sess-m6l-open.log
+expect "m6l-open-certified" "(lcnt best 0 1)" out/sess-m6l-open.log
+
+# Pin the remaining named topology refusals before M4T changes route
+# classification: recursive producer, negated consumer, and lattice writer.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m6l_recursive_producer.slog \
+  batch+:offer,1,9 batch+:offer,1,5 flush batch-:offer,1,5 flush \
+  dump-tuples:best > out/sess-m6l-recursive-producer.log 2>&1
+expect "m6l-recursive-producer-fallback" "(route rerun" out/sess-m6l-recursive-producer.log
+expect "m6l-recursive-producer-content" "(tuplerow 1 9)" out/sess-m6l-recursive-producer.log
+expect_not "m6l-recursive-producer-not-admitted" "maintain-lattice-producers" out/sess-m6l-recursive-producer.log
+
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m6l_negated_consumer.slog \
+  dump-tuples:missing batch+:offer,1,5 flush dump-tuples:missing \
+  batch-:offer,1,5 flush dump-tuples:missing \
+  > out/sess-m6l-negation.log 2>&1
+expect "m6l-negation-fallback" "(route rerun" out/sess-m6l-negation.log
+if [ "$(grep -cF '(tuplerow 1)' out/sess-m6l-negation.log)" -eq 2 ]; then
+  echo "PASS m6l-negation-content"; PASS=$((PASS+1))
+else
+  echo "FAIL m6l-negation-content"; FAIL=$((FAIL+1))
+fi
+
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m6l_lattice_writer.slog \
+  batch+:offer,1,9 batch+:offer,1,5 flush batch-:offer,1,5 flush \
+  dump-tuples:best dump-tuples:echoed \
+  > out/sess-m6l-lattice-writer.log 2>&1
+expect "m6l-lattice-writer-fallback" "(route rerun" out/sess-m6l-lattice-writer.log
+if [ "$(grep -cF '(tuplerow 1 9)' out/sess-m6l-lattice-writer.log)" -eq 2 ]; then
+  echo "PASS m6l-lattice-writer-content"; PASS=$((PASS+1))
+else
+  echo "FAIL m6l-lattice-writer-content"; FAIL=$((FAIL+1))
+fi
+
+# Direct lattice overlays are refused, while an inherited lattice successor
+# must fail contributor establishment and retain the correctness fallback.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m6l_leaf.slog batch+:best,1,5 flush \
+  > out/sess-m6l-direct.log 2>&1 || true
+expect "m6l-direct-refused" "set-overlay: best is a lattice/struct relation" out/sess-m6l-direct.log
+
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m6l_stratified.slog batch+:offer,1,5 flush \
+  inject-reopen:offer,m6l-inherited,tests/session/m6l_stratified.slog,2,7 \
+  batch+:offer,3,4 flush dump-tuples:best dump-tuples:reported \
+  lattice-contributor-state \
+  > out/sess-m6l-inherited.log 2>&1
+expect "m6l-inherited-recount-refused" "(maintenance-unavailable recount" out/sess-m6l-inherited.log
+expect "m6l-inherited-fallback" "(route rerun" out/sess-m6l-inherited.log
+expect "m6l-inherited-uncounted" "(lcnt best 1 0)" out/sess-m6l-inherited.log
+
 # Source-program facts are derived-only to the input API, and persistent keys
 # cannot collide within one evaluation.
 if timeout 900 racket tests/api/session-drive.rkt \

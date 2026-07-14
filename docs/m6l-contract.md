@@ -1,6 +1,7 @@
 # M6L stratified lattice-deletion contract
 
-**Status:** implemented contract for the first two M6L vertical slices.
+**Status:** implemented and hardened contract for the first two M6L vertical
+slices.
 `incremental.md` remains normative; this file pins the narrower admission and
 state lifecycle needed to implement §7A without weakening fallback.
 This slice is closed for now; the implementation queue resumes at M4T as
@@ -88,7 +89,20 @@ It must exercise:
 `tests/session/m6l_stratified.slog` adds the `reported` consumer. Slice 2
 settles every producer phase before staging the coalesced epoch-entry row
 negatively and final row positively. `tests/api/lattice-stream-fuzz.rkt`
-compares every maintained flush with a fresh unseeded clear-and-rerun session.
+retains a warm maintained session for ten epochs and compares every flush's
+content and sidecars with an independent fresh recount session.
+
+The permanent hardening matrix additionally covers:
+
+- max and flat payloads, multi-column keys, reversed consumer orderings, and
+  multiple producer strata;
+- net-no-change and absent/present transitions;
+- save/reopen from an uncertified contributor cache followed by exact repair;
+- recount abort, semantic-writer omission, overflow fallback, healing, and
+  next-epoch replacement-journal hygiene; and
+- named fallback for recursive producers and consumers, negated consumers,
+  downstream lattice writers, inherited successors, and direct overlay
+  refusal.
 
 ## Concurrency and observability
 
@@ -105,7 +119,11 @@ phases for slice 2.
 `(lattice-contributor-state ...)` reports version-local cache certification;
 legacy `(count-state ...)` remains table/struct-only.
 
-Deterministic leaf and stratified cases, randomized replacements under one,
-two, and eight workers, forced pause/resume boundaries, and cold-versus-warm
-performance/contributor-storage reporting are executable gates. Recursive
-consumers remain a named fallback boundary for M4T/M7.
+Deterministic leaf, stratified, shape, ordering, persistence, recovery, and
+fallback cases are executable gates. Randomized replacements run ten warm
+epochs under one, two, and eight workers against independent fresh recount
+oracles. Forced pause/resume is attributed to the replacement consumer phase
+and crosses the runtime split-batch boundary; cold-versus-warm performance and
+contributor-storage reporting remain separate gates. The focused hardening
+suite is `tests/incremental-stress.sh`; recursive consumers remain a named
+fallback boundary for M4T/M7.

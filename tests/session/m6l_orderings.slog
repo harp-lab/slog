@@ -1,0 +1,13 @@
+;; A two-column lattice key with consumers that force both forward and reversed
+;; key orderings.  Repair must update every resident payload-map ordering.
+
+lattice (cost (min int))
+
+table (offer int int int)
+table (best int int cost)
+table (forward int int int)
+table (reverse int int int)
+
+rule (offer A B V) --> (best A B V)
+rule (best A B V) --> (forward A B V)
+rule (best A B V) --> (reverse B A V)

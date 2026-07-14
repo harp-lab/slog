@@ -1,0 +1,14 @@
+;; M6L scalar-kind coverage: two lattice heads share one producer stratum.
+;; Removing the max winner regresses 9 -> 5; removing one arm of a flat join
+;; regresses top -> 5.
+
+lattice (score (max int))
+lattice (fv (flat int))
+
+table (imax int int)
+table (iflat int int)
+table (peak int score)
+table (constant int fv)
+
+rule (imax K V) --> (peak K V)
+rule (iflat K V) --> (constant K V)

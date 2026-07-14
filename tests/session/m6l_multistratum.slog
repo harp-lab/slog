@@ -1,0 +1,13 @@
+;; Two producer strata must settle before the closed lattice replacement is
+;; exposed to its final plain-table consumer.
+
+lattice (cost (min int))
+
+table (source int int)
+table (candidate int int)
+table (best int cost)
+table (reported int int)
+
+rule (source K V) --> (candidate K V)
+rule (candidate K V) --> (best K V)
+rule (best K V) --> (reported K V)

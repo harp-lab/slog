@@ -1,9 +1,9 @@
 #lang racket
 
-;; M6L slice-2 differential stream.  Every maintained flush is compared with
-;; a fresh, unseeded clear-and-rerun session over the same normalized
-;; offer/alias set.  Maintained contributor/table sidecars are also compared
-;; with a forced recount after every step.
+;; M6L slice-2 differential stream.  One session keeps its contributor and
+;; table sidecars warm for the complete edit stream.  Every maintained flush
+;; is compared with a separate fresh, unseeded clear-and-rerun session over the
+;; same normalized offer/alias set; that fresh session also recounts sidecars.
 
 (require "../../compiler/session.rkt")
 
@@ -20,7 +20,7 @@
 ;; across flushes.  Multiple keys and duplicate contributors are both common.
 (define-values (reverse-flushes reverse-models _final-model)
   (for/fold ([fs '()] [models (list initial)] [present initial])
-            ([_ (in-range 4)])
+            ([_ (in-range 10)])
     (define touched (take (shuffle universe) (+ 4 (random 5))))
     (define ops
       (for/list ([fact (in-list touched)])
@@ -88,13 +88,10 @@
      (define (capture! step)
        (define result (snapshot s))
        (define maintained (count-snapshot s))
-       (session-recount! s #:force? #t #:lattices? #t)
-       (define recounted (count-snapshot s))
-       (unless (equal? maintained recounted)
-         (eprintf "m6l-count-fuzz-FAIL seed ~a step ~a\n  maintained: ~s\n  recounted:  ~s\n"
-                  seed step maintained recounted)
-         (exit 1))
-       (set! snapshots (cons result snapshots)))
+       ;; Do not recount this session: the point of the stress is to carry the
+       ;; exact maintained cache through many delete/re-add cycles.  The fresh
+       ;; oracle below owns the independent recount comparison.
+       (set! snapshots (cons (list result maintained) snapshots)))
      (for ([fact (in-set initial)])
        (match-define (list rel key value) fact)
        (session-batch! s '+ rel (list key value)))
@@ -136,7 +133,8 @@
           (session-action! s `(set-overlay-int-file ,rel ,path 2)
                            (lambda (out) (void (read-line out)))))
         (session-rerun! s 'offer)
-        (snapshot s)))))
+        (session-recount! s #:force? #t #:lattices? #t)
+        (list (snapshot s) (count-snapshot s))))))
 
 (unless (equal? streamed oracle)
   (eprintf "m6l-fuzz-FAIL seed ~a\n  streamed: ~s\n  oracle:   ~s\n"

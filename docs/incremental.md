@@ -1395,6 +1395,15 @@ separately from legacy `count-state`.
 **Exit:** precise deletion through stratified lattice cones; recursive lattice
 cones still fall back.
 
+**Exit evidence:** deterministic coverage includes min/max/flat payloads,
+multi-column keys and map orderings, multiple producer strata, coalesced
+no-change and absent/present transitions, save/reopen cache establishment,
+transaction abort, writer audit, overflow recovery, and named fallback shapes.
+Ten-epoch warm randomized streams under one, two, and eight workers compare
+content and both sidecars with independent fresh recount sessions. A forced
+pause test enters the replacement consumer phase and crosses the runtime
+split-batch boundary before settling to the recount oracle.
+
 ### M4T — recursive deletion for positive plain tables
 
 Implement §4.5–§4.7:

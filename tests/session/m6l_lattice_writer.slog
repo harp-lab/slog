@@ -1,0 +1,11 @@
+;; Unsupported boundary: a closed lattice value feeds another lattice writer.
+
+lattice (cost (min int))
+lattice (score (max int))
+
+table (offer int int)
+table (best int cost)
+table (echoed int score)
+
+rule (offer K V) --> (best K V)
+rule (best K V) --> (echoed K V)

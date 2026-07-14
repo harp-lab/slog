@@ -1,6 +1,6 @@
 # Incremental Slog implementation ledger
 
-**Reviewed:** 2026-07-13 after M6L stratified-repair slices 1–2
+**Reviewed:** 2026-07-13 after the M6L slices 1–2 hardening checkpoint
 **Normative design:** `docs/incremental.md`
 
 This file records what the tree currently implements and where it differs
@@ -12,20 +12,29 @@ semantics and this file identifies migration work.
 
 The implementation is green under the current regression gates:
 
-- session workflow harness: 275/275;
+- session workflow harness: 309/309;
 - native count checks: 177/177;
 - quick harness: unit 137/137, diagnostics 14/14, stats, arena, sequence, and
   counts all pass;
-- focused incremental stress: M3 and M6L signed-stream oracles pass with 1,
-  2, and 8 workers; the M3 product and M6L replacement workloads survive
-  forced pause/resume; the M6L 240-key report measured 118.692 ms cold versus
-  69.882 ms warm (0.5888), with 479 contributor rows; and
+- focused incremental stress: 10/10 gates pass. M3 and M6L ten-epoch
+  signed-stream oracles pass with 1, 2, and 8 workers; the M3 product and M6L
+  replacement workloads survive phase-attributed forced pause/resume; the
+  M6L replacement test crosses the runtime split-batch boundary; recovery
+  injection passes; and the latest 240-key report measured 108.286 ms cold
+  versus 62.890 ms warm (0.5808), with 479 contributor rows; and
 - all modified Racket modules compile with `raco make`.
 
 These tests satisfy the M0.4, M1, M3, and first two M6L exit audits described
 below. They establish count reconstruction, version/input semantics, precise
 signed support maintenance, and stratified lattice replacement propagation on
 their certified surfaces.
+
+The post-slice hardening checkpoint found no product correctness defect. It
+did expose and correct one test setup that exceeded the session protocol's
+inline tuple limit before reaching the intended runtime split-batch boundary.
+The permanent boundary case now uses 2,048 arity-two tuples (4,096 words),
+which stays within the protocol limit while crossing the 4,095-word runtime
+batch limit.
 
 ## Resume point
 
@@ -234,8 +243,9 @@ Primary anchors:
   bindings, sidecars, and count tasks; and
 - `tests/session-tests.sh`, `tests/api/count-ir-oracle.rkt`,
   `tests/api/stream-fuzz.rkt`, `tests/api/acyclic-stream-fuzz.rkt`,
-  `tests/api/lattice-stream-fuzz.rkt`, `tests/incremental-stress.sh`, and
-  `tests/counts-tests.cpp` — present regression coverage.
+  `tests/api/lattice-stream-fuzz.rkt`, `tests/api/lattice-recovery.rkt`,
+  `tests/incremental-stress.sh`, and `tests/counts-tests.cpp` — present
+  regression coverage.
 
 ## Known limitations and deviations
 
@@ -305,22 +315,37 @@ inject-and-reopen inheritance, maintained-versus-recounted sidecars, and an
 explicit recursive program that must route to clear-and-rerun.
 
 The signed-stream differential harness generates legal ordered edits over two
-inputs, compares every input and derived relation with a fresh unseeded
-session, and forces recounts to compare derived support rows after each flush.
-The M3 surface is therefore closed. M6L stratified repair now builds on it;
-M4T remains the separate recursive plain-table deletion milestone.
+inputs and retains one warm maintained session for ten flushes. After each
+flush it compares every input, derived relation, and support sidecar with a
+separate fresh session and forced recount; the tested session is not refreshed
+by the oracle. Fixed session seeds and independent one-, two-, and eight-worker
+stress seeds cover both edit diversity and scheduling. Forced-pause coverage
+now attributes the pause to the negative maintenance phase itself. The M3
+surface is therefore closed. M6L stratified repair now builds on it; M4T
+remains the separate recursive plain-table deletion milestone.
 
 ## M6L slices 1–2 audit — implemented
 
-The deterministic fixture covers a losing contributor, winning regression,
-final-key removal, duplicate support, a mixed negative/positive flush, and a
-forced contributor recount. The stratified fixture additionally proves a
-mixed update publishes no intermediate payload, maintains its downstream
-table, and reproduces both sidecars under forced recount. Randomized streams
-compare every flush with a fresh unseeded clear-and-rerun session under one,
-two, and eight workers; forced pause/resume and cold-versus-warm contributor
-reporting are separate gates. A recursive-consumer fixture remains on the
-named fallback route.
+The deterministic matrix covers losing, winning, final-key, duplicate,
+net-no-change, appearance/disappearance, and mixed contributor updates. It
+also covers max and flat lattice payload shapes, multi-column keys, reversed
+consumer index ordering, multiple producer strata, and a save/reopen that
+begins uncertified and repairs its contributor cache before precise admission.
+The stratified fixtures prove that a mixed update publishes no intermediate
+payload, maintains downstream tables, and reproduces content and both
+sidecars under forced recount.
+
+The ten-epoch randomized streams retain warm maintained sessions and compare
+each flush's content and sidecars with independent fresh recount sessions
+under one, two, and eight workers. Forced pause/resume is attributed after the
+replacement consumer phase begins, and the 2,048-key case crosses the runtime
+split-batch boundary. Recovery gates inject recount abort, semantic-writer
+omission, contributor overflow/fallback, cache healing, and a next-epoch
+replacement-journal check. Named fallback fixtures cover recursive producers,
+recursive consumers, negated lattice consumers, downstream lattice writers,
+direct lattice overlay refusal, and inherited successors. This is the M6L
+slices 1–2 hardening checkpoint; the admission boundary remains intentionally
+closed while work moves to M4T.
 
 ### M3 retrospective and forward implications
 
