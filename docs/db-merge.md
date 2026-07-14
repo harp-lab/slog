@@ -64,8 +64,12 @@ and floats ride through unchanged.
 
 Two structural facts make this tractable and are the whole basis of the design:
 
-1. **Relation name is the schema identity.** Struct *type* ids are **not** baked
-   into generated `.so`s — generated code resolves them by name at runtime
+1. **In the shipped flat format, relation name is the schema-reconciliation
+   key.** It is not a timeless schema identity: the namespaced target gives
+   names meaning at a pipeline boundary and records declaration, VersionKey,
+   and TypeKey metadata separately (see [modules.md](modules.md)). Struct
+   *type* ids are **not** baked into generated `.so`s — generated code resolves
+   them by name at runtime
    (`InternStructTask: struct_id = rel->getStructId()`; declarations guarded
    `if (r==0)` in `emit-cpp.rkt` `add-write-task`). Type ids are an internal
    runtime detail; only the *name* is stable. So reconciliation is by name, and
@@ -154,7 +158,11 @@ reproduce). For each string `s`: `old = scratch.intern(s)`,
 `dbA`'s interner dedups by content, so the string *sets* union with no
 collisions.
 
-**Stage 2 — struct types (name-keyed).** From §4.1: `R_type[srcSID] = destSID`.
+**Stage 2 — struct types (name-keyed today).** From §4.1:
+`R_type[srcSID] = destSID`. Under namespaced catalogs this becomes a checked
+source-TypeKey/member to destination-TypeKey/SID map. A compatible existing
+destination member reuses its TypeKey; importing as a new independent
+namespace mints one. The transitive value-rewrite algorithm is unchanged.
 
 **Stage 3 — struct instances (the crux; acyclic DAG).** A `remapWord(w)`:
 `is_s32`/`is_float` → `w`; `is_str` → `remap[w]` (stage 1); `is_struct` →
@@ -509,6 +517,30 @@ import is rejected cleanly and the daemon continues.
   concurrency-safe iteration; counts-invalid flag (§7.3); mpz/enum guards.
 - **P3 — optional**: north-star content-addressing (C) if canonical ids are
   needed; parallelize stage 4.
+
+### 10.1 Namespaced catalog integration
+
+The shipped importer discovers a source schema from relation directories and
+reconciles flat names. That remains the data-plane mechanism, but module
+namespaces add a control-plane preflight:
+
+1. load the source's persisted declaration catalog, including empty members;
+2. apply one structured source-prefix to destination-prefix substitution;
+3. validate every overlapping declaration graph and collect missing members;
+4. choose destination VersionKeys and TypeKeys atomically;
+5. declare the complete destination namespace; and only then
+6. run the existing string/struct/collection word remapper and row ingestion.
+
+An older database with no catalog can still use the present kind/arity/lattice
+ABI reconciliation, but tooling must label that check as legacy/partial. Empty
+members and field-type graphs cannot be inferred from its data directories.
+
+Root replay and independent import have different identity behavior. Replaying
+the same recipe lineage preserves VersionKeys and TypeKeys, though a fresh
+daemon may assign different VersionIds and SIDs. Importing under a fresh
+namespace creates new destination keys; importing onto compatible existing
+members reuses the destination keys. Neither case changes the recursive
+source-word to destination-word canonicalization described above.
 
 ## 11. Testing
 

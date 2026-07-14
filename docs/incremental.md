@@ -110,7 +110,13 @@ Each logical slot has an immutable **VersionDescriptor**:
 - its creation event and output-slot ID;
 - an optional predecessor VersionKey;
 - a creation kind; and
-- its schema and struct type identity.
+- its declaration descriptor and optional nominal struct `TypeKey`.
+
+`TypeKey` identifies one concrete struct-constructor instance across the
+relation's successor versions and namespace renames. It is not the daemon's
+14-bit SID: one evaluation maps `(EvaluationId, TypeKey)` to an SID, and an
+independent import or fresh daemon may use another SID. Plain relations have
+no TypeKey.
 
 Each materialization of that slot has a **VersionInstance**:
 
@@ -129,6 +135,12 @@ load.
 A new layer assigns stable event identifiers. A persistent VersionKey is the
 layer identity plus the creation event and output slot. A runtime load maps a
 VersionKey in the current recipe evaluation to a fresh VersionId.
+
+Each committed catalog/version environment also has a persistent
+**BoundaryKey**, formed from the layer identity and boundary event. A REPL
+handle is a session-local label for `(EvaluationId, BoundaryKey)`. Qualified
+relation names are resolved relative to its catalog/environment; pipeline
+positions remain only evaluation-local ordering labels.
 
 The layer identity is an immutable, content-neutral identifier allocated
 before recipe hashing (for example, a random 128-bit LayerId). It is stored in
@@ -255,6 +267,8 @@ A relation name denotes a binding chain, not an object identity.
 The following events affect a relation:
 
 - **root open or declaration:** create an initial slot with no predecessor;
+- **compatible additive declaration:** retain compatible members and create
+  initial slots for all missing members in one atomic catalog transition;
 - **segment write:** create a new version inheriting from the current one;
 - **batch/import/link into an existing span:** update that slot's effective
   input overlay in the current recipe evaluation; it does not create a new
