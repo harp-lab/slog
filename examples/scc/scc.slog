@@ -1,0 +1,31 @@
+;; SCCs as mutual reachability: the idiomatic Slog formulation.
+;;
+;; `edge` is the only graph input.  Its rows may be produced by any rules,
+;; included program, prerequisite run, or loaded database.  With an edge-only
+;; representation, isolated vertices do not exist; add explicit `vertex` rows
+;; alongside the first rule when they matter.
+
+table (edge any any)
+table (vertex any)
+table (reachable any any)
+
+rule (edge x y) --> (vertex x) (vertex y)
+rule (vertex x) --> (reachable x x)
+rule (reachable x y) (edge y z) --> (reachable x z)
+
+;; Each key x gets one canonical set containing exactly its SCC.  Equal SCCs
+;; are equal interned set values, so that value can also serve as a component
+;; identifier without choosing an arbitrary representative vertex.
+lattice (vertex_set (set any))
+table (scc any vertex_set)
+rule (reachable x y) (reachable y x)
+     (= singleton (cins (cmap) y))
+  --> (scc x singleton)
+
+;; Example input.  Replace these facts with any producer of `edge` rows.
+rule
+  (edge 1 2) (edge 2 3) (edge 3 1)
+  (edge 3 4)
+  (edge 4 5) (edge 5 4)
+  (edge 5 6)
+  (edge 7 7)

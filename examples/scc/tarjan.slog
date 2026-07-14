@@ -1,0 +1,224 @@
+;; A direct, functional transcription of Tarjan's SCC algorithm.
+;;
+;; This is a proof of expressiveness, not the recommended production version:
+;; dependent DFS calls become sequential fixpoint rounds, and every immutable
+;; state snapshot remains a demand input/answer.  See README.md for the tradeoff.
+;;
+;; `edge` is the only graph input.  Vertices that occur in no edge cannot be
+;; represented by a two-column edge relation; add a separate vertex input if
+;; isolated vertices matter.
+
+table (edge any any)
+table (vertex any)
+rule (edge x y) --> (vertex x) (vertex y)
+
+;; Close the unordered input into deterministic vertex/adjacency lists.  The
+;; particular canonical order is deliberately semantically irrelevant.
+lattice (vertex_set (set any))
+table (vertices int vertex_set)
+table (successors any vertex_set)
+
+rule (vertex v) (= s (cins (cmap) v)) --> (vertices 0 s)
+rule (vertex v) (= e (cmap)) --> (successors v e)
+rule (edge v w) (= s (cins (cmap) w)) --> (successors v s)
+
+table (vertex_list list)
+table (successor_list any list)
+rule (vertices 0 vs) (= xs (set2lst vs)) --> (vertex_list xs)
+rule (successors v ws) (= xs (set2lst ws)) --> (successor_list v xs)
+
+;; State is the six-element list
+;;   [next-index, stack, index-map, lowlink-map, on-stack-set, components-set].
+;; A component is itself a canonical set; `components` is a set of those sets.
+;; Keeping this as a list avoids staging a fresh struct before every recursive
+;; demand call.
+
+;; Sequential folds over vertices and over one vertex's outgoing edges.
+demand (visit_all list list) list
+demand (visit any list) list
+demand (finish_visit any list) list
+demand (visit_edges any list list) list
+demand (pop_component any cset list) list
+
+rule (visit_all vertices state state)
+  <-- (= n (llen vertices)) (< n 1)
+
+rule (visit_all vertices state out)
+  <-- (= n (llen vertices)) (> n 0)
+      (= v (lref vertices 0))
+      (= rest (ldel vertices 0))
+      (= index (lref state 2))
+      (= 1 (chas index v))
+      (visit_all rest state out)
+
+rule (visit_all vertices state out)
+  <-- (= n (llen vertices)) (> n 0)
+      (= v (lref vertices 0))
+      (= rest (ldel vertices 0))
+      (= index (lref state 2))
+      (= 0 (chas index v))
+      (visit v state after_v)
+      (visit_all rest after_v out)
+
+;; Discover v and process every successor.  A second demand inspects the
+;; returned state after it is ground, then either returns it or pops one SCC.
+rule (visit v state (finish_visit v (visit_edges v edges discovered)))
+  <-- (successor_list v edges)
+      (= next (lref state 0))
+      (= stack (lref state 1))
+      (= index (lref state 2))
+      (= low (lref state 3))
+      (= on (lref state 4))
+      (= index1 (cput index v next))
+      (= low1 (cput low v next))
+      (= on1 (cins on v))
+      (= next1 (+ next 1))
+      (= stack1 (lins stack 0 v))
+      (= state1 (lset state 0 next1))
+      (= state2 (lset state1 1 stack1))
+      (= state3 (lset state2 2 index1))
+      (= state4 (lset state3 3 low1))
+      (= discovered (lset state4 4 on1))
+
+rule (finish_visit v after_edges after_edges)
+  <-- (= index2 (lref after_edges 2))
+      (= low2 (lref after_edges 3))
+      (= low_v (cget low2 v))
+      (= index_v (cget index2 v))
+      (< low_v index_v)
+
+rule (finish_visit v after_edges (pop_component v empty_component after_edges))
+  <-- (= index2 (lref after_edges 2))
+      (= low2 (lref after_edges 3))
+      (= on2 (lref after_edges 4))
+      (= low_v (cget low2 v))
+      (= index_v (cget index2 v))
+      (<= index_v low_v)
+      (= empty_component (cdiff on2 on2))
+
+rule (visit_edges v edges state state)
+  <-- (= n (llen edges)) (< n 1)
+
+;; Tree edge: recursively visit w, then low[v] := min(low[v], low[w]).
+rule (visit_edges v edges state out)
+  <-- (= n (llen edges)) (> n 0)
+      (= w (lref edges 0))
+      (= rest (ldel edges 0))
+      (= index (lref state 2))
+      (= 0 (chas index w))
+      (visit w state after_w)
+      (= low2 (lref after_w 3))
+      (= low_v (cget low2 v))
+      (= low_w (cget low2 w))
+      (= low3 (cput low2 v (min low_v low_w)))
+      (= after_low (lset after_w 3 low3))
+      (visit_edges v rest after_low out)
+
+;; Back edge to an active vertex: low[v] := min(low[v], index[w]).
+rule (visit_edges v edges state out)
+  <-- (= n (llen edges)) (> n 0)
+      (= w (lref edges 0))
+      (= rest (ldel edges 0))
+      (= index (lref state 2))
+      (= low (lref state 3))
+      (= on (lref state 4))
+      (= 1 (chas index w))
+      (= 1 (cmem on w))
+      (= low_v (cget low v))
+      (= index_w (cget index w))
+      (= low1 (cput low v (min low_v index_w)))
+      (= state1 (lset state 3 low1))
+      (visit_edges v rest state1 out)
+
+;; Edge to an already completed SCC: it cannot change low[v].
+rule (visit_edges v edges state out)
+  <-- (= n (llen edges)) (> n 0)
+      (= w (lref edges 0))
+      (= rest (ldel edges 0))
+      (= index (lref state 2))
+      (= on (lref state 4))
+      (= 1 (chas index w))
+      (= 0 (cmem on w))
+      (visit_edges v rest state out)
+
+;; Pop through the SCC root, accumulating one canonical component set.
+rule (pop_component root component state out)
+  <-- (= stack (lref state 1))
+      (= v (lref stack 0))
+      (= rest (ldel stack 0))
+      (= on (lref state 4))
+      (/= v root)
+      (= component1 (cins component v))
+      (= on1 (cdel on v))
+      (= state1 (lset state 1 rest))
+      (= state2 (lset state1 4 on1))
+      (pop_component root component1 state2 out)
+
+rule (pop_component root component state out)
+  <-- (= stack (lref state 1))
+      (= root (lref stack 0))
+      (= rest (ldel stack 0))
+      (= on (lref state 4))
+      (= comps (lref state 5))
+      (= component1 (cins component root))
+      (= on1 (cdel on root))
+      (= comps1 (cins comps component1))
+      (= state1 (lset state 1 rest))
+      (= state2 (lset state1 4 on1))
+      (= out (lset state2 5 comps1))
+
+;; Force one traversal, then expose both canonical component sets and the
+;; conventional node-to-component relation.  These two unit-returning walks
+;; avoid storing the quadratic suffix-answer relation of a nondeterministic
+;; `each(list) -> element` demand.
+table (final_state list)
+table (component cset)
+table (scc any cset)
+demand (emit_components list) int
+demand (emit_members cset list) int
+
+rule (emit_components xs 1) <-- (= n (llen xs)) (< n 1)
+rule (emit_components xs done) (component c)
+  <-- (= n (llen xs)) (> n 0)
+      (= c (lref xs 0))
+      (= rest (ldel xs 0))
+      (emit_components rest done)
+
+rule (emit_members c xs 1) <-- (= n (llen xs)) (< n 1)
+rule (emit_members c xs done) (scc vertex c)
+  <-- (= n (llen xs)) (> n 0)
+      (= vertex (lref xs 0))
+      (= rest (ldel xs 0))
+      (emit_members c rest done)
+
+rule (vertex_list vertices)
+     (= empty_index (cmap))
+     (= empty_low (cmap))
+     (= all_vertices (lst2set vertices))
+     (= empty_set (cdiff all_vertices all_vertices))
+     (= stack (lempty))
+     (= initial0 (lpush stack 0))
+     (= initial1 (lpush initial0 stack))
+     (= initial2 (lpush initial1 empty_index))
+     (= initial3 (lpush initial2 empty_low))
+     (= initial4 (lpush initial3 empty_set))
+     (= initial (lpush initial4 empty_set))
+     (visit_all vertices initial final)
+  --> (final_state final)
+
+rule (final_state final)
+     (= components (lref final 5))
+     (= xs (set2lst components))
+  --> (emit_components xs)
+
+rule (component c)
+     (= xs (set2lst c))
+  --> (emit_members c xs)
+
+;; Example input.  Replace these facts with any producer of `edge` rows.
+rule
+  (edge 1 2) (edge 2 3) (edge 3 1)
+  (edge 3 4)
+  (edge 4 5) (edge 5 4)
+  (edge 5 6)
+  (edge 7 7)
