@@ -531,9 +531,10 @@ namespaces add a control-plane preflight:
 5. declare the complete destination namespace; and only then
 6. run the existing string/struct/collection word remapper and row ingestion.
 
-An older database with no catalog can still use the present kind/arity/lattice
-ABI reconciliation, but tooling must label that check as legacy/partial. Empty
-members and field-type graphs cannot be inferred from its data directories.
+The namespaced format requires this catalog. There is no catalog-less
+compatibility path: empty members and field-type graphs cannot be inferred
+from data directories, and Slog is still free to reject obsolete database
+formats rather than weaken attachment checks.
 
 Root replay and independent import have different identity behavior. Replaying
 the same recipe lineage preserves VersionKeys and TypeKeys, though a fresh

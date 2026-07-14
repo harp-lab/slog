@@ -749,21 +749,27 @@ renaming it, or creating a successor relation version preserves its TypeKey
 and SID. Two compatible declaration shapes do not thereby become the same
 nominal type.
 
-### 6.3 The 14-bit ceiling becomes a lifecycle constraint
+### 6.3 Allocate SIDs from genuine gaps
 
-SIDs cannot be recycled while any retained relation version or REPL boundary
-can still contain a word bearing them. Namespaced instantiation and
-drop/redeclare cycles therefore consume the global 1..`0x3ffe` space even
-when the current namespace tree is small. The first implementation should:
+The current monotone `struct_id_max++` allocator should become a 16K occupancy
+bitmap or ordered free set. Allocation chooses the lowest unused SID in
+`1..0x3ffe` before reporting exhaustion. This is especially natural during
+import: source SIDs are being remapped anyway, so every fresh destination
+TypeKey can take any free destination SID.
 
-- make SID allocation and remaining capacity visible in introspection;
-- refuse exhaustion as it does today rather than wrap;
-- retain SIDs for all history pinned by the session; and
-- treat compaction as an explicit stop-the-world save/reload operation that
-  rewrites every reachable value graph, not as opportunistic ID reuse.
+“Unused” is semantic, not merely absent from the latest name map. An SID stays
+occupied while its TypeDescriptor, any retained relation version, or any live
+REPL value handle can refer to a word carrying it. Rename and drop therefore
+do not free it automatically. Root load marks every restored SID occupied;
+import reuses existing destination TypeKeys first and fills real gaps for new
+ones. Aborting a provisional boundary can free its SIDs after invalidating any
+provisional value handles, because no committed value can contain them.
 
-If real applications approach this ceiling, widening or separating the
-runtime type tag is preferable to weakening nominal identity.
+Filling a free gap is not compaction and moves no values. Defragmenting a live
+SID assignment would require recursively rewriting every referent and is not
+worth designing now. If all 16,382 slots are genuinely live, the honest
+answers are to reject the allocation or widen/change the runtime tag—not to
+silently reuse one.
 
 ### 6.4 Persistent key construction
 
@@ -778,12 +784,13 @@ TypeKey            = (LayerId, type-creation-event, type-slot)
 ModuleInstanceKey  = (ProgramInstanceKey, lexical-occurrence path)
 ```
 
-The serialized representation can be opaque. Slot tables are assigned once
-and stored in the recipe, in sorted QName order for deterministic creation but
-never recomputed after publication. Declaration hashes, source paths, aliases,
-and pipeline positions are metadata on these keys, not ingredients in their
-identity. A replay of the same immutable layer preserves the keys; a modified
-clone gets a fresh LayerId.
+The serialized representation can be opaque because the REPL assigns short
+`@vN` and `@tN` aliases and exposes the backing key only on request. Slot
+tables are assigned once and stored in the recipe, in sorted QName order for
+deterministic creation but never recomputed after publication. Declaration
+hashes, source paths, aliases, and pipeline positions are metadata on these
+keys, not ingredients in their identity. A replay of the same immutable layer
+preserves the keys; a modified clone gets a fresh LayerId.
 
 ## 7. Name resolution
 
@@ -972,7 +979,7 @@ not a second compatibility implementation. Field types, unions, and nominal
 constructor references live only in the richer catalog.
 
 The live `(schema)` action currently skips empty relations to mirror BIN data
-directories. Keep that action for legacy/materialization diagnostics. Add a
+directories. Keep that action for low-level materialization diagnostics. Add a
 catalog/introspection action that reports every logical relation, including
 empty ones, together with VersionKey, TypeKey if any, and runtime SID. The
 session still supplies the source-level field graph because the daemon need
@@ -1082,11 +1089,10 @@ one for a fresh destination namespace. Then reuse the shipped transitive word
 remapper. Import must never equate nominal types merely because declaration
 hashes match.
 
-Legacy databases have only kind/arity/lattice ABI metadata. They can remain
-loadable, but a typed namespace attachment should either obtain the full
-catalog from captured program sources or report that it is validating only a
-legacy ABI. The implementation must not silently claim field-type validation
-from data that was never stored.
+There is no compatibility mode for catalog-less databases. The new format
+requires the complete catalog and rejects an input that lacks it. Slog is still
+free to change the on-disk format, so carrying a kind/arity-only shadow path
+would add complexity while weakening the design's guarantees.
 
 ### 8.6 API and diagnostics
 
@@ -1189,7 +1195,8 @@ patch followed by a long tail of special cases.
 2. Index VersionKey directly and attach BoundaryKeys to binding events while
    retaining numeric pipeline positions as runtime ordinals.
 3. Replace name-discovered `structs_by_id` with durable SID/TypeKey
-   descriptors; keep current struct relation storage behind the descriptor.
+   descriptors and a lowest-free SID bitmap; keep current struct relation
+   storage behind the descriptor.
 4. Teach lookup, sizes, batch, rename, drop, and version-chain actions
    structured qualified paths; make subtree operations atomic.
 
@@ -1210,8 +1217,10 @@ patch followed by a long tail of special cases.
 1. Give stats `RuleKey`s their `ModuleInstanceKey` component immediately.
 2. Once namespace policy exists, migrate `$stat_*`, `$seq_*`, and `$sup*`
    prefix conventions deliberately rather than by blind string replacement.
-3. Add lifecycle monitors only after committed boundary snapshots and their
-   non-feedback rule are specified.
+3. Add the small daemon event/watch/breakpoint protocol from [repl.md](repl.md)
+   at iteration, stratum, and program safe points.
+4. Consider user lifecycle monitors only after ordinary relation/tuple watches
+   demonstrate a need beyond the built-in stats and debugger protocol.
 
 N0-N3 are the smallest coherent in-memory module slice; N4 makes it durable
 and interactive. Privacy, export lists, type parameters, generalized
@@ -1263,6 +1272,9 @@ The initial suite should include:
 19. rename a namespace referenced by an outside relation's field type and
     update that TypeRef without changing TypeKey; reject a drop that would
     leave the outside declaration dangling.
+20. load or import sparse SID assignments, allocate new TypeKeys into the
+    lowest genuine gaps, and never reuse an SID retained only by history or a
+    REPL value handle.
 
 ## 12. Decisions made and details still to pin down
 
@@ -1300,25 +1312,20 @@ The design now commits to these principles:
 - root namespaces receive external database handles in interactive tooling,
   not compiler-visible `db0.` prefixes.
 
-Before implementation, the following details still need explicit decisions
-and tests:
+Before implementation, one policy still needs experience from the REPL:
 
-1. **Legacy catalog recovery.** Decide whether an old database lacking field
-   descriptors may be refined from captured source declarations, or remains
-   explicitly ABI-only until migrated. It must not masquerade as fully
-   checked.
-2. **Type parameters.** If added, decide whether they specialize declaration
-   shapes while preserving module occurrence identity. They should not create
-   or connect relation instances.
-3. **Lifecycle attachment.** User-defined per-stratum/iteration monitors need
-   committed-snapshot semantics and are not ordinary namespace bindings. Do
-   not overload `run` or `instantiate` to imply them.
-4. **History retention.** Pin when an unreferenced BoundaryKey may be garbage
-   collected and whether an explicit compact/reload operation may remap SIDs.
-   The initial policy is conservative retention.
-5. **Absolute interactive syntax.** The semantic target is fixed—VersionKey
-   for relations and TypeKey for types—but the pleasant REPL spelling for an
-   opaque key can wait for REPL prototyping. See [repl.md](repl.md).
+1. **History retention.** Pin when an unreferenced BoundaryKey and its
+   relation materializations may be garbage collected. The initial policy is
+   conservative retention. SID allocation itself does not wait on this
+   decision: it fills every genuinely unused gap and never moves a live type.
+
+Two possible later capabilities do not need syntax now. A **type parameter**
+would be a compile-time hole used to state correlations such as
+`edge(Vertex, Vertex)` and `scc(Vertex, int)` more precisely than `any`; it
+would not be a runtime TypeKey. A **lifecycle monitor** would run user code at
+committed iteration/stratum/program events to consume runtime observations; it
+is a stats feature, not a module initializer/destructor. The current wildcard
+interface and built-in stats require neither feature.
 
 The central language promise is simple: **every program occurrence has fresh
 identity; a newly named namespace is isolated; and an inherited namespace is

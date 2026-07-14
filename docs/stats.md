@@ -136,6 +136,16 @@ events. It should be designed independently from `instantiate`: module
 instantiation is lexical composition, whereas a monitor is temporal
 attachment to runtime events.
 
+No lifecycle-monitor syntax is part of the module proposal. Ordinary
+post-analysis reporting is already expressed by a later `run` that reads a
+committed database. A new attachment surface is needed only if users must run
+custom logic after each internal iteration or stratum, where no ordinary Slog
+pipeline boundary exists. Built-in daemon statistics can cover the initial
+need; syntax should wait for a concrete user monitor. The first user-facing
+step is instead the small event/watch/breakpoint socket protocol described in
+[repl.md](repl.md): it observes finalized barriers and remains outside program
+semantics.
+
 A module run may execute against a prepared boundary overlay and later commit
 or abort it. Execution statistics are still truthful for an aborted run, but
 they must record the input BoundaryKey, proposed output BoundaryKey, and final
