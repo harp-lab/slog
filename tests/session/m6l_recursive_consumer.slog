@@ -1,0 +1,12 @@
+;; Unsupported M6L boundary: the lattice producer is acyclic, but its
+;; downstream table consumer belongs to a recursive SCC.
+
+lattice (cost (min int))
+
+table (offer int int)
+table (best int cost)
+table (reported int int)
+
+rule (offer K V) --> (best K V)
+rule (best K V) --> (reported K V)
+rule (reported K V) --> (reported K V)

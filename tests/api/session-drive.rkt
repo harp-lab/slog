@@ -53,6 +53,7 @@
      (match (string-split arg ",")
        [(list rel) `(dump-rel ,rel)]
        [(list rel p) `(dump-rel ,rel ,(string->number p))])]
+    [(list "dump-tuples" rel) `(dump-tuples ,rel)]
     [(list "write-db" db) `(write-db ,db)]
     [(list "write-csv" dir) `(write-csv ,dir)]
     [(list "add-tuple" arg)
@@ -125,10 +126,12 @@
        [(list pp) `(recount #f ,(string->number pp) #f)]
        [(list pp rel) `(recount ,(string->symbol rel) ,(string->number pp) #f)])]
     [(list "recount-force") `(recount #f #f #t)]
+    [(list "recount-lattices-force") `(recount-lattices-force)]
     [(list "recount-try") `(recount-try)]
     [(list "recount-fail" n) `(recount-fail ,(string->number n))]
     [(list "recount-omit" n) `(recount-omit ,(string->number n))]
     [(list "count-state") `(count-state)]
+    [(list "lattice-contributor-state") `(lattice-contributor-state)]
     [(list "count-capabilities") `(count-capabilities)]
     [(list "count-test-max" n) `(count-test-max ,(string->number n))]
     [(list "update-epoch") `(update-epoch)]
@@ -187,6 +190,8 @@
       [`(rerun ,rel) (session-rerun! s rel)]
       [`(recount ,rel ,at ,force?)
        (session-recount! s #:rel rel #:at at #:force? force?)]
+      [`(recount-lattices-force)
+       (session-recount! s #:force? #t #:lattices? #t)]
       [`(recount-try)
        (with-handlers ([exn:fail?
                         (lambda (e)
@@ -203,6 +208,8 @@
                           (displayln `(recount-omitted ,n ,(exn-message e))))])
          (session-recount! s #:force? #t #:omit-writer n))]
       [`(count-state) (session-action! s `(count-state) echo-one-line)]
+      [`(lattice-contributor-state)
+       (session-action! s `(lattice-contributor-state) echo-one-line)]
       [`(count-capabilities)
        (session-action! s `(count-capabilities) echo-one-line)]
       [`(count-test-max ,n)
@@ -230,6 +237,8 @@
                                          (echo-until #px"^\\(dumpdone "))]
       [`(dump-rel ,rel ,p) (session-action! s `(dump-rel ,rel ,p)
                                             (echo-until #px"^\\(dumpdone "))]
+      [`(dump-tuples ,rel) (session-action! s `(dump-tuples ,rel)
+                                             (echo-until #px"^\\(tupledone "))]
       [`(sizes)
        ;; no terminator line: rely on ordering -- the lines flush before
        ;; the next op's response and drain at close

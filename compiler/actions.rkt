@@ -174,6 +174,29 @@
       (format "  std::vector<std::pair<u8, std::vector<u64>>> rows = { ~a };\n"
               (string-join encoded ", "))
       (format "  d->setOverlayAt(\"~a\", ~a, rows);\n" rel pos))]
+    ;; Test/oracle bulk loader with a stable plugin identity: read whitespace-
+    ;; separated signed integers from a fixed file at execution time, encode
+    ;; each A-wide row, and install direct overlay support.  This keeps
+    ;; randomized fresh-session oracles from compiling one action per fact set.
+    [`(set-overlay-int-file ,rel ,path ,arity)
+     (define scans
+       (string-join
+        (for/list ([c (in-range arity)]) (format "&v[~a]" c)) ", "))
+     (define fmt (string-join (make-list arity "%lld") " "))
+     (string-append
+      (format "  FILE* f = fopen(\"~a\", \"r\");\n" path)
+      (format "  if (!f) { d->emit(\"(error set-overlay-int-file ~a)\"); return; }\n" rel)
+      "  std::vector<std::pair<u8, std::vector<u64>>> rows;\n"
+      (format "  long long v[~a];\n" arity)
+      (format "  while (fscanf(f, \"~a\", ~a) == ~a)\n" fmt scans arity)
+      "  {\n"
+      "    std::vector<u64> row;\n"
+      (format "    for (u16 c = 0; c < ~a; ++c) row.push_back(s32_encode((s32)v[c]));\n"
+              arity)
+      "    rows.push_back({1, std::move(row)});\n"
+      "  }\n"
+      "  fclose(f);\n"
+      (format "  d->setOverlayAt(\"~a\", -1, rows);\n" rel))]
     [`(set-overlay-positive ,rel (,tuples ...))
      (string-append
       "  slog::Database* db = d->db();\n"
@@ -195,6 +218,10 @@
      (format "  d->stageUpdateTransitions(std::vector<std::string>{~a}, 1);\n"
              (string-join (for/list ([r (in-list rels)])
                             (format "\"~a\"" r)) ", "))]
+    [`(stage-lattice-replacements signed ,sign ,rels ...)
+     (format "  d->stageLatticeReplacements(std::vector<std::string>{~a}, ~a);\n"
+             (string-join (for/list ([r (in-list rels)])
+                            (format "\"~a\"" r)) ", ") sign)]
     [`(begin-update ,expected)
      (format "  d->beginUpdateEpoch(~a);\n" expected)]
     [`(commit-update) "  d->commitUpdateEpoch();\n"]
@@ -372,6 +399,22 @@
       "    ++n;\n"
       "  });\n"
       "  d->emit(std::string(\"(dumpdone \") + std::to_string(n) + \")\");\n")]
+    ;; Full-width deterministic test/introspection dump.  `dump-rel` is kept
+    ;; column-0-only for the error watcher; this separate protocol exposes the
+    ;; complete nominal row, including a lattice's visible payload.
+    [`(dump-tuples ,rel)
+     (string-append
+      "  slog::Database* db = d->db();\n"
+      (format "  slog::Relation* r = db->getRelation(\"~a\");\n" rel)
+      "  size_t n = 0;\n"
+      "  if (r) slog::Database::forEachNominal(r, [&](const u64* row) {\n"
+      "    std::string line = \"(tuplerow\";\n"
+      "    for (u16 c = 0; c < r->getArity(); ++c)\n"
+      "      line += \" \" + db->writeValCSV(row[c]);\n"
+      "    d->emit(line + \")\");\n"
+      "    ++n;\n"
+      "  });\n"
+      "  d->emit(std::string(\"(tupledone \") + std::to_string(n) + \")\");\n")]
     ;; Drop ALL count state (docs/incremental.md §8B.2): counts are
     ;; session-ephemeral recomputable cache, so the cheap "uncounted"
     ;; transition is deletion -- the recount driver clears before a round
@@ -406,10 +449,12 @@
       "  d->db()->markCounted(mc);\n"
       "  d->emit(\"(marked-counted)\");\n")]
     ;; The per-(relation, version) counted state (§8B.2), one
-    ;; (count-state (cnt NAME ORD 0|1) ...) line; lattices, index-free
-    ;; versions, severed bindings, and $-diagnostics are omitted.
+    ;; (count-state (cnt NAME ORD 0|1) ...) line; lattices have a separate
+    ;; M6L contributor-state form so legacy recount remains table-only.
     [`(count-state)
      "  d->emit(d->db()->countStateSexpr());\n"]
+    [`(lattice-contributor-state)
+     "  d->emit(d->db()->latticeContributorStateSexpr());\n"]
     [`(count-capabilities)
      "  d->emit(d->db()->countCapabilitiesSexpr());\n"]
     [`(count-test-max ,n)

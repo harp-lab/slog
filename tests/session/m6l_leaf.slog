@@ -1,0 +1,8 @@
+lattice (cost (min int))
+
+table (offer int int)
+table (alias int int)
+table (best int cost)
+
+rule (offer K V) --> (best K V)
+rule (alias K V) --> (best K V)

@@ -625,6 +625,14 @@ public:
          + std::to_string(names.size()) + ")");
   }
 
+  void stageLatticeReplacements(const std::vector<std::string>& names, s8 sign)
+  {
+    if (refuseIfSuspended("stage-lattice-replacements")) return;
+    database->stageLatticeReplacements(names, sign);
+    emit("(lattice-replacements-staged " + std::to_string((s32)sign) + " "
+         + std::to_string(names.size()) + ")");
+  }
+
   void emitUpdateCountsValid()
   {
     emit(database->updateCountsValid() ? "(update-counts-valid 1)"

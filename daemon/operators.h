@@ -28,6 +28,8 @@
 
 #include "slogd.h"
 #include <array>
+#include <set>
+#include <vector>
 
 namespace slog
 {
@@ -547,6 +549,47 @@ inline void emit_count(Relation* head_rel, Index** head_index, u8 kind,
     head_rel->sendBatch(nb);
     nb = new InsertBatch();
     nb->kind = kind;
+  }
+}
+
+// M6L lattice contributor sinks.  A lattice's visible map contains only the
+// joined payload, so a non-winning contribution is normally absent from that
+// map and cannot pass emit_count's closure check.  Count and maintenance
+// flavors instead preserve every emitted (key..., payload) row in nominal
+// storage order; CountTask/LatticeMaintainTask fold its support separately.
+template <u16 A>
+inline void emit_lattice_count(Relation* head_rel, u8 kind,
+                               InsertBatch*& nb,
+                               const std::array<u64, A>& zs)
+{
+  nb->kind = kind;
+  u64* d = nb->data + nb->usage;
+  for (u16 j = 0; j < A; ++j) d[j] = zs[j];
+  nb->usage += A;
+  if (nb->usage + A >= batch_size_max)
+  {
+    head_rel->sendBatch(nb);
+    nb = new InsertBatch();
+    nb->kind = kind;
+  }
+}
+
+template <u16 A>
+inline void emit_lattice_maint(Relation* head_rel, u8 kind, s8 sign,
+                               InsertBatch*& nb,
+                               const std::array<u64, A>& zs)
+{
+  nb->kind = kind;
+  nb->sign = sign;
+  u64* d = nb->data + nb->usage;
+  for (u16 j = 0; j < A; ++j) d[j] = zs[j];
+  nb->usage += A;
+  if (nb->usage + A >= batch_size_max)
+  {
+    head_rel->sendBatch(nb);
+    nb = new InsertBatch();
+    nb->kind = kind;
+    nb->sign = sign;
   }
 }
 
@@ -1201,6 +1244,95 @@ public:
           db->recordUpdateTransition(rel, row, 1);
         }
       }
+    return true;
+  }
+};
+
+// M6L lattice repair.  The support sidecar is keyed by the complete
+// emitted contribution, while the resident lattice map is keyed by all but
+// the payload.  Fold all signed support changes first, then reduce each
+// affected key once and replace/remove its visible joined payload atomically
+// across every registered map ordering.  Contribution rows are private to
+// this sink and never become ordinary lattice delta.
+template <u16 A>
+class LatticeMaintainTask : public Task
+{
+  static_assert(A >= 2, "lattice relation must have a key and payload");
+  Database* db;
+  Relation* rel;
+  Index** side;
+public:
+  LatticeMaintainTask(Database* _db, Relation* _rel)
+    : db(_db), rel(_rel), side(_rel->ensureCountSidecar()) {}
+
+  bool work() override
+  {
+    std::set<std::vector<u64>> affected;
+    auto& delta = rel->getDelta();
+    for (InsertBatch* batch : delta)
+      for (u32 j = 0; j < batch->usage; j += A)
+      {
+        u64* row = batch->data + j;
+        if (row[0] == slog_null) continue;
+        if (batch->kind == cnt_kind_premise)
+        {
+          row[0] = slog_null;
+          continue;
+        }
+
+        const u16 bucket = buckethash(row[0]);
+        u64 word = 0;
+        side[bucket]->getPayload(row, A, word);
+        u64 next = word;
+        const bool ok = rel->isCounted()
+                     && rel->tryApplyCountSigned(word, batch->kind,
+                                                 batch->sign, next);
+        if (ok && cnt_present(next))
+          side[bucket]->setPayload(row, A, next);
+        else if (ok)
+        {
+          std::array<u64, A> contribution;
+          for (u16 c = 0; c < A; ++c) contribution[c] = row[c];
+          static_cast<BTreeMapIndex<A>*>(side[bucket])->tree.erase(contribution);
+        }
+        else
+          db->invalidateUpdateCounts();
+
+        if (ok)
+          affected.insert(std::vector<u64>(row, row + A - 1));
+        row[0] = slog_null;
+      }
+
+    for (const std::vector<u64>& key : affected)
+    {
+      u64 old_value = 0, new_value = 0;
+      const bool old_present = rel->getLatticePayloadForKey(key, old_value);
+      const bool new_present = rel->reduceLatticeContributorKey(side, key,
+                                                                 new_value);
+      if (old_present == new_present
+          && (!old_present || old_value == new_value))
+        continue;
+
+      u64 row[A];
+      for (u16 c = 0; c + 1 < A; ++c) row[c] = key[c];
+      if (!rel->setLatticePayloadForKey(key, new_present, new_value))
+      {
+        db->invalidateUpdateCounts();
+        continue;
+      }
+      if (old_present)
+      {
+        row[A - 1] = old_value;
+        db->recordUpdateTransition(rel, row, -1);
+      }
+      if (new_present)
+      {
+        row[A - 1] = new_value;
+        db->recordUpdateTransition(rel, row, 1);
+      }
+      db->recordLatticeReplacement(rel, key, old_present, old_value,
+                                   new_present, new_value);
+    }
     return true;
   }
 };

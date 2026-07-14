@@ -1,0 +1,16 @@
+;; M6L contributor-repair fixture.  The first slice maintains `best` as a
+;; leaf; the second admits the closed-value `reported` consumer.
+
+lattice (cost (min int))
+
+table (offer int int)
+table (alias int int)
+table (best int cost)
+table (reported int int)
+
+;; Two logical derivations can emit the same contributor.
+rule (offer K V) --> (best K V)
+rule (alias K V) --> (best K V)
+
+;; Strictly later-stratum consumer for the second M6L slice.
+rule (best K V) --> (reported K V)

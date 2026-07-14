@@ -604,6 +604,109 @@ public:
   u64 getCountedRevision() const { return counted_revision; }
   void setCountedRevision(u64 revision) { counted_revision = revision; }
 
+  // M6L contributor reduction.  A lattice count sidecar is keyed by the full
+  // emitted (key..., payload) row; its payload is the ordinary support word.
+  // The visible payload map remains separate and holds one joined value/key.
+  u64 joinLatticePayload(u64 oldw, u64 contribution)
+  {
+    InternTable<mpz_val>* mt = lat_arena ? lat_arena->mpzTable() : nullptr;
+    const u64 v = lat_clamp(lattice_kind, lat_has_floor, lat_floor,
+                            lat_has_ceil, lat_ceil, contribution, mt);
+    if (oldw == 0) return v;
+    return lattice_kind == LAT_EXTERN
+         ? lat_arena->merge_spec(oldw, v, lat_spec_tree)
+         : lat_join(lattice_kind, oldw, v, mt);
+  }
+
+  bool reduceLatticeContributorKey(Index** side,
+                                   const std::vector<u64>& storage_key,
+                                   u64& joined)
+  {
+    if (!isLattice() || side == nullptr || storage_key.size() + 1 != arity)
+      return false;
+    bool present = false;
+    joined = 0;
+    for (u16 b = 0; b < bucket_count; ++b)
+      side[b]->forEach([&](const u64* row)
+      {
+        bool same = true;
+        for (u16 c = 0; c + 1 < arity; ++c)
+          if (row[c] != storage_key[c]) { same = false; break; }
+        if (!same || !cnt_present(row[arity])) return;
+        joined = joinLatticePayload(joined, row[arity - 1]);
+        present = true;
+      });
+    return present;
+  }
+
+  bool getLatticePayloadForKey(const std::vector<u64>& storage_key, u64& value)
+  {
+    auto ordptr = getAnyIndex();
+    if (!isLattice() || ordptr == nullptr || storage_key.size() + 1 != arity)
+      return false;
+    const std::vector<u16>& ord = *ordptr;
+    u64 ordered[max_daemon_arity];
+    for (u16 c = 0; c + 1 < arity; ++c) ordered[c] = storage_key[ord[c]];
+    return getIndex(ord, false)[buckethash(ordered[0])]
+             ->getPayload(ordered, arity - 1, value);
+  }
+
+  bool setLatticePayloadForKey(const std::vector<u64>& storage_key,
+                               bool present, u64 value)
+  {
+    if (!isLattice() || storage_key.size() + 1 != arity) return false;
+    u64 storage_row[max_daemon_arity + 1];
+    for (u16 c = 0; c + 1 < arity; ++c) storage_row[c] = storage_key[c];
+    storage_row[arity - 1] = value;
+    bool ok = true;
+    for (const auto& it : indices)
+    {
+      const std::vector<u16>& ord = it.first;
+      u64 ordered[max_daemon_arity];
+      for (u16 c = 0; c + 1 < arity; ++c) ordered[c] = storage_key[ord[c]];
+      Index* idx = it.second[buckethash(ordered[0])];
+      if (present)
+        ok = idx->setPayload(ordered, arity - 1, value) && ok;
+      else
+        // Payload-map removeTuple keys only on the key prefix; the value word
+        // in storage_row is intentionally irrelevant.
+        ok = idx->removeTuple(storage_row, ord.data()) && ok;
+    }
+    return ok;
+  }
+
+  bool latticeContributorCoverage(Index** side, std::string& why)
+  {
+    std::map<std::vector<u64>, u64> reduced;
+    for (u16 b = 0; b < bucket_count; ++b)
+      side[b]->forEach([&](const u64* row)
+      {
+        if (!cnt_present(row[arity])) return;
+        std::vector<u64> key(row, row + arity - 1);
+        reduced[key] = joinLatticePayload(reduced[key], row[arity - 1]);
+      });
+    bool ok = true;
+    forEachLiveNominal([&](const u64* row)
+    {
+      if (!ok) return;
+      std::vector<u64> key(row, row + arity - 1);
+      auto it = reduced.find(key);
+      if (it == reduced.end() || it->second != row[arity - 1])
+      {
+        ok = false;
+        why = "visible lattice payload disagrees with contributors";
+      }
+      else
+        reduced.erase(it);
+    });
+    if (ok && !reduced.empty())
+    {
+      ok = false;
+      why = "live lattice contributor key has no visible payload";
+    }
+    return ok;
+  }
+
   // Add direct input support while preserving an already certified sidecar.
   // The tuple may be absent (a 0->1 membership transition) or already live by
   // rule support (support-only, no premise transition).  The ordinary overlay
@@ -705,7 +808,11 @@ public:
 
   bool beginCountEpoch()
   {
-    if (isLattice() || arity == 0 || getAnyIndex() == nullptr)
+    if (arity == 0 || getAnyIndex() == nullptr)
+      return false;
+    // M6L currently establishes only root contributor state.  A copied
+    // visible payload is not an exact copy of its predecessor's contributors.
+    if (isLattice() && predecessor_relation != nullptr)
       return false;
     deleteCountArray(count_epoch_sidecar);
     count_epoch_active = true;
@@ -740,6 +847,8 @@ public:
       why = "semantic writer coverage mismatch";
       return false;
     }
+    if (isLattice())
+      return latticeContributorCoverage(count_epoch_sidecar, why);
     bool ok = true;
     forEachLiveNominal([&](const u64* row)
     {
@@ -769,6 +878,8 @@ public:
   bool committedCountCoverage(std::string& why)
   {
     if (!counted || count_sidecar == nullptr) return true;
+    if (isLattice())
+      return latticeContributorCoverage(count_sidecar, why);
     bool ok = true;
     forEachLiveNominal([&](const u64* row)
     {
@@ -1919,6 +2030,22 @@ private:
   std::unordered_map<u64,
     std::unordered_set<std::vector<u64>, boost::hash<std::vector<u64>>>>
       update_negative_transitions;
+  // M6L replacements are coalesced per (lattice VersionId, key) across the
+  // complete update epoch.  A mixed delete/add may repair the same key more
+  // than once while producer strata settle; downstream consumers must see
+  // only the value present at epoch entry and the final settled value, never
+  // an intermediate payload.
+  struct LatticeReplacement
+  {
+    bool old_present = false;
+    std::vector<u64> old_row;
+    bool new_present = false;
+    std::vector<u64> new_row;
+  };
+  std::unordered_map<u64,
+    std::unordered_map<std::vector<u64>, LatticeReplacement,
+                       boost::hash<std::vector<u64>>>>
+      lattice_replacements;
   std::unordered_map<std::string, std::string> planned_version_keys;
   std::unordered_map<std::string, u64> version_key_ids;
   // Exact per-name VersionId environment for one plugin registration.  This
@@ -1995,6 +2122,7 @@ public:
       std::lock_guard<std::mutex> lk(update_transition_mutex);
       update_transitions.clear();
       update_negative_transitions.clear();
+      lattice_replacements.clear();
     }
     return true;
   }
@@ -2018,6 +2146,37 @@ public:
     auto& journal = sign < 0 ? update_negative_transitions : update_transitions;
     journal[rel->getVersionId()].insert(
       std::vector<u64>(row, row + rel->getArity()));
+  }
+
+  void recordLatticeReplacement(Relation* rel, const std::vector<u64>& key,
+                                bool old_present, u64 old_value,
+                                bool new_present, u64 new_value)
+  {
+    if (!update_epoch_active || rel == nullptr || !rel->isLattice()) return;
+    std::lock_guard<std::mutex> lk(update_transition_mutex);
+    auto& by_key = lattice_replacements[rel->getVersionId()];
+    auto [it, inserted] = by_key.try_emplace(key);
+    LatticeReplacement& replacement = it->second;
+    const u16 arity = rel->getArity();
+    if (inserted)
+    {
+      replacement.old_present = old_present;
+      if (old_present)
+      {
+        replacement.old_row.assign(key.begin(), key.end());
+        replacement.old_row.push_back(old_value);
+      }
+    }
+    replacement.new_present = new_present;
+    replacement.new_row.clear();
+    if (new_present)
+    {
+      replacement.new_row.assign(key.begin(), key.end());
+      replacement.new_row.push_back(new_value);
+    }
+    if ((replacement.old_present && replacement.old_row.size() != arity)
+        || (replacement.new_present && replacement.new_row.size() != arity))
+      update_epoch_valid = false;
   }
 
   bool applyPositiveInput(Relation* rel, const u64* row)
@@ -2078,6 +2237,47 @@ public:
     }
   }
 
+  // Stage the coalesced old or final rows for closed-value lattice consumers.
+  // An epoch whose net result returns to its entry value publishes nothing.
+  void stageLatticeReplacements(const std::vector<std::string>& names,
+                                s8 sign)
+  {
+    std::lock_guard<std::mutex> lk(update_transition_mutex);
+    for (const std::string& name : names)
+    {
+      Relation* rel = getRelation(name);
+      if (rel == nullptr || !rel->isLattice()) continue;
+      auto rit = lattice_replacements.find(rel->getVersionId());
+      if (rit == lattice_replacements.end()) continue;
+      InsertBatch* b = new InsertBatch();
+      b->kind = cnt_kind_premise;
+      b->sign = sign;
+      for (const auto& kv : rit->second)
+      {
+        const LatticeReplacement& replacement = kv.second;
+        const bool unchanged =
+          replacement.old_present == replacement.new_present
+          && (!replacement.old_present
+              || replacement.old_row == replacement.new_row);
+        if (unchanged) continue;
+        const bool present = sign < 0 ? replacement.old_present
+                                      : replacement.new_present;
+        const std::vector<u64>& row = sign < 0 ? replacement.old_row
+                                               : replacement.new_row;
+        if (!present) continue;
+        if (b->usage + row.size() > batch_size_max)
+        {
+          rel->sendBatch(b);
+          b = new InsertBatch();
+          b->kind = cnt_kind_premise;
+          b->sign = sign;
+        }
+        for (u64 v : row) b->data[b->usage++] = v;
+      }
+      rel->sendBatch(b);
+    }
+  }
+
   bool commitUpdateEpoch(std::string& why)
   {
     if (!update_epoch_active)
@@ -2110,6 +2310,7 @@ public:
       std::lock_guard<std::mutex> lk(update_transition_mutex);
       update_transitions.clear();
       update_negative_transitions.clear();
+      lattice_replacements.clear();
     }
     // Coverage failure is a committed set update with invalidated cache, not
     // a failed update transaction.  Reserve `why` for protocol refusal before
@@ -2128,6 +2329,7 @@ public:
       std::lock_guard<std::mutex> lk(update_transition_mutex);
       update_transitions.clear();
       update_negative_transitions.clear();
+      lattice_replacements.clear();
     }
     update_epoch_valid = true;
   }
@@ -2791,10 +2993,8 @@ public:
 
   // The per-(relation, version) counted state (§8B.2), one line:
   //   (count-state (cnt NAME ORD 0|1) ...)
-  // mirroring relChainsSexpr's ordinals.  Lattice-valued relations are
-  // omitted (uncountable until M6), as are index-free versions (temps,
-  // mid-reload husks), severed bindings, and $-diagnostics -- the driver
-  // treats absent names as "nothing to count here".
+  // mirroring relChainsSexpr's ordinals.  Lattice contributor state has a
+  // separate wire form below so legacy recount remains table-only.
   std::string countStateSexpr()
   {
     std::map<std::string, const std::vector<RelBinding>*> sorted;
@@ -2835,10 +3035,40 @@ public:
     return s;
   }
 
+  // M6L contributor certification, intentionally separate from count-state:
+  //   (lattice-contributor-state (lcnt NAME ORD 0|1) ...)
+  // A true flag means the full (key..., payload)->support sidecar reduces to
+  // exactly the visible lattice map at the recorded update revision.
+  std::string latticeContributorStateSexpr()
+  {
+    std::map<std::string, const std::vector<RelBinding>*> sorted;
+    for (const auto& kv : rel_bindings)
+      if (!kv.first.empty() && kv.first[0] != '$')
+        sorted[kv.first] = &kv.second;
+    std::string s = "(lattice-contributor-state";
+    for (const auto& kv : sorted)
+    {
+      u32 ord = 0;
+      for (const RelBinding& b : *kv.second)
+      {
+        const u32 o = ord++;
+        if (b.rel == nullptr || b.rel->isCompilerTemporary()
+            || !b.rel->getAnyIndex() || !b.rel->isLattice())
+          continue;
+        s += " (lcnt " + kv.first + " " + std::to_string(o) + " "
+           + (b.rel->isCounted() ? "1" : "0") + ")";
+      }
+    }
+    s += ")";
+    return s;
+  }
+
   // Explicit per-VersionId capability report.  Recount capability is
   // separate from precise deletion: ordinary tables can establish counts,
-  // structs are diagnostic-only until identity/liveness split in M5, and
-  // lattices/nullary/index-free versions remain on named fallback paths.
+  // structs are diagnostic-only until identity/liveness split in M5, and a
+  // lattice advertises only conditional contributor recount/repair.  The
+  // session still proves whether the complete cone is a leaf or an admitted
+  // stratified consumer shape before selecting signed repair.
   std::string countCapabilitiesSexpr()
   {
     std::map<std::string, const std::vector<RelBinding>*> sorted;
@@ -2864,9 +3094,9 @@ public:
         }
         else if (b.rel->isLattice())
         {
-          recount = "no";
-          precise = "no";
-          reason = "lattice-fallback";
+          recount = "yes";
+          precise = "conditional";
+          reason = "lattice-contributor-recount";
         }
         else if (!b.rel->getAnyIndex())
         {

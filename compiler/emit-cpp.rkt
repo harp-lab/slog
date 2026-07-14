@@ -304,7 +304,8 @@
 (define (lat-spec-token spec)
   (string-join (map ~a (flatten spec)) "-"))
 
-(define (add-lattice-decl name arity spec decomp indices)
+(define (add-lattice-decl name arity spec decomp indices
+                          #:counted? [counted? #f])
   (match-define `(,kind ,rest ...) spec)
   (define base (and (memq kind '(min max flat)) (car rest)))
   (define (param key)
@@ -351,11 +352,19 @@
        (define isstatic (if (and (equal? indx master) (not delta)) "true" "false"))
        (append
         (cond
-          ;; count flavor: payload maps register (idempotent -- live merged
-          ;; maps survive) for the flavor's join-lat reads; NO merge/write
-          ;; tasks and no delta indices (lattice heads are uncounted until
-          ;; M6 and emit nothing in this flavor).
+          ;; Count and M6L maintenance flavors keep resident payload maps
+          ;; registered but never run ordinary merge/write machinery.  For a
+          ;; counted head, contributions are folded by CountTask or
+          ;; LatticeMaintainTask; for a read-only lattice, premise-only staged
+          ;; old/new rows must remain delta without being joined back into the
+          ;; visible payload map.
           [(and (count-flavor) (not (maintenance-flavor)))
+           (if delta
+               '()
+               (list
+                (format "r->addMapIndex<~a>(~a);" A ordering)
+                (add-ord-decl ordering ind 2)))]
+          [(maintenance-flavor)
            (if delta
                '()
                (list
@@ -379,12 +388,24 @@
             (add-ord-decl ordering ind 2))])
         lines))))
    "\n"
-   (if (and (count-flavor) (not (maintenance-flavor)))
-       ""
-       ((emit-lines 2)
-        (format "for (u16 b = 0; b < ~a; ++b)" bucket-count)
-        (format "  s->addTask(phase_intern, new slog::LatticeInternTask<~a>(db, db->getRelation(\"~a\"), ~a, b~a));"
-                arity name (u16-array-lit master) decomp-args)))))
+   (cond
+     [(and (count-flavor) (not (maintenance-flavor)))
+      (if counted?
+          ((emit-lines 2)
+           (format "for (u16 b = 0; b < ~a; ++b)" bucket-count)
+           (format "  s->addTask(phase_intern, new slog::CountTask<~a>(db, db->getRelation(\"~a\"), b), false);"
+                   arity name))
+          "")]
+     [(and (maintenance-flavor) counted?)
+      ((emit-lines 2)
+       (format "s->addTask(phase_intern, new slog::LatticeMaintainTask<~a>(db, db->getRelation(\"~a\")));"
+               arity name))]
+     [(maintenance-flavor) ""]
+     [else
+      ((emit-lines 2)
+       (format "for (u16 b = 0; b < ~a; ++b)" bucket-count)
+       (format "  s->addTask(phase_intern, new slog::LatticeInternTask<~a>(db, db->getRelation(\"~a\"), ~a, b~a));"
+               arity name (u16-array-lit master) decomp-args))])))
 
 ;; `counted-heads` (the _count flavor): relations whose emissions are count
 ;; contributions -- rule heads plus the runtime-error arms; empty otherwise.
@@ -438,7 +459,8 @@
      (when (or (null? indices) (eq? 'delta (car (first indices))))
        (error (format "Lattice relation ~a must lead with a non-delta (master) index: ~a"
                       name indices)))
-     (add-lattice-decl name arity spec decomp indices)]))
+     (add-lattice-decl name arity spec decomp indices
+                       #:counted? (set-member? counted-heads name))]))
 
 ;; -----------------------------------------------------------------------
 ;; Rules.
@@ -759,16 +781,23 @@
                (format "slog::emit_temp<~a>(head_rel[~a], newbatch[~a], ~a);"
                        (length zs) i i
                        (u64-array-lit (map (lambda (z) (format "v_~a" z)) zs))))]
-             ;; a lattice contribution: nominal order, no dedup (the merge
-             ;; task owns subsumption) -- the emit_temp sink is exactly that.
-             ;; The count flavor emits NOTHING here: lattice-valued heads are
-             ;; uncounted until M6 (docs/incremental.md §7A/§8B), and firing
-             ;; the merge machinery off count-round re-derivations would be
-             ;; pure waste against an already-merged resident map.
+             ;; A lattice contribution is always nominal-order.  Normal runs
+             ;; merge it into the payload map; M6L count/maintenance flavors
+             ;; preserve the individual contribution for their sidecar sink.
              [`(emit-lat ,name ,zs ...)
               (if (current-rule-kind)
-                  ((emit-lines indent)
-                   "// lattice head: uncounted in the _count flavor (M6)")
+                  (if (maintenance-flavor)
+                      ((emit-lines indent)
+                       (format "slog::emit_lattice_maint<~a>(head_rel[~a], ~a, ~a, newbatch[~a], ~a);"
+                               (length zs) i (cnt-kind-cpp (current-rule-kind))
+                               (if (negative-maintenance-flavor?) -1 1) i
+                               (u64-array-lit
+                                (map (lambda (z) (format "v_~a" z)) zs))))
+                      ((emit-lines indent)
+                       (format "slog::emit_lattice_count<~a>(head_rel[~a], ~a, newbatch[~a], ~a);"
+                               (length zs) i (cnt-kind-cpp (current-rule-kind)) i
+                               (u64-array-lit
+                                (map (lambda (z) (format "v_~a" z)) zs)))))
                   ((emit-lines indent)
                    (format "slog::emit_temp<~a>(head_rel[~a], newbatch[~a], ~a);"
                            (length zs) i i
@@ -1265,6 +1294,7 @@
             (match hop
               [`(mkstruct ,name ,_ ,_ ,_ ...) (set-add acc name)]
               [`(emit ,name ,_ ,_ ...) (set-add acc name)]
+              [`(emit-lat ,name ,_ ...) (set-add acc name)]
               [`(tycheck ,_ ,_ ,_ ,_ ,_ ,_) (set-add acc 'malformed_deduction)]
               [_ acc])))))
   (define emit-rule (add-rule dynamic-rels))

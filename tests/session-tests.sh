@@ -788,7 +788,8 @@ expect "cnt-g-two"       "(countrow g (h 2) 0 2 0)" out/sess-counts-st.log
 
 # Ground struct trees (staged replay chains + synthesized-const temps) and
 # negation (absent probes over closed strata) through the count round; a
-# lattice relation stays uncounted (countdone -1) until M6.
+# lattice relation stays outside the legacy count walk (countdone -1); M6L
+# establishes contributor state only when the leaf-maintenance route asks.
 timeout 600 racket tests/api/session-drive.rkt \
   run:tests/deep_fact.slog recount dump-counts:corners dump-counts:t \
   > out/sess-counts-tree.log 2>&1
@@ -808,7 +809,7 @@ timeout 600 racket tests/api/session-drive.rkt \
   > out/sess-counts-lat.log 2>&1
 expect "cnt-lat-out"     "(countrow out (pair 1 2) 0 1 0)" out/sess-counts-lat.log
 expect "cnt-lat-skip"    "(countdone dist -1)" out/sess-counts-lat.log
-expect_re "m04-cap-lattice" '\(cap dist 0 [0-9]+ \(recount no\) \(precise-delete no\) \(fallback clear-rerun\) \(reason lattice-fallback\)\)' out/sess-counts-lat.log
+expect_re "m04-cap-lattice" '\(cap dist 0 [0-9]+ \(recount yes\) \(precise-delete conditional\) \(fallback clear-rerun\) \(reason lattice-contributor-recount\)\)' out/sess-counts-lat.log
 versioned_count_oracle "m04-lattice-boundary-oracle" out/sess-counts-lat.log
 
 # --- M0.3: counted state, laziness, invalidation, positional/cone walks ------
@@ -1143,6 +1144,85 @@ for seed in 3101 3102; do
     echo "FAIL m3-fuzz-$seed (see out/sess-m3-fuzz-$seed.log)"; FAIL=$((FAIL+1))
   fi
 done
+
+# --- M6L slice 1: acyclic leaf-lattice contributor repair -----------------
+# The sidecar keeps non-winning and duplicate contributions independently of
+# the visible min payload.  Losing/winning/final removals and a mixed flush
+# must stay on signed maintenance, after which a forced contributor recount
+# reproduces the warm state exactly.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m6l_leaf.slog \
+  batch+:offer,1,9 batch+:alias,1,5 flush \
+  dump-rel:best dump-counts:best lattice-contributor-state \
+  batch-:offer,1,9 flush dump-rel:best dump-counts:best \
+  batch-:alias,1,5 flush dump-rel:best dump-counts:best \
+  batch+:offer,1,7 batch+:alias,1,7 flush dump-counts:best \
+  batch-:offer,1,7 flush dump-counts:best \
+  batch-:alias,1,7 batch+:offer,1,3 batch+:alias,1,8 flush \
+  dump-rel:best dump-counts:best \
+  batch-:offer,1,3 flush dump-rel:best dump-counts:best \
+  recount-lattices-force dump-counts:best lattice-contributor-state \
+  > out/sess-m6l-leaf.log 2>&1
+expect "m6l-positive-route" "(route maintain 1)" out/sess-m6l-leaf.log
+expect "m6l-negative-route" "(route maintain-negative 1)" out/sess-m6l-leaf.log
+expect "m6l-mixed-route" "(route maintain-positive 1)" out/sess-m6l-leaf.log
+expect_not "m6l-no-rerun" "(route rerun" out/sess-m6l-leaf.log
+expect "m6l-certified" "(lcnt best 0 1)" out/sess-m6l-leaf.log
+expect "m6l-final-removal" "(countdone best 0)" out/sess-m6l-leaf.log
+expect "m6l-duplicate-two" "(countrow best 1 7 0 2 0)" out/sess-m6l-leaf.log
+expect "m6l-duplicate-one" "(countrow best 1 7 0 1 0)" out/sess-m6l-leaf.log
+if [ "$(grep -cF '(countrow best 1 5 0 1 0)' out/sess-m6l-leaf.log)" -eq 2 ] \
+   && [ "$(grep -cF '(countrow best 1 8 0 1 0)' out/sess-m6l-leaf.log)" -eq 3 ]; then
+  echo "PASS m6l-maintained-equals-recount"; PASS=$((PASS+1))
+else
+  echo "FAIL m6l-maintained-equals-recount"; FAIL=$((FAIL+1))
+fi
+
+# M6L slice 2 closes the acyclic lattice value before publishing exactly one
+# old->new pair into the downstream table consumer.  The losing deletion does
+# not move the visible value; the mixed deletion/addition must skip its
+# producer-phase intermediate and publish only 5->3; the next deletion
+# regresses 3->8.  A forced recount then reproduces both contributor and
+# consumer count state.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m6l_stratified.slog \
+  batch+:offer,1,9 batch+:alias,1,5 flush \
+  dump-tuples:best dump-tuples:reported dump-counts:best dump-counts:reported \
+  batch-:offer,1,9 flush \
+  dump-tuples:best dump-tuples:reported dump-counts:best dump-counts:reported \
+  batch-:alias,1,5 batch+:offer,1,3 batch+:alias,1,8 flush \
+  dump-tuples:best dump-tuples:reported dump-counts:best dump-counts:reported \
+  batch-:offer,1,3 flush \
+  dump-tuples:best dump-tuples:reported dump-counts:best dump-counts:reported \
+  recount-lattices-force \
+  dump-tuples:best dump-tuples:reported dump-counts:best dump-counts:reported \
+  lattice-contributor-state \
+  > out/sess-m6l-stratified.log 2>&1
+expect "m6l2-negative-producer" "(route maintain-lattice-producers-negative 1)" out/sess-m6l-stratified.log
+expect "m6l2-positive-producer" "(route maintain-lattice-producers-positive 1)" out/sess-m6l-stratified.log
+expect "m6l2-negative-consumer" "(route maintain-lattice-consumers-negative 1)" out/sess-m6l-stratified.log
+expect "m6l2-positive-consumer" "(route maintain-lattice-consumers-positive 1)" out/sess-m6l-stratified.log
+expect_not "m6l2-no-rerun" "(route rerun" out/sess-m6l-stratified.log
+expect_not "m6l2-no-intermediate" "(tuplerow 1 9)" out/sess-m6l-stratified.log
+expect "m6l2-certified" "(lcnt best 0 1)" out/sess-m6l-stratified.log
+if [ "$(grep -cF '(tuplerow 1 5)' out/sess-m6l-stratified.log)" -eq 4 ] \
+   && [ "$(grep -cF '(tuplerow 1 3)' out/sess-m6l-stratified.log)" -eq 2 ] \
+   && [ "$(grep -cF '(tuplerow 1 8)' out/sess-m6l-stratified.log)" -eq 4 ] \
+   && [ "$(grep -cF '(countrow best 1 8 0 1 0)' out/sess-m6l-stratified.log)" -eq 3 ] \
+   && [ "$(grep -cF '(countrow reported 1 8 0 1 0)' out/sess-m6l-stratified.log)" -eq 2 ]; then
+  echo "PASS m6l2-coalesced-recount"; PASS=$((PASS+1))
+else
+  echo "FAIL m6l2-coalesced-recount"; FAIL=$((FAIL+1))
+fi
+
+# Recursive lattice consumers still require M4T/M7 for their negative half.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m6l_recursive_consumer.slog \
+  batch+:offer,1,5 flush batch-:offer,1,5 flush \
+  dump-tuples:best dump-tuples:reported \
+  > out/sess-m6l-recursive-fallback.log 2>&1
+expect "m6l2-recursive-fallback" "(route rerun 2 2)" out/sess-m6l-recursive-fallback.log
+expect_not "m6l2-recursive-not-admitted" "maintain-lattice-consumers" out/sess-m6l-recursive-fallback.log
 
 # Source-program facts are derived-only to the input API, and persistent keys
 # cannot collide within one evaluation.

@@ -419,9 +419,9 @@
 ;; R's cone iff R is read here or produced by a cone stratum below; the cone
 ;; is MONOTONE iff every edge along the way is a plain `pos` -- any `neg`/`lat`
 ;; edge routes that cone to clear-and-rerun rather than delta re-entry.
-;; Consumers so far: the driver unions `dynamic-rels` into each segment's
-;; write-set for the daemon's begin-segment version boundary (B0, below);
-;; the reads/cone half still awaits the re-entry driver (0.B1).
+;; Consumers: the driver unions `dynamic-rels` into each segment's write-set
+;; for the daemon's begin-segment version boundary (B0, below), and uses the
+;; reads/cone half for replay plus M1/M3 capability routing.
 (define (write-stratum-manifest proghash stratum type-env decomps)
   (define-values (_rules dynamic-rels)
     (stratum-rules+dynamic stratum type-env decomps))
@@ -597,13 +597,20 @@
 ;; incremental.md §8B.1, M0): the count-round plugin -- one all-full
 ;; fire-once version per rule with counting sinks into the count sidecar.
 ;; Compiled LAZILY on the first (recount ...) touching the stratum, cached
-;; as build/<hash>_count.O0.so; -O0 for the same reason as the delta
-;; flavor (a count round is one embarrassingly-parallel pass; the artifact
-;; caches).  emit-stratum-cpp swaps the parameter's #t for the full
-;; count-mode value once the stratum's dynamic set is in hand.
+;; as a private ABI-versioned shared object; -O0 for the same reason as the
+;; delta flavor (a count round is one embarrassingly-parallel pass; the
+;; artifact caches).  The suffix is bumped whenever sink/task semantics
+;; change so a worktree cannot reuse an older compiler's flavor.  Generated
+;; stratum names and `.cprog` paths remain stable.  emit-stratum-cpp swaps the
+;; parameter's #t for the full count-mode value once the stratum's dynamic set
+;; is in hand.
+(define incremental-flavor-abi "m6l2-v1")
+
 (define (ensure-count-so job)
   (match-define (list proghash _te _st _dm _dc) job)
-  (define so (fullpath (format "build/~a_count.O0.so" proghash)))
+  (define so
+    (fullpath (format "build/~a_count.~a.O0.so"
+                      proghash incremental-flavor-abi)))
   (unless (file-exists? so)
     (define cpps (parameterize ([count-flavor #t])
                    (emit-stratum-cpp job)))
@@ -616,7 +623,9 @@
 ;; nor the fire-once `_count` plugin has these semantics.
 (define (ensure-maintenance-so job)
   (match-define (list proghash _te _st _dm _dc) job)
-  (define so (fullpath (format "build/~a_maint1.O0.so" proghash)))
+  (define so
+    (fullpath (format "build/~a_maint1.~a.O0.so"
+                      proghash incremental-flavor-abi)))
   (unless (file-exists? so)
     (define cpps (parameterize ([maintenance-flavor 'positive]
                                 [count-flavor #t])
@@ -629,7 +638,9 @@
 ;; probe would omit the delta half of a negative pre-state union view.
 (define (ensure-negative-maintenance-so job)
   (match-define (list proghash _te _st _dm _dc) job)
-  (define so (fullpath (format "build/~a_maint3neg.O0.so" proghash)))
+  (define so
+    (fullpath (format "build/~a_maint3neg.~a.O0.so"
+                      proghash incremental-flavor-abi)))
   (unless (file-exists? so)
     (define cpps (parameterize ([maintenance-flavor 'negative]
                                 [count-flavor #t]

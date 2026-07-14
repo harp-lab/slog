@@ -283,6 +283,8 @@
 ;; expressed over VersionIds and complete writer sets; a full prefix is
 ;; intentionally preferable to publishing a plausible partial count map.
 (define (session-recount! s #:rel [rel #f] #:at [at #f] #:force? [force? #f]
+                          #:only [only #f]
+                          #:lattices? [lattices? #f]
                           #:fail-after [fail-after #f]
                           #:omit-writer [omit-writer #f])
   (define-values (cur sinstances chains vinfo) (introspect-identities! s))
@@ -298,7 +300,7 @@
                #:do [(define si (hash-ref sinstances (car e) #f))]
                #:when (and si (<= (first si) p)))
       (list (car e) (first si) (cdr e) (second si) (third si))))
-  (define cstate (query-count-state! s))
+  (define cstate (query-maintenance-count-state! s lattices?))
   ;; VersionId -> counted?, de-duplicated across rename aliases.  A false
   ;; observation wins (aliases should agree, but this makes disagreement
   ;; conservatively force a rebuild).
@@ -310,7 +312,8 @@
       (and (< ord (length (hash-ref chains name '())))
            (list-ref (hash-ref chains name) ord)))
     (define vi (hash-ref vinfo (cons name ord) #f))
-    (when (and binding vi (<= (second binding) p))
+    (when (and (or (not only) (member name only))
+               binding vi (<= (second binding) p))
       (define vid (first vi))
       (hash-set! target-state vid
                  (and (cdr oc) (hash-ref target-state vid #t)))))
@@ -360,8 +363,8 @@
 
 ;; The per-(relation, version) counted state (§8B.2): name -> list of
 ;; (ord . counted?), from the (count-state) introspection action.
-;; Lattices, index-free versions, severed bindings, and $-diagnostics are
-;; absent by construction.
+;; Lattices use the separate contributor-state action below.  Index-free
+;; versions, severed bindings, and $-diagnostics are absent by construction.
 (define (query-count-state! s)
   (session-action! s `(count-state))
   (define line (read-line (session-out s)))
@@ -375,6 +378,32 @@
           (hash-update h name (lambda (l) (cons (cons ord (= flag 1)) l)) '())]
          [`(revisions ,_ ...) h]))]
     [x (error 'session (format "unparseable (count-state) reply: ~a" x))]))
+
+;; M6L contributor state mirrors count-state's name -> (ordinal . closed?)
+;; shape, but closing it certifies a full contribution multiset whose reduction
+;; equals the visible lattice map.
+(define (query-lattice-contributor-state! s)
+  (session-action! s `(lattice-contributor-state))
+  (define line (read-line (session-out s)))
+  (when (eof-object? line)
+    (error 'session "daemon EOF at lattice-contributor-state"))
+  (echo! s line)
+  (match (read (open-input-string line))
+    [`(lattice-contributor-state ,es ...)
+     (for/fold ([h (hash)]) ([e (in-list es)])
+       (match e
+         [`(lcnt ,name ,ord ,flag)
+          (hash-update h name (lambda (l) (cons (cons ord (= flag 1)) l)) '())]))]
+    [x (error 'session
+              (format "unparseable lattice-contributor-state reply: ~a" x))]))
+
+(define (query-maintenance-count-state! s include-lattices?)
+  (define tables (query-count-state! s))
+  (if include-lattices?
+      (for/fold ([h tables]) ([(name states)
+                               (in-hash (query-lattice-contributor-state! s))])
+        (hash-set h name states))
+      tables))
 
 (define (query-update-epoch! s)
   (session-action! s `(update-epoch))
@@ -395,9 +424,9 @@
     [`(update-counts-valid ,flag) (= flag 1)]
     [x (error 'session (format "unparseable update-counts-valid reply: ~a" x))]))
 
-;; Latest-version M1 capability: only positive-arity plain tables.  The native
-;; report deliberately distinguishes this from merely being recount-capable
-;; (structs can be diagnostically recounted but cannot yet maintain liveness).
+;; Latest-version maintenance capability.  Values distinguish ordinary table
+;; support from M6L's conditional lattice-contributor support; the route below
+;; proves leaf or stratified topology before accepting the latter.
 (define (query-positive-capabilities! s chains)
   (session-action! s `(count-capabilities))
   (define line (read-line (session-out s)))
@@ -411,11 +440,15 @@
                   [`(cap ,name ,ord ,_vid ,fields ...)
                    (define chain (hash-ref chains name '()))
                    (and (member '(recount yes) fields)
-                        (member '(reason table-recount) fields)
+                        (or (member '(reason table-recount) fields)
+                            (member '(reason lattice-contributor-recount) fields))
                         (pair? chain) (= ord (first (last chain))))]
                   [_ #f]))
-       (match-define `(cap ,name ,_ ...) c)
-       (values name #t))]
+       (match-define `(cap ,name ,_ord ,_vid ,fields ...) c)
+       (values name
+               (if (member '(reason lattice-contributor-recount) fields)
+                   'lattice
+                   'table)))]
     [x (error 'session (format "unparseable count-capabilities reply: ~a" x))]))
 
 ;; consume one response line without echoing (internal protocol chatter)
@@ -1340,25 +1373,90 @@
   (define has-negative?
     (for*/or ([g (in-list tip-groups)] [(_t change) (in-hash (third g))])
       (negative-change? change)))
-  (define precise-shape?
-    (and topology-mono?
-         (for*/and ([g (in-list tip-groups)]
-                    [(_t change) (in-hash (third g))])
-           (or (positive-change? change) (negative-change? change)))))
-  (define positive-shape? (and precise-shape? has-positive? (not has-negative?)))
+  (define edit-shape?
+    (for*/and ([g (in-list tip-groups)]
+               [(_t change) (in-hash (third g))])
+      (or (positive-change? change) (negative-change? change))))
   (define maintenance-names
     (remove-duplicates
      (append (map first tip-groups)
              (append-map sinfo-dyn union-cone)
              (for*/list ([info (in-list union-cone)]
                          [entry (in-list (sinfo-reads info))]
-                         #:when (member 'pos (cdr entry)))
+                         #:when (or (member 'pos (cdr entry))
+                                    (member 'lat (cdr entry))))
                (car entry)))))
-  (define caps (and precise-shape?
+  ;; A lattice edge is intentionally non-monotone in the generic cone test,
+  ;; but M6L has its own stricter certificate.  Query local capability once
+  ;; the edit form is admissible, then prove the complete topology below.
+  (define caps (and edit-shape?
                     (query-positive-capabilities! s chains)))
+  (define lattice-names
+    (if caps
+        (for/list ([r (in-list maintenance-names)]
+                   #:when (eq? (hash-ref caps r #f) 'lattice))
+          r)
+        '()))
+  (define lattice-head-names
+    (remove-duplicates
+     (for*/list ([info (in-list union-cone)]
+                 [h (in-list (sinfo-heads info))]
+                 #:when (member h lattice-names))
+       h)))
+  ;; Starting from a closed lattice head, collect its reader strata and their
+  ;; ordinary downstream closure.  Everything before/outside that wave is a
+  ;; producer stratum and settles before the replacement pair is published.
+  (define lattice-consumer-cone
+    (let ([wave (mutable-set)])
+      (for ([r (in-list lattice-head-names)]) (set-add! wave r))
+      (reverse
+       (for/fold ([acc '()]) ([info (in-list union-cone)])
+         (if (for/or ([entry (in-list (sinfo-reads info))])
+               (set-member? wave (car entry)))
+             (begin
+               (for ([d (in-list (sinfo-dyn info))]) (set-add! wave d))
+               (cons info acc))
+             acc)))))
+  (define lattice-producer-cone
+    (for/list ([info (in-list union-cone)]
+               #:unless (memq info lattice-consumer-cone))
+      info))
+  ;; M6L slices 1+2: root contributor state is produced by an acyclic positive
+  ;; cone.  Slice 2 additionally permits a closed lattice read followed only
+  ;; by acyclic positive plain-table consumers.  Recursive consumers, lattice
+  ;; heads below the boundary, negation, and direct lattice edits fall back.
+  (define lattice-shape-certified?
+    (or (null? lattice-names)
+        (and (pair? lattice-head-names)
+             (pair? lattice-producer-cone)
+             (for/and ([r (in-list lattice-names)])
+               (member r lattice-head-names))
+             (for/and ([g (in-list tip-groups)])
+               (not (eq? (hash-ref caps (first g) #f) 'lattice)))
+             (for/and ([info (in-list union-cone)]) (sinfo-acyclic? info))
+             (for*/and ([info (in-list lattice-producer-cone)]
+                        [entry (in-list (sinfo-reads info))]
+                        [kind (in-list (cdr entry))])
+               (eq? kind 'pos))
+             (for*/and ([info (in-list lattice-consumer-cone)]
+                        [entry (in-list (sinfo-reads info))]
+                        [kind (in-list (cdr entry))])
+               (and (member kind '(pos lat))
+                    (or (not (eq? kind 'lat))
+                        (member (car entry) lattice-names))))
+             (for*/and ([info (in-list lattice-consumer-cone)]
+                        [d (in-list (sinfo-dyn info))])
+               (not (member d lattice-names))))))
+  (define route-shape-certified?
+    (or (and (null? lattice-names) topology-mono?)
+        (and (pair? lattice-names) lattice-shape-certified?)))
+  (define positive-shape?
+    (and edit-shape? route-shape-certified?
+         has-positive? (not has-negative?)))
   (define structurally-certified?
-    (and caps (for/and ([r (in-list maintenance-names)])
-                (hash-ref caps r #f))))
+    (and caps route-shape-certified?
+         (for/and ([r (in-list maintenance-names)])
+           (hash-ref caps r #f))))
   ;; Establish counts lazily before touching content.  Recount is itself
   ;; transactional and version-local; a warm sidecar makes this a cheap state
   ;; check on later flushes.  Establishment failure is not an update failure:
@@ -1372,9 +1470,10 @@
                  (echo! s (format "(maintenance-unavailable recount ~s)"
                                   (exn-message e)))
                  #f)])
-           (session-recount! s)
+           (session-recount! s #:only maintenance-names #:lattices? #t)
            #t)))
-  (define cstate (and recount-ready? (query-count-state! s)))
+  (define cstate
+    (and recount-ready? (query-maintenance-count-state! s #t)))
   (define counts-certified?
     (and cstate
          (for/and ([r (in-list maintenance-names)])
@@ -1388,6 +1487,9 @@
   (define m3-eligible?
     (and structurally-certified? counts-certified? has-negative?
          (for/and ([info (in-list union-cone)]) (sinfo-acyclic? info))))
+  (define m6l2-eligible?
+    (and structurally-certified? counts-certified?
+         (pair? lattice-names) (pair? lattice-consumer-cone)))
 
   ;; The old set-only delta route remains a fallback for unsupported shapes.
   (define delta-eligible?
@@ -1450,16 +1552,29 @@
                                    #:when (eq? (first (second row)) state))
                           (first row))
                         state)))))
-  (define (run-maintenance-phase! sign get-so)
-    (for ([info (in-list union-cone)])
-      (define reads
+  (define (run-maintenance-phase! infos sign get-so
+                                  #:lattice-replacements?
+                                  [lattice-replacements? #f])
+    (for ([info (in-list infos)])
+      (define plain-reads
         (remove-duplicates
          (for/list ([entry (in-list (sinfo-reads info))]
                     #:when (member 'pos (cdr entry)))
            (car entry))))
-      (when (pair? reads)
-        (session-action! s `(stage-update-transitions signed ,sign ,@reads))
+      (when (pair? plain-reads)
+        (session-action! s
+                         `(stage-update-transitions signed ,sign ,@plain-reads))
         (read-one-line! s))
+      (when lattice-replacements?
+        (define lattice-reads
+          (remove-duplicates
+           (for/list ([entry (in-list (sinfo-reads info))]
+                      #:when (member 'lat (cdr entry)))
+             (car entry))))
+        (when (pair? lattice-reads)
+          (session-action!
+           s `(stage-lattice-replacements signed ,sign ,@lattice-reads))
+          (read-one-line! s)))
       (send-maintenance-stratum! s (get-so info))))
   (define (rerun-cone!)
     ;; clear cone-written relations, EXCEPT those also written by non-cone
@@ -1479,12 +1594,73 @@
     (for ([info (in-list union-cone)])
       (send-maintenance-stratum! s (sinfo-so info))))
   (cond
+    [m6l2-eligible?
+     ;; Settle every producer phase first.  LatticeMaintainTask coalesces all
+     ;; repairs for a key across those phases; only then do consumers receive
+     ;; the epoch-entry row negatively and the final row positively.
+     (define settled? #t)
+     (when has-negative?
+       (apply-negative-edits!)
+       (if negative-apply-ok?
+           (begin
+             (echo! s
+                    (format "(route maintain-lattice-producers-negative ~a)"
+                            (length lattice-producer-cone)))
+             (run-maintenance-phase!
+              lattice-producer-cone -1
+              (lambda (info) ((sinfo-negative-maintenance info)))))
+           (begin
+             (set! settled? #f)
+             (echo! s "(maintenance-unavailable negative-input)"))))
+     (when (and settled? has-negative?
+                (not (query-update-counts-valid! s)))
+       (set! settled? #f))
+     (when (and settled? has-positive?)
+       (apply-positive-edits!)
+       (if positive-apply-ok?
+           (begin
+             (echo! s
+                    (format "(route maintain-lattice-producers-positive ~a)"
+                            (length lattice-producer-cone)))
+             (run-maintenance-phase!
+              lattice-producer-cone 1
+              (lambda (info) ((sinfo-maintenance info)))))
+           (begin
+             (set! settled? #f)
+             (echo! s "(maintenance-unavailable positive-input)"))))
+     (when (and settled? has-positive?
+                (not (query-update-counts-valid! s)))
+       (set! settled? #f))
+     (when settled?
+       (echo! s
+              (format "(route maintain-lattice-consumers-negative ~a)"
+                      (length lattice-consumer-cone)))
+       (run-maintenance-phase!
+        lattice-consumer-cone -1
+        (lambda (info) ((sinfo-negative-maintenance info)))
+        #:lattice-replacements? #t)
+       (unless (query-update-counts-valid! s) (set! settled? #f)))
+     (when settled?
+       (echo! s
+              (format "(route maintain-lattice-consumers-positive ~a)"
+                      (length lattice-consumer-cone)))
+       (run-maintenance-phase!
+        lattice-consumer-cone 1
+        (lambda (info) ((sinfo-maintenance info)))
+        #:lattice-replacements? #t)
+       (unless (query-update-counts-valid! s) (set! settled? #f)))
+     (unless settled?
+       ;; Counts are cache state.  Once any signed phase has touched content,
+       ;; normalize the requested overlay and rebuild the full cone before the
+       ;; enclosing update epoch commits.
+       (apply-edits!)
+       (rerun-cone!))]
     [m3-eligible?
      (apply-negative-edits!)
      (cond
        [negative-apply-ok?
         (echo! s (format "(route maintain-negative ~a)" (length union-cone)))
-        (run-maintenance-phase! -1
+        (run-maintenance-phase! union-cone -1
                                 (lambda (info) ((sinfo-negative-maintenance info))))
         (cond
           [(query-update-counts-valid! s)
@@ -1495,7 +1671,7 @@
                    (echo! s (format "(route maintain-positive ~a)"
                                     (length union-cone)))
                    (run-maintenance-phase!
-                    1 (lambda (info) ((sinfo-maintenance info)))))
+                    union-cone 1 (lambda (info) ((sinfo-maintenance info)))))
                  (begin
                    (echo! s "(maintenance-unavailable positive-input)")
                    (apply-edits!)
@@ -1514,7 +1690,8 @@
      (if positive-apply-ok?
          (begin
            (echo! s (format "(route maintain ~a)" (length union-cone)))
-           (run-maintenance-phase! 1 (lambda (info) ((sinfo-maintenance info)))))
+           (run-maintenance-phase!
+            union-cone 1 (lambda (info) ((sinfo-maintenance info)))))
          (begin
            (echo! s "(maintenance-unavailable positive-input)")
            (apply-edits!)
