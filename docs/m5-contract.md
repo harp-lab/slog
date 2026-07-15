@@ -159,6 +159,20 @@ artifacts are out of scope here.
    after the rerun (observable via dumped embedded ids), including a
    direct assertion embedding a struct id that survives the rerun intact.
    Fresh-run goldens are unchanged (forward-only runs never tombstone).
+
+   *Closed 2026-07-15 (`m5-keep-*` in `tests/session-tests.sh`), and the
+   embedded-id leg found a real hole: `importDatabaseBIN` recorded a
+   direct-input payload's table rows in the input ledger but not its
+   struct heap, so after a clear-and-rerun the restored table row's
+   embedded id stayed tombstoned and silently decoded as garbage
+   (`(pair 0.0 0.0)`) — `reconcileTombstone` audits only the struct
+   relation itself, never ids embedded in plain rows. Fix: a direct-input
+   import records each materialized struct instance as direct input
+   exactly like its table rows, and the flat-open `markLatestRelationsDirect`
+   drops the same pre-M5 struct exclusion — both restores now ride the
+   baseline's verbatim re-insert, which reconciles the tombstone and
+   fatals on drift. The exclusions were pre-M5 fossils: verbatim baseline
+   restore of struct rows was only made sound by this contract.
 3. **No admission change:** struct cones still route to clear-and-rerun
    (`(reason struct-diagnostic)` capability lines unchanged); struct
    counts remain diagnostic-only.

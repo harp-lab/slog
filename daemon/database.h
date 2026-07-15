@@ -3180,9 +3180,12 @@ public:
 
   void markLatestRelationsDirect()
   {
+    // Struct relations included (M5): the loaded intern heap is semantic
+    // input like the table rows -- excluding it leaves a later
+    // clear-and-rerun unable to restore loaded rows nothing re-derives,
+    // dangling every embedded id that referenced them.
     for (const auto& kv : relations)
-      if (kv.second != nullptr && !kv.second->isLattice()
-          && kv.second->getStructId() == 0)
+      if (kv.second != nullptr && !kv.second->isLattice())
         kv.second->markAllLiveDirect();
   }
 
@@ -5994,13 +5997,29 @@ public:
       return remap[w0];
     };
 
-    // ---- drive: intern every source struct instance (children first) ----
+    // ---- drive: intern every source struct instance (children first).
+    // A direct-input import's struct heap is as much semantic input as its
+    // table rows: record each materialized dest row in the ledger, or a
+    // later clear-and-rerun over the cone restores a table row whose
+    // embedded id stayed tombstoned (M5) and decodes as garbage. ----
     for (const auto& kv : scratch.relations)
-      if (kv.second->getStructId() > 0)
-	forEachNominal(kv.second, [&](const u64* row)
-	{
-	  importWord(row[0]);
-	});
+    {
+      Relation* src = kv.second;
+      if (src->getStructId() == 0)
+	continue;
+      Relation* dst = dest_rel(kv.first);
+      const u16 A = src->getArity();
+      u64 row[max_daemon_arity + 1];
+      forEachNominal(src, [&](const u64* srow)
+      {
+	row[0] = importWord(srow[0]);
+	if (!as_direct_input)
+	  return;
+	for (u16 c = 1; c < A; ++c)
+	  row[c] = importWord(srow[c]);
+	dst->addInput(row, true);
+      });
+    }
 
     // ---- rewrite + ingest table and lattice rows (struct relations were
     // fully materialized above); lattice payload maps merge per key via

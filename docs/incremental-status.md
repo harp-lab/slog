@@ -13,8 +13,8 @@ semantics and this file identifies migration work.
 
 The implementation is green under the current regression gates:
 
-- session workflow harness: 413/413 (now including the wcoj join3
-  cross-layer block and the M5 id-stability block);
+- session workflow harness: 422/422 (now including the wcoj join3
+  cross-layer block and the M5 id-stability and embedded-id blocks);
 - native count checks: 177/177; struct identity battery: 31/31;
 - quick harness: unit 163/163, diagnostics 14/14, stats, arena, sequence,
   counts, wcoj3, and structid all pass;
@@ -332,6 +332,16 @@ current fixture proves dictionary resurrection and survivor-id stability.
   reconciliation, drift fatals, severance, version copy) and the
   `m5-ids-*` session block (id stability across a routed clear-and-rerun,
   tombstone consumption on reappearance).
+- **Embedded-id leg (2026-07-15):** the deferred exit-criterion-2 fixture
+  (`m5-keep-*`: frozen mini bin-db asserts `(out (pair 7 8))` directly,
+  nothing re-derives it, cone clear-and-rerun) exposed and fixed a real
+  input-ledger hole — `importDatabaseBIN` recorded a direct-input
+  payload's table rows but not its struct heap, and flat-open
+  `markLatestRelationsDirect` had the same pre-M5 struct exclusion, so
+  the restored table row's embedded id stayed tombstoned and silently
+  decoded as garbage. Both sites now record struct instances as direct
+  input; the baseline's verbatim re-insert reconciles the tombstone
+  (drift still fatals). See `docs/m5-contract.md` exit criterion 2.
 - **No admission change:** struct cones still route to clear-and-rerun and
   struct counts remain diagnostic; M4S owns route admission.
 

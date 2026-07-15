@@ -107,6 +107,15 @@ are green. M4S starts with a contract that pins struct-maintenance tasks,
 route admission, and tombstone persistence; the direct-input/embedded-id
 session fixture remains a small recorded M5 follow-up.
 
+**Checkpoint 2026-07-15 (W0 closed):** the 17-harness orchestrator was
+re-verified green on the committed tree, and the recorded M5 follow-up
+fixture (`m5-keep-*`) both landed and earned its keep — it exposed a real
+input-ledger hole (direct-input imports and flat opens recorded table rows
+but not the struct heap, so a clear-and-rerun left restored embedded ids
+tombstoned, decoding silently as garbage). Fixed in `importDatabaseBIN` and
+`markLatestRelationsDirect`; details in `docs/m5-contract.md` exit
+criterion 2. M5 slice 1's exit criteria are now met in full. W1 is open.
+
 ### W1 — the keel
 
 *Compiler:* **N0** qualified-name substrate (`names.rkt` QName authority;

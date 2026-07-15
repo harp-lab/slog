@@ -1783,6 +1783,75 @@ else
   echo "FAIL m5-ids-survivor-original (survivor id not from the original set)"; FAIL=$((FAIL+1))
 fi
 
+# --- M5 slice 1: imported direct assertion embedding a struct id ------------
+# (docs/m5-contract.md exit criterion 2, embedded-id leg.)  A frozen mini
+# bin-db asserts (out (pair 7 8)) directly; no rule derives pair(7,8), so
+# after the struct cone's clear-and-rerun its liveness must return through
+# the input ledger -- importDatabaseBIN records the payload's struct heap
+# as direct input exactly like its table rows, and the baseline verbatim
+# re-insert reconciles the tombstone.  Before that recording existed, the
+# restored out row's embedded id stayed tombstoned and decoded as garbage
+# ((pair 0.0 0.0)) with no drift fatal.
+rm -rf out/sess-m5-keep-db
+{
+  echo '(struct pair 2)'
+  echo '(table out 1)'
+  echo '(out (pair 7 8))'
+} > out/sess-m5-keep.facts
+timeout 600 racket -e '
+(require "compiler/tools.rkt" racket/file)
+(run-freezer "out/sess-m5-keep-db" (file->string "out/sess-m5-keep.facts"))
+(displayln "frozen-ok")' > out/sess-m5-keep-freeze.log 2>&1
+expect "m5-keep-freeze" "frozen-ok" out/sess-m5-keep-freeze.log
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/base2_input.slog \
+  batch+:in,1,2 batch+:in,3,4 flush \
+  import-delta:out/sess-m5-keep-db \
+  dump-ids:pair dump-rel:out \
+  batch-:in,3,4 flush dump-ids:pair dump-rel:out \
+  batch+:in,3,4 flush dump-ids:pair dump-rel:out \
+  > out/sess-m5-keep.log 2>&1
+# pair ids: 3 live/0 dead -> 2 live/1 tombstone -> 3 live/0 dead
+expect "m5-keep-populated"    "(idsdone 3 0)" out/sess-m5-keep.log
+expect "m5-keep-tombstoned"   "(idsdone 2 1)" out/sess-m5-keep.log
+expect "m5-keep-rerun-routed" "(route rerun " out/sess-m5-keep.log
+if [ "$(grep -cF '(idsdone 3 0)' out/sess-m5-keep.log)" -eq 2 ]; then
+  echo "PASS m5-keep-all-resurrected"; PASS=$((PASS+1))
+else
+  echo "FAIL m5-keep-all-resurrected (tombstones left after reappearance)"; FAIL=$((FAIL+1))
+fi
+# out: 3 rows -> 2 rows -> 3 rows, and the imported row's embedded id
+# decodes as (pair 7 8) in every dump (the dangling-id check).
+if [ "$(grep -cF '(dumpdone 3)' out/sess-m5-keep.log)" -eq 2 ] \
+   && [ "$(grep -cF '(dumpdone 2)' out/sess-m5-keep.log)" -eq 1 ]; then
+  echo "PASS m5-keep-out-contents"; PASS=$((PASS+1))
+else
+  echo "FAIL m5-keep-out-contents"; FAIL=$((FAIL+1))
+fi
+if [ "$(grep -F '(dumprow ' out/sess-m5-keep.log | grep -cF 'pair 7 8')" -eq 3 ]; then
+  echo "PASS m5-keep-imported-row-decodes"; PASS=$((PASS+1))
+else
+  echo "FAIL m5-keep-imported-row-decodes (embedded struct id dangling)"; FAIL=$((FAIL+1))
+fi
+# id-word stability: dump1 (3 ids) == dump3 (3 ids); dump2 (2 ids) subset.
+m5k_1=$(grep -F '(idrow ' out/sess-m5-keep.log | head -3 | sort)
+m5k_2=$(grep -F '(idrow ' out/sess-m5-keep.log | sed -n '4,5p' | sort)
+m5k_3=$(grep -F '(idrow ' out/sess-m5-keep.log | tail -3 | sort)
+if [ -n "$m5k_1" ] && [ "$m5k_1" = "$m5k_3" ]; then
+  echo "PASS m5-keep-ids-stable"; PASS=$((PASS+1))
+else
+  echo "FAIL m5-keep-ids-stable (ids reminted across rerun)"; FAIL=$((FAIL+1))
+fi
+m5k_sub=ok
+while IFS= read -r l; do
+  [ -n "$l" ] && { printf '%s\n' "$m5k_1" | grep -qFx "$l" || m5k_sub=bad; }
+done <<< "$m5k_2"
+if [ -n "$m5k_2" ] && [ "$m5k_sub" = ok ]; then
+  echo "PASS m5-keep-survivors-original"; PASS=$((PASS+1))
+else
+  echo "FAIL m5-keep-survivors-original"; FAIL=$((FAIL+1))
+fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
