@@ -1,0 +1,1 @@
+(stratum-meta (hash "916c5fd9") (level 3) (dynamic-rels answer) (accel-rels) (heads answer) (reads (mincost pos) (mincost_ans lat)) (acyclic #t) (rules (rule 468305990 "lat_demand.slog:26" "(rule (mincost_ans _t16mm6 C) (= _tconst5vQH5 (const 1)) (= _t16mm6 (mincost _tconst5vQH5)) --> (answer C))" (rec #f) (same-scc-body) (neg-body) (lat-body mincost_ans))))

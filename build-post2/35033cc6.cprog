@@ -1,0 +1,516 @@
+(cprog
+ #<set:
+  int_overflow
+  toint_range
+  map
+  nan_result
+  apply
+  apply_ans
+  temp8PY9125
+  ccons
+  type_mismatch
+  error
+  mpz_overflow
+  modulo_by_zero
+  temp19Ou126
+  $sup80907x18x0x0x0
+  addk
+  map_ans
+  mpz_table_overflow
+  div_by_zero
+  malformed_deduction
+  input>
+ #hash((0 . const5feceb66ffc86f38d952786c)
+       (1 . const6b86b273ff34fce19d6b804e)
+       (2 . constd4735e3a265e16eee03f5971)
+       (3 . const4e07408562bedb8b60ce05c1)
+       (10 . const4a44dc15364204a80fe80e90)
+       ("apply" . const2de92c8721196a7a472d40b9)
+       ("cnil" . const9ac63e4426dab2edcc97bcf7)
+       ("dbl" . const933b575c961e931c43e84b05)
+       ("dem_map.slog:19" . const97812a371f0b154056f7af1a)
+       ("map" . const33dffa18ca3f56970d9625f0))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp8PY9125 1)
+  (temp temp19Ou126 3)
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (relation map_ans 2 (0 1) (delta 0 1))
+  (struct
+   map
+   3
+   (1 2 0)
+   (0 1 2)
+   (2 0 1)
+   (delta 0 1 2)
+   (delta 1 2 0)
+   (delta 2 0 1))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation input 1 (0))
+  (relation error 1 (0))
+  (relation doubled 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct ccons 3 (1 2 0) (0 1 2) (2 0 1) (delta 1 2 0))
+  (relation bumped 1 (0))
+  (relation apply_ans 2 (0 1))
+  (struct apply 3 (1 2 0) (0 1 2) (2 0 1) (delta 0 1 2) (delta 1 2 0))
+  (struct addk 2 (1 0) (0 1))
+  (struct _enum 2 (1 0) (0 1) (delta 1 0))
+  (relation
+   $sup80907x18x0x0x0
+   4
+   (0 1 2 3)
+   (1 2 0 3)
+   (1 3 0 2)
+   (2 3 0 1)
+   (delta 1 2 0 3)
+   (delta 1 3 0 2)))
+ ((crule
+   (pre
+    (let __trid9LQ645 const97812a371f0b154056f7af1a)
+    (let __trel1Aw346 const2de92c8721196a7a472d40b9)
+    (let __tcol9hxE47 const5feceb66ffc86f38d952786c)
+    (let __trel6Lag48 const2de92c8721196a7a472d40b9)
+    (let __tcol7Yww49 const6b86b273ff34fce19d6b804e))
+   (scan $sup80907x18x0x0x0 __d0 f x xs)
+   (body)
+   (head
+    (tycheck
+     f
+     (accept (struct addk) (struct _enum))
+     __trid9LQ645
+     __trel1Aw346
+     __tcol9hxE47
+     (1 2 3 4 0))
+    (tycheck x (accept int) __trid9LQ645 __trel6Lag48 __tcol7Yww49 (1 2 3 4 0))
+    (mkstruct apply (1 2 0) __7fzk44 f x))
+   "dem_map.slog:19"
+   #f)
+  (crule
+   (pre)
+   (scan temp19Ou126 __t4Z5K3 y ys)
+   (body (join ccons (1 2 0) 2 y ys __t92ia1))
+   (head (emit map_ans (0 1) __t4Z5K3 __t92ia1))
+   "dem_map.slog:19"
+   #f)
+  (crule
+   (pre
+    (let __tconst0E1z28 const6b86b273ff34fce19d6b804e)
+    (let __tconst6vOH26 constd4735e3a265e16eee03f5971)
+    (let __tconst5eH624 const4e07408562bedb8b60ce05c1)
+    (let __tconst0UaC33 const9ac63e4426dab2edcc97bcf7))
+   (probe ccons (1 2 0) 1 __tconst0E1z28 __t27yb27 __t4hla29)
+   (body
+    (exists ccons (1 2 0) 1 __tconst5eH624)
+    (exists _enum (1 0) 1 __tconst0UaC33)
+    (join ccons (0 1 2) 2 __t27yb27 __tconst6vOH26 __t2qiY25)
+    (join ccons (0 1 2) 2 __t2qiY25 __tconst5eH624 __t5CBi23)
+    (join _enum (0 1) 2 __t5CBi23 __tconst0UaC33))
+   (head (emit input (0) __t4hla29))
+   "dem_map.slog:24"
+   #f)
+  (crule
+   (pre)
+   (scan addk __t8mEP12 k)
+   (body
+    (join-old apply (1 2 0) 1 (1 2 0) __t8mEP12 n __t6S8413)
+    (let __t30Ae14 (_0002b n k)))
+   (head (emit apply_ans (0 1) __t6S8413 __t30Ae14))
+   "dem_map.slog:14"
+   #f)
+  (crule
+   (pre)
+   (scan $sup80907x18x0x0x0 __t4Z5K3 f x xs)
+   (body
+    (exists map (0 1 2) 2 __t4Z5K3 f)
+    (exists apply (1 2 0) 2 f x)
+    (exists map (1 2 0) 2 f xs)
+    (join-old ccons (1 2 0) 2 (1 2 0) x xs __t7M342)
+    (join-old map (0 1 2) 3 (0 1 2) __t4Z5K3 f __t7M342)
+    (join-old apply (1 2 0) 2 (1 2 0) f x __t0IeY4)
+    (exists apply_ans (0 1) 1 __t0IeY4)
+    (join-old map (1 2 0) 2 (1 2 0) f xs __t0ipb5)
+    (exists map_ans (0 1) 1 __t0ipb5)
+    (join apply_ans (0 1) 1 __t0IeY4 y)
+    (join map_ans (0 1) 1 __t0ipb5 ys))
+   (head
+    (emit-temp temp19Ou126 __t4Z5K3 y ys)
+    (mkstruct ccons (1 2 0) __t92ia1 y ys))
+   "dem_map.slog:19"
+   #f)
+  (crule
+   (pre)
+   (scan ccons __t7M342 x xs)
+   (body
+    (exists map (2 0 1) 1 __t7M342)
+    (exists apply (2 0 1) 1 x)
+    (exists map (2 0 1) 1 xs)
+    (join $sup80907x18x0x0x0 (2 3 0 1) 2 x xs __t4Z5K3 f)
+    (join-old map (0 1 2) 3 (0 1 2) __t4Z5K3 f __t7M342)
+    (exists map (1 2 0) 2 f xs)
+    (join-old apply (1 2 0) 2 (1 2 0) f x __t0IeY4)
+    (exists apply_ans (0 1) 1 __t0IeY4)
+    (join-old map (1 2 0) 2 (1 2 0) f xs __t0ipb5)
+    (exists map_ans (0 1) 1 __t0ipb5)
+    (join apply_ans (0 1) 1 __t0IeY4 y)
+    (join map_ans (0 1) 1 __t0ipb5 ys))
+   (head
+    (emit-temp temp19Ou126 __t4Z5K3 y ys)
+    (mkstruct ccons (1 2 0) __t92ia1 y ys))
+   "dem_map.slog:19"
+   #f)
+  (crule
+   (pre
+    (let __tconst0UaC33 const9ac63e4426dab2edcc97bcf7)
+    (let __tconst0E1z28 const6b86b273ff34fce19d6b804e)
+    (let __tconst6vOH26 constd4735e3a265e16eee03f5971)
+    (let __tconst5eH624 const4e07408562bedb8b60ce05c1))
+   (probe _enum (1 0) 1 __tconst0UaC33 __t5CBi23)
+   (body)
+   (head (mkstruct ccons (1 2 0) __t2qiY25 __tconst5eH624 __t5CBi23))
+   "dem_map.slog:24"
+   #f)
+  (crule
+   (pre)
+   (scan map_ans __t0ipb5 ys)
+   (body
+    (join-old map (0 1 2) 1 (0 1 2) __t0ipb5 f xs)
+    (exists ccons (2 0 1) 1 xs)
+    (exists map (1 2 0) 1 f)
+    (exists apply (1 2 0) 1 f)
+    (join-old $sup80907x18x0x0x0 (1 3 0 2) 2 (1 3 0 2) f xs __t4Z5K3 x)
+    (exists map (0 1 2) 2 __t4Z5K3 f)
+    (exists apply (1 2 0) 2 f x)
+    (join-old ccons (1 2 0) 2 (1 2 0) x xs __t7M342)
+    (join-old map (0 1 2) 3 (0 1 2) __t4Z5K3 f __t7M342)
+    (join-old apply (1 2 0) 2 (1 2 0) f x __t0IeY4)
+    (join apply_ans (0 1) 1 __t0IeY4 y))
+   (head
+    (emit-temp temp19Ou126 __t4Z5K3 y ys)
+    (mkstruct ccons (1 2 0) __t92ia1 y ys))
+   "dem_map.slog:19"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre2XI3112
+    __errf1PWO113
+    __errf6rl6114
+    __errf01QG115
+    __errf5bdY116)
+   (body)
+   (head (emit error (0) __erre2XI3112))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst7ohR41 const9ac63e4426dab2edcc97bcf7))
+   (scan map __t37yS11 f __t1TdY10)
+   (body (join _enum (0 1) 2 __t1TdY10 __tconst7ohR41))
+   (head (emit map_ans (0 1) __t37yS11 __t1TdY10))
+   "dem_map.slog:18"
+   #f)
+  (crule
+   (pre
+    (let __tconst0E1z28 const6b86b273ff34fce19d6b804e)
+    (let __tconst6vOH26 constd4735e3a265e16eee03f5971)
+    (let __tconst5eH624 const4e07408562bedb8b60ce05c1)
+    (let __tconst0UaC33 const9ac63e4426dab2edcc97bcf7))
+   (probe ccons (1 2 0) 1 __tconst6vOH26 __t2qiY25 __t27yb27)
+   (body
+    (exists _enum (1 0) 1 __tconst0UaC33)
+    (join ccons (0 1 2) 2 __t2qiY25 __tconst5eH624 __t5CBi23)
+    (join _enum (0 1) 2 __t5CBi23 __tconst0UaC33))
+   (head (mkstruct ccons (1 2 0) __t4hla29 __tconst0E1z28 __t27yb27))
+   "dem_map.slog:24"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre529a105 __errf7Tnr106 __errf33MK107 __errf4Jqx108)
+   (body)
+   (head (emit error (0) __erre529a105))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan map __t7Y7z31 f __t18rm30)
+   (body (join ccons (0 1 2) 1 __t18rm30 x xs))
+   (head (emit $sup80907x18x0x0x0 (0 1 2 3) __t7Y7z31 f x xs))
+   "dem_map.slog:19"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre9Xgp122 __errf10rj123 __errf3yQY124)
+   (body)
+   (head (emit error (0) __erre9Xgp122))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst9UvB18 const4a44dc15364204a80fe80e90))
+   (scan temp8PY9125 l)
+   (body (join addk (1 0) 1 __tconst9UvB18 __t0QoC19))
+   (head (mkstruct map (1 2 0) __3Dif32 __t0QoC19 l))
+   "dem_map.slog:26"
+   #f)
+  (crule
+   (pre
+    (let __tconst0E1z28 const6b86b273ff34fce19d6b804e)
+    (let __tconst6vOH26 constd4735e3a265e16eee03f5971)
+    (let __tconst5eH624 const4e07408562bedb8b60ce05c1)
+    (let __tconst0UaC33 const9ac63e4426dab2edcc97bcf7))
+   (seeded)
+   (body
+    (join _enum (1 0) 1 __tconst0UaC33 __t5CBi23)
+    (exists ccons (1 2 0) 1 __tconst6vOH26)
+    (join ccons (1 2 0) 2 __tconst5eH624 __t5CBi23 __t2qiY25)
+    (join ccons (1 2 0) 2 __tconst6vOH26 __t2qiY25 __t27yb27))
+   (head (mkstruct ccons (1 2 0) __t4hla29 __tconst0E1z28 __t27yb27))
+   "dem_map.slog:24"
+   #f)
+  (crule
+   (pre)
+   (scan apply __t6S8413 __t8mEP12 n)
+   (body (join addk (0 1) 1 __t8mEP12 k) (let __t30Ae14 (_0002b n k)))
+   (head (emit apply_ans (0 1) __t6S8413 __t30Ae14))
+   "dem_map.slog:14"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre6NQr95 __errf67wM96 __errf8q0t97)
+   (body)
+   (head (emit error (0) __erre6NQr95))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst0E1z28 const6b86b273ff34fce19d6b804e)
+    (let __tconst6vOH26 constd4735e3a265e16eee03f5971)
+    (let __tconst5eH624 const4e07408562bedb8b60ce05c1)
+    (let __tconst0UaC33 const9ac63e4426dab2edcc97bcf7))
+   (seeded)
+   (body
+    (join _enum (1 0) 1 __tconst0UaC33 __t5CBi23)
+    (exists ccons (1 2 0) 1 __tconst6vOH26)
+    (exists ccons (1 2 0) 1 __tconst0E1z28)
+    (join ccons (1 2 0) 2 __tconst5eH624 __t5CBi23 __t2qiY25)
+    (join ccons (1 2 0) 2 __tconst6vOH26 __t2qiY25 __t27yb27)
+    (join ccons (1 2 0) 2 __tconst0E1z28 __t27yb27 __t4hla29))
+   (head (emit input (0) __t4hla29))
+   "dem_map.slog:24"
+   #f)
+  (crule
+   (pre (let __tconst4NQC43 const933b575c961e931c43e84b05))
+   (scan input l)
+   (body (join _enum (1 0) 1 __tconst4NQC43 __t6O0x8))
+   (head (mkstruct map (1 2 0) __0ivL42 __t6O0x8 l))
+   "dem_map.slog:27"
+   #f)
+  (crule
+   (pre (let __tconst9jvH50 const933b575c961e931c43e84b05))
+   (scan apply __t2YZH21 __t5LR320 n)
+   (body
+    (join _enum (0 1) 2 __t5LR320 __tconst9jvH50)
+    (let __t36b622 (_0002b n n)))
+   (head (emit apply_ans (0 1) __t2YZH21 __t36b622))
+   "dem_map.slog:15"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre4jU7109 __errf0nsv110 __errf8tpJ111)
+   (body)
+   (head (emit error (0) __erre4jU7109))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan apply_ans __t0IeY4 y)
+   (body
+    (join-old apply (0 1 2) 1 (0 1 2) __t0IeY4 f x)
+    (exists ccons (1 2 0) 1 x)
+    (exists map (1 2 0) 1 f)
+    (join-old $sup80907x18x0x0x0 (1 2 0 3) 2 (1 2 0 3) f x __t4Z5K3 xs)
+    (exists map (0 1 2) 2 __t4Z5K3 f)
+    (exists map (1 2 0) 2 f xs)
+    (join-old ccons (1 2 0) 2 (1 2 0) x xs __t7M342)
+    (join-old map (0 1 2) 3 (0 1 2) __t4Z5K3 f __t7M342)
+    (join-old map (1 2 0) 2 (1 2 0) f xs __t0ipb5)
+    (join-old map_ans (0 1) 1 (0 1) __t0ipb5 ys))
+   (head
+    (emit-temp temp19Ou126 __t4Z5K3 y ys)
+    (mkstruct ccons (1 2 0) __t92ia1 y ys))
+   "dem_map.slog:19"
+   #f)
+  (crule
+   (pre (let __tconst9UvB18 const4a44dc15364204a80fe80e90))
+   (scan input l)
+   (body)
+   (head
+    (emit-temp temp8PY9125 l)
+    (mkstruct addk (1 0) __t0QoC19 __tconst9UvB18))
+   "dem_map.slog:26"
+   #f)
+  (crule
+   (pre)
+   (scan ccons __t18rm30 x xs)
+   (body (join-old map (2 0 1) 1 (2 0 1) __t18rm30 __t7Y7z31 f))
+   (head (emit $sup80907x18x0x0x0 (0 1 2 3) __t7Y7z31 f x xs))
+   "dem_map.slog:19"
+   #f)
+  (crule
+   (pre
+    (let __trid1Hre35 const97812a371f0b154056f7af1a)
+    (let __trel3XoE36 const33dffa18ca3f56970d9625f0)
+    (let __tcol9jJN37 const5feceb66ffc86f38d952786c)
+    (let __trel77zb38 const33dffa18ca3f56970d9625f0)
+    (let __tcol3Sd739 const6b86b273ff34fce19d6b804e))
+   (scan $sup80907x18x0x0x0 __d0 f x xs)
+   (body)
+   (head
+    (tycheck
+     f
+     (accept (struct addk) (struct _enum))
+     __trid1Hre35
+     __trel3XoE36
+     __tcol9jJN37
+     (1 2 3 4 0))
+    (tycheck
+     xs
+     (accept (struct ccons) (struct _enum))
+     __trid1Hre35
+     __trel77zb38
+     __tcol3Sd739
+     (1 2 3 4 0))
+    (mkstruct map (1 2 0) __7jys34 f xs))
+   "dem_map.slog:19"
+   #f)
+  (crule
+   (pre)
+   (scan apply __t0IeY4 f x)
+   (body
+    (exists ccons (1 2 0) 1 x)
+    (exists map (1 2 0) 1 f)
+    (exists apply_ans (0 1) 1 __t0IeY4)
+    (join $sup80907x18x0x0x0 (1 2 0 3) 2 f x __t4Z5K3 xs)
+    (exists map (0 1 2) 2 __t4Z5K3 f)
+    (exists map (1 2 0) 2 f xs)
+    (join ccons (1 2 0) 2 x xs __t7M342)
+    (join map (0 1 2) 3 __t4Z5K3 f __t7M342)
+    (join-old map (1 2 0) 2 (1 2 0) f xs __t0ipb5)
+    (exists map_ans (0 1) 1 __t0ipb5)
+    (join apply_ans (0 1) 1 __t0IeY4 y)
+    (join map_ans (0 1) 1 __t0ipb5 ys))
+   (head
+    (emit-temp temp19Ou126 __t4Z5K3 y ys)
+    (mkstruct ccons (1 2 0) __t92ia1 y ys))
+   "dem_map.slog:19"
+   #f)
+  (crule
+   (pre
+    (let __tconst0E1z28 const6b86b273ff34fce19d6b804e)
+    (let __tconst6vOH26 constd4735e3a265e16eee03f5971)
+    (let __tconst5eH624 const4e07408562bedb8b60ce05c1)
+    (let __tconst0UaC33 const9ac63e4426dab2edcc97bcf7))
+   (probe ccons (1 2 0) 1 __tconst5eH624 __t5CBi23 __t2qiY25)
+   (body (join _enum (0 1) 2 __t5CBi23 __tconst0UaC33))
+   (head (mkstruct ccons (1 2 0) __t27yb27 __tconst6vOH26 __t2qiY25))
+   "dem_map.slog:24"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre2oSU117
+    __errf3keq118
+    __errf1HkU119
+    __errf23s9120
+    __errf7Eq3121)
+   (body)
+   (head (emit error (0) __erre2oSU117))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    malformed_deduction
+    __erre9loS90
+    __errf0u9H91
+    __errf4AHy92
+    __errf5yk693
+    __errf6taU94)
+   (body)
+   (head (emit error (0) __erre9loS90))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan map __t4Z5K3 f __t7M342)
+   (body
+    (exists apply (1 2 0) 1 f)
+    (exists map (1 2 0) 1 f)
+    (join $sup80907x18x0x0x0 (0 1 2 3) 2 __t4Z5K3 f x xs)
+    (join ccons (0 1 2) 3 __t7M342 x xs)
+    (exists map (1 2 0) 2 f xs)
+    (join-old apply (1 2 0) 2 (1 2 0) f x __t0IeY4)
+    (exists apply_ans (0 1) 1 __t0IeY4)
+    (join-old map (1 2 0) 2 (1 2 0) f xs __t0ipb5)
+    (exists map_ans (0 1) 1 __t0ipb5)
+    (join apply_ans (0 1) 1 __t0IeY4 y)
+    (join map_ans (0 1) 1 __t0ipb5 ys))
+   (head
+    (emit-temp temp19Ou126 __t4Z5K3 y ys)
+    (mkstruct ccons (1 2 0) __t92ia1 y ys))
+   "dem_map.slog:19"
+   #f)
+  (crule
+   (pre)
+   (scan map __t0ipb5 f xs)
+   (body
+    (exists ccons (2 0 1) 1 xs)
+    (exists map (1 2 0) 1 f)
+    (exists apply (1 2 0) 1 f)
+    (exists map_ans (0 1) 1 __t0ipb5)
+    (join $sup80907x18x0x0x0 (1 3 0 2) 2 f xs __t4Z5K3 x)
+    (exists map (0 1 2) 2 __t4Z5K3 f)
+    (exists apply (1 2 0) 2 f x)
+    (join ccons (1 2 0) 2 x xs __t7M342)
+    (join map (0 1 2) 3 __t4Z5K3 f __t7M342)
+    (join apply (1 2 0) 2 f x __t0IeY4)
+    (join apply_ans (0 1) 1 __t0IeY4 y)
+    (join map_ans (0 1) 1 __t0ipb5 ys))
+   (head
+    (emit-temp temp19Ou126 __t4Z5K3 y ys)
+    (mkstruct ccons (1 2 0) __t92ia1 y ys))
+   "dem_map.slog:19"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre0DnJ101 __errf04WT102 __errf8MmF103 __errf1JwH104)
+   (body)
+   (head (emit error (0) __erre0DnJ101))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst0E1z28 const6b86b273ff34fce19d6b804e)
+    (let __tconst6vOH26 constd4735e3a265e16eee03f5971)
+    (let __tconst5eH624 const4e07408562bedb8b60ce05c1)
+    (let __tconst0UaC33 const9ac63e4426dab2edcc97bcf7))
+   (seeded)
+   (body
+    (join _enum (1 0) 1 __tconst0UaC33 __t5CBi23)
+    (join ccons (1 2 0) 2 __tconst5eH624 __t5CBi23 __t2qiY25))
+   (head (mkstruct ccons (1 2 0) __t27yb27 __tconst6vOH26 __t2qiY25))
+   "dem_map.slog:24"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre6hOW98 __errf6dkN99 __errf2jVz100)
+   (body)
+   (head (emit error (0) __erre6hOW98))
+   "<internal>:1"
+   #f)))

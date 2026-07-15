@@ -1,0 +1,34 @@
+(cprog
+ #<set: out outs>
+ #hash((1 . const6b86b273ff34fce19d6b804e)
+       ("on" . const990c23868b965814b117cf9a))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation outs 1 (0))
+  (relation out 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation flag 2 (0 1))
+  (relation f 2 (0 1))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre (let __tconst9MFD12 const990c23868b965814b117cf9a))
+   (scan f X Y)
+   (body (absent flag (0 1) 2 X __tconst9MFD12))
+   (head (emit outs (0) X))
+   "neg_const.slog:19"
+   #f)
+  (crule
+   (pre (let __tconst9fEQ1 const6b86b273ff34fce19d6b804e))
+   (scan f X Y)
+   (body (absent f (0 1) 2 X __tconst9fEQ1))
+   (head (emit out (0) X))
+   "neg_const.slog:13"
+   #f)))

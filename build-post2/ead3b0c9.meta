@@ -1,0 +1,1 @@
+(stratum-meta (hash "ead3b0c9") (level 0) (dynamic-rels src) (accel-rels) (heads src) (reads) (acyclic #t) (rules (rule 1377865754 "strat_or.slog:10" "(rule --> (src _tconst3QRl7) (= _tconst3QRl7 (const 2)) (src _tconst9QMH6) (= _tconst9QMH6 (const 1)))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

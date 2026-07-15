@@ -1,0 +1,100 @@
+(cprog
+ #<set: node t leaf2>
+ #hash((1 . const6b86b273ff34fce19d6b804e)
+       (2 . constd4735e3a265e16eee03f5971)
+       (3 . const4e07408562bedb8b60ce05c1))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (relation t 1 (0))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation samepair 1 (0))
+  (struct node 3 (1 2 0) (0 1 2) (seeded-only 2 0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation lefts 1 (0))
+  (struct leaf2 2 (1 0) (0 1) (delta 1 0))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation both 3 (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre
+    (let __tconst0YKh11 const4e07408562bedb8b60ce05c1)
+    (let __tconst4SqU6 const6b86b273ff34fce19d6b804e)
+    (let __tconst4P4P4 constd4735e3a265e16eee03f5971))
+   (probe leaf2 (1 0) 1 __tconst4P4P4 __t4AGs5)
+   (body
+    (exists leaf2 (1 0) 1 __tconst0YKh11)
+    (join leaf2 (1 0) 1 __tconst4SqU6 __t4vma7)
+    (join leaf2 (1 0) 1 __tconst0YKh11 __t5BzA10))
+   (head
+    (mkstruct node (1 2 0) __t5SM213 __t5BzA10 __t5BzA10)
+    (mkstruct node (1 2 0) __t9wOt8 __t4vma7 __t4AGs5))
+   "sdeep_idbind.slog:13"
+   #f)
+  (crule
+   (pre
+    (let __tconst0YKh11 const4e07408562bedb8b60ce05c1)
+    (let __tconst4SqU6 const6b86b273ff34fce19d6b804e)
+    (let __tconst4P4P4 constd4735e3a265e16eee03f5971))
+   (once)
+   (body)
+   (head
+    (mkstruct leaf2 (1 0) __t5BzA10 __tconst0YKh11)
+    (mkstruct leaf2 (1 0) __t4vma7 __tconst4SqU6)
+    (mkstruct leaf2 (1 0) __t4AGs5 __tconst4P4P4))
+   "sdeep_idbind.slog:13"
+   #f)
+  (crule
+   (pre
+    (let __tconst0YKh11 const4e07408562bedb8b60ce05c1)
+    (let __tconst4SqU6 const6b86b273ff34fce19d6b804e)
+    (let __tconst4P4P4 constd4735e3a265e16eee03f5971))
+   (scan node __t9wOt8 __t4vma7 __t4AGs5)
+   (body
+    (join leaf2 (0 1) 2 __t4AGs5 __tconst4P4P4)
+    (join leaf2 (0 1) 2 __t4vma7 __tconst4SqU6)
+    (join leaf2 (1 0) 1 __tconst0YKh11 __t5BzA10)
+    (join node (1 2 0) 1 __t5BzA10 dup5YP518 __t5SM213)
+    (eq __t5BzA10 dup5YP518))
+   (head (emit t (0) __t5SM213) (emit t (0) __t9wOt8))
+   "sdeep_idbind.slog:13"
+   #f)
+  (crule
+   (pre
+    (let __tconst0YKh11 const4e07408562bedb8b60ce05c1)
+    (let __tconst4SqU6 const6b86b273ff34fce19d6b804e)
+    (let __tconst4P4P4 constd4735e3a265e16eee03f5971))
+   (seeded)
+   (body
+    (join leaf2 (1 0) 1 __tconst4P4P4 __t4AGs5)
+    (exists leaf2 (1 0) 1 __tconst0YKh11)
+    (join leaf2 (1 0) 1 __tconst4SqU6 __t4vma7)
+    (join leaf2 (1 0) 1 __tconst0YKh11 __t5BzA10))
+   (head
+    (mkstruct node (1 2 0) __t5SM213 __t5BzA10 __t5BzA10)
+    (mkstruct node (1 2 0) __t9wOt8 __t4vma7 __t4AGs5))
+   "sdeep_idbind.slog:13"
+   #f)
+  (crule
+   (pre
+    (let __tconst0YKh11 const4e07408562bedb8b60ce05c1)
+    (let __tconst4SqU6 const6b86b273ff34fce19d6b804e)
+    (let __tconst4P4P4 constd4735e3a265e16eee03f5971))
+   (seeded)
+   (body
+    (join leaf2 (1 0) 1 __tconst4P4P4 __t4AGs5)
+    (exists node (2 0 1) 1 __t4AGs5)
+    (exists leaf2 (1 0) 1 __tconst0YKh11)
+    (join leaf2 (1 0) 1 __tconst4SqU6 __t4vma7)
+    (join node (1 2 0) 2 __t4vma7 __t4AGs5 __t9wOt8)
+    (join leaf2 (1 0) 1 __tconst0YKh11 __t5BzA10)
+    (join node (1 2 0) 1 __t5BzA10 dup04iK19 __t5SM213)
+    (eq __t5BzA10 dup04iK19))
+   (head (emit t (0) __t5SM213) (emit t (0) __t9wOt8))
+   "sdeep_idbind.slog:13"
+   #f)))

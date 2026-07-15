@@ -1,0 +1,38 @@
+(cprog
+ #<set: fsame samefact>
+ #hash()
+ ((relation viafact 1 (0))
+  (struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation samefact 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct mid3 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation m 1 (0))
+  (struct leaf3 2 (1 0) (0 1))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation given2 1 (0))
+  (relation fsame 1 (0))
+  (struct fbox 2 (1 0) (0 1))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation computed 1 (0))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan viafact P)
+   (body (join m (0) 1 P))
+   (head (emit samefact (0) P))
+   "sdeep_share.slog:25"
+   #f)
+  (crule
+   (pre)
+   (scan computed P)
+   (body (join given2 (0) 1 P))
+   (head (emit fsame (0) P))
+   "sdeep_share.slog:30"
+   #f)))

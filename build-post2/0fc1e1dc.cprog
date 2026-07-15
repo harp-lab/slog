@@ -1,0 +1,164 @@
+(cprog
+ #<set:
+  type_mismatch
+  toint_range
+  nan_result
+  temp6YJj117
+  modulo_by_zero
+  input
+  int_overflow
+  temp3UwB120
+  temp2x1a119
+  edge
+  error
+  temp4aK9118
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash((1 . const6b86b273ff34fce19d6b804e)
+       (2 . constd4735e3a265e16eee03f5971)
+       (3 . const4e07408562bedb8b60ce05c1))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp6YJj117 1)
+  (temp temp4aK9118 1)
+  (temp temp3UwB120 1)
+  (temp temp2x1a119 1)
+  (relation tails 1 (0))
+  (relation swapped 1 (0))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation isnil 1 (0))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation input 1 (0))
+  (relation heads 1 (0))
+  (relation error 1 (0))
+  (relation edge 2 (0 1))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation built 1 (0))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre (let __tconst8Dpf3 const4e07408562bedb8b60ce05c1))
+   (scan temp2x1a119 __t82PY8)
+   (body (let __t7gps9 (lpush __t82PY8 __tconst8Dpf3)))
+   (head (emit-temp temp3UwB120 __t7gps9))
+   "lst_basic.slog:14"
+   #f)
+  (crule
+   (pre
+    (let __tconst8Dpf3 const4e07408562bedb8b60ce05c1)
+    (let __tconst9efJ4 constd4735e3a265e16eee03f5971)
+    (let __tconst6ll85 const6b86b273ff34fce19d6b804e))
+   (scan temp6YJj117 __t73RN10)
+   (body (let __t6w0j7 (lpush __t73RN10 __tconst6ll85)))
+   (head (emit-temp temp4aK9118 __t6w0j7) (emit input (0) __t73RN10))
+   "lst_basic.slog:14"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre5xLy97 __errf49x198 __errf1c1F99 __errf8Scx100)
+   (body)
+   (head (emit error (0) __erre5xLy97))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre5yrH104
+    __errf4fJR105
+    __errf9BKE106
+    __errf5EeK107
+    __errf55c8108)
+   (body)
+   (head (emit error (0) __erre5yrH104))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre8d8W114 __errf0UZM115 __errf2mE4116)
+   (body)
+   (head (emit error (0) __erre8d8W114))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst8Dpf3 const4e07408562bedb8b60ce05c1)
+    (let __tconst9efJ4 constd4735e3a265e16eee03f5971))
+   (scan temp4aK9118 __t6w0j7)
+   (body (let __t82PY8 (lpush __t6w0j7 __tconst9efJ4)))
+   (head (emit-temp temp2x1a119 __t82PY8))
+   "lst_basic.slog:14"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre11bu109
+    __errf6shG110
+    __errf9SAp111
+    __errf2gx2112
+    __errf4qQM113)
+   (body)
+   (head (emit error (0) __erre11bu109))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst7sBq2 const6b86b273ff34fce19d6b804e)
+    (let __tconst0fcT1 constd4735e3a265e16eee03f5971))
+   (once)
+   (body)
+   (head (emit edge (0 1) __tconst7sBq2 __tconst0fcT1))
+   "lst_basic.slog:15"
+   #f)
+  (crule
+   (pre)
+   (scan temp3UwB120 __t7gps9)
+   (body)
+   (head (emit input (0) __t7gps9))
+   "lst_basic.slog:14"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre5eNI90 __errf6lnm91 __errf6C6M92)
+   (body)
+   (head (emit error (0) __erre5eNI90))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre60Zl93 __errf0v8k94 __errf39rl95 __errf7YOb96)
+   (body)
+   (head (emit error (0) __erre60Zl93))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre3Tr7101 __errf2vud102 __errf008Z103)
+   (body)
+   (head (emit error (0) __erre3Tr7101))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst8Dpf3 const4e07408562bedb8b60ce05c1)
+    (let __tconst9efJ4 constd4735e3a265e16eee03f5971)
+    (let __tconst6ll85 const6b86b273ff34fce19d6b804e)
+    (let __t73RN10 (lempty)))
+   (once)
+   (body)
+   (head (emit-temp temp6YJj117 __t73RN10))
+   "lst_basic.slog:14"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre2zKe87 __errf5PvN88 __errf6pAk89)
+   (body)
+   (head (emit error (0) __erre2zKe87))
+   "<internal>:1"
+   #f)))

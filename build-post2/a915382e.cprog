@@ -1,0 +1,91 @@
+(cprog
+ #<set:
+  smt_bad_formula
+  error
+  smt_qmodel
+  smt_qmodel_ans
+  smt_qsat
+  smt_qcore
+  smt_qsat_ans
+  smt_qcore_ans>
+ #hash()
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (relation smt_vcode 2 (0 1))
+  (relation smt_unsat 1 (0))
+  (relation smt_unknown 1 (0))
+  (relation smt_sat 1 (0))
+  (relation smt_qsat_ans 2 (0 1))
+  (struct smt_qsat 2 (1 0) (0 1))
+  (relation smt_qmodel_ans 2 (0 1))
+  (struct smt_qmodel 2 (1 0) (0 1))
+  (relation smt_qcore_ans 2 (0 1))
+  (struct smt_qcore 2 (1 0) (0 1))
+  (relation smt_model_ans 3 (0 1 2))
+  (struct smt_model 2 (1 0) (0 1))
+  (relation smt_core_ans 3 (0 1 2))
+  (struct smt_core 2 (1 0) (0 1))
+  (relation smt_check_ans 2 (0 1))
+  (struct smt_check 2 (1 0) (0 1))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation same 2 (0 1))
+  (relation probe 2 (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct lsub 3 (1 2 0) (0 1 2))
+  (struct lor 3 (1 2 0) (0 1 2))
+  (struct lnot 2 (1 0) (0 1))
+  (struct lne 3 (1 2 0) (0 1 2))
+  (struct lmul 3 (1 2 0) (0 1 2))
+  (struct llt 3 (1 2 0) (0 1 2))
+  (struct lle 3 (1 2 0) (0 1 2))
+  (struct lite 4 (1 2 3 0) (0 1 2 3))
+  (struct limplies 3 (1 2 0) (0 1 2))
+  (struct lgt 3 (1 2 0) (0 1 2))
+  (struct lge 3 (1 2 0) (0 1 2))
+  (struct leq 3 (1 2 0) (0 1 2))
+  (struct lany 2 (1 0) (0 1))
+  (struct land 3 (1 2 0) (0 1 2))
+  (struct lall 2 (1 0) (0 1))
+  (struct ladd 3 (1 2 0) (0 1 2))
+  (struct iv 2 (1 0) (0 1))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (struct ic 2 (1 0) (0 1))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct bv 2 (1 0) (0 1))
+  (struct _enum 2 (1 0) (0 1))
+  (oracle smtcore smt_qcore smt_qcore_ans)
+  (oracle smtmodel smt_qmodel smt_qmodel_ans)
+  (oracle smt smt_qsat smt_qsat_ans))
+ ((crule
+   (pre)
+   (scan smt_vcode C V)
+   (body (join smt_core (0 1) 0 __t5oyh106 F))
+   (head (mkstruct smt_qcore (1 0) __1yrW267 F))
+   "smt.slog:106"
+   #f)
+  (crule
+   (pre)
+   (scan smt_vcode C V)
+   (body (join smt_check (0 1) 0 __t7MEw103 F))
+   (head (mkstruct smt_qsat (1 0) __85qL262 F))
+   "smt.slog:69"
+   #f)
+  (crule
+   (pre)
+   (scan smt_vcode C V)
+   (body (join smt_model (0 1) 0 __t07vR261 F))
+   (head (mkstruct smt_qmodel (1 0) __4quW282 F))
+   "smt.slog:93"
+   #f)
+  (crule
+   (pre)
+   (scan smt_bad_formula __erre2Nis411 __errf6nCL412 __errf05v8413)
+   (body)
+   (head (emit error (0) __erre2Nis411))
+   "<internal>:1"
+   #f)))

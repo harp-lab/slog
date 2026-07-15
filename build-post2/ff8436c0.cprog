@@ -1,0 +1,34 @@
+(cprog
+ #<set: flag>
+ #hash(("a" . constac8d8342bbb2362d13f0a559)
+       ("b" . constc100f95c1913f9c72fc1f4ef)
+       ("false" . const076de6e730df0b4c3860877a)
+       ("true" . const18d10c7d2b4b04aaf04254d1))
+ ((relation yes 1 (0))
+  (struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation inverted 2 (0 1))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation flag 2 (0 1))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1) (delta 1 0)))
+ ((crule
+   (pre
+    (let __tconst82Re14 const076de6e730df0b4c3860877a)
+    (let __tconst9X2M15 const18d10c7d2b4b04aaf04254d1)
+    (let __tconst6bGC8 constc100f95c1913f9c72fc1f4ef)
+    (let __tconst3AJB6 constac8d8342bbb2362d13f0a559))
+   (probe _enum (1 0) 1 __tconst82Re14 __tconst8Htp7)
+   (body (join _enum (1 0) 1 __tconst9X2M15 __tconst2Qvw5))
+   (head
+    (emit flag (0 1) __tconst6bGC8 __tconst8Htp7)
+    (emit flag (0 1) __tconst3AJB6 __tconst2Qvw5))
+   "bools.slog:8"
+   #f)))

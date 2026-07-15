@@ -1,0 +1,152 @@
+(cprog
+ #<set:
+  int_overflow
+  type_mismatch
+  toint_range
+  usz
+  nan_result
+  modulo_by_zero
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero
+  malformed_deduction
+  got>
+ #hash((0 . const5feceb66ffc86f38d952786c)
+       (2 . constd4735e3a265e16eee03f5971)
+       ("got" . const4f8703bdbf8b58437187d106)
+       ("lat_cjoin.slog:26" . const4e99def398d795aface67ec8))
+ ((relation usz 2 (0 1))
+  (struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation sc 1 (0))
+  (lattice sb 2 (set int) #f (0 1))
+  (lattice sa 2 (set int) #f (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (lattice mc 2 (map int (min int)) #f (0 1))
+  (lattice mb 2 (map int (min int)) #f (0 1))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (lattice ma 2 (map int (min int)) #f (0 1))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation got 3 (0 1 2))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan modulo_by_zero __erre0pif219 __errf5dla220 __errf7Djf221)
+   (body)
+   (head (emit error (0) __erre0pif219))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    malformed_deduction
+    __erre5DpO211
+    __errf85jr212
+    __errf9st5213
+    __errf8NEk214
+    __errf32Ut215)
+   (body)
+   (head (emit error (0) __erre5DpO211))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst7qx012 const5feceb66ffc86f38d952786c)
+    (let __tconst4JXr13 constd4735e3a265e16eee03f5971)
+    (let __trid17H040 const4e99def398d795aface67ec8)
+    (let __trel1E4041 const4f8703bdbf8b58437187d106)
+    (let __tcol2ztd42 constd4735e3a265e16eee03f5971))
+   (scan mc k z)
+   (body
+    (let __t9Rgt11 (chas z __tconst4JXr13))
+    (cmp gt __t9Rgt11 __tconst7qx012)
+    (letp __t3UAr14 (cget z __tconst4JXr13)))
+   (head
+    (tycheck
+     __t3UAr14
+     (accept int)
+     __trid17H040
+     __trel1E4041
+     __tcol2ztd42
+     (1 2 3 4 0))
+    (emit got (0 1 2) k __tconst4JXr13 __t3UAr14))
+   "lat_cjoin.slog:26"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre2Pov243 __errf6xhg244 __errf5Ali245)
+   (body)
+   (head (emit error (0) __erre2Pov243))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre7qZ8233
+    __errf9EFq234
+    __errf3xL9235
+    __errf2jiB236
+    __errf7tML237)
+   (body)
+   (head (emit error (0) __erre7qZ8233))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre3WtI230 __errf8y1x231 __errf0D0O232)
+   (body)
+   (head (emit error (0) __erre3WtI230))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre7xeL238
+    __errf0jOz239
+    __errf57j6240
+    __errf6ZWd241
+    __errf8o8Y242)
+   (body)
+   (head (emit error (0) __erre7xeL238))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre4Q1h216 __errf0tfG217 __errf5rwY218)
+   (body)
+   (head (emit error (0) __erre4Q1h216))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre7Wai226 __errf9Pnj227 __errf59ID228 __errf1LNy229)
+   (body)
+   (head (emit error (0) __erre7Wai226))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre9Miw222 __errf9aYU223 __errf5h6U224 __errf5kD3225)
+   (body)
+   (head (emit error (0) __erre9Miw222))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mc k z)
+   (body
+    (join-lat mb (0 1) 1 k y)
+    (cjoin __t01E931 (map int (min int)) z y)
+    (let __t35A732 (csize __t01E931)))
+   (head (emit usz (0 1) k __t35A732))
+   "lat_cjoin.slog:25"
+   #f)))

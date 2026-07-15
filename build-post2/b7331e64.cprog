@@ -1,0 +1,26 @@
+(cprog
+ #<set: _enum>
+ #hash(("halt" . conste433800a79f2d3be41014577))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation more_depth 1 (0))
+  (struct more 2 (1 0) (0 1))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation halt_depth 1 (0))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation build 2 (0 1))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre (let __tconst1lTH11 conste433800a79f2d3be41014577))
+   (once)
+   (body)
+   (head (mkstruct _enum (1 0) __5MEY12 __tconst1lTH11))
+   "<internal>:1"
+   #f)))

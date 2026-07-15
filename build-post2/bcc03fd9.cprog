@@ -1,0 +1,219 @@
+(cprog
+ #<set:
+  type_mismatch
+  temp1SxD339
+  $seq_at
+  nan_result
+  modulo_by_zero
+  temp3USn342
+  int_overflow
+  temp9mlh341
+  temp1otF343
+  toint_range
+  error
+  mpz_overflow
+  map_ans
+  mpz_table_overflow
+  div_by_zero>
+ #hash((0 . const5feceb66ffc86f38d952786c) (1 . const6b86b273ff34fce19d6b804e))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp9mlh341 4)
+  (temp temp3USn342 3)
+  (temp temp1otF343 2)
+  (temp temp1SxD339 2)
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (relation map_ans 2 (0 1))
+  (struct map 3 (1 2 0) (0 1 2) (2 0 1))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation input 1 (0))
+  (relation error 1 (0))
+  (relation doubled 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation bumped 1 (0))
+  (relation apply_ans 2 (0 1))
+  (struct apply 3 (1 2 0) (0 1 2) (2 0 1))
+  (struct addk 2 (1 0) (0 1))
+  (struct _enum 2 (1 0) (0 1))
+  (relation $sup94786x12x0x0x0 5 (2 4 0 1 3) (0 3 4 1 2))
+  (relation $seq_at 3 (1 0 2) (delta 1 0 2))
+  (seqindex bumped (0))
+  (seqindex doubled (0))
+  (seqindex input (0))
+  (seqindex map (2))
+  (seqindex map_ans (1)))
+ ((crule
+   (pre)
+   (scan temp9mlh341 __t22v01 __t9nRP4 y ys)
+   (body (let __t1oIm2 (lpush __t22v01 y)))
+   (head (emit-temp temp3USn342 __t1oIm2 __t9nRP4 ys))
+   "dem_brackets.slog:13"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre2pbE326
+    __errf2EuC327
+    __errf26DS328
+    __errf1fF5329
+    __errf3p5Y330)
+   (body)
+   (head (emit error (0) __erre2pbE326))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let _00024sqc34Ys43 const5feceb66ffc86f38d952786c)
+    (let __t18ST17 (lempty)))
+   (scan map __t4azW18 f _00024seq0)
+   (body
+    (letp _00024sql25js41 (aslst _00024seq0))
+    (let chk9uhZ340 (llen _00024sql25js41))
+    (eq _00024sqc34Ys43 chk9uhZ340))
+   (head (emit-temp temp1SxD339 __t18ST17 __t4azW18))
+   "dem_brackets.slog:12"
+   #f)
+  (crule
+   (pre)
+   (scan temp3USn342 __t1oIm2 __t9nRP4 ys)
+   (body (let __t6q863 (lcat __t1oIm2 ys)))
+   (head (emit-temp temp1otF343 __t6q863 __t9nRP4))
+   "dem_brackets.slog:13"
+   #f)
+  (crule
+   (pre)
+   (scan temp1otF343 __t6q863 __t9nRP4)
+   (body)
+   (head (emit map_ans (0 1) __t9nRP4 __t6q863))
+   "dem_brackets.slog:13"
+   #f)
+  (crule
+   (pre)
+   (scan temp1SxD339 __t18ST17 __t4azW18)
+   (body)
+   (head (emit map_ans (0 1) __t4azW18 __t18ST17))
+   "dem_brackets.slog:12"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre53vm336 __errf9yea337 __errf5EBV338)
+   (body)
+   (head (emit error (0) __erre53vm336))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre9lWx309 __errf5QUg310 __errf0yDq311)
+   (body)
+   (head (emit error (0) __erre9lWx309))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre69Tw312 __errf3Z62313 __errf0GNl314)
+   (body)
+   (head (emit error (0) __erre69Tw312))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre1KR7331
+    __errf7LdJ332
+    __errf8BOh333
+    __errf3tqH334
+    __errf5VLj335)
+   (body)
+   (head (emit error (0) __erre1KR7331))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre6528315 __errf8n2w316 __errf99sU317 __errf8JnI318)
+   (body)
+   (head (emit error (0) __erre6528315))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre9iB0319 __errf7rya320 __errf8Vnt321 __errf7fwp322)
+   (body)
+   (head (emit error (0) __erre9iB0319))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre5w9I323 __errf5TyS324 __errf917u325)
+   (body)
+   (head (emit error (0) __erre5w9I323))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let _00024sqc5ANZ46 const6b86b273ff34fce19d6b804e)
+    (let _00024sqc9K0e47 const5feceb66ffc86f38d952786c)
+    (let _00024sqc2wUx48 const6b86b273ff34fce19d6b804e)
+    (let _00024sqc43TV49 const5feceb66ffc86f38d952786c)
+    (let _00024sqo0ApU54 const5feceb66ffc86f38d952786c)
+    (let __t22v01 (lempty)))
+   (scan map_ans __t8ERN6 ys)
+   (body
+    (exists $seq_at (1 0 2) 1 _00024sqo0ApU54)
+    (join map (0 1 2) 1 __t8ERN6 f xs)
+    (exists map (1 2 0) 1 f)
+    (exists apply (1 2 0) 1 f)
+    (join $sup94786x12x0x0x0 (2 4 0 1 3) 2 f xs _00024seq0 __t9nRP4 x)
+    (join map (1 2 0) 3 f _00024seq0 __t9nRP4)
+    (join-old $seq_at (1 0 2) 3 (1 0 2) _00024sqo0ApU54 x _00024seq0)
+    (join apply (1 2 0) 2 f x __t3SBR5)
+    (join apply_ans (0 1) 1 __t3SBR5 y)
+    (letp _00024sql9Uwq44 (aslst _00024seq0))
+    (let _00024sqn7PIv45 (llen _00024sql9Uwq44))
+    (cmp ge _00024sqn7PIv45 _00024sqc5ANZ46)
+    (letp chk1Vo4344 (lref _00024sql9Uwq44 _00024sqc9K0e47))
+    (eq x chk1Vo4344)
+    (let _00024sqp4MVy50 (_0002d _00024sqn7PIv45 _00024sqc43TV49))
+    (let chk0ZXN345 (lslice _00024sql9Uwq44 _00024sqc2wUx48 _00024sqp4MVy50))
+    (eq xs chk0ZXN345))
+   (head (emit-temp temp9mlh341 __t22v01 __t9nRP4 y ys))
+   "dem_brackets.slog:13"
+   #f)
+  (crule
+   (pre
+    (let _00024sqc5ANZ46 const6b86b273ff34fce19d6b804e)
+    (let _00024sqc9K0e47 const5feceb66ffc86f38d952786c)
+    (let _00024sqc2wUx48 const6b86b273ff34fce19d6b804e)
+    (let _00024sqc43TV49 const5feceb66ffc86f38d952786c)
+    (let _00024sqo0ApU54 const5feceb66ffc86f38d952786c)
+    (let __t22v01 (lempty)))
+   (probe $seq_at (1 0 2) 1 _00024sqo0ApU54 x _00024seq0)
+   (body
+    (letp _00024sql9Uwq44 (aslst _00024seq0))
+    (let _00024sqn7PIv45 (llen _00024sql9Uwq44))
+    (cmp ge _00024sqn7PIv45 _00024sqc5ANZ46)
+    (let _00024sqp4MVy50 (_0002d _00024sqn7PIv45 _00024sqc43TV49))
+    (let xs (lslice _00024sql9Uwq44 _00024sqc2wUx48 _00024sqp4MVy50))
+    (exists map (2 0 1) 1 _00024seq0)
+    (exists apply (2 0 1) 1 x)
+    (exists map (2 0 1) 1 xs)
+    (join $sup94786x12x0x0x0 (0 3 4 1 2) 3 _00024seq0 x xs __t9nRP4 f)
+    (join map (1 2 0) 3 f _00024seq0 __t9nRP4)
+    (exists map (1 2 0) 2 f xs)
+    (join apply (1 2 0) 2 f x __t3SBR5)
+    (exists apply_ans (0 1) 1 __t3SBR5)
+    (join map (1 2 0) 2 f xs __t8ERN6)
+    (exists map_ans (0 1) 1 __t8ERN6)
+    (join apply_ans (0 1) 1 __t3SBR5 y)
+    (join map_ans (0 1) 1 __t8ERN6 ys)
+    (letp chk0Lmk346 (lref _00024sql9Uwq44 _00024sqc9K0e47))
+    (eq x chk0Lmk346))
+   (head (emit-temp temp9mlh341 __t22v01 __t9nRP4 y ys))
+   "dem_brackets.slog:13"
+   #f)))

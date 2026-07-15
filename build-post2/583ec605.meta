@@ -1,0 +1,1 @@
+(stratum-meta (hash "583ec605") (level 2) (dynamic-rels seen) (accel-rels) (heads seen) (reads (wrap pos)) (acyclic #t) (rules (rule 845026729 "stage_derived.slog:17" "(rule (wrap t) --> (seen t))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

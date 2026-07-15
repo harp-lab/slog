@@ -1,0 +1,1 @@
+(stratum-meta (hash "5109f044") (level 1) (dynamic-rels sq) (accel-rels) (heads sq) (reads (want pos)) (acyclic #t) (rules (rule 1740231749 "dem_escape.slog:15" "(rule (want n) --> (= _3s7x6 (sq n)))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

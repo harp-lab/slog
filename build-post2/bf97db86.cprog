@@ -1,0 +1,140 @@
+(cprog
+ #<set:
+  toint_range
+  temp9Z7E255
+  nan_result
+  modulo_by_zero
+  rebuilt
+  int_overflow
+  temp6IBS256
+  temp1dRy257
+  type_mismatch
+  temp5o83254
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash()
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (relation thirds 3 (0 1 2))
+  (temp temp9Z7E255 3)
+  (temp temp6IBS256 2)
+  (temp temp5o83254 4)
+  (temp temp1dRy257 1)
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation rebuilt 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (relation midthird 1 (0))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (relation doc 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre (let __t4SNe22 (lempty)))
+   (scan thirds as bs cs)
+   (body)
+   (head (emit-temp temp5o83254 __t4SNe22 as bs cs))
+   "seq_split_kway.slog:16"
+   #f)
+  (crule
+   (pre)
+   (scan temp5o83254 __t4SNe22 as bs cs)
+   (body (let __t0jYQ23 (lcat __t4SNe22 as)))
+   (head (emit-temp temp9Z7E255 __t0jYQ23 bs cs))
+   "seq_split_kway.slog:16"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre6lo7238 __errf2ZSi239 __errf4l6w240)
+   (body)
+   (head (emit error (0) __erre6lo7238))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre1usk246
+    __errf9wOS247
+    __errf2H98248
+    __errf5Fuj249
+    __errf5egw250)
+   (body)
+   (head (emit error (0) __erre1usk246))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre7pLC227 __errf88OJ228 __errf4Iyc229)
+   (body)
+   (head (emit error (0) __erre7pLC227))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre06dz224 __errf6qLm225 __errf6vep226)
+   (body)
+   (head (emit error (0) __erre06dz224))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp9Z7E255 __t0jYQ23 bs cs)
+   (body (let __t6YHa24 (lcat __t0jYQ23 bs)))
+   (head (emit-temp temp6IBS256 __t6YHa24 cs))
+   "seq_split_kway.slog:16"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre2v3s234 __errf2y57235 __errf0jrF236 __errf8AY8237)
+   (body)
+   (head (emit error (0) __erre2v3s234))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp6IBS256 __t6YHa24 cs)
+   (body (let __t225C25 (lcat __t6YHa24 cs)))
+   (head (emit-temp temp1dRy257 __t225C25))
+   "seq_split_kway.slog:16"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre2os3230 __errf92h6231 __errf1QF8232 __errf6sX4233)
+   (body)
+   (head (emit error (0) __erre2os3230))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp1dRy257 __t225C25)
+   (body)
+   (head (emit rebuilt (0) __t225C25))
+   "seq_split_kway.slog:16"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre45iK251 __errf10dw252 __errf2Hmq253)
+   (body)
+   (head (emit error (0) __erre45iK251))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre2DZn241
+    __errf9JAL242
+    __errf7uro243
+    __errf6bdP244
+    __errf5kX6245)
+   (body)
+   (head (emit error (0) __erre2DZn241))
+   "<internal>:1"
+   #f)))

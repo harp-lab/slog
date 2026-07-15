@@ -1,0 +1,260 @@
+(cprog
+ #<set:
+  int_overflow
+  lst_rev_ans
+  toint_range
+  $seq_at
+  lst_member_ans
+  lst_take_ans
+  temp9vkE332
+  temp38ND331
+  lst_ref_ans
+  temp6YZG330
+  type_mismatch
+  lst_rev_acc_ans
+  nan_result
+  temp90iQ327
+  temp7hCs333
+  lst_len_ans
+  error
+  mpz_overflow
+  $seq_atr
+  lst_absent_ans
+  temp0F5y328
+  modulo_by_zero
+  mpz_table_overflow
+  div_by_zero
+  lst_append_ans
+  temp2hdv329>
+ #hash((0 . const5feceb66ffc86f38d952786c) (1 . const6b86b273ff34fce19d6b804e))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (relation third 1 (0))
+  (temp temp9vkE332 2)
+  (temp temp90iQ327 2)
+  (temp temp7hCs333 2)
+  (temp temp6YZG330 2)
+  (temp temp38ND331 2)
+  (temp temp2hdv329 2)
+  (temp temp0F5y328 3)
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation reversed 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (relation n 1 (0))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation lst_take_ans 2 (0 1))
+  (struct lst_take 3 (1 2 0) (0 1 2))
+  (relation lst_rev_ans 2 (0 1))
+  (relation lst_rev_acc_ans 2 (0 1))
+  (struct lst_rev_acc 3 (1 2 0) (0 1 2))
+  (struct lst_rev 2 (1 0) (0 1))
+  (relation lst_ref_ans 2 (0 1))
+  (struct lst_ref 3 (1 2 0) (0 1 2))
+  (relation lst_member_ans 2 (0 1))
+  (struct lst_member 3 (1 2 0) (0 1 2))
+  (relation lst_len_ans 2 (0 1))
+  (struct lst_len 2 (1 0) (0 1))
+  (relation lst_append_ans 2 (0 1))
+  (struct lst_append 3 (1 2 0) (0 1 2))
+  (relation lst_absent_ans 2 (0 1))
+  (struct lst_absent 3 (1 2 0) (0 1 2))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation has7 1 (0))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation appended 1 (0))
+  (struct _enum 2 (1 0) (0 1))
+  (relation $seq_atr 3 (0 1 2))
+  (relation $seq_at 3 (0 1 2))
+  (seqindex appended (0))
+  (seqindex lst_absent (1))
+  (seqindex lst_append (1 2))
+  (seqindex lst_append_ans (1))
+  (seqindex lst_len (1))
+  (seqindex lst_member (1))
+  (seqindex lst_ref (1))
+  (seqindex lst_rev (1))
+  (seqindex lst_rev_acc (1 2))
+  (seqindex lst_rev_acc_ans (1))
+  (seqindex lst_rev_ans (1))
+  (seqindex lst_take (1))
+  (seqindex lst_take_ans (1))
+  (seqindex reversed (0)))
+ ((crule
+   (pre)
+   (scan nan_result __erre1zkK307 __errf9LYJ308 __errf9AYS309 __errf3HPB310)
+   (body)
+   (head (emit error (0) __erre1zkK307))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp90iQ327 __t0l0s7 __t4yJO6)
+   (body)
+   (head (emit lst_len_ans (0 1) __t0l0s7 __t4yJO6))
+   "list.slog:24"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre6ZYp324 __errf5Jon325 __errf3hbT326)
+   (body)
+   (head (emit error (0) __erre6ZYp324))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre0VUz314
+    __errf5k7m315
+    __errf1vyW316
+    __errf5RMZ317
+    __errf6aN3318)
+   (body)
+   (head (emit error (0) __erre0VUz314))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp0F5y328 __t09Ss8 __t3FDk10 acc)
+   (body (let __t0kNa9 (lcat __t09Ss8 acc)))
+   (head (emit-temp temp2hdv329 __t0kNa9 __t3FDk10))
+   "list.slog:42"
+   #f)
+  (crule
+   (pre)
+   (scan temp38ND331 __t13jl25 __t4ou824)
+   (body)
+   (head (emit lst_ref_ans (0 1) __t13jl25 __t4ou824))
+   "list.slog:16"
+   #f)
+  (crule
+   (pre)
+   (scan temp6YZG330 __t0Qfa30 __t2yHV31)
+   (body)
+   (head (emit lst_rev_ans (0 1) __t2yHV31 __t0Qfa30))
+   "list.slog:37"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre7Qi3300 __errf0pOq301 __errf7hyH302)
+   (body)
+   (head (emit error (0) __erre7Qi3300))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan lst_rev_acc __t3FDk10 l acc)
+   (body (let __t09Ss8 (lrev l)))
+   (head (emit-temp temp0F5y328 __t09Ss8 __t3FDk10 acc))
+   "list.slog:42"
+   #f)
+  (crule
+   (pre)
+   (scan lst_append __t5m8Z23 a b)
+   (body (let __t1JG922 (lcat a b)))
+   (head (emit-temp temp9vkE332 __t1JG922 __t5m8Z23))
+   "list.slog:11"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre6pLl297 __errf81j2298 __errf9PQs299)
+   (body)
+   (head (emit error (0) __erre6pLl297))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre0ZSy319
+    __errf4bWc320
+    __errf0ysc321
+    __errf63e3322
+    __errf1u0i323)
+   (body)
+   (head (emit error (0) __erre0ZSy319))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp9vkE332 __t1JG922 __t5m8Z23)
+   (body)
+   (head (emit lst_append_ans (0 1) __t5m8Z23 __t1JG922))
+   "list.slog:11"
+   #f)
+  (crule
+   (pre (let __tconst04q817 const6b86b273ff34fce19d6b804e))
+   (scan lst_absent __t2lbk15 l y)
+   (body (let __t9L8716 (lmem l y)) (cmp lt __t9L8716 __tconst04q817))
+   (head (emit lst_absent_ans (0 1) __t2lbk15 __tconst04q817))
+   "list.slog:33"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre56a1303 __errf3YJR304 __errf1siu305 __errf63K9306)
+   (body)
+   (head (emit error (0) __erre56a1303))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst0d0h21 const5feceb66ffc86f38d952786c)
+    (let __tconst6im918 const6b86b273ff34fce19d6b804e))
+   (scan lst_member __t0zNS19 l y)
+   (body (let __t16XW20 (lmem l y)) (cmp lt __tconst0d0h21 __t16XW20))
+   (head (emit lst_member_ans (0 1) __t0zNS19 __tconst6im918))
+   "list.slog:20"
+   #f)
+  (crule
+   (pre)
+   (scan lst_rev __t2yHV31 l)
+   (body (let __t0Qfa30 (lrev l)))
+   (head (emit-temp temp6YZG330 __t0Qfa30 __t2yHV31))
+   "list.slog:37"
+   #f)
+  (crule
+   (pre)
+   (scan temp2hdv329 __t0kNa9 __t3FDk10)
+   (body)
+   (head (emit lst_rev_acc_ans (0 1) __t3FDk10 __t0kNa9))
+   "list.slog:42"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre8EbR311 __errf89TC312 __errf3nrQ313)
+   (body)
+   (head (emit error (0) __erre8EbR311))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp7hCs333 __t1Vy04 __t1vcm3)
+   (body)
+   (head (emit lst_take_ans (0 1) __t1Vy04 __t1vcm3))
+   "list.slog:29"
+   #f)
+  (crule
+   (pre)
+   (scan lst_ref __t13jl25 l n)
+   (body (letp __t4ou824 (lref l n)))
+   (head (emit-temp temp38ND331 __t13jl25 __t4ou824))
+   "list.slog:16"
+   #f)
+  (crule
+   (pre (let __tconst1hgb2 const5feceb66ffc86f38d952786c))
+   (scan lst_take __t1Vy04 l n)
+   (body (let __t1vcm3 (lslice l __tconst1hgb2 n)))
+   (head (emit-temp temp7hCs333 __t1Vy04 __t1vcm3))
+   "list.slog:29"
+   #f)
+  (crule
+   (pre)
+   (scan lst_len __t0l0s7 l)
+   (body (let __t4yJO6 (llen l)))
+   (head (emit-temp temp90iQ327 __t0l0s7 __t4yJO6))
+   "list.slog:24"
+   #f)))

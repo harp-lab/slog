@@ -1,0 +1,221 @@
+(cprog
+ #<set:
+  int_overflow
+  temp7jij97
+  modulo_by_zero
+  fields
+  type_mismatch
+  render
+  toint_range
+  fls
+  temp8tuU96
+  nan_result
+  temp9QDi98
+  chars
+  error
+  mpz_overflow
+  nums
+  temp8B3c95
+  mpz_table_overflow
+  div_by_zero
+  temp4ao394>
+ #hash((-13 . const59100e1b869f778eb1d0975e)
+       (1 . const6b86b273ff34fce19d6b804e)
+       (2 . constd4735e3a265e16eee03f5971)
+       (2.5 . constb8736b999909049671d0ea07)
+       (3 . const4e07408562bedb8b60ce05c1)
+       (4.0 . constfbd04e1aae9ce0b11a8946e2)
+       ("" . const12ae32cb1ec02d01eda3581b)
+       ("," . const08b53b7d666cf717c2136d70)
+       ("a€b" . const7bbcb27d0c708f84fe100912))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp9QDi98 1)
+  (temp temp8tuU96 1)
+  (temp temp8B3c95 1)
+  (temp temp7jij97 1)
+  (temp temp4ao394 1)
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation roundtrip 1 (0))
+  (relation render 2 (0 1))
+  (relation rejoined 1 (0))
+  (relation nums 2 (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation fls 2 (0 1))
+  (relation fields 1 (0))
+  (relation fcand 1 (0))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation csv 1 (0))
+  (relation chars 1 (0))
+  (relation cand 1 (0))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre
+    (let __tconst7TQ224 constd4735e3a265e16eee03f5971)
+    (let __tconst7VTE22 constb8736b999909049671d0ea07)
+    (let __t8TVl23 (f2s __tconst7VTE22)))
+   (scan csv ____0wzg25)
+   (body)
+   (head (emit-temp temp8B3c95 __t8TVl23))
+   "str_split.slog:33"
+   #f)
+  (crule
+   (pre)
+   (scan temp9QDi98 __t3Qkc3)
+   (body)
+   (head (emit chars (0) __t3Qkc3))
+   "str_split.slog:22"
+   #f)
+  (crule
+   (pre
+    (let __tconst183l32 const4e07408562bedb8b60ce05c1)
+    (let __tconst3M8N30 constfbd04e1aae9ce0b11a8946e2)
+    (let __t0gm631 (f2s __tconst3M8N30)))
+   (scan csv ____46Db33)
+   (body)
+   (head (emit-temp temp7jij97 __t0gm631))
+   "str_split.slog:34"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre09aS81
+    __errf93HW82
+    __errf7T0983
+    __errf7Ksn84
+    __errf3by785)
+   (body)
+   (head (emit error (0) __erre09aS81))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst7TQ224 constd4735e3a265e16eee03f5971))
+   (scan temp8B3c95 __t8TVl23)
+   (body)
+   (head (emit render (0 1) __tconst7TQ224 __t8TVl23))
+   "str_split.slog:33"
+   #f)
+  (crule
+   (pre (let __tconst3GRA9 const6b86b273ff34fce19d6b804e))
+   (scan temp8tuU96 __t7CKA8)
+   (body)
+   (head (emit render (0 1) __tconst3GRA9 __t7CKA8))
+   "str_split.slog:32"
+   #f)
+  (crule
+   (pre
+    (let __tconst3GRA9 const6b86b273ff34fce19d6b804e)
+    (let __tconst7CQW7 const59100e1b869f778eb1d0975e)
+    (let __t7CKA8 (i2s __tconst7CQW7)))
+   (scan csv ____6Fqg10)
+   (body)
+   (head (emit-temp temp8tuU96 __t7CKA8))
+   "str_split.slog:32"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre07r174 __errf0NIW75 __errf1KEV76 __errf0HuX77)
+   (body)
+   (head (emit error (0) __erre07r174))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre9NeU78 __errf42HT79 __errf4ZEy80)
+   (body)
+   (head (emit error (0) __erre9NeU78))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst1R8K2 const7bbcb27d0c708f84fe100912)
+    (let __tconst4BdG1 const12ae32cb1ec02d01eda3581b)
+    (let __t3Qkc3 (ssplit __tconst1R8K2 __tconst4BdG1)))
+   (scan csv ____6SLu4)
+   (body)
+   (head (emit-temp temp9QDi98 __t3Qkc3))
+   "str_split.slog:22"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre8S3267 __errf9ocg68 __errf1lSe69)
+   (body)
+   (head (emit error (0) __erre8S3267))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst183l32 const4e07408562bedb8b60ce05c1))
+   (scan temp7jij97 __t0gm631)
+   (body)
+   (head (emit render (0 1) __tconst183l32 __t0gm631))
+   "str_split.slog:34"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre73DE91 __errf38hc92 __errf9pRt93)
+   (body)
+   (head (emit error (0) __erre73DE91))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre8jxW70 __errf5A5f71 __errf39Hx72 __errf4WvP73)
+   (body)
+   (head (emit error (0) __erre8jxW70))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan cand s)
+   (body (letp __t1Syw29 (s2i s)))
+   (head (emit nums (0 1) s __t1Syw29))
+   "str_split.slog:27"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre8u1n86
+    __errf4Fqv87
+    __errf8vqV88
+    __errf81OY89
+    __errf0WyC90)
+   (body)
+   (head (emit error (0) __erre8u1n86))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp4ao394 __t41dY6)
+   (body)
+   (head (emit fields (0) __t41dY6))
+   "str_split.slog:17"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre6i1G64 __errf9b0k65 __errf1BHG66)
+   (body)
+   (head (emit error (0) __erre6i1G64))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst8lR85 const08b53b7d666cf717c2136d70))
+   (scan csv s)
+   (body (let __t41dY6 (ssplit s __tconst8lR85)))
+   (head (emit-temp temp4ao394 __t41dY6))
+   "str_split.slog:17"
+   #f)
+  (crule
+   (pre)
+   (scan fcand s)
+   (body (letp __t1z5J26 (s2f s)))
+   (head (emit fls (0 1) s __t1z5J26))
+   "str_split.slog:30"
+   #f)))

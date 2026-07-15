@@ -1,0 +1,116 @@
+(cprog
+ #<set:
+  int_overflow
+  type_mismatch
+  toint_range
+  nan_result
+  parsed
+  error
+  mpz_overflow
+  bigabs
+  modulo_by_zero
+  mpz_table_overflow
+  div_by_zero>
+ #hash()
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation parsed 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation fact25 1 (0))
+  (relation fact 2 (0 1))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation canon 1 (0))
+  (relation bigneg 1 (0))
+  (relation biglit 1 (0))
+  (relation bigcmp 1 (0))
+  (relation bigabs 1 (0))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre9h7W200
+    __errf0NYs201
+    __errf7IjQ202
+    __errf4C0y203
+    __errf2DvJ204)
+   (body)
+   (head (emit error (0) __erre9h7W200))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre5Ky4192 __errf6hKl193 __errf7OBE194)
+   (body)
+   (head (emit error (0) __erre5Ky4192))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre5lXq205 __errf22YV206 __errf1PKa207)
+   (body)
+   (head (emit error (0) __erre5lXq205))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre2aw5195
+    __errf66uN196
+    __errf1LFu197
+    __errf1qh6198
+    __errf2MjB199)
+   (body)
+   (head (emit error (0) __erre2aw5195))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan bigneg N)
+   (body (let __t6hTk3 (abs N)))
+   (head (emit bigabs (0) __t6hTk3))
+   "int_bignum.slog:29"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre7X8t184 __errf45oA185 __errf2bXs186 __errf26LN187)
+   (body)
+   (head (emit error (0) __erre7X8t184))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre4IWg188 __errf3YR1189 __errf2Xx9190 __errf8J60191)
+   (body)
+   (head (emit error (0) __erre4IWg188))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre0E7o178 __errf85h0179 __errf9Q3C180)
+   (body)
+   (head (emit error (0) __erre0E7o178))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan fact25 S)
+   (body (letp __t93fX27 (s2i S)))
+   (head (emit parsed (0) __t93fX27))
+   "int_bignum.slog:22"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre9Kv4181 __errf0qUb182 __errf6lGP183)
+   (body)
+   (head (emit error (0) __erre9Kv4181))
+   "<internal>:1"
+   #f)))

@@ -1,0 +1,299 @@
+(cprog
+ #<set:
+  type_mismatch
+  toint_range
+  $seq_at
+  nan_result
+  _enum
+  mp_fromlist
+  modulo_by_zero
+  malformed_deduction
+  int_overflow
+  $sup5638x127x0x0x0
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash((0 . const5feceb66ffc86f38d952786c)
+       (1 . const6b86b273ff34fce19d6b804e)
+       (2 . constd4735e3a265e16eee03f5971)
+       (3 . const4e07408562bedb8b60ce05c1)
+       (7 . const7902699be42c8a8e46fbbb45)
+       (10 . const4a44dc15364204a80fe80e90)
+       (30 . const624b60c58c9d8bfb6ff1886c)
+       (70 . constff5a1ae012afa5d4c889c50a)
+       ("map.slog:128" . const1ef5dd96b7ac876a994a9ca1)
+       ("mempty" . constd01925b37634a1a9d24159d8)
+       ("mp_fromlist" . consta8648fdb04f7c50b03dd675e))
+ ((relation upd 1 (0))
+  (relation uni 1 (0))
+  (struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation mp_union_ans 2 (0 1))
+  (struct mp_union 3 (1 2 0) (0 1 2))
+  (relation mp_size_ans 2 (0 1))
+  (struct mp_size 2 (1 0) (0 1))
+  (relation mp_put_soft_ans 2 (0 1))
+  (struct mp_put_soft 4 (1 2 3 0) (0 1 2 3))
+  (relation mp_put_ans 2 (0 1))
+  (struct mp_put 4 (1 2 3 0) (0 1 2 3))
+  (relation mp_msk_ans 2 (0 1))
+  (struct mp_msk 3 (1 2 0) (0 1 2))
+  (relation mp_join_ans 2 (0 1))
+  (struct mp_join 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation mp_hsb_ans 2 (0 1))
+  (struct mp_hsb 2 (1 0) (0 1))
+  (relation mp_has0_ans 2 (0 1))
+  (struct mp_has0 3 (1 2 0) (0 1 2))
+  (relation mp_get_ans 2 (0 1))
+  (struct mp_get 3 (1 2 0) (0 1 2))
+  (relation mp_fromlist_ans 2 (0 1))
+  (struct mp_fromlist 2 (1 0) (0 1))
+  (relation mp_del_ans 2 (0 1))
+  (struct mp_del 3 (1 2 0) (0 1 2))
+  (relation mp_bld_ans 2 (0 1))
+  (struct mp_bld 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct mleaf 3 (1 2 0) (0 1 2))
+  (struct mbranch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation has 2 (0 1))
+  (relation got 2 (0 1))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation canon 1 (0))
+  (relation afterdel 1 (0))
+  (struct _enum 2 (1 0) (0 1))
+  (relation $sup5638x98x0x0x1 10 (0 1 2 3 4 5 6 7 8 9))
+  (relation $sup5638x98x0x0x0 9 (0 1 2 3 4 5 6 7 8))
+  (relation $sup5638x95x0x0x1 10 (0 1 2 3 4 5 6 7 8 9))
+  (relation $sup5638x95x0x0x0 9 (0 1 2 3 4 5 6 7 8))
+  (relation $sup5638x93x0x0x0 7 (0 1 2 3 4 5 6))
+  (relation $sup5638x84x0x0x0 6 (0 1 2 3 4 5))
+  (relation $sup5638x82x0x0x0 6 (0 1 2 3 4 5))
+  (relation $sup5638x81x0x0x0 6 (0 1 2 3 4 5))
+  (relation $sup5638x68x0x0x0 4 (0 1 2 3))
+  (relation $sup5638x67x0x0x0 4 (0 1 2 3))
+  (relation $sup5638x62x0x0x0 6 (0 1 2 3 4 5))
+  (relation $sup5638x60x0x0x0 6 (0 1 2 3 4 5))
+  (relation $sup5638x59x0x0x0 6 (0 1 2 3 4 5))
+  (relation $sup5638x52x0x0x0 6 (0 1 2 3 4 5))
+  (relation $sup5638x51x0x0x0 6 (0 1 2 3 4 5))
+  (relation $sup5638x44x0x0x0 8 (0 1 2 3 4 5 6 7))
+  (relation $sup5638x42x0x0x1 8 (0 1 2 3 4 5 6 7))
+  (relation $sup5638x42x0x0x0 7 (0 1 2 3 4 5 6))
+  (relation $sup5638x40x0x0x1 8 (0 1 2 3 4 5 6 7))
+  (relation $sup5638x40x0x0x0 7 (0 1 2 3 4 5 6))
+  (relation $sup5638x29x0x0x2 11 (0 1 2 3 4 5 6 7 8 9 10))
+  (relation $sup5638x29x0x0x1 7 (0 1 2 3 4 5 6))
+  (relation $sup5638x29x0x0x0 5 (0 1 2 3 4))
+  (relation $sup5638x25x0x0x2 11 (0 1 2 3 4 5 6 7 8 9 10))
+  (relation $sup5638x25x0x0x1 7 (0 1 2 3 4 5 6))
+  (relation $sup5638x25x0x0x0 5 (0 1 2 3 4))
+  (relation $sup5638x127x0x0x0 6 (0 1 2 3 4 5))
+  (relation $sup5638x121x0x0x0 5 (0 1 2 3 4))
+  (relation $sup5638x110x0x0x0 11 (0 1 2 3 4 5 6 7 8 9 10))
+  (relation $sup5638x107x0x0x1 10 (0 1 2 3 4 5 6 7 8 9))
+  (relation $sup5638x107x0x0x0 9 (0 1 2 3 4 5 6 7 8))
+  (relation $sup5638x104x0x0x1 10 (0 1 2 3 4 5 6 7 8 9))
+  (relation $sup5638x104x0x0x0 9 (0 1 2 3 4 5 6 7 8))
+  (relation $sup5638x101x0x0x0 11 (0 1 2 3 4 5 6 7 8 9 10))
+  (relation $seq_at 3 (0 1 2))
+  (seqindex mp_fromlist (1)))
+ ((crule
+   (pre)
+   (scan div_by_zero __erre5TBR916 __errf3cAk917 __errf8rZq918)
+   (body)
+   (head (emit error (0) __erre5TBR916))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre7NYo919 __errf8xPp920 __errf9Mcj921)
+   (body)
+   (head (emit error (0) __erre7NYo919))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let _00024sqc9HTA487 const6b86b273ff34fce19d6b804e)
+    (let _00024sqc2nUG488 const4a44dc15364204a80fe80e90)
+    (let _00024sqc5NiJ491 const7902699be42c8a8e46fbbb45)
+    (let _00024sqc0GS1492 constff5a1ae012afa5d4c889c50a)
+    (let _00024sqc0ru9495 const4e07408562bedb8b60ce05c1)
+    (let _00024sqc9Ew4496 const624b60c58c9d8bfb6ff1886c)
+    (let _00024sqb0D14482 (lempty))
+    (let _00024sqb8Kj1485 (lempty))
+    (let _00024sqb3AEH486 (lpush _00024sqb8Kj1485 _00024sqc9HTA487))
+    (let _00024seq2 (lpush _00024sqb3AEH486 _00024sqc2nUG488))
+    (let _00024sqb8g9r489 (lempty))
+    (let _00024sqb34Gf490 (lpush _00024sqb8g9r489 _00024sqc5NiJ491))
+    (let _00024seq1 (lpush _00024sqb34Gf490 _00024sqc0GS1492))
+    (let _00024sqb9pdk493 (lempty))
+    (let _00024sqb3xry494 (lpush _00024sqb9pdk493 _00024sqc0ru9495))
+    (let _00024seq0 (lpush _00024sqb3xry494 _00024sqc9Ew4496))
+    (let _00024sqb7ws1483 (lpush _00024sqb0D14482 _00024seq0))
+    (let _00024sqb3uC1484 (lpush _00024sqb7ws1483 _00024seq1))
+    (let _00024seq3 (lpush _00024sqb3uC1484 _00024seq2)))
+   (once)
+   (body)
+   (head (mkstruct mp_fromlist (1 0) __73tm775 _00024seq3))
+   "mp_basic.slog:16"
+   #f)
+  (crule
+   (pre
+    (let _00024sqc006w517 const4e07408562bedb8b60ce05c1)
+    (let _00024sqc9Tu0518 const624b60c58c9d8bfb6ff1886c)
+    (let _00024sqc1Tat521 const6b86b273ff34fce19d6b804e)
+    (let _00024sqc9Gs5522 const4a44dc15364204a80fe80e90)
+    (let _00024sqc8DGb525 const7902699be42c8a8e46fbbb45)
+    (let _00024sqc7g3Q526 constff5a1ae012afa5d4c889c50a)
+    (let _00024sqb4yht512 (lempty))
+    (let _00024sqb5PXY515 (lempty))
+    (let _00024sqb5fus516 (lpush _00024sqb5PXY515 _00024sqc006w517))
+    (let _00024seq2 (lpush _00024sqb5fus516 _00024sqc9Tu0518))
+    (let _00024sqb4WTR519 (lempty))
+    (let _00024sqb4e03520 (lpush _00024sqb4WTR519 _00024sqc1Tat521))
+    (let _00024seq1 (lpush _00024sqb4e03520 _00024sqc9Gs5522))
+    (let _00024sqb2zil523 (lempty))
+    (let _00024sqb0UaJ524 (lpush _00024sqb2zil523 _00024sqc8DGb525))
+    (let _00024seq0 (lpush _00024sqb0UaJ524 _00024sqc7g3Q526))
+    (let _00024sqb2bYQ513 (lpush _00024sqb4yht512 _00024seq0))
+    (let _00024sqb2Iuh514 (lpush _00024sqb2bYQ513 _00024seq1))
+    (let _00024seq3 (lpush _00024sqb2Iuh514 _00024seq2)))
+   (once)
+   (body)
+   (head (mkstruct mp_fromlist (1 0) __669H567 _00024seq3))
+   "mp_basic.slog:15"
+   #f)
+  (crule
+   (pre (let __tconst3zEO874 constd01925b37634a1a9d24159d8))
+   (once)
+   (body)
+   (head (mkstruct _enum (1 0) __6aKQ875 __tconst3zEO874))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre1CX5922 __errf88ij923 __errf9WdC924 __errf7sze925)
+   (body)
+   (head (emit error (0) __erre1CX5922))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre3is0943 __errf9lhS944 __errf2nvi945)
+   (body)
+   (head (emit error (0) __erre3is0943))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre9HTN938
+    __errf4Uay939
+    __errf9OC4940
+    __errf7HVa941
+    __errf0g7Y942)
+   (body)
+   (head (emit error (0) __erre9HTN938))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre4Bke933
+    __errf8hMV934
+    __errf7AC5935
+    __errf0VeO936
+    __errf1vjA937)
+   (body)
+   (head (emit error (0) __erre4Bke933))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre0iSV930 __errf6pC2931 __errf3iup932)
+   (body)
+   (head (emit error (0) __erre0iSV930))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __trid5B9n569 const1ef5dd96b7ac876a994a9ca1)
+    (let __trel665J570 consta8648fdb04f7c50b03dd675e)
+    (let __tcol7ioc571 const5feceb66ffc86f38d952786c))
+   (scan $sup5638x127x0x0x0 _00024seq0 _00024seq1 __d0 k v xs)
+   (body)
+   (head
+    (tycheck
+     xs
+     (accept seq)
+     __trid5B9n569
+     __trel665J570
+     __tcol7ioc571
+     (1 2 3 4 0))
+    (mkstruct mp_fromlist (1 0) __0Mwz568 xs))
+   "map.slog:128"
+   #f)
+  (crule
+   (pre)
+   (scan
+    malformed_deduction
+    __erre9uqM911
+    __errf3Pfp912
+    __errf9x3q913
+    __errf3Izg914
+    __errf4wsb915)
+   (body)
+   (head (emit error (0) __erre9uqM911))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre0daf926 __errf31Qi927 __errf71mP928 __errf5DsL929)
+   (body)
+   (head (emit error (0) __erre0daf926))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let _00024sqc7WBK499 constd4735e3a265e16eee03f5971)
+    (let _00024sqc7Wqb500 const5feceb66ffc86f38d952786c)
+    (let _00024sqc4DXV501 const6b86b273ff34fce19d6b804e)
+    (let _00024sqc4rh8504 const6b86b273ff34fce19d6b804e)
+    (let _00024sqc8YZ4505 const5feceb66ffc86f38d952786c)
+    (let _00024sqc4twO506 const6b86b273ff34fce19d6b804e)
+    (let _00024sqc9Tps507 const5feceb66ffc86f38d952786c))
+   (scan mp_fromlist __t1OZm234 _00024seq1)
+   (body
+    (letp _00024sql9A4h502 (aslst _00024seq1))
+    (let _00024sqn7O9N503 (llen _00024sql9A4h502))
+    (cmp ge _00024sqn7O9N503 _00024sqc4rh8504)
+    (letp _00024seq0 (lref _00024sql9A4h502 _00024sqc8YZ4505))
+    (letp _00024sql2Ed3497 (aslst _00024seq0))
+    (let chk8zxu946 (llen _00024sql2Ed3497))
+    (eq _00024sqc7WBK499 chk8zxu946)
+    (letp k (lref _00024sql2Ed3497 _00024sqc7Wqb500))
+    (letp v (lref _00024sql2Ed3497 _00024sqc4DXV501))
+    (let _00024sqp4nyU508 (_0002d _00024sqn7O9N503 _00024sqc9Tps507))
+    (let xs (lslice _00024sql9A4h502 _00024sqc4twO506 _00024sqp4nyU508)))
+   (head
+    (emit
+     $sup5638x127x0x0x0
+     (0 1 2 3 4 5)
+     _00024seq0
+     _00024seq1
+     __t1OZm234
+     k
+     v
+     xs))
+   "map.slog:128"
+   #f)))

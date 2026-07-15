@@ -1,0 +1,122 @@
+(cprog
+ #<set:
+  int_overflow
+  type_mismatch
+  toint_range
+  nan_result
+  singleton
+  polyvariant
+  modulo_by_zero
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash()
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (relation store 2 (0 1))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation singleton 1 (0))
+  (relation result 1 (0))
+  (struct ref 2 (1 0) (0 1))
+  (relation program 1 (0))
+  (relation polyvariant 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (lattice mu 2 (count) #f (0 1) (delta 1 0))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct lambda 3 (1 2 0) (0 1 2))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation eval_ans 2 (0 1))
+  (struct eval 2 (1 0) (0 1))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct app 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1))
+  (relation $sup7183x51x0x0x0 2 (0 1))
+  (relation $sup7183x46x0x0x1 8 (0 1 2 3 4 5 6 7))
+  (relation $sup7183x46x0x0x0 3 (0 1 2)))
+ ((crule
+   (pre)
+   (scan mpz_table_overflow __erre9A94207 __errf3X9e208 __errf95GV209)
+   (body)
+   (head (emit error (0) __erre9A94207))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre8nSu194 __errf2W1X195 __errf4mO4196)
+   (body)
+   (head (emit error (0) __erre8nSu194))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre0E8H186 __errf7HFr187 __errf8WWj188 __errf26ba189)
+   (body)
+   (head (emit error (0) __erre0E8H186))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre3JWm190 __errf3Aiv191 __errf7jWX192 __errf6PBJ193)
+   (body)
+   (head (emit error (0) __erre3JWm190))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre4SbP180 __errf4bG4181 __errf9p8V182)
+   (body)
+   (head (emit error (0) __erre4SbP180))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre9XyK197
+    __errf0Zqp198
+    __errf3MWP199
+    __errf1Q59200
+    __errf1ryO201)
+   (body)
+   (head (emit error (0) __erre9XyK197))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __t8wZt45 (inf)))
+   (probe mu (1 0) 1 __t8wZt45 X)
+   (body)
+   (head (emit polyvariant (0) X))
+   "0cfa-counting.slog:82"
+   #f)
+  (crule
+   (pre (let __t0Pfc46 (one)))
+   (probe mu (1 0) 1 __t0Pfc46 X)
+   (body)
+   (head (emit singleton (0) X))
+   "0cfa-counting.slog:81"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre3fpT183 __errf9JM9184 __errf23LZ185)
+   (body)
+   (head (emit error (0) __erre3fpT183))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre6XjK202
+    __errf3Luh203
+    __errf7Ptp204
+    __errf4jJ4205
+    __errf2YVC206)
+   (body)
+   (head (emit error (0) __erre6XjK202))
+   "<internal>:1"
+   #f)))

@@ -1,0 +1,68 @@
+(cprog
+ #<set: vals error typed malformed_deduction>
+ #hash((0 . const5feceb66ffc86f38d952786c)
+       ("tycheck_basic.slog:23" . const05e7b93925da1614f442644c)
+       ("tycheck_basic.slog:26" . const8566bd84ac5cefbdaacb0d97)
+       ("typed" . constda7d351a6dbf31ff4acbdba4)
+       ("vals" . const7808f18c8b98bf0341212d21))
+ ((relation vals 1 (0))
+  (relation typed 1 (0))
+  (struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation raw 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct lam 2 (1 0) (0 1))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation flow 1 (0))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct app 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan
+    malformed_deduction
+    __erre8Wof22
+    __errf9K9523
+    __errf4Xu624
+    __errf1p9h25
+    __errf9Q2D26)
+   (body)
+   (head (emit error (0) __erre8Wof22))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __trid0dXl14 const05e7b93925da1614f442644c)
+    (let __trel60Z115 constda7d351a6dbf31ff4acbdba4)
+    (let __tcol4TH016 const5feceb66ffc86f38d952786c))
+   (scan raw X)
+   (body)
+   (head
+    (tycheck X (accept int) __trid0dXl14 __trel60Z115 __tcol4TH016 (1 2 3 4 0))
+    (emit typed (0) X))
+   "tycheck_basic.slog:23"
+   #f)
+  (crule
+   (pre
+    (let __trid3Kou11 const8566bd84ac5cefbdaacb0d97)
+    (let __trel8GrS12 const7808f18c8b98bf0341212d21)
+    (let __tcol9o9R13 const5feceb66ffc86f38d952786c))
+   (scan flow E)
+   (body)
+   (head
+    (tycheck
+     E
+     (accept (struct lam))
+     __trid3Kou11
+     __trel8GrS12
+     __tcol9o9R13
+     (1 2 3 4 0))
+    (emit vals (0) E))
+   "tycheck_basic.slog:26"
+   #f)))

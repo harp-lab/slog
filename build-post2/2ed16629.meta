@@ -1,0 +1,1 @@
+(stratum-meta (hash "2ed16629") (level 1) (dynamic-rels pr t1 t2 t3 t4) (accel-rels) (heads pr t1 t2 t3 t4) (reads (src pos)) (acyclic #t) (rules (rule 1441980487 "shape_multihead.slog:23" "(rule (src X Y) --> (t4 X Y X) (t3 _t9bZf1) (= _t9bZf1 (pr X Y)) (t2 Y X) (t1 X))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

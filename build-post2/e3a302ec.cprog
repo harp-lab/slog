@@ -1,0 +1,34 @@
+(cprog
+ #<set: allans got>
+ #hash()
+ ((relation want 1 (0))
+  (struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (relation sq_ans 2 (0 1))
+  (struct sq 2 (1 0) (0 1))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation got 2 (0 1))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation allans 1 (0))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan sq_ans __t1H3x1 r)
+   (body (join sq (0 1) 1 __t1H3x1 n))
+   (head (emit got (0 1) n r))
+   "dem_escape.slog:16"
+   #f)
+  (crule
+   (pre)
+   (scan sq_ans d r)
+   (body)
+   (head (emit allans (0) r))
+   "dem_escape.slog:17"
+   #f)))

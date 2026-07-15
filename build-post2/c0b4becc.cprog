@@ -1,0 +1,112 @@
+(cprog
+ #<set: temp8RKK10 fsts mk pair rebuilt both>
+ #hash((1 . const6b86b273ff34fce19d6b804e)
+       (2 . constd4735e3a265e16eee03f5971)
+       (3 . const4e07408562bedb8b60ce05c1)
+       (4 . const4b227777d4dd1fc61c6f884f))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp8RKK10 2)
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation rebuilt 1 (0))
+  (struct pair 3 (1 2 0) (0 1 2) (delta 0 1 2) (delta 1 2 0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (relation mk 1 (0))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation fsts 1 (0) (delta 0))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation both 2 (0 1))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre
+    (let __tconst5w8S5 const4e07408562bedb8b60ce05c1)
+    (let __tconst778J4 const4b227777d4dd1fc61c6f884f)
+    (let __tconst3TAK2 const6b86b273ff34fce19d6b804e)
+    (let __tconst170m1 constd4735e3a265e16eee03f5971))
+   (probe pair (1 2 0) 2 __tconst3TAK2 __tconst170m1 __t9jTF3)
+   (body (join pair (1 2 0) 2 __tconst5w8S5 __tconst778J4 __t9pP66))
+   (head (emit mk (0) __t9pP66) (emit mk (0) __t9jTF3))
+   "strat_struct.slog:11"
+   #f)
+  (crule
+   (pre)
+   (scan mk __t7yPP9)
+   (body (join-old pair (0 1 2) 1 (0 1 2) __t7yPP9 X Y))
+   (head (emit fsts (0) X))
+   "strat_struct.slog:15"
+   #f)
+  (crule
+   (pre
+    (let __tconst5w8S5 const4e07408562bedb8b60ce05c1)
+    (let __tconst778J4 const4b227777d4dd1fc61c6f884f)
+    (let __tconst3TAK2 const6b86b273ff34fce19d6b804e)
+    (let __tconst170m1 constd4735e3a265e16eee03f5971))
+   (once)
+   (body)
+   (head
+    (mkstruct pair (1 2 0) __t9pP66 __tconst5w8S5 __tconst778J4)
+    (mkstruct pair (1 2 0) __t9jTF3 __tconst3TAK2 __tconst170m1))
+   "strat_struct.slog:11"
+   #f)
+  (crule
+   (pre)
+   (scan temp8RKK10 X Y)
+   (body (join pair (1 2 0) 2 Y X __t5YYp8))
+   (head (emit rebuilt (0) __t5YYp8))
+   "strat_struct.slog:17"
+   #f)
+  (crule
+   (pre)
+   (scan pair __t7yPP9 X Y)
+   (body (join mk (0) 1 __t7yPP9))
+   (head (emit fsts (0) X))
+   "strat_struct.slog:15"
+   #f)
+  (crule
+   (pre
+    (let __tconst5w8S5 const4e07408562bedb8b60ce05c1)
+    (let __tconst778J4 const4b227777d4dd1fc61c6f884f)
+    (let __tconst3TAK2 const6b86b273ff34fce19d6b804e)
+    (let __tconst170m1 constd4735e3a265e16eee03f5971))
+   (seeded)
+   (body
+    (join pair (1 2 0) 2 __tconst3TAK2 __tconst170m1 __t9jTF3)
+    (join pair (1 2 0) 2 __tconst5w8S5 __tconst778J4 __t9pP66))
+   (head (emit mk (0) __t9pP66) (emit mk (0) __t9jTF3))
+   "strat_struct.slog:11"
+   #f)
+  (crule
+   (pre)
+   (scan mk __t9F607)
+   (body
+    (join-old pair (0 1 2) 1 (0 1 2) __t9F607 X Y)
+    (join-old fsts (0) 1 (0) X))
+   (head (emit both (0 1) X Y))
+   "strat_struct.slog:16"
+   #f)
+  (crule
+   (pre)
+   (scan fsts X)
+   (body (join pair (1 2 0) 1 X Y __t9F607) (join mk (0) 1 __t9F607))
+   (head (emit both (0 1) X Y))
+   "strat_struct.slog:16"
+   #f)
+  (crule
+   (pre)
+   (scan both X Y)
+   (body)
+   (head (emit-temp temp8RKK10 X Y) (mkstruct pair (1 2 0) __t5YYp8 Y X))
+   "strat_struct.slog:17"
+   #f)
+  (crule
+   (pre)
+   (scan pair __t9F607 X Y)
+   (body (join mk (0) 1 __t9F607) (join-old fsts (0) 1 (0) X))
+   (head (emit both (0 1) X Y))
+   "strat_struct.slog:16"
+   #f)))

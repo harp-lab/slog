@@ -1,0 +1,115 @@
+(cprog
+ #<set:
+  int_overflow
+  type_mismatch
+  toint_range
+  nan_result
+  nonconst
+  modulo_by_zero
+  error
+  mpz_overflow
+  constat
+  mpz_table_overflow
+  div_by_zero>
+ #hash()
+ ((struct vstr 2 (1 0) (0 1))
+  (struct vnum 2 (1 0) (0 1))
+  (struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (lattice regval 3 (flat value) #f (0 1 2) (delta 2 0 1))
+  (relation nonconst 2 (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation flow 2 (0 1))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation constat 3 (0 1 2))
+  (relation assignc 3 (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre2ZXT71
+    __errf0YBK72
+    __errf2b3p73
+    __errf2wOf74
+    __errf9fOc75)
+   (body)
+   (head (emit error (0) __erre2ZXT71))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre3AP557 __errf5H2C58 __errf9JDN59)
+   (body)
+   (head (emit error (0) __erre3AP557))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan vnum __t5P1K2 N)
+   (body (join-lat regval (0 1 2) 0 L R latchk_0) (eq __t5P1K2 latchk_0))
+   (head (emit constat (0 1 2) L R __t5P1K2))
+   "lat_constprop.slog:27"
+   #f)
+  (crule
+   (pre (let __t7T2c3 (top)))
+   (probe regval (2 0 1) 1 __t7T2c3 L R)
+   (body)
+   (head (emit nonconst (0 1) L R))
+   "lat_constprop.slog:26"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre2t2781 __errf2jLk82 __errf316z83)
+   (body)
+   (head (emit error (0) __erre2t2781))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre7veb76
+    __errf356l77
+    __errf2Hax78
+    __errf8giR79
+    __errf7ZmM80)
+   (body)
+   (head (emit error (0) __erre7veb76))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre5K7e60 __errf4Kmh61 __errf5tHM62 __errf6E1n63)
+   (body)
+   (head (emit error (0) __erre5K7e60))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre1zK064 __errf9Xy365 __errf4ojM66 __errf0Kqc67)
+   (body)
+   (head (emit error (0) __erre1zK064))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre0cLo54 __errf7K0d55 __errf7kej56)
+   (body)
+   (head (emit error (0) __erre0cLo54))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre0mUI68 __errf0nmT69 __errf1EDM70)
+   (body)
+   (head (emit error (0) __erre0mUI68))
+   "<internal>:1"
+   #f)))

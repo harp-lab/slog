@@ -1,0 +1,28 @@
+(cprog
+ #<set: _enum>
+ #hash(("z" . const20c400557af0eddc0be4d9e0))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (relation sum 3 (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct s 2 (1 0) (0 1))
+  (relation padd 3 (0 1 2))
+  (relation num 2 (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation count 1 (0))
+  (relation check 1 (0))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre (let __tconst32oB22 const20c400557af0eddc0be4d9e0))
+   (once)
+   (body)
+   (head (mkstruct _enum (1 0) __1AKU23 __tconst32oB22))
+   "<internal>:1"
+   #f)))

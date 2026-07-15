@@ -1,0 +1,178 @@
+(cprog
+ #<set:
+  int_overflow
+  temp3juT510
+  nan_result
+  result
+  modulo_by_zero
+  type_mismatch
+  muval
+  many
+  toint_range
+  error
+  temp89Q2509
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash(("main" . conste4a9e4d8baa71a9d8ebf56ec))
+ ((relation valblur 2 (0 1))
+  (relation uniqueclo 1 (0))
+  (relation unique 2 (0 1))
+  (struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp89Q2509 3)
+  (temp temp3juT510 3)
+  (relation store 3 (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation result 1 (0))
+  (struct ref 2 (1 0) (0 1))
+  (relation rebound 2 (0 1))
+  (relation program 1 (0))
+  (relation poly 2 (0 1))
+  (relation pinned 2 (0 1))
+  (lattice nu 2 (count) #f (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (lattice muval 3 (count) #f (0 1 2))
+  (lattice mu 3 (count) #f (0 1 2))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation mono 2 (0 1))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (relation manyclo 1 (0))
+  (relation many 1 (0))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct lambda 3 (1 2 0) (0 1 2))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation freevar 2 (0 1))
+  (relation eval_ans 2 (0 1))
+  (struct eval 3 (2 1 0) (0 1 2))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct clo 3 (1 2 0) (0 1 2))
+  (relation callev 2 (0 1) (1 0))
+  (relation bindev 3 (0 1 2))
+  (relation bindblur 2 (0 1))
+  (struct app 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1) (delta 1 0))
+  (relation $sup27994x83x0x0x1 10 (0 1 2 3 4 5 6 7 8 9))
+  (relation $sup27994x83x0x0x0 4 (0 1 2 3)))
+ ((crule
+   (pre (let __t1nyb13 (one)))
+   (scan store x l v)
+   (body)
+   (head (emit-temp temp89Q2509 __t1nyb13 l x))
+   "mcfa-counting.slog:137"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre3dC3496
+    __errf9YkZ497
+    __errf9yiO498
+    __errf1aeY499
+    __errf3Xo1500)
+   (body)
+   (head (emit error (0) __erre3dC3496))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre2ORI489 __errf5eRO490 __errf4s1u491 __errf0523492)
+   (body)
+   (head (emit error (0) __erre2ORI489))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __t3xMi14 (inf)))
+   (scan store x l v2)
+   (body (join store (0 1 2) 2 x l v1) (neq v1 v2))
+   (head (emit-temp temp3juT510 __t3xMi14 l x))
+   "mcfa-counting.slog:138"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre1tTD493 __errf8GIR494 __errf90WU495)
+   (body)
+   (head (emit error (0) __erre1tTD493))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre6KTk479 __errf65af480 __errf2Qmq481)
+   (body)
+   (head (emit error (0) __erre6KTk479))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre9Qre485 __errf9Xi7486 __errf6HAj487 __errf7SCG488)
+   (body)
+   (head (emit error (0) __erre9Qre485))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre1MJw501
+    __errf70cs502
+    __errf9EGx503
+    __errf5ALq504
+    __errf3YQb505)
+   (body)
+   (head (emit error (0) __erre1MJw501))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst4qyR354 conste4a9e4d8baa71a9d8ebf56ec))
+   (probe _enum (1 0) 1 __tconst4qyR354 __t653W80)
+   (body
+    (join eval (2 1 0) 1 __t653W80 e __t9U6I81)
+    (join program (0) 1 e)
+    (join eval_ans (0 1) 1 __t9U6I81 v))
+   (head (emit result (0) v))
+   "mcfa-counting.slog:112"
+   #f)
+  (crule
+   (pre)
+   (scan many c)
+   (body (join callev (1 0) 1 c l))
+   (head (emit many (0) l))
+   "mcfa-counting.slog:120"
+   #f)
+  (crule
+   (pre)
+   (scan temp3juT510 __t3xMi14 l x)
+   (body)
+   (head (emit-lat muval x l __t3xMi14))
+   "mcfa-counting.slog:138"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre8GPq482 __errf2ZmZ483 __errf76jE484)
+   (body)
+   (head (emit error (0) __erre8GPq482))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan callev l c2)
+   (body (join callev (0 1) 1 l c1) (neq c1 c2))
+   (head (emit many (0) l))
+   "mcfa-counting.slog:119"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre3hZz506 __errf62CM507 __errf9JA1508)
+   (body)
+   (head (emit error (0) __erre3hZz506))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp89Q2509 __t1nyb13 l x)
+   (body)
+   (head (emit-lat muval x l __t1nyb13))
+   "mcfa-counting.slog:137"
+   #f)))

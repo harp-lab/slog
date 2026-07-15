@@ -1,0 +1,123 @@
+(cprog
+ #<set:
+  int_overflow
+  toint_range
+  rtf
+  modulo_by_zero
+  tineg
+  type_mismatch
+  rti
+  nan_result
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash((0.0 . const8aed642bf5118b9d3c859bd4))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (relation tineg 2 (0 1))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation rti 2 (0 1))
+  (relation rtf 2 (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation i 1 (0))
+  (relation fl 1 (0))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan mpz_table_overflow __erre9QpW71 __errf3BiA72 __errf2J9J73)
+   (body)
+   (head (emit error (0) __erre9QpW71))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre5fsW54 __errf8IMK55 __errf8n3456 __errf8hwr57)
+   (body)
+   (head (emit error (0) __erre5fsW54))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre8IXy47 __errf85gV48 __errf5CxE49)
+   (body)
+   (head (emit error (0) __erre8IXy47))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre5mmg50 __errf43bx51 __errf15mz52 __errf3Wt453)
+   (body)
+   (head (emit error (0) __erre5mmg50))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre0WTR44 __errf1k3145 __errf6k8C46)
+   (body)
+   (head (emit error (0) __erre0WTR44))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst2ETx1 const8aed642bf5118b9d3c859bd4))
+   (scan fl F)
+   (body
+    (let __t5ic32 (_0002d __tconst2ETx1 F))
+    (let __t78E23 (toint __t5ic32)))
+   (head (emit tineg (0 1) __t5ic32 __t78E23))
+   "prim2_roundtrip.slog:22"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre4VbE66
+    __errf8DkY67
+    __errf9gJ968
+    __errf4Ij569
+    __errf41rj70)
+   (body)
+   (head (emit error (0) __erre4VbE66))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre1Mom61
+    __errf7uSG62
+    __errf7Sjw63
+    __errf7cMV64
+    __errf3dTB65)
+   (body)
+   (head (emit error (0) __erre1Mom61))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan fl F)
+   (body (let __t06mi6 (toint F)) (let __t2fj37 (tofloat __t06mi6)))
+   (head (emit rtf (0 1) F __t2fj37))
+   "prim2_roundtrip.slog:21"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre7c0458 __errf2Cyq59 __errf0f5u60)
+   (body)
+   (head (emit error (0) __erre7c0458))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan i N)
+   (body (let __t9rc44 (tofloat N)) (let __t2fcx5 (toint __t9rc44)))
+   (head (emit rti (0 1) N __t2fcx5))
+   "prim2_roundtrip.slog:20"
+   #f)))

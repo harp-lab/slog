@@ -1,0 +1,41 @@
+(cprog
+ #<set: mincost>
+ #hash((1 . const6b86b273ff34fce19d6b804e))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (lattice mincost_ans 2 (min int (floor 0)) #f (0 1))
+  (struct mincost 2 (1 0) (0 1))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation goal 1 (0))
+  (relation error 1 (0))
+  (relation edge 3 (0 1 2))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation answer 1 (0))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan mincost __t9OzN4 N)
+   (body (join edge (0 1 2) 1 N M W))
+   (head (mkstruct mincost (1 0) __5W6E34 M))
+   "lat_demand.slog:20"
+   #f)
+  (crule
+   (pre (let __tconst2ixo32 const6b86b273ff34fce19d6b804e))
+   (once)
+   (body)
+   (head (mkstruct mincost (1 0) __0KVz33 __tconst2ixo32))
+   "lat_demand.slog:26"
+   #f)
+  (crule
+   (pre (let __tconst5zVI3 const6b86b273ff34fce19d6b804e))
+   (once)
+   (body)
+   (head (mkstruct mincost (1 0) __8ytW35 __tconst5zVI3))
+   "lat_demand.slog:23"
+   #f)))

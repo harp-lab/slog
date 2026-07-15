@@ -1,0 +1,126 @@
+(cprog
+ #<set:
+  smt_qcore_ans
+  smt_bad_formula
+  error
+  smt_qmodel
+  negb
+  smt_qcore
+  lnot
+  temp3m1o179
+  smt_qmodel_ans
+  temp4OHk180>
+ #hash()
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp4OHk180 1)
+  (temp temp3m1o179 1)
+  (relation stmt 2 (0 1))
+  (relation smt_vcode 2 (0 1))
+  (relation smt_unsat 1 (0))
+  (relation smt_unknown 1 (0))
+  (relation smt_sat 1 (0))
+  (relation smt_qsat_ans 2 (0 1))
+  (struct smt_qsat 2 (1 0) (0 1))
+  (relation smt_qmodel_ans 2 (0 1))
+  (struct smt_qmodel 2 (1 0) (0 1))
+  (relation smt_qcore_ans 2 (0 1))
+  (struct smt_qcore 2 (1 0) (0 1))
+  (relation smt_model_ans 3 (0 1 2))
+  (struct smt_model 2 (1 0) (0 1))
+  (relation smt_core_ans 3 (0 1 2))
+  (struct smt_core 2 (1 0) (0 1))
+  (relation smt_check_ans 2 (0 1))
+  (struct smt_check 2 (1 0) (0 1))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation perr 2 (0 1))
+  (relation pc 2 (0 1))
+  (relation negb 2 (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct lsub 3 (1 2 0) (0 1 2))
+  (struct lor 3 (1 2 0) (0 1 2))
+  (struct lnot 2 (1 0) (0 1))
+  (struct lne 3 (1 2 0) (0 1 2))
+  (struct lmul 3 (1 2 0) (0 1 2))
+  (struct llt 3 (1 2 0) (0 1 2))
+  (struct lle 3 (1 2 0) (0 1 2))
+  (struct lite 4 (1 2 3 0) (0 1 2 3))
+  (struct limplies 3 (1 2 0) (0 1 2))
+  (struct lgt 3 (1 2 0) (0 1 2))
+  (struct lge 3 (1 2 0) (0 1 2))
+  (struct leq 3 (1 2 0) (0 1 2))
+  (struct lany 2 (1 0) (0 1))
+  (struct land 3 (1 2 0) (0 1 2))
+  (struct lall 2 (1 0) (0 1))
+  (struct ladd 3 (1 2 0) (0 1 2))
+  (relation kept 1 (0))
+  (struct iv 2 (1 0) (0 1))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (struct ic 2 (1 0) (0 1))
+  (relation error 1 (0))
+  (relation eqf 3 (0 1 2))
+  (relation entry 1 (0))
+  (relation elidable 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation check_status 2 (0 1))
+  (lattice check_err 2 (set any) #f (0 1))
+  (struct check 4 (1 2 3 0) (0 1 2 3))
+  (struct bv 2 (1 0) (0 1))
+  (struct branch 4 (1 2 3 0) (0 1 2 3))
+  (struct asgn 4 (1 2 3 0) (0 1 2 3))
+  (struct _enum 2 (1 0) (0 1))
+  (oracle smtcore smt_qcore smt_qcore_ans)
+  (oracle smtmodel smt_qmodel smt_qmodel_ans))
+ ((crule
+   (pre)
+   (scan smt_bad_formula __erre512K176 __errf5Pzu177 __errf93cJ178)
+   (body)
+   (head (emit error (0) __erre512K176))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp3m1o179 C)
+   (body (join lnot (1 0) 1 C __t8xtG93))
+   (head (emit negb (0 1) C __t8xtG93))
+   "verify.slog:46"
+   #f)
+  (crule
+   (pre)
+   (scan smt_vcode C V)
+   (body (join smt_core (0 1) 0 __t6eub109 F))
+   (head (mkstruct smt_qcore (1 0) __4fZh131 F))
+   "smt.slog:106"
+   #f)
+  (crule
+   (pre)
+   (scan temp4OHk180 C)
+   (body (join lnot (1 0) 1 C __t2bOE87))
+   (head (emit negb (0 1) C __t2bOE87))
+   "verify.slog:45"
+   #f)
+  (crule
+   (pre)
+   (scan stmt L __t3X6X88)
+   (body (join branch (0 1 2 3) 1 __t3X6X88 C LT LF))
+   (head (emit-temp temp4OHk180 C) (mkstruct lnot (1 0) __t2bOE87 C))
+   "verify.slog:45"
+   #f)
+  (crule
+   (pre)
+   (scan stmt L __t57EW94)
+   (body (join check (0 1 2 3) 1 __t57EW94 ID C N))
+   (head (emit-temp temp3m1o179 C) (mkstruct lnot (1 0) __t8xtG93 C))
+   "verify.slog:46"
+   #f)
+  (crule
+   (pre)
+   (scan smt_vcode C V)
+   (body (join smt_model (0 1) 0 __t2hYJ122 F))
+   (head (mkstruct smt_qmodel (1 0) __7kX8143 F))
+   "smt.slog:93"
+   #f)))

@@ -1,0 +1,133 @@
+(cprog
+ #<set:
+  int_overflow
+  type_mismatch
+  nope
+  toint_range
+  nope2
+  nan_result
+  ok
+  modulo_by_zero
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash((1 . const6b86b273ff34fce19d6b804e)
+       (2 . constd4735e3a265e16eee03f5971)
+       (100 . constad57366865126e55649ecb23)
+       (70000 . const265f10e1bf87701b7aa597c1)
+       (100000 . const3bb78535cc9555ff19fe3556))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation ok 1 (0))
+  (relation nope2 1 (0))
+  (relation nope 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation go 1 (0))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan nan_result __erre12rF51 __errf6tDI52 __errf7R1s53 __errf06SA54)
+   (body)
+   (head (emit error (0) __erre12rF51))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst5gqp2 constad57366865126e55649ecb23)
+    (let __tconst71U93 constd4735e3a265e16eee03f5971)
+    (let __t6FKu4 (pow __tconst71U93 __tconst5gqp2)))
+   (scan go X)
+   (body)
+   (head (emit ok (0) __t6FKu4))
+   "int_caps.slog:19"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre717D44 __errf9zxZ45 __errf88fC46)
+   (body)
+   (head (emit error (0) __erre717D44))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre3A8G68 __errf1QTt69 __errf9LdA70)
+   (body)
+   (head (emit error (0) __erre3A8G68))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre2Qve41 __errf3RTM42 __errf3YZ343)
+   (body)
+   (head (emit error (0) __erre2Qve41))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre89UQ63
+    __errf6q1j64
+    __errf5NF365
+    __errf64qO66
+    __errf0KXq67)
+   (body)
+   (head (emit error (0) __erre89UQ63))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst68GI5 const3bb78535cc9555ff19fe3556)
+    (let __tconst2INI6 constd4735e3a265e16eee03f5971)
+    (let __t07Yv7 (pow __tconst2INI6 __tconst68GI5)))
+   (scan go X)
+   (body)
+   (head (emit nope (0) __t07Yv7))
+   "int_caps.slog:15"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre4EqJ55 __errf8pRB56 __errf21jI57)
+   (body)
+   (head (emit error (0) __erre4EqJ55))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre8Myv58
+    __errf8bXg59
+    __errf8zb460
+    __errf6Enc61
+    __errf4KOE62)
+   (body)
+   (head (emit error (0) __erre8Myv58))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst3lyY8 const265f10e1bf87701b7aa597c1)
+    (let __tconst1TPu9 const6b86b273ff34fce19d6b804e)
+    (let __t7ma510 (shl __tconst1TPu9 __tconst3lyY8)))
+   (scan go X)
+   (body)
+   (head (emit nope2 (0) __t7ma510))
+   "int_caps.slog:17"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre9AG047 __errf08NL48 __errf7COV49 __errf1LKQ50)
+   (body)
+   (head (emit error (0) __erre9AG047))
+   "<internal>:1"
+   #f)))

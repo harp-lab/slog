@@ -1,0 +1,545 @@
+(cprog
+ #<set:
+  toint_range
+  nan_result
+  step_ans
+  modulo_by_zero
+  malformed_deduction
+  Start
+  reach
+  int_overflow
+  mk_ans
+  okq
+  type_mismatch
+  store
+  okq_ans
+  Ap
+  error
+  step
+  mpz_overflow
+  temp8P5b111
+  temp8lsc110
+  $sup5130x35x0x0x1
+  mk
+  $sup5130x35x0x0x0
+  Done
+  mpz_table_overflow
+  div_by_zero>
+ #hash((0 . const5feceb66ffc86f38d952786c)
+       (1 . const6b86b273ff34fce19d6b804e)
+       (2 . constd4735e3a265e16eee03f5971)
+       (700 . const99ee50221221864d50c60bae)
+       ("dem_head_guarded.slog:36" . constb6579dd3e29d8cc73668c256)
+       ("okq" . const51f9fd68d7e9c802b42378d7))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp8lsc110 1)
+  (temp temp8P5b111 2)
+  (relation store 1 (0))
+  (relation step_ans 2 (0 1) (delta 0 1))
+  (struct step 2 (1 0) (0 1) (delta 0 1) (delta 1 0))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation reach 1 (0))
+  (relation okt 1 (0))
+  (relation okq_ans 2 (1 0) (delta 1 0))
+  (struct okq 2 (1 0) (0 1) (delta 0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (relation mk_ans 2 (0 1) (delta 0 1))
+  (struct mk 2 (1 0) (0 1) (delta 0 1))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1))
+  (struct Start 2 (1 0) (0 1) (delta 1 0))
+  (struct Done 2 (1 0) (0 1))
+  (struct Ap 3 (1 2 0) (0 1 2) (delta 1 2 0))
+  (relation
+   $sup5130x35x0x0x1
+   4
+   (0 1 2 3)
+   (1 3 0 2)
+   (2 3 0 1)
+   (delta 1 3 0 2)
+   (delta 2 3 0 1))
+  (relation $sup5130x35x0x0x0 3 (0 1 2) (2 1 0) (delta 2 1 0)))
+ ((crule
+   (pre
+    (let __tconst0rYx8 const6b86b273ff34fce19d6b804e)
+    (let __tconst70tI9 const99ee50221221864d50c60bae))
+   (scan $sup5130x35x0x0x1 __t2jdr6 __t6bDk7 k op)
+   (body
+    (join $sup5130x35x0x0x0 (2 1 0) 3 op k __t2jdr6)
+    (join okq_ans (1 0) 2 __tconst0rYx8 __t6bDk7)
+    (join-old okq (0 1) 2 (0 1) __t6bDk7 op)
+    (join-old Ap (1 2 0) 2 (1 2 0) op k __t0lCH5)
+    (join-old step (0 1) 2 (0 1) __t2jdr6 __t0lCH5)
+    (join mk_ans (0 1) 0 __t6KNu11 __v0)
+    (let __t4XhT10 (_0002b op __tconst70tI9))
+    (join-old mk (0 1) 2 (0 1) __t6KNu11 __t4XhT10))
+   (head
+    (emit-temp temp8P5b111 __t2jdr6 __v0)
+    (mkstruct Done (1 0) __t3NKT4 __v0))
+   "dem_head_guarded.slog:36"
+   #f)
+  (crule
+   (pre)
+   (scan step __t2lU12 __t4Z0S1)
+   (body (join Ap (0 1 2) 1 __t4Z0S1 op k))
+   (head (emit $sup5130x35x0x0x0 (0 1 2) __t2lU12 k op))
+   "dem_head_guarded.slog:36"
+   #f)
+  (crule
+   (pre
+    (let __tconst0HcW29 const5feceb66ffc86f38d952786c)
+    (let __tconst6kRe27 const6b86b273ff34fce19d6b804e))
+   (seeded)
+   (body
+    (join Ap (1 2 0) 2 __tconst6kRe27 __tconst0HcW29 __t8myT28)
+    (join Start (1 0) 1 __tconst0HcW29 __t9msl30)
+    (join step (1 0) 1 __t9msl30 __t2Hcv31))
+   (head (emit step_ans (0 1) __t2Hcv31 __t8myT28))
+   "dem_head_guarded.slog:30"
+   #f)
+  (crule
+   (pre)
+   (scan Ap __t4Z0S1 op k)
+   (body (join-old step (1 0) 1 (1 0) __t4Z0S1 __t2lU12))
+   (head (emit $sup5130x35x0x0x0 (0 1 2) __t2lU12 k op))
+   "dem_head_guarded.slog:36"
+   #f)
+  (crule
+   (pre
+    (let __tconst0HcW29 const5feceb66ffc86f38d952786c)
+    (let __tconst6kRe27 const6b86b273ff34fce19d6b804e))
+   (probe Start (1 0) 1 __tconst0HcW29 __t9msl30)
+   (body (join-old step (1 0) 1 (1 0) __t9msl30 __t2Hcv31))
+   (head (mkstruct Ap (1 2 0) __t8myT28 __tconst6kRe27 __tconst0HcW29))
+   "dem_head_guarded.slog:30"
+   #f)
+  (crule
+   (pre
+    (let __tconst0rYx8 const6b86b273ff34fce19d6b804e)
+    (let __tconst70tI9 const99ee50221221864d50c60bae))
+   (scan mk_ans __t6KNu11 __v0)
+   (body
+    (join okq_ans (1 0) 1 __tconst0rYx8 __t6bDk7)
+    (exists $sup5130x35x0x0x1 (1 3 0 2) 1 __t6bDk7)
+    (join-old okq (0 1) 1 (0 1) __t6bDk7 op)
+    (exists $sup5130x35x0x0x0 (2 1 0) 1 op)
+    (exists Ap (1 2 0) 1 op)
+    (join-old $sup5130x35x0x0x1 (1 3 0 2) 2 (1 3 0 2) __t6bDk7 op __t2jdr6 k)
+    (join-old $sup5130x35x0x0x0 (2 1 0) 3 (2 1 0) op k __t2jdr6)
+    (join-old Ap (1 2 0) 2 (1 2 0) op k __t0lCH5)
+    (join-old step (0 1) 2 (0 1) __t2jdr6 __t0lCH5)
+    (let __t4XhT10 (_0002b op __tconst70tI9))
+    (join-old mk (0 1) 2 (0 1) __t6KNu11 __t4XhT10))
+   (head
+    (emit-temp temp8P5b111 __t2jdr6 __v0)
+    (mkstruct Done (1 0) __t3NKT4 __v0))
+   "dem_head_guarded.slog:36"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre31K583 __errf31Zm84 __errf26n185)
+   (body)
+   (head (emit error (0) __erre31K583))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst0HcW29 const5feceb66ffc86f38d952786c)
+    (let __tconst6kRe27 const6b86b273ff34fce19d6b804e))
+   (scan step __t2Hcv31 __t9msl30)
+   (body (join Start (0 1) 2 __t9msl30 __tconst0HcW29))
+   (head (mkstruct Ap (1 2 0) __t8myT28 __tconst6kRe27 __tconst0HcW29))
+   "dem_head_guarded.slog:30"
+   #f)
+  (crule
+   (pre (let __tconst3Fxs32 const99ee50221221864d50c60bae))
+   (scan $sup5130x35x0x0x1 __d0 __d1 k op)
+   (body (let __t0R0d33 (_0002b op __tconst3Fxs32)))
+   (head (emit-temp temp8lsc110 __t0R0d33))
+   "dem_head_guarded.slog:36"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre1XcK97
+    __errf3BBz98
+    __errf2UdY99
+    __errf7bi3100
+    __errf0W8w101)
+   (body)
+   (head (emit error (0) __erre1XcK97))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp8lsc110 __t0R0d33)
+   (body)
+   (head (mkstruct mk (1 0) __5kDq39 __t0R0d33))
+   "dem_head_guarded.slog:36"
+   #f)
+  (crule
+   (pre
+    (let __tconst0rYx8 const6b86b273ff34fce19d6b804e)
+    (let __tconst70tI9 const99ee50221221864d50c60bae))
+   (scan mk __t6KNu11 __t4XhT10)
+   (body
+    (exists mk_ans (0 1) 1 __t6KNu11)
+    (join okq_ans (1 0) 1 __tconst0rYx8 __t6bDk7)
+    (exists $sup5130x35x0x0x1 (1 3 0 2) 1 __t6bDk7)
+    (join mk_ans (0 1) 1 __t6KNu11 __v0)
+    (join okq (0 1) 1 __t6bDk7 op)
+    (exists $sup5130x35x0x0x0 (2 1 0) 1 op)
+    (exists Ap (1 2 0) 1 op)
+    (join $sup5130x35x0x0x1 (1 3 0 2) 2 __t6bDk7 op __t2jdr6 k)
+    (join $sup5130x35x0x0x0 (2 1 0) 3 op k __t2jdr6)
+    (join Ap (1 2 0) 2 op k __t0lCH5)
+    (join step (0 1) 2 __t2jdr6 __t0lCH5)
+    (let chk1TAx112 (_0002b op __tconst70tI9))
+    (eq __t4XhT10 chk1TAx112))
+   (head
+    (emit-temp temp8P5b111 __t2jdr6 __v0)
+    (mkstruct Done (1 0) __t3NKT4 __v0))
+   "dem_head_guarded.slog:36"
+   #f)
+  (crule
+   (pre
+    (let __tconst7jOM18 const5feceb66ffc86f38d952786c)
+    (let __tconst7yxw16 constd4735e3a265e16eee03f5971))
+   (probe Start (1 0) 1 __tconst7jOM18 __t8LH219)
+   (body (join-old step (1 0) 1 (1 0) __t8LH219 __t4qfT20))
+   (head (mkstruct Ap (1 2 0) __t9hkM17 __tconst7yxw16 __tconst7jOM18))
+   "dem_head_guarded.slog:31"
+   #f)
+  (crule
+   (pre (let __tconst4wQg24 const6b86b273ff34fce19d6b804e))
+   (scan okq __t2hg825 n)
+   (body (join okt (0) 1 n))
+   (head (emit okq_ans (1 0) __tconst4wQg24 __t2hg825))
+   "dem_head_guarded.slog:22"
+   #f)
+  (crule
+   (pre
+    (let __tconst7jOM18 const5feceb66ffc86f38d952786c)
+    (let __tconst7yxw16 constd4735e3a265e16eee03f5971))
+   (seeded)
+   (body
+    (join Ap (1 2 0) 2 __tconst7yxw16 __tconst7jOM18 __t9hkM17)
+    (join Start (1 0) 1 __tconst7jOM18 __t8LH219)
+    (join step (1 0) 1 __t8LH219 __t4qfT20))
+   (head (emit step_ans (0 1) __t4qfT20 __t9hkM17))
+   "dem_head_guarded.slog:31"
+   #f)
+  (crule
+   (pre (let __tconst38yN22 const5feceb66ffc86f38d952786c))
+   (once)
+   (body)
+   (head (mkstruct Start (1 0) __t5jZE23 __tconst38yN22))
+   "dem_head_guarded.slog:26"
+   #f)
+  (crule
+   (pre
+    (let __tconst0rYx8 const6b86b273ff34fce19d6b804e)
+    (let __tconst70tI9 const99ee50221221864d50c60bae))
+   (probe okq_ans (1 0) 1 __tconst0rYx8 __t6bDk7)
+   (body
+    (exists $sup5130x35x0x0x1 (1 3 0 2) 1 __t6bDk7)
+    (join-old okq (0 1) 1 (0 1) __t6bDk7 op)
+    (exists $sup5130x35x0x0x0 (2 1 0) 1 op)
+    (exists Ap (1 2 0) 1 op)
+    (join-old $sup5130x35x0x0x1 (1 3 0 2) 2 (1 3 0 2) __t6bDk7 op __t2jdr6 k)
+    (join-old $sup5130x35x0x0x0 (2 1 0) 3 (2 1 0) op k __t2jdr6)
+    (join-old Ap (1 2 0) 2 (1 2 0) op k __t0lCH5)
+    (join-old step (0 1) 2 (0 1) __t2jdr6 __t0lCH5)
+    (join-old mk_ans (0 1) 0 (0 1) __t6KNu11 __v0)
+    (let __t4XhT10 (_0002b op __tconst70tI9))
+    (join-old mk (0 1) 2 (0 1) __t6KNu11 __t4XhT10))
+   (head
+    (emit-temp temp8P5b111 __t2jdr6 __v0)
+    (mkstruct Done (1 0) __t3NKT4 __v0))
+   "dem_head_guarded.slog:36"
+   #f)
+  (crule
+   (pre (let __tconst1G9T13 const6b86b273ff34fce19d6b804e))
+   (probe okq_ans (1 0) 1 __tconst1G9T13 __t6NE412)
+   (body
+    (join-old okq (0 1) 1 (0 1) __t6NE412 op)
+    (join $sup5130x35x0x0x0 (2 1 0) 1 op k __d0))
+   (head (emit $sup5130x35x0x0x1 (0 1 2 3) __d0 __t6NE412 k op))
+   "dem_head_guarded.slog:36"
+   #f)
+  (crule
+   (pre
+    (let __tconst0HcW29 const5feceb66ffc86f38d952786c)
+    (let __tconst6kRe27 const6b86b273ff34fce19d6b804e))
+   (probe Ap (1 2 0) 2 __tconst6kRe27 __tconst0HcW29 __t8myT28)
+   (body
+    (join Start (1 0) 1 __tconst0HcW29 __t9msl30)
+    (join step (1 0) 1 __t9msl30 __t2Hcv31))
+   (head (emit step_ans (0 1) __t2Hcv31 __t8myT28))
+   "dem_head_guarded.slog:30"
+   #f)
+  (crule
+   (pre (let __tconst38yN22 const5feceb66ffc86f38d952786c))
+   (probe Start (1 0) 1 __tconst38yN22 __t5jZE23)
+   (body)
+   (head (emit reach (0) __t5jZE23))
+   "dem_head_guarded.slog:26"
+   #f)
+  (crule
+   (pre)
+   (scan step __t2Dgj21 s)
+   (body (join reach (0) 1 s) (join step_ans (0 1) 1 __t2Dgj21 s_00027))
+   (head (emit reach (0) s_00027))
+   "dem_head_guarded.slog:27"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre33K6102
+    __errf3Ypx103
+    __errf5f2w104
+    __errf3Ee6105
+    __errf0PJX106)
+   (body)
+   (head (emit error (0) __erre33K6102))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre9hix94 __errf8DIJ95 __errf16bM96)
+   (body)
+   (head (emit error (0) __erre9hix94))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan reach s)
+   (body
+    (join-old step (1 0) 1 (1 0) s __t2Dgj21)
+    (join-old step_ans (0 1) 1 (0 1) __t2Dgj21 s_00027))
+   (head (emit reach (0) s_00027))
+   "dem_head_guarded.slog:27"
+   #f)
+  (crule
+   (pre
+    (let __tconst7jOM18 const5feceb66ffc86f38d952786c)
+    (let __tconst7yxw16 constd4735e3a265e16eee03f5971))
+   (scan step __t4qfT20 __t8LH219)
+   (body (join Start (0 1) 2 __t8LH219 __tconst7jOM18))
+   (head (mkstruct Ap (1 2 0) __t9hkM17 __tconst7yxw16 __tconst7jOM18))
+   "dem_head_guarded.slog:31"
+   #f)
+  (crule
+   (pre
+    (let __tconst0rYx8 const6b86b273ff34fce19d6b804e)
+    (let __tconst70tI9 const99ee50221221864d50c60bae))
+   (scan $sup5130x35x0x0x0 __t2jdr6 k op)
+   (body
+    (exists okq_ans (1 0) 1 __tconst0rYx8)
+    (exists okq (1 0) 1 op)
+    (exists Ap (1 2 0) 2 op k)
+    (join-old $sup5130x35x0x0x1 (2 3 0 1) 3 (2 3 0 1) k op __t2jdr6 __t6bDk7)
+    (join okq_ans (1 0) 2 __tconst0rYx8 __t6bDk7)
+    (join-old okq (0 1) 2 (0 1) __t6bDk7 op)
+    (join-old Ap (1 2 0) 2 (1 2 0) op k __t0lCH5)
+    (join-old step (0 1) 2 (0 1) __t2jdr6 __t0lCH5)
+    (join mk_ans (0 1) 0 __t6KNu11 __v0)
+    (let __t4XhT10 (_0002b op __tconst70tI9))
+    (join-old mk (0 1) 2 (0 1) __t6KNu11 __t4XhT10))
+   (head
+    (emit-temp temp8P5b111 __t2jdr6 __v0)
+    (mkstruct Done (1 0) __t3NKT4 __v0))
+   "dem_head_guarded.slog:36"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre6USv86 __errf1Zdp87 __errf9O5k88 __errf5kjD89)
+   (body)
+   (head (emit error (0) __erre6USv86))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan step_ans __t2Dgj21 s_00027)
+   (body (join-old step (0 1) 1 (0 1) __t2Dgj21 s) (join reach (0) 1 s))
+   (head (emit reach (0) s_00027))
+   "dem_head_guarded.slog:27"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre4iNB80 __errf6Ey381 __errf9fe282)
+   (body)
+   (head (emit error (0) __erre4iNB80))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre2ULd90 __errf6FMm91 __errf8kPf92 __errf9NJY93)
+   (body)
+   (head (emit error (0) __erre2ULd90))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst7jOM18 const5feceb66ffc86f38d952786c)
+    (let __tconst7yxw16 constd4735e3a265e16eee03f5971))
+   (probe Ap (1 2 0) 2 __tconst7yxw16 __tconst7jOM18 __t9hkM17)
+   (body
+    (join Start (1 0) 1 __tconst7jOM18 __t8LH219)
+    (join step (1 0) 1 __t8LH219 __t4qfT20))
+   (head (emit step_ans (0 1) __t4qfT20 __t9hkM17))
+   "dem_head_guarded.slog:31"
+   #f)
+  (crule
+   (pre
+    (let __tconst0rYx8 const6b86b273ff34fce19d6b804e)
+    (let __tconst70tI9 const99ee50221221864d50c60bae))
+   (scan okq __t6bDk7 op)
+   (body
+    (join okq_ans (1 0) 2 __tconst0rYx8 __t6bDk7)
+    (exists $sup5130x35x0x0x0 (2 1 0) 1 op)
+    (exists Ap (1 2 0) 1 op)
+    (join $sup5130x35x0x0x1 (1 3 0 2) 2 __t6bDk7 op __t2jdr6 k)
+    (join $sup5130x35x0x0x0 (2 1 0) 3 op k __t2jdr6)
+    (join Ap (1 2 0) 2 op k __t0lCH5)
+    (join step (0 1) 2 __t2jdr6 __t0lCH5)
+    (join mk_ans (0 1) 0 __t6KNu11 __v0)
+    (let __t4XhT10 (_0002b op __tconst70tI9))
+    (join-old mk (0 1) 2 (0 1) __t6KNu11 __t4XhT10))
+   (head
+    (emit-temp temp8P5b111 __t2jdr6 __v0)
+    (mkstruct Done (1 0) __t3NKT4 __v0))
+   "dem_head_guarded.slog:36"
+   #f)
+  (crule
+   (pre
+    (let __tconst0rYx8 const6b86b273ff34fce19d6b804e)
+    (let __tconst70tI9 const99ee50221221864d50c60bae))
+   (scan Ap __t0lCH5 op k)
+   (body
+    (exists $sup5130x35x0x0x1 (2 3 0 1) 2 k op)
+    (exists okq_ans (1 0) 1 __tconst0rYx8)
+    (exists step (1 0) 1 __t0lCH5)
+    (exists okq (1 0) 1 op)
+    (join $sup5130x35x0x0x0 (2 1 0) 2 op k __t2jdr6)
+    (exists step (0 1) 2 __t2jdr6 __t0lCH5)
+    (join $sup5130x35x0x0x1 (2 3 0 1) 3 k op __t2jdr6 __t6bDk7)
+    (join okq_ans (1 0) 2 __tconst0rYx8 __t6bDk7)
+    (join-old step (0 1) 2 (0 1) __t2jdr6 __t0lCH5)
+    (join-old okq (0 1) 2 (0 1) __t6bDk7 op)
+    (join mk_ans (0 1) 0 __t6KNu11 __v0)
+    (let __t4XhT10 (_0002b op __tconst70tI9))
+    (join-old mk (0 1) 2 (0 1) __t6KNu11 __t4XhT10))
+   (head
+    (emit-temp temp8P5b111 __t2jdr6 __v0)
+    (mkstruct Done (1 0) __t3NKT4 __v0))
+   "dem_head_guarded.slog:36"
+   #f)
+  (crule
+   (pre
+    (let __tconst0rYx8 const6b86b273ff34fce19d6b804e)
+    (let __tconst70tI9 const99ee50221221864d50c60bae))
+   (scan step __t2jdr6 __t0lCH5)
+   (body
+    (exists $sup5130x35x0x0x1 (0 1 2 3) 1 __t2jdr6)
+    (exists $sup5130x35x0x0x0 (0 1 2) 1 __t2jdr6)
+    (join okq_ans (1 0) 1 __tconst0rYx8 __t6bDk7)
+    (join $sup5130x35x0x0x1 (0 1 2 3) 2 __t2jdr6 __t6bDk7 k op)
+    (join $sup5130x35x0x0x0 (2 1 0) 3 op k __t2jdr6)
+    (join Ap (1 2 0) 3 op k __t0lCH5)
+    (join-old okq (0 1) 2 (0 1) __t6bDk7 op)
+    (join mk_ans (0 1) 0 __t6KNu11 __v0)
+    (let __t4XhT10 (_0002b op __tconst70tI9))
+    (join-old mk (0 1) 2 (0 1) __t6KNu11 __t4XhT10))
+   (head
+    (emit-temp temp8P5b111 __t2jdr6 __v0)
+    (mkstruct Done (1 0) __t3NKT4 __v0))
+   "dem_head_guarded.slog:36"
+   #f)
+  (crule
+   (pre)
+   (scan
+    malformed_deduction
+    __erre3buI75
+    __errf3fHJ76
+    __errf3wKr77
+    __errf4GHa78
+    __errf1xXW79)
+   (body)
+   (head (emit error (0) __erre3buI75))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp8P5b111 __t2jdr6 __v0)
+   (body (join Done (1 0) 1 __v0 __t3NKT4))
+   (head (emit step_ans (0 1) __t2jdr6 __t3NKT4))
+   "dem_head_guarded.slog:36"
+   #f)
+  (crule
+   (pre (let __tconst1G9T13 const6b86b273ff34fce19d6b804e))
+   (scan $sup5130x35x0x0x0 __d0 k op)
+   (body
+    (exists okq (1 0) 1 op)
+    (join-old okq_ans (1 0) 1 (1 0) __tconst1G9T13 __t6NE412)
+    (join-old okq (0 1) 2 (0 1) __t6NE412 op))
+   (head (emit $sup5130x35x0x0x1 (0 1 2 3) __d0 __t6NE412 k op))
+   "dem_head_guarded.slog:36"
+   #f)
+  (crule
+   (pre (let __tconst1G9T13 const6b86b273ff34fce19d6b804e))
+   (scan okq __t6NE412 op)
+   (body
+    (join okq_ans (1 0) 2 __tconst1G9T13 __t6NE412)
+    (join $sup5130x35x0x0x0 (2 1 0) 1 op k __d0))
+   (head (emit $sup5130x35x0x0x1 (0 1 2 3) __d0 __t6NE412 k op))
+   "dem_head_guarded.slog:36"
+   #f)
+  (crule
+   (pre)
+   (scan mk __t7Y3M14 v)
+   (body)
+   (head (emit mk_ans (0 1) __t7Y3M14 v) (emit store (0) v))
+   "dem_head_guarded.slog:15"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre5DUM107 __errf97hn108 __errf7uYp109)
+   (body)
+   (head (emit error (0) __erre5DUM107))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan reach s)
+   (body)
+   (head (mkstruct step (1 0) __7xP838 s))
+   "dem_head_guarded.slog:27"
+   #f)
+  (crule
+   (pre
+    (let __trid7IzR35 constb6579dd3e29d8cc73668c256)
+    (let __trel34l336 const51f9fd68d7e9c802b42378d7)
+    (let __tcol3S7Q37 const5feceb66ffc86f38d952786c))
+   (scan $sup5130x35x0x0x0 __d0 k op)
+   (body)
+   (head
+    (tycheck
+     op
+     (accept int)
+     __trid7IzR35
+     __trel34l336
+     __tcol3S7Q37
+     (1 2 3 4 0))
+    (mkstruct okq (1 0) __9EgW34 op))
+   "dem_head_guarded.slog:36"
+   #f)))

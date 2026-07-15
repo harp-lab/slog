@@ -1,0 +1,37 @@
+(cprog
+ #<set: edge>
+ #hash((1 . const6b86b273ff34fce19d6b804e)
+       (2 . constd4735e3a265e16eee03f5971)
+       (3 . const4e07408562bedb8b60ce05c1)
+       (4 . const4b227777d4dd1fc61c6f884f)
+       (5 . constef2d127de37b942baad06145))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation path 2 (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (relation edge 2 (0 1))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre
+    (let __tconst7RYx2 const6b86b273ff34fce19d6b804e)
+    (let __tconst398e4 constd4735e3a265e16eee03f5971)
+    (let __tconst2fYA6 const4e07408562bedb8b60ce05c1)
+    (let __tconst2kIm7 constef2d127de37b942baad06145)
+    (let __tconst7J5a8 const4b227777d4dd1fc61c6f884f))
+   (once)
+   (body)
+   (head
+    (emit edge (0 1) __tconst7RYx2 __tconst398e4)
+    (emit edge (0 1) __tconst398e4 __tconst2fYA6)
+    (emit edge (0 1) __tconst2fYA6 __tconst7J5a8)
+    (emit edge (0 1) __tconst7J5a8 __tconst2kIm7))
+   "stat_selfjoin.slog:23"
+   #f)))

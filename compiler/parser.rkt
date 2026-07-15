@@ -11,6 +11,7 @@
 
 (require "lexer.rkt")
 (require "ir-shared.rkt")
+(require "names.rkt")
 
 ;; Recompute-on-load source plumbing (docs/db-compression.md P1.1).
 ;;
@@ -248,6 +249,16 @@
       (let ([toks++ (advance toks+)])
         (match-define (cons e1 toks+++) (parse-w-rem-operators toks++ ops))
         (match e1
+          ;; Qualified name-path (docs/modules.md §8.1, N0): id.id chains
+          ;; collapse to ONE lowered symbol at the site the dot would
+          ;; otherwise build its (dormant) binary-operator tree.  Bare ids
+          ;; parse to bare symbols (parse-atom) and right-assoc recursion
+          ;; has already collapsed e1, so both operands being symbols IS
+          ;; the id(.id)+ shape; anything else (literals, parens) keeps
+          ;; the operator tree.  compiler/names.rkt owns the encoding.
+          [(? symbol?)
+           #:when (and (equal? tokstr ".") (symbol? e0))
+           (cons (qname-join e0 e1) toks+++)]
           [`(syn ,_ ,(? (lambda (x) (equal? x tokstrsym))) ,e+s ...)
            (cons (emit-expr `(,tokstrsym ,e0 ,@e+s) toks toks+++) toks+++)]
           [_ (cons (emit-expr `(,tokstrsym ,e0 ,e1) toks toks+++) toks+++)]))

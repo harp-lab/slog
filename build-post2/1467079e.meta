@@ -1,0 +1,1 @@
+(stratum-meta (hash "1467079e") (level 0) (dynamic-rels half) (accel-rels) (heads half) (reads) (acyclic #t) (rules (rule 308917156 "dem_multihead.slog:10" "(rule --> (= _4JTR6 (half _tconst9Whb2)) (= _tconst9Whb2 (const 12)) (= _7h5f7 (half _tconst6SvA1)) (= _tconst6SvA1 (const 8)))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

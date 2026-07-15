@@ -1,0 +1,1 @@
+(stratum-meta (hash "cf083732") (level 1) (dynamic-rels inc) (accel-rels) (heads inc) (reads (start pos)) (acyclic #t) (rules (rule 1855292301 "dem_chain.slog:12" "(rule (start n) --> (= _7vY87 (inc n)))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

@@ -1,0 +1,1 @@
+(stratum-meta (hash "fa57825a") (level 3) (dynamic-rels oks) (accel-rels) (heads oks) (reads (_enum pos) (box pos) (out pos)) (acyclic #t) (rules (rule 702256614 "enum_struct_field2.slog:16" "(rule (= _t3ggr1 (_enum _tconst7ieb8)) (= _tconst7ieb8 (const \"ok\")) (out n _t4g332) (= _t4g332 (box _t3ggr1)) --> (oks n))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

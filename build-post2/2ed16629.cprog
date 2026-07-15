@@ -1,0 +1,41 @@
+(cprog
+ #<set: pr temp34LV6 t1 t4 t2 t3>
+ #hash()
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp34LV6 2)
+  (relation t4 3 (0 1 2))
+  (relation t3 1 (0))
+  (relation t2 2 (0 1))
+  (relation t1 1 (0))
+  (relation src 2 (0 1))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct pr 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan src X Y)
+   (body)
+   (head
+    (emit-temp temp34LV6 X Y)
+    (emit t4 (0 1 2) X Y X)
+    (mkstruct pr (1 2 0) __t9bZf1 X Y)
+    (emit t2 (0 1) Y X)
+    (emit t1 (0) X))
+   "shape_multihead.slog:23"
+   #f)
+  (crule
+   (pre)
+   (scan temp34LV6 X Y)
+   (body (join pr (1 2 0) 2 X Y __t9bZf1))
+   (head (emit t3 (0) __t9bZf1))
+   "shape_multihead.slog:23"
+   #f)))

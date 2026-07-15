@@ -1,0 +1,1 @@
+(stratum-meta (hash "0f7e0ce9") (level 0) (dynamic-rels seed) (accel-rels) (heads seed) (reads) (acyclic #t) (rules (rule 1508250340 "str_utf8.slog:14" "(rule --> (seed _tconst7mFM39) (= _tconst7mFM39 (const \"héllo wörld €42 🎉\")))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

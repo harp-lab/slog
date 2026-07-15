@@ -1,0 +1,1 @@
+(stratum-meta (hash "9d0d5d21") (level 1) (dynamic-rels classify) (accel-rels) (heads classify) (reads (probe pos)) (acyclic #t) (rules (rule 1701343301 "dem_or.slog:16" "(rule (probe n) --> (= _0KDs11 (classify n)))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

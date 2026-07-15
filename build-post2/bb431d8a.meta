@@ -1,0 +1,1 @@
+(stratum-meta (hash "bb431d8a") (level 1) (dynamic-rels cyc4) (accel-rels) (heads cyc4) (reads (edge pos)) (acyclic #t) (rules (rule 569301817 "sj_cyc4.slog:17" "(rule (edge D A) (edge C D) (edge B C) (edge A B) --> (cyc4 A B C D))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

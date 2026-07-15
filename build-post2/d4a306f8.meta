@@ -1,0 +1,1 @@
+(stratum-meta (hash "d4a306f8") (level 4) (dynamic-rels $seq_at $seq_atr sz) (accel-rels) (heads sz) (reads (canon pos) (st_size pos) (st_size_ans pos)) (acyclic #t) (rules (rule 494458834 "st_basic.slog:22" "(rule (canon s) (st_size_ans _t6OqF426 n) (= _t6OqF426 (st_size s)) --> (sz n))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

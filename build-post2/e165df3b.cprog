@@ -1,0 +1,242 @@
+(cprog
+ #<set:
+  absent_ok
+  ref_ok
+  rev_ok
+  malformed_deduction
+  member_ok
+  $seq_at
+  error
+  len_ok>
+ #hash((0 . const5feceb66ffc86f38d952786c)
+       ("absent_ok" . constfab6dbe6378a4772063f8745)
+       ("member_ok" . const9c24b3c5efa47d78a06173fd)
+       ("ref_ok" . constc0045d3096b5fb58ddb708e4)
+       ("seq_oracle.slog:34" . constc0b63bd612a3529319444133)
+       ("seq_oracle.slog:39" . const434dac19a4d598622b9c67d7)
+       ("seq_oracle.slog:44" . constcff65e3a987ac3b552474055))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (relation take_ok 2 (0 1))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation seed 2 (0 1))
+  (relation rev_ok 1 (0))
+  (relation ref_ok 2 (0 1))
+  (relation probe 1 (0))
+  (relation ol_tolst_ans 2 (0 1))
+  (struct ol_tolst 2 (1 0) (0 1))
+  (relation ol_take_ans 2 (0 1))
+  (struct ol_take 3 (1 2 0) (0 1 2))
+  (relation ol_rev_ans 2 (0 1))
+  (relation ol_rev_acc_ans 2 (0 1))
+  (struct ol_rev_acc 3 (1 2 0) (0 1 2))
+  (struct ol_rev 2 (1 0) (0 1))
+  (relation ol_ref_ans 2 (1 0))
+  (struct ol_ref 3 (2 1 0) (0 2 1))
+  (relation ol_member_ans 2 (1 0))
+  (struct ol_member 3 (2 1 0) (0 2 1))
+  (relation ol_len_ans 2 (0 1))
+  (struct ol_len 2 (1 0) (0 1))
+  (relation ol_fromlst_ans 2 (0 1) (1 0))
+  (struct ol_fromlst 2 (1 0) (0 1))
+  (relation ol_append_ans 2 (0 1))
+  (struct ol_append 3 (1 2 0) (0 1 2))
+  (relation ol_absent_ans 2 (1 0))
+  (struct ol_absent 3 (2 1 0) (0 2 1))
+  (relation needle 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (relation member_ok 2 (0 1))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation lst_take_ans 2 (0 1))
+  (struct lst_take 3 (1 2 0) (0 1 2))
+  (relation lst_rev_ans 2 (0 1))
+  (relation lst_rev_acc_ans 2 (0 1))
+  (struct lst_rev_acc 3 (1 2 0) (0 1 2))
+  (struct lst_rev 2 (1 0) (0 1))
+  (relation lst_ref_ans 2 (0 1))
+  (struct lst_ref 3 (2 1 0) (0 1 2))
+  (relation lst_member_ans 2 (0 1))
+  (struct lst_member 3 (2 1 0) (0 1 2))
+  (relation lst_len_ans 2 (0 1))
+  (struct lst_len 2 (1 0) (0 1))
+  (relation lst_append_ans 2 (0 1))
+  (struct lst_append 3 (1 2 0) (0 1 2))
+  (relation lst_absent_ans 2 (0 1))
+  (struct lst_absent 3 (2 1 0) (0 1 2))
+  (relation len_ok 2 (0 1))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct ccons 3 (1 2 0) (0 1 2))
+  (relation append_ok 2 (0 1))
+  (relation absent_ok 2 (0 1))
+  (struct _enum 2 (1 0) (0 1))
+  (relation $sup76318x53x0x0x0 3 (0 1 2))
+  (relation $sup76318x43x0x0x0 3 (2 0 1))
+  (relation $sup76318x38x0x0x0 3 (2 0 1))
+  (relation $sup76318x33x0x0x0 3 (1 0 2))
+  (relation $sup76318x27x0x0x0 4 (0 1 2 3))
+  (relation $sup59985x48x0x0x0 4 (0 1 2 3))
+  (relation $sup59985x43x0x0x0 4 (0 1 2 3))
+  (relation $sup59985x37x0x0x0 3 (0 1 2))
+  (relation $sup59985x32x0x0x0 4 (0 1 2 3))
+  (relation $sup59985x27x0x0x0 4 (0 1 2 3))
+  (relation $sup59985x22x0x0x0 4 (0 1 2 3))
+  (relation $sup59985x17x0x0x0 3 (0 1 2))
+  (relation $sup59985x12x0x0x0 4 (0 1 2 3))
+  (relation $seq_at 3 (0 1 2))
+  (seqindex lst_absent (1))
+  (seqindex lst_append (1 2))
+  (seqindex lst_append_ans (1))
+  (seqindex lst_len (1))
+  (seqindex lst_member (1))
+  (seqindex lst_ref (1))
+  (seqindex lst_rev (1))
+  (seqindex lst_rev_acc (1 2))
+  (seqindex lst_rev_acc_ans (1))
+  (seqindex lst_rev_ans (1))
+  (seqindex lst_take (1))
+  (seqindex lst_take_ans (1))
+  (seqindex ol_fromlst (1))
+  (seqindex ol_tolst_ans (1))
+  (seqindex seed (1)))
+ ((crule
+   (pre
+    (let __trid4f6q304 constc0b63bd612a3529319444133)
+    (let __trel8Rbe305 constc0045d3096b5fb58ddb708e4)
+    (let __tcol9diz306 const5feceb66ffc86f38d952786c))
+   (scan probe k)
+   (body
+    (exists lst_ref (2 1 0) 1 k)
+    (exists ol_ref (2 1 0) 1 k)
+    (join $sup76318x33x0x0x0 (1 0 2) 1 k i l)
+    (join seed (0 1) 2 i l)
+    (exists ol_fromlst (1 0) 1 l)
+    (join lst_ref (2 1 0) 2 k l __t4S3Y237)
+    (join lst_ref_ans (0 1) 1 __t4S3Y237 v)
+    (join ol_ref_ans (1 0) 1 v __t9seB239)
+    (join ol_ref (0 2 1) 2 __t9seB239 k c)
+    (join ol_fromlst_ans (1 0) 1 c __t06bo238)
+    (join ol_fromlst (0 1) 2 __t06bo238 l))
+   (head
+    (tycheck
+     i
+     (accept int)
+     __trid4f6q304
+     __trel8Rbe305
+     __tcol9diz306
+     (1 2 3 4 0))
+    (emit ref_ok (0 1) i k))
+   "seq_oracle.slog:34"
+   #f)
+  (crule
+   (pre)
+   (scan seed i l)
+   (body
+    (exists lst_len (1 0) 1 l)
+    (exists ol_fromlst (1 0) 1 l)
+    (join ol_fromlst_ans (0 1) 0 __t2fHx60 c)
+    (exists ol_fromlst (0 1) 2 __t2fHx60 l)
+    (exists ol_len (1 0) 1 c)
+    (join lst_len (1 0) 1 l __t1DUd59)
+    (join ol_fromlst (0 1) 2 __t2fHx60 l)
+    (exists lst_len_ans (0 1) 1 __t1DUd59)
+    (join ol_len (1 0) 1 c __t1i2561)
+    (join3
+     n
+     (full lst_len_ans (0 1) 1 () __t1DUd59 n)
+     (full ol_len_ans (0 1) 1 () __t1i2561 n)))
+   (head (emit len_ok (0 1) i n))
+   "seq_oracle.slog:49"
+   #f)
+  (crule
+   (pre
+    (let __trid4n5R330 const434dac19a4d598622b9c67d7)
+    (let __trel5Zeg331 const9c24b3c5efa47d78a06173fd)
+    (let __tcol1zES332 const5feceb66ffc86f38d952786c))
+   (scan needle y)
+   (body
+    (exists lst_member (2 1 0) 1 y)
+    (exists ol_member (2 1 0) 1 y)
+    (join $sup76318x38x0x0x0 (2 0 1) 1 y i l)
+    (join seed (0 1) 2 i l)
+    (exists ol_fromlst (1 0) 1 l)
+    (join lst_member (2 1 0) 2 y l __t4Rmw5)
+    (join lst_member_ans (0 1) 1 __t4Rmw5 r)
+    (join ol_member_ans (1 0) 1 r __t4vH27)
+    (join ol_member (0 2 1) 2 __t4vH27 y c)
+    (join ol_fromlst_ans (1 0) 1 c __t19LN6)
+    (join ol_fromlst (0 1) 2 __t19LN6 l))
+   (head
+    (tycheck
+     i
+     (accept int)
+     __trid4n5R330
+     __trel5Zeg331
+     __tcol1zES332
+     (1 2 3 4 0))
+    (emit member_ok (0 1) i y))
+   "seq_oracle.slog:39"
+   #f)
+  (crule
+   (pre
+    (let __trid0Ya4347 constcff65e3a987ac3b552474055)
+    (let __trel4erq348 constfab6dbe6378a4772063f8745)
+    (let __tcol0fzn349 const5feceb66ffc86f38d952786c))
+   (scan needle y)
+   (body
+    (exists lst_absent (2 1 0) 1 y)
+    (exists ol_absent (2 1 0) 1 y)
+    (join $sup76318x43x0x0x0 (2 0 1) 1 y i l)
+    (join seed (0 1) 2 i l)
+    (exists ol_fromlst (1 0) 1 l)
+    (join lst_absent (2 1 0) 2 y l __t9nDA72)
+    (join lst_absent_ans (0 1) 1 __t9nDA72 r)
+    (join ol_absent_ans (1 0) 1 r __t997o74)
+    (join ol_absent (0 2 1) 2 __t997o74 y c)
+    (join ol_fromlst_ans (1 0) 1 c __t2THJ73)
+    (join ol_fromlst (0 1) 2 __t2THJ73 l))
+   (head
+    (tycheck
+     i
+     (accept int)
+     __trid0Ya4347
+     __trel4erq348
+     __tcol0fzn349
+     (1 2 3 4 0))
+    (emit absent_ok (0 1) i y))
+   "seq_oracle.slog:44"
+   #f)
+  (crule
+   (pre)
+   (scan seed i l)
+   (body
+    (exists ol_fromlst (1 0) 1 l)
+    (join lst_rev (1 0) 1 l __t6gX934)
+    (join lst_rev_ans (0 1) 1 __t6gX934 r)
+    (exists ol_fromlst (1 0) 1 r)
+    (join ol_fromlst (1 0) 1 l __t6Xr235)
+    (join ol_fromlst_ans (0 1) 1 __t6Xr235 c)
+    (join ol_rev (1 0) 1 c __t4YW936)
+    (join ol_rev_ans (0 1) 1 __t4YW936 cr)
+    (join ol_fromlst_ans (1 0) 1 cr __t5IQL37)
+    (join ol_fromlst (0 1) 2 __t5IQL37 r))
+   (head (emit rev_ok (0) i))
+   "seq_oracle.slog:59"
+   #f)
+  (crule
+   (pre)
+   (scan
+    malformed_deduction
+    __erre5gVV935
+    __errf5dOS936
+    __errf0Anc937
+    __errf98gq938
+    __errf1318939)
+   (body)
+   (head (emit error (0) __erre5gVV935))
+   "<internal>:1"
+   #f)))

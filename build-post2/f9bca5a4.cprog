@@ -1,0 +1,113 @@
+(cprog
+ #<set:
+  int_overflow
+  type_mismatch
+  depth
+  toint_range
+  nan_result
+  modulo_by_zero
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash()
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation reached 1 (0))
+  (relation node 1 (0))
+  (lattice ndset 2 (set str) #f (0 1))
+  (relation nd 2 (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (lattice loopsof 2 (set str) #f (0 1))
+  (relation loop 2 (0 1))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation idom 2 (0 1))
+  (relation error 1 (0))
+  (relation entry 1 (0))
+  (relation edge 2 (0 1))
+  (lattice domset 2 (set str) #f (0 1))
+  (relation dom 2 (0 1))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation depth 2 (0 1))
+  (relation backedge 2 (0 1))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan toint_range __erre3hRD407 __errf3CND408 __errf26VV409)
+   (body)
+   (head (emit error (0) __erre3hRD407))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre1y2Y403 __errf5HD6404 __errf0lyJ405 __errf5RH9406)
+   (body)
+   (head (emit error (0) __erre1y2Y403))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre6je4393 __errf7gfp394 __errf0LyV395)
+   (body)
+   (head (emit error (0) __erre6je4393))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre0NOS396 __errf7o4b397 __errf9Yqc398)
+   (body)
+   (head (emit error (0) __erre0NOS396))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan loopsof n s)
+   (body (let __t22gd6 (csize s)))
+   (head (emit depth (0 1) n __t22gd6))
+   "domtree.slog:100"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre12Zn415
+    __errf6Ipu416
+    __errf31q4417
+    __errf07ts418
+    __errf83XD419)
+   (body)
+   (head (emit error (0) __erre12Zn415))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre4WOt399 __errf2mpR400 __errf0Ngb401 __errf0D5E402)
+   (body)
+   (head (emit error (0) __erre4WOt399))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre7Cpx410
+    __errf6Pwf411
+    __errf6ykI412
+    __errf9Wxg413
+    __errf4EiP414)
+   (body)
+   (head (emit error (0) __erre7Cpx410))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre2Sad420 __errf6LSz421 __errf3RdM422)
+   (body)
+   (head (emit error (0) __erre2Sad420))
+   "<internal>:1"
+   #f)))

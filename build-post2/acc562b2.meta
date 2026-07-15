@@ -1,0 +1,1 @@
+(stratum-meta (hash "acc562b2") (level 0) (dynamic-rels d) (accel-rels) (heads d) (reads) (acyclic #t) (rules (rule 988392384 "err_react.slog:6" "(rule --> (d _tconst9YGr4) (= _tconst9YGr4 (const 5)) (d _tconst8b5u3) (= _tconst8b5u3 (const 0)))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

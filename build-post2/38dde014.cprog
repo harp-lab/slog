@@ -1,0 +1,121 @@
+(cprog
+ #<set:
+  int_overflow
+  type_mismatch
+  toint_range
+  nan_result
+  backedge
+  modulo_by_zero
+  domset
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash()
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation reached 1 (0))
+  (relation node 1 (0))
+  (lattice ndset 2 (set str) #f (0 1))
+  (relation nd 2 (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (lattice loopsof 2 (set str) #f (0 1))
+  (relation loop 2 (0 1))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation idom 2 (0 1))
+  (relation error 1 (0))
+  (relation entry 1 (0))
+  (relation edge 2 (0 1))
+  (lattice domset 2 (set str) #f (0 1))
+  (relation dom 2 (0 1))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation depth 2 (0 1))
+  (relation backedge 2 (0 1))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre428T224
+    __errf3OxW225
+    __errf9VkP226
+    __errf4M2F227
+    __errf0tq6228)
+   (body)
+   (head (emit error (0) __erre428T224))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre3iQf216 __errf6C6V217 __errf1ncL218)
+   (body)
+   (head (emit error (0) __erre3iQf216))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre1dWt202 __errf7HSF203 __errf05HK204)
+   (body)
+   (head (emit error (0) __erre1dWt202))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre2Xox208 __errf3dsO209 __errf3hmy210 __errf2Bwt211)
+   (body)
+   (head (emit error (0) __erre2Xox208))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan dom h a)
+   (body (join edge (0 1) 2 a h))
+   (head (emit backedge (0 1) a h))
+   "domtree.slog:86"
+   #f)
+  (crule
+   (pre (let __t6A9d17 (cmap)))
+   (scan dom d n)
+   (body (let __t5vsi18 (cins __t6A9d17 d)))
+   (head (emit-lat domset n __t5vsi18))
+   "domtree.slog:68"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre7ctU205 __errf4B2r206 __errf5Afi207)
+   (body)
+   (head (emit error (0) __erre7ctU205))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre75om219
+    __errf75AE220
+    __errf5p9B221
+    __errf5xj2222
+    __errf4PEv223)
+   (body)
+   (head (emit error (0) __erre75om219))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre8Tca212 __errf8aDc213 __errf5B7v214 __errf6yrc215)
+   (body)
+   (head (emit error (0) __erre8Tca212))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre9mSD229 __errf60Ny230 __errf1eLm231)
+   (body)
+   (head (emit error (0) __erre9mSD229))
+   "<internal>:1"
+   #f)))

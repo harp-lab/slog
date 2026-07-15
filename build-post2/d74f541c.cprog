@@ -1,0 +1,46 @@
+(cprog
+ #<set: r>
+ #hash((1 . const6b86b273ff34fce19d6b804e)
+       (2 . constd4735e3a265e16eee03f5971)
+       (3 . const4e07408562bedb8b60ce05c1)
+       (4 . const4b227777d4dd1fc61c6f884f))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation r 2 (0 1) (delta 0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan r a b)
+   (body (join r (0 1) 0 c d))
+   (head (emit r (0 1) a d))
+   "stat_selfcart.slog:26"
+   #f)
+  (crule
+   (pre
+    (let __tconst5Ahr4 const4e07408562bedb8b60ce05c1)
+    (let __tconst6uEH3 const4b227777d4dd1fc61c6f884f)
+    (let __tconst8qQk2 const6b86b273ff34fce19d6b804e)
+    (let __tconst3hXj1 constd4735e3a265e16eee03f5971))
+   (once)
+   (body)
+   (head
+    (emit r (0 1) __tconst5Ahr4 __tconst6uEH3)
+    (emit r (0 1) __tconst8qQk2 __tconst3hXj1))
+   "stat_selfcart.slog:25"
+   #f)
+  (crule
+   (pre)
+   (scan r c d)
+   (body (join-old r (0 1) 0 (0 1) a b))
+   (head (emit r (0 1) a d))
+   "stat_selfcart.slog:26"
+   #f)))

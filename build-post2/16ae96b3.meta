@@ -1,0 +1,1 @@
+(stratum-meta (hash "16ae96b3") (level 1) (dynamic-rels rec recs tag) (accel-rels) (heads rec recs tag) (reads (in pos)) (acyclic #t) (rules (rule 1309932073 "sdeep_mixed.slog:18" "(rule (in N S F) --> (recs _t0DTo8) (= _t0DTo8 (rec N _t0IyN7 S F N S)) (= _t0IyN7 (tag S F)))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

@@ -1,0 +1,30 @@
+(cprog
+ #<set: v>
+ #hash((2 . constd4735e3a265e16eee03f5971)
+       (2.5 . constb8736b999909049671d0ea07))
+ ((relation v 1 (0))
+  (struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (relation sums 3 (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation small 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (relation mx2 3 (0 1 2))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation ltv 2 (0 1))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre
+    (let __tconst3TTM2 constb8736b999909049671d0ea07)
+    (let __tconst7whR1 constd4735e3a265e16eee03f5971))
+   (once)
+   (body)
+   (head (emit v (0) __tconst3TTM2) (emit v (0) __tconst7whR1))
+   "prim2_mixed.slog:11"
+   #f)))

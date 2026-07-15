@@ -1,0 +1,724 @@
+(cprog
+ #<set:
+  $sup15869x25x0x0x0
+  $sup15869x25x0x0x1
+  store
+  eval
+  eval_ans
+  error
+  $sup15869x33x0x0x0
+  malformed_deduction>
+ #hash((0 . const5feceb66ffc86f38d952786c)
+       (1 . const6b86b273ff34fce19d6b804e)
+       ("0cfa-demand.slog:20" . const895fb44435658e0cef51ef58)
+       ("0cfa-demand.slog:26" . constc40db22dfb3712d9bcc7a93e)
+       ("0cfa-demand.slog:34" . const1cd2976e4f4400f31114fe53)
+       ("eval" . const4a59dbb9cb3129dfcc75170b)
+       ("eval_ans" . constafcf65f310629738af953774))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (relation store 2 (0 1))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation result 1 (0))
+  (struct ref 2 (1 0) (0 1))
+  (relation program 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct lambda 3 (2 1 0) (0 1 2))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation eval_ans 2 (0 1) (1 0) (delta 0 1))
+  (struct eval 2 (1 0) (0 1) (delta 0 1) (delta 1 0))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct app 3 (1 2 0) (0 1 2) (2 0 1))
+  (struct _enum 2 (1 0) (0 1))
+  (relation $sup15869x33x0x0x0 2 (0 1) (1 0) (delta 0 1) (delta 1 0))
+  (relation
+   $sup15869x25x0x0x1
+   8
+   (0 3 5 1 2 4 6 7)
+   (1 5 0 2 3 4 6 7)
+   (2 3 6 0 1 4 5 7)
+   (2 6 0 1 3 4 5 7)
+   (4 7 1 0 2 3 5 6)
+   (delta 0 3 5 1 2 4 6 7)
+   (delta 2 3 6 0 1 4 5 7)
+   (delta 4 7 1 0 2 3 5 6))
+  (relation
+   $sup15869x25x0x0x0
+   3
+   (0 1 2)
+   (1 0 2)
+   (2 0 1)
+   (delta 0 1 2)
+   (delta 2 0 1)))
+ ((crule
+   (pre)
+   (scan eval __38jS68 __t0QBk41)
+   (body (join app (0 1 2) 1 __t0QBk41 ef ea))
+   (head (emit $sup15869x33x0x0x0 (0 1) ea ef))
+   "0cfa-demand.slog:34"
+   #f)
+  (crule
+   (pre
+    (let __trid1G1W65 constc40db22dfb3712d9bcc7a93e)
+    (let __trel01t866 const4a59dbb9cb3129dfcc75170b)
+    (let __tcol2diU67 const5feceb66ffc86f38d952786c))
+   (scan $sup15869x25x0x0x0 __d0 ea ef)
+   (body)
+   (head
+    (tycheck
+     ea
+     (accept (struct app) (struct lambda) (struct ref))
+     __trid1G1W65
+     __trel01t866
+     __tcol2diU67
+     (1 2 3 4 0))
+    (mkstruct eval (1 0) __6ZI964 ea))
+   "0cfa-demand.slog:26"
+   #f)
+  (crule
+   (pre)
+   (scan eval_ans __t94No27 va)
+   (body
+    (exists $sup15869x25x0x0x1 (2 6 0 1 3 4 5 7) 2 __t94No27 va)
+    (join-old eval (0 1) 1 (0 1) __t94No27 ea)
+    (exists $sup15869x25x0x0x0 (1 0 2) 1 ea)
+    (exists app (2 0 1) 1 ea)
+    (join-old
+     $sup15869x25x0x0x1
+     (2 3 6 0 1 4 5 7)
+     3
+     (2 3 6 0 1 4 5 7)
+     __t94No27
+     ea
+     va
+     __t21aQ24
+     __t3z1j25
+     eb
+     ef
+     x)
+    (join-old $sup15869x25x0x0x0 (0 1 2) 3 (0 1 2) __t21aQ24 ea ef)
+    (join-old eval (0 1) 2 (0 1) __t3z1j25 ef)
+    (exists lambda (2 1 0) 2 eb x)
+    (exists eval_ans (0 1) 1 __t3z1j25)
+    (exists eval (1 0) 1 eb)
+    (join app (1 2 0) 2 ef ea __t53Ss23)
+    (join-old eval (0 1) 2 (0 1) __t21aQ24 __t53Ss23)
+    (join lambda (2 1 0) 2 eb x __t4NYz26)
+    (join eval_ans (0 1) 2 __t3z1j25 __t4NYz26)
+    (join-old eval (1 0) 1 (1 0) eb __t65yE28)
+    (join-old eval_ans (0 1) 1 (0 1) __t65yE28 v))
+   (head (emit eval_ans (0 1) __t21aQ24 v))
+   "0cfa-demand.slog:26"
+   #f)
+  (crule
+   (pre)
+   (scan eval_ans __t2MpD42 __t1L7f43)
+   (body
+    (join-old eval (0 1) 1 (0 1) __t2MpD42 ef)
+    (join $sup15869x25x0x0x0 (2 0 1) 1 ef __d0 ea)
+    (join-old eval (1 0) 1 (1 0) ea __t2CtC44)
+    (join-old eval_ans (0 1) 1 (0 1) __t2CtC44 va)
+    (join lambda (0 1 2) 1 __t1L7f43 x eb))
+   (head
+    (emit
+     $sup15869x25x0x0x1
+     (0 3 5 1 2 4 6 7)
+     __d0
+     ea
+     ef
+     __t2MpD42
+     __t2CtC44
+     eb
+     va
+     x))
+   "0cfa-demand.slog:26"
+   #f)
+  (crule
+   (pre)
+   (scan eval __t65yE28 eb)
+   (body
+    (exists lambda (2 1 0) 1 eb)
+    (exists $sup15869x25x0x0x1 (4 7 1 0 2 3 5 6) 1 eb)
+    (join eval_ans (0 1) 1 __t65yE28 v)
+    (join lambda (2 1 0) 1 eb x __t4NYz26)
+    (exists $sup15869x25x0x0x1 (4 7 1 0 2 3 5 6) 2 eb x)
+    (join eval_ans (1 0) 1 __t4NYz26 __t3z1j25)
+    (join
+     $sup15869x25x0x0x1
+     (4 7 1 0 2 3 5 6)
+     3
+     eb
+     x
+     __t3z1j25
+     __t21aQ24
+     __t94No27
+     ea
+     ef
+     va)
+    (join $sup15869x25x0x0x0 (0 1 2) 3 __t21aQ24 ea ef)
+    (join eval_ans (0 1) 2 __t94No27 va)
+    (join eval (0 1) 2 __t3z1j25 ef)
+    (join eval (0 1) 2 __t94No27 ea)
+    (join app (1 2 0) 2 ef ea __t53Ss23)
+    (join eval (0 1) 2 __t21aQ24 __t53Ss23))
+   (head (emit eval_ans (0 1) __t21aQ24 v))
+   "0cfa-demand.slog:26"
+   #f)
+  (crule
+   (pre)
+   (scan eval __t7NXF35 __t2Ncr34)
+   (body (join ref (0 1) 1 __t2Ncr34 x) (join store (0 1) 1 x v))
+   (head (emit eval_ans (0 1) __t7NXF35 v))
+   "0cfa-demand.slog:23"
+   #f)
+  (crule
+   (pre)
+   (scan $sup15869x25x0x0x0 __t21aQ24 ea ef)
+   (body
+    (exists $sup15869x25x0x0x1 (0 3 5 1 2 4 6 7) 3 __t21aQ24 ea ef)
+    (exists eval (1 0) 1 ef)
+    (exists eval (1 0) 1 ea)
+    (join app (1 2 0) 2 ef ea __t53Ss23)
+    (join-old eval (0 1) 2 (0 1) __t21aQ24 __t53Ss23)
+    (join-old
+     $sup15869x25x0x0x1
+     (0 3 5 1 2 4 6 7)
+     3
+     (0 3 5 1 2 4 6 7)
+     __t21aQ24
+     ea
+     ef
+     __t3z1j25
+     __t94No27
+     eb
+     va
+     x)
+    (join eval_ans (0 1) 2 __t94No27 va)
+    (join-old eval (0 1) 2 (0 1) __t3z1j25 ef)
+    (join-old eval (0 1) 2 (0 1) __t94No27 ea)
+    (exists eval_ans (0 1) 1 __t3z1j25)
+    (exists eval (1 0) 1 eb)
+    (join lambda (2 1 0) 2 eb x __t4NYz26)
+    (join eval_ans (0 1) 2 __t3z1j25 __t4NYz26)
+    (join-old eval (1 0) 1 (1 0) eb __t65yE28)
+    (join eval_ans (0 1) 1 __t65yE28 v))
+   (head (emit eval_ans (0 1) __t21aQ24 v))
+   "0cfa-demand.slog:26"
+   #f)
+  (crule
+   (pre)
+   (scan eval __t4UpS37 __t6eAN36)
+   (body (join app (0 1 2) 1 __t6eAN36 ef ea))
+   (head (emit $sup15869x25x0x0x0 (0 1 2) __t4UpS37 ea ef))
+   "0cfa-demand.slog:26"
+   #f)
+  (crule
+   (pre)
+   (scan eval __6Yjj70 __t5UcN30)
+   (body
+    (join app (0 1 2) 1 __t5UcN30 ef ea)
+    (join-old $sup15869x33x0x0x0 (0 1) 2 (0 1) ea ef)
+    (exists eval (1 0) 1 ea)
+    (join-old eval (1 0) 1 (1 0) ef __t1miS31)
+    (join-old eval_ans (0 1) 1 (0 1) __t1miS31 __t2kGk32)
+    (join-old eval (1 0) 1 (1 0) ea __t5Tar33)
+    (join-old eval_ans (0 1) 1 (0 1) __t5Tar33 va)
+    (join lambda (0 1 2) 1 __t2kGk32 x eb))
+   (head (emit store (0 1) x va))
+   "0cfa-demand.slog:34"
+   #f)
+  (crule
+   (pre)
+   (scan program e)
+   (body)
+   (head (mkstruct eval (1 0) __7yWq71 e))
+   "0cfa-demand.slog:36"
+   #f)
+  (crule
+   (pre)
+   (scan eval_ans __t2CtC44 va)
+   (body
+    (join-old eval (0 1) 1 (0 1) __t2CtC44 ea)
+    (join $sup15869x25x0x0x0 (1 0 2) 1 ea __d0 ef)
+    (join-old eval (1 0) 1 (1 0) ef __t2MpD42)
+    (join eval_ans (0 1) 1 __t2MpD42 __t1L7f43)
+    (join lambda (0 1 2) 1 __t1L7f43 x eb))
+   (head
+    (emit
+     $sup15869x25x0x0x1
+     (0 3 5 1 2 4 6 7)
+     __d0
+     ea
+     ef
+     __t2MpD42
+     __t2CtC44
+     eb
+     va
+     x))
+   "0cfa-demand.slog:26"
+   #f)
+  (crule
+   (pre)
+   (scan eval __t5Tar33 ea)
+   (body
+    (exists $sup15869x33x0x0x0 (0 1) 1 ea)
+    (exists app (2 0 1) 1 ea)
+    (join eval_ans (0 1) 1 __t5Tar33 va)
+    (join $sup15869x33x0x0x0 (0 1) 1 ea ef)
+    (exists eval (1 0) 1 ef)
+    (join app (1 2 0) 2 ef ea __t5UcN30)
+    (join eval (1 0) 1 __t5UcN30 __6Yjj70)
+    (join eval (1 0) 1 ef __t1miS31)
+    (join eval_ans (0 1) 1 __t1miS31 __t2kGk32)
+    (join lambda (0 1 2) 1 __t2kGk32 x eb))
+   (head (emit store (0 1) x va))
+   "0cfa-demand.slog:34"
+   #f)
+  (crule
+   (pre)
+   (scan eval_ans __t5Tar33 va)
+   (body
+    (join-old eval (0 1) 1 (0 1) __t5Tar33 ea)
+    (exists app (2 0 1) 1 ea)
+    (join-old $sup15869x33x0x0x0 (0 1) 1 (0 1) ea ef)
+    (exists eval (1 0) 1 ef)
+    (join app (1 2 0) 2 ef ea __t5UcN30)
+    (join eval (1 0) 1 __t5UcN30 __6Yjj70)
+    (join-old eval (1 0) 1 (1 0) ef __t1miS31)
+    (join eval_ans (0 1) 1 __t1miS31 __t2kGk32)
+    (join lambda (0 1 2) 1 __t2kGk32 x eb))
+   (head (emit store (0 1) x va))
+   "0cfa-demand.slog:34"
+   #f)
+  (crule
+   (pre)
+   (scan $sup15869x25x0x0x0 __d0 ea ef)
+   (body
+    (exists eval (1 0) 1 ea)
+    (join-old eval (1 0) 1 (1 0) ef __t2MpD42)
+    (join-old eval_ans (0 1) 1 (0 1) __t2MpD42 __t1L7f43)
+    (join-old eval (1 0) 1 (1 0) ea __t2CtC44)
+    (join-old eval_ans (0 1) 1 (0 1) __t2CtC44 va)
+    (join lambda (0 1 2) 1 __t1L7f43 x eb))
+   (head
+    (emit
+     $sup15869x25x0x0x1
+     (0 3 5 1 2 4 6 7)
+     __d0
+     ea
+     ef
+     __t2MpD42
+     __t2CtC44
+     eb
+     va
+     x))
+   "0cfa-demand.slog:26"
+   #f)
+  (crule
+   (pre)
+   (scan eval __t21aQ24 __t53Ss23)
+   (body
+    (exists $sup15869x25x0x0x1 (0 3 5 1 2 4 6 7) 1 __t21aQ24)
+    (join $sup15869x25x0x0x0 (0 1 2) 1 __t21aQ24 ea ef)
+    (join app (1 2 0) 3 ef ea __t53Ss23)
+    (exists eval (1 0) 1 ef)
+    (exists eval (1 0) 1 ea)
+    (join
+     $sup15869x25x0x0x1
+     (0 3 5 1 2 4 6 7)
+     3
+     __t21aQ24
+     ea
+     ef
+     __t3z1j25
+     __t94No27
+     eb
+     va
+     x)
+    (join eval_ans (0 1) 2 __t94No27 va)
+    (join-old eval (0 1) 2 (0 1) __t3z1j25 ef)
+    (join-old eval (0 1) 2 (0 1) __t94No27 ea)
+    (exists eval_ans (0 1) 1 __t3z1j25)
+    (exists eval (1 0) 1 eb)
+    (join lambda (2 1 0) 2 eb x __t4NYz26)
+    (join eval_ans (0 1) 2 __t3z1j25 __t4NYz26)
+    (join-old eval (1 0) 1 (1 0) eb __t65yE28)
+    (join eval_ans (0 1) 1 __t65yE28 v))
+   (head (emit eval_ans (0 1) __t21aQ24 v))
+   "0cfa-demand.slog:26"
+   #f)
+  (crule
+   (pre)
+   (scan
+    malformed_deduction
+    __erre1flm93
+    __errf8eTw94
+    __errf0sJh95
+    __errf5UdG96
+    __errf6QAe97)
+   (body)
+   (head (emit error (0) __erre1flm93))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan program e)
+   (body)
+   (head (mkstruct eval (1 0) __18Db69 e))
+   "0cfa-demand.slog:37"
+   #f)
+  (crule
+   (pre
+    (let __trid7kPt53 const895fb44435658e0cef51ef58)
+    (let __trel8C1l54 constafcf65f310629738af953774)
+    (let __tcol0bPF55 const6b86b273ff34fce19d6b804e))
+   (scan eval __t14SX40 __t1hJP39)
+   (body (join lambda (0 1 2) 1 __t1hJP39 x eb))
+   (head
+    (tycheck
+     __t1hJP39
+     (accept (struct lambda))
+     __trid7kPt53
+     __trel8C1l54
+     __tcol0bPF55
+     (1 2 3 4 0))
+    (emit eval_ans (0 1) __t14SX40 __t1hJP39))
+   "0cfa-demand.slog:20"
+   #f)
+  (crule
+   (pre)
+   (scan eval __t2MpD42 ef)
+   (body
+    (exists $sup15869x25x0x0x0 (2 0 1) 1 ef)
+    (join eval_ans (0 1) 1 __t2MpD42 __t1L7f43)
+    (join $sup15869x25x0x0x0 (2 0 1) 1 ef __d0 ea)
+    (join-old eval (1 0) 1 (1 0) ea __t2CtC44)
+    (join eval_ans (0 1) 1 __t2CtC44 va)
+    (join lambda (0 1 2) 1 __t1L7f43 x eb))
+   (head
+    (emit
+     $sup15869x25x0x0x1
+     (0 3 5 1 2 4 6 7)
+     __d0
+     ea
+     ef
+     __t2MpD42
+     __t2CtC44
+     eb
+     va
+     x))
+   "0cfa-demand.slog:26"
+   #f)
+  (crule
+   (pre)
+   (scan $sup15869x25x0x0x1 __t21aQ24 __t3z1j25 __t94No27 ea eb ef va x)
+   (body
+    (join $sup15869x25x0x0x0 (0 1 2) 3 __t21aQ24 ea ef)
+    (join eval_ans (0 1) 2 __t94No27 va)
+    (join-old eval (0 1) 2 (0 1) __t3z1j25 ef)
+    (join-old eval (0 1) 2 (0 1) __t94No27 ea)
+    (exists lambda (2 1 0) 2 eb x)
+    (exists eval_ans (0 1) 1 __t3z1j25)
+    (exists eval (1 0) 1 eb)
+    (join app (1 2 0) 2 ef ea __t53Ss23)
+    (join-old eval (0 1) 2 (0 1) __t21aQ24 __t53Ss23)
+    (join lambda (2 1 0) 2 eb x __t4NYz26)
+    (join eval_ans (0 1) 2 __t3z1j25 __t4NYz26)
+    (join-old eval (1 0) 1 (1 0) eb __t65yE28)
+    (join eval_ans (0 1) 1 __t65yE28 v))
+   (head (emit eval_ans (0 1) __t21aQ24 v))
+   "0cfa-demand.slog:26"
+   #f)
+  (crule
+   (pre)
+   (scan eval __t2CtC44 ea)
+   (body
+    (exists $sup15869x25x0x0x0 (1 0 2) 1 ea)
+    (join eval_ans (0 1) 1 __t2CtC44 va)
+    (join $sup15869x25x0x0x0 (1 0 2) 1 ea __d0 ef)
+    (join eval (1 0) 1 ef __t2MpD42)
+    (join eval_ans (0 1) 1 __t2MpD42 __t1L7f43)
+    (join lambda (0 1 2) 1 __t1L7f43 x eb))
+   (head
+    (emit
+     $sup15869x25x0x0x1
+     (0 3 5 1 2 4 6 7)
+     __d0
+     ea
+     ef
+     __t2MpD42
+     __t2CtC44
+     eb
+     va
+     x))
+   "0cfa-demand.slog:26"
+   #f)
+  (crule
+   (pre
+    (let __trid5a3R46 const1cd2976e4f4400f31114fe53)
+    (let __trel9eIn47 const4a59dbb9cb3129dfcc75170b)
+    (let __tcol792J48 const5feceb66ffc86f38d952786c))
+   (scan $sup15869x33x0x0x0 ea ef)
+   (body)
+   (head
+    (tycheck
+     ef
+     (accept (struct app) (struct lambda) (struct ref))
+     __trid5a3R46
+     __trel9eIn47
+     __tcol792J48
+     (1 2 3 4 0))
+    (mkstruct eval (1 0) __9hLe45 ef))
+   "0cfa-demand.slog:34"
+   #f)
+  (crule
+   (pre)
+   (scan eval_ans __t3z1j25 __t4NYz26)
+   (body
+    (exists $sup15869x25x0x0x1 (1 5 0 2 3 4 6 7) 1 __t3z1j25)
+    (join-old eval (0 1) 1 (0 1) __t3z1j25 ef)
+    (exists $sup15869x25x0x0x1 (1 5 0 2 3 4 6 7) 2 __t3z1j25 ef)
+    (exists app (1 2 0) 1 ef)
+    (join-old $sup15869x25x0x0x0 (2 0 1) 1 (2 0 1) ef __t21aQ24 ea)
+    (exists eval (1 0) 1 ea)
+    (exists app (1 2 0) 2 ef ea)
+    (join-old
+     $sup15869x25x0x0x1
+     (0 3 5 1 2 4 6 7)
+     4
+     (0 3 5 1 2 4 6 7)
+     __t21aQ24
+     ea
+     ef
+     __t3z1j25
+     __t94No27
+     eb
+     va
+     x)
+    (join lambda (2 1 0) 3 eb x __t4NYz26)
+    (join-old eval_ans (0 1) 2 (0 1) __t94No27 va)
+    (join-old eval (0 1) 2 (0 1) __t94No27 ea)
+    (exists eval (1 0) 1 eb)
+    (join app (1 2 0) 2 ef ea __t53Ss23)
+    (join-old eval (0 1) 2 (0 1) __t21aQ24 __t53Ss23)
+    (join-old eval (1 0) 1 (1 0) eb __t65yE28)
+    (join-old eval_ans (0 1) 1 (0 1) __t65yE28 v))
+   (head (emit eval_ans (0 1) __t21aQ24 v))
+   "0cfa-demand.slog:26"
+   #f)
+  (crule
+   (pre
+    (let __trid9N5A50 constc40db22dfb3712d9bcc7a93e)
+    (let __trel2s9g51 const4a59dbb9cb3129dfcc75170b)
+    (let __tcol81Vg52 const5feceb66ffc86f38d952786c))
+   (scan $sup15869x25x0x0x0 __d0 ea ef)
+   (body)
+   (head
+    (tycheck
+     ef
+     (accept (struct app) (struct lambda) (struct ref))
+     __trid9N5A50
+     __trel2s9g51
+     __tcol81Vg52
+     (1 2 3 4 0))
+    (mkstruct eval (1 0) __88Cr49 ef))
+   "0cfa-demand.slog:26"
+   #f)
+  (crule
+   (pre
+    (let __trid3cNF61 const1cd2976e4f4400f31114fe53)
+    (let __trel695h62 const4a59dbb9cb3129dfcc75170b)
+    (let __tcol3kHI63 const5feceb66ffc86f38d952786c))
+   (scan $sup15869x33x0x0x0 ea ef)
+   (body)
+   (head
+    (tycheck
+     ea
+     (accept (struct app) (struct lambda) (struct ref))
+     __trid3cNF61
+     __trel695h62
+     __tcol3kHI63
+     (1 2 3 4 0))
+    (mkstruct eval (1 0) __6Xew60 ea))
+   "0cfa-demand.slog:34"
+   #f)
+  (crule
+   (pre)
+   (scan eval_ans __t65yE28 v)
+   (body
+    (join-old eval (0 1) 1 (0 1) __t65yE28 eb)
+    (exists $sup15869x25x0x0x1 (4 7 1 0 2 3 5 6) 1 eb)
+    (join lambda (2 1 0) 1 eb x __t4NYz26)
+    (exists $sup15869x25x0x0x1 (4 7 1 0 2 3 5 6) 2 eb x)
+    (join eval_ans (1 0) 1 __t4NYz26 __t3z1j25)
+    (join-old
+     $sup15869x25x0x0x1
+     (4 7 1 0 2 3 5 6)
+     3
+     (4 7 1 0 2 3 5 6)
+     eb
+     x
+     __t3z1j25
+     __t21aQ24
+     __t94No27
+     ea
+     ef
+     va)
+    (join-old $sup15869x25x0x0x0 (0 1 2) 3 (0 1 2) __t21aQ24 ea ef)
+    (join eval_ans (0 1) 2 __t94No27 va)
+    (join-old eval (0 1) 2 (0 1) __t3z1j25 ef)
+    (join-old eval (0 1) 2 (0 1) __t94No27 ea)
+    (join app (1 2 0) 2 ef ea __t53Ss23)
+    (join-old eval (0 1) 2 (0 1) __t21aQ24 __t53Ss23))
+   (head (emit eval_ans (0 1) __t21aQ24 v))
+   "0cfa-demand.slog:26"
+   #f)
+  (crule
+   (pre)
+   (scan eval_ans __t1miS31 __t2kGk32)
+   (body
+    (join-old eval (0 1) 1 (0 1) __t1miS31 ef)
+    (exists app (1 2 0) 1 ef)
+    (join-old $sup15869x33x0x0x0 (1 0) 1 (1 0) ef ea)
+    (exists eval (1 0) 1 ea)
+    (join app (1 2 0) 2 ef ea __t5UcN30)
+    (join eval (1 0) 1 __t5UcN30 __6Yjj70)
+    (join-old eval (1 0) 1 (1 0) ea __t5Tar33)
+    (join-old eval_ans (0 1) 1 (0 1) __t5Tar33 va)
+    (join lambda (0 1 2) 1 __t2kGk32 x eb))
+   (head (emit store (0 1) x va))
+   "0cfa-demand.slog:34"
+   #f)
+  (crule
+   (pre)
+   (scan eval __t3z1j25 ef)
+   (body
+    (exists $sup15869x25x0x0x0 (2 0 1) 1 ef)
+    (exists $sup15869x25x0x0x1 (1 5 0 2 3 4 6 7) 2 __t3z1j25 ef)
+    (exists app (1 2 0) 1 ef)
+    (join eval_ans (0 1) 1 __t3z1j25 __t4NYz26)
+    (join $sup15869x25x0x0x0 (2 0 1) 1 ef __t21aQ24 ea)
+    (exists eval (1 0) 1 ea)
+    (exists app (1 2 0) 2 ef ea)
+    (join
+     $sup15869x25x0x0x1
+     (0 3 5 1 2 4 6 7)
+     4
+     __t21aQ24
+     ea
+     ef
+     __t3z1j25
+     __t94No27
+     eb
+     va
+     x)
+    (join lambda (2 1 0) 3 eb x __t4NYz26)
+    (join eval_ans (0 1) 2 __t94No27 va)
+    (join-old eval (0 1) 2 (0 1) __t94No27 ea)
+    (exists eval (1 0) 1 eb)
+    (join app (1 2 0) 2 ef ea __t53Ss23)
+    (join eval (0 1) 2 __t21aQ24 __t53Ss23)
+    (join-old eval (1 0) 1 (1 0) eb __t65yE28)
+    (join eval_ans (0 1) 1 __t65yE28 v))
+   (head (emit eval_ans (0 1) __t21aQ24 v))
+   "0cfa-demand.slog:26"
+   #f)
+  (crule
+   (pre
+    (let __trid2tkt57 constc40db22dfb3712d9bcc7a93e)
+    (let __trel6S3p58 const4a59dbb9cb3129dfcc75170b)
+    (let __tcol0QTn59 const5feceb66ffc86f38d952786c))
+   (scan $sup15869x25x0x0x1 __d0 __d1 __d2 ea eb ef va x)
+   (body)
+   (head
+    (tycheck
+     eb
+     (accept (struct app) (struct lambda) (struct ref))
+     __trid2tkt57
+     __trel6S3p58
+     __tcol0QTn59
+     (1 2 3 4 0))
+    (mkstruct eval (1 0) __3aFP56 eb))
+   "0cfa-demand.slog:26"
+   #f)
+  (crule
+   (pre)
+   (scan store x v)
+   (body
+    (join ref (1 0) 1 x __t2Ncr34)
+    (join-old eval (1 0) 1 (1 0) __t2Ncr34 __t7NXF35))
+   (head (emit eval_ans (0 1) __t7NXF35 v))
+   "0cfa-demand.slog:23"
+   #f)
+  (crule
+   (pre)
+   (scan eval __t94No27 ea)
+   (body
+    (exists $sup15869x25x0x0x1 (2 3 6 0 1 4 5 7) 2 __t94No27 ea)
+    (exists $sup15869x25x0x0x0 (1 0 2) 1 ea)
+    (exists app (2 0 1) 1 ea)
+    (join eval_ans (0 1) 1 __t94No27 va)
+    (join
+     $sup15869x25x0x0x1
+     (2 3 6 0 1 4 5 7)
+     3
+     __t94No27
+     ea
+     va
+     __t21aQ24
+     __t3z1j25
+     eb
+     ef
+     x)
+    (join $sup15869x25x0x0x0 (0 1 2) 3 __t21aQ24 ea ef)
+    (join eval (0 1) 2 __t3z1j25 ef)
+    (exists lambda (2 1 0) 2 eb x)
+    (exists eval_ans (0 1) 1 __t3z1j25)
+    (exists eval (1 0) 1 eb)
+    (join app (1 2 0) 2 ef ea __t53Ss23)
+    (join eval (0 1) 2 __t21aQ24 __t53Ss23)
+    (join lambda (2 1 0) 2 eb x __t4NYz26)
+    (join eval_ans (0 1) 2 __t3z1j25 __t4NYz26)
+    (join-old eval (1 0) 1 (1 0) eb __t65yE28)
+    (join eval_ans (0 1) 1 __t65yE28 v))
+   (head (emit eval_ans (0 1) __t21aQ24 v))
+   "0cfa-demand.slog:26"
+   #f)
+  (crule
+   (pre)
+   (scan $sup15869x33x0x0x0 ea ef)
+   (body
+    (exists eval (1 0) 1 ef)
+    (exists eval (1 0) 1 ea)
+    (join app (1 2 0) 2 ef ea __t5UcN30)
+    (join eval (1 0) 1 __t5UcN30 __6Yjj70)
+    (join-old eval (1 0) 1 (1 0) ef __t1miS31)
+    (join eval_ans (0 1) 1 __t1miS31 __t2kGk32)
+    (join-old eval (1 0) 1 (1 0) ea __t5Tar33)
+    (join eval_ans (0 1) 1 __t5Tar33 va)
+    (join lambda (0 1 2) 1 __t2kGk32 x eb))
+   (head (emit store (0 1) x va))
+   "0cfa-demand.slog:34"
+   #f)
+  (crule
+   (pre)
+   (scan eval __t1miS31 ef)
+   (body
+    (exists $sup15869x33x0x0x0 (1 0) 1 ef)
+    (exists app (1 2 0) 1 ef)
+    (join eval_ans (0 1) 1 __t1miS31 __t2kGk32)
+    (join $sup15869x33x0x0x0 (1 0) 1 ef ea)
+    (exists eval (1 0) 1 ea)
+    (join app (1 2 0) 2 ef ea __t5UcN30)
+    (join eval (1 0) 1 __t5UcN30 __6Yjj70)
+    (join-old eval (1 0) 1 (1 0) ea __t5Tar33)
+    (join eval_ans (0 1) 1 __t5Tar33 va)
+    (join lambda (0 1 2) 1 __t2kGk32 x eb))
+   (head (emit store (0 1) x va))
+   "0cfa-demand.slog:34"
+   #f)))

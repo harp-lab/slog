@@ -1,0 +1,125 @@
+(cprog
+ #<set:
+  int_overflow
+  type_mismatch
+  mincost_ans
+  nan_result
+  modulo_by_zero
+  temp6Yq496
+  toint_range
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash((0 . const5feceb66ffc86f38d952786c))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp6Yq496 2)
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (lattice mincost_ans 2 (min int (floor 0)) #f (0 1))
+  (struct mincost 2 (1 0) (0 1))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation goal 1 (0))
+  (relation error 1 (0))
+  (relation edge 3 (1 0 2))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation answer 1 (0))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre91tI83
+    __errf87q184
+    __errf8p5S85
+    __errf2llx86
+    __errf096K87)
+   (body)
+   (head (emit error (0) __erre91tI83))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre61A988
+    __errf40gC89
+    __errf1sbs90
+    __errf8qyv91
+    __errf46K992)
+   (body)
+   (head (emit error (0) __erre61A988))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre1zOx93 __errf6Fpt94 __errf48O295)
+   (body)
+   (head (emit error (0) __erre1zOx93))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre9a5D76 __errf091277 __errf7oN178 __errf3QJd79)
+   (body)
+   (head (emit error (0) __erre9a5D76))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp6Yq496 __t3qLB29 __t7RJm30)
+   (body)
+   (head (emit-lat mincost_ans __t7RJm30 __t3qLB29))
+   "lat_demand.slog:20"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre9Od172 __errf4w4F73 __errf1OUI74 __errf6dBH75)
+   (body)
+   (head (emit error (0) __erre9Od172))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst85xG1 const5feceb66ffc86f38d952786c))
+   (scan goal G)
+   (body (join mincost (1 0) 1 G __t0DY22))
+   (head (emit-lat mincost_ans __t0DY22 __tconst85xG1))
+   "lat_demand.slog:19"
+   #f)
+  (crule
+   (pre)
+   (scan mincost_ans __t83T831 __v0)
+   (body
+    (join mincost (0 1) 1 __t83T831 M)
+    (join edge (1 0 2) 1 M N W)
+    (join mincost (1 0) 1 N __t7RJm30)
+    (let __t3qLB29 (_0002b W __v0)))
+   (head (emit-temp temp6Yq496 __t3qLB29 __t7RJm30))
+   "lat_demand.slog:20"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre4D1x80 __errf4WjL81 __errf6Qks82)
+   (body)
+   (head (emit error (0) __erre4D1x80))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre5OnQ66 __errf6qWw67 __errf49ym68)
+   (body)
+   (head (emit error (0) __erre5OnQ66))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre6Z7l69 __errf0UlE70 __errf69kn71)
+   (body)
+   (head (emit error (0) __erre6Z7l69))
+   "<internal>:1"
+   #f)))

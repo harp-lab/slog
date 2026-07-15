@@ -1,0 +1,1 @@
+(stratum-meta (hash "2cf22f51") (level 1) (dynamic-rels nobest) (accel-rels) (heads nobest) (reads (best neg) (k pos)) (acyclic #t) (rules (rule 1099186821 "neg_lat.slog:13" "(rule (~ (best X)) (k X) --> (nobest X))" (rec #f) (same-scc-body) (neg-body best) (lat-body))))

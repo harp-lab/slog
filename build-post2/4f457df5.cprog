@@ -1,0 +1,28 @@
+(cprog
+ #<set: t>
+ #hash(("abcdef" . constb24daeeb6fab51e617ee863f)
+       ("hello" . const5aa762ae383fbb727af3c7a3))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (relation t 1 (0))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (relation mid24 2 (0 1))
+  (relation mid13 2 (0 1))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre
+    (let __tconst4dXV5 const5aa762ae383fbb727af3c7a3)
+    (let __tconst3TNc4 constb24daeeb6fab51e617ee863f))
+   (once)
+   (body)
+   (head (emit t (0) __tconst4dXV5) (emit t (0) __tconst3TNc4))
+   "prim2_substr.slog:9"
+   #f)))

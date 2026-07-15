@@ -1,0 +1,159 @@
+(cprog
+ #<set:
+  int_overflow
+  type_mismatch
+  toint_range
+  nan_result
+  uniqueclo
+  modulo_by_zero
+  rebound
+  error
+  manyclo
+  mpz_overflow
+  mpz_table_overflow
+  unique
+  div_by_zero>
+ #hash()
+ ((relation valblur 2 (0 1))
+  (relation uniqueclo 1 (0))
+  (relation unique 2 (0 1))
+  (struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (relation store 3 (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation result 1 (0))
+  (struct ref 2 (1 0) (0 1))
+  (relation rebound 2 (0 1))
+  (relation program 1 (0))
+  (relation poly 2 (0 1))
+  (relation pinned 2 (0 1))
+  (lattice nu 2 (count) #f (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (lattice muval 3 (count) #f (0 1 2))
+  (lattice mu 3 (count) #f (0 1 2) (delta 2 0 1))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation mono 2 (0 1))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (relation manyclo 1 (0))
+  (relation many 1 (0))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct lambda 3 (1 2 0) (0 1 2))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation freevar 2 (0 1))
+  (relation eval_ans 2 (0 1))
+  (struct eval 3 (1 2 0) (0 2 1))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct clo 3 (1 2 0) (0 1 2))
+  (relation callev 2 (0 1))
+  (relation bindev 3 (0 1 2))
+  (relation bindblur 2 (0 1))
+  (struct app 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1))
+  (relation $sup27994x83x0x0x1 10 (0 1 2 3 4 5 6 7 8 9))
+  (relation $sup27994x83x0x0x0 4 (0 1 2 3)))
+ ((crule
+   (pre)
+   (scan nan_result __erre8gDV617 __errf9GXT618 __errf3y34619 __errf0zmx620)
+   (body)
+   (head (emit error (0) __erre8gDV617))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre245X621 __errf0JMn622 __errf2du2623)
+   (body)
+   (head (emit error (0) __erre245X621))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre3TfD610 __errf9nkS611 __errf2tyX612)
+   (body)
+   (head (emit error (0) __erre3TfD610))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __t32aj255 (one)))
+   (probe mu (2 0 1) 1 __t32aj255 x l)
+   (body)
+   (head (emit unique (0 1) x l))
+   "mcfa-counting.slog:147"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre26E0634 __errf28i9635 __errf5q81636)
+   (body)
+   (head (emit error (0) __erre26E0634))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre6keJ607 __errf20e1608 __errf9bae609)
+   (body)
+   (head (emit error (0) __erre6keJ607))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre5ruH624
+    __errf0eTO625
+    __errf7q2f626
+    __errf9raP627
+    __errf84o9628)
+   (body)
+   (head (emit error (0) __erre5ruH624))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __t5NSu12 (inf)))
+   (scan eval_ans __t7k5811 vc)
+   (body
+    (join-lat nu (0 1) 0 c latchk_0)
+    (eq __t5NSu12 latchk_0)
+    (join eval (0 2 1) 2 __t7k5811 c __t3gkQ10)
+    (join lambda (0 1 2) 1 __t3gkQ10 x eb))
+   (head (emit manyclo (0) vc))
+   "mcfa-counting.slog:169"
+   #f)
+  (crule
+   (pre (let __t95lR199 (one)))
+   (scan eval_ans __t74fU198 vc)
+   (body
+    (join-lat nu (0 1) 0 c latchk_0)
+    (eq __t95lR199 latchk_0)
+    (join eval (0 2 1) 2 __t74fU198 c __t3rNk197)
+    (join lambda (0 1 2) 1 __t3rNk197 x eb))
+   (head (emit uniqueclo (0) vc))
+   "mcfa-counting.slog:168"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre1WTc613 __errf3OPv614 __errf2p9j615 __errf2IJC616)
+   (body)
+   (head (emit error (0) __erre1WTc613))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __t9AdQ254 (inf)))
+   (probe mu (2 0 1) 1 __t9AdQ254 x l)
+   (body)
+   (head (emit rebound (0 1) x l))
+   "mcfa-counting.slog:148"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre2MJD629
+    __errf7c71630
+    __errf0jTC631
+    __errf0UV8632
+    __errf1EMI633)
+   (body)
+   (head (emit error (0) __erre2MJD629))
+   "<internal>:1"
+   #f)))

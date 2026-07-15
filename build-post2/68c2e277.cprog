@@ -1,0 +1,863 @@
+(cprog
+ #<set:
+  temp3FcD500
+  temp4ZjV499
+  int_overflow
+  temp26JV506
+  temp6vgA504
+  seed
+  type_mismatch
+  temp4L8p502
+  temp4Qfu486
+  toint_range
+  $seq_at
+  temp3vdp510
+  temp1IDy503
+  temp62Y4490
+  temp8BRz485
+  nan_result
+  temp4wIF493
+  temp5HCD487
+  temp8wf8507
+  temp62j7489
+  temp3Pnb498
+  probe
+  temp67UX488
+  temp9P5L492
+  error
+  temp9II1508
+  mpz_overflow
+  temp5WL2496
+  temp3VcG495
+  temp4P8M501
+  _enum
+  temp7UhH509
+  needle
+  temp7JIl491
+  temp1v37494
+  modulo_by_zero
+  temp3Ykl497
+  mpz_table_overflow
+  div_by_zero
+  temp2V3n505>
+ #hash((0 . const5feceb66ffc86f38d952786c)
+       (1 . const6b86b273ff34fce19d6b804e)
+       (2 . constd4735e3a265e16eee03f5971)
+       (2.5 . constb8736b999909049671d0ea07)
+       (3 . const4e07408562bedb8b60ce05c1)
+       (4 . const4b227777d4dd1fc61c6f884f)
+       (5 . constef2d127de37b942baad06145)
+       (6 . conste7f6c011776e8db7cd330b54)
+       (7 . const7902699be42c8a8e46fbbb45)
+       (8 . const2c624232cdd221771294dfbb)
+       (9 . const19581e27de7ced00ff1ce50b)
+       (10 . const4a44dc15364204a80fe80e90)
+       (11 . const4fc82b26aecb47d2868c4efb)
+       (12 . const6b51d431df5d7f141cbececc)
+       (13 . const3fdba35f04dc8c462986c992)
+       (14 . const8527a891e224136950ff32ca)
+       (15 . conste629fa6598d732768f7c726b)
+       (16 . constb17ef6d19c7a5b1ee83b907c)
+       (17 . const4523540f1504cd17100c4835)
+       (18 . const4ec9599fc203d176a301536c)
+       (19 . const9400f1b21cb527d7fa3d3eab)
+       (20 . constf5ca38f748a1d6eaf726b8a4)
+       (21 . const6f4b6612125fb3a0daecd279)
+       (22 . const785f3ec7eb32f30b90cd0fcf)
+       (40 . constd59eced1ded07f84c145592f)
+       (99 . const8c1f1046219ddd216a023f79)
+       ("a" . constac8d8342bbb2362d13f0a559)
+       ("b" . constc100f95c1913f9c72fc1f4ef)
+       ("cnil" . const9ac63e4426dab2edcc97bcf7))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp9P5L492 5)
+  (temp temp9II1508 1)
+  (temp temp8wf8507 1)
+  (temp temp8BRz485 1)
+  (temp temp7UhH509 1)
+  (temp temp7JIl491 7)
+  (temp temp6vgA504 1)
+  (temp temp67UX488 1)
+  (temp temp62j7489 5)
+  (temp temp62Y4490 5)
+  (temp temp5WL2496 1)
+  (temp temp5HCD487 1)
+  (temp temp4wIF493 4)
+  (temp temp4ZjV499 1)
+  (temp temp4Qfu486 1)
+  (temp temp4P8M501 1)
+  (temp temp4L8p502 1)
+  (temp temp3vdp510 1)
+  (temp temp3Ykl497 1)
+  (temp temp3VcG495 1)
+  (temp temp3Pnb498 1)
+  (temp temp3FcD500 1)
+  (temp temp2V3n505 1)
+  (temp temp26JV506 1)
+  (temp temp1v37494 2)
+  (temp temp1IDy503 1)
+  (relation take_ok 2 (0 1))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation seed 2 (0 1))
+  (relation rev_ok 1 (0))
+  (relation ref_ok 2 (0 1))
+  (relation probe 1 (0))
+  (relation ol_tolst_ans 2 (0 1))
+  (struct ol_tolst 2 (1 0) (0 1))
+  (relation ol_take_ans 2 (0 1))
+  (struct ol_take 3 (1 2 0) (0 1 2))
+  (relation ol_rev_ans 2 (0 1))
+  (relation ol_rev_acc_ans 2 (0 1))
+  (struct ol_rev_acc 3 (1 2 0) (0 1 2))
+  (struct ol_rev 2 (1 0) (0 1))
+  (relation ol_ref_ans 2 (0 1))
+  (struct ol_ref 3 (1 2 0) (0 1 2))
+  (relation ol_member_ans 2 (0 1))
+  (struct ol_member 3 (1 2 0) (0 1 2))
+  (relation ol_len_ans 2 (0 1))
+  (struct ol_len 2 (1 0) (0 1))
+  (relation ol_fromlst_ans 2 (0 1))
+  (struct ol_fromlst 2 (1 0) (0 1))
+  (relation ol_append_ans 2 (0 1))
+  (struct ol_append 3 (1 2 0) (0 1 2))
+  (relation ol_absent_ans 2 (0 1))
+  (struct ol_absent 3 (1 2 0) (0 1 2))
+  (relation needle 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (relation member_ok 2 (0 1))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation lst_take_ans 2 (0 1))
+  (struct lst_take 3 (1 2 0) (0 1 2))
+  (relation lst_rev_ans 2 (0 1))
+  (relation lst_rev_acc_ans 2 (0 1))
+  (struct lst_rev_acc 3 (1 2 0) (0 1 2))
+  (struct lst_rev 2 (1 0) (0 1))
+  (relation lst_ref_ans 2 (0 1))
+  (struct lst_ref 3 (1 2 0) (0 1 2))
+  (relation lst_member_ans 2 (0 1))
+  (struct lst_member 3 (1 2 0) (0 1 2))
+  (relation lst_len_ans 2 (0 1))
+  (struct lst_len 2 (1 0) (0 1))
+  (relation lst_append_ans 2 (0 1))
+  (struct lst_append 3 (1 2 0) (0 1 2))
+  (relation lst_absent_ans 2 (0 1))
+  (struct lst_absent 3 (1 2 0) (0 1 2))
+  (relation len_ok 2 (0 1))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct ccons 3 (1 2 0) (0 1 2))
+  (relation append_ok 2 (0 1))
+  (relation absent_ok 2 (0 1))
+  (struct _enum 2 (1 0) (0 1))
+  (relation $sup76318x53x0x0x0 3 (0 1 2))
+  (relation $sup76318x43x0x0x0 3 (0 1 2))
+  (relation $sup76318x38x0x0x0 3 (0 1 2))
+  (relation $sup76318x33x0x0x0 3 (0 1 2))
+  (relation $sup76318x27x0x0x0 4 (0 1 2 3))
+  (relation $sup59985x48x0x0x0 4 (0 1 2 3))
+  (relation $sup59985x43x0x0x0 4 (0 1 2 3))
+  (relation $sup59985x37x0x0x0 3 (0 1 2))
+  (relation $sup59985x32x0x0x0 4 (0 1 2 3))
+  (relation $sup59985x27x0x0x0 4 (0 1 2 3))
+  (relation $sup59985x22x0x0x0 4 (0 1 2 3))
+  (relation $sup59985x17x0x0x0 3 (0 1 2))
+  (relation $sup59985x12x0x0x0 4 (0 1 2 3))
+  (relation $seq_at 3 (0 1 2))
+  (seqindex lst_absent (1))
+  (seqindex lst_append (1 2))
+  (seqindex lst_append_ans (1))
+  (seqindex lst_len (1))
+  (seqindex lst_member (1))
+  (seqindex lst_ref (1))
+  (seqindex lst_rev (1))
+  (seqindex lst_rev_acc (1 2))
+  (seqindex lst_rev_acc_ans (1))
+  (seqindex lst_rev_ans (1))
+  (seqindex lst_take (1))
+  (seqindex lst_take_ans (1))
+  (seqindex ol_fromlst (1))
+  (seqindex ol_tolst_ans (1))
+  (seqindex seed (1)))
+ ((crule
+   (pre)
+   (scan nan_result __erre7a4T465 __errf6473466 __errf5B43467 __errf0B49468)
+   (body)
+   (head (emit error (0) __erre7a4T465))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst84F3153 const785f3ec7eb32f30b90cd0fcf)
+    (let __tconst1LNd154 const6f4b6612125fb3a0daecd279)
+    (let __tconst5CLm155 constf5ca38f748a1d6eaf726b8a4)
+    (let __tconst1IHf156 const9400f1b21cb527d7fa3d3eab)
+    (let __tconst9QsM157 const4ec9599fc203d176a301536c)
+    (let __tconst8Mpx158 const4523540f1504cd17100c4835)
+    (let __tconst25c1159 constb17ef6d19c7a5b1ee83b907c)
+    (let __tconst51BV160 conste629fa6598d732768f7c726b)
+    (let __tconst64Fc161 const8527a891e224136950ff32ca)
+    (let __tconst9JLe162 const3fdba35f04dc8c462986c992)
+    (let __tconst6Gdj163 const6b51d431df5d7f141cbececc)
+    (let __tconst9Wln164 const4fc82b26aecb47d2868c4efb)
+    (let __tconst9uif165 const4a44dc15364204a80fe80e90)
+    (let __tconst9c8T166 const19581e27de7ced00ff1ce50b)
+    (let __tconst5XJ6167 const2c624232cdd221771294dfbb)
+    (let __tconst65Mz198 const4b227777d4dd1fc61c6f884f))
+   (scan temp3VcG495 __t1D24182)
+   (body (let __t78uK183 (lpush __t1D24182 __tconst5XJ6167)))
+   (head (emit-temp temp5WL2496 __t78uK183))
+   "seq_oracle.slog:13"
+   #f)
+  (crule
+   (pre
+    (let __tconst84F3153 const785f3ec7eb32f30b90cd0fcf)
+    (let __tconst1LNd154 const6f4b6612125fb3a0daecd279)
+    (let __tconst5CLm155 constf5ca38f748a1d6eaf726b8a4)
+    (let __tconst1IHf156 const9400f1b21cb527d7fa3d3eab)
+    (let __tconst9QsM157 const4ec9599fc203d176a301536c)
+    (let __tconst8Mpx158 const4523540f1504cd17100c4835)
+    (let __tconst25c1159 constb17ef6d19c7a5b1ee83b907c)
+    (let __tconst51BV160 conste629fa6598d732768f7c726b)
+    (let __tconst64Fc161 const8527a891e224136950ff32ca)
+    (let __tconst9JLe162 const3fdba35f04dc8c462986c992)
+    (let __tconst6Gdj163 const6b51d431df5d7f141cbececc)
+    (let __tconst65Mz198 const4b227777d4dd1fc61c6f884f))
+   (scan temp4ZjV499 __t7KMq186)
+   (body (let __t1dTM187 (lpush __t7KMq186 __tconst6Gdj163)))
+   (head (emit-temp temp3FcD500 __t1dTM187))
+   "seq_oracle.slog:13"
+   #f)
+  (crule
+   (pre (let __tconst65Mz198 const4b227777d4dd1fc61c6f884f))
+   (scan temp3vdp510 __t3Aj6197)
+   (body)
+   (head (emit seed (0 1) __tconst65Mz198 __t3Aj6197))
+   "seq_oracle.slog:13"
+   #f)
+  (crule
+   (pre
+    (let __tconst3Lgs127 constd4735e3a265e16eee03f5971)
+    (let __tconst0YKo128 const6b86b273ff34fce19d6b804e))
+   (scan temp8BRz485 __t6G0j129)
+   (body (let __t06gU130 (lpush __t6G0j129 __tconst0YKo128)))
+   (head (emit-temp temp4Qfu486 __t06gU130))
+   "seq_oracle.slog:25"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre63XB482 __errf0FZJ483 __errf9Cj0484)
+   (body)
+   (head (emit error (0) __erre63XB482))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst84F3153 const785f3ec7eb32f30b90cd0fcf)
+    (let __tconst1LNd154 const6f4b6612125fb3a0daecd279)
+    (let __tconst5CLm155 constf5ca38f748a1d6eaf726b8a4)
+    (let __tconst1IHf156 const9400f1b21cb527d7fa3d3eab)
+    (let __tconst65Mz198 const4b227777d4dd1fc61c6f884f))
+   (scan temp26JV506 __t6DUa193)
+   (body (let __t23s0194 (lpush __t6DUa193 __tconst1IHf156)))
+   (head (emit-temp temp8wf8507 __t23s0194))
+   "seq_oracle.slog:13"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre6trs461 __errf3Me5462 __errf8vyx463 __errf0fUd464)
+   (body)
+   (head (emit error (0) __erre6trs461))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst84F3153 const785f3ec7eb32f30b90cd0fcf)
+    (let __tconst1LNd154 const6f4b6612125fb3a0daecd279)
+    (let __tconst5CLm155 constf5ca38f748a1d6eaf726b8a4)
+    (let __tconst1IHf156 const9400f1b21cb527d7fa3d3eab)
+    (let __tconst9QsM157 const4ec9599fc203d176a301536c)
+    (let __tconst8Mpx158 const4523540f1504cd17100c4835)
+    (let __tconst25c1159 constb17ef6d19c7a5b1ee83b907c)
+    (let __tconst51BV160 conste629fa6598d732768f7c726b)
+    (let __tconst64Fc161 const8527a891e224136950ff32ca)
+    (let __tconst9JLe162 const3fdba35f04dc8c462986c992)
+    (let __tconst6Gdj163 const6b51d431df5d7f141cbececc)
+    (let __tconst9Wln164 const4fc82b26aecb47d2868c4efb)
+    (let __tconst9uif165 const4a44dc15364204a80fe80e90)
+    (let __tconst9c8T166 const19581e27de7ced00ff1ce50b)
+    (let __tconst5XJ6167 const2c624232cdd221771294dfbb)
+    (let __tconst4JN7168 const7902699be42c8a8e46fbbb45)
+    (let __tconst65Mz198 const4b227777d4dd1fc61c6f884f)
+    (let __tconst62sx203 constac8d8342bbb2362d13f0a559)
+    (let __tconst7QKk210 constef2d127de37b942baad06145)
+    (let __tconst5EkG230 conste7f6c011776e8db7cd330b54))
+   (scan temp9P5L492 __t0w43179 __t2xbR227 __t4Gf1224 __t5GeB208 __t7xqF143)
+   (body
+    (let __t8f98180 (lpush __t0w43179 __tconst7QKk210))
+    (let __t9hCR209 (lpush __t5GeB208 __tconst62sx203))
+    (let __t6tQu228 (lpush __t2xbR227 __t7xqF143)))
+   (head (emit-temp temp4wIF493 __t4Gf1224 __t6tQu228 __t8f98180 __t9hCR209))
+   "seq_oracle.slog:13"
+   #f)
+  (crule
+   (pre
+    (let __tconst84F3153 const785f3ec7eb32f30b90cd0fcf)
+    (let __tconst1LNd154 const6f4b6612125fb3a0daecd279)
+    (let __tconst5CLm155 constf5ca38f748a1d6eaf726b8a4)
+    (let __tconst65Mz198 const4b227777d4dd1fc61c6f884f))
+   (scan temp8wf8507 __t23s0194)
+   (body (let __t0Sw6195 (lpush __t23s0194 __tconst5CLm155)))
+   (head (emit-temp temp9II1508 __t0Sw6195))
+   "seq_oracle.slog:13"
+   #f)
+  (crule
+   (pre
+    (let __tconst84F3153 const785f3ec7eb32f30b90cd0fcf)
+    (let __tconst1LNd154 const6f4b6612125fb3a0daecd279)
+    (let __tconst5CLm155 constf5ca38f748a1d6eaf726b8a4)
+    (let __tconst1IHf156 const9400f1b21cb527d7fa3d3eab)
+    (let __tconst9QsM157 const4ec9599fc203d176a301536c)
+    (let __tconst8Mpx158 const4523540f1504cd17100c4835)
+    (let __tconst25c1159 constb17ef6d19c7a5b1ee83b907c)
+    (let __tconst65Mz198 const4b227777d4dd1fc61c6f884f))
+   (scan temp1IDy503 __t8gHB190)
+   (body (let __t4sr5191 (lpush __t8gHB190 __tconst25c1159)))
+   (head (emit-temp temp6vgA504 __t4sr5191))
+   "seq_oracle.slog:13"
+   #f)
+  (crule
+   (pre
+    (let __tconst84F3153 const785f3ec7eb32f30b90cd0fcf)
+    (let __tconst1LNd154 const6f4b6612125fb3a0daecd279)
+    (let __tconst5CLm155 constf5ca38f748a1d6eaf726b8a4)
+    (let __tconst1IHf156 const9400f1b21cb527d7fa3d3eab)
+    (let __tconst9QsM157 const4ec9599fc203d176a301536c)
+    (let __tconst8Mpx158 const4523540f1504cd17100c4835)
+    (let __tconst25c1159 constb17ef6d19c7a5b1ee83b907c)
+    (let __tconst51BV160 conste629fa6598d732768f7c726b)
+    (let __tconst64Fc161 const8527a891e224136950ff32ca)
+    (let __tconst9JLe162 const3fdba35f04dc8c462986c992)
+    (let __tconst6Gdj163 const6b51d431df5d7f141cbececc)
+    (let __tconst9Wln164 const4fc82b26aecb47d2868c4efb)
+    (let __tconst65Mz198 const4b227777d4dd1fc61c6f884f))
+   (scan temp3Pnb498 __t38yp185)
+   (body (let __t7KMq186 (lpush __t38yp185 __tconst9Wln164)))
+   (head (emit-temp temp4ZjV499 __t7KMq186))
+   "seq_oracle.slog:13"
+   #f)
+  (crule
+   (pre
+    (let __tconst84F3153 const785f3ec7eb32f30b90cd0fcf)
+    (let __tconst1LNd154 const6f4b6612125fb3a0daecd279)
+    (let __tconst5CLm155 constf5ca38f748a1d6eaf726b8a4)
+    (let __tconst1IHf156 const9400f1b21cb527d7fa3d3eab)
+    (let __tconst9QsM157 const4ec9599fc203d176a301536c)
+    (let __tconst8Mpx158 const4523540f1504cd17100c4835)
+    (let __tconst25c1159 constb17ef6d19c7a5b1ee83b907c)
+    (let __tconst51BV160 conste629fa6598d732768f7c726b)
+    (let __tconst64Fc161 const8527a891e224136950ff32ca)
+    (let __tconst9JLe162 const3fdba35f04dc8c462986c992)
+    (let __tconst6Gdj163 const6b51d431df5d7f141cbececc)
+    (let __tconst9Wln164 const4fc82b26aecb47d2868c4efb)
+    (let __tconst9uif165 const4a44dc15364204a80fe80e90)
+    (let __tconst9c8T166 const19581e27de7ced00ff1ce50b)
+    (let __tconst5XJ6167 const2c624232cdd221771294dfbb)
+    (let __tconst4JN7168 const7902699be42c8a8e46fbbb45)
+    (let __tconst65Mz198 const4b227777d4dd1fc61c6f884f)
+    (let __tconst7QKk210 constef2d127de37b942baad06145)
+    (let __tconst5EkG230 conste7f6c011776e8db7cd330b54))
+   (scan temp4wIF493 __t4Gf1224 __t6tQu228 __t8f98180 __t9hCR209)
+   (body
+    (let __t54ug181 (lpush __t8f98180 __tconst5EkG230))
+    (let __t8doc229 (lpush __t6tQu228 __t4Gf1224)))
+   (head
+    (emit-temp temp1v37494 __t54ug181 __t8doc229)
+    (emit seed (0 1) __tconst7QKk210 __t9hCR209))
+   "seq_oracle.slog:13"
+   #f)
+  (crule
+   (pre
+    (let __tconst84F3153 const785f3ec7eb32f30b90cd0fcf)
+    (let __tconst1LNd154 const6f4b6612125fb3a0daecd279)
+    (let __tconst5CLm155 constf5ca38f748a1d6eaf726b8a4)
+    (let __tconst1IHf156 const9400f1b21cb527d7fa3d3eab)
+    (let __tconst9QsM157 const4ec9599fc203d176a301536c)
+    (let __tconst8Mpx158 const4523540f1504cd17100c4835)
+    (let __tconst65Mz198 const4b227777d4dd1fc61c6f884f))
+   (scan temp6vgA504 __t4sr5191)
+   (body (let __t8zRv192 (lpush __t4sr5191 __tconst8Mpx158)))
+   (head (emit-temp temp2V3n505 __t8zRv192))
+   "seq_oracle.slog:13"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre9Vqu472
+    __errf1KE6473
+    __errf4bCy474
+    __errf2oki475
+    __errf3lET476)
+   (body)
+   (head (emit error (0) __erre9Vqu472))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst84F3153 const785f3ec7eb32f30b90cd0fcf)
+    (let __tconst1LNd154 const6f4b6612125fb3a0daecd279)
+    (let __tconst5CLm155 constf5ca38f748a1d6eaf726b8a4)
+    (let __tconst1IHf156 const9400f1b21cb527d7fa3d3eab)
+    (let __tconst9QsM157 const4ec9599fc203d176a301536c)
+    (let __tconst8Mpx158 const4523540f1504cd17100c4835)
+    (let __tconst25c1159 constb17ef6d19c7a5b1ee83b907c)
+    (let __tconst51BV160 conste629fa6598d732768f7c726b)
+    (let __tconst64Fc161 const8527a891e224136950ff32ca)
+    (let __tconst9JLe162 const3fdba35f04dc8c462986c992)
+    (let __tconst6Gdj163 const6b51d431df5d7f141cbececc)
+    (let __tconst9Wln164 const4fc82b26aecb47d2868c4efb)
+    (let __tconst9uif165 const4a44dc15364204a80fe80e90)
+    (let __tconst9c8T166 const19581e27de7ced00ff1ce50b)
+    (let __tconst65Mz198 const4b227777d4dd1fc61c6f884f))
+   (scan temp5WL2496 __t78uK183)
+   (body (let __t4YNT184 (lpush __t78uK183 __tconst9c8T166)))
+   (head (emit-temp temp3Ykl497 __t4YNT184))
+   "seq_oracle.slog:13"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre5sOP455 __errf7PTg456 __errf1jKS457)
+   (body)
+   (head (emit error (0) __erre5sOP455))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp5HCD487 __t8S8j131)
+   (body)
+   (head (emit needle (0) __t8S8j131))
+   "seq_oracle.slog:25"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre4P3T469 __errf4zFV470 __errf2CAE471)
+   (body)
+   (head (emit error (0) __erre4P3T469))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst5nQx94 constd59eced1ded07f84c145592f)
+    (let __tconst7lZb93 const6f4b6612125fb3a0daecd279)
+    (let __tconst3hgi92 constef2d127de37b942baad06145)
+    (let __tconst24bd91 constd4735e3a265e16eee03f5971)
+    (let __tconst0epT90 const5feceb66ffc86f38d952786c))
+   (once)
+   (body)
+   (head
+    (emit probe (0) __tconst5nQx94)
+    (emit probe (0) __tconst7lZb93)
+    (emit probe (0) __tconst3hgi92)
+    (emit probe (0) __tconst24bd91)
+    (emit probe (0) __tconst0epT90))
+   "seq_oracle.slog:22"
+   #f)
+  (crule
+   (pre
+    (let __tconst84F3153 const785f3ec7eb32f30b90cd0fcf)
+    (let __tconst1LNd154 const6f4b6612125fb3a0daecd279)
+    (let __tconst5CLm155 constf5ca38f748a1d6eaf726b8a4)
+    (let __tconst1IHf156 const9400f1b21cb527d7fa3d3eab)
+    (let __tconst9QsM157 const4ec9599fc203d176a301536c)
+    (let __tconst8Mpx158 const4523540f1504cd17100c4835)
+    (let __tconst25c1159 constb17ef6d19c7a5b1ee83b907c)
+    (let __tconst51BV160 conste629fa6598d732768f7c726b)
+    (let __tconst64Fc161 const8527a891e224136950ff32ca)
+    (let __tconst9JLe162 const3fdba35f04dc8c462986c992)
+    (let __tconst6Gdj163 const6b51d431df5d7f141cbececc)
+    (let __tconst9Wln164 const4fc82b26aecb47d2868c4efb)
+    (let __tconst9uif165 const4a44dc15364204a80fe80e90)
+    (let __tconst9c8T166 const19581e27de7ced00ff1ce50b)
+    (let __tconst5XJ6167 const2c624232cdd221771294dfbb)
+    (let __tconst4JN7168 const7902699be42c8a8e46fbbb45)
+    (let __tconst65Mz198 const4b227777d4dd1fc61c6f884f)
+    (let __tconst9tvM200 constb8736b999909049671d0ea07)
+    (let __tconst3L5u201 constc100f95c1913f9c72fc1f4ef)
+    (let __tconst62sx203 constac8d8342bbb2362d13f0a559)
+    (let __tconst7QKk210 constef2d127de37b942baad06145)
+    (let __tconst4IrW216 const4e07408562bedb8b60ce05c1)
+    (let __tconst8BnD220 constd4735e3a265e16eee03f5971)
+    (let __tconst7QpE221 const6b86b273ff34fce19d6b804e)
+    (let __tconst5EkG230 conste7f6c011776e8db7cd330b54))
+   (scan temp67UX488 __t4KbT225)
+   (body
+    (let __t7xqF143 (lpush __t4KbT225 __tconst4IrW216))
+    (let __t3PAv151 (lpush __t4KbT225 __tconst7QKk210))
+    (let __t4Ykf176 (lpush __t4KbT225 __tconst7QpE221))
+    (let __t3DHo205 (lpush __t4KbT225 __tconst62sx203)))
+   (head
+    (emit-temp
+     temp62j7489
+     __t3DHo205
+     __t3PAv151
+     __t4KbT225
+     __t4Ykf176
+     __t7xqF143)
+    (emit seed (0 1) __tconst8BnD220 __t4KbT225))
+   "seq_oracle.slog:13"
+   #f)
+  (crule
+   (pre (let __tconst1X23423 const9ac63e4426dab2edcc97bcf7))
+   (once)
+   (body)
+   (head (mkstruct _enum (1 0) __1oFP424 __tconst1X23423))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre0A32477
+    __errf0Pvj478
+    __errf9NlI479
+    __errf1ShU480
+    __errf9c0V481)
+   (body)
+   (head (emit error (0) __erre0A32477))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst84F3153 const785f3ec7eb32f30b90cd0fcf)
+    (let __tconst1LNd154 const6f4b6612125fb3a0daecd279)
+    (let __tconst5CLm155 constf5ca38f748a1d6eaf726b8a4)
+    (let __tconst1IHf156 const9400f1b21cb527d7fa3d3eab)
+    (let __tconst9QsM157 const4ec9599fc203d176a301536c)
+    (let __tconst8Mpx158 const4523540f1504cd17100c4835)
+    (let __tconst25c1159 constb17ef6d19c7a5b1ee83b907c)
+    (let __tconst51BV160 conste629fa6598d732768f7c726b)
+    (let __tconst64Fc161 const8527a891e224136950ff32ca)
+    (let __tconst9JLe162 const3fdba35f04dc8c462986c992)
+    (let __tconst6Gdj163 const6b51d431df5d7f141cbececc)
+    (let __tconst9Wln164 const4fc82b26aecb47d2868c4efb)
+    (let __tconst9uif165 const4a44dc15364204a80fe80e90)
+    (let __tconst65Mz198 const4b227777d4dd1fc61c6f884f))
+   (scan temp3Ykl497 __t4YNT184)
+   (body (let __t38yp185 (lpush __t4YNT184 __tconst9uif165)))
+   (head (emit-temp temp3Pnb498 __t38yp185))
+   "seq_oracle.slog:13"
+   #f)
+  (crule
+   (pre
+    (let __tconst84F3153 const785f3ec7eb32f30b90cd0fcf)
+    (let __tconst1LNd154 const6f4b6612125fb3a0daecd279)
+    (let __tconst5CLm155 constf5ca38f748a1d6eaf726b8a4)
+    (let __tconst1IHf156 const9400f1b21cb527d7fa3d3eab)
+    (let __tconst9QsM157 const4ec9599fc203d176a301536c)
+    (let __tconst8Mpx158 const4523540f1504cd17100c4835)
+    (let __tconst25c1159 constb17ef6d19c7a5b1ee83b907c)
+    (let __tconst51BV160 conste629fa6598d732768f7c726b)
+    (let __tconst64Fc161 const8527a891e224136950ff32ca)
+    (let __tconst9JLe162 const3fdba35f04dc8c462986c992)
+    (let __tconst6Gdj163 const6b51d431df5d7f141cbececc)
+    (let __tconst9Wln164 const4fc82b26aecb47d2868c4efb)
+    (let __tconst9uif165 const4a44dc15364204a80fe80e90)
+    (let __tconst9c8T166 const19581e27de7ced00ff1ce50b)
+    (let __tconst5XJ6167 const2c624232cdd221771294dfbb)
+    (let __tconst4JN7168 const7902699be42c8a8e46fbbb45)
+    (let __tconst65Mz198 const4b227777d4dd1fc61c6f884f)
+    (let __tconst9tvM200 constb8736b999909049671d0ea07)
+    (let __tconst62sx203 constac8d8342bbb2362d13f0a559)
+    (let __tconst7QKk210 constef2d127de37b942baad06145)
+    (let __tconst7QpE221 const6b86b273ff34fce19d6b804e)
+    (let __tconst5EkG230 conste7f6c011776e8db7cd330b54))
+   (scan
+    temp7JIl491
+    __t4Gf1224
+    __t4Hi3226
+    __t4KbT225
+    __t537F178
+    __t53GN145
+    __t7b8W207
+    __t7xqF143)
+   (body
+    (let __t0w43179 (lpush __t537F178 __tconst65Mz198))
+    (let __t5GeB208 (lpush __t7b8W207 __tconst9tvM200))
+    (let __t2xbR227 (lpush __t4Hi3226 __t4KbT225)))
+   (head
+    (emit-temp
+     temp9P5L492
+     __t0w43179
+     __t2xbR227
+     __t4Gf1224
+     __t5GeB208
+     __t7xqF143)
+    (emit seed (0 1) __tconst7QpE221 __t53GN145))
+   "seq_oracle.slog:13"
+   #f)
+  (crule
+   (pre (let __tconst3Lgs127 constd4735e3a265e16eee03f5971))
+   (scan temp4Qfu486 __t06gU130)
+   (body (let __t8S8j131 (lpush __t06gU130 __tconst3Lgs127)))
+   (head (emit-temp temp5HCD487 __t8S8j131))
+   "seq_oracle.slog:25"
+   #f)
+  (crule
+   (pre
+    (let __tconst84F3153 const785f3ec7eb32f30b90cd0fcf)
+    (let __tconst1LNd154 const6f4b6612125fb3a0daecd279)
+    (let __tconst5CLm155 constf5ca38f748a1d6eaf726b8a4)
+    (let __tconst1IHf156 const9400f1b21cb527d7fa3d3eab)
+    (let __tconst9QsM157 const4ec9599fc203d176a301536c)
+    (let __tconst8Mpx158 const4523540f1504cd17100c4835)
+    (let __tconst25c1159 constb17ef6d19c7a5b1ee83b907c)
+    (let __tconst51BV160 conste629fa6598d732768f7c726b)
+    (let __tconst64Fc161 const8527a891e224136950ff32ca)
+    (let __tconst9JLe162 const3fdba35f04dc8c462986c992)
+    (let __tconst6Gdj163 const6b51d431df5d7f141cbececc)
+    (let __tconst9Wln164 const4fc82b26aecb47d2868c4efb)
+    (let __tconst9uif165 const4a44dc15364204a80fe80e90)
+    (let __tconst9c8T166 const19581e27de7ced00ff1ce50b)
+    (let __tconst5XJ6167 const2c624232cdd221771294dfbb)
+    (let __tconst4JN7168 const7902699be42c8a8e46fbbb45)
+    (let __tconst65Mz198 const4b227777d4dd1fc61c6f884f)
+    (let __tconst9tvM200 constb8736b999909049671d0ea07)
+    (let __tconst3L5u201 constc100f95c1913f9c72fc1f4ef)
+    (let __tconst62sx203 constac8d8342bbb2362d13f0a559)
+    (let __tconst7QKk210 constef2d127de37b942baad06145)
+    (let __tconst4IrW216 const4e07408562bedb8b60ce05c1)
+    (let __tconst8BnD220 constd4735e3a265e16eee03f5971)
+    (let __tconst7QpE221 const6b86b273ff34fce19d6b804e)
+    (let __tconst5EkG230 conste7f6c011776e8db7cd330b54)
+    (let __t4KbT225 (lempty)))
+   (once)
+   (body)
+   (head (emit-temp temp67UX488 __t4KbT225))
+   "seq_oracle.slog:13"
+   #f)
+  (crule
+   (pre
+    (let __tconst84F3153 const785f3ec7eb32f30b90cd0fcf)
+    (let __tconst1LNd154 const6f4b6612125fb3a0daecd279)
+    (let __tconst5CLm155 constf5ca38f748a1d6eaf726b8a4)
+    (let __tconst1IHf156 const9400f1b21cb527d7fa3d3eab)
+    (let __tconst9QsM157 const4ec9599fc203d176a301536c)
+    (let __tconst8Mpx158 const4523540f1504cd17100c4835)
+    (let __tconst25c1159 constb17ef6d19c7a5b1ee83b907c)
+    (let __tconst51BV160 conste629fa6598d732768f7c726b)
+    (let __tconst64Fc161 const8527a891e224136950ff32ca)
+    (let __tconst9JLe162 const3fdba35f04dc8c462986c992)
+    (let __tconst65Mz198 const4b227777d4dd1fc61c6f884f))
+   (scan temp3FcD500 __t1dTM187)
+   (body (let __t2Qvt188 (lpush __t1dTM187 __tconst9JLe162)))
+   (head (emit-temp temp4P8M501 __t2Qvt188))
+   "seq_oracle.slog:13"
+   #f)
+  (crule
+   (pre
+    (let __tconst84F3153 const785f3ec7eb32f30b90cd0fcf)
+    (let __tconst1LNd154 const6f4b6612125fb3a0daecd279)
+    (let __tconst5CLm155 constf5ca38f748a1d6eaf726b8a4)
+    (let __tconst1IHf156 const9400f1b21cb527d7fa3d3eab)
+    (let __tconst9QsM157 const4ec9599fc203d176a301536c)
+    (let __tconst65Mz198 const4b227777d4dd1fc61c6f884f))
+   (scan temp2V3n505 __t8zRv192)
+   (body (let __t6DUa193 (lpush __t8zRv192 __tconst9QsM157)))
+   (head (emit-temp temp26JV506 __t6DUa193))
+   "seq_oracle.slog:13"
+   #f)
+  (crule
+   (pre
+    (let __tconst84F3153 const785f3ec7eb32f30b90cd0fcf)
+    (let __tconst1LNd154 const6f4b6612125fb3a0daecd279)
+    (let __tconst65Mz198 const4b227777d4dd1fc61c6f884f))
+   (scan temp9II1508 __t0Sw6195)
+   (body (let __t8IGL196 (lpush __t0Sw6195 __tconst1LNd154)))
+   (head (emit-temp temp7UhH509 __t8IGL196))
+   "seq_oracle.slog:13"
+   #f)
+  (crule
+   (pre
+    (let __tconst84F3153 const785f3ec7eb32f30b90cd0fcf)
+    (let __tconst1LNd154 const6f4b6612125fb3a0daecd279)
+    (let __tconst5CLm155 constf5ca38f748a1d6eaf726b8a4)
+    (let __tconst1IHf156 const9400f1b21cb527d7fa3d3eab)
+    (let __tconst9QsM157 const4ec9599fc203d176a301536c)
+    (let __tconst8Mpx158 const4523540f1504cd17100c4835)
+    (let __tconst25c1159 constb17ef6d19c7a5b1ee83b907c)
+    (let __tconst51BV160 conste629fa6598d732768f7c726b)
+    (let __tconst64Fc161 const8527a891e224136950ff32ca)
+    (let __tconst9JLe162 const3fdba35f04dc8c462986c992)
+    (let __tconst6Gdj163 const6b51d431df5d7f141cbececc)
+    (let __tconst9Wln164 const4fc82b26aecb47d2868c4efb)
+    (let __tconst9uif165 const4a44dc15364204a80fe80e90)
+    (let __tconst9c8T166 const19581e27de7ced00ff1ce50b)
+    (let __tconst5XJ6167 const2c624232cdd221771294dfbb)
+    (let __tconst4JN7168 const7902699be42c8a8e46fbbb45)
+    (let __tconst65Mz198 const4b227777d4dd1fc61c6f884f)
+    (let __tconst5EkG230 conste7f6c011776e8db7cd330b54))
+   (scan temp1v37494 __t54ug181 __t8doc229)
+   (body (let __t1D24182 (lpush __t54ug181 __tconst4JN7168)))
+   (head
+    (emit-temp temp3VcG495 __t1D24182)
+    (emit seed (0 1) __tconst5EkG230 __t8doc229))
+   "seq_oracle.slog:13"
+   #f)
+  (crule
+   (pre
+    (let __tconst5gqA125 constc100f95c1913f9c72fc1f4ef)
+    (let __tconst0i7S126 const8c1f1046219ddd216a023f79)
+    (let __tconst3Lgs127 constd4735e3a265e16eee03f5971)
+    (let __tconst0YKo128 const6b86b273ff34fce19d6b804e)
+    (let __t6G0j129 (lempty)))
+   (once)
+   (body)
+   (head
+    (emit-temp temp8BRz485 __t6G0j129)
+    (emit needle (0) __tconst3Lgs127)
+    (emit needle (0) __tconst5gqA125)
+    (emit needle (0) __tconst0i7S126))
+   "seq_oracle.slog:25"
+   #f)
+  (crule
+   (pre
+    (let __tconst84F3153 const785f3ec7eb32f30b90cd0fcf)
+    (let __tconst1LNd154 const6f4b6612125fb3a0daecd279)
+    (let __tconst5CLm155 constf5ca38f748a1d6eaf726b8a4)
+    (let __tconst1IHf156 const9400f1b21cb527d7fa3d3eab)
+    (let __tconst9QsM157 const4ec9599fc203d176a301536c)
+    (let __tconst8Mpx158 const4523540f1504cd17100c4835)
+    (let __tconst25c1159 constb17ef6d19c7a5b1ee83b907c)
+    (let __tconst51BV160 conste629fa6598d732768f7c726b)
+    (let __tconst64Fc161 const8527a891e224136950ff32ca)
+    (let __tconst9JLe162 const3fdba35f04dc8c462986c992)
+    (let __tconst6Gdj163 const6b51d431df5d7f141cbececc)
+    (let __tconst9Wln164 const4fc82b26aecb47d2868c4efb)
+    (let __tconst9uif165 const4a44dc15364204a80fe80e90)
+    (let __tconst9c8T166 const19581e27de7ced00ff1ce50b)
+    (let __tconst5XJ6167 const2c624232cdd221771294dfbb)
+    (let __tconst4JN7168 const7902699be42c8a8e46fbbb45)
+    (let __tconst65Mz198 const4b227777d4dd1fc61c6f884f)
+    (let __tconst9tvM200 constb8736b999909049671d0ea07)
+    (let __tconst3L5u201 constc100f95c1913f9c72fc1f4ef)
+    (let __tconst62sx203 constac8d8342bbb2362d13f0a559)
+    (let __tconst7QKk210 constef2d127de37b942baad06145)
+    (let __tconst4IrW216 const4e07408562bedb8b60ce05c1)
+    (let __tconst8BnD220 constd4735e3a265e16eee03f5971)
+    (let __tconst7QpE221 const6b86b273ff34fce19d6b804e)
+    (let __tconst5EkG230 conste7f6c011776e8db7cd330b54))
+   (scan temp62Y4490 __t1fDS206 __t4Gf1224 __t4KbT225 __t6aDB144 __t7xqF143)
+   (body
+    (let __t53GN145 (lpush __t6aDB144 __tconst8BnD220))
+    (let __t537F178 (lpush __t4Gf1224 __tconst4IrW216))
+    (let __t7b8W207 (lpush __t1fDS206 __tconst3L5u201))
+    (let __t4Hi3226 (lpush __t4KbT225 __t4Gf1224)))
+   (head
+    (emit-temp
+     temp7JIl491
+     __t4Gf1224
+     __t4Hi3226
+     __t4KbT225
+     __t537F178
+     __t53GN145
+     __t7b8W207
+     __t7xqF143))
+   "seq_oracle.slog:13"
+   #f)
+  (crule
+   (pre
+    (let __tconst84F3153 const785f3ec7eb32f30b90cd0fcf)
+    (let __tconst1LNd154 const6f4b6612125fb3a0daecd279)
+    (let __tconst5CLm155 constf5ca38f748a1d6eaf726b8a4)
+    (let __tconst1IHf156 const9400f1b21cb527d7fa3d3eab)
+    (let __tconst9QsM157 const4ec9599fc203d176a301536c)
+    (let __tconst8Mpx158 const4523540f1504cd17100c4835)
+    (let __tconst25c1159 constb17ef6d19c7a5b1ee83b907c)
+    (let __tconst51BV160 conste629fa6598d732768f7c726b)
+    (let __tconst64Fc161 const8527a891e224136950ff32ca)
+    (let __tconst9JLe162 const3fdba35f04dc8c462986c992)
+    (let __tconst6Gdj163 const6b51d431df5d7f141cbececc)
+    (let __tconst9Wln164 const4fc82b26aecb47d2868c4efb)
+    (let __tconst9uif165 const4a44dc15364204a80fe80e90)
+    (let __tconst9c8T166 const19581e27de7ced00ff1ce50b)
+    (let __tconst5XJ6167 const2c624232cdd221771294dfbb)
+    (let __tconst4JN7168 const7902699be42c8a8e46fbbb45)
+    (let __tconst65Mz198 const4b227777d4dd1fc61c6f884f)
+    (let __tconst9tvM200 constb8736b999909049671d0ea07)
+    (let __tconst3L5u201 constc100f95c1913f9c72fc1f4ef)
+    (let __tconst62sx203 constac8d8342bbb2362d13f0a559)
+    (let __tconst7QKk210 constef2d127de37b942baad06145)
+    (let __tconst4IrW216 const4e07408562bedb8b60ce05c1)
+    (let __tconst8BnD220 constd4735e3a265e16eee03f5971)
+    (let __tconst7QpE221 const6b86b273ff34fce19d6b804e)
+    (let __tconst5EkG230 conste7f6c011776e8db7cd330b54))
+   (scan temp62j7489 __t3DHo205 __t3PAv151 __t4KbT225 __t4Ykf176 __t7xqF143)
+   (body
+    (let __t6aDB144 (lpush __t7xqF143 __tconst7QpE221))
+    (let __t1fDS206 (lpush __t3DHo205 __tconst8BnD220))
+    (let __t4Gf1224 (lpush __t4Ykf176 __tconst8BnD220)))
+   (head
+    (emit-temp
+     temp62Y4490
+     __t1fDS206
+     __t4Gf1224
+     __t4KbT225
+     __t6aDB144
+     __t7xqF143)
+    (emit seed (0 1) __tconst4IrW216 __t3PAv151))
+   "seq_oracle.slog:13"
+   #f)
+  (crule
+   (pre
+    (let __tconst84F3153 const785f3ec7eb32f30b90cd0fcf)
+    (let __tconst1LNd154 const6f4b6612125fb3a0daecd279)
+    (let __tconst5CLm155 constf5ca38f748a1d6eaf726b8a4)
+    (let __tconst1IHf156 const9400f1b21cb527d7fa3d3eab)
+    (let __tconst9QsM157 const4ec9599fc203d176a301536c)
+    (let __tconst8Mpx158 const4523540f1504cd17100c4835)
+    (let __tconst25c1159 constb17ef6d19c7a5b1ee83b907c)
+    (let __tconst51BV160 conste629fa6598d732768f7c726b)
+    (let __tconst64Fc161 const8527a891e224136950ff32ca)
+    (let __tconst65Mz198 const4b227777d4dd1fc61c6f884f))
+   (scan temp4P8M501 __t2Qvt188)
+   (body (let __t6TTg189 (lpush __t2Qvt188 __tconst64Fc161)))
+   (head (emit-temp temp4L8p502 __t6TTg189))
+   "seq_oracle.slog:13"
+   #f)
+  (crule
+   (pre
+    (let __tconst84F3153 const785f3ec7eb32f30b90cd0fcf)
+    (let __tconst65Mz198 const4b227777d4dd1fc61c6f884f))
+   (scan temp7UhH509 __t8IGL196)
+   (body (let __t3Aj6197 (lpush __t8IGL196 __tconst84F3153)))
+   (head (emit-temp temp3vdp510 __t3Aj6197))
+   "seq_oracle.slog:13"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre2i99458 __errf5sD9459 __errf2GQl460)
+   (body)
+   (head (emit error (0) __erre2i99458))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst84F3153 const785f3ec7eb32f30b90cd0fcf)
+    (let __tconst1LNd154 const6f4b6612125fb3a0daecd279)
+    (let __tconst5CLm155 constf5ca38f748a1d6eaf726b8a4)
+    (let __tconst1IHf156 const9400f1b21cb527d7fa3d3eab)
+    (let __tconst9QsM157 const4ec9599fc203d176a301536c)
+    (let __tconst8Mpx158 const4523540f1504cd17100c4835)
+    (let __tconst25c1159 constb17ef6d19c7a5b1ee83b907c)
+    (let __tconst51BV160 conste629fa6598d732768f7c726b)
+    (let __tconst65Mz198 const4b227777d4dd1fc61c6f884f))
+   (scan temp4L8p502 __t6TTg189)
+   (body (let __t8gHB190 (lpush __t6TTg189 __tconst51BV160)))
+   (head (emit-temp temp1IDy503 __t8gHB190))
+   "seq_oracle.slog:13"
+   #f)))

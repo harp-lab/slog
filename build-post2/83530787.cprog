@@ -1,0 +1,365 @@
+(cprog
+ #<set:
+  DBool
+  normA
+  Wrap
+  fdat
+  malformed_deduction
+  DInt
+  normB
+  error
+  $sup87077x26x0x0x0>
+ #hash((0 . const5feceb66ffc86f38d952786c)
+       (7 . const7902699be42c8a8e46fbbb45)
+       ("False" . constcea17e0b05e3e6ace77ec2d1)
+       ("True" . const76c777b0ce3c35ba97c6cbde)
+       ("dem_neq_literal.slog:27" . const1bbd189cbe7b0e1338ec0ae5)
+       ("normB" . const3f91f2c205f6fee203b3a41a))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation outB 1 (0))
+  (relation outA 1 (0))
+  (relation normB_ans 2 (0 1))
+  (struct normB 2 (1 0) (0 1) (delta 1 0))
+  (relation normA_ans 2 (0 1))
+  (struct normA 2 (1 0) (0 1) (delta 1 0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation fdat 1 (0))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1) (delta 1 0))
+  (struct Wrap 2 (1 0) (0 1) (delta 0 1))
+  (struct DInt 2 (1 0) (0 1) (delta 1 0))
+  (struct DBool 2 (1 0) (0 1))
+  (relation $sup87077x26x0x0x0 3 (0 1 2)))
+ ((crule
+   (pre (let __tconst0JFG64 const7902699be42c8a8e46fbbb45))
+   (probe DInt (1 0) 1 __tconst0JFG64 __t9DSZ65)
+   (body)
+   (head (mkstruct Wrap (1 0) __t6HIa66 __t9DSZ65))
+   "dem_neq_literal.slog:36"
+   #f)
+  (crule
+   (pre (let __tconst5u1S74 const76c777b0ce3c35ba97c6cbde))
+   (seeded)
+   (body
+    (join _enum (1 0) 1 __tconst5u1S74 __t7h7g43)
+    (join DBool (1 0) 1 __t7h7g43 __t2BbG44))
+   (head (mkstruct Wrap (1 0) __t2uix45 __t2BbG44))
+   "dem_neq_literal.slog:31"
+   #f)
+  (crule
+   (pre)
+   (scan normA __t9cYb53 __t5VM452)
+   (body (join Wrap (0 1) 1 __t5VM452 d))
+   (head (mkstruct normA (1 0) __3BGD87 d))
+   "dem_neq_literal.slog:18"
+   #f)
+  (crule
+   (pre)
+   (scan
+    malformed_deduction
+    __erre9Tsw99
+    __errf62Lu100
+    __errf1Brz101
+    __errf1MxQ102
+    __errf3d1O103)
+   (body)
+   (head (emit error (0) __erre9Tsw99))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst0HhO89 constcea17e0b05e3e6ace77ec2d1))
+   (probe _enum (1 0) 1 __tconst0HhO89 __t5qfH46)
+   (body)
+   (head (mkstruct DBool (1 0) __t8cRC47 __t5qfH46))
+   "dem_neq_literal.slog:37"
+   #f)
+  (crule
+   (pre (let __tconst8g2w80 const76c777b0ce3c35ba97c6cbde))
+   (probe _enum (1 0) 1 __tconst8g2w80 __t5slS7)
+   (body)
+   (head (mkstruct DBool (1 0) __t10ZZ8 __t5slS7))
+   "dem_neq_literal.slog:35"
+   #f)
+  (crule
+   (pre (let __tconst9T9W15 const7902699be42c8a8e46fbbb45))
+   (seeded)
+   (body
+    (join DInt (1 0) 1 __tconst9T9W15 __t91BP16)
+    (join Wrap (1 0) 1 __t91BP16 __t8WhE17))
+   (head (mkstruct normA (1 0) __8bNW69 __t8WhE17))
+   "dem_neq_literal.slog:32"
+   #f)
+  (crule
+   (pre (let __tconst8g2w80 const76c777b0ce3c35ba97c6cbde))
+   (seeded)
+   (body
+    (join _enum (1 0) 1 __tconst8g2w80 __t5slS7)
+    (join DBool (1 0) 1 __t5slS7 __t10ZZ8))
+   (head (mkstruct Wrap (1 0) __t7iDF9 __t10ZZ8))
+   "dem_neq_literal.slog:35"
+   #f)
+  (crule
+   (pre (let __tconst8g2w80 const76c777b0ce3c35ba97c6cbde))
+   (scan DBool __t10ZZ8 __t5slS7)
+   (body (join _enum (0 1) 2 __t5slS7 __tconst8g2w80))
+   (head (mkstruct Wrap (1 0) __t7iDF9 __t10ZZ8))
+   "dem_neq_literal.slog:35"
+   #f)
+  (crule
+   (pre (let __tconst0HhO89 constcea17e0b05e3e6ace77ec2d1))
+   (seeded)
+   (body
+    (join _enum (1 0) 1 __tconst0HhO89 __t5qfH46)
+    (join DBool (1 0) 1 __t5qfH46 __t8cRC47)
+    (join Wrap (1 0) 1 __t8cRC47 __t3vMC48))
+   (head (mkstruct normB (1 0) __9qpr88 __t3vMC48))
+   "dem_neq_literal.slog:37"
+   #f)
+  (crule
+   (pre (let __tconst4Tmq78 constcea17e0b05e3e6ace77ec2d1))
+   (probe _enum (1 0) 1 __tconst4Tmq78 __t3TAP4)
+   (body)
+   (head (mkstruct DBool (1 0) __t6cJv5 __t3TAP4))
+   "dem_neq_literal.slog:33"
+   #f)
+  (crule
+   (pre (let __tconst4Tmq78 constcea17e0b05e3e6ace77ec2d1))
+   (scan Wrap __t8hcw6 __t6cJv5)
+   (body
+    (exists _enum (1 0) 1 __tconst4Tmq78)
+    (join DBool (0 1) 1 __t6cJv5 __t3TAP4)
+    (join _enum (0 1) 2 __t3TAP4 __tconst4Tmq78))
+   (head (mkstruct normA (1 0) __1dfE77 __t8hcw6))
+   "dem_neq_literal.slog:33"
+   #f)
+  (crule
+   (pre (let __tconst5u1S74 const76c777b0ce3c35ba97c6cbde))
+   (scan DBool __t2BbG44 __t7h7g43)
+   (body (join _enum (0 1) 2 __t7h7g43 __tconst5u1S74))
+   (head (mkstruct Wrap (1 0) __t2uix45 __t2BbG44))
+   "dem_neq_literal.slog:31"
+   #f)
+  (crule
+   (pre (let __tconst8ksF71 constcea17e0b05e3e6ace77ec2d1))
+   (probe _enum (1 0) 1 __tconst8ksF71 __t6ajx67)
+   (body)
+   (head (mkstruct DBool (1 0) __t4O0o68 __t6ajx67))
+   "dem_neq_literal.slog:23"
+   #f)
+  (crule
+   (pre (let __tconst8ksF71 constcea17e0b05e3e6ace77ec2d1))
+   (seeded)
+   (body
+    (join _enum (1 0) 1 __tconst8ksF71 __t6ajx67)
+    (join DBool (1 0) 1 __t6ajx67 __t4O0o68))
+   (head (emit fdat (0) __t4O0o68))
+   "dem_neq_literal.slog:23"
+   #f)
+  (crule
+   (pre)
+   (scan normB __t44h138 __t3lfE37)
+   (body (join Wrap (0 1) 1 __t3lfE37 d) (join fdat (0) 0 fd))
+   (head (emit $sup87077x26x0x0x0 (0 1 2) __t44h138 d fd))
+   "dem_neq_literal.slog:27"
+   #f)
+  (crule
+   (pre (let __tconst8ksF71 constcea17e0b05e3e6ace77ec2d1))
+   (scan DBool __t4O0o68 __t6ajx67)
+   (body (join _enum (0 1) 2 __t6ajx67 __tconst8ksF71))
+   (head (emit fdat (0) __t4O0o68))
+   "dem_neq_literal.slog:23"
+   #f)
+  (crule
+   (pre (let __tconst4Tmq78 constcea17e0b05e3e6ace77ec2d1))
+   (scan DBool __t6cJv5 __t3TAP4)
+   (body (join _enum (0 1) 2 __t3TAP4 __tconst4Tmq78))
+   (head (mkstruct Wrap (1 0) __t8hcw6 __t6cJv5))
+   "dem_neq_literal.slog:33"
+   #f)
+  (crule
+   (pre (let __tconst0JFG64 const7902699be42c8a8e46fbbb45))
+   (seeded)
+   (body
+    (join DInt (1 0) 1 __tconst0JFG64 __t9DSZ65)
+    (join Wrap (1 0) 1 __t9DSZ65 __t6HIa66))
+   (head (mkstruct normB (1 0) __2Bdt76 __t6HIa66))
+   "dem_neq_literal.slog:36"
+   #f)
+  (crule
+   (pre
+    (let __trid057o83 const1bbd189cbe7b0e1338ec0ae5)
+    (let __trel9nTS84 const3f91f2c205f6fee203b3a41a)
+    (let __tcol0q0b85 const5feceb66ffc86f38d952786c))
+   (scan $sup87077x26x0x0x0 __d0 d fd)
+   (body)
+   (head
+    (tycheck
+     d
+     (accept (struct DBool) (struct DInt) (struct Wrap))
+     __trid057o83
+     __trel9nTS84
+     __tcol0q0b85
+     (1 2 3 4 0))
+    (mkstruct normB (1 0) __6KKs82 d))
+   "dem_neq_literal.slog:27"
+   #f)
+  (crule
+   (pre (let __tconst4Tmq78 constcea17e0b05e3e6ace77ec2d1))
+   (seeded)
+   (body
+    (join _enum (1 0) 1 __tconst4Tmq78 __t3TAP4)
+    (join DBool (1 0) 1 __t3TAP4 __t6cJv5))
+   (head (mkstruct Wrap (1 0) __t8hcw6 __t6cJv5))
+   "dem_neq_literal.slog:33"
+   #f)
+  (crule
+   (pre (let __tconst5u1S74 const76c777b0ce3c35ba97c6cbde))
+   (probe _enum (1 0) 1 __tconst5u1S74 __t7h7g43)
+   (body)
+   (head (mkstruct DBool (1 0) __t2BbG44 __t7h7g43))
+   "dem_neq_literal.slog:31"
+   #f)
+  (crule
+   (pre)
+   (scan fdat fd)
+   (body
+    (join-old Wrap (0 1) 0 (0 1) __t3lfE37 d)
+    (join-old normB (1 0) 1 (1 0) __t3lfE37 __t44h138))
+   (head (emit $sup87077x26x0x0x0 (0 1 2) __t44h138 d fd))
+   "dem_neq_literal.slog:27"
+   #f)
+  (crule
+   (pre (let __tconst0JFG64 const7902699be42c8a8e46fbbb45))
+   (once)
+   (body)
+   (head (mkstruct DInt (1 0) __t9DSZ65 __tconst0JFG64))
+   "dem_neq_literal.slog:36"
+   #f)
+  (crule
+   (pre (let __tconst5u1S74 const76c777b0ce3c35ba97c6cbde))
+   (scan Wrap __t2uix45 __t2BbG44)
+   (body
+    (exists _enum (1 0) 1 __tconst5u1S74)
+    (join DBool (0 1) 1 __t2BbG44 __t7h7g43)
+    (join _enum (0 1) 2 __t7h7g43 __tconst5u1S74))
+   (head (mkstruct normA (1 0) __5vr173 __t2uix45))
+   "dem_neq_literal.slog:31"
+   #f)
+  (crule
+   (pre)
+   (scan Wrap __t5VM452 d)
+   (body (join-old normA (1 0) 1 (1 0) __t5VM452 __t9cYb53))
+   (head (mkstruct normA (1 0) __3BGD87 d))
+   "dem_neq_literal.slog:18"
+   #f)
+  (crule
+   (pre (let __tconst0HhO89 constcea17e0b05e3e6ace77ec2d1))
+   (scan DBool __t8cRC47 __t5qfH46)
+   (body (join _enum (0 1) 2 __t5qfH46 __tconst0HhO89))
+   (head (mkstruct Wrap (1 0) __t3vMC48 __t8cRC47))
+   "dem_neq_literal.slog:37"
+   #f)
+  (crule
+   (pre (let __tconst9T9W15 const7902699be42c8a8e46fbbb45))
+   (probe DInt (1 0) 1 __tconst9T9W15 __t91BP16)
+   (body)
+   (head (mkstruct Wrap (1 0) __t8WhE17 __t91BP16))
+   "dem_neq_literal.slog:32"
+   #f)
+  (crule
+   (pre (let __tconst9T9W15 const7902699be42c8a8e46fbbb45))
+   (once)
+   (body)
+   (head (mkstruct DInt (1 0) __t91BP16 __tconst9T9W15))
+   "dem_neq_literal.slog:32"
+   #f)
+  (crule
+   (pre (let __tconst8g2w80 const76c777b0ce3c35ba97c6cbde))
+   (scan Wrap __t7iDF9 __t10ZZ8)
+   (body
+    (exists _enum (1 0) 1 __tconst8g2w80)
+    (join DBool (0 1) 1 __t10ZZ8 __t5slS7)
+    (join _enum (0 1) 2 __t5slS7 __tconst8g2w80))
+   (head (mkstruct normB (1 0) __7Biu79 __t7iDF9))
+   "dem_neq_literal.slog:35"
+   #f)
+  (crule
+   (pre (let __tconst9T9W15 const7902699be42c8a8e46fbbb45))
+   (scan Wrap __t8WhE17 __t91BP16)
+   (body (join DInt (0 1) 2 __t91BP16 __tconst9T9W15))
+   (head (mkstruct normA (1 0) __8bNW69 __t8WhE17))
+   "dem_neq_literal.slog:32"
+   #f)
+  (crule
+   (pre (let __tconst4Tmq78 constcea17e0b05e3e6ace77ec2d1))
+   (seeded)
+   (body
+    (join _enum (1 0) 1 __tconst4Tmq78 __t3TAP4)
+    (join DBool (1 0) 1 __t3TAP4 __t6cJv5)
+    (join Wrap (1 0) 1 __t6cJv5 __t8hcw6))
+   (head (mkstruct normA (1 0) __1dfE77 __t8hcw6))
+   "dem_neq_literal.slog:33"
+   #f)
+  (crule
+   (pre (let __tconst0HhO89 constcea17e0b05e3e6ace77ec2d1))
+   (seeded)
+   (body
+    (join _enum (1 0) 1 __tconst0HhO89 __t5qfH46)
+    (join DBool (1 0) 1 __t5qfH46 __t8cRC47))
+   (head (mkstruct Wrap (1 0) __t3vMC48 __t8cRC47))
+   "dem_neq_literal.slog:37"
+   #f)
+  (crule
+   (pre)
+   (scan Wrap __t3lfE37 d)
+   (body
+    (join-old normB (1 0) 1 (1 0) __t3lfE37 __t44h138)
+    (join fdat (0) 0 fd))
+   (head (emit $sup87077x26x0x0x0 (0 1 2) __t44h138 d fd))
+   "dem_neq_literal.slog:27"
+   #f)
+  (crule
+   (pre (let __tconst0HhO89 constcea17e0b05e3e6ace77ec2d1))
+   (scan Wrap __t3vMC48 __t8cRC47)
+   (body
+    (exists _enum (1 0) 1 __tconst0HhO89)
+    (join DBool (0 1) 1 __t8cRC47 __t5qfH46)
+    (join _enum (0 1) 2 __t5qfH46 __tconst0HhO89))
+   (head (mkstruct normB (1 0) __9qpr88 __t3vMC48))
+   "dem_neq_literal.slog:37"
+   #f)
+  (crule
+   (pre (let __tconst0JFG64 const7902699be42c8a8e46fbbb45))
+   (scan Wrap __t6HIa66 __t9DSZ65)
+   (body (join DInt (0 1) 2 __t9DSZ65 __tconst0JFG64))
+   (head (mkstruct normB (1 0) __2Bdt76 __t6HIa66))
+   "dem_neq_literal.slog:36"
+   #f)
+  (crule
+   (pre (let __tconst8g2w80 const76c777b0ce3c35ba97c6cbde))
+   (seeded)
+   (body
+    (join _enum (1 0) 1 __tconst8g2w80 __t5slS7)
+    (join DBool (1 0) 1 __t5slS7 __t10ZZ8)
+    (join Wrap (1 0) 1 __t10ZZ8 __t7iDF9))
+   (head (mkstruct normB (1 0) __7Biu79 __t7iDF9))
+   "dem_neq_literal.slog:35"
+   #f)
+  (crule
+   (pre (let __tconst5u1S74 const76c777b0ce3c35ba97c6cbde))
+   (seeded)
+   (body
+    (join _enum (1 0) 1 __tconst5u1S74 __t7h7g43)
+    (join DBool (1 0) 1 __t7h7g43 __t2BbG44)
+    (join Wrap (1 0) 1 __t2BbG44 __t2uix45))
+   (head (mkstruct normA (1 0) __5vr173 __t2uix45))
+   "dem_neq_literal.slog:31"
+   #f)))

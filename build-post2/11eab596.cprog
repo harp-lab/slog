@@ -1,0 +1,52 @@
+(cprog
+ #<set: pairv sqfib temp0dO2283 packed>
+ #hash()
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp0dO2283 2)
+  (relation sqfib 2 (0 1))
+  (relation sq_ans 2 (0 1))
+  (struct sq 2 (1 0) (0 1))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation smallfib 1 (0))
+  (struct pairv 3 (1 2 0) (0 1 2))
+  (relation packed 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (relation n 1 (0))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation fib_ans 2 (0 1))
+  (struct fib 2 (1 0) (0 1))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan temp0dO2283 __v0 x)
+   (body (join pairv (1 2 0) 2 x __v0 __t4VnX23))
+   (head (emit packed (0) __t4VnX23))
+   "dem_value.slog:27"
+   #f)
+  (crule
+   (pre)
+   (scan n x)
+   (body (join sq (1 0) 1 x __t8l6U24) (join sq_ans (0 1) 1 __t8l6U24 __v0))
+   (head
+    (emit-temp temp0dO2283 __v0 x)
+    (mkstruct pairv (1 2 0) __t4VnX23 x __v0))
+   "dem_value.slog:27"
+   #f)
+  (crule
+   (pre)
+   (scan n x)
+   (body
+    (join fib (1 0) 1 x __t4UnL10)
+    (join fib_ans (0 1) 1 __t4UnL10 __v0)
+    (join sq (1 0) 1 __v0 __t8q2w11)
+    (join sq_ans (0 1) 1 __t8q2w11 r))
+   (head (emit sqfib (0 1) x r))
+   "dem_value.slog:18"
+   #f)))

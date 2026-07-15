@@ -1,0 +1,1 @@
+(stratum-meta (hash "f3fbb4e3") (level 1) (dynamic-rels onlya) (accel-rels) (heads onlya) (reads (a pos) (b neg)) (acyclic #t) (rules (rule 1914529640 "neg_diff.slog:11" "(rule (~ (b X)) (a X) --> (onlya X))" (rec #f) (same-scc-body) (neg-body b) (lat-body))))

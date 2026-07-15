@@ -1,0 +1,27 @@
+(cprog
+ #<set: cyc4>
+ #hash()
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (relation edge 2 (0 1) (1 0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation cyc4 4 (0 1 2 3))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan edge D A)
+   (body
+    (exists edge (0 1) 1 A)
+    (join edge (1 0) 1 D C)
+    (join3 B (full edge (1 0) 1 () C B) (full edge (0 1) 1 () A B)))
+   (head (emit cyc4 (0 1 2 3) A B C D))
+   "sj_cyc4.slog:17"
+   #f)))

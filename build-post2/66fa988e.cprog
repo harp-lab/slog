@@ -1,0 +1,40 @@
+(cprog
+ #<set: neq agree>
+ #hash()
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation right 1 (0))
+  (relation neq 2 (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation left 1 (0))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct dnode 3 (1 2 0) (0 1 2))
+  (struct dleaf 2 (1 0) (0 1))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation agree 3 (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan left __t3nGk18)
+   (body
+    (join dnode (0 1 2) 1 __t3nGk18 __t4Mmp19 A)
+    (exists dnode (1 2 0) 1 __t4Mmp19)
+    (join dleaf (0 1) 1 __t4Mmp19 N)
+    (join dnode (1 2 0) 1 __t4Mmp19 B __t33Ym20)
+    (join right (0) 1 __t33Ym20))
+   (head (emit agree (0 1 2) N A B))
+   "sdeep_deepjoin.slog:19"
+   #f)
+  (crule
+   (pre)
+   (scan right Q)
+   (body (join left (0) 0 P) (neq P Q))
+   (head (emit neq (0 1) P Q))
+   "sdeep_deepjoin.slog:21"
+   #f)))

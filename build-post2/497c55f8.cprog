@@ -1,0 +1,137 @@
+(cprog
+ #<set:
+  reach
+  int_overflow
+  toint_range
+  nan_result
+  modulo_by_zero
+  reach_has
+  type_mismatch
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash()
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (relation src 1 (0))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation rsize 2 (0 1))
+  (relation reach_has 2 (0 1) (delta 0 1))
+  (lattice reach 2 (set int) (decomp reach_has set) (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation gedge 3 (0 2 1) (2 0 1))
+  (relation final 2 (0 1))
+  (relation error 1 (0))
+  (relation edge 2 (0 1))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan modulo_by_zero __erre2qf355 __errf5LL656 __errf9Uk957)
+   (body)
+   (head (emit error (0) __erre2qf355))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __t7zsU20 (cmap)))
+   (scan reach_has s a)
+   (body (join edge (0 1) 1 a b) (let __t2mRV21 (cins __t7zsU20 b)))
+   (head (emit-lat reach s __t2mRV21))
+   "lat_rhas.slog:27"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre7zxN66 __errf3CBQ67 __errf31SQ68)
+   (body)
+   (head (emit error (0) __erre7zxN66))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre3Gp369
+    __errf69yC70
+    __errf4Dh571
+    __errf3IzB72
+    __errf8R9073)
+   (body)
+   (head (emit error (0) __erre3Gp369))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __t5W5817 (cmap)))
+   (scan src s)
+   (body (let __t87DA18 (cins __t5W5817 s)))
+   (head (emit-lat reach s __t87DA18))
+   "lat_rhas.slog:24"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre12i552 __errf7rZa53 __errf3D6w54)
+   (body)
+   (head (emit error (0) __erre12i552))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __t70gk2 (cmap)))
+   (scan reach_has s g)
+   (body
+    (exists gedge (2 0 1) 1 g)
+    (join reach_has (0 1) 1 s a)
+    (join gedge (0 2 1) 2 a g b)
+    (let __t6nLh3 (cins __t70gk2 b)))
+   (head (emit-lat reach s __t6nLh3))
+   "lat_rhas.slog:30"
+   #f)
+  (crule
+   (pre (let __t70gk2 (cmap)))
+   (scan reach_has s a)
+   (body
+    (exists gedge (0 2 1) 1 a)
+    (join-old reach_has (0 1) 1 (0 1) s g)
+    (join gedge (0 2 1) 2 a g b)
+    (let __t6nLh3 (cins __t70gk2 b)))
+   (head (emit-lat reach s __t6nLh3))
+   "lat_rhas.slog:30"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre6mOG79 __errf814Q80 __errf5NaQ81)
+   (body)
+   (head (emit error (0) __erre6mOG79))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre0VRw74
+    __errf6h3G75
+    __errf5OEz76
+    __errf0zxX77
+    __errf3Pd778)
+   (body)
+   (head (emit error (0) __erre0VRw74))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre37VU62 __errf3lsG63 __errf8GQN64 __errf9hDP65)
+   (body)
+   (head (emit error (0) __erre37VU62))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre5tm458 __errf3trA59 __errf9U5g60 __errf2AVB61)
+   (body)
+   (head (emit error (0) __erre5tm458))
+   "<internal>:1"
+   #f)))

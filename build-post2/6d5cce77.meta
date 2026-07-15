@@ -1,0 +1,1 @@
+(stratum-meta (hash "6d5cce77") (level 0) (dynamic-rels thing) (accel-rels) (heads thing) (reads) (acyclic #t) (rules (rule 1999486371 "err_typemix.slog:6" "(rule --> (thing _tconst7bjV2) (= _tconst7bjV2 (const \"oops\")) (thing _tconst67k21) (= _tconst67k21 (const 21)))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

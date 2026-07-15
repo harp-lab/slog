@@ -1056,17 +1056,39 @@ bytes.
 
 ### T2: daemon interpreter
 
-1. Arity-erased prefix-cursor adapters for set and lattice indices, including
-   `Join3PrefixCursor` erasure; shared primitive dispatch and bound `PrimFn`s.
-2. The full section-4.1 conformance vocabulary: scan/probe/once/seeded
-   drivers, explicit cursor stacks, guards, `letp`/`cjoin`, type checks,
-   negation probes, existing head sinks.
-3. Task-factory construction of write/intern/lattice/count tasks from plan
-   declarations (5.1) — the arity ladder moves into `slogd`.
-4. Integration with buckets, short deadlines, suspension, and the existing
-   write/intern pipeline.
-5. Gates: per-iteration content-delta equality against O0/O2 **and**
-   instantiation-multiset equality via the fires audit (section 12).
+**Preparation status 2026-07-15:** the VM/pause/debug machinery and a narrow
+`Plan -> seal -> bind -> task -> real emit` path are executable in
+[tests/interp-operator-tests.cpp](../tests/interp-operator-tests.cpp). No
+production daemon/compiler/protocol code has been lifted yet. The detailed
+start order and findings are recorded in execution-tiers-impl.md §7.
+
+1. **T2-A, normal-set vertical slice first.** Land the conformance fixture,
+   then extract `daemon/interp.h`: tri-state arity-erased cursors, immutable
+   decoded ops, plan-sized register/level state, pinned program generations,
+   and separately compiled fast/observed policies. Breakpoints are
+   post-transition and proof views lazy.
+2. Seal and bind a deliberately narrow vocabulary before broad coverage:
+   constant preloads; delta-scan/full-prefix-probe drivers; full-prefix set
+   probes; `neq`; exactly one body-instantiation `fire`; explicit bound head
+   sink ports; ordinary set emit. Seal every `(operator,A,K,view)` against the
+   out-of-line factory capability table.
+3. Attach one real `InterpReadTask` per `(RuleVariant,bucket)` to the existing
+   scheduler, short deadlines, `pushPaused`, and write/intern pipeline. Preserve
+   scan round-robin read partitions versus probe first-free-column hash
+   partitions; fully bound probes have one task. Use the existing emit family
+   through attempt/task-owned batches.
+4. First gate: one representative recursive normal-set program has identical
+   per-iteration content deltas and disaggregated RuleVariant fire counts under
+   interpreter and O0/O2. T0 protocol work may proceed in parallel and meet T2
+   at the decoded/sealed in-memory builder; T2-A does not wait for the command
+   dispatcher.
+5. **T2-B vocabulary expansion:** add scan-all/once/seeded, old/new/absence,
+   map/lattice probes, shared primitive dispatch and bound `PrimFn`s,
+   `letp`/`cjoin`, type checks, the real `Join3PrefixCursor`, and the remaining
+   existing head sinks in conformance-sized groups.
+6. Task-factory construction of write/intern/lattice/count tasks from plan
+   declarations (5.1) — the arity ladder moves into `slogd` — then the full
+   section-12 per-iteration delta and instantiation-multiset gates.
 
 ### T3: cold-start and selective tier scheduling
 

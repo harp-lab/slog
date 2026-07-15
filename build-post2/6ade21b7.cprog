@@ -1,0 +1,33 @@
+(cprog
+ #<set: w>
+ #hash(("" . const12ae32cb1ec02d01eda3581b)
+       ("foo" . constb2213295d564916f89a6a424)
+       ("hello world" . const9ddefe4435b21d901439e546))
+ ((relation w 1 (0))
+  (struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation len 2 (0 1))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation catlen 2 (0 1))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre
+    (let __tconst3f4g5 const9ddefe4435b21d901439e546)
+    (let __tconst7dkV4 const12ae32cb1ec02d01eda3581b)
+    (let __tconst2IHp3 constb2213295d564916f89a6a424))
+   (once)
+   (body)
+   (head
+    (emit w (0) __tconst3f4g5)
+    (emit w (0) __tconst7dkV4)
+    (emit w (0) __tconst2IHp3))
+   "prim2_size.slog:8"
+   #f)))

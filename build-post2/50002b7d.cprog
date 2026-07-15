@@ -1,0 +1,228 @@
+(cprog
+ #<set:
+  int_overflow
+  pairs
+  modulo_by_zero
+  temp1PAQ140
+  type_mismatch
+  temp6yuG139
+  toint_range
+  $seq_at
+  temp1Vwi136
+  temp0WPL138
+  nan_result
+  error
+  mpz_overflow
+  temp53Qk137
+  temp5Lic141
+  mpz_table_overflow
+  div_by_zero
+  temp5IhE144
+  temp1DUo143
+  temp6pUE142
+  input>
+ #hash((1 . const6b86b273ff34fce19d6b804e)
+       (2 . constd4735e3a265e16eee03f5971)
+       (3 . const4e07408562bedb8b60ce05c1)
+       (4 . const4b227777d4dd1fc61c6f884f))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation total 1 (0))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp6yuG139 1)
+  (temp temp6pUE142 3)
+  (temp temp5Lic141 3)
+  (temp temp5IhE144 1)
+  (temp temp53Qk137 1)
+  (temp temp1Vwi136 1)
+  (temp temp1PAQ140 1)
+  (temp temp1DUo143 2)
+  (temp temp0WPL138 1)
+  (relation sum_ans 2 (0 1))
+  (struct sum 2 (1 0) (0 1))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation pairs 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation input 1 (0))
+  (relation heads 1 (0))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1))
+  (relation $sup5242x12x0x0x0 4 (0 1 2 3))
+  (relation $seq_at 3 (0 1 2))
+  (seqindex input (0))
+  (seqindex pairs (0))
+  (seqindex sum (1)))
+ ((crule
+   (pre
+    (let __tconst12dp12 const4b227777d4dd1fc61c6f884f)
+    (let __tconst6hS817 constd4735e3a265e16eee03f5971))
+   (scan temp5Lic141 __t298J15 __t2UJl20 __t5o4a22)
+   (body
+    (let __t9leJ16 (lpush __t298J15 __tconst12dp12))
+    (let __t0tFq21 (lpush __t2UJl20 __tconst6hS817)))
+   (head (emit-temp temp6pUE142 __t0tFq21 __t5o4a22 __t9leJ16))
+   "lst_typed.slog:16"
+   #f)
+  (crule
+   (pre
+    (let __tconst12dp12 const4b227777d4dd1fc61c6f884f)
+    (let __tconst51DV13 const4e07408562bedb8b60ce05c1)
+    (let __tconst6hS817 constd4735e3a265e16eee03f5971)
+    (let __tconst5VsB18 const6b86b273ff34fce19d6b804e))
+   (scan temp1PAQ140 __t5o4a22)
+   (body
+    (let __t298J15 (lpush __t5o4a22 __tconst51DV13))
+    (let __t2UJl20 (lpush __t5o4a22 __tconst5VsB18)))
+   (head (emit-temp temp5Lic141 __t298J15 __t2UJl20 __t5o4a22))
+   "lst_typed.slog:16"
+   #f)
+  (crule
+   (pre (let __tconst5Sut5 const4e07408562bedb8b60ce05c1))
+   (scan temp0WPL138 __t24ht10)
+   (body (let __t4yRt11 (lpush __t24ht10 __tconst5Sut5)))
+   (head (emit-temp temp6yuG139 __t4yRt11))
+   "lst_typed.slog:15"
+   #f)
+  (crule
+   (pre
+    (let __tconst12dp12 const4b227777d4dd1fc61c6f884f)
+    (let __tconst51DV13 const4e07408562bedb8b60ce05c1)
+    (let __tconst6hS817 constd4735e3a265e16eee03f5971)
+    (let __tconst5VsB18 const6b86b273ff34fce19d6b804e)
+    (let __t5o4a22 (lempty)))
+   (once)
+   (body)
+   (head (emit-temp temp1PAQ140 __t5o4a22))
+   "lst_typed.slog:16"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre35mX116 __errf8vH3117 __errf53RF118 __errf91c7119)
+   (body)
+   (head (emit error (0) __erre35mX116))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp1DUo143 __t9R3O23 __t9leJ16)
+   (body (let __t8e4t24 (lpush __t9R3O23 __t9leJ16)))
+   (head (emit-temp temp5IhE144 __t8e4t24))
+   "lst_typed.slog:16"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre5tHo120 __errf31wS121 __errf5LPb122)
+   (body)
+   (head (emit error (0) __erre5tHo120))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre96Gu123
+    __errf3s3M124
+    __errf3qDh125
+    __errf6xKl126
+    __errf1WNn127)
+   (body)
+   (head (emit error (0) __erre96Gu123))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp6yuG139 __t4yRt11)
+   (body)
+   (head (emit input (0) __t4yRt11))
+   "lst_typed.slog:15"
+   #f)
+  (crule
+   (pre)
+   (scan temp5IhE144 __t8e4t24)
+   (body)
+   (head (emit pairs (0) __t8e4t24))
+   "lst_typed.slog:16"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre4BlU112 __errf8Oya113 __errf3aKr114 __errf7G29115)
+   (body)
+   (head (emit error (0) __erre4BlU112))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre2m0c109 __errf1feL110 __errf7ika111)
+   (body)
+   (head (emit error (0) __erre2m0c109))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre3X15106 __errf5IYF107 __errf4vn0108)
+   (body)
+   (head (emit error (0) __erre3X15106))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp6pUE142 __t0tFq21 __t5o4a22 __t9leJ16)
+   (body (let __t9R3O23 (lpush __t5o4a22 __t0tFq21)))
+   (head (emit-temp temp1DUo143 __t9R3O23 __t9leJ16))
+   "lst_typed.slog:16"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre7ID6133 __errf0NXE134 __errf7954135)
+   (body)
+   (head (emit error (0) __erre7ID6133))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst7zCN6 constd4735e3a265e16eee03f5971)
+    (let __tconst5Sut5 const4e07408562bedb8b60ce05c1))
+   (scan temp53Qk137 __t1SZO9)
+   (body (let __t24ht10 (lpush __t1SZO9 __tconst7zCN6)))
+   (head (emit-temp temp0WPL138 __t24ht10))
+   "lst_typed.slog:15"
+   #f)
+  (crule
+   (pre
+    (let __tconst9qUd7 const6b86b273ff34fce19d6b804e)
+    (let __tconst7zCN6 constd4735e3a265e16eee03f5971)
+    (let __tconst5Sut5 const4e07408562bedb8b60ce05c1)
+    (let __t6xjL8 (lempty)))
+   (once)
+   (body)
+   (head (emit-temp temp1Vwi136 __t6xjL8))
+   "lst_typed.slog:15"
+   #f)
+  (crule
+   (pre
+    (let __tconst9qUd7 const6b86b273ff34fce19d6b804e)
+    (let __tconst7zCN6 constd4735e3a265e16eee03f5971)
+    (let __tconst5Sut5 const4e07408562bedb8b60ce05c1))
+   (scan temp1Vwi136 __t6xjL8)
+   (body (let __t1SZO9 (lpush __t6xjL8 __tconst9qUd7)))
+   (head (emit-temp temp53Qk137 __t1SZO9))
+   "lst_typed.slog:15"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre8owJ128
+    __errf3qbG129
+    __errf2maw130
+    __errf9y6l131
+    __errf3Xn8132)
+   (body)
+   (head (emit error (0) __erre8owJ128))
+   "<internal>:1"
+   #f)))

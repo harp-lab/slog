@@ -1,0 +1,43 @@
+(cprog
+ #<set: selfd node allsame>
+ #hash()
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation tri 3 (0 1 2))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation selfj 1 (0))
+  (relation selfd 1 (0))
+  (relation node 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (relation edge 2 (0 1))
+  (relation dup 2 (0 1))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation allsame 1 (0))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan edge X Y)
+   (body)
+   (head (emit node (0) Y) (emit node (0) X))
+   "shape_selfloop.slog:34"
+   #f)
+  (crule
+   (pre)
+   (scan edge X dup7gWs22)
+   (body (eq X dup7gWs22))
+   (head (emit selfd (0) X))
+   "shape_selfloop.slog:32"
+   #f)
+  (crule
+   (pre)
+   (scan tri X dup3hXw20 dup4rCZ21)
+   (body (eq X dup4rCZ21) (eq X dup3hXw20))
+   (head (emit allsame (0) X))
+   "shape_selfloop.slog:40"
+   #f)))

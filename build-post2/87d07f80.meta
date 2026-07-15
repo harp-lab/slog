@@ -1,0 +1,1 @@
+(stratum-meta (hash "87d07f80") (level 2) (dynamic-rels d) (accel-rels) (heads d) (reads (b pos) (c pos)) (acyclic #t) (rules (rule 1993732632 "strat_diamond.slog:16" "(rule (c X V) (b X U) --> (d X U V))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

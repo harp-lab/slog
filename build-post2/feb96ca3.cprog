@@ -1,0 +1,102 @@
+(cprog
+ #<set:
+  int_overflow
+  type_mismatch
+  toint_range
+  nan_result
+  grow
+  modulo_by_zero
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash((10 . const4a44dc15364204a80fe80e90))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation seed 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation grow 1 (0))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan mpz_table_overflow __erre3Z1T65 __errf3W9e66 __errf9XVc67)
+   (body)
+   (head (emit error (0) __erre3Z1T65))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre2ZOH41 __errf8MBa42 __errf75wy43)
+   (body)
+   (head (emit error (0) __erre2ZOH41))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst9qFZ3 const4a44dc15364204a80fe80e90))
+   (scan seed X)
+   (body (let __t1YAv4 (_0002a X __tconst9qFZ3)))
+   (head (emit grow (0) __t1YAv4))
+   "strat_run_base.slog:12"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre1yte44 __errf6c9Z45 __errf99Af46 __errf6oYf47)
+   (body)
+   (head (emit error (0) __erre1yte44))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre5icV38 __errf1WZa39 __errf7Mie40)
+   (body)
+   (head (emit error (0) __erre5icV38))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre5qjZ52 __errf1zBY53 __errf01eh54)
+   (body)
+   (head (emit error (0) __erre5qjZ52))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre4F4748 __errf3Mci49 __errf2kaX50 __errf6FGH51)
+   (body)
+   (head (emit error (0) __erre4F4748))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre6cIl60
+    __errf5Y0H61
+    __errf2VSd62
+    __errf7pad63
+    __errf1zWH64)
+   (body)
+   (head (emit error (0) __erre6cIl60))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre2eMh55
+    __errf0RC756
+    __errf4Acx57
+    __errf9yn658
+    __errf2Ixf59)
+   (body)
+   (head (emit error (0) __erre2eMh55))
+   "<internal>:1"
+   #f)))

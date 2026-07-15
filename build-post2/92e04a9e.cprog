@@ -1,0 +1,35 @@
+(cprog
+ #<set: res>
+ #hash((2 . constd4735e3a265e16eee03f5971) (3 . const4e07408562bedb8b60ce05c1))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation res 3 (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation ack_ans 2 (0 1))
+  (struct ack 3 (1 2 0) (0 1 2) (delta 1 2 0))
+  (struct _enum 2 (1 0) (0 1))
+  (relation $sup35494x8x0x0x1 5 (0 1 2 3 4)))
+ ((crule
+   (pre
+    (let __tconst6je736 const4e07408562bedb8b60ce05c1)
+    (let __tconst9vxV37 constd4735e3a265e16eee03f5971))
+   (probe ack (1 2 0) 2 __tconst9vxV37 __tconst6je736 __t6u1r38)
+   (body (join ack_ans (0 1) 1 __t6u1r38 r))
+   (head (emit res (0 1 2) __tconst9vxV37 __tconst6je736 r))
+   "dem_ack.slog:12"
+   #f)
+  (crule
+   (pre (let __tconst2aCL46 const4e07408562bedb8b60ce05c1))
+   (probe ack (1 2 0) 1 __tconst2aCL46 dup2KN2143 __t14cO47)
+   (body (eq __tconst2aCL46 dup2KN2143) (join ack_ans (0 1) 1 __t14cO47 r))
+   (head (emit res (0 1 2) __tconst2aCL46 __tconst2aCL46 r))
+   "dem_ack.slog:13"
+   #f)))

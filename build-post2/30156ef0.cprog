@@ -1,0 +1,29 @@
+(cprog
+ #<set: query>
+ #hash((7 . const7902699be42c8a8e46fbbb45)
+       (10 . const4a44dc15364204a80fe80e90))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation query 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation fibres 2 (0 1))
+  (relation fib_ans 2 (0 1))
+  (struct fib 2 (1 0) (0 1))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre
+    (let __tconst8AnX6 const7902699be42c8a8e46fbbb45)
+    (let __tconst5UIx5 const4a44dc15364204a80fe80e90))
+   (once)
+   (body)
+   (head (emit query (0) __tconst8AnX6) (emit query (0) __tconst5UIx5))
+   "dem_fib.slog:12"
+   #f)))

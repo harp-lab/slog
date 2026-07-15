@@ -1,0 +1,34 @@
+(cprog
+ #<set: val>
+ #hash()
+ ((lattice val 2 (flat list) #f (0 1))
+  (struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation flow 2 (0 1))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation constant 2 (0 1))
+  (relation conflict 1 (0))
+  (relation assign 2 (0 1))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan assign L V)
+   (body)
+   (head (emit-lat val L V))
+   "lst_flat.slog:21"
+   #f)
+  (crule
+   (pre)
+   (scan val L V)
+   (body (join flow (0 1) 1 L L2))
+   (head (emit-lat val L2 V))
+   "lst_flat.slog:22"
+   #f)))

@@ -1,0 +1,112 @@
+(cprog
+ #<set:
+  c
+  type_mismatch
+  toint_range
+  nan_result
+  modulo_by_zero
+  int_overflow
+  b
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash((2 . constd4735e3a265e16eee03f5971) (5 . constef2d127de37b942baad06145))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation d 3 (0 1 2))
+  (relation c 2 (0 1))
+  (relation b 2 (0 1))
+  (relation a 2 (0 1))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre (let __tconst4zmV9 constef2d127de37b942baad06145))
+   (scan a X Y)
+   (body (let __t3mSH10 (_0002b Y __tconst4zmV9)))
+   (head (emit c (0 1) X __t3mSH10))
+   "strat_diamond.slog:15"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre64gr55 __errf2oAh56 __errf5yaW57)
+   (body)
+   (head (emit error (0) __erre64gr55))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre4twr58
+    __errf2b3T59
+    __errf6l1n60
+    __errf27tw61
+    __errf3gTm62)
+   (body)
+   (head (emit error (0) __erre4twr58))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre24me63
+    __errf6wJo64
+    __errf7eR765
+    __errf6l9V66
+    __errf4mgU67)
+   (body)
+   (head (emit error (0) __erre24me63))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre3uA451 __errf0Hx652 __errf9M8r53 __errf4cLL54)
+   (body)
+   (head (emit error (0) __erre3uA451))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre0XfY68 __errf0piR69 __errf19zq70)
+   (body)
+   (head (emit error (0) __erre0XfY68))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre5Sr247 __errf3zrU48 __errf8x0f49 __errf8hLX50)
+   (body)
+   (head (emit error (0) __erre5Sr247))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre8b9L41 __errf7D4v42 __errf3Gpz43)
+   (body)
+   (head (emit error (0) __erre8b9L41))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst0wYI1 constd4735e3a265e16eee03f5971))
+   (scan a X Y)
+   (body (let __t36aG2 (_0002a Y __tconst0wYI1)))
+   (head (emit b (0 1) X __t36aG2))
+   "strat_diamond.slog:14"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre9ob544 __errf07Kn45 __errf2Ri146)
+   (body)
+   (head (emit error (0) __erre9ob544))
+   "<internal>:1"
+   #f)))

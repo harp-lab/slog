@@ -1,0 +1,220 @@
+(cprog
+ #<set:
+  type_mismatch
+  toint_range
+  $seq_at
+  nan_result
+  temp3raE141
+  int_overflow
+  temp9fxX142
+  error
+  mpz_overflow
+  temp3KkW143
+  temp1W4r145
+  $seq_atr
+  doc
+  modulo_by_zero
+  want
+  mpz_table_overflow
+  div_by_zero
+  temp0jpv144>
+ #hash((1 . const6b86b273ff34fce19d6b804e)
+       (2 . constd4735e3a265e16eee03f5971)
+       (3 . const4e07408562bedb8b60ce05c1)
+       (7 . const7902699be42c8a8e46fbbb45)
+       (9 . const19581e27de7ced00ff1ce50b))
+ ((relation want 1 (0))
+  (struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (relation third3 1 (0))
+  (temp temp9fxX142 1)
+  (temp temp3raE141 1)
+  (temp temp3KkW143 4)
+  (temp temp1W4r145 4)
+  (temp temp0jpv144 4)
+  (relation startw 1 (0))
+  (relation starts7 1 (0))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation pair79 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (relation ends9 1 (0))
+  (relation doc 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1))
+  (relation $seq_atr 3 (0 1 2))
+  (relation $seq_at 3 (0 1 2))
+  (seqindex doc (0))
+  (seqindex ends9 (0))
+  (seqindex pair79 (0))
+  (seqindex starts7 (0))
+  (seqindex startw (0))
+  (seqindex third3 (0)))
+ ((crule
+   (pre
+    (let __tconst7hoU24 constd4735e3a265e16eee03f5971)
+    (let __tconst7jME22 const19581e27de7ced00ff1ce50b)
+    (let __tconst7VuE15 const4e07408562bedb8b60ce05c1))
+   (scan temp0jpv144 __t5Fi920 __t5jTL27 __t8JnU13 __t9uR46)
+   (body
+    (let __t7B4C28 (lpush __t5jTL27 __tconst7jME22))
+    (let __t4qkq21 (lpush __t5Fi920 __tconst7VuE15))
+    (let __t12Is14 (lpush __t8JnU13 __tconst7jME22))
+    (let __t9Pdf7 (lpush __t9uR46 __tconst7hoU24)))
+   (head (emit-temp temp1W4r145 __t12Is14 __t4qkq21 __t7B4C28 __t9Pdf7))
+   "seq_join.slog:12"
+   #f)
+  (crule
+   (pre
+    (let __tconst0AP729 const7902699be42c8a8e46fbbb45)
+    (let __tconst7hoU24 constd4735e3a265e16eee03f5971)
+    (let __tconst7jME22 const19581e27de7ced00ff1ce50b)
+    (let __tconst3UGp17 const6b86b273ff34fce19d6b804e)
+    (let __tconst7VuE15 const4e07408562bedb8b60ce05c1))
+   (scan temp9fxX142 __t19vD30)
+   (body
+    (let __t55CT26 (lpush __t19vD30 __tconst7hoU24))
+    (let __t3jUK19 (lpush __t19vD30 __tconst3UGp17))
+    (let __t9bUu12 (lpush __t19vD30 __tconst7VuE15))
+    (let __t9VBg5 (lpush __t19vD30 __tconst0AP729)))
+   (head (emit-temp temp3KkW143 __t3jUK19 __t55CT26 __t9VBg5 __t9bUu12))
+   "seq_join.slog:12"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre7Dyy111 __errf0CVn112 __errf9Qkj113)
+   (body)
+   (head (emit error (0) __erre7Dyy111))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp3raE141 __t5uF137)
+   (body)
+   (head (emit doc (0) __t5uF137))
+   "seq_join.slog:13"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre105v133
+    __errf205v134
+    __errf2vhf135
+    __errf43qh136
+    __errf6M04137)
+   (body)
+   (head (emit error (0) __erre105v133))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre5NQ2117 __errf3zwR118 __errf0HTm119 __errf5wze120)
+   (body)
+   (head (emit error (0) __erre5NQ2117))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre0kJF125 __errf41sT126 __errf0mhw127)
+   (body)
+   (head (emit error (0) __erre0kJF125))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst0AP729 const7902699be42c8a8e46fbbb45)
+    (let __tconst7hoU24 constd4735e3a265e16eee03f5971)
+    (let __tconst7jME22 const19581e27de7ced00ff1ce50b)
+    (let __tconst3UGp17 const6b86b273ff34fce19d6b804e)
+    (let __tconst7VuE15 const4e07408562bedb8b60ce05c1)
+    (let __t19vD30 (lempty)))
+   (once)
+   (body)
+   (head (emit-temp temp9fxX142 __t19vD30))
+   "seq_join.slog:12"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre80Uw114 __errf3USR115 __errf7dG7116)
+   (body)
+   (head (emit error (0) __erre80Uw114))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre49j5138 __errf8flv139 __errf7kjk140)
+   (body)
+   (head (emit error (0) __erre49j5138))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre8vEq128
+    __errf1yiw129
+    __errf0B7u130
+    __errf9Cti131
+    __errf4KkP132)
+   (body)
+   (head (emit error (0) __erre8vEq128))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst0AP729 const7902699be42c8a8e46fbbb45)
+    (let __tconst7hoU24 constd4735e3a265e16eee03f5971)
+    (let __tconst7jME22 const19581e27de7ced00ff1ce50b)
+    (let __tconst3UGp17 const6b86b273ff34fce19d6b804e)
+    (let __tconst7VuE15 const4e07408562bedb8b60ce05c1))
+   (scan temp3KkW143 __t3jUK19 __t55CT26 __t9VBg5 __t9bUu12)
+   (body
+    (let __t5jTL27 (lpush __t55CT26 __tconst0AP729))
+    (let __t5Fi920 (lpush __t3jUK19 __tconst7hoU24))
+    (let __t8JnU13 (lpush __t9bUu12 __tconst0AP729))
+    (let __t9uR46 (lpush __t9VBg5 __tconst3UGp17)))
+   (head
+    (emit-temp temp0jpv144 __t5Fi920 __t5jTL27 __t8JnU13 __t9uR46)
+    (emit doc (0) __t9VBg5))
+   "seq_join.slog:12"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre4bKj121 __errf09r8122 __errf48oR123 __errf62Si124)
+   (body)
+   (head (emit error (0) __erre4bKj121))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp1W4r145 __t12Is14 __t4qkq21 __t7B4C28 __t9Pdf7)
+   (body)
+   (head
+    (emit doc (0) __t7B4C28)
+    (emit doc (0) __t4qkq21)
+    (emit doc (0) __t12Is14)
+    (emit doc (0) __t9Pdf7))
+   "seq_join.slog:12"
+   #f)
+  (crule
+   (pre
+    (let __tconst5gCY36 const4e07408562bedb8b60ce05c1)
+    (let __tconst0K9a35 const7902699be42c8a8e46fbbb45))
+   (once)
+   (body)
+   (head (emit want (0) __tconst5gCY36) (emit want (0) __tconst0K9a35))
+   "seq_join.slog:22"
+   #f)
+  (crule
+   (pre (let __t5uF137 (lempty)))
+   (once)
+   (body)
+   (head (emit-temp temp3raE141 __t5uF137))
+   "seq_join.slog:13"
+   #f)))

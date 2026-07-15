@@ -1,0 +1,30 @@
+(cprog
+ #<set: accepted>
+ #hash((0 . const5feceb66ffc86f38d952786c)
+       ("E" . const43e6e2bebb3774311cf0c867))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation tok 2 (0 1))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation parse_ans 2 (0 1))
+  (struct parse 3 (1 2 0) (0 1 2) (delta 1 2 0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation len 1 (0))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation accepted 1 (0))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre
+    (let __tconst4gFD12 const5feceb66ffc86f38d952786c)
+    (let __tconst6uNz13 const43e6e2bebb3774311cf0c867))
+   (probe parse (1 2 0) 2 __tconst6uNz13 __tconst4gFD12 __t46uV14)
+   (body (join parse_ans (0 1) 1 __t46uV14 n) (join len (0) 1 n))
+   (head (emit accepted (0) n))
+   "dem_parse.slog:29"
+   #f)))

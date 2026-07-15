@@ -1,0 +1,104 @@
+(cprog
+ #<set:
+  int_overflow
+  type_mismatch
+  toint_range
+  nan_result
+  d
+  modulo_by_zero
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash((1 . const6b86b273ff34fce19d6b804e))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation d 1 (0))
+  (relation c 1 (0))
+  (relation b 1 (0))
+  (relation a 1 (0))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre5zFX175
+    __errf0QZP176
+    __errf7aVK177
+    __errf5YlQ178
+    __errf319Y179)
+   (body)
+   (head (emit error (0) __erre5zFX175))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre2TIl180
+    __errf6uEt181
+    __errf4zkj182
+    __errf5mfI183
+    __errf9b2F184)
+   (body)
+   (head (emit error (0) __erre2TIl180))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre4YgY168 __errf6XDz169 __errf8oCN170 __errf06rp171)
+   (body)
+   (head (emit error (0) __erre4YgY168))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre3b0M185 __errf1pF5186 __errf0hT9187)
+   (body)
+   (head (emit error (0) __erre3b0M185))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre9ScJ158 __errf1ZtD159 __errf0DtP160)
+   (body)
+   (head (emit error (0) __erre9ScJ158))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst4hcJ6 const6b86b273ff34fce19d6b804e))
+   (scan c X)
+   (body (let __t2EbY7 (_0002b X __tconst4hcJ6)))
+   (head (emit d (0) __t2EbY7))
+   "strat_revorder.slog:13"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre0gKr161 __errf2Sn1162 __errf6bzy163)
+   (body)
+   (head (emit error (0) __erre0gKr161))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre0Rtr164 __errf5v8O165 __errf3zfj166 __errf8XLJ167)
+   (body)
+   (head (emit error (0) __erre0Rtr164))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre7v61172 __errf3s9S173 __errf181s174)
+   (body)
+   (head (emit error (0) __erre7v61172))
+   "<internal>:1"
+   #f)))

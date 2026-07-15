@@ -1,0 +1,1 @@
+(stratum-meta (hash "a9299280") (level 1) (dynamic-rels out pair) (accel-rels) (heads out pair) (reads (in pos)) (acyclic #t) (rules (rule 1968816790 "structs.slog:10" "(rule (in X Y) --> (out _t93WH7) (= _t93WH7 (pair X Y)))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

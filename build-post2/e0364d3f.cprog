@@ -1,0 +1,247 @@
+(cprog
+ #<set:
+  int_overflow
+  type_mismatch
+  dv
+  md
+  nan_result
+  mul
+  shlr
+  absd
+  mn
+  mx
+  bor2
+  bnr
+  bxr
+  toint_range
+  error
+  bnd
+  mpz_overflow
+  sub
+  add
+  negr
+  shrr
+  pw
+  modulo_by_zero
+  absr
+  mpz_table_overflow
+  div_by_zero>
+ #hash()
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (relation sub 3 (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation shrr 3 (0 1 2))
+  (relation shlr 3 (0 1 2))
+  (relation pw 3 (0 1 2))
+  (relation negr 2 (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (relation mx 3 (0 1 2))
+  (relation mul 3 (0 1 2))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (relation mn 3 (0 1 2))
+  (relation md 3 (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation in2 2 (0 1))
+  (relation in1 1 (0))
+  (relation error 1 (0))
+  (relation dv 3 (0 1 2))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation bxr 3 (0 1 2))
+  (relation bor2 3 (0 1 2))
+  (relation bnr 2 (0 1))
+  (relation bnd 3 (0 1 2))
+  (relation add 3 (0 1 2))
+  (relation absr 2 (0 1))
+  (relation absd 3 (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan in2 A B)
+   (body (let __t03aW6 (_0002d A B)) (let __t98et7 (abs __t03aW6)))
+   (head (emit absd (0 1 2) A B __t98et7))
+   "prim_int.slog:53"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre8rpB70 __errf3obz71 __errf2jcG72 __errf3KSR73)
+   (body)
+   (head (emit error (0) __erre8rpB70))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan in1 A)
+   (body (let __t95bp17 (neg A)))
+   (head (emit negr (0 1) A __t95bp17))
+   "prim_int.slog:55"
+   #f)
+  (crule
+   (pre)
+   (scan in2 A B)
+   (body (let __t6JhG29 (_00025 A B)))
+   (head (emit md (0 1 2) A B __t6JhG29))
+   "prim_int.slog:42"
+   #f)
+  (crule
+   (pre)
+   (scan in2 A B)
+   (body (let __t0iAl11 (band A B)))
+   (head (emit bnd (0 1 2) A B __t0iAl11))
+   "prim_int.slog:46"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre4VnH77
+    __errf81bL78
+    __errf3Eix79
+    __errf0zz580
+    __errf7V7w81)
+   (body)
+   (head (emit error (0) __erre4VnH77))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan in2 A B)
+   (body (let __t29BG16 (bxor A B)))
+   (head (emit bxr (0 1 2) A B __t29BG16))
+   "prim_int.slog:48"
+   #f)
+  (crule
+   (pre)
+   (scan in2 A B)
+   (body (let __t1psu3 (_0002d A B)))
+   (head (emit sub (0 1 2) A B __t1psu3))
+   "prim_int.slog:39"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre1f9M82
+    __errf9Wer83
+    __errf2uik84
+    __errf4urq85
+    __errf7R2386)
+   (body)
+   (head (emit error (0) __erre1f9M82))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre8pqQ87 __errf9EHp88 __errf5Cr589)
+   (body)
+   (head (emit error (0) __erre8pqQ87))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre5GyT74 __errf64fr75 __errf297A76)
+   (body)
+   (head (emit error (0) __erre5GyT74))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan in1 A)
+   (body (let __t4E0615 (bnot A)))
+   (head (emit bnr (0 1) A __t4E0615))
+   "prim_int.slog:57"
+   #f)
+  (crule
+   (pre)
+   (scan in2 A B)
+   (body (let __t94KB4 (pow A B)))
+   (head (emit pw (0 1 2) A B __t94KB4))
+   "prim_int.slog:45"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre4lGu66 __errf3X5d67 __errf9aRX68 __errf4y7x69)
+   (body)
+   (head (emit error (0) __erre4lGu66))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan in2 A B)
+   (body (let __t2uI98 (shr A B)))
+   (head (emit shrr (0 1 2) A B __t2uI98))
+   "prim_int.slog:50"
+   #f)
+  (crule
+   (pre)
+   (scan in2 A B)
+   (body (let __t1QYX9 (max A B)))
+   (head (emit mx (0 1 2) A B __t1QYX9))
+   "prim_int.slog:44"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre5M1C63 __errf5QHW64 __errf2GkH65)
+   (body)
+   (head (emit error (0) __erre5M1C63))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan in2 A B)
+   (body (let __t9s4t10 (_0002b A B)))
+   (head (emit add (0 1 2) A B __t9s4t10))
+   "prim_int.slog:38"
+   #f)
+  (crule
+   (pre)
+   (scan in2 A B)
+   (body (let __t3cxS14 (_0002a A B)))
+   (head (emit mul (0 1 2) A B __t3cxS14))
+   "prim_int.slog:40"
+   #f)
+  (crule
+   (pre)
+   (scan in2 A B)
+   (body (let __t8VSh5 (bor A B)))
+   (head (emit bor2 (0 1 2) A B __t8VSh5))
+   "prim_int.slog:47"
+   #f)
+  (crule
+   (pre)
+   (scan in2 A B)
+   (body (let __t9rgm2 (_0002f A B)))
+   (head (emit dv (0 1 2) A B __t9rgm2))
+   "prim_int.slog:41"
+   #f)
+  (crule
+   (pre)
+   (scan in2 A B)
+   (body (let __t8i9013 (min A B)))
+   (head (emit mn (0 1 2) A B __t8i9013))
+   "prim_int.slog:43"
+   #f)
+  (crule
+   (pre)
+   (scan in1 A)
+   (body (let __t7d5k1 (abs A)))
+   (head (emit absr (0 1) A __t7d5k1))
+   "prim_int.slog:56"
+   #f)
+  (crule
+   (pre)
+   (scan in2 A B)
+   (body (let __t1FC712 (shl A B)))
+   (head (emit shlr (0 1 2) A B __t1FC712))
+   "prim_int.slog:49"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre0L1g60 __errf6c0Y61 __errf2yTx62)
+   (body)
+   (head (emit error (0) __erre0L1g60))
+   "<internal>:1"
+   #f)))

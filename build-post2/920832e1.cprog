@@ -1,0 +1,26 @@
+(cprog
+ #<set: verdict>
+ #hash(("blue" . const3aae004f448787fcf06c2d53))
+ ((relation verdict 2 (0 1))
+  (struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation item 2 (0 1))
+  (relation isred 1 (0))
+  (relation isgreen 1 (0))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1) (delta 1 0)))
+ ((crule
+   (pre (let __tconst3xMP15 const3aae004f448787fcf06c2d53))
+   (probe _enum (1 0) 1 __tconst3xMP15 __t5llU1)
+   (body (join isred (0) 0 n))
+   (head (emit verdict (0 1) n __t5llU1))
+   "enum_basic.slog:20"
+   #f)))

@@ -1,0 +1,128 @@
+(cprog
+ #<set:
+  int_overflow
+  type_mismatch
+  succ
+  toint_range
+  nan_result
+  modulo_by_zero
+  tonum
+  temp8PIA74
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash((0 . const5feceb66ffc86f38d952786c)
+       (1 . const6b86b273ff34fce19d6b804e)
+       (3 . const4e07408562bedb8b60ce05c1)
+       ("zero" . constb7ce3f814d0e14e74eb1dc74))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation tonum 2 (0 1))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp8PIA74 2)
+  (struct succ 2 (1 0) (0 1))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation pred 2 (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation isthree 1 (0))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1) (delta 1 0)))
+ ((crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre5tsI61
+    __errf9o3h62
+    __errf3HZk63
+    __errf3X9N64
+    __errf68E165)
+   (body)
+   (head (emit error (0) __erre5tsI61))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp8PIA74 N __t47yX7)
+   (body (join succ (1 0) 1 N __t1Ooo4))
+   (head (emit tonum (0 1) __t1Ooo4 __t47yX7))
+   "sdeep_recnest.slog:15"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre4D7166
+    __errf049O67
+    __errf81Wk68
+    __errf88np69
+    __errf4GqA70)
+   (body)
+   (head (emit error (0) __erre4D7166))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre4VdC58 __errf6thD59 __errf4LVo60)
+   (body)
+   (head (emit error (0) __erre4VdC58))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre9HBJ50 __errf825P51 __errf5WbO52 __errf1ez053)
+   (body)
+   (head (emit error (0) __erre9HBJ50))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst8IaY5 const4e07408562bedb8b60ce05c1)
+    (let __tconst4BJ56 const6b86b273ff34fce19d6b804e))
+   (scan tonum N V)
+   (body (cmp lt V __tconst8IaY5) (let __t47yX7 (_0002b V __tconst4BJ56)))
+   (head (emit-temp temp8PIA74 N __t47yX7) (mkstruct succ (1 0) __t1Ooo4 N))
+   "sdeep_recnest.slog:15"
+   #f)
+  (crule
+   (pre
+    (let __tconst2r9s11 constb7ce3f814d0e14e74eb1dc74)
+    (let __tconst5FOe8 const5feceb66ffc86f38d952786c))
+   (probe _enum (1 0) 1 __tconst2r9s11 __t3ZUI9)
+   (body)
+   (head (emit tonum (0 1) __t3ZUI9 __tconst5FOe8))
+   "sdeep_recnest.slog:11"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre45S171 __errf1caT72 __errf7AxC73)
+   (body)
+   (head (emit error (0) __erre45S171))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre2glK44 __errf2zgo45 __errf00mN46)
+   (body)
+   (head (emit error (0) __erre2glK44))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre4Seg54 __errf4YGb55 __errf6WE556 __errf6v0U57)
+   (body)
+   (head (emit error (0) __erre4Seg54))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre5kmI47 __errf72zC48 __errf9QbZ49)
+   (body)
+   (head (emit error (0) __erre5kmI47))
+   "<internal>:1"
+   #f)))

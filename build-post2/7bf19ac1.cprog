@@ -1,0 +1,28 @@
+(cprog
+ #<set: out>
+ #hash()
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation path 2 (0 1))
+  (relation out 2 (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (relation edge 2 (0 1))
+  (relation dub_ans 2 (0 1))
+  (struct dub 2 (1 0) (0 1))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation asked 1 (0))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan edge n ____4cQg2)
+   (body (join dub (1 0) 1 n __t0QTI1) (join dub_ans (0 1) 1 __t0QTI1 __v0))
+   (head (emit out (0 1) n __v0))
+   "rule_noarrow.slog:20"
+   #f)))

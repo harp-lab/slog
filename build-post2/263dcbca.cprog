@@ -1,0 +1,27 @@
+(cprog
+ #<set: pairs>
+ #hash((4 . const4b227777d4dd1fc61c6f884f))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (relation split_ans 3 (0 1 2))
+  (struct split 2 (1 0) (0 1) (delta 1 0))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation pairs 3 (0 1 2))
+  (relation num 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation demanded 1 (0))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre (let __tconst8qdd4 const4b227777d4dd1fc61c6f884f))
+   (probe split (1 0) 1 __tconst8qdd4 __t6Cqk5)
+   (body (join split_ans (0 1 2) 1 __t6Cqk5 a b))
+   (head (emit pairs (0 1 2) __tconst8qdd4 a b))
+   "dem_multi.slog:13"
+   #f)))

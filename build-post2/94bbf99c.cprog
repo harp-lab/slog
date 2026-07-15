@@ -1,0 +1,235 @@
+(cprog
+ #<set:
+  type_mismatch
+  temp7QdO572
+  poly
+  temp2YS4574
+  int_overflow
+  temp0ugy576
+  temp0AXa571
+  nu
+  toint_range
+  mono
+  nan_result
+  temp2ct4575
+  mu
+  error
+  mpz_overflow
+  temp4ZlF573
+  modulo_by_zero
+  mpz_table_overflow
+  div_by_zero>
+ #hash(("main" . conste4a9e4d8baa71a9d8ebf56ec))
+ ((relation valblur 2 (0 1))
+  (relation uniqueclo 1 (0))
+  (relation unique 2 (0 1))
+  (struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp7QdO572 1)
+  (temp temp4ZlF573 3)
+  (temp temp2ct4575 2)
+  (temp temp2YS4574 2)
+  (temp temp0ugy576 3)
+  (temp temp0AXa571 3)
+  (relation store 3 (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation result 1 (0))
+  (struct ref 2 (1 0) (0 1))
+  (relation rebound 2 (0 1))
+  (relation program 1 (0))
+  (relation poly 2 (0 1))
+  (relation pinned 2 (0 1))
+  (lattice nu 2 (count) #f (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (lattice muval 3 (count) #f (0 1 2) (delta 2 0 1))
+  (lattice mu 3 (count) #f (0 1 2))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation mono 2 (0 1))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (relation manyclo 1 (0))
+  (relation many 1 (0))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct lambda 3 (1 2 0) (0 1 2))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation freevar 2 (0 1))
+  (relation eval_ans 2 (0 1))
+  (struct eval 3 (1 2 0) (0 1 2))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct clo 3 (1 2 0) (0 1 2))
+  (relation callev 2 (0 1))
+  (relation bindev 3 (2 0 1) (0 1 2))
+  (relation bindblur 2 (0 1))
+  (struct app 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1) (delta 1 0))
+  (relation $sup27994x83x0x0x1 10 (0 1 2 3 4 5 6 7 8 9))
+  (relation $sup27994x83x0x0x0 4 (0 1 2 3)))
+ ((crule
+   (pre (let __t4vDS200 (inf)))
+   (probe muval (2 0 1) 1 __t4vDS200 x l)
+   (body)
+   (head (emit poly (0 1) x l))
+   "mcfa-counting.slog:150"
+   #f)
+  (crule
+   (pre)
+   (scan temp0ugy576 __t59AW129 l x)
+   (body)
+   (head (emit-lat mu x l __t59AW129))
+   "mcfa-counting.slog:131"
+   #f)
+  (crule
+   (pre (let __t6i2U128 (one)))
+   (scan bindev x l c)
+   (body)
+   (head (emit-temp temp4ZlF573 __t6i2U128 l x))
+   "mcfa-counting.slog:130"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre3t9x541 __errf6QnP542 __errf010m543)
+   (body)
+   (head (emit error (0) __erre3t9x541))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __t67t4280 (one)))
+   (probe muval (2 0 1) 1 __t67t4280 x l)
+   (body)
+   (head (emit mono (0 1) x l))
+   "mcfa-counting.slog:149"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre2YHG558
+    __errf46L1559
+    __errf7JkL560
+    __errf0KfP561
+    __errf3Iml562)
+   (body)
+   (head (emit error (0) __erre2YHG558))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __t4DfB281 (inf)))
+   (scan bindev x l c2)
+   (body (join bindev (0 1 2) 2 x l c1) (neq c1 c2))
+   (head (emit-temp temp0AXa571 __t4DfB281 l x))
+   "mcfa-counting.slog:132"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre7Eox555 __errf2nIj556 __errf4TXC557)
+   (body)
+   (head (emit error (0) __erre7Eox555))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp0AXa571 __t4DfB281 l x)
+   (body)
+   (head (emit-lat mu x l __t4DfB281))
+   "mcfa-counting.slog:132"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre2jr7568 __errf1OIz569 __errf4hCu570)
+   (body)
+   (head (emit error (0) __erre2jr7568))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp2ct4575 __t9nvh264 l)
+   (body)
+   (head (emit-lat nu l __t9nvh264))
+   "mcfa-counting.slog:128"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre6ZSJ551 __errf83YF552 __errf0Ugd553 __errf1tDr554)
+   (body)
+   (head (emit error (0) __erre6ZSJ551))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp2YS4574 __t1cOb223 l)
+   (body)
+   (head (emit-lat nu l __t1cOb223))
+   "mcfa-counting.slog:127"
+   #f)
+  (crule
+   (pre (let __tconst4Ntl326 conste4a9e4d8baa71a9d8ebf56ec))
+   (scan temp7QdO572 __t4vlQ1)
+   (body (join _enum (1 0) 1 __tconst4Ntl326 __t96FT2))
+   (head (emit-lat nu __t96FT2 __t4vlQ1))
+   "mcfa-counting.slog:126"
+   #f)
+  (crule
+   (pre (let __t59AW129 (inf)))
+   (scan many c)
+   (body (join bindev (2 0 1) 1 c x l))
+   (head (emit-temp temp0ugy576 __t59AW129 l x))
+   "mcfa-counting.slog:131"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre1Yca547 __errf47EG548 __errf5e6m549 __errf2xBF550)
+   (body)
+   (head (emit error (0) __erre1Yca547))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __t1cOb223 (one)))
+   (scan callev l c)
+   (body)
+   (head (emit-temp temp2YS4574 __t1cOb223 l))
+   "mcfa-counting.slog:127"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre3P4V563
+    __errf1IeD564
+    __errf1sEQ565
+    __errf4TT0566
+    __errf54yv567)
+   (body)
+   (head (emit error (0) __erre3P4V563))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre5HFg544 __errf4DRt545 __errf0yqZ546)
+   (body)
+   (head (emit error (0) __erre5HFg544))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst4Ntl326 conste4a9e4d8baa71a9d8ebf56ec)
+    (let __t4vlQ1 (one)))
+   (probe _enum (1 0) 1 __tconst4Ntl326 __t96FT2)
+   (body (join program (0) 0 e))
+   (head (emit-temp temp7QdO572 __t4vlQ1))
+   "mcfa-counting.slog:126"
+   #f)
+  (crule
+   (pre)
+   (scan temp4ZlF573 __t6i2U128 l x)
+   (body)
+   (head (emit-lat mu x l __t6i2U128))
+   "mcfa-counting.slog:130"
+   #f)
+  (crule
+   (pre (let __t9nvh264 (inf)))
+   (scan many l)
+   (body)
+   (head (emit-temp temp2ct4575 __t9nvh264 l))
+   "mcfa-counting.slog:128"
+   #f)))

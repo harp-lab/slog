@@ -1,0 +1,55 @@
+(cprog
+ #<set: node edge>
+ #hash((1 . const6b86b273ff34fce19d6b804e)
+       (2 . constd4735e3a265e16eee03f5971)
+       (3 . const4e07408562bedb8b60ce05c1)
+       (4 . const4b227777d4dd1fc61c6f884f)
+       (5 . constef2d127de37b942baad06145))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (lattice short 3 (min int) #f (0 1 2))
+  (relation node 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (relation edge 3 (0 1 2))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation bsz 2 (0 1))
+  (lattice best 2 (map int (min int)) #f (0 1))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre
+    (let __tconst15BK10 constef2d127de37b942baad06145)
+    (let __tconst1u5m15 constd4735e3a265e16eee03f5971)
+    (let __tconst3wjO16 const6b86b273ff34fce19d6b804e)
+    (let __tconst5zZK17 const4b227777d4dd1fc61c6f884f)
+    (let __tconst3Nwr18 const4e07408562bedb8b60ce05c1))
+   (once)
+   (body)
+   (head
+    (emit edge (0 1 2) __tconst3wjO16 __tconst1u5m15 __tconst3Nwr18)
+    (emit edge (0 1 2) __tconst3wjO16 __tconst1u5m15 __tconst15BK10)
+    (emit edge (0 1 2) __tconst1u5m15 __tconst3Nwr18 __tconst5zZK17)
+    (emit edge (0 1 2) __tconst3Nwr18 __tconst5zZK17 __tconst3wjO16))
+   "lat_nested.slog:19"
+   #f)
+  (crule
+   (pre
+    (let __tconst8GVs4 const4b227777d4dd1fc61c6f884f)
+    (let __tconst0b0t3 const4e07408562bedb8b60ce05c1)
+    (let __tconst3fSe2 constd4735e3a265e16eee03f5971)
+    (let __tconst02fr1 const6b86b273ff34fce19d6b804e))
+   (once)
+   (body)
+   (head
+    (emit node (0) __tconst8GVs4)
+    (emit node (0) __tconst0b0t3)
+    (emit node (0) __tconst3fSe2)
+    (emit node (0) __tconst02fr1))
+   "lat_nested.slog:20"
+   #f)))

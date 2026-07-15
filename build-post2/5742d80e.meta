@@ -1,0 +1,1 @@
+(stratum-meta (hash "5742d80e") (level 2) (dynamic-rels corners) (accel-rels) (heads corners) (reads (Lf pos) (lm pos) (rm pos)) (acyclic #t) (rules (rule 1946669835 "frozen_fact.slog:19" "(rule (rm _t13E52) (= _t13E52 (Lf b)) (lm _t26An1) (= _t26An1 (Lf a)) --> (corners a b))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

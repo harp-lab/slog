@@ -1,0 +1,33 @@
+(cprog
+ #<set: dark lit>
+ #hash(("off" . const9f3becba6e4b1583b3e19441)
+       ("on" . const990c23868b965814b117cf9a))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation lit 1 (0))
+  (relation lamp 2 (1 0))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation dark 1 (0))
+  (struct _enum 2 (1 0) (0 1) (delta 1 0)))
+ ((crule
+   (pre (let __tconst1YXC12 const990c23868b965814b117cf9a))
+   (probe _enum (1 0) 1 __tconst1YXC12 __t5Ax21)
+   (body (join lamp (1 0) 1 __t5Ax21 n))
+   (head (emit lit (0) n))
+   "enum_union_nullary.slog:15"
+   #f)
+  (crule
+   (pre (let __tconst4NCf11 const9f3becba6e4b1583b3e19441))
+   (probe _enum (1 0) 1 __tconst4NCf11 __t6a4n8)
+   (body (join lamp (1 0) 1 __t6a4n8 n))
+   (head (emit dark (0) n))
+   "enum_union_nullary.slog:16"
+   #f)))

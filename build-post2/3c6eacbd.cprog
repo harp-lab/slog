@@ -1,0 +1,222 @@
+(cprog
+ #<set: app program ref lambda>
+ #hash(("x" . constba2df4903a2c14e86dc3bcca)
+       ("y" . const2bc983a5942276eb00a75e21))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct ref 2 (1 0) (0 1) (delta 1 0))
+  (relation program 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct lambda 3 (1 2 0) (0 1 2) (delta 1 0 2))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct app 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre
+    (let __tconst2dKU13 const2bc983a5942276eb00a75e21)
+    (let __tconst2d0V20 constba2df4903a2c14e86dc3bcca))
+   (scan app __t0TEN22 __t7X6x21 __t553V14)
+   (body
+    (exists lambda (0 1 2) 2 __t553V14 __tconst2dKU13)
+    (exists ref (1 0) 1 __tconst2dKU13)
+    (exists ref (1 0) 1 __tconst2d0V20)
+    (join lambda (0 1 2) 2 __t7X6x21 __tconst2d0V20 __t9QAB19)
+    (join lambda (0 1 2) 2 __t553V14 __tconst2dKU13 __t3nP612)
+    (join ref (1 0) 1 __tconst2dKU13 __t2oNi6)
+    (exists app (1 2 0) 1 __t2oNi6)
+    (join app (0 1 2) 2 __t3nP612 __t2oNi6 __t66ch9)
+    (join app (0 1 2) 2 __t66ch9 __t2oNi6 dup9qtv85)
+    (eq __t2oNi6 dup9qtv85)
+    (join ref (1 0) 1 __tconst2d0V20 __t0D2T2)
+    (join app (0 1 2) 2 __t9QAB19 __t0D2T2 dup7A4B84)
+    (eq __t0D2T2 dup7A4B84))
+   (head (emit program (0) __t0TEN22))
+   "prog0.slog:7"
+   #f)
+  (crule
+   (pre
+    (let __tconst2d0V20 constba2df4903a2c14e86dc3bcca)
+    (let __tconst2dKU13 const2bc983a5942276eb00a75e21))
+   (probe lambda (1 0 2) 1 __tconst2d0V20 __t3Oar4 __t0D2T2)
+   (body
+    (join ref (0 1) 2 __t0D2T2 __tconst2d0V20)
+    (exists app (1 2 0) 1 __t0D2T2)
+    (join ref (1 0) 1 __tconst2dKU13 __t2oNi6)
+    (join app (1 2 0) 1 __t2oNi6 dup6Zhd72 __t66ch9)
+    (eq __t2oNi6 dup6Zhd72)
+    (join app (1 2 0) 1 __t0D2T2 dup8UwM73 __t9QAB19)
+    (eq __t0D2T2 dup8UwM73))
+   (head
+    (emit program (0) __t3Oar4)
+    (mkstruct lambda (1 2 0) __t7X6x21 __tconst2d0V20 __t9QAB19)
+    (mkstruct app (1 2 0) __t3nP612 __t2oNi6 __t66ch9))
+   "prog0.slog:7"
+   #f)
+  (crule
+   (pre
+    (let __tconst2d0V20 constba2df4903a2c14e86dc3bcca)
+    (let __tconst2dKU13 const2bc983a5942276eb00a75e21))
+   (seeded)
+   (body
+    (join ref (1 0) 1 __tconst2d0V20 __t0D2T2)
+    (join ref (1 0) 1 __tconst2dKU13 __t2oNi6))
+   (head
+    (mkstruct app (1 2 0) __t9QAB19 __t0D2T2 __t0D2T2)
+    (mkstruct app (1 2 0) __t66ch9 __t2oNi6 __t2oNi6)
+    (mkstruct lambda (1 2 0) __t3Oar4 __tconst2d0V20 __t0D2T2))
+   "prog0.slog:7"
+   #f)
+  (crule
+   (pre
+    (let __tconst2dKU13 const2bc983a5942276eb00a75e21)
+    (let __tconst2d0V20 constba2df4903a2c14e86dc3bcca))
+   (seeded)
+   (body
+    (join ref (1 0) 1 __tconst2dKU13 __t2oNi6)
+    (exists app (1 2 0) 1 __t2oNi6)
+    (exists lambda (1 2 0) 1 __tconst2dKU13)
+    (exists lambda (1 2 0) 1 __tconst2d0V20)
+    (join ref (1 0) 1 __tconst2d0V20 __t0D2T2)
+    (exists app (1 2 0) 1 __t0D2T2)
+    (join app (1 2 0) 1 __t2oNi6 dup4IAA82 __t66ch9)
+    (eq __t2oNi6 dup4IAA82)
+    (join app (1 2 0) 2 __t2oNi6 __t66ch9 __t3nP612)
+    (join lambda (1 2 0) 2 __tconst2dKU13 __t3nP612 __t553V14)
+    (join app (1 2 0) 1 __t0D2T2 dup9JDm83 __t9QAB19)
+    (eq __t0D2T2 dup9JDm83)
+    (join lambda (1 2 0) 2 __tconst2d0V20 __t9QAB19 __t7X6x21))
+   (head (mkstruct app (1 2 0) __t0TEN22 __t7X6x21 __t553V14))
+   "prog0.slog:7"
+   #f)
+  (crule
+   (pre
+    (let __tconst2dKU13 const2bc983a5942276eb00a75e21)
+    (let __tconst2d0V20 constba2df4903a2c14e86dc3bcca))
+   (seeded)
+   (body
+    (join ref (1 0) 1 __tconst2dKU13 __t2oNi6)
+    (exists lambda (1 2 0) 1 __tconst2d0V20)
+    (exists app (1 2 0) 1 __t2oNi6)
+    (exists lambda (1 2 0) 1 __tconst2dKU13)
+    (join ref (1 0) 1 __tconst2d0V20 __t0D2T2)
+    (join app (1 2 0) 1 __t0D2T2 dup2G8H86 __t9QAB19)
+    (eq __t0D2T2 dup2G8H86)
+    (join lambda (1 2 0) 2 __tconst2d0V20 __t9QAB19 __t7X6x21)
+    (exists app (1 2 0) 1 __t7X6x21)
+    (join app (1 2 0) 1 __t2oNi6 dup2RpF87 __t66ch9)
+    (eq __t2oNi6 dup2RpF87)
+    (join app (1 2 0) 2 __t2oNi6 __t66ch9 __t3nP612)
+    (join lambda (1 2 0) 2 __tconst2dKU13 __t3nP612 __t553V14)
+    (join app (1 2 0) 2 __t7X6x21 __t553V14 __t0TEN22))
+   (head (emit program (0) __t0TEN22))
+   "prog0.slog:7"
+   #f)
+  (crule
+   (pre
+    (let __tconst2dKU13 const2bc983a5942276eb00a75e21)
+    (let __tconst2d0V20 constba2df4903a2c14e86dc3bcca))
+   (probe lambda (1 0 2) 1 __tconst2dKU13 __t553V14 __t3nP612)
+   (body
+    (exists ref (1 0) 1 __tconst2d0V20)
+    (exists lambda (1 2 0) 1 __tconst2d0V20)
+    (join ref (1 0) 1 __tconst2dKU13 __t2oNi6)
+    (exists app (1 2 0) 1 __t2oNi6)
+    (join app (0 1 2) 2 __t3nP612 __t2oNi6 __t66ch9)
+    (join app (0 1 2) 2 __t66ch9 __t2oNi6 dup4sRM80)
+    (eq __t2oNi6 dup4sRM80)
+    (join ref (1 0) 1 __tconst2d0V20 __t0D2T2)
+    (join app (1 2 0) 1 __t0D2T2 dup1mZF81 __t9QAB19)
+    (eq __t0D2T2 dup1mZF81)
+    (join lambda (1 2 0) 2 __tconst2d0V20 __t9QAB19 __t7X6x21))
+   (head (mkstruct app (1 2 0) __t0TEN22 __t7X6x21 __t553V14))
+   "prog0.slog:7"
+   #f)
+  (crule
+   (pre
+    (let __tconst2d0V20 constba2df4903a2c14e86dc3bcca)
+    (let __tconst2dKU13 const2bc983a5942276eb00a75e21))
+   (seeded)
+   (body
+    (join ref (1 0) 1 __tconst2dKU13 __t2oNi6)
+    (exists app (1 2 0) 1 __t2oNi6)
+    (exists lambda (1 2 0) 1 __tconst2d0V20)
+    (join ref (1 0) 1 __tconst2d0V20 __t0D2T2)
+    (exists app (1 2 0) 1 __t0D2T2)
+    (join app (1 2 0) 1 __t2oNi6 dup0Kqk78 __t66ch9)
+    (eq __t2oNi6 dup0Kqk78)
+    (join app (1 2 0) 2 __t2oNi6 __t66ch9 __t3nP612)
+    (join app (1 2 0) 1 __t0D2T2 dup29Yu79 __t9QAB19)
+    (eq __t0D2T2 dup29Yu79)
+    (join lambda (1 2 0) 2 __tconst2d0V20 __t9QAB19 __t7X6x21))
+   (head (mkstruct lambda (1 2 0) __t553V14 __tconst2dKU13 __t3nP612))
+   "prog0.slog:7"
+   #f)
+  (crule
+   (pre
+    (let __tconst2d0V20 constba2df4903a2c14e86dc3bcca)
+    (let __tconst2dKU13 const2bc983a5942276eb00a75e21))
+   (seeded)
+   (body
+    (join ref (1 0) 1 __tconst2d0V20 __t0D2T2)
+    (exists ref (1 0) 1 __tconst2dKU13)
+    (exists app (1 2 0) 1 __t0D2T2)
+    (join lambda (1 2 0) 2 __tconst2d0V20 __t0D2T2 __t3Oar4)
+    (join ref (1 0) 1 __tconst2dKU13 __t2oNi6)
+    (join app (1 2 0) 1 __t2oNi6 dup9l8K74 __t66ch9)
+    (eq __t2oNi6 dup9l8K74)
+    (join app (1 2 0) 1 __t0D2T2 dup55sd75 __t9QAB19)
+    (eq __t0D2T2 dup55sd75))
+   (head
+    (emit program (0) __t3Oar4)
+    (mkstruct lambda (1 2 0) __t7X6x21 __tconst2d0V20 __t9QAB19)
+    (mkstruct app (1 2 0) __t3nP612 __t2oNi6 __t66ch9))
+   "prog0.slog:7"
+   #f)
+  (crule
+   (pre
+    (let __tconst2d0V20 constba2df4903a2c14e86dc3bcca)
+    (let __tconst2dKU13 const2bc983a5942276eb00a75e21))
+   (once)
+   (body)
+   (head
+    (mkstruct ref (1 0) __t2oNi6 __tconst2dKU13)
+    (mkstruct ref (1 0) __t0D2T2 __tconst2d0V20))
+   "prog0.slog:7"
+   #f)
+  (crule
+   (pre
+    (let __tconst2d0V20 constba2df4903a2c14e86dc3bcca)
+    (let __tconst2dKU13 const2bc983a5942276eb00a75e21))
+   (scan app __t3nP612 __t2oNi6 __t66ch9)
+   (body
+    (join ref (0 1) 2 __t2oNi6 __tconst2dKU13)
+    (exists ref (1 0) 1 __tconst2d0V20)
+    (exists lambda (1 2 0) 1 __tconst2d0V20)
+    (join app (0 1 2) 2 __t66ch9 __t2oNi6 dup9l0a76)
+    (eq __t2oNi6 dup9l0a76)
+    (join ref (1 0) 1 __tconst2d0V20 __t0D2T2)
+    (join app (1 2 0) 1 __t0D2T2 dup5Vqr77 __t9QAB19)
+    (eq __t0D2T2 dup5Vqr77)
+    (join lambda (1 2 0) 2 __tconst2d0V20 __t9QAB19 __t7X6x21))
+   (head (mkstruct lambda (1 2 0) __t553V14 __tconst2dKU13 __t3nP612))
+   "prog0.slog:7"
+   #f)
+  (crule
+   (pre
+    (let __tconst2d0V20 constba2df4903a2c14e86dc3bcca)
+    (let __tconst2dKU13 const2bc983a5942276eb00a75e21))
+   (probe ref (1 0) 1 __tconst2d0V20 __t0D2T2)
+   (body (join ref (1 0) 1 __tconst2dKU13 __t2oNi6))
+   (head
+    (mkstruct app (1 2 0) __t9QAB19 __t0D2T2 __t0D2T2)
+    (mkstruct app (1 2 0) __t66ch9 __t2oNi6 __t2oNi6)
+    (mkstruct lambda (1 2 0) __t3Oar4 __tconst2d0V20 __t0D2T2))
+   "prog0.slog:7"
+   #f)))

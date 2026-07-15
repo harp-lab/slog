@@ -1,0 +1,127 @@
+(cprog
+ #<set:
+  int_overflow
+  type_mismatch
+  toint_range
+  $seq_at
+  nan_result
+  modulo_by_zero
+  $seq_pos
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash((0 . const5feceb66ffc86f38d952786c) (1 . const6b86b273ff34fce19d6b804e))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation pairs 2 (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (relation mid 1 (0))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation key 1 (0))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (relation doc 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation contains5 1 (0))
+  (relation after12 1 (0))
+  (relation adjkey 2 (0 1))
+  (relation adj7 1 (0))
+  (struct _enum 2 (1 0) (0 1))
+  (relation $seq_posdem 2 (0 1))
+  (relation $seq_pos 3 (0 1 2))
+  (relation $seq_at 3 (0 1 2))
+  (seqindex after12 (0))
+  (seqindex contains5 (0))
+  (seqindex doc (0))
+  (seqindex mid (0)))
+ ((crule
+   (pre)
+   (scan nan_result __erre2nRZ310 __errf4jzp311 __errf9ZLF312 __errf6CTO313)
+   (body)
+   (head (emit error (0) __erre2nRZ310))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre0ftg314 __errf4bxm315 __errf8Y3A316)
+   (body)
+   (head (emit error (0) __erre0ftg314))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let one const6b86b273ff34fce19d6b804e))
+   (scan $seq_pos l j p)
+   (body
+    (let n (llen l))
+    (let lim (_0002d n j))
+    (cmp lt p lim)
+    (let p1 (_0002b p one)))
+   (head (emit $seq_pos (0 1 2) l j p1))
+   "seq_run.slog:15"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre7BcH303 __errf3CPh304 __errf2uYm305)
+   (body)
+   (head (emit error (0) __erre7BcH303))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre8ZgQ317
+    __errf5DJ1318
+    __errf0bBc319
+    __errf7Nd7320
+    __errf2kAf321)
+   (body)
+   (head (emit error (0) __erre8ZgQ317))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre1nmi322
+    __errf153V323
+    __errf4epl324
+    __errf0m2X325
+    __errf9Gcg326)
+   (body)
+   (head (emit error (0) __erre1nmi322))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let z const5feceb66ffc86f38d952786c))
+   (scan $seq_posdem l j)
+   (body (let n (llen l)) (cmp ge n j))
+   (head (emit $seq_pos (0 1 2) l j z))
+   "seq_run.slog:15"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre4pqP306 __errf6ZKV307 __errf3wyf308 __errf1q7e309)
+   (body)
+   (head (emit error (0) __erre4pqP306))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre8C9F300 __errf3z6b301 __errf0JZ7302)
+   (body)
+   (head (emit error (0) __erre8C9F300))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre8SKa327 __errf7OEE328 __errf6PAG329)
+   (body)
+   (head (emit error (0) __erre8SKa327))
+   "<internal>:1"
+   #f)))

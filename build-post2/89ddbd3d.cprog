@@ -1,0 +1,51 @@
+(cprog
+ #<set: laba labb probe>
+ #hash((1 . const6b86b273ff34fce19d6b804e)
+       (2 . constd4735e3a265e16eee03f5971)
+       (3 . const4e07408562bedb8b60ce05c1)
+       ("one" . const49e9fcfb5617aad332d56d58)
+       ("two" . constb85d38dc71a8027700bebd3c))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation probe 1 (0))
+  (relation out 2 (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation labb 2 (0 1))
+  (relation laba 2 (0 1))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation classify_ans 2 (0 1))
+  (struct classify 2 (1 0) (0 1))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre
+    (let __tconst86uW7 constd4735e3a265e16eee03f5971)
+    (let __tconst0j5T6 constb85d38dc71a8027700bebd3c)
+    (let __tconst55ad5 const6b86b273ff34fce19d6b804e)
+    (let __tconst2kF84 const49e9fcfb5617aad332d56d58))
+   (once)
+   (body)
+   (head
+    (emit labb (0 1) __tconst86uW7 __tconst0j5T6)
+    (emit laba (0 1) __tconst55ad5 __tconst2kF84))
+   "dem_or.slog:7"
+   #f)
+  (crule
+   (pre
+    (let __tconst9gJ43 const4e07408562bedb8b60ce05c1)
+    (let __tconst0bLo2 constd4735e3a265e16eee03f5971)
+    (let __tconst9SCT1 const6b86b273ff34fce19d6b804e))
+   (once)
+   (body)
+   (head
+    (emit probe (0) __tconst9gJ43)
+    (emit probe (0) __tconst0bLo2)
+    (emit probe (0) __tconst9SCT1))
+   "dem_or.slog:14"
+   #f)))

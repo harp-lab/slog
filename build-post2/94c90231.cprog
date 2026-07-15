@@ -1,0 +1,208 @@
+(cprog
+ #<set:
+  int_overflow
+  type_mismatch
+  toint_range
+  $seq_at
+  nan_result
+  modulo_by_zero
+  accepting
+  error
+  run_ans
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash((0 . const5feceb66ffc86f38d952786c) (1 . const6b86b273ff34fce19d6b804e))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (relation subject 1 (0))
+  (relation state 1 (0))
+  (struct star 2 (1 0) (0 1))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation run_ans 2 (0 1))
+  (struct run 3 (1 2 0) (0 1 2) (2 0 1))
+  (relation query 2 (0 1))
+  (relation nullable_ans 2 (0 1))
+  (struct nullable 2 (1 0) (0 1))
+  (relation nfa 3 (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (relation mkcat_ans 2 (0 1))
+  (struct mkcat 3 (1 2 0) (0 1 2))
+  (relation match 2 (0 1))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation frag 1 (0))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation deriv_ans 2 (0 1) (1 0))
+  (struct deriv 3 (2 1 0) (0 1 2))
+  (struct chr 2 (1 0) (0 1))
+  (struct cat 3 (1 2 0) (0 1 2))
+  (struct alt 3 (1 2 0) (0 1 2))
+  (relation alpha 1 (0))
+  (relation accepting 1 (0))
+  (struct _enum 2 (1 0) (0 1))
+  (relation $sup14449x83x0x0x0 5 (3 0 2 1 4) (2 3 4 0 1))
+  (relation $sup14449x71x0x0x1 6 (0 1 2 3 4 5))
+  (relation $sup14449x71x0x0x0 4 (0 1 2 3))
+  (relation $sup14449x70x0x0x0 4 (0 1 2 3))
+  (relation $sup14449x69x0x0x0 4 (0 1 2 3))
+  (relation $sup14449x68x0x0x0 4 (0 1 2 3))
+  (relation $sup14449x46x0x0x0 3 (0 1 2))
+  (relation $sup14449x45x0x0x0 3 (0 1 2))
+  (relation $seq_at 3 (1 0 2) (delta 1 0 2))
+  (seqindex run (2)))
+ ((crule
+   (pre)
+   (scan div_by_zero __erre70u9359 __errf07pP360 __errf8tCN361)
+   (body)
+   (head (emit error (0) __erre70u9359))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let _00024sqc0BMh151 const6b86b273ff34fce19d6b804e)
+    (let _00024sqc84j8152 const5feceb66ffc86f38d952786c)
+    (let _00024sqc3Nc1153 const6b86b273ff34fce19d6b804e)
+    (let _00024sqc3yfR154 const5feceb66ffc86f38d952786c)
+    (let _00024sqo4hCB159 const5feceb66ffc86f38d952786c))
+   (scan run_ans __t1EoI40 __v1)
+   (body
+    (exists $seq_at (1 0 2) 1 _00024sqo4hCB159)
+    (join run (0 1 2) 1 __t1EoI40 __v0 cs)
+    (exists $sup14449x83x0x0x0 (3 0 2 1 4) 1 cs)
+    (join deriv_ans (1 0) 1 __v0 __t64Hw39)
+    (join deriv (0 1 2) 1 __t64Hw39 r c)
+    (exists run (1 2 0) 1 r)
+    (exists $seq_at (1 0 2) 2 _00024sqo4hCB159 c)
+    (join $sup14449x83x0x0x0 (2 3 4 0 1) 3 c cs r _00024seq0 __t56Ql38)
+    (join run (1 2 0) 3 r _00024seq0 __t56Ql38)
+    (join-old $seq_at (1 0 2) 3 (1 0 2) _00024sqo4hCB159 c _00024seq0)
+    (letp _00024sql5Fed149 (aslst _00024seq0))
+    (let _00024sqn5Wub150 (llen _00024sql5Fed149))
+    (cmp ge _00024sqn5Wub150 _00024sqc0BMh151)
+    (letp chk3ZyV389 (lref _00024sql5Fed149 _00024sqc84j8152))
+    (eq c chk3ZyV389)
+    (let _00024sqp9FT9155 (_0002d _00024sqn5Wub150 _00024sqc3yfR154))
+    (let chk98DZ390 (lslice
+                     _00024sql5Fed149
+                     _00024sqc3Nc1153
+                     _00024sqp9FT9155))
+    (eq cs chk98DZ390))
+   (head (emit run_ans (0 1) __t56Ql38 __v1))
+   "antimirov.slog:84"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre30Wi369 __errf6gZu370 __errf0X9V371 __errf1Gof372)
+   (body)
+   (head (emit error (0) __erre30Wi369))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre3WR0376
+    __errf0zDM377
+    __errf8c4r378
+    __errf4ev2379
+    __errf2h6d380)
+   (body)
+   (head (emit error (0) __erre3WR0376))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let _00024sqc0BMh151 const6b86b273ff34fce19d6b804e)
+    (let _00024sqc84j8152 const5feceb66ffc86f38d952786c)
+    (let _00024sqc3Nc1153 const6b86b273ff34fce19d6b804e)
+    (let _00024sqc3yfR154 const5feceb66ffc86f38d952786c)
+    (let _00024sqo4hCB159 const5feceb66ffc86f38d952786c))
+   (probe $seq_at (1 0 2) 1 _00024sqo4hCB159 c _00024seq0)
+   (body
+    (letp _00024sql5Fed149 (aslst _00024seq0))
+    (let _00024sqn5Wub150 (llen _00024sql5Fed149))
+    (cmp ge _00024sqn5Wub150 _00024sqc0BMh151)
+    (let _00024sqp9FT9155 (_0002d _00024sqn5Wub150 _00024sqc3yfR154))
+    (let cs (lslice _00024sql5Fed149 _00024sqc3Nc1153 _00024sqp9FT9155))
+    (exists run (2 0 1) 1 _00024seq0)
+    (exists deriv (2 1 0) 1 c)
+    (exists run (2 0 1) 1 cs)
+    (join $sup14449x83x0x0x0 (3 0 2 1 4) 3 cs _00024seq0 c __t56Ql38 r)
+    (join run (1 2 0) 3 r _00024seq0 __t56Ql38)
+    (join deriv (2 1 0) 2 c r __t64Hw39)
+    (join deriv_ans (0 1) 1 __t64Hw39 __v0)
+    (join run (1 2 0) 2 __v0 cs __t1EoI40)
+    (join run_ans (0 1) 1 __t1EoI40 __v1)
+    (letp chk3BZA391 (lref _00024sql5Fed149 _00024sqc84j8152))
+    (eq c chk3BZA391))
+   (head (emit run_ans (0 1) __t56Ql38 __v1))
+   "antimirov.slog:84"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre3HQB365 __errf52HD366 __errf70P2367 __errf1xw4368)
+   (body)
+   (head (emit error (0) __erre3HQB365))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre62wX373 __errf2wX8374 __errf0kwj375)
+   (body)
+   (head (emit error (0) __erre62wX373))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst8dpy105 const5feceb66ffc86f38d952786c))
+   (scan state r)
+   (body
+    (join nullable (1 0) 1 r __t2Rlf106)
+    (join nullable_ans (0 1) 1 __t2Rlf106 n)
+    (cmp lt __tconst8dpy105 n))
+   (head (emit accepting (0) r))
+   "antimirov.slog:116"
+   #f)
+  (crule
+   (pre (let _00024sqc8xRx138 const5feceb66ffc86f38d952786c))
+   (scan nullable_ans __t7L2Q79 __v0)
+   (body
+    (join nullable (0 1) 1 __t7L2Q79 r)
+    (join run (1 2 0) 1 r _00024seq0 __t33xv78)
+    (letp _00024sql8ocV136 (aslst _00024seq0))
+    (let chk8X5t392 (llen _00024sql8ocV136))
+    (eq _00024sqc8xRx138 chk8X5t392))
+   (head (emit run_ans (0 1) __t33xv78 __v0))
+   "antimirov.slog:83"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre6Bsy386 __errf4kR6387 __errf72IC388)
+   (body)
+   (head (emit error (0) __erre6Bsy386))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre7TYs381
+    __errf4Tqh382
+    __errf3c8q383
+    __errf6fqy384
+    __errf2vix385)
+   (body)
+   (head (emit error (0) __erre7TYs381))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre78NY362 __errf8lgg363 __errf3BGj364)
+   (body)
+   (head (emit error (0) __erre78NY362))
+   "<internal>:1"
+   #f)))

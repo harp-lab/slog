@@ -1,0 +1,122 @@
+(cprog
+ #<set:
+  int_overflow
+  type_mismatch
+  g3
+  toint_range
+  nan_result
+  h
+  modulo_by_zero
+  cmpcalc
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash((2 . constd4735e3a265e16eee03f5971) (3 . const4e07408562bedb8b60ce05c1))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation pq 2 (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation h 2 (0 1))
+  (relation g3 3 (0 1 2))
+  (relation f 2 (0 1))
+  (relation error 1 (0))
+  (relation e 2 (1 0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation cmpcalc 2 (0 1))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan pq X Y)
+   (body (let __t6nO12 (_0002a X X)) (cmp lt Y __t6nO12))
+   (head (emit cmpcalc (0 1) X Y))
+   "prim2_guards.slog:31"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre7RsJ75
+    __errf92J676
+    __errf9Zv377
+    __errf34Qe78
+    __errf87Fq79)
+   (body)
+   (head (emit error (0) __erre7RsJ75))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre8T7I61 __errf0oFQ62 __errf55TH63)
+   (body)
+   (head (emit error (0) __erre8T7I61))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre2Lj272 __errf8QR373 __errf8xMV74)
+   (body)
+   (head (emit error (0) __erre2Lj272))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre8muS85 __errf5zy186 __errf03jh87)
+   (body)
+   (head (emit error (0) __erre8muS85))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst6ajx3 constd4735e3a265e16eee03f5971))
+   (scan e X Y)
+   (body (cmp ge X __tconst6ajx3) (join f (0 1) 1 Y Z))
+   (head (emit h (0 1) X Z))
+   "prim2_guards.slog:30"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre4ARK58 __errf2tXF59 __errf69Zl60)
+   (body)
+   (head (emit error (0) __erre4ARK58))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre2oli80
+    __errf7Wjd81
+    __errf7JfZ82
+    __errf7nQh83
+    __errf4BGv84)
+   (body)
+   (head (emit error (0) __erre2oli80))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst8GdB1 const4e07408562bedb8b60ce05c1))
+   (scan f Y Z)
+   (body (cmp gt Z Y) (join e (1 0) 1 Y X) (cmp lt X __tconst8GdB1))
+   (head (emit g3 (0 1 2) X Y Z))
+   "prim2_guards.slog:29"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre9nQ064 __errf2jtd65 __errf34Jr66 __errf8bSn67)
+   (body)
+   (head (emit error (0) __erre9nQ064))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre8iW068 __errf8mY869 __errf39vy70 __errf52Rx71)
+   (body)
+   (head (emit error (0) __erre8iW068))
+   "<internal>:1"
+   #f)))

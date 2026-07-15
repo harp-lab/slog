@@ -1,0 +1,34 @@
+(cprog
+ #<set: temp0dNe15 tag out>
+ #hash()
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp0dNe15 2)
+  (struct tag 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation out 1 (0))
+  (relation oks 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation in 2 (0 1))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan in n s)
+   (body)
+   (head (emit-temp temp0dNe15 n s) (mkstruct tag (1 2 0) __t00uM7 n s))
+   "enum_struct_field.slog:15"
+   #f)
+  (crule
+   (pre)
+   (scan temp0dNe15 n s)
+   (body (join tag (1 2 0) 2 n s __t00uM7))
+   (head (emit out (0) __t00uM7))
+   "enum_struct_field.slog:15"
+   #f)))

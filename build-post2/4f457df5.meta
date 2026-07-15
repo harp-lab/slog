@@ -1,0 +1,1 @@
+(stratum-meta (hash "4f457df5") (level 0) (dynamic-rels t) (accel-rels) (heads t) (reads) (acyclic #t) (rules (rule 460323072 "prim2_substr.slog:9" "(rule --> (t _tconst4dXV5) (= _tconst4dXV5 (const \"hello\")) (t _tconst3TNc4) (= _tconst3TNc4 (const \"abcdef\")))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

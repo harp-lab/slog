@@ -1,0 +1,250 @@
+(cprog
+ #<set:
+  fmin
+  fceil
+  fadd
+  fneg
+  ti
+  int_overflow
+  ffloor
+  fmul
+  type_mismatch
+  fsqrt
+  fmod2
+  fsub
+  fpow
+  fabsd
+  toint_range
+  nplus
+  nan_result
+  error
+  mpz_overflow
+  modulo_by_zero
+  fdiv
+  fmax
+  mpz_table_overflow
+  div_by_zero
+  tf
+  fround>
+ #hash((0.5 . constd2cbad71ff333de67d07ec67))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (relation ti 2 (0 1))
+  (relation tf 2 (0 1))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation nplus 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (relation n 1 (0))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation fsub 3 (0 1 2))
+  (relation fsqrt 2 (0 1))
+  (relation fround 2 (0 1))
+  (relation fpow 3 (0 1 2))
+  (relation fneg 2 (0 1))
+  (relation fmul 3 (0 1 2))
+  (relation fmod2 3 (0 1 2))
+  (relation fmin 3 (0 1 2))
+  (relation fmax 3 (0 1 2))
+  (relation ffloor 2 (0 1))
+  (relation fdiv 3 (0 1 2))
+  (relation fceil 2 (0 1))
+  (relation fadd 3 (0 1 2))
+  (relation fabsd 3 (0 1 2))
+  (relation f2 2 (0 1))
+  (relation f1 1 (0))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan f1 X)
+   (body (let __t5KnD27 (ceil X)))
+   (head (emit fceil (0 1) X __t5KnD27))
+   "prim_float.slog:52"
+   #f)
+  (crule
+   (pre (let __tconst1zmS11 constd2cbad71ff333de67d07ec67))
+   (scan n X)
+   (body
+    (let __t38KZ10 (tofloat X))
+    (let __t0gHW12 (_0002b __t38KZ10 __tconst1zmS11)))
+   (head (emit nplus (0) __t0gHW12))
+   "prim_float.slog:58"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre8T1887 __errf9fh388 __errf2g7h89)
+   (body)
+   (head (emit error (0) __erre8T1887))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan n X)
+   (body (let __t1YJx26 (tofloat X)))
+   (head (emit tf (0 1) X __t1YJx26))
+   "prim_float.slog:57"
+   #f)
+  (crule
+   (pre)
+   (scan f1 X)
+   (body (let __t7msk3 (floor X)))
+   (head (emit ffloor (0 1) X __t7msk3))
+   "prim_float.slog:51"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre0ejL63 __errf8syM64 __errf38ab65)
+   (body)
+   (head (emit error (0) __erre0ejL63))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre6pe674 __errf3LcT75 __errf6WqO76)
+   (body)
+   (head (emit error (0) __erre6pe674))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre87AM82
+    __errf4cHT83
+    __errf6twj84
+    __errf6b6q85
+    __errf8pSL86)
+   (body)
+   (head (emit error (0) __erre87AM82))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan f2 A B)
+   (body (let __t9tfc25 (pow A B)))
+   (head (emit fpow (0 1 2) A B __t9tfc25))
+   "prim_float.slog:47"
+   #f)
+  (crule
+   (pre)
+   (scan f1 X)
+   (body (let __t5oKG13 (sqrt X)))
+   (head (emit fsqrt (0 1) X __t5oKG13))
+   "prim_float.slog:50"
+   #f)
+  (crule
+   (pre)
+   (scan f1 X)
+   (body (let __t3rvQ4 (round X)))
+   (head (emit fround (0 1) X __t3rvQ4))
+   "prim_float.slog:53"
+   #f)
+  (crule
+   (pre)
+   (scan f2 A B)
+   (body (let __t6bak14 (_0002d A B)))
+   (head (emit fsub (0 1 2) A B __t6bak14))
+   "prim_float.slog:41"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre1sBZ77
+    __errf9UZj78
+    __errf22MG79
+    __errf5WhL80
+    __errf8ak581)
+   (body)
+   (head (emit error (0) __erre1sBZ77))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan f2 A B)
+   (body (let __t9oJz1 (max A B)))
+   (head (emit fmax (0 1 2) A B __t9oJz1))
+   "prim_float.slog:46"
+   #f)
+  (crule
+   (pre)
+   (scan f2 A B)
+   (body (let __t2mn85 (_0002b A B)))
+   (head (emit fadd (0 1 2) A B __t2mn85))
+   "prim_float.slog:40"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre6yTM60 __errf7zzi61 __errf2ZHh62)
+   (body)
+   (head (emit error (0) __erre6yTM60))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre4u7A70 __errf17Eg71 __errf4HAD72 __errf03Pf73)
+   (body)
+   (head (emit error (0) __erre4u7A70))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan f2 A B)
+   (body (let __t47W17 (_0002d B A)) (let __t2ppM8 (abs __t47W17)))
+   (head (emit fabsd (0 1 2) A B __t2ppM8))
+   "prim_float.slog:48"
+   #f)
+  (crule
+   (pre)
+   (scan f1 X)
+   (body (let __t3xWP6 (neg X)))
+   (head (emit fneg (0 1) X __t3xWP6))
+   "prim_float.slog:54"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre6H6V66 __errf5PgJ67 __errf1b1D68 __errf0CI969)
+   (body)
+   (head (emit error (0) __erre6H6V66))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan f2 A B)
+   (body (let __t3AjP2 (_00025 A B)))
+   (head (emit fmod2 (0 1 2) A B __t3AjP2))
+   "prim_float.slog:44"
+   #f)
+  (crule
+   (pre)
+   (scan f2 A B)
+   (body (let __t1Ctr24 (_0002a A B)))
+   (head (emit fmul (0 1 2) A B __t1Ctr24))
+   "prim_float.slog:42"
+   #f)
+  (crule
+   (pre)
+   (scan f2 A B)
+   (body (let __t89uZ29 (min A B)))
+   (head (emit fmin (0 1 2) A B __t89uZ29))
+   "prim_float.slog:45"
+   #f)
+  (crule
+   (pre)
+   (scan f2 A B)
+   (body (let __t2VuX9 (_0002f A B)))
+   (head (emit fdiv (0 1 2) A B __t2VuX9))
+   "prim_float.slog:43"
+   #f)
+  (crule
+   (pre)
+   (scan f1 X)
+   (body (let __t1mM528 (toint X)))
+   (head (emit ti (0 1) X __t1mM528))
+   "prim_float.slog:56"
+   #f)))

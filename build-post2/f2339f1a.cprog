@@ -1,0 +1,171 @@
+(cprog
+ #<set:
+  int_overflow
+  toint_range
+  o3
+  o1
+  h
+  modulo_by_zero
+  q
+  type_mismatch
+  nan_result
+  o2
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash((2 . constd4735e3a265e16eee03f5971) (4 . const4b227777d4dd1fc61c6f884f))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation q 1 (0))
+  (relation p 1 (0))
+  (relation o3 2 (0 1))
+  (relation o2 1 (0))
+  (relation o1 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation h 1 (0))
+  (relation g 1 (0))
+  (relation f 1 (0))
+  (relation error 1 (0))
+  (relation e 2 (0 1))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation d 1 (0))
+  (relation c 1 (0))
+  (relation b 1 (0))
+  (relation a 1 (0))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule (pre) (scan b X) (body) (head (emit o1 (0) X)) "shape_or.slog:46" #f)
+  (crule
+   (pre (let __tconst9sy11 constd4735e3a265e16eee03f5971))
+   (scan p X)
+   (body (cmp lt X __tconst9sy11))
+   (head (emit q (0) X))
+   "shape_or.slog:58"
+   #f)
+  (crule (pre) (scan b X) (body) (head (emit o2 (0) X)) "shape_or.slog:48" #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre4qJe77 __errf3zUr78 __errf67mj79)
+   (body)
+   (head (emit error (0) __erre4qJe77))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre6diL60 __errf5FAz61 __errf08DO62 __errf8EPY63)
+   (body)
+   (head (emit error (0) __erre6diL60))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan c Y)
+   (body (join a (0) 0 X))
+   (head (emit o3 (0 1) X Y))
+   "shape_or.slog:50"
+   #f)
+  (crule (pre) (scan a X) (body) (head (emit o1 (0) X)) "shape_or.slog:46" #f)
+  (crule
+   (pre)
+   (scan c Y)
+   (body (join b (0) 0 X))
+   (head (emit o3 (0 1) X Y))
+   "shape_or.slog:50"
+   #f)
+  (crule
+   (pre)
+   (scan g K)
+   (body (join e (0 1) 1 K V))
+   (head (emit h (0) V))
+   "shape_or.slog:56"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre6G1M56 __errf6l4157 __errf0g1s58 __errf2iZD59)
+   (body)
+   (head (emit error (0) __erre6G1M56))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre8kmf53 __errf01HD54 __errf8myU55)
+   (body)
+   (head (emit error (0) __erre8kmf53))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre5gwL72
+    __errf3yE473
+    __errf4yPQ74
+    __errf236575
+    __errf5Wre76)
+   (body)
+   (head (emit error (0) __erre5gwL72))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan f K)
+   (body (join e (0 1) 1 K V))
+   (head (emit h (0) V))
+   "shape_or.slog:56"
+   #f)
+  (crule
+   (pre)
+   (scan d Y)
+   (body (join a (0) 0 X))
+   (head (emit o3 (0 1) X Y))
+   "shape_or.slog:50"
+   #f)
+  (crule
+   (pre)
+   (scan d Y)
+   (body (join b (0) 0 X))
+   (head (emit o3 (0 1) X Y))
+   "shape_or.slog:50"
+   #f)
+  (crule (pre) (scan c X) (body) (head (emit o2 (0) X)) "shape_or.slog:48" #f)
+  (crule
+   (pre (let __tconst0sHM2 const4b227777d4dd1fc61c6f884f))
+   (scan p X)
+   (body (cmp gt X __tconst0sHM2))
+   (head (emit q (0) X))
+   "shape_or.slog:58"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre6RZd50 __errf3OKP51 __errf8g7352)
+   (body)
+   (head (emit error (0) __erre6RZd50))
+   "<internal>:1"
+   #f)
+  (crule (pre) (scan a X) (body) (head (emit o2 (0) X)) "shape_or.slog:48" #f)
+  (crule
+   (pre)
+   (scan toint_range __erre5gkQ64 __errf6EwJ65 __errf8fBh66)
+   (body)
+   (head (emit error (0) __erre5gkQ64))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre8hV867
+    __errf7Pbu68
+    __errf3FME69
+    __errf0Jmd70
+    __errf3j8M71)
+   (body)
+   (head (emit error (0) __erre8hV867))
+   "<internal>:1"
+   #f)))

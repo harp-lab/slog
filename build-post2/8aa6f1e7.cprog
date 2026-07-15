@@ -1,0 +1,30 @@
+(cprog
+ #<set: full>
+ #hash((0 . const5feceb66ffc86f38d952786c) (3 . const4e07408562bedb8b60ce05c1))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation tok2 2 (0 1))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation parse2_ans 3 (0 1 2))
+  (struct parse2 2 (1 0) (0 1) (delta 1 0))
+  (struct node 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct leaf 2 (1 0) (0 1))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation full 1 (0))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre
+    (let __tconst9huF16 const5feceb66ffc86f38d952786c)
+    (let __tconst7syw18 const4e07408562bedb8b60ce05c1))
+   (probe parse2 (1 0) 1 __tconst9huF16 __t2xCE17)
+   (body (join parse2_ans (0 1 2) 2 __t2xCE17 __tconst7syw18 t))
+   (head (emit full (0) t))
+   "dem_sppf.slog:19"
+   #f)))

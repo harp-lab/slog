@@ -1,0 +1,38 @@
+(cprog
+ #<set: go>
+ #hash((5 . constef2d127de37b942baad06145)
+       ("north" . const37171d544cfb48318189f58f)
+       ("south" . constc44926e20290c13324a8ecdf))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (relation step_ans 2 (0 1))
+  (struct step 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation go 2 (0 1))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1) (delta 1 0)))
+ ((crule
+   (pre
+    (let __tconst8AQt21 const37171d544cfb48318189f58f)
+    (let __tconst73oQ22 constc44926e20290c13324a8ecdf)
+    (let __tconst09dI15 constef2d127de37b942baad06145))
+   (probe _enum (1 0) 1 __tconst8AQt21 __t5aJF16)
+   (body
+    (exists _enum (1 0) 1 __tconst73oQ22)
+    (join step (1 2 0) 2 __t5aJF16 __tconst09dI15 __t4iXJ17)
+    (exists step_ans (0 1) 1 __t4iXJ17)
+    (join _enum (1 0) 1 __tconst73oQ22 __t9Y0b18)
+    (exists step (1 2 0) 1 __t9Y0b18)
+    (join step_ans (0 1) 1 __t4iXJ17 r)
+    (join step (1 2 0) 2 __t9Y0b18 r __t4A5v19)
+    (join step_ans (0 1) 1 __t4A5v19 q))
+   (head (emit go (0 1) r q))
+   "dem_enum.slog:12"
+   #f)))

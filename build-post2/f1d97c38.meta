@@ -1,0 +1,1 @@
+(stratum-meta (hash "f1d97c38") (level 1) (dynamic-rels tri) (accel-rels) (heads tri) (reads (edge pos)) (acyclic #t) (rules (rule 1361498243 "wcoj3.slog:15" "(rule (edge A C) (edge B C) (edge A B) --> (tri A B C))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

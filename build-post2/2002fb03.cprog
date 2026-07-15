@@ -1,0 +1,37 @@
+(cprog
+ #<set: joined keyname>
+ #hash()
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation score 2 (0 1))
+  (relation owner 2 (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation keyname 1 (0))
+  (struct key 3 (1 2 0) (0 1 2))
+  (relation joined 2 (0 1))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan score __t6lfa18 ____5HI519)
+   (body
+    (join key (0 1 2) 1 __t6lfa18 S ____0KQX20)
+    (join key (1 2 0) 1 S ____8F6t22 __t1sCo17)
+    (join owner (0 1) 1 __t1sCo17 ____6pZ221))
+   (head (emit keyname (0) S))
+   "sdeep_joinkey.slog:23"
+   #f)
+  (crule
+   (pre)
+   (scan score K V)
+   (body (join owner (0 1) 1 K Name))
+   (head (emit joined (0 1) Name V))
+   "sdeep_joinkey.slog:20"
+   #f)))

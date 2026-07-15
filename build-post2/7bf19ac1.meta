@@ -1,0 +1,1 @@
+(stratum-meta (hash "7bf19ac1") (level 3) (dynamic-rels out) (accel-rels) (heads out) (reads (dub pos) (dub_ans pos) (edge pos)) (acyclic #t) (rules (rule 1349412953 "rule_noarrow.slog:20" "(rule (edge n __4cQg2) (dub_ans _t0QTI1 _v0) (= _t0QTI1 (dub n)) --> (out n _v0))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

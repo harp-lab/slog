@@ -1,0 +1,407 @@
+(cprog
+ #<set:
+  $sup54764x22x18x0x0
+  int_overflow
+  type_mismatch
+  toint_range
+  $seq_at
+  nan_result
+  temp687o314
+  apply1_ans
+  modulo_by_zero
+  error
+  temp0G00313
+  mpz_overflow
+  apply1
+  mpz_table_overflow
+  div_by_zero
+  malformed_deduction
+  temp0r94312>
+ #hash((0 . const5feceb66ffc86f38d952786c)
+       (1 . const6b86b273ff34fce19d6b804e)
+       ("_lam54764x26x19" . conste593eb62d5b2b78aac29610d)
+       ("_lam54764x26x40" . const99071cf3586be89134ffc1b3)
+       ("apply1" . const25e7b0e6bcacc29ff436fea9)
+       ("dem_lambda.slog:10" . const019f836fc5ed4942d15bf125)
+       ("dem_lambda.slog:23" . constd20c23bad354bda74806a4f5))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation twice 1 (0))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp687o314 2)
+  (temp temp0r94312 2)
+  (temp temp0G00313 2)
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation scaled 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (relation map2_ans 2 (0 1))
+  (struct map2 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation kv 1 (0))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation input 1 (0))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation compose_ans 2 (0 1))
+  (struct compose 3 (1 2 0) (0 1 2))
+  (relation apply1_ans 2 (0 1) (1 0) (delta 0 1))
+  (struct apply1 3 (1 2 0) (0 1 2) (2 0 1) (delta 0 1 2) (delta 1 2 0))
+  (struct _lam54764x22x18 3 (1 2 0) (0 1 2) (2 0 1))
+  (struct _lam54764x18x33 2 (1 0) (0 1))
+  (struct _enum 2 (1 0) (0 1))
+  (relation $sup54764x9x0x0x0 5 (0 1 2 3 4))
+  (relation
+   $sup54764x22x18x0x0
+   4
+   (1 2 3 0)
+   (0 3 1 2)
+   (2 3 0 1)
+   (delta 1 2 3 0)
+   (delta 2 3 0 1))
+  (relation $seq_at 3 (0 1 2))
+  (seqindex input (0))
+  (seqindex map2 (2))
+  (seqindex map2_ans (1))
+  (seqindex scaled (0))
+  (seqindex twice (0)))
+ ((crule
+   (pre
+    (let __tconst3REr73 conste593eb62d5b2b78aac29610d)
+    (let __tconst5m6f34 const6b86b273ff34fce19d6b804e))
+   (scan apply1 __t8w5b37 __t0XnK36 n)
+   (body
+    (join _enum (0 1) 2 __t0XnK36 __tconst3REr73)
+    (let __t5ZXC35 (_0002b n __tconst5m6f34)))
+   (head (emit-temp temp687o314 __t5ZXC35 __t8w5b37))
+   "dem_lambda.slog:27"
+   #f)
+  (crule
+   (pre
+    (let __trid5HaP85 constd20c23bad354bda74806a4f5)
+    (let __trel5FD086 const25e7b0e6bcacc29ff436fea9)
+    (let __tcol70Dy87 const5feceb66ffc86f38d952786c))
+   (scan apply1 __t8SMm18 g x)
+   (body
+    (exists apply1_ans (0 1) 1 __t8SMm18)
+    (join $sup54764x22x18x0x0 (2 3 0 1) 2 g x __d0 f)
+    (join apply1_ans (0 1) 1 __t8SMm18 __v0))
+   (head
+    (tycheck
+     f
+     (accept (struct _lam54764x18x33) (struct _lam54764x22x18) (struct _enum))
+     __trid5HaP85
+     __trel5FD086
+     __tcol70Dy87
+     (1 2 3 4 0))
+    (mkstruct apply1 (1 2 0) __1iTE84 f __v0))
+   "dem_lambda.slog:23"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre0Pwu309 __errf8gBw310 __errf7jjc311)
+   (body)
+   (head (emit error (0) __erre0Pwu309))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __trid5HaP85 constd20c23bad354bda74806a4f5)
+    (let __trel5FD086 const25e7b0e6bcacc29ff436fea9)
+    (let __tcol70Dy87 const5feceb66ffc86f38d952786c))
+   (scan apply1_ans __t8SMm18 __v0)
+   (body
+    (join-old apply1 (0 1 2) 1 (0 1 2) __t8SMm18 g x)
+    (join $sup54764x22x18x0x0 (2 3 0 1) 2 g x __d0 f))
+   (head
+    (tycheck
+     f
+     (accept (struct _lam54764x18x33) (struct _lam54764x22x18) (struct _enum))
+     __trid5HaP85
+     __trel5FD086
+     __tcol70Dy87
+     (1 2 3 4 0))
+    (mkstruct apply1 (1 2 0) __1iTE84 f __v0))
+   "dem_lambda.slog:23"
+   #f)
+  (crule
+   (pre)
+   (scan temp687o314 __t5ZXC35 __t8w5b37)
+   (body)
+   (head (emit apply1_ans (0 1) __t8w5b37 __t5ZXC35))
+   "dem_lambda.slog:27"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre4Yj1292 __errf3T3y293 __errf9q9d294 __errf4rlg295)
+   (body)
+   (head (emit error (0) __erre4Yj1292))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    malformed_deduction
+    __erre64cN277
+    __errf1Nwt278
+    __errf0oGI279
+    __errf5xL9280
+    __errf2yJC281)
+   (body)
+   (head (emit error (0) __erre64cN277))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre2oy5282 __errf1Vqh283 __errf8Qbr284)
+   (body)
+   (head (emit error (0) __erre2oy5282))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre9eec304
+    __errf1lR2305
+    __errf0pwC306
+    __errf1clL307
+    __errf9cQR308)
+   (body)
+   (head (emit error (0) __erre9eec304))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan apply1 __t5Lm522 __t3Dcq21 x)
+   (body (join _lam54764x22x18 (0 1 2) 1 __t3Dcq21 f g))
+   (head (emit $sup54764x22x18x0x0 (1 2 3 0) f g x __t5Lm522))
+   "dem_lambda.slog:23"
+   #f)
+  (crule
+   (pre
+    (let __trid60wp75 const019f836fc5ed4942d15bf125)
+    (let __trel7cF176 const25e7b0e6bcacc29ff436fea9)
+    (let __tcol2j1x77 const5feceb66ffc86f38d952786c))
+   (scan $sup54764x9x0x0x0 _00024seq0 __d0 f x xs)
+   (body)
+   (head
+    (tycheck
+     f
+     (accept (struct _lam54764x18x33) (struct _lam54764x22x18) (struct _enum))
+     __trid60wp75
+     __trel7cF176
+     __tcol2j1x77
+     (1 2 3 4 0))
+    (mkstruct apply1 (1 2 0) __8fuM74 f x))
+   "dem_lambda.slog:10"
+   #f)
+  (crule
+   (pre)
+   (scan apply1 __t68lH41 f __v0)
+   (body
+    (exists apply1_ans (0 1) 1 __t68lH41)
+    (exists _lam54764x22x18 (1 2 0) 1 f)
+    (exists $sup54764x22x18x0x0 (1 2 3 0) 1 f)
+    (join apply1_ans (1 0) 1 __v0 __t5wmm40)
+    (join apply1_ans (0 1) 1 __t68lH41 __v1)
+    (join _lam54764x22x18 (1 2 0) 1 f g __t515s38)
+    (exists $sup54764x22x18x0x0 (1 2 3 0) 2 f g)
+    (exists apply1 (1 2 0) 1 __t515s38)
+    (join apply1 (0 1 2) 2 __t5wmm40 g x)
+    (exists apply1 (1 2 0) 2 __t515s38 x)
+    (join $sup54764x22x18x0x0 (1 2 3 0) 3 f g x __t288X39)
+    (join apply1 (0 1 2) 3 __t288X39 __t515s38 x))
+   (head (emit apply1_ans (0 1) __t288X39 __v1))
+   "dem_lambda.slog:23"
+   #f)
+  (crule
+   (pre)
+   (scan $sup54764x22x18x0x0 __t288X39 f g x)
+   (body
+    (exists apply1 (2 0 1) 2 x __t288X39)
+    (exists apply1 (1 2 0) 2 g x)
+    (exists apply1 (1 2 0) 1 f)
+    (join _lam54764x22x18 (1 2 0) 2 f g __t515s38)
+    (join-old apply1 (0 1 2) 3 (0 1 2) __t288X39 __t515s38 x)
+    (join-old apply1 (1 2 0) 2 (1 2 0) g x __t5wmm40)
+    (join apply1_ans (0 1) 1 __t5wmm40 __v0)
+    (join-old apply1 (1 2 0) 2 (1 2 0) f __v0 __t68lH41)
+    (join apply1_ans (0 1) 1 __t68lH41 __v1))
+   (head (emit apply1_ans (0 1) __t288X39 __v1))
+   "dem_lambda.slog:23"
+   #f)
+  (crule
+   (pre
+    (let __trid5HaP85 constd20c23bad354bda74806a4f5)
+    (let __trel5FD086 const25e7b0e6bcacc29ff436fea9)
+    (let __tcol70Dy87 const5feceb66ffc86f38d952786c))
+   (scan $sup54764x22x18x0x0 __d0 f g x)
+   (body
+    (join-old apply1 (1 2 0) 2 (1 2 0) g x __t8SMm18)
+    (join-old apply1_ans (0 1) 1 (0 1) __t8SMm18 __v0))
+   (head
+    (tycheck
+     f
+     (accept (struct _lam54764x18x33) (struct _lam54764x22x18) (struct _enum))
+     __trid5HaP85
+     __trel5FD086
+     __tcol70Dy87
+     (1 2 3 4 0))
+    (mkstruct apply1 (1 2 0) __1iTE84 f __v0))
+   "dem_lambda.slog:23"
+   #f)
+  (crule
+   (pre)
+   (scan apply1 __t5wmm40 g x)
+   (body
+    (exists _lam54764x22x18 (2 0 1) 1 g)
+    (exists apply1 (2 0 1) 1 x)
+    (exists apply1_ans (0 1) 1 __t5wmm40)
+    (join $sup54764x22x18x0x0 (2 3 0 1) 2 g x __t288X39 f)
+    (exists apply1 (2 0 1) 2 x __t288X39)
+    (exists apply1 (1 2 0) 1 f)
+    (join _lam54764x22x18 (1 2 0) 2 f g __t515s38)
+    (join apply1 (0 1 2) 3 __t288X39 __t515s38 x)
+    (join apply1_ans (0 1) 1 __t5wmm40 __v0)
+    (join-old apply1 (1 2 0) 2 (1 2 0) f __v0 __t68lH41)
+    (join apply1_ans (0 1) 1 __t68lH41 __v1))
+   (head (emit apply1_ans (0 1) __t288X39 __v1))
+   "dem_lambda.slog:23"
+   #f)
+  (crule
+   (pre)
+   (scan apply1 __t288X39 __t515s38 x)
+   (body
+    (exists apply1 (2 0 1) 1 x)
+    (join $sup54764x22x18x0x0 (0 3 1 2) 2 __t288X39 x f g)
+    (join _lam54764x22x18 (1 2 0) 3 f g __t515s38)
+    (exists apply1 (1 2 0) 1 f)
+    (join-old apply1 (1 2 0) 2 (1 2 0) g x __t5wmm40)
+    (join apply1_ans (0 1) 1 __t5wmm40 __v0)
+    (join-old apply1 (1 2 0) 2 (1 2 0) f __v0 __t68lH41)
+    (join apply1_ans (0 1) 1 __t68lH41 __v1))
+   (head (emit apply1_ans (0 1) __t288X39 __v1))
+   "dem_lambda.slog:23"
+   #f)
+  (crule
+   (pre (let __tconst2E4V101 const99071cf3586be89134ffc1b3))
+   (scan apply1 __t12sZ44 __t0PEU43 n)
+   (body
+    (join _enum (0 1) 2 __t0PEU43 __tconst2E4V101)
+    (let __t7bkw42 (_0002b n n)))
+   (head (emit-temp temp0G00313 __t12sZ44 __t7bkw42))
+   "dem_lambda.slog:27"
+   #f)
+  (crule
+   (pre)
+   (scan apply1_ans __t5wmm40 __v0)
+   (body
+    (exists apply1 (2 0 1) 1 __v0)
+    (join-old apply1 (0 1 2) 1 (0 1 2) __t5wmm40 g x)
+    (exists _lam54764x22x18 (2 0 1) 1 g)
+    (exists apply1 (2 0 1) 1 x)
+    (join-old $sup54764x22x18x0x0 (2 3 0 1) 2 (2 3 0 1) g x __t288X39 f)
+    (exists apply1 (2 0 1) 2 x __t288X39)
+    (exists apply1 (1 2 0) 2 f __v0)
+    (join _lam54764x22x18 (1 2 0) 2 f g __t515s38)
+    (join-old apply1 (0 1 2) 3 (0 1 2) __t288X39 __t515s38 x)
+    (join-old apply1 (1 2 0) 2 (1 2 0) f __v0 __t68lH41)
+    (join-old apply1_ans (0 1) 1 (0 1) __t68lH41 __v1))
+   (head (emit apply1_ans (0 1) __t288X39 __v1))
+   "dem_lambda.slog:23"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre9OqC285 __errf7eXC286 __errf5LzS287)
+   (body)
+   (head (emit error (0) __erre9OqC285))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp0G00313 __t12sZ44 __t7bkw42)
+   (body)
+   (head (emit apply1_ans (0 1) __t12sZ44 __t7bkw42))
+   "dem_lambda.slog:27"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre0DsV299
+    __errf7HDk300
+    __errf44ls301
+    __errf4hBX302
+    __errf55Gg303)
+   (body)
+   (head (emit error (0) __erre0DsV299))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan apply1 __t8ML628 __t4Oei27 n)
+   (body
+    (join _lam54764x18x33 (0 1) 1 __t4Oei27 k)
+    (let __t4uOj26 (_0002a n k)))
+   (head (emit-temp temp0r94312 __t4uOj26 __t8ML628))
+   "dem_lambda.slog:19"
+   #f)
+  (crule
+   (pre)
+   (scan apply1_ans __t68lH41 __v1)
+   (body
+    (join-old apply1 (0 1 2) 1 (0 1 2) __t68lH41 f __v0)
+    (exists _lam54764x22x18 (1 2 0) 1 f)
+    (exists $sup54764x22x18x0x0 (1 2 3 0) 1 f)
+    (join apply1_ans (1 0) 1 __v0 __t5wmm40)
+    (join _lam54764x22x18 (1 2 0) 1 f g __t515s38)
+    (exists $sup54764x22x18x0x0 (1 2 3 0) 2 f g)
+    (exists apply1 (1 2 0) 1 __t515s38)
+    (join-old apply1 (0 1 2) 2 (0 1 2) __t5wmm40 g x)
+    (exists apply1 (1 2 0) 2 __t515s38 x)
+    (join-old $sup54764x22x18x0x0 (1 2 3 0) 3 (1 2 3 0) f g x __t288X39)
+    (join-old apply1 (0 1 2) 3 (0 1 2) __t288X39 __t515s38 x))
+   (head (emit apply1_ans (0 1) __t288X39 __v1))
+   "dem_lambda.slog:23"
+   #f)
+  (crule
+   (pre)
+   (scan temp0r94312 __t4uOj26 __t8ML628)
+   (body)
+   (head (emit apply1_ans (0 1) __t8ML628 __t4uOj26))
+   "dem_lambda.slog:19"
+   #f)
+  (crule
+   (pre
+    (let __trid8IXr97 constd20c23bad354bda74806a4f5)
+    (let __trel6nKb98 const25e7b0e6bcacc29ff436fea9)
+    (let __tcol0DjC99 const5feceb66ffc86f38d952786c))
+   (scan $sup54764x22x18x0x0 __d0 f g x)
+   (body)
+   (head
+    (tycheck
+     g
+     (accept (struct _lam54764x18x33) (struct _lam54764x22x18) (struct _enum))
+     __trid8IXr97
+     __trel6nKb98
+     __tcol0DjC99
+     (1 2 3 4 0))
+    (mkstruct apply1 (1 2 0) __2lm196 g x))
+   "dem_lambda.slog:23"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre0Tuh296 __errf2EAJ297 __errf9H0z298)
+   (body)
+   (head (emit error (0) __erre0Tuh296))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre7SIx288 __errf9ad5289 __errf4hkx290 __errf6ssl291)
+   (body)
+   (head (emit error (0) __erre7SIx288))
+   "<internal>:1"
+   #f)))

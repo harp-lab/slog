@@ -1,0 +1,118 @@
+(cprog
+ #<set:
+  int_overflow
+  type_mismatch
+  temp4UXb282
+  toint_range
+  nan_result
+  sq_ans
+  modulo_by_zero
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash()
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp4UXb282 2)
+  (relation sqfib 2 (0 1))
+  (relation sq_ans 2 (0 1))
+  (struct sq 2 (1 0) (0 1))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation smallfib 1 (0))
+  (struct pairv 3 (1 2 0) (0 1 2))
+  (relation packed 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (relation n 1 (0))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation fib_ans 2 (0 1))
+  (struct fib 2 (1 0) (0 1))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan int_overflow __erre7v0G258 __errf7oAo259 __errf2Dny260 __errf53pF261)
+   (body)
+   (head (emit error (0) __erre7v0G258))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp4UXb282 __t7PV930 __t7YPN29)
+   (body)
+   (head (emit sq_ans (0 1) __t7PV930 __t7YPN29))
+   "dem_value.slog:7"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre3ylm262 __errf8epU263 __errf0Zdi264 __errf4Uuh265)
+   (body)
+   (head (emit error (0) __erre3ylm262))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre1plk252 __errf5rQn253 __errf5PUA254)
+   (body)
+   (head (emit error (0) __erre1plk252))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre5zDo269
+    __errf6lEs270
+    __errf3nLz271
+    __errf6XNu272
+    __errf4Gdx273)
+   (body)
+   (head (emit error (0) __erre5zDo269))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre3zu4266 __errf24sV267 __errf4UL1268)
+   (body)
+   (head (emit error (0) __erre3zu4266))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan sq __t7PV930 n)
+   (body (let __t7YPN29 (_0002a n n)))
+   (head (emit-temp temp4UXb282 __t7PV930 __t7YPN29))
+   "dem_value.slog:7"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre1Z76279 __errf5fNS280 __errf8Nfw281)
+   (body)
+   (head (emit error (0) __erre1Z76279))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre2L87274
+    __errf5s9O275
+    __errf8JJm276
+    __errf81bx277
+    __errf4DPI278)
+   (body)
+   (head (emit error (0) __erre2L87274))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre6wuo255 __errf0xuB256 __errf8KFx257)
+   (body)
+   (head (emit error (0) __erre6wuo255))
+   "<internal>:1"
+   #f)))

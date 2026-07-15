@@ -1,0 +1,65 @@
+(cprog
+ #<set: wrap arrow>
+ #hash(("tint" . constb40d060f542e4963e0fc1392))
+ ((relation wrap 1 (0))
+  (struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (relation src 1 (0))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation seen 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct arrow 3 (1 2 0) (0 1 2) (seeded-only 2 0 1))
+  (struct _enum 2 (1 0) (0 1) (delta 1 0)))
+ ((crule
+   (pre (let __tconst2DG09 constb40d060f542e4963e0fc1392))
+   (probe _enum (1 0) 1 __tconst2DG09 __t7idb3)
+   (body (join src (0) 0 x))
+   (head (mkstruct arrow (1 2 0) __t0qvL4 __t7idb3 __t7idb3))
+   "stage_derived.slog:16"
+   #f)
+  (crule
+   (pre (let __tconst2DG09 constb40d060f542e4963e0fc1392))
+   (seeded)
+   (body
+    (join _enum (1 0) 1 __tconst2DG09 __t7idb3)
+    (exists arrow (2 0 1) 1 __t7idb3)
+    (join arrow (1 2 0) 1 __t7idb3 dup9S8e15 __t0qvL4)
+    (eq __t7idb3 dup9S8e15)
+    (join arrow (1 2 0) 2 __t0qvL4 __t7idb3 __t91js5))
+   (head (emit wrap (0) __t91js5))
+   "stage_derived.slog:16"
+   #f)
+  (crule
+   (pre (let __tconst2DG09 constb40d060f542e4963e0fc1392))
+   (scan arrow __t0qvL4 __t7idb3 dup3bgk12)
+   (body (eq __t7idb3 dup3bgk12) (join _enum (0 1) 2 __t7idb3 __tconst2DG09))
+   (head (mkstruct arrow (1 2 0) __t91js5 __t0qvL4 __t7idb3))
+   "stage_derived.slog:16"
+   #f)
+  (crule
+   (pre (let __tconst2DG09 constb40d060f542e4963e0fc1392))
+   (seeded)
+   (body
+    (join _enum (1 0) 1 __tconst2DG09 __t7idb3)
+    (join arrow (1 2 0) 1 __t7idb3 dup4ZX813 __t0qvL4)
+    (eq __t7idb3 dup4ZX813))
+   (head (mkstruct arrow (1 2 0) __t91js5 __t0qvL4 __t7idb3))
+   "stage_derived.slog:16"
+   #f)
+  (crule
+   (pre (let __tconst2DG09 constb40d060f542e4963e0fc1392))
+   (scan arrow __t91js5 __t0qvL4 __t7idb3)
+   (body
+    (join _enum (0 1) 2 __t7idb3 __tconst2DG09)
+    (join arrow (0 1 2) 2 __t0qvL4 __t7idb3 dup619t14)
+    (eq __t7idb3 dup619t14))
+   (head (emit wrap (0) __t91js5))
+   "stage_derived.slog:16"
+   #f)))

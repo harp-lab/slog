@@ -1,0 +1,35 @@
+(cprog
+ #<set: in>
+ #hash(("a" . constac8d8342bbb2362d13f0a559)
+       ("b" . constc100f95c1913f9c72fc1f4ef)
+       ("bad" . constcbfeda2b1f044ccca4ea9dac)
+       ("ok" . constc48b5b1a9776c84602de2306))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation out 2 (0 1))
+  (relation oks 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation in 2 (0 1))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct box 2 (1 0) (0 1))
+  (struct _enum 2 (1 0) (0 1) (delta 1 0)))
+ ((crule
+   (pre
+    (let __tconst6m3h9 constcbfeda2b1f044ccca4ea9dac)
+    (let __tconst0wwE10 constc48b5b1a9776c84602de2306)
+    (let __tconst825E7 constc100f95c1913f9c72fc1f4ef)
+    (let __tconst1dku5 constac8d8342bbb2362d13f0a559))
+   (probe _enum (1 0) 1 __tconst6m3h9 __t7IXE6)
+   (body (join _enum (1 0) 1 __tconst0wwE10 __t04dY4))
+   (head
+    (emit in (0 1) __tconst825E7 __t7IXE6)
+    (emit in (0 1) __tconst1dku5 __t04dY4))
+   "enum_struct_field2.slog:11"
+   #f)))

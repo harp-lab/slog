@@ -1,0 +1,1 @@
+(stratum-meta (hash "d2061232") (level 2) (dynamic-rels res) (accel-rels) (heads res) (reads (_enum pos) (ev pos) (root pos)) (acyclic #t) (rules (rule 1243615502 "ex_let.slog:43" "(rule (= _t92AV1 (_enum _tconst83EY65)) (= _tconst83EY65 (const \"mt\")) (ev ee _t92AV1 w) (root pname ee) --> (res pname w))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

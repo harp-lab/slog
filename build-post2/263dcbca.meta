@@ -1,0 +1,1 @@
+(stratum-meta (hash "263dcbca") (level 2) (dynamic-rels pairs) (accel-rels) (heads pairs) (reads (split pos) (split_ans pos)) (acyclic #t) (rules (rule 1342902671 "dem_multi.slog:13" "(rule (split_ans _t6Cqk5 a b) (= _tconst8qdd4 (const 4)) (= _t6Cqk5 (split _tconst8qdd4)) --> (pairs _tconst8qdd4 a b))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

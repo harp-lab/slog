@@ -1,13 +1,14 @@
 # Execution tiers: implementation decisions and prototyped mechanisms
 
 2026-07-14. Companion to [execution-tiers.md](execution-tiers.md). Sections
-1–6 are the design-phase record (decisions D1–D14, prototype results,
+1–7 are the design-phase record (decisions D1–D18, prototype results,
 liftable code, change map); **section 0 tracks as-built execution status**
 and is the place to resume from in a new session.
 
-## 0. Execution status (updated 2026-07-14)
+## 0. Execution status (updated 2026-07-15)
 
-**T1 SHIPPED, working tree NOT yet committed.** The changed set:
+**T1 SHIPPED** in `50bb329` (`execution tiers and interpretation prep`).
+The changed set was:
 
 ```text
 new       compiler/canonical-plan.rkt        the pass + serializer + KernelPlanKey
@@ -24,12 +25,18 @@ confirmed in a real `.cprog`); cross-process plan-key determinism on a
 3-stratum lattice program exercising the ground-value probe; 31 `.plan`
 sidecars validate against `kernel-plan?`.
 
-**Before committing:** run the full suite once (`tests/run-all.sh`) — the
-new compiler source changes `compiler-sources-fingerprint`, so every cache
-key misses and the first run rebuilds everything (~4.5 min tiered). No
-golden refreshes are expected (generated C++ is byte-identical except
-`latchk_<n>` names in ground-value-lattice strata, and goldens compare CSV
-content, not C++).
+**T2 operator-kernel preparation is now executable, but not lifted into the
+daemon.** [tests/interp-operator-tests.cpp](../tests/interp-operator-tests.cpp)
+is a standalone design/conformance test over the real daemon headers. It now
+contains the VM, pausable cursors, observation ports, continuation ownership,
+and a narrow `Plan -> seal -> bind -> bucket task -> attempt-local candidates
+-> real emit` vertical slice. It is deliberately the only implementation file
+in this slice; no production daemon/compiler/protocol file was changed.
+
+Verified on 2026-07-15: Clang and GCC optimized builds; ASan+UBSan; all 163
+Racket unit tests; the 12 canonical-plan tests; the existing WCOJ3 operator
+test; and the standalone interpreter battery. See §7 for the production start
+order and the findings that must survive the lift.
 
 **Deliberate deviation from execution-tiers.md T1.3 (recorded there too):**
 `bumpFires` keeps its aggregated `(loc, base-tag)` key — emit-cpp documents
@@ -47,9 +54,11 @@ dispatch table exists — plans carry a sorted prim name table).
   explicit entry modes (§9.1 of the main doc), catalog introspection, and
   level-0 watches (early REPL payoff; no interpreter needed).
 - **T2** — the daemon interpreter: `daemon/interp.h` per §3.1/§3.2 shapes
-  (validated), cursor/task factory ladders in slogd beside `makeIndex`,
-  differential gates 12.1/12.2. T2 consumes the `.plan` sidecars T1 now
-  writes; remember stale caches predate `.plan` — re-emit on miss.
+  (validated further by the permanent operator test), cursor/task factory
+  ladders in slogd beside `makeIndex`, differential gates 12.1/12.2. Start
+  with the normal-set vertical slice in §7, not the whole opcode vocabulary.
+  T2 consumes the `.plan` sidecars T1 now writes; remember stale caches
+  predate `.plan` — re-emit on miss.
 
 Implementation gotchas already hit once (do not rediscover): the
 `all:`/`delta:` tag prefix is dynamic-rels membership, so input-only
@@ -57,8 +66,9 @@ relations scan as `all:`; the cprog constants hash is keyed value→name;
 `*_base.slog`/`*_lib.slog` files are multi-file-test helpers that fail
 standalone by design — never glob them into `run-tests.sh` args.
 
-Two working prototypes live in `/tmp/slog-tiers-proto/` (session artifacts;
-the liftable parts are inlined here):
+Two original working prototypes live in `/tmp/slog-tiers-proto/` (session
+artifacts; the liftable parts are inlined here), and the interpreter work now
+has the permanent executable test linked above:
 
 - `interp_proto.cpp` — the arity-erased cursor layer and a register-machine
   rule interpreter, compiled against the **real** daemon headers
@@ -128,14 +138,45 @@ lowers to three exact-semi-naive `join3` crules), (b) a compute/prims rule,
    a stratum is ~1–2 KB of text at these scales.
 3. Two real identity findings and several mechanical ones — section 4.
 
+### 1.3 Pause/debug/operator-chain prototype (P3, 2026-07-15)
+
+The permanent
+[interpreter operator test](../tests/interp-operator-tests.cpp) adds a second,
+deliberately dispatch-dominated benchmark (200K driver rows, 800K emitted
+candidates) and, more importantly, executable correctness tests for pausing
+and observation. Across repeated local runs:
+
+```text
+path                         factor vs fused native
+unobserved fast VM                 2.2–2.6x
+micro-stepped observed VM          3.7–5.0x
+```
+
+This is a stress ceiling, not a replacement for §1.1: it minimizes BTree work
+per dispatch, whereas the realistic joins remain 1.2–1.3x. It nevertheless
+pins an implementation rule: **ordinary execution and rich observation need
+separately compiled loops** (or compile-time policy specializations). An
+effective event mask of zero selects the fast loop. The observed loop pays for
+post-transition event construction, breakpoints, and optional lazy proof
+capture; native O0/O2 remains the right escape hatch for hot SCCs.
+
+The test also verifies every VM quantum from 1 through 31, a cursor that
+pauses repeatedly inside the search for one match, a 96-level cursor stack,
+all event/breakpoint ports, bounded proof capture, and continuation cloning
+under Clang, GCC, ASan, and UBSan.
+
 ## 2. Crystallized decisions
 
-**D1. Cursor representation: virtual dispatch, state inline.** One abstract
-`PrefixCursor { open(regs), next(regs) }`; concrete `Probe<A,K>` holds the
+**D1. Cursor representation: virtual dispatch, state inline, tri-state
+pull.** One abstract `PrefixCursor { open(regs), next(regs, budget) }`, where
+`next` returns `match | exhausted | paused`; concrete `Probe<A,K>` holds the
 btree iterator pair and bound key inline and writes output registers itself.
-Measured at parity with fused native; no function-pointer tables, no placement
-new. `Join3PrefixCursor` gains the same erasure later (same shape: it is
-already a cursor).
+The current match remains positioned until the next call, so proof capture can
+read it lazily without copying on the unobserved path. Measured at parity with
+fused native; no function-pointer tables, no placement new.
+`Join3PrefixCursor` gains the same erasure later (same shape: it is already a
+cursor). A boolean `next` is insufficient because a join3 intersection can
+exhaust a work slice before it either finds a match or proves exhaustion.
 
 **D2. Rule executor: register machine with explicit level stack.** Register
 file of plain `u64` (16 default, sized from the plan's `nregs`); ops in a
@@ -143,7 +184,10 @@ file of plain `u64` (16 default, sized from the plan's `nregs`); ops in a
 level stack so backtracking and mid-nest pausing are array operations. The
 complete backtracking loop is ~60 lines (section 3.1) and was validated
 differentially. Deadline polling: every 128 driver tuples (the
-`read_delta_sliced` cadence) plus inside long cursor loops.
+`read_delta_sliced` cadence) plus inside long cursor loops. The level stack is
+plan-sized, not an illustrative fixed array: real cached plans observed during
+P3 reached 85 cursor levels and 251 registers; the permanent test exercises
+96 levels.
 
 **D3. VariantTag must include a version ordinal — the doc's §2.1 as written
 is insufficient.** Prototyped fact: the recursive triangle lowers to *three*
@@ -224,7 +268,9 @@ pointers exactly where native tasks do it today. Parking reuses
 carries live btree iterators, which is safe for exactly the same reason the
 native `(rt, ri)` park is safe — indices are immutable until the finalize
 that a suspension skips — and must be discarded at any finalize, which the
-existing copy-for-resume ownership rule already enforces.
+existing copy-for-resume ownership rule already enforces. A parked task pins
+the immutable decoded/bound program generation; it must never hold a raw
+pointer into an install object that an upgrade can retire.
 
 **D12. Adapter/factory ladders live in the daemon, once.** The precedent is
 already shipped and measured: moving the `makeIndex` arity ladder out-of-line
@@ -238,16 +284,55 @@ daemon's exported symbols.
 same `emit`/`emit_temp`/`emit_struct`/`emit_lat` templates
 (`operators.h:520-616`) through a bound sink table built like the cursors —
 no second emit implementation, so send-shard formatting, error structs, and
-struct-id placeholder behavior are shared by construction.
+struct-id placeholder behavior are shared by construction. Every emit opcode
+carries an explicit bound sink port, and every attempt-local candidate retains
+that port. Head selection must not be reconstructed from candidate order.
 
 **D14. VM ops carry pre-resolved operands, not names.** Bound at install:
 cursor index, register numbers, constant slot values already materialized
 into a constant register bank at frame setup (so `(pre (let r k))` becomes a
 register preload executed once per task, not per tuple).
 
+**D15. Debug events are post-transition and proof payloads are lazy.** Driver,
+probe match/miss/exhaustion, guard pass/fail, instantiation, and emit are stable
+ports. A breakpoint observes state after the semantic transition has committed
+to the read attempt, so resume cannot retrigger it. Events carry RuleVariant,
+op index, and bound cursor/sink port; driver/register/current-premise views are
+materialized only when an enabled observer requests them. Proof counts and
+failure frontiers are bounded explicitly.
+
+**D16. Seal against the daemon capability table.** Register bounds/dataflow,
+relation slots and arities, ordering permutations and requisition, bound-prefix
+availability, head coverage, and RuleVariant uniqueness are seal errors. The
+seal also checks that every `(operator kind, A, K, view)` has an instantiated
+daemon factory. A syntactically valid plan must never discover a factory-ladder
+miss on a worker thread.
+
+**D17. Driver partition contracts stay distinct.** A delta scan consumes the
+relation's even round-robin `read_buckets`; those bucket numbers are not tuple
+hashes. A partially bound probe driver probes one shared prefix and partitions
+matches by `buckethash(first freshly bound column)`. A fully bound probe has
+one task. These three cases share no inferred generic "bucket" rule.
+
+**D18. Candidate, accepted insert, and committed delta are different event
+levels.** A satisfying body increments `fire` once, then may produce several
+head candidates. An existing master row can reject a candidate at the shared
+emit sink. Trace/provenance may report that attempted derivation, but a level-1
+watch settles only accepted changes before commit. Attempt-owned candidates,
+batches, and fire counters can be discarded and replayed from immutable input;
+cross-tier mid-read takeover restarts rather than translating live iterators.
+
 ## 3. Liftable code
 
 ### 3.1 The VM inner loop (validated shape for `daemon/interp.h`)
+
+The following is the original throughput skeleton. It records the compact
+backtracking structure, but its boolean cursor calls predate D1's internal
+pause result and its fixed `level_ip[8]` is illustrative only. The executable
+[operator test](../tests/interp-operator-tests.cpp) is authoritative for the
+state machine (`need_driver | dispatch | first_cursor_match | advance |
+done`), plan-sized level storage, post-transition stops, and continuation
+copying.
 
 ```cpp
 enum class OpK : u8 { probe, guard_neq, /*...,*/ emit };
@@ -303,8 +388,10 @@ the `guard` arm's backtrack (row abandon); `absent` is a probe arm that
 struct PrefixCursor
 {
   virtual ~PrefixCursor() = default;
-  virtual bool open(u64* regs) = 0;   // build key from key-regs, lower_bound
-  virtual bool next(u64* regs) = 0;   // prefix-check, write out-regs, advance
+  virtual std::unique_ptr<PrefixCursor> clone() const = 0;
+  virtual void open(const u64* regs) = 0; // build key, lower_bound
+  virtual CursorResult next(u64* regs, WorkBudget&) = 0;
+  virtual TupleView current() const = 0;  // valid while positioned; debug only
 };
 
 template <u16 A, u16 K>
@@ -313,24 +400,26 @@ struct Probe final : PrefixCursor
   Index** index; u16 keyreg[K]; u16 outreg[A - K];
   typename BTreeIndex<A>::iterator it, end;
   std::array<u64, A> key{};
-  bool open(u64* regs) override
+  bool positioned = false;
+  void open(const u64* regs) override
   {
     for (u16 i = 0; i < K; ++i) key[i] = regs[keyreg[i]];
     for (u16 i = K; i < A; ++i) key[i] = 0;
     auto* idx = static_cast<BTreeIndex<A>*>(index[buckethash(key[0])]);
     it = idx->lower_bound(key); end = idx->end();
-    return it != end;
+    positioned = false;
   }
-  bool next(u64* regs) override
+  CursorResult next(u64* regs, WorkBudget& budget) override
   {
-    while (it != end)
-    {
-      const std::array<u64, A>& m = *it;
-      for (u16 c = 0; c < K; ++c) if (m[c] != key[c]) return false;
-      for (u16 i = K; i < A; ++i) regs[outreg[i - K]] = m[i];
-      ++it; return true;
-    }
-    return false;
+    if (positioned) { ++it; positioned = false; }
+    if (it == end) return CursorResult::exhausted;
+    const std::array<u64, A>& m = *it;
+    for (u16 c = 0; c < K; ++c)
+      if (m[c] != key[c]) return CursorResult::exhausted;
+    if (!budget.tick()) return CursorResult::paused;
+    for (u16 i = K; i < A; ++i) regs[outreg[i - K]] = m[i];
+    positioned = true;
+    return CursorResult::match;
   }
 };
 ```
@@ -495,9 +584,11 @@ Tests:
 
 - `tests/unit/` canonical-plan battery: determinism (two-process diff), plan
   goldens for representative programs, VariantTag-ordinal uniqueness.
-- C++ interpreter operator tests following the `wcoj3-operator-tests.cpp`
-  pattern (standalone build, differential vs a logical model), plus the
-  prototype's native-vs-VM differential as a permanent fixture.
+- [C++ interpreter operator tests](../tests/interp-operator-tests.cpp)
+  following the `wcoj3-operator-tests.cpp` pattern (standalone build,
+  differential vs a logical model), including pause/continuation/debug and
+  the narrow seal/bind/real-index/real-emit vertical slice; retain the
+  native-vs-VM differential as a permanent fixture.
 - The `SLOG_OPT=interp` full-suite run (execution-tiers.md gate 12.3) and the
   disaggregated fires comparison (gate 12.2, finding 1).
 
@@ -512,3 +603,75 @@ From section 1.1, pending `bench/` validation:
   measured per-cluster O0 cost, both already tracked by the build cache);
 - demotion: a kernel whose profile shows fixpoint reached before O0 would
   have attached in each of the last N sessions skips compilation.
+
+## 7. Where to start T2 (recorded 2026-07-15)
+
+Start with **T2-A, the normal-set operator kernel**, independently of the
+RuleId/SCC refactor and before attempting the full canonical opcode language.
+The permanent
+[operator test](../tests/interp-operator-tests.cpp) is the executable
+specification for this slice.
+
+### T2-A0: land the conformance fixture
+
+- Keep the test standalone against real daemon headers, like the WCOJ3 test.
+- Preserve the logical-model differential, every-quantum continuation tests,
+  internal-cursor pause, post-transition breakpoints, bounded proofs, real
+  index/order probes, real emit dedup, and seal/bind rejection battery.
+- Add it to the appropriate quick/operator test tier before extracting code,
+  so every later lift is continuously differential against the prototype.
+
+### T2-A1: extract the production-neutral interpreter core
+
+- Create `daemon/interp.h` with immutable `DecodedRule`/`Op`, `CursorResult`,
+  `WorkBudget`, `PrefixCursor`, explicit VM state, plan-sized registers/level
+  stack, and a pinned program generation.
+- Provide separately compiled fast and observed policies with shared semantic
+  helpers. Keep candidate sink ports explicit and breakpoint stops
+  post-transition. A zero effective event mask must select the fast policy.
+- Move the test to instantiate this production core; do not integrate `Task`,
+  protocol parsing, SCC policy, or hot swap in this sub-slice.
+
+### T2-A2: seal and bind the narrow vertical vocabulary
+
+- Add the in-memory decoded/sealed/bound interfaces in `daemon/plan.h` (the T0
+  dispatcher may parse into them later): constant preloads; delta-scan and
+  full-prefix-probe drivers; full-prefix set probes; `neq`; one `fire`; and
+  ordinary set heads.
+- Seal register dataflow, slot/arity/order ABI, requested indices, head ports,
+  and the factory capability table. Bind direct `Relation*`, `Index**`, cursor
+  factories, primitive pointers when introduced, and head sinks exactly once.
+- Instantiate the `(A,K)` cursor/sink ladders out of line beside `makeIndex` in
+  `slogd.cpp`. The 2/3-arity test ladder is only a prototype convenience;
+  production coverage must match the daemon's supported arity range.
+- Parse at least one real T1 `.plan` sidecar into this path as soon as the T0
+  S-expression reader exists; until then, construct the same decoded object in
+  C++ and keep parser concerns out of worker execution.
+
+### T2-A3: attach one real `InterpReadTask`
+
+- Construct one task per `(RuleVariant, bucket)` and run it through the existing
+  read scheduler, `pushPaused`, deadline/stop plumbing, and write/intern phases.
+- Preserve the distinct driver partitions: scan `read_buckets`, partially
+  bound probe by first-free-column hash, fully bound probe as one task.
+- Use the existing emit family through attempt/task-owned bound sink batches;
+  do not allocate diagnostic `vector<vector<u64>>` candidates in the hot path.
+  Keep enough attempt ownership that T5 settle and T6 discard/replay do not
+  require changing the opcode or sink ABI.
+- First admission gate: one representative recursive normal-set program has
+  identical per-iteration deltas and disaggregated RuleVariant fire counts
+  under interpreter and O0/O2.
+
+### T2-B: expand vocabulary only after T2-A is green
+
+Add in conformance-sized groups: `once`/`seeded` and K=0 scans; old/new and
+absence cursors; map/lattice probes; primitive/`letp`/type operations; the real
+`Join3PrefixCursor`; then temp/struct/lattice/count sinks and declaration-built
+write/intern tasks. Each group lands with interpreter-vs-native per-iteration
+delta and fire-multiset tests before the next group.
+
+Do **not** pull T3 tier scheduling, T5 watch-settle UI, or T6 transactional
+mid-read replacement into T2-A. The kernel must preserve their seams—observed
+policy, lazy proof views, attempt-local sink identity, pinned generations—but
+T2 first ships boundary-safe interpreted execution. T0 protocol/identity work
+can proceed in parallel and meet T2 at the decoded/sealed builder interface.

@@ -1,0 +1,169 @@
+(cprog
+ #<set:
+  int_overflow
+  nan_result
+  modulo_by_zero
+  peak
+  type_mismatch
+  low
+  toint_range
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash((1 . const6b86b273ff34fce19d6b804e)
+       (2 . constd4735e3a265e16eee03f5971)
+       (3 . const4e07408562bedb8b60ce05c1)
+       (10 . const4a44dc15364204a80fe80e90)
+       (20 . constf5ca38f748a1d6eaf726b8a4)
+       (21 . const6f4b6612125fb3a0daecd279)
+       (40 . constd59eced1ded07f84c145592f))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation seed 2 (0 1) (delta 0 1))
+  (lattice peak 2 (max int) #f (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (lattice low 2 (min int) #f (0 1))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan modulo_by_zero __erre4WYR71 __errf4X5Z72 __errf0REM73)
+   (body)
+   (head (emit error (0) __erre4WYR71))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst4Rnr12 constd4735e3a265e16eee03f5971))
+   (probe seed (0 1) 1 __tconst4Rnr12 V)
+   (body)
+   (head (emit-lat peak __tconst4Rnr12 V) (emit-lat low __tconst4Rnr12 V))
+   "int_lat.slog:25"
+   #f)
+  (crule
+   (pre
+    (let __tconst2KDR35 constd59eced1ded07f84c145592f)
+    (let __tconst0oM736 const6b86b273ff34fce19d6b804e)
+    (let __t7YHP37 (shl __tconst0oM736 __tconst2KDR35)))
+   (probe seed (0 1) 1 __tconst0oM736 V)
+   (body)
+   (head
+    (emit-lat peak __tconst0oM736 __t7YHP37)
+    (emit-lat low __tconst0oM736 __t7YHP37))
+   "int_lat.slog:24"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre4Uq474 __errf0Vty75 __errf5jPp76 __errf8I6e77)
+   (body)
+   (head (emit error (0) __erre4Uq474))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre90dr95 __errf8Xck96 __errf88rL97)
+   (body)
+   (head (emit error (0) __erre90dr95))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst1AOx3 const6b86b273ff34fce19d6b804e))
+   (probe seed (0 1) 1 __tconst1AOx3 V)
+   (body)
+   (head (emit-lat peak __tconst1AOx3 V) (emit-lat low __tconst1AOx3 V))
+   "int_lat.slog:23"
+   #f)
+  (crule
+   (pre
+    (let __tconst2Av915 const4e07408562bedb8b60ce05c1)
+    (let __tconst03Qq16 const6f4b6612125fb3a0daecd279)
+    (let __tconst4gXk17 const4a44dc15364204a80fe80e90)
+    (let __t63t418 (pow __tconst4gXk17 __tconst03Qq16)))
+   (probe seed (0 1) 1 __tconst2Av915 V)
+   (body)
+   (head
+    (emit-lat peak __tconst2Av915 __t63t418)
+    (emit-lat low __tconst2Av915 __t63t418))
+   "int_lat.slog:28"
+   #f)
+  (crule
+   (pre
+    (let __tconst8jeO28 const4e07408562bedb8b60ce05c1)
+    (let __tconst4T7l29 constf5ca38f748a1d6eaf726b8a4)
+    (let __tconst3uK630 const4a44dc15364204a80fe80e90)
+    (let __t3rcO31 (pow __tconst3uK630 __tconst4T7l29)))
+   (probe seed (0 1) 1 __tconst8jeO28 V)
+   (body)
+   (head
+    (emit-lat peak __tconst8jeO28 __t3rcO31)
+    (emit-lat low __tconst8jeO28 __t3rcO31))
+   "int_lat.slog:27"
+   #f)
+  (crule
+   (pre
+    (let __tconst9xD521 constd4735e3a265e16eee03f5971)
+    (let __tconst2V4k22 constd59eced1ded07f84c145592f)
+    (let __tconst4QcT23 const6b86b273ff34fce19d6b804e)
+    (let __t5KnR24 (shl __tconst4QcT23 __tconst2V4k22))
+    (let __t1IFT25 (neg __t5KnR24)))
+   (probe seed (0 1) 1 __tconst9xD521 V)
+   (body)
+   (head
+    (emit-lat peak __tconst9xD521 __t1IFT25)
+    (emit-lat low __tconst9xD521 __t1IFT25))
+   "int_lat.slog:26"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre2iD382 __errf2KW783 __errf1Yso84)
+   (body)
+   (head (emit error (0) __erre2iD382))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre0g2990
+    __errf0VXK91
+    __errf86yS92
+    __errf1RB793
+    __errf46eu94)
+   (body)
+   (head (emit error (0) __erre0g2990))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre3Nan85
+    __errf14Ow86
+    __errf4r3D87
+    __errf2fwc88
+    __errf6i1P89)
+   (body)
+   (head (emit error (0) __erre3Nan85))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre2Ti868 __errf5wti69 __errf8vQr70)
+   (body)
+   (head (emit error (0) __erre2Ti868))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre5qED78 __errf6VSP79 __errf3fMG80 __errf7Gdv81)
+   (body)
+   (head (emit error (0) __erre5qED78))
+   "<internal>:1"
+   #f)))

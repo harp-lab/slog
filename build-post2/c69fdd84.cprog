@@ -1,0 +1,92 @@
+(cprog
+ #<set: outA outB>
+ #hash((7 . const7902699be42c8a8e46fbbb45)
+       ("False" . constcea17e0b05e3e6ace77ec2d1)
+       ("True" . const76c777b0ce3c35ba97c6cbde))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation outB 1 (0))
+  (relation outA 1 (0))
+  (relation normB_ans 2 (0 1))
+  (struct normB 2 (1 0) (0 1))
+  (relation normA_ans 2 (0 1))
+  (struct normA 2 (1 0) (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation fdat 1 (0))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1) (delta 1 0))
+  (struct Wrap 2 (1 0) (0 1))
+  (struct DInt 2 (1 0) (0 1) (delta 1 0))
+  (struct DBool 2 (1 0) (0 1))
+  (relation $sup87077x26x0x0x0 3 (0 1 2)))
+ ((crule
+   (pre (let __tconst6Tpj86 const76c777b0ce3c35ba97c6cbde))
+   (probe _enum (1 0) 1 __tconst6Tpj86 __t0vdg30)
+   (body
+    (join DBool (1 0) 1 __t0vdg30 __t0GJI31)
+    (join Wrap (1 0) 1 __t0GJI31 __t4J3o32)
+    (join normB (1 0) 1 __t4J3o32 __t4MR733)
+    (join normB_ans (0 1) 1 __t4MR733 r))
+   (head (emit outB (0) r))
+   "dem_neq_literal.slog:35"
+   #f)
+  (crule
+   (pre (let __tconst6ZoB81 const76c777b0ce3c35ba97c6cbde))
+   (probe _enum (1 0) 1 __tconst6ZoB81 __t1EDd26)
+   (body
+    (join DBool (1 0) 1 __t1EDd26 __t9mJP27)
+    (join Wrap (1 0) 1 __t9mJP27 __t66Fo28)
+    (join normA (1 0) 1 __t66Fo28 __t2Mn329)
+    (join normA_ans (0 1) 1 __t2Mn329 r))
+   (head (emit outA (0) r))
+   "dem_neq_literal.slog:31"
+   #f)
+  (crule
+   (pre (let __tconst5dNK72 constcea17e0b05e3e6ace77ec2d1))
+   (probe _enum (1 0) 1 __tconst5dNK72 __t5leX60)
+   (body
+    (join DBool (1 0) 1 __t5leX60 __t81Fc61)
+    (join Wrap (1 0) 1 __t81Fc61 __t05q862)
+    (join normA (1 0) 1 __t05q862 __t3D4S63)
+    (join normA_ans (0 1) 1 __t3D4S63 r))
+   (head (emit outA (0) r))
+   "dem_neq_literal.slog:33"
+   #f)
+  (crule
+   (pre (let __tconst6K4G70 constcea17e0b05e3e6ace77ec2d1))
+   (probe _enum (1 0) 1 __tconst6K4G70 __t1ffw39)
+   (body
+    (join DBool (1 0) 1 __t1ffw39 __t6JEv40)
+    (join Wrap (1 0) 1 __t6JEv40 __t0ugG41)
+    (join normB (1 0) 1 __t0ugG41 __t69BE42)
+    (join normB_ans (0 1) 1 __t69BE42 r))
+   (head (emit outB (0) r))
+   "dem_neq_literal.slog:37"
+   #f)
+  (crule
+   (pre (let __tconst7thG22 const7902699be42c8a8e46fbbb45))
+   (probe DInt (1 0) 1 __tconst7thG22 __t5nH523)
+   (body
+    (join Wrap (1 0) 1 __t5nH523 __t3RCG24)
+    (join normA (1 0) 1 __t3RCG24 __t47ch25)
+    (join normA_ans (0 1) 1 __t47ch25 r))
+   (head (emit outA (0) r))
+   "dem_neq_literal.slog:32"
+   #f)
+  (crule
+   (pre (let __tconst29Ei18 const7902699be42c8a8e46fbbb45))
+   (probe DInt (1 0) 1 __tconst29Ei18 __t50zR19)
+   (body
+    (join Wrap (1 0) 1 __t50zR19 __t47GT20)
+    (join normB (1 0) 1 __t47GT20 __t7i4W21)
+    (join normB_ans (0 1) 1 __t7i4W21 r))
+   (head (emit outB (0) r))
+   "dem_neq_literal.slog:36"
+   #f)))

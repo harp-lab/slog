@@ -1,0 +1,105 @@
+(cprog
+ #<set:
+  final
+  int_overflow
+  type_mismatch
+  toint_range
+  nan_result
+  modulo_by_zero
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash((3 . const4e07408562bedb8b60ce05c1))
+ ((relation unbox 1 (0))
+  (struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (relation n 1 (0))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation holds 1 (0))
+  (relation final 1 (0))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct box 2 (1 0) (0 1))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan nan_result __erre3isp109 __errf4Lxg110 __errf57YV111 __errf0Pqm112)
+   (body)
+   (head (emit error (0) __erre3isp109))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst2Qfi1 const4e07408562bedb8b60ce05c1))
+   (scan unbox X)
+   (body (cmp ge X __tconst2Qfi1))
+   (head (emit final (0) X))
+   "sdeep_strata.slog:25"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre0Wda116
+    __errf64Kq117
+    __errf6rop118
+    __errf9ml2119
+    __errf9IRv120)
+   (body)
+   (head (emit error (0) __erre0Wda116))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre3BHw99 __errf6h4q100 __errf8BtP101)
+   (body)
+   (head (emit error (0) __erre3BHw99))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre9bsw113 __errf5rXP114 __errf2zIV115)
+   (body)
+   (head (emit error (0) __erre9bsw113))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre8K41105 __errf9rx6106 __errf1NPE107 __errf0uXe108)
+   (body)
+   (head (emit error (0) __erre8K41105))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre2Lx3126 __errf4bd8127 __errf6qPC128)
+   (body)
+   (head (emit error (0) __erre2Lx3126))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre2oqc102 __errf3QpO103 __errf4b6d104)
+   (body)
+   (head (emit error (0) __erre2oqc102))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre5T1T121
+    __errf5UAu122
+    __errf80H1123
+    __errf8Arx124
+    __errf8oMJ125)
+   (body)
+   (head (emit error (0) __erre5T1T121))
+   "<internal>:1"
+   #f)))

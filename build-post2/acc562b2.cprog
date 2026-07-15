@@ -1,0 +1,27 @@
+(cprog
+ #<set: d>
+ #hash((0 . const5feceb66ffc86f38d952786c) (5 . constef2d127de37b942baad06145))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation q 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation d 1 (0))
+  (relation caught 1 (0))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre
+    (let __tconst9YGr4 constef2d127de37b942baad06145)
+    (let __tconst8b5u3 const5feceb66ffc86f38d952786c))
+   (once)
+   (body)
+   (head (emit d (0) __tconst9YGr4) (emit d (0) __tconst8b5u3))
+   "err_react.slog:6"
+   #f)))

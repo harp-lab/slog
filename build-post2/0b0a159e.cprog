@@ -1,0 +1,45 @@
+(cprog
+ #<set: both lefts samepair>
+ #hash()
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (relation t 1 (0))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation samepair 1 (0))
+  (struct node 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation lefts 1 (0))
+  (struct leaf2 2 (1 0) (0 1))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation both 3 (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan t __t7J2U17)
+   (body
+    (join node (0 1 2) 1 __t7J2U17 __t6xkv16 __t950D15)
+    (join leaf2 (0 1) 1 __t950D15 B)
+    (join leaf2 (0 1) 1 __t6xkv16 A))
+   (head (emit both (0 1 2) __t7J2U17 A B))
+   "sdeep_idbind.slog:17"
+   #f)
+  (crule
+   (pre)
+   (scan t __t6gc014)
+   (body (join node (0 1 2) 1 __t6gc014 L dup5Vxr20) (eq L dup5Vxr20))
+   (head (emit samepair (0) __t6gc014))
+   "sdeep_idbind.slog:20"
+   #f)
+  (crule
+   (pre)
+   (scan leaf2 __t1hpF1 A)
+   (body (join node (1 2 0) 1 __t1hpF1 ____68br3 __t0juH2))
+   (head (emit lefts (0) A))
+   "sdeep_idbind.slog:23"
+   #f)))

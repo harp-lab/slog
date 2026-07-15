@@ -1,0 +1,1 @@
+(stratum-meta (hash "df6f2004") (level 2) (dynamic-rels best_at final tags_at) (accel-rels) (heads final) (reads (best_at lat)) (acyclic #f) (rules (rule 1794653482 "lat_rat.slog:34" "(rule (best_at a k v) --> (final a k v))" (rec #t) (same-scc-body best_at) (neg-body) (lat-body best_at))))

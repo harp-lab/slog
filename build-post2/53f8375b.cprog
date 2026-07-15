@@ -1,0 +1,42 @@
+(cprog
+ #<set: _enum src>
+ #hash((1 . const6b86b273ff34fce19d6b804e)
+       (2 . constd4735e3a265e16eee03f5971)
+       (3 . const4e07408562bedb8b60ce05c1)
+       ("tint" . constb40d060f542e4963e0fc1392))
+ ((relation wrap 1 (0))
+  (struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (relation src 1 (0))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation seen 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct arrow 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre (let __tconst477w10 constb40d060f542e4963e0fc1392))
+   (once)
+   (body)
+   (head (mkstruct _enum (1 0) __5tFR11 __tconst477w10))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst6xLR8 const4e07408562bedb8b60ce05c1)
+    (let __tconst5bkw7 constd4735e3a265e16eee03f5971)
+    (let __tconst2ibA6 const6b86b273ff34fce19d6b804e))
+   (once)
+   (body)
+   (head
+    (emit src (0) __tconst6xLR8)
+    (emit src (0) __tconst5bkw7)
+    (emit src (0) __tconst2ibA6))
+   "stage_derived.slog:15"
+   #f)))

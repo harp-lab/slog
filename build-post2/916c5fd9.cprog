@@ -1,0 +1,27 @@
+(cprog
+ #<set: answer>
+ #hash((1 . const6b86b273ff34fce19d6b804e))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (lattice mincost_ans 2 (min int (floor 0)) #f (0 1))
+  (struct mincost 2 (1 0) (0 1) (delta 1 0))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation goal 1 (0))
+  (relation error 1 (0))
+  (relation edge 3 (0 1 2))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation answer 1 (0))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre (let __tconst5vQH5 const6b86b273ff34fce19d6b804e))
+   (probe mincost (1 0) 1 __tconst5vQH5 __t16mm6)
+   (body (join-lat mincost_ans (0 1) 1 __t16mm6 C))
+   (head (emit answer (0) C))
+   "lat_demand.slog:26"
+   #f)))

@@ -1,0 +1,172 @@
+(cprog
+ #<set:
+  int_overflow
+  type_mismatch
+  nan_result
+  mu
+  modulo_by_zero
+  mucnt
+  toint_range
+  temp5HZO81
+  error
+  temp7IkN79
+  mpz_overflow
+  temp8hr677
+  temp7pLu80
+  mpz_table_overflow
+  div_by_zero
+  temp1nWM78>
+ #hash()
+ ((relation unique 1 (0))
+  (struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp8hr677 2)
+  (temp temp7pLu80 3)
+  (temp temp7IkN79 4)
+  (temp temp5HZO81 3)
+  (temp temp1nWM78 2)
+  (relation step 2 (0 1))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (lattice mucnt 3 (count) #f (0 1 2))
+  (lattice mu 2 (count) #f (0 1))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation bind 2 (1 0))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre4MDZ64
+    __errf0o2V65
+    __errf9HwC66
+    __errf2t5M67
+    __errf5RbR68)
+   (body)
+   (head (emit error (0) __erre4MDZ64))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre1z4w57 __errf7AJr58 __errf08mN59 __errf5gdM60)
+   (body)
+   (head (emit error (0) __erre1z4w57))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre3fq274 __errf9o3K75 __errf4Hf776)
+   (body)
+   (head (emit error (0) __erre3fq274))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __t9XNZ16 (one)))
+   (scan bind S A)
+   (body)
+   (head (emit-temp temp5HZO81 A S __t9XNZ16))
+   "lat_count.slog:24"
+   #f)
+  (crule
+   (pre (let __t6Shj1 (inf)))
+   (scan bind S2 A)
+   (body (join bind (1 0) 1 A S1) (neq S1 S2))
+   (head (emit-temp temp1nWM78 A __t6Shj1))
+   "lat_count.slog:22"
+   #f)
+  (crule
+   (pre)
+   (scan temp5HZO81 A S __t9XNZ16)
+   (body)
+   (head (emit-lat mucnt S A __t9XNZ16))
+   "lat_count.slog:24"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre5wXe61 __errf2wqZ62 __errf8Tgj63)
+   (body)
+   (head (emit error (0) __erre5wXe61))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp1nWM78 A __t6Shj1)
+   (body)
+   (head (emit-lat mu A __t6Shj1))
+   "lat_count.slog:22"
+   #f)
+  (crule
+   (pre (let __t5hAV3 (one)))
+   (scan bind S A)
+   (body)
+   (head (emit-temp temp8hr677 A __t5hAV3))
+   "lat_count.slog:21"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre3YG247 __errf0Qpl48 __errf8WAz49)
+   (body)
+   (head (emit error (0) __erre3YG247))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre6P2C69
+    __errf1ZRO70
+    __errf930G71
+    __errf4obc72
+    __errf58BZ73)
+   (body)
+   (head (emit error (0) __erre6P2C69))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp7IkN79 A C S2 __t9Z3R4)
+   (body (let __t6STO5 (cplus C __t9Z3R4)))
+   (head (emit-temp temp7pLu80 A S2 __t6STO5))
+   "lat_count.slog:25"
+   #f)
+  (crule
+   (pre (let __t9Z3R4 (one)))
+   (scan mucnt S A C)
+   (body (join step (0 1) 1 S S2))
+   (head (emit-temp temp7IkN79 A C S2 __t9Z3R4))
+   "lat_count.slog:25"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre89QS50 __errf0pnw51 __errf6yjj52)
+   (body)
+   (head (emit error (0) __erre89QS50))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre4Dlv53 __errf96r754 __errf914Q55 __errf4ovy56)
+   (body)
+   (head (emit error (0) __erre4Dlv53))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp8hr677 A __t5hAV3)
+   (body)
+   (head (emit-lat mu A __t5hAV3))
+   "lat_count.slog:21"
+   #f)
+  (crule
+   (pre)
+   (scan temp7pLu80 A S2 __t6STO5)
+   (body)
+   (head (emit-lat mucnt S2 A __t6STO5))
+   "lat_count.slog:25"
+   #f)))

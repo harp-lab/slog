@@ -1,0 +1,1 @@
+(stratum-meta (hash "920832e1") (level 3) (dynamic-rels verdict) (accel-rels) (heads verdict) (reads (_enum pos) (isred pos)) (acyclic #t) (rules (rule 1149288073 "enum_basic.slog:20" "(rule (= _t5llU1 (_enum _tconst3xMP15)) (= _tconst3xMP15 (const \"blue\")) (isred n) --> (verdict n _t5llU1))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

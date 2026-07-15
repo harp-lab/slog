@@ -1,0 +1,111 @@
+(cprog
+ #<set:
+  int_overflow
+  type_mismatch
+  len
+  nan_result
+  modulo_by_zero
+  catlen
+  toint_range
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash()
+ ((relation w 1 (0))
+  (struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation len 2 (0 1))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation catlen 2 (0 1))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan div_by_zero __erre6py437 __errf71NC38 __errf11wT39)
+   (body)
+   (head (emit error (0) __erre6py437))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan w A)
+   (body (let __t9RcU1 (_0002b A A)) (let __t8UyL2 (size __t9RcU1)))
+   (head (emit catlen (0 1) __t9RcU1 __t8UyL2))
+   "prim2_size.slog:14"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre8tMt51 __errf7Bbk52 __errf5Yqj53)
+   (body)
+   (head (emit error (0) __erre8tMt51))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre7p7U43 __errf40gi44 __errf0ExW45 __errf6JLF46)
+   (body)
+   (head (emit error (0) __erre7p7U43))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre4N0d59
+    __errf3LGZ60
+    __errf6hJs61
+    __errf8olj62
+    __errf9QWB63)
+   (body)
+   (head (emit error (0) __erre4N0d59))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre3lhA40 __errf8lte41 __errf5xtq42)
+   (body)
+   (head (emit error (0) __erre3lhA40))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre6BN447 __errf4tFS48 __errf1YC449 __errf4Omu50)
+   (body)
+   (head (emit error (0) __erre6BN447))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre44cS64 __errf9YlJ65 __errf2DhO66)
+   (body)
+   (head (emit error (0) __erre44cS64))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan w A)
+   (body (let __t9LcS6 (size A)))
+   (head (emit len (0 1) A __t9LcS6))
+   "prim2_size.slog:13"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre9BUy54
+    __errf8i4W55
+    __errf20P556
+    __errf8Z9857
+    __errf32tF58)
+   (body)
+   (head (emit error (0) __erre9BUy54))
+   "<internal>:1"
+   #f)))

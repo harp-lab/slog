@@ -1,0 +1,1 @@
+(stratum-meta (hash "b07dd148") (level 0) (dynamic-rels okt) (accel-rels) (heads okt) (reads) (acyclic #t) (rules (rule 663655206 "dem_head_guarded.slog:20" "(rule --> (okt _tconst19sF3) (= _tconst19sF3 (const 1)))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

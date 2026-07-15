@@ -1,0 +1,1 @@
+(stratum-meta (hash "80c2f6b3") (level 2) (dynamic-rels answer) (accel-rels) (heads answer) (reads (prog pos) (val pos)) (acyclic #t) (rules (rule 323587461 "ex_eval.slog:31" "(rule (val e v) (prog name e) --> (answer name v))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

@@ -1,0 +1,1 @@
+(stratum-meta (hash "bb4b9308") (level 1) (dynamic-rels grandparent) (accel-rels) (heads grandparent) (reads (parent pos)) (acyclic #t) (rules (rule 1648737954 "grandparent.slog:10" "(rule (parent Y Z) (parent X Y) --> (grandparent X Z))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

@@ -1,0 +1,1 @@
+(stratum-meta (hash "973ca45f") (level 0) (dynamic-rels seed) (accel-rels) (heads seed) (reads) (acyclic #t) (rules (rule 2001227723 "strat_run_base.slog:8" "(rule --> (seed _tconst4DrK2) (= _tconst4DrK2 (const 2)) (seed _tconst2FQP1) (= _tconst2FQP1 (const 1)))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

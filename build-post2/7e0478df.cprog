@@ -1,0 +1,213 @@
+(cprog
+ #<set:
+  temp33lJ87
+  int_overflow
+  type_mismatch
+  node
+  nan_result
+  temp9YoI86
+  parse2
+  parse2_ans
+  modulo_by_zero
+  leaf
+  toint_range
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash((0 . const5feceb66ffc86f38d952786c)
+       (1 . const6b86b273ff34fce19d6b804e)
+       ("a" . constac8d8342bbb2362d13f0a559))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation tok2 2 (0 1))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp9YoI86 3)
+  (temp temp33lJ87 4)
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation parse2_ans 3 (0 1 2) (1 0 2) (delta 0 1 2))
+  (struct parse2 2 (1 0) (0 1) (delta 0 1) (delta 1 0))
+  (struct node 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct leaf 2 (1 0) (0 1))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation full 1 (0))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre9fuo78
+    __errf9jut79
+    __errf4lXq80
+    __errf1Dj881
+    __errf412C82)
+   (body)
+   (head (emit error (0) __erre9fuo78))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre8lu773
+    __errf3qUb74
+    __errf72Yh75
+    __errf1L7876
+    __errf5gfN77)
+   (body)
+   (head (emit error (0) __erre8lu773))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre3piB83 __errf9rfD84 __errf0a4r85)
+   (body)
+   (head (emit error (0) __erre3piB83))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst1BcQ22 const5feceb66ffc86f38d952786c))
+   (once)
+   (body)
+   (head (mkstruct parse2 (1 0) __8I9A23 __tconst1BcQ22))
+   "dem_sppf.slog:17"
+   #f)
+  (crule
+   (pre)
+   (scan parse2_ans __t2oFr21 j t1)
+   (body (join-old parse2 (0 1) 1 (0 1) __t2oFr21 i))
+   (head (mkstruct parse2 (1 0) __41EY25 j))
+   "dem_sppf.slog:15"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre877U70 __errf64bw71 __errf4wIp72)
+   (body)
+   (head (emit error (0) __erre877U70))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan parse2 __t30Sa10 j)
+   (body
+    (exists parse2_ans (0 1 2) 1 __t30Sa10)
+    (join parse2_ans (1 0 2) 1 j __t4aSm9 t1)
+    (join parse2 (0 1) 1 __t4aSm9 i)
+    (join parse2_ans (0 1 2) 1 __t30Sa10 k t2))
+   (head
+    (emit-temp temp33lJ87 __t4aSm9 k t1 t2)
+    (mkstruct node (1 2 0) __t3qk27 t1 t2))
+   "dem_sppf.slog:15"
+   #f)
+  (crule
+   (pre (let __tconst3R5O19 const5feceb66ffc86f38d952786c))
+   (once)
+   (body)
+   (head (mkstruct parse2 (1 0) __7fhu24 __tconst3R5O19))
+   "dem_sppf.slog:19"
+   #f)
+  (crule
+   (pre)
+   (scan parse2 __t2oFr21 i)
+   (body (join parse2_ans (0 1 2) 1 __t2oFr21 j t1))
+   (head (mkstruct parse2 (1 0) __41EY25 j))
+   "dem_sppf.slog:15"
+   #f)
+  (crule
+   (pre)
+   (scan temp9YoI86 __t22gO14 __t70jx13 i)
+   (body (join leaf (1 0) 1 i __t9feN11))
+   (head (emit parse2_ans (0 1 2) __t22gO14 __t70jx13 __t9feN11))
+   "dem_sppf.slog:14"
+   #f)
+  (crule
+   (pre)
+   (scan parse2_ans __t30Sa10 k t2)
+   (body
+    (join-old parse2 (0 1) 1 (0 1) __t30Sa10 j)
+    (join parse2_ans (1 0 2) 1 j __t4aSm9 t1)
+    (join-old parse2 (0 1) 1 (0 1) __t4aSm9 i))
+   (head
+    (emit-temp temp33lJ87 __t4aSm9 k t1 t2)
+    (mkstruct node (1 2 0) __t3qk27 t1 t2))
+   "dem_sppf.slog:15"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre2xMb59 __errf04Qp60 __errf796j61)
+   (body)
+   (head (emit error (0) __erre2xMb59))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst00N515 constac8d8342bbb2362d13f0a559)
+    (let __tconst4ibr12 const6b86b273ff34fce19d6b804e))
+   (scan parse2 __t22gO14 i)
+   (body
+    (join tok2 (0 1) 2 i __tconst00N515)
+    (let __t70jx13 (_0002b i __tconst4ibr12)))
+   (head
+    (emit-temp temp9YoI86 __t22gO14 __t70jx13 i)
+    (mkstruct leaf (1 0) __t9feN11 i))
+   "dem_sppf.slog:14"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre6w3U62 __errf7NDc63 __errf9WTE64 __errf2r9q65)
+   (body)
+   (head (emit error (0) __erre6w3U62))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp33lJ87 __t4aSm9 k t1 t2)
+   (body (join node (1 2 0) 2 t1 t2 __t3qk27))
+   (head (emit parse2_ans (0 1 2) __t4aSm9 k __t3qk27))
+   "dem_sppf.slog:15"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre8DSP56 __errf4TML57 __errf8F2D58)
+   (body)
+   (head (emit error (0) __erre8DSP56))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan parse2 __t4aSm9 i)
+   (body
+    (join parse2_ans (0 1 2) 1 __t4aSm9 j t1)
+    (join-old parse2 (1 0) 1 (1 0) j __t30Sa10)
+    (join parse2_ans (0 1 2) 1 __t30Sa10 k t2))
+   (head
+    (emit-temp temp33lJ87 __t4aSm9 k t1 t2)
+    (mkstruct node (1 2 0) __t3qk27 t1 t2))
+   "dem_sppf.slog:15"
+   #f)
+  (crule
+   (pre)
+   (scan parse2_ans __t4aSm9 j t1)
+   (body
+    (exists parse2 (1 0) 1 j)
+    (join-old parse2 (0 1) 1 (0 1) __t4aSm9 i)
+    (join-old parse2 (1 0) 1 (1 0) j __t30Sa10)
+    (join-old parse2_ans (0 1 2) 1 (0 1 2) __t30Sa10 k t2))
+   (head
+    (emit-temp temp33lJ87 __t4aSm9 k t1 t2)
+    (mkstruct node (1 2 0) __t3qk27 t1 t2))
+   "dem_sppf.slog:15"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre6c3T66 __errf30fa67 __errf7nfM68 __errf6jZA69)
+   (body)
+   (head (emit error (0) __erre6c3T66))
+   "<internal>:1"
+   #f)))

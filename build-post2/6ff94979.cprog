@@ -1,0 +1,126 @@
+(cprog
+ #<set:
+  int_overflow
+  type_mismatch
+  toint_range
+  $seq_at
+  nan_result
+  $seq_posdem
+  modulo_by_zero
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash((1 . const6b86b273ff34fce19d6b804e) (2 . constd4735e3a265e16eee03f5971))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation pair2 2 (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (relation doc 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation afterx 3 (0 1 2))
+  (struct _enum 2 (1 0) (0 1))
+  (relation $seq_posdem 2 (0 1))
+  (relation $seq_pos 3 (0 1 2))
+  (relation $seq_at 3 (0 1 2))
+  (seqindex afterx (0 1 2))
+  (seqindex doc (0)))
+ ((crule
+   (pre
+    (let _00024sqc5p7A26 constd4735e3a265e16eee03f5971)
+    (let _00024sqc4VcQ39 const6b86b273ff34fce19d6b804e))
+   (scan doc _00024seq0)
+   (body
+    (letp _00024sql8rVE24 (aslst _00024seq0))
+    (let _00024sqn0xpN25 (llen _00024sql8rVE24))
+    (cmp ge _00024sqn0xpN25 _00024sqc5p7A26))
+   (head (emit $seq_posdem (0 1) _00024seq0 _00024sqc4VcQ39))
+   "seq_split_mixed.slog:14"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre4yYZ184 __errf5OGH185 __errf0mbP186)
+   (body)
+   (head (emit error (0) __erre4yYZ184))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre9ZfS170 __errf5306171 __errf1p40172)
+   (body)
+   (head (emit error (0) __erre9ZfS170))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre93VS180 __errf36T3181 __errf2Hm1182 __errf1eeZ183)
+   (body)
+   (head (emit error (0) __erre93VS180))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let _00024sqc2QJz42 const6b86b273ff34fce19d6b804e)
+    (let _00024sqc3WvX68 const6b86b273ff34fce19d6b804e))
+   (scan doc _00024seq0)
+   (body
+    (letp _00024sql1lqR40 (aslst _00024seq0))
+    (let _00024sqn0pOQ41 (llen _00024sql1lqR40))
+    (cmp ge _00024sqn0pOQ41 _00024sqc2QJz42))
+   (head (emit $seq_posdem (0 1) _00024seq0 _00024sqc3WvX68))
+   "seq_split_mixed.slog:13"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre9fJT187
+    __errf51CC188
+    __errf28dV189
+    __errf4yct190
+    __errf4AMY191)
+   (body)
+   (head (emit error (0) __erre9fJT187))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre2HnN197 __errf1Ju2198 __errf82es199)
+   (body)
+   (head (emit error (0) __erre2HnN197))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre8LmZ192
+    __errf8Iu6193
+    __errf1Ywt194
+    __errf82aS195
+    __errf27b9196)
+   (body)
+   (head (emit error (0) __erre8LmZ192))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre2O5Z173 __errf8Lb0174 __errf3RPy175)
+   (body)
+   (head (emit error (0) __erre2O5Z173))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre2OvG176 __errf9M9s177 __errf23s4178 __errf7EUq179)
+   (body)
+   (head (emit error (0) __erre2OvG176))
+   "<internal>:1"
+   #f)))

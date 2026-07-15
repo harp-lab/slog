@@ -58,6 +58,19 @@
   (set-box! b (add1 n))
   (string->symbol (string-append (symbol->string prefix-sym) (number->string n))))
 
+;; Member-name prefixes that embed a RELATION name (index/delta locals
+;; below) must be legal C++ identifier text.  Qualified names (N0,
+;; compiler/names.rkt) contain dots; map every identifier-illegal char to
+;; '_' -- deliberately NOT escape-id-for-C, whose underscore-doubling
+;; would rewrite today's $- and _-bearing internal names ($seq_at, $sup..)
+;; and break byte-identity of existing TUs.  Uniqueness comes from
+;; elocal's counter, never from the prefix.
+(define (eident-prefix name-sym suffix)
+  (string->symbol
+   (string-append
+    (regexp-replace* #rx"[^A-Za-z0-9_$]" (symbol->string name-sym) "_")
+    suffix)))
+
 ;; `keep-names` are daemon-registered NAMES (relations/structs/lattices/temps)
 ;; that occur as STRING LITERALS in getRelation/addRelation/addStruct/... .  A
 ;; name beginning with `v_` (e.g. a user table `v_maybelist`) matches the
@@ -850,24 +863,24 @@
     (for/list ([op (in-list (append pre body))]
                #:when (memq (car op) '(join join-lat exists join-old join-new
                                        absent absent-lat)))
-      (cons op (elocal (string->symbol (format "~aindex" (second op)))))))
+      (cons op (elocal (eident-prefix (second op) "index")))))
   (define join3-arm-members
     (for*/list ([op (in-list body)]
                 #:when (eq? (car op) 'join3)
                 [arm (in-list (cddr op))])
-      (cons arm (elocal (string->symbol (format "~aindex" (second arm)))))))
+      (cons arm (elocal (eident-prefix (second arm) "index")))))
   (define join-members (append scalar-join-members join3-arm-members))
   ;; a join-old op needs a SECOND member for the delta index it excludes against
   (define scalar-delta-members
     (for/list ([op (in-list body)]
                #:when (memq (car op) '(join-old join-new)))
-      (cons op (elocal (string->symbol (format "~adelta" (second op)))))))
+      (cons op (elocal (eident-prefix (second op) "delta")))))
   (define join3-delta-members
     (for*/list ([op (in-list body)]
                 #:when (eq? (car op) 'join3)
                 [arm (in-list (cddr op))]
                 #:when (memq (car arm) '(old new)))
-      (cons arm (elocal (string->symbol (format "~adelta" (second arm)))))))
+      (cons arm (elocal (eident-prefix (second arm) "delta")))))
   (define join-old-delta-members
     (append scalar-delta-members join3-delta-members))
   (define (index-name-of op)

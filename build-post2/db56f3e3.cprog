@@ -1,0 +1,253 @@
+(cprog
+ #<set:
+  int_overflow
+  toint_range
+  nan_result
+  temp6Ucm219
+  modulo_by_zero
+  temp0RY0222
+  parse_ans
+  type_mismatch
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash((1 . const6b86b273ff34fce19d6b804e)
+       ("(" . const2c8b6d4a8b88a4444dd3bdd5)
+       (")" . constc9216a4bb2623d4056d2c458)
+       ("*" . consted725292f5f32d61535958c1)
+       ("+" . const7297d2085ea0adffc396d546)
+       ("E" . const43e6e2bebb3774311cf0c867)
+       ("F" . const66804d12743756eb85fb3115)
+       ("T" . const57cb45de78dd46c657524688)
+       ("n" . const46a3ae93aa7a8b988080d6c9))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation tok 2 (1 0) (delta 1 0))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp6Ucm219 2)
+  (temp temp0RY0222 2)
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation parse_ans 2 (0 1) (1 0) (delta 1 0))
+  (struct parse 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation len 1 (0))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation accepted 1 (0))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre
+    (let __tconst9Vwc8 const57cb45de78dd46c657524688)
+    (let __tconst064z6 const6b86b273ff34fce19d6b804e)
+    (let __tconst1oz95 const7297d2085ea0adffc396d546)
+    (let __tconst2Ruz3 const43e6e2bebb3774311cf0c867))
+   (scan parse_ans __t9LpQ2 j)
+   (body
+    (join tok (1 0) 2 __tconst1oz95 j)
+    (exists parse (1 2 0) 1 __tconst9Vwc8)
+    (join parse (0 1 2) 2 __t9LpQ2 __tconst2Ruz3 i)
+    (let __t0SA07 (_0002b j __tconst064z6))
+    (join parse (1 2 0) 2 __tconst9Vwc8 __t0SA07 __t2vLD9)
+    (join parse_ans (0 1) 1 __t2vLD9 k))
+   (head (emit parse_ans (0 1) __t9LpQ2 k))
+   "dem_parse.slog:16"
+   #f)
+  (crule
+   (pre
+    (let __tconst1Dlv34 const66804d12743756eb85fb3115)
+    (let __tconst04UH32 const6b86b273ff34fce19d6b804e)
+    (let __tconst9i2K31 consted725292f5f32d61535958c1)
+    (let __tconst2Jgp29 const57cb45de78dd46c657524688))
+   (scan parse_ans __t6XPr35 k)
+   (body
+    (exists tok (1 0) 1 __tconst9i2K31)
+    (exists parse (1 2 0) 1 __tconst2Jgp29)
+    (join parse (0 1 2) 2 __t6XPr35 __tconst1Dlv34 __t85cA33)
+    (join tok (1 0) 1 __tconst9i2K31 j)
+    (join-old parse_ans (1 0) 1 (1 0) j __t8jyV28)
+    (join parse (0 1 2) 2 __t8jyV28 __tconst2Jgp29 i)
+    (let chk1DUj221 (_0002b j __tconst04UH32))
+    (eq __t85cA33 chk1DUj221))
+   (head (emit parse_ans (0 1) __t8jyV28 k))
+   "dem_parse.slog:20"
+   #f)
+  (crule
+   (pre)
+   (scan temp0RY0222 __t1rI525 __t9B3e23)
+   (body)
+   (head (emit parse_ans (0 1) __t1rI525 __t9B3e23))
+   "dem_parse.slog:24"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre0AOA206
+    __errf0OTQ207
+    __errf1YN3208
+    __errf0kuz209
+    __errf7Pnb210)
+   (body)
+   (head (emit error (0) __erre0AOA206))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp6Ucm219 __t4XP872 __t842C74)
+   (body)
+   (head (emit parse_ans (0 1) __t842C74 __t4XP872))
+   "dem_parse.slog:25"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre7N3G203 __errf1Dh6204 __errf6OPB205)
+   (body)
+   (head (emit error (0) __erre7N3G203))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre72GQ211
+    __errf5Cw8212
+    __errf0Isc213
+    __errf06sr214
+    __errf8vSm215)
+   (body)
+   (head (emit error (0) __erre72GQ211))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst9lyh36 const57cb45de78dd46c657524688)
+    (let __tconst6uPN38 const66804d12743756eb85fb3115))
+   (scan parse_ans __t9PVs39 j)
+   (body
+    (exists parse (1 2 0) 1 __tconst9lyh36)
+    (join parse (0 1 2) 2 __t9PVs39 __tconst6uPN38 i)
+    (join parse (1 2 0) 2 __tconst9lyh36 i __t4cXZ37))
+   (head (emit parse_ans (0 1) __t4cXZ37 j))
+   "dem_parse.slog:21"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre2XQv192 __errf3ieJ193 __errf820p194)
+   (body)
+   (head (emit error (0) __erre2XQv192))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst9Vwc8 const57cb45de78dd46c657524688)
+    (let __tconst064z6 const6b86b273ff34fce19d6b804e)
+    (let __tconst1oz95 const7297d2085ea0adffc396d546)
+    (let __tconst2Ruz3 const43e6e2bebb3774311cf0c867))
+   (scan parse_ans __t2vLD9 k)
+   (body
+    (exists tok (1 0) 1 __tconst1oz95)
+    (exists parse (1 2 0) 1 __tconst2Ruz3)
+    (join parse (0 1 2) 2 __t2vLD9 __tconst9Vwc8 __t0SA07)
+    (join tok (1 0) 1 __tconst1oz95 j)
+    (join-old parse_ans (1 0) 1 (1 0) j __t9LpQ2)
+    (join parse (0 1 2) 2 __t9LpQ2 __tconst2Ruz3 i)
+    (let chk7nU8223 (_0002b j __tconst064z6))
+    (eq __t0SA07 chk7nU8223))
+   (head (emit parse_ans (0 1) __t9LpQ2 k))
+   "dem_parse.slog:16"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre5tuB199 __errf5D7N200 __errf439k201 __errf3wHa202)
+   (body)
+   (head (emit error (0) __erre5tuB199))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst1Dlv34 const66804d12743756eb85fb3115)
+    (let __tconst04UH32 const6b86b273ff34fce19d6b804e)
+    (let __tconst9i2K31 consted725292f5f32d61535958c1)
+    (let __tconst2Jgp29 const57cb45de78dd46c657524688))
+   (scan parse_ans __t8jyV28 j)
+   (body
+    (join tok (1 0) 2 __tconst9i2K31 j)
+    (exists parse (1 2 0) 1 __tconst1Dlv34)
+    (join parse (0 1 2) 2 __t8jyV28 __tconst2Jgp29 i)
+    (let __t85cA33 (_0002b j __tconst04UH32))
+    (join parse (1 2 0) 2 __tconst1Dlv34 __t85cA33 __t6XPr35)
+    (join parse_ans (0 1) 1 __t6XPr35 k))
+   (head (emit parse_ans (0 1) __t8jyV28 k))
+   "dem_parse.slog:20"
+   #f)
+  (crule
+   (pre
+    (let __tconst9f5324 const66804d12743756eb85fb3115)
+    (let __tconst7EwW26 const46a3ae93aa7a8b988080d6c9)
+    (let __tconst2oLd22 const6b86b273ff34fce19d6b804e))
+   (probe tok (1 0) 1 __tconst7EwW26 i)
+   (body
+    (join parse (1 2 0) 2 __tconst9f5324 i __t1rI525)
+    (let __t9B3e23 (_0002b i __tconst2oLd22)))
+   (head (emit-temp temp0RY0222 __t1rI525 __t9B3e23))
+   "dem_parse.slog:24"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre4yL7216 __errf52VQ217 __errf9mt9218)
+   (body)
+   (head (emit error (0) __erre4yL7216))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre9KLO195 __errf9yjI196 __errf1cbP197 __errf0Qvt198)
+   (body)
+   (head (emit error (0) __erre9KLO195))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre5fSE189 __errf4yW9190 __errf29Nu191)
+   (body)
+   (head (emit error (0) __erre5fSE189))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst3UMo73 const66804d12743756eb85fb3115)
+    (let __tconst8HVN75 const2c8b6d4a8b88a4444dd3bdd5)
+    (let __tconst1zhQ76 const6b86b273ff34fce19d6b804e)
+    (let __tconst4m0Q78 const43e6e2bebb3774311cf0c867)
+    (let __tconst4Y1x80 constc9216a4bb2623d4056d2c458))
+   (scan parse_ans __t4a8279 j)
+   (body
+    (join tok (1 0) 2 __tconst4Y1x80 j)
+    (exists tok (1 0) 1 __tconst8HVN75)
+    (exists parse (1 2 0) 1 __tconst3UMo73)
+    (join parse (0 1 2) 2 __t4a8279 __tconst4m0Q78 __t0ak277)
+    (join tok (1 0) 1 __tconst8HVN75 i)
+    (join parse (1 2 0) 2 __tconst3UMo73 i __t842C74)
+    (let chk9joH220 (_0002b i __tconst1zhQ76))
+    (eq __t0ak277 chk9joH220)
+    (let __t4XP872 (_0002b j __tconst1zhQ76)))
+   (head (emit-temp temp6Ucm219 __t4XP872 __t842C74))
+   "dem_parse.slog:25"
+   #f)
+  (crule
+   (pre
+    (let __tconst0IXf15 const43e6e2bebb3774311cf0c867)
+    (let __tconst5Vn517 const57cb45de78dd46c657524688))
+   (scan parse_ans __t1Nmr18 j)
+   (body
+    (exists parse (1 2 0) 1 __tconst0IXf15)
+    (join parse (0 1 2) 2 __t1Nmr18 __tconst5Vn517 i)
+    (join parse (1 2 0) 2 __tconst0IXf15 i __t503216))
+   (head (emit parse_ans (0 1) __t503216 j))
+   "dem_parse.slog:17"
+   #f)))

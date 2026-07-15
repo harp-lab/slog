@@ -1,0 +1,1 @@
+(stratum-meta (hash "599408ce") (level 1) (dynamic-rels c) (accel-rels) (heads c) (reads (a pos) (b pos)) (acyclic #t) (rules (rule 676633217 "cartesian.slog:11" "(rule (b Y) (a X) --> (c X Y))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

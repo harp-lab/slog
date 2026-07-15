@@ -1,0 +1,143 @@
+(cprog
+ #<set:
+  tags_at
+  int_overflow
+  best
+  nan_result
+  tags
+  modulo_by_zero
+  best_at
+  type_mismatch
+  bound
+  toint_range
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash((1 . const6b86b273ff34fce19d6b804e) (8 . const2c624232cdd221771294dfbb))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation tsz 3 (0 1 2))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (lattice tags_at 3 (set int) #f (0 1 2))
+  (lattice tags 2 (map int (set int)) (decomp tags_at map) (0 1))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation final 3 (0 1 2))
+  (relation error 1 (0))
+  (relation edge 3 (0 1 2) (1 0 2))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (lattice bound 3 (min int) #f (0 1 2))
+  (lattice best_at 3 (min int) #f (0 1 2))
+  (lattice best 2 (map int (min int)) (decomp best_at map) (0 1))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre
+    (let __tconst7tLI24 const2c624232cdd221771294dfbb)
+    (let __t9WfC25 (cmap)))
+   (scan bound a c v)
+   (body
+    (cmp lt v __tconst7tLI24)
+    (join edge (0 1 2) 1 c e w2)
+    (let __t3KnY26 (cput __t9WfC25 e w2)))
+   (head (emit-lat best a __t3KnY26))
+   "lat_rat.slog:29"
+   #f)
+  (crule
+   (pre
+    (let __tconst3GIO3 const6b86b273ff34fce19d6b804e)
+    (let __t6MVy7 (cmap)))
+   (scan edge a b w)
+   (body
+    (let __t1lmF5 (cput __t6MVy7 w __tconst3GIO3))
+    (let __t2LMO6 (cput __t1lmF5 b __tconst3GIO3))
+    (let __t3NoZ8 (cput __t6MVy7 b __t2LMO6)))
+   (head (emit-lat tags a __t3NoZ8))
+   "lat_rat.slog:44"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre346t74
+    __errf0HpF75
+    __errf045K76
+    __errf3zVq77
+    __errf78mW78)
+   (body)
+   (head (emit error (0) __erre346t74))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre36eB63 __errf9Hr464 __errf1nHW65 __errf7HcM66)
+   (body)
+   (head (emit error (0) __erre36eB63))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre6MZU84 __errf6hYs85 __errf1q4g86)
+   (body)
+   (head (emit error (0) __erre6MZU84))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre6AJi67 __errf9cJd68 __errf4BM969 __errf2SD070)
+   (body)
+   (head (emit error (0) __erre6AJi67))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre4TQR79
+    __errf5sEF80
+    __errf6pqs81
+    __errf4ZVr82
+    __errf57vz83)
+   (body)
+   (head (emit error (0) __erre4TQR79))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre7Hwa71 __errf2cAp72 __errf5WjN73)
+   (body)
+   (head (emit error (0) __erre7Hwa71))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre3dzy57 __errf7wlJ58 __errf6eoK59)
+   (body)
+   (head (emit error (0) __erre3dzy57))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __t2eCY22 (cmap)))
+   (scan edge a b w)
+   (body (let __t36Kt23 (cput __t2eCY22 b w)))
+   (head (emit-lat best a __t36Kt23))
+   "lat_rat.slog:20"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre4ArP60 __errf1DRE61 __errf2AdH62)
+   (body)
+   (head (emit error (0) __erre4ArP60))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan best_at b c d)
+   (body (join edge (1 0 2) 1 b a w) (let __t1lsu21 (_0002b w d)))
+   (head (emit-lat bound a c __t1lsu21))
+   "lat_rat.slog:24"
+   #f)))

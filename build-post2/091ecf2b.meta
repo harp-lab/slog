@@ -1,0 +1,1 @@
+(stratum-meta (hash "091ecf2b") (level 0) (dynamic-rels p) (accel-rels) (heads p) (reads) (acyclic #t) (rules (rule 1336961645 "strat_run2_base.slog:6" "(rule --> (p _tconst4WnG2) (= _tconst4WnG2 (const 2)) (p _tconst9X5w1) (= _tconst9X5w1 (const 1)))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

@@ -1,0 +1,30 @@
+(cprog
+ #<set: half>
+ #hash((8 . const2c624232cdd221771294dfbb)
+       (12 . const6b51d431df5d7f141cbececc))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation seen 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation half_ans 2 (0 1))
+  (struct half 2 (1 0) (0 1))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre
+    (let __tconst9Whb2 const6b51d431df5d7f141cbececc)
+    (let __tconst6SvA1 const2c624232cdd221771294dfbb))
+   (once)
+   (body)
+   (head
+    (mkstruct half (1 0) __4JTR6 __tconst9Whb2)
+    (mkstruct half (1 0) __7h5f7 __tconst6SvA1))
+   "dem_multihead.slog:10"
+   #f)))

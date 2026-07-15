@@ -1,0 +1,51 @@
+(cprog
+ #<set: getm getx getg>
+ #hash()
+ ((struct wrap 3 (1 2 0) (0 1 2))
+  (struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (relation src 3 (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct mid 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct leaf 2 (1 0) (0 1))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation given 1 (0))
+  (relation getx 1 (0))
+  (relation getm 1 (0))
+  (relation getg 3 (0 1 2))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation built 1 (0))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan built __t0CAS3)
+   (body
+    (join wrap (0 1 2) 1 __t0CAS3 __t5kkg2 ____9eRq4)
+    (join mid (0 1 2) 1 __t5kkg2 __t1A851 ____099f5)
+    (join leaf (0 1) 1 __t1A851 X))
+   (head (emit getx (0) X))
+   "sdeep_nest3.slog:23"
+   #f)
+  (crule
+   (pre)
+   (scan given __t8xqS11)
+   (body
+    (join wrap (0 1 2) 1 __t8xqS11 __t4iWj10 C)
+    (join mid (0 1 2) 1 __t4iWj10 __t9tYT9 B)
+    (join leaf (0 1) 1 __t9tYT9 A))
+   (head (emit getg (0 1 2) A B C))
+   "sdeep_nest3.slog:26"
+   #f)
+  (crule
+   (pre)
+   (scan given __t9eOv12)
+   (body (join wrap (0 1 2) 1 __t9eOv12 M ____6xhc13))
+   (head (emit getm (0) M))
+   "sdeep_nest3.slog:29"
+   #f)))

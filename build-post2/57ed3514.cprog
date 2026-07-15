@@ -1,0 +1,120 @@
+(cprog
+ #<set:
+  int_overflow
+  type_mismatch
+  toint_range
+  $seq_at
+  nan_result
+  modulo_by_zero
+  $seq_pos
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash((0 . const5feceb66ffc86f38d952786c) (1 . const6b86b273ff34fce19d6b804e))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation pair2 2 (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (relation doc 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation afterx 3 (0 1 2))
+  (struct _enum 2 (1 0) (0 1))
+  (relation $seq_posdem 2 (0 1))
+  (relation $seq_pos 3 (0 1 2))
+  (relation $seq_at 3 (0 1 2))
+  (seqindex afterx (0 1 2))
+  (seqindex doc (0)))
+ ((crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre99Xg247
+    __errf7uda248
+    __errf7JjZ249
+    __errf18Dw250
+    __errf4xD6251)
+   (body)
+   (head (emit error (0) __erre99Xg247))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre1pDS230 __errf5Qop231 __errf4jrl232)
+   (body)
+   (head (emit error (0) __erre1pDS230))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre2TBs244 __errf89PH245 __errf72jq246)
+   (body)
+   (head (emit error (0) __erre2TBs244))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre8Afq257 __errf1y1Q258 __errf4je3259)
+   (body)
+   (head (emit error (0) __erre8Afq257))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let one const6b86b273ff34fce19d6b804e))
+   (scan $seq_pos l j p)
+   (body
+    (let n (llen l))
+    (let lim (_0002d n j))
+    (cmp lt p lim)
+    (let p1 (_0002b p one)))
+   (head (emit $seq_pos (0 1 2) l j p1))
+   "seq_split_mixed.slog:13"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre2p7D233 __errf9mNn234 __errf1xS2235)
+   (body)
+   (head (emit error (0) __erre2p7D233))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre4JpQ252
+    __errf8Kuy253
+    __errf5yXZ254
+    __errf4561255
+    __errf9udK256)
+   (body)
+   (head (emit error (0) __erre4JpQ252))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre3j6O240 __errf5bA3241 __errf93yP242 __errf7Txt243)
+   (body)
+   (head (emit error (0) __erre3j6O240))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let z const5feceb66ffc86f38d952786c))
+   (scan $seq_posdem l j)
+   (body (let n (llen l)) (cmp ge n j))
+   (head (emit $seq_pos (0 1 2) l j z))
+   "seq_split_mixed.slog:13"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre0R1q236 __errf6yR5237 __errf6065238 __errf4RMz239)
+   (body)
+   (head (emit error (0) __erre0R1q236))
+   "<internal>:1"
+   #f)))

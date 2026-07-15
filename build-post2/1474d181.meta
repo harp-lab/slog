@@ -1,0 +1,1 @@
+(stratum-meta (hash "1474d181") (level 2) (dynamic-rels result) (accel-rels) (heads result) (reads (_enum pos) (ret pos)) (acyclic #t) (rules (rule 2044739756 "0cfa.slog:64" "(rule (= _t0G0O27 (_enum _tconst62Qe43)) (= _tconst62Qe43 (const \"halt\")) (ret v _t0G0O27) --> (result v))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

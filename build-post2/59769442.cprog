@@ -1,0 +1,146 @@
+(cprog
+ #<set:
+  int_overflow
+  toint_range
+  nan_result
+  modulo_by_zero
+  val
+  type_mismatch
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash()
+ ((relation val 2 (0 1) (delta 0 1))
+  (struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct times 3 (1 2 0) (0 1 2) (2 0 1))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation prog 2 (0 1))
+  (struct plus 3 (1 2 0) (0 1 2) (2 0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct lit 2 (1 0) (0 1))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation answer 2 (0 1))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan div_by_zero __erre0z1I72 __errf0Tro73 __errf0fId74)
+   (body)
+   (head (emit error (0) __erre0z1I72))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan val b y)
+   (body
+    (join times (2 0 1) 1 b __t8uIJ40 a)
+    (join val (0 1) 1 a x)
+    (let __t527x41 (_0002a x y)))
+   (head (emit val (0 1) __t8uIJ40 __t527x41))
+   "ex_eval.slog:26"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre4edr94
+    __errf04aO95
+    __errf8CIv96
+    __errf8a8Y97
+    __errf4JkO98)
+   (body)
+   (head (emit error (0) __erre4edr94))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre9FWd99 __errf70sL100 __errf8pQE101)
+   (body)
+   (head (emit error (0) __erre9FWd99))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan val a x)
+   (body
+    (join plus (1 2 0) 1 a b __t5zbX38)
+    (join-old val (0 1) 1 (0 1) b y)
+    (let __t4rTi39 (_0002b x y)))
+   (head (emit val (0 1) __t5zbX38 __t4rTi39))
+   "ex_eval.slog:21"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre3st775 __errf4Bpr76 __errf1JmT77)
+   (body)
+   (head (emit error (0) __erre3st775))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan lit __t0oZj1 n)
+   (body)
+   (head (emit val (0 1) __t0oZj1 n))
+   "ex_eval.slog:19"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre4aSs86 __errf652E87 __errf5umr88)
+   (body)
+   (head (emit error (0) __erre4aSs86))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan val b y)
+   (body
+    (join plus (2 0 1) 1 b __t5zbX38 a)
+    (join val (0 1) 1 a x)
+    (let __t4rTi39 (_0002b x y)))
+   (head (emit val (0 1) __t5zbX38 __t4rTi39))
+   "ex_eval.slog:21"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre5coT78 __errf8sao79 __errf17dF80 __errf6zhX81)
+   (body)
+   (head (emit error (0) __erre5coT78))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan val a x)
+   (body
+    (join times (1 2 0) 1 a b __t8uIJ40)
+    (join-old val (0 1) 1 (0 1) b y)
+    (let __t527x41 (_0002a x y)))
+   (head (emit val (0 1) __t8uIJ40 __t527x41))
+   "ex_eval.slog:26"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre3wfO82 __errf7DxS83 __errf4hNN84 __errf6pGH85)
+   (body)
+   (head (emit error (0) __erre3wfO82))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre1Zdw89
+    __errf5Pbc90
+    __errf0SS091
+    __errf7nCQ92
+    __errf4QvB93)
+   (body)
+   (head (emit error (0) __erre1Zdw89))
+   "<internal>:1"
+   #f)))

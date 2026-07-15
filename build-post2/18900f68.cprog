@@ -1,0 +1,38 @@
+(cprog
+ #<set: parent>
+ #hash(("ann" . constcec78459472eed8b9f4625f1)
+       ("bob" . const1b0ed536deb39ddcf8e689b3)
+       ("cid" . const80c0ad3001f47158f3fdf502)
+       ("dee" . const09821f160be25fa52918a453)
+       ("eve" . const52c10d919b69aebce9f9a9a6))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation parent 2 (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation gp 2 (0 1))
+  (relation ggp 2 (0 1))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre
+    (let __tconst6BWE4 const1b0ed536deb39ddcf8e689b3)
+    (let __tconst0F0I5 const09821f160be25fa52918a453)
+    (let __tconst2hv16 const80c0ad3001f47158f3fdf502)
+    (let __tconst301j7 const52c10d919b69aebce9f9a9a6)
+    (let __tconst8MOv8 constcec78459472eed8b9f4625f1))
+   (once)
+   (body)
+   (head
+    (emit parent (0 1) __tconst8MOv8 __tconst6BWE4)
+    (emit parent (0 1) __tconst6BWE4 __tconst2hv16)
+    (emit parent (0 1) __tconst2hv16 __tconst0F0I5)
+    (emit parent (0 1) __tconst8MOv8 __tconst301j7))
+   "shape_twice.slog:12"
+   #f)))

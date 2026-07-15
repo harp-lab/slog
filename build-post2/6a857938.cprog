@@ -1,0 +1,60 @@
+(cprog
+ #<set: fourth names vals inner>
+ #hash()
+ ((relation vals 1 (0))
+  (struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct tag 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation recs 1 (0))
+  (struct rec 7 (1 2 3 4 5 6 0) (0 2 1 3 4 5 6))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (relation names 1 (0))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation inner 1 (0))
+  (relation in 3 (0 1 2))
+  (relation fourth 1 (0))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan recs __t9QWC17)
+   (body
+    (join tag (0 1 2) 0 __t714T16 S F)
+    (join
+     rec
+     (0 2 1 3 4 5 6)
+     2
+     __t9QWC17
+     __t714T16
+     ____4uF818
+     ____5SLg19
+     ____5Rzs20
+     ____0UYK21
+     ____6qhX22))
+   (head (emit names (0) S) (emit vals (0) F) (emit inner (0) __t714T16))
+   "sdeep_mixed.slog:21"
+   #f)
+  (crule
+   (pre)
+   (scan recs __t5Su91)
+   (body
+    (join
+     rec
+     (0 2 1 3 4 5 6)
+     1
+     __t5Su91
+     ____1co93
+     ____8uo02
+     ____4jlL4
+     X
+     ____2FL25
+     ____4Iju6))
+   (head (emit fourth (0) X))
+   "sdeep_mixed.slog:24"
+   #f)))

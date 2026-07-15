@@ -1,0 +1,344 @@
+(cprog
+ #<set:
+  temp1JHB1172
+  int_overflow
+  $seq_at
+  nan_result
+  temp3IpF1170
+  frame_count
+  temp0MD71168
+  temp6KrG1171
+  type_mismatch
+  toint_range
+  temp2l6t1167
+  error
+  mpz_overflow
+  site_targets
+  binding_count
+  temp3Qu01169
+  $seq_atr
+  polyvariant_flow
+  modulo_by_zero
+  singleton_flow
+  mpz_table_overflow
+  div_by_zero>
+ #hash()
+ ((relation unique_closure 1 (0))
+  (relation unique_binding 2 (0 1))
+  (struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (relation tick_ans 2 (0 1))
+  (struct tick 3 (1 2 0) (0 1 2))
+  (temp temp6KrG1171 3)
+  (temp temp3Qu01169 3)
+  (temp temp3IpF1170 2)
+  (temp temp2l6t1167 2)
+  (temp temp1JHB1172 3)
+  (temp temp0MD71168 2)
+  (lattice target_count 2 (count) #f (0 1))
+  (struct symval 2 (1 0) (0 1))
+  (struct sym 2 (1 0) (0 1))
+  (relation summarized_closure 1 (0))
+  (relation summarized_binding 2 (0 1))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation site_targets 2 (0 1))
+  (relation singleton_flow 2 (0 1))
+  (relation select_branch_ans 2 (0 1))
+  (struct select_branch 4 (1 2 3 0) (0 1 2 3))
+  (relation scheme_false 1 (0))
+  (struct ref 2 (1 0) (0 1))
+  (relation reachable_expr 1 (0))
+  (relation program_result 1 (0))
+  (relation program 1 (0))
+  (relation primitive_site 2 (0 1))
+  (relation primitive 1 (0))
+  (struct prim 2 (1 0) (0 1))
+  (relation polyvariant_flow 2 (0 1))
+  (relation polymorphic_site 1 (0))
+  (struct num 2 (1 0) (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (relation must_value 3 (0 1 2))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation monomorphic_site 1 (0))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (relation mlimit 1 (0))
+  (relation many_frames 1 (0))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation lst_take_ans 2 (0 1))
+  (struct lst_take 3 (1 2 0) (0 1 2))
+  (relation lst_rev_ans 2 (0 1))
+  (relation lst_rev_acc_ans 2 (0 1))
+  (struct lst_rev_acc 3 (1 2 0) (0 1 2))
+  (struct lst_rev 2 (1 0) (0 1))
+  (relation lst_ref_ans 2 (0 1))
+  (struct lst_ref 3 (1 2 0) (0 1 2))
+  (relation lst_member_ans 2 (0 1))
+  (struct lst_member 3 (1 2 0) (0 1 2))
+  (relation lst_len_ans 2 (0 1))
+  (struct lst_len 2 (1 0) (0 1))
+  (relation lst_append_ans 2 (0 1))
+  (struct lst_append 3 (1 2 0) (0 1 2))
+  (relation lst_absent_ans 2 (0 1))
+  (struct lst_absent 3 (1 2 0) (0 1 2))
+  (relation lookup_ans 2 (0 1))
+  (struct lookup 3 (1 2 0) (0 1 2))
+  (struct letrec 4 (1 2 3 0) (0 1 2 3))
+  (struct let 4 (1 2 3 0) (0 1 2 3))
+  (struct lambda 3 (1 2 0) (0 1 2))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation inlinable_call 2 (0 1))
+  (struct if 4 (1 2 3 0) (0 1 2 3))
+  (relation freevar_in_args 2 (0 1))
+  (relation freevar 2 (0 1))
+  (lattice frame_count 2 (count) #f (0 1))
+  (lattice flow_count 3 (count) #f (0 1 2) (delta 2 0 1))
+  (relation eval_args_ans 2 (0 1))
+  (struct eval_args 3 (1 2 0) (0 1 2))
+  (relation eval_ans 2 (0 1))
+  (struct eval 3 (1 2 0) (0 1 2))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation delta_ans 2 (0 1))
+  (struct delta 3 (1 2 0) (0 1 2))
+  (relation comparison_op 1 (0))
+  (struct closure 3 (1 2 0) (0 1 2))
+  (relation call_target 4 (2 0 1 3))
+  (relation call_event 2 (0 1))
+  (struct boolval 2 (1 0) (0 1))
+  (struct boolean 2 (1 0) (0 1))
+  (relation binding_event 3 (2 0 1) (0 1 2))
+  (lattice binding_count 3 (count) #f (0 1 2))
+  (relation binding 3 (0 1 2))
+  (relation bind_params 4 (0 1 2 3))
+  (relation arithmetic_op 1 (0))
+  (relation argument_list 1 (0))
+  (struct app 3 (1 2 0) (0 1 2))
+  (relation any_bool 1 (0))
+  (struct _enum 2 (1 0) (0 1))
+  (relation $sup56712x93x0x0x0 5 (0 1 2 3 4))
+  (relation $sup56712x91x0x0x0 5 (0 1 2 3 4))
+  (relation $sup56712x86x0x0x0 5 (0 1 2 3 4))
+  (relation $sup56712x74x0x0x0 4 (0 1 2 3))
+  (relation $sup56712x41x0x0x0 4 (0 1 2 3))
+  (relation $sup56712x37x0x0x0 5 (0 1 2 3 4))
+  (relation $seq_atr 3 (0 1 2))
+  (relation $seq_at 3 (0 1 2))
+  (seqindex app (2))
+  (seqindex argument_list (0))
+  (seqindex bind_params (0 1 2 3))
+  (seqindex binding (1))
+  (seqindex binding_event (1 2))
+  (seqindex call_event (0 1))
+  (seqindex call_target (1 3))
+  (seqindex closure (2))
+  (seqindex delta (2))
+  (seqindex eval (2))
+  (seqindex eval_args (1 2))
+  (seqindex eval_args_ans (1))
+  (seqindex freevar_in_args (1))
+  (seqindex lambda (1))
+  (seqindex lookup (2))
+  (seqindex lst_absent (1))
+  (seqindex lst_append (1 2))
+  (seqindex lst_append_ans (1))
+  (seqindex lst_len (1))
+  (seqindex lst_member (1))
+  (seqindex lst_ref (1))
+  (seqindex lst_rev (1))
+  (seqindex lst_rev_acc (1 2))
+  (seqindex lst_rev_acc_ans (1))
+  (seqindex lst_rev_ans (1))
+  (seqindex lst_take (1))
+  (seqindex lst_take_ans (1))
+  (seqindex many_frames (0))
+  (seqindex must_value (1))
+  (seqindex polyvariant_flow (1))
+  (seqindex singleton_flow (1))
+  (seqindex summarized_binding (1))
+  (seqindex tick (2))
+  (seqindex tick_ans (1))
+  (seqindex unique_binding (1)))
+ ((crule
+   (pre (let __t8pxC198 (one)))
+   (scan binding_event x l c)
+   (body)
+   (head (emit-temp temp1JHB1172 __t8pxC198 l x))
+   "counting.slog:21"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre1qEK1140 __errf3NCR1141 __errf0vUh1142)
+   (body)
+   (head (emit error (0) __erre1qEK1140))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __t5x8O2 (lempty)) (let __t4ZfR1 (one)))
+   (scan program e)
+   (body)
+   (head (emit-temp temp0MD71168 __t4ZfR1 __t5x8O2))
+   "counting.slog:17"
+   #f)
+  (crule
+   (pre (let __t5umN115 (inf)))
+   (probe flow_count (2 0 1) 1 __t5umN115 x l)
+   (body)
+   (head (emit polyvariant_flow (0 1) x l))
+   "counting.slog:40"
+   #f)
+  (crule
+   (pre)
+   (scan temp0MD71168 __t4ZfR1 __t5x8O2)
+   (body)
+   (head (emit-lat frame_count __t5x8O2 __t4ZfR1))
+   "counting.slog:17"
+   #f)
+  (crule
+   (pre)
+   (scan
+    int_overflow
+    __erre4vGp1143
+    __errf6l5V1144
+    __errf4cjJ1145
+    __errf2S2m1146)
+   (body)
+   (head (emit error (0) __erre4vGp1143))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre8vZH1151 __errf5QoM1152 __errf3qzV1153)
+   (body)
+   (head (emit error (0) __erre8vZH1151))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp1JHB1172 __t8pxC198 l x)
+   (body)
+   (head (emit-lat binding_count x l __t8pxC198))
+   "counting.slog:21"
+   #f)
+  (crule
+   (pre (let __t2Hpv335 (one)))
+   (probe flow_count (2 0 1) 1 __t2Hpv335 x l)
+   (body)
+   (head (emit singleton_flow (0 1) x l))
+   "counting.slog:39"
+   #f)
+  (crule
+   (pre (let __t3Aac188 (inf)))
+   (scan many_frames l)
+   (body)
+   (head (emit-temp temp2l6t1167 __t3Aac188 l))
+   "counting.slog:19"
+   #f)
+  (crule
+   (pre)
+   (scan temp3Qu01169 __t4TsM57 l x)
+   (body)
+   (head (emit-lat binding_count x l __t4TsM57))
+   "counting.slog:23"
+   #f)
+  (crule
+   (pre (let __t8yDd126 (one)))
+   (scan call_event l c)
+   (body)
+   (head (emit-temp temp3IpF1170 __t8yDd126 l))
+   "counting.slog:18"
+   #f)
+  (crule
+   (pre)
+   (scan temp3IpF1170 __t8yDd126 l)
+   (body)
+   (head (emit-lat frame_count l __t8yDd126))
+   "counting.slog:18"
+   #f)
+  (crule
+   (pre (let __t4TsM57 (inf)))
+   (scan binding_event x l c2)
+   (body (join binding_event (0 1 2) 2 x l c1) (neq c1 c2))
+   (head (emit-temp temp3Qu01169 __t4TsM57 l x))
+   "counting.slog:23"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre37sD1164 __errf3e3x1165 __errf5Qo91166)
+   (body)
+   (head (emit error (0) __erre37sD1164))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre8euU1137 __errf5Wm01138 __errf295y1139)
+   (body)
+   (head (emit error (0) __erre8euU1137))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan closure __t9v82299 lam cb)
+   (body (join call_target (2 0 1 3) 1 __t9v82299 site c l))
+   (head (emit site_targets (0 1) site lam))
+   "analysis.slog:18"
+   #f)
+  (crule
+   (pre)
+   (scan
+    nan_result
+    __erre6iw91147
+    __errf5gwl1148
+    __errf6dFR1149
+    __errf20ne1150)
+   (body)
+   (head (emit error (0) __erre6iw91147))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre4vjn1154
+    __errf1cW11155
+    __errf1W1Q1156
+    __errf5lR81157
+    __errf1qt91158)
+   (body)
+   (head (emit error (0) __erre4vjn1154))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp6KrG1171 __t9Ucq5 l x)
+   (body)
+   (head (emit-lat binding_count x l __t9Ucq5))
+   "counting.slog:22"
+   #f)
+  (crule
+   (pre (let __t9Ucq5 (inf)))
+   (scan many_frames c)
+   (body (join binding_event (2 0 1) 1 c x l))
+   (head (emit-temp temp6KrG1171 __t9Ucq5 l x))
+   "counting.slog:22"
+   #f)
+  (crule
+   (pre)
+   (scan temp2l6t1167 __t3Aac188 l)
+   (body)
+   (head (emit-lat frame_count l __t3Aac188))
+   "counting.slog:19"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre2ASl1159
+    __errf5AYH1160
+    __errf87vx1161
+    __errf5r0B1162
+    __errf4PRb1163)
+   (body)
+   (head (emit error (0) __erre2ASl1159))
+   "<internal>:1"
+   #f)))

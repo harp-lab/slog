@@ -1,0 +1,329 @@
+(cprog
+ #<set:
+  int_overflow
+  nan_result
+  temp1Wzv100
+  temp7igP101
+  pt
+  type_mismatch
+  center
+  toint_range
+  error
+  rect
+  circle
+  mpz_overflow
+  shapes
+  temp5uvn102
+  modulo_by_zero
+  center_ans
+  mpz_table_overflow
+  div_by_zero>
+ #hash((0 . const5feceb66ffc86f38d952786c)
+       (1 . const6b86b273ff34fce19d6b804e)
+       (2 . constd4735e3a265e16eee03f5971)
+       (4 . const4b227777d4dd1fc61c6f884f)
+       (6 . conste7f6c011776e8db7cd330b54))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp7igP101 3)
+  (temp temp5uvn102 3)
+  (temp temp1Wzv100 3)
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation shapes 1 (0))
+  (struct rect 3 (1 2 0) (0 1 2) (2 0 1) (delta 1 2 0) (delta 2 0 1))
+  (struct pt 3 (1 2 0) (0 1 2) (delta 0 1 2) (delta 1 0 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct circle 3 (1 2 0) (0 1 2) (2 0 1) (delta 1 2 0))
+  (relation centery 2 (0 1))
+  (relation centerx 3 (0 1 2))
+  (relation center_ans 2 (0 1))
+  (struct center 2 (1 0) (0 1) (delta 1 0))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre
+    (let __tconst8PFH17 const6b86b273ff34fce19d6b804e)
+    (let __tconst7ikL19 constd4735e3a265e16eee03f5971)
+    (let __tconst3JzW22 conste7f6c011776e8db7cd330b54)
+    (let __tconst2yNa23 const4b227777d4dd1fc61c6f884f)
+    (let __tconst2dvT26 const5feceb66ffc86f38d952786c))
+   (seeded)
+   (body
+    (join pt (1 2 0) 2 __tconst2yNa23 __tconst3JzW22 __t8toC24)
+    (exists pt (1 2 0) 1 __tconst2dvT26)
+    (join pt (1 2 0) 2 __tconst7ikL19 __tconst2yNa23 __t5hsY20)
+    (join pt (1 2 0) 1 __tconst2dvT26 dup9uQJ104 __t7JfT27)
+    (eq __tconst2dvT26 dup9uQJ104))
+   (head
+    (mkstruct circle (1 2 0) __t1eeB21 __t5hsY20 __tconst8PFH17)
+    (mkstruct rect (1 2 0) __t420d28 __t7JfT27 __t8toC24))
+   "dem_alias.slog:18"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre30gU73 __errf1xeS74 __errf3qun75)
+   (body)
+   (head (emit error (0) __erre30gU73))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst7ZpN6 constd4735e3a265e16eee03f5971))
+   (scan center __t8eiQ13 __t54o512)
+   (body
+    (join rect (0 1 2) 1 __t54o512 __t3N3A11 __t8qZV10)
+    (join pt (0 1 2) 1 __t8qZV10 x1 y1)
+    (join pt (0 1 2) 1 __t3N3A11 x0 y0)
+    (let __t4LE84 (_0002b y0 y1))
+    (let __t43d97 (_0002b x0 x1)))
+   (head (emit-temp temp1Wzv100 __t43d97 __t4LE84 __t8eiQ13))
+   "dem_alias.slog:15"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre3uNX80 __errf6Wf481 __errf9URQ82 __errf5RiM83)
+   (body)
+   (head (emit error (0) __erre3uNX80))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre4CRW84 __errf9HW585 __errf2LQS86)
+   (body)
+   (head (emit error (0) __erre4CRW84))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre7VqG76 __errf39Xy77 __errf2fsX78 __errf1EgG79)
+   (body)
+   (head (emit error (0) __erre7VqG76))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst7ZpN6 constd4735e3a265e16eee03f5971))
+   (scan temp1Wzv100 __t43d97 __t4LE84 __t8eiQ13)
+   (body
+    (let __t0Mlo5 (_0002f __t4LE84 __tconst7ZpN6))
+    (let __t8U2s8 (_0002f __t43d97 __tconst7ZpN6)))
+   (head (emit-temp temp7igP101 __t0Mlo5 __t8U2s8 __t8eiQ13))
+   "dem_alias.slog:15"
+   #f)
+  (crule
+   (pre
+    (let __tconst8PFH17 const6b86b273ff34fce19d6b804e)
+    (let __tconst7ikL19 constd4735e3a265e16eee03f5971)
+    (let __tconst3JzW22 conste7f6c011776e8db7cd330b54)
+    (let __tconst2yNa23 const4b227777d4dd1fc61c6f884f)
+    (let __tconst2dvT26 const5feceb66ffc86f38d952786c))
+   (seeded)
+   (body
+    (join pt (1 2 0) 2 __tconst2yNa23 __tconst3JzW22 __t8toC24)
+    (exists circle (2 0 1) 1 __tconst8PFH17)
+    (exists pt (1 2 0) 1 __tconst2dvT26)
+    (exists rect (2 0 1) 1 __t8toC24)
+    (join pt (1 2 0) 2 __tconst7ikL19 __tconst2yNa23 __t5hsY20)
+    (join circle (1 2 0) 2 __t5hsY20 __tconst8PFH17 __t1eeB21)
+    (join pt (1 2 0) 1 __tconst2dvT26 dup8V72106 __t7JfT27)
+    (eq __tconst2dvT26 dup8V72106)
+    (join rect (1 2 0) 2 __t7JfT27 __t8toC24 __t420d28))
+   (head (emit shapes (0) __t1eeB21) (emit shapes (0) __t420d28))
+   "dem_alias.slog:18"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre4Hoo70 __errf7MV971 __errf0Q1E72)
+   (body)
+   (head (emit error (0) __erre4Hoo70))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan center __t8x5r31 __t7pXO30)
+   (body
+    (join circle (0 1 2) 1 __t7pXO30 __t9SVu29 ____2Se532)
+    (join pt (0 1 2) 1 __t9SVu29 ____9PH033 ____8XjR34))
+   (head (emit center_ans (0 1) __t8x5r31 __t9SVu29))
+   "dem_alias.slog:14"
+   #f)
+  (crule
+   (pre)
+   (scan shapes s)
+   (body)
+   (head (mkstruct center (1 0) __7Zzc38 s))
+   "dem_alias.slog:23"
+   #f)
+  (crule
+   (pre)
+   (scan pt __t1ld11 ____9egH2 y)
+   (body (join shapes (0) 0 s))
+   (head (mkstruct center (1 0) __2Klc39 s))
+   "dem_alias.slog:27"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre4YbK87
+    __errf3x9z88
+    __errf4kz689
+    __errf3s2290
+    __errf2ajB91)
+   (body)
+   (head (emit error (0) __erre4YbK87))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp7igP101 __t0Mlo5 __t8U2s8 __t8eiQ13)
+   (body)
+   (head
+    (emit-temp temp5uvn102 __t0Mlo5 __t8U2s8 __t8eiQ13)
+    (mkstruct pt (1 2 0) __t8Tqd9 __t8U2s8 __t0Mlo5))
+   "dem_alias.slog:15"
+   #f)
+  (crule
+   (pre (let __tconst7ZpN6 constd4735e3a265e16eee03f5971))
+   (scan rect __t54o512 __t3N3A11 __t8qZV10)
+   (body
+    (join-old center (1 0) 1 (1 0) __t54o512 __t8eiQ13)
+    (join pt (0 1 2) 1 __t8qZV10 x1 y1)
+    (join pt (0 1 2) 1 __t3N3A11 x0 y0)
+    (let __t4LE84 (_0002b y0 y1))
+    (let __t43d97 (_0002b x0 x1)))
+   (head (emit-temp temp1Wzv100 __t43d97 __t4LE84 __t8eiQ13))
+   "dem_alias.slog:15"
+   #f)
+  (crule
+   (pre
+    (let __tconst8PFH17 const6b86b273ff34fce19d6b804e)
+    (let __tconst7ikL19 constd4735e3a265e16eee03f5971)
+    (let __tconst3JzW22 conste7f6c011776e8db7cd330b54)
+    (let __tconst2yNa23 const4b227777d4dd1fc61c6f884f)
+    (let __tconst2dvT26 const5feceb66ffc86f38d952786c))
+   (probe pt (1 0 2) 1 __tconst2dvT26 __t7JfT27 dup9Dn7103)
+   (body
+    (eq __tconst2dvT26 dup9Dn7103)
+    (exists pt (1 2 0) 2 __tconst7ikL19 __tconst2yNa23)
+    (join pt (1 2 0) 2 __tconst2yNa23 __tconst3JzW22 __t8toC24)
+    (join pt (1 2 0) 2 __tconst7ikL19 __tconst2yNa23 __t5hsY20))
+   (head
+    (mkstruct circle (1 2 0) __t1eeB21 __t5hsY20 __tconst8PFH17)
+    (mkstruct rect (1 2 0) __t420d28 __t7JfT27 __t8toC24))
+   "dem_alias.slog:18"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre76Lw97 __errf5WnS98 __errf8Q7899)
+   (body)
+   (head (emit error (0) __erre76Lw97))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan shapes s)
+   (body (join-old pt (0 1 2) 0 (0 1 2) __t1ld11 ____9egH2 y))
+   (head (mkstruct center (1 0) __2Klc39 s))
+   "dem_alias.slog:27"
+   #f)
+  (crule
+   (pre (let __tconst7ZpN6 constd4735e3a265e16eee03f5971))
+   (scan pt __t8qZV10 x1 y1)
+   (body
+    (join-old rect (2 0 1) 1 (2 0 1) __t8qZV10 __t54o512 __t3N3A11)
+    (join-old center (1 0) 1 (1 0) __t54o512 __t8eiQ13)
+    (join-old pt (0 1 2) 1 (0 1 2) __t3N3A11 x0 y0)
+    (let __t4LE84 (_0002b y0 y1))
+    (let __t43d97 (_0002b x0 x1)))
+   (head (emit-temp temp1Wzv100 __t43d97 __t4LE84 __t8eiQ13))
+   "dem_alias.slog:15"
+   #f)
+  (crule
+   (pre
+    (let __tconst8PFH17 const6b86b273ff34fce19d6b804e)
+    (let __tconst7ikL19 constd4735e3a265e16eee03f5971)
+    (let __tconst3JzW22 conste7f6c011776e8db7cd330b54)
+    (let __tconst2yNa23 const4b227777d4dd1fc61c6f884f)
+    (let __tconst2dvT26 const5feceb66ffc86f38d952786c))
+   (scan rect __t420d28 __t7JfT27 __t8toC24)
+   (body
+    (join pt (0 1 2) 3 __t8toC24 __tconst2yNa23 __tconst3JzW22)
+    (exists pt (1 2 0) 2 __tconst7ikL19 __tconst2yNa23)
+    (exists circle (2 0 1) 1 __tconst8PFH17)
+    (join pt (0 1 2) 2 __t7JfT27 __tconst2dvT26 dup8HWa105)
+    (eq __tconst2dvT26 dup8HWa105)
+    (join pt (1 2 0) 2 __tconst7ikL19 __tconst2yNa23 __t5hsY20)
+    (join circle (1 2 0) 2 __t5hsY20 __tconst8PFH17 __t1eeB21))
+   (head (emit shapes (0) __t1eeB21) (emit shapes (0) __t420d28))
+   "dem_alias.slog:18"
+   #f)
+  (crule
+   (pre (let __tconst7ZpN6 constd4735e3a265e16eee03f5971))
+   (scan pt __t3N3A11 x0 y0)
+   (body
+    (join-old rect (1 2 0) 1 (1 2 0) __t3N3A11 __t8qZV10 __t54o512)
+    (join-old center (1 0) 1 (1 0) __t54o512 __t8eiQ13)
+    (join pt (0 1 2) 1 __t8qZV10 x1 y1)
+    (let __t4LE84 (_0002b y0 y1))
+    (let __t43d97 (_0002b x0 x1)))
+   (head (emit-temp temp1Wzv100 __t43d97 __t4LE84 __t8eiQ13))
+   "dem_alias.slog:15"
+   #f)
+  (crule
+   (pre)
+   (scan circle __t7pXO30 __t9SVu29 ____2Se532)
+   (body
+    (join-old center (1 0) 1 (1 0) __t7pXO30 __t8x5r31)
+    (join pt (0 1 2) 1 __t9SVu29 ____9PH033 ____8XjR34))
+   (head (emit center_ans (0 1) __t8x5r31 __t9SVu29))
+   "dem_alias.slog:14"
+   #f)
+  (crule
+   (pre)
+   (scan pt __t9SVu29 ____9PH033 ____8XjR34)
+   (body
+    (join-old circle (1 2 0) 1 (1 2 0) __t9SVu29 ____2Se532 __t7pXO30)
+    (join-old center (1 0) 1 (1 0) __t7pXO30 __t8x5r31))
+   (head (emit center_ans (0 1) __t8x5r31 __t9SVu29))
+   "dem_alias.slog:14"
+   #f)
+  (crule
+   (pre)
+   (scan temp5uvn102 __t0Mlo5 __t8U2s8 __t8eiQ13)
+   (body (join pt (1 2 0) 2 __t8U2s8 __t0Mlo5 __t8Tqd9))
+   (head (emit center_ans (0 1) __t8eiQ13 __t8Tqd9))
+   "dem_alias.slog:15"
+   #f)
+  (crule
+   (pre
+    (let __tconst8PFH17 const6b86b273ff34fce19d6b804e)
+    (let __tconst7ikL19 constd4735e3a265e16eee03f5971)
+    (let __tconst3JzW22 conste7f6c011776e8db7cd330b54)
+    (let __tconst2yNa23 const4b227777d4dd1fc61c6f884f)
+    (let __tconst2dvT26 const5feceb66ffc86f38d952786c))
+   (once)
+   (body)
+   (head
+    (mkstruct pt (1 2 0) __t5hsY20 __tconst7ikL19 __tconst2yNa23)
+    (mkstruct pt (1 2 0) __t8toC24 __tconst2yNa23 __tconst3JzW22)
+    (mkstruct pt (1 2 0) __t7JfT27 __tconst2dvT26 __tconst2dvT26))
+   "dem_alias.slog:18"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre1Gln92
+    __errf2Fqb93
+    __errf1AjG94
+    __errf8hx695
+    __errf2cH296)
+   (body)
+   (head (emit error (0) __erre1Gln92))
+   "<internal>:1"
+   #f)))

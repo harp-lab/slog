@@ -1,0 +1,1 @@
+(stratum-meta (hash "a9842cb0") (level 0) (dynamic-rels want) (accel-rels) (heads want) (reads) (acyclic #t) (rules (rule 1045985776 "dem_escape.slog:13" "(rule --> (want _tconst3xkN3) (= _tconst3xkN3 (const 7)) (want _tconst39pX2) (= _tconst39pX2 (const 5)))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

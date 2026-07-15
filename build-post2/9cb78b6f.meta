@@ -1,0 +1,1 @@
+(stratum-meta (hash "9cb78b6f") (level 2) (dynamic-rels redfans) (accel-rels) (heads redfans) (reads (_enum pos) (fav pos)) (acyclic #t) (rules (rule 2092662334 "enum_typed_col.slog:14" "(rule (= _t4ii45 (_enum _tconst2gVz8)) (= _tconst2gVz8 (const \"red\")) (fav n _t4ii45) --> (redfans n))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

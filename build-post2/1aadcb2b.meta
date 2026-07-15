@@ -1,0 +1,1 @@
+(stratum-meta (hash "1aadcb2b") (level 1) (dynamic-rels bar foo out) (accel-rels) (heads bar foo out) (reads (in pos)) (acyclic #t) (rules (rule 558001968 "nested.slog:10" "(rule (in X Y) --> (out _t0TDO2) (= _t0TDO2 (foo _t2mSE1 Y)) (= _t2mSE1 (bar X)))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

@@ -1,0 +1,120 @@
+(cprog
+ #<set:
+  reach
+  int_overflow
+  type_mismatch
+  toint_range
+  best
+  nan_result
+  modulo_by_zero
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash()
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (relation sz 2 (0 1))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (lattice reach 2 (set int) #f (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation got 2 (0 1))
+  (relation error 1 (0))
+  (relation edge 3 (1 0 2))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (lattice best 2 (map int (min int)) #f (0 1))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan int_overflow __erre7sJ277 __errf9SuT78 __errf9A6w79 __errf0jIX80)
+   (body)
+   (head (emit error (0) __erre7sJ277))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre201I71 __errf6GXj72 __errf4zoB73)
+   (body)
+   (head (emit error (0) __erre201I71))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre456993
+    __errf9LSs94
+    __errf32w595
+    __errf1Rut96
+    __errf7fRv97)
+   (body)
+   (head (emit error (0) __erre456993))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __t2mw415 (cmap)))
+   (scan edge a b w)
+   (body (let __t4leV16 (cput __t2mw415 b w)))
+   (head (emit-lat best a __t4leV16))
+   "lat_set.slog:26"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre1Zqj81 __errf36jD82 __errf6jP683 __errf6S2e84)
+   (body)
+   (head (emit error (0) __erre1Zqj81))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan reach b s)
+   (body (join edge (1 0 2) 1 b a w))
+   (head (emit-lat reach a s))
+   "lat_set.slog:23"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre8Ka074 __errf6W8Y75 __errf5Z8C76)
+   (body)
+   (head (emit error (0) __erre8Ka074))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre0bU885 __errf5VX986 __errf9bTv87)
+   (body)
+   (head (emit error (0) __erre0bU885))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __t2UwJ30 (cmap)))
+   (scan edge a b w)
+   (body (let __t139m31 (cins __t2UwJ30 b)))
+   (head (emit-lat reach a __t139m31))
+   "lat_set.slog:21"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre9MMb98 __errf4z9a99 __errf6QTm100)
+   (body)
+   (head (emit error (0) __erre9MMb98))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre47px88
+    __errf2p4g89
+    __errf6MDq90
+    __errf7wOz91
+    __errf7j8w92)
+   (body)
+   (head (emit error (0) __erre47px88))
+   "<internal>:1"
+   #f)))

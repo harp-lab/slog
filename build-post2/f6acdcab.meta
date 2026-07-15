@@ -1,0 +1,1 @@
+(stratum-meta (hash "f6acdcab") (level 2) (dynamic-rels $seq_at _lam54764x22x18 compose_ans) (accel-rels) (heads _lam54764x22x18 compose_ans) (reads (compose pos)) (acyclic #t) (rules (rule 495494441 "dem_lambda.slog:23" "(rule (= _t8QaG20 (compose f g)) --> (compose_ans _t8QaG20 _t2Nhy19) (= _t2Nhy19 (_lam54764x22x18 f g)))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

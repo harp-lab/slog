@@ -1,0 +1,122 @@
+(cprog
+ #<set:
+  int_overflow
+  type_mismatch
+  nan_result
+  cheap
+  hubdist
+  modulo_by_zero
+  to4
+  toint_range
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash((4 . const4b227777d4dd1fc61c6f884f) (6 . conste7f6c011776e8db7cd330b54))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (relation to4 2 (0 1))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation hubdist 2 (0 1))
+  (relation hub 1 (0))
+  (relation error 1 (0))
+  (relation edge 3 (0 1 2))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (lattice dist 3 (min int (floor 0)) #f (0 1 2) (delta 1 0 2))
+  (relation cheap 2 (0 1))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan modulo_by_zero __erre974W120 __errf3aG7121 __errf1jCG122)
+   (body)
+   (head (emit error (0) __erre974W120))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre3MeL131 __errf008h132 __errf4VAH133)
+   (body)
+   (head (emit error (0) __erre3MeL131))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst9ZSg24 conste7f6c011776e8db7cd330b54))
+   (scan dist X Y D)
+   (body (cmp lt D __tconst9ZSg24))
+   (head (emit cheap (0 1) X Y))
+   "lat_sssp_extract.slog:27"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre5vfl139
+    __errf7CsN140
+    __errf4mKZ141
+    __errf3NPm142
+    __errf9XaU143)
+   (body)
+   (head (emit error (0) __erre5vfl139))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst02bz23 const4b227777d4dd1fc61c6f884f))
+   (probe dist (1 0 2) 1 __tconst02bz23 X D)
+   (body)
+   (head (emit to4 (0 1) X D))
+   "lat_sssp_extract.slog:26"
+   #f)
+  (crule
+   (pre)
+   (scan hub H)
+   (body (join-lat dist (0 1 2) 1 H Y D))
+   (head (emit hubdist (0 1) Y D))
+   "lat_sssp_extract.slog:25"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre7HsB144 __errf8YcC145 __errf3Dnj146)
+   (body)
+   (head (emit error (0) __erre7HsB144))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre45z7117 __errf1GjA118 __errf2x1y119)
+   (body)
+   (head (emit error (0) __erre45z7117))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre14VK123 __errf5Z5Z124 __errf2BBs125 __errf3VF6126)
+   (body)
+   (head (emit error (0) __erre14VK123))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre9PkJ134
+    __errf9d8B135
+    __errf1egZ136
+    __errf3IDs137
+    __errf19Yg138)
+   (body)
+   (head (emit error (0) __erre9PkJ134))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre2zXP127 __errf1DxC128 __errf9pzV129 __errf4y8I130)
+   (body)
+   (head (emit error (0) __erre2zXP127))
+   "<internal>:1"
+   #f)))

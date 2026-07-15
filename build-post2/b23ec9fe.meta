@@ -1,0 +1,1 @@
+(stratum-meta (hash "b23ec9fe") (level 0) (dynamic-rels grow) (accel-rels) (heads grow) (reads) (acyclic #t) (rules (rule 1632167363 "strat_run_main.slog:11" "(rule --> (grow _tconst6iLI7) (= _tconst6iLI7 (const 7)))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

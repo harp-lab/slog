@@ -1,0 +1,946 @@
+(cprog
+ #<set:
+  ck_ans
+  num
+  var
+  error
+  $sup76879x16x0x0x0
+  arrow
+  lookup_ans
+  temp8Tl3109
+  malformed_deduction
+  app
+  temp9j5e118
+  $sup76879x10x0x0x0
+  prog
+  lam
+  lookup
+  ext
+  ck>
+ #hash((0 . const5feceb66ffc86f38d952786c)
+       (1 . const6b86b273ff34fce19d6b804e)
+       (3 . const4e07408562bedb8b60ce05c1)
+       (4 . const4b227777d4dd1fc61c6f884f)
+       ("ck" . const74ed1f1471d4dd9b505236e5)
+       ("dem_stlc.slog:11" . const6b51d0145b30dda2c4043c68)
+       ("dem_stlc.slog:17" . const79093c59b0bf60c8403ebce3)
+       ("f" . const30f8b180d63559f2512b744f)
+       ("lookup" . const38c0e144c051f35df0684885)
+       ("mt" . const1f503613ae12cc0c5121fd74)
+       ("tint" . constb40d060f542e4963e0fc1392)
+       ("x" . constba2df4903a2c14e86dc3bcca)
+       ("y" . const2bc983a5942276eb00a75e21))
+ ((struct var 2 (1 0) (0 1) (delta 1 0))
+  (relation typed 2 (0 1))
+  (struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp9j5e118 3)
+  (temp temp8Tl3109 4)
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation prog 1 (0))
+  (struct num 2 (1 0) (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation lookup_ans 2 (0 1))
+  (struct lookup 3 (1 2 0) (0 2 1) (2 0 1) (delta 0 2 1) (delta 1 2 0))
+  (struct lam 4 (1 2 3 0) (0 1 2 3) (3 1 0 2) (delta 1 0 2 3) (delta 3 1 0 2))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (struct
+   ext
+   4
+   (1 2 3 0)
+   (0 2 1 3)
+   (2 3 0 1)
+   (delta 0 2 1 3)
+   (delta 1 2 3 0)
+   (delta 2 3 0 1))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation ck_ans 2 (0 1) (1 0) (delta 0 1))
+  (struct
+   ck
+   3
+   (1 2 0)
+   (0 1 2)
+   (2 0 1)
+   (delta 0 1 2)
+   (delta 1 2 0)
+   (delta 2 0 1))
+  (struct arrow 3 (1 2 0) (0 1 2) (delta 0 1 2) (delta 1 2 0))
+  (struct app 3 (1 2 0) (0 2 1) (2 0 1) (delta 1 2 0))
+  (struct _enum 2 (1 0) (0 1) (delta 1 0))
+  (relation
+   $sup76879x16x0x0x0
+   4
+   (0 3 1 2)
+   (1 2 3 0)
+   (1 3 0 2)
+   (2 3 0 1)
+   (delta 1 2 3 0)
+   (delta 1 3 0 2))
+  (relation
+   $sup76879x10x0x0x0
+   4
+   (0 2 1 3)
+   (1 2 0 3)
+   (1 3 0 2)
+   (delta 1 2 0 3)))
+ ((crule
+   (pre
+    (let __tconst8dNm51 constba2df4903a2c14e86dc3bcca)
+    (let __tconst3JhQ48 const2bc983a5942276eb00a75e21)
+    (let __tconst9nbj32 const30f8b180d63559f2512b744f)
+    (let __tconst6P6s76 constb40d060f542e4963e0fc1392)
+    (let __tconst8kEV24 const6b86b273ff34fce19d6b804e))
+   (seeded)
+   (body
+    (join _enum (1 0) 1 __tconst6P6s76 __t3zgy50)
+    (exists var (1 0) 1 __tconst8dNm51)
+    (exists lam (1 2 3 0) 2 __tconst8dNm51 __t3zgy50)
+    (exists lam (1 2 3 0) 1 __tconst3JhQ48)
+    (exists arrow (1 2 0) 1 __t3zgy50)
+    (exists var (1 0) 1 __tconst3JhQ48)
+    (exists lam (1 2 3 0) 1 __tconst9nbj32)
+    (exists num (1 0) 1 __tconst8kEV24)
+    (exists var (1 0) 1 __tconst9nbj32)
+    (join lam (1 2 3 0) 2 __tconst8dNm51 __t3zgy50 __t0OY020 __t16B123)
+    (join var (0 1) 2 __t0OY020 __tconst8dNm51)
+    (exists app (2 0 1) 1 __t0OY020)
+    (exists app (2 0 1) 1 __t16B123)
+    (join lam (1 2 3 0) 2 __tconst8dNm51 __t3zgy50 __t5JUn49 __t5Erl52)
+    (join lam (0 1 2 3) 2 __t5JUn49 __tconst3JhQ48 __t4oeC31 __t2MLp44)
+    (exists app (0 2 1) 2 __t2MLp44 __t0OY020)
+    (exists lam (1 2 3 0) 2 __tconst9nbj32 __t4oeC31)
+    (join arrow (0 1 2) 2 __t4oeC31 __t3zgy50 dup0Zof117)
+    (eq __t3zgy50 dup0Zof117)
+    (join app (0 2 1) 2 __t2MLp44 __t0OY020 __t7Q1C43)
+    (join var (0 1) 2 __t7Q1C43 __tconst3JhQ48)
+    (join lam (1 2 3 0) 2 __tconst9nbj32 __t4oeC31 __t7G7R28 __t9fNk33)
+    (join app (1 2 0) 2 __t9fNk33 __t16B123 __t2P4j34)
+    (join num (1 0) 1 __tconst8kEV24 __t95AJ25)
+    (join app (0 2 1) 2 __t7G7R28 __t95AJ25 __t6EL627)
+    (join var (0 1) 2 __t6EL627 __tconst9nbj32))
+   (head (emit prog (0) __t5Erl52) (emit prog (0) __t2P4j34))
+   "dem_stlc.slog:23"
+   #f)
+  (crule
+   (pre)
+   (scan arrow __t9HVg9 t1 t2)
+   (body
+    (exists ck_ans (1 0) 1 t1)
+    (join ck_ans (1 0) 1 __t9HVg9 __t17cq8)
+    (join ck_ans (1 0) 1 t1 __t37kq10)
+    (join ck (0 1 2) 1 __t17cq8 env e1)
+    (exists $sup76879x16x0x0x0 (1 3 0 2) 2 e1 env)
+    (exists app (1 2 0) 1 e1)
+    (exists ck (1 2 0) 1 env)
+    (join-old ck (0 1 2) 2 (0 1 2) __t37kq10 env e2)
+    (exists app (1 2 0) 2 e1 e2)
+    (join $sup76879x16x0x0x0 (1 2 3 0) 3 e1 e2 env __t6Npw7)
+    (exists ck (0 1 2) 2 __t6Npw7 env)
+    (join app (1 2 0) 2 e1 e2 __t3xua6)
+    (join ck (0 1 2) 3 __t6Npw7 env __t3xua6))
+   (head (emit ck_ans (0 1) __t6Npw7 t2))
+   "dem_stlc.slog:17"
+   #f)
+  (crule
+   (pre (let __tconst0hXo78 constb40d060f542e4963e0fc1392))
+   (scan ck __t0Y0I55 env __t6P2x54)
+   (body
+    (join _enum (1 0) 1 __tconst0hXo78 __t2VZ853)
+    (join num (0 1) 1 __t6P2x54 i))
+   (head (emit ck_ans (0 1) __t0Y0I55 __t2VZ853))
+   "dem_stlc.slog:14"
+   #f)
+  (crule
+   (pre)
+   (scan ck_ans __t37kq10 t1)
+   (body
+    (join-old arrow (1 2 0) 1 (1 2 0) t1 t2 __t9HVg9)
+    (join ck_ans (1 0) 1 __t9HVg9 __t17cq8)
+    (join-old ck (0 1 2) 1 (0 1 2) __t17cq8 env e1)
+    (exists $sup76879x16x0x0x0 (1 3 0 2) 2 e1 env)
+    (exists app (1 2 0) 1 e1)
+    (exists ck (1 2 0) 1 env)
+    (join-old ck (0 1 2) 2 (0 1 2) __t37kq10 env e2)
+    (exists app (1 2 0) 2 e1 e2)
+    (join-old $sup76879x16x0x0x0 (1 2 3 0) 3 (1 2 3 0) e1 e2 env __t6Npw7)
+    (exists ck (0 1 2) 2 __t6Npw7 env)
+    (join-old app (1 2 0) 2 (1 2 0) e1 e2 __t3xua6)
+    (join-old ck (0 1 2) 3 (0 1 2) __t6Npw7 env __t3xua6))
+   (head (emit ck_ans (0 1) __t6Npw7 t2))
+   "dem_stlc.slog:17"
+   #f)
+  (crule
+   (pre)
+   (scan ext __t538W56 env y ____2zPL59)
+   (body
+    (exists lookup (1 2 0) 1 __t538W56)
+    (exists lookup (1 2 0) 1 env)
+    (join $sup76879x10x0x0x0 (1 3 0 2) 2 env y __t4rN257 x)
+    (neq x y)
+    (join-old lookup (0 2 1) 3 (0 2 1) __t4rN257 x __t538W56)
+    (join-old lookup (1 2 0) 2 (1 2 0) env x __t8ds158)
+    (join lookup_ans (0 1) 1 __t8ds158 t))
+   (head (emit lookup_ans (0 1) __t4rN257 t))
+   "dem_stlc.slog:11"
+   #f)
+  (crule
+   (pre)
+   (scan lookup_ans __t8ds158 t)
+   (body
+    (join-old lookup (0 2 1) 1 (0 2 1) __t8ds158 x env)
+    (exists lookup (2 0 1) 1 x)
+    (exists ext (1 2 3 0) 1 env)
+    (join-old $sup76879x10x0x0x0 (1 2 0 3) 2 (1 2 0 3) env x __t4rN257 y)
+    (neq x y)
+    (exists ext (1 2 3 0) 2 env y)
+    (join-old lookup (0 2 1) 2 (0 2 1) __t4rN257 x __t538W56)
+    (join-old ext (0 2 1 3) 3 (0 2 1 3) __t538W56 y env ____2zPL59))
+   (head (emit lookup_ans (0 1) __t4rN257 t))
+   "dem_stlc.slog:11"
+   #f)
+  (crule
+   (pre)
+   (scan lam __t8P1X2 x t1 e)
+   (body
+    (exists ck (2 0 1) 1 __t8P1X2)
+    (exists ck (2 0 1) 1 e)
+    (join-old ext (2 3 0 1) 2 (2 3 0 1) x t1 __t1FJ54 env)
+    (exists ck (1 2 0) 2 __t1FJ54 e)
+    (join-old ck (1 2 0) 2 (1 2 0) env __t8P1X2 __t99AN3)
+    (join-old ck (1 2 0) 2 (1 2 0) __t1FJ54 e __t57LD5)
+    (join ck_ans (0 1) 1 __t57LD5 __v0))
+   (head
+    (emit-temp temp9j5e118 __t99AN3 __v0 t1)
+    (mkstruct arrow (1 2 0) __t82gT1 t1 __v0))
+   "dem_stlc.slog:16"
+   #f)
+  (crule
+   (pre
+    (let __trid9kXb71 const6b51d0145b30dda2c4043c68)
+    (let __trel8N6O72 const38c0e144c051f35df0684885)
+    (let __tcol0PN573 const5feceb66ffc86f38d952786c)
+    (let __trel9GAv74 const38c0e144c051f35df0684885)
+    (let __tcol3Gev75 const6b86b273ff34fce19d6b804e))
+   (scan $sup76879x10x0x0x0 __d0 env x y)
+   (body)
+   (head
+    (tycheck
+     env
+     (accept (struct ext) (struct _enum))
+     __trid9kXb71
+     __trel8N6O72
+     __tcol0PN573
+     (1 2 3 4 0))
+    (tycheck x (accept str) __trid9kXb71 __trel9GAv74 __tcol3Gev75 (1 2 3 4 0))
+    (mkstruct lookup (1 2 0) __9VEu70 env x))
+   "dem_stlc.slog:11"
+   #f)
+  (crule
+   (pre)
+   (scan lam __t0VTf12 x t1 e)
+   (body (join-old ck (2 0 1) 1 (2 0 1) __t0VTf12 __t26fA13 env))
+   (head
+    (emit-temp temp8Tl3109 e env t1 x)
+    (mkstruct ext (1 2 3 0) __t0xCE11 env x t1))
+   "dem_stlc.slog:16"
+   #f)
+  (crule
+   (pre)
+   (scan lookup __t4rN257 __t538W56 x)
+   (body
+    (exists lookup (2 0 1) 1 x)
+    (join $sup76879x10x0x0x0 (0 2 1 3) 2 __t4rN257 x env y)
+    (neq x y)
+    (exists lookup (1 2 0) 2 env x)
+    (join ext (0 2 1 3) 3 __t538W56 y env ____2zPL59)
+    (join-old lookup (1 2 0) 2 (1 2 0) env x __t8ds158)
+    (join lookup_ans (0 1) 1 __t8ds158 t))
+   (head (emit lookup_ans (0 1) __t4rN257 t))
+   "dem_stlc.slog:11"
+   #f)
+  (crule
+   (pre
+    (let __tconst6P6s76 constb40d060f542e4963e0fc1392)
+    (let __tconst8dNm51 constba2df4903a2c14e86dc3bcca)
+    (let __tconst3JhQ48 const2bc983a5942276eb00a75e21)
+    (let __tconst1wvy37 const4e07408562bedb8b60ce05c1)
+    (let __tconst1K9r35 const4b227777d4dd1fc61c6f884f)
+    (let __tconst9nbj32 const30f8b180d63559f2512b744f)
+    (let __tconst8kEV24 const6b86b273ff34fce19d6b804e))
+   (probe _enum (1 0) 1 __tconst6P6s76 __t3zgy50)
+   (body)
+   (head
+    (mkstruct var (1 0) __t7Q1C43 __tconst3JhQ48)
+    (mkstruct num (1 0) __t7sPi38 __tconst1wvy37)
+    (mkstruct num (1 0) __t35Fj36 __tconst1K9r35)
+    (mkstruct arrow (1 2 0) __t4oeC31 __t3zgy50 __t3zgy50)
+    (mkstruct var (1 0) __t6EL627 __tconst9nbj32)
+    (mkstruct num (1 0) __t95AJ25 __tconst8kEV24)
+    (mkstruct var (1 0) __t0OY020 __tconst8dNm51))
+   "dem_stlc.slog:23"
+   #f)
+  (crule
+   (pre)
+   (scan app __t7Y9q66 e1 e2)
+   (body (join-old ck (2 0 1) 1 (2 0 1) __t7Y9q66 __t0iEo67 env))
+   (head (emit $sup76879x16x0x0x0 (0 3 1 2) __t0iEo67 env e1 e2))
+   "dem_stlc.slog:17"
+   #f)
+  (crule
+   (pre)
+   (scan lookup __t5u0262 __t1moV61 x)
+   (body (join ext (0 2 1 3) 1 __t1moV61 y env ____7sx763) (neq x y))
+   (head (emit $sup76879x10x0x0x0 (0 2 1 3) __t5u0262 x env y))
+   "dem_stlc.slog:11"
+   #f)
+  (crule
+   (pre
+    (let __tconst8dNm51 constba2df4903a2c14e86dc3bcca)
+    (let __tconst3JhQ48 const2bc983a5942276eb00a75e21)
+    (let __tconst9nbj32 const30f8b180d63559f2512b744f)
+    (let __tconst6P6s76 constb40d060f542e4963e0fc1392)
+    (let __tconst8kEV24 const6b86b273ff34fce19d6b804e))
+   (probe lam (1 0 2 3) 1 __tconst9nbj32 __t9fNk33 __t4oeC31 __t7G7R28)
+   (body
+    (exists _enum (1 0) 1 __tconst6P6s76)
+    (exists lam (1 2 3 0) 1 __tconst8dNm51)
+    (exists var (1 0) 1 __tconst8dNm51)
+    (exists var (1 0) 1 __tconst3JhQ48)
+    (exists num (1 0) 1 __tconst8kEV24)
+    (exists var (1 0) 1 __tconst9nbj32)
+    (join lam (1 2 3 0) 2 __tconst3JhQ48 __t4oeC31 __t2MLp44 __t5JUn49)
+    (join _enum (1 0) 1 __tconst6P6s76 __t3zgy50)
+    (exists lam (1 2 3 0) 2 __tconst8dNm51 __t3zgy50)
+    (join arrow (0 1 2) 2 __t4oeC31 __t3zgy50 dup5MnR114)
+    (eq __t3zgy50 dup5MnR114)
+    (join lam (1 2 3 0) 2 __tconst8dNm51 __t3zgy50 __t0OY020 __t16B123)
+    (join var (0 1) 2 __t0OY020 __tconst8dNm51)
+    (join app (0 2 1) 2 __t2MLp44 __t0OY020 __t7Q1C43)
+    (join var (0 1) 2 __t7Q1C43 __tconst3JhQ48)
+    (join num (1 0) 1 __tconst8kEV24 __t95AJ25)
+    (join app (0 2 1) 2 __t7G7R28 __t95AJ25 __t6EL627)
+    (join var (0 1) 2 __t6EL627 __tconst9nbj32))
+   (head
+    (mkstruct lam (1 2 3 0) __t5Erl52 __tconst8dNm51 __t3zgy50 __t5JUn49)
+    (mkstruct app (1 2 0) __t2P4j34 __t9fNk33 __t16B123))
+   "dem_stlc.slog:23"
+   #f)
+  (crule
+   (pre
+    (let __trid8u9P88 const79093c59b0bf60c8403ebce3)
+    (let __trel14DY89 const74ed1f1471d4dd9b505236e5)
+    (let __tcol2q4p90 const5feceb66ffc86f38d952786c)
+    (let __trel9AqL91 const74ed1f1471d4dd9b505236e5)
+    (let __tcol62rs92 const6b86b273ff34fce19d6b804e))
+   (scan $sup76879x16x0x0x0 __d0 e1 e2 env)
+   (body)
+   (head
+    (tycheck
+     env
+     (accept (struct ext) (struct _enum))
+     __trid8u9P88
+     __trel14DY89
+     __tcol2q4p90
+     (1 2 3 4 0))
+    (tycheck
+     e2
+     (accept (struct app) (struct lam) (struct num) (struct var))
+     __trid8u9P88
+     __trel9AqL91
+     __tcol62rs92
+     (1 2 3 4 0))
+    (mkstruct ck (1 2 0) __0LVD87 env e2))
+   "dem_stlc.slog:17"
+   #f)
+  (crule
+   (pre)
+   (scan ext __t1FJ54 env x t1)
+   (body
+    (exists ck (1 2 0) 1 env)
+    (exists ck (1 2 0) 1 __t1FJ54)
+    (join lam (1 2 3 0) 2 x t1 e __t8P1X2)
+    (exists ck (1 2 0) 2 __t1FJ54 e)
+    (join ck (1 2 0) 2 env __t8P1X2 __t99AN3)
+    (join-old ck (1 2 0) 2 (1 2 0) __t1FJ54 e __t57LD5)
+    (join ck_ans (0 1) 1 __t57LD5 __v0))
+   (head
+    (emit-temp temp9j5e118 __t99AN3 __v0 t1)
+    (mkstruct arrow (1 2 0) __t82gT1 t1 __v0))
+   "dem_stlc.slog:16"
+   #f)
+  (crule
+   (pre)
+   (scan $sup76879x16x0x0x0 __t6Npw7 e1 e2 env)
+   (body
+    (exists ck (0 1 2) 2 __t6Npw7 env)
+    (exists ck (1 2 0) 2 env e1)
+    (exists ck (1 2 0) 2 env e2)
+    (join-old app (1 2 0) 2 (1 2 0) e1 e2 __t3xua6)
+    (join-old ck (0 1 2) 3 (0 1 2) __t6Npw7 env __t3xua6)
+    (join-old ck (1 2 0) 2 (1 2 0) env e1 __t17cq8)
+    (exists ck_ans (0 1) 1 __t17cq8)
+    (join-old ck (1 2 0) 2 (1 2 0) env e2 __t37kq10)
+    (exists ck_ans (0 1) 1 __t37kq10)
+    (join ck_ans (0 1) 1 __t17cq8 __t9HVg9)
+    (join ck_ans (0 1) 1 __t37kq10 t1)
+    (join-old arrow (0 1 2) 2 (0 1 2) __t9HVg9 t1 t2))
+   (head (emit ck_ans (0 1) __t6Npw7 t2))
+   "dem_stlc.slog:17"
+   #f)
+  (crule
+   (pre (let __tconst0hXo78 constb40d060f542e4963e0fc1392))
+   (scan num __t6P2x54 i)
+   (body
+    (exists ck (2 0 1) 1 __t6P2x54)
+    (join _enum (1 0) 1 __tconst0hXo78 __t2VZ853)
+    (join-old ck (2 0 1) 1 (2 0 1) __t6P2x54 __t0Y0I55 env))
+   (head (emit ck_ans (0 1) __t0Y0I55 __t2VZ853))
+   "dem_stlc.slog:14"
+   #f)
+  (crule
+   (pre
+    (let __trid3XuU80 const79093c59b0bf60c8403ebce3)
+    (let __trel112q81 const74ed1f1471d4dd9b505236e5)
+    (let __tcol2Omn82 const5feceb66ffc86f38d952786c)
+    (let __trel9cyV83 const74ed1f1471d4dd9b505236e5)
+    (let __tcol2YQA84 const6b86b273ff34fce19d6b804e))
+   (scan $sup76879x16x0x0x0 __d0 e1 e2 env)
+   (body)
+   (head
+    (tycheck
+     env
+     (accept (struct ext) (struct _enum))
+     __trid3XuU80
+     __trel112q81
+     __tcol2Omn82
+     (1 2 3 4 0))
+    (tycheck
+     e1
+     (accept (struct app) (struct lam) (struct num) (struct var))
+     __trid3XuU80
+     __trel9cyV83
+     __tcol2YQA84
+     (1 2 3 4 0))
+    (mkstruct ck (1 2 0) __3jHJ79 env e1))
+   "dem_stlc.slog:17"
+   #f)
+  (crule
+   (pre)
+   (scan lookup __t9Fqg18 env x)
+   (body
+    (exists var (1 0) 1 x)
+    (exists ck (1 2 0) 1 env)
+    (join lookup_ans (0 1) 1 __t9Fqg18 __v0)
+    (join var (1 0) 1 x __t6OR216)
+    (join ck (1 2 0) 2 env __t6OR216 __t43Yp17))
+   (head (emit ck_ans (0 1) __t43Yp17 __v0))
+   "dem_stlc.slog:15"
+   #f)
+  (crule
+   (pre)
+   (scan var __t65ap68 x)
+   (body (join-old ck (2 0 1) 1 (2 0 1) __t65ap68 __t8xpU69 env))
+   (head (mkstruct lookup (1 2 0) __2bB777 env x))
+   "dem_stlc.slog:15"
+   #f)
+  (crule
+   (pre)
+   (scan var __t6OR216 x)
+   (body
+    (exists lookup (2 0 1) 1 x)
+    (join-old ck (2 0 1) 1 (2 0 1) __t6OR216 __t43Yp17 env)
+    (join-old lookup (1 2 0) 2 (1 2 0) env x __t9Fqg18)
+    (join lookup_ans (0 1) 1 __t9Fqg18 __v0))
+   (head (emit ck_ans (0 1) __t43Yp17 __v0))
+   "dem_stlc.slog:15"
+   #f)
+  (crule
+   (pre)
+   (scan app __t3xua6 e1 e2)
+   (body
+    (exists ck (2 0 1) 1 __t3xua6)
+    (exists ck (2 0 1) 1 e1)
+    (exists ck (2 0 1) 1 e2)
+    (join $sup76879x16x0x0x0 (1 2 3 0) 2 e1 e2 env __t6Npw7)
+    (join-old ck (0 1 2) 3 (0 1 2) __t6Npw7 env __t3xua6)
+    (exists ck (1 2 0) 2 env e2)
+    (join-old ck (1 2 0) 2 (1 2 0) env e1 __t17cq8)
+    (exists ck_ans (0 1) 1 __t17cq8)
+    (join-old ck (1 2 0) 2 (1 2 0) env e2 __t37kq10)
+    (exists ck_ans (0 1) 1 __t37kq10)
+    (join ck_ans (0 1) 1 __t17cq8 __t9HVg9)
+    (join ck_ans (0 1) 1 __t37kq10 t1)
+    (join-old arrow (0 1 2) 2 (0 1 2) __t9HVg9 t1 t2))
+   (head (emit ck_ans (0 1) __t6Npw7 t2))
+   "dem_stlc.slog:17"
+   #f)
+  (crule
+   (pre)
+   (scan $sup76879x10x0x0x0 __t4rN257 env x y)
+   (body
+    (neq x y)
+    (exists ext (1 2 3 0) 2 env y)
+    (exists lookup (1 2 0) 2 env x)
+    (join-old lookup (0 2 1) 2 (0 2 1) __t4rN257 x __t538W56)
+    (join-old ext (0 2 1 3) 3 (0 2 1 3) __t538W56 y env ____2zPL59)
+    (join-old lookup (1 2 0) 2 (1 2 0) env x __t8ds158)
+    (join lookup_ans (0 1) 1 __t8ds158 t))
+   (head (emit lookup_ans (0 1) __t4rN257 t))
+   "dem_stlc.slog:11"
+   #f)
+  (crule
+   (pre)
+   (scan temp9j5e118 __t99AN3 __v0 t1)
+   (body (join arrow (1 2 0) 2 t1 __v0 __t82gT1))
+   (head (emit ck_ans (0 1) __t99AN3 __t82gT1))
+   "dem_stlc.slog:16"
+   #f)
+  (crule
+   (pre
+    (let __tconst8dNm51 constba2df4903a2c14e86dc3bcca)
+    (let __tconst3JhQ48 const2bc983a5942276eb00a75e21)
+    (let __tconst9nbj32 const30f8b180d63559f2512b744f)
+    (let __tconst1wvy37 const4e07408562bedb8b60ce05c1)
+    (let __tconst1K9r35 const4b227777d4dd1fc61c6f884f)
+    (let __tconst8kEV24 const6b86b273ff34fce19d6b804e)
+    (let __tconst6P6s76 constb40d060f542e4963e0fc1392))
+   (seeded)
+   (body
+    (join _enum (1 0) 1 __tconst6P6s76 __t3zgy50)
+    (exists var (1 0) 1 __tconst8dNm51)
+    (exists num (1 0) 1 __tconst8kEV24)
+    (exists var (1 0) 1 __tconst9nbj32)
+    (exists num (1 0) 1 __tconst1K9r35)
+    (exists num (1 0) 1 __tconst1wvy37)
+    (exists var (1 0) 1 __tconst3JhQ48)
+    (exists arrow (1 2 0) 1 __t3zgy50)
+    (join lam (1 2 3 0) 2 __tconst8dNm51 __t3zgy50 __t0OY020 __t16B123)
+    (join var (0 1) 2 __t0OY020 __tconst8dNm51)
+    (exists app (2 0 1) 1 __t0OY020)
+    (join num (1 0) 1 __tconst8kEV24 __t95AJ25)
+    (exists app (2 0 1) 1 __t95AJ25)
+    (join var (1 0) 1 __tconst9nbj32 __t6EL627)
+    (join app (1 2 0) 2 __t6EL627 __t95AJ25 __t7G7R28)
+    (join num (1 0) 1 __tconst1K9r35 __t35Fj36)
+    (exists app (2 0 1) 1 __t35Fj36)
+    (join num (1 0) 1 __tconst1wvy37 __t7sPi38)
+    (join app (1 2 0) 2 __t7sPi38 __t35Fj36 __t4b7B39)
+    (join var (1 0) 1 __tconst3JhQ48 __t7Q1C43)
+    (join app (1 2 0) 2 __t7Q1C43 __t0OY020 __t2MLp44)
+    (join arrow (1 2 0) 1 __t3zgy50 dup1wZH113 __t4oeC31)
+    (eq __t3zgy50 dup1wZH113))
+   (head
+    (emit prog (0) __t4b7B39)
+    (mkstruct lam (1 2 3 0) __t5JUn49 __tconst3JhQ48 __t4oeC31 __t2MLp44)
+    (mkstruct lam (1 2 3 0) __t9fNk33 __tconst9nbj32 __t4oeC31 __t7G7R28))
+   "dem_stlc.slog:23"
+   #f)
+  (crule
+   (pre)
+   (scan lookup_ans __t9Fqg18 __v0)
+   (body
+    (join-old lookup (0 2 1) 1 (0 2 1) __t9Fqg18 x env)
+    (exists ck (1 2 0) 1 env)
+    (join-old var (1 0) 1 (1 0) x __t6OR216)
+    (join-old ck (1 2 0) 2 (1 2 0) env __t6OR216 __t43Yp17))
+   (head (emit ck_ans (0 1) __t43Yp17 __v0))
+   "dem_stlc.slog:15"
+   #f)
+  (crule
+   (pre)
+   (scan ext __t9GTJ64 env x t)
+   (body (join-old lookup (1 2 0) 2 (1 2 0) __t9GTJ64 x __t7RPo65))
+   (head (emit lookup_ans (0 1) __t7RPo65 t))
+   "dem_stlc.slog:10"
+   #f)
+  (crule
+   (pre
+    (let __tconst8dNm51 constba2df4903a2c14e86dc3bcca)
+    (let __tconst3JhQ48 const2bc983a5942276eb00a75e21)
+    (let __tconst9nbj32 const30f8b180d63559f2512b744f)
+    (let __tconst6P6s76 constb40d060f542e4963e0fc1392)
+    (let __tconst8kEV24 const6b86b273ff34fce19d6b804e))
+   (scan app __t2P4j34 __t9fNk33 __t16B123)
+   (body
+    (exists _enum (1 0) 1 __tconst6P6s76)
+    (exists var (1 0) 1 __tconst8dNm51)
+    (exists lam (0 1 2 3) 2 __t9fNk33 __tconst9nbj32)
+    (exists lam (1 2 3 0) 1 __tconst3JhQ48)
+    (exists lam (1 2 3 0) 1 __tconst8dNm51)
+    (exists var (1 0) 1 __tconst3JhQ48)
+    (exists num (1 0) 1 __tconst8kEV24)
+    (exists var (1 0) 1 __tconst9nbj32)
+    (join lam (0 1 2 3) 2 __t16B123 __tconst8dNm51 __t3zgy50 __t0OY020)
+    (join _enum (0 1) 2 __t3zgy50 __tconst6P6s76)
+    (join var (0 1) 2 __t0OY020 __tconst8dNm51)
+    (exists arrow (1 2 0) 1 __t3zgy50)
+    (exists lam (1 2 3 0) 2 __tconst8dNm51 __t3zgy50)
+    (exists app (2 0 1) 1 __t0OY020)
+    (join lam (0 1 2 3) 2 __t9fNk33 __tconst9nbj32 __t4oeC31 __t7G7R28)
+    (exists lam (1 2 3 0) 2 __tconst3JhQ48 __t4oeC31)
+    (join arrow (0 1 2) 2 __t4oeC31 __t3zgy50 dup2a9S116)
+    (eq __t3zgy50 dup2a9S116)
+    (join lam (1 2 3 0) 2 __tconst3JhQ48 __t4oeC31 __t2MLp44 __t5JUn49)
+    (exists app (0 2 1) 2 __t2MLp44 __t0OY020)
+    (join lam (1 2 3 0) 3 __tconst8dNm51 __t3zgy50 __t5JUn49 __t5Erl52)
+    (join app (0 2 1) 2 __t2MLp44 __t0OY020 __t7Q1C43)
+    (join var (0 1) 2 __t7Q1C43 __tconst3JhQ48)
+    (join num (1 0) 1 __tconst8kEV24 __t95AJ25)
+    (join app (0 2 1) 2 __t7G7R28 __t95AJ25 __t6EL627)
+    (join var (0 1) 2 __t6EL627 __tconst9nbj32))
+   (head (emit prog (0) __t5Erl52) (emit prog (0) __t2P4j34))
+   "dem_stlc.slog:23"
+   #f)
+  (crule
+   (pre
+    (let __tconst8dNm51 constba2df4903a2c14e86dc3bcca)
+    (let __tconst3JhQ48 const2bc983a5942276eb00a75e21)
+    (let __tconst1wvy37 const4e07408562bedb8b60ce05c1)
+    (let __tconst1K9r35 const4b227777d4dd1fc61c6f884f)
+    (let __tconst9nbj32 const30f8b180d63559f2512b744f)
+    (let __tconst8kEV24 const6b86b273ff34fce19d6b804e)
+    (let __tconst6P6s76 constb40d060f542e4963e0fc1392))
+   (probe var (1 0) 1 __tconst8dNm51 __t0OY020)
+   (body
+    (exists num (1 0) 1 __tconst8kEV24)
+    (exists var (1 0) 1 __tconst9nbj32)
+    (exists num (1 0) 1 __tconst1K9r35)
+    (exists num (1 0) 1 __tconst1wvy37)
+    (exists var (1 0) 1 __tconst3JhQ48)
+    (join _enum (1 0) 1 __tconst6P6s76 __t3zgy50)
+    (exists arrow (1 2 0) 1 __t3zgy50)
+    (join num (1 0) 1 __tconst8kEV24 __t95AJ25)
+    (join var (1 0) 1 __tconst9nbj32 __t6EL627)
+    (join num (1 0) 1 __tconst1K9r35 __t35Fj36)
+    (join num (1 0) 1 __tconst1wvy37 __t7sPi38)
+    (join var (1 0) 1 __tconst3JhQ48 __t7Q1C43)
+    (join arrow (1 2 0) 1 __t3zgy50 dup0fvT110 __t4oeC31)
+    (eq __t3zgy50 dup0fvT110))
+   (head
+    (mkstruct app (1 2 0) __t2MLp44 __t7Q1C43 __t0OY020)
+    (mkstruct app (1 2 0) __t4b7B39 __t7sPi38 __t35Fj36)
+    (mkstruct app (1 2 0) __t7G7R28 __t6EL627 __t95AJ25)
+    (mkstruct lam (1 2 3 0) __t16B123 __tconst8dNm51 __t3zgy50 __t0OY020))
+   "dem_stlc.slog:23"
+   #f)
+  (crule
+   (pre)
+   (scan lookup __t7RPo65 __t9GTJ64 x)
+   (body (join ext (0 2 1 3) 2 __t9GTJ64 x env t))
+   (head (emit lookup_ans (0 1) __t7RPo65 t))
+   "dem_stlc.slog:10"
+   #f)
+  (crule
+   (pre)
+   (scan ck_ans __t17cq8 __t9HVg9)
+   (body
+    (join-old ck (0 1 2) 1 (0 1 2) __t17cq8 env e1)
+    (exists app (1 2 0) 1 e1)
+    (exists ck (1 2 0) 1 env)
+    (join-old $sup76879x16x0x0x0 (1 3 0 2) 2 (1 3 0 2) e1 env __t6Npw7 e2)
+    (exists ck (0 1 2) 2 __t6Npw7 env)
+    (exists ck (1 2 0) 2 env e2)
+    (join-old app (1 2 0) 2 (1 2 0) e1 e2 __t3xua6)
+    (join-old ck (0 1 2) 3 (0 1 2) __t6Npw7 env __t3xua6)
+    (join-old ck (1 2 0) 2 (1 2 0) env e2 __t37kq10)
+    (join-old ck_ans (0 1) 1 (0 1) __t37kq10 t1)
+    (join-old arrow (0 1 2) 2 (0 1 2) __t9HVg9 t1 t2))
+   (head (emit ck_ans (0 1) __t6Npw7 t2))
+   "dem_stlc.slog:17"
+   #f)
+  (crule
+   (pre)
+   (scan ck __t26fA13 env __t0VTf12)
+   (body (join lam (0 1 2 3) 1 __t0VTf12 x t1 e))
+   (head
+    (emit-temp temp8Tl3109 e env t1 x)
+    (mkstruct ext (1 2 3 0) __t0xCE11 env x t1))
+   "dem_stlc.slog:16"
+   #f)
+  (crule
+   (pre (let __tconst9S2u94 const1f503613ae12cc0c5121fd74))
+   (scan prog e)
+   (body (join _enum (1 0) 1 __tconst9S2u94 __t835e60))
+   (head (mkstruct ck (1 2 0) __7GKq93 __t835e60 e))
+   "dem_stlc.slog:30"
+   #f)
+  (crule
+   (pre)
+   (scan ck __t17cq8 env e1)
+   (body
+    (exists app (1 2 0) 1 e1)
+    (exists ck (1 2 0) 1 env)
+    (exists ck_ans (0 1) 1 __t17cq8)
+    (join $sup76879x16x0x0x0 (1 3 0 2) 2 e1 env __t6Npw7 e2)
+    (exists ck (0 1 2) 2 __t6Npw7 env)
+    (exists ck (1 2 0) 2 env e2)
+    (join app (1 2 0) 2 e1 e2 __t3xua6)
+    (join ck (0 1 2) 3 __t6Npw7 env __t3xua6)
+    (join-old ck (1 2 0) 2 (1 2 0) env e2 __t37kq10)
+    (exists ck_ans (0 1) 1 __t37kq10)
+    (join ck_ans (0 1) 1 __t17cq8 __t9HVg9)
+    (join ck_ans (0 1) 1 __t37kq10 t1)
+    (join-old arrow (0 1 2) 2 (0 1 2) __t9HVg9 t1 t2))
+   (head (emit ck_ans (0 1) __t6Npw7 t2))
+   "dem_stlc.slog:17"
+   #f)
+  (crule
+   (pre)
+   (scan ck __t0iEo67 env __t7Y9q66)
+   (body (join app (0 2 1) 1 __t7Y9q66 e2 e1))
+   (head (emit $sup76879x16x0x0x0 (0 3 1 2) __t0iEo67 env e1 e2))
+   "dem_stlc.slog:17"
+   #f)
+  (crule
+   (pre)
+   (scan ck __t43Yp17 env __t6OR216)
+   (body
+    (exists lookup (1 2 0) 1 env)
+    (join var (0 1) 1 __t6OR216 x)
+    (join-old lookup (1 2 0) 2 (1 2 0) env x __t9Fqg18)
+    (join lookup_ans (0 1) 1 __t9Fqg18 __v0))
+   (head (emit ck_ans (0 1) __t43Yp17 __v0))
+   "dem_stlc.slog:15"
+   #f)
+  (crule
+   (pre)
+   (scan ck __t99AN3 env __t8P1X2)
+   (body
+    (exists ext (1 2 3 0) 1 env)
+    (join lam (0 1 2 3) 1 __t8P1X2 x t1 e)
+    (exists ck (2 0 1) 1 e)
+    (join-old ext (1 2 3 0) 3 (1 2 3 0) env x t1 __t1FJ54)
+    (join-old ck (1 2 0) 2 (1 2 0) __t1FJ54 e __t57LD5)
+    (join ck_ans (0 1) 1 __t57LD5 __v0))
+   (head
+    (emit-temp temp9j5e118 __t99AN3 __v0 t1)
+    (mkstruct arrow (1 2 0) __t82gT1 t1 __v0))
+   "dem_stlc.slog:16"
+   #f)
+  (crule
+   (pre)
+   (scan ck __t57LD5 __t1FJ54 e)
+   (body
+    (exists lam (3 1 0 2) 1 e)
+    (join ck_ans (0 1) 1 __t57LD5 __v0)
+    (join lam (3 1 0 2) 1 e x __t8P1X2 t1)
+    (exists ck (2 0 1) 1 __t8P1X2)
+    (join ext (2 3 0 1) 3 x t1 __t1FJ54 env)
+    (join ck (1 2 0) 2 env __t8P1X2 __t99AN3))
+   (head
+    (emit-temp temp9j5e118 __t99AN3 __v0 t1)
+    (mkstruct arrow (1 2 0) __t82gT1 t1 __v0))
+   "dem_stlc.slog:16"
+   #f)
+  (crule
+   (pre)
+   (scan ck_ans __t57LD5 __v0)
+   (body
+    (join-old ck (0 1 2) 1 (0 1 2) __t57LD5 __t1FJ54 e)
+    (join-old lam (3 1 0 2) 1 (3 1 0 2) e x __t8P1X2 t1)
+    (exists ck (2 0 1) 1 __t8P1X2)
+    (join-old ext (2 3 0 1) 3 (2 3 0 1) x t1 __t1FJ54 env)
+    (join-old ck (1 2 0) 2 (1 2 0) env __t8P1X2 __t99AN3))
+   (head
+    (emit-temp temp9j5e118 __t99AN3 __v0 t1)
+    (mkstruct arrow (1 2 0) __t82gT1 t1 __v0))
+   "dem_stlc.slog:16"
+   #f)
+  (crule
+   (pre)
+   (scan ck __t37kq10 env e2)
+   (body
+    (exists app (2 0 1) 1 e2)
+    (exists ck (1 2 0) 1 env)
+    (exists ck_ans (0 1) 1 __t37kq10)
+    (join $sup76879x16x0x0x0 (2 3 0 1) 2 e2 env __t6Npw7 e1)
+    (exists ck (0 1 2) 2 __t6Npw7 env)
+    (exists ck (1 2 0) 2 env e1)
+    (join app (1 2 0) 2 e1 e2 __t3xua6)
+    (join ck (0 1 2) 3 __t6Npw7 env __t3xua6)
+    (join ck (1 2 0) 2 env e1 __t17cq8)
+    (join ck_ans (0 1) 1 __t17cq8 __t9HVg9)
+    (join ck_ans (0 1) 1 __t37kq10 t1)
+    (join arrow (0 1 2) 2 __t9HVg9 t1 t2))
+   (head (emit ck_ans (0 1) __t6Npw7 t2))
+   "dem_stlc.slog:17"
+   #f)
+  (crule
+   (pre)
+   (scan ext __t1moV61 env y ____7sx763)
+   (body (join-old lookup (1 2 0) 1 (1 2 0) __t1moV61 x __t5u0262) (neq x y))
+   (head (emit $sup76879x10x0x0x0 (0 2 1 3) __t5u0262 x env y))
+   "dem_stlc.slog:11"
+   #f)
+  (crule
+   (pre)
+   (scan lookup __t8ds158 env x)
+   (body
+    (exists lookup (2 0 1) 1 x)
+    (exists ext (1 2 3 0) 1 env)
+    (exists lookup_ans (0 1) 1 __t8ds158)
+    (join $sup76879x10x0x0x0 (1 2 0 3) 2 env x __t4rN257 y)
+    (neq x y)
+    (exists ext (1 2 3 0) 2 env y)
+    (join lookup (0 2 1) 2 __t4rN257 x __t538W56)
+    (join ext (0 2 1 3) 3 __t538W56 y env ____2zPL59)
+    (join lookup_ans (0 1) 1 __t8ds158 t))
+   (head (emit lookup_ans (0 1) __t4rN257 t))
+   "dem_stlc.slog:11"
+   #f)
+  (crule
+   (pre)
+   (scan ck __t6Npw7 env __t3xua6)
+   (body
+    (exists ck (1 2 0) 1 env)
+    (join $sup76879x16x0x0x0 (0 3 1 2) 2 __t6Npw7 env e1 e2)
+    (join app (0 2 1) 3 __t3xua6 e2 e1)
+    (exists ck (1 2 0) 2 env e2)
+    (join-old ck (1 2 0) 2 (1 2 0) env e1 __t17cq8)
+    (exists ck_ans (0 1) 1 __t17cq8)
+    (join-old ck (1 2 0) 2 (1 2 0) env e2 __t37kq10)
+    (exists ck_ans (0 1) 1 __t37kq10)
+    (join ck_ans (0 1) 1 __t17cq8 __t9HVg9)
+    (join ck_ans (0 1) 1 __t37kq10 t1)
+    (join-old arrow (0 1 2) 2 (0 1 2) __t9HVg9 t1 t2))
+   (head (emit ck_ans (0 1) __t6Npw7 t2))
+   "dem_stlc.slog:17"
+   #f)
+  (crule
+   (pre
+    (let __tconst8dNm51 constba2df4903a2c14e86dc3bcca)
+    (let __tconst3JhQ48 const2bc983a5942276eb00a75e21)
+    (let __tconst1wvy37 const4e07408562bedb8b60ce05c1)
+    (let __tconst1K9r35 const4b227777d4dd1fc61c6f884f)
+    (let __tconst9nbj32 const30f8b180d63559f2512b744f)
+    (let __tconst8kEV24 const6b86b273ff34fce19d6b804e)
+    (let __tconst6P6s76 constb40d060f542e4963e0fc1392))
+   (seeded)
+   (body
+    (join _enum (1 0) 1 __tconst6P6s76 __t3zgy50)
+    (exists num (1 0) 1 __tconst8kEV24)
+    (exists var (1 0) 1 __tconst9nbj32)
+    (exists num (1 0) 1 __tconst1K9r35)
+    (exists num (1 0) 1 __tconst1wvy37)
+    (exists var (1 0) 1 __tconst3JhQ48)
+    (exists arrow (1 2 0) 1 __t3zgy50)
+    (join var (1 0) 1 __tconst8dNm51 __t0OY020)
+    (join num (1 0) 1 __tconst8kEV24 __t95AJ25)
+    (join var (1 0) 1 __tconst9nbj32 __t6EL627)
+    (join num (1 0) 1 __tconst1K9r35 __t35Fj36)
+    (join num (1 0) 1 __tconst1wvy37 __t7sPi38)
+    (join var (1 0) 1 __tconst3JhQ48 __t7Q1C43)
+    (join arrow (1 2 0) 1 __t3zgy50 dup6etk111 __t4oeC31)
+    (eq __t3zgy50 dup6etk111))
+   (head
+    (mkstruct app (1 2 0) __t2MLp44 __t7Q1C43 __t0OY020)
+    (mkstruct app (1 2 0) __t4b7B39 __t7sPi38 __t35Fj36)
+    (mkstruct app (1 2 0) __t7G7R28 __t6EL627 __t95AJ25)
+    (mkstruct lam (1 2 3 0) __t16B123 __tconst8dNm51 __t3zgy50 __t0OY020))
+   "dem_stlc.slog:23"
+   #f)
+  (crule
+   (pre)
+   (scan
+    malformed_deduction
+    __erre3wLN104
+    __errf8Y5A105
+    __errf1qa9106
+    __errf6KId107
+    __errf3O8i108)
+   (body)
+   (head (emit error (0) __erre3wLN104))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst8dNm51 constba2df4903a2c14e86dc3bcca)
+    (let __tconst3JhQ48 const2bc983a5942276eb00a75e21)
+    (let __tconst9nbj32 const30f8b180d63559f2512b744f)
+    (let __tconst1wvy37 const4e07408562bedb8b60ce05c1)
+    (let __tconst1K9r35 const4b227777d4dd1fc61c6f884f)
+    (let __tconst8kEV24 const6b86b273ff34fce19d6b804e)
+    (let __tconst6P6s76 constb40d060f542e4963e0fc1392))
+   (probe lam (1 0 2 3) 1 __tconst8dNm51 __t16B123 __t3zgy50 __t0OY020)
+   (body
+    (join _enum (0 1) 2 __t3zgy50 __tconst6P6s76)
+    (join var (0 1) 2 __t0OY020 __tconst8dNm51)
+    (exists var (1 0) 1 __tconst9nbj32)
+    (exists num (1 0) 1 __tconst1K9r35)
+    (exists num (1 0) 1 __tconst1wvy37)
+    (exists var (1 0) 1 __tconst3JhQ48)
+    (exists app (2 0 1) 1 __t0OY020)
+    (exists arrow (1 2 0) 1 __t3zgy50)
+    (join num (1 0) 1 __tconst8kEV24 __t95AJ25)
+    (exists app (2 0 1) 1 __t95AJ25)
+    (join var (1 0) 1 __tconst9nbj32 __t6EL627)
+    (join app (1 2 0) 2 __t6EL627 __t95AJ25 __t7G7R28)
+    (join num (1 0) 1 __tconst1K9r35 __t35Fj36)
+    (exists app (2 0 1) 1 __t35Fj36)
+    (join num (1 0) 1 __tconst1wvy37 __t7sPi38)
+    (join app (1 2 0) 2 __t7sPi38 __t35Fj36 __t4b7B39)
+    (join var (1 0) 1 __tconst3JhQ48 __t7Q1C43)
+    (join app (1 2 0) 2 __t7Q1C43 __t0OY020 __t2MLp44)
+    (join arrow (1 2 0) 1 __t3zgy50 dup2ODL112 __t4oeC31)
+    (eq __t3zgy50 dup2ODL112))
+   (head
+    (emit prog (0) __t4b7B39)
+    (mkstruct lam (1 2 3 0) __t5JUn49 __tconst3JhQ48 __t4oeC31 __t2MLp44)
+    (mkstruct lam (1 2 3 0) __t9fNk33 __tconst9nbj32 __t4oeC31 __t7G7R28))
+   "dem_stlc.slog:23"
+   #f)
+  (crule
+   (pre)
+   (scan ck __t8xpU69 env __t65ap68)
+   (body (join var (0 1) 1 __t65ap68 x))
+   (head (mkstruct lookup (1 2 0) __2bB777 env x))
+   "dem_stlc.slog:15"
+   #f)
+  (crule
+   (pre
+    (let __tconst8dNm51 constba2df4903a2c14e86dc3bcca)
+    (let __tconst3JhQ48 const2bc983a5942276eb00a75e21)
+    (let __tconst9nbj32 const30f8b180d63559f2512b744f)
+    (let __tconst6P6s76 constb40d060f542e4963e0fc1392)
+    (let __tconst8kEV24 const6b86b273ff34fce19d6b804e))
+   (seeded)
+   (body
+    (join _enum (1 0) 1 __tconst6P6s76 __t3zgy50)
+    (exists var (1 0) 1 __tconst8dNm51)
+    (exists num (1 0) 1 __tconst8kEV24)
+    (exists var (1 0) 1 __tconst9nbj32)
+    (exists lam (1 2 3 0) 1 __tconst9nbj32)
+    (exists arrow (1 2 0) 1 __t3zgy50)
+    (exists lam (1 2 3 0) 1 __tconst3JhQ48)
+    (exists var (1 0) 1 __tconst3JhQ48)
+    (join lam (1 2 3 0) 2 __tconst8dNm51 __t3zgy50 __t0OY020 __t16B123)
+    (join var (0 1) 2 __t0OY020 __tconst8dNm51)
+    (exists app (2 0 1) 1 __t0OY020)
+    (join num (1 0) 1 __tconst8kEV24 __t95AJ25)
+    (exists app (2 0 1) 1 __t95AJ25)
+    (join var (1 0) 1 __tconst9nbj32 __t6EL627)
+    (join app (1 2 0) 2 __t6EL627 __t95AJ25 __t7G7R28)
+    (join lam (3 1 0 2) 2 __t7G7R28 __tconst9nbj32 __t9fNk33 __t4oeC31)
+    (exists lam (1 2 3 0) 2 __tconst3JhQ48 __t4oeC31)
+    (join arrow (0 1 2) 2 __t4oeC31 __t3zgy50 dup8FCI115)
+    (eq __t3zgy50 dup8FCI115)
+    (join lam (1 2 3 0) 2 __tconst3JhQ48 __t4oeC31 __t2MLp44 __t5JUn49)
+    (join app (0 2 1) 2 __t2MLp44 __t0OY020 __t7Q1C43)
+    (join var (0 1) 2 __t7Q1C43 __tconst3JhQ48))
+   (head
+    (mkstruct lam (1 2 3 0) __t5Erl52 __tconst8dNm51 __t3zgy50 __t5JUn49)
+    (mkstruct app (1 2 0) __t2P4j34 __t9fNk33 __t16B123))
+   "dem_stlc.slog:23"
+   #f)
+  (crule
+   (pre)
+   (scan temp8Tl3109 e env t1 x)
+   (body (join ext (1 2 3 0) 3 env x t1 __t0xCE11))
+   (head (mkstruct ck (1 2 0) __3ANJ85 __t0xCE11 e))
+   "dem_stlc.slog:16"
+   #f)))

@@ -1,0 +1,251 @@
+(cprog
+ #<set:
+  toint_range
+  $seq_at
+  temp5zLw571
+  $sup76318x38x0x0x0
+  lst_len
+  int_overflow
+  temp9uLS572
+  $sup76318x53x0x0x0
+  type_mismatch
+  lst_rev_acc_ans
+  nan_result
+  error
+  $sup76318x43x0x0x0
+  mpz_overflow
+  $sup76318x27x0x0x0
+  lst_rev
+  modulo_by_zero
+  $sup76318x33x0x0x0
+  mpz_table_overflow
+  div_by_zero>
+ #hash()
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp9uLS572 2)
+  (temp temp5zLw571 3)
+  (relation take_ok 2 (0 1))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation seed 2 (0 1))
+  (relation rev_ok 1 (0))
+  (relation ref_ok 2 (0 1))
+  (relation probe 1 (0))
+  (relation ol_tolst_ans 2 (0 1))
+  (struct ol_tolst 2 (1 0) (0 1))
+  (relation ol_take_ans 2 (0 1))
+  (struct ol_take 3 (1 2 0) (0 1 2))
+  (relation ol_rev_ans 2 (0 1))
+  (relation ol_rev_acc_ans 2 (0 1))
+  (struct ol_rev_acc 3 (1 2 0) (0 1 2))
+  (struct ol_rev 2 (1 0) (0 1))
+  (relation ol_ref_ans 2 (0 1))
+  (struct ol_ref 3 (1 2 0) (0 1 2))
+  (relation ol_member_ans 2 (0 1))
+  (struct ol_member 3 (1 2 0) (0 1 2))
+  (relation ol_len_ans 2 (0 1))
+  (struct ol_len 2 (1 0) (0 1))
+  (relation ol_fromlst_ans 2 (0 1))
+  (struct ol_fromlst 2 (1 0) (0 1))
+  (relation ol_append_ans 2 (0 1))
+  (struct ol_append 3 (1 2 0) (0 1 2))
+  (relation ol_absent_ans 2 (0 1))
+  (struct ol_absent 3 (1 2 0) (0 1 2))
+  (relation needle 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (relation member_ok 2 (0 1))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation lst_take_ans 2 (0 1))
+  (struct lst_take 3 (1 2 0) (0 1 2))
+  (relation lst_rev_ans 2 (0 1))
+  (relation lst_rev_acc_ans 2 (0 1))
+  (struct lst_rev_acc 3 (1 2 0) (0 1 2))
+  (struct lst_rev 2 (1 0) (0 1))
+  (relation lst_ref_ans 2 (0 1))
+  (struct lst_ref 3 (1 2 0) (0 1 2))
+  (relation lst_member_ans 2 (0 1))
+  (struct lst_member 3 (1 2 0) (0 1 2))
+  (relation lst_len_ans 2 (0 1))
+  (struct lst_len 2 (1 0) (0 1))
+  (relation lst_append_ans 2 (0 1))
+  (struct lst_append 3 (1 2 0) (0 1 2))
+  (relation lst_absent_ans 2 (0 1))
+  (struct lst_absent 3 (1 2 0) (0 1 2))
+  (relation len_ok 2 (0 1))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct ccons 3 (1 2 0) (0 1 2))
+  (relation append_ok 2 (0 1))
+  (relation absent_ok 2 (0 1))
+  (struct _enum 2 (1 0) (0 1))
+  (relation $sup76318x53x0x0x0 3 (0 1 2))
+  (relation $sup76318x43x0x0x0 3 (0 1 2))
+  (relation $sup76318x38x0x0x0 3 (0 1 2))
+  (relation $sup76318x33x0x0x0 3 (0 1 2))
+  (relation $sup76318x27x0x0x0 4 (0 1 2 3))
+  (relation $sup59985x48x0x0x0 4 (0 1 2 3))
+  (relation $sup59985x43x0x0x0 4 (0 1 2 3))
+  (relation $sup59985x37x0x0x0 3 (0 1 2))
+  (relation $sup59985x32x0x0x0 4 (0 1 2 3))
+  (relation $sup59985x27x0x0x0 4 (0 1 2 3))
+  (relation $sup59985x22x0x0x0 4 (0 1 2 3))
+  (relation $sup59985x17x0x0x0 3 (0 1 2))
+  (relation $sup59985x12x0x0x0 4 (0 1 2 3))
+  (relation $seq_at 3 (0 1 2))
+  (seqindex lst_absent (1))
+  (seqindex lst_append (1 2))
+  (seqindex lst_append_ans (1))
+  (seqindex lst_len (1))
+  (seqindex lst_member (1))
+  (seqindex lst_ref (1))
+  (seqindex lst_rev (1))
+  (seqindex lst_rev_acc (1 2))
+  (seqindex lst_rev_acc_ans (1))
+  (seqindex lst_rev_ans (1))
+  (seqindex lst_take (1))
+  (seqindex lst_take_ans (1))
+  (seqindex ol_fromlst (1))
+  (seqindex ol_tolst_ans (1))
+  (seqindex seed (1)))
+ ((crule
+   (pre)
+   (scan modulo_by_zero __erre6NpJ544 __errf4ouG545 __errf570M546)
+   (body)
+   (head (emit error (0) __erre6NpJ544))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp5zLw571 __t6Z6a79 __t9C7a77 acc)
+   (body (let __t9eiK78 (lcat __t9C7a77 acc)))
+   (head (emit-temp temp9uLS572 __t6Z6a79 __t9eiK78))
+   "list.slog:42"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre5HdB568 __errf1bVg569 __errf6zgk570)
+   (body)
+   (head (emit error (0) __erre5HdB568))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan probe k)
+   (body (join seed (0 1) 0 i l))
+   (head (emit $sup76318x53x0x0x0 (0 1 2) i k l))
+   "seq_oracle.slog:54"
+   #f)
+  (crule
+   (pre)
+   (scan seed i l)
+   (body)
+   (head (mkstruct lst_rev (1 0) __0In2357 l))
+   "seq_oracle.slog:59"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre64Y5547 __errf1I9S548 __errf02Ap549 __errf9e0x550)
+   (body)
+   (head (emit error (0) __erre64Y5547))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp9uLS572 __t6Z6a79 __t9eiK78)
+   (body)
+   (head (emit lst_rev_acc_ans (0 1) __t6Z6a79 __t9eiK78))
+   "list.slog:42"
+   #f)
+  (crule
+   (pre)
+   (scan needle y)
+   (body (join seed (0 1) 0 i l))
+   (head (emit $sup76318x38x0x0x0 (0 1 2) i l y))
+   "seq_oracle.slog:39"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre7YHr563
+    __errf3hPg564
+    __errf4raL565
+    __errf42T9566
+    __errf0boH567)
+   (body)
+   (head (emit error (0) __erre7YHr563))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan needle y)
+   (body (join seed (0 1) 0 i l))
+   (head (emit $sup76318x43x0x0x0 (0 1 2) i l y))
+   "seq_oracle.slog:44"
+   #f)
+  (crule
+   (pre)
+   (scan seed i l)
+   (body)
+   (head (mkstruct lst_len (1 0) __8EFp301 l))
+   "seq_oracle.slog:49"
+   #f)
+  (crule
+   (pre)
+   (scan probe k)
+   (body (join seed (0 1) 0 i l))
+   (head (emit $sup76318x33x0x0x0 (0 1 2) i k l))
+   "seq_oracle.slog:34"
+   #f)
+  (crule
+   (pre)
+   (scan seed j b)
+   (body (join seed (0 1) 0 i a))
+   (head (emit $sup76318x27x0x0x0 (0 1 2 3) a b i j))
+   "seq_oracle.slog:28"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre16C4541 __errf2yF9542 __errf5tj9543)
+   (body)
+   (head (emit error (0) __erre16C4541))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre50jC558
+    __errf31FE559
+    __errf1eoQ560
+    __errf1bH0561
+    __errf4HZI562)
+   (body)
+   (head (emit error (0) __erre50jC558))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre8HnV555 __errf2yPc556 __errf6aNA557)
+   (body)
+   (head (emit error (0) __erre8HnV555))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan lst_rev_acc __t6Z6a79 l acc)
+   (body (let __t9C7a77 (lrev l)))
+   (head (emit-temp temp5zLw571 __t6Z6a79 __t9C7a77 acc))
+   "list.slog:42"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre922R551 __errf8uBs552 __errf9Wk7553 __errf6uQJ554)
+   (body)
+   (head (emit error (0) __erre922R551))
+   "<internal>:1"
+   #f)))

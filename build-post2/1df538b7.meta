@@ -1,0 +1,1 @@
+(stratum-meta (hash "1df538b7") (level 2) (dynamic-rels out tag) (accel-rels) (heads out tag) (reads (in pos)) (acyclic #t) (rules (rule 331879146 "enum_struct_field.slog:15" "(rule (in n s) --> (out _t00uM7) (= _t00uM7 (tag n s)))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

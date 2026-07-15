@@ -1,0 +1,103 @@
+(cprog
+ #<set:
+  final
+  int_overflow
+  type_mismatch
+  toint_range
+  nan_result
+  modulo_by_zero
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash()
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation final 1 (0))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation dbl 2 (0 1))
+  (relation base 2 (0 1))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan div_by_zero __erre9PoF98 __errf5WS399 __errf8ZNY100)
+   (body)
+   (head (emit error (0) __erre9PoF98))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre3fof120
+    __errf42Ui121
+    __errf9Qm4122
+    __errf1JIk123
+    __errf18UO124)
+   (body)
+   (head (emit error (0) __erre3fof120))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre9w3i125 __errf8D7P126 __errf3Cyp127)
+   (body)
+   (head (emit error (0) __erre9w3i125))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre0ZpA101 __errf2zx4102 __errf4gBW103)
+   (body)
+   (head (emit error (0) __erre0ZpA101))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre7DL1104 __errf35Kx105 __errf9uD4106 __errf5Ml1107)
+   (body)
+   (head (emit error (0) __erre7DL1104))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre5XVT108 __errf23Kv109 __errf5NYd110 __errf8HVd111)
+   (body)
+   (head (emit error (0) __erre5XVT108))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre6WE6115
+    __errf5k4g116
+    __errf8n5J117
+    __errf30wm118
+    __errf3Zac119)
+   (body)
+   (head (emit error (0) __erre6WE6115))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan dbl X Z)
+   (body (let __t1Hkv1 (_0002b X Z)))
+   (head (emit final (0) __t1Hkv1))
+   "strat_inc_main.slog:13"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre1Jv3112 __errf3Kj6113 __errf3jt6114)
+   (body)
+   (head (emit error (0) __erre1Jv3112))
+   "<internal>:1"
+   #f)))

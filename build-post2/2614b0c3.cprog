@@ -1,0 +1,152 @@
+(cprog
+ #<set: temp4LLY64 ret eval temp6bVx62 kaddr ar store temp9hnc63 fn kstore>
+ #hash(("halt" . conste433800a79f2d3be41014577))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp9hnc63 2)
+  (temp temp6bVx62 3)
+  (temp temp4LLY64 3)
+  (relation store 2 (0 1))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation ret 2 (1 0))
+  (relation result 1 (0))
+  (struct ref 2 (1 0) (0 1))
+  (relation program 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct lambda 3 (1 2 0) (0 1 2))
+  (relation kstore 2 (0 1) (delta 0 1))
+  (struct kaddr 2 (1 0) (0 1) (delta 0 1))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (struct fn 3 (1 2 0) (0 1 2) (delta 0 1 2))
+  (relation eval 2 (0 1) (delta 0 1))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct ar 3 (1 2 0) (0 1 2) (delta 0 1 2))
+  (struct app 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1) (delta 1 0)))
+ ((crule
+   (pre)
+   (scan kstore __t95Ou41 k)
+   (body
+    (join ret (1 0) 1 __t95Ou41 v)
+    (join-old kaddr (0 1) 1 (0 1) __t95Ou41 eb))
+   (head (emit ret (1 0) k v))
+   "0cfa.slog:58"
+   #f)
+  (crule
+   (pre)
+   (scan ret v __t312Q34)
+   (body (join-old ar (0 1 2) 1 (0 1 2) __t312Q34 ea k))
+   (head (emit-temp temp6bVx62 ea k v) (mkstruct fn (1 2 0) __t3IKj33 v k))
+   "0cfa.slog:46"
+   #f)
+  (crule
+   (pre)
+   (scan kaddr __t95Ou41 eb)
+   (body
+    (exists kstore (0 1) 1 __t95Ou41)
+    (join ret (1 0) 1 __t95Ou41 v)
+    (join kstore (0 1) 1 __t95Ou41 k))
+   (head (emit ret (1 0) k v))
+   "0cfa.slog:58"
+   #f)
+  (crule
+   (pre)
+   (scan eval __t3KEm28 k)
+   (body (join ref (0 1) 1 __t3KEm28 x) (join store (0 1) 1 x v))
+   (head (emit ret (1 0) k v))
+   "0cfa.slog:30"
+   #f)
+  (crule
+   (pre)
+   (scan temp6bVx62 ea k v)
+   (body (join fn (1 2 0) 2 v k __t3IKj33))
+   (head (emit eval (0 1) ea __t3IKj33))
+   "0cfa.slog:46"
+   #f)
+  (crule
+   (pre)
+   (scan store x v)
+   (body
+    (join ref (1 0) 1 x __t3KEm28)
+    (join-old eval (0 1) 1 (0 1) __t3KEm28 k))
+   (head (emit ret (1 0) k v))
+   "0cfa.slog:30"
+   #f)
+  (crule
+   (pre)
+   (scan eval __t9Hya32 k)
+   (body (join lambda (0 1 2) 1 __t9Hya32 x eb))
+   (head (emit ret (1 0) k __t9Hya32))
+   "0cfa.slog:41"
+   #f)
+  (crule
+   (pre)
+   (scan temp4LLY64 ea ef k)
+   (body (join ar (1 2 0) 2 ea k __t1Mh929))
+   (head (emit eval (0 1) ef __t1Mh929))
+   "0cfa.slog:36"
+   #f)
+  (crule
+   (pre)
+   (scan ar __t312Q34 ea k)
+   (body (join ret (1 0) 1 __t312Q34 v))
+   (head (emit-temp temp6bVx62 ea k v) (mkstruct fn (1 2 0) __t3IKj33 v k))
+   "0cfa.slog:46"
+   #f)
+  (crule
+   (pre)
+   (scan temp9hnc63 eb k)
+   (body (join kaddr (1 0) 1 eb __t47I037))
+   (head (emit eval (0 1) eb __t47I037) (emit kstore (0 1) __t47I037 k))
+   "0cfa.slog:51"
+   #f)
+  (crule
+   (pre (let __tconst1EJh42 conste433800a79f2d3be41014577))
+   (probe _enum (1 0) 1 __tconst1EJh42 __t8jUN35)
+   (body (join program (0) 0 e))
+   (head (emit eval (0 1) e __t8jUN35))
+   "0cfa.slog:25"
+   #f)
+  (crule
+   (pre)
+   (scan ret v __t95Ou41)
+   (body
+    (join-old kstore (0 1) 1 (0 1) __t95Ou41 k)
+    (join-old kaddr (0 1) 1 (0 1) __t95Ou41 eb))
+   (head (emit ret (1 0) k v))
+   "0cfa.slog:58"
+   #f)
+  (crule
+   (pre)
+   (scan eval __t2qxJ30 k)
+   (body (join app (0 1 2) 1 __t2qxJ30 ef ea))
+   (head (emit-temp temp4LLY64 ea ef k) (mkstruct ar (1 2 0) __t1Mh929 ea k))
+   "0cfa.slog:36"
+   #f)
+  (crule
+   (pre)
+   (scan ret v __t1wWC39)
+   (body
+    (join-old fn (0 1 2) 1 (0 1 2) __t1wWC39 __t1jAv38 k)
+    (join lambda (0 1 2) 1 __t1jAv38 x eb))
+   (head
+    (emit-temp temp9hnc63 eb k)
+    (emit store (0 1) x v)
+    (mkstruct kaddr (1 0) __t47I037 eb))
+   "0cfa.slog:51"
+   #f)
+  (crule
+   (pre)
+   (scan fn __t1wWC39 __t1jAv38 k)
+   (body (join ret (1 0) 1 __t1wWC39 v) (join lambda (0 1 2) 1 __t1jAv38 x eb))
+   (head
+    (emit-temp temp9hnc63 eb k)
+    (emit store (0 1) x v)
+    (mkstruct kaddr (1 0) __t47I037 eb))
+   "0cfa.slog:51"
+   #f)))

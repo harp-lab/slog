@@ -1,0 +1,154 @@
+(cprog
+ #<set:
+  int_overflow
+  type_mismatch
+  toint_range
+  nan_result
+  temp39a3159
+  modulo_by_zero
+  fib_ans
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash((1 . const6b86b273ff34fce19d6b804e) (2 . constd4735e3a265e16eee03f5971))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp39a3159 2)
+  (relation sqfib 2 (0 1))
+  (relation sq_ans 2 (0 1))
+  (struct sq 2 (1 0) (0 1))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation smallfib 1 (0))
+  (struct pairv 3 (1 2 0) (0 1 2))
+  (relation packed 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (relation n 1 (0))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation fib_ans 2 (0 1) (delta 0 1))
+  (struct fib 2 (1 0) (0 1))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre
+    (let __tconst7vbl4 const6b86b273ff34fce19d6b804e)
+    (let __tconst6VPm7 constd4735e3a265e16eee03f5971))
+   (scan fib_ans __t3ojO6 __v0)
+   (body
+    (join fib (0 1) 1 __t3ojO6 __t94L95)
+    (join fib (0 1) 0 __t7KU52 n)
+    (cmp lt __tconst7vbl4 n)
+    (join-old fib_ans (0 1) 0 (0 1) __t72U49 __v1)
+    (let __t4RJw8 (_0002d n __tconst6VPm7))
+    (join fib (0 1) 2 __t72U49 __t4RJw8)
+    (let chk3rld160 (_0002d n __tconst7vbl4))
+    (eq __t94L95 chk3rld160)
+    (let __t4LtS1 (_0002b __v0 __v1)))
+   (head (emit-temp temp39a3159 __t4LtS1 __t7KU52))
+   "dem_value.slog:11"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre7VxL151
+    __errf2Nq8152
+    __errf311F153
+    __errf1rWl154
+    __errf1WAY155)
+   (body)
+   (head (emit error (0) __erre7VxL151))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre3FB5143 __errf7VZu144 __errf5EOb145)
+   (body)
+   (head (emit error (0) __erre3FB5143))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre5Mwb156 __errf1jaC157 __errf0xoZ158)
+   (body)
+   (head (emit error (0) __erre5Mwb156))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst7vbl4 const6b86b273ff34fce19d6b804e)
+    (let __tconst6VPm7 constd4735e3a265e16eee03f5971))
+   (scan fib_ans __t72U49 __v1)
+   (body
+    (join fib (0 1) 1 __t72U49 __t4RJw8)
+    (join fib (0 1) 0 __t7KU52 n)
+    (cmp lt __tconst7vbl4 n)
+    (join fib_ans (0 1) 0 __t3ojO6 __v0)
+    (let __t94L95 (_0002d n __tconst7vbl4))
+    (join fib (0 1) 2 __t3ojO6 __t94L95)
+    (let chk6mAx161 (_0002d n __tconst6VPm7))
+    (eq __t4RJw8 chk6mAx161)
+    (let __t4LtS1 (_0002b __v0 __v1)))
+   (head (emit-temp temp39a3159 __t4LtS1 __t7KU52))
+   "dem_value.slog:11"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre4BJA129 __errf8dwt130 __errf98yC131)
+   (body)
+   (head (emit error (0) __erre4BJA129))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre7QaA146
+    __errf43Uu147
+    __errf58U0148
+    __errf2T4V149
+    __errf1SY8150)
+   (body)
+   (head (emit error (0) __erre7QaA146))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre8i7S132 __errf4lNI133 __errf1e25134)
+   (body)
+   (head (emit error (0) __erre8i7S132))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre9XFp139 __errf5xRP140 __errf6B13141 __errf4oIz142)
+   (body)
+   (head (emit error (0) __erre9XFp139))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre8kkX135 __errf5ri0136 __errf1xbd137 __errf8Z6Q138)
+   (body)
+   (head (emit error (0) __erre8kkX135))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst9N4y13 constd4735e3a265e16eee03f5971))
+   (scan fib __t9Vx112 n)
+   (body (cmp lt n __tconst9N4y13))
+   (head (emit fib_ans (0 1) __t9Vx112 n))
+   "dem_value.slog:10"
+   #f)
+  (crule
+   (pre)
+   (scan temp39a3159 __t4LtS1 __t7KU52)
+   (body)
+   (head (emit fib_ans (0 1) __t7KU52 __t4LtS1))
+   "dem_value.slog:11"
+   #f)))

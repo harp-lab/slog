@@ -1,0 +1,105 @@
+(cprog
+ #<set:
+  int_overflow
+  type_mismatch
+  toint_range
+  nan_result
+  sq_ans
+  modulo_by_zero
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash()
+ ((relation want 1 (0))
+  (struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (relation sq_ans 2 (0 1))
+  (struct sq 2 (1 0) (0 1))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation got 2 (0 1))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation allans 1 (0))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre1gH654
+    __errf1Vqp55
+    __errf7a6x56
+    __errf1PaN57
+    __errf1qDj58)
+   (body)
+   (head (emit error (0) __erre1gH654))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre1OYj40 __errf4hy341 __errf9yAY42)
+   (body)
+   (head (emit error (0) __erre1OYj40))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre1Hoh37 __errf1oVU38 __errf2Wja39)
+   (body)
+   (head (emit error (0) __erre1Hoh37))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre6csj47 __errf6iLM48 __errf7OlQ49 __errf2arm50)
+   (body)
+   (head (emit error (0) __erre6csj47))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre7vV264 __errf5DFL65 __errf3NSy66)
+   (body)
+   (head (emit error (0) __erre7vV264))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre6qZD51 __errf4T9X52 __errf3Nuz53)
+   (body)
+   (head (emit error (0) __erre6qZD51))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan sq __t7bXq4 n)
+   (body (let __t6Nab5 (_0002a n n)))
+   (head (emit sq_ans (0 1) __t7bXq4 __t6Nab5))
+   "dem_escape.slog:8"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre9uo843 __errf3fZL44 __errf6F6J45 __errf2aO146)
+   (body)
+   (head (emit error (0) __erre9uo843))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre7xvy59
+    __errf5cKg60
+    __errf7PID61
+    __errf6cEz62
+    __errf6EwN63)
+   (body)
+   (head (emit error (0) __erre7xvy59))
+   "<internal>:1"
+   #f)))

@@ -1,0 +1,127 @@
+(cprog
+ #<set:
+  int_overflow
+  type_mismatch
+  toint_range
+  nan_result
+  sq
+  error
+  mpz_overflow
+  smallfib
+  modulo_by_zero
+  mpz_table_overflow
+  div_by_zero>
+ #hash((10 . const4a44dc15364204a80fe80e90))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (relation sqfib 2 (0 1))
+  (relation sq_ans 2 (0 1))
+  (struct sq 2 (1 0) (0 1))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation smallfib 1 (0))
+  (struct pairv 3 (1 2 0) (0 1 2))
+  (relation packed 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (relation n 1 (0))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation fib_ans 2 (0 1))
+  (struct fib 2 (1 0) (0 1))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan modulo_by_zero __erre0TgG195 __errf4z2d196 __errf8t2M197)
+   (body)
+   (head (emit error (0) __erre0TgG195))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre2AcA202 __errf75Ud203 __errf4Lcb204 __errf3sNv205)
+   (body)
+   (head (emit error (0) __erre2AcA202))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan n x)
+   (body)
+   (head (mkstruct sq (1 0) __0cX834 x))
+   "dem_value.slog:27"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre4zls192 __errf9OMK193 __errf2Bjp194)
+   (body)
+   (head (emit error (0) __erre4zls192))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst5gnQ16 const4a44dc15364204a80fe80e90))
+   (scan n x)
+   (body
+    (join fib (1 0) 1 x __t9xSy17)
+    (join fib_ans (0 1) 1 __t9xSy17 __v0)
+    (cmp lt __v0 __tconst5gnQ16))
+   (head (emit smallfib (0) x))
+   "dem_value.slog:22"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre3vqa198 __errf875B199 __errf8Gp7200 __errf8I0Y201)
+   (body)
+   (head (emit error (0) __erre3vqa198))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre6U5f219 __errf918y220 __errf6cBO221)
+   (body)
+   (head (emit error (0) __erre6U5f219))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre8Sbp206 __errf6ZAr207 __errf4pwm208)
+   (body)
+   (head (emit error (0) __erre8Sbp206))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan n x)
+   (body (join fib (1 0) 1 x __t6isY22) (join fib_ans (0 1) 1 __t6isY22 __v0))
+   (head (mkstruct sq (1 0) __8EM331 __v0))
+   "dem_value.slog:18"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre8NuL214
+    __errf59wX215
+    __errf2rKB216
+    __errf5ouT217
+    __errf3IQK218)
+   (body)
+   (head (emit error (0) __erre8NuL214))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre51av209
+    __errf7Hhj210
+    __errf7cfJ211
+    __errf3lie212
+    __errf0ZoN213)
+   (body)
+   (head (emit error (0) __erre51av209))
+   "<internal>:1"
+   #f)))

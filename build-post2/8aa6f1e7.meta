@@ -1,0 +1,1 @@
+(stratum-meta (hash "8aa6f1e7") (level 2) (dynamic-rels full) (accel-rels) (heads full) (reads (parse2 pos) (parse2_ans pos)) (acyclic #t) (rules (rule 384693929 "dem_sppf.slog:19" "(rule (parse2_ans _t2xCE17 _tconst7syw18 t) (= _tconst9huF16 (const 0)) (= _t2xCE17 (parse2 _tconst9huF16)) (= _tconst7syw18 (const 3)) --> (full t))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

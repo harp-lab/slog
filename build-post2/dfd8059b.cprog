@@ -1,0 +1,26 @@
+(cprog
+ #<set: out>
+ #hash((3 . const4e07408562bedb8b60ce05c1))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation out 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation count_ans 2 (0 1))
+  (struct count 2 (1 0) (0 1) (delta 1 0))
+  (struct _enum 2 (1 0) (0 1))
+  (relation $sup4873x11x0x0x0 3 (0 1 2)))
+ ((crule
+   (pre (let __tconst0fa513 const4e07408562bedb8b60ce05c1))
+   (probe count (1 0) 1 __tconst0fa513 __t6FS214)
+   (body (join count_ans (0 1) 1 __t6FS214 __v0))
+   (head (emit out (0) __v0))
+   "stat_dem.slog:15"
+   #f)))

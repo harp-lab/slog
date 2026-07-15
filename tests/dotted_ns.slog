@@ -1,0 +1,26 @@
+;; N0 qualified-name substrate, end to end (docs/n0-seam-map.md;
+;; docs/modules.md §10 N0): dotted names are ordinary lowered symbols
+;; through parsing, typing, stratification, codegen, the daemon, CSV
+;; output, and goldens.  Exercises dotted tables, a dotted struct
+;; (constructed AND pattern-matched), a dotted lattice type, recursion
+;; through dotted relations, and coexistence with a plain name.
+
+table (g.edge int int)
+table (g.path int int)
+struct (m.Pair int int)
+table (m.pairs m.Pair)
+table (m.flip int int)
+lattice (m.cost (min int #:floor 0))
+table (m.dist int m.cost)
+table (plain int int)
+
+rule (g.edge 1 2) (g.edge 2 3) (g.edge 3 4)
+
+rule (g.edge x y) --> (g.path x y)
+rule (g.path x y) (g.edge y z) --> (g.path x z)
+
+rule (g.path x y) --> (m.pairs (m.Pair x y))
+rule (m.pairs (m.Pair x y)) --> (m.flip y x)
+
+rule (g.path x y) --> (m.dist x y)
+rule (g.path x y) --> (plain x y)

@@ -1,0 +1,72 @@
+(cprog
+ #<set: drawn circle square>
+ #hash((3 . const4e07408562bedb8b60ce05c1)
+       (4 . const4b227777d4dd1fc61c6f884f)
+       (5 . constef2d127de37b942baad06145)
+       ("nothing" . const47dbebec5d6543d84309f992))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct square 2 (1 0) (0 1))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (relation empty_seen 1 (0))
+  (relation drawn 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation circles 1 (0))
+  (struct circle 2 (1 0) (0 1) (delta 1 0))
+  (relation circ_r 1 (0))
+  (struct _enum 2 (1 0) (0 1) (delta 1 0)))
+ ((crule
+   (pre
+    (let __tconst30LZ7 constef2d127de37b942baad06145)
+    (let __tconst375N5 const4b227777d4dd1fc61c6f884f)
+    (let __tconst2d5a3 const4e07408562bedb8b60ce05c1))
+   (seeded)
+   (body
+    (join circle (1 0) 1 __tconst2d5a3 __t8DiF4)
+    (exists circle (1 0) 1 __tconst30LZ7)
+    (join square (1 0) 1 __tconst375N5 __t11zh6)
+    (join circle (1 0) 1 __tconst30LZ7 __t6pDO8))
+   (head
+    (emit drawn (0) __t6pDO8)
+    (emit drawn (0) __t11zh6)
+    (emit drawn (0) __t8DiF4))
+   "enum_union_direct.slog:12"
+   #f)
+  (crule
+   (pre
+    (let __tconst5sdz13 const47dbebec5d6543d84309f992)
+    (let __tconst30LZ7 constef2d127de37b942baad06145)
+    (let __tconst375N5 const4b227777d4dd1fc61c6f884f)
+    (let __tconst2d5a3 const4e07408562bedb8b60ce05c1))
+   (probe _enum (1 0) 1 __tconst5sdz13 __t3cS19)
+   (body)
+   (head
+    (emit drawn (0) __t3cS19)
+    (mkstruct circle (1 0) __t6pDO8 __tconst30LZ7)
+    (mkstruct square (1 0) __t11zh6 __tconst375N5)
+    (mkstruct circle (1 0) __t8DiF4 __tconst2d5a3))
+   "enum_union_direct.slog:12"
+   #f)
+  (crule
+   (pre
+    (let __tconst30LZ7 constef2d127de37b942baad06145)
+    (let __tconst375N5 const4b227777d4dd1fc61c6f884f)
+    (let __tconst2d5a3 const4e07408562bedb8b60ce05c1))
+   (probe circle (1 0) 1 __tconst2d5a3 __t8DiF4)
+   (body
+    (exists circle (1 0) 1 __tconst30LZ7)
+    (join square (1 0) 1 __tconst375N5 __t11zh6)
+    (join circle (1 0) 1 __tconst30LZ7 __t6pDO8))
+   (head
+    (emit drawn (0) __t6pDO8)
+    (emit drawn (0) __t11zh6)
+    (emit drawn (0) __t8DiF4))
+   "enum_union_direct.slog:12"
+   #f)))

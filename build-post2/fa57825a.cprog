@@ -1,0 +1,26 @@
+(cprog
+ #<set: oks>
+ #hash(("ok" . constc48b5b1a9776c84602de2306))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation out 2 (1 0))
+  (relation oks 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation in 2 (0 1))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct box 2 (1 0) (0 1))
+  (struct _enum 2 (1 0) (0 1) (delta 1 0)))
+ ((crule
+   (pre (let __tconst7ieb8 constc48b5b1a9776c84602de2306))
+   (probe _enum (1 0) 1 __tconst7ieb8 __t3ggr1)
+   (body (join box (1 0) 1 __t3ggr1 __t4g332) (join out (1 0) 1 __t4g332 n))
+   (head (emit oks (0) n))
+   "enum_struct_field2.slog:16"
+   #f)))

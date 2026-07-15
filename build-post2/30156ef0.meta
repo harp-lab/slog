@@ -1,0 +1,1 @@
+(stratum-meta (hash "30156ef0") (level 0) (dynamic-rels query) (accel-rels) (heads query) (reads) (acyclic #t) (rules (rule 1183555388 "dem_fib.slog:12" "(rule --> (query _tconst8AnX6) (= _tconst8AnX6 (const 7)) (query _tconst5UIx5) (= _tconst5UIx5 (const 10)))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

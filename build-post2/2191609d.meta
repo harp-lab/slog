@@ -1,0 +1,1 @@
+(stratum-meta (hash "2191609d") (level 2) (dynamic-rels unbox) (accel-rels) (heads unbox) (reads (box pos) (holds pos)) (acyclic #t) (rules (rule 1122198138 "sdeep_strata.slog:22" "(rule (holds _t96kb7) (= _t96kb7 (box X)) --> (unbox X))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

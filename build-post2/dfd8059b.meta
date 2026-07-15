@@ -1,0 +1,1 @@
+(stratum-meta (hash "dfd8059b") (level 2) (dynamic-rels out) (accel-rels) (heads out) (reads (count pos) (count_ans pos)) (acyclic #t) (rules (rule 1020458608 "stat_dem.slog:15" "(rule (count_ans _t6FS214 _v0) (= _tconst0fa513 (const 3)) (= _t6FS214 (count _tconst0fa513)) --> (out _v0))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

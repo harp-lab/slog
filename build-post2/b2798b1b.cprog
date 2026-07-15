@@ -1,0 +1,302 @@
+(cprog
+ #<set:
+  type_mismatch
+  toint_range
+  ev
+  lookup
+  bind
+  modulo_by_zero
+  int_overflow
+  need
+  temp84uP133
+  nan_result
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash(("mt" . const1f503613ae12cc0c5121fd74))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp84uP133 4)
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation root 2 (0 1))
+  (relation res 2 (0 1))
+  (struct ref 2 (1 0) (0 1))
+  (relation need 2 (0 1) (1 0) (delta 1 0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation lookup 3 (0 1 2) (delta 0 1 2))
+  (struct lit 2 (1 0) (0 1))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation ev 3 (0 1 2) (1 2 0) (delta 0 1 2) (delta 1 2 0))
+  (relation error 1 (0))
+  (struct elet 4 (1 2 3 0) (0 2 1 3) (2 0 1 3) (3 0 1 2))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct bind 4 (3 2 1 0) (0 1 2 3) (delta 0 1 2 3) (delta 3 2 1 0))
+  (struct add 3 (1 2 0) (0 1 2) (2 0 1))
+  (struct _enum 2 (1 0) (0 1) (delta 1 0)))
+ ((crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre3MtL125
+    __errf32gr126
+    __errf8eWm127
+    __errf4mU6128
+    __errf1Hca129)
+   (body)
+   (head (emit error (0) __erre3MtL125))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan ev e1 rho w1)
+   (body
+    (exists elet (2 0 1 3) 1 e1)
+    (exists need (1 0) 1 rho)
+    (join-old bind (3 2 1 0) 2 (3 2 1 0) rho w1 nm __t9AKq52)
+    (exists ev (1 2 0) 1 __t9AKq52)
+    (join elet (1 2 3 0) 2 nm e1 e2 __t8R2A51)
+    (join need (0 1) 2 __t8R2A51 rho)
+    (join-old ev (0 1 2) 2 (0 1 2) e2 __t9AKq52 w2))
+   (head (emit ev (0 1 2) __t8R2A51 rho w2))
+   "ex_let.slog:35"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre5Ada106 __errf2yuj107 __errf1YjC108)
+   (body)
+   (head (emit error (0) __erre5Ada106))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan lookup rest nm w)
+   (body
+    (join-old bind (3 2 1 0) 1 (3 2 1 0) rest ____6j2k47 other __t5FRN46)
+    (neq nm other))
+   (head (emit lookup (0 1 2) __t5FRN46 nm w))
+   "ex_let.slog:41"
+   #f)
+  (crule
+   (pre)
+   (scan need __t0FJ656 rho)
+   (body
+    (exists ev (1 2 0) 1 rho)
+    (join-old ev (1 2 0) 1 (1 2 0) rho wa a)
+    (join add (0 1 2) 2 __t0FJ656 a b)
+    (join-old ev (0 1 2) 2 (0 1 2) b rho wb)
+    (let __t5MpC57 (_0002b wa wb)))
+   (head (emit ev (0 1 2) __t0FJ656 rho __t5MpC57))
+   "ex_let.slog:32"
+   #f)
+  (crule
+   (pre)
+   (scan ev e1 rho w)
+   (body
+    (exists elet (2 0 1 3) 1 e1)
+    (join-old need (1 0) 1 (1 0) rho __t9PS754)
+    (join elet (0 2 1 3) 2 __t9PS754 e1 nm e2))
+   (head
+    (emit-temp temp84uP133 e2 nm rho w)
+    (mkstruct bind (3 2 1 0) __t9Fhp53 rho w nm))
+   "ex_let.slog:26"
+   #f)
+  (crule
+   (pre)
+   (scan bind __t9AKq52 nm w1 rho)
+   (body
+    (exists elet (1 2 3 0) 1 nm)
+    (exists need (1 0) 1 rho)
+    (exists ev (1 2 0) 1 __t9AKq52)
+    (join ev (1 2 0) 2 rho w1 e1)
+    (join elet (1 2 3 0) 2 nm e1 e2 __t8R2A51)
+    (join need (0 1) 2 __t8R2A51 rho)
+    (join ev (0 1 2) 2 e2 __t9AKq52 w2))
+   (head (emit ev (0 1 2) __t8R2A51 rho w2))
+   "ex_let.slog:35"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre2ZTP130 __errf7SV7131 __errf8mOG132)
+   (body)
+   (head (emit error (0) __erre2ZTP130))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan ev a rho wa)
+   (body
+    (exists add (1 2 0) 1 a)
+    (exists ev (1 2 0) 1 rho)
+    (join need (1 0) 1 rho __t0FJ656)
+    (join add (0 1 2) 2 __t0FJ656 a b)
+    (join-old ev (0 1 2) 2 (0 1 2) b rho wb)
+    (let __t5MpC57 (_0002b wa wb)))
+   (head (emit ev (0 1 2) __t0FJ656 rho __t5MpC57))
+   "ex_let.slog:32"
+   #f)
+  (crule
+   (pre)
+   (scan ev b rho wb)
+   (body
+    (exists add (2 0 1) 1 b)
+    (exists ev (1 2 0) 1 rho)
+    (join need (1 0) 1 rho __t0FJ656)
+    (join add (2 0 1) 2 b __t0FJ656 a)
+    (join ev (0 1 2) 2 a rho wa)
+    (let __t5MpC57 (_0002b wa wb)))
+   (head (emit ev (0 1 2) __t0FJ656 rho __t5MpC57))
+   "ex_let.slog:32"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre02kC109 __errf2SYC110 __errf4fOS111 __errf22Pf112)
+   (body)
+   (head (emit error (0) __erre02kC109))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan bind __t9SGm60 nm w ____0aP561)
+   (body)
+   (head (emit lookup (0 1 2) __t9SGm60 nm w))
+   "ex_let.slog:40"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre5T3u113 __errf1lbI114 __errf4hC9115 __errf0TiH116)
+   (body)
+   (head (emit error (0) __erre5T3u113))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan ev e2 __t9AKq52 w2)
+   (body
+    (join elet (3 0 1 2) 1 e2 __t8R2A51 nm e1)
+    (exists ev (0 1 2) 1 e1)
+    (exists need (0 1) 1 __t8R2A51)
+    (join-old bind (0 1 2 3) 2 (0 1 2 3) __t9AKq52 nm w1 rho)
+    (join ev (0 1 2) 3 e1 rho w1)
+    (join need (0 1) 2 __t8R2A51 rho))
+   (head (emit ev (0 1 2) __t8R2A51 rho w2))
+   "ex_let.slog:35"
+   #f)
+  (crule
+   (pre (let __tconst4oBu66 const1f503613ae12cc0c5121fd74))
+   (probe _enum (1 0) 1 __tconst4oBu66 __t5drm48)
+   (body (join root (0 1) 0 ____1cBa49 ee))
+   (head (emit need (0 1) ee __t5drm48))
+   "ex_let.slog:24"
+   #f)
+  (crule
+   (pre)
+   (scan need __t1LBD43 rho)
+   (body (join add (0 1 2) 1 __t1LBD43 a b))
+   (head (emit need (0 1) b rho) (emit need (0 1) a rho))
+   "ex_let.slog:27"
+   #f)
+  (crule
+   (pre)
+   (scan lookup rho nm w)
+   (body
+    (exists ref (1 0) 1 nm)
+    (join need (1 0) 1 rho __t3DuD45)
+    (join ref (0 1) 2 __t3DuD45 nm))
+   (head (emit ev (0 1 2) __t3DuD45 rho w))
+   "ex_let.slog:31"
+   #f)
+  (crule
+   (pre)
+   (scan bind __t5FRN46 other ____6j2k47 rest)
+   (body (join lookup (0 1 2) 1 rest nm w) (neq nm other))
+   (head (emit lookup (0 1 2) __t5FRN46 nm w))
+   "ex_let.slog:41"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre7P69120
+    __errf3dmn121
+    __errf7e0P122
+    __errf3l63123
+    __errf577d124)
+   (body)
+   (head (emit error (0) __erre7P69120))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan need __t9PS754 rho)
+   (body
+    (join ev (1 2 0) 1 rho w e1)
+    (join elet (0 2 1 3) 2 __t9PS754 e1 nm e2))
+   (head
+    (emit-temp temp84uP133 e2 nm rho w)
+    (mkstruct bind (3 2 1 0) __t9Fhp53 rho w nm))
+   "ex_let.slog:26"
+   #f)
+  (crule
+   (pre)
+   (scan need __t9Zqb59 rho)
+   (body (join lit (0 1) 1 __t9Zqb59 n))
+   (head (emit ev (0 1 2) __t9Zqb59 rho n))
+   "ex_let.slog:30"
+   #f)
+  (crule
+   (pre)
+   (scan need __t3gvv62 rho)
+   (body (join elet (0 2 1 3) 1 __t3gvv62 e1 ____1ah463 ____86x564))
+   (head (emit need (0 1) e1 rho))
+   "ex_let.slog:25"
+   #f)
+  (crule
+   (pre)
+   (scan temp84uP133 e2 nm rho w)
+   (body (join bind (3 2 1 0) 3 rho w nm __t9Fhp53))
+   (head (emit need (0 1) e2 __t9Fhp53))
+   "ex_let.slog:26"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre5juE103 __errf56qC104 __errf1Yf1105)
+   (body)
+   (head (emit error (0) __erre5juE103))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan need __t3DuD45 rho)
+   (body
+    (exists lookup (0 1 2) 1 rho)
+    (join ref (0 1) 1 __t3DuD45 nm)
+    (join-old lookup (0 1 2) 2 (0 1 2) rho nm w))
+   (head (emit ev (0 1 2) __t3DuD45 rho w))
+   "ex_let.slog:31"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre32M9117 __errf3pwV118 __errf1QCi119)
+   (body)
+   (head (emit error (0) __erre32M9117))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan need __t8R2A51 rho)
+   (body
+    (exists bind (3 2 1 0) 1 rho)
+    (join-old ev (1 2 0) 1 (1 2 0) rho w1 e1)
+    (exists bind (3 2 1 0) 2 rho w1)
+    (join elet (0 2 1 3) 2 __t8R2A51 e1 nm e2)
+    (exists ev (0 1 2) 1 e2)
+    (join-old bind (3 2 1 0) 3 (3 2 1 0) rho w1 nm __t9AKq52)
+    (join-old ev (0 1 2) 2 (0 1 2) e2 __t9AKq52 w2))
+   (head (emit ev (0 1 2) __t8R2A51 rho w2))
+   "ex_let.slog:35"
+   #f)))

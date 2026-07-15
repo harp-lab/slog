@@ -1,0 +1,1 @@
+(stratum-meta (hash "21045c32") (level 0) (dynamic-rels w) (accel-rels) (heads w) (reads) (acyclic #t) (rules (rule 1107528131 "prim2_sizeany.slog:10" "(rule --> (w _tconst51yN6) (= _tconst51yN6 (const \"hello world\")) (w _tconst5aWQ5) (= _tconst5aWQ5 (const \"\")) (w _tconst2yRs4) (= _tconst2yRs4 (const \"foo\")))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

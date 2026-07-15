@@ -1,0 +1,1 @@
+(stratum-meta (hash "f7469f75") (level 0) (dynamic-rels marker) (accel-rels) (heads marker) (reads) (acyclic #t) (rules (rule 1413045472 "lat_run_main.slog:9" "(rule --> (marker _tconst585n8) (= _tconst585n8 (const 1)))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

@@ -1,0 +1,185 @@
+(cprog
+ #<set:
+  s
+  int_overflow
+  type_mismatch
+  temp6hfj85
+  count
+  toint_range
+  num
+  nan_result
+  error
+  temp9C3E84
+  mpz_overflow
+  modulo_by_zero
+  padd
+  mpz_table_overflow
+  div_by_zero>
+ #hash((0 . const5feceb66ffc86f38d952786c)
+       (1 . const6b86b273ff34fce19d6b804e)
+       (4 . const4b227777d4dd1fc61c6f884f)
+       ("z" . const20c400557af0eddc0be4d9e0))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp9C3E84 3)
+  (temp temp6hfj85 2)
+  (relation sum 3 (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct s 2 (1 0) (0 1) (delta 0 1) (delta 1 0))
+  (relation padd 3 (0 1 2))
+  (relation num 2 (1 0) (delta 1 0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation count 1 (0))
+  (relation check 1 (0))
+  (struct _enum 2 (1 0) (0 1) (delta 1 0)))
+ ((crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre8HtF76
+    __errf09LP77
+    __errf38LT78
+    __errf6w3m79
+    __errf7PvD80)
+   (body)
+   (head (emit error (0) __erre8HtF76))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp9C3E84 B C __t09sP15)
+   (body (join s (1 0) 1 C __t9bD913))
+   (head (emit padd (0 1 2) __t09sP15 B __t9bD913))
+   "ex_peano.slog:31"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre9WjI57 __errf7rMF58 __errf68dc59)
+   (body)
+   (head (emit error (0) __erre9WjI57))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst9uHm3 const4b227777d4dd1fc61c6f884f)
+    (let __tconst6J4i4 const6b86b273ff34fce19d6b804e))
+   (scan count N)
+   (body (cmp lt N __tconst9uHm3) (let __t7AYQ5 (_0002b N __tconst6J4i4)))
+   (head (emit count (0) __t7AYQ5))
+   "ex_peano.slog:22"
+   #f)
+  (crule
+   (pre)
+   (scan padd A B C)
+   (body
+    (join-old s (1 0) 1 (1 0) A __t09sP15)
+    (join-old num (1 0) 1 (1 0) __t09sP15 ____7Lz216))
+   (head (emit-temp temp9C3E84 B C __t09sP15) (mkstruct s (1 0) __t9bD913 C))
+   "ex_peano.slog:31"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre48fZ81 __errf9pBy82 __errf9rDC83)
+   (body)
+   (head (emit error (0) __erre48fZ81))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst3Bmb21 const20c400557af0eddc0be4d9e0)
+    (let __tconst0cGY19 const5feceb66ffc86f38d952786c))
+   (probe _enum (1 0) 1 __tconst3Bmb21 __t9r2718)
+   (body)
+   (head
+    (emit count (0) __tconst0cGY19)
+    (emit num (1 0) __t9r2718 __tconst0cGY19))
+   "ex_peano.slog:17"
+   #f)
+  (crule
+   (pre)
+   (scan temp6hfj85 X __t8Iiy12)
+   (body (join s (1 0) 1 X __t4AI19))
+   (head (emit num (1 0) __t4AI19 __t8Iiy12))
+   "ex_peano.slog:25"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre888I71
+    __errf43bi72
+    __errf6E9l73
+    __errf4HbA74
+    __errf1LaD75)
+   (body)
+   (head (emit error (0) __erre888I71))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan s __t09sP15 A)
+   (body
+    (exists padd (0 1 2) 1 A)
+    (join num (1 0) 1 __t09sP15 ____7Lz216)
+    (join padd (0 1 2) 1 A B C))
+   (head (emit-temp temp9C3E84 B C __t09sP15) (mkstruct s (1 0) __t9bD913 C))
+   "ex_peano.slog:31"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre8loe64 __errf8aXu65 __errf6AsS66 __errf2HDU67)
+   (body)
+   (head (emit error (0) __erre8loe64))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre2ghV60 __errf0eH561 __errf3bQE62 __errf91wR63)
+   (body)
+   (head (emit error (0) __erre2ghV60))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre1xpt54 __errf8qOD55 __errf3Y5656)
+   (body)
+   (head (emit error (0) __erre1xpt54))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst07Tf20 const20c400557af0eddc0be4d9e0))
+   (scan num ____4wB52 B)
+   (body (join _enum (1 0) 1 __tconst07Tf20 __t1bKL1))
+   (head (emit padd (0 1 2) __t1bKL1 B B))
+   "ex_peano.slog:28"
+   #f)
+  (crule
+   (pre
+    (let __tconst45HA10 const4b227777d4dd1fc61c6f884f)
+    (let __tconst2f4j11 const6b86b273ff34fce19d6b804e))
+   (scan num N X)
+   (body (cmp lt N __tconst45HA10) (let __t8Iiy12 (_0002b N __tconst2f4j11)))
+   (head (emit-temp temp6hfj85 X __t8Iiy12) (mkstruct s (1 0) __t4AI19 X))
+   "ex_peano.slog:25"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre9gUA68 __errf2kE769 __errf01LC70)
+   (body)
+   (head (emit error (0) __erre9gUA68))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan num ____7Lz216 __t09sP15)
+   (body (join-old s (0 1) 1 (0 1) __t09sP15 A) (join padd (0 1 2) 1 A B C))
+   (head (emit-temp temp9C3E84 B C __t09sP15) (mkstruct s (1 0) __t9bD913 C))
+   "ex_peano.slog:31"
+   #f)))

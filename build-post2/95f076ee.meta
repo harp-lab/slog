@@ -1,0 +1,1 @@
+(stratum-meta (hash "95f076ee") (level 0) (dynamic-rels _enum) (accel-rels) (heads _enum) (reads) (acyclic #t) (rules (rule 632925235 "<internal>:1" "(rule --> (= _1Isn364 (_enum _tconst3pPE363)) (= _tconst3pPE363 (const \"main\")))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

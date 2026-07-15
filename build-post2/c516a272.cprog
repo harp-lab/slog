@@ -1,0 +1,105 @@
+(cprog
+ #<set:
+  int_overflow
+  type_mismatch
+  toint_range
+  modulo_by_zero
+  e
+  nan_result
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash((10000 . const39e5b4830d4d9c14db7368a9))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (relation e 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation d 1 (0))
+  (relation c 1 (0))
+  (relation b 1 (0))
+  (relation a 1 (0))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan div_by_zero __erre8Y3T221 __errf6K1q222 __errf2jBS223)
+   (body)
+   (head (emit error (0) __erre8Y3T221))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre6ji2248 __errf1bbc249 __errf99RD250)
+   (body)
+   (head (emit error (0) __erre6ji2248))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre2IfZ235 __errf8uI4236 __errf3atk237)
+   (body)
+   (head (emit error (0) __erre2IfZ235))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre4feW238
+    __errf5cKs239
+    __errf3nwQ240
+    __errf7dvO241
+    __errf0Vxs242)
+   (body)
+   (head (emit error (0) __erre4feW238))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre24bY227 __errf3UbK228 __errf64zJ229 __errf0Fra230)
+   (body)
+   (head (emit error (0) __erre24bY227))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre9qHG243
+    __errf1OnF244
+    __errf1DVL245
+    __errf9Mzh246
+    __errf5G2O247)
+   (body)
+   (head (emit error (0) __erre9qHG243))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre9NzF231 __errf6jo7232 __errf9NZX233 __errf2yhx234)
+   (body)
+   (head (emit error (0) __erre9NzF231))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst8DLH3 const39e5b4830d4d9c14db7368a9))
+   (scan d X)
+   (body (let __t8R5c4 (_0002b X __tconst8DLH3)))
+   (head (emit e (0) __t8R5c4))
+   "strat_chain.slog:18"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre3Yf2224 __errf2U1x225 __errf1bLL226)
+   (body)
+   (head (emit error (0) __erre3Yf2224))
+   "<internal>:1"
+   #f)))

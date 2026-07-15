@@ -1,0 +1,56 @@
+(cprog
+ #<set: corner>
+ #hash()
+ ((relation wide 2 (0 1))
+  (struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct n4 3 (1 2 0) (0 1 2))
+  (struct n2 3 (1 2 0) (0 1 2))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct l8 9 (1 2 3 4 5 6 7 8 0) (0 1 2 3 4 5 6 7 8))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation corner 2 (0 1))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan wide tag __t5z0q45)
+   (body
+    (join n4 (0 1 2) 1 __t5z0q45 __t1QSB44 __t6gLe42)
+    (join n2 (0 1 2) 1 __t1QSB44 __t8Ojc43 ____9sJI46)
+    (join n2 (0 1 2) 1 __t6gLe42 ____0ogq54 __t947V41)
+    (join
+     l8
+     (0 1 2 3 4 5 6 7 8)
+     1
+     __t8Ojc43
+     a
+     ____5Hg347
+     ____3Po848
+     ____1R8w49
+     ____9SP750
+     ____1v2151
+     ____7xFM52
+     ____8VFZ53)
+    (join
+     l8
+     (0 1 2 3 4 5 6 7 8)
+     1
+     __t947V41
+     ____6KuU55
+     ____0ci756
+     ____5fnq57
+     ____39LM58
+     ____1UhK59
+     ____0Usb60
+     ____65Rm61
+     b))
+   (head (emit corner (0 1) a b))
+   "wide_fact.slog:20"
+   #f)))

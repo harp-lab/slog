@@ -1,0 +1,1 @@
+(stratum-meta (hash "2f60c728") (level 0) (dynamic-rels d) (accel-rels) (heads d) (reads) (acyclic #t) (rules (rule 1463061518 "err_div0.slog:5" "(rule --> (d _tconst5F1v4) (= _tconst5F1v4 (const 4)) (d _tconst7pEq3) (= _tconst7pEq3 (const 0)))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

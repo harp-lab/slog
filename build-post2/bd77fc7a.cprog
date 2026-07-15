@@ -1,0 +1,164 @@
+(cprog
+ #<set:
+  int_overflow
+  type_mismatch
+  toint_range
+  lall
+  nan_result
+  perr
+  temp1n79314
+  modulo_by_zero
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash()
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp1n79314 2)
+  (relation stmt 2 (0 1))
+  (relation smt_vcode 2 (0 1))
+  (relation smt_unsat 1 (0))
+  (relation smt_unknown 1 (0))
+  (relation smt_sat 1 (0))
+  (relation smt_qsat_ans 2 (0 1))
+  (struct smt_qsat 2 (1 0) (0 1))
+  (relation smt_qmodel_ans 2 (0 1))
+  (struct smt_qmodel 2 (1 0) (0 1))
+  (relation smt_qcore_ans 2 (0 1))
+  (struct smt_qcore 2 (1 0) (0 1))
+  (relation smt_model_ans 3 (0 1 2))
+  (struct smt_model 2 (1 0) (0 1))
+  (relation smt_core_ans 3 (0 1 2))
+  (struct smt_core 2 (1 0) (0 1))
+  (relation smt_check_ans 2 (0 1))
+  (struct smt_check 2 (1 0) (0 1))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation perr 2 (0 1))
+  (relation pc 2 (0 1))
+  (relation negb 2 (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct lsub 3 (1 2 0) (0 1 2))
+  (struct lor 3 (1 2 0) (0 1 2))
+  (struct lnot 2 (1 0) (0 1))
+  (struct lne 3 (1 2 0) (0 1 2))
+  (struct lmul 3 (1 2 0) (0 1 2))
+  (struct llt 3 (1 2 0) (0 1 2))
+  (struct lle 3 (1 2 0) (0 1 2))
+  (struct lite 4 (1 2 3 0) (0 1 2 3))
+  (struct limplies 3 (1 2 0) (0 1 2))
+  (struct lgt 3 (1 2 0) (0 1 2))
+  (struct lge 3 (1 2 0) (0 1 2))
+  (struct leq 3 (1 2 0) (0 1 2))
+  (struct lany 2 (1 0) (0 1))
+  (struct land 3 (1 2 0) (0 1 2))
+  (struct lall 2 (1 0) (0 1))
+  (struct ladd 3 (1 2 0) (0 1 2))
+  (relation kept 1 (0))
+  (struct iv 2 (1 0) (0 1))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (struct ic 2 (1 0) (0 1))
+  (relation error 1 (0))
+  (relation eqf 3 (0 1 2))
+  (relation entry 1 (0))
+  (relation elidable 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation check_status 2 (0 1))
+  (lattice check_err 2 (set any) #f (0 1))
+  (struct check 4 (1 2 3 0) (0 1 2 3))
+  (struct bv 2 (1 0) (0 1))
+  (struct branch 4 (1 2 3 0) (0 1 2 3))
+  (struct asgn 4 (1 2 3 0) (0 1 2 3))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre1hVy306
+    __errf8Tkr307
+    __errf7VA8308
+    __errf4X8X309
+    __errf8UZv310)
+   (body)
+   (head (emit error (0) __erre1hVy306))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre8Ob2284 __errf4XsC285 __errf1SGC286)
+   (body)
+   (head (emit error (0) __erre8Ob2284))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre4gTv294 __errf5gyi295 __errf5IBN296 __errf21wU297)
+   (body)
+   (head (emit error (0) __erre4gTv294))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp1n79314 ID __t2lUu50)
+   (body (join lall (1 0) 1 __t2lUu50 __t9TQk48))
+   (head (emit perr (0 1) ID __t9TQk48))
+   "verify.slog:69"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre6rQi298 __errf43eP299 __errf4slK300)
+   (body)
+   (head (emit error (0) __erre6rQi298))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan pc L S)
+   (body
+    (join stmt (0 1) 1 L __t4FMr49)
+    (join check (0 1 2 3) 1 __t4FMr49 ID C N)
+    (join negb (0 1) 1 C NC)
+    (let __t2lUu50 (cins S NC)))
+   (head
+    (emit-temp temp1n79314 ID __t2lUu50)
+    (mkstruct lall (1 0) __t9TQk48 __t2lUu50))
+   "verify.slog:69"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre8kTt301
+    __errf0lS7302
+    __errf5HQP303
+    __errf9pkE304
+    __errf4IhV305)
+   (body)
+   (head (emit error (0) __erre8kTt301))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre6Ct5311 __errf1UL7312 __errf8nos313)
+   (body)
+   (head (emit error (0) __erre6Ct5311))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre0YBO287 __errf3RrH288 __errf6fHL289)
+   (body)
+   (head (emit error (0) __erre0YBO287))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre61N0290 __errf3QM8291 __errf5u38292 __errf3cSP293)
+   (body)
+   (head (emit error (0) __erre61N0290))
+   "<internal>:1"
+   #f)))

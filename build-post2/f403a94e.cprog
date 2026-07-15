@@ -1,0 +1,267 @@
+(cprog
+ #<set:
+  int_overflow
+  smt_sat
+  toint_range
+  smt_model_ans
+  nan_result
+  modulo_by_zero
+  smt_core_ans
+  type_mismatch
+  error
+  mpz_overflow
+  layer2
+  mpz_table_overflow
+  div_by_zero
+  malformed_deduction
+  smt_unsat
+  smt_unknown>
+ #hash((1 . const6b86b273ff34fce19d6b804e)
+       (2 . constd4735e3a265e16eee03f5971)
+       ("@status" . constfa94099f784d91500e1b95df)
+       ("again" . const2991bbea66ca04d60d8d9886)
+       ("fresh" . constb1e5780cb6ded9edcf5bac26)
+       ("sat" . constab76c7d069d6f33dc950fb33)
+       ("smt.slog:106" . constd2c28e4f541b3051f713f2a3)
+       ("smt.slog:93" . constbf14e8e2740173c2e99e36a3)
+       ("smt_core_ans" . const356829ca6c3df0a0d1117410)
+       ("smt_model_ans" . const7b4b6d235bc6fbc8c9ba5801)
+       ("unknown" . consteb8bf0d80db323992f6b634a)
+       ("unsat" . consta221beeaebe583607e193be7))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (relation smt_vcode 2 (0 1))
+  (relation smt_unsat 1 (0))
+  (relation smt_unknown 1 (0))
+  (relation smt_sat 1 (0))
+  (relation smt_qsat_ans 2 (0 1))
+  (struct smt_qsat 2 (1 0) (0 1))
+  (relation smt_qmodel_ans 2 (0 1))
+  (struct smt_qmodel 2 (1 0) (0 1))
+  (relation smt_qcore_ans 2 (0 1))
+  (struct smt_qcore 2 (1 0) (0 1))
+  (relation smt_model_ans 3 (0 1 2))
+  (struct smt_model 2 (1 0) (0 1))
+  (relation smt_core_ans 3 (0 1 2))
+  (struct smt_core 2 (1 0) (0 1))
+  (relation smt_check_ans 2 (0 1) (1 0))
+  (struct smt_check 2 (1 0) (0 1))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct lsub 3 (1 2 0) (0 1 2))
+  (struct lor 3 (1 2 0) (0 1 2))
+  (struct lnot 2 (1 0) (0 1))
+  (struct lne 3 (1 2 0) (0 1 2))
+  (struct lmul 3 (1 2 0) (0 1 2))
+  (struct llt 3 (2 1 0) (0 1 2))
+  (struct lle 3 (1 2 0) (0 1 2))
+  (struct lite 4 (1 2 3 0) (0 1 2 3))
+  (struct limplies 3 (1 2 0) (0 1 2))
+  (struct lgt 3 (1 2 0) (0 1 2))
+  (struct lge 3 (1 2 0) (0 1 2))
+  (struct leq 3 (1 2 0) (0 1 2))
+  (relation layer2 2 (0 1))
+  (relation layer1 1 (0))
+  (struct lany 2 (1 0) (0 1))
+  (struct land 3 (1 2 0) (0 1 2))
+  (struct lall 2 (1 0) (0 1))
+  (struct ladd 3 (1 2 0) (0 1 2))
+  (struct iv 2 (1 0) (0 1))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (struct ic 2 (1 0) (0 1) (delta 1 0))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct bv 2 (1 0) (0 1))
+  (struct _enum 2 (1 0) (0 1) (delta 1 0)))
+ ((crule
+   (pre)
+   (scan
+    malformed_deduction
+    __erre8cFp132
+    __errf9GEC133
+    __errf0FOs134
+    __errf38Sl135
+    __errf5rqB136)
+   (body)
+   (head (emit error (0) __erre8cFp132))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst0yXh55 constfa94099f784d91500e1b95df)
+    (let __trid30p869 constbf14e8e2740173c2e99e36a3)
+    (let __trel769870 const7b4b6d235bc6fbc8c9ba5801)
+    (let __tcol1iuH71 constd4735e3a265e16eee03f5971))
+   (scan smt_vcode __t9Kd754 V)
+   (body
+    (join smt_qmodel_ans (0 1) 0 __t6gra57 M0)
+    (join smt_qmodel (0 1) 1 __t6gra57 F)
+    (join smt_model (1 0) 1 F __t7w7A52)
+    (letp chk9ud8169 (cget M0 __tconst0yXh55))
+    (eq __t9Kd754 chk9ud8169)
+    (let __t9sBo56 (cdel M0 __tconst0yXh55)))
+   (head
+    (tycheck
+     __t9sBo56
+     (accept cnode)
+     __trid30p869
+     __trel769870
+     __tcol1iuH71
+     (1 2 3 4 0))
+    (emit smt_model_ans (0 1 2) __t7w7A52 V __t9sBo56))
+   "smt.slog:93"
+   #f)
+  (crule
+   (pre (let __tconst7eoC65 constab76c7d069d6f33dc950fb33))
+   (probe _enum (1 0) 1 __tconst7eoC65 __t0JC750)
+   (body
+    (join smt_check_ans (1 0) 1 __t0JC750 __t9sj051)
+    (join smt_check (0 1) 1 __t9sj051 F))
+   (head (emit smt_sat (0) F))
+   "smt.slog:77"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre9aA1137 __errf17dJ138 __errf4bJL139)
+   (body)
+   (head (emit error (0) __erre9aA1137))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre1IIO159
+    __errf2QO4160
+    __errf9tXU161
+    __errf9CcG162
+    __errf6xUI163)
+   (body)
+   (head (emit error (0) __erre1IIO159))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre63eV143 __errf5UIO144 __errf9SyN145 __errf4fCT146)
+   (body)
+   (head (emit error (0) __erre63eV143))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre5oPi164 __errf7eOo165 __errf7y5u166)
+   (body)
+   (head (emit error (0) __erre5oPi164))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst0YV214 const6b86b273ff34fce19d6b804e)
+    (let __tconst9qnT16 constd4735e3a265e16eee03f5971)
+    (let __tconst4BOC13 const2991bbea66ca04d60d8d9886))
+   (probe ic (1 0) 1 __tconst0YV214 __t1tRW15)
+   (body
+    (exists llt (2 1 0) 1 __t1tRW15)
+    (join ic (1 0) 1 __tconst9qnT16 __t3SQR17)
+    (join llt (2 1 0) 2 __t1tRW15 __t3SQR17 __t1iCb18)
+    (join smt_check (1 0) 1 __t1iCb18 __t1zM519)
+    (join smt_check_ans (0 1) 1 __t1zM519 W)
+    (join layer1 (0) 0 V))
+   (head (emit layer2 (0 1) __tconst4BOC13 W))
+   "smt_multi.slog:11"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre50td147 __errf8f1i148 __errf7uSg149 __errf2l2k150)
+   (body)
+   (head (emit error (0) __erre50td147))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre7yhg151 __errf6UCa152 __errf54s3153)
+   (body)
+   (head (emit error (0) __erre7yhg151))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst5KH474 consteb8bf0d80db323992f6b634a))
+   (probe _enum (1 0) 1 __tconst5KH474 __t2WV521)
+   (body
+    (join smt_check_ans (1 0) 1 __t2WV521 __t7dvI22)
+    (join smt_check (0 1) 1 __t7dvI22 F))
+   (head (emit smt_unknown (0) F))
+   "smt.slog:79"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre7S7L140 __errf3kbB141 __errf4DYN142)
+   (body)
+   (head (emit error (0) __erre7S7L140))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst2ZuX76 consta221beeaebe583607e193be7))
+   (probe _enum (1 0) 1 __tconst2ZuX76 __t3TTp58)
+   (body
+    (join smt_check_ans (1 0) 1 __t3TTp58 __t0yhD59)
+    (join smt_check (0 1) 1 __t0yhD59 F))
+   (head (emit smt_unsat (0) F))
+   "smt.slog:78"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre6vlu154
+    __errf7I9c155
+    __errf3gvA156
+    __errf4UMG157
+    __errf8ubh158)
+   (body)
+   (head (emit error (0) __erre6vlu154))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst0e0634 constd4735e3a265e16eee03f5971)
+    (let __tconst1KnK31 constb1e5780cb6ded9edcf5bac26))
+   (probe ic (1 0) 1 __tconst0e0634 __t3lrc33)
+   (body
+    (join lle (1 2 0) 1 __t3lrc33 dup3QMk167 __t0Ct036)
+    (eq __t3lrc33 dup3QMk167)
+    (join smt_check (1 0) 1 __t0Ct036 __t8REf37)
+    (join smt_check_ans (0 1) 1 __t8REf37 W)
+    (join layer1 (0) 0 V))
+   (head (emit layer2 (0 1) __tconst1KnK31 W))
+   "smt_multi.slog:12"
+   #f)
+  (crule
+   (pre
+    (let __tconst5qCd47 constfa94099f784d91500e1b95df)
+    (let __trid5sR866 constd2c28e4f541b3051f713f2a3)
+    (let __trel2t2z67 const356829ca6c3df0a0d1117410)
+    (let __tcol608b68 constd4735e3a265e16eee03f5971))
+   (scan smt_vcode __t8vl546 V)
+   (body
+    (join smt_qcore_ans (0 1) 0 __t7pJf49 M0)
+    (join smt_qcore (0 1) 1 __t7pJf49 F)
+    (join smt_core (1 0) 1 F __t13Ho44)
+    (letp chk2aWv168 (cget M0 __tconst5qCd47))
+    (eq __t8vl546 chk2aWv168)
+    (let __t6mDa48 (cdel M0 __tconst5qCd47)))
+   (head
+    (tycheck
+     __t6mDa48
+     (accept cnode)
+     __trid5sR866
+     __trel2t2z67
+     __tcol608b68
+     (1 2 3 4 0))
+    (emit smt_core_ans (0 1 2) __t13Ho44 V __t6mDa48))
+   "smt.slog:106"
+   #f)))

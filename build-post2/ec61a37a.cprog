@@ -1,0 +1,865 @@
+(cprog
+ #<set: l8 n4 wide n2>
+ #hash((1 . const6b86b273ff34fce19d6b804e)
+       (2 . constd4735e3a265e16eee03f5971)
+       (3 . const4e07408562bedb8b60ce05c1)
+       (4 . const4b227777d4dd1fc61c6f884f)
+       (5 . constef2d127de37b942baad06145)
+       (6 . conste7f6c011776e8db7cd330b54)
+       (7 . const7902699be42c8a8e46fbbb45)
+       (8 . const2c624232cdd221771294dfbb)
+       (9 . const19581e27de7ced00ff1ce50b)
+       (10 . const4a44dc15364204a80fe80e90)
+       (11 . const4fc82b26aecb47d2868c4efb)
+       (12 . const6b51d431df5d7f141cbececc)
+       (13 . const3fdba35f04dc8c462986c992)
+       (14 . const8527a891e224136950ff32ca)
+       (15 . conste629fa6598d732768f7c726b)
+       (16 . constb17ef6d19c7a5b1ee83b907c)
+       (17 . const4523540f1504cd17100c4835)
+       (18 . const4ec9599fc203d176a301536c)
+       (19 . const9400f1b21cb527d7fa3d3eab)
+       (20 . constf5ca38f748a1d6eaf726b8a4)
+       (21 . const6f4b6612125fb3a0daecd279)
+       (22 . const785f3ec7eb32f30b90cd0fcf)
+       (23 . const535fa30d7e25dd8a49f15367)
+       (24 . constc2356069e9d1e79ca9243781)
+       (25 . constb7a56873cd771f2c446d369b)
+       (26 . const5f9c4ab08cac7457e9111a30)
+       (27 . const670671cd97404156226e5079)
+       (28 . const59e19706d51d39f66711c265)
+       (29 . const35135aaa6cc23891b40cb3f3)
+       (30 . const624b60c58c9d8bfb6ff1886c)
+       (31 . consteb1e33e8a81b697b75855af6)
+       (32 . conste29c9c180c6279b0b02abd6a)
+       ("w" . const7265b875feb0d1730ead43d3))
+ ((relation wide 2 (0 1))
+  (struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct n4 3 (2 1 0) (0 1 2))
+  (struct n2 3 (2 1 0) (0 2 1))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct
+   l8
+   9
+   (1 2 3 4 5 6 7 8 0)
+   (0 1 2 3 4 5 6 7 8)
+   (delta 1 2 3 4 5 6 7 8 0))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation corner 2 (0 1))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre
+    (let __tconst3O4u40 const7265b875feb0d1730ead43d3)
+    (let __tconst80ly36 const6b86b273ff34fce19d6b804e)
+    (let __tconst5jtZ35 constd4735e3a265e16eee03f5971)
+    (let __tconst83R834 const4e07408562bedb8b60ce05c1)
+    (let __tconst4Vmv33 const4b227777d4dd1fc61c6f884f)
+    (let __tconst4fQB32 constef2d127de37b942baad06145)
+    (let __tconst40Ez31 conste7f6c011776e8db7cd330b54)
+    (let __tconst7DGk30 const7902699be42c8a8e46fbbb45)
+    (let __tconst1xMG29 const2c624232cdd221771294dfbb)
+    (let __tconst9qC527 const19581e27de7ced00ff1ce50b)
+    (let __tconst9Om326 const4a44dc15364204a80fe80e90)
+    (let __tconst0Q4z25 const4fc82b26aecb47d2868c4efb)
+    (let __tconst6M0p24 const6b51d431df5d7f141cbececc)
+    (let __tconst2nEI23 const3fdba35f04dc8c462986c992)
+    (let __tconst4Ied22 const8527a891e224136950ff32ca)
+    (let __tconst2O9k21 conste629fa6598d732768f7c726b)
+    (let __tconst755B20 constb17ef6d19c7a5b1ee83b907c)
+    (let __tconst1Q3N17 const4523540f1504cd17100c4835)
+    (let __tconst6IXa16 const4ec9599fc203d176a301536c)
+    (let __tconst7vco15 const9400f1b21cb527d7fa3d3eab)
+    (let __tconst02Ns14 constf5ca38f748a1d6eaf726b8a4)
+    (let __tconst81Eh13 const6f4b6612125fb3a0daecd279)
+    (let __tconst7mWH12 const785f3ec7eb32f30b90cd0fcf)
+    (let __tconst5Hgw11 const535fa30d7e25dd8a49f15367)
+    (let __tconst3TCY10 constc2356069e9d1e79ca9243781)
+    (let __tconst7wrk8 constb7a56873cd771f2c446d369b)
+    (let __tconst8h167 const5f9c4ab08cac7457e9111a30)
+    (let __tconst2Zj26 const670671cd97404156226e5079)
+    (let __tconst8Ade5 const59e19706d51d39f66711c265)
+    (let __tconst6Ux94 const35135aaa6cc23891b40cb3f3)
+    (let __tconst1s373 const624b60c58c9d8bfb6ff1886c)
+    (let __tconst7Egh2 consteb1e33e8a81b697b75855af6)
+    (let __tconst8ZZ61 conste29c9c180c6279b0b02abd6a))
+   (seeded)
+   (body
+    (join
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     8
+     __tconst7wrk8
+     __tconst8h167
+     __tconst2Zj26
+     __tconst8Ade5
+     __tconst6Ux94
+     __tconst1s373
+     __tconst7Egh2
+     __tconst8ZZ61
+     __t7tQU9)
+    (exists
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     8
+     __tconst9qC527
+     __tconst9Om326
+     __tconst0Q4z25
+     __tconst6M0p24
+     __tconst2nEI23
+     __tconst4Ied22
+     __tconst2O9k21
+     __tconst755B20)
+    (exists
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     8
+     __tconst80ly36
+     __tconst5jtZ35
+     __tconst83R834
+     __tconst4Vmv33
+     __tconst4fQB32
+     __tconst40Ez31
+     __tconst7DGk30
+     __tconst1xMG29)
+    (exists n2 (2 1 0) 1 __t7tQU9)
+    (join
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     8
+     __tconst1Q3N17
+     __tconst6IXa16
+     __tconst7vco15
+     __tconst02Ns14
+     __tconst81Eh13
+     __tconst7mWH12
+     __tconst5Hgw11
+     __tconst3TCY10
+     __t1W5d18)
+    (exists n2 (2 1 0) 2 __t7tQU9 __t1W5d18)
+    (join
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     8
+     __tconst9qC527
+     __tconst9Om326
+     __tconst0Q4z25
+     __tconst6M0p24
+     __tconst2nEI23
+     __tconst4Ied22
+     __tconst2O9k21
+     __tconst755B20
+     __t91OM28)
+    (exists n2 (2 1 0) 1 __t91OM28)
+    (join
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     8
+     __tconst80ly36
+     __tconst5jtZ35
+     __tconst83R834
+     __tconst4Vmv33
+     __tconst4fQB32
+     __tconst40Ez31
+     __tconst7DGk30
+     __tconst1xMG29
+     __t66rT37)
+    (exists n2 (2 1 0) 2 __t91OM28 __t66rT37)
+    (join n2 (2 1 0) 2 __t7tQU9 __t1W5d18 __t2YL419)
+    (exists n4 (2 1 0) 1 __t2YL419)
+    (join n2 (2 1 0) 2 __t91OM28 __t66rT37 __t61f638)
+    (join n4 (2 1 0) 2 __t2YL419 __t61f638 __t7VhN39))
+   (head (emit wide (0 1) __tconst3O4u40 __t7VhN39))
+   "wide_fact.slog:12"
+   #f)
+  (crule
+   (pre
+    (let __tconst3O4u40 const7265b875feb0d1730ead43d3)
+    (let __tconst80ly36 const6b86b273ff34fce19d6b804e)
+    (let __tconst5jtZ35 constd4735e3a265e16eee03f5971)
+    (let __tconst83R834 const4e07408562bedb8b60ce05c1)
+    (let __tconst4Vmv33 const4b227777d4dd1fc61c6f884f)
+    (let __tconst4fQB32 constef2d127de37b942baad06145)
+    (let __tconst40Ez31 conste7f6c011776e8db7cd330b54)
+    (let __tconst7DGk30 const7902699be42c8a8e46fbbb45)
+    (let __tconst1xMG29 const2c624232cdd221771294dfbb)
+    (let __tconst9qC527 const19581e27de7ced00ff1ce50b)
+    (let __tconst9Om326 const4a44dc15364204a80fe80e90)
+    (let __tconst0Q4z25 const4fc82b26aecb47d2868c4efb)
+    (let __tconst6M0p24 const6b51d431df5d7f141cbececc)
+    (let __tconst2nEI23 const3fdba35f04dc8c462986c992)
+    (let __tconst4Ied22 const8527a891e224136950ff32ca)
+    (let __tconst2O9k21 conste629fa6598d732768f7c726b)
+    (let __tconst755B20 constb17ef6d19c7a5b1ee83b907c)
+    (let __tconst1Q3N17 const4523540f1504cd17100c4835)
+    (let __tconst6IXa16 const4ec9599fc203d176a301536c)
+    (let __tconst7vco15 const9400f1b21cb527d7fa3d3eab)
+    (let __tconst02Ns14 constf5ca38f748a1d6eaf726b8a4)
+    (let __tconst81Eh13 const6f4b6612125fb3a0daecd279)
+    (let __tconst7mWH12 const785f3ec7eb32f30b90cd0fcf)
+    (let __tconst5Hgw11 const535fa30d7e25dd8a49f15367)
+    (let __tconst3TCY10 constc2356069e9d1e79ca9243781)
+    (let __tconst7wrk8 constb7a56873cd771f2c446d369b)
+    (let __tconst8h167 const5f9c4ab08cac7457e9111a30)
+    (let __tconst2Zj26 const670671cd97404156226e5079)
+    (let __tconst8Ade5 const59e19706d51d39f66711c265)
+    (let __tconst6Ux94 const35135aaa6cc23891b40cb3f3)
+    (let __tconst1s373 const624b60c58c9d8bfb6ff1886c)
+    (let __tconst7Egh2 consteb1e33e8a81b697b75855af6)
+    (let __tconst8ZZ61 conste29c9c180c6279b0b02abd6a))
+   (once)
+   (body)
+   (head
+    (mkstruct
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     __t66rT37
+     __tconst80ly36
+     __tconst5jtZ35
+     __tconst83R834
+     __tconst4Vmv33
+     __tconst4fQB32
+     __tconst40Ez31
+     __tconst7DGk30
+     __tconst1xMG29)
+    (mkstruct
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     __t91OM28
+     __tconst9qC527
+     __tconst9Om326
+     __tconst0Q4z25
+     __tconst6M0p24
+     __tconst2nEI23
+     __tconst4Ied22
+     __tconst2O9k21
+     __tconst755B20)
+    (mkstruct
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     __t1W5d18
+     __tconst1Q3N17
+     __tconst6IXa16
+     __tconst7vco15
+     __tconst02Ns14
+     __tconst81Eh13
+     __tconst7mWH12
+     __tconst5Hgw11
+     __tconst3TCY10)
+    (mkstruct
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     __t7tQU9
+     __tconst7wrk8
+     __tconst8h167
+     __tconst2Zj26
+     __tconst8Ade5
+     __tconst6Ux94
+     __tconst1s373
+     __tconst7Egh2
+     __tconst8ZZ61))
+   "wide_fact.slog:12"
+   #f)
+  (crule
+   (pre
+    (let __tconst3O4u40 const7265b875feb0d1730ead43d3)
+    (let __tconst80ly36 const6b86b273ff34fce19d6b804e)
+    (let __tconst5jtZ35 constd4735e3a265e16eee03f5971)
+    (let __tconst83R834 const4e07408562bedb8b60ce05c1)
+    (let __tconst4Vmv33 const4b227777d4dd1fc61c6f884f)
+    (let __tconst4fQB32 constef2d127de37b942baad06145)
+    (let __tconst40Ez31 conste7f6c011776e8db7cd330b54)
+    (let __tconst7DGk30 const7902699be42c8a8e46fbbb45)
+    (let __tconst1xMG29 const2c624232cdd221771294dfbb)
+    (let __tconst9qC527 const19581e27de7ced00ff1ce50b)
+    (let __tconst9Om326 const4a44dc15364204a80fe80e90)
+    (let __tconst0Q4z25 const4fc82b26aecb47d2868c4efb)
+    (let __tconst6M0p24 const6b51d431df5d7f141cbececc)
+    (let __tconst2nEI23 const3fdba35f04dc8c462986c992)
+    (let __tconst4Ied22 const8527a891e224136950ff32ca)
+    (let __tconst2O9k21 conste629fa6598d732768f7c726b)
+    (let __tconst755B20 constb17ef6d19c7a5b1ee83b907c)
+    (let __tconst1Q3N17 const4523540f1504cd17100c4835)
+    (let __tconst6IXa16 const4ec9599fc203d176a301536c)
+    (let __tconst7vco15 const9400f1b21cb527d7fa3d3eab)
+    (let __tconst02Ns14 constf5ca38f748a1d6eaf726b8a4)
+    (let __tconst81Eh13 const6f4b6612125fb3a0daecd279)
+    (let __tconst7mWH12 const785f3ec7eb32f30b90cd0fcf)
+    (let __tconst5Hgw11 const535fa30d7e25dd8a49f15367)
+    (let __tconst3TCY10 constc2356069e9d1e79ca9243781)
+    (let __tconst7wrk8 constb7a56873cd771f2c446d369b)
+    (let __tconst8h167 const5f9c4ab08cac7457e9111a30)
+    (let __tconst2Zj26 const670671cd97404156226e5079)
+    (let __tconst8Ade5 const59e19706d51d39f66711c265)
+    (let __tconst6Ux94 const35135aaa6cc23891b40cb3f3)
+    (let __tconst1s373 const624b60c58c9d8bfb6ff1886c)
+    (let __tconst7Egh2 consteb1e33e8a81b697b75855af6)
+    (let __tconst8ZZ61 conste29c9c180c6279b0b02abd6a))
+   (probe
+    l8
+    (1 2 3 4 5 6 7 8 0)
+    8
+    __tconst7wrk8
+    __tconst8h167
+    __tconst2Zj26
+    __tconst8Ade5
+    __tconst6Ux94
+    __tconst1s373
+    __tconst7Egh2
+    __tconst8ZZ61
+    __t7tQU9)
+   (body
+    (exists
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     8
+     __tconst9qC527
+     __tconst9Om326
+     __tconst0Q4z25
+     __tconst6M0p24
+     __tconst2nEI23
+     __tconst4Ied22
+     __tconst2O9k21
+     __tconst755B20)
+    (exists
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     8
+     __tconst80ly36
+     __tconst5jtZ35
+     __tconst83R834
+     __tconst4Vmv33
+     __tconst4fQB32
+     __tconst40Ez31
+     __tconst7DGk30
+     __tconst1xMG29)
+    (join
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     8
+     __tconst1Q3N17
+     __tconst6IXa16
+     __tconst7vco15
+     __tconst02Ns14
+     __tconst81Eh13
+     __tconst7mWH12
+     __tconst5Hgw11
+     __tconst3TCY10
+     __t1W5d18)
+    (join
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     8
+     __tconst9qC527
+     __tconst9Om326
+     __tconst0Q4z25
+     __tconst6M0p24
+     __tconst2nEI23
+     __tconst4Ied22
+     __tconst2O9k21
+     __tconst755B20
+     __t91OM28)
+    (join
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     8
+     __tconst80ly36
+     __tconst5jtZ35
+     __tconst83R834
+     __tconst4Vmv33
+     __tconst4fQB32
+     __tconst40Ez31
+     __tconst7DGk30
+     __tconst1xMG29
+     __t66rT37))
+   (head
+    (mkstruct n2 (2 1 0) __t61f638 __t91OM28 __t66rT37)
+    (mkstruct n2 (2 1 0) __t2YL419 __t7tQU9 __t1W5d18))
+   "wide_fact.slog:12"
+   #f)
+  (crule
+   (pre
+    (let __tconst3O4u40 const7265b875feb0d1730ead43d3)
+    (let __tconst80ly36 const6b86b273ff34fce19d6b804e)
+    (let __tconst5jtZ35 constd4735e3a265e16eee03f5971)
+    (let __tconst83R834 const4e07408562bedb8b60ce05c1)
+    (let __tconst4Vmv33 const4b227777d4dd1fc61c6f884f)
+    (let __tconst4fQB32 constef2d127de37b942baad06145)
+    (let __tconst40Ez31 conste7f6c011776e8db7cd330b54)
+    (let __tconst7DGk30 const7902699be42c8a8e46fbbb45)
+    (let __tconst1xMG29 const2c624232cdd221771294dfbb)
+    (let __tconst9qC527 const19581e27de7ced00ff1ce50b)
+    (let __tconst9Om326 const4a44dc15364204a80fe80e90)
+    (let __tconst0Q4z25 const4fc82b26aecb47d2868c4efb)
+    (let __tconst6M0p24 const6b51d431df5d7f141cbececc)
+    (let __tconst2nEI23 const3fdba35f04dc8c462986c992)
+    (let __tconst4Ied22 const8527a891e224136950ff32ca)
+    (let __tconst2O9k21 conste629fa6598d732768f7c726b)
+    (let __tconst755B20 constb17ef6d19c7a5b1ee83b907c)
+    (let __tconst1Q3N17 const4523540f1504cd17100c4835)
+    (let __tconst6IXa16 const4ec9599fc203d176a301536c)
+    (let __tconst7vco15 const9400f1b21cb527d7fa3d3eab)
+    (let __tconst02Ns14 constf5ca38f748a1d6eaf726b8a4)
+    (let __tconst81Eh13 const6f4b6612125fb3a0daecd279)
+    (let __tconst7mWH12 const785f3ec7eb32f30b90cd0fcf)
+    (let __tconst5Hgw11 const535fa30d7e25dd8a49f15367)
+    (let __tconst3TCY10 constc2356069e9d1e79ca9243781)
+    (let __tconst7wrk8 constb7a56873cd771f2c446d369b)
+    (let __tconst8h167 const5f9c4ab08cac7457e9111a30)
+    (let __tconst2Zj26 const670671cd97404156226e5079)
+    (let __tconst8Ade5 const59e19706d51d39f66711c265)
+    (let __tconst6Ux94 const35135aaa6cc23891b40cb3f3)
+    (let __tconst1s373 const624b60c58c9d8bfb6ff1886c)
+    (let __tconst7Egh2 consteb1e33e8a81b697b75855af6)
+    (let __tconst8ZZ61 conste29c9c180c6279b0b02abd6a))
+   (scan n4 __t7VhN39 __t61f638 __t2YL419)
+   (body
+    (exists
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     8
+     __tconst1Q3N17
+     __tconst6IXa16
+     __tconst7vco15
+     __tconst02Ns14
+     __tconst81Eh13
+     __tconst7mWH12
+     __tconst5Hgw11
+     __tconst3TCY10)
+    (exists
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     8
+     __tconst9qC527
+     __tconst9Om326
+     __tconst0Q4z25
+     __tconst6M0p24
+     __tconst2nEI23
+     __tconst4Ied22
+     __tconst2O9k21
+     __tconst755B20)
+    (exists
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     8
+     __tconst80ly36
+     __tconst5jtZ35
+     __tconst83R834
+     __tconst4Vmv33
+     __tconst4fQB32
+     __tconst40Ez31
+     __tconst7DGk30
+     __tconst1xMG29)
+    (join
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     8
+     __tconst7wrk8
+     __tconst8h167
+     __tconst2Zj26
+     __tconst8Ade5
+     __tconst6Ux94
+     __tconst1s373
+     __tconst7Egh2
+     __tconst8ZZ61
+     __t7tQU9)
+    (exists n2 (0 2 1) 2 __t2YL419 __t7tQU9)
+    (join
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     8
+     __tconst1Q3N17
+     __tconst6IXa16
+     __tconst7vco15
+     __tconst02Ns14
+     __tconst81Eh13
+     __tconst7mWH12
+     __tconst5Hgw11
+     __tconst3TCY10
+     __t1W5d18)
+    (exists n2 (0 2 1) 3 __t2YL419 __t7tQU9 __t1W5d18)
+    (join
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     8
+     __tconst9qC527
+     __tconst9Om326
+     __tconst0Q4z25
+     __tconst6M0p24
+     __tconst2nEI23
+     __tconst4Ied22
+     __tconst2O9k21
+     __tconst755B20
+     __t91OM28)
+    (exists n2 (0 2 1) 2 __t61f638 __t91OM28)
+    (join
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     8
+     __tconst80ly36
+     __tconst5jtZ35
+     __tconst83R834
+     __tconst4Vmv33
+     __tconst4fQB32
+     __tconst40Ez31
+     __tconst7DGk30
+     __tconst1xMG29
+     __t66rT37)
+    (join n2 (0 2 1) 3 __t2YL419 __t7tQU9 __t1W5d18)
+    (join n2 (0 2 1) 3 __t61f638 __t91OM28 __t66rT37))
+   (head (emit wide (0 1) __tconst3O4u40 __t7VhN39))
+   "wide_fact.slog:12"
+   #f)
+  (crule
+   (pre
+    (let __tconst3O4u40 const7265b875feb0d1730ead43d3)
+    (let __tconst80ly36 const6b86b273ff34fce19d6b804e)
+    (let __tconst5jtZ35 constd4735e3a265e16eee03f5971)
+    (let __tconst83R834 const4e07408562bedb8b60ce05c1)
+    (let __tconst4Vmv33 const4b227777d4dd1fc61c6f884f)
+    (let __tconst4fQB32 constef2d127de37b942baad06145)
+    (let __tconst40Ez31 conste7f6c011776e8db7cd330b54)
+    (let __tconst7DGk30 const7902699be42c8a8e46fbbb45)
+    (let __tconst1xMG29 const2c624232cdd221771294dfbb)
+    (let __tconst9qC527 const19581e27de7ced00ff1ce50b)
+    (let __tconst9Om326 const4a44dc15364204a80fe80e90)
+    (let __tconst0Q4z25 const4fc82b26aecb47d2868c4efb)
+    (let __tconst6M0p24 const6b51d431df5d7f141cbececc)
+    (let __tconst2nEI23 const3fdba35f04dc8c462986c992)
+    (let __tconst4Ied22 const8527a891e224136950ff32ca)
+    (let __tconst2O9k21 conste629fa6598d732768f7c726b)
+    (let __tconst755B20 constb17ef6d19c7a5b1ee83b907c)
+    (let __tconst1Q3N17 const4523540f1504cd17100c4835)
+    (let __tconst6IXa16 const4ec9599fc203d176a301536c)
+    (let __tconst7vco15 const9400f1b21cb527d7fa3d3eab)
+    (let __tconst02Ns14 constf5ca38f748a1d6eaf726b8a4)
+    (let __tconst81Eh13 const6f4b6612125fb3a0daecd279)
+    (let __tconst7mWH12 const785f3ec7eb32f30b90cd0fcf)
+    (let __tconst5Hgw11 const535fa30d7e25dd8a49f15367)
+    (let __tconst3TCY10 constc2356069e9d1e79ca9243781)
+    (let __tconst7wrk8 constb7a56873cd771f2c446d369b)
+    (let __tconst8h167 const5f9c4ab08cac7457e9111a30)
+    (let __tconst2Zj26 const670671cd97404156226e5079)
+    (let __tconst8Ade5 const59e19706d51d39f66711c265)
+    (let __tconst6Ux94 const35135aaa6cc23891b40cb3f3)
+    (let __tconst1s373 const624b60c58c9d8bfb6ff1886c)
+    (let __tconst7Egh2 consteb1e33e8a81b697b75855af6)
+    (let __tconst8ZZ61 conste29c9c180c6279b0b02abd6a))
+   (seeded)
+   (body
+    (join
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     8
+     __tconst7wrk8
+     __tconst8h167
+     __tconst2Zj26
+     __tconst8Ade5
+     __tconst6Ux94
+     __tconst1s373
+     __tconst7Egh2
+     __tconst8ZZ61
+     __t7tQU9)
+    (exists
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     8
+     __tconst9qC527
+     __tconst9Om326
+     __tconst0Q4z25
+     __tconst6M0p24
+     __tconst2nEI23
+     __tconst4Ied22
+     __tconst2O9k21
+     __tconst755B20)
+    (exists
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     8
+     __tconst80ly36
+     __tconst5jtZ35
+     __tconst83R834
+     __tconst4Vmv33
+     __tconst4fQB32
+     __tconst40Ez31
+     __tconst7DGk30
+     __tconst1xMG29)
+    (exists n2 (2 1 0) 1 __t7tQU9)
+    (join
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     8
+     __tconst1Q3N17
+     __tconst6IXa16
+     __tconst7vco15
+     __tconst02Ns14
+     __tconst81Eh13
+     __tconst7mWH12
+     __tconst5Hgw11
+     __tconst3TCY10
+     __t1W5d18)
+    (exists n2 (2 1 0) 2 __t7tQU9 __t1W5d18)
+    (join
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     8
+     __tconst9qC527
+     __tconst9Om326
+     __tconst0Q4z25
+     __tconst6M0p24
+     __tconst2nEI23
+     __tconst4Ied22
+     __tconst2O9k21
+     __tconst755B20
+     __t91OM28)
+    (exists n2 (2 1 0) 1 __t91OM28)
+    (join
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     8
+     __tconst80ly36
+     __tconst5jtZ35
+     __tconst83R834
+     __tconst4Vmv33
+     __tconst4fQB32
+     __tconst40Ez31
+     __tconst7DGk30
+     __tconst1xMG29
+     __t66rT37)
+    (exists n2 (2 1 0) 2 __t91OM28 __t66rT37)
+    (join n2 (2 1 0) 2 __t7tQU9 __t1W5d18 __t2YL419)
+    (join n2 (2 1 0) 2 __t91OM28 __t66rT37 __t61f638))
+   (head (mkstruct n4 (2 1 0) __t7VhN39 __t2YL419 __t61f638))
+   "wide_fact.slog:12"
+   #f)
+  (crule
+   (pre
+    (let __tconst3O4u40 const7265b875feb0d1730ead43d3)
+    (let __tconst80ly36 const6b86b273ff34fce19d6b804e)
+    (let __tconst5jtZ35 constd4735e3a265e16eee03f5971)
+    (let __tconst83R834 const4e07408562bedb8b60ce05c1)
+    (let __tconst4Vmv33 const4b227777d4dd1fc61c6f884f)
+    (let __tconst4fQB32 constef2d127de37b942baad06145)
+    (let __tconst40Ez31 conste7f6c011776e8db7cd330b54)
+    (let __tconst7DGk30 const7902699be42c8a8e46fbbb45)
+    (let __tconst1xMG29 const2c624232cdd221771294dfbb)
+    (let __tconst9qC527 const19581e27de7ced00ff1ce50b)
+    (let __tconst9Om326 const4a44dc15364204a80fe80e90)
+    (let __tconst0Q4z25 const4fc82b26aecb47d2868c4efb)
+    (let __tconst6M0p24 const6b51d431df5d7f141cbececc)
+    (let __tconst2nEI23 const3fdba35f04dc8c462986c992)
+    (let __tconst4Ied22 const8527a891e224136950ff32ca)
+    (let __tconst2O9k21 conste629fa6598d732768f7c726b)
+    (let __tconst755B20 constb17ef6d19c7a5b1ee83b907c)
+    (let __tconst1Q3N17 const4523540f1504cd17100c4835)
+    (let __tconst6IXa16 const4ec9599fc203d176a301536c)
+    (let __tconst7vco15 const9400f1b21cb527d7fa3d3eab)
+    (let __tconst02Ns14 constf5ca38f748a1d6eaf726b8a4)
+    (let __tconst81Eh13 const6f4b6612125fb3a0daecd279)
+    (let __tconst7mWH12 const785f3ec7eb32f30b90cd0fcf)
+    (let __tconst5Hgw11 const535fa30d7e25dd8a49f15367)
+    (let __tconst3TCY10 constc2356069e9d1e79ca9243781)
+    (let __tconst7wrk8 constb7a56873cd771f2c446d369b)
+    (let __tconst8h167 const5f9c4ab08cac7457e9111a30)
+    (let __tconst2Zj26 const670671cd97404156226e5079)
+    (let __tconst8Ade5 const59e19706d51d39f66711c265)
+    (let __tconst6Ux94 const35135aaa6cc23891b40cb3f3)
+    (let __tconst1s373 const624b60c58c9d8bfb6ff1886c)
+    (let __tconst7Egh2 consteb1e33e8a81b697b75855af6)
+    (let __tconst8ZZ61 conste29c9c180c6279b0b02abd6a))
+   (scan n2 __t2YL419 __t1W5d18 __t7tQU9)
+   (body
+    (join
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     9
+     __tconst7wrk8
+     __tconst8h167
+     __tconst2Zj26
+     __tconst8Ade5
+     __tconst6Ux94
+     __tconst1s373
+     __tconst7Egh2
+     __tconst8ZZ61
+     __t7tQU9)
+    (join
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     9
+     __tconst1Q3N17
+     __tconst6IXa16
+     __tconst7vco15
+     __tconst02Ns14
+     __tconst81Eh13
+     __tconst7mWH12
+     __tconst5Hgw11
+     __tconst3TCY10
+     __t1W5d18)
+    (exists
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     8
+     __tconst80ly36
+     __tconst5jtZ35
+     __tconst83R834
+     __tconst4Vmv33
+     __tconst4fQB32
+     __tconst40Ez31
+     __tconst7DGk30
+     __tconst1xMG29)
+    (join
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     8
+     __tconst9qC527
+     __tconst9Om326
+     __tconst0Q4z25
+     __tconst6M0p24
+     __tconst2nEI23
+     __tconst4Ied22
+     __tconst2O9k21
+     __tconst755B20
+     __t91OM28)
+    (exists n2 (2 1 0) 1 __t91OM28)
+    (join
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     8
+     __tconst80ly36
+     __tconst5jtZ35
+     __tconst83R834
+     __tconst4Vmv33
+     __tconst4fQB32
+     __tconst40Ez31
+     __tconst7DGk30
+     __tconst1xMG29
+     __t66rT37)
+    (join n2 (2 1 0) 2 __t91OM28 __t66rT37 __t61f638))
+   (head (mkstruct n4 (2 1 0) __t7VhN39 __t2YL419 __t61f638))
+   "wide_fact.slog:12"
+   #f)
+  (crule
+   (pre
+    (let __tconst3O4u40 const7265b875feb0d1730ead43d3)
+    (let __tconst80ly36 const6b86b273ff34fce19d6b804e)
+    (let __tconst5jtZ35 constd4735e3a265e16eee03f5971)
+    (let __tconst83R834 const4e07408562bedb8b60ce05c1)
+    (let __tconst4Vmv33 const4b227777d4dd1fc61c6f884f)
+    (let __tconst4fQB32 constef2d127de37b942baad06145)
+    (let __tconst40Ez31 conste7f6c011776e8db7cd330b54)
+    (let __tconst7DGk30 const7902699be42c8a8e46fbbb45)
+    (let __tconst1xMG29 const2c624232cdd221771294dfbb)
+    (let __tconst9qC527 const19581e27de7ced00ff1ce50b)
+    (let __tconst9Om326 const4a44dc15364204a80fe80e90)
+    (let __tconst0Q4z25 const4fc82b26aecb47d2868c4efb)
+    (let __tconst6M0p24 const6b51d431df5d7f141cbececc)
+    (let __tconst2nEI23 const3fdba35f04dc8c462986c992)
+    (let __tconst4Ied22 const8527a891e224136950ff32ca)
+    (let __tconst2O9k21 conste629fa6598d732768f7c726b)
+    (let __tconst755B20 constb17ef6d19c7a5b1ee83b907c)
+    (let __tconst1Q3N17 const4523540f1504cd17100c4835)
+    (let __tconst6IXa16 const4ec9599fc203d176a301536c)
+    (let __tconst7vco15 const9400f1b21cb527d7fa3d3eab)
+    (let __tconst02Ns14 constf5ca38f748a1d6eaf726b8a4)
+    (let __tconst81Eh13 const6f4b6612125fb3a0daecd279)
+    (let __tconst7mWH12 const785f3ec7eb32f30b90cd0fcf)
+    (let __tconst5Hgw11 const535fa30d7e25dd8a49f15367)
+    (let __tconst3TCY10 constc2356069e9d1e79ca9243781)
+    (let __tconst7wrk8 constb7a56873cd771f2c446d369b)
+    (let __tconst8h167 const5f9c4ab08cac7457e9111a30)
+    (let __tconst2Zj26 const670671cd97404156226e5079)
+    (let __tconst8Ade5 const59e19706d51d39f66711c265)
+    (let __tconst6Ux94 const35135aaa6cc23891b40cb3f3)
+    (let __tconst1s373 const624b60c58c9d8bfb6ff1886c)
+    (let __tconst7Egh2 consteb1e33e8a81b697b75855af6)
+    (let __tconst8ZZ61 conste29c9c180c6279b0b02abd6a))
+   (seeded)
+   (body
+    (join
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     8
+     __tconst7wrk8
+     __tconst8h167
+     __tconst2Zj26
+     __tconst8Ade5
+     __tconst6Ux94
+     __tconst1s373
+     __tconst7Egh2
+     __tconst8ZZ61
+     __t7tQU9)
+    (exists
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     8
+     __tconst9qC527
+     __tconst9Om326
+     __tconst0Q4z25
+     __tconst6M0p24
+     __tconst2nEI23
+     __tconst4Ied22
+     __tconst2O9k21
+     __tconst755B20)
+    (exists
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     8
+     __tconst80ly36
+     __tconst5jtZ35
+     __tconst83R834
+     __tconst4Vmv33
+     __tconst4fQB32
+     __tconst40Ez31
+     __tconst7DGk30
+     __tconst1xMG29)
+    (join
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     8
+     __tconst1Q3N17
+     __tconst6IXa16
+     __tconst7vco15
+     __tconst02Ns14
+     __tconst81Eh13
+     __tconst7mWH12
+     __tconst5Hgw11
+     __tconst3TCY10
+     __t1W5d18)
+    (join
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     8
+     __tconst9qC527
+     __tconst9Om326
+     __tconst0Q4z25
+     __tconst6M0p24
+     __tconst2nEI23
+     __tconst4Ied22
+     __tconst2O9k21
+     __tconst755B20
+     __t91OM28)
+    (join
+     l8
+     (1 2 3 4 5 6 7 8 0)
+     8
+     __tconst80ly36
+     __tconst5jtZ35
+     __tconst83R834
+     __tconst4Vmv33
+     __tconst4fQB32
+     __tconst40Ez31
+     __tconst7DGk30
+     __tconst1xMG29
+     __t66rT37))
+   (head
+    (mkstruct n2 (2 1 0) __t61f638 __t91OM28 __t66rT37)
+    (mkstruct n2 (2 1 0) __t2YL419 __t7tQU9 __t1W5d18))
+   "wide_fact.slog:12"
+   #f)))

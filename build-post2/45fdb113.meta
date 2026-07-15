@@ -1,0 +1,1 @@
+(stratum-meta (hash "45fdb113") (level 0) (dynamic-rels _enum) (accel-rels) (heads _enum) (reads) (acyclic #t) (rules (rule 1194633196 "<internal>:1" "(rule --> (= _1AKU23 (_enum _tconst32oB22)) (= _tconst32oB22 (const \"z\")))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

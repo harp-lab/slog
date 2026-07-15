@@ -1,0 +1,490 @@
+(cprog
+ #<set:
+  a5
+  a6
+  a3
+  a34
+  a23
+  a12
+  a43
+  a13
+  a44
+  a35
+  a24
+  a25
+  a41
+  a36
+  a14
+  a42
+  v_x
+  a37
+  a26
+  a15
+  a9
+  a38
+  a27
+  a16
+  a17
+  a40
+  a50
+  a39
+  a28
+  a7
+  a29
+  a18
+  a8
+  a19
+  a49
+  a4
+  a48
+  a1
+  a30
+  a47
+  a31
+  a2
+  a20
+  a46
+  a21
+  a32
+  a10
+  a22
+  a0
+  a45
+  a33
+  a11>
+ #hash((7 . const7902699be42c8a8e46fbbb45))
+ ((relation v_x 1 (0))
+  (struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation a9 1 (0))
+  (relation a8 1 (0))
+  (relation a7 1 (0))
+  (relation a6 1 (0))
+  (relation a50 1 (0))
+  (relation a5 1 (0))
+  (relation a49 1 (0))
+  (relation a48 1 (0))
+  (relation a47 1 (0))
+  (relation a46 1 (0))
+  (relation a45 1 (0))
+  (relation a44 1 (0))
+  (relation a43 1 (0))
+  (relation a42 1 (0))
+  (relation a41 1 (0))
+  (relation a40 1 (0))
+  (relation a4 1 (0))
+  (relation a39 1 (0))
+  (relation a38 1 (0))
+  (relation a37 1 (0))
+  (relation a36 1 (0))
+  (relation a35 1 (0))
+  (relation a34 1 (0))
+  (relation a33 1 (0))
+  (relation a32 1 (0))
+  (relation a31 1 (0))
+  (relation a30 1 (0))
+  (relation a3 1 (0))
+  (relation a29 1 (0))
+  (relation a28 1 (0))
+  (relation a27 1 (0))
+  (relation a26 1 (0))
+  (relation a25 1 (0))
+  (relation a24 1 (0))
+  (relation a23 1 (0))
+  (relation a22 1 (0))
+  (relation a21 1 (0))
+  (relation a20 1 (0))
+  (relation a2 1 (0))
+  (relation a19 1 (0))
+  (relation a18 1 (0))
+  (relation a17 1 (0))
+  (relation a16 1 (0))
+  (relation a15 1 (0))
+  (relation a14 1 (0))
+  (relation a13 1 (0))
+  (relation a12 1 (0))
+  (relation a11 1 (0))
+  (relation a10 1 (0))
+  (relation a1 1 (0))
+  (relation a0 1 (0))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan a17 X)
+   (body)
+   (head (emit a16 (0) X))
+   "split_vprefix.slog:77"
+   #f)
+  (crule
+   (pre)
+   (scan a1 X)
+   (body)
+   (head (emit a0 (0) X))
+   "split_vprefix.slog:61"
+   #f)
+  (crule
+   (pre)
+   (scan a27 X)
+   (body)
+   (head (emit a26 (0) X))
+   "split_vprefix.slog:87"
+   #f)
+  (crule
+   (pre)
+   (scan a43 X)
+   (body)
+   (head (emit a42 (0) X))
+   "split_vprefix.slog:103"
+   #f)
+  (crule
+   (pre)
+   (scan a28 X)
+   (body)
+   (head (emit a27 (0) X))
+   "split_vprefix.slog:88"
+   #f)
+  (crule
+   (pre)
+   (scan a4 X)
+   (body)
+   (head (emit a3 (0) X))
+   "split_vprefix.slog:64"
+   #f)
+  (crule
+   (pre)
+   (scan a16 X)
+   (body)
+   (head (emit a15 (0) X))
+   "split_vprefix.slog:76"
+   #f)
+  (crule
+   (pre)
+   (scan a30 X)
+   (body)
+   (head (emit a29 (0) X))
+   "split_vprefix.slog:90"
+   #f)
+  (crule
+   (pre)
+   (scan a0 X)
+   (body)
+   (head (emit v_x (0) X))
+   "split_vprefix.slog:112"
+   #f)
+  (crule
+   (pre)
+   (scan v_x X)
+   (body)
+   (head (emit a50 (0) X))
+   "split_vprefix.slog:111"
+   #f)
+  (crule
+   (pre)
+   (scan a47 X)
+   (body)
+   (head (emit a46 (0) X))
+   "split_vprefix.slog:107"
+   #f)
+  (crule
+   (pre)
+   (scan a29 X)
+   (body)
+   (head (emit a28 (0) X))
+   "split_vprefix.slog:89"
+   #f)
+  (crule
+   (pre)
+   (scan a31 X)
+   (body)
+   (head (emit a30 (0) X))
+   "split_vprefix.slog:91"
+   #f)
+  (crule
+   (pre)
+   (scan a26 X)
+   (body)
+   (head (emit a25 (0) X))
+   "split_vprefix.slog:86"
+   #f)
+  (crule
+   (pre)
+   (scan a14 X)
+   (body)
+   (head (emit a13 (0) X))
+   "split_vprefix.slog:74"
+   #f)
+  (crule
+   (pre)
+   (scan a34 X)
+   (body)
+   (head (emit a33 (0) X))
+   "split_vprefix.slog:94"
+   #f)
+  (crule
+   (pre)
+   (scan a9 X)
+   (body)
+   (head (emit a8 (0) X))
+   "split_vprefix.slog:69"
+   #f)
+  (crule
+   (pre)
+   (scan a37 X)
+   (body)
+   (head (emit a36 (0) X))
+   "split_vprefix.slog:97"
+   #f)
+  (crule
+   (pre)
+   (scan a48 X)
+   (body)
+   (head (emit a47 (0) X))
+   "split_vprefix.slog:108"
+   #f)
+  (crule
+   (pre)
+   (scan a5 X)
+   (body)
+   (head (emit a4 (0) X))
+   "split_vprefix.slog:65"
+   #f)
+  (crule
+   (pre)
+   (scan a33 X)
+   (body)
+   (head (emit a32 (0) X))
+   "split_vprefix.slog:93"
+   #f)
+  (crule
+   (pre)
+   (scan a23 X)
+   (body)
+   (head (emit a22 (0) X))
+   "split_vprefix.slog:83"
+   #f)
+  (crule
+   (pre)
+   (scan a8 X)
+   (body)
+   (head (emit a7 (0) X))
+   "split_vprefix.slog:68"
+   #f)
+  (crule
+   (pre)
+   (scan a13 X)
+   (body)
+   (head (emit a12 (0) X))
+   "split_vprefix.slog:73"
+   #f)
+  (crule
+   (pre)
+   (scan a21 X)
+   (body)
+   (head (emit a20 (0) X))
+   "split_vprefix.slog:81"
+   #f)
+  (crule
+   (pre)
+   (scan a12 X)
+   (body)
+   (head (emit a11 (0) X))
+   "split_vprefix.slog:72"
+   #f)
+  (crule
+   (pre)
+   (scan a6 X)
+   (body)
+   (head (emit a5 (0) X))
+   "split_vprefix.slog:66"
+   #f)
+  (crule
+   (pre)
+   (scan a15 X)
+   (body)
+   (head (emit a14 (0) X))
+   "split_vprefix.slog:75"
+   #f)
+  (crule
+   (pre)
+   (scan a46 X)
+   (body)
+   (head (emit a45 (0) X))
+   "split_vprefix.slog:106"
+   #f)
+  (crule
+   (pre)
+   (scan a22 X)
+   (body)
+   (head (emit a21 (0) X))
+   "split_vprefix.slog:82"
+   #f)
+  (crule
+   (pre)
+   (scan a20 X)
+   (body)
+   (head (emit a19 (0) X))
+   "split_vprefix.slog:80"
+   #f)
+  (crule
+   (pre)
+   (scan a36 X)
+   (body)
+   (head (emit a35 (0) X))
+   "split_vprefix.slog:96"
+   #f)
+  (crule
+   (pre)
+   (scan a45 X)
+   (body)
+   (head (emit a44 (0) X))
+   "split_vprefix.slog:105"
+   #f)
+  (crule
+   (pre)
+   (scan a41 X)
+   (body)
+   (head (emit a40 (0) X))
+   "split_vprefix.slog:101"
+   #f)
+  (crule
+   (pre)
+   (scan a7 X)
+   (body)
+   (head (emit a6 (0) X))
+   "split_vprefix.slog:67"
+   #f)
+  (crule
+   (pre)
+   (scan a3 X)
+   (body)
+   (head (emit a2 (0) X))
+   "split_vprefix.slog:63"
+   #f)
+  (crule
+   (pre)
+   (scan a49 X)
+   (body)
+   (head (emit a48 (0) X))
+   "split_vprefix.slog:109"
+   #f)
+  (crule
+   (pre)
+   (scan a38 X)
+   (body)
+   (head (emit a37 (0) X))
+   "split_vprefix.slog:98"
+   #f)
+  (crule
+   (pre)
+   (scan a32 X)
+   (body)
+   (head (emit a31 (0) X))
+   "split_vprefix.slog:92"
+   #f)
+  (crule
+   (pre)
+   (scan a24 X)
+   (body)
+   (head (emit a23 (0) X))
+   "split_vprefix.slog:84"
+   #f)
+  (crule
+   (pre)
+   (scan a39 X)
+   (body)
+   (head (emit a38 (0) X))
+   "split_vprefix.slog:99"
+   #f)
+  (crule
+   (pre)
+   (scan a11 X)
+   (body)
+   (head (emit a10 (0) X))
+   "split_vprefix.slog:71"
+   #f)
+  (crule
+   (pre)
+   (scan a2 X)
+   (body)
+   (head (emit a1 (0) X))
+   "split_vprefix.slog:62"
+   #f)
+  (crule
+   (pre)
+   (scan a42 X)
+   (body)
+   (head (emit a41 (0) X))
+   "split_vprefix.slog:102"
+   #f)
+  (crule
+   (pre)
+   (scan a25 X)
+   (body)
+   (head (emit a24 (0) X))
+   "split_vprefix.slog:85"
+   #f)
+  (crule
+   (pre)
+   (scan a10 X)
+   (body)
+   (head (emit a9 (0) X))
+   "split_vprefix.slog:70"
+   #f)
+  (crule
+   (pre)
+   (scan a19 X)
+   (body)
+   (head (emit a18 (0) X))
+   "split_vprefix.slog:79"
+   #f)
+  (crule
+   (pre)
+   (scan a18 X)
+   (body)
+   (head (emit a17 (0) X))
+   "split_vprefix.slog:78"
+   #f)
+  (crule
+   (pre)
+   (scan a44 X)
+   (body)
+   (head (emit a43 (0) X))
+   "split_vprefix.slog:104"
+   #f)
+  (crule
+   (pre)
+   (scan a35 X)
+   (body)
+   (head (emit a34 (0) X))
+   "split_vprefix.slog:95"
+   #f)
+  (crule
+   (pre (let __tconst0cj61 const7902699be42c8a8e46fbbb45))
+   (once)
+   (body)
+   (head (emit a0 (0) __tconst0cj61))
+   "split_vprefix.slog:60"
+   #f)
+  (crule
+   (pre)
+   (scan a50 X)
+   (body)
+   (head (emit a49 (0) X))
+   "split_vprefix.slog:110"
+   #f)
+  (crule
+   (pre)
+   (scan a40 X)
+   (body)
+   (head (emit a39 (0) X))
+   "split_vprefix.slog:100"
+   #f)))

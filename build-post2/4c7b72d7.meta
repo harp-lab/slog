@@ -1,0 +1,1 @@
+(stratum-meta (hash "4c7b72d7") (level 6) (dynamic-rels $seq_at $seq_atr must_value) (accel-rels) (heads must_value) (reads (binding pos) (singleton_flow pos) (unique_binding pos)) (acyclic #t) (rules (rule 1831617305 "counting.slog:45" "(rule (binding x l v) (singleton_flow x l) (unique_binding x l) --> (must_value x l v))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

@@ -1,0 +1,1 @@
+(stratum-meta (hash "cfdbb234") (level 0) (dynamic-rels maxi) (accel-rels) (heads maxi) (reads) (acyclic #t) (rules (rule 1325257774 "int_promote.slog:24" "(rule --> (maxi _tconst7IqC50) (= _tconst7IqC50 (const 2147483647)))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

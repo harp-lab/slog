@@ -1,0 +1,120 @@
+(cprog
+ #<set:
+  int_overflow
+  type_mismatch
+  dist
+  nan_result
+  modulo_by_zero
+  temp6RRc511
+  toint_range
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash((0 . const5feceb66ffc86f38d952786c) (1 . const6b86b273ff34fce19d6b804e))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp6RRc511 2)
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (relation edge 3 (0 1 2))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (lattice dist 2 (min int (floor 0)) #f (0 1))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan modulo_by_zero __erre4yam484 __errf01pL485 __errf6mve486)
+   (body)
+   (head (emit error (0) __erre4yam484))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre47xY491 __errf7x2i492 __errf4b4V493 __errf189R494)
+   (body)
+   (head (emit error (0) __erre47xY491))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre041j503
+    __errf2TKZ504
+    __errf80sf505
+    __errf6MMz506
+    __errf3QfR507)
+   (body)
+   (head (emit error (0) __erre041j503))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp6RRc511 Y __t68961)
+   (body)
+   (head (emit-lat dist Y __t68961))
+   "accel_lat_chain.slog:9"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre9PsL487 __errf9XQy488 __errf1K92489 __errf4g3o490)
+   (body)
+   (head (emit error (0) __erre9PsL487))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre93nV508 __errf1W71509 __errf3kpZ510)
+   (body)
+   (head (emit error (0) __erre93nV508))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre0JOn481 __errf50Ia482 __errf4GAE483)
+   (body)
+   (head (emit error (0) __erre0JOn481))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre5W7w495 __errf2sYG496 __errf5UMa497)
+   (body)
+   (head (emit error (0) __erre5W7w495))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan dist X D)
+   (body (join edge (0 1 2) 1 X Y W) (let __t68961 (_0002b D W)))
+   (head (emit-temp temp6RRc511 Y __t68961))
+   "accel_lat_chain.slog:9"
+   #f)
+  (crule
+   (pre
+    (let __tconst3jm83 const6b86b273ff34fce19d6b804e)
+    (let __tconst7wFG2 const5feceb66ffc86f38d952786c))
+   (once)
+   (body)
+   (head (emit-lat dist __tconst3jm83 __tconst7wFG2))
+   "accel_lat_chain.slog:8"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre6cWe498
+    __errf3BZG499
+    __errf0I7T500
+    __errf67di501
+    __errf9JEk502)
+   (body)
+   (head (emit error (0) __erre6cWe498))
+   "<internal>:1"
+   #f)))

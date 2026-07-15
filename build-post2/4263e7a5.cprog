@@ -1,0 +1,26 @@
+(cprog
+ #<set: _enum>
+ #hash(("zero" . constb7ce3f814d0e14e74eb1dc74))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation tonum 2 (0 1))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct succ 2 (1 0) (0 1))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation pred 2 (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation isthree 1 (0))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre (let __tconst0GmY12 constb7ce3f814d0e14e74eb1dc74))
+   (once)
+   (body)
+   (head (mkstruct _enum (1 0) __728k13 __tconst0GmY12))
+   "<internal>:1"
+   #f)))

@@ -1,0 +1,118 @@
+(cprog
+ #<set:
+  int_overflow
+  type_mismatch
+  dist
+  toint_range
+  nan_result
+  modulo_by_zero
+  error
+  temp51wk69
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash()
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp51wk69 3)
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (relation edge 3 (0 1 2))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (lattice dist 3 (min int (floor 0)) #f (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan modulo_by_zero __erre6Rk042 __errf7Xiv43 __errf2ob544)
+   (body)
+   (head (emit error (0) __erre6Rk042))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre9BVe66 __errf9RFO67 __errf0p6F68)
+   (body)
+   (head (emit error (0) __erre9BVe66))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp51wk69 X Z __t1L9f1)
+   (body)
+   (head (emit-lat dist X Z __t1L9f1))
+   "lat_run_base.slog:11"
+   #f)
+  (crule
+   (pre)
+   (scan edge X Y W)
+   (body)
+   (head (emit-lat dist X Y W))
+   "lat_run_base.slog:10"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre2GkH53 __errf871w54 __errf0Wl055)
+   (body)
+   (head (emit error (0) __erre2GkH53))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre6UqP61
+    __errf8lm462
+    __errf7reo63
+    __errf8iM264
+    __errf7lIM65)
+   (body)
+   (head (emit error (0) __erre6UqP61))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre9QNC45 __errf0QAh46 __errf030M47 __errf9WtB48)
+   (body)
+   (head (emit error (0) __erre9QNC45))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre2gz039 __errf1bMz40 __errf1DZz41)
+   (body)
+   (head (emit error (0) __erre2gz039))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre7Xp856
+    __errf3FA557
+    __errf7Hbg58
+    __errf0zRg59
+    __errf3fus60)
+   (body)
+   (head (emit error (0) __erre7Xp856))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan dist X Y D)
+   (body (join edge (0 1 2) 1 Y Z W) (let __t1L9f1 (_0002b D W)))
+   (head (emit-temp temp51wk69 X Z __t1L9f1))
+   "lat_run_base.slog:11"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre7wxL49 __errf05xT50 __errf3YCG51 __errf8D4W52)
+   (body)
+   (head (emit error (0) __erre7wxL49))
+   "<internal>:1"
+   #f)))

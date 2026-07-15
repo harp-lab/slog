@@ -1,0 +1,50 @@
+(cprog
+ #<set: _enum>
+ #hash(("false" . const076de6e730df0b4c3860877a)
+       ("green" . const7f3e916bf628c503cac5f6ba)
+       ("red" . const4bc9274d8758b867e8c071a6)
+       ("true" . const18d10c7d2b4b04aaf04254d1))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation saw_true 1 (0))
+  (relation saw_red 1 (0))
+  (relation saw_false 1 (0))
+  (relation obs 2 (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre (let __tconst0NJx21 const18d10c7d2b4b04aaf04254d1))
+   (once)
+   (body)
+   (head (mkstruct _enum (1 0) __33Br22 __tconst0NJx21))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst26fC23 const076de6e730df0b4c3860877a))
+   (once)
+   (body)
+   (head (mkstruct _enum (1 0) __28PQ24 __tconst26fC23))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst7GPC19 const7f3e916bf628c503cac5f6ba))
+   (once)
+   (body)
+   (head (mkstruct _enum (1 0) __49YC20 __tconst7GPC19))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst2npU25 const4bc9274d8758b867e8c071a6))
+   (once)
+   (body)
+   (head (mkstruct _enum (1 0) __50q226 __tconst2npU25))
+   "<internal>:1"
+   #f)))

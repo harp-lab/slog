@@ -1,0 +1,77 @@
+(cprog
+ #<set: reach_has edge src gedge>
+ #hash((1 . const6b86b273ff34fce19d6b804e)
+       (2 . constd4735e3a265e16eee03f5971)
+       (3 . const4e07408562bedb8b60ce05c1)
+       (4 . const4b227777d4dd1fc61c6f884f)
+       (5 . constef2d127de37b942baad06145)
+       (6 . conste7f6c011776e8db7cd330b54)
+       (9 . const19581e27de7ced00ff1ce50b))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (relation src 1 (0))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation rsize 2 (0 1))
+  (relation reach_has 2 (0 1))
+  (lattice reach 2 (set int) (decomp reach_has set) (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation gedge 3 (0 1 2))
+  (relation final 2 (0 1))
+  (relation error 1 (0))
+  (relation edge 2 (0 1))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre (let __tconst8CEk19 const6b86b273ff34fce19d6b804e))
+   (once)
+   (body)
+   (head (emit src (0) __tconst8CEk19))
+   "lat_rhas.slog:17"
+   #f)
+  (crule
+   (pre
+    (let __tconst6Shq9 const6b86b273ff34fce19d6b804e)
+    (let __tconst3xvW8 conste7f6c011776e8db7cd330b54)
+    (let __tconst4V2y7 const19581e27de7ced00ff1ce50b))
+   (once)
+   (body)
+   (head (emit gedge (0 1 2) __tconst6Shq9 __tconst3xvW8 __tconst4V2y7))
+   "lat_rhas.slog:21"
+   #f)
+  (crule
+   (pre
+    (let __tconst63ZJ16 const4e07408562bedb8b60ce05c1)
+    (let __tconst4LQW15 const4b227777d4dd1fc61c6f884f)
+    (let __tconst9XzS14 constd4735e3a265e16eee03f5971))
+   (once)
+   (body)
+   (head (emit gedge (0 1 2) __tconst63ZJ16 __tconst4LQW15 __tconst9XzS14))
+   "lat_rhas.slog:19"
+   #f)
+  (crule
+   (pre
+    (let __tconst0DAv11 const6b86b273ff34fce19d6b804e)
+    (let __tconst7ekA12 const4e07408562bedb8b60ce05c1)
+    (let __tconst6WMv13 constd4735e3a265e16eee03f5971))
+   (once)
+   (body)
+   (head
+    (emit edge (0 1) __tconst0DAv11 __tconst6WMv13)
+    (emit edge (0 1) __tconst6WMv13 __tconst7ekA12))
+   "lat_rhas.slog:18"
+   #f)
+  (crule
+   (pre
+    (let __tconst1pRC6 const6b86b273ff34fce19d6b804e)
+    (let __tconst6HMF5 constef2d127de37b942baad06145)
+    (let __tconst22JG4 const4b227777d4dd1fc61c6f884f))
+   (once)
+   (body)
+   (head (emit gedge (0 1 2) __tconst1pRC6 __tconst6HMF5 __tconst22JG4))
+   "lat_rhas.slog:20"
+   #f)))

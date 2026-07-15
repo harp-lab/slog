@@ -1,0 +1,67 @@
+(cprog
+ #<set: $seq_at apply error malformed_deduction>
+ #hash((0 . const5feceb66ffc86f38d952786c)
+       (1 . const6b86b273ff34fce19d6b804e)
+       ("apply" . const2de92c8721196a7a472d40b9)
+       ("dem_brackets.slog:13" . const6723d20422fb29be7fe89ccb))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (relation map_ans 2 (0 1))
+  (struct map 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation input 1 (0))
+  (relation error 1 (0))
+  (relation doubled 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation bumped 1 (0))
+  (relation apply_ans 2 (0 1))
+  (struct apply 3 (1 2 0) (0 1 2))
+  (struct addk 2 (1 0) (0 1))
+  (struct _enum 2 (1 0) (0 1))
+  (relation $sup94786x12x0x0x0 5 (0 1 2 3 4))
+  (relation $seq_at 3 (0 1 2))
+  (seqindex bumped (0))
+  (seqindex doubled (0))
+  (seqindex input (0))
+  (seqindex map (2))
+  (seqindex map_ans (1)))
+ ((crule
+   (pre
+    (let __trid3yMK65 const6723d20422fb29be7fe89ccb)
+    (let __trel5O0R66 const2de92c8721196a7a472d40b9)
+    (let __tcol76V267 const5feceb66ffc86f38d952786c)
+    (let __trel3FWB68 const2de92c8721196a7a472d40b9)
+    (let __tcol1F9Z69 const6b86b273ff34fce19d6b804e))
+   (scan $sup94786x12x0x0x0 _00024seq0 __d0 f x xs)
+   (body)
+   (head
+    (tycheck
+     f
+     (accept (struct addk) (struct _enum))
+     __trid3yMK65
+     __trel5O0R66
+     __tcol76V267
+     (1 2 3 4 0))
+    (tycheck x (accept int) __trid3yMK65 __trel3FWB68 __tcol1F9Z69 (1 2 3 4 0))
+    (mkstruct apply (1 2 0) __8GDG64 f x))
+   "dem_brackets.slog:13"
+   #f)
+  (crule
+   (pre)
+   (scan
+    malformed_deduction
+    __erre7voC214
+    __errf2mJg215
+    __errf5MLt216
+    __errf2cvs217
+    __errf1zFu218)
+   (body)
+   (head (emit error (0) __erre7voC214))
+   "<internal>:1"
+   #f)))

@@ -1,0 +1,51 @@
+(cprog
+ #<set: rec recs temp1ZYD23 tag temp9VMA24>
+ #hash()
+ ((relation vals 1 (0))
+  (struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp9VMA24 4)
+  (temp temp1ZYD23 3)
+  (struct tag 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation recs 1 (0))
+  (struct rec 7 (1 2 3 4 5 6 0) (0 1 2 3 4 5 6))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (relation names 1 (0))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation inner 1 (0))
+  (relation in 3 (0 1 2))
+  (relation fourth 1 (0))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan temp9VMA24 F N S __t0IyN7)
+   (body
+    (join rec (1 2 3 4 5 6 0) 4 N __t0IyN7 S F dup5Ngs25 dup27CX26 __t0DTo8)
+    (eq S dup27CX26)
+    (eq N dup5Ngs25))
+   (head (emit recs (0) __t0DTo8))
+   "sdeep_mixed.slog:18"
+   #f)
+  (crule
+   (pre)
+   (scan in N S F)
+   (body)
+   (head (emit-temp temp1ZYD23 F N S) (mkstruct tag (1 2 0) __t0IyN7 S F))
+   "sdeep_mixed.slog:18"
+   #f)
+  (crule
+   (pre)
+   (scan temp1ZYD23 F N S)
+   (body (join tag (1 2 0) 2 S F __t0IyN7))
+   (head
+    (emit-temp temp9VMA24 F N S __t0IyN7)
+    (mkstruct rec (1 2 3 4 5 6 0) __t0DTo8 N __t0IyN7 S F N S))
+   "sdeep_mixed.slog:18"
+   #f)))

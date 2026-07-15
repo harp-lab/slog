@@ -1,0 +1,1 @@
+(stratum-meta (hash "91329171") (level 0) (dynamic-rels n) (accel-rels) (heads n) (reads) (acyclic #t) (rules (rule 597968630 "dem_value.slog:14" "(rule --> (n _tconst4Jc315) (= _tconst4Jc315 (const 9)) (n _tconst3jtw14) (= _tconst3jtw14 (const 4)))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

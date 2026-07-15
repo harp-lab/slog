@@ -1,0 +1,167 @@
+(cprog
+ #<set:
+  fltp
+  int_overflow
+  nan_result
+  lep
+  ltc
+  type_mismatch
+  gtp
+  mixlt
+  toint_range
+  gep
+  error
+  ltp
+  mpz_overflow
+  fgep
+  modulo_by_zero
+  mpz_table_overflow
+  div_by_zero>
+ #hash((5.5 . const4819f5315cb49422b0b21be6)
+       (6 . conste7f6c011776e8db7cd330b54))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation p 2 (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (relation mixlt 1 (0))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation ltp 2 (0 1))
+  (relation ltc 1 (0))
+  (relation lep 2 (0 1))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation gtp 2 (0 1))
+  (relation gep 2 (0 1))
+  (relation fp 2 (0 1))
+  (relation fltp 2 (0 1))
+  (relation fgep 2 (0 1))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan toint_range __erre4Wjw59 __errf6L7J60 __errf4OzM61)
+   (body)
+   (head (emit error (0) __erre4Wjw59))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan fp A B)
+   (body (cmp lt A B))
+   (head (emit fltp (0 1) A B))
+   "prim_cmp.slog:30"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre3rbZ45 __errf4SEv46 __errf1a5j47)
+   (body)
+   (head (emit error (0) __erre3rbZ45))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst2m7w2 const4819f5315cb49422b0b21be6))
+   (scan p A B)
+   (body (cmp lt A __tconst2m7w2))
+   (head (emit mixlt (0) A))
+   "prim_cmp.slog:34"
+   #f)
+  (crule
+   (pre)
+   (scan p A B)
+   (body (cmp gt A B))
+   (head (emit gtp (0 1) A B))
+   "prim_cmp.slog:27"
+   #f)
+  (crule
+   (pre)
+   (scan p A B)
+   (body (cmp lt A B))
+   (head (emit ltp (0 1) A B))
+   "prim_cmp.slog:25"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre3n1D48 __errf1EDq49 __errf53MO50)
+   (body)
+   (head (emit error (0) __erre3n1D48))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan fp A B)
+   (body (cmp ge A B))
+   (head (emit fgep (0 1) A B))
+   "prim_cmp.slog:31"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre0pDX51 __errf9o5I52 __errf7VPO53 __errf0tUA54)
+   (body)
+   (head (emit error (0) __erre0pDX51))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre7foH62
+    __errf0ScG63
+    __errf2NnK64
+    __errf7Lgf65
+    __errf7Gdz66)
+   (body)
+   (head (emit error (0) __erre7foH62))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan p A B)
+   (body (cmp ge A B))
+   (head (emit gep (0 1) A B))
+   "prim_cmp.slog:28"
+   #f)
+  (crule
+   (pre (let __tconst7Bg31 conste7f6c011776e8db7cd330b54))
+   (scan p A B)
+   (body (cmp lt A __tconst7Bg31))
+   (head (emit ltc (0) A))
+   "prim_cmp.slog:33"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre0pnm67
+    __errf7s8H68
+    __errf8f1G69
+    __errf32tj70
+    __errf5RGl71)
+   (body)
+   (head (emit error (0) __erre0pnm67))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre7wh955 __errf3trI56 __errf8Y5c57 __errf11kS58)
+   (body)
+   (head (emit error (0) __erre7wh955))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre4svN72 __errf0xGh73 __errf16J474)
+   (body)
+   (head (emit error (0) __erre4svN72))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan p A B)
+   (body (cmp le A B))
+   (head (emit lep (0 1) A B))
+   "prim_cmp.slog:26"
+   #f)))

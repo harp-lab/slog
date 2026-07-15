@@ -1,0 +1,1 @@
+(stratum-meta (hash "3b74627d") (level 0) (dynamic-rels in) (accel-rels) (heads in) (reads) (acyclic #t) (rules (rule 221200944 "nested.slog:6" "(rule --> (in _tconst3St06 _tconst5UhF5) (= _tconst3St06 (const 3)) (= _tconst5UhF5 (const 4)) (in _tconst4sxf4 _tconst5GaI3) (= _tconst4sxf4 (const 1)) (= _tconst5GaI3 (const 2)))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

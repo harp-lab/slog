@@ -1,0 +1,106 @@
+(cprog
+ #<set:
+  int_overflow
+  type_mismatch
+  toint_range
+  nan_result
+  modulo_by_zero
+  bsz
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash()
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation nest 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (relation dsz 1 (0))
+  (relation doc 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation canon 1 (0))
+  (relation bsz 1 (0))
+  (relation big 1 (0))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre9vO2251
+    __errf9nQU252
+    __errf5pV6253
+    __errf1Uvv254
+    __errf9InK255)
+   (body)
+   (head (emit error (0) __erre9vO2251))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre1j8b240 __errf0i5h241 __errf9vwZ242 __errf4jhP243)
+   (body)
+   (head (emit error (0) __erre1j8b240))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre7xrz248 __errf1QqP249 __errf98US250)
+   (body)
+   (head (emit error (0) __erre7xrz248))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre1LyY244 __errf4qCR245 __errf5ckX246 __errf8Csf247)
+   (body)
+   (head (emit error (0) __erre1LyY244))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre1hCX234 __errf2gSy235 __errf4My1236)
+   (body)
+   (head (emit error (0) __erre1hCX234))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan big b)
+   (body (let __t3Bc310 (llen b)))
+   (head (emit bsz (0) __t3Bc310))
+   "seq_io.slog:18"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre1Isa261 __errf0JBm262 __errf2wQp263)
+   (body)
+   (head (emit error (0) __erre1Isa261))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre7zwI237 __errf9LwW238 __errf3Fx2239)
+   (body)
+   (head (emit error (0) __erre7zwI237))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre3m4X256
+    __errf1epv257
+    __errf5zLw258
+    __errf5qfm259
+    __errf9gFx260)
+   (body)
+   (head (emit error (0) __erre3m4X256))
+   "<internal>:1"
+   #f)))

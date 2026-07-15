@@ -1,0 +1,1 @@
+(stratum-meta (hash "efec2f96") (level 1) (dynamic-rels tri) (accel-rels) (heads tri) (reads (redge pos) (sedge pos) (tedge pos)) (acyclic #t) (rules (rule 227948269 "sj_tri.slog:25" "(rule (tedge C A W) (sedge B C) (redge A B) --> (tri A B C))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

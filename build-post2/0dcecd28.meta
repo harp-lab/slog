@@ -1,0 +1,1 @@
+(stratum-meta (hash "0dcecd28") (level 1) (dynamic-rels fresh) (accel-rels) (heads fresh) (reads (cand pos) (seen neg)) (acyclic #t) (rules (rule 689254109 "neg_struct_key.slog:13" "(rule (~ (seen P)) (cand P) --> (fresh P))" (rec #f) (same-scc-body) (neg-body seen) (lat-body))))

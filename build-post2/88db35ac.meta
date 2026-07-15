@@ -1,0 +1,1 @@
+(stratum-meta (hash "88db35ac") (level 2) (dynamic-rels result) (accel-rels) (heads result) (reads (eval pos) (eval_ans pos) (program pos)) (acyclic #t) (rules (rule 992157851 "0cfa-demand.slog:37" "(rule (program e) (eval_ans _t2h7R29 v) (= _t2h7R29 (eval e)) --> (result v))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

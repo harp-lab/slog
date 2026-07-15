@@ -1,0 +1,1 @@
+(stratum-meta (hash "9c1d4f4a") (level 0) (dynamic-rels a b c) (accel-rels) (heads a b c) (reads) (acyclic #t) (rules (rule 1684584858 "shape_nestor.slog:9" "(rule --> (c _tconst2U743) (= _tconst2U743 (const 3)) (b _tconst0t3b2) (= _tconst0t3b2 (const 2)) (a _tconst9CKY1) (= _tconst9CKY1 (const 1)))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

@@ -1,0 +1,37 @@
+(cprog
+ #<set: lamp>
+ #hash(("cellar" . constbfe75ce46f63363061f9c887)
+       ("hall" . const9a883ff1f56a410eba5d203f)
+       ("off" . const9f3becba6e4b1583b3e19441)
+       ("on" . const990c23868b965814b117cf9a)
+       ("porch" . const2d6f61dc0dbe3286c5ded6bb))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation lit 1 (0))
+  (relation lamp 2 (0 1))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation dark 1 (0))
+  (struct _enum 2 (1 0) (0 1) (delta 1 0)))
+ ((crule
+   (pre
+    (let __tconst4xdn9 const9f3becba6e4b1583b3e19441)
+    (let __tconst3xsp10 const990c23868b965814b117cf9a)
+    (let __tconst19rO3 const2d6f61dc0dbe3286c5ded6bb)
+    (let __tconst8Adm5 constbfe75ce46f63363061f9c887)
+    (let __tconst00zt7 const9a883ff1f56a410eba5d203f))
+   (probe _enum (1 0) 1 __tconst4xdn9 __t2R624)
+   (body (join _enum (1 0) 1 __tconst3xsp10 __t0MGP6))
+   (head
+    (emit lamp (0 1) __tconst19rO3 __t0MGP6)
+    (emit lamp (0 1) __tconst8Adm5 __t2R624)
+    (emit lamp (0 1) __tconst00zt7 __t0MGP6))
+   "enum_union_nullary.slog:10"
+   #f)))

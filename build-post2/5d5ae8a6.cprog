@@ -1,0 +1,81 @@
+(cprog
+ #<set: normB_ans normA_ans>
+ #hash(("False" . constcea17e0b05e3e6ace77ec2d1))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation outB 1 (0))
+  (relation outA 1 (0))
+  (relation normB_ans 2 (0 1))
+  (struct normB 2 (1 0) (0 1))
+  (relation normA_ans 2 (0 1))
+  (struct normA 2 (1 0) (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation fdat 1 (0))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1))
+  (struct Wrap 2 (1 0) (0 1))
+  (struct DInt 2 (1 0) (0 1))
+  (struct DBool 2 (1 0) (0 1))
+  (relation $sup87077x26x0x0x0 3 (1 0 2)))
+ ((crule
+   (pre)
+   (scan DInt __t1gGL2 n)
+   (body (join normA (1 0) 1 __t1gGL2 __t3Pno3))
+   (head (emit normA_ans (0 1) __t3Pno3 __t1gGL2))
+   "dem_neq_literal.slog:17"
+   #f)
+  (crule
+   (pre (let __tconst7UD275 constcea17e0b05e3e6ace77ec2d1))
+   (scan normA_ans __t075112 r)
+   (body
+    (join _enum (1 0) 1 __tconst7UD275 __t5qLr13)
+    (join DBool (1 0) 1 __t5qLr13 __t1nJF14)
+    (neq r __t1nJF14)
+    (join normA (0 1) 1 __t075112 d)
+    (join Wrap (1 0) 1 d __t7cVN10)
+    (join normA (1 0) 1 __t7cVN10 __t3pez11))
+   (head (emit normA_ans (0 1) __t3pez11 r))
+   "dem_neq_literal.slog:18"
+   #f)
+  (crule
+   (pre)
+   (scan DBool __t697j35 b)
+   (body (join normB (1 0) 1 __t697j35 __t3Cd336))
+   (head (emit normB_ans (0 1) __t3Cd336 __t697j35))
+   "dem_neq_literal.slog:25"
+   #f)
+  (crule
+   (pre)
+   (scan normB_ans __t6oha51 r)
+   (body
+    (join normB (0 1) 1 __t6oha51 d)
+    (exists $sup87077x26x0x0x0 (1 0 2) 1 d)
+    (join Wrap (1 0) 1 d __t8dWV49)
+    (join normB (1 0) 1 __t8dWV49 __t2r2x50)
+    (join $sup87077x26x0x0x0 (1 0 2) 2 d __t2r2x50 fd)
+    (neq r fd)
+    (join fdat (0) 1 fd))
+   (head (emit normB_ans (0 1) __t2r2x50 r))
+   "dem_neq_literal.slog:27"
+   #f)
+  (crule
+   (pre)
+   (scan DBool __t4ZYg58 b)
+   (body (join normA (1 0) 1 __t4ZYg58 __t8xKL59))
+   (head (emit normA_ans (0 1) __t8xKL59 __t4ZYg58))
+   "dem_neq_literal.slog:16"
+   #f)
+  (crule
+   (pre)
+   (scan DInt __t3K3555 n)
+   (body (join normB (1 0) 1 __t3K3555 __t4BUJ56))
+   (head (emit normB_ans (0 1) __t4BUJ56 __t3K3555))
+   "dem_neq_literal.slog:26"
+   #f)))

@@ -1,0 +1,50 @@
+(cprog
+ #<set: yes inverted>
+ #hash(("false" . const076de6e730df0b4c3860877a)
+       ("true" . const18d10c7d2b4b04aaf04254d1))
+ ((relation yes 1 (0))
+  (struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation inverted 2 (0 1))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation flag 2 (1 0))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1) (delta 1 0)))
+ ((crule
+   (pre (let __tconst6xtH16 const18d10c7d2b4b04aaf04254d1))
+   (probe _enum (1 0) 1 __tconst6xtH16 __tconst125S9)
+   (body (join flag (1 0) 1 __tconst125S9 n))
+   (head (emit yes (0) n))
+   "bools.slog:12"
+   #f)
+  (crule
+   (pre
+    (let __tconst2P5m12 const18d10c7d2b4b04aaf04254d1)
+    (let __tconst3tWJ13 const076de6e730df0b4c3860877a))
+   (probe _enum (1 0) 1 __tconst2P5m12 __tconst7Qdn4)
+   (body
+    (exists flag (1 0) 1 __tconst7Qdn4)
+    (join _enum (1 0) 1 __tconst3tWJ13 __tconst3D893)
+    (join flag (1 0) 1 __tconst7Qdn4 n))
+   (head (emit inverted (0 1) n __tconst3D893))
+   "bools.slog:14"
+   #f)
+  (crule
+   (pre
+    (let __tconst3hQ410 const076de6e730df0b4c3860877a)
+    (let __tconst5SEV11 const18d10c7d2b4b04aaf04254d1))
+   (probe _enum (1 0) 1 __tconst3hQ410 __tconst4gDo2)
+   (body
+    (exists flag (1 0) 1 __tconst4gDo2)
+    (join _enum (1 0) 1 __tconst5SEV11 __tconst4Joj1)
+    (join flag (1 0) 1 __tconst4gDo2 n))
+   (head (emit inverted (0 1) n __tconst4Joj1))
+   "bools.slog:15"
+   #f)))

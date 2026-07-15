@@ -1,0 +1,105 @@
+(cprog
+ #<set:
+  int_overflow
+  type_mismatch
+  toint_range
+  nan_result
+  modulo_by_zero
+  bsz
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash()
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (lattice short 3 (min int) #f (0 1 2))
+  (relation node 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (relation edge 3 (0 1 2))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation bsz 2 (0 1))
+  (lattice best 2 (map int (min int)) #f (0 1))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan modulo_by_zero __erre7qse118 __errf7M1w119 __errf2DSq120)
+   (body)
+   (head (emit error (0) __erre7qse118))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre2PFG129 __errf1Vux130 __errf5ANk131)
+   (body)
+   (head (emit error (0) __erre2PFG129))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre49hU125 __errf8y5D126 __errf5IY6127 __errf6bgc128)
+   (body)
+   (head (emit error (0) __erre49hU125))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre0WqZ137
+    __errf2HgG138
+    __errf9J3O139
+    __errf6f4x140
+    __errf6rIe141)
+   (body)
+   (head (emit error (0) __erre0WqZ137))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre6yOV121 __errf5aFW122 __errf73Al123 __errf3lD6124)
+   (body)
+   (head (emit error (0) __erre6yOV121))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre4BxI132
+    __errf73Ul133
+    __errf2TQX134
+    __errf63Yg135
+    __errf8Ylr136)
+   (body)
+   (head (emit error (0) __erre4BxI132))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan best a m)
+   (body (let __t4bcT21 (csize m)))
+   (head (emit bsz (0 1) a __t4bcT21))
+   "lat_nested.slog:38"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre6o9Z142 __errf1ybu143 __errf4gVu144)
+   (body)
+   (head (emit error (0) __erre6o9Z142))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre269D115 __errf0ynI116 __errf0bzt117)
+   (body)
+   (head (emit error (0) __erre269D115))
+   "<internal>:1"
+   #f)))

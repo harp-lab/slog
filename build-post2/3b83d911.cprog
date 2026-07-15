@@ -1,0 +1,210 @@
+(cprog
+ #<set:
+  int_overflow
+  parse
+  toint_range
+  nan_result
+  modulo_by_zero
+  type_mismatch
+  temp1A1G157
+  error
+  mpz_overflow
+  temp18Hd158
+  temp98xv156
+  mpz_table_overflow
+  div_by_zero>
+ #hash((0 . const5feceb66ffc86f38d952786c)
+       (1 . const6b86b273ff34fce19d6b804e)
+       ("(" . const2c8b6d4a8b88a4444dd3bdd5)
+       (")" . constc9216a4bb2623d4056d2c458)
+       ("*" . consted725292f5f32d61535958c1)
+       ("+" . const7297d2085ea0adffc396d546)
+       ("E" . const43e6e2bebb3774311cf0c867)
+       ("F" . const66804d12743756eb85fb3115)
+       ("T" . const57cb45de78dd46c657524688))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation tok 2 (1 0))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp98xv156 1)
+  (temp temp1A1G157 1)
+  (temp temp18Hd158 1)
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation parse_ans 2 (0 1))
+  (struct parse 3 (1 2 0) (0 1 2) (delta 1 0 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation len 1 (0))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation accepted 1 (0))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre
+    (let __tconst5vhP11 const43e6e2bebb3774311cf0c867)
+    (let __tconst0ig910 const5feceb66ffc86f38d952786c))
+   (once)
+   (body)
+   (head (mkstruct parse (1 2 0) __2OZs95 __tconst5vhP11 __tconst0ig910))
+   "dem_parse.slog:28"
+   #f)
+  (crule
+   (pre
+    (let __tconst2S1X84 const57cb45de78dd46c657524688)
+    (let __tconst2Ly286 consted725292f5f32d61535958c1)
+    (let __tconst0utE81 const6b86b273ff34fce19d6b804e)
+    (let __tconst0p0n83 const66804d12743756eb85fb3115))
+   (probe parse (1 0 2) 1 __tconst2S1X84 __t2xd285 i)
+   (body
+    (join tok (1 0) 1 __tconst2Ly286 j)
+    (let __t5PJH82 (_0002b j __tconst0utE81)))
+   (head (emit-temp temp1A1G157 __t5PJH82))
+   "dem_parse.slog:20"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre2XwG148
+    __errf5g8e149
+    __errf2oxA150
+    __errf5cEQ151
+    __errf5Ibr152)
+   (body)
+   (head (emit error (0) __erre2XwG148))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst9Lfy57 const57cb45de78dd46c657524688))
+   (scan temp98xv156 __t31f456)
+   (body)
+   (head (mkstruct parse (1 2 0) __6iVP91 __tconst9Lfy57 __t31f456))
+   "dem_parse.slog:16"
+   #f)
+  (crule
+   (pre (let __tconst9GD163 const43e6e2bebb3774311cf0c867))
+   (scan temp18Hd158 __t0R5j62)
+   (body)
+   (head (mkstruct parse (1 2 0) __9kLR94 __tconst9GD163 __t0R5j62))
+   "dem_parse.slog:25"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre8hkj132 __errf8fCz133 __errf2GwS134 __errf2nep135)
+   (body)
+   (head (emit error (0) __erre8hkj132))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst0p0n83 const66804d12743756eb85fb3115))
+   (scan temp1A1G157 __t5PJH82)
+   (body)
+   (head (mkstruct parse (1 2 0) __6CmH90 __tconst0p0n83 __t5PJH82))
+   "dem_parse.slog:20"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre2hky143
+    __errf0jHh144
+    __errf2S0x145
+    __errf2CVK146
+    __errf9YRY147)
+   (body)
+   (head (emit error (0) __erre2hky143))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst54Sc58 const43e6e2bebb3774311cf0c867)
+    (let __tconst7bl760 const7297d2085ea0adffc396d546)
+    (let __tconst8HE555 const6b86b273ff34fce19d6b804e)
+    (let __tconst9Lfy57 const57cb45de78dd46c657524688))
+   (probe parse (1 0 2) 1 __tconst54Sc58 __t8K4e59 i)
+   (body
+    (join tok (1 0) 1 __tconst7bl760 j)
+    (let __t31f456 (_0002b j __tconst8HE555)))
+   (head (emit-temp temp98xv156 __t31f456))
+   "dem_parse.slog:16"
+   #f)
+  (crule
+   (pre
+    (let __tconst7cMJ20 const57cb45de78dd46c657524688)
+    (let __tconst9Q4h19 const66804d12743756eb85fb3115))
+   (probe parse (1 0 2) 1 __tconst7cMJ20 __t6YIX21 i)
+   (body)
+   (head (mkstruct parse (1 2 0) __7Nfr93 __tconst9Q4h19 i))
+   "dem_parse.slog:21"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre73AM153 __errf5gRw154 __errf5KZ4155)
+   (body)
+   (head (emit error (0) __erre73AM153))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre7KLj126 __errf2B5T127 __errf6eAA128)
+   (body)
+   (head (emit error (0) __erre7KLj126))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst5bdj64 const66804d12743756eb85fb3115)
+    (let __tconst4PQw66 const2c8b6d4a8b88a4444dd3bdd5)
+    (let __tconst1NDR67 constc9216a4bb2623d4056d2c458)
+    (let __tconst8PDV61 const6b86b273ff34fce19d6b804e)
+    (let __tconst9GD163 const43e6e2bebb3774311cf0c867))
+   (probe parse (1 0 2) 1 __tconst5bdj64 __t58vr65 i)
+   (body
+    (join tok (1 0) 2 __tconst4PQw66 i)
+    (join tok (1 0) 1 __tconst1NDR67 j)
+    (let __t0R5j62 (_0002b i __tconst8PDV61)))
+   (head (emit-temp temp18Hd158 __t0R5j62))
+   "dem_parse.slog:25"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre2FDn140 __errf6fDR141 __errf8oNL142)
+   (body)
+   (head (emit error (0) __erre2FDn140))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre3ydT136 __errf3U5K137 __errf9eBq138 __errf6T8b139)
+   (body)
+   (head (emit error (0) __erre3ydT136))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst1dge88 const43e6e2bebb3774311cf0c867)
+    (let __tconst1pS887 const5feceb66ffc86f38d952786c))
+   (scan len n)
+   (body)
+   (head (mkstruct parse (1 2 0) __5Med92 __tconst1dge88 __tconst1pS887))
+   "dem_parse.slog:29"
+   #f)
+  (crule
+   (pre
+    (let __tconst9ktx69 const43e6e2bebb3774311cf0c867)
+    (let __tconst9siy68 const57cb45de78dd46c657524688))
+   (probe parse (1 0 2) 1 __tconst9ktx69 __t1tRd70 i)
+   (body)
+   (head (mkstruct parse (1 2 0) __4M1O89 __tconst9siy68 i))
+   "dem_parse.slog:17"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre8e50129 __errf4tnU130 __errf13Mn131)
+   (body)
+   (head (emit error (0) __erre8e50129))
+   "<internal>:1"
+   #f)))

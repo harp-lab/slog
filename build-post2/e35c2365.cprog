@@ -1,0 +1,103 @@
+(cprog
+ #<set:
+  int_overflow
+  type_mismatch
+  toint_range
+  nan_result
+  big
+  modulo_by_zero
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash((5 . constef2d127de37b942baad06145))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation seed 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation grow 1 (0))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation big 1 (0))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan mpz_table_overflow __erre07Y0125 __errf8lOq126 __errf2cbx127)
+   (body)
+   (head (emit error (0) __erre07Y0125))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre1f1T104 __errf65U6105 __errf3esT106 __errf3Plz107)
+   (body)
+   (head (emit error (0) __erre1f1T104))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre5hU7120
+    __errf2KoZ121
+    __errf3FJ0122
+    __errf01EQ123
+    __errf3dLs124)
+   (body)
+   (head (emit error (0) __erre5hU7120))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre52ug115
+    __errf6QA9116
+    __errf9hdF117
+    __errf9Mh5118
+    __errf4yIx119)
+   (body)
+   (head (emit error (0) __erre52ug115))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre8bYe112 __errf0Xy2113 __errf6OQr114)
+   (body)
+   (head (emit error (0) __erre8bYe112))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst6CzH5 constef2d127de37b942baad06145))
+   (scan grow X)
+   (body (let __t8vI86 (_0002b X __tconst6CzH5)))
+   (head (emit big (0) __t8vI86))
+   "strat_run_main.slog:14"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre9vpL101 __errf31Es102 __errf92O8103)
+   (body)
+   (head (emit error (0) __erre9vpL101))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre48zn108 __errf607Z109 __errf0ahw110 __errf2eok111)
+   (body)
+   (head (emit error (0) __erre48zn108))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre4eGT98 __errf9aTC99 __errf7jCl100)
+   (body)
+   (head (emit error (0) __erre4eGT98))
+   "<internal>:1"
+   #f)))

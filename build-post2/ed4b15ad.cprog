@@ -1,0 +1,104 @@
+(cprog
+ #<set:
+  c
+  int_overflow
+  type_mismatch
+  toint_range
+  nan_result
+  modulo_by_zero
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash((1 . const6b86b273ff34fce19d6b804e))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation d 1 (0))
+  (relation c 1 (0))
+  (relation b 1 (0))
+  (relation a 1 (0))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan nan_result __erre3OZQ108 __errf7wtg109 __errf7Xuz110 __errf63Mk111)
+   (body)
+   (head (emit error (0) __erre3OZQ108))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre0V5N120
+    __errf1Ko9121
+    __errf1v9N122
+    __errf2D8t123
+    __errf6eF9124)
+   (body)
+   (head (emit error (0) __erre0V5N120))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst7wf54 const6b86b273ff34fce19d6b804e))
+   (scan b X)
+   (body (let __t7Sll5 (_0002b X __tconst7wf54)))
+   (head (emit c (0) __t7Sll5))
+   "strat_revorder.slog:14"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre8cJK115
+    __errf9jJR116
+    __errf3MeC117
+    __errf55Mh118
+    __errf7KQO119)
+   (body)
+   (head (emit error (0) __erre8cJK115))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre90il98 __errf4eUI99 __errf1iaH100)
+   (body)
+   (head (emit error (0) __erre90il98))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre8Obd125 __errf8Uxg126 __errf3CT7127)
+   (body)
+   (head (emit error (0) __erre8Obd125))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre5ND4104 __errf5uRS105 __errf6E15106 __errf0LK8107)
+   (body)
+   (head (emit error (0) __erre5ND4104))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre6P0j112 __errf2hRQ113 __errf9MYk114)
+   (body)
+   (head (emit error (0) __erre6P0j112))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre2iVw101 __errf8oTR102 __errf7M2v103)
+   (body)
+   (head (emit error (0) __erre2iVw101))
+   "<internal>:1"
+   #f)))

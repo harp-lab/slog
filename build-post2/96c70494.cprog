@@ -1,0 +1,57 @@
+(cprog
+ #<set: fst mid lst skew outr>
+ #hash()
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation tri 3 (0 1 2))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation skew 1 (0))
+  (relation outr 2 (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (relation mid 1 (0))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation lst 1 (0))
+  (relation joined 1 (0))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation fst 1 (0))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan tri ____35wy14 ____6hFf15 Z)
+   (body)
+   (head (emit lst (0) Z))
+   "shape_wild.slog:28"
+   #f)
+  (crule
+   (pre)
+   (scan tri X ____9MRF10 dup8LSt19)
+   (body (eq X dup8LSt19))
+   (head (emit skew (0) X))
+   "shape_wild.slog:30"
+   #f)
+  (crule
+   (pre)
+   (scan tri X ____9iaw13 Z)
+   (body)
+   (head (emit outr (0 1) X Z))
+   "shape_wild.slog:29"
+   #f)
+  (crule
+   (pre)
+   (scan tri X ____4UC317 ____7xyb18)
+   (body)
+   (head (emit fst (0) X))
+   "shape_wild.slog:26"
+   #f)
+  (crule
+   (pre)
+   (scan tri ____9lt811 Y ____5M9c12)
+   (body)
+   (head (emit mid (0) Y))
+   "shape_wild.slog:27"
+   #f)))

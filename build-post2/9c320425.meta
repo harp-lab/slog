@@ -1,0 +1,1 @@
+(stratum-meta (hash "9c320425") (level 7) (dynamic-rels error smt_bad_formula smt_qsat smt_qsat_ans) (accel-rels) (heads smt_qsat) (reads (smt_check pos) (smt_vcode pos)) (acyclic #t) (rules (rule 1130177535 "smt.slog:69" "(rule (smt_vcode C V) (= _t6JbH106 (smt_check F)) --> (= _1z3y142 (smt_qsat F)))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

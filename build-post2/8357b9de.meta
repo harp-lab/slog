@@ -1,0 +1,1 @@
+(stratum-meta (hash "8357b9de") (level 3) (dynamic-rels circ_r) (accel-rels) (heads circ_r) (reads (circle pos) (circles pos)) (acyclic #t) (rules (rule 1828489383 "enum_union_direct.slog:19" "(rule (circles _t92Vc10) (= _t92Vc10 (circle r)) --> (circ_r r))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

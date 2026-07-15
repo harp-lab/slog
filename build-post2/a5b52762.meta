@@ -1,0 +1,1 @@
+(stratum-meta (hash "a5b52762") (level 2) (dynamic-rels box out) (accel-rels) (heads box out) (reads (in pos)) (acyclic #t) (rules (rule 131046909 "enum_struct_field2.slog:15" "(rule (in n s) --> (out n _t278s3) (= _t278s3 (box s)))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

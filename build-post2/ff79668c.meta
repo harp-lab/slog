@@ -1,0 +1,1 @@
+(stratum-meta (hash "ff79668c") (level 0) (dynamic-rels start) (accel-rels) (heads start) (reads) (acyclic #t) (rules (rule 2030267484 "dem_chain.slog:10" "(rule --> (start _tconst3Zx86) (= _tconst3Zx86 (const 10)) (start _tconst2TBl5) (= _tconst2TBl5 (const 3)))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

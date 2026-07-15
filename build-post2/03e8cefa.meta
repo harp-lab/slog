@@ -1,0 +1,1 @@
+(stratum-meta (hash "03e8cefa") (level 0) (dynamic-rels v) (accel-rels) (heads v) (reads) (acyclic #t) (rules (rule 846458875 "prim2_mixed.slog:11" "(rule --> (v _tconst3TTM2) (= _tconst3TTM2 (const 2.5)) (v _tconst7whR1) (= _tconst7whR1 (const 2)))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

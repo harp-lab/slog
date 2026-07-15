@@ -1,0 +1,148 @@
+(cprog
+ #<set:
+  int_overflow
+  type_mismatch
+  toint_range
+  nan_result
+  check_err
+  modulo_by_zero
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash()
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (relation stmt 2 (0 1))
+  (relation smt_vcode 2 (0 1))
+  (relation smt_unsat 1 (0))
+  (relation smt_unknown 1 (0))
+  (relation smt_sat 1 (0))
+  (relation smt_qsat_ans 2 (0 1))
+  (struct smt_qsat 2 (1 0) (0 1))
+  (relation smt_qmodel_ans 2 (0 1))
+  (struct smt_qmodel 2 (1 0) (0 1))
+  (relation smt_qcore_ans 2 (0 1))
+  (struct smt_qcore 2 (1 0) (0 1))
+  (relation smt_model_ans 3 (0 1 2))
+  (struct smt_model 2 (1 0) (0 1))
+  (relation smt_core_ans 3 (0 1 2))
+  (struct smt_core 2 (1 0) (0 1))
+  (relation smt_check_ans 2 (0 1))
+  (struct smt_check 2 (1 0) (0 1))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation perr 2 (0 1))
+  (relation pc 2 (0 1))
+  (relation negb 2 (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct lsub 3 (1 2 0) (0 1 2))
+  (struct lor 3 (1 2 0) (0 1 2))
+  (struct lnot 2 (1 0) (0 1))
+  (struct lne 3 (1 2 0) (0 1 2))
+  (struct lmul 3 (1 2 0) (0 1 2))
+  (struct llt 3 (1 2 0) (0 1 2))
+  (struct lle 3 (1 2 0) (0 1 2))
+  (struct lite 4 (1 2 3 0) (0 1 2 3))
+  (struct limplies 3 (1 2 0) (0 1 2))
+  (struct lgt 3 (1 2 0) (0 1 2))
+  (struct lge 3 (1 2 0) (0 1 2))
+  (struct leq 3 (1 2 0) (0 1 2))
+  (struct lany 2 (1 0) (0 1))
+  (struct land 3 (1 2 0) (0 1 2))
+  (struct lall 2 (1 0) (0 1))
+  (struct ladd 3 (1 2 0) (0 1 2))
+  (relation kept 1 (0))
+  (struct iv 2 (1 0) (0 1))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (struct ic 2 (1 0) (0 1))
+  (relation error 1 (0))
+  (relation eqf 3 (0 1 2))
+  (relation entry 1 (0))
+  (relation elidable 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation check_status 2 (0 1))
+  (lattice check_err 2 (set any) #f (0 1))
+  (struct check 4 (1 2 3 0) (0 1 2 3))
+  (struct bv 2 (1 0) (0 1))
+  (struct branch 4 (1 2 3 0) (0 1 2 3))
+  (struct asgn 4 (1 2 3 0) (0 1 2 3))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan div_by_zero __erre7KUI345 __errf1moU346 __errf2aly347)
+   (body)
+   (head (emit error (0) __erre7KUI345))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre8Iyl367
+    __errf26lD368
+    __errf0Rdv369
+    __errf6dDm370
+    __errf6WRs371)
+   (body)
+   (head (emit error (0) __erre8Iyl367))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre2QMu359 __errf5dol360 __errf5U2o361)
+   (body)
+   (head (emit error (0) __erre2QMu359))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __t1U8X8 (cmap)))
+   (scan perr ID E)
+   (body (let __t8yog9 (cins __t1U8X8 E)))
+   (head (emit-lat check_err ID __t8yog9))
+   "verify.slog:74"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre2vnr348 __errf7K1A349 __errf0ZBm350)
+   (body)
+   (head (emit error (0) __erre2vnr348))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre9ohk351 __errf14Pl352 __errf26tO353 __errf1PAj354)
+   (body)
+   (head (emit error (0) __erre9ohk351))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre3gIR362
+    __errf1NeV363
+    __errf5tN7364
+    __errf0wPz365
+    __errf0MGW366)
+   (body)
+   (head (emit error (0) __erre3gIR362))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre0Gwn355 __errf4lDU356 __errf90Gp357 __errf3piB358)
+   (body)
+   (head (emit error (0) __erre0Gwn355))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre2BrW372 __errf2TFy373 __errf1uY6374)
+   (body)
+   (head (emit error (0) __erre2BrW372))
+   "<internal>:1"
+   #f)))

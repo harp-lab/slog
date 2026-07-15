@@ -1,0 +1,192 @@
+(cprog
+ #<set:
+  int_overflow
+  toint_range
+  nan_result
+  temp7yG7135
+  temp13Vl134
+  type_mismatch
+  $seq_at
+  temp7Thj136
+  temp4ArT137
+  error
+  temp2Jpz138
+  mpz_overflow
+  doc
+  modulo_by_zero
+  temp2zRp139
+  mpz_table_overflow
+  div_by_zero>
+ #hash((1 . const6b86b273ff34fce19d6b804e)
+       (2 . constd4735e3a265e16eee03f5971)
+       (3 . const4e07408562bedb8b60ce05c1)
+       (9 . const19581e27de7ced00ff1ce50b))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp7yG7135 2)
+  (temp temp7Thj136 2)
+  (temp temp4ArT137 2)
+  (temp temp2zRp139 1)
+  (temp temp2Jpz138 2)
+  (temp temp13Vl134 1)
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation pair2 2 (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (relation doc 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation afterx 3 (0 1 2))
+  (struct _enum 2 (1 0) (0 1))
+  (relation $seq_posdem 2 (0 1))
+  (relation $seq_pos 3 (0 1 2))
+  (relation $seq_at 3 (0 1 2))
+  (seqindex afterx (0 1 2))
+  (seqindex doc (0)))
+ ((crule
+   (pre)
+   (scan nan_result __erre5UIV114 __errf5pm2115 __errf72kV116 __errf1bCk117)
+   (body)
+   (head (emit error (0) __erre5UIV114))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp2zRp139 __t4I6s23)
+   (body)
+   (head (emit doc (0) __t4I6s23))
+   "seq_split_mixed.slog:11"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre0YmH131 __errf4gFE132 __errf63wa133)
+   (body)
+   (head (emit error (0) __erre0YmH131))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre8rqK110 __errf1DMZ111 __errf2ipd112 __errf26y1113)
+   (body)
+   (head (emit error (0) __erre8rqK110))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre8coR118 __errf2xch119 __errf2nPy120)
+   (body)
+   (head (emit error (0) __erre8coR118))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst1EHd13 const4e07408562bedb8b60ce05c1)
+    (let __tconst3Khb15 constd4735e3a265e16eee03f5971)
+    (let __tconst0pp316 const19581e27de7ced00ff1ce50b))
+   (scan temp7Thj136 __t0VZZ10 __t46UG20)
+   (body
+    (let __t84sE11 (lpush __t0VZZ10 __tconst3Khb15))
+    (let __t8rmp21 (lpush __t46UG20 __tconst3Khb15)))
+   (head (emit-temp temp4ArT137 __t84sE11 __t8rmp21))
+   "seq_split_mixed.slog:11"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre5vrn126
+    __errf35Oo127
+    __errf6Bl5128
+    __errf24Sw129
+    __errf4eRA130)
+   (body)
+   (head (emit error (0) __erre5vrn126))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst1EHd13 const4e07408562bedb8b60ce05c1))
+   (scan temp2Jpz138 __t4iGN22 __t6tPz12)
+   (body (let __t4I6s23 (lpush __t4iGN22 __tconst1EHd13)))
+   (head (emit-temp temp2zRp139 __t4I6s23) (emit doc (0) __t6tPz12))
+   "seq_split_mixed.slog:11"
+   #f)
+  (crule
+   (pre
+    (let __tconst1EHd13 const4e07408562bedb8b60ce05c1)
+    (let __tconst3Khb15 constd4735e3a265e16eee03f5971)
+    (let __tconst0pp316 const19581e27de7ced00ff1ce50b)
+    (let __tconst7Uuf17 const6b86b273ff34fce19d6b804e))
+   (scan temp7yG7135 __t76Un9 __t7Ja119)
+   (body
+    (let __t0VZZ10 (lpush __t76Un9 __tconst7Uuf17))
+    (let __t46UG20 (lpush __t7Ja119 __tconst0pp316)))
+   (head (emit-temp temp7Thj136 __t0VZZ10 __t46UG20))
+   "seq_split_mixed.slog:11"
+   #f)
+  (crule
+   (pre
+    (let __tconst1EHd13 const4e07408562bedb8b60ce05c1)
+    (let __tconst3Khb15 constd4735e3a265e16eee03f5971)
+    (let __tconst0pp316 const19581e27de7ced00ff1ce50b)
+    (let __tconst7Uuf17 const6b86b273ff34fce19d6b804e))
+   (scan temp13Vl134 __t38hp18)
+   (body
+    (let __t76Un9 (lpush __t38hp18 __tconst0pp316))
+    (let __t7Ja119 (lpush __t38hp18 __tconst7Uuf17)))
+   (head (emit-temp temp7yG7135 __t76Un9 __t7Ja119))
+   "seq_split_mixed.slog:11"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre2xqT107 __errf5I3m108 __errf5ido109)
+   (body)
+   (head (emit error (0) __erre2xqT107))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst1EHd13 const4e07408562bedb8b60ce05c1)
+    (let __tconst3Khb15 constd4735e3a265e16eee03f5971)
+    (let __tconst0pp316 const19581e27de7ced00ff1ce50b)
+    (let __tconst7Uuf17 const6b86b273ff34fce19d6b804e)
+    (let __t38hp18 (lempty)))
+   (once)
+   (body)
+   (head (emit-temp temp13Vl134 __t38hp18))
+   "seq_split_mixed.slog:11"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre8qZM121
+    __errf7TZ0122
+    __errf94G2123
+    __errf8pT6124
+    __errf2CF0125)
+   (body)
+   (head (emit error (0) __erre8qZM121))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst1EHd13 const4e07408562bedb8b60ce05c1)
+    (let __tconst0pp316 const19581e27de7ced00ff1ce50b))
+   (scan temp4ArT137 __t84sE11 __t8rmp21)
+   (body
+    (let __t6tPz12 (lpush __t84sE11 __tconst1EHd13))
+    (let __t4iGN22 (lpush __t8rmp21 __tconst0pp316)))
+   (head (emit-temp temp2Jpz138 __t4iGN22 __t6tPz12))
+   "seq_split_mixed.slog:11"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre5PJH104 __errf66lK105 __errf77fm106)
+   (body)
+   (head (emit error (0) __erre5PJH104))
+   "<internal>:1"
+   #f)))

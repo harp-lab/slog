@@ -1,0 +1,33 @@
+(cprog
+ #<set: fav>
+ #hash(("amy" . const57e459adabad9fb762bf6769)
+       ("green" . const7f3e916bf628c503cac5f6ba)
+       ("red" . const4bc9274d8758b867e8c071a6)
+       ("tom" . constf4bef7d1c2e17f892c9697c4))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation redfans 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation fav 2 (0 1))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1) (delta 1 0)))
+ ((crule
+   (pre
+    (let __tconst4ODH6 const7f3e916bf628c503cac5f6ba)
+    (let __tconst9XU67 const4bc9274d8758b867e8c071a6)
+    (let __tconst9T4w4 const57e459adabad9fb762bf6769)
+    (let __tconst9RYw2 constf4bef7d1c2e17f892c9697c4))
+   (probe _enum (1 0) 1 __tconst4ODH6 __t93DI3)
+   (body (join _enum (1 0) 1 __tconst9XU67 __t2QlT1))
+   (head
+    (emit fav (0 1) __tconst9T4w4 __t93DI3)
+    (emit fav (0 1) __tconst9RYw2 __t2QlT1))
+   "enum_typed_col.slog:10"
+   #f)))

@@ -1,0 +1,219 @@
+(cprog
+ #<set:
+  type_mismatch
+  given2
+  nan_result
+  temp7FAt80
+  computed
+  int_overflow
+  temp2ZMC85
+  temp2B9W81
+  leaf3
+  toint_range
+  error
+  mpz_overflow
+  mid3
+  fbox
+  modulo_by_zero
+  div_by_zero
+  m
+  mpz_table_overflow
+  viafact>
+ #hash((0 . const5feceb66ffc86f38d952786c)
+       (1 . const6b86b273ff34fce19d6b804e)
+       (1.5 . const9f29a130438b81170b92a426)
+       (2.0 . constd84bdb34d4eeef4034d77e54)
+       (3.0 . consta416ea84421fa7e1351582da))
+ ((relation viafact 1 (0))
+  (struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp7FAt80 1)
+  (temp temp2ZMC85 1)
+  (temp temp2B9W81 1)
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation samefact 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct mid3 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation m 1 (0))
+  (struct leaf3 2 (1 0) (0 1) (delta 1 0))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation given2 1 (0))
+  (relation fsame 1 (0))
+  (struct fbox 2 (1 0) (0 1))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation computed 1 (0))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre1HW772
+    __errf1SZQ73
+    __errf5hGW74
+    __errf3u5i75
+    __errf9tJ876)
+   (body)
+   (head (emit error (0) __erre1HW772))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre9DT050 __errf3XNC51 __errf4YDL52)
+   (body)
+   (head (emit error (0) __erre9DT050))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst2ZEy3 const6b86b273ff34fce19d6b804e))
+   (seeded)
+   (body
+    (join leaf3 (1 0) 1 __tconst2ZEy3 __t8QLq2)
+    (join mid3 (1 2 0) 1 __t8QLq2 dup67Yx84 __t5wKU5)
+    (eq __t8QLq2 dup67Yx84))
+   (head (emit viafact (0) __t5wKU5))
+   "sdeep_share.slog:18"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre5DW577 __errf80NV78 __errf5abh79)
+   (body)
+   (head (emit error (0) __erre5DW577))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst4Zzm16 constd84bdb34d4eeef4034d77e54)
+    (let __tconst7tin17 consta416ea84421fa7e1351582da)
+    (let __t2B4l18 (_0002f __tconst7tin17 __tconst4Zzm16)))
+   (scan given2 ____4cSQ19)
+   (body)
+   (head
+    (emit-temp temp2ZMC85 __t2B4l18)
+    (mkstruct fbox (1 0) __t66Jo15 __t2B4l18))
+   "sdeep_share.slog:28"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre7zS964 __errf9Lam65 __errf9gKc66)
+   (body)
+   (head (emit error (0) __erre7zS964))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst3AZw6 const9f29a130438b81170b92a426)
+    (let __tconst2ZEy3 const6b86b273ff34fce19d6b804e))
+   (seeded)
+   (body
+    (join leaf3 (1 0) 1 __tconst2ZEy3 __t8QLq2)
+    (join fbox (1 0) 1 __tconst3AZw6 __t3iFN7))
+   (head
+    (emit given2 (0) __t3iFN7)
+    (mkstruct mid3 (1 2 0) __t5wKU5 __t8QLq2 __t8QLq2))
+   "sdeep_share.slog:18"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre3ali67
+    __errf5eex68
+    __errf7tyU69
+    __errf7Fbn70
+    __errf4Iz571)
+   (body)
+   (head (emit error (0) __erre3ali67))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp2ZMC85 __t2B4l18)
+   (body (join fbox (1 0) 1 __t2B4l18 __t66Jo15))
+   (head (emit computed (0) __t66Jo15))
+   "sdeep_share.slog:28"
+   #f)
+  (crule
+   (pre (let __tconst2ZEy3 const6b86b273ff34fce19d6b804e))
+   (scan mid3 __t5wKU5 __t8QLq2 dup49mo83)
+   (body (eq __t8QLq2 dup49mo83) (join leaf3 (0 1) 2 __t8QLq2 __tconst2ZEy3))
+   (head (emit viafact (0) __t5wKU5))
+   "sdeep_share.slog:18"
+   #f)
+  (crule
+   (pre)
+   (scan temp2B9W81 __t3I3F9)
+   (body
+    (join mid3 (1 2 0) 1 __t3I3F9 dup3BQF82 __t8brL10)
+    (eq __t3I3F9 dup3BQF82))
+   (head (emit m (0) __t8brL10))
+   "sdeep_share.slog:23"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre8rQy56 __errf29w357 __errf9Ald58 __errf0NxK59)
+   (body)
+   (head (emit error (0) __erre8rQy56))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre3V3b60 __errf2Z4c61 __errf6ylC62 __errf6w4V63)
+   (body)
+   (head (emit error (0) __erre3V3b60))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre26JD53 __errf7S6P54 __errf1G9v55)
+   (body)
+   (head (emit error (0) __erre26JD53))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst3AZw6 const9f29a130438b81170b92a426)
+    (let __tconst2ZEy3 const6b86b273ff34fce19d6b804e))
+   (once)
+   (body)
+   (head
+    (mkstruct fbox (1 0) __t3iFN7 __tconst3AZw6)
+    (mkstruct leaf3 (1 0) __t8QLq2 __tconst2ZEy3))
+   "sdeep_share.slog:18"
+   #f)
+  (crule
+   (pre
+    (let __tconst2kA711 const6b86b273ff34fce19d6b804e)
+    (let __tconst7mVK12 const5feceb66ffc86f38d952786c)
+    (let __t8H2L13 (_0002b __tconst7mVK12 __tconst2kA711)))
+   (scan viafact ____8Mor14)
+   (body)
+   (head
+    (emit-temp temp7FAt80 __t8H2L13)
+    (mkstruct leaf3 (1 0) __t3I3F9 __t8H2L13))
+   "sdeep_share.slog:23"
+   #f)
+  (crule
+   (pre)
+   (scan temp7FAt80 __t8H2L13)
+   (body (join leaf3 (1 0) 1 __t8H2L13 __t3I3F9))
+   (head
+    (emit-temp temp2B9W81 __t3I3F9)
+    (mkstruct mid3 (1 2 0) __t8brL10 __t3I3F9 __t3I3F9))
+   "sdeep_share.slog:23"
+   #f)
+  (crule
+   (pre
+    (let __tconst3AZw6 const9f29a130438b81170b92a426)
+    (let __tconst2ZEy3 const6b86b273ff34fce19d6b804e))
+   (probe leaf3 (1 0) 1 __tconst2ZEy3 __t8QLq2)
+   (body (join fbox (1 0) 1 __tconst3AZw6 __t3iFN7))
+   (head
+    (emit given2 (0) __t3iFN7)
+    (mkstruct mid3 (1 2 0) __t5wKU5 __t8QLq2 __t8QLq2))
+   "sdeep_share.slog:18"
+   #f)))

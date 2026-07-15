@@ -1,0 +1,35 @@
+(cprog
+ #<set: in>
+ #hash((1 . const6b86b273ff34fce19d6b804e)
+       (2 . constd4735e3a265e16eee03f5971)
+       (3 . const4e07408562bedb8b60ce05c1)
+       (4 . const4b227777d4dd1fc61c6f884f))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (struct pair 3 (1 2 0) (0 1 2))
+  (relation out 1 (0))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation in 2 (0 1))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre
+    (let __tconst7rlT3 const4b227777d4dd1fc61c6f884f)
+    (let __tconst6ra14 const4e07408562bedb8b60ce05c1)
+    (let __tconst9kdq5 constd4735e3a265e16eee03f5971)
+    (let __tconst8A3P6 const6b86b273ff34fce19d6b804e))
+   (once)
+   (body)
+   (head
+    (emit in (0 1) __tconst8A3P6 __tconst9kdq5)
+    (emit in (0 1) __tconst6ra14 __tconst7rlT3)
+    (emit in (0 1) __tconst8A3P6 __tconst9kdq5))
+   "structs.slog:5"
+   #f)))

@@ -1,0 +1,228 @@
+(cprog
+ #<set:
+  toint_range
+  $seq_at
+  nan_result
+  key
+  temp9hGw207
+  int_overflow
+  temp9oXV208
+  type_mismatch
+  temp3asc203
+  temp5hSp206
+  temp33ut205
+  error
+  mpz_overflow
+  doc
+  modulo_by_zero
+  temp5mSE204
+  mpz_table_overflow
+  div_by_zero>
+ #hash((1 . const6b86b273ff34fce19d6b804e)
+       (2 . constd4735e3a265e16eee03f5971)
+       (3 . const4e07408562bedb8b60ce05c1)
+       (5 . constef2d127de37b942baad06145)
+       (7 . const7902699be42c8a8e46fbbb45)
+       (8 . const2c624232cdd221771294dfbb)
+       (9 . const19581e27de7ced00ff1ce50b))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (temp temp9oXV208 1)
+  (temp temp9hGw207 1)
+  (temp temp5mSE204 3)
+  (temp temp5hSp206 3)
+  (temp temp3asc203 1)
+  (temp temp33ut205 3)
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation pairs 2 (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (relation mid 1 (0))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (relation key 1 (0))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (relation doc 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation contains5 1 (0))
+  (relation after12 1 (0))
+  (relation adjkey 2 (0 1))
+  (relation adj7 1 (0))
+  (struct _enum 2 (1 0) (0 1))
+  (relation $seq_posdem 2 (0 1))
+  (relation $seq_pos 3 (0 1 2))
+  (relation $seq_at 3 (0 1 2))
+  (seqindex after12 (0))
+  (seqindex contains5 (0))
+  (seqindex doc (0))
+  (seqindex mid (0)))
+ ((crule
+   (pre
+    (let __tconst9wmZ28 const7902699be42c8a8e46fbbb45)
+    (let __tconst5g3627 const2c624232cdd221771294dfbb)
+    (let __tconst8Nmj26 const19581e27de7ced00ff1ce50b)
+    (let __tconst1CX217 constef2d127de37b942baad06145)
+    (let __tconst3irN16 const6b86b273ff34fce19d6b804e)
+    (let __tconst2o4K15 constd4735e3a265e16eee03f5971)
+    (let __tconst4nT36 const4e07408562bedb8b60ce05c1)
+    (let __t3UYb29 (lempty)))
+   (once)
+   (body)
+   (head (emit-temp temp3asc203 __t3UYb29))
+   "seq_run.slog:13"
+   #f)
+  (crule
+   (pre
+    (let __tconst0KRz38 const2c624232cdd221771294dfbb)
+    (let __tconst231r37 const6b86b273ff34fce19d6b804e))
+   (once)
+   (body)
+   (head (emit key (0) __tconst0KRz38) (emit key (0) __tconst231r37))
+   "seq_run.slog:28"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre85g1190
+    __errf8r8v191
+    __errf0dvf192
+    __errf8ChL193
+    __errf8UHI194)
+   (body)
+   (head (emit error (0) __erre85g1190))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst9wmZ28 const7902699be42c8a8e46fbbb45)
+    (let __tconst5g3627 const2c624232cdd221771294dfbb)
+    (let __tconst8Nmj26 const19581e27de7ced00ff1ce50b)
+    (let __tconst1CX217 constef2d127de37b942baad06145)
+    (let __tconst3irN16 const6b86b273ff34fce19d6b804e)
+    (let __tconst2o4K15 constd4735e3a265e16eee03f5971)
+    (let __tconst4nT36 const4e07408562bedb8b60ce05c1))
+   (scan temp3asc203 __t3UYb29)
+   (body
+    (let __t4T0V24 (lpush __t3UYb29 __tconst9wmZ28))
+    (let __t785W19 (lpush __t3UYb29 __tconst1CX217))
+    (let __t6x7v10 (lpush __t3UYb29 __tconst3irN16)))
+   (head
+    (emit-temp temp5mSE204 __t4T0V24 __t6x7v10 __t785W19)
+    (emit doc (0) __t3UYb29))
+   "seq_run.slog:13"
+   #f)
+  (crule
+   (pre (let __tconst2o4K15 constd4735e3a265e16eee03f5971))
+   (scan temp9hGw207 __t8ggu13)
+   (body (let __t3UG314 (lpush __t8ggu13 __tconst2o4K15)))
+   (head (emit-temp temp9oXV208 __t3UG314))
+   "seq_run.slog:13"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre5QpW183 __errf7eBu184 __errf4M5g185 __errf3KAc186)
+   (body)
+   (head (emit error (0) __erre5QpW183))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan temp9oXV208 __t3UG314)
+   (body)
+   (head (emit doc (0) __t3UG314))
+   "seq_run.slog:13"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre5Whp200 __errf8IR7201 __errf5qTH202)
+   (body)
+   (head (emit error (0) __erre5Whp200))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre1d8E173 __errf2apm174 __errf4JC9175)
+   (body)
+   (head (emit error (0) __erre1d8E173))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre0xvu187 __errf4sqv188 __errf3uto189)
+   (body)
+   (head (emit error (0) __erre0xvu187))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst8Nmj26 const19581e27de7ced00ff1ce50b)
+    (let __tconst3irN16 const6b86b273ff34fce19d6b804e)
+    (let __tconst2o4K15 constd4735e3a265e16eee03f5971)
+    (let __tconst4nT36 const4e07408562bedb8b60ce05c1))
+   (scan temp33ut205 __t3oMQ11 __t8mPu20 __t9gIk31)
+   (body
+    (let __t4V1N32 (lpush __t9gIk31 __tconst8Nmj26))
+    (let __t0Wbi21 (lpush __t8mPu20 __tconst2o4K15))
+    (let __t4DOp12 (lpush __t3oMQ11 __tconst4nT36)))
+   (head (emit-temp temp5hSp206 __t0Wbi21 __t4DOp12 __t4V1N32))
+   "seq_run.slog:13"
+   #f)
+  (crule
+   (pre
+    (let __tconst3irN16 const6b86b273ff34fce19d6b804e)
+    (let __tconst2o4K15 constd4735e3a265e16eee03f5971))
+   (scan temp5hSp206 __t0Wbi21 __t4DOp12 __t4V1N32)
+   (body (let __t8ggu13 (lpush __t4DOp12 __tconst3irN16)))
+   (head
+    (emit-temp temp9hGw207 __t8ggu13)
+    (emit doc (0) __t4V1N32)
+    (emit doc (0) __t0Wbi21))
+   "seq_run.slog:13"
+   #f)
+  (crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre9Ih9195
+    __errf28HX196
+    __errf6Ecg197
+    __errf3GEw198
+    __errf5MDL199)
+   (body)
+   (head (emit error (0) __erre9Ih9195))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst5g3627 const2c624232cdd221771294dfbb)
+    (let __tconst8Nmj26 const19581e27de7ced00ff1ce50b)
+    (let __tconst3irN16 const6b86b273ff34fce19d6b804e)
+    (let __tconst2o4K15 constd4735e3a265e16eee03f5971)
+    (let __tconst4nT36 const4e07408562bedb8b60ce05c1))
+   (scan temp5mSE204 __t4T0V24 __t6x7v10 __t785W19)
+   (body
+    (let __t9gIk31 (lpush __t4T0V24 __tconst5g3627))
+    (let __t8mPu20 (lpush __t785W19 __tconst3irN16))
+    (let __t3oMQ11 (lpush __t6x7v10 __tconst2o4K15)))
+   (head
+    (emit-temp temp33ut205 __t3oMQ11 __t8mPu20 __t9gIk31)
+    (emit doc (0) __t4T0V24))
+   "seq_run.slog:13"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre5xAb176 __errf4SGY177 __errf4hfM178)
+   (body)
+   (head (emit error (0) __erre5xAb176))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre4D12179 __errf6aSc180 __errf1NxY181 __errf2uro182)
+   (body)
+   (head (emit error (0) __erre4D12179))
+   "<internal>:1"
+   #f)))

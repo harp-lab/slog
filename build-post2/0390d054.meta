@@ -1,0 +1,1 @@
+(stratum-meta (hash "0390d054") (level 2) (dynamic-rels joined) (accel-rels) (heads joined) (reads (fst pos) (tri pos)) (acyclic #t) (rules (rule 1325857482 "shape_wild.slog:31" "(rule (tri X __3T9K16 C) (fst X) --> (joined C))" (rec #f) (same-scc-body) (neg-body) (lat-body))))

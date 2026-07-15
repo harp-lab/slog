@@ -1,0 +1,132 @@
+(cprog
+ #<set:
+  loop
+  type_mismatch
+  toint_range
+  nan_result
+  modulo_by_zero
+  int_overflow
+  idom
+  error
+  mpz_overflow
+  mpz_table_overflow
+  div_by_zero>
+ #hash()
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation reached 1 (0))
+  (relation node 1 (0))
+  (lattice ndset 2 (set str) #f (0 1))
+  (relation nd 2 (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (lattice loopsof 2 (set str) #f (0 1))
+  (relation loop 2 (0 1))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation idom 2 (0 1))
+  (relation error 1 (0))
+  (relation entry 1 (0))
+  (relation edge 2 (1 0))
+  (lattice domset 2 (set str) #f (0 1))
+  (relation dom 2 (0 1))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation depth 2 (0 1))
+  (relation backedge 2 (0 1))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre6e6A284
+    __errf4kj1285
+    __errf3GPn286
+    __errf5rsS287
+    __errf7QLK288)
+   (body)
+   (head (emit error (0) __erre6e6A284))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan backedge a h)
+   (body)
+   (head (emit loop (0 1) h a) (emit loop (0 1) h h))
+   "domtree.slog:89"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre95Ba279
+    __errf5kRl280
+    __errf8zR8281
+    __errf6ARG282
+    __errf6KPP283)
+   (body)
+   (head (emit error (0) __erre95Ba279))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan domset n s)
+   (body
+    (let __t5AI532 (cdel s n))
+    (join-lat domset (0 1) 0 d latchk_0)
+    (eq __t5AI532 latchk_0)
+    (neq d n))
+   (head (emit idom (0 1) n d))
+   "domtree.slog:78"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre8vB1268 __errf5229269 __errf1vWI270 __errf6BAF271)
+   (body)
+   (head (emit error (0) __erre8vB1268))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre09Ia262 __errf71RY263 __errf2ekz264)
+   (body)
+   (head (emit error (0) __erre09Ia262))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre3RyV289 __errf9ZRm290 __errf533i291)
+   (body)
+   (head (emit error (0) __erre3RyV289))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre5NgH265 __errf7OEa266 __errf7Xld267)
+   (body)
+   (head (emit error (0) __erre5NgH265))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre3l4B276 __errf6Tyd277 __errf4I1z278)
+   (body)
+   (head (emit error (0) __erre3l4B276))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan loop h n)
+   (body (neq n h) (join edge (1 0) 1 n p))
+   (head (emit loop (0 1) h p))
+   "domtree.slog:90"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre0wh8272 __errf2RMh273 __errf0qdO274 __errf5yX9275)
+   (body)
+   (head (emit error (0) __erre0wh8272))
+   "<internal>:1"
+   #f)))

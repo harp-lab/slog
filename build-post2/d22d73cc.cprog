@@ -1,0 +1,131 @@
+(cprog
+ #<set:
+  int_overflow
+  type_mismatch
+  nan_result
+  chain
+  bounded
+  toint_range
+  error
+  mpz_overflow
+  ooo
+  modulo_by_zero
+  mpz_table_overflow
+  div_by_zero>
+ #hash((1 . const6b86b273ff34fce19d6b804e)
+       (2 . constd4735e3a265e16eee03f5971)
+       (30 . const624b60c58c9d8bfb6ff1886c))
+ ((struct type_mismatch 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct toint_range 3 (1 2 0) (0 1 2))
+  (struct smt_bad_formula 3 (1 2 0) (0 1 2))
+  (relation ooo 2 (0 1))
+  (struct nan_result 4 (1 2 3 0) (0 1 2 3))
+  (relation n 1 (0))
+  (struct mpz_table_overflow 3 (1 2 0) (0 1 2))
+  (struct mpz_overflow 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct modulo_by_zero 3 (1 2 0) (0 1 2))
+  (struct malformed_deduction 5 (1 2 3 4 0) (0 1 2 3 4))
+  (struct int_overflow 4 (1 2 3 0) (0 1 2 3))
+  (relation error 1 (0))
+  (struct div_by_zero 3 (1 2 0) (0 1 2))
+  (relation chain 3 (0 1 2))
+  (relation bounded 2 (0 1))
+  (struct _enum 2 (1 0) (0 1)))
+ ((crule
+   (pre)
+   (scan
+    mpz_overflow
+    __erre6K0x68
+    __errf4z2h69
+    __errf3q0s70
+    __errf3MMK71
+    __errf6c1672)
+   (body)
+   (head (emit error (0) __erre6K0x68))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan modulo_by_zero __erre3YZ449 __errf76dJ50 __errf5Z0z51)
+   (body)
+   (head (emit error (0) __erre3YZ449))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan toint_range __erre4QnS60 __errf6XUM61 __errf9QSx62)
+   (body)
+   (head (emit error (0) __erre4QnS60))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre (let __tconst8j3J1 const6b86b273ff34fce19d6b804e))
+   (scan n A)
+   (body
+    (let __t0RYW2 (_0002b A __tconst8j3J1))
+    (let __t024T3 (_0002a __t0RYW2 __t0RYW2)))
+   (head (emit chain (0 1 2) A __t0RYW2 __t024T3))
+   "prim2_lets.slog:16"
+   #f)
+  (crule
+   (pre (let __tconst1WW014 constd4735e3a265e16eee03f5971))
+   (scan n A)
+   (body
+    (let __t607E15 (_0002b A __tconst1WW014))
+    (let __t8qF713 (_0002a __t607E15 __t607E15)))
+   (head (emit ooo (0 1) A __t8qF713))
+   "prim2_lets.slog:17"
+   #f)
+  (crule
+   (pre)
+   (scan mpz_table_overflow __erre4yTe73 __errf0qdX74 __errf4kuy75)
+   (body)
+   (head (emit error (0) __erre4yTe73))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan div_by_zero __erre11vO46 __errf0CLP47 __errf9FN048)
+   (body)
+   (head (emit error (0) __erre11vO46))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan int_overflow __erre11X752 __errf0Ns153 __errf3UAq54 __errf9T6f55)
+   (body)
+   (head (emit error (0) __erre11X752))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan nan_result __erre9dKJ56 __errf3GS657 __errf757F58 __errf8YoI59)
+   (body)
+   (head (emit error (0) __erre9dKJ56))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre)
+   (scan
+    type_mismatch
+    __erre4p3n63
+    __errf8Kap64
+    __errf5UmM65
+    __errf7uyQ66
+    __errf2aJy67)
+   (body)
+   (head (emit error (0) __erre4p3n63))
+   "<internal>:1"
+   #f)
+  (crule
+   (pre
+    (let __tconst8t7K4 const6b86b273ff34fce19d6b804e)
+    (let __tconst8PlU7 const624b60c58c9d8bfb6ff1886c))
+   (scan n A)
+   (body
+    (let __t9Y5m5 (_0002b A __tconst8t7K4))
+    (let __t0gcY6 (_0002a __t9Y5m5 __t9Y5m5))
+    (cmp lt __t0gcY6 __tconst8PlU7))
+   (head (emit bounded (0 1) A __t0gcY6))
+   "prim2_lets.slog:18"
+   #f)))
