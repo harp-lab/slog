@@ -29,6 +29,17 @@
 (define semijoin-filters-enabled
   (make-parameter (not (getenv "SLOG_NO_SEMIJOIN"))))
 
+;; Key-simple ternary cyclic join (docs/wcoj.md).  The planner may replace two
+;; ordinary table probes that close a certified local cycle with one Expand3
+;; action over their sorted prefix cursors.  The off switch is cache-keyed in
+;; compile.rkt and remains the differential-testing/fallback escape hatch.
+(define wcoj3-enabled
+  (make-parameter (not (getenv "SLOG_NO_WCOJ3"))))
+
+;; Exhaustive action search is deliberately bounded.  Larger join bodies use
+;; the deterministic action-aware greedy fallback.
+(define wcoj3-search-cap (make-parameter 8))
+
 ;; Delta-entry flavor (docs/incremental.md §0.5 mode 3, 0.B5): when set, a
 ;; stratum is re-planned with its positive table/struct INPUTS marked
 ;; dynamic -- per-position delta-driven versions replace the run-once full

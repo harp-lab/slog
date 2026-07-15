@@ -16,10 +16,12 @@
 ;;
 ;;  2. BODY SCHEDULING.  A rule body is a bag of joins (relation/struct
 ;;     patterns), computations ((let x (f args)), from primitive calls),
-;;     guards (/=, <, ...), and constants.  The schedule is greedy and
-;;     safety-first: constants ground their variables up front; guards and
-;;     computations fire as soon as their inputs are ground; joins are
-;;     picked by a tunable score (see params.rkt).  A computation whose
+;;     guards (/=, <, ...), and constants.  Scheduling is safety-first:
+;;     constants ground their variables up front; guards and computations
+;;     fire as soon as their inputs are ground.  Small compute-free join
+;;     tails use bounded action search so a certified two-arm cycle can run
+;;     as Expand3; other tails retain the tunable greedy score (params.rkt).
+;;     A computation whose
 ;;     output variable is already ground computes into a fresh variable and
 ;;     becomes an equality check -- so lets are correct in any position a
 ;;     user writes them.  If computations remain unrunnable at the end (a
@@ -41,6 +43,7 @@
 (require "utils.rkt")
 (require "params.rkt")
 (require "ir-shared.rkt")
+(require "join-actions.rkt")
 
 ;; -----------------------------------------------------------------------
 ;; Clause classification.
@@ -108,6 +111,10 @@
     (or (set-member? dynamic-rels name) (set-member? temps name)))
   (define (temp? name) (set-member? temps name))
   (define (lattice? name) (and (rel-lattice-spec rel-env name) #t))
+  (define (ordinary-table? name)
+    (match (hash-ref rel-env name #f)
+      [`(table ,_ ...) (not (lattice? name))]
+      [_ #f]))
 
   (define rel-env-box (box rel-env))
   (define (add-temp! name arity)
@@ -161,9 +168,9 @@
     (define temp-driven?
       (for/or ([cl (in-list joins)]) (temp? (join-rel cl))))
     (if (and (pair? joins) (not temp-driven?))
-        (plan-rule-versions staged-rule dynamic? temp? lattice? statics
+        (plan-rule-versions staged-rule dynamic? temp? lattice? ordinary-table? statics
                             #:seeded? #t)
-        (plan-rule-versions staged-rule dynamic? temp? lattice? statics)))
+        (plan-rule-versions staged-rule dynamic? temp? lattice? ordinary-table? statics)))
 
   (define planned
     (for/fold ([acc (set)]) ([rule (in-set rules)])
@@ -174,7 +181,7 @@
         (define versions
           (if (and (count-flavor) (not (maintenance-flavor)))
               (plan-versions-counted staged-rule statics)
-              (plan-rule-versions staged-rule dynamic? temp? lattice? statics)))
+              (plan-rule-versions staged-rule dynamic? temp? lattice? ordinary-table? statics)))
         ;; SEEDED RE-ENTRY version (the staging-replay bug, 2026-07-10): a
         ;; staged rule with pruned (static) joins relies on this stratum's
         ;; own construction order -- statics' rows always land in FULL
@@ -210,7 +217,7 @@
                             [_ #f]))))])))
         (set-union acc versions
                     (if needs-seeded?
-                        (plan-rule-versions staged-rule dynamic? temp? lattice? '()
+                        (plan-rule-versions staged-rule dynamic? temp? lattice? ordinary-table? '()
                                             #:seeded? #t)
                         (set))))))))
   (cons planned (unbox rel-env-box)))
@@ -402,7 +409,7 @@
 ;; -----------------------------------------------------------------------
 ;; 2 & 3. Scheduling and version generation for one staged rule.
 
-(define (plan-rule-versions rule dynamic? temp? lattice? [statics '()]
+(define (plan-rule-versions rule dynamic? temp? lattice? ordinary-table? [statics '()]
                             #:seeded? [seeded? #f])
   (match rule
     [`(syn ,prov rule ,bodys ... --> ,heads ...)
@@ -416,20 +423,34 @@
      ;; (edge x x*) plus an equality guard, so downstream never sees a join
      ;; binding the same variable twice
      (define body-joins (filter join-cl? bodys))
-     (define-values (joins eq-guards)
+     (define-values (join-clauses eq-guards)
        (for/fold ([joins '()] [eqs '()]
                   #:result (values (reverse joins) eqs))
                  ([cl (in-list body-joins)])
          (define-values (cl+ eqs+) (dedup-join-vars cl))
          (values (cons cl+ joins) (append eqs+ eqs))))
+     ;; Stable logical occurrence identities are assigned before driver choice,
+     ;; version generation, and physical scheduling.  Dynamic ordinals retain
+     ;; original staged-rule order, which makes exact FULL/OLD/NEW views immune
+     ;; to later action reordering.
+     (define dynamic-ordinal 0)
+     (define joins
+       (for/list ([cl0 (in-list body-joins)]
+                  [cl+ (in-list join-clauses)]
+                  [source-index (in-naturals)])
+         (define static? (and (member cl0 statics) #t))
+         (define dynamic-index
+           (and (not static?)
+                (dynamic? (join-rel cl+))
+                (let ([i dynamic-ordinal])
+                  (set! dynamic-ordinal (add1 dynamic-ordinal))
+                  i)))
+         (join-occurrence source-index cl+ source-index dynamic-index static?)))
      ;; joins staging marked static (stage-rule) are guaranteed present in
      ;; FULL before any driver's delta arrives: they join in every version
      ;; but never drive one
      (define driver-joins
-       (for/list ([cl0 (in-list body-joins)]
-                  [cl+ (in-list joins)]
-                  #:unless (member cl0 statics))
-         cl+))
+       (filter (lambda (occ) (not (join-occurrence-static? occ))) joins))
 
      (define computes (filter compute-cl? bodys))
      (define guards (append (filter guard-cl? bodys) (filter neg-clause? bodys)
@@ -444,14 +465,27 @@
                                                  (not (const-cl? cl))))
                                heads))
 
-     ;; Positive maintenance assigns an instantiation to its rightmost new
-     ;; occurrence: N before, delta at the driver, O=N-delta after.  Negative
-     ;; maintenance assigns it to its leftmost deleted occurrence with the
-     ;; same positional shape but O=N+delta after.  The wrappers lower to the
-     ;; corresponding runtime index views.
-     (define (make-version driver marked-clauses)
+     ;; Exact views belong to logical occurrences, not scheduled positions.
+     (define (make-version driver exact-old?)
+       (define driver-dynamic-index
+         (and driver (join-occurrence-dynamic-index driver)))
+       (define (view-of occ)
+         (cond
+           [(and driver (eq? occ driver)) (if seeded? 'full 'delta)]
+           [(join-occurrence-static? occ) 'full]
+           [(and exact-old?
+                 (not seeded?)
+                 driver
+                 (not (temp? (join-rel (join-occurrence-clause driver))))
+                 driver-dynamic-index
+                 (join-occurrence-dynamic-index occ)
+                 (> (join-occurrence-dynamic-index occ) driver-dynamic-index))
+            (if (negative-maintenance-flavor?) 'new 'old)]
+           [else 'full]))
+       (define (access-of occ) (join-access occ (view-of occ)))
        (define-values (body-schedule ground)
-         (schedule-body driver joins computes+ guards const-vars rule))
+         (schedule-body-actions driver joins access-of computes+ guards
+                                const-vars rule ordinary-table?))
        ;; every variable a head emits must be ground by now
        (for ([cl (in-list head-rest)])
          (define missing (set-subtract (head-in-vars cl) ground))
@@ -462,50 +496,94 @@
                   (string-join (map symbol->string
                                     (sort (set->list missing) symbol<?)) ", ")
                   (strip-prov rule))))
-       (define marked
-         (for/list ([cl (in-list body-schedule)])
+       (define planned-body
+         (for/list ([entry (in-list body-schedule)])
            (cond
-             [(and (pair? marked-clauses) (memq cl marked-clauses))
-              `(syn ,(cadr cl)
-                    ,(if (negative-maintenance-flavor?) '$newjoin '$oldjoin)
-                    ,cl)]
-             [else cl])))
-       `(syn ,prov ,(if seeded? 'seeded-rule 'rule) ,@const-lets ,@marked
+             [(scalar-join-action? entry)
+              (define access (scalar-join-action-access entry))
+              (define cl (access-clause access))
+              (case (join-access-view access)
+                [(old) `(syn ,(cadr cl) $oldjoin ,cl)]
+                [(new) `(syn ,(cadr cl) $newjoin ,cl)]
+                [else cl])]
+             [else entry])))
+       `(syn ,prov ,(if seeded? 'seeded-rule 'rule) ,@const-lets ,@planned-body
              --> ,@head-rest))
 
-     (define temp-joins (filter (lambda (cl) (temp? (join-rel cl))) driver-joins))
-     (define dynamic-joins (filter (lambda (cl) (dynamic? (join-rel cl))) driver-joins))
+     (define (occ-rel occ) (join-rel (join-occurrence-clause occ)))
+     (define temp-joins (filter (lambda (occ) (temp? (occ-rel occ))) driver-joins))
+     (define dynamic-joins
+       (filter (lambda (occ) (dynamic? (occ-rel occ))) driver-joins))
      ;; exact semi-naive applies the R_old/full split only when EVERY dynamic
      ;; join is a table relation: lattice-valued recursion has its own
      ;; change-splitting story (M7), so a rule with any dynamic lattice join
      ;; keeps the current all-FULL behavior (no old-clauses marked).
      (define exact-old?
-       (not (for/or ([cl (in-list dynamic-joins)]) (lattice? (join-rel cl)))))
-     ;; each version as (cons driver old-clauses)
-     (define driver+olds
+       (not (for/or ([occ (in-list dynamic-joins)]) (lattice? (occ-rel occ)))))
+     ;; Dynamic/temp versions have a semantic driver and therefore retain one
+     ;; version per required occurrence.  Closed and seeded versions have no
+     ;; such constraint: try every legal outer occurrence for small bodies so
+     ;; a locally good scalar choice cannot hide the only Expand3 frontier.
+     (define choose-one-driver?
+       (or seeded?
+           (and (null? temp-joins) (null? dynamic-joins) (pair? joins))))
+     (define enumerate-drivers?
+       (and choose-one-driver?
+            (wcoj3-enabled)
+            (<= (length joins) (wcoj3-search-cap))))
+     (define drivers
        (cond
          ;; the seeded re-entry version (plan-stratum): ONE full-index
          ;; evaluation scheduled around the best-scoring join; no delta
          ;; position at all (operationalization keys off the seeded-rule
          ;; tag and lowers the first join like any other)
-         [seeded? (list (cons (best-join joins const-vars computes guards) '()))]
+         [seeded?
+          (if enumerate-drivers?
+              joins
+              (list (best-occurrence joins const-vars computes guards)))]
          ;; a temp join must drive (temps have no indices to probe), and its
          ;; delta subsumes its siblings' (they were emitted together)
-         [(pair? temp-joins) (list (cons (car temp-joins) '()))]
+         [(pair? temp-joins) (list (car temp-joins))]
          ;; one delta-driven version per dynamic join.  The joins ordered
          ;; after the driver use the sign-specific exact view: R_old for +,
          ;; R_pre=FULL union delta for -.
-         [(pair? dynamic-joins)
-          (for/list ([d (in-list dynamic-joins)] [i (in-naturals)])
-            (cons d (if exact-old? (drop dynamic-joins (add1 i)) '())))]
+         [(pair? dynamic-joins) dynamic-joins]
          ;; all joins read closed relations: one version, run once over the
-         ;; reloaded database (pick the best-scoring driver)
+         ;; reloaded database
          [(pair? joins)
-          (list (cons (best-join joins const-vars computes guards) '()))]
+          (if enumerate-drivers?
+              joins
+              (list (best-occurrence joins const-vars computes guards)))]
          ;; no joins at all: a fact rule
-         [else (list (cons #f '()))]))
+         [else (list #f)]))
 
-     (for/set ([p (in-list driver+olds)]) (make-version (car p) (cdr p)))]))
+     (define candidates
+       (for/list ([driver (in-list drivers)])
+         (cons driver (make-version driver exact-old?))))
+     (define (expand-count candidate)
+       (match (cdr candidate)
+         [`(syn ,_ ,_ ,body ... --> ,_ ...)
+          (count expand3-action? body)]))
+     (define (candidate-better? a b)
+       (define ea (expand-count a))
+       (define eb (expand-count b))
+       (cond
+         [(> ea eb) #t]
+         [(< ea eb) #f]
+         [else
+          (define da (car a))
+          (define db (car b))
+          (define sa (if da (join-score (join-occurrence-clause da)
+                                        const-vars computes guards) 0))
+          (define sb (if db (join-score (join-occurrence-clause db)
+                                        const-vars computes guards) 0))
+          (if (= sa sb)
+              (< (if da (join-occurrence-id da) -1)
+                 (if db (join-occurrence-id db) -1))
+              (> sa sb))]))
+     (if choose-one-driver?
+         (set (cdr (first (sort candidates candidate-better?))))
+         (for/set ([candidate (in-list candidates)]) (cdr candidate)))]))
 
 ;; Rewrite a join clause so no variable repeats, returning the clause and
 ;; the equality guards that restore the constraint.
@@ -635,8 +713,172 @@
      (* (plan-weight-free) (set-count free))
      (* (plan-weight-enables) enabled)))
 
-(define (best-join joins ground computes guards)
-  (car (sort joins > #:key (lambda (j) (join-score j ground computes guards)))))
+(define (best-occurrence occurrences ground computes guards)
+  (car
+   (sort occurrences
+         (lambda (a b)
+           (define sa (join-score (join-occurrence-clause a) ground computes guards))
+           (define sb (join-score (join-occurrence-clause b) ground computes guards))
+           (if (= sa sb)
+               (< (join-occurrence-id a) (join-occurrence-id b))
+               (> sa sb))))))
+
+;; Does the already-consumed positive-occurrence incidence graph connect two
+;; variables?  Constants, guards, and computations intentionally do not add
+;; edges: automatic Expand3 selection is initially restricted to a genuine
+;; relation-cycle closure.
+(define (incidence-connected? x y consumed)
+  (let loop ([seen (set x)])
+    (define seen+
+      (for/fold ([s seen]) ([occ (in-list consumed)])
+        (define vs (clause-vars (join-occurrence-clause occ)))
+        (if (set-empty? (set-intersect s vs)) s (set-union s vs))))
+    (cond
+      [(set-member? seen+ y) #t]
+      [(equal? seen seen+) #f]
+      [else (loop seen+)])))
+
+(struct expand-candidate (action bound-count) #:transparent)
+
+;; Enumerate conservative key-simple ternary cycle closers at one ground
+;; frontier.  A group of three or more arms sharing C is left scalar until an
+;; explicit IntersectN action exists; a different two-arm cycle in the same
+;; rule may still qualify.
+(define (expand3-candidates pending ground consumed access-of ordinary-table?)
+  (define infos
+    (for/hash ([occ (in-list pending)])
+      (define access (access-of occ))
+      (define vars (access-vars access))
+      (define free (set-subtract vars ground))
+      (define bound (set-intersect vars ground))
+      (define eligible?
+        (and (wcoj3-enabled)
+             (ordinary-table? (access-rel access))
+             (memq (join-access-view access) '(full old new))
+             (= (set-count free) 1)
+             (not (set-empty? bound))
+             ;; With normalized distinct tuple variables, K+1=arity says C
+             ;; is the sole unbound stored column: no payload/group product.
+             (= (length (access-tuple access)) (add1 (set-count bound)))
+             (= (length (access-tuple access)) (set-count vars))))
+      (values occ (and eligible? (cons (set-first free) bound)))))
+  (define groups
+    (for/fold ([h (hash)]) ([occ (in-list pending)])
+      (match (hash-ref infos occ)
+        [#f h]
+        [(cons cycle _)
+         (hash-update h cycle (lambda (xs) (cons occ xs)) '())])))
+  (define candidates
+    (for/list ([cycle (in-list (sort (hash-keys groups) symbol<?))]
+               #:do [(define arms (sort (hash-ref groups cycle) <
+                                        #:key join-occurrence-id))]
+               #:when (= (length arms) 2)
+               #:do [(define left (first arms))
+                     (define right (second arms))
+                     (define lbound (cdr (hash-ref infos left)))
+                     (define rbound (cdr (hash-ref infos right)))]
+               #:when
+               (for*/or ([x (in-set lbound)] [y (in-set rbound)])
+                 (and (not (eq? x y))
+                      (incidence-connected? x y consumed))))
+      (expand-candidate
+       (expand3-action cycle (access-of left) (access-of right))
+       (+ (set-count lbound) (set-count rbound)))))
+  (sort candidates
+        (lambda (a b)
+          (define ba (expand-candidate-bound-count a))
+          (define bb (expand-candidate-bound-count b))
+          (if (= ba bb)
+              (lexicographic<?
+               (action-occurrence-ids (expand-candidate-action a))
+               (action-occurrence-ids (expand-candidate-action b)))
+              (> ba bb)))))
+
+(define (lexicographic<? xs ys)
+  (cond
+    [(null? xs) (pair? ys)]
+    [(null? ys) #f]
+    [(< (car xs) (car ys)) #t]
+    [(> (car xs) (car ys)) #f]
+    [else (lexicographic<? (cdr xs) (cdr ys))]))
+
+(struct searched-plan (schedule ground expands score) #:transparent)
+
+(define (better-searched-plan a b)
+  (cond
+    [(not a) b]
+    [(not b) a]
+    [(> (searched-plan-expands a) (searched-plan-expands b)) a]
+    [(< (searched-plan-expands a) (searched-plan-expands b)) b]
+    [(> (searched-plan-score a) (searched-plan-score b)) a]
+    [else a]))
+
+;; Bounded exhaustive action search for graph-like bodies whose pre-phase has
+;; discharged every computation.  Guards remain deterministic/eager.  If the
+;; best complete schedule contains no Expand3, the caller deliberately keeps
+;; today's scalar greedy plan unchanged.
+(define (search-action-tail pending ground consumed guards access-of
+                            ordinary-table?)
+  (define memo (make-hash))
+  (define (go pending ground consumed guards)
+    (define key
+      (list (sort (map join-occurrence-id pending) <)
+            (sort (set->list ground) symbol<?)))
+    (hash-ref!
+     memo key
+     (lambda ()
+       (define-values (fired ground+ computes+ guards+)
+         (fire-specials ground '() guards (set)))
+       (unless (null? computes+)
+         (error 'plan-stratum "internal WCOJ search retained a computation"))
+       (cond
+         [(null? pending)
+          (define-values (tail final-ground final-computes final-guards)
+            (fire-specials ground+ '() guards+))
+          (and (null? final-computes)
+               (null? final-guards)
+               (searched-plan (append fired tail) final-ground 0 0))]
+         [else
+          (define expansions
+            (expand3-candidates pending ground+ consumed access-of ordinary-table?))
+          (define candidates
+            (append
+             (for/list ([candidate (in-list expansions)])
+               (define action (expand-candidate-action candidate))
+               (define arms (map join-access-occurrence (action-accesses action)))
+               (define suffix
+                 (go (filter (lambda (occ) (not (memq occ arms))) pending)
+                     (set-add ground+ (expand3-action-cycle action))
+                     (append arms consumed)
+                     guards+))
+               (and suffix
+                    (struct-copy
+                     searched-plan suffix
+                     [schedule (append fired (list action)
+                                       (searched-plan-schedule suffix))]
+                     [expands (add1 (searched-plan-expands suffix))]
+                     [score (+ (expand-candidate-bound-count candidate)
+                               (searched-plan-score suffix))])))
+             (for/list ([occ (in-list
+                              (sort pending < #:key join-occurrence-id))])
+               (define clause (join-occurrence-clause occ))
+               (define suffix
+                 (go (remq occ pending)
+                     (set-union ground+ (clause-vars clause))
+                     (cons occ consumed)
+                     guards+))
+               (and suffix
+                    (struct-copy
+                     searched-plan suffix
+                     [schedule
+                      (append fired
+                              (list (scalar-join-action (access-of occ)))
+                              (searched-plan-schedule suffix))]
+                     [score (+ (join-score clause ground+ '() guards+)
+                               (searched-plan-score suffix))])))))
+          (for/fold ([best #f]) ([candidate (in-list candidates)])
+            (better-searched-plan best candidate))]))))
+  (go pending ground consumed guards))
 
 ;; Order the full body: driver first (when there is one), then the greedy
 ;; interleaving of joins with the guards they unblock; computes fire only
@@ -644,19 +886,37 @@
 ;; last join (see fire-specials).  A join-free rule has nothing that can
 ;; reject a row later, so it keeps the fully-eager order.
 ;; Returns (values schedule ground).
-(define (schedule-body driver joins computes guards ground0 rule)
+(define (schedule-body-actions driver joins access-of computes guards ground0 rule
+                               ordinary-table?)
   ;; the pre phase stays fully eager: nothing row-bound is ground yet, so
   ;; a fireable compute here has constant inputs only -- it cannot be
   ;; speculative on rows, and fact rules keep their pre-slot ops
   (define-values (pre ground1 computes1 guards1)
     (fire-specials ground0 computes guards))
-  (let loop ([schedule (if driver
-                           (append pre (list driver))
-                           pre)]
-             [ground (if driver
-                         (set-union ground1 (clause-vars driver))
-                         ground1)]
-             [joins (remq driver joins)]
+  (define initial-schedule
+    (if driver
+        (append pre (list (scalar-join-action (access-of driver))))
+        pre))
+  (define initial-ground
+    (if driver
+        (set-union ground1 (clause-vars (join-occurrence-clause driver)))
+        ground1))
+  (define pending (remq driver joins))
+  (define searched
+    (and driver
+         (wcoj3-enabled)
+         (null? computes1)
+         (<= (length joins) (wcoj3-search-cap))
+         (search-action-tail pending initial-ground (list driver) guards1
+                             access-of ordinary-table?)))
+  (cond
+    [(and searched (> (searched-plan-expands searched) 0))
+     (values (append initial-schedule (searched-plan-schedule searched))
+             (searched-plan-ground searched))]
+    [else
+  (let loop ([schedule initial-schedule]
+             [ground initial-ground]
+             [joins pending]
              [computes computes1]
              [guards guards1])
     (cond
@@ -665,11 +925,13 @@
        ;; consumes (transitively), then the join itself
        (define-values (fired0 ground0+ computes0+ guards0+)
          (fire-specials ground computes guards (set)))
-       (define next (best-join joins ground0+ computes0+ guards0+))
+       (define next (best-occurrence joins ground0+ computes0+ guards0+))
+       (define next-clause (join-occurrence-clause next))
        (define-values (fired1 ground1+ computes1+ guards1+)
-         (fire-specials ground0+ computes0+ guards0+ (clause-vars next)))
-       (loop (append schedule fired0 fired1 (list next))
-             (set-union ground1+ (clause-vars next))
+         (fire-specials ground0+ computes0+ guards0+ (clause-vars next-clause)))
+       (loop (append schedule fired0 fired1
+                     (list (scalar-join-action (access-of next))))
+             (set-union ground1+ (clause-vars next-clause))
              (remq next joins)
              computes1+
              guards1+)]
@@ -686,4 +948,4 @@
           (error 'plan-stratum
                  "guard over variables never bound in body (~a):\n~a"
                  (map strip-prov guards+) (strip-prov rule))]
-         [else (values (append schedule fired) ground+)])])))
+         [else (values (append schedule fired) ground+)])]))]))

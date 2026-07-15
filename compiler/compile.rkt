@@ -129,6 +129,8 @@
                              ;; miss the cache rather than reuse a .so
                              ;; compiled under the other setting
                              (semijoin-filters-enabled)
+                             (wcoj3-enabled)
+                             (wcoj3-search-cap)
                              ;; the facts split changes stratum rule sets, so
                              ;; it must key the cache (else a split and a
                              ;; non-split build would share a .so slot)

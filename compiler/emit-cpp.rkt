@@ -482,6 +482,36 @@
 (define (emit-ops ops index-name-of delta-name-of head-fun indent)
   (match ops
     ['() (head-fun indent)]
+    [`(,(and op `(join3 ,cycle ,left ,right)) . ,rest)
+     (match-define `(,lview ,_ ,_ ,LK ,_ ,lys ...) left)
+     (match-define `(,rview ,_ ,_ ,RK ,_ ,rys ...) right)
+     (define LA (length lys))
+     (define RA (length rys))
+     (define (view-cpp view)
+       (case view
+         [(full) "slog::Join3View::full"]
+         [(old) "slog::Join3View::old"]
+         [(new) "slog::Join3View::new_"]))
+     (define (delta-index arm view)
+       (if (eq? view 'full) (index-name-of arm) (delta-name-of arm)))
+     (define left-key
+       (u64-array-lit
+        (append (map (lambda (y) (format "v_~a" y)) (take lys LK))
+                (make-list (- LA LK) "0"))))
+     (define right-key
+       (u64-array-lit
+        (append (map (lambda (y) (format "v_~a" y)) (take rys RK))
+                (make-list (- RA RK) "0"))))
+     (define cv (elocal 'cycle))
+     (string-append
+      ((emit-lines indent)
+       (format "slog::join3<~a,~a,~a,~a,~a,~a>(~a, ~a, ~a, ~a, ~a, ~a, [&](u64 ~a) {"
+               LA LK (view-cpp lview) RA RK (view-cpp rview)
+               (index-name-of left) (delta-index left lview) left-key
+               (index-name-of right) (delta-index right rview) right-key cv)
+       (format "u64 v_~a = ~a;" cycle cv))
+      (emit-ops rest index-name-of delta-name-of head-fun (+ indent 2))
+      ((emit-lines indent) "});"))]
     [`(,(and op `(join ,name ,ind ,K ,ys ...)) . ,rest)
      (define A (length ys))
      (define free (drop ys K))
@@ -816,16 +846,30 @@
   ;; semijoin filter's existence probe, and each negated atom's absence
   ;; probe -- absent ops can also sit in the PRE slot (a negation whose key
   ;; is all-constant or all-wildcard runs before the driver), so scan both
-  (define join-members
+  (define scalar-join-members
     (for/list ([op (in-list (append pre body))]
                #:when (memq (car op) '(join join-lat exists join-old join-new
                                        absent absent-lat)))
       (cons op (elocal (string->symbol (format "~aindex" (second op)))))))
+  (define join3-arm-members
+    (for*/list ([op (in-list body)]
+                #:when (eq? (car op) 'join3)
+                [arm (in-list (cddr op))])
+      (cons arm (elocal (string->symbol (format "~aindex" (second arm)))))))
+  (define join-members (append scalar-join-members join3-arm-members))
   ;; a join-old op needs a SECOND member for the delta index it excludes against
-  (define join-old-delta-members
+  (define scalar-delta-members
     (for/list ([op (in-list body)]
                #:when (memq (car op) '(join-old join-new)))
       (cons op (elocal (string->symbol (format "~adelta" (second op)))))))
+  (define join3-delta-members
+    (for*/list ([op (in-list body)]
+                #:when (eq? (car op) 'join3)
+                [arm (in-list (cddr op))]
+                #:when (memq (car arm) '(old new)))
+      (cons arm (elocal (string->symbol (format "~adelta" (second arm)))))))
+  (define join-old-delta-members
+    (append scalar-delta-members join3-delta-members))
   (define (index-name-of op)
     (cdr (assq op join-members)))
   (define (delta-name-of op)
@@ -949,7 +993,15 @@
                 [`(,(or 'join-old 'join-new) ,name ,ind ,_ ,dind ,_ ...)
                  (string-append
                   (index-member name (cdr om) ind #f) "\n"
-                  (index-member name (delta-name-of (car om)) dind #t) "\n")])))
+                  (index-member name (delta-name-of (car om)) dind #t) "\n")]
+                [`(,(or 'full 'old 'new) ,name ,ind ,_ ,dind ,_ ...)
+                 (string-append
+                  (index-member name (cdr om) ind #f) "\n"
+                  (if (eq? (first (car om)) 'full)
+                      ""
+                      (string-append
+                       (index-member name (delta-name-of (car om)) dind #t)
+                       "\n")))])))
      (apply string-append
             (for/list ([p (in-list sid-members-sorted)])
               (format "    ~a = db->getRelation(\"~a\")->getStructId();\n"
@@ -1258,9 +1310,13 @@
           [_ acc]))
       (for/fold ([a with-driver]) ([op (in-list (append (crule-pre cr)
                                                         (crule-body cr)))])
-        (if (memq (car op) '(join join-old join-new join-lat exists absent absent-lat))
-            (set-add a (second op))
-            a))))
+        (cond
+          [(memq (car op) '(join join-old join-new join-lat exists absent absent-lat))
+           (set-add a (second op))]
+          [(eq? (car op) 'join3)
+           (for/fold ([a a]) ([arm (in-list (cddr op))])
+             (set-add a (second arm)))]
+          [else a]))))
   (define readrel-meta
     (apply string-append
            (for/list ([rel (in-list (sort (set->list read-rels)

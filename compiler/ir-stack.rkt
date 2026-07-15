@@ -36,6 +36,7 @@
          crule-kind)
 
 (require "ir-shared.rkt")
+(require "join-actions.rkt")
 
 (define natural? exact-nonnegative-integer?)
 
@@ -228,7 +229,7 @@
     [`(syn ,_ ,(or 'rule 'seeded-rule) ,body ... --> ,head ...)
      (and (andmap (lambda (cl) (or (guard-clause? cl) (let-clause? cl) (join-clause? cl)
                                    (old-join-clause? cl) (new-join-clause? cl)
-                                   (neg-clause? cl)))
+                                   (neg-clause? cl) (expand3-action? cl)))
                   body)
           (andmap (lambda (cl) (or (let-clause? cl) (join-clause? cl)
                                    (tycheck-clause? cl)))
@@ -327,6 +328,14 @@
     [`(seqindex ,(? var?) (,(? natural?) ..1)) #t]
     [_ #f]))
 
+(define (join3-arm? arm)
+  (match arm
+    [`(,(or 'full 'old 'new) ,(? var?) (,(? natural?) ..1)
+       ,(? natural?) ,dind ,(? var?) ..1)
+     (or (null? dind)
+         (and (list? dind) (pair? dind) (andmap natural? dind)))]
+    [_ #f]))
+
 (define (c-op? op)
   (match op
     [`(join ,(? var?) (,(? natural?) ..1) ,(? natural?) ,(? var?) ...) #t]
@@ -335,6 +344,7 @@
     [`(join-old ,(? var?) (,(? natural?) ..1) ,(? natural?) (,(? natural?) ..1) ,(? var?) ...) #t]
     ;; negative exact partition: FULL union current delta (pre-state O)
     [`(join-new ,(? var?) (,(? natural?) ..1) ,(? natural?) (,(? natural?) ..1) ,(? var?) ...) #t]
+    [`(join3 ,(? var?) ,(? join3-arm?) ,(? join3-arm?)) #t]
     ;; a semijoin filter: existence probe of a future clause's relation on
     ;; the K currently-bound columns (which the index orders first)
     [`(exists ,(? var?) (,(? natural?) ..1) ,(? natural?) ,(? var?) ..1) #t]

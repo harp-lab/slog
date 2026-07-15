@@ -27,6 +27,7 @@
 #pragma once
 
 #include "slogd.h"
+#include <algorithm>
 #include <array>
 #include <set>
 #include <vector>
@@ -102,6 +103,170 @@ inline void join_probe(Index** index, const std::array<u64, A>& key, Cont&& k)
     for (u16 c = 0; c < K; ++c)
       if (m[c] != key[c]) return;       // prefix gone => done (sorted order)
     k(m);
+  }
+}
+
+// TERNARY KEY-SIMPLE CYCLE CLOSER (docs/wcoj.md).  A logical prefix cursor
+// exposes the sole free column K of an A=K+1 table access as a sorted stream.
+// FULL reads one index, OLD reads FULL-current-delta, and NEW reads the sorted
+// union of post-delete FULL and the deleted delta.  FULL and DELTA use the same
+// complete ordering for OLD/NEW.
+enum class Join3View : u8 { full, old, new_ };
+
+template <u16 A, u16 K, Join3View V>
+class Join3PrefixCursor
+{
+  static_assert(K > 0, "join3 needs a non-empty bound prefix");
+  static_assert(K + 1 == A, "join3 is key-simple (one free column)");
+
+  using Key = std::array<u64, A>;
+  using Tree = BTreeIndex<A>;
+  using Iter = typename Tree::iterator;
+
+  Tree* full;
+  Tree* delta;
+  Key prefix;
+  Iter fit;
+  Iter dit;
+  bool fok = true;
+  bool dok = true;
+
+  bool same_prefix(const Key& row) const
+  {
+    for (u16 c = 0; c < K; ++c)
+      if (row[c] != prefix[c]) return false;
+    return true;
+  }
+
+  void normalize_full()
+  {
+    while (fit != full->end())
+    {
+      if (!same_prefix(*fit)) { fok = false; return; }
+      if constexpr (V == Join3View::old)
+      {
+        if (delta->contains(*fit)) { ++fit; continue; }
+      }
+      fok = true;
+      return;
+    }
+    fok = false;
+  }
+
+  void normalize_delta()
+  {
+    if constexpr (V == Join3View::new_)
+    {
+      if (dit != delta->end() && same_prefix(*dit)) dok = true;
+      else dok = false;
+    }
+    else
+      dok = false;
+  }
+
+public:
+  // FULL passes its full-index array in both slots to keep the generated ABI
+  // uniform; the delta iterator is never opened for FULL or OLD.
+  Join3PrefixCursor(Index** full_indices, Index** delta_indices,
+                    const Key& key)
+    : full(static_cast<Tree*>(full_indices[buckethash(key[0])])),
+      delta(static_cast<Tree*>(delta_indices[buckethash(key[0])])),
+      prefix(key), fit(full->lower_bound(key)), dit(delta->end())
+  {
+    if constexpr (V == Join3View::new_) dit = delta->lower_bound(key);
+    normalize_full();
+    normalize_delta();
+  }
+
+  bool valid() const
+  {
+    if constexpr (V == Join3View::new_) return fok || dok;
+    return fok;
+  }
+
+  u64 value() const
+  {
+    if constexpr (V == Join3View::new_)
+    {
+      if (!fok) return (*dit)[K];
+      if (!dok) return (*fit)[K];
+      return std::min((*fit)[K], (*dit)[K]);
+    }
+    return (*fit)[K];
+  }
+
+  void advance_past(u64 current)
+  {
+    if (fok && (*fit)[K] == current)
+    {
+      ++fit;
+      normalize_full();
+    }
+    if constexpr (V == Join3View::new_)
+    {
+      // Advancing both branches on equality deduplicates FULL/DELTA overlap.
+      if (dok && (*dit)[K] == current)
+      {
+        ++dit;
+        normalize_delta();
+      }
+    }
+  }
+
+  void seek(u64 target)
+  {
+    // Nearby values are cheaper to visit on the current immutable B-tree leaf;
+    // real gaps use lower_bound.  Eight local steps was neutral-to-positive on
+    // dense ER inputs while preserving the hub/skew wins (docs/wcoj.md).
+    for (u16 step = 0; step < 8 && valid() && value() < target; ++step)
+    {
+      const u64 current = value();
+      advance_past(current);
+    }
+    if (!valid() || value() >= target) return;
+
+    Key key = prefix;
+    key[K] = target;
+    if (fok && (*fit)[K] < target)
+    {
+      fit = full->lower_bound(key);
+      normalize_full();
+    }
+    if constexpr (V == Join3View::new_)
+    {
+      if (dok && (*dit)[K] < target)
+      {
+        dit = delta->lower_bound(key);
+        normalize_delta();
+      }
+    }
+  }
+};
+
+// Symmetric seek/leapfrog intersection.  Each arm can use an independently
+// ordered and independently prefixed relation view; the shared suffix key is
+// produced once for every value present in both logical streams.
+template <u16 LA, u16 LK, Join3View LV,
+          u16 RA, u16 RK, Join3View RV, class Cont>
+inline void join3(Index** left_full, Index** left_delta,
+                  const std::array<u64, LA>& left_key,
+                  Index** right_full, Index** right_delta,
+                  const std::array<u64, RA>& right_key, Cont&& k)
+{
+  Join3PrefixCursor<LA, LK, LV> left(left_full, left_delta, left_key);
+  Join3PrefixCursor<RA, RK, RV> right(right_full, right_delta, right_key);
+  while (left.valid() && right.valid())
+  {
+    const u64 l = left.value();
+    const u64 r = right.value();
+    if (l < r) left.seek(r);
+    else if (r < l) right.seek(l);
+    else
+    {
+      k(l);
+      left.advance_past(l);
+      right.advance_past(r);
+    }
   }
 }
 

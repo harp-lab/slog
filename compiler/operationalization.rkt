@@ -22,6 +22,7 @@
 (require "utils.rkt")
 (require "params.rkt")
 (require "ir-shared.rkt")
+(require "join-actions.rkt")
 (require "primitives.rkt")    ; prim-partial? (letp lowering)
 (require "type-system.rkt")   ; rule-has-fallible-prims?, prim-error-arms
 (require sha)                 ; content-derived constant global names (P2)
@@ -40,10 +41,17 @@
 ;; Clause views shared by the steps below.
 
 (define (join-cl? cl)
-  (match cl
-    [`(syn ,_ ,(or '/= '== 'let 'tycheck '~) ,_ ...) #f]
-    [`(syn ,_ ,(? primitive-cmp?) ,_ ,_) #f]
-    [_ #t]))
+  (and (not (expand3-action? cl))
+       (match cl
+         [`(syn ,_ ,(or '/= '== 'let 'tycheck '~) ,_ ...) #f]
+         [`(syn ,_ ,(? primitive-cmp?) ,_ ,_) #f]
+         [_ #t])))
+
+(define (join-entry? entry)
+  (or (join-cl? entry) (expand3-action? entry)))
+
+(define (join-entry-width entry)
+  (if (expand3-action? entry) 2 1))
 
 ;; A residual type check in head position (type-system.rkt).
 (define (tycheck-cl? cl)
@@ -101,7 +109,8 @@
                 olds (set-add news jpos))]
          [cl
           (loop (cdr cls) (cons cl out)
-                (if (join-cl? cl) (add1 jpos) jpos) olds news)])])))
+                (if (join-entry? cl) (+ jpos (join-entry-width cl)) jpos)
+                olds news)])])))
 
 ;; -----------------------------------------------------------------------
 ;; The pass driver.
@@ -251,6 +260,9 @@
       ;; seeded-gated); record it so a live old-join keeps its full ordering
       [`(,(or 'join-old 'join-new) ,name ,ind ,_ ,_ ,_ ...)
        (list (cons name ind))]
+      [`(join3 ,_ ,arms ...)
+       (for/list ([arm (in-list arms)])
+         (cons (second arm) (third arm)))]
       [`(join-lat ,name ,ind ,_ ,_ ...) (list (cons name ind))]
       [`(exists ,name ,ind ,_ ,_ ...) (list (cons name ind))]
       [`(absent ,name ,ind ,_ ,_ ...) (list (cons name ind))]
@@ -352,16 +364,25 @@
     (match (hash-ref rel-env name #f)
       [`(struct ,_ ...) #t]
       [_ #f]))
-  (define joins (list->vector (filter join-cl? bodys)))
+  (define joins
+    (list->vector
+     (append-map
+      (lambda (entry)
+        (cond
+          [(join-cl? entry) (list entry)]
+          [(expand3-action? entry)
+           (map access-clause (action-accesses entry))]
+          [else '()]))
+      bodys)))
   (define n (vector-length joins))
   (cond
     [(or (not (semijoin-filters-enabled)) (< n 3)) (hash)]
     [else
      (define last-sel (make-hash))   ; future join index -> sel last checked
      ;; existence checks worth placing just before join `jpos` fires
-     (define (filters-at jpos ground)
+     (define (filters-at first-future ground)
        (for/fold ([out '()] [seen (set)] #:result (reverse out))
-                 ([m (in-range (add1 jpos) n)])
+                 ([m (in-range first-future n)])
          (define fut (vector-ref joins m))
          (define name (join-rel fut))
          (define tup (join-tuple fut))
@@ -393,11 +414,18 @@
           (define expanding? (not (subset? (clause-vars cl) ground)))
           (define acc+
             (if (and (> jpos 0) expanding?)
-                (match (filters-at jpos ground)
+                (match (filters-at (add1 jpos) ground)
                   ['() acc]
                   [fs (hash-set acc jpos fs)])
                 acc))
           (values (set-union ground (clause-vars cl)) (add1 jpos) acc+)]
+         [(expand3-action? cl)
+          (define acc+
+            (match (filters-at (+ jpos 2) ground)
+              ['() acc]
+              [fs (hash-set acc jpos fs)]))
+          (values (set-add ground (expand3-action-cycle cl))
+                  (+ jpos 2) acc+)]
          [else
           (values (set-union ground (clause-out-vars cl)) jpos acc)]))]))
 
@@ -461,6 +489,30 @@
   (for/fold ([ground (set)] [jpos 0] [needs needs] #:result needs)
             ([cl (in-list bodys)])
     (cond
+      [(expand3-action? cl)
+       (define needs0
+         (for/fold ([n needs]) ([f (in-list (hash-ref sj-filters jpos '()))])
+           (add-select-set n (first f) (second f))))
+       (define needs+
+         (for/fold ([n needs0]) ([access (in-list (action-accesses cl))])
+           (define tup (access-tuple access))
+           (define sel
+             (for/set ([x (in-list tup)] [i (in-naturals)]
+                       #:when (set-member? ground x))
+               i))
+           (define cycle (expand3-action-cycle cl))
+           (define cycle-pos (index-of tup cycle))
+           (unless (and cycle-pos
+                        (= (set-count sel) (sub1 (length tup)))
+                        (not (set-member? sel cycle-pos)))
+             (error 'operationalization
+                    "invalid key-simple Expand3 access ~a at ground frontier ~a"
+                    access ground))
+           (if (memq (join-access-view access) '(old new))
+               (add-same-order-selection n (access-rel access) sel)
+               (add-select-set n (access-rel access) sel))))
+       (values (set-add ground (expand3-action-cycle cl))
+               (+ jpos 2) needs+)]
       [(join-cl? cl)
        (define first? (and (= jpos 0) (not seeded?)))
        (define tup (join-tuple cl))
@@ -942,6 +994,39 @@
     (list `(join-new ,name ,ord ,(set-count sel) ,ord
                      ,@(map esc (order-tuple ord tup)))))
 
+  ;; Lower the planner's explicit two-occurrence action.  Both arms are
+  ;; resolved against the SAME pre-action ground frontier; lowering never
+  ;; rediscovers candidate adjacency.  Key-simple mode requires the cycle
+  ;; column to be the sole suffix immediately after the selected prefix.
+  (define (lower-join3 action ground)
+    (define cycle (expand3-action-cycle action))
+    (define (lower-arm access)
+      (define cl (access-clause access))
+      (define name (access-rel access))
+      (define tup (access-tuple access))
+      (define sel
+        (for/set ([x (in-list tup)] [i (in-naturals)]
+                  #:when (set-member? ground x))
+          i))
+      (define view (join-access-view access))
+      (define ord
+        (if (memq view '(old new))
+            (exact-index name sel (strip-prov cl))
+            (find-index indices name sel (strip-prov cl))))
+      (define K (set-count sel))
+      (define cycle-pos (index-of tup cycle))
+      (unless (and cycle-pos
+                   (= K (sub1 (length tup)))
+                   (= (list-ref ord K) cycle-pos))
+        (error 'operationalization
+               "chosen index ~a does not put Expand3 cycle column ~a after bound set ~a for ~a"
+               ord cycle-pos sel (strip-prov cl)))
+      (define ordered (order-tuple ord tup))
+      `(,view ,name ,ord ,K ,(if (memq view '(old new)) ord '())
+              ,@(map esc ordered)))
+    `(join3 ,(esc cycle)
+            ,@(map lower-arm (action-accesses action))))
+
   ;; the driver: scan the raw delta, or probe the delta index
   (define (lower-driver cl ground)
     (define name (join-rel cl))
@@ -1045,7 +1130,8 @@
   (define bodys (rule-body rule))
   (define spec-env (cjoin-spec-env rule))
   (define sj-filters (semijoin-filters bodys rel-env))
-  (define-values (pre-cls rest) (splitf-at bodys (lambda (cl) (not (join-cl? cl)))))
+  (define-values (pre-cls rest)
+    (splitf-at bodys (lambda (cl) (not (join-entry? cl)))))
   (define pre-ground
     (for/fold ([g (set)]) ([cl (in-list pre-cls)])
       (set-union g (clause-out-vars cl))))
@@ -1063,6 +1149,14 @@
        (let loop ([ground pre-ground] [ops '()] [jpos 0] [cls rest])
          (cond
            [(null? cls) (values `(seeded) (reverse ops))]
+           [(expand3-action? (car cls))
+            (define filter-ops
+              (map lower-filter (hash-ref sj-filters jpos '())))
+            (loop (set-add ground (expand3-action-cycle (car cls)))
+                  (cons (lower-join3 (car cls) ground)
+                        (append (reverse filter-ops) ops))
+                  (+ jpos 2)
+                  (cdr cls))]
            [(join-cl? (car cls))
             (define filter-ops
               (map lower-filter (hash-ref sj-filters jpos '())))
@@ -1090,6 +1184,15 @@
                   [cls (cdr rest)])
          (cond
            [(null? cls) (values driver (reverse ops))]
+           [(expand3-action? (car cls))
+            (define filter-ops
+              (map lower-filter (hash-ref sj-filters jpos '())))
+            (loop driver
+                  (set-add ground (expand3-action-cycle (car cls)))
+                  (cons (lower-join3 (car cls) ground)
+                        (append (reverse filter-ops) ops))
+                  (+ jpos 2)
+                  (cdr cls))]
            [(join-cl? (car cls))
             (define filter-ops
               (map lower-filter (hash-ref sj-filters jpos '())))
