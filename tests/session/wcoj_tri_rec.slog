@@ -1,0 +1,14 @@
+;; The recursive ternary cycle: every body occurrence is dynamic in the SCC,
+;; so the _maint4neg sweep and the _maint1 rebuild both carry the join3
+;; action (docs/wcoj.md §15, docs/m4t-contract.md).  tedge is both the
+;; edited input and the recursive head, exercising the foundation-aware
+;; overlay in front of a join3 sweep.
+
+table (tedge int int)
+
+rule
+(tedge A B)
+(tedge B C)
+(tedge A C)
+-->
+(tedge C A)

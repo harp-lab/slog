@@ -430,6 +430,20 @@
       "    ++n;\n"
       "  });\n"
       "  d->emit(std::string(\"(tupledone \") + std::to_string(n) + \")\");\n")]
+    ;; M5 diagnostics (docs/m5-contract.md): the raw live id words and the
+    ;; tombstone count of a struct relation.  Rendered dumps hide the id, so
+    ;; id stability across a clear-and-rerun is asserted on this protocol.
+    [`(dump-ids ,rel)
+     (string-append
+      "  slog::Database* db = d->db();\n"
+      (format "  slog::Relation* r = db->getRelation(\"~a\");\n" rel)
+      "  size_t n = 0;\n"
+      "  if (r) slog::Database::forEachNominal(r, [&](const u64* row) {\n"
+      "    d->emit(std::string(\"(idrow \") + std::to_string(row[0]) + \")\");\n"
+      "    ++n;\n"
+      "  });\n"
+      "  d->emit(std::string(\"(idsdone \") + std::to_string(n) + \" \"\n"
+      "          + std::to_string(r ? r->tombstoneCount() : 0) + \")\");\n")]
     ;; Drop ALL count state (docs/incremental.md §8B.2): counts are
     ;; session-ephemeral recomputable cache, so the cheap "uncounted"
     ;; transition is deletion -- the recount driver clears before a round

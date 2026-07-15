@@ -7,7 +7,11 @@ the compiler/session's database model, not daemon implementation strings.
 "level-0 observation watches" and layers a pre-commit provenance gate above
 it; it also adds the ad-hoc read-only query design (interpreted QueryPlans,
 not compiled action plugins) that this document's REPL will drive. The
-names/handles/printing/catalog sections here remain the authority.*
+names/handles/printing/catalog sections here remain the authority.
+[repl-ux.md](repl-ux.md) (same day) is the interaction-design brainstorm
+layered on both: personas, the two-verb doctrine, the interactive canvas and
+navigate mode, the handle economy (touch-to-name, reclamation), the scratch
+layer, debugging UX, and the REPL slice sequence.*
 
 ## 1. Names and four short handle classes
 

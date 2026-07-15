@@ -17,7 +17,7 @@
 #   tests/run-all.sh --list       # print the harness names and exit
 #
 # Harness names (also = full execution order):
-#   unit diag stats arena seq counts wcoj3 golden api tiered pause session incremental-stress compression smt-pin smt-solver
+#   unit diag stats arena seq counts wcoj3 structid golden api tiered pause session incremental-stress compression smt-pin smt-solver
 #
 # Gating: `smt-solver` self-skips its z3 leg when z3 is not on PATH.  `golden`
 # clears build/ by default (correctness is cache-independent), so it is ordered
@@ -52,12 +52,13 @@ run_harness() {
     seq)         "$CXX" -O2 -Wall -std=c++20 -pthread -Idaemon tests/seq-tests.cpp   -o build/seq-tests   -lgmp && ./build/seq-tests ;;
     counts)      "$CXX" -O2 -Wall -std=c++20 -pthread -Idaemon tests/counts-tests.cpp -o build/counts-tests -lgmp && ./build/counts-tests ;;
     wcoj3)       "$CXX" -O2 -Wall -std=c++20 -pthread -Idaemon tests/wcoj3-operator-tests.cpp -o build/wcoj3-operator-tests -lgmp && ./build/wcoj3-operator-tests ;;
+    structid)    "$CXX" -O2 -Wall -std=c++20 -pthread -Idaemon tests/struct-identity-tests.cpp -o build/struct-identity-tests -lgmp && ./build/struct-identity-tests ;;
     *)           echo "run-all: unknown harness '$1'" >&2; return 2 ;;
   esac
 }
 
-ALL=(unit diag stats arena seq counts wcoj3 golden api tiered pause session incremental-stress compression smt-pin smt-solver)
-QUICK=(unit diag stats arena seq counts wcoj3)
+ALL=(unit diag stats arena seq counts wcoj3 structid golden api tiered pause session incremental-stress compression smt-pin smt-solver)
+QUICK=(unit diag stats arena seq counts wcoj3 structid)
 
 case "${1:-}" in
   --list)  printf '%s\n' "${ALL[@]}"; exit 0 ;;

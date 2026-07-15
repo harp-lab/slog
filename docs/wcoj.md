@@ -791,9 +791,14 @@ shapes and identical FULL/DELTA orderings; the cursor oracle covers every pair
 of logical views, including union overlap and deduplication.  The full session
 and stress suites also pass with the feature enabled and continue to gate
 exact-once fire counts, maintained-vs-recount equality, cyclic deletion,
-self-joins, and reload.  A dedicated incremental Datalog test that forces a
-`join3` in each maintenance artifact would still make a useful additional
-cross-layer regression test.  Set output equality alone is not sufficient.
+self-joins, and reload.  A dedicated incremental Datalog regression now
+exists (`tests/session-tests.sh`, the `wcoj-tri-*`/`wcoj-rec-*` block over
+`tests/session/wcoj_tri.slog` and `wcoj_tri_rec.slog`): it forces a `join3`
+into the normal, `_count`, `_maint1`, and `_maint3neg`/`_maint4neg` plans
+(asserted against the run's own `.plan` sidecars), and gates maintained
+support sidecars against a forced fresh recount across positive maintenance,
+acyclic deletion, the recursive DRed sweep behind the foundation-aware
+overlay verb, and relearning.  Set output equality alone is not sufficient.
 
 ## 16. Observability and feature control
 

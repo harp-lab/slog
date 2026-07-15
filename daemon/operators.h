@@ -1248,8 +1248,16 @@ public:
           batch->data[j] = slog_null;
         else
         {
-          batch->data[j] = struct_encode(struct_id, (*intern_alloc << bucket_bits) | bucket);
-          ++(*intern_alloc);
+          // M5 (docs/m5-contract.md): a live-master miss may still be a
+          // dictionary hit -- dead content retains its id as a tombstone
+          // and reappearance resurrects it instead of minting.
+          u64 idw;
+          if (!rel->takeTombstone(bucket, batch->data + j, ord.data(), N, idw))
+          {
+            idw = struct_encode(struct_id, (*intern_alloc << bucket_bits) | bucket);
+            ++(*intern_alloc);
+          }
+          batch->data[j] = idw;
           std::array<u64, N> key;
           for (u16 c = 0; c < N; ++c) key[c] = batch->data[j + ord[c]];
           root->insert(key);

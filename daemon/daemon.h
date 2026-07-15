@@ -434,14 +434,16 @@ public:
   // persist (docs/incremental.md §0.5 mode 2 / B2): the driver clears each
   // cone-written relation before re-pushing the cone's strata, so the
   // re-run's iteration-0 reload stages base + batch without the stale
-  // derivations.  Cleared struct relations re-mint ids on re-derivation;
-  // intern allocators persist (monotone, never reused).
+  // derivations.  A cleared struct relation keeps its intern dictionary as
+  // tombstones, so re-derivation RESURRECTS the original ids (M5,
+  // docs/m5-contract.md); intern allocators persist (monotone, never
+  // reused), and only genuinely new content mints above them.
   void clearRelation(const std::string& rel)
   {
     if (refuseIfSuspended("clear-rel")) return;
     slog::Relation* r = database->getRelation(rel);
     if (!r) { emit(std::string("(error \"clear-rel: no relation ") + rel + "\")"); return; }
-    r->clearContents();
+    r->clearContentsToTombstones();
     // Rule derivations are gone until the rerun, but the input baseline
     // (direct assertions, unmasked inheritance) is not a rule consequence
     // and must survive the clear (§0.6).
@@ -457,7 +459,7 @@ public:
     if (refuseIfSuspended("clear-rel-at")) return;
     slog::Relation* r = database->getRelationAt(rel, pos);
     if (!r) { emit(std::string("(error \"clear-rel-at: no version of ") + rel + "\")"); return; }
-    r->clearContents();
+    r->clearContentsToTombstones();
     database->accelInvalidate(rel);   // stale sidecar rows must not reseed
   }
 

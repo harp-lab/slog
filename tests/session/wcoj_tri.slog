@@ -1,0 +1,15 @@
+;; Ternary cycle join inside the incremental artifacts (docs/wcoj.md §15):
+;; after the driver binds A and B, the two remaining key-simple occurrences
+;; close over C as one join3 action in the normal, _count, _maint1, and
+;; _maint3neg plans.  No source-program EDB: session batches feed edge so
+;; its assertions are editable input.
+
+table (edge int int)
+table (wtri int int int)
+
+rule
+(edge A B)
+(edge B C)
+(edge A C)
+-->
+(wtri A B C)

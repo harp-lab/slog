@@ -1660,6 +1660,129 @@ expect "m4t-midcone-anchored" "(route anchored edge 1 2)" out/sess-m4t-midcone.l
 expect_not "m4t-midcone-no-sweep" "(route maintain-recursive-negative" out/sess-m4t-midcone.log
 expect "m4t-midcone-content" "(dumpdone 8)" out/sess-m4t-midcone.log
 
+# --- WCOJ join3 inside the incremental artifacts (docs/wcoj.md §15) ---------
+# The triangle body lowers to a single join3 cycle action; every incremental
+# artifact flavor must carry it (asserted against the .plan sidecars of the
+# artifacts this very run compiled), and the maintained support sidecars must
+# equal a forced fresh recount -- set output equality alone is insufficient.
+expect_join3_plan() { # name plan-file
+  if [ -f "$2" ] && grep -qF "(join3 " "$2"; then
+    echo "PASS $1"; PASS=$((PASS+1))
+  else
+    echo "FAIL $1 (no join3 action in $2)"; FAIL=$((FAIL+1))
+  fi
+}
+
+# Acyclic: _maint1 (positive OLD arms) twice, then _maint3neg (negative NEW
+# arms); deleting the closing edge (1,3) kills wtri(1,2,3) and wtri(1,3,4)
+# while wtri(2,3,4) and wtri(1,2,4) survive with exact nonrec support.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/wcoj_tri.slog \
+  batch+:edge,1,2 batch+:edge,2,3 batch+:edge,1,3 batch+:edge,2,4 \
+  batch+:edge,3,4 flush \
+  dump-rel:wtri recount dump-counts:wtri \
+  batch+:edge,1,4 flush dump-rel:wtri dump-counts:wtri \
+  batch-:edge,1,3 flush dump-rel:wtri dump-counts:wtri \
+  recount-force dump-counts:wtri \
+  > out/sess-wcoj-tri.log 2>&1
+expect "wcoj-tri-neg-route" "(route maintain-negative 1)" out/sess-wcoj-tri.log
+expect "wcoj-tri-grown" "(dumpdone 4)" out/sess-wcoj-tri.log
+expect "wcoj-tri-settled" "(update-committed 3 counts-valid)" out/sess-wcoj-tri.log
+if [ "$(grep -cF '(route maintain 1)' out/sess-wcoj-tri.log)" -eq 2 ] \
+   && [ "$(grep -cF '(dumpdone 2)' out/sess-wcoj-tri.log)" -eq 2 ]; then
+  echo "PASS wcoj-tri-both-positive-maintained"; PASS=$((PASS+1))
+else
+  echo "FAIL wcoj-tri-both-positive-maintained"; FAIL=$((FAIL+1))
+fi
+# survivor counted 4x (recount, two maintained dumps, forced recount); the
+# maintained row born in flush 2 counted 3x; rows lost to the deletion stop
+# appearing at exactly the right dump
+if [ "$(grep -cF '(countrow wtri 2 3 4 0 1 0)' out/sess-wcoj-tri.log)" -eq 4 ] \
+   && [ "$(grep -cF '(countrow wtri 1 2 4 0 1 0)' out/sess-wcoj-tri.log)" -eq 3 ] \
+   && [ "$(grep -cF '(countrow wtri 1 2 3 0 1 0)' out/sess-wcoj-tri.log)" -eq 2 ] \
+   && [ "$(grep -cF '(countrow wtri 1 3 4 0 1 0)' out/sess-wcoj-tri.log)" -eq 1 ]; then
+  echo "PASS wcoj-tri-maintained-equals-recount"; PASS=$((PASS+1))
+else
+  echo "FAIL wcoj-tri-maintained-equals-recount"; FAIL=$((FAIL+1))
+fi
+wcoj_tri_hash=$(grep -oE '"[0-9a-f]{8}_maint1"' out/sess-wcoj-tri.log \
+                  | head -1 | tr -d '"' | sed 's/_maint1//')
+expect_join3_plan "wcoj-tri-plan-normal"   "build/${wcoj_tri_hash}.plan"
+expect_join3_plan "wcoj-tri-plan-count"    "build/${wcoj_tri_hash}_count.plan"
+expect_join3_plan "wcoj-tri-plan-maint1"   "build/${wcoj_tri_hash}_maint1.plan"
+expect_join3_plan "wcoj-tri-plan-maint3neg" "build/${wcoj_tri_hash}_maint3neg.plan"
+
+# Recursive: tedge is both the edited input and the recursive head, so the
+# deletion applies through the foundation-aware overlay verb and the
+# _maint4neg sweep's join3 finds the lost instantiation; tedge(3,1) loses
+# its only foundation (no reseed) and is relearned by the join3 _maint1
+# rebuild when the edge returns.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/wcoj_tri_rec.slog \
+  batch+:tedge,1,2 batch+:tedge,2,3 batch+:tedge,1,3 flush \
+  dump-rel:tedge recount dump-counts:tedge \
+  batch-:tedge,2,3 flush dump-rel:tedge dump-counts:tedge \
+  batch+:tedge,2,3 flush dump-rel:tedge dump-counts:tedge \
+  recount-force dump-counts:tedge \
+  > out/sess-wcoj-rec.log 2>&1
+expect "wcoj-rec-overlay-verb" "(overlay-negative-dred tedge 1 1)" out/sess-wcoj-rec.log
+expect "wcoj-rec-sweep" "(route maintain-recursive-negative 1)" out/sess-wcoj-rec.log
+expect "wcoj-rec-no-reseed" "(dred-reseeded 0 2)" out/sess-wcoj-rec.log
+expect "wcoj-rec-swept" "(dumpdone 2)" out/sess-wcoj-rec.log
+expect "wcoj-rec-settled" "(update-committed 3 counts-valid)" out/sess-wcoj-rec.log
+if [ "$(grep -cF '(route maintain 1)' out/sess-wcoj-rec.log)" -eq 2 ] \
+   && [ "$(grep -cF '(dumpdone 4)' out/sess-wcoj-rec.log)" -eq 2 ]; then
+  echo "PASS wcoj-rec-relearned"; PASS=$((PASS+1))
+else
+  echo "FAIL wcoj-rec-relearned"; FAIL=$((FAIL+1))
+fi
+# the purely recursively founded row: recount, maintained relearn, forced
+# recount -- and never while the closing edge is out
+if [ "$(grep -cF '(countrow tedge 3 1 0 0 1)' out/sess-wcoj-rec.log)" -eq 3 ]; then
+  echo "PASS wcoj-rec-maintained-equals-recount"; PASS=$((PASS+1))
+else
+  echo "FAIL wcoj-rec-maintained-equals-recount"; FAIL=$((FAIL+1))
+fi
+wcoj_rec_hash=$(grep -oE '"[0-9a-f]{8}_maint4neg"' out/sess-wcoj-rec.log \
+                  | head -1 | tr -d '"' | sed 's/_maint4neg//')
+expect_join3_plan "wcoj-rec-plan-normal"    "build/${wcoj_rec_hash}.plan"
+expect_join3_plan "wcoj-rec-plan-count"     "build/${wcoj_rec_hash}_count.plan"
+expect_join3_plan "wcoj-rec-plan-maint1"    "build/${wcoj_rec_hash}_maint1.plan"
+expect_join3_plan "wcoj-rec-plan-maint4neg" "build/${wcoj_rec_hash}_maint4neg.plan"
+
+# --- M5 slice 1: struct ids are stable across clear-and-rerun ---------------
+# (docs/m5-contract.md).  The struct cone routes to clear-and-rerun on a
+# deletion; the clear keeps the intern dictionary as tombstones, so the
+# rerun's re-derivations RESURRECT the original ids.  dump-ids exposes the
+# raw id words (rendered dumps hide them) plus the tombstone count.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/base2_input.slog \
+  batch+:in,1,2 batch+:in,3,4 flush dump-ids:pair \
+  batch-:in,3,4 flush dump-ids:pair \
+  batch+:in,3,4 flush dump-ids:pair \
+  > out/sess-m5-ids.log 2>&1
+expect "m5-ids-populated" "(idsdone 2 0)" out/sess-m5-ids.log
+expect "m5-ids-tombstoned" "(idsdone 1 1)" out/sess-m5-ids.log
+expect "m5-ids-rerun-routed" "(route rerun " out/sess-m5-ids.log
+if [ "$(grep -cF '(idsdone 2 0)' out/sess-m5-ids.log)" -eq 2 ]; then
+  echo "PASS m5-ids-all-resurrected"; PASS=$((PASS+1))
+else
+  echo "FAIL m5-ids-all-resurrected (tombstones left after reappearance)"; FAIL=$((FAIL+1))
+fi
+m5_ids1=$(grep -F '(idrow ' out/sess-m5-ids.log | head -2 | sort)
+m5_ids2=$(grep -F '(idrow ' out/sess-m5-ids.log | sed -n '3p')
+m5_ids3=$(grep -F '(idrow ' out/sess-m5-ids.log | tail -2 | sort)
+if [ -n "$m5_ids1" ] && [ "$m5_ids1" = "$m5_ids3" ]; then
+  echo "PASS m5-ids-stable-across-rerun"; PASS=$((PASS+1))
+else
+  echo "FAIL m5-ids-stable-across-rerun (ids reminted)"; FAIL=$((FAIL+1))
+fi
+if [ -n "$m5_ids2" ] && printf '%s\n' "$m5_ids1" | grep -qF "$m5_ids2"; then
+  echo "PASS m5-ids-survivor-original"; PASS=$((PASS+1))
+else
+  echo "FAIL m5-ids-survivor-original (survivor id not from the original set)"; FAIL=$((FAIL+1))
+fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

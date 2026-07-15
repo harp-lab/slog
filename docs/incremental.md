@@ -1492,6 +1492,14 @@ relations into the DRed capability set.
 **Exit:** every deletion/reseed/relearn preserves struct IDs for all surviving
 and reappearing content, with no dead row join-visible.
 
+**M5 shipped 2026-07-14** (`docs/m5-contract.md`): the dictionary is the
+live master plus a per-bucket content-to-id tombstone store; every
+physical removal retains the mapping, every reappearance (intern,
+verbatim re-copy, import) resurrects the original id or fails loudly on
+drift, and clear-and-rerun over struct cones is now id-stable.
+Tombstones are session-local (saves carry live content only) until M4S
+pins the persistence policy.
+
 ### M4N — precise stratified negation
 
 Emit and maintain negated-body-driven variants from §0.8. Until this exits,

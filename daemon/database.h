@@ -185,6 +185,16 @@ private:
   // these are unioned into `delta` for the next iteration (see finalizeBatches).
   std::vector<std::vector<InsertBatch*>> send_shards;
   u64 intern_allocators[bucket_count];
+  // M5 (docs/m5-contract.md): the DEAD half of a struct relation's intern
+  // dictionary.  Per bucket (buckethash of the master ordering's leading
+  // content column -- InternStructTask's routing, so each per-bucket intern
+  // task touches only its own map), content columns in master order -> the
+  // retained id word.  Live mappings stay in the master index; the two are
+  // disjoint by construction.  Null for non-struct relations; empty until
+  // something dies, so forward-only evaluations never pay for it.
+  std::unordered_map<std::vector<u64>, u64, boost::hash<std::vector<u64>>>*
+    struct_tombstones = nullptr;
+  std::atomic<u64> struct_tombstone_count{0};
 
   // Stage B: bucketized views of `delta`, rebuilt once per iteration (reorg).
   // write_leadcols holds the distinct index leading columns we hash-bucket by;
@@ -482,11 +492,16 @@ public:
       // more worker threads) lands a Relation on dirty memory and triggers it.
       intern_allocators{}
   {
+    if (struct_id > 0)
+      struct_tombstones =
+        new std::unordered_map<std::vector<u64>, u64,
+                               boost::hash<std::vector<u64>>>[bucket_count];
   }
 
   ~Relation()
   {
     clearAllIndices();
+    delete [] struct_tombstones;
     delete lat_spec_tree;
     if (delta)
     {
@@ -1097,6 +1112,141 @@ public:
   {
     for (u32 b = 0; b < bucket_count; ++b)
       intern_allocators[b] = pred.intern_allocators[b];
+  }
+
+  // ---- M5 struct intern dictionary: tombstones (docs/m5-contract.md) ----
+  // Identity invariant: per version, content-to-id is a partial function
+  // independent of liveness -- an id is never reassigned, content never gets
+  // a second id while the dictionary retains its first, ids never recycle
+  // online.  Live mappings are the master index; dead mappings live here.
+
+  u64 tombstoneCount() const
+  {
+    return struct_tombstones
+             ? struct_tombstone_count.load(std::memory_order_relaxed) : 0;
+  }
+
+  // Install content->id (key = content columns in master-ordering order).
+  // Re-installing the same mapping is idempotent; retained content under a
+  // second id is identity drift.
+  void installTombstone(std::vector<u64>&& key, u64 id)
+  {
+    auto& m = struct_tombstones[buckethash(key[0])];
+    auto r = m.emplace(std::move(key), id);
+    if (r.second)
+      struct_tombstone_count.fetch_add(1, std::memory_order_relaxed);
+    else if (r.first->second != id)
+      fatal("struct identity drift: relation " + name
+            + " tombstoned one content under two ids");
+  }
+
+  // Retain a dropped struct row's mapping (storage-order tuple, id at
+  // column 0).  No-op for non-struct relations.
+  void tombstoneFromStorage(const u64* t)
+  {
+    if (struct_id == 0 || !struct_tombstones) return;
+    const std::vector<u16>& ord = getMasterIndex();
+    std::vector<u64> key(arity - 1);
+    for (u16 c = 0; c + 1 < arity; ++c) key[c] = t[ord[c]];
+    installTombstone(std::move(key), t[0]);
+  }
+
+  // The intern task's live-master miss path: dead content must resurrect its
+  // retained id rather than mint.  `row` is a storage-order tuple and `ord`
+  // the master ordering (content columns first, id slot last); the caller's
+  // bucket is buckethash(row[ord[0]]), so per-bucket intern tasks touch only
+  // their own map.
+  bool takeTombstone(u16 b, const u64* row, const u16* ord, u16 n, u64& id_out)
+  {
+    if (!struct_tombstones
+        || struct_tombstone_count.load(std::memory_order_relaxed) == 0)
+      return false;
+    std::vector<u64> key(n - 1);
+    for (u16 c = 0; c + 1 < n; ++c) key[c] = row[ord[c]];
+    auto& m = struct_tombstones[b];
+    auto it = m.find(key);
+    if (it == m.end()) return false;
+    id_out = it->second;
+    m.erase(it);
+    struct_tombstone_count.fetch_sub(1, std::memory_order_relaxed);
+    return true;
+  }
+
+  // Dedup-map form (storage-order content fields, no id column) -- the
+  // import path's key shape (importDatabaseBIN's internStructTuple).
+  bool takeTombstoneByFields(const std::vector<u64>& fields, u64& id_out)
+  {
+    if (!struct_tombstones
+        || struct_tombstone_count.load(std::memory_order_relaxed) == 0)
+      return false;
+    const std::vector<u16>& ord = getMasterIndex();
+    std::vector<u64> key(arity - 1);
+    for (u16 c = 0; c + 1 < arity; ++c) key[c] = fields[ord[c] - 1];
+    auto& m = struct_tombstones[buckethash(key[0])];
+    auto it = m.find(key);
+    if (it == m.end()) return false;
+    id_out = it->second;
+    m.erase(it);
+    struct_tombstone_count.fetch_sub(1, std::memory_order_relaxed);
+    return true;
+  }
+
+  // Verbatim-ingestion reconciliation: a row arriving with its id already
+  // assigned (version re-copy, anchored refresh, baseline re-materialise,
+  // import) erases a matching tombstone -- resurrection by copy -- and a
+  // mismatched id is identity drift, caught loudly instead of dangling.
+  void reconcileTombstone(const u64* t)
+  {
+    if (struct_id == 0 || !struct_tombstones
+        || struct_tombstone_count.load(std::memory_order_relaxed) == 0)
+      return;
+    const std::vector<u16>& ord = getMasterIndex();
+    std::vector<u64> key(arity - 1);
+    for (u16 c = 0; c + 1 < arity; ++c) key[c] = t[ord[c]];
+    auto& m = struct_tombstones[buckethash(key[0])];
+    auto it = m.find(key);
+    if (it == m.end()) return;
+    if (it->second != t[0])
+      fatal("struct identity drift: relation " + name
+            + " re-ingested content under a different id");
+    m.erase(it);
+    struct_tombstone_count.fetch_sub(1, std::memory_order_relaxed);
+  }
+
+  // Id-space severance (refresh-from-disk, merge scratch teardown, freeze):
+  // the incoming id space replaces this one wholesale, so retained mappings
+  // would collide with unrelated content rather than protect identity.
+  void dropTombstones()
+  {
+    if (!struct_tombstones) return;
+    for (u16 b = 0; b < bucket_count; ++b) struct_tombstones[b].clear();
+    struct_tombstone_count.store(0, std::memory_order_relaxed);
+  }
+
+  // The dictionary is version state: a segment-boundary copy that dropped
+  // tombstones would remint across versions of one chain.
+  void copyTombstonesFrom(const Relation& pred)
+  {
+    if (!struct_tombstones || !pred.struct_tombstones) return;
+    u64 n = 0;
+    for (u16 b = 0; b < bucket_count; ++b)
+    {
+      struct_tombstones[b] = pred.struct_tombstones[b];
+      n += struct_tombstones[b].size();
+    }
+    struct_tombstone_count.store(n, std::memory_order_relaxed);
+  }
+
+  // M5 point removal: drop the row from every registered non-seeded ordering
+  // and retain its mapping.  The struct analog of
+  // removeTupleAllIndicesPreservingCounts; sidecar policy stays with the
+  // caller's flavor fold, not this verb (M4S wires the sweep to it).
+  bool tombstoneStructRow(const u64* t)
+  {
+    if (struct_id == 0) return false;
+    if (!removeTupleAllIndicesPreservingCounts(t)) return false;
+    tombstoneFromStorage(t);
+    return true;
   }
 
   // ---- lattice (map) relations: docs/lattices.md ----
@@ -1710,6 +1860,7 @@ public:
       });
     if (!found)
       return false;
+    tombstoneFromStorage(t);   // M5: physical removal retains the mapping
     clearContents();
     for (size_t i = 0; i < kept.size(); i += arity)
       insertTupleAllIndices(kept.data() + i);
@@ -1739,7 +1890,10 @@ public:
 	for (u16 c = 0; c < arity; ++c)
 	  row[c] = r[rewrite_ord[c]];
 	if (drop.count(row))
+	{
 	  ++found;
+	  tombstoneFromStorage(row.data());   // M5: retain the mapping
+	}
 	else
 	  kept.insert(kept.end(), row.begin(), row.end());
       });
@@ -1749,6 +1903,30 @@ public:
     for (size_t i = 0; i < kept.size(); i += arity)
       insertTupleAllIndices(kept.data() + i);
     return found;
+  }
+
+  // M5 re-derivation clear (docs/m5-contract.md): empty membership but keep
+  // the dictionary -- every live master row becomes a tombstone, so the
+  // rerun's re-derivations resurrect their original ids instead of
+  // reminting.  Id-space-severing paths (refresh-from-disk, merge) use plain
+  // clearContents + dropTombstones instead.  Tables degrade to clearContents.
+  void clearContentsToTombstones()
+  {
+    if (struct_id == 0 || indices.empty())
+    {
+      clearContents();
+      return;
+    }
+    const std::vector<u16> ord = getMasterIndex();
+    Index** buckets = getIndex(ord, false);
+    for (u16 b = 0; b < bucket_count; ++b)
+      buckets[b]->forEach([&](const u64* r)
+      {
+        // index order IS master order: content columns, then the id slot
+        std::vector<u64> key(r, r + arity - 1);
+        installTombstone(std::move(key), r[arity - 1]);
+      });
+    clearContents();
   }
 
   // Drop every tuple while KEEPING the index registrations (contrast
@@ -1820,6 +1998,7 @@ public:
   // only in externally-seeded runs and are never authoritative content.
   void insertTupleAllIndicesPreservingCounts(const u64* t)
   {
+    reconcileTombstone(t);   // M5: cheap no-op unless a tombstone exists
     for (const auto& it : indices)
     {
       if (seeded_orderings.find(it.first) != seeded_orderings.end())
@@ -2905,6 +3084,7 @@ public:
     if (old->isLattice())
       nv->setLatticeFromSpec(old->latticeSpec(), cnode_arena);
     nv->copyInternAllocatorsFrom(*old);
+    nv->copyTombstonesFrom(*old);   // M5: the dictionary is version state
     nv->ensureDefaultIndex();
     forEachNominal(old, [&](const u64* row)
     {
@@ -5448,6 +5628,7 @@ public:
     loadMpzBIN(db_dir);
 
     rel->clearContents();
+    rel->dropTombstones();   // M5: a disk refresh severs the id space
     readRelationFiles(rel, rel_dir);
     rel->ensureDefaultIndex();
     rel->finalizeBatches();
@@ -5616,11 +5797,19 @@ public:
       auto hit = cm.find(fields);
       if (hit != cm.end())
 	return hit->second;
-      const u16 bucket = buckethash(fields[0]);
-      u64* alloc = dst->getInternAlloc(bucket);
-      const u64 idw = struct_encode(dst->getStructId(),
-				    (*alloc << bucket_bits) | bucket);
-      ++(*alloc);
+      // M5 (docs/m5-contract.md): dead content in the dest retains its id
+      // as a tombstone; a merge reviving it resurrects rather than remints
+      // (takeTombstoneByFields erases the tombstone, so the verbatim insert
+      // below reconciles cleanly).
+      u64 idw = 0;
+      if (!dst->takeTombstoneByFields(fields, idw))
+      {
+	const u16 bucket = buckethash(fields[0]);
+	u64* alloc = dst->getInternAlloc(bucket);
+	idw = struct_encode(dst->getStructId(),
+			    (*alloc << bucket_bits) | bucket);
+	++(*alloc);
+      }
       u64 row[max_daemon_arity + 1];
       row[0] = idw;
       for (size_t c = 0; c < fields.size(); ++c)
@@ -5974,7 +6163,10 @@ public:
     Relation* v = it->second[ordinal].rel;
     if (pred == nullptr || v == nullptr)
       return false;
-    v->clearContents();
+    // M5: keep the dictionary across the refresh -- the verbatim re-copy
+    // reconciles matching mappings and downstream re-derivation resurrects
+    // the rest (docs/m5-contract.md); a mismatch is caught as drift.
+    v->clearContentsToTombstones();
     v->copyInternAllocatorsFrom(*pred);
     forEachNominal(pred, [&](const u64* row)
     {

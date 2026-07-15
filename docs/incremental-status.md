@@ -1,6 +1,7 @@
 # Incremental Slog implementation ledger
 
-**Reviewed:** 2026-07-14 after the M4T slice 2 checkpoint
+**Reviewed:** 2026-07-14 after M5 slice 1 (struct identity) and the
+join3 cross-layer regression
 **Normative design:** `docs/incremental.md`
 
 This file records what the tree currently implements and where it differs
@@ -12,16 +13,17 @@ semantics and this file identifies migration work.
 
 The implementation is green under the current regression gates:
 
-- session workflow harness: 309/309;
-- native count checks: 177/177;
-- quick harness: unit 137/137, diagnostics 14/14, stats, arena, sequence, and
-  counts all pass;
-- focused incremental stress: 10/10 gates pass. M3 and M6L ten-epoch
-  signed-stream oracles pass with 1, 2, and 8 workers; the M3 product and M6L
-  replacement workloads survive phase-attributed forced pause/resume; the
+- session workflow harness: 413/413 (now including the wcoj join3
+  cross-layer block and the M5 id-stability block);
+- native count checks: 177/177; struct identity battery: 31/31;
+- quick harness: unit 163/163, diagnostics 14/14, stats, arena, sequence,
+  counts, wcoj3, and structid all pass;
+- focused incremental stress: 14/14 gates pass. M3, M4T, and M6L ten-epoch
+  signed-stream oracles pass with 1, 2, and 8 workers; their large workloads
+  survive phase-attributed forced pause/resume; the
   M6L replacement test crosses the runtime split-batch boundary; recovery
-  injection passes; and the latest 240-key report measured 108.286 ms cold
-  versus 62.890 ms warm (0.5808), with 479 contributor rows; and
+  injection passes; and the latest 240-key report measured 212.626 ms cold
+  versus 93.977 ms warm (0.4420), with 479 contributor rows; and
 - all modified Racket modules compile with `raco make`.
 
 These tests satisfy the M0.4, M1, M3, and first two M6L exit audits described
@@ -39,25 +41,36 @@ batch limit.
 ## Resume point
 
 Begin a future incremental-maintenance review with this ledger, then read
-`docs/m4t-contract.md` (implemented) and §4.5–§4.7 in `docs/incremental.md`.
-`docs/m6l-contract.md` records the completed lattice admission boundary.
+`docs/m4t-contract.md` and `docs/m5-contract.md` (both implemented) and
+§4.5–§4.7 in `docs/incremental.md`. `docs/m6l-contract.md` records the
+completed lattice admission boundary.
 
 M4T slices 1 and 2 are shipped; the milestone's table surface is complete.
 Edits may target recursive head relations (foundation-aware overlay), and
 multi-version chains ride the tip route because the rebound guard already
 diverts mid-cone version edges to the anchored walk. Only historical
-anchors remain outside M4T, permanently owned by the anchored walk. The
-remaining implementation queue, in the decided order, is:
+anchors remain outside M4T, permanently owned by the anchored walk.
 
-1. **M5 — separate struct intern identity from live membership**, the
-   prerequisite for struct-capable deletion; then **M4S** admits struct
-   relations into the DRed capability set.
+M5 slice 1 is shipped: struct intern identity is separated from live
+membership through a tombstone dictionary, and clear-and-rerun over struct
+cones is id-stable. The remaining implementation queue, in the decided
+order, is:
+
+1. **M4S** — admit struct relations into the DRed capability set on the M5
+   substrate (sweep over-delete = `tombstoneStructRow`, reseed/relearn =
+   resurrection), deciding the tombstone persistence policy as it goes.
 2. **M4N — precise stratified negation**, then **M7 — recursive
    lattice/rank repair**.
 
 The handoff gates are `tests/run-all.sh --quick`, `tests/run-all.sh session`,
 and `tests/run-all.sh incremental-stress`. The complete orchestrator remains
 the arc-end gate.
+
+The W0 checkpoint is test-green: all 17 orchestrator harnesses passed across
+sandbox-compatible runs, including clean-build goldens, API, tiered, pause,
+compression, and SMT coverage. One narrow M5 follow-up remains: directly test
+an input-ledger assertion embedding a struct id across clear-and-rerun; the
+current fixture proves dictionary resurrection and survivor-id stability.
 
 ## Shipped implementation
 
@@ -284,6 +297,55 @@ the arc-end gate.
   silently dropped direct assertions on derived relations and the next
   count epoch aborted on the orphaned sidecar seed.
 
+### M5 slice 1 — struct intern identity separated from live membership
+
+- **Storage split:** the intern dictionary is the live master ordering plus
+  a per-bucket content-to-id tombstone store (`Relation::struct_tombstones`,
+  bucketed by the master ordering's leading content column — exactly
+  `InternStructTask`'s routing, preserving per-bucket task exclusivity).
+  Live and dead mappings are disjoint by construction; forward-only
+  evaluations never materialize a tombstone.
+- **Resurrection:** a live-master miss in `InternStructTask` consults the
+  bucket's tombstones and reuses the retained id without allocating; the
+  import path's `internStructTuple` does the same via
+  `takeTombstoneByFields`. Verbatim ingestion
+  (`insertTupleAllIndicesPreservingCounts`) reconciles a matching tombstone
+  and fatals on a mismatched id — the previously silent cross-version
+  remint hazard is now an audit.
+- **Removal retains identity:** `removeTuple`/`removeTuples` (Phase-0 input
+  edits) and the new `tombstoneStructRow` point verb (all non-seeded
+  orderings; M4S's sweep hook) install the mapping they drop.
+- **Clear discipline:** re-derivation clears (`clear-rel`, `clear-rel-at`,
+  `refreshVersion`) use `clearContentsToTombstones`, so fallback
+  clear-and-rerun over struct cones now RESURRECTS the original ids —
+  including direct assertions and inherited rows that embed struct ids.
+  Id-space-severing paths (`loadRelation` disk refresh) drop tombstones;
+  `newVersion` copies them (the dictionary is version state).
+- **Persistence limitation:** tombstones are session-local; saves carry
+  live content verbatim as before. Identity across a save/load boundary is
+  guaranteed for content live at save time; dead-content resurrection
+  stability across saves waits for M4S's persistence decision.
+- **Observability:** the `dump-ids` action (`(idrow W)` rows plus
+  `(idsdone N tombstones)`) exposes raw id words and the tombstone count.
+- **Tests:** `tests/struct-identity-tests.cpp` (`structid` quick-gate
+  target: resurrection, no-recycle, all-orderings removal, verbatim
+  reconciliation, drift fatals, severance, version copy) and the
+  `m5-ids-*` session block (id stability across a routed clear-and-rerun,
+  tombstone consumption on reappearance).
+- **No admission change:** struct cones still route to clear-and-rerun and
+  struct counts remain diagnostic; M4S owns route admission.
+
+### WCOJ ternary joins × incremental artifacts
+
+The `wcoj-tri-*`/`wcoj-rec-*` session block (over
+`tests/session/wcoj_tri.slog` and `wcoj_tri_rec.slog`) closes the
+`docs/wcoj.md` §15 cross-layer gap: it asserts a `join3` action is present
+in the normal, `_count`, `_maint1`, and `_maint3neg`/`_maint4neg` `.plan`
+sidecars of the artifacts each run compiles, and gates maintained support
+sidecars against forced fresh recounts across positive maintenance,
+acyclic deletion, the recursive DRed sweep (behind the foundation-aware
+overlay verb on the recursive head), and relearning.
+
 Legacy labels retained by code comments and tests map as follows:
 
 - **A1–A8:** parse, safety, stratification, operationalization, runtime
@@ -314,10 +376,12 @@ Primary anchors:
 
 These remain explicit capability boundaries or future correctness work.
 
-1. **Struct identity and liveness remain coupled.** The struct master index is
-   both the content-to-ID intern dictionary and live relational membership.
-   Struct counts are diagnostic only until M5 separates tombstoned identity
-   from join-visible membership.
+1. **Struct counts remain diagnostic and struct cones remain on
+   clear-and-rerun.** M5 separated tombstoned identity from join-visible
+   membership (the coupling itself is resolved), but route admission —
+   struct relations entering the counted maintenance and DRed capability
+   sets — belongs to M4S. Tombstone persistence is session-local until
+   M4S pins the save policy.
 2. **Recursive signed deletion is tip-local and plain-table only.** M4T
    handles counted recursive plain-table cones reached by any tip-local
    edit, including edits targeting the recursive head (foundation-aware

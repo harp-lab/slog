@@ -54,6 +54,7 @@
        [(list rel) `(dump-rel ,rel)]
        [(list rel p) `(dump-rel ,rel ,(string->number p))])]
     [(list "dump-tuples" rel) `(dump-tuples ,rel)]
+    [(list "dump-ids" rel) `(dump-ids ,rel)]
     [(list "write-db" db) `(write-db ,db)]
     [(list "write-csv" dir) `(write-csv ,dir)]
     [(list "add-tuple" arg)
@@ -239,6 +240,8 @@
                                             (echo-until #px"^\\(dumpdone "))]
       [`(dump-tuples ,rel) (session-action! s `(dump-tuples ,rel)
                                              (echo-until #px"^\\(tupledone "))]
+      [`(dump-ids ,rel) (session-action! s `(dump-ids ,rel)
+                                         (echo-until #px"^\\(idsdone "))]
       [`(sizes)
        ;; no terminator line: rely on ordering -- the lines flush before
        ;; the next op's response and drain at close
