@@ -715,6 +715,42 @@ unambiguous; repl-ux.md owns the plain R0–R5 labels.
 This answers whether the relational encoding is pleasant and affordable
 without changing the daemon or compiler pipeline.
 
+**Results (2026-07-15, `tests/reflect/rf0-roundtrip.rkt`):** the encoding
+is pleasant and affordable. All **560/560** `.plan` sidecars in a warm
+build cache (all six flavors) round-trip **byte-identical and
+KernelPlanKey-identical** — decoded from *shuffled*, text-serialized
+facts, so order-independence is proven, not assumed; deleting one fact or
+swapping two `pc` ordinals breaks the gate as it should. A separate
+`read`→`write` idempotence check confirms the `.plan` format itself has
+no ambiguity. Scale: the largest plan (~400 KB) encodes as ~68k facts
+(~170 facts/KB); fact text is ~4.5× the sexp bytes (the repeated
+plan/rule/region/pc key prefix dominates); plan→facts ~3 ms, facts→plan
+~20–60 ms including index building; the whole-repo sweep runs in seconds.
+The schema needed 27 fact relations. Findings that should shape RF1's
+Plan ABI 2 schemas:
+
+1. **`join3` is the one genuinely nested op** — it needs per-arm child
+   facts (a two-level `(pc, arm, pos)` key); a single flat
+   `slog.plan.op` row cannot hold it.
+2. **Variable-length integer lists** (index column orders, `ord`/`dord`
+   operands) are ~60% of all facts and the whole size multiplier —
+   worth one canonical sequence-value encoding rather than per-element
+   position facts.
+3. **Empty-vs-missing needs explicit existence facts** where the opcode
+   does not fix a field's existence (relation index lists) — and this
+   surfaced a live grammar straggler: a third index marker
+   (`seeded-only`) that `ir-stack.rkt`'s `index?` accepts but the
+   serializer's grammar comment omits.
+4. **Open sexp vocabularies** (lattice merge specs, `cjoin` collection
+   specs, oracle/seqindex attachment decls) fell back to a rooted
+   term-tree encoding; the production schema should close them.
+5. **Dual-shape `let`** (ref-copy vs prim call) decodes by the presence
+   of a sibling fact — workable, but the typed schema should make the
+   union explicit.
+
+The probe script provides `plan->facts`/`facts->plan` for reuse and is
+the seed of the image-based-goldens idea (§18.7).
+
 ### RF1: program model and real kernelization
 
 1. Preserve the SCC condensation graph in a new compiler `ProgramModel`.

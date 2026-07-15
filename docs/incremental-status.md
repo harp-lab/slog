@@ -43,7 +43,10 @@ batch limit.
 Begin a future incremental-maintenance review with this ledger, then read
 `docs/m4t-contract.md` and `docs/m5-contract.md` (both implemented) and
 §4.5–§4.7 in `docs/incremental.md`. `docs/m6l-contract.md` records the
-completed lattice admission boundary.
+completed lattice admission boundary. `docs/m4s-contract.md` (2026-07-15)
+is the next milestone's design contract: struct admission on the M4T
+lifecycle over M5 verbs, the embedded-id settlement invariant, probe-only
+negative `mkstruct`, and the chain-is-the-sidecar persistence decision.
 
 M4T slices 1 and 2 are shipped; the milestone's table surface is complete.
 Edits may target recursive head relations (foundation-aware overlay), and

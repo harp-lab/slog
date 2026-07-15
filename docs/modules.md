@@ -861,10 +861,12 @@ run         <string> [as <identifier>] [with <formal-path> = <actual-path>, ...]
 module instances. Formal and actual sides of a binding are qualified paths.
 
 Qualified names should parse as one name-path AST. The current lexer emits
-`.` as an operator and the expression parser has a low-precedence dot
-operator, so merely allowing dots in the identifier regular expression would
-create avoidable ambiguities. Parse `id(.id)+` explicitly in name positions,
-then preserve path components through module expansion.
+`.` as an operator and the expression parser has a binary dot operator
+(the tightest-binding entry in the operator table — see
+[n0-seam-map.md](n0-seam-map.md) Seam 1), so merely allowing dots in the
+identifier regular expression would create avoidable ambiguities. Parse
+`id(.id)+` explicitly in name positions, then preserve path components
+through module expansion.
 
 Add one `compiler/names.rkt` authority with a `QName` value (a nonempty vector
 or list of validated components), prefix substitution, ordering, display,
