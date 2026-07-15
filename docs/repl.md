@@ -3,6 +3,12 @@
 2026-07-13. **Design proposal; no REPL exists yet.** The REPL should present
 the compiler/session's database model, not daemon implementation strings.
 
+*2026-07-14: [execution-tiers.md](execution-tiers.md) adopts §6 verbatim as
+"level-0 observation watches" and layers a pre-commit provenance gate above
+it; it also adds the ad-hoc read-only query design (interpreted QueryPlans,
+not compiled action plugins) that this document's REPL will drive. The
+names/handles/printing/catalog sections here remain the authority.*
+
 ## 1. Names and four short handle classes
 
 A completed root or pipeline event receives a session-local handle such as

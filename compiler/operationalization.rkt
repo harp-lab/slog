@@ -859,6 +859,11 @@
   (define-values (plain-bodys old-positions new-positions)
     (split-exact-marks rbodys0))
   (define rule `(syn ,rprov ,rtag ,@plain-bodys --> ,@rheads))
+  ;; deterministic per-rule counter for lowering-introduced names: rule
+  ;; content is a pure function of its source, so clause-order counting is
+  ;; reproducible where a global gensym is not (the canonical plan and
+  ;; byte-reproducible codegen both need this, docs/execution-tiers.md §4)
+  (define latchk-count (box 0))
   (define (rel-arity name)
     (rel-decl-arity (hash-ref rel-env name)))
   (define (stored-arity name)                      ; struct tuples carry an id
@@ -943,14 +948,25 @@
       [lat?
        (define vvar (last tup))
        (define value-ground? (set-member? ground vvar))
-       (define vvar+ (if value-ground? (gensymb 'latchk) vvar))
+       ;; a ground value probes into a fresh check variable.  The name is a
+       ;; deterministic per-rule counter, NOT a gensym (run-varying names
+       ;; would break the canonical plan's byte stability); it is built in
+       ;; POST-escape form -- the single "_" is compiler-reserved by
+       ;; escape-id-for-C (a user "_" doubles), so no escaped source
+       ;; variable can collide -- and must bypass esc below.
+       (define vvar-c
+         (if value-ground?
+             (let ([n (unbox latchk-count)])
+               (set-box! latchk-count (add1 n))
+               (string->symbol (format "latchk_~a" n)))
+             (esc vvar)))
        (define ind (find-index indices name sel (strip-prov cl)))
        ;; the ordering ends in the value column; the op's vars are the key
        ;; columns in index order with the bound value variable last
        (define keytup (order-tuple (take ind (sub1 (length ind))) tup))
        (cons `(join-lat ,name ,ind ,(set-count sel)
-                        ,@(map esc keytup) ,(esc vvar+))
-             (if value-ground? (list `(eq ,(esc vvar) ,(esc vvar+))) '()))]
+                        ,@(map esc keytup) ,vvar-c)
+             (if value-ground? (list `(eq ,(esc vvar) ,vvar-c)) '()))]
       [else
        (define ind (find-index indices name sel (strip-prov cl)))
        (list `(join ,name ,ind ,(set-count sel) ,@(map esc (order-tuple ind tup))))]))

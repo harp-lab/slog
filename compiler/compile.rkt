@@ -39,6 +39,7 @@
 (require "lattice-check.rkt")
 (require "join-planning.rkt")
 (require "operationalization.rkt")
+(require "canonical-plan.rkt")
 (require "emit-cpp.rkt")
 (require "ir-shared.rkt")
 (require "ir-stack.rkt")
@@ -68,6 +69,10 @@
 (define/contract (lower-all planned-rules rel-env decomps)
   (-> set? hash? hash? cprog?)
   (build-cprog planned-rules rel-env decomps))
+
+(define/contract (canonicalize-all cprog flavor)
+  (-> cprog? symbol? kernel-plan?)
+  (canonicalize-cprog cprog #:flavor flavor))
 
 ;; -----------------------------------------------------------------------
 ;; Front end: a program to its list of stratum jobs.
@@ -522,6 +527,14 @@
           [(delta-entry-flavor) (string-append proghash "_delta")]
           [(count-flavor) (string-append proghash "_count")]
           [else proghash]))
+  ;; the same discrimination as a symbol, for the kernel plan's (flavor ...)
+  (define plan-flavor
+    (cond [(dred-maintenance-flavor?) 'maint4neg]
+          [(negative-maintenance-flavor?) 'maint3neg]
+          [(maintenance-flavor) 'maint1]
+          [(delta-entry-flavor) 'delta]
+          [(count-flavor) 'count]
+          [else 'normal]))
   ;; the augmented rule set (+ error/oracle arms) and the relations produced
   ;; within this stratum, both from stratum-rules+dynamic -- shared with the
   ;; sidecar manifest so recursive/non-recursive classification is derived once.
@@ -566,6 +579,14 @@
   ;; concurrent clang (docs/fast-compile.md §8)
   (call-with-atomic-output (fullpath (format "build/~a.cprog" hash-name))
                            (lambda () (pretty-write cprog)))
+  ;; canonical KernelPlan sidecar (docs/execution-tiers.md T1): the
+  ;; deterministic, edit-stable lowered plan the daemon will install
+  ;; directly (T2+), written beside the .cprog whenever emission runs.
+  ;; Cached .so's built before this pass existed have no .plan, so plan
+  ;; consumers must re-emit on a miss rather than assume presence.
+  (call-with-atomic-output
+   (fullpath (format "build/~a.plan" hash-name))
+   (lambda () (displayln (kernel-plan->string (canonicalize-all cprog plan-flavor)))))
   (define accel-rels (stratum-accel-rels stratum dynamic-rels type-env decomps))
   (define emitted (write-cpp cprog dbmanifest hash-name #:accel-rels accel-rels))
   ;; write-cpp returns either one string (a single TU) or a list of

@@ -7,6 +7,14 @@ pathological-budget test. See "Implementation notes" at the end for the two
 scoped-down pieces (probe/once slicing, and wiring the rule id into
 `malformed_deduction`) whose seams are cut but whose full form is deferred.*
 
+*2026-07-14: partially superseded by
+[execution-tiers.md](execution-tiers.md) — the §6 text-hash rule id / ordinal
+SCC id scheme is replaced by RuleKey/RuleId/SccInstanceKey, the §8(a) JIT'd
+point-query direction is replaced by interpreted read-only QueryPlans, and the
+§8(b) seams (scan-full driver, second RunState context, `bind(db)`) are
+consumed by that design. The shipped suspend/resume mechanics described here
+remain current.*
+
 ## 1. Goal
 
 Today, running a stratum blocks the daemon until that stratum's full fixpoint,

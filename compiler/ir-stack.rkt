@@ -33,7 +33,8 @@
          planned-rule?
          cprog? cprog-dynamic-rels cprog-constants cprog-decls cprog-rules
          crule? crule-pre crule-driver crule-body crule-head crule-loc
-         crule-kind)
+         crule-kind
+         kernel-plan?)
 
 (require "ir-shared.rkt")
 (require "join-actions.rkt")
@@ -438,3 +439,45 @@
 (define (crule-head r) (cdr (fifth r)))
 (define (crule-loc r) (sixth r))
 (define (crule-kind r) (seventh r))
+
+;; -----------------------------------------------------------------------
+;; Level 7: the canonical kernel plan (canonical-plan.rkt), the
+;; deterministic, edit-stable serialized form of one stratum's cprog
+;; (docs/execution-tiers.md §4, T1).  Frame check only, per the
+;; one-predicate-per-level convention -- op-level validation (bound/free
+;; register positions, slot ranges, ABI) is the daemon installer's
+;; seal-time job (T2).  Value refs are (r n) registers or (k n) constant
+;; slots; relations are (rel n) slots into the sorted storage-decl table;
+;; oracle/seqindex decls ride as raw attachments over those names.
+;;
+;;   kernel-plan ::= (kernel-plan (abi n) (flavor sym)
+;;                     (relations (rel n decl) ...)
+;;                     (attachments decl ...)
+;;                     (constants (k n name value) ...)
+;;                     (prims name ...)
+;;                     (dynamic name ...)
+;;                     (rules rule-def ...)
+;;                     (meta (rule-meta (rid n) (source loc)) ...))
+;;   rule-def    ::= (rule-def (rid n) (variant tag) (nregs n)
+;;                     (pre op ...) (driver d) (body op ...) (head hop ...))
+
+(define (kernel-rule-def? r)
+  (match r
+    [`(rule-def (rid ,(? natural?)) (variant ,(? string?))
+                (nregs ,(? natural?))
+                (pre ,_ ...) (driver ,_) (body ,_ ...) (head ,_ ...)) #t]
+    [_ #f]))
+
+(define (kernel-plan? p)
+  (match p
+    [`(kernel-plan
+       (abi ,(? natural?))
+       (flavor ,(? symbol?))
+       (relations (rel ,(? natural?) ,(? decl?)) ...)
+       (attachments ,(? decl?) ...)
+       (constants (k ,(? natural?) ,(? var?) ,_) ...)
+       (prims ,(? var?) ...)
+       (dynamic ,(? var?) ...)
+       (rules ,(? kernel-rule-def?) ...)
+       (meta (rule-meta (rid ,(? natural?)) (source ,_)) ...)) #t]
+    [_ #f]))

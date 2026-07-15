@@ -12,6 +12,13 @@ the existing pause/api/golden suites pass.  The description below is the design
 as built; a few incidental notes on what changed during implementation are
 inline.*
 
+*2026-07-14: [execution-tiers.md](execution-tiers.md) extends this design —
+"always compile, start at -O0" becomes "interpret by default, compile
+selectively," and the §5 standalone build pool is subsumed by a daemon-owned
+core-budget arbiter. The boundary hot-swap seams, single-flight claims, and
+per-cluster `.o` cache described here carry over unchanged as the attachment
+mechanism.*
+
 ## 1. Goal and the measured problem
 
 Fresh programs take minutes to start because every stratum `.so` is compiled

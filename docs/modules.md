@@ -3,6 +3,12 @@
 2026-07-13. **Design proposal; not implemented.** This document proposes a
 small surface feature with broad consequences:
 
+*2026-07-14: [execution-tiers.md](execution-tiers.md) designs its
+KernelPlanKey/BindingFrame identity model so that §8.4's alpha-normalized
+instance-path code reuse is achievable when instantiation ships; that reuse
+remains optional here and becomes a correctness gate there only once
+instantiation exists.*
+
 ```slog
 instantiate "module.slog" as mod
 ```
