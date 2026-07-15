@@ -25,27 +25,30 @@
   (require "../../compiler/ir-stack.rkt")
 
   ;; Compile source to the list of cprogs (one per stratum).
+  ;; Keep this suite focused on the scalar scheduler: WCOJ has its own tests
+  ;; for combined-action filter placement.
   (define (cprogs-of src)
-    (define f (make-temporary-file "semijoin-test-~a.slog"))
-    (dynamic-wind
-     void
-     (lambda ()
-       (with-output-to-file f #:exists 'replace (lambda () (display src)))
-       (match-define `((program ,type-env ,mods ,_ ,_))
-         (load-program-list (path->string f) (hash)))
-       (define all-rules (foldl set-union (set) (map last (set->list mods))))
-       (define typed
-         (typecheck-rules type-env
-                          (foldl simplify-rule (set) (set->list all-rules))))
-       (for/list ([stratum (in-list (stratify-rules typed))])
-         (define rules (stratum-rules stratum))
-         (define dynamic-rels
-           (for/fold ([acc (set)]) ([rule (in-set rules)])
-             (set-union acc (rule-head-rels rule))))
-         (match-define (cons planned rel-env+)
-           (plan-stratum rules (type-env-rels type-env) dynamic-rels))
-         (build-cprog planned rel-env+)))
-     (lambda () (delete-file f))))
+    (parameterize ([wcoj3-enabled #f])
+      (define f (make-temporary-file "semijoin-test-~a.slog"))
+      (dynamic-wind
+       void
+       (lambda ()
+         (with-output-to-file f #:exists 'replace (lambda () (display src)))
+         (match-define `((program ,type-env ,mods ,_ ,_))
+           (load-program-list (path->string f) (hash)))
+         (define all-rules (foldl set-union (set) (map last (set->list mods))))
+         (define typed
+           (typecheck-rules type-env
+                            (foldl simplify-rule (set) (set->list all-rules))))
+         (for/list ([stratum (in-list (stratify-rules typed))])
+           (define rules (stratum-rules stratum))
+           (define dynamic-rels
+             (for/fold ([acc (set)]) ([rule (in-set rules)])
+               (set-union acc (rule-head-rels rule))))
+           (match-define (cons planned rel-env+)
+             (plan-stratum rules (type-env-rels type-env) dynamic-rels))
+           (build-cprog planned rel-env+)))
+       (lambda () (delete-file f)))))
 
   ;; All (exists ...) ops across a cprog list, tagged with their crule.
   (define (exists-ops cprogs)

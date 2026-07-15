@@ -241,6 +241,7 @@ These are runtime/debug controls rather than config-program fields:
 | `SLOG_NO_STATS=1` | suppress `$stat_*` relation publication |
 | `SLOG_INLINE_MAX=N` | session inline batch limit per anchor/relation; default 2048 |
 | `SLOG_NO_SEMIJOIN=1` | disable generated semijoin filters for diagnosis |
+| `SLOG_NO_WCOJ3=1` | disable automatic key-simple ternary cyclic joins for diagnosis/benchmarking |
 | `SLOG_DEBUG=1` | compile generated code with extra debug information |
 | `SLOG_NO_FREEZE=1` | disable compiler freezing of ground facts |
 

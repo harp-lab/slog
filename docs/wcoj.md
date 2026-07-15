@@ -1,8 +1,78 @@
 # Local worst-case-optimal joins
 
-*(2026-07-14; design notes, not implemented.  The intended first operator is
-a batched ternary cycle closer over existing sorted indices.  This document
-does not propose a worst-case-optimality guarantee for every rule.)*
+*(Started 2026-07-14; updated after the first production implementation.  Slog
+now has an automatically selected key-simple ternary cycle closer over its
+existing sorted indices.  The later sections deliberately retain the roadmap
+for batching, resumability, grouped expansion, and larger cyclic islands.  This
+document does not claim a worst-case-optimality guarantee for every rule.)*
+
+## 0. Current implementation status
+
+The conservative `Expand3`/`join3` slice described in this document is now
+implemented and enabled by default:
+
+  - `compiler/join-actions.rkt` gives normalized positive occurrences stable
+    rule-local IDs and represents occurrence views and physical join actions;
+  - `compiler/join-planning.rkt` assigns DELTA/FULL/OLD/NEW from original
+    dynamic-occurrence order, searches action schedules for compute-free bodies
+    of at most eight occurrences, and enumerates legal drivers for small closed
+    and seeded rules;
+  - `compiler/operationalization.rkt` treats the two arms as one grounding
+    transition, requisitions their prefix indices, preserves identical
+    FULL/DELTA orders for OLD/NEW, and lowers one explicit `join3` C operation;
+  - `compiler/emit-cpp.rkt` emits independently ordered/viewed arms; and
+  - `daemon/operators.h` implements FULL, OLD difference, and NEW sorted-union
+    prefix cursors plus a symmetric hybrid sequential/`lower_bound` leapfrog.
+
+Automatic selection remains intentionally narrow.  Both arms must be ordinary
+set tables with exactly one common free stored column and no other free/payload
+column; each must have a non-empty bound prefix; the already-consumed positive
+occurrence graph must certify a real cycle between distinct anchors; and an
+ambiguous group of three or more eligible arms is left scalar.  A body compute
+that remains after the constant pre-phase also keeps the current scalar plan.
+Unsupported rules are not errors.  They follow the unchanged greedy pipeline.
+
+This first implementation uses Slog's existing coarse-grained batch
+parallelism: outer driver partitions are claimed by workers, every worker opens
+read-only prefix cursors for its current environment, and matches flow directly
+into its existing thread-local output batches.  There is not yet a separate
+array of environment descriptors or a pause/resume point inside a single
+`join3` call.  Explicit 64/128-environment batching and value-key continuation
+state remain follow-up work; Section 12 and Section 13 are the design for that
+work, not claims about the current runtime.  The fused callback can safely run
+after an arbitrary scalar prefix because those locals remain on the generated
+C++ stack; moving that prefix across a future batch/pause boundary will require
+the live-environment descriptor described below.
+
+The initial key-simple scope also does not need a new general `AccessNeed`
+record yet.  Since an eligible arm has arity `K+1`, requiring its `K` bound
+columns as an index prefix necessarily puts the sole remaining cycle column at
+position `K`.  Lowering asserts that fact, and OLD/NEW reuse the existing
+same-complete-order constraint.  The explicit ordered-next-column contract in
+Section 8 is still required before grouped or multi-free-column operators.
+
+The cache-keyed escape hatch is `SLOG_NO_WCOJ3=1`.  The bounded-search cap is
+also part of the compiled artifact key.  Scalar differential runs remain the
+correct first diagnostic for any suspected planner or maintenance issue.
+
+### Production measurements
+
+The checked-in `bench/wcoj-bench.sh` compares optimized scalar and `join3`
+plans on identical data and diffs every result relation.  On the development
+machine with eight workers, three-repetition medians were:
+
+| workload | scalar ms | `join3` ms | speedup | result |
+|---|---:|---:|---:|---|
+| disjoint high-degree hub | 4,334.169 | 10.957 | 395.56x | identical |
+| 500k-edge bipartite triangle | 318.212 | 92.708 | 3.43x | identical |
+| 600k-edge Erdős-Rényi triangle | 404.614 | 326.356 | 1.24x | identical |
+| 200k-edge Erdős-Rényi 4-cycle | 470.031 | 396.190 | 1.19x | identical |
+| TinyCFA 0CFA control | 17.686 | 15.397 | 1.15x | identical; no rewrite |
+
+The hub `join3` median at 1/2/4/8 workers was 18.511/18.840/12.947/9.933 ms.
+At this small absolute runtime, process and fixed scheduling costs are visible;
+the important result is that the operator participates in the existing outer
+driver parallelism without a private scheduler.
 
 ## 1. Recommendation
 
@@ -48,15 +118,13 @@ sets of possible next values are incompatible.  Dense cyclic queries are the
 important remaining case.
 
 The most severe example found so far used two high-degree arms with disjoint
-cycle keys.  The current plan visited 1,024,032,000 candidates for 64,000 input
-edges and no output.  In a temporary generated-C++ experiment (not checked in),
-an ordered-prefix intersection reduced the median 8-thread time from
-3,829.444 ms to 6.443 ms, about 594x.  On an Erdős-Rényi graph with 600,000
-edges and 216,297 output rows, the same idea improved 378.123 ms to 275.892 ms
-(1.37x), with identical output.
+cycle keys.  The binary plan visits a quadratic candidate intermediate even
+though it produces no output.  The production measurements in Section 0 show
+that ordered-prefix intersection retains a roughly 396x win on that shape and
+a 1.24x win on the ordinary 600,000-edge Erdős-Rényi graph, with identical
+outputs.
 
-These are prototype numbers, not acceptance results.  They establish two
-things:
+The measurements establish two things:
 
   1. avoiding the cyclic intermediate is much higher leverage than tuning the
      existing nested callbacks; and
@@ -699,26 +767,33 @@ The initial support matrix should be explicit rather than accidental:
 | Feature | First automatic version | Later |
 |---|---:|---:|
 | ordinary table/set relation | yes | yes |
-| FULL/DELTA view | yes | yes |
-| positive OLD view | after difference cursor | yes |
-| negative NEW view | after sorted-union cursor | yes |
+| FULL arm view | yes | yes |
+| DELTA outer driver | yes; never an intersection arm | yes |
+| positive OLD arm view | yes, difference cursor | yes |
+| negative NEW arm view | yes, sorted-union cursor | yes |
 | same-relation/self-join occurrences | yes, with occurrence IDs | yes |
 | static occurrence as an arm | yes | yes |
-| seeded FULL version | after full-driver tests | yes |
+| seeded FULL version | yes | yes |
 | temp relation | no | possible specialized path |
 | lattice/map relation | no | grouped/map operator |
 | struct relation | no | after storage-contract review |
 | negated occurrence | no | remains a guard/filter |
 | computed key column | no | after dependency-aware Lookup |
 | grouped payload columns | no | `Expand3Grouped` |
-| count/signed maintenance | fallback until exact tests pass | yes |
+| count/signed maintenance | yes; shares explicit occurrence views | yes |
 
 “No” means the planner retains scalar operations, not that the rule is
 rejected.
 
-Count and signed-maintenance plugins deserve explicit tests before enabling the
-rewrite.  Set output equality alone cannot reveal duplicated or omitted rule
-instantiations.
+Count and signed-maintenance plugins use the same occurrence-view assignment.
+Planner/lowering tests assert count FULL, positive OLD, and negative NEW action
+shapes and identical FULL/DELTA orderings; the cursor oracle covers every pair
+of logical views, including union overlap and deduplication.  The full session
+and stress suites also pass with the feature enabled and continue to gate
+exact-once fire counts, maintained-vs-recount equality, cyclic deletion,
+self-joins, and reload.  A dedicated incremental Datalog test that forces a
+`join3` in each maintenance artifact would still make a useful additional
+cross-layer regression test.  Set output equality alone is not sufficient.
 
 ## 16. Observability and feature control
 
@@ -837,7 +912,19 @@ starting proposal is:
   - positive scaling until outer partitions or memory bandwidth become the
     measured limit.
 
+The first three performance classes and outer-driver scaling have been
+measured.  Inner-prefix pause latency is still an explicit open acceptance
+item; current pausing remains at the outer driver boundary, as it is for the
+existing nested scalar pipeline.
+
 ## 19. Staged implementation plan
+
+Status as of the first production slice: stable occurrences, explicit
+`Expand3`, exact logical views, bounded small-body search, driver enumeration,
+physical lowering/emission, and the FULL/OLD/NEW leapfrog kernel are complete.
+The general ordered access record, inner-operator continuation, explicit
+environment batches, observability counters, GYO core extraction, delayed
+Lookup handles, `IntersectN`, and grouped payload expansion remain planned.
 
 ### Phase 0: lock down representations
 
@@ -900,11 +987,12 @@ parallel WCOJ and shared trie layouts are relevant here, but only after the
 local operator's counters show where B-tree seeks and task partitioning fall
 short.
 
-## 20. Decisions to pin down before writing production code
+## 20. Decision record and remaining design gates
 
-The following list is the pre-implementation design gate.  Each item needs a
-short recorded answer; the recommendation in parentheses is the current best
-choice.
+The following list began as the pre-implementation design gate.  Items resolved
+by the first slice use the recommended choice in the implementation; items
+about batching, continuation state, general ordered access, and broader cyclic
+islands remain gates for the next slice.
 
 1. **Occurrence representation and lifetime.**  Are IDs structs embedded at
    normalization or side-table keys?  (Embedded stable IDs, with provenance.)
@@ -919,10 +1007,13 @@ choice.
    or optimize any two-list intersection?  (Require the cycle for automatic
    enablement; expose broader mode to benchmarks.)
 6. **Placement restriction.**  Must the first operator immediately follow the
-   driver/check prefix?  (Yes unless environment batches and inner continuation
-   ship together.)
+   driver/check prefix?  (The fused v1 may follow a scalar prefix because its
+   locals stay on the callback stack.  A future batch/pause boundary must either
+   restrict placement or carry the live environment.)
 7. **Access-need representation.**  How does index packing retain “C is next”
-   and same FULL/DELTA order?  (Explicit bound-set plus ordered next-columns.)
+   and same FULL/DELTA order?  (For v1, arity `K+1` makes C the only possible
+   suffix and lowering asserts it; add explicit bound-set plus ordered
+   next-columns before any broader arm shape.)
 8. **Intersection algorithm.**  Merge, shorter-side probes, or leapfrog seek?
    (Symmetric seek/leapfrog first; instrument it.)
 9. **Logical views.**  Which of OLD/NEW is required before default enablement?

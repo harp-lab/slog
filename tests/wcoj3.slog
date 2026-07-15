@@ -1,0 +1,15 @@
+;; End-to-end key-simple ternary cycle closure.  The final two atoms are
+;; lowered as one join3 action after the outer edge binds A and B.
+
+table (edge int int)
+table (tri int int int)
+
+rule
+(edge 1 2)
+(edge 2 3)
+(edge 1 3)
+(edge 1 4)
+(edge 4 3)
+(edge 2 4)
+
+rule (edge A B) (edge B C) (edge A C) --> (tri A B C)

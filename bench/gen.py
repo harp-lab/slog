@@ -138,6 +138,13 @@ def main():
     write_bin_db("bench_hub", {"redge": (2, r), "sedge": (2, s),
                                "tedge": (3, t)})
 
+    # -- wcoj_hub: a genuine key-simple triangle hard case ------------------
+    # One edge relation contains spokes->hub and hub->other-spokes.  Every
+    # spoke has an outgoing edge, so the triangle semijoin existence check
+    # passes, but edge[hub,C] and edge[spoke,C] are disjoint.  The binary plan
+    # enumerates n^2 paths; prefix intersection seeks once per outer edge.
+    write_bin_db("bench_wcoj_hub", {"edge": (2, sorted(set(r + s)))})
+
     # -- hub_closing: same explosion, T selective (k spokes participate) -----
     rng = random.Random(3)
     k = 60

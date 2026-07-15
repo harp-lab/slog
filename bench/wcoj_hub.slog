@@ -1,0 +1,10 @@
+;; db: bench_wcoj_hub
+;; Key-simple directed-triangle worst case for join3.  For every
+;; spoke->hub driver row, edge[hub,C] has n values while edge[spoke,C]
+;; contains only the hub; their C sets are disjoint.  Prefix existence
+;; filtering passes, so a binary plan still enumerates n^2 two-paths.
+
+table (edge int int)
+table (tri int int int)
+
+rule (edge A B) (edge B C) (edge A C) --> (tri A B C)
