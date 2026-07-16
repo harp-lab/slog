@@ -265,6 +265,32 @@ the fork.
   twin parity, catalog round-trip) plus the existing session workflow
   harness driven **through the command protocol** dual-stack; all
   Appendix A consumers untouched and green.
+
+  *As built (2026-07-15):* `daemon/protocol.h` owns the D6 reader
+  (`parseLine`/`quoteString`; std-only, ready for plan.h); the verb
+  dispatch and catalog emission live beside the transport loops in
+  `slogd.cpp` (`dispatch_line` -> `dispatch_command`).  Refusal shapes:
+  `(refused parse <gen> [(verb V)] (detail "..."))`,
+  `(refused unknown-verb <gen> (verb V))`,
+  `(refused reserved-verb <gen> (verb V) (family
+  boundary|query|watch|debugger))`; `<gen>` reads
+  `Daemon::commandGeneration()` (backing store today: the update-epoch
+  counter).  Catalog: `(catalog [relations|types])` streams
+  `(catalog-rel (name "N") (kind table|struct|lat) (arity A)
+  (version-id I) (version-key K|#f) (evaluation E|#f) (predecessor P|#f)
+  (struct-id S|#f) (type-key #f) (lat-spec L|#f) (size Z|#f)
+  (temp #t|#f))` records — declaration truth, empties included, unlike
+  `(schema)` — plus `(catalog-planned (name "N") (version-key K))` for
+  announced-but-unregistered keys and `(catalog-type (sid S) (name "N")
+  (arity A) (type-key #f))`, each stream closed by `(catalog-end <n>)`.
+  Protocol-mode seam: `Daemon::commandProtocolSpoken()`, set by any
+  command verb EXCEPT the legacy `(continue)`/`(continue-boundary)`
+  literals (every pre-T0 driver sends those; slice (d) scopes the
+  uniform pause record by this flag), observable without marking via
+  `(protocol-mode)` -> `(protocol-mode path|command)`.  The
+  session-workflow-through-the-dual-stack leg remains with slice (b),
+  whose entry-mode verbs are what the workflow needs beyond `.so`
+  paths.
 - **(b) `plan.h` parse/seal + entry modes.** Parse a real T1 `.plan`
   sidecar; the D16 seal battery; `installStratum` with validated entry
   modes and forwarding shims. Tests: seal-rejection battery extending

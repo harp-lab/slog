@@ -3497,6 +3497,15 @@ public:
     return relations;
   }
 
+  // Version keys announced (plan-version-key) but not yet consumed by a
+  // registration -- relation slots the driver has named that have no
+  // materialized Relation yet.  Read-only view for the T0 catalog verbs
+  // (docs/t0-contract.md slice (a)).
+  const std::unordered_map<std::string, std::string>& plannedVersionKeys()
+  {
+    return planned_version_keys;
+  }
+
   // Every physical relation version ever registered, in creation order
   // (the owning registry; entries may be null after drops).  Read-only
   // walks -- e.g. dropping all count state before a count round

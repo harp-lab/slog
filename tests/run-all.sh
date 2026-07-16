@@ -17,7 +17,7 @@
 #   tests/run-all.sh --list       # print the harness names and exit
 #
 # Harness names (also = full execution order):
-#   unit diag stats arena seq counts wcoj3 interp structid golden api tiered pause session incremental-stress compression smt-pin smt-solver
+#   unit diag stats arena seq counts wcoj3 interp structid golden api tiered pause protocol session incremental-stress compression smt-pin smt-solver
 #
 # Gating: `smt-solver` self-skips its z3 leg when z3 is not on PATH.  `golden`
 # clears build/ by default (correctness is cache-independent), so it is ordered
@@ -43,6 +43,7 @@ run_harness() {
     api)         bash tests/api-tests.sh ;;
     tiered)      bash tests/tiered-tests.sh ;;
     pause)       bash tests/pause-tests.sh ;;
+    protocol)    bash tests/protocol-tests.sh ;;
     session)     bash tests/session-tests.sh ;;
     incremental-stress) bash tests/incremental-stress.sh ;;
     compression) bash tests/compression/run.sh ;;
@@ -58,7 +59,7 @@ run_harness() {
   esac
 }
 
-ALL=(unit diag stats arena seq counts wcoj3 interp structid golden api tiered pause session incremental-stress compression smt-pin smt-solver)
+ALL=(unit diag stats arena seq counts wcoj3 interp structid golden api tiered pause protocol session incremental-stress compression smt-pin smt-solver)
 QUICK=(unit diag stats arena seq counts wcoj3 interp structid)
 
 case "${1:-}" in
