@@ -1,0 +1,28 @@
+;; M4S recursive construction self-join (docs/m4s-contract.md, required
+;; fixtures): closure by self-join where every closure row is a CONSTRUCTED
+;; struct term -- the struct analog of m4t_selfjoin.  With the 3-cycle
+;; r0(1,2), r0(2,3), r0(3,1) the closure is all nine pairs over {1,2,3}:
+;;   sr (2,1) -> (input 0, nonrec 0, rec 3)   (2,Y)+(Y,1) for Y in {1,2,3}
+;; and sedge interns nine contents with the same support words.
+;;
+;; Cutting the cycle (delete r0(1,2)) leaves the closure of
+;; { (2,3), (3,1) } = { (2,3), (3,1), (2,1) }:
+;;   sr (2,3) -> (0, 1, 0)    copy of r0(2,3)
+;;   sr (3,1) -> (0, 1, 0)    copy of r0(3,1)
+;;   sr (2,1) -> (0, 0, 1)    (2,3)+(3,1) only
+;; so sedge holds 3 live ids and 6 tombstones after settlement.
+
+table (r0 int int)
+struct (sedge int int)
+table (sr sedge)
+
+rule
+(r0 X Y)
+-->
+(sr (sedge X Y))
+
+rule
+(sr (sedge X Y))
+(sr (sedge Y Z))
+-->
+(sr (sedge X Z))

@@ -686,6 +686,27 @@
 
 ;; Build full plans first, then delta plans.  Exact old/new select sets pin
 ;; their delta assignment to the full assignment chosen by the greedy packer.
+;;
+;; A struct's full-content selection {1..n} is pinned to the CANONICAL master
+;; ordering (1 2 ... n 0) in every flavor.  The master is the intern
+;; dictionary's authority (dedup, tombstone keys, clear-to-tombstones,
+;; count-mode probe-only mkstruct), shared across the flavors resident on one
+;; relation; letting the greedy packer unify it with a permuted probe
+;; selection (e.g. {2} chaining {1,2} into (2 1 0)) gives two flavors two
+;; disjoint "masters", and whichever one a flavor never writes goes silently
+;; stale -- discovered by the M4S diamond fixture as reminted ids after
+;; clear-and-rerun and count-round "uninterned instance" fatals (the M4T
+;; all-orderings lesson, this time between flavors).  Permuted content
+;; probes still get their own SECONDARY orderings; only the {1..n}
+;; assignment is fixed.
+(define (canonical-struct-master rel-env name)
+  (match (hash-ref rel-env name)
+    [`(struct ,ts ...)
+     (define stored (add1 (length ts)))
+     (hash (list->set (range 1 stored))
+           (append (range 1 stored) (list 0)))]
+    [_ (hash)]))
+
 (define (choose-indices rel-env needs)
   (define selections (selection-needs-by-key needs))
   (define orderings (make-hash))
@@ -695,7 +716,8 @@
     (define sels (hash-ref selections name (set)))
     (unless (set-empty? sels)
       (define arity (stored-arity-for-decl (hash-ref rel-env name)))
-      (define-values (ords asns) (pack-selections sels arity))
+      (define-values (ords asns)
+        (pack-selections sels arity (canonical-struct-master rel-env name)))
       (hash-set! orderings name ords)
       (hash-set! assignments name asns)))
   (for ([name (in-list names)])

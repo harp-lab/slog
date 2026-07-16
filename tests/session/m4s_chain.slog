@@ -1,0 +1,31 @@
+;; M4S pass-through chain (docs/m4s-contract.md, required fixtures):
+;; (p P) --> (q (bar P)) -- an id bound from a body column flows as a VALUE
+;; into a second struct construction, so q rows embed bar ids and bar rows
+;; embed foo ids (nested embedding across two struct relations).  The
+;; settlement obligation is the embedded-id invariant: after any flush,
+;; every embedded id in a live row must decode to a live struct row --
+;; asserted through the content-rendered dumps (a dangling id renders as
+;; garbage, never as the constructed content; see the m5-keep fixture).
+;;
+;; With in = {1, 2, 3}:
+;;   p = { (foo 1) (foo 2) (foo 3) }        each (input 0, nonrec 1, rec 0)
+;;   q = { (bar (foo X)) : X in {1,2,3} }   each (input 0, nonrec 1, rec 0)
+;; Mixed flush {-in(2), +in(4)}: p/q swap member 2 for 4; foo/bar each keep
+;; 3 live ids + 1 tombstone.  A second deletion (-in(3)) leaves {1, 4} and
+;; 2 live ids + 2 tombstones per struct relation.
+
+table (in int)
+struct (foo int)
+struct (bar foo)
+table (p foo)
+table (q bar)
+
+rule
+(in X)
+-->
+(p (foo X))
+
+rule
+(p P)
+-->
+(q (bar P))

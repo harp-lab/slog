@@ -1,0 +1,25 @@
+;; M4S import-then-edit (docs/m4s-contract.md, required fixtures): the
+;; m5-keep shape over a would-be-admissible cone -- plain tables + one
+;; struct relation, single acyclic stratum, NO lattice anywhere (unlike
+;; base2_input, whose dist/cost keeps the program outside M4S admission).
+;; The session imports a frozen mini bin-db asserting (out (pair 7 8))
+;; directly; nothing re-derives it, so its liveness -- and the struct
+;; row's foundation -- must come from the input ledger (the payload's
+;; struct heap is recorded as direct input exactly like its table rows).
+;;
+;; With in = {(1,2), (3,4)} plus the import:
+;;   out  = { (pair 1 2) (pair 3 4) (pair 7 8) }
+;;   pair (1 2)/(3 4) -> (input 0, nonrec 1, rec 0)   constructed
+;;   pair (7 8)       -> (input 1, nonrec 0, rec 0)   ledger foundation
+;;   out  (pair 7 8)  -> (input 1, nonrec 0, rec 0)
+;; Deleting in(3,4) removes exactly out/pair (3 4); the imported row's
+;; embedded id must stay valid across settlement.
+
+struct (pair int int)
+table (in int int)
+table (out pair)
+
+rule
+(in X Y)
+-->
+(out (pair X Y))
