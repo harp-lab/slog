@@ -96,15 +96,65 @@
     [`(syn ,_ ,name ,xs ...) xs]))
 
 ;; -----------------------------------------------------------------------
+;; Canonical rule order (RF1 slice 0, docs/rf1-contract.md determinism
+;; doctrine).  Temp relation names are minted by a per-stratum counter
+;; walked in canonical rule order (the shipped latchk_<n>/const<sha24>
+;; precedents), so two compiles of the same tree produce byte-identical
+;; names.  The order key is the rule's serialization with provenance
+;; stripped and every VARIABLE renamed to its first-occurrence ordinal:
+;; typed rules carry gensym'd variable spellings (wildcards `__*`, split
+;; `_t*`, residual tycheck reporting vars -- all minted post-cache-key and
+;; random run to run), and Racket set iteration order varies with symbol
+;; spellings, so neither mint order nor raw rule text can drive the walk.
+;; Relation/prim/struct names, constants, and accept lists are run-stable
+;; and stay verbatim.  Two rules can tie only by being alpha-equivalent,
+;; in which case the counter assignment within the tie group is arbitrary
+;; -- invisible at the plan layer, which is variable-blind (canonical
+;; plans register-rename), so either assignment yields the same plan SET.
+
+(define (rule-sort-key rule)
+  (define names (make-hash))
+  (define (var! v)
+    (if (symbol? v)
+        (hash-ref! names v (lambda () (string->symbol (format "?~a" (hash-count names)))))
+        v))
+  (define (vars! vs) (map var! vs))
+  (define (norm-rhs rhs)
+    (match rhs
+      [`(syn ,_ const ,v) `(const ,v)]
+      [`(syn ,_ ,name ,args ...) `(,name ,@(vars! args))]
+      [_ (if (symbol? rhs) (var! rhs) rhs)]))
+  (define (norm-cl cl)
+    (match cl
+      [`(syn ,_ = ,x ,rhs) `(= ,(var! x) ,(norm-rhs rhs))]
+      [`(syn ,_ let ,x ,rhs) `(let ,(var! x) ,(norm-rhs rhs))]
+      [`(syn ,_ ,(? neg-symbol?) ,inner) `(~ ,(norm-cl inner))]
+      [`(syn ,_ tycheck ,y ,accept ,rid ,rel ,col)
+       `(tycheck ,(var! y) ,accept ,(var! rid) ,(var! rel) ,(var! col))]
+      [`(syn ,_ /= ,a ,b) `(/= ,(var! a) ,(var! b))]
+      [`(syn ,_ == ,a ,b) `(== ,(var! a) ,(var! b))]
+      [`(syn ,_ ,(? primitive-cmp? f) ,a ,b) `(,f ,(var! a) ,(var! b))]
+      [`(syn ,_ ,name ,args ...) `(,name ,@(vars! args))]
+      [cl (strip-prov cl)]))   ; defensive: unknown shapes verbatim, prov-blind
+  (match rule
+    [`(syn ,_ rule ,bodys ... --> ,heads ...)
+     (format "~s" `(rule ,@(map norm-cl bodys) --> ,@(map norm-cl heads)))]
+    [_ (format "~s" (strip-prov rule))]))
+
+;; -----------------------------------------------------------------------
 ;; plan-stratum: the pass entry point.
 ;;
 ;; rules        set of typed rules (one stratum's worth)
 ;; rel-env      relation declarations (hash), extended here with temps
 ;; dynamic-rels relations that grow during this stratum (its rules' heads)
+;; #:level      the stratum's level, embedded in temp names: temps of two
+;;              strata coexist by NAME in one daemon database (emit-cpp
+;;              reuses an existing relation of the same name, fatal on
+;;              arity mismatch), so names must be unique program-wide
 ;;
 ;; Returns (cons planned-rules rel-env+) with planned-rules a set.
 
-(define (plan-stratum rules rel-env dynamic-rels)
+(define (plan-stratum rules rel-env dynamic-rels #:level [level 0])
   ;; temps created by staging are dynamic too; track them alongside
   (define temps (mutable-set))
   (define (dynamic? name)
@@ -120,6 +170,37 @@
   (define (add-temp! name arity)
     (set-add! temps name)
     (set-box! rel-env-box (hash-set (unbox rel-env-box) name `(temp ,arity))))
+
+  ;; Deterministic temp naming (RF1 slice 0; see rule-sort-key above).
+  ;; Shape: temp[<flavor>]<level>x<n> -- all-alphanumeric ON PURPOSE:
+  ;;  - tests/stats-tests.sh normalizes `temp[A-Za-z0-9]+`, so a `_` would
+  ;;    break the fires goldens;
+  ;;  - not `v_`-prefixed (emit-cpp value-reference namespace) and not
+  ;;    `$`-prefixed (docs/n0-seam-map.md Seam 4 conventions).
+  ;; The flavor tag keeps the count/maintenance/delta replans of the SAME
+  ;; stratum disjoint from the normal flavor's temps: flavored temps can
+  ;; differ in arity (a counted temp carries the parent's full enumeration
+  ;; signature), and emit-cpp resolves temps BY NAME against the live
+  ;; database, fatal on arity mismatch -- under gensym the flavors never
+  ;; shared names, and this preserves exactly that.
+  (define flavor-tag
+    (cond [(dred-maintenance-flavor?)     "r"]   ; _maint4neg
+          [(negative-maintenance-flavor?) "n"]   ; _maint3neg
+          [(maintenance-flavor)           "m"]   ; _maint1
+          [(count-flavor)                 "c"]   ; _count
+          [(delta-entry-flavor)           "d"]   ; _delta
+          [else                           ""]))
+  (define temp-counter (box 0))
+  (define (fresh-temp! arity)
+    (let loop ()
+      (define n (unbox temp-counter))
+      (set-box! temp-counter (add1 n))
+      (define name (string->symbol (format "temp~a~ax~a" flavor-tag level n)))
+      ;; skip names already taken (a user relation could spell temp<L>x<N>;
+      ;; rel-env content is run-stable, so the skip is deterministic too)
+      (if (hash-has-key? (unbox rel-env-box) name)
+          (loop)
+          (begin (add-temp! name arity) name))))
 
   ;; Count-flavor classification (docs/incremental.md §6.4/§8B.5, M0): a
   ;; rule is recursive iff some positive body relation is produced by its
@@ -172,11 +253,16 @@
                             #:seeded? #t)
         (plan-rule-versions staged-rule dynamic? temp? lattice? ordinary-table? statics)))
 
+  ;; Canonical rule order: temps mint in this walk (rule-sort-key above),
+  ;; NOT in set-iteration order, which varies with gensym'd symbol
+  ;; spellings run to run.
+  (define sorted-rules
+    (sort (set->list rules) string<? #:key rule-sort-key #:cache-keys? #t))
   (define planned
-    (for/fold ([acc (set)]) ([rule (in-set rules)])
+    (for/fold ([acc (set)]) ([rule (in-list sorted-rules)])
      (with-rule-context rule (lambda ()
       (count-classify! rule)
-      (for/fold ([acc acc]) ([staged (in-list (stage-rule rule add-temp!))])
+      (for/fold ([acc acc]) ([staged (in-list (stage-rule rule fresh-temp!))])
         (match-define (cons staged-rule statics) staged)
         (define versions
           (if (and (count-flavor) (not (maintenance-flavor)))
@@ -233,8 +319,12 @@
 ;; of a stage's sibling replays (they are co-emitted, so one delta subsumes
 ;; the others, the same argument temps make) -- and must not spawn
 ;; delta-driven versions of their own.
+;;
+;; `fresh-temp!` mints (and registers) a deterministic temp name per
+;; plan-stratum's canonical walk; the staging recursion below is list-
+;; ordered, so mints within one rule's staged chain are deterministic too.
 
-(define (stage-rule rule add-temp! [statics '()])
+(define (stage-rule rule fresh-temp! [statics '()])
   (match rule
     [`(syn ,prov rule ,bodys ... --> ,heads ...)
      ;; fresh values produced by this rule's heads: constructed ids AND
@@ -337,6 +427,26 @@
         ;; instantiations -- and carrying one would hand the follow-up a
         ;; const-pre-bound temp column, which the scheduler would turn
         ;; into a (nonexistent) temp delta-index probe.
+        ;; Temp COLUMN order: first-occurrence order over the rule's clause
+        ;; list, NOT variable-name order (RF1 slice 0).  Gensym'd variable
+        ;; spellings (wildcards `__*`, split `_t*`) vary run to run, so a
+        ;; symbol<? sort flips the temp's column order -- and with it the
+        ;; follow-up's scan/emit register pairing -- between two compiles
+        ;; of the same tree (measured: 35/500 suite plans once temp NAMES
+        ;; were deterministic).  The clause list order is run-stable (it
+        ;; drives scheduling, whose plans are byte-stable), so the
+        ;; occurrence index is too.
+        (define var-occ
+          (let ([h (make-hash)])
+            (let walk ([x (map strip-prov (append bodys heads))])
+              (cond [(symbol? x) (unless (hash-has-key? h x)
+                                   (hash-set! h x (hash-count h)))]
+                    [(pair? x) (walk (car x)) (walk (cdr x))]))
+            h))
+        (define (occ-of v)
+          (hash-ref var-occ v
+                    (lambda () (error 'plan-stratum
+                                      "carried variable ~a not in rule" v))))
         (define carried
           (sort (set->list
                  (if (count-flavor)
@@ -349,7 +459,7 @@
                        needed)
                       reest-vars)
                      (set-subtract needed reest-vars)))
-                symbol<?))
+                < #:key occ-of))
         ;; the copied subset: re-establishable clauses whose output the
         ;; follow-up uses, pulled in transitively (a copied join's inputs
         ;; need their own binders copied too)
@@ -386,8 +496,7 @@
               ;; nothing to carry: the follow-up is driven by a replayed
               ;; construction's delta alone
               (values immediate '())
-              (let ([temp (gensymb 'temp)])
-                (add-temp! temp (length carried+))
+              (let ([temp (fresh-temp! (length carried+))])
                 (values (append (cons `(syn ,prov ,temp ,@carried+) immediate)
                                 extra-consts)
                         `((syn ,prov ,temp ,@carried+))))))
@@ -404,7 +513,7 @@
           (append (filter (lambda (cl) (not (const-cl? cl))) sub-reest)
                   (if (pair? replays) (cdr replays) '())))
         (cons (cons parent statics)
-              (stage-rule follow-up add-temp! follow-statics))])]))
+              (stage-rule follow-up fresh-temp! follow-statics))])]))
 
 ;; -----------------------------------------------------------------------
 ;; 2 & 3. Scheduling and version generation for one staged rule.

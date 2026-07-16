@@ -386,6 +386,85 @@ Consequences, pinned:
    `.plan` sets AND identical `build/` filename sets; the wholesale
    plan comparison harness (this doc's evening measurement) wired as a
    repeatable check.
+
+   *As-built checkpoint (2026-07-15, slice 0 SHIPPED):*
+   - **Mint site.** The one temp mint was `(gensymb 'temp)` at
+     join-planning.rkt:389 (`gensymb` = utils.rkt:53: `temp` + 4
+     pseudo-random chars + global counter). Temps now mint as
+     `temp[<flavor>]<level>x<n>`: a per-stratum counter walked in
+     canonical rule order — `rule-sort-key` (join-planning.rkt) sorts
+     the stratum's typed rules by their provenance-stripped,
+     variable-blind serialization (variables rename to first-occurrence
+     ordinals; gensym'd variable spellings — wildcards `__*`, split
+     `_t*`, tycheck reporting vars — churn both raw text and Racket
+     set-iteration order, so neither can drive the walk; ties are
+     alpha-equivalent and plan-invariant). `<level>` = stratum level
+     threaded through `plan-all` (temps of different strata coexist BY
+     NAME in one daemon database: emit-cpp.rkt:449 reuses an existing
+     relation of the same name, fatal on arity mismatch). The flavor
+     tag ∈ {`""`,`c`,`m`,`n`,`r`,`d`} keeps count/maintenance/delta
+     replans' temps disjoint from the normal flavor's (flavored temps
+     can differ in arity — a counted temp is wide) exactly as gensym's
+     always-fresh names did. All-alphanumeric on purpose:
+     tests/stats-tests.sh normalizes `temp[A-Za-z0-9]+`, so the fires
+     goldens pass unchanged (that normalization is now retirable).
+   - **The job-hash audit refuted the leak hypothesis.** progstr
+     (compile.rkt info0–info4 + fingerprints + toggles) is computed
+     PRE-planning; an env-gated component dump (`SLOG_DUMP_PROGSTR=
+     <dir>`, kept as the audit instrument) over two symmetric clean
+     full-suite runs showed all 163 program progstrs and all 2941
+     build/ filenames byte-identical BEFORE the fix. Temp names never
+     reach the job hash. The historically observed "moved stems" were
+     asymmetric compile SETS, not renames: config/default-config.slog
+     and its `action-<hash>` plugins compile only when config/cache is
+     cold (config.rkt do-load-config!), so two runs can differ in which
+     stems exist at all. The one true pre-cache-key gensym was the
+     anonymous-inline-union name (modules.rkt:408), empirically proven
+     to churn progstr on a scratch program (`union2OMR1` vs
+     `union9HW91` in info1/info2); it now derives from the flattened
+     member list (`_union_<m1>_<m2>…`, the lattice-anon-name
+     precedent). No suite program uses the feature (inline anonymous
+     unions currently fail typecheck end-to-end — separate, pre-existing
+     issue).
+   - **Second plan-layer instability found and fixed.** 7/500 suite
+     plans churned with NO temps involved: the D4 sort key (canonical
+     text) was not total — alpha-equivalent crules from different
+     source rules tie, and the stable sort preserved upstream
+     set-iteration order, flipping the (rid, position) pairing run to
+     run. canonical-plan.rkt now breaks ties by location, then variant
+     tag.
+   - **Third instability, exposed BY the name fix: temp COLUMN order.**
+     `carried` was sorted `symbol<?` over variable names
+     (join-planning.rkt), so gensym'd variable spellings flipped the
+     temp's column order — and with it the follow-up's scan/emit
+     register pairing — run to run (measured: 35/500 plans still
+     churned once names were deterministic; pre-fix this was masked
+     inside the temp-name diffs). Columns now order by first
+     occurrence in the rule's clause list, which is run-stable (it
+     drives scheduling, whose plans were already byte-stable). One
+     planner unit expectation updated to the occurrence order.
+   - **Measured.** Pre-fix: 118/500 plans churned across two clean
+     full-suite runs (111 via temp gensyms, 7 via D4 ties); build/
+     filename sets and progstrs were already stable. Post-fix: 0/500 —
+     tests/plan-determinism.sh (two full golden tiers from clean
+     build/, asserting identical filename sets + byte-identical .plan
+     sets) is the repeatable check; manual/slice gate, deliberately not
+     wired into run-all.sh (~10 min per run). The filename assertion
+     excludes `action-*` plugins: those are runtime-DEMAND-compiled
+     client artifacts, and the `(continue)` action compiles lazily the
+     first time any fixpoint hits a wall-clock pause budget
+     (runslog.rkt:266) — a slow run mints it, a fast run never does.
+     cprog/TU text remains run-varying via local `__t*` variable
+     gensyms — T4 phase B's residue, unchanged and out of scope.
+   - **Checkout-path caveat discovered en route:** `$sup`/`_lam` names
+     embed `fnv(ABSOLUTE file path) mod 100000` (demand.rkt:369,716),
+     so stats fires goldens (`$sup4873…` = /home/tom/slog) and
+     dem_lambda's golden only match from the primary checkout — a
+     worktree run fails both for path reasons, not nondeterminism.
+     Run-to-run determinism on one tree is unaffected, but slice 4's
+     plan goldens of record will inherit the path-dependence through
+     `delta:$sup…` VariantTags unless $sup naming goes checkout-
+     relative first.
 1. **ProgramModel + program struct** (compiler-internal, zero
    behavior). The named program struct replacing the positional
    tuples; the ProgramModel record carrying condensation + lineage out
