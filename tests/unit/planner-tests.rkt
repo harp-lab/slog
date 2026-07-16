@@ -157,12 +157,14 @@
 
   ;; ---------------------------------------------------------------------
   ;; 5. Head staging: a nested construction chain becomes a chain of rules
-  ;;    whose temps carry exactly the variables the residue needs.
+  ;;    whose temps carry exactly the variables the residue needs, in
+  ;;    first-occurrence order (RF1 slice 0: occurrence order is run-stable
+  ;;    where variable-name order is not -- gensym'd spellings vary).
   ;;      (edge x y) --> (= i1 (pair x y)) (= i2 (pair i1 y)) (out5 i2)
   ;;    stages into:
   ;;      (edge x y)                  --> (t1 x y) (= i1 (pair x y))
-  ;;      (t1 x y) (= i1 (pair x y))  --> (t2 i1 y) (= i2 (pair i1 y))
-  ;;      (t2 i1 y) (= i2 (pair i1 y)) --> (out5 i2)
+  ;;      (t1 x y) (= i1 (pair x y))  --> (t2 y i1) (= i2 (pair i1 y))
+  ;;      (t2 y i1) (= i2 (pair i1 y)) --> (out5 i2)
 
   (test-case "nested head constructions stage into a temp-driven chain"
     (define r (R (list (S 'edge 'x 'y))
@@ -192,7 +194,7 @@
                 stripped))
        (check-not-false mid)
        (match mid
-         [`(rule (,_ x y) (= i1 (pair x y)) --> (,t2 i1 y) (= i2 (pair i1 y)))
+         [`(rule (,_ x y) (= i1 (pair x y)) --> (,t2 y i1) (= i2 (pair i1 y)))
           (check-true (set-member? temps t2))
           (check-not-equal? t2 t1)
           ;; the final rule: driven by t2's delta, emits out5
@@ -200,7 +202,7 @@
             (findf (match-lambda [`(rule (,(== t2) ,_ ...) ,_ ...) #t] [_ #f])
                    stripped))
           (check-not-false fin)
-          (check-equal? fin `(rule (,t2 i1 y) (= i2 (pair i1 y)) --> (out5 i2)))]
+          (check-equal? fin `(rule (,t2 y i1) (= i2 (pair i1 y)) --> (out5 i2)))]
          [other (fail (format "unexpected middle rule: ~a" other))])]
       [other (fail (format "unexpected parent rule: ~a" other))]))
 

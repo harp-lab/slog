@@ -196,8 +196,26 @@
               (base-tag (crule-driver cr) (crule-kind cr) dynamic-rels)
               (crule-loc cr)
               (sexp->string canon))))
-  (define sorted
-    (sort entries string<? #:key (lambda (e) (vector-ref e 4))))
+  ;; The D4 order must be TOTAL over run-stable data (RF1 slice 0):
+  ;; canonical text alone ties for alpha-equivalent crules from DIFFERENT
+  ;; source rules, and a stable sort then preserves upstream set-iteration
+  ;; order -- which varies run to run with gensym'd symbol spellings,
+  ;; flipping the (rid, position) pairing between the tied entries
+  ;; (measured: 7/500 suite plans churned this way).  Ties break by
+  ;; location, then variant tag; entries equal in all three are
+  ;; interchangeable (same text, same rid, ordinals cover the rest).
+  (define (entry<? a b)
+    (define sa (vector-ref a 4))
+    (define sb (vector-ref b 4))
+    (cond [(string<? sa sb) #t]
+          [(string<? sb sa) #f]
+          [else
+           (define la (loc-key (vector-ref a 3)))
+           (define lb (loc-key (vector-ref b 3)))
+           (cond [(loc-key<? la lb) #t]
+                 [(loc-key<? lb la) #f]
+                 [else (string<? (vector-ref a 2) (vector-ref b 2))])]))
+  (define sorted (sort entries entry<?))
   ;; rid assignment: located source rules in (file, line) order, then each
   ;; #f-loc crule as its own rid in canonical rule order
   (define located-locs

@@ -405,8 +405,17 @@
     (match type-e
       [(? symbol? x) (cons x env)]
       [`(syn ,prov union ,args ...)
-       (define g (gensymb 'union))
+       ;; Deterministic name, like lattice-anon-name below: the same member
+       ;; list names the same type, and no gensym -- the declaration enters
+       ;; the .so cache key (compile.rkt progstr), which must be byte-stable
+       ;; run to run (RF1 slice 0: the gensym here was the one pre-cache-key
+       ;; mint, churning every stratum stem of a program using an anonymous
+       ;; inline union).  Members flatten FIRST, so nested anonymous types
+       ;; name deterministically bottom-up.
        (match-define (cons xs env+) (flatten-nested-types env args))
+       (define g (string->symbol
+                  (apply string-append "_union"
+                         (map (lambda (x) (format "_~a" x)) xs))))
        (cons g
              (unify-type-envs env+
                               (extract-type-env

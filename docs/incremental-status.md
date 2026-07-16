@@ -348,6 +348,50 @@ current fixture proves dictionary resurrection and survivor-id stability.
 - **No admission change:** struct cones still route to clear-and-rerun and
   struct counts remain diagnostic; M4S owns route admission.
 
+### M4S slice 1 fixtures — fallback-first (2026-07-15)
+
+The `m4s-*` blocks in `tests/session-tests.sh` land the contract's fixture
+battery asserting today's fallback: struct diamond with tail, recursive
+construction self-join, the `(p P) --> (q (bar P))` pass-through chain,
+multi-constructor support, import-then-edit over a would-be-admissible
+(lattice-free) cone, a mixed-sign epoch, and the named fallbacks (struct
+relation as edit target, lattice+struct cone, negation+struct cone).  Each
+deletion asserts `(route rerun ...)` plus M5 identity (dump-ids stability,
+embedded-id decode) and compares hand-verified support words across a lazy
+heal and a forced fresh recount; `FLIP(M4S slice N)` comments mark the
+localized precise-route edits.  Save/load mid-stream (slice 3) and the
+randomized hardening are deliberately deferred.
+
+Landing them exposed one substrate hole, fixed because the diamond fixture
+cannot run without it (its recount op fatals the daemon mid-drive and its
+contract-mandated id-stability assertion is otherwise false):
+
+- **Permuted struct master across flavors.**  The greedy index packer
+  could unify a struct's intern MASTER ordering with a permuted probe
+  selection (the diamond's delta flavor chose `(2 1 0)` for `pnode` while
+  the semantic flavor held `(1 2 0)`), so two flavors owned two disjoint
+  "masters" and whichever one a flavor never wrote went silently stale:
+  `clearContentsToTombstones` walked the empty one and REMINTED every id
+  across clear-and-rerun (an M5 violation), and a count round after a
+  delta-entry flush fataled with "derived an uninterned instance".  Fix
+  (compiler-only): `choose-indices` (compiler/operationalization.rkt) pins
+  every flavor's struct full-content selection to the canonical ordering
+  `(1 2 ... n 0)`; permuted probes get secondary orderings, so the
+  canonical master is the unique id-last ordering and every runtime master
+  authority resolves to it.  The M4T "every registered ordering is
+  somebody's authority" lesson, recurring between flavors; base2-shaped
+  fixtures missed it because their structs are never read back.
+
+Reported, not fixed (deliberately — fixtures-first): a batch RETRACTION
+targeting a struct relation is refused deterministically before any epoch
+or mutation, but with a generic message (`cannot retract ... tuple is
+absent` — `input-state` classifies a content-arity tuple against struct
+storage incoherently and misreports the live derived row).  The positive
+sign already refuses by name at `set-overlay`.  The contract's by-name
+refusal for the negative sign is a small daemon follow-up (e.g. refusing
+`input-state` on struct relations by name); the `m4s-editstruct-del`
+expect flips to the by-name message when it lands.
+
 ### WCOJ ternary joins × incremental artifacts
 
 The `wcoj-tri-*`/`wcoj-rec-*` session block (over

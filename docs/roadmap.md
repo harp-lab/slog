@@ -15,7 +15,7 @@ remains normative for its content.
 | execution tiers | [execution-tiers.md](execution-tiers.md) | T0–T6, Q1 | T1 shipped; T0/T2+ unstarted |
 | modules/namespaces | [modules.md](modules.md) | N0–N5 | design complete, unstarted |
 | reflection | [slog-reflection.md](slog-reflection.md) | RF0–RF5 | brainstorm + §18 staging verdict |
-| REPL | [repl.md](repl.md), [repl-ux.md](repl-ux.md), [repl-terminal.md](repl-terminal.md) | R0–R5 | terminal plan fixed; R0 client/input seam started, session integration unstarted |
+| REPL | [repl.md](repl.md), [repl-ux.md](repl-ux.md), [repl-terminal.md](repl-terminal.md) | R0–R5 | native Rust shell, private TCP server, and live session/daemon vertical slice working; semantic catalogs/handles remain |
 | stats migration | [stats.md](stats.md) §7 | steps 1–7 | `$stat_*` shipped; migration unstarted |
 
 ## 1. Ordering principles
@@ -125,11 +125,14 @@ byte-diff is NOT a valid N0 gate — legacy TU text is run-unstable (crule
 emission order + gensym'd locals; measured ~12k normalized diff lines on
 `deep_fact`'s TU across consecutive same-tree runs) while canonical `.plan`
 sidecars are byte-stable run-to-run *for temp-free strata*. The evening
-wholesale comparison sharpened this: gensym'd temp relation names are the
-single contaminant reaching plan bytes, D4 sort order, KernelPlanKeys, and
-even job-hash filenames (moved stems verified content-identical); temp-free
-strata are stable at every layer. Deterministic temp naming is therefore
-promoted into RF1 as slice 0 (rf1-contract.md, determinism doctrine). N0's
+wholesale comparison sharpened this: gensym'd temp relation names were the
+contaminant reaching plan bytes, D4 sort order, and KernelPlanKeys
+(job-hash filenames were later PROVEN stable by slice 0's audit — the
+"moved stems" were asymmetric compile sets, not renames); temp-free
+strata were stable at every layer. Deterministic temp naming was promoted
+into RF1 as slice 0 and SHIPPED same day (rf1-contract.md as-built:
+500/500 plans byte-identical across runs, two further plan-layer
+instabilities fixed alongside). N0's
 byte-identity rests on the provable inertness of its changes for dot-free
 names, 165/165 goldens, and content-level plan equality against the
 `build-post2/` corpus modulo that one named defect. Ratified same

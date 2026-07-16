@@ -62,9 +62,12 @@
   (->* (set?) (set?) strata?)
   (stratify-rules rules extra-edges))
 
-(define/contract (plan-all rules rel-env dynamic-rels)
-  (-> set? hash? set? (cons/c (set/c planned-rule?) hash?))
-  (plan-stratum rules rel-env dynamic-rels))
+(define/contract (plan-all rules rel-env dynamic-rels level)
+  (-> set? hash? set? natural? (cons/c (set/c planned-rule?) hash?))
+  ;; level rides into deterministic temp names (temp<flavor><level>x<n>):
+  ;; temps of different strata coexist by name in one daemon database, so
+  ;; names must be unique program-wide (RF1 slice 0)
+  (plan-stratum rules rel-env dynamic-rels #:level level))
 
 (define/contract (lower-all planned-rules rel-env decomps)
   (-> set? hash? hash? cprog?)
@@ -140,6 +143,26 @@
                              ;; it must key the cache (else a split and a
                              ;; non-split build would share a .so slot)
                              split-facts?)))))
+  ;; RF1 slice-0 audit instrument: dump the job-hash inputs component by
+  ;; component so two runs of the same tree can be diffed to find which
+  ;; input churns (docs/rf1-contract.md, determinism doctrine).  Gated off
+  ;; an env var; writes one file per program under the given directory.
+  (let ([dump-dir (getenv "SLOG_DUMP_PROGSTR")])
+    (when dump-dir
+      (make-directory* dump-dir)
+      (define stem
+        (let ([paths (sort (map second (set->list mods)) string<?)])
+          (if (null? paths)
+              "noprog"
+              (regexp-replace* #rx"[^A-Za-z0-9_.-]" (car paths) "_"))))
+      (call-with-output-file (build-path dump-dir (format "~a.progstr" stem))
+        #:exists 'replace
+        (lambda (o)
+          (for ([label '(info0-aliases info1-rels info2-mods info3-dbmanifest
+                         info4-decomps)]
+                [v (list info0 info1 info2 info3 info4)])
+            (fprintf o ";; ---- ~a ----\n" label)
+            (pretty-write v o))))))
   (define (job-hash level)
     (substring (bytes->hex-string
                 (sha256 (string->bytes/utf-8 (format "~a:stratum ~a" progstr level))))
@@ -572,7 +595,7 @@
   (parameterize ([count-flavor (and (count-flavor)
                                     (count-mode dynamic-rels (make-hash)))])
   (match-define (cons planned rel-env+)
-    (plan-all rules (type-env-rels type-env) plan-dynamic))
+    (plan-all rules (type-env-rels type-env) plan-dynamic (stratum-level stratum)))
   (define cprog (lower-all planned rel-env+ decomps))
   ;; atomic writes: run-tests.sh -jN can compile the SAME content-addressed
   ;; stratum in two processes at once, and a torn .cpp/.cprog read would break a

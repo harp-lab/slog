@@ -68,16 +68,43 @@ relation names reach it**: of 498 fresh plans vs the `build-post2/`
 corpus, 273 were byte-identical, 73 differed only via temp gensyms
 (spellings in decls/`dynamic`/VariantTags, and — for 47 — D4 sort-order
 perturbation, since the canonical sort key contains the spelling), and
-152 sat under MOVED job-hash filenames with verified byte-identical
-content (`eb30565e` ≡ corpus `453edaee`) — gensym'd names also reach a
-`progstr` job-hash input, churning `.so`-cache stems run to run (5/758
-one run, 219/758 another, same tree). One root cause, four symptom
-layers. Consequences: deterministic temp naming is PROMOTED into RF1 as
-slice 0 (rf1-contract.md §determinism — the `latchk_<n>` precedent, plus
-the job-hash input audit); TU emission-ORDER canonicalization alone stays
-at T4 phase B; wholesale TU byte-diffs are not a valid gate methodology
-(use `.plan` content diffs); correctness unaffected throughout — caches
-miss spuriously, never collide.
+152 sat under MOVED stems with byte-identical content (`eb30565e` ≡
+corpus `453edaee`). **Slice 0 (SHIPPED same day, rf1-contract.md
+as-built) resolved the full picture:** the moved stems were NOT
+job-hash churn — `progstr` precedes planning and two symmetric clean
+runs measured 2941/2941 filenames byte-identical; the discrepancies
+were asymmetric compile sets (cold `config/cache`, wall-clock-lazy
+action plugins) and cross-era corpus comparison. Slice 0 made temp
+names deterministic (`temp[<flavor>]<level>x<n>` in canonical rule
+order), fixed the one genuine pre-cache-key gensym (anonymous inline
+union, modules.rkt), and fixed two further plan-layer instabilities its
+gate exposed (non-total D4 sort key; temp column order over gensym'd
+variable spellings). Post-slice-0: 500/500 plans byte-identical across
+runs. Remaining: TU emission-ORDER canonicalization stays at T4 phase B
+(`__t*` local gensyms still churn TU text → `.o`-cache misses only);
+wholesale TU byte-diffs remain an invalid gate methodology; and
+`$sup`/`_lam` names embed `fnv(absolute checkout path)` (demand.rkt) —
+a pre-existing checkout-path dependence that makes demand-name goldens
+fail in secondary checkouts/worktrees and must go checkout-relative
+before RF1 slice 4's plan goldens.
+
+**Update 2026-07-15 (T2-A1 done):** the production interpreter core is
+extracted into `daemon/interp.h` (namespace `slog::interp`, ~710 lines):
+immutable `Program` (rule_id, D3 `variant_ordinal`, display `variant`,
+`nregs`, ops, `driver_regs`, preloads), `TupleView`, the `PrefixCursor`
+family with `current()` (impl §3.2 spelling), the five-state `Machine`
+with ONE policy-templated transition loop instantiated twice
+(`run_fast`/`run_observed`; the production `run` selects the fast
+instantiation on a zero effective event mask), post-transition
+mask-gated events carrying the variant ordinal and a bounded
+attempt-scratch payload view, and the contract's three-range opcode
+reservation as named constants + static_asserts (core 0–95, thread-0
+96–159, thread-1 160–191, both reserved ranges empty). The fixture now
+instantiates the core (test file 1845→1409 lines; seal/bind slice stays
+test-side until T2-A2); `make -C daemon interp-check` is a compile-only
+standalone check under the daemon's flags. Verified: clang/gcc -O2,
+ASan+UBSan, `run-all.sh interp arena seq counts wcoj3 structid`,
+`make -C daemon`.
 
 **Next up (ratified order):**
 

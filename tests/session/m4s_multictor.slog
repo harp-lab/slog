@@ -1,0 +1,27 @@
+;; M4S multi-constructor support (docs/m4s-contract.md, required fixtures):
+;; identical struct content constructed by TWO rules.  With a = b = {7}:
+;;   out (mk 7) -> (input 0, nonrec 2, rec 0)   one row, two constructors
+;;   mk  (mk 7) -> (input 0, nonrec 2, rec 0)   one interned instance
+;; Deleting a(7) is a support-only decrement (the row stays live on the b
+;; constructor, nonrec 2 -> 1, SAME id); deleting b(7) as well tombstones
+;; it (0 live, 1 tombstone).
+;;
+;; The same program serves the mixed-sign-epoch fixture: from a = {7},
+;; b = {}, one flush {-a(7), +b(7)} kills and revives (mk 7) inside a
+;; single update epoch -- the id must survive (within-epoch resurrection,
+;; M5).
+
+table (a int)
+table (b int)
+struct (mk int)
+table (out mk)
+
+rule
+(a X)
+-->
+(out (mk X))
+
+rule
+(b X)
+-->
+(out (mk X))

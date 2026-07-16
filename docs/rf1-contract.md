@@ -26,9 +26,12 @@ single plan re-key is attributed to RF1 alone.
 1. Four-way split of the T1 `.plan` monolith (ABI 1 grammar:
    `ir-stack.rkt:444–483`) into **KernelExecPlan / DebugMap / binding
    schema / cohort manifest** — ABI 2.
-2. **Per-kernel (per-SCC) plans**, with a compatibility adapter
-   preserving today's merged-per-stratum consumption. The adapter
-   retires at T4, not in RF1.
+2. **Per-kernel (per-SCC) plans as the production representation**
+   (ratified 2026-07-15): a stratum is the cohort manifest's ordered
+   kernel list and every consumer walks it; no reaggregated
+   compatibility view exists (see "Per-kernel is the production
+   shape"). The manifest-driven grouping in the installer is permanent
+   — T4 later attaches kernels individually through the same manifest.
 3. **RuleId per D4** (crules sorted by canonical serialization —
    edit-stable) and **VariantTag ordinals per D3** retained; RuleIds
    are *referenced* by KernelExecPlan and *defined*, with lineage, in
@@ -130,8 +133,8 @@ without touching KernelExecPlan — the entire point of its existence as
 a separate part.
 
 Readers: the daemon binder at install/attach (BindingFrame
-construction, execution-tiers §2.3/§3), the compat adapter, the N2/N3
-catalog planner.
+construction, execution-tiers §2.3/§3), the installer's manifest
+grouping, the N2/N3 catalog planner.
 
 May NOT appear: ops, registers, physical `Relation*`/VersionIds
 (attachment-time state — writer attribution is per AttachmentId,
@@ -156,7 +159,8 @@ Per (stratum, flavor) install unit:
   classification, dependency facts the installer needs.
 
 Readers: the T2 installer (which kernels form the stratum it installs),
-T0 catalog verbs, the compat adapter, T3 tier designations, T4
+T0 catalog verbs, the installer's manifest grouping, T3 tier
+designations, T4
 coordinator manifests, RF2's image packaging.
 
 May NOT appear: per-kernel exec content (ops, registers, slot tables)
@@ -337,12 +341,23 @@ Classification of 498 fresh plans: 273 byte-identical to the corpus;
 `dynamic` list, `"delta:tempXXXX"` VariantTags), 47 additionally as
 **D4 sort-order perturbation** (the canonical sort runs over serialized
 text that contains the temp spelling; token multisets match, order
-does not); 152 appear under **moved job-hash filenames** — verified
-byte-identical content under a different stem (`eb30565e` ≡ corpus
-`453edaee`), so gensym'd names also reach some `progstr` job-hash
-input, churning `.so`-cache filenames run to run (5/758 stems moved in
-one morning run, 219/758 in an evening run of the same tree).
-Temp-free strata (e.g. `deep_fact`'s) are fully stable at every layer.
+does not); 152 appeared under **moved stems** — byte-identical content
+under different job-hash filenames across the corpus comparison
+(`eb30565e` ≡ corpus `453edaee`). Slice 0's audit RESOLVED the moved
+stems (initially misread as job-hash gensym churn): `progstr` is
+computed *before* planning, so temps cannot reach it, and two symmetric
+clean runs measured 163/163 progstrs and 2941/2941 `build/` filenames
+byte-identical — the "moved" stems were asymmetric compile *sets*
+(cold-vs-warm `config/cache`, wall-clock-lazy `(continue)` action
+plugins) and cross-era corpus comparisons, not renames. The one genuine
+pre-cache-key gensym was the anonymous inline union
+(`modules.rkt:408`), fixed in slice 0. The slice also found and fixed
+two plan-layer instabilities beyond temp spellings: a non-total D4
+sort key (alpha-equivalent crules tied, letting run-varying set order
+flip rid pairings) and temp column order keyed on gensym'd variable
+spellings. Temp-free strata were fully stable at every layer
+throughout; post-slice-0, all strata are (500/500 plans byte-identical
+across runs).
 
 Consequences, pinned:
 
@@ -386,6 +401,85 @@ Consequences, pinned:
    `.plan` sets AND identical `build/` filename sets; the wholesale
    plan comparison harness (this doc's evening measurement) wired as a
    repeatable check.
+
+   *As-built checkpoint (2026-07-15, slice 0 SHIPPED):*
+   - **Mint site.** The one temp mint was `(gensymb 'temp)` at
+     join-planning.rkt:389 (`gensymb` = utils.rkt:53: `temp` + 4
+     pseudo-random chars + global counter). Temps now mint as
+     `temp[<flavor>]<level>x<n>`: a per-stratum counter walked in
+     canonical rule order — `rule-sort-key` (join-planning.rkt) sorts
+     the stratum's typed rules by their provenance-stripped,
+     variable-blind serialization (variables rename to first-occurrence
+     ordinals; gensym'd variable spellings — wildcards `__*`, split
+     `_t*`, tycheck reporting vars — churn both raw text and Racket
+     set-iteration order, so neither can drive the walk; ties are
+     alpha-equivalent and plan-invariant). `<level>` = stratum level
+     threaded through `plan-all` (temps of different strata coexist BY
+     NAME in one daemon database: emit-cpp.rkt:449 reuses an existing
+     relation of the same name, fatal on arity mismatch). The flavor
+     tag ∈ {`""`,`c`,`m`,`n`,`r`,`d`} keeps count/maintenance/delta
+     replans' temps disjoint from the normal flavor's (flavored temps
+     can differ in arity — a counted temp is wide) exactly as gensym's
+     always-fresh names did. All-alphanumeric on purpose:
+     tests/stats-tests.sh normalizes `temp[A-Za-z0-9]+`, so the fires
+     goldens pass unchanged (that normalization is now retirable).
+   - **The job-hash audit refuted the leak hypothesis.** progstr
+     (compile.rkt info0–info4 + fingerprints + toggles) is computed
+     PRE-planning; an env-gated component dump (`SLOG_DUMP_PROGSTR=
+     <dir>`, kept as the audit instrument) over two symmetric clean
+     full-suite runs showed all 163 program progstrs and all 2941
+     build/ filenames byte-identical BEFORE the fix. Temp names never
+     reach the job hash. The historically observed "moved stems" were
+     asymmetric compile SETS, not renames: config/default-config.slog
+     and its `action-<hash>` plugins compile only when config/cache is
+     cold (config.rkt do-load-config!), so two runs can differ in which
+     stems exist at all. The one true pre-cache-key gensym was the
+     anonymous-inline-union name (modules.rkt:408), empirically proven
+     to churn progstr on a scratch program (`union2OMR1` vs
+     `union9HW91` in info1/info2); it now derives from the flattened
+     member list (`_union_<m1>_<m2>…`, the lattice-anon-name
+     precedent). No suite program uses the feature (inline anonymous
+     unions currently fail typecheck end-to-end — separate, pre-existing
+     issue).
+   - **Second plan-layer instability found and fixed.** 7/500 suite
+     plans churned with NO temps involved: the D4 sort key (canonical
+     text) was not total — alpha-equivalent crules from different
+     source rules tie, and the stable sort preserved upstream
+     set-iteration order, flipping the (rid, position) pairing run to
+     run. canonical-plan.rkt now breaks ties by location, then variant
+     tag.
+   - **Third instability, exposed BY the name fix: temp COLUMN order.**
+     `carried` was sorted `symbol<?` over variable names
+     (join-planning.rkt), so gensym'd variable spellings flipped the
+     temp's column order — and with it the follow-up's scan/emit
+     register pairing — run to run (measured: 35/500 plans still
+     churned once names were deterministic; pre-fix this was masked
+     inside the temp-name diffs). Columns now order by first
+     occurrence in the rule's clause list, which is run-stable (it
+     drives scheduling, whose plans were already byte-stable). One
+     planner unit expectation updated to the occurrence order.
+   - **Measured.** Pre-fix: 118/500 plans churned across two clean
+     full-suite runs (111 via temp gensyms, 7 via D4 ties); build/
+     filename sets and progstrs were already stable. Post-fix: 0/500 —
+     tests/plan-determinism.sh (two full golden tiers from clean
+     build/, asserting identical filename sets + byte-identical .plan
+     sets) is the repeatable check; manual/slice gate, deliberately not
+     wired into run-all.sh (~10 min per run). The filename assertion
+     excludes `action-*` plugins: those are runtime-DEMAND-compiled
+     client artifacts, and the `(continue)` action compiles lazily the
+     first time any fixpoint hits a wall-clock pause budget
+     (runslog.rkt:266) — a slow run mints it, a fast run never does.
+     cprog/TU text remains run-varying via local `__t*` variable
+     gensyms — T4 phase B's residue, unchanged and out of scope.
+   - **Checkout-path caveat discovered en route:** `$sup`/`_lam` names
+     embed `fnv(ABSOLUTE file path) mod 100000` (demand.rkt:369,716),
+     so stats fires goldens (`$sup4873…` = /home/tom/slog) and
+     dem_lambda's golden only match from the primary checkout — a
+     worktree run fails both for path reasons, not nondeterminism.
+     Run-to-run determinism on one tree is unaffected, but slice 4's
+     plan goldens of record will inherit the path-dependence through
+     `delta:$sup…` VariantTags unless $sup naming goes checkout-
+     relative first.
 1. **ProgramModel + program struct** (compiler-internal, zero
    behavior). The named program struct replacing the positional
    tuples; the ProgramModel record carrying condensation + lineage out

@@ -1,16 +1,21 @@
-// Executable design test for the decoded interpreter proposed in
-// docs/execution-tiers.md.  This deliberately lives as a test-side prototype:
-// it uses the real BTreeIndex implementation, but does not alter daemon code.
+// Executable specification for the production interpreter core in
+// daemon/interp.h (docs/interp-core-contract.md; extracted at T2-A1).  The
+// core types -- tri-state pull cursors, the decoded Program, the five-state
+// Machine with fast/observed policies, mask-gated post-transition events,
+// and attempt-local candidate ownership -- are instantiated from the
+// production header; this file keeps only test fixtures, the differential
+// logical model, and the narrow test-side Plan -> seal -> bind -> task slice
+// (seal/bind move to daemon/plan.h at T2-A2).
 //
-// It concentrates on the machinery the earlier throughput prototype omitted:
-// tri-state pull cursors, plan-sized register/level state, exact continuation
-// copies, arbitrary VM quanta, post-transition breakpoints, masked debug
-// events, bounded proof capture, failure-frontier events, and a narrow
-// Plan -> seal -> bind -> task path over real Relation indices and emit sinks.
+// It exercises: exact continuation copies at every VM quantum 1..31,
+// intra-match cursor pauses, a 96-level cursor stack, all eight event ports
+// with breakpoints, bounded proof capture, seal/bind rejections, and real
+// Relation indices and emit sinks with dedup.
 //
 //   clang++ -O2 -Wall -std=c++20 -pthread -fopenmp -Idaemon tests/interp-operator-tests.cpp -o /tmp/interp-tests -lgmp
 //   /tmp/interp-tests [--bench]
 
+#include "interp.h"
 #include "operators.h"
 
 #include <algorithm>
@@ -30,87 +35,11 @@
 #include <vector>
 
 using namespace slog;
+using namespace slog::interp;
 
 namespace {
 
-enum class CursorResult : u8 { match, exhausted, paused };
-
-struct WorkBudget
-{
-  u64 left;
-  bool tick()
-  {
-    if (left == 0) return false;
-    --left;
-    return true;
-  }
-};
-
-struct PrefixCursor
-{
-  virtual ~PrefixCursor() = default;
-  virtual std::unique_ptr<PrefixCursor> clone() const = 0;
-  virtual void open(const u64* regs) = 0;
-  virtual CursorResult next(u64* regs, WorkBudget& budget) = 0;
-  virtual std::vector<u64> current_row() const = 0;
-};
-
-// Real daemon BTreeIndex probe.  The iterator remains ON the current match;
-// the following next() advances first.  That gives debug capture a stable
-// current tuple without copying it on the unobserved path.
-template <u16 A, u16 K>
-struct ProbeCursor final : PrefixCursor
-{
-  Index** index;
-  std::array<u16, K> keyreg;
-  std::array<u16, A - K> outreg;
-  typename BTreeIndex<A>::iterator it, end;
-  std::array<u64, A> key{};
-  bool positioned = false;
-
-  ProbeCursor(Index** i, std::array<u16, K> kr,
-              std::array<u16, A - K> out)
-    : index(i), keyreg(kr), outreg(out) {}
-
-  std::unique_ptr<PrefixCursor> clone() const override
-  {
-    return std::make_unique<ProbeCursor>(*this);
-  }
-
-  void open(const u64* regs) override
-  {
-    for (u16 i = 0; i < K; ++i) key[i] = regs[keyreg[i]];
-    for (u16 i = K; i < A; ++i) key[i] = 0;
-    auto* tree = static_cast<BTreeIndex<A>*>(index[buckethash(key[0])]);
-    it = tree->lower_bound(key);
-    end = tree->end();
-    positioned = false;
-  }
-
-  CursorResult next(u64* regs, WorkBudget& budget) override
-  {
-    if (positioned)
-    {
-      ++it;
-      positioned = false;
-    }
-    if (it == end) return CursorResult::exhausted;
-    for (u16 c = 0; c < K; ++c)
-      if ((*it)[c] != key[c]) return CursorResult::exhausted;
-    if (!budget.tick()) return CursorResult::paused;
-    for (u16 i = K; i < A; ++i) regs[outreg[i - K]] = (*it)[i];
-    positioned = true;
-    return CursorResult::match;
-  }
-
-  std::vector<u64> current_row() const override
-  {
-    if (!positioned) return {};
-    return std::vector<u64>(it->begin(), it->end());
-  }
-};
-
-// A cursor whose next match takes several internal units of work.  This is
+// A test-only cursor whose next match takes several internal units of work.  This is
 // the shape join3 needs: an intersection may have to seek repeatedly before
 // producing a row, so bool next() cannot distinguish "yield" from "empty".
 struct SlowCursor final : PrefixCursor
@@ -156,83 +85,28 @@ struct SlowCursor final : PrefixCursor
     return CursorResult::match;
   }
 
-  std::vector<u64> current_row() const override
+  TupleView current() const override
   {
-    return positioned ? std::vector<u64>{values[next_index]}
-                      : std::vector<u64>{};
+    return positioned ? TupleView{&values[next_index], 1} : TupleView{};
   }
 };
 
-enum class OpK : u8 { probe, guard_neq, fire, emit2, emit3 };
-
-struct Op
-{
-  OpK kind;
-  u16 cursor = 0;
-  u16 a = 0, b = 0, c = 0;
-};
-
-struct Program
-{
-  u32 rule_id = 0;
-  std::string variant;
-  u16 nregs = 0;
-  std::vector<Op> ops;
-};
-
-enum class EventK : u8 {
-  driver,
-  probe_match,
-  probe_miss,
-  probe_exhausted,
-  guard_pass,
-  guard_fail,
-  instantiation,
-  emit
-};
-
-constexpr u64 event_bit(EventK k) { return u64{1} << static_cast<u8>(k); }
-
-struct Event
+// Event::tuple is a non-owning view valid only for the observer callback's
+// duration (interp.h lifetime doctrine), so a recording observer must
+// materialize the payload during the callback.
+struct OwnedEvent
 {
   EventK kind;
   u32 rule_id;
+  u32 variant_ordinal;
   size_t op_index;
-  u16 port = 0; // bound cursor/sink port; op_index remains the source position
-  u8 arity = 0;
-  std::array<u64, 3> tuple{};
-};
+  u16 port;
+  std::vector<u64> tuple;
 
-struct Proof
-{
-  std::vector<u64> driver;
-  std::vector<std::vector<u64>> premises;
-};
-
-struct DebugView
-{
-  const std::vector<u64>& driver;
-  const std::vector<size_t>& levels;
-  const std::vector<Op>& ops;
-  const std::vector<std::unique_ptr<PrefixCursor>>& cursors;
-
-  Proof proof() const
-  {
-    Proof p;
-    p.driver = driver;
-    for (size_t ip : levels)
-      p.premises.push_back(cursors[ops[ip].cursor]->current_row());
-    return p;
-  }
-};
-
-enum class DebugAction : u8 { continue_, pause };
-
-struct DebugSink
-{
-  u64 mask = 0;
-  virtual ~DebugSink() = default;
-  virtual DebugAction observe(const Event&, const DebugView&) = 0;
+  explicit OwnedEvent(const Event& e)
+    : kind(e.kind), rule_id(e.rule_id), variant_ordinal(e.variant_ordinal),
+      op_index(e.op_index), port(e.port),
+      tuple(e.tuple.begin(), e.tuple.end()) {}
 };
 
 struct RecordingDebug final : DebugSink
@@ -242,13 +116,13 @@ struct RecordingDebug final : DebugSink
   std::optional<std::array<u64, 2>> watched_emit;
   size_t proof_limit = std::numeric_limits<size_t>::max();
   size_t omitted_proofs = 0;
-  std::vector<Event> events;
+  std::vector<OwnedEvent> events;
   std::vector<Proof> proofs;
 
   DebugAction observe(const Event& e, const DebugView& view) override
   {
-    if (record_events) events.push_back(e);
-    if (watched_emit && e.kind == EventK::emit && e.arity == 2
+    if (record_events) events.emplace_back(e);
+    if (watched_emit && e.kind == EventK::emit && e.tuple.size() == 2
         && e.tuple[0] == (*watched_emit)[0]
         && e.tuple[1] == (*watched_emit)[1])
     {
@@ -258,367 +132,6 @@ struct RecordingDebug final : DebugSink
     return break_on && *break_on == e.kind
       ? DebugAction::pause : DebugAction::continue_;
   }
-};
-
-struct Attempt
-{
-  bool capture_outputs = true;
-  std::vector<std::vector<u64>> outputs;
-  std::vector<u16> output_sinks;
-  u64 output_count = 0;
-  u64 checksum = 0;
-  u64 fires = 0;
-};
-
-enum class MachineState : u8 {
-  need_driver,
-  dispatch,
-  first_cursor_match,
-  advance,
-  done
-};
-enum class StopReason : u8 { complete, quantum, cursor, breakpoint };
-
-class Machine
-{
-  std::shared_ptr<const Program> program;
-  std::shared_ptr<const std::vector<std::vector<u64>>> drivers;
-  std::vector<std::unique_ptr<PrefixCursor>> cursors;
-  std::shared_ptr<Attempt> attempt;
-  std::vector<u64> regs;
-  std::vector<u64> driver_row;
-  std::vector<u16> driver_regs;
-  std::vector<size_t> levels;
-  size_t driver_index = 0;
-  size_t ip = 0;
-  MachineState state = MachineState::need_driver;
-  DebugSink* debug = nullptr;
-
-  void load_driver_regs()
-  {
-    if (driver_regs.empty())
-      std::copy(driver_row.begin(), driver_row.end(), regs.begin());
-    else
-      for (size_t i = 0; i < driver_row.size(); ++i)
-        regs[driver_regs[i]] = driver_row[i];
-  }
-
-  bool debug_event(Event e)
-  {
-    if (debug == nullptr || (debug->mask & event_bit(e.kind)) == 0)
-      return false;
-    DebugView view{driver_row, levels, program->ops, cursors};
-    return debug->observe(e, view) == DebugAction::pause;
-  }
-
-  void backtrack()
-  {
-    if (levels.empty()) state = MachineState::need_driver;
-    else
-    {
-      ip = levels.back();
-      state = MachineState::advance;
-    }
-  }
-
-  // Performs one committed semantic transition.  A cursor pause commits
-  // nothing; every debug pause happens after the transition state is updated.
-  StopReason transition(WorkBudget& work)
-  {
-    for (;;)
-    {
-    while (state == MachineState::need_driver)
-    {
-      if (driver_index == drivers->size())
-      {
-        state = MachineState::done;
-        return StopReason::complete;
-      }
-      driver_row = (*drivers)[driver_index++];
-      load_driver_regs();
-      levels.clear();
-      ip = 0;
-      state = MachineState::dispatch;
-      Event e{EventK::driver, program->rule_id, 0};
-      return debug_event(e) ? StopReason::breakpoint : StopReason::quantum;
-    }
-
-    if (state == MachineState::first_cursor_match)
-    {
-      const Op& op = program->ops[ip];
-      CursorResult r = cursors[op.cursor]->next(regs.data(), work);
-      if (r == CursorResult::paused) return StopReason::cursor;
-      if (r == CursorResult::match)
-      {
-        const size_t matched_ip = ip;
-        levels.push_back(ip++);
-        state = MachineState::dispatch;
-        Event e{EventK::probe_match, program->rule_id, matched_ip};
-        return debug_event(e) ? StopReason::breakpoint : StopReason::quantum;
-      }
-      const size_t missed_ip = ip;
-      backtrack();
-      Event e{EventK::probe_miss, program->rule_id, missed_ip};
-      return debug_event(e) ? StopReason::breakpoint : StopReason::quantum;
-    }
-
-    if (state == MachineState::advance)
-    {
-      const Op& op = program->ops[ip];
-      CursorResult r = cursors[op.cursor]->next(regs.data(), work);
-      if (r == CursorResult::paused) return StopReason::cursor;
-      if (r == CursorResult::match)
-      {
-        state = MachineState::dispatch;
-        ++ip;
-        Event e{EventK::probe_match, program->rule_id, ip - 1};
-        return debug_event(e) ? StopReason::breakpoint : StopReason::quantum;
-      }
-      levels.pop_back();
-      const size_t exhausted_ip = ip;
-      backtrack();
-      Event e{EventK::probe_exhausted, program->rule_id, exhausted_ip};
-      return debug_event(e) ? StopReason::breakpoint : StopReason::quantum;
-    }
-
-    if (ip == program->ops.size())
-    {
-      backtrack();
-      continue;
-    }
-
-    const Op& op = program->ops[ip];
-    switch (op.kind)
-    {
-      case OpK::probe:
-      {
-        cursors[op.cursor]->open(regs.data());
-        state = MachineState::first_cursor_match;
-        continue;
-      }
-      case OpK::guard_neq:
-      {
-        const size_t guard_ip = ip;
-        const bool pass = regs[op.a] != regs[op.b];
-        if (pass) ++ip;
-        else backtrack();
-        Event e{pass ? EventK::guard_pass : EventK::guard_fail,
-                program->rule_id, guard_ip};
-        return debug_event(e) ? StopReason::breakpoint : StopReason::quantum;
-      }
-      case OpK::fire:
-      {
-        const size_t fire_ip = ip++;
-        ++attempt->fires;
-        Event e{EventK::instantiation, program->rule_id, fire_ip};
-        return debug_event(e) ? StopReason::breakpoint : StopReason::quantum;
-      }
-      case OpK::emit2:
-      case OpK::emit3:
-      {
-        const size_t emit_ip = ip++;
-        Event e{EventK::emit, program->rule_id, emit_ip};
-        e.port = op.cursor;
-        e.arity = op.kind == OpK::emit2 ? 2 : 3;
-        e.tuple[0] = regs[op.a]; e.tuple[1] = regs[op.b];
-        if (e.arity == 3) e.tuple[2] = regs[op.c];
-        ++attempt->output_count;
-        for (u8 i = 0; i < e.arity; ++i)
-          attempt->checksum = attempt->checksum * 1099511628211ull + e.tuple[i];
-        if (attempt->capture_outputs)
-        {
-          attempt->outputs.emplace_back(e.tuple.begin(), e.tuple.begin() + e.arity);
-          attempt->output_sinks.push_back(op.cursor);
-        }
-        return debug_event(e) ? StopReason::breakpoint : StopReason::quantum;
-      }
-    }
-    std::abort();
-    }
-  }
-
-public:
-  Machine(const Program& p,
-          std::shared_ptr<const std::vector<std::vector<u64>>> ds,
-          std::vector<std::unique_ptr<PrefixCursor>> cs,
-          DebugSink* d = nullptr, bool capture_outputs = true,
-          std::vector<u16> driver_registers = {},
-          std::vector<std::pair<u16, u64>> preloads = {})
-    : program(std::make_shared<Program>(p)), drivers(std::move(ds)),
-      cursors(std::move(cs)),
-      attempt(std::make_shared<Attempt>()), regs(p.nregs),
-      driver_regs(std::move(driver_registers)), debug(d)
-  {
-    attempt->capture_outputs = capture_outputs;
-    if (!driver_regs.empty() && !drivers->empty()
-        && driver_regs.size() != drivers->front().size())
-      std::abort();
-    for (const auto& [reg, value] : preloads) regs[reg] = value;
-  }
-
-  Machine(const Machine& other)
-    : program(other.program), drivers(other.drivers), attempt(other.attempt),
-      regs(other.regs), driver_row(other.driver_row),
-      driver_regs(other.driver_regs), levels(other.levels),
-      driver_index(other.driver_index), ip(other.ip), state(other.state),
-      debug(other.debug)
-  {
-    for (const auto& cursor : other.cursors) cursors.push_back(cursor->clone());
-  }
-
-  std::unique_ptr<Machine> continuation() const
-  {
-    return std::make_unique<Machine>(*this);
-  }
-
-  StopReason run(u64 transition_budget, u64 cursor_work_budget)
-  {
-    WorkBudget work{cursor_work_budget};
-    for (u64 n = 0; n < transition_budget; ++n)
-    {
-      const StopReason why = transition(work);
-      if (why == StopReason::complete || why == StopReason::cursor
-          || why == StopReason::breakpoint)
-        return why;
-    }
-    return StopReason::quantum;
-  }
-
-  // Same continuation state, but no per-port return and no observation
-  // branch.  This is the shape the ordinary interpreter should use: poll a
-  // cheap semantic-transition counter, save the already-live state only when
-  // it expires, and reserve the micro-stepped loop above for observed SCCs.
-  StopReason run_fast(u64 transition_budget, u64 cursor_work_budget)
-  {
-    WorkBudget work{cursor_work_budget};
-    u64 transitions = 0;
-    MachineState st = state;
-    size_t next_driver = driver_index;
-    size_t pc = ip;
-    std::vector<size_t> stack = levels;
-    const auto save = [&](StopReason why) {
-      state = st;
-      driver_index = next_driver;
-      ip = pc;
-      levels = std::move(stack);
-      return why;
-    };
-    const auto local_backtrack = [&] {
-      if (stack.empty()) st = MachineState::need_driver;
-      else
-      {
-        pc = stack.back();
-        st = MachineState::advance;
-      }
-    };
-    for (;;)
-    {
-      bool committed = false;
-      switch (st)
-      {
-        case MachineState::need_driver:
-          if (next_driver == drivers->size())
-          {
-            st = MachineState::done;
-            return save(StopReason::complete);
-          }
-          driver_row = (*drivers)[next_driver++];
-          load_driver_regs();
-          stack.clear();
-          pc = 0;
-          st = MachineState::dispatch;
-          committed = true;
-          break;
-
-        case MachineState::first_cursor_match:
-        {
-          const Op& op = program->ops[pc];
-          const CursorResult r = cursors[op.cursor]->next(regs.data(), work);
-          if (r == CursorResult::paused) return save(StopReason::cursor);
-          if (r == CursorResult::match)
-          {
-            stack.push_back(pc++);
-            st = MachineState::dispatch;
-          }
-          else
-            local_backtrack();
-          committed = true;
-          break;
-        }
-
-        case MachineState::advance:
-        {
-          const Op& op = program->ops[pc];
-          const CursorResult r = cursors[op.cursor]->next(regs.data(), work);
-          if (r == CursorResult::paused) return save(StopReason::cursor);
-          if (r == CursorResult::match)
-          {
-            ++pc;
-            st = MachineState::dispatch;
-          }
-          else
-          {
-            stack.pop_back();
-            local_backtrack();
-          }
-          committed = true;
-          break;
-        }
-
-        case MachineState::dispatch:
-          if (pc == program->ops.size())
-          {
-            local_backtrack();
-            break;
-          }
-          switch (const Op& op = program->ops[pc]; op.kind)
-          {
-            case OpK::probe:
-              cursors[op.cursor]->open(regs.data());
-              st = MachineState::first_cursor_match;
-              break;
-            case OpK::guard_neq:
-              if (regs[op.a] != regs[op.b]) ++pc;
-              else local_backtrack();
-              committed = true;
-              break;
-            case OpK::fire:
-              ++pc;
-              ++attempt->fires;
-              committed = true;
-              break;
-            case OpK::emit2:
-            case OpK::emit3:
-            {
-              ++pc;
-              const u8 arity = op.kind == OpK::emit2 ? 2 : 3;
-              const std::array<u64, 3> tuple{
-                regs[op.a], regs[op.b], arity == 3 ? regs[op.c] : 0};
-              ++attempt->output_count;
-              for (u8 i = 0; i < arity; ++i)
-                attempt->checksum =
-                  attempt->checksum * 1099511628211ull + tuple[i];
-              if (attempt->capture_outputs)
-              {
-                attempt->outputs.emplace_back(tuple.begin(), tuple.begin() + arity);
-                attempt->output_sinks.push_back(op.cursor);
-              }
-              committed = true;
-              break;
-            }
-          }
-          break;
-
-        case MachineState::done:
-          return save(StopReason::complete);
-      }
-      if (committed && ++transitions == transition_budget)
-        return save(StopReason::quantum);
-    }
-  }
-
-  bool done() const { return state == MachineState::done; }
-  const Attempt& result() const { return *attempt; }
 };
 
 template <u16 A>
@@ -657,6 +170,7 @@ struct Fixture
     drivers = std::make_shared<const std::vector<std::vector<u64>>>(
       std::vector<std::vector<u64>>{{10, 1}, {10, 2}, {20, 1}, {30, 9}});
     program.rule_id = 17;
+    program.variant_ordinal = 3; // D3 ordinal; events must carry it verbatim
     program.variant = "all:first";
     program.nregs = 4;
     program.ops = {
@@ -758,7 +272,8 @@ struct EmitPlan
 struct RulePlan
 {
   u32 rule_id;
-  std::string variant;
+  u32 variant_ordinal; // D3 RuleVariant ordinal (dense; unique per variant)
+  std::string variant; // display metadata only
   u16 nregs;
   std::vector<std::pair<u16, u64>> preloads;
   DriverPlan driver;
@@ -773,11 +288,10 @@ struct SealError : std::runtime_error
 
 struct SealedRule
 {
-  Program program;
+  Program program; // carries nregs, ops, driver_regs, preloads, identity
   DriverPlan driver;
   std::vector<ProbePlan> probes;
   std::vector<EmitPlan> heads;
-  std::vector<std::pair<u16, u64>> preloads;
   std::vector<RelationShape> relations;
   u16 max_depth = 0;
 };
@@ -836,11 +350,13 @@ static SealedRule seal_rule(const RulePlan& plan,
 
   SealedRule out;
   out.program.rule_id = plan.rule_id;
+  out.program.variant_ordinal = plan.variant_ordinal;
   out.program.variant = plan.variant;
   out.program.nregs = plan.nregs;
+  out.program.driver_regs = plan.driver.regs;
+  out.program.preloads = plan.preloads;
   out.driver = plan.driver;
   out.heads = plan.heads;
-  out.preloads = plan.preloads;
   out.relations = relations;
 
   std::vector<bool> assigned(plan.nregs, false);
@@ -967,6 +483,9 @@ static std::array<u16, N> order_array(const std::vector<u16>& order)
 class BoundRule
 {
   SealedRule sealed;
+  // The pinned immutable program generation, shared by every bucket task of
+  // this variant (D11); parked continuations keep it alive past a retire.
+  std::shared_ptr<const Program> pinned;
   std::vector<Relation*> frame;
 
   std::unique_ptr<PrefixCursor> make_probe(const ProbePlan& probe) const
@@ -994,7 +513,7 @@ class BoundRule
 
   u64 preload(u16 reg) const
   {
-    for (const auto& [r, value] : sealed.preloads)
+    for (const auto& [r, value] : sealed.program.preloads)
       if (r == reg) return value;
     throw SealError("bind: probe-driver prefix is not a preload");
   }
@@ -1092,7 +611,9 @@ class BoundRule
 
 public:
   BoundRule(SealedRule rule, std::vector<Relation*> binding)
-    : sealed(std::move(rule)), frame(std::move(binding))
+    : sealed(std::move(rule)),
+      pinned(std::make_shared<const Program>(sealed.program)),
+      frame(std::move(binding))
   {
     seal_check(frame.size() == sealed.relations.size(),
                "bind: relation frame width mismatch");
@@ -1116,9 +637,8 @@ public:
     for (const ProbePlan& probe : sealed.probes)
       cursors.push_back(make_probe(probe));
     return std::make_unique<Machine>(
-      sealed.program, driver_rows(bucket), std::move(cursors), debug,
-      capture_outputs,
-      sealed.driver.regs, sealed.preloads);
+      pinned, driver_rows(bucket), std::move(cursors), debug,
+      capture_outputs);
   }
 
   void apply(const Attempt& attempt) const
@@ -1186,10 +706,12 @@ bool test_uninterrupted_and_every_quantum()
   const auto wanted = reference(f, wanted_fires);
   for (u64 quantum = 1; quantum <= 31; ++quantum)
   {
+    // Micro-stepped observed loop (explicitly, since no observer is
+    // attached and the production `run` would select the fast loop).
     auto m = std::make_unique<Machine>(f.program, f.drivers, f.cursors());
     while (!m->done())
     {
-      const StopReason why = m->run(quantum, 1000000);
+      const StopReason why = m->run_observed(quantum, 1000000);
       CHECK(why == StopReason::quantum || why == StopReason::complete);
       if (why == StopReason::quantum)
         m = m->continuation(); // exercise copy-for-resume at every VM boundary
@@ -1212,7 +734,7 @@ bool test_uninterrupted_and_every_quantum()
 
 bool test_cursor_internal_pause_and_continuation_copy()
 {
-  Program p{23, "synthetic-join3", 2,
+  Program p{23, 1, "synthetic-join3", 2,
             {{OpK::probe, 0}, {OpK::fire}, {OpK::emit2, 0, 0, 1}}};
   auto drivers = std::make_shared<const std::vector<std::vector<u64>>>(
     std::vector<std::vector<u64>>{{42}});
@@ -1223,7 +745,7 @@ bool test_cursor_internal_pause_and_continuation_copy()
   size_t cursor_pauses = 0;
   while (!m->done())
   {
-    const StopReason why = m->run(1000, 2);
+    const StopReason why = m->run_observed(1000, 2);
     if (why == StopReason::cursor)
     {
       ++cursor_pauses;
@@ -1263,7 +785,7 @@ bool test_cursor_internal_pause_and_continuation_copy()
 
 static std::unique_ptr<Machine> machine_from_ephemeral_program()
 {
-  Program program{24, "retired-plan", 2,
+  Program program{24, 1, "retired-plan", 2,
                   {{OpK::fire}, {OpK::emit2, 0, 0, 1}}};
   auto drivers = std::make_shared<const std::vector<std::vector<u64>>>(
     std::vector<std::vector<u64>>{{4, 5}});
@@ -1275,11 +797,11 @@ static std::unique_ptr<Machine> machine_from_ephemeral_program()
 bool test_parked_task_pins_immutable_program()
 {
   auto task = machine_from_ephemeral_program();
-  CHECK(task->run(1, 1) == StopReason::quantum);
+  CHECK(task->run_observed(1, 1) == StopReason::quantum);
   task = task->continuation();
   while (!task->done())
   {
-    const StopReason why = task->run(1, 1);
+    const StopReason why = task->run_observed(1, 1);
     CHECK(why == StopReason::quantum || why == StopReason::complete);
     if (why == StopReason::quantum) task = task->continuation();
   }
@@ -1297,6 +819,7 @@ bool test_plan_sized_deep_cursor_stack()
   constexpr u16 depth = 96;
   Program p;
   p.rule_id = 29;
+  p.variant_ordinal = 2;
   p.variant = "deep-chain";
   p.nregs = depth + 1;
   std::vector<std::unique_ptr<PrefixCursor>> cursors;
@@ -1313,7 +836,7 @@ bool test_plan_sized_deep_cursor_stack()
   Machine m(p, drivers, std::move(cursors));
   while (!m.done())
   {
-    const StopReason why = m.run(3, 11);
+    const StopReason why = m.run_observed(3, 11);
     CHECK(why == StopReason::quantum || why == StopReason::complete);
   }
   CHECK(m.result().fires == 1);
@@ -1390,9 +913,22 @@ bool test_selective_watch_proofs_and_failure_events()
   CHECK(debug.proofs[0].premises[0][0] == 1);
   CHECK(debug.proofs[0].premises[1][1] == 8);
   CHECK(std::any_of(debug.events.begin(), debug.events.end(),
-                    [](const Event& e) { return e.kind == EventK::probe_miss; }));
+                    [](const OwnedEvent& e) { return e.kind == EventK::probe_miss; }));
   CHECK(std::any_of(debug.events.begin(), debug.events.end(),
-                    [](const Event& e) { return e.kind == EventK::guard_fail; }));
+                    [](const OwnedEvent& e) { return e.kind == EventK::guard_fail; }));
+  // Every event carries the decoded program's D3 variant ordinal verbatim
+  // (contract lift obligation 1), and emit payloads were materialized from
+  // the bounded view during the callback.
+  CHECK(!debug.events.empty());
+  CHECK(std::all_of(debug.events.begin(), debug.events.end(),
+                    [&](const OwnedEvent& e) {
+                      return e.rule_id == f.program.rule_id
+                          && e.variant_ordinal == f.program.variant_ordinal;
+                    }));
+  CHECK(std::all_of(debug.events.begin(), debug.events.end(),
+                    [](const OwnedEvent& e) {
+                      return e.kind != EventK::emit || e.tuple.size() == 2;
+                    }));
   return true;
 }
 
@@ -1405,6 +941,10 @@ bool test_zero_mask_observer_has_zero_callbacks()
     { ++calls; return DebugAction::continue_; }
   } debug;
   Fixture f;
+  u64 wanted_fires = 0;
+  const auto wanted = reference(f, wanted_fires);
+  // Production entry: a zero effective mask selects the fast loop, so an
+  // attached observer with mask 0 receives zero callbacks.
   Machine m(f.program, f.drivers, f.cursors(), &debug);
   while (!m.done())
   {
@@ -1412,6 +952,17 @@ bool test_zero_mask_observer_has_zero_callbacks()
     CHECK(why == StopReason::complete);
   }
   CHECK(debug.calls == 0);
+  CHECK(m.result().outputs == wanted);
+  // Mask gating also holds inside the observed loop itself: forcing the
+  // micro-stepped policy with a zero mask still constructs no callbacks.
+  Machine forced(f.program, f.drivers, f.cursors(), &debug);
+  while (!forced.done())
+  {
+    const StopReason why = forced.run_observed(1000000, 1000000);
+    CHECK(why == StopReason::complete);
+  }
+  CHECK(debug.calls == 0);
+  CHECK(forced.result().outputs == wanted);
   return true;
 }
 
@@ -1443,7 +994,7 @@ bool test_seal_bind_scan_multihead_and_real_emit()
   insert_nominal(output.get(), {1, 8}); // real emit must dedup this candidate
 
   RulePlan plan{
-    41, "scan-bound", 3, {},
+    41, 1, "scan-bound", 3, {},
     {DriverK::scan_delta, 0, {}, 0, {0, 1}},
     {ProbePlan{1, {0, 1}, 1, {1, 2}}, NeqPlan{0, 2}},
     {EmitPlan{2, {0, 1}, {0, 2}},
@@ -1498,7 +1049,7 @@ bool test_seal_bind_probe_driver_and_task_partition()
   insert_nominal(source.get(), {8, 99});
 
   RulePlan plan{
-    42, "probe-bound", 3, {{0, 7}, {2, 11}},
+    42, 2, "probe-bound", 3, {{0, 7}, {2, 11}},
     {DriverK::probe_full, 0, {0, 1}, 1, {0, 1}},
     {NeqPlan{1, 2}},
     {EmitPlan{1, {0, 1}, {0, 1}}}
@@ -1526,7 +1077,7 @@ bool test_seal_bind_probe_driver_and_task_partition()
   // A fully-bound probe is one atomic task, not 32 duplicate bucket tasks.
   auto exact_out = make_relation("exact", 2, shapes[1].full_orders);
   RulePlan exact{
-    43, "probe-exact", 2, {{0, 7}, {1, 12}},
+    43, 3, "probe-exact", 2, {{0, 7}, {1, 12}},
     {DriverK::probe_full, 0, {0, 1}, 2, {0, 1}},
     {ProbePlan{0, {0, 1}, 2, {0, 1}}},
     {EmitPlan{1, {0, 1}, {0, 1}}}
@@ -1572,7 +1123,7 @@ bool test_bound_nested_ternary_probes_debug_and_sink_order()
   insert_nominal(q.get(), {2, 3, 200});
 
   RulePlan plan{
-    46, "nested-ternary", 5, {},
+    46, 6, "nested-ternary", 5, {},
     {DriverK::scan_delta, 0, {}, 0, {0, 1}},
     {ProbePlan{1, {0, 1, 2}, 1, {1, 2, 3}},
      ProbePlan{2, {0, 1, 2}, 2, {2, 3, 4}}},
@@ -1583,11 +1134,11 @@ bool test_bound_nested_ternary_probes_debug_and_sink_order()
 
   struct BoundDebug final : DebugSink
   {
-    std::vector<Event> events;
+    std::vector<OwnedEvent> events;
     std::vector<Proof> proofs;
     DebugAction observe(const Event& event, const DebugView& view) override
     {
-      events.push_back(event);
+      events.emplace_back(event);
       if (event.kind == EventK::emit)
       {
         proofs.push_back(view.proof());
@@ -1647,8 +1198,19 @@ bool test_bound_nested_ternary_probes_debug_and_sink_order()
                           && proof.premises[1].size() == 3;
                     }));
   CHECK(std::all_of(debug.events.begin(), debug.events.end(),
-                    [](const Event& event) {
+                    [](const OwnedEvent& event) {
                       return event.kind != EventK::emit || event.port == 0;
+                    }));
+  // Bound-path identity: the D3 ordinal flows plan -> seal -> decoded
+  // program -> every event; emit payloads carry the full head arity.
+  CHECK(std::all_of(debug.events.begin(), debug.events.end(),
+                    [](const OwnedEvent& event) {
+                      return event.rule_id == 46 && event.variant_ordinal == 6;
+                    }));
+  CHECK(std::all_of(debug.events.begin(), debug.events.end(),
+                    [](const OwnedEvent& event) {
+                      return event.kind != EventK::emit
+                          || event.tuple.size() == 3;
                     }));
   CHECK(nominal_delta_rows(out.get()) ==
         (std::vector<std::vector<u64>>{{50, 5, 100}, {50, 5, 101},
@@ -1662,7 +1224,7 @@ bool test_seal_and_binding_rejections()
     {2, {{0, 1}}}, {2, {{0, 1}}}
   };
   const RulePlan valid{
-    44, "validation", 3, {},
+    44, 4, "validation", 3, {},
     {DriverK::scan_delta, 0, {}, 0, {0, 1}},
     {ProbePlan{0, {0, 1}, 1, {1, 2}}},
     {EmitPlan{1, {0, 1}, {0, 2}}}
@@ -1690,7 +1252,7 @@ bool test_seal_and_binding_rejections()
   CHECK(rejects([&] { (void)seal_rule(bad, shapes); }));
 
   RulePlan bad_driver{
-    45, "bad-driver", 2, {},
+    45, 5, "bad-driver", 2, {},
     {DriverK::probe_full, 0, {0, 1}, 1, {0, 1}}, {},
     {EmitPlan{1, {0, 1}, {0, 1}}}
   };
@@ -1700,7 +1262,7 @@ bool test_seal_and_binding_rejections()
     {2, {{0, 1}}}, {4, {{0, 1, 2, 3}}}, {2, {{0, 1}}}
   };
   RulePlan no_factory{
-    47, "no-factory", 5, {},
+    47, 7, "no-factory", 5, {},
     {DriverK::scan_delta, 0, {}, 0, {0, 1}},
     {ProbePlan{1, {0, 1, 2, 3}, 1, {1, 2, 3, 4}}},
     {EmitPlan{2, {0, 1}, {0, 2}}}
@@ -1735,11 +1297,14 @@ void benchmark_debug_masks()
   masked.mask = 0;
   emit_watch.mask = event_bit(EventK::emit);
 
+  // Explicitly the micro-stepped observed policy: with a null or mask-0
+  // sink the production `run` would select the fast loop, and this
+  // benchmark's whole point is to price the observed loop and mask gating.
   auto one = [&](DebugSink* debug) {
     const auto t0 = std::chrono::steady_clock::now();
     Machine m(f.program, drivers, f.cursors(), debug, false);
-    while (!m.done()) m.run(std::numeric_limits<u64>::max(),
-                            std::numeric_limits<u64>::max());
+    while (!m.done()) m.run_observed(std::numeric_limits<u64>::max(),
+                                     std::numeric_limits<u64>::max());
     bench_sink = m.result().checksum;
     const double ms = std::chrono::duration<double, std::milli>(
       std::chrono::steady_clock::now() - t0).count();

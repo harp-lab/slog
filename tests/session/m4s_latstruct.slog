@@ -1,0 +1,29 @@
+;; M4S named fallback (docs/m4s-contract.md): a lattice INSIDE the struct
+;; cone.  Both heads read `in`, so any edit's cone holds the struct
+;; constructor and the lattice writer together; lattices anywhere in the
+;; cone stay refused by name under M4S (M6L/M7 own those shapes), and the
+;; struct relation keeps the route outside M6L's certificate -- the flush
+;; must settle through clear-and-rerun from both directions.
+;;
+;; With in = {(1,5), (1,7), (2,3)}:
+;;   out   = { (pair 1 5) (pair 1 7) (pair 2 3) }
+;;   score = { 1 -> 7, 2 -> 3 }          (max lattice)
+;; Deleting in(1,7): out loses (pair 1 7) (2 live ids + 1 tombstone) and
+;; score's key 1 must REGRESS to 5 -- only a rerun can lower a lattice
+;; payload today.
+
+struct (pair int int)
+lattice (best (max int))
+table (in int int)
+table (out pair)
+table (score int best)
+
+rule
+(in X Y)
+-->
+(out (pair X Y))
+
+rule
+(in X Y)
+-->
+(score X Y)

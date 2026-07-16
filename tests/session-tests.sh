@@ -1852,6 +1852,371 @@ else
   echo "FAIL m5-keep-survivors-original"; FAIL=$((FAIL+1))
 fi
 
+# --- M4S slice 1 fixtures, fallback-first (docs/m4s-contract.md) ------------
+# Struct relations are NOT yet admitted to any counted maintenance route:
+# every deletion below must settle through clear-and-rerun with the route
+# reported, while the M5 identity invariants already hold across the fallback
+# (id stability via dump-ids, embedded-id validity via content-rendered
+# dumps).  Each case compares settled content and every support component
+# against a lazy heal plus a forced fresh recount (§10's two oracles --
+# trivially equal under fallback, load-bearing once the routes flip).  Lines
+# marked FLIP(M4S slice N) are the localized edits that flip a block to its
+# precise-route assertion; the recount before the first post-edit dump-counts
+# becomes a lazy no-op at that point and needs no removal.
+#
+# These fixtures exposed (and their substrate fix closed) a real M5 hole:
+# the greedy index packer could unify a struct's intern MASTER ordering with
+# a permuted probe selection, so two flavors resident on one relation owned
+# two disjoint "masters" -- clear-and-rerun walked the stale one, silently
+# forgot the dictionary, and reminted every id; a count round after a
+# delta-entry flush fataled on the same staleness.  The master assignment is
+# now pinned canonical in every flavor (operationalization.rkt
+# choose-indices), making the canonical master the one id-last ordering
+# every resident flavor maintains.  Without that fix the diamond block below
+# cannot even complete: its recount op fatals the daemon mid-drive.
+
+# Struct diamond with tail: the m4t_diamond shape with a constructed pnode
+# head.  Deleting edge(1,2) removes exactly spath/pnode (1,2); (1,4)
+# survives on its 1-3-4 route (rec 2 -> 1) and (1,5) through it.  Ids must
+# be stable across the fallback and the dead content must remain tombstoned.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4s_diamond.slog \
+  batch+:edge,1,2 batch+:edge,2,4 batch+:edge,1,3 batch+:edge,3,4 \
+  batch+:edge,4,5 flush \
+  dump-rel:spath dump-ids:pnode recount dump-counts:spath dump-counts:pnode \
+  batch-:edge,1,2 flush dump-rel:spath dump-ids:pnode \
+  recount dump-counts:spath dump-counts:pnode \
+  recount-force dump-counts:spath dump-counts:pnode \
+  > out/sess-m4s-diamond.log 2>&1
+expect "m4s-diamond-before" "(dumpdone 9)" out/sess-m4s-diamond.log
+expect "m4s-diamond-ids-before" "(idsdone 9 0)" out/sess-m4s-diamond.log
+expect "m4s-diamond-two-routes" "(countrow spath (pnode 1 4) 0 0 2)" out/sess-m4s-diamond.log
+expect "m4s-diamond-ctor-coupled" "(countrow pnode (pnode 1 4) 0 0 2)" out/sess-m4s-diamond.log
+# FLIP(M4S slice 2): -> (route maintain-recursive-negative 1) + a
+# (dred-reseeded ...) report; drop the two expect_nots.
+expect "m4s-diamond-fallback-route" "(route rerun 1 2)" out/sess-m4s-diamond.log
+expect_not "m4s-diamond-no-sweep" "(route maintain-recursive-negative" out/sess-m4s-diamond.log
+expect_not "m4s-diamond-no-reseed" "(dred-reseeded" out/sess-m4s-diamond.log
+expect "m4s-diamond-settled" "(update-committed 2 counts-valid)" out/sess-m4s-diamond.log
+expect "m4s-diamond-after" "(dumpdone 8)" out/sess-m4s-diamond.log
+expect "m4s-diamond-tombstoned" "(idsdone 8 1)" out/sess-m4s-diamond.log
+# healed and forced recounts agree on every support component; (1,5) holds
+# rec 1 before AND after, so its row appears in all three dumps
+if [ "$(grep -cF '(countrow spath (pnode 1 4) 0 0 1)' out/sess-m4s-diamond.log)" -eq 2 ] \
+   && [ "$(grep -cF '(countrow spath (pnode 1 5) 0 0 1)' out/sess-m4s-diamond.log)" -eq 3 ] \
+   && [ "$(grep -cF '(countrow pnode (pnode 1 4) 0 0 1)' out/sess-m4s-diamond.log)" -eq 2 ] \
+   && [ "$(grep -cF '(countrow spath (pnode 1 2)' out/sess-m4s-diamond.log)" -eq 1 ]; then
+  echo "PASS m4s-diamond-maintained-equals-recount"; PASS=$((PASS+1))
+else
+  echo "FAIL m4s-diamond-maintained-equals-recount"; FAIL=$((FAIL+1))
+fi
+m4sd_1=$(grep -F '(idrow ' out/sess-m4s-diamond.log | head -9 | sort)
+m4sd_2=$(grep -F '(idrow ' out/sess-m4s-diamond.log | tail -8 | sort)
+m4sd_sub=ok
+while IFS= read -r l; do
+  [ -n "$l" ] && { printf '%s\n' "$m4sd_1" | grep -qFx "$l" || m4sd_sub=bad; }
+done <<< "$m4sd_2"
+if [ -n "$m4sd_2" ] && [ "$m4sd_sub" = ok ]; then
+  echo "PASS m4s-diamond-ids-stable"; PASS=$((PASS+1))
+else
+  echo "FAIL m4s-diamond-ids-stable (ids reminted across fallback)"; FAIL=$((FAIL+1))
+fi
+
+# Recursive construction self-join: closure constructing sedge terms over a
+# 3-cycle; cutting the cycle strands 6 of 9 contents.  The re-add leg is the
+# strongest identity pin: every tombstone must be consumed back to its
+# ORIGINAL id ((idsdone 9 0) twice, identical id sets).
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4s_selfjoin.slog \
+  batch+:r0,1,2 batch+:r0,2,3 batch+:r0,3,1 flush \
+  dump-rel:sr dump-ids:sedge recount dump-counts:sr \
+  batch-:r0,1,2 flush dump-rel:sr dump-ids:sedge \
+  recount dump-counts:sr dump-counts:sedge \
+  recount-force dump-counts:sr dump-counts:sedge \
+  batch+:r0,1,2 flush dump-ids:sedge \
+  > out/sess-m4s-selfjoin.log 2>&1
+expect "m4s-selfjoin-before" "(dumpdone 9)" out/sess-m4s-selfjoin.log
+expect "m4s-selfjoin-dense" "(countrow sr (sedge 2 1) 0 0 3)" out/sess-m4s-selfjoin.log
+# FLIP(M4S slice 2): -> (route maintain-recursive-negative 1) + reseed report.
+expect "m4s-selfjoin-fallback-route" "(route rerun 1 2)" out/sess-m4s-selfjoin.log
+expect_not "m4s-selfjoin-no-sweep" "(route maintain-recursive-negative" out/sess-m4s-selfjoin.log
+expect "m4s-selfjoin-after" "(dumpdone 3)" out/sess-m4s-selfjoin.log
+expect "m4s-selfjoin-tombstoned" "(idsdone 3 6)" out/sess-m4s-selfjoin.log
+if [ "$(grep -cF '(countrow sr (sedge 2 1) 0 0 1)' out/sess-m4s-selfjoin.log)" -eq 2 ] \
+   && [ "$(grep -cF '(countrow sr (sedge 2 3) 0 1 0)' out/sess-m4s-selfjoin.log)" -eq 2 ] \
+   && [ "$(grep -cF '(countrow sr (sedge 3 1) 0 1 0)' out/sess-m4s-selfjoin.log)" -eq 2 ] \
+   && [ "$(grep -cF '(countrow sedge (sedge 2 1) 0 0 1)' out/sess-m4s-selfjoin.log)" -eq 2 ]; then
+  echo "PASS m4s-selfjoin-maintained-equals-recount"; PASS=$((PASS+1))
+else
+  echo "FAIL m4s-selfjoin-maintained-equals-recount"; FAIL=$((FAIL+1))
+fi
+if [ "$(grep -cF '(idsdone 9 0)' out/sess-m4s-selfjoin.log)" -eq 2 ]; then
+  echo "PASS m4s-selfjoin-all-resurrected"; PASS=$((PASS+1))
+else
+  echo "FAIL m4s-selfjoin-all-resurrected (tombstones left after re-add)"; FAIL=$((FAIL+1))
+fi
+m4ssj_1=$(grep -F '(idrow ' out/sess-m4s-selfjoin.log | head -9 | sort)
+m4ssj_2=$(grep -F '(idrow ' out/sess-m4s-selfjoin.log | sed -n '10,12p' | sort)
+m4ssj_3=$(grep -F '(idrow ' out/sess-m4s-selfjoin.log | tail -9 | sort)
+m4ssj_sub=ok
+while IFS= read -r l; do
+  [ -n "$l" ] && { printf '%s\n' "$m4ssj_1" | grep -qFx "$l" || m4ssj_sub=bad; }
+done <<< "$m4ssj_2"
+if [ -n "$m4ssj_1" ] && [ "$m4ssj_1" = "$m4ssj_3" ] && [ "$m4ssj_sub" = ok ]; then
+  echo "PASS m4s-selfjoin-ids-stable"; PASS=$((PASS+1))
+else
+  echo "FAIL m4s-selfjoin-ids-stable (ids reminted across cut/re-add)"; FAIL=$((FAIL+1))
+fi
+
+# Pass-through chain (p P) --> (q (bar P)): q rows embed bar ids, bar rows
+# embed foo ids.  After each settlement every embedded id must decode to its
+# live struct row -- a dangling id renders as garbage (e.g. 0.0 fields),
+# never as the constructed content.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4s_chain.slog \
+  batch+:in,1 batch+:in,2 batch+:in,3 flush \
+  dump-rel:q dump-ids:foo dump-ids:bar \
+  batch-:in,2 batch+:in,4 flush dump-rel:p dump-rel:q dump-ids:foo dump-ids:bar \
+  batch-:in,3 flush dump-rel:q dump-ids:foo dump-ids:bar \
+  recount dump-counts:q recount-force dump-counts:q \
+  > out/sess-m4s-chain.log 2>&1
+# FLIP(M4S slice 1): the mixed and negative flushes take the acyclic
+# maintenance routes ((route maintain-negative 2)/(route maintain-positive 2));
+# drop the rerun expects.
+expect "m4s-chain-mixed-fallback" "(route rerun 2 4)" out/sess-m4s-chain.log
+expect_not "m4s-chain-no-maintain" "(route maintain-negative" out/sess-m4s-chain.log
+expect "m4s-chain-settled" "(update-committed 3 counts-valid)" out/sess-m4s-chain.log
+# embedded-id decode walk: 3 + 3 + 2 nested q renderings, one p dump, and
+# never a dangling-id rendering
+if [ "$(grep -cF 'dumprow (bar (foo ' out/sess-m4s-chain.log)" -eq 8 ] \
+   && [ "$(grep -cF '(dumprow (foo 4))' out/sess-m4s-chain.log)" -eq 1 ] \
+   && ! grep -F '(dumprow ' out/sess-m4s-chain.log | grep -qF '0.0'; then
+  echo "PASS m4s-chain-embedded-ids-decode"; PASS=$((PASS+1))
+else
+  echo "FAIL m4s-chain-embedded-ids-decode (dangling embedded id)"; FAIL=$((FAIL+1))
+fi
+expect "m4s-chain-swap-tombstones" "(idsdone 3 1)" out/sess-m4s-chain.log
+expect "m4s-chain-final-tombstones" "(idsdone 2 2)" out/sess-m4s-chain.log
+if [ "$(grep -cF '(countrow q (bar (foo 1)) 0 1 0)' out/sess-m4s-chain.log)" -eq 2 ] \
+   && [ "$(grep -cF '(countrow q (bar (foo 4)) 0 1 0)' out/sess-m4s-chain.log)" -eq 2 ]; then
+  echo "PASS m4s-chain-maintained-equals-recount"; PASS=$((PASS+1))
+else
+  echo "FAIL m4s-chain-maintained-equals-recount"; FAIL=$((FAIL+1))
+fi
+# foo id stability: dumps are foo(3), bar(3), foo(3), bar(3), foo(2), bar(2)
+m4sc_foo1=$(grep -F '(idrow ' out/sess-m4s-chain.log | sed -n '1,3p' | sort)
+m4sc_foo2=$(grep -F '(idrow ' out/sess-m4s-chain.log | sed -n '7,9p' | sort)
+m4sc_foo3=$(grep -F '(idrow ' out/sess-m4s-chain.log | sed -n '13,14p' | sort)
+m4sc_kept=$(comm -12 <(printf '%s\n' "$m4sc_foo1") <(printf '%s\n' "$m4sc_foo2") | grep -c '(idrow ')
+m4sc_sub=ok
+while IFS= read -r l; do
+  [ -n "$l" ] && { printf '%s\n' "$m4sc_foo2" | grep -qFx "$l" || m4sc_sub=bad; }
+done <<< "$m4sc_foo3"
+if [ "$m4sc_kept" -eq 2 ] && [ -n "$m4sc_foo3" ] && [ "$m4sc_sub" = ok ]; then
+  echo "PASS m4s-chain-ids-stable"; PASS=$((PASS+1))
+else
+  echo "FAIL m4s-chain-ids-stable (survivor foo ids reminted)"; FAIL=$((FAIL+1))
+fi
+
+# Multi-constructor support: identical content (mk 7) constructed by two
+# rules.  Deleting one input is a support-only decrement (row stays live,
+# SAME id, nonrec 2 -> 1); deleting both tombstones it.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4s_multictor.slog \
+  batch+:a,7 batch+:b,7 flush dump-rel:out dump-ids:mk \
+  recount dump-counts:out dump-counts:mk \
+  batch-:a,7 flush dump-rel:out dump-ids:mk \
+  recount dump-counts:out dump-counts:mk \
+  recount-force dump-counts:out dump-counts:mk \
+  batch-:b,7 flush dump-rel:out dump-ids:mk \
+  > out/sess-m4s-multictor.log 2>&1
+expect "m4s-multictor-two-ctors" "(countrow out (mk 7) 0 2 0)" out/sess-m4s-multictor.log
+expect "m4s-multictor-struct-two" "(countrow mk (mk 7) 0 2 0)" out/sess-m4s-multictor.log
+# FLIP(M4S slice 1): both deletions -> (route maintain-negative 1); the first
+# is a support-only decrement, the second a last-support tombstone.
+if [ "$(grep -cF '(route rerun 1 2)' out/sess-m4s-multictor.log)" -eq 2 ]; then
+  echo "PASS m4s-multictor-fallback-routes"; PASS=$((PASS+1))
+else
+  echo "FAIL m4s-multictor-fallback-routes"; FAIL=$((FAIL+1))
+fi
+if [ "$(grep -cF '(countrow out (mk 7) 0 1 0)' out/sess-m4s-multictor.log)" -eq 2 ] \
+   && [ "$(grep -cF '(countrow mk (mk 7) 0 1 0)' out/sess-m4s-multictor.log)" -eq 2 ]; then
+  echo "PASS m4s-multictor-support-only"; PASS=$((PASS+1))
+else
+  echo "FAIL m4s-multictor-support-only"; FAIL=$((FAIL+1))
+fi
+if [ "$(grep -cF '(dumpdone 1)' out/sess-m4s-multictor.log)" -eq 2 ] \
+   && grep -qF '(dumpdone 0)' out/sess-m4s-multictor.log; then
+  echo "PASS m4s-multictor-contents"; PASS=$((PASS+1))
+else
+  echo "FAIL m4s-multictor-contents"; FAIL=$((FAIL+1))
+fi
+expect "m4s-multictor-live-kept" "(idsdone 1 0)" out/sess-m4s-multictor.log
+expect "m4s-multictor-final-tombstone" "(idsdone 0 1)" out/sess-m4s-multictor.log
+if [ "$(grep -F '(idrow ' out/sess-m4s-multictor.log | sort -u | wc -l)" -eq 1 ] \
+   && [ "$(grep -cF '(idrow ' out/sess-m4s-multictor.log)" -eq 2 ]; then
+  echo "PASS m4s-multictor-id-stable"; PASS=$((PASS+1))
+else
+  echo "FAIL m4s-multictor-id-stable (id changed on support-only decrement)"; FAIL=$((FAIL+1))
+fi
+
+# Mixed-sign epoch: from a = {7}, b = {}, one flush {-a(7), +b(7)} kills and
+# revives (mk 7) inside a single update epoch; the id must survive
+# (within-epoch resurrection, M5) and the support word swaps constructor
+# without changing value.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4s_multictor.slog \
+  batch+:a,7 flush dump-ids:mk recount dump-counts:out \
+  batch-:a,7 batch+:b,7 flush dump-rel:out dump-ids:mk \
+  recount dump-counts:out recount-force dump-counts:out \
+  > out/sess-m4s-mixedsign.log 2>&1
+# FLIP(M4S slice 1): -> (route maintain-negative 1)/(route maintain-positive 1)
+# with the tombstone-then-resurrect verbs inside one epoch.
+expect "m4s-mixedsign-fallback" "(route rerun 1 2)" out/sess-m4s-mixedsign.log
+expect "m4s-mixedsign-settled" "(update-committed 2 counts-valid)" out/sess-m4s-mixedsign.log
+expect "m4s-mixedsign-live" "(dumpdone 1)" out/sess-m4s-mixedsign.log
+if [ "$(grep -cF '(idsdone 1 0)' out/sess-m4s-mixedsign.log)" -eq 2 ] \
+   && [ "$(grep -F '(idrow ' out/sess-m4s-mixedsign.log | sort -u | wc -l)" -eq 1 ]; then
+  echo "PASS m4s-mixedsign-id-survives"; PASS=$((PASS+1))
+else
+  echo "FAIL m4s-mixedsign-id-survives (id lost across in-epoch kill/revive)"; FAIL=$((FAIL+1))
+fi
+if [ "$(grep -cF '(countrow out (mk 7) 0 1 0)' out/sess-m4s-mixedsign.log)" -eq 3 ]; then
+  echo "PASS m4s-mixedsign-ctor-swap-counts"; PASS=$((PASS+1))
+else
+  echo "FAIL m4s-mixedsign-ctor-swap-counts"; FAIL=$((FAIL+1))
+fi
+
+# Import-then-edit over a would-be-admissible cone (the m5-keep shape minus
+# the lattice): the frozen payload's (out (pair 7 8)) is direct input and so
+# is its struct heap -- the pair row's foundation is the input LEDGER, not a
+# constructor.  The deletion currently falls back; the imported row's
+# embedded id stays valid throughout.
+rm -rf out/sess-m4s-import-db
+{
+  echo '(struct pair 2)'
+  echo '(table out 1)'
+  echo '(out (pair 7 8))'
+} > out/sess-m4s-import.facts
+timeout 600 racket -e '
+(require "compiler/tools.rkt" racket/file)
+(run-freezer "out/sess-m4s-import-db" (file->string "out/sess-m4s-import.facts"))
+(displayln "frozen-ok")' > out/sess-m4s-import-freeze.log 2>&1
+expect "m4s-import-freeze" "frozen-ok" out/sess-m4s-import-freeze.log
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4s_import.slog \
+  batch+:in,1,2 batch+:in,3,4 flush \
+  import-delta:out/sess-m4s-import-db \
+  dump-ids:pair dump-rel:out recount dump-counts:pair dump-counts:out \
+  input-ledger \
+  batch-:in,3,4 flush dump-ids:pair dump-rel:out \
+  recount dump-counts:pair dump-counts:out \
+  recount-force dump-counts:pair dump-counts:out \
+  > out/sess-m4s-import.log 2>&1
+expect "m4s-import-populated" "(idsdone 3 0)" out/sess-m4s-import.log
+expect "m4s-import-ledger-heap" "pair (pair 7 8) 7 8)" out/sess-m4s-import.log
+expect "m4s-import-ledger-row" "out (pair 7 8))" out/sess-m4s-import.log
+# FLIP(M4S slice 1): -> (route maintain-negative 1), no rerun.
+expect "m4s-import-fallback-route" "(route rerun 1 2)" out/sess-m4s-import.log
+expect_not "m4s-import-no-maintain" "(route maintain-negative" out/sess-m4s-import.log
+expect "m4s-import-tombstoned" "(idsdone 2 1)" out/sess-m4s-import.log
+# the struct row's input foundation comes from the ledger: input bit set,
+# no constructor support, before AND after (healed + forced)
+if [ "$(grep -cF '(countrow pair (pair 7 8) 1 0 0)' out/sess-m4s-import.log)" -eq 3 ] \
+   && [ "$(grep -cF '(countrow out (pair 7 8) 1 0 0)' out/sess-m4s-import.log)" -eq 3 ] \
+   && [ "$(grep -cF '(countrow out (pair 1 2) 0 1 0)' out/sess-m4s-import.log)" -eq 3 ] \
+   && [ "$(grep -cF '(countrow pair (pair 3 4) 0 1 0)' out/sess-m4s-import.log)" -eq 1 ]; then
+  echo "PASS m4s-import-ledger-foundation"; PASS=$((PASS+1))
+else
+  echo "FAIL m4s-import-ledger-foundation"; FAIL=$((FAIL+1))
+fi
+# the imported row's embedded id decodes in the pre- and post-deletion dumps
+if [ "$(grep -cF '(dumprow (pair 7 8))' out/sess-m4s-import.log)" -eq 2 ] \
+   && [ "$(grep -cF '(dumpdone 2)' out/sess-m4s-import.log)" -eq 1 ]; then
+  echo "PASS m4s-import-embedded-id-valid"; PASS=$((PASS+1))
+else
+  echo "FAIL m4s-import-embedded-id-valid (imported embedded id dangling)"; FAIL=$((FAIL+1))
+fi
+m4si_1=$(grep -F '(idrow ' out/sess-m4s-import.log | head -3 | sort)
+m4si_2=$(grep -F '(idrow ' out/sess-m4s-import.log | tail -2 | sort)
+m4si_sub=ok
+while IFS= read -r l; do
+  [ -n "$l" ] && { printf '%s\n' "$m4si_1" | grep -qFx "$l" || m4si_sub=bad; }
+done <<< "$m4si_2"
+if [ -n "$m4si_2" ] && [ "$m4si_sub" = ok ]; then
+  echo "PASS m4s-import-ids-stable"; PASS=$((PASS+1))
+else
+  echo "FAIL m4s-import-ids-stable"; FAIL=$((FAIL+1))
+fi
+
+# --- M4S named fallbacks (permanent refusals and compositions) --------------
+# An edit whose TARGET is a struct relation is refused (docs/m4s-contract.md
+# keeps struct edit targets refused permanently, even after admission;
+# import-delta is the vehicle for struct-embedding input).  The positive
+# sign is refused BY NAME at set-overlay (the m6l lattice precedent):
+# nothing applies and the session continues, so content and ids are
+# asserted intact in the same drive.  KNOWN GAP (reported, not improvised):
+# the negative sign is also refused before any epoch or mutation -- baseline
+# normalization rejects the whole flush -- but with a GENERIC message
+# ("tuple is absent": input-state classifies a content-arity tuple against
+# struct storage incoherently and misreports the live derived row).  The
+# contract's by-name refusal for the negative sign is a substrate follow-up;
+# flip the del expect to the by-name message when it lands.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4s_import.slog \
+  batch+:in,1,2 flush \
+  batch+:pair,9,9 flush dump-rel:out dump-ids:pair \
+  > out/sess-m4s-editstruct-add.log 2>&1
+expect "m4s-editstruct-add-refused-by-name" \
+  '(error "set-overlay: pair is a lattice/struct relation")' \
+  out/sess-m4s-editstruct-add.log
+expect "m4s-editstruct-add-content-intact" "(dumpdone 1)" out/sess-m4s-editstruct-add.log
+expect "m4s-editstruct-add-ids-intact" "(idsdone 1 0)" out/sess-m4s-editstruct-add.log
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4s_import.slog \
+  batch+:in,1,2 flush \
+  batch-:pair,1,2 flush \
+  > out/sess-m4s-editstruct-del.log 2>&1
+expect "m4s-editstruct-del-refused" "cannot retract (1 2) from pair" \
+  out/sess-m4s-editstruct-del.log
+expect "m4s-editstruct-del-before-epoch" "(update-committed 1 " out/sess-m4s-editstruct-del.log
+expect_not "m4s-editstruct-del-unapplied" "(update-begun 1)" out/sess-m4s-editstruct-del.log
+
+# Lattice INSIDE the struct cone: refused by name under M4S (M6L/M7 own the
+# shape); the rerun must regress score's key 1 from 7 back to 5 -- only a
+# rerun can lower a lattice payload today.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4s_latstruct.slog \
+  batch+:in,1,5 batch+:in,1,7 batch+:in,2,3 flush \
+  dump-rel:out dump-tuples:score dump-ids:pair \
+  batch-:in,1,7 flush dump-rel:out dump-tuples:score dump-ids:pair \
+  > out/sess-m4s-latstruct.log 2>&1
+expect "m4s-latstruct-max-before" "(tuplerow 1 7)" out/sess-m4s-latstruct.log
+expect "m4s-latstruct-fallback" "(route rerun 1 3)" out/sess-m4s-latstruct.log
+expect_not "m4s-latstruct-no-maintain" "(route maintain" out/sess-m4s-latstruct.log
+expect "m4s-latstruct-regressed" "(tuplerow 1 5)" out/sess-m4s-latstruct.log
+expect "m4s-latstruct-out-shrunk" "(dumpdone 2)" out/sess-m4s-latstruct.log
+expect "m4s-latstruct-tombstoned" "(idsdone 2 1)" out/sess-m4s-latstruct.log
+
+# Negation INSIDE the struct cone: refused by name under M4S (M4N owns
+# anti-deltas); the complement recomputes exactly (blocked GROWS 2 -> 3).
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4s_negstruct.slog \
+  batch+:in,1,1 batch+:in,2,5 flush \
+  dump-rel:out dump-rel:blocked dump-ids:pair \
+  batch-:in,1,1 flush dump-rel:out dump-rel:blocked dump-ids:pair \
+  > out/sess-m4s-negstruct.log 2>&1
+if [ "$(grep -cF '(route rerun 1 3)' out/sess-m4s-negstruct.log)" -eq 2 ]; then
+  echo "PASS m4s-negstruct-fallback-routes"; PASS=$((PASS+1))
+else
+  echo "FAIL m4s-negstruct-fallback-routes"; FAIL=$((FAIL+1))
+fi
+expect_not "m4s-negstruct-no-maintain" "(route maintain" out/sess-m4s-negstruct.log
+expect "m4s-negstruct-complement-before" "(dumpdone 2)" out/sess-m4s-negstruct.log
+expect "m4s-negstruct-complement-grown" "(dumpdone 3)" out/sess-m4s-negstruct.log
+expect "m4s-negstruct-survivor" "(dumprow (pair 2 5))" out/sess-m4s-negstruct.log
+expect "m4s-negstruct-tombstoned" "(idsdone 1 1)" out/sess-m4s-negstruct.log
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

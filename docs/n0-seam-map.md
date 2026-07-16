@@ -87,8 +87,8 @@ was imprecise; corrected there).
 | `$stat_fixpoint/fires/size` | daemon/database.h:4183–4211 | database.h:4208,5163 (`rfind("$stat_",0)`); session.rkt:487 |
 | `<R>_ans` (demand answers) | demand.rkt:71–72 | emit-cpp.rkt:894 (`_ans$` regex) |
 | `<R>_has` / `<R>_at` | modules.rkt:764–787 | regex at 770 |
-| `_lat…/_list_…/_map_…/union<gensym>` | modules.rkt:389–447 | rel-env membership |
-| `latchk_<n>` | operationalization.rkt:959–961 | (bypasses `esc`) |
+| `_lat…/_list_…/_map_…/_union_<members…>` | modules.rkt:389–447 (union gensym → deterministic, RF1 slice 0) | rel-env membership |
+| `latchk_<n>`, `temp[<flavor>]<level>x<n>` | operationalization.rkt:959–961; join-planning.rkt fresh-temp! (RF1 slice 0) | (latchk bypasses `esc`; temps normalized as `temp[A-Za-z0-9]+` by tests/stats-tests.sh) |
 | `v_<var>` refs, `const<sha24>` globals | emit-cpp.rkt:48–53,71; operationalization.rkt:294–298 | canonicalize-vrefs 70–84 |
 
 Per modules.md §10 N5.2 these prefixes migrate *deliberately after*

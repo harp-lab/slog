@@ -1,0 +1,33 @@
+;; M4S struct diamond with tail (docs/m4s-contract.md, required fixtures):
+;; the m4t_diamond shape with a pair-style CONSTRUCTED head -- spath rows
+;; are struct instances of pnode, so the closure's identity rides the
+;; intern dictionary.  With edges 1-2, 2-4, 1-3, 3-4, 4-5 fed through the
+;; overlay API the closure is nine rows:
+;;   spath = { (1,2) (2,4) (1,3) (3,4) (4,5)     copies, nonrec 1 each
+;;             (1,4)  rec 2   via 1-2-4 AND 1-3-4
+;;             (2,5)  rec 1   via 2-4-5
+;;             (3,5)  rec 1   via 3-4-5
+;;             (1,5)  rec 1   via (1,4)+(4,5) }
+;; and pnode interns the same nine contents with the same support words
+;; (each firing supports the constructed pnode row and the spath row with
+;; equal multiplicity -- constructor coupling).
+;;
+;; Deleting edge(1,2) removes exactly spath/pnode (1,2):
+;;   (1,4) survives on the 1-3-4 route (rec 2 -> 1), (1,5) survives
+;;   through it (rec 1), everything else keeps its support:
+;;   spath = 8 rows, pnode = 8 live ids + 1 tombstone.
+
+table (edge int int)
+struct (pnode int int)
+table (spath pnode)
+
+rule
+(edge X Y)
+-->
+(spath (pnode X Y))
+
+rule
+(spath (pnode X Y))
+(edge Y Z)
+-->
+(spath (pnode X Z))

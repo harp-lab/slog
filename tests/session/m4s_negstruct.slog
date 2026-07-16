@@ -1,0 +1,31 @@
+;; M4S named fallback (docs/m4s-contract.md): a negation edge INSIDE the
+;; struct cone.  `in` feeds the struct constructor positively and the
+;; complement rule negatively, so every edit's cone crosses ~; negation
+;; stays refused by name under M4S (M4N owns anti-deltas), and the struct
+;; relation keeps the cone outside every counted route -- both signs must
+;; settle through clear-and-rerun.
+;;
+;; With in = {(1,1), (2,5)}:
+;;   out     = { (pair 1 1) (pair 2 5) }
+;;   blocked = keys K in {1,2,3} with NO in(K,K) = { 2, 3 }
+;; Deleting in(1,1): out = { (pair 2 5) } (1 live id + 1 tombstone) and
+;; blocked GROWS to { 1, 2, 3 } -- the complement recomputes exactly.
+
+struct (pair int int)
+table (in int int)
+table (key int)
+table (out pair)
+table (blocked int)
+
+rule (key 1) (key 2) (key 3)
+
+rule
+(in X Y)
+-->
+(out (pair X Y))
+
+rule
+(key K)
+~(in K K)
+-->
+(blocked K)
