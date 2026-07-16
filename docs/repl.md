@@ -1,7 +1,11 @@
 # REPL names, boundaries, and historical values
 
-2026-07-13. **Design proposal; no REPL exists yet.** The REPL should present
-the compiler/session's database model, not daemon implementation strings.
+2026-07-13. **Design proposal; no connected REPL exists yet.** As of
+2026-07-15, `compiler/repl.rkt` and `compiler/repl-x.rkt` establish the pure
+command loop and Expeditor/plain input seam; they intentionally do not dispatch
+to a live session. [repl-terminal.md](repl-terminal.md) is normative for that
+Racket/module/terminal split. The REPL should present the compiler/session's
+database model, not daemon implementation strings.
 
 *2026-07-14: [execution-tiers.md](execution-tiers.md) adopts §6 verbatim as
 "level-0 observation watches" and layers a pre-commit provenance gate above
@@ -322,7 +326,7 @@ The compiler provides:
 - qualified rule/source provenance; and
 - formal-to-actual binding maps.
 
-The session driver in `compiler/session.rkt` and `slog.rkt` provides:
+The session driver in `compiler/session.rkt` and `compiler/run.rkt` provides:
 
 - stable BoundaryKeys and `dbN` labels;
 - boundary catalog/environment deltas;
@@ -350,11 +354,24 @@ The existing `(schema)` action describes nonempty materialization and is not a
 catalog API. Add explicit catalog/type-registry introspection rather than
 changing the REPL to guess what empty declarations once existed.
 
-## 8. First implementation slice
+## 8. First implementation slices
 
-After the module/catalog substrate exists:
+The client keel does not need to wait for modules/catalogs:
 
-1. add a `repl` mode to `slog.rkt` that owns one session and labels every
+1. keep `compiler/repl.rkt` terminal-independent and accept an injected
+   dispatcher;
+2. use `compiler/repl-x.rkt` for Expeditor/plain frontend selection, then the
+   isolated raw-terminal canvas backend described by repl-terminal.md;
+3. parse only the command envelope initially and preserve embedded Slog as
+   source text for the compiler lexer/parser entry point;
+4. build budgeted pure presentation trees and plain golden transcripts against
+   a fake structured client; and
+5. generate help/completion metadata from one effect-typed verb registry.
+
+After the module/catalog substrate exists, connect that keel to the real
+session/wire client:
+
+1. add a `repl` mode to `compiler/run.rkt` that owns one session and labels every
    committed BoundaryKey;
 2. implement completion and lookup over the session catalog;
 3. add daemon lookup by VersionKey and TypeKey/SID registry inspection;

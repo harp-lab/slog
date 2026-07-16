@@ -17,7 +17,7 @@ It is the mirror image of `examples/regex`: that one is all `demand`
 ## Running
 
 ```
-racket slog.rkt --no-banner --debug-dir out/domtree examples/domtree/domtree.slog
+racket compiler/run.rkt --no-banner --debug-dir out/domtree examples/domtree/domtree.slog
 ```
 
 The input CFG is a doubly nested loop whose inner body is an if/else

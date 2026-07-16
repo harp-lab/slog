@@ -62,7 +62,7 @@ for t in "${PROGS[@]}"; do
   ok=1
   for o in "$out1" "$out2"; do
     rm -rf "$o"
-    if ! timeout 900 racket slog.rkt --no-banner --debug-dir "$o" "$t" \
+    if ! timeout 900 racket compiler/run.rkt --no-banner --debug-dir "$o" "$t" \
          > "out/stats-$name.log" 2>&1; then
       echo "FAIL $name (run error; see out/stats-$name.log)"; fail=1; ok=0; break
     fi
@@ -101,12 +101,12 @@ for t in "${PROGS[@]}"; do
   for per in $RELOAD_PERS; do
     db="stats_${name}_c"; rout="out/stats-$name-reload$per"
     rm -rf "data/$db" "data/$db.edb" "$rout"
-    if ! timeout 900 racket slog.rkt --no-banner --out-db-compressed "$db" --per "$per" "$t" \
+    if ! timeout 900 racket compiler/run.rkt --no-banner --out-db-compressed "$db" --per "$per" "$t" \
          > "out/stats-$name-save$per.log" 2>&1; then
       echo "FAIL $name (reload per=$per: save error; see out/stats-$name-save$per.log)"
       reload_ok=0; rm -rf "data/$db" "data/$db.edb"; break
     fi
-    if ! timeout 900 racket slog.rkt --no-banner -d "$db" --debug-dir "$rout" "$EMPTY" \
+    if ! timeout 900 racket compiler/run.rkt --no-banner -d "$db" --debug-dir "$rout" "$EMPTY" \
          > "out/stats-$name-reload$per.log" 2>&1; then
       echo "FAIL $name (reload per=$per: replay error; see out/stats-$name-reload$per.log)"
       reload_ok=0; rm -rf "data/$db" "data/$db.edb"; break

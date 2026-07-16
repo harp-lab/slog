@@ -6,7 +6,7 @@ Writes each graph directly as a slog binary database under data/bench_*/
 raw little-endian u64 words, arity words per tuple, s32-encoded) -- inline
 ground rules funnel every fact through one compiled rule, which is fine
 for tests but not for hundred-thousand-edge graphs.  Query programs run
-against these with `racket slog.rkt -d bench_<graph> ...`.
+against these with `racket compiler/run.rkt -d bench_<graph> ...`.
 
 All generation is seeded: regenerating produces identical databases.
 

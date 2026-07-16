@@ -83,7 +83,7 @@ rule (program
       [(Quote (NoPr) (DPair (DInt 1) (DPair (DInt 2) (DNil))))])]))
 ```
 ```
-cd ~/slog && SLOG_OPT=0 racket slog.rkt --debug-dir /tmp/out qpair_ana.slog
+cd ~/slog && SLOG_OPT=0 racket compiler/run.rkt --debug-dir /tmp/out qpair_ana.slog
 ```
 → crashes as above (EOF mid-stratum, after fixpoint 0).
 

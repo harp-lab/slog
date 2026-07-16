@@ -16,13 +16,13 @@ not arbitrary filesystem paths on the command line.
 Write the complete final database:
 
 ```console
-$ racket slog.rkt --no-banner --out-db callgraph analyze.slog
+$ racket compiler/run.rkt --no-banner --out-db callgraph analyze.slog
 ```
 
 This creates `data/callgraph/`. Load it before another program:
 
 ```console
-$ racket slog.rkt --no-banner -d callgraph --debug-dir out/query query.slog
+$ racket compiler/run.rkt --no-banner -d callgraph --debug-dir out/query query.slog
 ```
 
 An exact save contains the full materialized relations, interned strings and
@@ -49,7 +49,7 @@ rule (path X X) --> (in_cycle X)
 Run it with:
 
 ```console
-$ racket slog.rkt --no-banner -d callgraph --sizes \
+$ racket compiler/run.rkt --no-banner -d callgraph --sizes \
     --debug-dir out/cycles cycles.slog
 ```
 
@@ -70,14 +70,14 @@ interface.
 An exact output loaded over an input is a fresh materialized copy:
 
 ```console
-$ racket slog.rkt --no-banner -d callgraph \
+$ racket compiler/run.rkt --no-banner -d callgraph \
     --out-db callgraph-with-cycles cycles.slog
 ```
 
 A compressed output loaded over an input records a dependency on that input:
 
 ```console
-$ racket slog.rkt --no-banner -d callgraph \
+$ racket compiler/run.rkt --no-banner -d callgraph \
     --out-db-compressed callgraph-with-cycles cycles.slog
 ```
 
@@ -89,7 +89,7 @@ inputs in order and then its own layer.
 Use:
 
 ```console
-$ racket slog.rkt --no-banner --out-db-compressed analysis-small \
+$ racket compiler/run.rkt --no-banner --out-db-compressed analysis-small \
     analysis.slog
 ```
 
@@ -121,8 +121,8 @@ include resolution and diagnostics.
 Set the kept fraction with either a fraction or percent:
 
 ```console
-$ racket slog.rkt --out-db-compressed small --per 0.25 analysis.slog
-$ racket slog.rkt --out-db-compressed small --per 25 analysis.slog
+$ racket compiler/run.rkt --out-db-compressed small --per 0.25 analysis.slog
+$ racket compiler/run.rkt --out-db-compressed small --per 25 analysis.slog
 ```
 
 Both retain 25 percent of sample-eligible derived rows. `--per 1` or
@@ -163,7 +163,7 @@ This command uses the compressed-save path but writes one self-contained exact
 root:
 
 ```console
-$ racket slog.rkt --out-db-compressed snapshot --flatten analysis.slog
+$ racket compiler/run.rkt --out-db-compressed snapshot --flatten analysis.slog
 ```
 
 The result has no linked EDB root, stored deriving program, or replay recipe.
@@ -200,13 +200,13 @@ immutable once descendants exist.
 All database management commands begin with:
 
 ```console
-$ racket slog.rkt db SUBCOMMAND
+$ racket compiler/run.rkt db SUBCOMMAND
 ```
 
 ### List
 
 ```console
-$ racket slog.rkt db ls
+$ racket compiler/run.rkt db ls
 ```
 
 The table shows name, kind, retained percentage, relation-directory count,
@@ -217,8 +217,8 @@ disk size, and staleness. Databases written by plain `--out-db` have no managed
 ### Dependency tree
 
 ```console
-$ racket slog.rkt db tree
-$ racket slog.rkt db tree analysis-small report
+$ racket compiler/run.rkt db tree
+$ racket compiler/run.rkt db tree analysis-small report
 ```
 
 With no names, `tree` starts from databases that no other database references.
@@ -227,8 +227,8 @@ With names, it prints those roots and recursively shows their inputs.
 ### Verify metadata
 
 ```console
-$ racket slog.rkt db verify
-$ racket slog.rkt db verify analysis-small
+$ racket compiler/run.rkt db verify
+$ racket compiler/run.rkt db verify analysis-small
 ```
 
 The static check verifies readable managed metadata, present inputs, matching
@@ -238,7 +238,7 @@ no managed metadata.
 ### Verify by full replay
 
 ```console
-$ racket slog.rkt db verify analysis-small --replay
+$ racket compiler/run.rkt db verify analysis-small --replay
 ```
 
 This is the strong check for a compressed layer. It skips the retained sample,
@@ -256,14 +256,14 @@ choice.
 Remove unreferenced databases:
 
 ```console
-$ racket slog.rkt db rm old-result another-result
+$ racket compiler/run.rkt db rm old-result another-result
 ```
 
 If a database has dependents, removal is refused. Remove it and every
 transitive dependent with:
 
 ```console
-$ racket slog.rkt db rm base --cascade
+$ racket compiler/run.rkt db rm base --cascade
 ```
 
 This is destructive. Check `db tree base` first.
@@ -272,13 +272,13 @@ Deleting a compressed layer can leave its automatically named `.edb` root
 unreferenced. Collect such roots with:
 
 ```console
-$ racket slog.rkt db gc
+$ racket compiler/run.rkt db gc
 ```
 
 Remove every database directory under `data/` with:
 
 ```console
-$ racket slog.rkt db clear
+$ racket compiler/run.rkt db clear
 ```
 
 `clear` is intentionally broad and does not preserve selected names.
@@ -292,8 +292,8 @@ boundary and replays dependent programs so the change propagates.
 ### Add a tuple
 
 ```console
-$ racket slog.rkt db edit base add-tuple edge a b
-$ racket slog.rkt db edit base add-tuple weight a b 17
+$ racket compiler/run.rkt db edit base add-tuple edge a b
+$ racket compiler/run.rkt db edit base add-tuple weight a b 17
 ```
 
 Each value is parsed as a number when possible; otherwise it becomes a string
@@ -304,7 +304,7 @@ relation arity and compatible values.
 ### Delete a tuple
 
 ```console
-$ racket slog.rkt db edit base del-tuple edge a b
+$ racket compiler/run.rkt db edit base del-tuple edge a b
 ```
 
 A negative edit makes later program layers replay without their old retained
@@ -317,8 +317,8 @@ that the stored source itself asserts.
 ### Rename or drop a relation
 
 ```console
-$ racket slog.rkt db edit layer rename-rel old_name new_name
-$ racket slog.rkt db edit layer drop-rel scratch
+$ racket compiler/run.rkt db edit layer rename-rel old_name new_name
+$ racket compiler/run.rkt db edit layer drop-rel scratch
 ```
 
 These are version-environment operations applied during load. A follow-up
@@ -334,13 +334,13 @@ checking against it.
 Materialize a managed chain as a standalone flat database:
 
 ```console
-$ racket slog.rkt db freeze report --as report-flat
+$ racket compiler/run.rkt db freeze report --as report-flat
 ```
 
 Or replace it in place:
 
 ```console
-$ racket slog.rkt db freeze report
+$ racket compiler/run.rkt db freeze report
 ```
 
 An in-place freeze changes the database stamp and is refused while dependents

@@ -53,7 +53,7 @@ fi
 pass=0; fail=0; failed=()
 dump() { # dump db $1 to dir $2 via the empty loader (replays a compressed db)
   rm -rf "$2"
-  if ! racket slog.rkt --no-banner -d "$1" --debug-dir "$2" "$EMPTY" \
+  if ! racket compiler/run.rkt --no-banner -d "$1" --debug-dir "$2" "$EMPTY" \
        > "out/dump-$(basename "$2").log" 2>&1; then
     echo "  DUMP-ERROR $1 (see out/dump-$(basename "$2").log):"
     tail -3 "out/dump-$(basename "$2").log" | sed 's/^/    /'
@@ -64,7 +64,7 @@ for prog in "${PROGS[@]}"; do
   [ -f "$prog" ] || { echo "SKIP $name (no such file)"; continue; }
   # oracle: uncompressed, dumped once
   rm -rf "data/${name}_o" "data/${name}_o.edb"
-  racket slog.rkt --no-banner --out-db "${name}_o" "$prog" \
+  racket compiler/run.rkt --no-banner --out-db "${name}_o" "$prog" \
     > "out/save-${name}_o.log" 2>&1
   st=$?
   [ $st -ne 0 ] && echo "  SAVE-ERROR ${name}_o exit=$st (out/save-${name}_o.log)"
@@ -85,7 +85,7 @@ for prog in "${PROGS[@]}"; do
   fi
   for per in $PERS; do
     rm -rf "data/${name}_c" "data/${name}_c.edb"
-    racket slog.rkt --no-banner --out-db-compressed "${name}_c" --per "$per" "$prog" \
+    racket compiler/run.rkt --no-banner --out-db-compressed "${name}_c" --per "$per" "$prog" \
       > "out/save-${name}_c.log" 2>&1
     st=$?
     [ $st -ne 0 ] && echo "  SAVE-ERROR ${name}_c per=$per exit=$st (out/save-${name}_c.log)"

@@ -18,7 +18,7 @@ bad() { echo "FAIL $1"; FAIL=$((FAIL+1)); echo "  --- output ---"; echo "$2" | s
 
 D=out/diag
 rm -rf "$D"; mkdir -p "$D"
-run() { racket slog.rkt --no-banner --debug-dir "$D/out-$1" "$D/$1.slog" 2>&1; }
+run() { racket compiler/run.rkt --no-banner --debug-dir "$D/out-$1" "$D/$1.slog" 2>&1; }
 
 # 1. `_` wildcard in a head is rejected at simplify time with a located message
 #    (was: locationless `hash-ref '__gNNN`).

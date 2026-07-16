@@ -47,7 +47,7 @@ for t in "${BENCHES[@]}"; do
   out="out/regress-$name"
   rm -rf "$out"
   log="out/regress-$name.log"
-  if ! timeout 900 racket slog.rkt --no-banner --debug-dir "$out" "$t" \
+  if ! timeout 900 racket compiler/run.rkt --no-banner --debug-dir "$out" "$t" \
        > "$log" 2>&1; then
     echo "FAIL $name (run error; see $log)"; fail=1; continue
   fi

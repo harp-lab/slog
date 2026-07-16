@@ -74,7 +74,7 @@ make -C daemon >/dev/null 2>&1 || { echo "daemon build failed"; exit 1; }
 # The chains, positional sizes, and a positional dump must all show the
 # base state at position 0 and the grown state after the boundary (pos 1).
 rm -rf data/sess_b0a
-timeout 600 racket slog.rkt --no-banner --out-db sess_b0a tests/session/base.slog \
+timeout 600 racket compiler/run.rkt --no-banner --out-db sess_b0a tests/session/base.slog \
   > out/sess-b0-base.log 2>&1
 timeout 600 racket tests/api/session-drive.rkt \
   open:sess_b0a run:tests/session/seg2.slog \
@@ -95,7 +95,7 @@ expect "b0-dump-old"    "(dumpdone 6)" out/sess-b0.log
 # must equal a from-scratch run of the union program (content oracle:
 # struct rendering is content-based, so ids may differ freely).
 rm -rf data/sess_b0b out/sess-b0-session-csv
-timeout 600 racket slog.rkt --no-banner --out-db sess_b0b tests/session/base2.slog \
+timeout 600 racket compiler/run.rkt --no-banner --out-db sess_b0b tests/session/base2.slog \
   > out/sess-b0b-base.log 2>&1
 timeout 600 racket tests/api/session-drive.rkt \
   open:sess_b0b run:tests/session/seg2b.slog \
@@ -106,7 +106,7 @@ expect "b0-out-chain"   "(rel out (v 0 0 2) (v 1 1 3))" out/sess-b0b.log
 expect "b0-dist-chain"  "(rel dist (v 0 0 3) (v 1 1 3))" out/sess-b0b.log
 expect "b0-lat-base"    "(dist 3)" out/sess-b0b.log
 
-timeout 600 racket slog.rkt --no-banner --debug-dir out/sess-b0-oracle-csv \
+timeout 600 racket compiler/run.rkt --no-banner --debug-dir out/sess-b0-oracle-csv \
   tests/session/combined2.slog > out/sess-b0-oracle.log 2>&1
 for rel in in out pair edge dist; do
   if ! diff <(sort "out/sess-b0-session-csv/$rel.csv" 2>/dev/null) \
@@ -359,9 +359,9 @@ expect_not "c-collapse-recipe"  "(9 9)" out/sess-c-collapse.log
 # sess_cpay, so a stale copy from a prior run would trip the overwrite
 # guard here -- clear the dependent first
 rm -rf data/sess_cpay data/sess_cpay2 data/sess_lnk
-timeout 600 racket slog.rkt --no-banner --out-db sess_cpay tests/session/payload.slog \
+timeout 600 racket compiler/run.rkt --no-banner --out-db sess_cpay tests/session/payload.slog \
   > out/sess-cpay.log 2>&1
-timeout 600 racket slog.rkt --no-banner --out-db sess_cpay2 tests/session/payload2.slog \
+timeout 600 racket compiler/run.rkt --no-banner --out-db sess_cpay2 tests/session/payload2.slog \
   > out/sess-cpay2.log 2>&1
 timeout 600 racket tests/api/session-drive.rkt \
   run:tests/session/base.slog \
@@ -489,12 +489,12 @@ versioned_count_oracle "m04-link-ir-oracle" out/sess-d-link.log
 # D3: rename as an EDIT on a stored database -- one implementation with
 # the batch edits (the op IS the action spec, streamed on load)
 rm -rf data/sess_dedit
-timeout 600 racket slog.rkt --no-banner --out-db sess_dedit tests/session/base.slog \
+timeout 600 racket compiler/run.rkt --no-banner --out-db sess_dedit tests/session/base.slog \
   > out/sess-d-edit0.log 2>&1
-timeout 300 racket slog.rkt db edit sess_dedit rename-rel path reach \
+timeout 300 racket compiler/run.rkt db edit sess_dedit rename-rel path reach \
   > out/sess-d-edit1.log 2>&1
 expect "d-edit-recorded" "recorded edit on sess_dedit: (rename-rel path reach)" out/sess-d-edit1.log
-timeout 600 racket slog.rkt --no-banner --sizes -d sess_dedit tests/api/noop.slog \
+timeout 600 racket compiler/run.rkt --no-banner --sizes -d sess_dedit tests/api/noop.slog \
   > out/sess-d-edit2.log 2>&1
 expect     "d-edit-applied" "(relation_size reach 6)" out/sess-d-edit2.log
 expect_not "d-edit-no-old"  "(relation_size path" out/sess-d-edit2.log
@@ -570,7 +570,7 @@ expect "e4-chain-tip"      "(dumpdone 28)" out/sess-e4b.log
 # delta-routes through the replayed strata; the save is a PURE-BATCH layer
 # (no new program -- recipe = one open + one batch).
 rm -rf data/sess_w2 data/sess_w2.edb data/sess_pb
-timeout 600 racket slog.rkt --no-banner --out-db-compressed sess_w2 --per 100 \
+timeout 600 racket compiler/run.rkt --no-banner --out-db-compressed sess_w2 --per 100 \
   tests/session/base.slog > out/sess-w2-save.log 2>&1
 timeout 600 racket tests/api/session-drive.rkt \
   open:sess_w2 \
@@ -653,14 +653,14 @@ expect    "e0b-tip"       "(dumpdone 21)" out/sess-e0b.log
 # re-derives it -- program-supported, the §8B.5 "retracted as input;
 # remains derivable" answer -- so del edits target data-fed inputs.)
 rm -rf data/sess_uns data/sess_uns_in
-timeout 600 racket slog.rkt --no-banner --out-db sess_uns_in tests/session/edges.slog \
+timeout 600 racket compiler/run.rkt --no-banner --out-db sess_uns_in tests/session/edges.slog \
   > out/sess-uns-in.log 2>&1
-timeout 600 racket slog.rkt --no-banner --out-db-compressed sess_uns --per 100 \
+timeout 600 racket compiler/run.rkt --no-banner --out-db-compressed sess_uns --per 100 \
   -d sess_uns_in tests/session/tcrules.slog > out/sess-uns-save.log 2>&1
-timeout 300 racket slog.rkt db edit sess_uns_in del-tuple edge 2 3 \
+timeout 300 racket compiler/run.rkt db edit sess_uns_in del-tuple edge 2 3 \
   > out/sess-uns-edit.log 2>&1
 expect "uns-recorded" "recorded edit on sess_uns_in: (del-tuple edge 2 3)" out/sess-uns-edit.log
-timeout 600 racket slog.rkt --no-banner --sizes -d sess_uns tests/api/noop.slog \
+timeout 600 racket compiler/run.rkt --no-banner --sizes -d sess_uns tests/api/noop.slog \
   > out/sess-uns.log 2>&1
 expect "uns-edge-edited"    "(relation_size edge 2)" out/sess-uns.log
 expect "uns-path-rederived" "(relation_size path 2)" out/sess-uns.log
@@ -669,10 +669,10 @@ expect "uns-path-rederived" "(relation_size path 2)" out/sess-uns.log
 # Freezing the edited chain materialises the post-edit fixpoint (path 2)
 # with no manifest/recipe/program; the frozen copy loads as a plain root.
 rm -rf data/sess_frozen
-timeout 600 racket slog.rkt db freeze sess_uns --as sess_frozen \
+timeout 600 racket compiler/run.rkt db freeze sess_uns --as sess_frozen \
   > out/sess-freeze.log 2>&1
 expect "freeze-cut" "froze sess_uns as sess_frozen" out/sess-freeze.log
-timeout 600 racket slog.rkt --no-banner --sizes -d sess_frozen tests/api/noop.slog \
+timeout 600 racket compiler/run.rkt --no-banner --sizes -d sess_frozen tests/api/noop.slog \
   > out/sess-freeze2.log 2>&1
 expect "freeze-content" "(relation_size path 2)" out/sess-freeze2.log
 timeout 600 racket tests/api/session-drive.rkt \
@@ -688,9 +688,9 @@ fi
 
 # freezing a SESSION chain cuts its recipe history too
 rm -rf data/sess_e4f
-timeout 600 racket slog.rkt db freeze sess_e4 --as sess_e4f \
+timeout 600 racket compiler/run.rkt db freeze sess_e4 --as sess_e4f \
   > out/sess-freeze3.log 2>&1
-timeout 600 racket slog.rkt --no-banner --sizes -d sess_e4f tests/api/noop.slog \
+timeout 600 racket compiler/run.rkt --no-banner --sizes -d sess_e4f tests/api/noop.slog \
   > out/sess-freeze4.log 2>&1
 expect "freeze-session-content" "(relation_size path 28)" out/sess-freeze4.log
 
@@ -734,7 +734,7 @@ done
 # `slog -d sess_e1 seg3` runs a NEW one-shot program over the replayed
 # session -- the recipe chain loads through the session hook, then the
 # program runs as an ordinary segment atop it.
-timeout 600 racket slog.rkt --no-banner --sizes -d sess_e1 tests/api/noop.slog \
+timeout 600 racket compiler/run.rkt --no-banner --sizes -d sess_e1 tests/api/noop.slog \
   > out/sess-dhook.log 2>&1
 expect "dhook-loaded" "(relation_size path 21)" out/sess-dhook.log
 

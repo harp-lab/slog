@@ -834,7 +834,7 @@ ad-hoc prefix handling:
 | source composition | `compiler/parser.rkt`, `compiler/modules.rkt` | build occurrence trees, structured names, homes, and bindings |
 | program planning | `compiler/compile.rkt`, `compiler/session.rkt` | reconcile the qualified declaration catalog and allocate boundary/version/type keys |
 | runtime registration | `daemon/database.h`, `daemon/daemon.h` | atomically apply a declaration/version plan and maintain the global type registry |
-| persistence and interaction | `compiler/dbmeta.rkt`, `compiler/runslog.rkt`, `compiler/session.rkt`, `slog.rkt` | persist catalogs and keys; resolve boundary-relative REPL names |
+| persistence and interaction | `compiler/dbmeta.rkt`, `compiler/runslog.rkt`, `compiler/session.rkt`, `compiler/run.rkt` | persist catalogs and keys; resolve boundary-relative REPL names |
 
 The compiler remains the declaration/type authority, the session remains the
 recipe/name-history authority, and the daemon remains the materialization and
@@ -1218,7 +1218,7 @@ patch followed by a long tail of special cases.
 3. Expose boundary catalogs, module/program instances, bindings, homes,
    version chains, and type registries through structured introspection.
 4. Implement boundary handles, completion, relative lookup, absolute
-   VersionKey lookup, and history display in `slog.rkt`.
+   VersionKey lookup, and history display in `compiler/run.rkt`.
 
 ### N5: internal namespaces and observability
 

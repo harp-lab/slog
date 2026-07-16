@@ -15,7 +15,7 @@ remains normative for its content.
 | execution tiers | [execution-tiers.md](execution-tiers.md) | T0–T6, Q1 | T1 shipped; T0/T2+ unstarted |
 | modules/namespaces | [modules.md](modules.md) | N0–N5 | design complete, unstarted |
 | reflection | [slog-reflection.md](slog-reflection.md) | RF0–RF5 | brainstorm + §18 staging verdict |
-| REPL | [repl.md](repl.md), [repl-ux.md](repl-ux.md) | R0–R5 | design complete, unstarted |
+| REPL | [repl.md](repl.md), [repl-ux.md](repl-ux.md), [repl-terminal.md](repl-terminal.md) | R0–R5 | terminal plan fixed; R0 client/input seam started, session integration unstarted |
 | stats migration | [stats.md](stats.md) §7 | steps 1–7 | `$stat_*` shipped; migration unstarted |
 
 ## 1. Ordering principles
@@ -118,6 +118,27 @@ criterion 2. M5 slice 1's exit criteria are now met in full. W1 is open.
 
 ### W1 — the keel
 
+**Checkpoint 2026-07-15 (first arc landed; contracts pinned):** N0 landed
+(`names.rkt` authority, parser name-path collapse, emit-cpp identifier
+hygiene, `dotted_ns` golden + unit battery). Gate note: a wholesale TU
+byte-diff is NOT a valid N0 gate — legacy TU text is run-unstable (crule
+emission order + gensym'd locals; measured ~12k normalized diff lines on
+`deep_fact`'s TU across consecutive same-tree runs) while canonical `.plan`
+sidecars are byte-stable run-to-run *for temp-free strata*. The evening
+wholesale comparison sharpened this: gensym'd temp relation names are the
+single contaminant reaching plan bytes, D4 sort order, KernelPlanKeys, and
+even job-hash filenames (moved stems verified content-identical); temp-free
+strata are stable at every layer. Deterministic temp naming is therefore
+promoted into RF1 as slice 0 (rf1-contract.md, determinism doctrine). N0's
+byte-identity rests on the provable inertness of its changes for dot-free
+names, 165/165 goldens, and content-level plan equality against the
+`build-post2/` corpus modulo that one named defect. Ratified same
+day: the progressive fork (§3.1), the minimal-for-T2 RF1 scope, and T2-A
+starting immediately after the contract pins; drafted for review:
+rf1-contract.md, t0-contract.md, interp-core-contract.md. T2-A0 landed
+(`interp` harness in run-all.sh's quick tier, `-fopenmp`). M4S may start
+immediately under the progressive fork.
+
 *Compiler:* **N0** qualified-name substrate (`names.rkt` QName authority;
 gate: byte-identical emitted C++). **RF1** ProgramModel + Plan ABI 2 split
 into KernelExecPlan / DebugMap / binding schema / cohort manifest, per-kernel
@@ -146,8 +167,31 @@ occurrence trees, qualification pass, real `ModuleInstanceKey`s.
 
 ### 3.1 F — the fork gate
 
-The fork opens when the daemon API is genuinely ready for a client and has
-been exercised, specifically:
+**Amended 2026-07-15 (progressive fork; ratified).** F's five criteria below
+are unchanged, but F is the **interpreter-core freeze gate**, not the
+begin-parallelism gate. Parallel work begins per-workstream as its own true
+dependency lands:
+
+| workstream | starts after |
+|---|---|
+| M4S (thread 0) | nothing — native-path on shipped M4T/M5 substrates; may start immediately |
+| REPL R0–R1 (thread 1) | T0 slices a/b/d (dispatcher+catalog, seal, uniform pause record — t0-contract.md); level-0 watches co-develop post-fork |
+| Q1 + R2 (thread 1) | T2-A admission gate + core freeze (interp-core-contract.md) |
+| counted interpreter → M4N (thread 0) | T2-A admission gate + core freeze |
+| M7 | M4N |
+
+The core freezes early — after T2-A's admission gate plus the pre-freeze
+T2-B conformance groups, conservatively including the `Join3PrefixCursor`
+erasure and map/lattice probes (ratified 2026-07-15;
+interp-core-contract.md pins the trigger and the freeze list) — and the
+remaining monotone T2-B groups land as trunk chores under the frozen
+interfaces; criterion 1's full-suite `SLOG_OPT=interp` run completes
+during the fork rather than gating it. Ownership zones (§7) are
+in effect from today. Nothing interpreter-touching forks before the core
+freeze, so §4.3's safety argument is preserved exactly.
+
+The fork gate F is met when the daemon API is genuinely ready for a client
+and has been exercised, specifically:
 
 1. **Interpreter conformance:** per-iteration content-delta equality and
    instantiation-multiset (fires) equality against O0/O2; `SLOG_OPT=interp`
@@ -156,8 +200,12 @@ been exercised, specifically:
 2. **Protocol battery:** every builder/seal/entry-mode/generation-token
    refusal driven by a test; the existing session workflow harness passes
    *through the command protocol* dual-stack, not just the path protocol.
-3. **Level-0 watch battery:** watch/break/pause/continue as golden
-   transcripts against a real fixpoint.
+3. **Uniform pause record (amended 2026-07-15):** the command stack's
+   single structured pause record — arbitrary pause or pause-for-cause
+   citing a watch — as golden transcripts across pause classes, with the
+   watch-citation cause variant validated; `watch`/`unwatch` verb space
+   reserved. The level-0 watch battery itself is co-developed post-fork
+   as thread-1/joint work riding this record.
 4. **Catalog verbs** return structured records keyed by
    VersionKey/TypeKey (no string parsing), sufficient for REPL name
    resolution and completion.
@@ -305,6 +353,7 @@ zone only through joint review.
 | `session.rkt`: catalog/boundary planner, handles, alias tables | thread 1 |
 | `database.h`: versions, sidecars, maintained mutation verbs | thread 0 |
 | `database.h`: declaration/boundary application, `TypeDescriptor` registry | thread 1 |
+| interim evaluation-local VersionKey→VersionId map (T0; subsumed by N3 indexing) | thread 1 |
 | command protocol grammar | frozen at F; additive verbs only, joint review |
 | `emit-cpp.rkt` | dormant between the W1 ABI split and T4 (P4) |
 

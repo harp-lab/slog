@@ -401,7 +401,7 @@
 ;; (db-load-steps #:seed? #f) and replays from the EDB, comparing the result
 ;; against the stored signature -- the strong check that also surfaces
 ;; REMOVALS a seeded load masks (§11 blind spot).  Driven by the
-;; replay-verify callback slog.rkt supplies (the driver lives in runslog.rkt,
+;; replay-verify callback compiler/run.rkt supplies (the driver lives in runslog.rkt,
 ;; which requires this module).
 (define (cmd-verify names0 #:replay-verify [replay-verify #f])
   (define replay? (and (member "--replay" names0) #t))
@@ -495,7 +495,7 @@
 ;; (via a temp dir + swap): refused while dependents reference NAME unless
 ;; --force (they become stale -- the freeze changes NAME's stamp).  The
 ;; heavy lifting (`freeze`: load the chain, write data/<target>) is the run
-;; driver's, injected by slog.rkt exactly like verify's --replay.
+;; driver's, injected by compiler/run.rkt exactly like verify's --replay.
 (define (cmd-freeze args #:freeze freeze)
   (unless freeze
     (die "freeze needs the run driver; invoke as `slog db freeze NAME [--as NEW]`"))

@@ -6,14 +6,14 @@
          racket/path
          racket/system
          racket/logging
-         "./compiler/params.rkt"
-         "./compiler/config.rkt"
-         "./compiler/runslog.rkt"
+         "params.rkt"
+         "config.rkt"
+         "runslog.rkt"
          ;; requiring the session driver installs runslog's recipe-chain
          ;; loader (docs/incremental.md 0.E2): -d chains holding a saved
          ;; session replay their recipes through the live session machinery
-         "./compiler/session.rkt"
-         "./compiler/dbtool.rkt")
+         "session.rkt"
+         "dbtool.rkt")
 
 (define EXIT-FILE-NOT-FOUND 1)
 (define EXIT-RUNTIME-ERROR 2)
@@ -290,4 +290,3 @@
                    #:show-banner? show-banner?
                    #:verbose? verbose?
                    #:sizes? sizes?)]))))
-

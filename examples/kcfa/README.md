@@ -7,7 +7,7 @@ environments**: a closure captures a whole environment map, and free
 variables are resolved through it — there is no free-variable re-binding.
 
 ```
-racket slog.rkt --no-banner --debug-dir out/kcfa examples/kcfa/kcfa.slog
+racket compiler/run.rkt --no-banner --debug-dir out/kcfa examples/kcfa/kcfa.slog
 ```
 
 The context depth is a fact: edit `(klimit 1)` and rerun. `k = 0` is 0CFA;

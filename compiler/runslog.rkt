@@ -38,7 +38,7 @@
 ;; machinery -- anchored batches, imports, renames, the suffix walk -- which
 ;; lives in compiler/session.rkt.  That module requires THIS one, so the
 ;; dependency is inverted through a hook: session.rkt installs its loader at
-;; instantiation (slog.rkt and the session drivers require it); a bare
+;; instantiation (compiler/run.rkt and the session drivers require it); a bare
 ;; runslog user hitting a recipe chain gets a loud pointer instead of a
 ;; silent partial load.  Signature: (loader in-port out-port load-steps).
 (define recipe-chain-loader (box #f))
@@ -501,7 +501,7 @@
        (unless loader
          (error (string-append
                  "the input chain contains a saved session (a recipe layer), which loads "
-                 "through the session driver; require compiler/session.rkt (slog.rkt and the "
+                 "through the session driver; require compiler/session.rkt (compiler/run.rkt and the "
                  "session tools do) so its recipe replayer is installed")))
        (loader in out load-steps)]
       [else

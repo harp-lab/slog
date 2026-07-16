@@ -94,7 +94,7 @@ run_one_test() {
   # rules-based Patricia environments generate a large .cpp) run several
   # minutes; the fixpoints themselves are sub-second.  --keep-cache skips
   # the rebuild.  The ceiling is a hang backstop, not a perf gate.
-  if ! timeout 900 racket slog.rkt --no-banner --debug-dir "$outdir" "$t" \
+  if ! timeout 900 racket compiler/run.rkt --no-banner --debug-dir "$outdir" "$t" \
        > "$logfile" 2>&1; then
     echo "FAIL $name (run error; see $logfile)"
     echo "FAIL run-error" > "$RESULTS/$name"; return

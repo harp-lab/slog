@@ -48,13 +48,13 @@ operation that needs a closed lattice value.
 Run an analysis and save all of its relations under `data/graph-db/`:
 
 ```console
-$ racket slog.rkt --no-banner --out-db graph-db --sizes build-paths.slog
+$ racket compiler/run.rkt --no-banner --out-db graph-db --sizes build-paths.slog
 ```
 
 The database is binary, not CSV. Load it into a later run with `-d`:
 
 ```console
-$ racket slog.rkt --no-banner -d graph-db --debug-dir out/cycles find-cycles.slog
+$ racket compiler/run.rkt --no-banner -d graph-db --debug-dir out/cycles find-cycles.slog
 ```
 
 The later program must declare the inherited relations it reads. This keeps
@@ -84,7 +84,7 @@ rule (node X) ~(has_outgoing X) --> (sink X)
 Run it over the saved facts:
 
 ```console
-$ racket slog.rkt --no-banner -d graph-db --sizes --debug-dir out/query query.slog
+$ racket compiler/run.rkt --no-banner -d graph-db --sizes --debug-dir out/query query.slog
 $ sort out/query/mutually_reachable.csv
 $ sort out/query/sink.csv
 ```
@@ -125,7 +125,7 @@ with a compressed save to write a self-contained exact root instead.
 
 Database names form an immutable dependency graph. Slog refuses to overwrite
 a database that another saved database references unless you pass `--force`.
-Use `racket slog.rkt db tree` and `racket slog.rkt db verify NAME --replay` to
+Use `racket compiler/run.rkt db tree` and `racket compiler/run.rkt db verify NAME --replay` to
 inspect and check that graph.
 
 The [database guide](../user/databases.md) explains compression, replay,

@@ -53,10 +53,10 @@ FX=out/pause_chain.slog
 
 # --- 1. byte-identical: unbudgeted vs a pathological time budget ------------
 rm -rf out/pause-unb out/pause-bud
-racket slog.rkt --no-banner --debug-dir out/pause-unb "$FX" > out/pause-unb.log 2>&1
+racket compiler/run.rkt --no-banner --debug-dir out/pause-unb "$FX" > out/pause-unb.log 2>&1
 drop_o2 out/pause-unb.log   # re-run on the .O0 tier (see header)
-racket slog.rkt --no-banner --debug-dir out/pause-unb "$FX" > out/pause-unb.log 2>&1
-SLOG_MAX_MS=3 racket slog.rkt --no-banner --debug-dir out/pause-bud "$FX" > out/pause-bud.log 2>&1
+racket compiler/run.rkt --no-banner --debug-dir out/pause-unb "$FX" > out/pause-unb.log 2>&1
+SLOG_MAX_MS=3 racket compiler/run.rkt --no-banner --debug-dir out/pause-bud "$FX" > out/pause-bud.log 2>&1
 
 expect_rx "pause-observed"    '\(paused ' out/pause-bud.log
 expect_rx "fixpoint-observed" '\(fixpoint ' out/pause-bud.log
@@ -95,9 +95,9 @@ PFX=out/pause_probe.slog
   echo "rule (r 5 X) (r 5 W) --> (pair X W)"
 } > "$PFX"
 rm -rf out/pp-u out/pp-b
-racket slog.rkt --no-banner --debug-dir out/pp-u "$PFX" > out/pp-u.log 2>&1
+racket compiler/run.rkt --no-banner --debug-dir out/pp-u "$PFX" > out/pp-u.log 2>&1
 drop_o2 out/pp-u.log
-SLOG_MAX_MS=2 racket slog.rkt --no-banner --debug-dir out/pp-b "$PFX" > out/pp-b.log 2>&1
+SLOG_MAX_MS=2 racket compiler/run.rkt --no-banner --debug-dir out/pp-b "$PFX" > out/pp-b.log 2>&1
 expect_rx "probe-pause-observed" '\(paused ' out/pp-b.log
 if diff <(LC_ALL=C sort out/pp-u/pair.csv) <(LC_ALL=C sort out/pp-b/pair.csv) >/dev/null 2>&1
 then ok "probe-driver-byte-identical"; else bad "probe-driver-byte-identical"; fi
@@ -107,7 +107,7 @@ then ok "probe-driver-byte-identical"; else bad "probe-driver-byte-identical"; f
 # boundary; the front end must abort cleanly (non-zero exit, clear message),
 # never leave a SIGKILL/segfault.
 rm -rf out/pause-mem
-SLOG_MEM_BYTES=1 racket slog.rkt --no-banner --debug-dir out/pause-mem "$FX" \
+SLOG_MEM_BYTES=1 racket compiler/run.rkt --no-banner --debug-dir out/pause-mem "$FX" \
   > out/pause-mem.log 2>&1
 MEMEXIT=$?
 expect_rx  "memory-pause"        '\(paused .* memory\)' out/pause-mem.log
@@ -117,7 +117,7 @@ if [ "$MEMEXIT" -ne 0 ]; then ok "memory-nonzero-exit"; else bad "memory-nonzero
 # and a run UNDER the default cap completes normally (test 1 already showed the
 # unbudgeted CSVs; here just confirm a plain default-budget run succeeds)
 rm -rf out/pause-defmem
-if racket slog.rkt --no-banner --debug-dir out/pause-defmem "$FX" >/dev/null 2>&1 \
+if racket compiler/run.rkt --no-banner --debug-dir out/pause-defmem "$FX" >/dev/null 2>&1 \
    && diff <(LC_ALL=C sort out/pause-unb/path.csv) \
            <(LC_ALL=C sort out/pause-defmem/path.csv) >/dev/null 2>&1
 then ok "under-cap-completes"; else bad "under-cap-completes"; fi
@@ -157,14 +157,14 @@ fi
 # invariant a resumable incremental load leans on.  (per=60 so replay actually
 # regenerates dropped tuples; the 63k-path chain reliably outlives a 3ms slice.)
 rm -rf data/pause_c data/pause_c.edb out/pcr-unb out/pcr-bud
-racket slog.rkt --no-banner --out-db-compressed pause_c --per 60 "$FX" > out/pause-csave.log 2>&1
+racket compiler/run.rkt --no-banner --out-db-compressed pause_c --per 60 "$FX" > out/pause-csave.log 2>&1
 drop_o2 out/pause-csave.log
 CLOADER=out/pause_loader.slog; printf ';; empty replay loader\n' > "$CLOADER"
 # unbudgeted reload (oracle); prime then drop -O2 so the budgeted reload is -O0
-racket slog.rkt --no-banner -d pause_c --debug-dir out/pcr-unb "$CLOADER" > out/pcr-unb.log 2>&1
+racket compiler/run.rkt --no-banner -d pause_c --debug-dir out/pcr-unb "$CLOADER" > out/pcr-unb.log 2>&1
 drop_o2 out/pcr-unb.log
-racket slog.rkt --no-banner -d pause_c --debug-dir out/pcr-unb "$CLOADER" > out/pcr-unb.log 2>&1
-SLOG_MAX_MS=3 racket slog.rkt --no-banner -d pause_c --debug-dir out/pcr-bud "$CLOADER" > out/pcr-bud.log 2>&1
+racket compiler/run.rkt --no-banner -d pause_c --debug-dir out/pcr-unb "$CLOADER" > out/pcr-unb.log 2>&1
+SLOG_MAX_MS=3 racket compiler/run.rkt --no-banner -d pause_c --debug-dir out/pcr-bud "$CLOADER" > out/pcr-bud.log 2>&1
 expect_rx "creplay-pause-observed" '\(paused ' out/pcr-bud.log
 CRBI=1
 for f in out/pcr-unb/*.csv; do

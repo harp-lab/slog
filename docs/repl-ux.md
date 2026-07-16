@@ -1,6 +1,10 @@
 # The Slog REPL: interaction design and experience vision
 
-2026-07-14. **Design brainstorm; no REPL exists yet.** This document is the
+2026-07-14. **Design brainstorm; no connected REPL exists yet.** The pure
+command loop and Expeditor/plain input seam started on 2026-07-15; see
+[repl-terminal.md](repl-terminal.md), now normative for module boundaries,
+terminal-library choices, portability, repaint discipline, and R0/R1 gates.
+This document is the
 wide-angle companion to two normative designs it deliberately does not repeat:
 
 - [repl.md](repl.md) remains the authority on names, handles, boundary
@@ -19,7 +23,7 @@ semantic layer. It is intentionally a brainstorm: later passes will distill
 it into a command reference and an implementation plan.
 
 The stance throughout: **the REPL is the primary interactive mode of the whole
-system.** Batch runs (`slog.rkt foo.slog`) and external harnesses remain the
+system.** Batch runs (`compiler/run.rkt foo.slog`) and external harnesses remain the
 scripting surface; the REPL is how a person opens a database and starts
 working. It should be as natural to reach for as `sqlite3 file.db` or `python`
 — and it should exploit the two things Slog has that those tools do not: an
@@ -735,6 +739,13 @@ wire      the daemon protocol client: today the action-plugin path lines and
           path to the daemon (P: the REPL is a client)
 ```
 
+The concrete source mapping, terminal substrate, and platform gates are fixed
+in [repl-terminal.md](repl-terminal.md). `compiler/repl.rkt` is the headless
+facade; `compiler/repl-x.rkt` is the enhanced command-line facade. R0 uses
+Expeditor through its public API, while R1 owns the editor/canvas over one
+isolated, dynamically probed Racket terminal adapter. The REPL stays on the
+normal screen so its transcript remains real scrollback.
+
 Points worth fixing early:
 
 - **`present` is the reuse jackpot.** Every feature section above renders
@@ -794,24 +805,23 @@ Slices, mapped to the T/Q phases (execution-tiers §11):
 3. **Pin persistence.** Do pinned names survive REPL restart via a session
    sidecar (`.slog-repl/`), given values may not survive daemon restart?
    Tombstone-on-load seems right; needs a decision.
-4. **Navigate-mode key and terminal envelope.** One toggle key, chosen once;
-   minimum terminal contract (tmux, mosh, Windows Terminal) written down
-   before `term` is built.
-5. **Watch notification interleaving.** Exact redraw discipline for async
-   event lines above an active prompt/canvas — the classic hard tty corner;
-   decide before R1, prototype in `term` first.
-6. **`runN` visibility for background work.** v1 is synchronous-with-pause;
+4. **`runN` visibility for background work.** v1 is synchronous-with-pause;
    if detach ships, how much of the run protocol becomes user-visible state
    (`runs`, `attach run0`)?
-7. **Where `db edit` meets the session.** dbtool's offline edit verbs vs the
+5. **Where `db edit` meets the session.** dbtool's offline edit verbs vs the
    live `add/del` at the tip — one vocabulary or two? (Ideally the offline
    verbs are described as "the same events, applied at load.")
-8. **Result-history depth.** How many prior results stay re-summonable
+6. **Result-history depth.** How many prior results stay re-summonable
    (`it~k`) and does that interact with handle generations?
-9. **Auto-flush coalescing.** Bare `add` auto-flushes (§5.2.1); should
+7. **Auto-flush coalescing.** Bare `add` auto-flushes (§5.2.1); should
    consecutive `add` lines typed within one paste coalesce into one boundary
    the way scratch rules do, or is one-line-one-boundary the less surprising
    rule?
+
+The former terminal questions are resolved by repl-terminal.md: Esc then `v`
+enters navigate mode; Linux/macOS VT terminals on the normal screen are the
+release envelope; and one UI writer erases/redraws the live bottom region when
+an asynchronous notification becomes transcript output.
 
 ## 15. Appendix: the substrate as of 2026-07-14
 

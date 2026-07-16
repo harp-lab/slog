@@ -83,7 +83,7 @@ subterm-peeling machinery would subsume this if it recognized sequence chains.
 # in the analysis project:
 scheme --script chez-extract.ss -o sudoku.slog tests/sudoku.ss
 printf 'include "prims.slog"\n' > drv.slog; sed -n '/^rule (program/,$p' sudoku.slog >> drv.slog
-cd ~/slog && SLOG_OPT=0 racket slog.rkt --debug-dir /tmp/out /path/to/drv.slog
+cd ~/slog && SLOG_OPT=0 racket compiler/run.rkt --debug-dir /tmp/out /path/to/drv.slog
 # -> front-end spins for minutes, 0 fixpoints; build/frozen/ gets no new entry.
 ```
 A struct-only ground fact of comparable size (like `tests/frozen_fact.slog`)

@@ -25,11 +25,11 @@ fail=0
 for per in 100 60; do
   rm -rf data/smtpin_c data/smtpin_c.edb out/smtpin_save out/smtpin_load
   SLOG_SMT_SOLVERS="$SAT:5000" \
-    racket slog.rkt --no-banner --out-db-compressed smtpin_c --per "$per" \
+    racket compiler/run.rkt --no-banner --out-db-compressed smtpin_c --per "$per" \
     --debug-dir out/smtpin_save "$PROG" >/dev/null 2>&1
   LOG="$(mktemp)"
   SLOG_SMT_SOLVERS="$UNSAT" SMT_SOLVER_LOG="$LOG" \
-    racket slog.rkt --no-banner -d smtpin_c --debug-dir out/smtpin_load "$EMPTY" \
+    racket compiler/run.rkt --no-banner -d smtpin_c --debug-dir out/smtpin_load "$EMPTY" \
     >/dev/null 2>&1
   ok=1
   for f in out/smtpin_save/*.csv; do

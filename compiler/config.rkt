@@ -22,7 +22,7 @@
 (require sha)
 
 (define-runtime-path config-dir "../config")
-(define-runtime-path slog-main "../slog.rkt")
+(define-runtime-path slog-main "run.rkt")
 
 ;; Bump to invalidate every cache when the settings schema / env mapping changes.
 (define SCHEMA-VERSION "3")
@@ -54,7 +54,7 @@
         "mpz_table_bytes" "SLOG_MPZ_TABLE_BYTES"))
 
 ;; ---- entry point --------------------------------------------------------
-;; Called once, early, from slog.rkt.  Best-effort: any failure falls back to
+;; Called once, early, from compiler/run.rkt.  Best-effort: any failure falls back to
 ;; the built-in code defaults (which are themselves dynamic, e.g. cores-1).
 (define (load-config!)
   (when (config-enabled?)
@@ -143,7 +143,7 @@
          '("setting_int.csv" "setting_str.csv" "override_int.csv" "override_str.csv")))
 
 ;; ---- run the config program (cache miss) --------------------------------
-;; Runs via a fresh `racket slog.rkt` subprocess with SLOG_CONFIG_BOOTSTRAP set
+;; Runs via a fresh `racket compiler/run.rkt` subprocess with SLOG_CONFIG_BOOTSTRAP set
 ;; (so its own load-config! is a no-op).  Writes into a temp dir, then atomically
 ;; renames it into place -- so a crash or a concurrent build never leaves a
 ;; half-written cache that settings-cached? would trust.

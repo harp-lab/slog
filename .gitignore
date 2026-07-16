@@ -22,3 +22,5 @@ slogd
 .history/
 .vscode/
 slog-freeze
+/slog
+/repl/target/

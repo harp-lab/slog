@@ -20,7 +20,7 @@ source location, and the compile cost of one giant stratum dominates everything.
 ## 1. Running the toolchain: it must be `cd`'d to the slog root
 
 The driver builds the daemon with `make -C daemon` and looks for `daemon/slogd`,
-both **relative to CWD**. Running `racket slog.rkt <abs-path-to-my-file>` from
+both **relative to CWD**. Running `racket compiler/run.rkt <abs-path-to-my-file>` from
 anywhere else fails with:
 
 ```
@@ -30,7 +30,7 @@ Something went wrong compiling the daemon!
 
 which reads like a corrupt install but just means "wrong directory." Analyzing a
 project that lives elsewhere therefore means `cd /path/to/slog && racket
-slog.rkt --debug-dir <out> /abs/path/to/project/file.slog`. Minor, but it cost
+compiler/run.rkt --debug-dir <out> /abs/path/to/project/file.slog`. Minor, but it cost
 me a while at the start because the error doesn't say "run me from the repo
 root."
 

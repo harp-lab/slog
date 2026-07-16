@@ -141,14 +141,14 @@ data/base ──▶ data/mid ──▶ data/top        (each ──▶ is an inp
 Worked example. `reach.slog` computes transitive closure over `edge`:
 
 ```
-$ racket slog.rkt --out-db-compressed reach --per 60 reach.slog
+$ racket compiler/run.rkt --out-db-compressed reach --per 60 reach.slog
 # writes data/reach.edb/    (root: the edge facts, snapshot before any rule fired)
 #        data/reach/META    (manifest=[reach.edb], per=60%, stamp, versions, seed)
 #        data/reach/prog.sexpr   (the whole source tree of reach.slog)
 #        data/reach/table.path.arity.2/  (~60% of derived path tuples + heap closure)
 #        data/reach/signature            (full-coverage checksum of path)
 
-$ racket slog.rkt -d reach --sizes analyze.slog
+$ racket compiler/run.rkt -d reach --sizes analyze.slog
 # load(reach): materialise reach.edb -> replay reach's program to fixpoint
 #              (regenerates the other ~40% of path) -> verify signature
 #              -> then run analyze.slog atop it
@@ -1012,7 +1012,7 @@ unification are worth the change, not before shipping compression.
 | Resolve include/run program tree | `load-program-list`, `program-merge-run` | modules.rkt:37, 59 |
 | Per-stratum IDB/EDB (head relations) | `rule-head-rels`, `stratify-rules` | stratify.rkt:53 |
 | Program content identity | `progstr` / job-hash | compile.rkt:82 |
-| CLI surface | flags in `slog.rkt` | slog.rkt:137-148 |
+| CLI surface | flags in `compiler/run.rkt` | compiler/run.rkt:137-148 |
 
 ## 16. P0 — foundations (format, DAG, safety)
 
@@ -1065,7 +1065,7 @@ today's `--out-db`/`-d` plus a `META` and a signature).
   manifest graph; implement `ls`/`tree`, `rm [--cascade]`, `gc`, `clear`,
   `verify`; enforce acyclicity and referenced-db immutability (refuse `--out-db X`
   if `X` is referenced). *Files:* new `compiler/dbtool.rkt`; wire subcommands in
-  `slog.rkt`. *Depends:* P0.2.
+  `compiler/run.rkt`. *Depends:* P0.2.
 - **P0.4 — Stratum-boundary EDB/IDB partition at save.** From the compiler's
   stratification, compute the set of IDB (head) relations for the layer's stratum
   range and pass it to the save path (which relations to sample; the rest are
@@ -1078,7 +1078,7 @@ today's `--out-db`/`-d` plus a `META` and a signature).
   `write-db`). *Depends:* P0.1, P0.2.
 - **P0.6 — `--flatten` + CLI surface.** `--out-db-compressed NAME`, `--per`,
   `--flatten`, `--bias`, `--strict`, `--reoptimise` flags. `--flatten` materialises
-  and writes a standalone root. *Files:* `slog.rkt`, `runslog.rkt`. *Depends:*
+  and writes a standalone root. *Files:* `compiler/run.rkt`, `runslog.rkt`. *Depends:*
   P0.1.
 
 **P0 exit criterion:** save/load a `per = 100 %` compressed db (with `META`,
@@ -1159,7 +1159,7 @@ Goal: real compression + recompute-on-load + verification, gated by tests.
 - **P1.5 — verify + drift report.** After replay, recompute `signature`, compare;
   on mismatch attribute via `compiler-stamp` and emit a warn-only/strict report;
   `kept ⊆ replay` content check; `--diff`. *Files:* `recompute.rkt`, `actions.rkt`
-  (`(signature)` on the live db), frontend formatting in `slog.rkt`. *Depends:*
+  (`(signature)` on the live db), frontend formatting in `compiler/run.rkt`. *Depends:*
   P1.3, P1.4.
 - **P1.6 — content-equality primitive.** Assert two dbs are content-equal (id-free),
   used by verify and the harness — e.g. compare per-relation signatures, or a

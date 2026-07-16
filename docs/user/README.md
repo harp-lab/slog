@@ -47,7 +47,7 @@ extra detail is useful.
 Code blocks marked `slog` are Slog source. Commands assume the repository root:
 
 ```console
-$ racket slog.rkt --no-banner program.slog
+$ racket compiler/run.rkt --no-banner program.slog
 ```
 
 Relation signatures show column types after the relation name:

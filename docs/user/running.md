@@ -3,7 +3,7 @@
 The main entry point is a Racket program:
 
 ```console
-$ racket slog.rkt [options] program.slog
+$ racket compiler/run.rkt [options] program.slog
 ```
 
 Run it from the repository root. The current build and database drivers use
@@ -103,13 +103,13 @@ Database behavior is covered in [persistent databases](databases.md).
 Start with counts:
 
 ```console
-$ racket slog.rkt --no-banner --sizes analysis.slog
+$ racket compiler/run.rkt --no-banner --sizes analysis.slog
 ```
 
 For a small test case, write all relations:
 
 ```console
-$ racket slog.rkt --no-banner --debug-dir out/check analysis.slog
+$ racket compiler/run.rkt --no-banner --debug-dir out/check analysis.slog
 $ find out/check -maxdepth 1 -name '*.csv' -type f -print
 $ LC_ALL=C sort out/check/result.csv
 ```

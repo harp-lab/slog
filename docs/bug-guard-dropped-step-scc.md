@@ -141,7 +141,7 @@ Run (with the generic-opaque rule gated by `lst_absent`, i.e. the pre-workaround
 `interp.slog:~300`):
 
 ```
-racket slog.rkt --debug-dir OUT repro_interp2.slog     # SLOG_OPT=0
+racket compiler/run.rkt --debug-dir OUT repro_interp2.slog     # SLOG_OPT=0
 ```
 
 Observed (`OUT/vstore.csv`):

@@ -15,7 +15,7 @@ to a fixpoint.
 ## Running
 
 ```
-racket slog.rkt --no-banner --sizes --debug-dir out/sudoku examples/sudoku/easy1.slog
+racket compiler/run.rkt --no-banner --sizes --debug-dir out/sudoku examples/sudoku/easy1.slog
 ```
 
 The answer is one row per cell in `out/sudoku/solved.csv` (`cell digit`,

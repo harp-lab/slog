@@ -47,18 +47,50 @@ now. Also deferred: single-TU emission-order canonicalization (to T4 phase
 B, with the slot rewrite), prim opcode numbering (to T2, when the daemon
 dispatch table exists — plans carry a sorted prim name table).
 
-**Next up (either order):**
+**Update 2026-07-15 (contract pins + T2-A0):** the "either order" question
+below is resolved — the progressive fork was ratified (roadmap §3.1): T0 and
+T2-A proceed IN PARALLEL, meeting at the decoded/sealed builder interface,
+with contracts pinned first. See docs/rf1-contract.md (minimal-for-T2 Plan
+ABI 2 split — the one plan re-key), docs/t0-contract.md (protocol grammar,
+verb reservations, identity keys), docs/interp-core-contract.md (freeze
+list, freeze trigger, thread 0/1 extension seams). **T2-A0 is done**: the
+operator test is the `interp` harness in `tests/run-all.sh` (quick tier;
+needs `-fopenmp` — the fixture instantiates `Relation::sendBatch`, which
+references `omp_get_thread_num`).
 
-- **T0** — protocol substrate: line-framed command dispatcher in
-  `slogd.cpp` (dual-stack with bare-path lines), provisional builders,
-  explicit entry modes (§9.1 of the main doc), catalog introspection, and
-  level-0 watches (early REPL payoff; no interpreter needed).
-- **T2** — the daemon interpreter: `daemon/interp.h` per §3.1/§3.2 shapes
-  (validated further by the permanent operator test), cursor/task factory
-  ladders in slogd beside `makeIndex`, differential gates 12.1/12.2. Start
-  with the normal-set vertical slice in §7, not the whole opcode vocabulary.
-  T2 consumes the `.plan` sidecars T1 now writes; remember stale caches
-  predate `.plan` — re-emit on miss.
+**Determinism finding (2026-07-15, measured; sharpened same evening):**
+legacy TU text is run-unstable — crule emission ORDER varies across
+compiler runs (gensym'd symbols perturb hash iteration order) on top of
+the gensym'd `__t*`/`temp*`/derived `slog_rules_*` names; `deep_fact`'s TU
+showed ~12k normalized diff lines across two consecutive same-tree runs.
+The canonical `.plan` layer is byte-stable **except where gensym'd temp
+relation names reach it**: of 498 fresh plans vs the `build-post2/`
+corpus, 273 were byte-identical, 73 differed only via temp gensyms
+(spellings in decls/`dynamic`/VariantTags, and — for 47 — D4 sort-order
+perturbation, since the canonical sort key contains the spelling), and
+152 sat under MOVED job-hash filenames with verified byte-identical
+content (`eb30565e` ≡ corpus `453edaee`) — gensym'd names also reach a
+`progstr` job-hash input, churning `.so`-cache stems run to run (5/758
+one run, 219/758 another, same tree). One root cause, four symptom
+layers. Consequences: deterministic temp naming is PROMOTED into RF1 as
+slice 0 (rf1-contract.md §determinism — the `latchk_<n>` precedent, plus
+the job-hash input audit); TU emission-ORDER canonicalization alone stays
+at T4 phase B; wholesale TU byte-diffs are not a valid gate methodology
+(use `.plan` content diffs); correctness unaffected throughout — caches
+miss spuriously, never collide.
+
+**Next up (ratified order):**
+
+- **T0** — per docs/t0-contract.md slices (a)–(d): dispatcher dual-stack +
+  catalog verbs; plan.h parse/seal + entry modes (§9.1); identity keys +
+  rule-meta + D9 fire vectors; level-0 watches. Slices (a)/(b) unblock
+  REPL R0 and T2-A2 sidecar parsing respectively.
+- **T2-A** — in parallel: `daemon/interp.h` per §7 start order and
+  docs/interp-core-contract.md. T2 consumes the `.plan` sidecars T1 now
+  writes; remember stale caches predate `.plan` — re-emit on miss.
+- **RF1** — per docs/rf1-contract.md; the four-way ABI split re-keys plans
+  once; T2-A consumes the post-split KernelExecPlan shape.
+- **M4S** — starts immediately under the progressive fork (thread-0 spine).
 
 Implementation gotchas already hit once (do not rediscover): the
 `all:`/`delta:` tag prefix is dynamic-rels membership, so input-only

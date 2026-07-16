@@ -288,7 +288,7 @@ into generated C++ that is content-hashed for the `.so` cache:
 
 ## 7. Driver and protocol changes (uniform for batch and interactive)
 
-All runs — including plain batch `slog.rkt` runs — go through the bounded
+All runs — including plain batch `compiler/run.rkt` runs — go through the bounded
 continue loop; for now the driver simply always continues until fixpoint
 (easy to refine later into policies: growth alarms, user prompts, live
 dashboards).

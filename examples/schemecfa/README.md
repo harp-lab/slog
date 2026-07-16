@@ -6,7 +6,7 @@ plain fact: edit `(mlimit m)` in `schemecfa.slog` and rerun — `m = 0` is
 0CFA, each increment buys one more frame of call history.
 
 ```
-racket slog.rkt --no-banner --debug-dir out/schemecfa examples/schemecfa/schemecfa.slog
+racket compiler/run.rkt --no-banner --debug-dir out/schemecfa examples/schemecfa/schemecfa.slog
 ```
 
 ## The language

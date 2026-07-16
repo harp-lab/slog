@@ -69,11 +69,11 @@ FLT=out/tiered_flt.slog
 for prog in "$CHAIN" "$FLT"; do
   base="$(basename "$prog" .slog)"
   rm -rf "build" "out/$base-o2" "out/$base-o0" "out/$base-ti"; mkdir -p build
-  SLOG_OPT=2 racket slog.rkt --no-banner --debug-dir "out/$base-o2" "$prog" >/dev/null 2>&1
+  SLOG_OPT=2 racket compiler/run.rkt --no-banner --debug-dir "out/$base-o2" "$prog" >/dev/null 2>&1
   rm -rf build; mkdir -p build
-  SLOG_OPT=0 racket slog.rkt --no-banner --debug-dir "out/$base-o0" "$prog" >/dev/null 2>&1
+  SLOG_OPT=0 racket compiler/run.rkt --no-banner --debug-dir "out/$base-o0" "$prog" >/dev/null 2>&1
   rm -rf build; mkdir -p build
-  racket slog.rkt --no-banner --debug-dir "out/$base-ti" "$prog" >/dev/null 2>&1   # tiered (default)
+  racket compiler/run.rkt --no-banner --debug-dir "out/$base-ti" "$prog" >/dev/null 2>&1   # tiered (default)
   if same_csvs "out/$base-o2" "out/$base-o0" && same_csvs "out/$base-o2" "out/$base-ti"
   then ok "byte-identical-o2-o0-tiered-$base"
   else bad "byte-identical-o2-o0-tiered-$base"; fi
@@ -83,7 +83,7 @@ done
 # Compile the chain, find the recursive stratum (scc-id 1), build it at both
 # optimization levels, and drive a session that swaps mid-fixpoint.
 rm -rf build out/swap-ref out/swap-got; mkdir -p build
-SLOG_OPT=0 racket slog.rkt --no-banner --debug-dir out/swap-ref "$CHAIN" > out/swap-compile.log 2>&1
+SLOG_OPT=0 racket compiler/run.rkt --no-banner --debug-dir out/swap-ref "$CHAIN" > out/swap-compile.log 2>&1
 FACTS_HASH="$(grep -oE '\(fixpoint 0 "[a-f0-9]+"' out/swap-compile.log | grep -oE '[a-f0-9]{6,}' | head -1)"
 REC_HASH="$(grep -oE '\(fixpoint 1 "[a-f0-9]+"' out/swap-compile.log | grep -oE '[a-f0-9]{6,}' | head -1)"
 
@@ -125,7 +125,7 @@ LSET=out/tiered_lset.slog
   echo "rule (reach a s) (= n (csize s)) --> (sz a n)"
 } > "$LSET"
 rm -rf build out/lset-ref out/lset-got; mkdir -p build
-SLOG_OPT=0 racket slog.rkt --no-banner --debug-dir out/lset-ref "$LSET" > out/lset-compile.log 2>&1
+SLOG_OPT=0 racket compiler/run.rkt --no-banner --debug-dir out/lset-ref "$LSET" > out/lset-compile.log 2>&1
 # the recursive lattice stratum is the one that iterates > 2 times
 LREC="$(grep -oE '\(fixpoint [0-9]+ "[a-f0-9]+" [0-9]+' out/lset-compile.log \
         | awk '$4 > 2 {print $3}' | tr -d '"' | head -1)"
@@ -168,12 +168,12 @@ REUSE=out/tiered_reuse.slog
 } > "$REUSE"
 rm -rf build out/reuse-o0 out/reuse-ti; mkdir -p build
 # prior run leaving only <hash>.O0.so (SLOG_OPT=0 never builds <hash>.so)
-SLOG_OPT=0 racket slog.rkt --no-banner --debug-dir out/reuse-o0 "$REUSE" >/dev/null 2>&1
+SLOG_OPT=0 racket compiler/run.rkt --no-banner --debug-dir out/reuse-o0 "$REUSE" >/dev/null 2>&1
 # pre-claim every -O2 (fresh marker) so the tiered run cannot spawn a background
 # build, and stamp a reference mtime -- a rebuilt .O0.so would be newer than it.
 for f in build/*.O0.so; do [ -e "$f" ] && touch "${f%.O0.so}.so.building"; done
 sleep 1; touch out/reuse-stamp; sleep 1
-racket slog.rkt --no-banner --debug-dir out/reuse-ti "$REUSE" > out/reuse-ti.log 2>&1   # tiered
+racket compiler/run.rkt --no-banner --debug-dir out/reuse-ti "$REUSE" > out/reuse-ti.log 2>&1   # tiered
 reuse_ok=1
 # Check ONLY this program's own stratum hashes (from its fixpoint lines; stable
 # across opt levels).  build/ is shared and durably-detached -O2 builds from

@@ -12,7 +12,7 @@ manual.
 ## Main components
 
 ```text
-slog.rkt
+compiler/run.rkt
   command line, configuration, database commands
 
 compiler/modules.rkt

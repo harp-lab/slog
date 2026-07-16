@@ -22,7 +22,7 @@ if [ ${#TESTS[@]} -eq 0 ]; then
 fi
 
 mkdir -p build out
-raco make slog.rkt >/dev/null 2>&1
+raco make compiler/run.rkt >/dev/null 2>&1
 
 # Sum the fixpoint milliseconds in one run's log.
 evalms() {
@@ -56,10 +56,10 @@ for t in "${TESTS[@]}"; do
     for rep in $(seq "$REPS"); do
       log="out/bench-$name-$mode.log"
       if [ "$mode" = off ]; then
-        SLOG_NO_SEMIJOIN=1 timeout 900 racket slog.rkt --no-banner \
+        SLOG_NO_SEMIJOIN=1 timeout 900 racket compiler/run.rkt --no-banner \
           "${dbarg[@]}" --debug-dir "$outdir" "$t" > "$log" 2>&1
       else
-        timeout 900 racket slog.rkt --no-banner \
+        timeout 900 racket compiler/run.rkt --no-banner \
           "${dbarg[@]}" --debug-dir "$outdir" "$t" > "$log" 2>&1
       fi
       if [ $? -ne 0 ]; then

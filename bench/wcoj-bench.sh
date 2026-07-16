@@ -40,7 +40,7 @@ for t in "${TESTS[@]}"; do
     for rep in $(seq "$REPS"); do
       log="out/wcojbench-$name-$mode-$rep.log"
       common=(env TMPDIR=/tmp SLOG_THREADS="$THREADS" SLOG_NO_MEM_CAP=1
-              SLOG_OPT=2 timeout 900 racket slog.rkt --no-banner
+              SLOG_OPT=2 timeout 900 racket compiler/run.rkt --no-banner
               "${dbarg[@]}" --debug-dir "$outdir" "$t")
       if [ "$mode" = binary ]; then
         SLOG_NO_WCOJ3=1 "${common[@]}" >"$log" 2>&1

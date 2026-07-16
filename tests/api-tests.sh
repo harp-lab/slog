@@ -29,22 +29,22 @@ expect_not() { # name unexpected-substring file
 }
 
 # --- 1. relation sizes reported back over the connection after a run
-timeout 300 racket slog.rkt --no-banner --sizes tests/reach.slog \
+timeout 300 racket compiler/run.rkt --no-banner --sizes tests/reach.slog \
   > out/api-reach.log 2>&1
 expect "sizes-edge"  "(relation_size edge 3)" out/api-reach.log
 expect "sizes-path"  "(relation_size path 6)" out/api-reach.log
 
 # struct interning counts distinct contents (structs.slog inserts (pair 1 2) twice)
-timeout 300 racket slog.rkt --no-banner --sizes tests/structs.slog \
+timeout 300 racket compiler/run.rkt --no-banner --sizes tests/structs.slog \
   > out/api-structs.log 2>&1
 expect "sizes-struct" "(relation_size pair 2)" out/api-structs.log
 expect "sizes-out"    "(relation_size out 2)"  out/api-structs.log
 
 # --- 2. write the database, reopen it in a fresh daemon, sizes persist
 rm -rf data/apidb
-timeout 300 racket slog.rkt --no-banner --out-db apidb tests/reach.slog \
+timeout 300 racket compiler/run.rkt --no-banner --out-db apidb tests/reach.slog \
   > out/api-write.log 2>&1
-timeout 300 racket slog.rkt --no-banner --sizes -d apidb tests/api/noop.slog \
+timeout 300 racket compiler/run.rkt --no-banner --sizes -d apidb tests/api/noop.slog \
   > out/api-reopen.log 2>&1
 expect "reopen-edge" "(relation_size edge 3)" out/api-reopen.log
 expect "reopen-path" "(relation_size path 6)" out/api-reopen.log
@@ -52,7 +52,7 @@ expect "reopen-path" "(relation_size path 6)" out/api-reopen.log
 # --- 3. per-relation refresh from another database on disk:
 #        open reach's db, replace edge from line's db (11 edges), path keeps
 rm -rf data/apilinedb
-timeout 300 racket slog.rkt --no-banner --out-db apilinedb tests/line.slog \
+timeout 300 racket compiler/run.rkt --no-banner --out-db apilinedb tests/line.slog \
   > out/api-line.log 2>&1
 timeout 300 racket tests/api/send-actions.rkt \
   open:apidb load-rel:apilinedb,edge sizes \
@@ -102,14 +102,14 @@ expect "refresh-size"    "(relation_size edge 3)" out/api-fresh1.log
 #        reproducing every node id (daemon/arena.h).  The structural print is
 #        the assertion: it only renders if every id resolves after reload.
 rm -rf data/apicndb
-timeout 300 racket slog.rkt --no-banner --out-db apicndb tests/cn_basic.slog \
+timeout 300 racket compiler/run.rkt --no-banner --out-db apicndb tests/cn_basic.slog \
   > out/api-cn-write.log 2>&1
 if [ -d data/apicndb/value.nodes ]; then
   echo "PASS cn-nodes-dir"; PASS=$((PASS+1))
 else
   echo "FAIL cn-nodes-dir (no value.nodes written)"; FAIL=$((FAIL+1))
 fi
-timeout 300 racket slog.rkt --no-banner --sizes -d apicndb \
+timeout 300 racket compiler/run.rkt --no-banner --sizes -d apicndb \
   --debug-dir out/api-cn-reopen tests/api/noop.slog \
   > out/api-cn-reopen.log 2>&1
 expect "cn-reopen-size"  "(relation_size canon 1)"  out/api-cn-reopen.log
@@ -125,9 +125,9 @@ expect "cn-reopen-env"   "{\"y\":2 \"x\":3}"        out/api-cn-reopen/env.csv
 #        owned ids: 8 of 200 new structs collided, silently collapsing
 #        keep to 392 rows and pointing rows at the wrong struct.
 rm -rf data/apistructdb
-timeout 300 racket slog.rkt --no-banner --out-db apistructdb tests/api/structdb.slog \
+timeout 300 racket compiler/run.rkt --no-banner --out-db apistructdb tests/api/structdb.slog \
   > out/api-structdb.log 2>&1
-timeout 300 racket slog.rkt --no-banner --sizes -d apistructdb \
+timeout 300 racket compiler/run.rkt --no-banner --sizes -d apistructdb \
   --debug-dir out/api-structuse tests/api/structuse.slog \
   > out/api-structuse.log 2>&1
 expect "structs-mk"      "(relation_size mk 400)"     out/api-structuse.log
@@ -144,11 +144,11 @@ expect "structs-probe5-val" "10" out/api-structuse/probe5.csv
 #        words (string-keyed maps, REBUILT on import), a (min int) lattice
 #        (key 3 joins min(30,5)=5) and a (set int) lattice (per-key union).
 rm -rf data/apimrga data/apimrgb data/apimrgexp
-timeout 300 racket slog.rkt --no-banner --out-db apimrga tests/api/mergea.slog \
+timeout 300 racket compiler/run.rkt --no-banner --out-db apimrga tests/api/mergea.slog \
   > out/api-mergea.log 2>&1
-timeout 300 racket slog.rkt --no-banner --out-db apimrgb tests/api/mergeb.slog \
+timeout 300 racket compiler/run.rkt --no-banner --out-db apimrgb tests/api/mergeb.slog \
   > out/api-mergeb.log 2>&1
-timeout 300 racket slog.rkt --no-banner --out-db apimrgexp \
+timeout 300 racket compiler/run.rkt --no-banner --out-db apimrgexp \
   --debug-dir out/api-mergedexp tests/api/mergeexp.slog \
   > out/api-mergeexp.log 2>&1
 rm -rf out/api-merged
@@ -195,9 +195,9 @@ fi
 # unknown to the program AND its compile-time manifest, so it survives the
 # stratum's reload only via runStratum's orphan-relation restore
 rm -rf data/apimrgc
-timeout 300 racket slog.rkt --no-banner --out-db apimrgc tests/api/mergec.slog \
+timeout 300 racket compiler/run.rkt --no-banner --out-db apimrgc tests/api/mergec.slog \
   > out/api-mergec.log 2>&1
-timeout 300 racket slog.rkt --no-banner -d apimrga tests/api/mergerun.slog \
+timeout 300 racket compiler/run.rkt --no-banner -d apimrga tests/api/mergerun.slog \
   > out/api-mergerun-compile.log 2>&1
 # The stratum plugin the driver sent: tiered mode logs the -O0 artifact
 # (build/<hash>.O0.so), a cached run the plain build/<hash>.so; either replays.
@@ -258,14 +258,14 @@ fi
 #         renders if every id resolves after reload.  PARAMS carries the
 #         chunker format version (§8.2).
 rm -rf data/apiseqdb
-timeout 300 racket slog.rkt --no-banner --out-db apiseqdb tests/seq_io.slog \
+timeout 300 racket compiler/run.rkt --no-banner --out-db apiseqdb tests/seq_io.slog \
   > out/api-seq-write.log 2>&1
 if [ -f data/apiseqdb/value.seq/PARAMS ]; then
   echo "PASS seq-params"; PASS=$((PASS+1))
 else
   echo "FAIL seq-params (no value.seq/PARAMS written)"; FAIL=$((FAIL+1))
 fi
-timeout 300 racket slog.rkt --no-banner --sizes -d apiseqdb \
+timeout 300 racket compiler/run.rkt --no-banner --sizes -d apiseqdb \
   --debug-dir out/api-seq-reopen tests/api/noop.slog \
   > out/api-seq-reopen.log 2>&1
 expect "seq-reopen-size"  "(relation_size canon 1)"        out/api-seq-reopen.log
@@ -283,9 +283,9 @@ expect "seq-reopen-dsz"   "320"                            out/api-seq-reopen/ds
 #         length-prefixed records in iterator order, reproducing every id.
 #         Exact decimal renderings are the assertion.
 rm -rf data/apibigdb
-timeout 300 racket slog.rkt --no-banner --out-db apibigdb tests/api/bigint.slog \
+timeout 300 racket compiler/run.rkt --no-banner --out-db apibigdb tests/api/bigint.slog \
   > out/api-big-write.log 2>&1
-timeout 300 racket slog.rkt --no-banner --sizes -d apibigdb \
+timeout 300 racket compiler/run.rkt --no-banner --sizes -d apibigdb \
   --debug-dir out/api-big-reopen tests/api/noop.slog \
   > out/api-big-reopen.log 2>&1
 expect "big-reopen-lit" "123456789012345678901234567890" \
@@ -297,7 +297,7 @@ expect "big-reopen-sq" "15241578753238836750495351562536198787501905199875019052
 #         SLOG_MPZ_TABLE_BYTES no bignum interns -- the fixpoint still
 #         converges, with a deduped (error (mpz_table_overflow ...)) fact in
 #         place of the big row.
-timeout 300 env SLOG_MPZ_TABLE_BYTES=16 racket slog.rkt --no-banner --sizes \
+timeout 300 env SLOG_MPZ_TABLE_BYTES=16 racket compiler/run.rkt --no-banner --sizes \
   tests/api/bigcap.slog > out/api-bigcap.log 2>&1
 expect "big-tablecap-error" "(relation_size mpz_table_overflow 1)" out/api-bigcap.log
 expect "big-tablecap-no-row" "(relation_size big 0)" out/api-bigcap.log

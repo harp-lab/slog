@@ -47,7 +47,7 @@ LOG="$(mktemp)"
 OUT=out/test-smt-async
 rm -rf "$OUT"
 if SLOG_SMT_SOLVERS="$PWD/tests/smt/slow-sat.sh:5000" SMT_SOLVER_LOG="$LOG" \
-     timeout 300 racket slog.rkt --no-banner --debug-dir "$OUT" \
+     timeout 300 racket compiler/run.rkt --no-banner --debug-dir "$OUT" \
      tests/smt/async.slog > "$OUT.log" 2>&1; then
   sat_rows=$(grep -c 'sat' "$OUT/probe.csv" 2>/dev/null || echo 0)
   later_rows=$(grep -c 'sat' "$OUT/later.csv" 2>/dev/null || echo 0)
@@ -66,7 +66,7 @@ note "racing (slow-sat vs fast-unsat scripts)"
 OUT=out/test-smt-race
 rm -rf "$OUT"
 if SLOG_SMT_SOLVERS="$PWD/tests/smt/slow-sat.sh|$PWD/tests/smt/fast-unsat.sh:5000" \
-     timeout 300 racket slog.rkt --no-banner --debug-dir "$OUT" \
+     timeout 300 racket compiler/run.rkt --no-banner --debug-dir "$OUT" \
      tests/smt/async.slog > "$OUT.log" 2>&1; then
   unsat_rows=$(grep -c 'unsat' "$OUT/probe.csv" 2>/dev/null || echo 0)
   [ "$unsat_rows" -eq 3 ] \
@@ -85,7 +85,7 @@ else
   OUT=out/test-smt-z3
   rm -rf "$OUT"
   if SLOG_SMT_SOLVERS="$Z3BIN:8000" \
-       timeout 300 racket slog.rkt --no-banner --debug-dir "$OUT" \
+       timeout 300 racket compiler/run.rkt --no-banner --debug-dir "$OUT" \
        tests/smt/z3.slog > "$OUT.log" 2>&1; then
     check() {  # name expected-verdict
       if ! grep -q "\"$1\" *(_enum \"$2\")" "$OUT/probe.csv" 2>/dev/null; then
@@ -109,7 +109,7 @@ else
   OUT=out/test-smt-model-z3
   rm -rf "$OUT"
   if SLOG_SMT_SOLVERS="$Z3BIN:8000" \
-       timeout 300 racket slog.rkt --no-banner --debug-dir "$OUT" \
+       timeout 300 racket compiler/run.rkt --no-banner --debug-dir "$OUT" \
        tests/smt/model-z3.slog > "$OUT.log" 2>&1; then
     grep -q '"forced" *(_enum "sat")' "$OUT/probe.csv" 2>/dev/null \
       || fail "model: forced probe should be sat"
@@ -127,7 +127,7 @@ else
   OUT=out/test-smt-bigmodel-z3
   rm -rf "$OUT"
   if SLOG_SMT_SOLVERS="$Z3BIN:8000" \
-       timeout 300 racket slog.rkt --no-banner --debug-dir "$OUT" \
+       timeout 300 racket compiler/run.rkt --no-banner --debug-dir "$OUT" \
        tests/smt/bigmodel-z3.slog > "$OUT.log" 2>&1; then
     grep -q '"bigforced" *(_enum "sat")' "$OUT/probe.csv" 2>/dev/null \
       || fail "bigmodel: forced probe should be sat"
@@ -145,7 +145,7 @@ else
   OUT=out/test-smt-core-z3
   rm -rf "$OUT"
   if SLOG_SMT_SOLVERS="$Z3BIN:8000" \
-       timeout 300 racket slog.rkt --no-banner --debug-dir "$OUT" \
+       timeout 300 racket compiler/run.rkt --no-banner --debug-dir "$OUT" \
        tests/smt/core-z3.slog > "$OUT.log" 2>&1; then
     grep -q '"contra" *(_enum "unsat")' "$OUT/probe.csv" 2>/dev/null \
       || fail "core: contra probe should be unsat"
@@ -161,7 +161,7 @@ else
   OUT=out/test-verify-z3
   rm -rf "$OUT"
   if SLOG_SMT_SOLVERS="$Z3BIN:8000" \
-       timeout 300 racket slog.rkt --no-banner --debug-dir "$OUT" \
+       timeout 300 racket compiler/run.rkt --no-banner --debug-dir "$OUT" \
        examples/verify/demo.slog > "$OUT.log" 2>&1; then
     want_elidable() {
       grep -q "\"$1\"" "$OUT/elidable.csv" 2>/dev/null \

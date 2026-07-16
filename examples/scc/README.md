@@ -95,10 +95,10 @@ oriented today, so neither route exists as a few-line library definition.
 ## Running and checking
 
 ```console
-SLOG_NO_MEM_CAP=1 racket slog.rkt --no-banner --sizes \
+SLOG_NO_MEM_CAP=1 racket compiler/run.rkt --no-banner --sizes \
   --debug-dir /tmp/slog-scc examples/scc/scc.slog
 
-SLOG_NO_MEM_CAP=1 racket slog.rkt --no-banner --sizes \
+SLOG_NO_MEM_CAP=1 racket compiler/run.rkt --no-banner --sizes \
   --debug-dir /tmp/slog-tarjan examples/scc/tarjan.slog
 
 diff -u <(sort /tmp/slog-scc/scc.csv) \

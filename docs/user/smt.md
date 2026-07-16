@@ -245,7 +245,7 @@ Set `SLOG_SMT_SOLVERS` to a comma-separated chain. Each round has a timeout in
 milliseconds:
 
 ```console
-$ SLOG_SMT_SOLVERS='z3:500,cvc5:2000' racket slog.rkt program.slog
+$ SLOG_SMT_SOLVERS='z3:500,cvc5:2000' racket compiler/run.rkt program.slog
 ```
 
 The first definitive `sat` or `unsat` answer wins. A timeout, solver `unknown`,
@@ -255,7 +255,7 @@ chain is exhausted, the verdict is unknown.
 Use `|` to race solvers in one round:
 
 ```console
-$ SLOG_SMT_SOLVERS='z3|cvc5:500,z3:5000' racket slog.rkt program.slog
+$ SLOG_SMT_SOLVERS='z3|cvc5:500,z3:5000' racket compiler/run.rkt program.slog
 ```
 
 This races Z3 and cvc5 for 500 ms, then gives Z3 a five-second fallback. The
@@ -274,7 +274,7 @@ is normalized to 1:
 
 ```console
 $ SLOG_ORACLE_PROCS=8 SLOG_SMT_SOLVERS='z3:1000' \
-    racket slog.rkt program.slog
+    racket compiler/run.rkt program.slog
 ```
 
 The same settings can come from local Slog configuration:
@@ -292,7 +292,7 @@ See [running Slog](running.md#configuration) for config precedence.
 Use the built-in backend explicitly with:
 
 ```console
-$ SLOG_SMT_SOLVERS=mock racket slog.rkt program.slog
+$ SLOG_SMT_SOLVERS=mock racket compiler/run.rkt program.slog
 ```
 
 It evaluates supported ground formulas in-process and deterministically.

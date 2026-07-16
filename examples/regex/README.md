@@ -18,7 +18,7 @@ get built: a demand relation already *is* a set of answers.
 ## Running
 
 ```
-racket slog.rkt --no-banner --debug-dir out/regex examples/regex/antimirov.slog
+racket compiler/run.rkt --no-banner --debug-dir out/regex examples/regex/antimirov.slog
 ```
 
 - `match.csv` — which subjects each named regex accepts.

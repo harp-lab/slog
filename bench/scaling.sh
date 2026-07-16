@@ -14,7 +14,7 @@ NS=("$@")
 [ ${#NS[@]} -eq 0 ] && NS=(10000 20000 40000 80000 160000)
 
 mkdir -p build out
-raco make slog.rkt >/dev/null 2>&1
+raco make compiler/run.rkt >/dev/null 2>&1
 
 evalms() {
   awk '/^\(fixpoint / { v = $NF; gsub(/\)/, "", v); s += v + 0 }
@@ -44,10 +44,10 @@ rel("tedge", 3, [(90000001, 90000002, 7)])
 EOF
 
   off_log="out/scale-$n-off.log"; on_log="out/scale-$n-on.log"
-  SLOG_NO_SEMIJOIN=1 timeout 1800 racket slog.rkt --no-banner \
+  SLOG_NO_SEMIJOIN=1 timeout 1800 racket compiler/run.rkt --no-banner \
     -d bench_hub_scale bench/hub_tri.slog > "$off_log" 2>&1 || \
     { echo "n=$n off FAILED"; continue; }
-  timeout 1800 racket slog.rkt --no-banner \
+  timeout 1800 racket compiler/run.rkt --no-banner \
     -d bench_hub_scale bench/hub_tri.slog > "$on_log" 2>&1 || \
     { echo "n=$n on FAILED"; continue; }
 

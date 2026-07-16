@@ -32,7 +32,7 @@
 (define-runtime-path compiler-dir ".")
 
 ;; Cross-process-safe temp file in build/.  Racket's make-temporary-file has a
-;; TOCTOU window across SEPARATE `racket slog.rkt` processes (run-tests.sh -jN
+;; TOCTOU window across SEPARATE `racket compiler/run.rkt` processes (run-tests.sh -jN
 ;; compiling the same content-addressed stratum concurrently), which surfaces as
 ;; "open-output-file: file exists".  We give every process a unique OS-entropy
 ;; salt so its temp names live in a disjoint namespace (no cross-process
@@ -674,7 +674,7 @@
 
 ;; Atomically (re)write a file: emit to a unique temp in build/ then rename over
 ;; the target (same-dir rename is atomic on POSIX).  So a concurrent reader --
-;; e.g. another `racket slog.rkt` compiling the SAME content-addressed stratum
+;; e.g. another `racket compiler/run.rkt` compiling the SAME content-addressed stratum
 ;; under run-tests.sh -jN -- never sees a half-written .cpp/.cprog/.meta.
 (define (call-with-atomic-output path thunk)
   (define tmp (build-tempfile "w~a.tmp"))

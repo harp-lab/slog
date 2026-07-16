@@ -112,7 +112,7 @@ any order).
 - `runslog.rkt`: `db-manifest-from-schema-lines` — parse those s-exprs
   into the SAME manifest hash `db-manifest-from-name` produces (this is
   the hook for a future front end to compile against a session; no
-  slog.rkt orchestration in this shot — CLI sugar comes later with merge
+  compiler/run.rkt orchestration in this shot — CLI sugar comes later with merge
   P2's offline verb).
 - send-actions: `schema` spec.
 - Keep-alive hardening tests (api-tests §9): imported-exclusive relation

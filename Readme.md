@@ -67,7 +67,7 @@ Slog builds the daemon and compiled rule plugins when they are needed. Put the
 graph program above in `reach.slog`, then run:
 
 ```console
-$ racket slog.rkt --no-banner --sizes --debug-dir out/reach reach.slog
+$ racket compiler/run.rkt --no-banner --sizes --debug-dir out/reach reach.slog
 (relation_size edge 3)
 (relation_size path 6)
 ```
@@ -160,7 +160,7 @@ best place to learn the language.
 ## Repository map
 
 ```text
-slog.rkt       command-line entry point
+compiler/run.rkt       command-line entry point
 compiler/      parser, type checker, planner, code generator, and drivers
 daemon/        parallel runtime and persistent database implementation
 lib/           Slog libraries, including lists, rule-based maps/sets, and SMT

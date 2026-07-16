@@ -35,7 +35,7 @@ value must be the same in each place.
 Run the program from the repository root:
 
 ```console
-$ racket slog.rkt --no-banner --sizes --debug-dir out/reach reach.slog
+$ racket compiler/run.rkt --no-banner --sizes --debug-dir out/reach reach.slog
 (relation_size edge 3)
 (relation_size path 6)
 ```

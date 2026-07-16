@@ -134,7 +134,7 @@ fixpoint.  A stratum wires these only if it uses a fallible prim
 Because the arms are content-interned structs, a hot rule failing the
 same way a million times yields one row.
 
-**Driver policy (compiler/runslog.rkt).**  The default `slog.rkt` run drives
+**Driver policy (compiler/runslog.rkt).**  The default `compiler/run.rkt` run drives
 every stratum to fixpoint and only ever hard-stops on the memory cap (a
 `(paused … memory)` becomes a graceful out-of-memory abort); a time/slice
 pause just continues.  As each stratum reaches fixpoint the driver dumps the
