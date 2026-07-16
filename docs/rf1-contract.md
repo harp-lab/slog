@@ -26,9 +26,12 @@ single plan re-key is attributed to RF1 alone.
 1. Four-way split of the T1 `.plan` monolith (ABI 1 grammar:
    `ir-stack.rkt:444–483`) into **KernelExecPlan / DebugMap / binding
    schema / cohort manifest** — ABI 2.
-2. **Per-kernel (per-SCC) plans**, with a compatibility adapter
-   preserving today's merged-per-stratum consumption. The adapter
-   retires at T4, not in RF1.
+2. **Per-kernel (per-SCC) plans as the production representation**
+   (ratified 2026-07-15): a stratum is the cohort manifest's ordered
+   kernel list and every consumer walks it; no reaggregated
+   compatibility view exists (see "Per-kernel is the production
+   shape"). The manifest-driven grouping in the installer is permanent
+   — T4 later attaches kernels individually through the same manifest.
 3. **RuleId per D4** (crules sorted by canonical serialization —
    edit-stable) and **VariantTag ordinals per D3** retained; RuleIds
    are *referenced* by KernelExecPlan and *defined*, with lineage, in
@@ -130,8 +133,8 @@ without touching KernelExecPlan — the entire point of its existence as
 a separate part.
 
 Readers: the daemon binder at install/attach (BindingFrame
-construction, execution-tiers §2.3/§3), the compat adapter, the N2/N3
-catalog planner.
+construction, execution-tiers §2.3/§3), the installer's manifest
+grouping, the N2/N3 catalog planner.
 
 May NOT appear: ops, registers, physical `Relation*`/VersionIds
 (attachment-time state — writer attribution is per AttachmentId,
@@ -156,7 +159,8 @@ Per (stratum, flavor) install unit:
   classification, dependency facts the installer needs.
 
 Readers: the T2 installer (which kernels form the stratum it installs),
-T0 catalog verbs, the compat adapter, T3 tier designations, T4
+T0 catalog verbs, the installer's manifest grouping, T3 tier
+designations, T4
 coordinator manifests, RF2's image packaging.
 
 May NOT appear: per-kernel exec content (ops, registers, slot tables)
@@ -337,12 +341,23 @@ Classification of 498 fresh plans: 273 byte-identical to the corpus;
 `dynamic` list, `"delta:tempXXXX"` VariantTags), 47 additionally as
 **D4 sort-order perturbation** (the canonical sort runs over serialized
 text that contains the temp spelling; token multisets match, order
-does not); 152 appear under **moved job-hash filenames** — verified
-byte-identical content under a different stem (`eb30565e` ≡ corpus
-`453edaee`), so gensym'd names also reach some `progstr` job-hash
-input, churning `.so`-cache filenames run to run (5/758 stems moved in
-one morning run, 219/758 in an evening run of the same tree).
-Temp-free strata (e.g. `deep_fact`'s) are fully stable at every layer.
+does not); 152 appeared under **moved stems** — byte-identical content
+under different job-hash filenames across the corpus comparison
+(`eb30565e` ≡ corpus `453edaee`). Slice 0's audit RESOLVED the moved
+stems (initially misread as job-hash gensym churn): `progstr` is
+computed *before* planning, so temps cannot reach it, and two symmetric
+clean runs measured 163/163 progstrs and 2941/2941 `build/` filenames
+byte-identical — the "moved" stems were asymmetric compile *sets*
+(cold-vs-warm `config/cache`, wall-clock-lazy `(continue)` action
+plugins) and cross-era corpus comparisons, not renames. The one genuine
+pre-cache-key gensym was the anonymous inline union
+(`modules.rkt:408`), fixed in slice 0. The slice also found and fixed
+two plan-layer instabilities beyond temp spellings: a non-total D4
+sort key (alpha-equivalent crules tied, letting run-varying set order
+flip rid pairings) and temp column order keyed on gensym'd variable
+spellings. Temp-free strata were fully stable at every layer
+throughout; post-slice-0, all strata are (500/500 plans byte-identical
+across runs).
 
 Consequences, pinned:
 
