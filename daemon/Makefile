@@ -37,7 +37,14 @@ slog-freeze: freeze.cpp $(HEADERS)
 test: slogd
 	printf '(close)\n' | racket slogd.rkt
 
+# Compile-only check that the T2-A1 interpreter core header stands alone under
+# the daemon's own flags.  slogd.cpp does not include interp.h until T2-A2/A3;
+# until then this target (and the `interp` harness in tests/run-all.sh, which
+# compiles it first in its TU) is what keeps the header buildable.
+interp-check:
+	$(CXX) $(CXXFLAGS) $(OMPFLAGS) -Wno-pragma-once-outside-header -fsyntax-only -x c++ interp.h
+
 clean:
 	rm -f slogd slog-freeze
 
-.PHONY: test clean
+.PHONY: test interp-check clean

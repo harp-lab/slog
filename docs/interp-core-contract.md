@@ -1,9 +1,16 @@
 # Interpreter core contract: freeze list, trigger, extension seams
 
-**Status:** design contract (2026-07-15); core not yet extracted (T2-A1
-pending). Decisions here were ratified 2026-07-15 with the progressive
-fork (roadmap.md §3.1); this file consolidates them and does not reopen
-them. `execution-tiers.md` (§4, §6, §12) and `execution-tiers-impl.md`
+**Status:** design contract (2026-07-15); **core extracted at T2-A1
+(2026-07-15): `daemon/interp.h` now holds the production core in
+namespace `slog::interp`, the fixture instantiates it, and the three
+fixture deviations below are resolved** (Event carries the D3 variant
+ordinal; Event payloads are bounded `TupleView`s into attempt-owned
+scratch, valid for the observer callback; the cursor accessor is
+`current()` returning a non-owning `TupleView`). Fixture line citations
+below refer to the pre-extraction fixture as of commit `fb9bc77`; the
+behaviors are unchanged and remain covered by the same tests. Decisions
+here were ratified 2026-07-15 with the progressive fork (roadmap.md
+§3.1); this file consolidates them and does not reopen them. `execution-tiers.md` (§4, §6, §12) and `execution-tiers-impl.md`
 (§0, D1–D18, §7) remain normative for content;
 [tests/interp-operator-tests.cpp](../tests/interp-operator-tests.cpp)
 is the **authoritative executable specification** for every frozen

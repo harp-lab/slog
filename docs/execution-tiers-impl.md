@@ -79,6 +79,24 @@ at T4 phase B; wholesale TU byte-diffs are not a valid gate methodology
 (use `.plan` content diffs); correctness unaffected throughout — caches
 miss spuriously, never collide.
 
+**Update 2026-07-15 (T2-A1 done):** the production interpreter core is
+extracted into `daemon/interp.h` (namespace `slog::interp`, ~710 lines):
+immutable `Program` (rule_id, D3 `variant_ordinal`, display `variant`,
+`nregs`, ops, `driver_regs`, preloads), `TupleView`, the `PrefixCursor`
+family with `current()` (impl §3.2 spelling), the five-state `Machine`
+with ONE policy-templated transition loop instantiated twice
+(`run_fast`/`run_observed`; the production `run` selects the fast
+instantiation on a zero effective event mask), post-transition
+mask-gated events carrying the variant ordinal and a bounded
+attempt-scratch payload view, and the contract's three-range opcode
+reservation as named constants + static_asserts (core 0–95, thread-0
+96–159, thread-1 160–191, both reserved ranges empty). The fixture now
+instantiates the core (test file 1845→1409 lines; seal/bind slice stays
+test-side until T2-A2); `make -C daemon interp-check` is a compile-only
+standalone check under the daemon's flags. Verified: clang/gcc -O2,
+ASan+UBSan, `run-all.sh interp arena seq counts wcoj3 structid`,
+`make -C daemon`.
+
 **Next up (ratified order):**
 
 - **T0** — per docs/t0-contract.md slices (a)–(d): dispatcher dual-stack +
