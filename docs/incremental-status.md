@@ -56,12 +56,14 @@ anchors remain outside M4T, permanently owned by the anchored walk.
 
 M5 slice 1 is shipped: struct intern identity is separated from live
 membership through a tombstone dictionary, and clear-and-rerun over struct
-cones is id-stable. The remaining implementation queue, in the decided
-order, is:
+cones is id-stable. M4S slice 1 is shipped (2026-07-17): acyclic struct
+cones ride the M1/M3 counted maintenance routes on that substrate. The
+remaining implementation queue, in the decided order, is:
 
-1. **M4S** — admit struct relations into the DRed capability set on the M5
-   substrate (sweep over-delete = `tombstoneStructRow`, reseed/relearn =
-   resurrection), deciding the tombstone persistence policy as it goes.
+1. **M4S slices 2–3** — recursive sweep admission (`_maint4neg` over SCCs
+   containing struct relations: dead-candidate absorption by id,
+   reseed/relearn resurrection) and tombstone persistence (chain
+   reconstruction at load).
 2. **M4N — precise stratified negation**, then **M7 — recursive
    lattice/rank repair**.
 
@@ -382,15 +384,49 @@ contract-mandated id-stability assertion is otherwise false):
   somebody's authority" lesson, recurring between flavors; base2-shaped
   fixtures missed it because their structs are never read back.
 
-Reported, not fixed (deliberately — fixtures-first): a batch RETRACTION
-targeting a struct relation is refused deterministically before any epoch
-or mutation, but with a generic message (`cannot retract ... tuple is
-absent` — `input-state` classifies a content-arity tuple against struct
-storage incoherently and misreports the live derived row).  The positive
-sign already refuses by name at `set-overlay`.  The contract's by-name
-refusal for the negative sign is a small daemon follow-up (e.g. refusing
-`input-state` on struct relations by name); the `m4s-editstruct-del`
-expect flips to the by-name message when it lands.
+The recorded retraction-misreport gap closed with slice 1 (below): the
+negative sign is now refused by name on the normalization error path
+(`session.rkt` consults the live schema only when the generic error would
+fire), keeping the positive sign's `set-overlay` refusal untouched.
+
+### M4S slice 1 — acyclic struct-cone admission (2026-07-17)
+
+Struct relations are admissible interior cone members on the M1 positive
+and M3 acyclic negative routes; the chain, multictor, mixed-sign, and
+import fixtures are flipped to their precise-route assertions.
+
+- **Daemon:** `emit_struct_maint` (signed content-only emission, 0 id
+  placeholder) and `MaintainStructTask` (one task per relation at
+  phase_intern: sign-directed id resolution — ordinary intern path with
+  tombstone resurrection when positive, PROBE-ONLY via live master then
+  the non-erosive `peekTombstone` when negative, miss = epoch-invalidating
+  fold error; id-keyed sidecar fold; `tombstoneStructRow` /
+  `insertTupleAllIndicesPreservingCounts` membership transitions;
+  journaled transitions retained as next-iteration delta).  Signed overlay
+  verbs gained by-name struct/lattice guards (defense in depth — a
+  content-arity tuple must never reach a struct overlay fold).
+  Capability line: structs now advertise `(precise-delete conditional)
+  (reason struct-recount)`.
+- **Compiler:** `session.rkt` accepts `struct-recount` capabilities and
+  gates routes on `struct-cone-admissible?` (no struct edit target, no
+  lattice in the cone, all strata acyclic; M4T/M6L2 routes additionally
+  require struct-free cones until slice 2).  `emit-cpp.rkt` emits the
+  maintenance struct sink and registers `MaintainStructTask` (the
+  recursive sweep flavor still refuses struct heads loudly).
+  `join-planning.rkt`: struct occurrences outside a non-temp partition —
+  the content→id RESOLUTION joins of staged struct-head follow-ups — get
+  the `'new` (`FULL ∪ DeltaMinus`) view in the negative flavor; the dead
+  row leaves FULL at the fold one iteration before its follow-up fires,
+  and temp-driven versions otherwise probe all-FULL (exact for tables
+  because instantiation-injective temps carry every bound value; the
+  struct id does not exist at stage-1 emit time).
+- **Semantics validated by the flipped battery:** support-only decrements
+  keep rows live under their original ids; last-support transitions
+  tombstone with identity retained; constructor coupling holds (struct row
+  and sibling head rows gain/lose together); a mixed-sign epoch resurrects
+  the id within one epoch; import-ledger foundation survives maintained
+  deletion; healed sidecars equal forced recounts everywhere; embedded ids
+  decode after every settlement.
 
 ### WCOJ ternary joins × incremental artifacts
 
@@ -433,12 +469,14 @@ Primary anchors:
 
 These remain explicit capability boundaries or future correctness work.
 
-1. **Struct counts remain diagnostic and struct cones remain on
-   clear-and-rerun.** M5 separated tombstoned identity from join-visible
-   membership (the coupling itself is resolved), but route admission —
-   struct relations entering the counted maintenance and DRed capability
-   sets — belongs to M4S. Tombstone persistence is session-local until
-   M4S pins the save policy.
+1. **Struct cones are precise on acyclic routes only; recursive struct
+   cones and struct-cone persistence remain open.** M4S slice 1 admits
+   struct relations as interior members of acyclic M1/M3 cones (struct
+   counts are load-bearing there); cones with a recursive stratum, a
+   lattice, or a struct edit target keep clear-and-rerun by name until
+   M4S slice 2 (the DRed sweep) — the `_maint4neg` flavor refuses struct
+   heads loudly. Tombstone persistence is session-local until slice 3
+   pins the save policy (chain reconstruction).
 2. **Recursive signed deletion is tip-local and plain-table only.** M4T
    handles counted recursive plain-table cones reached by any tip-local
    edit, including edits targeting the recursive head (foundation-aware

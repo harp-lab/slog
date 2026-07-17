@@ -1343,8 +1343,10 @@ Shipped:
 The public routing boundary is deliberately narrower than the internal signed
 representation. User retractions do not enter `_maint1`; certified acyclic
 ones enter `_maint3neg`, while recursive negative propagation belongs to M4.
-Structs, nullary relations, lattices, negation, and fallible diagnostic-head
-cones also remain on fallback.
+Nullary relations, lattices, negation, and fallible diagnostic-head cones
+also remain on fallback. (Amended by M4S slice 1, 2026-07-17: struct
+relations are admissible interior members of acyclic `_maint1` cones;
+recursive struct cones and struct edit targets stay on fallback.)
 
 **Exit evidence:** for positive existing-slot edits and explicit inherited
 reopen edges in the certified surface, maintained set content, support
@@ -1380,8 +1382,10 @@ Shipped:
   positive-body, positive-arity plain-table cones; and
 - recovery through the normalized-overlay clear-and-rerun path if admission,
   arithmetic, or coverage validation fails. Recursive SCCs, negation,
-  lattices, structs, nullary relations, and unsupported version topology never
-  enter `_maint3neg`.
+  lattices, nullary relations, and unsupported version topology never
+  enter `_maint3neg`. (Amended by M4S slice 1, 2026-07-17: struct relations
+  are admissible interior cone members; a struct edit target or a lattice
+  anywhere in a struct cone still refuses by name.)
 
 The user-visible capability is deliberately reported as conditional: table
 storage supports point deletion, but the whole version cone must also satisfy
@@ -1499,6 +1503,15 @@ verbatim re-copy, import) resurrects the original id or fails loudly on
 drift, and clear-and-rerun over struct cones is now id-stable.
 Tombstones are session-local (saves carry live content only) until M4S
 pins the persistence policy.
+
+**M4S slice 1 shipped 2026-07-17** (`docs/m4s-contract.md`): acyclic
+struct cones ride the M1/M3 routes — signed struct contributions fold in
+`MaintainStructTask` (positive resolution = intern path with tombstone
+resurrection; negative = probe-only against live master then tombstones,
+miss invalidating the epoch), membership transitions use
+`tombstoneStructRow`, sidecars fold on the M5-stable id key, and staged
+struct-head follow-ups' resolution joins read `FULL ∪ DeltaMinus` in the
+negative flavor. Slices 2 (recursive sweep) and 3 (persistence) remain.
 
 ### M4N — precise stratified negation
 

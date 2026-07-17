@@ -597,6 +597,14 @@ public:
       emit(std::string("(error \"set-overlay-positive: no relation ") + rel + "\")");
       return;
     }
+    // M4S: routing refuses struct/lattice edit TARGETS by name; this guard
+    // keeps a wrong-arity content tuple from ever reaching the overlay fold.
+    if (r->isLattice() || r->getStructId() > 0)
+    {
+      emit(std::string("(error \"set-overlay-positive: ") + rel
+           + " is a lattice/struct relation\")");
+      return;
+    }
     u32 applied = 0;
     for (const auto& row : rows)
       if (database->applyPositiveInput(r, row.data())) ++applied;
@@ -613,6 +621,12 @@ public:
     if (!r)
     {
       emit(std::string("(error \"set-overlay-negative: no relation ") + rel + "\")");
+      return;
+    }
+    if (r->isLattice() || r->getStructId() > 0)
+    {
+      emit(std::string("(error \"set-overlay-negative: ") + rel
+           + " is a lattice/struct relation\")");
       return;
     }
     u32 applied = 0;
@@ -634,6 +648,12 @@ public:
     {
       emit(std::string("(error \"set-overlay-negative-dred: no relation ")
            + rel + "\")");
+      return;
+    }
+    if (r->isLattice() || r->getStructId() > 0)
+    {
+      emit(std::string("(error \"set-overlay-negative-dred: ") + rel
+           + " is a lattice/struct relation\")");
       return;
     }
     u32 applied = 0;

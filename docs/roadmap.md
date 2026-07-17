@@ -11,7 +11,7 @@ remains normative for its content.
 
 | stream | document | slices | status 2026-07-14 |
 |---|---|---|---|
-| incremental maintenance | [incremental.md](incremental.md), [incremental-status.md](incremental-status.md) | Phase 0, M0–M7 | Phase 0, M0, M1, M3, M6L 1–2, M4T, M5 slice 1 shipped; queue **M4S → M4N → M7** |
+| incremental maintenance | [incremental.md](incremental.md), [incremental-status.md](incremental-status.md) | Phase 0, M0–M7 | Phase 0, M0, M1, M3, M6L 1–2, M4T, M5 slice 1, M4S slice 1 shipped; queue **M4S 2–3 → M4N → M7** |
 | execution tiers | [execution-tiers.md](execution-tiers.md) | T0–T6, Q1 | T1 shipped; T0/T2+ unstarted |
 | modules/namespaces | [modules.md](modules.md) | N0–N5 | design complete, unstarted |
 | reflection | [slog-reflection.md](slog-reflection.md) | RF0–RF5 | brainstorm + §18 staging verdict |
@@ -156,6 +156,22 @@ RuleKey/SccInstanceKey on the Layer/Event/Slot substrate; catalog verbs;
 
 *Incremental:* **M4S** — struct relations enter the DRed capability set on
 the M5 tombstone substrate; tombstone persistence policy decided.
+
+**Checkpoint 2026-07-17 (M4S slice 1):** acyclic struct cones are admitted
+to the M1/M3 counted maintenance routes — sign-directed id resolution in a
+new struct maintenance fold (intern path with tombstone resurrection when
+positive; probe-only against live master then the non-erosive tombstone
+peek when negative, a miss invalidating the epoch), `tombstoneStructRow`
+membership transitions, id-keyed sidecar folds, and the `'new`-view fix for
+staged struct-head follow-ups' content→id resolution joins (temp-driven
+versions probe all-FULL, exact for tables but not for structs whose dead
+rows leave FULL one iteration before the follow-up fires).  Routing
+requires no struct edit target, no lattice in the cone, and all-acyclic
+strata; the recursive sweep flavor refuses struct heads loudly until
+slice 2.  The `m4s-*` chain/multictor/mixed-sign/import fixtures are
+flipped to precise-route assertions; the by-name negative-sign struct
+retraction refusal landed alongside.  Slices 2 (sweep) and 3 (persistence)
+remain on thread 0's spine.
 
 ### W2 — the engine
 

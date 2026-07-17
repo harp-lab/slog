@@ -1172,6 +1172,29 @@ public:
     return true;
   }
 
+  // M4S probe-only lookup (docs/m4s-contract.md): the negative maintenance
+  // fold resolves a lost instantiation's head id against the live master
+  // first, then here -- an earlier fold may already have tombstoned the head
+  // and the decrement must land on the retained id (dead-candidate
+  // absorption).  NON-EROSIVE: the mapping stays installed for later
+  // decrements and the eventual reseed/relearn; negative-phase resolution
+  // never allocates and never resurrects.  Key shape and bucket routing
+  // exactly as takeTombstone.
+  bool peekTombstone(u16 b, const u64* row, const u16* ord, u16 n,
+                     u64& id_out) const
+  {
+    if (!struct_tombstones
+        || struct_tombstone_count.load(std::memory_order_relaxed) == 0)
+      return false;
+    std::vector<u64> key(n - 1);
+    for (u16 c = 0; c + 1 < n; ++c) key[c] = row[ord[c]];
+    const auto& m = struct_tombstones[b];
+    auto it = m.find(key);
+    if (it == m.end()) return false;
+    id_out = it->second;
+    return true;
+  }
+
   // Dedup-map form (storage-order content fields, no id column) -- the
   // import path's key shape (importDatabaseBIN's internStructTuple).
   bool takeTombstoneByFields(const std::vector<u64>& fields, u64& id_out)
@@ -3476,10 +3499,11 @@ public:
 
   // Explicit per-VersionId capability report.  Recount capability is
   // separate from precise deletion: ordinary tables can establish counts,
-  // structs are diagnostic-only until identity/liveness split in M5, and a
-  // lattice advertises only conditional contributor recount/repair.  The
-  // session still proves whether the complete cone is a leaf or an admitted
-  // stratified consumer shape before selecting signed repair.
+  // structs advertise conditional maintenance on the M5 identity substrate
+  // (M4S), and a lattice advertises only conditional contributor
+  // recount/repair.  The session still proves whether the complete cone is
+  // a leaf or an admitted stratified consumer shape before selecting
+  // signed repair.
   std::string countCapabilitiesSexpr()
   {
     std::map<std::string, const std::vector<RelBinding>*> sorted;
@@ -3517,8 +3541,12 @@ public:
         }
         else if (b.rel->getStructId() != 0)
         {
-          precise = "no";
-          reason = "struct-diagnostic";
+          // M4S slice 1 (docs/m4s-contract.md): struct relations join the
+          // counted maintenance capability set on the M5 identity substrate.
+          // Like tables, "conditional" -- the session still proves the cone
+          // (acyclic strata, no lattice/negation, struct never the edit
+          // target) before selecting a precise route.
+          reason = "struct-recount";
         }
         s += " (cap " + kv.first + " " + std::to_string(o) + " "
            + std::to_string(b.rel->getVersionId()) + " (recount " + recount

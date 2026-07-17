@@ -161,6 +161,10 @@
     (or (set-member? dynamic-rels name) (set-member? temps name)))
   (define (temp? name) (set-member? temps name))
   (define (lattice? name) (and (rel-lattice-spec rel-env name) #t))
+  (define (struct-rel? name)
+    (match (hash-ref rel-env name #f)
+      [`(struct ,_ ...) #t]
+      [_ #f]))
   (define (ordinary-table? name)
     (match (hash-ref rel-env name #f)
       [`(table ,_ ...) (not (lattice? name))]
@@ -267,7 +271,8 @@
         (define versions
           (if (and (count-flavor) (not (maintenance-flavor)))
               (plan-versions-counted staged-rule statics)
-              (plan-rule-versions staged-rule dynamic? temp? lattice? ordinary-table? statics)))
+              (plan-rule-versions staged-rule dynamic? temp? lattice? ordinary-table? statics
+                                  #:struct-rel? struct-rel?)))
         ;; SEEDED RE-ENTRY version (the staging-replay bug, 2026-07-10): a
         ;; staged rule with pruned (static) joins relies on this stratum's
         ;; own construction order -- statics' rows always land in FULL
@@ -519,7 +524,8 @@
 ;; 2 & 3. Scheduling and version generation for one staged rule.
 
 (define (plan-rule-versions rule dynamic? temp? lattice? ordinary-table? [statics '()]
-                            #:seeded? [seeded? #f])
+                            #:seeded? [seeded? #f]
+                            #:struct-rel? [struct-rel? (lambda (_name) #f)])
   (match rule
     [`(syn ,prov rule ,bodys ... --> ,heads ...)
      ;; constants (from body or head) ground their variables up front
@@ -581,6 +587,25 @@
        (define (view-of occ)
          (cond
            [(and driver (eq? occ driver)) (if seeded? 'full 'delta)]
+           ;; M4S (docs/m4s-contract.md): a struct occurrence outside the
+           ;; exact partition -- no dynamic ordinal, or a sibling of a TEMP
+           ;; driver (temp-driven versions otherwise probe all-FULL, which
+           ;; is exact for tables precisely because instantiation-injective
+           ;; temps carry every bound value; the struct id does not exist at
+           ;; stage-1 emit time, so the follow-up re-probes by content) --
+           ;; is a content->id RESOLUTION join: functional (at most one id
+           ;; per content), multiplicity owned by the temp.  In the negative
+           ;; flavor the dead row leaves FULL at the fold one iteration
+           ;; before the follow-up fires, so resolution must probe
+           ;; FULL ∪ DeltaMinus.  Struct occurrences inside a non-temp
+           ;; partition keep their exact N/O/driver views.
+           [(and (negative-maintenance-flavor?)
+                 (not seeded?)
+                 (struct-rel? (join-rel (join-occurrence-clause occ)))
+                 (or (not (join-occurrence-dynamic-index occ))
+                     (and driver
+                          (temp? (join-rel (join-occurrence-clause driver))))))
+            'new]
            [(join-occurrence-static? occ) 'full]
            [(and exact-old?
                  (not seeded?)

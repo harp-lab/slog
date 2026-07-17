@@ -1,6 +1,16 @@
 # M4S recursive struct deletion contract
 
-**Status:** design contract (2026-07-15); not yet implemented.
+**Status:** design contract (2026-07-15); **slice 1 implemented 2026-07-17**
+(acyclic struct cones on the M1 positive / M3 negative routes: probe-only
+negative `mkstruct` resolution and the signed struct fold in
+`daemon/operators.h::MaintainStructTask` + `emit_struct_maint`, the
+non-erosive `Relation::peekTombstone`, the struct RESOLUTION-join `'new`
+view in `compiler/join-planning.rkt` (temp-driven follow-ups re-probe by
+content, and the dead row leaves FULL one iteration before the follow-up
+fires), `struct-recount` capability + `struct-cone-admissible?` routing in
+`compiler/session.rkt`, the by-name negative-sign edit refusal, and the
+flipped `m4s-*` battery).  Slices 2 (recursive sweep) and 3 (persistence)
+remain; the sweep flavor refuses struct heads loudly at emit until then.
 `incremental.md` §7 (M5-then-M4S) and §4.5–§4.7 remain normative; this
 file pins admission, the struct verb mapping, the embedded-id settlement
 invariant, and the tombstone persistence policy. The convention follows
@@ -238,11 +248,24 @@ cross-flavor check).
 
 ## Open implementation questions (pinned, not blocking)
 
-1. The compiler shape of probe-only negative `mkstruct`: a plan
-   attribute on the existing `mkstruct` op versus a distinct c-op; the
-   flavored planners must also start *emitting* struct-headed rule plans
-   for `_maint*` (they were never compiled for struct cones before).
+1. ~~The compiler shape of probe-only negative `mkstruct`~~ — resolved in
+   slice 1 (2026-07-17): neither a plan attribute nor a distinct plan-layer
+   c-op.  The `mkstruct` head op stays one canonical shape; the maintenance
+   flavors emit through a signed sink (`emit_struct_maint`, sign on the
+   batch exactly like `emit_maint`) with the id left as the 0 placeholder,
+   and resolution happens at the serial fold (`MaintainStructTask`):
+   intern-path when positive, probe-only (live master, then `peekTombstone`)
+   when negative, with a probe miss invalidating the epoch.  One further
+   compiler fact the contract missed: a struct-headed rule's staged
+   FOLLOW-UP re-probes the struct relation by content (the id does not
+   exist at stage-1 emit time), and in the negative flavor that RESOLUTION
+   join must read `FULL ∪ DeltaMinus` — temp-driven versions otherwise
+   probe all-FULL, which is exact for tables precisely because temps carry
+   every bound value.  `join-planning.rkt`'s `view-of` now gives struct
+   occurrences outside a non-temp partition the `'new` view.
 2. Whether journal staging of struct DeltaMinus needs any additional
    index requisition beyond what reading plans already demand.
+   *(Slice-1 evidence: none needed — the resolution join's `join-new`
+   requisitions the struct delta ordering generically.)*
 3. The lazy-versus-eager reconstruction default for slice 3, measured on
    a large loaded chain.

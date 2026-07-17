@@ -858,7 +858,7 @@ timeout 600 racket tests/api/session-drive.rkt \
 expect "m03-cone-ran"  "(recount 2 0 2 rel=g)" out/sess-counts-m03c.log
 expect "m03-cone-g"    "(countrow g (h 2) 0 2 0)" out/sess-counts-m03c.log
 expect "m03-cone-e"    "(countrow e 2 2 0 1 0)" out/sess-counts-m03c.log
-expect_re "m04-cap-struct" '\(cap h 0 [0-9]+ \(recount yes\) \(precise-delete no\) \(fallback clear-rerun\) \(reason struct-diagnostic\)\)' out/sess-counts-m03c.log
+expect_re "m04-cap-struct" '\(cap h 0 [0-9]+ \(recount yes\) \(precise-delete conditional\) \(fallback clear-rerun\) \(reason struct-recount\)\)' out/sess-counts-m03c.log
 versioned_count_oracle "m04-struct-ir-oracle" out/sess-counts-m03c.log
 
 # --- M0.4: stable instances, input overlays, transactional recount ---------
@@ -1852,17 +1852,18 @@ else
   echo "FAIL m5-keep-survivors-original"; FAIL=$((FAIL+1))
 fi
 
-# --- M4S slice 1 fixtures, fallback-first (docs/m4s-contract.md) ------------
-# Struct relations are NOT yet admitted to any counted maintenance route:
-# every deletion below must settle through clear-and-rerun with the route
-# reported, while the M5 identity invariants already hold across the fallback
-# (id stability via dump-ids, embedded-id validity via content-rendered
-# dumps).  Each case compares settled content and every support component
-# against a lazy heal plus a forced fresh recount (§10's two oracles --
-# trivially equal under fallback, load-bearing once the routes flip).  Lines
-# marked FLIP(M4S slice N) are the localized edits that flip a block to its
-# precise-route assertion; the recount before the first post-edit dump-counts
-# becomes a lazy no-op at that point and needs no removal.
+# --- M4S fixtures (docs/m4s-contract.md) -------------------------------------
+# SLICE 1 FLIPPED: struct relations are admitted as interior cone members on
+# the acyclic counted maintenance routes (M1 positive / M3 negative) -- the
+# chain, multictor, mixed-sign, and import blocks below assert the precise
+# routes, id stability (dump-ids), embedded-id validity (content-rendered
+# dumps), and healed-equals-forced support components.  The recursive blocks
+# (diamond, selfjoin) still assert fallback with FLIP(M4S slice 2) markers,
+# and the named refusals (struct edit target, lattice+struct, negation+struct)
+# are permanent.  Each case compares settled content and every support
+# component against a lazy heal plus a forced fresh recount (§10's two
+# oracles); the recount before the first post-edit dump-counts is now a lazy
+# no-op on the flipped blocks.
 #
 # These fixtures exposed (and their substrate fix closed) a real M5 hole:
 # the greedy index packer could unify a struct's intern MASTER ordering with
@@ -1980,11 +1981,11 @@ timeout 900 racket tests/api/session-drive.rkt \
   batch-:in,3 flush dump-rel:q dump-ids:foo dump-ids:bar \
   recount dump-counts:q recount-force dump-counts:q \
   > out/sess-m4s-chain.log 2>&1
-# FLIP(M4S slice 1): the mixed and negative flushes take the acyclic
-# maintenance routes ((route maintain-negative 2)/(route maintain-positive 2));
-# drop the rerun expects.
-expect "m4s-chain-mixed-fallback" "(route rerun 2 4)" out/sess-m4s-chain.log
-expect_not "m4s-chain-no-maintain" "(route maintain-negative" out/sess-m4s-chain.log
+# FLIPPED(M4S slice 1): the mixed and negative flushes take the acyclic
+# maintenance routes.
+expect "m4s-chain-negative-route" "(route maintain-negative 2)" out/sess-m4s-chain.log
+expect "m4s-chain-positive-route" "(route maintain-positive 2)" out/sess-m4s-chain.log
+expect_not "m4s-chain-no-rerun" "(route rerun" out/sess-m4s-chain.log
 expect "m4s-chain-settled" "(update-committed 3 counts-valid)" out/sess-m4s-chain.log
 # embedded-id decode walk: 3 + 3 + 2 nested q renderings, one p dump, and
 # never a dangling-id rendering
@@ -2032,13 +2033,14 @@ timeout 900 racket tests/api/session-drive.rkt \
   > out/sess-m4s-multictor.log 2>&1
 expect "m4s-multictor-two-ctors" "(countrow out (mk 7) 0 2 0)" out/sess-m4s-multictor.log
 expect "m4s-multictor-struct-two" "(countrow mk (mk 7) 0 2 0)" out/sess-m4s-multictor.log
-# FLIP(M4S slice 1): both deletions -> (route maintain-negative 1); the first
-# is a support-only decrement, the second a last-support tombstone.
-if [ "$(grep -cF '(route rerun 1 2)' out/sess-m4s-multictor.log)" -eq 2 ]; then
-  echo "PASS m4s-multictor-fallback-routes"; PASS=$((PASS+1))
+# FLIPPED(M4S slice 1): both deletions take the acyclic negative route; the
+# first is a support-only decrement, the second a last-support tombstone.
+if [ "$(grep -cF '(route maintain-negative 1)' out/sess-m4s-multictor.log)" -eq 2 ]; then
+  echo "PASS m4s-multictor-precise-routes"; PASS=$((PASS+1))
 else
-  echo "FAIL m4s-multictor-fallback-routes"; FAIL=$((FAIL+1))
+  echo "FAIL m4s-multictor-precise-routes"; FAIL=$((FAIL+1))
 fi
+expect_not "m4s-multictor-no-rerun" "(route rerun" out/sess-m4s-multictor.log
 if [ "$(grep -cF '(countrow out (mk 7) 0 1 0)' out/sess-m4s-multictor.log)" -eq 2 ] \
    && [ "$(grep -cF '(countrow mk (mk 7) 0 1 0)' out/sess-m4s-multictor.log)" -eq 2 ]; then
   echo "PASS m4s-multictor-support-only"; PASS=$((PASS+1))
@@ -2070,9 +2072,11 @@ timeout 900 racket tests/api/session-drive.rkt \
   batch-:a,7 batch+:b,7 flush dump-rel:out dump-ids:mk \
   recount dump-counts:out recount-force dump-counts:out \
   > out/sess-m4s-mixedsign.log 2>&1
-# FLIP(M4S slice 1): -> (route maintain-negative 1)/(route maintain-positive 1)
-# with the tombstone-then-resurrect verbs inside one epoch.
-expect "m4s-mixedsign-fallback" "(route rerun 1 2)" out/sess-m4s-mixedsign.log
+# FLIPPED(M4S slice 1): one epoch runs the negative walk (tombstone) then the
+# positive walk (within-epoch resurrection, M5).
+expect "m4s-mixedsign-negative-route" "(route maintain-negative 1)" out/sess-m4s-mixedsign.log
+expect "m4s-mixedsign-positive-route" "(route maintain-positive 1)" out/sess-m4s-mixedsign.log
+expect_not "m4s-mixedsign-no-rerun" "(route rerun" out/sess-m4s-mixedsign.log
 expect "m4s-mixedsign-settled" "(update-committed 2 counts-valid)" out/sess-m4s-mixedsign.log
 expect "m4s-mixedsign-live" "(dumpdone 1)" out/sess-m4s-mixedsign.log
 if [ "$(grep -cF '(idsdone 1 0)' out/sess-m4s-mixedsign.log)" -eq 2 ] \
@@ -2087,10 +2091,10 @@ else
   echo "FAIL m4s-mixedsign-ctor-swap-counts"; FAIL=$((FAIL+1))
 fi
 
-# Import-then-edit over a would-be-admissible cone (the m5-keep shape minus
-# the lattice): the frozen payload's (out (pair 7 8)) is direct input and so
+# Import-then-edit over an admissible cone (the m5-keep shape minus the
+# lattice): the frozen payload's (out (pair 7 8)) is direct input and so
 # is its struct heap -- the pair row's foundation is the input LEDGER, not a
-# constructor.  The deletion currently falls back; the imported row's
+# constructor.  The deletion takes the precise route; the imported row's
 # embedded id stays valid throughout.
 rm -rf out/sess-m4s-import-db
 {
@@ -2116,9 +2120,10 @@ timeout 900 racket tests/api/session-drive.rkt \
 expect "m4s-import-populated" "(idsdone 3 0)" out/sess-m4s-import.log
 expect "m4s-import-ledger-heap" "pair (pair 7 8) 7 8)" out/sess-m4s-import.log
 expect "m4s-import-ledger-row" "out (pair 7 8))" out/sess-m4s-import.log
-# FLIP(M4S slice 1): -> (route maintain-negative 1), no rerun.
-expect "m4s-import-fallback-route" "(route rerun 1 2)" out/sess-m4s-import.log
-expect_not "m4s-import-no-maintain" "(route maintain-negative" out/sess-m4s-import.log
+# FLIPPED(M4S slice 1): maintained deletion, no rerun -- the imported row's
+# input-ledger foundation and embedded id survive a precise-route epoch.
+expect "m4s-import-precise-route" "(route maintain-negative 1)" out/sess-m4s-import.log
+expect_not "m4s-import-no-rerun" "(route rerun" out/sess-m4s-import.log
 expect "m4s-import-tombstoned" "(idsdone 2 1)" out/sess-m4s-import.log
 # the struct row's input foundation comes from the ledger: input bit set,
 # no constructor support, before AND after (healed + forced)
@@ -2155,13 +2160,10 @@ fi
 # import-delta is the vehicle for struct-embedding input).  The positive
 # sign is refused BY NAME at set-overlay (the m6l lattice precedent):
 # nothing applies and the session continues, so content and ids are
-# asserted intact in the same drive.  KNOWN GAP (reported, not improvised):
-# the negative sign is also refused before any epoch or mutation -- baseline
-# normalization rejects the whole flush -- but with a GENERIC message
-# ("tuple is absent": input-state classifies a content-arity tuple against
-# struct storage incoherently and misreports the live derived row).  The
-# contract's by-name refusal for the negative sign is a substrate follow-up;
-# flip the del expect to the by-name message when it lands.
+# asserted intact in the same drive.  The negative sign is refused BY NAME
+# before any epoch or mutation: baseline normalization rejects the whole
+# flush, and the misleading generic classification ("tuple is absent") is
+# replaced by the struct-relation message on the error path.
 timeout 900 racket tests/api/session-drive.rkt \
   run:tests/session/m4s_import.slog \
   batch+:in,1,2 flush \
@@ -2177,7 +2179,8 @@ timeout 900 racket tests/api/session-drive.rkt \
   batch+:in,1,2 flush \
   batch-:pair,1,2 flush \
   > out/sess-m4s-editstruct-del.log 2>&1
-expect "m4s-editstruct-del-refused" "cannot retract (1 2) from pair" \
+expect "m4s-editstruct-del-refused" \
+  "cannot retract (1 2) from pair: pair is a struct relation" \
   out/sess-m4s-editstruct-del.log
 expect "m4s-editstruct-del-before-epoch" "(update-committed 1 " out/sess-m4s-editstruct-del.log
 expect_not "m4s-editstruct-del-unapplied" "(update-begun 1)" out/sess-m4s-editstruct-del.log

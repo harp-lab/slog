@@ -284,13 +284,21 @@
          (format "  s->addTask(phase_intern, new slog::Count~aTask<~a>(db, db->getRelation(\"~a\"), b), false);"
                  (if is-struct "Struct" "") arity name))])]
     [(and (maintenance-flavor) counted?)
-     (when (or is-struct (zero? arity))
+     (when (zero? arity)
        (error 'emit-cpp
-              "M1 maintenance supports positive-arity plain-table heads only: ~a"
+              "maintenance flavors support positive-arity heads only: ~a"
+              name))
+     ;; M4S slice 1 (docs/m4s-contract.md): struct heads fold through
+     ;; MaintainStructTask (id-keyed sidecar, tombstone dictionary) on the
+     ;; acyclic routes; the recursive sweep flavor keeps them refused
+     ;; until slice 2.
+     (when (and is-struct (dred-maintenance-flavor?))
+       (error 'emit-cpp
+              "M4S slice 2: struct heads are not yet admitted to the recursive sweep flavor: ~a"
               name))
      ((emit-lines 2)
-      (format "s->addTask(phase_intern, new slog::MaintainTask<~a>(db, db->getRelation(\"~a\"), ~a, 0, ~a));"
-              N name (u16-array-lit intern-ord)
+      (format "s->addTask(phase_intern, new slog::Maintain~aTask<~a>(db, db->getRelation(\"~a\"), ~a, 0, ~a));"
+              (if is-struct "Struct" "") N name (u16-array-lit intern-ord)
               (if (dred-maintenance-flavor?) "true" "false")))]
     [else
      ((emit-lines 2)
@@ -771,9 +779,26 @@
                "}")]
              [`(mkstruct ,name ,ind ,x ,fields ...)
               (cond
+                ;; M4S (docs/m4s-contract.md): signed struct contribution.
+                ;; Content-only emission with the 0 id placeholder -- the id
+                ;; is resolved at MaintainStructTask's serial fold (ordinary
+                ;; intern path when positive, PROBE-ONLY when negative),
+                ;; never at emit time.  The recursive sweep flavor stays
+                ;; refused until slice 2.
+                [(and (maintenance-flavor) (current-rule-kind))
+                 (when (dred-maintenance-flavor?)
+                   (error 'emit-cpp
+                          "M4S slice 2: struct heads are not yet admitted to the recursive sweep flavor: ~a"
+                          name))
+                 ((emit-lines indent)
+                  (format "slog::emit_struct_maint<~a>(head_rel[~a], ~a, ~a, newbatch[~a], ~a, ~a);"
+                          (length ind) i (cnt-kind-cpp (current-rule-kind))
+                          (if (negative-maintenance-flavor?) -1 1) i
+                          (u64-array-lit (map (lambda (z) (format "v_~a" z)) fields))
+                          (u16-array-lit ind)))]
                 [(maintenance-flavor)
                  (error 'emit-cpp
-                        "M1 maintenance does not support struct heads: ~a" name)]
+                        "maintenance flavor: kind-less struct head ~a" name)]
                 ;; count flavor (§8B.1): resolve the interned id by content
                 ;; and count the contribution; never inserts
                 [(current-rule-kind)

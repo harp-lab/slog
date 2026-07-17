@@ -427,8 +427,10 @@
     [x (error 'session (format "unparseable update-counts-valid reply: ~a" x))]))
 
 ;; Latest-version maintenance capability.  Values distinguish ordinary table
-;; support from M6L's conditional lattice-contributor support; the route below
-;; proves leaf or stratified topology before accepting the latter.
+;; support from M6L's conditional lattice-contributor support and M4S's
+;; conditional struct support; the route below proves leaf or stratified
+;; topology (and, for structs, acyclic interior membership) before accepting
+;; the conditional kinds.
 (define (query-positive-capabilities! s chains)
   (session-action! s `(count-capabilities))
   (define line (read-line (session-out s)))
@@ -443,14 +445,16 @@
                    (define chain (hash-ref chains name '()))
                    (and (member '(recount yes) fields)
                         (or (member '(reason table-recount) fields)
-                            (member '(reason lattice-contributor-recount) fields))
+                            (member '(reason lattice-contributor-recount) fields)
+                            (member '(reason struct-recount) fields))
                         (pair? chain) (= ord (first (last chain))))]
                   [_ #f]))
        (match-define `(cap ,name ,_ord ,_vid ,fields ...) c)
        (values name
-               (if (member '(reason lattice-contributor-recount) fields)
-                   'lattice
-                   'table)))]
+               (cond
+                 [(member '(reason lattice-contributor-recount) fields) 'lattice]
+                 [(member '(reason struct-recount) fields) 'struct]
+                 [else 'table])))]
     [x (error 'session (format "unparseable count-capabilities reply: ~a" x))]))
 
 ;; consume one response line without echoing (internal protocol chatter)
@@ -1234,9 +1238,18 @@
          (cond [d (set! d #f)]
                [(and pred? (not m)) (set! m #t)]
                [else
+                ;; M4S: a batch retraction TARGETING a struct relation is
+                ;; refused by name (docs/m4s-contract.md) -- content-arity
+                ;; tuples classify incoherently against struct storage, so
+                ;; the generic derived-only/absent report misleads.  The
+                ;; schema round trip runs only on this error path.
+                (define kind (hash-ref (session-schema-manifest s) rel #f))
                 (error 'session
-                       (format "cannot retract ~a from ~a: tuple is ~a"
-                               t rel (if live? "derived-only" "absent")))])]))
+                       (if (and (pair? kind) (eq? (car kind) 'struct))
+                           (format "cannot retract ~a from ~a: ~a is a struct relation (import-delta is the vehicle for struct-embedding input)"
+                                   t rel rel)
+                           (format "cannot retract ~a from ~a: tuple is ~a"
+                                   t rel (if live? "derived-only" "absent"))))])]))
     (unless (and (equal? d d0) (equal? m m0))
       (define before? (or d0 (and pred? (not m0))))
       (define after? (or d (and pred? (not m))))
@@ -1399,6 +1412,20 @@
                    #:when (eq? (hash-ref caps r #f) 'lattice))
           r)
         '()))
+  ;; M4S (docs/m4s-contract.md): struct relations are admissible INTERIOR
+  ;; cone members; an edit whose TARGET is a struct relation stays refused
+  ;; by name (import-delta is the vehicle for struct-embedding input), and
+  ;; slice 1 admits struct cones on the acyclic routes only.
+  (define struct-names
+    (if caps
+        (for/list ([r (in-list maintenance-names)]
+                   #:when (eq? (hash-ref caps r #f) 'struct))
+          r)
+        '()))
+  (define struct-edit-target?
+    (and caps
+         (for/or ([g (in-list tip-groups)])
+           (eq? (hash-ref caps (first g) #f) 'struct))))
   (define lattice-head-names
     (remove-duplicates
      (for*/list ([info (in-list union-cone)]
@@ -1484,10 +1511,21 @@
                 (let* ([ord (first (last chain))]
                        [row (assoc ord (hash-ref cstate r '()))])
                   (and row (cdr row)))))))
+  ;; M4S slice 1: struct interior members ride the acyclic M1/M3 routes.
+  ;; Refused by name: struct edit targets, recursive struct cones (the
+  ;; sweep is slice 2), and lattices anywhere in a struct cone (M6L/M7
+  ;; own those shapes).
+  (define struct-cone-admissible?
+    (or (null? struct-names)
+        (and (not struct-edit-target?)
+             (null? lattice-names)
+             (for/and ([info (in-list union-cone)]) (sinfo-acyclic? info)))))
   (define m1-eligible?
-    (and positive-shape? structurally-certified? counts-certified?))
+    (and positive-shape? structurally-certified? counts-certified?
+         struct-cone-admissible?))
   (define m3-eligible?
     (and structurally-certified? counts-certified? has-negative?
+         struct-cone-admissible?
          (for/and ([info (in-list union-cone)]) (sinfo-acyclic? info))))
   ;; M4T (docs/m4t-contract.md): a plain-table cone mixing certified acyclic
   ;; strata with recursive SCC strata takes the DRed sweep.  An edit whose
@@ -1499,10 +1537,12 @@
   (define m4t-eligible?
     (and structurally-certified? counts-certified? has-negative?
          (null? lattice-names)
+         (null? struct-names)          ; M4S slice 2 owns the struct sweep
          (for/or ([info (in-list union-cone)])
            (not (sinfo-acyclic? info)))))
   (define m6l2-eligible?
     (and structurally-certified? counts-certified?
+         (null? struct-names)          ; lattice+struct cones fall back by name
          (pair? lattice-names) (pair? lattice-consumer-cone)))
 
   ;; The old set-only delta route remains a fallback for unsupported shapes.

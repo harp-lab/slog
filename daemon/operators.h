@@ -817,6 +817,36 @@ inline void emit_struct_count(Relation* head_rel, Index** master, u8 kind,
   }
 }
 
+// M4S signed struct support contribution (docs/m4s-contract.md).  Content
+// fields ride in master order with the 0 id placeholder, exactly like
+// emit_struct: the id CANNOT be resolved at emit time -- a positive
+// contribution may be the first derivation of fresh content (the intern
+// path runs in MaintainStructTask's serial fold), and a negative one may
+// reference a row an earlier fold already tombstoned (whose id only the
+// dictionary still knows).
+template <u16 A>
+inline void emit_struct_maint(Relation* head_rel, u8 kind, s8 sign,
+                              InsertBatch*& nb,
+                              const std::array<u64, A - 1>& fields,
+                              const std::array<u16, A>& head_ord)
+{
+  static_assert(A >= 2, "emit_struct_maint: nullary struct head");
+  nb->kind = kind;
+  nb->sign = sign;
+  u64* d = nb->data + nb->usage;
+  d[head_ord[A - 1]] = 0;
+  for (u16 j = 0; j < A - 1; ++j)
+    d[head_ord[j]] = fields[j];
+  nb->usage += A;
+  if (nb->usage + A >= batch_size_max)
+  {
+    head_rel->sendBatch(nb);
+    nb = new InsertBatch();
+    nb->kind = kind;
+    nb->sign = sign;
+  }
+}
+
 // SINK (counted runtime-error struct): §8B.4 -- a guard fault is a
 // deterministic function of the instantiation, so error rows count like any
 // derivation.  Self-contained batch like emit_error_struct.
@@ -1583,6 +1613,159 @@ public:
           r.first->second = next;
       }
     }
+    return true;
+  }
+};
+
+// M4S struct maintenance fold (docs/m4s-contract.md): MaintainTask's fold
+// policy over the M5 identity substrate.  One task per relation owns the
+// master, every secondary ordering, the tombstone dictionary, the intern
+// allocators, and the id-keyed sidecar (§6.1), so the serial intern phase
+// resolves ids and mutates membership without cross-ordering races.
+//
+// Id resolution is sign-directed.  A POSITIVE contribution takes the
+// ordinary intern path -- live-master dedup, tombstone resurrection, fresh
+// allocation, in that order -- so a relearned or re-added head reuses its
+// original id (M5) and a genuinely new head mints above the monotone
+// allocator.  A NEGATIVE contribution resolves by PROBE ONLY: the live
+// master first, then the bucket's tombstones (dead-candidate absorption);
+// a miss in both means the claimed lost instantiation could never have
+// fired -- an epoch-invalidating fold error, never an allocation or a
+// resurrection.  Membership transitions go through tombstoneStructRow /
+// insertTupleAllIndicesPreservingCounts, so every registered non-seeded
+// ordering stays authoritative and dead content keeps its id.
+template <u16 A>
+class MaintainStructTask : public Task
+{
+  static_assert(A >= 2, "struct relation must have content and an id column");
+  Database* db;
+  Relation* rel;
+  std::array<u16, A> ord;      // canonical master: content columns, id last
+  Index** roots;
+  Index** side;                // id-keyed count sidecar (width-1 entries)
+  u32 struct_id;
+  bool dred;
+public:
+  MaintainStructTask(Database* _db, Relation* _rel,
+                     const std::array<u16, A>& _ord, u16, bool _dred = false)
+    : db(_db), rel(_rel), ord(_ord), dred(_dred)
+  {
+    std::vector<u16> ordv(ord.begin(), ord.end());
+    roots = rel->getIndex(ordv, false);
+    side = rel->ensureCountSidecar();
+    struct_id = rel->getStructId();
+  }
+  bool work() override
+  {
+    auto& delta = rel->getDelta();
+    for (InsertBatch* batch : delta)
+      for (u32 j = 0; j < batch->usage; j += A)
+      {
+        u64* row = batch->data + j;
+        if (row[0] == slog_null) continue;
+        if (batch->kind == cnt_kind_premise)
+        {
+          // Staged journal rows drove this iteration's reads; they carry
+          // real ids and are not support contributions.
+          row[0] = slog_null;
+          continue;
+        }
+
+        // Resolve the id (row[0] holds emit_struct_maint's 0 placeholder).
+        // Live-master dedup exactly as InternStructTask: range-probe the
+        // content prefix, confirm column by column.
+        const u16 b = buckethash(row[ord[0]]);
+        BTreeIndex<A>* root = static_cast<BTreeIndex<A>*>(roots[b]);
+        std::array<u64, A> low;
+        for (u16 c = 0; c + 1 < A; ++c) low[c] = row[ord[c]];
+        low[A - 1] = 0;
+        auto it = root->lower_bound(low);
+        bool was_live = (it != root->end());
+        if (was_live)
+          for (u16 c = 0; c + 1 < A; ++c)
+            if ((*it)[c] != row[ord[c]]) was_live = false;
+        if (was_live)
+          row[0] = (*it)[A - 1];
+        else if (batch->sign > 0)
+        {
+          u64 idw;
+          if (!rel->takeTombstone(b, row, ord.data(), A, idw))
+          {
+            u64* alloc = rel->getInternAlloc(b);
+            idw = struct_encode(struct_id, (*alloc << bucket_bits) | b);
+            ++(*alloc);
+          }
+          row[0] = idw;
+        }
+        else if (!rel->peekTombstone(b, row, ord.data(), A, row[0]))
+        {
+          db->invalidateUpdateCounts();
+          row[0] = slog_null;
+          continue;
+        }
+
+        // Fold into the id-keyed sidecar (bucketed by the id, matching
+        // CountStructTask and the coverage audits).
+        u64 word = 0;
+        const u16 cb = buckethash(row[0]);
+        side[cb]->getPayload(row, 1, word);
+        u64 next = word;
+        const bool ok = rel->isCounted()
+                     && rel->tryApplyCountSigned(word, batch->kind,
+                                                 batch->sign, next);
+        if (ok && cnt_present(next))
+          side[cb]->setPayload(row, 1, next);
+        else if (ok)
+        {
+          std::array<u64, 1> countkey = { row[0] };
+          static_cast<BTreeMapIndex<1>*>(side[cb])->tree.erase(countkey);
+        }
+        else
+          db->invalidateUpdateCounts();
+
+        if (batch->sign < 0)
+        {
+          if (!ok)
+            row[0] = slog_null;
+          else if (dred && !was_live)
+          {
+            // Dead candidate (resolved through the retained tombstone):
+            // the fold above absorbed the decrement; never re-stages.
+            row[0] = slog_null;
+          }
+          else if (!was_live || cnt_present(word) != was_live)
+          {
+            db->invalidateUpdateCounts();
+            row[0] = slog_null;
+          }
+          else if (dred ? cnt_foundation(next) : cnt_present(next))
+            row[0] = slog_null;       // support-only loss
+          else
+          {
+            if (!rel->tombstoneStructRow(row))
+            {
+              db->invalidateUpdateCounts();
+              row[0] = slog_null;
+            }
+            else
+            {
+              db->recordUpdateTransition(rel, row, -1);
+              // Retain exactly one false-transition row (real id in place)
+              // as next iteration's negative delta.  Full WriteTasks skip
+              // negative batches; delta WriteTasks stage the DeltaMinus
+              // view downstream reads probe.
+            }
+          }
+        }
+        else if (was_live)
+          row[0] = slog_null;         // support-only gain
+        else
+        {
+          // Resurrection or fresh mint: the membership transition.
+          rel->insertTupleAllIndicesPreservingCounts(row);
+          db->recordUpdateTransition(rel, row, 1);
+        }
+      }
     return true;
   }
 };
