@@ -243,6 +243,9 @@
     [`(abort-update) "  d->abortUpdateEpoch();\n"]
     [`(update-epoch) "  d->emitUpdateEpoch();\n"]
     [`(update-counts-valid) "  d->emitUpdateCountsValid();\n"]
+    ;; M4S slice 3: chain-reconstruct the struct tombstone dictionaries
+    ;; after a load (docs/m4s-contract.md persistence policy)
+    [`(reconstruct-tombstones) "  d->reconstructStructTombstones();\n"]
     [`(exercise-signed-underflow) "  d->exerciseSignedUnderflow();\n"]
     ;; Multi-tuple staging (0.B5's exact-once path, one plugin per flush).
     [`(stage-batch ,rel (,tuples ...))

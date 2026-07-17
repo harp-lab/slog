@@ -254,6 +254,59 @@ static void version_copy_tests()
   delete r;
 }
 
+// M4S slice 3 (docs/m4s-contract.md "the chain is the sidecar"): tombstones
+// never persist; a load reconstructs each version's dead half from the
+// chain -- dict(v) = (live(pred) ∪ dict(pred)) − live(v).  Simulate the
+// load by dropping every dictionary from a real registered chain, then
+// reconstruct and check the restored mapping carries the ancestor id, the
+// pass is idempotent, and a tip re-derivation resurrects rather than mints.
+static void chain_reconstruction_tests()
+{
+  Database db(1);
+  Relation* v0 = make_pair_rel("chain");
+  db.registerRelation("chain", v0);
+  auto ids = intern_rows(&db, v0, {{1, 2}, {3, 4}});
+  CHECK(ids.size() == 2 && ids[0] != slog_null && ids[1] != slog_null,
+        "chain root interned two rows");
+
+  // segment boundary: the successor copies content, dictionary, allocators
+  Relation* v1 = db.newVersion("chain", "v1:test-layer:0:0");
+  CHECK(v1 != nullptr && v1 != v0, "newVersion returns a successor");
+  // the successor starts with the identity default only; register the
+  // canonical master as the next segment's program would
+  v1->addIndex<3>({1, 2, 0}, false);
+
+  // tip deletion: (3,4) leaves live membership, identity retained
+  u64 row[3] = {ids[1], 3, 4};
+  CHECK(v1->tombstoneStructRow(row), "tip point removal");
+  CHECK(v1->tombstoneCount() == 1, "tip holds the mapping in-session");
+
+  // simulate a save/load boundary: the dead half is dropped everywhere
+  v0->dropTombstones();
+  v1->dropTombstones();
+  CHECK(v1->tombstoneCount() == 0, "simulated load starts empty");
+
+  // dict(v1) = (live(v0) ∪ dict(v0)) − live(v1) = { (3,4) -> ids[1] }
+  const u64 installed = db.reconstructStructTombstones();
+  CHECK(installed == 1, "one mapping reconstructed");
+  CHECK(v0->tombstoneCount() == 0, "the root needs no dictionary");
+  CHECK(v1->tombstoneCount() == 1, "tip mapping restored");
+  u64 idw = 0;
+  u64 probe[3] = {0, 3, 4};
+  CHECK(v1->peekTombstone(buckethash((u64)3), probe, MASTER_ORD.data(), 3, idw)
+            && idw == ids[1],
+        "reconstructed mapping carries the ancestor id");
+
+  // idempotent over an already-populated dictionary
+  CHECK(db.reconstructStructTombstones() == 0, "reconstruction is idempotent");
+
+  // a post-load tip re-derivation resurrects the ancestor id, never mints
+  auto back = intern_rows(&db, v1, {{3, 4}});
+  CHECK(back.size() == 1 && back[0] == ids[1],
+        "post-load re-derivation resurrects the ancestor id");
+  CHECK(v1->tombstoneCount() == 0, "resurrection consumed the mapping");
+}
+
 // Identity drift must be a loud fatal, not a silent dangling reference:
 // verbatim ingestion of retained content under a DIFFERENT id.
 static void drift_scenario()
@@ -280,6 +333,7 @@ int main()
   resurrection_tests();
   point_removal_tests();
   version_copy_tests();
+  chain_reconstruction_tests();
 
   CHECK(dies_fatally(drift_scenario), "mismatched-id verbatim insert fatals");
   CHECK(dies_fatally(double_install_scenario), "double-id install fatals");

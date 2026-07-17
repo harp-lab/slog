@@ -11,7 +11,7 @@ remains normative for its content.
 
 | stream | document | slices | status 2026-07-14 |
 |---|---|---|---|
-| incremental maintenance | [incremental.md](incremental.md), [incremental-status.md](incremental-status.md) | Phase 0, M0–M7 | Phase 0, M0, M1, M3, M6L 1–2, M4T, M5 slice 1, M4S slice 1 shipped; queue **M4S 2–3 → M4N → M7** |
+| incremental maintenance | [incremental.md](incremental.md), [incremental-status.md](incremental-status.md) | Phase 0, M0–M7 | Phase 0, M0, M1, M3, M6L 1–2, M4T, M5 slice 1, M4S (all slices) shipped; queue **M4N → M7** |
 | execution tiers | [execution-tiers.md](execution-tiers.md) | T0–T6, Q1 | T1 shipped; T0/T2+ unstarted |
 | modules/namespaces | [modules.md](modules.md) | N0–N5 | design complete, unstarted |
 | reflection | [slog-reflection.md](slog-reflection.md) | RF0–RF5 | brainstorm + §18 staging verdict |
@@ -172,6 +172,24 @@ slice 2.  The `m4s-*` chain/multictor/mixed-sign/import fixtures are
 flipped to precise-route assertions; the by-name negative-sign struct
 retraction refusal landed alongside.  Slices 2 (sweep) and 3 (persistence)
 remain on thread 0's spine.
+
+**Checkpoint 2026-07-17 (M4S slices 2+3 — M4S complete):** the sweep rode
+slice 1's fold nearly verbatim (the DRed policy and dead-candidate
+absorption were already in `MaintainStructTask`; the unchanged reseed
+verbs resurrect struct candidates through verbatim-reinsert
+reconciliation), with one genuinely new mechanism the selfjoin fixture
+forced: staged struct-head follow-ups' content→id RESOLUTION joins lower
+to a tombstone-aware probe (`join-tomb` → live master, then the
+dictionary) because a sweep round may tombstone a head arbitrarily many
+rounds before the last decrement referencing it — no one-round FULL∪Δ
+view spans that gap, and partition occurrences must NOT see the
+dictionary (double-decrement).  Slice 3 pins persistence: tombstones
+never save; `reconstructStructTombstones` rebuilds each chain's dead half
+at load (`dict(v) = (live(pred) ∪ dict(pred)) − live(v)`), replay
+re-minting the rest by re-execution.  Diamond/selfjoin/dredhead/persist
+batteries pin sweep routes, reseed counts, id resurrection, and the
+save/load policy.  The incremental queue is now **M4N → M7**, both behind
+the counted-interpreter gate (P4).
 
 ### W2 — the engine
 

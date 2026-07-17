@@ -595,17 +595,21 @@
            ;; stage-1 emit time, so the follow-up re-probes by content) --
            ;; is a content->id RESOLUTION join: functional (at most one id
            ;; per content), multiplicity owned by the temp.  In the negative
-           ;; flavor the dead row leaves FULL at the fold one iteration
-           ;; before the follow-up fires, so resolution must probe
-           ;; FULL ∪ DeltaMinus.  Struct occurrences inside a non-temp
-           ;; partition keep their exact N/O/driver views.
+           ;; flavors it probes the live master THEN the tombstone
+           ;; dictionary ('tomb -> join-tomb): a sweep round may tombstone
+           ;; the head ARBITRARILY many rounds before the last follow-up
+           ;; decrement referencing it, and the retained delta witness
+           ;; lives only one round, so no FULL∪Δ view can span the gap.
+           ;; Struct occurrences inside a non-temp partition keep their
+           ;; exact N/O/driver views (a dictionary there would re-count
+           ;; instantiations already decremented in earlier rounds).
            [(and (negative-maintenance-flavor?)
                  (not seeded?)
                  (struct-rel? (join-rel (join-occurrence-clause occ)))
                  (or (not (join-occurrence-dynamic-index occ))
                      (and driver
                           (temp? (join-rel (join-occurrence-clause driver))))))
-            'new]
+            'tomb]
            [(join-occurrence-static? occ) 'full]
            [(and exact-old?
                  (not seeded?)
@@ -639,6 +643,7 @@
               (case (join-access-view access)
                 [(old) `(syn ,(cadr cl) $oldjoin ,cl)]
                 [(new) `(syn ,(cadr cl) $newjoin ,cl)]
+                [(tomb) `(syn ,(cadr cl) $tombjoin ,cl)]
                 [else cl])]
              [else entry])))
        `(syn ,prov ,(if seeded? 'seeded-rule 'rule) ,@const-lets ,@planned-body

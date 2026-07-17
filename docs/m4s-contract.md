@@ -1,16 +1,39 @@
 # M4S recursive struct deletion contract
 
-**Status:** design contract (2026-07-15); **slice 1 implemented 2026-07-17**
-(acyclic struct cones on the M1 positive / M3 negative routes: probe-only
-negative `mkstruct` resolution and the signed struct fold in
+**Status:** design contract (2026-07-15); **all three slices implemented
+2026-07-17**.
+
+*Slice 1* — acyclic struct cones on the M1 positive / M3 negative routes:
+probe-only negative `mkstruct` resolution and the signed struct fold in
 `daemon/operators.h::MaintainStructTask` + `emit_struct_maint`, the
-non-erosive `Relation::peekTombstone`, the struct RESOLUTION-join `'new`
-view in `compiler/join-planning.rkt` (temp-driven follow-ups re-probe by
-content, and the dead row leaves FULL one iteration before the follow-up
-fires), `struct-recount` capability + `struct-cone-admissible?` routing in
-`compiler/session.rkt`, the by-name negative-sign edit refusal, and the
-flipped `m4s-*` battery).  Slices 2 (recursive sweep) and 3 (persistence)
-remain; the sweep flavor refuses struct heads loudly at emit until then.
+non-erosive `Relation::peekTombstone`, `struct-recount` capability +
+`struct-cone-admissible?` routing in `compiler/session.rkt`, the by-name
+negative-sign edit refusal, and the flipped acyclic `m4s-*` battery.
+
+*Slice 2* — the recursive sweep: `_maint4neg` admits struct heads (the
+same fold with the DRed policy: over-delete on foundation loss,
+dead-candidate absorption through the retained tombstone id), the
+UNCHANGED `dredReseedCandidates`/`dredReseedRow` reseed struct candidates
+(the verbatim reinsert reconciles the tombstone — exactly the verb-mapping
+table below), and the m4t routing admits struct cones.  The one piece the
+contract missed: a staged struct-head follow-up's content→id RESOLUTION
+join must probe the live master THEN the tombstone dictionary
+(`join-tomb`/`join_probe_tomb`) — a sweep round may tombstone the head
+arbitrarily many rounds before the last follow-up decrement referencing
+it, and the one-round `FULL ∪ Δ` view cannot span the gap (the acyclic
+slice-1 `'new` view was a special case, replaced).  Diamond/selfjoin/
+dredhead batteries flipped to sweep-route assertions.
+
+*Slice 3* — persistence, as pinned below: tombstones never persist, and
+`Database::reconstructStructTombstones` (invoked once at the end of every
+session load) rebuilds each version's dead half by the chain formula.
+As built, recipe replay already re-mints most mappings by re-running the
+same clears and deletions; the pass closes the invariant independent of
+each step's route and is the seam future verbatim chain loads (N4) ride.
+The formula is pinned by the `structid` unit battery (simulated
+dictionary-less load over a registered chain); the session battery pins
+the policy end-to-end (save after maintained deletion, reopen, re-derive,
+fresh mints, decode — never comparing tombstone counts).
 `incremental.md` §7 (M5-then-M4S) and §4.5–§4.7 remain normative; this
 file pins admission, the struct verb mapping, the embedded-id settlement
 invariant, and the tombstone persistence policy. The convention follows

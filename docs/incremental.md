@@ -1504,14 +1504,21 @@ drift, and clear-and-rerun over struct cones is now id-stable.
 Tombstones are session-local (saves carry live content only) until M4S
 pins the persistence policy.
 
-**M4S slice 1 shipped 2026-07-17** (`docs/m4s-contract.md`): acyclic
-struct cones ride the M1/M3 routes — signed struct contributions fold in
-`MaintainStructTask` (positive resolution = intern path with tombstone
-resurrection; negative = probe-only against live master then tombstones,
-miss invalidating the epoch), membership transitions use
-`tombstoneStructRow`, sidecars fold on the M5-stable id key, and staged
-struct-head follow-ups' resolution joins read `FULL ∪ DeltaMinus` in the
-negative flavor. Slices 2 (recursive sweep) and 3 (persistence) remain.
+**M4S shipped in full 2026-07-17** (`docs/m4s-contract.md`, slices 1–3):
+struct cones ride the M1/M3 acyclic routes and the M4T recursive sweep —
+signed struct contributions fold in `MaintainStructTask` (positive
+resolution = intern path with tombstone resurrection; negative =
+probe-only against live master then tombstones, miss invalidating the
+epoch; the DRed flag adds foundation-loss over-deletion and
+dead-candidate absorption by retained id), membership transitions use
+`tombstoneStructRow`, sidecars fold on the M5-stable id key, the
+unchanged reseed verbs resurrect struct candidates, and staged
+struct-head follow-ups' content→id resolution joins are tombstone-aware
+(`join-tomb`: live master, then the dictionary — a sweep round may
+tombstone a head arbitrarily many rounds before its last referencing
+decrement). Persistence follows §7's chain doctrine: tombstones never
+save; each version's dead half reconstructs at load as
+`dict(v) = (live(pred) ∪ dict(pred)) − live(v)`.
 
 ### M4N — precise stratified negation
 

@@ -288,14 +288,11 @@
        (error 'emit-cpp
               "maintenance flavors support positive-arity heads only: ~a"
               name))
-     ;; M4S slice 1 (docs/m4s-contract.md): struct heads fold through
-     ;; MaintainStructTask (id-keyed sidecar, tombstone dictionary) on the
-     ;; acyclic routes; the recursive sweep flavor keeps them refused
-     ;; until slice 2.
-     (when (and is-struct (dred-maintenance-flavor?))
-       (error 'emit-cpp
-              "M4S slice 2: struct heads are not yet admitted to the recursive sweep flavor: ~a"
-              name))
+     ;; M4S (docs/m4s-contract.md): struct heads fold through
+     ;; MaintainStructTask (id-keyed sidecar, tombstone dictionary); the
+     ;; DRed flag carries M4T's two fold-policy changes -- over-delete on
+     ;; foundation loss and dead-candidate absorption through the retained
+     ;; tombstone id.
      ((emit-lines 2)
       (format "s->addTask(phase_intern, new slog::Maintain~aTask<~a>(db, db->getRelation(\"~a\"), ~a, 0, ~a));"
               (if is-struct "Struct" "") N name (u16-array-lit intern-ord)
@@ -592,6 +589,29 @@
                      suffix A K (index-name-of op) (delta-name-of op) key A m))
             inner
             ((emit-lines indent) "});"))))]
+    ;; M4S struct resolution (docs/m4s-contract.md): content->id against the
+    ;; live master, then the tombstone dictionary -- functional (at most one
+    ;; id per content), and spans sweep rounds where the dead row's delta
+    ;; witness is long gone.  K is always A-1 (content fully bound).
+    [`(,(and op `(join-tomb ,name ,ind ,K ,ys ...)) . ,rest)
+     (define A (length ys))
+     (define m (elocal 'm))
+     (define bind-free
+       (string-join (for/list ([k (in-range K A)])
+                      (format "u64 v_~a = ~a[~a];" (list-ref ys k) m k))
+                    " "))
+     (define inner
+       (string-append
+        (if (string=? bind-free "") "" ((emit-lines (+ indent 2)) bind-free))
+        (emit-ops rest index-name-of delta-name-of head-fun (+ indent 2))))
+     (define key (u64-array-lit (append (map (lambda (y) (format "v_~a" y)) (take ys K))
+                                        (make-list (- A K) "0"))))
+     (string-append
+      ((emit-lines indent)
+       (format "slog::join_probe_tomb<~a>(~a, ~a, ~a, [&](const std::array<u64,~a>& ~a) {"
+               A (delta-name-of op) (index-name-of op) key A m))
+      inner
+      ((emit-lines indent) "});"))]
     ;; a lattice body read: probe the payload map over the key columns; the
     ;; continuation binds the free keys plus the current merged value (last var)
     ;; a semijoin filter: one existence probe on the K bound columns; a
@@ -782,14 +802,11 @@
                 ;; M4S (docs/m4s-contract.md): signed struct contribution.
                 ;; Content-only emission with the 0 id placeholder -- the id
                 ;; is resolved at MaintainStructTask's serial fold (ordinary
-                ;; intern path when positive, PROBE-ONLY when negative),
-                ;; never at emit time.  The recursive sweep flavor stays
-                ;; refused until slice 2.
+                ;; intern path when positive, PROBE-ONLY when negative --
+                ;; live master then tombstones, so the sweep's dead
+                ;; candidates absorb decrements by their retained id),
+                ;; never at emit time.
                 [(and (maintenance-flavor) (current-rule-kind))
-                 (when (dred-maintenance-flavor?)
-                   (error 'emit-cpp
-                          "M4S slice 2: struct heads are not yet admitted to the recursive sweep flavor: ~a"
-                          name))
                  ((emit-lines indent)
                   (format "slog::emit_struct_maint<~a>(head_rel[~a], ~a, ~a, newbatch[~a], ~a, ~a);"
                           (length ind) i (cnt-kind-cpp (current-rule-kind))
@@ -887,7 +904,7 @@
   (define scalar-join-members
     (for/list ([op (in-list (append pre body))]
                #:when (memq (car op) '(join join-lat exists join-old join-new
-                                       absent absent-lat)))
+                                       join-tomb absent absent-lat)))
       (cons op (elocal (eident-prefix (second op) "index")))))
   (define join3-arm-members
     (for*/list ([op (in-list body)]
@@ -908,10 +925,22 @@
       (cons arm (elocal (eident-prefix (second arm) "delta")))))
   (define join-old-delta-members
     (append scalar-delta-members join3-delta-members))
+  ;; a join-tomb op needs the Relation* too (the tombstone dictionary
+  ;; lives on the Relation, not in any index)
+  (define tomb-rel-members
+    (for/list ([op (in-list body)]
+               #:when (eq? (car op) 'join-tomb))
+      (cons op (elocal (eident-prefix (second op) "tombrel")))))
   (define (index-name-of op)
     (cdr (assq op join-members)))
+  ;; join-tomb rides the delta-name slot through emit-ops: its auxiliary
+  ;; member is the Relation* rather than a delta index
   (define (delta-name-of op)
-    (cdr (assq op join-old-delta-members)))
+    (if (eq? (car op) 'join-tomb)
+        (cdr (assq op tomb-rel-members))
+        (cdr (assq op join-old-delta-members))))
+  (define (tomb-rel-name-of op)
+    (cdr (assq op tomb-rel-members)))
 
   (define driver-rel
     (match driver
@@ -1026,6 +1055,13 @@
      (apply string-append
             (for/list ([om (in-list join-members)])
               (match (car om)
+                ;; the resolution probe also binds the Relation* (the
+                ;; tombstone dictionary lives on the Relation, not an index)
+                [`(join-tomb ,name ,ind ,_ ...)
+                 (string-append
+                  (index-member name (cdr om) ind #f) "\n"
+                  (format "    ~a = db->getRelation(\"~a\");\n"
+                          (tomb-rel-name-of (car om)) name))]
                 [`(,(or 'join 'join-lat 'exists 'absent 'absent-lat) ,name ,ind ,_ ...)
                  (string-append (index-member name (cdr om) ind #f) "\n")]
                 [`(,(or 'join-old 'join-new) ,name ,ind ,_ ,dind ,_ ...)
@@ -1189,6 +1225,9 @@
           (map (lambda (om) (format "  slog::Index** ~a;" (cdr om)))
                (append join-members join-old-delta-members)))
    (apply string-append
+          (map (lambda (om) (format "  slog::Relation* ~a;" (cdr om)))
+               tomb-rel-members))
+   (apply string-append
           (map (lambda (p) (format "  u32 ~a;" (cdr p))) sid-members-sorted))
    (format "public:")
    ;; index/relation lookups live in bind(db) -- the constructor calls it, and
@@ -1349,7 +1388,7 @@
       (for/fold ([a with-driver]) ([op (in-list (append (crule-pre cr)
                                                         (crule-body cr)))])
         (cond
-          [(memq (car op) '(join join-old join-new join-lat exists absent absent-lat))
+          [(memq (car op) '(join join-old join-new join-tomb join-lat exists absent absent-lat))
            (set-add a (second op))]
           [(eq? (car op) 'join3)
            (for/fold ([a a]) ([arm (in-list (cddr op))])

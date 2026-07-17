@@ -1079,9 +1079,28 @@ public:
 	  && kv.first[kv.first.size()-1] == 0)
 	struct_master_index = kv.first;
 
-    if (struct_master_index.size() == 0) 
+    if (struct_master_index.size() == 0)
       fatal("Could not find master index.");
     return struct_master_index;
+  }
+
+  // Non-fatal twin: null when no id-last ordering is registered (a fresh
+  // newVersion successor holds only the identity default until its
+  // program's registrations arrive).  M4S slice 3's chain reconstruction
+  // falls back to the canonical master order (1 2 .. n 0) there --
+  // operationalization pins every flavor's master to it, so the
+  // dictionary keying agrees.  The scan MUST mirror getMasterIndex's
+  // selection exactly (same loop, same cache): both resolve one relation
+  // to one ordering, or the reconstruction would key the dictionary
+  // differently from the intern machinery.
+  const std::vector<u16>* tryMasterIndex()
+  {
+    if (struct_master_index.size() > 0)
+      return &struct_master_index;
+    for (const auto& kv : indices)
+      if (kv.first.size() > 0 && kv.first[kv.first.size() - 1] == 0)
+        struct_master_index = kv.first;
+    return struct_master_index.size() > 0 ? &struct_master_index : nullptr;
   }
 
   const std::vector<u16>& getLookupIndex()
@@ -3334,6 +3353,77 @@ public:
     }
     s += ")";
     return s;
+  }
+
+  // M4S slice 3 (docs/m4s-contract.md "the chain is the sidecar"):
+  // tombstones never persist; identity for dead content across a save/load
+  // boundary is reconstructed from the chain itself -- per struct relation,
+  // walking root to tip,
+  //
+  //   dict(v) = (live(pred(v)) ∪ dict(pred(v))) − live(v)
+  //
+  // with the nearer ancestor's mapping taking precedence (the union order).
+  // Recipe replay already re-mints most mappings by re-running the same
+  // clears and deletions; this pass guarantees the invariant independent of
+  // each load step's route, and it is the seam future verbatim chain loads
+  // (N4) ride.  Content dead in EVERY version has no referent anywhere in
+  // the load (settlement invariant), so its absence here is unobservable.
+  // A severance marker (null binding) resets the accumulator: the id space
+  // changed.  Idempotent over replay-minted mappings; a conflicting
+  // retained id is the M5 drift fatal.  Returns installed-mapping count.
+  u64 reconstructStructTombstones()
+  {
+    u64 installed = 0;
+    for (auto& kv : rel_bindings)
+    {
+      // content->id accumulated over the chain prefix (live ∪ dict)
+      std::unordered_map<std::vector<u64>, u64, boost::hash<std::vector<u64>>>
+        acc;
+      for (const RelBinding& b : kv.second)
+      {
+        if (b.rel == nullptr) { acc.clear(); continue; }
+        Relation* rel = b.rel;
+        if (rel->getStructId() == 0 || rel->isCompilerTemporary())
+        {
+          acc.clear();
+          continue;
+        }
+        std::unordered_map<std::vector<u64>, u64,
+                           boost::hash<std::vector<u64>>> live;
+        if (rel->getAnyIndex() != nullptr)
+        {
+          const u16 arity = rel->getArity();
+          // master-order content key; a version holding only the identity
+          // default falls back to the canonical master (1 2 .. n 0), which
+          // the operationalization pin makes the registered master
+          // everywhere else
+          const std::vector<u16>* mp = rel->tryMasterIndex();
+          std::vector<u16> canonical;
+          if (mp == nullptr)
+          {
+            canonical.resize(arity);
+            for (u16 c = 0; c + 1 < arity; ++c) canonical[c] = c + 1;
+            canonical[arity - 1] = 0;
+            mp = &canonical;
+          }
+          const std::vector<u16>& ord = *mp;
+          rel->forEachLiveNominal([&](const u64* row)
+          {
+            std::vector<u64> key(arity - 1);
+            for (u16 c = 0; c + 1 < arity; ++c) key[c] = row[ord[c]];
+            live.emplace(std::move(key), row[0]);
+          });
+        }
+        const u64 before = rel->tombstoneCount();
+        for (const auto& e : acc)
+          if (live.find(e.first) == live.end())
+            rel->installTombstone(std::vector<u64>(e.first), e.second);
+        installed += rel->tombstoneCount() - before;
+        for (auto& e : live)
+          acc[e.first] = e.second;   // the nearer version's mapping wins
+      }
+    }
+    return installed;
   }
 
   // Close one count-round walk (docs/incremental.md §8B.2, M0.3).  A walk

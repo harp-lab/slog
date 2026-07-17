@@ -128,6 +128,18 @@
     [`(syn ,_ $newjoin ,inner) (join-clause? inner)]
     [_ #f]))
 
+;; Planner-marked struct content->id RESOLUTION join for negative
+;; maintenance (M4S, docs/m4s-contract.md): probe the live master, then the
+;; tombstone dictionary -- an earlier sweep round may already have
+;; tombstoned the constructed head, and the follow-up's decrement must
+;; land on the retained id across ANY round gap (the one-round delta
+;; window of $newjoin is not enough).  Functional: at most one id per
+;; content; never a partition occurrence.
+(define (tomb-join-clause? cl)
+  (match cl
+    [`(syn ,_ $tombjoin ,inner) (join-clause? inner)]
+    [_ #f]))
+
 (define (let-clause? cl)
   (match cl
     [`(syn ,_ let ,(? var?) ,(? var?)) #t]
@@ -230,6 +242,7 @@
     [`(syn ,_ ,(or 'rule 'seeded-rule) ,body ... --> ,head ...)
      (and (andmap (lambda (cl) (or (guard-clause? cl) (let-clause? cl) (join-clause? cl)
                                    (old-join-clause? cl) (new-join-clause? cl)
+                                   (tomb-join-clause? cl)
                                    (neg-clause? cl) (expand3-action? cl)))
                   body)
           (andmap (lambda (cl) (or (let-clause? cl) (join-clause? cl)
@@ -345,6 +358,9 @@
     [`(join-old ,(? var?) (,(? natural?) ..1) ,(? natural?) (,(? natural?) ..1) ,(? var?) ...) #t]
     ;; negative exact partition: FULL union current delta (pre-state O)
     [`(join-new ,(? var?) (,(? natural?) ..1) ,(? natural?) (,(? natural?) ..1) ,(? var?) ...) #t]
+    ;; M4S struct resolution probe: live master, then the tombstone
+    ;; dictionary (content fully bound; only the id column free)
+    [`(join-tomb ,(? var?) (,(? natural?) ..1) ,(? natural?) ,(? var?) ...) #t]
     [`(join3 ,(? var?) ,(? join3-arm?) ,(? join3-arm?)) #t]
     ;; a semijoin filter: existence probe of a future clause's relation on
     ;; the K currently-bound columns (which the index orders first)

@@ -1853,17 +1853,16 @@ else
 fi
 
 # --- M4S fixtures (docs/m4s-contract.md) -------------------------------------
-# SLICE 1 FLIPPED: struct relations are admitted as interior cone members on
-# the acyclic counted maintenance routes (M1 positive / M3 negative) -- the
-# chain, multictor, mixed-sign, and import blocks below assert the precise
-# routes, id stability (dump-ids), embedded-id validity (content-rendered
-# dumps), and healed-equals-forced support components.  The recursive blocks
-# (diamond, selfjoin) still assert fallback with FLIP(M4S slice 2) markers,
-# and the named refusals (struct edit target, lattice+struct, negation+struct)
-# are permanent.  Each case compares settled content and every support
-# component against a lazy heal plus a forced fresh recount (§10's two
-# oracles); the recount before the first post-edit dump-counts is now a lazy
-# no-op on the flipped blocks.
+# SLICES 1+2 FLIPPED: struct relations are admitted as interior cone members
+# on the counted maintenance routes -- acyclic M1/M3 (chain, multictor,
+# mixed-sign, import) and the M4T recursive sweep (diamond, selfjoin,
+# dredhead).  Every block asserts precise routes, id stability (dump-ids),
+# embedded-id validity (content-rendered dumps), and healed-equals-forced
+# support components; the named refusals (struct edit target, lattice+struct,
+# negation+struct) are permanent.  Each case compares settled content and
+# every support component against a lazy heal plus a forced fresh recount
+# (§10's two oracles); the recounts before the first post-edit dump-counts
+# are lazy no-ops on the precise routes.
 #
 # These fixtures exposed (and their substrate fix closed) a real M5 hole:
 # the greedy index packer could unify a struct's intern MASTER ordering with
@@ -1879,7 +1878,7 @@ fi
 # Struct diamond with tail: the m4t_diamond shape with a constructed pnode
 # head.  Deleting edge(1,2) removes exactly spath/pnode (1,2); (1,4)
 # survives on its 1-3-4 route (rec 2 -> 1) and (1,5) through it.  Ids must
-# be stable across the fallback and the dead content must remain tombstoned.
+# be stable across the sweep and the dead content must remain tombstoned.
 timeout 900 racket tests/api/session-drive.rkt \
   run:tests/session/m4s_diamond.slog \
   batch+:edge,1,2 batch+:edge,2,4 batch+:edge,1,3 batch+:edge,3,4 \
@@ -1893,11 +1892,14 @@ expect "m4s-diamond-before" "(dumpdone 9)" out/sess-m4s-diamond.log
 expect "m4s-diamond-ids-before" "(idsdone 9 0)" out/sess-m4s-diamond.log
 expect "m4s-diamond-two-routes" "(countrow spath (pnode 1 4) 0 0 2)" out/sess-m4s-diamond.log
 expect "m4s-diamond-ctor-coupled" "(countrow pnode (pnode 1 4) 0 0 2)" out/sess-m4s-diamond.log
-# FLIP(M4S slice 2): -> (route maintain-recursive-negative 1) + a
-# (dred-reseeded ...) report; drop the two expect_nots.
-expect "m4s-diamond-fallback-route" "(route rerun 1 2)" out/sess-m4s-diamond.log
-expect_not "m4s-diamond-no-sweep" "(route maintain-recursive-negative" out/sess-m4s-diamond.log
-expect_not "m4s-diamond-no-reseed" "(dred-reseeded" out/sess-m4s-diamond.log
+# FLIPPED(M4S slice 2): the deletion runs the sweep -- (1,4) is over-deleted
+# on foundation loss and reseeded from its surviving 1-3-4 support for BOTH
+# relations (2 reseeds), (1,2)/(1,5) discard (4), and the rebuild relearns
+# (1,5) through the reseeded (1,4), resurrecting its id.
+expect "m4s-diamond-sweep-route" "(route maintain-recursive-negative 1)" out/sess-m4s-diamond.log
+expect "m4s-diamond-reseeded" "(dred-reseeded 2 4)" out/sess-m4s-diamond.log
+expect "m4s-diamond-rebuild" "(route maintain-positive 1)" out/sess-m4s-diamond.log
+expect_not "m4s-diamond-no-rerun" "(route rerun" out/sess-m4s-diamond.log
 expect "m4s-diamond-settled" "(update-committed 2 counts-valid)" out/sess-m4s-diamond.log
 expect "m4s-diamond-after" "(dumpdone 8)" out/sess-m4s-diamond.log
 expect "m4s-diamond-tombstoned" "(idsdone 8 1)" out/sess-m4s-diamond.log
@@ -1938,9 +1940,14 @@ timeout 900 racket tests/api/session-drive.rkt \
   > out/sess-m4s-selfjoin.log 2>&1
 expect "m4s-selfjoin-before" "(dumpdone 9)" out/sess-m4s-selfjoin.log
 expect "m4s-selfjoin-dense" "(countrow sr (sedge 2 1) 0 0 3)" out/sess-m4s-selfjoin.log
-# FLIP(M4S slice 2): -> (route maintain-recursive-negative 1) + reseed report.
-expect "m4s-selfjoin-fallback-route" "(route rerun 1 2)" out/sess-m4s-selfjoin.log
-expect_not "m4s-selfjoin-no-sweep" "(route maintain-recursive-negative" out/sess-m4s-selfjoin.log
+# FLIPPED(M4S slice 2): the cut runs the sweep; the rec-founded survivor
+# (2,1) is over-deleted and reseeded for BOTH relations (2 reseeds, 12
+# discards), and the re-add leg resurrects every tombstone to its original
+# id -- the follow-up decrements of late rounds land on ids only the
+# dictionary still knows (join-tomb resolution).
+expect "m4s-selfjoin-sweep-route" "(route maintain-recursive-negative 1)" out/sess-m4s-selfjoin.log
+expect "m4s-selfjoin-reseeded" "(dred-reseeded 2 12)" out/sess-m4s-selfjoin.log
+expect_not "m4s-selfjoin-no-rerun" "(route rerun" out/sess-m4s-selfjoin.log
 expect "m4s-selfjoin-after" "(dumpdone 3)" out/sess-m4s-selfjoin.log
 expect "m4s-selfjoin-tombstoned" "(idsdone 3 6)" out/sess-m4s-selfjoin.log
 if [ "$(grep -cF '(countrow sr (sedge 2 1) 0 0 1)' out/sess-m4s-selfjoin.log)" -eq 2 ] \
@@ -1967,6 +1974,49 @@ if [ -n "$m4ssj_1" ] && [ "$m4ssj_1" = "$m4ssj_3" ] && [ "$m4ssj_sub" = ok ]; th
   echo "PASS m4s-selfjoin-ids-stable"; PASS=$((PASS+1))
 else
   echo "FAIL m4s-selfjoin-ids-stable (ids reminted across cut/re-add)"; FAIL=$((FAIL+1))
+fi
+
+# Foundation-aware overlay composing with struct heads (M4S slice 2): the
+# edit targets hop -- a plain int table dynamic in the recursive stratum --
+# via set-overlay-negative-dred, while mk maintains in the acyclic stratum
+# downstream.  Completing the 3-cycle by direct assertion explodes the
+# closure to 9; the retraction enters candidacy at apply, the sweep
+# discards the 6 unfounded rows and reseeds (1,3); mk keeps its ids
+# (3 live + 6 tombstones); the re-assertion resurrects all nine originals.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4s_dredhead.slog \
+  batch+:r0,1,2 batch+:r0,2,3 flush dump-rel:out dump-ids:mk \
+  batch+:hop,3,1 flush dump-rel:out dump-ids:mk \
+  batch-:hop,3,1 flush dump-rel:out dump-ids:mk \
+  recount dump-counts:out dump-counts:mk \
+  recount-force dump-counts:out dump-counts:mk \
+  batch+:hop,3,1 flush dump-ids:mk \
+  > out/sess-m4s-dredhead.log 2>&1
+expect "m4s-dredhead-apply-verb" "(overlay-negative-dred hop 1 1)" out/sess-m4s-dredhead.log
+expect "m4s-dredhead-sweep-route" "(route maintain-recursive-negative 2)" out/sess-m4s-dredhead.log
+expect "m4s-dredhead-reseeded" "(dred-reseeded 1 6)" out/sess-m4s-dredhead.log
+expect_not "m4s-dredhead-no-rerun" "(route rerun" out/sess-m4s-dredhead.log
+expect "m4s-dredhead-exploded" "(dumpdone 9)" out/sess-m4s-dredhead.log
+expect "m4s-dredhead-collapsed" "(idsdone 3 6)" out/sess-m4s-dredhead.log
+if [ "$(grep -cF '(countrow out (mk 1 3) 0 1 0)' out/sess-m4s-dredhead.log)" -eq 2 ] \
+   && [ "$(grep -cF '(countrow mk (mk 1 3) 0 1 0)' out/sess-m4s-dredhead.log)" -eq 2 ]; then
+  echo "PASS m4s-dredhead-maintained-equals-recount"; PASS=$((PASS+1))
+else
+  echo "FAIL m4s-dredhead-maintained-equals-recount"; FAIL=$((FAIL+1))
+fi
+# id stability: the 9-id set after the explosion equals the set after the
+# re-add, and the 3 survivors are a subset of it throughout
+m4sdh_1=$(grep -F '(idrow ' out/sess-m4s-dredhead.log | sed -n '4,12p' | sort)
+m4sdh_2=$(grep -F '(idrow ' out/sess-m4s-dredhead.log | sed -n '13,15p' | sort)
+m4sdh_3=$(grep -F '(idrow ' out/sess-m4s-dredhead.log | tail -9 | sort)
+m4sdh_sub=ok
+while IFS= read -r l; do
+  [ -n "$l" ] && { printf '%s\n' "$m4sdh_1" | grep -qFx "$l" || m4sdh_sub=bad; }
+done <<< "$m4sdh_2"
+if [ -n "$m4sdh_1" ] && [ "$m4sdh_1" = "$m4sdh_3" ] && [ "$m4sdh_sub" = ok ]; then
+  echo "PASS m4s-dredhead-ids-stable"; PASS=$((PASS+1))
+else
+  echo "FAIL m4s-dredhead-ids-stable (ids reminted across sweep/relearn)"; FAIL=$((FAIL+1))
 fi
 
 # Pass-through chain (p P) --> (q (bar P)): q rows embed bar ids, bar rows
@@ -2152,6 +2202,45 @@ if [ -n "$m4si_2" ] && [ "$m4si_sub" = ok ]; then
   echo "PASS m4s-import-ids-stable"; PASS=$((PASS+1))
 else
   echo "FAIL m4s-import-ids-stable"; FAIL=$((FAIL+1))
+fi
+
+# --- M4S slice 3: persistence -- the chain is the sidecar --------------------
+# Tombstones never persist: a save carries live content only, and a load
+# rebuilds every struct dictionary's dead half -- recipe replay re-executes
+# the same routes, and the reconstruct-tombstones chain pass closes the
+# invariant independent of them (dict(v) = (live(pred) ∪ dict(pred)) −
+# live(v); the formula itself is pinned by the structid unit battery).  A
+# maintained session deletes (mk 8), saves, reopens: re-deriving the dead
+# content must not leave a stale mapping (a remint against a retained
+# tombstone would show (idsdone 2 1)), fresh content mints above the loaded
+# allocators, and every embedded id decodes.  Tombstone COUNTS are
+# deliberately never compared across the boundary (docs/m4s-contract.md).
+rm -rf data/sess_m4s_persist
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4s_multictor.slog \
+  batch+:a,7 batch+:a,8 flush dump-rel:out dump-ids:mk \
+  batch-:a,8 flush dump-rel:out dump-ids:mk \
+  save:sess_m4s_persist \
+  > out/sess-m4s-persist-save.log 2>&1
+expect "m4s-persist-maintained" "(route maintain-negative 1)" out/sess-m4s-persist-save.log
+expect "m4s-persist-presave" "(idsdone 1 1)" out/sess-m4s-persist-save.log
+expect "m4s-persist-saved" "(saved sess_m4s_persist" out/sess-m4s-persist-save.log
+timeout 900 racket tests/api/session-drive.rkt \
+  open:sess_m4s_persist dump-rel:out dump-ids:mk \
+  batch+:b,8 flush dump-rel:out dump-ids:mk \
+  batch+:a,9 flush dump-rel:out dump-ids:mk \
+  > out/sess-m4s-persist-load.log 2>&1
+expect "m4s-persist-replayed" "(replayed-recipe sess_m4s_persist" out/sess-m4s-persist-load.log
+expect "m4s-persist-reconstructed" "(tombstones-reconstructed" out/sess-m4s-persist-load.log
+expect "m4s-persist-loaded" "(dumprow (mk 7))" out/sess-m4s-persist-load.log
+expect "m4s-persist-rederived-clean" "(idsdone 2 0)" out/sess-m4s-persist-load.log
+expect "m4s-persist-rederived-decodes" "(dumprow (mk 8))" out/sess-m4s-persist-load.log
+expect "m4s-persist-fresh" "(idsdone 3 0)" out/sess-m4s-persist-load.log
+expect "m4s-persist-fresh-decodes" "(dumprow (mk 9))" out/sess-m4s-persist-load.log
+if ! grep -F '(dumprow ' out/sess-m4s-persist-load.log | grep -qF '0.0'; then
+  echo "PASS m4s-persist-embedded-ids-decode"; PASS=$((PASS+1))
+else
+  echo "FAIL m4s-persist-embedded-ids-decode (dangling embedded id)"; FAIL=$((FAIL+1))
 fi
 
 # --- M4S named fallbacks (permanent refusals and compositions) --------------

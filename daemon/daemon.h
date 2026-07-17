@@ -548,8 +548,31 @@ public:
       emit(std::string("(error \"input-state: no relation ") + rel + "\")");
       return;
     }
+    // The driver frames STRUCT batches at content arity (stored arity - 1;
+    // the id is uninferable client-side); their storage has no input
+    // overlay, so classifying them against direct_inputs/live indices
+    // would read one word past the tuple (the pre-M4S misreport).  Emit
+    // all-zero rows instead: the session's by-name struct refusals own
+    // both signs of that flow (docs/m4s-contract.md).  Any other arity
+    // mismatch (including an empty tuple from a malformed request) must
+    // refuse, not read past a null data() pointer.
+    const bool is_struct = r->getStructId() > 0;
+    const size_t want = is_struct ? (size_t)(r->getArity() - 1)
+                                  : (size_t)r->getArity();
+    for (const auto& t : ts)
+      if (t.size() != want)
+      {
+        emit(std::string("(error \"input-state: tuple arity mismatch for ")
+             + rel + "\")");
+        return;
+      }
     for (size_t i = 0; i < ts.size(); ++i)
     {
+      if (is_struct)
+      {
+        emit("(inputstate " + std::to_string(i) + " 0 0 0 0)");
+        continue;
+      }
       const u64* t = ts[i].data();
       emit("(inputstate " + std::to_string(i) + " "
            + (r->isDirectInput(t) ? "1" : "0") + " "
@@ -693,6 +716,15 @@ public:
   {
     emit(database->updateCountsValid() ? "(update-counts-valid 1)"
                                        : "(update-counts-valid 0)");
+  }
+
+  // M4S slice 3: rebuild the struct intern dictionaries' dead half from
+  // the loaded version chains (docs/m4s-contract.md "the chain is the
+  // sidecar").  The session driver invokes this once at the end of a load.
+  void reconstructStructTombstones()
+  {
+    const u64 n = database->reconstructStructTombstones();
+    emit("(tombstones-reconstructed " + std::to_string(n) + ")");
   }
 
   void beginUpdateEpoch(u64 expected)

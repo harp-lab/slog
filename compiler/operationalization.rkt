@@ -94,23 +94,29 @@
 ;; premises are all new this round double-fires (docs/incremental.md §6/§8).
 ;; Recover those positions (0-based over body JOIN clauses; the driver is 0 and
 ;; is never marked) and strip the wrappers so the rest of the pass sees plain
-;; clauses.  Returns (values plain-bodys old-positions new-positions).
+;; clauses.  $tombjoin marks the M4S struct RESOLUTION join (probe live
+;; master then the tombstone dictionary -- docs/m4s-contract.md).  Returns
+;; (values plain-bodys old-positions new-positions tomb-positions).
 (define (split-exact-marks bodys)
-  (let loop ([cls bodys] [out '()] [jpos 0] [olds (set)] [news (set)])
+  (let loop ([cls bodys] [out '()] [jpos 0] [olds (set)] [news (set)]
+             [tombs (set)])
     (cond
-      [(null? cls) (values (reverse out) olds news)]
+      [(null? cls) (values (reverse out) olds news tombs)]
       [else
        (match (car cls)
          [`(syn ,_ $oldjoin ,inner)
           (loop (cdr cls) (cons inner out) (add1 jpos)
-                (set-add olds jpos) news)]
+                (set-add olds jpos) news tombs)]
          [`(syn ,_ $newjoin ,inner)
           (loop (cdr cls) (cons inner out) (add1 jpos)
-                olds (set-add news jpos))]
+                olds (set-add news jpos) tombs)]
+         [`(syn ,_ $tombjoin ,inner)
+          (loop (cdr cls) (cons inner out) (add1 jpos)
+                olds news (set-add tombs jpos))]
          [cl
           (loop (cdr cls) (cons cl out)
                 (if (join-entry? cl) (+ jpos (join-entry-width cl)) jpos)
-                olds news)])])))
+                olds news tombs)])])))
 
 ;; -----------------------------------------------------------------------
 ;; The pass driver.
@@ -256,6 +262,7 @@
   (define (op-refs op)
     (match op
       [`(join ,name ,ind ,_ ,_ ...) (list (cons name ind))]
+      [`(join-tomb ,name ,ind ,_ ,_ ...) (list (cons name ind))]
       ;; join-old's FULL index (the delta index it also references is never
       ;; seeded-gated); record it so a live old-join keeps its full ordering
       [`(,(or 'join-old 'join-new) ,name ,ind ,_ ,_ ,_ ...)
@@ -480,7 +487,7 @@
 ;; a ground value becomes an equality check after the probe (lower-join).
 ;; Delta indices are ordinary full-width sets, so drivers are unrestricted.
 (define ((add-select-sets rel-env) rule needs)
-  (define-values (bodys old-positions new-positions)
+  (define-values (bodys old-positions new-positions tomb-positions)
     (split-exact-marks (rule-body rule)))
   (define sj-filters (semijoin-filters bodys rel-env))
   ;; a seeded-rule has NO delta driver: its first join selects on the FULL
@@ -878,7 +885,7 @@
   ;; cjoin-spec-env / semijoin-filters / body-splitting all see ordinary
   ;; clauses; the position sets drive join-old/join-new below.
   (match-define `(syn ,rprov ,rtag ,rbodys0 ... --> ,rheads ...) rule0)
-  (define-values (plain-bodys old-positions new-positions)
+  (define-values (plain-bodys old-positions new-positions tomb-positions)
     (split-exact-marks rbodys0))
   (define rule `(syn ,rprov ,rtag ,@plain-bodys --> ,@rheads))
   ;; deterministic per-rule counter for lowering-introduced names: rule
@@ -1031,6 +1038,31 @@
     (define ord (exact-index name sel (strip-prov cl)))
     (list `(join-new ,name ,ord ,(set-count sel) ,ord
                      ,@(map esc (order-tuple ord tup)))))
+
+  ;; M4S struct RESOLUTION join (docs/m4s-contract.md "Negative-phase
+  ;; mkstruct is probe-only"): resolve a constructed head's content to its
+  ;; id against the live MASTER first, then the tombstone dictionary -- an
+  ;; earlier sweep round may already have tombstoned the head, and the
+  ;; retained delta witness lives only one round, so no view join can span
+  ;; the gap.  The temp carries every content column (head vars are
+  ;; body-ground), so the selection is exactly the master's content prefix
+  ;; and only the id column binds.
+  (define (lower-join-tomb cl ground)
+    (define name (join-rel cl))
+    (define tup (join-tuple cl))
+    (define stored (stored-arity name))
+    (define sel
+      (for/set ([x (in-list tup)] [i (in-naturals)]
+                #:when (set-member? ground x))
+        i))
+    (unless (and (struct-rel? name)
+                 (equal? sel (list->set (range 1 stored))))
+      (error 'operationalization
+             "resolution join on ~a must bind the full content prefix of a struct (got selection ~a) in ~a"
+             name (sort (set->list sel) <) (strip-prov cl)))
+    (define ord (master-index-of indices name stored (strip-prov cl)))
+    (list `(join-tomb ,name ,ord ,(set-count sel)
+                      ,@(map esc (order-tuple ord tup)))))
 
   ;; Lower the planner's explicit two-occurrence action.  Both arms are
   ;; resolved against the SAME pre-action ground frontier; lowering never
@@ -1240,6 +1272,8 @@
                  (lower-join-old (car cls) ground)]
                 [(set-member? new-positions jpos)
                  (lower-join-new (car cls) ground)]
+                [(set-member? tomb-positions jpos)
+                 (lower-join-tomb (car cls) ground)]
                 [else (lower-join (car cls) ground)]))
             (loop driver
                   (set-union ground (clause-vars (car cls)))

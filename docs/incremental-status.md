@@ -56,16 +56,15 @@ anchors remain outside M4T, permanently owned by the anchored walk.
 
 M5 slice 1 is shipped: struct intern identity is separated from live
 membership through a tombstone dictionary, and clear-and-rerun over struct
-cones is id-stable. M4S slice 1 is shipped (2026-07-17): acyclic struct
-cones ride the M1/M3 counted maintenance routes on that substrate. The
-remaining implementation queue, in the decided order, is:
+cones is id-stable. M4S is shipped in full (slices 1–3, 2026-07-17):
+struct cones ride the M1/M3 acyclic routes and the M4T recursive sweep on
+that substrate, and the tombstone persistence policy is pinned and
+implemented (the chain is the sidecar). The remaining implementation
+queue, in the decided order, is:
 
-1. **M4S slices 2–3** — recursive sweep admission (`_maint4neg` over SCCs
-   containing struct relations: dead-candidate absorption by id,
-   reseed/relearn resurrection) and tombstone persistence (chain
-   reconstruction at load).
-2. **M4N — precise stratified negation**, then **M7 — recursive
-   lattice/rank repair**.
+1. **M4N — precise stratified negation**, then **M7 — recursive
+   lattice/rank repair** (both interpreter-first per roadmap P4, behind
+   the counted-interpreter gate).
 
 The handoff gates are `tests/run-all.sh --quick`, `tests/run-all.sh session`,
 and `tests/run-all.sh incremental-stress`. The complete orchestrator remains
@@ -428,6 +427,52 @@ import fixtures are flipped to their precise-route assertions.
   deletion; healed sidecars equal forced recounts everywhere; embedded ids
   decode after every settlement.
 
+### M4S slices 2+3 — recursive sweep + persistence (2026-07-17)
+
+Slice 2 admits struct cones to the M4T sweep; slice 3 pins and implements
+the tombstone persistence policy. Diamond, selfjoin, and the new dredhead
+fixtures assert sweep routes, reseed/discard counts, and id resurrection;
+the persist fixture pins the save/load policy.
+
+- **The sweep rode slice 1's fold almost verbatim** — `MaintainStructTask`
+  already carried the DRed policy (over-delete on `cnt_foundation` loss,
+  dead-candidate absorption through the non-erosive tombstone peek), and
+  `dredReseedCandidates`/`dredReseedRow` needed NO struct changes: the
+  reseed's verbatim reinsert reconciles the retained tombstone (the
+  contract's verb-mapping table), and relearns resurrect through the
+  ordinary intern path.
+- **The one genuinely new mechanism (`join-tomb`):** the selfjoin fixture
+  exposed that a staged struct-head follow-up's content→id RESOLUTION join
+  cannot be a view join in the sweep — a round may tombstone the head
+  arbitrarily many rounds before the last follow-up decrement referencing
+  it, and the retained delta witness lives one round (slice 1's `'new`
+  view broke exactly there: 8 candidates over-reseeded, unfounded rows
+  survived, and recount fataled on unsupported live rows).  Resolution
+  joins now lower to `(join-tomb ...)` → `join_probe_tomb` (live master,
+  then `peekTombstone`), a distinct c-op so partition occurrences keep
+  their exact N/O views — a dictionary there would double-decrement.
+- **Routing:** `struct-cone-admissible?` drops its acyclicity clause; the
+  m4t route requires it (struct edit targets and lattice+struct cones
+  still refuse by name); m1 admits recursive struct cones (the rebuild and
+  re-add legs).
+- **Persistence (slice 3):** tombstones never persist.
+  `Database::reconstructStructTombstones` — invoked once at the end of
+  every session load via the `reconstruct-tombstones` action — walks each
+  struct chain root→tip computing `dict(v) = (live(pred) ∪ dict(pred)) −
+  live(v)` (nearer ancestor wins; severance markers reset; keying mirrors
+  `getMasterIndex` exactly via the new non-fatal `tryMasterIndex`, with a
+  canonical-order fallback for fresh successors holding only the identity
+  default).  As built, recipe replay re-mints most mappings by re-running
+  the same routes; the pass closes the invariant independent of them and
+  is the seam future verbatim chain loads (N4) ride.  The formula is
+  pinned by the `structid` unit battery (43 checks; simulated
+  dictionary-less load over a registered 2-version chain, ancestor-id
+  resurrection, idempotence); the session fixture pins the end-to-end
+  policy and never compares tombstone counts across the boundary.
+- **Hardening found along the way:** `emitInputStates` refuses wrong-arity
+  (including empty) tuples by name instead of reading past a null
+  `data()` pointer — a malformed driver request could segfault the daemon.
+
 ### WCOJ ternary joins × incremental artifacts
 
 The `wcoj-tri-*`/`wcoj-rec-*` session block (over
@@ -469,14 +514,15 @@ Primary anchors:
 
 These remain explicit capability boundaries or future correctness work.
 
-1. **Struct cones are precise on acyclic routes only; recursive struct
-   cones and struct-cone persistence remain open.** M4S slice 1 admits
-   struct relations as interior members of acyclic M1/M3 cones (struct
-   counts are load-bearing there); cones with a recursive stratum, a
-   lattice, or a struct edit target keep clear-and-rerun by name until
-   M4S slice 2 (the DRed sweep) — the `_maint4neg` flavor refuses struct
-   heads loudly. Tombstone persistence is session-local until slice 3
-   pins the save policy (chain reconstruction).
+1. **Struct cones are precise on every counted route (M4S complete);
+   struct edit targets and lattice+struct cones refuse by name,
+   permanently.** Struct relations are admissible interior members of
+   M1/M3 acyclic cones and M4T-swept recursive cones, with load-bearing
+   id-keyed counts; direct edits targeting a struct relation are refused
+   by name (import-delta carries struct-embedding input), and lattices
+   anywhere in a struct cone wait for M7's shapes. Tombstone persistence
+   follows the chain-is-the-sidecar policy (never saved, reconstructed
+   at load).
 2. **Recursive signed deletion is tip-local and plain-table only.** M4T
    handles counted recursive plain-table cones reached by any tip-local
    edit, including edits targeting the recursive head (foundation-aware

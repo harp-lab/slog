@@ -121,18 +121,19 @@ row and — outside a DRed epoch — no sidecar entry).
   allocators. The dictionary is version state; dropping tombstones at a
   boundary would remint across versions of one chain.
 
-## Persistence (slice-1 limitation)
+## Persistence (resolved by M4S slice 3, 2026-07-17)
 
-Tombstones do not persist in slice 1. Saves write live set content
-verbatim (ids preserved, as today); a load starts with an empty tombstone
-store. Consequently identity across a save/load boundary is guaranteed
-for content live at save time — unchanged from today — while
-dead-content resurrection stability is session-local. This is an
-explicit, capability-style boundary: M4S (whose sweeps mint tombstones
-routinely inside epochs that settle before saves) decides whether
-tombstones must ride delta-layer saves as a dictionary sidecar or be
-reconstructed by recipe replay, which reruns the same clears and
-re-derivations. Do not silently widen the guarantee before then.
+The slice-1 limitation is retired. M4S pinned the policy
+(`docs/m4s-contract.md` "the chain is the sidecar"): tombstones never
+persist — saves write live set content verbatim, unchanged — and a load
+reconstructs each struct version's dead half from the chain itself
+(recipe replay re-runs the same clears and re-derivations, and
+`Database::reconstructStructTombstones` closes the invariant with
+`dict(v) = (live(pred) ∪ dict(pred)) − live(v)` independent of each
+step's route). Content dead in every loaded version has no referent
+anywhere in the load (the settlement invariant), so its missing mapping
+is unobservable. Tombstone counts are not preserved across the boundary;
+fixtures compare live id sets and embedded-id validity only.
 
 ## What M4S buys with this
 

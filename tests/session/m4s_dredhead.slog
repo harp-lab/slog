@@ -1,0 +1,39 @@
+;; M4S slice 2 (docs/m4s-contract.md): the foundation-aware overlay verb
+;; composing with struct heads -- the EDIT targets a plain table (hop,
+;; int-typed rows, expressible inline) that is dynamic in a recursive
+;; stratum, while the struct constructor hangs downstream in an acyclic
+;; stratum of the same cone.  Deleting a direct assertion on hop takes
+;; set-overlay-negative-dred (candidacy at apply: foundation lost with
+;; surviving unfounded rec), the sweep collapses the unfounded closure,
+;; and the downstream struct maintenance tombstones mk rows by id.
+;;
+;; With r0 = {(1,2), (2,3)}:
+;;   hop = { (1,2) (2,3) (1,3) }          copies nonrec 1; (1,3) rec 1
+;;   out/mk mirror hop                    3 interned ids
+;; Asserting hop(3,1) directly completes the cycle: hop = all 9 pairs
+;; over {1,2,3}, mk = 9 ids.  Retracting it: (3,1) loses its only
+;; foundation at apply (rec support is unfounded), the sweep discards the
+;; 6 unfounded rows and reseeds (1,3) from its surviving (1,2)+(2,3)
+;; support; mk keeps 3 live ids + 6 tombstones.  Re-asserting hop(3,1)
+;; relearns everything: all 9 ORIGINAL ids resurrect.
+
+table (r0 int int)
+table (hop int int)
+struct (mk int int)
+table (out mk)
+
+rule
+(r0 X Y)
+-->
+(hop X Y)
+
+rule
+(hop X Y)
+(hop Y Z)
+-->
+(hop X Z)
+
+rule
+(hop X Y)
+-->
+(out (mk X Y))

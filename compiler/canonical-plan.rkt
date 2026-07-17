@@ -86,6 +86,9 @@
        `(join-old ,(rel! rel) ,ord ,K ,dord ,@(refs* xs))]
       [`(join-new ,rel ,ord ,K ,dord ,xs ...)
        `(join-new ,(rel! rel) ,ord ,K ,dord ,@(refs* xs))]
+      ;; M4S struct resolution probe (live master, then tombstones)
+      [`(join-tomb ,rel ,ord ,K ,xs ...)
+       `(join-tomb ,(rel! rel) ,ord ,K ,@(refs* xs))]
       [`(join3 ,cycle ,arms ...)
        `(join3 ,(ref! cycle)
                ,@(for/list ([arm (in-list arms)])

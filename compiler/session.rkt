@@ -569,7 +569,14 @@
   (session-execute-load-steps! s (db-load-steps db))
   ;; a recipe replay rebinds session-db to the layer's base for its first
   ;; segment's compile manifest; restore the user-level input
-  (set-session-db! s db))
+  (set-session-db! s db)
+  ;; M4S slice 3 (docs/m4s-contract.md): tombstones never persist -- the
+  ;; dead half of every struct intern dictionary is reconstructed from the
+  ;; loaded chain itself (dict(v) = (live(pred) ∪ dict(pred)) − live(v)).
+  ;; Replay re-mints most mappings by re-running the same clears and
+  ;; deletions; this closes the invariant independent of each step's route.
+  (session-action! s `(reconstruct-tombstones))
+  (read-one-line! s))
 
 ;; Execute a dbtool load plan with the live machinery: every step lands
 ;; exactly as it would in a live session.  Everything applied here is
@@ -1511,15 +1518,15 @@
                 (let* ([ord (first (last chain))]
                        [row (assoc ord (hash-ref cstate r '()))])
                   (and row (cdr row)))))))
-  ;; M4S slice 1: struct interior members ride the acyclic M1/M3 routes.
-  ;; Refused by name: struct edit targets, recursive struct cones (the
-  ;; sweep is slice 2), and lattices anywhere in a struct cone (M6L/M7
-  ;; own those shapes).
+  ;; M4S: struct interior members ride the counted maintenance routes --
+  ;; acyclic M1/M3 (slice 1) and the M4T recursive sweep (slice 2).
+  ;; Refused by name: struct edit targets (import-delta is the vehicle for
+  ;; struct-embedding input) and lattices anywhere in a struct cone
+  ;; (M6L/M7 own those shapes).
   (define struct-cone-admissible?
     (or (null? struct-names)
         (and (not struct-edit-target?)
-             (null? lattice-names)
-             (for/and ([info (in-list union-cone)]) (sinfo-acyclic? info)))))
+             (null? lattice-names))))
   (define m1-eligible?
     (and positive-shape? structurally-certified? counts-certified?
          struct-cone-admissible?))
@@ -1537,7 +1544,7 @@
   (define m4t-eligible?
     (and structurally-certified? counts-certified? has-negative?
          (null? lattice-names)
-         (null? struct-names)          ; M4S slice 2 owns the struct sweep
+         struct-cone-admissible?       ; M4S slice 2: structs join the sweep
          (for/or ([info (in-list union-cone)])
            (not (sinfo-acyclic? info)))))
   (define m6l2-eligible?

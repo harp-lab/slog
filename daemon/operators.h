@@ -817,6 +817,42 @@ inline void emit_struct_count(Relation* head_rel, Index** master, u8 kind,
   }
 }
 
+// M4S struct RESOLUTION probe (docs/m4s-contract.md "Negative-phase
+// mkstruct is probe-only"): resolve a constructed head's id by content
+// against the live MASTER first, then the bucket's tombstone dictionary --
+// a sweep round may tombstone the head arbitrarily many rounds before the
+// last follow-up decrement referencing it, and the retained delta witness
+// lives only one round, so no FULL∪delta view can span the gap.  Never
+// allocates, never resurrects; a miss in both yields NO row (the co-emitted
+// mkstruct decrement already invalidated the epoch on the same miss).  The
+// key is the full content prefix in master order (K = A-1); the
+// continuation receives the master-ordered row (content..., id).
+template <u16 A, class K>
+inline void join_probe_tomb(Relation* rel, Index** master,
+                            const std::array<u64, A>& key, K&& k)
+{
+  static_assert(A >= 2, "join_probe_tomb: nullary struct");
+  bool found = false;
+  join_probe<A, A - 1>(master, key, [&](const std::array<u64, A>& m)
+  {
+    found = true;
+    k(m);
+  });
+  if (found) return;
+  const std::vector<u16>& ord = rel->getMasterIndex();
+  u64 row[A];
+  row[0] = 0;
+  for (u16 c = 0; c + 1 < A; ++c) row[ord[c]] = key[c];
+  u64 idw = 0;
+  if (rel->peekTombstone(buckethash(key[0]), row, ord.data(), A, idw))
+  {
+    std::array<u64, A> m;
+    for (u16 c = 0; c + 1 < A; ++c) m[c] = key[c];
+    m[A - 1] = idw;
+    k(m);
+  }
+}
+
 // M4S signed struct support contribution (docs/m4s-contract.md).  Content
 // fields ride in master order with the 0 id placeholder, exactly like
 // emit_struct: the id CANNOT be resolved at emit time -- a positive
