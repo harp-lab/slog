@@ -18,7 +18,7 @@ needed:
    relational calls, closures, converging summaries, and soundness checks
 5. [SMT library](smt.md) — formulas, solver setup, verdicts, models, unsat
    cores, persistence, and failure behavior
-6. [Running Slog](running.md) — requirements, command-line options,
+6. [Running Slog](running.md) — native REPL, batch command-line options,
    configuration, output, errors, statistics, and tests
 7. [Persistent databases](databases.md) — exact and compressed saves, replay,
    database commands, edits, verification, and follow-up queries
@@ -44,7 +44,8 @@ extra detail is useful.
 
 ## Conventions used here
 
-Code blocks marked `slog` are Slog source. Commands assume the repository root:
+Code blocks marked `slog` are Slog source. Commands assume the repository root;
+`./slog` enters the REPL and this form performs a batch run:
 
 ```console
 $ racket compiler/run.rkt --no-banner program.slog

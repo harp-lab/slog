@@ -5,9 +5,23 @@
 
 (provide (all-defined-out))
 
-(define slog-version-major 2)
-(define slog-version-minor 0)
-(define slog-version-revision 0)
+(require racket/runtime-path
+         racket/string)
+
+(define-runtime-path slog-version-path "../.version")
+
+(define slog-version
+  (string-trim (file->string slog-version-path)))
+(define slog-version-components
+  (regexp-match #px"^([0-9]+)\\.([0-9]+)\\.([0-9]+)$" slog-version))
+(unless slog-version-components
+  (error 'slog-version
+         "expected MAJOR.MINOR.PATCH in ~a, got ~s"
+         slog-version-path
+         slog-version))
+(define slog-version-major (string->number (list-ref slog-version-components 1)))
+(define slog-version-minor (string->number (list-ref slog-version-components 2)))
+(define slog-version-revision (string->number (list-ref slog-version-components 3)))
 (define slog-copyright-authors "Thomas Gilray, Kristopher Micinski, Sidharth Kumar, et al.")
 (define slog-copyright-warning "Some rights reserved. See ./License.md.")
 

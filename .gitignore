@@ -23,4 +23,5 @@ slogd
 .vscode/
 slog-freeze
 /slog
+/.slog.new
 /repl/target/

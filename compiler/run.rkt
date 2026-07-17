@@ -34,10 +34,7 @@
           "      \\__ \\/ / __ \\/ __ `/"
           "     ___/ / / /_/ / /_/ / "
           "    /____/_/\\____/\\__, /  "
-          (format "                 /____/  v~a.~a.~a"
-                  slog-version-major
-                  slog-version-minor
-                  slog-version-revision)))
+          (format "                 /____/  v~a" slog-version)))
 
   (newline)
   (for-each (λ (l) (printf "~a\n" (cyan l))) art-lines)
@@ -127,7 +124,7 @@
           (and debug-dir (path->string (ensure-dir! (expand-tilde debug-dir))))))
 
 (define (print-version)
-  (printf "slog ~a.~a.~a\n" slog-version-major slog-version-minor slog-version-revision))
+  (printf "slog ~a\n" slog-version))
 
 ;; Parse a --per value: a percentage (e.g. 60) or a fraction (e.g. 0.6),
 ;; normalised to a fraction in (0,1].  The IDB sampler (P1.2) keeps this
@@ -273,7 +270,7 @@
      #:args (slog-file)
      (cond
        [print-version?
-        (printf "slog ~a.~a.~a\n" slog-version-major slog-version-minor slog-version-revision)
+        (printf "slog ~a\n" slog-version)
         (exit 0)]
        [else
         (run-slog* slog-file

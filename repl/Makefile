@@ -4,11 +4,13 @@ all: debug
 
 debug:
 	cargo build
-	cp target/debug/slog ../slog
+	cp target/debug/slog ../.slog.new
+	mv ../.slog.new ../slog
 
 release:
 	cargo build --release
-	cp target/release/slog ../slog
+	cp target/release/slog ../.slog.new
+	mv ../.slog.new ../slog
 
 check:
 	cargo check
@@ -18,5 +20,4 @@ test:
 
 clean:
 	cargo clean
-	rm -f ../slog
-
+	rm -f ../slog ../.slog.new

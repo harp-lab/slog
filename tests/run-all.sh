@@ -52,7 +52,7 @@ run_harness() {
     seq)         "$CXX" -O2 -Wall -std=c++20 -pthread -Idaemon tests/seq-tests.cpp   -o build/seq-tests   -lgmp && ./build/seq-tests ;;
     counts)      "$CXX" -O2 -Wall -std=c++20 -pthread -Idaemon tests/counts-tests.cpp -o build/counts-tests -lgmp && ./build/counts-tests ;;
     wcoj3)       "$CXX" -O2 -Wall -std=c++20 -pthread -Idaemon tests/wcoj3-operator-tests.cpp -o build/wcoj3-operator-tests -lgmp && ./build/wcoj3-operator-tests ;;
-    interp)      "$CXX" -O2 -Wall -std=c++20 -pthread -fopenmp -Idaemon tests/interp-operator-tests.cpp -o build/interp-operator-tests -lgmp && ./build/interp-operator-tests ;;
+    interp)      "$CXX" -O2 -Wall -std=c++20 -pthread -fopenmp -Idaemon tests/interp-operator-tests.cpp daemon/plan.cpp daemon/query.cpp daemon/sexp.cpp daemon/runtime.cpp -o build/interp-operator-tests -lgmp && ./build/interp-operator-tests ;;
     structid)    "$CXX" -O2 -Wall -std=c++20 -pthread -Idaemon tests/struct-identity-tests.cpp -o build/struct-identity-tests -lgmp && ./build/struct-identity-tests ;;
     *)           echo "run-all: unknown harness '$1'" >&2; return 2 ;;
   esac

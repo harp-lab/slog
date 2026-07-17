@@ -195,6 +195,21 @@ public:
     return (*fit)[K];
   }
 
+  // The physical premise row currently representing value().  NEW may have
+  // the same logical row in FULL and DELTA; choose FULL deterministically on
+  // overlap, matching the branch preference implicit in value().  This view
+  // remains valid until seek()/advance_past() mutates the cursor.
+  const Key& current() const
+  {
+    if constexpr (V == Join3View::new_)
+    {
+      if (!fok) return *dit;
+      if (!dok) return *fit;
+      return (*fit)[K] <= (*dit)[K] ? *fit : *dit;
+    }
+    return *fit;
+  }
+
   void advance_past(u64 current)
   {
     if (fok && (*fit)[K] == current)

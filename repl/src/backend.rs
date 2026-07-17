@@ -19,6 +19,7 @@ enum BackendCommand {
 #[derive(Debug)]
 pub enum BackendEvent {
     Response { command: String, response: Response },
+    Log(String),
     Disconnected(String),
 }
 
@@ -26,6 +27,7 @@ pub struct Backend {
     commands: mpsc::Sender<BackendCommand>,
     pub events: mpsc::Receiver<BackendEvent>,
     task: JoinHandle<()>,
+    project_root: PathBuf,
 }
 
 impl Backend {
@@ -51,7 +53,15 @@ impl Backend {
             commands: command_tx,
             events: event_rx,
             task,
+            project_root: project_root.to_owned(),
         })
+    }
+
+    /// Mirrors compiler/tools.rkt's `slogd-stale?` check without changing the
+    /// daemon. The first database session will synchronously rebuild a stale
+    /// runtime, so the REPL can label that wait honestly before sending open.
+    pub fn daemon_rebuild_pending(&self) -> bool {
+        daemon_rebuild_pending(&self.project_root)
     }
 
     pub async fn execute(&self, line: String) -> Result<(), String> {
@@ -61,10 +71,41 @@ impl Backend {
             .map_err(|_| "Racket session task has stopped".to_owned())
     }
 
+    pub fn cancel_in_flight(&self) {
+        self.task.abort();
+    }
+
     pub async fn shutdown(self) {
         let _ = self.commands.send(BackendCommand::Shutdown).await;
-        let _ = self.task.await;
+        let mut task = self.task;
+        if timeout(Duration::from_secs(1), &mut task).await.is_err() {
+            task.abort();
+            let _ = task.await;
+        }
     }
+}
+
+fn daemon_rebuild_pending(project_root: &Path) -> bool {
+    let daemon = project_root.join("daemon");
+    let executable_modified =
+        match std::fs::metadata(daemon.join("slogd")).and_then(|metadata| metadata.modified()) {
+            Ok(modified) => modified,
+            Err(_) => return true,
+        };
+    let Ok(entries) = std::fs::read_dir(daemon) else {
+        return false;
+    };
+    entries.filter_map(Result::ok).any(|entry| {
+        let source = entry.path();
+        let relevant = matches!(
+            source.extension().and_then(|extension| extension.to_str()),
+            Some("h" | "cpp")
+        );
+        relevant
+            && std::fs::metadata(source)
+                .and_then(|metadata| metadata.modified())
+                .is_ok_and(|modified| modified > executable_modified)
+    })
 }
 
 async fn run_backend(
@@ -73,6 +114,16 @@ async fn run_backend(
     mut commands: mpsc::Receiver<BackendCommand>,
     events: mpsc::Sender<BackendEvent>,
 ) {
+    let stderr_task = child.stderr.take().map(|stderr| {
+        let events = events.clone();
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                // Diagnostic floods must not block session shutdown.
+                let _ = events.try_send(BackendEvent::Log(line));
+            }
+        })
+    });
     while let Some(command) = commands.recv().await {
         match command {
             BackendCommand::Execute(line) => match connection.command(line.clone()).await {
@@ -115,6 +166,9 @@ async fn run_backend(
         let _ = child.kill().await;
         let _ = child.wait().await;
     }
+    if let Some(task) = stderr_task {
+        let _ = task.await;
+    }
 }
 
 async fn launch_server(project_root: &Path, token: &str) -> Result<(Child, Announcement), String> {
@@ -124,7 +178,7 @@ async fn launch_server(project_root: &Path, token: &str) -> Result<(Child, Annou
         .env("SLOG_REPL_TOKEN", token)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
         .map_err(|error| format!("cannot start racket compiler/repl.rkt: {error}"))?;

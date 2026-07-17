@@ -241,7 +241,7 @@ inline Index* makeIndexRec(u16 arity)
                         : makeIndexRec<A - 1>(arity);
 }
 
-// Defined out-of-line in slogd.cpp (not inline here) so the 1..32 arity ladder
+// Defined out-of-line in runtime.cpp (not inline here) so the full arity ladder
 // is instantiated ONCE in the daemon binary rather than in every generated
 // plugin .so.  Plugins reach it through the daemon's exported symbols (slogd is
 // linked -rdynamic); generated code instantiates only the specific arities it

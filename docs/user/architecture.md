@@ -12,8 +12,17 @@ manual.
 ## Main components
 
 ```text
+repl/src/main.rs and repl/src/ui/
+  native terminal lifecycle, event loop, fixed layout, and rendering
+
+repl/src/app.rs, editor.rs, backend.rs, protocol.rs
+  client state/editor, Racket child lifecycle, and framed loopback TCP
+
+compiler/repl.rkt
+  private interactive server and persistent compiler/session/daemon owner
+
 compiler/run.rkt
-  command line, configuration, database commands
+  one-shot batch command line, configuration, and database commands
 
 compiler/modules.rkt
   include/run loading, declarations, manifests, demand and collection setup

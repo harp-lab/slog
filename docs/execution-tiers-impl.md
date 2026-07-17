@@ -5,7 +5,7 @@
 liftable code, change map); **section 0 tracks as-built execution status**
 and is the place to resume from in a new session.
 
-## 0. Execution status (updated 2026-07-15)
+## 0. Execution status (updated 2026-07-16)
 
 **T1 SHIPPED** in `50bb329` (`execution tiers and interpretation prep`).
 The changed set was:
@@ -99,22 +99,221 @@ instantiation on a zero effective event mask), post-transition
 mask-gated events carrying the variant ordinal and a bounded
 attempt-scratch payload view, and the contract's three-range opcode
 reservation as named constants + static_asserts (core 0–95, thread-0
-96–159, thread-1 160–191, both reserved ranges empty). The fixture now
-instantiates the core (test file 1845→1409 lines; seal/bind slice stays
-test-side until T2-A2); `make -C daemon interp-check` is a compile-only
+96–159, thread-1 160–191, both reserved ranges empty). At that checkpoint the
+fixture instantiated the core while seal/bind remained test-side (it is lifted
+below); `make -C daemon interp-check` is a compile-only
 standalone check under the daemon's flags. Verified: clang/gcc -O2,
 ASan+UBSan, `run-all.sh interp arena seq counts wcoj3 structid`,
 `make -C daemon`.
 
-**Next up (ratified order):**
+**Update 2026-07-16 (T2-A2/A3 engine path landed):** `daemon/plan.h` now owns
+the production decoded/sealed/bound normal-set vocabulary and the real
+`InterpReadTask`; `daemon/plan.cpp` owns the out-of-line full-arity factories,
+and `daemon/runtime.cpp` is the shared home of the daemon index factories.
+Seal validates register dataflow, relation slot/arity/kind, requisitioned
+orders, head ports, RuleVariant uniqueness, operand-bank bounds, and exact
+factory coverage before bind. Production drivers stream the live delta or
+prefix index (no materialized driver table), and bound sink ports feed the
+existing `emit<A>` family through task-owned batches (diagnostic candidate
+vectors are disabled on this path). The VM gained only the representation
+pieces the production lift required: an erased cloneable outer-driver cursor
+and `emitn` over an immutable register-operand bank, preserving fixed-size ops
+while covering the daemon's complete arity range.
 
-- **T0** — per docs/t0-contract.md slices (a)–(d): dispatcher dual-stack +
-  catalog verbs; plan.h parse/seal + entry modes (§9.1); identity keys +
+The A3 task runs through `Stratum`'s existing read scheduler, 128-transition
+deadline polls, `pushPaused`, and the existing write/intern barriers. Its
+recursive admission fixture compares **per-iteration deltas and disaggregated
+variant fires** against the fused native `read_delta`/`join_probe`/`emit` path
+under the same two-worker scheduler, and drives clean-boundary pause/resume.
+The production factory path is also exercised above the old 2/3-arity
+prototype (arity 4, including `emitn`).
+
+**Update 2026-07-16 (T0 sidecar half of slice (b) landed):** the reusable
+`sexp.h`/`sexp.cpp` reader is bounded (16 MiB / 1M nodes / depth 256 for
+sidecars), and `plan.cpp` now owns the ABI-1 decoder for relation binding
+schemas, storage-neutral constants,
+RuleVariant identity/source metadata, and rule forms. Unsupported but
+well-framed canonical operators decode to immutable capability markers and are
+refused at seal; no parser or factory lookup reaches a worker thread. Typed
+parse and D16 seal classes cover ABI/flavor, register bounds/dataflow,
+relation slot/kind/arity, constant slots, order/requisition, bound prefixes,
+head coverage, RuleVariant uniqueness, factory coverage, and binding.
+
+The fixture `tests/data/t0-normal-set.plan` is byte-for-byte real
+`canonical-plan.rkt` output, including the standard unused service-struct
+prelude. It parses, seals, selectively binds only referenced ordinary-set
+slots, and executes through the real scheduler/emit path. As an additional
+corpus audit, the reader parsed all 857 sidecars then present in `build/` and
+`build-post2/`. This completes the `.plan -> decoded -> sealed -> bound ->
+task` seam; it does **not** complete T0 slice (b)'s entry modes or T0's command
+dispatcher/builders, and it is not T3 tier selection (`SLOG_OPT=interp` remains
+ahead).
+
+**Update 2026-07-16 (T2-B group (i) landed):** the same ABI-1 path now
+decodes, seals, and binds `join-old`, `join-new`, `exists`, and `absent`, plus
+full/delta index requisitions. Old/new and filter implementations are
+arity-erased cursor registrations behind the frozen tri-state interface; no VM
+opcode or state-machine change was needed. K=0 old/new view scans and K=0
+absence are covered, while ordinary full-view K=0 joins remain in their later
+group. Factory ladders resolve at bind, so read workers clone bound prototypes.
+The focused conformance test compares view rows and fire multiplicity against
+the native helper semantics and exercises typed seal/bind refusals.
+
+**Update 2026-07-16 (T2-B group (ii) landed):** canonical `let`/copy,
+`letp`, `eq`, `cmp`, and `tycheck` now preserve ordered pre/body/head
+placement through the same decoder and seal. Seal proves register dataflow,
+the declared primitive table, exact arity and total/partial ABI, accept tags,
+and the five-column malformed effect shape. Bind resolves shared
+`prims.h`/`seq_prims.h` functions, runtime struct ids, and ordinary/struct
+sinks once. The VM additions stay inside the reserved core opcode region:
+straight-line total/copy ops do not invent observation ports, while partial,
+comparison, primitive-error, and type-check outcomes reuse guard events and
+the existing backtrack arm. `tycheck` follows `fire` exactly as native code
+does and stages `(rid, relation, column, bad)` through a bound
+`malformed_deduction` struct port. A parsed differential exercises pre
+evaluation, continuation slicing, partial absence, the type diversion, and
+ordinary/effect production sinks against the shared native control flow.
+
+**Update 2026-07-16 (T2-B group (iii) landed):** canonical two-arm `join3`
+now decodes, seals, binds, and executes as one tri-state cursor level. The
+composite owns two independently arity-erased key-simple arms and performs the
+native symmetric seek/leapfrog loop under `WorkBudget`; FULL/OLD/NEW is
+runtime data inside the already-erased arm, avoiding three duplicate factory
+ladders without changing view equations. `seek` and `advance_past` remain
+private to those arms. The only general cursor addition is lazy
+`premise_count()`/`premise(i)` with a one-row default, allowing a join3 proof
+to retain both positioned rows. All nine view pairings are differential-tested
+against native `join3`, including budget-1 continuation cloning, fires,
+parsed production sinks, and typed refusal classes.
+The fixture also pairs a three-column arm with a two-column arm to pin the
+linear independent-arity factory rather than only same-arity triangles.
+
+**Update 2026-07-16 (T2-B group (iv) landed; core frozen):** canonical
+`join-lat` and `absent-lat` now decode, seal, bind, and execute behind the
+same tri-state cursor interface. A lattice storage row of arity `A` binds a
+payload-map index of key arity `A-1`; seal requires a full physical ordering
+whose last column is the payload and proves the K-column bound prefix. One
+cursor/factory ladder implements K=0 all-bucket joins, K>0 prefix joins, and
+pre/body absence, with lazy key-plus-payload proof scratch and no premise for
+absence. Binding checks the concrete map-index type before the typed cast.
+Native differentials cover non-identity key order, rows, fires, absence,
+budget-zero pause/clone continuation, production sinks, and typed refusals.
+No opcode, VM arm, or public cursor method changed. All four pre-freeze groups
+are now green, so the interpreter core is frozen under the joint-review rule;
+this satisfies the progressive-fork dependency but not the full daemon F
+gate.
+
+**Update 2026-07-16 (Q1 slice 1 + R2 engine surface landed):**
+`daemon/query.h`/`query.cpp` now own a second, main-thread query context with a
+master-index `scan-full` driver, capture-only `yield` sink, bounded pages,
+continuation slicing, cancellation, and one-active-query admission. The
+client-neutral result mode is the R2 register's `?`/`?count`/`?exists` split,
+and the bound plan exposes a structured `explain` record. Query execution
+reuses the frozen machine and bound-sink seam without adding an opcode, VM
+arm, relation batch, `RunState::paused_tasks` entry, or phase cursor.
+
+`InternTable::probe_value`, `Database::probeString`, and
+`Database::probeMpz` resolve short strings and normalized bignums without an
+insert; a miss seals the bound query as unsatisfiable. Strings longer than
+`SEQ_BLEAF_MAX`, malformed literals, delta views, absent existing indices,
+and all primitive computes are conservatively refused in this first slice.
+The fixture covers paged rows, count/exists, zero cursor budget, cancellation,
+all four quiescent admission labels, one-query serialization, probe hits and
+misses, and typed refusals. It snapshots every fixture master row plus exact
+string/mpz/collection/sequence heap counts before and after the successful,
+paused, cancelled, empty, and refused paths.
+
+**Update 2026-07-16 (Q1 slice 2 engine forkpoint landed):** `ScanFullPlan`
+registers are now nominal-column mappings. An empty requested order selects a
+deterministic existing catalog order at bind and remaps the physical driver
+tuple before entering the frozen VM; `explain` marks this
+`scan-plus-filter`. An explicit requested order remains exact and refuses a
+missing concrete index. Neither path calls `addIndex`.
+
+The query compute registry is intentionally separate from the ordinary rule
+registry. Its first audited set contains the four numeric comparison guards,
+`tofloat`, `size`/`sidx`/`shas`, and
+`aslst`/`llen`/`lref`/`lidx`/`lmem`. Checked adapters reject wrong runtime
+types as a row miss before the shared kernel can write `PendingError`; every
+admitted result is immediate or already interned. Paging exceptions now
+cancel and release the one-query lease before they propagate. The fixture
+pins reverse-only physical order, nominal remapping, paged fallback,
+total/partial/guard computes over mixed runtime types, cancellation, paging
+failure, master rows, all four heap counters, and pending-error scratch.
+
+**Update 2026-07-17 (Q1 slice 3 catalog planner landed):**
+`compiler/query-plan.rkt` is the transport-free construction boundary between
+a selected catalog snapshot and `query.h::Plan`. Its snapshot keeps logical
+name/type declarations separate from exact VersionKey, materialized full
+orders, and tuple-count facts. Planning validates types, safe negation,
+relation capabilities, and the query-only primitive whitelist, then performs
+a memoized deterministic search over existing positive index prefixes. It
+emits stable bindings/registers, eagerly scheduled guards/absence/computes,
+and structured scan-plus-filter, probe-plus-filter, and forced-join-order
+explanations. It never requisitions an index. Ten focused cases and the full
+212-test compiler unit battery pass.
+
+**Update 2026-07-17 (Q1 slice 4 / T2-B ordinary K=0 landed):**
+`DynamicProbeCursor<A>` now treats an empty key-register vector as a
+full-view body scan across all hash buckets. Nonzero prefixes retain their
+single-bucket path, and the separate probe-driver capability remains K>=1.
+No opcode, VM arm, or public cursor method changed. A parsed ABI-1 K=0 join
+now seals; its native differential pins non-identity physical order,
+Cartesian fire multiplicity, proof rows, and pause/clone continuation. Query
+binding labels a K=0 body cursor as degraded, and the hygiene fixture executes
+a paged body scan plus equality without changing rows, heaps, or pending-error
+scratch. The pure planner includes K=0 choices in its deterministic cost
+search and explains them as body scan-plus-filter. The expanded planner
+battery has 11 focused cases; all 213 compiler unit tests and the optimized
+native interpreter/query battery pass.
+
+**Update 2026-07-17 (Q1 slice 5 / catalog-to-daemon meeting contract
+landed):** `query-catalog-from-boundary` now consumes an N2/N3-shaped triple:
+logical declarations `C_k`, the selected QName-to-VersionKey environment
+`E_k`, and runtime materialization facts keyed by VersionKey. It checks
+declaration/environment/materialization referential integrity and kind/arity
+agreement, while retaining empty storage declarations instead of discovering
+the catalog from nonempty daemon relations.
+
+The planner serializes one canonical ABI-1 `query-plan` payload containing
+BoundaryKey/generation, dense relation slots, exact VersionKeys, existing
+full orders, tuple counts, registers, literals, operations, driver,
+projection, and result mode. `daemon/query.cpp` decodes that payload through
+the shared bounded S-expression reader into `DecodedPlan`, seals it through
+the existing query audit into `SealedRequest`, and binds every runtime slot by
+VersionKey alone. QName is display metadata and no bind path requisitions an
+index. A checked-in payload is generated byte-for-byte by the Racket planner,
+then parsed, sealed, VersionKey-bound, paged, and executed by the C++ battery;
+malformed dense slots, wrong ABI, and same-name/wrong-VersionKey bindings are
+typed refusals.
+
+This is a typed T0 builder boundary, not a second command path. The current
+tree still has neither N2/N3's persistent boundary-catalog producer nor T0's
+generic dispatcher, so `slogd.cpp` remains untouched and generation/phase
+admission remains dispatcher work. The next integration seam is therefore
+the real N2/N3 producer plus T0 slice (a), which embeds this payload unchanged
+under `query` and owns `query-page`/`query-cancel`. R2 still needs its
+parser/register, rendering/dump, and protocol transcripts over that surface.
+
+**Next up (post-freeze ratified order):**
+
+- **T0** — finish slice (b)'s entry modes, then continue per
+  docs/t0-contract.md slices (a)–(d): dispatcher dual-stack + catalog verbs;
+  plan builders; identity keys +
   rule-meta + D9 fire vectors; level-0 watches. Slices (a)/(b) unblock
-  REPL R0 and T2-A2 sidecar parsing respectively.
-- **T2-A** — in parallel: `daemon/interp.h` per §7 start order and
-  docs/interp-core-contract.md. T2 consumes the `.plan` sidecars T1 now
-  writes; remember stale caches predate `.plan` — re-emit on miss.
+  REPL R0; the sidecar parse/seal half of (b) is now done.
+- **T2-B trunk groups under frozen interfaces** — ordinary K=0 scans are
+  landed; next land `once`/`seeded`, then temp/struct/lattice/count sinks and
+  declaration-built write/intern tasks. Each keeps the native delta/fires
+  differential and typed refusal gate. Finish with the full
+  `SLOG_OPT=interp` compiler-driven suite. Stale caches predate `.plan` —
+  re-emit on miss.
+- **Progressive-fork workstreams** — Q1's first engine slice and the
+  client-neutral R2 result modes, catalog planning, and the typed QueryPlan
+  wire/builder boundary are landed; continue with the N2/N3 catalog producer,
+  T0 query protocol, then the R2 client surface. Counted interpreter to M4N
+  may proceed independently. Both extend only the pinned seams and follow the
+  ownership/joint-review rules.
 - **RF1** — per docs/rf1-contract.md; the four-way ABI split re-keys plans
   once; T2-A consumes the post-split KernelExecPlan shape.
 - **M4S** — starts immediately under the progressive fork (thread-0 spine).
@@ -231,11 +430,13 @@ pull.** One abstract `PrefixCursor { open(regs), next(regs, budget) }`, where
 `next` returns `match | exhausted | paused`; concrete `Probe<A,K>` holds the
 btree iterator pair and bound key inline and writes output registers itself.
 The current match remains positioned until the next call, so proof capture can
-read it lazily without copying on the unobserved path. Measured at parity with
-fused native; no function-pointer tables, no placement new.
-`Join3PrefixCursor` gains the same erasure later (same shape: it is already a
-cursor). A boolean `next` is insufficient because a join3 intersection can
-exhaust a work slice before it either finds a match or proves exhaustion.
+read it lazily without copying on the unobserved path. Ordinary cursors expose
+one proof row by default; join3 exposes both positioned arms. Measured at
+parity with fused native; no function-pointer tables, no placement new. The
+join3 composite uses the same public tri-state pull shape, while its typed
+arms keep `seek`/`advance_past` private. A boolean `next` is insufficient
+because an intersection can exhaust a work slice before it either finds a
+match or proves exhaustion.
 
 **D2. Rule executor: register machine with explicit level stack.** Register
 file of plain `u64` (16 default, sized from the plan's `nregs`); ops in a
@@ -487,8 +688,9 @@ Variants needed beyond `Probe<A,K>`: full-scan (K=0 all-bucket, for `scan-full`
 and K=0 negation), delta-scan driver (wrapping `getReadBucket` RefVecs),
 old/new exclusion probes (the `join-old`/`join-new` dord logic),
 map-index probe (`BTreeMapIndex<KA>`, binds payload last), absence probes
-(open-only), and the `Join3PrefixCursor` erasure. All are `(A, K)`-laddered
-factories in slogd (D12).
+(open-only), and the join3 composite. All are arity-laddered factories in
+`plan.cpp` (D12); join3 erases each arm independently rather than
+instantiating the left/right arity cross-product.
 
 ### 3.3 The canonicalization walker (validated shape for
 `compiler/canonical-plan.rkt`)
@@ -624,8 +826,10 @@ Daemon (all under `daemon/`):
   (slot/ABI/coverage/capability/entry-mode), the provisional builders.
 - **NEW `interp.h`** — `PrefixCursor` family, `InterpReadTask`, the VM
   (section 3.1/3.2), bound sink tables (D13).
-- **NEW `query.h`** — `QueryContext`, `scan-full` driver, `yield` pagination,
-  probe-only intern entry points' consumer (D7/D8).
+- **AS-BUILT `query.h` / `query.cpp`** — `QueryContext`, `scan-full` driver,
+  capture-only `yield` pagination, rows/count/exists modes, cancellation,
+  exact existing-index bind, and probe-only literal consumer (D7/D8). Catalog
+  planning and protocol verbs remain.
 - **`daemon.h`** — `installStratum(entry_mode)` unifying
   `beginStratum`/`beginStratumDelta`/upgrade (`daemon.h:200-315`, D10);
   attachment/load verbs; PauseToken/UpdateEpoch unification.
@@ -691,7 +895,7 @@ specification for this slice.
 - Move the test to instantiate this production core; do not integrate `Task`,
   protocol parsing, SCC policy, or hot swap in this sub-slice.
 
-### T2-A2: seal and bind the narrow vertical vocabulary
+### T2-A2: seal and bind the narrow vertical vocabulary — engine path done
 
 - Add the in-memory decoded/sealed/bound interfaces in `daemon/plan.h` (the T0
   dispatcher may parse into them later): constant preloads; delta-scan and
@@ -707,7 +911,7 @@ specification for this slice.
   S-expression reader exists; until then, construct the same decoded object in
   C++ and keep parser concerns out of worker execution.
 
-### T2-A3: attach one real `InterpReadTask`
+### T2-A3: attach one real `InterpReadTask` — done
 
 - Construct one task per `(RuleVariant, bucket)` and run it through the existing
   read scheduler, `pushPaused`, deadline/stop plumbing, and write/intern phases.
@@ -724,10 +928,13 @@ specification for this slice.
 ### T2-B: expand vocabulary only after T2-A is green
 
 Add in conformance-sized groups: `once`/`seeded` and K=0 scans; old/new and
-absence cursors; map/lattice probes; primitive/`letp`/type operations; the real
-`Join3PrefixCursor`; then temp/struct/lattice/count sinks and declaration-built
-write/intern tasks. Each group lands with interpreter-vs-native per-iteration
-delta and fire-multiset tests before the next group.
+absence cursors; map/lattice probes; primitive/`letp`/type operations; join3;
+then temp/struct/lattice/count sinks and declaration-built write/intern tasks.
+Groups (i) old/new/absence, (ii) primitives/types, (iii) join3, and (iv)
+map/lattice probes are landed; ordinary full-view K=0 landed post-freeze on
+2026-07-17. The interpreter core is frozen as of 2026-07-16. Each remaining
+post-freeze group lands with interpreter-vs-native per-iteration delta and
+fire-multiset tests before the next group.
 
 Do **not** pull T3 tier scheduling, T5 watch-settle UI, or T6 transactional
 mid-read replacement into T2-A. The kernel must preserve their seams—observed

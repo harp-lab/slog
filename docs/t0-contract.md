@@ -1,6 +1,9 @@
 # T0 command protocol and identity substrate contract
 
-**Status:** design contract (2026-07-15); not yet implemented.
+**Status:** design contract (2026-07-15); sidecar parse/seal half of slice (b)
+implemented 2026-07-16; Q1's canonical payload decoder and typed builder
+boundary implemented 2026-07-17; dispatcher, entry modes, generic command
+builders, identity, and pause-record slices remain.
 `execution-tiers.md` §9/§9.1/§11-T0/§12 and `execution-tiers-impl.md`
 (decisions D6, D9, D10, D16, D17; findings 6 and 8; the §5 daemon
 change map) remain normative; this file pins the dual-stack dispatcher,
@@ -109,6 +112,12 @@ sketch is the working set, this contract is where a rename must land):
 - **T5:** the debugger stepping verbs (`resume`, `replay`,
   `why-not-add`, `debug-on`/`debug-off` per the §9 sketch).
 
+Implementation dependency (recorded 2026-07-16): Q1's engine context may
+advance independently behind this reservation, but its three wire verbs
+activate only through slice (a)'s generic dispatcher and dispatcher-owned
+phase observation. They must not be added as another exact-string branch in
+the legacy plugin-path switch.
+
 Post-F rule: additive verbs only, joint review (roadmap §7).
 
 ## Entry modes
@@ -150,7 +159,8 @@ availability, head coverage, RuleVariant uniqueness (the D3 ordinal —
 a seal error, not an assumption), and **per-`(operator, A, K, view)`
 factory coverage** — a syntactically valid plan must never discover a
 factory-ladder miss on a worker thread. Factory ladders are
-instantiated once in `slogd.cpp` beside `makeIndex` (D12); driver
+instantiated once in the daemon-owned `plan.cpp` TU beside the shared
+out-of-line `runtime.cpp` index ladders (D12); driver
 partition classes stay distinct per D17 (delta-scan round-robin
 buckets, partial-probe first-free-column hash, fully-bound single
 task) and the seal records which applies. Every seal failure is a
@@ -164,6 +174,38 @@ at least one real T1 `.plan` sidecar into this path as soon as the T0
 S-expression reader exists"). Neither stream waits on the other's
 schedule: T2-A constructs decoded objects in C++ until slice (b) lands,
 then parses.
+
+**As built 2026-07-16 (slice (b), sidecar half only):**
+`daemon/sexp.h`/`sexp.cpp` provide the reusable bounded reader (16 MiB input,
+1M S-expression nodes, depth 256 for sidecars), and `plan.cpp` owns the ABI-1
+decoder. The future command dispatcher consumes this same reader with its own
+limits rather than growing a second grammar. Relation schemas, constants, rule/source
+metadata, and unsupported canonical forms are decoded before seal;
+constants stay storage-neutral until materialization. Parse errors carry
+syntax/limit/I/O subtype and byte offset. Seal errors carry the D16 family
+needed by the command refusal layer: ABI/flavor, capability, register
+bounds/dataflow, relation slot/kind/arity, constant slot,
+ordering/requisition, bound prefix, head coverage, RuleVariant identity,
+factory, and binding. The standard service-struct prelude remains in the
+binding schema, but only operator-referenced set slots must resolve, so an
+unused service relation cannot make a normal-set kernel unbindable.
+
+`tests/data/t0-normal-set.plan` is byte-identical compiler output and now runs
+through parse → seal → selective bind → `InterpReadTask`; the parsed refusal
+battery is in `tests/interp-operator-tests.cpp`. A separate audit parsed all
+857 sidecars then present across `build/` and `build-post2/`. Entry modes are
+not included in this checkpoint, so slice (b) as a whole is not yet complete.
+
+**Q1 meeting seam as built 2026-07-17:** `compiler/query-plan.rkt` emits a
+canonical ABI-1 `query-plan` datum carrying its BoundaryKey/generation and
+exact VersionKey catalog frame. `daemon/query.cpp` parses it with the shared
+bounded reader, seals it into `SealedRequest`, and builds the runtime relation
+frame by VersionKey rather than QName. The checked-in cross-language fixture
+executes through this path. This does not activate any reserved verb:
+dispatcher-owned phase/generation admission and query context IDs/pages stay
+in slice (a), and the payload must be embedded unchanged when that dispatcher
+lands. In particular, this seam is not authority to add an exact `(query ...)`
+branch beside the legacy `(continue)` cases.
 
 **ABI coordination (RF1):** the sidecar format is ABI 1 today;
 rf1-contract.md's re-key splits it into ABI 2's four parts. Slice (b)

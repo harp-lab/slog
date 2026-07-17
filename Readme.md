@@ -1,5 +1,8 @@
 # Slog
 
+The current development version is recorded once in [`.version`](.version);
+bump and change-note conventions live in [`versions/`](versions/README.md).
+
 Slog is a logic programming language for writing analyses over graphs,
 programs, and other structured data. A program says what facts exist and how
 new facts follow from them. Slog compiles those rules to native code and runs
@@ -48,6 +51,7 @@ Run Slog from the repository root. It currently expects its `compiler/`,
 The required tools and libraries are:
 
 - Racket, including its `sha` package
+- Rust and Cargo (to build the interactive `slog` frontend)
 - GNU Make
 - a C++20 Clang toolchain
 - OpenMP for the same Clang toolchain
@@ -65,6 +69,18 @@ $ raco pkg install sha
 
 Slog builds the daemon and compiled rule plugins when they are needed. Put the
 graph program above in `reach.slog`, then run:
+
+```console
+$ make -C repl
+$ ./slog
+```
+
+This builds the native terminal frontend, copies it to the repository root,
+and opens the interactive workbench. Type `help` for the current server
+commands, `library` to browse saved databases, or `:demo colors` to exercise
+the terminal UI.
+
+For a one-shot batch run outside the REPL, use:
 
 ```console
 $ racket compiler/run.rkt --no-banner --sizes --debug-dir out/reach reach.slog
@@ -161,6 +177,8 @@ best place to learn the language.
 
 ```text
 compiler/run.rkt       command-line entry point
+compiler/repl.rkt      private local REPL session server
+repl/          Rust terminal frontend; builds the root slog executable
 compiler/      parser, type checker, planner, code generator, and drivers
 daemon/        parallel runtime and persistent database implementation
 lib/           Slog libraries, including lists, rule-based maps/sets, and SMT

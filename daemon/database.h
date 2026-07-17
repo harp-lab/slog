@@ -1514,6 +1514,12 @@ public:
     }
   }
 
+  bool hasIndex(const std::vector<u16>& ord, bool delta) const
+  {
+    const auto& table = delta ? deltaindices : indices;
+    return table.find(ord) != table.end();
+  }
+
   static std::string ordString(const std::vector<u16>& ord)
   {
     std::string s;
@@ -2372,6 +2378,9 @@ private:
   u64 mpz_table_max;
   CollectionArena* cnode_arena;
   SequenceArena* seq_arena;
+  // Q1 v1 serializes read-only QueryContexts on the main thread.  This is
+  // control ownership only, never semantic database state.
+  std::atomic<bool> query_active{false};
   // External oracle work (docs/smt.md): set by the Daemon when the oracle
   // registry exists; consulted by ReadCompletion/EndIterCompletion so a
   // stratum's fixpoint waits for outstanding answers.
@@ -2383,6 +2392,18 @@ private:
 
 
 public:
+
+  bool tryBeginReadOnlyQuery()
+  {
+    bool expected = false;
+    return query_active.compare_exchange_strong(
+      expected, true, std::memory_order_acq_rel);
+  }
+
+  void endReadOnlyQuery()
+  {
+    query_active.store(false, std::memory_order_release);
+  }
 
   u64 getUpdateEpochId() const { return update_epoch_id; }
   bool updateActive() const { return update_epoch_active; }
@@ -2739,6 +2760,19 @@ public:
     return id;
   }
 
+  // Q1 probe-only literal resolution.  The caller enforces the v1
+  // SEQ_BLEAF_MAX limit before entering here, so no rope/sequence node is
+  // constructed.  A miss is ordinary query unsatisfiability, not insertion.
+  bool probeString(const std::string& s, u64& word) const
+  {
+    if (s.size() > SEQ_BLEAF_MAX) return false;
+    const utf8string candidate(s);
+    u64 id = 0;
+    if (!string_table->probe_value(candidate, id)) return false;
+    word = intern_encode(str_intern_tag, id);
+    return true;
+  }
+
   utf8string* lookup_string(u64 v)
   {
     return string_table->lookup_value(v);
@@ -2755,6 +2789,15 @@ public:
     else
       mpz_table_bytes.fetch_add(bytes, std::memory_order_relaxed);
     return id;
+  }
+
+  bool probeMpz(mpz_srcptr value, u64& word) const
+  {
+    const mpz_val candidate(value);
+    u64 id = 0;
+    if (!mpz_table->probe_value(candidate, id)) return false;
+    word = intern_encode(mpz_intern_tag, id);
+    return true;
   }
 
   mpz_val* lookup_mpz(u64 v)
@@ -2776,6 +2819,16 @@ public:
   SequenceArena* sequences()
   {
     return seq_arena;
+  }
+
+  // Cold exact heap state used by the query-hygiene gate.  The first two
+  // fields scan visible intern entries; collection/sequence arenas maintain
+  // exact successful-insert counters already.
+  std::array<u64, 5> queryHeapState() const
+  {
+    return {string_table->value_count(), mpz_table->value_count(),
+            mpz_table_bytes.load(std::memory_order_relaxed),
+            cnode_arena->freshCount(), seq_arena->freshCount()};
   }
 
   // The string-representation normalization keystone (docs/sequences.md
@@ -3176,6 +3229,13 @@ public:
       if (r != nullptr && r->getVersionId() == vid)
         return r;
     return nullptr;
+  }
+
+  Relation* getRelationByVersionKey(const std::string& key)
+  {
+    auto it = version_key_ids.find(key);
+    return it == version_key_ids.end()
+      ? nullptr : getRelationByVersionId(it->second);
   }
 
   void markLatestRelationsDirect()

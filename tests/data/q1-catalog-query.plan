@@ -1,0 +1,1 @@
+(query-plan (abi 1) (at (boundary "boundary/7") (generation 42)) (relations (rel 0 (binding "edge" "version/edge" 6) (relation 2 (0 1) (1 0)))) (registers 3) (preloads) (literals (literal (r 1) integer "2")) (pre) (driver (scan-full (rel 0) () (r 0) (r 2))) (body (eq (r 2) (r 1))) (project (r 0)) (mode rows))

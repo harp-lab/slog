@@ -3,27 +3,30 @@
 // core types -- tri-state pull cursors, the decoded Program, the five-state
 // Machine with fast/observed policies, mask-gated post-transition events,
 // and attempt-local candidate ownership -- are instantiated from the
-// production header; this file keeps only test fixtures, the differential
-// logical model, and the narrow test-side Plan -> seal -> bind -> task slice
-// (seal/bind move to daemon/plan.h at T2-A2).
+// production header; this file keeps the core fixtures, the differential
+// logical model, and the production Plan -> seal -> bind -> scheduler slice,
+// including bound primitives, partial matches, and type-effect sinks.
 //
 // It exercises: exact continuation copies at every VM quantum 1..31,
 // intra-match cursor pauses, a 96-level cursor stack, all eight event ports
 // with breakpoints, bounded proof capture, seal/bind rejections, and real
 // Relation indices and emit sinks with dedup.
 //
-//   clang++ -O2 -Wall -std=c++20 -pthread -fopenmp -Idaemon tests/interp-operator-tests.cpp -o /tmp/interp-tests -lgmp
+//   clang++ -O2 -Wall -std=c++20 -pthread -fopenmp -Idaemon tests/interp-operator-tests.cpp daemon/plan.cpp daemon/query.cpp daemon/sexp.cpp daemon/runtime.cpp -o /tmp/interp-tests -lgmp
 //   /tmp/interp-tests [--bench]
 
-#include "interp.h"
-#include "operators.h"
+#include "plan.h"
+#include "query.h"
+#include "sexp.h"
 
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -36,6 +39,7 @@
 
 using namespace slog;
 using namespace slog::interp;
+namespace q = slog::query;
 
 namespace {
 
@@ -203,6 +207,13 @@ bool fail(const std::string& what)
 
 #define CHECK(COND) do { if (!(COND)) return fail(#COND); } while (false)
 
+u64 primitive_error_callbacks = 0;
+
+void record_primitive_error(Database*, const char*)
+{
+  ++primitive_error_callbacks;
+}
+
 std::vector<std::vector<u64>> reference(const Fixture& f, u64& fires)
 {
   std::vector<std::vector<u64>> out;
@@ -227,438 +238,6 @@ std::vector<std::vector<u64>> reference(const Fixture& f, u64& fires)
   return out;
 }
 
-// --------------------------------------------------------------------------
-// Test-side Plan -> seal -> bind -> task pipeline.  This is intentionally a
-// narrow, liftable slice rather than a second daemon: normal tables only;
-// scan-delta and full-prefix-probe drivers; full-prefix body probes; neq;
-// ordinary arity-2/3 emits.  The seal inserts `fire` exactly once between the
-// body and all heads.  Unsupported vocabulary is absent rather than guessed.
-
-struct RelationShape
-{
-  u16 arity;
-  std::vector<std::vector<u16>> full_orders;
-};
-
-enum class DriverK : u8 { scan_delta, probe_full };
-
-struct DriverPlan
-{
-  DriverK kind;
-  u16 relation;
-  std::vector<u16> order; // empty for nominal-order scan
-  u16 bound = 0;
-  std::vector<u16> regs;  // nominal for scan, index order for probe
-};
-
-struct ProbePlan
-{
-  u16 relation;
-  std::vector<u16> order;
-  u16 bound;
-  std::vector<u16> regs; // index order: bound prefix, then fresh suffix
-};
-
-struct NeqPlan { u16 left, right; };
-using BodyPlan = std::variant<ProbePlan, NeqPlan>;
-
-struct EmitPlan
-{
-  u16 relation;
-  std::vector<u16> order;
-  std::vector<u16> regs; // values in head-index order
-};
-
-struct RulePlan
-{
-  u32 rule_id;
-  u32 variant_ordinal; // D3 RuleVariant ordinal (dense; unique per variant)
-  std::string variant; // display metadata only
-  u16 nregs;
-  std::vector<std::pair<u16, u64>> preloads;
-  DriverPlan driver;
-  std::vector<BodyPlan> body;
-  std::vector<EmitPlan> heads;
-};
-
-struct SealError : std::runtime_error
-{
-  using std::runtime_error::runtime_error;
-};
-
-struct SealedRule
-{
-  Program program; // carries nregs, ops, driver_regs, preloads, identity
-  DriverPlan driver;
-  std::vector<ProbePlan> probes;
-  std::vector<EmitPlan> heads;
-  std::vector<RelationShape> relations;
-  u16 max_depth = 0;
-};
-
-static void seal_check(bool ok, const std::string& message)
-{
-  if (!ok) throw SealError(message);
-}
-
-static void validate_reg(u16 reg, u16 nregs, const char* where)
-{
-  seal_check(reg < nregs, std::string(where) + ": register out of range");
-}
-
-static const RelationShape& relation_shape(
-  const std::vector<RelationShape>& rels, u16 slot, const char* where)
-{
-  seal_check(slot < rels.size(), std::string(where) + ": relation slot out of range");
-  return rels[slot];
-}
-
-static void validate_order(const RelationShape& shape,
-                           const std::vector<u16>& order,
-                           const char* where)
-{
-  seal_check(order.size() == shape.arity,
-             std::string(where) + ": ordering width mismatch");
-  std::vector<bool> seen(shape.arity, false);
-  for (u16 column : order)
-  {
-    seal_check(column < shape.arity,
-               std::string(where) + ": ordering column out of range");
-    seal_check(!seen[column], std::string(where) + ": ordering is not a permutation");
-    seen[column] = true;
-  }
-  seal_check(std::find(shape.full_orders.begin(), shape.full_orders.end(), order)
-               != shape.full_orders.end(),
-             std::string(where) + ": ordering was not requisitioned");
-}
-
-// This is deliberately the same table the bind-time template ladder covers.
-// Rejecting a syntactically valid but uninstantiated (A,K) at seal time keeps
-// factory misses out of worker threads.
-static bool supports_probe(u16 arity, u16 bound)
-{
-  return (arity == 2 || arity == 3) && bound >= 1 && bound <= arity;
-}
-
-static SealedRule seal_rule(const RulePlan& plan,
-                            const std::vector<RelationShape>& relations)
-{
-  seal_check(plan.nregs != 0, "rule: empty register file");
-  seal_check(!plan.heads.empty(), "rule: no head");
-  seal_check(plan.heads.size() <= std::numeric_limits<u16>::max(),
-             "rule: too many head sinks");
-
-  SealedRule out;
-  out.program.rule_id = plan.rule_id;
-  out.program.variant_ordinal = plan.variant_ordinal;
-  out.program.variant = plan.variant;
-  out.program.nregs = plan.nregs;
-  out.program.driver_regs = plan.driver.regs;
-  out.program.preloads = plan.preloads;
-  out.driver = plan.driver;
-  out.heads = plan.heads;
-  out.relations = relations;
-
-  std::vector<bool> assigned(plan.nregs, false);
-  for (const auto& [reg, _] : plan.preloads)
-  {
-    validate_reg(reg, plan.nregs, "preload");
-    seal_check(!assigned[reg], "preload: register assigned twice");
-    assigned[reg] = true;
-  }
-
-  const RelationShape& driver_rel =
-    relation_shape(relations, plan.driver.relation, "driver");
-  seal_check(plan.driver.regs.size() == driver_rel.arity,
-             "driver: register width mismatch");
-  if (plan.driver.kind == DriverK::scan_delta)
-  {
-    seal_check(plan.driver.order.empty(), "scan driver: unexpected ordering");
-    seal_check(plan.driver.bound == 0, "scan driver: unexpected bound prefix");
-    for (u16 reg : plan.driver.regs)
-    {
-      validate_reg(reg, plan.nregs, "scan driver");
-      seal_check(!assigned[reg], "scan driver: output register already assigned");
-      assigned[reg] = true;
-    }
-  }
-  else
-  {
-    validate_order(driver_rel, plan.driver.order, "probe driver");
-    seal_check(plan.driver.bound > 0 && plan.driver.bound <= driver_rel.arity,
-               "probe driver: unsupported bound width");
-    seal_check(supports_probe(driver_rel.arity, plan.driver.bound),
-               "probe driver: no daemon factory capability");
-    for (u16 i = 0; i < driver_rel.arity; ++i)
-    {
-      const u16 reg = plan.driver.regs[i];
-      validate_reg(reg, plan.nregs, "probe driver");
-      if (i < plan.driver.bound)
-        seal_check(assigned[reg], "probe driver: unbound prefix register");
-      else
-      {
-        seal_check(!assigned[reg], "probe driver: suffix register already assigned");
-        assigned[reg] = true;
-      }
-    }
-  }
-
-  for (const BodyPlan& body : plan.body)
-  {
-    if (const auto* probe = std::get_if<ProbePlan>(&body))
-    {
-      const RelationShape& rel = relation_shape(relations, probe->relation, "probe");
-      validate_order(rel, probe->order, "probe");
-      seal_check(probe->regs.size() == rel.arity, "probe: register width mismatch");
-      seal_check(probe->bound > 0 && probe->bound <= rel.arity,
-                 "probe: unsupported bound width");
-      seal_check(supports_probe(rel.arity, probe->bound),
-                 "probe: no daemon cursor capability");
-      for (u16 i = 0; i < rel.arity; ++i)
-      {
-        const u16 reg = probe->regs[i];
-        validate_reg(reg, plan.nregs, "probe");
-        if (i < probe->bound)
-          seal_check(assigned[reg], "probe: unbound prefix register");
-        else
-        {
-          seal_check(!assigned[reg], "probe: suffix register already assigned");
-          assigned[reg] = true;
-        }
-      }
-      const u16 cursor = out.probes.size();
-      out.probes.push_back(*probe);
-      out.program.ops.push_back({OpK::probe, cursor});
-      ++out.max_depth;
-    }
-    else
-    {
-      const NeqPlan& neq = std::get<NeqPlan>(body);
-      validate_reg(neq.left, plan.nregs, "neq");
-      validate_reg(neq.right, plan.nregs, "neq");
-      seal_check(assigned[neq.left] && assigned[neq.right],
-                 "neq: read of unassigned register");
-      out.program.ops.push_back({OpK::guard_neq, 0, neq.left, neq.right});
-    }
-  }
-
-  // One instantiation counter per satisfying body, regardless of head count.
-  out.program.ops.push_back({OpK::fire});
-  for (size_t sink = 0; sink < plan.heads.size(); ++sink)
-  {
-    const EmitPlan& head = plan.heads[sink];
-    const RelationShape& rel = relation_shape(relations, head.relation, "emit");
-    validate_order(rel, head.order, "emit");
-    seal_check(head.regs.size() == rel.arity, "emit: register width mismatch");
-    seal_check(rel.arity == 2 || rel.arity == 3,
-               "emit: prototype supports arity 2/3 only");
-    for (u16 reg : head.regs)
-    {
-      validate_reg(reg, plan.nregs, "emit");
-      seal_check(assigned[reg], "emit: read of unassigned register");
-    }
-    out.program.ops.push_back(
-      {rel.arity == 2 ? OpK::emit2 : OpK::emit3, static_cast<u16>(sink),
-       head.regs[0], head.regs[1], rel.arity == 3 ? head.regs[2] : u16{0}});
-  }
-  return out;
-}
-
-template <size_t N>
-static std::array<u16, N> regs_array(const std::vector<u16>& regs, size_t off = 0)
-{
-  std::array<u16, N> out{};
-  for (size_t i = 0; i < N; ++i) out[i] = regs[off + i];
-  return out;
-}
-
-template <size_t N>
-static std::array<u16, N> order_array(const std::vector<u16>& order)
-{
-  std::array<u16, N> out{};
-  std::copy(order.begin(), order.end(), out.begin());
-  return out;
-}
-
-class BoundRule
-{
-  SealedRule sealed;
-  // The pinned immutable program generation, shared by every bucket task of
-  // this variant (D11); parked continuations keep it alive past a retire.
-  std::shared_ptr<const Program> pinned;
-  std::vector<Relation*> frame;
-
-  std::unique_ptr<PrefixCursor> make_probe(const ProbePlan& probe) const
-  {
-    Relation* rel = frame[probe.relation];
-    Index** index = rel->getIndex(probe.order, false);
-    const u16 arity = rel->getArity();
-    if (arity == 2 && probe.bound == 1)
-      return std::make_unique<ProbeCursor<2, 1>>(
-        index, regs_array<1>(probe.regs), regs_array<1>(probe.regs, 1));
-    if (arity == 2 && probe.bound == 2)
-      return std::make_unique<ProbeCursor<2, 2>>(
-        index, regs_array<2>(probe.regs), std::array<u16, 0>{});
-    if (arity == 3 && probe.bound == 1)
-      return std::make_unique<ProbeCursor<3, 1>>(
-        index, regs_array<1>(probe.regs), regs_array<2>(probe.regs, 1));
-    if (arity == 3 && probe.bound == 2)
-      return std::make_unique<ProbeCursor<3, 2>>(
-        index, regs_array<2>(probe.regs), regs_array<1>(probe.regs, 2));
-    if (arity == 3 && probe.bound == 3)
-      return std::make_unique<ProbeCursor<3, 3>>(
-        index, regs_array<3>(probe.regs), std::array<u16, 0>{});
-    throw SealError("bind: cursor factory ladder miss");
-  }
-
-  u64 preload(u16 reg) const
-  {
-    for (const auto& [r, value] : sealed.program.preloads)
-      if (r == reg) return value;
-    throw SealError("bind: probe-driver prefix is not a preload");
-  }
-
-  std::shared_ptr<const std::vector<std::vector<u64>>>
-  driver_rows(u16 bucket) const
-  {
-    auto rows = std::make_shared<std::vector<std::vector<u64>>>();
-    Relation* rel = frame[sealed.driver.relation];
-    const u16 arity = rel->getArity();
-    if (sealed.driver.kind == DriverK::scan_delta)
-    {
-      RefVec& refs = rel->getReadBucket(0, bucket);
-      for (const TupleRef& ref : refs)
-      {
-        const u64* row = ref.batch->data + ref.offset;
-        rows->emplace_back(row, row + arity);
-      }
-    }
-    else if (arity == 2 && sealed.driver.bound == 2)
-    {
-      Index** index = rel->getIndex(sealed.driver.order, false);
-      const u64 k0 = preload(sealed.driver.regs[0]);
-      const u64 k1 = preload(sealed.driver.regs[1]);
-      join_probe<2, 2>(index, {k0, k1}, [&](const auto& row) {
-        rows->emplace_back(row.begin(), row.end());
-      });
-    }
-    else if (arity == 2 && sealed.driver.bound == 1)
-    {
-      Index** index = rel->getIndex(sealed.driver.order, false);
-      const u64 k0 = preload(sealed.driver.regs[0]);
-      join_probe<2, 1>(index, {k0, 0}, [&](const auto& row) {
-        if (buckethash(row[1]) == bucket)
-          rows->emplace_back(row.begin(), row.end());
-      });
-    }
-    else if (arity == 3 && sealed.driver.bound == 1)
-    {
-      Index** index = rel->getIndex(sealed.driver.order, false);
-      const u64 k0 = preload(sealed.driver.regs[0]);
-      join_probe<3, 1>(index, {k0, 0, 0}, [&](const auto& row) {
-        if (buckethash(row[1]) == bucket)
-          rows->emplace_back(row.begin(), row.end());
-      });
-    }
-    else if (arity == 3 && sealed.driver.bound == 2)
-    {
-      Index** index = rel->getIndex(sealed.driver.order, false);
-      const u64 k0 = preload(sealed.driver.regs[0]);
-      const u64 k1 = preload(sealed.driver.regs[1]);
-      join_probe<3, 2>(index, {k0, k1, 0}, [&](const auto& row) {
-        if (buckethash(row[2]) == bucket)
-          rows->emplace_back(row.begin(), row.end());
-      });
-    }
-    else if (arity == 3 && sealed.driver.bound == 3)
-    {
-      Index** index = rel->getIndex(sealed.driver.order, false);
-      const u64 k0 = preload(sealed.driver.regs[0]);
-      const u64 k1 = preload(sealed.driver.regs[1]);
-      const u64 k2 = preload(sealed.driver.regs[2]);
-      join_probe<3, 3>(index, {k0, k1, k2}, [&](const auto& row) {
-        rows->emplace_back(row.begin(), row.end());
-      });
-    }
-    else
-      throw SealError("bind: driver factory ladder miss");
-    return std::const_pointer_cast<const std::vector<std::vector<u64>>>(rows);
-  }
-
-  static void emit_rows(Relation* rel, const EmitPlan& head,
-                        const std::vector<std::vector<u64>>& rows)
-  {
-    InsertBatch* batch = new InsertBatch();
-    if (rel->getArity() == 2)
-    {
-      Index** index = rel->getIndex(head.order, false);
-      const auto ord = order_array<2>(head.order);
-      for (const auto& row : rows)
-        emit<2>(rel, index, batch, {row[0], row[1]}, ord);
-    }
-    else
-    {
-      Index** index = rel->getIndex(head.order, false);
-      const auto ord = order_array<3>(head.order);
-      for (const auto& row : rows)
-        emit<3>(rel, index, batch, {row[0], row[1], row[2]}, ord);
-    }
-    // Standalone-test analogue of the generated task's trailing sendBatch.
-    // Workloads stay below batch_size_max, so emit itself never flushes.
-    if (batch->usage != 0) rel->getDelta().push_back(batch);
-    else delete batch;
-  }
-
-public:
-  BoundRule(SealedRule rule, std::vector<Relation*> binding)
-    : sealed(std::move(rule)),
-      pinned(std::make_shared<const Program>(sealed.program)),
-      frame(std::move(binding))
-  {
-    seal_check(frame.size() == sealed.relations.size(),
-               "bind: relation frame width mismatch");
-    for (size_t i = 0; i < frame.size(); ++i)
-      seal_check(frame[i] != nullptr
-                   && frame[i]->getArity() == sealed.relations[i].arity,
-                 "bind: relation arity mismatch");
-  }
-
-  u16 task_count() const
-  {
-    if (sealed.driver.kind == DriverK::scan_delta) return bucket_count;
-    const u16 arity = frame[sealed.driver.relation]->getArity();
-    return sealed.driver.bound == arity ? 1 : bucket_count;
-  }
-
-  std::unique_ptr<Machine> make_task(u16 bucket, DebugSink* debug = nullptr,
-                                     bool capture_outputs = true) const
-  {
-    std::vector<std::unique_ptr<PrefixCursor>> cursors;
-    for (const ProbePlan& probe : sealed.probes)
-      cursors.push_back(make_probe(probe));
-    return std::make_unique<Machine>(
-      pinned, driver_rows(bucket), std::move(cursors), debug,
-      capture_outputs);
-  }
-
-  void apply(const Attempt& attempt) const
-  {
-    std::vector<std::vector<std::vector<u64>>> per_head(sealed.heads.size());
-    seal_check(attempt.outputs.size() == attempt.output_sinks.size(),
-               "commit: candidate/sink count mismatch");
-    for (size_t i = 0; i < attempt.outputs.size(); ++i)
-    {
-      const u16 sink = attempt.output_sinks[i];
-      seal_check(sink < sealed.heads.size(), "commit: sink port out of range");
-      per_head[sink].push_back(attempt.outputs[i]);
-    }
-    for (size_t i = 0; i < sealed.heads.size(); ++i)
-      emit_rows(frame[sealed.heads[i].relation], sealed.heads[i], per_head[i]);
-  }
-
-  const SealedRule& definition() const { return sealed; }
-};
-
 static std::vector<std::vector<u64>> nominal_delta_rows(Relation* rel)
 {
   std::vector<std::vector<u64>> rows;
@@ -678,7 +257,8 @@ static std::unique_ptr<Relation> make_relation(
   rel->initShards(1);
   for (const auto& order : orders)
   {
-    if (arity == 2) rel->addIndex<2>(order, false);
+    if (arity == 1) rel->addIndex<1>(order, false);
+    else if (arity == 2) rel->addIndex<2>(order, false);
     else if (arity == 3) rel->addIndex<3>(order, false);
     else throw SealError("fixture: unsupported relation arity");
   }
@@ -697,6 +277,16 @@ static void load_delta(Relation* rel,
   rel->getDelta().push_back(batch);
   rel->ensureReorgBuffers(1);
   rel->reorgDelta(0, 1);
+}
+
+static std::string replace_once(std::string text, const std::string& from,
+                                const std::string& to)
+{
+  const size_t at = text.find(from);
+  if (at == std::string::npos)
+    throw std::runtime_error("fixture replacement did not match: " + from);
+  text.replace(at, from.size(), to);
+  return text;
 }
 
 bool test_uninterrupted_and_every_quantum()
@@ -973,6 +563,2135 @@ static void insert_nominal(Relation* rel, std::initializer_list<u64> values)
   rel->insertTupleAllIndices(row.data());
 }
 
+static std::vector<std::vector<u64>> nominal_index_rows(
+  Relation* rel, const std::vector<u16>& order);
+
+static void add_delta_index_rows2(
+  Relation* rel, const std::vector<u16>& order,
+  const std::vector<std::array<u64, 2>>& rows)
+{
+  rel->addIndex<2>(order, true);
+  Index** index = rel->getIndex(order, true);
+  for (const auto& nominal : rows)
+  {
+    std::array<u64, 2> ordered{nominal[order[0]], nominal[order[1]]};
+    static_cast<BTreeIndex<2>*>(index[buckethash(ordered[0])])->insert(ordered);
+  }
+}
+
+static std::unique_ptr<Relation> make_lattice_relation(
+  const std::string& name, u16 arity,
+  const std::vector<std::vector<u16>>& orders)
+{
+  auto rel = std::make_unique<Relation>(name, arity, 0);
+  rel->initShards(1);
+  rel->setLattice(LAT_MIN, false, 0, false, 0, "min-int");
+  for (const auto& order : orders)
+  {
+    if (arity == 2) rel->addMapIndex<2>(order);
+    else if (arity == 3) rel->addMapIndex<3>(order);
+    else throw SealError("fixture: unsupported lattice arity");
+  }
+  return rel;
+}
+
+static void insert_lattice2(Relation* rel, u64 key, u64 value)
+{
+  auto* map = static_cast<BTreeMapIndex<1>*>(
+    rel->getIndex({0, 1}, false)[buckethash(key)]);
+  bool changed = false;
+  (void)map->merge({key}, value, changed);
+}
+
+static void insert_lattice3(
+  Relation* rel, const std::vector<u16>& order,
+  const std::array<u64, 3>& nominal)
+{
+  std::array<u64, 2> key{nominal[order[0]], nominal[order[1]]};
+  auto* map = static_cast<BTreeMapIndex<2>*>(
+    rel->getIndex(order, false)[buckethash(key[0])]);
+  bool changed = false;
+  (void)map->merge(key, nominal[order[2]], changed);
+}
+
+template <Join3View LV, Join3View RV>
+static std::vector<u64> native_join3_values(
+  Relation* left, Relation* right, u64 left_prefix, u64 right_prefix)
+{
+  const std::vector<u16> order{0, 1};
+  Index** left_full = left->getIndex(order, false);
+  Index** right_full = right->getIndex(order, false);
+  Index** left_delta = LV == Join3View::full
+    ? left_full : left->getIndex(order, true);
+  Index** right_delta = RV == Join3View::full
+    ? right_full : right->getIndex(order, true);
+  std::vector<u64> values;
+  join3<2, 1, LV, 2, 1, RV>(
+    left_full, left_delta, {left_prefix, 0},
+    right_full, right_delta, {right_prefix, 0},
+    [&](u64 value) { values.push_back(value); });
+  return values;
+}
+
+static std::vector<u64> native_join3_values(
+  ProbePlan::View left, ProbePlan::View right,
+  Relation* left_relation, Relation* right_relation,
+  u64 left_prefix, u64 right_prefix)
+{
+  using View = ProbePlan::View;
+  if (left == View::full && right == View::full)
+    return native_join3_values<Join3View::full, Join3View::full>(
+      left_relation, right_relation, left_prefix, right_prefix);
+  if (left == View::full && right == View::old)
+    return native_join3_values<Join3View::full, Join3View::old>(
+      left_relation, right_relation, left_prefix, right_prefix);
+  if (left == View::full && right == View::new_)
+    return native_join3_values<Join3View::full, Join3View::new_>(
+      left_relation, right_relation, left_prefix, right_prefix);
+  if (left == View::old && right == View::full)
+    return native_join3_values<Join3View::old, Join3View::full>(
+      left_relation, right_relation, left_prefix, right_prefix);
+  if (left == View::old && right == View::old)
+    return native_join3_values<Join3View::old, Join3View::old>(
+      left_relation, right_relation, left_prefix, right_prefix);
+  if (left == View::old && right == View::new_)
+    return native_join3_values<Join3View::old, Join3View::new_>(
+      left_relation, right_relation, left_prefix, right_prefix);
+  if (left == View::new_ && right == View::full)
+    return native_join3_values<Join3View::new_, Join3View::full>(
+      left_relation, right_relation, left_prefix, right_prefix);
+  if (left == View::new_ && right == View::old)
+    return native_join3_values<Join3View::new_, Join3View::old>(
+      left_relation, right_relation, left_prefix, right_prefix);
+  return native_join3_values<Join3View::new_, Join3View::new_>(
+    left_relation, right_relation, left_prefix, right_prefix);
+}
+
+bool test_join3_cursor_all_views_native_differential()
+{
+  using View = ProbePlan::View;
+  const std::vector<u16> order{0, 1};
+  const std::vector<RelationShape> shapes{
+    {2, {order}},
+    {2, {order}, RelationK::plain, {order}},
+    {2, {order}, RelationK::plain, {order}},
+    {2, {order}}
+  };
+  auto driver = make_relation("join3-driver", 2, {order});
+  auto left = make_relation("join3-left", 2, {order});
+  auto right = make_relation("join3-right", 2, {order});
+  auto output = make_relation("join3-output", 2, {order});
+
+  load_delta(driver.get(), {{10, 20}});
+  for (u64 value : {u64{0}, u64{2}, u64{4}, u64{8}, u64{20}})
+    insert_nominal(left.get(), {10, value});
+  for (u64 value : {u64{1}, u64{2}, u64{6}, u64{8}, u64{30}})
+    insert_nominal(right.get(), {20, value});
+  add_delta_index_rows2(left.get(), order,
+                        {{10, 2}, {10, 6}, {10, 20}});
+  add_delta_index_rows2(right.get(), order,
+                        {{20, 2}, {20, 4}, {20, 6}, {20, 40}});
+
+  struct JoinProofDebug final : DebugSink
+  {
+    std::vector<Proof> proofs;
+    DebugAction observe(const Event& event, const DebugView& view) override
+    {
+      if (event.kind == EventK::emit) proofs.push_back(view.proof());
+      return DebugAction::continue_;
+    }
+  };
+
+  const std::array<View, 3> views{View::full, View::old, View::new_};
+  size_t cursor_pauses = 0;
+  for (View left_view : views)
+  for (View right_view : views)
+  {
+    const auto delta_order = [&](View view) {
+      return view == View::full ? std::vector<u16>{} : order;
+    };
+    Join3Plan join3_plan{
+      2,
+      {1, order, 1, {0, 2}, left_view, delta_order(left_view)},
+      {2, order, 1, {1, 2}, right_view, delta_order(right_view)}
+    };
+    RulePlan plan{
+      84, static_cast<u32>(left_view) * 3 + static_cast<u32>(right_view),
+      "join3-all-views", 3, {},
+      {DriverK::scan_delta, 0, {}, 0, {0, 1}},
+      {join3_plan}, {EmitPlan{3, order, {0, 2}}}
+    };
+    BoundRule bound(seal_rule(plan, shapes),
+                    {driver.get(), left.get(), right.get(), output.get()});
+    JoinProofDebug debug;
+    debug.mask = event_bit(EventK::emit);
+    std::vector<std::vector<u64>> actual;
+    u64 fires = 0;
+    for (u16 bucket = 0; bucket < bound.task_count(); ++bucket)
+    {
+      auto task = bound.make_task(bucket, &debug);
+      while (!task->done())
+      {
+        const StopReason why = task->run_observed(2, 1);
+        CHECK(why == StopReason::quantum || why == StopReason::cursor
+              || why == StopReason::complete);
+        if (why == StopReason::cursor) ++cursor_pauses;
+        if (why != StopReason::complete) task = task->continuation();
+      }
+      fires += task->result().fires;
+      actual.insert(actual.end(), task->result().outputs.begin(),
+                    task->result().outputs.end());
+    }
+
+    const std::vector<u64> native = native_join3_values(
+      left_view, right_view, left.get(), right.get(), 10, 20);
+    std::vector<std::vector<u64>> expected;
+    for (u64 value : native) expected.push_back({10, value});
+    std::sort(actual.begin(), actual.end());
+    std::sort(expected.begin(), expected.end());
+    CHECK(actual == expected);
+    CHECK(fires == native.size());
+    CHECK(debug.proofs.size() == native.size());
+    for (const Proof& proof : debug.proofs)
+    {
+      CHECK(proof.driver == (std::vector<u64>{10, 20}));
+      CHECK(proof.premises.size() == 2);
+      CHECK(proof.premises[0].size() == 2);
+      CHECK(proof.premises[1].size() == 2);
+      CHECK(proof.premises[0][0] == 10);
+      CHECK(proof.premises[1][0] == 20);
+      CHECK(proof.premises[0][1] == proof.premises[1][1]);
+    }
+  }
+  CHECK(cursor_pauses != 0);
+  return true;
+}
+
+bool test_join3_mixed_arm_arities()
+{
+  const std::vector<u16> order2{0, 1};
+  const std::vector<u16> order3{0, 1, 2};
+  const std::vector<RelationShape> shapes{
+    {3, {order3}}, {3, {order3}}, {2, {order2}}, {2, {order2}}
+  };
+  auto driver = make_relation("join3-mixed-driver", 3, {order3});
+  auto left = make_relation("join3-mixed-left", 3, {order3});
+  auto right = make_relation("join3-mixed-right", 2, {order2});
+  auto output = make_relation("join3-mixed-output", 2, {order2});
+  load_delta(driver.get(), {{10, 11, 20}});
+  for (u64 value : {u64{1}, u64{4}, u64{8}, u64{30}})
+    insert_nominal(left.get(), {10, 11, value});
+  insert_nominal(left.get(), {10, 99, 4});
+  for (u64 value : {u64{0}, u64{4}, u64{8}, u64{40}})
+    insert_nominal(right.get(), {20, value});
+
+  RulePlan plan{
+    86, 0, "join3-mixed-arities", 4, {},
+    {DriverK::scan_delta, 0, {}, 0, {0, 1, 2}},
+    {Join3Plan{3,
+      {1, order3, 2, {0, 1, 3}, ProbePlan::View::full, {}},
+      {2, order2, 1, {2, 3}, ProbePlan::View::full, {}}}},
+    {EmitPlan{3, order2, {0, 3}}}
+  };
+  BoundRule bound(seal_rule(plan, shapes),
+                  {driver.get(), left.get(), right.get(), output.get()});
+  std::vector<std::vector<u64>> actual;
+  u64 fires = 0;
+  for (u16 bucket = 0; bucket < bound.task_count(); ++bucket)
+  {
+    auto task = bound.make_task(bucket);
+    while (!task->done())
+    {
+      const StopReason why = task->run_fast(2, 1);
+      CHECK(why == StopReason::quantum || why == StopReason::cursor
+            || why == StopReason::complete);
+      if (why != StopReason::complete) task = task->continuation();
+    }
+    fires += task->result().fires;
+    actual.insert(actual.end(), task->result().outputs.begin(),
+                  task->result().outputs.end());
+  }
+
+  std::vector<std::vector<u64>> expected;
+  join3<3, 2, Join3View::full, 2, 1, Join3View::full>(
+    left->getIndex(order3, false), left->getIndex(order3, false),
+    {10, 11, 0},
+    right->getIndex(order2, false), right->getIndex(order2, false),
+    {20, 0}, [&](u64 value) { expected.push_back({10, value}); });
+  std::sort(actual.begin(), actual.end());
+  std::sort(expected.begin(), expected.end());
+  CHECK(actual == expected);
+  CHECK(actual == (std::vector<std::vector<u64>>{{10, 4}, {10, 8}}));
+  CHECK(fires == expected.size());
+  return true;
+}
+
+bool test_parsed_join3_and_typed_refusals()
+{
+  const std::string text =
+    "(kernel-plan (abi 1) (flavor normal) "
+    "(relations "
+      "(rel 0 (relation driver 2 (0 1))) "
+      "(rel 1 (relation left 2 (0 1) (delta 0 1))) "
+      "(rel 2 (relation right 2 (0 1) (delta 0 1))) "
+      "(rel 3 (relation out 2 (0 1)))) "
+    "(attachments) (constants) (prims) (dynamic out) "
+    "(rules (rule-def (rid 85) (variant \"join3#0\") (nregs 3) "
+      "(pre) (driver (scan (rel 0) (r 0) (r 1))) "
+      "(body (join3 (r 2) "
+        "(new (rel 1) (0 1) 1 (0 1) (r 0) (r 2)) "
+        "(old (rel 2) (0 1) 1 (0 1) (r 1) (r 2)))) "
+      "(head (emit (rel 3) (0 1) (r 0) (r 2))))) "
+    "(meta (rule-meta (rid 85) (source \"join3.slog:1\"))))";
+
+  const DecodedKernelPlan decoded = parse_kernel_plan(text);
+  CHECK(decoded.rules.size() == 1);
+  const auto& parsed = std::get<Join3Plan>(decoded.rules[0].plan.body[0]);
+  CHECK(parsed.cycle == 2);
+  CHECK(parsed.left.view == ProbePlan::View::new_);
+  CHECK(parsed.right.view == ProbePlan::View::old);
+  CHECK(parsed.left.regs == (std::vector<u16>{0, 2}));
+  CHECK(parsed.right.regs == (std::vector<u16>{1, 2}));
+
+  Database db(1);
+  db.addRelation("driver", 2);
+  db.addRelation("left", 2);
+  db.addRelation("right", 2);
+  db.addRelation("out", 2);
+  Relation* driver = db.getRelation("driver");
+  Relation* left = db.getRelation("left");
+  Relation* right = db.getRelation("right");
+  Relation* output = db.getRelation("out");
+  for (Relation* rel : {driver, left, right, output})
+    rel->addIndex<2>({0, 1}, false);
+  load_delta(driver, {{10, 20}});
+  for (u64 value : {u64{0}, u64{2}, u64{4}, u64{6}, u64{8}})
+    insert_nominal(left, {10, value});
+  for (u64 value : {u64{1}, u64{2}, u64{6}, u64{8}, u64{30}})
+    insert_nominal(right, {20, value});
+  add_delta_index_rows2(left, {0, 1}, {{10, 4}});
+  add_delta_index_rows2(right, {0, 1}, {{20, 2}, {20, 6}});
+
+  const SealedKernelPlan sealed = seal_kernel_plan(decoded);
+  CHECK(sealed.rules[0].cursors.size() == 1);
+  CHECK(std::holds_alternative<Join3Plan>(sealed.rules[0].cursors[0]));
+  const auto rules = bind_kernel_plan(sealed, db);
+  std::vector<std::vector<u64>> actual;
+  u64 fires = 0;
+  size_t cursor_pauses = 0;
+  for (u16 bucket = 0; bucket < rules[0]->task_count(); ++bucket)
+  {
+    auto task = rules[0]->make_task(bucket);
+    while (!task->done())
+    {
+      const StopReason why = task->run_fast(2, 1);
+      CHECK(why == StopReason::quantum || why == StopReason::cursor
+            || why == StopReason::complete);
+      if (why == StopReason::cursor) ++cursor_pauses;
+      if (why != StopReason::complete) task = task->continuation();
+    }
+    fires += task->result().fires;
+    actual.insert(actual.end(), task->result().outputs.begin(),
+                  task->result().outputs.end());
+  }
+  const std::vector<u64> native = native_join3_values(
+    ProbePlan::View::new_, ProbePlan::View::old,
+    left, right, 10, 20);
+  std::vector<std::vector<u64>> expected;
+  for (u64 value : native) expected.push_back({10, value});
+  std::sort(actual.begin(), actual.end());
+  std::sort(expected.begin(), expected.end());
+  CHECK(actual == expected);
+  CHECK(fires == native.size());
+  CHECK(cursor_pauses != 0);
+
+  // The same parsed/bound rule must drive the real ordinary sink, not only
+  // the test capture path used above.
+  for (u16 bucket = 0; bucket < rules[0]->task_count(); ++bucket)
+  {
+    auto execution = rules[0]->make_execution(&db, bucket);
+    while (!execution->machine->done())
+    {
+      const StopReason why = execution->machine->run_fast(3, 2);
+      CHECK(why == StopReason::quantum || why == StopReason::cursor
+            || why == StopReason::complete);
+    }
+    execution->flush();
+  }
+  output->finalizeBatches();
+  CHECK(nominal_delta_rows(output) == expected);
+
+  const auto rejects = [](SealErrorK kind, auto&& thunk) {
+    try { thunk(); }
+    catch (const SealError& error) { return error.kind() == kind; }
+    return false;
+  };
+  const auto join3 = [](DecodedKernelPlan& plan) -> Join3Plan& {
+    return std::get<Join3Plan>(plan.rules[0].plan.body[0]);
+  };
+
+  DecodedKernelPlan zero_prefix = decoded;
+  join3(zero_prefix).left.bound = 0;
+  CHECK(rejects(SealErrorK::factory,
+    [&] { (void)seal_kernel_plan(zero_prefix); }));
+
+  DecodedKernelPlan non_key_simple = decoded;
+  join3(non_key_simple).left.bound = 2;
+  CHECK(rejects(SealErrorK::factory,
+    [&] { (void)seal_kernel_plan(non_key_simple); }));
+
+  DecodedKernelPlan unknown_view = decoded;
+  join3(unknown_view).left.view = static_cast<ProbePlan::View>(99);
+  CHECK(rejects(SealErrorK::capability,
+    [&] { (void)seal_kernel_plan(unknown_view); }));
+
+  DecodedKernelPlan wrong_cycle = decoded;
+  join3(wrong_cycle).left.regs.back() = 1;
+  CHECK(rejects(SealErrorK::dataflow,
+    [&] { (void)seal_kernel_plan(wrong_cycle); }));
+
+  DecodedKernelPlan unbound_prefix = decoded;
+  join3(unbound_prefix).left.regs[0] = 2;
+  CHECK(rejects(SealErrorK::bound_prefix,
+    [&] { (void)seal_kernel_plan(unbound_prefix); }));
+
+  DecodedKernelPlan full_with_delta = decoded;
+  join3(full_with_delta).left.view = ProbePlan::View::full;
+  CHECK(rejects(SealErrorK::ordering,
+    [&] { (void)seal_kernel_plan(full_with_delta); }));
+
+  DecodedKernelPlan mismatched_delta = decoded;
+  mismatched_delta.bindings[1].shape.delta_orders.push_back({1, 0});
+  join3(mismatched_delta).left.delta_order = {1, 0};
+  CHECK(rejects(SealErrorK::ordering,
+    [&] { (void)seal_kernel_plan(mismatched_delta); }));
+
+  DecodedKernelPlan missing_requisition = decoded;
+  missing_requisition.bindings[1].shape.delta_orders.clear();
+  CHECK(rejects(SealErrorK::index_requisition,
+    [&] { (void)seal_kernel_plan(missing_requisition); }));
+
+  Database missing_delta(1);
+  for (const std::string& name : {"driver", "left", "right", "out"})
+  {
+    missing_delta.addRelation(name, 2);
+    missing_delta.getRelation(name)->addIndex<2>({0, 1}, false);
+  }
+  CHECK(rejects(SealErrorK::binding,
+    [&] { (void)bind_kernel_plan(sealed, missing_delta); }));
+
+  const std::string short_arm = replace_once(
+    text,
+    "(new (rel 1) (0 1) 1 (0 1) (r 0) (r 2))",
+    "(new (rel 1) (0 1) 1 (0 1))");
+  CHECK([&] {
+    try { (void)parse_kernel_plan(short_arm); }
+    catch (const PlanParseError& error) {
+      return error.kind() == ParseErrorK::syntax;
+    }
+    return false;
+  }());
+  return true;
+}
+
+bool test_map_cursor_k0_native_differential()
+{
+  const std::vector<u16> unary{0};
+  const std::vector<u16> physical{1, 0, 2};
+  const std::vector<u16> order3{0, 1, 2};
+  const std::vector<RelationShape> shapes{
+    {1, {unary}},
+    {3, {physical}, RelationK::lattice},
+    {3, {order3}}
+  };
+  auto driver = make_relation("map-driver", 1, {unary});
+  auto lattice = make_lattice_relation("map-lattice", 3, {physical});
+  auto output = make_relation("map-output", 3, {order3});
+  load_delta(driver.get(), {{7}});
+  insert_lattice3(lattice.get(), physical, {10, 100, 1000});
+  insert_lattice3(lattice.get(), physical, {11, 100, 1100});
+  insert_lattice3(lattice.get(), physical, {12, 200, 1200});
+
+  RulePlan plan{
+    87, 0, "join-lat-k0", 4, {},
+    {DriverK::scan_delta, 0, {}, 0, {0}},
+    {ProbePlan{1, physical, 0, {1, 2, 3},
+               ProbePlan::View::full, {}, true}},
+    {EmitPlan{2, order3, {1, 2, 3}}}
+  };
+  BoundRule bound(seal_rule(plan, shapes),
+                  {driver.get(), lattice.get(), output.get()});
+  struct MapDebug final : DebugSink
+  {
+    std::vector<Proof> proofs;
+    DebugAction observe(const Event& event, const DebugView& view) override
+    {
+      if (event.kind == EventK::emit) proofs.push_back(view.proof());
+      return DebugAction::continue_;
+    }
+  } debug;
+  debug.mask = event_bit(EventK::emit);
+
+  std::vector<std::vector<u64>> actual;
+  u64 fires = 0;
+  size_t pauses = 0;
+  for (u16 bucket = 0; bucket < bound.task_count(); ++bucket)
+  {
+    auto task = bound.make_task(bucket, &debug);
+    u64 cursor_budget = 0;
+    while (!task->done())
+    {
+      const StopReason why = task->run_observed(3, cursor_budget);
+      CHECK(why == StopReason::quantum || why == StopReason::cursor
+            || why == StopReason::complete);
+      if (why == StopReason::cursor)
+      {
+        ++pauses;
+        cursor_budget = 1;
+      }
+      if (why != StopReason::complete) task = task->continuation();
+    }
+    fires += task->result().fires;
+    actual.insert(actual.end(), task->result().outputs.begin(),
+                  task->result().outputs.end());
+  }
+
+  std::vector<std::vector<u64>> expected;
+  join_all_lat<2>(lattice->getIndex(physical, false),
+    [&](const std::array<u64, 2>& key, u64 value) {
+      expected.push_back({key[0], key[1], value});
+    });
+  std::sort(actual.begin(), actual.end());
+  std::sort(expected.begin(), expected.end());
+  CHECK(actual == expected);
+  CHECK(fires == expected.size() && fires == 3);
+  CHECK(pauses != 0);
+  CHECK(debug.proofs.size() == expected.size());
+  for (const Proof& proof : debug.proofs)
+  {
+    CHECK(proof.premises.size() == 1);
+    CHECK(proof.premises[0].size() == 3);
+    CHECK(std::find(expected.begin(), expected.end(), proof.premises[0])
+          != expected.end());
+  }
+
+  u64 regs[1]{0};
+  auto nonempty = make_map_filter_cursor(
+    3, lattice->getIndex(physical, false), {}, 0, FilterK::absent);
+  nonempty->open(regs);
+  WorkBudget one{1};
+  CHECK(nonempty->next(regs, one) == CursorResult::exhausted);
+  CHECK(!(absent_probe_lat<2, 0>(lattice->getIndex(physical, false), {})));
+
+  auto empty = make_lattice_relation("empty-map", 3, {physical});
+  auto absent = make_map_filter_cursor(
+    3, empty->getIndex(physical, false), {}, 0, FilterK::absent);
+  absent->open(regs);
+  WorkBudget another{1};
+  CHECK(absent->next(regs, another) == CursorResult::match);
+  CHECK((absent_probe_lat<2, 0>(empty->getIndex(physical, false), {})));
+  return true;
+}
+
+bool test_full_view_k0_cursor_native_differential()
+{
+  const std::vector<u16> unary{0};
+  const std::vector<u16> reverse{1, 0};
+  const std::vector<u16> nominal{0, 1};
+  const std::vector<RelationShape> shapes{
+    {1, {unary}}, {2, {reverse}}, {2, {nominal}}
+  };
+  auto driver = make_relation("k0-driver", 1, {unary});
+  auto lookup = make_relation("k0-lookup", 2, {reverse});
+  auto output = make_relation("k0-output", 2, {nominal});
+  load_delta(driver.get(), {{100}, {200}});
+  insert_nominal(lookup.get(), {1, 10});
+  insert_nominal(lookup.get(), {2, 20});
+  insert_nominal(lookup.get(), {3, 30});
+
+  RulePlan plan{
+    91, 0, "join-full-k0", 3, {},
+    {DriverK::scan_delta, 0, {}, 0, {0}},
+    {ProbePlan{1, reverse, 0, {1, 2}}},
+    {EmitPlan{2, nominal, {2, 1}}}
+  };
+  BoundRule bound(seal_rule(plan, shapes),
+                  {driver.get(), lookup.get(), output.get()});
+  struct K0Debug final : DebugSink
+  {
+    std::vector<Proof> proofs;
+    DebugAction observe(const Event& event, const DebugView& view) override
+    {
+      if (event.kind == EventK::emit) proofs.push_back(view.proof());
+      return DebugAction::continue_;
+    }
+  } debug;
+  debug.mask = event_bit(EventK::emit);
+
+  std::vector<std::vector<u64>> actual;
+  u64 fires = 0;
+  size_t pauses = 0;
+  for (u16 bucket = 0; bucket < bound.task_count(); ++bucket)
+  {
+    auto task = bound.make_task(bucket, &debug);
+    u64 cursor_budget = 0;
+    while (!task->done())
+    {
+      const StopReason why = task->run_observed(3, cursor_budget);
+      CHECK(why == StopReason::quantum || why == StopReason::cursor
+            || why == StopReason::complete);
+      if (why == StopReason::cursor)
+      {
+        ++pauses;
+        cursor_budget = 1;
+      }
+      if (why != StopReason::complete) task = task->continuation();
+    }
+    fires += task->result().fires;
+    actual.insert(actual.end(), task->result().outputs.begin(),
+                  task->result().outputs.end());
+  }
+
+  std::vector<std::vector<u64>> one_scan;
+  join_all<2>(lookup->getIndex(reverse, false),
+    [&](const std::array<u64, 2>& physical) {
+      one_scan.push_back({physical[1], physical[0]});
+    });
+  std::vector<std::vector<u64>> expected = one_scan;
+  expected.insert(expected.end(), one_scan.begin(), one_scan.end());
+  std::sort(actual.begin(), actual.end());
+  std::sort(expected.begin(), expected.end());
+  CHECK(actual == expected);
+  CHECK(fires == expected.size() && fires == 6);
+  CHECK(pauses != 0);
+  CHECK(debug.proofs.size() == expected.size());
+  CHECK(std::all_of(debug.proofs.begin(), debug.proofs.end(),
+                    [](const Proof& proof) {
+                      return proof.premises.size() == 1
+                          && proof.premises[0].size() == 2;
+                    }));
+  return true;
+}
+
+bool test_parsed_map_probes_and_typed_refusals()
+{
+  const std::string text =
+    "(kernel-plan (abi 1) (flavor normal) "
+    "(relations "
+      "(rel 0 (relation driver 1 (0))) "
+      "(rel 1 (lattice best 2 (min int) #f (0 1))) "
+      "(rel 2 (relation found 2 (0 1))) "
+      "(rel 3 (relation missing 1 (0)))) "
+    "(attachments) (constants) (prims) (dynamic found missing) "
+    "(rules "
+      "(rule-def (rid 88) (variant \"join-lat#0\") (nregs 2) (pre) "
+        "(driver (scan (rel 0) (r 0))) "
+        "(body (join-lat (rel 1) (0 1) 1 (r 0) (r 1))) "
+        "(head (emit (rel 2) (0 1) (r 0) (r 1)))) "
+      "(rule-def (rid 89) (variant \"absent-lat#1\") (nregs 1) (pre) "
+        "(driver (scan (rel 0) (r 0))) "
+        "(body (absent-lat (rel 1) (0 1) 1 (r 0))) "
+        "(head (emit (rel 3) (0) (r 0)))) "
+      "(rule-def (rid 90) (variant \"pre-absent-lat#2\") (nregs 1) "
+        "(pre (absent-lat (rel 1) (0 1) 0)) "
+        "(driver (scan (rel 0) (r 0))) (body) "
+        "(head (emit (rel 3) (0) (r 0))))) "
+    "(meta))";
+
+  const DecodedKernelPlan decoded = parse_kernel_plan(text);
+  CHECK(decoded.rules.size() == 3);
+  const auto& join = std::get<ProbePlan>(decoded.rules[0].plan.body[0]);
+  const auto& absent = std::get<FilterPlan>(decoded.rules[1].plan.body[0]);
+  CHECK(join.lattice && join.bound == 1);
+  CHECK(absent.lattice && absent.kind == FilterK::absent);
+  CHECK(std::get<FilterPlan>(decoded.rules[2].plan.preops[0]).lattice);
+
+  Database db(1);
+  db.addRelation("driver", 1);
+  db.addRelation("best", 2);
+  db.addRelation("found", 2);
+  db.addRelation("missing", 1);
+  Relation* driver = db.getRelation("driver");
+  Relation* lattice = db.getRelation("best");
+  Relation* found = db.getRelation("found");
+  Relation* missing = db.getRelation("missing");
+  driver->addIndex<1>({0}, false);
+  lattice->setLattice(LAT_MIN, false, 0, false, 0, "min-int");
+  lattice->addMapIndex<2>({0, 1});
+  found->addIndex<2>({0, 1}, false);
+  missing->addIndex<1>({0}, false);
+  load_delta(driver, {{1}, {2}, {3}});
+  insert_lattice2(lattice, 1, 101);
+  insert_lattice2(lattice, 2, 202);
+
+  const SealedKernelPlan sealed = seal_kernel_plan(decoded);
+  CHECK(sealed.rules.size() == 3);
+  const auto rules = bind_kernel_plan(sealed, db);
+  std::vector<std::vector<u64>> actual_found, actual_missing;
+  std::array<u64, 3> fires{};
+  size_t pauses = 0;
+  for (size_t rule_index = 0; rule_index < rules.size(); ++rule_index)
+  for (u16 bucket = 0; bucket < rules[rule_index]->task_count(); ++bucket)
+  {
+    auto task = rules[rule_index]->make_task(bucket);
+    u64 cursor_budget = 0;
+    while (!task->done())
+    {
+      const StopReason why = task->run_fast(3, cursor_budget);
+      CHECK(why == StopReason::quantum || why == StopReason::cursor
+            || why == StopReason::complete);
+      if (why == StopReason::cursor)
+      {
+        ++pauses;
+        cursor_budget = 1;
+      }
+      if (why != StopReason::complete) task = task->continuation();
+    }
+    fires[rule_index] += task->result().fires;
+    auto& rows = rule_index == 0 ? actual_found : actual_missing;
+    rows.insert(rows.end(), task->result().outputs.begin(),
+                task->result().outputs.end());
+  }
+
+  std::vector<std::vector<u64>> native_found, native_missing;
+  for (u64 key : {u64{1}, u64{2}, u64{3}})
+  {
+    join_probe_lat<1, 1>(lattice->getIndex({0, 1}, false), {key},
+      [&](const std::array<u64, 1>& match, u64 value) {
+        native_found.push_back({match[0], value});
+      });
+    if (absent_probe_lat<1, 1>(lattice->getIndex({0, 1}, false), {key}))
+      native_missing.push_back({key});
+  }
+  std::sort(actual_found.begin(), actual_found.end());
+  std::sort(actual_missing.begin(), actual_missing.end());
+  CHECK(actual_found == native_found);
+  CHECK(actual_missing == native_missing);
+  CHECK(fires == (std::array<u64, 3>{2, 1, 0}));
+  CHECK(pauses != 0);
+
+  for (size_t rule_index = 0; rule_index < rules.size(); ++rule_index)
+  for (u16 bucket = 0; bucket < rules[rule_index]->task_count(); ++bucket)
+  {
+    auto execution = rules[rule_index]->make_execution(&db, bucket);
+    while (!execution->machine->done())
+      (void)execution->machine->run_fast(3, 1);
+    execution->flush();
+  }
+  found->finalizeBatches();
+  missing->finalizeBatches();
+  CHECK(nominal_delta_rows(found) == native_found);
+  CHECK(nominal_delta_rows(missing) == native_missing);
+
+  const auto rejects = [](SealErrorK kind, auto&& thunk) {
+    try { thunk(); }
+    catch (const SealError& error) { return error.kind() == kind; }
+    return false;
+  };
+  const auto probe = [](DecodedKernelPlan& plan) -> ProbePlan& {
+    return std::get<ProbePlan>(plan.rules[0].plan.body[0]);
+  };
+  const auto filter = [](DecodedKernelPlan& plan) -> FilterPlan& {
+    return std::get<FilterPlan>(plan.rules[1].plan.body[0]);
+  };
+
+  DecodedKernelPlan plain_probe = decoded;
+  plain_probe.bindings[1].shape.kind = RelationK::plain;
+  CHECK(rejects(SealErrorK::relation_kind,
+    [&] { (void)seal_kernel_plan(plain_probe); }));
+
+  DecodedKernelPlan set_probe = decoded;
+  probe(set_probe).lattice = false;
+  CHECK(rejects(SealErrorK::relation_kind,
+    [&] { (void)seal_kernel_plan(set_probe); }));
+
+  DecodedKernelPlan payload_not_last = decoded;
+  payload_not_last.bindings[1].shape.full_orders.push_back({1, 0});
+  probe(payload_not_last).order = {1, 0};
+  CHECK(rejects(SealErrorK::ordering,
+    [&] { (void)seal_kernel_plan(payload_not_last); }));
+
+  DecodedKernelPlan wide_prefix = decoded;
+  probe(wide_prefix).bound = 2;
+  CHECK(rejects(SealErrorK::factory,
+    [&] { (void)seal_kernel_plan(wide_prefix); }));
+
+  DecodedKernelPlan short_regs = decoded;
+  probe(short_regs).regs.pop_back();
+  CHECK(rejects(SealErrorK::relation_arity,
+    [&] { (void)seal_kernel_plan(short_regs); }));
+
+  DecodedKernelPlan unbound_prefix = decoded;
+  probe(unbound_prefix).regs[0] = 1;
+  CHECK(rejects(SealErrorK::bound_prefix,
+    [&] { (void)seal_kernel_plan(unbound_prefix); }));
+
+  DecodedKernelPlan assigned_payload = decoded;
+  probe(assigned_payload).regs[1] = 0;
+  CHECK(rejects(SealErrorK::dataflow,
+    [&] { (void)seal_kernel_plan(assigned_payload); }));
+
+  DecodedKernelPlan plain_filter = decoded;
+  filter(plain_filter).relation = 0;
+  CHECK(rejects(SealErrorK::relation_kind,
+    [&] { (void)seal_kernel_plan(plain_filter); }));
+
+  DecodedKernelPlan bad_filter_prefix = decoded;
+  filter(bad_filter_prefix).bound = 2;
+  filter(bad_filter_prefix).regs.push_back(0);
+  CHECK(rejects(SealErrorK::factory,
+    [&] { (void)seal_kernel_plan(bad_filter_prefix); }));
+
+  Database missing_map(1);
+  missing_map.addRelation("driver", 1);
+  missing_map.addRelation("best", 2);
+  missing_map.addRelation("found", 2);
+  missing_map.addRelation("missing", 1);
+  missing_map.getRelation("driver")->addIndex<1>({0}, false);
+  missing_map.getRelation("best")->setLattice(
+    LAT_MIN, false, 0, false, 0, "min-int");
+  missing_map.getRelation("found")->addIndex<2>({0, 1}, false);
+  missing_map.getRelation("missing")->addIndex<1>({0}, false);
+  CHECK(rejects(SealErrorK::binding,
+    [&] { (void)bind_kernel_plan(sealed, missing_map); }));
+
+  Database wrong_map(1);
+  wrong_map.addRelation("driver", 1);
+  wrong_map.addRelation("best", 2);
+  wrong_map.addRelation("found", 2);
+  wrong_map.addRelation("missing", 1);
+  wrong_map.getRelation("driver")->addIndex<1>({0}, false);
+  wrong_map.getRelation("best")->setLattice(
+    LAT_MIN, false, 0, false, 0, "min-int");
+  wrong_map.getRelation("best")->addIndex<2>({0, 1}, false);
+  wrong_map.getRelation("found")->addIndex<2>({0, 1}, false);
+  wrong_map.getRelation("missing")->addIndex<1>({0}, false);
+  CHECK(rejects(SealErrorK::binding,
+    [&] { (void)bind_kernel_plan(sealed, wrong_map); }));
+
+  const std::string short_join = replace_once(
+    text, "(join-lat (rel 1) (0 1) 1 (r 0) (r 1))",
+          "(join-lat (rel 1) (0 1) 1)");
+  CHECK([&] {
+    try { (void)parse_kernel_plan(short_join); }
+    catch (const PlanParseError& error) {
+      return error.kind() == ParseErrorK::syntax;
+    }
+    return false;
+  }());
+  return true;
+}
+
+bool test_catalog_query_payload_parse_seal_bind()
+{
+  std::ifstream input("tests/data/q1-catalog-query.plan", std::ios::binary);
+  CHECK(input.good());
+  const std::string payload{
+    std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+
+  const q::DecodedPlan decoded = q::parse_plan(payload);
+  CHECK(decoded.abi == 1);
+  CHECK(decoded.boundary_key == "boundary/7" && decoded.generation == 42);
+  CHECK(decoded.bindings.size() == 1);
+  CHECK(decoded.bindings[0].name == "edge");
+  CHECK(decoded.bindings[0].version_key == "version/edge");
+  CHECK(decoded.bindings[0].tuple_count == 6);
+  CHECK(decoded.bindings[0].shape.arity == 2);
+  CHECK(decoded.bindings[0].shape.full_orders ==
+        (std::vector<std::vector<u16>>{{0, 1}, {1, 0}}));
+  CHECK(decoded.plan.nregs == 3 && decoded.plan.literals.size() == 1);
+  CHECK(decoded.plan.driver.relation == 0);
+  CHECK(decoded.plan.driver.order.empty());
+  CHECK(decoded.plan.driver.regs == (std::vector<u16>{0, 2}));
+  CHECK(decoded.plan.body.size() == 1);
+  CHECK(std::get<EqPlan>(decoded.plan.body[0]).left == 2);
+  CHECK(decoded.plan.project == (std::vector<u16>{0}));
+
+  const q::SealedRequest sealed = q::seal(decoded);
+  CHECK(sealed.boundary_key == decoded.boundary_key);
+  CHECK(sealed.generation == decoded.generation);
+
+  Database db(1);
+  db.planVersionKey("edge", "version/edge");
+  db.addRelation("edge", 2);
+  Relation* edge = db.getRelation("edge");
+  edge->addIndex<2>({0, 1}, false);
+  edge->addIndex<2>({1, 0}, false);
+  for (const std::array<u64, 2>& row : {
+         std::array<u64, 2>{s32_encode(1), s32_encode(2)},
+         {s32_encode(2), s32_encode(2)},
+         {s32_encode(3), s32_encode(4)},
+         {s32_encode(4), s32_encode(2)},
+         {s32_encode(5), s32_encode(7)},
+         {s32_encode(6), s32_encode(2)}})
+    edge->insertTupleAllIndices(row.data());
+
+  auto bound = q::bind(sealed, db);
+  q::Context context(db, bound);
+  std::vector<std::vector<u64>> actual;
+  while (context.status() != q::Status::complete)
+  {
+    const q::Page page = context.next(2, 4, 2);
+    actual.insert(actual.end(), page.rows.begin(), page.rows.end());
+  }
+  std::sort(actual.begin(), actual.end());
+  CHECK(actual ==
+        (std::vector<std::vector<u64>>{
+          {s32_encode(1)}, {s32_encode(2)},
+          {s32_encode(4)}, {s32_encode(6)}}));
+
+  const auto rejects = [](q::ErrorK kind, auto&& thunk) {
+    try { thunk(); }
+    catch (const q::Error& error) { return error.kind() == kind; }
+    return false;
+  };
+  CHECK(rejects(q::ErrorK::parse, [&] {
+    (void)q::parse_plan(replace_once(payload, "(rel 0", "(rel 1"));
+  }));
+  CHECK(rejects(q::ErrorK::plan, [&] {
+    (void)q::seal(q::parse_plan(
+      replace_once(payload, "(abi 1)", "(abi 2)")));
+  }));
+
+  // The typed builder resolves only VersionKey. A same-named runtime relation
+  // with another identity cannot satisfy the serialized catalog binding.
+  Database wrong_version(1);
+  wrong_version.addRelation("edge", 2);
+  wrong_version.getRelation("edge")->addIndex<2>({0, 1}, false);
+  wrong_version.getRelation("edge")->addIndex<2>({1, 0}, false);
+  CHECK(rejects(q::ErrorK::binding,
+                [&] { (void)q::bind(sealed, wrong_version); }));
+  return true;
+}
+
+bool test_query_context_r2_modes_pagination_and_hygiene()
+{
+  const std::vector<u16> order{0, 1};
+  const std::vector<RelationShape> shapes{{2, {order}}, {2, {order}}};
+  Database db(1);
+  db.addRelation("edge", 2);
+  db.addRelation("label", 2);
+  Relation* edge = db.getRelation("edge");
+  Relation* label = db.getRelation("label");
+  edge->addIndex<2>(order, false);
+  label->addIndex<2>(order, false);
+
+  for (const auto& row : std::vector<std::array<u64, 2>>{
+         {1, 2}, {2, 3}, {2, 4}, {3, 5}, {4, 5}, {8, 9}})
+    edge->insertTupleAllIndices(row.data());
+  const u64 known = db.encodeString("known");
+  const u64 other = db.encodeString("other");
+  const u64 known_big = db.encodeIntLiteral("2147483648");
+  const std::array<u64, 2> sequence_values{s32_encode(7), s32_encode(8)};
+  const u64 known_sequence = db.sequences()->build(
+    sequence_values.data(), sequence_values.size());
+  for (const auto& row : std::vector<std::array<u64, 2>>{
+         {1, known}, {2, other}, {3, known}, {4, known_big},
+         {5, known_sequence}, {6, s32_encode(3)}})
+    label->insertTupleAllIndices(row.data());
+
+  const auto heap_before = db.queryHeapState();
+  const PendingError pending_before = db.currentPendingError();
+  const auto edge_before = nominal_index_rows(edge, order);
+  const auto label_before = nominal_index_rows(label, order);
+
+  q::Plan rows;
+  rows.nregs = 3;
+  rows.driver = {0, order, {0, 1}};
+  rows.body.push_back(ProbePlan{0, order, 1, {1, 2}});
+  rows.project = {0, 2};
+  rows.mode = q::Mode::rows;
+  const q::SealedPlan sealed_rows = q::seal(rows, shapes);
+  auto bound_rows = q::bind(sealed_rows, db, {edge, label});
+  CHECK(bound_rows->explain().find("(mode rows)") != std::string::npos);
+  CHECK(bound_rows->explain().find("driver scan-full") != std::string::npos);
+  CHECK(bound_rows->explain().find("(sink yield)") != std::string::npos);
+  CHECK(bound_rows->explain().find("(degraded no)") != std::string::npos);
+
+  std::vector<std::vector<u64>> actual;
+  q::Context context(db, bound_rows, q::Admission::idle);
+  // A zero cursor budget and tiny transition slice must park without losing
+  // the driver or first probe position.
+  q::Page first = context.next(2, 2, 0);
+  CHECK(first.status == q::Status::paused);
+  actual.insert(actual.end(), first.rows.begin(), first.rows.end());
+  u64 pages = 0;
+  for (u64 guard = 0; context.status() != q::Status::complete && guard < 1000;
+       ++guard)
+  {
+    q::Page page = context.next(1, 3, 1);
+    CHECK(page.status == q::Status::page
+          || page.status == q::Status::paused
+          || page.status == q::Status::complete);
+    CHECK(page.rows.size() <= 1);
+    if (page.status == q::Status::page) ++pages;
+    actual.insert(actual.end(), page.rows.begin(), page.rows.end());
+  }
+  CHECK(context.status() == q::Status::complete);
+  CHECK(pages != 0);
+  std::sort(actual.begin(), actual.end());
+  const std::vector<std::vector<u64>> expected{
+    {1, 3}, {1, 4}, {2, 5}, {2, 5}};
+  CHECK(actual == expected);
+
+  const auto collect_query_rows = [&](const auto& bound) {
+    q::Context query(db, bound);
+    std::vector<std::vector<u64>> result;
+    for (u64 guard = 0;
+         query.status() != q::Status::complete && guard < 1000; ++guard)
+    {
+      q::Page page = query.next(2, 5, 2);
+      result.insert(result.end(), page.rows.begin(), page.rows.end());
+    }
+    std::sort(result.begin(), result.end());
+    return result;
+  };
+
+  // Q1's audited compute table binds checked, storage-neutral adapters. A
+  // numeric comparison may guard rows, an immediate conversion may project a
+  // value, and a partial sequence cast quietly rejects non-sequence rows.
+  q::Plan guarded;
+  guarded.nregs = 3;
+  guarded.preloads.push_back({2, s32_encode(4)});
+  guarded.driver = {1, order, {0, 1}};
+  guarded.body.push_back(PrimPlan{PrimK::guard, "lt", 0, {1, 2}});
+  guarded.project = {0, 1};
+  auto bound_guarded = q::bind(q::seal(guarded, shapes), db, {edge, label});
+  CHECK(bound_guarded->explain().find("(safe-computes 1)")
+        != std::string::npos);
+  CHECK(collect_query_rows(bound_guarded) ==
+        (std::vector<std::vector<u64>>{{6, s32_encode(3)}}));
+
+  q::Plan converted;
+  converted.nregs = 3;
+  converted.driver = {1, order, {0, 1}};
+  converted.body.push_back(
+    PrimPlan{PrimK::total, "tofloat", 2, {1}});
+  converted.project = {0, 2};
+  auto converted_rows = collect_query_rows(
+    q::bind(q::seal(converted, shapes), db, {edge, label}));
+  std::vector<std::vector<u64>> expected_converted{
+    {4, float_encode(2147483648.0)}, {6, float_encode(3.0)}};
+  std::sort(expected_converted.begin(), expected_converted.end());
+  CHECK(converted_rows == expected_converted);
+
+  q::Plan sequence_cast;
+  sequence_cast.nregs = 3;
+  sequence_cast.driver = {1, order, {0, 1}};
+  sequence_cast.body.push_back(
+    PrimPlan{PrimK::partial, "aslst", 2, {1}});
+  sequence_cast.project = {0, 2};
+  CHECK(collect_query_rows(
+          q::bind(q::seal(sequence_cast, shapes), db, {edge, label})) ==
+        (std::vector<std::vector<u64>>{{5, known_sequence}}));
+
+  // A K=0 ordinary body probe walks every bucket of an already-materialized
+  // full index. The following equality is the planner's scan-plus-filter
+  // lowering when no positive prefix exists in the selected order.
+  q::Plan body_scan;
+  body_scan.nregs = 4;
+  body_scan.driver = {1, order, {0, 1}};
+  body_scan.body.push_back(ProbePlan{0, order, 0, {2, 3}});
+  body_scan.body.push_back(EqPlan{3, 0});
+  body_scan.project = {2, 1};
+  auto bound_body_scan = q::bind(
+    q::seal(body_scan, shapes), db, {edge, label});
+  CHECK(bound_body_scan->explain().find("(degraded scan-plus-filter)")
+        != std::string::npos);
+  std::vector<std::vector<u64>> expected_body_scan{
+    {1, other}, {2, known}, {2, known_big},
+    {3, known_sequence}, {4, known_sequence}};
+  std::sort(expected_body_scan.begin(), expected_body_scan.end());
+  CHECK(collect_query_rows(bound_body_scan) == expected_body_scan);
+
+  auto compute_cancelled = std::make_unique<q::Context>(db, bound_guarded);
+  CHECK(compute_cancelled->next(1, 0, 0).status == q::Status::paused);
+  compute_cancelled->cancel();
+  CHECK(compute_cancelled->status() == q::Status::cancelled);
+
+  q::Plan count = rows;
+  count.mode = q::Mode::count;
+  count.project.clear();
+  auto bound_count = q::bind(q::seal(count, shapes), db, {edge, label});
+  q::Context count_context(db, bound_count, q::Admission::boundary);
+  q::Page count_page;
+  do { count_page = count_context.next(0, 5, 2); }
+  while (count_page.status != q::Status::complete);
+  CHECK(count_page.rows.empty());
+  CHECK(count_page.matched == expected.size());
+
+  q::Plan exists = count;
+  exists.mode = q::Mode::exists;
+  auto bound_exists = q::bind(q::seal(exists, shapes), db, {edge, label});
+  q::Context exists_context(db, bound_exists, q::Admission::mid_read);
+  q::Page exists_page;
+  do { exists_page = exists_context.next(0, 2, 1); }
+  while (exists_page.status != q::Status::complete);
+  CHECK(exists_page.rows.empty() && exists_page.matched == 1);
+
+  // One active cursor per database. Cancellation drops only query-local VM,
+  // page, and admission state, after which another query may start.
+  auto cancelled = std::make_unique<q::Context>(
+    db, bound_rows, q::Admission::read_complete);
+  CHECK([&] {
+    try { q::Context second(db, bound_rows); }
+    catch (const q::Error& error) {
+      return error.kind() == q::ErrorK::admission;
+    }
+    return false;
+  }());
+  cancelled->cancel();
+  CHECK(cancelled->next(1, 1, 1).status == q::Status::cancelled);
+
+  // R2 string literals resolve through the non-allocating probe. A missing
+  // literal closes the query empty and remains absent from the heap.
+  q::Plan labels;
+  labels.nregs = 3;
+  labels.literals.push_back({2, q::LiteralK::string, "known"});
+  labels.driver = {1, order, {0, 1}};
+  labels.body.push_back(EqPlan{1, 2});
+  labels.project = {0};
+  auto bound_labels = q::bind(q::seal(labels, shapes), db, {edge, label});
+  q::Context label_context(db, bound_labels);
+  std::vector<std::vector<u64>> label_rows;
+  while (label_context.status() != q::Status::complete)
+  {
+    q::Page page = label_context.next(1, 5, 2);
+    label_rows.insert(label_rows.end(), page.rows.begin(), page.rows.end());
+  }
+  std::sort(label_rows.begin(), label_rows.end());
+  CHECK(label_rows == (std::vector<std::vector<u64>>{{1}, {3}}));
+
+  u64 missing_word = 0;
+  CHECK(!db.probeString("missing", missing_word));
+  q::Plan missing = labels;
+  missing.literals[0].text = "missing";
+  auto bound_missing = q::bind(q::seal(missing, shapes), db, {edge, label});
+  CHECK(!bound_missing->has_matches_possible());
+  q::Context missing_context(db, bound_missing);
+  CHECK(missing_context.status() == q::Status::complete);
+  CHECK(missing_context.next(1, 10, 10).rows.empty());
+  CHECK(!db.probeString("missing", missing_word));
+
+  q::Plan big = labels;
+  big.literals[0] = {2, q::LiteralK::integer, "2147483648"};
+  auto bound_big = q::bind(q::seal(big, shapes), db, {edge, label});
+  q::Context big_context(db, bound_big);
+  std::vector<std::vector<u64>> big_rows;
+  while (big_context.status() != q::Status::complete)
+  {
+    q::Page page = big_context.next(1, 5, 2);
+    big_rows.insert(big_rows.end(), page.rows.begin(), page.rows.end());
+  }
+  CHECK(big_rows == (std::vector<std::vector<u64>>{{4}}));
+
+  q::Plan missing_big = big;
+  missing_big.literals[0].text = "2147483649";
+  auto bound_missing_big = q::bind(
+    q::seal(missing_big, shapes), db, {edge, label});
+  CHECK(!bound_missing_big->has_matches_possible());
+  q::Context missing_big_context(db, bound_missing_big);
+  CHECK(missing_big_context.status() == q::Status::complete);
+
+  const auto query_rejects = [](q::ErrorK kind, auto&& thunk) {
+    try { thunk(); }
+    catch (const q::Error& error) {
+      if (error.kind() != kind)
+        std::cerr << "unexpected query error " << q::error_class(error.kind())
+                  << ": " << error.what() << '\n';
+      return error.kind() == kind;
+    }
+    return false;
+  };
+  q::Plan long_literal = labels;
+  long_literal.literals[0].text.assign(SEQ_BLEAF_MAX + 1, 'x');
+  CHECK(query_rejects(q::ErrorK::literal,
+    [&] { (void)q::seal(long_literal, shapes); }));
+
+  q::Plan malformed_integer = big;
+  malformed_integer.literals[0].text = "12nope";
+  CHECK(query_rejects(q::ErrorK::literal, [&] {
+    (void)q::bind(q::seal(malformed_integer, shapes), db, {edge, label});
+  }));
+
+  q::Plan unsafe = rows;
+  unsafe.nregs = 4;
+  // Integer/string addition can allocate an mpz or rope, so it remains
+  // outside the storage-neutral query whitelist.
+  unsafe.body.push_back(
+    PrimPlan{PrimK::total, "_0002b", 3, {0, 1}});
+  CHECK(!q::admits_primitive(std::get<PrimPlan>(unsafe.body.back())));
+  CHECK(query_rejects(q::ErrorK::unsafe_compute,
+    [&] { (void)q::seal(unsafe, shapes); }));
+  q::Plan wrong_role = guarded;
+  std::get<PrimPlan>(wrong_role.body[0]).kind = PrimK::total;
+  CHECK(query_rejects(q::ErrorK::unsafe_compute,
+    [&] { (void)q::seal(wrong_role, shapes); }));
+
+  CHECK(query_rejects(q::ErrorK::admission, [&] {
+    q::Context refused(db, bound_rows, q::Admission::write_or_intern);
+  }));
+
+  // A paging error is terminal for that context and must release the
+  // database lease before propagating, so a fresh query can start at once.
+  auto failed_page = std::make_unique<q::Context>(db, bound_rows);
+  CHECK(query_rejects(q::ErrorK::pagination,
+    [&] { (void)failed_page->next(0, 1, 1); }));
+  CHECK(failed_page->status() == q::Status::cancelled);
+  q::Context after_failed_page(db, bound_rows);
+  after_failed_page.cancel();
+
+  // A catalog may claim an order at seal, but binding still proves it is an
+  // already-materialized concrete index; Q1 never builds it on demand.
+  const std::vector<u16> reverse{1, 0};
+  std::vector<RelationShape> claimed = shapes;
+  claimed[0].full_orders.push_back(reverse);
+  q::Plan unavailable = rows;
+  unavailable.driver.order = reverse;
+  CHECK(query_rejects(q::ErrorK::binding, [&] {
+    (void)q::bind(q::seal(unavailable, claimed), db, {edge, label});
+  }));
+
+  // Empty driver order is the explicit planner request for scan-plus-filter.
+  // Binding deterministically chooses an already-existing catalog order and
+  // remaps its physical tuple back onto nominal query registers.
+  Database fallback_db(1);
+  fallback_db.addRelation("reverse-only", 2);
+  Relation* reverse_only = fallback_db.getRelation("reverse-only");
+  reverse_only->addIndex<2>(reverse, false);
+  for (const std::array<u64, 2>& row :
+       {std::array<u64, 2>{1, 10}, {2, 20}, {2, 21}, {3, 30}})
+    reverse_only->insertTupleAllIndices(row.data());
+  const std::vector<RelationShape> fallback_shapes{{2, {reverse}}};
+  const auto fallback_rows_before = nominal_index_rows(reverse_only, reverse);
+  const auto fallback_heap_before = fallback_db.queryHeapState();
+  const PendingError fallback_pending_before =
+    fallback_db.currentPendingError();
+
+  q::Plan fallback;
+  fallback.nregs = 3;
+  fallback.preloads.push_back({2, 2});
+  fallback.driver = {0, {}, {0, 1}};
+  fallback.body.push_back(EqPlan{0, 2});
+  fallback.project = {1};
+  auto bound_fallback = q::bind(
+    q::seal(fallback, fallback_shapes), fallback_db, {reverse_only});
+  CHECK(bound_fallback->explain().find("(order 1 0)")
+        != std::string::npos);
+  CHECK(bound_fallback->explain().find("(degraded scan-plus-filter)")
+        != std::string::npos);
+
+  q::Context fallback_context(fallback_db, bound_fallback);
+  std::vector<std::vector<u64>> fallback_rows;
+  u64 fallback_pages = 0;
+  while (fallback_context.status() != q::Status::complete)
+  {
+    q::Page page = fallback_context.next(1, 2, 1);
+    if (page.status == q::Status::page) ++fallback_pages;
+    fallback_rows.insert(
+      fallback_rows.end(), page.rows.begin(), page.rows.end());
+  }
+  std::sort(fallback_rows.begin(), fallback_rows.end());
+  CHECK(fallback_rows == (std::vector<std::vector<u64>>{{20}, {21}}));
+  CHECK(fallback_pages != 0);
+
+  q::Context fallback_cancel(fallback_db, bound_fallback);
+  CHECK(fallback_cancel.next(1, 0, 0).status == q::Status::paused);
+  fallback_cancel.cancel();
+  CHECK(nominal_index_rows(reverse_only, reverse) == fallback_rows_before);
+  CHECK(fallback_db.queryHeapState() == fallback_heap_before);
+  const PendingError fallback_pending_after =
+    fallback_db.currentPendingError();
+  CHECK(fallback_pending_after.kind == fallback_pending_before.kind
+        && fallback_pending_after.op == fallback_pending_before.op
+        && fallback_pending_after.a == fallback_pending_before.a
+        && fallback_pending_after.b == fallback_pending_before.b);
+
+  // The Q1 gate: success, pagination, zero-budget pause, count/exists,
+  // cancellation, missing literals, and refused queries leave every master
+  // row and every interner heap exactly unchanged.
+  CHECK(nominal_index_rows(edge, order) == edge_before);
+  CHECK(nominal_index_rows(label, order) == label_before);
+  CHECK(db.queryHeapState() == heap_before);
+  const PendingError pending_after = db.currentPendingError();
+  CHECK(pending_after.kind == pending_before.kind
+        && pending_after.op == pending_before.op
+        && pending_after.a == pending_before.a
+        && pending_after.b == pending_before.b);
+  return true;
+}
+
+bool test_view_and_filter_cursor_registrations()
+{
+  const std::vector<u16> order{0, 1};
+  const RelationShape driver_shape{2, {order}};
+  const RelationShape view_shape{
+    2, {order}, RelationK::plain, {order}};
+  const RelationShape unary_shape{1, {{0}}};
+  const RelationShape output_shape{2, {order}};
+  const std::vector<RelationShape> shapes{
+    driver_shape, view_shape, view_shape, unary_shape,
+    output_shape, output_shape, output_shape, output_shape};
+
+  auto driver = make_relation("view-driver", 2, {order});
+  auto old_view = make_relation("old-view", 2, {order});
+  auto new_view = make_relation("new-view", 2, {order});
+  auto allowed = std::make_unique<Relation>("allowed", 1, 0);
+  allowed->initShards(1);
+  allowed->addIndex<1>({0}, false);
+  auto old_out = make_relation("old-out", 2, {order});
+  auto new_out = make_relation("new-out", 2, {order});
+  auto exists_out = make_relation("exists-out", 2, {order});
+  auto absent_out = make_relation("absent-out", 2, {order});
+
+  load_delta(driver.get(), {{100, 7}, {200, 8}});
+  insert_nominal(old_view.get(), {7, 10});
+  insert_nominal(old_view.get(), {7, 11});
+  insert_nominal(old_view.get(), {8, 20});
+  add_delta_index_rows2(old_view.get(), order, {{7, 11}});
+  insert_nominal(new_view.get(), {7, 30});
+  insert_nominal(new_view.get(), {7, 31});
+  insert_nominal(new_view.get(), {8, 40});
+  add_delta_index_rows2(new_view.get(), order, {{7, 31}, {7, 32}});
+  insert_nominal(allowed.get(), {7});
+
+  auto run = [&](RulePlan plan, Relation* output) {
+    BoundRule bound(seal_rule(plan, shapes),
+      {driver.get(), old_view.get(), new_view.get(), allowed.get(),
+       old_out.get(), new_out.get(), exists_out.get(), absent_out.get()});
+    u64 fires = 0;
+    for (u16 bucket = 0; bucket < bound.task_count(); ++bucket)
+    {
+      auto task = bound.make_task(bucket);
+      while (!task->done())
+      {
+        const StopReason why = task->run_fast(2, 1);
+        seal_check(why == StopReason::quantum || why == StopReason::cursor
+                     || why == StopReason::complete,
+                   "fixture: unexpected interpreter stop");
+        if (why != StopReason::complete) task = task->continuation();
+      }
+      fires += task->result().fires;
+      bound.apply(task->result());
+    }
+    output->finalizeBatches();
+    return fires;
+  };
+
+  const u64 old_fires = run(RulePlan{
+    80, 0, "view-old#0", 3, {},
+    {DriverK::scan_delta, 0, {}, 0, {0, 1}},
+    {ProbePlan{1, order, 1, {1, 2}, ProbePlan::View::old, order}},
+    {EmitPlan{4, order, {0, 2}}}}, old_out.get());
+  const u64 new_fires = run(RulePlan{
+    81, 1, "view-new#1", 3, {},
+    {DriverK::scan_delta, 0, {}, 0, {0, 1}},
+    {ProbePlan{2, order, 1, {1, 2}, ProbePlan::View::new_, order}},
+    {EmitPlan{5, order, {0, 2}}}}, new_out.get());
+  const u64 exists_fires = run(RulePlan{
+    82, 2, "exists#2", 2, {},
+    {DriverK::scan_delta, 0, {}, 0, {0, 1}},
+    {FilterPlan{FilterK::exists, 3, {0}, 1, {1}}},
+    {EmitPlan{6, order, {0, 1}}}}, exists_out.get());
+  const u64 absent_fires = run(RulePlan{
+    83, 3, "absent#3", 2, {},
+    {DriverK::scan_delta, 0, {}, 0, {0, 1}},
+    {FilterPlan{FilterK::absent, 3, {0}, 1, {1}}},
+    {EmitPlan{7, order, {0, 1}}}}, absent_out.get());
+
+  CHECK(old_fires == 2);
+  CHECK(new_fires == 4);
+  CHECK(exists_fires == 1);
+  CHECK(absent_fires == 1);
+  CHECK(nominal_delta_rows(old_out.get()) ==
+        (std::vector<std::vector<u64>>{{100, 10}, {200, 20}}));
+  CHECK(nominal_delta_rows(new_out.get()) ==
+        (std::vector<std::vector<u64>>{{100, 30}, {100, 31}, {100, 32},
+                                       {200, 40}}));
+  CHECK(nominal_delta_rows(exists_out.get()) ==
+        (std::vector<std::vector<u64>>{{100, 7}}));
+  CHECK(nominal_delta_rows(absent_out.get()) ==
+        (std::vector<std::vector<u64>>{{200, 8}}));
+
+  // Differential against the generated/native helpers for this read
+  // iteration, including fire multiplicity rather than final-set equality.
+  std::vector<std::vector<u64>> native_old, native_new;
+  join_probe_old<2, 1>(old_view->getIndex(order, false),
+                       old_view->getIndex(order, true), {7, 0},
+    [&](const auto& row) { native_old.push_back({100, row[1]}); });
+  join_probe_new<2, 1>(new_view->getIndex(order, false),
+                       new_view->getIndex(order, true), {7, 0},
+    [&](const auto& row) { native_new.push_back({100, row[1]}); });
+  join_probe_old<2, 1>(old_view->getIndex(order, false),
+                       old_view->getIndex(order, true), {8, 0},
+    [&](const auto& row) { native_old.push_back({200, row[1]}); });
+  join_probe_new<2, 1>(new_view->getIndex(order, false),
+                       new_view->getIndex(order, true), {8, 0},
+    [&](const auto& row) { native_new.push_back({200, row[1]}); });
+  std::sort(native_old.begin(), native_old.end());
+  std::sort(native_new.begin(), native_new.end());
+  CHECK(native_old == nominal_delta_rows(old_out.get()));
+  CHECK(native_new == nominal_delta_rows(new_out.get()));
+  CHECK(old_fires == native_old.size());
+  CHECK(new_fires == native_new.size());
+  CHECK((exists_probe<1, 1>(allowed->getIndex({0}, false), {7})));
+  CHECK((absent_probe<1, 1>(allowed->getIndex({0}, false), {8})));
+
+  // K=0 view scans and absence are part of these registrations even though
+  // ordinary full-view K=0 joins remain a later roadmap group.
+  auto old_all = make_set_view_cursor(
+    2, old_view->getIndex(order, false), old_view->getIndex(order, true),
+    {0, 1}, 0, ProbePlan::View::old);
+  u64 regs[2]{0, 0};
+  old_all->open(regs);
+  std::vector<std::vector<u64>> all_rows;
+  for (;;)
+  {
+    WorkBudget budget{1};
+    const CursorResult result = old_all->next(regs, budget);
+    if (result == CursorResult::paused) continue;
+    if (result == CursorResult::exhausted) break;
+    all_rows.push_back({regs[0], regs[1]});
+  }
+  std::sort(all_rows.begin(), all_rows.end());
+  CHECK(all_rows == (std::vector<std::vector<u64>>{{7, 10}, {8, 20}}));
+  auto absent_all = make_set_filter_cursor(
+    1, allowed->getIndex({0}, false), {}, 0, FilterK::absent);
+  absent_all->open(regs);
+  WorkBudget one{1};
+  CHECK(absent_all->next(regs, one) == CursorResult::exhausted);
+  auto empty = std::make_unique<Relation>("empty", 1, 0);
+  empty->initShards(1);
+  empty->addIndex<1>({0}, false);
+  auto absent_empty = make_set_filter_cursor(
+    1, empty->getIndex({0}, false), {}, 0, FilterK::absent);
+  absent_empty->open(regs);
+  WorkBudget another{1};
+  CHECK(absent_empty->next(regs, another) == CursorResult::match);
+  return true;
+}
+
+static std::vector<std::vector<u64>> nominal_index_rows(
+  Relation* rel, const std::vector<u16>& order)
+{
+  std::vector<u16> inverse(order.size(), 0);
+  for (u16 i = 0; i < order.size(); ++i) inverse[order[i]] = i;
+  std::vector<std::vector<u64>> rows;
+  Index** index = rel->getIndex(order, false);
+  for (u16 bucket = 0; bucket < bucket_count; ++bucket)
+    index[bucket]->forEach([&](const u64* tuple) {
+      std::vector<u64> nominal(order.size());
+      for (u16 column = 0; column < order.size(); ++column)
+        nominal[column] = tuple[inverse[column]];
+      rows.push_back(std::move(nominal));
+    });
+  std::sort(rows.begin(), rows.end());
+  return rows;
+}
+
+bool test_parsed_view_and_filter_forms()
+{
+  const std::string text =
+    "(kernel-plan (abi 1) (flavor normal) "
+    "(relations "
+      "(rel 0 (relation driver 2 (0 1))) "
+      "(rel 1 (relation view 2 (0 1) (delta 0 1))) "
+      "(rel 2 (relation keys 1 (0))) "
+      "(rel 3 (relation out 2 (0 1)))) "
+    "(attachments) (constants) (prims) (dynamic out) "
+    "(rules "
+      "(rule-def (rid 10) (variant \"old#0\") (nregs 3) (pre) "
+        "(driver (scan (rel 0) (r 0) (r 1))) "
+        "(body (join-old (rel 1) (0 1) 1 (0 1) (r 1) (r 2))) "
+        "(head (emit (rel 3) (0 1) (r 0) (r 2)))) "
+      "(rule-def (rid 11) (variant \"new#1\") (nregs 3) (pre) "
+        "(driver (scan (rel 0) (r 0) (r 1))) "
+        "(body (join-new (rel 1) (0 1) 1 (0 1) (r 1) (r 2))) "
+        "(head (emit (rel 3) (0 1) (r 0) (r 2)))) "
+      "(rule-def (rid 12) (variant \"exists#2\") (nregs 2) (pre) "
+        "(driver (scan (rel 0) (r 0) (r 1))) "
+        "(body (exists (rel 2) (0) 1 (r 1))) "
+        "(head (emit (rel 3) (0 1) (r 0) (r 1)))) "
+      "(rule-def (rid 13) (variant \"absent#3\") (nregs 2) "
+        "(pre (absent (rel 2) (0) 0)) "
+        "(driver (scan (rel 0) (r 0) (r 1))) "
+        "(body (absent (rel 2) (0) 1 (r 1))) "
+        "(head (emit (rel 3) (0 1) (r 0) (r 1))))) "
+    "(meta))";
+
+  const DecodedKernelPlan decoded = parse_kernel_plan(text);
+  CHECK(decoded.bindings[1].shape.delta_orders ==
+        (std::vector<std::vector<u16>>{{0, 1}}));
+  CHECK(decoded.rules.size() == 4);
+  const auto& old = std::get<ProbePlan>(decoded.rules[0].plan.body[0]);
+  const auto& next = std::get<ProbePlan>(decoded.rules[1].plan.body[0]);
+  CHECK(old.view == ProbePlan::View::old && old.delta_order ==
+        (std::vector<u16>{0, 1}));
+  CHECK(next.view == ProbePlan::View::new_);
+  CHECK(std::get<FilterPlan>(decoded.rules[2].plan.body[0]).kind
+        == FilterK::exists);
+  CHECK(decoded.rules[3].plan.prefilters.size() == 1);
+  CHECK(std::get<FilterPlan>(decoded.rules[3].plan.body[0]).kind
+        == FilterK::absent);
+  const SealedKernelPlan sealed = seal_kernel_plan(decoded);
+  CHECK(sealed.rules.size() == 4);
+  CHECK(sealed.rules[0].cursors.size() == 1);
+  CHECK(sealed.rules[3].prefilters.size() == 1);
+  return true;
+}
+
+bool test_parsed_primitives_letp_tycheck_native_differential()
+{
+  const std::string text =
+    "(kernel-plan (abi 1) (flavor normal) "
+    "(relations "
+      "(rel 0 (relation driver 7 (0 1 2 3 4 5 6))) "
+      "(rel 1 (relation out 2 (0 1))) "
+      "(rel 2 (struct malformed_deduction 5 "
+        "(1 2 3 4 0) (0 1 2 3 4)))) "
+    "(attachments) "
+    "(constants (k 0 one 1) (k 1 two 2)) "
+    "(prims _0002b cget gt) (dynamic out malformed_deduction) "
+    "(rules "
+      "(rule-def (rid 90) (variant \"delta:driver#0\") (nregs 14) "
+        "(pre "
+          "(let (r 10) (k 0)) "
+          "(let (r 11) (k 1)) "
+          "(let (r 12) (prim _0002b (r 10) (r 11))) "
+          "(cmp gt (r 12) (r 11))) "
+        "(driver (scan (rel 0) (r 0) (r 1) (r 2) (r 3) "
+                                  "(r 4) (r 5) (r 6))) "
+        "(body "
+          "(let (r 7) (prim _0002b (r 0) (r 1))) "
+          "(cmp gt (r 7) (r 0)) "
+          "(letp (r 8) (prim cget (r 2) (r 3))) "
+          "(let (r 13) (r 7)) "
+          "(eq (r 13) (r 7))) "
+        "(head "
+          "(tycheck (r 8) (accept int) (r 4) (r 5) (r 6) "
+                   "(1 2 3 4 0)) "
+          "(let (r 9) (prim _0002b (r 13) (r 8))) "
+          "(emit (rel 1) (0 1) (r 0) (r 9))))) "
+    "(meta (rule-meta (rid 90) (source \"t2b-prims.slog:1\"))))";
+
+  const DecodedKernelPlan decoded = parse_kernel_plan(text);
+  CHECK(decoded.primitives ==
+        (std::vector<std::string>{"_0002b", "cget", "gt"}));
+  CHECK(decoded.rules[0].plan.preops.size() == 2);
+  CHECK(std::holds_alternative<PrimPlan>(decoded.rules[0].plan.preops[0]));
+  CHECK(decoded.rules[0].plan.body.size() == 5);
+  CHECK(std::get<PrimPlan>(decoded.rules[0].plan.body[2]).kind
+        == PrimK::partial);
+  CHECK(decoded.rules[0].plan.head_prefix.size() == 2);
+  CHECK(std::holds_alternative<TycheckPlan>(
+          decoded.rules[0].plan.head_prefix[0]));
+
+  Database db(1);
+  db.addRelation("driver", 7);
+  db.addRelation("out", 2);
+  db.addStruct("malformed_deduction", 5);
+  Relation* driver = db.getRelation("driver");
+  Relation* output = db.getRelation("out");
+  Relation* malformed = db.getRelation("malformed_deduction");
+  driver->addIndex<7>({0, 1, 2, 3, 4, 5, 6}, false);
+  output->addIndex<2>({0, 1}, false);
+  malformed->addIndex<5>({1, 2, 3, 4, 0}, false);
+  malformed->addIndex<5>({0, 1, 2, 3, 4}, false);
+
+  const u64 key = s32_encode(7);
+  const u64 empty = _prim_cmap(&db);
+  const u64 int_map = _prim_cput(&db, empty, key, s32_encode(5));
+  const u64 bad_value = db.encodeString("not-an-int");
+  const u64 string_map = _prim_cput(&db, empty, key, bad_value);
+  const std::vector<std::vector<u64>> driver_rows{
+    {s32_encode(10), s32_encode(2), int_map, key,
+     s32_encode(90), s32_encode(3), s32_encode(1)},
+    {s32_encode(20), s32_encode(3), empty, key,
+     s32_encode(90), s32_encode(3), s32_encode(1)},
+    {s32_encode(30), s32_encode(4), string_map, key,
+     s32_encode(90), s32_encode(3), s32_encode(1)}
+  };
+  load_delta(driver, driver_rows);
+
+  // The reference path is the native emitter's straight-line control flow,
+  // calling the exact same shared primitive functions and applying its
+  // fire-before-tycheck ordering.
+  u64 native_fires = 0;
+  std::vector<std::vector<u64>> native_out;
+  std::vector<std::vector<u64>> native_malformed;
+  const u64 pre_sum = _prim__0002b(&db, s32_encode(1), s32_encode(2));
+  CHECK(_prim_gt(&db, pre_sum, s32_encode(2)) != 0);
+  for (const auto& row : driver_rows)
+  {
+    const u64 sum = _prim__0002b(&db, row[0], row[1]);
+    if (_prim_gt(&db, sum, row[0]) == 0) continue;
+    bool ok = true;
+    const u64 found = _prim_cget(&db, row[2], row[3], &ok);
+    if (!ok) continue;
+    ++native_fires;
+    if (!is_int(found))
+    {
+      native_malformed.push_back({row[4], row[5], row[6], found});
+      continue;
+    }
+    native_out.push_back({row[0], _prim__0002b(&db, sum, found)});
+  }
+
+  const SealedKernelPlan sealed = seal_kernel_plan(decoded, &db);
+  CHECK(sealed.rules[0].program.source == "t2b-prims.slog:1");
+  CHECK(sealed.rules[0].program.ops.size() == 9);
+  CHECK(sealed.rules[0].program.ops[0].kind == OpK::prim);
+  CHECK(sealed.rules[0].program.ops[1].kind == OpK::guard_cmp);
+  CHECK(sealed.rules[0].program.ops[2].kind == OpK::prim_partial);
+  CHECK(sealed.rules[0].program.ops[5].kind == OpK::fire);
+  CHECK(sealed.rules[0].program.ops[6].kind == OpK::tycheck);
+  CHECK(sealed.rules[0].effects.size() == 1);
+  const auto rules = bind_kernel_plan(sealed, db);
+  CHECK(rules.size() == 1);
+
+  u64 interp_fires = 0;
+  std::vector<std::vector<u64>> interp_out;
+  std::vector<std::vector<u64>> interp_malformed;
+  for (u16 bucket = 0; bucket < rules[0]->task_count(); ++bucket)
+  {
+    auto task = rules[0]->make_task(bucket);
+    while (!task->done())
+    {
+      const StopReason why = task->run_fast(2, 1);
+      CHECK(why == StopReason::quantum || why == StopReason::cursor
+            || why == StopReason::complete);
+      if (why != StopReason::complete) task = task->continuation();
+    }
+    interp_fires += task->result().fires;
+    for (size_t i = 0; i < task->result().outputs.size(); ++i)
+    {
+      if (task->result().output_sinks[i] == 0)
+        interp_out.push_back(task->result().outputs[i]);
+      else if (task->result().output_sinks[i] == 1)
+        interp_malformed.push_back(task->result().outputs[i]);
+      else
+        return fail("unexpected T2-B sink port");
+    }
+  }
+  std::sort(native_out.begin(), native_out.end());
+  std::sort(native_malformed.begin(), native_malformed.end());
+  std::sort(interp_out.begin(), interp_out.end());
+  std::sort(interp_malformed.begin(), interp_malformed.end());
+  CHECK(interp_fires == native_fires && native_fires == 2);
+  CHECK(interp_out == native_out && interp_out.size() == 1);
+  CHECK(interp_malformed == native_malformed
+        && interp_malformed.size() == 1);
+
+  // Exercise the production ordinary + struct sinks, not only captured
+  // candidates. A failed letp produces neither sink; a failed tycheck emits
+  // only the malformed struct fields while retaining its fire.
+  for (u16 bucket = 0; bucket < rules[0]->task_count(); ++bucket)
+  {
+    auto execution = rules[0]->make_execution(&db, bucket);
+    while (!execution->machine->done())
+      (void)execution->machine->run_fast(3, 2);
+    execution->flush();
+  }
+  output->finalizeBatches();
+  malformed->finalizeBatches();
+  CHECK(nominal_delta_rows(output) == native_out);
+  CHECK(nominal_delta_rows(malformed) ==
+        (std::vector<std::vector<u64>>{
+          {0, driver_rows[2][4], driver_rows[2][5],
+           driver_rows[2][6], bad_value}}));
+
+  const auto rejects_kind = [](SealErrorK kind, auto&& thunk) {
+    try { thunk(); }
+    catch (const SealError& error) { return error.kind() == kind; }
+    return false;
+  };
+
+  DecodedKernelPlan bad_arity = decoded;
+  std::get<PrimPlan>(bad_arity.rules[0].plan.body[0]).args.pop_back();
+  CHECK(rejects_kind(SealErrorK::capability,
+    [&] { (void)seal_kernel_plan(bad_arity, &db); }));
+
+  DecodedKernelPlan bad_partial = decoded;
+  std::get<PrimPlan>(bad_partial.rules[0].plan.body[2]).kind = PrimK::total;
+  CHECK(rejects_kind(SealErrorK::capability,
+    [&] { (void)seal_kernel_plan(bad_partial, &db); }));
+
+  DecodedKernelPlan bad_comparison = decoded;
+  std::get<PrimPlan>(bad_comparison.rules[0].plan.body[1]).name = "_0002b";
+  CHECK(rejects_kind(SealErrorK::capability,
+    [&] { (void)seal_kernel_plan(bad_comparison, &db); }));
+
+  DecodedKernelPlan undeclared = decoded;
+  undeclared.primitives.pop_back();
+  CHECK(rejects_kind(SealErrorK::capability,
+    [&] { (void)seal_kernel_plan(undeclared, &db); }));
+
+  DecodedKernelPlan unknown = decoded;
+  unknown.primitives.push_back("zzz");
+  CHECK(rejects_kind(SealErrorK::capability,
+    [&] { (void)seal_kernel_plan(unknown, &db); }));
+
+  DecodedKernelPlan bad_accept = decoded;
+  std::get<TycheckPlan>(bad_accept.rules[0].plan.head_prefix[0])
+    .accepts[0].name = "bool";
+  CHECK(rejects_kind(SealErrorK::capability,
+    [&] { (void)seal_kernel_plan(bad_accept, &db); }));
+
+  DecodedKernelPlan missing_malformed = decoded;
+  missing_malformed.bindings[2].name = "not_malformed_deduction";
+  CHECK(rejects_kind(SealErrorK::relation_slot,
+    [&] { (void)seal_kernel_plan(missing_malformed, &db); }));
+
+  DecodedKernelPlan missing_struct = decoded;
+  std::get<TycheckPlan>(missing_struct.rules[0].plan.head_prefix[0])
+    .accepts.push_back({TypeK::struct_, "not_a_runtime_struct"});
+  const SealedKernelPlan missing_struct_sealed =
+    seal_kernel_plan(missing_struct, &db);
+  CHECK(rejects_kind(SealErrorK::binding,
+    [&] { (void)bind_kernel_plan(missing_struct_sealed, db); }));
+
+  // Fallible total primitives abandon only the bad row and invoke the bound
+  // native error channel. This isolates the control-flow contract from the
+  // error struct transport (emit_pending_error itself is shared native code).
+  auto error_program = std::make_shared<Program>();
+  error_program->rule_id = 91;
+  error_program->variant = "primitive-error#0";
+  error_program->nregs = 3;
+  error_program->driver_regs = {0, 1};
+  error_program->operands = {0, 1};
+  error_program->source = "t2b-prims.slog:99";
+  error_program->ops = {
+    {OpK::prim, 0, 2, 0, 2},
+    {OpK::fire},
+    {OpK::emit2, 0, 0, 2}
+  };
+  auto error_rows =
+    std::make_shared<const std::vector<std::vector<u64>>>(
+      std::vector<std::vector<u64>>{
+        {s32_encode(8), s32_encode(2)},
+        {s32_encode(8), s32_encode(0)}});
+  primitive_error_callbacks = 0;
+  auto error_machine = std::make_unique<Machine>(
+    error_program, std::make_unique<VectorDriverCursor>(error_rows),
+    std::vector<std::unique_ptr<PrefixCursor>>{},
+    std::vector<BoundSink*>{}, nullptr, true, &db,
+    std::vector<BoundPrim>{resolve_primitive("_0002f")},
+    std::vector<BoundTycheck>{}, &record_primitive_error);
+  while (!error_machine->done())
+  {
+    const StopReason why = error_machine->run_observed(1, 1);
+    CHECK(why == StopReason::quantum || why == StopReason::complete);
+    if (why != StopReason::complete)
+      error_machine = error_machine->continuation();
+  }
+  CHECK(error_machine->result().fires == 1);
+  CHECK(error_machine->result().outputs ==
+        (std::vector<std::vector<u64>>{{s32_encode(8), s32_encode(4)}}));
+  CHECK(primitive_error_callbacks == 1);
+  return true;
+}
+
+bool test_parsed_sidecar_scheduler_admission()
+{
+  // This fixture is byte-for-byte compiler/canonical-plan.rkt output from
+  // bulk.slog.  In particular it contains the standard service-struct prelude;
+  // only edge and node are present in this deliberately narrow runtime frame.
+  const DecodedKernelPlan decoded =
+    parse_kernel_plan_file("tests/data/t0-normal-set.plan");
+  CHECK(decoded.abi == 1);
+  CHECK(decoded.flavor == "normal");
+  CHECK(decoded.bindings.size() == 14);
+  CHECK(decoded.bindings[0].name == "edge");
+  CHECK(decoded.bindings[2].name == "node");
+  CHECK(decoded.bindings[3].shape.kind == RelationK::struct_);
+  CHECK(decoded.rules.size() == 1);
+  CHECK(decoded.rules[0].plan.variant == "all:edge");
+  CHECK(decoded.sources.at(0) == "bulk.slog:9");
+
+  Database db(2);
+  db.addRelation("edge", 2);
+  db.addRelation("node", 1);
+  Relation* edge = db.getRelation("edge");
+  Relation* node = db.getRelation("node");
+  edge->addIndex<2>({0, 1}, false);
+  node->addIndex<1>({0}, false);
+
+  InsertBatch* input = new InsertBatch();
+  for (const std::array<u64, 2>& row :
+       {std::array<u64, 2>{10, 11}, {20, 21}, {10, 99}})
+  {
+    input->data[input->usage++] = row[0];
+    input->data[input->usage++] = row[1];
+  }
+  edge->sendBatch(input);
+
+  const SealedKernelPlan sealed = seal_kernel_plan(decoded, &db);
+  const auto rules = bind_kernel_plan(sealed, db);
+  CHECK(rules.size() == 1);
+
+  Stratum stratum("parsed-sidecar-admission");
+  for (u16 bucket = 0; bucket < bucket_count; ++bucket)
+  {
+    stratum.addTask(phase_write,
+      new WriteTask<2>(&db, edge, {0, 1}, false, bucket));
+    stratum.addTask(phase_write,
+      new WriteTask<1>(&db, node, {0}, false, bucket));
+    stratum.addTask(phase_intern,
+      new InternTask<2>(&db, edge, {0, 1}, bucket));
+    stratum.addTask(phase_intern,
+      new InternTask<1>(&db, node, {0}, bucket));
+  }
+  rules[0]->attach(&db, &stratum);
+
+  RunBudget budget;
+  budget.max_ms = 10000;
+  budget.mem_bytes = UINT64_MAX;
+  budget.stop_at_boundary = true;
+  RunStatus status = db.continueStratum(&stratum, budget, true, true);
+  while (!status.fixpoint)
+  {
+    CHECK(status.where == RUN_AT_BOUNDARY);
+    status = db.continueStratum(&stratum, budget, false, true);
+  }
+  CHECK(nominal_index_rows(node, {0}) ==
+        (std::vector<std::vector<u64>>{{10}, {20}}));
+  CHECK(db.fire_counts[std::make_pair(std::string("<interp-rule:0:variant:0>"),
+                                      std::string("all:edge"))] == 3);
+  return true;
+}
+
+bool test_shared_sexp_reader_contract()
+{
+  const sexp::Limits limits{1024, 32, 8};
+  const sexp::SExp form = sexp::read_one(
+    "(command |two words| \"line\\nvalue\" ; ignored\n (nested 7))",
+    limits);
+  CHECK(form.kind == sexp::SExp::K::list);
+  CHECK(form.children.size() == 4);
+  CHECK(form.children[0].text == "command");
+  CHECK(form.children[1].text == "two words");
+  CHECK(form.children[2].kind == sexp::SExp::K::string);
+  CHECK(form.children[2].text == "line\nvalue");
+  CHECK(form.children[3].children[0].text == "nested");
+
+  const auto rejects = [](sexp::ReaderErrorK wanted, std::string_view text,
+                          sexp::Limits reader_limits) {
+    try { (void)sexp::read_one(text, reader_limits); }
+    catch (const sexp::ReaderError& error) {
+      return error.kind() == wanted && error.offset() <= text.size();
+    }
+    return false;
+  };
+  CHECK(rejects(sexp::ReaderErrorK::syntax, "(one) (two)", limits));
+  CHECK(rejects(sexp::ReaderErrorK::limit, "(one)", {4, 32, 8}));
+  CHECK(rejects(sexp::ReaderErrorK::limit, "(((x)))", {1024, 32, 1}));
+  return true;
+}
+
+bool test_parsed_sidecar_refusal_classes()
+{
+  const std::string base =
+    "(kernel-plan (abi 1) (flavor normal) "
+    "(relations (rel 0 (relation in 2 (0 1))) "
+    "(rel 1 (relation out 2 (0 1)))) "
+    "(attachments) (constants) (prims) (dynamic out) "
+    "(rules (rule-def (rid 4) (variant \"all:in#3\") (nregs 2) "
+    "(pre) (driver (scan (rel 0) (r 0) (r 1))) (body) "
+    "(head (emit (rel 1) (0 1) (r 0) (r 1))))) "
+    "(meta (rule-meta (rid 4) (source \"fixture.slog:1\"))))";
+
+  const auto parse_rejects = [](ParseErrorK wanted, const std::string& text) {
+    try { (void)parse_kernel_plan(text); }
+    catch (const PlanParseError& error) { return error.kind() == wanted; }
+    return false;
+  };
+  const auto seal_rejects = [](SealErrorK wanted, const std::string& text,
+                               Database* db = nullptr) {
+    try { (void)seal_kernel_plan(parse_kernel_plan(text), db); }
+    catch (const SealError& error) { return error.kind() == wanted; }
+    return false;
+  };
+  const auto seal_accepts = [](const std::string& text) {
+    try { (void)seal_kernel_plan(parse_kernel_plan(text)); }
+    catch (...) { return false; }
+    return true;
+  };
+
+  CHECK(parse_rejects(ParseErrorK::syntax, base.substr(0, base.size() - 1)));
+  CHECK(parse_rejects(ParseErrorK::syntax,
+        replace_once(base, "(rel 1", "(rel 7")));
+  CHECK(parse_rejects(ParseErrorK::limit,
+        std::string(258, '(') + "x" + std::string(258, ')')));
+  CHECK([&] {
+    try { (void)parse_kernel_plan_file("tests/data/no-such-sidecar.plan"); }
+    catch (const PlanParseError& error) {
+      return error.kind() == ParseErrorK::io;
+    }
+    return false;
+  }());
+  CHECK(seal_rejects(SealErrorK::abi,
+        replace_once(base, "(abi 1)", "(abi 2)")));
+  CHECK(seal_rejects(SealErrorK::flavor,
+        replace_once(base, "(flavor normal)", "(flavor count)")));
+  CHECK(seal_rejects(SealErrorK::capability,
+        replace_once(base,
+          "(driver (scan (rel 0) (r 0) (r 1)))", "(driver (seeded))")));
+  CHECK(seal_rejects(SealErrorK::relation_slot,
+        replace_once(base, "(emit (rel 1)", "(emit (rel 9)")));
+  CHECK(seal_rejects(SealErrorK::relation_arity,
+        replace_once(base, "(relation out 2 (0 1))",
+                            "(relation out 65 (0 1))")));
+  CHECK(seal_rejects(SealErrorK::ordering,
+        replace_once(base, "(emit (rel 1) (0 1)",
+                                  "(emit (rel 1) (0 0)")));
+  CHECK(seal_rejects(SealErrorK::index_requisition,
+        replace_once(base, "(emit (rel 1) (0 1)",
+                                  "(emit (rel 1) (1 0)")));
+  CHECK(seal_rejects(SealErrorK::register_bounds,
+        replace_once(base, "(r 0) (r 1)))))", "(r 0) (r 9)))))")));
+  CHECK(seal_rejects(SealErrorK::dataflow,
+        replace_once(replace_once(base, "(nregs 2)", "(nregs 3)"),
+                     "(r 0) (r 1)))))", "(r 0) (r 2)))))")));
+  CHECK(seal_rejects(SealErrorK::head_coverage,
+        replace_once(base,
+          "(head (emit (rel 1) (0 1) (r 0) (r 1)))", "(head)")));
+  CHECK(seal_rejects(SealErrorK::bound_prefix,
+        replace_once(replace_once(base, "(nregs 2)", "(nregs 4)"),
+          "(body)", "(body (join (rel 0) (0 1) 1 (r 2) (r 3)))")));
+  CHECK(seal_accepts(
+        replace_once(replace_once(base, "(nregs 2)", "(nregs 4)"),
+          "(body)", "(body (join (rel 0) (0 1) 0 (r 2) (r 3)))")));
+  CHECK(seal_rejects(SealErrorK::relation_kind,
+        replace_once(base,
+          "(rel 1 (relation out 2 (0 1)))",
+          "(rel 1 (struct out 2 (0 1)))")));
+  CHECK(seal_rejects(SealErrorK::constant_slot,
+        replace_once(base, "(pre)", "(pre (let (r 0) (k 9)))")));
+
+  DecodedKernelPlan duplicate = parse_kernel_plan(base);
+  duplicate.rules.push_back(duplicate.rules[0]);
+  CHECK([&] {
+    try { (void)seal_kernel_plan(duplicate); }
+    catch (const SealError& error) {
+      return error.kind() == SealErrorK::variant_identity;
+    }
+    return false;
+  }());
+  duplicate.rules[1].plan.variant = "all:in#4";
+  duplicate.rules[1].plan.variant_ordinal = 4;
+  CHECK(seal_kernel_plan(duplicate).rules.size() == 2);
+
+  Database constant_db(1);
+  const std::string constant_plan = replace_once(
+    replace_once(
+      replace_once(base, "(constants)",
+                   "(constants (k 0 seven 7) (k 1 label \"ok\"))"),
+      "(pre)", "(pre (let (r 0) (k 0)))"),
+    "(driver (scan (rel 0) (r 0) (r 1)))",
+    "(driver (probe (rel 0) (0 1) 1 (r 0) (r 1)))");
+  const DecodedKernelPlan decoded = parse_kernel_plan(constant_plan);
+  CHECK(decoded.constants.size() == 2);
+  CHECK(decoded.constants[0].kind == ConstantK::integer);
+  CHECK(decoded.constants[1].kind == ConstantK::string);
+  CHECK(decoded.rules[0].plan.variant_ordinal == 3);
+  const SealedKernelPlan sealed = seal_kernel_plan(decoded, &constant_db);
+  CHECK(sealed.rules[0].program.preloads ==
+        (std::vector<std::pair<u16, u64>>{{0, s32_encode(7)}}));
+
+  Database missing(1);
+  CHECK([&] {
+    try { (void)bind_kernel_plan(seal_kernel_plan(parse_kernel_plan(base)), missing); }
+    catch (const SealError& error) { return error.kind() == SealErrorK::binding; }
+    return false;
+  }());
+  return true;
+}
+
+bool test_real_interp_read_task_recursive_admission()
+{
+  class NativeBaseTask final : public Task
+  {
+    Database* db;
+    Relation* edge;
+    Relation* path;
+    Index** path_index;
+    u16 bucket;
+  public:
+    NativeBaseTask(Database* d, Relation* e, Relation* p, u16 b)
+      : db(d), edge(e), path(p), path_index(p->getIndex({0, 1}, false)),
+        bucket(b) {}
+    bool work() override
+    {
+      InsertBatch* batch = new InsertBatch();
+      u64 fires = 0;
+      read_delta(edge, bucket, db->getThreadCount(), [&](const u64* row) {
+        ++fires;
+        emit<2>(path, path_index, batch, {row[0], row[1]}, {0, 1});
+      });
+      path->sendBatch(batch);
+      if (fires) db->bumpFires("<native>", "delta:admit_edge#0", fires);
+      return true;
+    }
+  };
+
+  class NativeRecursiveTask final : public Task
+  {
+    Database* db;
+    Relation* path;
+    Index** edge_index;
+    Index** path_index;
+    u16 bucket;
+  public:
+    NativeRecursiveTask(Database* d, Relation* e, Relation* p, u16 b)
+      : db(d), path(p), edge_index(e->getIndex({0, 1}, false)),
+        path_index(p->getIndex({0, 1}, false)), bucket(b) {}
+    bool work() override
+    {
+      InsertBatch* batch = new InsertBatch();
+      u64 fires = 0;
+      read_delta(path, bucket, db->getThreadCount(), [&](const u64* row) {
+        join_probe<2, 1>(edge_index, {row[1], 0}, [&](const auto& match) {
+          ++fires;
+          emit<2>(path, path_index, batch, {row[0], match[1]}, {0, 1});
+        });
+      });
+      path->sendBatch(batch);
+      if (fires) db->bumpFires("<native>", "delta:admit_path#0", fires);
+      return true;
+    }
+  };
+
+  Database db(2);
+  db.addRelation("admit_edge", 2);
+  db.addRelation("admit_path", 2);
+  Relation* edge = db.getRelation("admit_edge");
+  Relation* path = db.getRelation("admit_path");
+  const std::vector<u16> order{0, 1};
+  edge->addIndex<2>(order, false);
+  path->addIndex<2>(order, false);
+
+  InsertBatch* input = new InsertBatch();
+  for (const std::array<u64, 2>& row :
+       {std::array<u64, 2>{1, 2}, {2, 3}, {3, 4}})
+  {
+    input->data[input->usage++] = row[0];
+    input->data[input->usage++] = row[1];
+  }
+  edge->sendBatch(input);
+
+  Stratum stratum("interp-admission");
+  for (u16 bucket = 0; bucket < bucket_count; ++bucket)
+  {
+    stratum.addTask(phase_write,
+      new WriteTask<2>(&db, edge, {0, 1}, false, bucket));
+    stratum.addTask(phase_write,
+      new WriteTask<2>(&db, path, {0, 1}, false, bucket));
+    stratum.addTask(phase_intern,
+      new InternTask<2>(&db, edge, {0, 1}, bucket));
+    stratum.addTask(phase_intern,
+      new InternTask<2>(&db, path, {0, 1}, bucket));
+  }
+
+  const std::vector<RelationShape> shapes{
+    {2, {{0, 1}}}, {2, {{0, 1}}}
+  };
+  BoundRule base(seal_rule(RulePlan{
+      70, 0, "delta:admit_edge#0", 2, {},
+      {DriverK::scan_delta, 0, {}, 0, {0, 1}}, {},
+      {EmitPlan{1, {0, 1}, {0, 1}}}}, shapes),
+    {edge, path});
+  BoundRule recursive(seal_rule(RulePlan{
+      71, 0, "delta:admit_path#0", 3, {},
+      {DriverK::scan_delta, 1, {}, 0, {0, 1}},
+      {ProbePlan{0, {0, 1}, 1, {1, 2}}},
+      {EmitPlan{1, {0, 1}, {0, 2}}}}, shapes),
+    {edge, path});
+  base.attach(&db, &stratum);
+  recursive.attach(&db, &stratum);
+
+  RunBudget budget;
+  budget.max_ms = 10000;
+  budget.mem_bytes = UINT64_MAX;
+  budget.stop_at_boundary = true;
+
+  std::vector<std::vector<std::vector<u64>>> deltas;
+  RunStatus status = db.continueStratum(&stratum, budget, true, true);
+  while (!status.fixpoint)
+  {
+    CHECK(status.where == RUN_AT_BOUNDARY);
+    deltas.push_back(nominal_delta_rows(path));
+    status = db.continueStratum(&stratum, budget, false, true);
+  }
+
+  const std::vector<std::vector<std::vector<u64>>> native_deltas{
+    {{1, 2}, {2, 3}, {3, 4}},
+    {{1, 3}, {2, 4}},
+    {{1, 4}}
+  };
+  CHECK(deltas == native_deltas);
+  CHECK(nominal_index_rows(path, order) ==
+        (std::vector<std::vector<u64>>{{1, 2}, {1, 3}, {1, 4},
+                                       {2, 3}, {2, 4}, {3, 4}}));
+  CHECK(db.fire_counts[std::make_pair(std::string("<interp-rule:70:variant:0>"),
+                                      std::string("delta:admit_edge#0"))] == 3);
+  CHECK(db.fire_counts[std::make_pair(std::string("<interp-rule:71:variant:0>"),
+                                      std::string("delta:admit_path#0"))] == 3);
+
+  // Run the same recursive normal-set kernel through the fused native
+  // operators and the same scheduler/barriers.  This is the admission
+  // differential: per-iteration deltas and disaggregated variant fires must
+  // match, not merely the final set.
+  Database native_db(2);
+  native_db.addRelation("admit_edge", 2);
+  native_db.addRelation("admit_path", 2);
+  Relation* native_edge = native_db.getRelation("admit_edge");
+  Relation* native_path = native_db.getRelation("admit_path");
+  native_edge->addIndex<2>(order, false);
+  native_path->addIndex<2>(order, false);
+  InsertBatch* native_input = new InsertBatch();
+  for (const std::array<u64, 2>& row :
+       {std::array<u64, 2>{1, 2}, {2, 3}, {3, 4}})
+  {
+    native_input->data[native_input->usage++] = row[0];
+    native_input->data[native_input->usage++] = row[1];
+  }
+  native_edge->sendBatch(native_input);
+  Stratum native_stratum("native-admission");
+  for (u16 bucket = 0; bucket < bucket_count; ++bucket)
+  {
+    native_stratum.addTask(phase_write,
+      new WriteTask<2>(&native_db, native_edge, {0, 1}, false, bucket));
+    native_stratum.addTask(phase_write,
+      new WriteTask<2>(&native_db, native_path, {0, 1}, false, bucket));
+    native_stratum.addTask(phase_read,
+      new NativeBaseTask(&native_db, native_edge, native_path, bucket));
+    native_stratum.addTask(phase_read,
+      new NativeRecursiveTask(&native_db, native_edge, native_path, bucket));
+    native_stratum.addTask(phase_intern,
+      new InternTask<2>(&native_db, native_edge, {0, 1}, bucket));
+    native_stratum.addTask(phase_intern,
+      new InternTask<2>(&native_db, native_path, {0, 1}, bucket));
+  }
+  std::vector<std::vector<std::vector<u64>>> native_observed_deltas;
+  RunStatus native_status = native_db.continueStratum(
+    &native_stratum, budget, true, true);
+  while (!native_status.fixpoint)
+  {
+    CHECK(native_status.where == RUN_AT_BOUNDARY);
+    native_observed_deltas.push_back(nominal_delta_rows(native_path));
+    native_status = native_db.continueStratum(
+      &native_stratum, budget, false, true);
+  }
+  CHECK(deltas == native_observed_deltas);
+  CHECK(nominal_index_rows(path, order) ==
+        nominal_index_rows(native_path, order));
+  CHECK(native_db.fire_counts[std::make_pair(std::string("<native>"),
+         std::string("delta:admit_edge#0"))] == 3);
+  CHECK(native_db.fire_counts[std::make_pair(std::string("<native>"),
+         std::string("delta:admit_path#0"))] == 3);
+  return true;
+}
+
 bool test_seal_bind_scan_multihead_and_real_emit()
 {
   const std::vector<RelationShape> shapes{
@@ -1028,6 +2747,8 @@ bool test_seal_bind_scan_multihead_and_real_emit()
     bound.apply(task->result());
   }
 
+  output->finalizeBatches();
+  mirror->finalizeBatches();
   CHECK(fires == 3); // multi-head still counts each satisfying body once
   CHECK(candidates_by_sink == (std::array<u64, 2>{3, 3}));
   CHECK(nominal_delta_rows(output.get()) ==
@@ -1070,6 +2791,7 @@ bool test_seal_bind_probe_driver_and_task_partition()
     fires += task->result().fires;
     bound.apply(task->result());
   }
+  output->finalizeBatches();
   CHECK(fires == 1);
   CHECK(nominal_delta_rows(output.get()) ==
         (std::vector<std::vector<u64>>{{7, 12}}));
@@ -1094,6 +2816,7 @@ bool test_seal_bind_probe_driver_and_task_partition()
     if (why != StopReason::complete) task = task->continuation();
   }
   exact_bound.apply(task->result());
+  exact_out->finalizeBatches();
   CHECK(task->result().fires == 1);
   CHECK(nominal_delta_rows(exact_out.get()) ==
         (std::vector<std::vector<u64>>{{7, 12}}));
@@ -1186,6 +2909,7 @@ bool test_bound_nested_ternary_probes_debug_and_sink_order()
     fires += task->result().fires;
     bound.apply(task->result());
   }
+  out->finalizeBatches();
 
   CHECK(fires == 4);
   CHECK(breaks == 5);
@@ -1234,6 +2958,11 @@ bool test_seal_and_binding_rejections()
     catch (const SealError&) { return true; }
     return false;
   };
+  const auto rejects_kind = [](SealErrorK kind, auto&& thunk) {
+    try { thunk(); }
+    catch (const SealError& error) { return error.kind() == kind; }
+    return false;
+  };
 
   RulePlan bad = valid;
   std::get<ProbePlan>(bad.body[0]).relation = 9;
@@ -1251,6 +2980,10 @@ bool test_seal_and_binding_rejections()
   bad.heads[0].regs[1] = 9;
   CHECK(rejects([&] { (void)seal_rule(bad, shapes); }));
 
+  CHECK(rejects([&] {
+    (void)seal_rules(std::vector<RulePlan>{valid, valid}, shapes);
+  }));
+
   RulePlan bad_driver{
     45, 5, "bad-driver", 2, {},
     {DriverK::probe_full, 0, {0, 1}, 1, {0, 1}}, {},
@@ -1258,16 +2991,105 @@ bool test_seal_and_binding_rejections()
   };
   CHECK(rejects([&] { (void)seal_rule(bad_driver, shapes); }));
 
+  const std::vector<RelationShape> view_shapes{
+    {2, {{0, 1}}},
+    {2, {{0, 1}}, RelationK::plain, {{0, 1}}},
+    {2, {{0, 1}}}
+  };
+  const RulePlan valid_view{
+    50, 10, "view-validation#10", 3, {},
+    {DriverK::scan_delta, 0, {}, 0, {0, 1}},
+    {ProbePlan{1, {0, 1}, 1, {1, 2}, ProbePlan::View::old, {0, 1}}},
+    {EmitPlan{2, {0, 1}, {0, 2}}}
+  };
+  auto missing_delta_shape = view_shapes;
+  missing_delta_shape[1].delta_orders.clear();
+  CHECK(rejects_kind(SealErrorK::index_requisition, [&] {
+    (void)seal_rule(valid_view, missing_delta_shape);
+  }));
+
+  RulePlan mismatched_view = valid_view;
+  auto& mismatched_probe = std::get<ProbePlan>(mismatched_view.body[0]);
+  mismatched_probe.delta_order = {1, 0};
+  auto mismatch_shapes = view_shapes;
+  mismatch_shapes[1].delta_orders.push_back({1, 0});
+  CHECK(rejects_kind(SealErrorK::ordering, [&] {
+    (void)seal_rule(mismatched_view, mismatch_shapes);
+  }));
+
+  RulePlan exists_zero = valid;
+  exists_zero.body = {FilterPlan{FilterK::exists, 0, {0, 1}, 0, {}}};
+  CHECK(rejects_kind(SealErrorK::factory, [&] {
+    (void)seal_rule(exists_zero, shapes);
+  }));
+
+  auto view_driver = make_relation("view-reject-driver", 2, {{0, 1}});
+  auto view_lookup = make_relation("view-reject-lookup", 2, {{0, 1}});
+  auto view_output = make_relation("view-reject-output", 2, {{0, 1}});
+  const SealedRule sealed_view = seal_rule(valid_view, view_shapes);
+  CHECK(rejects_kind(SealErrorK::binding, [&] {
+    BoundRule bound(sealed_view,
+      {view_driver.get(), view_lookup.get(), view_output.get()});
+    (void)bound;
+  }));
+
   const std::vector<RelationShape> wide_shapes{
     {2, {{0, 1}}}, {4, {{0, 1, 2, 3}}}, {2, {{0, 1}}}
   };
-  RulePlan no_factory{
+  RulePlan wide_probe{
     47, 7, "no-factory", 5, {},
     {DriverK::scan_delta, 0, {}, 0, {0, 1}},
     {ProbePlan{1, {0, 1, 2, 3}, 1, {1, 2, 3, 4}}},
     {EmitPlan{2, {0, 1}, {0, 2}}}
   };
-  CHECK(rejects([&] { (void)seal_rule(no_factory, wide_shapes); }));
+  SealedRule wide = seal_rule(wide_probe, wide_shapes);
+  CHECK(wide.cursors.size() == 1); // full daemon arity capability, not 2/3-only
+
+  RulePlan wide_head{
+    48, 8, "wide-head", 5, {},
+    {DriverK::scan_delta, 0, {}, 0, {0, 1}},
+    {ProbePlan{1, {0, 1, 2, 3}, 1, {1, 2, 3, 4}}},
+    {EmitPlan{1, {0, 1, 2, 3}, {1, 2, 3, 4}}}
+  };
+  SealedRule wide_emit = seal_rule(wide_head, wide_shapes);
+  CHECK(wide_emit.program.ops.back().kind == OpK::emitn);
+  CHECK(wide_emit.program.operands == (std::vector<u16>{1, 2, 3, 4}));
+
+  const std::vector<RelationShape> wide_runtime_shapes{
+    {2, {{0, 1}}}, {4, {{0, 1, 2, 3}}}, {4, {{0, 1, 2, 3}}}
+  };
+  auto wide_driver = make_relation("wide-driver", 2, {{0, 1}});
+  auto wide_lookup = std::make_unique<Relation>("wide-lookup", 4, 0);
+  auto wide_output = std::make_unique<Relation>("wide-output", 4, 0);
+  wide_lookup->initShards(1);
+  wide_output->initShards(1);
+  wide_lookup->addIndex<4>({0, 1, 2, 3}, false);
+  wide_output->addIndex<4>({0, 1, 2, 3}, false);
+  load_delta(wide_driver.get(), {{50, 7}});
+  const u64 wide_row[4]{7, 8, 9, 10};
+  wide_lookup->insertTupleAllIndices(wide_row);
+  RulePlan wide_runtime{
+    49, 9, "wide-runtime", 5, {},
+    {DriverK::scan_delta, 0, {}, 0, {0, 1}},
+    {ProbePlan{1, {0, 1, 2, 3}, 1, {1, 2, 3, 4}}},
+    {EmitPlan{2, {0, 1, 2, 3}, {1, 2, 3, 4}}}
+  };
+  BoundRule wide_bound(seal_rule(wide_runtime, wide_runtime_shapes),
+    {wide_driver.get(), wide_lookup.get(), wide_output.get()});
+  for (u16 bucket = 0; bucket < wide_bound.task_count(); ++bucket)
+  {
+    auto task = wide_bound.make_task(bucket);
+    while (!task->done())
+    {
+      const StopReason why = task->run_fast(3, 2);
+      CHECK(why == StopReason::quantum || why == StopReason::cursor
+            || why == StopReason::complete);
+    }
+    wide_bound.apply(task->result());
+  }
+  wide_output->finalizeBatches();
+  CHECK(nominal_delta_rows(wide_output.get()) ==
+        (std::vector<std::vector<u64>>{{7, 8, 9, 10}}));
 
   auto r0 = make_relation("r0", 2, shapes[0].full_orders);
   auto wrong = make_relation("wrong", 3, {{0, 1, 2}});
@@ -1398,6 +3220,21 @@ int main(int argc, char** argv)
   ok &= test_breakpoints_are_post_transition_and_non_retriggering();
   ok &= test_selective_watch_proofs_and_failure_events();
   ok &= test_zero_mask_observer_has_zero_callbacks();
+  ok &= test_join3_cursor_all_views_native_differential();
+  ok &= test_join3_mixed_arm_arities();
+  ok &= test_parsed_join3_and_typed_refusals();
+  ok &= test_map_cursor_k0_native_differential();
+  ok &= test_full_view_k0_cursor_native_differential();
+  ok &= test_parsed_map_probes_and_typed_refusals();
+  ok &= test_catalog_query_payload_parse_seal_bind();
+  ok &= test_query_context_r2_modes_pagination_and_hygiene();
+  ok &= test_view_and_filter_cursor_registrations();
+  ok &= test_shared_sexp_reader_contract();
+  ok &= test_parsed_view_and_filter_forms();
+  ok &= test_parsed_primitives_letp_tycheck_native_differential();
+  ok &= test_parsed_sidecar_scheduler_admission();
+  ok &= test_parsed_sidecar_refusal_classes();
+  ok &= test_real_interp_read_task_recursive_admission();
   ok &= test_seal_bind_scan_multihead_and_real_emit();
   ok &= test_seal_bind_probe_driver_and_task_partition();
   ok &= test_bound_nested_ternary_probes_debug_and_sink_order();

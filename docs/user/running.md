@@ -1,6 +1,24 @@
 # Running Slog
 
-The main entry point is a Racket program:
+The normal interactive entry point is the native terminal frontend. Build it
+and copy it to the repository root with:
+
+```console
+$ make -C repl
+$ ./slog
+```
+
+It launches a private Racket session server and keeps one compiler/daemon
+session alive behind the terminal UI. Type `help` for available session
+commands, use PageUp/PageDown or the mouse wheel to revisit output, or type
+`quit` to close the daemon and restore the terminal.
+
+Type `library` to browse the saved databases under `data/`. The list reports
+stored fact counts, relation counts, and disk use without starting the daemon;
+selecting a row opens a contextual schema summary. Use arrows, the wheel, or a
+mouse click to select and Esc or `q` to return to the shell.
+
+For scripts and one-shot work, use the batch Racket entry point:
 
 ```console
 $ racket compiler/run.rkt [options] program.slog
@@ -15,6 +33,7 @@ repository-relative paths for `compiler/`, `daemon/`, `lib/`, `build/`, and
 Slog needs:
 
 - Racket and its `sha` package
+- Rust and Cargo for the interactive frontend (not required for batch mode)
 - GNU Make
 - Clang with C++20 support
 - OpenMP matching that Clang installation

@@ -157,6 +157,35 @@ private:
       else
 	return 0;
     }
+
+    // Read-only content lookup.  Unlike intern_value this never allocates a
+    // replacement vector and never takes ownership of `value`; Q1 uses it to
+    // resolve literals without changing an interner heap.
+    bool probe_value(const T& value, const u32 h, u64& intern) const
+    {
+      const u64 pos = (h >> intern_buckets_bits) & 0x1f;
+      std::vector<T*>* ptr = data[pos].load();
+      if (ptr == nullptr) return false;
+      for (u16 i = 0; i < ptr->size(); ++i)
+        if (*ptr->operator[](i) == value)
+        {
+          intern = (pos << intern_buckets_bits) | (h & intern_buckets_mask)
+                 | ((u64)i << (5 + intern_buckets_bits));
+          return true;
+        }
+      return false;
+    }
+
+    u64 value_count() const
+    {
+      u64 count = 0;
+      for (u16 i = 0; i < 32; ++i)
+      {
+        std::vector<T*>* vec = data[i].load();
+        if (vec != nullptr) count += vec->size();
+      }
+      return count;
+    }
   };
 
   std::atomic<std::pair<void*,void*>*> usedpairs[128];
@@ -224,9 +253,39 @@ public:
     return 0;
   }
 
+  // Probe by content without inserting.  Safe in the read phase, where the
+  // table is immutable; callers receive the same canonical id intern_value
+  // would have returned on a duplicate hit.
+  bool probe_value(const T& value, u64& intern, u32 hash = (u32)-1) const
+  {
+    if (hash == (u32)-1) hash = fasthash<T>(value);
+    void* outer = table[hash & intern_buckets_mask].load();
+    if (outer == nullptr) return false;
+    if (hasInner(outer))
+      return decodeInner(outer)->probe_value(value, hash, intern);
+    auto* pair = (std::pair<u64,T*>*)outer;
+    if (*pair->second != value) return false;
+    intern = pair->first;
+    return true;
+  }
+
+  // Exact visible-entry count for the Q1 hygiene snapshot.  This is an
+  // intentionally cold, quiescent-state audit rather than a hot-path stat.
+  u64 value_count() const
+  {
+    u64 count = 0;
+    for (u32 i = 0; i < intern_buckets; ++i)
+    {
+      void* outer = table[i].load();
+      if (outer == nullptr) continue;
+      count += hasInner(outer) ? decodeInner(outer)->value_count() : 1;
+    }
+    return count;
+  }
+
   u64 intern_value(T* val, u32 hash = -1)
   {
-    if (hash == -1) hash = fasthash<T>(*val);
+    if (hash == (u32)-1) hash = fasthash<T>(*val);
     // Takes a T*, interns if 
     u32 tophash = intern_buckets_mask & hash;
     void* old = table[tophash].load();
@@ -404,5 +463,3 @@ public:
 
  
 } // namespace slog
-
-

@@ -14,6 +14,7 @@
 ;;     replay (P1 adds recompute for per<100%).
 
 (provide slog-db-command
+         db-library-summaries
          db-load-actions
          db-load-steps
          db-referenced-by
@@ -109,6 +110,114 @@
         [(< n (* 1024 1024)) (format "~aK" (quotient n 1024))]
         [(< n (* 1024 1024 1024)) (format "~aM" (quotient n (* 1024 1024)))]
         [else (format "~aG" (quotient n (* 1024 1024 1024)))]))
+
+;; ---------------------------------------------------------------------------
+;; Read-only library summaries for interactive clients
+;; ---------------------------------------------------------------------------
+
+;; Relation tuple files are raw u64 words with no header (database.h's
+;; readBIN/writeAllFactsBIN contract), so a stored row occupies arity*8 bytes.
+;; The directory name is also the persisted schema: kind, name, arity, and
+;; either struct id or lattice specification. Gzipped legacy files cannot be
+;; counted from their compressed size; a save signature supplies the logical
+;; count when one exists.
+(define (relation-library-summary db-path entry signature)
+  (define file-name (path->string entry))
+  (define-values (kind name arity detail)
+    (match (regexp-match #px"^table\\.(.+)\\.arity\\.([0-9]+)$" file-name)
+      [(list _ n a) (values "table" n (string->number a) #f)]
+      [_
+       (match (regexp-match #px"^struct\\.(.+)\\.arity\\.([0-9]+)\\.id\\.([0-9]+)$"
+                            file-name)
+         [(list _ n a sid)
+          (values "struct" n (string->number a) (format "id ~a" sid))]
+         [_
+          (match (regexp-match #px"^lat\\.(.+)\\.arity\\.([0-9]+)\\.spec\\.(.+)$"
+                               file-name)
+            [(list _ n a spec)
+             (values "lattice" n (string->number a) spec)]
+            [_ (values #f #f #f #f)])])]))
+  (and kind
+       (let* ([relation-path (build-path db-path entry)]
+              [bin-files
+               (for/list ([path (in-directory relation-path)]
+                          #:when (and (file-exists? path)
+                                      (regexp-match? #px"\\.bin$" (path->string path))))
+                 path)]
+              [raw-bytes (for/sum ([path (in-list bin-files)]) (file-size path))]
+              [stored-facts (quotient raw-bytes (* 8 arity))]
+              [signed (and signature
+                           (hash-ref signature (string->symbol name) #f))]
+              [facts (if signed (car signed) stored-facts)])
+         (hasheq 'name name
+                 'kind kind
+                 'arity arity
+                 'detail (or detail 'null)
+                 'facts facts
+                 'stored_facts stored-facts
+                 'count_source (if signed "signature" "stored")))))
+
+(define (db-library-summary name)
+  (define path (db-dir name))
+  (define meta (db-meta-of name))
+  (define signature
+    (with-handlers ([db-meta-error? (lambda (_) #f)]
+                    [exn:fail? (lambda (_) #f)])
+      (read-signature-file path)))
+  (define relations
+    (sort
+     (filter values
+             (for/list ([entry (in-list (directory-list path))]
+                        #:when (directory-exists? (build-path path entry)))
+               (relation-library-summary path entry signature)))
+     (lambda (a b)
+       (define ka (format "~a/~a" (hash-ref a 'kind) (hash-ref a 'name)))
+       (define kb (format "~a/~a" (hash-ref b 'kind) (hash-ref b 'name)))
+       (string<? ka kb))))
+  (define facts (for/sum ([relation (in-list relations)])
+                  (hash-ref relation 'facts)))
+  (define stored-facts (for/sum ([relation (in-list relations)])
+                         (hash-ref relation 'stored_facts)))
+  (define bytes (dir-bytes path))
+  (define stale (db-staleness name))
+  (hasheq
+   'name name
+   'kind (if meta (symbol->string (db-meta-kind meta)) "plain")
+   'managed (and meta #t)
+   'facts facts
+   'stored_facts stored-facts
+   'bytes bytes
+   'size (human-bytes bytes)
+   'relation_count (length relations)
+   'table_count (count (lambda (r) (equal? (hash-ref r 'kind) "table")) relations)
+   'struct_count (count (lambda (r) (equal? (hash-ref r 'kind) "struct")) relations)
+   'lattice_count (count (lambda (r) (equal? (hash-ref r 'kind) "lattice")) relations)
+   'inputs (if meta (map first (db-meta-manifest meta)) '())
+   'stale stale
+   'per (if meta (db-meta-per meta) 'null)
+   'relations relations))
+
+(define (db-library-summaries)
+  (for/list ([name (in-list (all-db-names))])
+    (with-handlers ([exn:fail?
+                     (lambda (e)
+                       (define bytes (dir-bytes (db-dir name)))
+                       (hasheq 'name name
+                               'kind "unreadable"
+                               'managed #f
+                               'facts 0
+                               'stored_facts 0
+                               'bytes bytes
+                               'size (human-bytes bytes)
+                               'relation_count 0
+                               'table_count 0
+                               'struct_count 0
+                               'lattice_count 0
+                               'inputs '()
+                               'stale (list (exn-message e))
+                               'per 'null
+                               'relations '()))])
+      (db-library-summary name))))
 
 ;; ---------------------------------------------------------------------------
 ;; Cycle detection (enforced logically; save also refuses to link a cycle)

@@ -1,8 +1,9 @@
 # The Slog REPL: interaction design and experience vision
 
-2026-07-14. **Design brainstorm; no connected REPL exists yet.** The pure
-command loop and Expeditor/plain input seam started on 2026-07-15; see
-[repl-terminal.md](repl-terminal.md), now normative for module boundaries,
+2026-07-14. **Experience design, with a connected transport/UI slice as of
+2026-07-15.** A Rust Ratatui/Crossterm client now drives the persistent Racket
+session server over private loopback TCP; see
+[repl-terminal.md](repl-terminal.md), now normative for process boundaries,
 terminal-library choices, portability, repaint discipline, and R0/R1 gates.
 This document is the
 wide-angle companion to two normative designs it deliberately does not repeat:
@@ -16,14 +17,14 @@ wide-angle companion to two normative designs it deliberately does not repeat:
 Those documents answer "what are the mechanisms." This one asks **what should
 sitting at the Slog prompt feel like** — what people actually do at a REPL,
 which experiences are worth designing for, and how a small number of shared
-mechanisms can carry all of them. It ends with a high-level Racket
+mechanisms can carry all of them. It ends with a high-level client/server
 implementation shape, a slice sequence, and an appendix (§15) inventorying
 the substrate that already exists — which turns out to be most of the
 semantic layer. It is intentionally a brainstorm: later passes will distill
 it into a command reference and an implementation plan.
 
 The stance throughout: **the REPL is the primary interactive mode of the whole
-system.** Batch runs (`compiler/run.rkt foo.slog`) and external harnesses remain the
+system.** Batch runs (`racket compiler/run.rkt foo.slog`) and external harnesses remain the
 scripting surface; the REPL is how a person opens a database and starts
 working. It should be as natural to reach for as `sqlite3 file.db` or `python`
 — and it should exploit the two things Slog has that those tools do not: an
@@ -118,6 +119,24 @@ Consequences: transcripts are replayable scripts; the interactive layer can be
 switched off (`--plain`) with zero loss of capability; and users learn the
 command language by using the arrows. This is the single highest-leverage UX
 decision in the document.
+
+The same rule applies within the shared collaboration lane: input from a local
+co-author is a compact dimmed generated command, while `;` introduces a shared
+transcript comment that never changes Slog state. A private lane may perform
+non-mutating observations without painting them into the terminal; private
+mutation is forbidden. Privacy is metadata around the canonical command, not a
+separate command language. Replicated menus likewise use ordinary commands
+(`library select NAME`, `open NAME`, `library close`); a future structured
+event must include the exact command a person could have typed and cannot add
+event-only behavior. Long actions may append temporary rows at the
+transcript tip and repaint them in place; only their success or failure is
+committed to durable history. Plain clients receive fixed progress events and
+semantic `◇ View` descriptions rather than animation or terminal cells. Until
+the backend streams measured load progress, the loading row labels its
+elapsed-time stage and explicitly says when relation/tuple progress is
+unavailable; it must never synthesize a percentage from elapsed time. Animated
+dots reserve a fixed-width field, and the temporary line has no status glyph;
+the green diamond appears only when the result commits.
 
 **P3 — One tree to render them all.** Values, facts, proof trees, why-not
 frontiers, schemas, module/program structure, query plans, pipeline history,
@@ -712,39 +731,31 @@ Recorded so they shape interfaces without blocking slices:
   as a notification stream (needs per-iteration fire flush or interpreted
   instrumentation; cheap once level-1 exists).
 
-## 12. Implementation shape (Racket, high level)
+## 12. Implementation shape (native client + Racket control plane)
 
 Six layers, dependencies strictly downward; the top two are the only ones
 that know a terminal exists.
 
 ```text
-term      raw-mode tty, keymap, repaint regions; --plain substitutes a
-          line-printer (all goldens run here)
-canvas    presentation buffers: rendered trees + marker maps
-          (screen position -> tree path), navigate-mode cursor, gesture->
-          command echo (P2)
-present   THE tree engine: value/proof/plan/schema/diff -> budgeted
-          presentation trees; handle registry (free-list, generations,
-          tombstones, pins); pure data in, pure data out — golden-testable
-lang      the REPL reader: verb grammar + embedded Slog fragments (reuses
-          compiler lexer/parser with a REPL entry point); completion engine
-          sharing the same tokens
-session   compiler/session.rkt as it stands — recipe, boundaries, catalogs,
-          version environments — plus the alias tables (dbN/@vN/@tN/rN/wN)
-          and retention policy; dbtool verbs mounted here
-wire      the daemon protocol client: today the action-plugin path lines and
-          the two literal continue lines (via session-action!), migrating
-          verb-by-verb to the execution-tiers §9 command protocol — queries
-          with pagination, watches, pause/continue, catalog verbs; the only
-          path to the daemon (P: the REPL is a client)
+Rust term      Crossterm events/raw-mode and one Ratatui terminal owner
+Rust canvas    cell layouts, transcript viewport, marker maps, gestures
+Rust present   planned value/proof/plan/schema/diff presentation trees and
+               handle registry; pure data in, pure data out
+Rust lang      planned verb grammar, command AST, completion, embedded-source
+               readiness; commands cross the wire as structured requests
+Racket session compiler/repl.rkt + compiler/session.rkt: compilation, recipe,
+               boundaries, catalogs, alias/retention policy, daemon lifecycle
+Racket wire    session-action! and the daemon protocol, migrating verb by verb
+               to structured catalog/query/watch/pause operations
 ```
 
 The concrete source mapping, terminal substrate, and platform gates are fixed
-in [repl-terminal.md](repl-terminal.md). `compiler/repl.rkt` is the headless
-facade; `compiler/repl-x.rkt` is the enhanced command-line facade. R0 uses
-Expeditor through its public API, while R1 owns the editor/canvas over one
-isolated, dynamically probed Racket terminal adapter. The REPL stays on the
-normal screen so its transcript remains real scrollback.
+in [repl-terminal.md](repl-terminal.md). The Rust binary is the only terminal
+frontend; `compiler/repl.rkt` is the only Racket REPL server. The current
+full-screen client keeps session history in its own PageUp/PageDown and
+mouse-wheel transcript.
+A future plain or inline client can reuse the same app/presentation and wire
+models.
 
 Points worth fixing early:
 
@@ -758,10 +769,10 @@ Points worth fixing early:
 - **Handle registry state is tiny and central**: id → (kind, evaluation,
   raw word or key, boundary context, generation, pin, tombstone). Everything
   in §7 is operations on this one table.
-- **Terminal portability** stays contained in `term`: ANSI + a conservative
-  capability probe; unicode markers (`▸`, `⏸`, `◂`) have ASCII fallbacks;
-  async event lines (watch notifications) repaint above the prompt, which is
-  the one genuinely fiddly tty problem — isolate it.
+- **Terminal portability** stays contained in Crossterm and the Rust `ui`
+  module; unicode markers (`▸`, `⏸`, `◂`) have ASCII fallbacks. One event loop
+  owns every Ratatui draw, so asynchronous watch notifications cannot splice
+  themselves into the editor.
 - **Nothing here blocks on the interpreter.** `session` + `wire` + `present`
   with lookup-sugar queries and level-0 watches is a useful REPL against the
   daemon as it exists after T0.
@@ -818,10 +829,12 @@ Slices, mapped to the T/Q phases (execution-tiers §11):
    the way scratch rules do, or is one-line-one-boundary the less surprising
    rule?
 
-The former terminal questions are resolved by repl-terminal.md: Esc then `v`
-enters navigate mode; Linux/macOS VT terminals on the normal screen are the
-release envelope; and one UI writer erases/redraws the live bottom region when
-an asynchronous notification becomes transcript output.
+The former terminal questions are resolved by repl-terminal.md: Rust owns the
+whole-screen cell buffer through Ratatui/Crossterm; Linux and macOS VT
+terminals are the release envelope; the current client uses an alternate
+screen and an application-owned scrollable transcript; and one UI writer
+redraws after terminal, backend, or resize events. Navigate mode remains an R1
+interaction decision rather than a terminal-substrate question.
 
 ## 15. Appendix: the substrate as of 2026-07-14
 

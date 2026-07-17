@@ -168,6 +168,72 @@ install/seal plans before clang, interpret immediately, `SLOG_OPT=interp`.
 **N1** lexical module instances (compiler track, parallel): `instantiate`,
 occurrence trees, qualification pass, real `ModuleInstanceKey`s.
 
+**Checkpoint 2026-07-16 (T2-A2/A3 engine admission + T0 sidecar seam):** the normal-set
+decoded/sealed/bound path and real scheduler task have landed in
+`daemon/plan.h`/`plan.cpp`. The admission fixture differentially compares
+per-iteration deltas and disaggregated fires with the fused native operators
+under the same scheduler, including boundary pause/resume, and production
+factories cover the daemon's full arity range. T0's bounded ABI-1 reader now
+parses a byte-identical real compiler sidecar into that same seam; typed
+parse/seal refusals and selective binding cover the standard unused
+service-struct prelude, and the parsed rule executes through the scheduler.
+The reader also parsed the extant 857-sidecar two-corpus audit. This does not
+claim T0 slice (b) complete (entry modes remain), much less F: the command
+dispatcher/builders, pre-freeze T2-B conformance groups, and full
+`SLOG_OPT=interp` compiler-driven suite remain ahead.
+
+**Checkpoint 2026-07-16 (T2-B conformance group (i)):** ABI-1
+`join-old`/`join-new` view probes and `exists`/`absent` filters now pass through
+parse, seal, bind, and the production VM as cursor registrations. Old/new use
+the native full/delta equations, delta orderings are explicit requisitions,
+K=0 view scans and absence are supported, and bound rules hand workers cloned
+cursor prototypes rather than factory lookups. Focused tests compare the same
+read iteration's rows and fire counts with the native helpers and pin typed
+rejections for missing/mismatched delta indices and unsupported filter shapes.
+The next pre-freeze engine group is (ii), prims/`letp`/`tycheck`; T0 entry
+modes/dispatcher remain a separate daemon track.
+
+**Checkpoint 2026-07-16 (T2-B conformance group (ii)):** ABI-1 primitive
+calls, copies, equality/comparison guards, `letp`, and `tycheck` now pass
+through parse, seal, bind, and the production VM in pre/body/head position.
+The complete emitted primitive-call ABI binds to shared daemon functions once
+per call site, with typed arity and total/partial validation and declared-primitive
+coverage at install. Partial misses abandon without an error; fallible total
+primitives retain the native pending-error diversion; and `tycheck` runs after
+the instantiation fire, emits four fields through a bound
+`malformed_deduction` struct sink, and suppresses ordinary heads. The focused
+parsed differential matches native straight-line control flow for fires,
+ordinary rows, partial misses, and malformed rows under continuation slicing,
+and pins unknown/undeclared primitive, arity, partiality, accept-set,
+effect-relation, and accepted-struct refusals. At that checkpoint the next
+pre-freeze engine group was (iii), the real `Join3PrefixCursor` erasure; T0
+entry modes/dispatcher remained orthogonal.
+
+**Checkpoint 2026-07-16 (T2-B conformance group (iii)):** canonical ABI-1
+`join3` now passes through parse, seal, bind, the production VM, and ordinary
+set sinks as one tri-state cursor level. Its key-simple arms keep the native
+FULL/OLD/NEW seek and normalization semantics behind a private arm interface;
+arity erasure is independent per arm, so the factory is linear rather than a
+left/right cross-product. `PrefixCursor` does not gain general seek methods;
+the only interface addition is a one-premise-default proof view so the
+composite can expose both physical premises lazily. The focused suite checks
+all nine view pairings against native `join3`, fires, budget-1 pause/clone
+continuations, parsed production output, mixed arm arities, and typed
+parse/seal/bind refusals. At that checkpoint the final pre-freeze engine group
+was (iv), map/lattice probes; T0 entry modes/dispatcher remained orthogonal.
+
+**Checkpoint 2026-07-16 (T2-B conformance group (iv), core freeze):**
+canonical ABI-1 `join-lat` and `absent-lat` now pass through parse, seal,
+bind, the production VM, and ordinary set sinks. Map storage arity determines
+key arity; the full physical ordering must end in its payload column; and a
+single arity-erased cursor covers K=0 all-bucket scans, K>0 prefix probes,
+and pre/body absence. It retains a physical key-plus-payload proof row only
+when observed and rejects missing, shape-mismatched, or wrong-concrete-type
+map indices at cold bind. Native differentials cover non-identity key order,
+rows, fire multiplicity, absence, and pause/clone continuation, with typed
+parse/seal/bind refusals. This closes all four pre-freeze groups without a new
+opcode, VM arm, or cursor method.
+
 ### 3.1 F — the fork gate
 
 **Amended 2026-07-15 (progressive fork; ratified).** F's five criteria below
@@ -192,6 +258,13 @@ interfaces; criterion 1's full-suite `SLOG_OPT=interp` run completes
 during the fork rather than gating it. Ownership zones (§7) are
 in effect from today. Nothing interpreter-touching forks before the core
 freeze, so §4.3's safety argument is preserved exactly.
+
+**Current status (2026-07-16): the interpreter-core freeze trigger is
+satisfied and declared.** Q1/R2 and the counted-interpreter-to-M4N workstream
+may now start against the frozen seams. The full fork gate F is not yet met:
+T0's client-ready command path, the remaining monotone conformance groups and
+full `SLOG_OPT=interp` suite, uniform pause transcript battery, and catalog
+criteria below remain open.
 
 The fork gate F is met when the daemon API is genuinely ready for a client
 and has been exercised, specifically:
@@ -280,6 +353,80 @@ interpreter; nothing waits for thread 0.
   `clear scratch` rides the *shipped* clear-and-rerun fallback — and
   silently improves as thread 0 lands precise routes. Tier visibility
   (`tiers`, `code`) reads whatever T3a exposes.
+
+**Checkpoint 2026-07-16 (Q1 slice 1 / R2 engine surface):** the thread-1
+`query.h`/`query.cpp` extension now runs existing-index `scan-full` plans
+through the frozen machine into a non-mutating paged `yield` sink. A separate
+`QueryContext` owns continuation, cancellation, and one-query admission and
+never enters `RunState`; rows/count/exists provide the client-neutral backing
+for `?`/`?count`/`?exists`, with a structured bound-plan explanation.
+Probe-only short-string and bignum resolution returns empty on a miss and
+never allocates an interned value. The focused hygiene differential preserves
+all fixture master rows and exact heap counts across successful, paused,
+cancelled, empty, and refused queries. No core opcode or cursor interface
+changed.
+
+**Checkpoint 2026-07-16 (Q1 slice 2 / engine forkpoint):** an empty physical
+driver order now means an explicit scan-plus-filter fallback. Binding chooses
+the lexicographically first catalogued order that is actually materialized,
+remaps its physical tuple into nominal query registers, and reports the
+degradation in `explain`; it never requisitions an index. The initial audited
+compute table admits numeric comparisons, storage-neutral numeric conversion,
+and read-only string/sequence inspection through query-specific checked
+adapters. Wrong runtime types abandon the row without touching pending-error
+scratch, and an exception during paging cancels the context and releases its
+lease before propagation. The hygiene differential now also pins reverse-only
+fallback, safe total/partial/guard computes, paging failure, and the exact
+pending-error record.
+
+**Checkpoint 2026-07-17 (Q1 slice 3 / catalog planner):**
+`compiler/query-plan.rkt` now constructs executable query plans as a pure
+function of an immutable boundary/materialization snapshot and a typed query
+request. It binds every logical relation to an exact VersionKey, uses only
+catalogued full orders, chooses a deterministic size-weighted driver and
+prefix-probe schedule, closes guards/absence/audited computes at their first
+safe frontier, and allocates stable dense registers before lowering to a
+`daemon/query.h::Plan`-shaped value. Explain distinguishes driver
+scan-plus-filter, suffix probe-plus-filter, and a larger driver forced by
+existing-index prefixes. Unsafe negation, incompatible types, non-whitelisted
+computes, unsupported relation kinds, and schedules requiring a body K=0 scan
+are structured front-end refusals. The memoized scheduler is bounded to 16
+positive atoms; its diagnostic datum is deliberately not a new wire grammar.
+The focused battery covers reverse-index reuse, missing-index driver changes,
+post-probe equality, computes/guards, snapshot absence, determinism, and typed
+refusals; all 212 compiler unit tests pass.
+
+**Checkpoint 2026-07-17 (Q1 slice 4 / universal body fallback):** the ordinary
+arity-erased full-view probe cursor now admits `K=0` and walks every physical
+hash bucket with exact pause/clone continuation. Probe drivers remain `K>=1`,
+so outer-driver semantics do not change. This closes the deferred T2-B
+ordinary Cartesian scan and lets Q1 lower any no-prefix body atom to a body
+full scan plus explicit equality filters, still over an already-materialized
+catalog order. The native differential compares non-identity-order rows,
+fires, proof premises, and cursor-budget pauses with `join_all`; the query
+hygiene fixture covers paged body fallback and marks it degraded. The catalog
+planner now costs `K=0`, reports its body scan-plus-filter reason, and reserves
+`no-feasible-schedule` for cyclic/un-groundable compute dataflow. The expanded
+planner battery has 11 focused cases; all 213 compiler unit tests and the
+optimized native interpreter/query battery pass.
+
+**Checkpoint 2026-07-17 (Q1 slice 5 / catalog-to-daemon meeting contract):**
+the compiler now adapts separate declaration, boundary-environment, and
+VersionKey-keyed materialization maps into the immutable planner catalog. It
+checks referential integrity plus kind/arity agreement and retains empty
+storage declarations. The resulting plan has a canonical ABI-1 wire datum;
+the daemon's bounded reader decodes it to a typed object, the existing query
+sealer audits it, and the typed builder binds relation slots only by exact
+VersionKey. One checked-in golden payload crosses Racket serialization and
+C++ parse/seal/bind/page execution, with parse, ABI, and wrong-VersionKey
+refusals pinned.
+
+Q1/R2 are still in progress. N2/N3 must supply the real persistent
+`C_k`/`E_k` boundary and materialization overlay, and T0's generic dispatcher
+must own generation/phase admission plus `query`/`query-page`/`query-cancel`.
+The payload/builder seam is ready for that meeting, but deliberately has no
+exact-command branch in `slogd.cpp`. The R2 parser/rendering and transcript
+battery follow the dispatcher integration.
 
 Deferred on this thread until after S: level-1 anything (provenance watches,
 stepping, why/why-not), `whatif`, fork/branching vocabulary beyond reserved

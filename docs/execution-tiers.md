@@ -368,9 +368,10 @@ free functions downcast to `BTreeIndex<A>`/`BTreeMapIndex<KA>` from
 arity-aware generated code — including the new WCOJ3 machinery
 (`Join3PrefixCursor`, `join3` in `daemon/operators.h`). The interpreter's
 binding layer therefore constructs, once per bound operation, an arity-erased
-**prefix cursor**: positioned by a bound register prefix, exposing the
-remaining columns as a sorted stream with `next`, `seek(key)`, and
-`advance_past(key)`.
+**prefix cursor** positioned by a bound register prefix. The general interface
+is the small tri-state pull API: `open`, `next`, `current`, and lazy physical
+premise views. `seek(key)` and `advance_past(key)` are private capabilities of
+join3's erased arms, not methods every cursor must implement.
 
 This one abstraction covers the whole operator family:
 
@@ -379,15 +380,16 @@ This one abstraction covers the whole operator family:
   full/old/new view enumerated to exhaustion;
 - a **semijoin filter** (`exists`, `absent`, `absent-lat`) asks the cursor
   only for non-emptiness; and
-- a **`join3` arm** is exactly a `Join3PrefixCursor`: two cursors co-iterate
-  by leapfrog `seek`, and the interpreter's deadline poll sits inside the
+- a **`join3` composite** owns two independently arity-erased key-simple arms;
+  they co-iterate by private leapfrog `seek`, expose two proof premises for
+  each logical match, and poll the interpreter work budget inside the
   intersection loop.
 
-Adapter tables are built at bind time by downcasting there, so the interpreter
-calls stored functions rather than switching on arity or searching names per
-tuple. Native code keeps calling the templated functions directly; the cursor
-layer is the interpreter's erasure of the same functions, not a second
-implementation.
+Adapters are built at bind time by downcasting there, so the interpreter does
+not switch on arity or search names per tuple. Native code keeps calling the
+view-templated functions directly; the erased join3 arm uses the same typed
+B-tree normalization and eight-step/`lower_bound` seek algorithm with view as
+bound runtime data. The all-nine-view differential pins the two paths.
 
 The full conformance vocabulary the interpreter must cover (from
 `ir-stack.rkt`, including the in-flight WCOJ3 additions):
@@ -622,6 +624,20 @@ plan:
   and (optionally) negation-as-absence with snapshot semantics. A recursive
   query is a module addition, full stop. Materialized recursive views can be
   revisited once ordinary queries are proven.
+
+**As-built note (2026-07-17):** scan-plus-filter is implemented for both the
+`scan-full` driver and later body atoms. A body atom with no positive existing
+index prefix uses a K=0 ordinary cursor over one catalogued full order, then
+applies its equality constraints. The planner reports that degradation and
+costs the complete relation scan; it never requisitions an index.
+
+The catalog/daemon meeting contract is also implemented: a pure adapter
+projects separate boundary declarations, QName-to-VersionKey bindings, and
+VersionKey-keyed materialization facts into the planner snapshot; the planner
+emits a canonical ABI-1 QueryPlan; and the daemon parses, seals, and binds its
+dense relation frame by VersionKey. The production N2/N3 catalog source and
+T0 command admission are still pending, so this is a typed builder boundary,
+not an active protocol verb.
 
 Query results render through the ordinary value printer and `#N` handles
 (repl.md §5), so large rows are browsable without a second inspection

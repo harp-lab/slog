@@ -6,9 +6,21 @@ namespace `slog::interp`, the fixture instantiates it, and the three
 fixture deviations below are resolved** (Event carries the D3 variant
 ordinal; Event payloads are bounded `TupleView`s into attempt-owned
 scratch, valid for the observer callback; the cursor accessor is
-`current()` returning a non-owning `TupleView`). Fixture line citations
+`current()` returning a non-owning `TupleView`). **T2-B groups (i)–(iv)
+landed on 2026-07-16 and the interpreter core is frozen:** the cursor
+interface includes its final lazy multi-premise proof view, join3
+seek/leapfrog remains private to the composite cursor, and map payload rows
+use that same lazy proof seam without another interface change. Fixture line
+citations
 below refer to the pre-extraction fixture as of commit `fb9bc77`; the
-behaviors are unchanged and remain covered by the same tests. Decisions
+behaviors are unchanged and remain covered by the same tests. **T2-A2/A3
+landed on 2026-07-16:** `daemon/plan.h`/`plan.cpp` now seal, bind, and schedule
+this core through a real `InterpReadTask`, with storage-backed driver cursors
+and bound set sinks; the admission differential is in the same authoritative
+fixture. **The T0 sidecar seam landed the same day:** a bounded ABI-1 reader
+now decodes real compiler output into that exact sealed interface, with typed
+parse/D16 refusals and a parsed scheduler-admission fixture; entry modes and
+the command builders remain T0 work. Decisions
 here were ratified 2026-07-15 with the progressive fork (roadmap.md
 §3.1); this file consolidates them and does not reopen them. `execution-tiers.md` (§4, §6, §12) and `execution-tiers-impl.md`
 (§0, D1–D18, §7) remain normative for content;
@@ -28,7 +40,8 @@ two extension seams are pinned before anyone builds on them.
 ## What freezes and when
 
 **The trigger is deliberately NOT the full T2-B monotone suite.** The
-core freezes when three things are green:
+core freezes when the T2-A admission gate and four conformance groups are
+green:
 
 1. **T2-A's first admission gate** (impl §7 T2-A3; tiers §12 gates
    1–2): one representative recursive normal-set program produces
@@ -41,22 +54,76 @@ core freezes when three things are green:
    `join-new` dord exclusion) and open-only absence probes land as
    cursor-factory registrations plus seal capability entries, nothing
    else.
+
+   **Landed 2026-07-16.** ABI-1 `join-old`, `join-new`, `exists`, and
+   `absent` decode into ordered cursor plans; relation delta requisitions are
+   sealed and bound explicitly. The arity-erased cursors implement the native
+   old/new view equations, including K=0 view scans and K=0 absence, without a
+   new opcode or state-machine arm. Binding resolves factory ladders once and
+   workers clone bound prototypes. The executable differential checks the same
+   read iteration's tuples and fire multiplicities against the native helpers.
 3. **T2-B conformance group (ii): prims / `letp` / `tycheck`** — the
    first non-cursor vocabulary. This group proves the opcode seam:
    bound `PrimFn` dispatch and row-abandoning guard arms land as new
    ops in reserved opcode space, with backtracking reusing the frozen
    `advance` arm.
+
+   **Landed 2026-07-16.** ABI-1 `let` (primitive and copy), `letp`, `eq`,
+   `cmp`, and head `tycheck` now retain their order across pre/body/head,
+   seal exact register dataflow plus primitive arity/partiality, and bind the
+   shared daemon primitive functions once per call site. Total-success and
+   copy ops remain straight-line; comparisons, partial misses, primitive
+   errors, and type failures reuse the existing guard/backtrack path. A
+   failed type check occurs after `fire`, stages the four reporting fields to
+   a bound `malformed_deduction` struct sink, and suppresses ordinary heads.
+   The parsed differential covers native-equivalent pre computation, body
+   guards/partial lookup, head computation, fires, ordinary tuples, and the
+   malformed diversion, plus typed install/bind refusals.
 4. **T2-B conformance group (iii): the real `Join3PrefixCursor`
    erasure** — pulled inside the pre-freeze set (conservative trigger,
    ratified 2026-07-15): whether the cursor interface needs
    `seek`/`advance_past` (tiers §4.1's sketch carries them; the frozen
    `PrefixCursor` does not) is resolved *before* the freeze, not by a
    post-freeze joint review.
+
+   **Landed 2026-07-16.** Canonical two-arm `join3` now decodes, seals, and
+   binds as one ordinary tri-state cursor level. Each key-simple arm retains
+   the native FULL/OLD/NEW B-tree normalization and eight-step/`lower_bound`
+   seek algorithm behind an arm-private interface; the two arms are erased
+   independently by arity, avoiding a quadratic left/right factory, and the
+   already-erased view is runtime data, avoiding three duplicate arity
+   ladders. The general `PrefixCursor` deliberately does **not** gain
+   `seek`/`advance_past`. It gains only `premise_count()`/`premise(i)`, with a
+   one-premise default, because one logical join3 match has two physical proof
+   rows. The executable differential covers all nine FULL/OLD/NEW pairings
+   against native `join3`, budget-1 pauses with continuation cloning, parsed
+   production sinks, fires, two-premise proofs, and typed parse/seal/bind
+   refusals, plus a mixed 3-column/2-column arm differential that pins the
+   independent-arity factory.
 5. **T2-B conformance group (iv): map/lattice probes** —
    `BTreeMapIndex` binds its payload last; the other named interface
    risk, likewise resolved pre-freeze.
 
-From that point, roadmap §3.1 criterion 5 applies: **post-freeze
+   **Landed 2026-07-16.** Canonical `join-lat` and `absent-lat` now decode,
+   seal, bind, and execute through the ordinary tri-state cursor level.
+   Storage arity `A` binds a `BTreeMapIndex<A-1>`; seal requires a full
+   ordering with the payload last, validates `0 <= K <= A-1`, and proves the
+   bound key prefix before assigning the remaining keys and payload.
+   `join-lat` covers both K=0 all-bucket scans and K>0 hashed prefix probes;
+   `absent-lat` works in pre and body position, including K=0. One shared map
+   cursor and one linear arity ladder implement both operations. Proof rows
+   are materialized into cursor-owned scratch only when observed, and absence
+   exposes no premise. Binding rejects a missing, mismatched, or non-map
+   concrete index before the typed cast. The executable differential compares
+   rows and fire counts with `join_all_lat`, `join_probe_lat`, and
+   `absent_probe_lat`, including non-identity physical key order, budget-zero
+   pause/clone continuation, production sinks, and typed parse/seal/bind
+   refusals. No opcode, state-machine arm, or frozen cursor method was added.
+
+**The interpreter-core freeze trigger was satisfied and declared on
+2026-07-16.** This is the progressive-fork dependency for Q1/R2 and the
+counted-interpreter/M4N workstream; it is not the full daemon fork gate F.
+From this point, roadmap §3.1 criterion 5 applies: **post-freeze
 changes to the core's dispatch, vocabulary layout, or cursor layer
 require joint review.** The remaining T2-B groups (once/seeded and K=0
 scans, temp/struct/lattice/count sinks, declaration-built write/intern
@@ -90,9 +157,9 @@ are to the fixture unless another file is named.
 
 ### Cursors
 
-**`PrefixCursor`** (`interp-operator-tests.cpp:49-56`): `clone()`,
-`open(const u64* regs)`, `next(u64* regs, WorkBudget&)`, and the
-current-row view. Frozen properties:
+**`PrefixCursor`** (`daemon/interp.h`): `clone()`, `open(const u64* regs)`,
+`next(u64* regs, WorkBudget&)`, `current()`, and the lazy proof accessors
+`premise_count()` / `premise(i)`. Frozen properties:
 
 - **Tri-state `next`** returning **`CursorResult`**
   `{ match | exhausted | paused }` (line 36, D1). A boolean is
@@ -105,13 +172,14 @@ current-row view. Frozen properties:
   underlying iterator until the following `next` advances it
   (`ProbeCursor::positioned`, lines 69, 90–104), so debug capture reads
   the current premise lazily with **no copy on the unobserved path**;
-  unpositioned reads return nothing (lines 106–110). The fixture spells
-  the accessor `current_row()` (owning copy, observed path only); the
-  production core may spell it `current()` returning a non-owning
-  `TupleView` (impl §3.2) — the *semantics* are the freeze, the
-  spelling is T2-A1's.
+  unpositioned reads return nothing. Ordinary cursors expose one premise by
+  default; join3 exposes both simultaneously positioned arm rows. All are
+  non-owning `TupleView`s with the same positioned lifetime.
 - A pause is returned **before** output registers are written (line
   100): a paused cursor has committed nothing.
+- **No public seek API**: `seek` and `advance_past` are private capabilities
+  of the erased join3 arms and their composite leapfrog loop. General cursors
+  retain the smaller pull interface.
 
 ### Budget and cadence
 
@@ -301,6 +369,41 @@ nodes in the sequence arena — an allocation a read-only query must not
 perform. **v1 rejects string literals longer than `SEQ_BLEAF_MAX` with
 a structured error, and collection literals likewise**, pending an
 arena dry-run probe that computes would-be node keys in scratch memory.
+
+**First thread-1 slice landed 2026-07-16.** `daemon/query.h`/`query.cpp`
+provide the separate context, existing-index `scan-full`, capture-only paged
+yield, cancellation, one-active-query lease, rows/count/exists modes, and
+structured explanation. Short-string and bignum literals use new read-only
+content probes; long strings and all primitive computes are conservatively
+refused for now. The query machine reaches the frozen core only through its
+existing driver and bound-sink seams: no core opcode, dispatch arm, cursor
+method, `RunState` queue, or relation sink changed. The initial hygiene
+differential snapshots master rows and exact heap counts across success,
+pause, cancellation, empty-probe, and refusal paths. Catalog planning,
+fallback scans, audited safe computes, and wire admission/pagination remain
+Q1/R2 work.
+
+**Second thread-1 slice landed 2026-07-16.** The fallback and compute items
+above are now closed without changing this frozen interface. Empty query
+driver order deterministically selects an already materialized catalog order
+and bind-remaps physical columns to nominal registers; the explanation labels
+the scan-plus-filter degradation. Thirteen storage-neutral primitive forms
+bind through checked query adapters, so ill-typed rows cannot mutate the
+ordinary primitive error scratch. Paging failures tear down the query-local
+machine and lease. The extended hygiene fixture includes reverse-order
+fallback, paged/cancelled continuation, total/partial/guard computes, every
+interner counter, and the pending-error record. Catalog-driven front-end
+planning and the T0-dispatched wire verbs remain Q1/R2 work.
+
+**Third thread-1 slice landed 2026-07-17.** The production ordinary probe
+cursor now covers full-view K=0 by walking all hash buckets, completing the
+query body's scan-plus-filter path and the deferred T2-B Cartesian scan. The
+probe-driver capability remains K>=1. Native differential coverage pins
+physical-order remapping, fires, proof premises, and budgeted continuation;
+the query hygiene fixture covers the same cursor through paged yield. This is
+an extension behind the frozen cursor factory seam: no opcode, VM arm, or
+public cursor interface changed. The catalog planner now chooses and explains
+this fallback; real-catalog adaptation and T0 wire verbs remain Q1/R2 work.
 
 ## Opcode and registration-table reservations
 

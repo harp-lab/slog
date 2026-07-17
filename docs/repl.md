@@ -1,10 +1,11 @@
 # REPL names, boundaries, and historical values
 
-2026-07-13. **Design proposal; no connected REPL exists yet.** As of
-2026-07-15, `compiler/repl.rkt` and `compiler/repl-x.rkt` establish the pure
-command loop and Expeditor/plain input seam; they intentionally do not dispatch
-to a live session. [repl-terminal.md](repl-terminal.md) is normative for that
-Racket/module/terminal split. The REPL should present the compiler/session's
+2026-07-13. **Semantic design proposal with a connected R0 transport slice as
+of 2026-07-15.** The native Rust client under `repl/` now connects to the sole
+Racket server, `compiler/repl.rkt`, which owns a persistent compiler session
+and daemon. [repl-terminal.md](repl-terminal.md) is normative for that process,
+wire, and terminal split. The rich names, handles, catalogs, queries, and
+watches below remain planned; the REPL should expose the compiler/session's
 database model, not daemon implementation strings.
 
 *2026-07-14: [execution-tiers.md](execution-tiers.md) adopts §6 verbatim as
@@ -326,7 +327,8 @@ The compiler provides:
 - qualified rule/source provenance; and
 - formal-to-actual binding maps.
 
-The session driver in `compiler/session.rkt` and `compiler/run.rkt` provides:
+The session driver in `compiler/session.rkt`, exposed interactively by
+`compiler/repl.rkt`, provides:
 
 - stable BoundaryKeys and `dbN` labels;
 - boundary catalog/environment deltas;
@@ -356,31 +358,32 @@ changing the REPL to guess what empty declarations once existed.
 
 ## 8. First implementation slices
 
-The client keel does not need to wait for modules/catalogs:
+The connected transport/UI keel now ships:
 
-1. keep `compiler/repl.rkt` terminal-independent and accept an injected
-   dispatcher;
-2. use `compiler/repl-x.rkt` for Expeditor/plain frontend selection, then the
-   isolated raw-terminal canvas backend described by repl-terminal.md;
-3. parse only the command envelope initially and preserve embedded Slog as
-   source text for the compiler lexer/parser entry point;
-4. build budgeted pure presentation trees and plain golden transcripts against
-   a fake structured client; and
-5. generate help/completion metadata from one effect-typed verb registry.
+1. `compiler/repl.rkt` owns one lazy compiler session, dispatches the initial
+   command envelope, and speaks authenticated framed JSON on loopback TCP;
+2. the `repl/` Rust crate owns the terminal, process lifecycle, grapheme-aware
+   multiline editor, transcript, and structured layouts;
+3. `help`, `status`, `ping`, `library`, `run`, `open`, `schema`, `pipeline`,
+   `save`, and `quit` exercise the offline catalog or live session/daemon
+   paths; and
+4. UI demos and buffer tests exercise color, fixed regions, tables, gauges,
+   Unicode widths, and transcript navigation before semantic widgets depend
+   on them.
 
-After the module/catalog substrate exists, connect that keel to the real
-session/wire client:
+Continue without changing that process boundary:
 
-1. add a `repl` mode to `compiler/run.rkt` that owns one session and labels every
-   committed BoundaryKey;
-2. implement completion and lookup over the session catalog;
-3. add daemon lookup by VersionKey and TypeKey/SID registry inspection;
-4. show history and bindings with both friendly names and stable keys;
-5. add budgeted value printing and generation-checked `#N` expansion handles;
-6. add iteration/stratum/boundary events, exact relation/tuple watches, and
-   barrier-safe breakpoints to the socket API;
-7. make save/reload preserve persistent keys while allowing short handles,
-   runtime VersionIds, and SIDs to change; and
+1. replace the temporary line-command switch with one effect-typed verb
+   registry and typed command AST, preserving embedded Slog as source text for
+   the compiler parser;
+2. add structured catalog/boundary responses and `dbN`/`@vN`/`@tN` aliases;
+3. implement completion and lookup over the session catalog;
+4. build budgeted pure presentation trees and golden transcripts, then mount
+   Ratatui widgets over the same trees;
+5. add daemon lookup by VersionKey and TypeKey/SID registry inspection;
+6. add generation-checked `#N` values, history, bindings, and saved-key views;
+7. add unsolicited progress/watch/boundary events to the framed protocol and
+   barrier-safe pause/continue commands; and
 8. retain every referenced boundary and value conservatively until its handle
    is released or the session closes. Branching and history GC remain later
    features.

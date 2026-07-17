@@ -24,8 +24,8 @@ LDLIBS = -lz -ldl -lgmp
 
 HEADERS = $(wildcard *.h)
 
-slogd: slogd.cpp $(HEADERS)
-	$(CXX) $(CXXFLAGS) $(OMPFLAGS) $(LDFLAGS) -o slogd slogd.cpp $(LDLIBS)
+slogd: slogd.cpp plan.cpp query.cpp sexp.cpp runtime.cpp $(HEADERS)
+	$(CXX) $(CXXFLAGS) $(OMPFLAGS) $(LDFLAGS) -o slogd slogd.cpp plan.cpp query.cpp sexp.cpp runtime.cpp $(LDLIBS)
 
 # The freezer: a fact stream on stdin -> a static .bin database (freeze.cpp).
 # Links the same headers as slogd so every value encodes through the one
@@ -37,10 +37,9 @@ slog-freeze: freeze.cpp $(HEADERS)
 test: slogd
 	printf '(close)\n' | racket slogd.rkt
 
-# Compile-only check that the T2-A1 interpreter core header stands alone under
-# the daemon's own flags.  slogd.cpp does not include interp.h until T2-A2/A3;
-# until then this target (and the `interp` harness in tests/run-all.sh, which
-# compiles it first in its TU) is what keeps the header buildable.
+# Compile-only check that the production-neutral T2 interpreter core remains
+# independently includable even though slogd now also links the A2/A3 plan,
+# factory, and scheduler integration.
 interp-check:
 	$(CXX) $(CXXFLAGS) $(OMPFLAGS) -Wno-pragma-once-outside-header -fsyntax-only -x c++ interp.h
 
