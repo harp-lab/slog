@@ -174,6 +174,18 @@ artifacts are out of scope here.
    baseline's verbatim re-insert, which reconciles the tombstone and
    fatals on drift. The exclusions were pre-M5 fossils: verbatim baseline
    restore of struct rows was only made sound by this contract.
+
+   *Open half pinned 2026-07-17 (`m5-open-*`):* the flat-open site has its
+   own fixture — an `--out-db` root asserting `(out (pair 7 8))`, opened
+   as the session base. The rerun path cannot detect this half (the opened
+   version is every tip's predecessor, so `rematerializeInputBaseline`
+   restores through unmasked inheritance regardless of the recording), but
+   the count round walks the opened version itself: without the input bit
+   its struct instance carries no support kind and the coverage audit
+   fatals the daemon ("live tuple has no positive semantic support",
+   verified by reverting the exclusion). The block's `recount` is the
+   regression detector; the edit cycle and forced recount pin decode, id
+   stability, and the re-derived support shape.
 3. **No admission change:** struct cones still route to clear-and-rerun
    (`(reason struct-diagnostic)` capability lines unchanged); struct
    counts remain diagnostic-only.

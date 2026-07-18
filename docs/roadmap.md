@@ -331,12 +331,13 @@ people; both threads follow trunk discipline (P7).
 
 The spine is the decided queue, now interpreter-first:
 
-- **Counted interpreter admissibility** (execution-tiers §4.3): the
+- **Counted interpreter admissibility** (execution-tiers §4.3; contract:
+  counted-interp-contract.md, drafted 2026-07-17): the
   interpreter enumerates the exact instantiation multiset for `_count` and
   maintenance flavors, drives the shared `cnt_*` folds, and respects
   counted-plan attributes (no semijoin re-optimization). Gate: fires
   multiset equality plus maintained-sidecar equality with forced recounts,
-  across the whole existing incremental battery under `SLOG_OPT=interp`.
+  across the whole existing incremental battery under interpreter routing.
 - **M4N — precise stratified negation:** anti-delta variants and pre/post
   transition scheduling, implemented as interpreter variants (P4); exit
   audit in the established style.

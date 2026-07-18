@@ -1,0 +1,11 @@
+;; Flat-root seed for the m5-open-* session block: one struct-embedding
+;; direct row.  Saved with --out-db and OPENED (not imported) by the
+;; session, so its rows become direct input through the flat-open
+;; markLatestRelationsDirect path; base2_input.slog derives no
+;; (pair 7 8), so a clear-and-rerun can only restore the row -- and the
+;; embedded id it references -- through the input ledger.
+
+struct (pair int int)
+table (out pair)
+
+rule (out (pair 7 8))

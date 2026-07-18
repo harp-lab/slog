@@ -13,8 +13,9 @@ semantics and this file identifies migration work.
 
 The implementation is green under the current regression gates:
 
-- session workflow harness: 422/422 (now including the wcoj join3
-  cross-layer block and the M5 id-stability and embedded-id blocks);
+- session workflow harness: 528/528 (now including the wcoj join3
+  cross-layer block, the M5 id-stability and embedded-id blocks — both
+  import and flat-open halves — and the M4S battery);
 - native count checks: 177/177; struct identity battery: 31/31;
 - quick harness: unit 163/163, diagnostics 14/14, stats, arena, sequence,
   counts, wcoj3, and structid all pass;
@@ -41,12 +42,13 @@ batch limit.
 ## Resume point
 
 Begin a future incremental-maintenance review with this ledger, then read
-`docs/m4t-contract.md` and `docs/m5-contract.md` (both implemented) and
-§4.5–§4.7 in `docs/incremental.md`. `docs/m6l-contract.md` records the
-completed lattice admission boundary. `docs/m4s-contract.md` (2026-07-15)
-is the next milestone's design contract: struct admission on the M4T
-lifecycle over M5 verbs, the embedded-id settlement invariant, probe-only
-negative `mkstruct`, and the chain-is-the-sidecar persistence decision.
+`docs/m4t-contract.md`, `docs/m5-contract.md`, and `docs/m4s-contract.md`
+(all implemented) and §4.5–§4.7 in `docs/incremental.md`.
+`docs/m6l-contract.md` records the completed lattice admission boundary.
+`docs/counted-interp-contract.md` (2026-07-17) is the next milestone's
+design contract: interpreter admissibility for `_count` and maintenance
+flavors — the plan-attribute doctrine, per-flavor sidecar-equality
+definition, slices, and exit audit that gate M4N.
 
 M4T slices 1 and 2 are shipped; the milestone's table surface is complete.
 Edits may target recursive head relations (foundation-aware overlay), and
@@ -62,9 +64,13 @@ that substrate, and the tombstone persistence policy is pinned and
 implemented (the chain is the sidecar). The remaining implementation
 queue, in the decided order, is:
 
-1. **M4N — precise stratified negation**, then **M7 — recursive
-   lattice/rank repair** (both interpreter-first per roadmap P4, behind
-   the counted-interpreter gate).
+1. **Counted interpreter admissibility** — the gate in front of the
+   rest of the queue; `docs/counted-interp-contract.md` (2026-07-17) is
+   the design contract (slices, plan-attribute doctrine, per-flavor
+   sidecar-equality definition, exit audit).
+2. **M4N — precise stratified negation**, then **M7 — recursive
+   lattice/rank repair** (both interpreter-first per roadmap P4, as
+   interpreter variants on the admitted counted core).
 
 The handoff gates are `tests/run-all.sh --quick`, `tests/run-all.sh session`,
 and `tests/run-all.sh incremental-stress`. The complete orchestrator remains
@@ -72,9 +78,12 @@ the arc-end gate.
 
 The W0 checkpoint is test-green: all 17 orchestrator harnesses passed across
 sandbox-compatible runs, including clean-build goldens, API, tiered, pause,
-compression, and SMT coverage. One narrow M5 follow-up remains: directly test
-an input-ledger assertion embedding a struct id across clear-and-rerun; the
-current fixture proves dictionary resurrection and survivor-id stability.
+compression, and SMT coverage. The M5 input-ledger follow-up is closed
+(2026-07-17): both struct-heap recording sites are fixture-pinned — the
+import half by `m5-keep-*` (2026-07-15) and the flat-open half by
+`m5-open-*`, whose `recount` leg is the regression detector (inheritance
+shadows the ledger on the rerun path; the count round's coverage audit
+does not).
 
 ## Shipped implementation
 
@@ -346,6 +355,17 @@ current fixture proves dictionary resurrection and survivor-id stability.
   decoded as garbage. Both sites now record struct instances as direct
   input; the baseline's verbatim re-insert reconciles the tombstone
   (drift still fatals). See `docs/m5-contract.md` exit criterion 2.
+- **Embedded-id leg, open half (2026-07-17):** the flat-open site is now
+  fixture-pinned too (`m5-open-*`: `--out-db` root asserting
+  `(out (pair 7 8))`, opened as the session base). The rerun path cannot
+  detect this half — the opened version is every tip's predecessor, so
+  `rematerializeInputBaseline` restores through unmasked inheritance
+  regardless of the recording — but the count round walks the opened
+  version itself: without the input bit its struct instance carries no
+  support kind and the coverage audit fatals the daemon (verified by
+  reverting the exclusion). The block's `recount` is the regression
+  detector; the edit cycle and forced recount pin decode, id stability,
+  and the re-derived support shape.
 - **No admission change:** struct cones still route to clear-and-rerun and
   struct counts remain diagnostic; M4S owns route admission.
 

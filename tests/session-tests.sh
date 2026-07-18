@@ -1852,6 +1852,84 @@ else
   echo "FAIL m5-keep-survivors-original"; FAIL=$((FAIL+1))
 fi
 
+# --- M5 slice 1: flat-OPENED direct assertion embedding a struct id ----------
+# (docs/m5-contract.md exit criterion 2, embedded-id leg -- the second fixed
+# site.)  The same recording hole had a flat-open half: markLatestRelationsDirect
+# carried the pre-M5 struct exclusion, so an opened root's struct heap was
+# not direct input.  Unlike the import leg, a later clear-and-rerun cannot
+# expose it here -- the opened version is every tip's predecessor, and
+# rematerializeInputBaseline restores through unmasked inheritance -- but the
+# COUNT ROUND walks the opened version itself: without the input bit its
+# struct instance has no support kind, and the coverage audit fatals the
+# daemon with "count epoch: live tuple has no positive semantic support"
+# (verified by reverting the exclusion).  The recount below is therefore the
+# regression detector; the edit cycle then pins the ledgered row's liveness,
+# decode, and id stability through a routed clear-and-rerun, and the forced
+# recount re-derives the same support shape from scratch.
+rm -rf data/sess_m5_open
+timeout 600 racket compiler/run.rkt --no-banner --out-db sess_m5_open \
+  tests/session/m5_open_seed.slog > out/sess-m5-open-seed.log 2>&1
+timeout 900 racket tests/api/session-drive.rkt \
+  open:sess_m5_open \
+  run:tests/session/base2_input.slog \
+  batch+:in,1,2 batch+:in,3,4 flush \
+  recount dump-counts:pair dump-counts:out \
+  dump-ids:pair dump-rel:out \
+  batch-:in,3,4 flush dump-ids:pair dump-rel:out \
+  batch+:in,3,4 flush dump-ids:pair dump-rel:out \
+  recount-force dump-counts:out \
+  > out/sess-m5-open.log 2>&1
+# the opened heap is counted input: the recount commits instead of fataling,
+# and the opened row's support at the tip is the inherited (nonrec) kind
+expect "m5-open-counts-valid" "(update-committed 1 counts-valid)" out/sess-m5-open.log
+expect "m5-open-heap-support" "(countrow pair (pair 7 8) 0 1 0)" out/sess-m5-open.log
+# pair ids: 3 live/0 dead -> 2 live/1 tombstone -> 3 live/0 dead
+expect "m5-open-populated"    "(idsdone 3 0)" out/sess-m5-open.log
+expect "m5-open-tombstoned"   "(idsdone 2 1)" out/sess-m5-open.log
+expect "m5-open-rerun-routed" "(route rerun " out/sess-m5-open.log
+if [ "$(grep -cF '(idsdone 3 0)' out/sess-m5-open.log)" -eq 2 ]; then
+  echo "PASS m5-open-all-resurrected"; PASS=$((PASS+1))
+else
+  echo "FAIL m5-open-all-resurrected (tombstones left after reappearance)"; FAIL=$((FAIL+1))
+fi
+# out: 3 rows -> 2 rows -> 3 rows, and the opened row's embedded id decodes
+# as (pair 7 8) in every dump (the dangling-id check)
+if [ "$(grep -cF '(dumpdone 3)' out/sess-m5-open.log)" -eq 2 ] \
+   && [ "$(grep -cF '(dumpdone 2)' out/sess-m5-open.log)" -eq 1 ]; then
+  echo "PASS m5-open-out-contents"; PASS=$((PASS+1))
+else
+  echo "FAIL m5-open-out-contents"; FAIL=$((FAIL+1))
+fi
+if [ "$(grep -F '(dumprow ' out/sess-m5-open.log | grep -cF 'pair 7 8')" -eq 3 ]; then
+  echo "PASS m5-open-opened-row-decodes"; PASS=$((PASS+1))
+else
+  echo "FAIL m5-open-opened-row-decodes (embedded struct id dangling)"; FAIL=$((FAIL+1))
+fi
+# id-word stability: dump1 (3 ids) == dump3 (3 ids); dump2 (2 ids) subset
+m5o_1=$(grep -F '(idrow ' out/sess-m5-open.log | head -3 | sort)
+m5o_2=$(grep -F '(idrow ' out/sess-m5-open.log | sed -n '4,5p' | sort)
+m5o_3=$(grep -F '(idrow ' out/sess-m5-open.log | tail -3 | sort)
+if [ -n "$m5o_1" ] && [ "$m5o_1" = "$m5o_3" ]; then
+  echo "PASS m5-open-ids-stable"; PASS=$((PASS+1))
+else
+  echo "FAIL m5-open-ids-stable (ids reminted across rerun)"; FAIL=$((FAIL+1))
+fi
+m5o_sub=ok
+while IFS= read -r l; do
+  [ -n "$l" ] && { printf '%s\n' "$m5o_1" | grep -qFx "$l" || m5o_sub=bad; }
+done <<< "$m5o_2"
+if [ -n "$m5o_2" ] && [ "$m5o_sub" = ok ]; then
+  echo "PASS m5-open-survivors-original"; PASS=$((PASS+1))
+else
+  echo "FAIL m5-open-survivors-original"; FAIL=$((FAIL+1))
+fi
+# the forced fresh recount re-derives the same opened-row support
+if [ "$(grep -cF '(countrow out (pair 7 8) 0 1 0)' out/sess-m5-open.log)" -eq 2 ]; then
+  echo "PASS m5-open-forced-recount-agrees"; PASS=$((PASS+1))
+else
+  echo "FAIL m5-open-forced-recount-agrees"; FAIL=$((FAIL+1))
+fi
+
 # --- M4S fixtures (docs/m4s-contract.md) -------------------------------------
 # SLICES 1+2 FLIPPED: struct relations are admitted as interior cone members
 # on the counted maintenance routes -- acyclic M1/M3 (chain, multictor,
