@@ -300,6 +300,19 @@ T0's client-ready command path, the remaining monotone conformance groups and
 full `SLOG_OPT=interp` suite, uniform pause transcript battery, and catalog
 criteria below remain open.
 
+**Checkpoint 2026-07-18 (T0 slice (a) landed):** the command-protocol
+dual-stack is on master — one per-line dispatch for stdin and TCP, typed
+refusals (`parse`/`unknown-verb`/`reserved-verb` with the generation
+token), all fourteen reserved verbs answering by family, read-only
+catalog verbs streaming keyed records (F criterion 4's no-string-parsing
+consumer is `tests/api/catalog-check.rkt`), and the protocol-mode seam
+slice (d) will scope the uniform pause record by. The dispatcher
+consumes the ONE shared bounded reader (`sexp.h`, per the slice-(b)
+as-built pin) — the parked branch's second grammar was deleted at
+landing. Gates: protocol 41/41, pause, api, quick 9/9, session 528/528.
+REPL R0 work is unblocked; R0–R1's full fork start still waits on
+slice (b)'s entry modes and slice (d)'s pause record.
+
 The fork gate F is met when the daemon API is genuinely ready for a client
 and has been exercised, specifically:
 
