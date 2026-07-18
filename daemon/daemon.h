@@ -86,6 +86,13 @@ private:
   // stratum restages and binds the P-environment instead of the latest;
   // push() resets the database's bind position after registration.
   s64 pending_bind_pos = -1;
+  // T0 protocol-mode seam (docs/t0-contract.md, "The uniform pause record"):
+  // set once this session speaks any command-layer verb BEYOND the legacy
+  // (continue)/(continue-boundary) literals -- every pre-T0 driver sends
+  // those, so they must not flip a path-protocol session into command mode.
+  // Slice (d) keys the uniform pause record off this; nothing changes any
+  // pause emission yet.
+  bool command_protocol_spoken = false;
   std::vector<std::pair<std::string, u64>> pending_bind_versions;
 
   static u64 envU64(const char* name, u64 fallback)
@@ -123,6 +130,21 @@ public:
 
   // Send one message (conventionally an s-expression) back to the client.
   void emit(const std::string& msg) { out(msg); }
+
+  // ---- T0 command layer (docs/t0-contract.md, slice (a)) ----
+  // The session's protocol mode: `true` after any command-layer verb beyond
+  // the legacy (continue)/(continue-boundary) literals.  The command
+  // dispatcher (slogd.cpp) marks it; slice (d)'s uniform pause record reads
+  // it.
+  void markCommandProtocol() { command_protocol_spoken = true; }
+  bool commandProtocolSpoken() const { return command_protocol_spoken; }
+
+  // The unified generation token every typed refusal (and, from slice (b),
+  // every generation-checked verb) carries on the wire.  Backing store today
+  // is the update-epoch counter (execution-tiers §2.2: PauseToken and
+  // UpdateEpochId are one mechanism); M1 may restructure the store -- the
+  // wire FIELD is the pin, not the store.
+  u64 commandGeneration() { return database->getUpdateEpochId(); }
 
   // While a stratum is suspended (docs/pausing.md §4), any action that would
   // reload or clear indices -- destroying the parked tasks' index bindings and

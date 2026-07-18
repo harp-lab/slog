@@ -2,29 +2,34 @@
  *
  * A multi-threaded backend for the deductive database and language Slog.
  *
- * The entire client protocol is one line per message, each line a path to
- * a plugin shared object.  Each plugin is dlopen'd and its
+ * The client protocol is one line per message, dispatched dual-stack
+ * (docs/t0-contract.md, "One protocol, two stacks"):
  *
- *     extern "C" void slog_plugin(slog::Daemon*)
+ *   - a line beginning `(` is an S-expression COMMAND (protocol.h reader;
+ *     dispatch below) -- typed replies, typed refusals
+ *     (refused <class> <generation> <detail>...), and record streams ending
+ *     in a sentinel;
+ *   - anything else is a PATH to a plugin shared object.  Each plugin is
+ *     dlopen'd and its
  *
- * called with the daemon object (daemon.h) -- the API through which plugins
- * push strata of rules, run the pipeline, read/write the database on disk,
- * inspect relations, and send results back over the connection.  Anything a
- * client wants of the database -- including one-off queries like a relation
- * count -- it expresses by compiling a (tiny, cached) plugin and sending
- * its path.
+ *         extern "C" void slog_plugin(slog::Daemon*)
  *
- * Two transports:
+ *     called with the daemon object (daemon.h) -- the API through which
+ *     plugins push strata of rules, run the pipeline, read/write the
+ *     database on disk, inspect relations, and send results back over the
+ *     connection.  Anything the command layer does not yet express, a
+ *     client obtains by compiling a (tiny, cached) plugin and sending its
+ *     path.
  *
- *   slogd [-t N]           read plugin paths from stdin, responses to
- *                          stdout (used by the compiler driver,
- *                          compiler/runslog.rkt)
- *   slogd [-t N] -p PORT   connect back to a TCP parent on PORT; plugin
- *                          paths arrive as lines, responses are sent as
- *                          s-expressions (used by the interactive console,
- *                          daemon/slogd.rkt).  A 2s idle heartbeat emits
- *                          (pending); the transport-level (close) line is
- *                          answered with (bye <unixtime>) before exiting.
+ * Two transports sharing ONE dispatch:
+ *
+ *   slogd [-t N]           lines from stdin, responses to stdout (used by
+ *                          the compiler driver, compiler/runslog.rkt)
+ *   slogd [-t N] -p PORT   connect back to a TCP parent on PORT (used by
+ *                          the interactive console, daemon/slogd.rkt).  A 2s
+ *                          idle heartbeat emits (pending); the
+ *                          transport-level (close) line is answered with
+ *                          (bye <unixtime>) before exiting.
  *
  * -t N sets the worker thread count (default 6).
  *
@@ -34,10 +39,12 @@
  ******************************/
 
 #include "daemon.h"
+#include "protocol.h"
 
 #include <dlfcn.h>
 #include <string>
 #include <vector>
+#include <map>
 #include <cstring>
 #include <chrono>
 #include <functional>
@@ -105,6 +112,245 @@ static void run_plugin(slog::Daemon* d,
     entry(d);
 }
 
+// ===================  T0 command layer (docs/t0-contract.md)  ===============
+//
+// Every command answers with exactly one structured reply, or a record stream
+// ending in a sentinel.  Refusals are typed --
+//     (refused <class> <generation> <detail>...)
+// -- with classes `parse`, `unknown-verb`, and `reserved-verb` implemented
+// here; the seal / entry-mode / stale-generation / suspended classes arrive
+// with slices (b) and (c).  <generation> is the unified generation token
+// (Daemon::commandGeneration; execution-tiers §2.2).
+
+static void refuse(slog::Daemon* d, const char* cls, const std::string& details)
+{
+    d->emit("(refused " + std::string(cls) + " "
+            + std::to_string(d->commandGeneration())
+            + (details.empty() ? "" : " " + details) + ")");
+}
+
+// Reserved verb families: the parser recognizes them and answers
+// `reserved-verb` -- distinct from `unknown-verb`, so a client can tell
+// "not yet" from "never" (contract, "Reply and refusal doctrine").
+static const char* reserved_family(const std::string& verb)
+{
+    struct ReservedVerb { const char* verb; const char* family; };
+    // N3 transactional boundaries (roadmap P3; modules.md §10 N3); Q1 paged
+    // queries (execution-tiers §6.4); watch management (repl.md §6 spellings,
+    // ratified 2026-07-15 -- deferred past T0, slice (d) tees up the pause
+    // machinery they ride); T5 debugger stepping (execution-tiers §9 sketch).
+    static const ReservedVerb reserved[] = {
+        { "prepare-boundary", "boundary" },
+        { "commit-boundary",  "boundary" },
+        { "abort-boundary",   "boundary" },
+        { "query",            "query"    },
+        { "query-page",       "query"    },
+        { "query-cancel",     "query"    },
+        { "watch",            "watch"    },
+        { "unwatch",          "watch"    },
+        { "subscribe",        "watch"    },
+        { "resume",           "debugger" },
+        { "replay",           "debugger" },
+        { "why-not-add",      "debugger" },
+        { "debug-on",         "debugger" },
+        { "debug-off",        "debugger" },
+    };
+    for (const auto& rv : reserved)
+        if (verb == rv.verb) return rv.family;
+    return nullptr;
+}
+
+// (catalog) / (catalog relations): one (catalog-rel ...) record per LATEST
+// relation binding plus one (catalog-planned ...) record per announced-but-
+// unregistered version key, name-sorted, then the (catalog-end <n>) sentinel.
+// Unlike the compiled (schema) action -- which describes nonempty
+// materialization -- the catalog is declaration truth: empty and index-free
+// relations appear (repl.md §7).  Every record carries the full pinned field
+// set, with an explicit #f where a value is not yet resolvable daemon-side
+// (the schema is the pin; N3 fills the values).
+static void emit_catalog_relations(slog::Daemon* d)
+{
+    using slog::protocol::quoteString;
+    std::map<std::string, slog::Relation*> sorted(
+        d->db()->getRelations().begin(), d->db()->getRelations().end());
+    u64 n = 0;
+    for (auto& kv : sorted)
+    {
+        slog::Relation* r = kv.second;
+        if (r == nullptr) continue;
+        const char* kind = r->getStructId() > 0 ? "struct"
+                         : r->isLattice()       ? "lat"
+                                                : "table";
+        std::string rec = "(catalog-rel (name " + quoteString(kv.first) + ")"
+            + " (kind " + kind + ")"
+            + " (arity " + std::to_string(r->getArity()) + ")"
+            + " (version-id " + std::to_string(r->getVersionId()) + ")"
+            + " (version-key "
+            + (r->getVersionKey().empty() ? "#f" : quoteString(r->getVersionKey())) + ")"
+            + " (evaluation "
+            + (r->getEvaluationId().empty() ? "#f" : quoteString(r->getEvaluationId())) + ")"
+            + " (predecessor "
+            + (r->getPredecessorVersionId() == 0
+                 ? "#f" : std::to_string(r->getPredecessorVersionId())) + ")"
+            + " (struct-id "
+            + (r->getStructId() == 0 ? "#f" : std::to_string(r->getStructId())) + ")"
+            + " (type-key #f)"
+            + " (lat-spec "
+            + (r->isLattice() ? quoteString(r->latticeSpec()) : "#f") + ")"
+            + " (size "
+            + (r->getAnyIndex() ? std::to_string(r->tupleCount()) : "#f") + ")"
+            + " (temp " + (r->isCompilerTemporary() ? "#t" : "#f") + "))";
+        d->emit(rec);
+        ++n;
+    }
+    std::map<std::string, std::string> planned(
+        d->db()->plannedVersionKeys().begin(),
+        d->db()->plannedVersionKeys().end());
+    for (const auto& kv : planned)
+    {
+        d->emit("(catalog-planned (name " + quoteString(kv.first)
+                + ") (version-key " + quoteString(kv.second) + "))");
+        ++n;
+    }
+    d->emit("(catalog-end " + std::to_string(n) + ")");
+}
+
+// (catalog types): the struct type registry -- one (catalog-type ...) record
+// per struct relation, SID-ordered, then (catalog-end <n>).  The durable
+// TypeKey is pinned as a field and explicitly #f until N3 resolves it
+// (modules.md §8.5.3); the SID is evaluation-local truth today.
+static void emit_catalog_types(slog::Daemon* d)
+{
+    using slog::protocol::quoteString;
+    std::map<u32, std::pair<std::string, slog::Relation*>> by_sid;
+    for (const auto& kv : d->db()->getRelations())
+        if (kv.second != nullptr && kv.second->getStructId() > 0)
+            by_sid[kv.second->getStructId()] = { kv.first, kv.second };
+    u64 n = 0;
+    for (const auto& kv : by_sid)
+    {
+        d->emit("(catalog-type (sid " + std::to_string(kv.first) + ")"
+                + " (name " + quoteString(kv.second.first) + ")"
+                + " (arity " + std::to_string(kv.second.second->getArity()) + ")"
+                + " (type-key #f))");
+        ++n;
+    }
+    d->emit("(catalog-end " + std::to_string(n) + ")");
+}
+
+// Dispatch one '('-line on the command stack.
+static void dispatch_command(slog::Daemon* d, const std::string& line)
+{
+    slog::protocol::Sexp form;
+    std::string err;
+    if (!slog::protocol::parseLine(line, form, err))
+    {
+        d->markCommandProtocol();
+        refuse(d, "parse", "(detail " + slog::protocol::quoteString(err) + ")");
+        return;
+    }
+    // The dispatcher routed on '(' so the form is a list.  The verb must be
+    // an atom in plain symbol spelling -- anything else (a string, a list, a
+    // token with reader-syntax characters) could not be echoed verbatim into
+    // a (verb ...) detail that datum readers consume, so it is refused here
+    // once and every downstream emission stays clean.
+    auto symbol_safe = [](const std::string& s) {
+        if (s.empty()) return false;
+        for (const char c : s)
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+                  || (c >= '0' && c <= '9') || std::strchr("-_+*/<=>!?.:$%&^~@", c)))
+                return false;
+        return true;
+    };
+    if (form.items.empty() || !form.items[0].isAtom()
+        || !symbol_safe(form.items[0].text))
+    {
+        d->markCommandProtocol();
+        refuse(d, "parse", form.items.empty()
+                             ? "(detail \"empty command\")"
+                             : "(detail \"verb must be a symbol\")");
+        return;
+    }
+    const std::string& verb = form.items[0].text;
+    const size_t argc = form.size() - 1;
+
+    // The pre-T0 literals (docs/pausing.md §5), now the command layer's first
+    // two verbs with byte-identical replies.  They do NOT mark the session as
+    // command-speaking: every legacy driver (runslog.rkt, slogd.rkt's
+    // auto-continue, pause-tests) sends the bare literals, and the
+    // protocol-mode seam exists precisely so slice (d) can keep the 8-field
+    // (paused ...) bytes for those sessions.
+    if (verb == "continue" && argc == 0)          { d->continueRun();        return; }
+    if (verb == "continue-boundary" && argc == 0) { d->continueToBoundary(); return; }
+
+    // (protocol-mode): observe the session's protocol mode without changing
+    // it -- exempt from marking so a test (or slice (d)) can see the mode a
+    // pause WOULD be scoped by.
+    if (verb == "protocol-mode" && argc == 0)
+    {
+        d->emit(std::string("(protocol-mode ")
+                + (d->commandProtocolSpoken() ? "command" : "path") + ")");
+        return;
+    }
+
+    d->markCommandProtocol();
+
+    if (verb == "continue" || verb == "continue-boundary")
+    {
+        refuse(d, "parse", "(verb " + verb + ") (detail \"T0 takes the bare "
+               "form; parameterized budgets ride the compiled action until "
+               "the verb grows arguments\")");
+        return;
+    }
+
+    if (const char* family = reserved_family(verb))
+    {
+        refuse(d, "reserved-verb",
+               "(verb " + verb + ") (family " + family + ")");
+        return;
+    }
+
+    if (verb == "catalog")
+    {
+        if (argc == 0) { emit_catalog_relations(d); return; }
+        if (argc == 1 && form.items[1].isAtom())
+        {
+            const std::string& what = form.items[1].text;
+            if (what == "relations") { emit_catalog_relations(d); return; }
+            if (what == "types")     { emit_catalog_types(d);     return; }
+        }
+        refuse(d, "parse", "(verb catalog) (detail \"expected (catalog), "
+               "(catalog relations), or (catalog types)\")");
+        return;
+    }
+
+    if (verb == "protocol-mode")
+    {
+        refuse(d, "parse",
+               "(verb protocol-mode) (detail \"takes no arguments\")");
+        return;
+    }
+
+    refuse(d, "unknown-verb", "(verb " + verb + ")");
+}
+
+// One per-line dispatch shared byte-identically by both transports
+// (docs/t0-contract.md, "One protocol, two stacks"): a line beginning '('
+// routes to the command layer; anything else stays a plugin path.  The TCP
+// twin handles its transport-level (close) BEFORE this dispatch, exactly as
+// before.
+static void dispatch_line(slog::Daemon* d,
+                          const std::string& line,
+                          std::vector<void*>& so_handles)
+{
+    if (line.empty())
+        return;
+    if (line[0] == '(')
+        dispatch_command(d, line);
+    else
+        run_plugin(d, line, so_handles);
+}
+
 // stdin transport: one plugin path per line, responses to stdout.
 static int run_stdin(u32 num_threads)
 {
@@ -117,16 +363,7 @@ static int run_stdin(u32 num_threads)
     {
         if (!line.empty() && line.back() == '\r')
             line.pop_back();
-        // The literal (continue) does one bounded unit of work (docs/pausing.md
-        // §5) without a plugin, so a driver/console can resume a suspended
-        // stratum with no clang build.  The (continue [ms] [mem]) action .so
-        // still exists for parameterized budgets.
-        if (line == "(continue)")
-            daemon->continueRun();
-        else if (line == "(continue-boundary)")
-            daemon->continueToBoundary();
-        else if (!line.empty())
-            run_plugin(daemon, line, so_handles);
+        dispatch_line(daemon, line, so_handles);
     }
 
     // Delete the daemon (and its database) BEFORE dlclosing: index objects
@@ -207,15 +444,7 @@ static int run_tcp(u32 num_threads, int port)
                 done = true;
                 break;
             }
-            // (continue): one bounded unit of work, no plugin (docs/pausing.md §5).
-            // (continue-boundary): the same but stop at the next iteration
-            // boundary (docs/fast-compile.md §4), the hot-swap-safe stop point.
-            if (line == "(continue)")
-                daemon->continueRun();
-            else if (line == "(continue-boundary)")
-                daemon->continueToBoundary();
-            else if (!line.empty())
-                run_plugin(daemon, line, so_handles);
+            dispatch_line(daemon, line, so_handles);
         }
         if (done)
             break;
