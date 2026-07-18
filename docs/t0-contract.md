@@ -308,10 +308,16 @@ the fork.
   harness driven **through the command protocol** dual-stack; all
   Appendix A consumers untouched and green.
 
-  *As built (2026-07-15):* `daemon/protocol.h` owns the D6 reader
-  (`parseLine`/`quoteString`; std-only, ready for plan.h); the verb
-  dispatch and catalog emission live beside the transport loops in
-  `slogd.cpp` (`dispatch_line` -> `dispatch_command`).  Refusal shapes:
+  *As built (2026-07-15; reader unified 2026-07-17):*
+  `daemon/protocol.h` is the command layer's adapter over the ONE
+  shared bounded reader (`daemon/sexp.h`/`sexp.cpp`, the same grammar
+  the plan and query-plan decoders consume — the slice-(b) as-built
+  pin): `parseLine` wraps `sexp::read_one` with command-layer limits
+  sized to the plan sidecar's, so a future builder or Q1 line embedding
+  a plan payload unchanged is never refused by framing; `quoteString`
+  is the wire-emission inverse.  The verb dispatch and catalog
+  emission live beside the transport loops in `slogd.cpp`
+  (`dispatch_line` -> `dispatch_command`).  Refusal shapes:
   `(refused parse <gen> [(verb V)] (detail "..."))`,
   `(refused unknown-verb <gen> (verb V))`,
   `(refused reserved-verb <gen> (verb V) (family

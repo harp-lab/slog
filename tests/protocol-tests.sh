@@ -48,11 +48,13 @@ expect_not "route-command-no-plugin" 'no such plugin: (no-such-verb)'      out/p
 # --- 2. refusal classes ------------------------------------------------------
 # parse: unbalanced form, trailing content (D6: one form per line), empty
 # command, non-symbol verb.  unknown-verb: an unrecognized verb.  Every
-# refusal carries the generation token field.
+# refusal carries the generation token field.  Reader details come from the
+# ONE shared bounded reader (daemon/sexp.cpp, byte-offset prefixed); the
+# refusal CLASS is the contract pin, the detail text is informative.
 racket tests/api/drive.rkt "(foo" "(foo) (bar)" "()" '(("x") 1)' "(frobnicate 1 2)" \
   > out/proto-refuse.log 2>&1
-expect_rx "refuse-parse-unbalanced" '\(refused parse [0-9]+ \(detail "unterminated list"\)\)' out/proto-refuse.log
-expect_rx "refuse-parse-trailing"   '\(refused parse [0-9]+ \(detail "trailing content' out/proto-refuse.log
+expect_rx "refuse-parse-unbalanced" '\(refused parse [0-9]+ \(detail "[^"]*unterminated list"\)\)' out/proto-refuse.log
+expect_rx "refuse-parse-trailing"   '\(refused parse [0-9]+ \(detail "[^"]*trailing value' out/proto-refuse.log
 expect_rx "refuse-parse-empty"      '\(refused parse [0-9]+ \(detail "empty command"\)\)' out/proto-refuse.log
 expect_rx "refuse-parse-nonsymbol"  '\(refused parse [0-9]+ \(detail "verb must be a symbol"\)\)' out/proto-refuse.log
 expect_rx "refuse-unknown-verb"     '\(refused unknown-verb [0-9]+ \(verb frobnicate\)\)' out/proto-refuse.log

@@ -241,7 +241,7 @@ static void emit_catalog_types(slog::Daemon* d)
 // Dispatch one '('-line on the command stack.
 static void dispatch_command(slog::Daemon* d, const std::string& line)
 {
-    slog::protocol::Sexp form;
+    slog::sexp::SExp form;
     std::string err;
     if (!slog::protocol::parseLine(line, form, err))
     {
@@ -262,17 +262,20 @@ static void dispatch_command(slog::Daemon* d, const std::string& line)
                 return false;
         return true;
     };
-    if (form.items.empty() || !form.items[0].isAtom()
-        || !symbol_safe(form.items[0].text))
+    const bool head_is_atom =
+        !form.children.empty()
+        && form.children[0].kind == slog::sexp::SExp::K::atom;
+    if (form.children.empty() || !head_is_atom
+        || !symbol_safe(form.children[0].text))
     {
         d->markCommandProtocol();
-        refuse(d, "parse", form.items.empty()
+        refuse(d, "parse", form.children.empty()
                              ? "(detail \"empty command\")"
                              : "(detail \"verb must be a symbol\")");
         return;
     }
-    const std::string& verb = form.items[0].text;
-    const size_t argc = form.size() - 1;
+    const std::string& verb = form.children[0].text;
+    const size_t argc = form.children.size() - 1;
 
     // The pre-T0 literals (docs/pausing.md §5), now the command layer's first
     // two verbs with byte-identical replies.  They do NOT mark the session as
@@ -313,9 +316,9 @@ static void dispatch_command(slog::Daemon* d, const std::string& line)
     if (verb == "catalog")
     {
         if (argc == 0) { emit_catalog_relations(d); return; }
-        if (argc == 1 && form.items[1].isAtom())
+        if (argc == 1 && form.children[1].kind == slog::sexp::SExp::K::atom)
         {
-            const std::string& what = form.items[1].text;
+            const std::string& what = form.children[1].text;
             if (what == "relations") { emit_catalog_relations(d); return; }
             if (what == "types")     { emit_catalog_types(d);     return; }
         }
