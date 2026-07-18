@@ -111,6 +111,18 @@ one has a history:
 A plan whose attributes the VM cannot honor is a typed install-time
 refusal (the T2-B refusal style), never a silent degradation.
 
+**ABI-1 interim (pinned at slice 1, 2026-07-18):** rf1-contract.md's
+flavored-plan attributes (`no-semijoin-reopt`, per-rule fold kinds,
+probe-only `mkstruct`) are ABI-2 vocabulary, and ABI 2 has not landed.
+Slice 1 consumes ABI-1 sidecars as they exist: the fold kind decodes
+from the rule variant's `/<kind>` suffix (the same discrimination the
+attribute will carry — rf1-contract.md "Fold kinds"), and
+semijoin-off is enforced as a seal CHECK — an `exists`/`absent-exists`
+op inside a `(flavor count)` plan is a typed seal refusal, which is
+strictly stronger than trusting a convention. When the ABI-2 split
+lands, the kind attribute supersedes the suffix decode and the check
+becomes attribute verification; nothing else in this contract moves.
+
 ## What sidecar equality means, per flavor
 
 "Maintained-sidecar equality against forced recounts" is pinned as:
