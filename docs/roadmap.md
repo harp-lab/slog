@@ -355,6 +355,38 @@ The spine is the decided queue, now interpreter-first:
   transition scheduling, implemented as interpreter variants (P4); exit
   audit in the established style.
 - **M7 — recursive lattice/rank repair**, likewise interpreter-first.
+**Checkpoint 2026-07-18 (counted interpreter slice 1):** `(flavor count)`
+plans now parse, seal, bind, and execute through the production
+interpreter with zero changes to the frozen core.  The counted read
+vocabulary landed as decode plus thread-0 factory registrations —
+once/seeded one-row drivers over K=0 FULL scans, temp declarations and
+nominal emit-temp staging, struct-master resolution probes, and a
+mkstruct lowering to a pre-fire resolve cursor (fatal on zero-match,
+the emit_struct_count closure stance) that composes chained
+constructions with no new opcode.  The thread-0 sinks call the native
+counting emitters verbatim, so kind-tagged batches reach the unchanged
+CountTask/CountStructTask folds; `install_count_stratum` mirrors the
+native flavored plugin (counted-head classification, fire-once
+scheduling, read/dynamic manifests, beginStratumDelta entry), and
+`SLOG_COUNT_INTERP=1` routes `_count` plugins through it as the
+differential's second executor — default routing untouched until
+slice 4.  A drafting error was found and fixed at the source: counted
+plans were NOT semijoin-stripped as the tiers doc claimed
+(`ensure-count-so` never disabled the lookahead); the count flavor now
+plans semijoin-free, `incremental-flavor-abi` bumped to `ci1-v1`, and
+the seal CHECK refuses stray `exists` ops.  The dual-executor
+differential earned its keep on its first full run: the VM's
+primitive-fault path still bound the normal flavor's error emitter,
+whose kind-less batch tripped the M0.3 invalidation and freed the
+count sidecars mid-round (an ASan-confirmed use-after-free); counted
+rules now bind `emit_pending_error_count` with the rule's fold kind,
+and the regression is a permanent fixture case.  The permanent counted
+differential cases live in the quick-tier `interp` harness (sidecar
+byte-equality against native tasks and hand-pinned words,
+disaggregated fires, chained-construction fatal, typed refusals for
+the maint flavors slices 2–3 will lift).  Slices 2–3 (maintenance
+flavors) and 4 (routing flip + exit audit) remain on this spine.
+
 - **The standing vetting campaign** — the reason this thread exists beyond
   the milestones. Full incrementality is the system's central bet and its
   testing should outweigh its implementation:

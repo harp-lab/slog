@@ -651,15 +651,23 @@
 ;; stratum names and `.cprog` paths remain stable.  emit-stratum-cpp swaps the
 ;; parameter's #t for the full count-mode value once the stratum's dynamic set
 ;; is in hand.
-(define incremental-flavor-abi "m4t-v1")
+(define incremental-flavor-abi "ci1-v1")
 
+;; Semijoin lookahead is disabled for the count flavor (docs/
+;; counted-interp-contract.md, plan-attribute 1; execution-tiers.md §4.3):
+;; count rounds take no existence shortcut, so counted plans carry no
+;; `exists` c-ops and the daemon seal CHECKS that absence.  The exists
+;; probes were fire-multiset-neutral (they prune only zero-instantiation
+;; prefixes), so stripping them changes no sidecar or golden; the flavor
+;; ABI bump above regenerates the affected cached artifacts once.
 (define (ensure-count-so job)
   (match-define (list proghash _te _st _dm _dc) job)
   (define so
     (fullpath (format "build/~a_count.~a.O0.so"
                       proghash incremental-flavor-abi)))
   (unless (file-exists? so)
-    (define cpps (parameterize ([count-flavor #t])
+    (define cpps (parameterize ([count-flavor #t]
+                                [semijoin-filters-enabled #f])
                    (emit-stratum-cpp job)))
     (build-so cpps so #:opt "-O0"))
   so)

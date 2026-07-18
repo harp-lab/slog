@@ -39,6 +39,7 @@
  ******************************/
 
 #include "daemon.h"
+#include "plan-count.h"
 #include "protocol.h"
 
 #include <dlfcn.h>
@@ -91,6 +92,12 @@ static void run_plugin(slog::Daemon* d,
                        const std::string& path,
                        std::vector<void*>& so_handles)
 {
+    // Counted-interpreter differential routing (counted-interp-contract.md
+    // slice 1): with SLOG_COUNT_INTERP set, a `_count` flavored plugin
+    // installs its sealed sidecar plan through the production interpreter
+    // seam instead of dlopen; native flavored execution stays the default.
+    if (slog::interp::maybe_interp_count_plugin(d, path))
+        return;
     if (!std::filesystem::is_regular_file(path))
     {
         d->emit("(error \"no such plugin: " + path + "\")");

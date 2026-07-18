@@ -36,9 +36,17 @@ struct RelationShape
   std::vector<std::vector<u16>> full_orders;
   RelationK kind = RelationK::plain;
   std::vector<std::vector<u16>> delta_orders;
+  // A per-rule staging temp (no requisitioned indices; nominal-order
+  // emission with no dedup; scanned by the follow-up rule's delta driver).
+  bool temp = false;
 };
 
-enum class DriverK : u8 { scan_delta, probe_full };
+// `once` fires a single empty driver row (ground/fact rules); `seeded` is the
+// count flavor's all-full fire-once shape -- also one empty row, with the
+// enumeration carried entirely by K=0 body scans over FULL views.  Both are
+// currently admitted for counted plans only (thread 0); the normal-flavor
+// once/seeded conformance group remains a trunk chore.
+enum class DriverK : u8 { scan_delta, probe_full, once, seeded };
 
 struct DriverPlan
 {
@@ -59,6 +67,14 @@ struct ProbePlan
   std::vector<u16> delta_order;
   // join-lat uses a BTreeMapIndex whose final ordered column is the payload.
   bool lattice = false;
+  // Counted plans probe struct masters directly: content->id resolution
+  // joins over the content-first/id-last ordering (thread 0).
+  bool struct_ = false;
+  // Count-flavor mkstruct lowering: at a settled fixpoint the instance is
+  // already interned, so the head construction becomes this pre-fire
+  // resolution probe (binding the id register) whose zero-match exhaustion
+  // is a loud fatal, mirroring emit_struct_count's closure stance.
+  bool resolve = false;
 };
 
 enum class FilterK : u8 { exists, absent };
@@ -130,11 +146,21 @@ using BodyPlan = std::variant<ProbePlan, FilterPlan, NeqPlan, EqPlan,
                               CopyPlan, PrimPlan, Join3Plan>;
 using HeadPrefixPlan = std::variant<CopyPlan, PrimPlan, TycheckPlan>;
 
+// Head sink families.  `set` is the ordinary indexed emit; the other three
+// are decoded for counted plans (thread 0): `temp` stages nominal-order rows
+// with no dedup (emit_temp), `lattice` preserves every contribution row
+// (emit_lattice_count), and `struct_` is a canonical mkstruct head whose id
+// column (nominal 0, listed first in regs) is bound by the lowered pre-fire
+// resolution probe.
+enum class HeadK : u8 { set, temp, lattice, struct_ };
+
 struct EmitPlan
 {
   u16 relation = 0;
   std::vector<u16> order;
-  std::vector<u16> regs; // values in head-index order
+  std::vector<u16> regs; // values in head-index order (nominal for
+                         // temp/lattice/struct_ heads)
+  HeadK head_kind = HeadK::set;
 };
 
 struct RulePlan
@@ -155,6 +181,10 @@ struct RulePlan
   std::vector<HeadPrefixPlan> head_prefix;
   // Parsed canonical pre ops retain their semantic order.
   std::vector<StraightPlan> preops;
+  // Count flavor: the rule's prov-keyed contribution kind (cnt_kind_nonrec /
+  // cnt_kind_rec), decoded from the variant tag's "/<kind>" suffix under the
+  // ABI-1 interim (counted-interp-contract.md); cnt_kind_none otherwise.
+  u8 fold_kind = 0;
 };
 
 enum class SealErrorK : u8
@@ -244,6 +274,9 @@ struct DecodedKernelPlan
   std::vector<DecodedRule> rules;
   std::map<u32, std::string> sources;
   size_t attachment_count = 0;
+  // The plan's (dynamic ...) names, retained for the counted installer's
+  // addDynamicRel mirroring (thread 0).
+  std::vector<std::string> dynamic_names;
 };
 
 struct SealedRule
@@ -262,6 +295,10 @@ struct SealedRule
   u16 max_depth = 0;
   // Compatibility view for the original T2-A seal fixtures.
   std::vector<FilterPlan> prefilters;
+  // Count flavor (thread 0): sinks fold this prov-keyed kind through the
+  // shared cnt_* folds; false/none for the normal flavor.
+  bool counted = false;
+  u8 fold_kind = 0;
 };
 
 // Resolve the canonical primitive name to its exact shared daemon function
@@ -275,6 +312,7 @@ struct SealedKernelPlan
   std::vector<RelationBinding> bindings;
   std::vector<SealedRule> rules;
   std::map<u32, std::string> sources;
+  std::vector<std::string> dynamic_names;
 };
 
 inline void seal_check(bool ok, SealErrorK kind,
@@ -320,6 +358,20 @@ inline const RelationShape& lattice_shape(
   seal_check(shape.arity >= 2 && shape.arity <= max_daemon_arity,
              SealErrorK::relation_arity,
              std::string(where) + ": unsupported lattice arity");
+  return shape;
+}
+
+inline const RelationShape& struct_shape(
+  const std::vector<RelationShape>& rels, u16 slot, const char* where)
+{
+  seal_check(slot < rels.size(), SealErrorK::relation_slot,
+             std::string(where) + ": relation slot out of range");
+  const RelationShape& shape = rels[slot];
+  seal_check(shape.kind == RelationK::struct_, SealErrorK::relation_kind,
+             std::string(where) + ": operation requires a struct relation");
+  seal_check(shape.arity >= 2 && shape.arity <= max_daemon_arity,
+             SealErrorK::relation_arity,
+             std::string(where) + ": unsupported struct arity");
   return shape;
 }
 
@@ -385,7 +437,8 @@ inline bool supports_map_filter(FilterK kind, u16 arity, u16 bound)
 }
 
 inline SealedRule seal_rule(const RulePlan& plan,
-                            const std::vector<RelationShape>& relations)
+                            const std::vector<RelationShape>& relations,
+                            bool counted = false)
 {
   seal_check(plan.nregs != 0, SealErrorK::register_bounds,
              "rule: empty register file");
@@ -405,6 +458,8 @@ inline SealedRule seal_rule(const RulePlan& plan,
   out.heads = plan.heads;
   out.relations = relations;
   out.preops = plan.preops;
+  out.counted = counted;
+  out.fold_kind = plan.fold_kind;
   if (out.preops.empty())
     for (const FilterPlan& filter : plan.prefilters)
       out.preops.emplace_back(filter);
@@ -517,6 +572,23 @@ inline SealedRule seal_rule(const RulePlan& plan,
   for (const StraightPlan& straight : out.preops)
     validate_straight(straight, "pre op");
 
+  if (plan.driver.kind == DriverK::once
+      || plan.driver.kind == DriverK::seeded)
+  {
+    // One empty driver row; the enumeration is carried by K=0 body scans
+    // over FULL views (the count flavor's fire-once shape).
+    seal_check(counted, SealErrorK::capability,
+               "driver: once/seeded drivers are admitted for counted "
+               "plans only");
+    seal_check(plan.driver.order.empty(), SealErrorK::ordering,
+               "driver: once/seeded driver has an unexpected ordering");
+    seal_check(plan.driver.bound == 0, SealErrorK::bound_prefix,
+               "driver: once/seeded driver has an unexpected bound prefix");
+    seal_check(plan.driver.regs.empty(), SealErrorK::dataflow,
+               "driver: once/seeded driver assigns no registers");
+  }
+  else
+  {
   const RelationShape& driver_rel =
     relation_shape(relations, plan.driver.relation, "driver");
   seal_check(plan.driver.regs.size() == driver_rel.arity,
@@ -558,47 +630,63 @@ inline SealedRule seal_rule(const RulePlan& plan,
       }
     }
   }
+  }
 
   for (const BodyPlan& body : plan.body)
   {
-    if (const auto* probe = std::get_if<ProbePlan>(&body))
+    if (const auto* probe_in = std::get_if<ProbePlan>(&body))
     {
-      const RelationShape& rel = probe->lattice
-        ? lattice_shape(relations, probe->relation, "lattice probe")
-        : relation_shape(relations, probe->relation, "probe");
-      validate_order(rel, probe->order, "probe");
-      seal_check(probe->regs.size() == rel.arity, SealErrorK::relation_arity,
+      ProbePlan probe = *probe_in;
+      // Counted plans resolve struct content->id through ordinary probes of
+      // the struct master (the M4S resolution-join shape at a settled
+      // fixpoint); the normal flavor keeps refusing struct probes.
+      seal_check(probe.relation < relations.size(), SealErrorK::relation_slot,
+                 "probe: relation slot out of range");
+      probe.struct_ = !probe.lattice
+        && relations[probe.relation].kind == RelationK::struct_;
+      seal_check(!probe.struct_ || counted, SealErrorK::relation_kind,
+                 "probe: struct relation probes are admitted for counted "
+                 "plans only");
+      const RelationShape& rel = probe.lattice
+        ? lattice_shape(relations, probe.relation, "lattice probe")
+        : probe.struct_
+          ? struct_shape(relations, probe.relation, "struct probe")
+          : relation_shape(relations, probe.relation, "probe");
+      validate_order(rel, probe.order, "probe");
+      seal_check(probe.regs.size() == rel.arity, SealErrorK::relation_arity,
                  "probe: register width mismatch");
-      const bool viewed = probe->view != ProbePlan::View::full;
-      seal_check(probe->lattice
-                   ? supports_map_probe(rel.arity, probe->bound)
-                   : (viewed ? supports_view_probe(rel.arity, probe->bound)
-                             : supports_set_probe(rel.arity, probe->bound)),
+      const bool viewed = probe.view != ProbePlan::View::full;
+      seal_check(!probe.struct_ || !viewed, SealErrorK::capability,
+                 "struct probe: relation views are unsupported");
+      seal_check(probe.lattice
+                   ? supports_map_probe(rel.arity, probe.bound)
+                   : (viewed ? supports_view_probe(rel.arity, probe.bound)
+                             : supports_set_probe(rel.arity, probe.bound)),
                  SealErrorK::factory,
                  "probe: no daemon cursor capability");
-      if (probe->lattice)
+      if (probe.lattice)
       {
-        seal_check(!viewed && probe->delta_order.empty(),
+        seal_check(!viewed && probe.delta_order.empty(),
                    SealErrorK::capability,
                    "lattice probe: relation views are unsupported");
-        seal_check(probe->order.back() == rel.arity - 1,
+        seal_check(probe.order.back() == rel.arity - 1,
                    SealErrorK::ordering,
                    "lattice probe: payload column is not last");
       }
       else if (viewed)
       {
-        validate_order(rel, probe->delta_order, "probe delta", true);
+        validate_order(rel, probe.delta_order, "probe delta", true);
         // The native old/new membership test compares physically ordered
         // tuples.  Canonical operationalization currently requisitions the
         // same order for both views; reject a mismatched pair explicitly.
-        seal_check(probe->delta_order == probe->order, SealErrorK::ordering,
+        seal_check(probe.delta_order == probe.order, SealErrorK::ordering,
                    "probe: full and delta orderings differ");
       }
       for (u16 i = 0; i < rel.arity; ++i)
       {
-        const u16 reg = probe->regs[i];
+        const u16 reg = probe.regs[i];
         validate_reg(reg, plan.nregs, "probe");
-        if (i < probe->bound)
+        if (i < probe.bound)
           seal_check(assigned[reg], SealErrorK::bound_prefix,
                      "probe: unbound prefix register");
         else
@@ -611,7 +699,7 @@ inline SealedRule seal_rule(const RulePlan& plan,
       const size_t cursor = out.cursors.size();
       seal_check(cursor < std::numeric_limits<u16>::max(), SealErrorK::factory,
                  "probe: too many cursor ports");
-      out.cursors.push_back(*probe);
+      out.cursors.push_back(std::move(probe));
       out.program.ops.push_back({OpK::probe, static_cast<u16>(cursor)});
       ++out.max_depth;
     }
@@ -735,6 +823,53 @@ inline SealedRule seal_rule(const RulePlan& plan,
     }
   }
 
+  // Count-flavor mkstruct heads lower to pre-fire resolution probes: at a
+  // settled fixpoint the constructed instance is already interned, so the
+  // content-bound probe binds the id register (nominal column 0, suffix of
+  // the id-last master ordering) and a zero-match exhaustion is a loud
+  // fatal in the bound cursor -- the emit_struct_count closure stance.
+  // Chained constructions compose as ordinary nested cursor levels.
+  for (const EmitPlan& head : plan.heads)
+  {
+    if (head.head_kind != HeadK::struct_) continue;
+    seal_check(counted, SealErrorK::capability,
+               "mkstruct: struct construction heads are admitted for "
+               "counted plans only");
+    const RelationShape& rel =
+      struct_shape(relations, head.relation, "mkstruct");
+    validate_order(rel, head.order, "mkstruct");
+    seal_check(head.order.back() == 0, SealErrorK::ordering,
+               "mkstruct: master ordering must end in the id column");
+    seal_check(head.regs.size() == rel.arity, SealErrorK::relation_arity,
+               "mkstruct: register width mismatch");
+    ProbePlan resolve;
+    resolve.relation = head.relation;
+    resolve.order = head.order;
+    resolve.bound = static_cast<u16>(rel.arity - 1);
+    resolve.struct_ = true;
+    resolve.resolve = true;
+    for (u16 column : head.order)
+      resolve.regs.push_back(head.regs[column]);
+    for (u16 i = 0; i + 1 < rel.arity; ++i)
+    {
+      const u16 reg = resolve.regs[i];
+      validate_reg(reg, plan.nregs, "mkstruct");
+      seal_check(assigned[reg], SealErrorK::bound_prefix,
+                 "mkstruct: unbound content register");
+    }
+    const u16 id_reg = resolve.regs.back();
+    validate_reg(id_reg, plan.nregs, "mkstruct");
+    seal_check(!assigned[id_reg], SealErrorK::dataflow,
+               "mkstruct: id register already assigned");
+    assigned[id_reg] = true;
+    const size_t cursor = out.cursors.size();
+    seal_check(cursor < std::numeric_limits<u16>::max(), SealErrorK::factory,
+               "mkstruct: too many cursor ports");
+    out.cursors.push_back(std::move(resolve));
+    out.program.ops.push_back({OpK::probe, static_cast<u16>(cursor)});
+    ++out.max_depth;
+  }
+
   out.program.ops.push_back({OpK::fire});
   for (const HeadPrefixPlan& prefix : plan.head_prefix)
   {
@@ -831,8 +966,45 @@ inline SealedRule seal_rule(const RulePlan& plan,
   for (size_t sink = 0; sink < plan.heads.size(); ++sink)
   {
     const EmitPlan& head = plan.heads[sink];
-    const RelationShape& rel = relation_shape(relations, head.relation, "emit");
-    validate_order(rel, head.order, "emit");
+    const RelationShape* shape = nullptr;
+    switch (head.head_kind)
+    {
+      case HeadK::set:
+        shape = &relation_shape(relations, head.relation, "emit");
+        validate_order(*shape, head.order, "emit");
+        break;
+      case HeadK::temp:
+        // Temps have no requisitioned orderings; rows stage in nominal
+        // order with no dedup (emit_temp), counted plans only.
+        seal_check(counted, SealErrorK::capability,
+                   "emit-temp: temp heads are admitted for counted "
+                   "plans only");
+        seal_check(head.relation < relations.size(),
+                   SealErrorK::relation_slot,
+                   "emit-temp: relation slot out of range");
+        shape = &relations[head.relation];
+        seal_check(shape->kind == RelationK::plain && shape->temp,
+                   SealErrorK::relation_kind,
+                   "emit-temp: not a temp relation");
+        seal_check(shape->arity > 0 && shape->arity <= max_daemon_arity,
+                   SealErrorK::relation_arity,
+                   "emit-temp: unsupported relation arity");
+        break;
+      case HeadK::lattice:
+        // Every contribution row is preserved in nominal storage order
+        // (emit_lattice_count); counted plans only.
+        seal_check(counted, SealErrorK::capability,
+                   "emit-lat: lattice heads are admitted for counted "
+                   "plans only");
+        shape = &lattice_shape(relations, head.relation, "emit-lat");
+        break;
+      case HeadK::struct_:
+        // Validated by the mkstruct pre-pass above; the emit stages the
+        // full nominal-order row with the resolved id in place.
+        shape = &struct_shape(relations, head.relation, "mkstruct emit");
+        break;
+    }
+    const RelationShape& rel = *shape;
     seal_check(head.regs.size() == rel.arity, SealErrorK::relation_arity,
                "emit: register width mismatch");
     for (u16 reg : head.regs)
@@ -865,7 +1037,8 @@ inline SealedRule seal_rule(const RulePlan& plan,
 
 inline std::vector<SealedRule> seal_rules(
   const std::vector<RulePlan>& plans,
-  const std::vector<RelationShape>& relations)
+  const std::vector<RelationShape>& relations,
+  bool counted = false)
 {
   std::set<std::pair<u32, std::string>> variants;
   std::vector<SealedRule> out;
@@ -875,7 +1048,7 @@ inline std::vector<SealedRule> seal_rules(
     seal_check(variants.insert({plan.rule_id, plan.variant}).second,
                SealErrorK::variant_identity,
                "rule: duplicate RuleVariant identity");
-    out.push_back(seal_rule(plan, relations));
+    out.push_back(seal_rule(plan, relations, counted));
   }
   return out;
 }
@@ -918,6 +1091,32 @@ std::unique_ptr<BoundSink> make_set_sink(
 std::unique_ptr<BoundSink> make_struct_sink(
   u16 arity, Relation* relation, const std::vector<u16>& order);
 
+// --- Thread-0 flavored factories (plan-count.cpp; interp-core-contract.md
+// extension seams).  Count sinks batch kind-tagged contribution rows for
+// the unchanged CountTask/CountStructTask folds; they never insert and
+// never dedup (docs/incremental.md 8B.1).
+std::unique_ptr<BoundSink> make_count_sink(
+  u16 arity, Relation* relation, Index** index,
+  const std::vector<u16>& order, u8 kind);
+std::unique_ptr<BoundSink> make_temp_sink(u16 arity, Relation* relation);
+std::unique_ptr<BoundSink> make_kind_batch_sink(
+  u16 arity, Relation* relation, u8 kind);
+std::unique_ptr<BoundSink> make_struct_count_sink(
+  u16 arity, Relation* relation, Index** master,
+  const std::vector<u16>& order, u8 kind);
+// The mkstruct resolution cursor: an ordinary content-bound master probe
+// whose zero-match exhaustion is a loud fatal (settled-fixpoint closure).
+std::unique_ptr<PrefixCursor> make_struct_resolve_cursor(
+  u16 arity, Index** index, const std::vector<u16>& regs, u16 bound,
+  const std::string& relation_name);
+// Counted rules bind these in place of emit_pending_error: a primitive
+// fault's error-arm row is a kind-tagged contribution
+// (emit_pending_error_count, docs/incremental.md 8B.4) folded by
+// CountStructTask -- never a set-semantics insert, whose kind-less batch
+// would invalidate and FREE the count sidecars mid-round at finalize.
+void emit_pending_error_count_nonrec(Database* db, const char* loc);
+void emit_pending_error_count_rec(Database* db, const char* loc);
+
 struct BoundExecution
 {
   std::vector<std::unique_ptr<BoundSink>> sinks;
@@ -938,6 +1137,9 @@ class BoundRule
   std::vector<Relation*> frame;
   Database* database = nullptr;
   std::string stats_rule_variant_key;
+  std::string stats_loc;
+  std::string stats_tag;
+  void (*error_fn)(Database*, const char*) = &emit_pending_error;
   std::vector<std::shared_ptr<const PrefixCursor>> cursor_prototypes;
   std::vector<std::shared_ptr<const PrefixCursor>> prefilter_prototypes;
   std::vector<BoundPrim> primitives;
@@ -993,7 +1195,7 @@ class BoundRule
         const u64 value = binding.invoke(database, args.data(), &ok);
         if (value == slog_error)
         {
-          emit_pending_error(database, sealed.program.source.empty()
+          error_fn(database, sealed.program.source.empty()
             ? "<interpreted>" : sealed.program.source.c_str());
           return {std::move(regs), false};
         }
@@ -1008,7 +1210,36 @@ class BoundRule
   std::unique_ptr<BoundSink> make_effect_sink(const EmitPlan& effect) const
   {
     Relation* rel = frame[effect.relation];
+    if (sealed.counted)
+      // The counted tycheck diversion: malformed rows pre-exist at a
+      // settled fixpoint, so the sink resolves by content probe and folds
+      // a kind-tagged contribution (emit_struct_count).
+      return make_struct_count_sink(rel->getArity(), rel,
+        rel->getIndex(effect.order, false), effect.order, sealed.fold_kind);
     return make_struct_sink(rel->getArity(), rel, effect.order);
+  }
+
+  std::unique_ptr<BoundSink> make_head_sink(const EmitPlan& head) const
+  {
+    Relation* rel = frame[head.relation];
+    switch (head.head_kind)
+    {
+      case HeadK::temp:
+        return make_temp_sink(rel->getArity(), rel);
+      case HeadK::lattice:
+      case HeadK::struct_:
+        // Nominal-order kind-tagged batching: lattice contributions are
+        // preserved verbatim (emit_lattice_count), and struct rows arrive
+        // with their id already bound by the resolution cursor.
+        return make_kind_batch_sink(rel->getArity(), rel, sealed.fold_kind);
+      case HeadK::set:
+        break;
+    }
+    if (sealed.counted)
+      return make_count_sink(rel->getArity(), rel,
+        rel->getIndex(head.order, false), head.order, sealed.fold_kind);
+    return make_set_sink(rel->getArity(), rel,
+      rel->getIndex(head.order, false), head.order);
   }
 
 public:
@@ -1021,6 +1252,29 @@ public:
     stats_rule_variant_key = "<interp-rule:"
       + std::to_string(sealed.program.rule_id) + ":variant:"
       + std::to_string(sealed.program.variant_ordinal) + ">";
+    if (sealed.counted)
+    {
+      // Counted rounds keep the native $stat_fires identity -- source
+      // location plus the base driver tag (no "/<kind>" suffix, no
+      // "#<ordinal>") -- so cross-executor comparison stays at the
+      // aggregated-golden level the exact-once audit pins.
+      stats_loc = sealed.program.source.empty()
+        ? stats_rule_variant_key : sealed.program.source;
+      const size_t cut = sealed.program.variant.find_first_of("/#");
+      stats_tag = cut == std::string::npos
+        ? sealed.program.variant : sealed.program.variant.substr(0, cut);
+    }
+    else
+    {
+      stats_loc = stats_rule_variant_key;
+      stats_tag = sealed.program.variant;
+    }
+    // A counted rule's primitive faults contribute kind-tagged error-arm
+    // rows exactly like native counted code (emit_pending_error_count).
+    if (sealed.counted)
+      error_fn = sealed.fold_kind == cnt_kind_rec
+        ? &emit_pending_error_count_rec
+        : &emit_pending_error_count_nonrec;
     seal_check(frame.size() == sealed.relations.size(),
                SealErrorK::binding,
                "bind: relation frame width mismatch");
@@ -1049,6 +1303,16 @@ public:
                  SealErrorK::binding, "bind: lattice kind mismatch");
       return rel;
     };
+    const auto struct_relation = [&](u16 slot) -> Relation* {
+      seal_check(slot < frame.size() && frame[slot] != nullptr,
+                 SealErrorK::binding, "bind: referenced struct is absent");
+      Relation* rel = frame[slot];
+      seal_check(rel->getArity() == sealed.relations[slot].arity,
+                 SealErrorK::binding, "bind: struct arity mismatch");
+      seal_check(rel->getStructId() != 0 && !rel->isLattice(),
+                 SealErrorK::binding, "bind: struct kind mismatch");
+      return rel;
+    };
     const auto index = [&](u16 slot, const std::vector<u16>& order) {
       seal_check(relation(slot)->hasIndex(order, false),
                  SealErrorK::binding,
@@ -1059,10 +1323,19 @@ public:
                  SealErrorK::binding,
                  "bind: requisitioned lattice map index is absent");
     };
+    const auto struct_index = [&](u16 slot, const std::vector<u16>& order) {
+      seal_check(struct_relation(slot)->hasIndex(order, false),
+                 SealErrorK::binding,
+                 "bind: requisitioned struct master index is absent");
+    };
 
-    (void)relation(sealed.driver.relation);
-    if (sealed.driver.kind == DriverK::probe_full)
-      index(sealed.driver.relation, sealed.driver.order);
+    if (sealed.driver.kind == DriverK::scan_delta
+        || sealed.driver.kind == DriverK::probe_full)
+    {
+      (void)relation(sealed.driver.relation);
+      if (sealed.driver.kind == DriverK::probe_full)
+        index(sealed.driver.relation, sealed.driver.order);
+    }
     for (const StraightPlan& op : sealed.preops)
       if (const auto* filter = std::get_if<FilterPlan>(&op))
       {
@@ -1075,9 +1348,12 @@ public:
       {
         if (probe->lattice)
           map_index(probe->relation, probe->order);
+        else if (probe->struct_)
+          struct_index(probe->relation, probe->order);
         else
           index(probe->relation, probe->order);
-        if (!probe->lattice && probe->view != ProbePlan::View::full)
+        if (!probe->lattice && !probe->struct_
+            && probe->view != ProbePlan::View::full)
           seal_check(relation(probe->relation)->hasIndex(
                        probe->delta_order, true), SealErrorK::binding,
                      "bind: requisitioned delta index is absent");
@@ -1102,7 +1378,23 @@ public:
       }
     }
     for (const EmitPlan& head : sealed.heads)
-      index(head.relation, head.order);
+      switch (head.head_kind)
+      {
+        case HeadK::set:
+          index(head.relation, head.order);
+          break;
+        case HeadK::temp:
+          // Temps carry no indices; the sink appends nominal-order rows.
+          (void)relation(head.relation);
+          break;
+        case HeadK::lattice:
+          (void)lattice_relation(head.relation);
+          break;
+        case HeadK::struct_:
+          // The resolution cursor above already requisitioned the master.
+          (void)struct_relation(head.relation);
+          break;
+      }
     for (const EmitPlan& effect : sealed.effects)
     {
       seal_check(effect.relation < frame.size()
@@ -1186,12 +1478,17 @@ public:
     {
       if (const auto* probe = std::get_if<ProbePlan>(&cursor))
       {
-        Relation* rel = probe->lattice
-          ? lattice_relation(probe->relation) : relation(probe->relation);
+        Relation* rel = probe->lattice ? lattice_relation(probe->relation)
+          : probe->struct_ ? struct_relation(probe->relation)
+          : relation(probe->relation);
         if (probe->lattice)
           cursor_prototypes.push_back(make_map_probe_cursor(
             rel->getArity(), rel->getIndex(probe->order, false),
             probe->regs, probe->bound));
+        else if (probe->resolve)
+          cursor_prototypes.push_back(make_struct_resolve_cursor(
+            rel->getArity(), rel->getIndex(probe->order, false),
+            probe->regs, probe->bound, rel->getName()));
         else if (probe->view == ProbePlan::View::full)
           cursor_prototypes.push_back(make_set_probe_cursor(
             rel->getArity(), rel->getIndex(probe->order, false),
@@ -1237,9 +1534,19 @@ public:
 
   u16 task_count() const
   {
+    if (sealed.driver.kind == DriverK::once
+        || sealed.driver.kind == DriverK::seeded)
+      return 1;
     if (sealed.driver.kind == DriverK::scan_delta) return bucket_count;
     return sealed.driver.bound == frame[sealed.driver.relation]->getArity()
          ? 1 : bucket_count;
+  }
+
+  // One empty driver row: the once/seeded fire-once dispatch.
+  static std::unique_ptr<DriverCursor> make_unit_driver()
+  {
+    return std::make_unique<VectorDriverCursor>(
+      std::make_shared<const std::vector<std::vector<u64>>>(1));
   }
 
   std::unique_ptr<Machine> make_task(u16 bucket, DebugSink* debug = nullptr,
@@ -1247,14 +1554,17 @@ public:
   {
     auto [initial, pre_pass] = initial_frame();
     std::unique_ptr<DriverCursor> driver;
-    Relation* rel = frame[sealed.driver.relation];
     if (!pre_pass)
       driver = std::make_unique<VectorDriverCursor>(
         std::make_shared<const std::vector<std::vector<u64>>>());
+    else if (sealed.driver.kind == DriverK::once
+             || sealed.driver.kind == DriverK::seeded)
+      driver = make_unit_driver();
     else if (sealed.driver.kind == DriverK::scan_delta)
-      driver = make_delta_driver(rel, bucket, 1);
+      driver = make_delta_driver(frame[sealed.driver.relation], bucket, 1);
     else
     {
+      Relation* rel = frame[sealed.driver.relation];
       std::vector<u64> prefix;
       for (u16 i = 0; i < sealed.driver.bound; ++i)
         prefix.push_back(initial[sealed.driver.regs[i]]);
@@ -1265,7 +1575,7 @@ public:
     return std::make_unique<Machine>(pinned, std::move(driver), make_cursors(),
                                      std::vector<BoundSink*>{}, debug,
                                      capture_outputs, database, primitives,
-                                     tychecks, &emit_pending_error,
+                                     tychecks, error_fn,
                                      std::move(initial));
   }
 
@@ -1277,26 +1587,26 @@ public:
     auto execution = std::make_unique<BoundExecution>();
     execution->sinks.reserve(sealed.heads.size() + sealed.effects.size());
     for (const EmitPlan& head : sealed.heads)
-    {
-      Relation* rel = frame[head.relation];
-      execution->sinks.push_back(make_set_sink(
-        rel->getArity(), rel, rel->getIndex(head.order, false), head.order));
-    }
+      execution->sinks.push_back(make_head_sink(head));
     for (const EmitPlan& effect : sealed.effects)
       execution->sinks.push_back(make_effect_sink(effect));
     std::vector<BoundSink*> ports;
     for (auto& sink : execution->sinks) ports.push_back(sink.get());
 
-    Relation* rel = frame[sealed.driver.relation];
     auto [initial, pre_pass] = initial_frame();
     std::unique_ptr<DriverCursor> driver;
     if (!pre_pass)
       driver = std::make_unique<VectorDriverCursor>(
         std::make_shared<const std::vector<std::vector<u64>>>());
+    else if (sealed.driver.kind == DriverK::once
+             || sealed.driver.kind == DriverK::seeded)
+      driver = make_unit_driver();
     else if (sealed.driver.kind == DriverK::scan_delta)
-      driver = make_delta_driver(rel, bucket, db->getThreadCount());
+      driver = make_delta_driver(frame[sealed.driver.relation], bucket,
+                                 db->getThreadCount());
     else
     {
+      Relation* rel = frame[sealed.driver.relation];
       std::vector<u64> prefix;
       for (u16 i = 0; i < sealed.driver.bound; ++i)
         prefix.push_back(initial[sealed.driver.regs[i]]);
@@ -1306,7 +1616,7 @@ public:
     }
     execution->machine = std::make_unique<Machine>(
       pinned, std::move(driver), make_cursors(), std::move(ports), nullptr,
-      false, db, primitives, tychecks, &emit_pending_error,
+      false, db, primitives, tychecks, error_fn,
       std::move(initial));
     return execution;
   }
@@ -1315,11 +1625,7 @@ public:
   {
     std::vector<std::unique_ptr<BoundSink>> sinks;
     for (const EmitPlan& head : sealed.heads)
-    {
-      Relation* rel = frame[head.relation];
-      sinks.push_back(make_set_sink(rel->getArity(), rel,
-        rel->getIndex(head.order, false), head.order));
-    }
+      sinks.push_back(make_head_sink(head));
     for (const EmitPlan& effect : sealed.effects)
       sinks.push_back(make_effect_sink(effect));
     seal_check(attempt.outputs.size() == attempt.output_sinks.size(),
@@ -1338,6 +1644,8 @@ public:
 
   const SealedRule& definition() const { return sealed; }
   const std::string& statsKey() const { return stats_rule_variant_key; }
+  const std::string& statsLoc() const { return stats_loc; }
+  const std::string& statsTag() const { return stats_tag; }
   void attach(Database* db, Stratum* stratum, bool once_only = false) const;
 };
 
@@ -1374,8 +1682,8 @@ public:
         execution->flush();
         const Attempt& result = execution->machine->result();
         if (result.fires)
-          db->bumpFires(rule->statsKey().c_str(),
-                        rule->definition().program.variant.c_str(),
+          db->bumpFires(rule->statsLoc().c_str(),
+                        rule->statsTag().c_str(),
                         result.fires);
         return true;
       }

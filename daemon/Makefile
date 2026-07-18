@@ -24,8 +24,8 @@ LDLIBS = -lz -ldl -lgmp
 
 HEADERS = $(wildcard *.h)
 
-slogd: slogd.cpp plan.cpp query.cpp sexp.cpp runtime.cpp $(HEADERS)
-	$(CXX) $(CXXFLAGS) $(OMPFLAGS) $(LDFLAGS) -o slogd slogd.cpp plan.cpp query.cpp sexp.cpp runtime.cpp $(LDLIBS)
+slogd: slogd.cpp plan.cpp plan-count.cpp query.cpp sexp.cpp runtime.cpp $(HEADERS)
+	$(CXX) $(CXXFLAGS) $(OMPFLAGS) $(LDFLAGS) -o slogd slogd.cpp plan.cpp plan-count.cpp query.cpp sexp.cpp runtime.cpp $(LDLIBS)
 
 # The freezer: a fact stream on stdin -> a static .bin database (freeze.cpp).
 # Links the same headers as slogd so every value encodes through the one

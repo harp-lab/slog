@@ -130,6 +130,23 @@ u32 variant_ordinal(const std::string& tag)
   return parsed.ec == std::errc{} ? out : 0;
 }
 
+// ABI-1 interim (counted-interp-contract.md): a counted rule's prov-keyed
+// fold kind rides as the variant tag's "/<kind>" suffix (before any
+// "#<ordinal>"), the same discrimination the ABI-2 fold-kind attribute will
+// carry.  Returns cnt_kind_none when no kind suffix is present.
+u8 variant_fold_kind(const std::string& tag)
+{
+  const size_t hash = tag.rfind('#');
+  const std::string_view base(tag.data(),
+    hash == std::string::npos ? tag.size() : hash);
+  const size_t slash = base.rfind('/');
+  if (slash == std::string_view::npos) return cnt_kind_none;
+  const std::string_view kind = base.substr(slash + 1);
+  if (kind == "nonrec") return cnt_kind_nonrec;
+  if (kind == "rec") return cnt_kind_rec;
+  return cnt_kind_none;
+}
+
 RelationBinding decode_relation(const SExp& x, u16 expected_slot)
 {
   const auto& entry = tagged(x, "rel", 3);
@@ -146,6 +163,7 @@ RelationBinding decode_relation(const SExp& x, u16 expected_slot)
   const std::string name = atom(decl[1], "relation name");
   const u16 arity = small(decl[2], "relation arity");
   RelationShape shape{arity, {}, relation_kind};
+  shape.temp = kind == "temp";
   for (size_t i = 3; i < decl.size(); ++i)
   {
     if (decl[i].kind != SExp::K::list) continue;
@@ -411,6 +429,14 @@ DecodedRule decode_rule(const SExp& x)
     for (size_t i = 4; i < ds.size(); ++i)
       out.plan.driver.regs.push_back(ref(ds[i], "r", "probe register"));
   }
+  else if (driver_name == "once" || driver_name == "seeded")
+  {
+    // One empty driver row; admitted at seal for counted plans only.
+    if (list(driver, driver_name.c_str()).size() != 1)
+      syntax(driver, driver_name + " driver takes no arguments");
+    out.plan.driver.kind = driver_name == "once"
+      ? DriverK::once : DriverK::seeded;
+  }
   else
   {
     out.unsupported.push_back("driver:" + driver_name);
@@ -532,6 +558,53 @@ DecodedRule decode_rule(const SExp& x)
     {
       if (saw_emit) out.unsupported.push_back("head:non-prefix-tycheck");
       else out.plan.head_prefix.emplace_back(decode_tycheck(op));
+    }
+    else if (name == "emit-temp")
+    {
+      // (emit-temp (rel n) (r ...) ...): nominal-order staging into a
+      // per-rule temp; no ordering field (temps carry no indices).
+      saw_emit = true;
+      const auto& xs = list(op, "emit-temp");
+      if (xs.size() < 3) syntax(op, "emit-temp is too short");
+      EmitPlan emit;
+      emit.head_kind = HeadK::temp;
+      emit.relation = ref(xs[1], "rel", "emit-temp relation");
+      for (size_t j = 2; j < xs.size(); ++j)
+        emit.regs.push_back(ref(xs[j], "r", "emit-temp register"));
+      for (u16 j = 0; j + 2 < xs.size(); ++j)
+        emit.order.push_back(j);
+      out.plan.heads.push_back(std::move(emit));
+    }
+    else if (name == "emit-lat")
+    {
+      // (emit-lat (rel n) (r ...) ...): nominal-order contribution rows.
+      saw_emit = true;
+      const auto& xs = list(op, "emit-lat");
+      if (xs.size() < 3) syntax(op, "emit-lat is too short");
+      EmitPlan emit;
+      emit.head_kind = HeadK::lattice;
+      emit.relation = ref(xs[1], "rel", "emit-lat relation");
+      for (size_t j = 2; j < xs.size(); ++j)
+        emit.regs.push_back(ref(xs[j], "r", "emit-lat register"));
+      for (u16 j = 0; j + 2 < xs.size(); ++j)
+        emit.order.push_back(j);
+      out.plan.heads.push_back(std::move(emit));
+    }
+    else if (name == "mkstruct")
+    {
+      // (mkstruct (rel n) (ord...) (r id) (r field) ...): registers in
+      // nominal order, the id column (nominal 0) listed first; the master
+      // ordering is content-first, id-last.
+      saw_emit = true;
+      const auto& xs = list(op, "mkstruct");
+      if (xs.size() < 5) syntax(op, "mkstruct is too short");
+      EmitPlan emit;
+      emit.head_kind = HeadK::struct_;
+      emit.relation = ref(xs[1], "rel", "mkstruct relation");
+      emit.order = order(xs[2], "mkstruct ordering");
+      for (size_t j = 3; j < xs.size(); ++j)
+        emit.regs.push_back(ref(xs[j], "r", "mkstruct register"));
+      out.plan.heads.push_back(std::move(emit));
     }
     else
       out.unsupported.push_back("head:" + name);
@@ -697,7 +770,7 @@ DecodedKernelPlan parse_kernel_plan(std::string_view input)
   for (size_t i = 1; i < prims.size(); ++i)
     out.primitives.push_back(atom(prims[i], "primitive name"));
   for (size_t i = 1; i < dynamic.size(); ++i)
-    (void)atom(dynamic[i], "dynamic relation name");
+    out.dynamic_names.push_back(atom(dynamic[i], "dynamic relation name"));
   for (size_t i = 1; i < rules.size(); ++i)
     out.rules.push_back(decode_rule(rules[i]));
   for (size_t i = 1; i < meta.size(); ++i)
@@ -779,8 +852,12 @@ SealedKernelPlan seal_kernel_plan(const DecodedKernelPlan& decoded,
 {
   seal_check(decoded.abi == 1, SealErrorK::abi,
              "plan: unsupported canonical ABI");
-  seal_check(decoded.flavor == "normal", SealErrorK::flavor,
-             "plan: T2-A admits normal flavor only");
+  // Slice 1 of counted-interp-contract.md lifts the count flavor; the
+  // maintenance flavors stay refused until slices 2-3 cover them.
+  const bool counted = decoded.flavor == "count";
+  seal_check(decoded.flavor == "normal" || counted, SealErrorK::flavor,
+             "plan: admitted flavors are normal and count "
+             "(maintenance flavors await counted-interp slices 2-3)");
   seal_check(decoded.attachment_count == 0, SealErrorK::capability,
              "plan: attachments are not admitted by T2-A");
   seal_check(std::is_sorted(decoded.primitives.begin(), decoded.primitives.end())
@@ -811,6 +888,32 @@ SealedKernelPlan seal_kernel_plan(const DecodedKernelPlan& decoded,
                       ? std::string("<unknown>")
                       : decoded_rule.unsupported.front()));
     RulePlan plan = decoded_rule.plan;
+    if (counted)
+    {
+      // Every counted rule must carry its prov-keyed fold kind (the ABI-1
+      // "/<kind>" variant suffix); the sinks fold it through cnt_apply.
+      plan.fold_kind = variant_fold_kind(plan.variant);
+      seal_check(plan.fold_kind == cnt_kind_nonrec
+                   || plan.fold_kind == cnt_kind_rec,
+                 SealErrorK::variant_identity,
+                 "plan: counted rule variant carries no fold kind: "
+                   + plan.variant);
+      // Plan-attribute 1 (counted-interp-contract.md): counted plans carry
+      // no semijoin filters, enforced as a seal CHECK rather than trusted
+      // as a convention.  A stale pre-ci1 sidecar can trip this; the
+      // compiler regenerates it with the flavored artifacts.
+      const auto no_exists = [](const FilterPlan& filter) {
+        seal_check(filter.kind != FilterK::exists, SealErrorK::capability,
+                   "plan: counted plan carries a semijoin exists filter "
+                   "(regenerate the _count sidecar)");
+      };
+      for (const StraightPlan& op : plan.preops)
+        if (const auto* filter = std::get_if<FilterPlan>(&op))
+          no_exists(*filter);
+      for (const BodyPlan& op : plan.body)
+        if (const auto* filter = std::get_if<FilterPlan>(&op))
+          no_exists(*filter);
+    }
     for (const auto& [reg, slot] : decoded_rule.constant_preloads)
     {
       seal_check(slot < decoded.constants.size(), SealErrorK::constant_slot,
@@ -855,8 +958,9 @@ SealedKernelPlan seal_kernel_plan(const DecodedKernelPlan& decoded,
   out.abi = decoded.abi;
   out.flavor = decoded.flavor;
   out.bindings = decoded.bindings;
-  out.rules = seal_rules(plans, shapes);
+  out.rules = seal_rules(plans, shapes, counted);
   out.sources = decoded.sources;
+  out.dynamic_names = decoded.dynamic_names;
   for (SealedRule& rule : out.rules)
   {
     const auto source = out.sources.find(rule.program.rule_id);

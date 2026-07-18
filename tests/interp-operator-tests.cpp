@@ -12,7 +12,7 @@
 // with breakpoints, bounded proof capture, seal/bind rejections, and real
 // Relation indices and emit sinks with dedup.
 //
-//   clang++ -O2 -Wall -std=c++20 -pthread -fopenmp -Idaemon tests/interp-operator-tests.cpp daemon/plan.cpp daemon/query.cpp daemon/sexp.cpp daemon/runtime.cpp -o /tmp/interp-tests -lgmp
+//   clang++ -O2 -Wall -std=c++20 -pthread -fopenmp -Idaemon tests/interp-operator-tests.cpp daemon/plan.cpp daemon/plan-count.cpp daemon/query.cpp daemon/sexp.cpp daemon/runtime.cpp -o /tmp/interp-tests -lgmp
 //   /tmp/interp-tests [--bench]
 
 #include "plan.h"
@@ -24,6 +24,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <fcntl.h>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -31,6 +32,8 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -2431,7 +2434,16 @@ bool test_parsed_sidecar_refusal_classes()
   }());
   CHECK(seal_rejects(SealErrorK::abi,
         replace_once(base, "(abi 1)", "(abi 2)")));
+  // Slice 1 of counted-interp-contract.md lifts the count flavor; the
+  // maintenance flavors stay typed refusals, and a counted rule without a
+  // "/<kind>" variant suffix is a typed identity refusal.
   CHECK(seal_rejects(SealErrorK::flavor,
+        replace_once(base, "(flavor normal)", "(flavor maint1)")));
+  CHECK(seal_rejects(SealErrorK::flavor,
+        replace_once(base, "(flavor normal)", "(flavor maint3neg)")));
+  CHECK(seal_rejects(SealErrorK::flavor,
+        replace_once(base, "(flavor normal)", "(flavor maint4neg)")));
+  CHECK(seal_rejects(SealErrorK::variant_identity,
         replace_once(base, "(flavor normal)", "(flavor count)")));
   CHECK(seal_rejects(SealErrorK::capability,
         replace_once(base,
@@ -2689,6 +2701,628 @@ bool test_real_interp_read_task_recursive_admission()
          std::string("delta:admit_edge#0"))] == 3);
   CHECK(native_db.fire_counts[std::make_pair(std::string("<native>"),
          std::string("delta:admit_path#0"))] == 3);
+  return true;
+}
+
+// ===========================================================================
+// Counted differential harness (counted-interp-contract.md slice 1).
+//
+// Each case runs the same settled database through the sealed/bound VM and
+// through hand-written native counting tasks -- the identical CountTask /
+// CountStructTask folds registered on both sides -- and requires
+// byte-identical count-sidecar words, disaggregated fire equality, and
+// untouched master content (count sinks never insert).
+// ===========================================================================
+
+template <u16 KA>
+static std::map<std::vector<u64>, u64> sidecar_words(Relation* rel)
+{
+  std::map<std::vector<u64>, u64> out;
+  Index** side = rel->getCountSidecar();
+  if (side == nullptr) return out;
+  for (u16 b = 0; b < bucket_count; ++b)
+  {
+    auto* index = static_cast<BTreeMapIndex<KA>*>(side[b]);
+    for (auto it = index->begin(); it != index->end(); ++it)
+      out.emplace(std::vector<u64>(it->first.begin(), it->first.end()),
+                  it->second);
+  }
+  return out;
+}
+
+static bool drive_stratum_to_fixpoint(Database& db, Stratum& stratum)
+{
+  RunBudget budget;
+  budget.max_ms = 10000;
+  budget.mem_bytes = UINT64_MAX;
+  budget.stop_at_boundary = true;
+  RunStatus status = db.continueStratum(&stratum, budget, true, true);
+  while (!status.fixpoint)
+  {
+    if (status.where != RUN_AT_BOUNDARY) return false;
+    status = db.continueStratum(&stratum, budget, false, true);
+  }
+  return true;
+}
+
+static void attach_counted_rules(Database& db, Stratum& stratum,
+                                 const SealedKernelPlan& sealed)
+{
+  const auto rules = bind_kernel_plan(sealed, db);
+  for (const auto& rule : rules)
+  {
+    const DriverK kind = rule->definition().driver.kind;
+    rule->attach(&db, &stratum,
+                 kind == DriverK::once || kind == DriverK::seeded);
+  }
+}
+
+// Recursive two-kind case (the fuzz-2-base shape): seeded/nonrec and
+// seeded/rec variants over a settled transitive closure, checking the
+// nonrec/rec decomposition of every sidecar word against the native
+// counting tasks and a hand-pinned expectation.
+bool test_counted_recursive_seeded_differential()
+{
+  const std::string text =
+    "(kernel-plan (abi 1) (flavor count) "
+    "(relations "
+      "(rel 0 (relation cnt_edge 2 (0 1))) "
+      "(rel 1 (relation cnt_path 2 (1 0)))) "
+    "(attachments) (constants) (prims) (dynamic cnt_path) "
+    "(rules "
+      "(rule-def (rid 0) (variant \"seeded/nonrec\") (nregs 2) (pre) "
+        "(driver (seeded)) "
+        "(body (join (rel 0) (0 1) 0 (r 0) (r 1))) "
+        "(head (emit (rel 1) (1 0) (r 1) (r 0)))) "
+      "(rule-def (rid 1) (variant \"seeded/rec\") (nregs 3) (pre) "
+        "(driver (seeded)) "
+        "(body (join (rel 0) (0 1) 0 (r 0) (r 1)) "
+              "(join (rel 1) (1 0) 1 (r 0) (r 2))) "
+        "(head (emit (rel 1) (1 0) (r 1) (r 2))))) "
+    "(meta (rule-meta (rid 0) (source \"cnt.slog:1\")) "
+          "(rule-meta (rid 1) (source \"cnt.slog:2\"))))";
+  const DecodedKernelPlan decoded = parse_kernel_plan(text);
+  CHECK(decoded.flavor == "count");
+  CHECK(decoded.dynamic_names == (std::vector<std::string>{"cnt_path"}));
+
+  const auto load = [](Database& db) {
+    db.addRelation("cnt_edge", 2);
+    db.addRelation("cnt_path", 2);
+    Relation* edge = db.getRelation("cnt_edge");
+    Relation* path = db.getRelation("cnt_path");
+    edge->addIndex<2>({0, 1}, false);
+    path->addIndex<2>({1, 0}, false);
+    // Settled closure of: path(X,Y) :- edge(X,Y).
+    //                     path(X,Z) :- edge(Y,Z), path(X,Y).
+    for (const std::array<u64, 2>& row :
+         {std::array<u64, 2>{1, 2}, {2, 3}})
+      insert_nominal(edge, {row[0], row[1]});
+    for (const std::array<u64, 2>& row :
+         {std::array<u64, 2>{1, 2}, {2, 3}, {1, 3}})
+      insert_nominal(path, {row[0], row[1]});
+  };
+
+  Database db(2);
+  load(db);
+  Relation* path = db.getRelation("cnt_path");
+  const auto master_before = nominal_index_rows(path, {1, 0});
+  Stratum stratum("counted-interp");
+  for (u16 bucket = 0; bucket < bucket_count; ++bucket)
+    stratum.addTask(phase_intern, new CountTask<2>(&db, path, bucket), false);
+  const SealedKernelPlan sealed = seal_kernel_plan(decoded);
+  CHECK(sealed.rules[0].counted && sealed.rules[1].counted);
+  CHECK(sealed.rules[0].fold_kind == cnt_kind_nonrec);
+  CHECK(sealed.rules[1].fold_kind == cnt_kind_rec);
+  attach_counted_rules(db, stratum, sealed);
+  CHECK(drive_stratum_to_fixpoint(db, stratum));
+
+  // Native second executor: the generated counted TU's exact shape.
+  Database native_db(2);
+  load(native_db);
+  Relation* native_edge = native_db.getRelation("cnt_edge");
+  Relation* native_path = native_db.getRelation("cnt_path");
+  class NativeBase final : public Task
+  {
+    Database* db;
+    Relation* path;
+    Index** edge_index;
+    Index** path_index;
+  public:
+    NativeBase(Database* d, Relation* e, Relation* p)
+      : db(d), path(p), edge_index(e->getIndex({0, 1}, false)),
+        path_index(p->getIndex({1, 0}, false)) {}
+    bool work() override
+    {
+      InsertBatch* batch = new InsertBatch();
+      u64 fires = 0;
+      join_all<2>(edge_index, [&](const std::array<u64, 2>& m) {
+        ++fires;
+        emit_count<2>(path, path_index, cnt_kind_nonrec, batch,
+                      {m[1], m[0]}, {1, 0});
+      });
+      path->sendBatch(batch);
+      if (fires) db->bumpFires("cnt.slog:1", "seeded", fires);
+      return true;
+    }
+  };
+  class NativeRec final : public Task
+  {
+    Database* db;
+    Relation* path;
+    Index** edge_index;
+    Index** path_index;
+  public:
+    NativeRec(Database* d, Relation* e, Relation* p)
+      : db(d), path(p), edge_index(e->getIndex({0, 1}, false)),
+        path_index(p->getIndex({1, 0}, false)) {}
+    bool work() override
+    {
+      InsertBatch* batch = new InsertBatch();
+      u64 fires = 0;
+      join_all<2>(edge_index, [&](const std::array<u64, 2>& m) {
+        join_probe<2, 1>(path_index, {m[0], 0},
+                         [&](const std::array<u64, 2>& p) {
+          ++fires;
+          emit_count<2>(path, path_index, cnt_kind_rec, batch,
+                        {m[1], p[1]}, {1, 0});
+        });
+      });
+      path->sendBatch(batch);
+      if (fires) db->bumpFires("cnt.slog:2", "seeded", fires);
+      return true;
+    }
+  };
+  Stratum native_stratum("counted-native");
+  for (u16 bucket = 0; bucket < bucket_count; ++bucket)
+    native_stratum.addTask(phase_intern,
+      new CountTask<2>(&native_db, native_path, bucket), false);
+  native_stratum.addTask(phase_read,
+    new NativeBase(&native_db, native_edge, native_path), true);
+  native_stratum.addTask(phase_read,
+    new NativeRec(&native_db, native_edge, native_path), true);
+  CHECK(drive_stratum_to_fixpoint(native_db, native_stratum));
+
+  // Byte-identical sidecar words, on both executors and hand-pinned.
+  const auto interp_words = sidecar_words<2>(path);
+  const auto native_words = sidecar_words<2>(native_path);
+  CHECK(interp_words == native_words);
+  const std::map<std::vector<u64>, u64> expected{
+    {{1, 2}, cnt_pack(false, 1, 0)},
+    {{2, 3}, cnt_pack(false, 1, 0)},
+    {{1, 3}, cnt_pack(false, 0, 1)}};
+  CHECK(interp_words == expected);
+  CHECK(db.getRelation("cnt_edge")->getCountSidecar() == nullptr);
+
+  // Count sinks never insert: master content is untouched.
+  CHECK(nominal_index_rows(path, {1, 0}) == master_before);
+  CHECK(nominal_index_rows(native_path, {1, 0}) == master_before);
+
+  // Disaggregated fires, and the native $stat_fires identity (source
+  // location plus base driver tag, no "/<kind>" suffix).
+  const auto fires = [](Database& which, const char* loc) {
+    return which.fire_counts[{std::string(loc), std::string("seeded")}];
+  };
+  CHECK(fires(db, "cnt.slog:1") == 2 && fires(native_db, "cnt.slog:1") == 2);
+  CHECK(fires(db, "cnt.slog:2") == 1 && fires(native_db, "cnt.slog:2") == 1);
+  return true;
+}
+
+// Temp chain + struct construction (the counts_struct shape): a seeded
+// parent stages a wide temp and a counted struct head; the delta-driven
+// follow-up resolves content->id through an ordinary struct-master probe.
+bool test_counted_temp_struct_chain_differential()
+{
+  const std::string text =
+    "(kernel-plan (abi 1) (flavor count) "
+    "(relations "
+      "(rel 0 (relation cs_e 2 (0 1))) "
+      "(rel 1 (struct cs_h 2 (1 0) (0 1))) "
+      "(rel 2 (relation cs_g 1 (0))) "
+      "(rel 3 (temp cs_tmp 2))) "
+    "(attachments) (constants) (prims) (dynamic cs_g cs_h cs_tmp) "
+    "(rules "
+      "(rule-def (rid 0) (variant \"seeded/nonrec\") (nregs 3) (pre) "
+        "(driver (seeded)) "
+        "(body (join (rel 0) (0 1) 0 (r 0) (r 1))) "
+        "(head (emit-temp (rel 3) (r 0) (r 1)) "
+              "(mkstruct (rel 1) (1 0) (r 2) (r 1)))) "
+      "(rule-def (rid 0) (variant \"delta:cs_tmp/nonrec\") (nregs 3) (pre) "
+        "(driver (scan (rel 3) (r 0) (r 1))) "
+        "(body (join (rel 1) (1 0) 1 (r 1) (r 2))) "
+        "(head (emit (rel 2) (0) (r 2))))) "
+    "(meta (rule-meta (rid 0) (source \"cs.slog:19\"))))";
+  const DecodedKernelPlan decoded = parse_kernel_plan(text);
+  CHECK(decoded.bindings[3].shape.temp);
+  CHECK(decoded.rules[0].plan.heads[0].head_kind == HeadK::temp);
+  CHECK(decoded.rules[0].plan.heads[1].head_kind == HeadK::struct_);
+
+  const auto load = [](Database& db) {
+    db.addRelation("cs_e", 2);
+    db.addStruct("cs_h", 2);
+    db.addRelation("cs_g", 1);
+    db.addTempRelation("cs_tmp", 2);
+    Relation* e = db.getRelation("cs_e");
+    Relation* h = db.getRelation("cs_h");
+    Relation* g = db.getRelation("cs_g");
+    e->addIndex<2>({0, 1}, false);
+    h->addIndex<2>({1, 0}, false);
+    h->addIndex<2>({0, 1}, false);
+    g->addIndex<1>({0}, false);
+    for (const std::array<u64, 2>& row :
+         {std::array<u64, 2>{10, 1}, {10, 2}, {20, 2}})
+      insert_nominal(e, {row[0], row[1]});
+    // Interned instances (id, content) and the settled follow-up rows.
+    insert_nominal(h, {1001, 1});
+    insert_nominal(h, {1002, 2});
+    insert_nominal(g, {1001});
+    insert_nominal(g, {1002});
+  };
+
+  Database db(2);
+  load(db);
+  Relation* h = db.getRelation("cs_h");
+  Relation* g = db.getRelation("cs_g");
+  Stratum stratum("counted-chain-interp");
+  for (u16 bucket = 0; bucket < bucket_count; ++bucket)
+  {
+    stratum.addTask(phase_intern,
+                    new CountStructTask<2>(&db, h, bucket), false);
+    stratum.addTask(phase_intern, new CountTask<1>(&db, g, bucket), false);
+  }
+  const SealedKernelPlan sealed = seal_kernel_plan(decoded);
+  // The mkstruct head lowered to a pre-fire resolution cursor.
+  CHECK(sealed.rules[0].cursors.size() == 2);
+  const auto* resolve =
+    std::get_if<ProbePlan>(&sealed.rules[0].cursors[1]);
+  CHECK(resolve != nullptr && resolve->resolve && resolve->struct_);
+  attach_counted_rules(db, stratum, sealed);
+  CHECK(drive_stratum_to_fixpoint(db, stratum));
+
+  Database native_db(2);
+  load(native_db);
+  Relation* native_e = native_db.getRelation("cs_e");
+  Relation* native_h = native_db.getRelation("cs_h");
+  Relation* native_g = native_db.getRelation("cs_g");
+  Relation* native_tmp = native_db.getRelation("cs_tmp");
+  class NativeSeeded final : public Task
+  {
+    Database* db;
+    Relation* tmp;
+    Relation* h;
+    Index** e_index;
+    Index** h_master;
+  public:
+    NativeSeeded(Database* d, Relation* e, Relation* h_rel, Relation* t)
+      : db(d), tmp(t), h(h_rel), e_index(e->getIndex({0, 1}, false)),
+        h_master(h_rel->getIndex({1, 0}, false)) {}
+    bool work() override
+    {
+      InsertBatch* tmp_batch = new InsertBatch();
+      InsertBatch* h_batch = new InsertBatch();
+      u64 fires = 0;
+      join_all<2>(e_index, [&](const std::array<u64, 2>& m) {
+        ++fires;
+        emit_temp<2>(tmp, tmp_batch, {m[0], m[1]});
+        emit_struct_count<2>(h, h_master, cnt_kind_nonrec, h_batch,
+                             {m[1]}, {1, 0});
+      });
+      tmp->sendBatch(tmp_batch);
+      h->sendBatch(h_batch);
+      if (fires) db->bumpFires("cs.slog:19", "seeded", fires);
+      return true;
+    }
+  };
+  class NativeFollowup final : public Task
+  {
+    Database* db;
+    Relation* tmp;
+    Relation* g;
+    Index** h_master;
+    Index** g_index;
+    u16 bucket;
+  public:
+    NativeFollowup(Database* d, Relation* t, Relation* h_rel,
+                   Relation* g_rel, u16 b)
+      : db(d), tmp(t), g(g_rel), h_master(h_rel->getIndex({1, 0}, false)),
+        g_index(g_rel->getIndex({0}, false)), bucket(b) {}
+    bool work() override
+    {
+      InsertBatch* batch = new InsertBatch();
+      u64 fires = 0;
+      read_delta(tmp, bucket, db->getThreadCount(), [&](const u64* row) {
+        join_probe<2, 1>(h_master, {row[1], 0},
+                         [&](const std::array<u64, 2>& m) {
+          ++fires;
+          emit_count<1>(g, g_index, cnt_kind_nonrec, batch, {m[1]}, {0});
+        });
+      });
+      g->sendBatch(batch);
+      if (fires) db->bumpFires("cs.slog:19", "delta:cs_tmp", fires);
+      return true;
+    }
+  };
+  Stratum native_stratum("counted-chain-native");
+  for (u16 bucket = 0; bucket < bucket_count; ++bucket)
+  {
+    native_stratum.addTask(phase_intern,
+      new CountStructTask<2>(&native_db, native_h, bucket), false);
+    native_stratum.addTask(phase_intern,
+      new CountTask<1>(&native_db, native_g, bucket), false);
+    native_stratum.addTask(phase_read,
+      new NativeFollowup(&native_db, native_tmp, native_h, native_g,
+                         bucket), false);
+  }
+  native_stratum.addTask(phase_read,
+    new NativeSeeded(&native_db, native_e, native_h, native_tmp), true);
+  CHECK(drive_stratum_to_fixpoint(native_db, native_stratum));
+
+  // Struct sidecars key by the id column; table sidecars by the full row.
+  const auto interp_h = sidecar_words<1>(h);
+  const auto interp_g = sidecar_words<1>(g);
+  CHECK(interp_h == sidecar_words<1>(native_h));
+  CHECK(interp_g == sidecar_words<1>(native_g));
+  const std::map<std::vector<u64>, u64> expected_h{
+    {{1001}, cnt_pack(false, 1, 0)},
+    {{1002}, cnt_pack(false, 2, 0)}};
+  const std::map<std::vector<u64>, u64> expected_g{
+    {{1001}, cnt_pack(false, 1, 0)},
+    {{1002}, cnt_pack(false, 2, 0)}};
+  CHECK(interp_h == expected_h);
+  CHECK(interp_g == expected_g);
+  CHECK(db.getRelation("cs_tmp")->getCountSidecar() == nullptr);
+  CHECK(nominal_index_rows(h, {1, 0}) ==
+        nominal_index_rows(native_h, {1, 0}));
+  CHECK(nominal_index_rows(g, {0}) == nominal_index_rows(native_g, {0}));
+
+  // Same-source rule, two variants: fires aggregate per (loc, base tag)
+  // exactly like the native TU's bumpFires.
+  const auto fires = [](Database& which, const char* tag) {
+    return which.fire_counts[{std::string("cs.slog:19"), std::string(tag)}];
+  };
+  CHECK(fires(db, "seeded") == 3 && fires(native_db, "seeded") == 3);
+  CHECK(fires(db, "delta:cs_tmp") == 3
+        && fires(native_db, "delta:cs_tmp") == 3);
+  return true;
+}
+
+namespace counted_chain
+{
+
+const char* chained_plan_text =
+  "(kernel-plan (abi 1) (flavor count) "
+  "(relations "
+    "(rel 0 (relation ch_e 1 (0))) "
+    "(rel 1 (struct ch_s1 2 (1 0) (0 1))) "
+    "(rel 2 (struct ch_s2 2 (1 0) (0 1)))) "
+  "(attachments) (constants) (prims) (dynamic ch_s1 ch_s2) "
+  "(rules "
+    "(rule-def (rid 0) (variant \"seeded/nonrec\") (nregs 3) (pre) "
+      "(driver (seeded)) "
+      "(body (join (rel 0) (0) 0 (r 0))) "
+      "(head (mkstruct (rel 1) (1 0) (r 1) (r 0)) "
+            "(mkstruct (rel 2) (1 0) (r 2) (r 1))))) "
+  "(meta (rule-meta (rid 0) (source \"ch.slog:1\"))))";
+
+// Shared setup: `settled` controls whether the outer construction ch_s2 is
+// interned -- when it is not, the fixpoint is not settled and the
+// resolution cursor must die loudly.
+void run(bool settled)
+{
+  Database db(2);
+  db.addRelation("ch_e", 1);
+  db.addStruct("ch_s1", 2);
+  db.addStruct("ch_s2", 2);
+  Relation* e = db.getRelation("ch_e");
+  Relation* s1 = db.getRelation("ch_s1");
+  Relation* s2 = db.getRelation("ch_s2");
+  e->addIndex<1>({0}, false);
+  for (Relation* rel : {s1, s2})
+  {
+    rel->addIndex<2>({1, 0}, false);
+    rel->addIndex<2>({0, 1}, false);
+  }
+  insert_nominal(e, {5});
+  insert_nominal(s1, {2001, 5});
+  if (settled) insert_nominal(s2, {3001, 2001});
+  Stratum stratum("counted-chained");
+  for (u16 bucket = 0; bucket < bucket_count; ++bucket)
+  {
+    stratum.addTask(phase_intern,
+                    new CountStructTask<2>(&db, s1, bucket), false);
+    stratum.addTask(phase_intern,
+                    new CountStructTask<2>(&db, s2, bucket), false);
+  }
+  const SealedKernelPlan sealed =
+    seal_kernel_plan(parse_kernel_plan(chained_plan_text));
+  attach_counted_rules(db, stratum, sealed);
+  if (!drive_stratum_to_fixpoint(db, stratum))
+    throw std::runtime_error("counted chained stratum did not settle");
+  if (sidecar_words<1>(s1)
+      != std::map<std::vector<u64>, u64>{{{2001}, cnt_pack(false, 1, 0)}})
+    throw std::runtime_error("counted chained s1 sidecar mismatch");
+  if (sidecar_words<1>(s2)
+      != std::map<std::vector<u64>, u64>{{{3001}, cnt_pack(false, 1, 0)}})
+    throw std::runtime_error("counted chained s2 sidecar mismatch");
+  if (db.fire_counts[{std::string("ch.slog:1"), std::string("seeded")}] != 1)
+    throw std::runtime_error("counted chained fires mismatch");
+}
+
+} // namespace counted_chain
+
+// Chained construction: the inner mkstruct's resolved id is the outer
+// construction's content register; on unsettled content the resolution
+// cursor's zero-match exhaustion is a loud fatal (forked child).
+bool test_counted_chained_mkstruct_and_closure_fatal()
+{
+  counted_chain::run(true);
+
+  const pid_t pid = fork();
+  if (pid == 0)
+  {
+    const int devnull = open("/dev/null", O_WRONLY);
+    dup2(devnull, 1);
+    dup2(devnull, 2);
+    counted_chain::run(false);
+    _exit(0); // reached only if the resolve cursor did NOT fatal
+  }
+  int status = 0;
+  waitpid(pid, &status, 0);
+  CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 1);
+  return true;
+}
+
+// A counted rule's primitive fault contributes a kind-tagged error-arm row
+// (emit_pending_error_count), never a set-semantics insert: a kind-less
+// batch at finalize would invalidate and FREE the count sidecars the
+// registered CountStructTasks hold (the slice-1 use-after-free this test
+// pins).  The arm instance pre-exists at the settled fixpoint, so the
+// counted error sink's closure probe resolves it and the sidecar gains
+// exactly one nonrec contribution.
+bool test_counted_prim_fault_arm_contribution()
+{
+  const std::string text =
+    "(kernel-plan (abi 1) (flavor count) "
+    "(relations "
+      "(rel 0 (relation arm_d 1 (0))) "
+      "(rel 1 (relation arm_bad 1 (0))) "
+      "(rel 2 (struct div_by_zero 3 (1 2 0) (0 1 2)))) "
+    "(attachments) (constants (k 0 c100 100)) (prims _0002f) "
+    "(dynamic arm_bad div_by_zero) "
+    "(rules "
+      "(rule-def (rid 5) (variant \"seeded/nonrec\") (nregs 3) "
+        "(pre (let (r 0) (k 0))) (driver (seeded)) "
+        "(body (join (rel 0) (0) 0 (r 1)) "
+              "(let (r 2) (prim _0002f (r 0) (r 1)))) "
+        "(head (emit (rel 1) (0) (r 2))))) "
+    "(meta (rule-meta (rid 5) (source \"arm.slog:5\"))))";
+
+  Database db(2);
+  db.addRelation("arm_d", 1);
+  db.addRelation("arm_bad", 1);
+  db.addStruct("div_by_zero", 3);
+  Relation* d = db.getRelation("arm_d");
+  Relation* bad = db.getRelation("arm_bad");
+  Relation* dz = db.getRelation("div_by_zero");
+  d->addIndex<1>({0}, false);
+  bad->addIndex<1>({0}, false);
+  dz->addIndex<3>({1, 2, 0}, false);
+  dz->addIndex<3>({0, 1, 2}, false);
+  // Settled content: 100/0 faulted (the interned arm instance), 100/4 fired.
+  insert_nominal(d, {s32_encode(0)});
+  insert_nominal(d, {s32_encode(4)});
+  insert_nominal(bad, {s32_encode(25)});
+  const u64 vloc = db.encodeString("arm.slog:5");
+  insert_nominal(dz, {9001, vloc, s32_encode(100)});
+
+  Stratum stratum("counted-arm");
+  for (u16 bucket = 0; bucket < bucket_count; ++bucket)
+  {
+    stratum.addTask(phase_intern, new CountTask<1>(&db, bad, bucket), false);
+    stratum.addTask(phase_intern,
+                    new CountStructTask<3>(&db, dz, bucket), false);
+  }
+  const SealedKernelPlan sealed = seal_kernel_plan(parse_kernel_plan(text),
+                                                   &db);
+  attach_counted_rules(db, stratum, sealed);
+  CHECK(drive_stratum_to_fixpoint(db, stratum));
+
+  // The sidecars survived (no kind-less invalidation freed them) and carry
+  // exactly the native words: one nonrec fire contribution to the head, one
+  // nonrec fault contribution to the arm.
+  CHECK(dz->getCountSidecar() != nullptr);
+  CHECK(bad->getCountSidecar() != nullptr);
+  CHECK(sidecar_words<1>(dz)
+        == (std::map<std::vector<u64>, u64>{{{9001}, cnt_pack(false, 1, 0)}}));
+  CHECK(sidecar_words<1>(bad)
+        == (std::map<std::vector<u64>, u64>{{{s32_encode(25)},
+                                             cnt_pack(false, 1, 0)}}));
+  // The faulting row abandons before its fire: one fire for X=4 only.
+  CHECK((db.fire_counts[{std::string("arm.slog:5"), std::string("seeded")}])
+        == 1);
+  return true;
+}
+
+// Typed refusals for the counted vocabulary: the plan-attribute seal CHECK
+// (no semijoin exists in counted plans), counted-only head forms in normal
+// plans, struct probes in normal plans, and malformed fold kinds.
+bool test_counted_plan_refusals()
+{
+  const auto seal_rejects = [](SealErrorK kind, const std::string& text) {
+    try { (void)seal_kernel_plan(parse_kernel_plan(text)); }
+    catch (const SealError& error) { return error.kind() == kind; }
+    catch (...) { return false; }
+    return false;
+  };
+  const std::string counted_base =
+    "(kernel-plan (abi 1) (flavor count) "
+    "(relations "
+      "(rel 0 (relation cr_a 2 (0 1))) "
+      "(rel 1 (relation cr_b 2 (0 1))) "
+      "(rel 2 (struct cr_s 2 (1 0) (0 1)))) "
+    "(attachments) (constants) (prims) (dynamic cr_b) "
+    "(rules "
+      "(rule-def (rid 0) (variant \"seeded/nonrec\") (nregs 2) (pre) "
+        "(driver (seeded)) "
+        "(body (join (rel 0) (0 1) 0 (r 0) (r 1))) "
+        "(head (emit (rel 1) (0 1) (r 0) (r 1))))) "
+    "(meta (rule-meta (rid 0) (source \"cr.slog:1\"))))";
+  // The base counted plan seals.
+  CHECK(seal_kernel_plan(parse_kernel_plan(counted_base)).rules[0].counted);
+  // Plan-attribute 1: a semijoin exists filter inside a counted plan is a
+  // typed seal refusal (body and pre positions).
+  CHECK(seal_rejects(SealErrorK::capability,
+        replace_once(counted_base,
+          "(body (join (rel 0) (0 1) 0 (r 0) (r 1)))",
+          "(body (join (rel 0) (0 1) 0 (r 0) (r 1)) "
+                "(exists (rel 1) (0 1) 1 (r 0)))")));
+  CHECK(seal_rejects(SealErrorK::capability,
+        replace_once(counted_base, "(pre)",
+                     "(pre (exists (rel 1) (0 1) 0))")));
+  // Absence stays admitted (negation under ~ is not a semijoin filter).
+  CHECK(!seal_rejects(SealErrorK::capability,
+        replace_once(counted_base,
+          "(body (join (rel 0) (0 1) 0 (r 0) (r 1)))",
+          "(body (join (rel 0) (0 1) 0 (r 0) (r 1)) "
+                "(absent (rel 1) (0 1) 1 (r 0)))")));
+  // A counted rule variant without a fold kind, or with an unknown one.
+  CHECK(seal_rejects(SealErrorK::variant_identity,
+        replace_once(counted_base, "seeded/nonrec", "seeded")));
+  CHECK(seal_rejects(SealErrorK::variant_identity,
+        replace_once(counted_base, "seeded/nonrec", "seeded/banana")));
+  // Counted-only forms refuse in normal plans: once/seeded drivers,
+  // temp/lattice/mkstruct heads, struct probes.
+  const std::string normal_base = replace_once(
+    replace_once(counted_base, "(flavor count)", "(flavor normal)"),
+    "seeded/nonrec", "seeded");
+  CHECK(seal_rejects(SealErrorK::capability, normal_base));
+  const std::string normal_scan = replace_once(normal_base,
+    "(driver (seeded))", "(driver (scan (rel 0) (r 0) (r 1)))");
+  CHECK(seal_rejects(SealErrorK::capability,
+        replace_once(
+          replace_once(normal_scan, "(body (join (rel 0) (0 1) 0 (r 0) (r 1)))",
+                       "(body)"),
+          "(head (emit (rel 1) (0 1) (r 0) (r 1)))",
+          "(head (emit-temp (rel 1) (r 0) (r 1)))")));
+  CHECK(seal_rejects(SealErrorK::capability,
+        replace_once(
+          replace_once(normal_scan, "(body (join (rel 0) (0 1) 0 (r 0) (r 1)))",
+                       "(body)"),
+          "(head (emit (rel 1) (0 1) (r 0) (r 1)))",
+          "(head (emit (rel 1) (0 1) (r 0) (r 1)) "
+                "(mkstruct (rel 2) (1 0) (r 2) (r 0)))")));
+  CHECK(seal_rejects(SealErrorK::relation_kind,
+        replace_once(
+          replace_once(normal_scan, "(body (join (rel 0) (0 1) 0 (r 0) (r 1)))",
+                       "(body (join (rel 2) (1 0) 1 (r 0) (r 2)))"),
+          "(nregs 2)", "(nregs 3)")));
+  // Struct probes admit no old/new views even in counted plans.
+  CHECK(seal_rejects(SealErrorK::capability,
+        replace_once(
+          replace_once(counted_base,
+            "(body (join (rel 0) (0 1) 0 (r 0) (r 1)))",
+            "(body (join (rel 0) (0 1) 0 (r 0) (r 1)) "
+                  "(join-old (rel 2) (1 0) 1 (1 0) (r 0) (r 2)))"),
+          "(nregs 2)", "(nregs 3)")));
   return true;
 }
 
@@ -3235,6 +3869,11 @@ int main(int argc, char** argv)
   ok &= test_parsed_sidecar_scheduler_admission();
   ok &= test_parsed_sidecar_refusal_classes();
   ok &= test_real_interp_read_task_recursive_admission();
+  ok &= test_counted_recursive_seeded_differential();
+  ok &= test_counted_temp_struct_chain_differential();
+  ok &= test_counted_chained_mkstruct_and_closure_fatal();
+  ok &= test_counted_prim_fault_arm_contribution();
+  ok &= test_counted_plan_refusals();
   ok &= test_seal_bind_scan_multihead_and_real_emit();
   ok &= test_seal_bind_probe_driver_and_task_partition();
   ok &= test_bound_nested_ternary_probes_debug_and_sink_order();

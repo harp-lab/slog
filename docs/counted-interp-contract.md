@@ -123,6 +123,26 @@ strictly stronger than trusting a convention. When the ABI-2 split
 lands, the kind attribute supersedes the suffix decode and the check
 becomes attribute verification; nothing else in this contract moves.
 
+**Correction discovered at slice 1 implementation (2026-07-18):** the
+drafting claim that counted plans already arrive semijoin-stripped was
+aspiration, not fact.  `compile.rkt` disabled `semijoin-filters-enabled`
+only for the two negative maintenance flavors; `ensure-count-so` left it
+at its default, so `_count` plans for rules with three or more positive
+clauses (the `n>=3` lookahead gate) carried `exists` c-ops — four plans
+in the extant build/ corpus.  Those probes were fire-multiset-neutral
+(a semijoin filter prunes only zero-instantiation prefixes, and at a
+settled fixpoint its FULL-only probe is exact), so no sidecar or golden
+was ever affected — but the doctrine's point is that counted
+admissibility should not rest on that argument.  Slice 1 made the
+doctrine true at the source: the count flavor now plans with
+`semijoin-filters-enabled #f`, `incremental-flavor-abi` bumped
+(`m4t-v1` → `ci1-v1`) so every cached flavored artifact and its sidecar
+regenerates once, and the seal CHECK refuses any `exists` that
+nevertheless appears (the refusal message names sidecar staleness as
+the likely cause).  `_maint1` still plans with semijoin lookahead
+enabled; slice 2 decides whether to strip it there under the same
+doctrine or justify the positive-maintenance exception explicitly.
+
 ## What sidecar equality means, per flavor
 
 "Maintained-sidecar equality against forced recounts" is pinned as:
@@ -201,6 +221,86 @@ it (they reuse its harness), and 4 flips the default only after 1–3
 hold. M4N starts on the slice-4 exit; the M4N anti-delta variants then
 become new conformance cases in the same harness rather than a new
 mechanism (execution-tiers §11 sequencing note).
+
+**Slice 1 as-built (2026-07-18).** Landed with zero changes to the
+frozen core — no opcode, VM arm, cursor method, or dispatch moved; the
+whole read side composes from the frozen vocabulary plus thread-0
+factory registrations:
+
+- **Decode/seal (plan.cpp, plan.h):** `(driver (once))`/`(driver
+  (seeded))` decode as one-empty-row dispatch (the enumeration rides
+  K=0 body scans over FULL views — the Q1 slice-4 cursor); `(temp name
+  arity)` declarations keep their temp bit; `emit-temp`/`emit-lat`
+  heads decode as nominal-order head kinds; `mkstruct` heads decode
+  with the id register (nominal column 0) first.  The seal admits
+  flavors `normal|count` (`maint*` stay typed `flavor` refusals),
+  requires the `/<kind>` suffix on every counted variant (typed
+  `variant_identity` refusal otherwise), and enforces the semijoin-off
+  CHECK.  Counted plans may probe struct masters (the resolution-join
+  shape); views on struct probes refuse.
+- **The mkstruct lowering.** A counted mkstruct head lowers at seal to
+  a pre-fire resolution probe over the content-first/id-last master
+  (bound = arity−1, suffix = the id register) plus a post-fire
+  nominal-order emit.  The bound cursor is a thread-0 wrapper over the
+  ordinary erased probe whose zero-match exhaustion is a loud fatal —
+  emit_struct_count's closure stance — and chained constructions
+  (deep_fact-class, one construction's id feeding the next's content)
+  compose as ordinary nested cursor levels.  No new opcode.
+- **Thread-0 sinks (plan-count.cpp):** CountSetSink → `emit_count`
+  (closure CHECK, kind tag), TempSink → `emit_temp` (no dedup, no
+  kind), KindBatchSink → `emit_lattice_count` (lattice heads and
+  resolved struct rows), StructCountSink → `emit_struct_count` (the
+  counted tycheck diversion).  All batches reach the unchanged
+  CountTask/CountStructTask folds; underflow/overflow/ceiling policy
+  rides `tryApplyCount` untouched.
+- **The installer** (`install_count_stratum`) mirrors the native
+  flavored plugin effect for effect: getRelation-or-add (temps via
+  `addTempRelation`; a missing lattice is fatal), full-order index
+  requisitions only, counted-head classification = rule sink targets
+  (emit/mkstruct/emit-lat, tycheck's malformed_deduction) ∪ the
+  declared prim-error arms, per-bucket CountTask/CountStructTask at
+  phase_intern, fire-once scheduling for once/seeded rules and
+  every-iteration per-bucket tasks for temp-driven scans, sorted
+  addReadRel manifest (resolve cursors excluded, matching the native
+  derivation), addDynamicRel from the plan's `(dynamic ...)` list, and
+  the `beginStratumDelta` → push → continueRun entry.  Counted rounds
+  keep the native `$stat_fires` identity: fires bump under (source
+  location, base driver tag) — no `/<kind>`, no `#<ordinal>` — so
+  cross-executor comparison stays at the aggregated level while the
+  harness compares disaggregated per-variant counts directly.
+- **Routing (interim):** `SLOG_COUNT_INTERP=1` routes `_count` plugin
+  paths through parse/seal/install of the sidecar plan instead of
+  dlopen (slogd's run_plugin); default routing is untouched until
+  slice 4.  An install failure under the knob is fatal, never a silent
+  native fallback.
+- **The error-arm divergence the differential caught.** The first
+  full `SLOG_COUNT_INTERP=1` session run failed exactly one case
+  (m03d, §8B.4 error-arm counting): the VM's primitive-fault path
+  still bound the normal flavor's `emit_pending_error`, whose
+  kind-less set-semantics batch tripped the M0.3 kind-less-batch
+  invalidation at finalize — `clearCounts` FREED the count sidecars
+  the registered CountStructTasks captured at construction, a
+  use-after-free (ASan-confirmed) that silently killed the daemon.
+  Counted rules now bind `emit_pending_error_count` wrappers carrying
+  the rule's fold kind, matching native counted codegen; the regression
+  is pinned by a permanent fixture case (prim fault → one nonrec arm
+  contribution, sidecars alive, fire count excludes the abandoned
+  instantiation).
+- **The differential fixture** (permanent, quick-tier `interp`
+  harness): recursive two-kind sidecar equality (seeded/nonrec +
+  seeded/rec vs the native counting tasks, byte-identical words plus a
+  hand-pinned expectation), the temp-chain/struct case (wide temp,
+  content→id resolution join, CountStructTask id keying, same-source
+  fires aggregation), chained mkstruct with a forked-child fatal on
+  unsettled content, the prim-fault arm-contribution case above,
+  master-content immutability and no-sidecar-on-inputs checks, and the
+  typed-refusal battery (maint flavors, missing /kind, exists-in-count
+  in body and pre positions, absent admitted, counted-only forms
+  refused in normal plans, struct-probe views).
+  The session battery ran green natively (528/528) and under
+  `SLOG_COUNT_INTERP=1` (528/528 — every recount/recount-force through
+  the VM, countrow goldens and the count-IR oracle as the third
+  triangle leg).
 
 ## Non-goals
 
