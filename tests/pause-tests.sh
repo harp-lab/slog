@@ -154,10 +154,24 @@ fi
 # prog.sexpr REPLAY.  Reloading under a pathological time budget forces mid-read
 # / boundary suspends DURING that replay; because pausing is exact, the
 # reconstructed content must be byte-identical to an unbudgeted reload -- the
-# invariant a resumable incremental load leans on.  (per=60 so replay actually
-# regenerates dropped tuples; the 63k-path chain reliably outlives a 3ms slice.)
+# invariant a resumable incremental load leans on.  This section needs its own
+# LARGER chain: the productive-seed bias (db-compression P2) closes a chain
+# replay in a handful of rounds regardless of --per, so the 250-edge fixture's
+# replay finishes in ~2ms and stopped outliving a 3ms slice (observed
+# 2026-07-19; the same held at pre-counted-interp commits -- a decayed premise,
+# not a routing regression).  1000 edges -> ~500k paths replays in ~30-55ms:
+# several slices deep, deterministically.
+FXC=out/pause_chain_c.slog
+{
+  echo "table (edge int int)"
+  echo "table (path int int)"
+  echo "rule"
+  for i in $(seq 1 1000); do echo "(edge $i $((i+1)))"; done
+  echo "rule (edge X Y) --> (path X Y)"
+  echo "rule (path X Y) (edge Y Z) --> (path X Z)"
+} > "$FXC"
 rm -rf data/pause_c data/pause_c.edb out/pcr-unb out/pcr-bud
-racket compiler/run.rkt --no-banner --out-db-compressed pause_c --per 60 "$FX" > out/pause-csave.log 2>&1
+racket compiler/run.rkt --no-banner --out-db-compressed pause_c --per 60 "$FXC" > out/pause-csave.log 2>&1
 drop_o2 out/pause-csave.log
 CLOADER=out/pause_loader.slog; printf ';; empty replay loader\n' > "$CLOADER"
 # unbudgeted reload (oracle); prime then drop -O2 so the budgeted reload is -O0
