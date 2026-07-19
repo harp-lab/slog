@@ -73,7 +73,7 @@ impl TerminalFeatures {
         // The CSI-u push is safe to send optimistically: terminals without
         // progressive keyboard support ignore it. Some compatible terminals
         // do not answer Crossterm's capability query, so gating the push on
-        // that query made Shift+Enter unnecessarily indistinguishable there.
+        // that query made modifier-bearing Enter unnecessarily ambiguous there.
         let keyboard_enhancement = execute!(
             stdout,
             PushKeyboardEnhancementFlags(

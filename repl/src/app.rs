@@ -6,15 +6,6 @@ use crossterm::event::{
     MouseEventKind,
 };
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum Demo {
-    #[default]
-    Welcome,
-    Colors,
-    Layout,
-    Unicode,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EntryKind {
     Command,
@@ -129,10 +120,9 @@ pub struct App {
     /// Canonical commands produced by transient UI gestures. They are shared
     /// with co-authors but do not become durable shell transcript entries.
     shared_actions: Vec<SharedAction>,
-    /// Stable progress-stage changes for plain co-author clients. Spinner
+    /// Stable progress-stage changes for plain co-author clients. Animation
     /// frames stay terminal-local; only meaningful detail changes are shared.
     progress_updates: Vec<String>,
-    pub demo: Demo,
     pub should_quit: bool,
     history: Vec<String>,
     history_position: Option<usize>,
@@ -150,7 +140,7 @@ impl App {
                 title: "Connected".to_owned(),
                 lines: vec![
                     "Rust terminal client ↔ Racket database control plane".to_owned(),
-                    "Type help, or try :demo colors | layout | unicode".to_owned(),
+                    "Type help for commands; :share shows co-author connection details".to_owned(),
                 ],
                 actor: None,
             }],
@@ -163,7 +153,6 @@ impl App {
             coauthor_discovery: None,
             shared_actions: Vec::new(),
             progress_updates: Vec::new(),
-            demo: Demo::Welcome,
             should_quit: false,
             history: Vec::new(),
             history_position: None,
@@ -366,7 +355,7 @@ impl App {
             // Some terminals map their multiline shortcut to LF rather than
             // reporting a modified Enter. In raw mode Crossterm preserves LF
             // as a character; accept it as a newline. This also makes Ctrl+J
-            // a portable fallback when Shift+Enter is not distinguishable.
+            // a portable fallback when modified Enter is not distinguishable.
             KeyCode::Char('\n') => {
                 self.editor.insert("\n");
                 Effect::None
@@ -424,19 +413,6 @@ impl App {
                 Effect::None
             }
             KeyCode::F(1) => Effect::Execute("help".to_owned()),
-            KeyCode::F(2) => {
-                self.demo = match self.demo {
-                    Demo::Welcome => Demo::Colors,
-                    Demo::Colors => Demo::Layout,
-                    Demo::Layout => Demo::Unicode,
-                    Demo::Unicode => Demo::Welcome,
-                };
-                Effect::None
-            }
-            KeyCode::Esc => {
-                self.demo = Demo::Welcome;
-                Effect::None
-            }
             _ => Effect::None,
         }
     }
@@ -556,24 +532,6 @@ impl App {
         }
         if line == ":share" {
             self.show_coauthor_info();
-            return Effect::None;
-        }
-        if let Some(name) = line.strip_prefix(":demo ") {
-            self.demo = match name.trim() {
-                "colors" => Demo::Colors,
-                "layout" => Demo::Layout,
-                "unicode" => Demo::Unicode,
-                "off" | "welcome" => Demo::Welcome,
-                other => {
-                    self.transcript.push(TranscriptEntry {
-                        kind: EntryKind::Error,
-                        title: "UI command".to_owned(),
-                        lines: vec![format!("unknown demo {other:?}")],
-                        actor: None,
-                    });
-                    return Effect::None;
-                }
-            };
             return Effect::None;
         }
         if line == "library close" {

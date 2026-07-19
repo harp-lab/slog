@@ -213,11 +213,7 @@
    "  help                show these commands"
    "  quit                close every resident database and the REPL"
    ""
-   "Rust UI commands"
-   "  :demo colors        true-color and styling gallery"
-   "  :demo layout        layout, gauge, and table gallery"
-   "  :demo unicode       grapheme and wide-character gallery"
-   "  :demo off           return to the welcome view"
+   "REPL client commands"
    "  :clear              clear the visible client transcript"
    "  :share              show the trusted-local co-author endpoint"
    "  ; COMMENT           add a transcript comment without invoking Slog"))

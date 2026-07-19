@@ -77,8 +77,8 @@ $ ./slog
 
 This builds the native terminal frontend, copies it to the repository root,
 and opens the interactive workbench. Type `help` for the current server
-commands, `library` to browse saved databases, or `:demo colors` to exercise
-the terminal UI.
+commands, `library` to browse saved databases, or `:share` for trusted-local
+co-author connection details.
 
 For a one-shot batch run outside the REPL, use:
 

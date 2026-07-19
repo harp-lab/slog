@@ -122,15 +122,6 @@ Thus a headless peer acts on the same semantics without receiving terminal
 escape sequences or a copy of the cell buffer. Input lines are capped at 64
 KiB.
 
-Frontend-only forcing-function demos exercise the widget boundaries:
-
-```text
-:demo colors
-:demo layout
-:demo unicode
-:demo off
-```
-
 Source boundaries:
 
 - `app.rs`: state and event reduction; no terminal output or TCP;
@@ -142,11 +133,8 @@ Source boundaries:
 - `main.rs`: the single terminal owner and asynchronous event loop.
 
 The UI is intentionally a full-screen workbench in this first demo so the
-contextual inspector, lightweight multiline editor, colors, wide characters,
-gauges, and tables are all exercised. PageUp/PageDown or the mouse wheel
-revisit the session transcript without moving the editor cursor. Shift+Enter
-inserts an editor newline on terminals supporting enhanced keyboard events.
-The client requests modifier-key press/release events as well as modified Enter;
-Alt+Enter and Ctrl+J are portable fallbacks when a terminal sends Shift+Enter
-as an ordinary, indistinguishable carriage return. The same app model can support
+contextual inspector, lightweight multiline editor, colors, and wide characters
+are all exercised. PageUp/PageDown or the mouse wheel revisit the session
+transcript without moving the editor cursor. Alt+Enter inserts an editor newline;
+Ctrl+J is a portable fallback. The same app model can support
 an inline-scrollback frontend later without changing the server protocol.

@@ -1,17 +1,16 @@
 mod library;
 
-use crate::app::{App, Demo, EntryKind};
+use crate::app::{App, EntryKind};
 use crate::version;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Gauge, Padding, Paragraph, Row, Table, Wrap};
+use ratatui::widgets::{Block, Borders, Padding, Paragraph, Wrap};
 
 const CYAN: Color = Color::Rgb(62, 207, 227);
 const PINK: Color = Color::Rgb(244, 114, 182);
 const GREEN: Color = Color::Rgb(74, 222, 128);
-const AMBER: Color = Color::Rgb(251, 191, 36);
 const MUTED: Color = Color::Rgb(124, 139, 161);
 const PANEL: Color = Color::Rgb(30, 36, 50);
 
@@ -23,15 +22,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
         render_library_footer(frame, sections[1]);
         return;
     }
-    let sections = Layout::vertical([
-        Constraint::Min(8),
-        Constraint::Length(4),
-        Constraint::Length(1),
-    ])
-    .split(area);
+    let sections = Layout::vertical([Constraint::Min(8), Constraint::Length(5)]).split(area);
     render_body(frame, sections[0], app);
     render_editor(frame, sections[1], app);
-    render_footer(frame, sections[2]);
 }
 
 fn render_body(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -39,24 +32,29 @@ fn render_body(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn render_primary(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    match app.demo {
-        Demo::Welcome if app.transcript.len() <= 1 => render_splash(frame, area, app),
-        Demo::Welcome => render_transcript(frame, area, app),
-        Demo::Colors => render_colors(frame, area),
-        Demo::Layout => render_layout_demo(frame, area),
-        Demo::Unicode => render_unicode(frame, area),
+    if app.transcript.len() <= 1 {
+        render_splash(frame, area, app);
+    } else {
+        render_transcript(frame, area, app);
     }
 }
 
 fn render_splash(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let art = [
-        "       _____ __           ".to_owned(),
+    let version_line = format!("                 /____/  v{}", version::current());
+    // Ratatui centers each line independently. Pad the whole logo to the
+    // version line's width so the descender of the `g` stays aligned.
+    let art_width = version_line.len();
+    let mut art = [
+        "       _____ __".to_owned(),
         "      / ___// /___  ____ _".to_owned(),
         "      \\__ \\/ / __ \\/ __ `/".to_owned(),
-        "     ___/ / / /_/ / /_/ / ".to_owned(),
-        "    /____/_/\\____/\\__, /  ".to_owned(),
-        format!("                 /____/  v{}", version::current()),
+        "     ___/ / / /_/ / /_/ /".to_owned(),
+        "    /____/_/\\____/\\__, /".to_owned(),
+        version_line,
     ];
+    for line in &mut art {
+        *line = format!("{line:<art_width$}");
+    }
     let mut lines = vec![Line::from("")];
     for (index, line) in art.iter().enumerate() {
         let color = Color::Rgb(45 + index as u8 * 16, 180 + index as u8 * 8, 230);
@@ -73,22 +71,19 @@ fn render_splash(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Line::from(""),
         Line::from(vec![
             Span::styled("help", Style::default().fg(CYAN)),
-            Span::raw(" for server commands  ·  "),
-            Span::styled(":demo colors", Style::default().fg(PINK)),
-            Span::raw(" for the UI gallery"),
+            Span::raw(" for commands"),
         ]),
     ]);
     if let Some(endpoint) = &app.coauthor_endpoint {
-        lines.extend([
-            Line::from(""),
-            Line::from(vec![
-                Span::styled("co-author", Style::default().fg(MUTED)),
-                Span::raw("  "),
-                Span::styled(endpoint, Style::default().fg(CYAN)),
-                Span::raw("  ·  "),
-                Span::styled(":share", Style::default().fg(PINK)),
-                Span::raw(" for connection details"),
-            ]),
+        let suggestion = lines.last_mut().expect("splash has suggestion line");
+        suggestion.spans.extend([
+            Span::raw("  ·  "),
+            Span::styled("co-author", Style::default().fg(MUTED)),
+            Span::raw("  "),
+            Span::styled(endpoint, Style::default().fg(CYAN)),
+            Span::raw("  ·  "),
+            Span::styled(":share", Style::default().fg(PINK)),
+            Span::raw(" connection details"),
         ]);
     }
     let paragraph = Paragraph::new(lines).alignment(Alignment::Center).block(
@@ -202,152 +197,13 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(transcript, area);
 }
 
-fn render_colors(frame: &mut Frame<'_>, area: Rect) {
-    let colors = [
-        ("compiler", Color::Rgb(62, 207, 227)),
-        ("daemon", Color::Rgb(74, 222, 128)),
-        ("warning", Color::Rgb(251, 191, 36)),
-        ("error", Color::Rgb(248, 113, 113)),
-        ("handle", Color::Rgb(192, 132, 252)),
-        ("value", Color::Rgb(244, 114, 182)),
-    ];
-    let mut lines = vec![Line::styled(
-        "True-color semantic palette",
-        Style::default().add_modifier(Modifier::BOLD),
-    )];
-    lines.push(Line::from(""));
-    for (name, color) in colors {
-        lines.push(Line::from(vec![
-            Span::styled("      ", Style::default().bg(color)),
-            Span::raw("  "),
-            Span::styled(format!("{name:<12}"), Style::default().fg(color)),
-            Span::styled(
-                " bold ",
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                " underline ",
-                Style::default()
-                    .fg(color)
-                    .add_modifier(Modifier::UNDERLINED),
-            ),
-        ]));
-    }
-    lines.extend([
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("●", Style::default().fg(GREEN)),
-            Span::raw(" ready   "),
-            Span::styled("◌", Style::default().fg(AMBER)),
-            Span::raw(" compiling   "),
-            Span::styled("◆", Style::default().fg(CYAN)),
-            Span::raw(" committed"),
-        ]),
-    ]);
-    frame.render_widget(
-        Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(PINK))
-                .title(" :demo colors "),
-        ),
-        area,
-    );
-}
-
-fn render_layout_demo(frame: &mut Frame<'_>, area: Rect) {
-    let rows = Layout::vertical([
-        Constraint::Length(5),
-        Constraint::Length(5),
-        Constraint::Min(5),
-    ])
-    .split(area);
-    frame.render_widget(
-        Gauge::default()
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Compile cache "),
-            )
-            .gauge_style(Style::default().fg(CYAN).bg(PANEL))
-            .percent(72)
-            .label("72% warm"),
-        rows[0],
-    );
-    frame.render_widget(
-        Gauge::default()
-            .block(Block::default().borders(Borders::ALL).title(" Fixpoint "))
-            .gauge_style(Style::default().fg(GREEN).bg(PANEL))
-            .ratio(0.43)
-            .label("stratum 3 · iteration 12"),
-        rows[1],
-    );
-    let table = Table::new(
-        [
-            Row::new(["edge", "table", "3", "db1"]),
-            Row::new(["path", "table", "6", "db2"]),
-            Row::new(["distance", "min lattice", "4", "db2"]),
-        ],
-        [
-            Constraint::Percentage(30),
-            Constraint::Percentage(30),
-            Constraint::Percentage(20),
-            Constraint::Percentage(20),
-        ],
-    )
-    .header(
-        Row::new(["relation", "kind", "rows", "boundary"])
-            .style(Style::default().fg(PINK).add_modifier(Modifier::BOLD)),
-    )
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" Catalog table "),
-    );
-    frame.render_widget(table, rows[2]);
-}
-
-fn render_unicode(frame: &mut Frame<'_>, area: Rect) {
-    let lines = vec![
-        Line::styled(
-            "Grapheme-aware editor and cell-width samples",
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-        Line::from(""),
-        Line::from("ASCII fallback       ->  [run] [pause] [commit]"),
-        Line::from("Unicode markers      →   ▸ run  ⏸ pause  ◆ commit"),
-        Line::from("Combining grapheme   →   e\u{301}  a\u{30a}  n\u{303}"),
-        Line::from("Wide cells           →   測試  解析  論理"),
-        Line::from("Emoji cluster        →   👩‍💻  🧑🏽‍🔬  🦀"),
-        Line::from("Box drawing          →   ┌────┬────┐  ╭────╮"),
-        Line::from(""),
-        Line::styled(
-            "Backspace in the editor removes one extended grapheme cluster.",
-            Style::default().fg(MUTED),
-        ),
-        Line::styled(
-            "Display width is measured independently from UTF-8 byte length.",
-            Style::default().fg(MUTED),
-        ),
-    ];
-    frame.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(CYAN))
-                .title(" :demo unicode "),
-        ),
-        area,
-    );
-}
-
 fn render_editor(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let block = Block::default()
         .borders(Borders::TOP)
         .border_style(Style::default().fg(CYAN))
         .padding(Padding::horizontal(1))
         .title(format!(
-            " {} ›  Enter send · Shift/Alt+Enter newline ",
+            " {} ›  Enter send · Alt+Enter newline · Ctrl-D exit ",
             app.prompt_label()
         ));
     let inner = block.inner(area);
@@ -366,25 +222,6 @@ fn render_editor(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .y
         .saturating_add(row.min(inner.height.saturating_sub(1)));
     frame.set_cursor_position((cursor_x, cursor_y));
-}
-
-fn render_footer(frame: &mut Frame<'_>, area: Rect) {
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(" F1", Style::default().fg(CYAN)),
-            Span::raw(" help  "),
-            Span::styled("F2", Style::default().fg(CYAN)),
-            Span::raw(" cycle demos  "),
-            Span::styled("PgUp/PgDn", Style::default().fg(CYAN)),
-            Span::raw(" transcript  "),
-            Span::styled("Esc", Style::default().fg(CYAN)),
-            Span::raw(" welcome  "),
-            Span::styled("Ctrl-C/D", Style::default().fg(CYAN)),
-            Span::raw(" exit"),
-        ]))
-        .alignment(Alignment::Center),
-        area,
-    );
 }
 
 fn render_library_footer(frame: &mut Frame<'_>, area: Rect) {
@@ -436,14 +273,35 @@ mod tests {
     fn welcome_renders_to_a_test_buffer() {
         let backend = TestBackend::new(100, 30);
         let mut terminal = Terminal::new(backend).expect("test terminal");
+        let mut app = App::new();
+        app.set_coauthor_info(
+            "127.0.0.1:3210".to_owned(),
+            "/tmp/slog-repl/example.json".to_owned(),
+        );
         terminal
-            .draw(|frame| draw(frame, &App::new()))
+            .draw(|frame| draw(frame, &app))
             .expect("draw welcome");
         let rendered = terminal.backend().to_string();
         assert!(rendered.contains("Symbolic-expression logic programming"));
-        assert!(rendered.contains("Enter send"));
+        assert!(rendered.contains("Enter send · Alt+Enter newline · Ctrl-D exit"));
+        assert!(!rendered.contains("Shift"));
+        assert!(!rendered.contains(":demo"));
+        assert!(!rendered.contains("F1"));
+        assert!(!rendered.contains("PgUp/PgDn"));
         assert!(!rendered.contains("private TCP"));
         assert!(!rendered.contains("ratatui/crossterm"));
+
+        let (_, help_y) = find_text(&terminal, "help for commands").expect("help suggestion");
+        let (_, endpoint_y) = find_text(&terminal, "127.0.0.1:3210").expect("endpoint");
+        let (_, share_y) = find_text(&terminal, ":share").expect("share command");
+        assert_eq!(help_y, endpoint_y);
+        assert_eq!(help_y, share_y);
+
+        let (body_x, _) = find_text(&terminal, "/____/_/").expect("logo body");
+        let (descender_x, _) = find_text(&terminal, "/____/  v").expect("logo descender");
+        assert_eq!(descender_x, body_x + 13);
+        let (_, editor_y) = find_text(&terminal, "slog ›").expect("editor title");
+        assert_eq!(editor_y, 25, "the five-row editor starts at row 25");
     }
 
     #[test]

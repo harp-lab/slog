@@ -269,8 +269,7 @@ The build copies `repl/target/debug/slog` to the ignored root `slog` path.
 server commands include `library`, `open`, `current`, `resident`, `mode`,
 `tables`, `state`, `count`, `show`, `query`, `run`, `add`, `del`, `save`, the
 raw `schema`/`pipeline` views, and the general `help`/`status`/`ping`/`quit`
-set. Client-only forcing-function demos are `:demo colors`, `:demo layout`,
-`:demo unicode`, and `:demo off`.
+set. Client-local commands include `:clear` and `:share`.
 
 The minimum gates for changes are:
 
