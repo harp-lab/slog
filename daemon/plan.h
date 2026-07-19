@@ -75,6 +75,11 @@ struct ProbePlan
   // resolution probe (binding the id register) whose zero-match exhaustion
   // is a loud fatal, mirroring emit_struct_count's closure stance.
   bool resolve = false;
+  // Negative-maintenance struct resolution (join-tomb): probe the live
+  // master first, then the bucket's tombstone dictionary -- a sweep round
+  // may tombstone a head arbitrarily many rounds before the last decrement
+  // referencing it (docs/m4s-contract.md).  K is always arity-1.
+  bool tomb = false;
 };
 
 enum class FilterK : u8 { exists, absent };
@@ -299,6 +304,21 @@ struct SealedRule
   // shared cnt_* folds; false/none for the normal flavor.
   bool counted = false;
   u8 fold_kind = 0;
+  // Maintenance flavors (thread 0): sinks stage signed kind-tagged
+  // contributions (emit_maint family) for the unchanged Maintain*Task
+  // folds; the sign is flavor-static (+1 maint1, -1 maint3neg/maint4neg).
+  bool maint = false;
+  s8 sign = 1;
+};
+
+// Flavored seal context (thread 0): which flavored vocabulary a rule may
+// use and how its sinks fold.  Defaults describe the normal flavor.
+struct FlavoredSeal
+{
+  bool counted = false;
+  bool maint = false;
+  s8 sign = 1;
+  bool flavored() const { return counted || maint; }
 };
 
 // Resolve the canonical primitive name to its exact shared daemon function
@@ -358,6 +378,22 @@ inline const RelationShape& lattice_shape(
   seal_check(shape.arity >= 2 && shape.arity <= max_daemon_arity,
              SealErrorK::relation_arity,
              std::string(where) + ": unsupported lattice arity");
+  return shape;
+}
+
+// Kind-agnostic shape lookup: flavored scan drivers read a relation's
+// delta buckets regardless of storage kind (a lattice consumer epoch is
+// driven by the staged replacement rows in the lattice's own delta; a
+// struct sweep by the struct's transition rows).
+inline const RelationShape& any_shape(
+  const std::vector<RelationShape>& rels, u16 slot, const char* where)
+{
+  seal_check(slot < rels.size(), SealErrorK::relation_slot,
+             std::string(where) + ": relation slot out of range");
+  const RelationShape& shape = rels[slot];
+  seal_check(shape.arity > 0 && shape.arity <= max_daemon_arity,
+             SealErrorK::relation_arity,
+             std::string(where) + ": unsupported relation arity");
   return shape;
 }
 
@@ -438,7 +474,7 @@ inline bool supports_map_filter(FilterK kind, u16 arity, u16 bound)
 
 inline SealedRule seal_rule(const RulePlan& plan,
                             const std::vector<RelationShape>& relations,
-                            bool counted = false)
+                            FlavoredSeal flavor = {})
 {
   seal_check(plan.nregs != 0, SealErrorK::register_bounds,
              "rule: empty register file");
@@ -458,8 +494,10 @@ inline SealedRule seal_rule(const RulePlan& plan,
   out.heads = plan.heads;
   out.relations = relations;
   out.preops = plan.preops;
-  out.counted = counted;
+  out.counted = flavor.counted;
   out.fold_kind = plan.fold_kind;
+  out.maint = flavor.maint;
+  out.sign = flavor.sign;
   if (out.preops.empty())
     for (const FilterPlan& filter : plan.prefilters)
       out.preops.emplace_back(filter);
@@ -577,7 +615,7 @@ inline SealedRule seal_rule(const RulePlan& plan,
   {
     // One empty driver row; the enumeration is carried by K=0 body scans
     // over FULL views (the count flavor's fire-once shape).
-    seal_check(counted, SealErrorK::capability,
+    seal_check(flavor.counted, SealErrorK::capability,
                "driver: once/seeded drivers are admitted for counted "
                "plans only");
     seal_check(plan.driver.order.empty(), SealErrorK::ordering,
@@ -589,8 +627,12 @@ inline SealedRule seal_rule(const RulePlan& plan,
   }
   else
   {
+  // Flavored scans read delta buckets regardless of storage kind; probe
+  // drivers and every normal-flavor driver stay ordinary set relations.
   const RelationShape& driver_rel =
-    relation_shape(relations, plan.driver.relation, "driver");
+    (flavor.flavored() && plan.driver.kind == DriverK::scan_delta)
+      ? any_shape(relations, plan.driver.relation, "driver")
+      : relation_shape(relations, plan.driver.relation, "driver");
   seal_check(plan.driver.regs.size() == driver_rel.arity,
              SealErrorK::relation_arity,
              "driver: register width mismatch");
@@ -637,26 +679,43 @@ inline SealedRule seal_rule(const RulePlan& plan,
     if (const auto* probe_in = std::get_if<ProbePlan>(&body))
     {
       ProbePlan probe = *probe_in;
-      // Counted plans resolve struct content->id through ordinary probes of
-      // the struct master (the M4S resolution-join shape at a settled
-      // fixpoint); the normal flavor keeps refusing struct probes.
+      // Flavored plans resolve struct content->id through probes of the
+      // struct master (the M4S resolution-join shapes); the normal flavor
+      // keeps refusing struct probes.
       seal_check(probe.relation < relations.size(), SealErrorK::relation_slot,
                  "probe: relation slot out of range");
       probe.struct_ = !probe.lattice
         && relations[probe.relation].kind == RelationK::struct_;
-      seal_check(!probe.struct_ || counted, SealErrorK::relation_kind,
-                 "probe: struct relation probes are admitted for counted "
+      seal_check(!probe.struct_ || flavor.flavored(),
+                 SealErrorK::relation_kind,
+                 "probe: struct relation probes are admitted for flavored "
                  "plans only");
+      // join-tomb (live master, then the tombstone dictionary) belongs to
+      // the negative maintenance flavors alone; a positive or counted plan
+      // carrying one is stale or corrupt.
+      seal_check(!probe.tomb || (flavor.maint && flavor.sign < 0),
+                 SealErrorK::capability,
+                 "join-tomb: admitted for negative maintenance plans only");
       const RelationShape& rel = probe.lattice
         ? lattice_shape(relations, probe.relation, "lattice probe")
         : probe.struct_
           ? struct_shape(relations, probe.relation, "struct probe")
           : relation_shape(relations, probe.relation, "probe");
+      seal_check(!probe.tomb
+                   || (probe.struct_ && probe.bound + 1 == rel.arity
+                       && probe.view == ProbePlan::View::full
+                       && probe.delta_order.empty()),
+                 SealErrorK::capability,
+                 "join-tomb: requires a full-content struct master probe");
       validate_order(rel, probe.order, "probe");
       seal_check(probe.regs.size() == rel.arity, SealErrorK::relation_arity,
                  "probe: register width mismatch");
       const bool viewed = probe.view != ProbePlan::View::full;
-      seal_check(!probe.struct_ || !viewed, SealErrorK::capability,
+      // Counted plans probe struct masters at settled FULL only; the
+      // maintenance flavors' pre/post-state views also cover structs
+      // (the M4S union-view resolution shapes).
+      seal_check(!probe.struct_ || !viewed || flavor.maint,
+                 SealErrorK::capability,
                  "struct probe: relation views are unsupported");
       seal_check(probe.lattice
                    ? supports_map_probe(rel.arity, probe.bound)
@@ -832,9 +891,13 @@ inline SealedRule seal_rule(const RulePlan& plan,
   for (const EmitPlan& head : plan.heads)
   {
     if (head.head_kind != HeadK::struct_) continue;
-    seal_check(counted, SealErrorK::capability,
+    seal_check(flavor.flavored(), SealErrorK::capability,
                "mkstruct: struct construction heads are admitted for "
-               "counted plans only");
+               "flavored plans only");
+    // Maintenance constructions stay unresolved at emit (the 0-placeholder
+    // id; MaintainStructTask's serial fold owns resolution) -- only the
+    // count flavor lowers to the pre-fire resolution probe.
+    if (!flavor.counted) continue;
     const RelationShape& rel =
       struct_shape(relations, head.relation, "mkstruct");
     validate_order(rel, head.order, "mkstruct");
@@ -967,6 +1030,9 @@ inline SealedRule seal_rule(const RulePlan& plan,
   {
     const EmitPlan& head = plan.heads[sink];
     const RelationShape* shape = nullptr;
+    // The registers this head's emit op stages, in the order its bound
+    // sink expects them.
+    std::vector<u16> staged = head.regs;
     switch (head.head_kind)
     {
       case HeadK::set:
@@ -975,9 +1041,9 @@ inline SealedRule seal_rule(const RulePlan& plan,
         break;
       case HeadK::temp:
         // Temps have no requisitioned orderings; rows stage in nominal
-        // order with no dedup (emit_temp), counted plans only.
-        seal_check(counted, SealErrorK::capability,
-                   "emit-temp: temp heads are admitted for counted "
+        // order with no dedup (emit_temp), flavored plans only.
+        seal_check(flavor.flavored(), SealErrorK::capability,
+                   "emit-temp: temp heads are admitted for flavored "
                    "plans only");
         seal_check(head.relation < relations.size(),
                    SealErrorK::relation_slot,
@@ -992,44 +1058,64 @@ inline SealedRule seal_rule(const RulePlan& plan,
         break;
       case HeadK::lattice:
         // Every contribution row is preserved in nominal storage order
-        // (emit_lattice_count); counted plans only.
-        seal_check(counted, SealErrorK::capability,
-                   "emit-lat: lattice heads are admitted for counted "
+        // (emit_lattice_count / emit_lattice_maint); flavored plans only.
+        seal_check(flavor.flavored(), SealErrorK::capability,
+                   "emit-lat: lattice heads are admitted for flavored "
                    "plans only");
         shape = &lattice_shape(relations, head.relation, "emit-lat");
         break;
       case HeadK::struct_:
-        // Validated by the mkstruct pre-pass above; the emit stages the
-        // full nominal-order row with the resolved id in place.
         shape = &struct_shape(relations, head.relation, "mkstruct emit");
+        if (flavor.counted)
+        {
+          // Validated by the mkstruct pre-pass above; the emit stages the
+          // full nominal-order row with the resolved id in place.
+        }
+        else
+        {
+          // Maintenance construction: the id stays a 0 placeholder that
+          // MaintainStructTask's serial fold resolves, so the emit stages
+          // only the content fields, in master-content order
+          // (emit_struct_maint).  The id register is never assigned.
+          validate_order(*shape, head.order, "mkstruct");
+          seal_check(head.order.back() == 0, SealErrorK::ordering,
+                     "mkstruct: master ordering must end in the id column");
+          seal_check(head.regs.size() == shape->arity,
+                     SealErrorK::relation_arity,
+                     "mkstruct: register width mismatch");
+          staged.clear();
+          for (u16 i = 0; i + 1 < shape->arity; ++i)
+            staged.push_back(head.regs[head.order[i]]);
+        }
         break;
     }
     const RelationShape& rel = *shape;
-    seal_check(head.regs.size() == rel.arity, SealErrorK::relation_arity,
-               "emit: register width mismatch");
-    for (u16 reg : head.regs)
+    if (head.head_kind != HeadK::struct_ || flavor.counted)
+      seal_check(staged.size() == rel.arity, SealErrorK::relation_arity,
+                 "emit: register width mismatch");
+    for (u16 reg : staged)
     {
       validate_reg(reg, plan.nregs, "emit");
       seal_check(assigned[reg], SealErrorK::dataflow,
                  "emit: read of unassigned register");
     }
-    if (rel.arity == 2)
+    if (staged.size() == 2)
       out.program.ops.push_back({OpK::emit2, static_cast<u16>(sink),
-                                 head.regs[0], head.regs[1], 0});
-    else if (rel.arity == 3)
+                                 staged[0], staged[1], 0});
+    else if (staged.size() == 3)
       out.program.ops.push_back({OpK::emit3, static_cast<u16>(sink),
-                                 head.regs[0], head.regs[1], head.regs[2]});
+                                 staged[0], staged[1], staged[2]});
     else
     {
-      seal_check(out.program.operands.size() + head.regs.size()
+      seal_check(out.program.operands.size() + staged.size()
                    <= std::numeric_limits<u16>::max(),
                  SealErrorK::factory,
                  "emit: operand bank overflow");
       const u16 offset = static_cast<u16>(out.program.operands.size());
       out.program.operands.insert(out.program.operands.end(),
-                                  head.regs.begin(), head.regs.end());
+                                  staged.begin(), staged.end());
       out.program.ops.push_back({OpK::emitn, static_cast<u16>(sink),
-                                 offset, rel.arity, 0});
+                                 offset, static_cast<u16>(staged.size()), 0});
     }
   }
   return out;
@@ -1038,7 +1124,7 @@ inline SealedRule seal_rule(const RulePlan& plan,
 inline std::vector<SealedRule> seal_rules(
   const std::vector<RulePlan>& plans,
   const std::vector<RelationShape>& relations,
-  bool counted = false)
+  FlavoredSeal flavor = {})
 {
   std::set<std::pair<u32, std::string>> variants;
   std::vector<SealedRule> out;
@@ -1048,7 +1134,7 @@ inline std::vector<SealedRule> seal_rules(
     seal_check(variants.insert({plan.rule_id, plan.variant}).second,
                SealErrorK::variant_identity,
                "rule: duplicate RuleVariant identity");
-    out.push_back(seal_rule(plan, relations, counted));
+    out.push_back(seal_rule(plan, relations, flavor));
   }
   return out;
 }
@@ -1116,6 +1202,22 @@ std::unique_ptr<PrefixCursor> make_struct_resolve_cursor(
 // would invalidate and FREE the count sidecars mid-round at finalize.
 void emit_pending_error_count_nonrec(Database* db, const char* loc);
 void emit_pending_error_count_rec(Database* db, const char* loc);
+// Maintenance sinks (slices 2-3): signed kind-tagged contributions for the
+// unchanged MaintainTask / LatticeMaintainTask / MaintainStructTask folds
+// (emit_maint / emit_lattice_maint / emit_struct_maint).
+std::unique_ptr<BoundSink> make_maint_sink(
+  u16 arity, Relation* relation, const std::vector<u16>& order,
+  u8 kind, s8 sign);
+std::unique_ptr<BoundSink> make_lattice_maint_sink(
+  u16 arity, Relation* relation, u8 kind, s8 sign);
+std::unique_ptr<BoundSink> make_struct_maint_sink(
+  u16 arity, Relation* relation, const std::vector<u16>& order,
+  u8 kind, s8 sign);
+// The join-tomb cursor: live-master content probe, then the bucket's
+// tombstone dictionary (join_probe_tomb; docs/m4s-contract.md).
+std::unique_ptr<PrefixCursor> make_tomb_probe_cursor(
+  u16 arity, Relation* relation, Index** master,
+  const std::vector<u16>& order, const std::vector<u16>& regs, u16 bound);
 
 struct BoundExecution
 {
@@ -1210,8 +1312,8 @@ class BoundRule
   std::unique_ptr<BoundSink> make_effect_sink(const EmitPlan& effect) const
   {
     Relation* rel = frame[effect.relation];
-    if (sealed.counted)
-      // The counted tycheck diversion: malformed rows pre-exist at a
+    if (sealed.counted || sealed.maint)
+      // The flavored tycheck diversion: malformed rows pre-exist at a
       // settled fixpoint, so the sink resolves by content probe and folds
       // a kind-tagged contribution (emit_struct_count).
       return make_struct_count_sink(rel->getArity(), rel,
@@ -1227,14 +1329,26 @@ class BoundRule
       case HeadK::temp:
         return make_temp_sink(rel->getArity(), rel);
       case HeadK::lattice:
+        if (sealed.maint)
+          return make_lattice_maint_sink(rel->getArity(), rel,
+                                         sealed.fold_kind, sealed.sign);
+        // Nominal-order kind-tagged batching (emit_lattice_count).
+        return make_kind_batch_sink(rel->getArity(), rel, sealed.fold_kind);
       case HeadK::struct_:
-        // Nominal-order kind-tagged batching: lattice contributions are
-        // preserved verbatim (emit_lattice_count), and struct rows arrive
-        // with their id already bound by the resolution cursor.
+        if (sealed.maint)
+          // Signed construction with the 0-placeholder id; the serial
+          // MaintainStructTask fold owns resolution (emit_struct_maint).
+          return make_struct_maint_sink(rel->getArity(), rel, head.order,
+                                        sealed.fold_kind, sealed.sign);
+        // Counted rows arrive with their id already bound by the
+        // resolution cursor; batch them verbatim, kind-tagged.
         return make_kind_batch_sink(rel->getArity(), rel, sealed.fold_kind);
       case HeadK::set:
         break;
     }
+    if (sealed.maint)
+      return make_maint_sink(rel->getArity(), rel, head.order,
+                             sealed.fold_kind, sealed.sign);
     if (sealed.counted)
       return make_count_sink(rel->getArity(), rel,
         rel->getIndex(head.order, false), head.order, sealed.fold_kind);
@@ -1252,9 +1366,9 @@ public:
     stats_rule_variant_key = "<interp-rule:"
       + std::to_string(sealed.program.rule_id) + ":variant:"
       + std::to_string(sealed.program.variant_ordinal) + ">";
-    if (sealed.counted)
+    if (sealed.counted || sealed.maint)
     {
-      // Counted rounds keep the native $stat_fires identity -- source
+      // Flavored rounds keep the native $stat_fires identity -- source
       // location plus the base driver tag (no "/<kind>" suffix, no
       // "#<ordinal>") -- so cross-executor comparison stays at the
       // aggregated-golden level the exact-once audit pins.
@@ -1269,9 +1383,9 @@ public:
       stats_loc = stats_rule_variant_key;
       stats_tag = sealed.program.variant;
     }
-    // A counted rule's primitive faults contribute kind-tagged error-arm
-    // rows exactly like native counted code (emit_pending_error_count).
-    if (sealed.counted)
+    // A flavored rule's primitive faults contribute kind-tagged error-arm
+    // rows exactly like native flavored code (emit_pending_error_count).
+    if (sealed.counted || sealed.maint)
       error_fn = sealed.fold_kind == cnt_kind_rec
         ? &emit_pending_error_count_rec
         : &emit_pending_error_count_nonrec;
@@ -1329,12 +1443,26 @@ public:
                  "bind: requisitioned struct master index is absent");
     };
 
-    if (sealed.driver.kind == DriverK::scan_delta
-        || sealed.driver.kind == DriverK::probe_full)
+    const auto any_relation = [&](u16 slot) -> Relation* {
+      seal_check(slot < frame.size() && frame[slot] != nullptr,
+                 SealErrorK::binding, "bind: referenced relation is absent");
+      Relation* rel = frame[slot];
+      seal_check(rel->getArity() == sealed.relations[slot].arity,
+                 SealErrorK::binding, "bind: relation arity mismatch");
+      return rel;
+    };
+    if (sealed.driver.kind == DriverK::scan_delta)
+    {
+      // Flavored scans drive from any storage kind's delta buckets.
+      if (sealed.counted || sealed.maint)
+        (void)any_relation(sealed.driver.relation);
+      else
+        (void)relation(sealed.driver.relation);
+    }
+    else if (sealed.driver.kind == DriverK::probe_full)
     {
       (void)relation(sealed.driver.relation);
-      if (sealed.driver.kind == DriverK::probe_full)
-        index(sealed.driver.relation, sealed.driver.order);
+      index(sealed.driver.relation, sealed.driver.order);
     }
     for (const StraightPlan& op : sealed.preops)
       if (const auto* filter = std::get_if<FilterPlan>(&op))
@@ -1352,11 +1480,14 @@ public:
           struct_index(probe->relation, probe->order);
         else
           index(probe->relation, probe->order);
-        if (!probe->lattice && !probe->struct_
-            && probe->view != ProbePlan::View::full)
-          seal_check(relation(probe->relation)->hasIndex(
-                       probe->delta_order, true), SealErrorK::binding,
+        if (!probe->lattice && probe->view != ProbePlan::View::full)
+        {
+          Relation* rel = probe->struct_
+            ? struct_relation(probe->relation) : relation(probe->relation);
+          seal_check(rel->hasIndex(probe->delta_order, true),
+                     SealErrorK::binding,
                      "bind: requisitioned delta index is absent");
+        }
       }
       else if (const auto* filter = std::get_if<FilterPlan>(&cursor))
       {
@@ -1485,6 +1616,10 @@ public:
           cursor_prototypes.push_back(make_map_probe_cursor(
             rel->getArity(), rel->getIndex(probe->order, false),
             probe->regs, probe->bound));
+        else if (probe->tomb)
+          cursor_prototypes.push_back(make_tomb_probe_cursor(
+            rel->getArity(), rel, rel->getIndex(probe->order, false),
+            probe->order, probe->regs, probe->bound));
         else if (probe->resolve)
           cursor_prototypes.push_back(make_struct_resolve_cursor(
             rel->getArity(), rel->getIndex(probe->order, false),

@@ -469,6 +469,22 @@ DecodedRule decode_rule(const SExp& x)
         probe.regs.push_back(ref(xs[j], "r", "join register"));
       out.plan.body.push_back(std::move(probe));
     }
+    else if (name == "join-tomb")
+    {
+      // (join-tomb (rel n) (ord...) K (r ...) ...): full-content struct
+      // resolution through the live master then the tombstone dictionary
+      // (negative maintenance; K is always arity-1, no delta ordering).
+      const auto& xs = list(op, "join-tomb");
+      if (xs.size() < 5) syntax(op, "join-tomb is too short");
+      ProbePlan probe;
+      probe.tomb = true;
+      probe.relation = ref(xs[1], "rel", "join-tomb relation");
+      probe.order = order(xs[2], "join-tomb ordering");
+      probe.bound = small(xs[3], "join-tomb bound prefix");
+      for (size_t j = 4; j < xs.size(); ++j)
+        probe.regs.push_back(ref(xs[j], "r", "join-tomb register"));
+      out.plan.body.push_back(std::move(probe));
+    }
     else if (name == "join-lat")
     {
       const auto& xs = list(op, "join-lat");
@@ -852,12 +868,20 @@ SealedKernelPlan seal_kernel_plan(const DecodedKernelPlan& decoded,
 {
   seal_check(decoded.abi == 1, SealErrorK::abi,
              "plan: unsupported canonical ABI");
-  // Slice 1 of counted-interp-contract.md lifts the count flavor; the
-  // maintenance flavors stay refused until slices 2-3 cover them.
+  // Counted-interp slices 1-3: the count flavor and all three maintenance
+  // flavors are admitted; the sign is flavor-static (+1 maint1,
+  // -1 maint3neg/maint4neg) and the dred distinction is the installer's.
   const bool counted = decoded.flavor == "count";
-  seal_check(decoded.flavor == "normal" || counted, SealErrorK::flavor,
-             "plan: admitted flavors are normal and count "
-             "(maintenance flavors await counted-interp slices 2-3)");
+  const bool maint_positive = decoded.flavor == "maint1";
+  const bool maint_negative = decoded.flavor == "maint3neg"
+                           || decoded.flavor == "maint4neg";
+  const bool maint = maint_positive || maint_negative;
+  seal_check(decoded.flavor == "normal" || counted || maint,
+             SealErrorK::flavor,
+             "plan: admitted flavors are normal, count, maint1, "
+             "maint3neg, and maint4neg");
+  const FlavoredSeal flavor{counted, maint,
+                            static_cast<s8>(maint_negative ? -1 : 1)};
   seal_check(decoded.attachment_count == 0, SealErrorK::capability,
              "plan: attachments are not admitted by T2-A");
   seal_check(std::is_sorted(decoded.primitives.begin(), decoded.primitives.end())
@@ -888,31 +912,39 @@ SealedKernelPlan seal_kernel_plan(const DecodedKernelPlan& decoded,
                       ? std::string("<unknown>")
                       : decoded_rule.unsupported.front()));
     RulePlan plan = decoded_rule.plan;
-    if (counted)
+    if (flavor.flavored())
     {
-      // Every counted rule must carry its prov-keyed fold kind (the ABI-1
-      // "/<kind>" variant suffix); the sinks fold it through cnt_apply.
+      // Every flavored rule must carry its prov-keyed fold kind (the ABI-1
+      // "/<kind>" variant suffix); the sinks fold it through the cnt_*
+      // family.
       plan.fold_kind = variant_fold_kind(plan.variant);
       seal_check(plan.fold_kind == cnt_kind_nonrec
                    || plan.fold_kind == cnt_kind_rec,
                  SealErrorK::variant_identity,
-                 "plan: counted rule variant carries no fold kind: "
+                 "plan: flavored rule variant carries no fold kind: "
                    + plan.variant);
-      // Plan-attribute 1 (counted-interp-contract.md): counted plans carry
-      // no semijoin filters, enforced as a seal CHECK rather than trusted
-      // as a convention.  A stale pre-ci1 sidecar can trip this; the
-      // compiler regenerates it with the flavored artifacts.
-      const auto no_exists = [](const FilterPlan& filter) {
-        seal_check(filter.kind != FilterK::exists, SealErrorK::capability,
-                   "plan: counted plan carries a semijoin exists filter "
-                   "(regenerate the _count sidecar)");
-      };
-      for (const StraightPlan& op : plan.preops)
-        if (const auto* filter = std::get_if<FilterPlan>(&op))
-          no_exists(*filter);
-      for (const BodyPlan& op : plan.body)
-        if (const auto* filter = std::get_if<FilterPlan>(&op))
-          no_exists(*filter);
+      // Plan-attribute 1 (counted-interp-contract.md): counted plans and
+      // the negative maintenance flavors carry no semijoin filters,
+      // enforced as a seal CHECK rather than trusted as a convention (a
+      // stale sidecar can trip this; the compiler regenerates it with the
+      // flavored artifacts).  maint1 keeps semijoin lookahead enabled at
+      // planning: its FULL-only probe over-approximates both the full and
+      // old (FULL-minus-delta) views, pruning only zero-instantiation
+      // prefixes, so any exists op that appears executes verbatim.
+      if (counted || maint_negative)
+      {
+        const auto no_exists = [](const FilterPlan& filter) {
+          seal_check(filter.kind != FilterK::exists, SealErrorK::capability,
+                     "plan: flavored plan carries a semijoin exists filter "
+                     "(regenerate the flavored sidecar)");
+        };
+        for (const StraightPlan& op : plan.preops)
+          if (const auto* filter = std::get_if<FilterPlan>(&op))
+            no_exists(*filter);
+        for (const BodyPlan& op : plan.body)
+          if (const auto* filter = std::get_if<FilterPlan>(&op))
+            no_exists(*filter);
+      }
     }
     for (const auto& [reg, slot] : decoded_rule.constant_preloads)
     {
@@ -958,7 +990,7 @@ SealedKernelPlan seal_kernel_plan(const DecodedKernelPlan& decoded,
   out.abi = decoded.abi;
   out.flavor = decoded.flavor;
   out.bindings = decoded.bindings;
-  out.rules = seal_rules(plans, shapes, counted);
+  out.rules = seal_rules(plans, shapes, flavor);
   out.sources = decoded.sources;
   out.dynamic_names = decoded.dynamic_names;
   for (SealedRule& rule : out.rules)

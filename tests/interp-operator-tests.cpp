@@ -12,7 +12,8 @@
 // with breakpoints, bounded proof capture, seal/bind rejections, and real
 // Relation indices and emit sinks with dedup.
 //
-//   clang++ -O2 -Wall -std=c++20 -pthread -fopenmp -Idaemon tests/interp-operator-tests.cpp daemon/plan.cpp daemon/plan-count.cpp daemon/query.cpp daemon/sexp.cpp daemon/runtime.cpp -o /tmp/interp-tests -lgmp
+//   clang++ -O0 -Wall -std=c++20 -pthread -fopenmp -Idaemon -c daemon/plan-flavored-tasks.cpp -o /tmp/pft.o
+//   clang++ -O2 -Wall -std=c++20 -pthread -fopenmp -Idaemon tests/interp-operator-tests.cpp daemon/plan.cpp daemon/plan-count.cpp daemon/query.cpp daemon/sexp.cpp daemon/runtime.cpp /tmp/pft.o -o /tmp/interp-tests -lgmp
 //   /tmp/interp-tests [--bench]
 
 #include "plan.h"
@@ -2434,14 +2435,17 @@ bool test_parsed_sidecar_refusal_classes()
   }());
   CHECK(seal_rejects(SealErrorK::abi,
         replace_once(base, "(abi 1)", "(abi 2)")));
-  // Slice 1 of counted-interp-contract.md lifts the count flavor; the
-  // maintenance flavors stay typed refusals, and a counted rule without a
-  // "/<kind>" variant suffix is a typed identity refusal.
+  // Slices 1-3 of counted-interp-contract.md admit count and the three
+  // maintenance flavors; an unknown flavor stays a typed refusal, and a
+  // flavored rule without a "/<kind>" variant suffix is a typed identity
+  // refusal.
   CHECK(seal_rejects(SealErrorK::flavor,
+        replace_once(base, "(flavor normal)", "(flavor maint9)")));
+  CHECK(seal_rejects(SealErrorK::variant_identity,
         replace_once(base, "(flavor normal)", "(flavor maint1)")));
-  CHECK(seal_rejects(SealErrorK::flavor,
+  CHECK(seal_rejects(SealErrorK::variant_identity,
         replace_once(base, "(flavor normal)", "(flavor maint3neg)")));
-  CHECK(seal_rejects(SealErrorK::flavor,
+  CHECK(seal_rejects(SealErrorK::variant_identity,
         replace_once(base, "(flavor normal)", "(flavor maint4neg)")));
   CHECK(seal_rejects(SealErrorK::variant_identity,
         replace_once(base, "(flavor normal)", "(flavor count)")));
@@ -2730,6 +2734,19 @@ static std::map<std::vector<u64>, u64> sidecar_words(Relation* rel)
   return out;
 }
 
+static void dump_words(const char* label,
+                       const std::map<std::vector<u64>, u64>& words)
+{
+  std::cout << label << ":\n";
+  for (const auto& [key, word] : words)
+  {
+    std::cout << "  (";
+    for (u64 value : key) std::cout << value << " ";
+    std::cout << ") in=" << cnt_input(word) << " nr=" << cnt_nonrec(word)
+              << " rc=" << cnt_rec(word) << "\n";
+  }
+}
+
 static bool drive_stratum_to_fixpoint(Database& db, Stratum& stratum)
 {
   RunBudget budget;
@@ -2748,12 +2765,21 @@ static bool drive_stratum_to_fixpoint(Database& db, Stratum& stratum)
 static void attach_counted_rules(Database& db, Stratum& stratum,
                                  const SealedKernelPlan& sealed)
 {
+  // The installer's fire-once rule: once/seeded dispatch and scans over
+  // NON-dynamic relations run first-iteration-only; dynamic scans chase
+  // the ripple every iteration.
+  const std::set<std::string> dynamic(sealed.dynamic_names.begin(),
+                                      sealed.dynamic_names.end());
   const auto rules = bind_kernel_plan(sealed, db);
   for (const auto& rule : rules)
   {
-    const DriverK kind = rule->definition().driver.kind;
-    rule->attach(&db, &stratum,
-                 kind == DriverK::once || kind == DriverK::seeded);
+    const DriverPlan& driver = rule->definition().driver;
+    bool fire_once = driver.kind == DriverK::once
+                  || driver.kind == DriverK::seeded;
+    if (driver.kind == DriverK::scan_delta)
+      fire_once =
+        dynamic.count(sealed.bindings[driver.relation].name) == 0;
+    rule->attach(&db, &stratum, fire_once);
   }
 }
 
@@ -3242,6 +3268,562 @@ bool test_counted_prim_fault_arm_contribution()
   return true;
 }
 
+// ===========================================================================
+// Maintenance differential harness (counted-interp-contract.md slices 2-3).
+// Each case builds a settled counted database, stages the signed premise
+// transitions exactly like stageUpdateTransitions, and runs the epoch
+// through the sealed/bound VM and through hand-written native maintenance
+// tasks -- the identical Maintain*Task folds registered on both sides.
+// ===========================================================================
+
+static void load_signed_delta(Relation* rel,
+                              const std::vector<std::vector<u64>>& rows,
+                              u8 kind, s8 sign)
+{
+  // Exactly stageUpdateTransitions' staging: a kind/sign-tagged batch SENT
+  // into the shards, so the run's entry finalize turns it into the
+  // iteration-0 delta that drives the epoch's scans.
+  InsertBatch* batch = new InsertBatch();
+  batch->kind = kind;
+  batch->sign = sign;
+  for (const auto& row : rows)
+  {
+    seal_check(row.size() == rel->getArity(), "fixture: row width mismatch");
+    for (u64 value : row) batch->data[batch->usage++] = value;
+  }
+  rel->sendBatch(batch);
+}
+
+// Registration shared by both executors of a maintenance fixture: the
+// native TU's write/intern machinery around the maintained head.
+static void register_maint_machinery(
+  Database& db, Stratum& stratum, Relation* input, Relation* head,
+  const std::vector<u16>& head_order)
+{
+  const std::vector<u16> input_order{0, 1};
+  for (u16 b = 0; b < bucket_count; ++b)
+  {
+    if (input != nullptr)
+    {
+      if (input->getArity() == 2)
+      {
+        stratum.addTask(phase_write,
+          new WriteTask<2>(&db, input, {0, 1}, false, b), true);
+        stratum.addTask(phase_intern,
+          new InternTask<2>(&db, input, {0, 1}, b));
+      }
+      else
+      {
+        stratum.addTask(phase_write,
+          new WriteTask<1>(&db, input, {0}, false, b), true);
+        stratum.addTask(phase_intern,
+          new InternTask<1>(&db, input, {0}, b));
+      }
+    }
+    std::array<u16, 2> head_ord2{};
+    std::copy(head_order.begin(), head_order.end(), head_ord2.begin());
+    stratum.addTask(phase_write,
+      new WriteTask<2>(&db, head, head_ord2, false, b), true);
+    stratum.addTask(phase_write,
+      new WriteTask<2>(&db, head, head_ord2, true, b), false);
+  }
+  std::array<u16, 2> head_ord2{};
+  std::copy(head_order.begin(), head_order.end(), head_ord2.begin());
+  stratum.addTask(phase_intern,
+    new MaintainTask<2>(&db, head, head_ord2, 0, false));
+}
+
+// Positive maintenance (maint1): the transitive-closure edge addition,
+// with the occurrence-partitioned rule versions of the real _maint1 plan
+// -- all:edge/nonrec, all:edge/rec over the R_old exclusion view, and the
+// delta:path/rec ripple -- healed counts pinned by hand and against the
+// native tasks.
+bool test_maint1_positive_differential()
+{
+  const std::string text =
+    "(kernel-plan (abi 1) (flavor maint1) "
+    "(relations "
+      "(rel 0 (relation mt_edge 2 (0 1))) "
+      "(rel 1 (relation mt_path 2 (1 0) (delta 1 0)))) "
+    "(attachments) (constants) (prims) (dynamic mt_path) "
+    "(rules "
+      "(rule-def (rid 0) (variant \"all:mt_edge/nonrec\") (nregs 2) (pre) "
+        "(driver (scan (rel 0) (r 0) (r 1))) (body) "
+        "(head (emit (rel 1) (1 0) (r 1) (r 0)))) "
+      "(rule-def (rid 1) (variant \"all:mt_edge/rec\") (nregs 3) (pre) "
+        "(driver (scan (rel 0) (r 0) (r 1))) "
+        "(body (join-old (rel 1) (1 0) 1 (1 0) (r 0) (r 2))) "
+        "(head (emit (rel 1) (1 0) (r 1) (r 2)))) "
+      "(rule-def (rid 1) (variant \"delta:mt_path/rec\") (nregs 3) (pre) "
+        "(driver (scan (rel 1) (r 0) (r 1))) "
+        "(body (join (rel 0) (0 1) 1 (r 1) (r 2))) "
+        "(head (emit (rel 1) (1 0) (r 2) (r 0))))) "
+    "(meta (rule-meta (rid 0) (source \"mt.slog:4\")) "
+          "(rule-meta (rid 1) (source \"mt.slog:9\"))))";
+  const DecodedKernelPlan decoded = parse_kernel_plan(text);
+
+  // Settled pre-state with established counts, then one positive edit:
+  // insert edge (0,1) into the live indices (set-overlay-positive) and
+  // stage its premise transition as iteration-0 delta.
+  const auto load = [](Database& db) {
+    db.addRelation("mt_edge", 2);
+    db.addRelation("mt_path", 2);
+    Relation* edge = db.getRelation("mt_edge");
+    Relation* path = db.getRelation("mt_path");
+    edge->addIndex<2>({0, 1}, false);
+    path->addIndex<2>({1, 0}, false);
+    path->addIndex<2>({1, 0}, true);
+    for (const std::array<u64, 2>& row :
+         {std::array<u64, 2>{1, 2}, {2, 3}})
+      insert_nominal(edge, {row[0], row[1]});
+    for (const std::array<u64, 2>& row :
+         {std::array<u64, 2>{1, 2}, {2, 3}, {1, 3}})
+      insert_nominal(path, {row[0], row[1]});
+    // Established sidecar (the recount-ready gate): nonrec for the copies,
+    // rec for the two-hop row.
+    Index** side = path->ensureCountSidecar();
+    const auto put = [&](u64 a, u64 b, u64 word) {
+      auto* index = static_cast<BTreeMapIndex<2>*>(side[buckethash(a)]);
+      index->tree.insert2({a, b}, word);
+    };
+    put(1, 2, cnt_pack(false, 1, 0));
+    put(2, 3, cnt_pack(false, 1, 0));
+    put(1, 3, cnt_pack(false, 0, 1));
+    db.markCounted({"mt_path"});
+    insert_nominal(edge, {0, 1});
+    load_signed_delta(edge, {{0, 1}}, cnt_kind_premise, 1);
+  };
+
+  Database db(2);
+  load(db);
+  Relation* path = db.getRelation("mt_path");
+  Stratum stratum("maint1-interp");
+  register_maint_machinery(db, stratum, db.getRelation("mt_edge"), path,
+                           {1, 0});
+  const SealedKernelPlan sealed = seal_kernel_plan(decoded);
+  CHECK(sealed.rules[0].maint && sealed.rules[0].sign == 1);
+  CHECK(sealed.rules[0].fold_kind == cnt_kind_nonrec);
+  CHECK(sealed.rules[1].fold_kind == cnt_kind_rec);
+  attach_counted_rules(db, stratum, sealed);
+  CHECK(drive_stratum_to_fixpoint(db, stratum));
+
+  Database native_db(2);
+  load(native_db);
+  Relation* native_edge = native_db.getRelation("mt_edge");
+  Relation* native_path = native_db.getRelation("mt_path");
+  class NativeBase final : public Task
+  {
+    Database* db;
+    Relation* edge;
+    Relation* path;
+    Index** path_index;
+    u16 bucket;
+  public:
+    NativeBase(Database* d, Relation* e, Relation* p, u16 b)
+      : db(d), edge(e), path(p),
+        path_index(p->getIndex({1, 0}, false)), bucket(b) {}
+    bool work() override
+    {
+      InsertBatch* batch = new InsertBatch();
+      u64 fires = 0;
+      read_delta(edge, bucket, db->getThreadCount(), [&](const u64* row) {
+        ++fires;
+        emit_maint<2>(path, cnt_kind_nonrec, 1, batch,
+                      {row[1], row[0]}, {1, 0});
+      });
+      path->sendBatch(batch);
+      if (fires) db->bumpFires("mt.slog:4", "all:mt_edge", fires);
+      return true;
+    }
+  };
+  class NativeEdgeRec final : public Task
+  {
+    Database* db;
+    Relation* edge;
+    Relation* path;
+    Index** path_full;
+    Index** path_delta;
+    u16 bucket;
+  public:
+    NativeEdgeRec(Database* d, Relation* e, Relation* p, u16 b)
+      : db(d), edge(e), path(p), path_full(p->getIndex({1, 0}, false)),
+        path_delta(p->getIndex({1, 0}, true)), bucket(b) {}
+    bool work() override
+    {
+      InsertBatch* batch = new InsertBatch();
+      u64 fires = 0;
+      read_delta(edge, bucket, db->getThreadCount(), [&](const u64* row) {
+        join_probe_old<2, 1>(path_full, path_delta, {row[0], 0},
+                             [&](const std::array<u64, 2>& m) {
+          ++fires;
+          emit_maint<2>(path, cnt_kind_rec, 1, batch,
+                        {row[1], m[1]}, {1, 0});
+        });
+      });
+      path->sendBatch(batch);
+      if (fires) db->bumpFires("mt.slog:9", "all:mt_edge", fires);
+      return true;
+    }
+  };
+  class NativePathRec final : public Task
+  {
+    Database* db;
+    Relation* path;
+    Index** edge_index;
+    u16 bucket;
+  public:
+    NativePathRec(Database* d, Relation* e, Relation* p, u16 b)
+      : db(d), path(p), edge_index(e->getIndex({0, 1}, false)), bucket(b) {}
+    bool work() override
+    {
+      InsertBatch* batch = new InsertBatch();
+      u64 fires = 0;
+      read_delta(path, bucket, db->getThreadCount(), [&](const u64* row) {
+        join_probe<2, 1>(edge_index, {row[1], 0},
+                         [&](const std::array<u64, 2>& m) {
+          ++fires;
+          emit_maint<2>(path, cnt_kind_rec, 1, batch,
+                        {m[1], row[0]}, {1, 0});
+        });
+      });
+      path->sendBatch(batch);
+      if (fires) db->bumpFires("mt.slog:9", "delta:mt_path", fires);
+      return true;
+    }
+  };
+  Stratum native_stratum("maint1-native");
+  register_maint_machinery(native_db, native_stratum, native_edge,
+                           native_path, {1, 0});
+  for (u16 b = 0; b < bucket_count; ++b)
+  {
+    native_stratum.addTask(phase_read,
+      new NativeBase(&native_db, native_edge, native_path, b), true);
+    native_stratum.addTask(phase_read,
+      new NativeEdgeRec(&native_db, native_edge, native_path, b), true);
+    native_stratum.addTask(phase_read,
+      new NativePathRec(&native_db, native_edge, native_path, b), false);
+  }
+  CHECK(drive_stratum_to_fixpoint(native_db, native_stratum));
+
+  // Healed content and byte-identical maintained sidecars, on both
+  // executors and hand-pinned.
+  const auto interp_words = sidecar_words<2>(path);
+  CHECK(interp_words == sidecar_words<2>(native_path));
+  const std::map<std::vector<u64>, u64> expected{
+    {{1, 2}, cnt_pack(false, 1, 0)},
+    {{2, 3}, cnt_pack(false, 1, 0)},
+    {{1, 3}, cnt_pack(false, 0, 1)},
+    {{0, 1}, cnt_pack(false, 1, 0)},
+    {{0, 2}, cnt_pack(false, 0, 1)},
+    {{0, 3}, cnt_pack(false, 0, 1)}};
+  if (interp_words != expected)
+  {
+    dump_words("maint1 interp", interp_words);
+    dump_words("maint1 expected", expected);
+    dump_words("maint1 native", sidecar_words<2>(native_path));
+    std::cout << "maint1 path rows interp="
+              << nominal_index_rows(path, {1, 0}).size() << " native="
+              << nominal_index_rows(native_path, {1, 0}).size() << "\n";
+  }
+  CHECK(interp_words == expected);
+  CHECK(nominal_index_rows(path, {1, 0})
+        == nominal_index_rows(native_path, {1, 0}));
+  CHECK(nominal_index_rows(path, {1, 0}).size() == 6);
+  const auto fires = [](Database& which, const char* loc, const char* tag) {
+    return which.fire_counts[{std::string(loc), std::string(tag)}];
+  };
+  CHECK(fires(db, "mt.slog:4", "all:mt_edge") == 1
+        && fires(native_db, "mt.slog:4", "all:mt_edge") == 1);
+  CHECK(fires(db, "mt.slog:9", "all:mt_edge")
+        == fires(native_db, "mt.slog:9", "all:mt_edge"));
+  CHECK(fires(db, "mt.slog:9", "delta:mt_path") == 2
+        && fires(native_db, "mt.slog:9", "delta:mt_path") == 2);
+  return true;
+}
+
+// Negative maintenance (maint3neg): the dual exact occurrence partition of
+// a self-join under deletion -- one version probes post-state FULL, the
+// other the pre-state union view (join-new) -- decrementing each deleted
+// pair exactly once, with membership crossings applied by MaintainTask.
+bool test_maint3neg_negative_differential()
+{
+  const std::string text =
+    "(kernel-plan (abi 1) (flavor maint3neg) "
+    "(relations "
+      "(rel 0 (relation mn_a 1 (0) (delta 0))) "
+      "(rel 1 (relation mn_pair 2 (0 1) (delta 0 1)))) "
+    "(attachments) (constants) (prims) (dynamic mn_pair) "
+    "(rules "
+      "(rule-def (rid 2) (variant \"all:mn_a/nonrec#0\") (nregs 2) (pre) "
+        "(driver (scan (rel 0) (r 0))) "
+        "(body (join (rel 0) (0) 0 (r 1))) "
+        "(head (emit (rel 1) (0 1) (r 0) (r 1)))) "
+      "(rule-def (rid 2) (variant \"all:mn_a/nonrec#1\") (nregs 2) (pre) "
+        "(driver (scan (rel 0) (r 0))) "
+        "(body (join-new (rel 0) (0) 0 (0) (r 1))) "
+        "(head (emit (rel 1) (0 1) (r 1) (r 0))))) "
+    "(meta (rule-meta (rid 2) (source \"mn.slog:9\"))))";
+  const DecodedKernelPlan decoded = parse_kernel_plan(text);
+
+  // pair(X,Y) :- a(Y), a(X) over a={1,2}, established counts, then the
+  // deletion of a(2): remove it from the live indices (the set-overlay)
+  // and stage the -1 premise transition.
+  const auto load = [](Database& db) {
+    db.addRelation("mn_a", 1);
+    db.addRelation("mn_pair", 2);
+    Relation* a = db.getRelation("mn_a");
+    Relation* pair = db.getRelation("mn_pair");
+    a->addIndex<1>({0}, false);
+    a->addIndex<1>({0}, true);
+    pair->addIndex<2>({0, 1}, false);
+    pair->addIndex<2>({0, 1}, true);
+    insert_nominal(a, {1});
+    insert_nominal(a, {2});
+    for (const std::array<u64, 2>& row :
+         {std::array<u64, 2>{1, 1}, {1, 2}, {2, 1}, {2, 2}})
+      insert_nominal(pair, {row[0], row[1]});
+    Index** side = pair->ensureCountSidecar();
+    const auto put = [&](u64 x, u64 y) {
+      auto* index = static_cast<BTreeMapIndex<2>*>(side[buckethash(x)]);
+      index->tree.insert2({x, y}, cnt_pack(false, 1, 0));
+    };
+    put(1, 1); put(1, 2); put(2, 1); put(2, 2);
+    db.markCounted({"mn_pair"});
+    const u64 deleted[1] = {2};
+    seal_check(a->removeTupleAllIndicesPreservingCounts(deleted),
+               "fixture: negative overlay removal failed");
+    load_signed_delta(a, {{2}}, cnt_kind_premise, -1);
+  };
+
+  Database db(2);
+  load(db);
+  Relation* pair = db.getRelation("mn_pair");
+  Stratum stratum("maint3neg-interp");
+  register_maint_machinery(db, stratum, nullptr, pair, {0, 1});
+  {
+    // The edited input's native machinery: the full-index writer skips
+    // negative-sign batches, and the DELTA-index writer installs the
+    // removed rows the pre-state union view (join-new) reads.
+    Relation* a = db.getRelation("mn_a");
+    for (u16 b = 0; b < bucket_count; ++b)
+    {
+      stratum.addTask(phase_write,
+        new WriteTask<1>(&db, a, {0}, false, b), true);
+      stratum.addTask(phase_write,
+        new WriteTask<1>(&db, a, {0}, true, b), false);
+      stratum.addTask(phase_intern, new InternTask<1>(&db, a, {0}, b));
+    }
+  }
+  const SealedKernelPlan sealed = seal_kernel_plan(decoded);
+  CHECK(sealed.rules[0].maint && sealed.rules[0].sign == -1);
+  attach_counted_rules(db, stratum, sealed);
+  CHECK(drive_stratum_to_fixpoint(db, stratum));
+
+  Database native_db(2);
+  load(native_db);
+  Relation* native_a = native_db.getRelation("mn_a");
+  Relation* native_pair = native_db.getRelation("mn_pair");
+  class NativePost final : public Task
+  {
+    Database* db;
+    Relation* a;
+    Relation* pair;
+    Index** a_full;
+    u16 bucket;
+  public:
+    NativePost(Database* d, Relation* rel_a, Relation* rel_pair, u16 b)
+      : db(d), a(rel_a), pair(rel_pair),
+        a_full(rel_a->getIndex({0}, false)), bucket(b) {}
+    bool work() override
+    {
+      InsertBatch* batch = new InsertBatch();
+      u64 fires = 0;
+      read_delta(a, bucket, db->getThreadCount(), [&](const u64* row) {
+        join_all<1>(a_full, [&](const std::array<u64, 1>& m) {
+          ++fires;
+          emit_maint<2>(pair, cnt_kind_nonrec, -1, batch,
+                        {row[0], m[0]}, {0, 1});
+        });
+      });
+      pair->sendBatch(batch);
+      if (fires) db->bumpFires("mn.slog:9", "all:mn_a", fires);
+      return true;
+    }
+  };
+  class NativePre final : public Task
+  {
+    Database* db;
+    Relation* a;
+    Relation* pair;
+    Index** a_full;
+    Index** a_delta;
+    u16 bucket;
+  public:
+    NativePre(Database* d, Relation* rel_a, Relation* rel_pair, u16 b)
+      : db(d), a(rel_a), pair(rel_pair),
+        a_full(rel_a->getIndex({0}, false)),
+        a_delta(rel_a->getIndex({0}, true)), bucket(b) {}
+    bool work() override
+    {
+      InsertBatch* batch = new InsertBatch();
+      u64 fires = 0;
+      read_delta(a, bucket, db->getThreadCount(), [&](const u64* row) {
+        join_all_new<1>(a_full, a_delta, [&](const std::array<u64, 1>& m) {
+          ++fires;
+          emit_maint<2>(pair, cnt_kind_nonrec, -1, batch,
+                        {m[0], row[0]}, {0, 1});
+        });
+      });
+      pair->sendBatch(batch);
+      if (fires) db->bumpFires("mn.slog:9", "all:mn_a", fires);
+      return true;
+    }
+  };
+  Stratum native_stratum("maint3neg-native");
+  register_maint_machinery(native_db, native_stratum, nullptr, native_pair,
+                           {0, 1});
+  for (u16 b = 0; b < bucket_count; ++b)
+  {
+    native_stratum.addTask(phase_write,
+      new WriteTask<1>(&native_db, native_a, {0}, false, b), true);
+    native_stratum.addTask(phase_write,
+      new WriteTask<1>(&native_db, native_a, {0}, true, b), false);
+    native_stratum.addTask(phase_intern,
+      new InternTask<1>(&native_db, native_a, {0}, b));
+    native_stratum.addTask(phase_read,
+      new NativePost(&native_db, native_a, native_pair, b), true);
+    native_stratum.addTask(phase_read,
+      new NativePre(&native_db, native_a, native_pair, b), true);
+  }
+  CHECK(drive_stratum_to_fixpoint(native_db, native_stratum));
+
+  // The three deleted pairs are gone with their sidecar entries erased;
+  // the survivor keeps its word.  Deleted-pair fires: exactly one
+  // decrement each (the dual partition never double-counts).
+  const auto interp_words = sidecar_words<2>(pair);
+  CHECK(interp_words == sidecar_words<2>(native_pair));
+  const std::map<std::vector<u64>, u64> expected{
+    {{1, 1}, cnt_pack(false, 1, 0)}};
+  if (interp_words != expected)
+  {
+    dump_words("maint3neg interp", interp_words);
+    dump_words("maint3neg expected", expected);
+    std::cout << "maint3neg pair rows="
+              << nominal_index_rows(pair, {0, 1}).size() << "\n";
+  }
+  CHECK(interp_words == expected);
+  CHECK(nominal_index_rows(pair, {0, 1})
+        == (std::vector<std::vector<u64>>{{1, 1}}));
+  CHECK(nominal_index_rows(native_pair, {0, 1})
+        == (std::vector<std::vector<u64>>{{1, 1}}));
+  CHECK((db.fire_counts[{std::string("mn.slog:9"),
+                         std::string("all:mn_a")}]) == 3);
+  CHECK((native_db.fire_counts[{std::string("mn.slog:9"),
+                                std::string("all:mn_a")}]) == 3);
+  return true;
+}
+
+// The join-tomb cursor (maint4neg): live-master resolution first, the
+// tombstone dictionary only on a complete live miss, and no row on a
+// double miss -- differentially against native join_probe_tomb.
+bool test_maint4neg_tomb_resolution()
+{
+  Database db(2);
+  db.addStruct("tb_s", 2);
+  db.addRelation("tb_d", 1);
+  db.addRelation("tb_out", 1);
+  Relation* s = db.getRelation("tb_s");
+  Relation* d = db.getRelation("tb_d");
+  Relation* out = db.getRelation("tb_out");
+  s->addIndex<2>({1, 0}, false);
+  s->addIndex<2>({0, 1}, false);
+  d->addIndex<1>({0}, false);
+  out->addIndex<1>({0}, false);
+  // Live instance (2001, 5); tombstoned instance (3001, 7); content 9 was
+  // never interned.  The maintained head holds both resolutions with
+  // established nonrec support, so the sweep's decrements legally remove
+  // them under the DRed fold.
+  insert_nominal(s, {2001, 5});
+  insert_nominal(s, {3001, 7});
+  {
+    const u64 dead[2] = {3001, 7};
+    seal_check(s->tombstoneStructRow(dead), "fixture: tombstone failed");
+  }
+  insert_nominal(d, {5});
+  insert_nominal(d, {7});
+  insert_nominal(d, {9});
+  insert_nominal(out, {2001});
+  insert_nominal(out, {3001});
+  {
+    Index** side = out->ensureCountSidecar();
+    for (u64 id : {u64{2001}, u64{3001}})
+      static_cast<BTreeMapIndex<1>*>(side[buckethash(id)])
+        ->tree.insert2({id}, cnt_pack(false, 1, 0));
+    db.markCounted({"tb_out"});
+  }
+  load_signed_delta(d, {{5}, {7}, {9}}, cnt_kind_premise, -1);
+
+  const std::string text =
+    "(kernel-plan (abi 1) (flavor maint4neg) "
+    "(relations "
+      "(rel 0 (relation tb_d 1 (0))) "
+      "(rel 1 (struct tb_s 2 (1 0) (0 1))) "
+      "(rel 2 (relation tb_out 1 (0)))) "
+    "(attachments) (constants) (prims) (dynamic tb_out) "
+    "(rules "
+      "(rule-def (rid 0) (variant \"all:tb_d/nonrec\") (nregs 2) (pre) "
+        "(driver (scan (rel 0) (r 0))) "
+        "(body (join-tomb (rel 1) (1 0) 1 (r 0) (r 1))) "
+        "(head (emit (rel 2) (0) (r 1))))) "
+    "(meta (rule-meta (rid 0) (source \"tb.slog:3\"))))";
+  const SealedKernelPlan sealed = seal_kernel_plan(parse_kernel_plan(text));
+  CHECK(sealed.rules[0].maint && sealed.rules[0].sign == -1);
+  const auto* tomb = std::get_if<ProbePlan>(&sealed.rules[0].cursors[0]);
+  CHECK(tomb != nullptr && tomb->tomb && tomb->struct_);
+
+  Stratum stratum("maint4neg-tomb");
+  // The arity-1 maintained head, with the DRed fold.
+  {
+    Relation* out2 = db.getRelation("tb_out");
+    for (u16 b = 0; b < bucket_count; ++b)
+      stratum.addTask(phase_write,
+        new WriteTask<1>(&db, out2, {0}, false, b), true);
+    stratum.addTask(phase_intern,
+                    new MaintainTask<1>(&db, out2, {0}, 0, true));
+  }
+  attach_counted_rules(db, stratum, sealed);
+  CHECK(drive_stratum_to_fixpoint(db, stratum));
+
+  // Native reference over the same inputs.
+  std::vector<u64> native_hits;
+  Index** master = s->getIndex({1, 0}, false);
+  for (u64 content : {u64{5}, u64{7}, u64{9}})
+    join_probe_tomb<2>(s, master, {content, 0},
+                       [&](const std::array<u64, 2>& m) {
+      native_hits.push_back(m[1]);
+    });
+  std::sort(native_hits.begin(), native_hits.end());
+  CHECK(native_hits == (std::vector<u64>{2001, 3001}));
+  // The VM saw the same two resolutions: the live id and the tombstoned id;
+  // content 9 double-missed and produced no row.  Both decrements landed:
+  // the maintained head is empty with its sidecar entries erased.
+  if ((db.fire_counts[{std::string("tb.slog:3"),
+                       std::string("all:tb_d")}]) != 2)
+  {
+    std::cout << "tomb fires="
+              << db.fire_counts[{std::string("tb.slog:3"),
+                                 std::string("all:tb_d")}]
+              << " out rows=" << nominal_index_rows(out, {0}).size()
+              << "\n";
+    dump_words("tomb out sidecar", sidecar_words<1>(out));
+  }
+  CHECK((db.fire_counts[{std::string("tb.slog:3"),
+                         std::string("all:tb_d")}]) == 2);
+  CHECK(nominal_index_rows(out, {0}).empty());
+  CHECK(sidecar_words<1>(out).empty());
+  return true;
+}
+
 // Typed refusals for the counted vocabulary: the plan-attribute seal CHECK
 // (no semijoin exists in counted plans), counted-only head forms in normal
 // plans, struct probes in normal plans, and malformed fold kinds.
@@ -3315,7 +3897,8 @@ bool test_counted_plan_refusals()
           replace_once(normal_scan, "(body (join (rel 0) (0 1) 0 (r 0) (r 1)))",
                        "(body (join (rel 2) (1 0) 1 (r 0) (r 2)))"),
           "(nregs 2)", "(nregs 3)")));
-  // Struct probes admit no old/new views even in counted plans.
+  // Struct probes admit no old/new views in counted plans (the maintenance
+  // flavors' union-view resolutions do).
   CHECK(seal_rejects(SealErrorK::capability,
         replace_once(
           replace_once(counted_base,
@@ -3323,6 +3906,46 @@ bool test_counted_plan_refusals()
             "(body (join (rel 0) (0 1) 0 (r 0) (r 1)) "
                   "(join-old (rel 2) (1 0) 1 (1 0) (r 0) (r 2)))"),
           "(nregs 2)", "(nregs 3)")));
+  // join-tomb belongs to the negative maintenance flavors alone.
+  CHECK(seal_rejects(SealErrorK::capability,
+        replace_once(
+          replace_once(counted_base,
+            "(body (join (rel 0) (0 1) 0 (r 0) (r 1)))",
+            "(body (join (rel 0) (0 1) 0 (r 0) (r 1)) "
+                  "(join-tomb (rel 2) (1 0) 1 (r 0) (r 2)))"),
+          "(nregs 2)", "(nregs 3)")));
+  // The maintenance-flavor policies, over a scan-driver base: join-tomb
+  // refuses in the positive flavor; the negative flavors carry no semijoin
+  // filters (seal CHECK); maint1 keeps semijoin lookahead admitted and
+  // executes any exists verbatim.
+  const std::string maint_base =
+    "(kernel-plan (abi 1) (flavor maint1) "
+    "(relations "
+      "(rel 0 (relation cr_a 2 (0 1))) "
+      "(rel 1 (relation cr_b 2 (0 1))) "
+      "(rel 2 (struct cr_s 2 (1 0) (0 1)))) "
+    "(attachments) (constants) (prims) (dynamic cr_b) "
+    "(rules "
+      "(rule-def (rid 0) (variant \"all:cr_a/nonrec\") (nregs 3) (pre) "
+        "(driver (scan (rel 0) (r 0) (r 1))) (body) "
+        "(head (emit (rel 1) (0 1) (r 0) (r 1))))) "
+    "(meta (rule-meta (rid 0) (source \"cr.slog:1\"))))";
+  CHECK(seal_kernel_plan(parse_kernel_plan(maint_base)).rules[0].maint);
+  CHECK(seal_rejects(SealErrorK::capability,
+        replace_once(maint_base, "(body)",
+          "(body (join-tomb (rel 2) (1 0) 1 (r 0) (r 2)))")));
+  CHECK(!seal_rejects(SealErrorK::capability,
+        replace_once(
+          replace_once(maint_base, "(flavor maint1)", "(flavor maint3neg)"),
+          "(body)",
+          "(body (join-tomb (rel 2) (1 0) 1 (r 0) (r 2)))")));
+  CHECK(seal_rejects(SealErrorK::capability,
+        replace_once(
+          replace_once(maint_base, "(flavor maint1)", "(flavor maint3neg)"),
+          "(body)", "(body (exists (rel 1) (0 1) 1 (r 0)))")));
+  CHECK(!seal_rejects(SealErrorK::capability,
+        replace_once(maint_base, "(body)",
+                     "(body (exists (rel 1) (0 1) 1 (r 0)))")));
   return true;
 }
 
@@ -3873,6 +4496,9 @@ int main(int argc, char** argv)
   ok &= test_counted_temp_struct_chain_differential();
   ok &= test_counted_chained_mkstruct_and_closure_fatal();
   ok &= test_counted_prim_fault_arm_contribution();
+  ok &= test_maint1_positive_differential();
+  ok &= test_maint3neg_negative_differential();
+  ok &= test_maint4neg_tomb_resolution();
   ok &= test_counted_plan_refusals();
   ok &= test_seal_bind_scan_multihead_and_real_emit();
   ok &= test_seal_bind_probe_driver_and_task_partition();

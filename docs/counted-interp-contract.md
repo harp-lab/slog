@@ -222,6 +222,76 @@ hold. M4N starts on the slice-4 exit; the M4N anti-delta variants then
 become new conformance cases in the same harness rather than a new
 mechanism (execution-tiers §11 sequencing note).
 
+**Slices 2-3 as-built (2026-07-18).** The three maintenance flavors ride
+the slice-1 seam with, again, zero frozen-core changes — the negative
+pre-state union view is literally the frozen `new` equation
+(FULL ∪ (Δ − FULL)) over the post-overlay indices, so no maintenance
+view needed new cursor code:
+
+- **Decode/seal.** `maint1`/`maint3neg`/`maint4neg` seal with
+  flavor-static signs (+1/−1/−1); fold kinds decode from the same
+  `/<kind>` suffix; `join-tomb` decodes as a full-content struct master
+  probe admitted for the negative flavors alone (typed refusals
+  elsewhere); struct probes admit old/new views under maintenance (the
+  M4S union-view resolution shapes); counted mkstruct lowering stays
+  count-only — a maintenance construction emits its content fields with
+  the 0-placeholder id for `MaintainStructTask`'s serial resolution.
+  The semijoin question the correction note left open is settled the
+  light way: `maint1` keeps lookahead admitted and the VM executes any
+  `exists` verbatim (its FULL-only probe over-approximates both the
+  full and old views, pruning only zero-instantiation prefixes — and
+  the 312-plan corpus carries none); the negative flavors keep the
+  seal CHECK (`compile.rkt` strips them for exactly the union-view
+  soundness hole).
+- **Thread-0 additions.** Signed sinks calling the native emitters
+  verbatim (`emit_maint`/`emit_lattice_maint`/`emit_struct_maint`); the
+  `TombProbeCursor` (live master first, dictionary only on a complete
+  live miss, no row on a double miss — `join_probe_tomb`'s exact
+  policy); `install_maint_stratum` mirroring the native maintenance
+  plugin: full write/intern machinery for non-maintained relations
+  (the full-index writer skips negative-sign batches; the delta-index
+  writers feed the exclusion and union views), one serial
+  `Maintain*Task`/`LatticeMaintainTask` per maintained head (dred for
+  maint4neg), maintained-head classification = rule sink targets only
+  (prim-error arms keep ordinary machinery, unlike the count flavor),
+  and the shared fire-once rule: scans over NON-dynamic relations (the
+  staged transitions) run first-iteration-only, dynamic scans chase
+  the ripple.  The registration ladders live in their own -O0
+  translation unit (plan-flavored-tasks.cpp): instantiating the
+  storage templates across the arity range dominated -O2 compile time.
+- **Fixtures** (permanent, quick-tier `interp` harness): the maint1
+  occurrence-partitioned TC heal (all:/rec over R_old plus the
+  delta-driven ripple; healed words hand-pinned and native-differential),
+  the maint3neg dual-partition self-join deletion (post-FULL and
+  pre-union versions decrementing each deleted pair exactly once), the
+  join-tomb resolution differential (live hit / dictionary hit / double
+  miss against native `join_probe_tomb`, DRed fold erasing the swept
+  head), and the flavored refusal battery (unknown flavors, tomb
+  outside negative maintenance, exists in negative flavors, exists
+  admitted in maint1).  Fixture staging lesson: signed premise
+  transitions must be SENT (`sendBatch`, exactly
+  `stageUpdateTransitions`) — a delta staged by direct insertion is
+  wiped by the run's entry finalize.
+- **The driver-kind divergence the session gate caught.** The first
+  full VM-routed run failed all 39 M6L cases from one root cause: a
+  lattice CONSUMER epoch is driven by the staged replacement rows in
+  the lattice's own delta (`(driver (scan ...))` over a lattice slot),
+  and the seal's scan-driver check demanded an ordinary set relation —
+  a typed install fatal that killed each lattice case's daemon.  The
+  same shape covers struct-driven sweep versions (`delta:pnode/rec`).
+  Flavored scan drivers are now kind-agnostic (delta buckets read the
+  same regardless of storage kind); probe drivers and every
+  normal-flavor driver stay plain-only.
+- **Routing (interim):** the `SLOG_COUNT_INTERP=1` hook now intercepts
+  all four flavored stems and dispatches by sealed flavor; a
+  corrupted-sidecar probe on a maintained stratum confirms the epoch
+  path.  Session gates: 528/528 native and 528/528 under
+  `SLOG_COUNT_INTERP=1` — every count round AND every maintenance
+  epoch (m1/m3/m6l healed-equals-forced, m4t/m4s sweep-reseed-relearn
+  with id stability, wcoj-rec) through the VM, with the countrow
+  goldens, `recount-lattices-force` contributor comparisons, dump-ids
+  stability blocks, and the count-IR oracle as the independent legs.
+
 **Slice 1 as-built (2026-07-18).** Landed with zero changes to the
 frozen core — no opcode, VM arm, cursor method, or dispatch moved; the
 whole read side composes from the frozen vocabulary plus thread-0

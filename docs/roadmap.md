@@ -387,6 +387,24 @@ disaggregated fires, chained-construction fatal, typed refusals for
 the maint flavors slices 2–3 will lift).  Slices 2–3 (maintenance
 flavors) and 4 (routing flip + exit audit) remain on this spine.
 
+**Checkpoint 2026-07-18 (counted interpreter slices 2–3):** the three
+maintenance flavors now execute through the VM — again zero frozen-core
+changes.  The negative pre-state union view is literally the frozen
+`join-new` equation over post-overlay indices, so the only new cursor
+is `join-tomb` (live master, then the tombstone dictionary); signed
+sinks call `emit_maint`/`emit_lattice_maint`/`emit_struct_maint`
+verbatim into the unchanged serial `Maintain*Task` folds, and
+`install_maint_stratum` mirrors the native plugin's full registration
+(kind-aware write/intern machinery, delta-index writers feeding the
+exclusion and union views, dred for maint4neg, native fire-once
+scheduling).  The dual-executor differential caught one real
+divergence per leg: the prim-fault error arms (slice 1's tail) and
+lattice-driven consumer epochs (flavored scan drivers are now
+kind-agnostic — a lattice consumer is driven by the staged replacement
+rows in the lattice's own delta).  Gates: interp battery 35 cases;
+session 528/528 native AND 528/528 with every flavored epoch through
+the VM.  Slice 4 (routing flip + exit audit) remains.
+
 - **The standing vetting campaign** — the reason this thread exists beyond
   the milestones. Full incrementality is the system's central bet and its
   testing should outweigh its implementation:
