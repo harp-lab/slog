@@ -653,6 +653,30 @@
 ;; is in hand.
 (define incremental-flavor-abi "ci1-v1")
 
+;; Counted-interp slice 4 (docs/counted-interp-contract.md): flavored
+;; variants are interp-only by default.  Each ensure-*-so ensures the
+;; canonical SIDECARS exist (.cprog + .plan, via the same emission the
+;; native path uses) and returns the flavored plugin path WITHOUT running
+;; clang; the daemon's flavored interception keys on that path's filename
+;; and installs the sealed .plan.  Setting SLOG_FLAVORED_NATIVE restores
+;; the native artifact -- the differential's second executor -- in which
+;; case the daemon dlopens it exactly as before.
+(define (flavored-native?)
+  (define v (getenv "SLOG_FLAVORED_NATIVE"))
+  (and v (not (string=? v "")) (not (string=? v "0"))))
+
+;; Ensure a flavor's artifacts under `emit` (a thunk running
+;; emit-stratum-cpp with the flavor's parameterization): sidecars always
+;; (the .plan is the re-emit-on-miss marker, per the T1 doctrine); the .so
+;; only under SLOG_FLAVORED_NATIVE.
+(define (ensure-flavored-artifacts so plan emit)
+  (cond
+    [(flavored-native?)
+     (unless (file-exists? so) (build-so (emit) so #:opt "-O0"))]
+    [else
+     (unless (file-exists? plan) (void (emit)))])
+  so)
+
 ;; Semijoin lookahead is disabled for the count flavor (docs/
 ;; counted-interp-contract.md, plan-attribute 1; execution-tiers.md §4.3):
 ;; count rounds take no existence shortcut, so counted plans carry no
@@ -662,15 +686,14 @@
 ;; ABI bump above regenerates the affected cached artifacts once.
 (define (ensure-count-so job)
   (match-define (list proghash _te _st _dm _dc) job)
-  (define so
-    (fullpath (format "build/~a_count.~a.O0.so"
-                      proghash incremental-flavor-abi)))
-  (unless (file-exists? so)
-    (define cpps (parameterize ([count-flavor #t]
-                                [semijoin-filters-enabled #f])
-                   (emit-stratum-cpp job)))
-    (build-so cpps so #:opt "-O0"))
-  so)
+  (ensure-flavored-artifacts
+   (fullpath (format "build/~a_count.~a.O0.so"
+                     proghash incremental-flavor-abi))
+   (fullpath (format "build/~a_count.plan" proghash))
+   (lambda ()
+     (parameterize ([count-flavor #t]
+                    [semijoin-filters-enabled #f])
+       (emit-stratum-cpp job)))))
 
 ;; M1 positive signed-maintenance flavor: exact delta occurrence partitions
 ;; plus support-counting sinks and presence-transition interning.  It is a
@@ -678,31 +701,29 @@
 ;; nor the fire-once `_count` plugin has these semantics.
 (define (ensure-maintenance-so job)
   (match-define (list proghash _te _st _dm _dc) job)
-  (define so
-    (fullpath (format "build/~a_maint1.~a.O0.so"
-                      proghash incremental-flavor-abi)))
-  (unless (file-exists? so)
-    (define cpps (parameterize ([maintenance-flavor 'positive]
-                                [count-flavor #t])
-                   (emit-stratum-cpp job)))
-    (build-so cpps so #:opt "-O0"))
-  so)
+  (ensure-flavored-artifacts
+   (fullpath (format "build/~a_maint1.~a.O0.so"
+                     proghash incremental-flavor-abi))
+   (fullpath (format "build/~a_maint1.plan" proghash))
+   (lambda ()
+     (parameterize ([maintenance-flavor 'positive]
+                    [count-flavor #t])
+       (emit-stratum-cpp job)))))
 
 ;; M3 acyclic negative maintenance: the dual exact occurrence partition and
 ;; -1 support sinks.  Semijoin lookahead is disabled because its FULL-only
 ;; probe would omit the delta half of a negative pre-state union view.
 (define (ensure-negative-maintenance-so job)
   (match-define (list proghash _te _st _dm _dc) job)
-  (define so
-    (fullpath (format "build/~a_maint3neg.~a.O0.so"
-                      proghash incremental-flavor-abi)))
-  (unless (file-exists? so)
-    (define cpps (parameterize ([maintenance-flavor 'negative]
-                                [count-flavor #t]
-                                [semijoin-filters-enabled #f])
-                   (emit-stratum-cpp job)))
-    (build-so cpps so #:opt "-O0"))
-  so)
+  (ensure-flavored-artifacts
+   (fullpath (format "build/~a_maint3neg.~a.O0.so"
+                     proghash incremental-flavor-abi))
+   (fullpath (format "build/~a_maint3neg.plan" proghash))
+   (lambda ()
+     (parameterize ([maintenance-flavor 'negative]
+                    [count-flavor #t]
+                    [semijoin-filters-enabled #f])
+       (emit-stratum-cpp job)))))
 
 ;; M4T recursive negative maintenance (docs/m4t-contract.md): the same dual
 ;; exact partition, with the maintenance interner in DRed mode so a
@@ -711,16 +732,15 @@
 ;; next round until the negative fixpoint.
 (define (ensure-recursive-negative-maintenance-so job)
   (match-define (list proghash _te _st _dm _dc) job)
-  (define so
-    (fullpath (format "build/~a_maint4neg.~a.O0.so"
-                      proghash incremental-flavor-abi)))
-  (unless (file-exists? so)
-    (define cpps (parameterize ([maintenance-flavor 'negative-rec]
-                                [count-flavor #t]
-                                [semijoin-filters-enabled #f])
-                   (emit-stratum-cpp job)))
-    (build-so cpps so #:opt "-O0"))
-  so)
+  (ensure-flavored-artifacts
+   (fullpath (format "build/~a_maint4neg.~a.O0.so"
+                     proghash incremental-flavor-abi))
+   (fullpath (format "build/~a_maint4neg.plan" proghash))
+   (lambda ()
+     (parameterize ([maintenance-flavor 'negative-rec]
+                    [count-flavor #t]
+                    [semijoin-filters-enabled #f])
+       (emit-stratum-cpp job)))))
 
 ;; -----------------------------------------------------------------------
 ;; Tiered compilation entry point (docs/fast-compile.md).

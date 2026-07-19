@@ -405,6 +405,17 @@ rows in the lattice's own delta).  Gates: interp battery 35 cases;
 session 528/528 native AND 528/528 with every flavored epoch through
 the VM.  Slice 4 (routing flip + exit audit) remains.
 
+**Checkpoint 2026-07-18 (counted interpreter slice 4 — the routing
+flip):** flavored variants are interp-only by default.  The compiler's
+`ensure-*-so` functions ensure sidecars (.cprog + .plan) without
+running clang and the daemon installs the sealed plan for every
+flavored plugin path; `SLOG_FLAVORED_NATIVE` restores native flavored
+artifacts as the differential's second executor (the flavored emit-cpp
+paths exist for that alone — M4N/M7 add interpreter variants
+exclusively, P4 discharged).  Corrupted-sidecar probes pin both
+directions.  Exit-audit battery counts land in incremental-status.md;
+M4N is unblocked on its completion.
+
 - **The standing vetting campaign** — the reason this thread exists beyond
   the milestones. Full incrementality is the system's central bet and its
   testing should outweigh its implementation:

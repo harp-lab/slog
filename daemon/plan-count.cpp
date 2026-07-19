@@ -923,12 +923,16 @@ void install_maint_stratum(Daemon* daemon, const std::string& name,
 
 bool maybe_interp_count_plugin(Daemon* daemon, const std::string& path)
 {
-  static const bool enabled = [] {
-    const char* value = std::getenv("SLOG_COUNT_INTERP");
+  // Slice 4 (counted-interp-contract.md): flavored variants are interp-only
+  // by default -- every `_count`/`_maint*` plugin path installs its sealed
+  // sidecar plan.  SLOG_FLAVORED_NATIVE restores dlopen of the native
+  // artifact, the differential's second executor.
+  static const bool native = [] {
+    const char* value = std::getenv("SLOG_FLAVORED_NATIVE");
     return value != nullptr && *value != '\0'
         && std::string_view(value) != "0";
   }();
-  if (!enabled) return false;
+  if (native) return false;
   const size_t slash = path.rfind('/');
   const std::string file =
     slash == std::string::npos ? path : path.substr(slash + 1);
@@ -963,7 +967,7 @@ bool maybe_interp_count_plugin(Daemon* daemon, const std::string& path)
   }
   catch (const std::exception& error)
   {
-    fatal("SLOG_COUNT_INTERP: flavored plan install failed for " + plan_path
+    fatal("flavored interp routing: plan install failed for " + plan_path
           + ": " + error.what());
   }
   return true;

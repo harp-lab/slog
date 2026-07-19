@@ -5,7 +5,8 @@
  * `install_count_stratum` mirrors the native counted plugin's effects
  * (relations/indices, CountTask/CountStructTask registration, VM read tasks,
  * read/dynamic manifests, push + continueRun), and `maybe_interp_count_plugin`
- * is the SLOG_COUNT_INTERP-gated hook run_plugin consults before dlopen.
+ * is the default-on hook run_plugin consults before dlopen
+ * (SLOG_FLAVORED_NATIVE restores the native artifact).
  * Flavored sinks, the mkstruct resolution cursor, and the arity ladders live
  * in plan-count.cpp -- the thread-0 extension regions of the factory tables
  * (interp-core-contract.md, extension seams).
@@ -38,11 +39,12 @@ void install_count_stratum(Daemon* daemon, const std::string& name,
 void install_maint_stratum(Daemon* daemon, const std::string& name,
                            const SealedKernelPlan& plan);
 
-// When SLOG_COUNT_INTERP is set and `path` is a flavored plugin whose
-// flavor the interpreter admits, parse/seal/install its sidecar plan
-// through the production reader and return true (the caller skips dlopen).
-// Any parse/seal/bind failure is a loud fatal: in differential routing a
-// silent native fallback would invalidate the comparison.
+// When `path` is a flavored plugin whose flavor the interpreter admits,
+// parse/seal/install its sidecar plan through the production reader and
+// return true (the caller skips dlopen); under SLOG_FLAVORED_NATIVE it
+// declines so the native artifact runs instead.  Any parse/seal/bind
+// failure is a loud fatal: a silent native fallback would invalidate the
+// dual-executor comparison.
 bool maybe_interp_count_plugin(Daemon* daemon, const std::string& path);
 
 // Registration ladders (plan-flavored-tasks.cpp, built -O0): the per-arity

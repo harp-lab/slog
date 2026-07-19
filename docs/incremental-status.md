@@ -45,10 +45,12 @@ Begin a future incremental-maintenance review with this ledger, then read
 `docs/m4t-contract.md`, `docs/m5-contract.md`, and `docs/m4s-contract.md`
 (all implemented) and §4.5–§4.7 in `docs/incremental.md`.
 `docs/m6l-contract.md` records the completed lattice admission boundary.
-`docs/counted-interp-contract.md` (2026-07-17) is the next milestone's
-design contract: interpreter admissibility for `_count` and maintenance
-flavors — the plan-attribute doctrine, per-flavor sidecar-equality
-definition, slices, and exit audit that gate M4N.
+`docs/counted-interp-contract.md` is COMPLETE (all four slices,
+2026-07-18; as-builts and the exit-audit note below): the interpreter is
+the default executor for `_count` and all maintenance flavors, native
+flavored artifacts survive only as the differential's second executor
+(`SLOG_FLAVORED_NATIVE`), and M4N — the next milestone — adds its
+anti-delta variants as interpreter variants in the same harness.
 
 M4T slices 1 and 2 are shipped; the milestone's table surface is complete.
 Edits may target recursive head relations (foundation-aware overlay), and
@@ -671,6 +673,48 @@ recursive consumers, negated lattice consumers, downstream lattice writers,
 direct lattice overlay refusal, and inherited successors. This is the M6L
 slices 1–2 hardening checkpoint; the admission boundary remains intentionally
 closed while work moves to M4T.
+
+## Counted interpreter exit audit — complete
+
+The production interpreter is the default executor for every flavored
+variant: count rounds and all three maintenance flavors parse, seal, bind,
+and execute through the sealed-plan seam with zero changes to the frozen
+core, and the compiler no longer schedules flavored clang (the sidecars are
+the artifact; `SLOG_FLAVORED_NATIVE` rebuilds the native flavored plugins
+as the differential's second executor).  The read side composed almost
+entirely from the frozen monotone vocabulary — the negative pre-state union
+view is the frozen new-view equation over post-overlay indices — plus
+thread-0 registrations: kind-tagged and signed sinks that call the native
+emitters verbatim into the unchanged CountTask/Maintain*Task folds, the
+mkstruct resolution cursor with the settled-fixpoint closure fatal, and the
+join-tomb cursor with the live-master-then-dictionary policy.
+
+Deterministic coverage rode the existing batteries with every flavored
+epoch interpreted: the session battery green on both executors (528/528
+default-interpreted and 528/528 under `SLOG_FLAVORED_NATIVE=1`), with
+maintained-equals-forced countrow comparisons, lattice contributor state
+under `recount-lattices-force`, struct id stability and resurrection
+blocks, and the independent count-IR oracle as the triangle's third leg.
+The permanent dual-executor differential lives in the quick-tier interp
+harness (38 cases): per-flavor sidecar byte-equality against the native
+tasks plus hand-pinned words, disaggregated fires, the chained-construction
+closure fatal, the prim-fault error-arm regression, and the typed-refusal
+battery over the plan attributes (semijoin absence, tomb and view
+admissibility, fold-kind identity).
+
+Adversarial scheduling over the interpreted routes: the signed-stream fuzz
+harnesses retained warm maintained sessions for ten flushes against fresh
+recompute-and-forced-recount oracles under one, two, and eight workers
+(m3/m4t/m6l seeds), and forced pause/resume attributed to the maintenance
+phases ran under the one-millisecond slice budget — 14/14 with every
+maintenance epoch interpreted.  Compression×counts and the accelerator
+sidecars ran green (104/104) with interpreted count rounds on replay.  The
+differential earned its keep twice before the flip: the prim-fault
+error-arm use-after-free (kind-less batches freeing count sidecars
+mid-round) and the lattice-driven consumer refusal (flavored scan drivers
+are kind-agnostic — a consumer epoch is driven by the staged replacement
+rows in the lattice's own delta).  M4N's anti-delta variants now land as
+interpreter variants and new conformance cases in this same harness.
 
 ### M3 retrospective and forward implications
 

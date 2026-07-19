@@ -92,10 +92,11 @@ static void run_plugin(slog::Daemon* d,
                        const std::string& path,
                        std::vector<void*>& so_handles)
 {
-    // Counted-interpreter differential routing (counted-interp-contract.md
-    // slice 1): with SLOG_COUNT_INTERP set, a `_count` flavored plugin
-    // installs its sealed sidecar plan through the production interpreter
-    // seam instead of dlopen; native flavored execution stays the default.
+    // Flavored interpreter routing (counted-interp-contract.md slice 4):
+    // by default every flavored plugin (`_count`, `_maint*`) installs its
+    // sealed sidecar plan through the production interpreter seam instead
+    // of dlopen; SLOG_FLAVORED_NATIVE restores the native artifact as the
+    // differential's second executor.
     if (slog::interp::maybe_interp_count_plugin(d, path))
         return;
     if (!std::filesystem::is_regular_file(path))

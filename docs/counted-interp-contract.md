@@ -222,6 +222,32 @@ hold. M4N starts on the slice-4 exit; the M4N anti-delta variants then
 become new conformance cases in the same harness rather than a new
 mechanism (execution-tiers §11 sequencing note).
 
+**Slice 4 as-built (2026-07-18).** Flavored variants are interp-only by
+default:
+
+- **The compiler stops scheduling flavored clang.**  Each
+  `ensure-*-so` now ensures the canonical SIDECARS exist (.cprog +
+  .plan, the .plan as the re-emit-on-miss marker per the T1 doctrine)
+  and returns the flavored plugin path without running clang; under
+  `SLOG_FLAVORED_NATIVE` it builds and returns the native artifact
+  exactly as before — the differential's second executor.
+- **The daemon routes flavored epochs to the VM by default.**  The
+  run_plugin interception is default-on for all four flavored stems
+  (the interim `SLOG_COUNT_INTERP` knob is retired); the path the
+  session sends is unchanged — the daemon swaps to the sealed sidecar
+  internally, and an install failure stays a loud fatal, never a
+  silent native fallback.  Corrupted-sidecar probes confirm both
+  directions: default + corrupt plan = fatal (interp is really the
+  route); `SLOG_FLAVORED_NATIVE=1` builds the .so and dlopens it.
+- **No emit-cpp for flavors, ever again** (the non-goal, now
+  structural): the flavored emit-cpp paths still exist solely to build
+  the differential's native artifacts under `SLOG_FLAVORED_NATIVE`;
+  M4N/M7 add interpreter variants exclusively.
+- **Exit audit:** recorded in incremental-status.md with the battery
+  counts (session default/native legs, incremental-stress worker
+  seeds + SLOG_MAX_MS=1 pause injection over the interpreted routes,
+  compression×counts + accel).
+
 **Slices 2-3 as-built (2026-07-18).** The three maintenance flavors ride
 the slice-1 seam with, again, zero frozen-core changes — the negative
 pre-state union view is literally the frozen `new` equation
