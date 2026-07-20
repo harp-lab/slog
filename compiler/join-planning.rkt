@@ -568,8 +568,29 @@
        (filter (lambda (occ) (not (join-occurrence-static? occ))) joins))
 
      (define computes (filter compute-cl? bodys))
-     (define guards (append (filter guard-cl? bodys) (filter neg-clause? bodys)
-                            eq-guards))
+     (define neg-clauses (filter neg-clause? bodys))
+     ;; M4N (docs/m4n-contract.md): under the maintenance flavors every
+     ;; negated atom carries an explicit absence-evaluation state (~old =
+     ;; absence at the epoch's PRE state for lost instantiations, ~new =
+     ;; final POST state for gained ones -- the ratified partition table),
+     ;; and each fully-bound table-negated occurrence contributes an
+     ;; ANTI-DELTA version below.  The recursive sweep's interplay is
+     ;; slice-2 work: a DRed plan with negation is a typed planner
+     ;; refusal, never a mis-planned sweep.
+     (when (and (dred-maintenance-flavor?) (pair? neg-clauses))
+       (error 'plan-stratum
+              "negation under the recursive sweep is not yet maintainable (m4n-contract.md slice 2): ~a"
+              (strip-prov rule)))
+     (define plain-guards (filter guard-cl? bodys))
+     (define default-neg-sym
+       (cond [(negative-maintenance-flavor?) '~old]
+             [(maintenance-flavor) '~new]
+             [else '~]))
+     (define default-neg-guards
+       (for/list ([nc (in-list neg-clauses)]) (neg-retag nc default-neg-sym)))
+     ;; the pre-M4N guard order (guards, negs, eqs) is preserved so
+     ;; normal-flavor plan bytes do not churn
+     (define guards (append plain-guards default-neg-guards eq-guards))
 
      ;; Head computations join the body's compute pool: the scheduler runs
      ;; them once their inputs ground, and -- crucially -- if their output
@@ -581,7 +602,10 @@
                                heads))
 
      ;; Exact views belong to logical occurrences, not scheduled positions.
-     (define (make-version driver exact-old?)
+     (define (make-version driver exact-old?
+                           #:neg-guards [neg-guards default-neg-guards]
+                           #:extra-eqs [extra-eqs '()]
+                           #:anti? [anti? #f])
        (define driver-dynamic-index
          (and driver (join-occurrence-dynamic-index driver)))
        (define (view-of occ)
@@ -611,6 +635,10 @@
                           (temp? (join-rel (join-occurrence-clause driver))))))
             'tomb]
            [(join-occurrence-static? occ) 'full]
+           ;; An anti-delta version's positive occurrences read survivors
+           ;; only: post - delta = pre intersect post, the join-old
+           ;; equation over the staged view rows (m4n-contract.md pin 5).
+           [anti? 'old]
            [(and exact-old?
                  (not seeded?)
                  driver
@@ -622,7 +650,9 @@
            [else 'full]))
        (define (access-of occ) (join-access occ (view-of occ)))
        (define-values (body-schedule ground)
-         (schedule-body-actions driver joins access-of computes+ guards
+         (schedule-body-actions driver joins access-of computes+
+                                (append plain-guards neg-guards eq-guards
+                                        extra-eqs)
                                 const-vars rule ordinary-table?))
        ;; every variable a head emits must be ground by now
        (for ([cl (in-list head-rest)])
@@ -699,6 +729,41 @@
      (define candidates
        (for/list ([driver (in-list drivers)])
          (cons driver (make-version driver exact-old?))))
+     ;; M4N anti-delta versions: one per fully-bound table-negated
+     ;; occurrence, driven by the negated relation's staged opposite-sign
+     ;; transitions.  The drive row binds the atom's variables (no probe of
+     ;; its own occurrence: for a fully-bound atom, gained implies
+     ;; absent-before and lost implies absent-after by construction);
+     ;; sibling negated occurrences split by the ownership order -- in the
+     ;; negative flavor, earlier siblings at POST (~new), later at PRE
+     ;; (~old); mirrored in the positive flavor.  Struct- and
+     ;; lattice-negated occurrences are pinned exclusions (admission owns
+     ;; their fallback).
+     (define anti-versions
+       (if (and (maintenance-flavor) (not (dred-maintenance-flavor?)))
+           (for/list ([nc (in-list neg-clauses)]
+                      [i (in-naturals)]
+                      #:when (andmap (lambda (x) (not (neg-wildcard-var? x)))
+                                     (neg-args nc))
+                      #:unless (or (lattice? (neg-rel nc))
+                                   (struct-rel? (neg-rel nc))))
+             (define-values (drive-cl drive-eqs)
+               (dedup-join-vars (neg-inner nc)))
+             (define drive-occ
+               (join-occurrence (+ (length joins) i) drive-cl
+                                (+ (length joins) i) #f #f))
+             (define anti-neg-guards
+               (for/list ([mc (in-list neg-clauses)] [j (in-naturals)]
+                          #:unless (= j i))
+                 (neg-retag mc
+                            (if (negative-maintenance-flavor?)
+                                (if (< j i) '~new '~old)
+                                (if (< j i) '~old '~new)))))
+             (make-version drive-occ exact-old?
+                           #:neg-guards anti-neg-guards
+                           #:extra-eqs drive-eqs
+                           #:anti? #t))
+           '()))
      (define (expand-count candidate)
        (match (cdr candidate)
          [`(syn ,_ ,_ ,body ... --> ,_ ...)
@@ -720,9 +785,11 @@
               (< (if da (join-occurrence-id da) -1)
                  (if db (join-occurrence-id db) -1))
               (> sa sb))]))
-     (if choose-one-driver?
-         (set (cdr (first (sort candidates candidate-better?))))
-         (for/set ([candidate (in-list candidates)]) (cdr candidate)))]))
+     (define base-versions
+       (if choose-one-driver?
+           (set (cdr (first (sort candidates candidate-better?))))
+           (for/set ([candidate (in-list candidates)]) (cdr candidate))))
+     (set-union base-versions (list->set anti-versions))]))
 
 ;; Rewrite a join clause so no variable repeats, returning the clause and
 ;; the equality guards that restore the constraint.

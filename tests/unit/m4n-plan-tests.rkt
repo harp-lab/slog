@@ -1,0 +1,176 @@
+#lang racket
+
+;; Unit tests for M4N slice-1 planner emission (docs/m4n-contract.md pins
+;; 2/4/5): anti-delta versions per fully-bound negated occurrence, the
+;; pre/post absence views per the ratified partition table, the wildcard
+;; and DRed scope pins, and canonical serialization.  Run via:
+;;   cd /home/tom/slog && raco test tests/unit/
+
+(module+ test
+  (require rackunit)
+  (require racket/file)
+  (require "../../compiler/params.rkt")
+  (require "../../compiler/modules.rkt")
+  (require "../../compiler/simplification.rkt")
+  (require "../../compiler/type-system.rkt")
+  (require "../../compiler/stratify.rkt")
+  (require "../../compiler/join-planning.rkt")
+  (require "../../compiler/operationalization.rkt")
+  (require "../../compiler/canonical-plan.rkt")
+  (require "../../compiler/ir-shared.rkt")
+  (require "../../compiler/ir-stack.rkt")
+
+  ;; Compile source through the front half under a flavor, mirroring
+  ;; compile.rkt's emit-stratum-cpp parameterization (plan-dynamic broadened
+  ;; with positive table reads under maintenance; count-mode swap).
+  (define (cprogs-of src #:flavor [flavor #f])
+    (parameterize ([wcoj3-enabled #f])
+      (define f (make-temporary-file "m4n-test-~a.slog"))
+      (dynamic-wind
+       void
+       (lambda ()
+         (with-output-to-file f #:exists 'replace (lambda () (display src)))
+         (match-define `((program ,type-env ,mods ,_ ,_))
+           (load-program-list (path->string f) (hash)))
+         (define all-rules (foldl set-union (set) (map last (set->list mods))))
+         (define typed
+           (typecheck-rules type-env
+                            (foldl simplify-rule (set) (set->list all-rules))))
+         (define rel-env (type-env-rels type-env))
+         (for/list ([stratum (in-list (stratify-rules typed))])
+           (define rules (stratum-rules stratum))
+           (define heads
+             (for/fold ([acc (set)]) ([rule (in-set rules)])
+               (set-union acc (rule-head-rels rule))))
+           (define plan-dynamic
+             (if (memq flavor '(maint1 maint3neg maint4neg))
+                 (for*/fold ([acc heads])
+                            ([rule (in-set rules)]
+                             [r (in-set (rule-body-pos-rels rule))]
+                             #:unless (set-member? heads r))
+                   (match (hash-ref rel-env r #f)
+                     [`(struct ,_ ...) (set-add acc r)]
+                     [`(table ,_ ...)
+                      (if (rel-lattice-spec rel-env r) acc (set-add acc r))]
+                     [_ acc]))
+                 heads))
+           (parameterize
+               ([maintenance-flavor (case flavor
+                                      [(maint1) 'positive]
+                                      [(maint3neg) 'negative]
+                                      [(maint4neg) 'negative-rec]
+                                      [else #f])]
+                [semijoin-filters-enabled
+                 (not (memq flavor '(count maint3neg maint4neg)))]
+                [count-flavor
+                 (and (memq flavor '(count maint1 maint3neg maint4neg))
+                      (count-mode heads (make-hash)))])
+             (match-define (cons planned rel-env+)
+               (plan-stratum rules rel-env plan-dynamic))
+             (build-cprog planned rel-env+))))
+       (lambda () (delete-file f)))))
+
+  ;; The crules of the stratum producing `head`, keyed by driver relation.
+  (define (rules-for cprogs head)
+    (for*/list ([cprog (in-list cprogs)]
+                [crule (in-list (cprog-rules cprog))]
+                #:when (for/or ([hop (in-list (crule-head crule))])
+                         (member head (cdr hop))))
+      crule))
+  (define (driver-rel crule)
+    (match (crule-driver crule)
+      [`(,(or 'scan 'probe) ,name ,_ ...) name]
+      [d (car d)]))
+  (define (body-ops crule tag)
+    (filter (lambda (op) (eq? (car op) tag)) (crule-body crule)))
+
+  (define canon "table (a int)
+                 table (b int)
+                 table (h int)
+                 rule (a 1) (a 2) (b 2)
+                 rule (a X) ~(b X) --> (h X)")
+
+  ;; -- 1. maint3neg: lost-A version tests ~b at PRE; the anti-delta version
+  ;;       drives b and reads a as survivors (join-old) ------------------
+  (let* ([hs (rules-for (cprogs-of canon #:flavor 'maint3neg) 'h)]
+         [by-driver (for/hash ([r (in-list hs)]) (values (driver-rel r) r))])
+    (check-equal? (sort (hash-keys by-driver) symbol<?) '(a b))
+    (check-equal? (length (body-ops (hash-ref by-driver 'a) 'absent-old)) 1)
+    (check-equal? (length (body-ops (hash-ref by-driver 'a) 'absent)) 0)
+    (check-equal? (length (body-ops (hash-ref by-driver 'b) 'join-old)) 1)
+    (check-equal? (length (body-ops (hash-ref by-driver 'b) 'absent-old)) 0))
+
+  ;; -- 2. maint1: gained-A version tests ~b at POST; anti-delta mirrors --
+  (let* ([hs (rules-for (cprogs-of canon #:flavor 'maint1) 'h)]
+         [by-driver (for/hash ([r (in-list hs)]) (values (driver-rel r) r))])
+    (check-equal? (sort (hash-keys by-driver) symbol<?) '(a b))
+    (check-equal? (length (body-ops (hash-ref by-driver 'a) 'absent-new)) 1)
+    (check-equal? (length (body-ops (hash-ref by-driver 'b) 'join-old)) 1))
+
+  ;; -- 3. count flavor: plain absent, no anti-delta version --------------
+  (let ([hs (rules-for (cprogs-of canon #:flavor 'count) 'h)])
+    (check-equal? (length hs) 1)
+    (check-equal? (length (body-ops (car hs) 'absent)) 1)
+    (check-equal? (length (body-ops (car hs) 'absent-old)) 0))
+
+  ;; -- 4. the ratified sibling split: anti-delta for Ni reads earlier
+  ;;       negated occurrences at POST, later at PRE (negative flavor) ----
+  (let* ([src "table (a int)
+               table (b int)
+               table (c int)
+               table (h int)
+               rule (a 1) (b 2) (c 3)
+               rule (a X) ~(b X) ~(c X) --> (h X)"]
+         [hs (rules-for (cprogs-of src #:flavor 'maint3neg) 'h)]
+         [by-driver (for/hash ([r (in-list hs)]) (values (driver-rel r) r))])
+    (check-equal? (sort (hash-keys by-driver) symbol<?) '(a b c))
+    ;; positive-driven: both at PRE
+    (check-equal? (length (body-ops (hash-ref by-driver 'a) 'absent-old)) 2)
+    ;; The ownership order is the planner's stable clause order (post-
+    ;; simplification), not source order; exactness requires only that the
+    ;; two anti-delta versions split PAIRWISE -- exactly one evaluates its
+    ;; sibling at PRE and the other at POST, and each carries exactly one
+    ;; sibling probe.
+    (let ([b-old (length (body-ops (hash-ref by-driver 'b) 'absent-old))]
+          [b-new (length (body-ops (hash-ref by-driver 'b) 'absent-new))]
+          [c-old (length (body-ops (hash-ref by-driver 'c) 'absent-old))]
+          [c-new (length (body-ops (hash-ref by-driver 'c) 'absent-new))])
+      (check-equal? (+ b-old b-new) 1)
+      (check-equal? (+ c-old c-new) 1)
+      (check-equal? (+ b-old c-old) 1)
+      (check-equal? (+ b-new c-new) 1)))
+
+  ;; -- 5. wildcard'd negation: viewed absence, but NO anti-delta version -
+  (let* ([src "table (a int)
+               table (c int int)
+               table (h int)
+               rule (a 1) (c 2 9)
+               rule (a X) ~(c X _) --> (h X)"]
+         [hs (rules-for (cprogs-of src #:flavor 'maint3neg) 'h)]
+         [drivers (map driver-rel hs)])
+    (check-equal? (sort drivers symbol<?) '(a))
+    (check-equal? (length (body-ops (car hs) 'absent-old)) 1))
+
+  ;; -- 6. the DRed sweep with negation is a typed planner refusal --------
+  (check-exn
+   #rx"not yet maintainable"
+   (lambda ()
+     (cprogs-of "table (e int int)
+                 table (blk int)
+                 table (r int int)
+                 rule (e 1 2) (e 2 3) (blk 9)
+                 rule (e X Y) ~(blk Y) --> (r X Y)
+                 rule (r X Y) (e Y Z) ~(blk Z) --> (r X Z)"
+                #:flavor 'maint4neg)))
+
+  ;; -- 7. canonical serialization carries the delta ordering -------------
+  (let* ([cprogs (cprogs-of canon #:flavor 'maint3neg)]
+         [texts (for/list ([cprog (in-list cprogs)])
+                  (kernel-plan->string
+                   (canonicalize-cprog cprog #:flavor 'maint3neg)))]
+         [joined (string-join texts)])
+    (check-true (regexp-match?
+                 #rx"\\(absent-old \\(rel [0-9]+\\) \\([0-9 ]+\\) [0-9]+ \\([0-9 ]+\\)"
+                 joined)))
+
+  (void))

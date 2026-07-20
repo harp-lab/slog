@@ -279,6 +279,12 @@
 ;;                                          (closed) relation's full index
 ;;                                          matches the K bound cols; K = 0
 ;;                                          tests relation emptiness
+;;             | (absent-old name idx K didx x ...)  M4N: absence at the
+;;                                          epoch's PRE state (FULL xor
+;;                                          staged delta); maintenance only
+;;             | (absent-new name idx K didx x ...)  M4N: absence at the
+;;                                          final POST state, spelled
+;;                                          explicitly in maintenance plans
 ;;             | (absent-lat name idx K x ...)  negation over lattice keys:
 ;;                                          prune when the payload map holds
 ;;                                          any entry under the K-bound
@@ -369,6 +375,12 @@
     ;; relation on the K bound columns (the index orders them first);
     ;; K = 0 tests emptiness.  Prunes the tuple when a match EXISTS.
     [`(absent ,(? var?) (,(? natural?) ..1) ,(? natural?) ,(? var?) ...) #t]
+    ;; M4N pre/post-state absence (docs/m4n-contract.md pin 4): the delta
+    ;; ordering rides after K exactly as in join-old/join-new.
+    [`(absent-old ,(? var?) (,(? natural?) ..1) ,(? natural?)
+                  (,(? natural?) ..1) ,(? var?) ...) #t]
+    [`(absent-new ,(? var?) (,(? natural?) ..1) ,(? natural?)
+                  (,(? natural?) ..1) ,(? var?) ...) #t]
     ;; its lattice form: key-prefix absence probe of the payload map
     ;; ("no value at key k"); the vars are the K bound key columns
     [`(absent-lat ,(? var?) (,(? natural?) ..1) ,(? natural?) ,(? var?) ...) #t]

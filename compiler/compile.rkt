@@ -464,7 +464,12 @@
         (for ([r (in-set (rule-body-pos-rels rule))])
           (hash-update! kinds r (lambda (s) (set-add s (if (rel-lattice-spec rel-env r) 'lat 'pos))) (set)))
         (for ([r (in-set (rule-body-neg-rels rule))])
-          (hash-update! kinds r (lambda (s) (set-add s 'neg)) (set))))
+          (hash-update! kinds r (lambda (s) (set-add s 'neg)) (set)))
+        ;; M4N pin 5: a wildcard'd (prefix-shaped) negative edge additionally
+        ;; carries 'negw -- admission refuses precise routes when such a
+        ;; relation changed (anti-delta multiplicity is per-prefix-transition).
+        (for ([r (in-set (rule-body-negw-rels rule))])
+          (hash-update! kinds r (lambda (s) (set-add s 'negw)) (set))))
       (for/list ([r (in-list (sort (hash-keys kinds) symbol<?))])
         `(,r ,@(sort (set->list (hash-ref kinds r)) symbol<?)))))
   ;; pure rule heads, WITHOUT the diagnostic side channels dynamic-rels

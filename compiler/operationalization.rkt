@@ -43,7 +43,9 @@
 (define (join-cl? cl)
   (and (not (expand3-action? cl))
        (match cl
-         [`(syn ,_ ,(or '/= '== 'let 'tycheck '~) ,_ ...) #f]
+         [`(syn ,_ ,(or '/= '== 'let 'tycheck) ,_ ...) #f]
+         ;; ~ and the M4N view-retagged ~old/~new (neg-symbol?)
+         [`(syn ,_ ,(? neg-symbol?) ,_ ...) #f]
          [`(syn ,_ ,(? primitive-cmp?) ,_ ,_) #f]
          [_ #t])))
 
@@ -273,6 +275,8 @@
       [`(join-lat ,name ,ind ,_ ,_ ...) (list (cons name ind))]
       [`(exists ,name ,ind ,_ ,_ ...) (list (cons name ind))]
       [`(absent ,name ,ind ,_ ,_ ...) (list (cons name ind))]
+      [`(,(or 'absent-old 'absent-new) ,name ,ind ,_ ,_ ,_ ...)
+       (list (cons name ind))]
       [`(absent-lat ,name ,ind ,_ ,_ ...) (list (cons name ind))]
       [`(mkstruct ,name ,ind ,_ ,_ ...) (list (cons name ind))]
       [`(emit ,name ,ind ,_ ...) (list (cons name ind))]
@@ -553,11 +557,15 @@
        ;; (highest, never selected) lands last: the payload-map layout.
        (define needs+
          (if (neg-clause? cl)
-             (add-select-set needs (neg-rel cl)
-                             (for/set ([x (in-list (neg-args cl))]
-                                       [i (in-naturals)]
-                                       #:unless (neg-wildcard-var? x))
-                               i))
+             ;; A view-marked absence (M4N ~old/~new) additionally needs a
+             ;; delta index with the SAME complete ordering as its full
+             ;; index, exactly like an exact old/new join.
+             ((if (neg-view cl) add-same-order-selection add-select-set)
+              needs (neg-rel cl)
+              (for/set ([x (in-list (neg-args cl))]
+                        [i (in-naturals)]
+                        #:unless (neg-wildcard-var? x))
+                i))
              needs))
        (values (set-union ground (clause-out-vars cl)) jpos needs+)])))
 
@@ -1186,15 +1194,38 @@
   (define (lower-absent cl)
     (define name (neg-rel cl))
     (define args (neg-args cl))
+    (define view (neg-view cl))
     (define sel
       (for/set ([x (in-list args)] [i (in-naturals)]
                 #:unless (neg-wildcard-var? x))
         i))
-    (define ind (find-index indices name sel
-                            (format "negated atom on ~a" name)))
     (define K (set-count sel))
-    (define op (if (rel-lattice-spec rel-env name) 'absent-lat 'absent))
-    `(,op ,name ,ind ,K ,@(map esc (order-tuple (take ind K) args))))
+    (cond
+      [(rel-lattice-spec rel-env name)
+       ;; Lattice negation is a pinned M4N exclusion (m4n-contract.md):
+       ;; the maintenance planners never view-mark it, and a view here
+       ;; means a mis-tagged plan -- refuse loudly.
+       (when view
+         (error 'operationalization
+                "lattice negation is not maintainable (~a): ~a"
+                name (strip-prov cl)))
+       (define ind (find-index indices name sel
+                               (format "negated atom on ~a" name)))
+       `(absent-lat ,name ,ind ,K
+                    ,@(map esc (order-tuple (take ind K) args)))]
+      [view
+       ;; M4N pre/post absence: the full and delta orderings are identical
+       ;; (exact-index), and the c-op carries the delta ordering exactly as
+       ;; join-old/join-new do.
+       (define ind (exact-index name sel (strip-prov cl)))
+       `(,(if (eq? view 'pre) 'absent-old 'absent-new)
+         ,name ,ind ,K ,ind
+         ,@(map esc (order-tuple (take ind K) args)))]
+      [else
+       (define ind (find-index indices name sel
+                               (format "negated atom on ~a" name)))
+       `(absent ,name ,ind ,K
+                ,@(map esc (order-tuple (take ind K) args)))]))
 
   ;; split the body: everything before the first join is a pre-op
   (define bodys (rule-body rule))

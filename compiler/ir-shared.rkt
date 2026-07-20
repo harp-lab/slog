@@ -33,6 +33,7 @@
  listof-spec? mapof-spec?
  ;; negated body atoms (docs/incremental.md §0.8)
  neg-symbol? neg-clause? neg-inner neg-rel neg-args neg-wildcard-var?
+ neg-view neg-retag
  ;; clause analysis (typed/planned clause grammar)
  clause-vars clause-in-vars clause-out-vars head-in-vars)
 
@@ -294,7 +295,24 @@
 ;; inputs are ground, only prune) and lower to an absent probe against a
 ;; CLOSED relation (stratification guarantees strictly-lower stratum).
 
-(define (neg-symbol? s) (eq? s '~))
+;; `~` is the source spelling.  The maintenance planners (M4N,
+;; docs/m4n-contract.md) retag negated atoms per version with an explicit
+;; absence-evaluation state: `~old` (absence at the epoch's PRE state) and
+;; `~new` (absence at the final POST state).  The retagged symbols exist
+;; only from planning onward -- every pass before join-planning sees `~`.
+(define (neg-symbol? s) (and (memq s '(~ ~old ~new)) #t))
+
+;; The absence view a (possibly retagged) negated atom carries: 'pre, 'post,
+;; or #f for the plain settled-state probe.
+(define (neg-view cl)
+  (case (third cl)
+    [(~old) 'pre]
+    [(~new) 'post]
+    [else #f]))
+
+;; Retag a negated clause with an absence-view symbol.
+(define (neg-retag cl sym)
+  `(syn ,(second cl) ,sym ,(neg-inner cl)))
 
 ;; The flat-level-and-later shape: inner args all plain variables.  Passes
 ;; that run BEFORE simplification (demand, collections) match the raw

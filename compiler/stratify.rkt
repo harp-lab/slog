@@ -32,6 +32,7 @@
          rule-head-rels
          rule-body-rels
          rule-body-neg-rels
+         rule-body-negw-rels
          rule-body-pos-rels
          rule-body-rel-occurrences
          tarjan-scc-ids)
@@ -79,6 +80,19 @@
   (match rule
     [`(syn ,_ rule ,bodys ... --> ,heads ...)
      (list->set (map neg-rel (filter neg-clause? bodys)))]))
+
+;; Wildcard'd negated reads (M4N, docs/m4n-contract.md pin 5): a negated
+;; atom with a wildcard column is a PREFIX test whose anti-delta
+;; multiplicity is per-prefix-transition, not per-row -- so route admission
+;; needs to know which negative edges are prefix-shaped.  Manifested as the
+;; 'negw read kind beside 'neg.
+(define (rule-body-negw-rels rule)
+  (match rule
+    [`(syn ,_ rule ,bodys ... --> ,heads ...)
+     (for/set ([cl (in-list bodys)]
+               #:when (and (neg-clause? cl)
+                           (ormap neg-wildcard-var? (neg-args cl))))
+       (neg-rel cl))]))
 
 (define (rule-body-pos-rels rule)
   (match rule
