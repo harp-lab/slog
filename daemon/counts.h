@@ -112,6 +112,13 @@ constexpr u8 cnt_kind_rec = 3;
 // is not itself a support contribution; MaintainTask consumes it after the
 // read phase without touching the sidecar.
 constexpr u8 cnt_kind_premise = 4;
+// A view-only staged transition (M4N, docs/m4n-contract.md pin 3): the
+// OPPOSITE sign of a phase's drive, staged so pre-state views (absent-old,
+// exclusion views) can see rows the final overlay already added or removed.
+// View rows populate delta INDICES only -- they must never drive a read
+// version and never reach a maintenance fold; both are typed faults, not
+// silently absorbed contributions.
+constexpr u8 cnt_kind_view = 5;
 
 // Fold one contribution of `kind` into a stored counter word: inputs SET the
 // bit (set semantics -- idempotent, never arithmetic, §8B.5); derivations

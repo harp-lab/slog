@@ -3824,6 +3824,184 @@ bool test_maint4neg_tomb_resolution()
   return true;
 }
 
+// ===========================================================================
+// M4N slice 1 substrate (docs/m4n-contract.md pins 3-4): the absent-old
+// cursor's symmetric-difference equation, the view-only staged kind's two
+// guards (never drives, never reaches a fold), and the typed refusals.
+// ===========================================================================
+
+namespace m4n_substrate
+{
+
+// Shared fixture: H(x) :- A(x), ~B(x) as its maint3neg lost-A version --
+// drive A's staged deletions, test ~B at PRE state, decrement H.
+// B is FINAL: live = {1}, staged delta = {1 (gained: in both), 2 (lost:
+// delta only)}; 3 was never present.  pre(B) = FULL xor delta = {2}, so
+// absence-at-pre holds for 1 and 3, not 2.
+void run()
+{
+  const std::string text =
+    "(kernel-plan (abi 1) (flavor maint3neg) "
+    "(relations "
+      "(rel 0 (relation na_a 1 (0))) "
+      "(rel 1 (relation na_b 1 (0) (delta 0))) "
+      "(rel 2 (relation na_h 1 (0) (delta 0)))) "
+    "(attachments) (constants) (prims) (dynamic na_h) "
+    "(rules "
+      "(rule-def (rid 0) (variant \"all:na_a/nonrec\") (nregs 1) (pre) "
+        "(driver (scan (rel 0) (r 0))) "
+        "(body (absent-old (rel 1) (0) 1 (0) (r 0))) "
+        "(head (emit (rel 2) (0) (r 0))))) "
+    "(meta (rule-meta (rid 0) (source \"na.slog:3\"))))";
+  const DecodedKernelPlan decoded = parse_kernel_plan(text);
+  const auto& filter =
+    std::get<FilterPlan>(decoded.rules[0].plan.body[0]);
+  if (filter.view != AbsentView::pre || filter.delta_order.empty())
+    throw std::runtime_error("m4n: absent-old decode shape");
+
+  Database db(2);
+  db.addRelation("na_a", 1);
+  db.addRelation("na_b", 1);
+  db.addRelation("na_h", 1);
+  Relation* a = db.getRelation("na_a");
+  Relation* b = db.getRelation("na_b");
+  Relation* h = db.getRelation("na_h");
+  a->addIndex<1>({0}, false);
+  b->addIndex<1>({0}, false);
+  b->addIndex<1>({0}, true);
+  h->addIndex<1>({0}, false);
+  h->addIndex<1>({0}, true);
+  for (u64 x : {u64{1}, u64{2}, u64{3}}) insert_nominal(a, {x});
+  insert_nominal(b, {1});
+  // B's staged transitions ride the genuine path: view-kind batches whose
+  // rows the delta-index WriteTask installs during the write phase (the
+  // full-index writer skips the negative-sign row; the positive one dedups
+  // against the live master).  Direct delta-index insertion would be wiped
+  // by the run's entry finalize.
+  load_signed_delta(b, {{1}}, cnt_kind_view, 1);
+  load_signed_delta(b, {{2}}, cnt_kind_view, -1);
+  for (u64 x : {u64{1}, u64{2}, u64{3}}) insert_nominal(h, {x});
+  {
+    Index** side = h->ensureCountSidecar();
+    for (u64 x : {u64{1}, u64{2}, u64{3}})
+      static_cast<BTreeMapIndex<1>*>(side[buckethash(x)])
+        ->tree.insert2({x}, cnt_pack(false, 1, 0));
+    db.markCounted({"na_h"});
+  }
+  // The drive: A's staged deletions {1,2,3}; plus one view-kind row that
+  // the driver must SKIP (a drive from it would decrement H(9) -> counts
+  // invalidation the assertions below would catch).
+  load_signed_delta(a, {{1}, {2}, {3}}, cnt_kind_premise, -1);
+  load_signed_delta(a, {{9}}, cnt_kind_view, -1);
+
+  Stratum stratum("m4n-substrate");
+  for (u16 bkt = 0; bkt < bucket_count; ++bkt)
+  {
+    stratum.addTask(phase_write,
+      new WriteTask<1>(&db, b, {0}, false, bkt), true);
+    stratum.addTask(phase_write,
+      new WriteTask<1>(&db, b, {0}, true, bkt), false);
+    stratum.addTask(phase_write,
+      new WriteTask<1>(&db, h, {0}, false, bkt), true);
+    stratum.addTask(phase_write,
+      new WriteTask<1>(&db, h, {0}, true, bkt), false);
+  }
+  stratum.addTask(phase_intern, new MaintainTask<1>(&db, h, {0}, 0, false));
+  const SealedKernelPlan sealed = seal_kernel_plan(decoded);
+  attach_counted_rules(db, stratum, sealed);
+  if (!drive_stratum_to_fixpoint(db, stratum))
+    throw std::runtime_error("m4n: stratum did not settle");
+
+  // Absence-at-pre held for 1 and 3: both retract; 2 survives with its
+  // word; the view row 9 never drove.
+  if (nominal_index_rows(h, {0})
+      != (std::vector<std::vector<u64>>{{2}}))
+  {
+    std::cerr << "m4n h rows:";
+    for (const auto& row : nominal_index_rows(h, {0}))
+      std::cerr << " " << row[0];
+    std::cerr << " | sidecar:";
+    for (const auto& [key, word] : sidecar_words<1>(h))
+      std::cerr << " " << key[0] << "=nr" << cnt_nonrec(word);
+    std::cerr << " | fires: "
+              << db.fire_counts[{std::string("na.slog:3"),
+                                 std::string("all:na_a")}] << std::endl;
+    throw std::runtime_error("m4n: healed content mismatch");
+  }
+  if (sidecar_words<1>(h)
+      != (std::map<std::vector<u64>, u64>{{{2}, cnt_pack(false, 1, 0)}}))
+    throw std::runtime_error("m4n: healed sidecar mismatch");
+  if ((db.fire_counts[{std::string("na.slog:3"),
+                       std::string("all:na_a")}]) != 2)
+    throw std::runtime_error("m4n: fire count mismatch");
+}
+
+} // namespace m4n_substrate
+
+bool test_m4n_absent_pre_and_view_kind()
+{
+  m4n_substrate::run();
+
+  // A view-kind row reaching a maintenance fold dies loudly.  Entry-staged
+  // batches retire at the first finalize before any intern runs, so the
+  // guard is exercised by driving the fold directly.
+  const pid_t pid = fork();
+  if (pid == 0)
+  {
+    const int devnull = open("/dev/null", O_WRONLY);
+    dup2(devnull, 1);
+    dup2(devnull, 2);
+    Database db(1);
+    db.addRelation("nv_h", 1);
+    Relation* h = db.getRelation("nv_h");
+    h->addIndex<1>({0}, false);
+    InsertBatch* batch = new InsertBatch();
+    batch->kind = cnt_kind_view;
+    batch->sign = -1;
+    batch->data[batch->usage++] = 7;
+    h->getDelta().push_back(batch);
+    MaintainTask<1> fold(&db, h, {0}, 0, false);
+    fold.work();
+    _exit(0); // reached only if the fold did NOT fatal
+  }
+  int status = 0;
+  waitpid(pid, &status, 0);
+  CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 1);
+
+  // Typed refusals: pre/post absence views are maintenance-only, and the
+  // delta ordering must be requisitioned and identical.
+  const auto seal_rejects = [](SealErrorK kind, const std::string& text) {
+    try { (void)seal_kernel_plan(parse_kernel_plan(text)); }
+    catch (const SealError& error) { return error.kind() == kind; }
+    catch (...) { return false; }
+    return false;
+  };
+  const std::string base =
+    "(kernel-plan (abi 1) (flavor maint3neg) "
+    "(relations "
+      "(rel 0 (relation nb_a 1 (0))) "
+      "(rel 1 (relation nb_b 1 (0) (delta 0))) "
+      "(rel 2 (relation nb_h 1 (0) (delta 0)))) "
+    "(attachments) (constants) (prims) (dynamic nb_h) "
+    "(rules "
+      "(rule-def (rid 0) (variant \"all:nb_a/nonrec\") (nregs 1) (pre) "
+        "(driver (scan (rel 0) (r 0))) "
+        "(body (absent-old (rel 1) (0) 1 (0) (r 0))) "
+        "(head (emit (rel 2) (0) (r 0))))) "
+    "(meta (rule-meta (rid 0) (source \"nb.slog:3\"))))";
+  CHECK(seal_kernel_plan(parse_kernel_plan(base)).rules[0].maint);
+  CHECK(!seal_rejects(SealErrorK::capability,
+        replace_once(base, "absent-old", "absent-new")));
+  CHECK(seal_rejects(SealErrorK::capability,
+        replace_once(
+          replace_once(base, "(flavor maint3neg)", "(flavor count)"),
+          "(driver (scan (rel 0) (r 0)))", "(driver (seeded))")));
+  CHECK(seal_rejects(SealErrorK::index_requisition,
+        replace_once(base, "(relation nb_b 1 (0) (delta 0))",
+                     "(relation nb_b 1 (0))")));
+  return true;
+}
+
 // Typed refusals for the counted vocabulary: the plan-attribute seal CHECK
 // (no semijoin exists in counted plans), counted-only head forms in normal
 // plans, struct probes in normal plans, and malformed fold kinds.
@@ -4499,6 +4677,7 @@ int main(int argc, char** argv)
   ok &= test_maint1_positive_differential();
   ok &= test_maint3neg_negative_differential();
   ok &= test_maint4neg_tomb_resolution();
+  ok &= test_m4n_absent_pre_and_view_kind();
   ok &= test_counted_plan_refusals();
   ok &= test_seal_bind_scan_multihead_and_real_emit();
   ok &= test_seal_bind_probe_driver_and_task_partition();

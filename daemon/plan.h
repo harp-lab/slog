@@ -84,6 +84,16 @@ struct ProbePlan
 
 enum class FilterK : u8 { exists, absent };
 
+// Absence evaluation state (M4N, docs/m4n-contract.md pin 4).  `settled` is
+// the shipped form: a FULL probe of a closed lower stratum.  In maintenance
+// epochs the negated stratum is final but its staged transitions ride its
+// delta index, so `pre` evaluates absence at the epoch's pre-state through
+// the finality identity -- absent from FULL∪Δ, or present in FULL∩Δ (a
+// staged row's sign is recoverable from live membership) -- and `post`
+// spells final-state absence explicitly (same predicate as settled; the
+// distinct spelling keeps maintenance plans self-describing).
+enum class AbsentView : u8 { settled, pre, post };
+
 struct FilterPlan
 {
   FilterK kind = FilterK::exists;
@@ -93,6 +103,10 @@ struct FilterPlan
   std::vector<u16> regs; // bound prefix only; filters assign no registers
   // absent-lat tests a lattice payload map's key prefix.
   bool lattice = false;
+  // M4N pre/post absence views (maintenance flavors only); `pre` binds the
+  // delta ordering exactly as join-old/join-new do.
+  AbsentView view = AbsentView::settled;
+  std::vector<u16> delta_order;
 };
 
 struct NeqPlan { u16 left = 0, right = 0; };
@@ -520,6 +534,22 @@ inline SealedRule seal_rule(const RulePlan& plan,
       ? lattice_shape(relations, filter.relation, where)
       : relation_shape(relations, filter.relation, where);
     validate_order(rel, filter.order, where);
+    // M4N pre/post absence views: maintenance flavors only, plain absent
+    // only, delta ordering requisitioned and identical to the full
+    // ordering (the join-old/join-new convention).
+    seal_check(filter.view == AbsentView::settled
+                 || (flavor.maint && !filter.lattice
+                     && filter.kind == FilterK::absent),
+               SealErrorK::capability,
+               std::string(where) + ": pre/post absence views are admitted "
+                 "for maintenance plans only");
+    if (filter.view != AbsentView::settled)
+    {
+      validate_order(rel, filter.delta_order, where, true);
+      seal_check(filter.delta_order == filter.order, SealErrorK::ordering,
+                 std::string(where)
+                   + ": full and delta orderings differ");
+    }
     if (filter.lattice)
       seal_check(filter.order.back() == rel.arity - 1,
                  SealErrorK::ordering,
@@ -1218,6 +1248,13 @@ std::unique_ptr<BoundSink> make_struct_maint_sink(
 std::unique_ptr<PrefixCursor> make_tomb_probe_cursor(
   u16 arity, Relation* relation, Index** master,
   const std::vector<u16>& order, const std::vector<u16>& regs, u16 bound);
+// The absent-old cursor (M4N pin 4): absence at the epoch's PRE state over
+// a FINAL stratum -- pre(B) = FULL symmetric-difference staged-delta, so
+// the filter passes iff no prefix-matching row is in exactly one of the
+// two indices.  One bound cursor owns the whole equation.
+std::unique_ptr<PrefixCursor> make_absent_pre_cursor(
+  u16 arity, Index** full, Index** delta,
+  const std::vector<u16>& regs, u16 bound);
 
 struct BoundExecution
 {
@@ -1469,6 +1506,10 @@ public:
       {
         if (filter->lattice) map_index(filter->relation, filter->order);
         else index(filter->relation, filter->order);
+        if (filter->view != AbsentView::settled)
+          seal_check(relation(filter->relation)->hasIndex(
+                       filter->delta_order, true), SealErrorK::binding,
+                     "bind: requisitioned absence delta index is absent");
       }
     for (const CursorPlan& cursor : sealed.cursors)
     {
@@ -1493,6 +1534,10 @@ public:
       {
         if (filter->lattice) map_index(filter->relation, filter->order);
         else index(filter->relation, filter->order);
+        if (filter->view != AbsentView::settled)
+          seal_check(relation(filter->relation)->hasIndex(
+                       filter->delta_order, true), SealErrorK::binding,
+                     "bind: requisitioned absence delta index is absent");
       }
       else
       {
@@ -1599,6 +1644,11 @@ public:
           prefilter_prototypes.push_back(make_map_filter_cursor(
             rel->getArity(), rel->getIndex(filter->order, false),
             filter->regs, filter->bound, filter->kind));
+        else if (filter->view == AbsentView::pre)
+          prefilter_prototypes.push_back(make_absent_pre_cursor(
+            rel->getArity(), rel->getIndex(filter->order, false),
+            rel->getIndex(filter->delta_order, true),
+            filter->regs, filter->bound));
         else
           prefilter_prototypes.push_back(make_set_filter_cursor(
             rel->getArity(), rel->getIndex(filter->order, false),
@@ -1642,6 +1692,11 @@ public:
           cursor_prototypes.push_back(make_map_filter_cursor(
             rel->getArity(), rel->getIndex(filter->order, false),
             filter->regs, filter->bound, filter->kind));
+        else if (filter->view == AbsentView::pre)
+          cursor_prototypes.push_back(make_absent_pre_cursor(
+            rel->getArity(), rel->getIndex(filter->order, false),
+            rel->getIndex(filter->delta_order, true),
+            filter->regs, filter->bound));
         else
           cursor_prototypes.push_back(make_set_filter_cursor(
             rel->getArity(), rel->getIndex(filter->order, false),

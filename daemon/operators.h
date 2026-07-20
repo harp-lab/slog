@@ -1448,6 +1448,10 @@ public:
           row[0] = slog_null;
           continue;
         }
+        if (batch->kind == cnt_kind_view)
+          fatal("view-only staged row reached a maintenance fold on "
+                + rel->getName() + " (docs/m4n-contract.md pin 3): "
+                  "mis-staged polarity");
         std::array<u64, A> key;
         for (u16 c = 0; c < A; ++c) key[c] = row[ord[c]];
         BTreeIndex<A>* root = static_cast<BTreeIndex<A>*>(
@@ -1552,6 +1556,10 @@ public:
           row[0] = slog_null;
           continue;
         }
+        if (batch->kind == cnt_kind_view)
+          fatal("view-only staged row reached a lattice maintenance fold on "
+                + rel->getName() + " (docs/m4n-contract.md pin 3): "
+                  "mis-staged polarity");
 
         const u16 bucket = buckethash(row[0]);
         u64 word = 0;
@@ -1706,6 +1714,10 @@ public:
           row[0] = slog_null;
           continue;
         }
+        if (batch->kind == cnt_kind_view)
+          fatal("view-only staged row reached a struct maintenance fold on "
+                + rel->getName() + " (docs/m4n-contract.md pin 3): "
+                  "mis-staged polarity");
 
         // Resolve the id (row[0] holds emit_struct_maint's 0 placeholder).
         // Live-master dedup exactly as InternStructTask: range-probe the

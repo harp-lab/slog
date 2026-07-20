@@ -209,6 +209,27 @@ FilterPlan decode_filter(const SExp& op, FilterK kind, bool lattice = false)
   return filter;
 }
 
+// (absent-old (rel n) (ord...) K (dord...) (r ...) ...) and the absent-new
+// twin (M4N pin 4): pre/post-state absence over a final stratum, carrying
+// the delta ordering exactly as join-old/join-new do.
+FilterPlan decode_absent_view(const SExp& op, AbsentView view)
+{
+  const char* where = view == AbsentView::pre ? "absent-old" : "absent-new";
+  const auto& xs = list(op, where);
+  if (xs.size() < 5)
+    syntax(op, std::string(where) + " is too short");
+  FilterPlan filter;
+  filter.kind = FilterK::absent;
+  filter.view = view;
+  filter.relation = ref(xs[1], "rel", "filter relation");
+  filter.order = order(xs[2], "filter ordering");
+  filter.bound = small(xs[3], "filter bound prefix");
+  filter.delta_order = order(xs[4], "filter delta ordering");
+  for (size_t i = 5; i < xs.size(); ++i)
+    filter.regs.push_back(ref(xs[i], "r", "filter register"));
+  return filter;
+}
+
 PrimPlan decode_primitive(const SExp& op, PrimK kind)
 {
   const char* where = kind == PrimK::partial ? "letp" : "let";
@@ -376,6 +397,13 @@ DecodedRule decode_rule(const SExp& x)
       out.plan.prefilters.push_back(filter);
       out.plan.preops.emplace_back(std::move(filter));
     }
+    else if (form_name(op) == "absent-old" || form_name(op) == "absent-new")
+    {
+      FilterPlan filter = decode_absent_view(op,
+        form_name(op) == "absent-old" ? AbsentView::pre : AbsentView::post);
+      out.plan.prefilters.push_back(filter);
+      out.plan.preops.emplace_back(std::move(filter));
+    }
     else if (form_name(op) == "let")
     {
       const auto& xs = tagged(op, "let", 3);
@@ -504,6 +532,10 @@ DecodedRule decode_rule(const SExp& x)
       out.plan.body.push_back(decode_filter(op, FilterK::absent));
     else if (name == "absent-lat")
       out.plan.body.push_back(decode_filter(op, FilterK::absent, true));
+    else if (name == "absent-old")
+      out.plan.body.push_back(decode_absent_view(op, AbsentView::pre));
+    else if (name == "absent-new")
+      out.plan.body.push_back(decode_absent_view(op, AbsentView::post));
     else if (name == "join3")
       out.plan.body.emplace_back(decode_join3(op));
     else if (name == "neq")
@@ -1029,6 +1061,9 @@ public:
       if (row < refs.size())
       {
         const TupleRef ref = refs[row++];
+        // View-only staged rows (M4N pin 3) populate delta indices for
+        // pre-state views; they never drive a read version.
+        if (ref.batch->kind == cnt_kind_view) continue;
         const u64* tuple = ref.batch->data + ref.offset;
         out.assign(tuple, tuple + relation->getArity());
         return true;

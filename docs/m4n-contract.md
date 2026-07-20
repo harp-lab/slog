@@ -95,6 +95,21 @@ now extended across polarity.
    typed fault rather than a silently absorbed contribution (the
    kind-less-batch lesson, applied prophylactically).
 
+   **Ratified amendment (2026-07-19): phasing is per-stratum for
+   negation-bearing cones.**  The shipped acyclic routes phase
+   GLOBALLY (one all-strata negative sweep, then one all-strata
+   positive rebuild) — sound along positive edges because a cause's
+   sign matches its effect's.  A negative edge breaks the alignment: a
+   gained B, which only materializes in the positive phase, must emit
+   a −H whose downstream cascade is a deletion cascade.  Admitted
+   negation cones therefore process strata in topological order, each
+   stratum running its own negative-then-positive pair (the §4.7
+   schedule) before any reader stratum starts, with both signs of each
+   now-final input staged at the boundary.  Positive-only cones keep
+   the global phasing untouched.  This is also what grounds the
+   finality identity of pin 4: a reader's phases always see fully
+   final inputs.
+
 4. **Pre/post absence views are explicit plan ops (ratified
    2026-07-19: the cursor owns the equation).**  By direct analogy
    with `join-old`/`join-new`: the ABI-1 grammar gains pre/post-state
