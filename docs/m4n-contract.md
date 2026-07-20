@@ -130,16 +130,34 @@ now extended across polarity.
    The count flavor keeps plain `absent` (settled state, both views
    coincide).
 
-5. **The exact partition extends across polarity.**  Retractions of
-   `(A(x), ¬B(x))` partition exactly: lost-A-driven versions evaluate
-   `~B` at PRE state; gained-B-driven (anti-delta) versions evaluate
-   `A` at the surviving/post state — the same dual-ownership convention
-   M1/M3 pinned (rightmost-new / leftmost-deleted), extended so that no
-   gained/lost instantiation is counted twice between a premise-driven
-   and an anti-delta version.  Repeated negated occurrences and
-   mixed-polarity self-overlaps (`H(x) :- A(x), ~A'(x)` shapes over one
-   relation's different versions) get the same `#ordinal` occurrence
-   treatment as positive repeats.
+5. **The exact partition extends across polarity (partition table
+   ratified 2026-07-19).**  Ownership is by first cause in a fixed
+   occurrence order — positives first (the shipped M1/M3 conventions),
+   then negated occurrences in rule order.  The complete view
+   assignment:
+
+   | version | positives | negated Nj before the owner | after |
+   |---|---|---|---|
+   | NEG flavor, positive-driven | shipped M3 dual partition | — | all `absent-old` |
+   | NEG flavor, anti-delta for Ni (drive = staged ΔNi⁺) | `join-old` (survivors: pre∩post) | `absent-new` | `absent-old` |
+   | POS flavor, positive-driven | shipped M1 partition | — | all `absent-new` |
+   | POS flavor, anti-delta for Ni (drive = staged ΔNi⁻) | `join-old` | `absent-old` | `absent-new` |
+
+   The join-old positives are exact because both signs stage as views:
+   post − Δ = pre ∩ post.  An anti-delta drive row needs no probe of
+   its own occurrence — for a FULLY-BOUND negated atom, gained implies
+   absent-before and lost implies absent-after, by construction.
+   **Scope pin (2026-07-19): anti-delta drives require fully-bound
+   negated occurrences.**  A wildcard'd negated atom is a prefix test;
+   its anti-delta multiplicity is per-prefix-transition, not per-row,
+   and collapsing row transitions to prefix transitions injectively is
+   its own staging problem.  Slice 1 admits precise routes only when
+   every CHANGED relation's negative edges are fully bound (the
+   manifest gains a wildcard marker); wildcard'd negation over a
+   changed relation routes to clear-and-rerun as a tested named
+   fallback, lifted by a dedicated later slice if profiles ever ask.
+   Repeated negated occurrences of one relation get the same
+   `#ordinal` treatment as positive repeats.
 
 6. **Interpreter variants exclusively; the differential is the oracle
    triangle.**  Native flavored emit-cpp is frozen legacy and is NOT
