@@ -89,9 +89,11 @@ now extended across polarity.
    The session's flush pipeline gains the polarity flip at negative
    edges: which sign stages into which phase of which stratum is a pure
    function of the polarity manifests, and mis-staging must be a typed
-   refusal, not a silent wrong answer.  Whether view-only rows ride the
-   existing premise-kind vehicle or a distinct staged kind is slice-1's
-   choice; the pin is the two roles and the per-sign discipline.
+   refusal, not a silent wrong answer.  **Ratified 2026-07-19:**
+   view-only rows ride a DISTINCT staged kind, not the premise-kind
+   vehicle — a view row reaching a fold or acting as a drive is then a
+   typed fault rather than a silently absorbed contribution (the
+   kind-less-batch lesson, applied prophylactically).
 
 4. **Pre/post absence views are explicit plan ops.**  By direct analogy
    with `join-old`/`join-new`: the ABI-1 grammar gains pre/post-state
@@ -144,20 +146,29 @@ exclusions (each a tested named fallback, in the M4S style):
 ## Slices
 
 1. **Acyclic readers (the §0.8 canon).**  Planner emission of
-   anti-delta versions + pre/post absence ops for rules read by acyclic
-   strata; ABI-1 grammar + canonical-plan serialization; seal/bind/
+   anti-delta versions + pre/post absence ops for rules whose READER
+   STRATUM is acyclic — the stratum classification, not the body
+   operator set: join3-bearing and temp-staged bodies are in scope here
+   whenever their stratum is acyclic (a negated atom is never a join3
+   arm; `~` compiles to absence probes beside whatever joins the body
+   carries).  ABI-1 grammar + canonical-plan serialization; seal/bind/
    cursor registrations (thread-0); the session staging polarity flip
    and admission for acyclic negation-bearing table cones.  Fixtures:
    the `H :- A, ~B` canon under +B/−B/mixed flushes, repeated negated
    occurrences, a two-negation rule, negation under temps (staged
    chains), healed-equals-forced plus the count-IR oracle on every
    case, and typed refusals for mis-staged polarity.
-2. **Recursive readers.**  Negative edges into M4T-class recursive
-   strata: anti-delta drives interleave with the DRed sweep's exact
-   partitions (candidates, reseed, relearn); foundation semantics
-   unchanged (`~B` support is nonrec by construction).  Gate: the M4T
-   battery shapes re-cut with a negated premise, id-stability included
-   where struct interiors appear below the negation.
+2. **Recursive readers — ALL admitted `~` shapes (ratified
+   2026-07-19).**  Every negation shape over recursive reader strata
+   lands in this slice, with no residual negation slice beyond the
+   pinned struct/lattice exclusions: negative edges into M4T-class
+   recursive strata AND `~` inside sweep cones, join3-bearing and
+   temp-staged shapes included.  Anti-delta drives interleave with the
+   DRed sweep's exact partitions (candidates, reseed, relearn);
+   foundation semantics unchanged (`~B` support is nonrec by
+   construction).  Gate: the M4T battery shapes re-cut with negated
+   premises — including the wcoj-rec shapes — with id stability where
+   struct interiors appear below the negation.
 3. **Admission completion + intersections.**  Inheritance and masks
    across negative edges (inject-reopen fixtures), negation × demand
    shapes, the intersection-matrix ledger rows for negation × {temps,
