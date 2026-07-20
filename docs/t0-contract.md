@@ -2,8 +2,9 @@
 
 **Status:** design contract (2026-07-15); sidecar parse/seal half of slice (b)
 implemented 2026-07-16; Q1's canonical payload decoder and typed builder
-boundary implemented 2026-07-17; dispatcher, entry modes, generic command
-builders, identity, and pause-record slices remain.
+boundary implemented 2026-07-17; slice (a)'s dual-stack dispatcher and
+catalog verbs implemented 2026-07-18. Entry modes, generic command builders,
+identity, and the pause-record slice remain.
 `execution-tiers.md` §9/§9.1/§11-T0/§12 and `execution-tiers-impl.md`
 (decisions D6, D9, D10, D16, D17; findings 6 and 8; the §5 daemon
 change map) remain normative; this file pins the dual-stack dispatcher,

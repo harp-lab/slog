@@ -721,7 +721,32 @@ void attach_flavored_rules(Database* db, Stratum* stratum,
                   || driver.kind == DriverK::seeded;
     if (driver.kind == DriverK::scan_delta)
       fire_once = dynamic.count(plan.bindings[driver.relation].name) == 0;
-    rule->attach(db, stratum, fire_once);
+    rule->attach(db, stratum,
+                 fire_once ? ReadSchedule::once : ReadSchedule::every);
+  }
+}
+
+// Normal scheduling mirrors generated plugins, with the crucial seeded
+// distinction: static scans/probes and `once` run only in iteration zero,
+// dynamic scans run every iteration, and a `seeded` unit driver belongs to
+// the replay-only queue rather than the ordinary once queue.
+void attach_normal_rules(Database* db, Stratum* stratum,
+                         const SealedKernelPlan& plan)
+{
+  const std::set<std::string> dynamic(plan.dynamic_names.begin(),
+                                      plan.dynamic_names.end());
+  const auto rules = bind_kernel_plan(plan, *db);
+  for (const auto& rule : rules)
+  {
+    const DriverPlan& driver = rule->definition().driver;
+    ReadSchedule schedule = ReadSchedule::every;
+    if (driver.kind == DriverK::seeded)
+      schedule = ReadSchedule::seeded;
+    else if (driver.kind == DriverK::once)
+      schedule = ReadSchedule::once;
+    else if (dynamic.count(plan.bindings[driver.relation].name) == 0)
+      schedule = ReadSchedule::once;
+    rule->attach(db, stratum, schedule);
   }
 }
 
@@ -733,7 +758,7 @@ void add_read_manifest(Stratum* stratum, const SealedKernelPlan& plan)
   for (const SealedRule& rule : plan.rules)
   {
     if (rule.driver.kind == DriverK::scan_delta
-        || rule.driver.kind == DriverK::probe_full)
+        || rule.driver.kind == DriverK::probe_delta)
       read_rels.insert(plan.bindings[rule.driver.relation].name);
     for (const StraightPlan& op : rule.preops)
       if (const auto* filter = std::get_if<FilterPlan>(&op))
@@ -762,9 +787,11 @@ void add_read_manifest(Stratum* stratum, const SealedKernelPlan& plan)
 }
 
 Relation* ensure_flavored_relation(Database* db,
-                                   const RelationBinding& binding)
+                                   const RelationBinding& binding,
+                                   bool allow_lattice_create = false)
 {
   Relation* relation = db->getRelation(binding.name);
+  bool created = false;
   if (relation == nullptr)
   {
     if (binding.shape.temp)
@@ -774,15 +801,157 @@ Relation* ensure_flavored_relation(Database* db,
     else if (binding.shape.kind == RelationK::plain)
       db->addRelation(binding.name, binding.shape.arity);
     else
-      fatal("flavored install: lattice relation is absent: " + binding.name);
+    {
+      if (!allow_lattice_create)
+        fatal("flavored install: lattice relation is absent: "
+              + binding.name);
+      db->addRelation(binding.name, binding.shape.arity);
+    }
     relation = db->getRelation(binding.name);
+    created = true;
   }
-  if (relation->getArity() != binding.shape.arity)
-    fatal("Relation already exists at incorrect arity.");
+  seal_check(relation->getArity() == binding.shape.arity,
+             SealErrorK::binding,
+             "install: relation arity mismatch for " + binding.name);
+  if (binding.shape.kind == RelationK::lattice && created)
+    relation->setLatticeFromSpec(binding.shape.lattice_spec,
+                                 db->collections());
+  const bool kind_matches =
+    binding.shape.kind == RelationK::struct_
+      ? relation->getStructId() != 0 && !relation->isLattice()
+    : binding.shape.kind == RelationK::lattice
+      ? relation->getStructId() == 0 && relation->isLattice()
+    : relation->getStructId() == 0 && !relation->isLattice()
+        && relation->isCompilerTemporary() == binding.shape.temp;
+  seal_check(kind_matches, SealErrorK::binding,
+             "install: relation kind mismatch for " + binding.name);
+  if (binding.shape.kind == RelationK::lattice)
+    seal_check(!binding.shape.lattice_spec.empty()
+                 && relation->latticeSpec() == binding.shape.lattice_spec,
+               SealErrorK::binding,
+               "install: lattice spec mismatch for " + binding.name);
   return relation;
 }
 
 } // namespace
+
+// ---------------------------------------------------------------------------
+// Normal/delta declaration installer. This is the cold coordinator side of
+// generated add-rel-decl: relation creation, index requisitions, write/intern
+// tasks, attachments, read scheduling, manifests, push, and first run unit.
+// ---------------------------------------------------------------------------
+
+void install_normal_stratum(Daemon* daemon, const std::string& name,
+                            const SealedKernelPlan& plan)
+{
+  seal_check(plan.flavor == "normal" || plan.flavor == "delta",
+             SealErrorK::flavor, "install: not a normal/delta plan");
+  Database* db = daemon->db();
+  Stratum* stratum = plan.flavor == "delta"
+    ? daemon->beginStratumDelta(name) : daemon->beginStratum(name);
+  if (stratum == nullptr) return;
+
+  // The compiler's declaration emitter walks its accumulated relation list
+  // in reverse slot order. Preserve that creation order exactly: struct ids
+  // feed collection hashing and are therefore visible in deterministic
+  // rendering even though rule bindings continue to address forward slots.
+  // Pass 1 still creates every relation before a lattice decomposition task
+  // or an attachment resolves a cross-relation target.
+  for (auto it = plan.bindings.rbegin(); it != plan.bindings.rend(); ++it)
+    (void)ensure_flavored_relation(db, *it, true);
+
+  // Generated declaration code also installs each relation's indices and
+  // write/intern tasks during that same reverse walk.
+  for (auto it = plan.bindings.rbegin(); it != plan.bindings.rend(); ++it)
+  {
+    const RelationBinding& binding = *it;
+    Relation* relation = db->getRelation(binding.name);
+    const RelationShape& shape = binding.shape;
+    if (shape.temp) continue;
+    seal_check(!shape.full_orders.empty(), SealErrorK::index_requisition,
+               "install: relation has no master ordering: " + binding.name);
+
+    Relation* decomp = shape.lattice_decomp_relation.empty()
+      ? nullptr : db->getRelation(shape.lattice_decomp_relation);
+    if (!shape.lattice_decomp_relation.empty())
+      seal_check(decomp != nullptr, SealErrorK::binding,
+                 "install: lattice decomposition target is absent: "
+                   + shape.lattice_decomp_relation);
+
+    if (shape.kind == RelationK::lattice)
+    {
+      for (size_t i = 0; i < shape.full_orders.size(); ++i)
+      {
+        const std::vector<u16>& order = shape.full_orders[i];
+        add_flavored_index(shape.arity, relation, order, true, false);
+        add_flavored_map_write_task(
+          shape.arity, db, stratum, relation, order,
+          i == 0 ? decomp : nullptr, shape.lattice_decomp_map, i == 0);
+      }
+      for (const std::vector<u16>& order : shape.delta_orders)
+      {
+        add_flavored_index(shape.arity, relation, order, false, true);
+        add_flavored_write_task(shape.arity, db, stratum, relation,
+                                order, true, false);
+      }
+      add_flavored_lattice_intern_task(
+        shape.arity, db, stratum, relation, shape.full_orders.front(),
+        decomp, shape.lattice_decomp_map);
+      continue;
+    }
+
+    for (size_t i = 0; i < shape.full_orders.size(); ++i)
+    {
+      const std::vector<u16>& order = shape.full_orders[i];
+      const bool seeded_only = std::find(shape.seeded_only_orders.begin(),
+                                         shape.seeded_only_orders.end(),
+                                         order)
+                            != shape.seeded_only_orders.end();
+      add_flavored_index(shape.arity, relation, order, false, false,
+                         seeded_only);
+      if (seeded_only)
+        add_flavored_seeded_write_task(shape.arity, db, stratum, relation,
+                                       order, false);
+      else
+        add_flavored_write_task(shape.arity, db, stratum, relation, order,
+                                false, i == 0);
+    }
+    for (const std::vector<u16>& order : shape.delta_orders)
+    {
+      add_flavored_index(shape.arity, relation, order, false, true);
+      add_flavored_write_task(shape.arity, db, stratum, relation,
+                              order, true, false);
+    }
+    add_flavored_intern_task(shape.arity, db, stratum, relation,
+                             shape.full_orders.front(),
+                             shape.kind == RelationK::struct_);
+  }
+
+  for (const AttachmentPlan& attachment : plan.attachments)
+  {
+    if (attachment.kind == AttachmentK::oracle)
+      daemon->bindOracle(stratum, attachment.a, attachment.b, attachment.c);
+    else if (attachment.kind == AttachmentK::seqindex)
+    {
+      Relation* base = db->getRelation(attachment.a);
+      seal_check(base != nullptr, SealErrorK::binding,
+                 "install: seqindex base relation is absent: " + attachment.a);
+      for (u16 column : attachment.columns)
+        seal_check(column < base->getArity(), SealErrorK::binding,
+                   "install: seqindex column is out of range");
+      stratum->addTask(phase_write,
+        new SeqIndexTask(db, base, attachment.columns,
+                         db->getRelation("$seq_at"),
+                         db->getRelation("$seq_atr")), false);
+      stratum->addReadRel(attachment.a);
+    }
+  }
+
+  attach_normal_rules(db, stratum, plan);
+  add_read_manifest(stratum, plan);
+  daemon->push(stratum);
+  daemon->continueRun();
+}
 
 // ---------------------------------------------------------------------------
 // The installer: one sealed counted plan -> one resident count-round stratum,
@@ -968,6 +1137,29 @@ bool maybe_interp_count_plugin(Daemon* daemon, const std::string& path)
   catch (const std::exception& error)
   {
     fatal("flavored interp routing: plan install failed for " + plan_path
+          + ": " + error.what());
+  }
+  return true;
+}
+
+bool maybe_interp_plan_plugin(Daemon* daemon, const std::string& path)
+{
+  if (path.size() < 5
+      || path.compare(path.size() - 5, 5, ".plan") != 0)
+    return false;
+  const size_t slash = path.rfind('/');
+  const std::string file =
+    slash == std::string::npos ? path : path.substr(slash + 1);
+  const std::string stem = file.substr(0, file.size() - 5);
+  try
+  {
+    const DecodedKernelPlan decoded = parse_kernel_plan_file(path);
+    const SealedKernelPlan sealed = seal_kernel_plan(decoded, daemon->db());
+    install_normal_stratum(daemon, stem, sealed);
+  }
+  catch (const std::exception& error)
+  {
+    fatal("normal interp routing: plan install failed for " + path
           + ": " + error.what());
   }
   return true;

@@ -1084,7 +1084,7 @@ start order and findings are recorded in execution-tiers-impl.md §7.
    and separately compiled fast/observed policies. Breakpoints are
    post-transition and proof views lazy.
 2. Seal and bind a deliberately narrow vocabulary before broad coverage:
-   constant preloads; delta-scan/full-prefix-probe drivers; full-prefix set
+   constant preloads; delta-scan/delta-prefix-probe drivers; full-prefix set
    probes; `neq`; exactly one body-instantiation `fire`; explicit bound head
    sink ports; ordinary set emit. Seal every `(operator,A,K,view)` against the
    out-of-line factory capability table.

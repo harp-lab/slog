@@ -92,6 +92,11 @@ static void run_plugin(slog::Daemon* d,
                        const std::string& path,
                        std::vector<void*>& so_handles)
 {
+    // SLOG_OPT=interp sends the canonical normal/delta `.plan` itself. Its
+    // installer owns declarations and tasks, so intercept before the shared
+    // object's existence check and dlopen path.
+    if (slog::interp::maybe_interp_plan_plugin(d, path))
+        return;
     // Flavored interpreter routing (counted-interp-contract.md slice 4):
     // by default every flavored plugin (`_count`, `_maint*`) installs its
     // sealed sidecar plan through the production interpreter seam instead

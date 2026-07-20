@@ -125,13 +125,24 @@ green:
 counted-interpreter/M4N workstream; it is not the full daemon fork gate F.
 From this point, roadmap §3.1 criterion 5 applies: **post-freeze
 changes to the core's dispatch, vocabulary layout, or cursor layer
-require joint review.** The remaining T2-B groups (once/seeded and K=0
-scans, temp/struct/lattice/count sinks, declaration-built write/intern
-tasks) land as trunk chores *under* the frozen interfaces, each with
-its delta/fires conformance tests — all of them registration-and-sink
-additions by design, which is why they can safely follow the freeze.
-Criterion 1's full-suite `SLOG_OPT=interp` run completes during the
-fork rather than gating it.
+require joint review.** K=0 scans landed 2026-07-17; normal
+`once`/`seeded` sealing and exact scheduler placement landed 2026-07-19,
+with fresh/externally-seeded native delta-and-fires differentials. Normal temp
+and struct sinks landed later that day: temp staging preserves duplicate
+nominal rows; ordinary struct staging delegates identity to
+`InternStructTask`; seeded struct replay uses the native checked emitter; and
+normal temp/struct delta drivers close both follow-up paths. The remaining
+T2-B groups landed later that day: normal lattice contributions reuse
+`LatticeInternTask`, and the cold plan installer rebuilds native declarations,
+indices, write/intern tasks, decompositions, and attachments. Canonical
+`cjoin`, struct filters, and DELTA-prefix probe drivers close the compiler's
+normal vocabulary without adding a VM opcode or cursor method. The direct
+`SLOG_OPT=interp` route consumes stratum `.plan` artifacts without compiling
+or loading stratum shared objects; separate action plugins remain native.
+These are registration, binding, and sink additions under the frozen
+interfaces. Criterion 1's repository run is native-equivalent; its sole
+remaining golden mismatch is the same stale generated lambda prefix under
+both interpreter and native execution.
 
 **Rationale.** The design risk this freeze would normally guard against
 was already absorbed: D1–D18 were prototyped against real daemon
@@ -243,6 +254,22 @@ family** — the fixture's `emit_rows` calls the real `emit<A>` templates
 against real indices with real dedup (lines 1069–1091, exercised by a
 pre-inserted duplicate at line 1443); there is no second emit
 implementation (D13, `operators.h:520-616`).
+
+Normal temp/struct conformance extends only this table. `emit-temp` binds the
+existing append-only native sink. `mkstruct` binds the native zero-id staging
+sink, or its master-checked form for a seeded replay task; the unchanged
+`InternStructTask` remains the sole owner of content identity, tombstone
+resurrection, and id allocation. A differential follows the resulting struct
+delta into an ordinary set and requires the exact native id words.
+
+Normal lattice/declaration conformance extends the same seams. `emit-lat`
+stages the native nominal row, `LatticeInternTask` remains the sole merge and
+subsumption owner, and the installer selects the existing arity ladders for
+map/full/delta/seeded-only indices and write/intern tasks. The installer walks
+declarations in native reverse order because constructor tags affect
+collection hashing and deterministic rendering. Probe drivers bind DELTA
+BTree indices; lattice delta rows are transitions and therefore use the same
+probe erasure as ordinary relations.
 
 ### The fast/observed policy split
 
