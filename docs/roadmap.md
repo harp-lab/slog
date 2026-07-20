@@ -9,13 +9,13 @@ streams are mature enough to collide unless sequenced deliberately; this
 document owns ordering and interleaving only. Each stream's own document
 remains normative for its content.
 
-| stream | document | slices | status 2026-07-14 |
+| stream | document | slices | status 2026-07-19 (v3.0.1) |
 |---|---|---|---|
-| incremental maintenance | [incremental.md](incremental.md), [incremental-status.md](incremental-status.md) | Phase 0, M0–M7 | Phase 0, M0, M1, M3, M6L 1–2, M4T, M5 slice 1, M4S (all slices) shipped; queue **M4N → M7** |
-| execution tiers | [execution-tiers.md](execution-tiers.md) | T0–T6, Q1 | T1 shipped; T0/T2+ unstarted |
-| modules/namespaces | [modules.md](modules.md) | N0–N5 | design complete, unstarted |
-| reflection | [slog-reflection.md](slog-reflection.md) | RF0–RF5 | brainstorm + §18 staging verdict |
-| REPL | [repl.md](repl.md), [repl-ux.md](repl-ux.md), [repl-terminal.md](repl-terminal.md) | R0–R5 | native Rust shell, private TCP server, and live session/daemon vertical slice working; semantic catalogs/handles remain |
+| incremental maintenance | [incremental.md](incremental.md), [incremental-status.md](incremental-status.md) | Phase 0, M0–M7 | Phase 0, M0, M1, M3, M6L 1–2, M4T, M5, M4S shipped; **counted-interpreter milestone complete** ([counted-interp-contract.md](counted-interp-contract.md), all 4 slices); queue **M4N ([m4n-contract.md](m4n-contract.md)) → M7** |
+| execution tiers | [execution-tiers.md](execution-tiers.md) | T0–T6, Q1 | T1 shipped; T2 core frozen, monotone conformance groups closed, **flavored execution interp-only by default**; T0 slice (a) landed; T3a/T4+ unstarted |
+| modules/namespaces | [modules.md](modules.md) | N0–N5 | N0 landed; N1+ unstarted |
+| reflection | [slog-reflection.md](slog-reflection.md) | RF0–RF5 | RF0 done; RF1 slice 0 shipped (plan determinism); ABI-2 split pending |
+| REPL | [repl.md](repl.md), [repl-ux.md](repl-ux.md), [repl-terminal.md](repl-terminal.md) | R0–R5 | native Rust shell, private TCP server, and live session/daemon vertical slice working; R0 waits on T0 (b)/(d) |
 | stats migration | [stats.md](stats.md) §7 | steps 1–7 | `$stat_*` shipped; migration unstarted |
 
 ## 1. Ordering principles
@@ -416,6 +416,31 @@ exclusively, P4 discharged).  Corrupted-sidecar probes pin both
 directions.  Exit-audit battery counts land in incremental-status.md;
 M4N is unblocked on its completion.
 
+**Thread-0 bearings (2026-07-19, v3.0.1).**  How this thread proceeds:
+
+1. **M4N** (contract: m4n-contract.md, drafted 2026-07-19) — the
+   negated-body-driven variants as interpreter plans: anti-delta
+   versions with inverted polarity, the per-sign drive-vs-view staging
+   protocol at negative edges, pre/post absence views as plan ops over
+   thread-0 cursors.  Slices: acyclic readers → recursive readers →
+   admission + intersections → exit audit.  Its differential is the
+   oracle triangle (replay content, count-IR oracle, forced recounts):
+   anti-delta variants have no native leg by design.
+2. **M7** — recursive lattice/rank repair, opening on M4N's exit,
+   interpreter-first on the same seam (M6L's contributor machinery +
+   the DRed change-splitting adopted in lattices.md).
+3. **The standing vetting campaign runs alongside, not after**: the
+   intersection-matrix ledger goes into incremental-status.md during
+   M4N slice 3 (its negation rows are the natural first entries), the
+   fuzz generators grow negative edges in M4N slice 4, and long-horizon
+   soak (hundreds-of-flush streams with save/load round-trips) lands as
+   its own arc between M4N and M7.
+4. **Banked and reusable**: the flavored install seam, the oracle
+   triangle harnesses, and the -O0 registration-ladder TU are the
+   substrate every remaining thread-0 milestone extends — new variants
+   mean planner emission + seal admission + cursor/sink registrations,
+   never new executor machinery.
+
 - **The standing vetting campaign** — the reason this thread exists beyond
   the milestones. Full incrementality is the system's central bet and its
   testing should outweigh its implementation:
@@ -537,6 +562,32 @@ The payload/builder seam is ready for that meeting, but deliberately has no
 exact-command branch in `slogd.cpp`. The R2 parser/rendering and transcript
 battery follow the dispatcher integration.
 
+**Thread-1 bearings (2026-07-19, v3.0.1).**  How this thread proceeds:
+
+1. **T0 slices (b) and (d) first** — entry modes and the uniform pause
+   record are the two remaining blockers for R0–R1's full start, and
+   slice (d)'s pause record is also what the level-0 watch battery
+   rides.  Slice (a)'s dispatcher and catalog verbs are landed; the
+   native Rust shell and TCP transport already work against them.
+2. **R0 → R1 on the shipped substrate**: session ownership, semantic
+   verbs over `session-*!`, change summaries, golden `--plain`
+   transcripts; then the canvas.  Nothing here waits on thread 0 —
+   forward incrementality and the frozen monotone interpreter are the
+   foundation, and `clear scratch` silently improves as thread 0's
+   precise routes land (M4N just widened them to negation cones).
+3. **The Q1/R2 meeting point**: T0's dispatcher takes ownership of
+   `query`/`query-page`/`query-cancel` admission, N2/N3 supply the
+   boundary/materialization overlay, and the already-golden
+   payload/builder seam connects — then R2's `?`/`?count`/`?exists`
+   and `explain` land as rendering over it.
+4. **Toward F**: the remaining fork-gate criteria are thread-1-adjacent
+   trunk chores — the monotone T2-B residue (normal-flavor once/seeded,
+   temp/struct/lattice sinks, declaration-built write/intern tasks:
+   substantially prebuilt by the counted-interpreter arc, needing
+   normal-flavor conformance tests) feeding criterion 1's full
+   `SLOG_OPT=interp` suite, plus the protocol/pause/watch batteries of
+   criteria 2–3.
+
 Deferred on this thread until after S: level-1 anything (provenance watches,
 stepping, why/why-not), `whatif`, fork/branching vocabulary beyond reserved
 words.
@@ -556,6 +607,15 @@ Thread-local exits: M4N and M7 audits plus the counted-interpreter gate
 (thread 0); R0–R3 golden batteries, Q1 hygiene, catalog round-trip
 (thread 1). The gate itself is the **joint intersection battery** — each
 item is a capability neither thread can prove alone:
+
+*Status 2026-07-19:* thread 0 has banked the counted-interpreter gate
+(all four slices, exit audit in incremental-status.md) — M4N and M7
+audits remain.  Thread 1 has banked Q1 slices 1–5 and T0 slice (a);
+R0–R3 and the catalog round-trip remain, gated first on T0 (b)/(d).
+The post-merge shape (W4′ debugger/T4/N4/RF2, W5′ capstone) is
+unchanged; item 2 of the joint battery (scratch over counted state)
+got materially easier — counted sidecars are now maintained by the
+same executor the scratch layer's views run on.
 
 1. **The REPL drives the incremental battery.** The session workflow
    harness re-expressed as REPL transcripts: edits, flushes, recounts,
