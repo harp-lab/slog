@@ -95,16 +95,25 @@ now extended across polarity.
    typed fault rather than a silently absorbed contribution (the
    kind-less-batch lesson, applied prophylactically).
 
-4. **Pre/post absence views are explicit plan ops.**  By direct analogy
+4. **Pre/post absence views are explicit plan ops (ratified
+   2026-07-19: the cursor owns the equation).**  By direct analogy
    with `join-old`/`join-new`: the ABI-1 grammar gains pre/post-state
    absence forms (working spellings `absent-old`/`absent-new`, carrying
    the delta ordering exactly as the join views do), emitted by the
-   maintenance planners and serialized by canonical-plan.  They execute
-   as thread-0 cursor registrations composing the frozen absence probe
-   with the staged transition views — no new opcode, no VM arm, no
-   cursor-interface change (the counted-interpreter precedent: every
-   view so far has been a cursor-factory composition).  The count
-   flavor keeps plain `absent` (settled state, both views coincide).
+   maintenance planners and serialized by canonical-plan.  Each
+   executes as ONE thread-0 cursor whose bound contract is the whole
+   pre/post-state predicate — never a planner-emitted idiom of partial
+   filters that is only safe by convention and fails silently when
+   half-emitted.  No new opcode, no VM arm, no cursor-interface change
+   (the counted-interpreter precedent: every view so far has been a
+   cursor-factory composition).  A useful identity the cursor exploits:
+   because the negated stratum is FINAL, a staged transition row's sign
+   is recoverable from live membership (in delta ∧ live = gained; in
+   delta ∧ not-live = lost), so one full+delta index pair — the exact
+   binding shape join-old/join-new already use — expresses
+   absence-at-pre as "absent from FULL∪Δ, or present in FULL∩Δ".
+   The count flavor keeps plain `absent` (settled state, both views
+   coincide).
 
 5. **The exact partition extends across polarity.**  Retractions of
    `(A(x), ¬B(x))` partition exactly: lost-A-driven versions evaluate
