@@ -1,0 +1,29 @@
+;; M4N slice 1 (docs/m4n-contract.md): acyclic negated reads of edited
+;; input relations.  h is the canonical shape, hs adds a sibling negated
+;; pair (the pairwise pre/post split), down is a positive reader of h so
+;; negated repairs propagate through ordinary staged transitions.
+
+table (a int)
+table (b int)
+table (c int)
+table (h int)
+table (hs int)
+table (down int)
+
+rule
+(a X)
+~(b X)
+-->
+(h X)
+
+rule
+(a X)
+~(b X)
+~(c X)
+-->
+(hs X)
+
+rule
+(h X)
+-->
+(down X)

@@ -27,7 +27,8 @@
 (provide compile-strata (struct-out sbuild) (struct-out db-partition)
          stratum-meta-dynamic-rels   ; segment write-sets (incremental B0)
          read-stratum-meta           ; cone/polarity input (incremental B4)
-         program->jobs)   ; tooling/debug: inspect a program's stratum jobs
+         program->jobs    ; tooling/debug: inspect a program's stratum jobs
+         flavored-native?) ; session M4N admission: no native leg for anti-delta variants
 
 (require "params.rkt")
 (require "utils.rkt")

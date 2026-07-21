@@ -416,6 +416,30 @@ exclusively, P4 discharged).  Corrupted-sidecar probes pin both
 directions.  Exit-audit battery counts land in incremental-status.md;
 M4N is unblocked on its completion.
 
+**Checkpoint 2026-07-20 (M4N slice 1 — acyclic negated readers):** the
+full stack landed per m4n-contract.md pins 2–5 with the slice-1
+refinement (upfront finalization of input-edited negated relations,
+global phasing retained — recorded in pin 3).  Planner: anti-delta
+versions per fully-bound negated occurrence with the ratified pairwise
+pre/post sibling split, `absent-old`/`absent-new` view ops carrying the
+delta ordering, DRed+`~` as a typed refusal until slice 2 (21-case unit
+battery).  Daemon: `AbsentView` decode/seal (maint flavors only,
+delta-ordering equality checked), the XOR pre-state cursor
+(`AbsentPreCursor`), `cnt_kind_view` with typed fold/drive fatals, and
+the non-draining view staging vehicle
+(`stageViewTransitions`/`stage-view-transitions`).  Session: the
+`negatable?` cone flag, the M4N admission predicate (input-edited,
+neg-only-read, fully-bound, acyclic, tables, interp-only), the
+finalize-upfront route with per-phase drive `(−S)` + view `(S)` staging
+(routes `maintain-negated-{negative,positive}`), and named fallbacks
+for `'negw`, derived-negated, mixed reads, structs/lattices, and
+`SLOG_FLAVORED_NATIVE` (emit-cpp emits `static_assert(false, ...)` for
+the views — no native leg, loudly).  Gates: the four-flush canon
+(initial/gained/lost/mixed churn incl. the ~b/~c sibling split) with
+healed-equals-forced counts, five fallback fixtures, `m4n-*` block in
+the session battery.  Next: slice 2 (recursive readers, ALL `~`
+shapes).
+
 **Thread-0 bearings (2026-07-19, v3.0.1).**  How this thread proceeds:
 
 1. **M4N** (contract: m4n-contract.md, drafted 2026-07-19) — the

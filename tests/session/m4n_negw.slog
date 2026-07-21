@@ -1,0 +1,13 @@
+;; M4N slice 1 refusal: a wildcard'd (prefix-shaped) negated read of the
+;; edited relation carries 'negw and must fall back to clear-and-rerun --
+;; absence of a PREFIX is not maintainable from signed row transitions.
+
+table (a int)
+table (pair int int)
+table (hw int)
+
+rule
+(a X)
+~(pair X _)
+-->
+(hw X)

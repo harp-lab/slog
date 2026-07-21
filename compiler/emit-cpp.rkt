@@ -637,6 +637,17 @@
        (format "if (!slog::absent_probe<~a,~a>(~a, ~a)) return;"
                A K (index-name-of op) key))
       (emit-ops rest index-name-of delta-name-of head-fun indent))]
+    ;; M4N anti-delta absence views (docs/m4n-contract.md pin 4): interp-only
+    ;; by ratified doctrine -- the pre-state XOR cursor has no native
+    ;; operator.  The TU text must still be generatable (sidecar emission
+    ;; shares this path), so emit a compile-time refusal: any attempt to
+    ;; build this artifact natively fails loudly instead of miscomputing.
+    [`(,(and op `(,(or 'absent-old 'absent-new) ,name ,ind ,K ,dind ,ys ...)) . ,rest)
+     (string-append
+      ((emit-lines indent)
+       (format "static_assert(false, \"~a: anti-delta absence view on ~a has no native leg (docs/m4n-contract.md pin 4)\");"
+               (car op) name))
+      (emit-ops rest index-name-of delta-name-of head-fun indent))]
     ;; negation over lattice keys: absence probe of the payload map under
     ;; the K-bound key prefix ("no value at key k"); the ordering's last
     ;; column is the merged value, so the map's key width is A-1
@@ -721,6 +732,9 @@
                                         (make-list (- KA K) "0"))))
      (format "if (!slog::absent_probe_lat<~a,~a>(~a, ~a)) return true;"
              KA K (index-name-of op) key)]
+    [`(,(or 'absent-old 'absent-new) ,name ,_ ...)
+     (format "static_assert(false, \"anti-delta absence view on ~a has no native leg (docs/m4n-contract.md pin 4)\");"
+             name)]
     [`(let ,x ,(? symbol? y)) (format "u64 v_~a = v_~a;" x y)]
     [`(let ,x (,f ,args ...))
      (string-append (format "u64 v_~a = ~a;\n" x (prim-call f args))
@@ -1388,7 +1402,8 @@
       (for/fold ([a with-driver]) ([op (in-list (append (crule-pre cr)
                                                         (crule-body cr)))])
         (cond
-          [(memq (car op) '(join join-old join-new join-tomb join-lat exists absent absent-lat))
+          [(memq (car op) '(join join-old join-new join-tomb join-lat exists
+                            absent absent-lat absent-old absent-new))
            (set-add a (second op))]
           [(eq? (car op) 'join3)
            (for/fold ([a a]) ([arm (in-list (cddr op))])

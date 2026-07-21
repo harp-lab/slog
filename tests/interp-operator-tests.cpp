@@ -3178,22 +3178,39 @@ void run(bool settled)
 // Chained construction: the inner mkstruct's resolved id is the outer
 // construction's content register; on unsettled content the resolution
 // cursor's zero-match exhaustion is a loud fatal (forked child).
-bool test_counted_chained_mkstruct_and_closure_fatal()
+// Fatal-expected probe bodies run in a RE-EXECED child (`main` dispatches
+// on the flag): plain fork() from this threaded process can inherit a
+// locked malloc/OpenMP futex and deadlock before reaching the fatal --
+// observed as a 22h hang -- while exec resets the address space.  alarm()
+// is belt-and-braces: a wedged child dies signaled and CHECK fails loudly
+// instead of hanging waitpid forever.
+[[noreturn]] static void probe_child_closure_fatal()
 {
-  counted_chain::run(true);
+  alarm(20);
+  const int devnull = open("/dev/null", O_WRONLY);
+  dup2(devnull, 1);
+  dup2(devnull, 2);
+  counted_chain::run(false);
+  _exit(0); // reached only if the resolve cursor did NOT fatal
+}
 
+static bool run_reexec_probe(const char* flag)
+{
   const pid_t pid = fork();
   if (pid == 0)
   {
-    const int devnull = open("/dev/null", O_WRONLY);
-    dup2(devnull, 1);
-    dup2(devnull, 2);
-    counted_chain::run(false);
-    _exit(0); // reached only if the resolve cursor did NOT fatal
+    execl("/proc/self/exe", "interp-operator-tests", flag, (char*)nullptr);
+    _exit(97); // exec failed
   }
   int status = 0;
   waitpid(pid, &status, 0);
-  CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 1);
+  return WIFEXITED(status) && WEXITSTATUS(status) == 1;
+}
+
+bool test_counted_chained_mkstruct_and_closure_fatal()
+{
+  counted_chain::run(true);
+  CHECK(run_reexec_probe("--probe-closure-fatal"));
   return true;
 }
 
@@ -3944,29 +3961,9 @@ bool test_m4n_absent_pre_and_view_kind()
 
   // A view-kind row reaching a maintenance fold dies loudly.  Entry-staged
   // batches retire at the first finalize before any intern runs, so the
-  // guard is exercised by driving the fold directly.
-  const pid_t pid = fork();
-  if (pid == 0)
-  {
-    const int devnull = open("/dev/null", O_WRONLY);
-    dup2(devnull, 1);
-    dup2(devnull, 2);
-    Database db(1);
-    db.addRelation("nv_h", 1);
-    Relation* h = db.getRelation("nv_h");
-    h->addIndex<1>({0}, false);
-    InsertBatch* batch = new InsertBatch();
-    batch->kind = cnt_kind_view;
-    batch->sign = -1;
-    batch->data[batch->usage++] = 7;
-    h->getDelta().push_back(batch);
-    MaintainTask<1> fold(&db, h, {0}, 0, false);
-    fold.work();
-    _exit(0); // reached only if the fold did NOT fatal
-  }
-  int status = 0;
-  waitpid(pid, &status, 0);
-  CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 1);
+  // guard is exercised by driving the fold directly -- in a re-execed
+  // child (see probe_child_closure_fatal's rationale).
+  CHECK(run_reexec_probe("--probe-view-fold-fatal"));
 
   // Typed refusals: pre/post absence views are maintenance-only, and the
   // delta ordering must be requisitioned and identical.
@@ -4645,8 +4642,32 @@ void benchmark_debug_masks()
 
 } // namespace
 
+[[noreturn]] static void probe_child_view_fold_fatal()
+{
+  alarm(20);
+  const int devnull = open("/dev/null", O_WRONLY);
+  dup2(devnull, 1);
+  dup2(devnull, 2);
+  Database db(1);
+  db.addRelation("nv_h", 1);
+  Relation* h = db.getRelation("nv_h");
+  h->addIndex<1>({0}, false);
+  InsertBatch* batch = new InsertBatch();
+  batch->kind = cnt_kind_view;
+  batch->sign = -1;
+  batch->data[batch->usage++] = 7;
+  h->getDelta().push_back(batch);
+  MaintainTask<1> fold(&db, h, {0}, 0, false);
+  fold.work();
+  _exit(0); // reached only if the fold did NOT fatal
+}
+
 int main(int argc, char** argv)
 {
+  if (argc > 1 && std::string(argv[1]) == "--probe-closure-fatal")
+    probe_child_closure_fatal();
+  if (argc > 1 && std::string(argv[1]) == "--probe-view-fold-fatal")
+    probe_child_view_fold_fatal();
   bool ok = true;
   ok &= test_uninterrupted_and_every_quantum();
   ok &= test_cursor_internal_pause_and_continuation_copy();

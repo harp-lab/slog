@@ -2573,7 +2573,15 @@ public:
   // the next maintenance stratum.  Each downstream stratum is run once, so a
   // journal row is staged at most once for that consumer even though it stays
   // available to later strata until commit.
-  void stageUpdateTransitions(const std::vector<std::string>& names, s8 sign = 1)
+  // `kind` distinguishes the two staged roles (M4N, docs/m4n-contract.md
+  // pin 3): premise-kind rows DRIVE a maintenance epoch's reads;
+  // view-kind rows populate delta indices only, so pre/post-state views
+  // (absent-old, the join-old survivor exclusion) can see the epoch's
+  // opposite-sign transitions.  Staging is non-draining either way -- the
+  // journals clear at update-epoch boundaries -- so one journal can stage
+  // as a drive in one phase and a view in the other.
+  void stageUpdateTransitions(const std::vector<std::string>& names,
+                              s8 sign = 1, u8 kind = cnt_kind_premise)
   {
     std::lock_guard<std::mutex> lk(update_transition_mutex);
     auto& journal = sign < 0 ? update_negative_transitions : update_transitions;
@@ -2584,7 +2592,7 @@ public:
       auto it = journal.find(rel->getVersionId());
       if (it == journal.end()) continue;
       InsertBatch* b = new InsertBatch();
-      b->kind = cnt_kind_premise;
+      b->kind = kind;
       b->sign = sign;
       for (const std::vector<u64>& row : it->second)
       {
@@ -2592,7 +2600,7 @@ public:
         {
           rel->sendBatch(b);
           b = new InsertBatch();
-          b->kind = cnt_kind_premise;
+          b->kind = kind;
           b->sign = sign;
         }
         for (u64 v : row) b->data[b->usage++] = v;

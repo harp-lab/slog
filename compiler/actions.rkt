@@ -221,6 +221,10 @@
      (format "  d->stageUpdateTransitions(std::vector<std::string>{~a}, ~a);\n"
              (string-join (for/list ([r (in-list rels)])
                             (format "\"~a\"" r)) ", ") sign)]
+    [`(stage-view-transitions signed ,sign ,rels ...)
+     (format "  d->stageViewTransitions(std::vector<std::string>{~a}, ~a);\n"
+             (string-join (for/list ([r (in-list rels)])
+                            (format "\"~a\"" r)) ", ") sign)]
     ;; Compatibility spelling for M1 callers predating explicit polarity.
     [`(stage-update-transitions ,rels ...)
      (format "  d->stageUpdateTransitions(std::vector<std::string>{~a}, 1);\n"

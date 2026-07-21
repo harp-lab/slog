@@ -1,0 +1,19 @@
+;; M4N slice 1 refusal: the negated relation is DERIVED (written by a cone
+;; stratum), so its transitions are not an input journal the route can
+;; finalize upfront -- slice 2/3 territory; today it falls back to rerun.
+
+table (a int)
+table (b int)
+table (m int)
+table (g int)
+
+rule
+(a X)
+-->
+(m X)
+
+rule
+(b X)
+~(m X)
+-->
+(g X)

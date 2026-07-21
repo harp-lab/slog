@@ -717,6 +717,17 @@ public:
          + std::to_string(names.size()) + ")");
   }
 
+  // M4N view-only staging: the opposite sign of a phase's drive, staged as
+  // cnt_kind_view rows for the pre/post-state cursors (never a drive,
+  // never a fold contribution -- both are typed faults downstream).
+  void stageViewTransitions(const std::vector<std::string>& names, s8 sign)
+  {
+    if (refuseIfSuspended("stage-view-transitions")) return;
+    database->stageUpdateTransitions(names, sign, cnt_kind_view);
+    emit("(view-transitions-staged " + std::to_string((s32)sign) + " "
+         + std::to_string(names.size()) + ")");
+  }
+
   void stageLatticeReplacements(const std::vector<std::string>& names, s8 sign)
   {
     if (refuseIfSuspended("stage-lattice-replacements")) return;

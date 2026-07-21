@@ -2387,6 +2387,105 @@ expect "m4s-negstruct-complement-grown" "(dumpdone 3)" out/sess-m4s-negstruct.lo
 expect "m4s-negstruct-survivor" "(dumprow (pair 2 5))" out/sess-m4s-negstruct.log
 expect "m4s-negstruct-tombstoned" "(idsdone 1 1)" out/sess-m4s-negstruct.log
 
+# --- M4N slice 1: acyclic negated reads of edited inputs --------------------
+# (docs/m4n-contract.md pins 3-5.)  The changed negated inputs are finalized
+# upfront (both overlay signs), each phase then stages their opposite-sign
+# journal as anti-delta drives and same-sign as view-only rows.  Four
+# flushes exercise every partition-table case: initial build, gained
+# blocker, lost blocker, and a mixed flush churning BOTH a positive premise
+# and a blocker (including the sibling ~b/~c pre/post split on hs).
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4n_acyclic.slog \
+  batch+:a,1 batch+:a,2 batch+:a,3 batch+:b,2 batch+:c,3 flush \
+  dump-rel:h dump-rel:hs dump-rel:down \
+  batch+:b,1 flush dump-rel:h dump-rel:hs dump-rel:down \
+  batch-:b,2 flush dump-rel:h dump-rel:hs dump-rel:down \
+  batch-:b,1 batch+:b,3 batch+:a,4 batch-:a,2 flush \
+  dump-rel:h dump-rel:hs dump-rel:down \
+  dump-counts:h dump-counts:hs recount-force dump-counts:h dump-counts:hs \
+  > out/sess-m4n-acyclic.log 2>&1
+if [ "$(grep -cE '\(route maintain-negated-negative [0-9]+ [0-9]+\)' out/sess-m4n-acyclic.log)" -eq 4 ] \
+   && [ "$(grep -cE '\(route maintain-negated-positive [0-9]+ [0-9]+\)' out/sess-m4n-acyclic.log)" -eq 4 ] \
+   && [ "$(grep -cE '\(route maintain-negated-negative [0-9]+ 2\)' out/sess-m4n-acyclic.log)" -eq 1 ]; then
+  echo "PASS m4n-routes"; PASS=$((PASS+1))
+else
+  echo "FAIL m4n-routes"; FAIL=$((FAIL+1))
+fi
+expect_not "m4n-no-rerun" "(route rerun" out/sess-m4n-acyclic.log
+expect "m4n-settled" "(update-committed 4 counts-valid)" out/sess-m4n-acyclic.log
+if [ "$(grep -cF '(dumpdone 2)' out/sess-m4n-acyclic.log)" -eq 7 ] \
+   && [ "$(grep -cF '(dumpdone 1)' out/sess-m4n-acyclic.log)" -eq 4 ] \
+   && [ "$(grep -cF '(dumpdone 0)' out/sess-m4n-acyclic.log)" -eq 1 ]; then
+  echo "PASS m4n-set-content"; PASS=$((PASS+1))
+else
+  echo "FAIL m4n-set-content"; FAIL=$((FAIL+1))
+fi
+if [ "$(grep -cF '(countrow h 1 0 1 0)' out/sess-m4n-acyclic.log)" -eq 2 ] \
+   && [ "$(grep -cF '(countrow h 4 0 1 0)' out/sess-m4n-acyclic.log)" -eq 2 ] \
+   && [ "$(grep -cF '(countrow hs 1 0 1 0)' out/sess-m4n-acyclic.log)" -eq 2 ] \
+   && [ "$(grep -cF '(countrow hs 4 0 1 0)' out/sess-m4n-acyclic.log)" -eq 2 ] \
+   && [ "$(grep -cF '(countdone h 2)' out/sess-m4n-acyclic.log)" -eq 2 ]; then
+  echo "PASS m4n-maintained-equals-recount"; PASS=$((PASS+1))
+else
+  echo "FAIL m4n-maintained-equals-recount"; FAIL=$((FAIL+1))
+fi
+
+# Named fallbacks.  A wildcard'd negated read of the changed relation
+# carries 'negw: prefix absence is not maintainable from row transitions.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4n_negw.slog \
+  batch+:a,1 batch+:pair,1,2 flush \
+  batch-:pair,1,2 flush dump-rel:hw \
+  > out/sess-m4n-negw.log 2>&1
+if [ "$(grep -cF '(route rerun' out/sess-m4n-negw.log)" -eq 2 ]; then
+  echo "PASS m4n-negw-fallback"; PASS=$((PASS+1))
+else
+  echo "FAIL m4n-negw-fallback"; FAIL=$((FAIL+1))
+fi
+expect_not "m4n-negw-no-maintain" "(route maintain-negated" out/sess-m4n-negw.log
+expect "m4n-negw-content" "(dumpdone 1)" out/sess-m4n-negw.log
+
+# A DERIVED negated relation (written by a cone stratum) is slice 2/3
+# territory: its transitions are not an input journal to finalize upfront.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4n_derived.slog \
+  batch+:a,1 batch+:b,1 batch+:b,2 flush \
+  batch-:a,1 flush dump-rel:g \
+  > out/sess-m4n-derived.log 2>&1
+if [ "$(grep -cF '(route rerun' out/sess-m4n-derived.log)" -eq 2 ]; then
+  echo "PASS m4n-derived-fallback"; PASS=$((PASS+1))
+else
+  echo "FAIL m4n-derived-fallback"; FAIL=$((FAIL+1))
+fi
+expect_not "m4n-derived-no-maintain" "(route maintain-negated" out/sess-m4n-derived.log
+expect "m4n-derived-content" "(dumpdone 2)" out/sess-m4n-derived.log
+
+# A relation read BOTH positively and negatively in the cone falls back:
+# slice 1 requires the changed negated relation's reads to be exactly ~.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4n_mixedread.slog \
+  batch+:a,1 batch+:b,2 flush \
+  batch-:b,2 flush dump-rel:h dump-rel:m \
+  > out/sess-m4n-mixedread.log 2>&1
+if [ "$(grep -cF '(route rerun' out/sess-m4n-mixedread.log)" -eq 2 ]; then
+  echo "PASS m4n-mixedread-fallback"; PASS=$((PASS+1))
+else
+  echo "FAIL m4n-mixedread-fallback"; FAIL=$((FAIL+1))
+fi
+expect_not "m4n-mixedread-no-maintain" "(route maintain-negated" out/sess-m4n-mixedread.log
+expect "m4n-mixedread-h" "(dumpdone 1)" out/sess-m4n-mixedread.log
+expect "m4n-mixedread-m" "(dumpdone 0)" out/sess-m4n-mixedread.log
+
+# Under SLOG_FLAVORED_NATIVE the anti-delta variants have no native leg,
+# so admission itself must decline (before forcing any flavored build).
+SLOG_FLAVORED_NATIVE=1 timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4n_acyclic.slog \
+  batch+:a,1 batch+:b,2 flush dump-rel:h \
+  > out/sess-m4n-native-fallback.log 2>&1
+expect "m4n-native-fallback" "(route rerun" out/sess-m4n-native-fallback.log
+expect_not "m4n-native-no-maintain" "(route maintain-negated" out/sess-m4n-native-fallback.log
+expect "m4n-native-content" "(dumpdone 1)" out/sess-m4n-native-fallback.log
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

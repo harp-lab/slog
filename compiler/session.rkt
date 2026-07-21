@@ -1040,7 +1040,7 @@
      (define union-sos (mutable-set))
      (for ([r (in-list (sort (set->list targets) symbol<?))]
            #:when (hash-has-key? chains+ r))
-       (define-values (cone _mono?) (cone-of s r strata-pos+ chains+))
+       (define-values (cone _mono? _neg?) (cone-of s r strata-pos+ chains+))
        (for ([info (in-list cone)])
          (set-add! union-sos (sinfo-so info))))
      (define union-cone
@@ -1130,9 +1130,10 @@
 ;; cone(target) closure over candidate entries (cons pos sinfo), in
 ;; pipeline order; monotone? = #f if any edge INTO the cone is neg/lat.
 (define (cone-closure candidates target)
-  (let loop ([infos candidates] [wave (set target)] [acc '()] [mono? #t])
+  (let loop ([infos candidates] [wave (set target)] [acc '()] [mono? #t]
+             [negatable? #t])
     (match infos
-      ['() (values (reverse acc) mono?)]
+      ['() (values (reverse acc) mono? negatable?)]
       [(cons (cons _pos info) rest)
        (define hit-kinds
          (for*/list ([entry (in-list (sinfo-reads info))]
@@ -1140,12 +1141,17 @@
                      [k (in-list (cdr entry))])
            k))
        (cond
-         [(null? hit-kinds) (loop rest wave acc mono?)]
+         [(null? hit-kinds) (loop rest wave acc mono? negatable?)]
          [else
           (loop rest
                 (for/fold ([w wave]) ([d (in-list (sinfo-dyn info))]) (set-add w d))
                 (cons info acc)
-                (and mono? (andmap (lambda (k) (eq? k 'pos)) hit-kinds)))])])))
+                (and mono? (andmap (lambda (k) (eq? k 'pos)) hit-kinds))
+                ;; M4N slice 1: fully-bound table negation is the one
+                ;; admissible non-monotone edge kind; 'negw (prefix-shaped)
+                ;; and 'lat stay blocking.
+                (and negatable?
+                     (andmap (lambda (k) (memq k '(pos neg))) hit-kinds)))])])))
 
 ;; cone(rel) for a TIP-anchored batch, given one introspection snapshot:
 ;; anchor at the target's last binding, candidates = strata bound
@@ -1164,7 +1170,7 @@
     (for/list ([p (in-list (session-strata-info s))]
                #:when (>= (hash-ref strata-pos (car p) 0) anchor))
       (cons (hash-ref strata-pos (car p) 0) (cdr p))))
-  (define-values (cone mono?) (cone-closure candidates rel))
+  (define-values (cone mono? negatable?) (cone-closure candidates rel))
   (for ([info (in-list cone)])
     (define pos
       (for/first ([c (in-list candidates)] #:when (eq? (cdr c) info)) (car c)))
@@ -1173,7 +1179,7 @@
       (when (for/or ([p (in-list (chain-positions chains r))]) (> p pos))
         (error 'session
                (format "~a was rebound after a cone stratum (pos ~a): tip re-entry is unsound here; anchor the batch at the version instead" r pos)))))
-  (values cone mono?))
+  (values cone mono? negatable?))
 
 ;; ---- the applied input-overlay log (M0.4b) -------------------------------
 
@@ -1371,10 +1377,12 @@
 ;; unsupported retraction or non-monotone edge.
 (define (tip-flush! s tip-groups strata-pos chains)
   (define topology-mono? #t)
+  (define topology-negatable? #t)
   (define union-sos (mutable-set))
   (for ([g (in-list tip-groups)])
-    (define-values (cone mono?) (cone-of s (first g) strata-pos chains))
+    (define-values (cone mono? negatable?) (cone-of s (first g) strata-pos chains))
     (unless mono? (set! topology-mono? #f))
+    (unless negatable? (set! topology-negatable? #f))
     (for ([info (in-list cone)])
       (set-add! union-sos (sinfo-so info))))
   (define union-cone
@@ -1408,6 +1416,41 @@
                          #:when (or (member 'pos (cdr entry))
                                     (member 'lat (cdr entry))))
                (car entry)))))
+  ;; M4N slice 1 (docs/m4n-contract.md pin 5): negated reads of CHANGED
+  ;; relations.  The changed negated relations are finalized upfront (both
+  ;; overlay signs, the finality identity: pre = FULL xor staged-delta), so
+  ;; each phase stages their opposite-sign journal as anti-delta DRIVES and
+  ;; the same-sign journal as view-kind rows for the pre/post cursors.
+  ;; Admissible only when every such relation is an input-edit TARGET whose
+  ;; cone reads are exactly '(neg) -- fully bound (no 'negw), no positive or
+  ;; lattice read of the same relation anywhere in the cone -- over an
+  ;; acyclic cone.  Derived negated relations and recursive readers are
+  ;; slice 2+; SLOG_FLAVORED_NATIVE falls back (the anti-delta variants
+  ;; have no native leg).
+  (define changed-names (map first tip-groups))
+  (define negated-changed
+    (remove-duplicates
+     (for*/list ([info (in-list union-cone)]
+                 [entry (in-list (sinfo-reads info))]
+                 #:when (and (member 'neg (cdr entry))
+                             (member (car entry) changed-names)))
+       (car entry))))
+  (define m4n-shape?
+    (and edit-shape?
+         (not topology-mono?)          ; monotone cones keep their own routes
+         topology-negatable?
+         (pair? negated-changed)
+         (not (flavored-native?))
+         (for/and ([info (in-list union-cone)]) (sinfo-acyclic? info))
+         (for*/and ([info (in-list union-cone)]
+                    [entry (in-list (sinfo-reads info))]
+                    #:when (member (car entry) negated-changed))
+           (equal? (cdr entry) '(neg)))
+         ;; derived-negated falls back: a changed negated relation written
+         ;; by any cone stratum is not an input edit
+         (for/and ([r (in-list negated-changed)])
+           (not (for/or ([info (in-list union-cone)])
+                  (member r (sinfo-dyn info)))))))
   ;; A lattice edge is intentionally non-monotone in the generic cone test,
   ;; but M6L has its own stricter certificate.  Query local capability once
   ;; the edit form is admissible, then prove the complete topology below.
@@ -1493,13 +1536,19 @@
     (and caps route-shape-certified?
          (for/and ([r (in-list maintenance-names)])
            (hash-ref caps r #f))))
+  ;; M4N runs beside route-shape-certified? (which is mono/lattice-scoped)
+  ;; so the m1/m3/m4t/m6l2 predicates cannot fire on a negated shape.
+  (define m4n-certified?
+    (and caps m4n-shape?
+         (for/and ([r (in-list maintenance-names)])
+           (hash-ref caps r #f))))
   ;; Establish counts lazily before touching content.  Recount is itself
   ;; transactional and version-local; a warm sidecar makes this a cheap state
   ;; check on later flushes.  Establishment failure is not an update failure:
   ;; the count epoch has published nothing and no edit has been applied yet,
   ;; so retain set semantics by selecting the legacy delta/re-entry route.
   (define recount-ready?
-    (and structurally-certified?
+    (and (or structurally-certified? m4n-certified?)
          (with-handlers
              ([exn:fail?
                (lambda (e)
@@ -1551,6 +1600,11 @@
     (and structurally-certified? counts-certified?
          (null? struct-names)          ; lattice+struct cones fall back by name
          (pair? lattice-names) (pair? lattice-consumer-cone)))
+  ;; M4N slice 1: negation x structs stays on rerun (contract exclusion,
+  ;; m4s-negstruct) and negation x lattices is M7's.
+  (define m4n-eligible?
+    (and m4n-certified? counts-certified?
+         (null? struct-names) (null? lattice-names)))
 
   ;; The old set-only delta route remains a fallback for unsupported shapes.
   (define delta-eligible?
@@ -1575,8 +1629,8 @@
                         (second row))
                       state))))
   (define positive-apply-ok? #t)
-  (define (apply-positive-edits!)
-    (for ([g (in-list tip-groups)])
+  (define (apply-positive-edits! #:groups [groups tip-groups])
+    (for ([g (in-list groups)])
       (match-define (list rel bind-pos per-rel) g)
       (define tuples
         (for/list ([(t change) (in-hash per-rel)] #:when (positive-change? change)) t))
@@ -1595,8 +1649,9 @@
   ;; recursive stratum of the maintained cone take the foundation-aware
   ;; retraction verb -- presence semantics would leave a row live on
   ;; recursive support that the sweep may prove unfounded.
-  (define (apply-negative-edits! #:dred-names [dred-names '()])
-    (for ([g (in-list tip-groups)])
+  (define (apply-negative-edits! #:dred-names [dred-names '()]
+                                 #:groups [groups tip-groups])
+    (for ([g (in-list groups)])
       (match-define (list rel bind-pos per-rel) g)
       (define rows
         (for/list ([(t change) (in-hash per-rel)] #:when (negative-change? change))
@@ -1624,7 +1679,8 @@
                         state)))))
   (define (run-maintenance-phase! infos sign get-so
                                   #:lattice-replacements?
-                                  [lattice-replacements? #f])
+                                  [lattice-replacements? #f]
+                                  #:negated-reads [negated-reads '()])
     (for ([info (in-list infos)])
       (define plain-reads
         (remove-duplicates
@@ -1634,6 +1690,26 @@
       (when (pair? plain-reads)
         (session-action! s
                          `(stage-update-transitions signed ,sign ,@plain-reads))
+        (read-one-line! s))
+      ;; M4N: a phase of sign S repairs firings against transitions of sign
+      ;; S in the POSITIVE premises but sign -S in the NEGATED ones (a lost
+      ;; blocker creates firings in the positive phase and vice versa).  So
+      ;; the negated relations' (- sign) journal drives the anti-delta
+      ;; versions, while their same-sign journal is staged view-only: the
+      ;; pre/post cursors need it in the delta indices to reconstruct the
+      ;; other side of the update, but it must never drive or reach a fold.
+      (define neg-reads
+        (remove-duplicates
+         (for/list ([entry (in-list (sinfo-reads info))]
+                    #:when (and (member 'neg (cdr entry))
+                                (member (car entry) negated-reads)))
+           (car entry))))
+      (when (pair? neg-reads)
+        (session-action! s
+                         `(stage-update-transitions signed ,(- sign) ,@neg-reads))
+        (read-one-line! s)
+        (session-action! s
+                         `(stage-view-transitions signed ,sign ,@neg-reads))
         (read-one-line! s))
       (when lattice-replacements?
         (define lattice-reads
@@ -1664,6 +1740,61 @@
     (for ([info (in-list union-cone)])
       (send-maintenance-stratum! s (sinfo-so info))))
   (cond
+    [m4n-eligible?
+     ;; M4N slice 1 (docs/m4n-contract.md pins 3-5): finalize the changed
+     ;; NEGATED inputs first -- both overlay signs -- so every reader phase
+     ;; sees their final state and reconstructs the other side from the
+     ;; both-sign delta indices (finality identity: pre = FULL xor delta).
+     ;; The positive premises keep the ordinary two-phase order.  Both
+     ;; phases always run: a purely-positive edit to a blocker still kills
+     ;; heads in the NEGATIVE phase (its +journal is that phase's
+     ;; anti-delta drive), and vice versa.
+     (define neg-groups
+       (for/list ([g (in-list tip-groups)]
+                  #:when (member (first g) negated-changed))
+         g))
+     (define premise-groups
+       (for/list ([g (in-list tip-groups)]
+                  #:unless (member (first g) negated-changed))
+         g))
+     (define settled? #t)
+     (apply-negative-edits! #:groups neg-groups)
+     (apply-positive-edits! #:groups neg-groups)
+     (unless (and negative-apply-ok? positive-apply-ok?)
+       (set! settled? #f)
+       (echo! s "(maintenance-unavailable negated-input)"))
+     (when settled?
+       (apply-negative-edits! #:groups premise-groups)
+       (if negative-apply-ok?
+           (begin
+             (echo! s (format "(route maintain-negated-negative ~a ~a)"
+                              (length union-cone) (length negated-changed)))
+             (run-maintenance-phase!
+              union-cone -1
+              (lambda (info) ((sinfo-negative-maintenance info)))
+              #:negated-reads negated-changed))
+           (begin
+             (set! settled? #f)
+             (echo! s "(maintenance-unavailable negative-input)"))))
+     (when (and settled? (not (query-update-counts-valid! s)))
+       (set! settled? #f))
+     (when settled?
+       (apply-positive-edits! #:groups premise-groups)
+       (if positive-apply-ok?
+           (begin
+             (echo! s (format "(route maintain-negated-positive ~a ~a)"
+                              (length union-cone) (length negated-changed)))
+             (run-maintenance-phase!
+              union-cone 1
+              (lambda (info) ((sinfo-maintenance info)))
+              #:negated-reads negated-changed)
+             (unless (query-update-counts-valid! s) (set! settled? #f)))
+           (begin
+             (set! settled? #f)
+             (echo! s "(maintenance-unavailable positive-input)"))))
+     (unless settled?
+       (apply-edits!)
+       (rerun-cone!))]
     [m6l2-eligible?
      ;; Settle every producer phase first.  LatticeMaintainTask coalesces all
      ;; repairs for a key across those phases; only then do consumers receive
@@ -2019,7 +2150,7 @@
 ;; the rebound guard admits.
 (define (session-reenter! s rel)
   (define-values (_cur strata-pos chains) (introspect! s))
-  (define-values (cone mono?) (cone-of s rel strata-pos chains))
+  (define-values (cone mono? _neg?) (cone-of s rel strata-pos chains))
   (unless mono?
     (error 'session
            (format "non-monotone cone for ~a (neg/lat edge): use rerun (clear-and-rerun, 0.B2)" rel)))
@@ -2029,7 +2160,7 @@
 
 (define (session-rerun! s rel)
   (define-values (_cur strata-pos chains) (introspect! s))
-  (define-values (cone _mono?) (cone-of s rel strata-pos chains))
+  (define-values (cone _mono? _neg?) (cone-of s rel strata-pos chains))
   (define cone-sos (for/set ([i (in-list cone)]) (sinfo-so i)))
   (define cone-dyn (for*/set ([i (in-list cone)] [d (in-list (sinfo-dyn i))]) d))
   (define noncone-dyn

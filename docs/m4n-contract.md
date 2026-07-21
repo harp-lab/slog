@@ -110,6 +110,27 @@ now extended across polarity.
    finality identity of pin 4: a reader's phases always see fully
    final inputs.
 
+   **Slice-1 refinement (as built, 2026-07-20): upfront finalization
+   of input-edited negated relations, global phasing retained.**  Full
+   per-stratum phasing would break the SHIPPED M3 dual-partition
+   pre-views mid-cone: once a stratum's positive half has run,
+   `join-new = post ∪ Δ⁻` over-approximates for later strata's
+   negative halves.  For slice 1's scope — the changed negated
+   relations are input-edit TARGETS, never derived — the same finality
+   is available without re-phasing anything: apply BOTH overlay signs
+   of the negated inputs before either global phase, so their FULL is
+   final everywhere, then let each phase stage their opposite-sign
+   journal as anti-delta drives (a phase of sign S repairs negated
+   premises from transitions of sign −S) and their same-sign journal
+   as view-kind rows.  The pre view is then the XOR identity of pin 4
+   over (final FULL, both-signs delta), the post view is plain FULL,
+   and unchanged negated siblings degenerate correctly (empty delta).
+   Positive premises need no extra staging: the mid-state `join-old`
+   equation already yields exactly the survivor set in both phases.
+   True per-stratum phasing is deferred to DERIVED negated relations
+   (slice 2/3), whose transitions only exist once their producer
+   stratum settles.
+
 4. **Pre/post absence views are explicit plan ops (ratified
    2026-07-19: the cursor owns the equation).**  By direct analogy
    with `join-old`/`join-new`: the ABI-1 grammar gains pre/post-state
@@ -200,6 +221,21 @@ exclusions (each a tested named fallback, in the M4S style):
    occurrences, a two-negation rule, negation under temps (staged
    chains), healed-equals-forced plus the count-IR oracle on every
    case, and typed refusals for mis-staged polarity.
+   **Landed 2026-07-20**: scope refined per the pin-3 slice-1
+   refinement — admission requires the changed negated relations to be
+   input-edit targets whose cone reads are exactly `~` (fully bound,
+   no `'negw`), over an acyclic cone, tables only, and interp routing
+   active (`SLOG_FLAVORED_NATIVE` declines admission: the anti-delta
+   variants have no native leg, and emit-cpp emits a
+   `static_assert(false, ...)` for the absence views so any native
+   build attempt fails loudly).  Named fallbacks shipped for `'negw`,
+   derived-negated, mixed pos+neg reads, and flavored-native; the
+   session battery block is `m4n-*` (routes
+   `maintain-negated-{negative,positive}`, staging verb
+   `stage-view-transitions`).  Deferred within-slice: the count-IR
+   oracle maintenance mode (recount-force already gates
+   healed-equals-forced) and the negation-under-temps fixture (temps
+   join slice 2's recursive-reader battery).
 2. **Recursive readers — ALL admitted `~` shapes (ratified
    2026-07-19).**  Every negation shape over recursive reader strata
    lands in this slice, with no residual negation slice beyond the

@@ -1,0 +1,19 @@
+;; M4N slice 1 refusal: the edited relation is read BOTH positively and
+;; negatively in the cone; slice 1's finalize-upfront vehicle requires the
+;; changed negated relation's cone reads to be exactly negative.
+
+table (a int)
+table (b int)
+table (m int)
+table (h int)
+
+rule
+(b X)
+-->
+(m X)
+
+rule
+(a X)
+~(b X)
+-->
+(h X)
