@@ -3,8 +3,10 @@
 **Status:** design contract (2026-07-15); sidecar parse/seal half of slice (b)
 implemented 2026-07-16; Q1's canonical payload decoder and typed builder
 boundary implemented 2026-07-17; slice (a)'s dual-stack dispatcher and
-catalog verbs implemented 2026-07-18. Entry modes, generic command builders,
-identity, and the pause-record slice remain.
+catalog verbs implemented 2026-07-18; slice (d)'s uniform pause record and
+slice (b)'s checked `EntryMode` state machine/legacy forwarding shims
+implemented 2026-07-20. Generic command builders, resident-count tier-policy
+admission, and identity remain.
 `execution-tiers.md` §9/§9.1/§11-T0/§12 and `execution-tiers-impl.md`
 (decisions D6, D9, D10, D16, D17; findings 6 and 8; the §5 daemon
 change map) remain normative; this file pins the dual-stack dispatcher,
@@ -148,6 +150,22 @@ entries remain as forwarding shims for the path-protocol stack
 (compiled plugins call them today) with replies unchanged; the
 accidental name-match firewall they relied on is retired by the
 explicit attribute.
+
+**As built 2026-07-20.** `daemon.h` now has the single checked
+`installStratumImpl` transition path plus the public `installStratum` overloads.
+The explicit path validates entry attributes before reload/bind mutation,
+checks the generation token, requires an in-range `resident-count (at P)`, and
+admits `upgrade` only for the named live stratum at `RUN_AT_BOUNDARY`.
+`beginStratum`/`beginStratumDelta` forward through it while retaining their
+exact legacy refusal bytes and the former name-matched hot-swap behavior.
+`tests/interp-operator-tests.cpp` drives fresh/resident-count/stale-generation,
+clean-boundary upgrade, and real mid-read refusal. This is the runtime half of
+slice (b), not a provisional wire builder: `stratum-begin` stays unimplemented
+until its provisional object and seal lifecycle land together. The remaining
+slice-(b) work is that builder lifecycle plus tier swap/restart capability
+refusals for `resident-count` and the dual-stack session workflow gate. The
+forwarding-shim regression gates are green: pause 18/18, session 528/528, and
+the full interpreter golden suite 165/165.
 
 ## Builders and seal: the T2 meeting point
 
@@ -340,7 +358,7 @@ the fork.
   session-workflow-through-the-dual-stack leg remains with slice (b),
   whose entry-mode verbs are what the workflow needs beyond `.so`
   paths.
-- **(b) `plan.h` parse/seal + entry modes.** Parse a real T1 `.plan`
+- **(b) `plan.h` parse/seal + entry modes (runtime half landed 2026-07-20).** Parse a real T1 `.plan`
   sidecar; the D16 seal battery; `installStratum` with validated entry
   modes and forwarding shims. Tests: seal-rejection battery extending
   `tests/interp-operator-tests.cpp`'s seal/bind rejections with parsed
@@ -354,7 +372,7 @@ the fork.
   degenerate module component round-trips; repo-relative source paths
   asserted per finding 6); `tests/stats-tests.sh` goldens unchanged
   with vectors underneath (merged totals ≡ legacy map).
-- **(d) uniform pause record + watch tee-up.** The command-stack
+- **(d) uniform pause record + watch tee-up (landed 2026-07-20).** The command-stack
   structured pause record for all pause classes (protocol-mode
   scoping; legacy stack byte-identical); the cause-payload grammar —
   including the watch-citation variant — designed, validated, and

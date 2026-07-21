@@ -16,7 +16,9 @@
 //   clang++ -O2 -Wall -std=c++20 -pthread -fopenmp -Idaemon tests/interp-operator-tests.cpp daemon/plan.cpp daemon/plan-count.cpp daemon/query.cpp daemon/sexp.cpp daemon/runtime.cpp /tmp/pft.o -o /tmp/interp-tests -lgmp
 //   /tmp/interp-tests [--bench]
 
+#include "daemon.h"
 #include "plan.h"
+#include "plan-count.h"
 #include "query.h"
 #include "sexp.h"
 
@@ -37,6 +39,7 @@
 #include <unistd.h>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -46,6 +49,38 @@ using namespace slog::interp;
 namespace q = slog::query;
 
 namespace {
+
+struct EntryEmitTask final : Task
+{
+  Database* db;
+  Relation* relation;
+
+  EntryEmitTask(Database* d, Relation* r) : db(d), relation(r) {}
+
+  bool work() override
+  {
+    InsertBatch* batch = new InsertBatch();
+    batch->data[0] = s32_encode(1);
+    batch->usage = 1;
+    relation->sendBatch(batch);
+    db->registerLatestAnyRec(true);
+    return true;
+  }
+};
+
+struct EntrySleepTask final : Task
+{
+  bool work() override
+  {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    return true;
+  }
+};
+
+struct EntryNoopTask final : Task
+{
+  bool work() override { return true; }
+};
 
 // A test-only cursor whose next match takes several internal units of work.  This is
 // the shape join3 needs: an intersection may have to seek repeatedly before
@@ -5283,6 +5318,100 @@ bool test_seal_and_binding_rejections()
   return true;
 }
 
+bool test_explicit_entry_modes_and_refusals()
+{
+  std::vector<std::string> replies;
+  Daemon plain(1, [&](const std::string& msg) { replies.push_back(msg); });
+
+  // Admission is generation-checked before entry can mutate bind/reload state.
+  CHECK(plain.installStratum("stale", EntryMode::fresh(),
+                             plain.commandGeneration() + 1) == nullptr);
+  CHECK(replies.back() ==
+        "(refused stale-generation 0 (verb stratum-begin) (expected 1))");
+
+  // Entry attributes are structural: resident-count alone accepts and
+  // requires an in-range historical pipeline position.
+  CHECK(plain.installStratum(
+          "missing-at", {EntryModeK::resident_count, -1}) == nullptr);
+  CHECK(replies.back().find("(refused entry-mode 0 (entry resident-count)") == 0);
+  CHECK(plain.installStratum(
+          "spurious-at", {EntryModeK::fresh, 0}) == nullptr);
+  CHECK(replies.back().find("(refused entry-mode 0 (entry fresh)") == 0);
+  CHECK(plain.installStratum("future", EntryMode::residentCount(1)) == nullptr);
+  CHECK(replies.back().find("(refused entry-mode 0 (entry resident-count)") == 0);
+
+  Stratum* counted = plain.installStratum(
+    "counted", EntryMode::residentCount(0), plain.commandGeneration());
+  CHECK(counted != nullptr);
+  CHECK(plain.db()->bindPosition() == 0);
+  delete counted;
+  plain.db()->setBindPosition(-1);
+
+  Stratum* fresh = plain.installStratum("fresh", EntryMode::fresh());
+  CHECK(fresh != nullptr);
+  delete fresh;
+  Stratum* delta = plain.installStratum(
+    "delta", EntryMode::residentDelta());
+  CHECK(delta != nullptr);
+  delete delta;
+  CHECK(plain.installStratum("not-running", EntryMode::upgrade()) == nullptr);
+  CHECK(replies.back().find("(refused entry-mode 0 (entry upgrade)") == 0);
+
+  // Build a real clean-boundary suspension. An explicit upgrade must name
+  // exactly that live stratum and returns the same object without reload.
+  std::vector<std::string> boundary_replies;
+  Daemon boundary(1, [&](const std::string& msg) {
+    boundary_replies.push_back(msg);
+  });
+  Stratum* live = boundary.installStratum(
+    "entry-boundary", EntryMode::fresh(), boundary.commandGeneration());
+  CHECK(live != nullptr);
+  boundary.db()->addRelation("entry-mode-out", 1);
+  Relation* output = boundary.db()->getRelation("entry-mode-out");
+  add_flavored_index(1, output, {0}, false, false);
+  live->addTask(phase_read,
+                new EntryEmitTask(boundary.db(), output), true);
+  boundary.push(live);
+  RunBudget boundary_budget;
+  boundary_budget.max_ms = UINT64_MAX;
+  boundary_budget.mem_bytes = UINT64_MAX;
+  boundary_budget.stop_at_boundary = true;
+  boundary.continueRun(boundary_budget);
+  CHECK(boundary.db()->isSuspended());
+  CHECK(boundary.db()->suspendPosition() == RUN_AT_BOUNDARY);
+
+  CHECK(boundary.installStratum("other", EntryMode::upgrade()) == nullptr);
+  CHECK(boundary_replies.back().find(
+          "(refused entry-mode 0 (entry upgrade)") == 0);
+  CHECK(boundary.beginStratumDelta("legacy-resident") == nullptr);
+  CHECK(boundary_replies.back() ==
+        "(error suspended \"beginStratumDelta is refused while a stratum "
+        "is suspended; continue to fixpoint first\")");
+  CHECK(boundary.installStratum("entry-boundary", EntryMode::upgrade()) == live);
+
+  // A mid-read park owns continuations into the old attachment and is never
+  // swappable, even when the requested name matches.
+  std::vector<std::string> read_replies;
+  Daemon midread(1, [&](const std::string& msg) {
+    read_replies.push_back(msg);
+  });
+  Stratum* reading = midread.installStratum("entry-read", EntryMode::fresh());
+  CHECK(reading != nullptr);
+  reading->addTask(phase_read, new EntrySleepTask(), true);
+  reading->addTask(phase_read, new EntryNoopTask(), true);
+  midread.push(reading);
+  RunBudget short_budget;
+  short_budget.max_ms = 1;
+  short_budget.slice_ms = 1;
+  short_budget.mem_bytes = UINT64_MAX;
+  midread.continueRun(short_budget);
+  CHECK(midread.db()->isSuspended());
+  CHECK(midread.db()->suspendPosition() == RUN_MID_READ);
+  CHECK(midread.installStratum("entry-read", EntryMode::upgrade()) == nullptr);
+  CHECK(read_replies.back().find("(refused suspended 0 (entry upgrade)") == 0);
+  return true;
+}
+
 void benchmark_debug_masks()
 {
   static volatile u64 bench_sink = 0;
@@ -5434,6 +5563,7 @@ int main(int argc, char** argv)
   ok &= test_seal_bind_probe_driver_and_task_partition();
   ok &= test_bound_nested_ternary_probes_debug_and_sink_order();
   ok &= test_seal_and_binding_rejections();
+  ok &= test_explicit_entry_modes_and_refusals();
   if (!ok) return 1;
   std::cout << "interpreter debug/operator tests passed\n";
   if (argc == 2 && std::string(argv[1]) == "--bench") benchmark_debug_masks();

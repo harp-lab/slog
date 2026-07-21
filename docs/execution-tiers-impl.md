@@ -82,11 +82,11 @@ gate exposed (non-total D4 sort key; temp column order over gensym'd
 variable spellings). Post-slice-0: 500/500 plans byte-identical across
 runs. Remaining: TU emission-ORDER canonicalization stays at T4 phase B
 (`__t*` local gensyms still churn TU text → `.o`-cache misses only);
-wholesale TU byte-diffs remain an invalid gate methodology; and
-`$sup`/`_lam` names embed `fnv(absolute checkout path)` (demand.rkt) —
-a pre-existing checkout-path dependence that makes demand-name goldens
-fail in secondary checkouts/worktrees and must go checkout-relative
-before RF1 slice 4's plan goldens.
+wholesale TU byte-diffs remain an invalid gate methodology. The pre-existing
+`$sup`/`_lam` checkout-path dependence was closed 2026-07-20:
+`source-name-key` normalizes provenance relative to the compilation root before
+hashing, a two-clone unit test pins the key, and `dem_lambda` passes in both
+native and interpreted modes with the repository-relative golden.
 
 **Update 2026-07-15 (T2-A1 done):** the production interpreter core is
 extracted into `daemon/interp.h` (namespace `slog::interp`, ~710 lines):
@@ -336,22 +336,24 @@ map order remain identical. `SLOG_OPT=interp` now sends normal and delta
 native stratum modes remain unchanged.
 
 The focused interpreter/native battery and a 29-program lattice/sequence/SMT
-matrix are green. The repository-wide interpreter golden run is 164/165; the
-sole `dem_lambda` mismatch is a generated lambda-name prefix and reproduces
-unchanged under native `SLOG_OPT=0`, so it is a baseline compiler/golden issue
-rather than an interpreter divergence.
+matrix are green. The formerly shared `dem_lambda` mismatch was repaired
+2026-07-20 by making demand-generated source keys compilation-root-relative;
+its targeted native run is green and the full `SLOG_OPT=interp` golden suite
+is now mechanically green at 165/165.
 
 **Next up (post-freeze ratified order):**
 
-- **T0** — slice (a)'s dispatcher/catalog surface is landed; finish slice
-  (b)'s entry modes and slice (d)'s uniform pause record next. Slice (c)'s
+- **T0** — slice (a)'s dispatcher/catalog surface and slice (d)'s uniform
+  pause record are landed. Slice (b)'s checked entry state machine and legacy
+  shims are landed; finish its provisional command builder and resident-count
+  tier-policy refusals next. Slice (c)'s
   identity keys + rule-meta + D9 fire vectors remains a fork-gate substrate
   chore; the level-0 watch implementation follows the fork on slice (d)'s
   record.
 - **T2-B trunk groups under frozen interfaces** — the monotone normal
   vocabulary, lattice sinks, declaration-built tasks, and compiler-driven
-  `SLOG_OPT=interp` route are landed. Repair the unrelated `dem_lambda`
-  generated-name golden, then record a mechanically clean full-suite gate;
+  `SLOG_OPT=interp` route are landed. The checkout-independent `dem_lambda`
+  baseline is repaired; record the mechanically clean full-suite gate;
   stale caches that predate `.plan` must re-emit on miss.
 - **Progressive-fork workstreams** — Q1's first engine slice and the
   client-neutral R2 result modes, catalog planning, and the typed QueryPlan

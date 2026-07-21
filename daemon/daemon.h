@@ -32,6 +32,7 @@
 
 #pragma once
 
+#include "protocol.h"
 #include "slogd.h"
 
 #include <chrono>
@@ -40,10 +41,49 @@
 #include <cstdlib>
 #include <functional>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 namespace slog
 {
+
+// T0(b)'s explicit stratum-entry vocabulary (docs/t0-contract.md, D10).
+// The optional `at` position is valid only for resident-count; keeping it in
+// the value object lets the future command builder validate a decoded entry
+// before any relation registration or reload can occur.
+enum class EntryModeK : u8
+{
+  fresh,
+  resident_delta,
+  resident_count,
+  upgrade
+};
+
+struct EntryMode
+{
+  EntryModeK kind = EntryModeK::fresh;
+  s64 at = -1;
+
+  static EntryMode fresh() { return {EntryModeK::fresh, -1}; }
+  static EntryMode residentDelta()
+  { return {EntryModeK::resident_delta, -1}; }
+  static EntryMode residentCount(u32 pos)
+  { return {EntryModeK::resident_count, (s64)pos}; }
+  static EntryMode upgrade() { return {EntryModeK::upgrade, -1}; }
+};
+
+inline const char* entryModeName(EntryModeK kind)
+{
+  switch (kind)
+  {
+    case EntryModeK::fresh:          return "fresh";
+    case EntryModeK::resident_delta: return "resident-delta";
+    case EntryModeK::resident_count: return "resident-count";
+    case EntryModeK::upgrade:        return "upgrade";
+  }
+  return "unknown";
+}
 
 class Daemon
 {
@@ -90,8 +130,9 @@ private:
   // set once this session speaks any command-layer verb BEYOND the legacy
   // (continue)/(continue-boundary) literals -- every pre-T0 driver sends
   // those, so they must not flip a path-protocol session into command mode.
-  // Slice (d) keys the uniform pause record off this; nothing changes any
-  // pause emission yet.
+  // Slice (d) keys the uniform pause record off this. Legacy path sessions
+  // retain the frozen positional bytes; command sessions receive the keyed
+  // record rendered by protocol.h.
   bool command_protocol_spoken = false;
   std::vector<std::pair<std::string, u64>> pending_bind_versions;
 
@@ -100,6 +141,132 @@ private:
     const char* v = std::getenv(name);
     if (v == nullptr || v[0] == '\0') return fallback;
     return (u64)std::strtoull(v, nullptr, 10);
+  }
+
+  enum class EntryReplyK : u8
+  {
+    typed,
+    legacy_fresh,
+    legacy_resident
+  };
+
+  void emitTypedRefusal(const char* cls, const std::string& details)
+  {
+    emit("(refused " + std::string(cls) + " "
+         + std::to_string(commandGeneration())
+         + (details.empty() ? "" : " " + details) + ")");
+  }
+
+  Stratum* refuseEntry(EntryReplyK replies, const char* cls,
+                       const EntryMode& entry, const std::string& detail)
+  {
+    if (replies == EntryReplyK::legacy_fresh)
+      emit("(error suspended \"beginStratum is refused while a stratum is "
+           "suspended; continue to fixpoint first\")");
+    else if (replies == EntryReplyK::legacy_resident)
+      emit("(error suspended \"beginStratumDelta is refused while a stratum "
+           "is suspended; continue to fixpoint first\")");
+    else
+      emitTypedRefusal(cls,
+        std::string("(entry ") + entryModeName(entry.kind) + ") (detail "
+        + protocol::quoteString(detail) + ")");
+    return nullptr;
+  }
+
+  // The ONE checked entry path. `consume_pending_legacy_bind` is true only
+  // for the forwarding shims: old generated plugins arm bind-at/bind-instance
+  // as a separate action. New command builders carry resident-count's `at`
+  // position in EntryMode and may not silently consume that hidden state.
+  Stratum* installStratumImpl(const std::string& name, const EntryMode& entry,
+                              EntryReplyK replies,
+                              bool consume_pending_legacy_bind)
+  {
+    const bool count_has_at = entry.kind == EntryModeK::resident_count
+                              && entry.at >= 0;
+    const bool other_has_at = entry.kind != EntryModeK::resident_count
+                              && entry.at >= 0;
+    if (replies == EntryReplyK::typed
+        && ((entry.kind == EntryModeK::resident_count && !count_has_at)
+            || other_has_at))
+      return refuseEntry(replies, "entry-mode", entry,
+        entry.kind == EntryModeK::resident_count
+          ? "resident-count requires (at <pipeline-pos>)"
+          : "only resident-count accepts (at <pipeline-pos>)");
+
+    const bool suspended = database->isSuspended();
+    if (entry.kind == EntryModeK::upgrade)
+    {
+      if (!suspended)
+        return refuseEntry(replies, "entry-mode", entry,
+                           "upgrade requires a suspended stratum");
+      const Stratum* current = database->suspendedStratum();
+      if (current == nullptr || current->name != name)
+        return refuseEntry(replies, "entry-mode", entry,
+                           "upgrade target is not the suspended stratum");
+      if (database->suspendPosition() != RUN_AT_BOUNDARY)
+        return refuseEntry(replies, "suspended", entry,
+                           "upgrade requires a settled iteration boundary");
+      Stratum* live = const_cast<Stratum*>(current);
+      live->clearForUpgrade();
+      return live;
+    }
+
+    if (suspended)
+      return refuseEntry(replies, "suspended", entry,
+                         "entry is refused while a stratum is suspended; "
+                         "continue to fixpoint first");
+
+    if (!consume_pending_legacy_bind && pending_bind_pos >= 0)
+      return refuseEntry(replies, "entry-mode", entry,
+                         "explicit entry cannot consume a pending legacy bind");
+
+    switch (entry.kind)
+    {
+      case EntryModeK::fresh:
+        if (pending_bind_pos >= 0)
+        {
+          // Positional re-entry (incremental.md 0.C): restage P as the
+          // iteration-zero delta. needs_reload remains armed for the next
+          // ordinary fresh entry, exactly as before this unification.
+          database->reloadInsertBatchesAt((u32)pending_bind_pos);
+          database->setBindPosition(pending_bind_pos);
+          database->setBindVersions(pending_bind_versions);
+          pending_bind_pos = -1;
+          pending_bind_versions.clear();
+        }
+        else if (needs_reload)
+        {
+          database->reloadInsertBatches();
+          needs_reload = false;
+        }
+        break;
+
+      case EntryModeK::resident_delta:
+        // No reload. The legacy shim may carry a positional count/replay bind;
+        // the explicit resident-delta form always binds the latest state.
+        if (pending_bind_pos >= 0)
+        {
+          database->setBindPosition(pending_bind_pos);
+          database->setBindVersions(pending_bind_versions);
+          pending_bind_pos = -1;
+          pending_bind_versions.clear();
+        }
+        break;
+
+      case EntryModeK::resident_count:
+        if ((u64)entry.at > database->currentPosition())
+          return refuseEntry(replies, "entry-mode", entry,
+                             "resident-count position is beyond the pipeline");
+        // No reload: a historical count round resolves registrations through
+        // the exact environment recorded by the entry itself.
+        database->setBindPosition(entry.at);
+        database->clearBindVersions();
+        break;
+
+      case EntryModeK::upgrade:
+        break; // handled above
+    }
+    return new Stratum(name);
   }
 
 public:
@@ -139,12 +306,28 @@ public:
   void markCommandProtocol() { command_protocol_spoken = true; }
   bool commandProtocolSpoken() const { return command_protocol_spoken; }
 
+  // Shared typed-refusal emission for dispatcher-owned admission checks.
+  void refuseCommand(const char* cls, const std::string& details = "")
+  {
+    emitTypedRefusal(cls, details);
+  }
+
   // The unified generation token every typed refusal (and, from slice (b),
   // every generation-checked verb) carries on the wire.  Backing store today
   // is the update-epoch counter (execution-tiers §2.2: PauseToken and
   // UpdateEpochId are one mechanism); M1 may restructure the store -- the
   // wire FIELD is the pin, not the store.
   u64 commandGeneration() { return database->getUpdateEpochId(); }
+
+  bool checkCommandGeneration(u64 expected, const char* verb)
+  {
+    const u64 actual = commandGeneration();
+    if (expected == actual) return true;
+    emitTypedRefusal("stale-generation",
+      std::string("(verb ") + verb + ") (expected "
+      + std::to_string(expected) + ")");
+    return false;
+  }
 
   // While a stratum is suspended (docs/pausing.md §4), any action that would
   // reload or clear indices -- destroying the parked tasks' index bindings and
@@ -213,56 +396,33 @@ public:
     needs_reload = true;
   }
 
-  // Start building a stratum.  If a stratum has run since the last reload,
-  // the database reloads NOW -- before the caller registers this stratum's
-  // indices and binds tasks to them -- re-staging every relation's contents
-  // as insert batches for the coming run's iteration zero.  Refused while a
-  // stratum is suspended (the reload would dangle every parked task's bindings
-  // and destroy the staged delta).
+  // Explicit T0(b) entry. The generation-checked overload is the future
+  // command builder's mutation gate; internal sealed-plan installers can use
+  // the trusted overload after their own admission.
+  Stratum* installStratum(const std::string& name, const EntryMode& entry)
+  {
+    return installStratumImpl(name, entry, EntryReplyK::typed, false);
+  }
+
+  Stratum* installStratum(const std::string& name, const EntryMode& entry,
+                          u64 expected_generation)
+  {
+    if (!checkCommandGeneration(expected_generation, "stratum-begin"))
+      return nullptr;
+    return installStratum(name, entry);
+  }
+
+  // Legacy path-protocol shim. It preserves the old name-matched upgrade and
+  // exact refusal bytes while forwarding every state transition through the
+  // checked implementation above.
   Stratum* beginStratum(const std::string& name)
   {
-    if (database->isSuspended())
-    {
-      // Hot-swap upgrade (docs/fast-compile.md §4): a freshly-compiled plugin
-      // for the SAME stratum, arriving while that stratum is parked at a clean
-      // iteration boundary, replaces the currently-running (e.g. -O0) one.  Hand
-      // back the LIVE Stratum with its task lists emptied; the caller then
-      // re-registers the identical relations (addRelation guarded), indices
-      // (addIndex idempotent), and tasks, and its trailing continueRun resumes
-      // the fixpoint with the new code.  No reload happens -- the staged delta
-      // and every index stay live, and the replacement's tasks bind() to them.
-      const Stratum* susp = database->suspendedStratum();
-      if (susp && susp->name == name
-          && database->suspendPosition() == RUN_AT_BOUNDARY)
-      {
-        Stratum* s = const_cast<Stratum*>(susp);
-        s->clearForUpgrade();
-        return s;
-      }
-      // Any other suspended state -- a different stratum, or a mid-read park
-      // whose continuations point into the old .so -- is not swappable.
-      emit("(error suspended \"beginStratum is refused while a stratum is "
-           "suspended; continue to fixpoint first\")");
-      return nullptr;
-    }
-    if (pending_bind_pos >= 0)
-    {
-      // Positional re-entry (0.C): restage the P-environment as the coming
-      // stratum's iteration-0 delta and resolve its registrations there.
-      // needs_reload stays armed -- the next NORMAL push still restages
-      // the latest environment as usual.
-      database->reloadInsertBatchesAt((u32)pending_bind_pos);
-      database->setBindPosition(pending_bind_pos);
-      database->setBindVersions(pending_bind_versions);
-      pending_bind_pos = -1;
-      pending_bind_versions.clear();
-    }
-    else if (needs_reload)
-    {
-      database->reloadInsertBatches();
-      needs_reload = false;
-    }
-    return new Stratum(name);
+    const Stratum* current = database->suspendedStratum();
+    const bool legacy_upgrade = current != nullptr && current->name == name
+      && database->suspendPosition() == RUN_AT_BOUNDARY;
+    return installStratumImpl(name,
+      legacy_upgrade ? EntryMode::upgrade() : EntryMode::fresh(),
+      EntryReplyK::legacy_fresh, true);
   }
 
   // Arm the next fresh beginStratum to bind at pipeline position P
@@ -306,34 +466,12 @@ public:
     emit("(maintenance-armed)");
   }
 
-  // Delta-entry variant (docs/incremental.md §0.5 mode 3, 0.B5): NO reload
-  // -- the staged batch (stageTuple) is the coming run's entire iteration-0
-  // delta, and every live index (registrations AND contents) survives into
-  // it; needs_reload stays armed for the next NORMAL push.  Same suspended
-  // guardrail; no hot-swap interplay (the delta flavor is a distinct
-  // stratum name, so an upgrade never matches it).
+  // Legacy resident-entry shim: exact old no-reload and pending-bind behavior,
+  // including its byte-compatible suspended refusal.
   Stratum* beginStratumDelta(const std::string& name)
   {
-    if (database->isSuspended())
-    {
-      emit("(error suspended \"beginStratumDelta is refused while a stratum "
-           "is suspended; continue to fixpoint first\")");
-      return nullptr;
-    }
-    if (pending_bind_pos >= 0)
-    {
-      // Positional count round (docs/incremental.md §8B.2, M0.3): resolve
-      // this plugin's registrations through P's environment WITHOUT the
-      // positional reload beginStratum performs -- old versions keep their
-      // indices resident, and a count round needs no iteration-0 delta.
-      // push() returns resolution to the latest environment, exactly as
-      // for a positional beginStratum.
-      database->setBindPosition(pending_bind_pos);
-      database->setBindVersions(pending_bind_versions);
-      pending_bind_pos = -1;
-      pending_bind_versions.clear();
-    }
-    return new Stratum(name);
+    return installStratumImpl(name, EntryMode::residentDelta(),
+                              EntryReplyK::legacy_resident, true);
   }
 
   // Stage one storage-order tuple as pending delta WITHOUT touching the
@@ -1204,13 +1342,41 @@ public:
     }
     else
     {
-      std::snprintf(buf, sizeof(buf),
-                    "(paused %u \"%s\" %u %s %llu %.3f %.3f %s)",
-                    s->scc_id, s->name.c_str(), st.iteration,
-                    st.where == RUN_MID_READ ? "read" : "iter",
-                    (unsigned long long)st.new_tuples,
-                    st.ms_call, st.ms_total, st.reason);
-      emit(buf);
+      if (command_protocol_spoken)
+      {
+        protocol::PauseCause cause;
+        if (st.reason == std::string_view("memory"))
+        {
+          cause.kind = protocol::PauseCauseKind::budget;
+          cause.detail = "memory";
+        }
+        else if (st.where == RUN_AT_BOUNDARY && b.stop_at_boundary)
+        {
+          cause.kind = protocol::PauseCauseKind::boundary;
+          cause.detail = "requested";
+        }
+        else
+        {
+          cause.kind = protocol::PauseCauseKind::budget;
+          cause.detail = "time";
+        }
+        const bool settled = st.where == RUN_AT_BOUNDARY;
+        emit(protocol::renderPauseRecord({
+          commandGeneration(), s->scc_id, s->name, st.iteration,
+          settled ? "iter" : "read", settled, st.new_tuples, settled,
+          st.ms_call, st.ms_total, std::move(cause)
+        }));
+      }
+      else
+      {
+        std::snprintf(buf, sizeof(buf),
+                      "(paused %u \"%s\" %u %s %llu %.3f %.3f %s)",
+                      s->scc_id, s->name.c_str(), st.iteration,
+                      st.where == RUN_MID_READ ? "read" : "iter",
+                      (unsigned long long)st.new_tuples,
+                      st.ms_call, st.ms_total, st.reason);
+        emit(buf);
+      }
     }
   }
 

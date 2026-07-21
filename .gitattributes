@@ -1,0 +1,4 @@
+# Golden CSV rows intentionally preserve the daemon renderer's spacing,
+# including trailing field separators. Treat those bytes as fixture data,
+# not source-code whitespace, so rebasing a generated name remains checkable.
+tests/expected/**/*.csv -whitespace

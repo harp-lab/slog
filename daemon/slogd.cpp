@@ -137,9 +137,7 @@ static void run_plugin(slog::Daemon* d,
 
 static void refuse(slog::Daemon* d, const char* cls, const std::string& details)
 {
-    d->emit("(refused " + std::string(cls) + " "
-            + std::to_string(d->commandGeneration())
-            + (details.empty() ? "" : " " + details) + ")");
+    d->refuseCommand(cls, details);
 }
 
 // Reserved verb families: the parser recognizes them and answers

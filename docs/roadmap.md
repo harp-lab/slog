@@ -324,9 +324,10 @@ filters reuse BTree cursors, and probe drivers consume the compiler-declared
 DELTA order. `SLOG_OPT=interp` sends stratum `.plan` artifacts directly to the
 daemon without compiling or loading stratum shared objects; separate action
 plugins remain native. The focused differential and 29 lattice/sequence/SMT
-goldens pass. The full interpreter run passes 164/165;
-the lone `dem_lambda` generated-name mismatch reproduces in native mode and is
-tracked as a baseline compiler/golden repair, not an interpreter gap.
+goldens pass. The former `dem_lambda` generated-name mismatch was closed
+2026-07-20 by hashing a compilation-root-relative source key. Its targeted
+native run passes and the full interpreter golden suite is now 165/165 from
+this clone.
 
 The fork gate F is met when the daemon API is genuinely ready for a client
 and has been exercised, specifically:
@@ -577,44 +578,50 @@ The payload/builder seam is ready for that meeting, but deliberately has no
 exact-command branch in `slogd.cpp`. The R2 parser/rendering and transcript
 battery follow the dispatcher integration.
 
-**Thread-1 checkpoint (2026-07-20; interpreter prep complete).** The monotone
+**Thread-1 checkpoint (2026-07-20; independent interpreter/protocol prep).** The monotone
 normal interpreter path is ready for the UX branch to consume: normal and
 delta plans install declarations and native write/intern machinery directly,
 the compiler can route strata through `.plan`, the frozen interpreter core is
 unchanged, and the focused plus 29-program feature batteries are green. The
-repository-wide run is interpreter/native-equivalent; its only non-green
-golden is the shared `dem_lambda` generated-name baseline described above.
-This is the intended synchronization point with the separately developed UX
-work.
+repository-wide run was interpreter/native-equivalent. Its shared
+`dem_lambda` checkout-path baseline is now repaired, and T0(d)'s uniform
+command-stack pause record plus slice (b)'s checked runtime entry state machine
+are landed without touching `repl/`. Thread 1 deliberately remains decoupled
+from the separately developed UX until the command builder lifecycle is a
+sensible integration seam.
 
 Thread 1 proceeds in this order:
 
-1. **Synchronize the UX work and run the joint intersection battery** —
-   preserve the frozen interpreter seams while resolving overlaps, then run
-   unit + interpreter, protocol/pause, and compiler-driven golden coverage.
-   Repair or explicitly rebaseline `dem_lambda` so the full-suite gate is
-   mechanically green rather than merely native-equivalent.
-2. **T0 slices (b) and (d)** — entry modes and the uniform pause
-   record are the two remaining blockers for R0–R1's full start, and
-   slice (d)'s pause record is also what the level-0 watch battery
-   rides.  Slice (a)'s dispatcher and catalog verbs are landed; the
-   native Rust shell and TCP transport already work against them.
-3. **R0 → R1 on the shipped substrate**: session ownership, semantic
+1. **Independent substrate checkpoint (completed 2026-07-20)** — demand-name
+   identity is checkout-independent; T0(d)'s pause record and the T0(b)
+   runtime `EntryMode` state machine/generation gate/legacy shims are landed.
+   Gates: unit 219/219, interpreter operator, protocol 48/48, pause 18/18,
+   session 528/528, targeted native `dem_lambda`, and full
+   `SLOG_OPT=interp` golden 165/165.
+2. **Finish the independent T0(b) command lifecycle** — the runtime
+   `EntryMode` state machine, generation admission, legacy forwarding shims,
+   and T0(d) pause record are landed. Next add `stratum-begin` only together
+   with its provisional object/add/seal lifecycle, then pin resident-count
+   swap/restart capability refusals and the session workflow through the
+   dual stack. No REPL code is needed for this step.
+3. **Synchronize the UX work at that seam**, resolve only genuine overlaps,
+   and run the joint intersection battery before beginning coupled client
+   changes.
+4. **R0 → R1 on the shipped substrate**: session ownership, semantic
    verbs over `session-*!`, change summaries, golden `--plain`
    transcripts; then the canvas.  Nothing here waits on thread 0 —
    forward incrementality and the frozen monotone interpreter are the
    foundation, and `clear scratch` silently improves as thread 0's
    precise routes land (M4N just widened them to negation cones).
-4. **The Q1/R2 meeting point**: T0's dispatcher takes ownership of
+5. **The Q1/R2 meeting point**: T0's dispatcher takes ownership of
    `query`/`query-page`/`query-cancel` admission, N2/N3 supply the
    boundary/materialization overlay, and the already-golden
    payload/builder seam connects — then R2's `?`/`?count`/`?exists`
    and `explain` land as rendering over it.
-5. **Toward F**: the monotone T2-B normal path and compiler-driven
-   `SLOG_OPT=interp` route are landed. Close the unrelated `dem_lambda`
-   generated-name baseline so criterion 1 records a mechanically clean run;
-   the remaining fork-gate work is the protocol/pause/watch batteries of
-   criteria 2–3 and their thread-1 integration.
+6. **Toward F**: the monotone T2-B normal path, compiler-driven
+   `SLOG_OPT=interp` route, checkout-independent demand names, and uniform
+   pause record are landed. The remaining fork-gate work is the slice-(b)/(c)
+   builder/identity surface and post-fork watch battery integration.
 
 Deferred on this thread until after S: level-1 anything (provenance watches,
 stepping, why/why-not), `whatif`, fork/branching vocabulary beyond reserved
