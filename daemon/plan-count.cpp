@@ -23,6 +23,7 @@
 #include "daemon.h"
 
 #include <cstdlib>
+#include <memory>
 #include <set>
 
 namespace slog
@@ -833,6 +834,136 @@ Relation* ensure_flavored_relation(Database* db,
   return relation;
 }
 
+void validate_existing_relation(Relation* relation,
+                                const RelationBinding& binding)
+{
+  if (relation == nullptr) return;
+  seal_check(relation->getArity() == binding.shape.arity,
+             SealErrorK::binding,
+             "install: relation arity mismatch for " + binding.name);
+  const bool kind_matches =
+    binding.shape.kind == RelationK::struct_
+      ? relation->getStructId() != 0 && !relation->isLattice()
+    : binding.shape.kind == RelationK::lattice
+      ? relation->getStructId() == 0 && relation->isLattice()
+    : relation->getStructId() == 0 && !relation->isLattice()
+        && relation->isCompilerTemporary() == binding.shape.temp;
+  seal_check(kind_matches, SealErrorK::binding,
+             "install: relation kind mismatch for " + binding.name);
+  if (binding.shape.kind == RelationK::lattice)
+    seal_check(!binding.shape.lattice_spec.empty()
+                 && relation->latticeSpec() == binding.shape.lattice_spec,
+               SealErrorK::binding,
+               "install: lattice spec mismatch for " + binding.name);
+}
+
+void validate_command_entry_flavor(const EntryMode& entry,
+                                   const SealedKernelPlan& plan)
+{
+  const bool normal = plan.flavor == "normal";
+  const bool delta = plan.flavor == "delta";
+  const bool count = plan.flavor == "count";
+  const bool maint = plan.flavor == "maint1"
+                  || plan.flavor == "maint3neg"
+                  || plan.flavor == "maint4neg";
+  seal_check(normal || delta || count || maint, SealErrorK::flavor,
+             "install: unsupported sealed-plan flavor");
+
+  const bool admitted =
+    (normal && (entry.kind == EntryModeK::fresh
+                || entry.kind == EntryModeK::upgrade))
+    || (delta && entry.kind == EntryModeK::resident_delta)
+    || (count && entry.kind == EntryModeK::resident_count)
+    || (maint && entry.kind == EntryModeK::resident_delta);
+  if (!admitted)
+  {
+    const bool count_boundary = count
+      || entry.kind == EntryModeK::resident_count;
+    throw SealError(SealErrorK::capability,
+      count_boundary
+        ? "install: resident-count strata cannot be restarted or tier-swapped"
+        : "install: entry mode is incompatible with the sealed-plan flavor");
+  }
+
+}
+
+// All checked failures must occur before installStratum can reload, rebind, or
+// clear a live upgrade target.  The D16 seal has already covered factories and
+// rule structure; this pass covers the database-dependent portion without
+// creating relations or tasks.
+void preflight_command_install(Daemon* daemon, const EntryMode& entry,
+                               const SealedKernelPlan& plan)
+{
+  validate_command_entry_flavor(entry, plan);
+  const bool count = plan.flavor == "count";
+  const bool maint = plan.flavor == "maint1"
+                  || plan.flavor == "maint3neg"
+                  || plan.flavor == "maint4neg";
+  Database* db = daemon->db();
+  auto current = [&](const std::string& name) -> Relation* {
+    if (entry.kind == EntryModeK::resident_count && entry.at >= 0)
+      return db->getRelationAt(name, static_cast<u32>(entry.at));
+    return db->getRelation(name);
+  };
+  std::map<std::string, const RelationBinding*> declared;
+  for (const RelationBinding& binding : plan.bindings)
+  {
+    seal_check(declared.emplace(binding.name, &binding).second,
+               SealErrorK::relation_slot,
+               "install: duplicate relation binding name " + binding.name);
+    Relation* relation = current(binding.name);
+    validate_existing_relation(relation, binding);
+    if (relation == nullptr && (count || maint)
+        && binding.shape.kind == RelationK::lattice)
+      throw SealError(SealErrorK::binding,
+        "install: resident lattice relation is absent: " + binding.name);
+    if (!binding.shape.temp
+        && ((plan.flavor == "normal" || plan.flavor == "delta")
+            || (maint && binding.shape.kind != RelationK::lattice)))
+      seal_check(!binding.shape.full_orders.empty(),
+                 SealErrorK::index_requisition,
+                 "install: relation has no master ordering: " + binding.name);
+  }
+
+  const auto available = [&](const std::string& name) {
+    return declared.count(name) != 0 || current(name) != nullptr;
+  };
+  for (const RelationBinding& binding : plan.bindings)
+    if (!binding.shape.lattice_decomp_relation.empty())
+      seal_check(available(binding.shape.lattice_decomp_relation),
+                 SealErrorK::binding,
+                 "install: lattice decomposition target is absent: "
+                   + binding.shape.lattice_decomp_relation);
+  for (const AttachmentPlan& attachment : plan.attachments)
+  {
+    if (attachment.kind == AttachmentK::oracle)
+    {
+      seal_check(daemon->supportsOracle(attachment.a),
+                 SealErrorK::capability,
+                 "install: unsupported oracle backend " + attachment.a);
+      seal_check(available(attachment.b) && available(attachment.c),
+                 SealErrorK::binding,
+                 "install: oracle relation is absent");
+      seal_check(daemon->oracleBindingCompatible(
+                   attachment.a, attachment.b, attachment.c),
+                 SealErrorK::binding,
+                 "install: oracle relation would be rebound inconsistently");
+    }
+    else if (attachment.kind == AttachmentK::seqindex)
+    {
+      seal_check(available(attachment.a), SealErrorK::binding,
+                 "install: seqindex base relation is absent: " + attachment.a);
+      const auto declared_base = declared.find(attachment.a);
+      const u16 arity = declared_base == declared.end()
+        ? current(attachment.a)->getArity()
+        : declared_base->second->shape.arity;
+      for (u16 column : attachment.columns)
+        seal_check(column < arity, SealErrorK::binding,
+                   "install: seqindex column is out of range");
+    }
+  }
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -841,15 +972,12 @@ Relation* ensure_flavored_relation(Database* db,
 // tasks, attachments, read scheduling, manifests, push, and first run unit.
 // ---------------------------------------------------------------------------
 
-void install_normal_stratum(Daemon* daemon, const std::string& name,
-                            const SealedKernelPlan& plan)
+static void populate_normal_stratum(Daemon* daemon, Stratum* stratum,
+                                    const SealedKernelPlan& plan)
 {
   seal_check(plan.flavor == "normal" || plan.flavor == "delta",
              SealErrorK::flavor, "install: not a normal/delta plan");
   Database* db = daemon->db();
-  Stratum* stratum = plan.flavor == "delta"
-    ? daemon->beginStratumDelta(name) : daemon->beginStratum(name);
-  if (stratum == nullptr) return;
 
   // The compiler's declaration emitter walks its accumulated relation list
   // in reverse slot order. Preserve that creation order exactly: struct ids
@@ -949,6 +1077,15 @@ void install_normal_stratum(Daemon* daemon, const std::string& name,
 
   attach_normal_rules(db, stratum, plan);
   add_read_manifest(stratum, plan);
+}
+
+void install_normal_stratum(Daemon* daemon, const std::string& name,
+                            const SealedKernelPlan& plan)
+{
+  Stratum* stratum = plan.flavor == "delta"
+    ? daemon->beginStratumDelta(name) : daemon->beginStratum(name);
+  if (stratum == nullptr) return;
+  populate_normal_stratum(daemon, stratum, plan);
   daemon->push(stratum);
   daemon->continueRun();
 }
@@ -958,14 +1095,12 @@ void install_normal_stratum(Daemon* daemon, const std::string& name,
 // mirroring the native flavored plugin's slog_plugin effect for effect.
 // ---------------------------------------------------------------------------
 
-void install_count_stratum(Daemon* daemon, const std::string& name,
-                           const SealedKernelPlan& plan)
+static void populate_count_stratum(Daemon* daemon, Stratum* stratum,
+                                   const SealedKernelPlan& plan)
 {
   seal_check(plan.flavor == "count", SealErrorK::flavor,
              "install: not a counted plan");
   Database* db = daemon->db();
-  Stratum* stratum = daemon->beginStratumDelta(name);
-  if (stratum == nullptr) return;
 
   // Relations and indices: getRelation-or-add with the native arity fatal;
   // full orderings only (delta/seeded-only are never requisitioned by
@@ -1009,21 +1144,26 @@ void install_count_stratum(Daemon* daemon, const std::string& name,
   // sorted read manifests.
   attach_flavored_rules(db, stratum, plan);
   add_read_manifest(stratum, plan);
+}
 
+void install_count_stratum(Daemon* daemon, const std::string& name,
+                           const SealedKernelPlan& plan)
+{
+  Stratum* stratum = daemon->beginStratumDelta(name);
+  if (stratum == nullptr) return;
+  populate_count_stratum(daemon, stratum, plan);
   daemon->push(stratum);
   daemon->continueRun();
 }
 
-void install_maint_stratum(Daemon* daemon, const std::string& name,
-                           const SealedKernelPlan& plan)
+static void populate_maint_stratum(Daemon* daemon, Stratum* stratum,
+                                   const SealedKernelPlan& plan)
 {
   seal_check(plan.flavor == "maint1" || plan.flavor == "maint3neg"
                || plan.flavor == "maint4neg",
              SealErrorK::flavor, "install: not a maintenance plan");
   const bool dred = plan.flavor == "maint4neg";
   Database* db = daemon->db();
-  Stratum* stratum = daemon->beginStratumDelta(name);
-  if (stratum == nullptr) return;
 
   // Maintained heads (rule sink targets: emit / mkstruct / emit-lat and
   // the tycheck diversion) get the serial Maintain*Task folds; everything
@@ -1085,9 +1225,42 @@ void install_maint_stratum(Daemon* daemon, const std::string& name,
 
   attach_flavored_rules(db, stratum, plan);
   add_read_manifest(stratum, plan);
+}
 
+void install_maint_stratum(Daemon* daemon, const std::string& name,
+                           const SealedKernelPlan& plan)
+{
+  Stratum* stratum = daemon->beginStratumDelta(name);
+  if (stratum == nullptr) return;
+  populate_maint_stratum(daemon, stratum, plan);
   daemon->push(stratum);
   daemon->continueRun();
+}
+
+bool install_command_stratum(Daemon* daemon, const std::string& name,
+                             const EntryMode& entry,
+                             const SealedKernelPlan& plan)
+{
+  validate_command_entry_flavor(entry, plan);
+  if (!daemon->validateStratumEntry(name, entry)) return false;
+  preflight_command_install(daemon, entry, plan);
+  Stratum* stratum = daemon->installStratum(name, entry);
+  if (stratum == nullptr) return false;
+
+  // Fresh/resident entries allocate a provisional Stratum.  Keep ownership
+  // local until every registration succeeds; upgrade returns the resident
+  // pipeline object and is owned there already.
+  std::unique_ptr<Stratum> provisional(
+    entry.kind == EntryModeK::upgrade ? nullptr : stratum);
+  if (plan.flavor == "normal" || plan.flavor == "delta")
+    populate_normal_stratum(daemon, stratum, plan);
+  else if (plan.flavor == "count")
+    populate_count_stratum(daemon, stratum, plan);
+  else
+    populate_maint_stratum(daemon, stratum, plan);
+  daemon->push(stratum);
+  (void)provisional.release();
+  return true;
 }
 
 bool maybe_interp_count_plugin(Daemon* daemon, const std::string& path)

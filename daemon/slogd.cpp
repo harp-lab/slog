@@ -43,9 +43,14 @@
 #include "protocol.h"
 
 #include <dlfcn.h>
+#include <algorithm>
+#include <charconv>
+#include <initializer_list>
+#include <limits>
 #include <string>
 #include <vector>
 #include <map>
+#include <memory>
 #include <cstring>
 #include <chrono>
 #include <functional>
@@ -130,14 +135,447 @@ static void run_plugin(slog::Daemon* d,
 // Every command answers with exactly one structured reply, or a record stream
 // ending in a sentinel.  Refusals are typed --
 //     (refused <class> <generation> <detail>...)
-// -- with classes `parse`, `unknown-verb`, and `reserved-verb` implemented
-// here; the seal / entry-mode / stale-generation / suspended classes arrive
-// with slices (b) and (c).  <generation> is the unified generation token
-// (Daemon::commandGeneration; execution-tiers §2.2).
+// -- including dispatcher parse/routing, provisional builder state, exact
+// plan parse/seal classes, and Daemon-owned entry/suspension admission.
+// <generation> is the unified generation token (Daemon::commandGeneration;
+// execution-tiers §2.2).
 
 static void refuse(slog::Daemon* d, const char* cls, const std::string& details)
 {
     d->refuseCommand(cls, details);
+}
+
+static bool symbol_safe(const std::string& s)
+{
+    if (s.empty()) return false;
+    for (const char c : s)
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+              || (c >= '0' && c <= '9')
+              || std::strchr("-_+*/<=>!?.:$%&^~@", c)))
+            return false;
+    return true;
+}
+
+// T0(b)'s builder store is connection-scoped, beside (not inside) the
+// database.  EOF/connection loss therefore destroys every unsealed object,
+// while sealed SCC plans may be referenced by more than one later stratum in
+// the same session.  ABI 1 begins an SCC from one canonical sidecar; T0(c)'s
+// rule-meta/rule-def assembly can become another kernel-plan source without
+// changing this stratum lifecycle.
+struct ProvisionalScc
+{
+    std::string sidecar;
+};
+
+struct ProvisionalStratum
+{
+    slog::EntryMode entry;
+    std::vector<std::string> sccs;
+};
+
+struct CommandBuilders
+{
+    std::map<std::string, ProvisionalScc> provisional_sccs;
+    std::map<std::string,
+             std::shared_ptr<const slog::interp::SealedKernelPlan>> sealed_sccs;
+    std::map<std::string, ProvisionalStratum> provisional_strata;
+};
+
+using CommandFields =
+    std::map<std::string, const slog::sexp::SExp*>;
+
+static bool collect_fields(const slog::sexp::SExp& form, size_t first,
+                           std::initializer_list<const char*> allowed,
+                           CommandFields& fields, std::string& error)
+{
+    for (size_t i = first; i < form.children.size(); ++i)
+    {
+        const auto& field = form.children[i];
+        if (field.kind != slog::sexp::SExp::K::list
+            || field.children.empty()
+            || field.children[0].kind != slog::sexp::SExp::K::atom)
+        {
+            error = "builder fields must be nonempty keyed lists";
+            return false;
+        }
+        const std::string& key = field.children[0].text;
+        bool admitted = false;
+        for (const char* candidate : allowed)
+            if (key == candidate) { admitted = true; break; }
+        if (!admitted)
+        {
+            error = "unexpected builder field: " + key;
+            return false;
+        }
+        if (!fields.emplace(key, &field).second)
+        {
+            error = "duplicate builder field: " + key;
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool parse_u64_atom(const slog::sexp::SExp& value, u64& out)
+{
+    if (value.kind != slog::sexp::SExp::K::atom || value.text.empty())
+        return false;
+    const char* begin = value.text.data();
+    const char* end = begin + value.text.size();
+    const auto result = std::from_chars(begin, end, out);
+    return result.ec == std::errc() && result.ptr == end;
+}
+
+static bool parse_generation(const CommandFields& fields, u64& generation)
+{
+    auto it = fields.find("generation");
+    if (it == fields.end()) return false;
+    const auto& field = *it->second;
+    return field.children.size() == 2
+        && parse_u64_atom(field.children[1], generation);
+}
+
+static bool parse_object_id(const slog::sexp::SExp& value, std::string& id)
+{
+    if (value.kind != slog::sexp::SExp::K::atom
+        || !symbol_safe(value.text))
+        return false;
+    id = value.text;
+    return true;
+}
+
+static void refuse_builder_parse(slog::Daemon* d, const std::string& verb,
+                                 const std::string& detail)
+{
+    refuse(d, "parse", "(verb " + verb + ") (detail "
+           + slog::protocol::quoteString(detail) + ")");
+}
+
+static void refuse_builder_state(slog::Daemon* d, const std::string& verb,
+                                 const std::string& detail)
+{
+    refuse(d, "builder-state", "(verb " + verb + ") (detail "
+           + slog::protocol::quoteString(detail) + ")");
+}
+
+static void accept_builder(slog::Daemon* d, const std::string& verb,
+                           const std::string& details)
+{
+    d->emit("(accepted " + verb + " "
+            + std::to_string(d->commandGeneration()) + " " + details + ")");
+}
+
+static bool parse_entry_field(slog::Daemon* d,
+                              const slog::sexp::SExp& field,
+                              slog::EntryMode& entry)
+{
+    if (field.children.size() < 2
+        || field.children[1].kind != slog::sexp::SExp::K::atom)
+    {
+        refuse_builder_parse(d, "stratum-begin",
+                             "entry must name an entry mode");
+        return false;
+    }
+    const std::string& mode = field.children[1].text;
+    auto refuse_mode = [&](const std::string& detail) {
+        refuse(d, "entry-mode", "(entry "
+               + (symbol_safe(mode) ? mode
+                                    : slog::protocol::quoteString(mode))
+               + ") (detail " + slog::protocol::quoteString(detail) + ")");
+        return false;
+    };
+    if (mode == "fresh" || mode == "resident-delta" || mode == "upgrade")
+    {
+        if (field.children.size() != 2)
+            return refuse_mode("only resident-count accepts (at <pipeline-pos>)");
+        entry = mode == "fresh" ? slog::EntryMode::fresh()
+              : mode == "resident-delta" ? slog::EntryMode::residentDelta()
+                                           : slog::EntryMode::upgrade();
+        return true;
+    }
+    if (mode == "resident-count")
+    {
+        if (field.children.size() != 3)
+            return refuse_mode("resident-count requires (at <pipeline-pos>)");
+        const auto& at = field.children[2];
+        u64 position = 0;
+        if (at.kind != slog::sexp::SExp::K::list || at.children.size() != 2
+            || at.children[0].kind != slog::sexp::SExp::K::atom
+            || at.children[0].text != "at"
+            || !parse_u64_atom(at.children[1], position)
+            || position > std::numeric_limits<u32>::max())
+            return refuse_mode("resident-count requires an unsigned 32-bit (at <pipeline-pos>)");
+        entry = slog::EntryMode::residentCount(static_cast<u32>(position));
+        return true;
+    }
+    return refuse_mode("unknown entry mode");
+}
+
+// Return true iff `verb` belongs to the active builder surface (including a
+// refused invocation).  This keeps the main dispatcher single-reply: a
+// runtime entry refusal is emitted by Daemon, parse/seal/state refusals here,
+// and only a fully installed stratum receives an acknowledgement.
+static bool dispatch_builder_command(slog::Daemon* d, CommandBuilders& state,
+                                     const slog::sexp::SExp& form,
+                                     const std::string& verb)
+{
+    const bool known = verb == "scc-begin" || verb == "scc-seal"
+                    || verb == "stratum-begin"
+                    || verb == "stratum-add-scc"
+                    || verb == "stratum-seal";
+    if (!known) return false;
+
+    const size_t argc = form.children.size() - 1;
+    const bool begin = verb == "scc-begin" || verb == "stratum-begin";
+    const size_t expected_argc = begin ? 3
+                               : verb == "stratum-add-scc" ? 3 : 2;
+    if (argc != expected_argc)
+    {
+        refuse_builder_parse(d, verb, "wrong builder command arity");
+        return true;
+    }
+
+    std::string id;
+    if (!parse_object_id(form.children[1], id))
+    {
+        refuse_builder_parse(d, verb, "object id must be a protocol symbol");
+        return true;
+    }
+
+    if (verb == "scc-begin")
+    {
+        CommandFields fields;
+        std::string error;
+        if (!collect_fields(form, 2, {"generation", "kernel-plan"},
+                            fields, error)
+            || fields.size() != 2)
+        {
+            refuse_builder_parse(d, verb,
+                error.empty() ? "requires generation and kernel-plan fields"
+                              : error);
+            return true;
+        }
+        u64 generation = 0;
+        if (!parse_generation(fields, generation))
+        {
+            refuse_builder_parse(d, verb,
+                                 "generation must be one unsigned integer");
+            return true;
+        }
+        const auto& kernel = *fields.at("kernel-plan");
+        if (kernel.children.size() != 2
+            || kernel.children[1].kind != slog::sexp::SExp::K::list
+            || kernel.children[1].children.size() != 2
+            || kernel.children[1].children[0].kind
+                 != slog::sexp::SExp::K::atom
+            || kernel.children[1].children[0].text != "sidecar"
+            || kernel.children[1].children[1].kind
+                 != slog::sexp::SExp::K::string
+            || kernel.children[1].children[1].text.empty())
+        {
+            refuse_builder_parse(d, verb,
+                "kernel-plan must be (kernel-plan (sidecar \"PATH\"))");
+            return true;
+        }
+        if (!d->checkCommandGeneration(generation, verb.c_str())) return true;
+        if (state.provisional_sccs.count(id) || state.sealed_sccs.count(id))
+        {
+            refuse_builder_state(d, verb, "SCC id already exists");
+            return true;
+        }
+        state.provisional_sccs.emplace(
+            id, ProvisionalScc{kernel.children[1].children[1].text});
+        accept_builder(d, verb, "(scc " + id + ")");
+        return true;
+    }
+
+    if (verb == "scc-seal")
+    {
+        CommandFields fields;
+        std::string error;
+        if (!collect_fields(form, 2, {"generation"}, fields, error)
+            || fields.size() != 1)
+        {
+            refuse_builder_parse(d, verb,
+                error.empty() ? "requires one generation field" : error);
+            return true;
+        }
+        u64 generation = 0;
+        if (!parse_generation(fields, generation))
+        {
+            refuse_builder_parse(d, verb,
+                                 "generation must be one unsigned integer");
+            return true;
+        }
+        if (!d->checkCommandGeneration(generation, verb.c_str())) return true;
+        auto pending = state.provisional_sccs.find(id);
+        if (pending == state.provisional_sccs.end())
+        {
+            refuse_builder_state(d, verb,
+                state.sealed_sccs.count(id) ? "SCC is already sealed"
+                                            : "unknown provisional SCC");
+            return true;
+        }
+        try
+        {
+            const auto decoded = slog::interp::parse_kernel_plan_file(
+                pending->second.sidecar);
+            auto sealed = std::make_shared<const slog::interp::SealedKernelPlan>(
+                slog::interp::seal_kernel_plan(decoded, d->db()));
+            state.sealed_sccs.emplace(id, std::move(sealed));
+            state.provisional_sccs.erase(pending);
+            accept_builder(d, verb, "(scc " + id + ")");
+        }
+        catch (const slog::interp::PlanParseError& exception)
+        {
+            refuse(d, slog::interp::parse_error_class(exception.kind()),
+                   "(verb scc-seal) (scc " + id + ") (offset "
+                   + std::to_string(exception.offset()) + ") (detail "
+                   + slog::protocol::quoteString(exception.what()) + ")");
+        }
+        catch (const slog::interp::SealError& exception)
+        {
+            refuse(d, slog::interp::seal_error_class(exception.kind()),
+                   "(verb scc-seal) (scc " + id + ") (detail "
+                   + slog::protocol::quoteString(exception.what()) + ")");
+        }
+        return true;
+    }
+
+    if (verb == "stratum-begin")
+    {
+        CommandFields fields;
+        std::string error;
+        if (!collect_fields(form, 2, {"generation", "entry"}, fields, error)
+            || fields.size() != 2)
+        {
+            refuse_builder_parse(d, verb,
+                error.empty() ? "requires generation and entry fields" : error);
+            return true;
+        }
+        u64 generation = 0;
+        if (!parse_generation(fields, generation))
+        {
+            refuse_builder_parse(d, verb,
+                                 "generation must be one unsigned integer");
+            return true;
+        }
+        if (!d->checkCommandGeneration(generation, verb.c_str())) return true;
+        const auto& entry_field = *fields.at("entry");
+        slog::EntryMode entry;
+        if (!parse_entry_field(d, entry_field, entry)) return true;
+        if (state.provisional_strata.count(id))
+        {
+            refuse_builder_state(d, verb, "stratum id already exists");
+            return true;
+        }
+        state.provisional_strata.emplace(id, ProvisionalStratum{entry, {}});
+        accept_builder(d, verb, "(stratum " + id + ")");
+        return true;
+    }
+
+    if (verb == "stratum-add-scc")
+    {
+        std::string scc;
+        if (!parse_object_id(form.children[2], scc))
+        {
+            refuse_builder_parse(d, verb, "SCC id must be a protocol symbol");
+            return true;
+        }
+        CommandFields fields;
+        std::string error;
+        if (!collect_fields(form, 3, {"generation"}, fields, error)
+            || fields.size() != 1)
+        {
+            refuse_builder_parse(d, verb,
+                error.empty() ? "requires one generation field" : error);
+            return true;
+        }
+        u64 generation = 0;
+        if (!parse_generation(fields, generation))
+        {
+            refuse_builder_parse(d, verb,
+                                 "generation must be one unsigned integer");
+            return true;
+        }
+        if (!d->checkCommandGeneration(generation, verb.c_str())) return true;
+        auto stratum = state.provisional_strata.find(id);
+        if (stratum == state.provisional_strata.end())
+        {
+            refuse_builder_state(d, verb, "unknown provisional stratum");
+            return true;
+        }
+        if (!state.sealed_sccs.count(scc))
+        {
+            refuse_builder_state(d, verb,
+                state.provisional_sccs.count(scc) ? "SCC is not sealed"
+                                                  : "unknown sealed SCC");
+            return true;
+        }
+        if (std::find(stratum->second.sccs.begin(), stratum->second.sccs.end(),
+                      scc) != stratum->second.sccs.end())
+        {
+            refuse_builder_state(d, verb, "SCC is already attached");
+            return true;
+        }
+        stratum->second.sccs.push_back(scc);
+        accept_builder(d, verb,
+                       "(stratum " + id + ") (scc " + scc + ")");
+        return true;
+    }
+
+    CommandFields fields;
+    std::string error;
+    if (!collect_fields(form, 2, {"generation"}, fields, error)
+        || fields.size() != 1)
+    {
+        refuse_builder_parse(d, verb,
+            error.empty() ? "requires one generation field" : error);
+        return true;
+    }
+    u64 generation = 0;
+    if (!parse_generation(fields, generation))
+    {
+        refuse_builder_parse(d, verb, "generation must be one unsigned integer");
+        return true;
+    }
+    if (!d->checkCommandGeneration(generation, verb.c_str())) return true;
+    auto stratum = state.provisional_strata.find(id);
+    if (stratum == state.provisional_strata.end())
+    {
+        refuse_builder_state(d, verb, "unknown provisional stratum");
+        return true;
+    }
+    if (stratum->second.sccs.empty())
+    {
+        refuse_builder_state(d, verb, "stratum has no sealed SCC");
+        return true;
+    }
+    if (stratum->second.sccs.size() != 1)
+    {
+        refuse(d, "capability", "(verb stratum-seal) (detail "
+               + slog::protocol::quoteString(
+                   "ABI 1 sidecar strata contain exactly one SCC") + ")");
+        return true;
+    }
+    const std::string scc = stratum->second.sccs.front();
+    try
+    {
+        const auto sealed = state.sealed_sccs.at(scc);
+        if (!slog::interp::install_command_stratum(
+                d, id, stratum->second.entry, *sealed))
+            return true;
+        state.provisional_strata.erase(stratum);
+        accept_builder(d, verb,
+                       "(stratum " + id + ") (scc " + scc + ")");
+    }
+    catch (const slog::interp::SealError& exception)
+    {
+        refuse(d, slog::interp::seal_error_class(exception.kind()),
+               "(verb stratum-seal) (stratum " + id + ") (detail "
+               + slog::protocol::quoteString(exception.what()) + ")");
+    }
+    return true;
 }
 
 // Reserved verb families: the parser recognizes them and answers
@@ -250,7 +688,8 @@ static void emit_catalog_types(slog::Daemon* d)
 }
 
 // Dispatch one '('-line on the command stack.
-static void dispatch_command(slog::Daemon* d, const std::string& line)
+static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
+                             const std::string& line)
 {
     slog::sexp::SExp form;
     std::string err;
@@ -265,14 +704,6 @@ static void dispatch_command(slog::Daemon* d, const std::string& line)
     // token with reader-syntax characters) could not be echoed verbatim into
     // a (verb ...) detail that datum readers consume, so it is refused here
     // once and every downstream emission stays clean.
-    auto symbol_safe = [](const std::string& s) {
-        if (s.empty()) return false;
-        for (const char c : s)
-            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-                  || (c >= '0' && c <= '9') || std::strchr("-_+*/<=>!?.:$%&^~@", c)))
-                return false;
-        return true;
-    };
     const bool head_is_atom =
         !form.children.empty()
         && form.children[0].kind == slog::sexp::SExp::K::atom;
@@ -308,6 +739,9 @@ static void dispatch_command(slog::Daemon* d, const std::string& line)
     }
 
     d->markCommandProtocol();
+
+    if (dispatch_builder_command(d, builders, form, verb))
+        return;
 
     if (verb == "continue" || verb == "continue-boundary")
     {
@@ -354,13 +788,14 @@ static void dispatch_command(slog::Daemon* d, const std::string& line)
 // twin handles its transport-level (close) BEFORE this dispatch, exactly as
 // before.
 static void dispatch_line(slog::Daemon* d,
+                          CommandBuilders& builders,
                           const std::string& line,
                           std::vector<void*>& so_handles)
 {
     if (line.empty())
         return;
     if (line[0] == '(')
-        dispatch_command(d, line);
+        dispatch_command(d, builders, line);
     else
         run_plugin(d, line, so_handles);
 }
@@ -369,6 +804,7 @@ static void dispatch_line(slog::Daemon* d,
 static int run_stdin(u32 num_threads)
 {
     std::vector<void*> so_handles;
+    CommandBuilders builders;
     auto* daemon = new slog::Daemon(num_threads,
         [](const std::string& s) { std::cout << s << std::endl; });
 
@@ -377,7 +813,7 @@ static int run_stdin(u32 num_threads)
     {
         if (!line.empty() && line.back() == '\r')
             line.pop_back();
-        dispatch_line(daemon, line, so_handles);
+        dispatch_line(daemon, builders, line, so_handles);
     }
 
     // Delete the daemon (and its database) BEFORE dlclosing: index objects
@@ -406,6 +842,7 @@ static int run_tcp(u32 num_threads, int port)
         return 1;
 
     std::vector<void*> so_handles;
+    CommandBuilders builders;
     auto* daemon = new slog::Daemon(num_threads,
         [sock](const std::string& s) { send_msg(sock, s); });
 
@@ -458,7 +895,7 @@ static int run_tcp(u32 num_threads, int port)
                 done = true;
                 break;
             }
-            dispatch_line(daemon, line, so_handles);
+            dispatch_line(daemon, builders, line, so_handles);
         }
         if (done)
             break;

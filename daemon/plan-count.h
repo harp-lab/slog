@@ -20,6 +20,7 @@ namespace slog
 {
 
 class Daemon;
+struct EntryMode;
 
 namespace interp
 {
@@ -43,6 +44,16 @@ void install_maint_stratum(Daemon* daemon, const std::string& name,
 // write/intern/lattice tasks, then attach its interpreted read rules.
 void install_normal_stratum(Daemon* daemon, const std::string& name,
                             const SealedKernelPlan& plan);
+
+// T0(b) command-builder installation.  The caller has already generation-
+// gated `stratum-seal`; this path validates the explicit entry/flavor pair,
+// installs through Daemon::installStratum, pushes the stratum, and deliberately
+// does NOT continue it.  A false return means the entry state machine emitted
+// the one typed refusal; structural/install failures remain SealError so the
+// command dispatcher can preserve the D16 refusal class.
+bool install_command_stratum(Daemon* daemon, const std::string& name,
+                             const EntryMode& entry,
+                             const SealedKernelPlan& plan);
 
 // When `path` is a flavored plugin whose flavor the interpreter admits,
 // parse/seal/install its sidecar plan through the production reader and

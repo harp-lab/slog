@@ -598,13 +598,13 @@ Thread 1 proceeds in this order:
    Gates: unit 219/219, interpreter operator, protocol 48/48, pause 18/18,
    session 528/528, targeted native `dem_lambda`, and full
    `SLOG_OPT=interp` golden 165/165.
-2. **Finish the independent T0(b) command lifecycle** — the runtime
-   `EntryMode` state machine, generation admission, legacy forwarding shims,
-   and T0(d) pause record are landed. Next add `stratum-begin` only together
-   with its provisional object/add/seal lifecycle, then pin resident-count
-   swap/restart capability refusals and the session workflow through the
-   dual stack. No REPL code is needed for this step.
-3. **Synchronize the UX work at that seam**, resolve only genuine overlaps,
+2. **Finish the independent T0(b) command lifecycle (completed 2026-07-21)**
+   — connection-scoped SCC and stratum begin/add/seal objects, generation
+   admission, D16/builder/entry refusals, count restart/tier-swap policy, and
+   the command-only dual-stack session workflow are landed. The ABI-1 bridge
+   takes one canonical sidecar per SCC and one SCC per runtime stratum; no REPL
+   code changed.
+3. **Synchronize the UX work at that seam (next)**, resolve only genuine overlaps,
    and run the joint intersection battery before beginning coupled client
    changes.
 4. **R0 → R1 on the shipped substrate**: session ownership, semantic
@@ -626,6 +626,31 @@ Thread 1 proceeds in this order:
 Deferred on this thread until after S: level-1 anything (provenance watches,
 stepping, why/why-not), `whatif`, fork/branching vocabulary beyond reserved
 words.
+
+**Thread-1 checkpoint (2026-07-21; T0(b) command lifecycle complete,
+pre-UX-sync).** The daemon now owns a connection-scoped ABI-1 SCC/stratum
+builder over canonical `.plan` sidecars: `scc-begin`/`scc-seal`, then
+`stratum-begin`/`stratum-add-scc`/`stratum-seal`. All five mutations are
+generation-gated and acknowledged; parse/I/O/D16, provisional-state,
+entry-state, suspension, and capability failures remain typed.
+`stratum-seal` read-only-preflights bindings before the checked entry
+transition, pushes without auto-continuing, and preserves legacy path-stack
+behavior through the existing installer wrappers. Entry/flavor policy pins
+normal=fresh/upgrade, delta+maintenance=resident-delta, and
+count=resident-count; count restart/tier-swap attempts are capability
+refusals. The sidecar bridge deliberately admits one SCC per runtime stratum;
+T0(c)'s rule identity/builder work can extend the SCC source without changing
+this lifecycle. `repl/` remains untouched. Exit gates: interpreter operator
+pass; protocol 67/67; pause 18/18; session 528/528; full cache-cleared
+`SLOG_OPT=interp` golden 165/165.
+
+The next thread-1 move is now the planned UX synchronization: merge at this
+command seam, reconcile only the dispatcher/session call sites that genuinely
+overlap, and run the joint protocol + plain-transcript intersection before
+starting coupled R0 work. After that, keep T0(c) identity (`rule-meta`, stable
+keys, per-attempt fire vectors) separate from UX rendering, and connect Q1's
+already-golden query payload only when the N2/N3 catalog overlay supplies real
+VersionKey-boundary state.
 
 ### 4.3 Why the fork is safe
 

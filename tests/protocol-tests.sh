@@ -17,6 +17,9 @@
 #   - the protocol-mode seam: legacy literals do NOT flip a session into
 #     command mode; any other command verb does (slice (d) keys the uniform
 #     pause record off this)
+#   - T0(b)'s connection-scoped SCC/stratum begin-add-seal lifecycle,
+#     generation admission, D16 refusal mapping, entry/flavor policy, and an
+#     explicit continue after command installation
 #
 #   tests/protocol-tests.sh        (expects a warm build/ cache; run after
 #                                   tests/run-tests.sh, or budget compile time)
@@ -114,18 +117,110 @@ else
   bad "pause-record-cause-goldens"
 fi
 
+# --- 5c. T0(b) provisional SCC/stratum lifecycle ----------------------------
+# ABI 1 adapts one canonical sidecar into one sealed SCC. The stratum object
+# is separately begun, populated, and sealed; sealing installs but never runs
+# it, so the following (continue) is an observable client-owned transition.
+BUILDER=(
+  '(scc-begin s0 (generation 0) (kernel-plan (sidecar "tests/data/t0-normal-set.plan")))'
+  '(scc-seal s0 (generation 0))'
+  '(stratum-begin st0 (generation 0) (entry fresh))'
+  '(stratum-add-scc st0 s0 (generation 0))'
+  '(stratum-seal st0 (generation 0))'
+)
+racket tests/api/drive.rkt "${BUILDER[@]}" > out/proto-builder-no-run.log 2>&1
+if [ "$(grep -cF '(accepted ' out/proto-builder-no-run.log)" -eq 5 ]; then
+  ok "builder-every-mutation-acked"; else bad "builder-every-mutation-acked"; fi
+expect_not "builder-seal-does-not-continue" '(fixpoint ' out/proto-builder-no-run.log
+
+# A new connection can reuse every object id: connection loss discarded the
+# prior session's builder store. This run then crosses the real installer,
+# continue loop, and catalog through commands only.
+racket tests/api/drive.rkt "${BUILDER[@]}" '(continue)' '(catalog)' \
+  > out/proto-builder-run.log 2>&1
+expect "builder-scc-begin-ack" '(accepted scc-begin 0 (scc s0))' out/proto-builder-run.log
+expect "builder-stratum-seal-ack" '(accepted stratum-seal 0 (stratum st0) (scc s0))' out/proto-builder-run.log
+expect_rx "builder-run-fixpoint" '^\(fixpoint ' out/proto-builder-run.log
+expect_rx "builder-run-catalog" '^\(catalog-rel \(name "node"\)' out/proto-builder-run.log
+expect_not "builder-run-no-error" '(error' out/proto-builder-run.log
+
+# Every builder mutation is generation-gated before object-state admission.
+GEN_SCRIPT=(
+  '(scc-begin stale (generation 1) (kernel-plan (sidecar "tests/data/t0-normal-set.plan")))'
+  '(scc-begin sg (generation 0) (kernel-plan (sidecar "tests/data/t0-normal-set.plan")))'
+  '(scc-seal sg (generation 1))'
+  '(scc-seal sg (generation 0))'
+  '(stratum-begin stale-st (generation 1) (entry fresh))'
+  '(stratum-begin gst (generation 0) (entry fresh))'
+  '(stratum-add-scc gst sg (generation 1))'
+  '(stratum-add-scc gst sg (generation 0))'
+  '(stratum-seal gst (generation 1))'
+)
+racket tests/api/drive.rkt "${GEN_SCRIPT[@]}" > out/proto-builder-generation.log 2>&1
+for v in scc-begin scc-seal stratum-begin stratum-add-scc stratum-seal; do
+  expect_rx "builder-stale-$v" "\\(refused stale-generation 0 \\(verb $v\\) \\(expected 1\\)\\)" \
+    out/proto-builder-generation.log
+done
+if [ "$(grep -cF '(refused stale-generation ' out/proto-builder-generation.log)" -eq 5 ]; then
+  ok "builder-stale-count-exact"; else bad "builder-stale-count-exact"; fi
+
+# Parse/IO/seal and lifecycle-state failures retain their exact typed class.
+sed 's/(abi 1)/(abi 2)/' tests/data/t0-normal-set.plan \
+  > out/proto-invalid-abi.plan
+racket tests/api/drive.rkt \
+  '(scc-begin missing (generation 0) (kernel-plan (sidecar "out/no-such.plan")))' \
+  '(scc-seal missing (generation 0))' \
+  '(scc-begin badabi (generation 0) (kernel-plan (sidecar "out/proto-invalid-abi.plan")))' \
+  '(scc-seal badabi (generation 0))' \
+  '(stratum-begin empty (generation 0) (entry fresh))' \
+  '(stratum-seal empty (generation 0))' \
+  > out/proto-builder-refuse.log 2>&1
+expect_rx "builder-plan-io" '\(refused plan-io 0 \(verb scc-seal\)' out/proto-builder-refuse.log
+expect_rx "builder-seal-class" '\(refused abi 0 \(verb scc-seal\)' out/proto-builder-refuse.log
+expect_rx "builder-state-class" '\(refused builder-state 0 \(verb stratum-seal\)' out/proto-builder-refuse.log
+
+# Structural entry errors are entry-mode refusals. The valid resident-count
+# spelling reaches seal policy, where a normal SCC is a forbidden count-tier
+# swap; count plans requested as fresh/upgrade are covered in the C++ gate.
+ENTRY_SCRIPT=(
+  '(stratum-begin missing-at (generation 0) (entry resident-count))'
+  '(stratum-begin spurious-at (generation 0) (entry fresh (at 0)))'
+  '(scc-begin es (generation 0) (kernel-plan (sidecar "tests/data/t0-normal-set.plan")))'
+  '(scc-seal es (generation 0))'
+  '(stratum-begin count-swap (generation 0) (entry resident-count (at 0)))'
+  '(stratum-add-scc count-swap es (generation 0))'
+  '(stratum-seal count-swap (generation 0))'
+  '(stratum-begin no-live-upgrade (generation 0) (entry upgrade))'
+  '(stratum-add-scc no-live-upgrade es (generation 0))'
+  '(stratum-seal no-live-upgrade (generation 0))'
+)
+racket tests/api/drive.rkt "${ENTRY_SCRIPT[@]}" > out/proto-builder-entry.log 2>&1
+if [ "$(grep -cF '(refused entry-mode ' out/proto-builder-entry.log)" -eq 3 ]; then
+  ok "builder-entry-mode-count-exact"; else bad "builder-entry-mode-count-exact"; fi
+expect_rx "builder-resident-count-swap-refused" \
+  '\(refused capability 0 \(verb stratum-seal\).*resident-count strata cannot be restarted or tier-swapped' \
+  out/proto-builder-entry.log
+
 # --- 6. TCP/stdin parity ------------------------------------------------------
 # One dispatch, two transports: the same command script produces byte-identical
 # reply lines.  (pending)/(bye ...) are transport chatter, filtered from the
 # diff but asserted separately -- the heartbeat and close handshake are frozen.
-SCRIPT=("(continue)" "(protocol-mode)" "(frobnicate 1 2)" "(watch v94)"
+# The fixpoint elapsed-ms field is intrinsically run-specific, so normalize that
+# one numeric field while retaining the generation/name/iteration tuple.
+SCRIPT=("${BUILDER[@]}" "(continue)" "(protocol-mode)" "(frobnicate 1 2)" "(watch v94)"
         "(query q7)" "(catalog)" "(protocol-mode)" "(foo" "(catalog types)"
         "no/such.so")
 racket tests/api/drive.rkt     "${SCRIPT[@]}" > out/proto-stdin.log 2>&1
 racket tests/api/tcp-drive.rkt "${SCRIPT[@]}" > out/proto-tcp.log   2>&1
-if diff <(grep -v -e '^(pending)$' -e '^(bye ' out/proto-tcp.log) out/proto-stdin.log \
+normalize_parity() {
+  grep -v -e '^(pending)$' -e '^(bye ' "$1" \
+    | sed -E 's/ [0-9]+\.[0-9]+\)$/ <elapsed-ms>)/'
+}
+if diff <(normalize_parity out/proto-tcp.log) \
+        <(normalize_parity out/proto-stdin.log) \
      > out/proto-parity.diff 2>&1
 then ok "tcp-stdin-parity"; else cat out/proto-parity.diff; bad "tcp-stdin-parity"; fi
+expect_rx "tcp-builder-fixpoint" '^\(fixpoint 0 "st0" ' out/proto-tcp.log
 expect_rx "tcp-bye-handshake" '^\(bye [0-9]+\)$' out/proto-tcp.log
 
 # --- 7. catalog record round-trip ----------------------------------------------

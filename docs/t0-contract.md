@@ -64,9 +64,10 @@ map must be additive under it.
 Refusals are typed: `(refused <class> <generation> <detail>...)`, one
 class per failure family — `parse`, `unknown-verb`, `reserved-verb`
 (distinct from unknown, so clients can distinguish "not yet" from
-"never"), each D16 seal class (below), `entry-mode`, `stale-generation`,
-`suspended`, and the capability refusals (tier swap/restart against
-`resident-count`). **Every refusal class is driven by a test** — F
+"never"), `builder-state`, `plan-io` / `parse-limit`, each D16 seal class
+(below), `entry-mode`, `stale-generation`, `suspended`, and the capability
+refusals (tier swap/restart against `resident-count`). **Every refusal class
+is driven by a test** — F
 criterion 2 verbatim; a refusal without a test does not exist.
 
 **Byte-compat guarantee (finding 8).** Every reply currently parsed by
@@ -151,21 +152,48 @@ entries remain as forwarding shims for the path-protocol stack
 accidental name-match firewall they relied on is retired by the
 explicit attribute.
 
-**As built 2026-07-20.** `daemon.h` now has the single checked
-`installStratumImpl` transition path plus the public `installStratum` overloads.
-The explicit path validates entry attributes before reload/bind mutation,
-checks the generation token, requires an in-range `resident-count (at P)`, and
-admits `upgrade` only for the named live stratum at `RUN_AT_BOUNDARY`.
+**As built 2026-07-21.** `daemon.h` has one read-only entry admission path and
+one transition path behind the public `installStratum` overloads. The explicit
+path validates entry attributes before reload/bind mutation, checks the
+generation token, requires an in-range `resident-count (at P)`, and admits
+`upgrade` only for the named live stratum at `RUN_AT_BOUNDARY`.
 `beginStratum`/`beginStratumDelta` forward through it while retaining their
-exact legacy refusal bytes and the former name-matched hot-swap behavior.
-`tests/interp-operator-tests.cpp` drives fresh/resident-count/stale-generation,
-clean-boundary upgrade, and real mid-read refusal. This is the runtime half of
-slice (b), not a provisional wire builder: `stratum-begin` stays unimplemented
-until its provisional object and seal lifecycle land together. The remaining
-slice-(b) work is that builder lifecycle plus tier swap/restart capability
-refusals for `resident-count` and the dual-stack session workflow gate. The
-forwarding-shim regression gates are green: pause 18/18, session 528/528, and
-the full interpreter golden suite 165/165.
+exact legacy refusal bytes and former name-matched hot-swap behavior.
+
+The command half is now active as a connection-scoped builder store. ABI 1's
+bridge consumes one already-canonical sidecar per SCC:
+
+```text
+(scc-begin S (generation G) (kernel-plan (sidecar "PATH.plan")))
+(scc-seal S (generation G))
+(stratum-begin ST (generation G) (entry fresh))
+(stratum-add-scc ST S (generation G))
+(stratum-seal ST (generation G))
+```
+
+Fields on the two begin forms are keyed (order-independent); ids are protocol
+symbols. Every mutation answers `(accepted <verb> <generation> ...)` or one
+typed refusal. `scc-seal` runs the production bounded parse/D16 seal and maps
+its exact error class. `stratum-seal` revalidates generation and live entry
+state, preflights every database-dependent binding without mutation, installs
+and pushes exactly one sealed SCC, then acknowledges without continuing; the
+client owns the subsequent `(continue)`. A connection drop destroys all
+unsealed SCCs and strata. Sealed SCCs are reusable within that connection.
+ABI 1 refuses a multi-SCC stratum as `capability`; T0(c)'s future
+`rule-meta`/`rule-def` assembly becomes another SCC plan source without changing
+the stratum lifecycle. Entry/flavor admission is explicit: normal =
+fresh/upgrade, delta and maintenance = resident-delta, count = resident-count.
+Any count plan requested as fresh/upgrade, or any non-count plan requested as
+resident-count, is the pinned count restart/tier-swap `capability` refusal.
+
+`tests/interp-operator-tests.cpp` drives runtime entry states plus command
+entry/flavor policy and no-auto-continue. `tests/protocol-tests.sh` drives the
+whole begin/seal/begin/add/seal/continue/catalog workflow over stdin and TCP,
+all five stale-generation gates, connection-loss discard, builder state,
+plan-I/O/D16 mapping, and count-tier refusal. This completes T0(b) without
+touching `repl/`. Exit gates: interpreter operator pass, protocol 67/67,
+pause 18/18, session 528/528, and cache-cleared `SLOG_OPT=interp` golden
+165/165.
 
 ## Builders and seal: the T2 meeting point
 
@@ -358,14 +386,14 @@ the fork.
   session-workflow-through-the-dual-stack leg remains with slice (b),
   whose entry-mode verbs are what the workflow needs beyond `.so`
   paths.
-- **(b) `plan.h` parse/seal + entry modes (runtime half landed 2026-07-20).** Parse a real T1 `.plan`
+- **(b) `plan.h` parse/seal + entry modes (completed 2026-07-21).** Parse a real T1 `.plan`
   sidecar; the D16 seal battery; `installStratum` with validated entry
   modes and forwarding shims. Tests: seal-rejection battery extending
   `tests/interp-operator-tests.cpp`'s seal/bind rejections with parsed
   input, one test per refusal class; entry-mode refusals
   (resident-count × swap/restart, resident × reload, upgrade × state);
-  `tests/pause-tests.sh` and `tests/session-tests.sh` green through the
-  shims.
+  provisional SCC/stratum lifecycle and dual-stack command session;
+  `tests/pause-tests.sh` and `tests/session-tests.sh` green through the shims.
 - **(c) identity keys + rule-meta registration + per-attempt fire
   vectors.** Tests: key-stability unit battery (same layer replay
   preserves keys; modified clone gets a fresh LayerId and fresh keys;

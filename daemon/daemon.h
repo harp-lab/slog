@@ -157,8 +157,8 @@ private:
          + (details.empty() ? "" : " " + details) + ")");
   }
 
-  Stratum* refuseEntry(EntryReplyK replies, const char* cls,
-                       const EntryMode& entry, const std::string& detail)
+  void refuseEntry(EntryReplyK replies, const char* cls,
+                   const EntryMode& entry, const std::string& detail)
   {
     if (replies == EntryReplyK::legacy_fresh)
       emit("(error suspended \"beginStratum is refused while a stratum is "
@@ -170,16 +170,18 @@ private:
       emitTypedRefusal(cls,
         std::string("(entry ") + entryModeName(entry.kind) + ") (detail "
         + protocol::quoteString(detail) + ")");
-    return nullptr;
   }
 
-  // The ONE checked entry path. `consume_pending_legacy_bind` is true only
-  // for the forwarding shims: old generated plugins arm bind-at/bind-instance
-  // as a separate action. New command builders carry resident-count's `at`
-  // position in EntryMode and may not silently consume that hidden state.
-  Stratum* installStratumImpl(const std::string& name, const EntryMode& entry,
-                              EntryReplyK replies,
-                              bool consume_pending_legacy_bind)
+  // The ONE read-only admission path. `consume_pending_legacy_bind` is true
+  // only for the forwarding shims: old generated plugins arm
+  // bind-at/bind-instance as a separate action. New command builders carry
+  // resident-count's `at` position in EntryMode and may not silently consume
+  // that hidden state. Keeping admission separate lets stratum-seal validate
+  // database-dependent plan bindings before reload/rebind/upgrade mutation.
+  bool validateStratumEntryImpl(const std::string& name,
+                                const EntryMode& entry,
+                                EntryReplyK replies,
+                                bool consume_pending_legacy_bind)
   {
     const bool count_has_at = entry.kind == EntryModeK::resident_count
                               && entry.at >= 0;
@@ -188,37 +190,78 @@ private:
     if (replies == EntryReplyK::typed
         && ((entry.kind == EntryModeK::resident_count && !count_has_at)
             || other_has_at))
-      return refuseEntry(replies, "entry-mode", entry,
+    {
+      refuseEntry(replies, "entry-mode", entry,
         entry.kind == EntryModeK::resident_count
           ? "resident-count requires (at <pipeline-pos>)"
           : "only resident-count accepts (at <pipeline-pos>)");
+      return false;
+    }
 
     const bool suspended = database->isSuspended();
     if (entry.kind == EntryModeK::upgrade)
     {
       if (!suspended)
-        return refuseEntry(replies, "entry-mode", entry,
-                           "upgrade requires a suspended stratum");
+      {
+        refuseEntry(replies, "entry-mode", entry,
+                          "upgrade requires a suspended stratum");
+        return false;
+      }
       const Stratum* current = database->suspendedStratum();
       if (current == nullptr || current->name != name)
-        return refuseEntry(replies, "entry-mode", entry,
-                           "upgrade target is not the suspended stratum");
+      {
+        refuseEntry(replies, "entry-mode", entry,
+                          "upgrade target is not the suspended stratum");
+        return false;
+      }
       if (database->suspendPosition() != RUN_AT_BOUNDARY)
-        return refuseEntry(replies, "suspended", entry,
-                           "upgrade requires a settled iteration boundary");
-      Stratum* live = const_cast<Stratum*>(current);
-      live->clearForUpgrade();
-      return live;
+      {
+        refuseEntry(replies, "suspended", entry,
+                          "upgrade requires a settled iteration boundary");
+        return false;
+      }
+      return true;
     }
 
     if (suspended)
-      return refuseEntry(replies, "suspended", entry,
-                         "entry is refused while a stratum is suspended; "
-                         "continue to fixpoint first");
+    {
+      refuseEntry(replies, "suspended", entry,
+                        "entry is refused while a stratum is suspended; "
+                        "continue to fixpoint first");
+      return false;
+    }
 
     if (!consume_pending_legacy_bind && pending_bind_pos >= 0)
-      return refuseEntry(replies, "entry-mode", entry,
-                         "explicit entry cannot consume a pending legacy bind");
+    {
+      refuseEntry(replies, "entry-mode", entry,
+                        "explicit entry cannot consume a pending legacy bind");
+      return false;
+    }
+
+    if (entry.kind == EntryModeK::resident_count
+        && (u64)entry.at > database->currentPosition())
+    {
+      refuseEntry(replies, "entry-mode", entry,
+                        "resident-count position is beyond the pipeline");
+      return false;
+    }
+    return true;
+  }
+
+  Stratum* installStratumImpl(const std::string& name, const EntryMode& entry,
+                              EntryReplyK replies,
+                              bool consume_pending_legacy_bind)
+  {
+    if (!validateStratumEntryImpl(name, entry, replies,
+                                  consume_pending_legacy_bind))
+      return nullptr;
+
+    if (entry.kind == EntryModeK::upgrade)
+    {
+      Stratum* live = const_cast<Stratum*>(database->suspendedStratum());
+      live->clearForUpgrade();
+      return live;
+    }
 
     switch (entry.kind)
     {
@@ -254,9 +297,6 @@ private:
         break;
 
       case EntryModeK::resident_count:
-        if ((u64)entry.at > database->currentPosition())
-          return refuseEntry(replies, "entry-mode", entry,
-                             "resident-count position is beyond the pipeline");
         // No reload: a historical count round resolves registrations through
         // the exact environment recorded by the entry itself.
         database->setBindPosition(entry.at);
@@ -402,6 +442,14 @@ public:
   Stratum* installStratum(const std::string& name, const EntryMode& entry)
   {
     return installStratumImpl(name, entry, EntryReplyK::typed, false);
+  }
+
+  // Read-only half of the same checked path. Command stratum-seal calls this
+  // before database-dependent plan preflight so an invalid entry wins without
+  // any reload, bind-position, or live-upgrade mutation.
+  bool validateStratumEntry(const std::string& name, const EntryMode& entry)
+  {
+    return validateStratumEntryImpl(name, entry, EntryReplyK::typed, false);
   }
 
   Stratum* installStratum(const std::string& name, const EntryMode& entry,
@@ -1027,6 +1075,19 @@ public:
     OracleBinding* b = oracle_registry->bind(oracle_name, demand_rel, ans_rel);
     s->addTask(phase_read, new OracleDispatchTask(database, oracle_registry, b, drel, arel));
     s->addTask(phase_read, new OracleHarvestTask(database, oracle_registry, b, arel));
+  }
+
+  bool supportsOracle(const std::string& name) const
+  {
+    return oracle_registry->supportsOracle(name);
+  }
+
+  bool oracleBindingCompatible(const std::string& oracle_name,
+                               const std::string& demand_rel,
+                               const std::string& ans_rel) const
+  {
+    return oracle_registry->bindingCompatible(
+      oracle_name, demand_rel, ans_rel);
   }
 
   // Append a stratum to the pipeline (it runs on the next continueRun),

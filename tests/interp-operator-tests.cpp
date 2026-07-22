@@ -5320,6 +5320,47 @@ bool test_seal_and_binding_rejections()
 
 bool test_explicit_entry_modes_and_refusals()
 {
+  // The command installer pins entry/flavor combinations before any runtime
+  // transition.  In particular, a resident count round is neither a fresh
+  // restart nor a tier-swap target.  Successful command install only pushes;
+  // the client must issue its own subsequent (continue).
+  SealedKernelPlan normal_plan;
+  normal_plan.abi = 1;
+  normal_plan.flavor = "normal";
+  std::vector<std::string> command_replies;
+  Daemon command_install(1, [&](const std::string& msg) {
+    command_replies.push_back(msg);
+  });
+  CHECK(install_command_stratum(&command_install, "command-normal",
+                                EntryMode::fresh(), normal_plan));
+  CHECK(command_replies.empty());
+  CHECK(command_install.db()->currentPosition() == 1);
+
+  SealedKernelPlan count_plan;
+  count_plan.abi = 1;
+  count_plan.flavor = "count";
+  auto command_capability_refuses = [&](const EntryMode& entry,
+                                        const SealedKernelPlan& plan) {
+    try
+    {
+      (void)install_command_stratum(&command_install, "bad-command-entry",
+                                    entry, plan);
+    }
+    catch (const SealError& error)
+    {
+      return error.kind() == SealErrorK::capability;
+    }
+    return false;
+  };
+  CHECK(command_capability_refuses(EntryMode::fresh(), count_plan));
+  CHECK(command_capability_refuses(EntryMode::upgrade(), count_plan));
+  CHECK(command_capability_refuses(EntryMode::residentCount(0), normal_plan));
+  SealedKernelPlan bad_oracle = normal_plan;
+  bad_oracle.attachments.push_back(
+    {AttachmentK::oracle, "not-registered", "demand", "answer", {}});
+  CHECK(command_capability_refuses(EntryMode::fresh(), bad_oracle));
+  CHECK(command_install.db()->currentPosition() == 1);
+
   std::vector<std::string> replies;
   Daemon plain(1, [&](const std::string& msg) { replies.push_back(msg); });
 
