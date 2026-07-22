@@ -1,0 +1,24 @@
+;; M4N slice 2 refusal: a DERIVED negated relation over a recursive
+;; reader falls back to rerun (per-stratum phasing is slice-3 scope).
+
+table (e int int)
+table (m int)
+table (r int int)
+
+rule
+(e X X)
+-->
+(m X)
+
+rule
+(e X Y)
+~(m Y)
+-->
+(r X Y)
+
+rule
+(r X Y)
+(e Y Z)
+~(m Z)
+-->
+(r X Z)

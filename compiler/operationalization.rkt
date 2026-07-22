@@ -275,7 +275,7 @@
       [`(join-lat ,name ,ind ,_ ,_ ...) (list (cons name ind))]
       [`(exists ,name ,ind ,_ ,_ ...) (list (cons name ind))]
       [`(absent ,name ,ind ,_ ,_ ...) (list (cons name ind))]
-      [`(,(or 'absent-old 'absent-new) ,name ,ind ,_ ,_ ,_ ...)
+      [`(,(or 'absent-old 'absent-new 'absent-ever) ,name ,ind ,_ ,_ ,_ ...)
        (list (cons name ind))]
       [`(absent-lat ,name ,ind ,_ ,_ ...) (list (cons name ind))]
       [`(mkstruct ,name ,ind ,_ ,_ ...) (list (cons name ind))]
@@ -1218,7 +1218,8 @@
        ;; (exact-index), and the c-op carries the delta ordering exactly as
        ;; join-old/join-new do.
        (define ind (exact-index name sel (strip-prov cl)))
-       `(,(if (eq? view 'pre) 'absent-old 'absent-new)
+       `(,(case view [(pre) 'absent-old] [(post) 'absent-new]
+                      [(ever) 'absent-ever])
          ,name ,ind ,K ,ind
          ,@(map esc (order-tuple (take ind K) args)))]
       [else

@@ -1,0 +1,23 @@
+;; M4N slice 2 (docs/m4n-contract.md): a recursive reader over an edited
+;; negated input.  Gaining blk(Z) kills base rows and cascades across
+;; sweep rounds; the corpse-driven versions probe ~blk at ABSENT-EVER so
+;; instantiations against a gained blocker stay owned by the round-1
+;; anti-delta version alone (the double-decrement hazard case is the
+;; (r 1 3)/(e 3 4)/blk(4) instantiation in the mixed flush).
+
+table (e int int)
+table (blk int)
+table (r int int)
+
+rule
+(e X Y)
+~(blk Y)
+-->
+(r X Y)
+
+rule
+(r X Y)
+(e Y Z)
+~(blk Z)
+-->
+(r X Z)

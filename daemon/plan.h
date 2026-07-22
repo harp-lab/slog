@@ -92,7 +92,7 @@ enum class FilterK : u8 { exists, absent };
 // staged row's sign is recoverable from live membership) -- and `post`
 // spells final-state absence explicitly (same predicate as settled; the
 // distinct spelling keeps maintenance plans self-describing).
-enum class AbsentView : u8 { settled, pre, post };
+enum class AbsentView : u8 { settled, pre, post, ever };
 
 struct FilterPlan
 {
@@ -1255,6 +1255,12 @@ std::unique_ptr<PrefixCursor> make_tomb_probe_cursor(
 std::unique_ptr<PrefixCursor> make_absent_pre_cursor(
   u16 arity, Index** full, Index** delta,
   const std::vector<u16>& regs, u16 bound);
+// The absent-ever cursor (M4N slice 2): absent from FULL and from the
+// staged delta -- the sweep's corpse-driven negated probe, excluding both
+// blocker transition signs (contract slice-2 table).
+std::unique_ptr<PrefixCursor> make_absent_ever_cursor(
+  u16 arity, Index** full, Index** delta,
+  const std::vector<u16>& regs, u16 bound);
 
 struct BoundExecution
 {
@@ -1649,6 +1655,11 @@ public:
             rel->getArity(), rel->getIndex(filter->order, false),
             rel->getIndex(filter->delta_order, true),
             filter->regs, filter->bound));
+        else if (filter->view == AbsentView::ever)
+          prefilter_prototypes.push_back(make_absent_ever_cursor(
+            rel->getArity(), rel->getIndex(filter->order, false),
+            rel->getIndex(filter->delta_order, true),
+            filter->regs, filter->bound));
         else
           prefilter_prototypes.push_back(make_set_filter_cursor(
             rel->getArity(), rel->getIndex(filter->order, false),
@@ -1694,6 +1705,11 @@ public:
             filter->regs, filter->bound, filter->kind));
         else if (filter->view == AbsentView::pre)
           cursor_prototypes.push_back(make_absent_pre_cursor(
+            rel->getArity(), rel->getIndex(filter->order, false),
+            rel->getIndex(filter->delta_order, true),
+            filter->regs, filter->bound));
+        else if (filter->view == AbsentView::ever)
+          cursor_prototypes.push_back(make_absent_ever_cursor(
             rel->getArity(), rel->getIndex(filter->order, false),
             rel->getIndex(filter->delta_order, true),
             filter->regs, filter->bound));

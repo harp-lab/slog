@@ -300,7 +300,7 @@
 ;; absence-evaluation state: `~old` (absence at the epoch's PRE state) and
 ;; `~new` (absence at the final POST state).  The retagged symbols exist
 ;; only from planning onward -- every pass before join-planning sees `~`.
-(define (neg-symbol? s) (and (memq s '(~ ~old ~new)) #t))
+(define (neg-symbol? s) (and (memq s '(~ ~old ~new ~ever)) #t))
 
 ;; The absence view a (possibly retagged) negated atom carries: 'pre, 'post,
 ;; or #f for the plain settled-state probe.
@@ -308,6 +308,11 @@
   (case (third cl)
     [(~old) 'pre]
     [(~new) 'post]
+    ;; M4N slice 2 (the sweep): absent from FULL and from the staged
+    ;; delta -- excludes BOTH blocker transition signs, so corpse-driven
+    ;; sweep versions never touch an instantiation the anti-delta
+    ;; version owns.
+    [(~ever) 'ever]
     [else #f]))
 
 ;; Retag a negated clause with an absence-view symbol.

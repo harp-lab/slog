@@ -237,7 +237,80 @@ exclusions (each a tested named fallback, in the M4S style):
    healed-equals-forced) and the negation-under-temps fixture (temps
    join slice 2's recursive-reader battery).
 2. **Recursive readers — ALL admitted `~` shapes (ratified
-   2026-07-19).**  Every negation shape over recursive reader strata
+   2026-07-19).**
+   **RATIFIED 2026-07-21 (all three decision points: the sweep table,
+   `absent-ever` as an explicit third plan op under that spelling, and
+   slice-2 scope = recursive readers over INPUT-EDITED negated
+   relations, derived-negated deferred to slice 3).**  Drafted
+   2026-07-20 from the round-indexed partition analysis: the acyclic partition
+   table (pin 5) does NOT lift to the sweep.  The shipped M4T
+   cross-round discipline is corpse-exclusion by ordinal: a round-k
+   driver reads earlier-ordinal occurrences LIVE (excluding every
+   corpse from rounds ≤ k) and later-ordinal occurrences at
+   round-stable PRE reconstruction (`join-new` over the cumulative
+   epoch delta), which is what keeps each lost instantiation
+   decremented exactly once across rounds.  A negated occurrence
+   breaks both halves of that discipline if given the acyclic
+   spellings:
+   - a corpse-driven version probing `~B` at PRE double-decrements
+     instantiations whose blocker was GAINED (the anti-delta version
+     owned them in round 1, but a pre-absence probe cannot exclude a
+     gained blocker the way a live read excludes a corpse);
+   - an anti-delta version reading positives at `join-old`
+     (survivors) leaves a hole: (corpse r, gained b) instantiations
+     where r died in the same or an earlier round are owned by
+     NOBODY (the corpse-driven version skips them because b is not
+     pre-absent under the double-decrement fix; the survivor read
+     skips the corpse).  DRed candidacy absorption does not save
+     either case: absorption is head-side and only for rows that
+     enter candidacy — a head surviving on independent support keeps
+     the corrupted count.
+   The exact sweep table is therefore:
+   - **anti-delta versions** (drive ΔB⁺ in the sweep, ΔB⁻ in the
+     rebuild): positive occurrences read the round-stable
+     PHASE-ENTRY reconstruction (`join-new` in the sweep / `join-old`
+     in the rebuild — the same views the shipped later-ordinal
+     discipline uses), so the version owns ALL phase-entry
+     instantiations against its transition sign, present or corpse;
+   - **corpse/gain-driven versions**: `~B` probes at a THIRD absence
+     view, **absent-ever** — absent from FULL AND absent from the
+     staged delta (∉ FULL∪Δ; strictly stronger than absent-at-pre
+     and absent-at-post) — so every instantiation whose blocker
+     transitioned is excluded wholesale, mirroring the corpse
+     exclusion.  Cursor-wise this is SIMPLER than the XOR pre view
+     (two plain absence probes, no sign recovery); it needs its own
+     spelling in the plan grammar and the same maint-only seal.
+   - **The rebuild mirror is ASYMMETRIC (derived 2026-07-21): no new
+     view needed on the positive side.**  Gain-driven relearn versions
+     keep plain `~new` (post-absence over final FULL): a gained
+     blocker's instantiations are nonexistent at post, so post-absence
+     already excludes them, and a LOST blocker's must be accepted —
+     which post-absence does.  Ownership: (r gained any round, b lost)
+     belongs to the r-driven gained version; (r present at phase
+     entry and persisting, b lost) to the anti-delta ΔB⁻ version,
+     whose positives read the phase-entry `'old` view (full − Δ).
+     The reseed interplay resolves itself: reseeded rows re-enter as
+     journaled gains, so they sit in the delta index and are excluded
+     from the anti-delta's `'old` reads while their own gain-driven
+     versions fire — no double count.  The sweep needs absent-ever
+     precisely because corpse-driven versions must exclude BOTH
+     blocker transition signs (lost-b instantiations never existed at
+     pre; gained-b ones belong to the anti-delta version), while a
+     pre-absence probe excludes only the lost sign.
+   - Sibling negated occurrences derive the same way per phase (the
+     pairwise pre/post split composes unchanged: the negated relations
+     are final with epoch-stable staged deltas, so anti-versions'
+     sibling probes are round-independent).
+   **Landed 2026-07-22:** planner retag `~ever` + anti-positives at
+   `'new` under maint4neg only; `absent-ever` op through
+   ir-stack/canonical-plan/emit-cpp (static_assert native leg, as pin
+   4); `AbsentView::ever` + `AbsentEverCursor` in the daemon;
+   session `m4n-rec-eligible?` + the sweep route arm (upfront
+   finalization → sweep with drive/view staging → reseed → rebuild
+   gated on reseeds ∨ positive edits ∨ lost blockers).  Scope as
+   ratified: input-edited negated relations only; derived-negated →
+   rerun fallback tested by name (slice 3).  Battery: m4n-sweep-*
+   14/14 incl. the double-decrement hazard case as a live fixture.  Every negation shape over recursive reader strata
    lands in this slice, with no residual negation slice beyond the
    pinned struct/lattice exclusions: negative edges into M4T-class
    recursive strata AND `~` inside sweep cones, join3-bearing and

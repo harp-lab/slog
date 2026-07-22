@@ -1441,7 +1441,6 @@
          topology-negatable?
          (pair? negated-changed)
          (not (flavored-native?))
-         (for/and ([info (in-list union-cone)]) (sinfo-acyclic? info))
          (for*/and ([info (in-list union-cone)]
                     [entry (in-list (sinfo-reads info))]
                     #:when (member (car entry) negated-changed))
@@ -1600,11 +1599,21 @@
     (and structurally-certified? counts-certified?
          (null? struct-names)          ; lattice+struct cones fall back by name
          (pair? lattice-names) (pair? lattice-consumer-cone)))
-  ;; M4N slice 1: negation x structs stays on rerun (contract exclusion,
+  ;; M4N: negation x structs stays on rerun (contract exclusion,
   ;; m4s-negstruct) and negation x lattices is M7's.
   (define m4n-eligible?
     (and m4n-certified? counts-certified?
-         (null? struct-names) (null? lattice-names)))
+         (null? struct-names) (null? lattice-names)
+         (for/and ([info (in-list union-cone)]) (sinfo-acyclic? info))))
+  ;; M4N slice 2 (ratified 2026-07-21): recursive readers take the M4T
+  ;; sweep schedule with negated staging; the sweep's corpse-driven
+  ;; versions probe at absent-ever and the anti-delta versions read
+  ;; phase-entry views, so drives and rounds compose exactly.
+  (define m4n-rec-eligible?
+    (and m4n-certified? counts-certified?
+         (null? struct-names) (null? lattice-names)
+         (for/or ([info (in-list union-cone)])
+           (not (sinfo-acyclic? info)))))
 
   ;; The old set-only delta route remains a fallback for unsupported shapes.
   (define delta-eligible?
@@ -1779,6 +1788,92 @@
      (when (and settled? (not (query-update-counts-valid! s)))
        (set! settled? #f))
      (when settled?
+       (apply-positive-edits! #:groups premise-groups)
+       (if positive-apply-ok?
+           (begin
+             (echo! s (format "(route maintain-negated-positive ~a ~a)"
+                              (length union-cone) (length negated-changed)))
+             (run-maintenance-phase!
+              union-cone 1
+              (lambda (info) ((sinfo-maintenance info)))
+              #:negated-reads negated-changed)
+             (unless (query-update-counts-valid! s) (set! settled? #f)))
+           (begin
+             (set! settled? #f)
+             (echo! s "(maintenance-unavailable positive-input)"))))
+     (unless settled?
+       (apply-edits!)
+       (rerun-cone!))]
+    [m4n-rec-eligible?
+     ;; M4N slice 2: upfront finalization of the negated inputs, then the
+     ;; M4T walk -- negative sweep, reseed, positive rebuild -- with each
+     ;; phase staging the negated relations' opposite-sign journal as
+     ;; anti-delta drives and same-sign journal as view rows.
+     (define neg-groups
+       (for/list ([g (in-list tip-groups)]
+                  #:when (member (first g) negated-changed))
+         g))
+     (define premise-groups
+       (for/list ([g (in-list tip-groups)]
+                  #:unless (member (first g) negated-changed))
+         g))
+     (define settled? #t)
+     (define reseeded 0)
+     (apply-negative-edits! #:groups neg-groups)
+     (apply-positive-edits! #:groups neg-groups)
+     (unless (and negative-apply-ok? positive-apply-ok?)
+       (set! settled? #f)
+       (echo! s "(maintenance-unavailable negated-input)"))
+     ;; Positive-premise targets dynamic in a recursive stratum take the
+     ;; foundation-aware verb (negated inputs are never cone-dynamic).
+     (define head-edited
+       (for/list ([g (in-list premise-groups)]
+                  #:when (for/or ([info (in-list union-cone)]
+                                  #:unless (sinfo-acyclic? info))
+                           (member (first g) (sinfo-dyn info))))
+         (first g)))
+     (when settled?
+       (apply-negative-edits! #:groups premise-groups
+                              #:dred-names head-edited)
+       (if negative-apply-ok?
+           (begin
+             (echo! s (format "(route maintain-negated-recursive ~a ~a)"
+                              (length union-cone) (length negated-changed)))
+             (run-maintenance-phase!
+              union-cone -1
+              (lambda (info)
+                (if (sinfo-acyclic? info)
+                    ((sinfo-negative-maintenance info))
+                    ((sinfo-recursive-negative-maintenance info))))
+              #:negated-reads negated-changed))
+           (begin
+             (set! settled? #f)
+             (echo! s "(maintenance-unavailable negative-input)"))))
+     (when (and settled? (not (query-update-counts-valid! s)))
+       (set! settled? #f))
+     (when settled?
+       (define swept
+         (remove-duplicates
+          (for*/list ([info (in-list union-cone)]
+                      #:unless (sinfo-acyclic? info)
+                      [d (in-list (sinfo-dyn info))])
+            d)))
+       (session-action! s `(dred-reseed ,@swept))
+       (define reply (read-line (session-out s)))
+       (echo! s reply)
+       (match (regexp-match #px"^\\(dred-reseeded (\\d+) (\\d+)\\)$" reply)
+         [(list _ r _) (set! reseeded (string->number r))]
+         [_ (set! settled? #f)])
+       (when (and settled? (not (query-update-counts-valid! s)))
+         (set! settled? #f)))
+     ;; The rebuild runs whenever anything can create firings: reseeds,
+     ;; positive premise edits, or LOST blockers (their negative journal
+     ;; is the rebuild's anti-delta drive).
+     (define neg-input-lost?
+       (for*/or ([g (in-list neg-groups)]
+                 [(_t change) (in-hash (third g))])
+         (negative-change? change)))
+     (when (and settled? (or (> reseeded 0) has-positive? neg-input-lost?))
        (apply-positive-edits! #:groups premise-groups)
        (if positive-apply-ok?
            (begin

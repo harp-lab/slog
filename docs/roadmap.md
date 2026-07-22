@@ -440,6 +440,29 @@ healed-equals-forced counts, five fallback fixtures, `m4n-*` block in
 the session battery.  Next: slice 2 (recursive readers, ALL `~`
 shapes).
 
+**Checkpoint 2026-07-22 (M4N slice 2 — recursive readers):** the sweep
+table ratified 2026-07-21 landed end-to-end.  Planner: the DRed+`~`
+refusal lifted; under maint4neg corpse-driven versions retag `~` to
+`~ever` (the third absence state) and anti-delta versions read positives
+at the phase-entry `join-new` reconstruction (`'old` on acyclic routes
+is unchanged; maint1 needed nothing — its `join-old` IS the rebuild's
+phase-entry view, and reseeded rows sit in the delta so the anti-delta
+excludes them while their own gain-driven versions fire).  Daemon:
+`AbsentView::ever` decode/seal + `AbsentEverCursor` (∉FULL ∧ ∉Δ — two
+plain bound-prefix witnesses, simpler than the XOR).  Session:
+`m4n-rec-eligible?` routes recursive negation cones through the M4T
+walk (upfront negated-input finalization → negative sweep with
+drive/view staging → dred-reseed → rebuild gated on reseeds ∨ positive
+edits ∨ LOST blockers, whose −journal is the rebuild's anti-delta
+drive); routes `maintain-negated-recursive`/`maintain-negated-positive`.
+Gates: m4n-sweep battery 14/14 — the cascade fixture's mixed flush
+exercises the double-decrement hazard directly (round-1 anti-delta owns
+(r 1 3)×blk(4); the round-3 corpse fire is absent-ever-excluded) and
+settles counts-valid with healed-equals-forced; self-join closure w/
+blocked-endpoint composition; derived-negated refusal (slice 3).
+Planner unit battery 39/39.  Next: slice 3 (admission completion +
+intersection-matrix ledger, derived-negated per-stratum phasing).
+
 **Thread-0 bearings (2026-07-19, v3.0.1).**  How this thread proceeds:
 
 1. **M4N** (contract: m4n-contract.md, drafted 2026-07-19) — the

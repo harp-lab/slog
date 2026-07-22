@@ -98,7 +98,7 @@
        `(exists ,(rel! rel) ,ord ,K ,@(refs* xs))]
       [`(absent ,rel ,ord ,K ,xs ...)
        `(absent ,(rel! rel) ,ord ,K ,@(refs* xs))]
-      [`(,(and op (or 'absent-old 'absent-new)) ,rel ,ord ,K ,dord ,xs ...)
+      [`(,(and op (or 'absent-old 'absent-new 'absent-ever)) ,rel ,ord ,K ,dord ,xs ...)
        `(,op ,(rel! rel) ,ord ,K ,dord ,@(refs* xs))]
       [`(absent-lat ,rel ,ord ,K ,xs ...)
        `(absent-lat ,(rel! rel) ,ord ,K ,@(refs* xs))]

@@ -214,7 +214,9 @@ FilterPlan decode_filter(const SExp& op, FilterK kind, bool lattice = false)
 // the delta ordering exactly as join-old/join-new do.
 FilterPlan decode_absent_view(const SExp& op, AbsentView view)
 {
-  const char* where = view == AbsentView::pre ? "absent-old" : "absent-new";
+  const char* where = view == AbsentView::pre    ? "absent-old"
+                    : view == AbsentView::post   ? "absent-new"
+                                                 : "absent-ever";
   const auto& xs = list(op, where);
   if (xs.size() < 5)
     syntax(op, std::string(where) + " is too short");
@@ -397,10 +399,13 @@ DecodedRule decode_rule(const SExp& x)
       out.plan.prefilters.push_back(filter);
       out.plan.preops.emplace_back(std::move(filter));
     }
-    else if (form_name(op) == "absent-old" || form_name(op) == "absent-new")
+    else if (form_name(op) == "absent-old" || form_name(op) == "absent-new"
+             || form_name(op) == "absent-ever")
     {
       FilterPlan filter = decode_absent_view(op,
-        form_name(op) == "absent-old" ? AbsentView::pre : AbsentView::post);
+        form_name(op) == "absent-old" ? AbsentView::pre
+        : form_name(op) == "absent-new" ? AbsentView::post
+                                        : AbsentView::ever);
       out.plan.prefilters.push_back(filter);
       out.plan.preops.emplace_back(std::move(filter));
     }
@@ -536,6 +541,8 @@ DecodedRule decode_rule(const SExp& x)
       out.plan.body.push_back(decode_absent_view(op, AbsentView::pre));
     else if (name == "absent-new")
       out.plan.body.push_back(decode_absent_view(op, AbsentView::post));
+    else if (name == "absent-ever")
+      out.plan.body.push_back(decode_absent_view(op, AbsentView::ever));
     else if (name == "join3")
       out.plan.body.emplace_back(decode_join3(op));
     else if (name == "neq")

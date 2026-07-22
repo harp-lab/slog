@@ -381,6 +381,10 @@
                   (,(? natural?) ..1) ,(? var?) ...) #t]
     [`(absent-new ,(? var?) (,(? natural?) ..1) ,(? natural?)
                   (,(? natural?) ..1) ,(? var?) ...) #t]
+    ;; M4N slice 2: absent from FULL and from the staged delta (the sweep's
+    ;; corpse-driven negated probe; stronger than both pre and post)
+    [`(absent-ever ,(? var?) (,(? natural?) ..1) ,(? natural?)
+                   (,(? natural?) ..1) ,(? var?) ...) #t]
     ;; its lattice form: key-prefix absence probe of the payload map
     ;; ("no value at key k"); the vars are the K bound key columns
     [`(absent-lat ,(? var?) (,(? natural?) ..1) ,(? natural?) ,(? var?) ...) #t]

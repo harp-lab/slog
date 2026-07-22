@@ -570,20 +570,20 @@
      (define computes (filter compute-cl? bodys))
      (define neg-clauses (filter neg-clause? bodys))
      ;; M4N (docs/m4n-contract.md): under the maintenance flavors every
-     ;; negated atom carries an explicit absence-evaluation state (~old =
-     ;; absence at the epoch's PRE state for lost instantiations, ~new =
-     ;; final POST state for gained ones -- the ratified partition table),
-     ;; and each fully-bound table-negated occurrence contributes an
-     ;; ANTI-DELTA version below.  The recursive sweep's interplay is
-     ;; slice-2 work: a DRed plan with negation is a typed planner
-     ;; refusal, never a mis-planned sweep.
-     (when (and (dred-maintenance-flavor?) (pair? neg-clauses))
-       (error 'plan-stratum
-              "negation under the recursive sweep is not yet maintainable (m4n-contract.md slice 2): ~a"
-              (strip-prov rule)))
+     ;; negated atom carries an explicit absence-evaluation state, and
+     ;; each fully-bound table-negated occurrence contributes an
+     ;; ANTI-DELTA version below.  The states follow the ratified
+     ;; per-flavor partition tables (pins 5 + slice 2): acyclic negative
+     ;; = ~old (PRE, lost instantiations), positive = ~new (final POST,
+     ;; gained ones), and the recursive sweep = ~ever (absent from FULL
+     ;; and the staged delta) -- corpse-driven sweep versions must
+     ;; exclude BOTH blocker transition signs, since gained-blocker
+     ;; instantiations belong to the anti-delta version and lost-blocker
+     ;; ones never existed at pre.
      (define plain-guards (filter guard-cl? bodys))
      (define default-neg-sym
-       (cond [(negative-maintenance-flavor?) '~old]
+       (cond [(dred-maintenance-flavor?)     '~ever]
+             [(negative-maintenance-flavor?) '~old]
              [(maintenance-flavor) '~new]
              [else '~]))
      (define default-neg-guards
@@ -635,10 +635,16 @@
                           (temp? (join-rel (join-occurrence-clause driver))))))
             'tomb]
            [(join-occurrence-static? occ) 'full]
-           ;; An anti-delta version's positive occurrences read survivors
-           ;; only: post - delta = pre intersect post, the join-old
-           ;; equation over the staged view rows (m4n-contract.md pin 5).
-           [anti? 'old]
+           ;; An anti-delta version's positive occurrences: on the acyclic
+           ;; routes they read survivors (join-old: post - delta = pre
+           ;; intersect post over the staged view rows, pin 5).  Under the
+           ;; sweep they read the round-stable PHASE-ENTRY reconstruction
+           ;; instead (join-new = full u delta; the anti-delta drive lives
+           ;; only in round 1, where that IS phase entry) -- the version
+           ;; owns every phase-entry instantiation against its transition
+           ;; sign, corpse or survivor, because corpse-driven versions
+           ;; can appear in ANY later round (slice-2 table).
+           [anti? (if (dred-maintenance-flavor?) 'new 'old)]
            [(and exact-old?
                  (not seeded?)
                  driver
@@ -740,7 +746,7 @@
      ;; lattice-negated occurrences are pinned exclusions (admission owns
      ;; their fallback).
      (define anti-versions
-       (if (and (maintenance-flavor) (not (dred-maintenance-flavor?)))
+       (if (maintenance-flavor)
            (for/list ([nc (in-list neg-clauses)]
                       [i (in-naturals)]
                       #:when (andmap (lambda (x) (not (neg-wildcard-var? x)))

@@ -581,6 +581,91 @@ public:
   TupleView current() const override { return {}; }
 };
 
+// M4N slice 2 (the sweep's corpse-driven negated probe, contract slice-2
+// table): absence from FULL and from the staged delta -- excludes BOTH
+// blocker transition signs.  The negated stratum is final and its staged
+// delta is epoch-stable, so the predicate is round-independent.  Simpler
+// than the pre-state XOR: two plain bound-prefix witnesses, no sign
+// recovery.
+template <u16 A>
+class AbsentEverCursor final : public PrefixCursor
+{
+  Index** full;
+  Index** delta;
+  std::vector<u16> regs_map; // bound prefix registers, index order
+  u16 bound;
+  std::array<u64, A> key{};
+  bool allowed = false;
+  bool fired = false;
+
+  bool present_in(Index** side) const
+  {
+    u16 first = 0, last = bucket_count;
+    if (bound > 0)
+    {
+      first = buckethash(key[0]);
+      last = static_cast<u16>(first + 1);
+    }
+    for (u16 b = first; b < last; ++b)
+    {
+      auto* tree = static_cast<BTreeIndex<A>*>(side[b]);
+      auto it = bound == 0 ? tree->begin() : tree->lower_bound(key);
+      if (it == tree->end()) continue;
+      bool same = true;
+      for (u16 c = 0; c < bound; ++c)
+        if ((*it)[c] != key[c]) { same = false; break; }
+      if (same) return true;
+    }
+    return false;
+  }
+
+public:
+  AbsentEverCursor(Index** full_index, Index** delta_index,
+                   const std::vector<u16>& regs, u16 bound_width)
+    : full(full_index), delta(delta_index), regs_map(regs),
+      bound(bound_width) {}
+
+  std::unique_ptr<PrefixCursor> clone() const override
+  {
+    return std::make_unique<AbsentEverCursor>(*this);
+  }
+
+  void open(const u64* regs) override
+  {
+    fired = false;
+    for (u16 i = 0; i < bound; ++i) key[i] = regs[regs_map[i]];
+    allowed = !present_in(full) && !present_in(delta);
+  }
+
+  CursorResult next(u64*, WorkBudget& budget) override
+  {
+    if (fired || !allowed) return CursorResult::exhausted;
+    if (!budget.tick()) return CursorResult::paused;
+    fired = true;
+    return CursorResult::match;
+  }
+
+  TupleView current() const override { return {}; }
+};
+
+template <u16 A>
+std::unique_ptr<PrefixCursor> absent_ever_ladder(
+  u16 arity, Index** full, Index** delta,
+  const std::vector<u16>& regs, u16 bound)
+{
+  if constexpr (A == 0)
+  {
+    (void)arity; (void)full; (void)delta; (void)regs; (void)bound;
+    return nullptr;
+  }
+  else
+  {
+    if (arity == A)
+      return std::make_unique<AbsentEverCursor<A>>(full, delta, regs, bound);
+    return absent_ever_ladder<A - 1>(arity, full, delta, regs, bound);
+  }
+}
+
 template <u16 A>
 std::unique_ptr<PrefixCursor> absent_pre_ladder(
   u16 arity, Index** full, Index** delta,
@@ -805,6 +890,21 @@ std::unique_ptr<PrefixCursor> make_absent_pre_cursor(
                                                     regs, bound);
   if (!result)
     throw SealError(SealErrorK::factory, "bind: absent-pre ladder miss");
+  return result;
+}
+
+std::unique_ptr<PrefixCursor> make_absent_ever_cursor(
+  u16 arity, Index** full, Index** delta,
+  const std::vector<u16>& regs, u16 bound)
+{
+  if (arity == 0 || arity > max_daemon_arity || bound > arity
+      || regs.size() != bound)
+    throw SealError(SealErrorK::factory,
+                    "bind: absent-ever factory capability miss");
+  auto result = absent_ever_ladder<max_daemon_arity>(arity, full, delta,
+                                                     regs, bound);
+  if (!result)
+    throw SealError(SealErrorK::factory, "bind: absent-ever ladder miss");
   return result;
 }
 

@@ -151,19 +151,69 @@
     (check-equal? (sort drivers symbol<?) '(a))
     (check-equal? (length (body-ops (car hs) 'absent-old)) 1))
 
-  ;; -- 6. the DRed sweep with negation is a typed planner refusal --------
-  (check-exn
-   #rx"not yet maintainable"
-   (lambda ()
-     (cprogs-of "table (e int int)
+  ;; -- 6. the sweep table (slice 2, ratified 2026-07-21): corpse-driven
+  ;;       versions probe ~blk at ABSENT-EVER (not pre); anti-delta
+  ;;       versions read positives at the phase-entry join-new view ------
+  (let* ([sweep "table (e int int)
                  table (blk int)
                  table (r int int)
                  rule (e 1 2) (e 2 3) (blk 9)
                  rule (e X Y) ~(blk Y) --> (r X Y)
-                 rule (r X Y) (e Y Z) ~(blk Z) --> (r X Z)"
-                #:flavor 'maint4neg)))
+                 rule (r X Y) (e Y Z) ~(blk Z) --> (r X Z)"]
+         [hs (rules-for (cprogs-of sweep #:flavor 'maint4neg) 'r)]
+         [of-driver (lambda (d) (filter (lambda (c) (eq? (driver-rel c) d)) hs))])
+    ;; two anti-delta versions (one per rule's ~blk occurrence)
+    (check-equal? (length (of-driver 'blk)) 2)
+    (for ([c (in-list (append (of-driver 'e) (of-driver 'r)))])
+      (check-equal? (length (body-ops c 'absent-ever)) 1)
+      (check-equal? (length (body-ops c 'absent-old)) 0)
+      (check-equal? (length (body-ops c 'absent)) 0))
+    ;; base-rule anti reads e at phase entry; rec-rule anti reads r AND e
+    (check-equal? (sort (for/list ([c (in-list (of-driver 'blk))])
+                          (length (body-ops c 'join-new))) <)
+                  '(1 2))
+    (for ([c (in-list (of-driver 'blk))])
+      (check-equal? (length (body-ops c 'join-old)) 0)))
 
-  ;; -- 7. canonical serialization carries the delta ordering -------------
+  ;; -- 6b. sweep sibling split: anti versions keep the pairwise pre/post
+  ;;        rule; corpse-driven versions carry BOTH probes at absent-ever -
+  (let* ([sweep2 "table (e int int)
+                  table (blk int)
+                  table (c int)
+                  table (r int int)
+                  rule (e 1 2) (blk 9) (c 8)
+                  rule (r X Y) (e Y Z) ~(blk Z) ~(c Z) --> (r X Z)
+                  rule (e X Y) --> (r X Y)"]
+         [hs (rules-for (cprogs-of sweep2 #:flavor 'maint4neg) 'r)]
+         [of-driver (lambda (d) (filter (lambda (c) (eq? (driver-rel c) d)) hs))]
+         [antis (append (of-driver 'blk) (of-driver 'c))])
+    (check-equal? (length antis) 2)
+    (let ([olds (for/sum ([a (in-list antis)]) (length (body-ops a 'absent-old)))]
+          [news (for/sum ([a (in-list antis)]) (length (body-ops a 'absent-new)))]
+          [evers (for/sum ([a (in-list antis)]) (length (body-ops a 'absent-ever)))])
+      (check-equal? olds 1)   ; pairwise: one sibling probe at PRE ...
+      (check-equal? news 1)   ; ... and the other at POST
+      (check-equal? evers 0))
+    (for ([c (in-list (of-driver 'r))]
+          #:when (pair? (body-ops c 'absent-ever)))
+      (check-equal? (length (body-ops c 'absent-ever)) 2)))
+
+  ;; -- 7. canonical serialization carries the delta ordering (and the
+  ;;       sweep spelling serializes) --------------------------------------
+  (let* ([sweep "table (e int int)
+                 table (blk int)
+                 table (r int int)
+                 rule (e 1 2) (blk 9)
+                 rule (e X Y) ~(blk Y) --> (r X Y)
+                 rule (r X Y) (e Y Z) ~(blk Z) --> (r X Z)"]
+         [texts (for/list ([cprog (in-list (cprogs-of sweep #:flavor 'maint4neg))])
+                  (kernel-plan->string
+                   (canonicalize-cprog cprog #:flavor 'maint4neg)))])
+    (check-true (regexp-match?
+                 #rx"\\(absent-ever \\(rel [0-9]+\\) \\([0-9 ]+\\) [0-9]+ \\([0-9 ]+\\)"
+                 (string-join texts))))
+
+  ;; -- 7b. canonical serialization carries the delta ordering ------------
   (let* ([cprogs (cprogs-of canon #:flavor 'maint3neg)]
          [texts (for/list ([cprog (in-list cprogs)])
                   (kernel-plan->string

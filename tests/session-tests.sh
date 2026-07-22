@@ -2486,6 +2486,83 @@ expect "m4n-native-fallback" "(route rerun" out/sess-m4n-native-fallback.log
 expect_not "m4n-native-no-maintain" "(route maintain-negated" out/sess-m4n-native-fallback.log
 expect "m4n-native-content" "(dumpdone 1)" out/sess-m4n-native-fallback.log
 
+# --- M4N slice 2: recursive readers over edited negated inputs --------------
+# (docs/m4n-contract.md slice 2, ratified 2026-07-21.)  The sweep schedule
+# with negated staging: +blk kills base rows and cascades across rounds
+# (the round-3 corpse fire against blk(4) must be excluded by absent-ever
+# or r(1,4) is double-decremented and the epoch goes counts-invalid);
+# -blk relearns through the rebuild's anti-delta drive; the mixed flush
+# churns a positive premise AND a blocker in one epoch.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4n_sweep.slog \
+  batch+:e,1,2 batch+:e,2,3 batch+:e,3,4 flush dump-rel:r \
+  batch+:blk,3 flush dump-rel:r dump-counts:r \
+  batch-:blk,3 flush dump-rel:r \
+  batch-:e,1,2 batch+:blk,4 flush dump-rel:r \
+  dump-counts:r recount-force dump-counts:r \
+  > out/sess-m4n-sweep.log 2>&1
+expect "m4n-sweep-initial-route" "(route maintain 1)" out/sess-m4n-sweep.log
+if [ "$(grep -cF '(route maintain-negated-recursive 1 1)' out/sess-m4n-sweep.log)" -eq 3 ] \
+   && [ "$(grep -cF '(route maintain-negated-positive 1 1)' out/sess-m4n-sweep.log)" -eq 3 ]; then
+  echo "PASS m4n-sweep-routes"; PASS=$((PASS+1))
+else
+  echo "FAIL m4n-sweep-routes"; FAIL=$((FAIL+1))
+fi
+expect_not "m4n-sweep-no-rerun" "(route rerun" out/sess-m4n-sweep.log
+expect "m4n-sweep-gained-sweep" "(dred-reseeded 0 4)" out/sess-m4n-sweep.log
+expect "m4n-sweep-settled" "(update-committed 4 counts-valid)" out/sess-m4n-sweep.log
+if [ "$(grep -cF '(dumpdone 6)' out/sess-m4n-sweep.log)" -eq 2 ] \
+   && [ "$(grep -cF '(dumpdone 2)' out/sess-m4n-sweep.log)" -eq 1 ] \
+   && [ "$(grep -cF '(dumpdone 1)' out/sess-m4n-sweep.log)" -eq 1 ]; then
+  echo "PASS m4n-sweep-content"; PASS=$((PASS+1))
+else
+  echo "FAIL m4n-sweep-content"; FAIL=$((FAIL+1))
+fi
+if [ "$(grep -cF '(countrow r 1 2 0 1 0)' out/sess-m4n-sweep.log)" -eq 1 ] \
+   && [ "$(grep -cF '(countrow r 3 4 0 1 0)' out/sess-m4n-sweep.log)" -eq 1 ] \
+   && [ "$(grep -cF '(countrow r 2 3 0 1 0)' out/sess-m4n-sweep.log)" -eq 2 ]; then
+  echo "PASS m4n-sweep-maintained-equals-recount"; PASS=$((PASS+1))
+else
+  echo "FAIL m4n-sweep-maintained-equals-recount"; FAIL=$((FAIL+1))
+fi
+
+# Repeated swept occurrences beside the negated input: the 3-cycle closure
+# (9 rows) loses exactly the rec-derived edges INTO the blocked node and
+# their cascades (2 rows), and relearns them on unblock.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4n_sweep_selfjoin.slog \
+  batch+:r0,1,2 batch+:r0,2,3 batch+:r0,3,1 flush dump-rel:r \
+  batch+:blk,1 flush dump-rel:r dump-counts:r recount-force dump-counts:r \
+  batch-:blk,1 flush dump-rel:r \
+  > out/sess-m4n-sweep-selfjoin.log 2>&1
+if [ "$(grep -cF '(dumpdone 9)' out/sess-m4n-sweep-selfjoin.log)" -eq 2 ] \
+   && [ "$(grep -cF '(dumpdone 7)' out/sess-m4n-sweep-selfjoin.log)" -eq 1 ]; then
+  echo "PASS m4n-sweep-selfjoin-content"; PASS=$((PASS+1))
+else
+  echo "FAIL m4n-sweep-selfjoin-content"; FAIL=$((FAIL+1))
+fi
+expect "m4n-sweep-selfjoin-route" "(route maintain-negated-recursive 1 1)" out/sess-m4n-sweep-selfjoin.log
+expect "m4n-sweep-selfjoin-settled" "(update-committed 3 counts-valid)" out/sess-m4n-sweep-selfjoin.log
+if [ "$(grep -cF '(countrow r 3 1 0 1 0)' out/sess-m4n-sweep-selfjoin.log)" -eq 2 ]; then
+  echo "PASS m4n-sweep-selfjoin-counts"; PASS=$((PASS+1))
+else
+  echo "FAIL m4n-sweep-selfjoin-counts"; FAIL=$((FAIL+1))
+fi
+
+# Derived negated relation over a recursive reader: slice-3 scope, rerun.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4n_sweep_derived.slog \
+  batch+:e,1,2 batch+:e,2,2 flush \
+  batch-:e,2,2 flush dump-rel:r \
+  > out/sess-m4n-sweep-derived.log 2>&1
+if [ "$(grep -cF '(route rerun' out/sess-m4n-sweep-derived.log)" -eq 2 ]; then
+  echo "PASS m4n-sweep-derived-fallback"; PASS=$((PASS+1))
+else
+  echo "FAIL m4n-sweep-derived-fallback"; FAIL=$((FAIL+1))
+fi
+expect_not "m4n-sweep-derived-no-maintain" "(route maintain-negated" out/sess-m4n-sweep-derived.log
+expect "m4n-sweep-derived-content" "(dumpdone 1)" out/sess-m4n-sweep-derived.log
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

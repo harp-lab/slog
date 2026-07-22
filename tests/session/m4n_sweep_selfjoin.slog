@@ -1,0 +1,20 @@
+;; M4N slice 2: repeated swept occurrences beside a negated input --
+;; closure by self-join where composition may not END at a blocked node.
+;; Base rows are r0-founded (no negation), so blocking a node strands
+;; only its rec-derived incoming edges plus their cascades.
+
+table (r0 int int)
+table (blk int)
+table (r int int)
+
+rule
+(r0 X Y)
+-->
+(r X Y)
+
+rule
+(r X Y)
+(r Y Z)
+~(blk Z)
+-->
+(r X Z)

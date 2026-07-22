@@ -642,7 +642,7 @@
     ;; operator.  The TU text must still be generatable (sidecar emission
     ;; shares this path), so emit a compile-time refusal: any attempt to
     ;; build this artifact natively fails loudly instead of miscomputing.
-    [`(,(and op `(,(or 'absent-old 'absent-new) ,name ,ind ,K ,dind ,ys ...)) . ,rest)
+    [`(,(and op `(,(or 'absent-old 'absent-new 'absent-ever) ,name ,ind ,K ,dind ,ys ...)) . ,rest)
      (string-append
       ((emit-lines indent)
        (format "static_assert(false, \"~a: anti-delta absence view on ~a has no native leg (docs/m4n-contract.md pin 4)\");"
@@ -732,7 +732,7 @@
                                         (make-list (- KA K) "0"))))
      (format "if (!slog::absent_probe_lat<~a,~a>(~a, ~a)) return true;"
              KA K (index-name-of op) key)]
-    [`(,(or 'absent-old 'absent-new) ,name ,_ ...)
+    [`(,(or 'absent-old 'absent-new 'absent-ever) ,name ,_ ...)
      (format "static_assert(false, \"anti-delta absence view on ~a has no native leg (docs/m4n-contract.md pin 4)\");"
              name)]
     [`(let ,x ,(? symbol? y)) (format "u64 v_~a = v_~a;" x y)]
@@ -1403,7 +1403,7 @@
                                                         (crule-body cr)))])
         (cond
           [(memq (car op) '(join join-old join-new join-tomb join-lat exists
-                            absent absent-lat absent-old absent-new))
+                            absent absent-lat absent-old absent-new absent-ever))
            (set-add a (second op))]
           [(eq? (car op) 'join3)
            (for/fold ([a a]) ([arm (in-list (cddr op))])
