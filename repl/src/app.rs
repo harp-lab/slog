@@ -140,7 +140,7 @@ impl App {
                 title: "Connected".to_owned(),
                 lines: vec![
                     "Rust terminal client ↔ Racket database control plane".to_owned(),
-                    "Type help for commands; :share shows co-author connection details".to_owned(),
+                    "Type :help for commands; :share shows co-author connection details".to_owned(),
                 ],
                 actor: None,
             }],
@@ -309,7 +309,7 @@ impl App {
                     .get("close")
                     .and_then(|value| value.as_bool())
                     .unwrap_or(false)
-                    || matches!(command.as_str(), "quit" | "exit")
+                    || matches!(command.as_str(), ":quit" | "quit" | "exit")
                 {
                     self.should_quit = true;
                 }
@@ -412,7 +412,7 @@ impl App {
                 self.editor.insert("  ");
                 Effect::None
             }
-            KeyCode::F(1) => Effect::Execute("help".to_owned()),
+            KeyCode::F(1) => self.issue(":help".to_owned(), EntryKind::GeneratedCommand),
             _ => Effect::None,
         }
     }
@@ -702,7 +702,10 @@ impl App {
             .to_ascii_lowercase();
         matches!(
             verb.as_str(),
-            "help"
+            ":help"
+                | ":ping"
+                | ":status"
+                | "help"
                 | "?"
                 | "ping"
                 | "status"
@@ -1394,6 +1397,16 @@ mod tests {
     }
 
     #[test]
+    fn help_shortcut_emits_the_canonical_workbench_command() {
+        let mut app = App::new();
+        let effect = app.on_terminal(Event::Key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE)));
+        assert!(matches!(effect, Effect::Execute(ref line) if line == ":help"));
+        let command = app.transcript.last().expect("generated help command");
+        assert_eq!(command.kind, EntryKind::GeneratedCommand);
+        assert_eq!(command.lines, vec![":help"]);
+    }
+
+    #[test]
     fn coauthor_input_is_dim_generated_shell_input() {
         let mut app = App::new();
         let effect = app.on_coauthor("codex", "tables edge".to_owned());
@@ -1548,7 +1561,10 @@ mod tests {
     fn private_lane_accepts_observations_without_touching_the_transcript() {
         assert!(App::private_command_allowed("tables edge"));
         assert!(App::private_command_allowed("library"));
+        assert!(App::private_command_allowed(":help"));
+        assert!(App::private_command_allowed(":status"));
         assert!(!App::private_command_allowed("add edge 1 2"));
+        assert!(!App::private_command_allowed(":quit"));
         assert!(!App::private_command_allowed("quit"));
 
         let mut app = App::new();

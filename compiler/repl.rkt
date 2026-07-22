@@ -207,13 +207,11 @@
    "  del REL V...        retract one input tuple and propagate it"
    "  save NAME           save the current database as data/NAME"
    ""
-   "General"
-   "  status              show REPL, current database, and daemon state"
-   "  ping                round-trip through the private TCP protocol"
-   "  help                show these commands"
-   "  quit                close every resident database and the REPL"
-   ""
-   "REPL client commands"
+   "Workbench"
+   "  :status             show REPL, current database, and daemon state"
+   "  :ping               round-trip through the private TCP protocol"
+   "  :help               show these commands"
+   "  :quit               close every resident database and the REPL"
    "  :clear              clear the visible client transcript"
    "  :share              show the trusted-local co-author endpoint"
    "  ; COMMENT           add a transcript comment without invoking Slog"))
@@ -541,12 +539,12 @@
   (define result
     (match verb
     ["" (text-result "Slog" '())]
-    [(or "help" "?") (text-result "Help" help-lines #:kind "help")]
-    ["ping"
+    [(or ":help" "help" "?") (text-result "Help" help-lines #:kind "help")]
+    [(or ":ping" "ping")
      (text-result "Protocol"
                   (list "pong" "Racket server answered over private loopback TCP.")
                   #:kind "status")]
-    ["status"
+    [(or ":status" "status")
      (define rs (current-repl-session state))
      (text-result
       "REPL status"
@@ -636,12 +634,12 @@
      (text-result (format "Saved ~a" argument)
                   (if (null? events) (list "database saved") events)
                   #:kind "save")]
-    [(or "quit" "exit")
+    [(or ":quit" "quit" "exit")
      (set-server-state-closing?! state #t)
      (hasheq 'kind "quit" 'title "Goodbye" 'lines (list "REPL closed") 'close #t)]
     [_
      (error 'command
-            (format "unknown command ~a; type help for the current command set" verb))]))
+            (format "unknown command ~a; type :help for the current command set" verb))]))
   (attach-session-state state result))
 
 (define (request-id request)
@@ -778,7 +776,8 @@
                 (hasheq 'id 7 'method "ping"))
 
   (define state (server-state (make-hash) #f #f #f))
-  (check-equal? (hash-ref (dispatch-command state "ping") 'kind) "status")
+  (check-equal? (hash-ref (dispatch-command state ":help") 'kind) "help")
+  (check-equal? (hash-ref (dispatch-command state ":ping") 'kind) "status")
   (define library-result (dispatch-command state "library"))
   (check-equal? (hash-ref library-result 'kind) "library")
   (when (pair? (hash-ref library-result 'databases))
@@ -791,7 +790,7 @@
                (dispatch-command state "library select __missing_repl_test_database__")))
   (check-exn #px"expected: library"
              (lambda () (dispatch-command state "library next")))
-  (check-equal? (hash-ref (dispatch-command state "status") 'lines)
+  (check-equal? (hash-ref (dispatch-command state ":status") 'lines)
                 (list (format "protocol: ~a" protocol-version)
                       (format "slog: ~a" slog-version)
                       (format "racket: ~a" (version))
@@ -820,6 +819,8 @@
                 "mutable")
   (check-equal? (hash-ref (dispatch-command mode-state "resident") 'lines)
                 (list "alpha  mutable · clean · current"))
+  (define quit-state (server-state (make-hash) #f #f #f))
+  (check-true (hash-ref (dispatch-command quit-state ":quit") 'close))
   (check-equal?
    (interesting-mutation-events
     (list "(pipeline noisy)" "(overlay-positive edge 1 1)"

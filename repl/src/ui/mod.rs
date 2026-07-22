@@ -70,7 +70,7 @@ fn render_splash(frame: &mut Frame<'_>, area: Rect, app: &App) {
         ),
         Line::from(""),
         Line::from(vec![
-            Span::styled("help", Style::default().fg(CYAN)),
+            Span::styled(":help", Style::default().fg(CYAN)),
             Span::raw(" for commands"),
         ]),
     ]);
@@ -291,7 +291,7 @@ mod tests {
         assert!(!rendered.contains("private TCP"));
         assert!(!rendered.contains("ratatui/crossterm"));
 
-        let (_, help_y) = find_text(&terminal, "help for commands").expect("help suggestion");
+        let (_, help_y) = find_text(&terminal, ":help for commands").expect("help suggestion");
         let (_, endpoint_y) = find_text(&terminal, "127.0.0.1:3210").expect("endpoint");
         let (_, share_y) = find_text(&terminal, ":share").expect("share command");
         assert_eq!(help_y, endpoint_y);

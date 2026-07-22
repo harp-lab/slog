@@ -604,10 +604,11 @@ Thread 1 proceeds in this order:
    the command-only dual-stack session workflow are landed. The ABI-1 bridge
    takes one canonical sidecar per SCC and one SCC per runtime stratum; no REPL
    code changed.
-3. **Synchronize the UX work at that seam (next)**, resolve only genuine overlaps,
-   and run the joint intersection battery before beginning coupled client
-   changes.
-4. **R0 → R1 on the shipped substrate**: session ownership, semantic
+3. **Synchronize the UX work at that seam (completed 2026-07-22)** — the
+   canonical workbench command patch is imported without the UX checkout's
+   unrelated M4N work. There were no daemon-builder overlaps; the shared
+   command boundary and terminal lifecycle pass their joint gates.
+4. **R0 → R1 on the shipped substrate (next)**: session ownership, semantic
    verbs over `session-*!`, change summaries, golden `--plain`
    transcripts; then the canvas.  Nothing here waits on thread 0 —
    forward incrementality and the frozen monotone interpreter are the
@@ -644,13 +645,31 @@ this lifecycle. `repl/` remains untouched. Exit gates: interpreter operator
 pass; protocol 67/67; pause 18/18; session 528/528; full cache-cleared
 `SLOG_OPT=interp` golden 165/165.
 
-The next thread-1 move is now the planned UX synchronization: merge at this
-command seam, reconcile only the dispatcher/session call sites that genuinely
-overlap, and run the joint protocol + plain-transcript intersection before
-starting coupled R0 work. After that, keep T0(c) identity (`rule-meta`, stable
-keys, per-attempt fire vectors) separate from UX rendering, and connect Q1's
-already-golden query payload only when the N2/N3 catalog overlay supplies real
-VersionKey-boundary state.
+That pre-sync seam is now closed by the 2026-07-22 checkpoint below. Coupled
+R0/R1 work may begin over the shipped command lifecycle. Keep T0(c) identity
+(`rule-meta`, stable keys, per-attempt fire vectors) separate from UX
+rendering, and connect Q1's already-golden query payload only when the N2/N3
+catalog overlay supplies real VersionKey-boundary state.
+
+**Thread-1 checkpoint (2026-07-22; canonical UX command sync complete).** The
+six-file UX patch is integrated at the T0(b) seam: `:help`, `:status`, `:ping`,
+and `:quit` are the canonical workbench commands in server help, terminal
+copy, and documentation, while the unprefixed server aliases remain accepted
+for compatibility. F1 now emits the same generated `:help` command and durable
+transcript entry as typed input. The private co-author lane admits the
+read-only colon commands and explicitly rejects `:quit`. No daemon builder,
+interpreter, session, or query-engine file changed, and the UX checkout's
+unrelated M4N commits and working-tree contract draft were not imported.
+
+The integration gates are green: Rust format and 28/28 frontend/model tests;
+16/16 Racket frame/dispatch tests; daemon protocol 67/67, including the full
+SCC/stratum lifecycle; and a real interactive PTY run in which `:status`
+returned protocol/version/session state, `:quit` returned `Goodbye`/`REPL
+closed`, terminal input modes and the alternate screen were restored, and the
+process exited zero. This is the clean handoff into coupled R0/R1 work. Next,
+add semantic session verbs over `session-*!` and a stable `--plain` golden
+transcript harness before canvas-specific behavior. Keep T0(c) identity work
+and Q1's N2/N3-dependent catalog meeting on their existing independent seams.
 
 ### 4.3 Why the fork is safe
 

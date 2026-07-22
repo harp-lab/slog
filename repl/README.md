@@ -35,11 +35,14 @@ del REL V...             retract one tuple and propagate
 save NAME                save the in-memory database
 
 ; COMMENT                add a shared transcript comment; do not invoke Slog
+:help                    show the command reference
+:status                  show REPL, database, and daemon state
 :share                   show this REPL's co-author address and discovery file
+:quit                    close the REPL
 ```
 
-`schema` and `pipeline` retain the raw daemon-facing views, and `help`,
-`status`, `ping`, and `quit` remain available. Daemons start lazily. Opening a
+`schema` and `pipeline` retain the raw daemon-facing views, and `:ping` tests
+the private backend connection. Daemons start lazily. Opening a
 database creates an independent compiler workspace and daemon; switching away
 does not discard its in-memory extensions. `mode readonly` is a REPL-side
 guard around mutating commands, not a different database representation.
@@ -110,7 +113,7 @@ the durable transcript, the current replicated view, then live output.
   in the terminal. The visibility envelope is not a separate capability: its
   echo is the ordinary command with a `[private]` annotation. This lane accepts
   observations such as `library`, `tables`, `state`, `count`, `show`, and
-  `query`; mutation, save, mode changes, and quit are rejected.
+  `query`; mutation, save, mode changes, and `:quit` are rejected.
 
 A line beginning with `;` remains a visible shared comment without invoking
 Racket. Interactive views are controlled by ordinary commands: the library
