@@ -70,7 +70,7 @@ fn render_splash(frame: &mut Frame<'_>, area: Rect, app: &App) {
         ),
         Line::from(""),
         Line::from(vec![
-            Span::styled("help", Style::default().fg(CYAN)),
+            Span::styled(":help", Style::default().fg(CYAN)),
             Span::raw(" for commands"),
         ]),
     ]);
@@ -175,7 +175,7 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, app: &App) {
         }
         lines.push(Line::from(""));
     }
-    for entry in &app.transient {
+    for entry in app.operations.active() {
         lines.push(Line::styled(
             format!("  {}", entry.animated_label()),
             Style::default().fg(Color::Gray),
@@ -246,8 +246,9 @@ fn render_library_footer(frame: &mut Frame<'_>, area: Rect) {
 #[cfg(test)]
 mod tests {
     use super::{GREEN, draw};
-    use crate::app::{App, EntryKind, TranscriptEntry};
+    use crate::app::{App, TranscriptEntry};
     use crate::backend::BackendEvent;
+    use crate::command::ShellCommand;
     use crate::library::{DatabaseSummary, LibraryView, RelationSummary};
     use crate::protocol::Response;
     use ratatui::Terminal;
@@ -291,7 +292,7 @@ mod tests {
         assert!(!rendered.contains("private TCP"));
         assert!(!rendered.contains("ratatui/crossterm"));
 
-        let (_, help_y) = find_text(&terminal, "help for commands").expect("help suggestion");
+        let (_, help_y) = find_text(&terminal, ":help for commands").expect("help suggestion");
         let (_, endpoint_y) = find_text(&terminal, "127.0.0.1:3210").expect("endpoint");
         let (_, share_y) = find_text(&terminal, ":share").expect("share command");
         assert_eq!(help_y, endpoint_y);
@@ -348,12 +349,10 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("test terminal");
         let mut app = App::new();
-        app.transcript.push(TranscriptEntry {
-            kind: EntryKind::GeneratedCommand,
-            title: "b0smoke".to_owned(),
-            lines: vec!["open example".to_owned()],
-            actor: Some("codex".to_owned()),
-        });
+        app.transcript.push(TranscriptEntry::command(
+            ShellCommand::coauthor("codex", "open example").expect("command"),
+            "b0smoke",
+        ));
         terminal
             .draw(|frame| draw(frame, &app))
             .expect("draw generated command");
@@ -384,13 +383,12 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("test terminal");
         let mut app = App::new();
-        app.transcript.push(TranscriptEntry {
-            kind: EntryKind::GeneratedCommand,
-            title: "slog".to_owned(),
-            lines: vec!["open example".to_owned()],
-            actor: None,
-        });
-        app.begin_operation("open example", false);
+        app.transcript.push(TranscriptEntry::command(
+            ShellCommand::generated("open example").expect("command"),
+            "slog",
+        ));
+        let command = ShellCommand::generated("open example").expect("command");
+        app.begin_operation(&command, false);
         terminal
             .draw(|frame| draw(frame, &app))
             .expect("draw loading workflow");

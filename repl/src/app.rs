@@ -1,21 +1,15 @@
 use crate::backend::BackendEvent;
+use crate::command::ShellCommand;
 use crate::editor::Editor;
 use crate::library::{DatabaseSummary, LibraryView};
+use crate::operation::OperationTable;
+use crate::runtime::RuntimeLedger;
+pub use crate::transcript::{EntryKind, SharedAction, TranscriptEntry};
+use crate::workspace::Workspace;
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, ModifierKeyCode, MouseButton, MouseEvent,
     MouseEventKind,
 };
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum EntryKind {
-    Command,
-    GeneratedCommand,
-    Comment,
-    Presence,
-    Result,
-    Error,
-    System,
-}
 
 #[derive(Clone, Debug, serde::Deserialize)]
 pub struct SessionSummary {
@@ -27,78 +21,10 @@ pub struct SessionSummary {
 }
 
 #[derive(Debug)]
-pub struct TranscriptEntry {
-    pub kind: EntryKind,
-    pub title: String,
-    pub lines: Vec<String>,
-    /// Human or tool responsible for generated input. Command context stays
-    /// in `title`; presentation can keep authorship compact and independent.
-    pub actor: Option<String>,
-}
-
-#[derive(Debug)]
-pub struct SharedAction {
-    pub command: String,
-    pub actor: Option<String>,
-}
-
-#[derive(Debug)]
-pub struct TransientEntry {
-    pub command: String,
-    pub label: String,
-    pub completed_label: Option<String>,
-    pub frame: usize,
-    pub ticks: u64,
-    pub daemon_rebuild_pending: bool,
-}
-
-impl TransientEntry {
-    fn animated_dots(&self) -> &'static str {
-        // Every frame occupies three cells so the detail never shifts.
-        const FRAMES: [&str; 3] = [".  ", ".. ", "..."];
-        FRAMES[self.frame % FRAMES.len()]
-    }
-
-    pub fn animated_label(&self) -> String {
-        format!("{}{} · {}", self.label, self.animated_dots(), self.detail())
-    }
-
-    pub fn fixed_label(&self) -> String {
-        format!("{}... · {}", self.label, self.detail())
-    }
-
-    fn detail_stage(&self) -> u8 {
-        match self.ticks {
-            0..=7 => 0,
-            8..=39 => 1,
-            40..=119 => 2,
-            _ => 3,
-        }
-    }
-
-    pub fn detail(&self) -> &'static str {
-        if self.daemon_rebuild_pending {
-            return match self.detail_stage() {
-                0 => "daemon sources changed; rebuilding the database runtime",
-                1 => "waiting for the database runtime rebuild",
-                2 => "runtime rebuild or database load is still active",
-                _ => "still working; measured compiler/load progress is not exposed yet",
-            };
-        }
-        match self.detail_stage() {
-            0 => "request sent to the session server",
-            1 => "waiting for the database runtime",
-            2 => "still loading; compressed databases may be replaying layers",
-            _ => "still waiting; relation and tuple progress is not exposed yet",
-        }
-    }
-}
-
-#[derive(Debug)]
 pub enum Effect {
     Ignore,
     None,
-    Execute(String),
+    Execute(ShellCommand),
     Shutdown,
 }
 
@@ -108,21 +34,24 @@ pub struct App {
     pub transcript: Vec<TranscriptEntry>,
     /// In-flight UI workflows are rendered after the durable transcript but
     /// are not part of it until the backend commits a response.
-    pub transient: Vec<TransientEntry>,
+    pub operations: OperationTable,
     /// Number of transcript rows to keep below the viewport. Zero follows
     /// the newest output.
     pub transcript_scroll: u16,
     pub library: Option<LibraryView>,
     pub current_database: Option<String>,
     pub sessions: Vec<SessionSummary>,
+    /// Structured, best-effort projections of semantic server results. This
+    /// augments transcript presentation; it never decides whether a command
+    /// itself succeeded.
+    pub runtime: RuntimeLedger,
+    /// Editable Slog snippets awaiting future compiler/session integration.
+    pub workspace: Workspace,
     pub coauthor_endpoint: Option<String>,
     pub coauthor_discovery: Option<String>,
     /// Canonical commands produced by transient UI gestures. They are shared
     /// with co-authors but do not become durable shell transcript entries.
     shared_actions: Vec<SharedAction>,
-    /// Stable progress-stage changes for plain co-author clients. Animation
-    /// frames stay terminal-local; only meaningful detail changes are shared.
-    progress_updates: Vec<String>,
     pub should_quit: bool,
     history: Vec<String>,
     history_position: Option<usize>,
@@ -135,24 +64,23 @@ impl App {
     pub fn new() -> Self {
         Self {
             editor: Editor::default(),
-            transcript: vec![TranscriptEntry {
-                kind: EntryKind::System,
-                title: "Connected".to_owned(),
-                lines: vec![
+            transcript: vec![TranscriptEntry::system(
+                "Connected",
+                vec![
                     "Rust terminal client ↔ Racket database control plane".to_owned(),
-                    "Type help for commands; :share shows co-author connection details".to_owned(),
+                    "Type :help for commands; :share shows co-author connection details".to_owned(),
                 ],
-                actor: None,
-            }],
-            transient: Vec::new(),
+            )],
+            operations: OperationTable::default(),
             transcript_scroll: 0,
             library: None,
             current_database: None,
             sessions: Vec::new(),
+            runtime: RuntimeLedger::default(),
+            workspace: Workspace::default(),
             coauthor_endpoint: None,
             coauthor_discovery: None,
             shared_actions: Vec::new(),
-            progress_updates: Vec::new(),
             should_quit: false,
             history: Vec::new(),
             history_position: None,
@@ -204,21 +132,13 @@ impl App {
     pub fn on_backend(&mut self, event: BackendEvent) {
         match event {
             BackendEvent::Log(line) => {
-                self.transcript.push(TranscriptEntry {
-                    kind: EntryKind::System,
-                    title: "Racket".to_owned(),
-                    lines: vec![line],
-                    actor: None,
-                });
+                self.transcript
+                    .push(TranscriptEntry::system("Racket", vec![line]));
             }
             BackendEvent::Disconnected(message) => {
-                self.transient.clear();
-                self.transcript.push(TranscriptEntry {
-                    kind: EntryKind::Error,
-                    title: "Server disconnected".to_owned(),
-                    lines: vec![message],
-                    actor: None,
-                });
+                self.operations.clear();
+                self.transcript
+                    .push(TranscriptEntry::error("Server disconnected", vec![message]));
                 self.should_quit = true;
             }
             BackendEvent::Response { command, response } => {
@@ -228,18 +148,15 @@ impl App {
                         kind: "server".to_owned(),
                         message: "unknown server failure".to_owned(),
                     });
-                    self.transcript.push(TranscriptEntry {
-                        kind: EntryKind::Error,
-                        title: error.kind,
-                        lines: vec![error.message],
-                        actor: None,
-                    });
+                    self.transcript
+                        .push(TranscriptEntry::error(error.kind, vec![error.message]));
                     return;
                 }
                 let result = response.result.unwrap_or_default();
+                let observation_warning = self.runtime.observe_result(&result).err();
                 self.update_session_context(&result);
                 let title = workflow
-                    .and_then(|workflow| workflow.completed_label)
+                    .and_then(|workflow| workflow.completed_label())
                     .or_else(|| {
                         result
                             .get("title")
@@ -281,35 +198,34 @@ impl App {
                             self.library = Some(library);
                         }
                         Some(Err(error)) => {
-                            self.transcript.push(TranscriptEntry {
-                                kind: EntryKind::Error,
-                                title: "Library response".to_owned(),
-                                lines: vec![error.to_string()],
-                                actor: None,
-                            });
+                            self.transcript.push(TranscriptEntry::error(
+                                "Library response",
+                                vec![error.to_string()],
+                            ));
                         }
                         None => {
-                            self.transcript.push(TranscriptEntry {
-                                kind: EntryKind::Error,
-                                title: "Library response".to_owned(),
-                                lines: vec!["server omitted the database list".to_owned()],
-                                actor: None,
-                            });
+                            self.transcript.push(TranscriptEntry::error(
+                                "Library response",
+                                vec!["server omitted the database list".to_owned()],
+                            ));
                         }
                     }
                     return;
                 }
-                self.transcript.push(TranscriptEntry {
-                    kind: EntryKind::Result,
-                    title,
-                    lines,
-                    actor: None,
-                });
+                self.transcript.push(TranscriptEntry::result(title, lines));
+                if let Some(warning) = observation_warning {
+                    self.transcript.push(TranscriptEntry::system(
+                        "Runtime observation",
+                        vec![format!(
+                            "command succeeded, but the client could not record its structured state: {warning}"
+                        )],
+                    ));
+                }
                 if result
                     .get("close")
                     .and_then(|value| value.as_bool())
                     .unwrap_or(false)
-                    || matches!(command.as_str(), "quit" | "exit")
+                    || matches!(command.as_str(), ":quit" | "quit" | "exit")
                 {
                     self.should_quit = true;
                 }
@@ -412,7 +328,9 @@ impl App {
                 self.editor.insert("  ");
                 Effect::None
             }
-            KeyCode::F(1) => Effect::Execute("help".to_owned()),
+            KeyCode::F(1) => self.issue(
+                ShellCommand::generated(":help").expect("generated help command is non-empty"),
+            ),
             _ => Effect::None,
         }
     }
@@ -432,7 +350,10 @@ impl App {
                     .map(|database| format!("open {}", database.name));
                 if let Some(command) = command {
                     self.library = None;
-                    self.issue(command, EntryKind::GeneratedCommand)
+                    self.issue(
+                        ShellCommand::generated(command)
+                            .expect("generated open command is non-empty"),
+                    )
                 } else {
                     Effect::None
                 }
@@ -516,78 +437,67 @@ impl App {
 
     fn submit(&mut self) -> Effect {
         let source = self.editor.take();
-        let line = source.trim().to_owned();
-        if line.is_empty() {
+        let Some(command) = ShellCommand::local(source.clone()) else {
             return Effect::None;
-        }
+        };
         self.history.push(source.clone());
         self.history_position = None;
-        if line.starts_with(';') {
-            self.comment(source, "local");
+        if command.is_comment() {
+            self.comment(command, "local");
             return Effect::None;
         }
-        if line == ":clear" {
+        if command.text() == ":clear" {
             self.transcript.clear();
             return Effect::None;
         }
-        if line == ":share" {
+        if command.text() == ":share" {
             self.show_coauthor_info();
             return Effect::None;
         }
-        if line == "library close" {
+        if command.text() == "library close" {
             self.close_library(None);
             return Effect::None;
         }
-        if let Some(name) = line.strip_prefix("library select ")
+        if let Some(name) = command.text().strip_prefix("library select ")
             && self.library.is_some()
         {
             if !self.select_library_name(name.trim(), None) {
-                self.transcript.push(TranscriptEntry {
-                    kind: EntryKind::Error,
-                    title: "Library selection".to_owned(),
-                    lines: vec![format!("no database named {}", name.trim())],
-                    actor: None,
-                });
+                self.transcript.push(TranscriptEntry::error(
+                    "Library selection",
+                    vec![format!("no database named {}", name.trim())],
+                ));
             }
             return Effect::None;
         }
-        self.issue(source, EntryKind::Command)
+        self.issue(command)
     }
 
-    fn issue(&mut self, source: String, kind: EntryKind) -> Effect {
+    fn issue(&mut self, command: ShellCommand) -> Effect {
         let title = self.prompt_label().to_owned();
-        self.issue_as(source, kind, title, None)
+        self.issue_as(command, title)
     }
 
-    fn issue_as(
-        &mut self,
-        source: String,
-        kind: EntryKind,
-        title: String,
-        actor: Option<String>,
-    ) -> Effect {
-        self.transcript.push(TranscriptEntry {
-            kind,
-            title,
-            lines: source.lines().map(str::to_owned).collect(),
-            actor,
-        });
+    fn issue_as(&mut self, command: ShellCommand, title: String) -> Effect {
+        self.transcript
+            .push(TranscriptEntry::command(command.clone(), title));
         self.transcript_scroll = 0;
-        Effect::Execute(source)
+        Effect::Execute(command)
     }
 
-    fn comment(&mut self, source: String, title: &str) {
-        self.transcript.push(TranscriptEntry {
-            kind: EntryKind::Comment,
-            title: title.to_owned(),
-            lines: source.lines().map(str::to_owned).collect(),
-            actor: None,
-        });
+    fn comment(&mut self, command: ShellCommand, title: &str) {
+        self.transcript
+            .push(TranscriptEntry::comment(command, title));
         self.transcript_scroll = 0;
     }
 
     fn record_shared_action(&mut self, command: String, actor: Option<String>) {
-        self.shared_actions.push(SharedAction { command, actor });
+        let action = match actor {
+            Some(actor) => SharedAction::coauthor(actor, command),
+            None => SharedAction::generated(command),
+        };
+        if let Some(action) = action {
+            self.shared_actions.push(action);
+        }
     }
 
     fn update_library_selection(
@@ -634,95 +544,51 @@ impl App {
     }
 
     pub fn plain_shared_action(action: &SharedAction) -> String {
-        format!(
-            "› {}{}",
-            action.command,
-            action
-                .actor
-                .as_deref()
-                .map(|actor| format!("  — {actor}"))
-                .unwrap_or_default()
-        )
+        action.plain()
     }
 
     pub fn on_coauthor(&mut self, source: &str, text: String) -> Effect {
-        let line = text.trim().to_owned();
-        if line.is_empty() {
+        let Some(command) = ShellCommand::coauthor(source, text) else {
+            return Effect::None;
+        };
+        if command.is_comment() {
+            self.comment(command, source);
             return Effect::None;
         }
-        if line.starts_with(';') {
-            self.comment(text, source);
-            return Effect::None;
-        }
-        if line == "library close" {
+        if command.text() == "library close" {
             self.close_library(Some(source.to_owned()));
             return Effect::None;
         }
-        if let Some(name) = line.strip_prefix("library select ")
+        if let Some(name) = command.text().strip_prefix("library select ")
             && self.library.is_some()
         {
             let name = name.trim().to_owned();
             if !self.select_library_name(&name, Some(source.to_owned())) {
-                self.record_shared_action(line, Some(source.to_owned()));
-                self.transcript.push(TranscriptEntry {
-                    kind: EntryKind::Error,
-                    title: "Library selection".to_owned(),
-                    lines: vec![format!("no database named {name}")],
-                    actor: None,
-                });
+                self.record_shared_action(command.text().to_owned(), Some(source.to_owned()));
+                self.transcript.push(TranscriptEntry::error(
+                    "Library selection",
+                    vec![format!("no database named {name}")],
+                ));
             }
             return Effect::None;
         }
         // A semantic shell command is also the escape hatch from a visual
         // mode. Headless peers can always act directly on the data they saw.
-        if matches!(line.split_whitespace().next(), Some("open" | "use")) {
+        if command.database_to_open().is_some() {
             self.library = None;
         } else {
             self.close_library(Some(source.to_owned()));
         }
         let title = self.prompt_label().to_owned();
-        self.issue_as(
-            text,
-            EntryKind::GeneratedCommand,
-            title,
-            Some(source.to_owned()),
-        )
+        self.issue_as(command, title)
     }
 
     pub fn coauthor_input_is_view_command(text: &str) -> bool {
-        let text = text.trim();
-        text == "library close" || text.starts_with("library select ")
+        ShellCommand::coauthor("coauthor", text).is_some_and(|command| command.is_view_command())
     }
 
     pub fn private_command_allowed(command: &str) -> bool {
-        let verb = command
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        matches!(
-            verb.as_str(),
-            "help"
-                | "?"
-                | "ping"
-                | "status"
-                | "library"
-                | "current"
-                | "database"
-                | "resident"
-                | "sessions"
-                | "tables"
-                | "rels"
-                | "relations"
-                | "state"
-                | "states"
-                | "count"
-                | "show"
-                | "query"
-                | "has"
-                | "schema"
-                | "pipeline"
-        )
+        ShellCommand::private("coauthor", command).is_some_and(|command| command.private_allowed())
     }
 
     pub fn on_private_backend(&mut self, event: BackendEvent) -> String {
@@ -777,32 +643,17 @@ impl App {
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_default();
-                Self::plain_entry(&TranscriptEntry {
-                    kind: EntryKind::Result,
-                    title,
-                    lines,
-                    actor: None,
-                })
+                Self::plain_entry(&TranscriptEntry::result(title, lines))
             }
         }
     }
 
     pub fn add_system_entry(&mut self, title: impl Into<String>, lines: Vec<String>) {
-        self.transcript.push(TranscriptEntry {
-            kind: EntryKind::System,
-            title: title.into(),
-            lines,
-            actor: None,
-        });
+        self.transcript.push(TranscriptEntry::system(title, lines));
     }
 
     pub fn add_presence(&mut self, message: impl Into<String>) {
-        self.transcript.push(TranscriptEntry {
-            kind: EntryKind::Presence,
-            title: message.into(),
-            lines: Vec::new(),
-            actor: None,
-        });
+        self.transcript.push(TranscriptEntry::presence(message));
     }
 
     pub fn set_coauthor_info(&mut self, endpoint: String, discovery: String) {
@@ -833,91 +684,44 @@ impl App {
 
     pub fn begin_operation(
         &mut self,
-        command: &str,
+        command: &ShellCommand,
         daemon_rebuild_pending: bool,
     ) -> Option<String> {
-        let (verb, argument) = command
-            .trim()
-            .split_once(char::is_whitespace)
-            .map(|(verb, argument)| (verb.to_ascii_lowercase(), argument.trim()))
-            .unwrap_or_else(|| (command.trim().to_ascii_lowercase(), ""));
-        if verb != "open" || argument.is_empty() {
-            return None;
-        }
-        let entry = TransientEntry {
-            command: command.to_owned(),
-            label: format!("Loading database `{argument}`"),
-            completed_label: Some(format!("Loaded database `{argument}`")),
-            frame: 0,
-            ticks: 0,
-            daemon_rebuild_pending,
-        };
-        let fixed = entry.fixed_label();
-        self.transient.push(entry);
+        let fixed = self
+            .operations
+            .begin_for_command(command, daemon_rebuild_pending)?;
         self.transcript_scroll = 0;
         Some(fixed)
     }
 
     pub fn tick(&mut self) -> bool {
-        if self.transient.is_empty() {
-            return false;
-        }
-        for entry in &mut self.transient {
-            let previous_stage = entry.detail_stage();
-            entry.frame = entry.frame.wrapping_add(1);
-            entry.ticks = entry.ticks.saturating_add(1);
-            if entry.detail_stage() != previous_stage {
-                self.progress_updates.push(entry.fixed_label());
-            }
-        }
-        true
+        self.operations.tick()
     }
 
     pub fn take_progress_updates(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.progress_updates)
+        self.operations.take_progress_updates()
     }
 
-    fn finish_operation(&mut self, command: &str) -> Option<TransientEntry> {
-        let index = self
-            .transient
-            .iter()
-            .position(|entry| entry.command == command)?;
-        Some(self.transient.remove(index))
+    fn finish_operation(&mut self, command: &str) -> Option<crate::operation::Operation> {
+        self.operations.finish(command)
     }
 
     pub fn plain_entry(entry: &TranscriptEntry) -> String {
-        match entry.kind {
-            EntryKind::Comment => entry.lines.join("\n"),
-            EntryKind::Command | EntryKind::GeneratedCommand => format!(
-                "› {}{}",
-                entry.lines.join("\n  "),
-                entry
-                    .actor
-                    .as_deref()
-                    .map(|actor| format!("  — {actor}"))
-                    .unwrap_or_default()
-            ),
-            EntryKind::Presence => format!("· {}", entry.title),
-            EntryKind::Result => {
-                let body = entry.lines.join("\n  ");
-                if body.is_empty() {
-                    format!("◆ {}", entry.title)
-                } else {
-                    format!("◆ {}\n  {body}", entry.title)
-                }
-            }
-            EntryKind::Error => format!("! {}\n  {}", entry.title, entry.lines.join("\n  ")),
-            EntryKind::System => format!("• {}\n  {}", entry.title, entry.lines.join("\n  ")),
-        }
+        entry.plain()
     }
 
     pub fn plain_share_snapshot(&self) -> String {
-        let mut entries = self
-            .transcript
-            .iter()
-            .map(Self::plain_entry)
-            .collect::<Vec<_>>();
-        entries.extend(self.transient.iter().map(TransientEntry::fixed_label));
+        let mut entries = Vec::new();
+        let transcript = crate::transcript::render_plain(&self.transcript);
+        if !transcript.is_empty() {
+            entries.push(transcript);
+        }
+        entries.extend(
+            self.operations
+                .active()
+                .iter()
+                .map(crate::operation::Operation::fixed_label),
+        );
         entries.push(self.plain_shared_view(true));
         entries.join("\n")
     }
@@ -934,9 +738,17 @@ impl App {
         match &self.library {
             Some(library) => format!("library:{}:{}", library.selected, library.databases.len()),
             None => format!(
-                "shell:{}:{}",
+                "shell:{}:{}:{}:{}",
                 self.current_database.as_deref().unwrap_or("none"),
-                self.sessions.len()
+                self.sessions.len(),
+                self.workspace
+                    .active()
+                    .map(|draft| draft.id().get().to_string())
+                    .unwrap_or_else(|| "none".to_owned()),
+                self.workspace
+                    .active()
+                    .map(|draft| draft.revision().get().to_string())
+                    .unwrap_or_else(|| "none".to_owned())
             ),
         }
     }
@@ -946,8 +758,14 @@ impl App {
             Some(library) => self.plain_library_view(library, full),
             None => {
                 let resident = self.sessions.len();
+                let runtime = self
+                    .current_database
+                    .as_deref()
+                    .and_then(|target| self.runtime.session(target))
+                    .map(|state| format!(" · {}", state.plain_summary()))
+                    .unwrap_or_default();
                 format!(
-                    "◇ View · shell · database {} · {resident} resident database{}",
+                    "◇ View · shell · database {} · {resident} resident database{}{runtime}",
                     self.current_database.as_deref().unwrap_or("none"),
                     if resident == 1 { "" } else { "s" }
                 )
@@ -1051,12 +869,10 @@ impl App {
         if let Some(sessions) = result.get("sessions").cloned() {
             match serde_json::from_value::<Vec<SessionSummary>>(sessions) {
                 Ok(sessions) => self.sessions = sessions,
-                Err(error) => self.transcript.push(TranscriptEntry {
-                    kind: EntryKind::Error,
-                    title: "Resident database response".to_owned(),
-                    lines: vec![error.to_string()],
-                    actor: None,
-                }),
+                Err(error) => self.transcript.push(TranscriptEntry::error(
+                    "Resident database response",
+                    vec![error.to_string()],
+                )),
             }
         }
     }
@@ -1100,6 +916,7 @@ impl App {
 mod tests {
     use super::{App, Effect, EntryKind};
     use crate::backend::BackendEvent;
+    use crate::command::ShellCommand;
     use crate::protocol::Response;
     use crossterm::event::{
         Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, ModifierKeyCode,
@@ -1271,7 +1088,7 @@ mod tests {
             KeyCode::Enter,
             KeyModifiers::NONE,
         )));
-        assert!(matches!(effect, Effect::Execute(ref line) if line == "open example"));
+        assert!(matches!(effect, Effect::Execute(ref command) if command.text() == "open example"));
         assert!(app.library.is_none());
         let entry = app.transcript.last().expect("generated command echo");
         assert_eq!(entry.kind, EntryKind::GeneratedCommand);
@@ -1310,11 +1127,61 @@ mod tests {
     }
 
     #[test]
+    fn semantic_response_updates_the_runtime_projection() {
+        let mut app = App::new();
+        app.on_backend(BackendEvent::Response {
+            command: "add edge 4 5".to_owned(),
+            response: Response {
+                id: 3,
+                ok: true,
+                result: Some(serde_json::json!({
+                    "kind": "mutation",
+                    "title": "Add · edge",
+                    "lines": ["settled"],
+                    "current": "example",
+                    "sessions": [],
+                    "change": {
+                        "operation": "add",
+                        "target": "example",
+                        "status": "settled",
+                        "update-revision": 7,
+                        "counts": "valid",
+                        "requested": [{"relation": "edge", "added": 1, "removed": 0}],
+                        "size-deltas": [
+                            {"relation": "edge", "before": 3, "after": 4, "net": 1}
+                        ],
+                        "size-deltas-omitted": 0,
+                        "sizes-observed": true,
+                        "routes": [{"kind": "maintain", "detail": ["0"]}]
+                    }
+                })),
+                error: None,
+            },
+        });
+
+        let state = app.runtime.session("example").expect("runtime projection");
+        assert_eq!(
+            state.update_revision,
+            Some(crate::runtime::UpdateRevision(7))
+        );
+        assert_eq!(state.observed_relation_sizes["edge"], 4);
+        assert_eq!(
+            state.last_change.as_ref().expect("change").routes[0].kind,
+            "maintain"
+        );
+        assert!(
+            app.plain_shared_view(false)
+                .contains("update revision 7 · counts valid")
+        );
+    }
+
+    #[test]
     fn database_load_is_transient_until_the_response_commits() {
         let mut app = App::new();
         let durable = app.transcript.len();
+        let command = ShellCommand::generated("open example").expect("command");
         assert_eq!(
-            app.begin_operation("open example", false).as_deref(),
+            app.begin_operation(&command, false).as_deref(),
             Some("Loading database `example`... · request sent to the session server")
         );
         assert_eq!(app.transcript.len(), durable);
@@ -1324,12 +1191,12 @@ mod tests {
         );
         assert!(!app.plain_share_snapshot().contains('◌'));
         assert_eq!(
-            app.transient[0].animated_label(),
+            app.operations.active()[0].animated_label(),
             "Loading database `example`.   · request sent to the session server"
         );
         app.tick();
         assert_eq!(
-            app.transient[0].animated_label(),
+            app.operations.active()[0].animated_label(),
             "Loading database `example`..  · request sent to the session server"
         );
         for _ in 0..7 {
@@ -1355,7 +1222,7 @@ mod tests {
                 error: None,
             },
         });
-        assert!(app.transient.is_empty());
+        assert!(app.operations.is_empty());
         let committed = app.transcript.last().expect("committed response");
         assert_eq!(committed.kind, EntryKind::Result);
         assert_eq!(committed.title, "Loaded database `example`");
@@ -1364,8 +1231,9 @@ mod tests {
     #[test]
     fn database_load_explains_a_pending_daemon_rebuild() {
         let mut app = App::new();
+        let command = ShellCommand::generated("open example").expect("command");
         assert_eq!(
-            app.begin_operation("open example", true).as_deref(),
+            app.begin_operation(&command, true).as_deref(),
             Some(
                 "Loading database `example`... · daemon sources changed; rebuilding the database runtime"
             )
@@ -1394,10 +1262,20 @@ mod tests {
     }
 
     #[test]
+    fn help_shortcut_emits_the_canonical_workbench_command() {
+        let mut app = App::new();
+        let effect = app.on_terminal(Event::Key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE)));
+        assert!(matches!(effect, Effect::Execute(ref command) if command.text() == ":help"));
+        let command = app.transcript.last().expect("generated help command");
+        assert_eq!(command.kind, EntryKind::GeneratedCommand);
+        assert_eq!(command.lines, vec![":help"]);
+    }
+
+    #[test]
     fn coauthor_input_is_dim_generated_shell_input() {
         let mut app = App::new();
         let effect = app.on_coauthor("codex", "tables edge".to_owned());
-        assert!(matches!(effect, Effect::Execute(ref line) if line == "tables edge"));
+        assert!(matches!(effect, Effect::Execute(ref command) if command.text() == "tables edge"));
         let command = app.transcript.last().expect("coauthor command");
         assert_eq!(command.kind, EntryKind::GeneratedCommand);
         assert_eq!(command.actor.as_deref(), Some("codex"));
@@ -1485,7 +1363,7 @@ mod tests {
         );
         assert!(app.plain_shared_view(false).contains("selected 2/2 · beta"));
         let effect = app.on_coauthor("codex", "open beta".to_owned());
-        assert!(matches!(effect, Effect::Execute(ref line) if line == "open beta"));
+        assert!(matches!(effect, Effect::Execute(ref command) if command.text() == "open beta"));
         assert!(app.library.is_none());
         let command = app.transcript.last().expect("semantic open echo");
         assert_eq!(command.actor.as_deref(), Some("codex"));
@@ -1548,7 +1426,10 @@ mod tests {
     fn private_lane_accepts_observations_without_touching_the_transcript() {
         assert!(App::private_command_allowed("tables edge"));
         assert!(App::private_command_allowed("library"));
+        assert!(App::private_command_allowed(":help"));
+        assert!(App::private_command_allowed(":status"));
         assert!(!App::private_command_allowed("add edge 1 2"));
+        assert!(!App::private_command_allowed(":quit"));
         assert!(!App::private_command_allowed("quit"));
 
         let mut app = App::new();

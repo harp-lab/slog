@@ -35,11 +35,14 @@ del REL V...             retract one tuple and propagate
 save NAME                save the in-memory database
 
 ; COMMENT                add a shared transcript comment; do not invoke Slog
+:help                    show the command reference
+:status                  show REPL, database, and daemon state
 :share                   show this REPL's co-author address and discovery file
+:quit                    close the REPL
 ```
 
-`schema` and `pipeline` retain the raw daemon-facing views, and `help`,
-`status`, `ping`, and `quit` remain available. Daemons start lazily. Opening a
+`schema` and `pipeline` retain the raw daemon-facing views, and `:ping` tests
+the private backend connection. Daemons start lazily. Opening a
 database creates an independent compiler workspace and daemon; switching away
 does not discard its in-memory extensions. `mode readonly` is a REPL-side
 guard around mutating commands, not a different database representation.
@@ -110,7 +113,7 @@ the durable transcript, the current replicated view, then live output.
   in the terminal. The visibility envelope is not a separate capability: its
   echo is the ordinary command with a `[private]` annotation. This lane accepts
   observations such as `library`, `tables`, `state`, `count`, `show`, and
-  `query`; mutation, save, mode changes, and quit are rejected.
+  `query`; mutation, save, mode changes, and `:quit` are rejected.
 
 A line beginning with `;` remains a visible shared comment without invoking
 Racket. Interactive views are controlled by ordinary commands: the library
@@ -124,13 +127,33 @@ KiB.
 
 Source boundaries:
 
-- `app.rs`: state and event reduction; no terminal output or TCP;
+- `lib.rs`: presentation-neutral REPL model exported independently of the
+  terminal binary;
+- `command.rs`: canonical shell input, origin/visibility, and shallow
+  `: / ? / ! / source / ;` classification;
+- `transcript.rs`: durable shell events and their plain co-author projection;
+- `operation.rs`: generic temporary workflow lifecycle; animation remains a
+  terminal rendering choice;
+- `workspace.rs`: revision-safe Slog drafts and compiler
+  pending/accepted/rejected state;
+- `app.rs`: terminal application state and event reduction; no terminal output
+  or TCP;
 - `editor.rs`: grapheme-aware editable command buffer;
 - `protocol.rs`: Content-Length-framed JSON over TCP;
 - `backend.rs`: Racket child lifecycle and session request queue;
+- `runtime.rs`: typed semantic-change observations and per-session projections;
 - `share.rs`: trusted-local discovery, line protocol, and transcript fan-out;
 - `ui/`: pure-ish Ratatui rendering and Slog-specific widgets;
 - `main.rs`: the single terminal owner and asynchronous event loop.
+
+The new core types intentionally stop at the current backend boundary. Rust
+classifies interaction intent but does not parse Slog or infer successful
+compilation. A draft only becomes accepted when a future compiler/session
+response returns the exact submitted revision; stale replies are rejected.
+Likewise, runtime tables are projections of structured response fields, never
+scraped from human-readable transcript lines. This lets catalog, diagnostic,
+preview, and boundary-key contracts land additively when the backend work is
+ready.
 
 The UI is intentionally a full-screen workbench in this first demo so the
 contextual inspector, lightweight multiline editor, colors, and wide characters

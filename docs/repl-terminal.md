@@ -127,7 +127,7 @@ them. The socket is transport-private, not a security boundary for hostile
 local users; loopback binding, an unguessable per-process token, and a single
 accepted connection prevent accidental attachment.
 
-Racket sessions are lazy. `status`, `ping`, `help`, and the read-only offline
+Racket sessions are lazy. `:status`, `:ping`, `:help`, and the read-only offline
 `library` scan do not start `slogd`. `open NAME` creates one database-backed
 session and retains it by name; opening it again switches to the existing
 session, preserving its in-memory extensions. A different database gets a
@@ -268,7 +268,7 @@ The build copies `repl/target/debug/slog` to the ignored root `slog` path.
 `make -C repl release` does the same with the release build. The current
 server commands include `library`, `open`, `current`, `resident`, `mode`,
 `tables`, `state`, `count`, `show`, `query`, `run`, `add`, `del`, `save`, the
-raw `schema`/`pipeline` views, and the general `help`/`status`/`ping`/`quit`
+raw `schema`/`pipeline` views, and the general `:help`/`:status`/`:ping`/`:quit`
 set. Client-local commands include `:clear` and `:share`.
 
 The minimum gates for changes are:
@@ -276,6 +276,6 @@ The minimum gates for changes are:
 - Rust unit tests for editor/state/protocol helpers and Ratatui `TestBackend`
   rendering tests;
 - Racket frame, authentication/dispatch, and session tests;
-- a PTY smoke test that boots the alternate screen, runs `status`, starts the
-  daemon with `pipeline`, and restores the terminal after `quit`; and
+- a PTY smoke test that boots the alternate screen, runs `:status`, starts the
+  daemon with `pipeline`, and restores the terminal after `:quit`; and
 - Linux and macOS CI once native REPL distribution begins.

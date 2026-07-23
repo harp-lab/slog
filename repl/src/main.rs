@@ -7,8 +7,11 @@ mod share;
 mod ui;
 mod version;
 
+pub use slog_repl::{command, operation, runtime, transcript, workspace};
+
 use app::{App, Effect};
 use backend::{Backend, BackendEvent, project_root};
+use command::ShellCommand;
 use crossterm::event::{
     DisableMouseCapture, EnableMouseCapture, EventStream, KeyboardEnhancementFlags,
     PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
@@ -27,12 +30,12 @@ struct TerminalFeatures {
 
 enum PendingCommand {
     /// The application already committed the command echo to its transcript.
-    SharedReady(String),
+    SharedReady(ShellCommand),
     /// Remote burst input is not echoed until it actually begins execution.
     RemoteShared { peer: String, text: String },
     Private {
         peer: String,
-        line: String,
+        command: ShellCommand,
         reply: DirectReply,
     },
 }
@@ -47,23 +50,27 @@ async fn launch_pending(
     app: &mut App,
     backend: &Backend,
 ) -> Result<(Option<InFlight>, Option<String>), String> {
-    let (line, flight) = match pending {
-        PendingCommand::SharedReady(line) => (line, InFlight::Shared),
+    let (command, flight) = match pending {
+        PendingCommand::SharedReady(command) => (command, InFlight::Shared),
         PendingCommand::RemoteShared { peer, text } => match app.on_coauthor(&peer, text) {
-            Effect::Execute(line) => (line, InFlight::Shared),
+            Effect::Execute(command) => (command, InFlight::Shared),
             Effect::Shutdown => {
                 app.should_quit = true;
                 return Ok((None, None));
             }
             Effect::Ignore | Effect::None => return Ok((None, None)),
         },
-        PendingCommand::Private { peer, line, reply } => {
-            let _ = reply.send(format!("› {line}  [private]"));
-            (line, InFlight::Private { peer, reply })
+        PendingCommand::Private {
+            peer,
+            command,
+            reply,
+        } => {
+            let _ = reply.send(format!("› {}  [private]", command.text()));
+            (command, InFlight::Private { peer, reply })
         }
     };
-    let operation = app.begin_operation(&line, backend.daemon_rebuild_pending());
-    backend.execute(line).await?;
+    let operation = app.begin_operation(&command, backend.daemon_rebuild_pending());
+    backend.execute(command.into_text()).await?;
     Ok((Some(flight), operation))
 }
 
@@ -216,9 +223,11 @@ async fn run_repl(
                                 );
                                 (Effect::None, None)
                             } else {
+                                let command = ShellCommand::private(&peer, line)
+                                    .expect("validated private command is non-empty");
                                 let request = PendingCommand::Private {
                                     peer,
-                                    line: line.to_owned(),
+                                    command,
                                     reply: reply.clone(),
                                 };
                                 if in_flight.is_some() {
@@ -250,7 +259,7 @@ async fn run_repl(
                     None => (Effect::Ignore, None),
                 }
             }
-            _ = animation.tick(), if !app.transient.is_empty() => {
+            _ = animation.tick(), if !app.operations.is_empty() => {
                 app.tick();
                 (Effect::None, None)
             }
