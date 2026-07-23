@@ -5,6 +5,7 @@
 #include <charconv>
 #include <cctype>
 #include <fstream>
+#include <mutex>
 
 namespace slog
 {
@@ -118,6 +119,26 @@ bool signed_integer(const std::string& s)
                      [](unsigned char c) { return std::isdigit(c); });
 }
 
+std::string lattice_spec_token(const SExp& spec)
+{
+  std::vector<std::string> parts;
+  const auto flatten = [&](const auto& self, const SExp& part) -> void {
+    if (part.kind == SExp::K::list)
+      for (const SExp& child : part.children) self(self, child);
+    else
+      parts.push_back(atom(part, "lattice spec token"));
+  };
+  flatten(flatten, spec);
+  if (parts.empty()) syntax(spec, "empty lattice spec");
+  std::string token;
+  for (const std::string& part : parts)
+  {
+    if (!token.empty()) token += '-';
+    token += part;
+  }
+  return token;
+}
+
 u32 variant_ordinal(const std::string& tag)
 {
   const size_t hash = tag.rfind('#');
@@ -164,7 +185,28 @@ RelationBinding decode_relation(const SExp& x, u16 expected_slot)
   const u16 arity = small(decl[2], "relation arity");
   RelationShape shape{arity, {}, relation_kind};
   shape.temp = kind == "temp";
-  for (size_t i = 3; i < decl.size(); ++i)
+  size_t first_order = 3;
+  if (relation_kind == RelationK::lattice)
+  {
+    if (decl.size() < 6)
+      syntax(entry[2], "lattice declaration lacks spec/decomp/index");
+    shape.lattice_spec = lattice_spec_token(decl[3]);
+    if (decl[4].kind == SExp::K::list)
+    {
+      const auto& decomp = tagged(decl[4], "decomp", 3);
+      shape.lattice_decomp_relation =
+        atom(decomp[1], "lattice decomposition relation");
+      const std::string& decomp_kind =
+        atom(decomp[2], "lattice decomposition kind");
+      if (decomp_kind != "set" && decomp_kind != "map")
+        syntax(decomp[2], "unknown lattice decomposition kind");
+      shape.lattice_decomp_map = decomp_kind == "map";
+    }
+    else if (atom(decl[4], "lattice decomposition") != "#f")
+      syntax(decl[4], "malformed lattice decomposition");
+    first_order = 5;
+  }
+  for (size_t i = first_order; i < decl.size(); ++i)
   {
     if (decl[i].kind != SExp::K::list) continue;
     if (decl[i].children.size() == static_cast<size_t>(arity) + 1
@@ -178,6 +220,18 @@ RelationBinding decode_relation(const SExp& x, u16 expected_slot)
       shape.delta_orders.push_back(std::move(delta_order));
       continue;
     }
+    if (decl[i].children.size() == static_cast<size_t>(arity) + 1
+        && decl[i].children[0].kind == SExp::K::atom
+        && decl[i].children[0].text == "seeded-only")
+    {
+      std::vector<u16> seeded_order;
+      for (size_t j = 1; j < decl[i].children.size(); ++j)
+        seeded_order.push_back(small(decl[i].children[j],
+                                     "seeded-only relation ordering"));
+      shape.full_orders.push_back(seeded_order);
+      shape.seeded_only_orders.push_back(std::move(seeded_order));
+      continue;
+    }
     if (decl[i].children.size() != arity) continue;
     bool numeric = true;
     for (const SExp& column : decl[i].children)
@@ -188,6 +242,38 @@ RelationBinding decode_relation(const SExp& x, u16 expected_slot)
     if (numeric) shape.full_orders.push_back(order(decl[i], "relation ordering"));
   }
   return {slot, name, std::move(shape)};
+}
+
+AttachmentPlan decode_attachment(const SExp& x)
+{
+  const auto& xs = list(x, "attachment");
+  if (xs.empty()) syntax(x, "empty attachment");
+  const std::string& kind = atom(xs[0], "attachment kind");
+  AttachmentPlan out;
+  if (kind == "oracle")
+  {
+    if (xs.size() != 4) syntax(x, "oracle attachment arity mismatch");
+    out.kind = AttachmentK::oracle;
+    out.a = atom(xs[1], "oracle name");
+    out.b = atom(xs[2], "oracle demand relation");
+    out.c = atom(xs[3], "oracle answer relation");
+  }
+  else if (kind == "seqindex")
+  {
+    if (xs.size() != 3) syntax(x, "seqindex attachment arity mismatch");
+    out.kind = AttachmentK::seqindex;
+    out.a = atom(xs[1], "seqindex base relation");
+    const auto& columns = list(xs[2], "seqindex columns");
+    if (columns.empty()) syntax(xs[2], "seqindex columns are empty");
+    for (const SExp& column : columns)
+      out.columns.push_back(small(column, "seqindex column"));
+  }
+  else
+  {
+    out.kind = AttachmentK::unsupported;
+    out.a = kind;
+  }
+  return out;
 }
 
 FilterPlan decode_filter(const SExp& op, FilterK kind, bool lattice = false)
@@ -244,6 +330,18 @@ PrimPlan decode_primitive(const SExp& op, PrimK kind)
   out.name = atom(call[1], "primitive name");
   for (size_t i = 2; i < call.size(); ++i)
     out.args.push_back(ref(call[i], "r", "primitive argument register"));
+  return out;
+}
+
+PrimPlan decode_cjoin(const SExp& op)
+{
+  const auto& xs = tagged(op, "cjoin", 5);
+  PrimPlan out;
+  out.kind = PrimK::total;
+  out.name = "$cjoin:" + lattice_spec_token(xs[2]);
+  out.output = ref(xs[1], "r", "cjoin output register");
+  out.args.push_back(ref(xs[3], "r", "cjoin left register"));
+  out.args.push_back(ref(xs[4], "r", "cjoin right register"));
   return out;
 }
 
@@ -419,6 +517,8 @@ DecodedRule decode_rule(const SExp& x)
     }
     else if (form_name(op) == "letp")
       out.plan.preops.emplace_back(decode_primitive(op, PrimK::partial));
+    else if (form_name(op) == "cjoin")
+      out.plan.preops.emplace_back(decode_cjoin(op));
     else if (form_name(op) == "eq")
     {
       const auto& xs = tagged(op, "eq", 3);
@@ -455,7 +555,7 @@ DecodedRule decode_rule(const SExp& x)
   {
     const auto& ds = list(driver, "probe driver");
     if (ds.size() < 5) syntax(driver, "probe driver is too short");
-    out.plan.driver.kind = DriverK::probe_full;
+    out.plan.driver.kind = DriverK::probe_delta;
     out.plan.driver.relation = ref(ds[1], "rel", "probe relation");
     out.plan.driver.order = order(ds[2], "probe ordering");
     out.plan.driver.bound = small(ds[3], "probe bound prefix");
@@ -569,6 +669,8 @@ DecodedRule decode_rule(const SExp& x)
     }
     else if (name == "letp")
       out.plan.body.emplace_back(decode_primitive(op, PrimK::partial));
+    else if (name == "cjoin")
+      out.plan.body.emplace_back(decode_cjoin(op));
     else if (name == "cmp")
       out.plan.body.emplace_back(decode_comparison(op));
     else
@@ -608,6 +710,11 @@ DecodedRule decode_rule(const SExp& x)
         else
           out.plan.head_prefix.emplace_back(decode_copy(op));
       }
+    }
+    else if (name == "cjoin")
+    {
+      if (saw_emit) out.unsupported.push_back("head:non-prefix-cjoin");
+      else out.plan.head_prefix.emplace_back(decode_cjoin(op));
     }
     else if (name == "tycheck")
     {
@@ -698,6 +805,14 @@ struct PrimitiveEntry
   BoundPrim binding;
 };
 
+u64 invoke_cjoin(Database* db, const u64* args, bool*)
+{
+  const auto* spec = reinterpret_cast<const LatSpec*>(
+    static_cast<uintptr_t>(args[2]));
+  if (spec == nullptr) fatal("cjoin: missing sealed lattice spec");
+  return db->collections()->merge_spec(args[0], args[1], spec);
+}
+
 #define TOTAL0(n) PrimitiveEntry{#n, {invoke0<&::_prim_##n>, 0, false, false}}
 #define TOTAL1(n) PrimitiveEntry{#n, {invoke1<&::_prim_##n>, 1, false, false}}
 #define TOTAL2(n) PrimitiveEntry{#n, {invoke2<&::_prim_##n>, 2, false, false}}
@@ -710,6 +825,7 @@ struct PrimitiveEntry
 const std::vector<PrimitiveEntry>& primitive_registry()
 {
   static const std::vector<PrimitiveEntry> entries{
+    PrimitiveEntry{"$cjoin", {invoke_cjoin, 3, false, false}},
     TOTAL2(_0002b), TOTAL2(_0002d), TOTAL2(_0002a), TOTAL2(_0002f),
     TOTAL2(_00025), TOTAL1(neg), TOTAL1(abs), TOTAL2(min), TOTAL2(max),
     TOTAL2(pow), TOTAL2(band), TOTAL2(bor), TOTAL2(bxor), TOTAL1(bnot),
@@ -741,6 +857,25 @@ const std::vector<PrimitiveEntry>& primitive_registry()
 #undef PARTIAL3
 
 } // namespace
+
+u64 intern_cjoin_spec(std::string_view token)
+{
+  static_assert(sizeof(uintptr_t) <= sizeof(u64));
+  static std::mutex lock;
+  static std::map<std::string, std::unique_ptr<LatSpec>> specs;
+  std::lock_guard<std::mutex> guard(lock);
+  const std::string key(token);
+  auto found = specs.find(key);
+  if (found == specs.end())
+  {
+    std::unique_ptr<LatSpec> parsed(parseLatSpecToken(key));
+    if (!parsed)
+      throw SealError(SealErrorK::capability,
+                      "cjoin: malformed lattice spec token: " + key);
+    found = specs.emplace(key, std::move(parsed)).first;
+  }
+  return static_cast<u64>(reinterpret_cast<uintptr_t>(found->second.get()));
+}
 
 BoundPrim resolve_primitive(std::string_view name)
 {
@@ -812,6 +947,8 @@ DecodedKernelPlan parse_kernel_plan(std::string_view input)
   out.abi = medium(abi[1], "plan ABI");
   out.flavor = atom(flavor[1], "plan flavor");
   out.attachment_count = attachments.size() - 1;
+  for (size_t i = 1; i < attachments.size(); ++i)
+    out.attachments.push_back(decode_attachment(attachments[i]));
   for (size_t i = 1; i < relations.size(); ++i)
   {
     if (i - 1 > std::numeric_limits<u16>::max())
@@ -915,14 +1052,25 @@ SealedKernelPlan seal_kernel_plan(const DecodedKernelPlan& decoded,
   const bool maint_negative = decoded.flavor == "maint3neg"
                            || decoded.flavor == "maint4neg";
   const bool maint = maint_positive || maint_negative;
-  seal_check(decoded.flavor == "normal" || counted || maint,
+  seal_check(decoded.flavor == "normal" || decoded.flavor == "delta"
+               || counted || maint,
              SealErrorK::flavor,
-             "plan: admitted flavors are normal, count, maint1, "
+             "plan: admitted flavors are normal, delta, count, maint1, "
              "maint3neg, and maint4neg");
   const FlavoredSeal flavor{counted, maint,
                             static_cast<s8>(maint_negative ? -1 : 1)};
-  seal_check(decoded.attachment_count == 0, SealErrorK::capability,
-             "plan: attachments are not admitted by T2-A");
+  seal_check(decoded.attachment_count == decoded.attachments.size(),
+             SealErrorK::capability,
+             "plan: attachment table was not decoded completely");
+  for (const AttachmentPlan& attachment : decoded.attachments)
+  {
+    seal_check(attachment.kind != AttachmentK::unsupported,
+               SealErrorK::capability,
+               "plan: unsupported attachment " + attachment.a);
+    if (attachment.kind == AttachmentK::seqindex)
+      seal_check(!attachment.columns.empty(), SealErrorK::capability,
+                 "plan: seqindex attachment has no columns");
+  }
   seal_check(std::is_sorted(decoded.primitives.begin(), decoded.primitives.end())
                && std::adjacent_find(decoded.primitives.begin(),
                                      decoded.primitives.end())
@@ -1004,6 +1152,7 @@ SealedKernelPlan seal_kernel_plan(const DecodedKernelPlan& decoded,
         malformed_slot = binding.slot;
       }
     const auto declared_primitive = [&](const std::string& name) {
+      if (name.starts_with("$cjoin:")) return;
       seal_check(std::binary_search(decoded.primitives.begin(),
                                     decoded.primitives.end(), name),
                  SealErrorK::capability,
@@ -1032,6 +1181,7 @@ SealedKernelPlan seal_kernel_plan(const DecodedKernelPlan& decoded,
   out.rules = seal_rules(plans, shapes, flavor);
   out.sources = decoded.sources;
   out.dynamic_names = decoded.dynamic_names;
+  out.attachments = decoded.attachments;
   for (SealedRule& rule : out.rules)
   {
     const auto source = out.sources.find(rule.program.rule_id);
@@ -1163,11 +1313,13 @@ template <u16 A>
 class StructSink final : public BoundSink
 {
   Relation* relation;
+  Index** master;
   InsertBatch* batch = new InsertBatch();
   std::array<u16, A> order{};
 
 public:
-  StructSink(Relation* rel, const std::vector<u16>& ord) : relation(rel)
+  StructSink(Relation* rel, const std::vector<u16>& ord, Index** master_index)
+    : relation(rel), master(master_index)
   {
     std::copy(ord.begin(), ord.end(), order.begin());
   }
@@ -1180,7 +1332,10 @@ public:
       fatal("interpreted struct sink arity mismatch");
     std::array<u64, A - 1> fields{};
     std::copy(tuple.begin(), tuple.end(), fields.begin());
-    emit_struct<A>(relation, batch, fields, order);
+    if (master != nullptr)
+      emit_struct_checked<A>(relation, master, batch, fields, order);
+    else
+      emit_struct<A>(relation, batch, fields, order);
   }
 
   void flush() override
@@ -1898,18 +2053,19 @@ std::unique_ptr<BoundSink> set_sink_ladder(
 
 template <u16 A>
 std::unique_ptr<BoundSink> struct_sink_ladder(
-  u16 arity, Relation* relation, const std::vector<u16>& order)
+  u16 arity, Relation* relation, const std::vector<u16>& order,
+  Index** master)
 {
   if constexpr (A <= 1)
   {
-    (void)arity; (void)relation; (void)order;
+    (void)arity; (void)relation; (void)order; (void)master;
     return nullptr;
   }
   else
   {
     if (arity == A)
-      return std::make_unique<StructSink<A>>(relation, order);
-    return struct_sink_ladder<A - 1>(arity, relation, order);
+      return std::make_unique<StructSink<A>>(relation, order, master);
+    return struct_sink_ladder<A - 1>(arity, relation, order, master);
   }
 }
 
@@ -2059,13 +2215,15 @@ std::unique_ptr<BoundSink> make_set_sink(
 }
 
 std::unique_ptr<BoundSink> make_struct_sink(
-  u16 arity, Relation* relation, const std::vector<u16>& order)
+  u16 arity, Relation* relation, const std::vector<u16>& order,
+  Index** master)
 {
   if (arity < 2 || arity > max_daemon_arity || relation == nullptr
       || relation->getStructId() == 0 || order.size() != arity)
     throw SealError(SealErrorK::factory,
                     "bind: struct sink factory capability miss");
-  auto result = struct_sink_ladder<max_daemon_arity>(arity, relation, order);
+  auto result = struct_sink_ladder<max_daemon_arity>(
+    arity, relation, order, master);
   if (!result) throw SealError(SealErrorK::factory,
                                "bind: struct sink factory ladder miss");
   return result;

@@ -471,15 +471,12 @@ Consequences, pinned:
      (runslog.rkt:266) — a slow run mints it, a fast run never does.
      cprog/TU text remains run-varying via local `__t*` variable
      gensyms — T4 phase B's residue, unchanged and out of scope.
-   - **Checkout-path caveat discovered en route:** `$sup`/`_lam` names
-     embed `fnv(ABSOLUTE file path) mod 100000` (demand.rkt:369,716),
-     so stats fires goldens (`$sup4873…` = /home/tom/slog) and
-     dem_lambda's golden only match from the primary checkout — a
-     worktree run fails both for path reasons, not nondeterminism.
-     Run-to-run determinism on one tree is unaffected, but slice 4's
-     plan goldens of record will inherit the path-dependence through
-     `delta:$sup…` VariantTags unless $sup naming goes checkout-
-     relative first.
+   - **Checkout-path caveat closed 2026-07-20:** `$sup`/`_lam` names formerly
+     embedded `fnv(ABSOLUTE file path) mod 100000` (demand.rkt), making stats
+     and `dem_lambda` goldens checkout-specific. `source-name-key` now hashes
+     the normalized compilation-root-relative path; a two-clone unit test
+     pins the key and native/interpreted `dem_lambda` both pass. RF1 slice 4
+     can therefore record `delta:$sup…` VariantTags without clone-path churn.
 1. **ProgramModel + program struct** (compiler-internal, zero
    behavior). The named program struct replacing the positional
    tuples; the ProgramModel record carrying condensation + lineage out

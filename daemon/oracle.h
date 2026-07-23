@@ -230,6 +230,21 @@ public:
     oracles[name] = o;
   }
 
+  bool supportsOracle(const std::string& name) const
+  {
+    return oracles.count(name) != 0;
+  }
+
+  bool bindingCompatible(const std::string& oracle_name,
+                         const std::string& demand_rel,
+                         const std::string& ans_rel) const
+  {
+    auto it = bindings.find(demand_rel);
+    return it == bindings.end()
+        || (it->second->oracle_name == oracle_name
+            && it->second->ans_rel == ans_rel);
+  }
+
   // Find-or-create the binding for an extern demand relation.  Called from
   // every stratum plugin that writes the demand struct; the binding (and its
   // answered set) persists across strata and hot swaps.

@@ -17,6 +17,9 @@
 #   - the protocol-mode seam: legacy literals do NOT flip a session into
 #     command mode; any other command verb does (slice (d) keys the uniform
 #     pause record off this)
+#   - T0(b)'s connection-scoped SCC/stratum begin-add-seal lifecycle,
+#     generation admission, D16 refusal mapping, entry/flavor policy, and an
+#     explicit continue after command installation
 #
 #   tests/protocol-tests.sh        (expects a warm build/ cache; run after
 #                                   tests/run-tests.sh, or budget compile time)
@@ -29,6 +32,7 @@ set -u
 cd "$(dirname "$0")/.."
 mkdir -p build out data
 export SLOG_NO_MEM_CAP=1
+CXX="${CXX:-clang++}"
 
 PASS=0; FAIL=0
 ok()  { echo "PASS $1"; PASS=$((PASS+1)); }
@@ -36,6 +40,7 @@ bad() { echo "FAIL $1"; FAIL=$((FAIL+1)); }
 expect()    { if grep -qF "$2" "$3"; then ok "$1"; else echo "  (missing '$2' in $3)"; bad "$1"; fi; }
 expect_rx() { if grep -qE "$2" "$3"; then ok "$1"; else echo "  (no match /$2/ in $3)"; bad "$1"; fi; }
 expect_not() { if grep -qF "$2" "$3"; then echo "  (unexpected '$2' in $3)"; bad "$1"; else ok "$1"; fi; }
+expect_not_rx() { if grep -qE "$2" "$3"; then echo "  (unexpected match /$2/ in $3)"; bad "$1"; else ok "$1"; fi; }
 
 # --- 1. routing: the one-character route ------------------------------------
 # A non-`(` line stays a plugin path with the byte-identical legacy error; a
@@ -96,18 +101,126 @@ if [ "$(grep -c '(protocol-mode path)' out/proto-mode.log)" -eq 2 ] \
 racket tests/api/drive.rkt "(bogus)" "(protocol-mode)" > out/proto-mode2.log 2>&1
 expect "mode-refusal-marks-command" "(protocol-mode command)" out/proto-mode2.log
 
+# --- 5b. T0(d) uniform command-stack pause record ----------------------------
+# The pure wire formatter has one checked-in transcript corpus covering budget,
+# requested-boundary, terminal-prepared, and future watch-citation causes. The
+# test binary reparses every rendered record through the shared bounded reader
+# and also refuses an empty watch citation.
+if "$CXX" -O2 -Wall -std=c++20 -Idaemon tests/protocol-record-tests.cpp \
+     daemon/sexp.cpp -o build/protocol-record-tests \
+   && build/protocol-record-tests > out/proto-pause-records.log \
+   && diff -u tests/data/t0-pause-records.txt out/proto-pause-records.log \
+        > out/proto-pause-records.diff; then
+  ok "pause-record-cause-goldens"
+else
+  cat out/proto-pause-records.diff 2>/dev/null || true
+  bad "pause-record-cause-goldens"
+fi
+
+# --- 5c. T0(b) provisional SCC/stratum lifecycle ----------------------------
+# ABI 1 adapts one canonical sidecar into one sealed SCC. The stratum object
+# is separately begun, populated, and sealed; sealing installs but never runs
+# it, so the following (continue) is an observable client-owned transition.
+BUILDER=(
+  '(scc-begin s0 (generation 0) (kernel-plan (sidecar "tests/data/t0-normal-set.plan")))'
+  '(scc-seal s0 (generation 0))'
+  '(stratum-begin st0 (generation 0) (entry fresh))'
+  '(stratum-add-scc st0 s0 (generation 0))'
+  '(stratum-seal st0 (generation 0))'
+)
+racket tests/api/drive.rkt "${BUILDER[@]}" > out/proto-builder-no-run.log 2>&1
+if [ "$(grep -cF '(accepted ' out/proto-builder-no-run.log)" -eq 5 ]; then
+  ok "builder-every-mutation-acked"; else bad "builder-every-mutation-acked"; fi
+expect_not "builder-seal-does-not-continue" '(fixpoint ' out/proto-builder-no-run.log
+
+# A new connection can reuse every object id: connection loss discarded the
+# prior session's builder store. This run then crosses the real installer,
+# continue loop, and catalog through commands only.
+racket tests/api/drive.rkt "${BUILDER[@]}" '(continue)' '(catalog)' \
+  > out/proto-builder-run.log 2>&1
+expect "builder-scc-begin-ack" '(accepted scc-begin 0 (scc s0))' out/proto-builder-run.log
+expect "builder-stratum-seal-ack" '(accepted stratum-seal 0 (stratum st0) (scc s0))' out/proto-builder-run.log
+expect_rx "builder-run-fixpoint" '^\(fixpoint ' out/proto-builder-run.log
+expect_rx "builder-run-catalog" '^\(catalog-rel \(name "node"\)' out/proto-builder-run.log
+expect_not "builder-run-no-error" '(error' out/proto-builder-run.log
+
+# Every builder mutation is generation-gated before object-state admission.
+GEN_SCRIPT=(
+  '(scc-begin stale (generation 1) (kernel-plan (sidecar "tests/data/t0-normal-set.plan")))'
+  '(scc-begin sg (generation 0) (kernel-plan (sidecar "tests/data/t0-normal-set.plan")))'
+  '(scc-seal sg (generation 1))'
+  '(scc-seal sg (generation 0))'
+  '(stratum-begin stale-st (generation 1) (entry fresh))'
+  '(stratum-begin gst (generation 0) (entry fresh))'
+  '(stratum-add-scc gst sg (generation 1))'
+  '(stratum-add-scc gst sg (generation 0))'
+  '(stratum-seal gst (generation 1))'
+)
+racket tests/api/drive.rkt "${GEN_SCRIPT[@]}" > out/proto-builder-generation.log 2>&1
+for v in scc-begin scc-seal stratum-begin stratum-add-scc stratum-seal; do
+  expect_rx "builder-stale-$v" "\\(refused stale-generation 0 \\(verb $v\\) \\(expected 1\\)\\)" \
+    out/proto-builder-generation.log
+done
+if [ "$(grep -cF '(refused stale-generation ' out/proto-builder-generation.log)" -eq 5 ]; then
+  ok "builder-stale-count-exact"; else bad "builder-stale-count-exact"; fi
+
+# Parse/IO/seal and lifecycle-state failures retain their exact typed class.
+sed 's/(abi 1)/(abi 2)/' tests/data/t0-normal-set.plan \
+  > out/proto-invalid-abi.plan
+racket tests/api/drive.rkt \
+  '(scc-begin missing (generation 0) (kernel-plan (sidecar "out/no-such.plan")))' \
+  '(scc-seal missing (generation 0))' \
+  '(scc-begin badabi (generation 0) (kernel-plan (sidecar "out/proto-invalid-abi.plan")))' \
+  '(scc-seal badabi (generation 0))' \
+  '(stratum-begin empty (generation 0) (entry fresh))' \
+  '(stratum-seal empty (generation 0))' \
+  > out/proto-builder-refuse.log 2>&1
+expect_rx "builder-plan-io" '\(refused plan-io 0 \(verb scc-seal\)' out/proto-builder-refuse.log
+expect_rx "builder-seal-class" '\(refused abi 0 \(verb scc-seal\)' out/proto-builder-refuse.log
+expect_rx "builder-state-class" '\(refused builder-state 0 \(verb stratum-seal\)' out/proto-builder-refuse.log
+
+# Structural entry errors are entry-mode refusals. The valid resident-count
+# spelling reaches seal policy, where a normal SCC is a forbidden count-tier
+# swap; count plans requested as fresh/upgrade are covered in the C++ gate.
+ENTRY_SCRIPT=(
+  '(stratum-begin missing-at (generation 0) (entry resident-count))'
+  '(stratum-begin spurious-at (generation 0) (entry fresh (at 0)))'
+  '(scc-begin es (generation 0) (kernel-plan (sidecar "tests/data/t0-normal-set.plan")))'
+  '(scc-seal es (generation 0))'
+  '(stratum-begin count-swap (generation 0) (entry resident-count (at 0)))'
+  '(stratum-add-scc count-swap es (generation 0))'
+  '(stratum-seal count-swap (generation 0))'
+  '(stratum-begin no-live-upgrade (generation 0) (entry upgrade))'
+  '(stratum-add-scc no-live-upgrade es (generation 0))'
+  '(stratum-seal no-live-upgrade (generation 0))'
+)
+racket tests/api/drive.rkt "${ENTRY_SCRIPT[@]}" > out/proto-builder-entry.log 2>&1
+if [ "$(grep -cF '(refused entry-mode ' out/proto-builder-entry.log)" -eq 3 ]; then
+  ok "builder-entry-mode-count-exact"; else bad "builder-entry-mode-count-exact"; fi
+expect_rx "builder-resident-count-swap-refused" \
+  '\(refused capability 0 \(verb stratum-seal\).*resident-count strata cannot be restarted or tier-swapped' \
+  out/proto-builder-entry.log
+
 # --- 6. TCP/stdin parity ------------------------------------------------------
 # One dispatch, two transports: the same command script produces byte-identical
 # reply lines.  (pending)/(bye ...) are transport chatter, filtered from the
 # diff but asserted separately -- the heartbeat and close handshake are frozen.
-SCRIPT=("(continue)" "(protocol-mode)" "(frobnicate 1 2)" "(watch v94)"
+# The fixpoint elapsed-ms field is intrinsically run-specific, so normalize that
+# one numeric field while retaining the generation/name/iteration tuple.
+SCRIPT=("${BUILDER[@]}" "(continue)" "(protocol-mode)" "(frobnicate 1 2)" "(watch v94)"
         "(query q7)" "(catalog)" "(protocol-mode)" "(foo" "(catalog types)"
         "no/such.so")
 racket tests/api/drive.rkt     "${SCRIPT[@]}" > out/proto-stdin.log 2>&1
 racket tests/api/tcp-drive.rkt "${SCRIPT[@]}" > out/proto-tcp.log   2>&1
-if diff <(grep -v -e '^(pending)$' -e '^(bye ' out/proto-tcp.log) out/proto-stdin.log \
+normalize_parity() {
+  grep -v -e '^(pending)$' -e '^(bye ' "$1" \
+    | sed -E 's/ [0-9]+\.[0-9]+\)$/ <elapsed-ms>)/'
+}
+if diff <(normalize_parity out/proto-tcp.log) \
+        <(normalize_parity out/proto-stdin.log) \
      > out/proto-parity.diff 2>&1
 then ok "tcp-stdin-parity"; else cat out/proto-parity.diff; bad "tcp-stdin-parity"; fi
+expect_rx "tcp-builder-fixpoint" '^\(fixpoint 0 "st0" ' out/proto-tcp.log
 expect_rx "tcp-bye-handshake" '^\(bye [0-9]+\)$' out/proto-tcp.log
 
 # --- 7. catalog record round-trip ----------------------------------------------
@@ -156,113 +269,53 @@ else
   bad "run-replay-setup (no stratum .so paths in out/proto-fixture.log)"
 fi
 
-# --- 9. entry modes: (install-stratum ...) (T0 slice (b)) --------------------
-# Verb-level refusals: parse shape, unknown mode, the (at P) combination
-# rules, and the no-stratum disarm (a failed load must not leak the armed
-# mode into the next legacy push -- the trailing fresh install proves the
-# session still works).
-racket tests/api/drive.rkt \
-  "(install-stratum)" \
-  "(install-stratum (path \"no/such.so\") (entry sideways))" \
-  "(install-stratum (path \"no/such.so\") (entry resident-count))" \
-  "(install-stratum (path \"no/such.so\") (entry fresh) (at 3))" \
-  "(install-stratum (path \"no/such.so\") (entry fresh))" \
-  > out/proto-entry-refusals.log 2>&1
-expect "entry-parse-refusal"    '(refused parse' out/proto-entry-refusals.log
-expect "entry-unknown-mode"     'unknown entry mode sideways' out/proto-entry-refusals.log
-expect "entry-count-needs-at"   'resident-count requires (at P)' out/proto-entry-refusals.log
-expect "entry-fresh-no-at"      'fresh takes no (at P)' out/proto-entry-refusals.log
-expect "entry-load-disarms"     'plugin did not install a stratum' out/proto-entry-refusals.log
-
-# The session workflow through the command dual-stack: every fixture
-# stratum installed via the explicit verb, driven to fixpoint, catalog
-# populated; an upgrade against the idle daemon is a typed refusal from
-# the ONE checked path.
-if [ "${#SOS[@]}" -ge 1 ]; then
-  LINES=()
-  for so in "${SOS[@]}"; do
-    LINES+=("(install-stratum (path \"$so\") (entry fresh))")
-    for i in 1 2 3 4 5; do LINES+=("(continue)"); done
-  done
-  LINES+=("(install-stratum (path \"${SOS[0]}\") (entry upgrade))")
-  LINES+=("(catalog)")
-  racket tests/api/drive.rkt "${LINES[@]}" > out/proto-entry-install.log 2>&1
-  expect     "entry-installed" "(installed (path \"${SOS[0]}\") (entry fresh))" out/proto-entry-install.log
-  expect_rx  "entry-fixpoint"  '\(fixpoint ' out/proto-entry-install.log
-  expect     "entry-upgrade-idle-refused" 'upgrade requires a suspended stratum' out/proto-entry-install.log
-  expect_rx  "entry-catalog-populated" '\(catalog-rel \(name "mk"\) \(kind struct\)' out/proto-entry-install.log
-  # TCP twin: the same workflow, byte-equal key replies
-  racket tests/api/tcp-drive.rkt "${LINES[@]}" > out/proto-entry-install-tcp.log 2>&1
-  expect "entry-tcp-installed" "(installed (path \"${SOS[0]}\") (entry fresh))" out/proto-entry-install-tcp.log
-  expect "entry-tcp-upgrade-refused" 'upgrade requires a suspended stratum' out/proto-entry-install-tcp.log
-else
-  bad "entry-install-setup (no stratum .so paths)"
-fi
-
-# --- 10. the uniform pause record (T0 slice (d)) -----------------------------
-# A deliberately budget-heavy stratum (300x300 pair product) under a 1ms
-# budget: the entry's internal continue pauses on BUDGET; subsequent
-# (continue-boundary) lines pause at iteration BOUNDARIES; both classes
-# arrive as the ONE structured record on a command-marked session, while
-# a path-mode twin keeps the 8-field bytes -- byte-compat asserted both
-# directions.
-# (A recursive closure: budget pauses need slices that expire mid-work,
-# boundary pauses need interior iteration boundaries -- a single-pass
-# stratum has neither.)
+# --- 9. live pause scoping: command keyed, path byte-compatible ---------------
+# A broad Cartesian read reliably outlives a 1ms slice. Marking command mode
+# before loading its strata must produce the keyed T0(d) shape; an otherwise
+# identical fresh daemon must retain the frozen positional path-stack bytes.
+PF=out/proto_pause.slog
 {
-  echo "table (e int int)"
-  echo "table (p int int)"
-  echo "rule (e X Y) --> (p X Y)"
-  echo "rule (p X Y) (e Y Z) --> (p X Z)"
-  printf 'rule'
-  for i in $(seq 1 400); do printf ' (e %d %d)' "$i" "$((i+1))"; done
-  echo
-} > out/proto-pause.slog
-# Ground-fact rules are EDB (provided on load, never re-derived), so a
-# bare stratum replay sees empty inputs; open the saved DB first and the
-# reload restages every row for the re-derivation the budget slices.
-rm -rf data/protopausedb
-if SLOG_OPT=0 timeout 600 racket compiler/run.rkt --no-banner --out-db protopausedb \
-     out/proto-pause.slog > out/proto-pause-build.log 2>&1; then
-  PAUSE_OPEN_SO=$(racket -e '(require (file "'"$PWD"'/compiler/actions.rkt")) (displayln (action-so (list (quote open) "protopausedb")))' 2>/dev/null)
-  mapfile -t PSOS < <(grep -oE 'build/[a-f0-9]+(\.O0)?\.so' out/proto-pause-build.log | grep -v 'action-' | awk '!seen[$0]++')
-  PLINES=("(catalog relations)" "$PAUSE_OPEN_SO")
-  for so in "${PSOS[@]}"; do
-    PLINES+=("$so")
-    for i in $(seq 1 60); do PLINES+=("(continue-boundary)"); done
-  done
-  SLOG_MAX_MS=1 racket tests/api/drive.rkt "${PLINES[@]}" \
-    > out/proto-pause-cmd.log 2>&1
-  expect_rx "pause-uniform-budget" '\(pause \(class budget\) \(cause \(arbitrary\)\) \(stratum "[^"]+"\) \(scc [0-9]+\) \(iteration [0-9]+\) \(phase (read|iter)\) \(new-tuples [0-9]+\) \(slice-ms [0-9.]+\) \(total-ms [0-9.]+\) \(reason (time|memory)\)\)' out/proto-pause-cmd.log
-  expect_rx "pause-uniform-boundary" '\(pause \(class boundary\) \(cause \(arbitrary\)\)' out/proto-pause-cmd.log
-  expect_not "pause-cmd-no-legacy" '(paused ' out/proto-pause-cmd.log
-  expect_rx  "pause-cmd-fixpoint" '\(fixpoint ' out/proto-pause-cmd.log
-  # the path-mode twin: byte-identical legacy record, no uniform record
-  PLINES2=("$PAUSE_OPEN_SO")
-  for so in "${PSOS[@]}"; do
-    PLINES2+=("$so")
-    for i in $(seq 1 60); do PLINES2+=("(continue-boundary)"); done
-  done
-  SLOG_MAX_MS=1 racket tests/api/drive.rkt "${PLINES2[@]}" \
-    > out/proto-pause-path.log 2>&1
-  expect_rx  "pause-legacy-8field" '\(paused [0-9]+ "[^"]+" [0-9]+ (read|iter) [0-9]+ [0-9.]+ [0-9.]+ (time|memory)\)' out/proto-pause-path.log
-  expect_not "pause-path-no-uniform" '(pause (class' out/proto-pause-path.log
-  expect_rx  "pause-path-fixpoint" '\(fixpoint ' out/proto-pause-path.log
+  echo "table (r int)"
+  echo "table (pair int int)"
+  echo "rule"
+  for i in $(seq 1 350); do echo "(r $i)"; done
+  echo "rule (r X) (r Y) --> (pair X Y)"
+} > "$PF"
+rm -rf out/proto-pause-build
+if SLOG_OPT=0 racket compiler/run.rkt --no-banner --debug-dir out/proto-pause-build \
+     "$PF" > out/proto-pause-build.log 2>&1; then
+  mapfile -t PSOS < <(grep -oE 'build/[a-f0-9]+(\.O0)?\.so' \
+    out/proto-pause-build.log | grep -v 'action-' | awk '!seen[$0]++')
+  if [ "${#PSOS[@]}" -ge 1 ]; then
+    CMD_ARGS=("(catalog)"); PATH_ARGS=()
+    for so in "${PSOS[@]}"; do
+      CMD_ARGS+=("$so"); PATH_ARGS+=("$so")
+      for _ in $(seq 1 80); do
+        CMD_ARGS+=("(continue-boundary)")
+        PATH_ARGS+=("(continue-boundary)")
+      done
+    done
+    SLOG_THREADS=1 SLOG_MAX_MS=1 racket tests/api/drive.rkt "${CMD_ARGS[@]}" \
+      > out/proto-pause-command.log 2>&1
+    SLOG_THREADS=1 SLOG_MAX_MS=1 racket tests/api/drive.rkt "${PATH_ARGS[@]}" \
+      > out/proto-pause-path.log 2>&1
+    expect_rx "pause-command-keyed" '^\(paused \(generation [0-9]+' \
+      out/proto-pause-command.log
+    expect_rx "pause-command-budget-cause" '\(cause \(budget time\)\)\)$' \
+      out/proto-pause-command.log
+    expect_rx "pause-command-boundary-cause" \
+      '\(cause \(boundary requested\)\)\)$' out/proto-pause-command.log
+    expect_not_rx "pause-command-no-positional" '^\(paused [0-9]+ ' \
+      out/proto-pause-command.log
+    expect_rx "pause-path-positional-bytes" '^\(paused [0-9]+ "[^"]+" [0-9]+ (read|iter) ' \
+      out/proto-pause-path.log
+    expect_not "pause-path-no-keyed" '(paused (generation ' \
+      out/proto-pause-path.log
+  else
+    bad "pause-live-setup (no stratum paths)"
+  fi
 else
-  bad "pause-fixture-build (see out/proto-pause-build.log)"
-fi
-
-# --- 11. the cause-variant validator (T0 slice (d)) --------------------------
-# A watch citation parses and renders as a cause VARIANT of the one
-# record -- proven against every class, both variants, and the refusal
-# edges, without a message-shape change.
-if g++ -O0 -Wall -std=c++20 -Idaemon tests/pause-record-validator.cpp \
-     daemon/sexp.cpp -o build/pause-record-validator 2> out/proto-validator-build.log \
-   && ./build/pause-record-validator > out/proto-validator.log 2>&1 \
-   && grep -qF "pause-record-validator: all checks passed" out/proto-validator.log; then
-  ok "pause-cause-validator"
-else
-  bad "pause-cause-validator (see out/proto-validator.log)"
+  bad "pause-live-build (see out/proto-pause-build.log)"
 fi
 
 echo

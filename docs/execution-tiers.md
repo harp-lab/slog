@@ -957,6 +957,27 @@ error. Connection loss before `*-seal` discards the provisional object. Pause,
 continue, and epoch commands carry the unified generation token (section 2.2)
 so a stale client cannot advance a newer run state.
 
+**ABI-1 sidecar bridge (landed 2026-07-21).** Rule-by-rule construction waits
+for T0(c)'s identity surface, but the stratum lifecycle is live now over the
+canonical sidecar already emitted by the compiler:
+
+```text
+(scc-begin scc5 (generation G)
+  (kernel-plan (sidecar "build/K.plan")))
+(scc-seal scc5 (generation G))
+(stratum-begin st3 (generation G) (entry fresh))
+(stratum-add-scc st3 scc5 (generation G))
+(stratum-seal st3 (generation G))
+(continue)
+```
+
+The builder store is connection-owned; `stratum-seal` performs a read-only
+entry/binding preflight, installs atomically with respect to all checked
+refusals, and does not imply `(continue)`. One sidecar is one SCC and ABI 1
+admits exactly one SCC per runtime `Stratum`; the object/add/seal shape remains
+valid when rule objects and true multi-SCC containers arrive. Every mutating
+form is generation-gated and receives an `accepted` record or typed refusal.
+
 ### 9.1 Entry modes are explicit
 
 Today the resident count/delta entry (`beginStratumDelta`: positional bind,
@@ -968,9 +989,10 @@ protocol removes that accidental firewall, so the distinction becomes an
 explicit, validated attribute:
 
 ```text
-(stratum-begin st3 (entry fresh))
-(stratum-begin st9 (entry resident-delta))
-(stratum-begin stC (entry resident-count (at <pipeline-pos>)))
+(stratum-begin st3 (generation G) (entry fresh))
+(stratum-begin st9 (generation G) (entry resident-delta))
+(stratum-begin stC (generation G)
+  (entry resident-count (at <pipeline-pos>)))
 ```
 
 Seal-time validation enforces the combinations: `resident-*` entries perform
@@ -1084,7 +1106,7 @@ start order and findings are recorded in execution-tiers-impl.md §7.
    and separately compiled fast/observed policies. Breakpoints are
    post-transition and proof views lazy.
 2. Seal and bind a deliberately narrow vocabulary before broad coverage:
-   constant preloads; delta-scan/full-prefix-probe drivers; full-prefix set
+   constant preloads; delta-scan/delta-prefix-probe drivers; full-prefix set
    probes; `neq`; exactly one body-instantiation `fire`; explicit bound head
    sink ports; ordinary set emit. Seal every `(operator,A,K,view)` against the
    out-of-line factory capability table.

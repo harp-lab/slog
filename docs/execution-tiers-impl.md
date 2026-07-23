@@ -82,11 +82,11 @@ gate exposed (non-total D4 sort key; temp column order over gensym'd
 variable spellings). Post-slice-0: 500/500 plans byte-identical across
 runs. Remaining: TU emission-ORDER canonicalization stays at T4 phase B
 (`__t*` local gensyms still churn TU text → `.o`-cache misses only);
-wholesale TU byte-diffs remain an invalid gate methodology; and
-`$sup`/`_lam` names embed `fnv(absolute checkout path)` (demand.rkt) —
-a pre-existing checkout-path dependence that makes demand-name goldens
-fail in secondary checkouts/worktrees and must go checkout-relative
-before RF1 slice 4's plan goldens.
+wholesale TU byte-diffs remain an invalid gate methodology. The pre-existing
+`$sup`/`_lam` checkout-path dependence was closed 2026-07-20:
+`source-name-key` normalizes provenance relative to the compilation root before
+hashing, a two-clone unit test pins the key, and `dem_lambda` passes in both
+native and interpreted modes with the repository-relative golden.
 
 **Update 2026-07-15 (T2-A1 done):** the production interpreter core is
 extracted into `daemon/interp.h` (namespace `slog::interp`, ~710 lines):
@@ -287,27 +287,74 @@ then parsed, sealed, VersionKey-bound, paged, and executed by the C++ battery;
 malformed dense slots, wrong ABI, and same-name/wrong-VersionKey bindings are
 typed refusals.
 
-This is a typed T0 builder boundary, not a second command path. The current
-tree still has neither N2/N3's persistent boundary-catalog producer nor T0's
-generic dispatcher, so `slogd.cpp` remains untouched and generation/phase
-admission remains dispatcher work. The next integration seam is therefore
-the real N2/N3 producer plus T0 slice (a), which embeds this payload unchanged
-under `query` and owns `query-page`/`query-cancel`. R2 still needs its
-parser/register, rendering/dump, and protocol transcripts over that surface.
+This is a typed T0 builder boundary, not a second command path. At this
+checkpoint the tree had neither N2/N3's persistent boundary-catalog producer
+nor T0's generic dispatcher. Slice (a)'s dispatcher has since landed; the
+query verbs remain reserved until the real N2/N3 producer can embed this
+payload unchanged under `query` and own `query-page`/`query-cancel` admission.
+R2 still needs its parser/register, rendering/dump, and protocol transcripts
+over that surface.
+
+**Update 2026-07-19 (T2-B normal `once`/`seeded` landed):** normal plans now
+seal both unit-driver forms. Bound-rule registration carries an explicit
+`every`/`once`/`seeded` schedule outside the frozen VM: `once` enters the
+first-iteration queue, while normal `seeded` enters the replay-only queue and
+reruns every iteration iff the run was externally seeded. Counted plans keep
+their existing interpretation of the seeded plan shape as a one-shot settled
+recount. The executable differential compares fresh and externally-seeded
+runs against fused native tasks at boundary deltas, final rows, and exact fire
+totals; maintenance flavors retain a typed refusal for unit drivers. No VM op,
+state-machine arm, or cursor interface changed.
+
+**Update 2026-07-19 (T2-B normal temp/struct sinks landed):** normal
+`emit-temp` now binds the existing nominal, append-only `emit_temp` sink; a
+typed bind check distinguishes compiler temporaries from ordinary set
+relations. Normal `mkstruct` stages master-content fields with a zero id and
+leaves content dedup, tombstone resurrection, and id allocation to the
+unchanged `InternStructTask`. A seeded normal construction binds the master
+index and calls `emit_struct_checked`, so full-join replay skips already-live
+content and reaches fixpoint. Normal scan-delta drivers may consume temp,
+struct, and lattice deltas, which closes the staged follow-up paths without
+changing the VM. Native differentials pin duplicate
+temp preservation, boundary-by-boundary staging waves, exact assigned struct
+ids, seeded replay fires, and one-time struct-delta consumption.
+
+**Update 2026-07-19 (T2-B normal lattice/declaration path and interpreter-only
+route landed):** normal `emit-lat` now stages nominal contribution rows for the
+unchanged `LatticeInternTask`; declaration install reconstructs set, temp,
+struct, and lattice relations, full/delta/seeded-only indices, native
+write/intern/map-write tasks, decompositions, oracle bindings, and sequence
+indices from the sealed plan. Probe drivers were corrected to the compiler's
+actual ABI: they prefix-probe requisitioned **DELTA** BTree indices for every
+storage kind. Canonical `cjoin` lowers at seal time to the frozen primitive op
+with one hidden pre-parsed lattice-spec register, and ordinary struct filters
+reuse the native BTree filter cursor. The cold installer preserves the native
+reverse declaration walk so constructor tags, collection hashes, and rendered
+map order remain identical. `SLOG_OPT=interp` now sends normal and delta
+`.plan` artifacts directly to `slogd`, invoking neither compilation nor
+`dlopen` for those strata; separate action plugins remain native. The existing
+native stratum modes remain unchanged.
+
+The focused interpreter/native battery and a 29-program lattice/sequence/SMT
+matrix are green. The formerly shared `dem_lambda` mismatch was repaired
+2026-07-20 by making demand-generated source keys compilation-root-relative;
+its targeted native run is green and the full `SLOG_OPT=interp` golden suite
+is now mechanically green at 165/165.
 
 **Next up (post-freeze ratified order):**
 
-- **T0** — finish slice (b)'s entry modes, then continue per
-  docs/t0-contract.md slices (a)–(d): dispatcher dual-stack + catalog verbs;
-  plan builders; identity keys +
-  rule-meta + D9 fire vectors; level-0 watches. Slices (a)/(b) unblock
-  REPL R0; the sidecar parse/seal half of (b) is now done.
-- **T2-B trunk groups under frozen interfaces** — ordinary K=0 scans are
-  landed; next land `once`/`seeded`, then temp/struct/lattice/count sinks and
-  declaration-built write/intern tasks. Each keeps the native delta/fires
-  differential and typed refusal gate. Finish with the full
-  `SLOG_OPT=interp` compiler-driven suite. Stale caches predate `.plan` —
-  re-emit on miss.
+- **T0** — slice (a)'s dispatcher/catalog surface and slice (d)'s uniform
+  pause record are landed. Slice (b)'s checked entry state machine and legacy
+  shims are landed; finish its provisional command builder and resident-count
+  tier-policy refusals next. Slice (c)'s
+  identity keys + rule-meta + D9 fire vectors remains a fork-gate substrate
+  chore; the level-0 watch implementation follows the fork on slice (d)'s
+  record.
+- **T2-B trunk groups under frozen interfaces** — the monotone normal
+  vocabulary, lattice sinks, declaration-built tasks, and compiler-driven
+  `SLOG_OPT=interp` route are landed. The checkout-independent `dem_lambda`
+  baseline is repaired; record the mechanically clean full-suite gate;
+  stale caches that predate `.plan` must re-emit on miss.
 - **Progressive-fork workstreams** — Q1's first engine slice and the
   client-neutral R2 result modes, catalog planning, and the typed QueryPlan
   wire/builder boundary are landed; continue with the N2/N3 catalog producer,
@@ -899,7 +946,7 @@ specification for this slice.
 
 - Add the in-memory decoded/sealed/bound interfaces in `daemon/plan.h` (the T0
   dispatcher may parse into them later): constant preloads; delta-scan and
-  full-prefix-probe drivers; full-prefix set probes; `neq`; one `fire`; and
+  delta-prefix-probe drivers; full-prefix set probes; `neq`; one `fire`; and
   ordinary set heads.
 - Seal register dataflow, slot/arity/order ABI, requested indices, head ports,
   and the factory capability table. Bind direct `Relation*`, `Index**`, cursor
@@ -932,9 +979,11 @@ absence cursors; map/lattice probes; primitive/`letp`/type operations; join3;
 then temp/struct/lattice/count sinks and declaration-built write/intern tasks.
 Groups (i) old/new/absence, (ii) primitives/types, (iii) join3, and (iv)
 map/lattice probes are landed; ordinary full-view K=0 landed post-freeze on
-2026-07-17. The interpreter core is frozen as of 2026-07-16. Each remaining
-post-freeze group lands with interpreter-vs-native per-iteration delta and
-fire-multiset tests before the next group.
+2026-07-17; normal `once`/`seeded`, temp, and struct conformance landed on
+2026-07-19; normal lattice sinks, declaration-built tasks, and the
+compiler-driven interpreter-only route landed later that day. The interpreter
+core is frozen as of 2026-07-16; every post-freeze group stayed within its
+registration, binding, and sink extension seams.
 
 Do **not** pull T3 tier scheduling, T5 watch-settle UI, or T6 transactional
 mid-read replacement into T2-A. The kernel must preserve their seams—observed

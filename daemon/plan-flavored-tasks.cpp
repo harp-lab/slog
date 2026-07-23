@@ -82,6 +82,60 @@ void write_task_ladder(u16 arity, Database* db, Stratum* stratum,
 }
 
 template <u16 A>
+void seeded_write_task_ladder(u16 arity, Database* db, Stratum* stratum,
+                              Relation* relation,
+                              const std::vector<u16>& order, bool delta)
+{
+  if constexpr (A == 0)
+  {
+    (void)arity; (void)db; (void)stratum; (void)relation; (void)order;
+    (void)delta;
+    fatal("normal install: seeded write task ladder miss");
+  }
+  else
+  {
+    if (arity == A)
+    {
+      for (u16 b = 0; b < bucket_count; ++b)
+        stratum->addTaskSeeded(phase_write,
+          new WriteTask<A>(db, relation, to_ordering_array<A>(order),
+                           delta, b));
+      return;
+    }
+    seeded_write_task_ladder<A - 1>(arity, db, stratum, relation, order,
+                                     delta);
+  }
+}
+
+template <u16 A>
+void map_write_task_ladder(u16 arity, Database* db, Stratum* stratum,
+                           Relation* relation,
+                           const std::vector<u16>& order, Relation* decomp,
+                           bool decomp_map, bool once_only)
+{
+  if constexpr (A <= 1)
+  {
+    (void)arity; (void)db; (void)stratum; (void)relation; (void)order;
+    (void)decomp; (void)decomp_map; (void)once_only;
+    fatal("normal install: map write task ladder miss");
+  }
+  else
+  {
+    if (arity == A)
+    {
+      for (u16 b = 0; b < bucket_count; ++b)
+        stratum->addTask(phase_write,
+          new MapWriteTask<A>(db, relation, to_ordering_array<A>(order), b,
+                              decomp, decomp_map),
+          once_only);
+      return;
+    }
+    map_write_task_ladder<A - 1>(arity, db, stratum, relation, order,
+                                  decomp, decomp_map, once_only);
+  }
+}
+
+template <u16 A>
 void intern_task_ladder(u16 arity, Database* db, Stratum* stratum,
                         Relation* relation, const std::vector<u16>& order,
                         bool is_struct)
@@ -108,6 +162,33 @@ void intern_task_ladder(u16 arity, Database* db, Stratum* stratum,
     }
     intern_task_ladder<A - 1>(arity, db, stratum, relation, order,
                               is_struct);
+  }
+}
+
+template <u16 A>
+void lattice_intern_task_ladder(u16 arity, Database* db, Stratum* stratum,
+                                Relation* relation,
+                                const std::vector<u16>& order,
+                                Relation* decomp, bool decomp_map)
+{
+  if constexpr (A <= 1)
+  {
+    (void)arity; (void)db; (void)stratum; (void)relation; (void)order;
+    (void)decomp; (void)decomp_map;
+    fatal("normal install: lattice intern task ladder miss");
+  }
+  else
+  {
+    if (arity == A)
+    {
+      for (u16 b = 0; b < bucket_count; ++b)
+        stratum->addTask(phase_intern,
+          new LatticeInternTask<A>(db, relation,
+            to_ordering_array<A>(order), b, decomp, decomp_map), false);
+      return;
+    }
+    lattice_intern_task_ladder<A - 1>(arity, db, stratum, relation, order,
+                                       decomp, decomp_map);
   }
 }
 
@@ -177,11 +258,13 @@ void lattice_maintain_task_ladder(u16 arity, Database* db, Stratum* stratum,
 
 template <u16 A>
 void add_index_ladder(u16 arity, Relation* relation,
-                      const std::vector<u16>& order, bool map, bool delta)
+                      const std::vector<u16>& order, bool map, bool delta,
+                      bool seeded_only)
 {
   if constexpr (A == 0)
   {
     (void)arity; (void)relation; (void)order; (void)map; (void)delta;
+    (void)seeded_only;
     fatal("flavored install: index ladder miss");
   }
   else
@@ -189,19 +272,22 @@ void add_index_ladder(u16 arity, Relation* relation,
     if (arity == A)
     {
       if (map) relation->addMapIndex<A>(order);
-      else relation->addIndex<A>(order, delta);
+      else relation->addIndex<A>(order, delta, seeded_only);
       return;
     }
-    add_index_ladder<A - 1>(arity, relation, order, map, delta);
+    add_index_ladder<A - 1>(arity, relation, order, map, delta,
+                             seeded_only);
   }
 }
 
 } // namespace
 
 void add_flavored_index(u16 arity, Relation* relation,
-                        const std::vector<u16>& order, bool map, bool delta)
+                        const std::vector<u16>& order, bool map, bool delta,
+                        bool seeded_only)
 {
-  add_index_ladder<max_daemon_arity>(arity, relation, order, map, delta);
+  add_index_ladder<max_daemon_arity>(arity, relation, order, map, delta,
+                                      seeded_only);
 }
 
 void add_flavored_count_task(u16 arity, Database* db, Stratum* stratum,
@@ -220,12 +306,37 @@ void add_flavored_write_task(u16 arity, Database* db, Stratum* stratum,
                                       delta, once_only);
 }
 
+void add_flavored_seeded_write_task(
+  u16 arity, Database* db, Stratum* stratum, Relation* relation,
+  const std::vector<u16>& order, bool delta)
+{
+  seeded_write_task_ladder<max_daemon_arity>(
+    arity, db, stratum, relation, order, delta);
+}
+
+void add_flavored_map_write_task(
+  u16 arity, Database* db, Stratum* stratum, Relation* relation,
+  const std::vector<u16>& order, Relation* decomp, bool decomp_map,
+  bool once_only)
+{
+  map_write_task_ladder<max_daemon_arity>(
+    arity, db, stratum, relation, order, decomp, decomp_map, once_only);
+}
+
 void add_flavored_intern_task(u16 arity, Database* db, Stratum* stratum,
                               Relation* relation,
                               const std::vector<u16>& order, bool is_struct)
 {
   intern_task_ladder<max_daemon_arity>(arity, db, stratum, relation, order,
                                        is_struct);
+}
+
+void add_flavored_lattice_intern_task(
+  u16 arity, Database* db, Stratum* stratum, Relation* relation,
+  const std::vector<u16>& order, Relation* decomp, bool decomp_map)
+{
+  lattice_intern_task_ladder<max_daemon_arity>(
+    arity, db, stratum, relation, order, decomp, decomp_map);
 }
 
 void add_flavored_maintain_task(u16 arity, Database* db, Stratum* stratum,

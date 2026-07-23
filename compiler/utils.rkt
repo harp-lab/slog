@@ -2,6 +2,7 @@
 
 (provide fnv
          fullpath
+         source-name-key
          escape-id-for-C
          escape-c-string-literal
          bucket-count
@@ -40,6 +41,20 @@
 
 (define (fullpath path)
   (path->string (path->complete-path path)))
+
+;; Stable source identity for compiler-generated relation/type names.  Parser
+;; provenance carries complete paths, but hashing those paths makes otherwise
+;; identical plans and result relation names depend on the checkout location.
+;; Keep the useful module path component while removing the compilation-root
+;; prefix.  `simplify-path` is deliberately filesystem-free: saved-source
+;; replay may describe a source file which no longer exists on disk.
+(define (source-name-key path [root (current-directory)])
+  (define root+ (simplify-path (path->complete-path root) #f))
+  (define path+ (simplify-path (path->complete-path path root+) #f))
+  (define relative (find-relative-path root+ path+))
+  ;; Racket paths use the host separator.  Generated names and plan identity
+  ;; must not, so make the key slash-normalized as well as root-relative.
+  (regexp-replace* #rx"\\\\" (path->string relative) "/"))
 
 (define nums-pool "0123456789")
 (define alpha-pool "abcdefghijklmnopqrstuvwxyz")

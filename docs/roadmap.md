@@ -313,6 +313,22 @@ landing. Gates: protocol 41/41, pause, api, quick 9/9, session 528/528.
 REPL R0 work is unblocked; R0–R1's full fork start still waits on
 slice (b)'s entry modes and slice (d)'s pause record.
 
+**Checkpoint 2026-07-19 (T2-B monotone normal path landed):** normal
+`once`/`seeded`, temp, struct, and lattice sinks now execute through the
+frozen interpreter seams. The sealed-plan installer reconstructs native
+declarations, full/delta/seeded-only indices, write/intern/lattice tasks,
+decompositions, oracle bindings, and sequence indices; it preserves native
+reverse declaration order for stable constructor tags and collection
+rendering. Canonical `cjoin` lowers to the existing primitive opcode, struct
+filters reuse BTree cursors, and probe drivers consume the compiler-declared
+DELTA order. `SLOG_OPT=interp` sends stratum `.plan` artifacts directly to the
+daemon without compiling or loading stratum shared objects; separate action
+plugins remain native. The focused differential and 29 lattice/sequence/SMT
+goldens pass. The former `dem_lambda` generated-name mismatch was closed
+2026-07-20 by hashing a compilation-root-relative source key. Its targeted
+native run passes and the full interpreter golden suite is now 165/165 from
+this clone.
+
 The fork gate F is met when the daemon API is genuinely ready for a client
 and has been exercised, specifically:
 
@@ -635,48 +651,154 @@ The payload/builder seam is ready for that meeting, but deliberately has no
 exact-command branch in `slogd.cpp`. The R2 parser/rendering and transcript
 battery follow the dispatcher integration.
 
-**Checkpoint 2026-07-23 (T0 slices (b)+(d) — R0–R1 UNBLOCKED):** the
-entry modes land as `installStratumChecked` (the ONE checked path;
-legacy entries are byte-identical forwarding shims; the accidental
-name-match firewall is retired by the explicit upgrade attribute and
-gate 12.13's resident-count refusal) with the `(install-stratum ...)`
-command verb and its typed `(refused entry-mode ...)` class; the
-uniform pause record ships scoped by protocol mode — budget/boundary
-classes live, the cause grammar with the watch-citation variant
-validated and golden'd, path-stack bytes untouched.  Protocol battery
-60/60.  With (a)+(b)+(d) banked, **thread 1's R0–R1 full start is
-unblocked**; the level-0 watch battery consumes the pause record
-post-fork as planned.
+**Checkpoint 2026-07-23 (threads reconciled at merge — T0(b)/(d)
+converged).** During the fork both threads independently built the
+shared-trunk T0 slices (b) entry modes and (d) uniform pause record. At
+merge, **thread 1's design is adopted as the trunk**: the
+connection-scoped SCC/stratum builder lifecycle
+(`scc-begin`/`scc-seal`/`stratum-begin`/`stratum-add-scc`/`stratum-seal`)
+over file-scope `EntryMode`/`EntryModeK` admission types, and the keyed
+`(paused ...)` command-session pause record — a superset of the frozen
+positional path-stack bytes — with its `PauseCause`/`PauseRecord`
+`renderPauseRecord` machinery. Thread 0's parallel
+`installStratumChecked`/`(install-stratum ...)` verb and the SExp
+`validatePauseRecord` validator are superseded (this was the forced
+resolution: the already-merged `plan-count.cpp` and
+`protocol-record-tests.cpp` bind thread 1's types). M4N's maintenance
+surface — `journalSigns`, `stageViewTransitions`, the `AbsentView`
+filter, the `cnt_kind_view` staging — is unaffected and rides beside the
+adopted lifecycle. **R0–R1's full start is unblocked.**
 
-**Thread-1 bearings (2026-07-19, v3.0.1).**  How this thread proceeds:
+**Thread-1 checkpoint (2026-07-20; independent interpreter/protocol prep).** The monotone
+normal interpreter path is ready for the UX branch to consume: normal and
+delta plans install declarations and native write/intern machinery directly,
+the compiler can route strata through `.plan`, the frozen interpreter core is
+unchanged, and the focused plus 29-program feature batteries are green. The
+repository-wide run was interpreter/native-equivalent. Its shared
+`dem_lambda` checkout-path baseline is now repaired, and T0(d)'s uniform
+command-stack pause record plus slice (b)'s checked runtime entry state machine
+are landed without touching `repl/`. Thread 1 deliberately remains decoupled
+from the separately developed UX until the command builder lifecycle is a
+sensible integration seam.
 
-1. **T0 slices (b) and (d) first** — entry modes and the uniform pause
-   record are the two remaining blockers for R0–R1's full start, and
-   slice (d)'s pause record is also what the level-0 watch battery
-   rides.  Slice (a)'s dispatcher and catalog verbs are landed; the
-   native Rust shell and TCP transport already work against them.
-2. **R0 → R1 on the shipped substrate**: session ownership, semantic
-   verbs over `session-*!`, change summaries, golden `--plain`
-   transcripts; then the canvas.  Nothing here waits on thread 0 —
+Thread 1 proceeds in this order:
+
+1. **Independent substrate checkpoint (completed 2026-07-20)** — demand-name
+   identity is checkout-independent; T0(d)'s pause record and the T0(b)
+   runtime `EntryMode` state machine/generation gate/legacy shims are landed.
+   Gates: unit 219/219, interpreter operator, protocol 48/48, pause 18/18,
+   session 528/528, targeted native `dem_lambda`, and full
+   `SLOG_OPT=interp` golden 165/165.
+2. **Finish the independent T0(b) command lifecycle (completed 2026-07-21)**
+   — connection-scoped SCC and stratum begin/add/seal objects, generation
+   admission, D16/builder/entry refusals, count restart/tier-swap policy, and
+   the command-only dual-stack session workflow are landed. The ABI-1 bridge
+   takes one canonical sidecar per SCC and one SCC per runtime stratum; no REPL
+   code changed.
+3. **Synchronize the UX work at that seam (completed 2026-07-22)** — the
+   canonical workbench command patch is imported without the UX checkout's
+   unrelated M4N work. There were no daemon-builder overlaps; the shared
+   command boundary and terminal lifecycle pass their joint gates.
+4. **R0 → R1 on the shipped substrate (server-contract preparation landed
+   2026-07-22; client join next)**: session ownership, semantic verbs over
+   `session-*!`, change summaries, golden `--plain` transcripts; then the
+   canvas.  Nothing here waits on thread 0 —
    forward incrementality and the frozen monotone interpreter are the
    foundation, and `clear scratch` silently improves as thread 0's
    precise routes land (M4N just widened them to negation cones).
-3. **The Q1/R2 meeting point**: T0's dispatcher takes ownership of
+5. **The Q1/R2 meeting point**: T0's dispatcher takes ownership of
    `query`/`query-page`/`query-cancel` admission, N2/N3 supply the
    boundary/materialization overlay, and the already-golden
    payload/builder seam connects — then R2's `?`/`?count`/`?exists`
    and `explain` land as rendering over it.
-4. **Toward F**: the remaining fork-gate criteria are thread-1-adjacent
-   trunk chores — the monotone T2-B residue (normal-flavor once/seeded,
-   temp/struct/lattice sinks, declaration-built write/intern tasks:
-   substantially prebuilt by the counted-interpreter arc, needing
-   normal-flavor conformance tests) feeding criterion 1's full
-   `SLOG_OPT=interp` suite, plus the protocol/pause/watch batteries of
-   criteria 2–3.
+6. **Toward F**: the monotone T2-B normal path, compiler-driven
+   `SLOG_OPT=interp` route, checkout-independent demand names, and uniform
+   pause record are landed. The remaining fork-gate work is the slice-(b)/(c)
+   builder/identity surface and post-fork watch battery integration.
 
 Deferred on this thread until after S: level-1 anything (provenance watches,
 stepping, why/why-not), `whatif`, fork/branching vocabulary beyond reserved
 words.
+
+**Thread-1 checkpoint (2026-07-21; T0(b) command lifecycle complete,
+pre-UX-sync).** The daemon now owns a connection-scoped ABI-1 SCC/stratum
+builder over canonical `.plan` sidecars: `scc-begin`/`scc-seal`, then
+`stratum-begin`/`stratum-add-scc`/`stratum-seal`. All five mutations are
+generation-gated and acknowledged; parse/I/O/D16, provisional-state,
+entry-state, suspension, and capability failures remain typed.
+`stratum-seal` read-only-preflights bindings before the checked entry
+transition, pushes without auto-continuing, and preserves legacy path-stack
+behavior through the existing installer wrappers. Entry/flavor policy pins
+normal=fresh/upgrade, delta+maintenance=resident-delta, and
+count=resident-count; count restart/tier-swap attempts are capability
+refusals. The sidecar bridge deliberately admits one SCC per runtime stratum;
+T0(c)'s rule identity/builder work can extend the SCC source without changing
+this lifecycle. `repl/` remains untouched. Exit gates: interpreter operator
+pass; protocol 67/67; pause 18/18; session 528/528; full cache-cleared
+`SLOG_OPT=interp` golden 165/165.
+
+That pre-sync seam is now closed by the 2026-07-22 checkpoint below. Coupled
+R0/R1 work may begin over the shipped command lifecycle. Keep T0(c) identity
+(`rule-meta`, stable keys, per-attempt fire vectors) separate from UX
+rendering, and connect Q1's already-golden query payload only when the N2/N3
+catalog overlay supplies real VersionKey-boundary state.
+
+**Thread-1 checkpoint (2026-07-22; canonical UX command sync complete).** The
+six-file UX patch is integrated at the T0(b) seam: `:help`, `:status`, `:ping`,
+and `:quit` are the canonical workbench commands in server help, terminal
+copy, and documentation, while the unprefixed server aliases remain accepted
+for compatibility. F1 now emits the same generated `:help` command and durable
+transcript entry as typed input. The private co-author lane admits the
+read-only colon commands and explicitly rejects `:quit`. No daemon builder,
+interpreter, session, or query-engine file changed, and the UX checkout's
+unrelated M4N commits and working-tree contract draft were not imported.
+
+The integration gates are green: Rust format and 28/28 frontend/model tests;
+16/16 Racket frame/dispatch tests; daemon protocol 67/67, including the full
+SCC/stratum lifecycle; and a real interactive PTY run in which `:status`
+returned protocol/version/session state, `:quit` returned `Goodbye`/`REPL
+closed`, terminal input modes and the alternate screen were restored, and the
+process exited zero. This is the clean handoff into coupled R0/R1 work. Next,
+add semantic session verbs over `session-*!` and a stable `--plain` golden
+transcript harness before canvas-specific behavior. Keep T0(c) identity work
+and Q1's N2/N3-dependent catalog meeting on their existing independent seams.
+
+**Thread-1 checkpoint (2026-07-22; semantic server contract prepared before
+the client join).** `compiler/repl.rkt` now wraps its existing `session-*!`
+calls in one settled semantic-result path. New loads, runs, add/delete,
+rename/drop, and saves return a structured `change` object alongside bounded
+text: operation/target/status, the daemon's explicitly named
+`update-revision`, counts-valid state, requested tuple edits, sorted
+before/after relation-size observations, and parsed route records. The
+distinctions are deliberate: an update revision is not an N2/N3 BoundaryKey,
+and a requested add is not claimed as an actual insert. The golden pins that
+truth with an existing-fact add whose request is `+1` while relation sizes are
+unchanged.
+
+Post-commit observations are best effort and cannot convert a successful
+session mutation into a reported command failure. The deterministic contract
+harness drives a real session through open, no-op/effective add, delete,
+rename, drop, and shutdown, round-trips every result through the actual
+Content-Length JSON framing, and compares the plain projection with a checked-
+in golden. It is now a named full-suite `repl` harness. No file under `repl/`
+changed: the user-facing Rust `--plain` mode remains the next client-side
+consumer, not a second Racket frontend.
+
+This checkpoint intentionally stops before three decisions/dependencies:
+`stage`/`flush` and `inject` need their command grammar and anchoring syntax
+pinned; honest `dbN` handles wait for N2/N3 BoundaryKeys rather than aliasing
+the update counter; and Q1 query verbs still wait for the N2/N3
+VersionKey/materialization overlay. T0(c) identity remains an independent
+engine track and does not block this client contract.
+
+The next join is intentionally one-dimensional: implement Rust `--plain` as a
+consumer of the existing framed result, hold it to the same semantic-session
+golden, and only then share its response model with the canvas. Do not add
+canvas-only state to the compiler contract. Before staging verbs land, decide
+buffer ownership across session switches, failure/discard behavior, flush
+atomicity, and BoundaryKey anchoring; relation-size summaries are useful
+settled evidence but are neither full tuple diffs nor support/provenance
+proofs.
 
 ### 4.3 Why the fork is safe
 

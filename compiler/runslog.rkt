@@ -244,7 +244,9 @@
   ;; snapshotted before any rule derives.  --flatten writes a single
   ;; self-contained root instead (today's --out-db + META), needing no split.
   (define linked-compressed? (and compressed (not flatten?)))
-  (define tiered? (not (member (or (getenv "SLOG_OPT") "tiered") '("0" "2"))))
+  (define tiered?
+    (not (member (or (getenv "SLOG_OPT") "tiered")
+                 '("0" "2" "interp"))))
   (ensure-slogd-exists)
   (define-values (sp out in err) (apply subprocess #f #f #f (slogd-argv "daemon/slogd")))
   (define (send-plugin path)

@@ -19,7 +19,11 @@
 
 #include "sexp.h"
 
+#include <cstdint>
+#include <cstdio>
+#include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace slog {
 namespace protocol {
@@ -76,81 +80,143 @@ inline std::string quoteString(const std::string& s)
   return q;
 }
 
-// T0 slice (d): the uniform pause record's cause grammar.  A cause is
-// either (arbitrary) or a for-cause citation -- today's designed variant
-// is (watch (key K) (relation "R") (kind size|delta|error)) -- and
-// watches later ADD VARIANTS here, never a new message kind.  The
-// validator is what the slice's tests drive: a watch citation must parse
-// and render without changing the record's shape.
-inline bool validatePauseCause(const sexp::SExp& cause, std::string& why)
+// T0(d)'s command-stack pause record. The legacy path stack keeps its frozen
+// positional `(paused ...)` bytes; command-speaking sessions receive this
+// keyed shape for every pause class. Future watches and breakpoints extend
+// only PauseCause, never the outer record.
+enum class PauseCauseKind
 {
-  if (cause.kind != sexp::SExp::K::list || cause.children.empty()
-      || cause.children[0].kind != sexp::SExp::K::atom
-      || cause.children[0].text != "cause")
-  { why = "expected (cause ...)"; return false; }
-  if (cause.children.size() != 2
-      || cause.children[1].kind != sexp::SExp::K::list
-      || cause.children[1].children.empty()
-      || cause.children[1].children[0].kind != sexp::SExp::K::atom)
-  { why = "expected one variant payload"; return false; }
-  const sexp::SExp& variant = cause.children[1];
-  const std::string& tag = variant.children[0].text;
-  if (tag == "arbitrary")
+  budget,
+  boundary,
+  terminal,
+  suspension,
+  watch,
+  breakpoint,
+  error_watch
+};
+
+struct PauseCause
+{
+  PauseCauseKind kind = PauseCauseKind::budget;
+  // budget: time|memory; boundary: requested; terminal: prepared;
+  // suspension/breakpoint: a stable reason or id. Empty for watch variants.
+  std::string detail;
+  // Stable watch ids for watch/error-watch citations. They are quoted on the
+  // wire, so future durable key spellings do not widen the command grammar.
+  std::vector<std::string> citations;
+};
+
+struct PauseRecord
+{
+  std::uint64_t generation = 0;
+  std::uint32_t scc = 0;
+  std::string stratum;
+  std::uint32_t iteration = 0;
+  // read | iter | terminal
+  std::string phase;
+  // True only at a coherent iteration/terminal barrier. Mid-read progress is
+  // explicitly inexact rather than masquerading as a finalized delta count.
+  bool settled = false;
+  std::uint64_t tuples = 0;
+  bool progress_exact = false;
+  double ms_call = 0;
+  double ms_total = 0;
+  PauseCause cause;
+};
+
+inline void validatePauseCause(const PauseCause& cause)
+{
+  const auto no_citations = [&] {
+    if (!cause.citations.empty())
+      throw std::invalid_argument("pause cause carries unexpected citations");
+  };
+  const auto cited = [&] {
+    if (cause.detail.size() != 0 || cause.citations.empty())
+      throw std::invalid_argument("watch pause cause requires citations only");
+    for (const std::string& id : cause.citations)
+      if (id.empty())
+        throw std::invalid_argument("watch pause citation is empty");
+  };
+  switch (cause.kind)
   {
-    if (variant.children.size() != 1)
-    { why = "(arbitrary) takes no fields"; return false; }
-    return true;
+    case PauseCauseKind::budget:
+      no_citations();
+      if (cause.detail != "time" && cause.detail != "memory")
+        throw std::invalid_argument("budget pause cause must be time or memory");
+      break;
+    case PauseCauseKind::boundary:
+      no_citations();
+      if (cause.detail != "requested")
+        throw std::invalid_argument("boundary pause cause must be requested");
+      break;
+    case PauseCauseKind::terminal:
+      no_citations();
+      if (cause.detail != "prepared")
+        throw std::invalid_argument("terminal pause cause must be prepared");
+      break;
+    case PauseCauseKind::suspension:
+    case PauseCauseKind::breakpoint:
+      no_citations();
+      if (cause.detail.empty())
+        throw std::invalid_argument("named pause cause requires a detail");
+      break;
+    case PauseCauseKind::watch:
+    case PauseCauseKind::error_watch:
+      cited();
+      break;
   }
-  if (tag == "watch")
-  {
-    bool have_key = false, have_rel = false, have_kind = false;
-    for (size_t i = 1; i < variant.children.size(); ++i)
-    {
-      const sexp::SExp& field = variant.children[i];
-      if (field.kind != sexp::SExp::K::list || field.children.size() != 2
-          || field.children[0].kind != sexp::SExp::K::atom)
-      { why = "watch fields are (key value) pairs"; return false; }
-      const std::string& key = field.children[0].text;
-      const sexp::SExp& val = field.children[1];
-      if (key == "key" && val.kind == sexp::SExp::K::atom) have_key = true;
-      else if (key == "relation" && val.kind == sexp::SExp::K::string)
-        have_rel = true;
-      else if (key == "kind" && val.kind == sexp::SExp::K::atom
-               && (val.text == "size" || val.text == "delta"
-                   || val.text == "error"))
-        have_kind = true;
-      else { why = "unknown watch field " + key; return false; }
-    }
-    if (!(have_key && have_rel && have_kind))
-    { why = "watch citation needs (key K) (relation \"R\") (kind size|delta|error)"; return false; }
-    return true;
-  }
-  why = "unknown cause variant " + tag;
-  return false;
 }
 
-// Validate a full uniform pause record (the message shape the command
-// stack emits): (pause (class C) (cause V) (stratum "S") ...).  Field
-// ORDER is part of the golden contract; unknown trailing fields are
-// permitted so the record can grow without a message-kind change.
-inline bool validatePauseRecord(const sexp::SExp& record, std::string& why)
+inline std::string renderPauseCause(const PauseCause& cause)
 {
-  if (record.kind != sexp::SExp::K::list || record.children.empty()
-      || record.children[0].kind != sexp::SExp::K::atom
-      || record.children[0].text != "pause")
-  { why = "expected (pause ...)"; return false; }
-  if (record.children.size() < 3)
-  { why = "pause record needs (class ...) and (cause ...)"; return false; }
-  const sexp::SExp& cls = record.children[1];
-  if (cls.kind != sexp::SExp::K::list || cls.children.size() != 2
-      || cls.children[0].kind != sexp::SExp::K::atom
-      || cls.children[0].text != "class"
-      || cls.children[1].kind != sexp::SExp::K::atom
-      || !(cls.children[1].text == "budget" || cls.children[1].text == "boundary"
-           || cls.children[1].text == "suspension"
-           || cls.children[1].text == "terminal"))
-  { why = "expected (class budget|boundary|suspension|terminal)"; return false; }
-  return validatePauseCause(record.children[2], why);
+  validatePauseCause(cause);
+  switch (cause.kind)
+  {
+    case PauseCauseKind::budget:
+      return "(budget " + cause.detail + ")";
+    case PauseCauseKind::boundary:
+      return "(boundary requested)";
+    case PauseCauseKind::terminal:
+      return "(terminal prepared)";
+    case PauseCauseKind::suspension:
+      return "(suspension " + quoteString(cause.detail) + ")";
+    case PauseCauseKind::breakpoint:
+      return "(breakpoint " + quoteString(cause.detail) + ")";
+    case PauseCauseKind::watch:
+    case PauseCauseKind::error_watch:
+    {
+      std::string out = cause.kind == PauseCauseKind::watch
+        ? "(watch" : "(error-watch";
+      for (const std::string& id : cause.citations)
+        out += " (watch-id " + quoteString(id) + ")";
+      return out + ")";
+    }
+  }
+  throw std::invalid_argument("unknown pause cause");
+}
+
+inline std::string renderPauseRecord(const PauseRecord& record)
+{
+  if (record.phase != "read" && record.phase != "iter"
+      && record.phase != "terminal")
+    throw std::invalid_argument("pause record carries an unknown phase");
+  if (record.settled != record.progress_exact)
+    throw std::invalid_argument("pause settled/exact fields disagree");
+  if ((record.phase == "read") == record.settled)
+    throw std::invalid_argument("pause phase/settled fields disagree");
+  char timing[96];
+  std::snprintf(timing, sizeof(timing),
+                "(timing (call-ms %.3f) (total-ms %.3f))",
+                record.ms_call, record.ms_total);
+  return "(paused (generation " + std::to_string(record.generation) + ")"
+    + " (scc " + std::to_string(record.scc) + ")"
+    + " (stratum " + quoteString(record.stratum) + ")"
+    + " (iteration " + std::to_string(record.iteration) + ")"
+    + " (phase " + record.phase + ")"
+    + " (settled " + (record.settled ? "#t" : "#f") + ")"
+    + " (progress (tuples " + std::to_string(record.tuples) + ") (exact "
+    + (record.progress_exact ? "#t" : "#f") + ")) " + timing
+    + " (cause " + renderPauseCause(record.cause) + "))";
 }
 
 }  // namespace protocol

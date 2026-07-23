@@ -1,0 +1,39 @@
+› open sess_w2.edb
+◆ Opened sess_w2.edb
+  database loaded into a new mutable in-memory workspace
+  Try `current`, `tables`, `state`, `show REL`, or `query REL V...`.
+  settled · update revision 0 · counts valid
+  size changes: edge +3 (new -> 3); path +3 (new -> 3)
+› add edge 1 2
+◆ Add · edge
+  (edge 1 2)
+  settled · update revision 0 · counts valid
+  requested: edge +1
+  relation sizes: unchanged
+› add edge 4 5
+◆ Add · edge
+  (edge 4 5)
+  settled · update revision 1 · counts valid
+  requested: edge +1
+  size changes: edge +1 (3 -> 4)
+  route: maintain 0
+› del edge 4 5
+◆ Del · edge
+  (edge 4 5)
+  settled · update revision 2 · counts valid
+  requested: edge -1
+  size changes: edge -1 (4 -> 3)
+  route: maintain-negative 0
+› rename edge input_edge
+◆ Renamed edge to input_edge
+  relation identity was rebound without moving tuple data
+  settled · update revision 2 · counts valid
+  size changes: edge -3 (3 -> removed); input_edge +3 (new -> 3)
+› drop path
+◆ Dropped path
+  relation name was removed from the live environment
+  settled · update revision 2 · counts valid
+  size changes: path -3 (3 -> removed)
+› :quit
+◆ Goodbye
+  REPL closed

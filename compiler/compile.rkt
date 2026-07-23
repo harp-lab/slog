@@ -647,11 +647,19 @@
 (define (ensure-delta-so job)
   (match-define (list proghash _te _st _dm _dc) job)
   (define so (fullpath (format "build/~a_delta.O0.so" proghash)))
-  (unless (file-exists? so)
-    (define cpps (parameterize ([delta-entry-flavor #t])
-                   (emit-stratum-cpp job)))
-    (build-so cpps so #:opt "-O0"))
-  so)
+  (define plan (fullpath (format "build/~a_delta.plan" proghash)))
+  (if (equal? (or (getenv "SLOG_OPT") "tiered") "interp")
+      (begin
+        (unless (file-exists? plan)
+          (parameterize ([delta-entry-flavor #t])
+            (void (emit-stratum-cpp job))))
+        plan)
+      (begin
+        (unless (file-exists? so)
+          (define cpps (parameterize ([delta-entry-flavor #t])
+                         (emit-stratum-cpp job)))
+          (build-so cpps so #:opt "-O0"))
+        so)))
 
 ;; Build (or reuse) the `_count` flavor of one stratum job (docs/
 ;; incremental.md §8B.1, M0): the count-round plugin -- one all-full
@@ -953,6 +961,15 @@
 
 (define (opt-mode) (or (getenv "SLOG_OPT") "tiered"))
 
+;; Materialize a normal canonical sidecar without invoking the toolchain.
+;; emit-stratum-cpp still writes the parallel C++ debug artifact today, but
+;; SLOG_OPT=interp never compiles or dlopens it; the daemon consumes this plan.
+(define (ensure-normal-plan job)
+  (match-define (list proghash _te _st _dm _dc) job)
+  (define plan (fullpath (format "build/~a.plan" proghash)))
+  (unless (file-exists? plan) (void (emit-stratum-cpp job)))
+  plan)
+
 ;; Returns (values strata partition edb-boundary frozen-dirs groups).
 ;; edb-boundary is the number of leading strata whose combined output is the
 ;; iteration-0 EDB root (P0.5): 1 when the first program contributed a facts
@@ -968,7 +985,7 @@
   (define mode (opt-mode))
   ;; tiered = the default regime (anything but the explicit -O0-only / -O2-only
   ;; knobs); mirrors runslog.rkt's driver-side test.
-  (define tiered? (not (member mode '("0" "2"))))
+  (define tiered? (not (member mode '("0" "2" "interp"))))
   (define per-program
     (for/list ([prog (in-list (load-program-list path dbmanifest))])
       (program->jobs prog #:split-facts? split-facts?)))
@@ -1008,6 +1025,18 @@
       (define o2so (fullpath (format "build/~a.so" proghash)))
       (define o0so (fullpath (format "build/~a.O0.so" proghash)))
       (cond
+        ;; Interpreter-only mode ignores every cached native artifact for this
+        ;; stratum. The canonical plan is its runnable artifact and the daemon
+        ;; installs it directly, so this stratum invokes no compiler and has
+        ;; no upgrade. Separate action plugins remain on their native path.
+        [(equal? mode "interp")
+         (define plan (ensure-normal-plan job))
+         (sbuild proghash #f (lambda () (cons plan 'interp)) #f
+                 (lambda () (ensure-delta-so job))
+                 (lambda () (ensure-count-so job))
+                 (lambda () (ensure-maintenance-so job))
+                 (lambda () (ensure-negative-maintenance-so job))
+                 (lambda () (ensure-recursive-negative-maintenance-so job)))]
         ;; Optimized artifact already cached: always the best thing to run.
         [(file-exists? o2so)
          (clear-o2-marker! o2so)   ; any leftover in-flight marker is moot now

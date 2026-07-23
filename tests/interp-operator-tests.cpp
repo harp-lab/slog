@@ -16,7 +16,9 @@
 //   clang++ -O2 -Wall -std=c++20 -pthread -fopenmp -Idaemon tests/interp-operator-tests.cpp daemon/plan.cpp daemon/plan-count.cpp daemon/query.cpp daemon/sexp.cpp daemon/runtime.cpp /tmp/pft.o -o /tmp/interp-tests -lgmp
 //   /tmp/interp-tests [--bench]
 
+#include "daemon.h"
 #include "plan.h"
+#include "plan-count.h"
 #include "query.h"
 #include "sexp.h"
 
@@ -37,6 +39,7 @@
 #include <unistd.h>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -46,6 +49,38 @@ using namespace slog::interp;
 namespace q = slog::query;
 
 namespace {
+
+struct EntryEmitTask final : Task
+{
+  Database* db;
+  Relation* relation;
+
+  EntryEmitTask(Database* d, Relation* r) : db(d), relation(r) {}
+
+  bool work() override
+  {
+    InsertBatch* batch = new InsertBatch();
+    batch->data[0] = s32_encode(1);
+    batch->usage = 1;
+    relation->sendBatch(batch);
+    db->registerLatestAnyRec(true);
+    return true;
+  }
+};
+
+struct EntrySleepTask final : Task
+{
+  bool work() override
+  {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    return true;
+  }
+};
+
+struct EntryNoopTask final : Task
+{
+  bool work() override { return true; }
+};
 
 // A test-only cursor whose next match takes several internal units of work.  This is
 // the shape join3 needs: an intersection may have to seek repeatedly before
@@ -2295,6 +2330,89 @@ bool test_parsed_primitives_letp_tycheck_native_differential()
   return true;
 }
 
+bool test_parsed_cjoin_and_struct_filter_native_differential()
+{
+  const std::string text =
+    "(kernel-plan (abi 1) (flavor normal) "
+    "(relations "
+      "(rel 0 (relation cj_driver 3 (0 1 2))) "
+      "(rel 1 (struct cj_tag 2 (1 0) (0 1))) "
+      "(rel 2 (relation cj_out 1 (0)))) "
+    "(attachments) (constants (k 0 key 9)) (prims cget) "
+    "(dynamic cj_out) "
+    "(rules (rule-def (rid 91) (variant \"delta:cj_driver\") (nregs 6) "
+      "(pre (let (r 5) (k 0))) "
+      "(driver (scan (rel 0) (r 0) (r 1) (r 2))) "
+      "(body "
+        "(exists (rel 1) (1 0) 1 (r 2)) "
+        "(cjoin (r 3) (map int (min int)) (r 0) (r 1)) "
+        "(letp (r 4) (prim cget (r 3) (r 5)))) "
+      "(head (emit (rel 2) (0) (r 4))))) "
+    "(meta (rule-meta (rid 91) (source \"cjoin.slog:1\"))))";
+
+  const DecodedKernelPlan decoded = parse_kernel_plan(text);
+  CHECK(decoded.rules.size() == 1);
+  CHECK(decoded.primitives == (std::vector<std::string>{"cget"}));
+  CHECK(std::get<PrimPlan>(decoded.rules[0].plan.body[1]).name
+        == "$cjoin:map-int-min-int");
+
+  Database db(1);
+  db.addRelation("cj_driver", 3);
+  db.addStruct("cj_tag", 2);
+  db.addRelation("cj_out", 1);
+  Relation* driver = db.getRelation("cj_driver");
+  Relation* tag = db.getRelation("cj_tag");
+  Relation* output = db.getRelation("cj_out");
+  driver->addIndex<3>({0, 1, 2}, false);
+  tag->addIndex<2>({1, 0}, false);
+  tag->addIndex<2>({0, 1}, false);
+  output->addIndex<1>({0}, false);
+
+  const u64 key = s32_encode(9);
+  const u64 empty = _prim_cmap(&db);
+  const u64 left = _prim_cput(&db, empty, key, s32_encode(5));
+  const u64 right = _prim_cput(&db, empty, key, s32_encode(3));
+  const u64 admitted = s32_encode(7);
+  insert_nominal(tag, {s32_encode(100), admitted});
+  load_delta(driver, {{left, right, admitted},
+                      {left, right, s32_encode(8)}});
+
+  std::unique_ptr<LatSpec> native_spec(
+    parseLatSpecToken("map-int-min-int"));
+  CHECK(native_spec != nullptr);
+  const u64 native_join =
+    db.collections()->merge_spec(left, right, native_spec.get());
+  bool native_ok = true;
+  const u64 native_value = _prim_cget(&db, native_join, key, &native_ok);
+  CHECK(native_ok && native_value == s32_encode(3));
+
+  const SealedKernelPlan sealed = seal_kernel_plan(decoded, &db);
+  CHECK(sealed.rules[0].program.nregs == 7);
+  CHECK(sealed.rules[0].primitive_names
+        == (std::vector<std::string>{"$cjoin", "cget"}));
+  CHECK(std::get<FilterPlan>(sealed.rules[0].cursors[0]).struct_);
+  const auto rules = bind_kernel_plan(sealed, db);
+  u64 fires = 0;
+  std::vector<std::vector<u64>> rows;
+  for (u16 bucket = 0; bucket < rules[0]->task_count(); ++bucket)
+  {
+    auto task = rules[0]->make_task(bucket);
+    while (!task->done())
+    {
+      const StopReason why = task->run_fast(2, 1);
+      CHECK(why == StopReason::quantum || why == StopReason::cursor
+            || why == StopReason::complete);
+      if (why != StopReason::complete) task = task->continuation();
+    }
+    fires += task->result().fires;
+    rows.insert(rows.end(), task->result().outputs.begin(),
+                task->result().outputs.end());
+  }
+  CHECK(fires == 1);
+  CHECK(rows == (std::vector<std::vector<u64>>{{native_value}}));
+  return true;
+}
+
 bool test_parsed_sidecar_scheduler_admission()
 {
   // This fixture is byte-for-byte compiler/canonical-plan.rkt output from
@@ -2449,9 +2567,11 @@ bool test_parsed_sidecar_refusal_classes()
         replace_once(base, "(flavor normal)", "(flavor maint4neg)")));
   CHECK(seal_rejects(SealErrorK::variant_identity,
         replace_once(base, "(flavor normal)", "(flavor count)")));
-  CHECK(seal_rejects(SealErrorK::capability,
-        replace_once(base,
-          "(driver (scan (rel 0) (r 0) (r 1)))", "(driver (seeded))")));
+  const std::string normal_seeded = replace_once(
+    replace_once(base, "(driver (scan (rel 0) (r 0) (r 1)))",
+                        "(driver (seeded))"),
+    "(body)", "(body (join (rel 0) (0 1) 0 (r 0) (r 1)))");
+  CHECK(seal_accepts(normal_seeded));
   CHECK(seal_rejects(SealErrorK::relation_slot,
         replace_once(base, "(emit (rel 1)", "(emit (rel 9)")));
   CHECK(seal_rejects(SealErrorK::relation_arity,
@@ -2499,10 +2619,12 @@ bool test_parsed_sidecar_refusal_classes()
 
   Database constant_db(1);
   const std::string constant_plan = replace_once(
-    replace_once(
+    replace_once(replace_once(
       replace_once(base, "(constants)",
                    "(constants (k 0 seven 7) (k 1 label \"ok\"))"),
       "(pre)", "(pre (let (r 0) (k 0)))"),
+      "(relation in 2 (0 1))",
+      "(relation in 2 (0 1) (delta 0 1))"),
     "(driver (scan (rel 0) (r 0) (r 1)))",
     "(driver (probe (rel 0) (0 1) 1 (r 0) (r 1)))");
   const DecodedKernelPlan decoded = parse_kernel_plan(constant_plan);
@@ -2609,7 +2731,7 @@ bool test_real_interp_read_task_recursive_admission()
   }
 
   const std::vector<RelationShape> shapes{
-    {2, {{0, 1}}}, {2, {{0, 1}}}
+    {2, {{0, 1}}, RelationK::plain, {{0, 1}}}, {2, {{0, 1}}}
   };
   BoundRule base(seal_rule(RulePlan{
       70, 0, "delta:admit_edge#0", 2, {},
@@ -2708,6 +2830,829 @@ bool test_real_interp_read_task_recursive_admission()
   return true;
 }
 
+// T2-B normal unit-driver conformance. A normal `once` rule belongs to the
+// first-iteration queue; a normal `seeded` rule belongs to the replay-only
+// queue and reruns every iteration of an externally-seeded run. The VM and
+// fused native tasks must agree on boundary deltas and fire multiplicities in
+// both a fresh and an externally-seeded run.
+bool test_normal_once_seeded_scheduler_differential()
+{
+  class NativeOnceTask final : public Task
+  {
+    Database* db;
+    Relation* output;
+    Index** output_index;
+  public:
+    NativeOnceTask(Database* d, Relation* out)
+      : db(d), output(out), output_index(out->getIndex({0}, false)) {}
+
+    bool work() override
+    {
+      InsertBatch* batch = new InsertBatch();
+      emit<1>(output, output_index, batch, {s32_encode(7)}, {0});
+      output->sendBatch(batch);
+      db->bumpFires("unit.slog:1", "once", 1);
+      return true;
+    }
+  };
+
+  class NativeSeededTask final : public Task
+  {
+    Database* db;
+    Relation* output;
+    Index** input_index;
+    Index** output_index;
+  public:
+    NativeSeededTask(Database* d, Relation* in, Relation* out)
+      : db(d), output(out), input_index(in->getIndex({0}, false)),
+        output_index(out->getIndex({0}, false)) {}
+
+    bool work() override
+    {
+      InsertBatch* batch = new InsertBatch();
+      u64 fires = 0;
+      join_all<1>(input_index, [&](const std::array<u64, 1>& row) {
+        ++fires;
+        emit<1>(output, output_index, batch, {row[0]}, {0});
+      });
+      output->sendBatch(batch);
+      if (fires) db->bumpFires("unit.slog:2", "seeded", fires);
+      return true;
+    }
+  };
+
+  struct Outcome
+  {
+    bool boundary_only = true;
+    std::vector<std::pair<std::vector<std::vector<u64>>,
+                          std::vector<std::vector<u64>>>> deltas;
+    std::vector<std::vector<u64>> once_rows;
+    std::vector<std::vector<u64>> seeded_rows;
+    u64 once_fires = 0;
+    u64 seeded_fires = 0;
+    size_t once_tasks = 0;
+    size_t seeded_tasks = 0;
+  };
+
+  const std::string plan_text =
+    "(kernel-plan (abi 1) (flavor normal) "
+    "(relations "
+      "(rel 0 (relation unit_input 1 (0))) "
+      "(rel 1 (relation unit_once 1 (0))) "
+      "(rel 2 (relation unit_seeded 1 (0)))) "
+    "(attachments) (constants (k 0 seven 7)) (prims) "
+    "(dynamic unit_once unit_seeded) "
+    "(rules "
+      "(rule-def (rid 0) (variant \"once\") (nregs 1) "
+        "(pre (let (r 0) (k 0))) (driver (once)) (body) "
+        "(head (emit (rel 1) (0) (r 0)))) "
+      "(rule-def (rid 1) (variant \"seeded\") (nregs 1) (pre) "
+        "(driver (seeded)) "
+        "(body (join (rel 0) (0) 0 (r 0))) "
+        "(head (emit (rel 2) (0) (r 0))))) "
+    "(meta (rule-meta (rid 0) (source \"unit.slog:1\")) "
+          "(rule-meta (rid 1) (source \"unit.slog:2\"))))";
+
+  const auto run = [&](bool interpreted, bool externally_seeded) {
+    Database db(2);
+    db.addRelation("unit_input", 1);
+    db.addRelation("unit_once", 1);
+    db.addRelation("unit_seeded", 1);
+    Relation* input = db.getRelation("unit_input");
+    Relation* once = db.getRelation("unit_once");
+    Relation* seeded = db.getRelation("unit_seeded");
+    for (Relation* relation : {input, once, seeded})
+      relation->addIndex<1>({0}, false);
+    insert_nominal(input, {s32_encode(10)});
+    insert_nominal(input, {s32_encode(20)});
+    db.externally_seeded = externally_seeded;
+
+    Stratum stratum(interpreted ? "interp-unit" : "native-unit");
+    for (u16 bucket = 0; bucket < bucket_count; ++bucket)
+    {
+      stratum.addTask(phase_write,
+        new WriteTask<1>(&db, once, {0}, false, bucket));
+      stratum.addTask(phase_write,
+        new WriteTask<1>(&db, seeded, {0}, false, bucket));
+      stratum.addTask(phase_intern,
+        new InternTask<1>(&db, once, {0}, bucket));
+      stratum.addTask(phase_intern,
+        new InternTask<1>(&db, seeded, {0}, bucket));
+    }
+
+    if (interpreted)
+    {
+      const SealedKernelPlan sealed = seal_kernel_plan(
+        parse_kernel_plan(plan_text), &db);
+      const auto rules = bind_kernel_plan(sealed, db);
+      rules[0]->attach(&db, &stratum, ReadSchedule::once);
+      rules[1]->attach(&db, &stratum, ReadSchedule::seeded);
+    }
+    else
+    {
+      stratum.addTask(phase_read, new NativeOnceTask(&db, once), true);
+      stratum.addTaskSeeded(
+        phase_read, new NativeSeededTask(&db, input, seeded));
+    }
+
+    Outcome outcome;
+    outcome.once_tasks = stratum.once[phase_read].size();
+    outcome.seeded_tasks = stratum.seeded[phase_read].size();
+    RunBudget budget;
+    budget.max_ms = 10000;
+    budget.mem_bytes = UINT64_MAX;
+    budget.stop_at_boundary = true;
+    RunStatus status = db.continueStratum(&stratum, budget, true, true);
+    while (!status.fixpoint)
+    {
+      if (status.where != RUN_AT_BOUNDARY)
+      {
+        outcome.boundary_only = false;
+        break;
+      }
+      outcome.deltas.push_back(
+        {nominal_delta_rows(once), nominal_delta_rows(seeded)});
+      status = db.continueStratum(&stratum, budget, false, true);
+    }
+    outcome.once_rows = nominal_index_rows(once, {0});
+    outcome.seeded_rows = nominal_index_rows(seeded, {0});
+    const std::string once_loc = interpreted
+      ? "<interp-rule:0:variant:0>" : "unit.slog:1";
+    const std::string seeded_loc = interpreted
+      ? "<interp-rule:1:variant:0>" : "unit.slog:2";
+    outcome.once_fires = db.fire_counts[{once_loc, "once"}];
+    outcome.seeded_fires = db.fire_counts[{seeded_loc, "seeded"}];
+    return outcome;
+  };
+
+  const Outcome interp_fresh = run(true, false);
+  const Outcome native_fresh = run(false, false);
+  CHECK(interp_fresh.boundary_only && native_fresh.boundary_only);
+  CHECK(interp_fresh.once_tasks == 1 && interp_fresh.seeded_tasks == 1);
+  CHECK(interp_fresh.deltas == native_fresh.deltas);
+  CHECK(interp_fresh.once_rows == native_fresh.once_rows);
+  CHECK(interp_fresh.seeded_rows == native_fresh.seeded_rows);
+  CHECK(interp_fresh.once_fires == native_fresh.once_fires);
+  CHECK(interp_fresh.seeded_fires == native_fresh.seeded_fires);
+  CHECK(interp_fresh.once_rows ==
+        (std::vector<std::vector<u64>>{{s32_encode(7)}}));
+  CHECK(interp_fresh.seeded_rows.empty());
+  CHECK(interp_fresh.once_fires == 1);
+  CHECK(interp_fresh.seeded_fires == 0);
+
+  const Outcome interp_seeded = run(true, true);
+  const Outcome native_seeded = run(false, true);
+  CHECK(interp_seeded.boundary_only && native_seeded.boundary_only);
+  CHECK(interp_seeded.deltas == native_seeded.deltas);
+  CHECK(interp_seeded.once_rows == native_seeded.once_rows);
+  CHECK(interp_seeded.seeded_rows == native_seeded.seeded_rows);
+  CHECK(interp_seeded.once_fires == native_seeded.once_fires);
+  CHECK(interp_seeded.seeded_fires == native_seeded.seeded_fires);
+  CHECK(interp_seeded.once_rows ==
+        (std::vector<std::vector<u64>>{{s32_encode(7)}}));
+  CHECK(interp_seeded.seeded_rows ==
+        (std::vector<std::vector<u64>>{{s32_encode(10)},
+                                       {s32_encode(20)}}));
+  CHECK(interp_seeded.once_fires == 1);
+  CHECK(interp_seeded.seeded_fires == 4);
+  return true;
+}
+
+// T2-B normal temp conformance. Temp sinks preserve every nominal-order row,
+// including duplicates, and a delta-driven follow-up consumes that staged
+// batch on the next scheduler iteration. The native and interpreted runs must
+// agree at every boundary, not only after the ordinary output set dedups it.
+bool test_normal_temp_staging_differential()
+{
+  class NativeProducer final : public Task
+  {
+    Database* db;
+    Relation* input;
+    Relation* temp;
+    u16 bucket;
+  public:
+    NativeProducer(Database* d, Relation* in, Relation* tmp, u16 b)
+      : db(d), input(in), temp(tmp), bucket(b) {}
+
+    bool work() override
+    {
+      InsertBatch* batch = new InsertBatch();
+      u64 fires = 0;
+      read_delta(input, bucket, db->getThreadCount(), [&](const u64* row) {
+        ++fires;
+        emit_temp<1>(temp, batch, {row[0]});
+        emit_temp<1>(temp, batch, {row[0]});
+      });
+      temp->sendBatch(batch);
+      if (fires) db->bumpFires("nt.slog:1", "delta:nt_input", fires);
+      return true;
+    }
+  };
+
+  class NativeFollowup final : public Task
+  {
+    Database* db;
+    Relation* temp;
+    Relation* output;
+    Index** output_index;
+    u16 bucket;
+  public:
+    NativeFollowup(Database* d, Relation* tmp, Relation* out, u16 b)
+      : db(d), temp(tmp), output(out),
+        output_index(out->getIndex({0}, false)), bucket(b) {}
+
+    bool work() override
+    {
+      InsertBatch* batch = new InsertBatch();
+      u64 fires = 0;
+      read_delta(temp, bucket, db->getThreadCount(), [&](const u64* row) {
+        ++fires;
+        emit<1>(output, output_index, batch, {row[0]}, {0});
+      });
+      output->sendBatch(batch);
+      if (fires) db->bumpFires("nt.slog:2", "delta:nt_tmp", fires);
+      return true;
+    }
+  };
+
+  using Rows = std::vector<std::vector<u64>>;
+  struct Outcome
+  {
+    bool boundary_only = true;
+    std::vector<std::pair<Rows, Rows>> deltas;
+    Rows output_rows;
+    u64 producer_fires = 0;
+    u64 followup_fires = 0;
+  };
+
+  const std::string plan_text =
+    "(kernel-plan (abi 1) (flavor normal) "
+    "(relations "
+      "(rel 0 (relation nt_input 1 (0))) "
+      "(rel 1 (temp nt_tmp 1)) "
+      "(rel 2 (relation nt_out 1 (0)))) "
+    "(attachments) (constants) (prims) (dynamic nt_tmp nt_out) "
+    "(rules "
+      "(rule-def (rid 0) (variant \"delta:nt_input\") (nregs 1) (pre) "
+        "(driver (scan (rel 0) (r 0))) (body) "
+        "(head (emit-temp (rel 1) (r 0)) "
+              "(emit-temp (rel 1) (r 0)))) "
+      "(rule-def (rid 1) (variant \"delta:nt_tmp\") (nregs 1) (pre) "
+        "(driver (scan (rel 1) (r 0))) (body) "
+        "(head (emit (rel 2) (0) (r 0))))) "
+    "(meta (rule-meta (rid 0) (source \"nt.slog:1\")) "
+          "(rule-meta (rid 1) (source \"nt.slog:2\"))))";
+  const DecodedKernelPlan decoded = parse_kernel_plan(plan_text);
+
+  const auto run = [&](bool interpreted) {
+    Database db(2);
+    db.addRelation("nt_input", 1);
+    db.addTempRelation("nt_tmp", 1);
+    db.addRelation("nt_out", 1);
+    Relation* input = db.getRelation("nt_input");
+    Relation* temp = db.getRelation("nt_tmp");
+    Relation* output = db.getRelation("nt_out");
+    input->addIndex<1>({0}, false);
+    output->addIndex<1>({0}, false);
+
+    InsertBatch* initial = new InsertBatch();
+    initial->data[initial->usage++] = s32_encode(10);
+    initial->data[initial->usage++] = s32_encode(20);
+    input->sendBatch(initial);
+
+    Stratum stratum(interpreted ? "interp-normal-temp"
+                                : "native-normal-temp");
+    for (u16 bucket = 0; bucket < bucket_count; ++bucket)
+    {
+      stratum.addTask(phase_write,
+        new WriteTask<1>(&db, input, {0}, false, bucket), true);
+      stratum.addTask(phase_write,
+        new WriteTask<1>(&db, output, {0}, false, bucket), true);
+      stratum.addTask(phase_intern,
+        new InternTask<1>(&db, input, {0}, bucket));
+      stratum.addTask(phase_intern,
+        new InternTask<1>(&db, output, {0}, bucket));
+    }
+
+    if (interpreted)
+    {
+      const SealedKernelPlan sealed = seal_kernel_plan(decoded, &db);
+      const auto rules = bind_kernel_plan(sealed, db);
+      rules[0]->attach(&db, &stratum, ReadSchedule::every);
+      rules[1]->attach(&db, &stratum, ReadSchedule::every);
+    }
+    else
+    {
+      for (u16 bucket = 0; bucket < bucket_count; ++bucket)
+      {
+        stratum.addTask(phase_read,
+          new NativeProducer(&db, input, temp, bucket), false);
+        stratum.addTask(phase_read,
+          new NativeFollowup(&db, temp, output, bucket), false);
+      }
+    }
+
+    Outcome outcome;
+    RunBudget budget;
+    budget.max_ms = 10000;
+    budget.mem_bytes = UINT64_MAX;
+    budget.stop_at_boundary = true;
+    RunStatus status = db.continueStratum(&stratum, budget, true, true);
+    while (!status.fixpoint)
+    {
+      if (status.where != RUN_AT_BOUNDARY)
+      {
+        outcome.boundary_only = false;
+        break;
+      }
+      outcome.deltas.push_back(
+        {nominal_delta_rows(temp), nominal_delta_rows(output)});
+      status = db.continueStratum(&stratum, budget, false, true);
+    }
+    outcome.output_rows = nominal_index_rows(output, {0});
+    const std::string producer_loc = interpreted
+      ? "<interp-rule:0:variant:0>" : "nt.slog:1";
+    const std::string followup_loc = interpreted
+      ? "<interp-rule:1:variant:0>" : "nt.slog:2";
+    outcome.producer_fires =
+      db.fire_counts[{producer_loc, "delta:nt_input"}];
+    outcome.followup_fires =
+      db.fire_counts[{followup_loc, "delta:nt_tmp"}];
+    return outcome;
+  };
+
+  const Outcome interp = run(true);
+  const Outcome native = run(false);
+  CHECK(interp.boundary_only && native.boundary_only);
+  CHECK(interp.deltas == native.deltas);
+  CHECK(interp.output_rows == native.output_rows);
+  CHECK(interp.producer_fires == native.producer_fires
+        && interp.producer_fires == 2);
+  CHECK(interp.followup_fires == native.followup_fires
+        && interp.followup_fires == 4);
+  const Rows wanted_temp{{s32_encode(10)}, {s32_encode(10)},
+                         {s32_encode(20)}, {s32_encode(20)}};
+  size_t temp_waves = 0;
+  for (const auto& [temp_delta, _] : interp.deltas)
+    if (temp_delta == wanted_temp) ++temp_waves;
+  CHECK(temp_waves == 1);
+  CHECK(interp.output_rows ==
+        (Rows{{s32_encode(10)}, {s32_encode(20)}}));
+
+  // The binding schema distinguishes a compiler temp from an ordinary set
+  // even though both use RelationK::plain in the canonical plan.
+  Database mismatched(1);
+  mismatched.addRelation("nt_input", 1);
+  mismatched.addRelation("nt_tmp", 1);
+  mismatched.addRelation("nt_out", 1);
+  mismatched.getRelation("nt_input")->addIndex<1>({0}, false);
+  mismatched.getRelation("nt_out")->addIndex<1>({0}, false);
+  bool typed_refusal = false;
+  try
+  {
+    (void)bind_kernel_plan(seal_kernel_plan(decoded), mismatched);
+  }
+  catch (const SealError& error)
+  {
+    typed_refusal = error.kind() == SealErrorK::binding;
+  }
+  CHECK(typed_refusal);
+  return true;
+}
+
+// T2-B normal struct conformance. The ordinary mode exercises zero-id staging
+// plus InternStructTask assignment; the seeded mode exercises the native
+// master probe that suppresses replayed live content. In both modes a staged
+// struct-delta rule must observe the assigned id, exactly once.
+bool test_normal_struct_staging_differential()
+{
+  class NativeConstruct final : public Task
+  {
+    Database* db;
+    Relation* input;
+    Relation* structure;
+    Index** input_index;
+    Index** master;
+    u16 bucket;
+    bool seeded;
+  public:
+    NativeConstruct(Database* d, Relation* in, Relation* s, u16 b,
+                    bool replay)
+      : db(d), input(in), structure(s),
+        input_index(in->getIndex({0}, false)),
+        master(s->getIndex({1, 0}, false)), bucket(b), seeded(replay) {}
+
+    bool work() override
+    {
+      InsertBatch* batch = new InsertBatch();
+      u64 fires = 0;
+      const auto one = [&](u64 content) {
+        ++fires;
+        if (seeded)
+          emit_struct_checked<2>(structure, master, batch,
+                                 {content}, {1, 0});
+        else
+          emit_struct<2>(structure, batch, {content}, {1, 0});
+      };
+      if (seeded)
+        join_all<1>(input_index,
+          [&](const std::array<u64, 1>& row) { one(row[0]); });
+      else
+        read_delta(input, bucket, db->getThreadCount(),
+                   [&](const u64* row) { one(row[0]); });
+      structure->sendBatch(batch);
+      if (fires)
+        db->bumpFires("ns.slog:1",
+                      seeded ? "seeded" : "delta:ns_input", fires);
+      return true;
+    }
+  };
+
+  class NativeStructFollowup final : public Task
+  {
+    Database* db;
+    Relation* structure;
+    Relation* output;
+    Index** output_index;
+    u16 bucket;
+  public:
+    NativeStructFollowup(Database* d, Relation* s, Relation* out, u16 b)
+      : db(d), structure(s), output(out),
+        output_index(out->getIndex({0, 1}, false)), bucket(b) {}
+
+    bool work() override
+    {
+      InsertBatch* batch = new InsertBatch();
+      u64 fires = 0;
+      read_delta(structure, bucket, db->getThreadCount(),
+                 [&](const u64* row) {
+        ++fires;
+        emit<2>(output, output_index, batch,
+                {row[0], row[1]}, {0, 1});
+      });
+      output->sendBatch(batch);
+      if (fires)
+        db->bumpFires("ns.slog:2", "delta:ns_struct", fires);
+      return true;
+    }
+  };
+
+  using Rows = std::vector<std::vector<u64>>;
+  struct Outcome
+  {
+    bool boundary_only = true;
+    std::vector<std::pair<Rows, Rows>> deltas;
+    Rows struct_rows;
+    Rows output_rows;
+    u64 construct_fires = 0;
+    u64 followup_fires = 0;
+  };
+
+  const std::string delta_plan =
+    "(kernel-plan (abi 1) (flavor normal) "
+    "(relations "
+      "(rel 0 (relation ns_input 1 (0))) "
+      "(rel 1 (struct ns_struct 2 (1 0) (0 1))) "
+      "(rel 2 (relation ns_out 2 (0 1)))) "
+    "(attachments) (constants) (prims) (dynamic ns_struct ns_out) "
+    "(rules "
+      "(rule-def (rid 0) (variant \"delta:ns_input\") (nregs 2) (pre) "
+        "(driver (scan (rel 0) (r 0))) (body) "
+        "(head (mkstruct (rel 1) (1 0) (r 1) (r 0)))) "
+      "(rule-def (rid 1) (variant \"delta:ns_struct\") (nregs 2) (pre) "
+        "(driver (scan (rel 1) (r 0) (r 1))) (body) "
+        "(head (emit (rel 2) (0 1) (r 0) (r 1))))) "
+    "(meta (rule-meta (rid 0) (source \"ns.slog:1\")) "
+          "(rule-meta (rid 1) (source \"ns.slog:2\"))))";
+  const std::string seeded_plan = replace_once(
+    replace_once(delta_plan,
+      "(variant \"delta:ns_input\")", "(variant \"seeded\")"),
+    "(driver (scan (rel 0) (r 0))) (body)",
+    "(driver (seeded)) (body (join (rel 0) (0) 0 (r 0)))");
+
+  const auto run = [&](bool interpreted, bool seeded) {
+    const DecodedKernelPlan decoded =
+      parse_kernel_plan(seeded ? seeded_plan : delta_plan);
+    Database db(2);
+    db.addRelation("ns_input", 1);
+    db.addStruct("ns_struct", 2);
+    db.addRelation("ns_out", 2);
+    Relation* input = db.getRelation("ns_input");
+    Relation* structure = db.getRelation("ns_struct");
+    Relation* output = db.getRelation("ns_out");
+    input->addIndex<1>({0}, false);
+    structure->addIndex<2>({1, 0}, false);
+    structure->addIndex<2>({0, 1}, false);
+    output->addIndex<2>({0, 1}, false);
+
+    if (seeded)
+    {
+      insert_nominal(input, {s32_encode(5)});
+      insert_nominal(input, {s32_encode(7)});
+      db.externally_seeded = true;
+    }
+    else
+    {
+      InsertBatch* initial = new InsertBatch();
+      initial->data[initial->usage++] = s32_encode(5);
+      initial->data[initial->usage++] = s32_encode(7);
+      input->sendBatch(initial);
+    }
+
+    Stratum stratum(interpreted ? "interp-normal-struct"
+                                : "native-normal-struct");
+    for (u16 bucket = 0; bucket < bucket_count; ++bucket)
+    {
+      stratum.addTask(phase_write,
+        new WriteTask<1>(&db, input, {0}, false, bucket), true);
+      stratum.addTask(phase_write,
+        new WriteTask<2>(&db, structure, {1, 0}, false, bucket), true);
+      stratum.addTask(phase_write,
+        new WriteTask<2>(&db, structure, {0, 1}, false, bucket), false);
+      stratum.addTask(phase_write,
+        new WriteTask<2>(&db, output, {0, 1}, false, bucket), true);
+      stratum.addTask(phase_intern,
+        new InternTask<1>(&db, input, {0}, bucket));
+      stratum.addTask(phase_intern,
+        new InternStructTask<2>(&db, structure, {1, 0}, bucket));
+      stratum.addTask(phase_intern,
+        new InternTask<2>(&db, output, {0, 1}, bucket));
+    }
+
+    if (interpreted)
+    {
+      const SealedKernelPlan sealed = seal_kernel_plan(decoded, &db);
+      const auto rules = bind_kernel_plan(sealed, db);
+      rules[0]->attach(&db, &stratum,
+        seeded ? ReadSchedule::seeded : ReadSchedule::every);
+      rules[1]->attach(&db, &stratum, ReadSchedule::every);
+    }
+    else
+    {
+      if (seeded)
+        stratum.addTaskSeeded(phase_read,
+          new NativeConstruct(&db, input, structure, 0, true));
+      else
+        for (u16 bucket = 0; bucket < bucket_count; ++bucket)
+          stratum.addTask(phase_read,
+            new NativeConstruct(&db, input, structure, bucket, false), false);
+      for (u16 bucket = 0; bucket < bucket_count; ++bucket)
+        stratum.addTask(phase_read,
+          new NativeStructFollowup(&db, structure, output, bucket), false);
+    }
+
+    Outcome outcome;
+    RunBudget budget;
+    budget.max_ms = 10000;
+    budget.mem_bytes = UINT64_MAX;
+    budget.stop_at_boundary = true;
+    RunStatus status = db.continueStratum(&stratum, budget, true, true);
+    while (!status.fixpoint)
+    {
+      if (status.where != RUN_AT_BOUNDARY)
+      {
+        outcome.boundary_only = false;
+        break;
+      }
+      outcome.deltas.push_back(
+        {nominal_delta_rows(structure), nominal_delta_rows(output)});
+      status = db.continueStratum(&stratum, budget, false, true);
+    }
+    outcome.struct_rows = nominal_index_rows(structure, {1, 0});
+    outcome.output_rows = nominal_index_rows(output, {0, 1});
+    const std::string construct_loc = interpreted
+      ? "<interp-rule:0:variant:0>" : "ns.slog:1";
+    const std::string followup_loc = interpreted
+      ? "<interp-rule:1:variant:0>" : "ns.slog:2";
+    outcome.construct_fires = db.fire_counts[
+      {construct_loc, seeded ? "seeded" : "delta:ns_input"}];
+    outcome.followup_fires =
+      db.fire_counts[{followup_loc, "delta:ns_struct"}];
+    return outcome;
+  };
+
+  for (bool seeded : {false, true})
+  {
+    const Outcome interp = run(true, seeded);
+    const Outcome native = run(false, seeded);
+    CHECK(interp.boundary_only && native.boundary_only);
+    CHECK(interp.deltas == native.deltas);
+    CHECK(interp.struct_rows == native.struct_rows);
+    CHECK(interp.output_rows == native.output_rows);
+    CHECK(interp.construct_fires == native.construct_fires);
+    CHECK(interp.followup_fires == native.followup_fires
+          && interp.followup_fires == 2);
+    CHECK(interp.construct_fires == (seeded ? 6 : 2));
+    CHECK(interp.struct_rows.size() == 2);
+    CHECK(interp.output_rows == interp.struct_rows);
+    CHECK(interp.struct_rows[0][0] != 0 && interp.struct_rows[1][0] != 0);
+    CHECK((Rows{{interp.struct_rows[0][1]}, {interp.struct_rows[1][1]}} ==
+           Rows{{s32_encode(5)}, {s32_encode(7)}}));
+    size_t struct_waves = 0;
+    size_t output_waves = 0;
+    for (const auto& [struct_delta, output_delta] : interp.deltas)
+    {
+      if (!struct_delta.empty()) ++struct_waves;
+      if (!output_delta.empty()) ++output_waves;
+    }
+    CHECK(struct_waves == 1 && output_waves == 1);
+  }
+  return true;
+}
+
+// T2-B normal lattice conformance. Contributions stage in nominal order,
+// LatticeInternTask performs the sole merge/subsumption step, and a normal
+// lattice-delta consumer observes only the value-carrying ascent rows.
+bool test_normal_lattice_staging_differential()
+{
+  class NativeContribute final : public Task
+  {
+    Database* db;
+    Relation* input;
+    Relation* lattice;
+    u16 bucket;
+  public:
+    NativeContribute(Database* d, Relation* in, Relation* lat, u16 b)
+      : db(d), input(in), lattice(lat), bucket(b) {}
+
+    bool work() override
+    {
+      InsertBatch* batch = new InsertBatch();
+      u64 fires = 0;
+      read_delta(input, bucket, db->getThreadCount(), [&](const u64* row) {
+        ++fires;
+        emit_temp<2>(lattice, batch, {row[0], row[1]});
+      });
+      lattice->sendBatch(batch);
+      if (fires) db->bumpFires("nl.slog:1", "all:nl_input", fires);
+      return true;
+    }
+  };
+
+  class NativeLatticeFollowup final : public Task
+  {
+    Database* db;
+    Relation* lattice;
+    Relation* output;
+    Index** output_index;
+    u16 bucket;
+  public:
+    NativeLatticeFollowup(Database* d, Relation* lat, Relation* out, u16 b)
+      : db(d), lattice(lat), output(out),
+        output_index(out->getIndex({0, 1}, false)), bucket(b) {}
+
+    bool work() override
+    {
+      InsertBatch* batch = new InsertBatch();
+      u64 fires = 0;
+      read_delta(lattice, bucket, db->getThreadCount(), [&](const u64* row) {
+        ++fires;
+        emit<2>(output, output_index, batch,
+                {row[0], row[1]}, {0, 1});
+      });
+      output->sendBatch(batch);
+      if (fires) db->bumpFires("nl.slog:2", "delta:nl_lat", fires);
+      return true;
+    }
+  };
+
+  using Rows = std::vector<std::vector<u64>>;
+  struct Outcome
+  {
+    bool boundary_only = true;
+    std::vector<std::pair<Rows, Rows>> deltas;
+    Rows lattice_rows;
+    Rows output_rows;
+    u64 contribute_fires = 0;
+    u64 followup_fires = 0;
+  };
+
+  const std::string plan_text =
+    "(kernel-plan (abi 1) (flavor normal) "
+    "(relations "
+      "(rel 0 (relation nl_input 2 (0 1))) "
+      "(rel 1 (lattice nl_lat 2 (max int) #f (0 1) (delta 0 1))) "
+      "(rel 2 (relation nl_out 2 (0 1)))) "
+    "(attachments) (constants) (prims) (dynamic nl_lat nl_out) "
+    "(rules "
+      "(rule-def (rid 0) (variant \"all:nl_input\") (nregs 2) (pre) "
+        "(driver (scan (rel 0) (r 0) (r 1))) (body) "
+        "(head (emit-lat (rel 1) (r 0) (r 1)))) "
+      "(rule-def (rid 1) (variant \"delta:nl_lat\") (nregs 2) (pre) "
+        "(driver (scan (rel 1) (r 0) (r 1))) (body) "
+        "(head (emit (rel 2) (0 1) (r 0) (r 1))))) "
+    "(meta (rule-meta (rid 0) (source \"nl.slog:1\")) "
+          "(rule-meta (rid 1) (source \"nl.slog:2\"))))";
+  const DecodedKernelPlan decoded = parse_kernel_plan(plan_text);
+
+  const auto run = [&](bool interpreted) {
+    Database db(1);
+    db.addRelation("nl_input", 2);
+    db.addRelation("nl_lat", 2);
+    db.addRelation("nl_out", 2);
+    Relation* input = db.getRelation("nl_input");
+    Relation* lattice = db.getRelation("nl_lat");
+    Relation* output = db.getRelation("nl_out");
+    input->addIndex<2>({0, 1}, false);
+    lattice->setLattice(LAT_MAX, false, 0, false, 0, "max-int");
+    lattice->addMapIndex<2>({0, 1});
+    lattice->addIndex<2>({0, 1}, true);
+    output->addIndex<2>({0, 1}, false);
+
+    InsertBatch* initial = new InsertBatch();
+    for (const std::array<u64, 2>& row :
+         {std::array<u64, 2>{1, s32_encode(10)},
+          {1, s32_encode(20)}, {1, s32_encode(15)}})
+    {
+      initial->data[initial->usage++] = row[0];
+      initial->data[initial->usage++] = row[1];
+    }
+    input->sendBatch(initial);
+
+    Stratum stratum(interpreted ? "interp-normal-lattice"
+                                : "native-normal-lattice");
+    for (u16 bucket = 0; bucket < bucket_count; ++bucket)
+    {
+      stratum.addTask(phase_write,
+        new WriteTask<2>(&db, input, {0, 1}, false, bucket), true);
+      stratum.addTask(phase_write,
+        new MapWriteTask<2>(&db, lattice, {0, 1}, bucket), true);
+      stratum.addTask(phase_write,
+        new WriteTask<2>(&db, lattice, {0, 1}, true, bucket), false);
+      stratum.addTask(phase_write,
+        new WriteTask<2>(&db, output, {0, 1}, false, bucket), true);
+      stratum.addTask(phase_intern,
+        new InternTask<2>(&db, input, {0, 1}, bucket));
+      stratum.addTask(phase_intern,
+        new LatticeInternTask<2>(&db, lattice, {0, 1}, bucket));
+      stratum.addTask(phase_intern,
+        new InternTask<2>(&db, output, {0, 1}, bucket));
+    }
+
+    if (interpreted)
+    {
+      const SealedKernelPlan sealed = seal_kernel_plan(decoded, &db);
+      const auto rules = bind_kernel_plan(sealed, db);
+      rules[0]->attach(&db, &stratum, ReadSchedule::once);
+      rules[1]->attach(&db, &stratum, ReadSchedule::every);
+    }
+    else
+    {
+      for (u16 bucket = 0; bucket < bucket_count; ++bucket)
+      {
+        stratum.addTask(phase_read,
+          new NativeContribute(&db, input, lattice, bucket), true);
+        stratum.addTask(phase_read,
+          new NativeLatticeFollowup(&db, lattice, output, bucket), false);
+      }
+    }
+
+    Outcome outcome;
+    RunBudget budget;
+    budget.max_ms = 10000;
+    budget.mem_bytes = UINT64_MAX;
+    budget.stop_at_boundary = true;
+    RunStatus status = db.continueStratum(&stratum, budget, true, true);
+    while (!status.fixpoint)
+    {
+      if (status.where != RUN_AT_BOUNDARY)
+      {
+        outcome.boundary_only = false;
+        break;
+      }
+      outcome.deltas.push_back(
+        {nominal_delta_rows(lattice), nominal_delta_rows(output)});
+      status = db.continueStratum(&stratum, budget, false, true);
+    }
+    outcome.lattice_rows = nominal_index_rows(lattice, {0, 1});
+    outcome.output_rows = nominal_index_rows(output, {0, 1});
+    const std::string contribute_loc = interpreted
+      ? "<interp-rule:0:variant:0>" : "nl.slog:1";
+    const std::string followup_loc = interpreted
+      ? "<interp-rule:1:variant:0>" : "nl.slog:2";
+    outcome.contribute_fires =
+      db.fire_counts[{contribute_loc, "all:nl_input"}];
+    outcome.followup_fires =
+      db.fire_counts[{followup_loc, "delta:nl_lat"}];
+    return outcome;
+  };
+
+  const Outcome interp = run(true);
+  const Outcome native = run(false);
+  CHECK(interp.boundary_only && native.boundary_only);
+  CHECK(interp.deltas == native.deltas);
+  CHECK(interp.lattice_rows == native.lattice_rows);
+  CHECK(interp.output_rows == native.output_rows);
+  CHECK(interp.contribute_fires == native.contribute_fires
+        && interp.contribute_fires == 3);
+  CHECK(interp.followup_fires == native.followup_fires
+        && interp.followup_fires == 2);
+  CHECK(interp.lattice_rows == (Rows{{1, s32_encode(20)}}));
+  CHECK(interp.output_rows ==
+        (Rows{{1, s32_encode(10)}, {1, s32_encode(20)}}));
+  return true;
+}
+
 // ===========================================================================
 // Counted differential harness (counted-interp-contract.md slice 1).
 //
@@ -2779,7 +3724,8 @@ static void attach_counted_rules(Database& db, Stratum& stratum,
     if (driver.kind == DriverK::scan_delta)
       fire_once =
         dynamic.count(sealed.bindings[driver.relation].name) == 0;
-    rule->attach(&db, &stratum, fire_once);
+    rule->attach(&db, &stratum,
+                 fire_once ? ReadSchedule::once : ReadSchedule::every);
   }
 }
 
@@ -4000,8 +4946,8 @@ bool test_m4n_absent_pre_and_view_kind()
 }
 
 // Typed refusals for the counted vocabulary: the plan-attribute seal CHECK
-// (no semijoin exists in counted plans), counted-only head forms in normal
-// plans, struct probes in normal plans, and malformed fold kinds.
+// (no semijoin exists in counted plans), flavored-only head forms and struct
+// probes in normal plans, maintenance unit drivers, and malformed fold kinds.
 bool test_counted_plan_refusals()
 {
   const auto seal_rejects = [](SealErrorK kind, const std::string& text) {
@@ -4046,28 +4992,37 @@ bool test_counted_plan_refusals()
         replace_once(counted_base, "seeded/nonrec", "seeded")));
   CHECK(seal_rejects(SealErrorK::variant_identity,
         replace_once(counted_base, "seeded/nonrec", "seeded/banana")));
-  // Counted-only forms refuse in normal plans: once/seeded drivers,
-  // temp/lattice/mkstruct heads, struct probes.
+  // Normal once/seeded unit drivers, temp/lattice heads, mkstruct, and struct
+  // body probes now seal; maintenance unit drivers remain delta-driven.
   const std::string normal_base = replace_once(
     replace_once(counted_base, "(flavor count)", "(flavor normal)"),
     "seeded/nonrec", "seeded");
-  CHECK(seal_rejects(SealErrorK::capability, normal_base));
+  CHECK(!seal_rejects(SealErrorK::capability, normal_base));
+  const std::string maintenance_unit = replace_once(
+    replace_once(normal_base, "(flavor normal)", "(flavor maint1)"),
+    "(variant \"seeded\")", "(variant \"seeded/nonrec\")");
+  CHECK(seal_rejects(SealErrorK::capability, maintenance_unit));
   const std::string normal_scan = replace_once(normal_base,
     "(driver (seeded))", "(driver (scan (rel 0) (r 0) (r 1)))");
-  CHECK(seal_rejects(SealErrorK::capability,
+  CHECK(!seal_rejects(SealErrorK::capability,
         replace_once(
+          replace_once(
           replace_once(normal_scan, "(body (join (rel 0) (0 1) 0 (r 0) (r 1)))",
                        "(body)"),
+          "(rel 1 (relation cr_b 2 (0 1)))",
+          "(rel 1 (temp cr_b 2))"),
           "(head (emit (rel 1) (0 1) (r 0) (r 1)))",
           "(head (emit-temp (rel 1) (r 0) (r 1)))")));
-  CHECK(seal_rejects(SealErrorK::capability,
+  CHECK(!seal_rejects(SealErrorK::capability,
         replace_once(
-          replace_once(normal_scan, "(body (join (rel 0) (0 1) 0 (r 0) (r 1)))",
-                       "(body)"),
+          replace_once(
+            replace_once(normal_scan,
+              "(body (join (rel 0) (0 1) 0 (r 0) (r 1)))", "(body)"),
+            "(nregs 2)", "(nregs 3)"),
           "(head (emit (rel 1) (0 1) (r 0) (r 1)))",
           "(head (emit (rel 1) (0 1) (r 0) (r 1)) "
                 "(mkstruct (rel 2) (1 0) (r 2) (r 0)))")));
-  CHECK(seal_rejects(SealErrorK::relation_kind,
+  CHECK(!seal_rejects(SealErrorK::relation_kind,
         replace_once(
           replace_once(normal_scan, "(body (join (rel 0) (0 1) 0 (r 0) (r 1)))",
                        "(body (join (rel 2) (1 0) 1 (r 0) (r 2)))"),
@@ -4192,18 +5147,23 @@ bool test_seal_bind_scan_multihead_and_real_emit()
 
 bool test_seal_bind_probe_driver_and_task_partition()
 {
-  const std::vector<RelationShape> shapes{
+  std::vector<RelationShape> shapes{
     {2, {{0, 1}}}, {2, {{0, 1}}}
   };
+  shapes[0].delta_orders.push_back({0, 1});
+  CHECK(shapes[0].delta_orders ==
+        (std::vector<std::vector<u16>>{{0, 1}}));
   auto source = make_relation("source", 2, shapes[0].full_orders);
   auto output = make_relation("selected", 2, shapes[1].full_orders);
   insert_nominal(source.get(), {7, 11});
   insert_nominal(source.get(), {7, 12});
   insert_nominal(source.get(), {8, 99});
+  add_delta_index_rows2(source.get(), {0, 1},
+                        {{7, 11}, {7, 12}, {8, 99}});
 
   RulePlan plan{
     42, 2, "probe-bound", 3, {{0, 7}, {2, 11}},
-    {DriverK::probe_full, 0, {0, 1}, 1, {0, 1}},
+    {DriverK::probe_delta, 0, {0, 1}, 1, {0, 1}},
     {NeqPlan{1, 2}},
     {EmitPlan{1, {0, 1}, {0, 1}}}
   };
@@ -4232,7 +5192,7 @@ bool test_seal_bind_probe_driver_and_task_partition()
   auto exact_out = make_relation("exact", 2, shapes[1].full_orders);
   RulePlan exact{
     43, 3, "probe-exact", 2, {{0, 7}, {1, 12}},
-    {DriverK::probe_full, 0, {0, 1}, 2, {0, 1}},
+    {DriverK::probe_delta, 0, {0, 1}, 2, {0, 1}},
     {ProbePlan{0, {0, 1}, 2, {0, 1}}},
     {EmitPlan{1, {0, 1}, {0, 1}}}
   };
@@ -4418,7 +5378,7 @@ bool test_seal_and_binding_rejections()
 
   RulePlan bad_driver{
     45, 5, "bad-driver", 2, {},
-    {DriverK::probe_full, 0, {0, 1}, 1, {0, 1}}, {},
+    {DriverK::probe_delta, 0, {0, 1}, 1, {0, 1}}, {},
     {EmitPlan{1, {0, 1}, {0, 1}}}
   };
   CHECK(rejects([&] { (void)seal_rule(bad_driver, shapes); }));
@@ -4530,6 +5490,141 @@ bool test_seal_and_binding_rejections()
     BoundRule bound(sealed, {r0.get(), wrong.get()});
     (void)bound;
   }));
+  return true;
+}
+
+bool test_explicit_entry_modes_and_refusals()
+{
+  // The command installer pins entry/flavor combinations before any runtime
+  // transition.  In particular, a resident count round is neither a fresh
+  // restart nor a tier-swap target.  Successful command install only pushes;
+  // the client must issue its own subsequent (continue).
+  SealedKernelPlan normal_plan;
+  normal_plan.abi = 1;
+  normal_plan.flavor = "normal";
+  std::vector<std::string> command_replies;
+  Daemon command_install(1, [&](const std::string& msg) {
+    command_replies.push_back(msg);
+  });
+  CHECK(install_command_stratum(&command_install, "command-normal",
+                                EntryMode::fresh(), normal_plan));
+  CHECK(command_replies.empty());
+  CHECK(command_install.db()->currentPosition() == 1);
+
+  SealedKernelPlan count_plan;
+  count_plan.abi = 1;
+  count_plan.flavor = "count";
+  auto command_capability_refuses = [&](const EntryMode& entry,
+                                        const SealedKernelPlan& plan) {
+    try
+    {
+      (void)install_command_stratum(&command_install, "bad-command-entry",
+                                    entry, plan);
+    }
+    catch (const SealError& error)
+    {
+      return error.kind() == SealErrorK::capability;
+    }
+    return false;
+  };
+  CHECK(command_capability_refuses(EntryMode::fresh(), count_plan));
+  CHECK(command_capability_refuses(EntryMode::upgrade(), count_plan));
+  CHECK(command_capability_refuses(EntryMode::residentCount(0), normal_plan));
+  SealedKernelPlan bad_oracle = normal_plan;
+  bad_oracle.attachments.push_back(
+    {AttachmentK::oracle, "not-registered", "demand", "answer", {}});
+  CHECK(command_capability_refuses(EntryMode::fresh(), bad_oracle));
+  CHECK(command_install.db()->currentPosition() == 1);
+
+  std::vector<std::string> replies;
+  Daemon plain(1, [&](const std::string& msg) { replies.push_back(msg); });
+
+  // Admission is generation-checked before entry can mutate bind/reload state.
+  CHECK(plain.installStratum("stale", EntryMode::fresh(),
+                             plain.commandGeneration() + 1) == nullptr);
+  CHECK(replies.back() ==
+        "(refused stale-generation 0 (verb stratum-begin) (expected 1))");
+
+  // Entry attributes are structural: resident-count alone accepts and
+  // requires an in-range historical pipeline position.
+  CHECK(plain.installStratum(
+          "missing-at", {EntryModeK::resident_count, -1}) == nullptr);
+  CHECK(replies.back().find("(refused entry-mode 0 (entry resident-count)") == 0);
+  CHECK(plain.installStratum(
+          "spurious-at", {EntryModeK::fresh, 0}) == nullptr);
+  CHECK(replies.back().find("(refused entry-mode 0 (entry fresh)") == 0);
+  CHECK(plain.installStratum("future", EntryMode::residentCount(1)) == nullptr);
+  CHECK(replies.back().find("(refused entry-mode 0 (entry resident-count)") == 0);
+
+  Stratum* counted = plain.installStratum(
+    "counted", EntryMode::residentCount(0), plain.commandGeneration());
+  CHECK(counted != nullptr);
+  CHECK(plain.db()->bindPosition() == 0);
+  delete counted;
+  plain.db()->setBindPosition(-1);
+
+  Stratum* fresh = plain.installStratum("fresh", EntryMode::fresh());
+  CHECK(fresh != nullptr);
+  delete fresh;
+  Stratum* delta = plain.installStratum(
+    "delta", EntryMode::residentDelta());
+  CHECK(delta != nullptr);
+  delete delta;
+  CHECK(plain.installStratum("not-running", EntryMode::upgrade()) == nullptr);
+  CHECK(replies.back().find("(refused entry-mode 0 (entry upgrade)") == 0);
+
+  // Build a real clean-boundary suspension. An explicit upgrade must name
+  // exactly that live stratum and returns the same object without reload.
+  std::vector<std::string> boundary_replies;
+  Daemon boundary(1, [&](const std::string& msg) {
+    boundary_replies.push_back(msg);
+  });
+  Stratum* live = boundary.installStratum(
+    "entry-boundary", EntryMode::fresh(), boundary.commandGeneration());
+  CHECK(live != nullptr);
+  boundary.db()->addRelation("entry-mode-out", 1);
+  Relation* output = boundary.db()->getRelation("entry-mode-out");
+  add_flavored_index(1, output, {0}, false, false);
+  live->addTask(phase_read,
+                new EntryEmitTask(boundary.db(), output), true);
+  boundary.push(live);
+  RunBudget boundary_budget;
+  boundary_budget.max_ms = UINT64_MAX;
+  boundary_budget.mem_bytes = UINT64_MAX;
+  boundary_budget.stop_at_boundary = true;
+  boundary.continueRun(boundary_budget);
+  CHECK(boundary.db()->isSuspended());
+  CHECK(boundary.db()->suspendPosition() == RUN_AT_BOUNDARY);
+
+  CHECK(boundary.installStratum("other", EntryMode::upgrade()) == nullptr);
+  CHECK(boundary_replies.back().find(
+          "(refused entry-mode 0 (entry upgrade)") == 0);
+  CHECK(boundary.beginStratumDelta("legacy-resident") == nullptr);
+  CHECK(boundary_replies.back() ==
+        "(error suspended \"beginStratumDelta is refused while a stratum "
+        "is suspended; continue to fixpoint first\")");
+  CHECK(boundary.installStratum("entry-boundary", EntryMode::upgrade()) == live);
+
+  // A mid-read park owns continuations into the old attachment and is never
+  // swappable, even when the requested name matches.
+  std::vector<std::string> read_replies;
+  Daemon midread(1, [&](const std::string& msg) {
+    read_replies.push_back(msg);
+  });
+  Stratum* reading = midread.installStratum("entry-read", EntryMode::fresh());
+  CHECK(reading != nullptr);
+  reading->addTask(phase_read, new EntrySleepTask(), true);
+  reading->addTask(phase_read, new EntryNoopTask(), true);
+  midread.push(reading);
+  RunBudget short_budget;
+  short_budget.max_ms = 1;
+  short_budget.slice_ms = 1;
+  short_budget.mem_bytes = UINT64_MAX;
+  midread.continueRun(short_budget);
+  CHECK(midread.db()->isSuspended());
+  CHECK(midread.db()->suspendPosition() == RUN_MID_READ);
+  CHECK(midread.installStratum("entry-read", EntryMode::upgrade()) == nullptr);
+  CHECK(read_replies.back().find("(refused suspended 0 (entry upgrade)") == 0);
   return true;
 }
 
@@ -4688,9 +5783,14 @@ int main(int argc, char** argv)
   ok &= test_shared_sexp_reader_contract();
   ok &= test_parsed_view_and_filter_forms();
   ok &= test_parsed_primitives_letp_tycheck_native_differential();
+  ok &= test_parsed_cjoin_and_struct_filter_native_differential();
   ok &= test_parsed_sidecar_scheduler_admission();
   ok &= test_parsed_sidecar_refusal_classes();
   ok &= test_real_interp_read_task_recursive_admission();
+  ok &= test_normal_once_seeded_scheduler_differential();
+  ok &= test_normal_temp_staging_differential();
+  ok &= test_normal_struct_staging_differential();
+  ok &= test_normal_lattice_staging_differential();
   ok &= test_counted_recursive_seeded_differential();
   ok &= test_counted_temp_struct_chain_differential();
   ok &= test_counted_chained_mkstruct_and_closure_fatal();
@@ -4704,6 +5804,7 @@ int main(int argc, char** argv)
   ok &= test_seal_bind_probe_driver_and_task_partition();
   ok &= test_bound_nested_ternary_probes_debug_and_sink_order();
   ok &= test_seal_and_binding_rejections();
+  ok &= test_explicit_entry_modes_and_refusals();
   if (!ok) return 1;
   std::cout << "interpreter debug/operator tests passed\n";
   if (argc == 2 && std::string(argv[1]) == "--bench") benchmark_debug_masks();

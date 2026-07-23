@@ -20,6 +20,7 @@ namespace slog
 {
 
 class Daemon;
+struct EntryMode;
 
 namespace interp
 {
@@ -39,6 +40,21 @@ void install_count_stratum(Daemon* daemon, const std::string& name,
 void install_maint_stratum(Daemon* daemon, const std::string& name,
                            const SealedKernelPlan& plan);
 
+// Install one normal or delta-entry plan with declaration-built indices and
+// write/intern/lattice tasks, then attach its interpreted read rules.
+void install_normal_stratum(Daemon* daemon, const std::string& name,
+                            const SealedKernelPlan& plan);
+
+// T0(b) command-builder installation.  The caller has already generation-
+// gated `stratum-seal`; this path validates the explicit entry/flavor pair,
+// installs through Daemon::installStratum, pushes the stratum, and deliberately
+// does NOT continue it.  A false return means the entry state machine emitted
+// the one typed refusal; structural/install failures remain SealError so the
+// command dispatcher can preserve the D16 refusal class.
+bool install_command_stratum(Daemon* daemon, const std::string& name,
+                             const EntryMode& entry,
+                             const SealedKernelPlan& plan);
+
 // When `path` is a flavored plugin whose flavor the interpreter admits,
 // parse/seal/install its sidecar plan through the production reader and
 // return true (the caller skips dlopen); under SLOG_FLAVORED_NATIVE it
@@ -47,20 +63,35 @@ void install_maint_stratum(Daemon* daemon, const std::string& name,
 // dual-executor comparison.
 bool maybe_interp_count_plugin(Daemon* daemon, const std::string& path);
 
+// A compiler-driven normal/delta interpreter artifact is the `.plan` itself;
+// intercept it before run_plugin's regular-file/dlopen path.
+bool maybe_interp_plan_plugin(Daemon* daemon, const std::string& path);
+
 // Registration ladders (plan-flavored-tasks.cpp, built -O0): the per-arity
 // index/task boilerplate the native flavored plugins carry, driven from a
 // sealed plan's structural facts.
 void add_flavored_index(u16 arity, Relation* relation,
-                        const std::vector<u16>& order, bool map, bool delta);
+                        const std::vector<u16>& order, bool map, bool delta,
+                        bool seeded_only = false);
 void add_flavored_count_task(u16 arity, Database* db, Stratum* stratum,
                              Relation* relation, bool is_struct);
 void add_flavored_write_task(u16 arity, Database* db, Stratum* stratum,
                              Relation* relation,
                              const std::vector<u16>& order, bool delta,
                              bool once_only);
+void add_flavored_seeded_write_task(
+  u16 arity, Database* db, Stratum* stratum, Relation* relation,
+  const std::vector<u16>& order, bool delta);
+void add_flavored_map_write_task(
+  u16 arity, Database* db, Stratum* stratum, Relation* relation,
+  const std::vector<u16>& order, Relation* decomp, bool decomp_map,
+  bool once_only);
 void add_flavored_intern_task(u16 arity, Database* db, Stratum* stratum,
                               Relation* relation,
                               const std::vector<u16>& order, bool is_struct);
+void add_flavored_lattice_intern_task(
+  u16 arity, Database* db, Stratum* stratum, Relation* relation,
+  const std::vector<u16>& order, Relation* decomp, bool decomp_map);
 void add_flavored_maintain_task(u16 arity, Database* db, Stratum* stratum,
                                 Relation* relation,
                                 const std::vector<u16>& order,

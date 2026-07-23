@@ -362,12 +362,12 @@
               (strip-prov params-form))]))
 
 ;; Closure names come from the lambda's source position: deterministic,
-;; and unique within a program (file hash x line x column).
+;; and unique within a program (root-relative file hash x line x column).
 (define (lambda-name prov)
   (match-define `(prov ,ltok ,_) prov)
   (define pos (token->pos ltok))
   (string->symbol (format "_lam~ax~ax~a"
-                          (modulo (fnv (format "~a" (pos->file pos))) 100000)
+                          (modulo (fnv (source-name-key (pos->file pos))) 100000)
                           (pos->startline pos)
                           (pos->startcol pos))))
 
@@ -716,7 +716,7 @@
   (match-define `(prov ,ltok ,_) prov)
   (define pos (token->pos ltok))
   (string->symbol (format "$sup~ax~ax~ax~ax~a"
-                          (modulo (fnv (format "~a" (pos->file pos))) 100000)
+                          (modulo (fnv (source-name-key (pos->file pos))) 100000)
                           (pos->startline pos)
                           (pos->startcol pos)
                           alt-idx stage-idx)))

@@ -2,8 +2,11 @@
 
 **Status:** design contract (2026-07-15); sidecar parse/seal half of slice (b)
 implemented 2026-07-16; Q1's canonical payload decoder and typed builder
-boundary implemented 2026-07-17; dispatcher, entry modes, generic command
-builders, identity, and pause-record slices remain.
+boundary implemented 2026-07-17; slice (a)'s dual-stack dispatcher and
+catalog verbs implemented 2026-07-18; slice (d)'s uniform pause record and
+slice (b)'s checked `EntryMode` state machine/legacy forwarding shims
+implemented 2026-07-20. Generic command builders, resident-count tier-policy
+admission, and identity remain.
 `execution-tiers.md` §9/§9.1/§11-T0/§12 and `execution-tiers-impl.md`
 (decisions D6, D9, D10, D16, D17; findings 6 and 8; the §5 daemon
 change map) remain normative; this file pins the dual-stack dispatcher,
@@ -61,9 +64,10 @@ map must be additive under it.
 Refusals are typed: `(refused <class> <generation> <detail>...)`, one
 class per failure family — `parse`, `unknown-verb`, `reserved-verb`
 (distinct from unknown, so clients can distinguish "not yet" from
-"never"), each D16 seal class (below), `entry-mode`, `stale-generation`,
-`suspended`, and the capability refusals (tier swap/restart against
-`resident-count`). **Every refusal class is driven by a test** — F
+"never"), `builder-state`, `plan-io` / `parse-limit`, each D16 seal class
+(below), `entry-mode`, `stale-generation`, `suspended`, and the capability
+refusals (tier swap/restart against `resident-count`). **Every refusal class
+is driven by a test** — F
 criterion 2 verbatim; a refusal without a test does not exist.
 
 **Byte-compat guarantee (finding 8).** Every reply currently parsed by
@@ -147,6 +151,49 @@ entries remain as forwarding shims for the path-protocol stack
 (compiled plugins call them today) with replies unchanged; the
 accidental name-match firewall they relied on is retired by the
 explicit attribute.
+
+**As built 2026-07-21.** `daemon.h` has one read-only entry admission path and
+one transition path behind the public `installStratum` overloads. The explicit
+path validates entry attributes before reload/bind mutation, checks the
+generation token, requires an in-range `resident-count (at P)`, and admits
+`upgrade` only for the named live stratum at `RUN_AT_BOUNDARY`.
+`beginStratum`/`beginStratumDelta` forward through it while retaining their
+exact legacy refusal bytes and former name-matched hot-swap behavior.
+
+The command half is now active as a connection-scoped builder store. ABI 1's
+bridge consumes one already-canonical sidecar per SCC:
+
+```text
+(scc-begin S (generation G) (kernel-plan (sidecar "PATH.plan")))
+(scc-seal S (generation G))
+(stratum-begin ST (generation G) (entry fresh))
+(stratum-add-scc ST S (generation G))
+(stratum-seal ST (generation G))
+```
+
+Fields on the two begin forms are keyed (order-independent); ids are protocol
+symbols. Every mutation answers `(accepted <verb> <generation> ...)` or one
+typed refusal. `scc-seal` runs the production bounded parse/D16 seal and maps
+its exact error class. `stratum-seal` revalidates generation and live entry
+state, preflights every database-dependent binding without mutation, installs
+and pushes exactly one sealed SCC, then acknowledges without continuing; the
+client owns the subsequent `(continue)`. A connection drop destroys all
+unsealed SCCs and strata. Sealed SCCs are reusable within that connection.
+ABI 1 refuses a multi-SCC stratum as `capability`; T0(c)'s future
+`rule-meta`/`rule-def` assembly becomes another SCC plan source without changing
+the stratum lifecycle. Entry/flavor admission is explicit: normal =
+fresh/upgrade, delta and maintenance = resident-delta, count = resident-count.
+Any count plan requested as fresh/upgrade, or any non-count plan requested as
+resident-count, is the pinned count restart/tier-swap `capability` refusal.
+
+`tests/interp-operator-tests.cpp` drives runtime entry states plus command
+entry/flavor policy and no-auto-continue. `tests/protocol-tests.sh` drives the
+whole begin/seal/begin/add/seal/continue/catalog workflow over stdin and TCP,
+all five stale-generation gates, connection-loss discard, builder state,
+plan-I/O/D16 mapping, and count-tier refusal. This completes T0(b) without
+touching `repl/`. Exit gates: interpreter operator pass, protocol 67/67,
+pause 18/18, session 528/528, and cache-cleared `SLOG_OPT=interp` golden
+165/165.
 
 ## Builders and seal: the T2 meeting point
 
@@ -339,61 +386,21 @@ the fork.
   session-workflow-through-the-dual-stack leg remains with slice (b),
   whose entry-mode verbs are what the workflow needs beyond `.so`
   paths.
-- **(b) `plan.h` parse/seal + entry modes.**
-  **As built 2026-07-23 (entry modes; slice (b) COMPLETE):**
-  `Daemon::installStratumChecked(name, mode, at)` is the ONE checked
-  installation path -- fresh (the deferred reload ordering), resident-
-  delta (no reload), resident-count (positional bind against the
-  recorded environment, no reload), upgrade (explicit attachment:
-  suspended + same stratum + RUN_AT_BOUNDARY is validation, and gate
-  12.13 refuses a tier swap against a resident-count entry).  The
-  legacy `beginStratum`/`beginStratumDelta` are forwarding shims with
-  byte-identical replies (suspended-refusal strings unchanged; the
-  name-match hot-swap forwards to the explicit upgrade mode).  The
-  command verb `(install-stratum (path "P") (entry M) [(at N)])` arms
-  the mode the next shim call consumes; verb-level combination
-  refusals ((at) rules, unknown modes) and checked-path refusals
-  surface as `(refused entry-mode <gen> ...)`, and a plugin that never
-  reaches a shim (load failure, flavored interception) disarms rather
-  than leaking the mode into the next legacy push.  The session
-  workflow leg runs the catalog fixture's strata end-to-end through
-  `install-stratum` on both transports (protocol-tests §9).  Live
-  resident-count installs keep riding the armed `bind-at` shim path
-  (every count round in the session battery); an explicit-`(at)`
-  command-driven count round joins when the session driver migrates
-  (R0+). Parse a real T1 `.plan`
+- **(b) `plan.h` parse/seal + entry modes (completed 2026-07-21).** Parse a real T1 `.plan`
   sidecar; the D16 seal battery; `installStratum` with validated entry
   modes and forwarding shims. Tests: seal-rejection battery extending
   `tests/interp-operator-tests.cpp`'s seal/bind rejections with parsed
   input, one test per refusal class; entry-mode refusals
   (resident-count × swap/restart, resident × reload, upgrade × state);
-  `tests/pause-tests.sh` and `tests/session-tests.sh` green through the
-  shims.
+  provisional SCC/stratum lifecycle and dual-stack command session;
+  `tests/pause-tests.sh` and `tests/session-tests.sh` green through the shims.
 - **(c) identity keys + rule-meta registration + per-attempt fire
   vectors.** Tests: key-stability unit battery (same layer replay
   preserves keys; modified clone gets a fresh LayerId and fresh keys;
   degenerate module component round-trips; repo-relative source paths
   asserted per finding 6); `tests/stats-tests.sh` goldens unchanged
   with vectors underneath (merged totals ≡ legacy map).
-- **(d) uniform pause record + watch tee-up.**
-  **As built 2026-07-23 (slice (d) COMPLETE):** the emitter in
-  `Daemon::continueRun` is scoped by `commandProtocolSpoken()`:
-  command-marked sessions receive `(pause (class C) (cause V)
-  (stratum "S") (scc N) (iteration N) (phase read|iter) (new-tuples N)
-  (slice-ms F) (total-ms F) (reason R))` -- classes budget and
-  boundary live today, suspension/terminal join through the same
-  class slot -- while path sessions keep the 8-field `(paused ...)`
-  bytes untouched.  The cause grammar lives in
-  `protocol.h::validatePauseCause/validatePauseRecord`: `(arbitrary)`
-  and the watch-citation variant `(watch (key K) (relation "R")
-  (kind size|delta|error))`, field order pinned, unknown trailing
-  record fields permitted so the record grows without a message-kind
-  change.  `tests/pause-record-validator.cpp` drives every class,
-  both variants, and the refusal edges; protocol-tests §10 goldens
-  the live budget- and boundary-class records (numeric fields
-  wildcarded -- the full `--plain` transcript format arrives with
-  R0's renderer) over an opened-DB replay under a 1ms budget, and
-  asserts path-stack byte-compat both directions. The command-stack
+- **(d) uniform pause record + watch tee-up (landed 2026-07-20).** The command-stack
   structured pause record for all pause classes (protocol-mode
   scoping; legacy stack byte-identical); the cause-payload grammar —
   including the watch-citation variant — designed, validated, and
