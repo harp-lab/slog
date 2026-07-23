@@ -320,7 +320,30 @@ exclusions (each a tested named fallback, in the M4S style):
    construction).  Gate: the M4T battery shapes re-cut with negated
    premises — including the wcoj-rec shapes — with id stability where
    struct interiors appear below the negation.
-3. **Admission completion + intersections.**  Inheritance and masks
+3. **Admission completion + intersections.**
+   **Landed 2026-07-22 (as built):** inheritance/masks across negative
+   edges precise on both routes (inject-reopen fixtures); negation x
+   demand split by cone shape (downstream precise, inside excluded via
+   structs -- demand memoization is struct-backed); temps subsumed
+   (maintenance planning stages temps only for struct construction);
+   the DERIVED-negated route per the ratified scope -- producer prefix
+   maintained precisely, reader suffix decided per flush from the epoch
+   journals (`journal-signs` verb): loss-only reader positives take the
+   precise phases staging the MAINTAINED journals (the 0.A8 reserved
+   case "~ + increments" is now precise, `b4-neg-*`), gains or
+   recursive readers degrade to a reader-suffix rerun
+   (`maintain-producers-rerun-readers`); the slice-1/2 admission hole
+   (mixed edited + derived negated relations in one cone) closed and
+   regression-tested; the intersection-matrix ledger seeded in
+   incremental-status.md.  DISCOVERY: constant-bearing driver clauses
+   hung EVERY maintenance flavor since M1 (keyed delta-index probes
+   never drain within a maintenance epoch) -- fixed by
+   lift-driver-consts (drivers scan full-shape, constants restored by
+   == guards), a seal refusal of probe drivers under maint flavors,
+   and flavor ABI ci1-v2 with .plan filenames abi-keyed like the .so's
+   (stale plans can no longer outlive planner fixes).  Remaining in
+   slice 3's ledger as future unlocks: `join-pre` (the XOR join view)
+   for gains-on-reader-positives, and derived x recursive readers.  Inheritance and masks
    across negative edges (inject-reopen fixtures), negation × demand
    shapes, the intersection-matrix ledger rows for negation × {temps,
    recursion, inheritance, structs(excluded), lattices(excluded)}

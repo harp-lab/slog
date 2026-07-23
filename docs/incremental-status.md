@@ -765,6 +765,35 @@ interpreter variants and new conformance cases in this same harness.
   multi-column heads are never read back masked this for two milestones —
   new fixtures should include a head that is also a join input.
 
+## M4N intersection-matrix ledger (slice 3, 2026-07-22)
+
+The standing vetting campaign's first installment: every composition of
+stratified negation with another feature is either PRECISE (a named
+battery block proves maintained-equals-forced), FALLBACK (a named test
+asserts the refusal and the recompute), or EXCLUDED (pinned in
+m4n-contract.md with its owner).  "Precise" always means: admission is a
+session predicate, mis-staging is a typed daemon fault, and the epoch
+commits counts-valid.
+
+| composition | status | evidence / owner |
+|---|---|---|
+| ~ x acyclic readers, edited negated input | PRECISE (slice 1) | `m4n-*` block: 4-flush canon, sibling pre/post split, healed-equals-forced |
+| ~ x recursive readers (DRed sweep), edited negated input | PRECISE (slice 2) | `m4n-sweep-*`: absent-ever corpse probes; the double-decrement hazard is a live fixture |
+| ~ x derived negated relation, acyclic readers, loss-only reader positives | PRECISE (slice 3) | `m4n-derived-precise-*`, `b4-neg-*` (the historic 0.A8 reserved case) |
+| ~ x derived negated relation, reader-positive GAINS | FALLBACK: producer-precise + reader-suffix rerun, decided per flush from the epoch journals | `m4n-derived-gains-detected`; general unlock = the `join-pre` XOR join view (late slice 3 / M7) |
+| ~ x derived negated relation, recursive readers | FALLBACK: producer-precise + reader-suffix rerun | `m4n-sweep-derived-suffix-reruns`; compose after `join-pre` |
+| mixed edited + derived negated relations in one cone | FALLBACK: full rerun (the slice-1/2 admission hole, closed) | `m4n-mixed-negs-hole-closed` |
+| ~ x inheritance / masks (inject-reopen) | PRECISE on both routes | `m4n-inherit-*`, `m4n-sweep-inherit-*` |
+| ~ x demand, blocker outside the demand cone | PRECISE | `m4n-demand-*` |
+| ~ x demand, blocker inside the demand cone | EXCLUDED via structs (demand memoization is struct-backed) | `m4n-demand-inside-fallback` |
+| ~ x temps | subsumed: maintenance planning stages temps only for struct construction, so ~ x temps c ~ x structs; flat conjunctive bodies plan temp-free at any width (probed to 6 clauses) | planner probe 2026-07-22; struct row below |
+| ~ x structs in the cone | EXCLUDED (pinned, M4S owns the tombstone interplay) | `m4s-negstruct`, `m4n_demand_inside` |
+| ~ x lattices | EXCLUDED (pinned, M7 owns) | `m6l-negation-fallback` (also 'negw-shaped) |
+| prefix/wildcard negation ('negw) | FALLBACK by shape (prefix absence is not row-transition-maintainable) | `m4n-negw-fallback` |
+| relation read both + and ~ in one cone | FALLBACK | `m4n-mixedread-fallback` |
+| ~ under `SLOG_FLAVORED_NATIVE` | FALLBACK at admission (anti-delta variants have no native leg; emit-cpp static_asserts) | `m4n-native-fallback` |
+| maintenance x body CONSTANTS (any flavor, ~ or not) | PRECISE after the slice-3 fix -- constant-bearing driver clauses hung every maintenance flavor since M1 (keyed delta-index probes never drain in a maintenance epoch); drivers now lift constants to full-shape scans and the seal refuses probe drivers under maint flavors | `m1-body-const-*`; flavor ABI ci1-v2 (plans now abi-keyed like .so's) |
+
 ## Migration and compatibility
 
 - Existing recipes using relation names and version ordinals remain readable.

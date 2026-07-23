@@ -1,0 +1,25 @@
+;; M4N slice 3 regression (the slice-1/2 admission hole): a cone holding
+;; BOTH an edited negated input (~b) and a derived negated relation (~m,
+;; fed by a2).  A flush editing b and a2 together must NOT take the
+;; edit-staging arms (m's maintained transitions would go unstaged) nor
+;; the pure-derived arm (b's edit journal is not a maintained journal in
+;; the reader schedule) -- it falls back to rerun.  A b-only flush keeps
+;; m outside the cone and stays precise.
+
+table (a int)
+table (a2 int)
+table (b int)
+table (m int)
+table (h int)
+
+rule
+(a2 X)
+-->
+(m X)
+
+rule
+(a X)
+~(b X)
+~(m X)
+-->
+(h X)

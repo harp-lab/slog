@@ -613,8 +613,15 @@
   ;; directly (T2+), written beside the .cprog whenever emission runs.
   ;; Cached .so's built before this pass existed have no .plan, so plan
   ;; consumers must re-emit on a miss rather than assume presence.
+  ;; Flavored plans carry the flavor ABI in the filename exactly as the
+  ;; flavored .so's do: a plan-semantics change bumps the abi and re-keys
+  ;; both artifacts together (a stale plan can otherwise outlive planner
+  ;; fixes -- the .plan is the re-emit-on-miss marker).
   (call-with-atomic-output
-   (fullpath (format "build/~a.plan" hash-name))
+   (fullpath (format "build/~a~a.plan" hash-name
+                     (if (memq plan-flavor '(count maint1 maint3neg maint4neg))
+                         (string-append "." incremental-flavor-abi)
+                         "")))
    (lambda () (displayln (kernel-plan->string (canonicalize-all cprog plan-flavor)))))
   (define accel-rels (stratum-accel-rels stratum dynamic-rels type-env decomps))
   (define emitted (write-cpp cprog dbmanifest hash-name #:accel-rels accel-rels))
@@ -657,7 +664,7 @@
 ;; stratum names and `.cprog` paths remain stable.  emit-stratum-cpp swaps the
 ;; parameter's #t for the full count-mode value once the stratum's dynamic set
 ;; is in hand.
-(define incremental-flavor-abi "ci1-v1")
+(define incremental-flavor-abi "ci1-v2")
 
 ;; Counted-interp slice 4 (docs/counted-interp-contract.md): flavored
 ;; variants are interp-only by default.  Each ensure-*-so ensures the
@@ -695,7 +702,7 @@
   (ensure-flavored-artifacts
    (fullpath (format "build/~a_count.~a.O0.so"
                      proghash incremental-flavor-abi))
-   (fullpath (format "build/~a_count.plan" proghash))
+   (fullpath (format "build/~a_count.~a.plan" proghash incremental-flavor-abi))
    (lambda ()
      (parameterize ([count-flavor #t]
                     [semijoin-filters-enabled #f])
@@ -710,7 +717,7 @@
   (ensure-flavored-artifacts
    (fullpath (format "build/~a_maint1.~a.O0.so"
                      proghash incremental-flavor-abi))
-   (fullpath (format "build/~a_maint1.plan" proghash))
+   (fullpath (format "build/~a_maint1.~a.plan" proghash incremental-flavor-abi))
    (lambda ()
      (parameterize ([maintenance-flavor 'positive]
                     [count-flavor #t])
@@ -724,7 +731,7 @@
   (ensure-flavored-artifacts
    (fullpath (format "build/~a_maint3neg.~a.O0.so"
                      proghash incremental-flavor-abi))
-   (fullpath (format "build/~a_maint3neg.plan" proghash))
+   (fullpath (format "build/~a_maint3neg.~a.plan" proghash incremental-flavor-abi))
    (lambda ()
      (parameterize ([maintenance-flavor 'negative]
                     [count-flavor #t]
@@ -741,7 +748,7 @@
   (ensure-flavored-artifacts
    (fullpath (format "build/~a_maint4neg.~a.O0.so"
                      proghash incremental-flavor-abi))
-   (fullpath (format "build/~a_maint4neg.plan" proghash))
+   (fullpath (format "build/~a_maint4neg.~a.plan" proghash incremental-flavor-abi))
    (lambda ()
      (parameterize ([maintenance-flavor 'negative-rec]
                     [count-flavor #t]

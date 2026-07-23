@@ -221,6 +221,10 @@
      (format "  d->stageUpdateTransitions(std::vector<std::string>{~a}, ~a);\n"
              (string-join (for/list ([r (in-list rels)])
                             (format "\"~a\"" r)) ", ") sign)]
+    [`(journal-signs ,rels ...)
+     (format "  d->journalSigns(std::vector<std::string>{~a});\n"
+             (string-join (for/list ([r (in-list rels)])
+                            (format "\"~a\"" r)) ", "))]
     [`(stage-view-transitions signed ,sign ,rels ...)
      (format "  d->stageViewTransitions(std::vector<std::string>{~a}, ~a);\n"
              (string-join (for/list ([r (in-list rels)])

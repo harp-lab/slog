@@ -602,10 +602,19 @@
                                heads))
 
      ;; Exact views belong to logical occurrences, not scheduled positions.
-     (define (make-version driver exact-old?
+     (define (make-version driver0 exact-old?
                            #:neg-guards [neg-guards default-neg-guards]
                            #:extra-eqs [extra-eqs '()]
                            #:anti? [anti? #f])
+       (define-values (driver drive-const-eqs)
+         (if (and driver0 (maintenance-flavor) (not seeded?))
+             (lift-driver-consts driver0 const-vars)
+             (values driver0 '())))
+       (define joins*
+         (if (eq? driver driver0)
+             joins
+             (for/list ([j (in-list joins)])
+               (if (eq? j driver0) driver j))))
        (define driver-dynamic-index
          (and driver (join-occurrence-dynamic-index driver)))
        (define (view-of occ)
@@ -656,9 +665,9 @@
            [else 'full]))
        (define (access-of occ) (join-access occ (view-of occ)))
        (define-values (body-schedule ground)
-         (schedule-body-actions driver joins access-of computes+
+         (schedule-body-actions driver joins* access-of computes+
                                 (append plain-guards neg-guards eq-guards
-                                        extra-eqs)
+                                        extra-eqs drive-const-eqs)
                                 const-vars rule ordinary-table?))
        ;; every variable a head emits must be ground by now
        (for ([cl (in-list head-rest)])
@@ -807,6 +816,36 @@
     [`(syn ,prov ,name ,xs ...)
      (define-values (xs+ eqs) (dedup-vars xs prov))
      (values `(syn ,prov ,name ,@xs+) eqs)]))
+
+;; Maintenance drivers must lower to retiring batch SCANS: a keyed
+;; delta-index probe never drains within a maintenance epoch (the staged
+;; deltas persist for the whole epoch to serve the pre/post views), so a
+;; constant-bearing driver clause re-fires its staged rows every round --
+;; an unterminating fixpoint.  (M4N slice-3 discovery; the hazard is as
+;; old as M1, but no battery had a body constant under maintenance.)
+;; Constants lift to fresh vars restored by == guards, making the driver
+;; a full-shape scan; the same clause as a NON-driver occurrence keeps
+;; its keyed probes.  Constants appear as const-VARS post-normalization
+;; (bound by pre-op lets), so lifting keys on initial groundness, not
+;; syntax.
+(define (lift-driver-consts occ const-vars)
+  (match-define `(syn ,prov ,name ,xs ...) (join-occurrence-clause occ))
+  (define-values (xs+ eqs)
+    (for/fold ([out '()] [eqs '()]
+               #:result (values (reverse out) eqs))
+              ([x (in-list xs)])
+      ;; exactly the initially-ground const-vars: struct construction
+      ;; terms and other non-var args belong to the staging machinery
+      (if (and (var? x) (set-member? const-vars x))
+          (let ([x* (gensymb 'dcst)])
+            (values (cons x* out)
+                    (cons `(syn ,prov == ,x* ,x) eqs)))
+          (values (cons x out) eqs))))
+  (if (null? eqs)
+      (values occ '())
+      (values (struct-copy join-occurrence occ
+                           [clause `(syn ,prov ,name ,@xs+)])
+              eqs)))
 
 (define (dedup-vars xs prov)
   (for/fold ([seen (set)] [out '()] [eqs '()]

@@ -1,0 +1,11 @@
+;; Maintenance x body constants (found by M4N slice 3, latent since M1):
+;; a keyed delta-index probe driver never drains within a maintenance
+;; epoch, so a constant-bearing body clause used as a version's driver
+;; re-fired forever.  Drivers now lift constants to full-shape scans
+;; (lift-driver-consts) and the seal refuses probe drivers under
+;; maintenance flavors.
+
+table (a int)
+table (p int int)
+table (h int)
+rule (a X) (p 1 X) --> (h X)

@@ -1171,9 +1171,17 @@ bool maybe_interp_count_plugin(Daemon* daemon, const std::string& path)
   }
   if (tag == std::string::npos) return false;
   const std::string stem = file.substr(0, tag + tag_length);
+  // The .plan is keyed by the flavor ABI exactly as the .so is (the abi
+  // is the filename segment after the flavor tag): plan-semantics changes
+  // re-key both artifacts together, so a stale plan can never be
+  // installed against a newer planner.
+  const size_t abi_start = tag + tag_length + 1;
+  const size_t abi_end = file.find('.', abi_start);
+  if (abi_end == std::string::npos) return false;
+  const std::string abi = file.substr(abi_start, abi_end - abi_start);
   const std::string plan_path =
     (slash == std::string::npos ? std::string() : path.substr(0, slash + 1))
-    + stem + ".plan";
+    + stem + "." + abi + ".plan";
   try
   {
     const DecodedKernelPlan decoded = parse_kernel_plan_file(plan_path);

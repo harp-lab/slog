@@ -666,6 +666,16 @@ inline SealedRule seal_rule(const RulePlan& plan,
   seal_check(plan.driver.regs.size() == driver_rel.arity,
              SealErrorK::relation_arity,
              "driver: register width mismatch");
+  // Keyed delta-index probes never drain within a maintenance epoch (the
+  // staged deltas persist to serve the pre/post views), so a probe driver
+  // under a maintenance flavor re-fires its staged rows every round.  The
+  // planner lifts driver constants to full-shape scans
+  // (lift-driver-consts); refuse here so a regression is a typed fault,
+  // not an unterminating fixpoint (m4n-contract.md slice 3).
+  seal_check(!(flavor.maint && plan.driver.kind == DriverK::probe_full),
+             SealErrorK::capability,
+             "driver: probe drivers are not admissible under maintenance "
+             "flavors (non-draining staged deltas)");
   if (plan.driver.kind == DriverK::scan_delta)
   {
     seal_check(plan.driver.order.empty(), SealErrorK::ordering,

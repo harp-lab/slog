@@ -1,0 +1,27 @@
+;; M4N slice 3 track B: negation BESIDE demand machinery, downstream
+;; shape.  The negated input gates only the post-answer stratum, so the
+;; demand SCC (struct-backed memoization) stays outside the blocker's
+;; cone and the acyclic m4n route admits precisely.
+
+demand (fib int) int
+rule (fib n n) <-- (< n 2)
+rule (fib n r) <-- (< 1 n) (fib (- n 1) a) (fib (- n 2) b) (= r (+ a b))
+
+table (query int)
+table (blk int)
+table (raw int int)
+table (fibres int int)
+
+rule (query 10) (query 7)
+
+rule
+(query n)
+(fib n r)
+-->
+(raw n r)
+
+rule
+(raw n r)
+~(blk n)
+-->
+(fibres n r)

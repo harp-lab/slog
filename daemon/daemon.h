@@ -717,6 +717,20 @@ public:
          + std::to_string(names.size()) + ")");
   }
 
+  void journalSigns(const std::vector<std::string>& names)
+  {
+    if (refuseIfSuspended("journal-signs")) return;
+    std::string out = "(journal-signs";
+    for (const std::string& name : names)
+    {
+      auto counts = database->journalSignCounts(name);
+      out += " (" + name + " " + std::to_string(counts.first) + " "
+           + std::to_string(counts.second) + ")";
+    }
+    out += ")";
+    emit(out);
+  }
+
   // M4N view-only staging: the opposite sign of a phase's drive, staged as
   // cnt_kind_view rows for the pre/post-state cursors (never a drive,
   // never a fold contribution -- both are typed faults downstream).

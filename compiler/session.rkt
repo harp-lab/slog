@@ -417,6 +417,19 @@
     [`(update-epoch ,revision active) revision]
     [x (error 'session (format "unparseable update-epoch reply: ~a" x))]))
 
+;; M4N slice 3: per-relation sign census of the open epoch's journals --
+;; the derived-negated route reads it after the producer prefix settles.
+(define (query-journal-signs! s rels)
+  (session-action! s `(journal-signs ,@rels))
+  (define line (read-line (session-out s)))
+  (when (eof-object? line) (error 'session "daemon EOF at journal-signs"))
+  (echo! s line)
+  (match (read (open-input-string line))
+    [`(journal-signs ,entries ...)
+     (for/hash ([e (in-list entries)])
+       (values (first e) (cons (second e) (third e))))]
+    [x (error 'session (format "unparseable journal-signs reply: ~a" x))]))
+
 (define (query-update-counts-valid! s)
   (session-action! s `(update-counts-valid))
   (define line (read-line (session-out s)))
@@ -1435,11 +1448,30 @@
                  #:when (and (member 'neg (cdr entry))
                              (member (car entry) changed-names)))
        (car entry))))
+  ;; M4N slice 3: negated reads of DERIVED (cone-dynamic) relations.
+  ;; These change through maintenance, not edits, so their transitions
+  ;; only exist once their producer strata settle -- the derived route
+  ;; below.  Their presence also excludes the slice-1/2 arms: those
+  ;; stage only the CHANGED negated inputs, and a cone mixing both would
+  ;; leave the derived relation's transitions unstaged.
+  (define cone-dyn-names
+    (remove-duplicates
+     (for*/list ([info (in-list union-cone)]
+                 [d (in-list (sinfo-dyn info))])
+       d)))
+  (define negated-derived
+    (remove-duplicates
+     (for*/list ([info (in-list union-cone)]
+                 [entry (in-list (sinfo-reads info))]
+                 #:when (and (member 'neg (cdr entry))
+                             (member (car entry) cone-dyn-names)))
+       (car entry))))
   (define m4n-shape?
     (and edit-shape?
          (not topology-mono?)          ; monotone cones keep their own routes
          topology-negatable?
          (pair? negated-changed)
+         (null? negated-derived)
          (not (flavored-native?))
          (for*/and ([info (in-list union-cone)]
                     [entry (in-list (sinfo-reads info))]
@@ -1541,13 +1573,35 @@
     (and caps m4n-shape?
          (for/and ([r (in-list maintenance-names)])
            (hash-ref caps r #f))))
+  ;; M4N slice 3 (ratified scope): pure derived-negated cones -- the
+  ;; negated relations are cone-dynamic, read exactly negatively, and no
+  ;; edited negated input coexists (mixed shapes fall back).
+  (define m4n-derived-shape?
+    (and edit-shape?
+         (not topology-mono?)
+         topology-negatable?
+         (pair? negated-derived)
+         (null? negated-changed)
+         (not (flavored-native?))
+         ;; READER strata only: a recursive producer legitimately reads
+         ;; its own relation positively in-SCC
+         (for/and ([r (in-list negated-derived)])
+           (for*/and ([info (in-list union-cone)]
+                      #:unless (member r (sinfo-dyn info))
+                      [entry (in-list (sinfo-reads info))]
+                      #:when (eq? (car entry) r))
+             (equal? (cdr entry) '(neg))))))
+  (define m4n-derived-certified?
+    (and caps m4n-derived-shape?
+         (for/and ([r (in-list maintenance-names)])
+           (hash-ref caps r #f))))
   ;; Establish counts lazily before touching content.  Recount is itself
   ;; transactional and version-local; a warm sidecar makes this a cheap state
   ;; check on later flushes.  Establishment failure is not an update failure:
   ;; the count epoch has published nothing and no edit has been applied yet,
   ;; so retain set semantics by selecting the legacy delta/re-entry route.
   (define recount-ready?
-    (and (or structurally-certified? m4n-certified?)
+    (and (or structurally-certified? m4n-certified? m4n-derived-certified?)
          (with-handlers
              ([exn:fail?
                (lambda (e)
@@ -1614,6 +1668,9 @@
          (null? struct-names) (null? lattice-names)
          (for/or ([info (in-list union-cone)])
            (not (sinfo-acyclic? info)))))
+  (define m4n-derived-eligible?
+    (and m4n-derived-certified? counts-certified?
+         (null? struct-names) (null? lattice-names)))
 
   ;; The old set-only delta route remains a fallback for unsupported shapes.
   (define delta-eligible?
@@ -1890,6 +1947,143 @@
      (unless settled?
        (apply-edits!)
        (rerun-cone!))]
+    [m4n-derived-eligible?
+     ;; M4N slice 3 track C (ratified): maintain the producer prefix
+     ;; precisely -- finalizing the derived negated relations -- then
+     ;; decide the reader suffix from the epoch journals.  Loss-only
+     ;; reader positives take the precise phases, staging the negated
+     ;; relations' MAINTAINED journals with the same drive/view vehicle
+     ;; as the edit routes (the finality identity holds: producers are
+     ;; settled, the staged deltas epoch-stable).  A gain on a reader
+     ;; positive (or a recursive reader, for now) degrades to rerunning
+     ;; just the reader suffix from final producer state -- the shipped
+     ;; join-new pre-reconstruction overapproximates under finalized
+     ;; gains; the join-pre view is the general unlock.
+     (define first-reader-pos
+       (for/first ([info (in-list union-cone)] [i (in-naturals)]
+                   #:when (for/or ([entry (in-list (sinfo-reads info))])
+                            (and (member (car entry) negated-derived)
+                                 ;; the producer's own in-SCC read is not
+                                 ;; a reader position
+                                 (not (member (car entry)
+                                              (sinfo-dyn info))))))
+         i))
+     (define producer-cone (take union-cone first-reader-pos))
+     (define reader-cone (drop union-cone first-reader-pos))
+     (define settled? #t)
+     (define reseeded 0)
+     (define producer-head-edited
+       (for/list ([g (in-list tip-groups)]
+                  #:when (for/or ([info (in-list producer-cone)]
+                                  #:unless (sinfo-acyclic? info))
+                           (member (first g) (sinfo-dyn info))))
+         (first g)))
+     (when has-negative?
+       (apply-negative-edits! #:dred-names producer-head-edited)
+       (if negative-apply-ok?
+           (begin
+             (echo! s (format "(route maintain-producers-negative ~a)"
+                              (length producer-cone)))
+             (run-maintenance-phase!
+              producer-cone -1
+              (lambda (info)
+                (if (sinfo-acyclic? info)
+                    ((sinfo-negative-maintenance info))
+                    ((sinfo-recursive-negative-maintenance info))))))
+           (begin
+             (set! settled? #f)
+             (echo! s "(maintenance-unavailable negative-input)"))))
+     (when (and settled? has-negative? (not (query-update-counts-valid! s)))
+       (set! settled? #f))
+     (when (and settled? has-negative?
+                (for/or ([info (in-list producer-cone)])
+                  (not (sinfo-acyclic? info))))
+       (define swept
+         (remove-duplicates
+          (for*/list ([info (in-list producer-cone)]
+                      #:unless (sinfo-acyclic? info)
+                      [d (in-list (sinfo-dyn info))])
+            d)))
+       (session-action! s `(dred-reseed ,@swept))
+       (define reply (read-line (session-out s)))
+       (echo! s reply)
+       (match (regexp-match #px"^\\(dred-reseeded (\\d+) (\\d+)\\)$" reply)
+         [(list _ r _) (set! reseeded (string->number r))]
+         [_ (set! settled? #f)])
+       (when (and settled? (not (query-update-counts-valid! s)))
+         (set! settled? #f)))
+     (when (and settled? (or (> reseeded 0) has-positive?))
+       (apply-positive-edits!)
+       (if positive-apply-ok?
+           (begin
+             (echo! s (format "(route maintain-producers-positive ~a)"
+                              (length producer-cone)))
+             (run-maintenance-phase!
+              producer-cone 1 (lambda (info) ((sinfo-maintenance info))))
+             (unless (query-update-counts-valid! s) (set! settled? #f)))
+           (begin
+             (set! settled? #f)
+             (echo! s "(maintenance-unavailable positive-input)"))))
+     (define (rerun-readers!)
+       (define suffix-sos (for/set ([i (in-list reader-cone)]) (sinfo-so i)))
+       (define suffix-dyn
+         (for*/set ([i (in-list reader-cone)] [d (in-list (sinfo-dyn i))]) d))
+       (define other-dyn
+         (for*/set ([p (in-list (session-strata-info s))]
+                    #:unless (set-member? suffix-sos (sinfo-so (cdr p)))
+                    [d (in-list (sinfo-dyn (cdr p)))])
+           d))
+       (define clear-set
+         (sort (set->list (set-subtract suffix-dyn other-dyn)) symbol<?))
+       (for ([r (in-list clear-set)])
+         (session-action! s `(clear-rel ,r)))
+       (echo! s (format "(route maintain-producers-rerun-readers ~a ~a ~a)"
+                        (length producer-cone) (length reader-cone)
+                        (length clear-set)))
+       (for ([info (in-list reader-cone)])
+         (send-maintenance-stratum! s (sinfo-so info))))
+     (cond
+       [(not settled?)
+        (apply-edits!)
+        (rerun-cone!)]
+       [else
+        (define reader-positives
+          (remove-duplicates
+           (for*/list ([info (in-list reader-cone)]
+                       [entry (in-list (sinfo-reads info))]
+                       #:when (member 'pos (cdr entry)))
+             (car entry))))
+        (define signs
+          (if (pair? reader-positives)
+              (query-journal-signs! s reader-positives)
+              (hash)))
+        (define reader-gains?
+          (for/or ([(r gl) (in-hash signs)]) (> (car gl) 0)))
+        (cond
+          [(or reader-gains?
+               (for/or ([info (in-list reader-cone)])
+                 (not (sinfo-acyclic? info))))
+           (when reader-gains?
+             (echo! s "(maintenance-unavailable reader-positive-gains)"))
+           (rerun-readers!)]
+          [else
+           (echo! s (format "(route maintain-negated-derived-negative ~a ~a)"
+                            (length reader-cone) (length negated-derived)))
+           (run-maintenance-phase!
+            reader-cone -1
+            (lambda (info) ((sinfo-negative-maintenance info)))
+            #:negated-reads negated-derived)
+           (cond
+             [(query-update-counts-valid! s)
+              (echo! s (format "(route maintain-negated-derived-positive ~a ~a)"
+                               (length reader-cone) (length negated-derived)))
+              (run-maintenance-phase!
+               reader-cone 1
+               (lambda (info) ((sinfo-maintenance info)))
+               #:negated-reads negated-derived)
+              (unless (query-update-counts-valid! s)
+                (rerun-readers!))]
+             [else (rerun-readers!)])])])]
     [m6l2-eligible?
      ;; Settle every producer phase first.  LatticeMaintainTask coalesces all
      ;; repairs for a key across those phases; only then do consumers receive

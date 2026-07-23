@@ -463,6 +463,18 @@ blocked-endpoint composition; derived-negated refusal (slice 3).
 Planner unit battery 39/39.  Next: slice 3 (admission completion +
 intersection-matrix ledger, derived-negated per-stratum phasing).
 
+**Checkpoint 2026-07-22 (M4N slice 3 — admission completion + the
+matrix):** inheritance masks precise across negative edges on both
+routes; negation x demand split by cone shape; the derived-negated
+route (producer-precise, journal-sign-decided reader suffix — the 0.A8
+"~ + increments" reserved case is now precise); the mixed
+input+derived admission hole closed; the intersection-matrix ledger
+seeded in incremental-status.md.  DISCOVERY: maintenance x body
+constants hung every flavor since M1 (non-draining probe drivers) —
+fixed with lift-driver-consts + a maint-flavor seal refusal + flavor
+ABI ci1-v2 (plans abi-keyed).  Next: slice 4 (exit audit) with
+`join-pre` and derived x recursive as recorded unlocks.
+
 **Thread-0 bearings (2026-07-19, v3.0.1).**  How this thread proceeds:
 
 1. **M4N** (contract: m4n-contract.md, drafted 2026-07-19) — the

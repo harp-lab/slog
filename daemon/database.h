@@ -2476,6 +2476,24 @@ public:
 
   void invalidateUpdateCounts() { update_epoch_valid = false; }
 
+  // M4N slice 3 (docs/m4n-contract.md): per-relation sign census of the
+  // open epoch's journals.  Read-only -- the session's derived-negated
+  // route reads it AFTER the producer prefix settles to decide whether
+  // the reader suffix can take the precise phases (loss-only reader
+  // positives) or must degrade to a suffix rerun (a gain would make the
+  // shipped join-new pre-reconstruction overapproximate).
+  std::pair<size_t, size_t> journalSignCounts(const std::string& name)
+  {
+    std::lock_guard<std::mutex> lk(update_transition_mutex);
+    Relation* rel = getRelation(name);
+    if (rel == nullptr) return {0, 0};
+    auto gains = update_transitions.find(rel->getVersionId());
+    auto losses = update_negative_transitions.find(rel->getVersionId());
+    return {gains == update_transitions.end() ? 0 : gains->second.size(),
+            losses == update_negative_transitions.end()
+              ? 0 : losses->second.size()};
+  }
+
   bool exerciseSignedUnderflow()
   {
     u64 out = 0;

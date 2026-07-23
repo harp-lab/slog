@@ -230,12 +230,17 @@ expect "b4-route-sweep"   "(route maintain-recursive-negative 1)" out/sess-b4.lo
 expect "b4-del-settled"   "(update-committed 3 counts-valid)" out/sess-b4.log
 expect "b4-del-applied"   "(dumpdone 6)" out/sess-b4.log
 
-# a monotone ADD whose cone crosses a negation still routes to rerun
+# The reserved "~ + increments" case (0.A8), precise since M4N slice 3: a
+# monotone ADD into the recursive producer finalizes path, then the
+# acyclic reader repairs from path's MAINTAINED journal (the gained rows
+# drive the reader's negative phase as anti-deltas).
 timeout 600 racket tests/api/session-drive.rkt \
   run:tests/session/negsess.slog \
   batch+:edge,3,4 flush dump-rel:unreached \
   > out/sess-b4n.log 2>&1
-expect "b4-neg-route"  "(route rerun 2 " out/sess-b4n.log
+expect "b4-neg-producers" "(route maintain-producers-positive 1)" out/sess-b4n.log
+expect "b4-neg-readers" "(route maintain-negated-derived-negative 1 1)" out/sess-b4n.log
+expect_not "b4-neg-no-rerun" "(route rerun" out/sess-b4n.log
 expect "b4-neg-result" "(dumpdone 2)" out/sess-b4n.log
 
 # a MULTI-stratum monotone cone chains update-local presence transitions
@@ -1708,9 +1713,9 @@ fi
 wcoj_tri_hash=$(grep -oE '"[0-9a-f]{8}_maint1"' out/sess-wcoj-tri.log \
                   | head -1 | tr -d '"' | sed 's/_maint1//')
 expect_join3_plan "wcoj-tri-plan-normal"   "build/${wcoj_tri_hash}.plan"
-expect_join3_plan "wcoj-tri-plan-count"    "build/${wcoj_tri_hash}_count.plan"
-expect_join3_plan "wcoj-tri-plan-maint1"   "build/${wcoj_tri_hash}_maint1.plan"
-expect_join3_plan "wcoj-tri-plan-maint3neg" "build/${wcoj_tri_hash}_maint3neg.plan"
+expect_join3_plan "wcoj-tri-plan-count"    "build/${wcoj_tri_hash}_count.ci1-v2.plan"
+expect_join3_plan "wcoj-tri-plan-maint1"   "build/${wcoj_tri_hash}_maint1.ci1-v2.plan"
+expect_join3_plan "wcoj-tri-plan-maint3neg" "build/${wcoj_tri_hash}_maint3neg.ci1-v2.plan"
 
 # Recursive: tedge is both the edited input and the recursive head, so the
 # deletion applies through the foundation-aware overlay verb and the
@@ -1746,9 +1751,9 @@ fi
 wcoj_rec_hash=$(grep -oE '"[0-9a-f]{8}_maint4neg"' out/sess-wcoj-rec.log \
                   | head -1 | tr -d '"' | sed 's/_maint4neg//')
 expect_join3_plan "wcoj-rec-plan-normal"    "build/${wcoj_rec_hash}.plan"
-expect_join3_plan "wcoj-rec-plan-count"     "build/${wcoj_rec_hash}_count.plan"
-expect_join3_plan "wcoj-rec-plan-maint1"    "build/${wcoj_rec_hash}_maint1.plan"
-expect_join3_plan "wcoj-rec-plan-maint4neg" "build/${wcoj_rec_hash}_maint4neg.plan"
+expect_join3_plan "wcoj-rec-plan-count"     "build/${wcoj_rec_hash}_count.ci1-v2.plan"
+expect_join3_plan "wcoj-rec-plan-maint1"    "build/${wcoj_rec_hash}_maint1.ci1-v2.plan"
+expect_join3_plan "wcoj-rec-plan-maint4neg" "build/${wcoj_rec_hash}_maint4neg.ci1-v2.plan"
 
 # --- M5 slice 1: struct ids are stable across clear-and-rerun ---------------
 # (docs/m5-contract.md).  The struct cone routes to clear-and-rerun on a
@@ -2445,19 +2450,21 @@ fi
 expect_not "m4n-negw-no-maintain" "(route maintain-negated" out/sess-m4n-negw.log
 expect "m4n-negw-content" "(dumpdone 1)" out/sess-m4n-negw.log
 
-# A DERIVED negated relation (written by a cone stratum) is slice 2/3
-# territory: its transitions are not an input journal to finalize upfront.
+# A DERIVED negated relation (M4N slice 3): the producer prefix is
+# maintained precisely in both flushes; the first flush GAINS a reader
+# positive (+b rows), so the reader suffix reruns; the second flush is
+# loss-only and the readers take the precise phases from m's MAINTAINED
+# journal.
 timeout 900 racket tests/api/session-drive.rkt \
   run:tests/session/m4n_derived.slog \
   batch+:a,1 batch+:b,1 batch+:b,2 flush \
   batch-:a,1 flush dump-rel:g \
   > out/sess-m4n-derived.log 2>&1
-if [ "$(grep -cF '(route rerun' out/sess-m4n-derived.log)" -eq 2 ]; then
-  echo "PASS m4n-derived-fallback"; PASS=$((PASS+1))
-else
-  echo "FAIL m4n-derived-fallback"; FAIL=$((FAIL+1))
-fi
-expect_not "m4n-derived-no-maintain" "(route maintain-negated" out/sess-m4n-derived.log
+expect "m4n-derived-gains-detected" "(maintenance-unavailable reader-positive-gains)" out/sess-m4n-derived.log
+expect "m4n-derived-suffix-rerun" "(route maintain-producers-rerun-readers 1 1 1)" out/sess-m4n-derived.log
+expect "m4n-derived-precise-neg" "(route maintain-negated-derived-negative 1 1)" out/sess-m4n-derived.log
+expect "m4n-derived-precise-pos" "(route maintain-negated-derived-positive 1 1)" out/sess-m4n-derived.log
+expect_not "m4n-derived-no-full-rerun" "(route rerun" out/sess-m4n-derived.log
 expect "m4n-derived-content" "(dumpdone 2)" out/sess-m4n-derived.log
 
 # A relation read BOTH positively and negatively in the cone falls back:
@@ -2549,19 +2556,163 @@ else
   echo "FAIL m4n-sweep-selfjoin-counts"; FAIL=$((FAIL+1))
 fi
 
-# Derived negated relation over a recursive reader: slice-3 scope, rerun.
+# Derived negated relation over RECURSIVE readers (M4N slice 3): the
+# producers maintain precisely; the reader suffix reruns in both flushes
+# (gains on the reader positive in the first, recursive readers in the
+# second -- the precise recursive-reader composition is future work).
 timeout 900 racket tests/api/session-drive.rkt \
   run:tests/session/m4n_sweep_derived.slog \
   batch+:e,1,2 batch+:e,2,2 flush \
   batch-:e,2,2 flush dump-rel:r \
   > out/sess-m4n-sweep-derived.log 2>&1
-if [ "$(grep -cF '(route rerun' out/sess-m4n-sweep-derived.log)" -eq 2 ]; then
-  echo "PASS m4n-sweep-derived-fallback"; PASS=$((PASS+1))
+if [ "$(grep -cF '(route maintain-producers-rerun-readers 1 1 1)' out/sess-m4n-sweep-derived.log)" -eq 2 ]; then
+  echo "PASS m4n-sweep-derived-suffix-reruns"; PASS=$((PASS+1))
 else
-  echo "FAIL m4n-sweep-derived-fallback"; FAIL=$((FAIL+1))
+  echo "FAIL m4n-sweep-derived-suffix-reruns"; FAIL=$((FAIL+1))
 fi
-expect_not "m4n-sweep-derived-no-maintain" "(route maintain-negated" out/sess-m4n-sweep-derived.log
+expect_not "m4n-sweep-derived-no-full-rerun" "(route rerun" out/sess-m4n-sweep-derived.log
 expect "m4n-sweep-derived-content" "(dumpdone 1)" out/sess-m4n-sweep-derived.log
+
+# --- M4N slice 3 track A: inheritance and masks across negative edges -------
+# The M0.4 inherited-overlay path (inject-reopen: a successor version masks
+# an inherited input tuple without mutating the predecessor) composed with
+# the m4n routes: the masked relation IS the negated input, on both the
+# acyclic route and the sweep.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4n_acyclic.slog \
+  batch+:a,1 batch+:b,1 flush \
+  inject-reopen:b,m4n-inherit,tests/session/m4n_acyclic.slog,9 \
+  batch-:b,1 flush dump-rel:b dump-rel:h input-ledger dump-counts:h \
+  recount-force dump-counts:h \
+  > out/sess-m4n-inherit.log 2>&1
+expect "m4n-inherit-route-neg" "(route maintain-negated-negative" out/sess-m4n-inherit.log
+expect "m4n-inherit-route-pos" "(route maintain-negated-positive" out/sess-m4n-inherit.log
+expect_not "m4n-inherit-no-rerun" "(route rerun" out/sess-m4n-inherit.log
+expect "m4n-inherit-mask" "(inputledger mask" out/sess-m4n-inherit.log
+if [ "$(grep -cF '(dumpdone 1)' out/sess-m4n-inherit.log)" -eq 2 ]; then
+  echo "PASS m4n-inherit-content"; PASS=$((PASS+1))
+else
+  echo "FAIL m4n-inherit-content"; FAIL=$((FAIL+1))
+fi
+if [ "$(grep -cF '(countrow h 1 0 1 0)' out/sess-m4n-inherit.log)" -eq 2 ]; then
+  echo "PASS m4n-inherit-counts"; PASS=$((PASS+1))
+else
+  echo "FAIL m4n-inherit-counts"; FAIL=$((FAIL+1))
+fi
+
+# The sweep variant: masking the inherited blocker relearns the blocked
+# closure through the rebuild's anti-delta drive.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4n_sweep.slog \
+  batch+:e,1,2 batch+:e,2,3 batch+:e,3,4 batch+:blk,3 flush dump-rel:r \
+  inject-reopen:blk,m4n-sweep-inherit,tests/session/m4n_sweep.slog,9 \
+  batch-:blk,3 flush dump-rel:r input-ledger dump-counts:r \
+  recount-force dump-counts:r \
+  > out/sess-m4n-sweep-inherit.log 2>&1
+expect "m4n-sweep-inherit-route" "(route maintain-negated-recursive" out/sess-m4n-sweep-inherit.log
+expect "m4n-sweep-inherit-relearn" "(route maintain-negated-positive" out/sess-m4n-sweep-inherit.log
+expect_not "m4n-sweep-inherit-no-rerun" "(route rerun" out/sess-m4n-sweep-inherit.log
+expect "m4n-sweep-inherit-mask" "(inputledger mask" out/sess-m4n-sweep-inherit.log
+expect "m4n-sweep-inherit-before" "(dumpdone 2)" out/sess-m4n-sweep-inherit.log
+expect "m4n-sweep-inherit-after" "(dumpdone 6)" out/sess-m4n-sweep-inherit.log
+if [ "$(grep -cF '(countrow r 1 4 0 0 1)' out/sess-m4n-sweep-inherit.log)" -eq 2 ] \
+   && [ "$(grep -cF '(countrow r 1 3 0 0 1)' out/sess-m4n-sweep-inherit.log)" -eq 2 ]; then
+  echo "PASS m4n-sweep-inherit-counts"; PASS=$((PASS+1))
+else
+  echo "FAIL m4n-sweep-inherit-counts"; FAIL=$((FAIL+1))
+fi
+
+# --- M4N slice 3 track B: negation x demand ---------------------------------
+# Downstream shape: the blocker's cone is one acyclic plain stratum (the
+# demand SCC stays outside it), so the precise route admits.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4n_demand.slog \
+  dump-rel:fibres batch+:blk,10 flush dump-rel:fibres dump-counts:fibres \
+  recount-force dump-counts:fibres \
+  batch-:blk,10 flush dump-rel:fibres \
+  > out/sess-m4n-demand.log 2>&1
+expect "m4n-demand-route" "(route maintain-negated-negative 1 1)" out/sess-m4n-demand.log
+expect "m4n-demand-relearn" "(route maintain-negated-positive 1 1)" out/sess-m4n-demand.log
+expect_not "m4n-demand-no-rerun" "(route rerun" out/sess-m4n-demand.log
+if [ "$(grep -cF '(dumpdone 2)' out/sess-m4n-demand.log)" -eq 2 ] \
+   && [ "$(grep -cF '(dumpdone 1)' out/sess-m4n-demand.log)" -eq 1 ]; then
+  echo "PASS m4n-demand-content"; PASS=$((PASS+1))
+else
+  echo "FAIL m4n-demand-content"; FAIL=$((FAIL+1))
+fi
+if [ "$(grep -cF '(countrow fibres 7 13 0 1 0)' out/sess-m4n-demand.log)" -eq 2 ]; then
+  echo "PASS m4n-demand-counts"; PASS=$((PASS+1))
+else
+  echo "FAIL m4n-demand-counts"; FAIL=$((FAIL+1))
+fi
+
+# Inside shape: the struct-backed demand SCC is in the blocker's cone --
+# the pinned negation x structs exclusion refuses by name; rerun
+# recomputes the demand fixpoint including retracting unshared demands.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4n_demand_inside.slog \
+  batch+:blk,10 flush dump-rel:fibres \
+  batch-:blk,10 flush dump-rel:fibres \
+  > out/sess-m4n-demand-inside.log 2>&1
+if [ "$(grep -cF '(route rerun' out/sess-m4n-demand-inside.log)" -eq 2 ]; then
+  echo "PASS m4n-demand-inside-fallback"; PASS=$((PASS+1))
+else
+  echo "FAIL m4n-demand-inside-fallback"; FAIL=$((FAIL+1))
+fi
+expect_not "m4n-demand-inside-no-maintain" "(route maintain-negated" out/sess-m4n-demand-inside.log
+if [ "$(grep -cF '(dumpdone 1)' out/sess-m4n-demand-inside.log)" -eq 1 ] \
+   && [ "$(grep -cF '(dumpdone 2)' out/sess-m4n-demand-inside.log)" -eq 1 ]; then
+  echo "PASS m4n-demand-inside-content"; PASS=$((PASS+1))
+else
+  echo "FAIL m4n-demand-inside-content"; FAIL=$((FAIL+1))
+fi
+
+# --- M4N slice 3: the mixed input+derived negation admission hole -----------
+# A flush editing BOTH the negated input b and a2 (feeding derived ~m)
+# must fall back (neither the edit-staging arms nor the pure-derived arm
+# admits a mixed shape); a b-only flush keeps m outside the cone and
+# stays precise.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4n_mixed_negs.slog \
+  batch+:a,1 batch+:a,2 batch+:b,1 flush dump-rel:h \
+  batch+:b,2 batch+:a2,2 flush dump-rel:h \
+  batch+:a,3 batch-:b,2 flush dump-rel:h \
+  > out/sess-m4n-mixed-negs.log 2>&1
+expect "m4n-mixed-negs-first-precise" "(route maintain-negated-negative" out/sess-m4n-mixed-negs.log
+expect "m4n-mixed-negs-hole-closed" "(route rerun" out/sess-m4n-mixed-negs.log
+expect_not "m4n-mixed-negs-no-derived" "(route maintain-negated-derived" out/sess-m4n-mixed-negs.log
+if [ "$(grep -cF '(dumpdone 1)' out/sess-m4n-mixed-negs.log)" -eq 2 ] \
+   && [ "$(grep -cF '(dumpdone 0)' out/sess-m4n-mixed-negs.log)" -eq 1 ]; then
+  echo "PASS m4n-mixed-negs-content"; PASS=$((PASS+1))
+else
+  echo "FAIL m4n-mixed-negs-content"; FAIL=$((FAIL+1))
+fi
+
+# --- maintenance x body constants (found by M4N slice 3; latent since M1) ---
+# Constant-bearing driver clauses hung every maintenance flavor (keyed
+# delta-index probes never drain in a maintenance epoch).  Both signs must
+# settle counts-valid on the precise routes.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m1_body_const.slog \
+  batch+:p,1,5 batch+:a,5 flush dump-rel:h dump-counts:h \
+  batch-:p,1,5 flush dump-rel:h \
+  batch+:p,1,7 batch+:a,7 flush dump-rel:h recount-force dump-counts:h \
+  > out/sess-m1-body-const.log 2>&1
+expect "m1-body-const-add" "(route maintain 1)" out/sess-m1-body-const.log
+expect "m1-body-const-del" "(route maintain-negative 1)" out/sess-m1-body-const.log
+expect "m1-body-const-settled" "(update-committed 3 counts-valid)" out/sess-m1-body-const.log
+if [ "$(grep -cF '(dumpdone 1)' out/sess-m1-body-const.log)" -eq 2 ] \
+   && [ "$(grep -cF '(dumpdone 0)' out/sess-m1-body-const.log)" -eq 1 ]; then
+  echo "PASS m1-body-const-content"; PASS=$((PASS+1))
+else
+  echo "FAIL m1-body-const-content"; FAIL=$((FAIL+1))
+fi
+if [ "$(grep -cF '(countrow h 5 0 1 0)' out/sess-m1-body-const.log)" -eq 1 ] \
+   && [ "$(grep -cF '(countrow h 7 0 1 0)' out/sess-m1-body-const.log)" -eq 1 ]; then
+  echo "PASS m1-body-const-counts"; PASS=$((PASS+1))
+else
+  echo "FAIL m1-body-const-counts"; FAIL=$((FAIL+1))
+fi
 
 echo
 echo "$PASS passed, $FAIL failed"

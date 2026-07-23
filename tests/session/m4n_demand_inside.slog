@@ -1,0 +1,21 @@
+;; M4N slice 3 track B: negation INSIDE the demand cone.  The blocker
+;; gates the demanding rule itself, so the struct-backed demand SCC is in
+;; the blocker's cone -- the pinned negation x structs exclusion refuses
+;; by name and clear-and-rerun recomputes the demand fixpoint.
+
+demand (fib int) int
+rule (fib n n) <-- (< n 2)
+rule (fib n r) <-- (< 1 n) (fib (- n 1) a) (fib (- n 2) b) (= r (+ a b))
+
+table (query int)
+table (blk int)
+table (fibres int int)
+
+rule (query 10) (query 7)
+
+rule
+(query n)
+~(blk n)
+(fib n r)
+-->
+(fibres n r)
