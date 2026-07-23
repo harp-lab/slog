@@ -794,6 +794,55 @@ commits counts-valid.
 | ~ under `SLOG_FLAVORED_NATIVE` | FALLBACK at admission (anti-delta variants have no native leg; emit-cpp static_asserts) | `m4n-native-fallback` |
 | maintenance x body CONSTANTS (any flavor, ~ or not) | PRECISE after the slice-3 fix -- constant-bearing driver clauses hung every maintenance flavor since M1 (keyed delta-index probes never drain in a maintenance epoch); drivers now lift constants to full-shape scans and the seal refuses probe drivers under maint flavors | `m1-body-const-*`; flavor ABI ci1-v2 (plans now abi-keyed like .so's) |
 
+## M4N exit audit — complete
+
+Precise stratified negation is maintained end-to-end on the interpreter:
+acyclic readers over edited negated inputs (slice 1, the finalize-upfront
+Option-2 route with drive/view staging), recursive sweep readers (slice 2,
+the absent-ever table), and derived negated relations (slice 3, the
+producer-precise/journal-sign-decided schedule), with the intersection
+matrix above naming every composition's status and the exclusions' owners
+(structs -> M4S follow-up, lattices -> M7, `join-pre` and derived x
+recursive recorded as unlocks).
+
+Deterministic coverage: the session battery's m4n blocks — the four-flush
+acyclic canon with the pairwise sibling split, the sweep cascade whose
+mixed flush is the slice-2 double-decrement hazard live, self-join
+closure, inheritance masks on both routes, demand split by cone shape,
+the mixed input+derived admission-hole regression, five named fallbacks,
+and the maintenance x body-constant fixture — all healed-equals-forced,
+plus count-IR oracle legs on both canon runs (the triangle's third leg
+over interpreted negation plans).
+
+Adversarial coverage (incremental-stress): a combined negation
+signed-stream oracle (acyclic + sweep readers in one program, ten
+mixed-sign warm flushes diffed per flush against fresh recompute and
+forced recounts) under 1/2/8 workers; a derived-negated boundary hammer
+whose flush generator cycles route classes so BOTH sides of the
+journal-sign decision fire every run (asserted), with the
+constant-column negated atom keeping the body-constant fix in the loop,
+under 1/2/8 workers; and a forced pause/resume epoch whose pauses
+attribute to the negation stratum's `_maint3neg` phase at the
+1-millisecond budget, settling with a forced recount.
+
+Slice-by-slice discoveries the audit banks: the sweep needs its own
+partition table (absent-ever; the acyclic table provably double-counts
+or leaves holes across rounds); reseeded rows self-exclude from
+anti-delta reads via the delta index; corpse exclusion by ordinal is the
+discipline negated probes must mirror; and three latent defects found
+and fixed by the campaign — the slice-1/2 mixed-negation admission hole,
+the maintenance x body-constant hang present since M1 (with the
+flavor-ABI plan-keying gap it exposed), and the slice-4 fuzzer's
+**expired-witness catch**: absent-ever's loss witness read the staged
+delta indices, but the retained delta witness lives only one round (the
+join-tomb lesson) while corpse-driven probes fire in ANY later round —
+a lost premise plus a lost blocker in one sweep flush produced a phantom
+decrement (loud underflow on dead heads; silent count corruption on
+heads surviving via other derivations).  The witness is now a bind-time
+snapshot of the epoch's negative journal (round-stable by the epoch
+lifecycle; edit-sized by admission), pinned by `m4n-lostwitness-*` and
+seed 7108 of the negation fuzzer.
+
 ## Migration and compatibility
 
 - Existing recipes using relation names and version ordinals remain readable.

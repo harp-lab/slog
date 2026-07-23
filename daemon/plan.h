@@ -1265,11 +1265,15 @@ std::unique_ptr<PrefixCursor> make_tomb_probe_cursor(
 std::unique_ptr<PrefixCursor> make_absent_pre_cursor(
   u16 arity, Index** full, Index** delta,
   const std::vector<u16>& regs, u16 bound);
-// The absent-ever cursor (M4N slice 2): absent from FULL and from the
-// staged delta -- the sweep's corpse-driven negated probe, excluding both
-// blocker transition signs (contract slice-2 table).
+// The absent-ever cursor (M4N slice 2; witness amended slice 4): absent
+// from FULL and from the epoch's LOST rows -- the sweep's corpse-driven
+// negated probe, excluding both blocker transition signs.  The loss
+// witness is a bind-time journal snapshot (round-stable; staged delta
+// indices expire per sweep round).
 std::unique_ptr<PrefixCursor> make_absent_ever_cursor(
-  u16 arity, Index** full, Index** delta,
+  u16 arity, Index** full,
+  std::shared_ptr<const std::vector<std::vector<u64>>> lost,
+  const std::vector<u16>& order,
   const std::vector<u16>& regs, u16 bound);
 
 struct BoundExecution
@@ -1668,7 +1672,7 @@ public:
         else if (filter->view == AbsentView::ever)
           prefilter_prototypes.push_back(make_absent_ever_cursor(
             rel->getArity(), rel->getIndex(filter->order, false),
-            rel->getIndex(filter->delta_order, true),
+            database->journalLostSnapshot(rel), filter->order,
             filter->regs, filter->bound));
         else
           prefilter_prototypes.push_back(make_set_filter_cursor(
@@ -1721,7 +1725,7 @@ public:
         else if (filter->view == AbsentView::ever)
           cursor_prototypes.push_back(make_absent_ever_cursor(
             rel->getArity(), rel->getIndex(filter->order, false),
-            rel->getIndex(filter->delta_order, true),
+            database->journalLostSnapshot(rel), filter->order,
             filter->regs, filter->bound));
         else
           cursor_prototypes.push_back(make_set_filter_cursor(

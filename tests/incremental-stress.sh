@@ -102,6 +102,52 @@ else
   bad "m6l-pause-resume (see $log)"
 fi
 
+# M4N slice 4: one combined negation signed-stream oracle per worker count
+# (acyclic h/hs readers AND the recursive sweep reader in one program;
+# mixed-sign flushes over positives and negated inputs, ten flushes warm,
+# every flush diffed against a fresh run plus forced recount).
+for spec in 1:7101 2:7102 8:7108; do
+  threads="${spec%%:*}"
+  seed="${spec##*:}"
+  log="out/m4n-stress-t${threads}-s${seed}.log"
+  if SLOG_THREADS="$threads" timeout 1200 \
+       racket tests/api/negation-stream-fuzz.rkt "$seed" > "$log" 2>&1 \
+     && grep -qF "m4n-fuzz-ok $seed" "$log"; then
+    ok "m4n-fuzz-t${threads}-s${seed}"
+  else
+    bad "m4n-fuzz-t${threads}-s${seed} (see $log)"
+  fi
+done
+
+# M4N derived-negated boundary: the flush generator cycles route classes so
+# BOTH sides of the journal-sign decision fire every run (asserted in the
+# harness), with the constant-column negated atom keeping the body-constant
+# fix in the loop.
+for spec in 1:8101 2:8102 8:8108; do
+  threads="${spec%%:*}"
+  seed="${spec##*:}"
+  log="out/m4n-derived-stress-t${threads}-s${seed}.log"
+  if SLOG_THREADS="$threads" timeout 1200 \
+       racket tests/api/derived-neg-stream-fuzz.rkt "$seed" > "$log" 2>&1 \
+     && grep -qF "m4n-derived-fuzz-ok $seed" "$log"; then
+    ok "m4n-derived-fuzz-t${threads}-s${seed}"
+  else
+    bad "m4n-derived-fuzz-t${threads}-s${seed} (see $log)"
+  fi
+done
+
+# Force a large anti-delta negative phase across pause/resume boundaries,
+# with pauses attributed to the negation stratum's maint3neg flavor.
+log="out/m4n-pause-stress.log"
+if SLOG_THREADS=4 SLOG_MAX_MS=1 timeout 1200 \
+     racket tests/api/negation-pause-stress.rkt > "$log" 2>&1 \
+   && grep -qF "m4n-pause-stress-ok" "$log"; then
+  ok "m4n-pause-resume"
+  grep -F "m4n-pause-stress-ok" "$log"
+else
+  bad "m4n-pause-resume (see $log)"
+fi
+
 # Timing is reported rather than thresholded so a loaded CI host cannot make
 # the correctness gate flaky.  Route selection and settled state are asserted
 # inside the benchmark.

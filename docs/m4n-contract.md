@@ -265,6 +265,14 @@ exclusions (each a tested named fallback, in the M4S style):
      either case: absorption is head-side and only for rows that
      enter candidacy — a head surviving on independent support keeps
      the corrupted count.
+   **Witness amendment (slice-4 audit, 2026-07-23):** absent-ever's
+   LOSS witness cannot live in the staged delta indices — the retained
+   delta witness expires after one sweep round (the join-tomb lesson)
+   while corpse-driven probes fire in any later round; the fuzzer
+   caught the expired witness as a phantom decrement.  The cursor now
+   snapshots the epoch's negative journal at bind time (round-stable;
+   edit-sized by admission).  Gains keep witnessing through final
+   FULL, which is round-stable by finality.
    The exact sweep table is therefore:
    - **anti-delta versions** (drive ΔB⁺ in the sweep, ΔB⁻ in the
      rebuild): positive occurrences read the round-stable
@@ -349,7 +357,11 @@ exclusions (each a tested named fallback, in the M4S style):
    recursion, inheritance, structs(excluded), lattices(excluded)}
    each tested-by-name or consciously excluded; route-refusal batteries
    for every exclusion.
-4. **Exit audit** in the established style: the deterministic matrix
+4. **Exit audit** — **COMPLETE 2026-07-23** (the audit note with
+   battery shapes lands in incremental-status.md; fuzz harnesses
+   negation-stream-fuzz / derived-neg-stream-fuzz / negation-pause-
+   stress in the incremental-stress tier at 1/2/8 workers; count-IR
+   oracle legs on both canon runs).  As specified: the deterministic matrix
    plus the signed-stream fuzz harnesses extended to generate negative
    edges (m3/m4t-class programs with `~`), ten-flush warm sessions vs
    fresh recompute and forced recounts under 1/2/8 workers, forced

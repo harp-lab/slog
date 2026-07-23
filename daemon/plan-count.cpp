@@ -581,24 +581,31 @@ public:
   TupleView current() const override { return {}; }
 };
 
-// M4N slice 2 (the sweep's corpse-driven negated probe, contract slice-2
-// table): absence from FULL and from the staged delta -- excludes BOTH
-// blocker transition signs.  The negated stratum is final and its staged
-// delta is epoch-stable, so the predicate is round-independent.  Simpler
-// than the pre-state XOR: two plain bound-prefix witnesses, no sign
-// recovery.
+// M4N (the sweep's corpse-driven negated probe, contract slice-2 table;
+// witness source amended in slice 4): absence from FULL and from the
+// epoch's LOST rows -- excludes BOTH blocker transition signs.  Gains
+// witness through the final FULL index (round-stable by finality).
+// Losses CANNOT witness through the staged delta indices: the retained
+// delta witness lives only one round (the join-tomb lesson) while
+// corpse-driven probes fire in ANY later sweep round -- the slice-4
+// audit's fuzzer caught the expired witness as a phantom decrement.
+// The loss witness is therefore a bind-time snapshot of the epoch's
+// negative journal, which clears only at epoch boundaries; admission
+// guarantees the negated relation is input-edited, so the snapshot is
+// edit-sized and a linear prefix scan per probe is fine.
 template <u16 A>
 class AbsentEverCursor final : public PrefixCursor
 {
   Index** full;
-  Index** delta;
+  std::shared_ptr<const std::vector<std::vector<u64>>> lost;
+  std::vector<u16> order;    // index ordering: key[i] binds column order[i]
   std::vector<u16> regs_map; // bound prefix registers, index order
   u16 bound;
   std::array<u64, A> key{};
   bool allowed = false;
   bool fired = false;
 
-  bool present_in(Index** side) const
+  bool present_full() const
   {
     u16 first = 0, last = bucket_count;
     if (bound > 0)
@@ -608,7 +615,7 @@ class AbsentEverCursor final : public PrefixCursor
     }
     for (u16 b = first; b < last; ++b)
     {
-      auto* tree = static_cast<BTreeIndex<A>*>(side[b]);
+      auto* tree = static_cast<BTreeIndex<A>*>(full[b]);
       auto it = bound == 0 ? tree->begin() : tree->lower_bound(key);
       if (it == tree->end()) continue;
       bool same = true;
@@ -619,11 +626,26 @@ class AbsentEverCursor final : public PrefixCursor
     return false;
   }
 
+  bool present_lost() const
+  {
+    for (const std::vector<u64>& row : *lost)
+    {
+      if (row.size() < A) continue;
+      bool same = true;
+      for (u16 i = 0; i < bound; ++i)
+        if (row[order[i]] != key[i]) { same = false; break; }
+      if (same) return true;
+    }
+    return false;
+  }
+
 public:
-  AbsentEverCursor(Index** full_index, Index** delta_index,
+  AbsentEverCursor(Index** full_index,
+                   std::shared_ptr<const std::vector<std::vector<u64>>> lost_rows,
+                   const std::vector<u16>& index_order,
                    const std::vector<u16>& regs, u16 bound_width)
-    : full(full_index), delta(delta_index), regs_map(regs),
-      bound(bound_width) {}
+    : full(full_index), lost(std::move(lost_rows)), order(index_order),
+      regs_map(regs), bound(bound_width) {}
 
   std::unique_ptr<PrefixCursor> clone() const override
   {
@@ -634,7 +656,7 @@ public:
   {
     fired = false;
     for (u16 i = 0; i < bound; ++i) key[i] = regs[regs_map[i]];
-    allowed = !present_in(full) && !present_in(delta);
+    allowed = !present_full() && !present_lost();
   }
 
   CursorResult next(u64*, WorkBudget& budget) override
@@ -650,19 +672,23 @@ public:
 
 template <u16 A>
 std::unique_ptr<PrefixCursor> absent_ever_ladder(
-  u16 arity, Index** full, Index** delta,
+  u16 arity, Index** full,
+  std::shared_ptr<const std::vector<std::vector<u64>>> lost,
+  const std::vector<u16>& order,
   const std::vector<u16>& regs, u16 bound)
 {
   if constexpr (A == 0)
   {
-    (void)arity; (void)full; (void)delta; (void)regs; (void)bound;
+    (void)arity; (void)full; (void)lost; (void)order; (void)regs; (void)bound;
     return nullptr;
   }
   else
   {
     if (arity == A)
-      return std::make_unique<AbsentEverCursor<A>>(full, delta, regs, bound);
-    return absent_ever_ladder<A - 1>(arity, full, delta, regs, bound);
+      return std::make_unique<AbsentEverCursor<A>>(full, std::move(lost),
+                                                   order, regs, bound);
+    return absent_ever_ladder<A - 1>(arity, full, std::move(lost), order,
+                                     regs, bound);
   }
 }
 
@@ -894,14 +920,17 @@ std::unique_ptr<PrefixCursor> make_absent_pre_cursor(
 }
 
 std::unique_ptr<PrefixCursor> make_absent_ever_cursor(
-  u16 arity, Index** full, Index** delta,
+  u16 arity, Index** full,
+  std::shared_ptr<const std::vector<std::vector<u64>>> lost,
+  const std::vector<u16>& order,
   const std::vector<u16>& regs, u16 bound)
 {
   if (arity == 0 || arity > max_daemon_arity || bound > arity
-      || regs.size() != bound)
+      || regs.size() != bound || order.size() != arity || !lost)
     throw SealError(SealErrorK::factory,
                     "bind: absent-ever factory capability miss");
-  auto result = absent_ever_ladder<max_daemon_arity>(arity, full, delta,
+  auto result = absent_ever_ladder<max_daemon_arity>(arity, full,
+                                                     std::move(lost), order,
                                                      regs, bound);
   if (!result)
     throw SealError(SealErrorK::factory, "bind: absent-ever ladder miss");

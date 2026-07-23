@@ -2408,6 +2408,7 @@ timeout 900 racket tests/api/session-drive.rkt \
   batch-:b,1 batch+:b,3 batch+:a,4 batch-:a,2 flush \
   dump-rel:h dump-rel:hs dump-rel:down \
   dump-counts:h dump-counts:hs recount-force dump-counts:h dump-counts:hs \
+  pipeline input-ledger dump-all-counts \
   > out/sess-m4n-acyclic.log 2>&1
 if [ "$(grep -cE '\(route maintain-negated-negative [0-9]+ [0-9]+\)' out/sess-m4n-acyclic.log)" -eq 4 ] \
    && [ "$(grep -cE '\(route maintain-negated-positive [0-9]+ [0-9]+\)' out/sess-m4n-acyclic.log)" -eq 4 ] \
@@ -2425,6 +2426,7 @@ if [ "$(grep -cF '(dumpdone 2)' out/sess-m4n-acyclic.log)" -eq 7 ] \
 else
   echo "FAIL m4n-set-content"; FAIL=$((FAIL+1))
 fi
+versioned_count_oracle "m4n-acyclic-ir-oracle" out/sess-m4n-acyclic.log
 if [ "$(grep -cF '(countrow h 1 0 1 0)' out/sess-m4n-acyclic.log)" -eq 2 ] \
    && [ "$(grep -cF '(countrow h 4 0 1 0)' out/sess-m4n-acyclic.log)" -eq 2 ] \
    && [ "$(grep -cF '(countrow hs 1 0 1 0)' out/sess-m4n-acyclic.log)" -eq 2 ] \
@@ -2507,6 +2509,7 @@ timeout 900 racket tests/api/session-drive.rkt \
   batch-:blk,3 flush dump-rel:r \
   batch-:e,1,2 batch+:blk,4 flush dump-rel:r \
   dump-counts:r recount-force dump-counts:r \
+  pipeline input-ledger dump-all-counts \
   > out/sess-m4n-sweep.log 2>&1
 expect "m4n-sweep-initial-route" "(route maintain 1)" out/sess-m4n-sweep.log
 if [ "$(grep -cF '(route maintain-negated-recursive 1 1)' out/sess-m4n-sweep.log)" -eq 3 ] \
@@ -2525,12 +2528,34 @@ if [ "$(grep -cF '(dumpdone 6)' out/sess-m4n-sweep.log)" -eq 2 ] \
 else
   echo "FAIL m4n-sweep-content"; FAIL=$((FAIL+1))
 fi
+versioned_count_oracle "m4n-sweep-ir-oracle" out/sess-m4n-sweep.log
 if [ "$(grep -cF '(countrow r 1 2 0 1 0)' out/sess-m4n-sweep.log)" -eq 1 ] \
    && [ "$(grep -cF '(countrow r 3 4 0 1 0)' out/sess-m4n-sweep.log)" -eq 1 ] \
    && [ "$(grep -cF '(countrow r 2 3 0 1 0)' out/sess-m4n-sweep.log)" -eq 2 ]; then
   echo "PASS m4n-sweep-maintained-equals-recount"; PASS=$((PASS+1))
 else
   echo "FAIL m4n-sweep-maintained-equals-recount"; FAIL=$((FAIL+1))
+fi
+
+# Slice-4 fuzzer catch (the expired-witness bug): a lost premise AND a
+# lost blocker in one sweep flush.  The round-2 corpse probe against the
+# LOST blocker must witness it round-stably (the bind-time journal
+# snapshot) -- through the staged delta indices the witness expires after
+# round 1 and the phantom decrement poisons the epoch.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m4n_sweep.slog \
+  batch+:blk,3 batch+:e,0,1 batch+:e,1,3 flush dump-rel:r \
+  batch-:e,0,1 batch-:blk,3 flush dump-rel:r \
+  dump-counts:r recount-force dump-counts:r \
+  > out/sess-m4n-lostwitness.log 2>&1
+expect "m4n-lostwitness-route" "(route maintain-negated-recursive 1 1)" out/sess-m4n-lostwitness.log
+expect "m4n-lostwitness-settled" "(update-committed 2 counts-valid)" out/sess-m4n-lostwitness.log
+expect_not "m4n-lostwitness-no-rerun" "(route rerun" out/sess-m4n-lostwitness.log
+if [ "$(grep -cF '(dumpdone 1)' out/sess-m4n-lostwitness.log)" -eq 2 ] \
+   && [ "$(grep -cF '(countrow r 1 3 0 1 0)' out/sess-m4n-lostwitness.log)" -eq 2 ]; then
+  echo "PASS m4n-lostwitness-counts"; PASS=$((PASS+1))
+else
+  echo "FAIL m4n-lostwitness-counts"; FAIL=$((FAIL+1))
 fi
 
 # Repeated swept occurrences beside the negated input: the 3-cycle closure

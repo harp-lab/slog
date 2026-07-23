@@ -2476,6 +2476,25 @@ public:
 
   void invalidateUpdateCounts() { update_epoch_valid = false; }
 
+  // M4N slice 4 (docs/m4n-contract.md): a round-stable snapshot of one
+  // relation's LOST rows this epoch.  The sweep's absent-ever cursor
+  // cannot witness losses through the staged delta indices -- the
+  // retained delta witness lives only one round (the join-tomb lesson),
+  // while corpse-driven probes fire in ANY later round -- so it
+  // snapshots the negative journal at bind time instead (journals clear
+  // only at epoch boundaries; admission guarantees the negated relation
+  // is input-edited, so the journal is edit-sized).
+  std::shared_ptr<const std::vector<std::vector<u64>>>
+  journalLostSnapshot(Relation* rel)
+  {
+    std::lock_guard<std::mutex> lk(update_transition_mutex);
+    auto out = std::make_shared<std::vector<std::vector<u64>>>();
+    auto it = update_negative_transitions.find(rel->getVersionId());
+    if (it != update_negative_transitions.end())
+      out->assign(it->second.begin(), it->second.end());
+    return out;
+  }
+
   // M4N slice 3 (docs/m4n-contract.md): per-relation sign census of the
   // open epoch's journals.  Read-only -- the session's derived-negated
   // route reads it AFTER the producer prefix settles to decide whether

@@ -475,6 +475,19 @@ fixed with lift-driver-consts + a maint-flavor seal refusal + flavor
 ABI ci1-v2 (plans abi-keyed).  Next: slice 4 (exit audit) with
 `join-pre` and derived x recursive as recorded unlocks.
 
+**Checkpoint 2026-07-23 (M4N slice 4 — exit audit; M4N COMPLETE):**
+the negation fuzz harnesses land in the incremental-stress tier — the
+combined acyclic+sweep signed-stream oracle and the derived-negated
+boundary hammer (route classes cycled so both sides of the journal-sign
+decision fire every run, constant-column negated atom included), each
+at 1/2/8 workers, ten warm flushes diffed per flush against fresh
+recompute + forced recounts; the negation pause-stress attributes
+1ms-budget pauses to the anti-delta `_maint3neg` phase; count-IR oracle
+legs cover both canon runs.  The audit note is in
+incremental-status.md.  **M4N is complete — M7 (recursive lattice/rank
+repair) opens**, with `join-pre` and derived x recursive readers as its
+recorded companion unlocks.
+
 **Thread-0 bearings (2026-07-19, v3.0.1).**  How this thread proceeds:
 
 1. **M4N** (contract: m4n-contract.md, drafted 2026-07-19) — the
