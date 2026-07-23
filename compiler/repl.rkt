@@ -9,7 +9,8 @@
 ;; one authenticated Rust client connects over a loopback-only TCP listener
 ;; and exchanges Content-Length-framed JSON messages.
 
-(provide serve-repl)
+(provide serve-repl
+         plain-transcript) ; deterministic server-contract harness
 
 (require json
          racket/cmdline
@@ -137,9 +138,6 @@
            "current database is read-only; use `mode mutable` before changing it"))
   rs)
 
-(define (ensure-mutable-session! state who)
-  (repl-session-session (ensure-mutable-session-record! state who)))
-
 (define (session-display-name key rs)
   (or (repl-session-database rs)
       (and (eq? key scratch-key) "scratch")
@@ -205,6 +203,8 @@
    "  run PATH            compile and run a .slog program"
    "  add REL V...        add one input tuple and propagate it"
    "  del REL V...        retract one input tuple and propagate it"
+   "  rename FROM TO      rename one live relation without moving its data"
+   "  drop REL            remove one relation name at the next boundary"
    "  save NAME           save the current database as data/NAME"
    ""
    "Workbench"
@@ -225,8 +225,9 @@
        [(list _ verb argument)
         (values (string-downcase verb) (or argument ""))])]))
 
-(define (text-result title lines #:kind [kind "text"])
-  (hasheq 'kind kind 'title title 'lines lines))
+(define (text-result title lines #:kind [kind "text"] #:change [change #f])
+  (define result (hasheq 'kind kind 'title title 'lines lines))
+  (if change (hash-set result 'change change) result))
 
 (define (read-datum line)
   (with-handlers ([exn:fail? (lambda (_) #f)])
@@ -269,6 +270,45 @@
       [(list kind arity detail)
        (relation-info name kind arity detail (hash-ref sizes name 0))]
       [_ (relation-info name "relation" #f '() (hash-ref sizes name 0))])))
+
+;; A semantic command is observed at two settled points.  These snapshots are
+;; presentation evidence only: a failed observation must never turn an already
+;; committed session operation into a reported failure.  N2/N3 will eventually
+;; replace this name-keyed stopgap with boundary/VersionKey catalog deltas.
+(define (catalog-size-snapshot s)
+  (with-handlers ([exn:fail? (lambda (_) #f)])
+    (for/hash ([relation (in-list (live-catalog s))])
+      (values (relation-info-name relation) (relation-info-size relation)))))
+
+(define (signed-count amount)
+  (if (positive? amount) (format "+~a" amount) (~a amount)))
+
+(define (catalog-delta-records before after)
+  (cond
+    [(and before after)
+     (define names
+       (sort (remove-duplicates (append (hash-keys before) (hash-keys after)))
+             string<?))
+     (sort
+      (for/list ([name (in-list names)]
+                 #:when (or (not (hash-has-key? before name))
+                            (not (hash-has-key? after name))
+                            (not (= (hash-ref before name) (hash-ref after name)))))
+        (define before? (hash-has-key? before name))
+        (define after? (hash-has-key? after name))
+        (define old-size (if before? (hash-ref before name) 0))
+        (define new-size (if after? (hash-ref after name) 0))
+        (hasheq 'relation name
+                'before (if before? old-size 'null)
+                'after (if after? new-size 'null)
+                'net (- new-size old-size)))
+      (lambda (a b)
+        (define an (abs (hash-ref a 'net)))
+        (define bn (abs (hash-ref b 'net)))
+        (if (= an bn)
+            (string<? (hash-ref a 'relation) (hash-ref b 'relation))
+            (> an bn))))]
+    [else '()]))
 
 (define (internal-relation? name)
   (or (string-prefix? name "$")
@@ -402,6 +442,122 @@
   (define lines (session-action! s '(pipeline) read-one-response))
   (and (pair? lines) (read-datum (first lines))))
 
+(define (settled-session-state s)
+  (with-handlers ([exn:fail? (lambda (_) (values 'null "unknown"))])
+    (define revision
+      (match (pipeline-datum s)
+        [`(pipeline (pos ,_) (evaluation ,_) (update-epoch ,epoch) ,_ ...) epoch]
+        [_ 'null]))
+    (define counts
+      (match (session-action! s '(update-counts-valid) read-one-response)
+        [(list line)
+         (match (read-datum line)
+           [`(update-counts-valid 1) "valid"]
+           [`(update-counts-valid 0) "invalid"]
+           [_ "unknown"])]
+        [_ "unknown"]))
+    (values revision counts)))
+
+(define (route-records events)
+  (for/list ([line (in-list events)]
+             #:do [(define datum (read-datum line))]
+             #:when (match datum [`(route ,_ ,_ ...) #t] [_ #f]))
+    (match datum
+      [`(route ,kind ,detail ...)
+       (hasheq 'kind (~a kind) 'detail (map ~a detail))])))
+
+(define max-change-relations 8)
+
+(define (assemble-change operation target status requested events before after
+                         revision counts)
+  (define deltas (catalog-delta-records before after))
+  (define shown (take deltas (min max-change-relations (length deltas))))
+  (hasheq 'operation operation
+          'status status
+          'target target
+          'update-revision revision
+          'counts counts
+          'requested requested
+          'size-deltas shown
+          'size-deltas-omitted (- (length deltas) (length shown))
+          'sizes-observed (and before after #t)
+          'routes (route-records events)))
+
+(define (make-change s operation target status requested events before after)
+  (define-values (revision counts) (settled-session-state s))
+  (assemble-change operation target status requested events before after
+                   revision counts))
+
+(define (capture-semantic-change state rs operation status requested thunk)
+  (define s (repl-session-session rs))
+  (define before (catalog-size-snapshot s))
+  (define-values (value events) (capture-session-events state thunk))
+  (define after (catalog-size-snapshot s))
+  (values value
+          events
+          (make-change s operation (or (repl-session-database rs) "scratch")
+                       status requested events before after)))
+
+(define (change-relation-line record)
+  (define name (hash-ref record 'relation))
+  (define before (hash-ref record 'before))
+  (define after (hash-ref record 'after))
+  (define net (hash-ref record 'net))
+  (format "~a ~a (~a -> ~a)"
+          name (signed-count net)
+          (if (eq? before 'null) "new" before)
+          (if (eq? after 'null) "removed" after)))
+
+(define (change-summary-lines change)
+  (define revision (hash-ref change 'update-revision))
+  (define state-line
+    (string-append
+     (hash-ref change 'status)
+     (if (eq? revision 'null) "" (format " · update revision ~a" revision))
+     (format " · counts ~a" (hash-ref change 'counts))))
+  (define requested (hash-ref change 'requested))
+  (define size-deltas (hash-ref change 'size-deltas))
+  (define routes (hash-ref change 'routes))
+  (append
+   (list state-line)
+   (if (null? requested)
+       '()
+       (list
+        (format "requested: ~a"
+                (string-join
+                 (for/list ([record (in-list requested)])
+                   (define added (hash-ref record 'added 0))
+                   (define removed (hash-ref record 'removed 0))
+                   (string-append
+                    (hash-ref record 'relation)
+                    (if (zero? added) "" (format " +~a" added))
+                    (if (zero? removed) "" (format " -~a" removed))))
+                 "; "))))
+   (cond
+     [(not (hash-ref change 'sizes-observed))
+      (list "relation sizes: unavailable")]
+     [(null? size-deltas) (list "relation sizes: unchanged")]
+     [else
+      (list (format "size changes: ~a"
+                    (string-join (map change-relation-line size-deltas) "; ")))])
+   (if (positive? (hash-ref change 'size-deltas-omitted))
+       (list (format "...and ~a more relation-size changes"
+                     (hash-ref change 'size-deltas-omitted)))
+       '())
+   (if (null? routes)
+       '()
+       (list
+        (format "route: ~a"
+                (string-join
+                 (for/list ([record (in-list routes)])
+                   (string-join
+                    (cons (hash-ref record 'kind) (hash-ref record 'detail)) " "))
+                 "; "))))))
+
+(define (semantic-text-result title lines change #:kind kind)
+  (text-result title (append lines (change-summary-lines change))
+               #:kind kind #:change change))
+
 (define (state-result state argument)
   (define rs (ensure-session-record! state))
   (define datum (pipeline-datum (repl-session-session rs)))
@@ -444,18 +600,6 @@
                      #:kind "state")])]
     [other (error 'state "unparseable pipeline response: ~a" other)]))
 
-(define (interesting-load-events events)
-  (filter (lambda (line)
-            (regexp-match? #px"^\\((replayed|fixpoint|route)" line))
-          events))
-
-(define (interesting-mutation-events events)
-  (filter (lambda (line)
-            (regexp-match?
-             #px"^\\((overlay-(positive|negative)|route|update-committed)"
-             line))
-          events))
-
 (define (open-database! state name)
   (unless (db-exists? name) (error 'open "no database named ~a under data/" name))
   (define sessions (server-state-sessions state))
@@ -470,26 +614,26 @@
      (define replay?
        (for/or ([step (in-list (db-load-steps name))])
          (match step [`(replay ,_ ,_) #t] [`(replay-recipe ,_) #t] [_ #f])))
-     (define-values (_ events)
+     (define-values (_ events change)
        (with-handlers
            ([exn:fail?
              (lambda (e)
                (with-handlers ([exn:fail? void])
                  (session-close! (repl-session-session rs)))
                (raise e))])
-         (capture-session-events
-          state
+         (capture-semantic-change
+          state rs "open" "settled" '()
           (lambda () (session-open! (repl-session-session rs) name)))))
      (hash-set! sessions name rs)
      (set-server-state-current! state name)
-     (text-result
+     (semantic-text-result
       (format "Opened ~a" name)
       (append
        (list (if replay?
                  "compressed load materialized retained data and recomputed replay layers"
                  "database loaded into a new mutable in-memory workspace"))
-       (interesting-load-events events)
        (list "Try `current`, `tables`, `state`, `show REL`, or `query REL V...`."))
+      change
       #:kind "open")]))
 
 (define (current-result state)
@@ -588,20 +732,27 @@
      (when (string=? argument "")
        (error 'run "expected: run PATH"))
      (define rs (ensure-mutable-session-record! state 'run))
-     (define-values (_ events)
-       (capture-session-events
-        state (lambda () (session-run! (repl-session-session rs) argument))))
+     (define-values (_ _events change)
+       (capture-semantic-change
+        state rs "run" "settled" '()
+        (lambda () (session-run! (repl-session-session rs) argument))))
      (set-repl-session-changed?! rs #t)
-     (text-result (format "Run ~a" argument)
-                  (if (null? events) (list "run completed") events)
-                  #:kind "run")]
+     (semantic-text-result
+      (format "Run ~a" argument)
+      (list "program completed at a settled daemon boundary")
+      change
+      #:kind "run")]
     [(or "add" "del")
      (match-define (list* rel values)
        (read-command-data (string->symbol verb) argument #:minimum 2))
      (define rs (ensure-mutable-session-record! state (string->symbol verb)))
-     (define-values (_ events)
-       (capture-session-events
-        state
+     (define requested
+       (list (hasheq 'relation (relation-key rel)
+                     'added (if (string=? verb "add") 1 0)
+                     'removed (if (string=? verb "del") 1 0))))
+     (define-values (_ _events change)
+       (capture-semantic-change
+        state rs verb "settled" requested
         (lambda ()
           (session-batch! (repl-session-session rs)
                           (if (string=? verb "add") '+ '-)
@@ -609,11 +760,47 @@
                           values)
           (session-flush! (repl-session-session rs)))))
      (set-repl-session-changed?! rs #t)
-     (text-result (format "~a · ~a" (string-titlecase verb) (relation-key rel))
-                  (append (list (format "(~a ~a)" (relation-key rel)
-                                       (string-join (map ~s values) " ")))
-                          (interesting-mutation-events events))
-                  #:kind "mutation")]
+     (semantic-text-result
+      (format "~a · ~a" (string-titlecase verb) (relation-key rel))
+      (list (format "(~a ~a)" (relation-key rel)
+                    (string-join (map ~s values) " ")))
+      change
+      #:kind "mutation")]
+    ["rename"
+     (match (read-command-data 'rename argument #:minimum 2)
+       [(list from to)
+        (define rs (ensure-mutable-session-record! state 'rename))
+        (define-values (_ _events change)
+          (capture-semantic-change
+           state rs "rename" "settled" '()
+           (lambda ()
+             (session-rename! (repl-session-session rs)
+                              (string->symbol (relation-key from))
+                              (string->symbol (relation-key to))))))
+        (set-repl-session-changed?! rs #t)
+        (semantic-text-result
+         (format "Renamed ~a to ~a" (relation-key from) (relation-key to))
+         (list "relation identity was rebound without moving tuple data")
+         change
+         #:kind "mutation")]
+       [_ (error 'rename "expected: rename FROM TO")])]
+    ["drop"
+     (match (read-command-data 'drop argument)
+       [(list rel)
+        (define rs (ensure-mutable-session-record! state 'drop))
+        (define-values (_ _events change)
+          (capture-semantic-change
+           state rs "drop" "settled" '()
+           (lambda ()
+             (session-drop! (repl-session-session rs)
+                            (string->symbol (relation-key rel))))))
+        (set-repl-session-changed?! rs #t)
+        (semantic-text-result
+         (format "Dropped ~a" (relation-key rel))
+         (list "relation name was removed from the live environment")
+         change
+         #:kind "mutation")]
+       [_ (error 'drop "expected: drop REL")])]
     ["schema"
      (define s (ensure-session! state))
      (define lines
@@ -628,12 +815,16 @@
     ["save"
      (when (string=? argument "")
        (error 'save "expected: save NAME"))
-     (define s (ensure-mutable-session! state 'save))
-     (define-values (_ events)
-       (capture-session-events state (lambda () (session-save! s argument))))
-     (text-result (format "Saved ~a" argument)
-                  (if (null? events) (list "database saved") events)
-                  #:kind "save")]
+     (define rs (ensure-mutable-session-record! state 'save))
+     (define-values (_ _events change)
+       (capture-semantic-change
+        state rs "save" "saved" '()
+        (lambda () (session-save! (repl-session-session rs) argument))))
+     (semantic-text-result
+      (format "Saved ~a" argument)
+      (list "database materialization and replay recipe were written")
+      change
+      #:kind "save")]
     [(or ":quit" "quit" "exit")
      (set-server-state-closing?! state #t)
      (hasheq 'kind "quit" 'title "Goodbye" 'lines (list "REPL closed") 'close #t)]
@@ -641,6 +832,45 @@
      (error 'command
             (format "unknown command ~a; type :help for the current command set" verb))]))
   (attach-session-state state result))
+
+;; Deterministic transcript projection for the server contract.  This is a
+;; test harness, not a second interactive frontend: the future Rust --plain
+;; mode must render the same structured responses and is golden-compared to
+;; this projection before it replaces the harness at the executable boundary.
+(define (plain-command-result source result)
+  (define title (hash-ref result 'title))
+  (define lines (hash-ref result 'lines '()))
+  (string-append
+   (format "› ~a\n◆ ~a" source title)
+   (if (null? lines)
+       ""
+       (format "\n  ~a" (string-join lines "\n  ")))))
+
+(define (wire-round-trip value)
+  (define out (open-output-bytes))
+  (write-frame out value)
+  (read-frame (open-input-bytes (get-output-bytes out))))
+
+(define (plain-transcript commands)
+  (define state (server-state (make-hash) #f #f #f))
+  (dynamic-wind
+    void
+    (lambda ()
+      (string-append
+       (string-join
+        (for/list ([command (in-list commands)]
+                   #:break (server-state-closing? state))
+          (with-handlers
+              ([exn:fail?
+                (lambda (e)
+                  (format "› ~a\n! Command failed\n  ~a" command
+                          (exn-message e)))])
+            (plain-command-result
+             command
+             (wire-round-trip (dispatch-command state command)))))
+        "\n")
+       "\n"))
+    (lambda () (close-server-session! state))))
 
 (define (request-id request)
   (hash-ref request 'id 0))
@@ -767,7 +997,12 @@
   (serve-repl #:port port))
 
 (module+ test
-  (require rackunit)
+  (require rackunit
+           racket/runtime-path)
+
+  (define-runtime-path semantic-session-golden
+    "../tests/expected/repl/semantic-session.txt")
+  (define-runtime-path repository-root "..")
 
   (define out (open-output-bytes))
   (write-frame out (hasheq 'id 7 'method "ping"))
@@ -802,6 +1037,33 @@
   (check-equal? (hash-ref (dispatch-command state "resident") 'title)
                 "Resident databases")
 
+  (check-equal?
+   (catalog-delta-records (hash "a" 2 "b" 0) (hash "a" 5 "c" 0))
+   (list (hasheq 'relation "a" 'before 2 'after 5 'net 3)
+         (hasheq 'relation "b" 'before 0 'after 'null 'net 0)
+         (hasheq 'relation "c" 'before 'null 'after 0 'net 0)))
+
+  (define sample-request
+    (list (hasheq 'relation "edge" 'added 1 'removed 0)))
+  (define sample-change
+    (assemble-change "add" "scratch" "settled" sample-request
+                     (list "(route maintain 2)")
+                     (hash "edge" 3) (hash "edge" 4)
+                     7 "valid"))
+  (check-equal?
+   (wire-round-trip sample-change)
+   (hasheq 'operation "add"
+           'status "settled"
+           'target "scratch"
+           'update-revision 7
+           'counts "valid"
+           'requested sample-request
+           'size-deltas
+           (list (hasheq 'relation "edge" 'before 3 'after 4 'net 1))
+           'size-deltas-omitted 0
+           'sizes-observed #t
+           'routes (list (hasheq 'kind "maintain" 'detail (list "2")))))
+
   (define mode-state (server-state (make-hash) #f #f #f))
   (hash-set! (server-state-sessions mode-state)
              "alpha"
@@ -821,9 +1083,21 @@
                 (list "alpha  mutable · clean · current"))
   (define quit-state (server-state (make-hash) #f #f #f))
   (check-true (hash-ref (dispatch-command quit-state ":quit") 'close))
+  ;; The golden deliberately stops at the server contract.  It proves real
+  ;; session calls and deterministic presentation data without making this
+  ;; Racket process a competing user-facing frontend.
+  (define test-environment
+    (environment-variables-copy (current-environment-variables)))
+  (environment-variables-set! test-environment #"SLOG_NO_MEM_CAP" #"1")
   (check-equal?
-   (interesting-mutation-events
-    (list "(pipeline noisy)" "(overlay-positive edge 1 1)"
-          "(route maintain 0)" "(update-committed 1 counts-valid)"))
-   (list "(overlay-positive edge 1 1)"
-         "(route maintain 0)" "(update-committed 1 counts-valid)")))
+   (parameterize ([current-directory repository-root]
+                  [current-environment-variables test-environment])
+     (plain-transcript
+      (list "open sess_w2.edb"
+            "add edge 1 2"
+            "add edge 4 5"
+            "del edge 4 5"
+            "rename edge input_edge"
+            "drop path"
+            ":quit")))
+   (file->string semantic-session-golden)))

@@ -608,9 +608,10 @@ Thread 1 proceeds in this order:
    canonical workbench command patch is imported without the UX checkout's
    unrelated M4N work. There were no daemon-builder overlaps; the shared
    command boundary and terminal lifecycle pass their joint gates.
-4. **R0 → R1 on the shipped substrate (next)**: session ownership, semantic
-   verbs over `session-*!`, change summaries, golden `--plain`
-   transcripts; then the canvas.  Nothing here waits on thread 0 —
+4. **R0 → R1 on the shipped substrate (server-contract preparation landed
+   2026-07-22; client join next)**: session ownership, semantic verbs over
+   `session-*!`, change summaries, golden `--plain` transcripts; then the
+   canvas.  Nothing here waits on thread 0 —
    forward incrementality and the frozen monotone interpreter are the
    foundation, and `clear scratch` silently improves as thread 0's
    precise routes land (M4N just widened them to negation cones).
@@ -670,6 +671,43 @@ process exited zero. This is the clean handoff into coupled R0/R1 work. Next,
 add semantic session verbs over `session-*!` and a stable `--plain` golden
 transcript harness before canvas-specific behavior. Keep T0(c) identity work
 and Q1's N2/N3-dependent catalog meeting on their existing independent seams.
+
+**Thread-1 checkpoint (2026-07-22; semantic server contract prepared before
+the client join).** `compiler/repl.rkt` now wraps its existing `session-*!`
+calls in one settled semantic-result path. New loads, runs, add/delete,
+rename/drop, and saves return a structured `change` object alongside bounded
+text: operation/target/status, the daemon's explicitly named
+`update-revision`, counts-valid state, requested tuple edits, sorted
+before/after relation-size observations, and parsed route records. The
+distinctions are deliberate: an update revision is not an N2/N3 BoundaryKey,
+and a requested add is not claimed as an actual insert. The golden pins that
+truth with an existing-fact add whose request is `+1` while relation sizes are
+unchanged.
+
+Post-commit observations are best effort and cannot convert a successful
+session mutation into a reported command failure. The deterministic contract
+harness drives a real session through open, no-op/effective add, delete,
+rename, drop, and shutdown, round-trips every result through the actual
+Content-Length JSON framing, and compares the plain projection with a checked-
+in golden. It is now a named full-suite `repl` harness. No file under `repl/`
+changed: the user-facing Rust `--plain` mode remains the next client-side
+consumer, not a second Racket frontend.
+
+This checkpoint intentionally stops before three decisions/dependencies:
+`stage`/`flush` and `inject` need their command grammar and anchoring syntax
+pinned; honest `dbN` handles wait for N2/N3 BoundaryKeys rather than aliasing
+the update counter; and Q1 query verbs still wait for the N2/N3
+VersionKey/materialization overlay. T0(c) identity remains an independent
+engine track and does not block this client contract.
+
+The next join is intentionally one-dimensional: implement Rust `--plain` as a
+consumer of the existing framed result, hold it to the same semantic-session
+golden, and only then share its response model with the canvas. Do not add
+canvas-only state to the compiler contract. Before staging verbs land, decide
+buffer ownership across session switches, failure/discard behavior, flush
+atomicity, and BoundaryKey anchoring; relation-size summaries are useful
+settled evidence but are neither full tuple diffs nor support/provenance
+proofs.
 
 ### 4.3 Why the fork is safe
 

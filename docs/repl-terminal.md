@@ -144,8 +144,39 @@ a compatibility alias), `tables`,
 `state`, `count`, bounded `show`, and prefix-existence `query`. They compose
 the existing `schema`, `sizes`, `pipeline`, `dump-tuples`, and `lookup` action
 plugins; no daemon source changes are required. `run`, `add`, and `del` extend
-the selected session, while `mode readonly` provides a REPL-side mutation
-guard.
+the selected session; `rename` and `drop` expose the corresponding settled
+session environment operations; and `mode readonly` provides a REPL-side
+mutation guard.
+
+Successful semantic responses carry a structured `change` object in addition
+to their bounded human-readable lines. It records the operation and target,
+settled status, the daemon's **update revision** and counts-valid state,
+requested direct tuple edits, sorted before/after relation-size observations,
+and structured route records. `update-revision` is deliberately not called a
+boundary or `dbN`: rename/drop do not advance that fact-update counter, and
+only N2/N3 can supply the real BoundaryKey-backed timeline. Likewise,
+`requested` is not a claim that a tuple changed—normalization may make an add
+or delete a no-op; the before/after relation observations are the settled
+effect. Those observations are relation cardinalities, not a tuple diff or a
+claim that support/provenance state was unchanged. They are bounded
+presentation evidence; consumers must preserve the distinction in both labels
+and logic.
+
+Summary observations are best effort and can report unavailable/unknown; a
+failed post-commit observation must never turn a successful session operation
+into a command failure. A deterministic server-contract transcript harness
+round-trips every result through the actual JSON framing and pins open,
+add/delete, rename/drop, and shutdown against a golden. It is preparation for,
+not a substitute for, the Rust executable's future `--plain` frontend.
+
+The client join should therefore begin narrowly: make Rust `--plain` render
+these framed results and pass the same semantic-session golden, then let the
+canvas consume that shared client model. Display-only canvas state does not
+belong in the compiler response. `stage`/`flush` and `inject` remain deferred
+until their ownership and anchoring rules are explicit: whether a staged
+buffer follows or pins the selected session, what switching or failure does to
+it, whether a flush is atomic, and which BoundaryKey an anchored operation
+names. A temporary update counter must not masquerade as that boundary.
 
 ### 4.1 Trusted-local co-author protocol
 
