@@ -11,7 +11,7 @@ remains normative for its content.
 
 | stream | document | slices | status 2026-07-19 (v3.0.1) |
 |---|---|---|---|
-| incremental maintenance | [incremental.md](incremental.md), [incremental-status.md](incremental-status.md) | Phase 0, M0–M7 | Phase 0, M0, M1, M3, M6L 1–2, M4T, M5, M4S shipped; **counted-interpreter milestone complete** ([counted-interp-contract.md](counted-interp-contract.md), all 4 slices); queue **M4N ([m4n-contract.md](m4n-contract.md)) → M7** |
+| incremental maintenance | [incremental.md](incremental.md), [incremental-status.md](incremental-status.md) | Phase 0, M0–M7 | Phase 0, M0, M1, M3, M6L 1–2, M4T, M5, M4S, **M4N ([m4n-contract.md](m4n-contract.md), all 4 slices)** shipped; **counted-interpreter milestone complete** ([counted-interp-contract.md](counted-interp-contract.md)); queue **M7 ([m7-contract.md](m7-contract.md), draft)** |
 | execution tiers | [execution-tiers.md](execution-tiers.md) | T0–T6, Q1 | T1 shipped; T2 core frozen, monotone conformance groups closed, **flavored execution interp-only by default**; T0 slice (a) landed; T3a/T4+ unstarted |
 | modules/namespaces | [modules.md](modules.md) | N0–N5 | N0 landed; N1+ unstarted |
 | reflection | [slog-reflection.md](slog-reflection.md) | RF0–RF5 | RF0 done; RF1 slice 0 shipped (plan determinism); ABI-2 split pending |

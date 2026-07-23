@@ -1533,7 +1533,12 @@ This is not a prerequisite for M4T.
 ### M7 — recursive lattice/rank repair
 
 Implement change splitting and regression repair for admitted recursive
-lattices. Keep non-stable recursive aggregates rejected.
+lattices. Keep non-stable recursive aggregates rejected. The narrower state,
+admission, and repair-fixpoint lifecycle are pinned in
+[m7-contract.md](m7-contract.md): stored-contributor repair (extending M6L's
+`Contrib` plus per-tuple rank witnesses) unifying recursive lattice value
+regression and foundedness rank regression over one DRed^c
+candidate/replacement substrate (§7A.3/§7A.4), ratified 2026-07-23.
 
 ---
 
