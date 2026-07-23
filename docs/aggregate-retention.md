@@ -92,6 +92,17 @@ second deletion triggers a refill instead. The counterexample pins two
 rules: never certify a retained row below `h`, and `h` only rises between
 refills.
 
+A simpler equivalent discipline (Yi et al., see lineage): never backfill at
+all — let the retained set shrink on deletions and admit only payloads that
+beat the *current retained minimum*, which is then non-decreasing between
+refills and acts as an implicit watermark. That variant needs no stored `h`
+(one fewer sidecar scalar) at the cost of ignoring payloads in `(h, min)`
+that our rule would retain. Both are sound; pick at implementation time.
+Yi et al. also note the refill can run *eagerly* — triggered at low
+headroom rather than at exhaustion — so the cone recompute happens off the
+critical path while precise answers continue from the remaining rows; that
+composes naturally with our background-upgrade patterns.
+
 **Headroom and storms.** Headroom is ~k contributor *deaths* per key between
 refills — in a recursive cone one input deletion can cascade into many
 contributor deaths at once (DRed candidates kill derived contributors), so
@@ -145,11 +156,45 @@ wide (dense in-degree under min/max) and per-key regressions between refills
 are rarer than k. M7's sidecar-memory exit gate produces exactly the numbers
 needed to decide whether this experiment is ever worth running.
 
-## Lineage
+The buffer-sizing theory exists (Yi et al. 2003, random-walk hitting-time
+analysis of exactly this headroom scheme): with balanced insert/delete
+pressure on a key, headroom n = N^(1/2+ε) over N contributions makes the
+expected refill interval exceed N updates with high probability — e.g. their
+table shows 0.45% of a million-row domain buys a >10^6-update refill
+interval at 99.98% — and with insert-dominant pressure (the common Datalog
+case: facts mostly accrete) n = O(log N) suffices. The converse is the
+admission caveat: under *deletion-dominant* pressure the walk is absorbing
+and no sublinear buffer helps (they need n = Θ(N)), so the future experiment
+should consult observed insert/delete ratios (the `$stat_fires` tables)
+before enabling truncation on a cone, and prefer full retention there. One
+transferable nuance: their refill is an O(N) base-table scan, while ours is
+a cone recompute that can cost far more — their analysis bounds refill
+*frequency*, which is precisely the quantity our heavier refill makes
+matter; it argues for generous k and eager refill on our side. Their §7
+runtime procedure for adapting k_max to the observed workload without prior
+knowledge is the shape a per-relation auto-tuned k would take here.
 
-Top-k retention making MIN/MAX views self-maintainable under bounded
-deletions is a warehouse-era result from the self-maintainable-views
-literature (mid-1990s); "selective" for joins returning one of their
-arguments is standard semiring vocabulary; tournament trees and heaps as
-collapsed aggregation trees are classical. Verify precise citations before
-citing externally.
+## Lineage (citations verified 2026-07-23)
+
+- D. Quass, A. Gupta, I. S. Mumick, J. Widom, **"Making Views
+  Self-Maintainable for Data Warehousing,"** PDIS 1996, pp. 158–169. The
+  self-maintainability concept: augment a materialized view with auxiliary
+  views so maintenance never re-queries the sources. The auxiliary-data
+  idea our contributor sidecar instantiates.
+- K. Yi, H. Yu, J. Yang, G. Xia, Y. Chen, **"Efficient Maintenance of
+  Materialized Top-k Views,"** ICDE 2003 (Duke). Exactly the truncated
+  scheme above: maintain a top-k′ view with k′ floating in [k, k_max],
+  shrink on deletions, refill only when k′ < k, with a random-walk model
+  giving the buffer-sizing and amortized-O(1)-refill results quoted in the
+  cost sketch, plus a runtime procedure for choosing k_max adaptively.
+- Context, optional: I. S. Mumick, D. Quass, B. S. Mumick, "Maintenance of
+  Data Cubes and Summary Tables in a Warehouse," SIGMOD 1997 (summary-delta
+  maintenance of aggregates; MIN/MAX deletions recompute affected groups);
+  T. Palpanas, R. Sidle, R. Cochrane, H. Pirahesh, "Incremental Maintenance
+  for Non-Distributive Aggregate Functions," VLDB 2002 (the "work areas"
+  scheme — the same headroom idea, developed independently of Yi et al.,
+  without the sizing analysis).
+
+"Selective" for joins returning one of their arguments is standard semiring
+vocabulary; tournament trees and heaps as collapsed aggregation trees are
+classical.
