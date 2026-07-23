@@ -66,13 +66,33 @@ that substrate, and the tombstone persistence policy is pinned and
 implemented (the chain is the sidecar). The remaining implementation
 queue, in the decided order, is:
 
-1. **Counted interpreter admissibility** — the gate in front of the
-   rest of the queue; `docs/counted-interp-contract.md` (2026-07-17) is
-   the design contract (slices, plan-attribute doctrine, per-flavor
-   sidecar-equality definition, exit audit).
-2. **M4N — precise stratified negation**, then **M7 — recursive
-   lattice/rank repair** (both interpreter-first per roadmap P4, as
-   interpreter variants on the admitted counted core).
+1. **M7 — recursive lattice/rank repair** (interpreter-first per roadmap
+   P4, as interpreter variants on the admitted counted core; the counted
+   interpreter and M4N are complete — see their exit audits below).
+   `docs/m7-contract.md` (2026-07-23) is the certification target and the
+   **single admission gate**; the sub-slices below are implementation
+   order only, not separately certified admissions. Admission stays off
+   until (b) lands, so no sub-slice weakens fallback:
+   - (a) **sidecar substrate** — same-SCC contributor retention plus the
+     new rank-witness sidecar (eager forward maintenance) and its
+     coverage/certification plumbing; regressions still fall back; gated
+     by the fresh-recount oracles.
+   - (b) **repair fixpoint on plain tables** — M4T candidate seeding, the
+     rank-unchanged exclusion, value re-join from live contributors,
+     replacement pairs; opens admission. Fixtures: recursive value
+     regression, rank corpse fire, contributor collapse/loser retention.
+   - (c) **struct-keyed cones + persistence** — M5 tombstone identity
+     across delete/reseed/relearn; load re-establishment from the exact
+     historical writers, or certified fallback when that is impossible.
+   - (d) **hygiene + exit** — recount abort/retry and replacement-journal
+     hygiene, named-fallback routing, the warm multi-worker fuzz,
+     sidecar-memory reporting, and the exit audit (the M4N slice-4
+     shape).
+
+   Scope note: the `m6l-negation-fallback` route (~ × lattices) does
+   **not** clear with M7 slice 1 — the contract keeps negation over a
+   changing lattice key on clear-and-rerun until a later, separately
+   certified slice.
 
 The handoff gates are `tests/run-all.sh --quick`, `tests/run-all.sh session`,
 and `tests/run-all.sh incremental-stress`. The complete orchestrator remains
@@ -788,7 +808,7 @@ commits counts-valid.
 | ~ x demand, blocker inside the demand cone | EXCLUDED via structs (demand memoization is struct-backed) | `m4n-demand-inside-fallback` |
 | ~ x temps | subsumed: maintenance planning stages temps only for struct construction, so ~ x temps c ~ x structs; flat conjunctive bodies plan temp-free at any width (probed to 6 clauses) | planner probe 2026-07-22; struct row below |
 | ~ x structs in the cone | EXCLUDED (pinned, M4S owns the tombstone interplay) | `m4s-negstruct`, `m4n_demand_inside` |
-| ~ x lattices | EXCLUDED (pinned, M7 owns) | `m6l-negation-fallback` (also 'negw-shaped) |
+| ~ x lattices | EXCLUDED (pinned, M7 owns; NOT cleared by M7 slice 1 — m7-contract.md keeps it on clear-and-rerun until a later separately certified slice) | `m6l-negation-fallback` (also 'negw-shaped) |
 | prefix/wildcard negation ('negw) | FALLBACK by shape (prefix absence is not row-transition-maintainable) | `m4n-negw-fallback` |
 | relation read both + and ~ in one cone | FALLBACK | `m4n-mixedread-fallback` |
 | ~ under `SLOG_FLAVORED_NATIVE` | FALLBACK at admission (anti-delta variants have no native leg; emit-cpp static_asserts) | `m4n-native-fallback` |

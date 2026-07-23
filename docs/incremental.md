@@ -1015,8 +1015,14 @@ shapes. It does **not** make either feature free: finding the next surviving
 value requires stored contributors, localized rule re-evaluation, or a
 hybrid.
 
-M7 must choose that tradeoff using workload measurements. Until then,
-recursive lattice regressions route to clear-and-rerun.
+M7 must choose that tradeoff deliberately. **Ratified 2026-07-23**
+([m7-contract.md](m7-contract.md)): M7 implements stored contributors,
+extending M6L's retained contributor state rather than building a localized
+re-evaluation engine. The workload measurements move to M7's sidecar-memory
+gate, and a localized-re-evaluation variant remains a permitted later swap
+behind the same repair seam — as does the truncated top-k retention
+interpolation sketched in [aggregate-retention.md](aggregate-retention.md).
+Until M7 ships, recursive lattice regressions route to clear-and-rerun.
 
 ### 7A.4 DRed repair versus rank repair
 

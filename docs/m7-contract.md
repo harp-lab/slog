@@ -17,7 +17,17 @@ Direction ratified 2026-07-23:
   re-derivation. This reuses shipped machinery (M6L contributor state, the
   M4T DRed^c candidate/reseed path); the cost is sidecar memory, revisited
   only if the §7A.3 workload measurements later justify a localized-re-eval
-  variant behind the same seam.
+  variant behind the same seam; the truncated top-k interpolation and the
+  retention-class hook it needs are sketched in
+  [aggregate-retention.md](aggregate-retention.md) (future, experimental).
+- **Interpreter-first, freeze-compliant.** M7's repair rounds execute as VM
+  plan flavors, like the shipped counted/maintenance and M4N variants; no
+  native leg is added (under `SLOG_FLAVORED_NATIVE=1` the recursive
+  lattice/rank routes fall back at admission, mirroring M4N's
+  `m4n-native-fallback`). Contributor sinks and rank-witness folds are
+  registration/binding/sink additions under the frozen interpreter core
+  ([interp-core-contract.md](interp-core-contract.md)); new opcodes, if any,
+  land in reserved opcode space, and no frozen state-machine arm changes.
 
 M7 retires the M6L recursive-producer/recursive-consumer fallback *only* for
 the monotone, stability-certified forms below. Everything else stays on
@@ -47,6 +57,12 @@ precise admission, or falls back — identical to M6L's contributor-cache rule.
 Both sidecars preserve the same VersionId, writer, count-epoch, and coverage
 invariants as an ordinary hidden relation, exactly as M6L requires of its
 contributor sidecar.
+
+Retention class is part of certification: both caches are *complete* in M7.
+The repair fixpoint consults them only through the next-surviving-value/rank
+seam, so a future truncated retention class
+([aggregate-retention.md](aggregate-retention.md)) can slot in without
+redesign; no caller may assume contributor completeness as an ambient fact.
 
 ## The repair fixpoint
 
@@ -102,11 +118,19 @@ recursive (same-SCC) cone that is:
 Maintain contributors and rank witnesses; repair regressions from stored
 state through the fixpoint above.
 
+Slice 1 is implemented through four internal sub-slices — substrate, repair
+fixpoint, structs + persistence, hygiene + exit — tracked in
+[incremental-status.md](incremental-status.md). They are implementation
+order only: this contract remains the single certification target, and
+admission stays off until the repair-fixpoint sub-slice lands, so no
+sub-slice weakens fallback.
+
 Until a later slice is separately certified, fall back (clear-and-rerun) for:
 
 - a user-defined recursive lattice whose stability is asserted but not a
   trusted built-in or a checkable certificate (§7A.1);
-- negation over the changing lattice key that M4N does not already cover;
+- negation over the changing lattice key that M4N does not already cover
+  (the shipped `m6l-negation-fallback` route remains in force);
 - SQL-style non-idempotent SUM/COUNT/AVG folds (those are M6A, a separate
   language feature, never an alias for the count semilattice);
 - struct/nullary/diagnostic/fallible or unsupported side-channel cones;
@@ -133,8 +157,11 @@ forced fresh version-local recount.
   `(key, payload)`; regression falls to a retained losing payload.
 - **Struct-keyed recursive lattice:** reuses M5 tombstone identity across
   delete/reseed/relearn with stable ids.
-- **Persistence:** save/reopen from an uncertified contributor+rank cache,
-  then exact repair on the first regression.
+- **Persistence:** save/reopen; load re-establishes the contributor and rank
+  caches from the exact historical writers (certifying them) before the first
+  regression repairs precisely — plus a companion case where exact
+  re-establishment is impossible and the regression confirms the fallback
+  route instead.
 - **Transaction hygiene:** recount abort/retry, counter overflow fallback,
   healing, and next-epoch replacement-journal hygiene.
 - **Named fallback:** uncertified user recursive fold, negated changing key,
