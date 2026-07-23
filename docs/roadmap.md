@@ -486,7 +486,8 @@ recompute + forced recounts; the negation pause-stress attributes
 legs cover both canon runs.  The audit note is in
 incremental-status.md.  **M4N is complete — M7 (recursive lattice/rank
 repair) opens**, with `join-pre` and derived x recursive readers as its
-recorded companion unlocks.
+recorded companion unlocks.  **v3.1.0 tagged on the milestone**
+(2026-07-23; .version, display-only).
 
 **Thread-0 bearings (2026-07-19, v3.0.1).**  How this thread proceeds:
 
@@ -633,6 +634,19 @@ must own generation/phase admission plus `query`/`query-page`/`query-cancel`.
 The payload/builder seam is ready for that meeting, but deliberately has no
 exact-command branch in `slogd.cpp`. The R2 parser/rendering and transcript
 battery follow the dispatcher integration.
+
+**Checkpoint 2026-07-23 (T0 slices (b)+(d) — R0–R1 UNBLOCKED):** the
+entry modes land as `installStratumChecked` (the ONE checked path;
+legacy entries are byte-identical forwarding shims; the accidental
+name-match firewall is retired by the explicit upgrade attribute and
+gate 12.13's resident-count refusal) with the `(install-stratum ...)`
+command verb and its typed `(refused entry-mode ...)` class; the
+uniform pause record ships scoped by protocol mode — budget/boundary
+classes live, the cause grammar with the watch-citation variant
+validated and golden'd, path-stack bytes untouched.  Protocol battery
+60/60.  With (a)+(b)+(d) banked, **thread 1's R0–R1 full start is
+unblocked**; the level-0 watch battery consumes the pause record
+post-fork as planned.
 
 **Thread-1 bearings (2026-07-19, v3.0.1).**  How this thread proceeds:
 

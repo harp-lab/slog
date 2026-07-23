@@ -156,6 +156,115 @@ else
   bad "run-replay-setup (no stratum .so paths in out/proto-fixture.log)"
 fi
 
+# --- 9. entry modes: (install-stratum ...) (T0 slice (b)) --------------------
+# Verb-level refusals: parse shape, unknown mode, the (at P) combination
+# rules, and the no-stratum disarm (a failed load must not leak the armed
+# mode into the next legacy push -- the trailing fresh install proves the
+# session still works).
+racket tests/api/drive.rkt \
+  "(install-stratum)" \
+  "(install-stratum (path \"no/such.so\") (entry sideways))" \
+  "(install-stratum (path \"no/such.so\") (entry resident-count))" \
+  "(install-stratum (path \"no/such.so\") (entry fresh) (at 3))" \
+  "(install-stratum (path \"no/such.so\") (entry fresh))" \
+  > out/proto-entry-refusals.log 2>&1
+expect "entry-parse-refusal"    '(refused parse' out/proto-entry-refusals.log
+expect "entry-unknown-mode"     'unknown entry mode sideways' out/proto-entry-refusals.log
+expect "entry-count-needs-at"   'resident-count requires (at P)' out/proto-entry-refusals.log
+expect "entry-fresh-no-at"      'fresh takes no (at P)' out/proto-entry-refusals.log
+expect "entry-load-disarms"     'plugin did not install a stratum' out/proto-entry-refusals.log
+
+# The session workflow through the command dual-stack: every fixture
+# stratum installed via the explicit verb, driven to fixpoint, catalog
+# populated; an upgrade against the idle daemon is a typed refusal from
+# the ONE checked path.
+if [ "${#SOS[@]}" -ge 1 ]; then
+  LINES=()
+  for so in "${SOS[@]}"; do
+    LINES+=("(install-stratum (path \"$so\") (entry fresh))")
+    for i in 1 2 3 4 5; do LINES+=("(continue)"); done
+  done
+  LINES+=("(install-stratum (path \"${SOS[0]}\") (entry upgrade))")
+  LINES+=("(catalog)")
+  racket tests/api/drive.rkt "${LINES[@]}" > out/proto-entry-install.log 2>&1
+  expect     "entry-installed" "(installed (path \"${SOS[0]}\") (entry fresh))" out/proto-entry-install.log
+  expect_rx  "entry-fixpoint"  '\(fixpoint ' out/proto-entry-install.log
+  expect     "entry-upgrade-idle-refused" 'upgrade requires a suspended stratum' out/proto-entry-install.log
+  expect_rx  "entry-catalog-populated" '\(catalog-rel \(name "mk"\) \(kind struct\)' out/proto-entry-install.log
+  # TCP twin: the same workflow, byte-equal key replies
+  racket tests/api/tcp-drive.rkt "${LINES[@]}" > out/proto-entry-install-tcp.log 2>&1
+  expect "entry-tcp-installed" "(installed (path \"${SOS[0]}\") (entry fresh))" out/proto-entry-install-tcp.log
+  expect "entry-tcp-upgrade-refused" 'upgrade requires a suspended stratum' out/proto-entry-install-tcp.log
+else
+  bad "entry-install-setup (no stratum .so paths)"
+fi
+
+# --- 10. the uniform pause record (T0 slice (d)) -----------------------------
+# A deliberately budget-heavy stratum (300x300 pair product) under a 1ms
+# budget: the entry's internal continue pauses on BUDGET; subsequent
+# (continue-boundary) lines pause at iteration BOUNDARIES; both classes
+# arrive as the ONE structured record on a command-marked session, while
+# a path-mode twin keeps the 8-field bytes -- byte-compat asserted both
+# directions.
+# (A recursive closure: budget pauses need slices that expire mid-work,
+# boundary pauses need interior iteration boundaries -- a single-pass
+# stratum has neither.)
+{
+  echo "table (e int int)"
+  echo "table (p int int)"
+  echo "rule (e X Y) --> (p X Y)"
+  echo "rule (p X Y) (e Y Z) --> (p X Z)"
+  printf 'rule'
+  for i in $(seq 1 400); do printf ' (e %d %d)' "$i" "$((i+1))"; done
+  echo
+} > out/proto-pause.slog
+# Ground-fact rules are EDB (provided on load, never re-derived), so a
+# bare stratum replay sees empty inputs; open the saved DB first and the
+# reload restages every row for the re-derivation the budget slices.
+rm -rf data/protopausedb
+if SLOG_OPT=0 timeout 600 racket compiler/run.rkt --no-banner --out-db protopausedb \
+     out/proto-pause.slog > out/proto-pause-build.log 2>&1; then
+  PAUSE_OPEN_SO=$(racket -e '(require (file "'"$PWD"'/compiler/actions.rkt")) (displayln (action-so (list (quote open) "protopausedb")))' 2>/dev/null)
+  mapfile -t PSOS < <(grep -oE 'build/[a-f0-9]+(\.O0)?\.so' out/proto-pause-build.log | grep -v 'action-' | awk '!seen[$0]++')
+  PLINES=("(catalog relations)" "$PAUSE_OPEN_SO")
+  for so in "${PSOS[@]}"; do
+    PLINES+=("$so")
+    for i in $(seq 1 60); do PLINES+=("(continue-boundary)"); done
+  done
+  SLOG_MAX_MS=1 racket tests/api/drive.rkt "${PLINES[@]}" \
+    > out/proto-pause-cmd.log 2>&1
+  expect_rx "pause-uniform-budget" '\(pause \(class budget\) \(cause \(arbitrary\)\) \(stratum "[^"]+"\) \(scc [0-9]+\) \(iteration [0-9]+\) \(phase (read|iter)\) \(new-tuples [0-9]+\) \(slice-ms [0-9.]+\) \(total-ms [0-9.]+\) \(reason (time|memory)\)\)' out/proto-pause-cmd.log
+  expect_rx "pause-uniform-boundary" '\(pause \(class boundary\) \(cause \(arbitrary\)\)' out/proto-pause-cmd.log
+  expect_not "pause-cmd-no-legacy" '(paused ' out/proto-pause-cmd.log
+  expect_rx  "pause-cmd-fixpoint" '\(fixpoint ' out/proto-pause-cmd.log
+  # the path-mode twin: byte-identical legacy record, no uniform record
+  PLINES2=("$PAUSE_OPEN_SO")
+  for so in "${PSOS[@]}"; do
+    PLINES2+=("$so")
+    for i in $(seq 1 60); do PLINES2+=("(continue-boundary)"); done
+  done
+  SLOG_MAX_MS=1 racket tests/api/drive.rkt "${PLINES2[@]}" \
+    > out/proto-pause-path.log 2>&1
+  expect_rx  "pause-legacy-8field" '\(paused [0-9]+ "[^"]+" [0-9]+ (read|iter) [0-9]+ [0-9.]+ [0-9.]+ (time|memory)\)' out/proto-pause-path.log
+  expect_not "pause-path-no-uniform" '(pause (class' out/proto-pause-path.log
+  expect_rx  "pause-path-fixpoint" '\(fixpoint ' out/proto-pause-path.log
+else
+  bad "pause-fixture-build (see out/proto-pause-build.log)"
+fi
+
+# --- 11. the cause-variant validator (T0 slice (d)) --------------------------
+# A watch citation parses and renders as a cause VARIANT of the one
+# record -- proven against every class, both variants, and the refusal
+# edges, without a message-shape change.
+if g++ -O0 -Wall -std=c++20 -Idaemon tests/pause-record-validator.cpp \
+     daemon/sexp.cpp -o build/pause-record-validator 2> out/proto-validator-build.log \
+   && ./build/pause-record-validator > out/proto-validator.log 2>&1 \
+   && grep -qF "pause-record-validator: all checks passed" out/proto-validator.log; then
+  ok "pause-cause-validator"
+else
+  bad "pause-cause-validator (see out/proto-validator.log)"
+fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -76,5 +76,82 @@ inline std::string quoteString(const std::string& s)
   return q;
 }
 
+// T0 slice (d): the uniform pause record's cause grammar.  A cause is
+// either (arbitrary) or a for-cause citation -- today's designed variant
+// is (watch (key K) (relation "R") (kind size|delta|error)) -- and
+// watches later ADD VARIANTS here, never a new message kind.  The
+// validator is what the slice's tests drive: a watch citation must parse
+// and render without changing the record's shape.
+inline bool validatePauseCause(const sexp::SExp& cause, std::string& why)
+{
+  if (cause.kind != sexp::SExp::K::list || cause.children.empty()
+      || cause.children[0].kind != sexp::SExp::K::atom
+      || cause.children[0].text != "cause")
+  { why = "expected (cause ...)"; return false; }
+  if (cause.children.size() != 2
+      || cause.children[1].kind != sexp::SExp::K::list
+      || cause.children[1].children.empty()
+      || cause.children[1].children[0].kind != sexp::SExp::K::atom)
+  { why = "expected one variant payload"; return false; }
+  const sexp::SExp& variant = cause.children[1];
+  const std::string& tag = variant.children[0].text;
+  if (tag == "arbitrary")
+  {
+    if (variant.children.size() != 1)
+    { why = "(arbitrary) takes no fields"; return false; }
+    return true;
+  }
+  if (tag == "watch")
+  {
+    bool have_key = false, have_rel = false, have_kind = false;
+    for (size_t i = 1; i < variant.children.size(); ++i)
+    {
+      const sexp::SExp& field = variant.children[i];
+      if (field.kind != sexp::SExp::K::list || field.children.size() != 2
+          || field.children[0].kind != sexp::SExp::K::atom)
+      { why = "watch fields are (key value) pairs"; return false; }
+      const std::string& key = field.children[0].text;
+      const sexp::SExp& val = field.children[1];
+      if (key == "key" && val.kind == sexp::SExp::K::atom) have_key = true;
+      else if (key == "relation" && val.kind == sexp::SExp::K::string)
+        have_rel = true;
+      else if (key == "kind" && val.kind == sexp::SExp::K::atom
+               && (val.text == "size" || val.text == "delta"
+                   || val.text == "error"))
+        have_kind = true;
+      else { why = "unknown watch field " + key; return false; }
+    }
+    if (!(have_key && have_rel && have_kind))
+    { why = "watch citation needs (key K) (relation \"R\") (kind size|delta|error)"; return false; }
+    return true;
+  }
+  why = "unknown cause variant " + tag;
+  return false;
+}
+
+// Validate a full uniform pause record (the message shape the command
+// stack emits): (pause (class C) (cause V) (stratum "S") ...).  Field
+// ORDER is part of the golden contract; unknown trailing fields are
+// permitted so the record can grow without a message-kind change.
+inline bool validatePauseRecord(const sexp::SExp& record, std::string& why)
+{
+  if (record.kind != sexp::SExp::K::list || record.children.empty()
+      || record.children[0].kind != sexp::SExp::K::atom
+      || record.children[0].text != "pause")
+  { why = "expected (pause ...)"; return false; }
+  if (record.children.size() < 3)
+  { why = "pause record needs (class ...) and (cause ...)"; return false; }
+  const sexp::SExp& cls = record.children[1];
+  if (cls.kind != sexp::SExp::K::list || cls.children.size() != 2
+      || cls.children[0].kind != sexp::SExp::K::atom
+      || cls.children[0].text != "class"
+      || cls.children[1].kind != sexp::SExp::K::atom
+      || !(cls.children[1].text == "budget" || cls.children[1].text == "boundary"
+           || cls.children[1].text == "suspension"
+           || cls.children[1].text == "terminal"))
+  { why = "expected (class budget|boundary|suspension|terminal)"; return false; }
+  return validatePauseCause(record.children[2], why);
+}
+
 }  // namespace protocol
 }  // namespace slog

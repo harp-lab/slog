@@ -339,7 +339,29 @@ the fork.
   session-workflow-through-the-dual-stack leg remains with slice (b),
   whose entry-mode verbs are what the workflow needs beyond `.so`
   paths.
-- **(b) `plan.h` parse/seal + entry modes.** Parse a real T1 `.plan`
+- **(b) `plan.h` parse/seal + entry modes.**
+  **As built 2026-07-23 (entry modes; slice (b) COMPLETE):**
+  `Daemon::installStratumChecked(name, mode, at)` is the ONE checked
+  installation path -- fresh (the deferred reload ordering), resident-
+  delta (no reload), resident-count (positional bind against the
+  recorded environment, no reload), upgrade (explicit attachment:
+  suspended + same stratum + RUN_AT_BOUNDARY is validation, and gate
+  12.13 refuses a tier swap against a resident-count entry).  The
+  legacy `beginStratum`/`beginStratumDelta` are forwarding shims with
+  byte-identical replies (suspended-refusal strings unchanged; the
+  name-match hot-swap forwards to the explicit upgrade mode).  The
+  command verb `(install-stratum (path "P") (entry M) [(at N)])` arms
+  the mode the next shim call consumes; verb-level combination
+  refusals ((at) rules, unknown modes) and checked-path refusals
+  surface as `(refused entry-mode <gen> ...)`, and a plugin that never
+  reaches a shim (load failure, flavored interception) disarms rather
+  than leaking the mode into the next legacy push.  The session
+  workflow leg runs the catalog fixture's strata end-to-end through
+  `install-stratum` on both transports (protocol-tests §9).  Live
+  resident-count installs keep riding the armed `bind-at` shim path
+  (every count round in the session battery); an explicit-`(at)`
+  command-driven count round joins when the session driver migrates
+  (R0+). Parse a real T1 `.plan`
   sidecar; the D16 seal battery; `installStratum` with validated entry
   modes and forwarding shims. Tests: seal-rejection battery extending
   `tests/interp-operator-tests.cpp`'s seal/bind rejections with parsed
@@ -353,7 +375,25 @@ the fork.
   degenerate module component round-trips; repo-relative source paths
   asserted per finding 6); `tests/stats-tests.sh` goldens unchanged
   with vectors underneath (merged totals ≡ legacy map).
-- **(d) uniform pause record + watch tee-up.** The command-stack
+- **(d) uniform pause record + watch tee-up.**
+  **As built 2026-07-23 (slice (d) COMPLETE):** the emitter in
+  `Daemon::continueRun` is scoped by `commandProtocolSpoken()`:
+  command-marked sessions receive `(pause (class C) (cause V)
+  (stratum "S") (scc N) (iteration N) (phase read|iter) (new-tuples N)
+  (slice-ms F) (total-ms F) (reason R))` -- classes budget and
+  boundary live today, suspension/terminal join through the same
+  class slot -- while path sessions keep the 8-field `(paused ...)`
+  bytes untouched.  The cause grammar lives in
+  `protocol.h::validatePauseCause/validatePauseRecord`: `(arbitrary)`
+  and the watch-citation variant `(watch (key K) (relation "R")
+  (kind size|delta|error))`, field order pinned, unknown trailing
+  record fields permitted so the record grows without a message-kind
+  change.  `tests/pause-record-validator.cpp` drives every class,
+  both variants, and the refusal edges; protocol-tests §10 goldens
+  the live budget- and boundary-class records (numeric fields
+  wildcarded -- the full `--plain` transcript format arrives with
+  R0's renderer) over an opened-DB replay under a 1ms budget, and
+  asserts path-stack byte-compat both directions. The command-stack
   structured pause record for all pause classes (protocol-mode
   scoping; legacy stack byte-identical); the cause-payload grammar —
   including the watch-citation variant — designed, validated, and

@@ -247,7 +247,12 @@ static void emit_catalog_types(slog::Daemon* d)
 }
 
 // Dispatch one '('-line on the command stack.
-static void dispatch_command(slog::Daemon* d, const std::string& line)
+static void run_plugin(slog::Daemon* d,
+                       const std::string& path,
+                       std::vector<void*>& so_handles);
+
+static void dispatch_command(slog::Daemon* d, const std::string& line,
+                             std::vector<void*>& so_handles)
 {
     slog::sexp::SExp form;
     std::string err;
@@ -342,6 +347,98 @@ static void dispatch_command(slog::Daemon* d, const std::string& line)
         return;
     }
 
+    if (verb == "install-stratum")
+    {
+        // (install-stratum (path "P") (entry MODE) [(at N)]) -- T0 slice
+        // (b): the explicit entry-mode installation.  The mode is armed,
+        // the plugin runs through the ordinary loader, and its entry's
+        // shim call consumes the mode through the ONE checked path; a
+        // checked refusal surfaces here as (refused entry-mode ...).
+        std::string path, entry;
+        long long at = -1;
+        bool have_at = false, bad = false;
+        std::string detail;
+        for (size_t i = 1; i < form.children.size() && !bad; ++i)
+        {
+            const auto& field = form.children[i];
+            if (field.kind != slog::sexp::SExp::K::list
+                || field.children.size() != 2
+                || field.children[0].kind != slog::sexp::SExp::K::atom)
+            { bad = true; detail = "expected (key value) fields"; break; }
+            const std::string& key = field.children[0].text;
+            const auto& val = field.children[1];
+            if (key == "path" && val.kind == slog::sexp::SExp::K::string)
+                path = val.text;
+            else if (key == "entry" && val.kind == slog::sexp::SExp::K::atom)
+                entry = val.text;
+            else if (key == "at" && val.kind == slog::sexp::SExp::K::atom)
+            {
+                errno = 0;
+                char* end = nullptr;
+                at = std::strtoll(val.text.c_str(), &end, 10);
+                have_at = (errno == 0 && end && *end == '\0' && at >= 0);
+                if (!have_at) { bad = true; detail = "(at N) takes a nonnegative integer"; }
+            }
+            else { bad = true; detail = "unknown field " + key; }
+        }
+        if (bad || path.empty() || entry.empty())
+        {
+            refuse(d, "parse", "(verb install-stratum) (detail "
+                   + slog::protocol::quoteString(
+                       bad ? detail : "expected (path \"...\") and (entry mode)")
+                   + ")");
+            return;
+        }
+        slog::Daemon::EntryMode mode;
+        if      (entry == "fresh")          mode = slog::Daemon::EntryMode::fresh;
+        else if (entry == "resident-delta") mode = slog::Daemon::EntryMode::resident_delta;
+        else if (entry == "resident-count") mode = slog::Daemon::EntryMode::resident_count;
+        else if (entry == "upgrade")        mode = slog::Daemon::EntryMode::upgrade;
+        else
+        {
+            refuse(d, "entry-mode", "(verb install-stratum) (detail "
+                   + slog::protocol::quoteString("unknown entry mode " + entry) + ")");
+            return;
+        }
+        // Combination validation at the verb (t0-contract.md entry modes):
+        // resident-count REQUIRES (at P); no other mode takes one.
+        if (mode == slog::Daemon::EntryMode::resident_count && !have_at)
+        {
+            refuse(d, "entry-mode", "(verb install-stratum) (detail "
+                   "\"resident-count requires (at P)\")");
+            return;
+        }
+        if (mode != slog::Daemon::EntryMode::resident_count && have_at)
+        {
+            refuse(d, "entry-mode", "(verb install-stratum) (detail "
+                   + slog::protocol::quoteString(
+                       std::string(slog::Daemon::entryModeName(mode))
+                       + " takes no (at P)") + ")");
+            return;
+        }
+        d->armEntryMode(mode, have_at ? at : -1);
+        run_plugin(d, path, so_handles);
+        if (d->entryModeArmed())
+        {
+            // The plugin never reached an entry shim (load failure, or a
+            // flavored plugin routed through the interpreter seam): the
+            // armed mode must not leak into the next legacy push.
+            d->disarmEntryMode();
+            refuse(d, "entry-mode", "(verb install-stratum) (detail "
+                   "\"plugin did not install a stratum\")");
+            return;
+        }
+        if (!d->armedEntryRefusal().empty())
+        {
+            refuse(d, "entry-mode", "(verb install-stratum) (detail "
+                   + slog::protocol::quoteString(d->armedEntryRefusal()) + ")");
+            return;
+        }
+        d->emit("(installed (path " + slog::protocol::quoteString(path)
+                + ") (entry " + entry + "))");
+        return;
+    }
+
     refuse(d, "unknown-verb", "(verb " + verb + ")");
 }
 
@@ -357,7 +454,7 @@ static void dispatch_line(slog::Daemon* d,
     if (line.empty())
         return;
     if (line[0] == '(')
-        dispatch_command(d, line);
+        dispatch_command(d, line, so_handles);
     else
         run_plugin(d, line, so_handles);
 }
