@@ -701,15 +701,21 @@ public:
         reduced[key] = joinLatticePayload(reduced[key], row[arity - 1]);
       });
     bool ok = true;
+    u64 walked = 0;
     forEachLiveNominal([&](const u64* row)
     {
+      ++walked;
       if (!ok) return;
       std::vector<u64> key(row, row + arity - 1);
       auto it = reduced.find(key);
       if (it == reduced.end() || it->second != row[arity - 1])
       {
         ok = false;
-        why = "visible lattice payload disagrees with contributors";
+        why = "visible lattice payload disagrees with contributors"
+              " (key";
+        for (u16 c = 0; c + 1 < arity; ++c)
+          why += " " + std::to_string(row[c]);
+        why += " visible " + std::to_string(row[arity - 1]) + ")";
       }
       else
         reduced.erase(it);
@@ -717,7 +723,28 @@ public:
     if (ok && !reduced.empty())
     {
       ok = false;
-      why = "live lattice contributor key has no visible payload";
+      why = "live lattice contributor key has no visible payload"
+            " (visible-walked " + std::to_string(walked) + ") (orderings";
+      for (const auto& it : indices)
+      {
+        u64 n = 0;
+        for (u16 b = 0; b < bucket_count; ++b)
+          it.second[b]->forEach([&](const u64*) { ++n; });
+        why += " (";
+        for (u16 c : it.first) why += std::to_string(c);
+        why += (seeded_orderings.count(it.first) ? " seeded n=" : " n=")
+             + std::to_string(n) + ")";
+      }
+      why += "):";
+      u32 shown = 0;
+      for (const auto& kv : reduced)
+      {
+        if (shown++ == 4) { why += " ..."; break; }
+        why += " (";
+        for (size_t c = 0; c < kv.first.size(); ++c)
+          why += (c ? " " : "") + std::to_string(kv.first[c]);
+        why += " -> " + std::to_string(kv.second) + ")";
+      }
     }
     return ok;
   }
@@ -1393,6 +1420,46 @@ public:
       idx->lat_arena = lat_arena;
       indices_ord[i] = idx;
     }
+
+    // Backfill a newly-registered payload-map ordering from the relation's
+    // existing content, mirroring addIndex's 0.B5 backfill for tables: a
+    // transient count stratum (a recursive lattice premise read) or a
+    // delta-entry re-push can requisition a fresh join ordering against a
+    // LIVE lattice.  Without the copy the new map is empty (and only new
+    // writes would land in it via setLatticePayloadForKey), so join-lat
+    // probes silently under-derive and getAnyIndex walkers -- coverage,
+    // dumps, saves, reload staging -- may treat its buckets as the
+    // relation's authoritative contents.
+    if (!ord.empty())
+    {
+      const std::vector<u16>* src = nullptr;
+      for (const auto& it : indices)
+        if (it.first != ord
+            && seeded_orderings.find(it.first) == seeded_orderings.end())
+        {
+          src = &it.first;
+          break;
+        }
+      if (src != nullptr)
+      {
+        Index** srcarr = indices[*src];
+        std::vector<u16> rewrite(src->size(), 0);
+        for (u16 i = 0; i < src->size(); ++i)
+          rewrite[(*src)[i]] = i;
+        for (u16 b = 0; b < bucket_count; ++b)
+          srcarr[b]->forEach([&](const u64* t)
+          {
+            u64 row[max_daemon_arity + 1];
+            for (u16 c = 0; c < arity; ++c)
+              row[c] = t[rewrite[c]];
+            u64 ordered[max_daemon_arity];
+            for (u16 c = 0; c + 1 < arity; ++c) ordered[c] = row[ord[c]];
+            indices_ord[buckethash(ordered[0])]
+              ->setPayload(ordered, arity - 1, row[arity - 1]);
+          });
+      }
+    }
+
     if (!ord.empty())
     {
       u16 lead = ord[0];
