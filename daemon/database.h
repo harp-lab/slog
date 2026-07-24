@@ -1166,6 +1166,12 @@ public:
              ->removeTuple(const_cast<u64*>(row.data()), ident.data());
   }
 
+  void eraseRankStamp(const std::vector<u64>& row)
+  {
+    if (rank_sidecar == nullptr) return;
+    eraseContributorRow(rank_sidecar, row);
+  }
+
   u16 getArity()
   {
     return arity;
@@ -2263,6 +2269,9 @@ public:
   // incarnations are maintenance executions and must never become another
   // writer merely because they were pushed through the scheduler.
   bool semantic_instance = true;
+  // Transient (count/recount) incarnations fold sidecars without mutating
+  // membership; rank marking skips them entirely (M7).
+  bool transient_instance = false;
   // accelerator-seed relations (docs/db-compression.md §4.4 v2): the
   // compiler's per-SCC tier scoring picked these (linear-recursive or
   // lattice SCCs) for per-round delta sampling into the seed sidecar
@@ -2876,6 +2885,7 @@ public:
       else
       {
         rel->eraseContributorRow(side, row);
+        rel->eraseRankStamp(row);
         ++discarded;
       }
     }
@@ -4936,6 +4946,10 @@ public:
   // until sub-slice (b) maintains ranks precisely.
   void rankMarkStratumEntry(Stratum* s)
   {
+    // A count round reads membership and folds sidecars only -- it can
+    // neither corrupt stamps nor make them stale, so it must not flip
+    // validity either way (forced recounts used to spuriously invalidate).
+    if (s->transient_instance) return;
     for (const std::string& rname : s->dynamic_rels)
     {
       if (!rankTracked(s, rname)) continue;
@@ -4956,7 +4970,7 @@ public:
   void rankRecordRound()
   {
     const Stratum* s = rs.stratum;
-    if (s == nullptr) return;
+    if (s == nullptr || s->transient_instance) return;
     const u32 round = rs.iteration_count;
     for (const std::string& rname : s->dynamic_rels)
     {

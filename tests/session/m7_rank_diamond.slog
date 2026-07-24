@@ -15,11 +15,13 @@
 ;; path(9,11) despite their mutual recursive support (the rank witness of a
 ;; corpse never certifies a re-fire).
 ;;
-;; Sub-slice (a): the initial from-empty run stamps exact ranks (state 1).
-;; Deletions take M4T's PRECISE sweep (plain-table recursion shipped
-;; there), a maintenance epoch over warm content -- so rank witnesses go
-;; honestly INVALID (state 2) until sub-slice (b) maintains them through
-;; the candidate rounds.
+;; The initial from-empty run stamps exact ranks (state 1).  Deletions
+;; take M4T's PRECISE sweep, a maintenance epoch over warm content, so
+;; rank witnesses go honestly INVALID (state 2) -- and as-built they stay
+;; so (m7-contract.md, ratified 2026-07-24): DRed over-deletes every
+;; touched derived-only row, so exact table ranks through a sweep need
+;; the deferred per-derivation rank folds.  Erased rows' stamps erase;
+;; transient count rounds flip validity neither way.
 
 table (edge int int)
 table (path int int)

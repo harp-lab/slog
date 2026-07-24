@@ -1141,6 +1141,9 @@ public:
       if (pipeline[i]->name == s->name)
         pipeline[i]->clearTasksForHusk();
     s->semantic_instance = !next_push_transient && !next_push_maintenance;
+    // Count/recount incarnations fold sidecars without touching membership:
+    // rank marking must neither stamp nor invalidate under them (M7).
+    s->transient_instance = next_push_transient;
     next_push_maintenance = false;
     // Capture the exact output instances BEFORE positional resolution is
     // reset.  Several strata may name the same version; aliases do not mint

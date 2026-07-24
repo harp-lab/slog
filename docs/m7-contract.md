@@ -53,6 +53,17 @@ precise admission, or falls back — identical to M6L's contributor-cache rule.
    contributors' derivation depths (§7A.3). Foundedness stays a *separate*
    axis from value (§7A.2): the support word decides liveness; the rank
    witness decides which round a recursive re-fire is admissible in.
+   *As built (2026-07-24):* first-derivation-round stamps are exact for any
+   from-scratch evaluation and kept honest through repair by erasure
+   hygiene; maintenance and count incarnations neither stamp nor blanket-
+   invalidate (their round numbering restarts).  A repair epoch that
+   reseeds or re-derives rows of a relation downgrades that relation's
+   witness certification — DRed over-deletes every touched derived-only
+   row, and a derivation-grain rank recompute for tables needs the finer
+   per-derivation contributor identity §7A.2 deliberately reserves.
+   Lattice keys retain contributor-grain stamps the repair can consult.
+   Per-derivation rank folds behind the repair seam are the deferred
+   precise mechanism, measured before adoption like the retention seam.
 
 Both sidecars preserve the same VersionId, writer, count-epoch, and coverage
 invariants as an ordinary hidden relation, exactly as M6L requires of its
@@ -79,6 +90,15 @@ fixpoint of rounds over the candidate cone:
   re-derived nor re-fired — this is the rank analogue of M4N's absent-ever
   sweep exclusion, and it is what keeps recursive over-deletion from
   double-counting a corpse fire across rounds.
+  *As built (ratified 2026-07-24):* the sweep's pessimistic value
+  retraction, exact contributor counting, and dead-candidate absorption
+  already prevent corpse-fire double-counting and break unfounded value
+  cycles (the 0-weight-cycle fixtures, certified against fresh recounts) —
+  the value-unchanged skip is the operative re-fire exclusion, and the
+  rank comparison is an admissible *optimization* of it rather than a
+  soundness precondition. Rank witnesses keep their per-tuple obligations
+  below; the rank-comparison gate may be added behind the same round seam
+  if workload measurements show cascade waste.
 - **Value**: for each affected lattice key, recompute the join of live
   contributors. Reseed/relearn consults retained contributors (and, for
   struct-keyed cones, the M5 tombstone dictionary) to restore the value

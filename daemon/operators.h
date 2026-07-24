@@ -1472,6 +1472,9 @@ public:
           std::array<u64, A> countkey;
           for (u16 c = 0; c < A; ++c) countkey[c] = row[c];
           static_cast<BTreeMapIndex<A>*>(side[cb])->tree.erase(countkey);
+          // M7 stamp hygiene: a genuinely-dead row's rank witness goes too.
+          if (Index** rside = rel->getRankSidecar())
+            static_cast<BTreeMapIndex<A>*>(rside[cb])->tree.erase(countkey);
         }
         else
           db->invalidateUpdateCounts();
@@ -1601,6 +1604,9 @@ public:
               for (u16 c = 0; c < A; ++c) contribution[c] = row[c];
               static_cast<BTreeMapIndex<A>*>(side[bucket])
                 ->tree.erase(contribution);
+              if (Index** rside = rel->getRankSidecar())
+                static_cast<BTreeMapIndex<A>*>(rside[bucket])
+                  ->tree.erase(contribution);
               rel->lattice_dred_candidates.erase(
                 std::vector<u64>(row, row + A));
             }
@@ -1631,6 +1637,9 @@ public:
           std::array<u64, A> contribution;
           for (u16 c = 0; c < A; ++c) contribution[c] = row[c];
           static_cast<BTreeMapIndex<A>*>(side[bucket])->tree.erase(contribution);
+          if (Index** rside = rel->getRankSidecar())
+            static_cast<BTreeMapIndex<A>*>(rside[bucket])
+              ->tree.erase(contribution);
         }
         else
           db->invalidateUpdateCounts();

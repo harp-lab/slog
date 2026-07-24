@@ -113,10 +113,16 @@ queue, in the decided order, is:
      dies via absorption — the rank gate is an OPTIMIZATION in this
      design, not a correctness precondition; the value-unchanged skip is
      the operative re-fire exclusion).  Cache survives repair epochs.
-     REMAINING in (b): rank-witness maintenance through repair/sweep
-     epochs (the diamond fixture's `(rnk path 0 1)` flip + lattice-key
-     rank repair from contributor stamps) and the as-built exclusion
-     equivalence pinned in the contract.
+     RANK AS-BUILT PINNED 2026-07-24 (contract, ratified): the
+     value-unchanged skip is the operative re-fire exclusion (the rank
+     comparison is an admissible optimization behind the round seam);
+     transient count rounds flip rank validity neither way (forced
+     recounts used to spuriously invalidate), dead rows' stamps erase at
+     all three genuine-deletion sites, warm maintenance epochs downgrade
+     honestly — DRed over-deletes every touched derived-only row, so
+     exact table ranks through a sweep need the per-derivation rank
+     folds §7A.2 reserves (the deferred precise mechanism behind the
+     repair seam).  Sub-slice (b) COMPLETE.
    - (c) **struct-keyed cones + persistence** — M5 tombstone identity
      across delete/reseed/relearn; load re-establishment from the exact
      historical writers, or certified fallback when that is impossible.

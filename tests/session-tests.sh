@@ -2803,10 +2803,12 @@ else
   echo "FAIL m7-recmin-loser-retained"; FAIL=$((FAIL+1))
 fi
 # rank witnesses: valid after the initial from-empty run; the REPAIR epoch
-# is a warm maintenance re-entry, so ranks go honestly invalid.
-# FLIP POINT (M7 sub-slice (b) rank maintenance, task: repair epochs
-# maintain witnesses): "(rnk dist 0 2)" flips back to "(rnk dist 0 1)"
-# and the depth asserts extend across the repair.
+# is a warm maintenance re-entry, so ranks go honestly invalid (as-built,
+# m7-contract.md: DRed over-deletes every touched derived-only row, and a
+# derivation-grain rank recompute needs the finer per-derivation
+# contributor identity 7A.2 reserves -- per-derivation rank folds behind
+# the repair seam are the deferred precise mechanism).  Transient count
+# rounds no longer flip validity either way; dead rows' stamps erase.
 if [ "$(grep -cF '(rnk dist 0 1)' out/sess-m7-recmin.log)" -eq 1 ] \
    && [ "$(grep -cF '(rnk dist 0 2)' out/sess-m7-recmin.log)" -eq 1 ]; then
   echo "PASS m7-recmin-ranks-honest"; PASS=$((PASS+1))
@@ -2870,10 +2872,11 @@ expect_not "m7-cycle0-no-rerun" "(route rerun" out/sess-m7-cycle0.log
 # a symmetric cycle.  The initial from-empty run stamps exact ranks
 # (path(1,4) = 2 via the diamond; first-seen-wins beats the rank-3 refound
 # chain).  Deletion takes M4T's PRECISE sweep -- a maintenance epoch over
-# warm content -- so rank witnesses go honestly INVALID (state 2).
-# FLIP POINT (M7 sub-slice (b)): the sweep maintains ranks through the
-# candidate rounds -- "(rnk path 0 2)" flips to "(rnk path 0 1)" and
-# path(1,4)'s witness stays 2 (the rank-unchanged exclusion case).
+# warm content -- so rank witnesses go honestly INVALID (state 2), and
+# as-built (m7-contract.md) they STAY so: DRed over-deletes every touched
+# derived-only row (path(1,4) reseeds), so exact table ranks through a
+# sweep need the deferred per-derivation rank folds.  The value-level
+# unchanged skip is the operative re-fire exclusion (ratified 2026-07-24).
 timeout 900 racket tests/api/session-drive.rkt \
   run:tests/session/m7_rank_diamond.slog \
   batch+:edge,1,2 batch+:edge,1,3 batch+:edge,2,4 batch+:edge,3,4 \
