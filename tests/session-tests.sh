@@ -1223,14 +1223,24 @@ else
   echo "FAIL m6l2-coalesced-recount"; FAIL=$((FAIL+1))
 fi
 
-# Recursive lattice consumers still require M4T/M7 for their negative half.
+# FLIPPED(M7 sub-slice (b)): recursive lattice consumers ride the repair
+# route -- the acyclic producer keeps its M6L fold, the recursive consumer
+# stratum takes the M4T sweep driven by the staged replacement rows.
 timeout 900 racket tests/api/session-drive.rkt \
   run:tests/session/m6l_recursive_consumer.slog \
   batch+:offer,1,5 flush batch-:offer,1,5 flush \
   dump-tuples:best dump-tuples:reported \
   > out/sess-m6l-recursive-fallback.log 2>&1
-expect "m6l2-recursive-fallback" "(route rerun 2 2)" out/sess-m6l-recursive-fallback.log
-expect_not "m6l2-recursive-not-admitted" "maintain-lattice-consumers" out/sess-m6l-recursive-fallback.log
+expect "m6l2-recursive-repair-neg" "(route maintain-lattice-recursive-negative 2)" out/sess-m6l-recursive-fallback.log
+expect "m6l2-recursive-repair-pos" "(route maintain-lattice-recursive-positive 2)" out/sess-m6l-recursive-fallback.log
+# exactly one rerun: the POSITIVE flush keeps its legacy route (monotone
+# ascents never enter the repair fixpoint); only the deletion repairs
+if [ "$(grep -cF '(route rerun' out/sess-m6l-recursive-fallback.log)" -eq 1 ]; then
+  echo "PASS m6l2-recursive-one-legacy-rerun"; PASS=$((PASS+1))
+else
+  echo "FAIL m6l2-recursive-one-legacy-rerun"; FAIL=$((FAIL+1))
+fi
+expect_not "m6l2-recursive-not-m6l2-verbs" "maintain-lattice-consumers" out/sess-m6l-recursive-fallback.log
 
 # A net contributor change that returns to the epoch-entry payload must emit no
 # consumer replacement.  The same fixture also pins absent->present and
@@ -1324,9 +1334,12 @@ timeout 900 racket tests/api/session-drive.rkt \
   run:tests/session/m6l_recursive_producer.slog \
   batch+:offer,1,9 batch+:offer,1,5 flush batch-:offer,1,5 flush \
   dump-tuples:best > out/sess-m6l-recursive-producer.log 2>&1
-expect "m6l-recursive-producer-fallback" "(route rerun" out/sess-m6l-recursive-producer.log
+# FLIPPED(M7 sub-slice (b)): the recursive producer repairs -- deletion of
+# the winning contributor regresses to the retained loser without rerun.
+expect "m6l-recursive-producer-repair" "(route maintain-lattice-recursive-negative" out/sess-m6l-recursive-producer.log
+expect_not "m6l-recursive-producer-no-rerun" "(route rerun" out/sess-m6l-recursive-producer.log
 expect "m6l-recursive-producer-content" "(tuplerow 1 9)" out/sess-m6l-recursive-producer.log
-expect_not "m6l-recursive-producer-not-admitted" "maintain-lattice-producers" out/sess-m6l-recursive-producer.log
+expect_not "m6l-recursive-producer-not-m6l2-verbs" "maintain-lattice-producers" out/sess-m6l-recursive-producer.log
 
 timeout 900 racket tests/api/session-drive.rkt \
   run:tests/session/m6l_negated_consumer.slog \
@@ -2749,17 +2762,19 @@ fi
 # empty.  Loser contributors subsumed before reaching the delta carry no
 # forward stamp (lattice merge) -- repair derives those on demand, a
 # pinned sub-slice (b) design point.
-# FLIP POINT (M7 sub-slice (b)): the deletion flush takes the stored-
-# contributor repair fixpoint -- "(route rerun 1 10)" flips to the repair
-# verbs, dist regresses to the retained loser (1,3)->100 without rerun,
-# and the contributor cache survives the flush instead of dropping.
+# FLIPPED(M7 sub-slice (b)): the deletion flush takes the stored-
+# contributor repair fixpoint -- the maint4neg sweep runs the contributor
+# candidate lifecycle with pessimistic retraction and old-value witnesses,
+# dred-reseed re-asserts swept keys (dist regresses to the retained loser
+# (1,3)->100), and the repair-mode positive rebuild re-derives downstream.
+# No rerun; the contributor cache survives the flush.
 timeout 900 racket tests/api/session-drive.rkt \
   run:tests/session/m7_rec_min.slog \
   batch+:edge,1,2,10 batch+:edge,2,3,5 batch+:edge,3,1,2 \
   batch+:edge,1,3,100 batch+:edge,3,4,1 batch+:edge,2,4,20 batch+:edge,1,4,17 \
   flush dump-rel:dist rank-witness-state dump-ranks:dist \
   recount-lattices-force dump-counts:dist lattice-contributor-state \
-  batch-:edge,2,3,5 flush dump-rel:dist rank-witness-state dump-ranks:dist \
+  batch-:edge,2,3,5 flush dump-rel:dist rank-witness-state \
   recount-lattices-force dump-counts:dist lattice-contributor-state \
   > out/sess-m7-recmin.log 2>&1
 if [ "$(grep -cF '(m7-retention (dist))' out/sess-m7-recmin.log)" -eq 2 ]; then
@@ -2767,7 +2782,10 @@ if [ "$(grep -cF '(m7-retention (dist))' out/sess-m7-recmin.log)" -eq 2 ]; then
 else
   echo "FAIL m7-retention-fires"; FAIL=$((FAIL+1))
 fi
-expect "m7-recmin-fallback-route" "(route rerun 1 10)" out/sess-m7-recmin.log
+expect "m7-recmin-admitted" "(m7-admitted (lattices (dist)) (recursive 1) (strata 1))" out/sess-m7-recmin.log
+expect "m7-recmin-repair-neg" "(route maintain-lattice-recursive-negative 1)" out/sess-m7-recmin.log
+expect "m7-recmin-repair-pos" "(route maintain-lattice-recursive-positive 1)" out/sess-m7-recmin.log
+expect_not "m7-recmin-no-rerun" "(route rerun" out/sess-m7-recmin.log
 if [ "$(grep -cF '(lcnt dist 0 1)' out/sess-m7-recmin.log)" -ge 4 ]; then
   echo "PASS m7-recmin-certified"; PASS=$((PASS+1))
 else
@@ -2784,22 +2802,68 @@ if [ "$(grep -cF '(countrow dist 1 3 100 0 1 0)' out/sess-m7-recmin.log)" -eq 2 
 else
   echo "FAIL m7-recmin-loser-retained"; FAIL=$((FAIL+1))
 fi
-# rank witnesses: valid after the initial from-empty run AND after the
-# rerun (the fallback is its own exact re-establishment); depths follow
-# the temp-staged stride (direct edge 1, one hop 3, two hops 5)
-if [ "$(grep -cF '(rnk dist 0 1)' out/sess-m7-recmin.log)" -eq 2 ]; then
-  echo "PASS m7-recmin-ranks-valid"; PASS=$((PASS+1))
+# rank witnesses: valid after the initial from-empty run; the REPAIR epoch
+# is a warm maintenance re-entry, so ranks go honestly invalid.
+# FLIP POINT (M7 sub-slice (b) rank maintenance, task: repair epochs
+# maintain witnesses): "(rnk dist 0 2)" flips back to "(rnk dist 0 1)"
+# and the depth asserts extend across the repair.
+if [ "$(grep -cF '(rnk dist 0 1)' out/sess-m7-recmin.log)" -eq 1 ] \
+   && [ "$(grep -cF '(rnk dist 0 2)' out/sess-m7-recmin.log)" -eq 1 ]; then
+  echo "PASS m7-recmin-ranks-honest"; PASS=$((PASS+1))
 else
-  echo "FAIL m7-recmin-ranks-valid"; FAIL=$((FAIL+1))
+  echo "FAIL m7-recmin-ranks-honest"; FAIL=$((FAIL+1))
 fi
-if [ "$(grep -cF '(rankrow dist 1 3 100 1)' out/sess-m7-recmin.log)" -eq 2 ] \
+if [ "$(grep -cF '(rankrow dist 1 3 100 1)' out/sess-m7-recmin.log)" -ge 1 ] \
    && [ "$(grep -cF '(rankrow dist 1 3 15 3)' out/sess-m7-recmin.log)" -eq 1 ] \
-   && [ "$(grep -cF '(rankrow dist 1 1 17 5)' out/sess-m7-recmin.log)" -eq 1 ] \
-   && [ "$(grep -cF '(rankrow dist 1 1 102 3)' out/sess-m7-recmin.log)" -eq 2 ]; then
+   && [ "$(grep -cF '(rankrow dist 1 1 17 5)' out/sess-m7-recmin.log)" -eq 1 ]; then
   echo "PASS m7-recmin-rank-depths"; PASS=$((PASS+1))
 else
   echo "FAIL m7-recmin-rank-depths"; FAIL=$((FAIL+1))
 fi
+# the M7 repair schedule: candidate lifecycle visible in the reseed reply
+expect "m7-recmin-reseed" "(dred-reseeded 0 0)" out/sess-m7-recmin.log
+# candidate collapse + reseed: a contributor with foundation AND two
+# recursive supports loses its foundation, survives as a reseeded
+# candidate, and its downstream re-derives through repair staging
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m7_rec_min.slog \
+  batch+:edge,1,2,10 batch+:edge,2,3,5 batch+:edge,1,5,7 batch+:edge,5,3,8 \
+  batch+:edge,1,3,15 batch+:edge,3,4,1 \
+  flush \
+  batch-:edge,1,3,15 flush dump-rel:dist recount-lattices-force dump-counts:dist \
+  batch-:edge,2,3,5 flush dump-rel:dist recount-lattices-force dump-counts:dist \
+  > out/sess-m7-collapse.log 2>&1
+if [ "$(grep -cF '(dred-reseeded 1 0)' out/sess-m7-collapse.log)" -eq 2 ] \
+   && [ "$(grep -cF '(dumpdone 9)' out/sess-m7-collapse.log)" -eq 1 ] \
+   && [ "$(grep -cF '(dumpdone 7)' out/sess-m7-collapse.log)" -eq 1 ] \
+   && [ "$(grep -cF '(count-epoch-aborted)' out/sess-m7-collapse.log)" -eq 0 ]; then
+  echo "PASS m7-collapse-reseed"; PASS=$((PASS+1))
+else
+  echo "FAIL m7-collapse-reseed"; FAIL=$((FAIL+1))
+fi
+expect_not "m7-collapse-no-rerun" "(route rerun" out/sess-m7-collapse.log
+# 0-weight cycle: candidate absorbed to death, rec-only contributor
+# lifecycle, and the unfounded 10<->11 pair dying with its last external
+# feed -- foundedness held by pessimistic retraction + exact counting
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m7_rec_min.slog \
+  batch+:edge,9,10,0 batch+:edge,10,11,0 batch+:edge,11,10,0 \
+  batch+:edge,9,12,0 batch+:edge,12,10,0 \
+  flush \
+  batch-:edge,9,10,0 flush dump-rel:dist recount-lattices-force \
+  batch-:edge,9,12,0 flush dump-rel:dist recount-lattices-force \
+  batch-:edge,12,10,0 flush dump-rel:dist recount-lattices-force \
+  > out/sess-m7-cycle0.log 2>&1
+if [ "$(grep -cF '(dred-reseeded 1 0)' out/sess-m7-cycle0.log)" -eq 1 ] \
+   && [ "$(grep -cF '(dumpdone 9)' out/sess-m7-cycle0.log)" -eq 1 ] \
+   && [ "$(grep -cF '(dumpdone 6)' out/sess-m7-cycle0.log)" -eq 1 ] \
+   && [ "$(grep -cF '(dumpdone 4)' out/sess-m7-cycle0.log)" -eq 1 ] \
+   && [ "$(grep -cF '(count-epoch-aborted)' out/sess-m7-cycle0.log)" -eq 0 ]; then
+  echo "PASS m7-cycle0-foundedness"; PASS=$((PASS+1))
+else
+  echo "FAIL m7-cycle0-foundedness"; FAIL=$((FAIL+1))
+fi
+expect_not "m7-cycle0-no-rerun" "(route rerun" out/sess-m7-cycle0.log
 
 # --- M7 sub-slice (a): rank witnesses on a plain-table recursive cone -----
 # Diamond/refound from incremental.md section 10's foundedness list, plus

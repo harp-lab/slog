@@ -1,5 +1,6 @@
-;; Unsupported M6L boundary: the lattice producer is acyclic, but its
-;; downstream table consumer belongs to a recursive SCC.
+;; M6L boundary, retired by M7 sub-slice (b): the acyclic producer keeps
+;; its M6L fold; the recursive table consumer takes the M4T sweep driven
+;; by the staged replacement rows.
 
 lattice (cost (min int))
 

@@ -98,7 +98,8 @@ void add_flavored_maintain_task(u16 arity, Database* db, Stratum* stratum,
                                 bool is_struct, bool dred);
 void add_flavored_lattice_maintain_task(u16 arity, Database* db,
                                         Stratum* stratum,
-                                        Relation* relation);
+                                        Relation* relation, bool dred,
+                                        bool recursive);
 
 } // namespace interp
 } // namespace slog

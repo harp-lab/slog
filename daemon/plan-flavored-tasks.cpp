@@ -232,11 +232,13 @@ void maintain_task_ladder(u16 arity, Database* db, Stratum* stratum,
 
 template <u16 A>
 void lattice_maintain_task_ladder(u16 arity, Database* db, Stratum* stratum,
-                                  Relation* relation)
+                                  Relation* relation, bool dred,
+                                  bool recursive)
 {
   if constexpr (A == 0)
   {
     (void)arity; (void)db; (void)stratum; (void)relation;
+    (void)dred; (void)recursive;
     fatal("maintenance install: lattice maintain ladder miss");
   }
   else
@@ -246,13 +248,15 @@ void lattice_maintain_task_ladder(u16 arity, Database* db, Stratum* stratum,
       if constexpr (A >= 2)
       {
         stratum->addTask(phase_intern,
-                         new LatticeMaintainTask<A>(db, relation), false);
+                         new LatticeMaintainTask<A>(db, relation, dred,
+                                                    recursive), false);
         return;
       }
       else
         fatal("maintenance install: lattice arity below 2");
     }
-    lattice_maintain_task_ladder<A - 1>(arity, db, stratum, relation);
+    lattice_maintain_task_ladder<A - 1>(arity, db, stratum, relation, dred,
+                                        recursive);
   }
 }
 
@@ -350,10 +354,11 @@ void add_flavored_maintain_task(u16 arity, Database* db, Stratum* stratum,
 
 void add_flavored_lattice_maintain_task(u16 arity, Database* db,
                                         Stratum* stratum,
-                                        Relation* relation)
+                                        Relation* relation, bool dred,
+                                        bool recursive)
 {
   lattice_maintain_task_ladder<max_daemon_arity>(arity, db, stratum,
-                                                 relation);
+                                                 relation, dred, recursive);
 }
 
 } // namespace interp

@@ -1,4 +1,6 @@
-;; Unsupported boundary: the lattice head is recursive.
+;; M6L boundary, retired by M7 sub-slice (b): the recursive lattice head
+;; repairs via stored contributors (the self-loop's rec support drains by
+;; absorption; the deletion regresses to the retained loser).
 
 lattice (cost (min int))
 

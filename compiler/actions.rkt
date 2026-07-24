@@ -238,6 +238,14 @@
      (format "  d->stageLatticeReplacements(std::vector<std::string>{~a}, ~a);\n"
              (string-join (for/list ([r (in-list rels)])
                             (format "\"~a\"" r)) ", ") sign)]
+    ;; M7 repair rebuild: stage every TOUCHED key's post-reseed row, net
+    ;; filter off (the sweep over-deleted downstream contributions even for
+    ;; keys whose value returns to the entry state).
+    [`(stage-lattice-replacements-repair signed ,sign ,rels ...)
+     (format
+      "  d->stageLatticeReplacements(std::vector<std::string>{~a}, ~a, true);\n"
+      (string-join (for/list ([r (in-list rels)])
+                     (format "\"~a\"" r)) ", ") sign)]
     ;; M4T reseed (docs/m4t-contract.md): restore rec>0 candidates of the
     ;; named swept relations after the negative walk, journaling survivors
     ;; as positive transitions; reply (dred-reseeded R D).

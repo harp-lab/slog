@@ -1531,6 +1531,18 @@ public:
 // affected key once and replace/remove its visible joined payload atomically
 // across every registered map ordering.  Contribution rows are private to
 // this sink and never become ordinary lattice delta.
+//
+// M7 sub-slice (b) (docs/m7-contract.md): under `dred` (the maint4neg
+// repair sweep) contributor rows follow M4T's candidate lifecycle --
+// foundation-lost-but-recursively-supported rows become candidates
+// (retained, excluded from reduce, resolved by dred-reseed), a second
+// decrement on a candidate is absorbed without re-affecting its key, and a
+// changed key's visible value is retracted PESSIMISTICALLY (re-assertion
+// waits for the post-reseed repair).  On a recursive (same-SCC) head, the
+// changed key's value row is injected into the delta as a premise-kind
+// witness (-old under the sweep, +new under maint1) so the stratum's own
+// dynamic scans cascade next round -- the lattice analogue of the
+// MaintainTask's retained membership-crossing rows.
 template <u16 A>
 class LatticeMaintainTask : public Task
 {
@@ -1538,9 +1550,13 @@ class LatticeMaintainTask : public Task
   Database* db;
   Relation* rel;
   Index** side;
+  const bool dred;
+  const bool recursive;
 public:
-  LatticeMaintainTask(Database* _db, Relation* _rel)
-    : db(_db), rel(_rel), side(_rel->ensureCountSidecar()) {}
+  LatticeMaintainTask(Database* _db, Relation* _rel,
+                      bool _dred, bool _recursive)
+    : db(_db), rel(_rel), side(_rel->ensureCountSidecar()),
+      dred(_dred), recursive(_recursive) {}
 
   bool work() override
   {
@@ -1562,6 +1578,39 @@ public:
                   "mis-staged polarity");
 
         const u16 bucket = buckethash(row[0]);
+        // Dead-candidate absorption (M7): the candidate already left the
+        // reduce, so a further decrement only folds the word (each row
+        // enters candidacy at most once); recursion reaching zero erases
+        // it for good.
+        if (dred && !rel->lattice_dred_candidates.empty()
+            && rel->lattice_dred_candidates.count(
+                 std::vector<u64>(row, row + A)))
+        {
+          u64 word = 0;
+          side[bucket]->getPayload(row, A, word);
+          u64 next = word;
+          if (rel->isCounted()
+              && rel->tryApplyCountSigned(word, batch->kind,
+                                          batch->sign, next))
+          {
+            if (cnt_present(next))
+              side[bucket]->setPayload(row, A, next);
+            else
+            {
+              std::array<u64, A> contribution;
+              for (u16 c = 0; c < A; ++c) contribution[c] = row[c];
+              static_cast<BTreeMapIndex<A>*>(side[bucket])
+                ->tree.erase(contribution);
+              rel->lattice_dred_candidates.erase(
+                std::vector<u64>(row, row + A));
+            }
+          }
+          else
+            db->invalidateUpdateCounts();
+          row[0] = slog_null;
+          continue;
+        }
+
         u64 word = 0;
         side[bucket]->getPayload(row, A, word);
         u64 next = word;
@@ -1569,7 +1618,14 @@ public:
                      && rel->tryApplyCountSigned(word, batch->kind,
                                                  batch->sign, next);
         if (ok && cnt_present(next))
+        {
           side[bucket]->setPayload(row, A, next);
+          // M7 over-deletion: foundation gone, recursion remains -- the
+          // row becomes a candidate until dred-reseed resolves it.
+          if (dred && !cnt_foundation(next))
+            rel->lattice_dred_candidates.insert(
+              std::vector<u64>(row, row + A));
+        }
         else if (ok)
         {
           std::array<u64, A> contribution;
@@ -1584,6 +1640,24 @@ public:
         row[0] = slog_null;
       }
 
+    // Witness batches are collected while iterating and appended after --
+    // the delta vector must not reallocate under the loop above.
+    InsertBatch* witness = nullptr;
+    std::vector<InsertBatch*> injected;
+    auto inject = [&](const std::vector<u64>& key, u64 value)
+    {
+      if (witness == nullptr || witness->usage + A > batch_size_max)
+      {
+        if (witness) injected.push_back(witness);
+        witness = new InsertBatch();
+        witness->kind = cnt_kind_premise;
+        witness->sign = dred ? (s8)-1 : (s8)1;
+      }
+      for (u16 c = 0; c + 1 < A; ++c)
+        witness->data[witness->usage++] = key[c];
+      witness->data[witness->usage++] = value;
+    };
+
     for (const std::vector<u64>& key : affected)
     {
       u64 old_value = 0, new_value = 0;
@@ -1596,6 +1670,27 @@ public:
 
       u64 row[A];
       for (u16 c = 0; c + 1 < A; ++c) row[c] = key[c];
+
+      if (dred)
+      {
+        // Pessimistic sweep: retract the changed key's visible value
+        // outright; reseeded originals and regressed losers alike are
+        // re-asserted once, post-reseed.  The old-value witness is the
+        // sole retraction driver for this key's instantiations.
+        rel->lattice_sweep_keys.insert(key);
+        if (!old_present) continue;   // already retracted this epoch
+        if (!rel->setLatticePayloadForKey(key, false, 0))
+        {
+          db->invalidateUpdateCounts();
+          continue;
+        }
+        row[A - 1] = old_value;
+        db->recordUpdateTransition(rel, row, -1);
+        db->recordLatticeReplacement(rel, key, true, old_value, false, 0);
+        if (recursive) inject(key, old_value);
+        continue;
+      }
+
       if (!rel->setLatticePayloadForKey(key, new_present, new_value))
       {
         db->invalidateUpdateCounts();
@@ -1610,10 +1705,13 @@ public:
       {
         row[A - 1] = new_value;
         db->recordUpdateTransition(rel, row, 1);
+        if (recursive) inject(key, new_value);
       }
       db->recordLatticeReplacement(rel, key, old_present, old_value,
                                    new_present, new_value);
     }
+    if (witness) injected.push_back(witness);
+    for (InsertBatch* b : injected) delta.push_back(b);
     return true;
   }
 };

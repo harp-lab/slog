@@ -1694,6 +1694,30 @@
     (and structurally-certified? counts-certified?
          (null? struct-names)          ; lattice+struct cones fall back by name
          (pair? lattice-names) (pair? lattice-consumer-cone)))
+  ;; M7 sub-slice (b) (docs/m7-contract.md): recursive (same-SCC) lattice
+  ;; repair.  Admission = the slice-1 ladder: the retention shape (positive
+  ;; pos/lat cone, trusted built-in lattice heads, no struct edit targets,
+  ;; no negation) with certified contributor state, over a genuinely
+  ;; recursive cone.  Only regressing epochs enter; monotone ascents keep
+  ;; the legacy re-entry path (the contract's monotone insertion rule).
+  ;; User struct data in a lattice cone is sub-slice (c) (the M5 tombstone
+  ;; identity interplay); the compiler's fallible side channels (the
+  ;; error_spec union in modules.rkt plus the error sink) are struct-capped
+  ;; but write-only diagnostics and stay admissible cone members.
+  (define diagnostic-side-channels
+    '(error error_spec malformed_deduction div_by_zero modulo_by_zero
+      int_overflow nan_result toint_range type_mismatch mpz_overflow
+      mpz_table_overflow smt_bad_formula))
+  (define user-struct-in-cone?
+    (for/or ([r (in-list struct-names)])
+      (not (memq r diagnostic-side-channels))))
+  (define m7-eligible?
+    (and lattice-retention-certified? counts-certified?
+         has-negative?
+         (not (flavored-native?))     ; repair variants have no native leg
+         (not user-struct-in-cone?)   ; struct-keyed repair is sub-slice (c)
+         (for/or ([info (in-list union-cone)])
+           (not (sinfo-acyclic? info)))))
   ;; M4N: negation x structs stays on rerun (contract exclusion,
   ;; m4s-negstruct) and negation x lattices is M7's.
   (define m4n-eligible?
@@ -1825,8 +1849,14 @@
                       #:when (member 'lat (cdr entry)))
              (car entry))))
         (when (pair? lattice-reads)
+          ;; 'repair (M7 rebuild) stages every TOUCHED key -- the sweep
+          ;; over-deleted downstream contributions even where the net
+          ;; value returned to the entry state (a reseeded candidate).
           (session-action!
-           s `(stage-lattice-replacements signed ,sign ,@lattice-reads))
+           s (if (eq? lattice-replacements? 'repair)
+                 `(stage-lattice-replacements-repair signed ,sign
+                                                     ,@lattice-reads)
+                 `(stage-lattice-replacements signed ,sign ,@lattice-reads)))
           (read-one-line! s)))
       (send-maintenance-stratum! s (get-so info))))
   (define (rerun-cone!)
@@ -2216,6 +2246,83 @@
         (echo! s "(maintenance-unavailable negative-input)")
         (apply-edits!)
         (rerun-cone!)])]
+    [m7-eligible?
+     ;; M7 sub-slice (b): the M4T schedule with lattice repair.  The
+     ;; negative walk sweeps each recursive stratum with the DRed flavor,
+     ;; whose lattice folds run the contributor candidate lifecycle,
+     ;; retract changed keys pessimistically, and inject old-value
+     ;; witnesses so the SCC's own scans cascade round by round; lattice
+     ;; reads stage the coalesced old rows into downstream strata.
+     ;; dred-reseed then resolves contributor candidates and re-asserts
+     ;; every swept key exactly once -- regressed values fall to retained
+     ;; losers here.  The positive phase always runs on a settled sweep:
+     ;; it stages the +new replacement rows so in-SCC and downstream
+     ;; consumers re-derive from the regressed values.
+     (define settled? #t)
+     (define reseeded 0)
+     (define discarded 0)
+     (define head-edited
+       (for/list ([g (in-list tip-groups)]
+                  #:when (for/or ([info (in-list union-cone)]
+                                  #:unless (sinfo-acyclic? info))
+                           (member (first g) (sinfo-dyn info))))
+         (first g)))
+     (echo! s (format "(m7-admitted (lattices ~a) (recursive ~a) (strata ~a))"
+                      lattice-names
+                      (for/sum ([info (in-list union-cone)])
+                        (if (sinfo-acyclic? info) 0 1))
+                      (length union-cone)))
+     (apply-negative-edits! #:dred-names head-edited)
+     (if negative-apply-ok?
+         (begin
+           (echo! s (format "(route maintain-lattice-recursive-negative ~a)"
+                            (length union-cone)))
+           (run-maintenance-phase!
+            union-cone -1
+            (lambda (info)
+              (if (sinfo-acyclic? info)
+                  ((sinfo-negative-maintenance info))
+                  ((sinfo-recursive-negative-maintenance info))))
+            #:lattice-replacements? #t))
+         (begin
+           (set! settled? #f)
+           (echo! s "(maintenance-unavailable negative-input)")))
+     (when (and settled? (not (query-update-counts-valid! s)))
+       (set! settled? #f))
+     (when settled?
+       (define swept
+         (remove-duplicates
+          (for*/list ([info (in-list union-cone)]
+                      #:unless (sinfo-acyclic? info)
+                      [d (in-list (sinfo-dyn info))])
+            d)))
+       (session-action! s `(dred-reseed ,@swept))
+       (define reply (read-line (session-out s)))
+       (echo! s reply)
+       (match (regexp-match #px"^\\(dred-reseeded (\\d+) (\\d+)\\)$" reply)
+         [(list _ r d)
+          (set! reseeded (string->number r))
+          (set! discarded (string->number d))]
+         [_ (set! settled? #f)])
+       (when (and settled? (not (query-update-counts-valid! s)))
+         (set! settled? #f)))
+     (when settled?
+       (when has-positive? (apply-positive-edits!))
+       (if (or (not has-positive?) positive-apply-ok?)
+           (begin
+             (echo! s (format "(route maintain-lattice-recursive-positive ~a)"
+                              (length union-cone)))
+             (run-maintenance-phase!
+              union-cone 1 (lambda (info) ((sinfo-maintenance info)))
+              #:lattice-replacements? 'repair)
+             (unless (query-update-counts-valid! s) (set! settled? #f)))
+           (begin
+             (set! settled? #f)
+             (echo! s "(maintenance-unavailable positive-input)"))))
+     (void reseeded discarded)
+     (unless settled?
+       (apply-edits!)
+       (rerun-cone!))]
     [m4t-eligible?
      ;; M4T (docs/m4t-contract.md): the ordinary topological negative walk,
      ;; with each recursive stratum swept by the DRed flavor; then reseed the

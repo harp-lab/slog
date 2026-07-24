@@ -685,6 +685,24 @@ public:
          : lat_join(lattice_kind, oldw, v, mt);
   }
 
+  // M7 sub-slice (b) repair-sweep state (docs/m7-contract.md): contributor
+  // rows whose foundation died while recursive support survives are
+  // CANDIDATES -- retained in the sidecar (their word keeps the rec count
+  // for reseed) but excluded from every reduce until dred-reseed resolves
+  // them, mirroring M4T's over-deleted-but-retained table rows.  Keys the
+  // sweep touched are collected so the post-reseed repair re-reduces and
+  // re-asserts exactly once.  Both sets are epoch-local shared scheduling
+  // state (contract, "Concurrency and observability"): mutated only by the
+  // serial LatticeMaintainTask fold and the single-threaded reseed.
+  std::set<std::vector<u64>> lattice_dred_candidates;
+  std::set<std::vector<u64>> lattice_sweep_keys;
+
+  void clearLatticeSweepState()
+  {
+    lattice_dred_candidates.clear();
+    lattice_sweep_keys.clear();
+  }
+
   bool reduceLatticeContributorKey(Index** side,
                                    const std::vector<u64>& storage_key,
                                    u64& joined)
@@ -700,6 +718,10 @@ public:
         for (u16 c = 0; c + 1 < arity; ++c)
           if (row[c] != storage_key[c]) { same = false; break; }
         if (!same || !cnt_present(row[arity])) return;
+        if (!lattice_dred_candidates.empty()
+            && lattice_dred_candidates.count(
+                 std::vector<u64>(row, row + arity)))
+          return;
         joined = joinLatticePayload(joined, row[arity - 1]);
         present = true;
       });
@@ -1131,6 +1153,17 @@ public:
     count_epoch_writer_ids.clear();
     counted = false;
     counted_revision = 0;
+    clearLatticeSweepState();
+  }
+
+  // Generic full-row erase from a contributor-shaped sidecar (untemplated
+  // callers; the maintain task's templated cast is the hot-path variant).
+  bool eraseContributorRow(Index** side, const std::vector<u64>& row)
+  {
+    std::vector<u16> ident(arity);
+    for (u16 c = 0; c < arity; ++c) ident[c] = c;
+    return side[buckethash(row[0])]
+             ->removeTuple(const_cast<u64*>(row.data()), ident.data());
   }
 
   u16 getArity()
@@ -2788,6 +2821,11 @@ public:
     {
       Relation* rel = getRelation(name);
       if (rel == nullptr) continue;
+      if (rel->isLattice())
+      {
+        latticeDredReseed(rel, reseeded, discarded);
+        continue;
+      }
       std::vector<std::vector<u64>> rows;
       {
         std::lock_guard<std::mutex> lk(update_transition_mutex);
@@ -2814,10 +2852,76 @@ public:
     }
   }
 
+  // M7 sub-slice (b): resolve contributor candidates after the sweep and
+  // re-assert every swept key from the surviving + reseeded contributors.
+  // The sweep pessimistically retracted each changed key's visible value
+  // (its old-value witness was the only retraction driver); this is the
+  // single post-reseed re-assertion, so regressed values -- retained
+  // losers included -- surface exactly once per key per epoch.
+  void latticeDredReseed(Relation* rel, u64& reseeded, u64& discarded)
+  {
+    Index** side = rel->getCountSidecar();
+    if (side == nullptr)
+    {
+      rel->clearLatticeSweepState();
+      return;
+    }
+    const u16 arity = rel->getArity();
+    for (const std::vector<u64>& row : rel->lattice_dred_candidates)
+    {
+      u64 word = 0;
+      side[buckethash(row[0])]->getPayload(row.data(), arity, word);
+      if (cnt_present(word))
+        ++reseeded;                    // recursive support survived: live
+      else
+      {
+        rel->eraseContributorRow(side, row);
+        ++discarded;
+      }
+    }
+    rel->lattice_dred_candidates.clear();
+    for (const std::vector<u64>& key : rel->lattice_sweep_keys)
+    {
+      u64 old_value = 0, new_value = 0;
+      const bool old_present = rel->getLatticePayloadForKey(key, old_value);
+      const bool new_present =
+        rel->reduceLatticeContributorKey(side, key, new_value);
+      if (old_present == new_present
+          && (!old_present || old_value == new_value))
+        continue;
+      std::vector<u64> row(key);
+      row.push_back(0);
+      if (!rel->setLatticePayloadForKey(key, new_present, new_value))
+      {
+        update_epoch_valid = false;
+        continue;
+      }
+      if (old_present)
+      {
+        row[arity - 1] = old_value;
+        recordUpdateTransition(rel, row.data(), -1);
+      }
+      if (new_present)
+      {
+        row[arity - 1] = new_value;
+        recordUpdateTransition(rel, row.data(), 1);
+      }
+      recordLatticeReplacement(rel, key, old_present, old_value,
+                               new_present, new_value);
+    }
+    rel->lattice_sweep_keys.clear();
+  }
+
   // Stage the coalesced old or final rows for closed-value lattice consumers.
   // An epoch whose net result returns to its entry value publishes nothing.
+  // `repair` (M7 sub-slice (b)): the sweep pessimistically over-deleted
+  // every touched key's downstream contributions, so the rebuild must
+  // re-drive each touched key's post-reseed row even when its NET value is
+  // unchanged (a reseeded candidate restoring the entry value still lost
+  // its downstream derivations).  External publication keeps the
+  // net-unchanged filter; only the repair rebuild widens it.
   void stageLatticeReplacements(const std::vector<std::string>& names,
-                                s8 sign)
+                                s8 sign, bool repair = false)
   {
     std::lock_guard<std::mutex> lk(update_transition_mutex);
     for (const std::string& name : names)
@@ -2836,7 +2940,7 @@ public:
           replacement.old_present == replacement.new_present
           && (!replacement.old_present
               || replacement.old_row == replacement.new_row);
-        if (unchanged) continue;
+        if (unchanged && !repair) continue;
         const bool present = sign < 0 ? replacement.old_present
                                       : replacement.new_present;
         const std::vector<u64>& row = sign < 0 ? replacement.old_row

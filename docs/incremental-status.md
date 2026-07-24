@@ -96,6 +96,27 @@ queue, in the decided order, is:
      rank-unchanged exclusion, value re-join from live contributors,
      replacement pairs; opens admission. Fixtures: recursive value
      regression, rank corpse fire, contributor collapse/loser retention.
+     VALUE REPAIR LANDED 2026-07-24: `m7-eligible?` route (M4T schedule +
+     lattice staging) — dred overlay → negative walk (`maint4neg`, whose
+     `LatticeMaintainTask` now runs the contributor candidate lifecycle:
+     foundation-lost/rec-surviving rows become candidates excluded from
+     reduce, dead-candidate absorption, changed keys retracted
+     PESSIMISTICALLY with old-value witnesses injected into the delta so
+     the SCC's own scans cascade) → `dred-reseed` lattice arm (resolves
+     candidates, re-asserts swept keys once — regressions fall to
+     retained losers) → repair-mode positive rebuild
+     (`stage-lattice-replacements-repair` stages every TOUCHED key, net
+     filter off, since the sweep over-deleted downstream contributions
+     even where the net value returned).  Verified: cyclic flagship
+     (9 keys/18 contributors ≡ fresh recount), candidate collapse +
+     reseed ×2 warm epochs, 0-weight-cycle foundedness (unfounded pair
+     dies via absorption — the rank gate is an OPTIMIZATION in this
+     design, not a correctness precondition; the value-unchanged skip is
+     the operative re-fire exclusion).  Cache survives repair epochs.
+     REMAINING in (b): rank-witness maintenance through repair/sweep
+     epochs (the diamond fixture's `(rnk path 0 1)` flip + lattice-key
+     rank repair from contributor stamps) and the as-built exclusion
+     equivalence pinned in the contract.
    - (c) **struct-keyed cones + persistence** — M5 tombstone identity
      across delete/reseed/relearn; load re-establishment from the exact
      historical writers, or certified fallback when that is impossible.

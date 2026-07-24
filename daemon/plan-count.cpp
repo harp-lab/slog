@@ -1417,6 +1417,10 @@ static void populate_maint_stratum(Daemon* daemon, Stratum* stratum,
   // else -- inputs, error arms, service structs -- keeps the full ordinary
   // write/intern machinery.  Temps are staging: no indices, no tasks.
   std::set<u16> maintained;
+  // Slots the plan READS (drivers + cursors): a maintained head that is
+  // also read is a same-SCC (recursive) member -- its lattice fold injects
+  // value-change witnesses so the stratum's own scans cascade (M7 (b)).
+  std::set<u16> read_slots;
   for (const SealedRule& rule : plan.rules)
   {
     for (const EmitPlan& head : rule.heads)
@@ -1424,6 +1428,17 @@ static void populate_maint_stratum(Daemon* daemon, Stratum* stratum,
         maintained.insert(head.relation);
     for (const EmitPlan& effect : rule.effects)
       maintained.insert(effect.relation);
+    read_slots.insert(rule.driver.relation);
+    for (const CursorPlan& cursor : rule.cursors)
+      std::visit([&](const auto& c)
+      {
+        using T = std::decay_t<decltype(c)>;
+        if constexpr (std::is_same_v<T, ProbePlan>
+                      || std::is_same_v<T, FilterPlan>)
+          read_slots.insert(c.relation);
+        // Join3Plan participants are plain tables (wcoj), never a lattice
+        // head; they cannot make a lattice recursive.
+      }, cursor);
   }
 
   for (const RelationBinding& binding : plan.bindings)
@@ -1441,7 +1456,9 @@ static void populate_maint_stratum(Daemon* daemon, Stratum* stratum,
                            false);
       if (is_head)
         add_flavored_lattice_maintain_task(binding.shape.arity, db, stratum,
-                                           relation);
+                                           relation, dred,
+                                           read_slots.count(binding.slot)
+                                             != 0);
       continue;
     }
     seal_check(!binding.shape.full_orders.empty(), SealErrorK::binding,

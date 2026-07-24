@@ -928,10 +928,11 @@ public:
          + std::to_string(names.size()) + ")");
   }
 
-  void stageLatticeReplacements(const std::vector<std::string>& names, s8 sign)
+  void stageLatticeReplacements(const std::vector<std::string>& names, s8 sign,
+                                bool repair = false)
   {
     if (refuseIfSuspended("stage-lattice-replacements")) return;
-    database->stageLatticeReplacements(names, sign);
+    database->stageLatticeReplacements(names, sign, repair);
     emit("(lattice-replacements-staged " + std::to_string((s32)sign) + " "
          + std::to_string(names.size()) + ")");
   }
