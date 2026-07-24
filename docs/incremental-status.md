@@ -76,7 +76,22 @@ queue, in the decided order, is:
    - (a) **sidecar substrate** — same-SCC contributor retention plus the
      new rank-witness sidecar (eager forward maintenance) and its
      coverage/certification plumbing; regressions still fall back; gated
-     by the fresh-recount oracles.
+     by the fresh-recount oracles.  LANDED 2026-07-23: the
+     `lattice-retention-shape?` route predicate (acyclicity-free subset
+     of M6L's certificate) runs the version-local establishment recount
+     for recursive lattice cones before route selection (`(m7-retention
+     ...)`), after fixing the latent missing-backfill bug in late
+     lattice payload-map ordering requisition that aborted every
+     recursive-lattice recount; rank witnesses stamp first-derivation
+     rounds at the iteration barrier (write∩read = the same-SCC test,
+     no emit-cpp or frozen-core changes), certified `(rnk NAME ORD 1)`
+     when stamped from empty, honestly invalid (2) across warm
+     re-entries and M4T sweeps until (b); new verbs
+     `(rank-witness-state)`/`(dump-ranks ...)`; fixtures
+     `m7_rec_min`/`m7_rank_diamond` with (b) flip points.  Pinned for
+     (b): lattice-subsumed losers carry no forward stamp (repair derives
+     them on demand); temp-staged rules stride two physical rounds per
+     logical hop.
    - (b) **repair fixpoint on plain tables** — M4T candidate seeding, the
      rank-unchanged exclusion, value re-join from live contributors,
      replacement pairs; opens admission. Fixtures: recursive value

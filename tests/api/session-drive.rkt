@@ -146,6 +146,11 @@
      (match (string-split arg ",")
        [(list rel) `(dump-counts ,rel)]
        [(list rel pp) `(dump-counts ,rel ,(string->number pp))])]
+    [(list "rank-witness-state") `(rank-witness-state)]
+    [(list "dump-ranks" arg)
+     (match (string-split arg ",")
+       [(list rel) `(dump-ranks ,rel)]
+       [(list rel pp) `(dump-ranks ,rel ,(string->number pp))])]
     [_ (error 'session-drive "unrecognized op: ~a" s)]))
 
 ;; response readers for the query actions
@@ -211,6 +216,12 @@
       [`(count-state) (session-action! s `(count-state) echo-one-line)]
       [`(lattice-contributor-state)
        (session-action! s `(lattice-contributor-state) echo-one-line)]
+      [`(rank-witness-state)
+       (session-action! s `(rank-witness-state) echo-one-line)]
+      [`(dump-ranks ,rel) (session-action! s `(dump-ranks ,rel)
+                                           (echo-until #px"^\\(rankdone "))]
+      [`(dump-ranks ,rel ,pp) (session-action! s `(dump-ranks ,rel ,pp)
+                                               (echo-until #px"^\\(rankdone "))]
       [`(count-capabilities)
        (session-action! s `(count-capabilities) echo-one-line)]
       [`(count-test-max ,n)

@@ -1,0 +1,28 @@
+;; M7 sub-slice (a): rank witnesses on a plain-table recursive cone --
+;; foundedness rank as a recursive-min instance (m7-contract admission
+;; ladder).  Diamond/refound from incremental.md section 10's foundedness
+;; list: path(1,4) is derivable at rank 2 via BOTH 2 and 3, and at rank 3
+;; via the refound chain 1 -> 5 -> 6 -> 4.
+;;
+;;   delete edge(2,4): best rank of path(1,4) UNCHANGED at 2 (via 3) --
+;;     the rank-unchanged exclusion case (no propagation in sub-slice (b));
+;;   delete edge(3,4) too: rank REGRESSES to 3 (via the refound chain) --
+;;     membership unchanged, rank repaired;
+;;   delete edge(6,4) too: path(1,4) loses all support -> retracted.
+;;
+;; A separate symmetric cycle 10 <-> 11 seeded by 9 -> 10 pins the
+;; unfounded-pair shape: deleting the seed must kill both path(9,10) and
+;; path(9,11) despite their mutual recursive support (the rank witness of a
+;; corpse never certifies a re-fire).
+;;
+;; Sub-slice (a): the initial from-empty run stamps exact ranks (state 1).
+;; Deletions take M4T's PRECISE sweep (plain-table recursion shipped
+;; there), a maintenance epoch over warm content -- so rank witnesses go
+;; honestly INVALID (state 2) until sub-slice (b) maintains them through
+;; the candidate rounds.
+
+table (edge int int)
+table (path int int)
+
+rule (edge X Y) --> (path X Y)
+rule (path X Y) (edge Y Z) --> (path X Z)

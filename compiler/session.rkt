@@ -1567,6 +1567,41 @@
     (and caps route-shape-certified?
          (for/and ([r (in-list maintenance-names)])
            (hash-ref caps r #f))))
+  ;; M7 sub-slice (a) (docs/m7-contract.md): contributor RETENTION for
+  ;; recursive (same-SCC) lattice cones.  The recount that establishes and
+  ;; certifies contributor state is version-local and transactional, so it
+  ;; may run for shapes whose ROUTE still falls back: this is
+  ;; lattice-shape-certified? minus acyclicity and minus the
+  ;; producer/consumer split -- a recursive producer legitimately reads its
+  ;; own lattice head in-SCC ('lat) and has it dynamic.  Negation anywhere
+  ;; in the cone, struct cones (sub-slice (c)), and direct lattice edits
+  ;; stay out.  Routing below keeps requiring lattice-shape-certified?, so
+  ;; recursive regressions remain on clear-and-rerun until sub-slice (b)
+  ;; opens admission.
+  ;; Struct-kind cone members do not refuse RETENTION: the M4S-hardened
+  ;; recount covers them exactly, and arithmetic in a lattice cone drags
+  ;; the diagnostic side channels (struct-capped) into scope.  Repair over
+  ;; struct-KEYED lattices stays sub-slice (c); struct edit targets stay
+  ;; refused as everywhere else.
+  (define lattice-retention-shape?
+    (and (pair? lattice-names)
+         (not struct-edit-target?)
+         (pair? lattice-head-names)
+         (for/and ([r (in-list lattice-names)])
+           (member r lattice-head-names))
+         (for/and ([g (in-list tip-groups)])
+           (not (eq? (hash-ref caps (first g) #f) 'lattice)))
+         (for*/and ([info (in-list union-cone)]
+                    [entry (in-list (sinfo-reads info))]
+                    [kind (in-list (cdr entry))])
+           (and (member kind '(pos lat))
+                (or (not (eq? kind 'lat))
+                    (member (car entry) lattice-names))))))
+  (define lattice-retention-certified?
+    (and caps lattice-retention-shape?
+         (not structurally-certified?)  ; acyclic shapes already establish
+         (for/and ([r (in-list maintenance-names)])
+           (hash-ref caps r #f))))
   ;; M4N runs beside route-shape-certified? (which is mono/lattice-scoped)
   ;; so the m1/m3/m4t/m6l2 predicates cannot fire on a negated shape.
   (define m4n-certified?
@@ -1601,7 +1636,8 @@
   ;; the count epoch has published nothing and no edit has been applied yet,
   ;; so retain set semantics by selecting the legacy delta/re-entry route.
   (define recount-ready?
-    (and (or structurally-certified? m4n-certified? m4n-derived-certified?)
+    (and (or structurally-certified? m4n-certified? m4n-derived-certified?
+             lattice-retention-certified?)
          (with-handlers
              ([exn:fail?
                (lambda (e)
@@ -1610,6 +1646,11 @@
                  #f)])
            (session-recount! s #:only maintenance-names #:lattices? #t)
            #t)))
+  ;; Route-observability for the retention-only establishment: fixtures
+  ;; assert the recursive cone's contributor cache went warm even though
+  ;; the route below still falls back.
+  (when (and lattice-retention-certified? recount-ready?)
+    (echo! s (format "(m7-retention ~a)" lattice-names)))
   (define cstate
     (and recount-ready? (query-maintenance-count-state! s #t)))
   (define counts-certified?

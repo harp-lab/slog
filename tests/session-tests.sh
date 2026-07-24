@@ -2739,6 +2739,93 @@ else
   echo "FAIL m1-body-const-counts"; FAIL=$((FAIL+1))
 fi
 
+# =========================================================================
+# --- M7 sub-slice (a): recursive (same-SCC) lattice substrate -------------
+# docs/m7-contract.md.  Retention establishes and CERTIFIES contributor
+# state for the recursive min cone before route selection (the recount is
+# version-local and transactional); routing still falls back.  Rank
+# witnesses stamp first-derivation rounds (temp-staged rules stride two
+# physical rounds per logical hop) and the rerun re-certifies them from
+# empty.  Loser contributors subsumed before reaching the delta carry no
+# forward stamp (lattice merge) -- repair derives those on demand, a
+# pinned sub-slice (b) design point.
+# FLIP POINT (M7 sub-slice (b)): the deletion flush takes the stored-
+# contributor repair fixpoint -- "(route rerun 1 10)" flips to the repair
+# verbs, dist regresses to the retained loser (1,3)->100 without rerun,
+# and the contributor cache survives the flush instead of dropping.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m7_rec_min.slog \
+  batch+:edge,1,2,10 batch+:edge,2,3,5 batch+:edge,3,1,2 \
+  batch+:edge,1,3,100 batch+:edge,3,4,1 batch+:edge,2,4,20 batch+:edge,1,4,17 \
+  flush dump-rel:dist rank-witness-state dump-ranks:dist \
+  recount-lattices-force dump-counts:dist lattice-contributor-state \
+  batch-:edge,2,3,5 flush dump-rel:dist rank-witness-state dump-ranks:dist \
+  recount-lattices-force dump-counts:dist lattice-contributor-state \
+  > out/sess-m7-recmin.log 2>&1
+if [ "$(grep -cF '(m7-retention (dist))' out/sess-m7-recmin.log)" -eq 2 ]; then
+  echo "PASS m7-retention-fires"; PASS=$((PASS+1))
+else
+  echo "FAIL m7-retention-fires"; FAIL=$((FAIL+1))
+fi
+expect "m7-recmin-fallback-route" "(route rerun 1 10)" out/sess-m7-recmin.log
+if [ "$(grep -cF '(lcnt dist 0 1)' out/sess-m7-recmin.log)" -ge 4 ]; then
+  echo "PASS m7-recmin-certified"; PASS=$((PASS+1))
+else
+  echo "FAIL m7-recmin-certified"; FAIL=$((FAIL+1))
+fi
+expect "m7-recmin-contributors-pre" "(countdone dist 28)" out/sess-m7-recmin.log
+expect "m7-recmin-contributors-post" "(countdone dist 18)" out/sess-m7-recmin.log
+# loser retention: rule-1's (1,3)->100 keeps nonrec support while the
+# recursive winner (1,3)->15 holds the visible value -- then the winner
+# dies with the deleted edge and the loser IS the post-rerun value
+if [ "$(grep -cF '(countrow dist 1 3 100 0 1 0)' out/sess-m7-recmin.log)" -eq 2 ] \
+   && [ "$(grep -cF '(countrow dist 1 3 15 0 0 1)' out/sess-m7-recmin.log)" -eq 1 ]; then
+  echo "PASS m7-recmin-loser-retained"; PASS=$((PASS+1))
+else
+  echo "FAIL m7-recmin-loser-retained"; FAIL=$((FAIL+1))
+fi
+# rank witnesses: valid after the initial from-empty run AND after the
+# rerun (the fallback is its own exact re-establishment); depths follow
+# the temp-staged stride (direct edge 1, one hop 3, two hops 5)
+if [ "$(grep -cF '(rnk dist 0 1)' out/sess-m7-recmin.log)" -eq 2 ]; then
+  echo "PASS m7-recmin-ranks-valid"; PASS=$((PASS+1))
+else
+  echo "FAIL m7-recmin-ranks-valid"; FAIL=$((FAIL+1))
+fi
+if [ "$(grep -cF '(rankrow dist 1 3 100 1)' out/sess-m7-recmin.log)" -eq 2 ] \
+   && [ "$(grep -cF '(rankrow dist 1 3 15 3)' out/sess-m7-recmin.log)" -eq 1 ] \
+   && [ "$(grep -cF '(rankrow dist 1 1 17 5)' out/sess-m7-recmin.log)" -eq 1 ] \
+   && [ "$(grep -cF '(rankrow dist 1 1 102 3)' out/sess-m7-recmin.log)" -eq 2 ]; then
+  echo "PASS m7-recmin-rank-depths"; PASS=$((PASS+1))
+else
+  echo "FAIL m7-recmin-rank-depths"; FAIL=$((FAIL+1))
+fi
+
+# --- M7 sub-slice (a): rank witnesses on a plain-table recursive cone -----
+# Diamond/refound from incremental.md section 10's foundedness list, plus
+# a symmetric cycle.  The initial from-empty run stamps exact ranks
+# (path(1,4) = 2 via the diamond; first-seen-wins beats the rank-3 refound
+# chain).  Deletion takes M4T's PRECISE sweep -- a maintenance epoch over
+# warm content -- so rank witnesses go honestly INVALID (state 2).
+# FLIP POINT (M7 sub-slice (b)): the sweep maintains ranks through the
+# candidate rounds -- "(rnk path 0 2)" flips to "(rnk path 0 1)" and
+# path(1,4)'s witness stays 2 (the rank-unchanged exclusion case).
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m7_rank_diamond.slog \
+  batch+:edge,1,2 batch+:edge,1,3 batch+:edge,2,4 batch+:edge,3,4 \
+  batch+:edge,1,5 batch+:edge,5,6 batch+:edge,6,4 \
+  batch+:edge,9,10 batch+:edge,10,11 batch+:edge,11,10 \
+  flush rank-witness-state dump-ranks:path \
+  batch-:edge,2,4 flush rank-witness-state \
+  > out/sess-m7-rankdiamond.log 2>&1
+expect "m7-diamond-ranks-valid" "(rnk path 0 1)" out/sess-m7-rankdiamond.log
+expect "m7-diamond-rank-14" "(rankrow path 1 4 2)" out/sess-m7-rankdiamond.log
+expect "m7-diamond-rank-refound" "(rankrow path 5 4 2)" out/sess-m7-rankdiamond.log
+expect "m7-diamond-rank-cycle" "(rankrow path 9 11 2)" out/sess-m7-rankdiamond.log
+expect "m7-diamond-rankcount" "(rankdone path 16)" out/sess-m7-rankdiamond.log
+expect "m7-diamond-m4t-route" "(route maintain-recursive-negative 1)" out/sess-m7-rankdiamond.log
+expect "m7-diamond-ranks-honest" "(rnk path 0 2)" out/sess-m7-rankdiamond.log
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

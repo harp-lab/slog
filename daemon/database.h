@@ -220,6 +220,18 @@ private:
   // first materialises it (§8B.2's lazy protocol).
   Index** count_sidecar = nullptr;
   Index** count_epoch_sidecar = nullptr;
+
+  // M7 sub-slice (a) rank witnesses (docs/m7-contract.md): per-tuple best
+  // derivation rank = the semi-naive round of first derivation, stamped
+  // once per round at the EndIterCompletion barrier for relations their
+  // stratum both writes and reads (the same-SCC members).  Session-
+  // ephemeral recomputable cache exactly like counts: never serialized,
+  // never an entry in `indices`.  rank_state: 0 = pending (cleared or
+  // never tracked), 1 = valid (stamped from an empty relation, exact),
+  // 2 = invalid (a warm re-entry restarted round numbering, or a point
+  // mutation bypassed the stamp; precise maintenance is sub-slice (b)).
+  Index** rank_sidecar = nullptr;
+  u8 rank_state = 0;
   bool count_epoch_active = false;
   std::atomic<bool> count_epoch_valid{true};
   // Authoritative M0.4 semantic-writer ownership.  Pipeline maintenance
@@ -443,6 +455,7 @@ public:
     else
       removeTuple(t);
     clearCounts();
+    rankInvalidate();
   }
 
   void markAllLiveDirect()
@@ -550,6 +563,7 @@ public:
     // Registration teardown invalidates the count invariant ("a version's
     // count map covers exactly its live tuples", §6.1) with everything else.
     clearCounts();
+    clearRanks();
   }
 
   // ---- DRed^c count sidecar (docs/incremental.md §6.1/§8B.2) ----
@@ -582,6 +596,44 @@ public:
   Index** getCountSidecar()
   {
     return count_sidecar;
+  }
+
+  // ---- M7 rank-witness sidecar (docs/m7-contract.md sub-slice (a)) -----
+
+  Index** ensureRankSidecar()
+  {
+    if (rank_sidecar) return rank_sidecar;
+    rank_sidecar = new Index*[bucket_count];
+    for (u32 b = 0; b < bucket_count; ++b)
+      rank_sidecar[b] = makeMapIndex(countKeyArity(), LAT_NONE,
+                                     false, 0, false, 0);
+    return rank_sidecar;
+  }
+  Index** getRankSidecar() { return rank_sidecar; }
+  u8 rankState() const { return rank_state; }
+  void setRankStateValid() { rank_state = 1; }
+  // Never un-invalidates: only a stamp-from-empty run re-certifies.
+  void rankInvalidate() { if (rank_state == 1) rank_state = 2; }
+  void clearRanks()
+  {
+    deleteCountArray(rank_sidecar);
+    rank_state = 0;
+  }
+  // First-seen-wins stamp for one storage-order row (key prefix per
+  // countKeyArity, so struct relations stamp by their id column).
+  void stampRankIfAbsent(const u64* row, u32 round)
+  {
+    Index** side = ensureRankSidecar();
+    Index* node = side[buckethash(row[0])];
+    u64 cur;
+    if (!node->getPayload(row, countKeyArity(), cur))
+      node->setPayload(row, countKeyArity(), (u64)round);
+  }
+  bool hasAnyLiveNominal()
+  {
+    bool found = false;
+    forEachLiveNominal([&](const u64*) { found = true; });
+    return found;
   }
 
   bool isCounted()
@@ -2057,8 +2109,10 @@ public:
       for (u16 b = 0; b < bucket_count; ++b)
 	it.second[b]->clear();
     // Contents gone => counts gone ("covers exactly its live tuples", §6.1);
-    // the lazy protocol re-establishes them on demand.
+    // the lazy protocol re-establishes them on demand.  Ranks reset to
+    // pending: the refilling run stamps from empty and re-certifies.
     clearCounts();
+    clearRanks();
     for (InsertBatch* ib : *delta)
       delete ib;
     delta->clear();
@@ -2097,6 +2151,7 @@ public:
   void insertTupleAllIndices(const u64* t)
   {
     clearCounts();
+    rankInvalidate();
     insertTupleAllIndicesPreservingCounts(t);
   }
 
@@ -3699,6 +3754,34 @@ public:
     return s;
   }
 
+  // M7 rank-witness certification, beside contributor certification:
+  //   (rank-witness-state (rnk NAME ORD 1|2) ...)
+  // 1 = stamped from an empty relation and exact; 2 = invalidated (a warm
+  // re-entry or a bypassing mutation); never-tracked relations are omitted.
+  std::string rankWitnessStateSexpr()
+  {
+    std::map<std::string, const std::vector<RelBinding>*> sorted;
+    for (const auto& kv : rel_bindings)
+      if (!kv.first.empty() && kv.first[0] != '$')
+        sorted[kv.first] = &kv.second;
+    std::string s = "(rank-witness-state";
+    for (const auto& kv : sorted)
+    {
+      u32 ord = 0;
+      for (const RelBinding& b : *kv.second)
+      {
+        const u32 o = ord++;
+        if (b.rel == nullptr || b.rel->isCompilerTemporary()
+            || b.rel->rankState() == 0)
+          continue;
+        s += " (rnk " + kv.first + " " + std::to_string(o) + " "
+           + std::to_string(b.rel->rankState()) + ")";
+      }
+    }
+    s += ")";
+    return s;
+  }
+
   // Explicit per-VersionId capability report.  Recount capability is
   // separate from precise deletion: ordinary tables can establish counts,
   // structs advertise conditional maintenance on the M5 identity substrate
@@ -4066,6 +4149,7 @@ public:
         auto it = accel_sidecar.find(s->name);
         if (it != accel_sidecar.end()) ++it->second.generation;
       }
+      rankMarkStratumEntry(s);
       rs.stratum = s;
       rs.position = RUN_FRESH;
       rs.suspended = false;
@@ -4723,6 +4807,70 @@ public:
 
     drain();
     return marked;
+  }
+
+  // ---- M7 rank-witness stamping (docs/m7-contract.md sub-slice (a)) --------
+  //
+  // A tuple's foundedness rank is the recursive minimum over derivations of
+  // (1 + max body rank); under fair semi-naive evaluation that IS the round
+  // its first derivation lands in the finalized delta -- deterministic
+  // across worker counts and stable across pause slices (an interrupted
+  // round resumes as the same round; partial read phases never finalize).
+  // Stamped single-threaded from EndIterCompletion beside the accelerator
+  // recorder.  Only relations their stratum both writes and reads (the
+  // same-SCC members) pay; the stamp is first-seen-wins.
+
+  static bool rankTracked(const Stratum* s, const std::string& rname)
+  {
+    return std::find(s->read_rels.begin(), s->read_rels.end(), rname)
+             != s->read_rels.end();
+  }
+
+  // Decide this run's stamping validity per recursive relation.  Stamping
+  // that begins on an EMPTY relation yields exact ranks; a warm re-entry
+  // restarts round numbering, so a previously-valid sidecar goes invalid
+  // until sub-slice (b) maintains ranks precisely.
+  void rankMarkStratumEntry(Stratum* s)
+  {
+    for (const std::string& rname : s->dynamic_rels)
+    {
+      if (!rankTracked(s, rname)) continue;
+      auto rit = relations.find(rname);
+      if (rit == relations.end()) continue;
+      Relation* rel = rit->second;
+      if (rel->getArity() == 0) continue;
+      if (!rel->hasAnyLiveNominal())
+      {
+        rel->clearRanks();
+        rel->setRankStateValid();
+      }
+      else
+        rel->rankInvalidate();
+    }
+  }
+
+  void rankRecordRound()
+  {
+    const Stratum* s = rs.stratum;
+    if (s == nullptr) return;
+    const u32 round = rs.iteration_count;
+    for (const std::string& rname : s->dynamic_rels)
+    {
+      if (!rankTracked(s, rname)) continue;
+      auto rit = relations.find(rname);
+      if (rit == relations.end()) continue;
+      Relation* rel = rit->second;
+      const u16 arity = rel->getArity();
+      if (arity == 0 || rel->rankState() != 1) continue;
+      for (InsertBatch* b : rel->getDelta())
+      {
+        if (b->kind == cnt_kind_premise || b->kind == cnt_kind_view
+            || b->sign < 0) continue;
+        for (u64 j = 0; j + arity <= b->usage; j += arity)
+          if (b->data[j] != slog_null)
+            rel->stampRankIfAbsent(&b->data[j], round);
+      }
+    }
   }
 
   // ---- Accelerator-seed sidecar (docs/db-compression.md §4.4 v2) -----------
@@ -6545,6 +6693,7 @@ inline void EndIterCompletion::operator()() noexcept
   // sample this round's delta into the accelerator-seed sidecar (§4.4 v2):
   // single-threaded here (all workers parked), delta finalized+interned+idle
   db->accelRecordRound();
+  db->rankRecordRound();
   if (readRSSbytes() >= rs.mem_cap)
   {
     rs.mem_tripped.store(true, std::memory_order_relaxed);

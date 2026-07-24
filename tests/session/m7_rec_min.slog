@@ -1,0 +1,30 @@
+;; M7 sub-slice (a): recursive (same-SCC) min lattice -- dist reads dist
+;; through the cycle 1 -> 2 -> 3 -> 1, so the lattice head is recursive and
+;; M6L's contributor machinery historically refused to retain state for it.
+;; Today ANY signed deletion in the cone falls back to clear-and-rerun
+;; (route rerun); M7 sub-slice (b) flips regressions to the
+;; stored-contributor repair fixpoint.  Sub-slice (a) pins the substrate
+;; only: same-SCC contributor retention and rank witnesses, certified equal
+;; to a forced fresh recount, with routing unchanged.
+;;
+;; The deletion scenario (batch-:edge,2,3,5) exercises, per key:
+;;   dist(1,3): 15 -> 100     regression to a RETAINED LOSER (direct edge);
+;;   dist(1,4): 16 -> 17      likewise (losers 17 and 30 both retained);
+;;   dist(1,1): 17 -> 102     regression through a REPLACEMENT cascade
+;;                            around the cycle (new value, derived from the
+;;                            regressed dist(1,3));
+;;   dist(2,1)/(2,2)/(2,3):   all contributors die -> present-to-absent.
+;;
+;; Rank witnesses stamp per CONTRIBUTOR row (the lattice's tuples), at the
+;; physical semi-naive round of first derivation: the (+ D W) compute
+;; stages through a temp, so depths stride 2 (direct edge 1, one hop 3,
+;; two hops 5).  Losers subsumed by the lattice merge before reaching the
+;; delta (e.g. (1,4)->30) carry no forward stamp -- sub-slice (b) derives
+;; those on demand during repair.
+
+lattice (cost (min int #:floor 0))
+table (edge int int int)
+table (dist int int cost)
+
+rule (edge X Y W) --> (dist X Y W)
+rule (dist X Y D) (edge Y Z W) --> (dist X Z (+ D W))

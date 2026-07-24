@@ -495,6 +495,10 @@
      "  d->emit(d->db()->countStateSexpr());\n"]
     [`(lattice-contributor-state)
      "  d->emit(d->db()->latticeContributorStateSexpr());\n"]
+    ;; M7 rank-witness certification beside the contributor form:
+    ;; (rank-witness-state (rnk NAME ORD 1|2) ...)
+    [`(rank-witness-state)
+     "  d->emit(d->db()->rankWitnessStateSexpr());\n"]
     [`(count-capabilities)
      "  d->emit(d->db()->countCapabilitiesSexpr());\n"]
     [`(count-test-max ,n)
@@ -580,6 +584,29 @@
       "      ++n;\n"
       "    });\n"
       (format "  d->emit(std::string(\"(countdone ~a \") + std::to_string(n) + \")\");\n" rel))]
+    ;; M7 rank witnesses: (rankrow REL key.. ROUND) per stamped key, then
+    ;; (rankdone REL N); -1 when the relation has no rank sidecar.
+    [`(dump-ranks ,rel ,pos ...)
+     (string-append
+      "  slog::Database* db = d->db();\n"
+      (if (null? pos)
+          (format "  slog::Relation* r = db->getRelation(\"~a\");\n" rel)
+          (format "  slog::Relation* r = db->getRelationAt(\"~a\", ~a);\n"
+                  rel (car pos)))
+      "  if (!r || !r->getRankSidecar())\n"
+      (format "  { d->emit(\"(rankdone ~a -1)\"); return; }\n" rel)
+      "  slog::Index** side = r->getRankSidecar();\n"
+      "  const u16 ka = r->countKeyArity();\n"
+      "  size_t n = 0;\n"
+      "  for (u16 b = 0; b < bucket_count; ++b)\n"
+      "    side[b]->forEach([&](const u64* row) {\n"
+      (format "      std::string line = \"(rankrow ~a\";\n" rel)
+      "      for (u16 c = 0; c < ka; ++c) line += \" \" + db->writeValCSV(row[c]);\n"
+      "      line += \" \" + std::to_string(row[ka]) + \")\";\n"
+      "      d->emit(line);\n"
+      "      ++n;\n"
+      "    });\n"
+      (format "  d->emit(std::string(\"(rankdone ~a \") + std::to_string(n) + \")\");\n" rel))]
     ;; Per-relation id-free content signature (docs/db-compression.md P1.3):
     ;; emit one `(sig NAME count checksum)` per named relation, then `(sig-end)`.
     ;; Read-only, so it is safe against a suspended snapshot.
