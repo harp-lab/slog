@@ -1700,22 +1700,21 @@
   ;; no negation) with certified contributor state, over a genuinely
   ;; recursive cone.  Only regressing epochs enter; monotone ascents keep
   ;; the legacy re-entry path (the contract's monotone insertion rule).
-  ;; User struct data in a lattice cone is sub-slice (c) (the M5 tombstone
-  ;; identity interplay); the compiler's fallible side channels (the
-  ;; error_spec union in modules.rkt plus the error sink) are struct-capped
-  ;; but write-only diagnostics and stay admissible cone members.
+  ;; The compiler's fallible side channels (the error_spec union in
+  ;; modules.rkt plus the error sink) are struct-capped but write-only
+  ;; diagnostics; user struct cone members ride the shipped M4S/M5
+  ;; maintenance machinery, and struct-KEYED lattice rows carry stable
+  ;; interned ids through the repair via the tombstone dictionary
+  ;; (sub-slice (c)).  Struct edit targets stay refused via the retention
+  ;; shape, as everywhere.
   (define diagnostic-side-channels
     '(error error_spec malformed_deduction div_by_zero modulo_by_zero
       int_overflow nan_result toint_range type_mismatch mpz_overflow
       mpz_table_overflow smt_bad_formula))
-  (define user-struct-in-cone?
-    (for/or ([r (in-list struct-names)])
-      (not (memq r diagnostic-side-channels))))
   (define m7-eligible?
     (and lattice-retention-certified? counts-certified?
          has-negative?
          (not (flavored-native?))     ; repair variants have no native leg
-         (not user-struct-in-cone?)   ; struct-keyed repair is sub-slice (c)
          (for/or ([info (in-list union-cone)])
            (not (sinfo-acyclic? info)))))
   ;; M4N: negation x structs stays on rerun (contract exclusion,
@@ -1861,13 +1860,21 @@
       (send-maintenance-stratum! s (get-so info))))
   (define (rerun-cone!)
     ;; clear cone-written relations, EXCEPT those also written by non-cone
-    ;; strata (shared diagnostic side channels)
+    ;; strata (shared diagnostic side channels).  A REBOUND name (multiple
+    ;; chain bindings -- an inject-reopen successor) is not a shared side
+    ;; channel: the non-cone writers target HISTORICAL versions, and the
+    ;; tip's OWN overlay must clear so rows derived only at the tip from a
+    ;; now-deleted premise cannot survive re-derivation (M7 (c)).  Clearing
+    ;; touches own content only; inherited foundations persist by the
+    ;; version semantics ("inheritance contributes one nonrec foundation
+    ;; support per active tuple").
     (define cone-dyn
       (for*/set ([info (in-list union-cone)] [d (in-list (sinfo-dyn info))]) d))
     (define noncone-dyn
       (for*/set ([p (in-list (session-strata-info s))]
                  #:unless (set-member? union-sos (sinfo-so (cdr p)))
-                 [d (in-list (sinfo-dyn (cdr p)))])
+                 [d (in-list (sinfo-dyn (cdr p)))]
+                 #:unless (> (length (hash-ref chains d '())) 1))
         d))
     (define clear-set
       (sort (set->list (set-subtract cone-dyn noncone-dyn)) symbol<?))

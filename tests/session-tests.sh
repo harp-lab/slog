@@ -1781,7 +1781,9 @@ timeout 900 racket tests/api/session-drive.rkt \
   > out/sess-m5-ids.log 2>&1
 expect "m5-ids-populated" "(idsdone 2 0)" out/sess-m5-ids.log
 expect "m5-ids-tombstoned" "(idsdone 1 1)" out/sess-m5-ids.log
-expect "m5-ids-rerun-routed" "(route rerun " out/sess-m5-ids.log
+# FLIPPED(M7 sub-slice (c)): struct+lattice cones repair in place;
+# the id-stability asserts below now hold THROUGH the repair route.
+expect "m5-ids-repair-routed" "(route maintain-lattice-recursive-negative" out/sess-m5-ids.log
 if [ "$(grep -cF '(idsdone 2 0)' out/sess-m5-ids.log)" -eq 2 ]; then
   echo "PASS m5-ids-all-resurrected"; PASS=$((PASS+1))
 else
@@ -1832,7 +1834,9 @@ timeout 900 racket tests/api/session-drive.rkt \
 # pair ids: 3 live/0 dead -> 2 live/1 tombstone -> 3 live/0 dead
 expect "m5-keep-populated"    "(idsdone 3 0)" out/sess-m5-keep.log
 expect "m5-keep-tombstoned"   "(idsdone 2 1)" out/sess-m5-keep.log
-expect "m5-keep-rerun-routed" "(route rerun " out/sess-m5-keep.log
+# FLIPPED(M7 sub-slice (c)): struct+lattice cones repair in place;
+# the id-stability asserts below now hold THROUGH the repair route.
+expect "m5-keep-repair-routed" "(route maintain-lattice-recursive-negative" out/sess-m5-keep.log
 if [ "$(grep -cF '(idsdone 3 0)' out/sess-m5-keep.log)" -eq 2 ]; then
   echo "PASS m5-keep-all-resurrected"; PASS=$((PASS+1))
 else
@@ -1904,7 +1908,9 @@ expect "m5-open-heap-support" "(countrow pair (pair 7 8) 0 1 0)" out/sess-m5-ope
 # pair ids: 3 live/0 dead -> 2 live/1 tombstone -> 3 live/0 dead
 expect "m5-open-populated"    "(idsdone 3 0)" out/sess-m5-open.log
 expect "m5-open-tombstoned"   "(idsdone 2 1)" out/sess-m5-open.log
-expect "m5-open-rerun-routed" "(route rerun " out/sess-m5-open.log
+# FLIPPED(M7 sub-slice (c)): struct+lattice cones repair in place;
+# the id-stability asserts below now hold THROUGH the repair route.
+expect "m5-open-repair-routed" "(route maintain-lattice-recursive-negative" out/sess-m5-open.log
 if [ "$(grep -cF '(idsdone 3 0)' out/sess-m5-open.log)" -eq 2 ]; then
   echo "PASS m5-open-all-resurrected"; PASS=$((PASS+1))
 else
@@ -2892,6 +2898,81 @@ expect "m7-diamond-rank-cycle" "(rankrow path 9 11 2)" out/sess-m7-rankdiamond.l
 expect "m7-diamond-rankcount" "(rankdone path 16)" out/sess-m7-rankdiamond.log
 expect "m7-diamond-m4t-route" "(route maintain-recursive-negative 1)" out/sess-m7-rankdiamond.log
 expect "m7-diamond-ranks-honest" "(rnk path 0 2)" out/sess-m7-rankdiamond.log
+
+# --- M7 sub-slice (c): persistence -----------------------------------------
+# Save a warm recursive-lattice session, reopen: the load re-establishes
+# contributor state from the exact historical writers (certifying it), and
+# the FIRST regression repairs precisely -- the contract's persistence
+# fixture verbatim.
+rm -rf data/sess_m7_reopen
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m7_rec_min.slog \
+  batch+:edge,1,2,10 batch+:edge,2,3,5 batch+:edge,3,1,2 \
+  batch+:edge,1,3,100 batch+:edge,3,4,1 batch+:edge,2,4,20 batch+:edge,1,4,17 \
+  flush save:sess_m7_reopen \
+  > out/sess-m7-save.log 2>&1
+timeout 900 racket tests/api/session-drive.rkt \
+  open:sess_m7_reopen lattice-contributor-state \
+  batch-:edge,2,3,5 flush dump-rel:dist \
+  recount-lattices-force dump-counts:dist lattice-contributor-state \
+  > out/sess-m7-reopen.log 2>&1
+expect "m7-reopen-starts-uncounted" "(lcnt dist 0 0)" out/sess-m7-reopen.log
+expect "m7-reopen-establishes" "(m7-retention (dist))" out/sess-m7-reopen.log
+expect "m7-reopen-repairs" "(route maintain-lattice-recursive-negative 1)" out/sess-m7-reopen.log
+expect_not "m7-reopen-no-rerun" "(route rerun" out/sess-m7-reopen.log
+expect "m7-reopen-content" "(dumpdone 9)" out/sess-m7-reopen.log
+expect "m7-reopen-oracle" "(countdone dist 18)" out/sess-m7-reopen.log
+expect "m7-reopen-certified" "(lcnt dist 0 1)" out/sess-m7-reopen.log
+
+# The companion impossible case: an inject-reopen'd lattice successor
+# cannot establish contributor state (begin-count-epoch refuses lattice
+# versions with predecessors) -- the regression takes the named fallback.
+# Content follows the version semantics: inherited rows keep their nonrec
+# foundation and SURVIVE the input deletion, while rows derived only at
+# the tip through the deleted premise are retracted -- the rebound-aware
+# clear-set (rerun clears the tip's OWN overlay; inheritance persists).
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m7_rec_min.slog \
+  batch+:edge,1,2,10 batch+:edge,2,3,5 batch+:edge,3,4,1 flush \
+  inject-reopen:edge,m7-inh,tests/session/m7_rec_min.slog,9,2,1 \
+  batch-:edge,2,3,5 flush dump-tuples:dist \
+  > out/sess-m7-inherited.log 2>&1
+expect "m7-inherited-refused" "(maintenance-unavailable recount" out/sess-m7-inherited.log
+expect "m7-inherited-fallback" "(route rerun " out/sess-m7-inherited.log
+expect "m7-inherited-foundation-survives" "(tuplerow 2 3 5)" out/sess-m7-inherited.log
+expect "m7-inherited-direct-survives" "(tuplerow 9 2 1)" out/sess-m7-inherited.log
+if [ "$(grep -cF '(tuplerow 9 3 6)' out/sess-m7-inherited.log)" -eq 0 ] \
+   && [ "$(grep -cF '(tuplerow 9 4 7)' out/sess-m7-inherited.log)" -eq 0 ]; then
+  echo "PASS m7-inherited-tip-rows-retract"; PASS=$((PASS+1))
+else
+  echo "FAIL m7-inherited-tip-rows-retract (tip-only derivations survived)"; FAIL=$((FAIL+1))
+fi
+
+# --- M7 sub-slice (c): struct-KEYED recursive lattice -----------------------
+# The lattice key is a pnode struct: contributor rows, witnesses, and
+# replacement pairs carry interned ids that stay stable across the repair
+# (M5 tombstone identity) -- delete tombstones the dead keys' ids, the
+# re-add resurrects all of them.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m7_struct_min.slog \
+  batch+:edge,1,2,10 batch+:edge,2,3,5 batch+:edge,3,1,2 \
+  batch+:edge,1,3,100 batch+:edge,3,4,1 batch+:edge,2,4,20 batch+:edge,1,4,17 \
+  flush dump-ids:pnode \
+  batch-:edge,2,3,5 flush dump-rel:dist dump-ids:pnode \
+  recount-lattices-force dump-counts:dist \
+  batch+:edge,2,3,5 flush dump-ids:pnode \
+  > out/sess-m7-struct.log 2>&1
+expect "m7-struct-repairs" "(route maintain-lattice-recursive-negative 1)" out/sess-m7-struct.log
+expect_not "m7-struct-no-rerun" "(route rerun" out/sess-m7-struct.log
+expect "m7-struct-reseed" "(dred-reseeded 1 4)" out/sess-m7-struct.log
+expect "m7-struct-content" "(dumpdone 9)" out/sess-m7-struct.log
+expect "m7-struct-tombstoned" "(idsdone 9 3)" out/sess-m7-struct.log
+expect "m7-struct-oracle" "(countdone dist 18)" out/sess-m7-struct.log
+if [ "$(grep -cF '(idsdone 12 0)' out/sess-m7-struct.log)" -eq 2 ]; then
+  echo "PASS m7-struct-ids-resurrected"; PASS=$((PASS+1))
+else
+  echo "FAIL m7-struct-ids-resurrected (tombstones left after re-add)"; FAIL=$((FAIL+1))
+fi
 
 echo
 echo "$PASS passed, $FAIL failed"

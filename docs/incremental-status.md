@@ -126,6 +126,21 @@ queue, in the decided order, is:
    - (c) **struct-keyed cones + persistence** — M5 tombstone identity
      across delete/reseed/relearn; load re-establishment from the exact
      historical writers, or certified fallback when that is impossible.
+     COMPLETE 2026-07-24: save/reopen re-establishes and the first
+     regression repairs precisely (zero new machinery — (a)'s backfill +
+     retention compose); the inject-reopen'd lattice successor refuses
+     establishment (`begin-count-epoch` lattice+predecessor guard) and
+     takes the named fallback, whose clear-set is now REBOUND-AWARE —
+     the tip's own overlay clears so tip-only derivations through a
+     deleted premise retract, while inherited rows keep their nonrec
+     foundation by the version semantics (a pre-existing staleness hole,
+     found by the fixture).  Struct admission OPEN: user struct cone
+     members ride M4S/M5 machinery, struct-KEYED lattice keys hold
+     stable interned ids through repair (9 live + 3 tombstones on
+     delete, all resurrected on re-add; `m7_struct_min` +
+     `dred-reseeded 1 4` exercising both candidate paths); the three m5
+     blocks flipped to the repair route with id asserts unchanged.
+     Battery 646/646, structid + unit green.
    - (d) **hygiene + exit** — recount abort/retry and replacement-journal
      hygiene, named-fallback routing, the warm multi-worker fuzz,
      sidecar-memory reporting, and the exit audit (the M4N slice-4

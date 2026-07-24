@@ -1,0 +1,17 @@
+;; M7 sub-slice (c): struct-KEYED recursive min lattice -- the lattice key
+;; is a pnode struct instance, so contributor rows, sweep witnesses, and
+;; replacement pairs all carry interned struct ids that must stay stable
+;; across delete/reseed/relearn (M5 tombstone identity; M4S maintenance
+;; machinery for the struct cone members).
+;;
+;; Same graph shape as m7_rec_min: deleting edge(2,3,5) regresses
+;; dist(pnode 1 3) to the retained loser 100 and cascades around the
+;; 1 -> 2 -> 3 -> 1 cycle, with every surviving pnode id unchanged.
+
+lattice (cost (min int #:floor 0))
+table (edge int int int)
+struct (pnode int int)
+table (dist pnode cost)
+
+rule (edge X Y W) --> (dist (pnode X Y) W)
+rule (dist (pnode X Y) D) (edge Y Z W) --> (dist (pnode X Z) (+ D W))
