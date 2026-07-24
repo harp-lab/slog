@@ -26,6 +26,12 @@ retained state backs that answer:
   roughly k contributor deaths of precise-repair headroom per key before the
   worst case reappears.
 
+Vocabulary note: our "k" is the *buffer* size — Yi et al.'s k_max/headroom.
+Their k is the answer arity the view must serve, and a min/max lattice value
+is their k = 1 special case (one visible value per key). If a future lattice
+payload is itself a top-k list (a k-bounded-merge over collections), the
+buffer becomes answer-k plus headroom; the discipline is unchanged.
+
 ## Monoid taxonomy: who needs which structure
 
 The aggregation-tree observation sorts fold shapes into four classes; the
@@ -173,6 +179,40 @@ a cone recompute that can cost far more — their analysis bounds refill
 matter; it argues for generous k and eager refill on our side. Their §7
 runtime procedure for adapting k_max to the observed workload without prior
 knowledge is the shape a per-relation auto-tuned k would take here.
+
+## Research delta over the 2003 result
+
+Yi et al. live in a flat, stored, non-recursive world: one base table,
+values updated in place, truth re-readable by scan. If this experiment ever
+graduates to a publication, the claimable delta is:
+
+1. **Soundness where truth is derived, not stored** — truncated retention
+   with certified exactness under least-fixpoint semantics, where "live" is
+   foundedness, retained rows die via cascades, and the watermark is
+   conservatively stale. The warehouse literature never left stratified SQL.
+2. **Correlated-cascade buffer sizing** — their memoryless independent-walk
+   model misses that one input deletion kills contributors across many keys
+   at once, and that one key's regression drives deaths at downstream keys
+   (coupled walks), under batched epochs rather than tuple-at-a-time.
+3. **Rank unification** — foundedness rank as a recursive-min instance, so
+   the buffer doubles as *scheduling state* for the deletion algorithm
+   (rank-unchanged corpse-fire exclusion), with exactness extended to
+   DRed^c counts, not just view content.
+4. **Systems** — per-key headroom under a global sidecar-memory budget from
+   always-on stats (their §7 adapts a single view), shared refills (one cone
+   recompute resets headroom for every key it touches), eager refill under
+   pause/budget machinery, differential-oracle validation.
+
+Before claiming novelty, sweep: IncA's incremental lattice analyses,
+differential dataflow / DBSP (full input collections retained for
+reductions), Materialize's hierarchical reduction trees (the class-4
+agg-tree choice, forced because streaming systems cannot refill — no base
+to re-scan; we CAN refill via the cone recompute, which is what makes
+truncation available to us at all), and F-IVM-style factorized aggregate
+maintenance. Current read: streaming keeps full state, warehouses truncate
+only over stored flat tables — recursive + truncated + certified-exact
+appears unclaimed. Timing: after M7 ships full retention and the memory
+gate produces the motivating numbers.
 
 ## Lineage (citations verified 2026-07-23)
 
