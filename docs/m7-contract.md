@@ -1,8 +1,10 @@
 # M7 recursive lattice/rank repair contract
 
-**Status:** draft (2026-07-23). `incremental.md` §7A remains normative; this
-file pins the state, admission, and repair lifecycle M7 adds on top of the
-shipped M6L stratified-deletion foundation ([m6l-contract.md](m6l-contract.md)).
+**Status:** slice 1 implemented and audited (2026-07-24; sub-slices (a)–(d),
+exit audit in [incremental-status.md](incremental-status.md); as-built
+annotations inline).  `incremental.md` §7A remains normative; this file pins
+the state, admission, and repair lifecycle M7 adds on top of the shipped M6L
+stratified-deletion foundation ([m6l-contract.md](m6l-contract.md)).
 
 Direction ratified 2026-07-23:
 
