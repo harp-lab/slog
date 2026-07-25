@@ -1,0 +1,9 @@
+;; M7: mutual recursion between two selective lattices in one SCC --
+;; both repair through one m7 epoch (vetting matrix cell).
+lattice (cost (min int #:floor 0))
+table (edge int int int)
+table (da int int cost)
+table (db2 int int cost)
+rule (edge X Y W) --> (da X Y W)
+rule (da X Y D) (edge Y Z W) --> (db2 X Z (+ D W))
+rule (db2 X Y D) (edge Y Z W) --> (da X Z (+ D W))

@@ -3023,6 +3023,85 @@ else
   echo "FAIL m7-struct-ids-resurrected (tombstones left after re-add)"; FAIL=$((FAIL+1))
 fi
 
+# --- M7 named fallback: non-selective recursive lattice ---------------------
+# Set-union joins can preserve a value across DISTINCT contributor rows,
+# so the repair's row-level candidacy cannot ground foundedness -- the
+# vetting probe hid an unfounded cycle behind an unchanged join.  The
+# selectivity gate refuses admission; rerun stays the exact backstop.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m7_set_lat.slog \
+  batch+:src,1 batch+:src,5 batch+:edge,1,2 batch+:edge,5,2 \
+  batch+:edge,2,3 batch+:edge,3,2 \
+  flush batch-:edge,5,2 flush dump-tuples:reach \
+  > out/sess-m7-setlat.log 2>&1
+expect "m7-nonselective-fallback" "(route rerun " out/sess-m7-setlat.log
+expect_not "m7-nonselective-not-admitted" "(m7-admitted" out/sess-m7-setlat.log
+expect "m7-nonselective-content" "(tuplerow 2 {1:1})" out/sess-m7-setlat.log
+expect_not "m7-nonselective-no-stale" "(tuplerow 2 {1:1 5:1})" out/sess-m7-setlat.log
+
+# --- M7 precision cliff: the selectivity gate is CONE-WIDE -----------------
+# m7_mixed_cone is m7_rec_min's dist SCC (which IS admitted above, on this
+# very edit sequence) plus one non-selective set-union head reading the same
+# edge.  A cone is repaired as one fixpoint, so the hazard belongs to the
+# cone rather than to the head that carries it: retention is refused for the
+# WHOLE cone and dist -- repair-capable, still reporting
+# lattice-rank-repair -- falls to clear-and-rerun with it.  Sound, but a real
+# precision loss; pinned so narrowing the gate to the offending head (the
+# per-element contributor identity of m7-contract §7A.2) is a deliberate
+# decision against a failing assertion, not a silent drift.  Content is the
+# contract: rerun must reproduce the values m7_rec_min repairs in place.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m7_mixed_cone.slog \
+  batch+:edge,1,2,10 batch+:edge,2,3,5 batch+:edge,3,1,2 \
+  batch+:edge,1,3,100 batch+:edge,3,4,1 batch+:edge,2,4,20 batch+:edge,1,4,17 \
+  flush dump-tuples:dist \
+  batch-:edge,2,3,5 flush dump-tuples:dist dump-tuples:tags \
+  > out/sess-m7-mixed.log 2>&1
+expect_re "m7-mixed-selective-capable" \
+  '\(cap dist 0 [0-9]+ \(recount yes\) \(precise-delete conditional\) \(fallback clear-rerun\) \(reason lattice-rank-repair\)\)' \
+  out/sess-m7-mixed.log
+expect_re "m7-mixed-nonselective-sibling" \
+  '\(cap tags 0 [0-9]+ \(recount yes\) \(precise-delete conditional\) \(fallback clear-rerun\) \(reason lattice-nonselective-recount\)\)' \
+  out/sess-m7-mixed.log
+expect_not "m7-mixed-not-admitted" "(m7-admitted" out/sess-m7-mixed.log
+expect_not "m7-mixed-no-retention" "(m7-retention" out/sess-m7-mixed.log
+expect "m7-mixed-fallback" "(route rerun " out/sess-m7-mixed.log
+# exact content, identical to m7_rec_min's repaired values
+expect "m7-mixed-loser-regress" "(tuplerow 1 3 100)" out/sess-m7-mixed.log
+expect "m7-mixed-cascade-regress" "(tuplerow 1 1 102)" out/sess-m7-mixed.log
+expect "m7-mixed-direct-regress" "(tuplerow 1 4 17)" out/sess-m7-mixed.log
+expect "m7-mixed-count" "(tupledone 9)" out/sess-m7-mixed.log
+# the pre-deletion dump is in the same log, so pin each value to ONE leg:
+# 15/5 appear only before the flush, 100 only after -- the regression
+# happened and left nothing stale behind.
+if [ "$(grep -cF '(tuplerow 1 3 15)' out/sess-m7-mixed.log)" -eq 1 ] \
+   && [ "$(grep -cF '(tuplerow 1 3 100)' out/sess-m7-mixed.log)" -eq 1 ]; then
+  echo "PASS m7-mixed-regressed-once"; PASS=$((PASS+1))
+else
+  echo "FAIL m7-mixed-regressed-once"; FAIL=$((FAIL+1))
+fi
+if [ "$(grep -cF '(tuplerow 2 3 5)' out/sess-m7-mixed.log)" -eq 1 ]; then
+  echo "PASS m7-mixed-present-to-absent"; PASS=$((PASS+1))
+else
+  echo "FAIL m7-mixed-present-to-absent"; FAIL=$((FAIL+1))
+fi
+# the non-selective sibling itself stays exact across the same flush
+expect "m7-mixed-set-content" "(tuplerow 1 {10:1 17:1 100:1})" out/sess-m7-mixed.log
+expect "m7-mixed-set-shrunk" "(tuplerow 3 {1:1 2:1})" out/sess-m7-mixed.log
+
+# Mutual recursion: two selective lattices in one SCC repair together.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m7_mutual.slog \
+  batch+:edge,1,2,10 batch+:edge,2,3,5 batch+:edge,3,1,2 \
+  batch+:edge,1,3,100 batch+:edge,3,4,1 \
+  flush batch-:edge,2,3,5 flush dump-tuples:da \
+  recount-lattices-force \
+  > out/sess-m7-mutual.log 2>&1
+expect "m7-mutual-admitted" "(m7-admitted (lattices (da db2)) (recursive 1) (strata 1))" out/sess-m7-mutual.log
+expect_not "m7-mutual-no-rerun" "(route rerun" out/sess-m7-mutual.log
+expect "m7-mutual-regressed" "(tuplerow 1 3 100)" out/sess-m7-mutual.log
+expect_not "m7-mutual-abort" "(count-epoch-aborted)" out/sess-m7-mutual.log
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

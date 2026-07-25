@@ -13,6 +13,9 @@
 
 (define args (current-command-line-arguments))
 (define seed (string->number (vector-ref args 0)))
+(define epochs (if (> (vector-length args) 1)
+                   (string->number (vector-ref args 1))
+                   10))
 (random-seed seed)
 
 (define universe
@@ -23,7 +26,7 @@
 
 (define-values (reverse-flushes reverse-models _final-model)
   (for/fold ([fs '()] [models (list initial)] [present initial])
-            ([_ (in-range 10)])
+            ([_ (in-range epochs)])
     (define touched (take (shuffle universe) (+ 4 (random 5))))
     (define ops
       (for/list ([fact (in-list touched)])

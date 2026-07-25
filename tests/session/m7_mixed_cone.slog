@@ -1,0 +1,30 @@
+;; M7 precision cliff: a MIXED cone.  One SELECTIVE recursive lattice
+;; (dist -- m7_rec_min's exact shape, which repairs in place and is
+;; m7-admitted on its own) plus one NON-SELECTIVE lattice (tags, a set
+;; union) reading the same edited edge relation.
+;;
+;; The selectivity gate is CONE-WIDE: lattice-retention-shape? requires
+;; nonselective-lattice-names to be null, so one non-selective head
+;; anywhere in the affected cone refuses retention for the WHOLE cone --
+;; including the dist SCC that would otherwise repair.  That is sound (a
+;; cone is repaired as one fixpoint, so the unfounded-cycle hazard the
+;; set-lattice probe found is a property of the cone, not of the single
+;; head that carries it), but it IS a real precision loss.  Pinned here so
+;; the cliff is visible, and so it is a deliberate decision to move it if
+;; the per-element contributor identity of §7A.2 ever narrows the gate to
+;; the offending head.
+;;
+;; Content is the contract: the same deletion that m7_rec_min repairs in
+;; place must produce the SAME dist values through clear-and-rerun --
+;; dist(1,3) 15 -> 100, dist(1,4) 16 -> 17, dist(1,1) 17 -> 102, and
+;; dist(2,*) present-to-absent.
+
+lattice (cost (min int #:floor 0))
+lattice (iset (set int))
+table (edge int int int)
+table (dist int int cost)
+table (tags int iset)
+
+rule (edge X Y W) --> (dist X Y W)
+rule (dist X Y D) (edge Y Z W) --> (dist X Z (+ D W))
+rule (edge X Y W) (= R (cins (cmap) W)) --> (tags X R)

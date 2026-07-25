@@ -3940,7 +3940,19 @@ public:
           // M7: a live rank-witness sidecar marks the recursive repair
           // capability (conditional -- the session route still proves the
           // admitted cone shape; storage class is never sufficient).
-          reason = b.rel->rankState() != 0 ? "lattice-rank-repair"
+          // SELECTIVE joins only (min/max/count-as-max): value preservation
+          // pins the surviving (key,payload) row, so row-level candidacy
+          // grounds foundedness.  Non-selective joins (set/map unions,
+          // flat's TOP conflict state) can preserve the join across
+          // DISTINCT rows -- an unfounded cycle could hide behind the
+          // value-unchanged skip (the set-lattice vetting probe) -- so
+          // they report a distinct reason and stay on the acyclic routes
+          // until per-element contributor identity lands (7A.2).
+          const u32 k = b.rel->latticeKind();
+          const bool selective =
+            k == LAT_MIN || k == LAT_MAX || k == LAT_COUNT;
+          reason = !selective ? "lattice-nonselective-recount"
+                 : b.rel->rankState() != 0 ? "lattice-rank-repair"
                                            : "lattice-contributor-recount";
         }
         else if (!b.rel->getAnyIndex())

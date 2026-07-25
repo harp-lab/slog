@@ -200,7 +200,29 @@ Named fallbacks that remain (by contract): negation over the changing
 lattice key (`m6l-negation-fallback`), user-defined non-built-in
 recursive folds and SQL-style aggregates (both currently unexpressible —
 every lattice declaration is a trusted built-in; vacuously excluded),
-historical/back-anchored edits, and uncertifiable inherited successors.
+historical/back-anchored edits, uncertifiable inherited successors, and
+— per the vetting campaign's as-built restriction — non-selective
+lattice joins (set/map/flat) recursively.
+
+### M7 vetting campaign (2026-07-24, pre-gate-S consolidation)
+
+| composition | status | evidence |
+|---|---|---|
+| repair × selective lattices (min/max/count) | PRECISE | m7-* blocks, repair fuzz |
+| repair × NON-selective joins (set/map/flat) | EXCLUDED — the vetting probe FOUND a soundness bug: distinct rows preserved a set-union join while an unfounded 2↔3 cycle hid behind the value-unchanged skip; selectivity gate added (`lattice-nonselective-recount`), rerun content exact | `m7-nonselective-fallback` |
+| two lattices / mutual recursion in one SCC | PRECISE | `m7-mutual` |
+| MIXED cone (selective SCC + non-selective sibling) | IMPRECISE, sound — the gate is cone-wide, so one non-selective head refuses retention for the whole cone and a repair-capable SCC falls back with it; rerun content identical to the repaired values | `m7-mixed-*` |
+| repair × decomposition relations (R_has) | EXCLUDED via the extern gate | probe |
+| repair × structs (members + struct-keyed ids) | PRECISE, ids stable | m7-struct, flipped m5 blocks |
+| repair × negation | EXCLUDED (later certified slice) | `m6l-negation-fallback` |
+| repair × inheritance (inject-reopen) | named fallback; inherited foundations survive by design, tip-only rows retract | `m7-inherited` |
+| repair × save/reopen | PRECISE (re-establish, first regression repairs) | `m7-reopen` |
+| repair × compression | full no-seed replay verify green on a saved repaired session | `slog db verify --replay` probe |
+| repair × renames/drops | covered by construction (alias identity: one VersionId + count state) | standing-vetting item |
+| repair × demand cones | admissible by composition (struct members ride M4S); not separately fixtured | standing-vetting item |
+| repair × workers/pauses | 1/2/8 workers, SLOG_MAX_MS=1, 40-epoch soak ×5 legs | repair fuzz + soak |
+| repair × SLOG_FLAVORED_NATIVE | refused at admission | `m7-native` |
+| repair × abort/overflow hygiene | fallback exact; abort restores the tip binding | `m7-hygiene`, `m7-overflow` |
 
 The handoff gates are `tests/run-all.sh --quick`, `tests/run-all.sh session`,
 and `tests/run-all.sh incremental-stress`. The complete orchestrator remains

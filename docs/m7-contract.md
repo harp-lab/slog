@@ -136,6 +136,23 @@ recursive (same-SCC) cone that is:
 - headed by a *trusted built-in* semilattice (min, max, flat, count-lattice,
   set, map) — or foundedness rank, which is a recursive-min instance of the
   same shape.
+  *As built (2026-07-24, vetting):* SELECTIVE joins only — min, max, and
+  count (whose join is max).  Selectivity is what grounds the repair:
+  value preservation pins the surviving (key, payload) row, so row-level
+  candidacy carries foundedness.  A non-selective join (set/map unions;
+  flat's ⊤ conflict state) can preserve the value across *distinct* rows,
+  letting an unfounded cycle hide behind the value-unchanged skip — the
+  set-lattice vetting probe demonstrated exactly this.  Non-selective
+  heads report `(reason lattice-nonselective-recount)`, keep M6L's acyclic
+  routes, and stay on clear-and-rerun recursively until the finer
+  per-element contributor identity §7A.2 reserves is built.
+  The refusal is CONE-WIDE, not per-head: a cone is repaired as one
+  fixpoint, so the hazard belongs to the cone rather than to the head that
+  carries it, and one non-selective head drags an otherwise admissible
+  selective SCC back to rerun with it.  That is a real precision loss, so
+  `lattice-retention-shape?` pins it against a fixture (`m7-mixed-*`) —
+  narrowing the gate to the offending head, once §7A.2 makes it sound, is
+  a deliberate decision against a failing assertion rather than a drift.
 
 Maintain contributors and rank witnesses; repair regressions from stored
 state through the fixpoint above.

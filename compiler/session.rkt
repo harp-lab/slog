@@ -473,6 +473,7 @@
                         (or (member '(reason table-recount) fields)
                             (member '(reason lattice-contributor-recount) fields)
                             (member '(reason lattice-rank-repair) fields)
+                            (member '(reason lattice-nonselective-recount) fields)
                             (member '(reason struct-recount) fields))
                         (pair? chain) (= ord (first (last chain))))]
                   [_ #f]))
@@ -481,6 +482,11 @@
                (cond
                  [(member '(reason lattice-contributor-recount) fields) 'lattice]
                  [(member '(reason lattice-rank-repair) fields) 'lattice]
+                 ;; non-selective joins (set/map/flat): M6L's acyclic routes
+                 ;; only; the recursive repair refuses them (selectivity is
+                 ;; what grounds row-level candidacy -- M7 as-built).
+                 [(member '(reason lattice-nonselective-recount) fields)
+                  'lattice-ns]
                  [(member '(reason struct-recount) fields) 'struct]
                  [else 'table])))]
     [x (error 'session (format "unparseable count-capabilities reply: ~a" x))]))
@@ -1505,7 +1511,17 @@
   (define lattice-names
     (if caps
         (for/list ([r (in-list maintenance-names)]
-                   #:when (eq? (hash-ref caps r #f) 'lattice))
+                   #:when (memq (hash-ref caps r #f) '(lattice lattice-ns)))
+          r)
+        '()))
+  ;; Non-selective lattice heads (set/map unions, flat): admissible on the
+  ;; acyclic M6L routes, refused by the recursive repair (M7 as-built --
+  ;; distinct rows can preserve the join, so the value-unchanged skip
+  ;; cannot ground foundedness for them).
+  (define nonselective-lattice-names
+    (if caps
+        (for/list ([r (in-list maintenance-names)]
+                   #:when (eq? (hash-ref caps r #f) 'lattice-ns))
           r)
         '()))
   ;; M4S (docs/m4s-contract.md): struct relations are admissible INTERIOR
@@ -1600,6 +1616,7 @@
   ;; refused as everywhere else.
   (define lattice-retention-shape?
     (and (pair? lattice-names)
+         (null? nonselective-lattice-names)
          (not struct-edit-target?)
          (pair? lattice-head-names)
          (for/and ([r (in-list lattice-names)])
@@ -1730,6 +1747,7 @@
     (and lattice-retention-certified? counts-certified?
          has-negative?
          (not (flavored-native?))     ; repair variants have no native leg
+         (null? nonselective-lattice-names)
          (for/or ([info (in-list union-cone)])
            (not (sinfo-acyclic? info)))))
   ;; M4N: negation x structs stays on rerun (contract exclusion,

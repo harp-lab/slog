@@ -1,0 +1,14 @@
+;; M7 named fallback: a recursive NON-SELECTIVE lattice (set union).
+;; Distinct contributor rows can preserve the join -- deleting edge(5,2)
+;; kills (2,{5}) while the cycle-derived (2,{1,5}) sustains the value, so
+;; the value-unchanged skip cannot ground foundedness (the vetting probe
+;; that found this hid an unfounded 2<->3 pair behind an unchanged join).
+;; Non-selective heads report (reason lattice-nonselective-recount) and
+;; the recursive repair refuses them: clear-and-rerun stays the exact
+;; backstop until per-element contributor identity lands (7A.2).
+lattice (iset (set int))
+table (src int)
+table (edge int int)
+table (reach int iset)
+rule (src S) (= R (cins (cmap) S)) --> (reach S R)
+rule (reach X R) (edge X Y) --> (reach Y R)
