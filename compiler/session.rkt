@@ -346,6 +346,19 @@
           (lambda (e)
             (with-handlers ([exn:fail? void])
               (epoch-action! `(abort-count-epoch ,@vids) '(count-epoch-aborted)))
+            ;; Restore the tip binding environment: the walk re-binds per
+            ;; historical writer, so an abort mid-walk must not leave the
+            ;; session resolving names at a historical position -- the next
+            ;; flush's shape/capability queries (and its lazy healing
+            ;; establishment) depend on tip resolution (M7 (d) hygiene).
+            (when (pair? entries)
+              (define tip (last entries))
+              (with-handlers ([exn:fail? void])
+                (session-action!
+                 s `(bind-instance ,(second tip)
+                                   ,(remove-duplicates
+                                     (append (fourth tip) (fifth tip))
+                                     equal?)))))
             (raise e))])
       (for ([e (in-list entries)] [writer-n (in-naturals 1)])
         ;; Resolve this count plugin through its historical environment;
@@ -459,6 +472,7 @@
                    (and (member '(recount yes) fields)
                         (or (member '(reason table-recount) fields)
                             (member '(reason lattice-contributor-recount) fields)
+                            (member '(reason lattice-rank-repair) fields)
                             (member '(reason struct-recount) fields))
                         (pair? chain) (= ord (first (last chain))))]
                   [_ #f]))
@@ -466,6 +480,7 @@
        (values name
                (cond
                  [(member '(reason lattice-contributor-recount) fields) 'lattice]
+                 [(member '(reason lattice-rank-repair) fields) 'lattice]
                  [(member '(reason struct-recount) fields) 'struct]
                  [else 'table])))]
     [x (error 'session (format "unparseable count-capabilities reply: ~a" x))]))
@@ -2322,7 +2337,25 @@
              (run-maintenance-phase!
               union-cone 1 (lambda (info) ((sinfo-maintenance info)))
               #:lattice-replacements? 'repair)
-             (unless (query-update-counts-valid! s) (set! settled? #f)))
+             (unless (query-update-counts-valid! s) (set! settled? #f))
+             ;; The recursive rebuild self-iterates through the contributor
+             ;; fold, so transient intermediate values accumulate as phantom
+             ;; contributor rows -- the visible repair is exact, but the
+             ;; CACHE drifts from the settled-instantiation multiset the
+             ;; recount defines.  Counts are a recomputable cache (§8B):
+             ;; re-establish the lattice sidecars from the settled
+             ;; post-repair state, so maintained ≡ recount holds at every
+             ;; flush boundary (the warm-fuzz exactness oracle).  Failure
+             ;; falls through to clear-and-rerun like every repair fault.
+             (when settled?
+               (with-handlers
+                   ([exn:fail?
+                     (lambda (e)
+                       (echo! s (format "(maintenance-unavailable refresh ~s)"
+                                        (exn-message e)))
+                       (set! settled? #f))])
+                 (session-recount! s #:only lattice-names
+                                   #:force? #t #:lattices? #t))))
            (begin
              (set! settled? #f)
              (echo! s "(maintenance-unavailable positive-input)"))))

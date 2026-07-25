@@ -151,6 +151,57 @@ queue, in the decided order, is:
    changing lattice key on clear-and-rerun until a later, separately
    certified slice.
 
+## M7 slice 1 exit audit — complete
+
+Recursive (same-SCC) lattice value repair is maintained end-to-end on the
+interpreter: the `m7-eligible?` route (M4T schedule fused with lattice
+replacement staging) runs the contributor candidate lifecycle inside
+`LatticeMaintainTask` (pessimistic retraction, delta-injected old/new
+value witnesses so the SCC's own scans cascade, dead-candidate
+absorption), `dred-reseed`'s lattice arm re-asserts swept keys from
+surviving contributors — regressions fall to retained losers — and the
+repair-mode replacement staging rebuilds downstream with the net filter
+off.  Two shipped M6L named fallbacks are retired (recursive producers
+including the idempotent self-loop; recursive table consumers of a closed
+lattice); struct-keyed cones hold stable interned ids through repair via
+the M5 tombstone dictionary; save/reopen re-establishes from the exact
+historical writers and the first regression repairs precisely, while the
+uncertifiable inherited successor takes the named fallback whose
+clear-set is now rebound-aware.
+
+The maintained-cache doctrine, as-built: **exact or absent, never
+wrong** — a repair flush ends with a post-repair refresh recount (the
+recursive rebuild's transient intermediate values would otherwise
+accumulate as phantom contributor rows; the warm fuzz caught this on its
+first seed), legacy reenter flushes drop the cache per §8B.2's lazy
+protocol, and every certified epoch's coverage audit proves repaired
+visible ≡ reduce of from-scratch contributors.  Foundedness holds
+without a rank gate — pessimistic retraction + exact counting +
+absorption break unfounded 0-weight cycles (ratified as-built; the rank
+comparison remains an optimization seam) — and rank witnesses stay
+honest: exact from-scratch, transient count rounds neutral, erasure
+hygiene at every deletion site, warm-epoch downgrades with the
+per-derivation rank folds pinned as the deferred precise mechanism.
+
+Deterministic coverage: the m7-* session blocks (flagship regression,
+collapse/loser retention, 0-weight cycles, reopen persistence, inherited
+fallback, struct-keyed identity, recount abort/heal, counter-overflow
+fallback, flavored-native refusal, rank-repair capability) plus the
+flipped m6l/m5 blocks.  Randomized coverage: the repair stream fuzz
+(ten mixed signed epochs, cyclic 0-weight graphs, content + sidecars vs
+fresh rerun + forced recount) under 1/2/8 workers and SLOG_MAX_MS=1.
+Performance/memory (reported, not thresholded, per §7A): the repair-perf
+leg shows the post-repair refresh dominates warm cost (ratio ~1 on small
+cones) — scoping the refresh to affected keys (M0.3 cone-recount verbs)
+or in-fold change-splitting is the pinned first optimization behind the
+contract's revisit seam.
+
+Named fallbacks that remain (by contract): negation over the changing
+lattice key (`m6l-negation-fallback`), user-defined non-built-in
+recursive folds and SQL-style aggregates (both currently unexpressible —
+every lattice declaration is a trusted built-in; vacuously excluded),
+historical/back-anchored edits, and uncertifiable inherited successors.
+
 The handoff gates are `tests/run-all.sh --quick`, `tests/run-all.sh session`,
 and `tests/run-all.sh incremental-stress`. The complete orchestrator remains
 the arc-end gate.

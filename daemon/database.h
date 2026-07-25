@@ -612,8 +612,15 @@ public:
   Index** getRankSidecar() { return rank_sidecar; }
   u8 rankState() const { return rank_state; }
   void setRankStateValid() { rank_state = 1; }
-  // Never un-invalidates: only a stamp-from-empty run re-certifies.
-  void rankInvalidate() { if (rank_state == 1) rank_state = 2; }
+  // Never un-invalidates: only a stamp-from-empty run re-certifies.  An
+  // invalidated sidecar is never consulted, so drop the memory too -- the
+  // repair-perf gate showed stale stamps accumulating across warm epochs.
+  void rankInvalidate()
+  {
+    if (rank_state != 1) return;
+    rank_state = 2;
+    deleteCountArray(rank_sidecar);
+  }
   void clearRanks()
   {
     deleteCountArray(rank_sidecar);
@@ -3930,7 +3937,11 @@ public:
         {
           recount = "yes";
           precise = "conditional";
-          reason = "lattice-contributor-recount";
+          // M7: a live rank-witness sidecar marks the recursive repair
+          // capability (conditional -- the session route still proves the
+          // admitted cone shape; storage class is never sufficient).
+          reason = b.rel->rankState() != 0 ? "lattice-rank-repair"
+                                           : "lattice-contributor-recount";
         }
         else if (!b.rel->getAnyIndex())
         {

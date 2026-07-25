@@ -148,6 +148,34 @@ else
   bad "m4n-pause-resume (see $log)"
 fi
 
+# --- M7 recursive lattice repair (docs/m7-contract.md sub-slice (d)): ten
+# mixed signed epochs over a cyclic weighted graph (0-weight edges
+# included), every flush's content AND contributor sidecars diffed against
+# a fresh rerun + forced recount.  Regressions must take the repair route
+# (any rerun = failure).  Cache model: exact or absent, never wrong; a
+# repair flush must be exact (the post-repair refresh).
+for spec in 1:9101 2:9102 8:9108; do
+  threads="${spec%%:*}"
+  seed="${spec##*:}"
+  log="out/m7-stress-t${threads}-s${seed}.log"
+  if SLOG_THREADS="$threads" timeout 1200 \
+       racket tests/api/lattice-repair-stream-fuzz.rkt "$seed" > "$log" 2>&1 \
+     && grep -qF "m7-fuzz-ok $seed" "$log"; then
+    ok "m7-fuzz-t${threads}-s${seed}"
+  else
+    bad "m7-fuzz-t${threads}-s${seed} (see $log)"
+  fi
+done
+
+log="out/m7-pause-stress.log"
+if SLOG_THREADS=4 SLOG_MAX_MS=1 timeout 1200 \
+     racket tests/api/lattice-repair-stream-fuzz.rkt 9104 > "$log" 2>&1 \
+   && grep -qF "m7-fuzz-ok 9104" "$log"; then
+  ok "m7-pause-stress"
+else
+  bad "m7-pause-stress (see $log)"
+fi
+
 # Timing is reported rather than thresholded so a loaded CI host cannot make
 # the correctness gate flaky.  Route selection and settled state are asserted
 # inside the benchmark.
@@ -159,6 +187,19 @@ if SLOG_THREADS=4 timeout 1200 \
   grep -F "m6l-perf-ok" "$log"
 else
   bad "m6l-cold-warm-perf (see $log)"
+fi
+
+# M7 repair perf + sidecar memory (docs/m7-contract.md sub-slice (d)):
+# cold derivation vs warm one-edge repair, contributor/rank storage lower
+# bounds -- reported, not thresholded; route selection is the hard gate.
+log="out/m7-perf.log"
+if SLOG_THREADS=4 timeout 1200 \
+     racket tests/api/lattice-repair-perf.rkt > "$log" 2>&1 \
+   && grep -qF "m7-perf-ok" "$log"; then
+  ok "m7-cold-warm-perf"
+  grep -F "m7-perf-ok" "$log"
+else
+  bad "m7-cold-warm-perf (see $log)"
 fi
 
 echo

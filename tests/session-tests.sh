@@ -816,7 +816,10 @@ timeout 600 racket tests/api/session-drive.rkt \
   > out/sess-counts-lat.log 2>&1
 expect "cnt-lat-out"     "(countrow out (pair 1 2) 0 1 0)" out/sess-counts-lat.log
 expect "cnt-lat-skip"    "(countdone dist -1)" out/sess-counts-lat.log
-expect_re "m04-cap-lattice" '\(cap dist 0 [0-9]+ \(recount yes\) \(precise-delete conditional\) \(fallback clear-rerun\) \(reason lattice-contributor-recount\)\)' out/sess-counts-lat.log
+# FLIPPED(M7 sub-slice (d)): a recursive lattice's live rank sidecar
+# reports the repair capability; rankless (acyclic) lattices keep
+# lattice-contributor-recount (asserted by m6l blocks).
+expect_re "m04-cap-lattice" '\(cap dist 0 [0-9]+ \(recount yes\) \(precise-delete conditional\) \(fallback clear-rerun\) \(reason lattice-rank-repair\)\)' out/sess-counts-lat.log
 versioned_count_oracle "m04-lattice-boundary-oracle" out/sess-counts-lat.log
 
 # --- M0.3: counted state, laziness, invalidation, positional/cone walks ------
@@ -2830,6 +2833,52 @@ else
 fi
 # the M7 repair schedule: candidate lifecycle visible in the reseed reply
 expect "m7-recmin-reseed" "(dred-reseeded 0 0)" out/sess-m7-recmin.log
+# conditional capability: a live rank sidecar reports the repair reason
+# (rankless lattices keep lattice-contributor-recount; m04-cap-lattice)
+expect_re "m7-recmin-cap-rank" '\(cap dist 0 [0-9]+ \(recount yes\) \(precise-delete conditional\) \(fallback clear-rerun\) \(reason lattice-rank-repair\)\)' out/sess-m7-recmin.log
+
+# --- M7 sub-slice (d): transaction hygiene ----------------------------------
+# An aborted recount transaction publishes nothing; the next flush's lazy
+# establishment heals and the repair proceeds normally.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m7_rec_min.slog \
+  batch+:edge,1,2,10 batch+:edge,2,3,5 batch+:edge,1,3,100 batch+:edge,3,4,1 \
+  flush recount-fail:1 \
+  batch-:edge,2,3,5 flush dump-rel:dist \
+  recount-lattices-force dump-counts:dist \
+  > out/sess-m7-hygiene.log 2>&1
+expect "m7-hygiene-injected" "(recount-failed 1" out/sess-m7-hygiene.log
+expect "m7-hygiene-abort" "(count-epoch-aborted)" out/sess-m7-hygiene.log
+expect "m7-hygiene-heals-and-repairs" "(route maintain-lattice-recursive-negative 1)" out/sess-m7-hygiene.log
+expect_not "m7-hygiene-no-rerun" "(route rerun" out/sess-m7-hygiene.log
+expect "m7-hygiene-content" "(dumpdone 4)" out/sess-m7-hygiene.log
+expect "m7-hygiene-oracle" "(countdone dist 4)" out/sess-m7-hygiene.log
+
+# Counter overflow (test-width cap): the establishment recount trips the
+# arithmetic gate on the rec=2 collapsed contributor and the epoch
+# completes through clear-and-rerun with exact content.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m7_rec_min.slog \
+  batch+:edge,1,2,10 batch+:edge,2,3,5 batch+:edge,1,5,7 batch+:edge,5,3,8 \
+  batch+:edge,1,3,15 batch+:edge,3,4,1 \
+  flush count-test-max:1 \
+  batch-:edge,2,3,5 flush dump-rel:dist \
+  > out/sess-m7-overflow.log 2>&1
+expect "m7-overflow-refused" "(maintenance-unavailable recount" out/sess-m7-overflow.log
+expect "m7-overflow-fallback" "(route rerun " out/sess-m7-overflow.log
+expect_not "m7-overflow-no-repair" "maintain-lattice-recursive" out/sess-m7-overflow.log
+expect "m7-overflow-content" "(dumpdone 7)" out/sess-m7-overflow.log
+
+# SLOG_FLAVORED_NATIVE: the repair variants have no native leg -- admission
+# declines and the regression completes through clear-and-rerun.
+SLOG_FLAVORED_NATIVE=1 timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/m7_rec_min.slog \
+  batch+:edge,1,2,10 batch+:edge,2,3,5 batch+:edge,1,3,100 batch+:edge,3,4,1 \
+  flush batch-:edge,2,3,5 flush dump-rel:dist \
+  > out/sess-m7-native.log 2>&1
+expect "m7-native-fallback" "(route rerun " out/sess-m7-native.log
+expect_not "m7-native-not-admitted" "(m7-admitted" out/sess-m7-native.log
+expect "m7-native-content" "(dumpdone 4)" out/sess-m7-native.log
 # candidate collapse + reseed: a contributor with foundation AND two
 # recursive supports loses its foundation, survives as a reseeded
 # candidate, and its downstream re-derives through repair staging
