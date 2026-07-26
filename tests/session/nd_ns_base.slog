@@ -1,0 +1,12 @@
+;; N3-D fixture: a namespace subtree (ns.edge feeding recursive ns.path)
+;; beside a plain root relation, ready for a subtree rename/drop.
+
+table (ns.edge int int)
+table (ns.path int int)
+table (keep int)
+
+rule (ns.edge 1 2) (ns.edge 2 3) (ns.edge 3 4)
+rule (keep 7)
+
+rule (ns.edge X Y) --> (ns.path X Y)
+rule (ns.path X Y) (ns.edge Y Z) --> (ns.path X Z)

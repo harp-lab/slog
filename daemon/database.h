@@ -4372,13 +4372,23 @@ private:
       return out;
     }
     affected = collectPathBindings(path);
-    if (affected.empty())
+    // A declaration-only subtree (unions, lattice/collection declarations)
+    // has no environment bindings but is still a real transform target: the
+    // catalog carries it.
+    bool exact = !affected.empty() && affected.front().first == path;
+    bool nested = affected.size() > (exact ? 1u : 0u);
+    for (const auto& decl : catalog_declarations)
+    {
+      if (decl.first == path) exact = true;
+      else if (pathInside(decl.first, path)) nested = true;
+    }
+    if (!exact && !nested)
     {
       out.refusal_class = "transform-plan";
       out.detail = "path is unbound: " + path;
       return out;
     }
-    if (affected.front().first == path && affected.size() > 1)
+    if (exact && nested)
     {
       // one path is never both a leaf and a namespace (§5.3)
       out.refusal_class = "transform-plan";
@@ -4556,14 +4566,19 @@ public:
       return {false, "transform-plan",
               "rename target is already bound: " + to, 0, 0};
     }
-    // no ancestor of the target may be a leaf relation: one path is never
-    // both a relation and a namespace
+    for (const auto& decl : catalog_declarations)
+      if (decl.first == to || pathInside(decl.first, to))
+        return {false, "transform-plan",
+                "rename target is already declared: " + to, 0, 0};
+    // no ancestor of the target may be a leaf relation or declaration: one
+    // path is never both a relation and a namespace
     for (size_t dot = to.rfind('.');
          dot != std::string::npos && dot > 0;
          dot = to.rfind('.', dot - 1))
     {
       const std::string ancestor = to.substr(0, dot);
-      if (relations.find(ancestor) != relations.end())
+      if (relations.find(ancestor) != relations.end()
+          || catalog_declarations.find(ancestor) != catalog_declarations.end())
         return {false, "transform-plan",
                 "rename target nests inside relation " + ancestor, 0, 0};
     }

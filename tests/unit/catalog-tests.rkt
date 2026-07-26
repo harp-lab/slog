@@ -299,4 +299,157 @@
                  (exn:fail:catalog-kind error))))
      (lambda ()
        (replay-boundary-plan
-        (empty-boundary) delta '(m.edge) tampered)))))
+        (empty-boundary) delta '(m.edge) tampered))))
+
+  ;; ---- N3-D path transforms (modules.md §5.3) -----------------------------
+
+  (define (transform-fixture)
+    ;; ns.Node (struct) and ns.edge (table over it) form the subtree;
+    ;; `outside` references ns.Node from outside it (test §11.19), and
+    ;; Maybe is an outside union with ns.Node as a member.
+    (boundary
+     "b1:test:0"
+     (catalog
+      (hash (Q 'ns.Node) (D 'ns.Node 'struct (list I))
+            (Q 'ns.edge)
+            (declaration-descriptor (Q 'ns.edge) 'table
+                                    (list (N 'ns.Node) (N 'ns.Node)) #f)
+            (Q 'outside)
+            (declaration-descriptor (Q 'outside) 'table
+                                    (list (N 'ns.Node)) #f)
+            (Q 'Maybe) (D 'Maybe 'union))
+      (set (cons (Q 'ns.Node) (Q 'Maybe)))
+      (hash (Q 'ns.Node) "t1:test:0:0"))
+     (hash (Q 'ns.Node) "v1:test:0:0"
+           (Q 'ns.edge) "v1:test:0:1"
+           (Q 'outside) "v1:test:0:2")))
+
+  (test-case "namespace rename rebinds the subtree and rewrites outside references"
+    (define plan
+      (plan-path-transform (transform-fixture) 'rename (Q 'ns) (Q 'geo)
+                           #:layer-id "test" #:event 7))
+    (check-equal? (transform-plan-boundary-key plan) "b1:test:7")
+    (define output (transform-plan-output plan))
+    (define declarations (catalog-declarations (boundary-catalog output)))
+    (check-true (hash-has-key? declarations (Q 'geo.Node)))
+    (check-true (hash-has-key? declarations (Q 'geo.edge)))
+    (check-false (hash-has-key? declarations (Q 'ns.Node)))
+    ;; the outside declaration's field TypeRef followed the rename (§11.19)
+    (check-equal?
+     (declaration-descriptor-fields (hash-ref declarations (Q 'outside)))
+     (list (N 'geo.Node)))
+    ;; subtree-internal references rewrote too
+    (check-equal?
+     (declaration-descriptor-fields (hash-ref declarations (Q 'geo.edge)))
+     (list (N 'geo.Node) (N 'geo.Node)))
+    ;; TypeKey and VersionKeys are IDENTITY-STABLE across the rename (§11.17)
+    (check-equal?
+     (hash-ref (catalog-nominals (boundary-catalog output)) (Q 'geo.Node))
+     "t1:test:0:0")
+    (check-equal?
+     (hash-ref (boundary-environment output) (Q 'geo.edge)) "v1:test:0:1")
+    (check-equal?
+     (hash-ref (boundary-environment output) (Q 'outside)) "v1:test:0:2")
+    ;; the membership edge followed its member
+    (check-true
+     (set-member? (catalog-memberships (boundary-catalog output))
+                  (cons (Q 'geo.Node) (Q 'Maybe)))))
+
+  (test-case "leaf rename is the same one-path event"
+    (define plan
+      (plan-path-transform (transform-fixture) 'rename
+                           (Q 'outside) (Q 'main)
+                           #:layer-id "test" #:event 3))
+    (define output (transform-plan-output plan))
+    (check-equal?
+     (hash-ref (boundary-environment output) (Q 'main)) "v1:test:0:2")
+    (check-false
+     (hash-has-key? (boundary-environment output) (Q 'outside))))
+
+  (test-case "rename refusals: occupied target, self-capture, unknown path"
+    (define (fails kind thunk)
+      (check-exn
+       (lambda (e) (and (exn:fail:catalog? e)
+                        (eq? kind (exn:fail:catalog-kind e))))
+       thunk))
+    (fails 'occupied-target
+           (lambda ()
+             (plan-path-transform (transform-fixture) 'rename
+                                  (Q 'ns) (Q 'outside)
+                                  #:layer-id "test" #:event 1)))
+    (fails 'occupied-target
+           (lambda ()
+             ;; the target may not nest a namespace inside a leaf
+             (plan-path-transform (transform-fixture) 'rename
+                                  (Q 'ns) (Q 'outside.sub)
+                                  #:layer-id "test" #:event 1)))
+    (fails 'invalid-transform
+           (lambda ()
+             (plan-path-transform (transform-fixture) 'rename
+                                  (Q 'ns) (Q 'ns.sub)
+                                  #:layer-id "test" #:event 1)))
+    (fails 'unknown-path
+           (lambda ()
+             (plan-path-transform (transform-fixture) 'rename
+                                  (Q 'ghost) (Q 'zebra)
+                                  #:layer-id "test" #:event 1))))
+
+  (test-case "drop integrity: outside field references and memberships reject"
+    (check-exn
+     (lambda (e) (and (exn:fail:catalog? e)
+                      (eq? 'dangling-reference (exn:fail:catalog-kind e))))
+     (lambda ()
+       (plan-path-transform (transform-fixture) 'drop (Q 'ns) #f
+                            #:layer-id "test" #:event 1)))
+    ;; with the field reference gone, the membership edge still rejects
+    (define membership-only
+      (boundary
+       "b1:test:0"
+       (catalog
+        (hash (Q 'ns.Node) (D 'ns.Node 'struct (list I))
+              (Q 'Maybe) (D 'Maybe 'union))
+        (set (cons (Q 'ns.Node) (Q 'Maybe)))
+        (hash (Q 'ns.Node) "t1:test:0:0"))
+       (hash (Q 'ns.Node) "v1:test:0:0")))
+    (check-exn
+     (lambda (e) (and (exn:fail:catalog? e)
+                      (eq? 'dangling-membership (exn:fail:catalog-kind e))))
+     (lambda ()
+       (plan-path-transform membership-only 'drop (Q 'ns) #f
+                            #:layer-id "test" #:event 1))))
+
+  (test-case "drop removes the subtree and the whole parent union with it"
+    ;; dropping Maybe (the union itself) is fine: the member survives
+    (define plan
+      (plan-path-transform (transform-fixture) 'drop (Q 'Maybe) #f
+                           #:layer-id "test" #:event 2))
+    (define output (transform-plan-output plan))
+    (check-false
+     (hash-has-key? (catalog-declarations (boundary-catalog output))
+                    (Q 'Maybe)))
+    (check-true (set-empty?
+                 (catalog-memberships (boundary-catalog output))))
+    (check-true
+     (hash-has-key? (catalog-declarations (boundary-catalog output))
+                    (Q 'ns.Node))))
+
+  (test-case "transform plans replay by exact key or refuse"
+    (define plan
+      (plan-path-transform (transform-fixture) 'rename (Q 'ns) (Q 'geo)
+                           #:layer-id "test" #:event 7))
+    (define datum (transform-plan->datum plan))
+    (check-true (transform-plan-datum? datum))
+    (check-equal?
+     (transform-plan->datum
+      (replay-path-transform (transform-fixture) datum))
+     datum)
+    (define tampered
+      (match datum
+        [`(transform-plan ,layer ,event ,kind ,from ,to (boundary ,_))
+         `(transform-plan ,layer ,event ,kind ,from ,to
+                          (boundary "b1:wrong:9"))]))
+    (check-exn
+     (lambda (e) (and (exn:fail:catalog? e)
+                      (eq? 'replay-divergence (exn:fail:catalog-kind e))))
+     (lambda ()
+       (replay-path-transform (transform-fixture) tampered)))))

@@ -351,7 +351,10 @@
 ;;     (import-delta DIR ((X Z) ...))        ; DIR may be (delta k) post-
 ;;                                           ;   externalisation (0.C5)
 ;;     (link DB ((X Z) ...))                 ; reference, never copied (0.D5)
-;;     (rename-rel R S) | (drop-rel R)       ; environment ops (0.D1)
+;;     (rename-rel R S) | (drop-rel R)       ; legacy environment ops (0.D1)
+;;     (rename-path R S (transform-plan ...))  ; N3-D planned transforms --
+;;     (drop-path R (transform-plan ...))       ;   subtree-atomic, replayed
+;;                                              ;   against the catalog head
 ;;     (add-tuple REL v ...) | (del-tuple REL v ...)   ; inline single-tuple
 ;;                                           ;   steps, anchored at entry --
 ;;                                           ;   the degenerate batch (§0.2)
@@ -396,6 +399,10 @@
     [`(link ,(? string?) ,(? rename-map?)) #t]
     [`(rename-rel ,(? symbol?) ,(? symbol?)) #t]
     [`(drop-rel ,(? symbol?)) #t]
+    ;; N3-D planned transforms: the step retains its self-auditing plan so
+    ;; replay revalidates the exact minted BoundaryKey (catalog.rkt).
+    [`(rename-path ,(? symbol?) ,(? symbol?) ,(? transform-plan-datum?)) #t]
+    [`(drop-path ,(? symbol?) ,(? transform-plan-datum?)) #t]
     [`(inject-version ,(? symbol?) ,(? string?)) #t]
     [`(add-tuple ,(? symbol?) ,_ ...) #t]
     [`(del-tuple ,(? symbol?) ,_ ...) #t]

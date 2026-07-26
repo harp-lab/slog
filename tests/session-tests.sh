@@ -456,13 +456,20 @@ timeout 600 racket tests/api/session-drive.rkt \
   abatch+:1,edge,4,5 flush \
   dump-rel:reach dump-rel:endp recount pipeline input-ledger dump-all-counts recipe \
   > out/sess-d-rename.log 2>&1
-expect "d-renamed"        "(renamed path reach 1)" out/sess-d-rename.log
+# N3-D: with a live catalog head the rename is a planned transform under a
+# successor BoundaryKey; the next program RETAINS the renamed relation's
+# exact VersionKey instead of re-adopting the environment.
+expect_re "d-renamed" \
+  '\(path-renamed [0-9]+ \(from "path"\) \(to "reach"\) \(boundary "b1:' \
+  out/sess-d-rename.log
 expect "d-endp-initial"   "(dumpdone 3)" out/sess-d-rename.log
 expect "d-walk-translates" "(route anchored edge 0 3)" out/sess-d-rename.log
 expect "d-alias-reapply"  "(overlay-set reach 1)" out/sess-d-rename.log
 expect "d-reach-final"    "(dumpdone 11)" out/sess-d-rename.log
 expect "d-endp-final"     "(dumpdone 5)" out/sess-d-rename.log
-expect "d-recipe-rename"  "(rename-rel path reach)" out/sess-d-rename.log
+expect "d-recipe-rename"  "(rename-path path reach (transform-plan" out/sess-d-rename.log
+expect_re "d-rename-head-survives" \
+  '\(retain \(qname "reach"\) "v1:[^"]+:0:10"' out/sess-d-rename.log
 versioned_count_oracle "m04-rename-ir-oracle" out/sess-d-rename.log
 
 # drop + re-declare: the dropped lineage stays positionally addressable
@@ -474,10 +481,41 @@ timeout 600 racket tests/api/session-drive.rkt \
   run:tests/session/redecl.slog \
   sizes-at:2 dump-rel:path recount pipeline input-ledger dump-all-counts \
   > out/sess-d-drop.log 2>&1
-expect    "d-dropped"     "(dropped path 1)" out/sess-d-drop.log
+expect_re "d-dropped" \
+  '\(path-dropped [0-9]+ \(path "path"\) \(boundary "b1:' out/sess-d-drop.log
 expect_re "d-old-lineage" '\(sizes-at 2 .*\(path 6\)' out/sess-d-drop.log
 expect    "d-fresh-chain" "(dumpdone 1)" out/sess-d-drop.log
 versioned_count_oracle "m04-drop-redeclare-ir-oracle" out/sess-d-drop.log
+
+# --- N3-D: namespace subtree transforms (modules.md §5.3) -------------------
+# ONE path syntax: renaming namespace `ns` atomically rebinds ns.edge AND
+# recursive ns.path under a successor BoundaryKey with their exact
+# VersionKeys; the next program consumes geo.path without re-adoption; the
+# subtree drop unbinds both while the severed chains stay positionally
+# addressable; the recipe carries the planned transform events.
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/session/nd_ns_base.slog \
+  rename-rel:ns,geo \
+  run:tests/session/nd_ns_consumer.slog \
+  dump-rel:endp dump-rel:geo.path \
+  drop-rel:geo \
+  pipeline recipe \
+  > out/sess-nd-ns.log 2>&1
+expect_re "nd-ns-rename-atomic" \
+  '\(path-renamed [0-9]+ \(from "ns"\) \(to "geo"\) \(boundary "b1:[^"]+:1"\) \(position [0-9]+\) \(rebound 2\)\)' \
+  out/sess-nd-ns.log
+expect "nd-ns-consumer-endp"  "(dumpdone 3)" out/sess-nd-ns.log
+expect "nd-ns-consumer-path"  "(dumpdone 6)" out/sess-nd-ns.log
+expect_re "nd-ns-drop-atomic" \
+  '\(path-dropped [0-9]+ \(path "geo"\) \(boundary "b1:[^"]+:3"\) \(position [0-9]+\) \(unbound 2\)\)' \
+  out/sess-nd-ns.log
+expect_re "nd-ns-versionkey-stable" \
+  '\(vid geo\.path 0 [0-9]+ 0 "v1:[^"]+:0:[0-9]+" \(schema 2 0 set\) \(boundary "b1:[^"]+:1"\)' \
+  out/sess-nd-ns.log
+expect_re "nd-ns-severed-chain" \
+  '\(rel ns\.path \(v 0 0 6\) \(v 1 [0-9]+ -1\)\)' out/sess-nd-ns.log
+expect "nd-ns-recipe-rename" "(rename-path ns geo (transform-plan" out/sess-nd-ns.log
+expect "nd-ns-recipe-drop" "(drop-path geo (transform-plan" out/sess-nd-ns.log
 
 # hot-link (D5): same merge machinery as import-delta, recorded as a LINK
 # step (payload stays a reference; externalisation leaves it alone)

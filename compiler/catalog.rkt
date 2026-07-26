@@ -29,6 +29,12 @@
  type-env->catalog-delta
  plan-boundary
  replay-boundary-plan
+ (struct-out transform-plan)
+ plan-path-transform
+ replay-path-transform
+ transform-plan->datum
+ transform-plan-datum?
+ qname-inside?
  boundary-plan->datum
  boundary-plan-datum?
  declaration-descriptor->datum
@@ -532,6 +538,213 @@
    actions
    version-slots
    type-slots))
+
+;; -----------------------------------------------------------------------
+;; N3-D path transforms (modules.md §5.3)
+;;
+;; A rename or drop is a pure transform of one input boundary: the selected
+;; subtree's declarations, memberships, nominal TypeKeys, and environment
+;; VersionKeys move (or leave) together under a successor BoundaryKey minted
+;; from the same LayerId/event identity as program boundaries.  A rename also
+;; rewrites every nominal reference INTO the subtree -- including field types
+;; declared outside it -- without changing any TypeKey or VersionKey.  A drop
+;; is rejected while a surviving declaration still references the subtree
+;; (field type or membership edge): the conservative §5.3 integrity rule.
+
+(struct transform-plan
+  (layer-id event kind from to boundary-key input output)
+  #:transparent)
+
+(define (qname-inside? name path)
+  (define nc (qname-components name))
+  (define pc (qname-components path))
+  (and (> (length nc) (length pc))
+       (equal? (take nc (length pc)) pc)))
+
+(define (qname-at-or-inside? name path)
+  (or (qname=? name path) (qname-inside? name path)))
+
+(define (qname-rebase name from to)
+  (if (qname=? name from)
+      to
+      (qname (append (qname-components to)
+                     (drop (qname-components name)
+                           (length (qname-components from)))))))
+
+(define (rewrite-type-ref ref rename)
+  (match ref
+    [(type-ref 'primitive _) ref]
+    [(type-ref 'named (? qname? name)) (type-ref 'named (rename name))]
+    [_ (catalog-fail 'invalid-type "invalid normalized TypeRef: ~a" ref)]))
+
+(define (rewrite-lattice-spec spec rename)
+  (lattice-descriptor
+   (lattice-descriptor-kind spec)
+   (for/list ([argument (in-list (lattice-descriptor-arguments spec))])
+     (cond
+       [(type-ref? argument) (rewrite-type-ref argument rename)]
+       [(lattice-descriptor? argument) (rewrite-lattice-spec argument rename)]
+       [else (catalog-fail 'invalid-lattice
+                           "invalid normalized lattice argument: ~a"
+                           argument)]))
+   (lattice-descriptor-parameters spec)))
+
+(define (rewrite-declaration descriptor rename)
+  (declaration-descriptor
+   (rename (declaration-descriptor-name descriptor))
+   (declaration-descriptor-kind descriptor)
+   (for/list ([field (in-list (declaration-descriptor-fields descriptor))])
+     (rewrite-type-ref field rename))
+   (let ([spec (declaration-descriptor-lattice-spec descriptor)])
+     (and spec (rewrite-lattice-spec spec rename)))))
+
+(define (plan-path-transform input kind path target
+                             #:layer-id layer-id #:event event)
+  (unless (memq kind '(rename drop))
+    (catalog-fail 'invalid-transform "unknown transform kind: ~a" kind))
+  (check-key-input 'transform layer-id event)
+  (define from (name->qname 'transform path))
+  (define to (and (eq? kind 'rename) (name->qname 'transform target)))
+  (define cat (boundary-catalog input))
+  (define declarations (catalog-declarations cat))
+  (define memberships (catalog-memberships cat))
+  (define nominals (catalog-nominals cat))
+  (define environment (boundary-environment input))
+  (define (known-names)
+    (set-union (list->set (hash-keys declarations))
+               (list->set (hash-keys environment))))
+  (define names (known-names))
+  (define selected
+    (for/set ([name (in-set names)]
+              #:when (qname-at-or-inside? name from))
+      name))
+  (when (set-empty? selected)
+    (catalog-fail 'unknown-path "transform path is unbound: ~a"
+                  (qname->display from)))
+  (when (and (set-member? selected from) (> (set-count selected) 1))
+    (catalog-fail 'invalid-catalog
+                  "path names both a declaration and a namespace: ~a"
+                  (qname->display from)))
+  (when to
+    (when (qname-at-or-inside? to from)
+      (catalog-fail 'invalid-transform
+                    "rename target lies inside the renamed subtree: ~a"
+                    (qname->display to)))
+    (for ([name (in-set names)])
+      (when (qname-at-or-inside? name to)
+        (catalog-fail 'occupied-target
+                      "rename target is already bound: ~a covers ~a"
+                      (qname->display to) (qname->display name)))
+      ;; one path is never both a declaration and a namespace: the target
+      ;; may not nest inside an existing leaf either
+      (when (qname-inside? to name)
+        (catalog-fail 'occupied-target
+                      "rename target nests inside declaration ~a"
+                      (qname->display name)))))
+  (define (rename-name name)
+    (if (and to (qname-at-or-inside? name from))
+        (qname-rebase name from to)
+        name))
+  (define output-catalog
+    (cond
+      [to
+       (catalog
+        (for/hash ([(name descriptor) (in-hash declarations)])
+          (values (rename-name name)
+                  (rewrite-declaration descriptor rename-name)))
+        (for/set ([edge (in-set memberships)])
+          (cons (rename-name (car edge)) (rename-name (cdr edge))))
+        (for/hash ([(name key) (in-hash nominals)])
+          (values (rename-name name) key)))]
+      [else
+       (define surviving
+         (for/hash ([(name descriptor) (in-hash declarations)]
+                    #:unless (qname-at-or-inside? name from))
+           (values name descriptor)))
+       (for ([(name descriptor) (in-hash surviving)])
+         (for ([reference (in-set (declaration-references descriptor))])
+           (when (and (qname-at-or-inside? reference from)
+                      ;; a reference to a name that was never declared is the
+                      ;; planner's concern elsewhere; integrity gates only on
+                      ;; real subtree members
+                      (or (hash-has-key? declarations reference)
+                          (hash-has-key? environment reference)))
+             (catalog-fail 'dangling-reference
+                           "declaration ~a references ~a inside the dropped subtree"
+                           (qname->display name)
+                           (qname->display reference)))))
+       (catalog
+        surviving
+        (for/set ([edge (in-set memberships)]
+                  #:unless (or (qname-at-or-inside? (car edge) from)
+                               (qname-at-or-inside? (cdr edge) from)))
+          edge)
+        (for/hash ([(name key) (in-hash nominals)]
+                   #:unless (qname-at-or-inside? name from))
+          (values name key)))]))
+  ;; membership integrity runs over EVERY edge: a surviving parent may not
+  ;; keep an edge whose member the drop removes (§5.3)
+  (unless to
+    (for ([edge (in-set memberships)])
+      (when (and (qname-at-or-inside? (car edge) from)
+                 (not (qname-at-or-inside? (cdr edge) from)))
+        (catalog-fail 'dangling-membership
+                      "declaration ~a retains a membership into the dropped subtree"
+                      (qname->display (cdr edge))))))
+  (define output-environment
+    (if to
+        (for/hash ([(name key) (in-hash environment)])
+          (values (rename-name name) key))
+        (for/hash ([(name key) (in-hash environment)]
+                   #:unless (qname-at-or-inside? name from))
+          (values name key))))
+  (define output
+    (boundary (make-boundary-key layer-id event)
+              output-catalog
+              output-environment))
+  (transform-plan layer-id event kind from to
+                  (make-boundary-key layer-id event)
+                  input output))
+
+(define (transform-plan->datum plan)
+  `(transform-plan
+    (layer ,(transform-plan-layer-id plan))
+    (event ,(transform-plan-event plan))
+    (kind ,(transform-plan-kind plan))
+    (from ,(qname->datum (transform-plan-from plan)))
+    (to ,(and (transform-plan-to plan)
+              (qname->datum (transform-plan-to plan))))
+    (boundary ,(transform-plan-boundary-key plan))))
+
+(define (transform-plan-datum? datum)
+  (match datum
+    [`(transform-plan (layer ,(? string?)) (event ,(? exact-nonnegative-integer?))
+                      (kind ,(or 'rename 'drop)) (from ,_) (to ,_)
+                      (boundary ,(? string?)))
+     #t]
+    [_ #f]))
+
+;; Replay recomputes the transform from the reconstructed input boundary
+;; under the persisted identity and refuses any disagreement -- transforms
+;; carry no allocation tables, so key equality plus successful recomputation
+;; is the complete audit.
+(define (replay-path-transform input datum)
+  (match datum
+    [`(transform-plan (layer ,(? string? layer)) (event ,(? exact-nonnegative-integer? event))
+                      (kind ,(and kind (or 'rename 'drop)))
+                      (from ,from) (to ,to)
+                      (boundary ,(? string? key)))
+     (define plan
+       (plan-path-transform input kind (datum->qname from)
+                            (and (eq? kind 'rename) (datum->qname to))
+                            #:layer-id layer #:event event))
+     (unless (equal? (transform-plan-boundary-key plan) key)
+       (catalog-fail 'replay-divergence
+                     "replayed transform minted ~a but the recipe recorded ~a"
+                     (transform-plan-boundary-key plan) key))
+     plan]
+    [_ (catalog-fail 'invalid-recipe
+                     "malformed persisted transform plan: ~a" datum)]))
 
 ;; -----------------------------------------------------------------------
 ;; Recipe codec

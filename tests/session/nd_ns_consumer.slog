@@ -1,0 +1,7 @@
+;; N3-D fixture: reads the RENAMED namespace -- geo.path only exists if the
+;; subtree transform rebound ns.* to geo.* with content intact.
+
+table (geo.path int int)
+table (endp int)
+
+rule (geo.path X Y) --> (endp Y)

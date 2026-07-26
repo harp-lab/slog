@@ -686,6 +686,11 @@
     [`(del-tuple ,rel ,vs ...) (apply-tuples! s rel '() (list vs))]
     [`(rename-rel ,from ,to) (session-rename! s from to)]
     [`(drop-rel ,r) (session-drop! s r)]
+    ;; N3-D transform steps replay through the same entry points with their
+    ;; persisted self-auditing plan: the reconstructed transform must mint
+    ;; the identical BoundaryKey or the replay refuses.
+    [`(rename-path ,from ,to ,plan) (session-rename! s from to #:plan plan)]
+    [`(drop-path ,r ,plan) (session-drop! s r #:plan plan)]
     [`(inject-version ,r ,key) (session-inject-version! s r #:key key)]
     [`(import-delta ,dir ,renames) (session-import-delta! s dir renames)]
     [`(link ,db ,renames) (session-link! s db renames)]
@@ -880,36 +885,112 @@
 ;; names; drops need no driver record -- the chains' severance markers
 ;; carry them.  Rename EVENTS record even while replaying (the walk needs
 ;; ancestor renames too); recipe STEPS only for the session's own.
-(define (session-rename! s from to)
+;; N3-D: with a live logical head, rename/drop are planned catalog
+;; transforms (catalog.rkt plan-path-transform) driven through the
+;; rename-path/drop-path dispatcher verbs -- the head SURVIVES, transformed
+;; in lockstep with the daemon's atomic environment event, and the recipe
+;; step carries the self-auditing plan.  Without a head (catalog-less root,
+;; or invalidated by a legacy import/link/inject event), the legacy
+;; single-relation env op remains: the next program re-adopts the live
+;; environment exactly as before.
+(define (transform-event! s persisted)
+  (cond
+    [persisted
+     (define event
+       (match persisted
+         [`(transform-plan (layer ,_) (event ,(? exact-nonnegative-integer? e))
+                           . ,_) e]
+         [_ (error 'session (format "malformed transform plan: ~a" persisted))]))
+     (set-session-next-event! s (max (session-next-event s) (add1 event)))
+     event]
+    [else
+     (define event (session-next-event s))
+     (set-session-next-event! s (add1 event))
+     event]))
+
+(define (drive-path-transform! s plan verb clauses)
+  (define generation (query-update-epoch! s))
+  (define reply
+    (session-command!
+     s
+     `(,verb (generation ,generation)
+             (boundary ,(transform-plan-boundary-key plan))
+             ,@clauses
+             ,@(boundary-catalog-clauses (transform-plan-output plan)))))
+  (match reply
+    [`(,(or 'path-renamed 'path-dropped) ,_ . ,_)
+     (set-session-catalog-boundary! s (transform-plan-output plan))]
+    [`(refused ,class ,_ . ,details)
+     (error 'session (format "~a refused (~a): ~a" verb class details))]
+    [other
+     (error 'session (format "unexpected ~a reply: ~a" verb other))]))
+
+(define (session-rename! s from to #:plan [persisted #f])
   ;; normalize to symbols: the affected-set walk and the recipe both key
   ;; relations symbolically
   (define from* (if (symbol? from) from (string->symbol from)))
   (define to* (if (symbol? to) to (string->symbol to)))
   (define-values (cur _sp _ch) (introspect! s))
-  (session-action! s `(rename-rel ,from* ,to*))
-  (define line (read-line (session-out s)))
-  (unless (and (string? line) (regexp-match? #px" 1\\)\\s*$" line))
-    (error 'session (format "rename-rel ~a -> ~a refused: ~a" from* to* line)))
-  (echo! s line)
-  (record-step! s `(rename-rel ,from* ,to*) #:at cur)
+  (define head (session-catalog-boundary s))
+  (when (and persisted (not head))
+    (error 'session
+           "recipe replays a planned rename but no catalog head is live"))
+  (cond
+    [head
+     (define event (transform-event! s persisted))
+     (define plan
+       (if persisted
+           (replay-path-transform head persisted)
+           (plan-path-transform head 'rename
+                                (symbol->qname from*) (symbol->qname to*)
+                                #:layer-id (session-layer-id s)
+                                #:event event)))
+     (drive-path-transform!
+      s plan 'rename-path
+      `((from ,(boundary-qname-datum (transform-plan-from plan)))
+        (to ,(boundary-qname-datum (transform-plan-to plan)))))
+     (record-step! s `(rename-path ,from* ,to*
+                                   ,(transform-plan->datum plan))
+                   #:at cur)]
+    [else
+     (session-action! s `(rename-rel ,from* ,to*))
+     (define line (read-line (session-out s)))
+     (unless (and (string? line) (regexp-match? #px" 1\\)\\s*$" line))
+       (error 'session
+              (format "rename-rel ~a -> ~a refused: ~a" from* to* line)))
+     (echo! s line)
+     (record-step! s `(rename-rel ,from* ,to*) #:at cur)])
   (touch! s (list to*))
-  (set-session-renames! s (cons (list from* to* cur) (session-renames s)))
-  ;; N2 does not yet have a catalog rename transform.  Force the next program
-  ;; to re-adopt the exact live VersionKeys under the renamed environment.
-  (set-session-catalog-boundary! s #f))
+  (set-session-renames! s (cons (list from* to* cur) (session-renames s))))
 
-(define (session-drop! s rel)
+(define (session-drop! s rel #:plan [persisted #f])
   (define rel* (if (symbol? rel) rel (string->symbol rel)))
   (define-values (cur _sp _ch) (introspect! s))
-  (session-action! s `(drop-rel ,rel*))
-  (define line (read-line (session-out s)))
-  (unless (and (string? line) (regexp-match? #px" 1\\)\\s*$" line))
-    (error 'session (format "drop-rel ~a refused: ~a" rel* line)))
-  (echo! s line)
-  (record-step! s `(drop-rel ,rel*) #:at cur)
-  ;; As with rename, the daemon environment is authoritative until N3 grows a
-  ;; transactional catalog operation for this mutation.
-  (set-session-catalog-boundary! s #f))
+  (define head (session-catalog-boundary s))
+  (when (and persisted (not head))
+    (error 'session
+           "recipe replays a planned drop but no catalog head is live"))
+  (cond
+    [head
+     (define event (transform-event! s persisted))
+     (define plan
+       (if persisted
+           (replay-path-transform head persisted)
+           (plan-path-transform head 'drop (symbol->qname rel*) #f
+                                #:layer-id (session-layer-id s)
+                                #:event event)))
+     (drive-path-transform!
+      s plan 'drop-path
+      `((path ,(boundary-qname-datum (transform-plan-from plan)))))
+     (record-step! s `(drop-path ,rel* ,(transform-plan->datum plan))
+                   #:at cur)]
+    [else
+     (session-action! s `(drop-rel ,rel*))
+     (define line (read-line (session-out s)))
+     (unless (and (string? line) (regexp-match? #px" 1\\)\\s*$" line))
+       (error 'session (format "drop-rel ~a refused: ~a" rel* line)))
+     (echo! s line)
+     (record-step! s `(drop-rel ,rel*) #:at cur)]))
 
 ;; Run one program atop the session (docs/incremental.md §0.4): one
 ;; version boundary PER PROGRAM of its run tree (E0c) -- announce the
@@ -1083,12 +1164,32 @@
     (shape ,(format "~s"
                     (declaration-descriptor->datum descriptor)))))
 
-(define (boundary-prepare-command plan group generation)
-  (define output (boundary-plan-output plan))
+;; The two catalog clauses every complete-catalog command carries
+;; (prepare-boundary and the N3-D transforms): sorted declaration records
+;; and sorted membership edges over one output boundary.
+(define (boundary-catalog-clauses output)
   (define declarations
     (catalog-declarations (boundary-catalog output)))
   (define memberships
     (catalog-memberships (boundary-catalog output)))
+  (list
+   `(declarations
+     ,@(for/list ([name
+                   (in-list (sort (hash-keys declarations) qname<?))])
+         (boundary-declaration-record output name)))
+   `(memberships
+     ,@(for/list ([edge
+                   (in-list
+                    (sort (set->list memberships)
+                          (lambda (a b)
+                            (or (qname<? (car a) (car b))
+                                (and (qname=? (car a) (car b))
+                                     (qname<? (cdr a) (cdr b)))))))])
+         `(member ,(boundary-qname-datum (car edge))
+                  ,(boundary-qname-datum (cdr edge)))))))
+
+(define (boundary-prepare-command plan group generation)
+  (define output (boundary-plan-output plan))
   (define-values (daemon-table _descriptor-rows)
     (boundary-plan-daemon-data plan group))
   (define internal-actions
@@ -1101,20 +1202,7 @@
     (generation ,generation)
     (boundary ,(boundary-plan-boundary-key plan))
     (program ,(boundary-plan-program-key plan))
-    (declarations
-     ,@(for/list ([name
-                   (in-list (sort (hash-keys declarations) qname<?))])
-         (boundary-declaration-record output name)))
-    (memberships
-     ,@(for/list ([edge
-                   (in-list
-                    (sort (set->list memberships)
-                          (lambda (a b)
-                            (or (qname<? (car a) (car b))
-                                (and (qname=? (car a) (car b))
-                                     (qname<? (cdr a) (cdr b)))))))])
-         `(member ,(boundary-qname-datum (car edge))
-                  ,(boundary-qname-datum (cdr edge)))))
+    ,@(boundary-catalog-clauses output)
     (actions
      ,@(for/list ([action (in-list (boundary-plan-actions plan))])
          `(,(boundary-action-kind action)
