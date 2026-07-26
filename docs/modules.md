@@ -1319,9 +1319,24 @@ declaration-only session boundary assertion, and all 605 session checks.
    maintenance ordinals.
 3. Replace name-discovered `structs_by_id` with durable SID/TypeKey
    descriptors and a lowest-free SID bitmap; keep current struct relation
-   storage behind the descriptor.
+   storage behind the descriptor. **Landed as N3-C (2026-07-25).**
 4. Teach lookup, sizes, batch, rename, drop, and version-chain actions
-   structured qualified paths; make subtree operations atomic.
+   structured qualified paths; make subtree operations atomic. **Landed as
+   N3-D (2026-07-26):** `rename-path`/`drop-path` dispatcher verbs apply the
+   §5.3 subtree transform atomically under a session-planned successor
+   BoundaryKey — the session's `plan-path-transform` (catalog.rkt) rewrites
+   declarations, outside TypeRefs, memberships, nominals, and environment
+   keys with every TypeKey/VersionKey preserved, the daemon verifies the
+   sent catalog is the exact mechanical rewrite plus the membership
+   integrity projection, and the logical head survives in lockstep (recipes
+   carry the self-auditing transform plan; replay refuses key divergence).
+   Anchored batches translate through subtree renames leaf-by-leaf; catalog
+   streams take a structured subtree filter; Q1 binds old names at
+   historical boundaries and refuses them at successors; catalog truth now
+   survives content events and clears only at genuinely catalog-invalidating
+   legacy events (imports, links, injected versions, catalog-less
+   rename/drop). Legacy single-relation env ops remain for catalog-less
+   roots; §5.3 attach/import-at-path and save/inspect bundles stay with N4.
 
 ### N4: persistence and the first REPL
 

@@ -524,6 +524,27 @@ expect_re "nd-ns-severed-chain" \
 expect "nd-ns-recipe-rename" "(rename-path ns geo (transform-plan" out/sess-nd-ns.log
 expect "nd-ns-recipe-drop" "(drop-path geo (transform-plan" out/sess-nd-ns.log
 
+# chained transforms (hygiene): two subtree renames compose; an anchored
+# batch to the ORIGINAL leaf name translates through both hops; the count
+# walk stays coherent across the transformed versions (counts were never
+# invalidated -- content did not change at either transform)
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/session/nd_ns_base.slog \
+  rename-rel:ns,geo \
+  rename-rel:geo,net \
+  abatch+:0,ns.edge,4,5 flush \
+  dump-rel:net.path \
+  recount dump-counts:net.path \
+  pipeline input-ledger dump-all-counts recipe \
+  > out/sess-nd-chain.log 2>&1
+expect_re "nd-chain-second-hop" \
+  '\(path-renamed [0-9]+ \(from "geo"\) \(to "net"\) \(boundary "b1:[^"]+:2"\)' \
+  out/sess-nd-chain.log
+expect "nd-chain-translated-content" "(dumpdone 10)" out/sess-nd-chain.log
+expect_re "nd-chain-counts-close" '\(countdone net\.path [0-9]+\)' \
+  out/sess-nd-chain.log
+versioned_count_oracle "nd-chain-ir-oracle" out/sess-nd-chain.log
+
 # hot-link (D5): same merge machinery as import-delta, recorded as a LINK
 # step (payload stays a reference; externalisation leaves it alone)
 timeout 600 racket tests/api/session-drive.rkt \

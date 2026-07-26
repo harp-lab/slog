@@ -266,6 +266,52 @@ else
   bad "nd-transform-boundaries-listed"
 fi
 
+# History coherence (sub-slice (d)): Q1 binds through transform-minted
+# boundaries exactly as through committed program boundaries -- the renamed
+# name resolves in the successor snapshot, the OLD name resolves in the
+# historical snapshot under the SAME VersionKey, and the old name inside the
+# successor snapshot refuses.  A struct's SID and TypeKey survive the
+# subtree rename (§11.17), and a key freed by an aborted prepare is reusable
+# by a transform (N3-A key doctrine).
+NDQ_DECL="(declare (qname \"x\" \"edge\") (kind table) (arity 2) (type-key #f) (lat-spec #f) (shape \"s\")) (declare (qname \"x\" \"pt\") (kind struct) (arity 2) (type-key \"type:ndq:pt\") (lat-spec #f) (shape \"s\"))"
+NDQ_DECL_Y="(declare (qname \"y\" \"edge\") (kind table) (arity 2) (type-key #f) (lat-spec #f) (shape \"s\")) (declare (qname \"y\" \"pt\") (kind struct) (arity 2) (type-key \"type:ndq:pt\") (lat-spec #f) (shape \"s\"))"
+NDQ_PREPARE="(prepare-boundary (generation 0) (boundary \"ndq.b0\") (program \"ndq.p0\") (declarations $NDQ_DECL) (memberships) (actions (create (qname \"x\" \"edge\") (version-key \"ndq.v.edge\") (predecessor #f) (type-key #f)) (create (qname \"x\" \"pt\") (version-key \"ndq.v.pt\") (predecessor #f) (type-key \"type:ndq:pt\"))))"
+NDQ_ROWS_SO=$(racket -e \
+  '(require (file "compiler/actions.rkt"))
+   (displayln
+    (action-so
+     (quote (add-batch x.edge -1
+                       ((1 2) (2 2) (3 4) (4 2) (5 7) (6 2))))))')
+NDQ_LEASE="(prepare-boundary (generation 1) (boundary \"ndq.freed\") (program \"ndq.lp\") (declarations $NDQ_DECL) (memberships) (actions (retain (qname \"x\" \"edge\") (version-key \"ndq.v.edge\") (predecessor #f) (type-key #f)) (retain (qname \"x\" \"pt\") (version-key \"ndq.v.pt\") (predecessor #f) (type-key \"type:ndq:pt\"))))"
+NDQ_RENAME="(rename-path (generation 1) (boundary \"ndq.freed\") (from (qname \"x\")) (to (qname \"y\")) (declarations $NDQ_DECL_Y) (memberships))"
+NDQ_NEW_PLAN='(query-plan (abi 1) (at (boundary "ndq.freed") (generation 2)) (relations (rel 0 (binding "y.edge" "ndq.v.edge" 6) (relation 2 (0 1)))) (registers 3) (preloads) (literals (literal (r 1) integer "2")) (pre) (driver (scan-full (rel 0) (0 1) (r 0) (r 2))) (body (eq (r 2) (r 1))) (project (r 0)) (mode count))'
+NDQ_OLD_PLAN='(query-plan (abi 1) (at (boundary "ndq.b0") (generation 2)) (relations (rel 0 (binding "x.edge" "ndq.v.edge" 6) (relation 2 (0 1)))) (registers 3) (preloads) (literals (literal (r 1) integer "2")) (pre) (driver (scan-full (rel 0) (0 1) (r 0) (r 2))) (body (eq (r 2) (r 1))) (project (r 0)) (mode count))'
+NDQ_STALE_NAME_PLAN='(query-plan (abi 1) (at (boundary "ndq.freed") (generation 2)) (relations (rel 0 (binding "x.edge" "ndq.v.edge" 6) (relation 2 (0 1)))) (registers 3) (preloads) (literals (literal (r 1) integer "2")) (pre) (driver (scan-full (rel 0) (0 1) (r 0) (r 2))) (body (eq (r 2) (r 1))) (project (r 0)) (mode count))'
+racket tests/api/drive.rkt \
+  "$NDQ_PREPARE" \
+  "$NDQ_ROWS_SO" \
+  '(commit-boundary (generation 0) (boundary "ndq.b0"))' \
+  "$NDQ_LEASE" \
+  '(abort-boundary (generation 1) (boundary "ndq.freed"))' \
+  "$NDQ_RENAME" \
+  "(query q1 $NDQ_NEW_PLAN (page 100))" \
+  "(query q2 $NDQ_OLD_PLAN (page 100))" \
+  "(query q3 $NDQ_STALE_NAME_PLAN (page 100))" \
+  '(catalog types)' \
+  > out/proto-nd-q1.log 2>&1
+expect_rx "nd-q1-abort-frees-transform-key" \
+  '\(path-renamed 2 \(from "x"\) \(to "y"\) \(boundary "ndq\.freed"\)' \
+  out/proto-nd-q1.log
+expect_rx "nd-q1-new-name-binds" \
+  '\(query-end q1 .*\(matched 4\)' out/proto-nd-q1.log
+expect_rx "nd-q1-old-boundary-old-name-binds" \
+  '\(query-end q2 .*\(matched 4\)' out/proto-nd-q1.log
+expect_rx "nd-q1-stale-name-refused" \
+  '\(refused query-binding [0-9]+ \(verb query\) \(query q3\)' out/proto-nd-q1.log
+expect "nd-typekey-survives-rename" \
+  '(catalog-type (sid 1) (name "y.pt") (arity 2) (type-key "type:ndq:pt"))' \
+  out/proto-nd-q1.log
+
 # Subtree selection (§5.3 "inspecting X selects the subtree"): a trailing
 # structured qname narrows the current and historical catalog streams to the
 # exact member or its nested descendants.  Counts are exact, so the filtered

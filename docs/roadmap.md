@@ -13,7 +13,7 @@ remains normative for its content.
 |---|---|---|---|
 | incremental maintenance | [incremental.md](incremental.md), [incremental-status.md](incremental-status.md) | Phase 0, M0–M7 | Phase 0, M0, M1, M3, M6L 1–2, M4T, M5, M4S, **M4N ([m4n-contract.md](m4n-contract.md), all 4 slices)** shipped; **counted-interpreter milestone complete** ([counted-interp-contract.md](counted-interp-contract.md)); **M7 slice 1 complete ([m7-contract.md](m7-contract.md), sub-slices (a)–(d), 2026-07-24)** — thread 0's M-milestone spine is done |
 | execution tiers | [execution-tiers.md](execution-tiers.md) | T0–T6, Q1 | T1 shipped; T2 core frozen, monotone conformance groups closed, **flavored execution interp-only by default**; T0 slices (a), (b), and (d) landed; canonical Q1 query/page/cancel dispatcher active; T0(c) identity remains independent; T3a/T4+ unstarted |
-| modules/namespaces | [modules.md](modules.md) | N0–N5 | N0, N2-A/B, and N3-A/B/C daemon boundaries, direct history, and durable in-memory type registry landed; N1 and N3-D+ unstarted |
+| modules/namespaces | [modules.md](modules.md) | N0–N5 | N0, N2-A/B, and **all of N3** landed (N3-A/B/C daemon boundaries, direct history, durable type registry; **N3-D qualified-path transforms, 2026-07-26**); N1 and N4+ unstarted |
 | reflection | [slog-reflection.md](slog-reflection.md) | RF0–RF5 | RF0 done; RF1 slice 0 shipped (plan determinism); ABI-2 split pending |
 | REPL | [repl.md](repl.md), [repl-ux.md](repl-ux.md), [repl-terminal.md](repl-terminal.md) | R0–R5 | native Rust shell, private TCP server, live session/daemon vertical slice, structured change projection, executable `--plain` golden, and R1 budgeted tree, navigation, semantic change cards, command completion, visible-canvas search, live-relation observations, and buffered pagination shipped; canonical Q1 cursor protocol active, with boundary catalog/friendly parser/value/proof adapters next |
 | stats migration | [stats.md](stats.md) §7 | steps 1–7 | `$stat_*` shipped; migration unstarted |
@@ -1122,6 +1122,52 @@ tests, 62 struct-identity checks, 102 command-protocol checks, 24 Racket REPL
 contract checks, 28 Rust library tests, 44 Rust client tests, three executable
 semantic integrations, the native/interpreter operator gate, and all 608
 session checks.
+
+**Checkpoint (2026-07-26; N3-D qualified-path transforms — N3 complete).**
+Landed on the reunified trunk in four sub-slices after the thread-1 merge.
+`rename-path`/`drop-path` are single-shot atomic environment events in the
+T0 dispatcher over ONE structured path syntax: the current environment and
+catalog decide leaf vs namespace (never both), the whole selected subtree
+rebinds or unbinds at one pipeline position, and the event publishes a
+successor BoundarySnapshot under a session-planned BoundaryKey with the
+generation advancing while counts stay valid. The session's pure planner
+(`plan-path-transform`) rewrites declaration names, nominal TypeRefs into
+the subtree — including field types declared outside it — membership edges,
+nominal TypeKey keys, and environment VersionKey keys, preserving every
+key's value; drop applies §5.3's conservative referential-integrity
+rejection (field graph session-side, memberships re-checked by the daemon).
+The logical head is TRANSFORMED in lockstep instead of invalidated: the
+next program retains exact VersionKeys, recipes carry the self-auditing
+`(transform-plan ...)` datum, and replay recomputes it and refuses key
+divergence. Anchored batches translate through subtree renames leaf-by-leaf
+(per-leaf rename triples derived from the plan's environments by VersionKey
+match); catalog streams take a structured subtree filter (`(catalog
+relations (qname ...))`); Q1 binds old names at their historical boundaries
+under the same VersionKey and refuses them at successors; struct SID/
+TypeKey survive renames; keys freed by aborted prepares are reusable.
+
+Two latent thread-1 seams surfaced and were fixed: prepare-boundary's
+declaration/action parsers required singleton qname fields (multi-component
+qualified declarations could not be spelled at all), and `advancePosition`
+cleared the daemon's complete catalog on EVERY non-transactional boundary
+event — any flush/walk rebind silently destroyed catalog identity, invisible
+until the transforms became the first consumer to compare against it.
+Declarations are version-independent: content events now clear only the
+current boundary handle, and only genuinely catalog-invalidating legacy
+events (imports, links, injected input versions, catalog-less rename/drop)
+clear catalog truth, matching the session's head-invalidation policy.
+
+Legacy single-relation env ops remain for catalog-less roots. Deliberately
+out of scope, per the docs: §5.3 attach/import-at-path and save/inspect
+bundles (N4 persistence), the N1 module system, and privacy/export lists.
+
+Exit gates: daemon -O2 build; 275 compiler unit tests (7 new transform
+planner cases); 127/127 command-protocol checks (25 new: transform atomicity
+and refusals, subtree filters, Q1 history coherence, TypeKey survival);
+struct-identity battery; Racket REPL contract 24/24; Rust 28+44+3 with the
+unchanged semantic golden; session battery 703/703 (namespace rename/
+consume/drop, anchored-batch translation, chained transforms with a closed
+count walk and IR oracle).
 
 ### 4.3 Why the fork is safe
 
