@@ -9,13 +9,13 @@ streams are mature enough to collide unless sequenced deliberately; this
 document owns ordering and interleaving only. Each stream's own document
 remains normative for its content.
 
-| stream | document | slices | status 2026-07-19 (v3.0.1) |
+| stream | document | slices | status 2026-07-25 (v3.1.0) |
 |---|---|---|---|
 | incremental maintenance | [incremental.md](incremental.md), [incremental-status.md](incremental-status.md) | Phase 0, M0–M7 | Phase 0, M0, M1, M3, M6L 1–2, M4T, M5, M4S, **M4N ([m4n-contract.md](m4n-contract.md), all 4 slices)** shipped; **counted-interpreter milestone complete** ([counted-interp-contract.md](counted-interp-contract.md)); **M7 slice 1 complete ([m7-contract.md](m7-contract.md), sub-slices (a)–(d), 2026-07-24)** — thread 0's M-milestone spine is done |
-| execution tiers | [execution-tiers.md](execution-tiers.md) | T0–T6, Q1 | T1 shipped; T2 core frozen, monotone conformance groups closed, **flavored execution interp-only by default**; T0 slice (a) landed; T3a/T4+ unstarted |
-| modules/namespaces | [modules.md](modules.md) | N0–N5 | N0 landed; N1+ unstarted |
+| execution tiers | [execution-tiers.md](execution-tiers.md) | T0–T6, Q1 | T1 shipped; T2 core frozen, monotone conformance groups closed, **flavored execution interp-only by default**; T0 slices (a), (b), and (d) landed; canonical Q1 query/page/cancel dispatcher active; T0(c) identity remains independent; T3a/T4+ unstarted |
+| modules/namespaces | [modules.md](modules.md) | N0–N5 | N0, N2-A/B, and N3-A/B/C daemon boundaries, direct history, and durable in-memory type registry landed; N1 and N3-D+ unstarted |
 | reflection | [slog-reflection.md](slog-reflection.md) | RF0–RF5 | RF0 done; RF1 slice 0 shipped (plan determinism); ABI-2 split pending |
-| REPL | [repl.md](repl.md), [repl-ux.md](repl-ux.md), [repl-terminal.md](repl-terminal.md) | R0–R5 | native Rust shell, private TCP server, and live session/daemon vertical slice working; R0 waits on T0 (b)/(d) |
+| REPL | [repl.md](repl.md), [repl-ux.md](repl-ux.md), [repl-terminal.md](repl-terminal.md) | R0–R5 | native Rust shell, private TCP server, live session/daemon vertical slice, structured change projection, executable `--plain` golden, and R1 budgeted tree, navigation, semantic change cards, command completion, visible-canvas search, live-relation observations, and buffered pagination shipped; canonical Q1 cursor protocol active, with boundary catalog/friendly parser/value/proof adapters next |
 | stats migration | [stats.md](stats.md) §7 | steps 1–7 | `$stat_*` shipped; migration unstarted |
 
 ## 1. Ordering principles
@@ -36,8 +36,8 @@ module-occurrence component (the root include tree) defined so N1's real
 
 **P3 — One protocol, not two.** T0's S-expression command protocol and N3's
 transactional boundary requests (`prepare-boundary` / `commit-boundary` /
-`abort-boundary`) are the same protocol. T0 reserves the verb space; N3
-joins it later. After the fork, protocol changes are additive verbs only,
+`abort-boundary`) are the same protocol. T0 reserved the verb space; N3-A
+joined it without a second dispatcher. After the fork, protocol changes are additive verbs only,
 under joint review.
 
 **P4 — Interpreter before new flavors.** Flavored variants (`_count`,
@@ -699,18 +699,22 @@ Thread 1 proceeds in this order:
    canonical workbench command patch is imported without the UX checkout's
    unrelated M4N work. There were no daemon-builder overlaps; the shared
    command boundary and terminal lifecycle pass their joint gates.
-4. **R0 → R1 on the shipped substrate (server-contract preparation landed
-   2026-07-22; client join next)**: session ownership, semantic verbs over
-   `session-*!`, change summaries, golden `--plain` transcripts; then the
-   canvas.  Nothing here waits on thread 0 —
+4. **R0 → R1 on the shipped substrate (server contract landed 2026-07-22;
+   executable `--plain` client join landed 2026-07-23)**: session ownership,
+   semantic verbs over `session-*!`, change summaries, and the golden plain
+   transcript are joined through one client result model; canvas behavior is
+   next. Nothing here waits on thread 0 —
    forward incrementality and the frozen monotone interpreter are the
    foundation, and `clear scratch` silently improves as thread 0's
    precise routes land (M4N just widened them to negation cones).
-5. **The Q1/R2 meeting point**: T0's dispatcher takes ownership of
-   `query`/`query-page`/`query-cancel` admission, N2/N3 supply the
-   boundary/materialization overlay, and the already-golden
-   payload/builder seam connects — then R2's `?`/`?count`/`?exists`
-   and `explain` land as rendering over it.
+5. **The Q1/R2 meeting point (dispatcher half completed 2026-07-23)**:
+   T0's dispatcher owns `query`/`query-page`/`query-cancel`, generation/phase
+   admission, connection-scoped cursor lifetime, and structured page
+   sentinels. N3-B now supplies the live direct boundary/materialization
+   overlay; N3-C now supplies direct TypeKey/SID descriptors and
+   boundary-aware struct rendering, while N4 persists them. R2's
+   `?`/`?count`/`?exists` and `explain` can land over the already-golden
+   payload seam once checked REPL value-handle ownership joins.
 6. **Toward F**: the monotone T2-B normal path, compiler-driven
    `SLOG_OPT=interp` route, checkout-independent demand names, and uniform
    pause record are landed. The remaining fork-gate work is the slice-(b)/(c)
@@ -787,18 +791,337 @@ consumer, not a second Racket frontend.
 This checkpoint intentionally stops before three decisions/dependencies:
 `stage`/`flush` and `inject` need their command grammar and anchoring syntax
 pinned; honest `dbN` handles wait for N2/N3 BoundaryKeys rather than aliasing
-the update counter; and Q1 query verbs still wait for the N2/N3
-VersionKey/materialization overlay. T0(c) identity remains an independent
-engine track and does not block this client contract.
+the update counter; and, at this checkpoint, Q1 query verbs still waited for
+their dispatcher join. The later canonical dispatcher accepts exact
+VersionKey payloads without pretending that it supplies N2/N3's persistent
+boundary/materialization overlay. T0(c) identity remains an independent engine
+track and does not block this client contract.
 
-The next join is intentionally one-dimensional: implement Rust `--plain` as a
-consumer of the existing framed result, hold it to the same semantic-session
-golden, and only then share its response model with the canvas. Do not add
-canvas-only state to the compiler contract. Before staging verbs land, decide
-buffer ownership across session switches, failure/discard behavior, flush
-atomicity, and BoundaryKey anchoring; relation-size summaries are useful
+**Thread-1 checkpoint (2026-07-23; executable plain client join complete).**
+The Rust `slog --plain` path branches before Ratatui, raw input, mouse capture,
+and the co-author listener. It reads one command per line, drives the existing
+authenticated Content-Length backend, renders through the canonical transcript
+projection, and updates the typed semantic-change ledger without scraping
+human text. EOF shuts down gracefully, server `close` ends the command stream,
+diagnostics stay on stderr, and transport loss fails the process.
+
+The executable now drives the same open, no-op/effective add, delete, rename,
+drop, and shutdown sequence as the server harness and byte-compares stdout
+with the existing semantic-session golden. `CommandResult` is shared with the
+canvas, removing its duplicate title/line/kind/close decoding. Gates: Rust
+format; 16/16 presentation-model tests; 31/31 canvas/client tests; 3/3
+executable tests; Racket REPL contract 18/18. The named full-suite `repl`
+harness owns both Racket and Rust legs.
+
+Next on R0/R1: build canvas behavior over this shared result model without
+adding display-only state to the compiler contract. Before staging verbs land,
+decide buffer ownership across session switches, failure/discard behavior,
+flush atomicity, and BoundaryKey anchoring; relation-size summaries are useful
 settled evidence but are neither full tuple diffs nor support/provenance
 proofs.
+
+**Thread-1 checkpoint (2026-07-23; R1 presentation/navigation foundation).**
+`repl/src/present.rs` is the terminal-independent tree engine: separate depth,
+total-node, collection-item, and string budgets render stable expandable
+markers, and expansion state is keyed by positional paths rather than handles.
+The first semantic adapter preserves the server's bounded result lines and
+adds a collapsed `it.change` tree from the structured mutation record; it
+never scrapes those lines or changes the plain projection.
+
+The newest successful result is the sole live canvas. Tab enters navigate
+mode; arrows/hjkl select and expand/collapse; Esc/q returns to the editor.
+Every successful gesture appends a dim generated
+`expand POSITION`/`collapse POSITION` command, and typed or co-author commands
+take the same reducer path without reaching Racket. Older results keep their
+last rendered lines. Gates: Rust format and Clippy; 20/20
+presentation-model tests; 34/34 canvas/client tests; 3/3 executable tests
+including the unchanged semantic-session golden; Racket REPL contract 19/19.
+
+Next R1 slices: cards/actions over selected semantic nodes, then completion,
+search, richer schema/value/proof adapters, and pagination. R2 remains at the
+separate N2/N3 catalog/VersionKey meeting point.
+
+**Thread-1 checkpoint (2026-07-23; semantic change cards).** Navigate mode's
+`o` gesture and the typed/co-author `card POSITION` command now run through
+the same client-owned reducer as expansion. A contextual sidebar describes
+the selected structured change node and publishes its canonical actions;
+`card close` closes it. Collapsing an ancestor also closes a descendant card,
+and narrow terminals retain the state while omitting the sidebar.
+
+The first card adapter keeps the evidence boundary explicit: requested tuple
+edits are requests whose settled effect is determined by normalization, while
+relation sizes are cardinality observations, not tuple diffs or provenance
+proofs. No display-only field was added to the Racket result contract, and
+plain mode remains byte-identical. Gates: Rust format and Clippy; 21/21
+presentation-model tests; 34/34 canvas/client tests; 3/3 executable tests
+including the unchanged semantic-session golden; Racket REPL contract 20/20;
+named combined `repl` gate PASS.
+
+Next R1 slices: completion, then search, richer schema/value/proof adapters,
+and pagination. R2 remains at the separate N2/N3 catalog/VersionKey meeting
+point.
+
+**Thread-1 checkpoint (2026-07-23; command completion foundation).**
+`repl/src/completion.rs` is a terminal-independent token/candidate reducer.
+Tab applies a unique candidate directly or opens a bounded selection panel;
+Tab/Down and Shift-Tab/Up cycle, Enter accepts, Esc dismisses, and mouse-wheel
+selection uses the same state. Acceptance only changes the editor, leaving the
+eventual canonical typed command as the sole semantic action.
+
+The initial inventory covers shipped command verbs, mode/library grammar,
+database names learned from structured resident and library records, and
+currently valid expand/collapse/card positions. It intentionally refuses to
+infer relation or namespace names from the runtime size ledger or saved
+relation directories. The selected boundary catalog and embedded-Slog token
+stream remain the authoritative inputs for those future candidates; no Racket
+contract field was added in this slice. Gates: Rust format and Clippy; 25/25
+presentation-model tests; 38/38 canvas/client tests; 3/3 executable tests
+including the unchanged semantic-session golden; Racket REPL contract 20/20;
+named combined `repl` gate PASS.
+
+Next R1 slices: the boundary-catalog/embedded-Slog completion adapter when its
+identity contract lands, plus client-local canvas search, richer
+schema/value/proof adapters, and pagination. Search can proceed independently;
+R2 remains at the separate N2/N3 catalog/VersionKey meeting point.
+
+**Thread-1 checkpoint (2026-07-23; visible canvas search).** Search lives in
+the terminal-independent presentation reducer and visits only the currently
+rendered tree after depth, node, item, and string budgets. Navigate-mode `/`
+previews a case-insensitive query incrementally; Enter commits and echoes
+`search TEXT`, Esc restores the prior query/selection, and n/N echo
+`search-next`/`search-previous`. Typed and co-author commands, including
+`search-clear`, take the same client-owned path without reaching Racket.
+Visible matches are highlighted with an honest current/total status; collapsed
+children remain absent until expanded.
+
+No compiler result field or plain projection changed. Gates: Rust format and
+Clippy; 26/26 presentation-model tests; 40/40 canvas/client tests; 3/3
+executable tests including the unchanged semantic-session golden; Racket REPL
+contract 21/21; named combined `repl` gate PASS.
+
+Next R1 slices: richer schema/value/proof presentation adapters and pagination;
+the boundary-catalog/embedded-Slog completion adapter joins when its identity
+contract lands. R2 remains at the N2/N3 catalog/VersionKey meeting point.
+
+**Thread-1 checkpoint (2026-07-23; live relation observation adapter).**
+`tables` already owned current-session relation name, daemon kind/arity,
+schema detail, and row count; it now retains those facts in an additive
+JSON-safe `relations` field with filter/scope totals instead of discarding
+them after formatting. The presentation reducer maps the field to a budgeted
+`it.relations` tree. Each relation card offers canonical `count`, `show`, and
+`state` actions and states that the current live name has no published
+BoundaryKey or VersionKey.
+
+The existing `lines` projection and plain transcript are unchanged. The
+completion engine does not consume this field: only the N2/N3 boundary catalog
+can supply empty additive members, historical names, and durable identity.
+Tuple values remain unstructured until evaluation/boundary TypeDescriptor and
+value-handle ownership are fixed; proof trees remain gated by provenance.
+Gates: Rust format and Clippy; 27/27 presentation-model tests; 42/42
+canvas/client tests; 3/3 executable tests including the unchanged
+semantic-session golden; Racket REPL contract 23/23; named combined `repl`
+gate PASS.
+
+Next R1 work is pagination where the existing protocol can support it; richer
+tuple-value and proof adapters wait on their named identity/provenance
+contracts. The boundary-catalog completion adapter joins at N2/N3.
+
+**Thread-1 checkpoint (2026-07-23; buffered canvas pagination).** Wide
+presentation collections now retain one item-budget page at a time. Markers
+report exact remaining/prior item counts and current/total pages; Enter emits
+the absolute `page POSITION NUMBER` command. Typed and co-author commands use
+the same client reducer, while completion derives visible targets and valid
+page numbers from structured canvas state. Changing pages reselects the first
+item, closes an off-page card, and refreshes search so hidden buffered nodes do
+not leak into visible results.
+
+This is explicitly not Q1 cursor pagination. It operates only on nodes already
+present in a bounded response, including `show REL all` under the current
+200-row cap. The server contract gained only the client-command help line;
+result fields and plain projection are unchanged. Default `show REL` continues
+to advertise `show REL all`; this checkpoint predates the canonical Q1
+dispatcher below, so the Rust `more` command is still not connected to that
+cursor surface. Gates: Rust format and Clippy; 28/28
+presentation-model tests; 44/44 canvas/client tests; 3/3 executable tests
+including the unchanged semantic-session golden; Racket REPL contract 24/24;
+named combined `repl` gate PASS.
+
+The remaining rich R1 adapters are dependency-bound: tuple values need
+evaluation/boundary TypeDescriptor and value-handle ownership, proof trees
+need provenance, and catalog completion needs N2/N3 identity. The next
+unblocked Thread-1 join is the Q1/R2 dispatcher/catalog meeting point rather
+than a display-only imitation of those contracts.
+
+**Thread-1 checkpoint (2026-07-23; canonical Q1 dispatcher).** The generic
+daemon command layer now activates `query`, `query-page`, and `query-cancel`
+over the frozen ABI-1 QueryPlan. Query start checks the embedded generation,
+seals the payload without reserializing it, binds the dense relation frame
+only by exact VersionKey, derives idle/boundary/mid-read admission from the
+daemon, and returns a structured row stream ending in exactly one
+`query-end`. Page and cursor-work budgets are server-bounded; matched counts
+are cumulative across page/paused/complete/cancelled sentinels.
+
+The cursor is connection-scoped and holds the database's one-query lease.
+While it is live, all non-query commands and arbitrary plugin paths are
+refused, so no index mutation can invalidate a continuation; EOF explicitly
+releases the lease before database teardown. Completed/cancelled ids are not
+retained. The protocol battery pins page/page/complete continuation,
+cancellation, exact-VersionKey rejection, stale generation, payload and page
+refusals, active-id serialization, mutation interlocks, EOF cleanup, and an
+absent-string probe followed by an unchanged row set. The Q1 native hygiene
+battery remains the exact master-row/heap/pending-error audit.
+
+This does not manufacture N2/N3 identity. The BoundaryKey is carried through
+the canonical payload, while runtime authority remains its exact VersionKey
+frame. Friendly `?`/catalog completion, rich TypeDescriptor/value handles,
+and `more` integration remain at the real boundary-catalog adapter.
+
+**Thread-1 checkpoint (2026-07-24; N2-A immutable boundary producer).**
+The first real N2 catalog slice now lives in `compiler/catalog.rkt`.
+Existing type environments normalize into exact qualified declaration graphs
+(`TypeRef`, lattice/collection descriptors, union edges, including empty
+tables and structs), and one pure planner reconciles those assertions against
+an explicit input catalog/environment. Compatible omissions retain their
+VersionKeys; new storage receives one initial VersionKey even when written in
+the same program; written existing storage receives one successor; new
+structs receive TypeKeys; any incompatible overlap or dangling field graph
+rejects before a plan is returned. ProgramInstanceKey, BoundaryKey,
+VersionKey, and TypeKey slot tables are content-neutral and deterministic by
+sorted QName over caller-supplied LayerId/events.
+
+The old `modules.rkt` manifest threading now consumes the catalog's one-way
+legacy ABI projection, so `update-manifest` no longer owns a parallel
+public kind/arity/lattice encoder. Compiler-reserved `$...` supplementary
+relations stay in an execution-only manifest appendix until N1 replaces that
+legacy convention with internal IDs/path components; anonymous lattice clamp
+names now escape non-QName signs deterministically. The compiler tuple ABI is
+intentionally unchanged in this slice. Gates: eight focused planner cases
+and all 266 compiler unit tests pass; an extern-backed standard-library load
+also passes. Next is N2-B: carry `CatalogDelta` plus each compiled program
+group's actual write set through `compile-strata` into session boundary/recipe
+state. The N2-A producer deliberately did not advance session state. N2-B
+must preserve an explicit seam for N3's daemon prepare/fixpoint/commit overlay
+and must not claim that a logical post-fixpoint head alone provides atomic
+publication. This work is wholly Thread 1-owned; N1 can later supply lexical
+multi-instance paths to the same QName-native planner without rekeying it.
+
+**Thread-1 checkpoint (2026-07-24; N2-B compile/session boundary bridge).**
+`compile-strata` now returns one named `compile-group` per dependency-ordered
+program instead of an anonymous `(count . frozen-dirs)` pair. Each group owns
+its `CatalogDelta`, stratum/frozen actual write set, and the public catalog
+storage subset of that write set. The same write-set computation now serves
+the one-shot and session drivers; compiler-only `$...` state remains
+execution metadata and cannot acquire public catalog identity accidentally.
+Declaration-only programs remain first-class groups and therefore receive a
+logical program/boundary event even with zero strata.
+
+`session-run!` pure-plans the complete group chain before daemon mutation,
+then records a self-auditing plan and exact daemon VersionKey table per group.
+The persisted form contains LayerId and program/boundary/type events, complete
+normalized deltas, retain/create actions with exact predecessor keys, and the
+version/type slot tables. Replay recompiles the source, reconstructs each
+plan from the selected input boundary, and rejects any semantic disagreement
+between the reconstructed and persisted plan before executing that group.
+Recipe grammar validation admits both this form and the prior
+version-events-only form.
+
+The session publishes each logical output catalog/environment only after that
+group reaches fixpoint. Open reconstructs the head from recipe plans; rename,
+drop, import/link, and input injection invalidate it so the next program
+re-adopts the live environment rather than extending stale state. The
+transition bridge for an older catalog-less root adopts only live storage
+reachable through the next program's declaration graph, preserves the exact
+current VersionKeys, and refuses a referenced storage type without a live
+key. It does not fabricate omitted nominal graphs.
+
+This is deliberately not N3 atomicity. `begin-segment/keyed` still exposes
+the legacy daemon boundary while execution is in flight, a declaration-only
+initial slot is logical until daemon declaration support exists, and durable
+TypeKey/SID descriptors remain absent. N3 next replaces that bridge with
+preflighted `prepare-boundary` / fixpoint / `commit-boundary` (or abort) and
+direct VersionKey/BoundaryKey indexing. N4 remains responsible for a
+checksummed catalog table and restoring empty declarations independently of
+recipe source. Gates: 11 focused catalog/compile-group cases, all 269 compiler
+unit tests, fresh and catalog-less save/replay probes, and all 605 session
+checks.
+
+**Thread-1 checkpoint (2026-07-25; N3-A transactional daemon boundary).**
+The T0 command dispatcher now implements generation-checked
+`prepare-boundary`, `commit-boundary`, and `abort-boundary`. Prepare validates
+the complete output catalog, memberships, retain/create actions, storage ABI,
+TypeKeys, predecessor bindings, and VersionKey uniqueness before allocating
+anything. It then opens eager initial/successor slots and a plugin-visible
+private environment. Declaration-only groups therefore own real empty
+physical relations. Ordinary command/catalog/query access is refused while
+the private lease exists.
+
+Native strata and frozen inputs execute against that overlay. Commit requires
+terminal fixpoint and atomically publishes catalog, name bindings, VersionKey
+index entries, and deferred stats before advancing the generation. Abort
+settles a mid-read pause to a clean boundary if necessary, removes the private
+pipeline suffix and relations, restores the prior cursor/reload state, and
+leaves both public keys and content unchanged. VersionIds and SIDs may burn.
+The session now sends the same immutable N2 `BoundaryPlan` it persists,
+publishes its logical head only after the daemon commit, and issues abort on
+every execution or commit failure.
+
+Legacy rename/drop/import/input-version events remain outside boundary
+transactions until N3-D. They invalidate both sides' logical snapshot; the
+next program re-adopts the live environment, including durable TypeKeys from
+`(catalog types)`, rather than synthesizing a second nominal identity.
+
+Gates: daemon and Racket builds, 269 compiler unit tests, 87 command-protocol
+checks, and all 606 session checks. Those gates opened N3-B's durable
+boundary/history work.
+
+**Thread-1 checkpoint (2026-07-25; N3-B boundary identity and history).**
+Every N3 commit now installs one immutable `BoundarySnapshot` under its
+BoundaryKey, records that key on each created `RelBinding`, and appends it to
+evaluation-local commit history. The snapshot owns the complete public
+storage environment plus catalog and program identity; historical relations
+therefore resolve directly without reconstructing a name map from
+`pipeline_pos`. Positions remain the fast ordering labels used by maintenance.
+Committed keys are unique, aborted keys are reusable, and legacy
+rename/drop/import/stratum events clear only the selected current handle while
+conservatively retained history stays addressable.
+
+`(catalog boundaries)` streams commit-order handles and
+`(catalog boundary "KEY")` streams the exact historical relation
+materialization. Current and historical relation records carry BoundaryKey,
+and pipeline identity records attach it to committed binding events. Q1 now
+rejects an unknown BoundaryKey or a QName/VersionKey pair that does not match
+the selected snapshot; it no longer accepts a decorative boundary beside a
+globally resolved VersionKey. The REPL tables adapter consumes the structured
+catalog and publishes the real BoundaryKey/VersionKey pair to relation cards.
+
+**Thread-1 checkpoint (2026-07-25; N3-C durable type identity).**
+Name-discovered `structs_by_id` and the monotone high-water allocator are
+gone. Each evaluation now owns pointer-stable `TypeDescriptor`s under direct
+SID and TypeKey indices plus a lowest-free occupancy bitmap. Sparse root loads
+reserve only their actual SIDs; successors and renames retain one descriptor;
+drop removes only the current name projection; redeclaration receives a fresh
+TypeKey/SID; and history-only or aborted slots remain conservatively occupied.
+
+Prepared struct storage lives in a private SID overlay. Commit atomically
+advances canonical descriptor storage and publishes new TypeKeys; abort
+deletes the physical overlay without publishing its TypeKey. `(catalog types)`
+enumerates descriptors independently of the latest map and reports `(name
+#f)` for an unnamed retained type. Value rendering resolves SID through the
+descriptor, uses the selected BoundaryKey's constructor name/storage for
+historical queries, and emits an explicit `<type TypeKey>` form when no
+current name exists.
+
+Focused gates add 62 struct-identity checks and seven protocol lifecycle
+checks (102 command-protocol checks total), including sparse SIDs 10/3 with
+fresh allocations 1/2/4 and an aborted SID burn. N3-D is next: teach lookup,
+sizes, batch, rename, drop, and version-chain actions structured qualified
+paths and make subtree environment operations atomic.
+
+Full exit gates are green: the optimized daemon build, 269 compiler unit
+tests, 62 struct-identity checks, 102 command-protocol checks, 24 Racket REPL
+contract checks, 28 Rust library tests, 44 Rust client tests, three executable
+semantic integrations, the native/interpreter operator gate, and all 608
+session checks.
 
 ### 4.3 Why the fork is safe
 

@@ -106,21 +106,22 @@ sketch is the working set, this contract is where a rename must land):
 - **one-at-a-time equivalents of existing compiled action verbs**
   (lookup, sizes, dumps, saves, ...), retired per §9.2.
 
-**Reserved verb families** — the parser recognizes them and answers
-`(refused reserved-verb ...)`:
+**Active post-T0 families:** N3-A owns `prepare-boundary`,
+`commit-boundary`, and `abort-boundary`; Q1 owns `query`, `query-page`, and
+`query-cancel`. They extend this dispatcher and generation/refusal doctrine;
+neither is a second protocol path.
 
-- **N3:** `prepare-boundary`, `commit-boundary`, `abort-boundary`
-  (roadmap P3; modules.md §10 N3).
-- **Q1:** `query`, `query-page`, `query-cancel`
-  (execution-tiers §6.4).
+**Reserved verb families** — the parser recognizes these remaining verbs and
+answers `(refused reserved-verb ...)`:
+
+- **watch:** `watch`, `unwatch`, `subscribe`.
 - **T5:** the debugger stepping verbs (`resume`, `replay`,
   `why-not-add`, `debug-on`/`debug-off` per the §9 sketch).
 
-Implementation dependency (recorded 2026-07-16): Q1's engine context may
-advance independently behind this reservation, but its three wire verbs
-activate only through slice (a)'s generic dispatcher and dispatcher-owned
-phase observation. They must not be added as another exact-string branch in
-the legacy plugin-path switch.
+The active Q1 and N3 families followed the recorded 2026-07-16 dependency:
+their wire verbs activate only through slice (a)'s generic dispatcher and
+dispatcher-owned phase observation, never another exact-string branch in the
+legacy plugin-path switch.
 
 Post-F rule: additive verbs only, joint review (roadmap §7).
 
@@ -243,16 +244,19 @@ battery is in `tests/interp-operator-tests.cpp`. A separate audit parsed all
 857 sidecars then present across `build/` and `build-post2/`. Entry modes are
 not included in this checkpoint, so slice (b) as a whole is not yet complete.
 
-**Q1 meeting seam as built 2026-07-17:** `compiler/query-plan.rkt` emits a
+**Q1 meeting seam as built 2026-07-17 and activated 2026-07-23:**
+`compiler/query-plan.rkt` emits a
 canonical ABI-1 `query-plan` datum carrying its BoundaryKey/generation and
 exact VersionKey catalog frame. `daemon/query.cpp` parses it with the shared
 bounded reader, seals it into `SealedRequest`, and builds the runtime relation
 frame by VersionKey rather than QName. The checked-in cross-language fixture
-executes through this path. This does not activate any reserved verb:
-dispatcher-owned phase/generation admission and query context IDs/pages stay
-in slice (a), and the payload must be embedded unchanged when that dispatcher
-lands. In particular, this seam is not authority to add an exact `(query ...)`
-branch beside the legacy `(continue)` cases.
+executes through this path. The dispatcher now embeds that datum unchanged in
+`(query ID QUERY_PLAN (page N))`, checks generation/phase, and owns
+`query-page`/`query-cancel` plus the connection-scoped cursor lifetime. A live
+cursor refuses all non-query commands and plugin paths, preventing mutation
+between pages. This is exact-VersionKey admission for canonical clients, not
+authority to resolve friendly names: persistent BoundaryKey/catalog
+production remains N2/N3's responsibility.
 
 **ABI coordination (RF1):** the sidecar format is ABI 1 today;
 rf1-contract.md's re-key splits it into ABI 2's four parts. Slice (b)
@@ -370,14 +374,21 @@ the fork.
   `(refused reserved-verb <gen> (verb V) (family
   boundary|query|watch|debugger))`; `<gen>` reads
   `Daemon::commandGeneration()` (backing store today: the update-epoch
-  counter).  Catalog: `(catalog [relations|types])` streams
+  counter).  Catalog: `(catalog [relations|types|boundaries])` streams
   `(catalog-rel (name "N") (kind table|struct|lat) (arity A)
-  (version-id I) (version-key K|#f) (evaluation E|#f) (predecessor P|#f)
-  (struct-id S|#f) (type-key #f) (lat-spec L|#f) (size Z|#f)
+  (version-id I) (version-key K|#f) (boundary B|#f)
+  (evaluation E|#f) (predecessor P|#f)
+  (struct-id S|#f) (type-key T|#f) (lat-spec L|#f) (size Z|#f)
   (temp #t|#f))` records — declaration truth, empties included, unlike
   `(schema)` — plus `(catalog-planned (name "N") (version-key K))` for
-  announced-but-unregistered keys and `(catalog-type (sid S) (name "N")
-  (arity A) (type-key #f))`, each stream closed by `(catalog-end <n>)`.
+  announced-but-unregistered keys and `(catalog-type (sid S) (name "N"|#f)
+  (arity A) (type-key T|#f))`. N3-C sources these records from the independent
+  TypeDescriptor registry, so a dropped/history-only type remains present
+  with `(name #f)`. N3-B adds ordered
+  `(catalog-boundary (boundary B) (program P) (evaluation E) (position N)
+  (generation G) (relations N))` history and `(catalog boundary "B")` direct historical
+  relation lookup; an unknown key is a `boundary-lookup` refusal. Each stream
+  is closed by `(catalog-end <n>)`.
   Protocol-mode seam: `Daemon::commandProtocolSpoken()`, set by any
   command verb EXCEPT the legacy `(continue)`/`(continue-boundary)`
   literals (every pre-T0 driver sends those; slice (d) scopes the

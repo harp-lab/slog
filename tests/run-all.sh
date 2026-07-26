@@ -44,7 +44,7 @@ run_harness() {
     tiered)      bash tests/tiered-tests.sh ;;
     pause)       bash tests/pause-tests.sh ;;
     protocol)    bash tests/protocol-tests.sh ;;
-    repl)        raco test compiler/repl.rkt ;;
+    repl)        raco test compiler/repl.rkt && cargo test --manifest-path repl/Cargo.toml ;;
     session)     bash tests/session-tests.sh ;;
     incremental-stress) bash tests/incremental-stress.sh ;;
     compression) bash tests/compression/run.sh ;;
@@ -55,7 +55,7 @@ run_harness() {
     counts)      "$CXX" -O2 -Wall -std=c++20 -pthread -Idaemon tests/counts-tests.cpp -o build/counts-tests -lgmp && ./build/counts-tests ;;
     wcoj3)       "$CXX" -O2 -Wall -std=c++20 -pthread -Idaemon tests/wcoj3-operator-tests.cpp -o build/wcoj3-operator-tests -lgmp && ./build/wcoj3-operator-tests ;;
     interp)      "$CXX" -O0 -Wall -std=c++20 -pthread -fopenmp -Idaemon -c daemon/plan-flavored-tasks.cpp -o build/plan-flavored-tasks.O0.o && "$CXX" -O2 -Wall -std=c++20 -pthread -fopenmp -Idaemon tests/interp-operator-tests.cpp daemon/plan.cpp daemon/plan-count.cpp daemon/query.cpp daemon/sexp.cpp daemon/runtime.cpp build/plan-flavored-tasks.O0.o -o build/interp-operator-tests -lgmp && ./build/interp-operator-tests ;;
-    structid)    "$CXX" -O2 -Wall -std=c++20 -pthread -Idaemon tests/struct-identity-tests.cpp -o build/struct-identity-tests -lgmp && ./build/struct-identity-tests ;;
+    structid)    "$CXX" -O2 -Wall -std=c++20 -pthread -fopenmp -Idaemon tests/struct-identity-tests.cpp -o build/struct-identity-tests -lz -lgmp && ./build/struct-identity-tests ;;
     *)           echo "run-all: unknown harness '$1'" >&2; return 2 ;;
   esac
 }

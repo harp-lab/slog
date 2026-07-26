@@ -1450,9 +1450,15 @@ bool test_catalog_query_payload_parse_seal_bind()
   CHECK(sealed.boundary_key == decoded.boundary_key);
   CHECK(sealed.generation == decoded.generation);
 
+  const BoundaryCatalogDecl edge_decl{
+    "edge", "table", 2, true, "", "",
+    "(declaration (qname \"edge\") table (fields int int))"};
+  const BoundaryRelationAction edge_create{
+    BoundaryActionK::create, "edge", "version/edge", "", ""};
+
   Database db(1);
-  db.planVersionKey("edge", "version/edge");
-  db.addRelation("edge", 2);
+  CHECK(db.prepareBoundary(
+          "boundary/7", "program/7", {edge_decl}, {}, {edge_create}).ok);
   Relation* edge = db.getRelation("edge");
   edge->addIndex<2>({0, 1}, false);
   edge->addIndex<2>({1, 0}, false);
@@ -1464,6 +1470,35 @@ bool test_catalog_query_payload_parse_seal_bind()
          {s32_encode(5), s32_encode(7)},
          {s32_encode(6), s32_encode(2)}})
     edge->insertTupleAllIndices(row.data());
+  CHECK(db.commitPreparedBoundary().ok);
+  CHECK(db.currentBoundaryKey() == "boundary/7");
+  CHECK(db.getRelationAtBoundary("edge", "boundary/7") == edge);
+  CHECK(db.boundaryHistory()
+        == (std::vector<std::string>{"boundary/7"}));
+
+  // A committed key is unique, while a later boundary retains the old
+  // snapshot as a directly selectable historical environment.
+  CHECK(!db.prepareBoundary(
+           "boundary/7", "program/retry", {edge_decl}, {}, {}).ok);
+  const BoundaryRelationAction edge_successor{
+    BoundaryActionK::create, "edge", "version/edge/next",
+    "version/edge", ""};
+  CHECK(db.prepareBoundary(
+          "boundary/8", "program/8", {edge_decl}, {}, {edge_successor}).ok);
+  Relation* successor = db.getRelation("edge");
+  const std::array<u64, 2> successor_only{
+    s32_encode(7), s32_encode(2)};
+  successor->insertTupleAllIndices(successor_only.data());
+  CHECK(db.commitPreparedBoundary().ok);
+  CHECK(db.currentBoundaryKey() == "boundary/8");
+  CHECK(db.getRelationAtBoundary("edge", "boundary/7") == edge);
+  CHECK(db.getRelationAtBoundary("edge", "boundary/8") == successor);
+  CHECK(db.boundaryHistory()
+        == (std::vector<std::string>{"boundary/7", "boundary/8"}));
+  CHECK(db.versionIdsSexpr().find(
+          "(boundary \"boundary/7\")") != std::string::npos);
+  CHECK(db.versionIdsSexpr().find(
+          "(boundary \"boundary/8\")") != std::string::npos);
 
   auto bound = q::bind(sealed, db);
   q::Context context(db, bound);
@@ -1492,12 +1527,16 @@ bool test_catalog_query_payload_parse_seal_bind()
       replace_once(payload, "(abi 1)", "(abi 2)")));
   }));
 
-  // The typed builder resolves only VersionKey. A same-named runtime relation
-  // with another identity cannot satisfy the serialized catalog binding.
+  // BoundaryKey selects the immutable environment first; the VersionKey in
+  // its same-named catalog slot must then match exactly.
   Database wrong_version(1);
-  wrong_version.addRelation("edge", 2);
+  const BoundaryRelationAction wrong_create{
+    BoundaryActionK::create, "edge", "version/wrong", "", ""};
+  CHECK(wrong_version.prepareBoundary(
+          "boundary/7", "program/7", {edge_decl}, {}, {wrong_create}).ok);
   wrong_version.getRelation("edge")->addIndex<2>({0, 1}, false);
   wrong_version.getRelation("edge")->addIndex<2>({1, 0}, false);
+  CHECK(wrong_version.commitPreparedBoundary().ok);
   CHECK(rejects(q::ErrorK::binding,
                 [&] { (void)q::bind(sealed, wrong_version); }));
   return true;

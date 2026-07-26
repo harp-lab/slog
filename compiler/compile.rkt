@@ -25,6 +25,8 @@
 ;; (tools.rkt) so a program's strata compile concurrently and overlap the run.
 
 (provide compile-strata (struct-out sbuild) (struct-out db-partition)
+         (struct-out compile-group)
+         compiled-strata-write-set
          stratum-meta-dynamic-rels   ; segment write-sets (incremental B0)
          read-stratum-meta           ; cone/polarity input (incremental B4)
          program->jobs    ; tooling/debug: inspect a program's stratum jobs
@@ -32,7 +34,9 @@
 
 (require "params.rkt")
 (require "utils.rkt")
-(require "modules.rkt")
+(require (except-in "modules.rkt" type-env->catalog-delta))
+(require "catalog.rkt")
+(require "names.rkt")
 (require "simplification.rkt")
 (require "seq-expand.rkt")
 (require "type-system.rkt")
@@ -975,20 +979,61 @@
 ;; iteration-0 EDB root (P0.5): 1 when the first program contributed a facts
 ;; stratum, else 0.  The driver drives that many strata, snapshots the root,
 ;; then drives the rest.
-;; `groups` (incremental 0.E0c) maps the flat strata list back onto the
-;; program list: one (cons stratum-count frozen-dirs) entry per program of
-;; the run tree, in pipeline order -- the driver opens one version boundary
-;; (begin-segment) per group, so a multi-`run` program's segments version
-;; their writes separately (the §0.4 model) instead of compiling to one
-;; segment, and each program's frozen ground facts import at ITS boundary.
+;; `groups` (incremental 0.E0c / modules N2-B) maps the flat strata list back
+;; onto the program list with one named compile-group per dependency-ordered
+;; program.  Besides its stratum count and frozen imports, each group carries
+;; the normalized CatalogDelta and the actual write sets.  `write-set` is the
+;; complete legacy execution set (including `$...` machinery);
+;; `boundary-write-set` contains only public catalog storage names.  The
+;; driver opens one version boundary per group, so a multi-`run` program's
+;; segments version their writes separately.
+(struct compile-group
+  (stratum-count frozen-dirs catalog-delta write-set boundary-write-set)
+  #:transparent)
+
+;; The actual writes of already-built strata plus frozen ground facts.  This
+;; used to live in runslog.rkt and was recomputed independently by session.rkt;
+;; keeping it next to compile-group makes group metadata authoritative.
+(define (compiled-strata-write-set strata frozen-dirs)
+  (define names (make-hash))
+  (for ([sb (in-list strata)])
+    (for ([name (in-list (stratum-meta-dynamic-rels (sbuild-hash sb)))])
+      (hash-set! names name #t)))
+  ;; Greedy (.+) with an anchored tail splits on the LAST .arity., like the
+  ;; daemon and db-manifest-from-name.
+  (for ([dir (in-list frozen-dirs)])
+    (when (directory-exists? dir)
+      (for ([path (in-list (directory-list dir))])
+        (define match
+          (regexp-match #px"^(?:table|struct|lat)\\.(.+)\\.arity\\.[0-9]+"
+                        (path->string path)))
+        (when match
+          (hash-set! names (string->symbol (second match)) #t)))))
+  (sort (hash-keys names) symbol<?))
+
+(define (catalog-write-set delta writes)
+  (define declarations (catalog-delta-declarations delta))
+  (for/list ([name (in-list writes)]
+             #:when
+             (with-handlers ([exn:fail? (lambda (_e) #f)])
+               (define qn (symbol->qname name))
+               (define descriptor (hash-ref declarations qn #f))
+               (and descriptor (storage-declaration? descriptor))))
+    name))
+
 (define (compile-strata path dbmanifest #:split-facts? [split-facts? #f])
   (define mode (opt-mode))
   ;; tiered = the default regime (anything but the explicit -O0-only / -O2-only
   ;; knobs); mirrors runslog.rkt's driver-side test.
   (define tiered? (not (member mode '("0" "2" "interp"))))
+  (define programs (load-program-list path dbmanifest))
   (define per-program
-    (for/list ([prog (in-list (load-program-list path dbmanifest))])
+    (for/list ([prog (in-list programs)])
       (program->jobs prog #:split-facts? split-facts?)))
+  (define per-program-deltas
+    (for/list ([prog (in-list programs)])
+      (match-define `(program ,type-env ,_mods ,_manifest ,_decomps) prog)
+      (type-env->catalog-delta type-env)))
   (define jobs (append-map first per-program))
   (define edb-boundary
     (if (and split-facts? (pair? per-program) (second (first per-program))) 1 0))
@@ -1011,9 +1056,6 @@
            (printf "(frozen ~a)\n" dir))
          (list dir)])))
   (define frozen-dirs (append* per-program-frozen))
-  (define groups
-    (for/list ([pp (in-list per-program)] [fds (in-list per-program-frozen)])
-      (cons (length (first pp)) fds)))
   (define partition (jobs->db-partition jobs))
   ;; background -O2 build commands (tiered mode), launched as ONE bounded batch
   ;; after all strata are planned so concurrency is capped (docs/fast-compile.md §7)
@@ -1105,4 +1147,26 @@
                     (lambda () (ensure-negative-maintenance-so job))
                  (lambda () (ensure-recursive-negative-maintenance-so job)))])])))
   (spawn-detached-o2-batch (reverse o2-cmds))
+  (define groups
+    (let loop ([pps per-program]
+               [fds* per-program-frozen]
+               [deltas per-program-deltas]
+               [remaining strata]
+               [out '()])
+      (match* (pps fds* deltas)
+        [('() '() '()) (reverse out)]
+        [((cons pp more-pps)
+          (cons fds more-fds)
+          (cons delta more-deltas))
+         (define count (length (first pp)))
+         (define group-strata (take remaining count))
+         (define writes (compiled-strata-write-set group-strata fds))
+         (loop more-pps more-fds more-deltas (drop remaining count)
+               (cons (compile-group
+                      count fds delta writes
+                      (catalog-write-set delta writes))
+                     out))]
+        [(_ _ _)
+         (error 'compile-strata
+                "internal per-program group metadata length mismatch")])))
   (values strata partition edb-boundary frozen-dirs groups))

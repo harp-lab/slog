@@ -1450,7 +1450,7 @@ database-local (db-merge.md §2):
 |---|---|---|---|
 | `s32` / `float` | the value itself | — | **Yes** (self-encoding) |
 | string (`is_str`) | 35-bit intern id | FNV low-26 bits + collision position (intern.h:227-269) | mostly (collisions order-dependent) |
-| struct (`is_struct`) | 14-bit type id + 38-bit instance id | type = `addStruct`/`struct_id_max++` (declaration order); instance = `intern_allocators[bucket]` counter (operators.h:490) | **No** (allocation order) |
+| struct (`is_struct`) | 14-bit type id + 38-bit instance id | type = evaluation-local TypeDescriptor registry, lowest-free occupied SID; instance = `intern_allocators[bucket]` counter (operators.h) | **No** (TypeKey is durable; SID/allocation order is not) |
 | collection node (`is_cnode`) | 35-bit arena intern id | content-hash + collision position; contents embed other id words | **No** (order-dependent, recursive) |
 
 On-disk directory layout of a (kept) database:

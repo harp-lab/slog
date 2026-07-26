@@ -1000,14 +1000,23 @@ std::shared_ptr<const BoundPlan> bind(
   require(request.bindings.size() == request.plan.storage_relations,
           ErrorK::binding,
           "query bind: catalog frame width changed after seal");
+  const BoundarySnapshot* boundary = db.getBoundary(request.boundary_key);
+  require(boundary != nullptr, ErrorK::binding,
+          "query bind: BoundaryKey is not committed in this evaluation: "
+            + request.boundary_key);
   std::vector<Relation*> frame;
   frame.reserve(request.bindings.size());
   for (const CatalogBinding& binding : request.bindings)
   {
-    Relation* relation = db.getRelationByVersionKey(binding.version_key);
+    Relation* relation =
+      db.getRelationAtBoundary(binding.name, request.boundary_key);
     require(relation != nullptr, ErrorK::binding,
-            "query bind: VersionKey is not materialized: "
-              + binding.version_key);
+            "query bind: relation is absent from selected boundary: "
+              + binding.name);
+    require(relation->getVersionKey() == binding.version_key,
+            ErrorK::binding,
+            "query bind: VersionKey does not match selected boundary: "
+              + binding.name);
     frame.push_back(relation);
   }
   return bind(request.plan, db, std::move(frame));
@@ -1164,6 +1173,11 @@ void Context::cancel()
   machine.reset();
   terminal = Status::cancelled;
   release_admission();
+}
+
+u64 Context::matched() const
+{
+  return sink->matched();
 }
 
 } // namespace query

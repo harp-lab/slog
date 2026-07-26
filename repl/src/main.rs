@@ -7,7 +7,9 @@ mod share;
 mod ui;
 mod version;
 
-pub use slog_repl::{command, operation, runtime, transcript, workspace};
+pub use slog_repl::{
+    command, completion, operation, present, response, runtime, transcript, workspace,
+};
 
 use app::{App, Effect};
 use backend::{Backend, BackendEvent, project_root};
@@ -18,10 +20,61 @@ use crossterm::event::{
 };
 use crossterm::execute;
 use futures_util::StreamExt;
+use response::CommandResult;
+use runtime::RuntimeLedger;
 use share::{DirectReply, ShareEvent, ShareServer};
 use std::collections::VecDeque;
 use std::error::Error;
-use std::io;
+use std::io::{self, BufRead, IsTerminal, Write};
+use transcript::TranscriptEntry;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FrontendMode {
+    Terminal,
+    Plain,
+    Help,
+}
+
+fn frontend_mode(
+    args: impl IntoIterator<Item = String>,
+    terminal_output: bool,
+) -> Result<FrontendMode, String> {
+    let mut mode = if terminal_output {
+        FrontendMode::Terminal
+    } else {
+        FrontendMode::Plain
+    };
+    let mut explicit = false;
+    for argument in args {
+        match argument.as_str() {
+            "--plain" if !explicit => {
+                mode = FrontendMode::Plain;
+                explicit = true;
+            }
+            "--help" | "-h" if !explicit => {
+                mode = FrontendMode::Help;
+                explicit = true;
+            }
+            "--plain" => {
+                return Err("frontend options cannot be combined or repeated".to_owned());
+            }
+            "--help" | "-h" => {
+                return Err("help cannot be combined with another frontend mode".to_owned());
+            }
+            _ => return Err(format!("unknown option: {argument}\n{}", usage())),
+        }
+    }
+    Ok(mode)
+}
+
+fn usage() -> &'static str {
+    "usage: slog [--plain]\n\
+     \n\
+     With terminal stdout, open the full-screen workbench. Redirected stdout\n\
+     automatically selects plain mode.\n\
+     --plain  read one command per input line and write a stable transcript\n\
+     -h, --help  show this help"
+}
 
 struct TerminalFeatures {
     keyboard_enhancement: bool,
@@ -113,10 +166,24 @@ impl Drop for TerminalFeatures {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    let mode = frontend_mode(std::env::args().skip(1), io::stdout().is_terminal())
+        .map_err(|error| format!("slog: {error}"))?;
+    if mode == FrontendMode::Help {
+        println!("{}", usage());
+        return Ok(());
+    }
+
     let root = project_root().map_err(|error| format!("slog: {error}"))?;
     let mut backend = Backend::start(&root)
         .await
         .map_err(|error| format!("slog: {error}"))?;
+
+    if mode == FrontendMode::Plain {
+        let result = run_plain(&mut backend).await;
+        backend.shutdown().await;
+        return result.map_err(Into::into);
+    }
+
     let mut share = ShareServer::start(&root)
         .await
         .map_err(|error| format!("slog: {error}"))?;
@@ -128,6 +195,83 @@ async fn main() -> Result<(), Box<dyn Error>> {
     ratatui::restore();
     backend.shutdown().await;
     result.map_err(Into::into)
+}
+
+async fn run_plain(backend: &mut Backend) -> Result<(), String> {
+    let stdin = io::stdin();
+    let mut stdout = io::BufWriter::new(io::stdout().lock());
+    let mut stderr = io::stderr().lock();
+    let mut runtime = RuntimeLedger::default();
+
+    for source in stdin.lock().lines() {
+        let source = source.map_err(|error| format!("cannot read plain input: {error}"))?;
+        let Some(command) = ShellCommand::local(source) else {
+            continue;
+        };
+        if command.is_comment() {
+            write_plain_entry(&mut stdout, &TranscriptEntry::comment(command, "plain"))?;
+            continue;
+        }
+
+        write_plain_entry(
+            &mut stdout,
+            &TranscriptEntry::command(command.clone(), "plain"),
+        )?;
+        backend.execute(command.into_text()).await?;
+
+        let closes = loop {
+            match backend.events.recv().await {
+                Some(BackendEvent::Log(line)) => {
+                    writeln!(stderr, "{line}")
+                        .and_then(|_| stderr.flush())
+                        .map_err(|error| format!("cannot write server diagnostic: {error}"))?;
+                }
+                Some(BackendEvent::Disconnected(message)) => {
+                    return Err(format!("server disconnected: {message}"));
+                }
+                Some(BackendEvent::Response { response, .. }) => {
+                    if !response.ok {
+                        let error = response.error.unwrap_or(crate::protocol::ServerError {
+                            kind: "server".to_owned(),
+                            message: "unknown server failure".to_owned(),
+                        });
+                        write_plain_entry(
+                            &mut stdout,
+                            &TranscriptEntry::error(error.kind, vec![error.message]),
+                        )?;
+                        break false;
+                    }
+
+                    let result = CommandResult::from_value(response.result.unwrap_or_default());
+                    let observation_warning = runtime.observe_result(result.raw()).err();
+                    write_plain_entry(&mut stdout, &result.transcript_entry())?;
+                    if let Some(warning) = observation_warning {
+                        write_plain_entry(
+                            &mut stdout,
+                            &TranscriptEntry::system(
+                                "Runtime observation",
+                                vec![format!(
+                                    "command succeeded, but the client could not record its structured state: {warning}"
+                                )],
+                            ),
+                        )?;
+                    }
+                    break result.closes();
+                }
+                None => return Err("session backend stopped before replying".to_owned()),
+            }
+        };
+        if closes {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn write_plain_entry(output: &mut impl Write, entry: &TranscriptEntry) -> Result<(), String> {
+    writeln!(output, "{}", entry.plain())
+        .and_then(|_| output.flush())
+        .map_err(|error| format!("cannot write plain transcript: {error}"))
 }
 
 async fn run_repl(
@@ -320,4 +464,35 @@ async fn run_repl(
         share.set_snapshot(app.plain_share_snapshot());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::{FrontendMode, frontend_mode, usage};
+
+    fn parse(args: &[&str], terminal_output: bool) -> Result<FrontendMode, String> {
+        frontend_mode(
+            args.iter().map(|argument| (*argument).to_owned()),
+            terminal_output,
+        )
+    }
+
+    #[test]
+    fn selects_exactly_one_frontend_before_starting_processes() {
+        assert_eq!(parse(&[], true), Ok(FrontendMode::Terminal));
+        assert_eq!(parse(&[], false), Ok(FrontendMode::Plain));
+        assert_eq!(parse(&["--plain"], true), Ok(FrontendMode::Plain));
+        assert_eq!(parse(&["--plain"], false), Ok(FrontendMode::Plain));
+        assert_eq!(parse(&["--help"], true), Ok(FrontendMode::Help));
+        assert_eq!(parse(&["-h"], false), Ok(FrontendMode::Help));
+    }
+
+    #[test]
+    fn refuses_ambiguous_or_unknown_options() {
+        assert!(parse(&["--plain", "--plain"], true).is_err());
+        assert!(parse(&["--plain", "--help"], true).is_err());
+        let error = parse(&["--future"], true).expect_err("unknown option");
+        assert!(error.contains("unknown option: --future"));
+        assert!(error.contains(usage()));
+    }
 }

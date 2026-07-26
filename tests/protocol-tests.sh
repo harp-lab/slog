@@ -6,8 +6,12 @@
 #
 #   - routing: path lines behave exactly as before; `(`-lines are commands
 #   - typed refusals: (refused <class> <generation> <detail>...) for the
-#     implemented classes parse / unknown-verb / reserved-verb
-#   - every reserved verb family answers reserved-verb (never unknown-verb)
+#     implemented classes parse / unknown-verb / reserved-verb plus Q1's
+#     query parse/bind/admission/pagination/state refusals
+#   - every still-reserved verb family answers reserved-verb (never unknown);
+#     N3-A's boundary family exercises live prepare/commit/abort instead
+#   - canonical Q1 payload admission, exact-VersionKey bind, row pagination,
+#     cancellation, stale generation, and non-mutating literal misses
 #   - TCP/stdin parity: one dispatch, two transports, byte-identical replies
 #     (the TCP (pending) heartbeat and (bye ...) handshake unchanged)
 #   - catalog record round-trip: structured records a client consumes with
@@ -67,9 +71,7 @@ if [ "$(grep -c '(refused ' out/proto-refuse.log)" -eq 5 ]; then ok "refuse-one-
 else bad "refuse-one-reply-per-line"; fi
 
 # --- 3. every reserved verb answers reserved-verb ----------------------------
-RESERVED=(prepare-boundary commit-boundary abort-boundary
-          query query-page query-cancel
-          watch unwatch subscribe
+RESERVED=(watch unwatch subscribe
           resume replay why-not-add debug-on debug-off)
 ARGS=(); for v in "${RESERVED[@]}"; do ARGS+=("($v x y)"); done
 racket tests/api/drive.rkt "${ARGS[@]}" > out/proto-reserved.log 2>&1
@@ -79,6 +81,249 @@ done
 if [ "$(grep -c '(refused reserved-verb ' out/proto-reserved.log)" -eq "${#RESERVED[@]}" ]; then
   ok "reserved-count-exact"; else bad "reserved-count-exact"; fi
 expect_not "reserved-never-unknown" '(refused unknown-verb' out/proto-reserved.log
+
+# --- 3a. N3-A transaction + N3-B durable boundary history -------------------
+# Prepare eagerly constructs an empty slot but keeps both its VersionKey and
+# latest binding private. Ordinary catalog access is refused under the lease;
+# commit publishes and advances generation. A successor can then be prepared
+# and aborted without changing the committed key. N3-B indexes the committed
+# boundary directly, retains it across abort/refusal, and attaches its key to
+# catalog and binding-history records.
+N3_DECL='(declare (qname "edge") (kind table) (arity 2) (type-key #f) (lat-spec #f) (shape "(declaration (qname \"edge\") table (fields int int))"))'
+N3_PREPARE_0="(prepare-boundary (generation 0) (boundary \"n3.b0\") (program \"n3.p0\") (declarations $N3_DECL) (memberships) (actions (create (qname \"edge\") (version-key \"n3.edge.0\") (predecessor #f) (type-key #f))))"
+N3_PREPARE_1="(prepare-boundary (generation 1) (boundary \"n3.b1\") (program \"n3.p1\") (declarations $N3_DECL) (memberships) (actions (create (qname \"edge\") (version-key \"n3.edge.1\") (predecessor \"n3.edge.0\") (type-key #f))))"
+N3_PREPARE_2="(prepare-boundary (generation 1) (boundary \"n3.b2\") (program \"n3.p2\") (declarations $N3_DECL) (memberships) (actions (create (qname \"edge\") (version-key \"n3.edge.2\") (predecessor \"n3.edge.0\") (type-key #f))))"
+N3_BAD="(prepare-boundary (generation 1) (boundary \"n3.bad\") (program \"n3.bad\") (declarations $N3_DECL) (memberships) (actions (create (qname \"edge\") (version-key \"n3.edge.bad\") (predecessor \"wrong\") (type-key #f))))"
+N3_DUPLICATE="(prepare-boundary (generation 1) (boundary \"n3.b0\") (program \"n3.retry\") (declarations $N3_DECL) (memberships) (actions (retain (qname \"edge\") (version-key \"n3.edge.0\") (predecessor #f) (type-key #f))))"
+QUERY_ROWS_SO=$(racket -e \
+  '(require (file "compiler/actions.rkt"))
+   (displayln
+    (action-so
+     (quote (add-batch edge -1
+                       ((1 2) (2 2) (3 4) (4 2) (5 7) (6 2))))))')
+racket tests/api/drive.rkt \
+  "$N3_PREPARE_0" \
+  '(catalog)' \
+  '(commit-boundary (generation 0) (boundary "n3.b0"))' \
+  '(catalog)' \
+  '(catalog boundaries)' \
+  '(catalog boundary "n3.b0")' \
+  "$N3_PREPARE_1" \
+  "$QUERY_ROWS_SO" \
+  '(catalog types)' \
+  '(abort-boundary (generation 1) (boundary "n3.b1"))' \
+  '(catalog)' \
+  '(catalog boundaries)' \
+  "$N3_BAD" \
+  "$N3_DUPLICATE" \
+  '(catalog boundary "missing")' \
+  '(catalog)' \
+  "$N3_PREPARE_2" \
+  "$QUERY_ROWS_SO" \
+  '(commit-boundary (generation 1) (boundary "n3.b2"))' \
+  '(catalog)' \
+  '(catalog boundaries)' \
+  '(catalog boundary "n3.b0")' \
+  '(catalog boundary "n3.b2")' \
+  > out/proto-n3-boundary.log 2>&1
+expect_rx "n3-prepare-eager" '\(boundary-prepared 0 \(boundary "n3\.b0"\).* \(created 1\)\)' out/proto-n3-boundary.log
+expect_rx "n3-private-admission" '\(refused boundary-admission 0 \(verb catalog\) \(boundary "n3\.b0"\)\)' out/proto-n3-boundary.log
+expect_rx "n3-commit-generation" '\(boundary-committed 1 \(boundary "n3\.b0"\) \(position 0\) \(created 1\)\)' out/proto-n3-boundary.log
+expect_rx "n3-commit-empty-slot" '\(catalog-rel \(name "edge"\).* \(version-key "n3\.edge\.0"\) \(boundary "n3\.b0"\).* \(size 0\)' out/proto-n3-boundary.log
+expect "n3-boundary-history" '(catalog-boundary (boundary "n3.b0") (program "n3.p0") (evaluation "runtime-evaluation") (position 0) (generation 1) (relations 1))' out/proto-n3-boundary.log
+expect_rx "n3-second-private-admission" '\(refused boundary-admission 1 \(verb catalog\) \(boundary "n3\.b1"\)\)' out/proto-n3-boundary.log
+expect "n3-private-slot-mutable" '(added edge 6)' out/proto-n3-boundary.log
+expect_rx "n3-abort" '\(boundary-aborted 1 \(boundary "n3\.b1"\).* \(discarded 1\)\)' out/proto-n3-boundary.log
+if [ "$(grep -cE '\(catalog-rel \(name "edge"\).*\(version-key "n3.edge.0"\).*\(size 0\)' out/proto-n3-boundary.log)" -eq 5 ]; then
+  ok "n3-abort-discards-private-content"; else bad "n3-abort-discards-private-content"; fi
+expect_not "n3-abort-hides-successor" '(version-key "n3.edge.1")' out/proto-n3-boundary.log
+expect_rx "n3-preflight-refusal" '\(refused boundary-binding 1 \(verb prepare-boundary\).*create predecessor does not match latest binding' out/proto-n3-boundary.log
+expect_rx "n3-duplicate-boundary-refusal" '\(refused boundary-plan 1 \(verb prepare-boundary\).*BoundaryKey is already committed: n3\.b0' out/proto-n3-boundary.log
+expect_rx "n3-unknown-boundary-refusal" '\(refused boundary-lookup 1 \(verb catalog\) \(boundary "missing"\)\)' out/proto-n3-boundary.log
+if [ "$(grep -cF '(catalog-boundary (boundary "n3.b0")' out/proto-n3-boundary.log)" -eq 3 ]; then
+  ok "n3-abort-preserves-history"; else bad "n3-abort-preserves-history"; fi
+expect "n3-successor-history" '(catalog-boundary (boundary "n3.b2") (program "n3.p2") (evaluation "runtime-evaluation") (position 1) (generation 2) (relations 1))' out/proto-n3-boundary.log
+expect_rx "n3-current-successor" '\(catalog-rel \(name "edge"\).*\(version-key "n3\.edge\.2"\) \(boundary "n3\.b2"\).*\(size 6\)' out/proto-n3-boundary.log
+expect_rx "n3-direct-historical-lookup" '\(catalog-rel \(name "edge"\).*\(version-key "n3\.edge\.0"\) \(boundary "n3\.b0"\).*\(size 0\)' out/proto-n3-boundary.log
+if [ "$(grep -c '(catalog-end ' out/proto-n3-boundary.log)" -eq 10 ]; then
+  ok "n3-refusal-leaves-no-lease"; else bad "n3-refusal-leaves-no-lease"; fi
+if racket tests/api/catalog-check.rkt rel=edge,table,2 \
+     < out/proto-n3-boundary.log; then
+  ok "n3-boundary-stream-round-trip"
+else
+  bad "n3-boundary-stream-round-trip"
+fi
+
+# --- 3a. N3-C durable type descriptors and lowest-free SIDs ----------------
+N3C_OLD_DECL='(declare (qname "old_const") (kind struct) (arity 2) (type-key "type:n3c:old") (lat-spec #f) (shape "(declaration old_const struct int)"))'
+N3C_OLD_0="(prepare-boundary (generation 0) (boundary \"n3c.old.0\") (program \"n3c.old.p0\") (declarations $N3C_OLD_DECL) (memberships) (actions (create (qname \"old_const\") (version-key \"n3c.old.v0\") (predecessor #f) (type-key \"type:n3c:old\"))))"
+N3C_OLD_1="(prepare-boundary (generation 1) (boundary \"n3c.old.1\") (program \"n3c.old.p1\") (declarations $N3C_OLD_DECL) (memberships) (actions (create (qname \"old_const\") (version-key \"n3c.old.v1\") (predecessor \"n3c.old.v0\") (type-key \"type:n3c:old\"))))"
+N3C_FRESH_DECL='(declare (qname "fresh_const") (kind struct) (arity 2) (type-key "type:n3c:fresh") (lat-spec #f) (shape "(declaration fresh_const struct int)"))'
+N3C_FRESH="(prepare-boundary (generation 2) (boundary \"n3c.fresh\") (program \"n3c.fresh.p\") (declarations $N3C_FRESH_DECL) (memberships) (actions (create (qname \"fresh_const\") (version-key \"n3c.fresh.v0\") (predecessor #f) (type-key \"type:n3c:fresh\"))))"
+N3C_ABORT_DECL='(declare (qname "abort_const") (kind struct) (arity 2) (type-key "type:n3c:abort") (lat-spec #f) (shape "(declaration abort_const struct int)"))'
+N3C_ABORT="(prepare-boundary (generation 3) (boundary \"n3c.abort\") (program \"n3c.abort.p\") (declarations $N3C_FRESH_DECL $N3C_ABORT_DECL) (memberships) (actions (retain (qname \"fresh_const\") (version-key \"n3c.fresh.v0\") (predecessor #f) (type-key \"type:n3c:fresh\")) (create (qname \"abort_const\") (version-key \"n3c.abort.v0\") (predecessor #f) (type-key \"type:n3c:abort\"))))"
+N3C_FINAL_DECL='(declare (qname "final_const") (kind struct) (arity 2) (type-key "type:n3c:final") (lat-spec #f) (shape "(declaration final_const struct int)"))'
+N3C_FINAL="(prepare-boundary (generation 3) (boundary \"n3c.final\") (program \"n3c.final.p\") (declarations $N3C_FRESH_DECL $N3C_FINAL_DECL) (memberships) (actions (retain (qname \"fresh_const\") (version-key \"n3c.fresh.v0\") (predecessor #f) (type-key \"type:n3c:fresh\")) (create (qname \"final_const\") (version-key \"n3c.final.v0\") (predecessor #f) (type-key \"type:n3c:final\"))))"
+N3C_RENAME_SO=$(racket -e \
+  '(require (file "compiler/actions.rkt"))
+   (displayln (action-so (quote (rename-rel old_const renamed_const))))')
+N3C_DROP_SO=$(racket -e \
+  '(require (file "compiler/actions.rkt"))
+   (displayln (action-so (quote (drop-rel renamed_const))))')
+racket tests/api/drive.rkt \
+  "$N3C_OLD_0" \
+  '(commit-boundary (generation 0) (boundary "n3c.old.0"))' \
+  '(catalog types)' \
+  "$N3C_OLD_1" \
+  '(commit-boundary (generation 1) (boundary "n3c.old.1"))' \
+  '(catalog types)' \
+  "$N3C_RENAME_SO" \
+  '(catalog types)' \
+  "$N3C_DROP_SO" \
+  '(catalog types)' \
+  "$N3C_FRESH" \
+  '(commit-boundary (generation 2) (boundary "n3c.fresh"))' \
+  '(catalog types)' \
+  "$N3C_ABORT" \
+  '(abort-boundary (generation 3) (boundary "n3c.abort"))' \
+  '(catalog types)' \
+  "$N3C_FINAL" \
+  '(commit-boundary (generation 3) (boundary "n3c.final"))' \
+  '(catalog types)' \
+  > out/proto-n3c-types.log 2>&1
+expect "n3c-initial-descriptor" \
+  '(catalog-type (sid 1) (name "old_const") (arity 2) (type-key "type:n3c:old"))' \
+  out/proto-n3c-types.log
+expect "n3c-rename-preserves-descriptor" \
+  '(catalog-type (sid 1) (name "renamed_const") (arity 2) (type-key "type:n3c:old"))' \
+  out/proto-n3c-types.log
+expect "n3c-drop-retains-unnamed-descriptor" \
+  '(catalog-type (sid 1) (name #f) (arity 2) (type-key "type:n3c:old"))' \
+  out/proto-n3c-types.log
+expect "n3c-drop-redeclare-fresh-sid" \
+  '(catalog-type (sid 2) (name "fresh_const") (arity 2) (type-key "type:n3c:fresh"))' \
+  out/proto-n3c-types.log
+expect_not "n3c-abort-hides-typekey" 'type:n3c:abort' out/proto-n3c-types.log
+expect "n3c-abort-burns-sid" \
+  '(catalog-type (sid 4) (name "final_const") (arity 2) (type-key "type:n3c:final"))' \
+  out/proto-n3c-types.log
+if racket tests/api/catalog-check.rkt types'>='3 \
+     < out/proto-n3c-types.log; then
+  ok "n3c-type-stream-round-trip"
+else
+  bad "n3c-type-stream-round-trip"
+fi
+
+# --- 3b. Q1 canonical payload dispatcher ------------------------------------
+# The canonical payload now resolves through a real committed BoundaryKey.
+# QName selects one binding within that immutable snapshot and its supplied
+# VersionKey must match; neither an unknown key nor a cross-boundary key can
+# fall back to the latest name map.
+QUERY_PREPARE="(prepare-boundary (generation 0) (boundary \"query.boundary\") (program \"query.program\") (declarations $N3_DECL) (memberships) (actions (create (qname \"edge\") (version-key \"protocol.edge\") (predecessor #f) (type-key #f))))"
+QUERY_SETUP=(
+  "$QUERY_PREPARE"
+  "$QUERY_ROWS_SO"
+  '(commit-boundary (generation 0) (boundary "query.boundary"))'
+)
+QUERY_ROWS_PLAN='(query-plan (abi 1) (at (boundary "query.boundary") (generation 1)) (relations (rel 0 (binding "edge" "protocol.edge" 6) (relation 2 (0 1)))) (registers 3) (preloads) (literals (literal (r 1) integer "2")) (pre) (driver (scan-full (rel 0) (0 1) (r 0) (r 2))) (body (eq (r 2) (r 1))) (project (r 0)) (mode rows))'
+QUERY_MISS_PLAN='(query-plan (abi 1) (at (boundary "query.boundary") (generation 1)) (relations (rel 0 (binding "edge" "protocol.edge" 6) (relation 2 (0 1)))) (registers 3) (preloads) (literals (literal (r 1) string "not-in-heap")) (pre) (driver (scan-full (rel 0) (0 1) (r 0) (r 2))) (body (eq (r 2) (r 1))) (project (r 0)) (mode rows))'
+QUERY_COUNT_PLAN="${QUERY_ROWS_PLAN/(project (r 0)) (mode rows)/(project) (mode count)}"
+QUERY_EXISTS_PLAN="${QUERY_ROWS_PLAN/(project (r 0)) (mode rows)/(project) (mode exists)}"
+QUERY_BUILDER=(
+  '(scc-begin qs0 (generation 1) (kernel-plan (sidecar "tests/data/t0-normal-set.plan")))'
+  '(scc-seal qs0 (generation 1))'
+  '(stratum-begin qst0 (generation 1) (entry fresh))'
+  '(stratum-add-scc qst0 qs0 (generation 1))'
+  '(stratum-seal qst0 (generation 1))'
+  '(continue)'
+)
+
+if racket tests/api/drive.rkt "${QUERY_SETUP[@]}" "${QUERY_BUILDER[@]}" \
+  "(query q1 $QUERY_ROWS_PLAN (page 2))" \
+  '(query-page q1 (page 2))' \
+  '(query-page q1 (page 2))' \
+  '(query-page q1 (page 2))' \
+  "(query q2 $QUERY_ROWS_PLAN (page 1))" \
+  "(query q3 $QUERY_ROWS_PLAN (page 1))" \
+  '(continue)' \
+  "$QUERY_ROWS_SO" \
+  '(catalog)' \
+  '(query-cancel q2)' \
+  '(query-page q2 (page 1))' \
+  "(query q3 $QUERY_MISS_PLAN (page 5))" \
+  "(query q4 $QUERY_ROWS_PLAN (page 10))" \
+  "(query qcount $QUERY_COUNT_PLAN (page 1))" \
+  "(query qexists $QUERY_EXISTS_PLAN (page 1))" \
+  "(query stale ${QUERY_ROWS_PLAN/(generation 1)/(generation 2)} (page 1))" \
+  "(query wrong ${QUERY_ROWS_PLAN/protocol.edge/protocol.wrong} (page 1))" \
+  "(query unknown ${QUERY_ROWS_PLAN/query.boundary/query.missing} (page 1))" \
+  '(query malformed (not-a-query-plan) (page 1))' \
+  "(query badpage $QUERY_ROWS_PLAN (page 0))" \
+  '(query-cancel absent)' \
+  "(query q5 $QUERY_ROWS_PLAN (page 1))" \
+  > out/proto-query.log 2>&1; then
+  ok "query-eof-releases-lease"
+else
+  bad "query-eof-releases-lease"
+fi
+
+if racket tests/api/query-check.rkt < out/proto-query.log; then
+  ok "query-structured-pagination"; else bad "query-structured-pagination"; fi
+expect_rx "query-active-admission" \
+  '\(refused query-admission 1 \(verb query\) \(query q3\) \(active q2\)\)' \
+  out/proto-query.log
+expect_rx "query-blocks-continue-mutation" \
+  '\(refused query-admission 1 \(verb continue\) \(active q2\)\)' \
+  out/proto-query.log
+expect_rx "query-blocks-path-mutation" \
+  '\(refused query-admission 1 \(verb plugin-path\) \(active q2\)\)' \
+  out/proto-query.log
+expect_rx "query-blocks-command-interleave" \
+  '\(refused query-admission 1 \(verb catalog\) \(active q2\)\)' \
+  out/proto-query.log
+if [ "$(grep -cF '(refused query-state ' out/proto-query.log)" -eq 3 ]; then
+  ok "query-terminal-state-count"; else bad "query-terminal-state-count"; fi
+expect_rx "query-stale-generation" \
+  '\(refused stale-generation 1 \(verb query\) \(expected 2\)\)' \
+  out/proto-query.log
+expect_rx "query-exact-version-binding" \
+  '\(refused query-binding 1 \(verb query\) \(query wrong\)' \
+  out/proto-query.log
+expect_rx "query-boundary-binding" \
+  '\(refused query-binding 1 \(verb query\) \(query unknown\).*BoundaryKey is not committed' \
+  out/proto-query.log
+expect_rx "query-payload-parse" \
+  '\(refused query-parse 1 \(verb query\) \(query malformed\)' \
+  out/proto-query.log
+expect_rx "query-page-policy" \
+  '\(refused query-pagination 1 \(verb query\) \(page 0\)' \
+  out/proto-query.log
+expect_rx "query-eof-page-before-release" \
+  '\(query-end q5 page \(rows 1\) \(matched 1\)\)' \
+  out/proto-query.log
+expect_not "query-no-reserved-fallback" '(family query)' out/proto-query.log
+
+# The active record stream crosses the same byte-level dispatcher on stdin and
+# TCP, not merely the query refusal branch exercised by the broader parity
+# script below.
+QUERY_PARITY=(
+  "${QUERY_SETUP[@]}"
+  "${QUERY_BUILDER[@]}"
+  "(query qp $QUERY_ROWS_PLAN (page 10))"
+)
+racket tests/api/drive.rkt     "${QUERY_PARITY[@]}" > out/proto-query-stdin.log 2>&1
+racket tests/api/tcp-drive.rkt "${QUERY_PARITY[@]}" > out/proto-query-tcp.log   2>&1
+grep -v -e '^(fixpoint ' out/proto-query-stdin.log \
+  > out/proto-query-stdin-normal.log
+grep -v -e '^(pending)$' -e '^(bye ' out/proto-query-tcp.log \
+  | grep -v -e '^(fixpoint ' > out/proto-query-tcp-normal.log
+if diff -u out/proto-query-stdin-normal.log out/proto-query-tcp-normal.log \
+     > out/proto-query-parity.diff; then
+  ok "query-tcp-stdin-stream-parity"
+else
+  cat out/proto-query-parity.diff
+  bad "query-tcp-stdin-stream-parity"
+fi
 
 # --- 4. (continue)/(continue-boundary): first verbs, byte-identical replies --
 racket tests/api/drive.rkt "(continue)" > out/proto-idle.log 2>&1

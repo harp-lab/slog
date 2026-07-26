@@ -204,7 +204,8 @@ fn classify(text: &str) -> CommandKind {
         | "has" => CommandKind::Observation,
         "run" | "add" | "del" | "rename" | "drop" | "save" => CommandKind::Mutation,
         "help" | "ping" | "status" | "quit" | "exit" | "library" | "open" | "use" | "current"
-        | "database" | "resident" | "sessions" | "mode" | "schema" | "pipeline" => {
+        | "database" | "resident" | "sessions" | "mode" | "schema" | "pipeline" | "expand"
+        | "collapse" | "card" | "search" | "search-next" | "search-previous" | "search-clear" => {
             CommandKind::Meta
         }
         _ => CommandKind::Legacy,
@@ -219,6 +220,9 @@ mod tests {
     fn classifies_the_five_shell_registers_without_parsing_slog() {
         let cases = [
             (":status", CommandKind::Meta),
+            ("expand it.change", CommandKind::Meta),
+            ("card it.change", CommandKind::Meta),
+            ("search edge", CommandKind::Meta),
             ("?(edge X _)", CommandKind::Observation),
             ("!run s45", CommandKind::Mutation),
             ("rule (edge X Y) --> (path X Y)", CommandKind::Source),

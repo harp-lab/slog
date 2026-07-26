@@ -99,9 +99,11 @@ and presentation model; do not weaken the server boundary to obtain it.
 
 The supported release targets are modern Linux and macOS terminals, locally
 or through SSH. WSL, VMs, and other VT-compatible environments may work but
-are not initial release gates. Narrow terminals omit the sidebar. A later
-plain/non-TTY frontend should consume the same structured responses; terminal
-capability must never affect Slog semantics.
+are not initial release gates. Narrow terminals omit the sidebar. The shipped
+`--plain` frontend consumes the same structured responses without initializing
+Ratatui, raw mode, mouse capture, or the co-author listener; terminal
+capability does not affect Slog semantics. Non-TTY stdout selects this path
+automatically; `--plain` is the explicit form.
 
 ## 4. Private local protocol
 
@@ -166,17 +168,21 @@ Summary observations are best effort and can report unavailable/unknown; a
 failed post-commit observation must never turn a successful session operation
 into a command failure. A deterministic server-contract transcript harness
 round-trips every result through the actual JSON framing and pins open,
-add/delete, rename/drop, and shutdown against a golden. It is preparation for,
-not a substitute for, the Rust executable's future `--plain` frontend.
+add/delete, rename/drop, and shutdown against a golden. The Rust executable's
+`--plain` path now drives that same sequence over the real loopback protocol
+and byte-compares its stdout with the golden. Its `CommandResult` projection
+is also the canvas's result decoder, while display-only canvas state stays out
+of the compiler response.
 
-The client join should therefore begin narrowly: make Rust `--plain` render
-these framed results and pass the same semantic-session golden, then let the
-canvas consume that shared client model. Display-only canvas state does not
-belong in the compiler response. `stage`/`flush` and `inject` remain deferred
-until their ownership and anchoring rules are explicit: whether a staged
-buffer follows or pins the selected session, what switching or failure does to
-it, whether a flush is atomic, and which BoundaryKey an anchored operation
-names. A temporary update counter must not masquerade as that boundary.
+Plain mode is deliberately line-oriented: one input line is one command, with
+`run PATH` covering multiline Slog. EOF performs graceful shutdown; a response
+with `close` stops consumption; command refusals remain transcript entries,
+while transport loss is a failing process exit. `stage`/`flush` and `inject`
+remain deferred until their ownership and anchoring rules are explicit:
+whether a staged buffer follows or pins the selected session, what switching
+or failure does to it, whether a flush is atomic, and which BoundaryKey an
+anchored operation names. A temporary update counter must not masquerade as
+that boundary.
 
 ### 4.1 Trusted-local co-author protocol
 
@@ -281,10 +287,67 @@ Keep these dependency rules:
 6. only the main loop combines terminal events, backend events, effects, and
    redraws.
 
-Future `present` and command-language modules should produce typed trees and
-command ASTs before adding rich schema/value/proof widgets. Gestures must
-produce the same command AST as typed input so there remains one semantic
-path.
+The shipped `present` module produces budgeted typed trees before Ratatui sees
+them. The first R1 adapter maps bounded result lines plus structured semantic
+change records into the live canvas; independent depth, node, item, and string
+budgets leave expandable markers. Gestures and typed `expand`/`collapse`
+commands use the same expansion paths, so there remains one semantic path. The
+selected semantic node may also publish a contextual card: `o` and typed or
+co-author `card POSITION` use the same client-owned reducer, and the card lists
+canonical actions including `card close`. Requested edits remain explicitly
+distinct from settled relation-size observations; neither is presented as a
+tuple diff or provenance proof.
+
+The terminal-independent `completion` model now owns token replacement,
+candidate ordering, and selection. Tab completes the shipped verb grammar,
+mode arguments, database names learned from structured resident/library
+records, and valid positions in the live canvas. Unique candidates apply
+directly; ambiguous candidates render in a bounded menu. It deliberately does
+not derive relation or namespace names from runtime size observations or saved
+relation directories. Those candidates require the selected boundary catalog
+specified by repl.md §3. Rich schema/value/proof adapters, catalog and
+embedded-Slog completion remain later slices.
+
+Canvas search also stays inside `present`: a case-insensitive query is matched
+against the currently rendered lines after all depth, node, item, and string
+budgets. `/` opens an incremental preview, Enter publishes `search TEXT`, Esc
+restores the prior selection/search, and n/N publish
+`search-next`/`search-previous`; typed and co-author forms use the same reducer.
+Collapsed descendants are not searched until their canonical expand action
+makes them visible. Search changes no compiler result or plain projection.
+
+Collection-item truncation is now a real client-buffered page boundary rather
+than an expand-to-the-rest affordance. Each marker reports its exact remaining
+or prior item count and current/total pages. Enter emits the absolute
+`page POSITION NUMBER` command; typed and co-author forms use the same
+client-owned reducer, and completion offers only visible paged collections and
+in-range page numbers. Cards close when their node leaves the current page,
+and search sees only that page.
+
+This does not claim the Q1 continuation protocol. It only pages nodes already
+present in the bounded compiler response—such as `show REL all` under its
+existing 200-row safety cap, help lines, and structured relation observations.
+Default `show REL` retains its honest `show REL all` continuation. Daemon-side
+`query`/`query-page`/`query-cancel` now admit canonical exact-VersionKey
+payloads, but `more` and cancellation remain unconnected here until the
+friendly R2 parser/register is built over N3-B's truthful boundary identity.
+
+The first schema-side adapter now consumes N3-B's structured current-boundary
+catalog. `tables` retains a JSON-safe `relations` observation for the current
+live session: name, daemon-reported kind and arity, schema detail, row count,
+exact VersionKey, and selected BoundaryKey, plus filter/scope totals.
+`present` maps that additive field to a budgeted relation tree and cards
+offering `count`, `show`, and `state`; cards display the real identity pair
+and say explicitly when a legacy environment event has left no committed
+boundary selected. The completion inventory still waits for N4's persistent
+historical/additive catalog. Plain mode continues to render only the existing
+`lines`.
+
+Structured tuple/value rendering remains deferred until the client can retain
+evaluation, boundary-naming, and TypeDescriptor/value-handle context. Proof
+trees remain downstream of provenance support. This avoids freezing an
+accidental JSON encoding of daemon words or treating current names as durable
+identity.
 
 ## 6. Build, demos, and gates
 
@@ -306,6 +369,8 @@ The minimum gates for changes are:
 
 - Rust unit tests for editor/state/protocol helpers and Ratatui `TestBackend`
   rendering tests;
+- the real Rust `--plain` executable driven through the semantic-session
+  command stream, byte-identical to the server-contract golden;
 - Racket frame, authentication/dispatch, and session tests;
 - a PTY smoke test that boots the alternate screen, runs `:status`, starts the
   daemon with `pipeline`, and restores the terminal after `:quit`; and

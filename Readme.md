@@ -78,7 +78,19 @@ $ ./slog
 This builds the native terminal frontend, copies it to the repository root,
 and opens the interactive workbench. Type `:help` for the current server
 commands, `library` to browse saved databases, or `:share` for trusted-local
-co-author connection details.
+co-author connection details. Tab completes commands and the structured
+database/canvas choices currently known to the client. In a live result,
+press `/` to search visible canvas lines and `n`/`N` to move between matches.
+`tables` results also expose navigable live-relation details and contextual
+`count`/`show`/`state` actions. Buffered collections stay one page wide;
+select a continuation marker or type `page POSITION NUMBER` to change pages.
+
+For a stable non-TTY transcript, pipe one command per line through the same
+client:
+
+```console
+$ printf ':status\n:quit\n' | ./slog --plain
+```
 
 For a one-shot batch run outside the REPL, use:
 

@@ -9,8 +9,8 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 /// The daemon's fact-update counter. This is intentionally not named a
-/// boundary: rename/drop do not advance it, and the future N2/N3 BoundaryKey
-/// is the durable identity that read-only queries and previews must anchor to.
+/// boundary: rename/drop do not advance it, while N3's BoundaryKey is the
+/// durable environment identity that read-only queries and previews use.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct UpdateRevision(pub u64);
 
@@ -106,8 +106,8 @@ pub struct RuntimeSessionState {
     pub update_revision: Option<UpdateRevision>,
     pub counts: CountsValidity,
     /// Sizes learned from structured snapshots/deltas. This is a cache, not
-    /// the relation catalog; relation and version identity will come from the
-    /// N2/N3 catalog contract.
+    /// the relation catalog; the tables observation carries N3's relation and
+    /// boundary identity separately.
     pub observed_relation_sizes: BTreeMap<String, u64>,
     pub sizes_complete: bool,
     pub last_change: Option<SemanticChange>,

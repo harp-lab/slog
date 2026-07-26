@@ -40,6 +40,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -135,6 +136,24 @@ private:
   // record rendered by protocol.h.
   bool command_protocol_spoken = false;
   std::vector<std::pair<std::string, u64>> pending_bind_versions;
+  // N3.1 execution journal. Database owns the private relation/catalog
+  // overlay; Daemon owns the pipeline cursor that plugins extend while that
+  // overlay is active, so abort can remove exactly the unpublished suffix.
+  struct BoundaryRunSnapshot
+  {
+    size_t pipeline_size = 0;
+    size_t next_unrun = 0;
+    bool needs_reload = false;
+  };
+  std::unique_ptr<BoundaryRunSnapshot> boundary_run;
+  struct DeferredStratumStats
+  {
+    u32 scc;
+    std::string name;
+    u32 iterations;
+    double ms;
+  };
+  std::vector<DeferredStratumStats> boundary_stats;
 
   static u64 envU64(const char* name, u64 fallback)
   {
@@ -367,6 +386,121 @@ public:
       std::string("(verb ") + verb + ") (expected "
       + std::to_string(expected) + ")");
     return false;
+  }
+
+  bool boundaryPrepared() const { return database->boundaryPrepared(); }
+  const std::string& preparedBoundaryKey() const
+  { return database->preparedBoundaryKey(); }
+
+  BoundaryAdmission prepareBoundary(
+      const std::string& boundary_key,
+      const std::string& program_key,
+      const std::vector<BoundaryCatalogDecl>& declarations,
+      const std::set<std::pair<std::string, std::string>>& memberships,
+      const std::vector<BoundaryRelationAction>& actions)
+  {
+    if (database->isSuspended())
+      return {false, "boundary-state",
+              "cannot prepare while a stratum is suspended", 0, 0};
+    if (transient_run != nullptr || next_unrun != pipeline.size()
+        || next_push_transient || next_push_maintenance
+        || pending_bind_pos >= 0 || !pending_bind_versions.empty())
+      return {false, "boundary-state",
+              "cannot prepare with pending pipeline execution or entry state",
+              0, 0};
+    BoundaryAdmission result = database->prepareBoundary(
+      boundary_key, program_key, declarations, memberships, actions);
+    if (result.ok)
+    {
+      boundary_run = std::make_unique<BoundaryRunSnapshot>();
+      boundary_run->pipeline_size = pipeline.size();
+      boundary_run->next_unrun = next_unrun;
+      boundary_run->needs_reload = needs_reload;
+      boundary_stats.clear();
+    }
+    return result;
+  }
+
+  BoundaryAdmission commitBoundary(const std::string& boundary_key)
+  {
+    if (!database->boundaryPrepared() || !boundary_run)
+      return {false, "boundary-state", "no boundary is prepared", 0, 0};
+    if (database->preparedBoundaryKey() != boundary_key)
+      return {false, "boundary-state", "BoundaryKey does not match prepared boundary",
+              0, 0};
+    if (database->isSuspended() || transient_run != nullptr
+        || next_unrun != pipeline.size())
+      return {false, "boundary-state",
+              "prepared boundary has not reached terminal fixpoint", 0, 0};
+
+    BoundaryAdmission result = database->commitPreparedBoundary();
+    if (!result.ok) return result;
+
+    // Only a committed replacement may husk an older executable incarnation.
+    // Deferring this legacy memory optimization keeps abort able to restore
+    // the exact pre-prepare pipeline.
+    for (size_t fresh = boundary_run->pipeline_size;
+         fresh < pipeline.size(); ++fresh)
+      for (size_t old = 0; old < boundary_run->pipeline_size; ++old)
+        if (pipeline[old]->name == pipeline[fresh]->name)
+          pipeline[old]->clearTasksForHusk();
+
+    boundary_run.reset();
+    for (const DeferredStratumStats& stat : boundary_stats)
+      database->publishStratumStats(
+        stat.scc, stat.name, stat.iterations, stat.ms);
+    boundary_stats.clear();
+    return result;
+  }
+
+  BoundaryAdmission abortBoundary(const std::string& boundary_key)
+  {
+    if (!database->boundaryPrepared() || !boundary_run)
+      return {false, "boundary-state", "no boundary is prepared", 0, 0};
+    if (database->preparedBoundaryKey() != boundary_key)
+      return {false, "boundary-state", "BoundaryKey does not match prepared boundary",
+              0, 0};
+
+    // A mid-read pause has live continuation state.  Finish just that
+    // iteration without memory/time limits, park at its coherent boundary,
+    // then discard.  No successor/public relation can have been a write
+    // target: prepare bound every declared write to a private create slot.
+    if (database->isSuspended())
+    {
+      Stratum* current =
+        const_cast<Stratum*>(database->suspendedStratum());
+      if (database->suspendPosition() == RUN_MID_READ)
+      {
+        RunBudget settle;
+        settle.max_ms = UINT64_MAX;
+        settle.slice_ms = UINT64_MAX;
+        settle.mem_bytes = UINT64_MAX;
+        settle.stop_at_boundary = true;
+        const RunStatus status =
+          database->continueStratum(current, settle, false, true);
+        if (status.fixpoint)
+        {
+          if (next_unrun < pipeline.size()
+              && pipeline[next_unrun] == current)
+            ++next_unrun;
+          needs_reload = true;
+        }
+      }
+      if (!database->abandonSuspendedAtBoundary())
+        return {false, "boundary-state",
+                "could not settle the suspended stratum for abort", 0, 0};
+    }
+
+    for (size_t i = boundary_run->pipeline_size; i < pipeline.size(); ++i)
+      delete pipeline[i];
+    pipeline.resize(boundary_run->pipeline_size);
+    next_unrun = boundary_run->next_unrun;
+    needs_reload = boundary_run->needs_reload;
+    database->discardPendingStratumStats();
+    boundary_stats.clear();
+    BoundaryAdmission result = database->abortPreparedBoundary();
+    boundary_run.reset();
+    return result;
   }
 
   // While a stratum is suspended (docs/pausing.md §4), any action that would
@@ -1137,9 +1271,10 @@ public:
     // pausing.md §12 bind()-reuse seam (no pipeline growth at all) stays
     // parked unless task re-construction ever shows up in profiles --
     // the reload, not registration, dominates re-entry (B5's target).
-    for (size_t i = 0; i < next_unrun && i < pipeline.size(); ++i)
-      if (pipeline[i]->name == s->name)
-        pipeline[i]->clearTasksForHusk();
+    if (!database->boundaryPrepared())
+      for (size_t i = 0; i < next_unrun && i < pipeline.size(); ++i)
+        if (pipeline[i]->name == s->name)
+          pipeline[i]->clearTasksForHusk();
     s->semantic_instance = !next_push_transient && !next_push_maintenance;
     // Count/recount incarnations fold sidecars without touching membership:
     // rank marking must neither stamp nor invalidate under them (M7).
@@ -1417,8 +1552,12 @@ public:
         // runtime statistics (docs/stats.md): one $stat_fixpoint row and this
         // stratum's accumulated $stat_fires rows, materialized immediately so
         // output actions after the final stratum see them
-        database->publishStratumStats(s->scc_id, s->name, st.iteration,
-                                      st.ms_total);
+        if (database->boundaryPrepared())
+          boundary_stats.push_back(
+            {s->scc_id, s->name, st.iteration, st.ms_total});
+        else
+          database->publishStratumStats(s->scc_id, s->name, st.iteration,
+                                        st.ms_total);
       }
       std::snprintf(buf, sizeof(buf), "(fixpoint %u \"%s\" %u %.3f)",
                     s->scc_id, s->name.c_str(), st.iteration, st.ms_total);

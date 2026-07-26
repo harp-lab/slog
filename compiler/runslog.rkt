@@ -202,19 +202,7 @@
 ;; each already-bound written name to a new physical version -- before the
 ;; segment's strata (or frozen imports) bind.
 (define (segment-write-set strata frozen-dirs)
-  (define names (make-hash))
-  (for ([sb (in-list strata)])
-    (for ([r (in-list (stratum-meta-dynamic-rels (sbuild-hash sb)))])
-      (hash-set! names r #t)))
-  ;; greedy (.+) with an anchored tail splits on the LAST .arity., like the
-  ;; daemon and db-manifest-from-name above
-  (for ([dir (in-list frozen-dirs)])
-    (when (directory-exists? dir)
-      (for ([p (in-list (directory-list dir))])
-        (define m (regexp-match #px"^(?:table|struct|lat)\\.(.+)\\.arity\\.[0-9]+"
-                                (path->string p)))
-        (when m (hash-set! names (string->symbol (cadr m)) #t)))))
-  (sort (hash-keys names) symbol<?))
+  (compiled-strata-write-set strata frozen-dirs))
 
 (define (slog-run-file slog-path
                        [db-name #f]
@@ -596,7 +584,9 @@
     (let run-groups ([gs groups] [remaining strata] [i 0])
       (match gs
         ['() (void)]
-        [(cons (cons n g-frozen) more)
+        [(cons (? compile-group? group) more)
+         (define n (compile-group-stratum-count group))
+         (define g-frozen (compile-group-frozen-dirs group))
          (define g-strata (take remaining n))
          (begin-group! g-strata g-frozen (zero? i))
          (for ([sb (in-list g-strata)] [gi (in-naturals i)])

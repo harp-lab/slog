@@ -5,7 +5,10 @@
 //! become coupled to Ratatui or the event loop.
 
 pub mod command;
+pub mod completion;
 pub mod operation;
+pub mod present;
+pub mod response;
 pub mod runtime;
 pub mod transcript;
 pub mod workspace;

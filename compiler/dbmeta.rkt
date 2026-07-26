@@ -71,6 +71,7 @@
 
 (require "tools.rkt")            ; compiler-sources-fingerprint, call-with-atomic-output
 (require "params.rkt")           ; semijoin-filters-enabled (result-affecting)
+(require "catalog.rkt")          ; persisted N2 BoundaryPlan validation
 (require sha)
 (require racket/hash)
 
@@ -343,7 +344,10 @@
 ;; attached to an existing layer -- same spellings, same applier, same
 ;; digest core):
 ;;   (slog-recipe
-;;     (open DB) | (run PROG)
+;;     (open DB)
+;;     (run PROG)
+;;     (run PROG (version-events TABLE ...)
+;;               (boundary-plans PLAN ...))  ; N2 self-auditing form
 ;;     (import-delta DIR ((X Z) ...))        ; DIR may be (delta k) post-
 ;;                                           ;   externalisation (0.C5)
 ;;     (link DB ((X Z) ...))                 ; reference, never copied (0.D5)
@@ -362,16 +366,23 @@
 ;; (opening a db or running a segment inside an ancestor's edit appendix
 ;; makes no sense -- those are layer-level recipe steps).
 (define (recipe-step? st)
+  (define (version-table? table)
+    (and (list? table)
+         (for/and ([entry (in-list table)])
+           (match entry
+             [`(,(? symbol?) ,(? string?)) #t]
+             [_ #f]))))
   (match st
     [`(open ,(? string?)) #t]
     [`(run ,_) #t]
+    [`(run ,_
+           (version-events ,tables ...)
+           (boundary-plans ,plans ...))
+     (and (= (length tables) (length plans))
+          (andmap version-table? tables)
+          (andmap boundary-plan-datum? plans))]
     [`(run ,_ (version-events ,tables ...))
-     (for/and ([table (in-list tables)])
-       (and (list? table)
-            (for/and ([entry (in-list table)])
-              (match entry
-                [`(,(? symbol?) ,(? string?)) #t]
-                [_ #f]))))]
+     (andmap version-table? tables)]
     [_ (edit-step? st)]))
 
 (define (edit-step? st)

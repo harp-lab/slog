@@ -1,8 +1,14 @@
 use crate::backend::BackendEvent;
 use crate::command::ShellCommand;
+use crate::completion::{CompletionInventory, CompletionMenu, complete};
 use crate::editor::Editor;
 use crate::library::{DatabaseSummary, LibraryView};
 use crate::operation::OperationTable;
+use crate::present::{
+    ExpansionAction, PresentationCanvas, PresentationCard, PresentationSearchSnapshot,
+    PresentationSearchSummary,
+};
+use crate::response::CommandResult;
 use crate::runtime::RuntimeLedger;
 pub use crate::transcript::{EntryKind, SharedAction, TranscriptEntry};
 use crate::workspace::Workspace;
@@ -10,6 +16,7 @@ use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, ModifierKeyCode, MouseButton, MouseEvent,
     MouseEventKind,
 };
+use std::collections::BTreeSet;
 
 #[derive(Clone, Debug, serde::Deserialize)]
 pub struct SessionSummary {
@@ -18,6 +25,12 @@ pub struct SessionSummary {
     pub current: bool,
     pub mode: String,
     pub changed: bool,
+}
+
+#[derive(Debug)]
+struct CanvasSearchDraft {
+    editor: Editor,
+    snapshot: PresentationSearchSnapshot,
 }
 
 #[derive(Debug)]
@@ -31,6 +44,8 @@ pub enum Effect {
 #[derive(Debug)]
 pub struct App {
     pub editor: Editor,
+    completion: Option<CompletionMenu>,
+    completion_databases: BTreeSet<String>,
     pub transcript: Vec<TranscriptEntry>,
     /// In-flight UI workflows are rendered after the durable transcript but
     /// are not part of it until the backend commits a response.
@@ -39,6 +54,11 @@ pub struct App {
     /// the newest output.
     pub transcript_scroll: u16,
     pub library: Option<LibraryView>,
+    /// The newest successful result remains a live, client-owned canvas.
+    /// Older result entries retain their last rendered lines in the transcript.
+    pub canvas: Option<PresentationCanvas>,
+    canvas_entry: Option<usize>,
+    canvas_search: Option<CanvasSearchDraft>,
     pub current_database: Option<String>,
     pub sessions: Vec<SessionSummary>,
     /// Structured, best-effort projections of semantic server results. This
@@ -64,6 +84,8 @@ impl App {
     pub fn new() -> Self {
         Self {
             editor: Editor::default(),
+            completion: None,
+            completion_databases: BTreeSet::new(),
             transcript: vec![TranscriptEntry::system(
                 "Connected",
                 vec![
@@ -74,6 +96,9 @@ impl App {
             operations: OperationTable::default(),
             transcript_scroll: 0,
             library: None,
+            canvas: None,
+            canvas_entry: None,
+            canvas_search: None,
             current_database: None,
             sessions: Vec::new(),
             runtime: RuntimeLedger::default(),
@@ -110,7 +135,13 @@ impl App {
                 self.on_key(key)
             }
             Event::Paste(text) if self.library.is_none() => {
-                self.editor.insert(&text);
+                self.completion = None;
+                if let Some(search) = self.canvas_search.as_mut() {
+                    search.editor.insert(&text.replace(['\r', '\n'], " "));
+                    self.update_canvas_search_preview();
+                } else {
+                    self.editor.insert(&text);
+                }
                 Effect::None
             }
             Event::Mouse(mouse) => self.on_mouse(mouse),
@@ -142,6 +173,8 @@ impl App {
                 self.should_quit = true;
             }
             BackendEvent::Response { command, response } => {
+                self.completion = None;
+                self.cancel_canvas_search();
                 let workflow = self.finish_operation(&command);
                 if !response.ok {
                     let error = response.error.unwrap_or(crate::protocol::ServerError {
@@ -152,42 +185,29 @@ impl App {
                         .push(TranscriptEntry::error(error.kind, vec![error.message]));
                     return;
                 }
-                let result = response.result.unwrap_or_default();
-                let observation_warning = self.runtime.observe_result(&result).err();
-                self.update_session_context(&result);
+                let result = CommandResult::from_value(response.result.unwrap_or_default());
+                let observation_warning = self.runtime.observe_result(result.raw()).err();
+                self.update_session_context(result.raw());
                 let title = workflow
                     .and_then(|workflow| workflow.completed_label())
-                    .or_else(|| {
-                        result
-                            .get("title")
-                            .and_then(|value| value.as_str())
-                            .map(str::to_owned)
-                    })
-                    .unwrap_or_else(|| "Result".to_owned());
-                let lines = result
-                    .get("lines")
-                    .and_then(|value| value.as_array())
-                    .map(|values| {
-                        values
-                            .iter()
-                            .filter_map(|value| value.as_str().map(str::to_owned))
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                let kind = result
-                    .get("kind")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("result");
-                if kind == "library" {
+                    .unwrap_or_else(|| result.title().to_owned());
+                if result.kind() == "library" {
                     match result
+                        .raw()
                         .get("databases")
                         .cloned()
                         .map(serde_json::from_value::<Vec<DatabaseSummary>>)
                     {
                         Some(Ok(databases)) => {
+                            self.completion_databases = databases
+                                .iter()
+                                .map(|database| database.name.clone())
+                                .collect();
                             let mut library = LibraryView::new(databases);
-                            if let Some(selected) =
-                                result.get("selected").and_then(|value| value.as_str())
+                            if let Some(selected) = result
+                                .raw()
+                                .get("selected")
+                                .and_then(|value| value.as_str())
                                 && let Some(index) = library
                                     .databases
                                     .iter()
@@ -212,7 +232,10 @@ impl App {
                     }
                     return;
                 }
-                self.transcript.push(TranscriptEntry::result(title, lines));
+                let canvas = PresentationCanvas::for_result(&result);
+                self.transcript
+                    .push(result.transcript_entry_with_title(title));
+                self.install_canvas(canvas);
                 if let Some(warning) = observation_warning {
                     self.transcript.push(TranscriptEntry::system(
                         "Runtime observation",
@@ -221,12 +244,7 @@ impl App {
                         )],
                     ));
                 }
-                if result
-                    .get("close")
-                    .and_then(|value| value.as_bool())
-                    .unwrap_or(false)
-                    || matches!(command.as_str(), ":quit" | "quit" | "exit")
-                {
+                if result.closes() || matches!(command.as_str(), ":quit" | "quit" | "exit") {
                     self.should_quit = true;
                 }
             }
@@ -240,15 +258,18 @@ impl App {
                     if self.editor.is_empty() {
                         return Effect::Shutdown;
                     }
+                    self.completion = None;
                     self.editor.clear();
                     return Effect::None;
                 }
                 KeyCode::Char('d') if self.editor.is_empty() => return Effect::Shutdown,
                 KeyCode::Char('a') => {
+                    self.completion = None;
                     self.editor.move_home();
                     return Effect::None;
                 }
                 KeyCode::Char('e') => {
+                    self.completion = None;
                     self.editor.move_end();
                     return Effect::None;
                 }
@@ -257,6 +278,19 @@ impl App {
         }
         if self.library.is_some() {
             return self.on_library_key(key);
+        }
+        if self.canvas_search.is_some() {
+            return self.on_canvas_search_key(key);
+        }
+        if self
+            .canvas
+            .as_ref()
+            .is_some_and(|canvas| canvas.navigating())
+        {
+            return self.on_canvas_key(key);
+        }
+        if self.completion.is_some() {
+            return self.on_completion_key(key);
         }
         match key.code {
             KeyCode::Enter
@@ -325,7 +359,16 @@ impl App {
                 Effect::None
             }
             KeyCode::Tab => {
-                self.editor.insert("  ");
+                if self.editor.is_empty()
+                    && self
+                        .canvas
+                        .as_mut()
+                        .is_some_and(PresentationCanvas::enter_navigation)
+                {
+                    self.transcript_scroll = 0;
+                } else if !self.begin_completion() {
+                    self.editor.insert("  ");
+                }
                 Effect::None
             }
             KeyCode::F(1) => self.issue(
@@ -333,6 +376,312 @@ impl App {
             ),
             _ => Effect::None,
         }
+    }
+
+    fn on_completion_key(&mut self, key: KeyEvent) -> Effect {
+        if key.code == KeyCode::BackTab
+            || (key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT))
+        {
+            if let Some(completion) = self.completion.as_mut() {
+                completion.previous();
+            }
+            return Effect::None;
+        }
+        match key.code {
+            KeyCode::Tab | KeyCode::Down => {
+                if let Some(completion) = self.completion.as_mut() {
+                    completion.next();
+                }
+                Effect::None
+            }
+            KeyCode::Up => {
+                if let Some(completion) = self.completion.as_mut() {
+                    completion.previous();
+                }
+                Effect::None
+            }
+            KeyCode::Enter => {
+                self.accept_completion();
+                Effect::None
+            }
+            KeyCode::Esc => {
+                self.completion = None;
+                Effect::None
+            }
+            _ => {
+                self.completion = None;
+                self.on_key(key)
+            }
+        }
+    }
+
+    fn begin_completion(&mut self) -> bool {
+        let inventory = self.completion_inventory();
+        let Some(completion) = complete(self.editor.text(), self.editor.cursor(), &inventory)
+        else {
+            return false;
+        };
+        if completion.candidates().len() == 1 {
+            self.apply_completion(completion);
+        } else {
+            self.completion = Some(completion);
+        }
+        true
+    }
+
+    fn accept_completion(&mut self) {
+        if let Some(completion) = self.completion.take() {
+            self.apply_completion(completion);
+        }
+    }
+
+    fn apply_completion(&mut self, completion: CompletionMenu) {
+        let (start, end) = completion.replacement_range();
+        let replacement = completion.selected_candidate().replacement.clone();
+        self.editor.replace_range(start, end, &replacement);
+    }
+
+    fn completion_inventory(&self) -> CompletionInventory {
+        let mut databases = self.completion_databases.clone();
+        databases.extend(
+            self.sessions
+                .iter()
+                .filter_map(|session| session.database.clone()),
+        );
+        let mut inventory = CompletionInventory {
+            databases: databases.into_iter().collect(),
+            ..CompletionInventory::default()
+        };
+        if let Some(canvas) = &self.canvas {
+            for line in canvas.rendered_lines() {
+                match line.action {
+                    Some(ExpansionAction::Expand) => inventory.expand_positions.push(line.path),
+                    Some(ExpansionAction::Collapse) => inventory.collapse_positions.push(line.path),
+                    None => {}
+                }
+            }
+            inventory.card_positions = canvas.visible_card_positions();
+            inventory.card_open = canvas.card().is_some();
+            inventory.page_targets = canvas.visible_page_targets();
+        }
+        inventory
+    }
+
+    pub fn completion(&self) -> Option<&CompletionMenu> {
+        self.completion.as_ref()
+    }
+
+    fn on_canvas_key(&mut self, key: KeyEvent) -> Effect {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                if let Some(canvas) = self.canvas.as_mut() {
+                    canvas.leave_navigation();
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let Some(canvas) = self.canvas.as_mut() {
+                    canvas.select_previous();
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let Some(canvas) = self.canvas.as_mut() {
+                    canvas.select_next();
+                }
+            }
+            KeyCode::Home => {
+                if let Some(canvas) = self.canvas.as_mut() {
+                    canvas.select_first();
+                }
+            }
+            KeyCode::End => {
+                if let Some(canvas) = self.canvas.as_mut() {
+                    canvas.select_last();
+                }
+            }
+            KeyCode::PageUp => {
+                if let Some(canvas) = self.canvas.as_mut() {
+                    for _ in 0..8 {
+                        canvas.select_previous();
+                    }
+                }
+            }
+            KeyCode::PageDown => {
+                if let Some(canvas) = self.canvas.as_mut() {
+                    for _ in 0..8 {
+                        canvas.select_next();
+                    }
+                }
+            }
+            KeyCode::Enter => {
+                let command = self
+                    .canvas
+                    .as_mut()
+                    .and_then(PresentationCanvas::toggle_selected);
+                self.commit_canvas_gesture(command);
+            }
+            KeyCode::Char('o') => {
+                let command = self
+                    .canvas
+                    .as_mut()
+                    .and_then(PresentationCanvas::toggle_selected_card);
+                self.commit_canvas_gesture(command);
+            }
+            KeyCode::Char('/') => {
+                self.begin_canvas_search();
+            }
+            KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                let command = self.canvas.as_mut().and_then(|canvas| {
+                    canvas
+                        .search_previous()
+                        .then(|| "search-previous".to_owned())
+                });
+                self.commit_canvas_gesture(command);
+            }
+            KeyCode::Char('N') => {
+                let command = self.canvas.as_mut().and_then(|canvas| {
+                    canvas
+                        .search_previous()
+                        .then(|| "search-previous".to_owned())
+                });
+                self.commit_canvas_gesture(command);
+            }
+            KeyCode::Char('n') => {
+                let command = self
+                    .canvas
+                    .as_mut()
+                    .and_then(|canvas| canvas.search_next().then(|| "search-next".to_owned()));
+                self.commit_canvas_gesture(command);
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                let command = self
+                    .canvas
+                    .as_mut()
+                    .and_then(PresentationCanvas::expand_selected);
+                self.commit_canvas_gesture(command);
+            }
+            KeyCode::Left | KeyCode::Char('h') | KeyCode::Backspace => {
+                let command = self
+                    .canvas
+                    .as_mut()
+                    .and_then(PresentationCanvas::collapse_selected);
+                self.commit_canvas_gesture(command);
+            }
+            _ => return Effect::Ignore,
+        }
+        self.sync_canvas_entry();
+        Effect::None
+    }
+
+    fn begin_canvas_search(&mut self) {
+        let Some(canvas) = self.canvas.as_mut() else {
+            return;
+        };
+        let snapshot = canvas.search_snapshot();
+        canvas.clear_search();
+        self.canvas_search = Some(CanvasSearchDraft {
+            editor: Editor::default(),
+            snapshot,
+        });
+    }
+
+    fn on_canvas_search_key(&mut self, key: KeyEvent) -> Effect {
+        if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')) {
+            self.cancel_canvas_search();
+            return Effect::None;
+        }
+        match key.code {
+            KeyCode::Esc => self.cancel_canvas_search(),
+            KeyCode::Enter => self.commit_canvas_search(),
+            KeyCode::Char(character)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER) =>
+            {
+                if let Some(search) = self.canvas_search.as_mut() {
+                    search.editor.insert(&character.to_string());
+                }
+                self.update_canvas_search_preview();
+            }
+            KeyCode::Backspace => {
+                if let Some(search) = self.canvas_search.as_mut() {
+                    search.editor.backspace();
+                }
+                self.update_canvas_search_preview();
+            }
+            KeyCode::Delete => {
+                if let Some(search) = self.canvas_search.as_mut() {
+                    search.editor.delete();
+                }
+                self.update_canvas_search_preview();
+            }
+            KeyCode::Left => {
+                if let Some(search) = self.canvas_search.as_mut() {
+                    search.editor.move_left();
+                }
+            }
+            KeyCode::Right => {
+                if let Some(search) = self.canvas_search.as_mut() {
+                    search.editor.move_right();
+                }
+            }
+            KeyCode::Home => {
+                if let Some(search) = self.canvas_search.as_mut() {
+                    search.editor.move_home();
+                }
+            }
+            KeyCode::End => {
+                if let Some(search) = self.canvas_search.as_mut() {
+                    search.editor.move_end();
+                }
+            }
+            _ => return Effect::Ignore,
+        }
+        Effect::None
+    }
+
+    fn update_canvas_search_preview(&mut self) {
+        let Some(query) = self
+            .canvas_search
+            .as_ref()
+            .map(|search| search.editor.text().to_owned())
+        else {
+            return;
+        };
+        if let Some(canvas) = self.canvas.as_mut() {
+            if query.trim().is_empty() {
+                canvas.clear_search();
+            } else {
+                canvas.search(&query);
+            }
+        }
+    }
+
+    fn cancel_canvas_search(&mut self) {
+        let Some(search) = self.canvas_search.take() else {
+            return;
+        };
+        if let Some(canvas) = self.canvas.as_mut() {
+            canvas.restore_search(search.snapshot);
+        }
+    }
+
+    fn commit_canvas_search(&mut self) {
+        let Some(search) = self.canvas_search.take() else {
+            return;
+        };
+        let query = search.editor.text().trim().to_owned();
+        let command = if query.is_empty() {
+            if let Some(canvas) = self.canvas.as_mut() {
+                canvas.clear_search();
+            }
+            "search-clear".to_owned()
+        } else {
+            if let Some(canvas) = self.canvas.as_mut() {
+                canvas.search(&query);
+            }
+            format!("search {query}")
+        };
+        self.commit_canvas_gesture(Some(command));
     }
 
     fn on_library_key(&mut self, key: KeyEvent) -> Effect {
@@ -393,6 +742,22 @@ impl App {
     }
 
     fn on_mouse(&mut self, mouse: MouseEvent) -> Effect {
+        if let Some(completion) = self.completion.as_mut() {
+            return match mouse.kind {
+                MouseEventKind::ScrollUp => {
+                    completion.previous();
+                    Effect::None
+                }
+                MouseEventKind::ScrollDown => {
+                    completion.next();
+                    Effect::None
+                }
+                _ => {
+                    self.completion = None;
+                    Effect::Ignore
+                }
+            };
+        }
         if let Some(library) = self.library.as_mut() {
             return match mouse.kind {
                 MouseEventKind::ScrollUp => {
@@ -436,6 +801,7 @@ impl App {
     }
 
     fn submit(&mut self) -> Effect {
+        self.completion = None;
         let source = self.editor.take();
         let Some(command) = ShellCommand::local(source.clone()) else {
             return Effect::None;
@@ -448,10 +814,17 @@ impl App {
         }
         if command.text() == ":clear" {
             self.transcript.clear();
+            self.canvas = None;
+            self.canvas_entry = None;
+            self.canvas_search = None;
             return Effect::None;
         }
         if command.text() == ":share" {
             self.show_coauthor_info();
+            return Effect::None;
+        }
+        if Self::is_canvas_command(&command) {
+            self.commit_typed_canvas_command(command);
             return Effect::None;
         }
         if command.text() == "library close" {
@@ -482,6 +855,113 @@ impl App {
             .push(TranscriptEntry::command(command.clone(), title));
         self.transcript_scroll = 0;
         Effect::Execute(command)
+    }
+
+    fn is_canvas_command(command: &ShellCommand) -> bool {
+        matches!(
+            command.verb().to_ascii_lowercase().as_str(),
+            "expand"
+                | "collapse"
+                | "card"
+                | "search"
+                | "search-next"
+                | "search-previous"
+                | "search-clear"
+                | "page"
+        )
+    }
+
+    fn commit_typed_canvas_command(&mut self, command: ShellCommand) {
+        let title = self.prompt_label().to_owned();
+        let outcome = self
+            .canvas
+            .as_mut()
+            .ok_or_else(|| "there is no live result canvas".to_owned())
+            .and_then(|canvas| canvas.apply_command(command.text()));
+        self.transcript
+            .push(TranscriptEntry::command(command, title));
+        match outcome {
+            Ok(true) => self.sync_canvas_entry(),
+            Ok(false) => unreachable!("canvas command was classified before dispatch"),
+            Err(message) => self
+                .transcript
+                .push(TranscriptEntry::error("Canvas", vec![message])),
+        }
+        self.transcript_scroll = 0;
+    }
+
+    fn commit_canvas_gesture(&mut self, command: Option<String>) {
+        let Some(command) = command.and_then(ShellCommand::generated) else {
+            return;
+        };
+        let title = self.prompt_label().to_owned();
+        self.transcript
+            .push(TranscriptEntry::command(command, title));
+        self.transcript_scroll = 0;
+    }
+
+    fn install_canvas(&mut self, canvas: PresentationCanvas) {
+        self.cancel_canvas_search();
+        if !canvas.has_content() {
+            self.canvas = None;
+            self.canvas_entry = None;
+            return;
+        }
+        self.canvas_entry = self.transcript.len().checked_sub(1);
+        self.canvas = Some(canvas);
+        self.sync_canvas_entry();
+    }
+
+    fn sync_canvas_entry(&mut self) {
+        let Some(index) = self.canvas_entry else {
+            return;
+        };
+        let Some(lines) = self.canvas.as_ref().map(PresentationCanvas::plain_lines) else {
+            return;
+        };
+        if let Some(entry) = self.transcript.get_mut(index) {
+            entry.lines = lines;
+        }
+    }
+
+    pub fn canvas_selected_line(&self, entry: usize) -> Option<usize> {
+        (self.canvas_entry == Some(entry))
+            .then(|| {
+                self.canvas
+                    .as_ref()
+                    .and_then(PresentationCanvas::selected_line)
+            })
+            .flatten()
+    }
+
+    pub fn canvas_navigating(&self) -> bool {
+        self.canvas
+            .as_ref()
+            .is_some_and(PresentationCanvas::navigating)
+    }
+
+    pub fn canvas_card(&self) -> Option<PresentationCard> {
+        self.canvas.as_ref().and_then(PresentationCanvas::card)
+    }
+
+    pub fn canvas_search_editor(&self) -> Option<&Editor> {
+        self.canvas_search.as_ref().map(|search| &search.editor)
+    }
+
+    pub fn canvas_search_summary(&self) -> Option<PresentationSearchSummary> {
+        self.canvas
+            .as_ref()
+            .and_then(PresentationCanvas::search_summary)
+    }
+
+    pub fn canvas_search_match_lines(&self, entry: usize) -> Vec<usize> {
+        if self.canvas_entry != Some(entry) || !self.canvas_navigating() {
+            return Vec::new();
+        }
+        self.canvas
+            .as_ref()
+            .map(PresentationCanvas::search_match_lines)
+            .unwrap_or_default()
     }
 
     fn comment(&mut self, command: ShellCommand, title: &str) {
@@ -551,8 +1031,14 @@ impl App {
         let Some(command) = ShellCommand::coauthor(source, text) else {
             return Effect::None;
         };
+        self.completion = None;
+        self.cancel_canvas_search();
         if command.is_comment() {
             self.comment(command, source);
+            return Effect::None;
+        }
+        if Self::is_canvas_command(&command) {
+            self.commit_typed_canvas_command(command);
             return Effect::None;
         }
         if command.text() == "library close" {
@@ -603,18 +1089,21 @@ impl App {
                     });
                     return format!("! {}\n  {}", error.kind, error.message);
                 }
-                let result = response.result.unwrap_or_default();
-                self.update_session_context(&result);
-                if result.get("kind").and_then(|value| value.as_str()) == Some("library") {
+                let result = CommandResult::from_value(response.result.unwrap_or_default());
+                self.update_session_context(result.raw());
+                if result.kind() == "library" {
                     return match result
+                        .raw()
                         .get("databases")
                         .cloned()
                         .map(serde_json::from_value::<Vec<DatabaseSummary>>)
                     {
                         Some(Ok(databases)) => {
                             let mut library = LibraryView::new(databases);
-                            if let Some(selected) =
-                                result.get("selected").and_then(|value| value.as_str())
+                            if let Some(selected) = result
+                                .raw()
+                                .get("selected")
+                                .and_then(|value| value.as_str())
                                 && let Some(index) = library
                                     .databases
                                     .iter()
@@ -628,22 +1117,7 @@ impl App {
                         None => "! Library response\n  server omitted the database list".to_owned(),
                     };
                 }
-                let title = result
-                    .get("title")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("Result")
-                    .to_owned();
-                let lines = result
-                    .get("lines")
-                    .and_then(|value| value.as_array())
-                    .map(|values| {
-                        values
-                            .iter()
-                            .filter_map(|value| value.as_str().map(str::to_owned))
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                Self::plain_entry(&TranscriptEntry::result(title, lines))
+                Self::plain_entry(&result.transcript_entry())
             }
         }
     }
@@ -939,6 +1413,92 @@ mod tests {
     }
 
     #[test]
+    fn tab_completes_unique_verbs_and_cycles_grammar_arguments() {
+        let mut app = App::new();
+        app.editor.insert("ta");
+        app.on_terminal(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        assert_eq!(app.editor.text(), "tables ");
+        assert!(app.completion().is_none());
+
+        app.editor.replace("mode ".to_owned());
+        app.on_terminal(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        assert_eq!(
+            app.completion()
+                .expect("mode candidates")
+                .selected_candidate()
+                .label,
+            "mutable"
+        );
+        app.on_terminal(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+        app.on_terminal(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(app.editor.text(), "mode readonly");
+        assert!(app.completion().is_none());
+        assert_eq!(app.transcript.len(), 1);
+    }
+
+    #[test]
+    fn completion_uses_only_structured_database_and_live_canvas_state() {
+        let mut app = App::new();
+        app.on_backend(BackendEvent::Response {
+            command: ":status".to_owned(),
+            response: Response {
+                id: 3,
+                ok: true,
+                result: Some(serde_json::json!({
+                    "kind": "status",
+                    "title": "Status",
+                    "lines": [],
+                    "current": "alpha",
+                    "sessions": [{
+                        "name": "alpha",
+                        "database": "alpha",
+                        "current": true,
+                        "mode": "mutable",
+                        "changed": false
+                    }]
+                })),
+                error: None,
+            },
+        });
+        app.editor.insert("open al");
+        app.on_terminal(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        assert_eq!(app.editor.text(), "open alpha");
+
+        app.editor.replace("count ed".to_owned());
+        app.on_terminal(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        assert_eq!(
+            app.editor.text(),
+            "count ed  ",
+            "relation names are not inferred without a boundary catalog"
+        );
+
+        app.on_backend(BackendEvent::Response {
+            command: "add edge 4 5".to_owned(),
+            response: Response {
+                id: 4,
+                ok: true,
+                result: Some(serde_json::json!({
+                    "kind": "mutation",
+                    "title": "Add · edge",
+                    "lines": ["settled"],
+                    "change": {
+                        "operation": "add",
+                        "target": "alpha",
+                        "status": "settled"
+                    }
+                })),
+                error: None,
+            },
+        });
+        app.editor.replace("expand it.c".to_owned());
+        app.on_terminal(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        assert_eq!(app.editor.text(), "expand it.change");
+    }
+
+    #[test]
     fn mouse_wheel_navigates_transcript() {
         let mut app = App::new();
         app.on_terminal(Event::Mouse(MouseEvent {
@@ -1173,6 +1733,405 @@ mod tests {
             app.plain_shared_view(false)
                 .contains("update revision 7 · counts valid")
         );
+    }
+
+    #[test]
+    fn latest_semantic_result_is_a_navigable_canvas_with_gesture_echo() {
+        let mut app = App::new();
+        app.on_backend(BackendEvent::Response {
+            command: "add edge 4 5".to_owned(),
+            response: Response {
+                id: 4,
+                ok: true,
+                result: Some(serde_json::json!({
+                    "kind": "mutation",
+                    "title": "Add · edge",
+                    "lines": ["settled"],
+                    "change": {
+                        "operation": "add",
+                        "target": "example",
+                        "status": "settled",
+                        "update-revision": 7,
+                        "counts": "valid",
+                        "requested": [{"relation": "edge", "added": 1, "removed": 0}],
+                        "size-deltas": [],
+                        "size-deltas-omitted": 0,
+                        "sizes-observed": true,
+                        "routes": []
+                    }
+                })),
+                error: None,
+            },
+        });
+        let result_index = app.transcript.len() - 1;
+        assert_eq!(
+            app.transcript[result_index].lines,
+            ["settled", "▸ Change details"]
+        );
+
+        assert!(matches!(
+            app.on_terminal(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))),
+            Effect::None
+        ));
+        assert!(app.canvas_navigating());
+        app.on_terminal(Event::Key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)));
+        let effect = app.on_terminal(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert!(matches!(effect, Effect::None));
+        assert!(
+            app.transcript[result_index]
+                .lines
+                .contains(&"▾ Change details".to_owned())
+        );
+        assert!(
+            app.transcript[result_index]
+                .lines
+                .contains(&"  operation: add".to_owned())
+        );
+        let echo = app.transcript.last().expect("gesture echo");
+        assert_eq!(echo.kind, EntryKind::GeneratedCommand);
+        assert_eq!(echo.lines, ["expand it.change"]);
+
+        app.on_terminal(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert!(
+            app.transcript[result_index]
+                .lines
+                .contains(&"▸ Change details".to_owned())
+        );
+        assert_eq!(
+            app.transcript.last().expect("collapse echo").lines,
+            ["collapse it.change"]
+        );
+        app.on_terminal(Event::Key(KeyEvent::new(
+            KeyCode::Char('o'),
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(
+            app.transcript.last().expect("card echo").lines,
+            ["card it.change"]
+        );
+        let card = app.canvas_card().expect("change card");
+        assert_eq!(card.title, "Change details");
+        assert!(card.actions.contains(&"expand it.change".to_owned()));
+        app.on_terminal(Event::Key(KeyEvent::new(
+            KeyCode::Char('o'),
+            KeyModifiers::NONE,
+        )));
+        assert!(app.canvas_card().is_none());
+        assert_eq!(
+            app.transcript.last().expect("card close echo").lines,
+            ["card close"]
+        );
+        app.on_terminal(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert!(!app.canvas_navigating());
+    }
+
+    #[test]
+    fn typed_canvas_commands_use_the_same_expansion_path_and_stay_client_side() {
+        let mut app = App::new();
+        app.on_backend(BackendEvent::Response {
+            command: "add edge 4 5".to_owned(),
+            response: Response {
+                id: 5,
+                ok: true,
+                result: Some(serde_json::json!({
+                    "kind": "mutation",
+                    "title": "Add · edge",
+                    "lines": ["settled"],
+                    "change": {
+                        "operation": "add",
+                        "target": "example",
+                        "status": "settled"
+                    }
+                })),
+                error: None,
+            },
+        });
+        let result_index = app.transcript.len() - 1;
+        app.editor.insert("expand it.change");
+        let effect = app.on_terminal(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert!(matches!(effect, Effect::None));
+        assert!(
+            app.transcript[result_index]
+                .lines
+                .contains(&"  operation: add".to_owned())
+        );
+        let echo = app.transcript.last().expect("typed echo");
+        assert_eq!(echo.kind, EntryKind::Command);
+        assert_eq!(echo.lines, ["expand it.change"]);
+
+        let effect = app.on_coauthor("codex", "collapse it.change".to_owned());
+        assert!(matches!(effect, Effect::None));
+        assert!(
+            app.transcript[result_index]
+                .lines
+                .contains(&"▸ Change details".to_owned())
+        );
+        let echo = app.transcript.last().expect("coauthor echo");
+        assert_eq!(echo.actor.as_deref(), Some("codex"));
+        assert_eq!(echo.lines, ["collapse it.change"]);
+
+        app.editor.insert("card it.change");
+        let effect = app.on_terminal(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert!(matches!(effect, Effect::None));
+        assert_eq!(
+            app.canvas_card().expect("typed card").kind,
+            "semantic change"
+        );
+    }
+
+    #[test]
+    fn incremental_canvas_search_commits_canonical_commands_and_can_cancel() {
+        let mut app = App::new();
+        app.on_backend(BackendEvent::Response {
+            command: "add edge 4 5".to_owned(),
+            response: Response {
+                id: 6,
+                ok: true,
+                result: Some(serde_json::json!({
+                    "kind": "mutation",
+                    "title": "Add · edge",
+                    "lines": ["settled", "edge ready"],
+                    "change": {
+                        "operation": "add",
+                        "target": "example",
+                        "status": "settled"
+                    }
+                })),
+                error: None,
+            },
+        });
+        app.on_terminal(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        app.on_terminal(Event::Key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)));
+        app.on_terminal(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        app.on_terminal(Event::Key(KeyEvent::new(
+            KeyCode::Char('/'),
+            KeyModifiers::NONE,
+        )));
+        for character in "operation".chars() {
+            app.on_terminal(Event::Key(KeyEvent::new(
+                KeyCode::Char(character),
+                KeyModifiers::NONE,
+            )));
+        }
+        assert_eq!(
+            app.canvas_search_editor().expect("search editor").text(),
+            "operation"
+        );
+        assert_eq!(app.canvas_search_summary().expect("preview").total, 1);
+
+        app.on_terminal(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert!(app.canvas_search_editor().is_none());
+        assert_eq!(
+            app.transcript.last().expect("search echo").lines,
+            ["search operation"]
+        );
+        app.on_terminal(Event::Key(KeyEvent::new(
+            KeyCode::Char('n'),
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(
+            app.transcript.last().expect("next echo").lines,
+            ["search-next"]
+        );
+        app.on_terminal(Event::Key(KeyEvent::new(
+            KeyCode::Char('N'),
+            KeyModifiers::SHIFT,
+        )));
+        assert_eq!(
+            app.transcript.last().expect("previous echo").lines,
+            ["search-previous"]
+        );
+
+        let before_cancel = app.transcript.len();
+        app.on_terminal(Event::Key(KeyEvent::new(
+            KeyCode::Char('/'),
+            KeyModifiers::NONE,
+        )));
+        for character in "missing".chars() {
+            app.on_terminal(Event::Key(KeyEvent::new(
+                KeyCode::Char(character),
+                KeyModifiers::NONE,
+            )));
+        }
+        assert_eq!(app.canvas_search_summary().expect("no matches").total, 0);
+        app.on_terminal(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert_eq!(app.transcript.len(), before_cancel);
+        assert_eq!(
+            app.canvas_search_summary().expect("restored search").query,
+            "operation"
+        );
+
+        app.on_terminal(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        app.editor.insert("search settled");
+        let effect = app.on_terminal(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert!(matches!(effect, Effect::None));
+        assert!(app.canvas_navigating());
+        assert_eq!(
+            app.canvas_search_summary().expect("typed search").query,
+            "settled"
+        );
+        let effect = app.on_coauthor("codex", "search-next".to_owned());
+        assert!(matches!(effect, Effect::None));
+        assert_eq!(
+            app.transcript
+                .last()
+                .expect("coauthor search")
+                .actor
+                .as_deref(),
+            Some("codex")
+        );
+    }
+
+    #[test]
+    fn structured_live_relations_join_canvas_navigation_and_cards() {
+        let mut app = App::new();
+        app.on_backend(BackendEvent::Response {
+            command: "tables".to_owned(),
+            response: Response {
+                id: 7,
+                ok: true,
+                result: Some(serde_json::json!({
+                    "kind": "tables",
+                    "title": "Live relations",
+                    "lines": ["edge/2  table · Int Int  3 rows"],
+                    "relations": [{
+                        "name": "edge",
+                        "kind": "table",
+                        "arity": 2,
+                        "detail": ["Int", "Int"],
+                        "rows": 3
+                    }],
+                    "relations-total": 1,
+                    "relations-filter": "",
+                    "relations-scope": "current live session"
+                })),
+                error: None,
+            },
+        });
+        let result_index = app.transcript.len() - 1;
+        assert_eq!(
+            app.transcript[result_index].lines,
+            [
+                "edge/2  table · Int Int  3 rows",
+                "▸ Live relation observations (1)"
+            ]
+        );
+        app.on_terminal(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        app.on_terminal(Event::Key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)));
+        app.on_terminal(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(
+            app.transcript.last().expect("relation expansion").lines,
+            ["expand it.relations"]
+        );
+        app.on_terminal(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+        app.on_terminal(Event::Key(KeyEvent::new(
+            KeyCode::Char('o'),
+            KeyModifiers::NONE,
+        )));
+        let card = app.canvas_card().expect("edge relation card");
+        assert_eq!(card.title, "edge");
+        assert_eq!(card.kind, "live relation observation");
+        assert!(card.actions.contains(&"count edge".to_owned()));
+        assert!(
+            card.fields.iter().any(|field| {
+                field.label == "identity" && field.value.contains("no BoundaryKey")
+            })
+        );
+    }
+
+    #[test]
+    fn buffered_canvas_pages_use_the_same_absolute_command_for_gestures_and_coauthors() {
+        let mut app = App::new();
+        let lines = (1..=22).map(|row| format!("row {row}")).collect::<Vec<_>>();
+        app.on_backend(BackendEvent::Response {
+            command: "show edge all".to_owned(),
+            response: Response {
+                id: 11,
+                ok: true,
+                result: Some(serde_json::json!({
+                    "kind": "query",
+                    "title": "Rows · edge",
+                    "lines": lines
+                })),
+                error: None,
+            },
+        });
+        let result_index = app.transcript.len() - 1;
+        assert_eq!(
+            app.transcript[result_index]
+                .lines
+                .last()
+                .map(String::as_str),
+            Some("▸ … 2 more · page 1/2")
+        );
+
+        app.on_terminal(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        app.on_terminal(Event::Key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)));
+        app.on_terminal(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(
+            app.transcript.last().expect("page gesture").lines,
+            ["page it 2"]
+        );
+        assert_eq!(
+            app.transcript[result_index].lines,
+            ["◂ 20 before · page 2/2", "row 21", "row 22"]
+        );
+
+        app.on_terminal(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        app.editor.insert("page it 1");
+        assert!(matches!(
+            app.on_terminal(Event::Key(KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE
+            ))),
+            Effect::None
+        ));
+        assert_eq!(
+            app.transcript[result_index]
+                .lines
+                .last()
+                .map(String::as_str),
+            Some("▸ … 2 more · page 1/2")
+        );
+
+        assert!(matches!(
+            app.on_coauthor("codex", "page it 2".to_owned()),
+            Effect::None
+        ));
+        assert_eq!(
+            app.transcript[result_index].lines,
+            ["◂ 20 before · page 2/2", "row 21", "row 22"]
+        );
+        let echo = app.transcript.last().expect("coauthor page");
+        assert_eq!(echo.actor.as_deref(), Some("codex"));
+        assert_eq!(echo.lines, ["page it 2"]);
     }
 
     #[test]

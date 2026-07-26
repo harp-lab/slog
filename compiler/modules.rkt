@@ -35,12 +35,14 @@
 ;; (demand.rkt) desugars every rule's judgment occurrences of f into plain
 ;; rules over those relations.  Programs leave this file free of demands.
 
-(provide load-program-list)
+(provide load-program-list
+         type-env->catalog-delta)
 
 (require racket/runtime-path)
 (require "parser.rkt")
 (require "utils.rkt")
 (require "ir-shared.rkt")
+(require "catalog.rkt")
 (require "demand.rkt")
 (require "collections.rkt")
 
@@ -386,10 +388,30 @@
 ;; Deterministic name for an anonymous inline valuespec: the same spec
 ;; names the same type, and no gensym (declarations enter the .so cache
 ;; key, which must be stable run to run).
+(define (generated-name-fragment value)
+  ;; Numeric clamps may be negative or use an exponent sign.  Keep the
+  ;; historical alphanumeric/underscore/dot spelling byte-identical, but
+  ;; encode characters which cannot occur in a QName component with the same
+  ;; fixed-width scalar escape used by names.rkt's C++ codec.  (A dot remains
+  ;; the already-established lowered QName separator; decimal components are
+  ;; valid lexer components.)
+  (apply
+   string-append
+   (for/list ([char (in-string (format "~a" value))])
+     (cond
+       [(regexp-match? #rx"^[A-Za-z0-9_'.]$" (string char)) (string char)]
+       [else
+        (define hex (number->string (char->integer char) 16))
+        (string-append
+         "_"
+         (make-string (max 0 (- 5 (string-length hex))) #\0)
+         hex)]))))
+
 (define (lattice-anon-name spec)
   (string->symbol
    (apply string-append "_lat"
-          (map (lambda (part) (format "_~a" part))
+          (map (lambda (part)
+                 (format "_~a" (generated-name-fragment part)))
                (flatten (cdr spec))))))
 
 ;; -----------------------------------------------------------------------
@@ -808,40 +830,14 @@
 ;; program's declarations), and must not contradict it.
 
 (define (update-manifest type-env manifest)
-  (define rels (type-env-rels type-env))
-  (foldl (lambda (x man)
-           (match (hash-ref rels x)
-             ;; a map relation (table with a lattice-typed last column)
-             ;; carries its valuespec so open/reload can re-register it
-             [`(table ,xs ...)
-              #:when (rel-lattice-spec rels x)
-              (define entry `(lat ,x ,(length xs) ,(rel-lattice-spec rels x)))
-              (cond
-                [(hash-has-key? man x)
-                 (when (not (equal? (hash-ref man x) entry))
-                   (error (format "Lattice relation declaration does not match input database: ~a" x)))
-                 man]
-                [else (hash-set man x entry)])]
-             [`(table ,xs ...)
-              #:when (hash-has-key? man x)
-              (when (not (equal? (hash-ref man x) `(rel ,x ,(length xs))))
-                (error (format "Table declaration does not match input database: ~a" x)))
-              man]
-             [`(struct ,xs ...)
-              #:when (hash-has-key? man x)
-              (when (not (equal? (hash-ref man x) `(struct ,x ,(add1 (length xs)))))
-                (error (format "Struct declaration does not match input database: ~a" x)))
-              man]
-             [`(table ,xs ...) (hash-set man x `(rel ,x ,(length xs)))]
-             [`(struct ,xs ...) (hash-set man x `(struct ,x ,(add1 (length xs))))]
-             [`(temp ,_ ...) man]
-             [`(enum ,name) man]
-             [`(oracle ,_ ...) man]   ; extern binding entry: not a relation
-             [(? lattice-spec?) man]
-             [(? listof-spec?) man]
-             [(? mapof-spec?) man]))
-         manifest
-         (hash-keys rels)))
+  ;; The flat manifest is now only the current code-generation ABI
+  ;; projection.  Rich declaration normalization has one authority in
+  ;; catalog.rkt; the session boundary planner consumes the same delta.
+  ;; Today's `$...` generated relations remain an explicitly execution-only
+  ;; appendix until N1 replaces that legacy spelling with internal IDs.
+  (merge-legacy-manifest
+   manifest
+   (type-env->legacy-manifest type-env)))
 
 (define (thread-manifests prog-lst manifest)
   (match prog-lst

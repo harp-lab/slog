@@ -92,8 +92,9 @@ struct Plan
 };
 
 // The canonical query payload carries exact boundary/catalog bindings beside
-// the executable plan. Friendly names are display metadata; VersionKey is the
-// binding authority. Runtime shape/count facts are the materialization overlay
+// the executable plan. N3-B resolves BoundaryKey to an immutable environment,
+// then QName selects its slot and VersionKey proves the expected physical
+// identity. Runtime shape/count facts are the materialization overlay
 // projected by compiler/query-plan.rkt, never index requisitions.
 struct CatalogBinding
 {
@@ -222,6 +223,10 @@ public:
   Page next(u64 page_size, u64 step_budget, u64 cursor_work_budget);
   void cancel();
   Status status() const { return terminal; }
+  // Cumulative satisfying-instantiation count, including rows returned by
+  // earlier pages.  The command dispatcher uses this for a cancellation
+  // sentinel without advancing the cursor.
+  u64 matched() const;
 };
 
 } // namespace query

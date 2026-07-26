@@ -39,7 +39,9 @@
                       [closing? #:mutable])
   #:transparent)
 
-(struct relation-info (name kind arity detail size) #:transparent)
+(struct relation-info
+  (name kind arity detail size version-key boundary-key)
+  #:transparent)
 
 (define scratch-key 'scratch)
 (define max-show-facts 200)
@@ -214,6 +216,14 @@
    "  :quit               close every resident database and the REPL"
    "  :clear              clear the visible client transcript"
    "  :share              show the trusted-local co-author endpoint"
+   "  expand POSITION     expand a node in the newest live result canvas"
+   "  collapse POSITION   collapse a node in the newest live result canvas"
+   "  card POSITION       show the contextual card for a live canvas node"
+   "  search TEXT         search visible lines in the newest live result canvas"
+   "  search-next         select the next visible canvas search match"
+   "  search-previous     select the previous visible canvas search match"
+   "  search-clear        clear the current canvas search"
+   "  page POSITION N     select an absolute page in a buffered canvas collection"
    "  ; COMMENT           add a transcript comment without invoking Slog"))
 
 (define (split-command source)
@@ -245,31 +255,55 @@
 
 (define (relation-key value) (~a value))
 
-;; `(sizes)` has no terminator, while `(schema)` does.  Queue them in that
-;; order and read through schema-end: the daemon's ordered plugin stream makes
-;; schema-end a delimiter for both read-only replies without any daemon change.
+;; N3-B's command catalog is relation identity authority: every current record
+;; carries its exact VersionKey and selected committed BoundaryKey (or #f after
+;; a legacy environment mutation).  The legacy schema stream still contributes
+;; human field detail; N3-C's TypeDescriptor stream now owns nominal TypeKey/SID
+;; identity, while richer declaration-field projection remains with N3-D/N4.
 (define (live-catalog s)
-  (session-action! s '(sizes))
-  (define lines
+  (define catalog-lines
+    (session-command-stream!
+     s '(catalog)
+     (lambda (line)
+       (regexp-match? #px"^\\(catalog-end [0-9]+\\)$" line))))
+  (define schema-lines
     (session-action! s '(schema)
                      (read-until-response #px"^\\(schema-end\\)$")))
-  (define sizes (make-hash))
+  (define identities (make-hash))
   (define schemas (make-hash))
-  (for ([line (in-list lines)])
+  (define (record-field fields key [default #f])
+    (match (assq key fields)
+      [(list _ value) value]
+      [_ default]))
+  (for ([line (in-list catalog-lines)])
     (match (read-datum line)
-      [`(relation_size ,name ,size)
-       (hash-set! sizes (relation-key name) size)]
+      [`(catalog-rel ,fields ...)
+       (define name (record-field fields 'name))
+       (when (string? name)
+         (hash-set!
+          identities name
+          (list (~a (record-field fields 'kind "relation"))
+                (record-field fields 'arity)
+                (or (record-field fields 'size) 0)
+                (record-field fields 'version-key)
+                (record-field fields 'boundary))))]
+      [_ (void)]))
+  (for ([line (in-list schema-lines)])
+    (match (read-datum line)
       [`(schema-rel ,kind ,name ,arity ,detail ...)
        (hash-set! schemas (relation-key name)
                   (list (~a kind) arity detail))]
       [_ (void)]))
-  (for/list ([name (in-list (sort (remove-duplicates
-                                    (append (hash-keys sizes) (hash-keys schemas)))
-                                   string<?))])
+  (for/list ([name (in-list (sort (hash-keys identities) string<?))])
+    (match-define (list catalog-kind catalog-arity size version-key boundary-key)
+      (hash-ref identities name))
     (match (hash-ref schemas name #f)
-      [(list kind arity detail)
-       (relation-info name kind arity detail (hash-ref sizes name 0))]
-      [_ (relation-info name "relation" #f '() (hash-ref sizes name 0))])))
+      [(list schema-kind schema-arity detail)
+       (relation-info name schema-kind schema-arity detail size
+                      version-key boundary-key)]
+      [_
+       (relation-info name catalog-kind catalog-arity '() size
+                      version-key boundary-key)])))
 
 ;; A semantic command is observed at two settled points.  These snapshots are
 ;; presentation evidence only: a failed observation must never turn an already
@@ -340,9 +374,22 @@
           (relation-info-size relation)
           (if (= (relation-info-size relation) 1) "" "s")))
 
-(define (tables-result state argument)
-  (define catalog (live-catalog (ensure-session! state)))
+(define (relation-observation relation)
+  (hasheq 'name (relation-info-name relation)
+          'kind (relation-info-kind relation)
+          'arity (or (relation-info-arity relation) 'null)
+          'detail (map ~a (relation-info-detail relation))
+          'rows (relation-info-size relation)
+          'version-key (or (relation-info-version-key relation) 'null)
+          'boundary-key (or (relation-info-boundary-key relation) 'null)))
+
+(define (tables-result-from-catalog catalog argument)
   (define filter-text (string-trim argument))
+  (define boundary-keys
+    (remove-duplicates
+     (filter values (map relation-info-boundary-key catalog))))
+  (define selected-boundary
+    (and (= (length boundary-keys) 1) (car boundary-keys)))
   (define visible
     (filter
      (lambda (relation)
@@ -352,14 +399,26 @@
          [(string=? filter-text "") (not (default-hidden-relation? relation))]
          [else (string-contains? name filter-text)]))
      catalog))
-  (text-result
-   "Live relations"
-   (if (null? visible)
-       (list (if (string=? filter-text "")
-                 "no user relations; use `tables all` to include internals"
-                 (format "no relations match ~s" filter-text)))
-       (map relation-description visible))
-   #:kind "tables"))
+  (hash-set*
+   (text-result
+    "Live relations"
+    (if (null? visible)
+        (list (if (string=? filter-text "")
+                  "no user relations; use `tables all` to include internals"
+                  (format "no relations match ~s" filter-text)))
+        (map relation-description visible))
+    #:kind "tables")
+   'relations (map relation-observation visible)
+   'relations-total (length catalog)
+   'relations-filter filter-text
+   'relations-scope
+   (if selected-boundary
+       (format "committed boundary ~a" selected-boundary)
+       "current live session")
+   'boundary-key (or selected-boundary 'null)))
+
+(define (tables-result state argument)
+  (tables-result-from-catalog (live-catalog (ensure-session! state)) argument))
 
 (define (relation-from-catalog who catalog name)
   (or (findf (lambda (relation) (string=? (relation-info-name relation) name))
@@ -1011,7 +1070,20 @@
                 (hasheq 'id 7 'method "ping"))
 
   (define state (server-state (make-hash) #f #f #f))
-  (check-equal? (hash-ref (dispatch-command state ":help") 'kind) "help")
+  (define help-result (dispatch-command state ":help"))
+  (check-equal? (hash-ref help-result 'kind) "help")
+  (check-not-false
+   (member "  expand POSITION     expand a node in the newest live result canvas"
+           (hash-ref help-result 'lines)))
+  (check-not-false
+   (member "  card POSITION       show the contextual card for a live canvas node"
+           (hash-ref help-result 'lines)))
+  (check-not-false
+   (member "  search TEXT         search visible lines in the newest live result canvas"
+           (hash-ref help-result 'lines)))
+  (check-not-false
+   (member "  page POSITION N     select an absolute page in a buffered canvas collection"
+           (hash-ref help-result 'lines)))
   (check-equal? (hash-ref (dispatch-command state ":ping") 'kind) "status")
   (define library-result (dispatch-command state "library"))
   (check-equal? (hash-ref library-result 'kind) "library")
@@ -1042,6 +1114,39 @@
    (list (hasheq 'relation "a" 'before 2 'after 5 'net 3)
          (hasheq 'relation "b" 'before 0 'after 'null 'net 0)
          (hasheq 'relation "c" 'before 'null 'after 0 'net 0)))
+
+  (check-equal?
+   (wire-round-trip
+    (relation-observation
+     (relation-info "edge" "table" 2 (list "Int" "Int") 3
+                    "v1:edge" "b1:root:1")))
+   (hasheq 'name "edge"
+           'kind "table"
+           'arity 2
+           'detail (list "Int" "Int")
+           'rows 3
+           'version-key "v1:edge"
+           'boundary-key "b1:root:1"))
+
+  (define sample-tables
+    (tables-result-from-catalog
+     (list (relation-info "$internal" "relation" 1 '() 4 #f #f)
+           (relation-info "edge" "table" 2 (list "Int" "Int") 3
+                          "v1:edge" "b1:root:1"))
+     ""))
+  (check-equal?
+   (list (hash-ref sample-tables 'lines)
+         (hash-ref sample-tables 'relations)
+         (hash-ref sample-tables 'relations-total)
+         (hash-ref sample-tables 'relations-filter)
+         (hash-ref sample-tables 'relations-scope))
+   (list (list "edge/2  table · Int Int  3 rows")
+         (list (relation-observation
+                (relation-info "edge" "table" 2 (list "Int" "Int") 3
+                               "v1:edge" "b1:root:1")))
+         2
+         ""
+         "committed boundary b1:root:1"))
 
   (define sample-request
     (list (hasheq 'relation "edge" 'added 1 'removed 0)))

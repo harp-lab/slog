@@ -31,7 +31,9 @@
 #include <atomic>
 #include <barrier>
 #include <chrono>
+#include <bitset>
 #include <mutex>
+#include <memory>
 #include <unistd.h>
 #include <omp.h>
 #include <unordered_map>
@@ -168,6 +170,9 @@ private:
   // relations receive a runtime fallback until recipe migration resolves it.
   std::string version_key;
   std::string evaluation_id;
+  // Durable nominal identity mirrored from N3-C's TypeDescriptor onto each
+  // physical version for boundary catalog/version diagnostics.
+  std::string type_key;
   bool compiler_temporary = false;
   // Evaluation-local semantic input ledger (M0.4b).  Direct assertions are
   // local to this slot.  An inheritance mask suppresses the predecessor's
@@ -296,6 +301,8 @@ public:
   const std::string& getVersionKey() const { return version_key; }
   const std::string& getEvaluationId() const { return evaluation_id; }
   void setEvaluationId(const std::string& id) { evaluation_id = id; }
+  const std::string& getTypeKey() const { return type_key; }
+  void setTypeKey(const std::string& key) { type_key = key; }
   void markCompilerTemporary() { compiler_temporary = true; }
   bool isCompilerTemporary() const { return compiler_temporary; }
 
@@ -2488,6 +2495,73 @@ enum ErrorKind : u32 { ERR_DIV0, ERR_MOD0, ERR_INT_OVF, ERR_NAN, ERR_TOINT, ERR_
                        ERR_MPZ_OVF, ERR_MPZ_TABLE };
 struct PendingError { u32 kind = 0; const char* op = ""; u64 a = 0; u64 b = 0; };
 
+// N3.1's decoded transactional boundary plan.  QNames have already passed
+// component validation in the command dispatcher and are lowered once there;
+// Database never splits their dotted wire projection.  `shape` is the
+// compiler's canonical, complete declaration datum and is compared byte-for-
+// byte for catalog compatibility; the remaining fields are its checked
+// storage ABI projection.
+struct BoundaryCatalogDecl
+{
+  std::string name;
+  std::string kind;
+  u16 arity = 0;
+  bool storage = false;
+  std::string type_key;
+  std::string lat_spec;
+  std::string shape;
+};
+
+enum class BoundaryActionK : u8 { retain, create, internal_create };
+
+struct BoundaryRelationAction
+{
+  BoundaryActionK kind = BoundaryActionK::retain;
+  std::string name;
+  std::string version_key;
+  std::string predecessor;
+  std::string type_key;
+};
+
+struct BoundaryAdmission
+{
+  bool ok = false;
+  std::string refusal_class;
+  std::string detail;
+  u32 position = 0;
+  u64 created = 0;
+};
+
+// N3-B's immutable committed-boundary record.  A Database is one evaluation,
+// so BoundaryKey alone is a direct key inside it; external handles pair that
+// key with Database::evaluation_id.  `environment` contains every public
+// storage declaration at the boundary and deliberately retains historical
+// Relation pointers after the latest name map advances.
+struct BoundarySnapshot
+{
+  std::string key;
+  std::string program_key;
+  std::string evaluation_id;
+  u32 position = 0;
+  u64 generation = 0;
+  std::unordered_map<std::string, BoundaryCatalogDecl> declarations;
+  std::set<std::pair<std::string, std::string>> memberships;
+  std::unordered_map<std::string, Relation*> environment;
+};
+
+// N3-C nominal runtime identity.  A descriptor is owned by Database and
+// pointer-stable for the lifetime of the evaluation.  Names and relation
+// versions are boundary-relative bindings; this record is the one durable
+// TypeKey/SID association and delegates interning to the latest complete
+// physical store for the first implementation slice (modules.md §8.5.3).
+struct TypeDescriptor
+{
+  std::string type_key;
+  u32 sid = 0;
+  u16 stored_arity = 0;
+  Relation* canonical_relation = nullptr;
+};
+
 class Database
 {
 private:
@@ -2503,10 +2577,16 @@ private:
   // (segments that rewrite it, imports, anchored batches).  rel_registry owns
   // every physical relation ever registered, in creation order; rel_bindings
   // records, per name, at which pipeline position each version became
-  // current (`pos` = the boundary-event counter below, NOT an SCC id --
-  // ordinals are stable across recompiles, §0.4).  `relations` above always
-  // mirrors each chain's last entry.  rel==nullptr marks a drop (0.D).
-  struct RelBinding { u32 pos; Relation* rel; };
+  // current (`pos` = the evaluation-local boundary-event counter below, NOT
+  // an SCC id).  N3 commits also attach their durable BoundaryKey; legacy
+  // environment events carry an empty key.  `relations` above always mirrors
+  // each chain's last entry.  rel==nullptr marks a drop (0.D).
+  struct RelBinding
+  {
+    u32 pos;
+    Relation* rel;
+    std::string boundary_key;
+  };
   std::vector<Relation*> rel_registry;
   std::unordered_map<std::string, std::vector<RelBinding>> rel_bindings;
   // Monotone boundary-event counter: each open/import, segment boundary, and
@@ -2550,7 +2630,49 @@ private:
                        boost::hash<std::vector<u64>>>>
       lattice_replacements;
   std::unordered_map<std::string, std::string> planned_version_keys;
-  std::unordered_map<std::string, u64> version_key_ids;
+  // One Database is one EvaluationId, so this is the direct
+  // (EvaluationId, VersionKey) -> Relation*/VersionId index.
+  std::unordered_map<std::string, Relation*> version_key_relations;
+  // N3.1 logical catalog truth.  Prepare receives the complete output
+  // catalog, so commit replaces these snapshots atomically with the name
+  // bindings below.  Memberships are kept even though N3.1's relation/type
+  // catalog streams do not expose them yet.
+  std::unordered_map<std::string, BoundaryCatalogDecl> catalog_declarations;
+  std::set<std::pair<std::string, std::string>> catalog_memberships;
+  // Direct durable boundary lookup plus commit order.  History is retained
+  // conservatively (modules.md §12); legacy events clear only the selected
+  // current handle, never an already-committed snapshot.
+  std::unordered_map<std::string, BoundarySnapshot> boundary_index;
+  std::vector<std::string> boundary_history;
+  std::string current_boundary_key;
+
+  struct PreparedBoundary
+  {
+    std::string key;
+    std::string program_key;
+    u32 position = 0;
+    std::unordered_map<std::string, BoundaryCatalogDecl> declarations;
+    std::set<std::pair<std::string, std::string>> memberships;
+    // Complete plugin-visible environment for names named by semantic
+    // actions; ordinary undeclared machinery reads fall back to `relations`.
+    std::unordered_map<std::string, Relation*> environment;
+    std::vector<std::pair<std::string, Relation*>> created;
+    std::unordered_set<Relation*> created_set;
+    // An absent compiler-internal relation cannot be allocated before its
+    // generated declaration supplies arity/kind.  Its key is nevertheless
+    // preflighted and consumed by private registerRelation.
+    std::unordered_map<std::string, std::string> pending_internal_keys;
+    // Catalog-less roots may contain a struct whose durable TypeKey was not
+    // known when it was loaded.  Admission records the one compatible key;
+    // only commit attaches it to the public slot.
+    std::unordered_map<Relation*, std::string> adopted_type_keys;
+    // Struct versions created by this boundary must decode inside the private
+    // plugin environment without advancing the public TypeDescriptor.  Fresh
+    // descriptors are published only by commit.
+    std::unordered_map<u32, Relation*> type_storage;
+    std::unordered_set<u32> allocated_sids;
+  };
+  std::unique_ptr<PreparedBoundary> prepared_boundary;
   // Exact per-name VersionId environment for one plugin registration.  This
   // is the recount/replay authority; bind_pos remains a compatibility
   // fallback for compiler-local temporaries that have no semantic VersionId
@@ -2560,7 +2682,17 @@ private:
   // default); >= 0 = bind-time resolution at that position, set around a
   // re-entry push so a cached .so re-binds an OLD position's versions (B1).
   s64 bind_pos = -1;
-  std::unordered_map<u32, Relation*> structs_by_id;
+  // N3-C's evaluation-local nominal registry.  SID 0 and 0x3fff are invalid;
+  // the bitmap covers exactly 0..0x3ffe and allocation fills the lowest real
+  // gap.  Occupancy is conservative: committed descriptors/history and
+  // aborted allocations never release their slot.
+  static constexpr u32 struct_sid_limit = 0x3fff;
+  std::vector<std::unique_ptr<TypeDescriptor>> type_descriptors;
+  std::unordered_map<u32, TypeDescriptor*> types_by_sid;
+  std::unordered_map<std::string, TypeDescriptor*> types_by_key;
+  std::bitset<struct_sid_limit> occupied_struct_sids;
+  std::unordered_set<u32> unpublished_struct_sids;
+  u32 lowest_free_struct_sid = 1;
   // per-relation on-disk modification times, recorded at each load/write,
   // backing relationChangedOnDisk
   std::unordered_map<std::string, std::filesystem::file_time_type> disk_mtimes;
@@ -2580,7 +2712,6 @@ private:
   std::barrier<NoopCompletion>* phase_barrier[phase_count] = {};
   std::atomic<bool> latest_any_rec;
   u32 thread_count;
-  u32 struct_id_max;
   InternTable<utf8string>* string_table;
   InternTable<mpz_val>* mpz_table;
   // Whole-table approximate byte counter + the two bignum caps
@@ -2603,6 +2734,109 @@ private:
   // this thread's slot to build the (error_spec ...).  One per thread => no lock.
   std::vector<PendingError> pending_errors;
 
+  void advanceLowestFreeStructSid()
+  {
+    while (lowest_free_struct_sid < struct_sid_limit
+           && occupied_struct_sids.test(lowest_free_struct_sid))
+      ++lowest_free_struct_sid;
+  }
+
+  bool hasFreeStructSids(u32 count) const
+  {
+    for (u32 sid = 1; sid < struct_sid_limit && count > 0; ++sid)
+      if (!occupied_struct_sids.test(sid)) --count;
+    return count == 0;
+  }
+
+  u32 allocateStructSid()
+  {
+    advanceLowestFreeStructSid();
+    if (lowest_free_struct_sid >= struct_sid_limit)
+      fatal("Struct type-id space exhausted (14-bit NaN-box field)");
+    const u32 sid = lowest_free_struct_sid;
+    occupied_struct_sids.set(sid);
+    unpublished_struct_sids.insert(sid);
+    advanceLowestFreeStructSid();
+    return sid;
+  }
+
+  // Publish or advance one descriptor.  An occupied SID with no descriptor is
+  // valid only while this Database owns the corresponding unpublished
+  // allocation; every other such collision is a corrupt load/registration.
+  TypeDescriptor* publishTypeStorage(Relation* relation,
+                                     bool allow_existing = false)
+  {
+    if (relation == nullptr || relation->getStructId() == 0)
+      return nullptr;
+    const u32 sid = relation->getStructId();
+    if (sid >= struct_sid_limit)
+      fatal("Struct type-id is outside the 14-bit NaN-box field");
+
+    auto existing = types_by_sid.find(sid);
+    TypeDescriptor* descriptor = nullptr;
+    if (existing == types_by_sid.end())
+    {
+      if (occupied_struct_sids.test(sid))
+      {
+        if (unpublished_struct_sids.erase(sid) == 0)
+          fatal("Duplicate or retained struct SID " + std::to_string(sid));
+      }
+      else
+      {
+        occupied_struct_sids.set(sid);
+        if (sid == lowest_free_struct_sid) advanceLowestFreeStructSid();
+      }
+      auto owned = std::make_unique<TypeDescriptor>();
+      owned->sid = sid;
+      owned->stored_arity = relation->getArity();
+      descriptor = owned.get();
+      type_descriptors.push_back(std::move(owned));
+      types_by_sid[sid] = descriptor;
+    }
+    else
+    {
+      descriptor = existing->second;
+      if (!allow_existing && descriptor->canonical_relation != relation)
+        fatal("Duplicate live struct SID " + std::to_string(sid));
+      if (descriptor->stored_arity != relation->getArity())
+        fatal("Struct SID " + std::to_string(sid)
+              + " changed stored arity");
+    }
+
+    const std::string& key = relation->getTypeKey();
+    if (!key.empty())
+    {
+      auto keyed = types_by_key.find(key);
+      if (keyed != types_by_key.end() && keyed->second != descriptor)
+        fatal("TypeKey " + key + " resolves to two struct SIDs");
+      if (!descriptor->type_key.empty() && descriptor->type_key != key)
+        fatal("Struct SID " + std::to_string(sid)
+              + " resolves to two TypeKeys");
+      descriptor->type_key = key;
+      types_by_key[key] = descriptor;
+    }
+    descriptor->canonical_relation = relation;
+    return descriptor;
+  }
+
+  void attachTypeKey(Relation* relation, const std::string& key)
+  {
+    if (relation == nullptr || relation->getStructId() == 0 || key.empty())
+      fatal("Cannot attach an empty TypeKey to non-struct storage");
+    auto found = types_by_sid.find(relation->getStructId());
+    if (found == types_by_sid.end())
+      fatal("Cannot attach TypeKey to an unregistered struct SID");
+    TypeDescriptor* descriptor = found->second;
+    auto keyed = types_by_key.find(key);
+    if (keyed != types_by_key.end() && keyed->second != descriptor)
+      fatal("TypeKey " + key + " resolves to two struct SIDs");
+    if (!descriptor->type_key.empty() && descriptor->type_key != key)
+      fatal("Struct SID " + std::to_string(descriptor->sid)
+            + " resolves to two TypeKeys");
+    descriptor->type_key = key;
+    types_by_key[key] = descriptor;
+    relation->setTypeKey(key);
+  }
 
 public:
 
@@ -3034,7 +3268,7 @@ public:
   Database(u32 _thread_count)
   {
     thread_count = _thread_count;
-    struct_id_max = 1;
+    occupied_struct_sids.set(0);
     string_table = new InternTable<utf8string>();
     mpz_table = new InternTable<mpz_val>();
     const char* mb = std::getenv("SLOG_MPZ_MAX_BITS");
@@ -3298,6 +3532,21 @@ public:
   // Is a stratum currently suspended (parked, resumable by continueStratum)?
   bool isSuspended() const { return rs.suspended; }
   const Stratum* suspendedStratum() const { return rs.suspended ? rs.stratum : nullptr; }
+  // N3 abort calls this only after Daemon has driven a mid-read pause to the
+  // next clean iteration boundary.  Workers are no longer live, so dropping
+  // continuation/run metadata is safe; the boundary's private relations and
+  // stratum tasks are removed immediately afterwards.
+  bool abandonSuspendedAtBoundary()
+  {
+    if (!rs.suspended) return true;
+    if (rs.position != RUN_AT_BOUNDARY) return false;
+    for (u32 i = 0; i < phase_count; ++i) clearPausedPhase(i);
+    rs.suspended = false;
+    rs.position = RUN_FRESH;
+    rs.stratum = nullptr;
+    rs.read_suspended = false;
+    return true;
+  }
   // Where a suspended stratum is parked (RUN_AT_BOUNDARY | RUN_MID_READ) -- the
   // hot-swap upgrade (daemon.h beginStratum) is permitted only at a boundary.
   RunPosition suspendPosition() const { return rs.position; }
@@ -3349,45 +3598,86 @@ public:
     latest_any_rec = _any;
   }
 
-  // Register a freshly-constructed physical relation as `name`'s current
-  // version at the current pipeline position: every registration site
-  // (addRelation/addStruct/loadDatabaseBIN/ensureStatsRelation/newVersion)
-  // funnels through here so ownership (rel_registry), the binding chain, and
-  // the latest map stay consistent (docs/incremental.md §0.4-§0.5, B0).
+  // Take ownership and assign identity without publishing a name binding.
+  // Prepared boundary slots use this first half of registration; abort may
+  // delete them, while commit performs the binding/index half atomically.
+  Relation* ownRelation(Relation* r, Relation* predecessor,
+                        const std::string& version_key)
+  {
+    const u64 vid = next_version_id++;
+    r->setVersionIdentity(
+      vid, predecessor,
+      version_key.empty()
+        ? (std::string("runtime-") + std::to_string(vid))
+        : version_key,
+      evaluation_id);
+    r->initShards(thread_count);
+    rel_registry.push_back(r);
+    return r;
+  }
+
+  // Register a freshly-constructed physical relation.  Outside an N3 prepare
+  // it becomes the latest binding immediately (the legacy path).  During a
+  // prepare, generated compiler-internal declarations are owned and added to
+  // the private overlay but remain absent from every public binding/key map.
   Relation* registerRelation(const std::string& name, Relation* r,
                              Relation* predecessor = nullptr,
                              const std::string& version_key = "")
   {
-    const u64 vid = next_version_id++;
     std::string chosen_key = version_key;
     if (chosen_key.empty())
     {
-      auto pit = planned_version_keys.find(name);
-      if (pit != planned_version_keys.end())
+      if (prepared_boundary)
       {
-        chosen_key = pit->second;
-        planned_version_keys.erase(pit);
+        auto pit = prepared_boundary->pending_internal_keys.find(name);
+        if (pit != prepared_boundary->pending_internal_keys.end())
+        {
+          chosen_key = pit->second;
+          prepared_boundary->pending_internal_keys.erase(pit);
+        }
+      }
+      if (chosen_key.empty())
+      {
+        auto pit = planned_version_keys.find(name);
+        if (pit != planned_version_keys.end())
+        {
+          chosen_key = pit->second;
+          planned_version_keys.erase(pit);
+        }
       }
     }
-    r->setVersionIdentity(vid, predecessor,
-                          chosen_key.empty()
-                            ? (std::string("runtime-") + std::to_string(vid))
-                            : chosen_key,
-                          evaluation_id);
+    ownRelation(r, predecessor, chosen_key);
     const std::string& assigned_key = r->getVersionKey();
-    auto kit = version_key_ids.find(assigned_key);
-    if (kit != version_key_ids.end())
+    auto kit = version_key_relations.find(assigned_key);
+    if (kit != version_key_relations.end())
       fatal("duplicate VersionKey " + assigned_key + " in one evaluation");
-    version_key_ids[assigned_key] = vid;
-    r->initShards(thread_count);
-    rel_registry.push_back(r);
+
+    if (prepared_boundary)
+    {
+      for (const auto& created : prepared_boundary->created)
+        if (created.second->getVersionKey() == assigned_key)
+          fatal("duplicate prepared VersionKey " + assigned_key);
+      if (prepared_boundary->environment.find(name)
+          != prepared_boundary->environment.end())
+        fatal("prepared relation " + name + " registered twice");
+      prepared_boundary->environment[name] = r;
+      prepared_boundary->created.push_back({name, r});
+      prepared_boundary->created_set.insert(r);
+      if (r->getStructId() > 0)
+        prepared_boundary->type_storage[r->getStructId()] = r;
+      return r;
+    }
+
+    version_key_relations[assigned_key] = r;
     // A positional maintenance/replay plugin can declare compiler-local
     // temps that did not exist in the original set-semantics flavor.  They
     // belong to that plugin's historical environment, not to the wall-clock
     // tip (otherwise its own subsequent getRelation-at-P returns null).
     const u32 registration_pos = bind_pos >= 0 ? (u32)bind_pos : pipeline_pos;
-    rel_bindings[name].push_back({registration_pos, r});
+    rel_bindings[name].push_back({registration_pos, r, ""});
     relations[name] = r;
+    if (r->getStructId() > 0)
+      publishTypeStorage(r, predecessor != nullptr);
     return r;
   }
 
@@ -3404,7 +3694,478 @@ public:
   const std::string& getEvaluationId() const { return evaluation_id; }
   bool hasVersionKey(const std::string& key) const
   {
-    return version_key_ids.find(key) != version_key_ids.end();
+    return version_key_relations.find(key) != version_key_relations.end();
+  }
+
+  bool boundaryPrepared() const { return prepared_boundary != nullptr; }
+  const std::string& preparedBoundaryKey() const
+  {
+    static const std::string empty;
+    return prepared_boundary ? prepared_boundary->key : empty;
+  }
+  u32 preparedBoundaryPosition() const
+  {
+    return prepared_boundary ? prepared_boundary->position : pipeline_pos;
+  }
+
+  // Validate the COMPLETE proposed catalog and relation action set before
+  // allocating an id or changing the runtime position.  Only after every
+  // check passes do we build the plugin-visible private environment.
+  BoundaryAdmission prepareBoundary(
+      const std::string& boundary_key,
+      const std::string& program_key,
+      const std::vector<BoundaryCatalogDecl>& declarations,
+      const std::set<std::pair<std::string, std::string>>& memberships,
+      const std::vector<BoundaryRelationAction>& actions)
+  {
+    const auto reject = [](const char* cls, const std::string& detail)
+    {
+      BoundaryAdmission out;
+      out.refusal_class = cls;
+      out.detail = detail;
+      return out;
+    };
+    if (prepared_boundary)
+      return reject("boundary-state", "another boundary is already prepared");
+    if (update_epoch_active)
+      return reject("boundary-state", "an update epoch is active");
+    if (boundary_index.find(boundary_key) != boundary_index.end())
+      return reject("boundary-plan",
+                    "BoundaryKey is already committed: " + boundary_key);
+
+    std::unordered_map<std::string, BoundaryCatalogDecl> proposed;
+    std::unordered_map<std::string, std::string> proposed_type_names;
+    u32 fresh_structs = 0;
+    for (const BoundaryCatalogDecl& decl : declarations)
+    {
+      if (!proposed.emplace(decl.name, decl).second)
+        return reject("boundary-catalog",
+                      "duplicate declaration " + decl.name);
+      if (decl.storage)
+      {
+        if (decl.arity == 0 || decl.arity > max_daemon_arity)
+          return reject("boundary-catalog",
+                        "invalid stored arity for " + decl.name);
+        if (decl.kind != "table" && decl.kind != "struct")
+          return reject("boundary-catalog",
+                        "invalid storage kind for " + decl.name);
+        if (decl.kind == "struct")
+        {
+          if (decl.type_key.empty())
+            return reject("boundary-type",
+                          "struct " + decl.name + " has no TypeKey");
+          if (!decl.lat_spec.empty())
+            return reject("boundary-catalog",
+                          "struct " + decl.name + " carries a lattice spec");
+          auto unique_type = proposed_type_names.emplace(
+            decl.type_key, decl.name);
+          if (!unique_type.second)
+            return reject("boundary-type",
+                          "TypeKey is declared by two current names: "
+                          + unique_type.first->second + " and " + decl.name);
+
+          auto current = relations.find(decl.name);
+          auto known = types_by_key.find(decl.type_key);
+          if (known != types_by_key.end()
+              && known->second->stored_arity != decl.arity)
+            return reject("boundary-type",
+                          "TypeKey stored arity conflicts for " + decl.name);
+          if (current == relations.end())
+          {
+            if (known == types_by_key.end()) ++fresh_structs;
+          }
+          else if (current->second->getStructId() > 0)
+          {
+            auto by_sid = types_by_sid.find(current->second->getStructId());
+            if (by_sid == types_by_sid.end())
+              return reject("boundary-type",
+                            "current struct SID has no TypeDescriptor: "
+                            + decl.name);
+            if (known != types_by_key.end() && known->second != by_sid->second)
+              return reject("boundary-type",
+                            "TypeKey/SID conflict for " + decl.name);
+          }
+        }
+        else if (!decl.type_key.empty())
+          return reject("boundary-type",
+                        "table " + decl.name + " carries a TypeKey");
+      }
+      else if (decl.arity != 0 || !decl.type_key.empty()
+               || !decl.lat_spec.empty())
+        return reject("boundary-catalog",
+                      "logical declaration " + decl.name
+                      + " carries a storage projection");
+      auto old = catalog_declarations.find(decl.name);
+      if (old != catalog_declarations.end() && old->second.shape != decl.shape)
+        return reject("boundary-catalog",
+                      "declaration conflicts with committed catalog: "
+                      + decl.name);
+    }
+    for (const auto& old : catalog_declarations)
+      if (proposed.find(old.first) == proposed.end())
+        return reject("boundary-catalog",
+                      "complete catalog omits committed declaration "
+                      + old.first);
+    for (const auto& edge : catalog_memberships)
+      if (memberships.find(edge) == memberships.end())
+        return reject("boundary-catalog",
+                      "complete catalog omits a committed membership");
+    if (!hasFreeStructSids(fresh_structs))
+      return reject("boundary-type", "struct SID space exhausted");
+
+    std::unordered_map<std::string, const BoundaryRelationAction*> by_name;
+    std::unordered_map<std::string, Relation*> retained_keys;
+    std::unordered_set<std::string> created_keys;
+    for (const BoundaryRelationAction& action : actions)
+    {
+      if (!by_name.emplace(action.name, &action).second)
+        return reject("boundary-plan",
+                      "duplicate relation action " + action.name);
+      if (action.version_key.empty())
+        return reject("boundary-plan",
+                      "empty VersionKey for " + action.name);
+
+      if (action.kind == BoundaryActionK::internal_create)
+      {
+        if (action.name.empty() || action.name[0] != '$')
+          return reject("boundary-plan",
+                        "internal action is not compiler-owned: "
+                        + action.name);
+        if (hasVersionKey(action.version_key)
+            || !created_keys.insert(action.version_key).second)
+          return reject("boundary-plan",
+                        "duplicate create VersionKey " + action.version_key);
+        continue;
+      }
+
+      auto dit = proposed.find(action.name);
+      if (dit == proposed.end() || !dit->second.storage)
+        return reject("boundary-plan",
+                      "relation action has no storage declaration: "
+                      + action.name);
+      const BoundaryCatalogDecl& decl = dit->second;
+      auto rit = relations.find(action.name);
+      Relation* current = rit == relations.end() ? nullptr : rit->second;
+      const bool wants_struct = decl.kind == "struct";
+
+      if (action.kind == BoundaryActionK::retain)
+      {
+        if (!action.predecessor.empty())
+          return reject("boundary-plan",
+                        "retain carries a predecessor: " + action.name);
+        if (current == nullptr
+            || current->getVersionKey() != action.version_key)
+          return reject("boundary-binding",
+                        "retain does not match latest binding: "
+                        + action.name);
+        auto prior = retained_keys.find(action.version_key);
+        if (prior != retained_keys.end() && prior->second != current)
+          return reject("boundary-binding",
+                        "VersionKey resolves to two retained relations");
+        retained_keys[action.version_key] = current;
+      }
+      else
+      {
+        if (hasVersionKey(action.version_key)
+            || !created_keys.insert(action.version_key).second)
+          return reject("boundary-plan",
+                        "duplicate create VersionKey " + action.version_key);
+        if (action.predecessor.empty())
+        {
+          if (current != nullptr)
+            return reject("boundary-binding",
+                          "initial create already has a latest binding: "
+                          + action.name);
+        }
+        else if (current == nullptr
+                 || current->getVersionKey() != action.predecessor)
+          return reject("boundary-binding",
+                        "create predecessor does not match latest binding: "
+                        + action.name);
+      }
+
+      if (current != nullptr
+          && (current->getArity() != decl.arity
+              || (current->getStructId() > 0) != wants_struct
+              || current->isLattice() != !decl.lat_spec.empty()
+              || (current->isLattice()
+                  && current->latticeSpec() != decl.lat_spec)))
+        return reject("boundary-catalog",
+                      "storage ABI conflicts with latest relation: "
+                      + action.name);
+      if (wants_struct)
+      {
+        if (action.type_key != decl.type_key)
+          return reject("boundary-type",
+                        "action/declaration TypeKey mismatch: "
+                        + action.name);
+        if (current != nullptr && !current->getTypeKey().empty()
+            && current->getTypeKey() != action.type_key)
+          return reject("boundary-type",
+                        "TypeKey conflicts with latest struct: "
+                        + action.name);
+      }
+      else if (!action.type_key.empty())
+        return reject("boundary-type",
+                      "plain relation action carries a TypeKey: "
+                      + action.name);
+    }
+
+    for (const auto& item : proposed)
+      if (item.second.storage)
+      {
+        auto action = by_name.find(item.first);
+        if (action == by_name.end()
+            || action->second->kind == BoundaryActionK::internal_create)
+          return reject("boundary-plan",
+                        "storage declaration has no relation action: "
+                        + item.first);
+        if (relations.find(item.first) == relations.end()
+            && (action->second->kind != BoundaryActionK::create
+                || !action->second->predecessor.empty()))
+          return reject("boundary-plan",
+                        "missing relation requires an initial create: "
+                        + item.first);
+      }
+
+    // Validate collection lattice tokens without entering Relation's fatal
+    // registration path.  Scalar tokens are deliberately conservative; the
+    // compiler is the only producer and emits precisely these prefixes.
+    for (const auto& item : proposed)
+      if (!item.second.lat_spec.empty())
+      {
+        const std::string& spec = item.second.lat_spec;
+        bool valid = spec == "count"
+          || spec.rfind("min-", 0) == 0
+          || spec.rfind("max-", 0) == 0
+          || spec.rfind("flat-", 0) == 0;
+        if (spec.rfind("set-", 0) == 0 || spec.rfind("map-", 0) == 0)
+        {
+          LatSpec* parsed = parseLatSpecToken(spec);
+          valid = parsed != nullptr;
+          delete parsed;
+        }
+        if (!valid)
+          return reject("boundary-catalog",
+                        "malformed lattice spec for " + item.first);
+      }
+
+    auto prepared = std::make_unique<PreparedBoundary>();
+    prepared->key = boundary_key;
+    prepared->program_key = program_key;
+    prepared->position = pipeline_pos;
+    prepared->declarations = std::move(proposed);
+    prepared->memberships = memberships;
+    prepared_boundary = std::move(prepared);
+
+    const auto clone = [&](const std::string& name, Relation* old,
+                           const std::string& key) -> Relation*
+    {
+      Relation* nv = new Relation(name, old->getArity(), old->getStructId());
+      if (old->isLattice())
+        nv->setLatticeFromSpec(old->latticeSpec(), cnode_arena);
+      nv->setTypeKey(old->getTypeKey());
+      nv->copyInternAllocatorsFrom(*old);
+      nv->copyTombstonesFrom(*old);
+      nv->ensureDefaultIndex();
+      forEachNominal(old, [&](const u64* row)
+      {
+        nv->insertTupleAllIndices(row);
+      });
+      ownRelation(nv, old, key);
+      prepared_boundary->environment[name] = nv;
+      prepared_boundary->created.push_back({name, nv});
+      prepared_boundary->created_set.insert(nv);
+      if (nv->getStructId() > 0)
+        prepared_boundary->type_storage[nv->getStructId()] = nv;
+      return nv;
+    };
+
+    for (const BoundaryRelationAction& action : actions)
+    {
+      auto current_it = relations.find(action.name);
+      Relation* current =
+        current_it == relations.end() ? nullptr : current_it->second;
+      if (action.kind == BoundaryActionK::retain)
+      {
+        prepared_boundary->environment[action.name] = current;
+        if (current->getStructId() > 0 && current->getTypeKey().empty())
+          prepared_boundary->adopted_type_keys[current] = action.type_key;
+        continue;
+      }
+      if (action.kind == BoundaryActionK::internal_create)
+      {
+        if (current != nullptr)
+          clone(action.name, current, action.version_key);
+        else
+          prepared_boundary->pending_internal_keys[action.name]
+            = action.version_key;
+        continue;
+      }
+      if (current != nullptr)
+      {
+        Relation* nv = clone(action.name, current, action.version_key);
+        if (!action.type_key.empty()) nv->setTypeKey(action.type_key);
+        continue;
+      }
+
+      const BoundaryCatalogDecl& decl =
+        prepared_boundary->declarations.at(action.name);
+      u32 sid = 0;
+      TypeDescriptor* prior_type = nullptr;
+      if (decl.kind == "struct")
+      {
+        auto known = types_by_key.find(decl.type_key);
+        if (known != types_by_key.end())
+        {
+          prior_type = known->second;
+          sid = prior_type->sid;
+        }
+        else
+        {
+          sid = allocateStructSid();
+          prepared_boundary->allocated_sids.insert(sid);
+        }
+      }
+      Relation* fresh = new Relation(action.name, decl.arity, sid);
+      if (!decl.type_key.empty()) fresh->setTypeKey(decl.type_key);
+      if (!decl.lat_spec.empty())
+        fresh->setLatticeFromSpec(decl.lat_spec, cnode_arena);
+      fresh->ensureDefaultIndex();
+      // Rebinding the same TypeKey after a name-environment change keeps the
+      // nominal intern store even though the new relation-version chain has
+      // no name predecessor.
+      if (prior_type != nullptr && prior_type->canonical_relation != nullptr)
+      {
+        Relation* prior = prior_type->canonical_relation;
+        fresh->copyInternAllocatorsFrom(*prior);
+        fresh->copyTombstonesFrom(*prior);
+        forEachNominal(prior, [&](const u64* row)
+        {
+          fresh->insertTupleAllIndices(row);
+        });
+      }
+      ownRelation(fresh, nullptr, action.version_key);
+      prepared_boundary->environment[action.name] = fresh;
+      prepared_boundary->created.push_back({action.name, fresh});
+      prepared_boundary->created_set.insert(fresh);
+      if (fresh->getStructId() > 0)
+        prepared_boundary->type_storage[fresh->getStructId()] = fresh;
+    }
+
+    // The boundary event itself owns one evaluation-local ordinal.  This is
+    // private until commit because command admission hides the working state;
+    // Daemon::abortBoundary restores the saved position.
+    ++pipeline_pos;
+    BoundaryAdmission accepted;
+    accepted.ok = true;
+    accepted.position = prepared_boundary->position;
+    accepted.created = prepared_boundary->created.size()
+                     + prepared_boundary->pending_internal_keys.size();
+    return accepted;
+  }
+
+  // Publish all prepared physical and logical bindings in one single-threaded
+  // critical section.  The daemon has already established terminal fixpoint.
+  BoundaryAdmission commitPreparedBoundary()
+  {
+    if (!prepared_boundary)
+    {
+      BoundaryAdmission out;
+      out.refusal_class = "boundary-state";
+      out.detail = "no boundary is prepared";
+      return out;
+    }
+    if (!prepared_boundary->pending_internal_keys.empty())
+    {
+      BoundaryAdmission out;
+      out.refusal_class = "boundary-plan";
+      out.detail = "prepared internal declarations were not registered";
+      return out;
+    }
+    for (const auto& adopted : prepared_boundary->adopted_type_keys)
+      attachTypeKey(adopted.first, adopted.second);
+    for (const auto& created : prepared_boundary->created)
+    {
+      const std::string& name = created.first;
+      Relation* r = created.second;
+      version_key_relations[r->getVersionKey()] = r;
+      rel_bindings[name].push_back(
+        {prepared_boundary->position, r, prepared_boundary->key});
+      relations[name] = r;
+      if (r->getStructId() > 0) publishTypeStorage(r, true);
+    }
+    catalog_declarations = prepared_boundary->declarations;
+    catalog_memberships = prepared_boundary->memberships;
+
+    BoundarySnapshot snapshot;
+    snapshot.key = prepared_boundary->key;
+    snapshot.program_key = prepared_boundary->program_key;
+    snapshot.evaluation_id = evaluation_id;
+    snapshot.position = prepared_boundary->position;
+    snapshot.generation = update_epoch_id + 1;
+    snapshot.declarations = prepared_boundary->declarations;
+    snapshot.memberships = prepared_boundary->memberships;
+    for (const auto& decl : snapshot.declarations)
+      if (decl.second.storage)
+      {
+        auto binding = prepared_boundary->environment.find(decl.first);
+        if (binding == prepared_boundary->environment.end()
+            || binding->second == nullptr)
+          fatal("committed boundary is missing storage binding " + decl.first);
+        snapshot.environment[decl.first] = binding->second;
+      }
+    current_boundary_key = snapshot.key;
+    boundary_history.push_back(snapshot.key);
+    boundary_index.emplace(snapshot.key, std::move(snapshot));
+
+    BoundaryAdmission out;
+    out.ok = true;
+    out.position = prepared_boundary->position;
+    out.created = prepared_boundary->created.size();
+    prepared_boundary.reset();
+    // Boundary publication is a settled-state mutation and therefore
+    // invalidates stale command/query generations just like an update commit.
+    ++update_epoch_id;
+    for (Relation* r : rel_registry)
+      if (r && r->isCounted()) r->setCountedRevision(update_epoch_id);
+    return out;
+  }
+
+  // Drop every privately owned slot.  VersionIds and SIDs intentionally burn;
+  // removing the pointers from the owning registry keeps later reload/count
+  // walks from observing discarded storage.
+  BoundaryAdmission abortPreparedBoundary()
+  {
+    if (!prepared_boundary)
+    {
+      BoundaryAdmission out;
+      out.refusal_class = "boundary-state";
+      out.detail = "no boundary is prepared";
+      return out;
+    }
+    const u32 position = prepared_boundary->position;
+    const u64 discarded = prepared_boundary->created.size();
+    for (const auto& created : prepared_boundary->created)
+    {
+      Relation* doomed = created.second;
+      for (Relation*& registered : rel_registry)
+        if (registered == doomed)
+        {
+          registered = nullptr;
+          break;
+        }
+      delete doomed;
+    }
+    for (u32 sid : prepared_boundary->allocated_sids)
+      unpublished_struct_sids.erase(sid);
+    prepared_boundary.reset();
+    pipeline_pos = position;
+    BoundaryAdmission out;
+    out.ok = true;
+    out.position = position;
+    out.created = discarded;
+    return out;
   }
 
   void addRelation(const std::string& name, u16 arity)
@@ -3420,20 +4181,36 @@ public:
     registerRelation(name, r);
   }
 
-  void addStruct(const std::string& name, u16 arity)
+  void addStruct(const std::string& name, u16 arity,
+                 const std::string& type_key = "")
   {
     // Client code must check that struct does not already exist!
-    // is_struct (types.h) requires 0 < sid < 0x3fff; running past the
-    // 14-bit field would silently encode garbage words
-    if (struct_id_max >= 0x3fff)
-      fatal("Struct type-id space exhausted (14-bit NaN-box field)");
-    registerRelation(name, new Relation(name, arity, struct_id_max++));
+    const u32 sid = allocateStructSid();
+    if (prepared_boundary) prepared_boundary->allocated_sids.insert(sid);
+    Relation* relation = new Relation(name, arity, sid);
+    if (!type_key.empty()) relation->setTypeKey(type_key);
+    registerRelation(name, relation);
   }
 
   // ---- version boundaries (docs/incremental.md §0.4-§0.5, B0) ----
 
   u32 currentPosition() { return pipeline_pos; }
-  void advancePosition() { ++pipeline_pos; }
+  void advancePosition()
+  {
+    ++pipeline_pos;
+    if (!prepared_boundary)
+    {
+      // Rename/drop/import, input-only VersionKeys, and legacy strata still
+      // mutate the live environment outside an N3 transaction.  The session
+      // deliberately re-adopts that environment before its next program, so
+      // the daemon must not compare the replacement complete catalog against
+      // a snapshot from before the legacy event.  A prepared boundary uses
+      // its own private catalog and advances the cursor directly.
+      catalog_declarations.clear();
+      catalog_memberships.clear();
+      current_boundary_key.clear();
+    }
+  }
   // -1 = latest (default); >= 0 = resolve getRelation at that position (set
   // around a re-entry push, B1).
   void setBindPosition(s64 p) { bind_pos = p; }
@@ -3466,6 +4243,7 @@ public:
     nv->initShards(thread_count);
     if (old->isLattice())
       nv->setLatticeFromSpec(old->latticeSpec(), cnode_arena);
+    nv->setTypeKey(old->getTypeKey());
     nv->copyInternAllocatorsFrom(*old);
     nv->copyTombstonesFrom(*old);   // M5: the dictionary is version state
     nv->ensureDefaultIndex();
@@ -3474,9 +4252,6 @@ public:
       nv->insertTupleAllIndices(row);
     });
     registerRelation(name, nv, old, version_key);
-    // the by-id memo must follow the latest version
-    if (nv->getStructId() > 0)
-      structs_by_id[nv->getStructId()] = nv;
     return nv;
   }
 
@@ -3496,8 +4271,8 @@ public:
     Relation* r = it->second;
     relations.erase(it);
     relations[to] = r;
-    rel_bindings[from].push_back({pipeline_pos, nullptr});
-    rel_bindings[to].push_back({pipeline_pos, r});
+    rel_bindings[from].push_back({pipeline_pos, nullptr, ""});
+    rel_bindings[to].push_back({pipeline_pos, r, ""});
     advancePosition();
     // sidecar rows recorded under either name are no longer trustworthy
     // seeds (§4.4.5: a rename severs; a re-declared name is a fresh chain)
@@ -3512,7 +4287,7 @@ public:
     if (it == relations.end())
       return false;
     relations.erase(it);
-    rel_bindings[name].push_back({pipeline_pos, nullptr});
+    rel_bindings[name].push_back({pipeline_pos, nullptr, ""});
     advancePosition();
     accelInvalidate(name);   // dropped rows must not resurrect as seeds
     return true;
@@ -3527,6 +4302,15 @@ public:
     // environment of the position being bound instead of the latest map.
     if (bind_pos >= 0)
       return getRelationAt(name, (u32)bind_pos);
+    // N3.1 program plugins resolve through the private prepared environment.
+    // Ordinary catalog/query paths use the public maps or exact public
+    // VersionKey index and therefore cannot observe this overlay.
+    if (prepared_boundary)
+    {
+      auto pit = prepared_boundary->environment.find(name);
+      if (pit != prepared_boundary->environment.end())
+        return pit->second;
+    }
     // find, not operator[]: a lookup of an undeclared name (e.g. the
     // generated SeqIndexTask registration probing for "$seq_atr" in a
     // stratum that never declared it) must NOT plant a null entry in the
@@ -3563,9 +4347,33 @@ public:
 
   Relation* getRelationByVersionKey(const std::string& key)
   {
-    auto it = version_key_ids.find(key);
-    return it == version_key_ids.end()
-      ? nullptr : getRelationByVersionId(it->second);
+    auto it = version_key_relations.find(key);
+    return it == version_key_relations.end() ? nullptr : it->second;
+  }
+
+  const BoundarySnapshot* getBoundary(const std::string& key) const
+  {
+    auto it = boundary_index.find(key);
+    return it == boundary_index.end() ? nullptr : &it->second;
+  }
+
+  Relation* getRelationAtBoundary(const std::string& name,
+                                  const std::string& key) const
+  {
+    const BoundarySnapshot* boundary = getBoundary(key);
+    if (boundary == nullptr) return nullptr;
+    auto it = boundary->environment.find(name);
+    return it == boundary->environment.end() ? nullptr : it->second;
+  }
+
+  const std::vector<std::string>& boundaryHistory() const
+  {
+    return boundary_history;
+  }
+
+  const std::string& currentBoundaryKey() const
+  {
+    return current_boundary_key;
   }
 
   void markLatestRelationsDirect()
@@ -3636,7 +4444,10 @@ public:
            + b.rel->getVersionKey() + "\" (schema "
            + std::to_string(b.rel->getArity()) + " "
            + std::to_string(b.rel->getStructId()) + " "
-           + (b.rel->isLattice() ? "lattice" : "set") + "))";
+           + (b.rel->isLattice() ? "lattice" : "set") + ")";
+        if (!b.boundary_key.empty())
+          s += " (boundary \"" + b.boundary_key + "\")";
+        s += ")";
       }
     }
     s += ")";
@@ -4025,6 +4836,59 @@ public:
     return rel_registry;
   }
 
+  const std::unordered_map<u32, TypeDescriptor*>& getTypeDescriptors() const
+  {
+    return types_by_sid;
+  }
+
+  TypeDescriptor* getTypeDescriptorBySid(u32 sid) const
+  {
+    auto found = types_by_sid.find(sid);
+    return found == types_by_sid.end() ? nullptr : found->second;
+  }
+
+  TypeDescriptor* getTypeDescriptorByKey(const std::string& key) const
+  {
+    auto found = types_by_key.find(key);
+    return found == types_by_key.end() ? nullptr : found->second;
+  }
+
+  // A descriptor has no intrinsic public name.  These projections choose a
+  // binding from the requested environment, deterministically when a legacy
+  // alias temporarily exposes more than one.
+  std::string currentTypeName(const TypeDescriptor& descriptor) const
+  {
+    std::string chosen;
+    for (const auto& binding : relations)
+      if (binding.second != nullptr
+          && binding.second->getStructId() == descriptor.sid
+          && (chosen.empty() || binding.first < chosen))
+        chosen = binding.first;
+    return chosen;
+  }
+
+  std::string typeNameAtBoundary(const TypeDescriptor& descriptor,
+                                 const std::string& boundary_key) const
+  {
+    if (boundary_key.empty()) return currentTypeName(descriptor);
+    const BoundarySnapshot* boundary = getBoundary(boundary_key);
+    if (boundary == nullptr) return "";
+    std::string chosen;
+    for (const auto& declaration : boundary->declarations)
+    {
+      const BoundaryCatalogDecl& decl = declaration.second;
+      if (!decl.storage || decl.kind != "struct") continue;
+      const bool same_type = !descriptor.type_key.empty()
+        ? decl.type_key == descriptor.type_key
+        : (boundary->environment.count(declaration.first)
+           && boundary->environment.at(declaration.first)->getStructId()
+                == descriptor.sid);
+      if (same_type && (chosen.empty() || declaration.first < chosen))
+        chosen = declaration.first;
+    }
+    return chosen;
+  }
+
   // Distinct-tuple count of a relation; 0 if unknown or index-free.
   u64 relationSize(const std::string& name)
   {
@@ -4034,14 +4898,16 @@ public:
 
   Relation* getStructById(u32 struct_id)
   {
-    if (struct_id > 0 && !structs_by_id.contains(struct_id))
+    if (prepared_boundary)
     {
-      for (auto& it : relations) 
-	if (it.second->getStructId() == struct_id)
-	  return structs_by_id[struct_id] = it.second;
+      auto overlay = prepared_boundary->type_storage.find(struct_id);
+      if (overlay != prepared_boundary->type_storage.end())
+        return overlay->second;
     }
-    else if (struct_id > 0)
-      return structs_by_id[struct_id];
+    auto descriptor = types_by_sid.find(struct_id);
+    if (descriptor != types_by_sid.end()
+        && descriptor->second->canonical_relation != nullptr)
+      return descriptor->second->canonical_relation;
 
     fatal("Could not find struct by id.");
     return 0;
@@ -4063,8 +4929,12 @@ public:
   u64 totalTuples()
   {
     u64 n = 0;
+    std::unordered_set<Relation*> seen;
+    if (prepared_boundary)
+      for (const auto& kv : prepared_boundary->environment)
+        if (seen.insert(kv.second).second) n += kv.second->tupleCount();
     for (const auto& kv : relations)
-      n += kv.second->tupleCount();
+      if (seen.insert(kv.second).second) n += kv.second->tupleCount();
     return n;
   }
 
@@ -4405,12 +5275,43 @@ public:
     continueStratum(s, unbounded, true, tofixpoint);
   }
 
-  std::string writeStructCSV(u64 v, u32 cdepth = 0)
+  std::string writeStructCSVAtBoundary(
+      u64 v, const std::string& boundary_key, u32 cdepth = 0)
   {
-    // We use std::string because we don't care about codepoints here and need mutability
-    u64 struct_id = decode_struct_id(v);
-    Relation* rel = getStructById(struct_id);
-    std::string tupstr = "(" + rel->getName() + " ";
+    const u32 struct_id = (u32)decode_struct_id(v);
+    TypeDescriptor* descriptor = getTypeDescriptorBySid(struct_id);
+    if (descriptor == nullptr)
+      fatal("Could not find TypeDescriptor for struct SID "
+            + std::to_string(struct_id));
+    Relation* rel = descriptor->canonical_relation;
+    if (!boundary_key.empty())
+    {
+      const BoundarySnapshot* boundary = getBoundary(boundary_key);
+      if (boundary == nullptr)
+        fatal("Could not find selected boundary " + boundary_key);
+      const std::string selected_name =
+        typeNameAtBoundary(*descriptor, boundary_key);
+      if (!selected_name.empty())
+      {
+        auto selected = boundary->environment.find(selected_name);
+        if (selected != boundary->environment.end()
+            && selected->second->getStructId() == struct_id)
+          rel = selected->second;
+      }
+    }
+    if (rel == nullptr)
+      fatal("TypeDescriptor has no canonical relation for struct SID "
+            + std::to_string(struct_id));
+
+    std::string display_name =
+      typeNameAtBoundary(*descriptor, boundary_key);
+    if (display_name.empty())
+      display_name = "<type "
+        + (descriptor->type_key.empty()
+             ? "sid:" + std::to_string(descriptor->sid)
+             : descriptor->type_key)
+        + ">";
+    std::string tupstr = "(" + display_name;
     const std::vector<u16>& ord = rel->getLookupIndex();
     std::vector<u16> rewrite_ord(ord.size(), 0);
     for (u16 i = 0; i < ord.size(); ++i)
@@ -4423,19 +5324,30 @@ public:
 
     // The lookup index leads with the id column (ord[0]==0); find the tuple
     // whose id == v (unique) and copy its columns (in index order).
+    bool found = false;
     node->forEach([&](const u64* t)
     {
       if (t[0] == v)
+      {
+        found = true;
 	for (u16 i = 0; i < rewrite_ord.size(); ++i)
 	  tuple[i] = t[i];
+      }
     });
+    if (!found)
+      fatal("Could not find struct instance in selected TypeDescriptor store");
 
     // Write tuple out in nominal order (fields nest one level deeper)
     for (u16 i = 1; i < rewrite_ord.size(); ++i)
-      tupstr += writeValCSV(tuple[rewrite_ord[i]], cdepth+1) + " ";
+      tupstr += " "
+        + writeValCSVAtBoundary(
+            tuple[rewrite_ord[i]], boundary_key, cdepth + 1);
+    return tupstr + ")";
+  }
 
-    tupstr[tupstr.size()-1] = ')';
-    return tupstr;
+  std::string writeStructCSV(u64 v, u32 cdepth = 0)
+  {
+    return writeStructCSVAtBoundary(v, "", cdepth);
   }
 
   // Render a collection canonically as {k:v k:v ...}, entries in the trie's
@@ -4444,7 +5356,8 @@ public:
   // so set entries print as k:1.  cdepth counts COLLECTION nesting (maps as
   // values of maps): the mutual recursion with writeValCSV is stack-bounded
   // only by nesting depth, so fail loudly rather than overflow.
-  std::string writeCNodeCSV(u64 v, u32 cdepth)
+  std::string writeCNodeCSV(
+      u64 v, u32 cdepth, const std::string& boundary_key = "")
   {
     // (Total value-nesting depth is bounded by the guard in writeValCSV, which
     // every recursion here passes back through.)
@@ -4454,7 +5367,8 @@ public:
     {
       if (!first) s += " ";
       first = false;
-      s += writeValCSV(k, cdepth+1) + ":" + writeValCSV(val, cdepth+1);
+      s += writeValCSVAtBoundary(k, boundary_key, cdepth + 1) + ":"
+        + writeValCSVAtBoundary(val, boundary_key, cdepth + 1);
     });
     return s + "}";
   }
@@ -4463,7 +5377,8 @@ public:
   // the chunked tree is a function of content alone (docs/sequences.md §2).
   // cdepth counts value nesting exactly as collections do; the mutual
   // recursion with writeValCSV is bounded by its depth guard.
-  std::string writeSeqCSV(u64 v, u32 cdepth)
+  std::string writeSeqCSV(
+      u64 v, u32 cdepth, const std::string& boundary_key = "")
   {
     std::string s = "[";
     bool first = true;
@@ -4471,12 +5386,13 @@ public:
     {
       if (!first) s += " ";
       first = false;
-      s += writeValCSV(w, cdepth+1);
+      s += writeValCSVAtBoundary(w, boundary_key, cdepth + 1);
     });
     return s + "]";
   }
 
-  std::string writeValCSV(u64 v, u32 cdepth = 0)
+  std::string writeValCSVAtBoundary(
+      u64 v, const std::string& boundary_key, u32 cdepth = 0)
   {
     // Bound the struct/collection render recursion so a pathologically deep
     // value (e.g. a ~4000-deep cons list) fails cleanly instead of SIGSEGV.
@@ -4495,11 +5411,11 @@ public:
       return s;
     }
     else if (is_struct(v))
-      return writeStructCSV(v, cdepth);
+      return writeStructCSVAtBoundary(v, boundary_key, cdepth);
     else if (is_cnode(v))
-      return writeCNodeCSV(v, cdepth);
+      return writeCNodeCSV(v, cdepth, boundary_key);
     else if (is_seq(v))
-      return writeSeqCSV(v, cdepth);
+      return writeSeqCSV(v, cdepth, boundary_key);
     else if (v == slog_lat_top)
       return "(top)";              // a flat lattice's top element
     else
@@ -4511,6 +5427,11 @@ public:
       fatal("Unrecognized basic value:\n" +std::format("{:b}",v));
       return "";
     }
+  }
+
+  std::string writeValCSV(u64 v, u32 cdepth = 0)
+  {
+    return writeValCSVAtBoundary(v, "", cdepth);
   }
   
   void writeAllFactsCSV(std::ostream& os,
@@ -4660,6 +5581,12 @@ public:
   {
     std::lock_guard<std::mutex> g(stats_mx);
     fire_counts[{rule_loc, variant}] += n;
+  }
+
+  void discardPendingStratumStats()
+  {
+    std::lock_guard<std::mutex> g(stats_mx);
+    fire_counts.clear();
   }
 
   Relation* ensureStatsRelation(const std::string& name, u32 arity)
@@ -4976,9 +5903,12 @@ public:
     for (const std::string& rname : s->dynamic_rels)
     {
       if (!rankTracked(s, rname)) continue;
-      auto rit = relations.find(rname);
-      if (rit == relations.end()) continue;
-      Relation* rel = rit->second;
+      // Resolve the instance this run actually executes against: an N3
+      // prepared boundary registers the program's output versions only in
+      // its private environment until commit, and maintenance re-entries
+      // bind exact historical versions -- the latest map sees neither.
+      Relation* rel = getRelation(rname);
+      if (rel == nullptr) continue;
       if (rel->getArity() == 0) continue;
       if (!rel->hasAnyLiveNominal())
       {
@@ -4998,9 +5928,10 @@ public:
     for (const std::string& rname : s->dynamic_rels)
     {
       if (!rankTracked(s, rname)) continue;
-      auto rit = relations.find(rname);
-      if (rit == relations.end()) continue;
-      Relation* rel = rit->second;
+      // Same resolution as rankMarkStratumEntry: the executing instance,
+      // not the public latest map (prepared boundaries, bound re-entries).
+      Relation* rel = getRelation(rname);
+      if (rel == nullptr) continue;
       const u16 arity = rel->getArity();
       if (arity == 0 || rel->rankState() != 1) continue;
       for (InsertBatch* b : rel->getDelta())
@@ -5256,7 +6187,6 @@ public:
       auto it = relations.find(name);
       if (it == relations.end())
       {
-        struct_id_max = std::max(struct_id_max, struct_id + 1);
         rel = registerRelation(name, new Relation(name, arity, struct_id));
         if (kind == "lat")
           rel->setLatticeFromSpec(lat_spec, cnode_arena);
@@ -6163,8 +7093,6 @@ public:
 	continue;
       }
 
-      struct_id_max = std::max(struct_id_max, struct_id+1);
-
       if (relations.find(name) != relations.end())
 	fatal(name + " appears to be a duplicated relation");
 
@@ -6288,8 +7216,7 @@ public:
       const std::string& d = dest_name(s);
       if (at_pos >= 0)
         return getRelationAt(d, (u32)at_pos);
-      auto it = relations.find(d);
-      return it == relations.end() ? nullptr : it->second;
+      return getRelation(d);
     };
 
     // Struct ids the dest already holds (the verbatim-loaded input heap), for
@@ -6335,7 +7262,7 @@ public:
 	addStruct(dest_name(kv.first), src->getArity());
       else
 	addRelation(dest_name(kv.first), src->getArity());
-      Relation* dst = relations[dest_name(kv.first)];
+      Relation* dst = getRelation(dest_name(kv.first));
       if (src->isLattice())
 	dst->setLatticeFromSpec(src->latticeSpec(), cnode_arena);
       dst->ensureDefaultIndex();
@@ -6731,8 +7658,12 @@ public:
   void reloadInsertBatches()
   {
     std::vector<Relation*> rels;
+    std::unordered_set<Relation*> seen;
+    if (prepared_boundary)
+      for (auto& p : prepared_boundary->environment)
+        if (seen.insert(p.second).second) rels.push_back(p.second);
     for (auto& p : relations)
-      rels.push_back(p.second);
+      if (seen.insert(p.second).second) rels.push_back(p.second);
     reloadRelations(rels, "reload");
   }
 

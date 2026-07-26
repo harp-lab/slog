@@ -6,11 +6,13 @@
 ;; access -- NO string splitting of payload fields (F criterion 4).  Checks:
 ;;
 ;;   - every (catalog-rel ...) record carries the full pinned field set
-;;     [name kind arity version-id version-key evaluation predecessor
+;;     [name kind arity version-id version-key boundary evaluation predecessor
 ;;      struct-id type-key lat-spec size temp] with well-typed values
 ;;     (strings for names/keys, naturals for ids/sizes, #f for absent);
 ;;   - every (catalog-planned ...) record carries [name version-key];
-;;   - every (catalog-type ...) record carries [sid name arity type-key];
+;;   - every (catalog-type ...) record carries [sid name|#f arity type-key];
+;;   - every (catalog-boundary ...) history record carries durable boundary
+;;     and program keys plus position/generation/relation-count naturals;
 ;;   - each stream's (catalog-end <n>) sentinel count equals the number of
 ;;     records that preceded it.
 ;;
@@ -47,10 +49,11 @@
   (check-typed rec 'arity exact-nonnegative-integer? "a natural")
   (check-typed rec 'version-id exact-nonnegative-integer? "a natural")
   (check-typed rec 'version-key string-or-f? "a string or #f")
+  (check-typed rec 'boundary string-or-f? "a BoundaryKey string or #f")
   (check-typed rec 'evaluation string-or-f? "a string or #f")
   (check-typed rec 'predecessor nat-or-f? "a natural or #f")
   (define sid (check-typed rec 'struct-id nat-or-f? "a natural or #f"))
-  (check-typed rec 'type-key not "#f (N3 fills it)")
+  (check-typed rec 'type-key string-or-f? "a durable TypeKey string or #f")
   (check-typed rec 'lat-spec string-or-f? "a string or #f")
   (check-typed rec 'size nat-or-f? "a natural or #f")
   (check-typed rec 'temp boolean? "a boolean")
@@ -63,9 +66,17 @@
 
 (define (check-type rec)
   (check-typed rec 'sid exact-positive-integer? "a positive integer")
-  (check-typed rec 'name string? "a string")
+  (check-typed rec 'name string-or-f? "a current name string or #f")
   (check-typed rec 'arity exact-nonnegative-integer? "a natural")
-  (check-typed rec 'type-key not "#f (N3 fills it)"))
+  (check-typed rec 'type-key string-or-f? "a durable TypeKey string or #f"))
+
+(define (check-boundary rec)
+  (check-typed rec 'boundary string? "a BoundaryKey string")
+  (check-typed rec 'program string? "a ProgramInstanceKey string")
+  (check-typed rec 'evaluation string? "an EvaluationId string")
+  (check-typed rec 'position exact-nonnegative-integer? "a natural")
+  (check-typed rec 'generation exact-nonnegative-integer? "a natural")
+  (check-typed rec 'relations exact-nonnegative-integer? "a natural"))
 
 (module+ main
   (define assertions (vector->list (current-command-line-arguments)))
@@ -85,6 +96,8 @@
                            (set! in-stream (add1 in-stream))]
         [(catalog-type)    (check-type rec)
                            (set! types (cons rec types))
+                           (set! in-stream (add1 in-stream))]
+        [(catalog-boundary)(check-boundary rec)
                            (set! in-stream (add1 in-stream))]
         [(catalog-end)
          (unless (and (= (length rec) 2) (equal? (cadr rec) in-stream))

@@ -1,7 +1,7 @@
 /** M5 struct intern-identity unit tests (docs/m5-contract.md).
  *
  * Standalone binary; not part of the golden suite.  Build + run:
- *   clang++ -O2 -Wall -std=c++20 -pthread -Idaemon tests/struct-identity-tests.cpp -o build/struct-identity-tests -lgmp
+ *   clang++ -O2 -Wall -std=c++20 -pthread -fopenmp -Idaemon tests/struct-identity-tests.cpp -o build/struct-identity-tests -lz -lgmp
  *   ./build/struct-identity-tests
  *
  * Covers the dictionary/membership split:
@@ -307,6 +307,102 @@ static void chain_reconstruction_tests()
   CHECK(v1->tombstoneCount() == 0, "resurrection consumed the mapping");
 }
 
+// N3-C: descriptors, rather than the latest name map, own TypeKey/SID
+// identity.  Explicit sparse root assignments occupy only their real slots;
+// fresh nominal types fill the lowest gaps.
+static void type_descriptor_gap_tests()
+{
+  const std::filesystem::path root =
+    std::filesystem::temp_directory_path()
+      / ("slog-n3c-sparse-" + std::to_string((u64)getpid()));
+  std::filesystem::remove_all(root);
+  std::filesystem::create_directories(
+    root / "struct.sparse.ten.arity.2.id.10");
+  std::filesystem::create_directories(
+    root / "struct.sparse.three.arity.2.id.3");
+
+  Database db(1);
+  db.loadDatabaseBIN(root.string() + "/");
+  CHECK(db.getRelation("sparse.ten")->getStructId() == 10
+        && db.getRelation("sparse.three")->getStructId() == 3,
+        "BIN load preserves sparse root SID assignments");
+
+  db.addStruct("gap.one", 2, "type:gap:one");
+  db.addStruct("gap.two", 2, "type:gap:two");
+  db.addStruct("gap.four", 2, "type:gap:four");
+  CHECK(db.getRelation("gap.one")->getStructId() == 1,
+        "lowest-free allocator fills SID 1");
+  CHECK(db.getRelation("gap.two")->getStructId() == 2,
+        "lowest-free allocator fills SID 2");
+  CHECK(db.getRelation("gap.four")->getStructId() == 4,
+        "lowest-free allocator skips occupied sparse SID 3");
+  CHECK(db.getTypeDescriptorBySid(10)->canonical_relation
+          == db.getRelation("sparse.ten"),
+        "sparse root SID directly resolves canonical storage");
+  CHECK(db.getTypeDescriptorByKey("type:gap:four")->sid == 4,
+        "fresh TypeKey directly resolves its lowest-gap SID");
+  std::filesystem::remove_all(root);
+}
+
+// The selected boundary chooses a constructor spelling.  Rename/drop never
+// retags a value word or destroys the descriptor/canonical store, and a fresh
+// declaration after drop consumes a different SID.
+static void type_descriptor_history_tests()
+{
+  Database db(1);
+  db.addStruct("Old.Const", 3, "type:n3c:const");
+  Relation* root = db.getRelation("Old.Const");
+  root->ensureDefaultIndex();
+  const u64 id = struct_encode(root->getStructId(), 1);
+  const u64 row[3] = {id, s32_encode(1), s32_encode(2)};
+  root->insertTupleAllIndices(row);
+
+  BoundaryCatalogDecl declaration;
+  declaration.name = "Old.Const";
+  declaration.kind = "struct";
+  declaration.arity = 3;
+  declaration.storage = true;
+  declaration.type_key = "type:n3c:const";
+  declaration.shape = "(declaration Old.Const struct)";
+  BoundaryRelationAction retain;
+  retain.kind = BoundaryActionK::retain;
+  retain.name = declaration.name;
+  retain.version_key = root->getVersionKey();
+  retain.type_key = declaration.type_key;
+  BoundaryAdmission prepared = db.prepareBoundary(
+    "boundary:n3c:old", "program:n3c", {declaration}, {}, {retain});
+  CHECK(prepared.ok, "historical struct boundary prepares");
+  CHECK(db.commitPreparedBoundary().ok, "historical struct boundary commits");
+
+  TypeDescriptor* descriptor =
+    db.getTypeDescriptorByKey("type:n3c:const");
+  CHECK(descriptor != nullptr && descriptor->sid == root->getStructId(),
+        "committed TypeKey retains its SID");
+  Relation* successor = db.newVersion("Old.Const", "version:n3c:successor");
+  CHECK(successor != nullptr && successor->getStructId() == descriptor->sid
+        && descriptor->canonical_relation == successor,
+        "successor advances canonical storage without changing identity");
+
+  CHECK(db.renameRelation("Old.Const", "New.Const"),
+        "legacy rename rebinds the constructor");
+  CHECK(db.writeValCSV(id) == "(New.Const 1 2)",
+        "current rendering uses the renamed binding");
+  CHECK(db.dropRelation("New.Const"), "legacy drop unbinds the constructor");
+  CHECK(db.currentTypeName(*descriptor).empty(),
+        "dropped descriptor has no current public name");
+  CHECK(db.writeValCSV(id) == "(<type type:n3c:const> 1 2)",
+        "unnamed current value uses explicit TypeKey rendering");
+  CHECK(db.writeValCSVAtBoundary(id, "boundary:n3c:old")
+          == "(Old.Const 1 2)",
+        "historical rendering uses the selected boundary name and storage");
+
+  db.addStruct("Fresh.Const", 3, "type:n3c:fresh");
+  CHECK(db.getRelation("Fresh.Const")->getStructId() != descriptor->sid,
+        "drop/redeclare mints a fresh TypeKey/SID pair");
+  CHECK(db.getTypeDescriptorBySid(descriptor->sid) == descriptor,
+        "history-only SID remains occupied and directly resolvable");
+}
+
 // Identity drift must be a loud fatal, not a silent dangling reference:
 // verbatim ingestion of retained content under a DIFFERENT id.
 static void drift_scenario()
@@ -328,15 +424,26 @@ static void double_install_scenario()
   r->installTombstone({1, 2}, struct_encode(1, 6));   // must fatal
 }
 
+static void duplicate_sid_scenario()
+{
+  Database db(1);
+  db.registerRelation("first", new Relation("first", 2, 7));
+  db.registerRelation("second", new Relation("second", 2, 7)); // must fatal
+}
+
 int main()
 {
   resurrection_tests();
   point_removal_tests();
   version_copy_tests();
   chain_reconstruction_tests();
+  type_descriptor_gap_tests();
+  type_descriptor_history_tests();
 
   CHECK(dies_fatally(drift_scenario), "mismatched-id verbatim insert fatals");
   CHECK(dies_fatally(double_install_scenario), "double-id install fatals");
+  CHECK(dies_fatally(duplicate_sid_scenario),
+        "duplicate live root SID fatals");
 
   std::cout << checks << " checks, " << failures << " failures" << std::endl;
   return failures == 0 ? 0 : 1;

@@ -33,7 +33,7 @@ baked directly into every stored tuple word:
 |---|---|---|---|
 | `s32` / `float` | the value itself | — | **Yes** — self-encoding, pass through untouched |
 | string (`is_str`) | 35-bit intern id | FNV low-21 bucket + collision **position** in bucket (`intern.h:95-142`) | **No** — order-dependent |
-| struct (`is_struct`) | 14-bit **type** id (bits 51:38) + 38-bit **instance** id (low 5 = bucket, rest = per-bucket counter) | type = declaration-order counter (`addStruct`→`struct_id_max++`); instance = `intern_allocators[bucket]` in `InternStructTask` | **No** — both are per-DB sequences |
+| struct (`is_struct`) | 14-bit **type** id (bits 51:38) + 38-bit **instance** id (low 5 = bucket, rest = per-bucket counter) | type = evaluation-local TypeDescriptor registry with lowest-free occupied SID; instance = `intern_allocators[bucket]` in `InternStructTask` | **No** — TypeKey is durable, but SID and instance ids are per evaluation |
 | collection node (`is_cnode`, intern tag 2 — NEW 2026-07-05, `daemon/arena.h`) | 35-bit intern id into the collection arena (`value.nodes/`) | content-hash low-26 bits + collision position, like strings | **No** — order-dependent; AND the node *contents* embed other id-space words |
 
 > **Merge addendum required (2026-07-05):** collection nodes are a FOURTH

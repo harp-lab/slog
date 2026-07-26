@@ -1081,6 +1081,25 @@ not discovered by scanning the current name map. A later cleanup can move the
 canonical intern pool fully out of relation-version storage if branching or
 GC requires it.
 
+*As built (N3-C, 2026-07-25):* `Database` owns pointer-stable
+`TypeDescriptor`s indexed directly by SID and TypeKey. A 16,383-bit occupancy
+map reserves SID 0 and allocates the lowest free member of `1..0x3ffe`; root
+BIN loads reserve their exact sparse assignments, committed history keeps an
+SID occupied after drop, and provisional SIDs remain conservatively burned
+after abort. The public descriptor advances to successor storage only at
+boundary commit. Prepared plugins instead resolve through a private
+SID-to-storage overlay, so abort cannot expose a TypeKey or replace the
+canonical intern relation.
+
+`(catalog types)` now enumerates the registry rather than current relation
+names. Its `name` projection is `#f` for a retained descriptor with no current
+binding. Struct rendering decodes SID through the descriptor, selects storage
+and constructor spelling from an explicit historical BoundaryKey when one is
+available, and prints an explicit `<type TypeKey>` constructor when no public
+name exists. N4 still owns persisted TypeKeys/catalogs and explicit
+source-TypeKey-to-destination-TypeKey import mapping; N3-C makes both load and
+import SID allocation gap-correct underneath that future metadata.
+
 #### 8.5.4 Persistence and import
 
 Add a catalog table to META (or a separately checksummed catalog file) with
@@ -1097,10 +1116,14 @@ one for a fresh destination namespace. Then reuse the shipped transitive word
 remapper. Import must never equate nominal types merely because declaration
 hashes match.
 
-There is no compatibility mode for catalog-less databases. The new format
-requires the complete catalog and rejects an input that lacks it. Slog is still
-free to change the on-disk format, so carrying a kind/arity-only shadow path
-would add complexity while weakening the design's guarantees.
+The target N4 format has no permanent compatibility mode for catalog-less
+databases: it requires the complete catalog and rejects an input that lacks
+it. N2-B has a narrower transition bridge while old roots still exist: before
+the first planned program it may adopt only currently live storage reachable
+from that program's exact declaration graph, using the daemon's current
+VersionKeys, and must reject a referenced storage declaration without a live
+key. This is not a kind/arity shadow catalog and is removed once N4 catalog
+persistence is the required input format.
 
 ### 8.6 API and diagnostics
 
@@ -1195,13 +1218,105 @@ patch followed by a long tail of special cases.
 5. Assign `ProgramInstanceKey`, `BoundaryKey`, `VersionKey`, and `TypeKey`
    slot tables; capture bindings and exact input VersionKeys in the recipe.
 
+**Checkpoint 2026-07-24 (N2-A — immutable catalog/boundary producer):**
+`compiler/catalog.rkt` is now the transport-free authority for normalized
+`TypeRef`, lattice, `DeclarationDescriptor`, `CatalogDelta`, catalog,
+boundary, and `BoundaryPlan` values. It consumes the existing N0 QName
+representation and a program's type environment, preserving exact field
+references, lattice/collection descriptors, union membership closure, and
+empty storage declarations. Boundary planning is a pure operation over an
+explicit input `C_k`/`E_k`: it validates the complete overlap and reference
+graph first, retains omitted/compatible members, adds missing members, gives
+new storage an initial slot, gives written existing storage one successor,
+and allocates new struct `TypeKey`s. Program, boundary, version, and type
+keys use caller-supplied LayerId/event inputs; every created relation/type
+slot is assigned once in sorted QName order and returned as an immutable slot
+table.
+
+`compiler/modules.rkt` now exports that normalized `CatalogDelta` producer and
+derives its legacy flat manifest from the same descriptors. The manifest is
+therefore a one-way code-generation ABI projection, not a second public
+declaration-shape implementation. Today's compiler-reserved `$...`
+supplementary relations remain an explicitly execution-only manifest appendix
+until N1 replaces that convention with internal IDs/path components, as
+required by §8.3. Anonymous lattice clamp names now encode non-QName
+characters deterministically (notably a negative/exponent sign) before
+entering the catalog. Eight focused cases plus the 266-case
+compiler unit suite pin empty initial members, retain/create/successor
+semantics, the new-and-written single-slot rule, additive membership,
+deterministic qualified slots, TypeKey retention, atomic incompatibility, and
+the public/internal legacy projection boundary.
+
+This is N2-A, not N2 completion: the current positional program tuples and
+live session still use the flat manifest ABI. N2-B must carry each program
+group's `CatalogDelta` and actual write set into this producer and retain the
+selected boundary in session/recipe state. N2-A deliberately does not add a
+shadow session head. If N2-B records a logical post-fixpoint head before N3,
+that bridge must remain explicitly non-atomic: only N3's prepared daemon
+overlay can couple logical and physical publication. N1 will later feed
+multi-instance qualified declarations into the same producer without
+changing its key allocation rules.
+
+**Checkpoint 2026-07-24 (N2-B — compile/session boundary bridge):**
+`compile-strata` now returns one `compile-group` per dependency-ordered
+program. The named value carries its stratum count, frozen imports,
+`CatalogDelta`, complete execution write set, and public catalog write set.
+Actual writes come from the same emitted-stratum sidecars and frozen relation
+directories used by execution. A write enters the public set only when its
+QName names storage in that group's delta, keeping `$...` support relations
+strictly outside the logical catalog. A declaration-only program therefore
+survives compilation as a zero-stratum group rather than disappearing.
+
+The session pure-plans the whole group chain before issuing a daemon request.
+Each immutable `BoundaryPlan` now carries its LayerId and program, boundary,
+and type events in addition to complete normalized delta, retain/create
+actions, exact predecessor VersionKeys, and deterministic slot tables.
+Recipes persist one plan beside each exact daemon VersionKey table. On replay,
+the source is compiled again and `replay-boundary-plan` reconstructs the plan
+from the selected input boundary; any mismatch in the persisted semantic
+datum is a typed `recipe-plan-mismatch` refusal. The older bare and
+version-events-only run recipe forms remain readable.
+
+After each group reaches fixpoint, `session-run!` publishes its logical
+output `C_k`/`E_k` and records the plan in boundary history. Open clears the
+old head and rebuilds it through recipe replay. Rename, drop, import/link, and
+input injection invalidate the head because N2 has no catalog transaction for
+those operations; the next run re-adopts the live environment. For an older
+catalog-less root, that adoption is intentionally narrow: start from storage
+which is actually live and present in the next delta, close through its
+declaration references, retain the daemon's exact VersionKeys, and refuse a
+referenced storage type which has no live key. It neither reconstructs nor
+invents declarations absent from the next program.
+
+This bridge preserves the N3 boundary rather than claiming it. The logical
+head advances only after successful fixpoint, but the legacy
+`begin-segment/keyed` mutation is not private or atomic; declaration-only
+initial slots are planned logically but are not materialized until a plugin
+registers them; and transition TypeKeys for adopted structs are not durable
+SID descriptors. N3 must replace those gaps with prepare/commit/abort, eager
+declaration of every planned empty member, direct VersionKey/BoundaryKey
+indexes, and durable TypeKey/SID records. N4 then persists the complete
+catalog independently of recipe source and removes transition adoption.
+
+Coverage now includes nine pure catalog cases, two compile-group cases, the
+269-test compiler unit tier, fresh and catalog-less save/replay probes, a
+declaration-only session boundary assertion, and all 605 session checks.
+
 ### N3: daemon boundary and type registry
 
 1. Add preflighted prepare/commit/abort boundary requests that declare missing
    members and open all planned initial/successor relation slots privately
-   until fixpoint.
+   until fixpoint. **Landed as N3-A (2026-07-25):** complete preflight, eager
+   empty slots, private plugin environment, terminal-fixpoint commit,
+   suspended-run abort/rollback, session integration, and durable TypeKey
+   re-adoption across legacy environment events.
 2. Index VersionKey directly and attach BoundaryKeys to binding events while
-   retaining numeric pipeline positions as runtime ordinals.
+   retaining numeric pipeline positions as runtime ordinals. **Landed as
+   N3-B (2026-07-25):** committed bindings carry BoundaryKey, each evaluation
+   owns a direct immutable boundary index plus ordered conservatively retained
+   history, and Q1 binds through the selected boundary before checking the
+   exact VersionKey. Numeric positions remain evaluation-local execution and
+   maintenance ordinals.
 3. Replace name-discovered `structs_by_id` with durable SID/TypeKey
    descriptors and a lowest-free SID bitmap; keep current struct relation
    storage behind the descriptor.

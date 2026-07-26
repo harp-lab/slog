@@ -27,6 +27,9 @@
 ;;   reenter:REL        direct replay-entry (refuses non-monotone cones)
 ;;   rerun:REL          direct clear-and-rerun
 ;;   pipeline           version chains + strata positions
+;;   boundary           logical N2 catalog/environment + plan count
+;;   daemon-boundaries  committed N3 daemon boundary history
+;;   daemon-current-boundary exact current N3 materialization snapshot
 ;;   sizes-at:P         sizes resolved at position P
 ;;   dump-rel:REL[,P]   dump REL (optionally at position P)
 ;;   sizes | schema     the existing unversioned actions
@@ -35,7 +38,9 @@
 ;; Run from the repository root.  SLOG_OPT=0 recommended (no hot-swap
 ;; logic here -- strata run whatever tier sbuild-runnable returns first).
 
-(require "../../compiler/session.rkt")
+(require "../../compiler/catalog.rkt"
+         "../../compiler/names.rkt"
+         "../../compiler/session.rkt")
 
 (define (num-or-str v) (or (string->number v) v))
 
@@ -44,6 +49,9 @@
     [(list "open" db) `(open ,db)]
     [(list "run" prog) `(run ,prog)]
     [(list "pipeline") `(pipeline)]
+    [(list "boundary") `(boundary)]
+    [(list "daemon-boundaries") `(daemon-boundaries)]
+    [(list "daemon-current-boundary") `(daemon-current-boundary)]
     [(list "recipe") `(recipe)]
     [(list "sizes") `(sizes)]
     [(list "schema") `(schema)]
@@ -243,6 +251,47 @@
       [`(dump-counts ,rel ,pp) (session-action! s `(dump-counts ,rel ,pp)
                                                 (echo-until #px"^\\(countdone "))]
       [`(pipeline) (session-action! s `(pipeline) echo-one-line)]
+      [`(boundary)
+       (define current (session-current-boundary s))
+       (writeln
+        (if current
+            `(catalog-boundary
+              (key ,(boundary-key current))
+              (plans ,(length (session-boundary-history s)))
+              (declarations
+               ,@(sort
+                  (map qname->symbol
+                       (hash-keys
+                        (catalog-declarations
+                         (boundary-catalog current))))
+                  symbol<?))
+              (versions
+               ,@(sort
+                  (map qname->symbol
+                       (hash-keys (boundary-environment current)))
+                  symbol<?)))
+            `(catalog-boundary #f
+                               (plans ,(length
+                                        (session-boundary-history s))))))]
+      [`(daemon-boundaries)
+       (for ([line (in-list
+                    (session-command-stream!
+                     s '(catalog boundaries)
+                     (lambda (line)
+                       (regexp-match? #px"^\\(catalog-end [0-9]+\\)$"
+                                      line))))])
+         (displayln line))]
+      [`(daemon-current-boundary)
+       (define current (session-current-boundary s))
+       (unless current
+         (error 'session-drive "no current committed boundary"))
+       (for ([line (in-list
+                    (session-command-stream!
+                     s `(catalog boundary ,(boundary-key current))
+                     (lambda (line)
+                       (regexp-match? #px"^\\(catalog-end [0-9]+\\)$"
+                                      line))))])
+         (displayln line))]
       [`(recipe) (writeln (session-recipe s))]
       [`(sizes-at ,p) (session-action! s `(sizes-at ,p) echo-one-line)]
       [`(dump-rel ,rel) (session-action! s `(dump-rel ,rel)

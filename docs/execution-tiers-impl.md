@@ -287,13 +287,19 @@ then parsed, sealed, VersionKey-bound, paged, and executed by the C++ battery;
 malformed dense slots, wrong ABI, and same-name/wrong-VersionKey bindings are
 typed refusals.
 
-This is a typed T0 builder boundary, not a second command path. At this
-checkpoint the tree had neither N2/N3's persistent boundary-catalog producer
-nor T0's generic dispatcher. Slice (a)'s dispatcher has since landed; the
-query verbs remain reserved until the real N2/N3 producer can embed this
-payload unchanged under `query` and own `query-page`/`query-cancel` admission.
-R2 still needs its parser/register, rendering/dump, and protocol transcripts
-over that surface.
+At this checkpoint the tree had neither N2/N3's persistent boundary-catalog
+producer nor T0's generic dispatcher. The dispatcher has since landed and, as
+of 2026-07-23, embeds this payload unchanged under `query`, checks generation
+and quiescent phase admission, binds exact VersionKeys, and owns
+`query-page`/`query-cancel`. One connection-scoped cursor refuses every
+non-query command/plugin path until completion or cancellation. Structured
+row/page sentinels and the protocol transcript are now live. N3-B now supplies
+live committed BoundaryKey/catalog authority: binding first selects the direct
+boundary snapshot, then checks each QName's exact VersionKey. N3-C now
+supplies the independent SID/TypeKey descriptor registry and boundary-aware
+historical struct rendering. N4 still owns persistence of that history and
+the REPL still owns checked `#N` value-handle lifetimes before R2 can expose
+rich expandable typed values.
 
 **Update 2026-07-19 (T2-B normal `once`/`seeded` landed):** normal plans now
 seal both unit-driver forms. Bound-rule registration carries an explicit

@@ -16,6 +16,10 @@ impl Editor {
         self.text.is_empty()
     }
 
+    pub fn cursor(&self) -> usize {
+        self.cursor
+    }
+
     pub fn insert(&mut self, value: &str) {
         self.text.insert_str(self.cursor, value);
         self.cursor += value.len();
@@ -24,6 +28,14 @@ impl Editor {
     pub fn replace(&mut self, value: String) {
         self.cursor = value.len();
         self.text = value;
+    }
+
+    pub fn replace_range(&mut self, start: usize, end: usize, value: &str) {
+        assert!(start <= end);
+        assert!(self.text.is_char_boundary(start));
+        assert!(self.text.is_char_boundary(end));
+        self.text.replace_range(start..end, value);
+        self.cursor = start + value.len();
     }
 
     pub fn clear(&mut self) {
@@ -126,5 +138,19 @@ mod tests {
         let mut editor = Editor::default();
         editor.insert("測試");
         assert_eq!(editor.visual_cursor(20), (4, 0));
+    }
+
+    #[test]
+    fn completion_replaces_a_token_and_places_the_cursor_after_it() {
+        let mut editor = Editor::default();
+        editor.insert("open al tail");
+        editor.move_left();
+        editor.move_left();
+        editor.move_left();
+        editor.move_left();
+        editor.move_left();
+        editor.replace_range(5, 7, "alpha");
+        assert_eq!(editor.text(), "open alpha tail");
+        assert_eq!(editor.cursor(), 10);
     }
 }

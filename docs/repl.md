@@ -165,8 +165,8 @@ friendly QName.
 
 ## 5. Printing values with expandable `#N` leaves
 
-The daemon can decode a struct word only by its evaluation-local SID. The
-target registry is:
+The daemon decodes a struct word by its evaluation-local SID. N3-C supplies
+the registry:
 
 ```text
 SID -> TypeDescriptor(TypeKey, arity, canonical lookup)
@@ -228,10 +228,11 @@ recognize repeated nodes and reuse one `#N` rather than expand shared subtrees
 again. Relation lookup uses the same printer, making large rows browsable
 without a second value-inspection facility.
 
-The current daemon's `structs_by_id` cache follows the latest `Relation*` and
-can discover uncached SIDs only by scanning current names. Modules must replace
-that with a descriptor that survives rename/drop before historical value
-inspection is reliable.
+The N3-C daemon registry survives rename/drop and boundary-aware rendering now
+chooses a historical constructor name without scanning current names. The
+remaining REPL work here is the checked `#N` handle table, aliasing TypeKeys as
+`@tN`, and applying the independent expansion budgets above; descriptor
+identity itself is no longer the blocker.
 
 ## 6. A small daemon debugging protocol
 

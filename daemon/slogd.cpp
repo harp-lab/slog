@@ -41,13 +41,16 @@
 #include "daemon.h"
 #include "plan-count.h"
 #include "protocol.h"
+#include "query.h"
 
 #include <dlfcn.h>
 #include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <initializer_list>
 #include <limits>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <map>
 #include <memory>
@@ -173,12 +176,23 @@ struct ProvisionalStratum
     std::vector<std::string> sccs;
 };
 
+struct ActiveCommandQuery
+{
+    std::string id;
+    std::string boundary_key;
+    std::unique_ptr<slog::query::Context> context;
+};
+
 struct CommandBuilders
 {
     std::map<std::string, ProvisionalScc> provisional_sccs;
     std::map<std::string,
              std::shared_ptr<const slog::interp::SealedKernelPlan>> sealed_sccs;
     std::map<std::string, ProvisionalStratum> provisional_strata;
+    // Q1 v1 admits one read-only cursor per database.  Keeping its client id
+    // and continuation here makes the cursor connection-scoped just like the
+    // T0 builders: EOF/cable loss discards it rather than leaking server state.
+    std::unique_ptr<ActiveCommandQuery> active_query;
 };
 
 using CommandFields =
@@ -241,6 +255,284 @@ static bool parse_object_id(const slog::sexp::SExp& value, std::string& id)
         || !symbol_safe(value.text))
         return false;
     id = value.text;
+    return true;
+}
+
+static bool parse_string_value(const slog::sexp::SExp& value,
+                               std::string& out)
+{
+    if (value.kind != slog::sexp::SExp::K::string || value.text.empty())
+        return false;
+    out = value.text;
+    return true;
+}
+
+static bool parse_optional_string(const slog::sexp::SExp& value,
+                                  std::string& out)
+{
+    if (value.kind == slog::sexp::SExp::K::atom && value.text == "#f")
+    {
+        out.clear();
+        return true;
+    }
+    return parse_string_value(value, out);
+}
+
+static bool qname_component_safe(const std::string& component)
+{
+    if (component.empty()
+        || !((component[0] >= 'A' && component[0] <= 'Z')
+             || (component[0] >= 'a' && component[0] <= 'z')
+             || (component[0] >= '0' && component[0] <= '9')
+             || component[0] == '_'))
+        return false;
+    for (char c : component)
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+              || (c >= '0' && c <= '9') || c == '_' || c == '\''))
+            return false;
+    return true;
+}
+
+// The wire retains QName components structurally.  Lowering joins them once
+// after validation; no daemon path splits dotted names.
+static bool parse_qname(const slog::sexp::SExp& value, std::string& out)
+{
+    if (value.kind != slog::sexp::SExp::K::list
+        || value.children.size() < 2
+        || value.children[0].kind != slog::sexp::SExp::K::atom
+        || value.children[0].text != "qname")
+        return false;
+    out.clear();
+    for (size_t i = 1; i < value.children.size(); ++i)
+    {
+        const auto& component = value.children[i];
+        if (component.kind != slog::sexp::SExp::K::string
+            || !qname_component_safe(component.text))
+            return false;
+        if (!out.empty()) out.push_back('.');
+        out += component.text;
+    }
+    return true;
+}
+
+namespace {
+constexpr u64 QUERY_MAX_PAGE_SIZE = 10000;
+constexpr u64 QUERY_STEP_BUDGET = 100000;
+constexpr u64 QUERY_CURSOR_WORK_BUDGET = 4096;
+}
+
+static void refuse_query_parse(slog::Daemon* d, const std::string& verb,
+                               const std::string& detail)
+{
+    refuse(d, "parse", "(verb " + verb + ") (detail "
+           + slog::protocol::quoteString(detail) + ")");
+}
+
+static void refuse_query_state(slog::Daemon* d, const std::string& verb,
+                               const std::string& id,
+                               const std::string& detail)
+{
+    refuse(d, "query-state", "(verb " + verb + ") (query " + id
+           + ") (detail " + slog::protocol::quoteString(detail) + ")");
+}
+
+static bool parse_query_id(slog::Daemon* d, const std::string& verb,
+                           const slog::sexp::SExp& value, std::string& id)
+{
+    if (parse_object_id(value, id)) return true;
+    refuse_query_parse(d, verb, "query id must be a protocol-safe symbol");
+    return false;
+}
+
+static bool parse_query_page(slog::Daemon* d, const std::string& verb,
+                             const slog::sexp::SExp& field, u64& page_size)
+{
+    if (field.kind != slog::sexp::SExp::K::list
+        || field.children.size() != 2
+        || field.children[0].kind != slog::sexp::SExp::K::atom
+        || field.children[0].text != "page"
+        || !parse_u64_atom(field.children[1], page_size))
+    {
+        refuse_query_parse(d, verb, "expected (page N)");
+        return false;
+    }
+    if (page_size == 0 || page_size > QUERY_MAX_PAGE_SIZE)
+    {
+        refuse(d, "query-pagination", "(verb " + verb + ") (page "
+               + std::to_string(page_size) + ") (maximum "
+               + std::to_string(QUERY_MAX_PAGE_SIZE) + ")");
+        return false;
+    }
+    return true;
+}
+
+static const char* query_status_name(slog::query::Status status)
+{
+    switch (status)
+    {
+        case slog::query::Status::page:      return "page";
+        case slog::query::Status::paused:    return "paused";
+        case slog::query::Status::complete:  return "complete";
+        case slog::query::Status::cancelled: return "cancelled";
+    }
+    return "cancelled";
+}
+
+static slog::query::Admission query_admission(slog::Database* db)
+{
+    // Commands are dispatched synchronously between continue calls, so the
+    // only live RunState observations are idle or one of the two parked read
+    // snapshots.  The engine retains read_complete/write_or_intern labels for
+    // the future pre-commit dispatcher; do not fabricate either state here.
+    if (!db->isSuspended()) return slog::query::Admission::idle;
+    return db->suspendPosition() == slog::RUN_MID_READ
+         ? slog::query::Admission::mid_read
+         : slog::query::Admission::boundary;
+}
+
+static std::string_view query_payload(const std::string& line,
+                                      const slog::sexp::SExp& form)
+{
+    const size_t begin = form.children[2].offset;
+    size_t end = form.children[3].offset;
+    while (end > begin
+           && std::isspace(static_cast<unsigned char>(line[end - 1])))
+        --end;
+    return std::string_view(line).substr(begin, end - begin);
+}
+
+static void emit_query_page(slog::Daemon* d, CommandBuilders& state,
+                            slog::query::Page page)
+{
+    const std::string id = state.active_query->id;
+    for (const auto& row : page.rows)
+    {
+        // Preserve column boundaries for every Slog value, including strings,
+        // structs, maps, and sequences whose ordinary rendering contains
+        // whitespace. N3-C renders structs against this query's selected
+        // boundary; R2's future checked value-handle adapter can enrich the
+        // keyed field without teaching the command reader Slog's value grammar.
+        std::string record = "(query-row " + id + " (values";
+        for (u64 value : row)
+            record += " " + slog::protocol::quoteString(
+                d->db()->writeValCSVAtBoundary(
+                    value, state.active_query->boundary_key));
+        d->emit(record + "))");
+    }
+    d->emit("(query-end " + id + " " + query_status_name(page.status)
+            + " (rows " + std::to_string(page.rows.size()) + ") (matched "
+            + std::to_string(page.matched) + "))");
+    if (page.status == slog::query::Status::complete
+        || page.status == slog::query::Status::cancelled)
+        state.active_query.reset();
+}
+
+static void emit_next_query_page(slog::Daemon* d, CommandBuilders& state,
+                                 u64 page_size)
+{
+    slog::query::Page page = state.active_query->context->next(
+        page_size, QUERY_STEP_BUDGET, QUERY_CURSOR_WORK_BUDGET);
+    emit_query_page(d, state, std::move(page));
+}
+
+static bool dispatch_query_command(slog::Daemon* d, CommandBuilders& state,
+                                   const slog::sexp::SExp& form,
+                                   const std::string& line,
+                                   const std::string& verb)
+{
+    if (verb != "query" && verb != "query-page" && verb != "query-cancel")
+        return false;
+
+    const size_t argc = form.children.size() - 1;
+    const size_t expected = verb == "query" ? 3
+                          : verb == "query-page" ? 2 : 1;
+    if (argc != expected)
+    {
+        refuse_query_parse(d, verb,
+            verb == "query"
+              ? "expected (query ID QUERY_PLAN (page N))"
+              : verb == "query-page"
+                  ? "expected (query-page ID (page N))"
+                  : "expected (query-cancel ID)");
+        return true;
+    }
+
+    std::string id;
+    if (!parse_query_id(d, verb, form.children[1], id))
+        return true;
+
+    if (verb == "query-cancel")
+    {
+        if (!state.active_query || state.active_query->id != id)
+        {
+            refuse_query_state(d, verb, id, "no active query with this id");
+            return true;
+        }
+        const u64 matched = state.active_query->context->matched();
+        state.active_query->context->cancel();
+        d->emit("(query-end " + id
+                + " cancelled (rows 0) (matched "
+                + std::to_string(matched) + "))");
+        state.active_query.reset();
+        return true;
+    }
+
+    u64 page_size = 0;
+    const size_t page_field = verb == "query" ? 3 : 2;
+    if (!parse_query_page(d, verb, form.children[page_field], page_size))
+        return true;
+
+    if (verb == "query-page")
+    {
+        if (!state.active_query || state.active_query->id != id)
+        {
+            refuse_query_state(d, verb, id, "no active query with this id");
+            return true;
+        }
+        try
+        {
+            emit_next_query_page(d, state, page_size);
+        }
+        catch (const slog::query::Error& exception)
+        {
+            state.active_query.reset();
+            refuse(d, slog::query::error_class(exception.kind()),
+                   "(verb query-page) (query " + id + ") (detail "
+                   + slog::protocol::quoteString(exception.what()) + ")");
+        }
+        return true;
+    }
+
+    if (state.active_query)
+    {
+        refuse(d, "query-admission", "(verb query) (query " + id
+               + ") (active " + state.active_query->id + ")");
+        return true;
+    }
+
+    try
+    {
+        const slog::query::DecodedPlan decoded =
+            slog::query::parse_plan(query_payload(line, form));
+        if (!d->checkCommandGeneration(decoded.generation, "query"))
+            return true;
+        slog::query::SealedRequest sealed = slog::query::seal(decoded);
+        auto bound = slog::query::bind(sealed, *d->db());
+        auto active = std::make_unique<ActiveCommandQuery>();
+        active->id = id;
+        active->boundary_key = sealed.boundary_key;
+        active->context = std::make_unique<slog::query::Context>(
+            *d->db(), std::move(bound), query_admission(d->db()));
+        state.active_query = std::move(active);
+        emit_next_query_page(d, state, page_size);
+    }
+    catch (const slog::query::Error& exception)
+    {
+        state.active_query.reset();
+        refuse(d, slog::query::error_class(exception.kind()),
+               "(verb query) (query " + id + ") (detail "
+               + slog::protocol::quoteString(exception.what()) + ")");
+    }
     return true;
 }
 
@@ -578,23 +870,327 @@ static bool dispatch_builder_command(slog::Daemon* d, CommandBuilders& state,
     return true;
 }
 
+static void refuse_boundary_parse(slog::Daemon* d, const std::string& verb,
+                                  const std::string& detail)
+{
+    refuse(d, "parse", "(verb " + verb + ") (detail "
+           + slog::protocol::quoteString(detail) + ")");
+}
+
+static bool singleton_field(const CommandFields& fields, const char* key,
+                            const slog::sexp::SExp*& value)
+{
+    auto it = fields.find(key);
+    if (it == fields.end() || it->second->children.size() != 2)
+        return false;
+    value = &it->second->children[1];
+    return true;
+}
+
+static bool parse_boundary_declaration(
+    const slog::sexp::SExp& form, slog::BoundaryCatalogDecl& out,
+    std::string& error)
+{
+    if (form.kind != slog::sexp::SExp::K::list
+        || form.children.empty()
+        || form.children[0].kind != slog::sexp::SExp::K::atom
+        || form.children[0].text != "declare")
+    {
+        error = "declarations must contain (declare ...) records";
+        return false;
+    }
+    CommandFields fields;
+    if (!collect_fields(form, 1,
+          {"qname", "kind", "arity", "type-key", "lat-spec", "shape"},
+          fields, error)
+        || fields.size() != 6)
+    {
+        if (error.empty()) error = "declare requires six keyed fields";
+        return false;
+    }
+    const slog::sexp::SExp* value = nullptr;
+    if (!singleton_field(fields, "qname", value)
+        || !parse_qname(*fields.at("qname"), out.name))
+    {
+        error = "declare requires a structured (qname \"component\" ...)";
+        return false;
+    }
+    if (!singleton_field(fields, "kind", value)
+        || value->kind != slog::sexp::SExp::K::atom
+        || (value->text != "table" && value->text != "struct"
+            && value->text != "enum" && value->text != "union"
+            && value->text != "lattice" && value->text != "list"
+            && value->text != "map"))
+    {
+        error = "declare kind is not in the N3 catalog vocabulary";
+        return false;
+    }
+    out.kind = value->text;
+    out.storage = out.kind == "table" || out.kind == "struct";
+
+    if (!singleton_field(fields, "arity", value))
+    {
+        error = "declare requires one arity value";
+        return false;
+    }
+    u64 arity = 0;
+    if (value->kind == slog::sexp::SExp::K::atom && value->text == "#f")
+    {
+        if (out.storage)
+        {
+            error = "storage declaration arity cannot be #f";
+            return false;
+        }
+    }
+    else if (!parse_u64_atom(*value, arity)
+             || arity > std::numeric_limits<u16>::max())
+    {
+        error = "declare arity must be #f or an unsigned 16-bit integer";
+        return false;
+    }
+    out.arity = (u16)arity;
+    if (!singleton_field(fields, "type-key", value)
+        || !parse_optional_string(*value, out.type_key)
+        || !singleton_field(fields, "lat-spec", value)
+        || !parse_optional_string(*value, out.lat_spec)
+        || !singleton_field(fields, "shape", value)
+        || !parse_string_value(*value, out.shape))
+    {
+        error = "declare TypeKey/lat-spec/shape fields are malformed";
+        return false;
+    }
+    return true;
+}
+
+static bool parse_boundary_action(
+    const slog::sexp::SExp& form, slog::BoundaryRelationAction& out,
+    std::string& error)
+{
+    if (form.kind != slog::sexp::SExp::K::list
+        || form.children.empty()
+        || form.children[0].kind != slog::sexp::SExp::K::atom)
+    {
+        error = "actions must be nonempty records";
+        return false;
+    }
+    const std::string& kind = form.children[0].text;
+    CommandFields fields;
+    if (kind == "internal-create")
+    {
+        if (!collect_fields(form, 1, {"name", "version-key"}, fields, error)
+            || fields.size() != 2)
+        {
+            if (error.empty())
+                error = "internal-create requires name and VersionKey";
+            return false;
+        }
+        const slog::sexp::SExp* value = nullptr;
+        if (!singleton_field(fields, "name", value)
+            || !parse_string_value(*value, out.name)
+            || !singleton_field(fields, "version-key", value)
+            || !parse_string_value(*value, out.version_key))
+        {
+            error = "internal-create fields are malformed";
+            return false;
+        }
+        out.kind = slog::BoundaryActionK::internal_create;
+        return true;
+    }
+    if (kind != "retain" && kind != "create")
+    {
+        error = "action kind must be retain, create, or internal-create";
+        return false;
+    }
+    if (!collect_fields(form, 1,
+          {"qname", "version-key", "predecessor", "type-key"},
+          fields, error)
+        || fields.size() != 4)
+    {
+        if (error.empty()) error = "relation action requires four keyed fields";
+        return false;
+    }
+    const slog::sexp::SExp* value = nullptr;
+    if (!singleton_field(fields, "qname", value)
+        || !parse_qname(*fields.at("qname"), out.name)
+        || !singleton_field(fields, "version-key", value)
+        || !parse_string_value(*value, out.version_key)
+        || !singleton_field(fields, "predecessor", value)
+        || !parse_optional_string(*value, out.predecessor)
+        || !singleton_field(fields, "type-key", value)
+        || !parse_optional_string(*value, out.type_key))
+    {
+        error = "relation action fields are malformed";
+        return false;
+    }
+    out.kind = kind == "retain"
+      ? slog::BoundaryActionK::retain : slog::BoundaryActionK::create;
+    return true;
+}
+
+static bool dispatch_boundary_command(slog::Daemon* d,
+                                      const slog::sexp::SExp& form,
+                                      const std::string& verb)
+{
+    if (verb != "prepare-boundary" && verb != "commit-boundary"
+        && verb != "abort-boundary")
+        return false;
+
+    if (verb == "prepare-boundary")
+    {
+        CommandFields fields;
+        std::string error;
+        if (!collect_fields(form, 1,
+              {"generation", "boundary", "program", "declarations",
+               "memberships", "actions"},
+              fields, error)
+            || fields.size() != 6)
+        {
+            refuse_boundary_parse(
+              d, verb, error.empty()
+                ? "requires generation, boundary, program, declarations, "
+                  "memberships, and actions"
+                : error);
+            return true;
+        }
+        u64 generation = 0;
+        if (!parse_generation(fields, generation))
+        {
+            refuse_boundary_parse(d, verb,
+                                   "generation must be one unsigned integer");
+            return true;
+        }
+        if (!d->checkCommandGeneration(generation, verb.c_str())) return true;
+
+        const slog::sexp::SExp* value = nullptr;
+        std::string boundary, program;
+        if (!singleton_field(fields, "boundary", value)
+            || !parse_string_value(*value, boundary)
+            || !singleton_field(fields, "program", value)
+            || !parse_string_value(*value, program))
+        {
+            refuse_boundary_parse(
+              d, verb, "boundary and program keys must be nonempty strings");
+            return true;
+        }
+
+        std::vector<slog::BoundaryCatalogDecl> declarations;
+        const auto& declaration_field = *fields.at("declarations");
+        for (size_t i = 1; i < declaration_field.children.size(); ++i)
+        {
+            slog::BoundaryCatalogDecl declaration;
+            if (!parse_boundary_declaration(
+                    declaration_field.children[i], declaration, error))
+            {
+                refuse_boundary_parse(d, verb, error);
+                return true;
+            }
+            declarations.push_back(std::move(declaration));
+        }
+
+        std::set<std::pair<std::string, std::string>> memberships;
+        const auto& membership_field = *fields.at("memberships");
+        for (size_t i = 1; i < membership_field.children.size(); ++i)
+        {
+            const auto& member = membership_field.children[i];
+            std::string child, parent;
+            if (member.kind != slog::sexp::SExp::K::list
+                || member.children.size() != 3
+                || member.children[0].kind != slog::sexp::SExp::K::atom
+                || member.children[0].text != "member"
+                || !parse_qname(member.children[1], child)
+                || !parse_qname(member.children[2], parent)
+                || !memberships.insert({child, parent}).second)
+            {
+                refuse_boundary_parse(
+                  d, verb, "memberships contain a malformed or duplicate member");
+                return true;
+            }
+        }
+
+        std::vector<slog::BoundaryRelationAction> actions;
+        const auto& action_field = *fields.at("actions");
+        for (size_t i = 1; i < action_field.children.size(); ++i)
+        {
+            slog::BoundaryRelationAction action;
+            if (!parse_boundary_action(action_field.children[i], action, error))
+            {
+                refuse_boundary_parse(d, verb, error);
+                return true;
+            }
+            actions.push_back(std::move(action));
+        }
+
+        const slog::BoundaryAdmission result = d->prepareBoundary(
+          boundary, program, declarations, memberships, actions);
+        if (!result.ok)
+            refuse(d, result.refusal_class.c_str(),
+                   "(verb prepare-boundary) (boundary "
+                   + slog::protocol::quoteString(boundary) + ") (detail "
+                   + slog::protocol::quoteString(result.detail) + ")");
+        else
+            d->emit("(boundary-prepared " + std::to_string(generation)
+                    + " (boundary " + slog::protocol::quoteString(boundary)
+                    + ") (program " + slog::protocol::quoteString(program)
+                    + ") (position " + std::to_string(result.position)
+                    + ") (created " + std::to_string(result.created) + "))");
+        return true;
+    }
+
+    CommandFields fields;
+    std::string error;
+    if (!collect_fields(form, 1, {"generation", "boundary"}, fields, error)
+        || fields.size() != 2)
+    {
+        refuse_boundary_parse(
+          d, verb, error.empty()
+            ? "requires generation and boundary fields" : error);
+        return true;
+    }
+    u64 generation = 0;
+    const slog::sexp::SExp* value = nullptr;
+    std::string boundary;
+    if (!parse_generation(fields, generation)
+        || !singleton_field(fields, "boundary", value)
+        || !parse_string_value(*value, boundary))
+    {
+        refuse_boundary_parse(
+          d, verb, "generation/boundary fields are malformed");
+        return true;
+    }
+    if (!d->checkCommandGeneration(generation, verb.c_str())) return true;
+    const slog::BoundaryAdmission result =
+      verb == "commit-boundary"
+        ? d->commitBoundary(boundary) : d->abortBoundary(boundary);
+    if (!result.ok)
+        refuse(d, result.refusal_class.c_str(),
+               "(verb " + verb + ") (boundary "
+               + slog::protocol::quoteString(boundary) + ") (detail "
+               + slog::protocol::quoteString(result.detail) + ")");
+    else if (verb == "commit-boundary")
+        d->emit("(boundary-committed "
+                + std::to_string(d->commandGeneration()) + " (boundary "
+                + slog::protocol::quoteString(boundary) + ") (position "
+                + std::to_string(result.position) + ") (created "
+                + std::to_string(result.created) + "))");
+    else
+        d->emit("(boundary-aborted " + std::to_string(d->commandGeneration())
+                + " (boundary " + slog::protocol::quoteString(boundary)
+                + ") (position " + std::to_string(result.position)
+                + ") (discarded " + std::to_string(result.created) + "))");
+    return true;
+}
+
 // Reserved verb families: the parser recognizes them and answers
 // `reserved-verb` -- distinct from `unknown-verb`, so a client can tell
 // "not yet" from "never" (contract, "Reply and refusal doctrine").
 static const char* reserved_family(const std::string& verb)
 {
     struct ReservedVerb { const char* verb; const char* family; };
-    // N3 transactional boundaries (roadmap P3; modules.md §10 N3); Q1 paged
-    // queries (execution-tiers §6.4); watch management (repl.md §6 spellings,
-    // ratified 2026-07-15 -- deferred past T0, slice (d) tees up the pause
-    // machinery they ride); T5 debugger stepping (execution-tiers §9 sketch).
+    // Watch management (repl.md §6 spellings, ratified 2026-07-15 -- deferred past
+    // T0, slice (d) tees up the pause machinery they ride); T5 debugger
+    // stepping (execution-tiers §9 sketch). Q1's canonical payload dispatcher
+    // is active below; friendly R2 parsing still waits for N2/N3 identity.
     static const ReservedVerb reserved[] = {
-        { "prepare-boundary", "boundary" },
-        { "commit-boundary",  "boundary" },
-        { "abort-boundary",   "boundary" },
-        { "query",            "query"    },
-        { "query-page",       "query"    },
-        { "query-cancel",     "query"    },
         { "watch",            "watch"    },
         { "unwatch",          "watch"    },
         { "subscribe",        "watch"    },
@@ -609,47 +1205,62 @@ static const char* reserved_family(const std::string& verb)
     return nullptr;
 }
 
+static std::string catalog_relation_record(
+    const std::string& name, slog::Relation* r,
+    const std::string& boundary_key)
+{
+    using slog::protocol::quoteString;
+    const char* kind = r->getStructId() > 0 ? "struct"
+                     : r->isLattice()       ? "lat"
+                                            : "table";
+    return "(catalog-rel (name " + quoteString(name) + ")"
+        + " (kind " + kind + ")"
+        + " (arity " + std::to_string(r->getArity()) + ")"
+        + " (version-id " + std::to_string(r->getVersionId()) + ")"
+        + " (version-key "
+        + (r->getVersionKey().empty() ? "#f" : quoteString(r->getVersionKey())) + ")"
+        + " (boundary "
+        + (boundary_key.empty() ? "#f" : quoteString(boundary_key)) + ")"
+        + " (evaluation "
+        + (r->getEvaluationId().empty() ? "#f" : quoteString(r->getEvaluationId())) + ")"
+        + " (predecessor "
+        + (r->getPredecessorVersionId() == 0
+             ? "#f" : std::to_string(r->getPredecessorVersionId())) + ")"
+        + " (struct-id "
+        + (r->getStructId() == 0 ? "#f" : std::to_string(r->getStructId())) + ")"
+        + " (type-key "
+        + (r->getTypeKey().empty()
+             ? "#f" : quoteString(r->getTypeKey())) + ")"
+        + " (lat-spec "
+        + (r->isLattice() ? quoteString(r->latticeSpec()) : "#f") + ")"
+        + " (size "
+        + (r->getAnyIndex() ? std::to_string(r->tupleCount()) : "#f") + ")"
+        + " (temp " + (r->isCompilerTemporary() ? "#t" : "#f") + "))";
+}
+
 // (catalog) / (catalog relations): one (catalog-rel ...) record per LATEST
 // relation binding plus one (catalog-planned ...) record per announced-but-
 // unregistered version key, name-sorted, then the (catalog-end <n>) sentinel.
 // Unlike the compiled (schema) action -- which describes nonempty
 // materialization -- the catalog is declaration truth: empty and index-free
-// relations appear (repl.md §7).  Every record carries the full pinned field
-// set, with an explicit #f where a value is not yet resolvable daemon-side
-// (the schema is the pin; N3 fills the values).
+// relations appear (repl.md §7).  N3-B adds the selected committed
+// BoundaryKey, or #f after a legacy environment event.
 static void emit_catalog_relations(slog::Daemon* d)
 {
     using slog::protocol::quoteString;
     std::map<std::string, slog::Relation*> sorted(
         d->db()->getRelations().begin(), d->db()->getRelations().end());
+    const std::string current_boundary = d->db()->currentBoundaryKey();
     u64 n = 0;
     for (auto& kv : sorted)
     {
         slog::Relation* r = kv.second;
         if (r == nullptr) continue;
-        const char* kind = r->getStructId() > 0 ? "struct"
-                         : r->isLattice()       ? "lat"
-                                                : "table";
-        std::string rec = "(catalog-rel (name " + quoteString(kv.first) + ")"
-            + " (kind " + kind + ")"
-            + " (arity " + std::to_string(r->getArity()) + ")"
-            + " (version-id " + std::to_string(r->getVersionId()) + ")"
-            + " (version-key "
-            + (r->getVersionKey().empty() ? "#f" : quoteString(r->getVersionKey())) + ")"
-            + " (evaluation "
-            + (r->getEvaluationId().empty() ? "#f" : quoteString(r->getEvaluationId())) + ")"
-            + " (predecessor "
-            + (r->getPredecessorVersionId() == 0
-                 ? "#f" : std::to_string(r->getPredecessorVersionId())) + ")"
-            + " (struct-id "
-            + (r->getStructId() == 0 ? "#f" : std::to_string(r->getStructId())) + ")"
-            + " (type-key #f)"
-            + " (lat-spec "
-            + (r->isLattice() ? quoteString(r->latticeSpec()) : "#f") + ")"
-            + " (size "
-            + (r->getAnyIndex() ? std::to_string(r->tupleCount()) : "#f") + ")"
-            + " (temp " + (r->isCompilerTemporary() ? "#t" : "#f") + "))";
-        d->emit(rec);
+        const std::string boundary =
+            !current_boundary.empty()
+            && d->db()->getRelationAtBoundary(kv.first, current_boundary) == r
+              ? current_boundary : "";
+        d->emit(catalog_relation_record(kv.first, r, boundary));
         ++n;
     }
     std::map<std::string, std::string> planned(
@@ -664,24 +1275,69 @@ static void emit_catalog_relations(slog::Daemon* d)
     d->emit("(catalog-end " + std::to_string(n) + ")");
 }
 
-// (catalog types): the struct type registry -- one (catalog-type ...) record
-// per struct relation, SID-ordered, then (catalog-end <n>).  The durable
-// TypeKey is pinned as a field and explicitly #f until N3 resolves it
-// (modules.md §8.5.3); the SID is evaluation-local truth today.
+// N3-B direct history lookup. `(catalog boundaries)` enumerates committed
+// handles in commit order; `(catalog boundary KEY)` projects the exact
+// historical materialization snapshot rather than reconstructing it from
+// pipeline positions.
+static void emit_catalog_boundaries(slog::Daemon* d)
+{
+    using slog::protocol::quoteString;
+    u64 n = 0;
+    for (const std::string& key : d->db()->boundaryHistory())
+    {
+        const slog::BoundarySnapshot* boundary = d->db()->getBoundary(key);
+        if (boundary == nullptr) continue;
+        d->emit("(catalog-boundary (boundary " + quoteString(boundary->key)
+                + ") (program " + quoteString(boundary->program_key)
+                + ") (evaluation " + quoteString(boundary->evaluation_id)
+                + ") (position " + std::to_string(boundary->position)
+                + ") (generation " + std::to_string(boundary->generation)
+                + ") (relations "
+                + std::to_string(boundary->environment.size()) + "))");
+        ++n;
+    }
+    d->emit("(catalog-end " + std::to_string(n) + ")");
+}
+
+static bool emit_catalog_boundary(slog::Daemon* d, const std::string& key)
+{
+    const slog::BoundarySnapshot* boundary = d->db()->getBoundary(key);
+    if (boundary == nullptr) return false;
+    std::map<std::string, slog::Relation*> sorted(
+        boundary->environment.begin(), boundary->environment.end());
+    u64 n = 0;
+    for (const auto& item : sorted)
+    {
+        if (item.second == nullptr) continue;
+        d->emit(catalog_relation_record(item.first, item.second, key));
+        ++n;
+    }
+    d->emit("(catalog-end " + std::to_string(n) + ")");
+    return true;
+}
+
+// (catalog types): the independent TypeDescriptor registry, SID-ordered.
+// `name` is a projection of the current binding environment and is #f after a
+// drop; the descriptor and canonical intern store remain directly reachable.
 static void emit_catalog_types(slog::Daemon* d)
 {
     using slog::protocol::quoteString;
-    std::map<u32, std::pair<std::string, slog::Relation*>> by_sid;
-    for (const auto& kv : d->db()->getRelations())
-        if (kv.second != nullptr && kv.second->getStructId() > 0)
-            by_sid[kv.second->getStructId()] = { kv.first, kv.second };
+    std::map<u32, slog::TypeDescriptor*> by_sid(
+        d->db()->getTypeDescriptors().begin(),
+        d->db()->getTypeDescriptors().end());
     u64 n = 0;
     for (const auto& kv : by_sid)
     {
+        const slog::TypeDescriptor* descriptor = kv.second;
+        const std::string name = d->db()->currentTypeName(*descriptor);
         d->emit("(catalog-type (sid " + std::to_string(kv.first) + ")"
-                + " (name " + quoteString(kv.second.first) + ")"
-                + " (arity " + std::to_string(kv.second.second->getArity()) + ")"
-                + " (type-key #f))");
+                + " (name " + (name.empty() ? "#f" : quoteString(name)) + ")"
+                + " (arity "
+                + std::to_string(descriptor->stored_arity) + ")"
+                + " (type-key "
+                + (descriptor->type_key.empty()
+                     ? "#f"
+                     : quoteString(descriptor->type_key)) + "))");
         ++n;
     }
     d->emit("(catalog-end " + std::to_string(n) + ")");
@@ -719,6 +1375,21 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
     const std::string& verb = form.children[0].text;
     const size_t argc = form.children.size() - 1;
 
+    // A saved Q1 cursor owns a snapshot lease across command lines.  Until it
+    // completes or is cancelled, no other command may reach a path/plugin or
+    // mutation seam and change an index underneath that cursor.  Query-page
+    // and query-cancel are the only legal interleavings; a second query gets
+    // the more specific active-id refusal in dispatch_query_command.
+    const bool query_verb =
+        verb == "query" || verb == "query-page" || verb == "query-cancel";
+    if (builders.active_query && !query_verb)
+    {
+        d->markCommandProtocol();
+        refuse(d, "query-admission", "(verb " + verb + ") (active "
+               + builders.active_query->id + ")");
+        return;
+    }
+
     // The pre-T0 literals (docs/pausing.md §5), now the command layer's first
     // two verbs with byte-identical replies.  They do NOT mark the session as
     // command-speaking: every legacy driver (runslog.rkt, slogd.rkt's
@@ -740,7 +1411,33 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
 
     d->markCommandProtocol();
 
+    // A prepared boundary is a private execution lease.  Its own lifecycle,
+    // bounded continue, and command-stratum construction may proceed; every
+    // ordinary catalog/query/mutation command is refused until commit/abort.
+    // Path plugins are admitted by the shared line dispatcher because native
+    // strata and frozen-input actions still ride that stack; their relation
+    // resolution is through Database's private overlay.
+    const bool boundary_verb =
+        verb == "prepare-boundary" || verb == "commit-boundary"
+        || verb == "abort-boundary";
+    const bool builder_verb =
+        verb == "scc-begin" || verb == "scc-seal"
+        || verb == "stratum-begin" || verb == "stratum-add-scc"
+        || verb == "stratum-seal";
+    if (d->boundaryPrepared() && !boundary_verb && !builder_verb)
+    {
+        refuse(d, "boundary-admission", "(verb " + verb + ") (boundary "
+               + slog::protocol::quoteString(d->preparedBoundaryKey()) + ")");
+        return;
+    }
+
+    if (dispatch_boundary_command(d, form, verb))
+        return;
+
     if (dispatch_builder_command(d, builders, form, verb))
+        return;
+
+    if (dispatch_query_command(d, builders, form, line, verb))
         return;
 
     if (verb == "continue" || verb == "continue-boundary")
@@ -766,9 +1463,23 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
             const std::string& what = form.children[1].text;
             if (what == "relations") { emit_catalog_relations(d); return; }
             if (what == "types")     { emit_catalog_types(d);     return; }
+            if (what == "boundaries"){ emit_catalog_boundaries(d); return; }
+        }
+        if (argc == 2
+            && form.children[1].kind == slog::sexp::SExp::K::atom
+            && form.children[1].text == "boundary"
+            && form.children[2].kind == slog::sexp::SExp::K::string)
+        {
+            const std::string& key = form.children[2].text;
+            if (emit_catalog_boundary(d, key)) return;
+            refuse(d, "boundary-lookup",
+                   "(verb catalog) (boundary "
+                   + slog::protocol::quoteString(key) + ")");
+            return;
         }
         refuse(d, "parse", "(verb catalog) (detail \"expected (catalog), "
-               "(catalog relations), or (catalog types)\")");
+               "(catalog relations), (catalog types), (catalog boundaries), "
+               "or (catalog boundary \\\"KEY\\\")\")");
         return;
     }
 
@@ -796,6 +1507,9 @@ static void dispatch_line(slog::Daemon* d,
         return;
     if (line[0] == '(')
         dispatch_command(d, builders, line);
+    else if (builders.active_query)
+        refuse(d, "query-admission", "(verb plugin-path) (active "
+               + builders.active_query->id + ")");
     else
         run_plugin(d, line, so_handles);
 }
@@ -816,9 +1530,11 @@ static int run_stdin(u32 num_threads)
         dispatch_line(daemon, builders, line, so_handles);
     }
 
-    // Delete the daemon (and its database) BEFORE dlclosing: index objects
+    // A connection-scoped query owns a Database lease. Release it before the
+    // Database, then delete the daemon BEFORE dlclosing: index objects
     // (BTreeIndex<A>) are instantiated in the .so's, so their vtables and
     // destructors live there.
+    builders.active_query.reset();
     delete daemon;
     for (void* h : so_handles) if (h) dlclose(h);
     return 0;
@@ -917,7 +1633,9 @@ static int run_tcp(u32 num_threads, int port)
         }
     }
 
-    // Delete the daemon BEFORE dlclosing (vtables live in the .so's).
+    // Release a connection-scoped query lease before its Database, then
+    // delete the daemon BEFORE dlclosing (vtables live in the .so's).
+    builders.active_query.reset();
     delete daemon;
     for (void* h : so_handles) if (h) dlclose(h);
     close(sock);

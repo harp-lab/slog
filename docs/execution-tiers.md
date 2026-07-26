@@ -635,13 +635,22 @@ The catalog/daemon meeting contract is also implemented: a pure adapter
 projects separate boundary declarations, QName-to-VersionKey bindings, and
 VersionKey-keyed materialization facts into the planner snapshot; the planner
 emits a canonical ABI-1 QueryPlan; and the daemon parses, seals, and binds its
-dense relation frame by VersionKey. The production N2/N3 catalog source and
-T0 command admission are still pending, so this is a typed builder boundary,
-not an active protocol verb.
+dense relation frame by VersionKey.
 
-Query results render through the ordinary value printer and `#N` handles
-(repl.md §5), so large rows are browsable without a second inspection
-facility.
+**As-built note (2026-07-23):** the T0 dispatcher now embeds that canonical
+payload unchanged under `query`, checks its generation, binds only its exact
+VersionKeys, and owns one connection-scoped `QueryContext`. `query-page` and
+`query-cancel` resume or release it; every non-query command and plugin path
+is refused while the cursor is live, so no mutation can invalidate its saved
+index position. The production N2/N3 boundary source is still pending: this
+activates canonical clients, not friendly-name authority or the R2 `?`
+parser.
+
+Query rows carry one ordinary value-printer rendering per projected column in
+a structured `(values "...")` field. This preserves column boundaries for
+strings and compound values. R2's future TypeDescriptor/value-handle adapter
+can enrich their presentation and add `#N` handles (repl.md §5) without
+changing query execution.
 
 ### 6.2 Read-only discipline
 
@@ -684,13 +693,29 @@ which is exactly what a debugger user expects but should be labeled in
 ### 6.4 Protocol surface
 
 ```text
-(query q7 (plan ...) (page 500))
-(query-next q7 (page 500))
+(query q7 (query-plan ...) (page 500))
+(query-page q7 (page 500))
 (query-cancel q7)
 (explain r17)              ; canonical plan for a rule variant
 (explain q7)               ; chosen driver, orderings, join order, join3 use
 (catalog ...)              ; boundary catalog/type-registry introspection
 ```
+
+The active Q1 record stream is:
+
+```text
+(query-row q7 (values "VALUE" ...))
+(query-end q7 page|paused|complete|cancelled
+           (rows N) (matched TOTAL))
+```
+
+Every `query`/`query-page` request ends with exactly one `query-end`; `page`
+means the requested row page filled, while `paused` means the daemon's
+internal transition/cursor-work slice expired first. `matched` is cumulative
+(and is the only result payload for count/exists). Page size is positive and
+capped at 10,000. Completed/cancelled ids are not retained; a later page or
+cancel receives `query-state`. Parse, plan, unsafe-compute, literal, binding,
+admission, pagination, and stale-generation failures remain typed refusals.
 
 `(lookup rel v...)` survives as sugar for a one-row query. The catalog verbs
 are repl.md §7's introspection surface; the daemon returns structured records

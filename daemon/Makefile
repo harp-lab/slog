@@ -10,6 +10,7 @@
 # share one OpenMP runtime (the .so calls omp_get_thread_num()).  On another
 # machine, ensure the matching libomp-<ver>-dev for your clang is installed.
 CXX = clang++
+.DEFAULT_GOAL := slogd
 OMPFLAGS ?= -fopenmp
 # -ffp-contract=off: match the flag generated plugin .so's are built with
 # (compiler/tools.rkt) so float primitives contract FMA identically across the

@@ -1049,7 +1049,7 @@
     (project ,@(query-plan-project plan))
     (mode ,(query-plan-mode plan))))
 
-;; Frozen QueryPlan payload ABI consumed by daemon/query.cpp. The future T0
+;; Frozen QueryPlan payload ABI consumed by daemon/query.cpp. The T0
 ;; `(query ID <payload> (page N))` command embeds this datum unchanged; command
 ;; framing, IDs, generation admission, and pagination are dispatcher concerns.
 (define (query-plan->wire-datum plan)

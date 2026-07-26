@@ -4,7 +4,7 @@
 #
 # B0 -- the version registry + environment: running a second program segment
 # atop a loaded database in ONE resident daemon opens a version boundary
-# (begin-segment): each relation the segment writes is rebound to a new
+# (prepare-boundary/commit-boundary): each relation the segment writes is rebound to a new
 # physical version (a full copy of its predecessor), the predecessor stays
 # positionally addressable ((pipeline), (sizes-at P), (dump-rel R P)), and
 # the session's final content equals the from-scratch run of the union
@@ -80,11 +80,11 @@ timeout 600 racket tests/api/session-drive.rkt \
   open:sess_b0a run:tests/session/seg2.slog \
   pipeline sizes-at:0 sizes-at:1 dump-rel:path,0 \
   > out/sess-b0.log 2>&1
-expect "b0-boundary"    "(segment 1 2)" out/sess-b0.log
+expect "b0-boundary"    "(boundary-committed 1" out/sess-b0.log
 expect "b0-edge-chain"  "(rel edge (v 0 0 3) (v 1 1 4))" out/sess-b0.log
 expect "b0-path-chain"  "(rel path (v 0 0 6) (v 1 1 10))" out/sess-b0.log
 expect "b0-sizes-base"  "(sizes-at 0 (edge 3) (path 6))" out/sess-b0.log
-expect "b0-sizes-new"   "(sizes-at 1 (edge 4) (path 10))" out/sess-b0.log
+expect_re "b0-sizes-new" '\(sizes-at 1 .*\(edge 4\).*\(path 10\)' out/sess-b0.log
 expect "b0-dump-old"    "(dumpdone 6)" out/sess-b0.log
 
 # --- B0.2: structs + lattices across the boundary, vs the union oracle ----
@@ -299,7 +299,7 @@ timeout 600 racket tests/api/session-drive.rkt \
   abatch+:1,edge,0,1 flush \
   sizes-at:2 dump-rel:path write-csv:out/sess-c-anchored-csv \
   > out/sess-c-add.log 2>&1
-expect    "c-anchored-route" "(route anchored edge 1 4)" out/sess-c-add.log
+expect    "c-anchored-route" "(route anchored edge 0 4)" out/sess-c-add.log
 expect_re "c-anchored-old"   '\(sizes-at 2 .*\(edge 4\).*\(path 10\)' out/sess-c-add.log
 expect    "c-anchored-tip"   "(dumpdone 15)" out/sess-c-add.log
 timeout 600 racket tests/api/session-drive.rkt \
@@ -458,7 +458,7 @@ timeout 600 racket tests/api/session-drive.rkt \
   > out/sess-d-rename.log 2>&1
 expect "d-renamed"        "(renamed path reach 1)" out/sess-d-rename.log
 expect "d-endp-initial"   "(dumpdone 3)" out/sess-d-rename.log
-expect "d-walk-translates" "(route anchored edge 1 3)" out/sess-d-rename.log
+expect "d-walk-translates" "(route anchored edge 0 3)" out/sess-d-rename.log
 expect "d-alias-reapply"  "(overlay-set reach 1)" out/sess-d-rename.log
 expect "d-reach-final"    "(dumpdone 11)" out/sess-d-rename.log
 expect "d-endp-final"     "(dumpdone 5)" out/sess-d-rename.log
@@ -506,18 +506,34 @@ expect_not "d-edit-no-old"  "(relation_size path" out/sess-d-edit2.log
 
 # --- 0.E0c: per-program version boundaries in a multi-`run` program ---------
 # strat_run2_main chains two `run` prerequisites; each program of the run
-# tree gets its OWN begin-segment, so the pipeline versions their writes
+# tree gets its OWN transactional boundary, so the pipeline versions their writes
 # separately (three segments: p-facts, q, r+main).
 timeout 600 racket tests/api/session-drive.rkt \
   run:tests/strat_run2_main.slog \
   pipeline dump-rel:r \
   > out/sess-e0c.log 2>&1
 expect "e0c-result" "(dumpdone 2)" out/sess-e0c.log
-if [ "$(grep -oE '\(segment [0-9]+ [0-9]+\)' out/sess-e0c.log | wc -l)" -ge "2" ]; then
+if [ "$(grep -oE '\(boundary-committed [0-9]+' out/sess-e0c.log | wc -l)" -ge "2" ]; then
   echo "PASS e0c-per-program-segments"; PASS=$((PASS+1))
 else
-  echo "FAIL e0c-per-program-segments (expected >=2 segment boundaries)"; FAIL=$((FAIL+1))
+  echo "FAIL e0c-per-program-segments (expected >=2 committed boundaries)"; FAIL=$((FAIL+1))
 fi
+
+# --- N3-A: atomic catalog groups and eager declaration-only boundaries -------
+# A source with no strata still owns a committed daemon boundary. Its new empty
+# declaration is an eager physical slot as well as catalog/environment truth,
+# and the recipe retains the self-auditing BoundaryPlan.
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/session/base.slog run:tests/session/n2_decl_only.slog \
+  boundary daemon-boundaries daemon-current-boundary pipeline recipe \
+  > out/sess-n2b.log 2>&1
+expect "n2b-declaration-boundary" "(plans 2)" out/sess-n2b.log
+expect_re "n2b-empty-catalog" '\(declarations .*\bempty\b' out/sess-n2b.log
+expect_re "n2b-empty-environment" '\(versions .*\bempty\b' out/sess-n2b.log
+expect_re "n3a-empty-physical-slot" '\(rel empty \(v 0 [0-9]+ 0\)\)' out/sess-n2b.log
+expect "n2b-recipe-plans" "(boundary-plans (boundary-plan" out/sess-n2b.log
+expect "n3b-daemon-history" "(catalog-end 2)" out/sess-n2b.log
+expect_re "n3b-current-boundary-identity" '\(catalog-rel \(name "empty"\).*\(version-key "v1:.*"\) \(boundary "b1:.*"\).*\(size 0\)' out/sess-n2b.log
 
 # --- 0.E1 + 0.E2: save a fed session; load = replay the recipe (W3) ---------
 # A session (two segments + a tip batch + an anchored back-insertion) saves
@@ -603,7 +619,7 @@ timeout 600 racket tests/api/session-drive.rkt \
   abatch-:1,edge,0,1 flush \
   dump-rel:path save:sess_bi \
   > out/sess-bi.log 2>&1
-expect "bi-walked" "(route anchored edge 1 " out/sess-bi.log
+expect "bi-walked" "(route anchored edge 0 " out/sess-bi.log
 expect "bi-tip"    "(dumpdone 15)" out/sess-bi.log
 timeout 600 racket tests/api/session-drive.rkt \
   open:sess_bi dump-rel:path \
@@ -968,7 +984,7 @@ timeout 900 racket tests/api/session-drive.rkt \
   recount-force dump-counts:path dump-counts:endpoint \
   > out/sess-m1-multistratum.log 2>&1
 expect "m1-route" "(route maintain 2)" out/sess-m1-multistratum.log
-expect "m1-revision" "(update-committed 1 counts-valid)" out/sess-m1-multistratum.log
+expect "m1-revision" "(update-committed 2 counts-valid)" out/sess-m1-multistratum.log
 expect "m1-count-revision" "(rev path 0 1)" out/sess-m1-multistratum.log
 if [ "$(grep -cF '(countrow path 1 4 0 0 1)' out/sess-m1-multistratum.log)" -eq 2 ] \
    && [ "$(grep -cF '(countrow endpoint 4 0 3 0)' out/sess-m1-multistratum.log)" -eq 2 ]; then
@@ -1029,12 +1045,12 @@ expect "m1-establish-content" "(dumpdone 6)" out/sess-m1-establish-fallback.log
 # intact, counts become unestablished, and a recount heals them.
 timeout 900 racket tests/api/session-drive.rkt \
   run:tests/session/counts_tc.slog recount \
-  begin-update:0 signed-underflow commit-update begin-update:0 update-epoch \
+  begin-update:1 signed-underflow commit-update begin-update:1 update-epoch \
   dump-rel:path count-state recount-force dump-counts:path \
   > out/sess-m1-revision-failure.log 2>&1
 expect "m1-underflow-recovered" "(signed-underflow-recovered)" out/sess-m1-revision-failure.log
-expect "m1-underflow-invalidates" "(update-committed 1 counts-invalid)" out/sess-m1-revision-failure.log
-expect "m1-stale-refused" "stale expected revision 0; current revision is 1" out/sess-m1-revision-failure.log
+expect "m1-underflow-invalidates" "(update-committed 2 counts-invalid)" out/sess-m1-revision-failure.log
+expect "m1-stale-refused" "stale expected revision 1; current revision is 2" out/sess-m1-revision-failure.log
 expect "m1-failure-content" "(dumpdone 3)" out/sess-m1-revision-failure.log
 expect "m1-failure-healed" "(countrow path 1 3 0 1 1)" out/sess-m1-revision-failure.log
 
@@ -1043,7 +1059,7 @@ timeout 900 racket tests/api/session-drive.rkt \
   batch+:edge,3,4 flush dump-rel:path count-state \
   count-test-max:4294967295 recount-force dump-counts:path \
   > out/sess-m1-overflow.log 2>&1
-expect "m1-overflow-fallback" "(update-committed 1 counts-invalid)" out/sess-m1-overflow.log
+expect "m1-overflow-fallback" "(update-committed 2 counts-invalid)" out/sess-m1-overflow.log
 expect "m1-overflow-content" "(dumpdone 6)" out/sess-m1-overflow.log
 expect "m1-overflow-healed" "(countrow path 1 4 0 0 2)" out/sess-m1-overflow.log
 
@@ -1677,7 +1693,7 @@ timeout 900 racket tests/api/session-drive.rkt \
   run:tests/session/m4t_diamond.slog \
   batch-:edge,1,2 flush dump-rel:path \
   > out/sess-m4t-midcone.log 2>&1
-expect "m4t-midcone-anchored" "(route anchored edge 1 2)" out/sess-m4t-midcone.log
+expect "m4t-midcone-anchored" "(route anchored edge 0 2)" out/sess-m4t-midcone.log
 expect_not "m4t-midcone-no-sweep" "(route maintain-recursive-negative" out/sess-m4t-midcone.log
 expect "m4t-midcone-content" "(dumpdone 8)" out/sess-m4t-midcone.log
 
@@ -1906,7 +1922,7 @@ timeout 900 racket tests/api/session-drive.rkt \
   > out/sess-m5-open.log 2>&1
 # the opened heap is counted input: the recount commits instead of fataling,
 # and the opened row's support at the tip is the inherited (nonrec) kind
-expect "m5-open-counts-valid" "(update-committed 1 counts-valid)" out/sess-m5-open.log
+expect "m5-open-counts-valid" "(update-committed 2 counts-valid)" out/sess-m5-open.log
 expect "m5-open-heap-support" "(countrow pair (pair 7 8) 0 1 0)" out/sess-m5-open.log
 # pair ids: 3 live/0 dead -> 2 live/1 tombstone -> 3 live/0 dead
 expect "m5-open-populated"    "(idsdone 3 0)" out/sess-m5-open.log
@@ -2376,8 +2392,8 @@ timeout 900 racket tests/api/session-drive.rkt \
 expect "m4s-editstruct-del-refused" \
   "cannot retract (1 2) from pair: pair is a struct relation" \
   out/sess-m4s-editstruct-del.log
-expect "m4s-editstruct-del-before-epoch" "(update-committed 1 " out/sess-m4s-editstruct-del.log
-expect_not "m4s-editstruct-del-unapplied" "(update-begun 1)" out/sess-m4s-editstruct-del.log
+expect "m4s-editstruct-del-before-epoch" "(update-committed 2 " out/sess-m4s-editstruct-del.log
+expect_not "m4s-editstruct-del-unapplied" "(update-begun 2)" out/sess-m4s-editstruct-del.log
 
 # Lattice INSIDE the struct cone: refused by name under M4S (M6L/M7 own the
 # shape); the rerun must regress score's key 1 from 7 back to 5 -- only a

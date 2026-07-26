@@ -77,7 +77,10 @@
          session-save!          ; the delta-layer save (0.E1)
          session-log            ; the collapsed applied-batch log (C2/C3)
          session-recipe         ; ordered steps + anchored batches (§0.10)
+         session-current-boundary
+         session-boundary-history
          session-action!        ; low-level: one action + a reader
+         session-command-stream! ; low-level: one T0 command record stream
          session-recount!       ; the count round over the pipeline (M0)
          session-reenter!       ; direct replay-entry (tests/tools)
          session-rerun!         ; direct clear-and-rerun (tests/tools)
@@ -86,6 +89,8 @@
 
 (require "tools.rkt")
 (require "compile.rkt")
+(require "catalog.rkt")
+(require "names.rkt")
 (require "actions.rkt")
 (require "runslog.rkt")   ; db-full-manifest, segment-write-set, manifest-entry
 (require "dbmeta.rkt")
@@ -146,7 +151,8 @@
                  [imports #:mutable] [steps #:mutable] [renames #:mutable]
                  touched sources [replaying? #:mutable] echo
                  [layer-id #:mutable] evaluation-id [next-event #:mutable]
-                 [descriptors #:mutable] compat-keys input-only)
+                 [descriptors #:mutable] compat-keys input-only
+                 [catalog-boundary #:mutable] [boundary-plans #:mutable])
   #:transparent)
 
 (define (fresh-runtime-id prefix)
@@ -163,11 +169,13 @@
               (let loop ()
                 (define s (read-line err))
                 (unless (eof-object? s) (eprintf "~a\n" s) (loop))))))
+  (define layer-id (fresh-runtime-id "layer"))
   (define s
     (session sp out in err-thread #f '() 0 (make-hash) (make-hash) (make-hash)
              '() '() '() (make-hash) (make-hash) #f echo
-             (fresh-runtime-id "layer") (fresh-runtime-id "eval") 0 '()
-             (make-hash) (make-hash)))
+             layer-id (fresh-runtime-id "eval") 0 '()
+             (make-hash) (make-hash)
+             (empty-boundary (format "b0:~a" layer-id)) '()))
   (session-action! s `(set-evaluation ,(session-evaluation-id s))
                    read-one-line-quiet!)
   s)
@@ -177,19 +185,56 @@
 ;; next-scc initialises from live introspection so cone bookkeeping aligns
 ;; with whatever the connection already pushed.
 (define (make-session-over in-port out-port #:echo [echo displayln])
+  (define layer-id (fresh-runtime-id "layer"))
   (define s (session #f out-port in-port #f #f '() 0 (make-hash) (make-hash)
                      (make-hash) '() '() '() (make-hash) (make-hash) #f echo
-                     (fresh-runtime-id "layer") (fresh-runtime-id "eval") 0 '()
-                     (make-hash) (make-hash)))
+                     layer-id (fresh-runtime-id "eval") 0 '()
+                     (make-hash) (make-hash) #f '()))
   (session-action! s `(set-evaluation ,(session-evaluation-id s))
                    read-one-line-quiet!)
   (define-values (_cur strata-pos _chains) (introspect! s))
   (set-session-next-scc! s (hash-count strata-pos))
   s)
 
+(define (session-current-boundary s)
+  (session-catalog-boundary s))
+
+(define (session-boundary-history s)
+  (session-boundary-plans s))
+
 (define (send-plugin! s path)
   (display (string-append path "\n") (session-in s))
   (flush-output (session-in s)))
+
+(define (session-command! s datum)
+  ;; N3 joins T0's line-framed command protocol directly.  `write` preserves
+  ;; structured QName component lists and string keys without passing through
+  ;; the legacy compiled-action stack.
+  (write datum (session-in s))
+  (newline (session-in s))
+  (flush-output (session-in s))
+  (define line (read-line (session-out s)))
+  (when (eof-object? line)
+    (error 'session (format "daemon EOF after command: ~a" datum)))
+  (echo! s line)
+  (read (open-input-string line)))
+
+(define (session-command-stream! s datum terminal?)
+  ;; Read-only T0 catalog/history streams use a sentinel rather than the
+  ;; compiled plugin protocol.  Keep the framing in the session owner so REPL
+  ;; consumers never reach through to its private ports.
+  (write datum (session-in s))
+  (newline (session-in s))
+  (flush-output (session-in s))
+  (let loop ([lines '()])
+    (define line (read-line (session-out s)))
+    (when (eof-object? line)
+      (error 'session (format "daemon EOF in command stream: ~a" datum)))
+    (when (regexp-match? #px"^\\(refused " line)
+      (error 'session (format "daemon refused command stream ~a: ~a"
+                              datum line)))
+    (define next (cons line lines))
+    (if (terminal? line) (reverse next) (loop next))))
 
 (define (echo! s line) ((session-echo s) line))
 
@@ -598,6 +643,11 @@
     (error 'session
            (format "database ~a was written with value-encoding v~a but this build reads v~a; re-encode its root bins (or drop-and-replay derived layers) to migrate"
                    (first mm) (second mm) slog-value-encoding-version)))
+  ;; A loaded database may predate catalog metadata, and even an N2 recipe
+  ;; must reconstruct its logical head by replaying the persisted plans.
+  ;; Never carry the caller's in-memory head across a database switch.
+  (set-session-catalog-boundary! s #f)
+  (set-session-boundary-plans! s '())
   (set-session-db! s db)
   (record-step! s `(open ,db))
   (session-execute-load-steps! s (db-load-steps db))
@@ -732,6 +782,12 @@
       (match st
         [`(open ,_db) (void)]   ; the manifest link already materialised the base
         [`(run ,prog) (session-run! s prog)]
+        [`(run ,prog
+               (version-events ,tables ...)
+               (boundary-plans ,plans ...))
+         (session-run! s prog
+                       #:version-events tables
+                       #:boundary-plans plans)]
         [`(run ,prog (version-events ,tables ...))
          (session-run! s prog #:version-events tables)]
         [`(import-delta ,ref ,renames)
@@ -837,7 +893,10 @@
   (echo! s line)
   (record-step! s `(rename-rel ,from* ,to*) #:at cur)
   (touch! s (list to*))
-  (set-session-renames! s (cons (list from* to* cur) (session-renames s))))
+  (set-session-renames! s (cons (list from* to* cur) (session-renames s)))
+  ;; N2 does not yet have a catalog rename transform.  Force the next program
+  ;; to re-adopt the exact live VersionKeys under the renamed environment.
+  (set-session-catalog-boundary! s #f))
 
 (define (session-drop! s rel)
   (define rel* (if (symbol? rel) rel (string->symbol rel)))
@@ -847,7 +906,10 @@
   (unless (and (string? line) (regexp-match? #px" 1\\)\\s*$" line))
     (error 'session (format "drop-rel ~a refused: ~a" rel* line)))
   (echo! s line)
-  (record-step! s `(drop-rel ,rel*) #:at cur))
+  (record-step! s `(drop-rel ,rel*) #:at cur)
+  ;; As with rename, the daemon environment is authoritative until N3 grows a
+  ;; transactional catalog operation for this mutation.
+  (set-session-catalog-boundary! s #f))
 
 ;; Run one program atop the session (docs/incremental.md §0.4): one
 ;; version boundary PER PROGRAM of its run tree (E0c) -- announce the
@@ -855,6 +917,303 @@
 ;; stratum to fixpoint, recording its manifest for later cone assembly.
 ;; Sources are captured for the save's prog.sexpr (unless replaying
 ;; ancestor history, whose sources belong to the ancestor layers).
+(define (current-version-info chains vinfo name)
+  (define bindings (hash-ref chains name '()))
+  (and (pair? bindings)
+       (let ([binding (last bindings)])
+         (and (not (third binding))
+              (hash-ref vinfo (cons name (first binding)) #f)))))
+
+(define (live-struct-type-keys s)
+  ;; N3-A exposes durable TypeKeys through the public type catalog.  This
+  ;; stream is the authority when a legacy environment event (rename, drop,
+  ;; import, or input-only VersionKey) forces the logical session head to be
+  ;; re-adopted.  Catalog-less roots report #f and take the compatibility key
+  ;; below exactly once; commit then attaches that key to the physical slot.
+  (write '(catalog types) (session-in s))
+  (newline (session-in s))
+  (flush-output (session-in s))
+  (let loop ([out (hash)])
+    (define line (read-line (session-out s)))
+    (when (eof-object? line)
+      (error 'session "daemon EOF in (catalog types) stream"))
+    (echo! s line)
+    (match (read (open-input-string line))
+      [`(catalog-type (sid ,_) (name ,name) (arity ,_) (type-key ,key))
+       ;; N3-C retains descriptors after their last public name is dropped.
+       ;; Adoption needs only currently visible name->TypeKey bindings.
+       (loop (if (and name key)
+                 (hash-set out (wire->qname name) key)
+                 out))]
+      [`(catalog-end ,_) out]
+      [`(refused ,class ,_ ,details ...)
+       (error 'session
+              (format "catalog types refused (~a): ~a" class details))]
+      [other
+       (error 'session
+              (format "unexpected catalog types reply: ~a" other))])))
+
+;; Compatibility adoption for a catalog-less input database.  Old META/schema
+;; can prove materialized kind/arity and the daemon can report exact
+;; VersionKeys, but neither carries the source field graph.  The next compiled
+;; program supplies that graph.  Adopt only declarations reachable from
+;; storage members which are actually bound now; everything else remains a
+;; proposed addition for the ordinary planner.
+(define (legacy-planning-boundary s delta)
+  (define declarations (catalog-delta-declarations delta))
+  (define-values (cur _sinstances chains vinfo) (introspect-identities! s))
+  (define type-keys (live-struct-type-keys s))
+  (define version-keys
+    (for/hash ([(name descriptor) (in-hash declarations)]
+               #:when (storage-declaration? descriptor)
+               #:do [(define symbol-name (qname->symbol name))
+                     (define info
+                       (current-version-info chains vinfo symbol-name))]
+               #:when info)
+      (values name (third info))))
+  (define initial (list->set (hash-keys version-keys)))
+  (define adopted
+    (let loop ([names initial])
+      (define names+
+        (for/fold ([out names]) ([name (in-set names)])
+          (define descriptor (hash-ref declarations name))
+          (for/fold ([out out])
+                    ([reference (in-set
+                                 (declaration-references descriptor))])
+            (define referenced (hash-ref declarations reference #f))
+            (cond
+              [(not referenced) out]
+              [(and (storage-declaration? referenced)
+                    (not (hash-has-key? version-keys reference)))
+               (error
+                'session
+                (string-append
+                 "cannot adopt catalog-less input: materialized declaration ~a "
+                 "references storage type ~a with no live VersionKey; rebuild "
+                 "the input with catalog metadata")
+                (qname->display name) (qname->display reference))]
+              [else (set-add out reference)]))))
+      (if (set=? names names+) names (loop names+))))
+  (define adopted-declarations
+    (for/hash ([name (in-set adopted)])
+      (values name (hash-ref declarations name))))
+  (define adopted-memberships
+    (for/set ([edge (in-set (catalog-delta-memberships delta))]
+              #:when (set-member? adopted (cdr edge)))
+      edge))
+  (define nominals
+    (for/hash ([name (in-set adopted)]
+               #:do [(define descriptor
+                       (hash-ref adopted-declarations name))]
+               #:when
+               (eq? 'struct (declaration-descriptor-kind descriptor)))
+      (values name
+              (hash-ref
+               type-keys name
+               ;; A catalog-less root has no durable nominal identity yet.
+               ;; Its exact current VersionKey gives replay a stable adoption
+               ;; key; the first N3 commit attaches it to the daemon slot.
+               (lambda ()
+                 (format "legacy-t1:~a"
+                         (hash-ref version-keys name)))))))
+  (boundary
+   (format "legacy-b1:~a:~a" (session-evaluation-id s) cur)
+   (catalog adopted-declarations adopted-memberships nominals)
+   version-keys))
+
+(define (internal-write? name)
+  (and (symbol? name)
+       (string-prefix? (symbol->string name) "$")))
+
+(define (boundary-qname-datum name)
+  `(qname ,@(qname-components name)))
+
+(define (boundary-type-token ref)
+  (match ref
+    [(type-ref 'primitive name) (~a name)]
+    [(type-ref 'named name) (qname->wire name)]
+    [_ (error 'session (format "invalid boundary lattice type: ~a" ref))]))
+
+;; The exact inverse spelling of emit-cpp.rkt's `(flatten spec)` token, over
+;; N2's normalized lattice descriptor rather than the pre-normalized source.
+(define (boundary-lattice-token spec)
+  (define words
+    (append
+     (list (~a (lattice-descriptor-kind spec)))
+     (append*
+      (for/list ([argument
+                  (in-list (lattice-descriptor-arguments spec))])
+        (cond
+          [(type-ref? argument) (list (boundary-type-token argument))]
+          [(lattice-descriptor? argument)
+           (string-split (boundary-lattice-token argument) "-")]
+          [else
+           (error 'session
+                  (format "invalid boundary lattice argument: ~a"
+                          argument))])))
+     (append*
+      (for/list ([parameter
+                  (in-list (lattice-descriptor-parameters spec))])
+        (list (~a (car parameter)) (~a (cdr parameter)))))))
+  (string-join words "-"))
+
+(define (boundary-declaration-record output name)
+  (define descriptor
+    (hash-ref (catalog-declarations (boundary-catalog output)) name))
+  (define storage? (storage-declaration? descriptor))
+  (define kind (declaration-descriptor-kind descriptor))
+  (define arity
+    (and storage?
+         (+ (length (declaration-descriptor-fields descriptor))
+            (if (eq? kind 'struct) 1 0))))
+  (define type-key
+    (and (eq? kind 'struct)
+         (hash-ref (catalog-nominals (boundary-catalog output)) name)))
+  (define lat-spec
+    (and (eq? kind 'table)
+         (declaration-descriptor-lattice-spec descriptor)
+         (boundary-lattice-token
+          (declaration-descriptor-lattice-spec descriptor))))
+  `(declare
+    ,(boundary-qname-datum name)
+    (kind ,kind)
+    (arity ,arity)
+    (type-key ,type-key)
+    (lat-spec ,lat-spec)
+    (shape ,(format "~s"
+                    (declaration-descriptor->datum descriptor)))))
+
+(define (boundary-prepare-command plan group generation)
+  (define output (boundary-plan-output plan))
+  (define declarations
+    (catalog-declarations (boundary-catalog output)))
+  (define memberships
+    (catalog-memberships (boundary-catalog output)))
+  (define-values (daemon-table _descriptor-rows)
+    (boundary-plan-daemon-data plan group))
+  (define internal-actions
+    (for/list ([entry (in-list daemon-table)]
+               #:when (internal-write? (first entry)))
+      `(internal-create
+        (name ,(symbol->string (first entry)))
+        (version-key ,(second entry)))))
+  `(prepare-boundary
+    (generation ,generation)
+    (boundary ,(boundary-plan-boundary-key plan))
+    (program ,(boundary-plan-program-key plan))
+    (declarations
+     ,@(for/list ([name
+                   (in-list (sort (hash-keys declarations) qname<?))])
+         (boundary-declaration-record output name)))
+    (memberships
+     ,@(for/list ([edge
+                   (in-list
+                    (sort (set->list memberships)
+                          (lambda (a b)
+                            (or (qname<? (car a) (car b))
+                                (and (qname=? (car a) (car b))
+                                     (qname<? (cdr a) (cdr b)))))))])
+         `(member ,(boundary-qname-datum (car edge))
+                  ,(boundary-qname-datum (cdr edge)))))
+    (actions
+     ,@(for/list ([action (in-list (boundary-plan-actions plan))])
+         `(,(boundary-action-kind action)
+           ,(boundary-qname-datum (boundary-action-name action))
+           (version-key ,(boundary-action-version-key action))
+           (predecessor ,(boundary-action-predecessor action))
+           (type-key ,(boundary-action-type-key action))))
+     ,@internal-actions)))
+
+(define (boundary-plan-daemon-data plan group)
+  (define public
+    (for/list ([action (in-list (boundary-plan-actions plan))]
+               #:when (eq? 'create (boundary-action-kind action)))
+      (list (qname->symbol (boundary-action-name action))
+            (boundary-action-version-key action))))
+  (define public-names
+    (list->set (map qname->symbol
+                    (hash-keys (boundary-plan-version-slots plan)))))
+  (define internal
+    (sort
+     (for/list ([name (in-list (compile-group-write-set group))]
+                #:when (and (internal-write? name)
+                            (not (set-member? public-names name))))
+       name)
+     symbol<?))
+  (define internal-start (hash-count (boundary-plan-version-slots plan)))
+  (define internal-pairs
+    (for/list ([name (in-list internal)] [offset (in-naturals)])
+      (list
+       name
+       (format "v1:~a:~a:~a"
+               (boundary-plan-layer-id plan)
+               (boundary-plan-boundary-event plan)
+               (+ internal-start offset)))))
+  (define public-rows
+    (for/list ([action (in-list (boundary-plan-actions plan))]
+               #:when (eq? 'create (boundary-action-kind action)))
+      (list
+       (qname->symbol (boundary-action-name action))
+       (boundary-action-version-key action)
+       (boundary-plan-boundary-event plan)
+       (hash-ref (boundary-plan-version-slots plan)
+                 (boundary-action-name action))
+       (if (boundary-action-predecessor action)
+           'program-inherit
+           'program-initial))))
+  (define internal-rows
+    (for/list ([pair (in-list internal-pairs)] [offset (in-naturals)])
+      (list (first pair) (second pair)
+            (boundary-plan-boundary-event plan)
+            (+ internal-start offset)
+            'program-internal)))
+  (values (append public internal-pairs)
+          (append public-rows internal-rows)))
+
+(define (plan-compile-groups s groups supplied-plan-data)
+  (when (and supplied-plan-data
+             (not (= (length supplied-plan-data) (length groups))))
+    (error 'session
+           "recipe supplied ~a boundary plans for ~a program groups"
+           (length supplied-plan-data) (length groups)))
+  (define initial-boundary
+    (or (session-catalog-boundary s)
+        (and (pair? groups)
+             (legacy-planning-boundary
+              s (compile-group-catalog-delta (first groups))))))
+  (let loop ([remaining groups]
+             [input initial-boundary]
+             [event (session-next-event s)]
+             [persisted (or supplied-plan-data '())]
+             [plans '()]
+             [tables '()]
+             [rows '()])
+    (match remaining
+      ['() (values (reverse plans) (reverse tables) (reverse rows))]
+      [(cons group more)
+       (define delta (compile-group-catalog-delta group))
+       (define writes (compile-group-boundary-write-set group))
+       (define plan
+         (cond
+           [supplied-plan-data
+            (replay-boundary-plan input delta writes (first persisted))]
+           [else
+            (plan-boundary
+             input delta writes
+             #:layer-id (session-layer-id s)
+             #:program-event event
+             #:boundary-event event
+             #:type-event event)]))
+       (define-values (table descriptor-rows)
+         (boundary-plan-daemon-data plan group))
+       (loop more
+             (boundary-plan-output plan)
+             (add1 event)
+             (if supplied-plan-data (rest persisted) '())
+             (cons plan plans)
+             (cons table tables)
+             (cons descriptor-rows rows))])))
+
 (define (allocate-version-event! s writes kind)
   (define event (session-next-event s))
   (set-session-next-event! s (add1 event))
@@ -866,7 +1225,9 @@
   (set-session-descriptors! s (append (session-descriptors s) rows))
   (for/list ([row (in-list rows)]) (take row 2)))
 
-(define (session-run! s prog #:version-events [supplied-events #f])
+(define (session-run! s prog
+                      #:version-events [supplied-events #f]
+                      #:boundary-plans [supplied-plan-data #f])
   ;; Segments compile against the LIVE schema once the session has any
   ;; state (0.D2): renames, drops, imports, and prior segments' relations
   ;; are all reflected, so later-segment resolution errors come free --
@@ -882,37 +1243,148 @@
     (parameterize ([current-source-capture
                     (and (not (session-replaying? s)) (session-sources s))])
       (compile-strata prog manifest #:split-facts? #f)))
-  (define group-write-sets
-    (let loop ([gs groups] [remaining strata] [out '()])
-      (match gs
-        ['() (reverse out)]
-        [(cons (cons n g-frozen) more)
-         (define g-strata (take remaining n))
-         (loop more (drop remaining n)
-               (cons (segment-write-set g-strata g-frozen) out))])))
-  (define version-events
-    (or supplied-events
-        (for/list ([ws (in-list group-write-sets)])
-          (allocate-version-event! s ws 'program-inherit))))
-  (unless (= (length version-events) (length groups))
+  (when (and supplied-events
+             (not (= (length supplied-events) (length groups))))
     (error 'session "recipe supplied ~a version events for ~a program groups"
-           (length version-events) (length groups)))
-  (record-step! s `(run ,prog (version-events ,@version-events)))
-  (let run-groups ([gs groups] [remaining strata] [ves version-events])
+           (length supplied-events) (length groups)))
+  (define n2? (or supplied-plan-data (not supplied-events)))
+  (define-values (plans planned-events descriptor-rows)
+    (cond
+      [n2? (plan-compile-groups s groups supplied-plan-data)]
+      [else (values (make-list (length groups) #f)
+                    supplied-events
+                    (make-list (length groups) '()))]))
+  (define version-events
+    (cond
+      [(and supplied-events n2?)
+       (unless (equal? supplied-events planned-events)
+         (error 'session
+                "persisted version-event tables differ from their BoundaryPlans"))
+       supplied-events]
+      [n2? planned-events]
+      [else supplied-events]))
+  ;; Live N2 plans reserve one content-neutral recipe event per program group
+  ;; only after the complete pure chain validated.  A daemon failure burns the
+  ;; reservation but does not publish that group's logical output boundary.
+  (when (and n2? (not supplied-plan-data))
+    (set-session-next-event! s
+                             (+ (session-next-event s) (length groups))))
+  (record-step!
+   s
+   (if n2?
+       `(run ,prog
+             (version-events ,@version-events)
+             (boundary-plans
+              ,@(map boundary-plan->datum plans)))
+       `(run ,prog (version-events ,@version-events))))
+  (let run-groups ([gs groups]
+                   [remaining strata]
+                   [ves version-events]
+                   [bps plans]
+                   [row-groups descriptor-rows])
     (match gs
       ['() (void)]
-      [(cons (cons n g-frozen) more)
+      [(cons (? compile-group? group) more)
+       (define n (compile-group-stratum-count group))
+       (define g-frozen (compile-group-frozen-dirs group))
        (define g-strata (take remaining n))
-       (define ws (segment-write-set g-strata g-frozen))
-       (when (pair? ws)
-         (session-action! s `(begin-segment/keyed ,(car ves)))
-         (read-one-line! s))   ; (segment P N)
-       (touch! s ws)
-       (for ([dir (in-list g-frozen)])
-         (session-action! s `(import-path ,dir)))
-       (for ([sb (in-list g-strata)])
-         (push-sbuild! s sb))
-       (run-groups more (drop remaining n) (cdr ves))]))
+       (define ws (compile-group-write-set group))
+       (define committed? #f)
+       (cond
+         [n2?
+          ;; N3-A admission: even a declaration-only group creates its empty
+          ;; storage slots now.  The daemon validates the complete output
+          ;; catalog and exact predecessor/key table before allocating a
+          ;; private working environment.
+          (define generation (query-update-epoch! s))
+          (define key (boundary-plan-boundary-key (car bps)))
+          (define prepared
+            (session-command!
+             s (boundary-prepare-command (car bps) group generation)))
+          (define old-next-scc (session-next-scc s))
+          (define old-strata-info (session-strata-info s))
+          (match prepared
+            [`(boundary-prepared ,(== generation)
+                                 (boundary ,(== key))
+                                 (program ,_)
+                                 (position ,_)
+                                 (created ,_))
+             (void)]
+            [`(refused ,class ,_ ,details ...)
+             (error 'session
+                    (format "prepare-boundary refused (~a): ~a"
+                            class details))]
+            [other
+             (error 'session
+                    (format "unexpected prepare-boundary reply: ~a"
+                            other))])
+          (with-handlers
+              ([exn:fail?
+                (lambda (failure)
+                  (set-session-next-scc! s old-next-scc)
+                  (set-session-strata-info! s old-strata-info)
+                  (with-handlers ([exn:fail? void])
+                    (define aborted
+                      (session-command!
+                       s `(abort-boundary
+                           (generation ,generation)
+                           (boundary ,key))))
+                    (unless
+                        (match aborted
+                          [`(boundary-aborted ,(== generation)
+                                              (boundary ,(== key))
+                                              (position ,_)
+                                              (discarded ,_))
+                           #t]
+                          [_ #f])
+                      (error 'session
+                             (format "unexpected abort-boundary reply: ~a"
+                                     aborted))))
+                  (raise failure))])
+            (for ([dir (in-list g-frozen)])
+              (session-action! s `(import-path ,dir)))
+            (for ([sb (in-list g-strata)])
+              (push-sbuild! s sb))
+            (let ([committed
+                   (session-command!
+                    s `(commit-boundary
+                        (generation ,generation)
+                        (boundary ,key)))])
+              (match committed
+                [`(boundary-committed ,_
+                                      (boundary ,(== key))
+                                      (position ,_)
+                                      (created ,_))
+                 (set! committed? #t)]
+                [`(refused ,class ,_ ,details ...)
+                 (error 'session
+                        (format "commit-boundary refused (~a): ~a"
+                                class details))]
+                [other
+                 (error 'session
+                        (format "unexpected commit-boundary reply: ~a"
+                                other))])))]
+         [(pair? ws)
+          (session-action! s `(begin-segment/keyed ,(car ves)))
+          (read-one-line! s)])   ; (segment P N)
+       (unless n2?
+         (for ([dir (in-list g-frozen)])
+           (session-action! s `(import-path ,dir)))
+         (for ([sb (in-list g-strata)])
+           (push-sbuild! s sb)))
+       (when (or (not n2?) committed?) (touch! s ws))
+       (when n2?
+         ;; The logical head and recipe descriptors advance only after the
+         ;; daemon atomically installed the same boundary.
+         (set-session-catalog-boundary!
+          s (boundary-plan-output (car bps)))
+         (set-session-boundary-plans!
+          s (append (session-boundary-plans s) (list (car bps))))
+         (unless (session-replaying? s)
+           (set-session-descriptors!
+            s (append (session-descriptors s) (car row-groups)))))
+       (run-groups more (drop remaining n) (cdr ves)
+                   (cdr bps) (cdr row-groups))]))
   ;; Running a program is the explicit semantic reopen event for any
   ;; input-only successors accumulated since the prior program event.
   (hash-clear! (session-input-only s)))
@@ -988,6 +1460,9 @@
   (echo! s committed)
   (record-step! s `(inject-version ,rel* ,k))
   (touch! s (list rel*))
+  ;; Injection creates a live VersionKey outside a program BoundaryPlan.
+  ;; Re-adopt from daemon identity before planning the next program.
+  (set-session-catalog-boundary! s #f)
   (match (read (open-input-string line))
     [`(injected ,_ ,pos ,vid) (values pos vid k)]))
 
@@ -1096,7 +1571,11 @@
      ;; deliberately different from an overlay anchored to a VersionInstance
      ;; binding, whose equal-position writer must see the overlay.
      (walk-suffix! s anchor targets strata-pos chains
-                   #:include-anchor? #f)]))
+                   #:include-anchor? #f)])
+  ;; Imports can populate (and, with renames, redirect) storage independently
+  ;; of the current logical catalog.  The next program adopts the resulting
+  ;; live environment rather than extending a stale in-memory boundary.
+  (set-session-catalog-boundary! s #f))
 
 ;; ---- cone assembly (docs/incremental.md §0.5) ----------------------------
 
@@ -1146,7 +1625,10 @@
          (values scc (list pos reads writes vids kind))))
      (define vinfo
        (for/hash ([vi (in-list vis)])
-         (match-define `(vid ,name ,ord ,vid ,pred ,key (schema ,arity ,sid ,storage)) vi)
+         (match-define
+           `(vid ,name ,ord ,vid ,pred ,key
+                 (schema ,arity ,sid ,storage) ,_identity-fields ...)
+           vi)
          (values (cons name ord) (list vid pred key (list arity sid storage)))))
      (define chains
        (for/hash ([r (in-list rels)])

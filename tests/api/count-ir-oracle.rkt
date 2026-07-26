@@ -253,7 +253,8 @@
 (define vid-info
   (for/fold ([h (hash)]) ([vi (in-list version-forms)])
     (match vi
-      [`(vid ,name ,_ord ,vid ,pred ,_key (schema ,arity ,sid ,storage))
+      [`(vid ,name ,_ord ,vid ,pred ,_key
+             (schema ,arity ,sid ,storage) ,_identity-fields ...)
        (if (hash-has-key? h vid) h
            (hash-set h vid (list name pred sid storage arity)))])))
 (define masks (make-hash)) ; VersionId -> immutable tuple set

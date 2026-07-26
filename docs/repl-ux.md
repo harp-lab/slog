@@ -450,14 +450,101 @@ from the prompt into the **last result's canvas**:
 - **/** incremental search within the expanded tree; **n** next match;
 - **q**/Esc returns to the prompt; the canvas remains printed as plain text.
 
+**Checkpoint 2026-07-23 (R1 presentation/navigation foundation).** The
+terminal-independent `present` model now owns depth, total-node,
+collection-item, and string budgets plus stable positional expansion paths.
+The newest successful result becomes the one live canvas; structured mutation
+records contribute a collapsed `it.change` tree without parsing their bounded
+human-readable lines. Tab enters navigation, arrows/hjkl select or
+expand/collapse, and every successful gesture appends the same generated
+`expand POSITION`/`collapse POSITION` command accepted as typed input.
+Previous result entries retain their last rendered text, while `--plain`
+continues to render the server projection byte-for-byte.
+
+**Checkpoint 2026-07-23 (semantic change cards).** Pressing **o** on a
+card-capable node opens a contextual sidebar; typing or receiving
+`card POSITION` applies the identical client-side action, and `card close`
+closes it. The initial adapter covers the structured mutation summary,
+requested tuple edits, observed relation sizes, and affected routes. It labels
+requests as requests whose settled effect depends on normalization and labels
+sizes as cardinality evidence rather than tuple diffs or provenance. Cards
+publish the same typed expand/collapse/close actions gestures perform. Narrow
+terminals omit the sidebar without losing card state, and plain output remains
+byte-identical.
+
+**Checkpoint 2026-07-23 (command completion foundation).** With editor text,
+Tab completes canonical verbs, `mode` and `library` subcommands, structured
+resident/library database names, and action-valid paths in the newest live
+canvas. A unique candidate replaces its token immediately. Ambiguous
+candidates open a bounded panel; Tab/Down and Shift-Tab/Up cycle, Enter
+accepts, Esc dismisses, and the mouse wheel follows the same selection state.
+Acceptance only edits the command buffer—the resulting command is ordinary
+typed input and no hidden transcript action occurs.
+
+The completer explicitly returns no relation or namespace candidates yet.
+Runtime cardinality observations are not a catalog, and saved relation
+directories omit declarations the catalog may know. The pure candidate model
+has an inventory seam for the selected boundary catalog from repl.md §3;
+catalog/embedded-Slog completion, search, arbitrary value/proof adapters, and
+pagination remain open R1 slices.
+
+**Checkpoint 2026-07-23 (visible canvas search).** Navigate-mode `/` opens a
+single-line incremental search over the rendered canvas. Matches are
+case-insensitive and remain bounded by the same depth, total-node,
+collection-item, and string budgets as presentation; collapsed descendants do
+not leak into results. All visible matches are highlighted and the current
+match plus total are reported. Enter commits and echoes `search TEXT`, Esc
+restores the prior search and selection without an echo, and n/N echo
+`search-next`/`search-previous`. `search-clear` is the canonical reset.
+Typed and co-author commands run through the identical client reducer without
+reaching Racket, and plain transcript bytes remain unchanged. Catalog and
+embedded-Slog completion, richer value/proof adapters, and pagination remain
+open R1 slices.
+
+**Checkpoint 2026-07-25 (N3-B relation identity adapter).** The server's
+`tables` pass now consumes the structured daemon catalog and retains additive
+JSON-safe records for visible current-session relations: name, kind, arity,
+schema detail, row count, exact VersionKey, and selected BoundaryKey, with
+filter/scope totals. The canvas renders those records as a budgeted
+`it.relations` tree. Relation cards expose `count`, `show`, and `state`
+actions and display the real BoundaryKey/VersionKey pair; a legacy environment
+event is labelled as having no committed boundary selected.
+
+The original human `lines` and plain transcript remain byte-identical. This
+observation is intentionally not fed to completion: N4 must persist the
+additive historical boundary catalog from repl.md §3. Tuple values
+also remain unstructured until evaluation/boundary TypeDescriptor and
+value-handle ownership are fixed, while proof trees remain gated by
+provenance. Pagination and those value/proof adapters remain open.
+
+**Checkpoint 2026-07-23 (buffered canvas pagination).** Collection item
+budgets now render one page rather than expanding every buffered remainder.
+Continuation markers state the exact remaining/prior count and current/total
+pages. Enter on a marker echoes an absolute `page POSITION NUMBER` command;
+typed and co-author forms take the identical client reducer, and completion
+offers only visible page targets and in-range page numbers. Search and cards
+remain honest to the current page—off-page nodes are neither matches nor open
+cards.
+
+This slice is intentionally client-buffered. It pages only nodes already in a
+bounded compiler result, including `show REL all` under the existing 200-row
+safety cap. It does not name that state a query cursor and does not implement
+the future Q1 `more`: default `show REL` keeps its explicit `show REL all`
+continuation. The daemon's canonical `query`/`query-page`/`query-cancel`
+dispatcher landed after this checkpoint, but Rust `more` still waits for the
+N2/N3 boundary-catalog and friendly query adapter rather than manufacturing
+identity from the live-name observation.
+
 Only the most recent result is a live canvas; older results decay to plain
 transcript text (bounded terminal state, and P2 means nothing is lost — the
 echoes reproduce any expansion). Older results can be re-summoned: `it~1`,
 `it~2`, or rerun the command.
 
-`--plain` (and any non-tty stdout) disables the canvas entirely; every
-capability remains reachable by typed commands. All golden tests run in plain
-mode; the canvas is sugar by construction.
+`--plain` (and any non-tty stdout) disables client-owned canvas operations and
+prints the compiler's bounded semantic projection. Database capabilities
+remain ordinary server commands; full-screen canvas actions are replayable
+client commands. All golden tests run in plain mode, so presentation paging
+cannot change Slog semantics or transcript bytes.
 
 ### 6.3 Pagination and floods
 

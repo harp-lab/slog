@@ -150,10 +150,11 @@ QName mangler cannot accidentally produce a colliding shape.
   `relations` map (2285/3007), `rel_bindings` (2292/3006),
   `bind_versions` (2339), `planned_version_keys` (2982); rename/drop
   mutate by string (3110–3132).
-- Struct identity: `struct_id_max++` monotone allocator (`addStruct`
-  3040–3047; modules.md §6.3 wants lowest-free bitmap — N3);
-  `structs_by_id` name-discovered scan (2344, 3516–3525; §8.5.3 wants
-  TypeDescriptors — N3).
+- Struct identity (map captured before N3-C): the former
+  `struct_id_max++`/`structs_by_id` seam has been replaced by a lowest-free
+  occupancy bitmap and pointer-stable TypeDescriptors indexed directly by SID
+  and TypeKey. Prepared boundaries use a private SID storage overlay; public
+  descriptors survive rename/drop.
 - On-disk dirs: `relationDirBIN` writes
   `table.<name>.arity.<A>/`, `struct.<name>.arity.<A>.id.<SID>/`,
   `lat.<name>.arity.<A>.spec.<TOK>/` (4695–4708);

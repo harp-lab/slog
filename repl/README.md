@@ -12,6 +12,65 @@ $ make -C repl
 $ ./slog
 ```
 
+For scripts, CI, redirected output, and golden transcripts, use the same
+executable without terminal control:
+
+```console
+$ printf ':status\n:quit\n' | ./slog --plain
+```
+
+Plain mode reads one command per input line, sends semantic commands through
+the same framed Racket backend, and writes the canonical transcript to stdout.
+Server diagnostics use stderr. It starts no alternate screen, raw input,
+mouse capture, or co-author listener. Redirecting stdout selects it
+automatically; `--plain` makes the choice explicit. Use `run PATH` for
+multiline Slog in this first line-oriented slice.
+
+In the full-screen client, the newest successful result is a live canvas.
+With an empty editor, Tab enters navigate mode; arrows or j/k select, Enter
+toggles an expandable node, left/h/backspace collapses, right/l expands, and
+Esc or q returns to the prompt. Semantic mutations expose a collapsed
+`▸ Change details` tree built from their structured `change` record. Every
+gesture echoes the client command it performs, such as
+`expand it.change`; typing that command takes the identical path. Press o on
+a semantic node to open its contextual card. The equivalent
+`card POSITION` command works when typed or received from a co-author, and
+`card close` closes the sidebar. Change cards distinguish requested edits
+from observed settled cardinalities; they do not claim a tuple diff or
+provenance proof. Press `/` in navigate mode to search the currently visible
+canvas lines. Search is incremental and case-insensitive; Enter commits the
+canonical `search TEXT` action, Esc cancels the preview, and n/N emit
+`search-next`/`search-previous`. `search-clear` clears the active search.
+Collapsed children become searchable only after expansion.
+
+Collections already present in a result are paged by the same item budget.
+A continuation marker reports the remaining item count and current/total
+pages; selecting it with Enter emits an absolute command such as `page it 2`.
+`page POSITION NUMBER` works identically when typed or received from a
+co-author, and Tab completes only currently visible paged positions and valid
+page numbers. Search covers only the current visible page. This is
+client-buffered pagination, not the canonical Q1 daemon query cursor: the
+current Rust/Racket frontend has not connected that exact-VersionKey surface,
+so `show REL` still directs users to `show REL all` when more rows exist, and
+`show REL all` remains hard-capped at 200.
+
+`tables` preserves its original bounded lines and also publishes structured
+current-session relation observations. The full-screen canvas adds a collapsed
+`Live relation observations` tree; each relation expands to kind, arity, row
+count, and schema detail, while its card offers `count`, `show`, and `state`.
+These are current live names, not BoundaryKey/VersionKey catalog identities,
+and the completer deliberately does not treat them as the future boundary
+catalog.
+
+With text in the editor, Tab completes command verbs, mode arguments,
+structured resident/library database names, and positions in the current live
+canvas. A unique match is applied immediately. Multiple matches open a bounded
+menu: Tab or Down selects the next candidate, Shift-Tab or Up selects the
+previous one, Enter accepts, and Esc closes the menu. Relation and namespace
+names are intentionally not inferred from row-count observations or saved
+relation directories; they join this same completion model when the selected
+boundary catalog becomes a structured server contract.
+
 The current vertical slice supports several databases resident in one shared
 REPL. The
 main commands are:
@@ -39,6 +98,8 @@ save NAME                save the in-memory database
 :status                  show REPL, database, and daemon state
 :share                   show this REPL's co-author address and discovery file
 :quit                    close the REPL
+
+page POSITION NUMBER     select an absolute buffered-canvas page
 ```
 
 `schema` and `pipeline` retain the raw daemon-facing views, and `:ping` tests
@@ -131,9 +192,15 @@ Source boundaries:
   terminal binary;
 - `command.rs`: canonical shell input, origin/visibility, and shallow
   `: / ? / ! / source / ;` classification;
+- `completion.rs`: pure command/argument candidate selection over structured
+  client inventory; no terminal or compiler dependency;
 - `transcript.rs`: durable shell events and their plain co-author projection;
 - `operation.rs`: generic temporary workflow lifecycle; animation remains a
   terminal rendering choice;
+- `present.rs`: budgeted presentation trees, expansion paths, live-canvas
+  navigation state, and contextual card actions;
+- `response.rs`: the shared structured-result projection consumed by plain
+  mode and the canvas;
 - `workspace.rs`: revision-safe Slog drafts and compiler
   pending/accepted/rejected state;
 - `app.rs`: terminal application state and event reduction; no terminal output
@@ -159,5 +226,6 @@ The UI is intentionally a full-screen workbench in this first demo so the
 contextual inspector, lightweight multiline editor, colors, and wide characters
 are all exercised. PageUp/PageDown or the mouse wheel revisit the session
 transcript without moving the editor cursor. Alt+Enter inserts an editor newline;
-Ctrl+J is a portable fallback. The same app model can support
-an inline-scrollback frontend later without changing the server protocol.
+Ctrl+J is a portable fallback. `--plain` is the non-TTY rendering of the same
+command/result model; a future inline-scrollback frontend can likewise reuse
+it without changing the server protocol.
