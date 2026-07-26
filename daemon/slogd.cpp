@@ -1378,7 +1378,17 @@ static std::string catalog_relation_record(
 // materialization -- the catalog is declaration truth: empty and index-free
 // relations appear (repl.md §7).  N3-B adds the selected committed
 // BoundaryKey, or #f after a legacy environment event.
-static void emit_catalog_relations(slog::Daemon* d)
+// `path` empty selects everything; otherwise the record stream is the §5.3
+// subtree selection -- exact member or nested under the path.
+static bool catalog_path_selects(const std::string& name,
+                                 const std::string& path)
+{
+    return path.empty() || name == path
+        || slog::Database::pathInside(name, path);
+}
+
+static void emit_catalog_relations(slog::Daemon* d,
+                                   const std::string& path = "")
 {
     using slog::protocol::quoteString;
     std::map<std::string, slog::Relation*> sorted(
@@ -1388,7 +1398,7 @@ static void emit_catalog_relations(slog::Daemon* d)
     for (auto& kv : sorted)
     {
         slog::Relation* r = kv.second;
-        if (r == nullptr) continue;
+        if (r == nullptr || !catalog_path_selects(kv.first, path)) continue;
         const std::string boundary =
             !current_boundary.empty()
             && d->db()->getRelationAtBoundary(kv.first, current_boundary) == r
@@ -1401,6 +1411,7 @@ static void emit_catalog_relations(slog::Daemon* d)
         d->db()->plannedVersionKeys().end());
     for (const auto& kv : planned)
     {
+        if (!catalog_path_selects(kv.first, path)) continue;
         d->emit("(catalog-planned (name " + quoteString(kv.first)
                 + ") (version-key " + quoteString(kv.second) + "))");
         ++n;
@@ -1432,7 +1443,8 @@ static void emit_catalog_boundaries(slog::Daemon* d)
     d->emit("(catalog-end " + std::to_string(n) + ")");
 }
 
-static bool emit_catalog_boundary(slog::Daemon* d, const std::string& key)
+static bool emit_catalog_boundary(slog::Daemon* d, const std::string& key,
+                                  const std::string& path = "")
 {
     const slog::BoundarySnapshot* boundary = d->db()->getBoundary(key);
     if (boundary == nullptr) return false;
@@ -1441,7 +1453,8 @@ static bool emit_catalog_boundary(slog::Daemon* d, const std::string& key)
     u64 n = 0;
     for (const auto& item : sorted)
     {
-        if (item.second == nullptr) continue;
+        if (item.second == nullptr
+            || !catalog_path_selects(item.first, path)) continue;
         d->emit(catalog_relation_record(item.first, item.second, key));
         ++n;
     }
@@ -1601,21 +1614,45 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
             if (what == "types")     { emit_catalog_types(d);     return; }
             if (what == "boundaries"){ emit_catalog_boundaries(d); return; }
         }
+        // N3-D §5.3 subtree selection: a trailing structured qname narrows
+        // the record stream to the exact member or nested descendants.
         if (argc == 2
+            && form.children[1].kind == slog::sexp::SExp::K::atom
+            && form.children[1].text == "relations")
+        {
+            std::string path;
+            if (!parse_qname(form.children[2], path))
+            {
+                refuse(d, "parse", "(verb catalog) (detail \"subtree filter "
+                       "must be a structured (qname \\\"component\\\" ...)\")");
+                return;
+            }
+            emit_catalog_relations(d, path);
+            return;
+        }
+        if ((argc == 2 || argc == 3)
             && form.children[1].kind == slog::sexp::SExp::K::atom
             && form.children[1].text == "boundary"
             && form.children[2].kind == slog::sexp::SExp::K::string)
         {
             const std::string& key = form.children[2].text;
-            if (emit_catalog_boundary(d, key)) return;
+            std::string path;
+            if (argc == 3 && !parse_qname(form.children[3], path))
+            {
+                refuse(d, "parse", "(verb catalog) (detail \"subtree filter "
+                       "must be a structured (qname \\\"component\\\" ...)\")");
+                return;
+            }
+            if (emit_catalog_boundary(d, key, path)) return;
             refuse(d, "boundary-lookup",
                    "(verb catalog) (boundary "
                    + slog::protocol::quoteString(key) + ")");
             return;
         }
         refuse(d, "parse", "(verb catalog) (detail \"expected (catalog), "
-               "(catalog relations), (catalog types), (catalog boundaries), "
-               "or (catalog boundary \\\"KEY\\\")\")");
+               "(catalog relations), (catalog relations (qname ...)), "
+               "(catalog types), (catalog boundaries), "
+               "or (catalog boundary \\\"KEY\\\" [(qname ...)])\")");
         return;
     }
 

@@ -4200,16 +4200,27 @@ public:
     ++pipeline_pos;
     if (!prepared_boundary)
     {
-      // Rename/drop/import, input-only VersionKeys, and legacy strata still
-      // mutate the live environment outside an N3 transaction.  The session
-      // deliberately re-adopts that environment before its next program, so
-      // the daemon must not compare the replacement complete catalog against
-      // a snapshot from before the legacy event.  A prepared boundary uses
-      // its own private catalog and advances the cursor directly.
-      catalog_declarations.clear();
-      catalog_memberships.clear();
+      // Any non-transactional boundary event (walk rebinds, batches,
+      // segment boundaries) leaves the live environment different from
+      // every committed snapshot, so the CURRENT boundary handle clears.
+      // The declaration catalog is version-independent and survives content
+      // events (N3-D): only the genuinely catalog-invalidating legacy
+      // events -- rename-rel/drop-rel, imports/links, injected input
+      // versions -- clear it, each at its own site
+      // (invalidateCatalogTruth).  A prepared boundary uses its own private
+      // catalog and advances the cursor directly.
       current_boundary_key.clear();
     }
+  }
+
+  // The legacy environment events the session answers by re-adopting the
+  // live environment before its next program: the daemon must not compare
+  // a later complete catalog against pre-event declarations.
+  void invalidateCatalogTruth()
+  {
+    catalog_declarations.clear();
+    catalog_memberships.clear();
+    current_boundary_key.clear();
   }
   // -1 = latest (default); >= 0 = resolve getRelation at that position (set
   // around a re-entry push, B1).
@@ -4274,6 +4285,7 @@ public:
     rel_bindings[from].push_back({pipeline_pos, nullptr, ""});
     rel_bindings[to].push_back({pipeline_pos, r, ""});
     advancePosition();
+    invalidateCatalogTruth();
     // sidecar rows recorded under either name are no longer trustworthy
     // seeds (§4.4.5: a rename severs; a re-declared name is a fresh chain)
     accelInvalidate(from);
@@ -4289,6 +4301,7 @@ public:
     relations.erase(it);
     rel_bindings[name].push_back({pipeline_pos, nullptr, ""});
     advancePosition();
+    invalidateCatalogTruth();
     accelInvalidate(name);   // dropped rows must not resurrect as seeds
     return true;
   }
@@ -4443,8 +4456,25 @@ private:
     }
     if (sent.size() != expected)
     {
+      // name one offender: every sent declaration must be the rewrite of a
+      // current one, so any extra is diagnosable directly
+      std::string extra;
+      std::unordered_set<std::string> images;
+      for (const auto& current : catalog_declarations)
+      {
+        const std::string target = rewrite(current.first);
+        if (!target.empty()) images.insert(target);
+      }
+      for (const auto& entry : sent)
+        if (images.find(entry.first) == images.end())
+        {
+          extra = entry.first;
+          break;
+        }
       out.refusal_class = "transform-plan";
-      out.detail = "declarations contain names outside the transform";
+      out.detail = "declarations contain names outside the transform"
+                 + (extra.empty() ? std::string()
+                                  : std::string(": ") + extra);
       return out;
     }
     std::set<std::pair<std::string, std::string>> expected_members;
@@ -7523,6 +7553,9 @@ public:
     if (!std::filesystem::is_directory(src_dir))
       fatal("Import: no database directory at " + src_dir);
     externally_seeded = true;
+    // foreign declarations arrive with no catalog metadata: the session
+    // re-adopts the merged environment before its next program (N2-B bridge)
+    invalidateCatalogTruth();
     // source name -> destination name (identity for relations not in `rename`)
     const auto dest_name = [&](const std::string& s) -> const std::string& {
       auto it = rename.find(s);

@@ -498,6 +498,8 @@ timeout 600 racket tests/api/session-drive.rkt \
   rename-rel:ns,geo \
   run:tests/session/nd_ns_consumer.slog \
   dump-rel:endp dump-rel:geo.path \
+  abatch+:0,ns.edge,4,5 flush \
+  dump-rel:geo.path dump-rel:endp \
   drop-rel:geo \
   pipeline recipe \
   > out/sess-nd-ns.log 2>&1
@@ -506,6 +508,11 @@ expect_re "nd-ns-rename-atomic" \
   out/sess-nd-ns.log
 expect "nd-ns-consumer-endp"  "(dumpdone 3)" out/sess-nd-ns.log
 expect "nd-ns-consumer-path"  "(dumpdone 6)" out/sess-nd-ns.log
+# an anchored batch to the OLD leaf name (pre-severance v0) translates
+# through the subtree rename: the walk rebuilds geo.path and the consumer
+# suffix; content lands under the successor names
+expect "nd-ns-batch-translates-path" "(dumpdone 10)" out/sess-nd-ns.log
+expect "nd-ns-batch-translates-endp" "(dumpdone 4)" out/sess-nd-ns.log
 expect_re "nd-ns-drop-atomic" \
   '\(path-dropped [0-9]+ \(path "geo"\) \(boundary "b1:[^"]+:3"\) \(position [0-9]+\) \(unbound 2\)\)' \
   out/sess-nd-ns.log

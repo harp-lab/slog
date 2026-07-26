@@ -266,6 +266,35 @@ else
   bad "nd-transform-boundaries-listed"
 fi
 
+# Subtree selection (§5.3 "inspecting X selects the subtree"): a trailing
+# structured qname narrows the current and historical catalog streams to the
+# exact member or its nested descendants.  Counts are exact, so the filtered
+# record totals pin both inclusion and exclusion.
+NDC_PREPARE="(prepare-boundary (generation 0) (boundary \"ndc.b0\") (program \"ndc.p0\") (declarations $ND_DECL_X) (memberships) (actions (create (qname \"x\" \"edge\") (version-key \"ndc.v.edge\") (predecessor #f) (type-key #f)) (create (qname \"x\" \"aux\") (version-key \"ndc.v.aux\") (predecessor #f) (type-key #f)) (create (qname \"keep\") (version-key \"ndc.v.keep\") (predecessor #f) (type-key #f))))"
+racket tests/api/drive.rkt \
+  "$NDC_PREPARE" \
+  '(commit-boundary (generation 0) (boundary "ndc.b0"))' \
+  '(catalog relations (qname "x"))' \
+  '(catalog boundary "ndc.b0" (qname "x"))' \
+  '(catalog relations (qname "keep"))' \
+  '(catalog relations bogus)' \
+  > out/proto-nd-filter.log 2>&1
+if [ "$(grep -c '(catalog-rel (name "x\.' out/proto-nd-filter.log)" -eq 4 ] \
+   && [ "$(grep -c '(catalog-rel (name "keep")' out/proto-nd-filter.log)" -eq 1 ]; then
+  ok "nd-filter-subtree-selects"
+else
+  bad "nd-filter-subtree-selects"
+fi
+if [ "$(grep -o '(catalog-end [0-9]*)' out/proto-nd-filter.log | tr -d '\n')" \
+     = "(catalog-end 2)(catalog-end 2)(catalog-end 1)" ]; then
+  ok "nd-filter-exact-counts"
+else
+  bad "nd-filter-exact-counts"
+fi
+expect_rx "nd-filter-malformed" \
+  '\(refused parse [0-9]+ \(verb catalog\) \(detail "subtree filter' \
+  out/proto-nd-filter.log
+
 # Refusal side: nothing may mutate on a refused transform, referential
 # integrity holds for memberships, and the lease/generation gates apply.
 NDB_DECL="(declare (qname \"x\" \"edge\") (kind table) (arity 2) (type-key #f) (lat-spec #f) (shape \"s\")) (declare (qname \"keep\") (kind table) (arity 1) (type-key #f) (lat-spec #f) (shape \"s\")) (declare (qname \"hull\") (kind union) (arity #f) (type-key #f) (lat-spec #f) (shape \"s\"))"

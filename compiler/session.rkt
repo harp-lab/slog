@@ -951,7 +951,28 @@
         (to ,(boundary-qname-datum (transform-plan-to plan)))))
      (record-step! s `(rename-path ,from* ,to*
                                    ,(transform-plan->datum plan))
-                   #:at cur)]
+                   #:at cur)
+     ;; The affected-set walk and anchored-batch translation key on exact
+     ;; LEAF names.  A subtree rename is many leaf renames at one position;
+     ;; the moved pairs fall out of the plan's environments by VersionKey
+     ;; (values are rename-stable and unique), never by splitting names.
+     (define output-names
+       (for/hash ([(name key) (in-hash
+                               (boundary-environment
+                                (transform-plan-output plan)))])
+         (values key name)))
+     (define moved
+       (for/list ([(name key) (in-hash
+                               (boundary-environment
+                                (transform-plan-input plan)))]
+                  #:unless (hash-has-key?
+                            (boundary-environment
+                             (transform-plan-output plan)) name))
+         (list (qname->symbol name)
+               (qname->symbol (hash-ref output-names key))
+               cur)))
+     (touch! s (map second moved))
+     (set-session-renames! s (append moved (session-renames s)))]
     [else
      (session-action! s `(rename-rel ,from* ,to*))
      (define line (read-line (session-out s)))
@@ -959,9 +980,10 @@
        (error 'session
               (format "rename-rel ~a -> ~a refused: ~a" from* to* line)))
      (echo! s line)
-     (record-step! s `(rename-rel ,from* ,to*) #:at cur)])
-  (touch! s (list to*))
-  (set-session-renames! s (cons (list from* to* cur) (session-renames s))))
+     (record-step! s `(rename-rel ,from* ,to*) #:at cur)
+     (touch! s (list to*))
+     (set-session-renames! s (cons (list from* to* cur)
+                                   (session-renames s)))]))
 
 (define (session-drop! s rel #:plan [persisted #f])
   (define rel* (if (symbol? rel) rel (string->symbol rel)))
@@ -1883,7 +1905,19 @@
 (define (resolve-anchor chains rel anchor)
   (define chain (hash-ref chains rel '()))
   (when (null? chain)
-    (error 'session (format "batch targets unknown relation ~a" rel)))
+    ;; ONE path syntax (§5.3): a batch/lookup path naming a NAMESPACE gets
+    ;; told what it selects instead of "unknown relation"
+    (define members
+      (sort (for/list ([name (in-hash-keys chains)]
+                       #:when (qname-inside? (symbol->qname name)
+                                             (symbol->qname rel)))
+              name)
+            symbol<?))
+    (if (pair? members)
+        (error 'session
+               (format "~a names a namespace, not a relation; its members are ~a"
+                       rel members))
+        (error 'session (format "batch targets unknown relation ~a" rel))))
   (define hit
     (if (eq? anchor 'tip)
         (last chain)

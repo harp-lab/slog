@@ -1440,6 +1440,9 @@ public:
     }
     const u32 pos = database->currentPosition();
     database->advancePosition();
+    // an input-only VersionKey is a legacy environment event: the session
+    // invalidates its logical head and re-adopts, so catalog truth clears
+    database->invalidateCatalogTruth();
     needs_reload = true;
     emit("(injected " + name + " " + std::to_string(pos) + " "
          + std::to_string(r->getVersionId()) + ")");
