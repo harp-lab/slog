@@ -138,8 +138,15 @@ done
 
 # Force a large anti-delta negative phase across pause/resume boundaries,
 # with pauses attributed to the negation stratum's maint3neg flavor.
+# WALL: this leg is the harness's slowest by a wide margin -- SLOG_MAX_MS=1
+# pauses the anti-delta phase on essentially every budget check.  Measured
+# 1146s standalone on 2026-07-25 against the harness-wide 1200s wall, i.e.
+# 95% of it, so it timed out inside the full suite (where it also competes
+# for cache) while passing standalone with identical output.  Given its own
+# 2400s so a genuine hang is still caught but scheduling noise is not
+# reported as a failure.  If this leg gets faster, put it back on 1200.
 log="out/m4n-pause-stress.log"
-if SLOG_THREADS=4 SLOG_MAX_MS=1 timeout 1200 \
+if SLOG_THREADS=4 SLOG_MAX_MS=1 timeout 2400 \
      racket tests/api/negation-pause-stress.rkt > "$log" 2>&1 \
    && grep -qF "m4n-pause-stress-ok" "$log"; then
   ok "m4n-pause-resume"
