@@ -909,8 +909,9 @@ static bool parse_boundary_declaration(
         return false;
     }
     const slog::sexp::SExp* value = nullptr;
-    if (!singleton_field(fields, "qname", value)
-        || !parse_qname(*fields.at("qname"), out.name))
+    // the qname field IS the structured name -- multi-component paths make
+    // it wider than a singleton field (N3-D qualified declarations)
+    if (!parse_qname(*fields.at("qname"), out.name))
     {
         error = "declare requires a structured (qname \"component\" ...)";
         return false;
@@ -1010,8 +1011,8 @@ static bool parse_boundary_action(
         return false;
     }
     const slog::sexp::SExp* value = nullptr;
-    if (!singleton_field(fields, "qname", value)
-        || !parse_qname(*fields.at("qname"), out.name)
+    // as with declare: a qualified action name is not a singleton field
+    if (!parse_qname(*fields.at("qname"), out.name)
         || !singleton_field(fields, "version-key", value)
         || !parse_string_value(*value, out.version_key)
         || !singleton_field(fields, "predecessor", value)
@@ -1177,6 +1178,138 @@ static bool dispatch_boundary_command(slog::Daemon* d,
                 + " (boundary " + slog::protocol::quoteString(boundary)
                 + ") (position " + std::to_string(result.position)
                 + ") (discarded " + std::to_string(result.created) + "))");
+    return true;
+}
+
+// N3-D path transforms (modules.md §5.3): rename-path / drop-path are
+// single-shot atomic environment events over ONE structured path syntax --
+// the current environment decides leaf vs namespace.  The session supplies
+// the complete post-transform catalog; the daemon verifies it is exactly
+// the mechanical rewrite of the current one and applies env rebinds,
+// catalog replacement, and the successor BoundarySnapshot atomically.
+static bool dispatch_transform_command(slog::Daemon* d,
+                                       const slog::sexp::SExp& form,
+                                       const std::string& verb)
+{
+    const bool rename = verb == "rename-path";
+    if (!rename && verb != "drop-path") return false;
+
+    CommandFields fields;
+    std::string error;
+    const bool shaped = rename
+      ? (collect_fields(form, 1,
+           {"generation", "boundary", "from", "to",
+            "declarations", "memberships"}, fields, error)
+         && fields.size() == 6)
+      : (collect_fields(form, 1,
+           {"generation", "boundary", "path",
+            "declarations", "memberships"}, fields, error)
+         && fields.size() == 5);
+    if (!shaped)
+    {
+        refuse_boundary_parse(
+          d, verb, !error.empty() ? error
+            : rename
+              ? "requires generation, boundary, from, to, declarations, "
+                "and memberships"
+              : "requires generation, boundary, path, declarations, "
+                "and memberships");
+        return true;
+    }
+    u64 generation = 0;
+    if (!parse_generation(fields, generation))
+    {
+        refuse_boundary_parse(d, verb,
+                              "generation must be one unsigned integer");
+        return true;
+    }
+    const slog::sexp::SExp* value = nullptr;
+    std::string boundary;
+    if (!singleton_field(fields, "boundary", value)
+        || !parse_string_value(*value, boundary))
+    {
+        refuse_boundary_parse(d, verb, "boundary must be one BoundaryKey");
+        return true;
+    }
+    std::string from, to, path;
+    if (rename)
+    {
+        if (!singleton_field(fields, "from", value)
+            || !parse_qname(*value, from)
+            || !singleton_field(fields, "to", value)
+            || !parse_qname(*value, to))
+        {
+            refuse_boundary_parse(
+              d, verb, "from/to must be structured (qname \"component\" ...)");
+            return true;
+        }
+    }
+    else if (!singleton_field(fields, "path", value)
+             || !parse_qname(*value, path))
+    {
+        refuse_boundary_parse(
+          d, verb, "path must be a structured (qname \"component\" ...)");
+        return true;
+    }
+
+    std::vector<slog::BoundaryCatalogDecl> declarations;
+    const auto& declaration_field = *fields.at("declarations");
+    for (size_t i = 1; i < declaration_field.children.size(); ++i)
+    {
+        slog::BoundaryCatalogDecl decl;
+        if (!parse_boundary_declaration(declaration_field.children[i],
+                                        decl, error))
+        {
+            refuse_boundary_parse(d, verb, error);
+            return true;
+        }
+        declarations.push_back(std::move(decl));
+    }
+    std::set<std::pair<std::string, std::string>> memberships;
+    const auto& membership_field = *fields.at("memberships");
+    for (size_t i = 1; i < membership_field.children.size(); ++i)
+    {
+        const auto& member = membership_field.children[i];
+        std::string child, parent;
+        if (member.kind != slog::sexp::SExp::K::list
+            || member.children.size() != 3
+            || member.children[0].kind != slog::sexp::SExp::K::atom
+            || member.children[0].text != "member"
+            || !parse_qname(member.children[1], child)
+            || !parse_qname(member.children[2], parent)
+            || !memberships.insert({child, parent}).second)
+        {
+            refuse_boundary_parse(
+              d, verb, "memberships contain a malformed or duplicate member");
+            return true;
+        }
+    }
+    if (!d->checkCommandGeneration(generation, verb.c_str())) return true;
+
+    const slog::BoundaryAdmission result = rename
+      ? d->renamePath(from, to, boundary, declarations, memberships)
+      : d->dropPath(path, boundary, declarations, memberships);
+    if (!result.ok)
+    {
+        refuse(d, result.refusal_class.c_str(),
+               "(verb " + verb + ") (boundary "
+               + slog::protocol::quoteString(boundary) + ") (detail "
+               + slog::protocol::quoteString(result.detail) + ")");
+        return true;
+    }
+    if (rename)
+        d->emit("(path-renamed " + std::to_string(d->commandGeneration())
+                + " (from " + slog::protocol::quoteString(from)
+                + ") (to " + slog::protocol::quoteString(to)
+                + ") (boundary " + slog::protocol::quoteString(boundary)
+                + ") (position " + std::to_string(result.position)
+                + ") (rebound " + std::to_string(result.created) + "))");
+    else
+        d->emit("(path-dropped " + std::to_string(d->commandGeneration())
+                + " (path " + slog::protocol::quoteString(path)
+                + ") (boundary " + slog::protocol::quoteString(boundary)
+                + ") (position " + std::to_string(result.position)
+                + ") (unbound " + std::to_string(result.created) + "))");
     return true;
 }
 
@@ -1432,6 +1565,9 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
     }
 
     if (dispatch_boundary_command(d, form, verb))
+        return;
+
+    if (dispatch_transform_command(d, form, verb))
         return;
 
     if (dispatch_builder_command(d, builders, form, verb))

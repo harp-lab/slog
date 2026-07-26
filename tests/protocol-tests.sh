@@ -214,6 +214,108 @@ else
   bad "n3c-type-stream-round-trip"
 fi
 
+# --- 3a'. N3-D qualified-path transforms ------------------------------------
+# rename-path / drop-path are single-shot atomic environment events over ONE
+# structured path syntax (modules.md §5.3): the environment decides leaf vs
+# namespace, the whole subtree rebinds at one position under a fresh
+# successor BoundaryKey, VersionKeys and physical storage never move, and
+# committed snapshots keep resolving the old names.  The daemon verifies the
+# sent catalog is exactly the mechanical rewrite of the current one.
+ND_DECL_X="(declare (qname \"x\" \"edge\") (kind table) (arity 2) (type-key #f) (lat-spec #f) (shape \"s\")) (declare (qname \"x\" \"aux\") (kind table) (arity 1) (type-key #f) (lat-spec #f) (shape \"s\")) (declare (qname \"keep\") (kind table) (arity 1) (type-key #f) (lat-spec #f) (shape \"s\"))"
+ND_DECL_Y="(declare (qname \"y\" \"edge\") (kind table) (arity 2) (type-key #f) (lat-spec #f) (shape \"s\")) (declare (qname \"y\" \"aux\") (kind table) (arity 1) (type-key #f) (lat-spec #f) (shape \"s\")) (declare (qname \"keep\") (kind table) (arity 1) (type-key #f) (lat-spec #f) (shape \"s\"))"
+ND_DECL_KEEP="(declare (qname \"keep\") (kind table) (arity 1) (type-key #f) (lat-spec #f) (shape \"s\"))"
+ND_PREPARE="(prepare-boundary (generation 0) (boundary \"nd.b0\") (program \"nd.p0\") (declarations $ND_DECL_X) (memberships) (actions (create (qname \"x\" \"edge\") (version-key \"nd.v.edge\") (predecessor #f) (type-key #f)) (create (qname \"x\" \"aux\") (version-key \"nd.v.aux\") (predecessor #f) (type-key #f)) (create (qname \"keep\") (version-key \"nd.v.keep\") (predecessor #f) (type-key #f))))"
+ND_RENAME="(rename-path (generation 1) (boundary \"nd.r1\") (from (qname \"x\")) (to (qname \"y\")) (declarations $ND_DECL_Y) (memberships))"
+ND_DROP="(drop-path (generation 2) (boundary \"nd.d2\") (path (qname \"y\")) (declarations $ND_DECL_KEEP) (memberships))"
+ND_REDECLARE="(prepare-boundary (generation 3) (boundary \"nd.b3\") (program \"nd.p3\") (declarations (declare (qname \"x\" \"edge\") (kind table) (arity 2) (type-key #f) (lat-spec #f) (shape \"s\")) $ND_DECL_KEEP) (memberships) (actions (create (qname \"x\" \"edge\") (version-key \"nd.v.edge2\") (predecessor #f) (type-key #f)) (retain (qname \"keep\") (version-key \"nd.v.keep\") (predecessor #f) (type-key #f))))"
+racket tests/api/drive.rkt \
+  "$ND_PREPARE" \
+  '(commit-boundary (generation 0) (boundary "nd.b0"))' \
+  "$ND_RENAME" \
+  '(catalog)' \
+  '(catalog boundaries)' \
+  '(catalog boundary "nd.b0")' \
+  "$ND_DROP" \
+  '(catalog)' \
+  '(catalog boundary "nd.r1")' \
+  "$ND_REDECLARE" \
+  '(commit-boundary (generation 3) (boundary "nd.b3"))' \
+  '(catalog)' \
+  > out/proto-nd-transform.log 2>&1
+expect "nd-rename-atomic" \
+  '(path-renamed 2 (from "x") (to "y") (boundary "nd.r1") (position 1) (rebound 2))' \
+  out/proto-nd-transform.log
+expect_rx "nd-rename-versionkey-stable" \
+  '\(catalog-rel \(name "y\.edge"\).*\(version-key "nd\.v\.edge"\) \(boundary "nd\.r1"\)' \
+  out/proto-nd-transform.log
+expect_rx "nd-rename-untouched-binding" \
+  '\(catalog-rel \(name "keep"\).*\(version-key "nd\.v\.keep"\) \(boundary "nd\.b0"\)' \
+  out/proto-nd-transform.log
+expect_rx "nd-history-resolves-old-name" \
+  '\(catalog-rel \(name "x\.edge"\).*\(version-key "nd\.v\.edge"\)' \
+  out/proto-nd-transform.log
+expect "nd-drop-atomic" \
+  '(path-dropped 3 (path "y") (boundary "nd.d2") (position 2) (unbound 2))' \
+  out/proto-nd-transform.log
+expect_rx "nd-drop-redeclare-fresh-chain" \
+  '\(catalog-rel \(name "x\.edge"\).*\(version-key "nd\.v\.edge2"\) \(boundary "nd\.b3"\)' \
+  out/proto-nd-transform.log
+if [ "$(grep -cE '\(catalog-boundary \(boundary "nd\.(b0|r1)"\)' out/proto-nd-transform.log)" -ge 2 ]; then
+  ok "nd-transform-boundaries-listed"
+else
+  bad "nd-transform-boundaries-listed"
+fi
+
+# Refusal side: nothing may mutate on a refused transform, referential
+# integrity holds for memberships, and the lease/generation gates apply.
+NDB_DECL="(declare (qname \"x\" \"edge\") (kind table) (arity 2) (type-key #f) (lat-spec #f) (shape \"s\")) (declare (qname \"keep\") (kind table) (arity 1) (type-key #f) (lat-spec #f) (shape \"s\")) (declare (qname \"hull\") (kind union) (arity #f) (type-key #f) (lat-spec #f) (shape \"s\"))"
+NDB_DECL_Y="(declare (qname \"y\" \"edge\") (kind table) (arity 2) (type-key #f) (lat-spec #f) (shape \"s\")) (declare (qname \"keep\") (kind table) (arity 1) (type-key #f) (lat-spec #f) (shape \"s\")) (declare (qname \"hull\") (kind union) (arity #f) (type-key #f) (lat-spec #f) (shape \"s\"))"
+NDB_DECL_Y_BAD="(declare (qname \"y\" \"edge\") (kind table) (arity 3) (type-key #f) (lat-spec #f) (shape \"s\")) (declare (qname \"keep\") (kind table) (arity 1) (type-key #f) (lat-spec #f) (shape \"s\")) (declare (qname \"hull\") (kind union) (arity #f) (type-key #f) (lat-spec #f) (shape \"s\"))"
+NDB_MEMBER='(member (qname "x" "edge") (qname "hull"))'
+NDB_MEMBER_Y='(member (qname "y" "edge") (qname "hull"))'
+NDB_PREPARE="(prepare-boundary (generation 0) (boundary \"ndb.b0\") (program \"ndb.p0\") (declarations $NDB_DECL) (memberships $NDB_MEMBER) (actions (create (qname \"x\" \"edge\") (version-key \"ndb.v.edge\") (predecessor #f) (type-key #f)) (create (qname \"keep\") (version-key \"ndb.v.keep\") (predecessor #f) (type-key #f))))"
+NDB_LEASE="(prepare-boundary (generation 2) (boundary \"ndb.lease\") (program \"ndb.lp\") (declarations $NDB_DECL_Y) (memberships $NDB_MEMBER_Y) (actions (retain (qname \"y\" \"edge\") (version-key \"ndb.v.edge\") (predecessor #f) (type-key #f)) (retain (qname \"keep\") (version-key \"ndb.v.keep\") (predecessor #f) (type-key #f))))"
+racket tests/api/drive.rkt \
+  "$NDB_PREPARE" \
+  '(commit-boundary (generation 0) (boundary "ndb.b0"))' \
+  "(rename-path (generation 0) (boundary \"ndb.stale\") (from (qname \"x\")) (to (qname \"y\")) (declarations $NDB_DECL_Y) (memberships $NDB_MEMBER_Y))" \
+  "(rename-path (generation 1) (boundary \"ndb.r\") (from (qname \"z\")) (to (qname \"w\")) (declarations $NDB_DECL) (memberships $NDB_MEMBER))" \
+  "(rename-path (generation 1) (boundary \"ndb.r\") (from (qname \"x\")) (to (qname \"keep\")) (declarations $NDB_DECL) (memberships $NDB_MEMBER))" \
+  "(rename-path (generation 1) (boundary \"ndb.r\") (from (qname \"x\")) (to (qname \"x\" \"sub\")) (declarations $NDB_DECL) (memberships $NDB_MEMBER))" \
+  "(rename-path (generation 1) (boundary \"ndb.r\") (from (qname \"x\")) (to (qname \"y\")) (declarations $NDB_DECL_Y_BAD) (memberships $NDB_MEMBER_Y))" \
+  "(rename-path (generation 1) (boundary \"ndb.r\") (from (qname \"x\")) (to (qname \"y\")) (declarations $NDB_DECL_Y) (memberships $NDB_MEMBER))" \
+  "(drop-path (generation 1) (boundary \"ndb.d\") (path (qname \"x\")) (declarations (declare (qname \"keep\") (kind table) (arity 1) (type-key #f) (lat-spec #f) (shape \"s\")) (declare (qname \"hull\") (kind union) (arity #f) (type-key #f) (lat-spec #f) (shape \"s\"))) (memberships))" \
+  '(catalog)' \
+  "(rename-path (generation 1) (boundary \"ndb.r1\") (from (qname \"x\")) (to (qname \"y\")) (declarations $NDB_DECL_Y) (memberships $NDB_MEMBER_Y))" \
+  "$NDB_LEASE" \
+  "(rename-path (generation 2) (boundary \"ndb.r2\") (from (qname \"y\")) (to (qname \"z\")) (declarations $NDB_DECL) (memberships $NDB_MEMBER))" \
+  '(abort-boundary (generation 2) (boundary "ndb.lease"))' \
+  > out/proto-nd-refuse.log 2>&1
+expect_rx "nd-refuse-stale-generation" \
+  '\(refused stale-generation .*rename-path' out/proto-nd-refuse.log
+expect_rx "nd-refuse-unknown-path" \
+  '\(refused transform-plan .*path is unbound: z' out/proto-nd-refuse.log
+expect_rx "nd-refuse-target-bound" \
+  '\(refused transform-plan .*already bound: keep' out/proto-nd-refuse.log
+expect_rx "nd-refuse-self-capture" \
+  '\(refused transform-plan .*inside the renamed subtree' out/proto-nd-refuse.log
+expect_rx "nd-refuse-abi-drift" \
+  '\(refused transform-plan .*ABI changed across the transform: y\.edge' \
+  out/proto-nd-refuse.log
+expect_rx "nd-refuse-unrewritten-membership" \
+  '\(refused transform-plan .*memberships do not match' out/proto-nd-refuse.log
+expect_rx "nd-refuse-dangling-membership" \
+  '\(refused transform-plan .*hull retains a membership' out/proto-nd-refuse.log
+expect_rx "nd-refusals-left-env-intact" \
+  '\(catalog-rel \(name "x\.edge"\).*\(version-key "ndb\.v\.edge"\) \(boundary "ndb\.b0"\)' \
+  out/proto-nd-refuse.log
+expect "nd-membership-rewrites" \
+  '(path-renamed 2 (from "x") (to "y") (boundary "ndb.r1") (position 1) (rebound 1))' \
+  out/proto-nd-refuse.log
+expect_rx "nd-refuse-under-lease" \
+  '\(refused boundary-admission [0-9]+ \(verb rename-path\)' \
+  out/proto-nd-refuse.log
+
 # --- 3b. Q1 canonical payload dispatcher ------------------------------------
 # The canonical payload now resolves through a real committed BoundaryKey.
 # QName selects one binding within that immutable snapshot and its supplied

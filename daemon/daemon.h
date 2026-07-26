@@ -453,6 +453,47 @@ public:
     return result;
   }
 
+  // N3-D path transforms (modules.md §5.3).  Rename/drop are single-shot
+  // atomic environment events -- no prepared state, so admission simply
+  // requires the same quiet pipeline a prepare does.  The dispatcher's
+  // generic gates already refuse them under a prepared boundary or a live
+  // query lease; generation is checked at the verb layer.
+  BoundaryAdmission renamePath(
+      const std::string& from, const std::string& to,
+      const std::string& boundary_key,
+      const std::vector<BoundaryCatalogDecl>& declarations,
+      const std::set<std::pair<std::string, std::string>>& memberships)
+  {
+    if (database->isSuspended())
+      return {false, "transform-admission",
+              "cannot transform while a stratum is suspended", 0, 0};
+    if (transient_run != nullptr || next_unrun != pipeline.size()
+        || next_push_transient || next_push_maintenance
+        || pending_bind_pos >= 0 || !pending_bind_versions.empty())
+      return {false, "transform-admission",
+              "cannot transform with pending pipeline execution or entry state",
+              0, 0};
+    return database->renamePath(from, to, boundary_key,
+                                declarations, memberships);
+  }
+
+  BoundaryAdmission dropPath(
+      const std::string& path, const std::string& boundary_key,
+      const std::vector<BoundaryCatalogDecl>& declarations,
+      const std::set<std::pair<std::string, std::string>>& memberships)
+  {
+    if (database->isSuspended())
+      return {false, "transform-admission",
+              "cannot transform while a stratum is suspended", 0, 0};
+    if (transient_run != nullptr || next_unrun != pipeline.size()
+        || next_push_transient || next_push_maintenance
+        || pending_bind_pos >= 0 || !pending_bind_versions.empty())
+      return {false, "transform-admission",
+              "cannot transform with pending pipeline execution or entry state",
+              0, 0};
+    return database->dropPath(path, boundary_key, declarations, memberships);
+  }
+
   BoundaryAdmission abortBoundary(const std::string& boundary_key)
   {
     if (!database->boundaryPrepared() || !boundary_run)

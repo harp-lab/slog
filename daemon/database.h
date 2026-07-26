@@ -4293,6 +4293,309 @@ public:
     return true;
   }
 
+  // ---- N3-D qualified-path environment transforms (modules.md §5.3) ----
+  // ONE path syntax: the current environment decides whether a path names a
+  // leaf relation or a child namespace (the design forbids both).  A rename
+  // atomically rebinds the whole selected subtree at one pipeline position
+  // as one recipe event; a drop unbinds it.  VersionKeys, TypeKeys, SIDs,
+  // and physical storage are untouched -- name projections follow the
+  // environment, so struct rendering re-resolves without descriptor churn.
+  // The caller (the session) supplies the complete post-transform catalog;
+  // the daemon verifies it is exactly the mechanical rewrite of the current
+  // one (name keys and storage ABI -- shape strings may differ because the
+  // session rewrites nominal references) and applies everything atomically.
+  // Field-graph referential integrity lives with the session's planner; the
+  // membership dangling check below is the daemon-checkable projection.
+
+  // Path components follow names.rkt's alphabet; the daemon only enforces
+  // what it must: nonempty dot-separated components, none machine-reserved.
+  static bool validTransformPath(const std::string& path)
+  {
+    if (path.empty() || path.front() == '.' || path.back() == '.') return false;
+    bool component_start = true;
+    for (char c : path)
+    {
+      if (component_start && (c == '$' || c == '.')) return false;
+      component_start = (c == '.');
+    }
+    return true;
+  }
+
+  static bool pathInside(const std::string& name, const std::string& path)
+  {
+    return name.size() > path.size() + 1
+        && name.compare(0, path.size(), path) == 0
+        && name[path.size()] == '.';
+  }
+
+  // The names the current environment binds at or under `path`, exact
+  // binding first.  Deterministic order (map iteration is unordered).
+  std::vector<std::pair<std::string, Relation*>>
+  collectPathBindings(const std::string& path)
+  {
+    std::vector<std::pair<std::string, Relation*>> out;
+    auto exact = relations.find(path);
+    if (exact != relations.end()) out.push_back({path, exact->second});
+    std::vector<std::pair<std::string, Relation*>> nested;
+    for (const auto& binding : relations)
+      if (pathInside(binding.first, path))
+        nested.push_back(binding);
+    std::sort(nested.begin(), nested.end());
+    out.insert(out.end(), nested.begin(), nested.end());
+    return out;
+  }
+
+private:
+  // Shared admission for both transforms.  Returns ok with the affected
+  // bindings; nothing is mutated on refusal.
+  BoundaryAdmission admitPathTransform(
+      const std::string& path, const std::string& boundary_key,
+      std::vector<std::pair<std::string, Relation*>>& affected)
+  {
+    BoundaryAdmission out;
+    if (boundary_key.empty())
+    {
+      out.refusal_class = "transform-plan";
+      out.detail = "transform requires a fresh BoundaryKey";
+      return out;
+    }
+    if (boundary_index.find(boundary_key) != boundary_index.end())
+    {
+      out.refusal_class = "transform-plan";
+      out.detail = "BoundaryKey was already committed: " + boundary_key;
+      return out;
+    }
+    if (!validTransformPath(path))
+    {
+      out.refusal_class = "transform-plan";
+      out.detail = "malformed or machine-reserved path: " + path;
+      return out;
+    }
+    affected = collectPathBindings(path);
+    if (affected.empty())
+    {
+      out.refusal_class = "transform-plan";
+      out.detail = "path is unbound: " + path;
+      return out;
+    }
+    if (affected.front().first == path && affected.size() > 1)
+    {
+      // one path is never both a leaf and a namespace (§5.3)
+      out.refusal_class = "transform-plan";
+      out.detail = "path names both a relation and a namespace: " + path;
+      return out;
+    }
+    out.ok = true;
+    return out;
+  }
+
+  // The complete post-transform catalog must be exactly the mechanical
+  // rewrite of the current one.  `rewrite` maps a current name to its
+  // post-transform name, or empty for "removed by this transform".
+  BoundaryAdmission verifyTransformedCatalog(
+      const std::function<std::string(const std::string&)>& rewrite,
+      const std::vector<BoundaryCatalogDecl>& declarations,
+      const std::set<std::pair<std::string, std::string>>& memberships)
+  {
+    BoundaryAdmission out;
+    std::unordered_map<std::string, const BoundaryCatalogDecl*> sent;
+    for (const BoundaryCatalogDecl& decl : declarations)
+      if (!sent.insert({decl.name, &decl}).second)
+      {
+        out.refusal_class = "transform-plan";
+        out.detail = "duplicate declaration: " + decl.name;
+        return out;
+      }
+    size_t expected = 0;
+    for (const auto& current : catalog_declarations)
+    {
+      const std::string target = rewrite(current.first);
+      if (target.empty()) continue;
+      ++expected;
+      auto it = sent.find(target);
+      if (it == sent.end())
+      {
+        out.refusal_class = "transform-plan";
+        out.detail = "declarations are missing " + target;
+        return out;
+      }
+      const BoundaryCatalogDecl& next = *it->second;
+      const BoundaryCatalogDecl& prior = current.second;
+      if (next.kind != prior.kind || next.arity != prior.arity
+          || next.storage != prior.storage
+          || next.type_key != prior.type_key
+          || next.lat_spec != prior.lat_spec)
+      {
+        out.refusal_class = "transform-plan";
+        out.detail = "declaration ABI changed across the transform: " + target;
+        return out;
+      }
+    }
+    if (sent.size() != expected)
+    {
+      out.refusal_class = "transform-plan";
+      out.detail = "declarations contain names outside the transform";
+      return out;
+    }
+    std::set<std::pair<std::string, std::string>> expected_members;
+    for (const auto& edge : catalog_memberships)
+    {
+      const std::string child = rewrite(edge.first);
+      const std::string parent = rewrite(edge.second);
+      if (child.empty() && parent.empty()) continue;
+      if (child.empty())
+      {
+        // a surviving parent's edge requires a declaration the transform
+        // removes -- the §5.3 conservative referential-integrity rejection
+        out.refusal_class = "transform-plan";
+        out.detail = "declaration " + parent
+                   + " retains a membership into the transformed subtree";
+        return out;
+      }
+      if (parent.empty()) continue;  // the union itself is going away
+      expected_members.insert({child, parent});
+    }
+    if (memberships != expected_members)
+    {
+      out.refusal_class = "transform-plan";
+      out.detail = "memberships do not match the path transform";
+      return out;
+    }
+    out.ok = true;
+    return out;
+  }
+
+  // Apply an admitted transform: rebind/unbind every affected name at ONE
+  // pipeline position, replace the catalog, and publish the successor
+  // BoundarySnapshot under the supplied key.  No failure past this point.
+  BoundaryAdmission applyPathTransform(
+      const std::vector<std::pair<std::string, Relation*>>& affected,
+      const std::function<std::string(const std::string&)>& rewrite,
+      const std::string& boundary_key,
+      const std::vector<BoundaryCatalogDecl>& declarations,
+      const std::set<std::pair<std::string, std::string>>& memberships)
+  {
+    const u32 position = pipeline_pos;
+    for (const auto& binding : affected)
+    {
+      relations.erase(binding.first);
+      rel_bindings[binding.first].push_back({position, nullptr, ""});
+      accelInvalidate(binding.first);
+    }
+    for (const auto& binding : affected)
+    {
+      const std::string target = rewrite(binding.first);
+      if (target.empty()) continue;
+      relations[target] = binding.second;
+      rel_bindings[target].push_back({position, binding.second, boundary_key});
+      accelInvalidate(target);
+    }
+    advancePosition();
+
+    catalog_declarations.clear();
+    for (const BoundaryCatalogDecl& decl : declarations)
+      catalog_declarations[decl.name] = decl;
+    catalog_memberships = memberships;
+
+    BoundarySnapshot snapshot;
+    snapshot.key = boundary_key;
+    snapshot.program_key = "";
+    snapshot.evaluation_id = evaluation_id;
+    snapshot.position = position;
+    snapshot.generation = update_epoch_id + 1;
+    snapshot.declarations = catalog_declarations;
+    snapshot.memberships = catalog_memberships;
+    for (const auto& decl : snapshot.declarations)
+      if (decl.second.storage)
+      {
+        auto binding = relations.find(decl.first);
+        if (binding == relations.end() || binding->second == nullptr)
+          fatal("transformed boundary is missing storage binding "
+                + decl.first);
+        snapshot.environment[decl.first] = binding->second;
+      }
+    current_boundary_key = snapshot.key;
+    boundary_history.push_back(snapshot.key);
+    boundary_index.emplace(snapshot.key, std::move(snapshot));
+
+    BoundaryAdmission out;
+    out.ok = true;
+    out.position = position;
+    out.created = affected.size();
+    // The environment changed, so stale command/query generations must be
+    // refused -- but content did not, so counts stay valid for the new epoch.
+    ++update_epoch_id;
+    for (Relation* r : rel_registry)
+      if (r && r->isCounted()) r->setCountedRevision(update_epoch_id);
+    return out;
+  }
+
+public:
+  BoundaryAdmission renamePath(
+      const std::string& from, const std::string& to,
+      const std::string& boundary_key,
+      const std::vector<BoundaryCatalogDecl>& declarations,
+      const std::set<std::pair<std::string, std::string>>& memberships)
+  {
+    std::vector<std::pair<std::string, Relation*>> affected;
+    BoundaryAdmission out = admitPathTransform(from, boundary_key, affected);
+    if (!out.ok) return out;
+    if (!validTransformPath(to))
+    {
+      return {false, "transform-plan",
+              "malformed or machine-reserved path: " + to, 0, 0};
+    }
+    if (to == from || pathInside(to, from))
+    {
+      return {false, "transform-plan",
+              "rename target lies inside the renamed subtree", 0, 0};
+    }
+    if (relations.find(to) != relations.end()
+        || !collectPathBindings(to).empty())
+    {
+      return {false, "transform-plan",
+              "rename target is already bound: " + to, 0, 0};
+    }
+    // no ancestor of the target may be a leaf relation: one path is never
+    // both a relation and a namespace
+    for (size_t dot = to.rfind('.');
+         dot != std::string::npos && dot > 0;
+         dot = to.rfind('.', dot - 1))
+    {
+      const std::string ancestor = to.substr(0, dot);
+      if (relations.find(ancestor) != relations.end())
+        return {false, "transform-plan",
+                "rename target nests inside relation " + ancestor, 0, 0};
+    }
+    const auto rewrite = [&](const std::string& name) -> std::string {
+      if (name == from) return to;
+      if (pathInside(name, from)) return to + name.substr(from.size());
+      return name;
+    };
+    out = verifyTransformedCatalog(rewrite, declarations, memberships);
+    if (!out.ok) return out;
+    return applyPathTransform(affected, rewrite, boundary_key,
+                              declarations, memberships);
+  }
+
+  BoundaryAdmission dropPath(
+      const std::string& path, const std::string& boundary_key,
+      const std::vector<BoundaryCatalogDecl>& declarations,
+      const std::set<std::pair<std::string, std::string>>& memberships)
+  {
+    std::vector<std::pair<std::string, Relation*>> affected;
+    BoundaryAdmission out = admitPathTransform(path, boundary_key, affected);
+    if (!out.ok) return out;
+    const auto rewrite = [&](const std::string& name) -> std::string {
+      if (name == path || pathInside(name, path)) return std::string();
+      return name;
+    };
+    out = verifyTransformedCatalog(rewrite, declarations, memberships);
+    if (!out.ok) return out;
+    return applyPathTransform(affected, rewrite, boundary_key,
+                              declarations, memberships);
+  }
+
   Relation* getRelation(const std::string& name)
   {
     auto bit = bind_versions.find(name);
