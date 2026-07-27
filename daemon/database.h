@@ -19,6 +19,7 @@
 #include "gzfile.h"
 #include "index.h"
 #include "counts.h"
+#include "protocol.h"   // quoteString, for the value adapter's CELL records
 #include <string>
 #include <vector>
 #include <set>
@@ -5780,6 +5781,49 @@ public:
   std::string writeValCSV(u64 v, u32 cdepth = 0)
   {
     return writeValCSVAtBoundary(v, "", cdepth);
+  }
+
+  // The value adapter (repl.md §1, roadmap "value adapter"): one CELL record
+  // per concrete runtime value, carrying what a client needs to mint a
+  // checked `#N` handle for it -- the encoded word (its identity inside this
+  // evaluation), a coarse kind, the struct id when it has one, and the same
+  // rendering `writeValCSV` produces.  This is deliberately the only place
+  // that classifies a word for a client: the encodings live here, so a
+  // reader never re-derives them from a rendered string.
+  //
+  // The word is meaningful ONLY within one evaluation's interner state, so a
+  // client must pair it with the EvaluationId before treating it as identity;
+  // the daemon states the word and says nothing about its lifetime.
+  const char* valueKind(u64 v)
+  {
+    if (is_int(v))    return "int";
+    if (is_str(v))    return "str";
+    if (is_float(v))  return "float";
+    if (is_struct(v)) return "struct";
+    if (is_cnode(v))  return "collection";
+    if (is_seq(v))    return "sequence";
+    if (v == slog_lat_top) return "top";
+    return "unknown";
+  }
+
+  std::string describeValue(u64 v, const std::string& boundary_key = "")
+  {
+    const bool structured = is_struct(v);
+    std::string record = std::string("(cell (word ") + std::to_string(v)
+      + ") (kind " + valueKind(v) + ") (sid ";
+    record += structured ? std::to_string(decode_struct_id(v)) : std::string("#f");
+    record += ") (type-key ";
+    if (structured)
+    {
+      auto it = types_by_sid.find((u32)decode_struct_id(v));
+      record += (it == types_by_sid.end() || it->second->type_key.empty())
+        ? std::string("#f")
+        : slog::protocol::quoteString(it->second->type_key);
+    }
+    else record += "#f";
+    return record + ") (text "
+      + slog::protocol::quoteString(writeValCSVAtBoundary(v, boundary_key))
+      + "))";
   }
   
   void writeAllFactsCSV(std::ostream& os,

@@ -3666,6 +3666,33 @@ expect "n4c-stacked-reloads" "(dumpdone 3)" out/sess-n4c-stack-load.log
 expect "n4c-stacked-empty-member" "(dumpdone 0)" out/sess-n4c-stack-load.log
 expect "n4c-stacked-structs" "(tuplerow (m.Pair 1 2))" out/sess-n4c-stack-load.log
 
+# --- the value adapter (repl.md §1, R2 substrate) ---------------------------
+#
+# Rows reach a client as structured CELLS, not display text: each carries the
+# encoded word that identifies the value inside this evaluation, its kind, its
+# struct id, and the DURABLE TypeKey from N4's registry.  That is what lets the
+# REPL mint a checked `#N` handle without parsing a rendered string.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/n4a_shapes.slog dump-cells:m.pairs dump-cells:g.edge \
+  > out/sess-cells.log 2>&1
+expect_re "cells-struct-word" \
+  '\(cell \(word [0-9]+\) \(kind struct\) \(sid [0-9]+\) \(type-key "t1:[^"]+"\) \(text "\(m\.Pair 1 2\)"\)\)' \
+  out/sess-cells.log
+expect_re "cells-scalar" \
+  '\(cell \(word [0-9]+\) \(kind int\) \(sid #f\) \(type-key #f\) \(text "1"\)\)' \
+  out/sess-cells.log
+expect "cells-terminated" "(cellsdone 6)" out/sess-cells.log
+# the TypeKey a cell reports is the one the durable catalog holds
+timeout 300 racket -e '
+(require "compiler/catalog.rkt" "compiler/names.rkt" racket/file racket/string)
+(define line
+  (for/first ([l (in-list (file->lines "out/sess-cells.log"))]
+              #:when (string-contains? l "(m.Pair 1 2)")) l))
+(define key (second (regexp-match #px"\\(type-key \"([^\"]+)\"\\)" line)))
+(unless (regexp-match? #px"^t1:" key) (error (quote not-a-typekey) key))
+(displayln "cells-typekey-ok")' > out/sess-cells-key.log 2>&1
+expect "cells-typekey-durable" "cells-typekey-ok" out/sess-cells-key.log
+
 # Work order 7: identity operations refuse a catalog-less input loudly.
 timeout 300 racket -e '
 (require "compiler/repl.rkt")

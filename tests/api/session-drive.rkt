@@ -33,6 +33,7 @@
 ;;   daemon-current-boundary exact current N3 materialization snapshot
 ;;   sizes-at:P         sizes resolved at position P
 ;;   dump-rel:REL[,P]   dump REL (optionally at position P)
+;;   dump-cells:REL     rows as structured value cells (word/kind/sid/type)
 ;;   sizes | schema     the existing unversioned actions
 ;;   write-db:DB | write-csv:DIR
 ;;
@@ -64,6 +65,7 @@
        [(list rel) `(dump-rel ,rel)]
        [(list rel p) `(dump-rel ,rel ,(string->number p))])]
     [(list "dump-tuples" rel) `(dump-tuples ,rel)]
+    [(list "dump-cells" rel) `(dump-cells ,rel)]
     [(list "dump-ids" rel) `(dump-ids ,rel)]
     [(list "write-db" db) `(write-db ,db)]
     [(list "write-csv" dir) `(write-csv ,dir)]
@@ -372,6 +374,9 @@
                                             (echo-until #px"^\\(dumpdone "))]
       [`(dump-tuples ,rel) (session-action! s `(dump-tuples ,rel)
                                              (echo-until #px"^\\(tupledone "))]
+      ;; the value adapter: structured cells rather than a rendered line
+      [`(dump-cells ,rel) (session-action! s `(dump-cells ,rel)
+                                           (echo-until #px"^\\(cellsdone "))]
       [`(dump-ids ,rel) (session-action! s `(dump-ids ,rel)
                                          (echo-until #px"^\\(idsdone "))]
       [`(sizes)

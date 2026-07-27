@@ -449,6 +449,24 @@
       "    ++n;\n"
       "  });\n"
       "  d->emit(std::string(\"(tupledone \") + std::to_string(n) + \")\");\n")]
+    ;; The value adapter (repl.md §1): the same rows as `dump-tuples`, but as
+    ;; structured CELL records rather than one rendered line -- each cell
+    ;; carries its encoded word, kind, struct id, TypeKey, and rendering, so a
+    ;; client can mint a checked `#N` handle without parsing display text.
+    ;; The word is evaluation-local; the client pairs it with the EvaluationId.
+    [`(dump-cells ,rel)
+     (string-append
+      "  slog::Database* db = d->db();\n"
+      (format "  slog::Relation* r = db->getRelation(\"~a\");\n" rel)
+      "  size_t n = 0;\n"
+      "  if (r) slog::Database::forEachNominal(r, [&](const u64* row) {\n"
+      "    std::string line = \"(cellrow\";\n"
+      "    for (u16 c = 0; c < r->getArity(); ++c)\n"
+      "      line += \" \" + db->describeValue(row[c]);\n"
+      "    d->emit(line + \")\");\n"
+      "    ++n;\n"
+      "  });\n"
+      "  d->emit(std::string(\"(cellsdone \") + std::to_string(n) + \")\");\n")]
     ;; M5 diagnostics (docs/m5-contract.md): the raw live id words and the
     ;; tombstone count of a struct relation.  Rendered dumps hide the id, so
     ;; id stability across a clear-and-rerun is asserted on this protocol.

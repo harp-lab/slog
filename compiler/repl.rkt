@@ -27,7 +27,10 @@
 (define protocol-version 1)
 (define default-max-frame-bytes (* 16 1024 1024))
 
-(struct repl-session (session database [mode #:mutable] [changed? #:mutable])
+(struct repl-session (session database [mode #:mutable] [changed? #:mutable]
+                              ;; the EvaluationId this session's daemon is in;
+                              ;; a value handle is only valid within it
+                              [evaluation #:mutable])
   #:transparent)
 
 ;; One Racket REPL connection can own several independent compiler sessions.
@@ -38,7 +41,9 @@
 (struct server-state (sessions
                       [current #:mutable]
                       [event-sink #:mutable]
-                      [closing? #:mutable])
+                      [closing? #:mutable]
+                      ;; label -> value-handle, the checked `#N` table
+                      handles)
   #:transparent)
 
 (struct relation-info
@@ -118,6 +123,7 @@
         (set-box! sink (cons line (unbox sink))))))
    database
    'mutable
+   #f
    #f))
 
 (define (current-repl-session state)
@@ -259,6 +265,95 @@
   datum)
 
 (define (relation-key value) (~a value))
+
+;; ---- the value-handle table (repl.md §1) ----------------------------------
+;;
+;; `#N` denotes ONE concrete runtime value.  The daemon states a value's
+;; encoded word, kind, struct id, and TypeKey; the word is identity only
+;; inside one evaluation's interner state, so the handle records the
+;; evaluation it was minted in and resolving it anywhere else refuses.  That
+;; check is the whole point of the table: a stale word would otherwise decode
+;; as some unrelated live value rather than as an error.
+
+(struct value-cell (word kind sid type-key text) #:transparent)
+(struct value-handle (label evaluation database cell) #:transparent)
+
+(define (datum->value-cell datum)
+  (match datum
+    [`(cell (word ,(? exact-nonnegative-integer? word))
+            (kind ,(? symbol? kind))
+            (sid ,sid)
+            (type-key ,type-key)
+            (text ,(? string? text)))
+     (value-cell word kind (and sid sid) (and type-key type-key) text)]
+    [_ (error 'value-adapter "malformed value cell: ~s" datum)]))
+
+;; Scalars render as themselves and re-type trivially; a handle earns its
+;; keep for values a user cannot retype -- structs and collections.
+(define (handle-worthy? cell)
+  (and (memq (value-cell-kind cell) '(struct collection sequence)) #t))
+
+(define (session-evaluation s)
+  (match (session-action! s '(pipeline) read-one-response)
+    [(list line)
+     (match (read-datum line)
+       [`(pipeline ,fields ...)
+        (match (assq 'evaluation fields)
+          [(list _ (? string? id)) id]
+          [_ #f])]
+       [_ #f])]
+    [_ #f]))
+
+;; The EvaluationId is minted once per session's daemon, so read it once and
+;; cache it; every handle this session mints is stamped with it.
+(define (ensure-evaluation! state s)
+  (define rs (current-repl-session state))
+  (when (and rs (not (repl-session-evaluation rs)))
+    (set-repl-session-evaluation! rs (session-evaluation s)))
+  rs)
+
+(define (mint-value-handle! state cell)
+  (define rs (current-repl-session state))
+  (and rs
+       (let* ([handles (server-state-handles state)]
+              [existing
+               (for/first ([(label handle) (in-hash handles)]
+                           #:when (and (equal? (value-handle-database handle)
+                                               (repl-session-database rs))
+                                       (= (value-cell-word
+                                           (value-handle-cell handle))
+                                          (value-cell-word cell))))
+                 label)])
+         (or existing
+             (let ([label (format "#~a" (add1 (hash-count handles)))])
+               (hash-set! handles label
+                          (value-handle label
+                                        (repl-session-evaluation rs)
+                                        (repl-session-database rs)
+                                        cell))
+               label)))))
+
+;; Resolve `#N` against the session that minted it.  A handle from another
+;; database, or from an evaluation this session no longer is, is refused --
+;; never silently re-decoded.
+(define (resolve-value-handle state label)
+  (define rs (current-repl-session state))
+  (define handle (hash-ref (server-state-handles state) label #f))
+  (cond
+    [(not handle) (error 'handle "no such value handle: ~a" label)]
+    [(not rs) (error 'handle "~a needs a live session" label)]
+    [(not (equal? (value-handle-database handle) (repl-session-database rs)))
+     (error 'handle
+            "~a was minted in ~a and cannot be resolved in ~a"
+            label
+            (or (value-handle-database handle) "scratch")
+            (or (repl-session-database rs) "scratch"))]
+    [(not (equal? (value-handle-evaluation handle)
+                  (repl-session-evaluation rs)))
+     (error 'handle
+            "~a is stale: it was minted in a previous evaluation of ~a"
+            label (or (value-handle-database handle) "scratch"))]
+    [else handle]))
 
 ;; N3-B's command catalog is relation identity authority: every current record
 ;; carries its exact VersionKey and selected committed BoundaryKey (or #f after
@@ -597,6 +692,29 @@
 (define (show-result state argument)
   (match-define (list* rel options) (read-command-data 'show argument))
   (define name (relation-key rel))
+  (if (regexp-match? #px"^#[0-9]+$" name)
+      (show-value-handle state name)
+      (show-relation-rows state name options)))
+
+;; `show #N` re-renders one value handle instead of a relation.
+(define (show-value-handle state label)
+  (define cell (value-handle-cell (resolve-value-handle state label)))
+  (hash-set*
+   (text-result
+    (format "Value · ~a" label)
+    (append
+     (list (value-cell-text cell)
+           (format "kind: ~a" (value-cell-kind cell)))
+     (if (value-cell-type-key cell)
+         (list (format "type: ~a" (value-cell-type-key cell)))
+         '()))
+    #:kind "value")
+   'handle label
+   'value-kind (~a (value-cell-kind cell))
+   'type-key (or (value-cell-type-key cell) 'null)
+   'text (value-cell-text cell)))
+
+(define (show-relation-rows state name options)
   (define limit
     (match options
       ['() 20]
@@ -612,20 +730,33 @@
             "relation ~a has ~a rows; row display is capped at ~a because the current daemon "
             "can only stream a whole relation. Use `count ~a` or `query ~a V...` instead")
            name size max-show-facts name name))
+  ;; The value adapter: rows arrive as structured cells, so a struct or
+  ;; collection value becomes a CHECKED `#N` handle instead of display text
+  ;; the client would have to parse back (repl.md §1).
+  (ensure-evaluation! state s)
   (define raw
-    (session-action! s `(dump-tuples ,(string->symbol name))
-                     (read-until-response #px"^\\(tupledone [0-9]+\\)$")))
-  (define rows
+    (session-action! s `(dump-cells ,(string->symbol name))
+                     (read-until-response #px"^\\(cellsdone [0-9]+\\)$")))
+  (define cell-rows
     (for/list ([line (in-list raw)]
                #:do [(define datum (read-datum line))]
-               #:when (match datum [`(tuplerow ,_ ...) #t] [_ #f]))
-      (match datum
-        [`(tuplerow ,values ...)
-         (format "(~a~a)"
-                 name
-                 (if (null? values)
-                     ""
-                     (string-append " " (string-join (map ~s values) " "))))])))
+               #:when (match datum [`(cellrow ,_ ...) #t] [_ #f]))
+      (match datum [`(cellrow ,cells ...) (map datum->value-cell cells)])))
+  (define rows
+    (for/list ([cells (in-list cell-rows)])
+      (format "(~a~a)" name
+              (if (null? cells)
+                  ""
+                  (string-append
+                   " "
+                   (string-join
+                    (for/list ([cell (in-list cells)])
+                      (define handle (and (handle-worthy? cell)
+                                          (mint-value-handle! state cell)))
+                      (if handle
+                          (format "~a ~a" (value-cell-text cell) handle)
+                          (value-cell-text cell)))
+                    " "))))))
   (define shown (take rows (min limit (length rows))))
   (text-result
    (format "Rows · ~a" name)
@@ -1121,7 +1252,7 @@
   (read-frame (open-input-bytes (get-output-bytes out))))
 
 (define (plain-transcript commands)
-  (define state (server-state (make-hash) #f #f #f))
+  (define state (server-state (make-hash) #f #f #f (make-hash)))
   (dynamic-wind
     void
     (lambda ()
@@ -1213,7 +1344,7 @@
   (set-server-state-current! state #f))
 
 (define (serve-connection in out token)
-  (define state (server-state (make-hash) #f #f #f))
+  (define state (server-state (make-hash) #f #f #f (make-hash)))
   (dynamic-wind
     void
     (lambda ()
@@ -1279,7 +1410,7 @@
   (check-equal? (read-frame (open-input-bytes framed))
                 (hasheq 'id 7 'method "ping"))
 
-  (define state (server-state (make-hash) #f #f #f))
+  (define state (server-state (make-hash) #f #f #f (make-hash)))
   (define help-result (dispatch-command state ":help"))
   (check-equal? (hash-ref help-result 'kind) "help")
   (check-not-false
@@ -1414,6 +1545,52 @@
                        (hash-ref result 'relations))
                   '("g.Node" "g.edge" "g.unseen")))
 
+  ;; The value adapter and the checked `#N` table (repl.md §1).  A handle is
+  ;; provenance-checked: the word it carries is identity only inside the
+  ;; evaluation that minted it, so resolving one anywhere else must refuse
+  ;; rather than decode some unrelated live value.
+  (let ()
+    (define cell
+      (datum->value-cell
+       '(cell (word 18442241573593808924) (kind struct) (sid 4)
+              (type-key "t1:demo:0:3") (text "(m.Pair 1 2)"))))
+    (check-equal? (value-cell-word cell) 18442241573593808924)
+    (check-equal? (value-cell-kind cell) 'struct)
+    (check-equal? (value-cell-sid cell) 4)
+    (check-equal? (value-cell-type-key cell) "t1:demo:0:3")
+    (check-equal? (value-cell-text cell) "(m.Pair 1 2)")
+    ;; scalars re-type trivially, so they earn no handle; structs do
+    (check-true (handle-worthy? cell))
+    (check-false
+     (handle-worthy?
+      (datum->value-cell
+       '(cell (word 7) (kind int) (sid #f) (type-key #f) (text "3")))))
+    (check-exn exn:fail? (lambda () (datum->value-cell '(cell (word 1)))))
+
+    (define state (server-state (make-hash) "alpha" #f #f (make-hash)))
+    (define rs (repl-session #f "alpha" 'mutable #f "eval-1"))
+    (hash-set! (server-state-sessions state) "alpha" rs)
+    (define label (mint-value-handle! state cell))
+    (check-equal? label "#1")
+    ;; the same word mints once, not once per sighting
+    (check-equal? (mint-value-handle! state cell) "#1")
+    (check-equal? (value-cell-text
+                   (value-handle-cell (resolve-value-handle state label)))
+                  "(m.Pair 1 2)")
+    (check-exn #px"no such value handle"
+               (lambda () (resolve-value-handle state "#99")))
+    ;; a handle from a previous evaluation of the same database is stale
+    (set-repl-session-evaluation! rs "eval-2")
+    (check-exn #px"stale"
+               (lambda () (resolve-value-handle state label)))
+    ;; ... and one from another database is refused outright
+    (set-repl-session-evaluation! rs "eval-1")
+    (define other (repl-session #f "beta" 'mutable #f "eval-1"))
+    (hash-set! (server-state-sessions state) "beta" other)
+    (set-server-state-current! state "beta")
+    (check-exn #px"cannot be resolved in beta"
+               (lambda () (resolve-value-handle state label))))
+
   (define sample-request
     (list (hasheq 'relation "edge" 'added 1 'removed 0)))
   (define sample-change
@@ -1435,10 +1612,10 @@
            'sizes-observed #t
            'routes (list (hasheq 'kind "maintain" 'detail (list "2")))))
 
-  (define mode-state (server-state (make-hash) #f #f #f))
+  (define mode-state (server-state (make-hash) #f #f #f (make-hash)))
   (hash-set! (server-state-sessions mode-state)
              "alpha"
-             (repl-session #f "alpha" 'readonly #f))
+             (repl-session #f "alpha" 'readonly #f #f))
   (set-server-state-current! mode-state "alpha")
   (check-true
    (regexp-match?
@@ -1452,7 +1629,7 @@
                 "mutable")
   (check-equal? (hash-ref (dispatch-command mode-state "resident") 'lines)
                 (list "alpha  mutable · clean · current"))
-  (define quit-state (server-state (make-hash) #f #f #f))
+  (define quit-state (server-state (make-hash) #f #f #f (make-hash)))
   (check-true (hash-ref (dispatch-command quit-state ":quit") 'close))
   ;; The golden deliberately stops at the server contract.  It proves real
   ;; session calls and deterministic presentation data without making this
