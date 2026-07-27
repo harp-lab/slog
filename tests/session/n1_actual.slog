@@ -1,0 +1,5 @@
+table (real.edge int int)
+
+rule
+(real.edge 4 5)
+(real.edge 5 6)

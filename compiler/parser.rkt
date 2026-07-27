@@ -314,10 +314,95 @@
               (parse toks+3)))
         (cons (emit-expr `(def ,pattern-e ,w-or-b ,rest-e) toks toks+4) toks+4))))
 
+;; Top-level forms delimit variable-length declarations/rules and the optional
+;; namespace-binding tail of run/instantiate.  Keep this list in one place:
+;; historically the local list omitted include/run/union/... and therefore
+;; only happened to work when those directives preceded every declaration.
+(define top-level-keywords
+  (set "def" "rule" "enum" "table" "struct" "union" "demand" "extern"
+       "lattice" "include" "instantiate" "run" "let" "import" "export" ""))
+
+;; Parse one id(.id)* path without admitting the ordinary expression `=`
+;; operator.  Binding grammar needs the left path to stop exactly before `=`
+;; and the right path to stop before `,` or the next top-level form.
+(define (parse-name-path toks what)
+  (define first-token (peek toks))
+  (unless (memq (token->tag first-token) '(id ref))
+    (parse-error (format "Expected ~a name path" what) toks))
+  (let loop ([name (string->symbol (token->str first-token))]
+             [rest (advance toks)])
+    (cond
+      [(equal? "." (token->str (peek rest)))
+       (define component-token (peek rest 1))
+       (unless (memq (token->tag component-token) '(id ref))
+         (parse-error (format "Expected a name component after '.' in ~a" what)
+                      rest))
+       (loop (qname-join name
+                         (string->symbol (token->str component-token)))
+             (advance rest 2))]
+      [else (cons name rest)])))
+
+;; [with formal = actual, ...] -> (values binding-pairs remaining-tokens).
+;; Paths retain the N0 lowered-symbol representation; modules.rkt immediately
+;; recovers components through names.rkt before applying any substitution.
+(define (parse-optional-bindings toks)
+  (cond
+    [(not (equal? "with" (token->str (peek toks)))) (values '() toks)]
+    [else
+     (let loop ([rest (advance toks)] [out '()])
+       (match-define (cons formal after-formal)
+         (parse-name-path rest "formal namespace"))
+       (unless (equal? "=" (token->str (peek after-formal)))
+         (parse-error "Expected '=' after a formal namespace path"
+                      after-formal))
+       (match-define (cons actual after-actual)
+         (parse-name-path (advance after-formal) "actual namespace"))
+       (define out+ (cons (list formal actual) out))
+       (cond
+         [(equal? "," (token->str (peek after-actual)))
+          (loop (advance after-actual) out+)]
+         [(set-member? top-level-keywords (token->str (peek after-actual)))
+          (values (reverse out+) after-actual)]
+         [else
+          (parse-error
+           "Expected ',' or the next top-level form after a namespace binding"
+           after-actual)]))]))
+
+;; Parse the two occurrence forms. Plain `run "x"` deliberately retains its
+;; historical AST shape, preserving the root-only parser/compile identity
+;; gate. Extended run carries one options record; instantiate always names a
+;; fresh lexical child.
+(define (parse-occurrence toks kind)
+  (define after-kind (advance toks))
+  (match-define (cons source after-source) (parse after-kind))
+  (define alias #f)
+  (define after-alias
+    (cond
+      [(equal? "as" (token->str (peek after-source)))
+       (define alias-token (peek after-source 1))
+       (unless (eq? 'id (token->tag alias-token))
+         (parse-error "Expected one identifier after 'as'" after-source))
+       (set! alias (string->symbol (token->str alias-token)))
+       (advance after-source 2)]
+      [(eq? kind 'instantiate)
+       (parse-error "Expected 'as <identifier>' after instantiate source"
+                    after-source)]
+      [else after-source]))
+  (define-values (bindings after-bindings)
+    (parse-optional-bindings after-alias))
+  (match-define (cons body after-body) (parse-top-level after-bindings))
+  (define expr
+    (cond
+      [(eq? kind 'instantiate)
+       `(instantiate ,source ,alias (bindings ,@bindings) ,body)]
+      [(and (not alias) (null? bindings))
+       `(run ,source ,body)]
+      [else
+       `(run ,source (occurrence-options ,alias (bindings ,@bindings)) ,body)]))
+  (cons (emit-expr expr toks after-body) after-body))
+
 (define (parse-top-level toks)
   ;; parses top level expression from toks
-  (define top-level-keywords
-    (set "def" "rule" "enum" "table" "struct" "union" "demand" "extern" "lattice" ""))
   (match (token->str (peek toks))
     ["def" (parse-def toks #t)]
     [(or "import" "export")
@@ -388,7 +473,9 @@
      (match-define (cons tag-pat-rhs toks+) (parse-id-then-N toks parse 2))
      (match-define (cons body toks++) (parse-top-level toks+))
      (cons (emit-expr `(,@tag-pat-rhs ,body) toks toks++) toks++)]
-    [(or "include" "run" "union" "struct" "table" "enum" "lattice")
+    ["instantiate" (parse-occurrence toks 'instantiate)]
+    ["run" (parse-occurrence toks 'run)]
+    [(or "include" "union" "struct" "table" "enum" "lattice")
      (match-define (cons tag-str toks+) (parse-id-then-N toks parse 1))
      (match-define (cons body toks++) (parse-top-level toks+))
      (cons (emit-expr `(,@tag-str ,body) toks toks++) toks++)]

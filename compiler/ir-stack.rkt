@@ -10,7 +10,7 @@
 ;;   module-ast          parser.rkt            (module path toks ast)
 ;;     |  modules.rkt: include/run resolution, type-env extraction+merge,
 ;;     |               demand desugar (demand.rkt)
-;;   program-list        modules.rkt           (program type-env mods manifest)
+;;   program-list        modules.rkt           program-ir records
 ;;     |  simplification.rkt: or-split, flatten, wildcards, static unification
 ;;   flat rules          (set/c flat-rule?)
 ;;     |  type-system.rkt: check + normalize (prim calls -> let, enums -> consts)
@@ -62,9 +62,12 @@
 ;; (derived-name -> (base-name set|map), modules.rkt synthesis).
 
 (define (program? p)
-  (match p
-    [`(program ,(? type-env?) ,(? set? mods) ,(? hash?) ,(? hash?)) #t]
-    [_ #f]))
+  (and (program-ir? p)
+       (type-env? (program-ir-type-env p))
+       (set? (program-ir-modules p))
+       (hash? (program-ir-manifest p))
+       (hash? (program-ir-decomps p))
+       (module-occurrence? (program-ir-occurrence-tree p))))
 
 (define (program-list? ps)
   (and (list? ps) (andmap program? ps)))

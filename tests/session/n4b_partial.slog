@@ -1,0 +1,18 @@
+;; N4-B destination fixture: a destination that ALREADY holds part of the
+;; namespace being attached (docs/n4-contract.md §5).
+;;
+;;   graph.edge    compatible and non-empty -- source rows merge into a
+;;                 successor version
+;;   graph.unseen  compatible and empty -- must NOT be advanced merely
+;;                 because the source bundle declares it
+;;   graph.local   destination-only -- must be retained untouched
+;;
+;; The attachment additionally has to add graph.path, which this program
+;; never declares.
+
+table (graph.edge int int)
+table (graph.unseen int)
+table (graph.local int)
+
+rule (graph.edge 9 9)
+rule (graph.local 7)

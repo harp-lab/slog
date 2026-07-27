@@ -631,7 +631,9 @@
      (when (and (not in-place?) (db-exists? target) (not force?))
        (die "database ~a already exists (use --force to overwrite)" target))
      (when (db-exists? target) (rm-one! target))
-     (freeze name target)
+     ;; A freeze that can supply an exact catalog hands one back; the frozen
+     ;; root then describes itself without its (now cut) chain.
+     (define bundle (freeze name target))
      (unless (db-exists? target)
        (die "freeze failed: data/~a was not written" target))
      ;; strip chain artifacts the daemon's write never emits but a copied
@@ -643,7 +645,8 @@
            #:when (regexp-match? #px"^delta\\.[0-9]+$" (path->string e)))
        (delete-directory/files (build-path (db-dir target) e)))
      (define m0 (make-db-meta #:kind 'flat #:pure-edb? #f #:manifest '()
-                              #:per 1.0 #:compiler-stamp (current-compiler-stamp)))
+                              #:per 1.0 #:compiler-stamp (current-compiler-stamp)
+                              #:boundary-bundle bundle))
      (write-db-meta (hash-set m0 'stamp (compute-db-stamp m0 #:db-dir (db-dir target)))
                     (db-dir target))
      (cond

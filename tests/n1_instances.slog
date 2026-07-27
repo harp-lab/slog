@@ -1,0 +1,14 @@
+instantiate "n1_graph_lib.slog" as left
+instantiate "n1_graph_lib.slog" as right
+
+table (seed int int)
+table (answer int int int)
+
+rule
+(seed 1 2)
+(seed 2 3)
+(right.edge 8 9)
+
+rule (seed X Y) --> (left.edge X Y)
+rule (left.path X Y) --> (answer 0 X Y)
+rule (right.path X Y) --> (answer 1 X Y)

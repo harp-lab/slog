@@ -16,8 +16,8 @@
 ;; signatures, and goldens are byte-for-byte unchanged until dotted names
 ;; actually appear in source.
 ;;
-;; No other pass may join or split name components.  Prefix substitution
-;; (N2's namespace binding) belongs here when it arrives.
+;; No other pass may join or split name components.  N1 prefix substitution
+;; and occurrence qualification live here as component-wise operations.
 
 (provide valid-component?
          qname            ; (listof string) -> qname (validated)
@@ -36,7 +36,12 @@
          qname->fs-name   ; data/ directory + CSV name component (validated)
          fs-name->qname
          qname->cxx-ident ; C++ identifier form (the _0XXXX scheme)
-         qname-derive)    ; owner + role -> generated companion name
+         qname-derive     ; owner + role -> generated companion name
+         qname-prefix?    ; QName QName -> boolean
+         qname-prepend    ; (listof string) QName -> QName
+         qname-rebase     ; QName formal-prefix actual-prefix -> QName
+         name-at-home     ; (listof string) symbol -> lowered symbol
+         internal-name-at-home) ; (listof string) symbol -> internal symbol
 
 (require "utils.rkt")
 
@@ -126,3 +131,52 @@
    (string-append (symbol->string owner)
                   "_"
                   (symbol->string role))))
+
+;; Namespace operations. Prefixes are QNames (never dotted string slices), so
+;; `a.bc` cannot alias `ab.c`. An empty lexical home is represented by `()`;
+;; QName itself remains nonempty.
+(define (qname-prefix? prefix name)
+  (define ps (qname-components prefix))
+  (define ns (qname-components name))
+  (and (<= (length ps) (length ns))
+       (equal? ps (take ns (length ps)))))
+
+(define (qname-prepend components name)
+  (unless (and (list? components) (andmap valid-component? components))
+    (error 'qname-prepend "invalid namespace components: ~a" components))
+  (qname (append components (qname-components name))))
+
+(define (qname-rebase name formal-prefix actual-prefix)
+  (unless (qname-prefix? formal-prefix name)
+    (error 'qname-rebase "~a is not inside formal prefix ~a"
+           (qname->display name) (qname->display formal-prefix)))
+  (qname
+   (append (qname-components actual-prefix)
+           (drop (qname-components name)
+                 (length (qname-components formal-prefix))))))
+
+(define (name-at-home home name)
+  (unless (symbol? name)
+    (error 'name-at-home "expected a lowered symbol; got ~a" name))
+  (qname->symbol (qname-prepend home (symbol->qname name))))
+
+;; Compiler-reserved `$...` names are execution-only and intentionally do not
+;; enter the public QName catalog. Root spellings remain byte-identical.
+;; Instantiated spellings carry an escaped component vector so two occurrences
+;; of the same template cannot share an oracle/supplementary helper by accident.
+(define (internal-name-at-home home name)
+  (unless (and (symbol? name)
+               (string-prefix? (symbol->string name) "$"))
+    (error 'internal-name-at-home "expected a compiler-internal symbol; got ~a"
+           name))
+  (cond
+    [(null? home) name]
+    [else
+     (string->symbol
+      (format "$inst$~a$~a"
+              (string-join
+               (for/list ([component (in-list home)])
+                 (symbol->string
+                  (qname->cxx-ident (qname (list component)))))
+               "$")
+              (substring (symbol->string name) 1)))]))

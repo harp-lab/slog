@@ -46,14 +46,24 @@
   ;; Level 1: program / program-list
 
   (test-case "program? / program-list?"
-    (define prog `(program ,empty-type-env ,(set) ,(hash) ,(hash)))
+    (define occurrence
+      (module-occurrence "f.slog" '() '() '() '("f.slog") '()))
+    (define prog
+      (program-ir empty-type-env (set) (hash) (hash) occurrence))
     (check-true (program? prog))
     (check-true (program-list? (list prog prog)))
     (check-true (program-list? '()))
-    (check-false (program? `(program (,(hash) ,(hash)) ,(set) ,(hash) ,(hash)))) ; 2-part type-env
-    (check-false (program? `(program ,empty-type-env () ,(hash) ,(hash))))       ; mods not a set
-    (check-false (program? `(program ,empty-type-env ,(set) ,(list) ,(hash))))   ; manifest not a hash
-    (check-false (program? `(program ,empty-type-env ,(set) ,(hash))))  ; missing decomp-env
+    (check-false
+     (program?
+      (program-ir (list (hash) (hash)) (set) (hash) (hash) occurrence)))
+    (check-false
+     (program-ir? `(program ,empty-type-env ,(set) ,(hash) ,(hash))))
+    (check-false
+     (program? (program-ir empty-type-env '() (hash) (hash) occurrence)))
+    (check-false
+     (program? (program-ir empty-type-env (set) '() (hash) occurrence)))
+    (check-false
+     (program? (program-ir empty-type-env (set) (hash) (hash) 'not-an-occurrence)))
     (check-false (program-list? prog))          ; one program is not a program list
     (check-false (program-list? (list prog 'x))))
 

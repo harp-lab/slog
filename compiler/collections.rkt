@@ -67,16 +67,24 @@
 (define pipe-symbol? (symbol-named? "|"))
 (define ellipsis-symbol? (symbol-named? "..."))
 
-;; mods is a list of (list path toks rules) triples (lift-type-envs'
-;; working shape); rewrite every rule, leaving everything else alone.
+;; mods is normally a list of occurrence-aware module-ir records.  The
+;; historical triple shape remains accepted by the rules-only unit helpers.
 ;; `demands` (name -> (in-arity . ans-arity)) routes HEAD brackets: a
 ;; demand-moded head's INPUT columns are pattern context (they destructure
 ;; the demanded value), everything else in a head constructs.
 (define (desugar-collections-mods mods [lib? #f] [demands (hash)])
   (for/list ([m (in-list mods)])
-    (match-define (list path toks rules) m)
-    (list path toks (for/set ([r (in-set rules)])
-                      (desugar-rule r lib? demands)))))
+    (cond
+      [(module-ir? m)
+       (struct-copy module-ir m
+                    [rules
+                     (for/set ([r (in-set (module-ir-rules m))])
+                       (desugar-rule r lib? demands))])]
+      [else
+       (match-define (list path toks rules) m)
+       (list path toks
+             (for/set ([r (in-set rules)])
+               (desugar-rule r lib? demands)))])))
 
 ;; -----------------------------------------------------------------------
 ;; Per-rule bracket rewriting.

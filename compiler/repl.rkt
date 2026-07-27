@@ -18,7 +18,9 @@
          racket/port
          racket/string
          racket/tcp
+         "catalog.rkt"   ; N4-B attachment plan projection
          "dbtool.rkt"
+         "names.rkt"
          "params.rkt"
          "session.rkt")
 
@@ -198,6 +200,7 @@
    "  count REL           count the current version of a relation"
    "  show REL [LIMIT]    show rows for a small relation (safety cap: 200)"
    "  query REL V...      test whether any row matches a value prefix"
+   "  catalog             show the selected boundary, history, and types"
    "  schema              show the daemon's raw live schema"
    "  pipeline            show the daemon's raw versioned pipeline"
    ""
@@ -207,6 +210,8 @@
    "  del REL V...        retract one input tuple and propagate it"
    "  rename FROM TO      rename one live relation without moving its data"
    "  drop REL            remove one relation name at the next boundary"
+   "  attach DB as DEST   import a saved database under one namespace"
+   "  attach DB SRC as DEST   import one subtree of a saved database"
    "  save NAME           save the current database as data/NAME"
    ""
    "Workbench"
@@ -260,7 +265,69 @@
 ;; a legacy environment mutation).  The legacy schema stream still contributes
 ;; human field detail; N3-C's TypeDescriptor stream now owns nominal TypeKey/SID
 ;; identity, while richer declaration-field projection remains with N3-D/N4.
+;; N4-A work order 6: the SELECTED LOGICAL BOUNDARY is the schema authority.
+;; The session's committed head owns every declaration, its qualified field
+;; graph, its VersionKey, and its nominal TypeKey; the daemon contributes only
+;; what it alone knows -- how many rows are actually there.  A declaration the
+;; head holds but no tuple ever reached still appears, which the daemon-side
+;; join could never show.
+(define (type-detail ref)
+  (match ref
+    [(type-ref 'primitive name) (~a name)]
+    [(type-ref 'named name) (qname->display name)]
+    [_ "?"]))
+
+(define (declaration-detail descriptor)
+  (define fields (map type-detail (declaration-descriptor-fields descriptor)))
+  (define spec (declaration-descriptor-lattice-spec descriptor))
+  (if spec
+      (append fields (list (format "lattice:~a" (lattice-descriptor-kind spec))))
+      fields))
+
+(define (boundary-catalog-projection head sizes)
+  (define cat (boundary-catalog head))
+  (define declarations (catalog-declarations cat))
+  (define environment (boundary-environment head))
+  (for/list ([name (in-list (sort (hash-keys environment) qname<?))])
+    (define descriptor (hash-ref declarations name))
+    (define display-name (qname->display name))
+    (define kind (declaration-descriptor-kind descriptor))
+    (relation-info
+     display-name
+     (~a kind)
+     (+ (length (declaration-descriptor-fields descriptor))
+        (if (eq? kind 'struct) 1 0))
+     (declaration-detail descriptor)
+     (hash-ref sizes display-name 0)
+     (hash-ref environment name)
+     (boundary-key head))))
+
+;; Sizes only: the one observation the logical boundary cannot supply.
+(define (daemon-relation-sizes s)
+  (define lines
+    (session-command-stream!
+     s '(catalog)
+     (lambda (line)
+       (regexp-match? #px"^\\(catalog-end [0-9]+\\)$" line))))
+  (for/fold ([out (hash)]) ([line (in-list lines)])
+    (match (read-datum line)
+      [`(catalog-rel ,fields ...)
+       (define (field key)
+         (match (assq key fields) [(list _ value) value] [_ #f]))
+       (define name (field 'name))
+       (if (string? name) (hash-set out name (or (field 'size) 0)) out)]
+      [_ out])))
+
 (define (live-catalog s)
+  (define head (session-current-boundary s))
+  (if head
+      (boundary-catalog-projection head (daemon-relation-sizes s))
+      (legacy-live-catalog s)))
+
+;; The pre-N4 name/size approximation, kept for a catalog-less input: an old
+;; database no program has re-declared has no logical boundary to project.
+;; Work order 7 retires this once such inputs must be regenerated.
+(define (legacy-live-catalog s)
   (define catalog-lines
     (session-command-stream!
      s '(catalog)
@@ -382,6 +449,97 @@
           'rows (relation-info-size relation)
           'version-key (or (relation-info-version-key relation) 'null)
           'boundary-key (or (relation-info-boundary-key relation) 'null)))
+
+;; The structured boundary projection (work order 6).  Every record is
+;; identity the bundle actually holds -- nothing is inferred from a relation
+;; directory or a flat manifest.
+(define (module-observation instance)
+  (match instance
+    [`(module-instance (key ,key) (home ,home ...)
+                       (lexical-path (occurrence ,slots ,aliases) ...)
+                       (bindings (bind (formal ,formals ...)
+                                       (actual ,actuals ...)) ...))
+     (hasheq 'key key
+             'home (string-join home ".")
+             'path (string-join
+                    (for/list ([slot (in-list slots)] [alias (in-list aliases)])
+                      (format "~a#~a" alias slot))
+                    ".")
+             'bindings
+             (for/list ([formal (in-list formals)] [actual (in-list actuals)])
+               (hasheq 'formal (string-join formal ".")
+                       'actual (string-join actual "."))))]
+    [_ (hasheq 'key "?" 'home "" 'path "" 'bindings '())]))
+
+(define (catalog-result bundle sizes)
+  (define head (boundary-bundle-selected-head bundle))
+  (define declarations (catalog-declarations (boundary-catalog head)))
+  (define environment (boundary-environment head))
+  (define nominals (catalog-nominals (boundary-catalog head)))
+  (define namespaces
+    (sort (remove-duplicates
+           (for*/list ([name (in-hash-keys declarations)]
+                       [depth (in-range 1 (length (qname-components name)))])
+             (string-join (take (qname-components name) depth) ".")))
+          string<?))
+  (define lines
+    (append
+     (list (format "boundary ~a  (~a declaration~a, ~a namespace~a)"
+                   (boundary-key head) (hash-count declarations)
+                   (if (= 1 (hash-count declarations)) "" "s")
+                   (length namespaces)
+                   (if (= 1 (length namespaces)) "" "s")))
+     (for/list ([record (in-list (boundary-bundle-history bundle))])
+       (format "  ~a ~a" (boundary-record-origin-kind record)
+               (boundary-record-key record)))
+     (if (null? (boundary-bundle-programs bundle))
+         '()
+         (cons "programs"
+               (for/list ([record (in-list (boundary-bundle-programs bundle))])
+                 (format "  ~a -> ~a  (~a module~a)"
+                         (program-record-key record)
+                         (program-record-output record)
+                         (length (program-record-modules record))
+                         (if (= 1 (length (program-record-modules record)))
+                             "" "s")))))))
+  (hash-set*
+   (text-result "Logical catalog" lines #:kind "catalog")
+   'boundary-key (boundary-key head)
+   'namespaces namespaces
+   'history
+   (for/list ([record (in-list (boundary-bundle-history bundle))])
+     (hasheq 'key (boundary-record-key record)
+             'predecessor (or (boundary-record-predecessor record) 'null)
+             'origin (~a (boundary-record-origin-kind record))))
+   'versions
+   (for/list ([record (in-list (boundary-bundle-versions bundle))])
+     (hasheq 'key (version-record-key record)
+             'predecessor (or (version-record-predecessor record) 'null)
+             'kind (~a (version-record-kind record))
+             'name (let ([name (version-record-name record)])
+                     (if name (qname->display name) 'null))
+             'materialized (and (version-record-materialized? record) #t)
+             'rows (let ([name (version-record-name record)])
+                     (if name (hash-ref sizes (qname->display name) 0) 0))))
+   'types
+   (for/list ([record (in-list (boundary-bundle-types bundle))])
+     (hasheq 'key (type-record-key record)
+             'arity (type-record-arity record)
+             'sid (or (type-record-sid record) 'null)
+             'names (map qname->display (type-record-names record))
+             'bound (for/or ([(name key) (in-hash nominals)])
+                      (equal? key (type-record-key record)))))
+   'programs
+   (for/list ([record (in-list (boundary-bundle-programs bundle))])
+     (hasheq 'key (program-record-key record)
+             'input (or (program-record-input record) 'null)
+             'output (program-record-output record)
+             'modules (map module-observation
+                           (program-record-modules record))))
+   'relations
+   (for/list ([name (in-list (sort (hash-keys environment) qname<?))])
+     (hasheq 'name (qname->display name)
+             'version-key (hash-ref environment name)))))
 
 (define (tables-result-from-catalog catalog argument)
   (define filter-text (string-trim argument))
@@ -860,6 +1018,58 @@
          change
          #:kind "mutation")]
        [_ (error 'drop "expected: drop REL")])]
+    ;; N4-B (docs/n4-contract.md §5): `attach DB as DEST` maps a saved root
+    ;; under one destination prefix; `attach DB SOURCE as DEST` maps one
+    ;; dependency-closed subtree.  Both publish as one ordinary N3 boundary.
+    ["attach"
+     ;; read-command-data returns datums; the attach grammar is positional
+     ;; words, so normalize before matching on the `as` keyword.
+     (define words
+       (map relation-key (read-command-data 'attach argument #:minimum 3)))
+     (define-values (db source destination)
+       (match words
+         [(list db "as" destination) (values db #f destination)]
+         [(list db source "as" destination) (values db source destination)]
+         [_ (error 'attach
+                   "expected: attach DB as DEST | attach DB SOURCE as DEST")]))
+     (define rs (ensure-mutable-session-record! state 'attach))
+     (define plan (box #f))
+     (define-values (_ _events change)
+       (capture-semantic-change
+        state rs "attach" "settled" '()
+        (lambda ()
+          (set-box!
+           plan
+           (session-attach!
+            (repl-session-session rs) db
+            #:source (and source (symbol->qname (string->symbol source)))
+            #:as (symbol->qname (string->symbol destination)))))))
+     (set-repl-session-changed?! rs #t)
+     (semantic-text-result
+      (format "Attached ~a~a as ~a" db
+              (if source (format " ~a" source) "") destination)
+      (list (format "~a relation versions and ~a nominal types were mapped"
+                    (length (attachment-plan-version-map (unbox plan)))
+                    (length (attachment-plan-type-map (unbox plan))))
+            (format "published as boundary ~a"
+                    (attachment-plan-boundary-key (unbox plan))))
+      change
+      #:kind "mutation")]
+    ;; N4-A work order 6: one structured projection of the session's selected
+    ;; logical boundary -- committed history, program/module records with
+    ;; their bindings, version chains, and type records.  Work order 7: this
+    ;; is an IDENTITY operation, so a catalog-less input is refused loudly
+    ;; rather than answered from a name/size approximation.
+    ["catalog"
+     (define s (ensure-session! state))
+     (define bundle (session-boundary-bundle s))
+     (unless bundle
+       (error 'catalog
+              (string-append
+               "this database has no logical catalog (a pre-N4 input, or one "
+               "invalidated by an import/link/inject); replay and re-save it, "
+               "or regenerate it")))
+     (catalog-result bundle (daemon-relation-sizes s))]
     ["schema"
      (define s (ensure-session! state))
      (define lines
@@ -1147,6 +1357,62 @@
          2
          ""
          "committed boundary b1:root:1"))
+
+  ;; N4-A work order 6: the projection comes from the selected logical
+  ;; boundary, so a declaration with no rows is a first-class entry and its
+  ;; field graph is real type information rather than a schema-stream echo.
+  (let* ([Q (lambda (name) (symbol->qname name))]
+         [decl (lambda (name kind fields [lat #f])
+                 (declaration-descriptor (Q name) kind fields lat))]
+         [head
+          (boundary
+           "b1:proj:0"
+           (catalog
+            (hash (Q 'g.Node) (decl 'g.Node 'struct (list (type-ref 'primitive 'int)))
+                  (Q 'g.edge) (decl 'g.edge 'table
+                                    (list (type-ref 'named (Q 'g.Node))
+                                          (type-ref 'named (Q 'g.Node))))
+                  (Q 'g.unseen) (decl 'g.unseen 'table
+                                      (list (type-ref 'primitive 'int))))
+            (set)
+            (hash (Q 'g.Node) "t1:proj:0:0"))
+           (hash (Q 'g.Node) "v1:proj:0:0"
+                 (Q 'g.edge) "v1:proj:0:1"
+                 (Q 'g.unseen) "v1:proj:0:2"))]
+         [projected (boundary-catalog-projection head (hash "g.edge" 3))])
+    (check-equal? (map relation-info-name projected)
+                  '("g.Node" "g.edge" "g.unseen"))
+    ;; the empty declaration is present, with its VersionKey, at zero rows
+    (define unseen (third projected))
+    (check-equal? (relation-info-version-key unseen) "v1:proj:0:2")
+    (check-equal? (relation-info-size unseen) 0)
+    ;; field types come from the declaration graph, qualified
+    (check-equal? (relation-info-detail (second projected))
+                  (list "g.Node" "g.Node"))
+    ;; a struct's stored arity includes its intern id column
+    (check-equal? (relation-info-arity (first projected)) 2)
+    (check-equal? (relation-info-boundary-key unseen) "b1:proj:0")
+    ;; ... and the structured catalog projection reports the same identity
+    (define bundle
+      (boundary-bundle
+       slog-boundary-bundle-format head
+       (list (boundary-record "b1:proj:0" #f 'initial #f))
+       (list (version-record "v1:proj:0:0" #f 'struct (Q 'g.Node) #t)
+             (version-record "v1:proj:0:1" #f 'table (Q 'g.edge) #t)
+             (version-record "v1:proj:0:2" #f 'table (Q 'g.unseen) #t))
+       (list (type-record "t1:proj:0:0" 2 4 (list (Q 'g.Node) (Q 'old.Node))))
+       '()))
+    (define result (catalog-result bundle (hash "g.edge" 3)))
+    (check-equal? (hash-ref result 'boundary-key) "b1:proj:0")
+    (check-equal? (hash-ref result 'namespaces) '("g"))
+    (check-equal? (length (hash-ref result 'versions)) 3)
+    ;; a TypeKey renders through every spelling it has carried
+    (check-equal? (hash-ref (first (hash-ref result 'types)) 'names)
+                  '("g.Node" "old.Node"))
+    (check-true (hash-ref (first (hash-ref result 'types)) 'bound))
+    (check-equal? (map (lambda (r) (hash-ref r 'name))
+                       (hash-ref result 'relations))
+                  '("g.Node" "g.edge" "g.unseen")))
 
   (define sample-request
     (list (hasheq 'relation "edge" 'added 1 'removed 0)))

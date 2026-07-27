@@ -51,6 +51,22 @@
   ;; derive keeps today's root spellings byte-identical and composes
   (check-eq? (qname-derive 'reach 'has) 'reach_has)
   (check-eq? (qname-derive 'm.reach 'ans) 'm.reach_ans)
+  ;; Prefix operations are component-wise, never textual.
+  (check-true
+   (qname-prefix? (symbol->qname 'a.bc) (symbol->qname 'a.bc.edge)))
+  (check-false
+   (qname-prefix? (symbol->qname 'a.bc) (symbol->qname 'ab.c.edge)))
+  (check-equal?
+   (qname-components
+    (qname-rebase (symbol->qname 'formal.graph.edge)
+                  (symbol->qname 'formal.graph)
+                  (symbol->qname 'actual)))
+   '("actual" "edge"))
+  (check-eq? (name-at-home '() 'edge) 'edge)
+  (check-eq? (name-at-home '("left") 'edge) 'left.edge)
+  (check-eq? (internal-name-at-home '() '$sup0) '$sup0)
+  (check-not-eq? (internal-name-at-home '("left") '$sup0)
+                 (internal-name-at-home '("right") '$sup0))
 
   ;; ---- codecs ---------------------------------------------------------
   (check-equal? (qname->display mv) "model.value")

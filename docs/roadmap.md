@@ -9,11 +9,11 @@ streams are mature enough to collide unless sequenced deliberately; this
 document owns ordering and interleaving only. Each stream's own document
 remains normative for its content.
 
-| stream | document | slices | status 2026-07-25 (v3.1.0) |
+| stream | document | slices | status 2026-07-26 (v3.1.0) |
 |---|---|---|---|
 | incremental maintenance | [incremental.md](incremental.md), [incremental-status.md](incremental-status.md) | Phase 0, M0–M7 | Phase 0, M0, M1, M3, M6L 1–2, M4T, M5, M4S, **M4N ([m4n-contract.md](m4n-contract.md), all 4 slices)** shipped; **counted-interpreter milestone complete** ([counted-interp-contract.md](counted-interp-contract.md)); **M7 slice 1 complete ([m7-contract.md](m7-contract.md), sub-slices (a)–(d), 2026-07-24)** — thread 0's M-milestone spine is done |
 | execution tiers | [execution-tiers.md](execution-tiers.md) | T0–T6, Q1 | T1 shipped; T2 core frozen, monotone conformance groups closed, **flavored execution interp-only by default**; T0 slices (a), (b), and (d) landed; canonical Q1 query/page/cancel dispatcher active; T0(c) identity remains independent; T3a/T4+ unstarted |
-| modules/namespaces | [modules.md](modules.md) | N0–N5 | N0, N2-A/B, and **all of N3** landed (N3-A/B/C daemon boundaries, direct history, durable type registry; **N3-D qualified-path transforms, 2026-07-26**); N1 and N4+ unstarted |
+| modules/namespaces | [modules.md](modules.md), [n4-contract.md](n4-contract.md) | N0–N5 | N0, **N1**, N2-A/B, and **all of N3** landed (N1 lexical occurrences, qualification, bindings, and persisted module identity; N3-A/B/C daemon boundaries, direct history, durable type registry; **N3-D qualified-path transforms, 2026-07-26**); **all of N4** ([n4-contract.md](n4-contract.md): N4-A durable bundle in META format 2, restore-on-open, replay audit, boundary-backed REPL projection; N4-B mapped namespace attachment) -- **N0-N4 are complete**, N5 unstarted |
 | reflection | [slog-reflection.md](slog-reflection.md) | RF0–RF5 | RF0 done; RF1 slice 0 shipped (plan determinism); ABI-2 split pending |
 | REPL | [repl.md](repl.md), [repl-ux.md](repl-ux.md), [repl-terminal.md](repl-terminal.md) | R0–R5 | native Rust shell, private TCP server, live session/daemon vertical slice, structured change projection, executable `--plain` golden, and R1 budgeted tree, navigation, semantic change cards, command completion, visible-canvas search, live-relation observations, and buffered pagination shipped; canonical Q1 cursor protocol active, with boundary catalog/friendly parser/value/proof adapters next |
 | stats migration | [stats.md](stats.md) §7 | steps 1–7 | `$stat_*` shipped; migration unstarted |
@@ -82,7 +82,7 @@ discipline makes it a checklist.
                        \                    /
                         S  — sync gate (§5)
                                 |
-        W4': T5 + REPL R4 (the debugger) · T4 · N4 · RF2 · T3b
+        W4': T5 + REPL R4 (the debugger) · T4 · N4-A -> N4-B · RF2 · T3b
         W5': T6 · N5 + stats 5–7 · RF5 program edits · R5 · derived watches
 ```
 
@@ -201,6 +201,91 @@ install/seal plans before clang, interpret immediately, `SLOG_OPT=interp`.
 **Stats steps 1+4**: `$stat_fires` rekeys to `(RuleId, VariantTag)`.
 **N1** lexical module instances (compiler track, parallel): `instantiate`,
 occurrence trees, qualification pass, real `ModuleInstanceKey`s.
+
+**Checkpoint 2026-07-27 (N4 complete: work orders 4-7).** Opening a saved
+database now restores its logical catalog before any row is loaded.
+`slog db freeze` carries the catalog forward through the recipe-chain loader
+hook and cuts its history, so a flat root is the database that has a bundle
+and no recipe -- and therefore the one that exercises restore. The daemon
+change this looked to need turned out to be unnecessary: instead of adopting a
+verbatim-loaded environment (which `prepareBoundary` cannot express), the
+restore skips the verbatim load and prepares the persisted head as ordinary
+initial creates, imports rows into that boundary's private slots, and commits.
+BoundaryKeys, VersionKeys, and TypeKeys survive exactly; a reversed create
+order (`SLOG_N4_RESTORE_REVERSE`) forces 40 of 41 runtime SIDs onto different
+values and every set, map, sequence, and nested struct still decodes.
+A recipe layer takes the other route -- it rebuilds its own chain -- and is
+audited against the stored bundle: head, declaration graph, VersionKey
+environment, TypeKey registry, and program/module keys, with divergence a load
+failure. `live-catalog` is now a projection of the selected boundary (so an
+empty declaration appears in `tables`), a new `catalog` command publishes the
+structured history/programs/modules/versions/types, and the Rust completion
+inventory gained relation and namespace paths. Gated by 19 `n4c-*` session
+checks, 12 new REPL projection assertions, and a Rust completion case.
+
+**Checkpoint 2026-07-27 (N4-B complete: mapped namespace attachment).**
+`attach DB as DEST` / `attach DB SOURCE as DEST` imports a saved database, or
+one dependency-closed subtree of it, under a destination prefix as one
+ordinary N3 boundary. `plan-attachment` (catalog.rkt) is pure -- selection,
+dependency closure, component-wise prefix substitution, leaf-vs-namespace
+shape, and the complete VersionKey/TypeKey maps are decided before the daemon
+is contacted -- and it allocates through the *unchanged* `plan-boundary`,
+whose established behaviour already is §5's mapping rules. `session-attach!`
+prepares one boundary, imports into its private slots (the shipped
+`importDatabaseBIN` remap, reached through the prepared overlay), and commits;
+any failure aborts. The recipe step carries the self-auditing plan, replay
+refuses source/destination/content drift, and the attachment enters the
+durable bundle history under a new `attachment` origin. Gated by 15 unit
+cases and a 27-check `n4b-*` session block covering root and subtree attach,
+double attach with disjoint keys, merge into a compatible partial destination,
+an empty member with no tuple directory, sets/maps/sequences/structs remapped
+through each other, save+replay, and the escaping/occupied/catalog-less
+refusals. Two settlements §5 did not anticipate are recorded in
+[n4-contract.md](n4-contract.md) §5.1: builtin membership members do not move,
+and internal `$...` relations are staged out of the payload.
+
+**Fix 2026-07-27 (N1 sequence splice regression).** `qualify-rule`'s
+`operator-name` tested `qname-symbol?` -- "does this symbol contain a dot" --
+before the special-operator check, so the sequence splice token `...` was
+routed into name resolution and failed there. Every program using `[x xs ...]`
+was broken, including `lib/set.slog`, `lib/map.slog`, and `lib/list.slog`;
+five compression cases and fourteen goldens were failing. `...` is dot-free
+in no other special operator, so the dotted-name branch now excludes them.
+
+**Checkpoint 2026-07-26 (N4-A work orders 1-3: the durable bundle is
+written).** A saved session layer now carries its own logical catalog.
+`compiler/catalog.rkt` gained the one canonical bundle codec -- boundary,
+committed-boundary-history, version, type, and program/module records, with
+a validator that refuses duplicate keys, dangling versions or TypeRefs, an
+unlinked history, a head binding no record describes, and a stored-arity
+disagreement. `compiler/dbmeta.rkt` cut the format to version 2, placed the
+bundle in META, gated it on read and write, and folded it into the database
+stamp. `compiler/session.rkt` accumulates the bundle from committed state
+only: one head-assignment point, one history record per committed program
+boundary or N3-D transform, TypeKeys retaining every qualified spelling they
+have carried, and a prepared-boundary lease a save refuses to write over. A
+legacy environment event restarts the chain rather than faking continuity,
+and a session with no exact head writes no bundle at all. Gated by a 27-case
+`tests/unit/n4-bundle-tests.rkt`, an `n4a-*` session block over a fixture
+carrying qualified tables, a qualified struct column, a lattice table, and an
+unwritten declaration, and the full unit + session suites. Restore-on-open,
+the replay audit, the REPL projection, and the catalog-less refusals (work
+orders 4-7) are next; [n4-contract.md](n4-contract.md) §4.1 records the exact
+residue, including the new daemon boundary action the restore path needs.
+
+**Checkpoint 2026-07-26 (N1 complete):** `instantiate` and the shared
+`as`/`with` occurrence grammar now produce ordered lexical occurrence trees
+with per-occurrence include deduplication. Qualification lowers complete
+declaration/rule graphs and owner-scoped generated helpers through the
+central QName authority before the existing middle end. Explicit bindings
+perform component-wise prefix substitution, use directional `any` only while
+validating the bound interface, and compile against the selected live catalog
+rather than reconstructing types from the legacy manifest. Program IR and
+compile groups retain occurrence metadata; session recipes persist
+`ModuleInstanceKey`s derived from replayed `ProgramInstanceKey`s plus lexical
+slots. Focused unit, golden execution, and two-segment live-catalog tests pin
+double instantiation, client extension, richer actual namespaces, compatible
+completion, atomic incompatibility, provenance separation, and replay data.
 
 **Checkpoint 2026-07-16 (T2-A2/A3 engine admission + T0 sidecar seam):** the normal-set
 decoded/sealed/bound path and real scheduler task have landed in
@@ -1217,8 +1302,11 @@ m5-contract, lattice per M6L contributor-reduce; monotone-only enforcement
 now testable against real M4N/M7 exclusions) with **REPL R4** (stepping,
 frames, why/why-not, commit/replay) as its UX. In parallel: **T4**
 parameterized native bundles (the alpha-normalized KernelPlanKey gate goes
-live over N1 instantiation), **N4** persistence (catalogs in META, namespace
-import maps, empty-declaration restore), **RF2** image mount via
+live over N1 instantiation), **N4's two slices**
+([n4-contract.md](n4-contract.md): N4-A versioned META boundary bundle,
+empty-declaration restore, replay audit, and catalog-backed REPL; then N4-B
+atomic mapped namespace attachment with explicit TypeKey/SID remapping),
+**RF2** image mount via
 freeze/import with image-based compiler goldens and a first Slog-written
 lint, **T3b** full tier policy (promotion budgets, profile sidecars, core
 arbiter).

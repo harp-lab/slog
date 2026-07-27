@@ -32,6 +32,57 @@ database. Daemon diagnostic `$stat_*` relations are excluded.
 `--out-db` is the simplest choice when the result fits comfortably on disk and
 fast predictable loading matters more than space.
 
+## Import a folder of text files
+
+External data does not have to arrive as Slog rules. A folder of delimited
+text files becomes a database directly:
+
+```console
+$ racket compiler/csv2db.rkt path/to/folder mygraph
+  data/mygraph/table.edge.arity.2/0.bin  1204332 tuples (arity 2)
+  data/mygraph/table.node.arity.1/0.bin   300000 tuples (arity 1)
+  data/mygraph  300000 interned strings
+```
+
+There is one input file per relation. The relation name is the file name, and
+its arity is either taken from the first row or stated in the name:
+
+```text
+edge.csv        arity inferred from the first row
+edge.2.csv      arity stated in the name
+```
+
+`.csv`, `.tsv`, and `.txt` are read the same way: rows are newline-delimited
+and columns are separated by spaces or tabs. Every row in a file must have
+the same number of columns as the declared or inferred arity; a ragged row is
+reported by line number rather than silently shifting the rows after it.
+
+A column that reads as an integer becomes an `int`, one that reads as a
+decimal becomes a `float`, and anything else becomes a `str`. Quoting forces a
+string and allows spaces inside a column:
+
+```text
+alice   bob         7
+"alice" "bob jones" "7"
+```
+
+The first row is `(str str int)`; the second is `(str str str)`.
+
+Import once, then query the result like any other saved database:
+
+```console
+$ racket compiler/run.rkt --no-banner -d mygraph --sizes reach.slog
+```
+
+This is the right way to load bulk data. Writing a million facts as ground
+rules instead funnels every one of them through the parser and a compiled
+rule; importing them writes the binary tables directly and takes seconds.
+
+Two limits are worth knowing. Integer columns must fit in the `int` fast path
+(`-2^31` to `2^31 - 1`) and string columns must be at most 256 bytes, since
+larger values of both kinds are representations this writer does not build.
+Both are reported as errors, not silently truncated.
+
 ## Query an existing database
 
 The compiler discovers relation names and arities from the database, but your
@@ -213,6 +264,59 @@ The table shows name, kind, retained percentage, relation-directory count,
 disk size, and staleness. Databases written by plain `--out-db` have no managed
 `META` and appear as kind `plain`. Managed kinds are `root`, `compressed`, and
 `flat`.
+
+### Self-describing databases
+
+A database saved from a session (`session-save!`) records its own logical
+catalog in `META` under `boundary-bundle`: the selected boundary with every
+declaration and its field types, the qualified-name-to-VersionKey environment,
+the nominal-name-to-TypeKey map, the committed boundary history, and the
+program/module records that produced it. That makes the schema readable
+without recompiling the source or scanning relation directories, and it means
+a declaration nothing ever wrote is still part of the saved catalog.
+
+The bundle is optional at the format level: a database produced by a path that
+holds no exact declaration metadata -- a plain `--out-db` run, or a session
+whose catalog was invalidated by an `import`/`link`/`inject` before the save --
+omits it. A bundle that *is* present must be internally consistent, and it
+contributes to the database stamp, so a hand-edited one fails the load rather
+than being read.
+
+Databases carrying a bundle use `META` `format-version` 2. Older databases
+still load; this build simply has no logical catalog for them.
+
+### Attaching a saved database
+
+A database that carries a logical catalog can be imported into another
+session under one namespace prefix:
+
+```text
+attach DB as DEST          # the whole saved database, under DEST.*
+attach DB SOURCE as DEST   # one subtree, SOURCE.* mapped to DEST.*
+```
+
+Every declaration below the source path moves component-wise: `app.edge`
+attached as `graph` becomes `graph.edge`, and its field types follow, so a
+column typed `app.Node` becomes one typed `graph.Node`. The subtree has to be
+self-contained — if a declaration inside it refers to a type outside it, the
+attachment refuses rather than leaving a dangling reference. Attaching the
+whole saved database is always self-contained.
+
+The destination keeps its own identity. A relation the destination already
+has, with a compatible declaration, receives the source's rows; one it does
+not have is created. Relations the destination has and the source does not
+are left alone, and nothing is ever deleted. Constructors work the same way:
+an existing compatible one at the destination keeps its identity, and a new
+one gets a fresh identity of its own — attaching the same database at two
+different prefixes gives you two independent copies that share no relation
+versions, no constructor identities, and no rows.
+
+Everything is checked before any data moves, and the whole attachment either
+lands as one boundary or leaves no trace. It is recorded in the session, so
+saving and reopening replays the same mapping — and refuses if the source
+database has changed underneath it.
+
+Attaching a database with no logical catalog is refused; regenerate it first.
 
 ### Dependency tree
 

@@ -190,6 +190,7 @@ best place to learn the language.
 ```text
 compiler/run.rkt       command-line entry point
 compiler/repl.rkt      private local REPL session server
+compiler/csv2db.rkt    import a folder of delimited text files as a database
 repl/          Rust terminal frontend; builds the root slog executable
 compiler/      parser, type checker, planner, code generator, and drivers
 daemon/        parallel runtime and persistent database implementation

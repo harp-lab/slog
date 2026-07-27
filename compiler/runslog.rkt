@@ -26,6 +26,7 @@
 (require "compile.rkt")
 (require "actions.rkt")
 (require "dbmeta.rkt")
+(require "catalog.rkt")  ; N4-A bundle projection for the freeze carry-forward
 (require "dbtool.rkt")
 (require "parser.rkt")   ; current-source-capture (P1.1)
 
@@ -40,9 +41,17 @@
 ;; dependency is inverted through a hook: session.rkt installs its loader at
 ;; instantiation (compiler/run.rkt and the session drivers require it); a bare
 ;; runslog user hitting a recipe chain gets a loud pointer instead of a
-;; silent partial load.  Signature: (loader in-port out-port load-steps).
+;; silent partial load.  Signature: (loader in-port out-port load-steps)
+;; -> the loaded session's N4-A boundary-bundle datum, or #f when it has no
+;; exact logical head.
 (define recipe-chain-loader (box #f))
 (define (set-recipe-chain-loader! f) (set-box! recipe-chain-loader f))
+
+;; The logical catalog of the chain this run loaded, for a save that has to
+;; carry it forward (`slog db freeze` cutting a chain down to a flat root).
+;; Reset at the top of every run so a later read cannot see a stale bundle.
+(define loaded-boundary-bundle (box #f))
+(define (last-loaded-boundary-bundle) (unbox loaded-boundary-bundle))
 
 ;; Simple auto-per (docs/db-compression.md §13.1, deliberately coarse): pick a
 ;; retention `per` from how expensive the database was to compute from origin
@@ -219,6 +228,7 @@
   ;; Working directories used by the compiler and daemon (relative to cwd).
   (make-directory* "build")
   (make-directory* "out")
+  (set-box! loaded-boundary-bundle #f)
   ;; The query compiles against the FULL DAG manifest so it sees an opened
   ;; compressed db's EDB root as well as its IDB layer (P1.4); a plain db's full
   ;; manifest is just its own directory.
@@ -493,7 +503,7 @@
                  "the input chain contains a saved session (a recipe layer), which loads "
                  "through the session driver; require compiler/session.rkt (compiler/run.rkt and the "
                  "session tools do) so its recipe replayer is installed")))
-       (loader in out load-steps)]
+       (set-box! loaded-boundary-bundle (loader in out load-steps))]
       [else
        (for ([step (in-list rest-load-steps)])
          (match step
@@ -769,6 +779,11 @@
 ;; plain database data/<target> -- the flat-root data; the caller (dbtool's
 ;; cmd-freeze) strips chain artifacts, stamps the flat META, and swaps for
 ;; an in-place freeze.
+;;
+;; Returns the frozen root's N4-A logical catalog (docs/n4-contract.md §4
+;; work order 3), or #f when the chain cannot supply an exact one.  A freeze
+;; runs an EMPTY program, so the loaded head is exactly what was materialised;
+;; the history is CUT because a flat root has no lineage left.
 (define (slog-db-freeze name target)
   (define tmp (make-temporary-file "slog-freeze-~a.slog"))
   (dynamic-wind
@@ -777,7 +792,17 @@
      (call-with-output-file tmp #:exists 'truncate
        (lambda (p) (fprintf p ";; freeze loader\n")))
      (make-directory* (string-append "data/" target))
-     (slog-run-file (path->string tmp) name target #f #f))
+     (slog-run-file (path->string tmp) name target #f #f)
+     ;; A recipe chain reports its head through the loader hook; a chain that
+     ;; is already one bundle-carrying root reports it through its own META.
+     (define datum
+       (or (last-loaded-boundary-bundle)
+           (let ([dir (string-append "data/" name)])
+             (and (db-meta-file-exists? dir)
+                  (db-meta-boundary-bundle (read-db-meta dir))))))
+     (and datum
+          (boundary-bundle->datum
+           (boundary-bundle-cut-history (datum->boundary-bundle datum)))))
    (lambda () (when (file-exists? tmp) (delete-file tmp)))))
 
 ;; Write the META header(s) for a compressed/flattened save (docs/db-

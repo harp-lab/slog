@@ -706,6 +706,7 @@ data/<name>/
 | `pure-edb?` | true for roots (no `prog.sexpr`) |
 | `full-store-rels` | relations forced to `per = 100 %` (nondeterministic, §5.3) |
 | `accel` | accelerator-seed summary if `accel/` present: `(quota cap-mb tiers groups rows bytes)` (§4.4) |
+| `boundary-bundle` | the N4-A durable logical catalog: selected head, committed boundary history, version/type/program records ([n4-contract.md](n4-contract.md) §3). Optional — a creator with no exact declaration metadata omits it and N4 catalog/attach/REPL identity operations then refuse the database — but a present bundle must validate completely, and it is covered by `stamp`. Added at `format-version` 2. |
 
 Notes:
 

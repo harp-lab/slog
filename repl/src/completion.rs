@@ -31,6 +31,13 @@ impl CompletionCandidate {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CompletionInventory {
     pub databases: Vec<String>,
+    /// Qualified relation names from the selected logical boundary (N4-A
+    /// work order 6). Sourced from the boundary projection, never from a
+    /// tuple-directory scan, so a declared-but-empty relation completes too.
+    pub relations: Vec<String>,
+    /// Namespace prefixes of those names -- every proper prefix of a dotted
+    /// relation path, so `attach ... as` and subtree arguments complete.
+    pub namespaces: Vec<String>,
     pub expand_positions: Vec<String>,
     pub collapse_positions: Vec<String>,
     pub card_positions: Vec<String>,
@@ -287,6 +294,21 @@ pub fn complete(
         [verb] if matches_lower(verb, &["open", "use"]) => {
             dynamic_candidates(prefix, &inventory.databases, "database")
         }
+        // Relation arguments come from the selected boundary's declarations.
+        [verb] if matches_lower(verb, &["count", "show", "state", "drop"]) => {
+            dynamic_candidates(prefix, &inventory.relations, "relation")
+        }
+        [verb] if verb.eq_ignore_ascii_case("rename") => {
+            dynamic_candidates(prefix, &inventory.relations, "relation")
+        }
+        // `attach DB SOURCE as DEST`: the second word is a namespace of the
+        // saved database, so offer the namespaces we know about.
+        [verb, _database] if verb.eq_ignore_ascii_case("attach") => {
+            dynamic_candidates(prefix, &inventory.namespaces, "namespace")
+        }
+        [verb] if verb.eq_ignore_ascii_case("attach") => {
+            dynamic_candidates(prefix, &inventory.databases, "database")
+        }
         [verb] if verb.eq_ignore_ascii_case("library") => word_candidates(
             prefix,
             [
@@ -436,6 +458,51 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["alpha", "alpine"]
         );
+    }
+
+    /// N4-A work order 6: relation and namespace arguments complete from the
+    /// selected logical boundary, so a declared-but-empty relation is offered
+    /// like any other and `attach DB SRC as ...` offers real namespaces.
+    #[test]
+    fn completes_relation_and_namespace_paths_from_the_boundary() {
+        let inventory = CompletionInventory {
+            databases: vec!["saved".to_owned()],
+            relations: vec![
+                "g.edge".to_owned(),
+                "g.unseen".to_owned(),
+                "m.pairs".to_owned(),
+            ],
+            namespaces: vec!["g".to_owned(), "m".to_owned()],
+            ..CompletionInventory::default()
+        };
+        let relations = complete("count g.", 8, &inventory).expect("relation completion");
+        assert_eq!(
+            relations
+                .candidates()
+                .iter()
+                .map(|candidate| candidate.label.as_str())
+                .collect::<Vec<_>>(),
+            ["g.edge", "g.unseen"]
+        );
+        // an empty declaration is in the boundary, so it completes
+        assert!(
+            complete("show g.uns", 10, &inventory)
+                .expect("empty relation completion")
+                .candidates()
+                .iter()
+                .any(|candidate| candidate.label == "g.unseen")
+        );
+        let namespaces = complete("attach saved ", 13, &inventory).expect("namespace completion");
+        assert_eq!(
+            namespaces
+                .candidates()
+                .iter()
+                .map(|candidate| candidate.label.as_str())
+                .collect::<Vec<_>>(),
+            ["g", "m"]
+        );
+        let databases = complete("attach sa", 9, &inventory).expect("database completion");
+        assert_eq!(databases.selected_candidate().label, "saved");
     }
 
     #[test]

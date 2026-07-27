@@ -248,8 +248,9 @@
        (call-with-output-file path
          #:exists 'replace
          (lambda (out) (display source out)))
-       (match-define `((program ,type-env ,_ ,_ ,_))
+       (match-define (list (? program-ir? program))
          (load-program-list path (hash)))
+       (define type-env (program-ir-type-env program))
        (define generated
          (for/first ([name (in-list (hash-keys (type-env-rels type-env)))]
                      #:when

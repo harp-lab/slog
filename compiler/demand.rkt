@@ -62,6 +62,7 @@
 (provide desugar-demand-program desugar-demand-rules demand-ans-name)
 
 (require "ir-shared.rkt")
+(require "names.rkt")
 (require "simplification.rkt")
 (require "lexer.rkt")
 (require "utils.rkt")
@@ -69,7 +70,12 @@
 ;; The generated answer table's name.  User-visible: naming it directly is
 ;; the escape hatch for enumeration and direct answer access.
 (define (demand-ans-name name)
-  (string->symbol (format "~a_ans" name)))
+  (qname-derive name 'ans))
+
+;; Demand expansion happens after lexical qualification.  Keep synthesized
+;; helpers beside the module whose rule caused them; root programs retain the
+;; historical unqualified spellings.
+(define current-demand-home (make-parameter '()))
 
 ;; -----------------------------------------------------------------------
 ;; Program entry point (called by modules.rkt after env merging).
@@ -88,8 +94,14 @@
   (define ctx (make-ctx demands type-env))
   (define mods+
     (for/list ([m (in-list mods)])
-      (match-define (list path toks rules) m)
-      (list path toks (transform-rules rules ctx))))
+      (cond
+        [(module-ir? m)
+         (parameterize ([current-demand-home (module-ir-home m)])
+           (struct-copy module-ir m
+                        [rules (transform-rules (module-ir-rules m) ctx)]))]
+        [else
+         (match-define (list path toks rules) m)
+         (list path toks (transform-rules rules ctx))])))
   ;; generated apply rules go through the transform themselves (their
   ;; judgment heads need gates); synthesis is closed after one round
   ;; because generated rules contain no lambdas or var calls
@@ -98,6 +110,10 @@
     (if (set-empty? gen)
         mods+
         (match mods+
+          [(cons (? module-ir? first) rest)
+           (cons (struct-copy module-ir first
+                              [rules (set-union (module-ir-rules first) gen)])
+                 rest)]
           [(cons (list path toks rules) rest)
            (cons (list path toks (set-union rules gen)) rest)])))
   (values mods++ (unbox (ctx-rels ctx)) (unbox (ctx-clo-members ctx))))
@@ -120,7 +136,7 @@
 (struct ctx (demands rels clo-members gen-rules type-env) #:transparent)
 
 (define (make-ctx demands type-env)
-  (ctx (box demands) (box (hash)) (box (set)) (box (set)) type-env))
+  (ctx (box demands) (box (hash)) (box (hash)) (box (set)) type-env))
 
 (define (ctx-demand ctx name) (hash-ref (unbox (ctx-demands ctx)) name #f))
 
@@ -136,13 +152,16 @@
 
 ;; Ensure the applyN judgment for call arity n exists; returns its name.
 (define (ensure-apply! ctx n)
-  (define name (string->symbol (format "apply~a" n)))
+  (define home (current-demand-home))
+  (define name
+    (name-at-home home (string->symbol (format "apply~a" n))))
+  (define clo-name (name-at-home home 'clo))
   (unless (ctx-demand ctx name)
     (set-box! (ctx-demands ctx)
               (hash-set (unbox (ctx-demands ctx)) name (cons (add1 n) 1)))
     (set-box! (ctx-rels ctx)
               (hash-set* (unbox (ctx-rels ctx))
-                         name `(struct clo ,@(make-list n 'any))
+                         name `(struct ,clo-name ,@(make-list n 'any))
                          (demand-ans-name name) `(table ,name any))))
   name)
 
@@ -366,10 +385,14 @@
 (define (lambda-name prov)
   (match-define `(prov ,ltok ,_) prov)
   (define pos (token->pos ltok))
-  (string->symbol (format "_lam~ax~ax~a"
-                          (modulo (fnv (source-name-key (pos->file pos))) 100000)
-                          (pos->startline pos)
-                          (pos->startcol pos))))
+  (name-at-home
+   (current-demand-home)
+   (string->symbol (format "_lam~ax~ax~a"
+                           (modulo
+                            (fnv (source-name-key (pos->file pos)))
+                            100000)
+                           (pos->startline pos)
+                           (pos->startcol pos)))))
 
 (define (var-callable? ctx h bound)
   (and (symbol? h)
@@ -408,7 +431,12 @@
                       (if (null? captured)
                           `(enum ,name)
                           `(struct ,@(make-list (length captured) 'any)))))
-  (set-box! (ctx-clo-members ctx) (set-add (unbox (ctx-clo-members ctx)) name))
+  (define clo-name (name-at-home (current-demand-home) 'clo))
+  (set-box! (ctx-clo-members ctx)
+            (hash-update (unbox (ctx-clo-members ctx))
+                         clo-name
+                         (lambda (members) (set-add members name))
+                         (set)))
   (define ap (ensure-apply! ctx (length params)))
   (set-box! (ctx-gen-rules ctx)
             (set-add (unbox (ctx-gen-rules ctx))
@@ -715,11 +743,15 @@
 (define (sup-rel-name prov alt-idx stage-idx)
   (match-define `(prov ,ltok ,_) prov)
   (define pos (token->pos ltok))
-  (string->symbol (format "$sup~ax~ax~ax~ax~a"
-                          (modulo (fnv (source-name-key (pos->file pos))) 100000)
-                          (pos->startline pos)
-                          (pos->startcol pos)
-                          alt-idx stage-idx)))
+  (internal-name-at-home
+   (current-demand-home)
+   (string->symbol (format "$sup~ax~ax~ax~ax~a"
+                           (modulo
+                            (fnv (source-name-key (pos->file pos)))
+                            100000)
+                           (pos->startline pos)
+                           (pos->startcol pos)
+                           alt-idx stage-idx))))
 
 (define (seq-item-var it)
   (match it
@@ -1225,7 +1257,7 @@
                  (hash))])
     (define lam (lambda-name (P@ 7 4)))
     (check-equal? (hash-ref rels lam) '(struct any))     ; captures k
-    (check-true (set-member? clo lam))
+    (check-true (set-member? (hash-ref clo 'clo) lam))
     (check-true (set-member? out `(rule (kv k) --> (mk (,lam k)))))
     ;; the generated apply rule is itself demand-transformed (gated)
     (check-true

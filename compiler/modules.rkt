@@ -41,6 +41,7 @@
 (require racket/runtime-path)
 (require "parser.rkt")
 (require "utils.rkt")
+(require "names.rkt")
 (require "ir-shared.rkt")
 (require "catalog.rkt")
 (require "demand.rkt")
@@ -51,18 +52,32 @@
 ;; threaded.  `input-manifest` describes the relations of the input DB
 ;; (name -> (rel name arity) | (struct name arity)).
 
-(define (load-program-list path input-manifest)
-  (define tree (lift-type-envs (load-program-tree path)))
-  (thread-manifests (linearize-programs tree) input-manifest))
+(define current-input-catalog (make-parameter #f))
+
+(define (load-program-list path input-manifest
+                           #:input-catalog [input-catalog #f])
+  (parameterize ([current-input-catalog input-catalog])
+    (define tree (lift-type-envs (load-program-tree path)))
+    (thread-manifests (linearize-programs tree) input-manifest)))
 
 ;; -----------------------------------------------------------------------
-;; Include/run resolution.
+;; Include/run/instantiate resolution (N1).
 ;;
-;; A program tree is (program (subtree ...) mods): its `run` prerequisites
-;; and its own set of modules (this file plus everything included).
+;; Includes contribute source units to one lexical occurrence. Instantiation
+;; creates a fresh child occurrence with its own include-dedup set. Runs create
+;; temporal predecessor programs while retaining the lexical home selected by
+;; their occurrence options.
 
-(define (load-program-tree path [seen-run (set)] [seen-inc (set)])
-  (include-module path (parse-file path) seen-run seen-inc))
+(struct raw-source (path tokens ast) #:transparent)
+(struct raw-occurrence
+  (entry-path alias home lexical-path bindings interface? sources children)
+  #:transparent)
+(struct raw-program (requirements root) #:transparent)
+(struct qualified-module (ir type-env demands interface?) #:transparent)
+
+(define (load-program-tree path [seen-run (set)])
+  (define canonical (fullpath path))
+  (resolve-program canonical '() '() '() (set-add seen-run canonical)))
 
 ;; An include/run target is available if it is on disk OR provided by the
 ;; source override (P1.1) -- so a stored program's closure resolves during a
@@ -87,70 +102,187 @@
      (define stdlib (fullpath (normalize-path p stdlib-dir)))
      (if (source-available? stdlib) stdlib local)]))
 
-(define (program-merge-run p0 p1)
-  (match p0
-    [`(program ,reqs ,mods) `(program (,@reqs ,p1) ,mods)]))
+(define (source-string directive)
+  (match directive
+    [`(syn ,_ const ,(? string? path)) path]
+    [_ (error 'modules "module source must be a string literal: ~a"
+              (strip-prov directive))]))
 
-(define (program-merge-include p0 p1)
-  (match (list p0 p1)
-    [`((program ,reqs0 ,mods0) (program ,reqs1 ,mods1))
-     `(program (,@reqs0 ,@reqs1) ,(set-union mods0 mods1))]))
+;; Return the body with its leading source-composition directives removed and
+;; an ordered directive list. Source order matters for sibling run programs.
+(define (strip-directives ast)
+  (match ast
+    [`(syn ,_ include ,source ,body)
+     (define-values (body+ directives) (strip-directives body))
+     (values body+ (cons `(include ,(source-string source)) directives))]
+    [`(syn ,_ run ,source ,body)
+     (define-values (body+ directives) (strip-directives body))
+     (values body+ (cons `(run ,(source-string source) #f ()) directives))]
+    [`(syn ,_ run ,source
+            (occurrence-options ,alias (bindings ,bindings ...)) ,body)
+     (define-values (body+ directives) (strip-directives body))
+     (values body+
+             (cons `(run ,(source-string source) ,alias ,bindings) directives))]
+    [`(syn ,_ instantiate ,source ,alias (bindings ,bindings ...) ,body)
+     (define-values (body+ directives) (strip-directives body))
+     (values body+
+             (cons `(instantiate ,(source-string source) ,alias ,bindings)
+                   directives))]
+    [_ (values ast '())]))
 
-(define (include-module path module-ast [seen-run (set)] [seen-inc (set)])
-  (let* ([path (fullpath path)]
-         [seen-run (set-add seen-run path)]
-         [seen-inc (set-add seen-inc path)])
-    (match module-ast
-      [`(module ,path+ ,toks
-          ,ast)
-       (define-values (rel-dir _0 _1) (split-path path))
-       ;; Peel the leading include/run directives off the module body.
-       (define (strip-directives ast)
-         (match ast
-           [`(syn ,_ include (syn ,_ const ,inc-path) ,body)
-            (match-define (list ast+ run-paths inc-paths) (strip-directives body))
-            (list ast+ run-paths (set-add inc-paths inc-path))]
-           [`(syn ,_ run (syn ,_ const ,run-path) ,body)
-            (match-define (list ast+ run-paths inc-paths) (strip-directives body))
-            (list ast+ (cons run-path run-paths) inc-paths)]
-           [_ (list ast '() (set))]))
-       (match-define (list ast-sans-directives run-paths inc-paths)
-         (strip-directives ast))
-       ;; Resolve each include to its on-disk (or source-override, or lib/)
-       ;; path.  A target that resolves to nothing is dropped -- but WARN first
-       ;; (docs/build-issues-notes.md §1): a silently-dropped include makes its
-       ;; declarations vanish and surfaces later as a baffling cascade of
-       ;; "relation/struct X is not defined" for things you clearly included.
-       (define resolved-incs
-         (for/list ([raw (in-list (set->list inc-paths))])
-           (cons raw (resolve-include raw rel-dir))))
-       (for ([ri (in-list resolved-incs)])
-         (unless (source-available? (cdr ri))
-           (eprintf "warning: include ~s not found (searched ~a and the compiler's lib/); ignoring it -- its declarations will be missing\n"
-                    (car ri) (path->string (path->complete-path rel-dir)))))
-       (define this-prog
-         (foldl
-          (lambda (inc-path prog)
-            (program-merge-include prog (load-program-tree inc-path seen-run seen-inc)))
-          (organize-module `(module ,path ,toks
-                              ,ast-sans-directives))
-          (filter (lambda (p) (and (source-available? p) (not (set-member? seen-inc p))))
-                  (map cdr resolved-incs))))
-       ;; Same for `run` targets (no lib/ fallback): warn on a dropped one.
-       (define resolved-runs
-         (for/list ([raw (in-list run-paths)])
-           (cons raw (normalize-path raw rel-dir))))
-       (for ([rr (in-list resolved-runs)])
-         (unless (source-available? (cdr rr))
-           (eprintf "warning: run target ~s not found; ignoring it\n" (car rr))))
-       (foldl (lambda (run-path prog)
-                (define rp (fullpath run-path))
-                (when (set-member? seen-run rp)
-                  (error (format "Module ~a transitively runs itself" rp)))
-                ;; a fresh include-set: each program's includes are its own
-                (program-merge-run prog (load-program-tree rp seen-run (set))))
-              this-prog
-              (filter source-available? (map cdr resolved-runs)))])))
+(define (symbol-components who name)
+  (unless (symbol? name)
+    (error who "expected a namespace path; got ~a" name))
+  (qname-components (symbol->qname name)))
+
+(define (prefix-components? left right)
+  (and (<= (length left) (length right))
+       (equal? left (take right (length left)))))
+
+;; Bindings captured by a new occurrence map a FORMAL path relative to that
+;; occurrence to an ACTUAL absolute path resolved in its caller.
+(define (normalize-bindings who raw caller-home)
+  (define normalized
+    (for/list ([binding (in-list raw)])
+      (match binding
+        [(list formal actual)
+         (cons (symbol-components who formal)
+               (append caller-home (symbol-components who actual)))]
+        [_ (error who "malformed namespace binding: ~a" binding)])))
+  (define formals (map car normalized))
+  (for* ([left (in-list formals)]
+         [right (in-list formals)]
+         #:when (and (not (equal? left right))
+                     (or (prefix-components? left right)
+                         (prefix-components? right left))))
+    (error who "overlapping formal namespace bindings are not allowed: ~a and ~a"
+           (string-join left ".") (string-join right ".")))
+  (unless (= (length formals) (length (remove-duplicates formals equal?)))
+    (error who "a formal namespace is bound more than once"))
+  normalized)
+
+(define (resolve-program path home lexical-path bindings seen-run)
+  (define-values (root requirements)
+    (resolve-occurrence path #f home lexical-path bindings #f
+                        seen-run (set)))
+  (raw-program requirements root))
+
+(define (resolve-occurrence path alias home lexical-path bindings interface?
+                            seen-run instance-stack)
+  (define entry (fullpath path))
+  (when (set-member? instance-stack entry)
+    (error 'instantiate
+           "lexical module cycle reaches ~a through occurrence ~a"
+           entry lexical-path))
+  (define seen-inc (mutable-set))
+  (define sources '())
+  (define children '())
+  (define requirements '())
+  (define aliases (make-hash))
+  (define next-slot 0)
+  (define stack+ (set-add instance-stack entry))
+
+  (define (visit source-path module-ast)
+    (define canonical (fullpath source-path))
+    (unless (set-member? seen-inc canonical)
+      (set-add! seen-inc canonical)
+      (match module-ast
+        [`(module ,_ ,tokens ,ast)
+         (define-values (rel-dir _name _dir?) (split-path canonical))
+         (define-values (body directives) (strip-directives ast))
+         (set! sources
+               (append sources (list (raw-source canonical tokens body))))
+         (for ([directive (in-list directives)])
+           (match directive
+             [`(include ,raw)
+              (define target (resolve-include raw rel-dir))
+              (cond
+                [(source-available? target)
+                 (visit target (parse-file target))]
+                [else
+                 (eprintf
+                  "warning: include ~s not found (searched ~a and the compiler's lib/); ignoring it -- its declarations will be missing\n"
+                  raw (path->string (path->complete-path rel-dir)))])]
+             [`(instantiate ,raw ,(? symbol? child-alias) ,raw-bindings)
+              (when (hash-has-key? aliases child-alias)
+                (error 'instantiate
+                       "duplicate instance alias ~a in lexical occurrence ~a"
+                       child-alias lexical-path))
+              (hash-set! aliases child-alias #t)
+              (define target (resolve-include raw rel-dir))
+              (unless (source-available? target)
+                (error 'instantiate "module source ~s was not found" raw))
+              (define slot next-slot)
+              (set! next-slot (add1 next-slot))
+              (define alias-component (symbol->string child-alias))
+              (define inherited
+                (for/list ([binding (in-list bindings)]
+                           #:when (equal? alias-component (first (car binding))))
+                  (cons (rest (car binding)) (cdr binding))))
+              (define exact-home
+                (for/first ([binding (in-list inherited)]
+                            #:when (null? (car binding)))
+                  (cdr binding)))
+              (define child-home
+                (or exact-home (append home (list alias-component))))
+              (define child-lexical
+                (append lexical-path
+                        (list (list slot (symbol->string child-alias)))))
+              (define child-bindings
+                (append
+                 (filter (lambda (binding) (pair? (car binding))) inherited)
+                 (normalize-bindings 'instantiate raw-bindings home)))
+              ;; The two sources of child bindings (an enclosing binding of a
+              ;; nested formal and the child's own `with`) share the same
+              ;; no-overlap rule.
+              (define child-formals (map car child-bindings))
+              (unless (= (length child-formals)
+                         (length (remove-duplicates child-formals equal?)))
+                (error 'instantiate
+                       "a child formal namespace is bound more than once under ~a"
+                       child-alias))
+              (for* ([left (in-list child-formals)]
+                     [right (in-list child-formals)]
+                     #:when (and (not (equal? left right))
+                                 (or (prefix-components? left right)
+                                     (prefix-components? right left))))
+                (error 'instantiate
+                       "overlapping child formal namespace bindings under ~a: ~a and ~a"
+                       child-alias (string-join left ".")
+                       (string-join right ".")))
+              (define-values (child child-reqs)
+                (resolve-occurrence target child-alias child-home child-lexical
+                                    child-bindings
+                                    (or interface? (and exact-home #t))
+                                    seen-run stack+))
+              (set! children (append children (list child)))
+              (set! requirements (append requirements child-reqs))]
+             [`(run ,raw ,run-alias ,raw-bindings)
+              (define target (fullpath (normalize-path raw rel-dir)))
+              (cond
+                [(not (source-available? target))
+                 (eprintf "warning: run target ~s not found; ignoring it\n" raw)]
+                [(set-member? seen-run target)
+                 (error 'run "module ~a transitively runs itself" target)]
+                [else
+                 (define run-home
+                   (if run-alias
+                       (append home (list (symbol->string run-alias)))
+                       home))
+                 (define run-bindings
+                   (normalize-bindings 'run raw-bindings home))
+                 (set! requirements
+                       (append requirements
+                               (list
+                                (resolve-program
+                                 target run-home '() run-bindings
+                                 (set-add seen-run target)))))])]))])))
+
+  (visit entry (parse-file entry))
+  (values
+   (raw-occurrence entry alias home lexical-path bindings interface?
+                   sources children)
+   requirements))
 
 ;; -----------------------------------------------------------------------
 ;; Type environments: construction and merging.
@@ -659,7 +791,259 @@
                         ,(extract-rules ast))))]))
 
 ;; -----------------------------------------------------------------------
+;; N1 qualification.
+
+(define builtin-type-names
+  (set-union (list->set (hash-keys (type-env-aliases base-type-env)))
+             (list->set (hash-keys (type-env-rels base-type-env)))))
+
+(define primitive-type-names
+  (set 'any 'int 'float 'str 'cset 'cmap '$count))
+
+(define special-operator-names
+  (set '= '/= '== '< '<= '> '>= '& (string->symbol "|")
+       'let 'const 'rule '--> '<-- '~ 'lambda
+       (string->symbol "[]") (string->symbol "{}") '...))
+
+(define (internal-symbol? name)
+  (and (symbol? name)
+       (string-prefix? (symbol->string name) "$")))
+
+(define (resolve-components home bindings components)
+  (define selected
+    (for/first ([binding
+                 (in-list
+                  (sort bindings > #:key (lambda (binding)
+                                           (length (car binding)))))]
+                #:when (prefix-components? (car binding) components))
+      binding))
+  (if selected
+      (append (cdr selected)
+              (drop components (length (car selected))))
+      (append home components)))
+
+(define (resolve-public-name home bindings name)
+  (qname->symbol
+   (qname (resolve-components home bindings
+                              (qname-components (symbol->qname name))))))
+
+(define (qualify-type-name home bindings name)
+  (cond
+    [(or (set-member? primitive-type-names name)
+         (set-member? builtin-type-names name))
+     name]
+    [(internal-symbol? name) (internal-name-at-home home name)]
+    [else (resolve-public-name home bindings name)]))
+
+(define (qualify-lattice-datum home bindings value)
+  (match value
+    [`(lattice ,kind ,arguments ...)
+     `(lattice ,kind
+               ,@(for/list ([argument (in-list arguments)])
+                   (match argument
+                     [(? symbol? name)
+                      (if (string-prefix? (symbol->string name) "#:")
+                          name
+                          (qualify-type-name home bindings name))]
+                     [`(,parameter ,literal)
+                      #:when (memq parameter '(floor ceiling))
+                      argument]
+                     [(? list?)
+                      (qualify-lattice-datum home bindings argument)]
+                     [_ argument])))]
+    [_ value]))
+
+(define (qualify-rel-declaration home bindings declaration)
+  (match declaration
+    [`(,(and kind (or 'table 'struct)) ,fields ...)
+     `(,kind ,@(map (lambda (name)
+                      (qualify-type-name home bindings name))
+                    fields))]
+    [`(enum ,name)
+     `(enum ,(qualify-type-name home bindings name))]
+    [`(lattice ,_ ...)
+     (qualify-lattice-datum home bindings declaration)]
+    [`(listof ,name)
+     `(listof ,(qualify-type-name home bindings name))]
+    [`(mapof ,key ,value)
+     `(mapof ,(qualify-type-name home bindings key)
+             ,(qualify-type-name home bindings value))]
+    [`(oracle ,oracle ,demand-rel ,answer-rel)
+     `(oracle ,oracle
+              ,(resolve-public-name home bindings demand-rel)
+              ,(resolve-public-name home bindings answer-rel))]
+    [other other]))
+
+(define (qualify-type-environment env home bindings)
+  (define aliases
+    (for/fold ([out (hash)])
+              ([(name members) (in-hash (type-env-aliases env))])
+      (cond
+        [(set-member? builtin-type-names name)
+         (hash-set out name members)]
+        [else
+         (hash-set
+          out
+          (resolve-public-name home bindings name)
+          (for/set ([member (in-set members)])
+            (qualify-type-name home bindings member)))])))
+  (define rels
+    (for/fold ([out (hash)])
+              ([(name declaration) (in-hash (type-env-rels env))])
+      (cond
+        [(and (set-member? builtin-type-names name)
+              (equal? declaration
+                      (hash-ref (type-env-rels base-type-env) name #f)))
+         (hash-set out name declaration)]
+        [else
+         (define name+
+           (if (internal-symbol? name)
+               (internal-name-at-home home name)
+               (resolve-public-name home bindings name)))
+         (hash-set out name+
+                   (qualify-rel-declaration home bindings declaration))])))
+  (list aliases rels (type-env-funs env)))
+
+(define (occurrence-source-label path lexical-path)
+  (cond
+    [(null? lexical-path) path]
+    [else
+     (define-values (dir file _dir?) (split-path path))
+     (define occurrence
+       (string-join
+        (for/list ([step (in-list lexical-path)])
+          (format "~a#~a" (second step) (first step)))
+        "."))
+     (path->string
+      (build-path (if (path? dir) dir (current-directory))
+                  (format "~a@~a" occurrence file)))]))
+
+(define (rewrite-token-source token label)
+  (match token
+    [`(token ,tag (pos ,_ ,sl ,sc ,el ,ec) ,text)
+     `(token ,tag (pos ,label ,sl ,sc ,el ,ec) ,text)]
+    [_ token]))
+
+(define (rewrite-provenance provenance label)
+  (match provenance
+    [`(prov ,left ,right)
+     `(prov ,(rewrite-token-source left label)
+            ,(rewrite-token-source right label))]
+    [_ provenance]))
+
+(define (qualify-rule rule home bindings local-names source-label)
+  (define (operator-name name)
+    (cond
+      [(internal-symbol? name) (internal-name-at-home home name)]
+      [(or (set-member? local-names name)
+           ;; `qname-symbol?` only asks whether a symbol contains a dot.  The
+           ;; sequence splice token `...` does, but it is syntax, not a
+           ;; qualified name -- routing it into name resolution fails there
+           ;; because "" is not a valid component.  Every other special
+           ;; operator is dot-free, so this exclusion is exactly `...`.
+           (and (qname-symbol? name)
+                (not (set-member? special-operator-names name))))
+       (resolve-public-name home bindings name)]
+      [(or (set-member? special-operator-names name)
+           (hash-has-key? (type-env-funs base-type-env) name)
+           (set-member? builtin-type-names name))
+       name]
+      [else name]))
+  (let walk ([form rule])
+    (match form
+      [`(syn ,provenance const ,value)
+       `(syn ,(rewrite-provenance provenance source-label) const ,value)]
+      [`(syn ,provenance ,(? symbol? head) ,arguments ...)
+       `(syn ,(rewrite-provenance provenance source-label)
+             ,(operator-name head)
+             ,@(map walk arguments))]
+      [`(syn ,provenance ,items ...)
+       `(syn ,(rewrite-provenance provenance source-label)
+             ,@(map walk items))]
+      [(? list?) (map walk form)]
+      [_ form])))
+
+(define (organize-raw-source source)
+  (match-define
+    `(program ()
+              ,(app set->list
+                    (list `(module ,path ,tokens ,env ,demands ,rules))))
+    (organize-module
+     `(module ,(raw-source-path source)
+              ,(raw-source-tokens source)
+              ,(raw-source-ast source))))
+  (list path tokens env demands rules))
+
+(define (qualify-occurrence occurrence)
+  (define organized
+    (map organize-raw-source (raw-occurrence-sources occurrence)))
+  (define local-names
+    (for*/set ([source (in-list organized)]
+               [name (in-list
+                      (append
+                       (hash-keys (type-env-aliases (third source)))
+                       (hash-keys (type-env-rels (third source)))))]
+               #:unless (set-member? builtin-type-names name))
+      name))
+  (define aliases
+    (for/set ([child (in-list (raw-occurrence-children occurrence))])
+      (raw-occurrence-alias child)))
+  (for ([alias (in-set aliases)])
+    (when (set-member? local-names alias)
+      (error 'instantiate
+             "instance alias ~a collides with a declaration in ~a"
+             alias (raw-occurrence-entry-path occurrence))))
+  (for ([binding (in-list (raw-occurrence-bindings occurrence))])
+    (unless (and (pair? (car binding))
+                 (set-member? aliases
+                              (string->symbol (first (car binding)))))
+      (error 'instantiate
+             "formal namespace ~a is not an explicitly instantiated child of ~a"
+             (string-join (car binding) ".")
+             (raw-occurrence-entry-path occurrence))))
+  (define home (raw-occurrence-home occurrence))
+  (define bindings (raw-occurrence-bindings occurrence))
+  (define modules
+    (for/list ([source (in-list organized)])
+      (match-define (list path tokens env demands rules) source)
+      (define label
+        (occurrence-source-label path
+                                 (raw-occurrence-lexical-path occurrence)))
+      (qualified-module
+       (module-ir
+        path tokens
+        (for/set ([rule (in-set rules)])
+          (qualify-rule rule home bindings local-names label))
+        home
+        (raw-occurrence-lexical-path occurrence))
+       (qualify-type-environment env home bindings)
+       (for/hash ([(name signature) (in-hash demands)])
+         (values (resolve-public-name home bindings name) signature))
+       (raw-occurrence-interface? occurrence))))
+  (define child-results
+    (for/list ([child (in-list (raw-occurrence-children occurrence))])
+      (call-with-values (lambda () (qualify-occurrence child)) list)))
+  (define child-modules
+    (append-map first child-results))
+  (define child-trees
+    (map second child-results))
+  (values
+   (append modules child-modules)
+   (module-occurrence
+    (raw-occurrence-entry-path occurrence)
+    home
+    (raw-occurrence-lexical-path occurrence)
+    (for/list ([binding (in-list bindings)])
+      (list (car binding) (cdr binding)))
+    (map raw-source-path (raw-occurrence-sources occurrence))
+    child-trees)))
+
+;; -----------------------------------------------------------------------
 ;; Lifting and linearization.
+
+(struct lifted-program
+  (requirements type-env modules decomps occurrence-tree)
+  #:transparent)
 
 ;; The oracle owns an extern relation's answers: reject any rule that would
 ;; answer it in-language -- a full-arity head occurrence of the demand
@@ -677,7 +1061,7 @@
       (values drel (cons (add1 in-arity) arel))))
   (unless (hash-empty? externs)
     (for* ([m (in-list mods)]
-           [rule (in-set (third m))])
+           [rule (in-set (module-ir-rules m))])
       (match rule
         [`(syn ,_ rule ,bodys ... --> ,heads ...)
          (for ([h (in-list heads)])
@@ -701,6 +1085,111 @@
       (error (format "Demand relation ~a is declared twice with different signatures" name)))
     (hash-set d name entry)))
 
+;; Directional compatibility for a namespace interface.  `any` is a wildcard
+;; only on the formal side of an explicit binding; it is deliberately not
+;; added to ordinary type-env unification, where overlapping declarations
+;; continue to require equality.
+(define (interface-datum-compatible? formal actual)
+  (cond
+    [(eq? formal 'any) #t]
+    [(equal? formal actual) #t]
+    [(and (list? formal)
+          (list? actual)
+          (= (length formal) (length actual)))
+     (andmap interface-datum-compatible? formal actual)]
+    [else #f]))
+
+(define (unify-interface-type-env actual formal)
+  (define aliases
+    (for/fold ([out (type-env-aliases actual)])
+              ([(name members) (in-hash (type-env-aliases formal))])
+      (hash-update out name
+                   (lambda (actual-members)
+                     (set-union actual-members members))
+                   members)))
+  (define rels
+    (for/fold ([out (type-env-rels actual)])
+              ([(name declaration) (in-hash (type-env-rels formal))])
+      (cond
+        [(not (hash-has-key? out name))
+         (hash-set out name declaration)]
+        [else
+         (define actual-declaration (hash-ref out name))
+         (unless (interface-datum-compatible? declaration
+                                               actual-declaration)
+           (error 'instantiate
+                  (string-append
+                   "bound namespace declaration ~a is incompatible:\n"
+                   "  required ~a\n  actual   ~a")
+                  name declaration actual-declaration))
+         out])))
+  ;; User-defined primitive functions are not a module feature today, but
+  ;; retain the ordinary exact check if that changes.
+  (define funs
+    (for/fold ([out (type-env-funs actual)])
+              ([(name declaration) (in-hash (type-env-funs formal))])
+      (when (and (hash-has-key? out name)
+                 (not (equal? declaration (hash-ref out name))))
+        (error 'instantiate
+               "bound function declaration ~a is incompatible" name))
+      (hash-set out name declaration)))
+  (list (transitive-env aliases) rels funs))
+
+(define (binding-actual-prefixes occurrence)
+  (append
+   (map cdr (raw-occurrence-bindings occurrence))
+   (append-map binding-actual-prefixes
+               (raw-occurrence-children occurrence))))
+
+(define (input-binding-type-env occurrence)
+  (define input (current-input-catalog))
+  (define prefixes
+    (remove-duplicates (binding-actual-prefixes occurrence) equal?))
+  (cond
+    [(or (not input) (null? prefixes)) empty-type-env]
+    [else
+     (define full (catalog->type-env input))
+     (define aliases (type-env-aliases full))
+     (define rels (type-env-rels full))
+     (define initial
+       (for/set ([name (in-list
+                        (append (hash-keys aliases) (hash-keys rels)))]
+                 #:when
+                 (for/or ([prefix (in-list prefixes)])
+                   (prefix-components?
+                    prefix
+                    (qname-components (symbol->qname name)))))
+         name))
+     ;; Pull in named field/member dependencies even when they live outside
+     ;; the selected actual subtree.  This is a schema closure, not a blanket
+     ;; import of the input database.
+     (define selected
+       (let loop ([names initial])
+         (define names+
+           (for/fold ([out names]) ([name (in-set names)])
+             (define values
+               (append
+                (set->list (hash-ref aliases name (set)))
+                (let walk ([value (hash-ref rels name '())])
+                  (cond
+                    [(symbol? value) (list value)]
+                    [(list? value) (append-map walk value)]
+                    [else '()]))))
+             (for/fold ([out out]) ([dependency (in-list values)]
+                                    #:when
+                                    (or (hash-has-key? aliases dependency)
+                                        (hash-has-key? rels dependency)))
+               (set-add out dependency))))
+         (if (equal? names names+) names (loop names+))))
+     (list
+      (for/hash ([(name members) (in-hash aliases)]
+                 #:when (set-member? selected name))
+        (values name members))
+      (for/hash ([(name declaration) (in-hash rels)]
+                 #:when (set-member? selected name))
+        (values name declaration))
+      (type-env-funs full))]))
+
 ;; Merge each program's per-module type environments (and demand
 ;; registries) into one program-level environment, then desugar every
 ;; module's demand-moded rules against the merged view -- a rule may use a
@@ -710,21 +1199,27 @@
 ;; applyN backing relations); those merge into the type env here, with
 ;; the usual conflict checking.
 (define (lift-type-envs p)
-  (match p
-    [`(program ,reqs ,mods)
-     (match-define (list type-env demands mods+)
-       (foldl (lambda (mod acc)
-                (match-define (list type-env+ demands+ mods+) acc)
-                (match mod
-                  [`(module ,path ,toks
-                      ,type-env
-                      ,demands
-                      ,rules)
-                   (list (unify-type-envs type-env type-env+)
-                         (unify-demands demands+ demands)
-                         (cons (list path toks rules) mods+))]))
-              (list base-type-env (hash) '())
-              (set->list mods)))
+  (match-define (raw-program reqs root) p)
+  (define-values (qualified occurrence-tree)
+    (qualify-occurrence root))
+  (define ordinary
+    (filter (lambda (mod) (not (qualified-module-interface? mod)))
+            qualified))
+  (define interfaces
+    (filter qualified-module-interface? qualified))
+  (define seeded-type-env
+    (unify-type-envs (input-binding-type-env root) base-type-env))
+  (define type-env-ordinary
+    (for/fold ([env seeded-type-env]) ([mod (in-list ordinary)])
+      (unify-type-envs (qualified-module-type-env mod) env)))
+  (define type-env
+    (for/fold ([env type-env-ordinary]) ([mod (in-list interfaces)])
+      (unify-interface-type-env env (qualified-module-type-env mod))))
+  (define demands
+    (for/fold ([out (hash)]) ([mod (in-list qualified)])
+      (unify-demands out (qualified-module-demands mod))))
+  (define mods+
+    (map qualified-module-ir qualified))
      ;; Bracket list literals desugar BEFORE the demand transform: the
      ;; transform or-splits rule bodies (demand.rkt), and a not-yet-
      ;; reassociated tail pipe inside ([] ...) would be silently split
@@ -752,28 +1247,28 @@
                              (type-env-rel name (hash-ref synth-rels name))))
                           type-env
                           (sort (hash-keys synth-rels) symbol<?))])
-         (if (set-empty? clo-members)
-             env
-             (unify-type-envs
-              env
-              (type-env-union 'clo (set-add clo-members 'clo))))))
+         (for/fold ([env env])
+                   ([(clo-name members) (in-hash clo-members)])
+           (unify-type-envs
+            env
+            (type-env-union clo-name (set-add members clo-name))))))
      (define mods++
        (for/set ([m (in-list mods-desugared)])
-         (match-define (list path toks rules) m)
-         `(module ,path ,toks ,rules)))
+         m))
      ;; M2.4 need-driven decomposition synthesis (header comment above):
      ;; scan the desugared rules for undeclared `<R>_has`/`<R>_at` names over
      ;; a matching collection-lattice base and synthesize their declarations.
      (define-values (type-env++ decomp-env)
        (synthesize-decompositions mods++ type-env+))
-     `(program ,(map lift-type-envs reqs) ,type-env++ ,mods++ ,decomp-env)]))
+  (lifted-program (map lift-type-envs reqs)
+                  type-env++ mods++ decomp-env occurrence-tree))
 
 ;; Every operator-position name of every rule (relation atoms, struct
 ;; patterns, prim calls -- conservative: an undeclared non-relation name is a
 ;; type error anyway, so over-collection cannot mis-fire the synthesis).
 (define (rules-used-names mods)
   (for*/fold ([names (set)])
-             ([m (in-set mods)] [rule (in-set (last m))])
+             ([m (in-set mods)] [rule (in-set (module-ir-rules m))])
     (let walk ([e rule] [names names])
       (match e
         [`(syn ,_ ,(? symbol? h) ,rest ...)
@@ -819,10 +1314,14 @@
 
 ;; Dependencies-first (post-order) linearization of the run tree.
 (define (linearize-programs prog)
-  (match prog
-    [`(program ,reqs ,type-env ,mods ,decomps)
-     (foldr append `((program ,type-env ,mods ,decomps))
-            (map linearize-programs reqs))]))
+  (foldr append
+         (list
+          (program-ir (lifted-program-type-env prog)
+                      (lifted-program-modules prog)
+                      (hash)
+                      (lifted-program-decomps prog)
+                      (lifted-program-occurrence-tree prog)))
+         (map linearize-programs (lifted-program-requirements prog))))
 
 ;; -----------------------------------------------------------------------
 ;; Manifests: each program is compiled against the manifest of relations
@@ -841,7 +1340,8 @@
 
 (define (thread-manifests prog-lst manifest)
   (match prog-lst
-    [`((program ,type-env ,mods ,decomps) ,more ...)
-     `((program ,type-env ,mods ,manifest ,decomps)
-       ,@(thread-manifests more (update-manifest type-env manifest)))]
+    [(cons (? program-ir? program) more)
+     (define type-env (program-ir-type-env program))
+     (cons (struct-copy program-ir program [manifest manifest])
+           (thread-manifests more (update-manifest type-env manifest)))]
     ['() '()]))

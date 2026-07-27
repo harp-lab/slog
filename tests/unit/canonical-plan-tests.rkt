@@ -26,9 +26,12 @@
 
   (define (cprogs-of src)
     (with-output-to-file fixed-src #:exists 'replace (lambda () (display src)))
-    (match-define `((program ,type-env ,mods ,_ ,_))
+    (match-define (list (? program-ir? program))
       (load-program-list (path->string fixed-src) (hash)))
-    (define all-rules (foldl set-union (set) (map last (set->list mods))))
+    (define type-env (program-ir-type-env program))
+    (define mods (program-ir-modules program))
+    (define all-rules
+      (foldl set-union (set) (map module-ir-rules (set->list mods))))
     (define typed
       (typecheck-rules type-env
                        (foldl simplify-rule (set) (set->list all-rules))))

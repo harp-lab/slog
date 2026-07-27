@@ -1,0 +1,4 @@
+instantiate "n1_interface_lib.slog" as model
+
+table (seen int)
+rule (model.edge X Y) --> (seen X)

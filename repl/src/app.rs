@@ -46,6 +46,10 @@ pub struct App {
     pub editor: Editor,
     completion: Option<CompletionMenu>,
     completion_databases: BTreeSet<String>,
+    /// Relation and namespace paths harvested from the boundary projection
+    /// (N4-A work order 6), so completion offers what the catalog declares.
+    completion_relations: BTreeSet<String>,
+    completion_namespaces: BTreeSet<String>,
     pub transcript: Vec<TranscriptEntry>,
     /// In-flight UI workflows are rendered after the durable transcript but
     /// are not part of it until the backend commits a response.
@@ -86,6 +90,8 @@ impl App {
             editor: Editor::default(),
             completion: None,
             completion_databases: BTreeSet::new(),
+            completion_relations: BTreeSet::new(),
+            completion_namespaces: BTreeSet::new(),
             transcript: vec![TranscriptEntry::system(
                 "Connected",
                 vec![
@@ -188,6 +194,7 @@ impl App {
                 let result = CommandResult::from_value(response.result.unwrap_or_default());
                 let observation_warning = self.runtime.observe_result(result.raw()).err();
                 self.update_session_context(result.raw());
+                self.harvest_completion_paths(result.raw());
                 let title = workflow
                     .and_then(|workflow| workflow.completed_label())
                     .unwrap_or_else(|| result.title().to_owned());
@@ -441,6 +448,32 @@ impl App {
         self.editor.replace_range(start, end, &replacement);
     }
 
+    /// Relation and namespace paths from any result that carries the boundary
+    /// projection (N4-A work order 6): `tables` reports the relations it
+    /// listed, `catalog` reports the full declared set plus its namespaces.
+    /// A declared-but-empty relation is in the projection, so it completes
+    /// like any other.
+    fn harvest_completion_paths(&mut self, raw: &serde_json::Value) {
+        if let Some(relations) = raw.get("relations").and_then(|value| value.as_array()) {
+            for relation in relations {
+                if let Some(name) = relation.get("name").and_then(|value| value.as_str()) {
+                    self.completion_relations.insert(name.to_owned());
+                    let parts: Vec<&str> = name.split('.').collect();
+                    for depth in 1..parts.len() {
+                        self.completion_namespaces.insert(parts[..depth].join("."));
+                    }
+                }
+            }
+        }
+        if let Some(namespaces) = raw.get("namespaces").and_then(|value| value.as_array()) {
+            for namespace in namespaces {
+                if let Some(path) = namespace.as_str() {
+                    self.completion_namespaces.insert(path.to_owned());
+                }
+            }
+        }
+    }
+
     fn completion_inventory(&self) -> CompletionInventory {
         let mut databases = self.completion_databases.clone();
         databases.extend(
@@ -450,6 +483,8 @@ impl App {
         );
         let mut inventory = CompletionInventory {
             databases: databases.into_iter().collect(),
+            relations: self.completion_relations.iter().cloned().collect(),
+            namespaces: self.completion_namespaces.iter().cloned().collect(),
             ..CompletionInventory::default()
         };
         if let Some(canvas) = &self.canvas {
@@ -1091,6 +1126,7 @@ impl App {
                 }
                 let result = CommandResult::from_value(response.result.unwrap_or_default());
                 self.update_session_context(result.raw());
+                self.harvest_completion_paths(result.raw());
                 if result.kind() == "library" {
                     return match result
                         .raw()

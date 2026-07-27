@@ -1,7 +1,8 @@
 # Namespaced module instances and schema bundles
 
-2026-07-13. **Design proposal; not implemented.** This document proposes a
-small surface feature with broad consequences:
+2026-07-13, implemented 2026-07-26. **N0–N3 are implemented; N4 is pinned as
+an unstarted two-slice contract; N5 remains design.** In particular N1 now
+ships the lexical module-instance surface described below:
 
 *2026-07-14: [execution-tiers.md](execution-tiers.md) designs its
 KernelPlanKey/BindingFrame identity model so that §8.4's alpha-normalized
@@ -215,7 +216,11 @@ database ingestion in many languages. The single explicit verb
 `instantiate` says the important thing: make a fresh occurrence here.
 
 Database attachment may still deserve a separate action because it consumes
-data plus a schema rather than source rules.
+data plus a schema rather than source rules. As built (N4-B, 2026-07-27) it
+is exactly that: `attach DB as DEST` / `attach DB SOURCE as DEST` is its own
+verb over a *saved* database's persisted catalog, not a source directive, and
+it publishes as one ordinary boundary. See
+[n4-contract.md](n4-contract.md) §5.
 
 Source order among `include` directives or rules does not create time. All
 rules in one expanded program are stratified together. To say “operate on the
@@ -834,7 +839,7 @@ ad-hoc prefix handling:
 | source composition | `compiler/parser.rkt`, `compiler/modules.rkt` | build occurrence trees, structured names, homes, and bindings |
 | program planning | `compiler/compile.rkt`, `compiler/session.rkt` | reconcile the qualified declaration catalog and allocate boundary/version/type keys |
 | runtime registration | `daemon/database.h`, `daemon/daemon.h` | atomically apply a declaration/version plan and maintain the global type registry |
-| persistence and interaction | `compiler/dbmeta.rkt`, `compiler/runslog.rkt`, `compiler/session.rkt`, `compiler/run.rkt` | persist catalogs and keys; resolve boundary-relative REPL names |
+| persistence and interaction | `compiler/dbmeta.rkt`, `compiler/runslog.rkt`, `compiler/session.rkt`, `compiler/repl.rkt`, `repl/` | persist catalogs and keys; resolve boundary-relative REPL names |
 
 The compiler remains the declaration/type authority, the session remains the
 recipe/name-history authority, and the daemon remains the materialization and
@@ -1102,12 +1107,13 @@ import SID allocation gap-correct underneath that future metadata.
 
 #### 8.5.4 Persistence and import
 
-Add a catalog table to META (or a separately checksummed catalog file) with
-BoundaryKey, QName components, normalized declaration descriptors,
-VersionKeys, TypeKeys, and predecessor/event information. Tuple directories
-remain a materialization format and may continue omitting empty relations.
-On load, restore the catalog and declare every logical member before loading
-rows.
+N4-A stores one canonical `boundary-bundle` directly in a version-bumped
+META; there is no separate catalog file. The bundle carries BoundaryKeys,
+QName components, normalized declaration descriptors, VersionKeys, TypeKeys,
+program/module occurrence metadata, and predecessor/event information. Tuple
+directories remain a materialization format and may continue omitting empty
+relations. On load, restore the catalog and declare every logical member
+before loading rows.
 
 Root replay preserves recipe keys but may choose new runtime SIDs. Independent
 namespace import performs one source-TypeKey to destination-TypeKey/SID map:
@@ -1118,12 +1124,12 @@ hashes match.
 
 The target N4 format has no permanent compatibility mode for catalog-less
 databases: it requires the complete catalog and rejects an input that lacks
-it. N2-B has a narrower transition bridge while old roots still exist: before
-the first planned program it may adopt only currently live storage reachable
-from that program's exact declaration graph, using the daemon's current
-VersionKeys, and must reject a referenced storage declaration without a live
-key. This is not a kind/arity shadow catalog and is removed once N4 catalog
-persistence is the required input format.
+it. An old recipe database may be replayed and re-saved when replay
+reconstructs its exact catalog; a pure legacy root without declaration
+metadata must be regenerated. N2-B's transition adoption bridge is removed
+once N4 catalog persistence is the required input format. The complete
+two-slice contract and migration/atomicity gates are pinned in
+[n4-contract.md](n4-contract.md).
 
 ### 8.6 API and diagnostics
 
@@ -1204,6 +1210,19 @@ patch followed by a long tail of special cases.
 3. Assign `ModuleInstanceKey`s and qualify rule provenance.
 4. Allow client rules to read and write qualified members and support two
    isolated instances of one source.
+
+**Checkpoint 2026-07-26 (N1 complete):** the resolver retains repeated
+lexical occurrences, scopes include deduplication to each occurrence, and
+qualifies complete source closures into named `program-ir`/`module-ir`
+records before simplification. `instantiate` and `run` share `as`/`with`
+parsing; explicit namespace bindings substitute QName prefixes, validate
+formal `any` directionally against the selected input catalog, preserve richer
+actual namespaces, and add compatible missing declarations atomically.
+Generated demand/closure/supplementary names are occurrence-scoped. Session
+recipes persist the occurrence tree as module descriptors whose opaque keys
+derive only from the replayed `ProgramInstanceKey` and lexical slots; aliases
+and source paths remain metadata. [n1-contract.md](n1-contract.md) records the
+landed slices and exit gates.
 
 ### N2: catalog and temporal planning
 
@@ -1338,17 +1357,28 @@ declaration-only session boundary assertion, and all 605 session checks.
    rename/drop). Legacy single-relation env ops remain for catalog-less
    roots; §5.3 attach/import-at-path and save/inspect bundles stay with N4.
 
-### N4: persistence and the first REPL
+### N4: durable boundaries and namespace attachment
 
-1. Round-trip catalogs, keys, qualified tables, lattices, structs, and nested
-   values through save, open, import, and compressed replay; restore empty
-   declarations before tuple data.
-2. Extend import preflight from flat name maps to namespace maps and perform
-   explicit source-TypeKey to destination-TypeKey/SID mapping.
-3. Expose boundary catalogs, module/program instances, bindings, homes,
-   version chains, and type registries through structured introspection.
-4. Implement boundary handles, completion, relative lookup, absolute
-   VersionKey lookup, and history display in `compiler/run.rkt`.
+N4 is an unstarted **two-slice** contract; see
+[n4-contract.md](n4-contract.md) for the data model, work order, migration
+cut, and acceptance gates.
+
+1. **N4-A — durable boundary bundle and catalog-backed REPL.** Put the
+   complete selected boundary, history, stable version/type/program/module
+   identities, homes, and bindings in versioned META; restore empty
+   declarations before tuple data; audit compressed replay; and feed the
+   existing `compiler/repl.rkt` + Rust client from that structured logical
+   catalog. This slice owns boundary handles, completion, relative lookup,
+   absolute VersionKey lookup, and truthful history display.
+2. **N4-B — mapped namespace attachment.** Attach one saved root or
+   dependency-closed subtree under one destination prefix through an atomic
+   QName rewrite, compatibility/additive-completion plan, explicit
+   source-TypeKey/SID to destination-TypeKey/SID remap, transitive nested-value
+   import, persisted mapping, and REPL inspection.
+
+The existing `import-delta` remains content-only and `link` remains legacy;
+N4 adds one explicit `attach` path rather than silently changing either
+operation's meaning.
 
 ### N5: internal namespaces and observability
 
@@ -1360,9 +1390,10 @@ declaration-only session boundary assertion, and all 605 session checks.
 4. Consider user lifecycle monitors only after ordinary relation/tuple watches
    demonstrate a need beyond the built-in stats and debugger protocol.
 
-N0-N3 are the smallest coherent in-memory module slice; N4 makes it durable
-and interactive. Privacy, export lists, type parameters, generalized
-cross-database attachment syntax, and the N5 lifecycle-monitor
+N0-N3 are the smallest coherent in-memory module slice; N4 makes it durable,
+catalog-backed in the existing REPL, and attachable. Privacy, export lists,
+type parameters, generalized multi-prefix cross-database attachment syntax,
+and the N5 lifecycle-monitor
 surface remain later work. The early metadata must nevertheless distinguish
 declaration shape, module instance, program instance, boundary, binding,
 relation version, nominal type, and execution identities so those additions

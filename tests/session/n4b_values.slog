@@ -1,0 +1,29 @@
+;; N4-B source fixture: nested values that must survive the attachment's
+;; word remap (docs/n4-contract.md §5) -- a Patricia set, a sequence, a map,
+;; and a struct wrapping each, so the remapper walks structs through
+;; collections and collections through structs rather than only flat rows.
+;;
+;; Everything sits at the root: the collection libraries declare `pset`,
+;; `pmap`, and the builtin sequence union at root level, so a nested subtree
+;; referring to them would (correctly) fail the dependency-closure check.
+;; Attaching the saved root carries the whole graph.
+
+include "../../lib/set.slog"
+include "../../lib/map.slog"
+
+struct (Wrap pset)
+struct (Boxed (list int))
+
+table (sets pset)
+table (wraps Wrap)
+table (seqs (list int))
+table (boxes Boxed)
+table (maps pmap)
+table (deep int Wrap)
+
+rule (= s {5 2 8}) --> (sets s) (wraps (Wrap s)) (deep 1 (Wrap s))
+rule (= t (st_ins {1} 9)) --> (sets t) (wraps (Wrap t))
+
+rule (seqs [1 2 3]) (boxes (Boxed [4 5]))
+
+rule (= m (mp_put (mp_put (mempty) 1 10) 2 20)) --> (maps m)

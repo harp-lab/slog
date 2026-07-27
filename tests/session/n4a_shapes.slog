@@ -1,0 +1,23 @@
+;; N4-A fixture (docs/n4-contract.md §4): every shape the durable bundle
+;; must round-trip through save/open -- qualified tables, a qualified struct
+;; used as a column type, a lattice type and a lattice-valued table, a plain
+;; root-level name, and one declaration nothing ever writes (the empty member
+;; that must still be visible in the restored catalog).
+
+table (g.edge int int)
+table (g.path int int)
+table (g.unseen int)
+struct (m.Pair int int)
+table (m.pairs m.Pair)
+lattice (m.cost (min int #:floor 0))
+table (m.dist int m.cost)
+table (plain int int)
+
+rule (g.edge 1 2) (g.edge 2 3) (g.edge 3 4)
+
+rule (g.edge x y) --> (g.path x y)
+rule (g.path x y) (g.edge y z) --> (g.path x z)
+
+rule (g.path x y) --> (m.pairs (m.Pair x y))
+rule (g.path x y) --> (m.dist x y)
+rule (g.path x y) --> (plain x y)

@@ -178,13 +178,14 @@
      (values mods #f)]
     [else
      (define mod-list (set->list mods))
-     ;; a module here is (module path toks rules)
+     ;; Modules retain lexical occurrence metadata through this pass; frozen
+     ;; fact selection itself only needs their path and rule set.
      (define picked   ; list of (list mod-path rule (cons nodes heads))
        (for*/list ([m (in-list mod-list)]
-                   [rule (in-set (fourth m))]
+                   [rule (in-set (module-ir-rules m))]
                    [ph (in-value (peelable-heads rule rel-env))]
                    #:when ph)
-         (list (second m) rule ph)))
+         (list (module-ir-path m) rule ph)))
      (define total (for/sum ([p (in-list picked)]) (car (third p))))
      (cond
        [(< total minimum) (values mods #f)]
@@ -196,9 +197,12 @@
                          (set))))
         (define mods+
           (for/set ([m (in-list mod-list)])
-            (match-define (list tag path toks rules) m)
-            (list tag path toks
-                  (set-subtract rules (hash-ref peeled-rules path (set))))))
+            (struct-copy
+             module-ir m
+             [rules
+              (set-subtract
+               (module-ir-rules m)
+               (hash-ref peeled-rules (module-ir-path m) (set)))])))
         (define decls (make-hash))
         (define lines
           (sort (for*/list ([p (in-list picked)]

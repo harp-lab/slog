@@ -105,7 +105,10 @@
 ;; program's big ground rules peeled into a fact stream (freeze.rkt) for
 ;; compile-strata to render as a static database the driver links in.
 (define (program->jobs prog #:split-facts? [split-facts? #f])
-  (match-define `(program ,type-env ,mods0 ,dbmanifest ,decomps) prog)
+  (define type-env (program-ir-type-env prog))
+  (define mods0 (program-ir-modules prog))
+  (define dbmanifest (program-ir-manifest prog))
+  (define decomps (program-ir-decomps prog))
   ;; Robustness lint (docs/bug-daemon-crash-shape-car.md): the compiler mints
   ;; value-reference C++ locals as `v_<var>` and shares that textual namespace
   ;; with any relation/struct/lattice/enum whose name begins with `v_`.  Such
@@ -127,7 +130,18 @@
     (peel-ground-facts mods0 type-env #:enabled? (not split-facts?)))
   (define info0 (sort (hash->list (type-env-aliases type-env)) symbol<? #:key car))
   (define info1 (sort (hash->list (type-env-rels type-env)) symbol<? #:key car))
-  (define info2 (sort (set->list mods) string<? #:key second))
+  ;; Keep the pre-N1 cache representation for a root-only source. Occurrence
+  ;; metadata affects qualified rules/names when it is semantic, but does not
+  ;; churn cache keys merely because the carrier changed from a list to a
+  ;; named record.
+  (define (module-cache-datum m)
+    `(module ,(module-ir-path m)
+             ,(module-ir-tokens m)
+             ,(module-ir-rules m)))
+  (define info2
+    (sort (map module-cache-datum (set->list mods))
+          string<?
+          #:key second))
   (define info3 (sort (hash->list dbmanifest) symbol<? #:key car))
   ;; the M2.4 decomposition registry changes codegen (merge-task decomp
   ;; targets) without necessarily changing the rels env (a user decl toggling
@@ -156,7 +170,7 @@
     (when dump-dir
       (make-directory* dump-dir)
       (define stem
-        (let ([paths (sort (map second (set->list mods)) string<?)])
+        (let ([paths (sort (map module-ir-path (set->list mods)) string<?)])
           (if (null? paths)
               "noprog"
               (regexp-replace* #rx"[^A-Za-z0-9_.-]" (car paths) "_"))))
@@ -175,7 +189,7 @@
                (if debug-mode 8 32)))
 
   (define all-rules
-    (foldl set-union (set) (map last (set->list mods))))
+    (foldl set-union (set) (map module-ir-rules (set->list mods))))
   ;; lattice declaration occurrence restrictions run before typechecking
   ;; (a misplaced lattice type should be its own error, not a type error);
   ;; the monotone-use calculus needs the strata for the same-SCC bit
@@ -988,7 +1002,8 @@
 ;; driver opens one version boundary per group, so a multi-`run` program's
 ;; segments version their writes separately.
 (struct compile-group
-  (stratum-count frozen-dirs catalog-delta write-set boundary-write-set)
+  (stratum-count frozen-dirs catalog-delta write-set boundary-write-set
+                 occurrence-tree)
   #:transparent)
 
 ;; The actual writes of already-built strata plus frozen ground facts.  This
@@ -1021,19 +1036,21 @@
                (and descriptor (storage-declaration? descriptor))))
     name))
 
-(define (compile-strata path dbmanifest #:split-facts? [split-facts? #f])
+(define (compile-strata path dbmanifest
+                        #:split-facts? [split-facts? #f]
+                        #:input-catalog [input-catalog #f])
   (define mode (opt-mode))
   ;; tiered = the default regime (anything but the explicit -O0-only / -O2-only
   ;; knobs); mirrors runslog.rkt's driver-side test.
   (define tiered? (not (member mode '("0" "2" "interp"))))
-  (define programs (load-program-list path dbmanifest))
+  (define programs
+    (load-program-list path dbmanifest #:input-catalog input-catalog))
   (define per-program
     (for/list ([prog (in-list programs)])
       (program->jobs prog #:split-facts? split-facts?)))
   (define per-program-deltas
     (for/list ([prog (in-list programs)])
-      (match-define `(program ,type-env ,_mods ,_manifest ,_decomps) prog)
-      (type-env->catalog-delta type-env)))
+      (type-env->catalog-delta (program-ir-type-env prog))))
   (define jobs (append-map first per-program))
   (define edb-boundary
     (if (and split-facts? (pair? per-program) (second (first per-program))) 1 0))
@@ -1149,24 +1166,28 @@
   (spawn-detached-o2-batch (reverse o2-cmds))
   (define groups
     (let loop ([pps per-program]
+               [programs* programs]
                [fds* per-program-frozen]
                [deltas per-program-deltas]
                [remaining strata]
                [out '()])
-      (match* (pps fds* deltas)
-        [('() '() '()) (reverse out)]
+      (match* (pps programs* fds* deltas)
+        [('() '() '() '()) (reverse out)]
         [((cons pp more-pps)
+          (cons program more-programs)
           (cons fds more-fds)
           (cons delta more-deltas))
          (define count (length (first pp)))
          (define group-strata (take remaining count))
          (define writes (compiled-strata-write-set group-strata fds))
-         (loop more-pps more-fds more-deltas (drop remaining count)
+         (loop more-pps more-programs more-fds more-deltas
+               (drop remaining count)
                (cons (compile-group
                       count fds delta writes
-                      (catalog-write-set delta writes))
+                      (catalog-write-set delta writes)
+                      (program-ir-occurrence-tree program))
                      out))]
-        [(_ _ _)
+        [(_ _ _ _)
          (error 'compile-strata
                 "internal per-program group metadata length mismatch")])))
   (values strata partition edb-boundary frozen-dirs groups))

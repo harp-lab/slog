@@ -1,0 +1,7 @@
+;; N4-B destination fixture: a session with a logical catalog of its own, so
+;; an attachment lands in an established boundary rather than an empty one.
+;; `own.thing` must survive every attachment untouched.
+
+table (own.thing int)
+
+rule (own.thing 42)

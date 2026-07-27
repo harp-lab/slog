@@ -21,6 +21,7 @@
  (struct-out boundary)
  (struct-out boundary-action)
  (struct-out boundary-plan)
+ (struct-out module-instance-descriptor)
  (struct-out exn:fail:catalog)
  empty-catalog
  empty-boundary
@@ -29,6 +30,10 @@
  type-env->catalog-delta
  plan-boundary
  replay-boundary-plan
+ module-instance-key
+ module-occurrence-instances
+ module-instance-descriptor->datum
+ module-instance-descriptor-datum?
  (struct-out transform-plan)
  plan-path-transform
  replay-path-transform
@@ -38,9 +43,36 @@
  boundary-plan->datum
  boundary-plan-datum?
  declaration-descriptor->datum
+ datum->declaration-descriptor
  catalog-delta->datum
  datum->catalog-delta
+ boundary->datum
+ datum->boundary
+ ;; N4-A durable boundary bundle
+ slog-boundary-bundle-format
+ (struct-out boundary-record)
+ (struct-out version-record)
+ (struct-out type-record)
+ (struct-out program-record)
+ (struct-out boundary-bundle)
+ boundary-bundle->datum
+ datum->boundary-bundle
+ boundary-bundle-datum?
+ validate-boundary-bundle
+ boundary-bundle-cut-history
+ plan-bundle-restore
+ boundary-bundle-type-key->sid
+ plan-clause              ; read one clause of a persisted plan datum
+ ;; N4-B mapped namespace attachment
+ (struct-out attachment-plan)
+ attachment-plan-boundary-key
+ attachment-plan-output
+ plan-attachment
+ attachment-plan->datum
+ attachment-plan-datum?
+ replay-attachment
  catalog->manifest
+ catalog->type-env
  catalog-delta->manifest
  type-env->legacy-manifest
  merge-legacy-manifest)
@@ -95,6 +127,76 @@
   (layer-id program-event boundary-event type-event
    program-key boundary-key input output delta actions version-slots type-slots)
   #:transparent)
+
+;; A lexical module occurrence receives its stable key only after the
+;; enclosing boundary planner has minted (or replayed) the ProgramInstanceKey.
+;; Source paths and aliases remain metadata; the key uses only the persisted
+;; program key and deterministic occurrence slots.
+(struct module-instance-descriptor
+  (key home lexical-path bindings)
+  #:transparent)
+
+(define (module-instance-key program-key lexical-path)
+  (unless (string? program-key)
+    (catalog-fail 'invalid-key
+                  "module instance needs a ProgramInstanceKey string"))
+  (define slots
+    (for/list ([step (in-list lexical-path)])
+      (match step
+        [(list (? exact-nonnegative-integer? slot) (? string? _alias))
+         slot]
+        [_ (catalog-fail 'invalid-key
+                         "malformed lexical occurrence step: ~a" step)])))
+  (format "m1:~a:~a"
+          program-key
+          (if (null? slots) "root"
+              (string-join (map number->string slots) "."))))
+
+(define (module-occurrence-instances program-key occurrence)
+  (unless (module-occurrence? occurrence)
+    (catalog-fail 'invalid-module-tree
+                  "expected a module occurrence tree; got ~a" occurrence))
+  (define lexical-path (module-occurrence-lexical-path occurrence))
+  (cons
+   (module-instance-descriptor
+    (module-instance-key program-key lexical-path)
+    (module-occurrence-home occurrence)
+    lexical-path
+    (module-occurrence-bindings occurrence))
+   (append-map
+    (lambda (child)
+      (module-occurrence-instances program-key child))
+    (module-occurrence-children occurrence))))
+
+(define (module-instance-descriptor->datum descriptor)
+  `(module-instance
+    (key ,(module-instance-descriptor-key descriptor))
+    (home ,@(module-instance-descriptor-home descriptor))
+    (lexical-path
+     ,@(for/list ([step
+                   (in-list
+                    (module-instance-descriptor-lexical-path descriptor))])
+         `(occurrence ,(first step) ,(second step))))
+    (bindings
+     ,@(for/list ([binding
+                   (in-list
+                    (module-instance-descriptor-bindings descriptor))])
+         `(bind (formal ,@(first binding))
+                (actual ,@(second binding)))))))
+
+(define (module-instance-descriptor-datum? datum)
+  (match datum
+    [`(module-instance
+       (key ,(? string?))
+       (home ,(? valid-component?) ...)
+       (lexical-path
+        (occurrence ,(? exact-nonnegative-integer?)
+                    ,(? valid-component?)) ...)
+       (bindings
+        (bind (formal ,(? valid-component?) ...)
+              (actual ,(? valid-component?) ...)) ...))
+     #t]
+    [_ #f]))
 
 (struct exn:fail:catalog exn:fail (kind detail) #:transparent)
 
@@ -855,12 +957,8 @@
     (memberships
      ,@(for/list ([edge
                    (in-list
-                    (sort
-                     (set->list (catalog-delta-memberships delta))
-                     (lambda (left right)
-                       (or (qname<? (cdr left) (cdr right))
-                           (and (qname=? (cdr left) (cdr right))
-                                (qname<? (car left) (car right)))))))])
+                    (sort-membership-edges
+                     (catalog-delta-memberships delta)))])
          `(member ,(qname->datum (car edge))
                   ,(qname->datum (cdr edge)))))))
 
@@ -986,6 +1084,802 @@
      datum (boundary-plan->datum plan)))
   plan)
 
+;; -----------------------------------------------------------------------
+;; N4-A durable boundary bundle (docs/n4-contract.md §3)
+;;
+;; One canonical value describes a saved database's logical schema without
+;; rediscovering it from tuple directories or source text.  The head is a
+;; COMPLETE snapshot; history is a chain of validated transition records that
+;; reuse the BoundaryPlan and transform-plan codecs above rather than
+;; repeating full catalog snapshots.  Every record family is validated for
+;; internal consistency before a reader may expose a single key, so a
+;; malformed bundle fails ahead of any daemon mutation.
+
+(define slog-boundary-bundle-format 1)
+
+;; One committed boundary in order.  `origin` is 'program (its BoundaryPlan
+;; datum), 'transform (its transform-plan datum), 'attachment (its N4-B
+;; attachment-plan datum), or 'initial (an adopted or empty base with no
+;; producing plan).
+(struct boundary-record (key predecessor origin-kind origin) #:transparent)
+
+;; A relation version.  `name` is its qualified name AT THE SELECTED HEAD, or
+;; #f for a historical version whose name no longer resolves there.
+;; `materialized?` records whether this save carries its rows.
+(struct version-record (key predecessor kind name materialized?) #:transparent)
+
+;; A nominal constructor.  `arity` is the STORED arity (fields + the intern
+;; id column), `sid` the saved runtime struct id, and `names` every qualified
+;; spelling this TypeKey has carried -- current or historical, so an unnamed
+;; historical constructor still renders through its TypeKey.
+(struct type-record (key arity sid names) #:transparent)
+
+;; One compiled program occurrence and its lexical module instances.
+(struct program-record (key input output modules) #:transparent)
+
+(struct boundary-bundle
+  (format selected-head history versions types programs)
+  #:transparent)
+
+(define (boundary->datum input)
+  (unless (boundary? input)
+    (catalog-fail 'invalid-boundary "expected a boundary; got ~a" input))
+  (define cat (boundary-catalog input))
+  (unless (catalog? cat)
+    (catalog-fail 'invalid-boundary "boundary has no catalog: ~a" input))
+  (define declarations (catalog-declarations cat))
+  (define nominals (catalog-nominals cat))
+  (define environment (boundary-environment input))
+  `(boundary
+    (key ,(boundary-key input))
+    (declarations
+     ,@(for/list ([name (in-list (sort (hash-keys declarations) qname<?))])
+         (declaration-descriptor->datum (hash-ref declarations name))))
+    (memberships
+     ,@(for/list ([edge (in-list (sort-membership-edges
+                                  (catalog-memberships cat)))])
+         `(member ,(qname->datum (car edge)) ,(qname->datum (cdr edge)))))
+    (nominals
+     ,@(for/list ([name (in-list (sort (hash-keys nominals) qname<?))])
+         `(nominal ,(qname->datum name) ,(hash-ref nominals name))))
+    (environment
+     ,@(for/list ([name (in-list (sort (hash-keys environment) qname<?))])
+         `(binding ,(qname->datum name) ,(hash-ref environment name))))))
+
+(define (sort-membership-edges memberships)
+  (sort (set->list memberships)
+        (lambda (left right)
+          (or (qname<? (cdr left) (cdr right))
+              (and (qname=? (cdr left) (cdr right))
+                   (qname<? (car left) (car right)))))))
+
+(define (datum->boundary datum)
+  (match datum
+    [`(boundary
+       (key ,(? non-empty-string? key))
+       (declarations ,declarations ...)
+       (memberships ,memberships ...)
+       (nominals ,nominals ...)
+       (environment ,bindings ...))
+     (define descriptors (map datum->declaration-descriptor declarations))
+     (define names (map declaration-descriptor-name descriptors))
+     (unless (= (length names) (length (remove-duplicates names equal?)))
+       (catalog-fail 'invalid-bundle "boundary repeats a declaration"))
+     (boundary
+      key
+      (catalog
+       (for/hash ([descriptor (in-list descriptors)])
+         (values (declaration-descriptor-name descriptor) descriptor))
+       (for/set ([edge (in-list memberships)])
+         (match edge
+           [`(member ,member ,union)
+            (cons (datum->qname member) (datum->qname union))]
+           [_ (catalog-fail 'invalid-bundle
+                            "malformed boundary membership: ~a" edge)]))
+       (keyed-name-table nominals 'nominal "nominal TypeKey"))
+      (keyed-name-table bindings 'binding "VersionKey binding"))]
+    [_ (catalog-fail 'invalid-bundle "malformed persisted boundary: ~a"
+                     datum)]))
+
+;; A sorted QName -> nonempty-string table under one tag.  Duplicate names are
+;; a hard error: an allocation table is never silently last-wins.
+(define (keyed-name-table entries tag what)
+  (for/fold ([out (hash)]) ([entry (in-list entries)])
+    (match entry
+      [`(,(== tag) ,name ,(? non-empty-string? key))
+       (define decoded (datum->qname name))
+       (when (hash-has-key? out decoded)
+         (catalog-fail 'duplicate-key "~a repeats ~a" what
+                       (qname->display decoded)))
+       (hash-set out decoded key)]
+      [_ (catalog-fail 'invalid-bundle "malformed ~a entry: ~a" what entry)])))
+
+(define (boundary-record->datum record)
+  (define origin (boundary-record-origin record))
+  `(boundary-record
+    (key ,(boundary-record-key record))
+    (predecessor ,(boundary-record-predecessor record))
+    (origin
+     ,(case (boundary-record-origin-kind record)
+        [(program) `(program ,origin)]
+        [(transform) `(transform ,origin)]
+        [(attachment) `(attachment ,origin)]
+        [(initial) `(initial)]
+        [else
+         (catalog-fail 'invalid-bundle "unknown boundary origin kind: ~a"
+                       (boundary-record-origin-kind record))]))))
+
+(define (datum->boundary-record datum)
+  (match datum
+    [`(boundary-record
+       (key ,(? non-empty-string? key))
+       (predecessor ,(and predecessor (or #f (? non-empty-string?))))
+       (origin ,origin))
+     (match origin
+       [`(program ,plan)
+        (unless (boundary-plan-datum? plan)
+          (catalog-fail 'invalid-bundle
+                        "boundary record ~a carries a malformed BoundaryPlan"
+                        key))
+        (boundary-record key predecessor 'program plan)]
+       [`(transform ,plan)
+        (unless (transform-plan-datum? plan)
+          (catalog-fail 'invalid-bundle
+                        "boundary record ~a carries a malformed transform plan"
+                        key))
+        (boundary-record key predecessor 'transform plan)]
+       [`(attachment ,plan)
+        (unless (attachment-plan-datum? plan)
+          (catalog-fail 'invalid-bundle
+                        "boundary record ~a carries a malformed attachment plan"
+                        key))
+        (boundary-record key predecessor 'attachment plan)]
+       [`(initial) (boundary-record key predecessor 'initial #f)]
+       [_ (catalog-fail 'invalid-bundle
+                        "malformed boundary origin: ~a" origin)])]
+    [_ (catalog-fail 'invalid-bundle
+                     "malformed persisted boundary record: ~a" datum)]))
+
+(define (version-record->datum record)
+  `(version-record
+    (key ,(version-record-key record))
+    (predecessor ,(version-record-predecessor record))
+    (kind ,(version-record-kind record))
+    (name ,(let ([name (version-record-name record)])
+             (and name (qname->datum name))))
+    (materialized ,(and (version-record-materialized? record) #t))))
+
+(define (datum->version-record datum)
+  (match datum
+    [`(version-record
+       (key ,(? non-empty-string? key))
+       (predecessor ,(and predecessor (or #f (? non-empty-string?))))
+       (kind ,(and kind (or 'table 'struct)))
+       (name ,name)
+       (materialized ,(? boolean? materialized?)))
+     (version-record key predecessor kind
+                     (and name (datum->qname name))
+                     materialized?)]
+    [_ (catalog-fail 'invalid-bundle
+                     "malformed persisted version record: ~a" datum)]))
+
+(define (type-record->datum record)
+  `(type-record
+    (key ,(type-record-key record))
+    (arity ,(type-record-arity record))
+    (sid ,(type-record-sid record))
+    (names ,@(for/list ([name (in-list (sort (type-record-names record)
+                                             qname<?))])
+               (qname->datum name)))))
+
+(define (datum->type-record datum)
+  (match datum
+    [`(type-record
+       (key ,(? non-empty-string? key))
+       (arity ,(? exact-positive-integer? arity))
+       (sid ,(and sid (or #f (? exact-nonnegative-integer?))))
+       (names ,names ...))
+     (define decoded (map datum->qname names))
+     (unless (= (length decoded) (length (remove-duplicates decoded equal?)))
+       (catalog-fail 'invalid-bundle
+                     "type record ~a repeats a constructor name" key))
+     (type-record key arity sid decoded)]
+    [_ (catalog-fail 'invalid-bundle
+                     "malformed persisted type record: ~a" datum)]))
+
+(define (program-record->datum record)
+  `(program-record
+    (key ,(program-record-key record))
+    (input ,(program-record-input record))
+    (output ,(program-record-output record))
+    (modules ,@(program-record-modules record))))
+
+(define (datum->program-record datum)
+  (match datum
+    [`(program-record
+       (key ,(? non-empty-string? key))
+       (input ,(and input (or #f (? non-empty-string?))))
+       (output ,(? non-empty-string? output))
+       (modules ,modules ...))
+     (for ([module-datum (in-list modules)])
+       (unless (module-instance-descriptor-datum? module-datum)
+         (catalog-fail 'invalid-bundle
+                       "program record ~a carries a malformed module instance"
+                       key)))
+     (program-record key input output modules)]
+    [_ (catalog-fail 'invalid-bundle
+                     "malformed persisted program record: ~a" datum)]))
+
+(define (boundary-bundle->datum bundle)
+  (unless (boundary-bundle? bundle)
+    (catalog-fail 'invalid-bundle "expected a BoundaryBundle; got ~a" bundle))
+  `(boundary-bundle
+    (bundle-format ,(boundary-bundle-format bundle))
+    (selected-head ,(boundary->datum (boundary-bundle-selected-head bundle)))
+    (boundary-history
+     ,@(map boundary-record->datum (boundary-bundle-history bundle)))
+    (versions ,@(map version-record->datum (boundary-bundle-versions bundle)))
+    (types ,@(map type-record->datum (boundary-bundle-types bundle)))
+    (programs
+     ,@(map program-record->datum (boundary-bundle-programs bundle)))))
+
+;; Decode WITHOUT cross-record validation -- callers that mutate public state
+;; must run `validate-boundary-bundle` (which decoding here already implies
+;; for shape).  Kept separate so a diagnostic reader can inspect a bundle that
+;; fails integrity.
+(define (datum->boundary-bundle datum)
+  (match datum
+    [`(boundary-bundle
+       (bundle-format ,(? exact-nonnegative-integer? format))
+       (selected-head ,head)
+       (boundary-history ,history ...)
+       (versions ,versions ...)
+       (types ,types ...)
+       (programs ,programs ...))
+     (unless (= format slog-boundary-bundle-format)
+       (catalog-fail
+        'unsupported-bundle-format
+        "boundary bundle format ~a is not supported by this build (~a)"
+        format slog-boundary-bundle-format))
+     (boundary-bundle
+      format
+      (datum->boundary head)
+      (map datum->boundary-record history)
+      (map datum->version-record versions)
+      (map datum->type-record types)
+      (map datum->program-record programs))]
+    [_ (catalog-fail 'invalid-bundle
+                     "malformed persisted boundary bundle: ~a" datum)]))
+
+;; A cheap total predicate for META gating: shape-and-integrity, never raising.
+(define (boundary-bundle-datum? datum)
+  (with-handlers ([exn:fail? (lambda (_error) #f)])
+    (validate-boundary-bundle (datum->boundary-bundle datum))
+    #t))
+
+;; The items of a persisted plan datum's `tag` clause, or #f when it has none.
+;; Both plan codecs above are flat keyed forms, so every reader of a stored
+;; plan goes through this rather than growing a second positional grammar.
+(define (plan-clause datum tag)
+  (and (pair? datum)
+       (for/or ([clause (in-list (cdr datum))])
+         (and (pair? clause) (eq? (car clause) tag) (cdr clause)))))
+
+;; The same, for a clause known to carry exactly one value.
+(define (tagged-clause datum tag)
+  (match (plan-clause datum tag)
+    [(list value) value]
+    [_ #f]))
+
+(define (unique-keys! keys what)
+  (unless (= (length keys) (length (remove-duplicates keys equal?)))
+    (catalog-fail 'duplicate-key "boundary bundle repeats a ~a" what)))
+
+(define (validate-boundary-bundle bundle)
+  (unless (boundary-bundle? bundle)
+    (catalog-fail 'invalid-bundle "expected a BoundaryBundle; got ~a" bundle))
+  (unless (= (boundary-bundle-format bundle) slog-boundary-bundle-format)
+    (catalog-fail 'unsupported-bundle-format
+                  "boundary bundle format ~a is not supported by this build (~a)"
+                  (boundary-bundle-format bundle) slog-boundary-bundle-format))
+  (define head (boundary-bundle-selected-head bundle))
+  (validate-boundary head)
+  (define declarations (catalog-declarations (boundary-catalog head)))
+  (define nominals (catalog-nominals (boundary-catalog head)))
+  (define environment (boundary-environment head))
+
+  ;; --- history: an ordered, linked chain ending at the selected head ---
+  (define history (boundary-bundle-history bundle))
+  (when (null? history)
+    (catalog-fail 'invalid-bundle "boundary bundle has no boundary history"))
+  (unique-keys! (map boundary-record-key history) "BoundaryKey")
+  (for ([record (in-list history)]
+        [previous (in-list (cons #f (map boundary-record-key history)))])
+    (unless (equal? (boundary-record-predecessor record) previous)
+      (catalog-fail
+       'invalid-bundle
+       "boundary record ~a names predecessor ~a but follows ~a"
+       (boundary-record-key record)
+       (boundary-record-predecessor record) previous))
+    (define recorded-key
+      (case (boundary-record-origin-kind record)
+        [(program) (tagged-clause (boundary-record-origin record) 'boundary-key)]
+        [(transform) (tagged-clause (boundary-record-origin record) 'boundary)]
+        ;; an attachment mints its key through the BoundaryPlan it embeds
+        [(attachment)
+         (for/or ([clause (in-list (cdr (boundary-record-origin record)))])
+           (and (pair? clause) (eq? (car clause) 'boundary-plan)
+                (tagged-clause clause 'boundary-key)))]
+        [else (boundary-record-key record)]))
+    (unless (equal? recorded-key (boundary-record-key record))
+      (catalog-fail
+       'invalid-bundle
+       "boundary record ~a carries a plan that mints ~a"
+       (boundary-record-key record) recorded-key)))
+  (unless (equal? (boundary-record-key (last history)) (boundary-key head))
+    (catalog-fail
+     'invalid-bundle
+     "boundary history ends at ~a but the selected head is ~a"
+     (boundary-record-key (last history)) (boundary-key head)))
+
+  ;; --- versions: every bound VersionKey is described, exactly once ---
+  (define versions (boundary-bundle-versions bundle))
+  (unique-keys! (map version-record-key versions) "VersionKey")
+  (define version-index
+    (for/hash ([record (in-list versions)])
+      (values (version-record-key record) record)))
+  (for ([record (in-list versions)])
+    (define predecessor (version-record-predecessor record))
+    (when (and predecessor (not (hash-has-key? version-index predecessor)))
+      (catalog-fail 'dangling-version
+                    "version ~a names unknown predecessor ~a"
+                    (version-record-key record) predecessor))
+    (define name (version-record-name record))
+    (when name
+      (define descriptor (hash-ref declarations name #f))
+      (unless (and descriptor (storage-declaration? descriptor))
+        (catalog-fail 'dangling-version
+                      "version ~a names ~a, which the selected head does not declare"
+                      (version-record-key record) (qname->display name)))
+      (unless (eq? (version-record-kind record)
+                   (declaration-descriptor-kind descriptor))
+        (catalog-fail 'invalid-bundle
+                      "version ~a is a ~a but ~a is declared ~a"
+                      (version-record-key record)
+                      (version-record-kind record)
+                      (qname->display name)
+                      (declaration-descriptor-kind descriptor)))))
+  (for ([(name key) (in-hash environment)])
+    (define record (hash-ref version-index key #f))
+    (unless record
+      (catalog-fail 'missing-version
+                    "selected head binds ~a to undescribed VersionKey ~a"
+                    (qname->display name) key))
+    (unless (and (version-record-name record)
+                 (qname=? (version-record-name record) name))
+      (catalog-fail
+       'invalid-bundle
+       "VersionKey ~a is bound to ~a but its record names ~a"
+       key (qname->display name)
+       (let ([recorded (version-record-name record)])
+         (if recorded (qname->display recorded) "no relation")))))
+
+  ;; --- types: every nominal TypeKey is described, with a distinct SID ---
+  (define types (boundary-bundle-types bundle))
+  (unique-keys! (map type-record-key types) "TypeKey")
+  (define saved-sids (filter values (map type-record-sid types)))
+  (unique-keys! saved-sids "saved struct id")
+  (define type-index
+    (for/hash ([record (in-list types)]) (values (type-record-key record) record)))
+  (for ([(name key) (in-hash nominals)])
+    (define record (hash-ref type-index key #f))
+    (unless record
+      (catalog-fail 'missing-type
+                    "selected head binds nominal ~a to undescribed TypeKey ~a"
+                    (qname->display name) key))
+    (unless (for/or ([recorded (in-list (type-record-names record))])
+              (qname=? recorded name))
+      (catalog-fail 'invalid-bundle
+                    "TypeKey ~a is bound to ~a but records names ~a"
+                    key (qname->display name)
+                    (map qname->display (type-record-names record))))
+    (define descriptor (hash-ref declarations name))
+    (define stored-arity
+      (add1 (length (declaration-descriptor-fields descriptor))))
+    (unless (= (type-record-arity record) stored-arity)
+      (catalog-fail 'invalid-bundle
+                    "TypeKey ~a stores arity ~a but ~a declares ~a fields"
+                    key (type-record-arity record) (qname->display name)
+                    (length (declaration-descriptor-fields descriptor)))))
+
+  ;; --- programs: keys unique, outputs land on committed boundaries ---
+  (define programs (boundary-bundle-programs bundle))
+  (unique-keys! (map program-record-key programs) "ProgramInstanceKey")
+  (define boundary-keys
+    (list->set (map boundary-record-key history)))
+  (define module-keys
+    (append*
+     (for/list ([record (in-list programs)])
+       (for/list ([module-datum (in-list (program-record-modules record))])
+         (match module-datum
+           [`(module-instance (key ,key) ,_ ...) key])))))
+  (unique-keys! module-keys "ModuleInstanceKey")
+  (for ([record (in-list programs)])
+    (unless (set-member? boundary-keys (program-record-output record))
+      (catalog-fail 'dangling-boundary
+                    "program ~a outputs unknown boundary ~a"
+                    (program-record-key record)
+                    (program-record-output record)))
+    (define input (program-record-input record))
+    (when (and input (not (set-member? boundary-keys input)))
+      (catalog-fail 'dangling-boundary
+                    "program ~a reads unknown boundary ~a"
+                    (program-record-key record) input)))
+  bundle)
+
+;; Restate a bundle as its own base: the selected head becomes a single
+;; `initial` history record, superseded/dropped versions drop away, and no
+;; program lineage is claimed.  This is what a FROZEN root carries -- its
+;; history was deliberately cut, so keeping transition records that name
+;; boundaries the database no longer contains would be a lie.
+;;
+;; Type records are kept WHOLE, including those no name binds: live rows still
+;; embed those SIDs, so their descriptors remain part of what the database
+;; needs to decode itself.
+(define (boundary-bundle-cut-history bundle)
+  (validate-boundary-bundle bundle)
+  (define head (boundary-bundle-selected-head bundle))
+  (define environment (boundary-environment head))
+  (define bound (list->set (hash-values environment)))
+  (define cut
+    (boundary-bundle
+     (boundary-bundle-format bundle)
+     head
+     (list (boundary-record (boundary-key head) #f 'initial #f))
+     (for/list ([record (in-list (boundary-bundle-versions bundle))]
+                #:when (set-member? bound (version-record-key record)))
+       (version-record (version-record-key record) #f
+                       (version-record-kind record)
+                       (version-record-name record)
+                       #t))
+     (boundary-bundle-types bundle)
+     '()))
+  (validate-boundary-bundle cut)
+  cut)
+
+;; N4-A work order 4: the boundary that RESTORES a saved head verbatim.
+;;
+;; Unlike every other producer here this mints nothing.  The output boundary
+;; IS the persisted head -- same BoundaryKey, same VersionKeys, same TypeKeys
+;; -- so opening a saved database preserves its stable identity instead of
+;; re-deriving it.  Every storage declaration is an initial `create`, which is
+;; what the daemon's admission rules already accept for names it does not yet
+;; hold; runtime SIDs are assigned fresh at that point and the caller maps
+;; saved-SID to live-SID explicitly.
+;; `storage-order` reorders the create actions.  Runtime SIDs are assigned in
+;; action order, so reversing it forces every nominal onto a DIFFERENT live
+;; SID than it was saved with -- the fixture the "forced SID reassignment
+;; still decodes" gate needs.  Ordering carries no identity: VersionKeys and
+;; TypeKeys do, and both are persisted.
+(define (plan-bundle-restore bundle #:storage-order [storage-order values])
+  (validate-boundary-bundle bundle)
+  (define head (boundary-bundle-selected-head bundle))
+  (define cat (boundary-catalog head))
+  (define declarations (catalog-declarations cat))
+  (define nominals (catalog-nominals cat))
+  (define environment (boundary-environment head))
+  (define storage
+    (storage-order
+     (sorted-qnames
+      (for/list ([(name descriptor) (in-hash declarations)]
+                 #:when (storage-declaration? descriptor))
+        name))))
+  (define actions
+    (for/list ([name (in-list storage)])
+      (boundary-action 'create name (hash-ref environment name) #f
+                       (hash-ref nominals name #f))))
+  (define version-slots
+    (for/hash ([name (in-list storage)] [slot (in-naturals)])
+      (values name slot)))
+  (define type-slots
+    (for/hash ([name (in-list (sorted-qnames (hash-keys nominals)))]
+               [slot (in-naturals)])
+      (values name slot)))
+  ;; The producing program, when the bundle still records it; a cut-history
+  ;; root records none, and the daemon only needs a nonempty handle.
+  (define program
+    (or (for/or ([record (in-list (boundary-bundle-programs bundle))]
+                 #:when (equal? (program-record-output record)
+                                (boundary-key head)))
+          (program-record-key record))
+        (format "restore:~a" (boundary-key head))))
+  (boundary-plan
+   "restore" 0 0 0
+   program
+   (boundary-key head)
+   (empty-boundary "b0:restore")
+   head
+   (catalog-delta declarations (catalog-memberships cat))
+   actions version-slots type-slots))
+
+;; The loader's saved-SID-to-live-SID substrate: TypeKey -> saved SID for
+;; every nominal that recorded one.  Runtime SIDs may be reassigned on open,
+;; so this is the left-hand side of the explicit map, never an assertion that
+;; the live daemon uses the same id.
+(define (boundary-bundle-type-key->sid bundle)
+  (for/hash ([record (in-list (boundary-bundle-types bundle))]
+             #:when (type-record-sid record))
+    (values (type-record-key record) (type-record-sid record))))
+
+;; -----------------------------------------------------------------------
+;; N4-B mapped namespace attachment (docs/n4-contract.md §5)
+;;
+;; Attachment is a PURE plan over two catalogs: a saved bundle's selected head
+;; and the destination boundary.  Nothing here contacts the daemon or the
+;; filesystem -- the caller supplies which source relations actually carry
+;; materialization -- so the complete schema, key, and type decision is made
+;; and checkable before any content moves.
+;;
+;; The allocator is `plan-boundary`, unchanged.  Its established behaviour is
+;; exactly §5's mapping rules: an added declaration mints a fresh VersionKey,
+;; an existing one advances only when it is in the write set, an added struct
+;; mints a fresh TypeKey while an existing one keeps the destination's, and an
+;; overlapping declaration must be EXACTLY compatible or the plan refuses.
+;; N4-B therefore adds no second compatibility checker or key allocator.
+
+(struct attachment-plan
+  (layer-id event source-stamp source-boundary-key source-path
+   destination-path boundary-plan version-map type-map imports)
+  #:transparent)
+
+(define (attachment-plan-boundary-key plan)
+  (boundary-plan-boundary-key (attachment-plan-boundary-plan plan)))
+
+(define (attachment-plan-output plan)
+  (boundary-plan-output (attachment-plan-boundary-plan plan)))
+
+;; One path may not be both a declaration and a namespace.  Attachment checks
+;; only the names it INTRODUCES -- against the whole output -- so a
+;; pre-existing catalog is never retroactively rejected.
+(define (check-attachment-shape added existing)
+  (define all (set-union added existing))
+  (for* ([name (in-set added)] [other (in-set all)])
+    (when (qname-inside? other name)
+      (catalog-fail 'occupied-target
+                    "attachment target ~a is also a namespace containing ~a"
+                    (qname->display name) (qname->display other)))
+    (when (qname-inside? name other)
+      (catalog-fail 'occupied-target
+                    "attachment target ~a nests inside declaration ~a"
+                    (qname->display name) (qname->display other)))))
+
+(define (plan-attachment source-bundle destination
+                         #:source-path [source-path #f]
+                         #:destination-path destination-path
+                         #:content [content (set)]
+                         #:source-stamp [source-stamp #f]
+                         #:layer-id layer-id
+                         #:event event)
+  (validate-boundary-bundle source-bundle)
+  (validate-boundary destination)
+  (check-key-input 'attachment layer-id event)
+  (define destination-root (name->qname 'attachment destination-path))
+  (define source-root (and source-path (name->qname 'attachment source-path)))
+  (define source-head (boundary-bundle-selected-head source-bundle))
+  (define source-catalog (boundary-catalog source-head))
+  (define source-declarations (catalog-declarations source-catalog))
+  (define source-memberships (catalog-memberships source-catalog))
+  (define source-environment (boundary-environment source-head))
+  (define source-nominals (catalog-nominals source-catalog))
+
+  ;; --- selection: the saved root, or the subtree at SOURCE ---------------
+  (define (selected? name)
+    (or (not source-root) (qname-at-or-inside? name source-root)))
+  (define selected
+    (for/set ([name (in-hash-keys source-declarations)] #:when (selected? name))
+      name))
+  (when (set-empty? selected)
+    (catalog-fail 'unknown-path
+                  "attachment source path selects nothing: ~a"
+                  (if source-root (qname->display source-root) "<root>")))
+
+  ;; --- dependency closure: nothing may escape the selection --------------
+  ;; Primitives are not names and never escape; a reference or membership
+  ;; edge leaving the subtree would arrive at the destination pointing into a
+  ;; namespace this attachment does not carry.
+  (for ([name (in-set selected)])
+    (for ([reference (in-set (declaration-references
+                              (hash-ref source-declarations name)))])
+      (unless (set-member? selected reference)
+        (catalog-fail
+         'escaping-dependency
+         "~a references ~a, which lies outside the attached subtree"
+         (qname->display name) (qname->display reference)))))
+  ;; A membership endpoint that is not a declaration at all is a builtin
+  ;; member (`cmap` in `coll`, say) -- an opaque leaf with nothing outside the
+  ;; subtree to point at, so it neither escapes nor moves.
+  (define (declared? name) (hash-has-key? source-declarations name))
+  (define (escapes? name) (and (declared? name) (not (set-member? selected name))))
+  (for ([edge (in-set source-memberships)])
+    (define touched?
+      (or (set-member? selected (car edge)) (set-member? selected (cdr edge))))
+    (when (and touched? (or (escapes? (car edge)) (escapes? (cdr edge))))
+      (catalog-fail
+       'escaping-dependency
+       "membership ~a in ~a crosses the attached subtree boundary"
+       (qname->display (car edge)) (qname->display (cdr edge)))))
+
+  ;; --- component-wise prefix substitution --------------------------------
+  ;; Only SELECTED declarations move.  A builtin membership member keeps its
+  ;; own spelling: prefixing `cmap` would invent a declaration that does not
+  ;; exist on either side.
+  (define (attach-name name)
+    (cond
+      [(not (set-member? selected name)) name]
+      [source-root (qname-rebase name source-root destination-root)]
+      [else (qname-prepend (qname-components destination-root) name)]))
+  (define rewritten
+    (for/hash ([name (in-set selected)])
+      (values (attach-name name)
+              (rewrite-declaration (hash-ref source-declarations name)
+                                   attach-name))))
+  (unless (= (hash-count rewritten) (set-count selected))
+    (catalog-fail 'duplicate-key
+                  "prefix substitution collapsed two source declarations"))
+  (define rewritten-memberships
+    (for/set ([edge (in-set source-memberships)]
+              #:when (set-member? selected (cdr edge)))
+      (cons (attach-name (car edge)) (attach-name (cdr edge)))))
+
+  (define destination-declarations
+    (catalog-declarations (boundary-catalog destination)))
+  (check-attachment-shape
+   (for/set ([name (in-hash-keys rewritten)]
+             #:unless (hash-has-key? destination-declarations name))
+     name)
+   (list->set (hash-keys destination-declarations)))
+
+  ;; --- the write set: destinations that actually receive source rows -----
+  ;; A fresh declaration gets its VersionKey from `plan-boundary` whether or
+  ;; not content follows; an EXISTING compatible member advances only when
+  ;; source content lands in it (§5), so an empty source member leaves the
+  ;; destination version exactly where it was.
+  (define imports
+    (sort
+     (for/list ([name (in-set selected)]
+                #:when (and (storage-declaration? (hash-ref source-declarations name))
+                            (set-member? content name)))
+       (cons name (attach-name name)))
+     qname<? #:key car))
+  (define writes (map cdr imports))
+
+  (define plan
+    (plan-boundary destination
+                   (catalog-delta rewritten rewritten-memberships)
+                   writes
+                   #:layer-id layer-id
+                   #:program-event event
+                   #:boundary-event event
+                   #:type-event event))
+  (define output (boundary-plan-output plan))
+  (define output-environment (boundary-environment output))
+  (define output-nominals (catalog-nominals (boundary-catalog output)))
+
+  ;; --- the explicit maps -------------------------------------------------
+  ;; Source identity is never reused: every entry maps a source key to the
+  ;; key the DESTINATION boundary holds, so attaching one source twice yields
+  ;; two disjoint right-hand sides.
+  (define version-map
+    (for/list ([name (in-list (sorted-qnames
+                               (for/list ([name (in-set selected)]
+                                          #:when (hash-has-key? source-environment name))
+                                 name)))])
+      (cons (hash-ref source-environment name)
+            (hash-ref output-environment (attach-name name)))))
+  (define type-map
+    (for/list ([name (in-list (sorted-qnames
+                               (for/list ([name (in-set selected)]
+                                          #:when (hash-has-key? source-nominals name))
+                                 name)))])
+      (cons (hash-ref source-nominals name)
+            (hash-ref output-nominals (attach-name name)))))
+
+  (attachment-plan layer-id event source-stamp
+                   (boundary-key source-head)
+                   source-root destination-root
+                   plan version-map type-map imports))
+
+(define (attachment-plan->datum plan)
+  (unless (attachment-plan? plan)
+    (catalog-fail 'invalid-attachment "expected an attachment plan; got ~a" plan))
+  `(attachment-plan
+    (layer-id ,(attachment-plan-layer-id plan))
+    (event ,(attachment-plan-event plan))
+    (source
+     (stamp ,(attachment-plan-source-stamp plan))
+     (boundary ,(attachment-plan-source-boundary-key plan))
+     (path ,(let ([path (attachment-plan-source-path plan)])
+              (and path (qname->datum path)))))
+    (destination
+     (path ,(qname->datum (attachment-plan-destination-path plan))))
+    (version-map
+     ,@(for/list ([entry (in-list (attachment-plan-version-map plan))])
+         `(v ,(car entry) ,(cdr entry))))
+    (type-map
+     ,@(for/list ([entry (in-list (attachment-plan-type-map plan))])
+         `(t ,(car entry) ,(cdr entry))))
+    (imports
+     ,@(for/list ([entry (in-list (attachment-plan-imports plan))])
+         `(import ,(qname->datum (car entry)) ,(qname->datum (cdr entry)))))
+    ,(boundary-plan->datum (attachment-plan-boundary-plan plan))))
+
+(define (attachment-plan-datum? datum)
+  (with-handlers ([exn:fail? (lambda (_error) #f)])
+    (match datum
+      [`(attachment-plan
+         (layer-id ,(? non-empty-string?))
+         (event ,(? exact-nonnegative-integer?))
+         (source (stamp ,_) (boundary ,(? non-empty-string?)) (path ,path))
+         (destination (path ,destination))
+         (version-map ,versions ...)
+         (type-map ,types ...)
+         (imports ,imports ...)
+         ,boundary)
+       (when path (datum->qname path))
+       (datum->qname destination)
+       (for ([entry (in-list versions)])
+         (match entry
+           [`(v ,(? non-empty-string?) ,(? non-empty-string?)) #t]
+           [_ (catalog-fail 'invalid-attachment
+                            "malformed VersionKey map entry: ~a" entry)]))
+       (for ([entry (in-list types)])
+         (match entry
+           [`(t ,(? non-empty-string?) ,(? non-empty-string?)) #t]
+           [_ (catalog-fail 'invalid-attachment
+                            "malformed TypeKey map entry: ~a" entry)]))
+       (for ([entry (in-list imports)])
+         (match entry
+           [`(import ,from ,to) (datum->qname from) (datum->qname to)]
+           [_ (catalog-fail 'invalid-attachment
+                            "malformed import entry: ~a" entry)]))
+       (boundary-plan-datum? boundary)]
+      [_ #f])))
+
+;; Replay recomputes the attachment from the same source bundle and the
+;; reconstructed destination boundary under the persisted identity, then
+;; refuses any disagreement -- the recorded plan is self-auditing, so a source
+;; whose catalog, keys, or content coverage drifted cannot replay silently.
+(define (replay-attachment source-bundle destination content datum)
+  (unless (attachment-plan-datum? datum)
+    (catalog-fail 'invalid-attachment
+                  "malformed persisted attachment plan: ~a" datum))
+  (match-define
+    `(attachment-plan
+      (layer-id ,layer-id)
+      (event ,event)
+      (source (stamp ,stamp) (boundary ,source-boundary) (path ,path))
+      (destination (path ,destination-path))
+      ,_ ...)
+    datum)
+  (define plan
+    (plan-attachment source-bundle destination
+                     #:source-path (and path (datum->qname path))
+                     #:destination-path (datum->qname destination-path)
+                     #:content content
+                     #:source-stamp stamp
+                     #:layer-id layer-id
+                     #:event event))
+  (unless (equal? (attachment-plan-source-boundary-key plan) source-boundary)
+    (catalog-fail 'replay-divergence
+                  "attachment source boundary was ~a but the recipe recorded ~a"
+                  (attachment-plan-source-boundary-key plan) source-boundary))
+  (unless (equal? datum (attachment-plan->datum plan))
+    (catalog-fail
+     'replay-divergence
+     "replayed attachment differs from its persisted plan:\n  stored ~a\n  rebuilt ~a"
+     datum (attachment-plan->datum plan)))
+  plan)
+
 (define (type-ref->symbol ref)
   (match ref
     [(type-ref 'primitive (? symbol? name)) name]
@@ -1034,6 +1928,70 @@
   (unless (catalog? cat)
     (catalog-fail 'invalid-catalog "expected catalog; got ~a" cat))
   (declarations->manifest (catalog-declarations cat)))
+
+;; Recover the typed compiler view of a logical catalog.  Unlike the legacy
+;; manifest projection this preserves field types, nominal references,
+;; memberships, and lattice structure, so N1 namespace bindings can validate
+;; against an inherited boundary without guessing schema from arities.
+(define (catalog->type-env cat)
+  (unless (catalog? cat)
+    (catalog-fail 'invalid-catalog "expected catalog; got ~a" cat))
+  (define (ref->name ref)
+    (match ref
+      [(type-ref 'primitive name) name]
+      [(type-ref 'named (? qname? name)) (qname->symbol name)]
+      [_ (catalog-fail 'invalid-type "invalid normalized TypeRef: ~a" ref)]))
+  (define (lattice->datum spec)
+    `(lattice
+      ,(lattice-descriptor-kind spec)
+      ,@(for/list ([argument
+                    (in-list (lattice-descriptor-arguments spec))])
+          (cond
+            [(type-ref? argument) (ref->name argument)]
+            [(lattice-descriptor? argument)
+             (cdr (lattice->datum argument))]
+            [else
+             (catalog-fail 'invalid-lattice
+                           "invalid normalized lattice argument: ~a"
+                           argument)]))
+      ,@(for/list ([parameter
+                    (in-list (lattice-descriptor-parameters spec))])
+          (list (car parameter) (cdr parameter)))))
+  (define declarations (catalog-declarations cat))
+  (define rels
+    (for/fold ([out (hash)])
+              ([(name descriptor) (in-hash declarations)]
+               #:unless (eq? 'union
+                             (declaration-descriptor-kind descriptor)))
+      (define lowered (qname->symbol name))
+      (define fields (map ref->name
+                          (declaration-descriptor-fields descriptor)))
+      (define declaration
+        (match (declaration-descriptor-kind descriptor)
+          ['table `(table ,@fields)]
+          ['struct `(struct ,@fields)]
+          ['enum `(enum ,lowered)]
+          ['lattice
+           (lattice->datum
+            (declaration-descriptor-lattice-spec descriptor))]
+          ['list `(listof ,@fields)]
+          ['map `(mapof ,@fields)]
+          [kind
+           (catalog-fail 'invalid-declaration
+                         "cannot recover compiler declaration kind ~a" kind)]))
+      (hash-set out lowered declaration)))
+  (define aliases
+    (for/fold ([out (hash)])
+              ([(name descriptor) (in-hash declarations)]
+               #:when (eq? 'union
+                           (declaration-descriptor-kind descriptor)))
+      (define members
+        (for/set ([edge (in-set (catalog-memberships cat))]
+                  #:when (qname=? name (cdr edge)))
+          (qname->symbol (car edge))))
+      (define lowered (qname->symbol name))
+      (hash-set out lowered (set-add members lowered))))
+  (list aliases rels (type-env-funs empty-type-env)))
 
 (define (catalog-delta->manifest delta)
   (unless (catalog-delta? delta)

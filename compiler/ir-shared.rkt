@@ -26,6 +26,10 @@
  ;; type environments
  empty-type-env type-env? type-env-aliases type-env-rels type-env-funs
  rel-decl-kind rel-decl-arity
+ ;; N1 source/program records
+ (struct-out module-ir)
+ (struct-out module-occurrence)
+ (struct-out program-ir)
  ;; lattice value types
  lattice-spec? lattice-spec-kind lattice-spec-base lattice-spec-param
  lattice-base-type rel-lattice-spec rel-lattice-key-arity
@@ -172,6 +176,25 @@
 (define (type-env-aliases e) (first e))
 (define (type-env-rels e) (second e))
 (define (type-env-funs e) (third e))
+
+;; -----------------------------------------------------------------------
+;; N1 source/program records
+;;
+;; `home` and `lexical-path` are component lists. A module-ir is one physical
+;; source unit after include resolution and qualification; several units may
+;; belong to one occurrence/home. The occurrence tree is semantic metadata,
+;; while `program-ir-modules` is the flat set consumed by the existing middle
+;; end.
+
+(struct module-ir (path tokens rules home lexical-path) #:transparent)
+
+(struct module-occurrence
+  (entry-path home lexical-path bindings source-paths children)
+  #:transparent)
+
+(struct program-ir
+  (type-env modules manifest decomps occurrence-tree)
+  #:transparent)
 
 ;; The kind tag and column count of a rel-env declaration.
 (define (rel-decl-kind decl) (first decl))

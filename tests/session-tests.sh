@@ -601,6 +601,20 @@ expect "n2b-recipe-plans" "(boundary-plans (boundary-plan" out/sess-n2b.log
 expect "n3b-daemon-history" "(catalog-end 2)" out/sess-n2b.log
 expect_re "n3b-current-boundary-identity" '\(catalog-rel \(name "empty"\).*\(version-key "v1:.*"\) \(boundary "b1:.*"\).*\(size 0\)' out/sess-n2b.log
 
+# --- N1: a bound lexical occurrence reads the live typed catalog -------------
+# The formal says edge(any, any); the inherited actual is real.edge(int, int).
+# The richer actual satisfies the interface, the missing formal member is
+# completed under real.*, and recipe metadata retains the binding plus stable
+# program/lexical-slot-derived module keys.
+timeout 600 racket tests/api/session-drive.rkt \
+  run:tests/session/n1_actual.slog run:tests/session/n1_bound.slog \
+  dump-rel:use.seen boundary recipe \
+  > out/sess-n1.log 2>&1
+expect "n1-bound-result" "(dumpdone 2)" out/sess-n1.log
+expect_re "n1-compatible-completion" '\(declarations .*real\.created.*real\.edge.*use\.seen' out/sess-n1.log
+expect "n1-module-key" '(module-instance (key "m1:p1:' out/sess-n1.log
+expect "n1-binding-persisted" '(bindings (bind (formal "model") (actual "real")))' out/sess-n1.log
+
 # --- 0.E1 + 0.E2: save a fed session; load = replay the recipe (W3) ---------
 # A session (two segments + a tip batch + an anchored back-insertion) saves
 # as data/sess_e1; loading it replays the recipe -- the tip content AND the
@@ -3183,6 +3197,480 @@ expect "m7-mutual-admitted" "(m7-admitted (lattices (da db2)) (recursive 1) (str
 expect_not "m7-mutual-no-rerun" "(route rerun" out/sess-m7-mutual.log
 expect "m7-mutual-regressed" "(tuplerow 1 3 100)" out/sess-m7-mutual.log
 expect_not "m7-mutual-abort" "(count-epoch-aborted)" out/sess-m7-mutual.log
+
+# --- N4-A: the durable boundary bundle (docs/n4-contract.md §3, §4) ---------
+#
+# A saved layer describes its own logical schema.  The fixture carries every
+# shape the bundle must survive: qualified tables, a qualified struct used as
+# a column type, a lattice type and a lattice-valued table, a root-level name,
+# and one declaration nothing ever writes.
+
+rm -rf data/n4a-reopen data/n4a-shapes      # the dependent first: a save
+                                            # refuses to overwrite an input
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/n4a_shapes.slog bundle save:n4a-shapes \
+  > out/sess-n4a-save.log 2>&1
+expect    "n4a-saved" "(saved n4a-shapes 1)" out/sess-n4a-save.log
+# the head is one committed program boundary over the session's own base
+expect_re "n4a-history-chain" \
+  '\(history \(initial "b0:[^"]+"\) \(program "b1:[^"]+:0"\)\)' \
+  out/sess-n4a-save.log
+# the empty member is a full catalog citizen: a real VersionKey, and its rows
+# (there are none) belong to this save
+expect_re "n4a-empty-member-versioned" \
+  '\(g\.unseen table "v1:[^"]+" materialized\)' out/sess-n4a-save.log
+expect_re "n4a-qualified-struct" '\(m\.Pair struct "v1:[^"]+" materialized\)' \
+  out/sess-n4a-save.log
+expect_re "n4a-lattice-table" '\(m\.dist table "v1:[^"]+" materialized\)' \
+  out/sess-n4a-save.log
+# one lexical module occurrence (the root include tree) rides with its program
+expect_re "n4a-program-record" \
+  '\(programs \("p1:[^"]+:0" \(input "b0:[^"]+"\) \(output "b1:[^"]+:0"\) \(modules 1\)\)\)' \
+  out/sess-n4a-save.log
+
+# The saved META is self-describing: format 2, a bundle that validates on its
+# own, and a head whose empty member and nominal identity are present before
+# any tuple directory is consulted.
+timeout 300 racket -e '
+(require "compiler/dbmeta.rkt" "compiler/catalog.rkt" "compiler/names.rkt"
+         racket/set)
+(define m (read-db-meta "data/n4a-shapes"))
+(unless (= (db-meta-format-version m) 2) (error (quote format-version)))
+(unless (db-meta-has-boundary-bundle? m) (error (quote no-bundle)))
+(define b (datum->boundary-bundle (db-meta-boundary-bundle m)))
+(void (validate-boundary-bundle b))
+(define head (boundary-bundle-selected-head b))
+(define declarations (catalog-declarations (boundary-catalog head)))
+(define (Q n) (symbol->qname n))
+(unless (hash-has-key? declarations (Q (quote g.unseen)))
+  (error (quote missing-empty-declaration)))
+(unless (hash-has-key? (boundary-environment head) (Q (quote g.unseen)))
+  (error (quote unversioned-empty-declaration)))
+(unless (hash-has-key? (catalog-nominals (boundary-catalog head))
+                       (Q (quote m.Pair)))
+  (error (quote missing-nominal)))
+(unless (equal? (boundary-bundle->datum b) (db-meta-boundary-bundle m))
+  (error (quote datum-round-trip)))
+(displayln "n4a-meta-ok")' > out/sess-n4a-meta.log 2>&1
+expect "n4a-meta-self-describing" "n4a-meta-ok" out/sess-n4a-meta.log
+
+# Reopening the layer and re-saving reproduces the SAME identity: the recipe
+# replay rebuilds its boundary chain under the persisted LayerId and events,
+# so the head BoundaryKey, the whole declaration graph, every VersionKey, the
+# TypeKey set, and the ProgramInstanceKeys are equal.  (The chain's base is
+# not yet: with no restore-on-open the replay re-adopts a runtime
+# `legacy-b1:` base -- n4-contract.md §4.1.)
+timeout 900 racket tests/api/session-drive.rkt \
+  open:n4a-shapes save:n4a-reopen > out/sess-n4a-reopen.log 2>&1
+timeout 300 racket -e '
+(require "compiler/dbmeta.rkt" "compiler/catalog.rkt")
+(define (bundle-of name)
+  (datum->boundary-bundle
+   (db-meta-boundary-bundle (read-db-meta (string-append "data/" name)))))
+(define saved (bundle-of "n4a-shapes"))
+(define reopened (bundle-of "n4a-reopen"))
+(define (head-of b) (boundary-bundle-selected-head b))
+(unless (equal? (boundary-key (head-of saved)) (boundary-key (head-of reopened)))
+  (error (quote boundary-key)))
+(unless (equal? (boundary-catalog (head-of saved))
+                (boundary-catalog (head-of reopened)))
+  (error (quote catalog)))
+(unless (equal? (boundary-environment (head-of saved))
+                (boundary-environment (head-of reopened)))
+  (error (quote version-keys)))
+(unless (equal? (sort (map type-record-key (boundary-bundle-types saved)) string<?)
+                (sort (map type-record-key (boundary-bundle-types reopened)) string<?))
+  (error (quote type-keys)))
+(unless (equal? (map program-record-key (boundary-bundle-programs saved))
+                (map program-record-key (boundary-bundle-programs reopened)))
+  (error (quote program-keys)))
+(unless (equal? (map (lambda (p) (map cadr (program-record-modules p)))
+                     (boundary-bundle-programs saved))
+                (map (lambda (p) (map cadr (program-record-modules p)))
+                     (boundary-bundle-programs reopened)))
+  (error (quote module-keys)))
+(displayln "n4a-reopen-ok")' > out/sess-n4a-reopen-check.log 2>&1
+expect "n4a-reopen-preserves-keys" "n4a-reopen-ok" out/sess-n4a-reopen-check.log
+
+# A renamed namespace keeps its VersionKeys and TypeKeys and RECORDS the old
+# qualified spelling; a dropped one keeps the TypeKey with its historical name
+# while its versions become metadata-only.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/n4a_shapes.slog rename-rel:m,n bundle \
+  > out/sess-n4a-rename.log 2>&1
+expect_re "n4a-rename-transform-record" \
+  '\(program "b1:[^"]+:0"\) \(transform "b1:[^"]+:1"\)\)' \
+  out/sess-n4a-rename.log
+expect_re "n4a-rename-keeps-typekey-history" \
+  '\(names m\.Pair n\.Pair\)' out/sess-n4a-rename.log
+expect_re "n4a-rename-keeps-version" '\(n\.Pair struct "v1:[^"]+:0:[0-9]+" materialized\)' \
+  out/sess-n4a-rename.log
+
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/n4a_shapes.slog drop-rel:m bundle \
+  > out/sess-n4a-drop.log 2>&1
+# the constructor survives its last public name, renderable through its TypeKey
+expect_re "n4a-drop-keeps-historical-type" \
+  '\(sid [0-9]+\) \(names m\.Pair\)' out/sess-n4a-drop.log
+expect_re "n4a-drop-version-metadata-only" \
+  '\(\|\| struct "v1:[^"]+" metadata-only\)' out/sess-n4a-drop.log
+
+# A session with no exact logical head cannot describe itself, and says so
+# rather than guessing: a legacy environment event invalidates catalog truth,
+# and the save that follows writes no bundle at all.
+rm -rf data/n4a-nocatalog
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/base.slog inject-version:edge,n4a-legacy \
+  bundle save:n4a-nocatalog \
+  > out/sess-n4a-nocatalog.log 2>&1
+expect "n4a-no-head-no-bundle" "(boundary-bundle #f (leased #f))" \
+  out/sess-n4a-nocatalog.log
+timeout 300 racket -e '
+(require "compiler/dbmeta.rkt")
+(define m (read-db-meta "data/n4a-nocatalog"))
+(when (db-meta-has-boundary-bundle? m) (error (quote unexpected-bundle)))
+(unless (= (db-meta-format-version m) 2) (error (quote format-version)))
+(displayln "n4a-legacy-ok")' > out/sess-n4a-legacy.log 2>&1
+expect "n4a-catalog-less-save-has-no-bundle" "n4a-legacy-ok" \
+  out/sess-n4a-legacy.log
+
+# --- N4-B: mapped namespace attachment (docs/n4-contract.md §5) -------------
+#
+# One saved database, or one dependency-closed subtree of it, imported under a
+# destination prefix as ONE ordinary N3 boundary.  The whole schema/key/type
+# decision is made before any content moves, so these cases assert on both the
+# plan the session published and the rows that landed.
+
+# Sources: the qualified shapes fixture, and one whose rows are nested values
+# (Patricia sets, maps, sequences, structs wrapping each) that only survive if
+# the transitive word remapper runs.
+rm -rf data/n4b-src data/n4b-values
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/n4a_shapes.slog save:n4b-src > out/sess-n4b-src.log 2>&1
+expect "n4b-source-saved" "(saved n4b-src 1)" out/sess-n4b-src.log
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/n4b_values.slog save:n4b-values > out/sess-n4b-values.log 2>&1
+expect "n4b-value-source-saved" "(saved n4b-values 1)" out/sess-n4b-values.log
+
+# The saved root under one fresh dotted destination.  The destination's own
+# relation is untouched, and every attached row arrives.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/n4b_dest.slog attach:n4b-src,site \
+  dump-rel:site.g.edge dump-rel:site.m.pairs dump-rel:own.thing \
+  > out/sess-n4b-root.log 2>&1
+expect_re "n4b-root-attached" \
+  '\(attached "n4b-src" \(source \|\|\) \(destination site\) \(boundary "b1:[^"]+"\)' \
+  out/sess-n4b-root.log
+expect_re "n4b-root-rows" '\(dumpdone 3\)' out/sess-n4b-root.log
+expect_re "n4b-root-struct-rows" '\(dumpdone 6\)' out/sess-n4b-root.log
+expect "n4b-root-destination-intact" "(dumpdone 1)" out/sess-n4b-root.log
+
+# A nested, dependency-closed subtree at a differently named destination --
+# twice, at two destinations.  The two attachments must share nothing.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/n4b_dest.slog attach:n4b-src,g,graph attach:n4b-src,g,other \
+  dump-rel:graph.edge dump-rel:other.edge dump-rel:graph.unseen \
+  > out/sess-n4b-twice.log 2>&1
+expect_re "n4b-subtree-attached" \
+  '\(attached "n4b-src" \(source g\) \(destination graph\)' out/sess-n4b-twice.log
+expect_re "n4b-subtree-attached-again" \
+  '\(attached "n4b-src" \(source g\) \(destination other\)' out/sess-n4b-twice.log
+# an empty source member with no tuple directory still arrives as a declared,
+# versioned, empty destination relation
+expect "n4b-empty-member-attached" "(dumpdone 0)" out/sess-n4b-twice.log
+if [ "$(grep -c '(dumpdone 3)' out/sess-n4b-twice.log)" -eq 2 ]; then
+  echo "PASS n4b-both-destinations-populated"; PASS=$((PASS+1))
+else
+  echo "FAIL n4b-both-destinations-populated"; FAIL=$((FAIL+1))
+fi
+# the same source VersionKeys and TypeKeys map to DISJOINT destination keys
+timeout 300 racket -e '
+(require racket/string racket/list racket/set racket/file)
+(define lines
+  (filter (lambda (l) (string-prefix? l "(attached"))
+          (file->lines "out/sess-n4b-twice.log")))
+(unless (= (length lines) 2) (error (quote two-attachments)))
+;; every ("source-key" "destination-key") pair in one (attached ...) line
+(define (pairs line)
+  (map (lambda (p) (cons (second p) (third p)))
+       (regexp-match* #px"\\(\"([^\"]+)\" \"([^\"]+)\"\\)" line
+                      #:match-select values)))
+(define left (pairs (first lines)))
+(define right (pairs (second lines)))
+(unless (equal? (map car left) (map car right)) (error (quote same-sources)))
+(unless (set-empty? (set-intersect (list->set (map cdr left))
+                                   (list->set (map cdr right))))
+  (error (quote destination-keys-overlap)))
+(unless (set-empty? (set-intersect (list->set (map car left))
+                                   (list->set (map cdr left))))
+  (error (quote reused-source-identity)))
+(displayln "n4b-disjoint-ok")' > out/sess-n4b-disjoint.log 2>&1
+expect "n4b-two-attachments-disjoint" "n4b-disjoint-ok" out/sess-n4b-disjoint.log
+
+# Into a compatible PARTIAL destination: merge into the compatible non-empty
+# member, retain the destination-only one, leave the empty one where it was,
+# and add what was missing.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/n4b_partial.slog attach:n4b-src,g,graph \
+  dump-rel:graph.edge dump-rel:graph.local dump-rel:graph.unseen \
+  dump-rel:graph.path \
+  > out/sess-n4b-partial.log 2>&1
+expect "n4b-partial-merged"    "(dumpdone 4)" out/sess-n4b-partial.log
+expect "n4b-partial-retained"  "(dumpdone 1)" out/sess-n4b-partial.log
+expect "n4b-partial-not-advanced" "(dumpdone 0)" out/sess-n4b-partial.log
+expect "n4b-partial-added"     "(dumpdone 6)" out/sess-n4b-partial.log
+
+# Nested values: sets, maps, sequences, and structs wrapping each, all
+# rendered under DESTINATION constructor names with identical contents.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/n4b_dest.slog attach:n4b-values,nv \
+  dump-tuples:nv.wraps dump-tuples:nv.deep dump-tuples:nv.maps \
+  dump-tuples:nv.boxes dump-tuples:nv.seqs \
+  > out/sess-n4b-nested.log 2>&1
+expect "n4b-set-through-struct" \
+  "(tuplerow (nv.Wrap (nv.pbranch 0 8 (nv.pleaf 1) (nv.pleaf 9))))" \
+  out/sess-n4b-nested.log
+expect "n4b-struct-column" \
+  "(tuplerow 1 (nv.Wrap (nv.pbranch 0 8 (nv.pbranch 0 4 (nv.pleaf 2) (nv.pleaf 5)) (nv.pleaf 8))))" \
+  out/sess-n4b-nested.log
+expect "n4b-map-remapped" \
+  "(tuplerow (nv.mbranch 0 2 (nv.mleaf 1 10) (nv.mleaf 2 20)))" \
+  out/sess-n4b-nested.log
+expect "n4b-sequence-through-struct" "(tuplerow (nv.Boxed [4 5]))" \
+  out/sess-n4b-nested.log
+expect "n4b-bare-sequence" "(tuplerow [1 2 3])" out/sess-n4b-nested.log
+
+# The recorded mapping survives save and replay: reopening re-runs the
+# attachment from its self-auditing plan and reproduces the same rows.
+rm -rf data/n4b-attached
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/n4b_dest.slog attach:n4b-src,g,graph save:n4b-attached \
+  > out/sess-n4b-save.log 2>&1
+expect "n4b-attachment-saved" "(saved n4b-attached 2)" out/sess-n4b-save.log
+timeout 900 racket tests/api/session-drive.rkt \
+  open:n4b-attached dump-rel:graph.edge dump-rel:graph.unseen \
+  dump-rel:own.thing dump-rel:graph.path \
+  > out/sess-n4b-replay.log 2>&1
+expect_re "n4b-replay-rows" '\(dumpdone 3\)' out/sess-n4b-replay.log
+expect_re "n4b-replay-added" '\(dumpdone 6\)' out/sess-n4b-replay.log
+# and the durable bundle records the attachment as a committed boundary
+timeout 300 racket -e '
+(require "compiler/dbmeta.rkt" "compiler/catalog.rkt" "compiler/names.rkt")
+(define b (datum->boundary-bundle
+           (db-meta-boundary-bundle (read-db-meta "data/n4b-attached"))))
+(void (validate-boundary-bundle b))
+(unless (member (quote attachment)
+                (map boundary-record-origin-kind (boundary-bundle-history b)))
+  (error (quote no-attachment-record)))
+(define head (boundary-bundle-selected-head b))
+(for ([name (in-list (quote (graph.edge graph.path graph.unseen)))])
+  (unless (hash-has-key? (catalog-declarations (boundary-catalog head))
+                         (symbol->qname name))
+    (error name)))
+(displayln "n4b-bundle-ok")' > out/sess-n4b-bundle.log 2>&1
+expect "n4b-attachment-in-bundle" "n4b-bundle-ok" out/sess-n4b-bundle.log
+
+# Refusals, each before any public state changes.
+# own.thing is a LEAF at the destination; an attachment may not nest a
+# namespace inside it
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/n4b_dest.slog attach:n4b-src,m,own.thing \
+  > out/sess-n4b-occupied.log 2>&1
+expect "n4b-refuses-occupied-leaf" "nests inside declaration" \
+  out/sess-n4b-occupied.log
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/n4b_dest.slog attach:n4b-src,nowhere,here \
+  > out/sess-n4b-unbound.log 2>&1
+expect "n4b-refuses-unbound-source" "selects nothing" out/sess-n4b-unbound.log
+# a catalog-less input is refused loudly rather than reconstructed from
+# relation-directory names (n4-contract.md §4 work order 7)
+rm -rf data/n4b-legacy
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/base.slog inject-version:edge,n4b-legacy save:n4b-legacy \
+  > out/sess-n4b-mklegacy.log 2>&1
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/n4b_dest.slog attach:n4b-legacy,here \
+  > out/sess-n4b-catalogless.log 2>&1
+expect "n4b-refuses-catalog-less-source" "carries no logical catalog" \
+  out/sess-n4b-catalogless.log
+
+# --- N4-A work orders 3-7: freeze carry-forward, restore, audit, refusals ---
+#
+# A frozen root is the database that has a logical catalog and NO recipe, so
+# it is the one that exercises restore-schema-before-rows.  Everything else
+# here is the read side: keys survive, the replay is audited rather than
+# trusted, and a catalog-less input is refused loudly.
+
+rm -rf data/n4c-src data/n4c-frozen data/n4c-values-frozen
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/n4a_shapes.slog save:n4c-src > out/sess-n4c-src.log 2>&1
+expect "n4c-source-saved" "(saved n4c-src 1)" out/sess-n4c-src.log
+
+# `slog db freeze` cuts the chain but must NOT lose the catalog: the flat root
+# describes itself, with its history restated as its own base.
+timeout 900 racket compiler/run.rkt db freeze n4c-src --as n4c-frozen \
+  > out/sess-n4c-freeze.log 2>&1
+expect "n4c-frozen" "a standalone flat root (history cut)" out/sess-n4c-freeze.log
+timeout 300 racket -e '
+(require "compiler/dbmeta.rkt" "compiler/catalog.rkt" "compiler/names.rkt")
+(define m (read-db-meta "data/n4c-frozen"))
+(unless (db-meta-has-boundary-bundle? m) (error (quote frozen-root-has-no-bundle)))
+(when (db-has-recipe? "data/n4c-frozen") (error (quote frozen-root-kept-a-recipe)))
+(define b (datum->boundary-bundle (db-meta-boundary-bundle m)))
+(void (validate-boundary-bundle b))
+(unless (equal? (map boundary-record-origin-kind (boundary-bundle-history b))
+                (quote (initial)))
+  (error (quote history-not-cut)))
+(unless (null? (boundary-bundle-programs b)) (error (quote kept-program-lineage)))
+;; the head is intact: the empty member and the nominal are both still there
+(define head (boundary-bundle-selected-head b))
+(unless (hash-has-key? (boundary-environment head) (symbol->qname (quote g.unseen)))
+  (error (quote lost-empty-member)))
+(unless (hash-has-key? (catalog-nominals (boundary-catalog head))
+                       (symbol->qname (quote m.Pair)))
+  (error (quote lost-nominal)))
+(displayln "n4c-freeze-ok")' > out/sess-n4c-frozen.log 2>&1
+expect "n4c-frozen-self-describing" "n4c-freeze-ok" out/sess-n4c-frozen.log
+
+# Opening it RESTORES the head before any row is loaded: the empty member is
+# there with no tuple directory behind it, and every stable key survives.
+timeout 900 racket tests/api/session-drive.rkt \
+  open:n4c-frozen dump-rel:g.edge dump-rel:g.unseen dump-tuples:m.pairs bundle \
+  > out/sess-n4c-restore.log 2>&1
+expect "n4c-restored-rows" "(dumpdone 3)" out/sess-n4c-restore.log
+expect "n4c-restored-empty-member" "(dumpdone 0)" out/sess-n4c-restore.log
+expect "n4c-restored-struct" "(tuplerow (m.Pair 1 2))" out/sess-n4c-restore.log
+timeout 300 racket -e '
+(require "compiler/dbmeta.rkt" "compiler/catalog.rkt" "compiler/names.rkt"
+         racket/string racket/file)
+(define stored (datum->boundary-bundle
+                (db-meta-boundary-bundle (read-db-meta "data/n4c-frozen"))))
+(define head (boundary-bundle-selected-head stored))
+(define line (for/first ([l (in-list (file->lines "out/sess-n4c-restore.log"))]
+                         #:when (string-prefix? l "(boundary-bundle")) l))
+(unless line (error (quote no-bundle-projection)))
+(unless (string-contains? line (boundary-key head)) (error (quote boundary-key)))
+(for ([k (in-hash-values (boundary-environment head))])
+  (unless (string-contains? line k) (error (quote version-key) k)))
+(for ([t (in-list (boundary-bundle-types stored))])
+  (unless (string-contains? line (type-record-key t)) (error (quote type-key))))
+(displayln "n4c-restore-keys-ok")' > out/sess-n4c-keys.log 2>&1
+expect "n4c-restore-preserves-keys" "n4c-restore-keys-ok" out/sess-n4c-keys.log
+
+# A FORCED SID reassignment must not change what a nested value decodes to.
+# Reversing the restore's create order shifts every runtime struct id off the
+# value it was saved with; the persisted keys are unaffected, and the sets,
+# maps, sequences, and nested structs still read back identically.
+timeout 900 racket compiler/run.rkt db freeze n4b-values --as n4c-values-frozen \
+  > out/sess-n4c-vfreeze.log 2>&1
+expect "n4c-value-root-frozen" "a standalone flat root (history cut)" \
+  out/sess-n4c-vfreeze.log
+SLOG_N4_RESTORE_REVERSE=1 timeout 900 racket tests/api/session-drive.rkt \
+  open:n4c-values-frozen dump-tuples:wraps dump-tuples:deep dump-tuples:maps \
+  dump-tuples:boxes dump-tuples:seqs bundle \
+  > out/sess-n4c-shift.log 2>&1
+expect "n4c-shift-set-through-struct" \
+  "(tuplerow (Wrap (pbranch 0 8 (pleaf 1) (pleaf 9))))" out/sess-n4c-shift.log
+expect "n4c-shift-struct-column" \
+  "(tuplerow 1 (Wrap (pbranch 0 8 (pbranch 0 4 (pleaf 2) (pleaf 5)) (pleaf 8))))" \
+  out/sess-n4c-shift.log
+expect "n4c-shift-map" "(tuplerow (mbranch 0 2 (mleaf 1 10) (mleaf 2 20)))" \
+  out/sess-n4c-shift.log
+expect "n4c-shift-sequence" "(tuplerow (Boxed [4 5]))" out/sess-n4c-shift.log
+timeout 300 racket -e '
+(require "compiler/dbmeta.rkt" "compiler/catalog.rkt" "compiler/names.rkt"
+         racket/string racket/file racket/list)
+(define stored (datum->boundary-bundle
+                (db-meta-boundary-bundle (read-db-meta "data/n4c-values-frozen"))))
+(define saved (for/hash ([t (in-list (boundary-bundle-types stored))]
+                         #:when (pair? (type-record-names t)))
+                (values (qname->display (car (type-record-names t)))
+                        (type-record-sid t))))
+(define line (for/first ([l (in-list (file->lines "out/sess-n4c-shift.log"))]
+                         #:when (string-prefix? l "(boundary-bundle")) l))
+(define live
+  (for/hash ([m (in-list (regexp-match*
+                          #px"\\(\"[^\"]+\" \\(arity [0-9]+\\) \\(sid ([0-9]+)\\) \\(names ([^) ]+)\\)\\)"
+                          line #:match-select values))])
+    (values (third m) (string->number (second m)))))
+(define shifted
+  (for/list ([(n s) (in-hash saved)]
+             #:when (and (hash-ref live n #f) (not (= s (hash-ref live n)))))
+    n))
+;; the fixture must actually have forced a reassignment, or it proves nothing
+(unless (> (length shifted) 10) (error (quote no-sid-shift) (length shifted)))
+;; ... while every persisted key stayed put
+(unless (string-contains? line (boundary-key (boundary-bundle-selected-head stored)))
+  (error (quote boundary-key-moved)))
+(printf "n4c-sid-shift-ok ~a\n" (length shifted))' > out/sess-n4c-sids.log 2>&1
+expect "n4c-forced-sid-reassignment" "n4c-sid-shift-ok" out/sess-n4c-sids.log
+
+# A recipe layer takes the OTHER route: its chain rebuilds the boundary chain
+# independently, so the stored bundle is an AUDIT rather than the source of
+# truth.  The clean case reproduces it exactly.
+timeout 900 racket tests/api/session-drive.rkt open:n4c-src bundle \
+  > out/sess-n4c-recipe.log 2>&1
+expect_re "n4c-recipe-audited" '\(boundary-bundle \(head "b1:' out/sess-n4c-recipe.log
+
+# ... and a bundle that disagrees with what the replay reconstructs fails the
+# open.  Retargeting one VersionKey keeps the bundle internally well-formed
+# and self-consistent -- only the replay can tell it is no longer the truth.
+rm -rf data/n4c-tampered
+cp -r data/n4c-src data/n4c-tampered
+timeout 300 racket -e '
+(require racket/file racket/string)
+(define path "data/n4c-tampered/META")
+(define text (file->string path))
+(define tampered (string-replace text ":0:2\"" ":0:99\""))
+(when (equal? tampered text) (error (quote nothing-tampered)))
+(display-to-file tampered path #:exists (quote truncate))
+(displayln "tampered")' > out/sess-n4c-tamper.log 2>&1
+expect "n4c-tamper-applied" "tampered" out/sess-n4c-tamper.log
+timeout 900 racket tests/api/session-drive.rkt open:n4c-tampered \
+  > out/sess-n4c-audit.log 2>&1
+expect "n4c-audit-refuses-divergence" "diverges from the catalog stored in" \
+  out/sess-n4c-audit.log
+# that tamper moved a nominal TypeKey too, so the declaration graph is what
+# reports first; retargeting ONLY a VersionKey exercises the other branch
+rm -rf data/n4c-tampered2
+cp -r data/n4c-src data/n4c-tampered2
+timeout 300 racket -e '
+(require racket/file)
+(define path "data/n4c-tampered2/META")
+(define text (file->string path))
+(define tampered (regexp-replace* #px"\"v1:([^\"]*):0:2\"" text "\"v1:\\1:0:99\""))
+(when (equal? tampered text) (error (quote nothing-tampered)))
+(display-to-file tampered path #:exists (quote truncate))
+(displayln "tampered")' > out/sess-n4c-tamper2.log 2>&1
+expect "n4c-version-tamper-applied" "tampered" out/sess-n4c-tamper2.log
+timeout 900 racket tests/api/session-drive.rkt open:n4c-tampered2 \
+  > out/sess-n4c-audit2.log 2>&1
+expect "n4c-audit-names-the-environment" "VersionKey environment" \
+  out/sess-n4c-audit2.log
+
+# A CHAINED plan keeps the verbatim path even when its base describes itself.
+# Restoring re-interns rows and gives the base a logical head; `import-layer`
+# passthrough assumes an id-preserving root, and a recipe layer's persisted
+# BoundaryPlans were planned against a legacy-adopted base.  Opening a session
+# layer stacked on a frozen root must still load, and still reach the same
+# content as the layer did live.
+rm -rf data/n4c-stacked
+timeout 900 racket tests/api/session-drive.rkt \
+  open:n4c-frozen run:tests/session/tcrules.slog dump-rel:g.edge \
+  save:n4c-stacked > out/sess-n4c-stack.log 2>&1
+expect "n4c-stacked-saved" "(saved n4c-stacked" out/sess-n4c-stack.log
+timeout 900 racket tests/api/session-drive.rkt \
+  open:n4c-stacked dump-rel:g.edge dump-rel:g.unseen dump-tuples:m.pairs \
+  > out/sess-n4c-stack-load.log 2>&1
+expect "n4c-stacked-reloads" "(dumpdone 3)" out/sess-n4c-stack-load.log
+expect "n4c-stacked-empty-member" "(dumpdone 0)" out/sess-n4c-stack-load.log
+expect "n4c-stacked-structs" "(tuplerow (m.Pair 1 2))" out/sess-n4c-stack-load.log
+
+# Work order 7: identity operations refuse a catalog-less input loudly.
+timeout 300 racket -e '
+(require "compiler/repl.rkt")
+(displayln "loaded")' > out/sess-n4c-replload.log 2>&1
+expect "n4c-repl-loads" "loaded" out/sess-n4c-replload.log
 
 echo
 echo "$PASS passed, $FAIL failed"

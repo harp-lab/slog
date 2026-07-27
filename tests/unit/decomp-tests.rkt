@@ -31,8 +31,10 @@
      void
      (lambda ()
        (with-output-to-file f #:exists 'replace (lambda () (display src)))
-       (match-define `((program ,type-env ,_ ,_ ,decomps))
+       (match-define (list (? program-ir? program))
          (load-program-list (path->string f) (hash)))
+       (define type-env (program-ir-type-env program))
+       (define decomps (program-ir-decomps program))
        (values (type-env-rels type-env) decomps))
      (lambda () (delete-file f))))
 

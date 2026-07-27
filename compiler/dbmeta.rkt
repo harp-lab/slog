@@ -41,6 +41,8 @@
          db-meta-idb-rels
          db-meta-edb-rels
          db-meta-pinned-rels
+         db-meta-boundary-bundle
+         db-meta-has-boundary-bundle?
          db-meta->sexpr
          sexpr->db-meta
          write-db-meta
@@ -82,8 +84,15 @@
 ;; Bump format-version on any incompatible META schema change; a reader
 ;; refuses a file whose format-version exceeds what it understands (§8: "reject
 ;; foreign files loudly").
+;; v2 (2026-07-26, N4-A): the `boundary-bundle` field -- one canonical,
+;; self-describing logical catalog (docs/n4-contract.md §3) carried directly
+;; in META rather than a second CATALOG file, so schema restore stays a single
+;; atomic metadata read.  The field is OPTIONAL at the format level (a legacy
+;; root re-stamped by this build still has no exact declaration metadata to
+;; offer), but when present it must validate completely, and N4 catalog /
+;; attach / REPL identity operations refuse an input that lacks it.
 (define slog-db-magic "SLOGDB")
-(define slog-db-format-version 1)
+(define slog-db-format-version 2)
 
 ;; The daemon's NaN-box/interner encoding version (docs/db-compression.md §9):
 ;; the ONE residual coupling between a stored bin db and the runtime.  A bump
@@ -127,6 +136,8 @@
 ;;                      §15): written by no rule, so replay cannot re-derive
 ;;                      them -- stored unsampled, used as heap-trim roots,
 ;;                      and re-ingested (never re-queried) on load
+;;   boundary-bundle  : the N4-A durable logical catalog (catalog.rkt), or #f
+;;                      for a creator with no exact declaration metadata
 (define (make-db-meta
          #:kind [kind 'root]
          #:pure-edb? [pure-edb? #t]
@@ -143,7 +154,11 @@
          #:idb-rels [idb-rels '()]
          #:edb-rels [edb-rels '()]
          #:pinned-rels [pinned-rels '()]
+         #:boundary-bundle [boundary-bundle #f]
          #:extra [extra '()])          ; extra ((key . value) ...) for forward-compat
+  (when boundary-bundle
+    (unless (boundary-bundle-datum? boundary-bundle)
+      (meta-fail "refusing to write an invalid boundary bundle into META")))
   (define base
     (hash 'magic slog-db-magic
           'format-version slog-db-format-version
@@ -163,7 +178,9 @@
           'idb-rels idb-rels
           'edb-rels edb-rels
           'pinned-rels pinned-rels))
-  (for/fold ([m base]) ([kv (in-list extra)])
+  (define with-bundle
+    (if boundary-bundle (hash-set base 'boundary-bundle boundary-bundle) base))
+  (for/fold ([m with-bundle]) ([kv (in-list extra)])
     (hash-set m (car kv) (cdr kv))))
 
 (define (db-meta-ref m key [default #f]) (hash-ref m key default))
@@ -185,6 +202,9 @@
 (define (db-meta-idb-rels m) (db-meta-ref m 'idb-rels '()))
 (define (db-meta-edb-rels m) (db-meta-ref m 'edb-rels '()))
 (define (db-meta-pinned-rels m) (db-meta-ref m 'pinned-rels '()))
+(define (db-meta-boundary-bundle m) (db-meta-ref m 'boundary-bundle #f))
+(define (db-meta-has-boundary-bundle? m)
+  (and (db-meta-boundary-bundle m) #t))
 
 ;; ---------------------------------------------------------------------------
 ;; Serialisation.  A META file is a single top-level form:
@@ -214,6 +234,12 @@
      (unless (and (exact-nonnegative-integer? fv) (<= fv slog-db-format-version))
        (meta-fail "META format-version ~s is newer than this build understands (~s)"
                   fv slog-db-format-version))
+     ;; N4-A: the bundle is optional, but a PRESENT one is authoritative --
+     ;; a malformed, internally inconsistent, or unsupported bundle fails the
+     ;; whole read, before any caller can touch daemon state with it.
+     (define bundle (hash-ref m 'boundary-bundle #f))
+     (when (and bundle (not (boundary-bundle-datum? bundle)))
+       (meta-fail "META carries a malformed or inconsistent boundary bundle"))
      m]
     [_ (meta-fail "not a slog-db-meta s-expr: ~s" s)]))
 
@@ -347,7 +373,8 @@
 ;;     (open DB)
 ;;     (run PROG)
 ;;     (run PROG (version-events TABLE ...)
-;;               (boundary-plans PLAN ...))  ; N2 self-auditing form
+;;               (boundary-plans PLAN ...)
+;;               (module-instances GROUP ...)) ; N1/N2 self-auditing form
 ;;     (import-delta DIR ((X Z) ...))        ; DIR may be (delta k) post-
 ;;                                           ;   externalisation (0.C5)
 ;;     (link DB ((X Z) ...))                 ; reference, never copied (0.D5)
@@ -375,9 +402,24 @@
            (match entry
              [`(,(? symbol?) ,(? string?)) #t]
              [_ #f]))))
+  (define (module-group? group)
+    (match group
+      [`(program-modules
+         (program ,(? string?))
+         ,(? module-instance-descriptor-datum?) ...)
+       #t]
+      [_ #f]))
   (match st
     [`(open ,(? string?)) #t]
     [`(run ,_) #t]
+    [`(run ,_
+           (version-events ,tables ...)
+           (boundary-plans ,plans ...)
+           (module-instances ,module-groups ...))
+     (and (= (length tables) (length plans) (length module-groups))
+          (andmap version-table? tables)
+          (andmap boundary-plan-datum? plans)
+          (andmap module-group? module-groups))]
     [`(run ,_
            (version-events ,tables ...)
            (boundary-plans ,plans ...))
@@ -403,6 +445,10 @@
     ;; replay revalidates the exact minted BoundaryKey (catalog.rkt).
     [`(rename-path ,(? symbol?) ,(? symbol?) ,(? transform-plan-datum?)) #t]
     [`(drop-path ,(? symbol?) ,(? transform-plan-datum?)) #t]
+    ;; N4-B attachment: the step carries its self-auditing plan, so replay
+    ;; recomputes the whole mapping and refuses any source or destination
+    ;; drift rather than re-deriving a fresh one (n4-contract.md §5).
+    [`(attach ,(? string?) ,(? attachment-plan-datum?)) #t]
     [`(inject-version ,(? symbol?) ,(? string?)) #t]
     [`(add-tuple ,(? symbol?) ,_ ...) #t]
     [`(del-tuple ,(? symbol?) ,_ ...) #t]
@@ -626,6 +672,10 @@
           (db-meta-value-encoding-version m)
           (db-meta-env m)
           prog-fp
+          ;; N4-A: the logical catalog is part of a database's identity, so a
+          ;; tampered or swapped bundle changes the stamp like any other
+          ;; identity field.
+          (db-meta-boundary-bundle m)
           (if (and db-dir (db-meta-pure-edb? m)) (dir-content-digest db-dir) 'derived)))
   (substring (bytes->hex-string
               (sha256 (string->bytes/utf-8 (format "~s" identity))))

@@ -73,12 +73,15 @@
          session-link!          ; hot-link a data/ DB (0.D5)
          session-rename!        ; environment operations (0.D1)
          session-drop!
+         session-attach!        ; N4-B mapped namespace attachment
          session-flush!
          session-save!          ; the delta-layer save (0.E1)
          session-log            ; the collapsed applied-batch log (C2/C3)
          session-recipe         ; ordered steps + anchored batches (§0.10)
          session-current-boundary
          session-boundary-history
+         session-boundary-bundle  ; the N4-A durable bundle, or #f (no head)
+         session-prepared-boundary ; the leased, uncommitted BoundaryKey or #f
          session-action!        ; low-level: one action + a reader
          session-command-stream! ; low-level: one T0 command record stream
          session-recount!       ; the count round over the pipeline (M0)
@@ -152,7 +155,14 @@
                  touched sources [replaying? #:mutable] echo
                  [layer-id #:mutable] evaluation-id [next-event #:mutable]
                  [descriptors #:mutable] compat-keys input-only
-                 [catalog-boundary #:mutable] [boundary-plans #:mutable])
+                 [catalog-boundary #:mutable] [boundary-plans #:mutable]
+                 ;; N4-A bundle accumulators: the ordered committed boundary
+                 ;; record chain (program boundaries AND transforms), the
+                 ;; program/module records, every qualified spelling a TypeKey
+                 ;; has carried, and the currently leased prepared BoundaryKey
+                 ;; (a save while one is outstanding is refused).
+                 [catalog-records #:mutable] [program-records #:mutable]
+                 [nominal-names #:mutable] [prepared-boundary #:mutable])
   #:transparent)
 
 (define (fresh-runtime-id prefix)
@@ -175,7 +185,8 @@
              '() '() '() (make-hash) (make-hash) #f echo
              layer-id (fresh-runtime-id "eval") 0 '()
              (make-hash) (make-hash)
-             (empty-boundary (format "b0:~a" layer-id)) '()))
+             (empty-boundary (format "b0:~a" layer-id)) '()
+             '() '() (hash) #f))
   (session-action! s `(set-evaluation ,(session-evaluation-id s))
                    read-one-line-quiet!)
   s)
@@ -189,7 +200,8 @@
   (define s (session #f out-port in-port #f #f '() 0 (make-hash) (make-hash)
                      (make-hash) '() '() '() (make-hash) (make-hash) #f echo
                      layer-id (fresh-runtime-id "eval") 0 '()
-                     (make-hash) (make-hash) #f '()))
+                     (make-hash) (make-hash) #f '()
+                     '() '() (hash) #f))
   (session-action! s `(set-evaluation ,(session-evaluation-id s))
                    read-one-line-quiet!)
   (define-values (_cur strata-pos _chains) (introspect! s))
@@ -646,11 +658,22 @@
   ;; A loaded database may predate catalog metadata, and even an N2 recipe
   ;; must reconstruct its logical head by replaying the persisted plans.
   ;; Never carry the caller's in-memory head across a database switch.
-  (set-session-catalog-boundary! s #f)
+  (install-head! s #f)
   (set-session-boundary-plans! s '())
+  (set-session-catalog-records! s '())
+  (set-session-program-records! s '())
+  (set-session-nominal-names! s (hash))
+  (set-session-prepared-boundary! s #f)
   (set-session-db! s db)
   (record-step! s `(open ,db))
+  ;; Work order 4: the bundle is read and validated BEFORE any daemon
+  ;; mutation, so a corrupt or unsupported one fails the open outright.
+  (define stored (database-boundary-bundle db))
   (session-execute-load-steps! s (db-load-steps db))
+  ;; Work order 5: however the load got here -- a restored root or a recipe
+  ;; chain that rebuilt its own boundary chain -- audit it against what the
+  ;; database says it is.
+  (when stored (audit-restored-bundle! s db stored))
   ;; a recipe replay rebinds session-db to the layer's base for its first
   ;; segment's compile manifest; restore the user-level input
   (set-session-db! s db)
@@ -670,7 +693,25 @@
   (set-session-replaying?! s #t)
   (for ([st (in-list steps)])
     (match st
-      [`(open ,db) (session-action! s `(open ,db))]
+      ;; N4-A work order 4: a database that describes itself is RESTORED --
+      ;; schema through the boundary machinery, then rows into its slots --
+      ;; rather than loaded verbatim with no logical identity.
+      ;;
+      ;; The choice depends ONLY on the database, never on the shape of the
+      ;; plan it appears in, and that is load-bearing.  A restore re-interns
+      ;; rows and gives the base a logical head; anything computed against
+      ;; the base -- a recipe layer's BoundaryPlans, a compressed layer's
+      ;; heap-trimmed kept sample -- must see the same base at save time and
+      ;; at load time or it diverges.  Restore is deterministic (one fixed
+      ;; action order into a fresh daemon), so a rule that is a function of
+      ;; the database alone is symmetric by construction; a rule that also
+      ;; consulted the surrounding plan would restore while saving and not
+      ;; while loading, which is exactly the failure it looks like it avoids.
+      [`(open ,db)
+       (define bundle (database-boundary-bundle db))
+       (if bundle
+           (restore-database! s db bundle)
+           (session-action! s `(open ,db)))]
       [`(import-layer ,l) (session-action! s `(import-layer ,l))]
       [`(replay ,l ,own) (replay-prog-layer! s l own)]
       [`(replay-recipe ,l) (replay-recipe-layer! s l)]
@@ -691,6 +732,9 @@
     ;; the identical BoundaryKey or the replay refuses.
     [`(rename-path ,from ,to ,plan) (session-rename! s from to #:plan plan)]
     [`(drop-path ,r ,plan) (session-drop! s r #:plan plan)]
+    ;; The persisted attachment plan carries its own source/destination paths;
+    ;; replay recomputes it and refuses divergence.
+    [`(attach ,db ,plan) (session-attach! s db #:plan plan)]
     [`(inject-version ,r ,key) (session-inject-version! s r #:key key)]
     [`(import-delta ,dir ,renames) (session-import-delta! s dir renames)]
     [`(link ,db ,renames) (session-link! s db renames)]
@@ -787,6 +831,14 @@
       (match st
         [`(open ,_db) (void)]   ; the manifest link already materialised the base
         [`(run ,prog) (session-run! s prog)]
+        [`(run ,prog
+               (version-events ,tables ...)
+               (boundary-plans ,plans ...)
+               (module-instances ,module-groups ...))
+         (session-run! s prog
+                       #:version-events tables
+                       #:boundary-plans plans
+                       #:module-instances module-groups)]
         [`(run ,prog
                (version-events ,tables ...)
                (boundary-plans ,plans ...))
@@ -896,11 +948,14 @@
 (define (transform-event! s persisted)
   (cond
     [persisted
+     ;; Both planned-transform and attachment recipe steps carry their event
+     ;; in an `(event N)` clause; replay adopts it so the recomputed plan
+     ;; mints exactly the persisted keys.
      (define event
-       (match persisted
-         [`(transform-plan (layer ,_) (event ,(? exact-nonnegative-integer? e))
-                           . ,_) e]
-         [_ (error 'session (format "malformed transform plan: ~a" persisted))]))
+       (match (plan-clause persisted 'event)
+         [(list (? exact-nonnegative-integer? e)) e]
+         [_ (error 'session
+                   (format "persisted plan carries no event: ~a" persisted))]))
      (set-session-next-event! s (max (session-next-event s) (add1 event)))
      event]
     [else
@@ -919,7 +974,10 @@
              ,@(boundary-catalog-clauses (transform-plan-output plan)))))
   (match reply
     [`(,(or 'path-renamed 'path-dropped) ,_ . ,_)
-     (set-session-catalog-boundary! s (transform-plan-output plan))]
+     (record-boundary! s (boundary-key (transform-plan-input plan))
+                       (transform-plan-boundary-key plan)
+                       'transform (transform-plan->datum plan))
+     (install-head! s (transform-plan-output plan))]
     [`(refused ,class ,_ . ,details)
      (error 'session (format "~a refused (~a): ~a" verb class details))]
     [other
@@ -1014,6 +1072,396 @@
      (echo! s line)
      (record-step! s `(drop-rel ,rel*) #:at cur)]))
 
+;; ---- N4-B mapped namespace attachment (docs/n4-contract.md §5) ------------
+
+;; The relation directories a saved database actually carries, as
+;; QName -> directory basename.  Emptiness is a property of the SOURCE
+;; database, not of its catalog: a declared member with no rows has no
+;; directory (n4-contract.md §4 work order 4), which is exactly the
+;; distinction §5 needs to decide whether a destination version advances.
+;; Returns (values public-dirs all-relation-bases): the QName-keyed public
+;; directories the plan may select from, and EVERY relation directory the
+;; source holds.  The second is what staging must reason about -- an internal
+;; directory left in the payload would arrive under its own name and create a
+;; relation the boundary never planned.
+(define (source-relation-directories dir)
+  (for/fold ([out (hash)] [bases (set)])
+            ([entry (in-list (if (directory-exists? dir)
+                                 (directory-list dir)
+                                 '()))])
+    (define base (path->string entry))
+    (define name
+      (for/or ([pattern
+                (in-list
+                 (list #px"^table\\.(.+)\\.arity\\.[0-9]+$"
+                       #px"^struct\\.(.+)\\.arity\\.[0-9]+\\.id\\.[0-9]+$"
+                       #px"^lat\\.(.+)\\.arity\\.[0-9]+\\.spec\\.[-.'\\w]+$"))])
+        (match (regexp-match pattern base)
+          [(list _ name) name]
+          [_ #f])))
+    ;; Compiler-internal `$...` relations (the sequence/demand machinery) are
+    ;; materialized but are execution state, not public schema: they carry no
+    ;; QName, are never attached, and must stay out of the staged payload so
+    ;; the import cannot create them at the destination.  Anything else whose
+    ;; name is not a valid QName is skipped for the same reason.
+    (define relation?
+      (and name (directory-exists? (build-path dir base))))
+    (define qname
+      (and relation? (not (string-prefix? name "$"))
+           (with-handlers ([exn:fail? (lambda (_error) #f)])
+             (wire->qname name))))
+    (values (if qname (hash-set out qname base) out)
+            (if relation? (set-add bases base) bases))))
+
+;; Stage the payload the import will read.  When the attachment carries every
+;; materialized relation (the saved root), the source directory IS the
+;; payload.  A subtree attach must not let the importer create destination
+;; relations outside the plan, so it stages a copy holding only the selected
+;; relation directories plus every interner/heap file -- the heap travels
+;; whole, so the remap stays closure-complete.
+(define (call-with-attachment-payload dir selected-bases all-bases proc)
+  (cond
+    [(= (set-count selected-bases) (set-count all-bases)) (proc dir)]
+    [(directory-exists? (build-path dir "accel"))
+     (error 'session
+            (format
+             "cannot attach a subtree of ~a: it carries accelerator seeds whose rows this selection cannot attribute"
+             dir))]
+    [else
+     (define staged (make-temporary-file "slog-attach-~a" 'directory))
+     (dynamic-wind
+      void
+      (lambda ()
+        (define excluded (set-subtract all-bases selected-bases))
+        (for ([entry (in-list (directory-list dir))])
+          (define base (path->string entry))
+          (unless (set-member? excluded base)
+            (define from (build-path dir base))
+            (define to (build-path staged base))
+            (if (directory-exists? from)
+                (copy-directory/files from to)
+                (copy-file from to))))
+        (proc (path->string staged)))
+      (lambda () (delete-directory/files staged #:must-exist? #f)))]))
+
+;; ---- N4-A restore and replay audit (n4-contract.md §4, work orders 4-5) ---
+
+;; The saved logical catalog of a database, or #f when it has none.  Reads and
+;; validates directly rather than through dbtool's `db-meta-of`, which
+;; deliberately swallows a malformed META and reports the database as
+;; unmanaged: for the restore path a corrupt bundle must fail the load.
+(define (database-boundary-bundle db)
+  (define dir (string-append "data/" db))
+  (and (db-meta-file-exists? dir)
+       (let ([datum (db-meta-boundary-bundle (read-db-meta dir))])
+         (and datum (datum->boundary-bundle datum)))))
+
+;; Restore a saved head BEFORE any tuple is loaded (work order 4).  The
+;; declarations, their qualified field graph, the empty members, and every
+;; stable key are installed through the ordinary N3 boundary machinery; the
+;; rows then land in that boundary's private slots and the whole thing
+;; publishes at once.  Deliberately NOT a verbatim `open`: a verbatim load
+;; would create relations with no VersionKey that no boundary action can
+;; describe, and would let a tuple directory -- not the bundle -- decide what
+;; the database declares.
+(define (restore-database! s db bundle)
+  (define dir (string-append "data/" db))
+  ;; SLOG_N4_RESTORE_REVERSE is a test fixture, not a mode: it only reverses
+  ;; the order the restore creates its storage slots in, which shifts every
+  ;; runtime SID off the value it was saved with.  Nothing identity-bearing
+  ;; depends on that order, so a correct restore is unaffected -- which is
+  ;; exactly what the gate checks.
+  (define plan
+    (plan-bundle-restore
+     bundle
+     #:storage-order (if (getenv "SLOG_N4_RESTORE_REVERSE") reverse values)))
+  (define key (boundary-plan-boundary-key plan))
+  (define-values (all-dirs all-bases) (source-relation-directories dir))
+  (define head (boundary-bundle-selected-head bundle))
+  (define environment (boundary-environment head))
+  ;; Only declared storage members are loaded; a directory the catalog does
+  ;; not declare is not silently admitted as schema.
+  (define loadable
+    (sort (for/list ([(name base) (in-hash all-dirs)]
+                     #:when (hash-has-key? environment name))
+            name)
+          qname<?))
+  (define undeclared
+    (for/list ([(name base) (in-hash all-dirs)]
+               #:unless (hash-has-key? environment name))
+      name))
+  (unless (null? undeclared)
+    (error 'session
+           (format
+            "cannot open ~a: it carries relation directories its catalog does not declare (~a)"
+            db (string-join (map qname->display (sort undeclared qname<?)) ", "))))
+  (define selected-bases
+    (for/set ([name (in-list loadable)]) (hash-ref all-dirs name)))
+  (define renames
+    (for/list ([name (in-list loadable)])
+      (define lowered (qname->symbol name))
+      (list lowered lowered)))
+  (define generation (query-update-epoch! s))
+  (set-session-prepared-boundary! s key)
+  (match (session-command! s (boundary-prepare-command plan #f generation))
+    [`(boundary-prepared ,(== generation) (boundary ,(== key)) ,_ ...) (void)]
+    [`(refused ,class ,_ ,details ...)
+     (set-session-prepared-boundary! s #f)
+     (error 'session
+            (format "restoring ~a refused (~a): ~a" db class details))]
+    [other
+     (error 'session
+            (format "unexpected prepare-boundary reply restoring ~a: ~a"
+                    db other))])
+  (with-handlers
+      ([exn:fail?
+        (lambda (failure)
+          (with-handlers ([exn:fail? void])
+            (match (session-command! s `(abort-boundary
+                                         (generation ,generation)
+                                         (boundary ,key)))
+              [`(boundary-aborted ,_ (boundary ,(== key)) ,_ ...)
+               (set-session-prepared-boundary! s #f)]
+              [_ (void)]))
+          (raise failure))])
+    (define (commit!)
+      (match (session-command! s `(commit-boundary
+                                   (generation ,generation)
+                                   (boundary ,key)))
+        [`(boundary-committed ,_ (boundary ,(== key)) ,_ ...)
+         (set-session-prepared-boundary! s #f)]
+        [`(refused ,class ,_ ,details ...)
+         (error 'session
+                (format "restoring ~a refused at commit (~a): ~a"
+                        db class details))]
+        [other
+         (error 'session
+                (format "unexpected commit-boundary reply restoring ~a: ~a"
+                        db other))]))
+    (cond
+      [(null? renames) (commit!)]
+      [else
+       (call-with-attachment-payload
+        dir selected-bases all-bases
+        (lambda (payload)
+          (session-action! s `(import-delta ,payload ,renames))
+          (commit!)))]))
+  ;; The session adopts the persisted identity wholesale: history, program and
+  ;; module records, and the TypeKey name history all come from the bundle, so
+  ;; a later save continues the same lineage instead of starting a new one.
+  (set-session-catalog-records! s (boundary-bundle-history bundle))
+  (set-session-program-records! s (boundary-bundle-programs bundle))
+  (set-session-nominal-names!
+   s
+   (for/fold ([out (hash)]) ([record (in-list (boundary-bundle-types bundle))])
+     (hash-set out (type-record-key record)
+               (list->set (type-record-names record)))))
+  (install-head! s head)
+  (set-session-boundary-plans! s (list plan))
+  (restored-sid-map s bundle))
+
+;; The explicit saved-SID-to-live-SID map (work order 4).  Runtime SIDs are
+;; assigned when the restore boundary creates its struct slots, so they may
+;; differ from the saved ones; the import remaps every word through the same
+;; correspondence, and this records it for the reader.
+(define (restored-sid-map s bundle)
+  (define live
+    (for/fold ([out (hash)]) ([record (in-list (live-type-descriptors s))])
+      (match-define (list sid _name _arity key) record)
+      (if key (hash-set out key sid) out)))
+  (for/fold ([out (hash)])
+            ([(key saved) (in-hash (boundary-bundle-type-key->sid bundle))])
+    (define now (hash-ref live key #f))
+    (cond
+      [(not now)
+       (error 'session
+              (format "restored catalog lost TypeKey ~a" key))]
+      [else (hash-set out saved now)])))
+
+;; Work order 5: a replay is audited, never trusted.  Whatever route the load
+;; took -- a restored root or a recipe chain that rebuilt its own boundary
+;; chain -- the reconstructed head and stable-key records must equal the ones
+;; the database stored, or the load fails.
+(define (audit-restored-bundle! s db stored)
+  (define rebuilt (session-boundary-bundle s))
+  (define (fail what detail)
+    (error 'session
+           (format "~a diverges from the catalog stored in ~a: ~a" what db detail)))
+  (unless rebuilt
+    (fail "the replayed session"
+          "it rebuilt no logical head at all"))
+  (define stored-head (boundary-bundle-selected-head stored))
+  (define rebuilt-head (boundary-bundle-selected-head rebuilt))
+  (unless (equal? (boundary-key stored-head) (boundary-key rebuilt-head))
+    (fail "the replayed BoundaryKey"
+          (format "~a vs ~a" (boundary-key rebuilt-head)
+                  (boundary-key stored-head))))
+  (unless (equal? (boundary-catalog stored-head) (boundary-catalog rebuilt-head))
+    (fail "the replayed declaration graph"
+          "a declaration, membership, or nominal TypeKey differs"))
+  (unless (equal? (boundary-environment stored-head)
+                  (boundary-environment rebuilt-head))
+    (fail "the replayed VersionKey environment"
+          "a relation is bound to a different version"))
+  (define (type-keys bundle)
+    (sort (map type-record-key (boundary-bundle-types bundle)) string<?))
+  (unless (equal? (type-keys stored) (type-keys rebuilt))
+    (fail "the replayed TypeKey registry"
+          "a nominal type is missing or unexpected"))
+  (define (program-keys bundle)
+    (sort (map program-record-key (boundary-bundle-programs bundle)) string<?))
+  (unless (equal? (program-keys stored) (program-keys rebuilt))
+    (fail "the replayed program records"
+          "a ProgramInstanceKey is missing or unexpected"))
+  (define (module-keys bundle)
+    (sort (for*/list ([record (in-list (boundary-bundle-programs bundle))]
+                      [instance (in-list (program-record-modules record))])
+            (match instance [`(module-instance (key ,key) ,_ ...) key]))
+          string<?))
+  (unless (equal? (module-keys stored) (module-keys rebuilt))
+    (fail "the replayed module instances"
+          "a ModuleInstanceKey is missing or unexpected"))
+  rebuilt)
+
+;; Attach a saved database, or one dependency-closed subtree of it, under one
+;; destination path.  The complete schema/key/type decision is made before the
+;; daemon is contacted; content then lands in the prepared boundary's private
+;; slots, and the whole attachment either commits as one ordinary N3 boundary
+;; or leaves no trace.
+(define (session-attach! s db
+                         #:source [source-path #f]
+                         #:as [destination-path #f]
+                         #:plan [persisted #f])
+  ;; A replayed attachment reads both paths from its persisted plan; a live
+  ;; one must be told where to land.
+  (unless (or persisted destination-path)
+    (error 'session "attach needs a destination path"))
+  (define head (session-catalog-boundary s))
+  (unless head
+    (error 'session
+           (format
+            "cannot attach ~a: this session has no logical catalog to attach into; run a program first"
+            db)))
+  (when (session-prepared-boundary s)
+    (error 'session
+           (format "cannot attach while boundary ~a is prepared but not committed"
+                   (session-prepared-boundary s))))
+  (define dir (string-append "data/" db))
+  (unless (directory-exists? dir)
+    (error 'session (format "no such database: ~a" db)))
+  (define meta
+    (with-handlers ([db-meta-error?
+                     (lambda (e)
+                       (error 'session
+                              (format "cannot read ~a: ~a" db
+                                      (db-meta-error-message e))))])
+      (read-db-meta dir)))
+  ;; Work order 7: an input with no exact declaration metadata is refused
+  ;; loudly rather than reconstructed from relation-directory names.
+  (unless (db-meta-has-boundary-bundle? meta)
+    (error 'session
+           (format
+            "cannot attach ~a: it carries no logical catalog (a pre-N4 database); replay and re-save it, or regenerate it"
+            db)))
+  (define bundle (datum->boundary-bundle (db-meta-boundary-bundle meta)))
+  (define-values (all-dirs all-bases) (source-relation-directories dir))
+  (define content (list->set (hash-keys all-dirs)))
+
+  (define event (transform-event! s persisted))
+  (define plan
+    (if persisted
+        (replay-attachment bundle head content persisted)
+        (plan-attachment bundle head
+                         #:source-path source-path
+                         #:destination-path destination-path
+                         #:content content
+                         #:source-stamp (db-meta-stamp meta)
+                         #:layer-id (session-layer-id s)
+                         #:event event)))
+  (drive-attachment! s dir plan all-dirs all-bases)
+  (record-step! s `(attach ,db ,(attachment-plan->datum plan)))
+  plan)
+
+;; One prepared boundary, one import, one commit.  Any failure between prepare
+;; and commit aborts, so no destination name, relation version, catalog entry,
+;; or nominal identity is ever published half-attached.
+(define (drive-attachment! s dir plan all-dirs all-bases)
+  (define boundary (attachment-plan-boundary-plan plan))
+  (define key (boundary-plan-boundary-key boundary))
+  (define imports (attachment-plan-imports plan))
+  (define selected-bases
+    (for/set ([entry (in-list imports)]
+              #:when (hash-has-key? all-dirs (car entry)))
+      (hash-ref all-dirs (car entry))))
+  ;; Every imported relation must have a directory: the plan's content set
+  ;; came from this same scan, so a mismatch means the source changed under
+  ;; us and no partial attachment may proceed.
+  (unless (= (set-count selected-bases) (length imports))
+    (error 'session
+           "attachment plan imports a relation the source database does not carry"))
+  (define renames
+    (for/list ([entry (in-list imports)])
+      (list (qname->symbol (car entry)) (qname->symbol (cdr entry)))))
+  (define generation (query-update-epoch! s))
+  (set-session-prepared-boundary! s key)
+  (match (session-command! s (boundary-prepare-command boundary #f generation))
+    [`(boundary-prepared ,(== generation) (boundary ,(== key)) ,_ ...) (void)]
+    [`(refused ,class ,_ ,details ...)
+     (set-session-prepared-boundary! s #f)
+     (error 'session
+            (format "attachment prepare-boundary refused (~a): ~a" class details))]
+    [other
+     (error 'session
+            (format "unexpected prepare-boundary reply: ~a" other))])
+  (with-handlers
+      ([exn:fail?
+        (lambda (failure)
+          (with-handlers ([exn:fail? void])
+            (match (session-command! s `(abort-boundary
+                                         (generation ,generation)
+                                         (boundary ,key)))
+              [`(boundary-aborted ,_ (boundary ,(== key)) ,_ ...)
+               (set-session-prepared-boundary! s #f)]
+              [_ (void)]))
+          (raise failure))])
+    ;; importDelta emits no reply, so the commit round trip is the
+    ;; synchronisation point (stdin order) -- and therefore the earliest
+    ;; moment a staged payload may be removed.
+    (define (commit!)
+      (match (session-command! s `(commit-boundary
+                                   (generation ,generation)
+                                   (boundary ,key)))
+        [`(boundary-committed ,_ (boundary ,(== key)) ,_ ...)
+         (set-session-prepared-boundary! s #f)]
+        [`(refused ,class ,_ ,details ...)
+         (error 'session
+                (format "attachment commit-boundary refused (~a): ~a"
+                        class details))]
+        [other
+         (error 'session
+                (format "unexpected commit-boundary reply: ~a" other))]))
+    (cond
+      [(null? renames) (commit!)]
+      [else
+       (call-with-attachment-payload
+        dir selected-bases all-bases
+        (lambda (payload)
+          (session-action! s `(import-delta ,payload ,renames))
+          (commit!)))]))
+  (record-boundary! s (boundary-key (boundary-plan-input boundary)) key
+                    'attachment (attachment-plan->datum plan))
+  (install-head! s (boundary-plan-output boundary))
+  (set-session-boundary-plans!
+   s (append (session-boundary-plans s) (list boundary)))
+  (unless (session-replaying? s)
+    (set-session-descriptors!
+     s (append (session-descriptors s)
+               (let-values ([(_table rows)
+                             (boundary-plan-daemon-data boundary #f)])
+                 rows))))
+  (touch! s (for/list ([entry (in-list imports)])
+              (qname->symbol (cdr entry)))))
+
 ;; Run one program atop the session (docs/incremental.md §0.4): one
 ;; version boundary PER PROGRAM of its run tree (E0c) -- announce the
 ;; segment's write-set, import its frozen ground facts, then drive each
@@ -1027,34 +1475,61 @@
          (and (not (third binding))
               (hash-ref vinfo (cons name (first binding)) #f)))))
 
+;; The daemon's TypeDescriptor registry, verbatim: one
+;; (list sid name-or-#f stored-arity type-key-or-#f) per descriptor, SID
+;; ordered.  N3-C retains descriptors after their last public name is
+;; dropped, so `name` may be #f while the descriptor stays reachable.
+(define (live-type-descriptors s)
+  (define lines
+    (session-command-stream!
+     s '(catalog types)
+     (lambda (line) (regexp-match? #px"^\\(catalog-end " line))))
+  (for/list ([line (in-list lines)]
+             #:do [(define datum (read (open-input-string line)))]
+             #:when (match datum [`(catalog-type ,_ ...) #t] [_ #f]))
+    (match datum
+      [`(catalog-type (sid ,sid) (name ,name) (arity ,arity)
+                      (type-key ,key))
+       (list sid (and name (wire->qname name)) arity key)]
+      [other
+       (error 'session
+              (format "unexpected catalog types record: ~a" other))])))
+
+;; Every LATEST relation binding the daemon currently holds, as
+;; VersionKey -> (cons QName size).  Compiler temporaries and `$...` internals
+;; are execution state, not public schema, so they never enter the bundle.
+(define (live-relation-versions s)
+  (define lines
+    (session-command-stream!
+     s '(catalog)
+     (lambda (line) (regexp-match? #px"^\\(catalog-end " line))))
+  (for/fold ([out (hash)]) ([line (in-list lines)])
+    (match (read (open-input-string line))
+      [`(catalog-rel ,fields ...)
+       (define (field key)
+         (match (assq key fields) [(list _ value) value] [_ #f]))
+       (define name (field 'name))
+       (define key (field 'version-key))
+       (cond
+         [(or (not (string? name)) (not (string? key))
+              (eq? #t (field 'temp))
+              (string-prefix? name "$"))
+          out]
+         [else (hash-set out key (cons (wire->qname name)
+                                       (or (field 'size) 0)))])]
+      [_ out])))
+
 (define (live-struct-type-keys s)
   ;; N3-A exposes durable TypeKeys through the public type catalog.  This
   ;; stream is the authority when a legacy environment event (rename, drop,
   ;; import, or input-only VersionKey) forces the logical session head to be
   ;; re-adopted.  Catalog-less roots report #f and take the compatibility key
   ;; below exactly once; commit then attaches that key to the physical slot.
-  (write '(catalog types) (session-in s))
-  (newline (session-in s))
-  (flush-output (session-in s))
-  (let loop ([out (hash)])
-    (define line (read-line (session-out s)))
-    (when (eof-object? line)
-      (error 'session "daemon EOF in (catalog types) stream"))
-    (echo! s line)
-    (match (read (open-input-string line))
-      [`(catalog-type (sid ,_) (name ,name) (arity ,_) (type-key ,key))
-       ;; N3-C retains descriptors after their last public name is dropped.
-       ;; Adoption needs only currently visible name->TypeKey bindings.
-       (loop (if (and name key)
-                 (hash-set out (wire->qname name) key)
-                 out))]
-      [`(catalog-end ,_) out]
-      [`(refused ,class ,_ ,details ...)
-       (error 'session
-              (format "catalog types refused (~a): ~a" class details))]
-      [other
-       (error 'session
-              (format "unexpected catalog types reply: ~a" other))])))
+  ;; N3-C retains descriptors after their last public name is dropped, so
+  ;; adoption keeps only currently visible name->TypeKey bindings.
+  (for/fold ([out (hash)]) ([record (in-list (live-type-descriptors s))])
+    (match-define (list _sid name _arity key) record)
+    (if (and name key) (hash-set out name key) out)))
 
 ;; Compatibility adoption for a catalog-less input database.  Old META/schema
 ;; can prove materialized kind/arity and the daemon can report exact
@@ -1123,6 +1598,194 @@
    (format "legacy-b1:~a:~a" (session-evaluation-id s) cur)
    (catalog adopted-declarations adopted-memberships nominals)
    version-keys))
+
+;; ---- N4-A bundle accumulation (docs/n4-contract.md §3) --------------------
+;;
+;; The durable bundle is assembled from what the session already knows to be
+;; true, never rediscovered at save time: the head advances in exactly one
+;; place, and each committed transition appends one validated history record.
+
+;; THE head assignment.  Besides the head itself this accumulates the nominal
+;; name history: a TypeKey retains every qualified spelling it has carried, so
+;; a renamed -- or later dropped -- constructor still renders through its key.
+(define (install-head! s output)
+  (set-session-catalog-boundary! s output)
+  (when output
+    (set-session-nominal-names!
+     s
+     (for/fold ([out (session-nominal-names s)])
+               ([(name key)
+                 (in-hash (catalog-nominals (boundary-catalog output)))])
+       (hash-update out key
+                    (lambda (names) (set-add names name))
+                    (lambda () (set)))))))
+
+;; Append one committed boundary.  The first record is the base the chain
+;; starts from, so a program record's input BoundaryKey always resolves.
+;; A legacy environment event (import, link, inject) invalidates the head and
+;; the next program re-adopts a fresh `legacy-b1:` base -- the chain cannot
+;; span that gap, so it RESTARTS there rather than claiming a continuity the
+;; session no longer has.
+(define (record-boundary! s input-key output-key kind origin)
+  (define history (session-catalog-records s))
+  (define continues?
+    (and (pair? history)
+         (equal? (boundary-record-key (last history)) input-key)))
+  (define base
+    (if continues? history (list (boundary-record input-key #f 'initial #f))))
+  (set-session-catalog-records!
+   s (append base (list (boundary-record output-key input-key kind origin)))))
+
+;; Assemble the durable bundle from the session's committed state plus the
+;; daemon's materialization/type observations.  Returns #f when this session
+;; has no exact logical head -- a catalog-less input that no program has
+;; re-declared cannot produce an N4 database, and must say so rather than
+;; guess (docs/n4-contract.md §4 work orders 3 and 7).
+(define (session-boundary-bundle s)
+  (define head (session-catalog-boundary s))
+  (define history (session-catalog-records s))
+  (cond
+    [(not head) #f]
+    [(or (null? history)
+         (not (equal? (boundary-record-key (last history))
+                      (boundary-key head))))
+     ;; The head is live but its committed chain is not -- a legacy
+     ;; environment event severed it.  Refuse rather than persist a history
+     ;; that does not reach the head it claims to describe.
+     #f]
+    [else
+     (define declarations (catalog-declarations (boundary-catalog head)))
+     (define nominals (catalog-nominals (boundary-catalog head)))
+     (define environment (boundary-environment head))
+     (define live-versions (live-relation-versions s))
+     (define descriptors (live-type-descriptors s))
+
+     ;; --- versions: every key this session's history minted, plus the
+     ;;     bindings the head holds.  A version is MATERIALIZED when the
+     ;;     daemon still binds it now, i.e. this save carries its rows;
+     ;;     superseded and dropped versions persist as metadata only.
+     (define planned-actions
+       (append*
+        (for/list ([record (in-list history)]
+                   #:when (eq? 'program (boundary-record-origin-kind record)))
+          (or (plan-clause (boundary-record-origin record) 'actions) '()))))
+     (define predecessors
+       (for/fold ([out (hash)]) ([action (in-list planned-actions)])
+         (match action
+           [`(create ,_ ,key ,predecessor ,_) (hash-set out key predecessor)]
+           [_ out])))
+     (define head-names
+       (for/hash ([(name key) (in-hash environment)]) (values key name)))
+     (define version-kinds
+       (for/fold ([out (hash)]) ([action (in-list planned-actions)])
+         (match action
+           [`(,(or 'create 'retain) ,_ ,key ,_ ,type-key)
+            (hash-set out key (if type-key 'struct 'table))]
+           [_ out])))
+     (define version-keys
+       (sort (remove-duplicates
+              (append (hash-keys predecessors) (hash-keys version-kinds)
+                      (hash-values environment)))
+             string<?))
+     (define described
+       (for/list ([key (in-list version-keys)])
+         (define name (hash-ref head-names key #f))
+         (define kind
+           (cond
+             [name (declaration-descriptor-kind (hash-ref declarations name))]
+             [else (hash-ref version-kinds key 'table)]))
+         (version-record key (hash-ref predecessors key #f) kind name
+                         (hash-has-key? live-versions key))))
+     ;; A legacy environment event severs the history chain, so a surviving
+     ;; successor can name a predecessor minted before the restart.  The key
+     ;; is real and the link is true; close the set with a metadata-only
+     ;; record rather than either dropping the link or claiming to know more.
+     (define described-keys (list->set (map version-record-key described)))
+     (define severed
+       (for/list ([record (in-list described)]
+                  #:when (and (version-record-predecessor record)
+                              (not (set-member?
+                                    described-keys
+                                    (version-record-predecessor record)))))
+         (version-record (version-record-predecessor record) #f
+                         (version-record-kind record) #f #f)))
+     (define versions
+       (append described
+               (remove-duplicates severed equal?
+                                  #:key version-record-key)))
+
+     ;; --- types: one record per nominal the head binds, plus every
+     ;;     descriptor the daemon still holds under its own TypeKey (an
+     ;;     unnamed historical constructor keeps rendering through its key).
+     (define names-by-key (session-nominal-names s))
+     (define sid-by-key
+       (for/fold ([out (hash)]) ([record (in-list descriptors)])
+         (match-define (list sid _name _arity key) record)
+         (if key (hash-set out key sid) out)))
+     (define arity-by-key
+       (for/fold ([out (hash)]) ([record (in-list descriptors)])
+         (match-define (list _sid _name arity key) record)
+         (if key (hash-set out key arity) out)))
+     (define head-type-records
+       (for/list ([name (in-list (sort (hash-keys nominals) qname<?))])
+         (define key (hash-ref nominals name))
+         (define stored-arity
+           (add1 (length (declaration-descriptor-fields
+                          (hash-ref declarations name)))))
+         (define observed (hash-ref arity-by-key key #f))
+         ;; catalog-vs-BIN ABI check: the logical declaration and the running
+         ;; struct store must agree on stored arity before either is saved.
+         (when (and observed (not (= observed stored-arity)))
+           (error 'session
+                  (format
+                   "catalog/ABI mismatch: ~a declares stored arity ~a but the daemon holds ~a"
+                   (qname->display name) stored-arity observed)))
+         (type-record key stored-arity (hash-ref sid-by-key key #f)
+                      (sort (set->list
+                             (set-add (hash-ref names-by-key key (set)) name))
+                            qname<?))))
+     (define bound-type-keys
+       (list->set (hash-values nominals)))
+     (define historical-type-records
+       (for/list ([record (in-list descriptors)]
+                  #:when (and (fourth record)
+                              (not (set-member? bound-type-keys
+                                                (fourth record)))))
+         (match-define (list sid _name arity key) record)
+         (type-record key arity sid
+                      (sort (set->list (hash-ref names-by-key key (set)))
+                            qname<?))))
+
+     ;; Program records describe the boundaries THIS bundle carries.  A
+     ;; legacy environment event restarts the chain, so programs whose output
+     ;; boundary is no longer in it belong to a lineage the bundle cannot
+     ;; describe and are not claimed.
+     (define history-keys
+       (list->set (map boundary-record-key history)))
+     (define programs
+       (for/list ([record (in-list (session-program-records s))]
+                  #:when (set-member? history-keys
+                                      (program-record-output record)))
+         record))
+
+     (define bundle
+       (boundary-bundle slog-boundary-bundle-format
+                        head
+                        history
+                        versions
+                        (append head-type-records historical-type-records)
+                        programs))
+     (validate-boundary-bundle bundle)
+     bundle]))
+
+(define (record-program! s plan modules)
+  (set-session-program-records!
+   s
+   (append (session-program-records s)
+           (list (program-record (boundary-plan-program-key plan)
+                                 (boundary-key (boundary-plan-input plan))
+                                 (boundary-plan-boundary-key plan)
+                                 modules)))))
 
 (define (internal-write? name)
   (and (symbol? name)
@@ -1234,6 +1897,8 @@
            (type-key ,(boundary-action-type-key action))))
      ,@internal-actions)))
 
+;; `group` is #f for a boundary with no compiled program behind it (an N4-B
+;; attachment): there is no write set, so it declares no internal relations.
 (define (boundary-plan-daemon-data plan group)
   (define public
     (for/list ([action (in-list (boundary-plan-actions plan))]
@@ -1245,7 +1910,7 @@
                     (hash-keys (boundary-plan-version-slots plan)))))
   (define internal
     (sort
-     (for/list ([name (in-list (compile-group-write-set group))]
+     (for/list ([name (in-list (if group (compile-group-write-set group) '()))]
                 #:when (and (internal-write? name)
                             (not (set-member? public-names name))))
        name)
@@ -1337,7 +2002,8 @@
 
 (define (session-run! s prog
                       #:version-events [supplied-events #f]
-                      #:boundary-plans [supplied-plan-data #f])
+                      #:boundary-plans [supplied-plan-data #f]
+                      #:module-instances [supplied-module-data #f])
   ;; Segments compile against the LIVE schema once the session has any
   ;; state (0.D2): renames, drops, imports, and prior segments' relations
   ;; are all reflected, so later-segment resolution errors come free --
@@ -1352,7 +2018,12 @@
   (define-values (strata _partition _edb-boundary _frozen-dirs groups)
     (parameterize ([current-source-capture
                     (and (not (session-replaying? s)) (session-sources s))])
-      (compile-strata prog manifest #:split-facts? #f)))
+      (compile-strata
+       prog manifest
+       #:split-facts? #f
+       #:input-catalog
+       (and (session-catalog-boundary s)
+            (boundary-catalog (session-catalog-boundary s))))))
   (when (and supplied-events
              (not (= (length supplied-events) (length groups))))
     (error 'session "recipe supplied ~a version events for ~a program groups"
@@ -1364,6 +2035,31 @@
       [else (values (make-list (length groups) #f)
                     supplied-events
                     (make-list (length groups) '()))]))
+  (define module-instance-data
+    (and n2?
+         (for/list ([group (in-list groups)]
+                    [plan (in-list plans)])
+           `(program-modules
+             (program ,(boundary-plan-program-key plan))
+             ,@(map
+                module-instance-descriptor->datum
+                (module-occurrence-instances
+                 (boundary-plan-program-key plan)
+                 (compile-group-occurrence-tree group)))))))
+  (when supplied-module-data
+    (unless (and
+             (= (length supplied-module-data) (length groups))
+             (for/and ([program-data (in-list supplied-module-data)])
+               (match program-data
+                 [`(program-modules
+                    (program ,(? string?))
+                    ,(? module-instance-descriptor-datum?) ...)
+                  #t]
+                 [_ #f])))
+      (error 'session "recipe contains malformed module-instance metadata"))
+    (unless (equal? supplied-module-data module-instance-data)
+      (error 'session
+             "persisted module-instance metadata differs from the occurrence tree")))
   (define version-events
     (cond
       [(and supplied-events n2?)
@@ -1385,13 +2081,16 @@
        `(run ,prog
              (version-events ,@version-events)
              (boundary-plans
-              ,@(map boundary-plan->datum plans)))
+              ,@(map boundary-plan->datum plans))
+             (module-instances ,@module-instance-data))
        `(run ,prog (version-events ,@version-events))))
   (let run-groups ([gs groups]
                    [remaining strata]
                    [ves version-events]
                    [bps plans]
-                   [row-groups descriptor-rows])
+                   [row-groups descriptor-rows]
+                   [module-groups (or module-instance-data
+                                      (make-list (length groups) #f))])
     (match gs
       ['() (void)]
       [(cons (? compile-group? group) more)
@@ -1408,6 +2107,10 @@
           ;; private working environment.
           (define generation (query-update-epoch! s))
           (define key (boundary-plan-boundary-key (car bps)))
+          ;; The lease is outstanding from the moment the command goes out:
+          ;; a prepare whose reply never arrives still left private daemon
+          ;; state behind, and a save must not describe that as committed.
+          (set-session-prepared-boundary! s key)
           (define prepared
             (session-command!
              s (boundary-prepare-command (car bps) group generation)))
@@ -1449,7 +2152,8 @@
                           [_ #f])
                       (error 'session
                              (format "unexpected abort-boundary reply: ~a"
-                                     aborted))))
+                                     aborted)))
+                    (set-session-prepared-boundary! s #f))
                   (raise failure))])
             (for ([dir (in-list g-frozen)])
               (session-action! s `(import-path ,dir)))
@@ -1465,6 +2169,7 @@
                                       (boundary ,(== key))
                                       (position ,_)
                                       (created ,_))
+                 (set-session-prepared-boundary! s #f)
                  (set! committed? #t)]
                 [`(refused ,class ,_ ,details ...)
                  (error 'session
@@ -1484,17 +2189,25 @@
            (push-sbuild! s sb)))
        (when (or (not n2?) committed?) (touch! s ws))
        (when n2?
-         ;; The logical head and recipe descriptors advance only after the
-         ;; daemon atomically installed the same boundary.
-         (set-session-catalog-boundary!
-          s (boundary-plan-output (car bps)))
+         ;; The logical head, the bundle's history, and the recipe descriptors
+         ;; advance only after the daemon atomically installed the same
+         ;; boundary.
+         (record-boundary! s (boundary-key (boundary-plan-input (car bps)))
+                           (boundary-plan-boundary-key (car bps))
+                           'program (boundary-plan->datum (car bps)))
+         (record-program!
+          s (car bps)
+          (match (car module-groups)
+            [`(program-modules (program ,_) ,instances ...) instances]
+            [_ '()]))
+         (install-head! s (boundary-plan-output (car bps)))
          (set-session-boundary-plans!
           s (append (session-boundary-plans s) (list (car bps))))
          (unless (session-replaying? s)
            (set-session-descriptors!
             s (append (session-descriptors s) (car row-groups)))))
        (run-groups more (drop remaining n) (cdr ves)
-                   (cdr bps) (cdr row-groups))]))
+                   (cdr bps) (cdr row-groups) (cdr module-groups))]))
   ;; Running a program is the explicit semantic reopen event for any
   ;; input-only successors accumulated since the prior program event.
   (hash-clear! (session-input-only s)))
@@ -1572,7 +2285,7 @@
   (touch! s (list rel*))
   ;; Injection creates a live VersionKey outside a program BoundaryPlan.
   ;; Re-adopt from daemon identity before planning the next program.
-  (set-session-catalog-boundary! s #f)
+  (install-head! s #f)
   (match (read (open-input-string line))
     [`(injected ,_ ,pos ,vid) (values pos vid k)]))
 
@@ -1685,7 +2398,7 @@
   ;; Imports can populate (and, with renames, redirect) storage independently
   ;; of the current logical catalog.  The next program adopts the resulting
   ;; live environment rather than extending a stale in-memory boundary.
-  (set-session-catalog-boundary! s #f))
+  (install-head! s #f))
 
 ;; ---- cone assembly (docs/incremental.md §0.5) ----------------------------
 
@@ -3285,6 +3998,14 @@
 ;; the layer replays the recipe (0.E2) -- pending batches are flushed
 ;; first so the saved log is the applied truth.
 (define (session-save! s name)
+  ;; A leased prepared boundary owns private daemon state that no committed
+  ;; snapshot describes.  Saving over it would publish a catalog the database
+  ;; does not actually hold (n4-contract.md §4 work order 3).
+  (when (session-prepared-boundary s)
+    (error 'session
+           (format
+            "refusing to save ~a while boundary ~a is prepared but not committed"
+            name (session-prepared-boundary s))))
   (when (for*/or ([(a per-anchor) (in-hash (session-pending s))]
                   [(r per-rel) (in-hash per-anchor)])
           (positive? (hash-count per-rel)))
@@ -3356,10 +4077,17 @@
   (define compatibility-map
     (for/list ([(anchor key) (in-hash (session-compat-keys s))])
       `(legacy-anchor ,(car anchor) ,(cdr anchor) ,key)))
+  ;; N4-A: the saved layer describes its own logical schema.  A session with
+  ;; no exact head (a catalog-less input no program has re-declared) writes no
+  ;; bundle, and N4 catalog/attach/REPL identity operations refuse it later
+  ;; rather than reconstructing schema from relation directories.
+  (define bundle (session-boundary-bundle s))
   (define m0 (make-db-meta #:kind 'compressed #:pure-edb? #f
                            #:manifest manifest #:per 1.0
                            #:compiler-stamp (current-compiler-stamp)
                            #:idb-rels touched #:edb-rels '()
+                           #:boundary-bundle (and bundle
+                                                  (boundary-bundle->datum bundle))
                            #:extra (list (cons 'recipe? #t)
                                          (cons 'version-format 1)
                                          (cons 'layer-id (session-layer-id s))
@@ -3390,7 +4118,12 @@
 ;; verify --replay, freeze) delegates the WHOLE load plan of any chain
 ;; holding a saved session to this, driving a session facade over its own
 ;; daemon connection -- one code path for W1 and W2, by construction.
+;; Returns the loaded chain's N4-A logical catalog (or #f), so a one-shot save
+;; that re-materialises a chain -- `slog db freeze` -- can carry it forward
+;; instead of emitting a database that cannot describe itself.
 (set-recipe-chain-loader!
  (lambda (in-port out-port steps)
    (define s (make-session-over in-port out-port #:echo displayln))
-   (session-execute-load-steps! s steps)))
+   (session-execute-load-steps! s steps)
+   (define bundle (session-boundary-bundle s))
+   (and bundle (boundary-bundle->datum bundle))))

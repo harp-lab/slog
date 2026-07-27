@@ -28,6 +28,7 @@
 ;;   rerun:REL          direct clear-and-rerun
 ;;   pipeline           version chains + strata positions
 ;;   boundary           logical N2 catalog/environment + plan count
+;;   bundle             the N4-A durable boundary bundle this session saves
 ;;   daemon-boundaries  committed N3 daemon boundary history
 ;;   daemon-current-boundary exact current N3 materialization snapshot
 ;;   sizes-at:P         sizes resolved at position P
@@ -50,6 +51,7 @@
     [(list "run" prog) `(run ,prog)]
     [(list "pipeline") `(pipeline)]
     [(list "boundary") `(boundary)]
+    [(list "bundle") `(bundle)]
     [(list "daemon-boundaries") `(daemon-boundaries)]
     [(list "daemon-current-boundary") `(daemon-current-boundary)]
     [(list "recipe") `(recipe)]
@@ -113,6 +115,12 @@
      (match-define (list from to) (string-split arg ","))
      `(rename-rel ,from ,to)]
     [(list "drop-rel" rel) `(drop-rel ,rel)]
+    ;; N4-B attachment: attach:DB,DEST maps the saved root; attach:DB,SRC,DEST
+    ;; maps one dependency-closed subtree.
+    [(list "attach" arg)
+     (match (string-split arg ",")
+       [(list db dest) `(attach ,db #f ,dest)]
+       [(list db source dest) `(attach ,db ,source ,dest)])]
     ;; hot-link a stored database (0.D5): link:DB[,SRC=DST...]
     [(list "link" arg)
      (match-define (cons db renames) (string-split arg ","))
@@ -188,6 +196,32 @@
       [`(link ,db ,renames) (session-link! s db renames)]
       [`(rename-rel ,from ,to) (session-rename! s from to)]
       [`(drop-rel ,rel) (session-drop! s rel)]
+      [`(attach ,db ,source ,dest)
+       (define plan
+         (session-attach! s db
+                          #:source (and source (symbol->qname
+                                                (string->symbol source)))
+                          #:as (symbol->qname (string->symbol dest))))
+       (writeln
+        `(attached ,db
+                   (source ,(let ([path (attachment-plan-source-path plan)])
+                              (if path (qname->symbol path) '||)))
+                   (destination
+                    ,(qname->symbol (attachment-plan-destination-path plan)))
+                   (boundary ,(attachment-plan-boundary-key plan))
+                   (versions
+                    ,@(for/list ([entry (in-list
+                                         (attachment-plan-version-map plan))])
+                        `(,(car entry) ,(cdr entry))))
+                   (types
+                    ,@(for/list ([entry (in-list
+                                         (attachment-plan-type-map plan))])
+                        `(,(car entry) ,(cdr entry))))
+                   (imports
+                    ,@(for/list ([entry (in-list
+                                         (attachment-plan-imports plan))])
+                        `(,(qname->symbol (car entry))
+                          ,(qname->symbol (cdr entry)))))))]
       [`(flush) (session-flush! s)]
       [`(save ,name) (session-save! s name)]
       [`(add-tuple ,rel ,vals ...)
@@ -273,6 +307,44 @@
             `(catalog-boundary #f
                                (plans ,(length
                                         (session-boundary-history s))))))]
+      ;; N4-A: the durable bundle this session would save (n4-contract.md §3),
+      ;; projected to the identity facts a transcript can assert on.
+      [`(bundle)
+       (define bundle (session-boundary-bundle s))
+       (writeln
+        (cond
+          [(not bundle) `(boundary-bundle #f (leased ,(session-prepared-boundary s)))]
+          [else
+           `(boundary-bundle
+             (head ,(boundary-key (boundary-bundle-selected-head bundle)))
+             (history
+              ,@(for/list ([record (in-list (boundary-bundle-history bundle))])
+                  `(,(boundary-record-origin-kind record)
+                    ,(boundary-record-key record))))
+             (versions
+              ,@(for/list ([record (in-list (boundary-bundle-versions bundle))])
+                  `(,(if (version-record-name record)
+                         (qname->symbol (version-record-name record))
+                         '||)
+                    ,(version-record-kind record)
+                    ,(version-record-key record)
+                    ,(if (version-record-materialized? record)
+                         'materialized 'metadata-only))))
+             (types
+              ,@(for/list ([record
+                            (in-list (sort (boundary-bundle-types bundle)
+                                           string<? #:key type-record-key))])
+                  `(,(type-record-key record)
+                    (arity ,(type-record-arity record))
+                    (sid ,(type-record-sid record))
+                    (names ,@(map qname->symbol
+                                  (type-record-names record))))))
+             (programs
+              ,@(for/list ([record (in-list (boundary-bundle-programs bundle))])
+                  `(,(program-record-key record)
+                    (input ,(program-record-input record))
+                    (output ,(program-record-output record))
+                    (modules ,(length (program-record-modules record)))))))]))]
       [`(daemon-boundaries)
        (for ([line (in-list
                     (session-command-stream!

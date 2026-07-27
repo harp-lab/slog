@@ -73,154 +73,286 @@
   (close-input-port err)
   (subprocess-wait sp))
 
-(define (convert-db-folder path dbname)
-  (let () ;; setup folder
-    (delete-folder (format "data/~a" dbname))
-    (make-directory (format "data/~a/" dbname))
-    (make-directory (format "data/~a/value.strings/" dbname)))
+;; Import a folder of delimited text files as a static binary database under
+;; data/<dbname>/, loadable afterwards with `racket compiler/run.rkt -d <dbname>`.
+;; One input file per relation:
+;;
+;;   NAME.csv | NAME.tsv | NAME.txt   arity inferred from the first row
+;;   NAME.ARITY.csv                   arity stated in the file name
+;;
+;; Rows are newline-delimited, columns space/tab-delimited.  A column that
+;; reads as an integer becomes an int, one that reads as a decimal becomes a
+;; float, and anything else becomes a string; a "quoted" column is always a
+;; string and may contain spaces.  #:read-values? #t restores the original
+;; Racket-`read` tokenizer, under which a parenthesized column builds a
+;; struct relation (arity must then be in the file name).
+;;
+;; The delicate part is string ids.  value.strings/0.bin is re-interned in
+;; file order by Database::loadStringsBIN, so the id written into a tuple word
+;; has to be exactly the one InternTable::intern_value will hand back: the low
+;; 26 bits are FNV-1a over the utf8 bytes (intern_buckets_bits 21 plus 5
+;; inner-position bits) and the bits above are the string's position in that
+;; hash's collision chain.  This mirrors daemon/intern.h and must keep
+;; mirroring it; a mismatch is not silent corruption but a "Dangling string
+;; id" fatal at load.
+(define (convert-db-folder path dbname #:read-values? [read-values? #f])
+  (unless (directory-exists? path)
+    (error 'convert-db-folder "cannot convert ~a; it is not a directory" path))
+  (unless (directory-exists? "data")
+    (error 'convert-db-folder
+           "no data/ directory under ~a -- run this from the repository root"
+           (current-directory)))
 
-  (if (directory-exists? path)
-      (let ([out-files (make-hash)]
-            [strings-file (open-output-file (format "data/~a/value.strings/0.bin" dbname))]
-            [fnv-to-count (make-hash)]
-            [string-to-value (make-hash)]
-            [struct-map (make-hash)]
-            [alloc-map (make-hash)]
-            [in-files (directory-list path)]
-            [struct-id-max 1])
+  (delete-folder (format "data/~a" dbname))
+  (make-directory (format "data/~a/" dbname))
+  (make-directory (format "data/~a/value.strings/" dbname))
 
-        (define (alloc-struct-id)
-          (let ([n struct-id-max])
-            (set! struct-id-max (add1 struct-id-max))
-            n))
+  (let ([out-files (make-hash)]
+        [strings-file (open-output-file (format "data/~a/value.strings/0.bin" dbname))]
+        [chain-count (make-hash)]
+        [string-to-value (make-hash)]
+        [struct-map (make-hash)]
+        [alloc-map (make-hash)]
+        [row-counts (make-hash)]
+        ;; string ids depend on interning order, so walk the folder in a
+        ;; stable order rather than directory-list's unspecified one
+        [in-files (sort (map path->string (directory-list path)) string<?)]
+        [struct-id-max 1])
 
-        (define (int->bytes n len)
-          (if (= len 0)
-              (bytes)
-              (bytes-append (bytes (bitwise-and n 255))
-                            (int->bytes (arithmetic-shift n -8) (- len 1)))))
+    (define (alloc-struct-id)
+      (let ([n struct-id-max])
+        (set! struct-id-max (add1 struct-id-max))
+        n))
 
-        (define (alloc structname)
-          (define n (hash-ref alloc-map structname (lambda () 0)))
-          (hash-set! alloc-map structname (add1 n))
-          n)
+    (define (int->bytes n len)
+      (if (= len 0)
+          (bytes)
+          (bytes-append (bytes (bitwise-and n 255))
+                        (int->bytes (arithmetic-shift n -8) (- len 1)))))
 
-        (define (emit-string s)
-          (write-bytes (bytes-append (string->bytes/utf-8 s) (bytes 0)) strings-file))
+    (define (alloc structname)
+      (define n (hash-ref alloc-map structname (lambda () 0)))
+      (hash-set! alloc-map structname (add1 n))
+      n)
 
-        (define str-type 0) ;; intern type tags are 0..7 inclusive
-        (define s32-type 1) ;; prim type tags are 1..7 inclusive
-        (define NaNcode (arithmetic-shift (sub1 (expt 2 11)) 52))
-        (define interncode (bitwise-ior NaNcode (arithmetic-shift (sub1 (expt 2 14)) 38)))
-        ;; Uses a NaN-based IEEE-754 Binary64 encoding of non-float values
-        ;; 0 11111111111 1111111 XXXXX YYYY....[35bit intern-id]....YYYYYY
-        (define (make-intern-value type-code lower-bits) ; 3 bit type code
-          (int->bytes (bitwise-ior lower-bits (arithmetic-shift type-code 35) interncode) 8))
-        ;; 0 11111111111 0000000 XXXXX YYYY....[prim-value]...YYYYYY
-        (define (make-prim-value type-code lower-bits) ; 3 bit non-zero type code
-          (int->bytes (bitwise-ior lower-bits (arithmetic-shift type-code 35) NaNcode) 8))
-        ;; 1 11111111111 [14bit struct-id]  [38bit interned struct id with buckets at bottom]
-        (define (make-struct-value struct-id id)
-          (int->bytes (bitwise-ior id (arithmetic-shift struct-id 38) NaNcode (arithmetic-shift 1 63))
-                      8))
-        ;; strings are interned intro a separate table
-        (define (intern-string s)
-          (when (not (hash-has-key? string-to-value s))
-            (let* ([fnvhash (fnv s)]
-                   [coll-n (hash-ref fnv-to-count fnvhash (lambda () 0))])
-              (hash-set! fnv-to-count fnvhash (add1 coll-n))
-              (define str-id (bitwise-ior (arithmetic-shift coll-n 32) fnvhash))
-              (hash-set! string-to-value s (make-intern-value str-type str-id))
-              (emit-string s)))
-          (hash-ref string-to-value s))
+    (define (emit-string s)
+      (write-bytes (bytes-append (string->bytes/utf-8 s) (bytes 0)) strings-file))
 
-        (define (write-val v)
-          (match v
-            [(? bytes?) v]
-            ;; Strings are interned
-            [(? string?) (intern-string v)]
-            ;; Floating points are stored as their little-endian binary64 encoding
-            [(and (? number?) (? inexact?)) (real->floating-point-bytes v 8 #f)]
-            [(? integer?)
-             #:when (and (> v (- (expt 2 31))) (< v (expt 2 31)))
-             ;; 0 11111111111 0 1 ... [SIGNED INT] ...
-             (make-prim-value s32-type v)]
-            [(? integer? x) (error "BigInt prims not supported yet.")]
-            [`(,structname ,vals ...)
-             (match (hash-ref out-files (symbol->string structname) (lambda () #f))
-               [`(struct ,arity ,struct-id ,port)
-                (when (not (= arity (length vals)))
-                  (error "Struct arity mismatch"))
-                (when (not (hash-has-key? struct-map v))
-                  (hash-set! struct-map v (alloc structname)))
-                (define id (hash-ref struct-map v))
-                (define id-bytes (make-struct-value struct-id id))
-                (emit-tuple (symbol->string structname) `(,id-bytes ,@vals))
-                id-bytes]
+    (define str-type 0) ;; intern type tags are 0..7 inclusive
+    (define s32-type 1) ;; prim type tags are 1..7 inclusive
+    (define NaNcode (arithmetic-shift (sub1 (expt 2 11)) 52))
+    (define interncode (bitwise-ior NaNcode (arithmetic-shift (sub1 (expt 2 14)) 38)))
+    ;; Uses a NaN-based IEEE-754 Binary64 encoding of non-float values
+    ;; 0 11111111111 1111111 XXXXX YYYY....[35bit intern-id]....YYYYYY
+    (define (make-intern-value type-code lower-bits) ; 3 bit type code
+      (int->bytes (bitwise-ior lower-bits (arithmetic-shift type-code 35) interncode) 8))
+    ;; 0 11111111111 0000000 XXXXX YYYY....[prim-value]...YYYYYY
+    (define (make-prim-value type-code lower-bits) ; 3 bit non-zero type code
+      (int->bytes (bitwise-ior lower-bits (arithmetic-shift type-code 35) NaNcode) 8))
+    ;; 1 11111111111 [14bit struct-id]  [38bit interned struct id with buckets at bottom]
+    (define (make-struct-value struct-id id)
+      (int->bytes (bitwise-ior id (arithmetic-shift struct-id 38) NaNcode (arithmetic-shift 1 63))
+                  8))
 
-               [_
-                (define struct-id (alloc-struct-id))
-                (define out-folder
-                  (format "data/~a/struct.~a.arity.~a.id.~a/"
-                          dbname
-                          structname
-                          (add1 (length vals))
-                          struct-id))
-                (make-directory out-folder)
-                (define out-file (string-append out-folder "0.bin"))
-                (display (format "Writing ~a\n" out-file))
-                (hash-set! out-files
-                           (symbol->string structname)
-                           `(struct ,(length vals) ,struct-id ,(open-output-file out-file)))
-                (write-val v)])]
-            [_ (error "Unmable to write other types just now.")]))
+    ;; daemon/intern.h fasthash<utf8string>: FNV-1a over the utf8 bytes,
+    ;; xoring the SIGNED char, so bytes >= 0x80 sign-extend before the xor.
+    (define (fnv32 bs)
+      (for/fold ([h 2166136261]) ([b (in-bytes bs)])
+        (bitwise-and (* (bitwise-xor h (if (< b 128) b (bitwise-and (- b 256) #xffffffff)))
+                        16777619)
+                     #xffffffff)))
 
-        (define (emit-tuple relname tuple)
-          (match (hash-ref out-files relname)
-            [`(rel ,arity ,port)
-             #:when (= arity (length tuple))
-             (write-bytes (apply bytes-append (map write-val tuple)) port)]
-            [`(struct ,arity ,struct-id ,port)
-             #:when (= (add1 arity) (length tuple))
-             (write-bytes (apply bytes-append (map write-val tuple)) port)]))
+    ;; strings are interned into a separate table, with the id the daemon's
+    ;; interner will recompute for them on load (see the header comment)
+    (define (intern-string s)
+      (unless (hash-has-key? string-to-value s)
+        (define bs (string->bytes/utf-8 s))
+        ;; > SEQ_BLEAF_MAX bytes is a tag-4 rope in the sequence arena, not a
+        ;; monolithic intern, and this writer cannot build one
+        (when (> (bytes-length bs) 256)
+          (error 'convert-db-folder
+                 "string of ~a bytes exceeds the ~a-byte monolithic-intern limit: ~s"
+                 (bytes-length bs) 256 s))
+        (when (for/or ([b (in-bytes bs)]) (= b 0))
+          (error 'convert-db-folder "value.strings records are NUL-terminated: ~s" s))
+        (define lo26 (bitwise-and (fnv32 bs) #x3ffffff))
+        (define chain (hash-ref chain-count lo26 (lambda () 0)))
+        (when (>= chain 512)
+          (error 'convert-db-folder "intern collision chain overflow (512) at hash ~a" lo26))
+        (hash-set! chain-count lo26 (add1 chain))
+        (hash-set! string-to-value s
+                   (make-intern-value str-type
+                                      (bitwise-ior (arithmetic-shift chain 26) lo26)))
+        (emit-string s))
+      (hash-ref string-to-value s))
 
-        (map (lambda (file)
-               (define infile (normalize-path file (path->complete-path path)))
-               (match (regexp-match #px"/(\\w+)\\.(\\d+)\\.csv$" (fullpath infile))
-                 [`(,_ ,relname ,aritystr)
-                  (define arity (string->number aritystr))
-                  ;; the daemon can only load arities 1..32 (and arity 0
-                  ;; would loop forever below reading zero-length tuples)
-                  (unless (and arity (<= 1 arity 32))
-                    (error 'convert-db-folder
-                           "~a: arity ~a out of the loadable range 1..32"
-                           file arity))
-                  (define outfolder (format "data/~a/table.~a.arity.~a/" dbname relname arity))
-                  (make-directory outfolder)
-                  (define outfile (string-append outfolder "0.bin"))
-                  (display (format "Writing ~a\n" outfile))
-                  (hash-set! out-files relname `(rel ,arity ,(open-output-file outfile)))
-                  (with-input-from-file infile
-                                        (lambda ()
-                                          (let loop ()
-                                            (define tup (map (lambda (x) (read)) (range arity)))
-                                            (if (ormap eof-object? tup)
-                                                (void)
-                                                (let ()
-                                                  (emit-tuple relname tup)
-                                                  (loop))))))]
-                 [_ (void)]))
-             in-files)
+    (define (write-val v)
+      (match v
+        [(? bytes?) v]
+        ;; Strings are interned; a bare word in a data file is one too
+        [(? string?) (intern-string v)]
+        [(? symbol?) (intern-string (symbol->string v))]
+        ;; Floating points are stored as their little-endian binary64 encoding
+        [(and (? number?) (? inexact?)) (real->floating-point-bytes v 8 #f)]
+        [(? integer?)
+         #:when (and (>= v (- (expt 2 31))) (< v (expt 2 31)))
+         ;; 0 11111111111 0 1 ... [SIGNED INT] ...
+         ;; mask first: bitwise-ior on a negative would sign-extend over the tag
+         (make-prim-value s32-type (bitwise-and v #xffffffff))]
+        [(? integer? x)
+         (error 'convert-db-folder
+                "~a is outside the s32 range; bignum columns are not supported yet" x)]
+        [`(,structname ,vals ...)
+         (match (hash-ref out-files (symbol->string structname) (lambda () #f))
+           [`(struct ,arity ,struct-id ,port)
+            (when (not (= arity (length vals)))
+              (error 'convert-db-folder "struct arity mismatch for ~a" structname))
+            (when (not (hash-has-key? struct-map v))
+              (hash-set! struct-map v (alloc structname)))
+            (define id (hash-ref struct-map v))
+            (define id-bytes (make-struct-value struct-id id))
+            (emit-tuple (symbol->string structname) `(,id-bytes ,@vals))
+            id-bytes]
+           [_
+            (define struct-id (alloc-struct-id))
+            (define out-folder
+              (format "data/~a/struct.~a.arity.~a.id.~a/"
+                      dbname
+                      structname
+                      (add1 (length vals))
+                      struct-id))
+            (make-directory out-folder)
+            (define out-file (string-append out-folder "0.bin"))
+            (display (format "Writing ~a\n" out-file))
+            (hash-set! out-files
+                       (symbol->string structname)
+                       `(struct ,(length vals) ,struct-id ,(open-output-file out-file)))
+            (write-val v)])]
+        [_ (error 'convert-db-folder "cannot write a column of this type: ~s" v)]))
 
-        (map (lambda (file)
-               (match file
-                 [`(rel ,arity ,port) (close-output-port port)]
-                 [`(struct ,arity ,struct-id ,port) (close-output-port port)]))
-             (hash-values out-files))
-        (close-output-port strings-file)
-        (void))
+    (define (emit-tuple relname tuple)
+      (hash-update! row-counts relname add1 0)
+      (match (hash-ref out-files relname)
+        [`(rel ,arity ,port)
+         #:when (= arity (length tuple))
+         (write-bytes (apply bytes-append (map write-val tuple)) port)]
+        [`(struct ,arity ,struct-id ,port)
+         #:when (= (add1 arity) (length tuple))
+         (write-bytes (apply bytes-append (map write-val tuple)) port)]))
 
-      (error "Cannot convert DB directory; it does not exist.")))
+    ;; ---- input files ------------------------------------------------
+
+    ;; A column is a "quoted string" (which may hold spaces) or a run of
+    ;; non-whitespace.
+    (define token-rx #px"\"(?:[^\"\\\\]|\\\\.)*\"|[^ \t\r\n]+")
+    (define int-rx #px"^[+-]?[0-9]+$")
+    (define float-rx #px"^[+-]?(?:[0-9]+\\.[0-9]*|\\.[0-9]+|[0-9]+)(?:[eE][+-]?[0-9]+)?$")
+
+    (define (token->value t)
+      (cond
+        [(and (> (string-length t) 1) (char=? (string-ref t 0) #\"))
+         (regexp-replace* #px"\\\\(.)"
+                          (substring t 1 (sub1 (string-length t)))
+                          (lambda (_ c) (case c [("n") "\n"] [("t") "\t"] [else c])))]
+        [(regexp-match? int-rx t) (string->number t 10)]
+        [(regexp-match? float-rx t) (exact->inexact (string->number t 10))]
+        [else t]))
+
+    ;; NAME.ARITY.ext or NAME.ext -> (list relname arity-or-#f); #f if the
+    ;; name is not an importable data file at all.
+    (define (parse-input-name filename)
+      (define m (regexp-match #px"^(.+)\\.(?:csv|tsv|txt)$" filename))
+      (and m
+           (let* ([stem (second m)]
+                  [a (regexp-match #px"^(.+)\\.([0-9]+)$" stem)])
+             (if a
+                 (list (second a) (string->number (third a)))
+                 (list stem #f)))))
+
+    (define (arity-of-first-row infile)
+      (with-input-from-file infile
+        (lambda ()
+          (let loop ()
+            (define line (read-line))
+            (cond [(eof-object? line) #f]
+                  [else (define toks (regexp-match* token-rx line))
+                        (if (null? toks) (loop) (length toks))])))))
+
+    ;; Whitespace tokenizer: one row per line, and a row that is not exactly
+    ;; `arity` columns wide is a mistake worth reporting by line number
+    ;; rather than silently resynchronizing the whole rest of the file.
+    (define (import-tokenized infile relname arity)
+      (with-input-from-file infile
+        (lambda ()
+          (let loop ([lineno 1])
+            (define line (read-line))
+            (unless (eof-object? line)
+              (define toks (regexp-match* token-rx line))
+              (cond
+                [(null? toks) (void)]
+                [(= (length toks) arity)
+                 (emit-tuple relname (map token->value toks))]
+                [else
+                 (error 'convert-db-folder
+                        "~a:~a: ~a columns, expected arity ~a"
+                        infile lineno (length toks) arity)])
+              (loop (add1 lineno)))))))
+
+    ;; Legacy tokenizer: values are Racket data, tuple boundaries come from
+    ;; the arity alone, and a parenthesized value builds a struct relation.
+    (define (import-read infile relname arity)
+      (with-input-from-file infile
+        (lambda ()
+          (let loop ()
+            (define tup (for/list ([_ (in-range arity)]) (read)))
+            (unless (ormap eof-object? tup)
+              (emit-tuple relname tup)
+              (loop))))))
+
+    (for ([file (in-list in-files)])
+      (define parsed (parse-input-name file))
+      (cond
+        [(not parsed) (eprintf "skipping ~a (not a .csv/.tsv/.txt file)\n" file)]
+        [else
+         (define infile (path->string (normalize-path file (path->complete-path path))))
+         (define relname (first parsed))
+         (unless (regexp-match? #px"^[A-Za-z_][A-Za-z0-9_']*$" relname)
+           (error 'convert-db-folder "~a: ~s is not a usable relation name" file relname))
+         (when (hash-has-key? out-files relname)
+           (error 'convert-db-folder "~a: relation ~a already imported from another file"
+                  file relname))
+         (define arity
+           (or (second parsed)
+               (and (not read-values?) (arity-of-first-row infile))))
+         (cond
+           [(not arity)
+            ;; an empty file has no first row to measure, and `read` mode has
+            ;; no row boundaries at all, so both need the arity in the name
+            (eprintf "skipping ~a (no rows to infer arity from; name it ~a.ARITY.csv)\n"
+                     file relname)]
+           [else
+            ;; the daemon can only load arities 1..32 (and arity 0 would loop
+            ;; forever below reading zero-length tuples)
+            (unless (<= 1 arity 32)
+              (error 'convert-db-folder
+                     "~a: arity ~a out of the loadable range 1..32" file arity))
+            (define outfolder (format "data/~a/table.~a.arity.~a/" dbname relname arity))
+            (make-directory outfolder)
+            (define outfile (string-append outfolder "0.bin"))
+            (hash-set! out-files relname `(rel ,arity ,(open-output-file outfile)))
+            (if read-values?
+                (import-read infile relname arity)
+                (import-tokenized infile relname arity))
+            (printf "  ~a  ~a tuples (arity ~a)\n"
+                    outfile (hash-ref row-counts relname 0) arity)])]))
+
+    (for ([file (in-list (hash-values out-files))])
+      (match file
+        [`(rel ,arity ,port) (close-output-port port)]
+        [`(struct ,arity ,struct-id ,port) (close-output-port port)]))
+    (close-output-port strings-file)
+    (printf "  data/~a  ~a interned strings\n" dbname (hash-count string-to-value))
+    (void)))
 
 ;; Parse a memory size ("4G" / "512M" / "1048576") into bytes; #f if unparseable.
 (define (parse-mem-size s)
