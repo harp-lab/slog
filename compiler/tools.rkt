@@ -26,6 +26,7 @@
 (require racket/runtime-path)
 (require racket/future)   ; processor-count
 (require racket/random)   ; crypto-random-bytes
+(require file/gunzip)     ; gzipped importer inputs
 (require sha)
 
 (define-runtime-path daemon-dir "../daemon")
@@ -75,27 +76,49 @@
 
 ;; Import a folder of delimited text files as a static binary database under
 ;; data/<dbname>/, loadable afterwards with `racket compiler/run.rkt -d <dbname>`.
-;; One input file per relation:
+;; One relation per input file (or per subdirectory of shard files):
 ;;
-;;   NAME.csv | NAME.tsv | NAME.txt   arity inferred from the first row
-;;   NAME.ARITY.csv                   arity stated in the file name
+;;   edge.csv | edge.tsv | edge.txt   arity inferred from the first row
+;;   edge.2.csv                       arity stated in the file name
+;;   edge/  or  edge.2/               a directory of shards, one .bin each
 ;;
-;; Rows are newline-delimited, columns space/tab-delimited.  A column that
-;; reads as an integer becomes an int, one that reads as a decimal becomes a
-;; float, and anything else becomes a string; a "quoted" column is always a
-;; string and may contain spaces.  #:read-values? #t restores the original
-;; Racket-`read` tokenizer, under which a parenthesized column builds a
-;; struct relation (arity must then be in the file name).
+;; Any input may be gzipped (edge.csv.gz).  Rows are newline-delimited and
+;; columns are separated by runs of spaces and tabs, or by a single #:delimiter
+;; character if one is given.  A column is
 ;;
-;; The delicate part is string ids.  value.strings/0.bin is re-interned in
-;; file order by Database::loadStringsBIN, so the id written into a tuple word
-;; has to be exactly the one InternTable::intern_value will hand back: the low
-;; 26 bits are FNV-1a over the utf8 bytes (intern_buckets_bits 21 plus 5
-;; inner-position bits) and the bits above are the string's position in that
-;; hash's collision chain.  This mirrors daemon/intern.h and must keep
-;; mirroring it; a mismatch is not silent corruption but a "Dangling string
-;; id" fatal at load.
-(define (convert-db-folder path dbname #:read-values? [read-values? #f])
+;;   1712              an int  (an interned bignum outside the s32 range)
+;;   0.5 | -1.25e2     a float
+;;   alice             a str
+;;   "bob jones"       a str, and may hold delimiters
+;;   (pt 1 2)          a struct value, nestable: (seg (pt 1 2) (pt 3 4))
+;;
+;; A `#` line is a comment.  A comment whose columns are all type names is a
+;; schema line, which forces column types (and settles arity) rather than
+;; leaving them to what the first row happens to look like:
+;;
+;;   # str str int
+;;   alice bob 7
+;;
+;; #:read-values? #t restores the original Racket-`read` tokenizer, where a
+;; value may span lines and row boundaries come from the arity alone.
+;;
+;; The delicate part is interned ids.  value.strings/0.bin and value.mpz/0.bin
+;; are re-interned in file order by Database::loadStringsBIN/loadMpzBIN, so the
+;; id written into a tuple word has to be exactly the one
+;; InternTable::intern_value will hand back: the low 26 bits are the FNV-1a
+;; hash (intern_buckets_bits 21 plus 5 inner-position bits) and the bits above
+;; are the value's position in that hash's collision chain.  The two tables
+;; hash slightly differently -- utf8string xors a SIGNED char, mpz_val an
+;; unsigned byte -- and they are separate tables, so their chains are counted
+;; separately.  This mirrors daemon/intern.h and must keep mirroring it; a
+;; mismatch is not silent corruption but a "Dangling string id" / "Dangling
+;; mpz id" fatal at load.  Struct instance ids are safe to number from 0
+;; because Relation::seedInternAllocators lifts every bucket's allocator above
+;; the largest id in a loaded file, so nothing the daemon mints later collides.
+(define (convert-db-folder path dbname
+                          #:read-values? [read-values? #f]
+                          #:delimiter [delimiter #f]
+                          #:skip-rows [skip-rows 0])
   (unless (directory-exists? path)
     (error 'convert-db-folder "cannot convert ~a; it is not a directory" path))
   (unless (directory-exists? "data")
@@ -103,20 +126,28 @@
            "no data/ directory under ~a -- run this from the repository root"
            (current-directory)))
 
-  (delete-folder (format "data/~a" dbname))
-  (make-directory (format "data/~a/" dbname))
-  (make-directory (format "data/~a/value.strings/" dbname))
+  ;; Build into a staging directory and rename it into place at the very end.
+  ;; A failed import must not leave a half-written data/<dbname>/ behind: it
+  ;; would load as a real database, silently short a relation or two.
+  (define staging (format "data/.import-~a" dbname))
+  (delete-folder staging)
+  (make-directory (format "~a/" staging))
+  (make-directory (format "~a/value.strings/" staging))
 
   (let ([out-files (make-hash)]
-        [strings-file (open-output-file (format "data/~a/value.strings/0.bin" dbname))]
-        [chain-count (make-hash)]
+        [strings-file (open-output-file (format "~a/value.strings/0.bin" staging))]
+        [mpz-file #f]
+        [str-chains (make-hash)]
+        [mpz-chains (make-hash)]
         [string-to-value (make-hash)]
+        [mpz-to-value (make-hash)]
         [struct-map (make-hash)]
         [alloc-map (make-hash)]
         [row-counts (make-hash)]
-        ;; string ids depend on interning order, so walk the folder in a
-        ;; stable order rather than directory-list's unspecified one
-        [in-files (sort (map path->string (directory-list path)) string<?)]
+        [col-types (make-hash)]     ; relname -> vector of observed type sets
+        [struct-fields (make-hash)] ; struct name -> vector of observed type sets
+        [rel-shape (make-hash)]     ; relname -> (arity schema-or-#f), rows or not
+        [enum-members (mutable-set)]
         [struct-id-max 1])
 
     (define (alloc-struct-id)
@@ -135,10 +166,8 @@
       (hash-set! alloc-map structname (add1 n))
       n)
 
-    (define (emit-string s)
-      (write-bytes (bytes-append (string->bytes/utf-8 s) (bytes 0)) strings-file))
-
     (define str-type 0) ;; intern type tags are 0..7 inclusive
+    (define mpz-type 1)
     (define s32-type 1) ;; prim type tags are 1..7 inclusive
     (define NaNcode (arithmetic-shift (sub1 (expt 2 11)) 52))
     (define interncode (bitwise-ior NaNcode (arithmetic-shift (sub1 (expt 2 14)) 38)))
@@ -154,16 +183,26 @@
       (int->bytes (bitwise-ior id (arithmetic-shift struct-id 38) NaNcode (arithmetic-shift 1 63))
                   8))
 
-    ;; daemon/intern.h fasthash<utf8string>: FNV-1a over the utf8 bytes,
-    ;; xoring the SIGNED char, so bytes >= 0x80 sign-extend before the xor.
-    (define (fnv32 bs)
+    ;; FNV-1a, as daemon/intern.h's two fasthash specializations spell it.
+    ;; fasthash<utf8string> xors a SIGNED char, so a byte >= 0x80 sign-extends
+    ;; first; fasthash<mpz_val> xors an unsigned byte and does not.
+    (define (fnv32 bs signed?)
       (for/fold ([h 2166136261]) ([b (in-bytes bs)])
-        (bitwise-and (* (bitwise-xor h (if (< b 128) b (bitwise-and (- b 256) #xffffffff)))
+        (bitwise-and (* (bitwise-xor h (if (and signed? (>= b 128)) (+ b #xffffff00) b))
                         16777619)
                      #xffffffff)))
 
-    ;; strings are interned into a separate table, with the id the daemon's
-    ;; interner will recompute for them on load (see the header comment)
+    ;; The id InternTable::intern_value returns for the `n`th distinct value
+    ;; whose hash shares these low 26 bits.
+    (define (intern-id chains hash)
+      (define lo26 (bitwise-and hash #x3ffffff))
+      (define chain (hash-ref chains lo26 (lambda () 0)))
+      (when (>= chain 512)
+        (error 'convert-db-folder "intern collision chain overflow (512) at hash ~a" lo26))
+      (hash-set! chains lo26 (add1 chain))
+      (bitwise-ior (arithmetic-shift chain 26) lo26))
+
+    ;; strings are interned into a separate table, in write order
     (define (intern-string s)
       (unless (hash-has-key? string-to-value s)
         (define bs (string->bytes/utf-8 s))
@@ -175,16 +214,80 @@
                  (bytes-length bs) 256 s))
         (when (for/or ([b (in-bytes bs)]) (= b 0))
           (error 'convert-db-folder "value.strings records are NUL-terminated: ~s" s))
-        (define lo26 (bitwise-and (fnv32 bs) #x3ffffff))
-        (define chain (hash-ref chain-count lo26 (lambda () 0)))
-        (when (>= chain 512)
-          (error 'convert-db-folder "intern collision chain overflow (512) at hash ~a" lo26))
-        (hash-set! chain-count lo26 (add1 chain))
         (hash-set! string-to-value s
-                   (make-intern-value str-type
-                                      (bitwise-ior (arithmetic-shift chain 26) lo26)))
-        (emit-string s))
+                   (make-intern-value str-type (intern-id str-chains (fnv32 bs #t))))
+        (write-bytes (bytes-append bs (bytes 0)) strings-file))
       (hash-ref string-to-value s))
+
+    ;; An int outside [-2^31, 2^31) is an interned GMP bignum, never an s32
+    ;; word (docs/primitives.md §14: the int TYPE spans both representations
+    ;; and every producer has to normalize the same way).  A value.mpz record
+    ;; is a u32 length then the canonical body mpz_val::write_bytes emits: a
+    ;; sign byte followed by LSB-first magnitude bytes.
+    (define (intern-mpz n)
+      (unless (hash-has-key? mpz-to-value n)
+        (define mag (abs n))
+        (define nbytes (max 1 (quotient (+ (integer-length mag) 7) 8)))
+        (define body
+          (bytes-append (bytes (if (negative? n) 1 0))
+                        (apply bytes
+                               (for/list ([i (in-range nbytes)])
+                                 (bitwise-and (arithmetic-shift mag (* -8 i)) 255)))))
+        (unless mpz-file
+          (make-directory (format "~a/value.mpz/" staging))
+          (set! mpz-file (open-output-file (format "~a/value.mpz/0.bin" staging))))
+        (hash-set! mpz-to-value n
+                   (make-intern-value mpz-type (intern-id mpz-chains (fnv32 body #f))))
+        (write-bytes (int->bytes (bytes-length body) 4) mpz-file)
+        (write-bytes body mpz-file))
+      (hash-ref mpz-to-value n))
+
+    ;; A name no `table`/`struct` declaration can carry is a database nothing
+    ;; can query, so refuse it here instead of at the first query.  Kept in
+    ;; step with modules.rkt's check-not-reserved! by a unit test rather than
+    ;; by requiring the middle end from this build utility.
+    (define (check-import-name! name what)
+      (unless (regexp-match? #px"^[A-Za-z_][A-Za-z0-9_']*$" name)
+        (error 'convert-db-folder "~s is not a usable ~a name" name what))
+      (when (member name '("list" "cons" "nil"          ; native sequence syntax
+                           "cset" "cmap" "coll" "cseq"  ; collection base types
+                           "error" "error_spec" "malformed_deduction" "div_by_zero"
+                           "modulo_by_zero" "int_overflow" "nan_result" "toint_range"
+                           "type_mismatch" "mpz_overflow" "mpz_table_overflow"
+                           "smt_bad_formula"))
+        (error 'convert-db-folder
+               "~a is a reserved name (modules.rkt check-not-reserved!) and cannot be a ~a"
+               name what)))
+
+    ;; ---- observed column types, for the declarations to print at the end --
+
+    (define (type-name v)
+      (cond [(string? v) "str"]
+            [(and (number? v) (inexact? v)) "float"]
+            [(exact-integer? v) "int"]
+            [(pair? v) (symbol->string (car v))]
+            [else "?"]))
+
+    (define (note-types! table name arity vals)
+      (define seen (hash-ref! table name (lambda () (build-vector arity (lambda (_) (mutable-set))))))
+      (for ([v (in-list vals)] [i (in-naturals)])
+        (set-add! (vector-ref seen i) (type-name v))))
+
+    (define mixed-columns '())   ; (name column types) worth warning about
+    (define (column-decl name seen)
+      (string-join
+       (for/list ([s (in-vector seen)] [i (in-naturals)])
+         ;; sorted list, not the set itself: `seen` holds mutable sets and
+         ;; equal? never says one of those is an immutable set
+         (define kinds (sort (set->list s) string<?))
+         (cond [(= 1 (length kinds)) (first kinds)]
+               ;; an int column with one decimal in it is a float column
+               [(equal? kinds '("float" "int")) "float"]
+               [else (set! mixed-columns (cons (list name i kinds) mixed-columns))
+                     "any"]))
+       " "))
+
+    ;; ---- tuple words -----------------------------------------------------
 
     (define (write-val v)
       (match v
@@ -192,41 +295,79 @@
         ;; Strings are interned; a bare word in a data file is one too
         [(? string?) (intern-string v)]
         [(? symbol?) (intern-string (symbol->string v))]
-        ;; Floating points are stored as their little-endian binary64 encoding
-        [(and (? number?) (? inexact?)) (real->floating-point-bytes v 8 #f)]
-        [(? integer?)
+        ;; Floating points are stored as their little-endian binary64 encoding.
+        ;; The NaN box reuses the IEEE NaN space, so a non-finite float is not
+        ;; a value the daemon can hold: NaN is unrepresentable outright, and
+        ;; -inf.0 satisfies is_struct as well as is_float (types.h).
+        [(and (? number?) (? inexact?))
+         (unless (rational? v)
+           (error 'convert-db-folder "~a is not a representable float" v))
+         (real->floating-point-bytes v 8 #f)]
+        [(? exact-integer?)
          #:when (and (>= v (- (expt 2 31))) (< v (expt 2 31)))
          ;; 0 11111111111 0 1 ... [SIGNED INT] ...
          ;; mask first: bitwise-ior on a negative would sign-extend over the tag
          (make-prim-value s32-type (bitwise-and v #xffffffff))]
-        [(? integer? x)
-         (error 'convert-db-folder
-                "~a is outside the s32 range; bignum columns are not supported yet" x)]
+        [(? exact-integer?) (intern-mpz v)]
+        ;; A NULLARY constructor -- (nil), (on), a union's terminator -- is not
+        ;; a zero-field struct.  modules.rkt turns one into an `enum` member,
+        ;; and the runtime holds every member of every enum as one shared
+        ;; `_enum` struct whose single field is the member name's string.  An
+        ;; arity-1 struct directory is not even loadable ("Malformed relation
+        ;; directory name"), so this is the only shape that works.
+        [`(,membername)
+         #:when (symbol? membername)
+         (set-add! enum-members (symbol->string membername))
+         (unless (hash-has-key? out-files "_enum")
+           (define struct-id (alloc-struct-id))
+           (define out-folder
+             (format "~a/struct._enum.arity.2.id.~a/" staging struct-id))
+           (make-directory out-folder)
+           (hash-set! out-files "_enum"
+                      `(struct 1 ,struct-id
+                               ,(open-output-file (string-append out-folder "0.bin")))))
+         (match-define `(struct ,_ ,struct-id ,_port) (hash-ref out-files "_enum"))
+         (unless (hash-has-key? struct-map v)
+           (hash-set! struct-map v (alloc "_enum"))
+           (emit-tuple "_enum"
+                       (list (make-struct-value struct-id (hash-ref struct-map v))
+                             (symbol->string membername))))
+         (make-struct-value struct-id (hash-ref struct-map v))]
         [`(,structname ,vals ...)
+         #:when (symbol? structname)
          (match (hash-ref out-files (symbol->string structname) (lambda () #f))
            [`(struct ,arity ,struct-id ,port)
-            (when (not (= arity (length vals)))
-              (error 'convert-db-folder "struct arity mismatch for ~a" structname))
-            (when (not (hash-has-key? struct-map v))
-              (hash-set! struct-map v (alloc structname)))
-            (define id (hash-ref struct-map v))
-            (define id-bytes (make-struct-value struct-id id))
-            (emit-tuple (symbol->string structname) `(,id-bytes ,@vals))
-            id-bytes]
+            (unless (= arity (length vals))
+              (error 'convert-db-folder
+                     "struct ~a appears with ~a fields and also with ~a"
+                     structname arity (length vals)))
+            ;; content-to-id is a function: repeated content is one instance
+            ;; with one row, so the same value in ten places is one id
+            (unless (hash-has-key? struct-map v)
+              (hash-set! struct-map v (alloc structname))
+              (emit-tuple (symbol->string structname)
+                          `(,(make-struct-value struct-id (hash-ref struct-map v)) ,@vals)))
+            (make-struct-value struct-id (hash-ref struct-map v))]
+           [`(rel ,arity ,port)
+            (error 'convert-db-folder
+                   "~a is both a relation file and a struct constructor" structname)]
            [_
+            (check-import-name! (symbol->string structname) "struct constructor")
+            (unless (<= 1 (add1 (length vals)) 32)
+              (error 'convert-db-folder "struct ~a has ~a fields; the limit is 31"
+                     structname (length vals)))
             (define struct-id (alloc-struct-id))
             (define out-folder
-              (format "data/~a/struct.~a.arity.~a.id.~a/"
-                      dbname
+              (format "~a/struct.~a.arity.~a.id.~a/"
+                      staging
                       structname
                       (add1 (length vals))
                       struct-id))
             (make-directory out-folder)
-            (define out-file (string-append out-folder "0.bin"))
-            (display (format "Writing ~a\n" out-file))
             (hash-set! out-files
                        (symbol->string structname)
-                       `(struct ,(length vals) ,struct-id ,(open-output-file out-file)))
+                       `(struct ,(length vals) ,struct-id
+                                ,(open-output-file (string-append out-folder "0.bin"))))
             (write-val v)])]
         [_ (error 'convert-db-folder "cannot write a column of this type: ~s" v)]))
 
@@ -235,33 +376,131 @@
       (match (hash-ref out-files relname)
         [`(rel ,arity ,port)
          #:when (= arity (length tuple))
+         (note-types! col-types relname arity tuple)
          (write-bytes (apply bytes-append (map write-val tuple)) port)]
         [`(struct ,arity ,struct-id ,port)
          #:when (= (add1 arity) (length tuple))
+         (note-types! struct-fields relname arity (cdr tuple))
          (write-bytes (apply bytes-append (map write-val tuple)) port)]))
 
-    ;; ---- input files ------------------------------------------------
+    ;; ---- rows ------------------------------------------------------------
 
-    ;; A column is a "quoted string" (which may hold spaces) or a run of
-    ;; non-whitespace.
-    (define token-rx #px"\"(?:[^\"\\\\]|\\\\.)*\"|[^ \t\r\n]+")
+    (define (delimiter? c)
+      (if delimiter
+          (char=? c delimiter)
+          (or (char=? c #\space) (char=? c #\tab) (char=? c #\return))))
+
+    ;; A column is a "quoted string" (backslash escapes; may contain the
+    ;; delimiter), a balanced ( s-expression ) -- which may itself contain
+    ;; quoted strings and nested parens -- or a run of ordinary characters.
+    (define (tokenize-row line* where)
+      ;; a UTF-8 BOM would otherwise ride along inside the first column
+      (define line (if (and (> (string-length line*) 0) (char=? (string-ref line* 0) #\uFEFF))
+                       (substring line* 1)
+                       line*))
+      (define n (string-length line))
+      (define (scan-quoted i)      ; line[i] is #\"; returns the index past it
+        (let loop ([j (add1 i)])
+          (cond [(>= j n) (error 'convert-db-folder "~a: unterminated string" where)]
+                [(char=? (string-ref line j) #\\) (loop (+ j 2))]
+                [(char=? (string-ref line j) #\") (add1 j)]
+                [else (loop (add1 j))])))
+      (define (scan-sexp i)        ; line[i] is #\(; returns the index past it
+        (let loop ([j i] [depth 0])
+          (if (>= j n)
+              (error 'convert-db-folder "~a: unbalanced parentheses" where)
+              (let ([c (string-ref line j)])
+                (cond [(char=? c #\") (loop (scan-quoted j) depth)]
+                      [(char=? c #\() (loop (add1 j) (add1 depth))]
+                      [(char=? c #\)) (if (= depth 1) (add1 j) (loop (add1 j) (sub1 depth)))]
+                      [else (loop (add1 j) depth)])))))
+      (define (scan-token i)
+        (define c (string-ref line i))
+        (cond [(char=? c #\") (scan-quoted i)]
+              [(char=? c #\() (scan-sexp i)]
+              [else (let loop ([j i])
+                      (cond [(>= j n) j]
+                            [(delimiter? (string-ref line j)) j]
+                            [else (loop (add1 j))]))]))
+      (if delimiter
+          ;; one field per delimiter, so an empty field is a real empty column
+          (let loop ([i 0] [start 0] [acc '()])
+            (cond [(>= i n) (reverse (cons (string-trim (substring line start i)) acc))]
+                  [(char=? (string-ref line i) #\") (loop (scan-quoted i) start acc)]
+                  [(char=? (string-ref line i) #\() (loop (scan-sexp i) start acc)]
+                  [(delimiter? (string-ref line i))
+                   (loop (add1 i) (add1 i) (cons (string-trim (substring line start i)) acc))]
+                  [else (loop (add1 i) start acc)]))
+          ;; runs of whitespace separate columns and cannot make an empty one
+          (let loop ([i 0] [acc '()])
+            (cond [(>= i n) (reverse acc)]
+                  [(delimiter? (string-ref line i)) (loop (add1 i) acc)]
+                  [else (define e (scan-token i))
+                        (loop e (cons (substring line i e) acc))]))))
+
     (define int-rx #px"^[+-]?[0-9]+$")
     (define float-rx #px"^[+-]?(?:[0-9]+\\.[0-9]*|\\.[0-9]+|[0-9]+)(?:[eE][+-]?[0-9]+)?$")
 
-    (define (token->value t)
+    (define (unescape body)
+      (regexp-replace* #px"\\\\(.)" body
+                       (lambda (_ c) (case c [("n") "\n"] [("t") "\t"] [else c]))))
+
+    (define (token->value t where)
       (cond
         [(and (> (string-length t) 1) (char=? (string-ref t 0) #\"))
-         (regexp-replace* #px"\\\\(.)"
-                          (substring t 1 (sub1 (string-length t)))
-                          (lambda (_ c) (case c [("n") "\n"] [("t") "\t"] [else c])))]
+         (unescape (substring t 1 (sub1 (string-length t))))]
+        [(and (> (string-length t) 0) (char=? (string-ref t 0) #\())
+         (define v (with-handlers ([exn:fail? (lambda (e)
+                                                (error 'convert-db-folder
+                                                       "~a: cannot read the column ~a" where t))])
+                     (read (open-input-string t))))
+         (unless (and (pair? v) (symbol? (car v)))
+           (error 'convert-db-folder "~a: ~a is not a (constructor field ...) column" where t))
+         v]
         [(regexp-match? int-rx t) (string->number t 10)]
         [(regexp-match? float-rx t) (exact->inexact (string->number t 10))]
         [else t]))
 
-    ;; NAME.ARITY.ext or NAME.ext -> (list relname arity-or-#f); #f if the
-    ;; name is not an importable data file at all.
-    (define (parse-input-name filename)
-      (define m (regexp-match #px"^(.+)\\.(?:csv|tsv|txt)$" filename))
+    ;; A schema line pins what the columns are instead of leaving it to what
+    ;; the first row happens to look like -- "01234" is a str, not 1234.
+    (define type-names '("int" "float" "str" "any"))
+    (define (schema-line? toks)
+      (and (pair? toks) (andmap (lambda (t) (member t type-names)) toks)))
+
+    (define (coerce ty t v where)
+      (case ty
+        [("any") v]
+        [("str") (cond [(string? v) v]
+                       [(pair? v) (error 'convert-db-folder
+                                         "~a: a struct column cannot be a str" where)]
+                       [else t])]   ; the raw text, so "007" stays "007"
+        [("int") (unless (exact-integer? v)
+                   (error 'convert-db-folder "~a: ~a is not an int" where t))
+                 v]
+        [("float") (cond [(and (number? v) (inexact? v)) v]
+                         [(exact-integer? v) (exact->inexact v)]
+                         [else (error 'convert-db-folder "~a: ~a is not a float" where t)])]))
+
+    ;; ---- input files -----------------------------------------------------
+
+    ;; Read a possibly-gzipped text file as lines.
+    (define (call-with-input-lines file proc)
+      (if (regexp-match? #px"\\.gz$" file)
+          (let-values ([(pin pout) (make-pipe)])
+            (define t (thread (lambda ()
+                               (call-with-input-file file (lambda (in) (gunzip-through-ports in pout)))
+                               (close-output-port pout))))
+            (begin0 (proc pin) (thread-wait t) (close-input-port pin)))
+          (call-with-input-file file proc)))
+
+    ;; NAME.ARITY.ext or NAME.ext -> (list relname arity-or-#f); #f when the
+    ;; name is not an importable data file at all.  A directory carries the
+    ;; same naming, and holds shard files.
+    (define (parse-input-name filename dir?)
+      (define stripped (regexp-replace #px"\\.gz$" filename ""))
+      (define m (if dir?
+                    (list #f stripped)
+                    (regexp-match #px"^(.+)\\.(?:csv|tsv|txt)$" stripped)))
       (and m
            (let* ([stem (second m)]
                   [a (regexp-match #px"^(.+)\\.([0-9]+)$" stem)])
@@ -269,89 +508,185 @@
                  (list (second a) (string->number (third a)))
                  (list stem #f)))))
 
-    (define (arity-of-first-row infile)
-      (with-input-from-file infile
-        (lambda ()
-          (let loop ()
-            (define line (read-line))
-            (cond [(eof-object? line) #f]
-                  [else (define toks (regexp-match* token-rx line))
-                        (if (null? toks) (loop) (length toks))])))))
+    ;; The first row that is neither blank nor a comment settles the arity; a
+    ;; schema comment settles it too, and takes precedence.
+    (define (probe-shape file)
+      (call-with-input-lines file
+        (lambda (in)
+          (let loop ([schema #f])
+            (define line (read-line in))
+            (cond
+              [(eof-object? line) (list schema (and schema (length schema)))]
+              [(regexp-match? #px"^\\s*#" line)
+               (define toks (tokenize-row (regexp-replace #px"^\\s*#" line "") file))
+               (if (and (not schema) (schema-line? toks)) (loop toks) (loop schema))]
+              [else
+               (define toks (tokenize-row line file))
+               (cond [(null? toks) (loop schema)]
+                     [schema (list schema (length schema))]
+                     [else (list #f (length toks))])])))))
 
-    ;; Whitespace tokenizer: one row per line, and a row that is not exactly
-    ;; `arity` columns wide is a mistake worth reporting by line number
-    ;; rather than silently resynchronizing the whole rest of the file.
-    (define (import-tokenized infile relname arity)
-      (with-input-from-file infile
-        (lambda ()
-          (let loop ([lineno 1])
-            (define line (read-line))
+    (define (import-tokenized file relname arity schema)
+      (call-with-input-lines file
+        (lambda (in)
+          (let loop ([lineno 1] [dropped 0])
+            (define line (read-line in))
             (unless (eof-object? line)
-              (define toks (regexp-match* token-rx line))
+              (define where (format "~a:~a" file lineno))
               (cond
-                [(null? toks) (void)]
-                [(= (length toks) arity)
-                 (emit-tuple relname (map token->value toks))]
+                [(regexp-match? #px"^\\s*#" line) (loop (add1 lineno) dropped)]
                 [else
-                 (error 'convert-db-folder
-                        "~a:~a: ~a columns, expected arity ~a"
-                        infile lineno (length toks) arity)])
-              (loop (add1 lineno)))))))
+                 (define toks (tokenize-row line where))
+                 (cond
+                   [(null? toks) (loop (add1 lineno) dropped)]
+                   [(< dropped skip-rows) (loop (add1 lineno) (add1 dropped))]
+                   [(= (length toks) arity)
+                    (emit-tuple relname
+                                (for/list ([t (in-list toks)] [i (in-naturals)])
+                                  (define v (token->value t where))
+                                  (if schema (coerce (list-ref schema i) t v where) v)))
+                    (loop (add1 lineno) dropped)]
+                   [else
+                    (error 'convert-db-folder
+                           "~a: ~a columns, expected arity ~a"
+                           where (length toks) arity)])]))))))
 
-    ;; Legacy tokenizer: values are Racket data, tuple boundaries come from
-    ;; the arity alone, and a parenthesized value builds a struct relation.
-    (define (import-read infile relname arity)
-      (with-input-from-file infile
-        (lambda ()
+    ;; Legacy tokenizer: values are Racket data, a value may span lines, and
+    ;; tuple boundaries come from the arity alone.
+    (define (import-read file relname arity)
+      (call-with-input-lines file
+        (lambda (in)
           (let loop ()
-            (define tup (for/list ([_ (in-range arity)]) (read)))
+            (define tup (for/list ([_ (in-range arity)]) (read in)))
             (unless (ormap eof-object? tup)
               (emit-tuple relname tup)
               (loop))))))
 
-    (for ([file (in-list in-files)])
-      (define parsed (parse-input-name file))
+    ;; ---- the work list ---------------------------------------------------
+
+    ;; String and mpz ids depend on interning order, so walk the folder in a
+    ;; stable order rather than directory-list's unspecified one.
+    (define entries (sort (map path->string (directory-list path)) string<?))
+
+    (define work
+      (for*/list ([entry (in-list entries)]
+                  [full (in-value (build-path path entry))]
+                  [dir? (in-value (directory-exists? full))]
+                  [parsed (in-value (parse-input-name entry dir?))]
+                  #:when (cond
+                           [parsed #t]
+                           [else (eprintf "skipping ~a (not a .csv/.tsv/.txt file)\n" entry) #f]))
+        (define shards
+          (if dir?
+              (for/list ([f (in-list (sort (map path->string (directory-list full)) string<?))]
+                         #:when (regexp-match? #px"\\.(csv|tsv|txt)(\\.gz)?$" f))
+                (path->string (build-path full f)))
+              (list (path->string full))))
+        (list (first parsed) (second parsed) shards)))
+
+    (define (close-all!)
+      (for ([entry (in-list (hash-values out-files))])
+        (match entry
+          [`(rel ,arity ,port) (close-output-port port)]
+          [`(struct ,arity ,struct-id ,port) (close-output-port port)]))
+      (close-output-port strings-file)
+      (when mpz-file (close-output-port mpz-file)))
+
+    (define (import-one-relation job)
+      (define relname (first job))
+      (define named-arity (second job))
+      (define shards (third job))
+      (check-import-name! relname "relation")
+      (when (hash-has-key? out-files relname)
+        (error 'convert-db-folder
+               "the name ~a is already taken, by another input or by a struct constructor"
+               relname))
       (cond
-        [(not parsed) (eprintf "skipping ~a (not a .csv/.tsv/.txt file)\n" file)]
+        [(null? shards) (eprintf "skipping ~a (no shard files)\n" relname)]
         [else
-         (define infile (path->string (normalize-path file (path->complete-path path))))
-         (define relname (first parsed))
-         (unless (regexp-match? #px"^[A-Za-z_][A-Za-z0-9_']*$" relname)
-           (error 'convert-db-folder "~a: ~s is not a usable relation name" file relname))
-         (when (hash-has-key? out-files relname)
-           (error 'convert-db-folder "~a: relation ~a already imported from another file"
-                  file relname))
-         (define arity
-           (or (second parsed)
-               (and (not read-values?) (arity-of-first-row infile))))
+         (define probed (and (not read-values?) (probe-shape (first shards))))
+         (define schema (and probed (first probed)))
+         (define arity (or named-arity (and probed (second probed))))
+         (when (and named-arity schema (not (= named-arity (length schema))))
+           (error 'convert-db-folder
+                  "~a: the name says arity ~a but the schema line has ~a columns"
+                  (first shards) named-arity (length schema)))
          (cond
            [(not arity)
             ;; an empty file has no first row to measure, and `read` mode has
             ;; no row boundaries at all, so both need the arity in the name
             (eprintf "skipping ~a (no rows to infer arity from; name it ~a.ARITY.csv)\n"
-                     file relname)]
+                     relname relname)]
            [else
             ;; the daemon can only load arities 1..32 (and arity 0 would loop
             ;; forever below reading zero-length tuples)
             (unless (<= 1 arity 32)
               (error 'convert-db-folder
-                     "~a: arity ~a out of the loadable range 1..32" file arity))
-            (define outfolder (format "data/~a/table.~a.arity.~a/" dbname relname arity))
+                     "~a: arity ~a out of the loadable range 1..32" relname arity))
+            (define outfolder (format "~a/table.~a.arity.~a/" staging relname arity))
             (make-directory outfolder)
-            (define outfile (string-append outfolder "0.bin"))
-            (hash-set! out-files relname `(rel ,arity ,(open-output-file outfile)))
-            (if read-values?
-                (import-read infile relname arity)
-                (import-tokenized infile relname arity))
-            (printf "  ~a  ~a tuples (arity ~a)\n"
-                    outfile (hash-ref row-counts relname 0) arity)])]))
+            (hash-set! rel-shape relname (list arity schema))
+            (for ([shard (in-list shards)] [i (in-naturals)])
+              (define port (open-output-file (format "~a~a.bin" outfolder i)))
+              (hash-set! out-files relname `(rel ,arity ,port))
+              (if read-values?
+                  (import-read shard relname arity)
+                  (import-tokenized shard relname arity
+                                    (if (= i 0) schema (first (probe-shape shard)))))
+              (close-output-port port))])]))
 
-    (for ([file (in-list (hash-values out-files))])
-      (match file
-        [`(rel ,arity ,port) (close-output-port port)]
-        [`(struct ,arity ,struct-id ,port) (close-output-port port)]))
-    (close-output-port strings-file)
-    (printf "  data/~a  ~a interned strings\n" dbname (hash-count string-to-value))
+    (with-handlers ([(lambda (_) #t)
+                     (lambda (e) (close-all!) (delete-folder staging) (raise e))])
+      (for-each import-one-relation work))
+
+    (close-all!)
+    (delete-folder (format "data/~a" dbname))
+    (rename-file-or-directory staging (format "data/~a" dbname))
+
+    ;; What a query over this database has to declare.  A column type that
+    ;; disagrees with the stored rows is rejected at load rather than
+    ;; reinterpreted, so print what was actually written.
+    (define (pad s w) (string-append s (make-string (max 1 (- w (string-length s))) #\space)))
+    ;; a nullary constructor declares as (nil), not (nil )
+    (define (decl kind name cols)
+      (if (string=? cols "") (format "~a (~a)" kind name) (format "~a (~a ~a)" kind name cols)))
+    (printf "data/~a\n" dbname)
+    (for ([name (in-list (sort (hash-keys struct-fields) string<?))]
+          ;; _enum is the runtime's shared carrier for enum members, never
+          ;; something a program declares; report the members instead
+          #:unless (string=? name "_enum"))
+      (printf "  ~a~a values\n"
+              (pad (decl "struct" name (column-decl name (hash-ref struct-fields name))) 44)
+              (hash-ref row-counts name 0)))
+    (unless (set-empty? enum-members)
+      (printf "  ~a~a values\n"
+              (pad (format "nullary members: ~a"
+                           (string-join (for/list ([m (sort (set->list enum-members) string<?)])
+                                          (format "(~a)" m))
+                                        " "))
+                   44)
+              (hash-ref row-counts "_enum" 0)))
+    (for ([name (in-list (sort (hash-keys rel-shape) string<?))])
+      (define shape (hash-ref rel-shape name))
+      ;; what the rows say, else what a schema line said, else nothing to go on
+      (define cols
+        (cond [(hash-ref col-types name #f) => (lambda (seen) (column-decl name seen))]
+              [(second shape) (string-join (second shape) " ")]
+              [else (string-join (for/list ([_ (in-range (first shape))]) "any") " ")]))
+      (printf "  ~a~a rows\n"
+              (pad (decl "table" name cols) 44)
+              (hash-ref row-counts name 0)))
+    (printf "  ~a interned strings, ~a interned bignums\n"
+            (hash-count string-to-value) (hash-count mpz-to-value))
+    ;; A column of two primitive kinds is nearly always a delimiter or schema
+    ;; mistake.  A column of several CONSTRUCTORS is not a mistake at all --
+    ;; that is what a union type is for -- so say so rather than crying `any`.
+    (for ([m (in-list (reverse mixed-columns))])
+      (define constructors?
+        (andmap (lambda (k) (not (member k '("int" "float" "str")))) (third m)))
+      (eprintf "warning: ~a column ~a holds ~a; declare it ~a\n"
+               (first m) (add1 (second m)) (string-join (third m) " and ")
+               (if constructors? "as a union type" "any, or fix the input")))
     (void)))
 
 ;; Parse a memory size ("4G" / "512M" / "1048576") into bytes; #f if unparseable.

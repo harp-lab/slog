@@ -39,10 +39,15 @@ text files becomes a database directly:
 
 ```console
 $ racket compiler/csv2db.rkt path/to/folder mygraph
-  data/mygraph/table.edge.arity.2/0.bin  1204332 tuples (arity 2)
-  data/mygraph/table.node.arity.1/0.bin   300000 tuples (arity 1)
-  data/mygraph  300000 interned strings
+data/mygraph
+  table (edge str str)                        1204332 rows
+  table (node str)                             300000 rows
+  300000 interned strings, 0 interned bignums
 ```
+
+The importer prints the declarations a query over the result has to write. A
+column type that disagrees with the stored rows is rejected at load rather
+than reinterpreted, so this is the list to copy into the query.
 
 There is one input file per relation. The relation name is the file name, and
 its arity is either taken from the first row or stated in the name:
@@ -50,23 +55,63 @@ its arity is either taken from the first row or stated in the name:
 ```text
 edge.csv        arity inferred from the first row
 edge.2.csv      arity stated in the name
+edge.csv.gz     any input may be gzipped
+edge/           a directory of shard files, all one relation
 ```
 
 `.csv`, `.tsv`, and `.txt` are read the same way: rows are newline-delimited
-and columns are separated by spaces or tabs. Every row in a file must have
-the same number of columns as the declared or inferred arity; a ragged row is
-reported by line number rather than silently shifting the rows after it.
+and columns are separated by runs of spaces and tabs. Every row in a file must
+have the same number of columns as the declared or inferred arity; a ragged row
+is reported by line number rather than silently shifting the rows after it.
 
-A column that reads as an integer becomes an `int`, one that reads as a
-decimal becomes a `float`, and anything else becomes a `str`. Quoting forces a
-string and allows spaces inside a column:
+### Columns
+
+A column that reads as an integer becomes an `int`, one that reads as a decimal
+becomes a `float`, and anything else becomes a `str`. Quoting forces a string
+and allows spaces inside a column. A parenthesized column is a structure, and
+structures nest:
 
 ```text
-alice   bob         7
-"alice" "bob jones" "7"
+7                   int
+0.5   -1.25e2       float
+alice               str
+"bob jones"         str, spaces and all
+(pt 1 2)            struct (pt int int)
+(seg (pt 1 2) (nil)) struct (seg pt ilist), with a nullary constructor inside
 ```
 
-The first row is `(str str int)`; the second is `(str str str)`.
+Bignums are ordinary `int` columns: a value outside the `int` fast path
+(`-2^31` to `2^31 - 1`) is written as an interned bignum, exactly as the
+runtime would.
+
+A `#` line is a comment. A comment whose columns are all type names —
+`int`, `float`, `str`, or `any` — is a schema line, which pins the column types
+instead of leaving them to whatever the first row happens to look like:
+
+```text
+# str str int
+01234 "main st" 7
+```
+
+Without the schema line, `01234` would be the integer 1234. A schema line also
+settles the arity, so a file with a schema line and no rows imports as an empty
+relation of the right shape.
+
+### Options
+
+```console
+$ racket compiler/csv2db.rkt --delim , --skip 1 path/to/folder mydb
+```
+
+`--delim` separates columns on a single character instead of on whitespace.
+With an explicit delimiter, an empty column is a real empty string, and a
+quoted column may contain the delimiter. `--skip` drops that many leading rows
+of every input file, for a text header that is not a `#` comment.
+
+`--read-values` reads columns as Racket data rather than delimited tokens; a
+value may then span lines, and row boundaries come from the arity alone.
+
+### What it is good for, and what it will not do
 
 Import once, then query the result like any other saved database:
 
@@ -75,13 +120,17 @@ $ racket compiler/run.rkt --no-banner -d mygraph --sizes reach.slog
 ```
 
 This is the right way to load bulk data. Writing a million facts as ground
-rules instead funnels every one of them through the parser and a compiled
-rule; importing them writes the binary tables directly and takes seconds.
+rules instead funnels every one of them through the parser and a compiled rule;
+importing them writes the binary tables directly and takes seconds. The import
+is atomic: it builds a staging directory and renames it into place, so a
+rejected input leaves any existing database of that name untouched.
 
-Two limits are worth knowing. Integer columns must fit in the `int` fast path
-(`-2^31` to `2^31 - 1`) and string columns must be at most 256 bytes, since
-larger values of both kinds are representations this writer does not build.
-Both are reported as errors, not silently truncated.
+Three limits are worth knowing. String columns must be at most 256 bytes, since
+a longer string is a rope in the sequence arena and this writer does not build
+one. Collection and lattice columns cannot be imported at all. And an imported
+database carries no logical catalog, so the N4 boundary operations refuse it
+(`docs/n4-contract.md` §4.1) — it is a set of relations to query, not a session
+to attach.
 
 ## Query an existing database
 
