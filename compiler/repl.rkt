@@ -333,9 +333,31 @@
                                         cell))
                label)))))
 
+;; The live sid -> TypeKey binding, from N3-C's independent registry.  A
+;; struct handle records the DURABLE TypeKey beside the runtime sid, so a sid
+;; that has since been freed and reissued to a different constructor is
+;; detectable: the word still decodes, but it decodes as the wrong type.
+(define (live-sid-type-keys s)
+  (for/fold ([out (hash)])
+            ([line (in-list
+                    (session-command-stream!
+                     s '(catalog types)
+                     (lambda (line)
+                       (regexp-match? #px"^\\(catalog-end " line))))])
+    (match (read-datum line)
+      [`(catalog-type (sid ,sid) (name ,_) (arity ,_) (type-key ,key))
+       (if key (hash-set out sid key) out)]
+      [_ out])))
+
 ;; Resolve `#N` against the session that minted it.  A handle from another
-;; database, or from an evaluation this session no longer is, is refused --
-;; never silently re-decoded.
+;; database, from an evaluation this session no longer is, or whose struct id
+;; has been reissued to a different constructor is refused -- never silently
+;; re-decoded.
+;;
+;; What this does NOT check is liveness: a value retracted within the same
+;; evaluation still resolves and still renders, because M5 keeps the struct id
+;; alive as a tombstone.  Holding a handle to a value you deleted is arguably
+;; the point of a handle; a presence probe would be a separate daemon verb.
 (define (resolve-value-handle state label)
   (define rs (current-repl-session state))
   (define handle (hash-ref (server-state-handles state) label #f))
@@ -353,7 +375,26 @@
      (error 'handle
             "~a is stale: it was minted in a previous evaluation of ~a"
             label (or (value-handle-database handle) "scratch"))]
-    [else handle]))
+    [else
+     (define drift
+       (and (repl-session-session rs)
+            (value-handle-type-drift
+             (value-handle-cell handle)
+             (live-sid-type-keys (repl-session-session rs)))))
+     (when drift (error 'handle "~a is no longer valid: ~a" label drift))
+     handle]))
+
+;; #f when the handle's constructor identity still holds; otherwise why not.
+;; A non-struct cell carries no sid and cannot drift this way.
+(define (value-handle-type-drift cell live-keys)
+  (define sid (value-cell-sid cell))
+  (define recorded (value-cell-type-key cell))
+  (and sid recorded
+       (let ([live (hash-ref live-keys sid #f)])
+         (and (not (equal? live recorded))
+              (format
+               "struct id ~a now belongs to ~a, not the constructor this value was minted from (~a)"
+               sid (or live "no live type") recorded)))))
 
 ;; N3-B's command catalog is relation identity authority: every current record
 ;; carries its exact VersionKey and selected committed BoundaryKey (or #f after
@@ -1589,7 +1630,25 @@
     (hash-set! (server-state-sessions state) "beta" other)
     (set-server-state-current! state "beta")
     (check-exn #px"cannot be resolved in beta"
-               (lambda () (resolve-value-handle state label))))
+               (lambda () (resolve-value-handle state label)))
+
+    ;; Constructor identity, the gap the EvaluationId check cannot see: SIDs
+    ;; are allocated lowest-free, so dropping a struct type and declaring
+    ;; another can reissue sid 4.  The word still decodes -- as the WRONG
+    ;; constructor -- and only the durable TypeKey catches it.
+    (check-false (value-handle-type-drift cell (hash 4 "t1:demo:0:3")))
+    (check-regexp-match
+     #px"struct id 4 now belongs to t1:other:0:0"
+     (value-handle-type-drift cell (hash 4 "t1:other:0:0")))
+    (check-regexp-match
+     #px"no live type"
+     (value-handle-type-drift cell (hash)))
+    ;; a scalar has no constructor identity to drift
+    (check-false
+     (value-handle-type-drift
+      (datum->value-cell
+       '(cell (word 7) (kind int) (sid #f) (type-key #f) (text "3")))
+      (hash))))
 
   (define sample-request
     (list (hasheq 'relation "edge" 'added 1 'removed 0)))
