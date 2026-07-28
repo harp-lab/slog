@@ -372,7 +372,10 @@
 
     (define (drive-stratum! sb tag)  ; poll one stratum to fixpoint; #t unless eof
       (define upgrade (sbuild-upgrade sb))
-      (define upgradeable? (and tiered? (eq? tag 'o0) upgrade))
+      ;; T3a: a cold start runs INTERPRETED and swaps to the native artifact
+      ;; when the detached build lands, exactly as an -O0 start swaps to its
+      ;; -O2 clusters.  Both are "a better artifact arrived at a boundary".
+      (define upgradeable? (and tiered? (memq tag '(o0 interp)) upgrade))
       (let poll ([loaded 0])   ; # clusters currently loaded at -O2 (0 = all -O0)
         (define line (read-line out))
         (cond

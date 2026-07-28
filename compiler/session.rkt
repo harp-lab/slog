@@ -252,9 +252,16 @@
 
 ;; Drive the current stratum to fixpoint: echo every line; answer
 ;; (paused ...) with (continue); error on (error ...) or EOF.
-(define (drive-to-fixpoint! s)
+;; `upgrade` (T3a) is this stratum's artifact-arrival closure, or #f.  A
+;; stratum that started interpreted -- the cold-start default -- swaps to its
+;; native build the first time the detached compile lands, at a clean
+;; iteration boundary, which is the only swap-safe point.  Before T3a the
+;; session driver had no swap at all: it forced the runnable and never looked
+;; again, so a REPL run never picked up a background build.
+(define (drive-to-fixpoint! s [upgrade #f])
   (define continue-so (action-so `(continue)))
-  (let poll ()
+  (define continue-boundary-so (action-so `(continue-boundary)))
+  (let poll ([loaded 0])
     (define line (read-line (session-out s)))
     (cond
       [(eof-object? line) (error 'session "daemon EOF mid-stratum")]
@@ -264,18 +271,31 @@
        (cond
          [(regexp-match? #px"memory\\)\\s*$" line)
           (error 'session (format "out of memory: ~a" line))]
-         [else (send-plugin! s continue-so) (poll)])]
+         [(not upgrade) (send-plugin! s continue-so) (poll loaded)]
+         ;; Only a settled ITERATION boundary is swap-safe -- a mid-read pause
+         ;; is not -- so match the phase field exactly, in either the uniform
+         ;; command record or the legacy positional form, and drive to a
+         ;; boundary first otherwise.  The daemon then recognizes the same
+         ;; stratum name and re-registers in upgrade entry mode, exactly as
+         ;; the -O0 -> -O2 swap does.
+         [(or (regexp-match? #px"\\(phase iter\\)" line)
+              (regexp-match? #px"^\\(paused [^ ]+ \"[^\"]*\" [0-9]+ iter " line))
+          (match-define (list artifact done _total) (upgrade loaded))
+          (cond
+            [artifact (send-plugin! s artifact) (poll done)]
+            [else (send-plugin! s continue-so) (poll loaded)])]
+         [else (send-plugin! s continue-boundary-so) (poll loaded)])]
       [(regexp-match? #px"^\\(error " line)
        (error 'session (format "daemon error: ~a" line))]
-      [else (echo! s line) (poll)])))
+      [else (echo! s line) (poll loaded)])))
 
 ;; Send one STRATUM plugin and drive it to fixpoint, advancing the daemon
 ;; pipeline mirror -- every stratum push (fresh or re-push) lands here so
 ;; next-scc never drifts from the daemon's scc assignment.
-(define (send-stratum! s so)
+(define (send-stratum! s so [upgrade #f])
   (set-session-next-scc! s (add1 (session-next-scc s)))
   (send-plugin! s so)
-  (drive-to-fixpoint! s))
+  (drive-to-fixpoint! s upgrade))
 
 ;; Maintenance strata use the same bounded execution protocol without
 ;; becoming pipeline events.  In particular, recount must not make a later
@@ -312,7 +332,9 @@
                                 (sbuild-maintenance sb)
                                 (sbuild-negative-maintenance sb)
                                 (sbuild-recursive-negative-maintenance sb))))))
-  (send-stratum! s so))
+  ;; T3a: a freshly compiled stratum starts interpreted and upgrades in place.
+  ;; A re-push of a cached stratum has no upgrade to offer.
+  (send-stratum! s so (sbuild-upgrade sb)))
 
 ;; The count round (docs/incremental.md §8B.1-§8B.2, M0.4c): rebuild a
 ;; VERSION-LOCAL count state in scratch sidecars, audit its coverage, then

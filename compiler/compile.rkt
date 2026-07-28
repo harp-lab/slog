@@ -821,6 +821,18 @@
 ;; per-TU .o paths are content-addressed and fixed, so they are computed once;
 ;; each boundary is then just file-exists? checks + (on progress) one cheap link.
 ;; Returns (list mix-so-or-#f n-o2 total).
+;; T3a's cold-start upgrade: two rungs above the interpreter.  `loaded` is the
+;; rung already installed -- 0 interpreted, 1 at -O0, 2 at -O2 -- so each
+;; artifact is swapped in at most once and -O2 always wins if both have landed
+;; by the time we look.  Shape matches `make-upgrade`'s
+;; (list artifact done total) so both drivers' polling loops are identical.
+(define (make-native-upgrade o0so o2so)
+  (lambda (loaded)
+    (cond
+      [(and (< loaded 2) (file-exists? o2so)) (list o2so 2 2)]
+      [(and (< loaded 1) (file-exists? o0so)) (list o0so 1 2)]
+      [else (list #f loaded 2)])))
+
 (define (make-upgrade proghash cpps)
   (define pairs
     (for/list ([cpp (in-list cpps)])
@@ -1149,15 +1161,32 @@
                  (lambda () (ensure-maintenance-so job))
                  (lambda () (ensure-negative-maintenance-so job))
                  (lambda () (ensure-recursive-negative-maintenance-so job)))]
-           [else ; tiered: eager -O0 to run now, then upgrade cluster-by-cluster to
-                 ;; -O2 as the background fills the .o cache (docs/fast-compile.md §14)
+           [else ; T3a cold start (execution-tiers §T3.1): install and seal the
+                 ;; plan and INTERPRET NOW rather than blocking on clang.
+                 ;;
+                 ;; The ladder stays three rungs -- interpret, then -O0, then
+                 ;; -O2 -- because they solve different problems.  The
+                 ;; interpreter removes the wait for a first result; -O0
+                 ;; arrives in seconds and restores throughput; -O2 follows.
+                 ;; Dropping the -O0 rung (an early version of this slice did)
+                 ;; leaves a stratum interpreting for the whole duration of an
+                 ;; -O2 build, which is a large throughput loss on exactly the
+                 ;; short programs a test suite is made of.
+                 ;;
+                 ;; pooled-eager starts the -O0 build IMMEDIATELY in a pool
+                 ;; thread; we simply never force its blocking thunk, so the
+                 ;; run proceeds interpreted while that compile happens and
+                 ;; the upgrade closure picks the artifact up when it lands.
             ;; claim-gate the -O2 so concurrent/successive runs that all miss the
             ;; -O2 don't each spawn one (docs/fast-compile.md §13)
             (when (try-claim-o2! o2so)
               (set! o2-cmds (cons (o2-build-command cpps o2so) o2-cmds)))
+            (void (pooled-eager
+                   (lambda () (build-so cpps o0so #:opt "-O0") (cons o0so 'o0))))
+            (define plan (ensure-normal-plan job))
             (sbuild proghash o2so
-                    (pooled-eager (lambda () (build-so cpps o0so #:opt "-O0") (cons o0so 'o0)))
-                    (make-upgrade proghash cpps)
+                    (lambda () (cons plan 'interp))
+                    (make-native-upgrade o0so o2so)
                     (lambda () (ensure-delta-so job))
                     (lambda () (ensure-count-so job))
                     (lambda () (ensure-maintenance-so job))
