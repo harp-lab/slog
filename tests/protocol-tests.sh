@@ -171,6 +171,9 @@ if [ "$(grep -cF '(catalog-boundary (boundary "n3.b0")' out/proto-n3-boundary.lo
   ok "n3-abort-preserves-history"; else bad "n3-abort-preserves-history"; fi
 expect "n3-successor-history" '(catalog-boundary (boundary "n3.b2") (program "n3.p2") (evaluation "runtime-evaluation") (position 1) (generation 2) (relations 1))' out/proto-n3-boundary.log
 expect_rx "n3-current-successor" '\(catalog-rel \(name "edge"\).*\(version-key "n3\.edge\.2"\) \(boundary "n3\.b2"\).*\(size 6\)' out/proto-n3-boundary.log
+# R2: the catalog reports each relation's materialized full-index orders --
+# the runtime fact the Q1 planner schedules over (t0-contract.md).
+expect_rx "n3-catalog-orders" '\(catalog-rel \(name "edge"\).*\(version-key "n3\.edge\.2"\).*\(orders \(\(0 1\)\)\) \(temp #f\)\)' out/proto-n3-boundary.log
 expect_rx "n3-direct-historical-lookup" '\(catalog-rel \(name "edge"\).*\(version-key "n3\.edge\.0"\) \(boundary "n3\.b0"\).*\(size 0\)' out/proto-n3-boundary.log
 if [ "$(grep -c '(catalog-end ' out/proto-n3-boundary.log)" -eq 10 ]; then
   ok "n3-refusal-leaves-no-lease"; else bad "n3-refusal-leaves-no-lease"; fi

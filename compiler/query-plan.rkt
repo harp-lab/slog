@@ -35,7 +35,8 @@
          plan-query
          query-plan->datum
          query-plan->wire-datum
-         query-plan->wire-string)
+         query-plan->wire-string
+         query-primitive-spec)
 
 (require racket/list
          racket/match
@@ -248,6 +249,12 @@
 
 (define comparison-kinds '(lt le gt ge))
 (define equality-kinds '(eq neq))
+
+;; The R2 front end asks which audited primitive a surface (= X (op ...))
+;; names; #f means "not in the query whitelist" (the surface language's
+;; primitive set is much larger).
+(define (query-primitive-spec name)
+  (hash-ref primitive-specs (normalize-primitive-name name) #f))
 
 (define (normalize-primitive-name name)
   (cond [(symbol? name) name]

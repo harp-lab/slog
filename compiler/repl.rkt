@@ -22,6 +22,8 @@
          "dbtool.rkt"
          "names.rkt"
          "params.rkt"
+         "query-front.rkt" ; the R2 `?` register grammar
+         "query-plan.rkt"  ; Q1 catalog planner + ABI-1 wire emission
          "session.rkt")
 
 (define protocol-version 1)
@@ -206,6 +208,10 @@
    "  count REL           count the current version of a relation"
    "  show REL [LIMIT]    show rows for a small relation (safety cap: 200)"
    "  query REL V...      test whether any row matches a value prefix"
+   "  ?(REL V...)         query the committed boundary; also"
+   "                      ? (a X Y) (b Y Z) (< Z 9) -> (X Z)  and  ~ absence"
+   "  ?count ?exists      the same query without materializing rows"
+   "  explain ?QUERY      show the query plan and degradations, do not run"
    "  catalog             show the selected boundary, history, and types"
    "  schema              show the daemon's raw live schema"
    "  pipeline            show the daemon's raw versioned pipeline"
@@ -827,6 +833,273 @@
                  (if found? "yes" "no") name values))
    #:kind "query"))
 
+;; ---- the `?` register (R2 over Q1) -----------------------------------------
+;;
+;; parse (query-front.rkt) -> plan against the committed head + the daemon's
+;; materialization facts (query-plan.rkt) -> drive the canonical dispatcher
+;; (query/query-page/query-cancel) -> render.  Queries never mutate: literals
+;; resolve probe-only in the daemon and the plan uses existing indices only.
+
+;; Runtime facts only the daemon knows, keyed by exact VersionKey: kind,
+;; arity, materialized full-index orders, tuple count.  An index-free
+;; relation reports no orders and is dropped -- it has no scannable storage,
+;; so it is not queryable until something materializes it.
+(define (daemon-materialization-facts s)
+  (define lines
+    (session-command-stream!
+     s '(catalog)
+     (lambda (line) (regexp-match? #px"^\\(catalog-end [0-9]+\\)$" line))))
+  (for/fold ([out (hash)]) ([line (in-list lines)])
+    (match (read-datum line)
+      [`(catalog-rel ,fields ...)
+       (define (field key)
+         (match (assq key fields) [(list _ value) value] [_ #f]))
+       (define version-key (field 'version-key))
+       (define arity (field 'arity))
+       (define orders (field 'orders))
+       (define size (field 'size))
+       (define kind
+         (match (field 'kind) ['struct 'struct] ['lat 'lattice] [_ 'plain]))
+       (if (and (string? version-key)
+                (exact-nonnegative-integer? arity)
+                (list? orders) (pair? orders)
+                (exact-nonnegative-integer? size))
+           (hash-set out version-key
+                     (query-materialization version-key kind arity orders size))
+           out)]
+      [_ out])))
+
+(define (field-type-symbol ref)
+  (match ref
+    [(type-ref 'primitive name)
+     (if (symbol? name) name (string->symbol (~a name)))]
+    [(type-ref 'named name) (string->symbol (qname->display name))]
+    [_ 'any]))
+
+;; Project the committed logical head and the daemon's materialization facts
+;; into the planner's immutable snapshot.  Display names are the query keys:
+;; the `?` register speaks the dotted names the canvas shows.  Only pairs
+;; whose logical and runtime kinds agree join the snapshot -- anything else
+;; (non-storage declarations, drifted kinds, index-free storage) stays out
+;; and queries against it refuse as unknown rather than poisoning the rest.
+(define (query-boundary-snapshot s)
+  (define head (session-current-boundary s))
+  (unless head
+    (error '? (string-append
+               "queries need a committed boundary catalog; "
+               "run a program against this database first")))
+  (define generation
+    (match (pipeline-datum s)
+      [`(pipeline (pos ,_) (evaluation ,_) (update-epoch ,epoch) ,_ ...)
+       epoch]
+      [_ (error '? "cannot read the daemon update epoch")]))
+  (define materializations (daemon-materialization-facts s))
+  (define declarations (catalog-declarations (boundary-catalog head)))
+  (define-values (decl-map env-map)
+    (for/fold ([decls (hash)] [env (hash)])
+              ([(name version-key) (in-hash (boundary-environment head))])
+      (define descriptor (hash-ref declarations name #f))
+      (define materialization (hash-ref materializations version-key #f))
+      (define kind (and descriptor (declaration-descriptor-kind descriptor)))
+      (define runtime-kind
+        (and materialization (query-materialization-kind materialization)))
+      (cond
+        [(or (not descriptor) (not materialization)
+             (not (case kind
+                    [(table) (eq? runtime-kind 'plain)]
+                    [(struct lattice) (eq? runtime-kind kind)]
+                    [else #f])))
+         (values decls env)]
+        [else
+         (define runtime-arity (query-materialization-arity materialization))
+         (define fields
+           (map field-type-symbol (declaration-descriptor-fields descriptor)))
+         ;; the struct id column (and a lattice's spec-only width) types as
+         ;; `any`; only plain tables plan, so table typing never weakens
+         (define types
+           (cond
+             [(= (length fields) runtime-arity) fields]
+             [(< (length fields) runtime-arity)
+              (append fields
+                      (make-list (- runtime-arity (length fields)) 'any))]
+             [else (take fields runtime-arity)]))
+         (define key (qname->display name))
+         (values (hash-set decls key (query-declaration key kind types))
+                 (hash-set env key version-key))])))
+  (query-boundary (boundary-key head) generation decl-map env-map
+                  materializations))
+
+;; The one-query lease is connection-scoped, so every command drains or
+;; cancels its cursor before returning: v1 fetches at most one page of rows
+;; and reports what remains rather than holding the lease across commands.
+(define query-page-size 200)
+(define query-slice-budget 64)
+
+(define query-id-counter (box 0))
+(define (next-query-id)
+  (set-box! query-id-counter (add1 (unbox query-id-counter)))
+  (format "q~a" (unbox query-id-counter)))
+
+(struct query-outcome (status rows matched) #:transparent)
+
+(define (query-refused! who lines)
+  (for ([line (in-list lines)])
+    (match (read-datum line)
+      [`(refused ,class ,_ ,fields ...)
+       (define detail
+         (match (assq 'detail fields) [(list _ text) text] [_ #f]))
+       (error who "daemon refused the query (~a)~a" class
+              (if detail (format ": ~a" detail) ""))]
+      [_ (void)])))
+
+;; Drive one wire plan through the dispatcher.  Rows mode stops at the first
+;; full page (more matches exist -> cancel and say so); count/exists keep
+;; continuing through paused work slices until complete or the slice budget
+;; trips, so their `matched` is exact whenever the status says complete.
+(define (drive-query! s wire-plan rows-mode?)
+  (define id (next-query-id))
+  (define (page-command first?)
+    (if first?
+        (format "(query ~a ~a (page ~a))" id wire-plan query-page-size)
+        (format "(query-page ~a (page ~a))" id query-page-size)))
+  (let loop ([first? #t] [rows '()] [slices 0])
+    (define lines (session-query-lines! s (page-command first?)))
+    (query-refused! '? lines)
+    (define new-rows
+      (for/list ([line (in-list lines)]
+                 #:do [(define datum (read-datum line))]
+                 #:when (match datum [`(query-row ,_ ,_) #t] [_ #f]))
+        (match datum
+          [`(query-row ,_ (values ,values ...)) (map ~a values)])))
+    (define all-rows (append rows new-rows))
+    (match (read-datum (last lines))
+      [`(query-end ,_ ,status (rows ,_) (matched ,matched))
+       (cond
+         [(memq status '(complete cancelled))
+          (query-outcome status all-rows matched)]
+         [(and rows-mode? (>= (length all-rows) query-page-size))
+          (session-query-lines! s (format "(query-cancel ~a)" id))
+          (query-outcome 'truncated all-rows matched)]
+         [(>= slices query-slice-budget)
+          (session-query-lines! s (format "(query-cancel ~a)" id))
+          (query-outcome 'budget all-rows matched)]
+         [else (loop #f all-rows (add1 slices))])]
+      [other (error '? "unexpected query reply: ~a" other)])))
+
+;; Substitute an answer row back into the single-atom sugar's fact template.
+;; Every symbol in a qualifying template is a projected variable, so the
+;; lookup cannot miss.
+(define (render-query-fact pattern vars values)
+  (define bindings (map cons vars values))
+  (define parts
+    (for/list ([term (in-list (rest pattern))])
+      (cond
+        [(symbol? term) (cdr (assq term bindings))]
+        [(string? term) (~s term)]
+        [else (~a term)])))
+  (format "(~a~a)" (first pattern)
+          (if (null? parts) "" (string-append " " (string-join parts " ")))))
+
+(define (render-query-rows line outcome)
+  (define vars (query-line-project-vars line))
+  (define pattern (query-line-pattern line))
+  (define rows (query-outcome-rows outcome))
+  (define shown (take rows (min query-page-size (length rows))))
+  (define numbered
+    (for/list ([row (in-list shown)] [i (in-naturals 1)])
+      (format "~a  ~a" i
+              (if pattern
+                  (render-query-fact pattern vars row)
+                  (format "(~a)" (string-join row " "))))))
+  (define header
+    (format "~a row~a~a" (length shown)
+            (if (= (length shown) 1) "" "s")
+            (match (query-outcome-status outcome)
+              ['complete ""]
+              ['truncated
+               (format " shown · ~a+ matched; narrow the query or use ?count"
+                       (query-outcome-matched outcome))]
+              [_ (format " shown before the work budget; use ?count")])))
+  (hash-set*
+   (text-result
+    (if pattern
+        "Query"
+        (format "Query · (~a)" (string-join (map ~a vars) " ")))
+    (cons header numbered)
+    #:kind "query")
+   'query-mode "rows"
+   'query-status (~a (query-outcome-status outcome))
+   'query-matched (query-outcome-matched outcome)))
+
+(define (query-register-result state text)
+  ;; grammar refusals need no session, so parse before touching the daemon
+  (define line (parse-query-line text))
+  (define s (ensure-session! state))
+  (define catalog (query-catalog-from-boundary (query-boundary-snapshot s)))
+  (define plan (plan-query catalog (query-line-request line)))
+  (define wire (query-plan->wire-string plan))
+  (define mode (query-request-mode (query-line-request line)))
+  (define outcome (drive-query! s wire (eq? mode 'rows)))
+  (define exact? (eq? (query-outcome-status outcome) 'complete))
+  (match mode
+    ['rows (render-query-rows line outcome)]
+    ['count
+     (hash-set*
+      (text-result
+       "Query count"
+       (list (format "~a~a row~a match"
+                     (query-outcome-matched outcome)
+                     (if exact? "" "+")
+                     (if (= (query-outcome-matched outcome) 1) "" "s")))
+       #:kind "query")
+      'query-mode "count"
+      'query-matched (query-outcome-matched outcome))]
+    ['exists
+     (define yes? (positive? (query-outcome-matched outcome)))
+     (hash-set*
+      (text-result
+       "Query exists"
+       (list (cond [yes? "yes — at least one row matches"]
+                   [exact? "no rows match"]
+                   [else "none found before the work budget"]))
+       #:kind "query")
+      'query-mode "exists"
+      'query-matched (query-outcome-matched outcome))]))
+
+;; `explain ?...` plans without executing: the chosen driver, the join
+;; schedule, and every degradation the planner had to accept.
+(define (explain-result state argument)
+  (define text (string-trim argument))
+  (unless (string-prefix? text "?")
+    (error 'explain "expected: explain ?QUERY (rule explain arrives with R4)"))
+  (define s (ensure-session! state))
+  (define line (parse-query-line text))
+  (define catalog (query-catalog-from-boundary (query-boundary-snapshot s)))
+  (define plan (plan-query catalog (query-line-request line)))
+  (define explain (query-plan-explain plan))
+  (define degradations
+    (match (query-explain-degradations explain)
+      ['() (list "degradations: none — existing indices cover the query")]
+      [items
+       (for/list ([d (in-list items)])
+         (format "degraded ~a: ~a~a"
+                 (query-degradation-kind d)
+                 (query-degradation-relation d)
+                 (let ([detail (query-degradation-detail d)])
+                   (if detail (format " — ~a" detail) ""))))]))
+  (text-result
+   "Explain query"
+   (append
+    (list (format "mode: ~a" (query-request-mode (query-line-request line)))
+          (format "boundary: ~a · generation ~a"
+                  (query-plan-boundary-key plan)
+                  (query-plan-generation plan))
+          (format "driver: ~s" (query-explain-driver explain))
+          (format "schedule: ~s" (query-explain-schedule explain))
+          (format "estimated cost: ~a" (query-explain-estimated-cost explain)))
+    degradations)
+   #:kind "explain"))
+
 (define (pipeline-datum s)
   (define lines (session-action! s '(pipeline) read-one-response))
   (and (pair? lines) (read-datum (first lines))))
@@ -1068,9 +1341,22 @@
                #:kind "mode"))
 
 (define (dispatch-command state source)
+  (define trimmed (string-trim source))
   (define-values (verb argument) (split-command source))
   (define result
-    (match verb
+    (cond
+    ;; the `?` sigil binds to its atom, so the query register routes on the
+    ;; raw line before verb splitting; bare `?` stays the help alias.
+    [(and (string-prefix? trimmed "?") (not (string=? trimmed "?")))
+     (query-register-result state trimmed)]
+    [(string-prefix? trimmed "(")
+     (error 'command
+            (format (string-append
+                     "a bare fact is ambiguous: `add ~a` asserts it, "
+                     "`?~a` queries it")
+                    trimmed trimmed))]
+    [else
+     (match verb
     ["" (text-result "Slog" '())]
     [(or ":help" "help" "?") (text-result "Help" help-lines #:kind "help")]
     [(or ":ping" "ping")
@@ -1117,6 +1403,7 @@
     ["count" (count-result state argument)]
     ["show" (show-result state argument)]
     [(or "query" "has") (query-result state argument)]
+    ["explain" (explain-result state argument)]
     ["run"
      (when (string=? argument "")
        (error 'run "expected: run PATH"))
@@ -1271,7 +1558,7 @@
      (hasheq 'kind "quit" 'title "Goodbye" 'lines (list "REPL closed") 'close #t)]
     [_
      (error 'command
-            (format "unknown command ~a; type :help for the current command set" verb))]))
+            (format "unknown command ~a; type :help for the current command set" verb))])]))
   (attach-session-state state result))
 
 ;; Deterministic transcript projection for the server contract.  This is a
@@ -1707,4 +1994,63 @@
             "rename edge input_edge"
             "drop path"
             ":quit")))
-   (file->string semantic-session-golden)))
+   (file->string semantic-session-golden))
+
+  ;; The `?` register (R2): grammar refusals need no daemon; the live rows/
+  ;; count/exists/explain checks drive a real scratch session over
+  ;; tests/reach.slog (edge = the 1-2-3-4 chain, path = its closure).  Row
+  ;; ORDER is index order, so assertions pin content the planner/daemon
+  ;; must produce, never incidental orderings.
+  (let ([bare-state (server-state (make-hash) #f #f #f (make-hash))])
+    (check-regexp-match
+     #px"ambiguous"
+     (with-handlers ([exn:fail? exn-message])
+       (dispatch-command bare-state "(edge 1 2)")
+       "bare fact unexpectedly accepted"))
+    (check-regexp-match
+     #px"query plan \\[parse\\]"
+     (with-handlers ([exn:fail? exn-message])
+       (dispatch-command bare-state "? ->")
+       "empty projection unexpectedly accepted"))
+    ;; bare `?` stays the help alias
+    (check-equal? (hash-ref (dispatch-command bare-state "?") 'kind) "help"))
+
+  (let ([transcript
+         (parameterize ([current-directory repository-root]
+                        [current-environment-variables test-environment])
+           (plain-transcript
+            (list "run tests/reach.slog"
+                  "?count (path X Y)"
+                  "?exists (edge 1 2)"
+                  "?(edge 4 1)"
+                  "?(edge 1 X)"
+                  "?count (path 1 Y) (< Y 4)"
+                  "explain ?(edge 1 X)"
+                  "explain ? (path X Y) (edge Y Z) -> (X Z)"
+                  "?(nope X)"
+                  "?(edge #1 X)"
+                  ;; queries ride forward incrementality: the head's
+                  ;; VersionKeys survive a flushed tip edit, and the fresh
+                  ;; update epoch is read per query
+                  "add edge 4 1"
+                  "?count (path X Y)"
+                  ":quit")))])
+    ;; count is exact at completion
+    (check-regexp-match #px"◆ Query count\n  6 rows match" transcript)
+    ;; existence, spelled and ground-sugared
+    (check-regexp-match #px"◆ Query exists\n  yes" transcript)
+    (check-regexp-match #px"◆ Query exists\n  no rows match" transcript)
+    ;; the single-atom sugar substitutes answers into the fact template
+    (check-regexp-match #px"1 row\n  1  \\(edge 1 2\\)" transcript)
+    ;; guards ride the audited whitelist
+    (check-regexp-match #px"◆ Query count\n  2 rows match" transcript)
+    ;; explain plans without running and reports the boundary identity
+    (check-regexp-match #px"◆ Explain query\n  mode: rows\n  boundary: "
+                        transcript)
+    (check-regexp-match #px"driver: " transcript)
+    ;; typed refusals surface as command failures with the planner's kind
+    (check-regexp-match #px"query plan \\[unknown-relation\\]" transcript)
+    (check-regexp-match #px"handles cannot splice" transcript)
+    ;; closing the 4-cycle makes path the complete relation on 4 nodes,
+    ;; and the query observes it at the post-edit epoch
+    (check-regexp-match #px"◆ Query count\n  16 rows match" transcript)))

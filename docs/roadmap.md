@@ -1254,6 +1254,39 @@ unchanged semantic golden; session battery 703/703 (namespace rename/
 consume/drop, anchored-batch translation, chained transforms with a closed
 count walk and IR oracle).
 
+**Checkpoint (2026-07-28; R2 slice (a) — the query spine).** The `?`
+register is live end to end over the shipped Q1 substrate: `?`/`?count`/
+`?exists` with conjunctive bodies, `/=`-and-comparison guards, the audited
+compute whitelist, snapshot negation, `->` projection, and `explain ?...`
+plan-without-run rendering. The grammar lives in `compiler/query-front.rkt`
+as a pure text-to-request translator (symbols are variables exactly as in
+rule bodies, `_` is fresh per occurrence, a fully ground rows query answers
+existence); `repl.rkt` projects the committed logical head plus the daemon's
+materialization facts into the planner's snapshot, keys it by display name,
+plans with `query-plan.rkt`, and drives the canonical dispatcher through the
+new `session-query-lines!` raw channel. The missing catalog link closed on
+the daemon side: `Relation::fullOrders()` (seeded-order policy mirrors
+`getAnyIndex`) and an additive `(orders ((0 1) ...))` field on
+`catalog-rel` records now report the materialized full-index orders the
+planner may schedule over (t0-contract.md updated; field-tagged readers
+unaffected).
+
+The one-query lease is respected by construction: v1 fetches at most one
+page (200 rows) or drains count/exists through paused work slices under a
+budget, then cancels — no cursor survives a command, so `more` integration
+remains open. Value handles do not yet splice into queries (`#N` refuses
+with a hint); the single-atom sugar substitutes answers back into the fact
+template. A bare `(fact ...)` line now errors with the two-way add/query
+hint (repl-ux §5.1).
+
+Gates: daemon build; unit 404 (query-front battery + planner suite);
+protocol 132/132 (orders pin added); Racket REPL contract 67/67 including a
+live scratch-session battery — rows/count/exists/explain, typed refusals,
+and a query at the fresh epoch after a flushed tip edit; Rust 29+44+3 with
+the semantic golden byte-identical. Remaining for R2: `uses`/`find`, `dump`,
+query watches, handle splicing, Q1-cursor pagination (`more`), and client
+completion/canvas adapters for query results.
+
 ### 4.3 Why the fork is safe
 
 Three structural facts, not optimism: the interpreter partitions (monotone

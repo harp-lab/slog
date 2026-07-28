@@ -297,7 +297,7 @@ A line at the prompt is one of three things, disambiguated by its first token:
    Verbs are reserved only in line-head position.
 2. **A query** — the `?` sigil followed by Slog body syntax:
    `?(edge "a" X)` as one-atom sugar; full conjunctive form
-   `? (path X Y) (label Y L) (=/= L "skip") -> (X L)` with an optional
+   `? (path X Y) (label Y L) (/= L "skip") -> (X L)` with an optional
    projection head. `?count`, `?exists` avoid materializing rows.
 3. **Slog itself** — a line starting with `rule`, `table`, `lat`, etc. is a
    *scratch definition* (§5.3). Bare facts are deliberately **not** accepted

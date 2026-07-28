@@ -84,6 +84,7 @@
          session-prepared-boundary ; the leased, uncommitted BoundaryKey or #f
          session-action!        ; low-level: one action + a reader
          session-command-stream! ; low-level: one T0 command record stream
+         session-query-lines!   ; low-level: one Q1 query command + records
          session-recount!       ; the count round over the pipeline (M0)
          session-reenter!       ; direct replay-entry (tests/tools)
          session-rerun!         ; direct clear-and-rerun (tests/tools)
@@ -247,6 +248,25 @@
                               datum line)))
     (define next (cons line lines))
     (if (terminal? line) (reverse next) (loop next))))
+
+;; One Q1 dispatcher command (query/query-page/query-cancel) as a RAW line --
+;; the canonical wire plan text must cross byte-for-byte because the daemon
+;; re-slices the payload from the line -- returning every reply line through
+;; the terminal (query-end ...).  A refusal is DATA here, not an error: the
+;; R2 register renders typed refusals, and raising would strand the reply.
+(define (session-query-lines! s line)
+  (display line (session-in s))
+  (newline (session-in s))
+  (flush-output (session-in s))
+  (let loop ([lines '()])
+    (define reply (read-line (session-out s)))
+    (when (eof-object? reply)
+      (error 'session (format "daemon EOF in query stream: ~a" line)))
+    (define next (cons reply lines))
+    (if (or (regexp-match? #px"^\\(query-end " reply)
+            (regexp-match? #px"^\\(refused " reply))
+        (reverse next)
+        (loop next))))
 
 (define (echo! s line) ((session-echo s) line))
 

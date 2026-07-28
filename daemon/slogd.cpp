@@ -1338,6 +1338,18 @@ static const char* reserved_family(const std::string& verb)
     return nullptr;
 }
 
+// The materialization facts the Q1 planner needs beside the declaration:
+// one list of full-index orderings, e.g. ((0 1) (1 0)), () when index-free.
+// A single-value field so assq-style readers see one datum.
+static std::string catalog_orders_field(slog::Relation* r)
+{
+    std::string orders;
+    for (const std::vector<u16>& ord : r->fullOrders())
+        orders += (orders.empty() ? "(" : " (")
+            + slog::Relation::ordString(ord) + ")";
+    return "(" + orders + ")";
+}
+
 static std::string catalog_relation_record(
     const std::string& name, slog::Relation* r,
     const std::string& boundary_key)
@@ -1368,6 +1380,7 @@ static std::string catalog_relation_record(
         + (r->isLattice() ? quoteString(r->latticeSpec()) : "#f") + ")"
         + " (size "
         + (r->getAnyIndex() ? std::to_string(r->tupleCount()) : "#f") + ")"
+        + " (orders " + catalog_orders_field(r) + ")"
         + " (temp " + (r->isCompilerTemporary() ? "#t" : "#f") + "))";
 }
 

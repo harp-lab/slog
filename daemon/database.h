@@ -1658,6 +1658,24 @@ public:
     return 0;
   }
 
+  // Every materialized full-index ordering, sorted (`indices` iterates in
+  // hash order).  Same trust policy as getAnyIndex: seeded-only orderings
+  // are unmaintained in a fresh run, so they are reported only when the
+  // relation has nothing else.  This is the catalog's answer to the Q1
+  // planner, which may only schedule over indices that already exist.
+  std::vector<std::vector<u16>> fullOrders() const
+  {
+    std::vector<std::vector<u16>> orders;
+    for (const auto& it : indices)
+      if (seeded_orderings.find(it.first) == seeded_orderings.end())
+        orders.push_back(it.first);
+    if (orders.empty())
+      for (const auto& it : indices)
+        orders.push_back(it.first);
+    std::sort(orders.begin(), orders.end());
+    return orders;
+  }
+
 
   // Register the identity-ordering index if the relation has no index at
   // all, so the daemon can materialize data it loads itself (an opened or

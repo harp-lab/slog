@@ -379,8 +379,10 @@ the fork.
   (version-id I) (version-key K|#f) (boundary B|#f)
   (evaluation E|#f) (predecessor P|#f)
   (struct-id S|#f) (type-key T|#f) (lat-spec L|#f) (size Z|#f)
-  (temp #t|#f))` records — declaration truth, empties included, unlike
-  `(schema)` — plus `(catalog-planned (name "N") (version-key K))` for
+  (orders ((0 1) ...)) (temp #t|#f))` records — declaration truth,
+  empties included, unlike `(schema)` — `orders` lists the materialized
+  full-index orderings (sorted; `()` when index-free), the runtime
+  materialization fact the Q1 planner schedules over — plus `(catalog-planned (name "N") (version-key K))` for
   announced-but-unregistered keys and `(catalog-type (sid S) (name "N"|#f)
   (arity A) (type-key T|#f))`. N3-C sources these records from the independent
   TypeDescriptor registry, so a dropped/history-only type remains present
