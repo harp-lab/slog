@@ -3666,6 +3666,38 @@ expect "n4c-stacked-reloads" "(dumpdone 3)" out/sess-n4c-stack-load.log
 expect "n4c-stacked-empty-member" "(dumpdone 0)" out/sess-n4c-stack-load.log
 expect "n4c-stacked-structs" "(tuplerow (m.Pair 1 2))" out/sess-n4c-stack-load.log
 
+# --- level-0 watches (repl.md §6, t0-contract.md) ---------------------------
+#
+# A watch observes evaluation from OUTSIDE the dependency graph -- no rule, no
+# fact, nothing in the compile hash or recipe.  It fires only at a coherent
+# barrier where the delta is already finalized, so it works under any executor,
+# and it fires at most once per barrier so a `continue` cannot re-return the
+# identical pause.
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/base.slog watch:w1,path rerun:path unwatch:w1 \
+  > out/sess-watch.log 2>&1
+expect_re "watch-registered" \
+  '\(watch-added \(id "w1"\) \(version-key "v1:[^"]+"\) \(watches 1\)\)' \
+  out/sess-watch.log
+# every hit is a settled iteration barrier citing the watch, in the uniform
+# pause record slice (d) already shipped -- a cause variant, not a new message
+expect_re "watch-fires-at-a-settled-barrier" \
+  '\(phase iter\) \(settled #t\).*\(cause \(watch \(watch-id "w1"\)\)\)' \
+  out/sess-watch.log
+# path settles over three iterations, so the watch fires three times and the
+# run still reaches fixpoint: edge-triggered, one pause per barrier
+if [ "$(grep -c '(cause (watch (watch-id "w1")))' out/sess-watch.log)" -eq 3 ]; then
+  echo "PASS watch-edge-triggered-per-barrier"; PASS=$((PASS+1))
+else
+  echo "FAIL watch-edge-triggered-per-barrier"; FAIL=$((FAIL+1))
+fi
+expect "watch-reaches-fixpoint" "(fixpoint 2 " out/sess-watch.log
+expect "watch-removed" '(watch-removed (id "w1") (watches 0))' out/sess-watch.log
+# an unwatched run pauses for no watch at all
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/base.slog rerun:path > out/sess-watch-none.log 2>&1
+expect_not "watch-silent-when-unregistered" "(cause (watch" out/sess-watch-none.log
+
 # --- the value adapter (repl.md §1, R2 substrate) ---------------------------
 #
 # Rows reach a client as structured CELLS, not display text: each carries the

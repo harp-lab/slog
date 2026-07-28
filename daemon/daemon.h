@@ -1618,7 +1618,17 @@ public:
       if (command_protocol_spoken)
       {
         protocol::PauseCause cause;
-        if (st.reason == std::string_view("memory"))
+        // All watches that hit at this barrier aggregate into ONE pause
+        // (repl.md §6).  A watch citation outranks the budget reason: the
+        // client asked to be told about this barrier, and the record already
+        // states which barrier and what settled.
+        std::vector<std::string> hits = database->takeWatchHits();
+        if (!hits.empty())
+        {
+          cause.kind = protocol::PauseCauseKind::watch;
+          cause.citations = std::move(hits);
+        }
+        else if (st.reason == std::string_view("memory"))
         {
           cause.kind = protocol::PauseCauseKind::budget;
           cause.detail = "memory";

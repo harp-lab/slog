@@ -71,7 +71,9 @@ if [ "$(grep -c '(refused ' out/proto-refuse.log)" -eq 5 ]; then ok "refuse-one-
 else bad "refuse-one-reply-per-line"; fi
 
 # --- 3. every reserved verb answers reserved-verb ----------------------------
-RESERVED=(watch unwatch subscribe
+# watch/unwatch are LIVE (level-0 watches).  `subscribe` -- the event-kind
+# filter, a separate concept from a WatchSpec -- is still reserved.
+RESERVED=(subscribe
           resume replay why-not-add debug-on debug-off)
 ARGS=(); for v in "${RESERVED[@]}"; do ARGS+=("($v x y)"); done
 racket tests/api/drive.rkt "${ARGS[@]}" > out/proto-reserved.log 2>&1
@@ -81,6 +83,31 @@ done
 if [ "$(grep -c '(refused reserved-verb ' out/proto-reserved.log)" -eq "${#RESERVED[@]}" ]; then
   ok "reserved-count-exact"; else bad "reserved-count-exact"; fi
 expect_not "reserved-never-unknown" '(refused unknown-verb' out/proto-reserved.log
+
+# --- 3z. level-0 watch registration (repl.md §6) ----------------------------
+# A watch names an EXACT VersionKey: the daemon never resolves a QName or
+# follows a latest binding, so an unbound key is refused rather than guessed.
+# Ids belong to the client, so a duplicate is refused rather than rebound.
+# (Firing is behaviour over a running stratum and is gated in the session
+# battery, where a real program iterates.)
+W_DECL='(declare (qname "edge") (kind table) (arity 2) (type-key #f) (lat-spec #f) (shape "(declaration (qname \"edge\") table (fields int int))"))'
+W_PREPARE="(prepare-boundary (generation 0) (boundary \"w.b0\") (program \"w.p0\") (declarations $W_DECL) (memberships) (actions (create (qname \"edge\") (version-key \"w.edge.0\") (predecessor #f) (type-key #f))))"
+racket tests/api/drive.rkt \
+  "$W_PREPARE" \
+  '(commit-boundary (generation 0) (boundary "w.b0"))' \
+  '(watch (id "w1") (version-key "w.edge.0"))' \
+  '(watch (id "w1") (version-key "w.edge.0"))' \
+  '(watch (id "w2") (version-key "w.edge.missing"))' \
+  '(watch (id "w3"))' \
+  '(unwatch (id "nope"))' \
+  '(unwatch (id "w1"))' \
+  > out/proto-watch.log 2>&1
+expect    "watch-added" '(watch-added (id "w1") (version-key "w.edge.0") (watches 1))' out/proto-watch.log
+expect_rx "watch-duplicate-id" '\(refused watch-binding [0-9]+ \(verb watch\) \(detail "watch id w1 is already in use"\)\)' out/proto-watch.log
+expect_rx "watch-unbound-key" '\(refused watch-binding [0-9]+ \(verb watch\) \(detail "no relation is bound to w\.edge\.missing"\)\)' out/proto-watch.log
+expect_rx "watch-needs-key" '\(refused parse [0-9]+ \(verb watch\)' out/proto-watch.log
+expect_rx "unwatch-unknown" '\(refused watch-binding [0-9]+ \(verb unwatch\) \(detail "no watch with id nope"\)\)' out/proto-watch.log
+expect    "watch-removed" '(watch-removed (id "w1") (watches 0))' out/proto-watch.log
 
 # --- 3a. N3-A transaction + N3-B durable boundary history -------------------
 # Prepare eagerly constructs an empty slot but keeps both its VersionKey and

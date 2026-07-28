@@ -29,6 +29,8 @@
 ;;   pipeline           version chains + strata positions
 ;;   boundary           logical N2 catalog/environment + plan count
 ;;   bundle             the N4-A durable boundary bundle this session saves
+;;   watch:ID,REL       level-0 watch on REL's exact current VersionKey
+;;   unwatch:ID         drop a level-0 watch
 ;;   daemon-boundaries  committed N3 daemon boundary history
 ;;   daemon-current-boundary exact current N3 materialization snapshot
 ;;   sizes-at:P         sizes resolved at position P
@@ -53,6 +55,13 @@
     [(list "pipeline") `(pipeline)]
     [(list "boundary") `(boundary)]
     [(list "bundle") `(bundle)]
+    ;; level-0 watches: the CLIENT resolves a QName intent to the exact
+    ;; VersionKey the daemon wants (repl.md §6) -- the daemon never follows a
+    ;; latest name itself.
+    [(list "watch" arg)
+     (match-define (list id rel) (string-split arg ","))
+     `(watch ,id ,(string->symbol rel))]
+    [(list "unwatch" id) `(unwatch ,id)]
     [(list "daemon-boundaries") `(daemon-boundaries)]
     [(list "daemon-current-boundary") `(daemon-current-boundary)]
     [(list "recipe") `(recipe)]
@@ -311,6 +320,21 @@
                                         (session-boundary-history s))))))]
       ;; N4-A: the durable bundle this session would save (n4-contract.md §3),
       ;; projected to the identity facts a transcript can assert on.
+      [`(watch ,id ,rel)
+       (define head (session-current-boundary s))
+       (unless head (error 'watch "no logical catalog; run a program first"))
+       (define key (hash-ref (boundary-environment head) (symbol->qname rel) #f))
+       (unless key (error 'watch "~a is not bound at the current boundary" rel))
+       (for ([line (in-list
+                    (session-command-stream!
+                     s `(watch (id ,id) (version-key ,key))
+                     (lambda (_line) #t)))])
+         (displayln line))]
+      [`(unwatch ,id)
+       (for ([line (in-list
+                    (session-command-stream!
+                     s `(unwatch (id ,id)) (lambda (_line) #t)))])
+         (displayln line))]
       [`(bundle)
        (define bundle (session-boundary-bundle s))
        (writeln

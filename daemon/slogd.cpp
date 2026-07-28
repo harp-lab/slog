@@ -1324,8 +1324,8 @@ static const char* reserved_family(const std::string& verb)
     // stepping (execution-tiers §9 sketch). Q1's canonical payload dispatcher
     // is active below; friendly R2 parsing still waits for N2/N3 identity.
     static const ReservedVerb reserved[] = {
-        { "watch",            "watch"    },
-        { "unwatch",          "watch"    },
+        // `watch`/`unwatch` are live below.  `subscribe` -- the event-kind
+        // filter, a separate concept from a WatchSpec -- stays reserved.
         { "subscribe",        "watch"    },
         { "resume",           "debugger" },
         { "replay",           "debugger" },
@@ -1660,6 +1660,114 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
     {
         refuse(d, "parse",
                "(verb protocol-mode) (detail \"takes no arguments\")");
+        return;
+    }
+
+    // ---- level-0 watches (repl.md §6) ----------------------------------
+    //
+    //   (watch (id "w1") (version-key "v1:...") [(tuple V ...)])
+    //   (unwatch (id "w1"))
+    //
+    // A watch names an EXACT VersionKey.  The daemon never resolves a QName
+    // or follows a latest binding: a client that wants "this relation through
+    // the next run" keeps that intent and re-registers against the successor
+    // key when it prepares that boundary.
+    if (verb == "watch")
+    {
+        CommandFields fields;
+        std::string error;
+        if (!collect_fields(form, 1, {"id", "version-key", "tuple"},
+                            fields, error)
+            || fields.find("id") == fields.end()
+            || fields.find("version-key") == fields.end())
+        {
+            refuse_boundary_parse(
+              d, verb, error.empty()
+                ? "requires (id \"...\") and (version-key \"...\"), with an "
+                  "optional (tuple V ...)"
+                : error);
+            return;
+        }
+        const slog::sexp::SExp* value = nullptr;
+        std::string id, version_key;
+        if (!singleton_field(fields, "id", value)
+            || !parse_string_value(*value, id)
+            || !singleton_field(fields, "version-key", value)
+            || !parse_string_value(*value, version_key))
+        {
+            refuse_boundary_parse(
+              d, verb, "id and version-key must be nonempty strings");
+            return;
+        }
+        std::vector<u64> tuple;
+        bool tuple_mode = false;
+        auto tit = fields.find("tuple");
+        if (tit != fields.end())
+        {
+            tuple_mode = true;
+            const auto& field = *tit->second;
+            for (size_t i = 1; i < field.children.size(); ++i)
+            {
+                u64 word = 0;
+                if (!parse_u64_atom(field.children[i], word))
+                {
+                    refuse_boundary_parse(
+                      d, verb, "tuple takes encoded value words");
+                    return;
+                }
+                tuple.push_back(word);
+            }
+            if (tuple.empty())
+            {
+                refuse_boundary_parse(d, verb, "tuple watch needs a tuple");
+                return;
+            }
+        }
+        if (!d->db()->hasVersionKey(version_key))
+        {
+            refuse(d, "watch-binding",
+                   "(verb watch) (detail "
+                   + slog::protocol::quoteString(
+                       "no relation is bound to " + version_key) + ")");
+            return;
+        }
+        if (!d->db()->addWatch(id, version_key, tuple_mode, std::move(tuple)))
+        {
+            refuse(d, "watch-binding",
+                   "(verb watch) (detail "
+                   + slog::protocol::quoteString(
+                       "watch id " + id + " is already in use") + ")");
+            return;
+        }
+        d->emit("(watch-added (id " + slog::protocol::quoteString(id)
+                + ") (version-key " + slog::protocol::quoteString(version_key)
+                + ") (watches " + std::to_string(d->db()->watchCount()) + "))");
+        return;
+    }
+
+    if (verb == "unwatch")
+    {
+        CommandFields fields;
+        std::string error;
+        const slog::sexp::SExp* value = nullptr;
+        std::string id;
+        if (!collect_fields(form, 1, {"id"}, fields, error)
+            || !singleton_field(fields, "id", value)
+            || !parse_string_value(*value, id))
+        {
+            refuse_boundary_parse(d, verb, "requires (id \"...\")");
+            return;
+        }
+        if (!d->db()->removeWatch(id))
+        {
+            refuse(d, "watch-binding",
+                   "(verb unwatch) (detail "
+                   + slog::protocol::quoteString("no watch with id " + id)
+                   + ")");
+            return;
+        }
+        d->emit("(watch-removed (id " + slog::protocol::quoteString(id)
+                + ") (watches " + std::to_string(d->db()->watchCount()) + "))");
         return;
     }
 

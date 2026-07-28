@@ -2634,6 +2634,19 @@ private:
   // One Database is one EvaluationId, so this is the direct
   // (EvaluationId, VersionKey) -> Relation*/VersionId index.
   std::unordered_map<std::string, Relation*> version_key_relations;
+  // Level-0 watches: live debugging state for this session only.  Never
+  // saved, never replayed, never part of any hash (repl.md §6).
+  struct WatchSpec
+  {
+    std::string id;
+    std::string version_key;   // exact binding; never a name
+    bool tuple_mode = false;
+    std::vector<u64> tuple;    // exact-tuple appearance
+    u64 last_barrier = 0;      // this watch already handled that barrier
+  };
+  std::vector<WatchSpec> watches;
+  std::vector<std::string> watch_hits;
+  u64 watch_barrier_seq = 0;
   // N3.1 logical catalog truth.  Prepare receives the complete output
   // catalog, so commit replaces these snapshots atomically with the name
   // bindings below.  Memberships are kept even though N3.1's relation/type
@@ -4211,6 +4224,88 @@ public:
       // (invalidateCatalogTruth).  A prepared boundary uses its own private
       // catalog and advances the cursor directly.
       current_boundary_key.clear();
+    }
+  }
+
+  // ---- level-0 watches (repl.md §6, t0-contract.md) ---------------------
+  //
+  // A watch observes the evaluation from OUTSIDE its dependency graph: it is
+  // session state, never a fact, a rule, or anything in the compile hash,
+  // catalog, recipe, or replay.  It addresses an exact VersionKey -- the
+  // daemon never performs basename search or follows a latest name, so a
+  // client that means "this relation through the next run" re-resolves the
+  // intent itself and re-registers.
+  //
+  // Evaluation happens only at a coherent barrier where the delta is already
+  // finalized and every worker is parked (EndIterCompletion), so a watch adds
+  // no callback to tuple insertion and never reads an index mid-mutation.
+  // That is also why this works under ANY executor, interpreter or -O2.
+  // Returns false when the id is already taken -- ids are the client's, and
+  // silently rebinding one would make `unwatch` ambiguous.
+  bool addWatch(const std::string& id, const std::string& version_key,
+                bool tuple_mode, std::vector<u64> tuple)
+  {
+    for (const WatchSpec& w : watches) if (w.id == id) return false;
+    watches.push_back({id, version_key, tuple_mode, std::move(tuple), 0});
+    return true;
+  }
+
+  bool removeWatch(const std::string& id)
+  {
+    for (size_t i = 0; i < watches.size(); ++i)
+      if (watches[i].id == id)
+      {
+        watches.erase(watches.begin() + i);
+        return true;
+      }
+    return false;
+  }
+
+  size_t watchCount() const { return watches.size(); }
+  bool watchHitsPending() const { return !watch_hits.empty(); }
+
+  std::vector<std::string> takeWatchHits()
+  {
+    std::vector<std::string> out;
+    out.swap(watch_hits);
+    return out;
+  }
+
+  // One evaluation per barrier.  Each watch records the barrier it handled,
+  // so a `continue` that resumes and stops again cannot re-return the
+  // identical pause; a fresh barrier is a fresh chance to fire.
+  void evaluateWatchesAtBarrier()
+  {
+    if (watches.empty()) return;
+    const u64 barrier = ++watch_barrier_seq;
+    for (WatchSpec& w : watches)
+    {
+      if (w.last_barrier == barrier) continue;
+      auto it = version_key_relations.find(w.version_key);
+      if (it == version_key_relations.end() || it->second == nullptr) continue;
+      Relation* rel = it->second;
+      const u16 arity = rel->getArity();
+      if (arity == 0) continue;
+      bool hit = false;
+      for (InsertBatch* b : rel->getDelta())
+      {
+        for (u64 j = 0; j + arity <= b->usage; j += arity)
+        {
+          if (b->data[j] == slog_null) continue;       // masked, not added
+          if (!w.tuple_mode) { hit = true; break; }
+          if (w.tuple.size() != arity) continue;
+          bool same = true;
+          for (u16 c = 0; c < arity && same; ++c)
+            same = (b->data[j + c] == w.tuple[c]);
+          if (same) { hit = true; break; }
+        }
+        if (hit) break;
+      }
+      if (hit)
+      {
+        w.last_barrier = barrier;
+        watch_hits.push_back(w.id);
+      }
     }
   }
 
@@ -8161,6 +8256,9 @@ inline void EndIterCompletion::operator()() noexcept
   // single-threaded here (all workers parked), delta finalized+interned+idle
   db->accelRecordRound();
   db->rankRecordRound();
+  // Level-0 watches evaluate HERE and nowhere else: the delta is finalized,
+  // every worker is parked, and the iteration's growth is already known.
+  db->evaluateWatchesAtBarrier();
   if (readRSSbytes() >= rs.mem_cap)
   {
     rs.mem_tripped.store(true, std::memory_order_relaxed);
@@ -8185,7 +8283,12 @@ inline void EndIterCompletion::operator()() noexcept
   }
   else if (rs.budget.stop_at_boundary
            || rs.stop_requested.load(std::memory_order_relaxed)
-           || std::chrono::steady_clock::now() >= rs.global_deadline)
+           || std::chrono::steady_clock::now() >= rs.global_deadline
+           // A watch hit is a fourth reason to park at this clean boundary.
+           // Whether that is a notification or a breakpoint is entirely the
+           // client's policy: the daemon has one mechanism and sends nothing
+           // unsolicited (repl.md §6).
+           || db->watchHitsPending())
     rs.next_action = ACT_BOUNDARY_SUSPEND;
   else
     rs.next_action = ACT_CONTINUE;
