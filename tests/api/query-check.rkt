@@ -3,8 +3,9 @@
 ;; Structured consumer for the Q1 command transcript.  It reads each record as
 ;; a datum (rather than splitting lines), checks every page sentinel, and pins
 ;; pagination/cancellation plus the row set that survives an empty literal
-;; probe.  The fixture uses integers so this checker does not pre-empt R2's
-;; still-pending TypeDescriptor/value-handle renderer.
+;; probe.  R2: each projected column arrives as one value-adapter cell record
+;; (word/kind/sid/type-key/text); this checker keys rows by their texts and
+;; pins the cell shape itself.
 
 (define (fail! fmt . args)
   (eprintf "query-check: ~a\n" (apply format fmt args))
@@ -15,7 +16,15 @@
 
 (for ([record (in-port read)])
   (match record
-    [`(query-row ,(? symbol? id) (values ,(? string? renderings) ...))
+    [`(query-row ,(? symbol? id) (cells ,cells ...))
+     (define renderings
+       (for/list ([cell (in-list cells)])
+         (match cell
+           [`(cell (word ,(? exact-nonnegative-integer?))
+                   (kind ,(? symbol?)) (sid ,_) (type-key ,_)
+                   (text ,(? string? text)))
+            text]
+           [_ (fail! "malformed cell record: ~s" cell)])))
      (hash-update! rows id
                    (lambda (old) (append old (list renderings))) '())]
     [`(query-end ,(? symbol? id) ,status
@@ -59,5 +68,12 @@
 (check 'qcount-ends (hash-ref ends 'qcount '()) '((complete 0 4)))
 (check 'qexists-rows (hash-ref rows 'qexists '()) '())
 (check 'qexists-ends (hash-ref ends 'qexists '()) '((complete 0 1)))
+
+;; A render-depth budget never changes WHICH rows match, only how deep each
+;; cell's text preview goes (ints are shallower than any budget).
+(check 'qdeep-rows
+       (sort (hash-ref rows 'qdeep '()) < #:key (compose1 string->number car))
+       expected-rows)
+(check 'qdeep-ends (hash-ref ends 'qdeep '()) '((complete 4 4)))
 
 (printf "query-check: ok\n")

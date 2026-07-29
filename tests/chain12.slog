@@ -1,0 +1,38 @@
+;; R2 cursor/pagination fixture: a 12-node chain whose closure (66 pairs)
+;; overflows one 50-row query page, plus one 5-deep struct so the daemon's
+;; preview-depth cut and the minted #N handle are both observable.
+table (edge int int)
+table (path int int)
+struct (l1 int)
+struct (l2 l1)
+struct (l3 l2)
+struct (l4 l3)
+struct (l5 l4)
+table (deep l5)
+
+rule
+(edge 1 2)
+(edge 2 3)
+(edge 3 4)
+(edge 4 5)
+(edge 5 6)
+(edge 6 7)
+(edge 7 8)
+(edge 8 9)
+(edge 9 10)
+(edge 10 11)
+(edge 11 12)
+
+rule
+(deep (l5 (l4 (l3 (l2 (l1 7))))))
+
+rule
+(edge X Y)
+-->
+(path X Y)
+
+rule
+(path X Y)
+(edge Y Z)
+-->
+(path X Z)

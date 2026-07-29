@@ -646,11 +646,16 @@ index position. The production N2/N3 boundary source is still pending: this
 activates canonical clients, not friendly-name authority or the R2 `?`
 parser.
 
-Query rows carry one ordinary value-printer rendering per projected column in
-a structured `(values "...")` field. This preserves column boundaries for
-strings and compound values. R2's future TypeDescriptor/value-handle adapter
-can enrich their presentation and add `#N` handles (repl.md §5) without
-changing query execution.
+**As-built note (2026-07-28):** query rows carry one value-adapter CELL
+record per projected column — `(cell (word W) (kind K) (sid S|#f)
+(type-key T|#f) (text "..."))`, the same shape the `dump-cells` action
+emits — never a bare rendering the client would have to re-parse. The word
+is the value's identity inside this evaluation, so the REPL mints checked
+`#N` handles for compound cells (repl.md §5). The text preview is the
+ordinary boundary-aware rendering cut at the request's render depth: an
+optional `(depth N)` field (1..4096) on `query`/`query-page` budgets value
+nesting, a cut subtree prints as `...`, and the client keeps the cell's
+word to ask again deeper. Omitting depth renders unbudgeted (dumps).
 
 ### 6.2 Read-only discipline
 
@@ -693,8 +698,8 @@ which is exactly what a debugger user expects but should be labeled in
 ### 6.4 Protocol surface
 
 ```text
-(query q7 (query-plan ...) (page 500))
-(query-page q7 (page 500))
+(query q7 (query-plan ...) (page 500) [(depth 4)])
+(query-page q7 (page 500) [(depth 4)])
 (query-cancel q7)
 (explain r17)              ; canonical plan for a rule variant
 (explain q7)               ; chosen driver, orderings, join order, join3 use
@@ -704,7 +709,8 @@ which is exactly what a debugger user expects but should be labeled in
 The active Q1 record stream is:
 
 ```text
-(query-row q7 (values "VALUE" ...))
+(query-row q7 (cells (cell (word W) (kind K) (sid S|#f)
+                           (type-key T|#f) (text "...")) ...))
 (query-end q7 page|paused|complete|cancelled
            (rows N) (matched TOTAL))
 ```

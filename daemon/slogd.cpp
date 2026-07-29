@@ -180,6 +180,10 @@ struct ActiveCommandQuery
 {
     std::string id;
     std::string boundary_key;
+    // R2 cell previews: render row values to this nesting budget (0 =
+    // unlimited); a cut subtree prints as "..." and the client keeps the
+    // cell's word to ask deeper.
+    u32 render_depth = 0;
     std::unique_ptr<slog::query::Context> context;
 };
 
@@ -366,6 +370,27 @@ static bool parse_query_page(slog::Daemon* d, const std::string& verb,
     return true;
 }
 
+// Optional (depth D) field on query/query-page: 1..4096 (the render guard's
+// bound); omitted keeps the query's current budget, and a query that never
+// names one renders unbudgeted.
+static bool parse_query_depth(slog::Daemon* d, const std::string& verb,
+                              const slog::sexp::SExp& field, u32& depth)
+{
+    u64 value = 0;
+    if (field.kind != slog::sexp::SExp::K::list
+        || field.children.size() != 2
+        || field.children[0].kind != slog::sexp::SExp::K::atom
+        || field.children[0].text != "depth"
+        || !parse_u64_atom(field.children[1], value)
+        || value == 0 || value > 4096)
+    {
+        refuse_query_parse(d, verb, "expected (depth N) with N in 1..4096");
+        return false;
+    }
+    depth = (u32)value;
+    return true;
+}
+
 static const char* query_status_name(slog::query::Status status)
 {
     switch (status)
@@ -407,16 +432,17 @@ static void emit_query_page(slog::Daemon* d, CommandBuilders& state,
     const std::string id = state.active_query->id;
     for (const auto& row : page.rows)
     {
-        // Preserve column boundaries for every Slog value, including strings,
-        // structs, maps, and sequences whose ordinary rendering contains
-        // whitespace. N3-C renders structs against this query's selected
-        // boundary; R2's future checked value-handle adapter can enrich the
-        // keyed field without teaching the command reader Slog's value grammar.
-        std::string record = "(query-row " + id + " (values";
+        // One CELL record per projected column (the repl.md §1 value
+        // adapter): the encoded word is the value's identity inside this
+        // evaluation, so the client can mint a checked #N handle; the text
+        // is the ordinary N3-C boundary-aware rendering, cut to the
+        // requested preview depth.  Plain strings alone would strand the
+        // client at whatever depth we happened to print.
+        std::string record = "(query-row " + id + " (cells";
         for (u64 value : row)
-            record += " " + slog::protocol::quoteString(
-                d->db()->writeValCSVAtBoundary(
-                    value, state.active_query->boundary_key));
+            record += " " + d->db()->describeValue(
+                value, state.active_query->boundary_key,
+                state.active_query->render_depth);
         d->emit(record + "))");
     }
     d->emit("(query-end " + id + " " + query_status_name(page.status)
@@ -446,13 +472,14 @@ static bool dispatch_query_command(slog::Daemon* d, CommandBuilders& state,
     const size_t argc = form.children.size() - 1;
     const size_t expected = verb == "query" ? 3
                           : verb == "query-page" ? 2 : 1;
-    if (argc != expected)
+    const bool depth_allowed = verb != "query-cancel";
+    if (argc != expected && !(depth_allowed && argc == expected + 1))
     {
         refuse_query_parse(d, verb,
             verb == "query"
-              ? "expected (query ID QUERY_PLAN (page N))"
+              ? "expected (query ID QUERY_PLAN (page N) [(depth N)])"
               : verb == "query-page"
-                  ? "expected (query-page ID (page N))"
+                  ? "expected (query-page ID (page N) [(depth N)])"
                   : "expected (query-cancel ID)");
         return true;
     }
@@ -481,6 +508,12 @@ static bool dispatch_query_command(slog::Daemon* d, CommandBuilders& state,
     const size_t page_field = verb == "query" ? 3 : 2;
     if (!parse_query_page(d, verb, form.children[page_field], page_size))
         return true;
+    u32 render_depth = 0;
+    const bool depth_given = argc == expected + 1;
+    if (depth_given
+        && !parse_query_depth(d, verb, form.children[page_field + 1],
+                              render_depth))
+        return true;
 
     if (verb == "query-page")
     {
@@ -489,6 +522,8 @@ static bool dispatch_query_command(slog::Daemon* d, CommandBuilders& state,
             refuse_query_state(d, verb, id, "no active query with this id");
             return true;
         }
+        if (depth_given)
+            state.active_query->render_depth = render_depth;
         try
         {
             emit_next_query_page(d, state, page_size);
@@ -521,6 +556,7 @@ static bool dispatch_query_command(slog::Daemon* d, CommandBuilders& state,
         auto active = std::make_unique<ActiveCommandQuery>();
         active->id = id;
         active->boundary_key = sealed.boundary_key;
+        active->render_depth = render_depth;
         active->context = std::make_unique<slog::query::Context>(
             *d->db(), std::move(bound), query_admission(d->db()));
         state.active_query = std::move(active);

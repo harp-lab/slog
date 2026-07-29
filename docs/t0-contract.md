@@ -251,8 +251,10 @@ exact VersionKey catalog frame. `daemon/query.cpp` parses it with the shared
 bounded reader, seals it into `SealedRequest`, and builds the runtime relation
 frame by VersionKey rather than QName. The checked-in cross-language fixture
 executes through this path. The dispatcher now embeds that datum unchanged in
-`(query ID QUERY_PLAN (page N))`, checks generation/phase, and owns
-`query-page`/`query-cancel` plus the connection-scoped cursor lifetime. A live
+`(query ID QUERY_PLAN (page N) [(depth N)])`, checks generation/phase, and owns
+`query-page`/`query-cancel` plus the connection-scoped cursor lifetime; rows
+stream as value-adapter cell records with previews cut at the optional render
+depth (execution-tiers.md §6.4). A live
 cursor refuses all non-query commands and plugin paths, preventing mutation
 between pages. This is exact-VersionKey admission for canonical clients, not
 authority to resolve friendly names: persistent BoundaryKey/catalog

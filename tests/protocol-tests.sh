@@ -467,6 +467,8 @@ if racket tests/api/drive.rkt "${QUERY_SETUP[@]}" "${QUERY_BUILDER[@]}" \
   '(query malformed (not-a-query-plan) (page 1))' \
   "(query badpage $QUERY_ROWS_PLAN (page 0))" \
   '(query-cancel absent)' \
+  "(query qdeep $QUERY_ROWS_PLAN (page 10) (depth 1))" \
+  "(query baddepth $QUERY_ROWS_PLAN (page 1) (depth 0))" \
   "(query q5 $QUERY_ROWS_PLAN (page 1))" \
   > out/proto-query.log 2>&1; then
   ok "query-eof-releases-lease"
@@ -476,6 +478,15 @@ fi
 
 if racket tests/api/query-check.rkt < out/proto-query.log; then
   ok "query-structured-pagination"; else bad "query-structured-pagination"; fi
+# R2 cells: each projected column is one value-adapter cell record -- word,
+# kind, sid, type-key, and the boundary-aware text preview -- never a bare
+# string the client would have to re-parse.
+expect_rx "query-cells-shape" \
+  '\(query-row q1 \(cells \(cell \(word [0-9]+\) \(kind int\) \(sid #f\) \(type-key #f\) \(text "1"\)\)\)\)' \
+  out/proto-query.log
+expect_rx "query-depth-refusal" \
+  '\(refused parse 1 \(verb query\) \(detail "expected \(depth N\) with N in 1\.\.4096"\)\)' \
+  out/proto-query.log
 expect_rx "query-active-admission" \
   '\(refused query-admission 1 \(verb query\) \(query q3\) \(active q2\)\)' \
   out/proto-query.log

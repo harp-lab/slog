@@ -32,7 +32,11 @@
 (struct repl-session (session database [mode #:mutable] [changed? #:mutable]
                               ;; the EvaluationId this session's daemon is in;
                               ;; a value handle is only valid within it
-                              [evaluation #:mutable])
+                              [evaluation #:mutable]
+                              ;; the held Q1 cursor (query-cursor) or #f;
+                              ;; `more` pulls it, `cancel` or any command
+                              ;; that needs the daemon discards it
+                              [cursor #:mutable])
   #:transparent)
 
 ;; One Racket REPL connection can own several independent compiler sessions.
@@ -126,6 +130,7 @@
    database
    'mutable
    #f
+   #f
    #f))
 
 (define (current-repl-session state)
@@ -211,6 +216,8 @@
    "  ?(REL V...)         query the committed boundary; also"
    "                      ? (a X Y) (b Y Z) (< Z 9) -> (X Z)  and  ~ absence"
    "  ?count ?exists      the same query without materializing rows"
+   "  more | cancel       pull or discard the held query cursor"
+   "  dump ?QUERY to F    stream every answer row into a CSV file"
    "  explain ?QUERY      show the query plan and degradations, do not run"
    "  catalog             show the selected boundary, history, and types"
    "  schema              show the daemon's raw live schema"
@@ -737,11 +744,14 @@
                #:kind "query"))
 
 (define (show-result state argument)
-  (match-define (list* rel options) (read-command-data 'show argument))
-  (define name (relation-key rel))
-  (if (regexp-match? #px"^#[0-9]+$" name)
-      (show-value-handle state name)
-      (show-relation-rows state name options)))
+  ;; `#N` is a REPL token, not readable Slog/Racket data, so the handle
+  ;; check must come before the reader touches the argument.
+  (cond
+    [(regexp-match? #px"^#[0-9]+$" (string-trim argument))
+     (show-value-handle state (string-trim argument))]
+    [else
+     (match-define (list* rel options) (read-command-data 'show argument))
+     (show-relation-rows state (relation-key rel) options)]))
 
 ;; `show #N` re-renders one value handle instead of a relation.
 (define (show-value-handle state label)
@@ -929,18 +939,25 @@
   (query-boundary (boundary-key head) generation decl-map env-map
                   materializations))
 
-;; The one-query lease is connection-scoped, so every command drains or
-;; cancels its cursor before returning: v1 fetches at most one page of rows
-;; and reports what remains rather than holding the lease across commands.
-(define query-page-size 200)
+;; The page model: `?` pulls one page of 50 rows with cell previews cut at
+;; depth 4 and, when more rows remain, HOLDS the connection's one query
+;; cursor: `more` continues it, `cancel` discards it, and any command that
+;; needs the daemon discards it first (the daemon refuses everything else
+;; while a cursor is live, so a held cursor never blocks the next thought).
+(define query-page-size 50)
+(define query-preview-depth 4)
 (define query-slice-budget 64)
+(define query-dump-page-size 1000)
+(define query-dump-slice-budget 100000)
 
 (define query-id-counter (box 0))
 (define (next-query-id)
   (set-box! query-id-counter (add1 (unbox query-id-counter)))
   (format "q~a" (unbox query-id-counter)))
 
-(struct query-outcome (status rows matched) #:transparent)
+;; id lives on the daemon connection; line keeps the vars/template for
+;; rendering later pages; shown numbers rows continuously across pages.
+(struct query-cursor (id line shown) #:transparent)
 
 (define (query-refused! who lines)
   (for ([line (in-list lines)])
@@ -952,45 +969,83 @@
               (if detail (format ": ~a" detail) ""))]
       [_ (void)])))
 
-;; Drive one wire plan through the dispatcher.  Rows mode stops at the first
-;; full page (more matches exist -> cancel and say so); count/exists keep
-;; continuing through paused work slices until complete or the slice budget
-;; trips, so their `matched` is exact whenever the status says complete.
-(define (drive-query! s wire-plan rows-mode?)
-  (define id (next-query-id))
-  (define (page-command first?)
-    (if first?
-        (format "(query ~a ~a (page ~a))" id wire-plan query-page-size)
-        (format "(query-page ~a (page ~a))" id query-page-size)))
-  (let loop ([first? #t] [rows '()] [slices 0])
-    (define lines (session-query-lines! s (page-command first?)))
+(define (query-row-cells datum)
+  (match datum
+    [`(query-row ,_ (cells ,cells ...)) (map datum->value-cell cells)]
+    [_ #f]))
+
+;; Silently release a held cursor.  Best-effort by design: the daemon may
+;; already have dropped it, and discarding must never turn the user's next
+;; command into a failure.
+(define (discard-query-cursor! rs)
+  (define cursor (repl-session-cursor rs))
+  (when cursor
+    (set-repl-session-cursor! rs #f)
+    (with-handlers ([exn:fail? void])
+      (session-query-lines!
+       (repl-session-session rs)
+       (format "(query-cancel ~a)" (query-cursor-id cursor))))))
+
+;; Pull rows until this request's page quota is met, the query completes,
+;; or the slice budget trips (then the cursor is cancelled).  Returns
+;; (values status rows matched): 'complete, 'open (cursor still live on the
+;; daemon), or 'budget.  `start` is the opening (query ...) line; omitted
+;; means continue an existing cursor with (query-page ...) remainders.
+(define (query-pull-page! s id #:start [start #f]
+                          #:page-size [page-size query-page-size]
+                          #:slice-budget [slice-budget query-slice-budget])
+  (let loop ([command start] [rows '()] [slices 0])
+    (define line-out
+      (or command
+          (format "(query-page ~a (page ~a))" id
+                  (max 1 (- page-size (length rows))))))
+    (define lines (session-query-lines! s line-out))
     (query-refused! '? lines)
-    (define new-rows
-      (for/list ([line (in-list lines)]
-                 #:do [(define datum (read-datum line))]
-                 #:when (match datum [`(query-row ,_ ,_) #t] [_ #f]))
-        (match datum
-          [`(query-row ,_ (values ,values ...)) (map ~a values)])))
-    (define all-rows (append rows new-rows))
+    (define all
+      (append rows (filter-map query-row-cells (map read-datum lines))))
     (match (read-datum (last lines))
       [`(query-end ,_ ,status (rows ,_) (matched ,matched))
        (cond
-         [(memq status '(complete cancelled))
-          (query-outcome status all-rows matched)]
-         [(and rows-mode? (>= (length all-rows) query-page-size))
+         [(memq status '(complete cancelled)) (values 'complete all matched)]
+         [(>= (length all) page-size) (values 'open all matched)]
+         [(>= slices slice-budget)
           (session-query-lines! s (format "(query-cancel ~a)" id))
-          (query-outcome 'truncated all-rows matched)]
+          (values 'budget all matched)]
+         [else (loop #f all (add1 slices))])]
+      [other (error '? "unexpected query reply: ~a" other)])))
+
+;; count/exists never materialize rows: keep advancing work slices until the
+;; daemon says complete, so `matched` is exact whenever exact? is #t.
+(define (query-run-aggregate! s wire-plan)
+  (define id (next-query-id))
+  (let loop ([command (format "(query ~a ~a (page 1))" id wire-plan)]
+             [slices 0])
+    (define lines (session-query-lines! s command))
+    (query-refused! '? lines)
+    (match (read-datum (last lines))
+      [`(query-end ,_ ,status (rows ,_) (matched ,matched))
+       (cond
+         [(memq status '(complete cancelled)) (values #t matched)]
          [(>= slices query-slice-budget)
           (session-query-lines! s (format "(query-cancel ~a)" id))
-          (query-outcome 'budget all-rows matched)]
-         [else (loop #f all-rows (add1 slices))])]
+          (values #f matched)]
+         [else (loop (format "(query-page ~a (page 1))" id) (add1 slices))])]
       [other (error '? "unexpected query reply: ~a" other)])))
+
+;; Mirror the show adapter: a compound value's preview is followed by its
+;; checked #N handle -- the daemon cut the preview at the requested depth,
+;; and the handle is how the user asks for more; scalars render bare.
+(define (query-cell-display state cell)
+  (define handle (and (handle-worthy? cell) (mint-value-handle! state cell)))
+  (if handle
+      (format "~a ~a" (value-cell-text cell) handle)
+      (value-cell-text cell)))
 
 ;; Substitute an answer row back into the single-atom sugar's fact template.
 ;; Every symbol in a qualifying template is a projected variable, so the
 ;; lookup cannot miss.
-(define (render-query-fact pattern vars values)
-  (define bindings (map cons vars values))
+(define (render-query-fact pattern vars displays)
+  (define bindings (map cons vars displays))
   (define parts
     (for/list ([term (in-list (rest pattern))])
       (cond
@@ -1000,26 +1055,37 @@
   (format "(~a~a)" (first pattern)
           (if (null? parts) "" (string-append " " (string-join parts " ")))))
 
-(define (render-query-rows line outcome)
+(define (render-query-page state rs line rows-cells status matched
+                           start-index)
+  (ensure-evaluation! state (repl-session-session rs))
   (define vars (query-line-project-vars line))
   (define pattern (query-line-pattern line))
-  (define rows (query-outcome-rows outcome))
-  (define shown (take rows (min query-page-size (length rows))))
+  (define displays
+    (for/list ([cells (in-list rows-cells)])
+      (for/list ([cell (in-list cells)])
+        (query-cell-display state cell))))
   (define numbered
-    (for/list ([row (in-list shown)] [i (in-naturals 1)])
+    (for/list ([row (in-list displays)] [i (in-naturals (add1 start-index))])
       (format "~a  ~a" i
               (if pattern
                   (render-query-fact pattern vars row)
                   (format "(~a)" (string-join row " "))))))
+  (define shown (+ start-index (length rows-cells)))
   (define header
-    (format "~a row~a~a" (length shown)
-            (if (= (length shown) 1) "" "s")
-            (match (query-outcome-status outcome)
-              ['complete ""]
-              ['truncated
-               (format " shown · ~a+ matched; narrow the query or use ?count"
-                       (query-outcome-matched outcome))]
-              [_ (format " shown before the work budget; use ?count")])))
+    (match status
+      ['complete
+       (cond
+         [(zero? start-index)
+          (format "~a row~a" shown (if (= shown 1) "" "s"))]
+         [(null? rows-cells) (format "no more rows (~a total)" matched)]
+         [else (format "rows ~a–~a · complete (~a total)"
+                       (add1 start-index) shown matched)])]
+      ['open
+       (format "rows ~a–~a — `more` continues, `cancel` discards"
+               (add1 start-index) shown)]
+      ['budget
+       (format "~a row~a before the work budget; narrow the query or use ?count"
+               shown (if (= shown 1) "" "s"))]))
   (hash-set*
    (text-result
     (if pattern
@@ -1028,34 +1094,44 @@
     (cons header numbered)
     #:kind "query")
    'query-mode "rows"
-   'query-status (~a (query-outcome-status outcome))
-   'query-matched (query-outcome-matched outcome)))
+   'query-status (~a status)
+   'query-matched matched
+   'query-shown shown))
 
 (define (query-register-result state text)
   ;; grammar refusals need no session, so parse before touching the daemon
   (define line (parse-query-line text))
-  (define s (ensure-session! state))
+  (define rs (ensure-session-record! state))
+  (discard-query-cursor! rs)
+  (define s (repl-session-session rs))
   (define catalog (query-catalog-from-boundary (query-boundary-snapshot s)))
   (define plan (plan-query catalog (query-line-request line)))
   (define wire (query-plan->wire-string plan))
-  (define mode (query-request-mode (query-line-request line)))
-  (define outcome (drive-query! s wire (eq? mode 'rows)))
-  (define exact? (eq? (query-outcome-status outcome) 'complete))
-  (match mode
-    ['rows (render-query-rows line outcome)]
+  (match (query-request-mode (query-line-request line))
+    ['rows
+     (define id (next-query-id))
+     (define-values (status rows matched)
+       (query-pull-page!
+        s id
+        #:start (format "(query ~a ~a (page ~a) (depth ~a))"
+                        id wire query-page-size query-preview-depth)))
+     (when (eq? status 'open)
+       (set-repl-session-cursor! rs (query-cursor id line (length rows))))
+     (render-query-page state rs line rows status matched 0)]
     ['count
+     (define-values (exact? matched) (query-run-aggregate! s wire))
      (hash-set*
       (text-result
        "Query count"
        (list (format "~a~a row~a match"
-                     (query-outcome-matched outcome)
-                     (if exact? "" "+")
-                     (if (= (query-outcome-matched outcome) 1) "" "s")))
+                     matched (if exact? "" "+")
+                     (if (= matched 1) "" "s")))
        #:kind "query")
       'query-mode "count"
-      'query-matched (query-outcome-matched outcome))]
+      'query-matched matched)]
     ['exists
-     (define yes? (positive? (query-outcome-matched outcome)))
+     (define-values (exact? matched) (query-run-aggregate! s wire))
+     (define yes? (positive? matched))
      (hash-set*
       (text-result
        "Query exists"
@@ -1064,7 +1140,88 @@
                    [else "none found before the work budget"]))
        #:kind "query")
       'query-mode "exists"
-      'query-matched (query-outcome-matched outcome))]))
+      'query-matched matched)]))
+
+;; `more` continues the held cursor; `cancel` discards it.  The handle is
+;; cleared before pulling so an error mid-pull cannot strand a stale id.
+(define (more-result state)
+  (define rs (ensure-session-record! state))
+  (define cursor (repl-session-cursor rs))
+  (unless cursor
+    (error 'more "no open query cursor; a ? query holds one when rows remain"))
+  (set-repl-session-cursor! rs #f)
+  (define-values (status rows matched)
+    (query-pull-page! (repl-session-session rs) (query-cursor-id cursor)))
+  (define start (query-cursor-shown cursor))
+  (when (eq? status 'open)
+    (set-repl-session-cursor!
+     rs (query-cursor (query-cursor-id cursor) (query-cursor-line cursor)
+                      (+ start (length rows)))))
+  (render-query-page state rs (query-cursor-line cursor) rows status matched
+                     start))
+
+(define (cancel-result state)
+  (define rs (ensure-session-record! state))
+  (define cursor (repl-session-cursor rs))
+  (unless cursor (error 'cancel "no open query cursor"))
+  (discard-query-cursor! rs)
+  (text-result "Query cursor"
+               (list (format "discarded after ~a row~a"
+                             (query-cursor-shown cursor)
+                             (if (= (query-cursor-shown cursor) 1) "" "s")))
+               #:kind "query"))
+
+(define (csv-field text)
+  (if (regexp-match? #px"[,\"\n]" text)
+      (string-append "\"" (regexp-replace* #px"\"" text "\"\"") "\"")
+      text))
+
+;; `dump ?QUERY to PATH` -- pull the cursor to completion page by page and
+;; write one CSV row per answer under a variable-name header.  Full-depth
+;; text (no preview budget): dumps are for machines, previews are for eyes.
+(define (dump-result state argument)
+  (match (regexp-match #px"^(\\?.*?)\\s+to\\s+(\\S+)$" (string-trim argument))
+    [(list _ query-text path)
+     (define line (parse-query-line query-text))
+     (unless (eq? (query-request-mode (query-line-request line)) 'rows)
+       (error 'dump "dump takes a rows query; ?count/?exists print directly"))
+     (define rs (ensure-session-record! state))
+     (define s (repl-session-session rs))
+     (define catalog (query-catalog-from-boundary (query-boundary-snapshot s)))
+     (define plan (plan-query catalog (query-line-request line)))
+     (define wire (query-plan->wire-string plan))
+     (define id (next-query-id))
+     (define vars (query-line-project-vars line))
+     (define total
+       (call-with-output-file path #:exists 'truncate
+         (lambda (out)
+           (displayln (string-join (map ~a vars) ",") out)
+           (let loop ([start (format "(query ~a ~a (page ~a))"
+                                     id wire query-dump-page-size)]
+                      [written 0])
+             (define-values (status rows matched)
+               (query-pull-page! s id #:start start
+                                 #:page-size query-dump-page-size
+                                 #:slice-budget query-dump-slice-budget))
+             (for ([cells (in-list rows)])
+               (displayln
+                (string-join
+                 (for/list ([cell (in-list cells)])
+                   (csv-field (value-cell-text cell)))
+                 ",")
+                out))
+             (define now (+ written (length rows)))
+             (cond
+               [(eq? status 'open) (loop #f now)]
+               [(eq? status 'budget)
+                (error 'dump "work budget exceeded after ~a rows (partial file kept)"
+                       now)]
+               [else now])))))
+     (text-result "Dump"
+                  (list (format "wrote ~a row~a to ~a"
+                                total (if (= total 1) "" "s") path))
+                  #:kind "dump")]
+    [_ (error 'dump "expected: dump ?QUERY to PATH.csv")]))
 
 ;; `explain ?...` plans without executing: the chosen driver, the join
 ;; schedule, and every degradation the planner had to accept.
@@ -1340,9 +1497,21 @@
                              (or (repl-session-database rs) "scratch") mode))
                #:kind "mode"))
 
+;; Commands that never touch the current session's daemon may run over a
+;; held query cursor; anything else discards it first, because the daemon
+;; refuses every non-query verb while its one cursor is live.  A new `?`
+;; query discards inside the register itself.
+(define keep-cursor-verbs
+  '(":help" "help" "?" ":ping" ":status" "library" "current" "resident"
+    "sessions" "mode" ":share" ":clear" "more" "cancel"))
+
 (define (dispatch-command state source)
   (define trimmed (string-trim source))
   (define-values (verb argument) (split-command source))
+  (let ([rs (current-repl-session state)])
+    (when (and rs (repl-session-cursor rs)
+               (not (member verb keep-cursor-verbs)))
+      (discard-query-cursor! rs)))
   (define result
     (cond
     ;; the `?` sigil binds to its atom, so the query register routes on the
@@ -1404,6 +1573,9 @@
     ["show" (show-result state argument)]
     [(or "query" "has") (query-result state argument)]
     ["explain" (explain-result state argument)]
+    ["more" (more-result state)]
+    ["cancel" (cancel-result state)]
+    ["dump" (dump-result state argument)]
     ["run"
      (when (string=? argument "")
        (error 'run "expected: run PATH"))
@@ -1896,7 +2068,7 @@
     (check-exn exn:fail? (lambda () (datum->value-cell '(cell (word 1)))))
 
     (define state (server-state (make-hash) "alpha" #f #f (make-hash)))
-    (define rs (repl-session #f "alpha" 'mutable #f "eval-1"))
+    (define rs (repl-session #f "alpha" 'mutable #f "eval-1" #f))
     (hash-set! (server-state-sessions state) "alpha" rs)
     (define label (mint-value-handle! state cell))
     (check-equal? label "#1")
@@ -1913,7 +2085,7 @@
                (lambda () (resolve-value-handle state label)))
     ;; ... and one from another database is refused outright
     (set-repl-session-evaluation! rs "eval-1")
-    (define other (repl-session #f "beta" 'mutable #f "eval-1"))
+    (define other (repl-session #f "beta" 'mutable #f "eval-1" #f))
     (hash-set! (server-state-sessions state) "beta" other)
     (set-server-state-current! state "beta")
     (check-exn #px"cannot be resolved in beta"
@@ -1961,7 +2133,7 @@
   (define mode-state (server-state (make-hash) #f #f #f (make-hash)))
   (hash-set! (server-state-sessions mode-state)
              "alpha"
-             (repl-session #f "alpha" 'readonly #f #f))
+             (repl-session #f "alpha" 'readonly #f #f #f))
   (set-server-state-current! mode-state "alpha")
   (check-true
    (regexp-match?
@@ -2053,4 +2225,50 @@
     (check-regexp-match #px"handles cannot splice" transcript)
     ;; closing the 4-cycle makes path the complete relation on 4 nodes,
     ;; and the query observes it at the post-edit epoch
-    (check-regexp-match #px"◆ Query count\n  16 rows match" transcript)))
+    (check-regexp-match #px"◆ Query count\n  16 rows match" transcript))
+
+  ;; The held cursor, cell previews, and dump (R2 slice b) over a 12-node
+  ;; chain whose closure (66 pairs) overflows one 50-row page, and a 5-deep
+  ;; struct whose preview the daemon cuts at depth 4.
+  (let* ([dump-path "out/repl-qdump.csv"]
+         [transcript
+          (parameterize ([current-directory repository-root]
+                         [current-environment-variables test-environment])
+            (when (file-exists? dump-path) (delete-file dump-path))
+            (plain-transcript
+             (list "run tests/chain12.slog"
+                   "?(path X Y)"
+                   "more"
+                   "more"
+                   "?(path X Y)"
+                   "cancel"
+                   "?(path X Y)"
+                   "count path"
+                   "more"
+                   "?(deep D)"
+                   "show #1"
+                   "dump ?(path X Y) to out/repl-qdump.csv"
+                   ":quit")))])
+    ;; page one holds the cursor; `more` finishes it; a third `more` refuses
+    (check-regexp-match
+     #px"rows 1–50 — `more` continues, `cancel` discards" transcript)
+    (check-regexp-match #px"rows 51–66 · complete \\(66 total\\)" transcript)
+    (check-regexp-match #px"no open query cursor" transcript)
+    ;; `cancel` reports what was shown
+    (check-regexp-match #px"◆ Query cursor\n  discarded after 50 rows"
+                        transcript)
+    ;; a session command auto-discards the held cursor and still succeeds
+    (check-regexp-match #px"◆ Count path\n  66 rows" transcript)
+    ;; the daemon cut the 5-deep struct preview at depth 4 and the REPL
+    ;; minted a checked handle for the compound cell
+    (check-regexp-match
+     #px"1  \\(deep \\(l5 \\(l4 \\(l3 \\(l2 \\.\\.\\.\\)\\)\\)\\) #1\\)"
+     transcript)
+    (check-regexp-match #px"◆ Value · #1" transcript)
+    ;; dump pulled every page and wrote header + 66 rows
+    (check-regexp-match #px"wrote 66 rows to out/repl-qdump\\.csv" transcript)
+    (define dump-file
+      (build-path repository-root dump-path))
+    (check-true (file-exists? dump-file))
+    (check-equal? (length (file->lines dump-file)) 67)
+    (delete-file dump-file)))

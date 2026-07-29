@@ -5738,7 +5738,8 @@ public:
   }
 
   std::string writeStructCSVAtBoundary(
-      u64 v, const std::string& boundary_key, u32 cdepth = 0)
+      u64 v, const std::string& boundary_key, u32 cdepth = 0,
+      u32 max_depth = 0)
   {
     const u32 struct_id = (u32)decode_struct_id(v);
     TypeDescriptor* descriptor = getTypeDescriptorBySid(struct_id);
@@ -5803,7 +5804,7 @@ public:
     for (u16 i = 1; i < rewrite_ord.size(); ++i)
       tupstr += " "
         + writeValCSVAtBoundary(
-            tuple[rewrite_ord[i]], boundary_key, cdepth + 1);
+            tuple[rewrite_ord[i]], boundary_key, cdepth + 1, max_depth);
     return tupstr + ")";
   }
 
@@ -5819,7 +5820,8 @@ public:
   // values of maps): the mutual recursion with writeValCSV is stack-bounded
   // only by nesting depth, so fail loudly rather than overflow.
   std::string writeCNodeCSV(
-      u64 v, u32 cdepth, const std::string& boundary_key = "")
+      u64 v, u32 cdepth, const std::string& boundary_key = "",
+      u32 max_depth = 0)
   {
     // (Total value-nesting depth is bounded by the guard in writeValCSV, which
     // every recursion here passes back through.)
@@ -5829,8 +5831,8 @@ public:
     {
       if (!first) s += " ";
       first = false;
-      s += writeValCSVAtBoundary(k, boundary_key, cdepth + 1) + ":"
-        + writeValCSVAtBoundary(val, boundary_key, cdepth + 1);
+      s += writeValCSVAtBoundary(k, boundary_key, cdepth + 1, max_depth) + ":"
+        + writeValCSVAtBoundary(val, boundary_key, cdepth + 1, max_depth);
     });
     return s + "}";
   }
@@ -5840,7 +5842,8 @@ public:
   // cdepth counts value nesting exactly as collections do; the mutual
   // recursion with writeValCSV is bounded by its depth guard.
   std::string writeSeqCSV(
-      u64 v, u32 cdepth, const std::string& boundary_key = "")
+      u64 v, u32 cdepth, const std::string& boundary_key = "",
+      u32 max_depth = 0)
   {
     std::string s = "[";
     bool first = true;
@@ -5848,18 +5851,24 @@ public:
     {
       if (!first) s += " ";
       first = false;
-      s += writeValCSVAtBoundary(w, boundary_key, cdepth + 1);
+      s += writeValCSVAtBoundary(w, boundary_key, cdepth + 1, max_depth);
     });
     return s + "]";
   }
 
   std::string writeValCSVAtBoundary(
-      u64 v, const std::string& boundary_key, u32 cdepth = 0)
+      u64 v, const std::string& boundary_key, u32 cdepth = 0,
+      u32 max_depth = 0)
   {
     // Bound the struct/collection render recursion so a pathologically deep
     // value (e.g. a ~4000-deep cons list) fails cleanly instead of SIGSEGV.
     if (cdepth > 4096)
       fatal("Value nesting too deep to render (> 4096 levels)");
+    // A render BUDGET (0 = unlimited) is a client preview courtesy, not the
+    // overflow guard above: a subtree past the budget renders as "..." and
+    // the client keeps the value's word (its cell) to ask again deeper.
+    if (max_depth != 0 && cdepth >= max_depth)
+      return "...";
     if (is_int(v))
       return decodeIntString(v);                           // s32 or bignum
     else if (is_str(v))
@@ -5873,11 +5882,11 @@ public:
       return s;
     }
     else if (is_struct(v))
-      return writeStructCSVAtBoundary(v, boundary_key, cdepth);
+      return writeStructCSVAtBoundary(v, boundary_key, cdepth, max_depth);
     else if (is_cnode(v))
-      return writeCNodeCSV(v, cdepth, boundary_key);
+      return writeCNodeCSV(v, cdepth, boundary_key, max_depth);
     else if (is_seq(v))
-      return writeSeqCSV(v, cdepth, boundary_key);
+      return writeSeqCSV(v, cdepth, boundary_key, max_depth);
     else if (v == slog_lat_top)
       return "(top)";              // a flat lattice's top element
     else
@@ -5919,7 +5928,8 @@ public:
     return "unknown";
   }
 
-  std::string describeValue(u64 v, const std::string& boundary_key = "")
+  std::string describeValue(u64 v, const std::string& boundary_key = "",
+                            u32 max_depth = 0)
   {
     const bool structured = is_struct(v);
     std::string record = std::string("(cell (word ") + std::to_string(v)
@@ -5935,7 +5945,8 @@ public:
     }
     else record += "#f";
     return record + ") (text "
-      + slog::protocol::quoteString(writeValCSVAtBoundary(v, boundary_key))
+      + slog::protocol::quoteString(
+          writeValCSVAtBoundary(v, boundary_key, 0, max_depth))
       + "))";
   }
   

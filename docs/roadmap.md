@@ -1287,6 +1287,38 @@ the semantic golden byte-identical. Remaining for R2: `uses`/`find`, `dump`,
 query watches, handle splicing, Q1-cursor pagination (`more`), and client
 completion/canvas adapters for query results.
 
+**Checkpoint (2026-07-28; R2 slice (b) — held cursors, cell replies, dump).**
+Ratified direction: large query responses yield a REAL cursor the REPL pulls
+or throws away, and the daemon's query replies are structured, never bare
+strings. Query rows now stream as value-adapter CELL records — the
+`dump-cells` shape: word, kind, sid, TypeKey, boundary-aware text — with the
+preview cut at an optional `(depth N)` render budget on `query`/`query-page`
+(a cut subtree prints `...`; the cell's word lets the client ask deeper).
+The budget rides `writeValCSVAtBoundary` as a parameter beside the existing
+4096 overflow guard. The REPL pulls pages of 50 at preview depth 4, mints
+checked `#N` handles for compound cells exactly as `show` does, substitutes
+answers into the single-atom fact template, and HOLDS the connection's one
+cursor when rows remain: `more` continues with continuous numbering,
+`cancel` discards, and any command that needs the daemon discards the
+cursor first (the daemon refuses every other verb while its cursor lives,
+so a held cursor never blocks the next thought — new `?` queries included).
+`dump ?QUERY to PATH.csv` pulls 1000-row pages to completion and writes
+CSV (variable-name header, standard quoting) client-side; the relation
+fast-path via the daemon's own CSV facilities remains open. count/exists
+still drain to exactness. Fixed in passing: `show #N` parsed its argument
+with the Racket reader before checking for a handle label, so the
+documented verb could never fire.
+
+Gates: daemon -O2 build; unit 404; protocol 134/134 (cells shape + depth
+grammar pins; query-check.rkt reads cells); Racket REPL contract 77/77 —
+new live battery over tests/chain12.slog covering page/more/complete
+numbering, third-`more` refusal, cancel, auto-discard before `count`, the
+depth-4 preview cut with `#1` minted from a query row, `show #1`, and a
+66-row CSV dump; Rust 29+44+3, semantic golden byte-identical; session
+battery at slice end. Remaining for R2: `#N` splice via preload words,
+`uses`/`find` daemon verbs, query watches (after REPL watch integration),
+deep re-describe for cut previews, and client completion/canvas adapters.
+
 ### 4.3 Why the fork is safe
 
 Three structural facts, not optimism: the interpreter partitions (monotone
