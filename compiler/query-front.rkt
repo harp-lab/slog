@@ -24,10 +24,17 @@
 ;; order of first appearance.
 
 (provide (struct-out query-line)
+         (struct-out handle-token)
          parse-query-line)
 
 (require racket/match
          "query-plan.rkt")
+
+;; A `#N` value-handle reference.  Only the reader mints these (user data
+;; cannot forge a struct instance), and only a caller-supplied resolver can
+;; turn one into a literal -- the front end knows nothing about the handle
+;; table it names.
+(struct handle-token (label) #:transparent)
 
 ;; request        : the query-plan.rkt query-request
 ;; project-vars   : projected variable symbols, request order (rows mode)
@@ -44,22 +51,41 @@
 
 ;; ---- lexical layer ---------------------------------------------------------
 
+;; `#` followed by digits is the REPL's checked value-handle token, which
+;; the standard reader rejects; hook every digit as a dispatch macro so
+;; `#42` reads as (handle-token "#42") while `#t`/`#f` stay themselves.
+(define (read-handle-token first-digit in)
+  (let loop ([digits (list first-digit)])
+    (define next (peek-char in))
+    (if (and (char? next) (char-numeric? next))
+        (loop (cons (read-char in) digits))
+        (handle-token (list->string (cons #\# (reverse digits)))))))
+
+(define query-readtable
+  (for/fold ([table (make-readtable #f)])
+            ([digit (in-string "0123456789")])
+    (make-readtable table digit 'dispatch-macro
+                    (case-lambda
+                      [(char in) (read-handle-token char in)]
+                      [(char in src line col pos)
+                       (read-handle-token char in)]))))
+
+;; label -> query-literal, supplied by the caller who owns a handle table;
+;; #f refuses splices (the pure-grammar configuration unit tests use).
+(define current-handle-resolver (make-parameter #f))
+
 (define (read-query-datums text)
   (define in (open-input-string text))
   (with-handlers
       ([exn:fail:read?
         (lambda (e)
-          (if (regexp-match? #px"#[0-9]" text)
-              (front-fail
-               (string-append
-                "value handles cannot splice into queries yet; "
-                "spell the value out"))
-              (front-fail "unreadable query text: ~a" (exn-message e))))])
-    (let loop ([datums '()])
-      (define datum (read in))
-      (if (eof-object? datum)
-          (reverse datums)
-          (loop (cons datum datums))))))
+          (front-fail "unreadable query text: ~a" (exn-message e)))])
+    (parameterize ([current-readtable query-readtable])
+      (let loop ([datums '()])
+        (define datum (read in))
+        (if (eof-object? datum)
+            (reverse datums)
+            (loop (cons datum datums)))))))
 
 (define (strip-mode text)
   (define trimmed (string-trim text))
@@ -80,12 +106,22 @@
   (string->uninterned-symbol (format "_~a" counter)))
 
 ;; symbols are variables; `_` is fresh per occurrence; numbers and strings
-;; become wire literals.  seen-vars preserves first-appearance order.
+;; become wire literals; a #N token resolves through the caller's handle
+;; table into a spliced word literal.  seen-vars preserves
+;; first-appearance order.
 (define (parse-term datum wildcards seen-vars)
   (match datum
     ['_ (define fresh (make-wildcard (unbox wildcards)))
         (set-box! wildcards (add1 (unbox wildcards)))
         fresh]
+    [(handle-token label)
+     (define resolve (current-handle-resolver))
+     (unless resolve
+       (front-fail "~a needs a live session to splice into a query" label))
+     (define resolved (resolve label))
+     (unless (query-literal? resolved)
+       (front-fail "handle resolver returned ~s for ~a" resolved label))
+     resolved]
     [(? symbol? v)
      (unless (memq v (unbox seen-vars))
        (set-box! seen-vars (append (unbox seen-vars) (list v))))
@@ -178,7 +214,13 @@
 ;; sigil.  Wildcard variables never project; a fully ground rows query
 ;; downgrades to an existence test rather than refusing (repl-ux §5.1's
 ;; two-way add/query hint covers the bare-fact case before we get here).
-(define (parse-query-line text)
+;; #:resolve-handle turns `#N` tokens into spliced literals; without one,
+;; a splice is a typed refusal.
+(define (parse-query-line text #:resolve-handle [resolve-handle #f])
+  (parameterize ([current-handle-resolver resolve-handle])
+    (parse-query-line* text)))
+
+(define (parse-query-line* text)
   (define-values (mode body) (strip-mode text))
   (define datums (read-query-datums body))
   (when (null? datums)

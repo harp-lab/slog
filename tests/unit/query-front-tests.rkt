@@ -89,11 +89,62 @@
       (query-request-guards (request "? (num X) (= X 3)")))
     (check-equal? (query-guard-kind eq-guard) 'eq))
 
-  (test-case "typed refusals"
+  (test-case "handle splices resolve through the caller's table"
+    ;; without a resolver a #N token is a typed refusal...
     (check-equal? (failure-kind (lambda () (request "?(edge #3 X)"))) 'parse)
     (check-regexp-match
-     #px"handles"
+     #px"needs a live session"
      (~a (failure-detail (lambda () (request "?(edge #3 X)")))))
+    ;; ...with one, it becomes a spliced word literal (and `#` digits do
+    ;; not leak into adjacent tokens)
+    (define resolved
+      (parse-query-line
+       "?(edge #37 X)"
+       #:resolve-handle
+       (lambda (label)
+         (check-equal? label "#37")
+         (query-literal 'word "12345"))))
+    (match-define (list atom)
+      (query-request-atoms (query-line-request resolved)))
+    (match-define (list word var) (query-atom-terms atom))
+    (check-equal? (query-literal-kind word) 'word)
+    (check-equal? (query-literal-text word) "12345")
+    (check-equal? var 'X)
+    ;; the single-atom template keeps the token's label for rendering
+    (check-true (handle-token? (second (query-line-pattern resolved)))))
+
+  (test-case "a spliced word lowers to a preload, not a wire literal"
+    (define catalog
+      (query-catalog-from-boundary
+       (query-boundary
+        "boundary/word" 3
+        (hash "edge" (query-declaration "edge" 'table '(int int)))
+        (hash "edge" "version/edge")
+        (hash "version/edge"
+              (query-materialization
+               "version/edge" 'plain 2 '((0 1)) 4)))))
+    (define line
+      (parse-query-line
+       "?(edge #1 X)"
+       #:resolve-handle (lambda (_) (query-literal 'word "9218868471587143682"))))
+    (define wire
+      (query-plan->wire-string (plan-query catalog (query-line-request line))))
+    (check-regexp-match #px"\\(preloads \\(set \\(r [0-9]+\\) 9218868471587143682\\)\\)"
+                        wire)
+    (check-regexp-match #px"\\(literals\\)" wire)
+    ;; an out-of-range word refuses as a literal error
+    (check-equal?
+     (failure-kind
+      (lambda ()
+        (plan-query
+         catalog
+         (query-line-request
+          (parse-query-line
+           "?(edge #1 X)"
+           #:resolve-handle (lambda (_) (query-literal 'word "not-a-word")))))))
+     'literal))
+
+  (test-case "typed refusals"
     (check-equal? (failure-kind (lambda () (request "? -> (X)"))) 'parse)
     (check-equal? (failure-kind (lambda () (request "?"))) 'parse)
     (check-equal? (failure-kind (lambda () (request "? (< 1 2 3)"))) 'parse)

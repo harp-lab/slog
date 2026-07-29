@@ -897,9 +897,13 @@ Slices, mapped to the T/Q phases (execution-tiers §11):
    immediately (live feel, more boundary churn) or stage until a `go`?
    Leaning immediate-with-coalescing (rules typed within one paste commit
    together).
-2. **Handle splice syntax in Slog fragments.** `#42` inside a query body must
-   not collide with future Slog lexing; reserve the token in the REPL reader
-   only, or claim it in the language grammar?
+2. **Handle splice syntax in Slog fragments.** *Resolved 2026-07-28 for the
+   query register:* the REPL's query reader owns `#N` (a dispatch-macro on
+   `#`+digit; the language grammar is untouched), and a splice lowers to the
+   handle's raw word in a preloaded register — read-only by construction,
+   valid for every value kind, checked against the handle's evaluation and
+   constructor identity before planning. Scratch-rule bodies (R3) still owe
+   an answer if handles should splice there too.
 3. **Pin persistence.** Do pinned names survive REPL restart via a session
    sidecar (`.slog-repl/`), given values may not survive daemon restart?
    Tombstone-on-load seems right; needs a decision.

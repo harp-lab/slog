@@ -217,6 +217,19 @@
     ['integer 'int]
     ['real 'float]
     ['string 'str]
+    ;; A spliced value handle: the text is the value's raw encoded word
+    ;; (decimal u64), identity inside one evaluation.  It lowers to a wire
+    ;; PRELOAD rather than a probe-resolved literal, so it is read-only by
+    ;; construction; the caller vouches for evaluation/constructor identity
+    ;; (the REPL's checked #N table does).  Encoded words span every value
+    ;; kind, so it types as `any`.
+    ['word
+     (define value (string->number (query-literal-text literal)))
+     (unless (and (exact-nonnegative-integer? value)
+                  (< value (expt 2 64)))
+       (query-fail 'literal "word literal must be a decimal u64, got ~s"
+                   (query-literal-text literal)))
+     'any]
     [kind (query-fail 'literal "unsupported literal kind ~s" kind)]))
 
 (define (term? term) (or (symbol? term) (query-literal? term)))
@@ -903,8 +916,18 @@
               [else (lower-special item)]))
       (candidate-body chosen))))
 
+  ;; Word literals become preloads: the register starts holding the exact
+  ;; encoded word, no interner probe involved.  Everything else stays a
+  ;; typed wire literal the daemon resolves probe-only at bind.
+  (define-values (word-literals wire-literals)
+    (partition (lambda (literal) (eq? (query-literal-kind literal) 'word))
+               literal-order))
+  (define preloads
+    (for/list ([literal (in-list word-literals)])
+      (list (literal-register! literal)
+            (string->number (query-literal-text literal)))))
   (define literals
-    (for/list ([literal (in-list literal-order)])
+    (for/list ([literal (in-list wire-literals)])
       (qp-literal (literal-register! literal)
                   (query-literal-kind literal)
                   (query-literal-text literal))))
@@ -935,7 +958,7 @@
   (query-plan
    (query-catalog-boundary-key catalog)
    (query-catalog-generation catalog)
-   bindings next-register '() literals preops driver body
+   bindings next-register preloads literals preops driver body
    (map variable-register! (query-request-project request))
    (query-request-mode request) explain))
 

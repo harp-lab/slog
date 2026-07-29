@@ -1319,6 +1319,28 @@ battery at slice end. Remaining for R2: `#N` splice via preload words,
 `uses`/`find` daemon verbs, query watches (after REPL watch integration),
 deep re-describe for cut previews, and client completion/canvas adapters.
 
+**Checkpoint (2026-07-28; R2 slice (c) — `#N` splices as preload words).**
+A value handle now splices into any query term position and the front end
+translates it seamlessly: the REPL's query reader owns `#`+digits as a
+dispatch macro (the language grammar is untouched — repl-ux §14.2
+resolved), the token resolves through the checked handle table
+(database, evaluation, and constructor identity re-verified before
+planning), and the planner lowers the new `word` literal kind to a wire
+PRELOAD — the register starts holding the exact encoded word, no interner
+probe involved, so the splice is read-only by construction and works for
+every value kind including the structs and collections no typed wire
+literal could spell. Word literals type as `any`; the daemon needed no
+changes (preloads were already decoded). Equality on a spliced word is
+interned-value identity, exactly the semantics joins use.
+
+Gates: unit 406 (resolver/readtable/preload-wire cases); protocol
+134/134; Racket REPL contract 79/79 — the chain12 battery now splices the
+minted `#1` back in, both as a ground existence query and through an eq
+guard that re-yields its row; Rust suites green; session battery at slice
+end. NOTE an intermittent protocol-battery flake (~1-in-4 runs, one
+unnamed check, self-heals on rerun) predating nothing in particular —
+run logs are now kept so the next occurrence names it.
+
 ### 4.3 Why the fork is safe
 
 Three structural facts, not optimism: the interpreter partitions (monotone

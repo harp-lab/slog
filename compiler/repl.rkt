@@ -1032,6 +1032,17 @@
          [else (loop (format "(query-page ~a (page 1))" id) (add1 slices))])]
       [other (error '? "unexpected query reply: ~a" other)])))
 
+;; `#N` splices into a query as the handle's raw encoded word -- identity
+;; inside this evaluation, lowered to a preloaded register (never an
+;; interner write), so it is read-only by construction and works for every
+;; value kind including structs and collections no wire literal could
+;; spell.  resolve-value-handle re-checks database, evaluation, and
+;; constructor identity, so a stale handle refuses before planning.
+(define (query-handle-resolver state)
+  (lambda (label)
+    (define cell (value-handle-cell (resolve-value-handle state label)))
+    (query-literal 'word (number->string (value-cell-word cell)))))
+
 ;; Mirror the show adapter: a compound value's preview is followed by its
 ;; checked #N handle -- the daemon cut the preview at the requested depth,
 ;; and the handle is how the user asks for more; scalars render bare.
@@ -1050,6 +1061,7 @@
     (for/list ([term (in-list (rest pattern))])
       (cond
         [(symbol? term) (cdr (assq term bindings))]
+        [(handle-token? term) (handle-token-label term)]
         [(string? term) (~s term)]
         [else (~a term)])))
   (format "(~a~a)" (first pattern)
@@ -1100,7 +1112,9 @@
 
 (define (query-register-result state text)
   ;; grammar refusals need no session, so parse before touching the daemon
-  (define line (parse-query-line text))
+  ;; (the handle resolver only fires when a #N actually appears)
+  (define line
+    (parse-query-line text #:resolve-handle (query-handle-resolver state)))
   (define rs (ensure-session-record! state))
   (discard-query-cursor! rs)
   (define s (repl-session-session rs))
@@ -1182,7 +1196,9 @@
 (define (dump-result state argument)
   (match (regexp-match #px"^(\\?.*?)\\s+to\\s+(\\S+)$" (string-trim argument))
     [(list _ query-text path)
-     (define line (parse-query-line query-text))
+     (define line
+       (parse-query-line query-text
+                         #:resolve-handle (query-handle-resolver state)))
      (unless (eq? (query-request-mode (query-line-request line)) 'rows)
        (error 'dump "dump takes a rows query; ?count/?exists print directly"))
      (define rs (ensure-session-record! state))
@@ -1230,7 +1246,8 @@
   (unless (string-prefix? text "?")
     (error 'explain "expected: explain ?QUERY (rule explain arrives with R4)"))
   (define s (ensure-session! state))
-  (define line (parse-query-line text))
+  (define line
+    (parse-query-line text #:resolve-handle (query-handle-resolver state)))
   (define catalog (query-catalog-from-boundary (query-boundary-snapshot s)))
   (define plan (plan-query catalog (query-line-request line)))
   (define explain (query-plan-explain plan))
@@ -2222,7 +2239,7 @@
     (check-regexp-match #px"driver: " transcript)
     ;; typed refusals surface as command failures with the planner's kind
     (check-regexp-match #px"query plan \\[unknown-relation\\]" transcript)
-    (check-regexp-match #px"handles cannot splice" transcript)
+    (check-regexp-match #px"no such value handle: #1" transcript)
     ;; closing the 4-cycle makes path the complete relation on 4 nodes,
     ;; and the query observes it at the post-edit epoch
     (check-regexp-match #px"◆ Query count\n  16 rows match" transcript))
@@ -2247,6 +2264,8 @@
                    "more"
                    "?(deep D)"
                    "show #1"
+                   "?(deep #1)"
+                   "? (deep D) (= D #1) -> (D)"
                    "dump ?(path X Y) to out/repl-qdump.csv"
                    ":quit")))])
     ;; page one holds the cursor; `more` finishes it; a third `more` refuses
@@ -2265,6 +2284,10 @@
      #px"1  \\(deep \\(l5 \\(l4 \\(l3 \\(l2 \\.\\.\\.\\)\\)\\)\\) #1\\)"
      transcript)
     (check-regexp-match #px"◆ Value · #1" transcript)
+    ;; #1 splices back into queries as a preloaded word: ground existence
+    ;; through the struct value, and an eq guard that re-yields its row
+    (check-regexp-match #px"◆ Query exists\n  yes" transcript)
+    (check-regexp-match #px"◆ Query · \\(D\\)\n  1 row" transcript)
     ;; dump pulled every page and wrote header + 66 rows
     (check-regexp-match #px"wrote 66 rows to out/repl-qdump\\.csv" transcript)
     (define dump-file
