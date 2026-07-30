@@ -4137,6 +4137,19 @@
 (define (session-scratch-add! s text)
   (when (session-replaying? s)
     (error 'session "scratch fragments are live input, never replayed history"))
+  ;; Scratch is a catalog-era feature: adoption reads the typed catalog,
+  ;; and the fresh/extended split that makes the layer retractable is a
+  ;; catalog diff.  A legacy input (loaded verbatim, no logical catalog)
+  ;; has data-bearing relations OUTSIDE any catalog -- a fragment's first
+  ;; boundary would mint the whole catalog as "introduced" and a later
+  ;; clear would drop live data.  Same refusal shape as the catalog verb.
+  (when (and (session-db s) (not (session-boundary-bundle s)))
+    (error 'session
+           (string-append
+            "this database has no logical catalog (a pre-N4 input, or one "
+            "invalidated by an import/link/inject); scratch needs the "
+            "typed catalog for adoption and retraction -- replay and "
+            "re-save it, or regenerate it")))
   (define n (add1 (length (session-scratch s))))
   (define dir (format "build/scratch/~a" (session-layer-id s)))
   (make-directory* dir)

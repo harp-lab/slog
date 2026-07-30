@@ -884,7 +884,11 @@ Slices, mapped to the T/Q phases (execution-tiers §11):
   `?count`/`?exists`, query watches, `uses`/`find`.
 - **R3 — the workbench** (needs T2/T3): scratch layer with instant
   interpreted views, `keep scratch`, tier visibility (`tiers`, `code`,
-  arrival notes in summaries).
+  arrival notes in summaries).  *Shipped server-side 2026-07-29/30*
+  (four slices: the register + catalog adoption, `clear scratch`,
+  tiers/code/arrival notes, save×scratch policy + goldens; §14.1 has the
+  pinned policies; extended-layer clear ships later with its recipe
+  event).
 - **R4 — the debugger** (needs T5): level-1 watches, break r17[@k][when],
   stepping/frames, why/whynot trees, pre-commit commit/replay.
 - **R5 — the operator's edge** (needs the relevant M milestones): whatif
@@ -917,6 +921,19 @@ Slices, mapped to the T/Q phases (execution-tiers §11):
    derived rows from a surviving relation needs a recipe spelling (replay
    would re-derive them; the load signature would refuse), and that
    recipe event ships together with the recompute, not before.
+   *Save policy (slice d, 2026-07-30):* until the layer is kept, `save
+   NAME` refuses while scratch is live, naming the three ways out — `keep
+   scratch as F.slog` (promote), `clear scratch` (retract), `save NAME
+   with scratch` (bake as ordinary history, which is exactly what a
+   reload yields) — the server-side form of "save asks"; an interactive
+   client can render the refusal as a prompt.  *Catalog-era only:* the
+   register refuses on a database with no logical catalog (a pre-N4
+   legacy input): adoption reads the typed catalog, and the
+   fresh/extended split that makes the layer retractable is a catalog
+   diff — a fragment's first boundary over a catalog-less database would
+   mint every live relation as "introduced" and a later clear would drop
+   real data.  Replay and re-save the input first, exactly as the
+   `catalog` verb already demands.
 2. **Handle splice syntax in Slog fragments.** *Resolved 2026-07-28 for the
    query register:* the REPL's query reader owns `#N` (a dispatch-macro on
    `#`+digit; the language grammar is untouched), and a splice lowers to the

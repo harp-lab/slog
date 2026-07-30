@@ -237,7 +237,10 @@ async fn run_plain(backend: &mut Backend) -> Result<(), String> {
                         });
                         write_plain_entry(
                             &mut stdout,
-                            &TranscriptEntry::error(error.kind, vec![error.message]),
+                            &TranscriptEntry::error(
+                                crate::app::failure_title(&error.kind),
+                                vec![error.message],
+                            ),
                         )?;
                         break false;
                     }

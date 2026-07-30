@@ -252,7 +252,9 @@
    "  drop REL            remove one relation name at the next boundary"
    "  attach DB as DEST   import a saved database under one namespace"
    "  attach DB SRC as DEST   import one subtree of a saved database"
-   "  save NAME           save the current database as data/NAME"
+   "  save NAME           save the current database as data/NAME; a live"
+   "                      scratch layer must be kept, cleared, or baked"
+   "                      explicitly (`save NAME with scratch`)"
    ""
    "Workbench"
    "  :status             show REPL, current database, and daemon state"
@@ -2367,15 +2369,47 @@
                   #:kind "pipeline")]
     ["save"
      (when (string=? argument "")
-       (error 'save "expected: save NAME"))
+       (error 'save "expected: save NAME [with scratch]"))
+     ;; R3 slice (d), repl-ux §5.3: until the layer is kept, a save must
+     ;; decide what happens to scratch.  The server-side form of "save
+     ;; asks" is a typed refusal naming the three ways out; `with scratch`
+     ;; is the explicit override (the layer bakes into the saved recipe as
+     ;; ordinary history -- exactly what a reload yields).
+     (define-values (name with-scratch?)
+       (match (regexp-match #px"^(.*?)[[:space:]]+with[[:space:]]+scratch$"
+                            (string-trim argument))
+         [(list _ name) (values (string-trim name) #t)]
+         [_ (values (string-trim argument) #f)]))
+     (when (string=? name "")
+       (error 'save "expected: save NAME [with scratch]"))
      (define rs (ensure-mutable-session-record! state 'save))
+     (define pending-scratch
+       (session-scratch-events (repl-session-session rs)))
+     (when (and (pair? pending-scratch) (not with-scratch?))
+       (error 'save
+              (format
+               (string-append
+                "the scratch layer holds ~a fragment~a; decide first: "
+                "`keep scratch as F.slog` promotes it, `clear scratch` "
+                "retracts it, `save ~a with scratch` bakes it as ordinary "
+                "history")
+               (length pending-scratch)
+               (if (= (length pending-scratch) 1) "" "s")
+               name)))
      (define-values (_ _events change)
        (capture-semantic-change
         state rs "save" "saved" '()
-        (lambda () (session-save! (repl-session-session rs) argument))))
+        (lambda () (session-save! (repl-session-session rs) name))))
      (semantic-text-result
-      (format "Saved ~a" argument)
-      (list "database materialization and replay recipe were written")
+      (format "Saved ~a" name)
+      (append
+       (list "database materialization and replay recipe were written")
+       (if (and with-scratch? (pair? pending-scratch))
+           (list (format
+                  "~a scratch fragment~a saved as ordinary history (a reload holds them baked)"
+                  (length pending-scratch)
+                  (if (= (length pending-scratch) 1) "" "s")))
+           '()))
       change
       #:kind "save")]
     [(or ":quit" "quit" "exit")
@@ -2823,6 +2857,12 @@
             "add edge 1 2"
             "add edge 4 5"
             "del edge 4 5"
+            ;; R3: scratch is a catalog-era feature -- over this legacy
+            ;; (pre-N4, catalog-less) fixture the register refuses, and
+            ;; the byte-exact golden pins that refusal; the full scratch
+            ;; round trip lives in the cataloged batteries below
+            "table (deg2 int int) rule (deg2 X Z) <-- (edge X Y) (edge Y Z)"
+            "scratch"
             "rename edge input_edge"
             "drop path"
             ":quit")))
@@ -3068,7 +3108,9 @@
             (list "run tests/chain12.slog"
                   "table (leaf int) rule (leaf N) <-- (deep (l5 (l4 (l3 (l2 (l1 N))))))"
                   "?(leaf N)"
+                  ;; a plain save must first decide the layer's fate
                   "save r3_scratch_replay"
+                  "save r3_scratch_replay with scratch"
                   "open r3_scratch_replay"
                   "?(leaf N)"
                   "add edge 12 1"
@@ -3076,6 +3118,12 @@
                   ":quit")))])
     (check-regexp-match
      #px"fragment 1 joined the scratch layer — writes leaf" transcript)
+    ;; the save×scratch decision point (slice d): a plain save refuses
+    ;; while the layer is live; the explicit spelling bakes it
+    (check-regexp-match
+     #px"the scratch layer holds 1 fragment; decide first" transcript)
+    (check-regexp-match
+     #px"1 scratch fragment saved as ordinary history" transcript)
     ;; both the live and the replayed boundary yield the struct-matched leaf
     (check-regexp-match
      #px"◆ Query\n  1 row\n  1  \\(leaf 7\\)\n(?s:.*)Opened r3_scratch_replay(?s:.*)◆ Query\n  1 row\n  1  \\(leaf 7\\)"

@@ -187,8 +187,10 @@ impl App {
                         kind: "server".to_owned(),
                         message: "unknown server failure".to_owned(),
                     });
-                    self.transcript
-                        .push(TranscriptEntry::error(error.kind, vec![error.message]));
+                    self.transcript.push(TranscriptEntry::error(
+                        failure_title(&error.kind),
+                        vec![error.message],
+                    ));
                     return;
                 }
                 let result = CommandResult::from_value(response.result.unwrap_or_default());
@@ -1122,7 +1124,7 @@ impl App {
                         kind: "server".to_owned(),
                         message: "unknown server failure".to_owned(),
                     });
-                    return format!("! {}\n  {}", error.kind, error.message);
+                    return format!("! {}\n  {}", failure_title(&error.kind), error.message);
                 }
                 let result = CommandResult::from_value(response.result.unwrap_or_default());
                 self.update_session_context(result.raw());
@@ -1419,6 +1421,17 @@ impl App {
             self.history_position = None;
             self.editor.clear();
         }
+    }
+}
+
+/// A failed server response's transcript title.  Matches the Racket
+/// `--plain` harness rendering ("Command failed") so the shared
+/// semantic-session golden pins one rendering across both clients.
+pub fn failure_title(kind: &str) -> String {
+    let mut chars = kind.chars();
+    match chars.next() {
+        Some(first) => format!("{}{} failed", first.to_uppercase(), chars.as_str()),
+        None => "Failed".to_owned(),
     }
 }
 

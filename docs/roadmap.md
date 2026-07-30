@@ -1489,6 +1489,28 @@ nature, so the rendering is pinned at the unit level and the verbs under
 forced interp.  Gates: unit 406, REPL contract 123, protocol 139/139,
 Rust 29+44+3, session battery at slice end.
 
+**Checkpoint (2026-07-30; R3 slice (d) — save×scratch policy + goldens;
+R3 SERVER-SIDE COMPLETE).**  Until the layer is kept, `save NAME`
+refuses while scratch is live, naming the three ways out — `keep scratch
+as F.slog` promotes, `clear scratch` retracts, `save NAME with scratch`
+bakes it as ordinary history (exactly what a reload yields) — the
+server-side form of §5.3's "save asks"; an interactive client renders
+the refusal as a prompt.  Second policy pinned here, forced by the
+golden regeneration: **scratch is catalog-era only** — over a legacy
+(pre-N4, catalog-less) input the register refuses with the catalog
+verb's own message, because adoption reads the typed catalog and the
+fresh/extended split IS a catalog diff: a fragment's first boundary over
+such a database would mint every live relation as "introduced" and a
+later clear would drop real data.  The byte-exact semantic-session
+golden gained the refusal stanza (additive diff only).  Gates: unit 406,
+REPL contract 125, protocol 139/139, Rust 29+44+3, session battery at
+slice end.  **R3's server side is done** — with R0–R2 banked, thread 1's
+gate-S local exits (R0–R3 batteries, Q1 hygiene, catalog round-trip) are
+all closed; what remains before S is the JOINT battery (§5), plus the
+non-gating leftovers: R2's Rust client adapters / prepare-time watch
+registration / relation fast-path dump, R3's extended-layer clear recipe
+event, and T3b's next-re-entry artifact pickup.
+
 ### 4.3 Why the fork is safe
 
 Three structural facts, not optimism: the interpreter partitions (monotone

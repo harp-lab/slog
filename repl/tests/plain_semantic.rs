@@ -8,6 +8,8 @@ open sess_w2.edb
 add edge 1 2
 add edge 4 5
 del edge 4 5
+table (deg2 int int) rule (deg2 X Z) <-- (edge X Y) (edge Y Z)
+scratch
 rename edge input_edge
 drop path
 :quit
