@@ -233,6 +233,8 @@
    "                      query count; reports ride each change summary"
    "  unwatch wN          remove one watch;  `watches` lists them"
    "  explain ?QUERY      show the query plan and degradations, do not run"
+   "  tiers               show each stratum's execution rung (interp/-O0/-O2)"
+   "  code sN | HASH      show one stratum's rung, artifacts, and plan shape"
    "  catalog             show the selected boundary, history, and types"
    "  schema              show the daemon's raw live schema"
    "  pipeline            show the daemon's raw versioned pipeline"
@@ -1639,6 +1641,25 @@
       [`(route ,kind ,detail ...)
        (hasheq 'kind (~a kind) 'detail (map ~a detail))])))
 
+;; R3 slice (c): T3a arrival notes.  push-sbuild!'s upgrade wrapper echoes
+;; one `(tier SCC HASH RUNG)` event per in-place artifact swap; the change
+;; summary carries them as "s3 upgraded to -O0 mid-run" lines (§5.4).
+(define (tier-label tier)
+  (match tier
+    ['interp "interp"]
+    ['o0 "-O0"]
+    ['o2 "-O2"]
+    ['o2-mix "-O2 (partial)"]
+    [other (~a other)]))
+
+(define (tier-records events)
+  (for/list ([line (in-list events)]
+             #:do [(define datum (read-datum line))]
+             #:when (match datum [`(tier ,_ ,_ ,_) #t] [_ #f]))
+    (match datum
+      [`(tier ,scc ,hash ,rung)
+       (hasheq 'scc scc 'hash (~a hash) 'rung (~a rung))])))
+
 (define max-change-relations 8)
 
 (define (assemble-change operation target status requested events before after
@@ -1654,7 +1675,8 @@
           'size-deltas shown
           'size-deltas-omitted (- (length deltas) (length shown))
           'sizes-observed (and before after #t)
-          'routes (route-records events)))
+          'routes (route-records events)
+          'tiers (tier-records events)))
 
 (define (make-change s operation target status requested events before after)
   (define-values (revision counts) (settled-session-state s))
@@ -1733,6 +1755,19 @@
                    (string-join
                     (cons (hash-ref record 'kind) (hash-ref record 'detail)) " "))
                  "; "))))
+   ;; T3a arrival notes: which strata upgraded rungs mid-run (§5.4)
+   (let ([tiers (hash-ref change 'tiers '())])
+     (if (null? tiers)
+         '()
+         (list
+          (format "tiers: ~a"
+                  (string-join
+                   (for/list ([record (in-list tiers)])
+                     (format "s~a -> ~a arrived"
+                             (hash-ref record 'scc)
+                             (tier-label
+                              (string->symbol (hash-ref record 'rung)))))
+                   "; ")))))
    ;; the operator's heartbeat: watch hits, rebinds, and query deltas
    (hash-ref change 'watches '())))
 
@@ -2001,12 +2036,105 @@
       #:kind "scratch")]
     [_ (error 'keep "expected: keep scratch as FILE.slog")]))
 
+;; ---- R3 slice (c): tier visibility (execution-tiers T3a) -------------------
+;;
+;; `tiers` renders the session's per-stratum execution rungs -- what the
+;; cold-start ladder is doing right now -- and `code` opens one stratum's
+;; card: rung, cached artifacts, and the canonical plan's shape.  Both are
+;; observations over client state and the build cache; no daemon round
+;; trip, so a held query cursor survives them.
+
+(define (tiers-result state)
+  (define s (ensure-session! state))
+  (define rows (session-tiers s))
+  (text-result
+   "Tiers"
+   (if (null? rows)
+       (list "no resident strata; run a program first")
+       (append
+        (for/list ([r (in-list rows)])
+          (match-define (list scc hash tier cached) r)
+          (format "s~a  ~a  ~a~a"
+                  scc hash (tier-label tier)
+                  (if (null? cached)
+                      ""
+                      (format "  · cache: ~a"
+                              (string-join (map ~a cached) " ")))))
+        (let ([groups (for/fold ([acc (hash)]) ([r (in-list rows)])
+                        (hash-update acc (third r) add1 0))])
+          (list
+           (format "~a strat~a · ~a"
+                   (length rows) (if (= (length rows) 1) "um" "a")
+                   (string-join
+                    (for/list ([tier (in-list '(interp o0 o2 o2-mix))]
+                               #:when (hash-ref groups tier #f))
+                      (format "~a ~a" (hash-ref groups tier)
+                              (tier-label tier)))
+                    " · "))))))
+   #:kind "tiers"))
+
+(define (code-result state argument)
+  (define s (ensure-session! state))
+  (define requested (string-trim argument))
+  (when (string=? requested "")
+    (error 'code "expected: code sN | code HASHPREFIX"))
+  (define rows (session-tiers s))
+  (define row
+    (or (findf (lambda (r)
+                 (or (equal? (format "s~a" (first r)) requested)
+                     (equal? (~a (first r)) requested)
+                     (string-prefix? (second r) requested)))
+               rows)
+        (error 'code "no resident stratum matches ~a (see `tiers`)"
+               requested)))
+  (match-define (list scc hash tier cached) row)
+  (define plan-path (format "build/~a.plan" hash))
+  (define plan
+    (and (file-exists? plan-path)
+         (with-handlers ([exn:fail? (lambda (_) #f)])
+           (call-with-input-file plan-path read))))
+  (define plan-lines
+    (match plan
+      [`(kernel-plan ,parts ...)
+       (define (field key)
+         (match (assq key parts) [(cons _ values) values] [_ #f]))
+       (define sources
+         (remove-duplicates
+          (filter values
+                  (for/list ([m (in-list (or (field 'meta) '()))])
+                    (match m
+                      [`(rule-meta (rid ,_) (source ,src)) src]
+                      [_ #f])))))
+       (append
+        (list (format "flavor: ~a · abi ~a · ~a relations · ~a rule variants"
+                      (car (or (field 'flavor) '(unknown)))
+                      (car (or (field 'abi) '(0)))
+                      (length (or (field 'relations) '()))
+                      (length (or (field 'rules) '())))
+              (format "dynamic: ~a"
+                      (string-join (map ~a (or (field 'dynamic) '())) ", ")))
+        (if (null? sources)
+            '()
+            (list (format "sources: ~a" (string-join sources ", ")))))]
+      [_ (list "no canonical plan in the build cache for this stratum")]))
+  (text-result
+   (format "Code · s~a" scc)
+   (append
+    (list (format "stratum ~a · running ~a" hash (tier-label tier))
+          (format "cache: ~a"
+                  (if (null? cached)
+                      "empty"
+                      (string-join (map ~a cached) " "))))
+    plan-lines)
+   #:kind "code"))
+
 ;; refuses every non-query verb while its one cursor is live.  A new `?`
-;; query discards inside the register itself.  `scratch` and `keep` never
-;; touch the daemon, so a held cursor survives them.
+;; query discards inside the register itself.  `scratch`, `keep`, `tiers`,
+;; and `code` never touch the daemon, so a held cursor survives them.
 (define keep-cursor-verbs
   '(":help" "help" "?" ":ping" ":status" "library" "current" "resident"
-    "sessions" "mode" ":share" ":clear" "more" "cancel" "scratch" "keep"))
+    "sessions" "mode" ":share" ":clear" "more" "cancel" "scratch" "keep"
+    "tiers" "code"))
 
 (define (dispatch-command state source)
   (define trimmed (string-trim source))
@@ -2099,6 +2227,8 @@
     ["scratch" (scratch-show-result state)]
     ["keep" (keep-scratch-result state argument)]
     ["clear" (clear-scratch-result state argument)]
+    ["tiers" (tiers-result state)]
+    ["code" (code-result state argument)]
     ["run"
      (when (string=? argument "")
        (error 'run "expected: run PATH"))
@@ -2636,7 +2766,8 @@
     (list (hasheq 'relation "edge" 'added 1 'removed 0)))
   (define sample-change
     (assemble-change "add" "scratch" "settled" sample-request
-                     (list "(route maintain 2)")
+                     (list "(route maintain 2)"
+                           "(tier 3 4f0b9c11 o0)")
                      (hash "edge" 3) (hash "edge" 4)
                      7 "valid"))
   (check-equal?
@@ -2651,7 +2782,13 @@
            (list (hasheq 'relation "edge" 'before 3 'after 4 'net 1))
            'size-deltas-omitted 0
            'sizes-observed #t
-           'routes (list (hasheq 'kind "maintain" 'detail (list "2")))))
+           'routes (list (hasheq 'kind "maintain" 'detail (list "2")))
+           'tiers (list (hasheq 'scc 3 'hash "4f0b9c11" 'rung "o0"))))
+  ;; the arrival note renders from the captured tier event (live arrivals
+  ;; depend on clang wall-clock vs fixpoint length, so the rendering is
+  ;; pinned here and the verbs in the interp battery below)
+  (check-not-false
+   (member "tiers: s3 -> -O0 arrived" (change-summary-lines sample-change)))
 
   (define mode-state (server-state (make-hash) #f #f #f (make-hash)))
   (hash-set! (server-state-sessions mode-state)
@@ -3004,4 +3141,33 @@
     (parameterize ([current-directory repository-root])
       (when (file-exists? kept-path) (delete-file kept-path))
       (when (directory-exists? "data/r3_clear_replay")
-        (delete-directory/files "data/r3_clear_replay")))))
+        (delete-directory/files "data/r3_clear_replay"))))
+
+  ;; tier visibility (R3 slice c): under forced interp every stratum sits
+  ;; on the interpreter rung with its plan cached, deterministically;
+  ;; `code` opens one stratum's card from the canonical plan sidecar.
+  (let* ([interp-environment
+          (environment-variables-copy test-environment)]
+         [transcript
+          (parameterize ([current-directory repository-root]
+                         [current-environment-variables
+                          (begin
+                            (environment-variables-set!
+                             interp-environment #"SLOG_OPT" #"interp")
+                            interp-environment)])
+            (plain-transcript
+             (list "tiers"
+                   "run tests/reach.slog"
+                   "table (hop2 int int) rule (hop2 X Z) <-- (edge X Y) (edge Y Z)"
+                   "tiers"
+                   "code s2"
+                   "code nope"
+                   ":quit")))])
+    (check-regexp-match #px"◆ Tiers\n  no resident strata" transcript)
+    (check-regexp-match #px"s0  [0-9a-f]+  interp  · cache: plan" transcript)
+    (check-regexp-match #px"3 strata · 3 interp" transcript)
+    ;; the scratch stratum's card: rung, cached artifacts, plan shape
+    (check-regexp-match
+     #px"◆ Code · s2\n  stratum [0-9a-f]+ · running interp\n  cache: plan\n  flavor: normal · abi 1 · [0-9]+ relations · 1 rule variants\n  dynamic: hop2"
+     transcript)
+    (check-regexp-match #px"no resident stratum matches nope" transcript)))

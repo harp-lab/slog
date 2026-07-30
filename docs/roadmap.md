@@ -1465,6 +1465,32 @@ count).  Gates: unit 406, REPL contract 117 (clear battery: dependency-
 ordered drops, extended refusal, create→fill→drop replay round-trip),
 protocol 139/139, Rust 29+44+3, session battery at slice end.
 
+**Checkpoint (2026-07-30; R3 slice (c) — tier visibility).**  `tiers`
+renders the session's per-stratum execution rungs — scc id, content
+hash, current rung, and which rungs the build cache holds — and `code
+sN|HASHPREFIX` opens one stratum's card (rung, cached artifacts, and the
+canonical plan's shape: flavor, abi, relation/rule-variant counts,
+dynamic set, rule sources).  Both are observations over client state
+plus the build cache, no daemon round trip, cursor-preserving.  The
+substrate: `sinfo` gained the stratum's content hash and a tier box;
+`push-sbuild!` seeds the box from the runnable's tag and wraps the T3a
+upgrade closure so every in-place artifact swap advances the box and
+echoes one `(tier SCC HASH RUNG)` event — change summaries render those
+as §5.4's arrival notes ("tiers: s3 -> -O0 arrived").  The two upgrade
+shapes disambiguate by initial tag (a cold start's make-native-upgrade
+counts absolute rungs; a warm -O0 start's make-upgrade counts linked
+clusters, partial = "-O2 (partial)").  One truth the verb immediately
+surfaces: a stratum whose fixpoint beats clang stays on its starting
+rung for its maintenance lifetime (mid-run swap is the only shipped
+pickup point — the cache rows show the built-but-unused artifacts), so
+next-re-entry artifact pickup is explicitly future T3b policy work, now
+visible instead of latent.  Live arrival notes are timing-dependent by
+nature, so the rendering is pinned at the unit level and the verbs under
+forced interp.  Gates: unit 406, REPL contract 123, protocol 139/139,
+Rust 29+44+3, session battery at slice end.
+
+### 4.3 Why the fork is safe
+
 Three structural facts, not optimism: the interpreter partitions (monotone
 frozen at F; counted = thread 0; query = thread 1, in separate files and
 registration tables); thread 1's semantic foundation (Phase 0

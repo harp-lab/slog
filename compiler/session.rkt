@@ -92,6 +92,7 @@
          session-scratch-events ; R3: the live scratch ledger, oldest first
          session-scratch-keep!  ; R3: export the layer and promote it
          session-scratch-clear! ; R3: retract the whole layer
+         session-tiers          ; R3: per-stratum execution rungs + cache
          (struct-out scratch-event)
          session-close!
          inline-batch-max)
@@ -119,7 +120,12 @@
 ;; legacy delta-entry (0.B5), `_count` (§8B.1/M0), and `_maint1` (M1)
 ;; flavors.
 (struct sinfo (so dyn reads heads acyclic? delta count maintenance
-                  negative-maintenance recursive-negative-maintenance)
+                  negative-maintenance recursive-negative-maintenance
+                  ;; R3 slice (c) tier visibility: the stratum's content
+                  ;; hash (artifact/plan lookup key) and its current
+                  ;; execution rung -- a box the T3a upgrade path advances
+                  ;; ('interp -> 'o0 -> 'o2; 'o2-mix = partial cluster mix)
+                  hash tier)
   #:transparent)
 
 ;; One live session.
@@ -362,21 +368,66 @@
 
 ;; Send one FRESH stratum (recording its manifest info for cone assembly)
 ;; and drive it.
+;; The rung an arriving artifact lands the stratum on.  A cold start's
+;; make-native-upgrade counts absolute rungs (1 = -O0, 2 = -O2 of 2); a
+;; warm -O0 start's make-upgrade counts LINKED CLUSTERS, so a partial
+;; count is a mixed -O0/-O2 artifact.  The initial tag disambiguates the
+;; two shapes.
+(define (swap-rung initial done total)
+  (cond
+    [(= done total) 'o2]
+    [(eq? initial 'interp) (if (>= done 1) 'o0 initial)]
+    [else 'o2-mix]))
+
 (define (push-sbuild! s sb)
-  (match-define (cons so _tag) ((sbuild-runnable sb)))
+  (match-define (cons so tag) ((sbuild-runnable sb)))
   (define-values (dyn reads heads acyclic?)
     (read-stratum-meta (sbuild-hash sb)))
+  (define scc (session-next-scc s))
+  (define tier (box tag))
   (set-session-strata-info!
    s (append (session-strata-info s)
-             (list (cons (session-next-scc s)
+             (list (cons scc
                          (sinfo so dyn reads heads acyclic?
                                 (sbuild-delta sb) (sbuild-count sb)
                                 (sbuild-maintenance sb)
                                 (sbuild-negative-maintenance sb)
-                                (sbuild-recursive-negative-maintenance sb))))))
-  ;; T3a: a freshly compiled stratum starts interpreted and upgrades in place.
-  ;; A re-push of a cached stratum has no upgrade to offer.
-  (send-stratum! s so (sbuild-upgrade sb)))
+                                (sbuild-recursive-negative-maintenance sb)
+                                (sbuild-hash sb) tier)))))
+  ;; T3a: a freshly compiled stratum starts interpreted and upgrades in
+  ;; place.  A re-push of a cached stratum has no upgrade to offer.  The
+  ;; swap now narrates itself: the tier box advances and a tier event
+  ;; enters the echo stream, so change summaries can carry arrival notes
+  ;; (repl-ux §5.4) without a second bookkeeping channel.
+  (define upgrade
+    (let ([u (sbuild-upgrade sb)])
+      (and u
+           (lambda (loaded)
+             (match-define (and result (list artifact done total)) (u loaded))
+             (when artifact
+               (define rung (swap-rung tag done total))
+               (set-box! tier rung)
+               (echo! s (format "(tier ~a ~a ~a)" scc (sbuild-hash sb) rung)))
+             result))))
+  (send-stratum! s so upgrade))
+
+;; R3 slice (c): the tier ledger `tiers` renders -- one record per
+;; resident pipeline stratum: scc id, content hash, current rung, and
+;; which rungs the build cache holds right now.
+(define (session-tiers s)
+  (for/list ([p (in-list (session-strata-info s))])
+    (define i (cdr p))
+    (list (car p) (sinfo-hash i) (unbox (sinfo-tier i))
+          (filter values
+                  (list (and (file-exists?
+                              (format "build/~a.plan" (sinfo-hash i)))
+                             'plan)
+                        (and (file-exists?
+                              (format "build/~a.O0.so" (sinfo-hash i)))
+                             'o0)
+                        (and (file-exists?
+                              (format "build/~a.so" (sinfo-hash i)))
+                             'o2))))))
 
 ;; The count round (docs/incremental.md §8B.1-§8B.2, M0.4c): rebuild a
 ;; VERSION-LOCAL count state in scratch sidecars, audit its coverage, then
