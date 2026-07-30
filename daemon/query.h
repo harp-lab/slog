@@ -66,6 +66,12 @@ struct Literal
   std::string text;
 };
 
+// Probe-only literal resolution (query.cpp): true + the encoded word when
+// the value exists (inline scalars always do), false when the interner has
+// never seen it, and a typed Error for malformed text.  Shared with the R2
+// `uses` value-search verb so one resolution semantics serves both.
+bool resolve_literal(Database& db, const Literal& literal, u64& word);
+
 struct ScanFullPlan
 {
   u16 relation = 0;

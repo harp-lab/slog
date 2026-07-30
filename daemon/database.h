@@ -1730,6 +1730,23 @@ public:
     return n;
   }
 
+  // R2 `uses`: rows whose ANY storage column equals `word`, counted over
+  // one full index (each holds the complete tuple set).  0 when index-free.
+  u64 countWordUses(u64 word)
+  {
+    auto ord = getAnyIndex();
+    if (ord == 0) return 0;
+    Index** buckets = getIndex(*ord, false);
+    u64 n = 0;
+    for (u16 b = 0; b < bucket_count; ++b)
+      buckets[b]->forEach([&](const u64* t)
+      {
+        for (u16 c = 0; c < ord->size(); ++c)
+          if (t[c] == word) { ++n; break; }
+      });
+    return n;
+  }
+
   Index**& getIndex(const std::vector<u16>& ord, bool delta)
   {
     if (delta)
@@ -5926,6 +5943,32 @@ public:
     if (is_seq(v))    return "sequence";
     if (v == slog_lat_top) return "top";
     return "unknown";
+  }
+
+  // Cheap validation before describeValue renders a CLIENT-SUPPLIED word:
+  // an unrecognized encoding, a dead SID, or a struct id absent from its
+  // canonical store must refuse rather than trip the renderer's fatals.
+  // Interned string/collection/sequence ids are accepted as-is -- like
+  // every reader here, we trust ids this evaluation itself handed out
+  // (the REPL's handle table only holds words from our own cell records).
+  bool canDescribeWord(u64 v)
+  {
+    if (std::string("unknown") == valueKind(v)) return false;
+    if (is_struct(v))
+    {
+      const u32 sid = (u32)decode_struct_id(v);
+      TypeDescriptor* descriptor = getTypeDescriptorBySid(sid);
+      if (descriptor == nullptr || descriptor->canonical_relation == nullptr)
+        return false;
+      Relation* rel = descriptor->canonical_relation;
+      const std::vector<u16>& ord = rel->getLookupIndex();
+      if (!rel->hasIndex(ord, false)) return false;
+      Index* node = rel->getIndex(ord, false)[buckethash(v)];
+      bool found = false;
+      node->forEach([&](const u64* t) { if (t[0] == v) found = true; });
+      return found;
+    }
+    return true;
   }
 
   std::string describeValue(u64 v, const std::string& boundary_key = "",

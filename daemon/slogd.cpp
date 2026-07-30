@@ -1712,6 +1712,139 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
         return;
     }
 
+    // ---- R2 deep value view ---------------------------------------------
+    //
+    //   (describe-value WORD [(depth N)])
+    //
+    // Re-render one evaluation-local value word as a cell record, the text
+    // cut at the requested preview depth (omitted = unbudgeted).  This is
+    // how a client iterates deeper into a value whose earlier preview was
+    // cut: the word never changes, only how much text is materialized.
+    // The word must be one this evaluation handed out; unrecognized words
+    // and dead struct ids refuse as value-lookup.
+    if (verb == "describe-value")
+    {
+        u64 word = 0;
+        if ((argc != 1 && argc != 2)
+            || !parse_u64_atom(form.children[1], word))
+        {
+            refuse(d, "parse", "(verb describe-value) (detail \"expected "
+                   "(describe-value WORD [(depth N)])\")");
+            return;
+        }
+        u32 depth = 0;
+        if (argc == 2
+            && !parse_query_depth(d, verb, form.children[2], depth))
+            return;
+        if (!d->db()->canDescribeWord(word))
+        {
+            refuse(d, "value-lookup", "(verb describe-value) (word "
+                   + std::to_string(word) + ")");
+            return;
+        }
+        d->emit(d->db()->describeValue(
+            word, d->db()->currentBoundaryKey(), depth));
+        return;
+    }
+
+    // ---- R2 value search -------------------------------------------------
+    //
+    //   (uses (word W))
+    //   (uses (string "TEXT")) | (uses (integer "42")) | (uses (real "2.5"))
+    //
+    // Which relations contain this value?  A word is one this evaluation
+    // handed out (validated like describe-value); a typed literal resolves
+    // probe-only, so a value the interner has never seen honestly appears
+    // nowhere.  The scan walks each latest non-temporary relation's master
+    // index once, counting rows with the word in ANY column: one
+    // (uses-rel ...) per nonzero relation, name-sorted, then
+    // (uses-end (relations N) (rows TOTAL)).
+    if (verb == "uses")
+    {
+        using slog::protocol::quoteString;
+        u64 word = 0;
+        bool resolved = false;
+        const slog::sexp::SExp* spec =
+            argc == 1 && form.children[1].kind == slog::sexp::SExp::K::list
+                && form.children[1].children.size() == 2
+                && form.children[1].children[0].kind
+                       == slog::sexp::SExp::K::atom
+            ? &form.children[1] : nullptr;
+        const std::string kind = spec ? spec->children[0].text : "";
+        if (spec != nullptr && kind == "word")
+        {
+            if (!parse_u64_atom(spec->children[1], word)) spec = nullptr;
+            else if (!d->db()->canDescribeWord(word))
+            {
+                refuse(d, "value-lookup", "(verb uses) (word "
+                       + std::to_string(word) + ")");
+                return;
+            }
+            else resolved = true;
+        }
+        else if (spec != nullptr
+                 && (kind == "string" || kind == "integer" || kind == "real"))
+        {
+            if (spec->children[1].kind != slog::sexp::SExp::K::string)
+                spec = nullptr;
+            else
+            {
+                slog::query::Literal literal;
+                literal.kind = kind == "string"  ? slog::query::LiteralK::string
+                             : kind == "integer" ? slog::query::LiteralK::integer
+                                                 : slog::query::LiteralK::real;
+                literal.text = spec->children[1].text;
+                try
+                {
+                    resolved = slog::query::resolve_literal(
+                        *d->db(), literal, word);
+                }
+                catch (const slog::query::Error& exception)
+                {
+                    refuse(d, slog::query::error_class(exception.kind()),
+                           "(verb uses) (detail "
+                           + quoteString(exception.what()) + ")");
+                    return;
+                }
+            }
+        }
+        else spec = nullptr;
+        if (spec == nullptr)
+        {
+            refuse(d, "parse", "(verb uses) (detail \"expected (uses (word W)"
+                   " | (string \\\"...\\\") | (integer \\\"...\\\")"
+                   " | (real \\\"...\\\"))\")");
+            return;
+        }
+        u64 total = 0, nrels = 0;
+        if (resolved)
+        {
+            std::map<std::string, slog::Relation*> sorted(
+                d->db()->getRelations().begin(),
+                d->db()->getRelations().end());
+            for (auto& kv : sorted)
+            {
+                slog::Relation* r = kv.second;
+                // compiler-reserved $... machinery (stats, supplementary
+                // relations) is execution metadata, not user data
+                if (r == nullptr || r->isCompilerTemporary()
+                    || kv.first.find('$') != std::string::npos) continue;
+                const u64 count = r->countWordUses(word);
+                if (count == 0) continue;
+                d->emit("(uses-rel (name " + quoteString(kv.first)
+                        + ") (version-key "
+                        + (r->getVersionKey().empty()
+                             ? "#f" : quoteString(r->getVersionKey()))
+                        + ") (count " + std::to_string(count) + "))");
+                ++nrels;
+                total += count;
+            }
+        }
+        d->emit("(uses-end (relations " + std::to_string(nrels)
+                + ") (rows " + std::to_string(total) + "))");
+        return;
+    }
+
     // ---- level-0 watches (repl.md §6) ----------------------------------
     //
     //   (watch (id "w1") (version-key "v1:...") [(tuple V ...)])

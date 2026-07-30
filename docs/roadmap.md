@@ -1338,8 +1338,59 @@ Gates: unit 406 (resolver/readtable/preload-wire cases); protocol
 minted `#1` back in, both as a ground existence query and through an eq
 guard that re-yields its row; Rust suites green; session battery at slice
 end. NOTE an intermittent protocol-battery flake (~1-in-4 runs, one
-unnamed check, self-heals on rerun) predating nothing in particular —
-run logs are now kept so the next occurrence names it.
+unnamed check, self-heals on rerun) — RESOLVED in slice (d): it was
+`run-replay-setup` scraping stratum .so paths from a fixture run log that
+T3a's cold start can complete interpreted; the fixture is now pinned
+`SLOG_OPT=0`. Any test scraping .so paths from a run log must pin the
+regime.
+
+**Checkpoint (2026-07-28; R2 slice (d) — `show #N` iterates deeper).**
+Ratified: `show` always gives a deeper view than the handle has, so
+iterating it pulls in an arbitrary tree one preview-depth step at a time.
+The daemon gains the read-only `(describe-value WORD [(depth N)])` verb —
+re-render one evaluation-local word as a bare cell record;
+`canDescribeWord` refuses unrecognized encodings, dead SIDs, and absent
+struct instances as `value-lookup` instead of tripping the renderer's
+fatals (interned ids are trusted exactly as every other reader trusts
+them: the handle table only holds words this evaluation emitted). Handles
+now record the depth their stored text was rendered at (#f = complete);
+minting the same word deeper upgrades the stored cell in place, `show #N`
+re-describes at stored+4 and keeps the cut/complete state, a completed
+text skips the daemon round trip, and a still-cut preview prints a
+dig-further hint.
+
+Same slice, **watches at the prompt** (the R2 query-watch item over the
+07-27 level-0 daemon substrate). `watch REL` binds a daemon watch to the
+relation's exact current VersionKey and the REPL keeps the INTENT: at
+every semantic barrier it rebinds against successor keys (noting rebinds,
+suspending on drops — the daemon never follows names). `watch ?QUERY` is
+the client-side re-run: the query re-counts at each barrier and the delta
+reports. Both speak through the change summary — in-run hits arrive as
+watch-cause pause records in the captured event stream (the driver
+auto-continues them) and aggregate to ONE heartbeat line per watch
+("watch w1: 13 hits, last at ..._maint1 iter 12"), never a ledger of
+every round. `watches` lists intents; `unwatch wN` removes one.
+Deliberately deferred: interactive pause-on-hit (`break`, the paused
+prompt, paused-mode queries) is R4's debugger surface, and registration
+against PREPARED keys (so a watch fires inside the run that creates the
+successor version) needs a session.rkt prepare-hook — today a relation
+watch fires on in-place propagation (flushes, maintenance epochs), which
+is exactly the joint battery's item 4.
+
+Same slice, the other ratified daemon verb: **value search**. `(uses
+(word W))` / `(uses (string|integer|real "TEXT"))` walks every latest
+non-temporary relation's master index once and reports nonzero counts of
+rows containing the value in any column — `(uses-rel (name ..)
+(version-key ..) (count ..))` records, name-sorted, then `(uses-end
+(relations N) (rows TOTAL))`. Typed literals share Q1's probe-only
+`resolve_literal` (now declared in query.h), so a value the interner has
+never seen honestly appears nowhere; words validate like
+`describe-value`. The REPL's `uses #N | uses VALUE` (alias `find`)
+renders the dream-session line: relation counts plus a total. Also fixed
+here: the protocol battery's intermittent `run-replay-setup` flake —
+section 8 scrapes stratum .so paths from a fixture run log that T3a's
+tiered cold start can complete interpreted on a cold cache; the fixture
+run is now pinned `SLOG_OPT=0`, verified cold 136/136.
 
 ### 4.3 Why the fork is safe
 

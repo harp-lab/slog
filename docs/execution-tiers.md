@@ -656,6 +656,16 @@ ordinary boundary-aware rendering cut at the request's render depth: an
 optional `(depth N)` field (1..4096) on `query`/`query-page` budgets value
 nesting, a cut subtree prints as `...`, and the client keeps the cell's
 word to ask again deeper. Omitting depth renders unbudgeted (dumps).
+Asking deeper is `(describe-value WORD [(depth N)])` — a read-only command
+verb that re-renders one evaluation-local word as a bare cell record;
+unrecognized words and dead struct ids refuse as `value-lookup`. The
+REPL's `show #N` iterates it: each call deepens the handle's stored
+preview by one depth step until the text completes. Value search is
+`(uses (word W) | (string|integer|real "TEXT"))` — probe-resolve one
+value, walk every latest user relation's master index, and report the
+nonzero per-relation counts of rows containing it in any column
+(`uses-rel` records, then `(uses-end (relations N) (rows TOTAL))`); the
+REPL's `uses`/`find` verbs render it.
 
 ### 6.2 Read-only discipline
 

@@ -469,6 +469,11 @@ if racket tests/api/drive.rkt "${QUERY_SETUP[@]}" "${QUERY_BUILDER[@]}" \
   '(query-cancel absent)' \
   "(query qdeep $QUERY_ROWS_PLAN (page 10) (depth 1))" \
   "(query baddepth $QUERY_ROWS_PLAN (page 1) (depth 0))" \
+  '(describe-value 9218868471587143682)' \
+  '(describe-value)' \
+  '(uses (word 9218868471587143682))' \
+  '(uses (string "not-in-heap"))' \
+  '(uses (frob 1))' \
   "(query q5 $QUERY_ROWS_PLAN (page 1))" \
   > out/proto-query.log 2>&1; then
   ok "query-eof-releases-lease"
@@ -486,6 +491,26 @@ expect_rx "query-cells-shape" \
   out/proto-query.log
 expect_rx "query-depth-refusal" \
   '\(refused parse 1 \(verb query\) \(detail "expected \(depth N\) with N in 1\.\.4096"\)\)' \
+  out/proto-query.log
+# R2 deep view: (describe-value WORD [(depth N)]) re-renders one
+# evaluation-local word as a bare cell record (line-anchored: query rows
+# embed the same cell inside (query-row ...)).
+expect_rx "describe-value-cell" \
+  '^\(cell \(word 9218868471587143682\) \(kind int\) \(sid #f\) \(type-key #f\) \(text "2"\)\)' \
+  out/proto-query.log
+expect_rx "describe-value-parse" \
+  '\(refused parse 1 \(verb describe-value\) \(detail "expected \(describe-value WORD \[\(depth N\)\]\)"\)\)' \
+  out/proto-query.log
+# R2 value search: (uses SPEC) walks every latest user relation's master
+# index for one probe-resolved value; a probe miss appears nowhere.
+expect_rx "uses-known-value" \
+  '\(uses-rel \(name "edge"\) \(version-key "protocol.edge"\) \(count [1-9][0-9]*\)\)' \
+  out/proto-query.log
+expect_rx "uses-probe-miss" \
+  '\(uses-end \(relations 0\) \(rows 0\)\)' \
+  out/proto-query.log
+expect_rx "uses-parse" \
+  '\(refused parse 1 \(verb uses\)' \
   out/proto-query.log
 expect_rx "query-active-admission" \
   '\(refused query-admission 1 \(verb query\) \(query q3\) \(active q2\)\)' \
@@ -700,7 +725,11 @@ expect_not "catalog-bad-no-stream" '(catalog-end' out/proto-catbad.log
 # records exactly as a client must -- datum read + keyed fields, no string
 # splitting (tests/api/catalog-check.rkt), including the pinned #f fields.
 rm -rf data/protocoldb
-if timeout 600 racket compiler/run.rkt --no-banner --out-db protocoldb \
+# SLOG_OPT=0 pins the eager -O0 path: under the default tiered regime T3a
+# cold-starts interpreted, so on a cold .so cache the log can complete
+# without ever naming a stratum .so -- and section 8 below scrapes those
+# paths from this log (the run-replay-setup flake, diagnosed 2026-07-28).
+if SLOG_OPT=0 timeout 600 racket compiler/run.rkt --no-banner --out-db protocoldb \
      tests/api/structdb.slog > out/proto-fixture.log 2>&1; then
   OPEN_SO=$(racket -e '(require (file "'"$PWD"'/compiler/actions.rkt")) (displayln (action-so (list (quote open) "protocoldb")))' 2>/dev/null)
   racket tests/api/drive.rkt "$OPEN_SO" "(catalog)" "(catalog types)" \

@@ -36,7 +36,10 @@
                               ;; the held Q1 cursor (query-cursor) or #f;
                               ;; `more` pulls it, `cancel` or any command
                               ;; that needs the daemon discards it
-                              [cursor #:mutable])
+                              [cursor #:mutable]
+                              ;; id -> watch-intent: what the user asked to
+                              ;; observe, settled at every semantic barrier
+                              watches)
   #:transparent)
 
 ;; One Racket REPL connection can own several independent compiler sessions.
@@ -131,7 +134,8 @@
    'mutable
    #f
    #f
-   #f))
+   #f
+   (make-hash)))
 
 (define (current-repl-session state)
   (and (server-state-current state)
@@ -218,6 +222,10 @@
    "  ?count ?exists      the same query without materializing rows"
    "  more | cancel       pull or discard the held query cursor"
    "  dump ?QUERY to F    stream every answer row into a CSV file"
+   "  uses #N | VALUE     which relations contain a value (`find` = alias)"
+   "  watch REL | ?QUERY  observe a relation (daemon barrier hits) or a"
+   "                      query count; reports ride each change summary"
+   "  unwatch wN          remove one watch;  `watches` lists them"
    "  explain ?QUERY      show the query plan and degradations, do not run"
    "  catalog             show the selected boundary, history, and types"
    "  schema              show the daemon's raw live schema"
@@ -289,7 +297,9 @@
 ;; as some unrelated live value rather than as an error.
 
 (struct value-cell (word kind sid type-key text) #:transparent)
-(struct value-handle (label evaluation database cell) #:transparent)
+;; depth = the preview depth the stored cell's text was rendered at, or #f
+;; when the text is complete; `show #N` deepens it in place.
+(struct value-handle (label evaluation database cell depth) #:transparent)
 
 (define (datum->value-cell datum)
   (match datum
@@ -325,7 +335,11 @@
     (set-repl-session-evaluation! rs (session-evaluation s)))
   rs)
 
-(define (mint-value-handle! state cell)
+;; depth: the preview depth `cell` was rendered at (#f = complete text).
+;; One word mints once; re-sighting the same word with a DEEPER rendering
+;; upgrades the stored cell in place, so a handle never regresses to a
+;; shallower preview than the user has already been shown.
+(define (mint-value-handle! state cell #:depth [depth #f])
   (define rs (current-repl-session state))
   (and rs
        (let* ([handles (server-state-handles state)]
@@ -336,15 +350,23 @@
                                        (= (value-cell-word
                                            (value-handle-cell handle))
                                           (value-cell-word cell))))
-                 label)])
-         (or existing
-             (let ([label (format "#~a" (add1 (hash-count handles)))])
-               (hash-set! handles label
-                          (value-handle label
-                                        (repl-session-evaluation rs)
-                                        (repl-session-database rs)
-                                        cell))
-               label)))))
+                 handle)])
+         (cond
+           [existing
+            (define stored (value-handle-depth existing))
+            (when (and stored (or (not depth) (> depth stored)))
+              (hash-set! handles (value-handle-label existing)
+                         (struct-copy value-handle existing
+                           [cell cell] [depth depth])))
+            (value-handle-label existing)]
+           [else
+            (define label (format "#~a" (add1 (hash-count handles))))
+            (hash-set! handles label
+                       (value-handle label
+                                     (repl-session-evaluation rs)
+                                     (repl-session-database rs)
+                                     cell depth))
+            label]))))
 
 ;; The live sid -> TypeKey binding, from N3-C's independent registry.  A
 ;; struct handle records the DURABLE TypeKey beside the runtime sid, so a sid
@@ -753,9 +775,38 @@
      (match-define (list* rel options) (read-command-data 'show argument))
      (show-relation-rows state (relation-key rel) options)]))
 
-;; `show #N` re-renders one value handle instead of a relation.
+(define (preview-cut? text) (regexp-match? #px"\\.\\.\\." text))
+
+;; `show #N` always gives a DEEPER view than the handle has (ratified
+;; 2026-07-28): each call re-describes the word another preview-depth's
+;; worth of levels down, so iterating `show` pulls in an arbitrary tree.
+;; A handle whose text is already complete skips the daemon round trip.
 (define (show-value-handle state label)
-  (define cell (value-handle-cell (resolve-value-handle state label)))
+  (define rs (ensure-session-record! state))
+  (define handle (resolve-value-handle state label))
+  (define stored-depth (value-handle-depth handle))
+  (define cell
+    (cond
+      [(or (not stored-depth) (not (repl-session-session rs)))
+       (value-handle-cell handle)]
+      [else
+       (define next-depth (+ stored-depth query-preview-depth))
+       (define reply
+         (session-command-stream!
+          (repl-session-session rs)
+          `(describe-value ,(value-cell-word (value-handle-cell handle))
+                           (depth ,next-depth))
+          (lambda (line) #t)))
+       (define deeper (datum->value-cell (read-datum (first reply))))
+       (hash-set! (server-state-handles state) label
+                  (struct-copy value-handle handle
+                    [cell deeper]
+                    [depth (and (preview-cut? (value-cell-text deeper))
+                                next-depth)]))
+       deeper]))
+  (define cut? (and (value-handle-depth
+                     (hash-ref (server-state-handles state) label))
+                    (preview-cut? (value-cell-text cell))))
   (hash-set*
    (text-result
     (format "Value · ~a" label)
@@ -764,6 +815,10 @@
            (format "kind: ~a" (value-cell-kind cell)))
      (if (value-cell-type-key cell)
          (list (format "type: ~a" (value-cell-type-key cell)))
+         '())
+     (if cut?
+         (list (format "… deeper levels remain — `show ~a` digs further"
+                       label))
          '()))
     #:kind "value")
    'handle label
@@ -1047,7 +1102,9 @@
 ;; checked #N handle -- the daemon cut the preview at the requested depth,
 ;; and the handle is how the user asks for more; scalars render bare.
 (define (query-cell-display state cell)
-  (define handle (and (handle-worthy? cell) (mint-value-handle! state cell)))
+  (define handle (and (handle-worthy? cell)
+                      (mint-value-handle! state cell
+                                          #:depth query-preview-depth)))
   (if handle
       (format "~a ~a" (value-cell-text cell) handle)
       (value-cell-text cell)))
@@ -1239,6 +1296,275 @@
                   #:kind "dump")]
     [_ (error 'dump "expected: dump ?QUERY to PATH.csv")]))
 
+;; `uses #N` / `uses VALUE` / `find VALUE`: which relations contain one
+;; concrete value?  A handle names its word directly; a typed literal is
+;; probe-resolved by the daemon, so a value absent from the interner
+;; honestly appears nowhere.  The daemon walks every latest user relation's
+;; master index once and reports the nonzero counts.
+(define (uses-result state argument)
+  (define text (string-trim argument))
+  (when (string=? text "")
+    (error 'uses "expected: uses #N | uses VALUE (int, float, or string)"))
+  (define spec
+    (cond
+      [(regexp-match? #px"^#[0-9]+$" text)
+       (define cell (value-handle-cell (resolve-value-handle state text)))
+       `(word ,(value-cell-word cell))]
+      [else
+       (match (read-datum text)
+         [(? string? s) `(string ,s)]
+         [(? exact-integer? n) `(integer ,(number->string n))]
+         [(and (? real?) (? inexact? n)) `(real ,(number->string n))]
+         [_ (error 'uses
+                   "expected: uses #N | uses VALUE (int, float, or string)")])]))
+  (define s (ensure-session! state))
+  (define lines
+    (session-command-stream!
+     s `(uses ,spec)
+     (lambda (line) (regexp-match? #px"^\\(uses-end " line))))
+  (define rels
+    (for/list ([line (in-list lines)]
+               #:do [(define datum (read-datum line))]
+               #:when (match datum [`(uses-rel ,_ ...) #t] [_ #f]))
+      (match datum
+        [`(uses-rel (name ,name) (version-key ,key) (count ,count))
+         (list name key count)])))
+  (define-values (total-rels total-rows)
+    (match (read-datum (last lines))
+      [`(uses-end (relations ,n) (rows ,rows)) (values n rows)]
+      [other (error 'uses "unexpected reply: ~a" other)]))
+  (hash-set*
+   (text-result
+    (format "Uses · ~a" text)
+    (if (null? rels)
+        (list "no relation contains this value")
+        (append
+         (for/list ([rel (in-list rels)])
+           (format "~a — ~a row~a" (first rel) (third rel)
+                   (if (= (third rel) 1) "" "s")))
+         (list (format "~a row~a across ~a relation~a"
+                       total-rows (if (= total-rows 1) "" "s")
+                       total-rels (if (= total-rels 1) "" "s")))))
+    #:kind "query")
+   'uses-value text
+   'uses-relations
+   (for/list ([rel (in-list rels)])
+     (hasheq 'name (~a (first rel))
+             'version-key (~a (second rel))
+             'rows (third rel)))
+   'uses-rows total-rows))
+
+;; ---- watches at the prompt (R2 over the level-0 daemon substrate) ---------
+;;
+;; A RELATION intent holds a daemon watch against the relation's exact
+;; current VersionKey and re-registers against each successor (the daemon
+;; never follows names — repl.md §6); hits arrive as watch-cause pause
+;; records inside the run's own event stream.  A QUERY intent is
+;; client-side: re-count at every semantic barrier and report the delta
+;; (repl-ux §9.1).  Both report through the change summary, never by
+;; interrupting the command.
+
+(struct watch-intent
+  (id kind target [bound-key #:mutable] [last-count #:mutable])
+  #:transparent)
+
+(define (next-watch-id registry)
+  (let loop ([n (add1 (hash-count registry))])
+    (define id (format "w~a" n))
+    (if (hash-has-key? registry id) (loop (add1 n)) id)))
+
+(define (register-daemon-watch! s id key)
+  (session-command-stream! s `(watch (id ,id) (version-key ,key))
+                           (lambda (_line) #t)))
+
+(define (silent-unwatch! s id)
+  (with-handlers ([exn:fail? void])
+    (session-command-stream! s `(unwatch (id ,id)) (lambda (_line) #t))))
+
+;; Coerce any query spelling to a count: a watch observes cardinality.
+(define (run-watch-query state rs text)
+  (define line
+    (parse-query-line text #:resolve-handle (query-handle-resolver state)))
+  (define request
+    (struct-copy query-request (query-line-request line)
+      [mode 'count] [project '()]))
+  (define s (repl-session-session rs))
+  (define catalog (query-catalog-from-boundary (query-boundary-snapshot s)))
+  (define plan (plan-query catalog request))
+  (define-values (_exact? matched)
+    (query-run-aggregate! s (query-plan->wire-string plan)))
+  matched)
+
+(define (watch-result state argument)
+  (define text (string-trim argument))
+  (when (string=? text "")
+    (error 'watch "expected: watch REL | watch ?QUERY"))
+  (define rs (ensure-session-record! state))
+  (define registry (repl-session-watches rs))
+  (define id (next-watch-id registry))
+  (cond
+    [(string-prefix? text "?")
+     (define count (run-watch-query state rs text))
+     (hash-set! registry id (watch-intent id 'query text #f count))
+     (text-result
+      (format "Watch ~a" id)
+      (list (format "~a — ~a row~a now; changes report at each boundary"
+                    text count (if (= count 1) "" "s")))
+      #:kind "watch")]
+    [else
+     (define s (repl-session-session rs))
+     (define relation (relation-from-catalog 'watch (live-catalog s) text))
+     (define key (relation-info-version-key relation))
+     (unless (string? key)
+       (error 'watch "~a has no VersionKey yet; run a program first" text))
+     (register-daemon-watch! s id key)
+     (hash-set! registry id (watch-intent id 'relation text key #f))
+     (text-result
+      (format "Watch ~a" id)
+      (list (format "~a @ ~a — hits report at coherent barriers" text key))
+      #:kind "watch")]))
+
+(define (unwatch-result state argument)
+  (define id (string-trim argument))
+  (define rs (ensure-session-record! state))
+  (define registry (repl-session-watches rs))
+  (define intent (hash-ref registry id #f))
+  (unless intent
+    (error 'unwatch "no watch named ~a; `watches` lists them" id))
+  (when (and (eq? (watch-intent-kind intent) 'relation)
+             (watch-intent-bound-key intent))
+    (silent-unwatch! (repl-session-session rs) id))
+  (hash-remove! registry id)
+  (text-result (format "Watch ~a" id)
+               (list (format "removed (~a)" (watch-intent-target intent)))
+               #:kind "watch"))
+
+(define (watches-result state)
+  (define rs (ensure-session-record! state))
+  (define registry (repl-session-watches rs))
+  (define intents
+    (sort (hash-values registry) string<? #:key watch-intent-id))
+  (text-result
+   "Watches"
+   (if (null? intents)
+       (list "none; `watch REL` or `watch ?QUERY` adds one")
+       (for/list ([intent (in-list intents)])
+         (match (watch-intent-kind intent)
+           ['relation
+            (format "~a  ~a @ ~a" (watch-intent-id intent)
+                    (watch-intent-target intent)
+                    (or (watch-intent-bound-key intent) "suspended"))]
+           ['query
+            (format "~a  ~a — ~a row~a at the last boundary"
+                    (watch-intent-id intent) (watch-intent-target intent)
+                    (watch-intent-last-count intent)
+                    (if (equal? (watch-intent-last-count intent) 1) "" "s"))])))
+   #:kind "watch"))
+
+;; In-run hits: the driver auto-continues watch-cause pauses, so the
+;; records are already in the captured event stream.  A propagating edit
+;; hits at EVERY iteration barrier it advances, so aggregate to one line
+;; per watch — the heartbeat states the count and the last barrier, not a
+;; ledger of every round.
+(define (watch-hit-notes events)
+  (define hits (make-hash))
+  (for ([line (in-list events)])
+    (match (read-datum line)
+      [`(paused ,fields ...)
+       (match (assq 'cause fields)
+         [(list _ `(watch ,cites ...))
+          (define site
+            (format "~a iter ~a"
+                    (match (assq 'stratum fields)
+                      [(list _ name) name] [_ "?"])
+                    (match (assq 'iteration fields)
+                      [(list _ n) n] [_ "?"])))
+          (for ([cite (in-list cites)])
+            (match cite
+              [`(watch-id ,id)
+               (hash-update! hits id
+                             (lambda (entry) (cons (add1 (car entry)) site))
+                             (cons 0 site))]))]
+         [_ (void)])]
+      [_ (void)]))
+  (for/list ([id (in-list (sort (hash-keys hits) string<?))])
+    (match-define (cons n site) (hash-ref hits id))
+    (if (= n 1)
+        (format "watch ~a: hit at ~a" id site)
+        (format "watch ~a: ~a hits, last at ~a" id n site))))
+
+(define (settle-relation-watches! rs)
+  (define s (repl-session-session rs))
+  (define intents
+    (for/list ([intent (in-hash-values (repl-session-watches rs))]
+               #:when (eq? (watch-intent-kind intent) 'relation))
+      intent))
+  (cond
+    [(null? intents) '()]
+    [else
+     (define catalog (live-catalog s))
+     (for/fold ([notes '()]) ([intent (in-list intents)])
+       (define info
+         (findf (lambda (r) (string=? (relation-info-name r)
+                                      (watch-intent-target intent)))
+                catalog))
+       (define new-key (and info (relation-info-version-key info)))
+       (define old-key (watch-intent-bound-key intent))
+       (cond
+         [(equal? new-key old-key) notes]
+         [(not (string? new-key))
+          (set-watch-intent-bound-key! intent #f)
+          (cons (format "watch ~a: ~a has no live binding; suspended"
+                        (watch-intent-id intent) (watch-intent-target intent))
+                notes)]
+         [else
+          ;; successor VersionKey: the old registration died with its
+          ;; version (or evaluation) — re-register, tolerating a stale id
+          (silent-unwatch! s (watch-intent-id intent))
+          (with-handlers
+              ([exn:fail?
+                (lambda (e)
+                  (set-watch-intent-bound-key! intent #f)
+                  (cons (format "watch ~a: could not rebind ~a"
+                                (watch-intent-id intent)
+                                (watch-intent-target intent))
+                        notes))])
+            (register-daemon-watch! s (watch-intent-id intent) new-key)
+            (set-watch-intent-bound-key! intent new-key)
+            (cons (format "watch ~a: rebound to ~a @ ~a"
+                          (watch-intent-id intent)
+                          (watch-intent-target intent) new-key)
+                  notes))]))]))
+
+(define (settle-query-watches! state rs)
+  (for/fold ([notes '()])
+            ([intent (in-hash-values (repl-session-watches rs))]
+             #:when (eq? (watch-intent-kind intent) 'query))
+    (with-handlers
+        ([exn:fail?
+          (lambda (e)
+            (cons (format "watch ~a: query no longer plans (~a)"
+                          (watch-intent-id intent)
+                          (exn-message e))
+                  notes))])
+      (define count (run-watch-query state rs (watch-intent-target intent)))
+      (define before (watch-intent-last-count intent))
+      (set-watch-intent-last-count! intent count)
+      (if (equal? before count)
+          notes
+          (cons (format "watch ~a: ~a — ~a -> ~a (~a)"
+                        (watch-intent-id intent) (watch-intent-target intent)
+                        before count (signed-count (- count before)))
+                notes)))))
+
+;; The barrier hook: report, rebind, re-count.  Returns summary note lines.
+(define (settle-watches! state rs events)
+  (if (zero? (hash-count (repl-session-watches rs)))
+      '()
+      (append (watch-hit-notes events)
+              (reverse (settle-relation-watches! rs))
+              (reverse (settle-query-watches! state rs)))))
+
 ;; `explain ?...` plans without executing: the chosen driver, the join
 ;; schedule, and every degradation the planner had to accept.
 (define (explain-result state argument)
@@ -1329,10 +1655,17 @@
   (define before (catalog-size-snapshot s))
   (define-values (value events) (capture-session-events state thunk))
   (define after (catalog-size-snapshot s))
+  (define change
+    (make-change s operation (or (repl-session-database rs) "scratch")
+                 status requested events before after))
+  ;; watches settle after the event: in-run hits from the captured stream,
+  ;; relation intents rebound to successor keys, query intents re-counted
+  (define watch-notes (settle-watches! state rs events))
   (values value
           events
-          (make-change s operation (or (repl-session-database rs) "scratch")
-                       status requested events before after)))
+          (if (null? watch-notes)
+              change
+              (hash-set change 'watches watch-notes))))
 
 (define (change-relation-line record)
   (define name (hash-ref record 'relation))
@@ -1388,7 +1721,9 @@
                  (for/list ([record (in-list routes)])
                    (string-join
                     (cons (hash-ref record 'kind) (hash-ref record 'detail)) " "))
-                 "; "))))))
+                 "; "))))
+   ;; the operator's heartbeat: watch hits, rebinds, and query deltas
+   (hash-ref change 'watches '())))
 
 (define (semantic-text-result title lines change #:kind kind)
   (text-result title (append lines (change-summary-lines change))
@@ -1593,6 +1928,10 @@
     ["more" (more-result state)]
     ["cancel" (cancel-result state)]
     ["dump" (dump-result state argument)]
+    [(or "uses" "find") (uses-result state argument)]
+    ["watch" (watch-result state argument)]
+    ["unwatch" (unwatch-result state argument)]
+    ["watches" (watches-result state)]
     ["run"
      (when (string=? argument "")
        (error 'run "expected: run PATH"))
@@ -2085,7 +2424,7 @@
     (check-exn exn:fail? (lambda () (datum->value-cell '(cell (word 1)))))
 
     (define state (server-state (make-hash) "alpha" #f #f (make-hash)))
-    (define rs (repl-session #f "alpha" 'mutable #f "eval-1" #f))
+    (define rs (repl-session #f "alpha" 'mutable #f "eval-1" #f (make-hash)))
     (hash-set! (server-state-sessions state) "alpha" rs)
     (define label (mint-value-handle! state cell))
     (check-equal? label "#1")
@@ -2102,7 +2441,7 @@
                (lambda () (resolve-value-handle state label)))
     ;; ... and one from another database is refused outright
     (set-repl-session-evaluation! rs "eval-1")
-    (define other (repl-session #f "beta" 'mutable #f "eval-1" #f))
+    (define other (repl-session #f "beta" 'mutable #f "eval-1" #f (make-hash)))
     (hash-set! (server-state-sessions state) "beta" other)
     (set-server-state-current! state "beta")
     (check-exn #px"cannot be resolved in beta"
@@ -2150,7 +2489,7 @@
   (define mode-state (server-state (make-hash) #f #f #f (make-hash)))
   (hash-set! (server-state-sessions mode-state)
              "alpha"
-             (repl-session #f "alpha" 'readonly #f #f #f))
+             (repl-session #f "alpha" 'readonly #f #f #f (make-hash)))
   (set-server-state-current! mode-state "alpha")
   (check-true
    (regexp-match?
@@ -2266,7 +2605,16 @@
                    "show #1"
                    "?(deep #1)"
                    "? (deep D) (= D #1) -> (D)"
+                   "uses 12"
+                   "uses #1"
+                   "find \"nope\""
                    "dump ?(path X Y) to out/repl-qdump.csv"
+                   "watch path"
+                   "watch ?count (path X Y)"
+                   "add edge 12 1"
+                   "watches"
+                   "unwatch w1"
+                   "watches"
                    ":quit")))])
     ;; page one holds the cursor; `more` finishes it; a third `more` refuses
     (check-regexp-match
@@ -2283,15 +2631,47 @@
     (check-regexp-match
      #px"1  \\(deep \\(l5 \\(l4 \\(l3 \\(l2 \\.\\.\\.\\)\\)\\)\\) #1\\)"
      transcript)
-    (check-regexp-match #px"◆ Value · #1" transcript)
+    ;; `show #1` deepens past the query's cut: one more preview-depth step
+    ;; reaches the leaf, and the completed text drops the dig-further hint
+    (check-regexp-match
+     #px"◆ Value · #1\n  \\(l5 \\(l4 \\(l3 \\(l2 \\(l1 7\\)\\)\\)\\)\\)"
+     transcript)
+    (check-false (regexp-match? #px"digs further" transcript))
     ;; #1 splices back into queries as a preloaded word: ground existence
     ;; through the struct value, and an eq guard that re-yields its row
     (check-regexp-match #px"◆ Query exists\n  yes" transcript)
     (check-regexp-match #px"◆ Query · \\(D\\)\n  1 row" transcript)
+    ;; uses/find walk every user relation's master index for one value:
+    ;; a scalar by typed literal, a struct by its handle's word, and a
+    ;; probe-miss honestly appears nowhere
+    (check-regexp-match
+     #px"◆ Uses · 12\n  edge — 1 row\n  path — 11 rows\n  12 rows across 2 relations"
+     transcript)
+    (check-regexp-match
+     #px"◆ Uses · #1\n  deep — 1 row\n  l5 — 1 row\n  2 rows across 2 relations"
+     transcript)
+    (check-regexp-match
+     #px"◆ Uses · \"nope\"\n  no relation contains this value" transcript)
     ;; dump pulled every page and wrote header + 66 rows
     (check-regexp-match #px"wrote 66 rows to out/repl-qdump\\.csv" transcript)
     (define dump-file
       (build-path repository-root dump-path))
     (check-true (file-exists? dump-file))
     (check-equal? (length (file->lines dump-file)) 67)
-    (delete-file dump-file)))
+    (delete-file dump-file)
+    ;; watches: registration echoes the exact bound VersionKey; closing the
+    ;; 12-cycle fires the relation watch at every propagation barrier
+    ;; (aggregated to one heartbeat line) and moves the query count 66->144
+    (check-regexp-match #px"◆ Watch w1\n  path @ v1:" transcript)
+    (check-regexp-match
+     #px"◆ Watch w2\n  \\?count \\(path X Y\\) — 66 rows now" transcript)
+    (check-regexp-match
+     #px"watch w1: [0-9]+ hits, last at [0-9a-f]+_maint1 iter 12" transcript)
+    (check-regexp-match
+     #px"watch w2: \\?count \\(path X Y\\) — 66 -> 144 \\(\\+78\\)" transcript)
+    (check-regexp-match
+     #px"◆ Watches\n  w1  path @ v1:[^\n]*\n  w2  \\?count \\(path X Y\\) — 144 rows"
+     transcript)
+    ;; unwatch removes the daemon registration and the intent
+    (check-regexp-match #px"◆ Watch w1\n  removed \\(path\\)" transcript)
+    (check-regexp-match #px"◆ Watches\n  w2  \\?count" transcript)))

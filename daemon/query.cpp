@@ -282,6 +282,10 @@ std::unique_ptr<DriverCursor> scan_driver_ladder(
   }
 }
 
+}  // pause the internal-linkage helpers: resolve_literal is declared in
+   // query.h (shared with the R2 `uses` verb), so it must define the
+   // namespace-level symbol, not an anonymous-namespace twin.
+
 bool resolve_literal(Database& db, const Literal& literal, u64& word)
 {
   switch (literal.kind)
@@ -327,6 +331,9 @@ bool resolve_literal(Database& db, const Literal& literal, u64& word)
   }
   throw Error(ErrorK::literal, "query literal: unknown kind");
 }
+
+namespace
+{
 
 const char* mode_name(Mode mode)
 {
