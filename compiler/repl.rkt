@@ -39,7 +39,12 @@
                               [cursor #:mutable]
                               ;; id -> watch-intent: what the user asked to
                               ;; observe, settled at every semantic barrier
-                              watches)
+                              watches
+                              ;; path -> #t: files this session already wrote
+                              ;; via `keep scratch as F` -- re-keeping into
+                              ;; the same file is a workflow, so those paths
+                              ;; may be overwritten; unrelated files may not
+                              kept)
   #:transparent)
 
 ;; One Racket REPL connection can own several independent compiler sessions.
@@ -135,6 +140,7 @@
    #f
    #f
    #f
+   (make-hash)
    (make-hash)))
 
 (define (current-repl-session state)
@@ -233,6 +239,10 @@
    ""
    "Extend a mutable database"
    "  run PATH            compile and run a .slog program"
+   "  rule ...| table ... a Slog definition is a scratch fragment; it"
+   "                      compiles against the live schema and runs now"
+   "  scratch             show the scratch layer's accumulated program"
+   "  keep scratch as F   export the scratch layer to F and promote it"
    "  add REL V...        add one input tuple and propagate it"
    "  del REL V...        retract one input tuple and propagate it"
    "  rename FROM TO      rename one live relation without moving its data"
@@ -1851,11 +1861,121 @@
 
 ;; Commands that never touch the current session's daemon may run over a
 ;; held query cursor; anything else discards it first, because the daemon
+;; ---- R3: the scratch register (repl-ux.md §5.3) ----------------------------
+;;
+;; The third syntactic register: a line whose head token is a Slog
+;; definition keyword is a scratch definition.  One dispatched line is one
+;; program event (immediate-with-coalescing, §14.1: a multi-form paste that
+;; arrives as one command commits as one boundary), compiled against the
+;; live schema and interpreted immediately.
+(define scratch-definition-heads
+  '("rule" "table" "struct" "union" "enum" "lattice" "demand" "extern"
+    "def" "let"))
+;; Source-composition directives stay in files: scratch is a tip layer over
+;; this session, not a module system.
+(define scratch-directive-heads
+  '("include" "instantiate" "import" "export"))
+
+(define (line-head-token trimmed)
+  (match (regexp-match #px"^([a-zA-Z_][a-zA-Z0-9_-]*)" trimmed)
+    [(list _ head) head]
+    [_ #f]))
+
+(define (scratch-single-line text)
+  (string-join (filter (lambda (s) (not (string=? s "")))
+                       (map string-trim (string-split text "\n")))
+               " "))
+
+(define (scratch-register-result state source head)
+  (define rs (ensure-mutable-session-record! state 'scratch))
+  (define event (box #f))
+  (define-values (_ _events change)
+    (with-handlers
+        ;; the language rule is unchanged (a defined head takes an explicit
+        ;; declaration); the prompt just says how to satisfy it here
+        ([(lambda (e)
+            (and (exn:fail? e)
+                 (regexp-match? #px"Table ([^ ]+) in .+ is not defined"
+                                (exn-message e))))
+          (lambda (e)
+            (define name
+              (second (regexp-match #px"Table ([^ ]+) in .+ is not defined"
+                                    (exn-message e))))
+            (error 'scratch
+                   (format
+                    (string-append
+                     "~a — a relation the fragment defines needs its "
+                     "declaration in the same layer: `table (~a ...)` "
+                     "first (adoption only covers relations the database "
+                     "already holds)")
+                    (exn-message e) name)))])
+      (capture-semantic-change
+       state rs "scratch" "settled" '()
+       (lambda ()
+         (set-box! event
+                   (session-scratch-add! (repl-session-session rs) source))))))
+  (set-repl-session-changed?! rs #t)
+  (define n (scratch-event-n (unbox event)))
+  (define writes (scratch-event-writes (unbox event)))
+  (semantic-text-result
+   (format "Scratch ~a · ~a" n head)
+   (list (scratch-single-line source)
+         (format "fragment ~a joined the scratch layer~a"
+                 n
+                 (if (null? writes)
+                     ""
+                     (format " — writes ~a"
+                             (string-join (map ~a writes) ", ")))))
+   change
+   #:kind "scratch"))
+
+(define (scratch-show-result state)
+  (define s (ensure-session! state))
+  (define events (session-scratch-events s))
+  (text-result
+   "Scratch"
+   (if (null? events)
+       (list "the scratch layer is empty"
+             "type a Slog definition (`rule ...`, `table ...`) to start one")
+       (append
+        (for/list ([ev (in-list events)])
+          (format "~a  ~a" (scratch-event-n ev)
+                  (scratch-single-line (scratch-event-text ev))))
+        (list (format
+               "~a fragment~a · `keep scratch as FILE.slog` exports and promotes the layer"
+               (length events)
+               (if (= (length events) 1) "" "s")))))
+   #:kind "scratch"))
+
+(define (keep-scratch-result state argument)
+  (match (regexp-match #px"^scratch[[:space:]]+as[[:space:]]+(.+)$"
+                       (string-trim argument))
+    [(list _ dest0)
+     (define dest (string-trim dest0))
+     (define rs (ensure-mutable-session-record! state 'keep))
+     ;; re-keeping into a file this session already wrote is the iterate
+     ;; loop; clobbering an unrelated file is an accident the session layer
+     ;; refuses
+     (define count
+       (session-scratch-keep! (repl-session-session rs) dest
+                              #:overwrite?
+                              (and (hash-ref (repl-session-kept rs) dest #f)
+                                   #t)))
+     (hash-set! (repl-session-kept rs) dest #t)
+     (text-result
+      (format "Kept scratch as ~a" dest)
+      (list (format "~a fragment~a written and promoted to ordinary history"
+                    count (if (= count 1) "" "s"))
+            "the scratch layer is empty again; its events stay in the recipe")
+      #:kind "scratch")]
+    [_ (error 'keep "expected: keep scratch as FILE.slog")]))
+
 ;; refuses every non-query verb while its one cursor is live.  A new `?`
-;; query discards inside the register itself.
+;; query discards inside the register itself.  `scratch` and `keep` never
+;; touch the daemon, so a held cursor survives them.
 (define keep-cursor-verbs
   '(":help" "help" "?" ":ping" ":status" "library" "current" "resident"
-    "sessions" "mode" ":share" ":clear" "more" "cancel"))
+    "sessions" "mode" ":share" ":clear" "more" "cancel" "scratch" "keep"))
 
 (define (dispatch-command state source)
   (define trimmed (string-trim source))
@@ -1870,6 +1990,19 @@
     ;; raw line before verb splitting; bare `?` stays the help alias.
     [(and (string-prefix? trimmed "?") (not (string=? trimmed "?")))
      (query-register-result state trimmed)]
+    ;; R3: the scratch register -- a Slog definition keyword in line-head
+    ;; position routes the raw line (case-sensitive, like the language) to
+    ;; the scratch layer before verb dispatch sees it.
+    [(member (line-head-token trimmed) scratch-definition-heads)
+     (scratch-register-result state trimmed (line-head-token trimmed))]
+    [(member (line-head-token trimmed) scratch-directive-heads)
+     (error 'scratch
+            (format
+             (string-append
+              "~a is a source-composition directive; scratch takes "
+              "definitions (rule, table, struct, ...) -- put directives "
+              "in a file and `run` it")
+             (line-head-token trimmed)))]
     [(string-prefix? trimmed "(")
      (error 'command
             (format (string-append
@@ -1932,6 +2065,8 @@
     ["watch" (watch-result state argument)]
     ["unwatch" (unwatch-result state argument)]
     ["watches" (watches-result state)]
+    ["scratch" (scratch-show-result state)]
+    ["keep" (keep-scratch-result state argument)]
     ["run"
      (when (string=? argument "")
        (error 'run "expected: run PATH"))
@@ -2424,7 +2559,7 @@
     (check-exn exn:fail? (lambda () (datum->value-cell '(cell (word 1)))))
 
     (define state (server-state (make-hash) "alpha" #f #f (make-hash)))
-    (define rs (repl-session #f "alpha" 'mutable #f "eval-1" #f (make-hash)))
+    (define rs (repl-session #f "alpha" 'mutable #f "eval-1" #f (make-hash) (make-hash)))
     (hash-set! (server-state-sessions state) "alpha" rs)
     (define label (mint-value-handle! state cell))
     (check-equal? label "#1")
@@ -2441,7 +2576,7 @@
                (lambda () (resolve-value-handle state label)))
     ;; ... and one from another database is refused outright
     (set-repl-session-evaluation! rs "eval-1")
-    (define other (repl-session #f "beta" 'mutable #f "eval-1" #f (make-hash)))
+    (define other (repl-session #f "beta" 'mutable #f "eval-1" #f (make-hash) (make-hash)))
     (hash-set! (server-state-sessions state) "beta" other)
     (set-server-state-current! state "beta")
     (check-exn #px"cannot be resolved in beta"
@@ -2489,7 +2624,7 @@
   (define mode-state (server-state (make-hash) #f #f #f (make-hash)))
   (hash-set! (server-state-sessions mode-state)
              "alpha"
-             (repl-session #f "alpha" 'readonly #f #f #f (make-hash)))
+             (repl-session #f "alpha" 'readonly #f #f #f (make-hash) (make-hash)))
   (set-server-state-current! mode-state "alpha")
   (check-true
    (regexp-match?
@@ -2674,4 +2809,110 @@
      transcript)
     ;; unwatch removes the daemon registration and the intent
     (check-regexp-match #px"◆ Watch w1\n  removed \\(path\\)" transcript)
-    (check-regexp-match #px"◆ Watches\n  w2  \\?count" transcript)))
+    (check-regexp-match #px"◆ Watches\n  w2  \\?count" transcript))
+
+  ;; The scratch register (R3 slice a): Slog definitions typed at the prompt
+  ;; are immediate interp-only program events; a fragment ADOPTS the live
+  ;; schema it reads (the documented consumer convention, synthesized from
+  ;; the typed catalog) instead of re-declaring it; the layer accumulates,
+  ;; lists, keeps, and rides ordinary maintenance epochs.
+  (let* ([kept-path "out/repl-kept-views.slog"]
+         [transcript
+          (parameterize ([current-directory repository-root]
+                         [current-environment-variables test-environment])
+            (when (file-exists? kept-path) (delete-file kept-path))
+            (plain-transcript
+             (list "run tests/reach.slog"
+                   "scratch"
+                   "table (hop2 int int) rule (hop2 X Z) <-- (edge X Y) (edge Y Z)"
+                   "?(hop2 X Y)"
+                   ;; the second fragment adopts a SCRATCH relation
+                   "table (hop4 int int) rule (hop4 X Z) <-- (hop2 X Y) (hop2 Y Z)"
+                   ;; closing the 4-cycle propagates through the whole
+                   ;; scratch cone in one maintenance epoch
+                   "add edge 4 1"
+                   "?count (hop2 X Y)"
+                   "scratch"
+                   ;; an undeclared head refuses with the declare-it hint
+                   ;; and leaves the ledger untouched
+                   "rule (hop9 X Z) <-- (hop2 X Z)"
+                   ;; directives are refused with the file hint
+                   "include \"list.slog\""
+                   "keep scratch as out/repl-kept-views.slog"
+                   "scratch"
+                   "keep scratch as out/repl-kept-views.slog"
+                   ":quit")))])
+    ;; the empty layer explains itself
+    (check-regexp-match
+     #px"◆ Scratch\n  the scratch layer is empty" transcript)
+    ;; a fragment compiles against the live schema (edge adopted, never
+    ;; re-declared), runs interpreted now, and prints an ordinary summary
+    (check-regexp-match
+     #px"◆ Scratch 1 · table\n  table \\(hop2 int int\\) rule \\(hop2 X Z\\) <-- \\(edge X Y\\) \\(edge Y Z\\)\n  fragment 1 joined the scratch layer — writes hop2"
+     transcript)
+    (check-regexp-match #px"hop2 \\+2 \\(new -> 2\\)" transcript)
+    ;; queries observe scratch relations at the committed head, index order
+    (check-regexp-match #px"1  \\(hop2 2 4\\)\n  2  \\(hop2 1 3\\)" transcript)
+    ;; scratch-over-scratch adoption
+    (check-regexp-match
+     #px"fragment 2 joined the scratch layer — writes hop4" transcript)
+    ;; the edit's cone covers both scratch strata: hop2 2->4, hop4 0->4
+    (check-regexp-match #px"hop2 \\+2 \\(2 -> 4\\)" transcript)
+    (check-regexp-match #px"hop4 \\+4 \\(new -> 4|hop4 \\+4 \\(0 -> 4"
+                        transcript)
+    (check-regexp-match #px"◆ Query count\n  4 rows match" transcript)
+    ;; the layer lists its fragments in order
+    (check-regexp-match
+     #px"◆ Scratch\n  1  table \\(hop2 int int\\)[^\n]*\n  2  table \\(hop4 int int\\)[^\n]*\n  2 fragments"
+     transcript)
+    ;; an undeclared head names the fix at the prompt; the failed fragment
+    ;; never joined the layer (the later keep still writes 2 fragments)
+    (check-regexp-match
+     #px"declaration in the same layer: `table \\(hop9 \\.\\.\\.\\)`"
+     transcript)
+    ;; source-composition directives stay in files
+    (check-regexp-match
+     #px"include is a source-composition directive" transcript)
+    ;; keep exports the accumulated program and empties the layer;
+    ;; a second keep honestly refuses
+    (check-regexp-match
+     #px"◆ Kept scratch as out/repl-kept-views\\.slog\n  2 fragments written and promoted"
+     transcript)
+    (check-regexp-match #px"scratch is empty; nothing to keep" transcript)
+    (define kept-file (build-path repository-root kept-path))
+    (check-true (file-exists? kept-file))
+    (check-regexp-match
+     #px";; kept from a REPL scratch layer \\(2 fragments\\)\ntable \\(hop2 int int\\) rule \\(hop2 X Z\\) <-- \\(edge X Y\\) \\(edge Y Z\\)\ntable \\(hop4 int int\\) rule \\(hop4 X Z\\) <-- \\(hop2 X Y\\) \\(hop2 Y Z\\)"
+     (file->string kept-file))
+    (delete-file kept-file))
+
+  ;; Scratch adoption closes over named type dependencies: matching the
+  ;; 5-deep struct pulls l5..l1 along with `deep`; and a saved recipe whose
+  ;; tip holds scratch run steps REPLAYS (the segment path is a source-
+  ;; override key; adoption is on for replayed compiles).
+  (let ([transcript
+         (parameterize ([current-directory repository-root]
+                        [current-environment-variables test-environment])
+           (when (directory-exists? "data/r3_scratch_replay")
+             (delete-directory/files "data/r3_scratch_replay"))
+           (plain-transcript
+            (list "run tests/chain12.slog"
+                  "table (leaf int) rule (leaf N) <-- (deep (l5 (l4 (l3 (l2 (l1 N))))))"
+                  "?(leaf N)"
+                  "save r3_scratch_replay"
+                  "open r3_scratch_replay"
+                  "?(leaf N)"
+                  "add edge 12 1"
+                  "?count (path X Y)"
+                  ":quit")))])
+    (check-regexp-match
+     #px"fragment 1 joined the scratch layer — writes leaf" transcript)
+    ;; both the live and the replayed boundary yield the struct-matched leaf
+    (check-regexp-match
+     #px"◆ Query\n  1 row\n  1  \\(leaf 7\\)\n(?s:.*)Opened r3_scratch_replay(?s:.*)◆ Query\n  1 row\n  1  \\(leaf 7\\)"
+     transcript)
+    ;; the replayed database stays a live workbench: the edit propagates
+    (check-regexp-match #px"◆ Query count\n  144 rows match" transcript)
+    (parameterize ([current-directory repository-root])
+      (when (directory-exists? "data/r3_scratch_replay")
+        (delete-directory/files "data/r3_scratch_replay")))))

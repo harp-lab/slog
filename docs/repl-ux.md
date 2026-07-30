@@ -893,10 +893,23 @@ Slices, mapped to the T/Q phases (execution-tiers §11):
 
 ## 14. Open questions
 
-1. **Scratch commit granularity.** Run each completed scratch rule
-   immediately (live feel, more boundary churn) or stage until a `go`?
-   Leaning immediate-with-coalescing (rules typed within one paste commit
-   together).
+1. **Scratch commit granularity.** *Resolved 2026-07-29 (R3 slice a):*
+   immediate-with-coalescing at the command boundary — one dispatched
+   line/paste is one program event committing as one boundary, however many
+   toplevel forms it contains; separate lines are separate events.  Two
+   companions were pinned with it.  *Catalog adoption:* a scratch fragment
+   ADOPTS the live schema it reads — the compiler seeds the root type env
+   from the input catalog's declarations for used-but-undeclared names
+   (dependency-closed, so a struct match pulls its field chain), which is
+   tests/session/consumer.slog's declare-what-you-read convention
+   synthesized instead of typed; heads the fragment *defines* still take an
+   explicit `table`/`struct` declaration, exactly as in a file.  Adoption is
+   also on for every replayed recipe compile (a self-describing program's
+   adoption set is empty, so its plans recompute identically; a scratch run
+   step needs it).  *Reloaded scratch is baked:* the layer's ledger is
+   session-local, so a save/load keeps scratch events as ordinary history —
+   whether the ledger itself should persist is R3 slice (d)'s save-policy
+   question.
 2. **Handle splice syntax in Slog fragments.** *Resolved 2026-07-28 for the
    query register:* the REPL's query reader owns `#N` (a dispatch-macro on
    `#`+digit; the language grammar is untouched), and a splice lowers to the

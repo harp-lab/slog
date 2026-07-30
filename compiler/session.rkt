@@ -88,11 +88,16 @@
          session-recount!       ; the count round over the pipeline (M0)
          session-reenter!       ; direct replay-entry (tests/tools)
          session-rerun!         ; direct clear-and-rerun (tests/tools)
+         session-scratch-add!   ; R3: run one scratch fragment, interp-only
+         session-scratch-events ; R3: the live scratch ledger, oldest first
+         session-scratch-keep!  ; R3: export the layer and promote it
+         (struct-out scratch-event)
          session-close!
          inline-batch-max)
 
 (require "tools.rkt")
 (require "compile.rkt")
+(require (only-in "modules.rkt" current-catalog-adoption)) ; R3 scratch
 (require "catalog.rkt")
 (require "names.rkt")
 (require "actions.rkt")
@@ -163,8 +168,20 @@
                  ;; has carried, and the currently leased prepared BoundaryKey
                  ;; (a save while one is outstanding is refused).
                  [catalog-records #:mutable] [program-records #:mutable]
-                 [nominal-names #:mutable] [prepared-boundary #:mutable])
+                 [nominal-names #:mutable] [prepared-boundary #:mutable]
+                 ;; R3 scratch ledger: scratch-event records, oldest first.
+                 ;; Every entry's run step is ALSO in `steps` -- the ledger
+                 ;; marks which tip events belong to the retractable layer,
+                 ;; so `clear scratch` knows what to unwind and a save knows
+                 ;; what a stripped recipe omits.  Kept fragments leave the
+                 ;; ledger (they become ordinary history).
+                 [scratch #:mutable])
   #:transparent)
+
+;; One committed scratch fragment (R3, repl-ux.md §5.3): its ordinal, the
+;; source text as typed, the segment path the recipe records, the pipeline
+;; scc ids its strata occupy, and the relations its rules write.
+(struct scratch-event (n text path sccs writes) #:transparent)
 
 (define (fresh-runtime-id prefix)
   (format "~a-~x-~x-~x-~x"
@@ -187,7 +204,7 @@
              layer-id (fresh-runtime-id "eval") 0 '()
              (make-hash) (make-hash)
              (empty-boundary (format "b0:~a" layer-id)) '()
-             '() '() (hash) #f))
+             '() '() (hash) #f '()))
   (session-action! s `(set-evaluation ,(session-evaluation-id s))
                    read-one-line-quiet!)
   s)
@@ -202,7 +219,7 @@
                      (make-hash) '() '() '() (make-hash) (make-hash) #f echo
                      layer-id (fresh-runtime-id "eval") 0 '()
                      (make-hash) (make-hash) #f '()
-                     '() '() (hash) #f))
+                     '() '() (hash) #f '()))
   (session-action! s `(set-evaluation ,(session-evaluation-id s))
                    read-one-line-quiet!)
   (define-values (_cur strata-pos _chains) (introspect! s))
@@ -831,7 +848,14 @@
     [plan
      (match-define (cons r-entry r-sources) plan)
      (define-values (strata _partition _edb _frozen _groups)
-       (parameterize ([current-source-override r-sources])
+       (parameterize ([current-source-override r-sources]
+                      ;; R3: catalog adoption is on for every replayed
+                      ;; compile.  A self-describing program is unaffected
+                      ;; (its declarations win, so the adoption set is
+                      ;; empty and plans recompute byte-identically); a
+                      ;; scratch segment gets exactly the environment it
+                      ;; compiled under live.
+                      [current-catalog-adoption #t])
          (compile-strata r-entry (db-full-manifest lname) #:split-facts? #f)))
      (define ws (segment-write-set strata '()))
      (when (pair? ws)
@@ -868,7 +892,10 @@
                 #:when (match st [`(open ,_) #t] [_ #f]))
       (second st)))
   (set-session-db! s base)
-  (parameterize ([current-source-override sources])
+  ;; catalog adoption on for the same reason as replay-prog-layer!: no-op
+  ;; for self-describing run steps, required for replayed scratch segments
+  (parameterize ([current-source-override sources]
+                 [current-catalog-adoption #t])
     (for ([st (in-list steps)])
       (match st
         [`(open ,_db) (void)]   ; the manifest link already materialised the base
@@ -4028,6 +4055,77 @@
   (echo! s (format "(rerun ~a ~a ~a)" rel (length cone) (length clear-set)))
   (for ([info (in-list cone)])
     (send-maintenance-stratum! s (sinfo-so info))))
+
+;; ---- R3: the scratch layer (repl-ux.md §5.3) -------------------------------
+;;
+;; A scratch fragment is an ordinary program event at the tip -- same
+;; compile, same boundary machinery, same recipe step -- with two twists.
+;; It compiles interp-only (the canonical plan is the runnable artifact, so
+;; a typed rule is live in one round trip, no toolchain), and the ledger
+;; remembers which tip events belong to the layer -- that marking is what
+;; makes the layer retractable (`clear scratch`) and lets a save choose to
+;; strip it.  Segments land under build/scratch/<layer-id>/ -- the path is
+;; only a recipe KEY: replay reads the captured source text through
+;; current-source-override, exactly as any run step does.
+
+(define (session-scratch-add! s text)
+  (when (session-replaying? s)
+    (error 'session "scratch fragments are live input, never replayed history"))
+  (define n (add1 (length (session-scratch s))))
+  (define dir (format "build/scratch/~a" (session-layer-id s)))
+  (make-directory* dir)
+  (define path (format "~a/~a.slog" dir n))
+  (call-with-output-file path #:exists 'replace
+    (lambda (o) (display text o) (newline o)))
+  (define before
+    (for/set ([entry (in-list (session-strata-info s))]) (car entry)))
+  ;; interp-only: live in one round trip, no toolchain.  Catalog adoption:
+  ;; the fragment reads live relations without re-declaring them -- the
+  ;; documented consumer convention, synthesized from the typed catalog.
+  (parameterize ([opt-mode-override "interp"]
+                 [current-catalog-adoption #t])
+    (session-run! s path))
+  (define added
+    (for/list ([entry (in-list (session-strata-info s))]
+               #:unless (set-member? before (car entry)))
+      (car entry)))
+  (define writes
+    (sort (set->list
+           (for*/set ([entry (in-list (session-strata-info s))]
+                      #:when (memv (car entry) added)
+                      [h (in-list (sinfo-heads (cdr entry)))])
+             h))
+          symbol<?))
+  (define event (scratch-event n text path added writes))
+  (set-session-scratch! s (append (session-scratch s) (list event)))
+  (echo! s (format "(scratch ~a (strata ~a) (writes ~a))"
+                   n (length added) writes))
+  event)
+
+(define (session-scratch-events s) (session-scratch s))
+
+;; Export the accumulated layer as one .slog file and promote its events to
+;; ordinary history.  The recipe already holds every fragment's run step, so
+;; promotion is just emptying the ledger: nothing remains to strip or clear.
+;; Returns the fragment count.  The overwrite guard is the caller's policy
+;; knob -- re-keeping into the same file is a workflow, clobbering an
+;; unrelated file is an accident.
+(define (session-scratch-keep! s dest #:overwrite? [overwrite? #f])
+  (define events (session-scratch s))
+  (when (null? events)
+    (error 'session "scratch is empty; nothing to keep"))
+  (when (and (file-exists? dest) (not overwrite?))
+    (error 'session
+           (format "~a already exists; refusing to overwrite it" dest)))
+  (call-with-output-file dest #:exists 'replace
+    (lambda (o)
+      (fprintf o ";; kept from a REPL scratch layer (~a fragment~a)\n"
+               (length events) (if (= (length events) 1) "" "s"))
+      (for ([ev (in-list events)])
+        (display (scratch-event-text ev) o)
+        (newline o))))
+  (set-session-scratch! s '())
+  (length events))
 
 ;; ---- save: one new delta layer (0.E1) -------------------------------------
 

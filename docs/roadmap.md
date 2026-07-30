@@ -1392,6 +1392,49 @@ section 8 scrapes stratum .so paths from a fixture run log that T3a's
 tiered cold start can complete interpreted on a cold cache; the fixture
 run is now pinned `SLOG_OPT=0`, verified cold 136/136.
 
+**Checkpoint (2026-07-29; R3 slice (a) — the scratch register).** The
+third syntactic register is live: a line whose head token is a Slog
+definition keyword (`rule table struct union enum lattice demand extern
+def let`) is a scratch fragment — one dispatched line/paste is one
+program event (immediate-with-coalescing, repl-ux §14.1 resolved), run
+through the ordinary boundary machinery with two twists.  It compiles
+INTERP-ONLY (`opt-mode-override` beats `SLOG_OPT` for exactly that
+compile: the canonical plan is the runnable artifact, no toolchain, live
+in one round trip), and it ADOPTS the live schema it reads: modules.rkt's
+`current-catalog-adoption` seeds the root type env from the input
+catalog's declarations for used-but-undeclared names, dependency-closed
+(a 5-deep struct match pulls `l5..l1` along) — the
+tests/session/consumer.slog declare-what-you-read convention synthesized
+from the N3-C typed catalog instead of typed by hand.  Defined heads
+still declare explicitly, exactly as in a file.  Source-composition
+directives (`include`/`instantiate`/`import`/`export`) refuse with a
+run-a-file hint.  The session ledger (`session-scratch-add!/events/
+keep!`) marks which tip events are the retractable layer; `scratch`
+lists fragments; `keep scratch as F.slog` exports the program and
+promotes its events to ordinary history (re-keep into the same file
+allowed, unrelated overwrite refused).  Fragments ride the full
+substrate: scratch-over-scratch adoption, edits propagating through
+scratch cones in one maintenance epoch (`edge +1 ⇒ hop2 +1 · hop4 +1 ·
+route maintain 3`), query/watch visibility at the committed head, and —
+after fixing a real replay gap found by the save smoke — save/load, with
+adoption on for every replayed recipe compile (a self-describing
+program's adoption set is empty, so its plans recompute byte-identically;
+the scratch segment path under `build/scratch/<layer>/` is only a
+source-override key).  Reloaded scratch arrives as ordinary baked
+history (ledger is session-local; the persistence question is slice
+(d)'s).  Gates: unit 406, REPL contract 108 (two new live batteries:
+reach-cycle scratch spine incl. the undeclared-head hint, chain12
+struct-adoption + save/replay), protocol 139/139, Rust golden 29+44+3,
+golden 167 (chain12 finally got the expected/ dir R2 forgot to mint),
+session battery at slice end.  The plan-determinism gate ran for the
+first time since RF1 slice 0 and re-surfaced a PRE-EXISTING tie-group
+defect (verify.slog's twin demand rules flip their rid↔temp pairing;
+reproduced on a pristine checkout; logged in rf1-contract.md with the
+fix direction — not this slice's to fix); filename sets and every other
+plan byte-identical.  Remaining R3: `clear scratch` retraction over
+clear-and-rerun (slice b), tier visibility `tiers`/`code` + arrival
+notes (slice c), save×scratch policy + goldens (slice d).
+
 ### 4.3 Why the fork is safe
 
 Three structural facts, not optimism: the interpreter partitions (monotone

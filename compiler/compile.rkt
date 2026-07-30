@@ -30,7 +30,8 @@
          stratum-meta-dynamic-rels   ; segment write-sets (incremental B0)
          read-stratum-meta           ; cone/polarity input (incremental B4)
          program->jobs    ; tooling/debug: inspect a program's stratum jobs
-         flavored-native?) ; session M4N admission: no native leg for anti-delta variants
+         flavored-native?  ; session M4N admission: no native leg for anti-delta variants
+         opt-mode-override) ; R3 scratch: force interp-only for one compile
 
 (require "params.rkt")
 (require "utils.rkt")
@@ -989,7 +990,12 @@
                 (sort (set->list (set-intersect idb read-rels)) symbol<?)
                 pinned))
 
-(define (opt-mode) (or (getenv "SLOG_OPT") "tiered"))
+;; R3 scratch segments compile interp-only regardless of the ambient
+;; SLOG_OPT: the canonical plan is the runnable artifact and no toolchain
+;; runs, so a typed rule is live in one round trip.  The parameter beats the
+;; environment so a caller's override is scoped to exactly one compile.
+(define opt-mode-override (make-parameter #f))
+(define (opt-mode) (or (opt-mode-override) (getenv "SLOG_OPT") "tiered"))
 
 ;; Materialize a normal canonical sidecar without invoking the toolchain.
 ;; emit-stratum-cpp still writes the parallel C++ debug artifact today, but

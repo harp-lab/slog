@@ -477,6 +477,27 @@ Consequences, pinned:
      the normalized compilation-root-relative path; a two-clone unit test
      pins the key and native/interpreted `dem_lambda` both pass. RF1 slice 4
      can therefore record `delta:$sup…` VariantTags without clone-path churn.
+   - **NEW defect logged 2026-07-29 (tie-group rid/temp pairing —
+     alpha-equivalent rules):** the slice-0 fix left one documented
+     escape hatch — "two rules can tie only by being alpha-equivalent,
+     in which case the counter assignment within the tie group is
+     arbitrary … either assignment yields the same plan SET"
+     (join-planning.rkt, rule-sort-key). The set claim is true but the
+     BYTES are not: `examples/verify/verify.slog` lines 79/83 desugar
+     to two alpha-equivalent demand-emission rules in one stratum
+     (both `check_err(ID,ES) → smt_check(lany ES)` demand), and the
+     (rid ↔ tempNx0/tempNx1) pairing flips run to run because the rid
+     walk and the temp-mint walk break the tie independently
+     (reproduced 6-run on a pristine checkout, so it long predates the
+     R3 work whose gate re-surfaced it — tests/plan-determinism.sh had
+     not been run since verify.slog landed). Everything else holds:
+     filename sets identical (2621 entries), every other .plan
+     byte-identical. Fix direction: the rid assignment must reuse the
+     canonical walk's order INCLUDING minted temp names (total once
+     temps differ), or the sort key must gain a same-stratum
+     tie-group ordinal shared by both walks. Small, but it touches
+     canonical-plan.rkt — schedule as its own slice, not inside an
+     unrelated commit.
 1. **ProgramModel + program struct** (compiler-internal, zero
    behavior). The named program struct replacing the positional
    tuples; the ProgramModel record carrying condensation + lineage out

@@ -36,7 +36,8 @@
 ;; rules over those relations.  Programs leave this file free of demands.
 
 (provide load-program-list
-         type-env->catalog-delta)
+         type-env->catalog-delta
+         current-catalog-adoption) ; R3 scratch: adopt used input-catalog schema
 
 (require racket/runtime-path)
 (require "parser.rkt")
@@ -1141,6 +1142,40 @@
    (append-map binding-actual-prefixes
                (raw-occurrence-children occurrence))))
 
+;; Project one catalog type env down to `initial` plus its named
+;; field/member dependencies, even when those live outside the selected
+;; set.  This is a schema closure, not a blanket import of the input
+;; database.
+(define (catalog-selection-type-env full initial)
+  (define aliases (type-env-aliases full))
+  (define rels (type-env-rels full))
+  (define selected
+    (let loop ([names initial])
+      (define names+
+        (for/fold ([out names]) ([name (in-set names)])
+          (define values
+            (append
+             (set->list (hash-ref aliases name (set)))
+             (let walk ([value (hash-ref rels name '())])
+               (cond
+                 [(symbol? value) (list value)]
+                 [(list? value) (append-map walk value)]
+                 [else '()]))))
+          (for/fold ([out out]) ([dependency (in-list values)]
+                                 #:when
+                                 (or (hash-has-key? aliases dependency)
+                                     (hash-has-key? rels dependency)))
+            (set-add out dependency))))
+      (if (equal? names names+) names (loop names+))))
+  (list
+   (for/hash ([(name members) (in-hash aliases)]
+              #:when (set-member? selected name))
+     (values name members))
+   (for/hash ([(name declaration) (in-hash rels)]
+              #:when (set-member? selected name))
+     (values name declaration))
+   (type-env-funs full)))
+
 (define (input-binding-type-env occurrence)
   (define input (current-input-catalog))
   (define prefixes
@@ -1160,35 +1195,47 @@
                     prefix
                     (qname-components (symbol->qname name)))))
          name))
-     ;; Pull in named field/member dependencies even when they live outside
-     ;; the selected actual subtree.  This is a schema closure, not a blanket
-     ;; import of the input database.
-     (define selected
-       (let loop ([names initial])
-         (define names+
-           (for/fold ([out names]) ([name (in-set names)])
-             (define values
-               (append
-                (set->list (hash-ref aliases name (set)))
-                (let walk ([value (hash-ref rels name '())])
-                  (cond
-                    [(symbol? value) (list value)]
-                    [(list? value) (append-map walk value)]
-                    [else '()]))))
-             (for/fold ([out out]) ([dependency (in-list values)]
-                                    #:when
-                                    (or (hash-has-key? aliases dependency)
-                                        (hash-has-key? rels dependency)))
-               (set-add out dependency))))
-         (if (equal? names names+) names (loop names+))))
-     (list
-      (for/hash ([(name members) (in-hash aliases)]
-                 #:when (set-member? selected name))
-        (values name members))
-      (for/hash ([(name declaration) (in-hash rels)]
-                 #:when (set-member? selected name))
-        (values name declaration))
-      (type-env-funs full))]))
+     (catalog-selection-type-env full initial)]))
+
+;; R3 scratch adoption (repl-ux.md §5.3): the cross-segment convention is
+;; that a reading segment DECLARES the schema it reads (tests/session/
+;; consumer.slog states it as doctrine).  A REPL scratch fragment is that
+;; consumer with the declarations synthesized: when this parameter is set,
+;; the root type env is seeded from the input catalog's declarations for
+;; every name the program uses but does not declare itself.  Selection is
+;; by use with the usual dependency closure, so a fragment adopts exactly
+;; the schema it touches, never the whole database.  Off by default: file
+;; programs stay self-describing.
+(define current-catalog-adoption (make-parameter #f))
+
+(define (adopted-type-env qualified)
+  (define input (current-input-catalog))
+  (cond
+    [(or (not (current-catalog-adoption)) (not input)) empty-type-env]
+    [else
+     (define full (catalog->type-env input))
+     (define aliases (type-env-aliases full))
+     (define rels (type-env-rels full))
+     (define declared
+       (for/fold ([out (set)]) ([mod (in-list qualified)])
+         (define env (qualified-module-type-env mod))
+         (set-union out
+                    (list->set (hash-keys (type-env-aliases env)))
+                    (list->set (hash-keys (type-env-rels env))))))
+     (define used
+       (rules-used-names (for/set ([mod (in-list qualified)])
+                           (qualified-module-ir mod))))
+     (define initial
+       (for/set ([name (in-set used)]
+                 #:when (and (not (set-member? declared name))
+                             (not (hash-has-key?
+                                   (type-env-rels base-type-env) name))
+                             (not (hash-has-key?
+                                   (type-env-aliases base-type-env) name))
+                             (or (hash-has-key? aliases name)
+                                 (hash-has-key? rels name))))
+         name))
+     (catalog-selection-type-env full initial)]))
 
 ;; Merge each program's per-module type environments (and demand
 ;; registries) into one program-level environment, then desugar every
@@ -1208,7 +1255,9 @@
   (define interfaces
     (filter qualified-module-interface? qualified))
   (define seeded-type-env
-    (unify-type-envs (input-binding-type-env root) base-type-env))
+    (unify-type-envs
+     (adopted-type-env qualified)
+     (unify-type-envs (input-binding-type-env root) base-type-env)))
   (define type-env-ordinary
     (for/fold ([env seeded-type-env]) ([mod (in-list ordinary)])
       (unify-type-envs (qualified-module-type-env mod) env)))
