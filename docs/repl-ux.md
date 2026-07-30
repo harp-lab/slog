@@ -909,7 +909,14 @@ Slices, mapped to the T/Q phases (execution-tiers §11):
    step needs it).  *Reloaded scratch is baked:* the layer's ledger is
    session-local, so a save/load keeps scratch events as ordinary history —
    whether the ledger itself should persist is R3 slice (d)'s save-policy
-   question.
+   question.  *`clear scratch` (slice b, 2026-07-30):* retraction covers
+   layers of INTRODUCED relations (the workbench norm) — strata forgotten,
+   names dropped dependents-first, recipe replay-honest (create → fill →
+   drop).  A layer that extended a pre-existing relation through an
+   adopted head refuses to clear with a `keep scratch` hint: retracting
+   derived rows from a surviving relation needs a recipe spelling (replay
+   would re-derive them; the load signature would refuse), and that
+   recipe event ships together with the recompute, not before.
 2. **Handle splice syntax in Slog fragments.** *Resolved 2026-07-28 for the
    query register:* the REPL's query reader owns `#N` (a dispatch-macro on
    `#`+digit; the language grammar is untouched), and a splice lowers to the

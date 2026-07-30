@@ -243,6 +243,7 @@
    "                      compiles against the live schema and runs now"
    "  scratch             show the scratch layer's accumulated program"
    "  keep scratch as F   export the scratch layer to F and promote it"
+   "  clear scratch       retract the whole scratch layer"
    "  add REL V...        add one input tuple and propagate it"
    "  del REL V...        retract one input tuple and propagate it"
    "  rename FROM TO      rename one live relation without moving its data"
@@ -1942,9 +1943,39 @@
           (format "~a  ~a" (scratch-event-n ev)
                   (scratch-single-line (scratch-event-text ev))))
         (list (format
-               "~a fragment~a · `keep scratch as FILE.slog` exports and promotes the layer"
+               "~a fragment~a · `keep scratch as FILE.slog` exports and promotes · `clear scratch` retracts the layer"
                (length events)
                (if (= (length events) 1) "" "s")))))
+   #:kind "scratch"))
+
+(define (clear-scratch-result state argument)
+  (unless (string=? (string-downcase (string-trim argument)) "scratch")
+    (error 'clear "expected: clear scratch"))
+  (define rs (ensure-mutable-session-record! state 'clear))
+  (define outcome (box #f))
+  (define-values (_ _events change)
+    (capture-semantic-change
+     state rs "clear-scratch" "settled" '()
+     (lambda ()
+       (call-with-values
+        (lambda () (session-scratch-clear! (repl-session-session rs)))
+        (lambda (count dropped rerun)
+          (set-box! outcome (list count dropped rerun)))))))
+  (set-repl-session-changed?! rs #t)
+  (match-define (list count dropped rerun) (unbox outcome))
+  (semantic-text-result
+   "Cleared scratch"
+   (append
+    (list (format "~a fragment~a retracted"
+                  count (if (= count 1) "" "s")))
+    (if (null? dropped)
+        '()
+        (list (format "dropped: ~a" (string-join (map ~a dropped) ", "))))
+    (if (null? rerun)
+        '()
+        (list (format "recomputed without the layer: ~a"
+                      (string-join (map ~a rerun) ", ")))))
+   change
    #:kind "scratch"))
 
 (define (keep-scratch-result state argument)
@@ -2067,6 +2098,7 @@
     ["watches" (watches-result state)]
     ["scratch" (scratch-show-result state)]
     ["keep" (keep-scratch-result state argument)]
+    ["clear" (clear-scratch-result state argument)]
     ["run"
      (when (string=? argument "")
        (error 'run "expected: run PATH"))
@@ -2915,4 +2947,61 @@
     (check-regexp-match #px"◆ Query count\n  144 rows match" transcript)
     (parameterize ([current-directory repository-root])
       (when (directory-exists? "data/r3_scratch_replay")
-        (delete-directory/files "data/r3_scratch_replay")))))
+        (delete-directory/files "data/r3_scratch_replay"))))
+
+  ;; clear scratch (R3 slice b): a fresh-only layer retracts wholesale --
+  ;; strata forgotten, introduced names dropped dependents-first -- and the
+  ;; recipe stays replay-honest (create, fill, drop).  A layer that
+  ;; extended a pre-existing relation refuses with the keep hint, because
+  ;; its retraction has no recipe spelling yet.
+  (let* ([kept-path "out/repl-clear-kept.slog"]
+         [transcript
+          (parameterize ([current-directory repository-root]
+                         [current-environment-variables test-environment])
+            (when (file-exists? kept-path) (delete-file kept-path))
+            (when (directory-exists? "data/r3_clear_replay")
+              (delete-directory/files "data/r3_clear_replay"))
+            (plain-transcript
+             (list "run tests/reach.slog"
+                   ;; dependency-ordered drops: the table dies before the
+                   ;; struct its column references
+                   "struct (pt int) table (loc pt) rule (loc (pt 5)) <-- (edge 1 2)"
+                   "clear scratch"
+                   "?(loc X)"
+                   ;; an extended layer refuses; keep promotes it instead
+                   "rule (path 99 99) <-- (edge 1 2)"
+                   "clear scratch"
+                   "keep scratch as out/repl-clear-kept.slog"
+                   ;; a fresh layer cleared before a save: the replayed
+                   ;; recipe creates, fills, and drops it
+                   "table (hop9 int int) rule (hop9 X Z) <-- (edge X Y) (edge Y Z)"
+                   "clear scratch"
+                   "save r3_clear_replay"
+                   "open r3_clear_replay"
+                   "?count (path X Y)"
+                   "?(hop9 X Y)"
+                   "clear scratch"
+                   ":quit")))])
+    (check-regexp-match
+     #px"◆ Cleared scratch\n  1 fragment retracted\n  dropped: loc, pt"
+     transcript)
+    (check-regexp-match
+     #px"loc -1 \\(1 -> removed\\); pt -1 \\(1 -> removed\\)" transcript)
+    (check-regexp-match #px"unknown relation \"loc\"" transcript)
+    ;; the typed extended-layer refusal names the relation and the way out
+    (check-regexp-match
+     #px"extended pre-existing relation path; retraction there has no recipe spelling yet"
+     transcript)
+    (check-regexp-match #px"1 fragment written and promoted" transcript)
+    (check-regexp-match #px"dropped: hop9" transcript)
+    ;; the reloaded database re-derives kept history, not the cleared layer
+    (check-regexp-match
+     #px"Opened r3_clear_replay(?s:.*)◆ Query count\n  7 rows match"
+     transcript)
+    (check-regexp-match #px"unknown relation \"hop9\"" transcript)
+    ;; a freshly loaded database holds no live scratch ledger
+    (check-regexp-match #px"scratch is empty; nothing to clear" transcript)
+    (parameterize ([current-directory repository-root])
+      (when (file-exists? kept-path) (delete-file kept-path))
+      (when (directory-exists? "data/r3_clear_replay")
+        (delete-directory/files "data/r3_clear_replay")))))

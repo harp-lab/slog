@@ -1435,7 +1435,35 @@ plan byte-identical.  Remaining R3: `clear scratch` retraction over
 clear-and-rerun (slice b), tier visibility `tiers`/`code` + arrival
 notes (slice c), save×scratch policy + goldens (slice d).
 
-### 4.3 Why the fork is safe
+**Checkpoint (2026-07-30; R3 slice (b) — `clear scratch`).**  The layer
+retracts wholesale: its strata leave `strata-info` (the client drives all
+propagation, so a forgotten stratum never re-enters; the daemon's
+pipeline entries persist, inert), pending edits aimed at its relations
+are discarded with it, and the names it INTRODUCED drop through the
+ordinary planned transforms — dependents before their dependencies
+(reverse-topological over the catalog's named field references, so a
+fresh table dies before the fresh struct its column cites).  The recipe
+stays replay-honest by construction: the run steps remain, the drops
+append, and a reloaded save replays create → fill → drop (pinned in the
+battery).  Two typed refusals guard that honesty: a later non-scratch
+program event reading a scratch relation (dropping under a compiled
+reader), and — the deliberate v1 cut — a layer that EXTENDED a
+pre-existing relation via an adopted head: its derived rows have no
+recipe spelling for retraction, so replay would re-derive them and the
+load-time signature would refuse the divergence; the refusal names the
+relation and points at `keep scratch`.  The live-state recompute for
+that case was built and works (writers+downstream-cone clear-and-rerun
+over the surviving strata — `session-rerun!` cannot serve: its anchor is
+the relation's last binding, i.e. the scratch boundary itself, and its
+wave misses non-recursive writers) but ships only together with its
+recipe event, a design the save/load walkthrough forced.  Also fixed
+here, found by the save smoke: scratch segment FILE ordinals were
+ledger-relative and reset at keep/clear, aliasing distinct fragments
+under one source-override key — the replay plan validation refused
+exactly as designed; ordinals are now session-monotonic (directory
+count).  Gates: unit 406, REPL contract 117 (clear battery: dependency-
+ordered drops, extended refusal, create→fill→drop replay round-trip),
+protocol 139/139, Rust 29+44+3, session battery at slice end.
 
 Three structural facts, not optimism: the interpreter partitions (monotone
 frozen at F; counted = thread 0; query = thread 1, in separate files and

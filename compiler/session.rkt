@@ -91,6 +91,7 @@
          session-scratch-add!   ; R3: run one scratch fragment, interp-only
          session-scratch-events ; R3: the live scratch ledger, oldest first
          session-scratch-keep!  ; R3: export the layer and promote it
+         session-scratch-clear! ; R3: retract the whole layer
          (struct-out scratch-event)
          session-close!
          inline-batch-max)
@@ -180,8 +181,12 @@
 
 ;; One committed scratch fragment (R3, repl-ux.md §5.3): its ordinal, the
 ;; source text as typed, the segment path the recipe records, the pipeline
-;; scc ids its strata occupy, and the relations its rules write.
-(struct scratch-event (n text path sccs writes) #:transparent)
+;; scc ids its strata occupy, the relations its rules write, and the
+;; catalog names the event INTRODUCED (fresh = absent from the committed
+;; catalog before the run -- includes declared-but-never-written tables,
+;; which writes alone would miss).  fresh vs writes∖fresh is exactly the
+;; clear-scratch split: introduced names drop, extended names rerun.
+(struct scratch-event (n text path sccs writes fresh) #:transparent)
 
 (define (fresh-runtime-id prefix)
   (format "~a-~x-~x-~x-~x"
@@ -4068,17 +4073,32 @@
 ;; only a recipe KEY: replay reads the captured source text through
 ;; current-source-override, exactly as any run step does.
 
+;; The committed head's declaration names -- the "does this name already
+;; exist" oracle for the fresh/extended split.
+(define (session-catalog-names s)
+  (define b (session-catalog-boundary s))
+  (if b
+      (for/set ([(name _d) (in-hash (catalog-declarations
+                                     (boundary-catalog b)))])
+        (qname->symbol name))
+      (set)))
+
 (define (session-scratch-add! s text)
   (when (session-replaying? s)
     (error 'session "scratch fragments are live input, never replayed history"))
   (define n (add1 (length (session-scratch s))))
   (define dir (format "build/scratch/~a" (session-layer-id s)))
   (make-directory* dir)
-  (define path (format "~a/~a.slog" dir n))
+  ;; the FILE ordinal is session-monotonic (directory count), never the
+  ;; display ordinal: keep/clear reset the ledger, and a reused path would
+  ;; alias distinct fragments under one source-override key -- the replay
+  ;; plan validation refuses exactly that
+  (define path (format "~a/~a.slog" dir (add1 (length (directory-list dir)))))
   (call-with-output-file path #:exists 'replace
     (lambda (o) (display text o) (newline o)))
   (define before
     (for/set ([entry (in-list (session-strata-info s))]) (car entry)))
+  (define names-before (session-catalog-names s))
   ;; interp-only: live in one round trip, no toolchain.  Catalog adoption:
   ;; the fragment reads live relations without re-declaring them -- the
   ;; documented consumer convention, synthesized from the typed catalog.
@@ -4096,13 +4116,127 @@
                       [h (in-list (sinfo-heads (cdr entry)))])
              h))
           symbol<?))
-  (define event (scratch-event n text path added writes))
+  (define fresh
+    (sort (set->list (set-subtract (session-catalog-names s) names-before))
+          symbol<?))
+  (define event (scratch-event n text path added writes fresh))
   (set-session-scratch! s (append (session-scratch s) (list event)))
-  (echo! s (format "(scratch ~a (strata ~a) (writes ~a))"
-                   n (length added) writes))
+  (echo! s (format "(scratch ~a (strata ~a) (writes ~a) (fresh ~a))"
+                   n (length added) writes fresh))
   event)
 
 (define (session-scratch-events s) (session-scratch s))
+
+;; Retract the whole layer (repl-ux §5.3: real, bounded retraction, never
+;; a from-scratch reload).  The layer's strata leave strata-info -- the
+;; client drives all propagation, so a forgotten stratum never re-enters
+;; (the daemon's pipeline entries persist, harmlessly inert) -- then the
+;; names the layer introduced drop through the ordinary planned
+;; transforms, dependents before their dependencies.  The recipe stays
+;; honest by construction: the layer's run steps remain and its drops
+;; append, so a replay reproduces exactly the retracted state (create,
+;; fill, drop), and the save signature agrees.
+;;
+;; Two refusals keep that honesty:
+;;   - a later non-scratch program event reading a scratch relation would
+;;     be silently orphaned by the drop;
+;;   - a layer that EXTENDED a pre-existing relation (adopted head) has
+;;     no recipe spelling for retracting its derived rows -- replay would
+;;     re-derive them with nothing to take them back, and the load-time
+;;     signature would refuse the divergence.  The live-state recompute
+;;     is buildable (writers+cone clear-and-rerun over the surviving
+;;     strata); it ships together with its recipe event, not before.
+;; Pending (unflushed) edits aimed at a fresh relation are discarded with
+;; the layer -- they target what is being retracted.
+(define (session-scratch-clear! s)
+  (define events (session-scratch s))
+  (when (null? events)
+    (error 'session "scratch is empty; nothing to clear"))
+  (define sccs
+    (for*/set ([ev (in-list events)] [c (in-list (scratch-event-sccs ev))])
+      c))
+  (define fresh
+    (for*/set ([ev (in-list events)] [r (in-list (scratch-event-fresh ev))])
+      r))
+  (define extended
+    (sort (set->list
+           (for*/set ([ev (in-list events)]
+                      [r (in-list (scratch-event-writes ev))]
+                      #:unless (set-member? fresh r))
+             r))
+          symbol<?))
+  (unless (null? extended)
+    (error 'session
+           (format
+            (string-append
+             "the layer extended pre-existing relation~a ~a; retraction "
+             "there has no recipe spelling yet -- `keep scratch` to "
+             "promote the layer instead")
+            (if (null? (cdr extended)) "" "s")
+            (string-join (map symbol->string extended) ", "))))
+  (for ([p (in-list (session-strata-info s))]
+        #:unless (set-member? sccs (car p)))
+    (for ([entry (in-list (sinfo-reads (cdr p)))])
+      (when (set-member? fresh (car entry))
+        (error 'session
+               (format
+                (string-append
+                 "~a is read by a later program event; `keep scratch` "
+                 "first, or drop that program's relations")
+                (car entry))))))
+  (set-session-strata-info!
+   s (for/list ([p (in-list (session-strata-info s))]
+                #:unless (set-member? sccs (car p)))
+       p))
+  (for ([(_anchor rel-map) (in-hash (session-pending s))])
+    (for ([r (in-set fresh)])
+      (hash-remove! rel-map r)))
+  (define dropped (scratch-drop-order s fresh))
+  (for ([r (in-list dropped)])
+    (session-drop! s r))
+  (set-session-scratch! s '())
+  (echo! s (format "(clear-scratch ~a (dropped ~a))"
+                   (length events) dropped))
+  (values (length events) dropped '()))
+
+;; Dependents drop before what they reference: a fresh table over a fresh
+;; struct (or l5 -> l4 -> ... struct chains) must not leave a dangling
+;; schema reference mid-sequence.  Reverse-topological over the committed
+;; catalog's named field references, restricted to the fresh set; ties
+;; break sorted for determinism; an (impossible) reference cycle degrades
+;; to sorted order rather than looping.
+(define (scratch-drop-order s fresh-set)
+  (define b (session-catalog-boundary s))
+  (define decls
+    (if b (catalog-declarations (boundary-catalog b)) (hash)))
+  (define named
+    (for/hash ([(qn desc) (in-hash decls)]
+               #:when (set-member? fresh-set (qname->symbol qn)))
+      (values (qname->symbol qn) desc)))
+  (define (references name)
+    (define desc (hash-ref named name #f))
+    (if desc
+        (for/set ([f (in-list (declaration-descriptor-fields desc))]
+                  #:when (and (type-ref? f) (eq? (type-ref-kind f) 'named)))
+          (qname->symbol (type-ref-value f)))
+        (set)))
+  (let loop ([remaining fresh-set] [out '()])
+    (cond
+      [(set-empty? remaining) (reverse out)]
+      [else
+       (define droppable
+         (sort (for/list ([r (in-set remaining)]
+                          #:unless
+                          (for/or ([o (in-set remaining)]
+                                   #:unless (eq? o r))
+                            (set-member? (references o) r)))
+                 r)
+               symbol<?))
+       (define batch
+         (if (null? droppable) (sort (set->list remaining) symbol<?)
+             droppable))
+       (loop (set-subtract remaining (list->set batch))
+             (append (reverse batch) out))])))
 
 ;; Export the accumulated layer as one .slog file and promote its events to
 ;; ordinary history.  The recipe already holds every fragment's run step, so
