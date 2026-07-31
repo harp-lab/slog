@@ -1536,6 +1536,40 @@ unchanged; item 2 of the joint battery (scratch over counted state)
 got materially easier — counted sidecars are now maintained by the
 same executor the scratch layer's views run on.
 
+*Status 2026-07-30 — **GATE S CLOSED**.*  Both threads' local exits were
+already banked (thread 0: counted-interpreter + M4N + M7 audits; thread
+1: R0–R3 batteries, Q1 hygiene, catalog round-trip).  The joint
+intersection battery now exists as `tests/joint-battery.sh` (run-all's
+`joint` tier, 21 checks; commits 727e1a1 + 216710f) and each item below
+points at its proof:
+item 1 → tests/joint/repl-workflow.rkt (staged edits via the new
+`stage`/`flush` verbs, visible pending then ONE epoch; delete cone
+through the closure; `recount [force]` + `counts REL`
+sidecar-vs-forced-rebuild equality; save/load replay — the REPL is a
+permanent second driver harness);
+item 2 → tests/joint/scratch-counted.rkt (a scratch view over counted
+state; the delete routes through the scratch stratum on counted flavors;
+sidecar equality WITH scratch resident and again after `clear scratch`);
+item 3 → tests/joint/quiescence.rkt (a query issued FROM a parked
+barrier of a counted delete epoch via the new `session-pause-hook` —
+R4's future stepping seam — is admitted and answers committed masters;
+lease/stale-generation/prepared-boundary refusals stay pinned in the
+protocol battery; the write/intern refusal class is documented
+unreachable from this dispatcher by design, slogd.cpp query_admission);
+item 4 → pinned in both drivers (watch heartbeats at `maint4neg`
+barriers, truthful counted status in the change summaries);
+item 5 → the union sweep under `SLOG_OPT=interp`: golden 167/167,
+protocol 139/139, REPL contract 125, session 782/782, joint 21/21.
+One operational lesson worth keeping: bare epochs never pause — the
+daemon parks FOR CAUSE (a watch) or on budget, so parked-state tests
+must register a watch first.  Post-merge bearings unchanged: W4′ = T5
+level-1 debugging with REPL R4 as its UX, plus T4 parameterized native
+bundles, RF2 mount, and T3b tier policy (now with `tiers` making the
+pickup gap visible).  Standing non-gating leftovers: R2's Rust client
+adapters / prepare-time watch registration / relation fast-path dump,
+R3's extended-layer clear recipe event, and the wandering-recount flake
+hunt (three strikes, always near count rounds, always rerun-green).
+
 1. **The REPL drives the incremental battery.** The session workflow
    harness re-expressed as REPL transcripts: edits, flushes, recounts,
    maintenance epochs, save/load — all through the shell. The REPL becomes
