@@ -46,6 +46,7 @@ run_harness() {
     protocol)    bash tests/protocol-tests.sh ;;
     repl)        raco test compiler/repl.rkt && cargo test --manifest-path repl/Cargo.toml ;;
     session)     bash tests/session-tests.sh ;;
+    joint)       bash tests/joint-battery.sh ;;
     incremental-stress) bash tests/incremental-stress.sh ;;
     compression) bash tests/compression/run.sh ;;
     smt-pin)     bash tests/compression/smt-pin-test.sh ;;
@@ -60,7 +61,7 @@ run_harness() {
   esac
 }
 
-ALL=(unit diag stats arena seq counts wcoj3 interp structid golden api tiered pause protocol repl session incremental-stress compression smt-pin smt-solver)
+ALL=(unit diag stats arena seq counts wcoj3 interp structid golden api tiered pause protocol repl session joint incremental-stress compression smt-pin smt-solver)
 QUICK=(unit diag stats arena seq counts wcoj3 interp structid)
 
 case "${1:-}" in

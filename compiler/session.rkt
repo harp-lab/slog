@@ -93,6 +93,7 @@
          session-scratch-keep!  ; R3: export the layer and promote it
          session-scratch-clear! ; R3: retract the whole layer
          session-tiers          ; R3: per-stratum execution rungs + cache
+         session-pending-summary ; gate S1: staged-but-unflushed changes
          (struct-out scratch-event)
          session-close!
          inline-batch-max)
@@ -2336,6 +2337,25 @@
   ;; Running a program is the explicit semantic reopen event for any
   ;; input-only successors accumulated since the prior program event.
   (hash-clear! (session-input-only s)))
+
+;; Gate S1: the staged-but-unflushed changes, summarized for the REPL's
+;; `status` -- one record per (anchor, relation) with the count of tuples
+;; whose LATEST queued sign is an add vs a delete (commands are stored
+;; newest-first; the chronological list itself stays untouched for flush
+;; normalization).
+(define (session-pending-summary s)
+  (sort
+   (for*/list ([(anchor per-rel) (in-hash (session-pending s))]
+               [(rel tuples) (in-hash per-rel)]
+               #:when (positive? (hash-count tuples)))
+     (define-values (adds dels)
+       (for/fold ([a 0] [d 0]) ([(_t commands) (in-hash tuples)])
+         (if (eq? (car commands) '+)
+             (values (add1 a) d)
+             (values a (add1 d)))))
+     (list anchor rel adds dels))
+   string<?
+   #:key (lambda (p) (format "~a ~a" (first p) (second p)))))
 
 ;; Queue one signed tuple against an anchor.  Commands remain ordered until
 ;; flush: `+,-` is a mask on inherited input while `-,+` clears one, so the

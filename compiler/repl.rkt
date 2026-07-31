@@ -248,6 +248,10 @@
    "  clear scratch       retract the whole scratch layer"
    "  add REL V...        add one input tuple and propagate it"
    "  del REL V...        retract one input tuple and propagate it"
+   "  stage +(R V..) -(..) queue signed edits; `status` shows them pending"
+   "  flush               commit everything staged as one update epoch"
+   "  recount [force]     re-establish (or force-rebuild) the count cache"
+   "  counts REL          dump one relation's count sidecar rows"
    "  rename FROM TO      rename one live relation without moving its data"
    "  drop REL            remove one relation name at the next boundary"
    "  attach DB as DEST   import a saved database under one namespace"
@@ -2136,7 +2140,7 @@
 (define keep-cursor-verbs
   '(":help" "help" "?" ":ping" ":status" "library" "current" "resident"
     "sessions" "mode" ":share" ":clear" "more" "cancel" "scratch" "keep"
-    "tiers" "code"))
+    "tiers" "code" "stage"))
 
 (define (dispatch-command state source)
   (define trimmed (string-trim source))
@@ -2180,15 +2184,27 @@
                   #:kind "status")]
     [(or ":status" "status")
      (define rs (current-repl-session state))
+     ;; gate S1: the git-shaped pending view (§5.2.1) -- staged changes by
+     ;; anchor and relation, awaiting one flush
+     (define pending
+       (if rs (session-pending-summary (repl-session-session rs)) '()))
      (text-result
       "REPL status"
-      (list (format "protocol: ~a" protocol-version)
-            (format "slog: ~a" slog-version)
-            (format "racket: ~a" (version))
-            (format "current: ~a"
-                    (if rs (or (repl-session-database rs) "scratch") "none"))
-            (format "resident databases: ~a"
-                    (hash-count (server-state-sessions state))))
+      (append
+       (list (format "protocol: ~a" protocol-version)
+             (format "slog: ~a" slog-version)
+             (format "racket: ~a" (version))
+             (format "current: ~a"
+                     (if rs (or (repl-session-database rs) "scratch") "none"))
+             (format "resident databases: ~a"
+                     (hash-count (server-state-sessions state))))
+       (for/list ([p (in-list pending)])
+         (match-define (list anchor rel adds dels) p)
+         (format "pending~a: ~a~a~a"
+                 (if (eq? anchor 'tip) "" (format " @~a" anchor))
+                 rel
+                 (if (positive? adds) (format " +~a" adds) "")
+                 (if (positive? dels) (format " -~a" dels) ""))))
       #:kind "status")]
     ["library"
      (define selected
@@ -2231,6 +2247,99 @@
     ["clear" (clear-scratch-result state argument)]
     ["tiers" (tiers-result state)]
     ["code" (code-result state argument)]
+    ;; Gate S1 (roadmap §5 item 1): the staged-batch surface -- the git
+    ;; index for facts (§5.2.1).  `stage` queues client-side (no daemon
+    ;; touch, no epoch); `flush` commits everything queued as ONE update
+    ;; epoch with one change summary.
+    ["stage"
+     (define rs (ensure-mutable-session-record! state 'stage))
+     (define datums
+       (with-handlers
+           ([exn:fail?
+             (lambda (e)
+               (error 'stage "unreadable staged change: ~a" (exn-message e)))])
+         (port->list read (open-input-string argument))))
+     (when (null? datums)
+       (error 'stage "expected: stage +(REL V...) -(REL V...) ..."))
+     (define staged
+       (let loop ([ds datums] [acc '()])
+         (match ds
+           ['() (reverse acc)]
+           [(list-rest '+ (and fact (list _ _ ...)) rest)
+            (loop rest (cons (cons '+ fact) acc))]
+           [(list-rest '- (and fact (list _ _ ...)) rest)
+            (loop rest (cons (cons '- fact) acc))]
+           ;; a bare fact stages as an add
+           [(list-rest (and fact (list _ _ ...)) rest)
+            (loop rest (cons (cons '+ fact) acc))]
+           [_ (error 'stage
+                     "malformed staged change; expected signed facts like +(edge 1 2)")])))
+     (for ([sf (in-list staged)])
+       (match-define (cons sign (cons rel vals)) sf)
+       (session-batch! (repl-session-session rs) sign rel vals))
+     (define summary (session-pending-summary (repl-session-session rs)))
+     (text-result
+      (format "Staged ~a change~a"
+              (length staged) (if (= (length staged) 1) "" "s"))
+      (append
+       (for/list ([sf (in-list staged)])
+         (format "~a~a" (car sf) (cdr sf)))
+       (list (format "pending: ~a — `flush` commits one update epoch"
+                     (string-join
+                      (for/list ([p (in-list summary)])
+                        (match-define (list _anchor rel adds dels) p)
+                        (format "~a~a~a" rel
+                                (if (positive? adds) (format " +~a" adds) "")
+                                (if (positive? dels) (format " -~a" dels) "")))
+                      "; "))))
+      #:kind "stage")]
+    ["flush"
+     (define rs (ensure-mutable-session-record! state 'flush))
+     (define-values (_ _events change)
+       (capture-semantic-change
+        state rs "flush" "settled" '()
+        (lambda () (session-flush! (repl-session-session rs)))))
+     (set-repl-session-changed?! rs #t)
+     (semantic-text-result
+      "Flush"
+      (list "staged changes committed as one update epoch")
+      change
+      #:kind "mutation")]
+    ;; Gate S1: the count round at the prompt.  Counts are a recomputable
+    ;; cache; `recount` re-establishes them through the pipeline tip, and
+    ;; `recount force` replaces even already-closed walks -- the joint
+    ;; battery's sidecar-vs-forced-rebuild equality instrument.
+    ["recount"
+     (define force?
+       (match (string-downcase (string-trim argument))
+         ["" #f]
+         ["force" #t]
+         [_ (error 'recount "expected: recount [force]")]))
+     (define rs (ensure-mutable-session-record! state 'recount))
+     (define-values (_ _events change)
+       (capture-semantic-change
+        state rs "recount" "settled" '()
+        (lambda ()
+          (session-recount! (repl-session-session rs) #:force? force?))))
+     (semantic-text-result
+      (if force? "Recount · force" "Recount")
+      (list (if force?
+                "count state rebuilt from scratch sidecars and republished"
+                "count state re-established through the pipeline tip"))
+      change
+      #:kind "recount")]
+    ["counts"
+     (match (read-command-data 'counts argument)
+       [(list rel)
+        (define s (ensure-session! state))
+        (define lines
+          (session-action!
+           s `(dump-counts ,(string->symbol (relation-key rel)))
+           (read-until-response #px"^\\(countdone ")))
+        (text-result (format "Counts · ~a" (relation-key rel))
+                     lines
+                     #:kind "counts")]
+       [_ (error 'counts "expected: counts REL")])]
     ["run"
      (when (string=? argument "")
        (error 'run "expected: run PATH"))
