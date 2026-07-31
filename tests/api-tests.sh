@@ -197,10 +197,14 @@ fi
 rm -rf data/apimrgc
 timeout 300 racket compiler/run.rkt --no-banner --out-db apimrgc tests/api/mergec.slog \
   > out/api-mergec.log 2>&1
-timeout 300 racket compiler/run.rkt --no-banner -d apimrga tests/api/mergerun.slog \
+# SLOG_OPT=0 pinned: the lines below scrape a stratum .so path from this
+# run's log, and T3a's tiered cold start completes interpreted with no .so
+# logged at all (the run-replay-setup lesson; any test that scrapes .so
+# paths from a run log must pin SLOG_OPT).
+timeout 300 env SLOG_OPT=0 racket compiler/run.rkt --no-banner -d apimrga tests/api/mergerun.slog \
   > out/api-mergerun-compile.log 2>&1
-# The stratum plugin the driver sent: tiered mode logs the -O0 artifact
-# (build/<hash>.O0.so), a cached run the plain build/<hash>.so; either replays.
+# The stratum plugin the driver sent: -O0 pinned above logs
+# build/<hash>.O0.so; a warm cache may log the plain build/<hash>.so.
 RUNSO="$(grep -oE '/[^ ]*/build/[a-f0-9]+(\.O0)?\.so' out/api-mergerun-compile.log | head -1)"
 timeout 300 racket tests/api/send-actions.rkt \
   "open:apimrga" "import:apimrgc" "so:$RUNSO" sizes \
