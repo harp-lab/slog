@@ -101,6 +101,9 @@ racket tests/api/drive.rkt \
   '(watch (id "w3"))' \
   '(unwatch (id "nope"))' \
   '(unwatch (id "w1"))' \
+  '(watch (id "w4") (version-key "w.edge.0") (level 1))' \
+  '(watch (id "w5") (version-key "w.edge.0") (level 0))' \
+  '(watch (id "w6") (version-key "w.edge.0") (level 2))' \
   > out/proto-watch.log 2>&1
 expect    "watch-added" '(watch-added (id "w1") (version-key "w.edge.0") (watches 1))' out/proto-watch.log
 expect_rx "watch-duplicate-id" '\(refused watch-binding [0-9]+ \(verb watch\) \(detail "watch id w1 is already in use"\)\)' out/proto-watch.log
@@ -108,6 +111,12 @@ expect_rx "watch-unbound-key" '\(refused watch-binding [0-9]+ \(verb watch\) \(d
 expect_rx "watch-needs-key" '\(refused parse [0-9]+ \(verb watch\)' out/proto-watch.log
 expect_rx "unwatch-unknown" '\(refused watch-binding [0-9]+ \(verb unwatch\) \(detail "no watch with id nope"\)\)' out/proto-watch.log
 expect    "watch-removed" '(watch-removed (id "w1") (watches 0))' out/proto-watch.log
+# T5 slice (a): (level 1) registers the pre-commit-gate intent and echoes;
+# an explicit (level 0) stays byte-identical to the unlevelled reply; any
+# other level is a parse refusal (docs/t5-contract.md)
+expect    "watch-level1-added" '(watch-added (id "w4") (version-key "w.edge.0") (watches 1) (level 1))' out/proto-watch.log
+expect    "watch-level0-explicit" '(watch-added (id "w5") (version-key "w.edge.0") (watches 2))' out/proto-watch.log
+expect_rx "watch-level-refused" '\(refused parse [0-9]+ \(verb watch\) \(detail "level must be 0 or 1"\)\)' out/proto-watch.log
 
 # --- 3a. N3-A transaction + N3-B durable boundary history -------------------
 # Prepare eagerly constructs an empty slot but keeps both its VersionKey and

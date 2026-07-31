@@ -2677,6 +2677,12 @@ private:
     std::string version_key;   // exact binding; never a name
     bool tuple_mode = false;
     std::vector<u64> tuple;    // exact-tuple appearance
+    // 0 = notify at barriers (shipped semantics); 1 = additionally arm the
+    // T5 pre-commit gate during monotone strata (docs/t5-contract.md).  At
+    // registration the levels differ only in this recorded intent; hits
+    // report identically until the gate lands, and during non-monotone
+    // strata a level-1 watch behaves exactly as level 0 by contract.
+    u32 level = 0;
     u64 last_barrier = 0;      // this watch already handled that barrier
   };
   std::vector<WatchSpec> watches;
@@ -4278,10 +4284,11 @@ public:
   // Returns false when the id is already taken -- ids are the client's, and
   // silently rebinding one would make `unwatch` ambiguous.
   bool addWatch(const std::string& id, const std::string& version_key,
-                bool tuple_mode, std::vector<u64> tuple)
+                bool tuple_mode, std::vector<u64> tuple, u32 level = 0)
   {
     for (const WatchSpec& w : watches) if (w.id == id) return false;
-    watches.push_back({id, version_key, tuple_mode, std::move(tuple), 0});
+    watches.push_back({id, version_key, tuple_mode, std::move(tuple),
+                       level, 0});
     return true;
   }
 

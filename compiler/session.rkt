@@ -93,6 +93,7 @@
          session-scratch-keep!  ; R3: export the layer and promote it
          session-scratch-clear! ; R3: retract the whole layer
          session-tiers          ; R3: per-stratum execution rungs + cache
+         session-set-scc-policy! ; T5: pin a relation's writers to an executor
          session-pending-summary ; gate S1: staged-but-unflushed changes
          session-pause-hook     ; gate S3/R4: observe a parked epoch
          (struct-out scratch-event)
@@ -127,7 +128,13 @@
                   ;; hash (artifact/plan lookup key) and its current
                   ;; execution rung -- a box the T3a upgrade path advances
                   ;; ('interp -> 'o0 -> 'o2; 'o2-mix = partial cluster mix)
-                  hash tier)
+                  hash tier
+                  ;; T5 slice (a) executor policy: 'auto sends whatever the
+                  ;; stratum registered with; 'interpreted resolves the
+                  ;; canonical plan at every re-entry send (a level-1 watch
+                  ;; on a head relation pins its writers here; the flip
+                  ;; rides the executor-blind upgrade entry path)
+                  policy)
   #:transparent)
 
 ;; One live session.
@@ -406,7 +413,7 @@
                                 (sbuild-maintenance sb)
                                 (sbuild-negative-maintenance sb)
                                 (sbuild-recursive-negative-maintenance sb)
-                                (sbuild-hash sb) tier)))))
+                                (sbuild-hash sb) tier (box 'auto))))))
   ;; T3a: a freshly compiled stratum starts interpreted and upgrades in
   ;; place.  A re-push of a cached stratum has no upgrade to offer.  The
   ;; swap now narrates itself: the tier box advances and a tier event
@@ -425,8 +432,9 @@
   (send-stratum! s so upgrade))
 
 ;; R3 slice (c): the tier ledger `tiers` renders -- one record per
-;; resident pipeline stratum: scc id, content hash, current rung, and
-;; which rungs the build cache holds right now.
+;; resident pipeline stratum: scc id, content hash, current rung, which
+;; rungs the build cache holds right now, and (T5 slice a) the executor
+;; policy.
 (define (session-tiers s)
   (for/list ([p (in-list (session-strata-info s))])
     (define i (cdr p))
@@ -440,7 +448,32 @@
                              'o0)
                         (and (file-exists?
                               (format "build/~a.so" (sinfo-hash i)))
-                             'o2))))))
+                             'o2)))
+          (unbox (sinfo-policy i)))))
+
+;; T5 slice (a): pin the writer strata of `rel` to a policy ('interpreted
+;; or 'auto); returns the affected scc ids.  Policy applies at re-entry
+;; SENDS via sinfo-artifact -- the daemon's upgrade entry path is
+;; executor-blind, so a parked native stratum re-sent as its canonical
+;; plan flips executors at the boundary (t5-contract §6).
+(define (session-set-scc-policy! s rel policy)
+  (unless (memq policy '(auto interpreted))
+    (error 'session "scc policy must be auto or interpreted"))
+  (for/list ([p (in-list (session-strata-info s))]
+             #:when (memq rel (sinfo-heads (cdr p))))
+    (set-box! (sinfo-policy (cdr p)) policy)
+    (car p)))
+
+;; The artifact a re-entry SEND should carry under the stratum's policy.
+;; 'auto = whatever the stratum registered with (sinfo-so); 'interpreted =
+;; the canonical plan when the cache holds it.  Identity uses (sinfo-so)
+;; everywhere -- this resolver is for send sites only.
+(define (sinfo-artifact i)
+  (define plan (format "build/~a.plan" (sinfo-hash i)))
+  (if (and (eq? (unbox (sinfo-policy i)) 'interpreted)
+           (file-exists? plan))
+      (path->string (path->complete-path plan))
+      (sinfo-so i)))
 
 ;; The count round (docs/incremental.md §8B.1-§8B.2, M0.4c): rebuild a
 ;; VERSION-LOCAL count state in scratch sidecars, audit its coverage, then
@@ -2538,7 +2571,7 @@
          (cdr p)))
      (echo! s (format "(import-delta ~a ~a)" dir (length union-cone)))
      (for ([info (in-list union-cone)])
-       (send-maintenance-stratum! s (sinfo-so info)))]
+       (send-maintenance-stratum! s (sinfo-artifact info)))]
     [else
      ;; anchored import (0.E0b): positional apply, then the suffix walk
      (session-action! s `(import-delta ,dir ,renames ,anchor))
@@ -3389,7 +3422,7 @@
       (session-action! s `(clear-rel ,r)))
     (echo! s (format "(route rerun ~a ~a)" (length union-cone) (length clear-set)))
     (for ([info (in-list union-cone)])
-      (send-maintenance-stratum! s (sinfo-so info))))
+      (send-maintenance-stratum! s (sinfo-artifact info))))
   (cond
     [m4n-eligible?
      ;; M4N slice 1 (docs/m4n-contract.md pins 3-5): finalize the changed
@@ -3626,7 +3659,7 @@
                         (length producer-cone) (length reader-cone)
                         (length clear-set)))
        (for ([info (in-list reader-cone)])
-         (send-maintenance-stratum! s (sinfo-so info))))
+         (send-maintenance-stratum! s (sinfo-artifact info))))
      (cond
        [(not settled?)
         (apply-edits!)
@@ -3939,7 +3972,7 @@
      (apply-edits!)
      (echo! s (format "(route reenter ~a)" (length union-cone)))
      (for ([info (in-list union-cone)])
-       (send-maintenance-stratum! s (sinfo-so info)))]
+       (send-maintenance-stratum! s (sinfo-artifact info)))]
     [else
      (apply-edits!)
      (rerun-cone!)]))
@@ -4093,7 +4126,7 @@
           (cons (list pos 2
                       (lambda ()
                         (session-action! s `(bind-at ,pos))
-                        (send-maintenance-stratum! s (sinfo-so info))))
+                        (send-maintenance-stratum! s (sinfo-artifact info))))
                 events)))
   ;; logged imports past the anchor re-apply at their positions (0.E0b)
   (for ([im (in-list (session-imports s))]
@@ -4125,7 +4158,7 @@
            (format "non-monotone cone for ~a (neg/lat edge): use rerun (clear-and-rerun, 0.B2)" rel)))
   (echo! s (format "(reenter ~a ~a)" rel (length cone)))
   (for ([info (in-list cone)])
-    (send-maintenance-stratum! s (sinfo-so info))))
+    (send-maintenance-stratum! s (sinfo-artifact info))))
 
 (define (session-rerun! s rel)
   (define-values (_cur strata-pos chains) (introspect! s))
@@ -4142,7 +4175,7 @@
     (session-action! s `(clear-rel ,r)))
   (echo! s (format "(rerun ~a ~a ~a)" rel (length cone) (length clear-set)))
   (for ([info (in-list cone)])
-    (send-maintenance-stratum! s (sinfo-so info))))
+    (send-maintenance-stratum! s (sinfo-artifact info))))
 
 ;; ---- R3: the scratch layer (repl-ux.md §5.3) -------------------------------
 ;;

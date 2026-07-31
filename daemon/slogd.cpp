@@ -1858,7 +1858,7 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
     {
         CommandFields fields;
         std::string error;
-        if (!collect_fields(form, 1, {"id", "version-key", "tuple"},
+        if (!collect_fields(form, 1, {"id", "version-key", "tuple", "level"},
                             fields, error)
             || fields.find("id") == fields.end()
             || fields.find("version-key") == fields.end())
@@ -1866,7 +1866,7 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
             refuse_boundary_parse(
               d, verb, error.empty()
                 ? "requires (id \"...\") and (version-key \"...\"), with an "
-                  "optional (tuple V ...)"
+                  "optional (tuple V ...) and (level 0|1)"
                 : error);
             return;
         }
@@ -1905,6 +1905,22 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
                 return;
             }
         }
+        // T5 slice (a): (level 1) records the pre-commit-gate intent
+        // (docs/t5-contract.md).  Registration is the only difference at
+        // this slice; hits report identically until the gate lands.
+        u64 level = 0;
+        auto lit = fields.find("level");
+        if (lit != fields.end())
+        {
+            const auto& field = *lit->second;
+            if (field.children.size() != 2
+                || !parse_u64_atom(field.children[1], level)
+                || level > 1)
+            {
+                refuse_boundary_parse(d, verb, "level must be 0 or 1");
+                return;
+            }
+        }
         if (!d->db()->hasVersionKey(version_key))
         {
             refuse(d, "watch-binding",
@@ -1913,7 +1929,8 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
                        "no relation is bound to " + version_key) + ")");
             return;
         }
-        if (!d->db()->addWatch(id, version_key, tuple_mode, std::move(tuple)))
+        if (!d->db()->addWatch(id, version_key, tuple_mode, std::move(tuple),
+                               static_cast<u32>(level)))
         {
             refuse(d, "watch-binding",
                    "(verb watch) (detail "
@@ -1923,7 +1940,8 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
         }
         d->emit("(watch-added (id " + slog::protocol::quoteString(id)
                 + ") (version-key " + slog::protocol::quoteString(version_key)
-                + ") (watches " + std::to_string(d->db()->watchCount()) + "))");
+                + ") (watches " + std::to_string(d->db()->watchCount()) + ")"
+                + (level == 1 ? " (level 1)" : "") + ")");
         return;
     }
 

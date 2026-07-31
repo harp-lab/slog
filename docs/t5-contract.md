@@ -87,14 +87,22 @@ it.
 
 ## 4. Slices
 
-- **(a) Policy, registration, refusals.**  Per-SCC `auto`/`interpreted`
-  policy verbs (`debug-on`/`debug-off`), observer ownership, the
-  native→interp boundary flip, level-1 watch registration piggybacked on
-  the level-0 grammar (`(watch ... (level 1))` additive field), and the
-  two refusals: counted/maintenance epochs (`level-1-unwatchable`) and
-  non-interpreted SCCs auto-flip rather than refuse.  Exit: protocol
-  battery pins registration, flip, both refusals; level-0 batteries
-  byte-unchanged.
+- **(a) Policy, registration, refusals.**  *(Ratified 2026-07-31 with
+  the §6 answers; scope adjusted accordingly.)*  Level-1 watch
+  registration piggybacked on the level-0 grammar (`(watch ... (level
+  1))` additive field, echoed in `watch-added` only when 1); per-SCC
+  `auto`/`interpreted` policy CLIENT-side (a level-1 watch pins the
+  relation's writer strata; re-entry sends resolve the canonical plan —
+  the flip; the daemon wire verbs stay parked); non-interpreted SCCs
+  auto-flip rather than refuse; query watches refuse level 1 (client-side
+  re-counts).  The `level-1-unwatchable` refusal and Stratum flavor
+  retention MOVE to slice (b): under the ratified firing point
+  (level-1-only continuations) their first consumer is the gate, and an
+  unconsumed field is an inert scaffold.  Exit: protocol battery pins
+  registration round-trip + level parse refusal with level-0 lines
+  byte-identical; REPL battery pins the spelling, the pin, tiers'
+  `· debug` column, and the flip end to end (native-registered strata,
+  plan re-entry, exact recompute).
 - **(b) The gate.**  `RUN_READ_COMPLETE`, candidate capture, plain-table
   `WatchSettle`, the pre-commit pause record, `commit` and paused
   observation (no replay yet).  Exit: a REPL transcript drives add →

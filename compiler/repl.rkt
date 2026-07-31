@@ -243,6 +243,8 @@
    "  uses #N | VALUE     which relations contain a value (`find` = alias)"
    "  watch REL | ?QUERY  observe a relation (daemon barrier hits) or a"
    "                      query count; reports ride each change summary"
+   "  watch REL level 1   arm the pre-commit gate intent; the relation's"
+   "                      writer strata pin to the interpreter (debug)"
    "  unwatch wN          remove one watch;  `watches` lists them"
    "  explain ?QUERY      show the query plan and degradations, do not run"
    "  tiers               show each stratum's execution rung (interp/-O0/-O2)"
@@ -1396,7 +1398,7 @@
 ;; interrupting the command.
 
 (struct watch-intent
-  (id kind target [bound-key #:mutable] [last-count #:mutable])
+  (id kind target [bound-key #:mutable] [last-count #:mutable] level)
   #:transparent)
 
 (define (next-watch-id registry)
@@ -1404,9 +1406,13 @@
     (define id (format "w~a" n))
     (if (hash-has-key? registry id) (loop (add1 n)) id)))
 
-(define (register-daemon-watch! s id key)
-  (session-command-stream! s `(watch (id ,id) (version-key ,key))
-                           (lambda (_line) #t)))
+(define (register-daemon-watch! s id key #:level [level 0])
+  (session-command-stream!
+   s
+   (if (= level 1)
+       `(watch (id ,id) (version-key ,key) (level 1))
+       `(watch (id ,id) (version-key ,key)))
+   (lambda (_line) #t)))
 
 (define (silent-unwatch! s id)
   (with-handlers ([exn:fail? void])
@@ -1427,16 +1433,26 @@
   matched)
 
 (define (watch-result state argument)
-  (define text (string-trim argument))
-  (when (string=? text "")
-    (error 'watch "expected: watch REL | watch ?QUERY"))
+  (define raw (string-trim argument))
+  (when (string=? raw "")
+    (error 'watch "expected: watch REL [level 1] | watch ?QUERY"))
+  ;; T5 slice (a): `watch REL level 1` records the pre-commit-gate intent
+  ;; (docs/t5-contract.md) and forces the relation's writer SCCs onto the
+  ;; interpreter at their next re-entry (client-side policy, ratified).
+  (define-values (text level)
+    (match (regexp-match #px"^(.*[^[:space:]])[[:space:]]+level[[:space:]]+([01])$" raw)
+      [(list _ target n) (values target (string->number n))]
+      [_ (values raw 0)]))
   (define rs (ensure-session-record! state))
   (define registry (repl-session-watches rs))
   (define id (next-watch-id registry))
   (cond
     [(string-prefix? text "?")
+     (when (= level 1)
+       (error 'watch
+              "query watches are client-side re-counts; level 1 applies to relation watches"))
      (define count (run-watch-query state rs text))
-     (hash-set! registry id (watch-intent id 'query text #f count))
+     (hash-set! registry id (watch-intent id 'query text #f count 0))
      (text-result
       (format "Watch ~a" id)
       (list (format "~a — ~a row~a now; changes report at each boundary"
@@ -1448,11 +1464,23 @@
      (define key (relation-info-version-key relation))
      (unless (string? key)
        (error 'watch "~a has no VersionKey yet; run a program first" text))
-     (register-daemon-watch! s id key)
-     (hash-set! registry id (watch-intent id 'relation text key #f))
+     (register-daemon-watch! s id key #:level level)
+     (define flipped
+       (if (= level 1)
+           (session-set-scc-policy! s (string->symbol text) 'interpreted)
+           '()))
+     (hash-set! registry id (watch-intent id 'relation text key #f level))
      (text-result
       (format "Watch ~a" id)
-      (list (format "~a @ ~a — hits report at coherent barriers" text key))
+      (append
+       (list (format "~a @ ~a — hits report at coherent barriers~a"
+                     text key (if (= level 1) " · level 1" "")))
+       (if (null? flipped)
+           '()
+           (list (format "writer strat~a ~a pinned to the interpreter for future re-entries"
+                         (if (= (length flipped) 1) "um" "a")
+                         (string-join (map (lambda (n) (format "s~a" n)) flipped)
+                                      ", ")))))
       #:kind "watch")]))
 
 (define (unwatch-result state argument)
@@ -1482,9 +1510,10 @@
        (for/list ([intent (in-list intents)])
          (match (watch-intent-kind intent)
            ['relation
-            (format "~a  ~a @ ~a" (watch-intent-id intent)
+            (format "~a  ~a @ ~a~a" (watch-intent-id intent)
                     (watch-intent-target intent)
-                    (or (watch-intent-bound-key intent) "suspended"))]
+                    (or (watch-intent-bound-key intent) "suspended")
+                    (if (= (watch-intent-level intent) 1) " · level 1" ""))]
            ['query
             (format "~a  ~a — ~a row~a at the last boundary"
                     (watch-intent-id intent) (watch-intent-target intent)
@@ -1560,7 +1589,8 @@
                                 (watch-intent-id intent)
                                 (watch-intent-target intent))
                         notes))])
-            (register-daemon-watch! s (watch-intent-id intent) new-key)
+            (register-daemon-watch! s (watch-intent-id intent) new-key
+                                    #:level (watch-intent-level intent))
             (set-watch-intent-bound-key! intent new-key)
             (cons (format "watch ~a: rebound to ~a @ ~a"
                           (watch-intent-id intent)
@@ -2071,9 +2101,10 @@
        (list "no resident strata; run a program first")
        (append
         (for/list ([r (in-list rows)])
-          (match-define (list scc hash tier cached) r)
-          (format "s~a  ~a  ~a~a"
+          (match-define (list scc hash tier cached policy) r)
+          (format "s~a  ~a  ~a~a~a"
                   scc hash (tier-label tier)
+                  (if (eq? policy 'interpreted) "  · debug" "")
                   (if (null? cached)
                       ""
                       (format "  · cache: ~a"
@@ -2105,7 +2136,7 @@
                rows)
         (error 'code "no resident stratum matches ~a (see `tiers`)"
                requested)))
-  (match-define (list scc hash tier cached) row)
+  (match-define (list scc hash tier cached policy) row)
   (define plan-path (format "build/~a.plan" hash))
   (define plan
     (and (file-exists? plan-path)
@@ -2138,7 +2169,10 @@
   (text-result
    (format "Code · s~a" scc)
    (append
-    (list (format "stratum ~a · running ~a" hash (tier-label tier))
+    (list (format "stratum ~a · running ~a~a" hash (tier-label tier)
+                  (if (eq? policy 'interpreted)
+                      " · pinned interpreted (debug)"
+                      ""))
           (format "cache: ~a"
                   (if (null? cached)
                       "empty"
@@ -3329,14 +3363,56 @@
                    "run tests/reach.slog"
                    "table (hop2 int int) rule (hop2 X Z) <-- (edge X Y) (edge Y Z)"
                    "tiers"
+                   ;; T5 slice (a): the level-1 intent pins path's writer
+                   "watch path level 1"
+                   "watch ?count (path X Y) level 1"
+                   "tiers"
                    "code s2"
                    "code nope"
                    ":quit")))])
     (check-regexp-match #px"◆ Tiers\n  no resident strata" transcript)
     (check-regexp-match #px"s0  [0-9a-f]+  interp  · cache: plan" transcript)
     (check-regexp-match #px"3 strata · 3 interp" transcript)
+    ;; T5 slice (a): the level-1 registration surface under interp
+    (check-regexp-match
+     #px"◆ Watch w1\n  path @ v1:[^\n]* — hits report at coherent barriers · level 1\n  writer stratum s1 pinned to the interpreter"
+     transcript)
+    (check-regexp-match #px"s1  [0-9a-f]+  interp  · debug  · cache: plan"
+                        transcript)
+    (check-regexp-match
+     #px"query watches are client-side re-counts; level 1 applies to relation watches"
+     transcript)
     ;; the scratch stratum's card: rung, cached artifacts, plan shape
+    ;; (unchanged by the policy column)
     (check-regexp-match
      #px"◆ Code · s2\n  stratum [0-9a-f]+ · running interp\n  cache: plan\n  flavor: normal · abi 1 · [0-9]+ relations · 1 rule variants\n  dynamic: hop2"
      transcript)
-    (check-regexp-match #px"no resident stratum matches nope" transcript)))
+    (check-regexp-match #px"no resident stratum matches nope" transcript))
+
+  ;; T5 slice (a), the flip end to end: under SLOG_OPT=0 the strata
+  ;; register NATIVE; a level-1 watch pins path's writer to the
+  ;; interpreter; a direct clear-and-rerun re-entry then carries the
+  ;; canonical plan through the executor-blind entry path (a bogus
+  ;; artifact would refuse loudly), and the closure recomputes exactly.
+  (let ([o0-environment (environment-variables-copy test-environment)])
+    (environment-variables-set! o0-environment #"SLOG_OPT" #"0")
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables o0-environment])
+      (define state (make-server-state))
+      (define (run! line) (dispatch-command state line))
+      (void (run! "run tests/reach.slog"))
+      (void (run! "watch path level 1"))
+      (define rs (current-repl-session state))
+      (define s (repl-session-session rs))
+      (define pinned
+        (for/list ([row (in-list (session-tiers s))]
+                   #:when (eq? (fifth row) 'interpreted))
+          row))
+      (check-equal? (length pinned) 1)
+      ;; native rung, interpreted policy: exactly the flip case
+      (check-not-false (memq (third (first pinned)) '(o0 o2)))
+      (session-rerun! s 'edge)
+      (check-regexp-match
+       #px"6 rows match"
+       (string-join (hash-ref (run! "?count (path X Y)") 'lines '()) "\n"))
+      (close-server-session! state))))
