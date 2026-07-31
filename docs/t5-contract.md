@@ -116,3 +116,65 @@ it.
 Counted-sidecar preview/apply (lifting §7.3) — post-M7 milestone, not a
 rider.  `whatif` cones and branching — R5.  T6 transactional mid-read
 replacement — after T5.  Derived/parameterized watches — W5′.
+
+## 6. Substrate notes (survey 2026-07-31; file:line as of db6b57f)
+
+What exists, what is missing, and the review questions the gaps raise.
+
+- **`(level 1)` is genuinely additive**: watch registration parses
+  through a strict allow-list (`collect_fields`, slogd.cpp:1861 — one
+  token to add), `WatchSpec` lives on Database (database.h:2674) with a
+  positional brace-init in `addWatch` (database.h:4284 — append the
+  field there too or it silently zero-inits).  Level-0 test lines stay
+  byte-identical.
+- **No daemon-side epoch flavor survives install.**
+  `SealedKernelPlan::flavor` (plan.h:319) is dropped after
+  `install_*_stratum`; `Stratum` retains only
+  `semantic_instance`/`transient_instance` booleans
+  (database.h:2321,2324).  The `level-1-unwatchable` refusal therefore
+  has nothing to read today ⇒ slice (a) RETAINS the install flavor on
+  `Stratum` (the daemon already re-derives it from the artifact stem,
+  plan-count.cpp:1548).
+- **The native→interp flip already works and nothing refuses it**: the
+  upgrade entry path is executor-blind (`beginStratum` name+position
+  match, daemon.h:641; `clearForUpgrade` database.h:2377; idempotent
+  push).  A `.plan` re-sent for a native stratum parked at
+  `RUN_AT_BOUNDARY` installs through `maybe_interp_plan_plugin`
+  (slogd.cpp:106) — T3a's swap ridden in reverse, confirmed.  Caveat: a
+  stratum already at fixpoint falls through to `fresh` (a NEW pipeline
+  entry, not a flip) — the flip must catch the SCC parked.
+- **The daemon has no per-SCC executor/policy state** — the tier lives
+  only in the client's `sinfo` box.  REVIEW QUESTION 1: the `auto`/
+  `interpreted` policy's home.  Proposed: CLIENT-side (the session
+  already owns artifact choice and drives every re-entry; `debug-on`
+  marks the sinfo so future re-entries send the `.plan`, and flips a
+  parked native SCC immediately) — the daemon-side `debug-on`/`debug-off`
+  wire verbs then stay PARKED until slice (b) needs a daemon-side
+  capture toggle, which may be a plan-install argument instead.
+- **REVIEW QUESTION 2: the refusal's firing point.**  Registration is
+  VersionKey-bound while epochs are temporal, so
+  `level-1-unwatchable` cannot fire at registration in general.
+  Proposed: a `(level 1)` spec is accepted; during non-monotone strata
+  (flavor ≠ normal/delta, or transient) its hits report exactly as
+  level 0 and the pre-commit gate never engages; the STRUCTURED refusal
+  fires when a level-1-only continuation is requested against such an
+  epoch (replay/step at a maintenance pause).  Alternative: refuse
+  registration when the bound relation `isCounted()` — rejected as too
+  strong (counted relations still run monotone epochs).
+- **Legacy-protocol sessions cannot express a level-1 pause** — the
+  frozen 8-field positional record has no cause slot (daemon.h:1654).
+  Level-1 is command-protocol-only; the legacy path keeps level-0
+  semantics untouched.
+- **Slice (b)'s site is `ReadCompletion`** (database.h:8300, where
+  `finalizeAll()` runs at :8318) — NOT `EndIterCompletion`
+  (database.h:8331), whose watch evaluation runs inside a `noexcept`
+  barrier functor after delta finalization; a settle preview there
+  would be too late for cheap replay and could not throw.
+- **Watch verbs are not `refuseIfSuspended`-guarded** (that is why gate
+  S could register at a parked barrier); a level-1 registration that
+  must flip an SCC is the first watch-family command needing a
+  park-position check.
+- `watch_barrier_seq` is per-Database and monotone across all strata
+  (database.h:4314) — it cannot identify which epoch a hit belongs to;
+  slice (b)'s correlation needs the suspended stratum's identity, which
+  `suspendedStratum()` provides.
