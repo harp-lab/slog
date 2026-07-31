@@ -1602,6 +1602,25 @@ freeze/import with image-based compiler goldens and a first Slog-written
 lint, **T3b** full tier policy (promotion budgets, profile sidecars, core
 arbiter).
 
+**Checkpoint (2026-07-31; W4′ entry).**  Two arc-entry items done.  (1)
+The wandering crash flake open since the N3 merge is root-caused and
+fixed (db6b57f): the `sha` package's `_bytes` RETURN conversion scans
+past every 32-byte digest for a NUL terminator — ~88% of calls overread
+the heap, a page-edge hit was the SIGSEGV; `compiler/sha256.rkt` binds
+libcrypto correctly (digest via the sized output argument, returned
+pointer dropped), byte-identical digests so no cache churn; 40-iteration
+soak of the three strike cases, 0 strikes.  N4 landed pre-gate-S, so
+this wave's parallel track is T4/RF2/T3b.  (2)
+[t5-contract.md](t5-contract.md) DRAFTED (pending review): monotone-only
+pins with structured `level-1-unwatchable` refusals, the one-pause-record
+rule, settle/apply factoring (struct settle co-designed with the SHIPPED
+M5 split), interpreter-first with the native→interp flip riding T3a's
+swap seam in reverse, reserved-verb activation, and four slices —
+(a) policy/registration/refusals, (b) the pre-commit gate with
+plain-table WatchSettle, (c) replay + stepping over gate S's
+session-pause-hook seam, (d) proof surfaces + non-plain settles + exit
+audit.
+
 **W5′ — the capstone.** **T6** transactional mid-read restart; **N5 + stats
 steps 5–7**; **RF5** draft images and activation wired to writer/cone
 healing — the point where the two long arcs merge and a program edit becomes
