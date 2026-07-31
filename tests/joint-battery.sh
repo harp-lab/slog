@@ -8,9 +8,13 @@
 #   item 2: scratch over counted state (routes + sidecar equality)
 #   item 4: level-0 watches through counted maintenance epochs
 #
-# (item 3, quiescence admission over counted epochs, lives in the
-# protocol battery's driving style and joins here as it lands; item 5 is
-# the SLOG_OPT=interp union sweep, run at gate closure.)
+#   item 3: quiescence -- queries admitted against a PARKED counted epoch
+#           (the lease/stale-generation/prepared-boundary refusals are the
+#           protocol battery's pins; the write/intern refusal class is
+#           deliberately unreachable from this dispatcher -- slogd.cpp
+#           query_admission documents why)
+#
+# (item 5 is the SLOG_OPT=interp union sweep, run at gate closure.)
 #
 #   tests/joint-battery.sh          (expects a warm build/ cache)
 
@@ -105,6 +109,17 @@ else
   FAIL=$((FAIL+1))
 fi
 expect "s2-survivor-count" "6 rows match" out/joint-s2.log
+
+# --- item 3: quiescence -- a query at the parked barrier of a counted epoch --
+timeout 900 racket tests/joint/quiescence.rkt > out/joint-s3.log 2>&1
+
+# the watch parks the delete epoch at its barrier(s)
+expect_re "s3-epoch-parked" '\(quiescence \(pauses [1-9][0-9]*\)\)' \
+  out/joint-s3.log
+# the query issued FROM the parked barrier is admitted (quiescent-master
+# class) and answers from committed masters
+expect "s3-barrier-admitted" '(barrier-query "6 rows match")' out/joint-s3.log
+expect "s3-settled-agrees" '(settled-query "6 rows match")' out/joint-s3.log
 
 echo
 echo "$PASS passed, $FAIL failed"

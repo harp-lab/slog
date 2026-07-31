@@ -10,7 +10,15 @@
 ;; and exchanges Content-Length-framed JSON messages.
 
 (provide serve-repl
-         plain-transcript) ; deterministic server-contract harness
+         plain-transcript  ; deterministic server-contract harness
+         ;; stateful harness surface (gate S / R4 batteries): a server
+         ;; state plus the single command entry point, for tests that
+         ;; must interleave commands with session-level hooks (e.g.
+         ;; querying a parked epoch from session-pause-hook).  This is a
+         ;; test surface, not a second frontend: rendering stays with
+         ;; plain-transcript and the Rust client.
+         make-server-state
+         dispatch-command)
 
 (require json
          racket/cmdline
@@ -142,6 +150,10 @@
    #f
    (make-hash)
    (make-hash)))
+
+;; a fresh, connection-less server state -- the stateful harness entry
+(define (make-server-state)
+  (server-state (make-hash) #f #f #f (make-hash)))
 
 (define (current-repl-session state)
   (and (server-state-current state)

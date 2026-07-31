@@ -94,6 +94,7 @@
          session-scratch-clear! ; R3: retract the whole layer
          session-tiers          ; R3: per-stratum execution rungs + cache
          session-pending-summary ; gate S1: staged-but-unflushed changes
+         session-pause-hook     ; gate S3/R4: observe a parked epoch
          (struct-out scratch-event)
          session-close!
          inline-batch-max)
@@ -299,6 +300,15 @@
 
 (define (echo! s line) ((session-echo s) line))
 
+;; Gate S item 3 (and R4's future stepping seam): when set, called with
+;; (s pause-line) at every driver pause BEFORE the automatic continue.
+;; The daemon dispatches commands synchronously between continues, so the
+;; hook runs against a PARKED epoch -- masters immutable, queries and
+;; read-only actions admissible (execution-tiers §6.3's quiescent-master
+;; classes).  The driver continues exactly as before when the hook
+;; returns; the hook must not send its own (continue).
+(define session-pause-hook (make-parameter #f))
+
 ;; Drive the current stratum to fixpoint: echo every line; answer
 ;; (paused ...) with (continue); error on (error ...) or EOF.
 ;; `upgrade` (T3a) is this stratum's artifact-arrival closure, or #f.  A
@@ -317,6 +327,8 @@
       [(regexp-match? #px"^\\(fixpoint " line) (echo! s line)]
       [(regexp-match? #px"^\\(paused " line)
        (echo! s line)
+       (when (session-pause-hook)
+         ((session-pause-hook) s line))
        (cond
          [(regexp-match? #px"memory\\)\\s*$" line)
           (error 'session (format "out of memory: ~a" line))]
