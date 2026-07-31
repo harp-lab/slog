@@ -27,7 +27,7 @@
 (require racket/future)   ; processor-count
 (require racket/random)   ; crypto-random-bytes
 (require file/gunzip)     ; gzipped importer inputs
-(require sha)
+(require "sha256.rkt")
 
 (define-runtime-path daemon-dir "../daemon")
 (define-runtime-path compiler-dir ".")

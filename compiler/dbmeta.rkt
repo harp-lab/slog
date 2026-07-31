@@ -74,7 +74,7 @@
 (require "tools.rkt")            ; compiler-sources-fingerprint, call-with-atomic-output
 (require "params.rkt")           ; semijoin-filters-enabled (result-affecting)
 (require "catalog.rkt")          ; persisted N2 BoundaryPlan validation
-(require sha)
+(require "sha256.rkt")
 (require racket/hash)
 
 ;; ---------------------------------------------------------------------------

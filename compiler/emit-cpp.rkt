@@ -27,7 +27,7 @@
 (require "ir-shared.rkt")
 (require "ir-stack.rkt")
 (require (only-in "type-system.rkt" prim-error-arms))  ; counted-head arms (_count)
-(require sha)   ; content-hashed cluster names + stable bucketing (P2)
+(require "sha256.rkt")   ; content-hashed cluster names + stable bucketing (P2)
 
 (define (repeat s n)
   (if (= n 0)

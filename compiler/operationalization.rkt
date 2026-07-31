@@ -25,7 +25,7 @@
 (require "join-actions.rkt")
 (require "primitives.rkt")    ; prim-partial? (letp lowering)
 (require "type-system.rkt")   ; rule-has-fallible-prims?, prim-error-arms
-(require sha)                 ; content-derived constant global names (P2)
+(require "sha256.rkt")                 ; content-derived constant global names (P2)
 
 ;; The rule's "basename:line" (1-based), baked into any runtime-error
 ;; (error_spec ...) it reports.  Mirrors compile.rkt's rule-location; basename

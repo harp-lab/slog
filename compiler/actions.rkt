@@ -27,7 +27,7 @@
 
 (require "tools.rkt")
 (require "utils.rkt")
-(require sha)
+(require "sha256.rkt")
 
 ;; Shared value encoder for tuple-carrying actions (add/del/stage/lookup):
 ;; strings/symbols intern, small ints NaN-box, bignums normalize through the

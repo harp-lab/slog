@@ -32,7 +32,7 @@
 (require "parser.rkt")   ; current-source-override
 (require "tools.rkt")    ; daemon-headers-fingerprint
 (require "ir-shared.rkt")
-(require sha)
+(require "sha256.rkt")
 
 (define (bracket-sym? h)
   (and (symbol? h) (equal? (symbol->string h) "[]")))

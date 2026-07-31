@@ -19,7 +19,7 @@
 (require racket/runtime-path
          racket/future           ; processor-count
          racket/random)          ; crypto-random-bytes
-(require sha)
+(require "sha256.rkt")
 
 (define-runtime-path config-dir "../config")
 (define-runtime-path slog-main "run.rkt")

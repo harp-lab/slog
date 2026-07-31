@@ -51,7 +51,7 @@
 (require "ir-stack.rkt")
 (require "tools.rkt")
 (require "freeze.rkt")
-(require sha)
+(require "sha256.rkt")
 
 ;; -----------------------------------------------------------------------
 ;; Pass drivers, contract-checked once per program/stratum.
