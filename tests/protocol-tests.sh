@@ -118,6 +118,21 @@ expect    "watch-level1-added" '(watch-added (id "w4") (version-key "w.edge.0") 
 expect    "watch-level0-explicit" '(watch-added (id "w5") (version-key "w.edge.0") (watches 2))' out/proto-watch.log
 expect_rx "watch-level-refused" '\(refused parse [0-9]+ \(verb watch\) \(detail "level must be 0 or 1"\)\)' out/proto-watch.log
 
+# T5 slice (b): prepare-time registration -- a watch binds a PREPARED
+# successor key through the private overlay, and watch verbs are exempt
+# from the boundary lease (session debugging state); ordinary catalog
+# access under the lease stays refused exactly as before.
+racket tests/api/drive.rkt \
+  "$W_PREPARE" \
+  '(watch (id "g1") (version-key "w.edge.0") (level 1))' \
+  '(catalog)' \
+  '(commit-boundary (generation 0) (boundary "w.b0"))' \
+  '(unwatch (id "g1"))' \
+  > out/proto-watch-lease.log 2>&1
+expect    "watch-under-lease" '(watch-added (id "g1") (version-key "w.edge.0") (watches 1) (level 1))' out/proto-watch-lease.log
+expect_rx "catalog-still-leased" '\(refused boundary-admission [0-9]+ \(verb catalog\) \(boundary "w\.b0"\)\)' out/proto-watch-lease.log
+expect    "watch-lease-unwatch" '(watch-removed (id "g1") (watches 0))' out/proto-watch-lease.log
+
 # --- 3a. N3-A transaction + N3-B durable boundary history -------------------
 # Prepare eagerly constructs an empty slot but keeps both its VersionKey and
 # latest binding private. Ordinary catalog access is refused under the lease;

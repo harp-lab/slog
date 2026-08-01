@@ -96,6 +96,7 @@
          session-set-scc-policy! ; T5: pin a relation's writers to an executor
          session-pending-summary ; gate S1: staged-but-unflushed changes
          session-pause-hook     ; gate S3/R4: observe a parked epoch
+         session-prepare-hook   ; T5: bind watches before the run (R4 break)
          (struct-out scratch-event)
          session-close!
          inline-batch-max)
@@ -306,6 +307,14 @@
         (loop next))))
 
 (define (echo! s line) ((session-echo s) line))
+
+;; T5 slice (b), prepare-time registration (the R2 leftover): when set,
+;; called with (s boundary-plan) after prepare-boundary succeeds and
+;; BEFORE the group's strata run.  A level-1 watch that should observe
+;; the run must bind the prepared successor key here -- the daemon
+;; resolves prepared keys through its private overlay, and watch verbs
+;; are exempt from the boundary lease (session debugging state).
+(define session-prepare-hook (make-parameter #f))
 
 ;; Gate S item 3 (and R4's future stepping seam): when set, called with
 ;; (s pause-line) at every driver pause BEFORE the automatic continue.
@@ -2326,6 +2335,13 @@
                                      aborted)))
                     (set-session-prepared-boundary! s #f))
                   (raise failure))])
+            ;; T5: prepare-time watch registration -- the client binds
+            ;; level-1 intents to this plan's successor keys so the
+            ;; pre-commit gate observes the run about to happen.  Inside
+            ;; the abort handler: a hook failure burns the reservation
+            ;; like any other prepare-time fault.
+            (when (session-prepare-hook)
+              ((session-prepare-hook) s (car bps)))
             (for ([dir (in-list g-frozen)])
               (session-action! s `(import-path ,dir)))
             (for ([sb (in-list g-strata)])

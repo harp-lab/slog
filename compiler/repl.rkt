@@ -1731,10 +1731,41 @@
   (assemble-change operation target status requested events before after
                    revision counts))
 
+;; T5 slice (b): before a prepared run's strata execute, rebind each
+;; level-1 RELATION intent whose target the plan CREATES to the successor
+;; VersionKey -- that is what lets the pre-commit gate observe the run
+;; (a semantic run always writes successor instances).  Retained
+;; relations keep their bindings; failures degrade to the post-event
+;; rebind (the gate misses that run, honestly).
+(define (prepare-rebind-level1! rs plan)
+  (define registry (repl-session-watches rs))
+  (when (positive? (hash-count registry))
+    (define s (repl-session-session rs))
+    (define actions
+      (match (assq 'actions (cdr (boundary-plan->datum plan)))
+        [(cons _ acts) acts]
+        [_ '()]))
+    (for ([act (in-list actions)])
+      (match act
+        [`(create (qname ,name) ,key ,_ ,_)
+         (for ([intent (in-hash-values registry)]
+               #:when (and (eq? (watch-intent-kind intent) 'relation)
+                           (= (watch-intent-level intent) 1)
+                           (equal? (watch-intent-target intent) (~a name))))
+           (with-handlers ([exn:fail? void])
+             (silent-unwatch! s (watch-intent-id intent))
+             (register-daemon-watch! s (watch-intent-id intent) (~a key)
+                                     #:level 1)
+             (set-watch-intent-bound-key! intent (~a key))))]
+        [_ (void)]))))
+
 (define (capture-semantic-change state rs operation status requested thunk)
   (define s (repl-session-session rs))
   (define before (catalog-size-snapshot s))
-  (define-values (value events) (capture-session-events state thunk))
+  (define-values (value events)
+    (parameterize ([session-prepare-hook
+                    (lambda (_s plan) (prepare-rebind-level1! rs plan))])
+      (capture-session-events state thunk)))
   (define after (catalog-size-snapshot s))
   (define change
     (make-change s operation (or (repl-session-database rs) "scratch")
@@ -3415,4 +3446,87 @@
       (check-regexp-match
        #px"6 rows match"
        (string-join (hash-ref (run! "?count (path X Y)") 'lines '()) "\n"))
-      (close-server-session! state))))
+      (close-server-session! state)))
+
+  ;; T5 slice (b): the pre-commit gate end to end.  A level-1 watch binds
+  ;; the prepared successor key at prepare time (the session-prepare-hook
+  ;; rebind), the run's read completes with an accepted candidate and
+  ;; parks BEFORE finalize (phase read + watch cause), a query issued from
+  ;; the park answers from COMMITTED masters only, and the auto-continue
+  ;; commits exactly once.  Controls: a level-0 watch never gates a run,
+  ;; and a maintenance epoch never gates a level-1 watch (the ratified
+  ;; §7.3 downgrade -- its hits stay at iteration barriers).
+  (let ([interp-environment (environment-variables-copy test-environment)])
+    (environment-variables-set! interp-environment #"SLOG_OPT" #"interp")
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables interp-environment])
+      ;; watched run: gate park, paused query, commit
+      (define state (make-server-state))
+      (define (run! line) (dispatch-command state line))
+      (void (run! "run tests/reach.slog"))
+      (void (run! "watch path level 1"))
+      (define gate-lines '())
+      (define paused-answer #f)
+      (parameterize ([session-pause-hook
+                      (lambda (_s line)
+                        (when (and (regexp-match? #px"\\(phase read\\)" line)
+                                   (regexp-match? #px"\\(cause \\(watch" line))
+                          (set! gate-lines (cons line gate-lines))
+                          (unless paused-answer
+                            (set! paused-answer
+                                  (string-join
+                                   (hash-ref (run! "?count (path X Y)")
+                                             'lines)
+                                   " | ")))))])
+        (void (run! "rule (path 99 99) <-- (edge 1 2)")))
+      (check-equal? (length gate-lines) 1)
+      (check-regexp-match
+       #px"\\(paused \\(generation [0-9]+\\) \\(scc [0-9]+\\) \\(stratum \"[0-9a-f]+\"\\) \\(iteration 0\\) \\(phase read\\) \\(settled #f\\)[^\n]*\\(cause \\(watch \\(watch-id \"w1\"\\)\\)\\)\\)"
+       (first gate-lines))
+      ;; committed masters only: the candidate is invisible at the park
+      (check-regexp-match #px"6 rows match" paused-answer)
+      (check-regexp-match
+       #px"7 rows match"
+       (string-join (hash-ref (run! "?count (path X Y)") 'lines) " | "))
+      (void (run! "dump ?(path X Y) to out/t5b-watched.csv"))
+      (void (run! ":quit"))
+      ;; unwatched run: byte-equal committed content
+      (define state2 (make-server-state))
+      (define (run2! line) (dispatch-command state2 line))
+      (void (run2! "run tests/reach.slog"))
+      (void (run2! "rule (path 99 99) <-- (edge 1 2)"))
+      (void (run2! "dump ?(path X Y) to out/t5b-plain.csv"))
+      (void (run2! ":quit"))
+      (check-equal? (file->string "out/t5b-watched.csv")
+                    (file->string "out/t5b-plain.csv"))
+      (delete-file "out/t5b-watched.csv")
+      (delete-file "out/t5b-plain.csv")
+      ;; control 1: a level-0 watch never gates a run (rebinds after it)
+      (define state3 (make-server-state))
+      (define (run3! line) (dispatch-command state3 line))
+      (void (run3! "run tests/reach.slog"))
+      (void (run3! "watch path"))
+      (define l0-gates 0)
+      (parameterize ([session-pause-hook
+                      (lambda (_s line)
+                        (when (regexp-match? #px"\\(phase read\\)" line)
+                          (set! l0-gates (add1 l0-gates))))])
+        (void (run3! "rule (path 99 99) <-- (edge 1 2)")))
+      (check-equal? l0-gates 0)
+      ;; control 2: a maintenance epoch never gates a level-1 watch; its
+      ;; hits report at iteration barriers with counts truthful
+      (define maint-gates 0)
+      (define maint-result #f)
+      (void (run3! "watch path level 1"))
+      (parameterize ([session-pause-hook
+                      (lambda (_s line)
+                        (when (and (regexp-match? #px"\\(phase read\\)" line)
+                                   (regexp-match? #px"\\(cause \\(watch" line))
+                          (set! maint-gates (add1 maint-gates))))])
+        (set! maint-result (run3! "add edge 4 1")))
+      (check-equal? maint-gates 0)
+      (define maint-text
+        (string-join (hash-ref maint-result 'lines) "\n"))
+      (check-regexp-match #px"watch w2: .*hit" maint-text)
+      (check-regexp-match #px"counts valid" maint-text)
+      (void (run3! ":quit")))))

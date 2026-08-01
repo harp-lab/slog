@@ -510,7 +510,11 @@ public:
     {
       Stratum* current =
         const_cast<Stratum*>(database->suspendedStratum());
-      if (database->suspendPosition() == RUN_MID_READ)
+      // A pre-commit gate park (T5) settles exactly like a mid-read one:
+      // the resume commits the deferred finalize, then drives to a clean
+      // boundary the abandon below can accept.
+      if (database->suspendPosition() == RUN_MID_READ
+          || database->suspendPosition() == RUN_READ_COMPLETE)
       {
         RunBudget settle;
         settle.max_ms = UINT64_MAX;
@@ -1320,6 +1324,16 @@ public:
     // Count/recount incarnations fold sidecars without touching membership:
     // rank marking must neither stamp nor invalidate under them (M7).
     s->transient_instance = next_push_transient;
+    // T5: retain the epoch flavor.  Plan installs set the sealed plan's
+    // exact string before pushing; the fallback here covers native .so
+    // installs, where only the arming is known -- including a NORMAL
+    // artifact re-entered under maintenance arming (clear-and-rerun),
+    // whose EPOCH is a maintenance epoch and must not engage the gate.
+    if (s->flavor == "normal" || s->flavor == "delta")
+    {
+      if (next_push_transient) s->flavor = "count";
+      else if (next_push_maintenance) s->flavor = "maint";
+    }
     next_push_maintenance = false;
     // Capture the exact output instances BEFORE positional resolution is
     // reset.  Several strata may name the same version; aliases do not mint
@@ -1621,8 +1635,12 @@ public:
         // All watches that hit at this barrier aggregate into ONE pause
         // (repl.md §6).  A watch citation outranks the budget reason: the
         // client asked to be told about this barrier, and the record already
-        // states which barrier and what settled.
-        std::vector<std::string> hits = database->takeWatchHits();
+        // states which barrier and what settled.  A pre-commit gate park
+        // (T5) cites its settled level-1 watches the same way; phase "read"
+        // with a watch cause IS the gate record (docs/t5-contract.md §1).
+        std::vector<std::string> hits = st.where == RUN_READ_COMPLETE
+          ? database->takeGateHits()
+          : database->takeWatchHits();
         if (!hits.empty())
         {
           cause.kind = protocol::PauseCauseKind::watch;

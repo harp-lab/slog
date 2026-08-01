@@ -103,12 +103,40 @@ it.
   byte-identical; REPL battery pins the spelling, the pin, tiers'
   `· debug` column, and the flip end to end (native-registered strata,
   plan re-entry, exact recompute).
-- **(b) The gate.**  `RUN_READ_COMPLETE`, candidate capture, plain-table
-  `WatchSettle`, the pre-commit pause record, `commit` and paused
-  observation (no replay yet).  Exit: a REPL transcript drives add →
-  level-1 watch hit → pre-commit pause → paused `?` queries →
-  commit; differential: committed content byte-equal to an unwatched
-  run; pause/protocol batteries extended.
+- **(b) The gate.**  *(Shipped 2026-07-31; two additions the
+  choreography forced, both flagged for review.)*  `RUN_READ_COMPLETE`
+  parks at `ReadCompletion` before the deferred finalize (a third state —
+  `read_suspended` definitionally requires unfinished work); the resume
+  finalizes single-threaded in `continueStratum` before the parallel
+  region and enters at intern — plain `(continue)` is the commit, the
+  t0-ratified spelling.  Plain-table `WatchSettle`
+  (`hasAcceptedCandidate`: send-shard scan + any-full-ordering absence
+  probe through a `makeIndexRec`-style contains ladder); `gate_hits`
+  kept apart from `watch_hits` so level-0 park triggers and dedup stay
+  byte-identical; gate-settled watches are `gate_owned` for one
+  iteration so nothing reports twice.  `Stratum` retains its install
+  flavor (exact from sealed plans; arming-derived for native installs —
+  a NORMAL artifact re-entered under maintenance arming is stamped
+  "maint", its epoch's truth).  FORCED ADDITION 1: **prepare-time watch
+  registration** (the R2 leftover) — a semantic run writes successor
+  instances, so without it the gate is unreachable; `session-prepare-
+  hook` + the REPL's level-1 rebind bind the prepared key, resolved
+  through the private overlay (`watchTarget`), with `watch`/`unwatch`
+  exempt from the boundary lease (session debugging state).  FORCED
+  ADDITION 2: **gate-park lease reads** — `query`/`query-page`/
+  `query-cancel`/`catalog` are admitted under the lease ONLY while
+  parked at `RUN_READ_COMPLETE`; both the catalog snapshot and the bound
+  keys are committed truth, which is §7.2's "remain paused and inspect"
+  made concrete.  The `level-1-unwatchable` refusal moves to slice (c)
+  with `replay`/stepping — the ratified firing point (level-1-only
+  continuations) has no reachable surface before them; meanwhile the
+  §7.3 downgrade is behavioral: maintenance epochs never engage the gate
+  and level-1 hits stay at iteration barriers (battery-pinned).  Exit
+  (met): REPL battery drives run → prepare-rebind → gate park (phase
+  read + watch cause, iteration 0) → paused `?count` answering
+  committed masters → commit; committed content byte-equal to an
+  unwatched run; level-0 and maintenance controls; protocol pins for
+  lease registration + still-refused catalog outside the park.
 - **(c) Replay + stepping.**  `replay` (shard/debug-record disposal,
   same-read rerun), the interactive pause state in the REPL server over
   `session-pause-hook`, `step*`/`finish`/`frames`/`up`/`down`.  Exit:

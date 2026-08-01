@@ -406,10 +406,13 @@ static const char* query_status_name(slog::query::Status status)
 static slog::query::Admission query_admission(slog::Database* db)
 {
     // Commands are dispatched synchronously between continue calls, so the
-    // only live RunState observations are idle or one of the two parked read
-    // snapshots.  The engine retains read_complete/write_or_intern labels for
-    // the future pre-commit dispatcher; do not fabricate either state here.
+    // live RunState observations are idle, the two parked read snapshots,
+    // and (T5) the pre-commit gate park -- masters immutable in all four
+    // (execution-tiers §6.3).  The write_or_intern refusal label remains
+    // unreachable from this dispatcher by design; do not fabricate it.
     if (!db->isSuspended()) return slog::query::Admission::idle;
+    if (db->suspendPosition() == slog::RUN_READ_COMPLETE)
+        return slog::query::Admission::read_complete;
     return db->suspendPosition() == slog::RUN_MID_READ
          ? slog::query::Admission::mid_read
          : slog::query::Admission::boundary;
@@ -1619,7 +1622,25 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
         verb == "scc-begin" || verb == "scc-seal"
         || verb == "stratum-begin" || verb == "stratum-add-scc"
         || verb == "stratum-seal";
-    if (d->boundaryPrepared() && !boundary_verb && !builder_verb)
+    // T5: watches are session debugging state (repl.md §6 -- never saved,
+    // never part of any hash, never a catalog read), and prepare-time
+    // registration is what lets a level-1 watch observe the run that
+    // creates its successor version (t5-contract §1).  Queries -- and the
+    // catalog read their planner binds against -- are additionally
+    // admitted while the run is PARKED AT THE PRE-COMMIT GATE: that park
+    // is exactly the "remain paused and inspect" state (execution-tiers
+    // §7.2), masters are immutable, and both the catalog snapshot and the
+    // bound keys are COMMITTED truth (the private boundary replaces the
+    // catalog only at commit).  Every other ordinary command stays
+    // refused until commit/abort, exactly as before.
+    const bool watch_verb = verb == "watch" || verb == "unwatch";
+    const bool gate_parked_read =
+        (verb == "query" || verb == "query-page" || verb == "query-cancel"
+         || verb == "catalog")
+        && d->db()->isSuspended()
+        && d->db()->suspendPosition() == slog::RUN_READ_COMPLETE;
+    if (d->boundaryPrepared() && !boundary_verb && !builder_verb
+        && !watch_verb && !gate_parked_read)
     {
         refuse(d, "boundary-admission", "(verb " + verb + ") (boundary "
                + slog::protocol::quoteString(d->preparedBoundaryKey()) + ")");
@@ -1921,7 +1942,9 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
                 return;
             }
         }
-        if (!d->db()->hasVersionKey(version_key))
+        // watchTarget also resolves a PREPARED successor key (T5: the
+        // registration that lets the gate observe the creating run)
+        if (d->db()->watchTarget(version_key) == nullptr)
         {
             refuse(d, "watch-binding",
                    "(verb watch) (detail "

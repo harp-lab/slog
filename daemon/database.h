@@ -154,7 +154,29 @@ struct TupleRef
 // One bucket of tuple references.
 using RefVec = std::vector<TupleRef>;
 
-  
+// T5 (docs/t5-contract.md §1): runtime-arity master-index point probe,
+// mirroring makeIndexRec's dispatch ladder (index.h).  `key` is already
+// permuted into the index's ordering and `bucket` already selected by the
+// operators' convention (buckethash of the ordering's lead column).
+// Instantiated only in the daemon binary; generated code keeps its typed
+// compile-time probes.
+template <u16 A>
+inline bool masterContainsRec(u16 arity, Index* bucket, const u64* key)
+{
+  if constexpr (A == 0)
+  {
+    (void)arity; (void)bucket; (void)key;
+    return false;
+  }
+  else
+  {
+    if (arity != A) return masterContainsRec<A - 1>(arity, bucket, key);
+    typename BTreeIndex<A>::Key k;
+    for (u16 c = 0; c < A; ++c) k[c] = key[c];
+    return static_cast<BTreeIndex<A>*>(bucket)->contains(k);
+  }
+}
+
 class Relation
 {
 private:
@@ -310,6 +332,51 @@ public:
   std::vector<u64> tupleKey(const u64* t) const
   {
     return std::vector<u64>(t, t + arity);
+  }
+
+  // T5 slice (b), the plain-table settle half of the shared transition
+  // (docs/t5-contract.md §0.3): does this read's send-shard output hold a
+  // candidate ABSENT from the master -- i.e. one duplicate copy guaranteed
+  // to survive intern?  Runs at read-complete only: masters immutable,
+  // shards complete, the old delta not yet finalized.  tuple_mode narrows
+  // to one exact tuple.  ANY registered full ordering serves an absence
+  // probe (hasLiveTuple's precedent) -- plain tables need not hold an
+  // id-last "master" ordering at all.  A relation with no full index yet
+  // cannot be probed; answer no rather than park on an unverifiable claim.
+  bool level1Settleable()
+  {
+    return struct_id == 0 && !isLattice() && arity > 0
+           && getAnyIndex() != nullptr;
+  }
+  bool hasAcceptedCandidate(bool exact, const std::vector<u64>& t)
+  {
+    const std::vector<u16>* ordptr = getAnyIndex();
+    if (ordptr == nullptr || ordptr->size() != arity) return false;
+    const std::vector<u16>& ord = *ordptr;
+    Index** buckets = getIndex(ord, false);
+    u64 key[max_daemon_arity + 1];
+    for (auto& shard : send_shards)
+      for (InsertBatch* b : shard)
+      {
+        if (b->sign < 0 || b->kind != cnt_kind_none) continue;
+        for (u64 j = 0; j + arity <= b->usage; j += arity)
+        {
+          if (b->data[j] == slog_null) continue;   // masked, not a candidate
+          if (exact)
+          {
+            if (t.size() != arity) continue;
+            bool same = true;
+            for (u16 c = 0; c < arity && same; ++c)
+              same = (b->data[j + c] == t[c]);
+            if (!same) continue;
+          }
+          for (u16 c = 0; c < arity; ++c) key[c] = b->data[j + ord[c]];
+          if (!masterContainsRec<max_daemon_arity>(
+                arity, buckets[buckethash(key[0])], key))
+            return true;
+        }
+      }
+    return false;
   }
 
   bool hasLiveTuple(const u64* t)
@@ -2319,6 +2386,13 @@ public:
   // incarnations are maintenance executions and must never become another
   // writer merely because they were pushed through the scheduler.
   bool semantic_instance = true;
+  // T5 slice (b): the epoch flavor this INSTANCE runs under, retained at
+  // install (the sealed plan's exact string for plan installs; derived
+  // from the arming flags for native ones -- "maint"/"count" stand in
+  // when only the arming is known).  The pre-commit gate engages only for
+  // "normal"/"delta" semantic instances; survives clearForUpgrade so a
+  // hot-swapped stratum keeps its epoch identity.
+  std::string flavor = "normal";
   // Transient (count/recount) incarnations fold sidecars without mutating
   // membership; rank marking skips them entirely (M7).
   bool transient_instance = false;
@@ -2418,7 +2492,13 @@ public:
 enum RunPosition {
   RUN_FRESH        = 0,   // never started: promote initial delta, run iter 0
   RUN_AT_BOUNDARY  = 1,   // suspended after a full iteration (clean boundary)
-  RUN_MID_READ     = 2    // suspended mid read-phase (delta NOT finalized)
+  RUN_MID_READ     = 2,   // suspended mid read-phase (delta NOT finalized)
+  // T5 pre-commit gate (docs/t5-contract.md §1): the read COMPLETED but a
+  // level-1 watch settled accepted candidates, so finalizeAll was deferred.
+  // The old delta still drives an exact replay, candidates sit whole in the
+  // send shards, and no master or sidecar has changed.  A continue commits:
+  // the resume runs the deferred finalize and this iteration's intern.
+  RUN_READ_COMPLETE = 3
 };
 
 // The per-iteration decision made once, single-threaded, at the end-of-iter
@@ -2505,6 +2585,10 @@ struct RunState {
 
   // Set by ReadCompletion / EndIterCompletion, read by runLoop after barriers.
   bool read_suspended = false;
+  // T5: the read completed but the pre-commit gate parked before finalize.
+  // Distinct from read_suspended by construction -- a mid-read park requires
+  // unfinished work, this one requires NONE (ReadCompletion's finalize gate).
+  bool read_complete_parked = false;
   NextAction next_action = ACT_CONTINUE;
   // Snapshot of Database::externalPending() taken once per iteration (in
   // ReadCompletion, single-threaded) so every worker makes the SAME
@@ -2679,14 +2763,23 @@ private:
     std::vector<u64> tuple;    // exact-tuple appearance
     // 0 = notify at barriers (shipped semantics); 1 = additionally arm the
     // T5 pre-commit gate during monotone strata (docs/t5-contract.md).  At
-    // registration the levels differ only in this recorded intent; hits
-    // report identically until the gate lands, and during non-monotone
-    // strata a level-1 watch behaves exactly as level 0 by contract.
+    // registration the levels differ only in this recorded intent; during
+    // non-monotone strata a level-1 watch behaves exactly as level 0 by
+    // contract (the gate never engages there).
     u32 level = 0;
+    // The pre-commit gate evaluated this watch at THIS iteration's
+    // read-complete: the end-of-iteration level-0 evaluation skips it (one
+    // report per accepted change, at the earlier barrier), clearing the
+    // mark.  Only ever set for level-1 watches under monotone strata.
+    bool gate_owned = false;
     u64 last_barrier = 0;      // this watch already handled that barrier
   };
   std::vector<WatchSpec> watches;
   std::vector<std::string> watch_hits;
+  // T5: watch ids whose settle accepted candidates at the pre-commit gate.
+  // Kept apart from watch_hits so EndIterCompletion's boundary-park trigger
+  // and the level-0 dedup counters stay byte-identical for level-0 flows.
+  std::vector<std::string> gate_hits;
   u64 watch_barrier_seq = 0;
   // N3.1 logical catalog truth.  Prepare receives the complete output
   // catalog, so commit replaces these snapshots atomically with the name
@@ -4288,7 +4381,7 @@ public:
   {
     for (const WatchSpec& w : watches) if (w.id == id) return false;
     watches.push_back({id, version_key, tuple_mode, std::move(tuple),
-                       level, 0});
+                       level, false, 0});
     return true;
   }
 
@@ -4313,6 +4406,64 @@ public:
     return out;
   }
 
+  std::vector<std::string> takeGateHits()
+  {
+    std::vector<std::string> out;
+    out.swap(gate_hits);
+    return out;
+  }
+
+  // T5 prepare-time registration (the R2 leftover this slice forces): a
+  // semantic run writes SUCCESSOR instances, so a watch that should
+  // observe the run must bind the prepared boundary's key -- which lives
+  // in the private overlay until commit.  Resolution checks the committed
+  // map first, then the prepared boundary's created list (small, linear).
+  Relation* watchTarget(const std::string& version_key)
+  {
+    auto it = version_key_relations.find(version_key);
+    if (it != version_key_relations.end()) return it->second;
+    if (prepared_boundary)
+      for (const auto& created : prepared_boundary->created)
+        if (created.second->getVersionKey() == version_key)
+          return created.second;
+    return nullptr;
+  }
+
+  // T5 slice (b): the pre-commit gate's settle pass, run by ReadCompletion
+  // and nothing else, when a MONOTONE SEMANTIC stratum's read completes.
+  // Previews only level-1-watched keys against the immutable masters: a
+  // hit means the change genuinely appears if this iteration commits
+  // (execution-tiers §7.2).  Fills gate_hits (the pause's citations) and
+  // marks every settled watch gate_owned so the end-of-iteration level-0
+  // evaluation reports nothing twice.  Returns whether to park.  Watches
+  // bound to struct/lattice relations keep level-0 semantics until slice
+  // (d)'s settles exist; counted and maintenance epochs never reach here
+  // (the flavor gate), which is the ratified §7.3 downgrade.
+  bool settleLevel1AtReadComplete()
+  {
+    if (watches.empty() || rs.stratum == nullptr) return false;
+    const Stratum* s = rs.stratum;
+    if (!s->semantic_instance || s->transient_instance) return false;
+    if (s->flavor != "normal" && s->flavor != "delta") return false;
+    bool park = false;
+    for (WatchSpec& w : watches)
+    {
+      if (w.level != 1) continue;
+      // through the prepared overlay: the run being observed is usually
+      // the one that created the watched instance (prepare-time binding)
+      Relation* rel = watchTarget(w.version_key);
+      if (rel == nullptr) continue;
+      if (!rel->level1Settleable()) continue;
+      w.gate_owned = true;
+      if (rel->hasAcceptedCandidate(w.tuple_mode, w.tuple))
+      {
+        park = true;
+        gate_hits.push_back(w.id);
+      }
+    }
+    return park;
+  }
+
   // One evaluation per barrier.  Each watch records the barrier it handled,
   // so a `continue` that resumes and stops again cannot re-return the
   // identical pause; a fresh barrier is a fresh chance to fire.
@@ -4322,6 +4473,10 @@ public:
     const u64 barrier = ++watch_barrier_seq;
     for (WatchSpec& w : watches)
     {
+      // T5: the pre-commit gate already settled this watch at THIS
+      // iteration's read-complete -- one report per accepted change, at
+      // the earlier barrier.  The mark lasts exactly one iteration.
+      if (w.gate_owned) { w.gate_owned = false; continue; }
       if (w.last_barrier == barrier) continue;
       auto it = version_key_relations.find(w.version_key);
       if (it == version_key_relations.end() || it->second == nullptr) continue;
@@ -5539,6 +5694,7 @@ public:
     RunState& rs = db->rs;
 
     bool skip_to_read = false;
+    bool skip_to_intern = false;
     if (rs.position == RUN_FRESH)
     {
       // Promote the initial db (e.g. facts loaded by open:) into the delta and
@@ -5552,24 +5708,40 @@ public:
     }
     else if (rs.position == RUN_MID_READ)
       skip_to_read = true;
+    else if (rs.position == RUN_READ_COMPLETE)
+      // T5 commit-continue: this iteration's write/read already ran and the
+      // deferred finalize was performed single-threaded by continueStratum
+      // BEFORE this parallel region, so the resume enters at intern.
+      skip_to_intern = true;
     // RUN_AT_BOUNDARY: latest_any_rec persists true (we boundary-suspend only
     // when the last iteration grew), so the next iteration runs.
 
     for (;;)
     {
-      if (!skip_to_read)
+      if (!skip_to_intern)
       {
-        db->iter_barrier->arrive_and_wait();       // IterCompletion: latest=false
-        db->runPhase(phase_write, sentinel);
-      }
-      skip_to_read = false;
+        if (!skip_to_read)
+        {
+          db->iter_barrier->arrive_and_wait();     // IterCompletion: latest=false
+          db->runPhase(phase_write, sentinel);
+        }
+        skip_to_read = false;
 
-      db->runPhase(phase_read, sentinel);          // may suspend mid-read
-      if (rs.read_suspended)
-      {
-        if (sentinel) rs.position = RUN_MID_READ;
-        return;
+        db->runPhase(phase_read, sentinel);        // may suspend mid-read
+        if (rs.read_suspended)
+        {
+          if (sentinel) rs.position = RUN_MID_READ;
+          return;
+        }
+        // T5 pre-commit gate park (set in ReadCompletion): read complete,
+        // finalize deferred, level-1 citations pending in gate_hits.
+        if (rs.read_complete_parked)
+        {
+          if (sentinel) rs.position = RUN_READ_COMPLETE;
+          return;
+        }
       }
+      skip_to_intern = false;
 
       db->runPhase(phase_intern, sentinel);
 
@@ -5680,10 +5852,19 @@ public:
     rs.stop_requested.store(false, std::memory_order_relaxed);
     rs.mem_tripped.store(false, std::memory_order_relaxed);
     rs.read_suspended = false;
+    rs.read_complete_parked = false;
     // max_ms==UINT64_MAX (unbudgeted internal strata / run()) => never expires.
     rs.global_deadline = (b.max_ms == UINT64_MAX)
       ? std::chrono::steady_clock::time_point::max()
       : t0 + std::chrono::milliseconds(b.max_ms ? b.max_ms : 8000);
+
+    // T5 commit-continue: a resume from the pre-commit gate runs the
+    // DEFERRED finalize here, single-threaded before the parallel region --
+    // race-free by construction; runLoop then enters at intern.  The
+    // sticky latest_any_rec this sets survives into the loop (the resumed
+    // iteration's IterCompletion reset already happened before the park).
+    if (!starting && rs.position == RUN_READ_COMPLETE)
+      finalizeAll();
 
     // Bind every relation's per-run accounting (the memory cap for this
     // call) -- registry-wide (0.C), so positional writes count too.
@@ -8320,7 +8501,18 @@ inline void ReadCompletion::operator()() noexcept
   // Finalize only a COMPLETE read phase, and only to-fixpoint (an unbudgeted
   // single pass leaves its send shards for the next stratum's FRESH promote).
   if (rs.tofixpoint && !rs.read_suspended)
-    db->finalizeAll();
+  {
+    // T5 pre-commit gate (docs/t5-contract.md §1): park BEFORE finalize
+    // when a level-1 watch settles accepted candidates.  The old delta
+    // must stay alive for exact replay and the shards unmerged for the
+    // settle's truth, so this decision cannot wait for a later barrier.
+    // The deferred finalize runs on the commit-continue (continueStratum's
+    // RUN_READ_COMPLETE resume).
+    if (db->settleLevel1AtReadComplete())
+      rs.read_complete_parked = true;
+    else
+      db->finalizeAll();
+  }
 }
 
 // After a full iteration: fixpoint (no growth), boundary-suspend (grew but the

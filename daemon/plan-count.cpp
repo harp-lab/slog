@@ -1332,6 +1332,7 @@ void install_normal_stratum(Daemon* daemon, const std::string& name,
   Stratum* stratum = plan.flavor == "delta"
     ? daemon->beginStratumDelta(name) : daemon->beginStratum(name);
   if (stratum == nullptr) return;
+  stratum->flavor = plan.flavor;   // T5: retain the epoch flavor
   populate_normal_stratum(daemon, stratum, plan);
   daemon->push(stratum);
   daemon->continueRun();
@@ -1398,6 +1399,7 @@ void install_count_stratum(Daemon* daemon, const std::string& name,
 {
   Stratum* stratum = daemon->beginStratumDelta(name);
   if (stratum == nullptr) return;
+  stratum->flavor = plan.flavor;   // T5: retain the epoch flavor
   populate_count_stratum(daemon, stratum, plan);
   daemon->push(stratum);
   daemon->continueRun();
@@ -1496,6 +1498,7 @@ void install_maint_stratum(Daemon* daemon, const std::string& name,
 {
   Stratum* stratum = daemon->beginStratumDelta(name);
   if (stratum == nullptr) return;
+  stratum->flavor = plan.flavor;   // T5: retain the epoch flavor
   populate_maint_stratum(daemon, stratum, plan);
   daemon->push(stratum);
   daemon->continueRun();
@@ -1516,6 +1519,7 @@ bool install_command_stratum(Daemon* daemon, const std::string& name,
   // pipeline object and is owned there already.
   std::unique_ptr<Stratum> provisional(
     entry.kind == EntryModeK::upgrade ? nullptr : stratum);
+  stratum->flavor = plan.flavor;   // T5: retain the epoch flavor
   if (plan.flavor == "normal" || plan.flavor == "delta")
     populate_normal_stratum(daemon, stratum, plan);
   else if (plan.flavor == "count")
