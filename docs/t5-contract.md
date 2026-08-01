@@ -141,7 +141,47 @@ it.
   same-read rerun), the interactive pause state in the REPL server over
   `session-pause-hook`, `step*`/`finish`/`frames`/`up`/`down`.  Exit:
   replay-then-commit content equality; a stepping golden over a 3-rule
-  fixture (the teaching transcript repl-ux §2.7 wants).
+  fixture (the teaching transcript repl-ux §2.7 wants).  Shipped in parts;
+  stepping is still open:
+  - **(c1) the rerun and the refusal** *(2026-07-31)*.  `replay` leaves
+    reserved-verb parking through the T0 dispatcher.  At a gate park
+    `Database::replayReadPhase` discards every relation's send shards
+    (`discardSendShards` -- no finalize, and struct ids are minted in the
+    INTERN phase, so a discarded read leaks no identity), rolls the
+    iteration's `$stat_fires` tallies back to the snapshot `IterCompletion`
+    takes while a level-1 watch is armed, re-arms `once_pending[phase_read]`
+    (runPhase's completed-read tail had already cleared it -- without this
+    the rerun would be a SMALLER read), and re-enters at `RUN_MID_READ`,
+    which is exactly "the read phase again, without the iteration barrier or
+    the write phase".  The old delta and its indices are untouched, so the
+    rerun is exact and parks with an indistinguishable record.
+    `replayObstacle` orders the refusals FLAVOR FIRST: a counted or
+    maintenance epoch answers `level-1-unwatchable` naming that epoch's
+    retained flavor (§0.1's ratified firing point -- replay is a
+    level-1-only continuation, and this is its first reachable surface);
+    any other park answers `replay-unavailable` with the position; and
+    outstanding oracle work refuses rather than promising an
+    unreproducible rerun.  The client seam is the pause hook's RETURN value
+    (`'replay`); a refusal the driver meets is echoed, committed past, and
+    rendered in the change summary (`refused: ...`) rather than swallowed.
+  - **(c2) the gate as a place** *(2026-07-31)*.  A session with a level-1
+    watch armed -- and no embedding hook of its own, which then owns the
+    pause -- runs its commands on a HELD thread: at a gate park the REPL
+    answers with the pause record instead of a change summary, ordinary
+    commands then observe the parked epoch, and `commit` / `replay` /
+    `abort` resolve it.  `commit` returns the held command's own summary
+    (the held continuation still owns the prepared boundary, the remaining
+    strata, and the rendering); `abort` raises an `exn:fail` subtype into
+    the held thread so the session's existing abort-boundary unwind -- and
+    the daemon's forced settle of a parked gate epoch -- discards the change
+    with no second path.  A dropped connection resolves a held run rather
+    than stranding it.  repl-ux §9.2's "the pause is simply a place" made
+    literal.
+  - **(c3) stepping** *(next)*: the interpreter substrate is already there
+    (interp.h's eight D15 ports, `DebugSink`/`DebugAction::pause`,
+    `DebugView`'s cursor stack and lazy `proof()`, `StopReason::breakpoint`)
+    -- what is missing is a daemon step sink over it, park-at-port, the
+    frame surface, and the client verbs.
 - **(d) Proof surfaces + non-plain settles.**  `why`/`whynot` trees,
   struct settle (M5 co-design), lattice settle (M6L contributor-reduce),
   hygiene + exit audit (M4N slice-4 shape): full suite, interp-union

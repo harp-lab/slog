@@ -114,9 +114,13 @@ neither is a second protocol path.
 **Reserved verb families** — the parser recognizes these remaining verbs and
 answers `(refused reserved-verb ...)`:
 
-- **watch:** `watch`, `unwatch`, `subscribe`.
-- **T5:** the debugger stepping verbs (`resume`, `replay`,
-  `why-not-add`, `debug-on`/`debug-off` per the §9 sketch).
+- **watch:** `subscribe` (`watch`/`unwatch` are live as of T5 slice (a)).
+- **T5:** the debugger verbs still parked (`resume`, `why-not-add`,
+  `debug-on`/`debug-off` per the §9 sketch).  `replay` LEFT this parking in
+  T5 slice (c): at a pre-commit gate park it reruns the read from its
+  origin, and everywhere else it refuses structurally
+  (`level-1-unwatchable` naming the epoch flavor, or `replay-unavailable`
+  naming the park position) -- through this dispatcher, no second grammar.
 
 The active Q1 and N3 families followed the recorded 2026-07-16 dependency:
 their wire verbs activate only through slice (a)'s generic dispatcher and

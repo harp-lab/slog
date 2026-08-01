@@ -65,8 +65,29 @@
                       [event-sink #:mutable]
                       [closing? #:mutable]
                       ;; label -> value-handle, the checked `#N` table
-                      handles)
+                      handles
+                      ;; T5 slice (c): the held-run record while a command is
+                      ;; parked at the pre-commit gate, or #f
+                      [held #:mutable])
   #:transparent)
+
+;; T5 slice (c) / R4: a run HELD at the pre-commit gate (repl-ux §9.2 -- the
+;; pause is a place, not an interruption).  The command that started it is
+;; still in flight on `thread`, blocked inside the session driver's pause
+;; hook with its whole continuation intact -- prepared boundary, remaining
+;; strata, commit, change summary.  The REPL answered the operator with the
+;; pause record instead; `commit`, `replay` and `abort` resume that thread,
+;; and every other command runs meanwhile against the parked epoch, which
+;; the daemon admits precisely because it is parked (slice (b)'s lease).
+(struct held-run (thread to-run from-run source [record #:mutable]
+                         [parks #:mutable] [replays #:mutable]))
+
+;; Raised INTO the held thread by `abort`.  An exn:fail subtype on purpose:
+;; the session's boundary driver already unwinds a failed run through
+;; abort-boundary (session.rkt), and the daemon's abort forces a parked
+;; gate epoch to settle first -- so abort needs no second unwind path, only
+;; a marker the REPL can tell apart from a real fault.
+(struct exn:fail:gate-abort exn:fail ())
 
 (struct relation-info
   (name kind arity detail size version-key boundary-key)
@@ -153,7 +174,7 @@
 
 ;; a fresh, connection-less server state -- the stateful harness entry
 (define (make-server-state)
-  (server-state (make-hash) #f #f #f (make-hash)))
+  (server-state (make-hash) #f #f #f (make-hash) #f))
 
 (define (current-repl-session state)
   (and (server-state-current state)
@@ -245,6 +266,8 @@
    "                      query count; reports ride each change summary"
    "  watch REL level 1   arm the pre-commit gate intent; the relation's"
    "                      writer strata pin to the interpreter (debug)"
+   "  commit|replay|abort resolve a run held at the pre-commit gate: take"
+   "                      the change, rerun the same read, or discard it"
    "  unwatch wN          remove one watch;  `watches` lists them"
    "  explain ?QUERY      show the query plan and degradations, do not run"
    "  tiers               show each stratum's execution rung (interp/-O0/-O2)"
@@ -1708,6 +1731,21 @@
       [`(tier ,scc ,hash ,rung)
        (hasheq 'scc scc 'hash (~a hash) 'rung (~a rung))])))
 
+;; T5 slice (c): a structured refusal the DRIVER met mid-run -- today a
+;; `replay` the daemon would not honour (a non-monotone epoch answers
+;; `level-1-unwatchable`, any non-gate park answers `replay-unavailable`).
+;; The run commits past it, so without this the refusal would vanish; a
+;; debugger continuation that was declined is exactly what the operator
+;; needs told.
+(define (refusal-records events)
+  (for/list ([line (in-list events)]
+             #:do [(define datum (read-datum line))]
+             #:when (match datum [`(refused ,_ ,_ ,_ ...) #t] [_ #f]))
+    (match datum
+      [`(refused ,class ,_generation ,detail ...)
+       (hasheq 'class (~a class)
+               'detail (for/list ([d (in-list detail)]) (format "~s" d)))])))
+
 (define max-change-relations 8)
 
 (define (assemble-change operation target status requested events before after
@@ -1724,7 +1762,8 @@
           'size-deltas-omitted (- (length deltas) (length shown))
           'sizes-observed (and before after #t)
           'routes (route-records events)
-          'tiers (tier-records events)))
+          'tiers (tier-records events)
+          'refusals (refusal-records events)))
 
 (define (make-change s operation target status requested events before after)
   (define-values (revision counts) (settled-session-state s))
@@ -1846,6 +1885,17 @@
                              (hash-ref record 'scc)
                              (tier-label
                               (string->symbol (hash-ref record 'rung)))))
+                   "; ")))))
+   ;; T5 slice (c): debugger continuations the daemon declined mid-run
+   (let ([refusals (hash-ref change 'refusals '())])
+     (if (null? refusals)
+         '()
+         (list
+          (format "refused: ~a"
+                  (string-join
+                   (for/list ([record (in-list refusals)])
+                     (string-join (cons (hash-ref record 'class)
+                                        (hash-ref record 'detail)) " "))
                    "; ")))))
    ;; the operator's heartbeat: watch hits, rebinds, and query deltas
    (hash-ref change 'watches '())))
@@ -2219,7 +2269,169 @@
     "sessions" "mode" ":share" ":clear" "more" "cancel" "scratch" "keep"
     "tiers" "code" "stage"))
 
+;; ---- T5 slice (c) / R4: the pre-commit gate as a place ---------------------
+;; A level-1 watch is an explicit request to stop the run before it commits,
+;; so a session that has armed one runs its semantic commands on a HELD
+;; thread: the driver's pause hook hands the gate record out and blocks, the
+;; command answers with that record, and the operator's next commands work
+;; the parked epoch until one of them resolves it.  Sessions without a
+;; level-1 watch -- and any embedding that installs its own
+;; `session-pause-hook`, which then owns the pause -- keep the shipped
+;; straight-through path byte for byte.
+
+(define (gate-pause-line? line)
+  (and (regexp-match? #px"^\\(paused " line)
+       (regexp-match? #px"\\(phase read\\)" line)
+       (regexp-match? #px"\\(cause \\(watch " line)))
+
+(define (session-level1-armed? state)
+  (define rs (current-repl-session state))
+  (and rs
+       (for/or ([intent (in-hash-values (repl-session-watches rs))])
+         (and (eq? (watch-intent-kind intent) 'relation)
+              (= (watch-intent-level intent) 1)))))
+
+(define pause-resolution-verbs '("commit" "continue" "replay" "abort"))
+
+;; Fields of the uniform pause record, for rendering (t0-contract).
+(define (pause-record-field line key)
+  (match (read-datum line)
+    [`(paused ,fields ...)
+     (match (assq key fields)
+       [(list _ value) value]
+       [_ #f])]
+    [_ #f]))
+
+(define (pause-watch-citations line)
+  (match (read-datum line)
+    [`(paused ,fields ...)
+     (match (assq 'cause fields)
+       [(list _ `(watch ,cites ...))
+        (for/list ([cite (in-list cites)]
+                   #:when (match cite [`(watch-id ,_) #t] [_ #f]))
+          (match cite [`(watch-id ,id) (~a id)]))]
+       [_ '()])]
+    [_ '()]))
+
+(define (held-pause-result state held)
+  (define line (held-run-record held))
+  (define cites (pause-watch-citations line))
+  (define rs (current-repl-session state))
+  (define registry (and rs (repl-session-watches rs)))
+  (define watch-lines
+    (for/list ([id (in-list cites)])
+      (define intent (and registry (hash-ref registry id #f)))
+      (format "watch ~a~a — the change is settled but NOT committed"
+              id
+              (if intent
+                  (format " · ~a" (watch-intent-target intent))
+                  ""))))
+  (attach-session-state
+   state
+   (text-result
+    "Paused · pre-commit gate"
+    (append
+     (list (format "~a · iteration ~a · phase ~a"
+                   (or (pause-record-field line 'stratum) "?")
+                   (or (pause-record-field line 'iteration) "?")
+                   (or (pause-record-field line 'phase) "?")))
+     watch-lines
+     (list
+      "queries here answer COMMITTED masters; the candidate rows are not in them"
+      (format "held: ~a" (held-run-source held)))
+     (if (positive? (held-run-replays held))
+         (list (format "replayed ~a time~a"
+                       (held-run-replays held)
+                       (if (= (held-run-replays held) 1) "" "s")))
+         '())
+     (list "commit · replay · abort"))
+    #:kind "paused")))
+
+;; Wait for the held thread's next event: it either finishes the command
+;; (result or fault) or parks again.
+(define (await-held-run state held)
+  (match (channel-get (held-run-from-run held))
+    [(list 'paused line)
+     (set-held-run-record! held line)
+     (set-held-run-parks! held (add1 (held-run-parks held)))
+     (set-server-state-held! state held)
+     (held-pause-result state held)]
+    [(list 'result value)
+     (set-server-state-held! state #f)
+     value]
+    [(list 'raise exception)
+     (set-server-state-held! state #f)
+     (if (exn:fail:gate-abort? exception)
+         (attach-session-state
+          state
+          (text-result
+           "Aborted · pre-commit gate"
+           (list "the run was discarded at the gate; nothing was committed"
+                 (format "discarded: ~a" (held-run-source held)))
+           #:kind "mutation"))
+         (raise exception))]))
+
+;; Start a semantic command on its own thread with the gate hook installed.
+(define (dispatch-held-command state source)
+  (define to-run (make-channel))
+  (define from-run (make-channel))
+  (define runner
+    (thread
+     (lambda ()
+       (parameterize
+           ([session-pause-hook
+             (lambda (_s line)
+               (cond
+                 [(gate-pause-line? line)
+                  (channel-put from-run (list 'paused line))
+                  (match (channel-get to-run)
+                    ['abort
+                     (raise (exn:fail:gate-abort
+                             "aborted at the pre-commit gate"
+                             (current-continuation-marks)))]
+                    [directive directive])]
+                 [else 'continue]))])
+         (with-handlers ([(lambda (_) #t)
+                          (lambda (e) (channel-put from-run (list 'raise e)))])
+           (channel-put from-run
+                        (list 'result (dispatch-command* state source))))))))
+  (await-held-run state (held-run runner to-run from-run source #f 0 0)))
+
+;; A command typed while a run is held.  The three resolutions resume the
+;; held thread; everything else is an ordinary observation of the parked
+;; epoch, dispatched on this thread while the run stays put.
+(define (dispatch-at-gate state held source)
+  (define-values (verb _argument) (split-command source))
+  (cond
+    [(member verb '("commit" "continue"))
+     (channel-put (held-run-to-run held) 'continue)
+     (await-held-run state held)]
+    [(equal? verb "replay")
+     (set-held-run-replays! held (add1 (held-run-replays held)))
+     (channel-put (held-run-to-run held) 'replay)
+     (await-held-run state held)]
+    [(equal? verb "abort")
+     (channel-put (held-run-to-run held) 'abort)
+     (await-held-run state held)]
+    [(member verb '(":quit" "quit" "exit"))
+     ;; never strand a held run: commit it, then quit
+     (channel-put (held-run-to-run held) 'continue)
+     (void (await-held-run state held))
+     (dispatch-command* state source)]
+    [else (dispatch-command* state source)]))
+
 (define (dispatch-command state source)
+  (define held (server-state-held state))
+  (cond
+    [held (dispatch-at-gate state held source)]
+    [(and (session-level1-armed? state)
+          (not (session-pause-hook))
+          (not (member (let-values ([(verb _a) (split-command source)]) verb)
+                       pause-resolution-verbs)))
+     (dispatch-held-command state source)]
+    [else (dispatch-command* state source)]))
+
+(define (dispatch-command* state source)
   (define trimmed (string-trim source))
   (define-values (verb argument) (split-command source))
   (let ([rs (current-repl-session state)])
@@ -2598,6 +2810,21 @@
            '()))
       change
       #:kind "save")]
+    ;; T5 slice (c): the pre-commit gate's three resolutions.  They reach
+    ;; here only when NOTHING is held (dispatch-command routes them to the
+    ;; held thread otherwise), so the honest answer is that there is no
+    ;; pause to resolve -- never a bare "unknown command".
+    [(or "commit" "continue" "abort")
+     (error 'debugger
+            (format (string-append
+                     "~a resolves a pause at the pre-commit gate; no run is "
+                     "held (arm one with `watch REL level 1`)")
+                    verb))]
+    ["replay"
+     (error 'debugger
+            (string-append
+             "replay reruns a read held at the pre-commit gate; no run is "
+             "held (arm one with `watch REL level 1`)"))]
     [(or ":quit" "quit" "exit")
      (set-server-state-closing?! state #t)
      (hasheq 'kind "quit" 'title "Goodbye" 'lines (list "REPL closed") 'close #t)]
@@ -2625,7 +2852,7 @@
   (read-frame (open-input-bytes (get-output-bytes out))))
 
 (define (plain-transcript commands)
-  (define state (server-state (make-hash) #f #f #f (make-hash)))
+  (define state (server-state (make-hash) #f #f #f (make-hash) #f))
   (dynamic-wind
     void
     (lambda ()
@@ -2708,6 +2935,17 @@
          (listen candidate)))]))
 
 (define (close-server-session! state)
+  ;; T5 slice (c): a connection that drops while a run is held at the gate
+  ;; must not strand it -- resolve to the ordinary commit (the t0-ratified
+  ;; continue) before any session closes underneath the held thread.
+  (let ([held (server-state-held state)])
+    (when held
+      (with-handlers ([exn:fail? (lambda (e)
+                                   (eprintf "held run cleanup failed: ~a\n"
+                                            (exn-message e)))])
+        (channel-put (held-run-to-run held) 'continue)
+        (void (await-held-run state held)))
+      (set-server-state-held! state #f)))
   (for ([rs (in-hash-values (server-state-sessions state))])
     (with-handlers ([exn:fail? (lambda (e)
                                  (eprintf "REPL session cleanup failed: ~a\n"
@@ -2717,7 +2955,7 @@
   (set-server-state-current! state #f))
 
 (define (serve-connection in out token)
-  (define state (server-state (make-hash) #f #f #f (make-hash)))
+  (define state (server-state (make-hash) #f #f #f (make-hash) #f))
   (dynamic-wind
     void
     (lambda ()
@@ -2783,7 +3021,7 @@
   (check-equal? (read-frame (open-input-bytes framed))
                 (hasheq 'id 7 'method "ping"))
 
-  (define state (server-state (make-hash) #f #f #f (make-hash)))
+  (define state (server-state (make-hash) #f #f #f (make-hash) #f))
   (define help-result (dispatch-command state ":help"))
   (check-equal? (hash-ref help-result 'kind) "help")
   (check-not-false
@@ -2940,7 +3178,7 @@
        '(cell (word 7) (kind int) (sid #f) (type-key #f) (text "3")))))
     (check-exn exn:fail? (lambda () (datum->value-cell '(cell (word 1)))))
 
-    (define state (server-state (make-hash) "alpha" #f #f (make-hash)))
+    (define state (server-state (make-hash) "alpha" #f #f (make-hash) #f))
     (define rs (repl-session #f "alpha" 'mutable #f "eval-1" #f (make-hash) (make-hash)))
     (hash-set! (server-state-sessions state) "alpha" rs)
     (define label (mint-value-handle! state cell))
@@ -3003,14 +3241,16 @@
            'size-deltas-omitted 0
            'sizes-observed #t
            'routes (list (hasheq 'kind "maintain" 'detail (list "2")))
-           'tiers (list (hasheq 'scc 3 'hash "4f0b9c11" 'rung "o0"))))
+           'tiers (list (hasheq 'scc 3 'hash "4f0b9c11" 'rung "o0"))
+           ;; T5 slice (c): no debugger continuation was declined here
+           'refusals '()))
   ;; the arrival note renders from the captured tier event (live arrivals
   ;; depend on clang wall-clock vs fixpoint length, so the rendering is
   ;; pinned here and the verbs in the interp battery below)
   (check-not-false
    (member "tiers: s3 -> -O0 arrived" (change-summary-lines sample-change)))
 
-  (define mode-state (server-state (make-hash) #f #f #f (make-hash)))
+  (define mode-state (server-state (make-hash) #f #f #f (make-hash) #f))
   (hash-set! (server-state-sessions mode-state)
              "alpha"
              (repl-session #f "alpha" 'readonly #f #f #f (make-hash) (make-hash)))
@@ -3027,7 +3267,7 @@
                 "mutable")
   (check-equal? (hash-ref (dispatch-command mode-state "resident") 'lines)
                 (list "alpha  mutable · clean · current"))
-  (define quit-state (server-state (make-hash) #f #f #f (make-hash)))
+  (define quit-state (server-state (make-hash) #f #f #f (make-hash) #f))
   (check-true (hash-ref (dispatch-command quit-state ":quit") 'close))
   ;; The golden deliberately stops at the server contract.  It proves real
   ;; session calls and deterministic presentation data without making this
@@ -3059,7 +3299,7 @@
   ;; tests/reach.slog (edge = the 1-2-3-4 chain, path = its closure).  Row
   ;; ORDER is index order, so assertions pin content the planner/daemon
   ;; must produce, never incidental orderings.
-  (let ([bare-state (server-state (make-hash) #f #f #f (make-hash))])
+  (let ([bare-state (server-state (make-hash) #f #f #f (make-hash) #f)])
     (check-regexp-match
      #px"ambiguous"
      (with-handlers ([exn:fail? exn-message])
@@ -3529,4 +3769,144 @@
         (string-join (hash-ref maint-result 'lines) "\n"))
       (check-regexp-match #px"watch w2: .*hit" maint-text)
       (check-regexp-match #px"counts valid" maint-text)
-      (void (run3! ":quit")))))
+      (void (run3! ":quit"))))
+
+  ;; T5 slice (c): `replay` at the pre-commit gate.  The parked read's send
+  ;; shards are discarded and the SAME read runs again from its origin, so
+  ;; the rerun parks with the same record (an exact rerun is meant to be
+  ;; indistinguishable from what it repeats), a query at the replayed park
+  ;; still answers committed masters only, and the commit that follows writes
+  ;; content byte-equal to a run that was never replayed.  Control: a
+  ;; maintenance epoch refuses the level-1-only continuation by name and
+  ;; flavor, and the run commits past the refusal.
+  (let ([interp-environment (environment-variables-copy test-environment)])
+    (environment-variables-set! interp-environment #"SLOG_OPT" #"interp")
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables interp-environment])
+      (define state (make-server-state))
+      (define (run! line) (dispatch-command state line))
+      (void (run! "run tests/reach.slog"))
+      (void (run! "watch path level 1"))
+      (define parks '())
+      (define replayed-answer #f)
+      (parameterize ([session-pause-hook
+                      (lambda (_s line)
+                        (cond
+                          [(and (regexp-match? #px"\\(phase read\\)" line)
+                                (regexp-match? #px"\\(cause \\(watch" line))
+                           (set! parks (cons line parks))
+                           (cond
+                             [(= (length parks) 1) 'replay]
+                             [else
+                              (set! replayed-answer
+                                    (string-join
+                                     (hash-ref (run! "?count (path X Y)")
+                                               'lines)
+                                     " | "))
+                              'continue])]
+                          [else 'continue]))])
+        (void (run! "rule (path 99 99) <-- (edge 1 2)")))
+      ;; one replay: two parks, both the same iteration-0 read-phase gate
+      (check-equal? (length parks) 2)
+      (for ([park (in-list parks)])
+        (check-regexp-match
+         #px"\\(iteration 0\\) \\(phase read\\) \\(settled #f\\)[^\n]*\\(cause \\(watch \\(watch-id \"w1\"\\)\\)\\)\\)"
+         park))
+      ;; a replayed read has still committed nothing
+      (check-regexp-match #px"6 rows match" replayed-answer)
+      (check-regexp-match
+       #px"7 rows match"
+       (string-join (hash-ref (run! "?count (path X Y)") 'lines) " | "))
+      (void (run! "dump ?(path X Y) to out/t5c-replayed.csv"))
+      (void (run! ":quit"))
+      ;; the same change, never replayed
+      (define state2 (make-server-state))
+      (define (run2! line) (dispatch-command state2 line))
+      (void (run2! "run tests/reach.slog"))
+      (void (run2! "rule (path 99 99) <-- (edge 1 2)"))
+      (void (run2! "dump ?(path X Y) to out/t5c-plain.csv"))
+      (void (run2! ":quit"))
+      (check-equal? (file->string "out/t5c-replayed.csv")
+                    (file->string "out/t5c-plain.csv"))
+      (delete-file "out/t5c-replayed.csv")
+      (delete-file "out/t5c-plain.csv")
+      ;; control: a maintenance epoch is not replayable, and says why
+      (define state3 (make-server-state))
+      (define (run3! line) (dispatch-command state3 line))
+      (void (run3! "run tests/reach.slog"))
+      (void (run3! "watch path level 1"))
+      (define maint-result #f)
+      (parameterize ([session-pause-hook (lambda (_s _line) 'replay)])
+        (set! maint-result (run3! "add edge 4 1")))
+      (define maint-text (string-join (hash-ref maint-result 'lines) "\n"))
+      ;; every park of the change's epochs refuses, naming that epoch's own
+      ;; flavor -- the count round and the maintenance incarnation alike
+      (check-regexp-match
+       #px"refused: level-1-unwatchable \\(verb replay\\) \\(flavor \"(count|maint[0-9a-z]*)\"\\) \\(position iter\\)"
+       maint-text)
+      (check-regexp-match #px"\\(flavor \"maint1\"\\) \\(position iter\\)"
+                          maint-text)
+      ;; and a refused replay leaves the change itself untouched
+      (check-regexp-match #px"settled" maint-text)
+      (check-regexp-match #px"path \\+10" maint-text)
+      (void (run3! ":quit"))))
+
+  ;; T5 slice (c) / R4: the gate as a PLACE at the prompt (repl-ux §9.2).
+  ;; With a level-1 watch armed and no embedding hook, the command that
+  ;; trips the gate answers with the pause record instead of a change
+  ;; summary; the operator then works the parked epoch by ordinary commands
+  ;; and resolves it with commit / replay / abort.  The held command's own
+  ;; summary is what `commit` finally returns.
+  (let ([interp-environment (environment-variables-copy test-environment)])
+    (environment-variables-set! interp-environment #"SLOG_OPT" #"interp")
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables interp-environment])
+      ;; the resolutions are honest with nothing held
+      (let ([bare (make-server-state)])
+        (check-exn #px"no run is held"
+                   (lambda () (dispatch-command bare "commit")))
+        (check-exn #px"no run is held"
+                   (lambda () (dispatch-command bare "replay"))))
+      (define state (make-server-state))
+      (define (run! line) (dispatch-command state line))
+      (define (count-line) (string-join (hash-ref (run! "?count (path X Y)")
+                                                  'lines) " | "))
+      (void (run! "run tests/reach.slog"))
+      (void (run! "watch path level 1"))
+      (define paused (run! "rule (path 99 99) <-- (edge 1 2)"))
+      (check-equal? (hash-ref paused 'kind) "paused")
+      (define paused-text (string-join (hash-ref paused 'lines) "\n"))
+      (check-regexp-match #px"iteration 0 · phase read" paused-text)
+      (check-regexp-match #px"watch w1 · path — the change is settled but NOT committed"
+                          paused-text)
+      (check-regexp-match #px"commit · replay · abort" paused-text)
+      ;; the parked epoch is a place: queries answer committed masters
+      (check-regexp-match #px"6 rows match" (count-line))
+      ;; replay reruns the same read and lands in the same place
+      (define replayed (run! "replay"))
+      (check-equal? (hash-ref replayed 'kind) "paused")
+      (define replay-text (string-join (hash-ref replayed 'lines) "\n"))
+      (check-regexp-match #px"iteration 0 · phase read" replay-text)
+      (check-regexp-match #px"replayed 1 time" replay-text)
+      (check-regexp-match #px"6 rows match" (count-line))
+      ;; commit finishes the HELD command -- its own summary returns now
+      (define committed (run! "commit"))
+      (check-not-equal? (hash-ref committed 'kind) "paused")
+      (check-regexp-match #px"path \\+1"
+                          (string-join (hash-ref committed 'lines) "\n"))
+      (check-regexp-match #px"7 rows match" (count-line))
+      (void (run! ":quit"))
+      ;; abort discards the whole change at the gate; the session survives
+      (define state2 (make-server-state))
+      (define (run2! line) (dispatch-command state2 line))
+      (void (run2! "run tests/reach.slog"))
+      (void (run2! "watch path level 1"))
+      (check-equal? (hash-ref (run2! "rule (path 98 98) <-- (edge 1 2)") 'kind)
+                    "paused")
+      (define aborted (run2! "abort"))
+      (check-regexp-match #px"nothing was committed"
+                          (string-join (hash-ref aborted 'lines) "\n"))
+      (check-regexp-match
+       #px"6 rows match"
+       (string-join (hash-ref (run2! "?count (path X Y)") 'lines) " | "))
+      (void (run2! ":quit")))))

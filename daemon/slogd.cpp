@@ -1366,8 +1366,9 @@ static const char* reserved_family(const std::string& verb)
         // `watch`/`unwatch` are live below.  `subscribe` -- the event-kind
         // filter, a separate concept from a WatchSpec -- stays reserved.
         { "subscribe",        "watch"    },
+        // `replay` is LIVE below (T5 slice (c)); `resume` stays reserved --
+        // the t0-ratified commit spelling is the bare (continue).
         { "resume",           "debugger" },
-        { "replay",           "debugger" },
         { "why-not-add",      "debugger" },
         { "debug-on",         "debugger" },
         { "debug-off",        "debugger" },
@@ -1634,13 +1635,18 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
     // catalog only at commit).  Every other ordinary command stays
     // refused until commit/abort, exactly as before.
     const bool watch_verb = verb == "watch" || verb == "unwatch";
+    // T5 slice (c): `replay` is a debugger continuation over a PARKED epoch,
+    // so the lease admits it whenever the run is suspended -- including at
+    // parks it will refuse, because `level-1-unwatchable` is the honest
+    // answer there and a boundary-admission refusal would hide it.
+    const bool parked_debug_verb = verb == "replay" && d->db()->isSuspended();
     const bool gate_parked_read =
         (verb == "query" || verb == "query-page" || verb == "query-cancel"
          || verb == "catalog")
         && d->db()->isSuspended()
         && d->db()->suspendPosition() == slog::RUN_READ_COMPLETE;
     if (d->boundaryPrepared() && !boundary_verb && !builder_verb
-        && !watch_verb && !gate_parked_read)
+        && !watch_verb && !gate_parked_read && !parked_debug_verb)
     {
         refuse(d, "boundary-admission", "(verb " + verb + ") (boundary "
                + slog::protocol::quoteString(d->preparedBoundaryKey()) + ")");
@@ -1664,6 +1670,40 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
         refuse(d, "parse", "(verb " + verb + ") (detail \"T0 takes the bare "
                "form; parameterized budgets ride the compiled action until "
                "the verb grows arguments\")");
+        return;
+    }
+
+    // T5 slice (c): `replay` leaves reserved-verb parking through the T0
+    // dispatcher (contract §0.5 -- no second grammar).  At a pre-commit gate
+    // park it discards the read's send shards and runs the SAME read again
+    // from its origin; against a non-monotone epoch it refuses as
+    // `level-1-unwatchable` naming that epoch's flavor (§0.1's ratified
+    // firing point: replay is a level-1-only continuation); at any other
+    // park -- or none -- it refuses structurally with the position.
+    if (verb == "replay")
+    {
+        if (argc != 0)
+        {
+            refuse(d, "parse", "(verb replay) (detail \"T5 takes the bare "
+                   "form; the rerun uses the session's continue budget\")");
+            return;
+        }
+        const char* obstacle = d->db()->replayObstacle();
+        if (obstacle == nullptr)
+        {
+            d->replayRead();
+            return;
+        }
+        if (std::strcmp(obstacle, "flavor") == 0)
+            refuse(d, "level-1-unwatchable",
+                   "(verb replay) (flavor "
+                   + slog::protocol::quoteString(d->db()->currentFlavor())
+                   + ") (position "
+                   + d->db()->currentPositionName() + ")");
+        else
+            refuse(d, "replay-unavailable",
+                   std::string("(verb replay) (detail ") + obstacle
+                   + ") (position " + d->db()->currentPositionName() + ")");
         return;
     }
 

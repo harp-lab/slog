@@ -257,6 +257,13 @@
   (display (string-append path "\n") (session-in s))
   (flush-output (session-in s)))
 
+;; T5 slice (c): a bare command line sent WITHOUT reading a reply -- the
+;; daemon answers `(replay)` with the rerun's own pause / fixpoint (or a
+;; structured refusal), and the driver's poll loop is what consumes it.
+(define (send-command-line! s line)
+  (display (string-append line "\n") (session-in s))
+  (flush-output (session-in s)))
+
 (define (session-command! s datum)
   ;; N3 joins T0's line-framed command protocol directly.  `write` preserves
   ;; structured QName component lists and string keys without passing through
@@ -316,13 +323,17 @@
 ;; are exempt from the boundary lease (session debugging state).
 (define session-prepare-hook (make-parameter #f))
 
-;; Gate S item 3 (and R4's future stepping seam): when set, called with
+;; Gate S item 3 (and R4's stepping seam): when set, called with
 ;; (s pause-line) at every driver pause BEFORE the automatic continue.
 ;; The daemon dispatches commands synchronously between continues, so the
 ;; hook runs against a PARKED epoch -- masters immutable, queries and
 ;; read-only actions admissible (execution-tiers §6.3's quiescent-master
-;; classes).  The driver continues exactly as before when the hook
-;; returns; the hook must not send its own (continue).
+;; classes).  The hook must not send its own resume; it RETURNS the
+;; continuation it wants instead (T5 slice (c)):
+;;   'replay -- rerun the parked read from its origin (only the pre-commit
+;;              gate can honour it; any other park answers with a
+;;              structured refusal, which the driver commits past)
+;;   anything else (including void) -- continue exactly as before.
 (define session-pause-hook (make-parameter #f))
 
 ;; Drive the current stratum to fixpoint: echo every line; answer
@@ -341,11 +352,25 @@
     (cond
       [(eof-object? line) (error 'session "daemon EOF mid-stratum")]
       [(regexp-match? #px"^\\(fixpoint " line) (echo! s line)]
+      ;; A refusal reaches the driver only as the answer to a resume it sent
+      ;; itself -- today a `replay` the daemon would not honour (T5 slice
+      ;; (c): a non-monotone epoch, or a park that is not the pre-commit
+      ;; gate).  The epoch is still parked, so commit past it exactly as an
+      ;; unhooked driver would; the refusal is already echoed as data.
+      [(regexp-match? #px"^\\(refused " line)
+       (echo! s line)
+       (send-plugin! s continue-so)
+       (poll loaded)]
       [(regexp-match? #px"^\\(paused " line)
        (echo! s line)
-       (when (session-pause-hook)
-         ((session-pause-hook) s line))
+       (define directive
+         (and (session-pause-hook) ((session-pause-hook) s line)))
        (cond
+         [(eq? directive 'replay)
+          ;; The reply is the REPLAYED read's own pause / fixpoint (an exact
+          ;; rerun is indistinguishable from what it repeats) or a refusal.
+          (send-command-line! s "(replay)")
+          (poll loaded)]
          [(regexp-match? #px"memory\\)\\s*$" line)
           (error 'session (format "out of memory: ~a" line))]
          [(not upgrade) (send-plugin! s continue-so) (poll loaded)]

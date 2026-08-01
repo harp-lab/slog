@@ -609,6 +609,23 @@ public:
       send_shards.resize(nthreads);
   }
 
+  // T5 slice (c): throw away everything this read produced WITHOUT finalizing
+  // it (docs/t5-contract.md §1's replay).  Legitimate only single-threaded at
+  // a pre-commit gate park, where the shards hold exactly the candidate rows
+  // the settle previewed and no master, sidecar or intern allocator has moved
+  // yet -- struct ids are minted in the INTERN phase (InternStructTask), which
+  // a parked read never reached, so a discarded read leaks no identity.  The
+  // per-thread vectors keep their capacity for the replay.
+  void discardSendShards()
+  {
+    for (auto& shard : send_shards)
+    {
+      for (InsertBatch* ib : shard)
+        delete ib;
+      shard.clear();
+    }
+  }
+
   void clearAllIndices()
   {
     for (const auto& it : indices)
@@ -2589,6 +2606,12 @@ struct RunState {
   // Distinct from read_suspended by construction -- a mid-read park requires
   // unfinished work, this one requires NONE (ReadCompletion's finalize gate).
   bool read_complete_parked = false;
+  // T5 slice (c): did the read now parked include the once[phase_read] tasks?
+  // runPhase's completed-read tail already ran reloadPhaseQueue, which clears
+  // once_pending -- so a replay that did not restore this would re-run the
+  // iteration's read WITHOUT its once tasks and reproduce a smaller candidate
+  // set.  Recorded by ReadCompletion (which reads the flag anyway).
+  bool read_once_armed = false;
   NextAction next_action = ACT_CONTINUE;
   // Snapshot of Database::externalPending() taken once per iteration (in
   // ReadCompletion, single-threaded) so every worker makes the SAME
@@ -4464,6 +4487,93 @@ public:
     return park;
   }
 
+  // Is any level-1 watch registered?  Cheap enough to ask per iteration, and
+  // the answer gates slice (c)'s only always-on cost (the per-iteration fire
+  // snapshot a replay restores): a session with no debugger intent pays
+  // nothing.
+  bool level1Armed() const
+  {
+    for (const WatchSpec& w : watches)
+      if (w.level == 1) return true;
+    return false;
+  }
+
+  // T5 slice (c): why `replay` cannot run right now (nullptr = it can).  The
+  // FLAVOR obstacle is the contract's `level-1-unwatchable` (§0.1): replay is
+  // a level-1-only continuation, so requesting one against a counted or
+  // maintenance epoch earns a structured refusal naming that epoch's flavor
+  // -- the ratified firing point, and the first surface that can reach it.
+  // Order matters: the flavor answer is the honest one even when the park
+  // position would also refuse.
+  const char* replayObstacle()
+  {
+    if (!rs.suspended || rs.stratum == nullptr) return "not-parked";
+    if (!rs.stratum->semantic_instance || rs.stratum->transient_instance
+        || (rs.stratum->flavor != "normal" && rs.stratum->flavor != "delta"))
+      return "flavor";
+    if (rs.position != RUN_READ_COMPLETE) return "position";
+    // An oracle answer that landed during the read is not reproducible by
+    // re-running it (racing pools, docs/smt.md), so refuse rather than
+    // promise an exact rerun.
+    if (external_work != nullptr && externalPending()) return "external";
+    return nullptr;
+  }
+
+  // The flavor a refusal cites (the epoch's truth, exact from sealed plans
+  // and arming-derived for native installs -- slice (b)).
+  std::string currentFlavor() const
+  {
+    if (rs.stratum == nullptr) return "none";
+    // The retained string first: it is the EPOCH's truth (a normal artifact
+    // re-entered under maintenance arming is stamped "maint"), which is
+    // exactly what a refusal owes the operator.  The booleans only cover a
+    // stratum that never went through a push.
+    if (!rs.stratum->flavor.empty()) return rs.stratum->flavor;
+    if (rs.stratum->transient_instance) return "transient";
+    if (!rs.stratum->semantic_instance) return "internal";
+    return "unknown";
+  }
+
+  // How the parked epoch would name its position in a refusal.
+  const char* currentPositionName() const
+  {
+    if (!rs.suspended) return "none";
+    switch (rs.position)
+    {
+      case RUN_AT_BOUNDARY:   return "iter";
+      case RUN_MID_READ:      return "read";
+      case RUN_READ_COMPLETE: return "read-complete";
+      default:                return "none";
+    }
+  }
+
+  // T5 slice (c): re-run the parked read FROM ITS ORIGIN (contract §1).  At a
+  // pre-commit gate park the old delta still drives the read exactly as it
+  // did the first time -- the write phase already bucketized it, no master
+  // moved, and every row the read produced is in the send shards -- so
+  // discarding the shards and re-entering at the read phase reproduces the
+  // same candidates (normally under deeper budgets).  The iteration's fire
+  // tallies are rolled back with them, so a replayed read is not counted
+  // twice in the exact-once audit ($stat_fires, docs/stats.md).  Position
+  // MID_READ is precisely "re-enter the read phase without re-running the
+  // iteration barrier or the write phase" -- and the cursor and continuation
+  // queue were already reset by runPhase's completed-read tail.
+  bool replayReadPhase()
+  {
+    if (rs.suspended == false || rs.position != RUN_READ_COMPLETE) return false;
+    for (Relation* r : rel_registry)
+      if (r != nullptr) r->discardSendShards();
+    restoreIterationFires();
+    rs.once_pending[phase_read] = rs.read_once_armed;
+    rs.task_cursor[phase_read] = 0;
+    clearPausedPhase(phase_read);
+    gate_hits.clear();
+    rs.read_complete_parked = false;
+    rs.read_suspended = false;
+    rs.position = RUN_MID_READ;
+    return true;
+  }
+
   // One evaluation per barrier.  Each watch records the barrier it handled,
   // so a `continue` that resumes and stops again cannot re-return the
   // identical pause; a fresh barrier is a fresh chance to fire.
@@ -6334,6 +6444,26 @@ public:
   {
     std::lock_guard<std::mutex> g(stats_mx);
     fire_counts.clear();
+    fires_at_iteration.clear();
+  }
+
+  // T5 slice (c): the fire tallies as of the CURRENT iteration's start, so a
+  // replayed read can roll its own instantiations back and the published
+  // $stat_fires still equals the committed execution's count (the exact-once
+  // audit's observable).  Snapshotted at the iteration barrier, and only
+  // while a level-1 watch is armed -- an ordinary run never copies the map.
+  std::map<std::pair<std::string, std::string>, u64> fires_at_iteration;
+
+  void snapshotIterationFires()
+  {
+    std::lock_guard<std::mutex> g(stats_mx);
+    fires_at_iteration = fire_counts;
+  }
+
+  void restoreIterationFires()
+  {
+    std::lock_guard<std::mutex> g(stats_mx);
+    fire_counts = fires_at_iteration;
   }
 
   Relation* ensureStatsRelation(const std::string& name, u32 arity)
@@ -8474,6 +8604,11 @@ public:
 inline void IterCompletion::operator()() noexcept
 {
   db->setLatestAnyRec(false);
+  // T5 slice (c): mark the rollback point a replay of THIS iteration's read
+  // restores its fire tallies to.  Armed sessions only, so the copy never
+  // touches an ordinary run's iteration barrier.
+  if (db->level1Armed())
+    db->snapshotIterationFires();
 }
 
 // Decide, now that all workers have stopped claiming, whether the read phase
@@ -8509,7 +8644,12 @@ inline void ReadCompletion::operator()() noexcept
     // The deferred finalize runs on the commit-continue (continueStratum's
     // RUN_READ_COMPLETE resume).
     if (db->settleLevel1AtReadComplete())
+    {
       rs.read_complete_parked = true;
+      // Record the read's shape for a possible replay BEFORE the sentinel's
+      // reloadPhaseQueue clears once_pending (slice (c)).
+      rs.read_once_armed = (n_once > 0);
+    }
     else
       db->finalizeAll();
   }

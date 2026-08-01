@@ -73,8 +73,9 @@ else bad "refuse-one-reply-per-line"; fi
 # --- 3. every reserved verb answers reserved-verb ----------------------------
 # watch/unwatch are LIVE (level-0 watches).  `subscribe` -- the event-kind
 # filter, a separate concept from a WatchSpec -- is still reserved.
+# `replay` is LIVE as of T5 slice (c) and is pinned in 3y below.
 RESERVED=(subscribe
-          resume replay why-not-add debug-on debug-off)
+          resume why-not-add debug-on debug-off)
 ARGS=(); for v in "${RESERVED[@]}"; do ARGS+=("($v x y)"); done
 racket tests/api/drive.rkt "${ARGS[@]}" > out/proto-reserved.log 2>&1
 for v in "${RESERVED[@]}"; do
@@ -132,6 +133,21 @@ racket tests/api/drive.rkt \
 expect    "watch-under-lease" '(watch-added (id "g1") (version-key "w.edge.0") (watches 1) (level 1))' out/proto-watch-lease.log
 expect_rx "catalog-still-leased" '\(refused boundary-admission [0-9]+ \(verb catalog\) \(boundary "w\.b0"\)\)' out/proto-watch-lease.log
 expect    "watch-lease-unwatch" '(watch-removed (id "g1") (watches 0))' out/proto-watch-lease.log
+
+# --- 3y. T5 slice (c): `replay` leaves reserved-verb parking ----------------
+# The verb is live, so it must answer STRUCTURALLY rather than as a family
+# placeholder: bare form only, and with nothing parked it says so and names
+# the position it found.  (Honouring a replay needs a pre-commit gate park,
+# which the REPL battery drives over a real program; the refusal against a
+# non-monotone epoch -- `level-1-unwatchable` -- is pinned there too, where
+# a maintenance epoch actually exists to park.)
+racket tests/api/drive.rkt \
+  '(replay)' \
+  '(replay now)' \
+  > out/proto-replay.log 2>&1
+expect_rx "replay-not-reserved" '\(refused replay-unavailable [0-9]+ \(verb replay\) \(detail not-parked\) \(position none\)\)' out/proto-replay.log
+expect_rx "replay-bare-only"    '\(refused parse [0-9]+ \(verb replay\) \(detail "T5 takes the bare form' out/proto-replay.log
+expect_not "replay-still-reserved" '(refused reserved-verb' out/proto-replay.log
 
 # --- 3a. N3-A transaction + N3-B durable boundary history -------------------
 # Prepare eagerly constructs an empty slot but keeps both its VersionKey and

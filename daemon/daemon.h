@@ -1681,6 +1681,20 @@ public:
     }
   }
 
+  // T5 slice (c): discard the parked read and run it again from its origin
+  // (docs/t5-contract.md §1).  Admission is the caller's (slogd's dispatcher
+  // renders the structured refusals); here the rerun is an ordinary bounded
+  // unit of work, so a replayed read that settles again parks again with a
+  // record indistinguishable from the one it repeats -- an exact rerun is
+  // supposed to look exact.  Budget: the ordinary default, which is also how
+  // "normally with deeper budgets" is spelled (the client sets the session
+  // budget before replaying).
+  void replayRead()
+  {
+    database->replayReadPhase();
+    continueRun(default_budget);
+  }
+
   // The legacy blocking loop: continue every not-yet-run stratum to fixpoint,
   // unbudgeted, emitting one (fixpoint ...) each.  Generated plugins now drive
   // via continueRun; kept for internal use / compatibility.
