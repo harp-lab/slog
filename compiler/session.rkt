@@ -85,6 +85,7 @@
          session-action!        ; low-level: one action + a reader
          session-command-stream! ; low-level: one T0 command record stream
          session-query-lines!   ; low-level: one Q1 query command + records
+         session-debug-lines!   ; T5 (c3): one debugger stream (frames)
          session-recount!       ; the count round over the pipeline (M0)
          session-reenter!       ; direct replay-entry (tests/tools)
          session-rerun!         ; direct clear-and-rerun (tests/tools)
@@ -264,6 +265,24 @@
   (display (string-append line "\n") (session-in s))
   (flush-output (session-in s)))
 
+;; T5 slice (c3): one debugger command whose reply is a RECORD STREAM --
+;; `(frames)` at a step stop.  A refusal is DATA here, exactly as it is for
+;; queries: the REPL renders typed refusals, and raising would strand the
+;; reply mid-stream.  Safe from any thread that owns the baton while the
+;; run is parked (the driver is blocked in its pause hook).
+(define (session-debug-lines! s datum terminal?)
+  (write datum (session-in s))
+  (newline (session-in s))
+  (flush-output (session-in s))
+  (let loop ([lines '()])
+    (define line (read-line (session-out s)))
+    (when (eof-object? line)
+      (error 'session (format "daemon EOF in debug stream: ~a" datum)))
+    (define next (cons line lines))
+    (if (or (terminal? line) (regexp-match? #px"^\\(refused " line))
+        (reverse next)
+        (loop next))))
+
 (define (session-command! s datum)
   ;; N3 joins T0's line-framed command protocol directly.  `write` preserves
   ;; structured QName component lists and string keys without passing through
@@ -333,6 +352,10 @@
 ;;   'replay -- rerun the parked read from its origin (only the pre-commit
 ;;              gate can honour it; any other park answers with a
 ;;              structured refusal, which the driver commits past)
+;;   a STRING -- send that command line verbatim as the resume.  Slice (c3)
+;;              spells steps this way ("(step emit)", "(step rule 3)"), so
+;;              the debugger's grammar stays with the client and this
+;;              driver stays a pump.
 ;;   anything else (including void) -- continue exactly as before.
 (define session-pause-hook (make-parameter #f))
 
@@ -370,6 +393,11 @@
           ;; The reply is the REPLAYED read's own pause / fixpoint (an exact
           ;; rerun is indistinguishable from what it repeats) or a refusal.
           (send-command-line! s "(replay)")
+          (poll loaded)]
+         [(string? directive)
+          ;; A client-spelled resume (slice (c3)'s steps): the reply is the
+          ;; next pause -- a step stop, an ordinary park -- or a refusal.
+          (send-command-line! s directive)
           (poll loaded)]
          [(regexp-match? #px"memory\\)\\s*$" line)
           (error 'session (format "out of memory: ~a" line))]

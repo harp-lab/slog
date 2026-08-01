@@ -1588,6 +1588,11 @@ public:
 
   void continueRun(RunBudget b)
   {
+    // T5 slice (c3): resuming moves PAST any step stop, so the stop is
+    // history from here -- the record this call emits cites a breakpoint
+    // only if the run stops at a fresh port, and the gate's watch citation
+    // is not shadowed by a stale one.
+    database->clearStepStop();
     const bool suspended = database->isSuspended();
     if (!suspended && transient_run == nullptr && next_unrun >= pipeline.size())
     {
@@ -1638,10 +1643,22 @@ public:
         // states which barrier and what settled.  A pre-commit gate park
         // (T5) cites its settled level-1 watches the same way; phase "read"
         // with a watch cause IS the gate record (docs/t5-contract.md §1).
-        std::vector<std::string> hits = st.where == RUN_READ_COMPLETE
-          ? database->takeGateHits()
-          : database->takeWatchHits();
-        if (!hits.empty())
+        // T5 slice (c3): a step stop outranks every other reason -- the
+        // operator asked for exactly this position, and the record's
+        // breakpoint detail names the port and rule it stopped at.  Take
+        // the watch citations only when they are the reason, so a step
+        // stop cannot silently consume a barrier's pending hits.
+        std::vector<std::string> hits;
+        if (!database->stepStopPending())
+          hits = st.where == RUN_READ_COMPLETE
+            ? database->takeGateHits()
+            : database->takeWatchHits();
+        if (database->stepStopPending())
+        {
+          cause.kind = protocol::PauseCauseKind::breakpoint;
+          cause.detail = database->stepStopDetail();
+        }
+        else if (!hits.empty())
         {
           cause.kind = protocol::PauseCauseKind::watch;
           cause.citations = std::move(hits);
@@ -1693,6 +1710,25 @@ public:
   {
     database->replayReadPhase();
     continueRun(default_budget);
+  }
+
+  // T5 slice (c3): arm one stop and run to it (contract §3).  From a
+  // pre-commit gate park the read is COMPLETE, so stepping there means
+  // walking the very read that produced the candidate: arm, replay it from
+  // its origin (slice (c1)), and stop at the first matching port.  From a
+  // step stop the parked continuation simply carries on to the next one.
+  // Either way the unit of work is an ordinary bounded continue, so the
+  // pause record comes out of the one place that renders pauses.
+  void stepRun(Database::StepGrain grain, u32 rule_filter)
+  {
+    const bool from_gate =
+      database->suspendPosition() == RUN_READ_COMPLETE;
+    database->stepArm(grain, rule_filter);   // also clears the last stop
+    if (from_gate) database->replayReadPhase();
+    continueRun(default_budget);
+    // An armed step that reached the end of the read (or the epoch) without
+    // matching leaves nothing armed behind it.
+    database->stepDisarm();
   }
 
   // The legacy blocking loop: continue every not-yet-run stratum to fixpoint,

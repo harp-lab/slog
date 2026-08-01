@@ -2804,6 +2804,51 @@ private:
   // and the level-0 dedup counters stay byte-identical for level-0 flows.
   std::vector<std::string> gate_hits;
   u64 watch_barrier_seq = 0;
+
+  // ---- T5 slice (c3): stepping state (docs/t5-contract.md §3) ------------
+  // The interpreter already owns the mechanism (interp.h's eight D15 ports,
+  // DebugSink, DebugAction::pause, DebugView's cursor stack).  Database
+  // holds only PLAIN state -- interp.h includes this header, so the sink
+  // itself lives with the plan binding (plan.h) and translates.
+  //
+  // A granularity is what the operator asked to stop at; the sink maps it
+  // to an event mask.  `step_any` is repl-ux §9.3's bare `step` (one port).
+  // The TYPES are public (the sink and the dispatcher name them); the state
+  // stays private behind the arm/claim/report methods below.
+public:
+  enum StepGrain : u8
+  {
+    step_off = 0, step_any, step_match, step_fire, step_emit, step_tuple
+  };
+
+  // One materialized stop: the frame stack as PLAIN rows (the DebugView is
+  // valid only inside the observer callback, so this is a copy by
+  // construction), plus the identity a client needs to name the position.
+  struct StepStop
+  {
+    bool valid = false;
+    std::string port;          // drive|match|miss|exhausted|guard|guard-fail|fire|emit
+    std::string rule_loc;      // the bound rule's source "file:line"
+    std::string rule_tag;      // its variant tag
+    u32 rule_id = 0;
+    u32 variant = 0;
+    u64 op_index = 0;
+    std::vector<u64> tuple;    // the emit candidate, when the port carries one
+    std::vector<u64> driver;   // the driving delta tuple
+    std::vector<std::vector<u64>> premises;   // one row per open cursor level
+  };
+
+private:
+  StepGrain step_grain = step_off;
+  // Stop only in this rule's variants (repl-ux's `step rule rN`); the
+  // sentinel means any rule.
+  u32 step_rule_filter = UINT32_MAX;
+  // First observer to claim it wins the stop and every other worker parks
+  // at the read barrier behind it: with several workers a step is exact
+  // only under SLOG_THREADS=1, which is how the goldens pin it.
+  std::atomic<bool> step_claimed{false};
+  StepStop step_stop;
+
   // N3.1 logical catalog truth.  Prepare receives the complete output
   // catalog, so commit replaces these snapshots atomically with the name
   // bindings below.  Memberships are kept even though N3.1's relation/type
@@ -4572,6 +4617,78 @@ public:
     rs.read_suspended = false;
     rs.position = RUN_MID_READ;
     return true;
+  }
+
+  // ---- T5 slice (c3): stepping (contract §3) -----------------------------
+  // Arm ONE stop.  The sink disarms itself the moment a stop is claimed, so
+  // a step is exactly a step: the run continues normally afterwards until
+  // the next `step` re-arms it.  Zero cost while disarmed -- the sink's
+  // effective mask is then 0, which selects the interpreter's separately
+  // compiled fast loop (interp.h's frozen policy split).
+  void stepArm(StepGrain grain, u32 rule_filter)
+  {
+    step_grain = grain;
+    step_rule_filter = rule_filter;
+    step_claimed.store(false, std::memory_order_relaxed);
+    step_stop = StepStop{};
+  }
+
+  void stepDisarm()
+  {
+    step_grain = step_off;
+    step_rule_filter = UINT32_MAX;
+    step_claimed.store(false, std::memory_order_relaxed);
+  }
+
+  StepGrain stepGrain() const { return step_grain; }
+  u32 stepRuleFilter() const { return step_rule_filter; }
+
+  // The first worker to get here owns the stop; the rest run on to the read
+  // barrier and park behind it.
+  bool claimStepStop()
+  {
+    bool expected = false;
+    return step_claimed.compare_exchange_strong(expected, true,
+                                                std::memory_order_acq_rel);
+  }
+
+  StepStop& stepStopSlot() { return step_stop; }
+  const StepStop& stepStop() const { return step_stop; }
+  bool stepStopPending() const { return step_stop.valid; }
+  void clearStepStop() { step_stop = StepStop{}; }
+
+  // The pause record's breakpoint detail: the port and the rule position it
+  // stopped at, stable enough for a client to key on.
+  std::string stepStopDetail() const
+  {
+    if (!step_stop.valid) return "step";
+    return step_stop.port + "@"
+         + (step_stop.rule_loc.empty() ? std::string("r")
+              + std::to_string(step_stop.rule_id)
+            : step_stop.rule_loc)
+         + (step_stop.rule_tag.empty() ? "" : ":" + step_stop.rule_tag);
+  }
+
+  // A step stop is a mid-read suspension the worker asks for: the task
+  // parked its continuation, so the read is genuinely unfinished and
+  // ReadCompletion's `stopped && work_left` test does the rest.
+  void requestStepSuspend()
+  {
+    rs.stop_requested.store(true, std::memory_order_relaxed);
+  }
+
+  // Where a debugger continuation may run from (shared by replay and step).
+  // Stepping additionally accepts a park that IS a step stop: `step` from
+  // there is "carry on to the next port".
+  const char* stepObstacle()
+  {
+    if (!rs.suspended || rs.stratum == nullptr) return "not-parked";
+    if (!rs.stratum->semantic_instance || rs.stratum->transient_instance
+        || (rs.stratum->flavor != "normal" && rs.stratum->flavor != "delta"))
+      return "flavor";
+    if (rs.position != RUN_READ_COMPLETE && rs.position != RUN_MID_READ)
+      return "position";
+    return nullptr;
   }
 
   // One evaluation per barrier.  Each watch records the barrier it handled,

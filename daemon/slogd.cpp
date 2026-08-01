@@ -1424,6 +1424,38 @@ static std::string catalog_relation_record(
         + " (temp " + (r->isCompilerTemporary() ? "#t" : "#f") + "))";
 }
 
+// T5 slice (c3): the step stop's join stack.  One (frame ...) record per
+// level -- the driving delta tuple first, then one per open cursor level,
+// innermost last -- followed by the position record and a sentinel.  Rows
+// render through the ordinary value writer, so structs, sequences and
+// collections read the same here as anywhere else.
+static void emit_step_frames(slog::Daemon* d)
+{
+    using slog::protocol::quoteString;
+    slog::Database* db = d->db();
+    const slog::Database::StepStop& stop = db->stepStop();
+    const auto row_text = [&](const std::vector<u64>& row) {
+        std::string text;
+        for (u64 v : row) text += (text.empty() ? "" : " ") + db->writeValCSV(v);
+        return text;
+    };
+    d->emit("(step-at (port " + stop.port + ") (rule "
+            + std::to_string(stop.rule_id) + ") (variant "
+            + std::to_string(stop.variant) + ") (op "
+            + std::to_string(stop.op_index) + ") (source "
+            + quoteString(stop.rule_loc) + ") (tag "
+            + quoteString(stop.rule_tag) + ") (tuple "
+            + quoteString(row_text(stop.tuple)) + "))");
+    size_t level = 0;
+    d->emit("(frame (level " + std::to_string(level++) + ") (kind drive) (row "
+            + quoteString(row_text(stop.driver)) + "))");
+    for (const std::vector<u64>& premise : stop.premises)
+        d->emit("(frame (level " + std::to_string(level++)
+                + ") (kind premise) (row " + quoteString(row_text(premise))
+                + "))");
+    d->emit("(frames-end " + std::to_string(level) + ")");
+}
+
 // (catalog) / (catalog relations): one (catalog-rel ...) record per LATEST
 // relation binding plus one (catalog-planned ...) record per announced-but-
 // unregistered version key, name-sorted, then the (catalog-end <n>) sentinel.
@@ -1639,12 +1671,21 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
     // so the lease admits it whenever the run is suspended -- including at
     // parks it will refuse, because `level-1-unwatchable` is the honest
     // answer there and a boundary-admission refusal would hide it.
-    const bool parked_debug_verb = verb == "replay" && d->db()->isSuspended();
+    const bool parked_debug_verb =
+        (verb == "replay" || verb == "step" || verb == "frames")
+        && d->db()->isSuspended();
+    // T5 slice (c3) widens this by exactly one park: a STEP STOP is the
+    // same "remain paused and inspect" state one transition earlier -- the
+    // read is mid-flight, so no master, sidecar or intern allocator has
+    // moved either, and the query layer already admits `mid_read`.  A
+    // budget-driven mid-read park stays outside: nobody is sitting at it.
     const bool gate_parked_read =
         (verb == "query" || verb == "query-page" || verb == "query-cancel"
          || verb == "catalog")
         && d->db()->isSuspended()
-        && d->db()->suspendPosition() == slog::RUN_READ_COMPLETE;
+        && (d->db()->suspendPosition() == slog::RUN_READ_COMPLETE
+            || (d->db()->suspendPosition() == slog::RUN_MID_READ
+                && d->db()->stepStopPending()));
     if (d->boundaryPrepared() && !boundary_verb && !builder_verb
         && !watch_verb && !gate_parked_read && !parked_debug_verb)
     {
@@ -1704,6 +1745,80 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
             refuse(d, "replay-unavailable",
                    std::string("(verb replay) (detail ") + obstacle
                    + ") (position " + d->db()->currentPositionName() + ")");
+        return;
+    }
+
+    // T5 slice (c3): `step` and `frames` (contract §3, repl-ux §9.3).  A
+    // step is a level-1-only continuation like replay, so it refuses the
+    // same way and in the same order: flavor first, then position.  From a
+    // gate park it replays the completed read and stops at the first
+    // matching port; from a step stop it carries on to the next one.
+    if (verb == "step")
+    {
+        slog::Database::StepGrain grain = slog::Database::step_any;
+        u32 filter = UINT32_MAX;
+        bool parsed = argc == 0;
+        if (argc >= 1 && form.children[1].kind == slog::sexp::SExp::K::atom)
+        {
+            const std::string& what = form.children[1].text;
+            parsed = true;
+            if (what == "match")      grain = slog::Database::step_match;
+            else if (what == "fire")  grain = slog::Database::step_fire;
+            else if (what == "emit")  grain = slog::Database::step_emit;
+            else if (what == "tuple") grain = slog::Database::step_tuple;
+            else if (what == "rule" && argc == 2
+                     && form.children[2].kind == slog::sexp::SExp::K::atom)
+                filter = (u32)std::strtoul(form.children[2].text.c_str(),
+                                           nullptr, 10);
+            else parsed = false;
+            if (what != "rule" && argc != 1) parsed = false;
+        }
+        if (!parsed)
+        {
+            refuse(d, "parse", "(verb step) (detail \"step [match|fire|emit"
+                   "|tuple] | step rule N\")");
+            return;
+        }
+        const char* obstacle = d->db()->stepObstacle();
+        if (obstacle == nullptr)
+        {
+            d->stepRun(grain, filter);
+            return;
+        }
+        if (std::strcmp(obstacle, "flavor") == 0)
+            refuse(d, "level-1-unwatchable",
+                   "(verb step) (flavor "
+                   + slog::protocol::quoteString(d->db()->currentFlavor())
+                   + ") (position "
+                   + d->db()->currentPositionName() + ")");
+        else
+            refuse(d, "step-unavailable",
+                   std::string("(verb step) (detail ") + obstacle
+                   + ") (position " + d->db()->currentPositionName() + ")");
+        return;
+    }
+
+    // (frames): the join stack of the CURRENT step stop, innermost premise
+    // last.  Structural only -- rule id, variant, op index and rows -- so
+    // the client renders SOURCE variable names from the canonical plan it
+    // already holds (execution-tiers §4.2's rule meta), not from a second
+    // daemon-side name table.
+    if (verb == "frames")
+    {
+        if (argc != 0)
+        {
+            refuse(d, "parse", "(verb frames) (detail \"frames takes no "
+                   "arguments\")");
+            return;
+        }
+        if (!d->db()->stepStopPending())
+        {
+            refuse(d, "step-unavailable",
+                   std::string("(verb frames) (detail no-stop) (position ")
+                   + d->db()->currentPositionName() + ")");
+            return;
+        }
+        emit_step_frames(d);
         return;
     }
 

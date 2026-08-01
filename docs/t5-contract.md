@@ -177,11 +177,53 @@ it.
     with no second path.  A dropped connection resolves a held run rather
     than stranding it.  repl-ux §9.2's "the pause is simply a place" made
     literal.
-  - **(c3) stepping** *(next)*: the interpreter substrate is already there
-    (interp.h's eight D15 ports, `DebugSink`/`DebugAction::pause`,
-    `DebugView`'s cursor stack and lazy `proof()`, `StopReason::breakpoint`)
-    -- what is missing is a daemon step sink over it, park-at-port, the
-    frame surface, and the client verbs.
+  - **(c3) stepping** *(2026-08-01)*.  The interpreter already owned the
+    mechanism -- interp.h's eight D15 ports, `DebugSink` with a per-event
+    mask, `DebugAction::pause` (post-transition, so a resumed continuation
+    never retriggers), `DebugView`'s cursor stack with a lazy `proof()`,
+    `StopReason::breakpoint` -- so this slice is the translation layer, not
+    a new machine.  `StepSink` (plan.h, because interp.h includes
+    database.h) maps the operator's granularity to an event mask and
+    materializes the stop; Database holds the granularity, the filter and
+    the stop as PLAIN state.  The cost is honest: a disarmed session's mask
+    is 0, which selects the machine's separately compiled fast loop, so
+    `InterpReadTask` switching from `run_fast` to `run` changes nothing for
+    an ordinary run.  A stop parks the continuation exactly as a budget
+    pause does and asks the run to suspend, so `ReadCompletion`'s
+    `stopped && work_left` test produces an ordinary `RUN_MID_READ` park
+    carrying a `breakpoint` cause -- no new pause shape.  Wire verbs:
+    `(step [match|fire|emit|tuple] | step rule N)` and `(frames)`, refusing
+    flavor-first exactly as replay does.  From a GATE park a step replays
+    the completed read (slice (c1)) and stops at the first matching port --
+    walking the very read that produced the candidate; from a step stop it
+    carries on.  The lease widens by exactly one park: queries and catalog
+    are admitted at a mid-read STEP STOP, the same quiescent-master state
+    one transition earlier.  At the prompt: `step`, `step iter`/`finish`
+    (to the next clean boundary, held by a one-shot flag since that pause
+    carries no debugger cause), `frames`, beside commit/replay/abort.
+    A granularity with no matching port in the rule at hand simply runs on
+    -- a single-body-position rule's one position IS its driver, so it has
+    no `match` port, which is the ports being honest about the plan rather
+    than a hole.  Determinism note: the first observer to claim a stop
+    wins, so a step is a determinate place only under `SLOG_THREADS=1`,
+    which is how the battery pins it.  Exit, met: the REPL battery walks
+    the 3-rule fixture end to end --
+    gate park, `step tuple` to the driver port, `frames` (stable across
+    repeats, and the read still uncommitted), `step emit` re-arming a
+    PARKED continuation at a new granularity, `finish` back to the gate,
+    then one commit landing the change exactly once.  Pinned by ASSERTION
+    rather than a byte-golden on purpose: a step record names the
+    content-addressed stratum and the rule position, so a transcript
+    golden would gate unrelated compiler churn on debugger output -- the
+    same lesson as "gate on .plan diffs, not TU text".
+    - STILL OPEN, deliberately: (i) `frames` prints the join stack
+      STRUCTURALLY (port, rule position, driver row, premise rows).  Source
+      VARIABLE NAMES need the canonical plan's `rule-meta` -- today only
+      `(rid source)` -- to carry a register-to-name map, and every byte of
+      that plan text is the KernelPlanKey, so widening it moves every
+      artifact hash: its own change, with the plan-determinism goldens.
+      (ii) `up`/`down` are a cursor over a stack the server already prints
+      whole -- the interactive canvas's job, with the Rust client work.
 - **(d) Proof surfaces + non-plain settles.**  `why`/`whynot` trees,
   struct settle (M5 co-design), lattice settle (M6L contributor-reduce),
   hygiene + exit audit (M4N slice-4 shape): full suite, interp-union

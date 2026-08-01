@@ -737,6 +737,17 @@ walk it; the tuple at each frame is an ordinary expandable value. This is
 "checkpoints within rules": a breakpoint or step target is a body position of
 a rule variant, and the interpreter owns exactly that granularity.
 
+*Shipped (T5 slice (c3), 2026-08-01):* `step`, `step match|fire|emit|tuple`,
+`step rule rN`, `finish`, and `frames`, entered from a pre-commit gate pause
+— where a step REPLAYS the held read and stops at the first matching port,
+so you walk the read that produced the candidate. The interpreter separates
+the two ports this section's "(next emit)" ran together: `step fire` stops
+at an instantiation (a satisfying body assignment), `step emit` at the head
+actually produced. `frames` prints the whole stack, so `up`/`down` become a
+cursor in the canvas rather than a server round trip; source VARIABLE names
+wait on rule-meta carrying a register-to-name map (it is inside the
+KernelPlanKey, so widening it is its own change).
+
 ### 9.4 Why and why-not
 
 `why <fact>` renders bounded proof trees (execution-tiers §7.4) through the

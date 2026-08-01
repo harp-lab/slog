@@ -1602,6 +1602,48 @@ freeze/import with image-based compiler goldens and a first Slog-written
 lint, **T3b** full tier policy (promotion budgets, profile sidecars, core
 arbiter).
 
+**Checkpoint (2026-08-01; T5 slice (c) — replay, the gate as a place,
+and stepping).**  Three parts, all over the substrate the earlier slices
+built.  **(c1) replay** (commit 7dddec0): `replay` leaves reserved-verb
+parking through the T0 dispatcher, and at a gate park discards every
+relation's send shards, rolls the iteration's `$stat_fires` tallies back
+to a snapshot taken at the iteration barrier (armed sessions only),
+re-arms `once_pending[phase_read]` — runPhase's completed-read tail had
+already cleared it, so without this the rerun would be a SMALLER read —
+and re-enters at `RUN_MID_READ`, which is precisely "the read phase
+again, without the iteration barrier or the write phase".  The old delta
+and its indices never moved, so the rerun is exact and re-parks with an
+indistinguishable record; struct ids are minted in the INTERN phase, so a
+discarded read leaks no identity.  `replayObstacle` orders refusals
+FLAVOR FIRST, which is where `level-1-unwatchable` finally fires (its
+ratified surface: a level-1-only continuation against a counted or
+maintenance epoch, naming that epoch's retained flavor).  **(c2) the gate
+as a place** (7dddec0): a session with a level-1 watch armed runs its
+commands on a held thread, so a gate park comes back as the command's
+RESULT, ordinary commands then observe the parked epoch, and
+`commit`/`replay`/`abort` resolve it — `commit` returning the held
+command's own summary, `abort` raising an `exn:fail` subtype so the
+session's existing abort-boundary unwind discards the change with no
+second path.  repl-ux §9.2's "the pause is simply a place", literally.
+**(c3) stepping**: the interpreter already owned the mechanism (interp.h's
+eight D15 ports, `DebugSink` with a per-event mask, post-transition
+`DebugAction::pause`, `DebugView`'s cursor stack, `StopReason::
+breakpoint`), so this is a translation layer — a `StepSink` mapping the
+operator's granularity to a mask, plain step state on Database, a stop
+that parks its continuation exactly as a budget pause does and comes out
+as an ordinary `RUN_MID_READ` park with a `breakpoint` cause.  Cost stays
+honest: a disarmed session's mask is 0, which selects the machine's
+separately compiled fast loop.  From the gate a step REPLAYS the
+completed read and stops at the first matching port — walking the very
+read that produced the candidate — and the lease widens by exactly one
+park so queries and `frames` work there.  Two pieces deliberately left:
+frames print the join stack structurally, because source VARIABLE names
+need the canonical plan's rule-meta to carry a register-to-name map and
+every byte of that plan text is the KernelPlanKey; and `up`/`down` are a
+cursor over a stack the server already prints whole (the Rust canvas's
+job).  Remaining in the arc: slice (d) — why/whynot proof trees,
+struct/lattice settles, the exit audit.
+
 **Checkpoint (2026-07-31; T5 slices (a)+(b) — the pre-commit gate
 works).**  Slice (a), commit 7edfe7a: level-1 watch registration as an
 additive `(level 0|1)` wire field (level-0 replies byte-identical) and

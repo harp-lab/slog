@@ -80,7 +80,13 @@
 ;; and every other command runs meanwhile against the parked epoch, which
 ;; the daemon admits precisely because it is parked (slice (b)'s lease).
 (struct held-run (thread to-run from-run source [record #:mutable]
-                         [parks #:mutable] [replays #:mutable]))
+                         [parks #:mutable] [replays #:mutable]
+                         ;; T5 slice (c3): `finish` runs to the next clean
+                         ;; iteration boundary, which is an ordinary pause
+                         ;; with no debugger cause -- this one-shot box is
+                         ;; what tells the held thread's hook to hold it
+                         ;; anyway instead of driving past.
+                         hold-next))
 
 ;; Raised INTO the held thread by `abort`.  An exn:fail subtype on purpose:
 ;; the session's boundary driver already unwinds a failed run through
@@ -268,6 +274,10 @@
    "                      writer strata pin to the interpreter (debug)"
    "  commit|replay|abort resolve a run held at the pre-commit gate: take"
    "                      the change, rerun the same read, or discard it"
+   "  step [match|fire|   walk the held read one interpreter port at a time"
+   "   emit|tuple|rule rN] (from the gate it replays the read to get there)"
+   "  finish              leave the ports; run to the next iteration boundary"
+   "  frames              the join stack at the current step stop"
    "  unwatch wN          remove one watch;  `watches` lists them"
    "  explain ?QUERY      show the query plan and degradations, do not run"
    "  tiers               show each stratum's execution rung (interp/-O0/-O2)"
@@ -2279,10 +2289,38 @@
 ;; `session-pause-hook`, which then owns the pause -- keep the shipped
 ;; straight-through path byte for byte.
 
+;; Which pauses the server HOLDS: the pre-commit gate (a level-1 watch
+;; citation at phase read) and, once stepping is armed, the step stop the
+;; interpreter reports as a breakpoint.  Budget and boundary pauses stay
+;; auto-continued -- they are progress, not places.
 (define (gate-pause-line? line)
   (and (regexp-match? #px"^\\(paused " line)
-       (regexp-match? #px"\\(phase read\\)" line)
-       (regexp-match? #px"\\(cause \\(watch " line)))
+       (or (regexp-match? #px"\\(cause \\(breakpoint " line)
+           (and (regexp-match? #px"\\(phase read\\)" line)
+                (regexp-match? #px"\\(cause \\(watch " line)))))
+
+(define (step-stop-line? line)
+  (and (string? line) (regexp-match? #px"\\(cause \\(breakpoint " line)))
+
+(define (pause-breakpoint-detail line)
+  (match (read-datum line)
+    [`(paused ,fields ...)
+     (match (assq 'cause fields)
+       [(list _ `(breakpoint ,detail)) (~a detail)]
+       [_ #f])]
+    [_ #f]))
+
+;; `step`, `step match|fire|emit|tuple`, `step rule rN|N` -> the wire line
+;; the daemon's dispatcher takes, or #f when the spelling is not one.
+(define (step-command-line argument)
+  (define parts (string-split (string-trim argument)))
+  (match parts
+    ['() "(step)"]
+    [(list (and grain (or "match" "fire" "emit" "tuple"))) (format "(step ~a)" grain)]
+    [(list "rule" target)
+     (define n (string->number (regexp-replace #px"^r" target "")))
+     (and (exact-nonnegative-integer? n) (format "(step rule ~a)" n))]
+    [_ #f]))
 
 (define (session-level1-armed? state)
   (define rs (current-repl-session state))
@@ -2291,7 +2329,8 @@
          (and (eq? (watch-intent-kind intent) 'relation)
               (= (watch-intent-level intent) 1)))))
 
-(define pause-resolution-verbs '("commit" "continue" "replay" "abort"))
+(define pause-resolution-verbs
+  '("commit" "continue" "replay" "abort" "step" "frames" "finish"))
 
 ;; Fields of the uniform pause record, for rendering (t0-contract).
 (define (pause-record-field line key)
@@ -2318,6 +2357,7 @@
   (define cites (pause-watch-citations line))
   (define rs (current-repl-session state))
   (define registry (and rs (repl-session-watches rs)))
+  (define stepped? (step-stop-line? line))
   (define watch-lines
     (for/list ([id (in-list cites)])
       (define intent (and registry (hash-ref registry id #f)))
@@ -2329,12 +2369,20 @@
   (attach-session-state
    state
    (text-result
-    "Paused · pre-commit gate"
+    ;; Name the place honestly: a step stop, the pre-commit gate, or the
+    ;; clean iteration boundary `finish` asked to be held at.
+    (cond [stepped? "Paused · step"]
+          [(pair? cites) "Paused · pre-commit gate"]
+          [else "Paused · iteration boundary"])
     (append
      (list (format "~a · iteration ~a · phase ~a"
                    (or (pause-record-field line 'stratum) "?")
                    (or (pause-record-field line 'iteration) "?")
                    (or (pause-record-field line 'phase) "?")))
+     (if stepped?
+         (list (format "port ~a" (or (pause-breakpoint-detail line) "?"))
+               "frames shows the join stack at this port")
+         '())
      watch-lines
      (list
       "queries here answer COMMITTED masters; the candidate rows are not in them"
@@ -2344,8 +2392,43 @@
                        (held-run-replays held)
                        (if (= (held-run-replays held) 1) "" "s")))
          '())
-     (list "commit · replay · abort"))
+     (list (string-append
+            "step [match|fire|emit|tuple] · frames · finish · "
+            "commit · replay · abort")))
     #:kind "paused")))
+
+;; The daemon reports the join stack STRUCTURALLY -- port, rule position and
+;; rows.  Source variable names are the remaining half of contract §3: the
+;; canonical plan's rule-meta carries only (rid source) today, and widening
+;; it moves every KernelPlanKey, so that is its own change.
+(define (frames-result state)
+  (define rs (ensure-session-record! state))
+  (define s (repl-session-session rs))
+  (define lines
+    (session-debug-lines! s '(frames)
+                          (lambda (l) (regexp-match? #px"^\\(frames-end " l))))
+  (define rendered
+    (for/list ([line (in-list lines)])
+      (match (read-datum line)
+        [`(step-at (port ,port) (rule ,rid) (variant ,variant) (op ,op)
+                   (source ,source) (tag ,tag) (tuple ,tuple))
+         (format "~a at r~a~a · ~a · op ~a~a"
+                 port rid
+                 (if (equal? (~a tag) "") "" (format " (~a)" tag))
+                 (if (equal? (~a source) "") "?" source)
+                 op
+                 (if (equal? (~a tuple) "") "" (format " · (~a)" tuple)))]
+        [`(frame (level ,level) (kind ,kind) (row ,row))
+         (format "  ~a ~a  (~a)" level kind row)]
+        [`(frames-end ,n) (format "~a frame~a" n (if (= n 1) "" "s"))]
+        [`(refused ,class ,_generation ,detail ...)
+         (format "refused: ~a ~a" class
+                 (string-join (for/list ([d (in-list detail)])
+                                (format "~s" d)) " "))]
+        [_ line])))
+  (attach-session-state
+   state
+   (text-result "Frames" rendered #:kind "frames")))
 
 ;; Wait for the held thread's next event: it either finishes the command
 ;; (result or fault) or parks again.
@@ -2375,6 +2458,7 @@
 (define (dispatch-held-command state source)
   (define to-run (make-channel))
   (define from-run (make-channel))
+  (define hold-next (box #f))
   (define runner
     (thread
      (lambda ()
@@ -2382,7 +2466,8 @@
            ([session-pause-hook
              (lambda (_s line)
                (cond
-                 [(gate-pause-line? line)
+                 [(or (gate-pause-line? line) (unbox hold-next))
+                  (set-box! hold-next #f)
                   (channel-put from-run (list 'paused line))
                   (match (channel-get to-run)
                     ['abort
@@ -2395,13 +2480,14 @@
                           (lambda (e) (channel-put from-run (list 'raise e)))])
            (channel-put from-run
                         (list 'result (dispatch-command* state source))))))))
-  (await-held-run state (held-run runner to-run from-run source #f 0 0)))
+  (await-held-run state
+                  (held-run runner to-run from-run source #f 0 0 hold-next)))
 
 ;; A command typed while a run is held.  The three resolutions resume the
 ;; held thread; everything else is an ordinary observation of the parked
 ;; epoch, dispatched on this thread while the run stays put.
 (define (dispatch-at-gate state held source)
-  (define-values (verb _argument) (split-command source))
+  (define-values (verb argument) (split-command source))
   (cond
     [(member verb '("commit" "continue"))
      (channel-put (held-run-to-run held) 'continue)
@@ -2410,6 +2496,32 @@
      (set-held-run-replays! held (add1 (held-run-replays held)))
      (channel-put (held-run-to-run held) 'replay)
      (await-held-run state held)]
+    ;; T5 slice (c3): a step is a resume with a granularity.  From the gate
+    ;; it replays the completed read and stops at the first matching port
+    ;; (walking the very read that produced the candidate); from a step stop
+    ;; it carries on to the next one.
+    [(and (equal? verb "step")
+          (equal? (string-trim argument) "iter"))
+     ;; repl-ux §9.3's coarsest step is `finish` by another name.
+     (dispatch-at-gate state held "finish")]
+    [(equal? verb "step")
+     (define line (step-command-line argument))
+     (unless line
+       (error 'step (string-append
+                     "expected: step [match | fire | emit | tuple | iter] "
+                     "| step rule rN")))
+     (channel-put (held-run-to-run held) line)
+     (await-held-run state held)]
+    ;; `finish` leaves the ports behind and runs to the next clean
+    ;; iteration boundary -- an ordinary pause, so the hook is told to hold
+    ;; that one too rather than drive past it (repl-ux §9.3's coarsest
+    ;; granularity).
+    [(equal? verb "finish")
+     (set-box! (held-run-hold-next held) #t)
+     (channel-put (held-run-to-run held) "(continue-boundary)")
+     (await-held-run state held)]
+    ;; frames observes the stop without resuming: the run stays put.
+    [(equal? verb "frames") (frames-result state)]
     [(equal? verb "abort")
      (channel-put (held-run-to-run held) 'abort)
      (await-held-run state held)]
@@ -2818,6 +2930,12 @@
      (error 'debugger
             (format (string-append
                      "~a resolves a pause at the pre-commit gate; no run is "
+                     "held (arm one with `watch REL level 1`)")
+                    verb))]
+    [(or "step" "frames" "finish")
+     (error 'debugger
+            (format (string-append
+                     "~a works a run held at the pre-commit gate; no run is "
                      "held (arm one with `watch REL level 1`)")
                     verb))]
     ["replay"
@@ -3880,6 +3998,7 @@
       (check-regexp-match #px"watch w1 · path — the change is settled but NOT committed"
                           paused-text)
       (check-regexp-match #px"commit · replay · abort" paused-text)
+      (check-regexp-match #px"step \\[match\\|fire\\|emit\\|tuple\\]" paused-text)
       ;; the parked epoch is a place: queries answer committed masters
       (check-regexp-match #px"6 rows match" (count-line))
       ;; replay reruns the same read and lands in the same place
@@ -3909,4 +4028,67 @@
       (check-regexp-match
        #px"6 rows match"
        (string-join (hash-ref (run2! "?count (path X Y)") 'lines) " | "))
-      (void (run2! ":quit")))))
+      (void (run2! ":quit"))))
+
+  ;; T5 slice (c3): stepping the held read (contract §3, repl-ux §9.3).
+  ;; From the gate a step REPLAYS the completed read and stops at the first
+  ;; matching interpreter port -- walking the very read that produced the
+  ;; candidate -- and `frames` prints the join stack there without moving.
+  ;; Resuming from a step stop finishes the read, which re-engages the gate:
+  ;; two distinct stops, resolved separately.  Pinned single-threaded, which
+  ;; is what makes "the first matching port" a determinate place.
+  (let ([step-environment (environment-variables-copy test-environment)])
+    (environment-variables-set! step-environment #"SLOG_OPT" #"interp")
+    (environment-variables-set! step-environment #"SLOG_THREADS" #"1")
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables step-environment])
+      (define state (make-server-state))
+      (define (run! line) (dispatch-command state line))
+      (define (text result) (string-join (hash-ref result 'lines) "\n"))
+      (void (run! "run tests/reach.slog"))
+      (void (run! "watch path level 1"))
+      (check-equal? (hash-ref (run! "rule (path 99 99) <-- (edge 1 2)") 'kind)
+                    "paused")
+      ;; step to the first driver tuple: a different KIND of stop at the
+      ;; same run.  Drive before emit is the rule's own order, and this
+      ;; fragment's single body position IS its driver (no probe level, so
+      ;; no `match` port exists to stop at -- the granularity has to fit
+      ;; the rule, which is exactly what the ports make visible).
+      (define stepped (run! "step tuple"))
+      (check-equal? (hash-ref stepped 'kind) "paused")
+      (check-equal? (hash-ref stepped 'title) "Paused · step")
+      (check-regexp-match #px"port drive@" (text stepped))
+      (check-regexp-match #px"\\(phase read\\)|phase read" (text stepped))
+      ;; frames reads the stop without resuming it
+      (define frames (run! "frames"))
+      (check-equal? (hash-ref frames 'kind) "frames")
+      (define frame-text (text frames))
+      (check-regexp-match #px"drive at r[0-9]+" frame-text)
+      (check-regexp-match #px"0 drive  \\(" frame-text)
+      (check-regexp-match #px"[0-9]+ frames?" frame-text)
+      ;; still parked: nothing committed, and frames again is stable
+      (check-regexp-match
+       #px"6 rows match"
+       (string-join (hash-ref (run! "?count (path X Y)") 'lines) " | "))
+      (check-equal? frame-text (text (run! "frames")))
+      ;; a SECOND step re-arms at a different granularity: the stop moves
+      ;; to the emit port this attempt is heading for (a parked
+      ;; continuation must pick up the NEW arming, not the one that
+      ;; stopped it)
+      (define stepped2 (run! "step emit"))
+      (check-equal? (hash-ref stepped2 'kind) "paused")
+      (check-equal? (hash-ref stepped2 'title) "Paused · step")
+      (check-regexp-match #px"port emit@" (text stepped2))
+      ;; `finish` leaves the ports behind; the next place the stepped read
+      ;; reaches is the gate it was stepped out of
+      (define regated (run! "finish"))
+      (check-equal? (hash-ref regated 'kind) "paused")
+      (check-equal? (hash-ref regated 'title) "Paused · pre-commit gate")
+      ;; and committing there lands the change exactly once
+      (define committed (run! "commit"))
+      (check-not-equal? (hash-ref committed 'kind) "paused")
+      (check-regexp-match #px"path \\+1" (text committed))
+      (check-regexp-match
+       #px"7 rows match"
+       (string-join (hash-ref (run! "?count (path X Y)") 'lines) " | "))
+      (void (run! ":quit")))))

@@ -149,6 +149,22 @@ expect_rx "replay-not-reserved" '\(refused replay-unavailable [0-9]+ \(verb repl
 expect_rx "replay-bare-only"    '\(refused parse [0-9]+ \(verb replay\) \(detail "T5 takes the bare form' out/proto-replay.log
 expect_not "replay-still-reserved" '(refused reserved-verb' out/proto-replay.log
 
+# --- 3x. T5 slice (c3): step and frames ------------------------------------
+# Both are debugger continuations over a PARKED epoch, so with nothing
+# parked they refuse structurally and name the position; a granularity that
+# is not one of the five is a parse refusal, not a silent "step".  (Stepping
+# a live read is pinned in the REPL battery, where a program is running.)
+racket tests/api/drive.rkt \
+  '(step)' \
+  '(step sideways)' \
+  '(frames)' \
+  '(frames now)' \
+  > out/proto-step.log 2>&1
+expect_rx "step-not-parked"  '\(refused step-unavailable [0-9]+ \(verb step\) \(detail not-parked\) \(position none\)\)' out/proto-step.log
+expect_rx "step-grain-parse" '\(refused parse [0-9]+ \(verb step\) \(detail "step \[match\|fire\|emit\|tuple\]' out/proto-step.log
+expect_rx "frames-no-stop"   '\(refused step-unavailable [0-9]+ \(verb frames\) \(detail no-stop\) \(position none\)\)' out/proto-step.log
+expect_rx "frames-bare-only" '\(refused parse [0-9]+ \(verb frames\) \(detail "frames takes no arguments"\)\)' out/proto-step.log
+
 # --- 3a. N3-A transaction + N3-B durable boundary history -------------------
 # Prepare eagerly constructs an empty slot but keeps both its VersionKey and
 # latest binding private. Ordinary catalog access is refused under the lease;

@@ -1394,9 +1394,99 @@ std::unique_ptr<PrefixCursor> make_absent_ever_cursor(
   const std::vector<u16>& order,
   const std::vector<u16>& regs, u16 bound);
 
+// T5 slice (c3): the debugger's step sink (docs/t5-contract.md §3).  The
+// interpreter owns the mechanism -- eight stable ports, a mask, and a
+// post-transition observer whose pause stops the machine AFTER the
+// transition commits, so a resumed continuation never retriggers the stop.
+// This is the translation layer: Database holds the operator's granularity
+// as plain state (interp.h includes database.h, so the sink cannot live
+// there), and the mask below is what makes the cost honest -- a disarmed
+// session's mask is 0, which selects the machine's separately compiled fast
+// loop, exactly as if no debugger existed.
+struct StepSink final : public DebugSink
+{
+  Database* db;
+  const std::string* rule_loc;
+  const std::string* rule_tag;
+
+  static u64 mask_for(Database::StepGrain grain)
+  {
+    switch (grain)
+    {
+      case Database::step_off:   return 0;
+      case Database::step_match: return event_bit(EventK::probe_match);
+      case Database::step_fire:  return event_bit(EventK::instantiation);
+      case Database::step_emit:  return event_bit(EventK::emit);
+      case Database::step_tuple: return event_bit(EventK::driver);
+      case Database::step_any:
+      default:
+        return event_bit(EventK::driver) | event_bit(EventK::probe_match)
+             | event_bit(EventK::probe_miss)
+             | event_bit(EventK::probe_exhausted)
+             | event_bit(EventK::guard_pass) | event_bit(EventK::guard_fail)
+             | event_bit(EventK::instantiation) | event_bit(EventK::emit);
+    }
+  }
+
+  static const char* port_name(EventK kind)
+  {
+    switch (kind)
+    {
+      case EventK::driver:          return "drive";
+      case EventK::probe_match:     return "match";
+      case EventK::probe_miss:      return "miss";
+      case EventK::probe_exhausted: return "exhausted";
+      case EventK::guard_pass:      return "guard";
+      case EventK::guard_fail:      return "guard-fail";
+      case EventK::instantiation:   return "fire";
+      case EventK::emit:            return "emit";
+    }
+    return "port";
+  }
+
+  StepSink(Database* database, const std::string* loc, const std::string* tag)
+    : db(database), rule_loc(loc), rule_tag(tag)
+  {
+    refresh();
+  }
+
+  // The arming can change between bounded units of work -- a PARKED
+  // continuation carries the sink that stopped it, so the next `step` at a
+  // different granularity must be picked up here rather than inherited.
+  // Read once per work() call, never per transition.
+  void refresh() { mask = mask_for(db->stepGrain()); }
+
+  DebugAction observe(const Event& e, const DebugView& view) override
+  {
+    const u32 filter = db->stepRuleFilter();
+    if (filter != UINT32_MAX && e.rule_id != filter)
+      return DebugAction::continue_;
+    // One stop per arming, whichever worker reaches a matching port first.
+    if (!db->claimStepStop()) return DebugAction::continue_;
+    Database::StepStop& stop = db->stepStopSlot();
+    stop.valid = true;
+    stop.port = port_name(e.kind);
+    stop.rule_loc = rule_loc ? *rule_loc : std::string();
+    stop.rule_tag = rule_tag ? *rule_tag : std::string();
+    stop.rule_id = e.rule_id;
+    stop.variant = e.variant_ordinal;
+    stop.op_index = e.op_index;
+    stop.tuple.assign(e.tuple.begin(), e.tuple.end());
+    const Proof proof = view.proof();
+    stop.driver = proof.driver;
+    stop.premises = proof.premises;
+    // Disarm here, not at resume: the machine returns breakpoint with the
+    // transition already committed, and the parked continuation must run
+    // on afterwards without stopping at every port.
+    db->stepDisarm();
+    return DebugAction::pause;
+  }
+};
+
 struct BoundExecution
 {
   std::vector<std::unique_ptr<BoundSink>> sinks;
+  std::unique_ptr<StepSink> stepper;
   std::unique_ptr<Machine> machine;
 
   void flush()
@@ -1995,8 +2085,19 @@ public:
         rel->getIndex(sealed.driver.order, true), prefix,
         sealed.driver.bound, bucket);
     }
+    // T5 slice (c3): give every interpreted execution the step sink.  It is
+    // constructed with the CURRENT granularity, so a disarmed session gets
+    // mask 0 and runs the fast loop; arming happens between bounded units
+    // of work, which is exactly when the next execution is built.
+    // The rule's DISPLAY metadata, not its stats key: an interpreted
+    // set-semantics rule's stats_loc is the disaggregated
+    // `<interp-rule:N:variant:M>` identity, while a frame should name the
+    // source position the operator wrote (interp.h's Program::source).
+    execution->stepper = std::make_unique<StepSink>(
+      db, &pinned->source, &pinned->variant);
     execution->machine = std::make_unique<Machine>(
-      pinned, std::move(driver), make_cursors(), std::move(ports), nullptr,
+      pinned, std::move(driver), make_cursors(), std::move(ports),
+      execution->stepper.get(),
       false, db, primitives, tychecks, error_fn,
       std::move(initial));
     return execution;
@@ -2052,13 +2153,20 @@ public:
   {
     std::unique_ptr<BoundExecution> execution = parked
       ? std::move(parked) : rule->make_execution(db, bucket);
+    // T5 slice (c3): pick up the CURRENT arming (a resumed continuation
+    // carries the sink that stopped it, whose mask is last step's).
+    if (execution->stepper) execution->stepper->refresh();
     const auto deadline = std::min(
       db->runDeadline(), std::chrono::steady_clock::now()
         + std::chrono::milliseconds(db->runSliceMs()));
 
     for (;;)
     {
-      const StopReason why = execution->machine->run_fast(128, 128);
+      // T5 slice (c3): `run` dispatches on the sink's EFFECTIVE mask, so a
+      // session with nothing armed takes the identical fast loop this call
+      // used before stepping existed; an armed one takes the observed loop
+      // and can come back with `breakpoint`.
+      const StopReason why = execution->machine->run(128, 128);
       if (why == StopReason::complete)
       {
         execution->flush();
@@ -2068,6 +2176,20 @@ public:
                         rule->statsTag().c_str(),
                         result.fires);
         return true;
+      }
+      if (why == StopReason::breakpoint)
+      {
+        // The stop is already materialized in the database (the observer
+        // copied the frame; the DebugView dies with the callback).  Park
+        // this continuation exactly as a budget pause does and ask the run
+        // to suspend: the read is genuinely unfinished, so ReadCompletion's
+        // `stopped && work_left` test parks the epoch at RUN_MID_READ and
+        // the ordinary mid-read resume is what carries on.
+        execution->flush();
+        db->pushPaused(phase_read,
+          new InterpReadTask(db, rule, bucket, std::move(execution)));
+        db->requestStepSuspend();
+        return false;
       }
       if (db->runStopFlag().load(std::memory_order_relaxed)
           || std::chrono::steady_clock::now() >= deadline)
