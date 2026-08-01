@@ -1602,6 +1602,35 @@ freeze/import with image-based compiler goldens and a first Slog-written
 lint, **T3b** full tier policy (promotion budgets, profile sidecars, core
 arbiter).
 
+**Checkpoint (2026-07-31; T5 slices (a)+(b) — the pre-commit gate
+works).**  Slice (a), commit 7edfe7a: level-1 watch registration as an
+additive `(level 0|1)` wire field (level-0 replies byte-identical) and
+the per-SCC interpreter pin — `watch REL level 1` pins the relation's
+writer strata client-side, every re-entry send resolves the canonical
+plan, and the native→interp flip is battery-proven with zero daemon
+changes.  Slice (b), commit 0e51337: `RUN_READ_COMPLETE` parks a
+level-1-watched run at read-complete before the deferred finalize;
+`WatchSettle` scans the send shards and probes master absence over ANY
+full ordering (plain tables hold no id-last master — the first draft's
+gate silently never fired); the uniform pause record carries phase
+`read` + the watch citations with zero grammar changes; plain
+`(continue)` commits, and committed content is byte-equal to an
+unwatched run.  Two contract additions flagged for review in
+t5-contract §4(b): prepare-time watch registration (the R2 leftover,
+load-bearing — semantic runs write successor instances, so the gate is
+unreachable without binding the prepared key through the private
+overlay, with watch verbs exempt from the boundary lease) and
+gate-park lease reads (`query*`/`catalog` admitted under the lease only
+at the park, where everything they touch is committed truth).  The
+`level-1-unwatchable` refusal rides to slice (c) with `replay`, its
+first reachable surface; the §7.3 downgrade is meanwhile behavioral and
+battery-pinned (maintenance epochs never gate; level-1 hits stay at
+iteration barriers).  Gates at (b): protocol 145/145, REPL contract
+140, unit 406, pause 18/18, joint 21/21, Rust 29+44+3, golden 167/167,
+session 782/782.  Remaining: slice (c) replay + the interactive pause
+state over `session-pause-hook` + four-port stepping + the refusal;
+slice (d) why/whynot + struct/lattice settles + exit audit.
+
 **Checkpoint (2026-07-31; W4′ entry).**  Two arc-entry items done.  (1)
 The wandering crash flake open since the N3 merge is root-caused and
 fixed (db6b57f): the `sha` package's `_bytes` RETURN conversion scans
