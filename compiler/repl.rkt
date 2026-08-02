@@ -272,6 +272,10 @@
    "                      query count; reports ride each change summary"
    "  watch REL level 1   arm the pre-commit gate intent; the relation's"
    "                      writer strata pin to the interpreter (debug)"
+   "  watch REL level 1 why  also capture this event's derivations, so"
+   "                      `why` can answer afterwards (observed loop)"
+   "  why [(REL t ...)]   the proof tree for a fact, or -- bare, at a gate"
+   "                      park -- for the candidates that stopped the run"
    "  commit|replay|abort resolve a run held at the pre-commit gate: take"
    "                      the change, rerun the same read, or discard it"
    "  step [match|fire|   walk the held read one interpreter port at a time"
@@ -1431,7 +1435,8 @@
 ;; interrupting the command.
 
 (struct watch-intent
-  (id kind target [bound-key #:mutable] [last-count #:mutable] level)
+  (id kind target [bound-key #:mutable] [last-count #:mutable] level
+      provenance)
   #:transparent)
 
 (define (next-watch-id registry)
@@ -1439,12 +1444,19 @@
     (define id (format "w~a" n))
     (if (hash-has-key? registry id) (loop (add1 n)) id)))
 
-(define (register-daemon-watch! s id key #:level [level 0])
+;; T5 slice (d1): `provenance` rides every registration and every rebind --
+;; the arming the capture sink reads is the DAEMON's, so a watch that
+;; forgets it at a successor key stops capturing exactly when the run that
+;; matters begins (the same lesson as the level field in slice (b)).
+(define (register-daemon-watch! s id key #:level [level 0]
+                                #:provenance [provenance #f])
   (session-command-stream!
    s
-   (if (= level 1)
-       `(watch (id ,id) (version-key ,key) (level 1))
-       `(watch (id ,id) (version-key ,key)))
+   (cond
+     [(and (= level 1) provenance)
+      `(watch (id ,id) (version-key ,key) (level 1) (provenance #t))]
+     [(= level 1) `(watch (id ,id) (version-key ,key) (level 1))]
+     [else `(watch (id ,id) (version-key ,key))])
    (lambda (_line) #t)))
 
 (define (silent-unwatch! s id)
@@ -1468,14 +1480,21 @@
 (define (watch-result state argument)
   (define raw (string-trim argument))
   (when (string=? raw "")
-    (error 'watch "expected: watch REL [level 1] | watch ?QUERY"))
+    (error 'watch "expected: watch REL [level 1 [why]] | watch ?QUERY"))
   ;; T5 slice (a): `watch REL level 1` records the pre-commit-gate intent
   ;; (docs/t5-contract.md) and forces the relation's writer SCCs onto the
   ;; interpreter at their next re-entry (client-side policy, ratified).
-  (define-values (text level)
-    (match (regexp-match #px"^(.*[^[:space:]])[[:space:]]+level[[:space:]]+([01])$" raw)
-      [(list _ target n) (values target (string->number n))]
-      [_ (values raw 0)]))
+  ;; T5 slice (d1): a trailing `why` additionally captures the event's
+  ;; derivations, which is what makes `why` answerable afterwards -- opt-in
+  ;; because it is what puts the interpreter on its observed loop.
+  (define-values (text level provenance)
+    (match (regexp-match
+            #px"^(.*[^[:space:]])[[:space:]]+level[[:space:]]+([01])([[:space:]]+why)?$"
+            raw)
+      [(list _ target n why) (values target (string->number n) (and why #t))]
+      [_ (values raw 0 #f)]))
+  (when (and provenance (not (= level 1)))
+    (error 'watch "provenance capture (`why`) is a level-1 watch's observation"))
   (define rs (ensure-session-record! state))
   (define registry (repl-session-watches rs))
   (define id (next-watch-id registry))
@@ -1485,7 +1504,7 @@
        (error 'watch
               "query watches are client-side re-counts; level 1 applies to relation watches"))
      (define count (run-watch-query state rs text))
-     (hash-set! registry id (watch-intent id 'query text #f count 0))
+     (hash-set! registry id (watch-intent id 'query text #f count 0 #f))
      (text-result
       (format "Watch ~a" id)
       (list (format "~a — ~a row~a now; changes report at each boundary"
@@ -1497,17 +1516,19 @@
      (define key (relation-info-version-key relation))
      (unless (string? key)
        (error 'watch "~a has no VersionKey yet; run a program first" text))
-     (register-daemon-watch! s id key #:level level)
+     (register-daemon-watch! s id key #:level level #:provenance provenance)
      (define flipped
        (if (= level 1)
            (session-set-scc-policy! s (string->symbol text) 'interpreted)
            '()))
-     (hash-set! registry id (watch-intent id 'relation text key #f level))
+     (hash-set! registry id
+                (watch-intent id 'relation text key #f level provenance))
      (text-result
       (format "Watch ~a" id)
       (append
-       (list (format "~a @ ~a — hits report at coherent barriers~a"
-                     text key (if (= level 1) " · level 1" "")))
+       (list (format "~a @ ~a — hits report at coherent barriers~a~a"
+                     text key (if (= level 1) " · level 1" "")
+                     (if provenance " · why" "")))
        (if (null? flipped)
            '()
            (list (format "writer strat~a ~a pinned to the interpreter for future re-entries"
@@ -1543,10 +1564,11 @@
        (for/list ([intent (in-list intents)])
          (match (watch-intent-kind intent)
            ['relation
-            (format "~a  ~a @ ~a~a" (watch-intent-id intent)
+            (format "~a  ~a @ ~a~a~a" (watch-intent-id intent)
                     (watch-intent-target intent)
                     (or (watch-intent-bound-key intent) "suspended")
-                    (if (= (watch-intent-level intent) 1) " · level 1" ""))]
+                    (if (= (watch-intent-level intent) 1) " · level 1" "")
+                    (if (watch-intent-provenance intent) " · why" ""))]
            ['query
             (format "~a  ~a — ~a row~a at the last boundary"
                     (watch-intent-id intent) (watch-intent-target intent)
@@ -1623,7 +1645,9 @@
                                 (watch-intent-target intent))
                         notes))])
             (register-daemon-watch! s (watch-intent-id intent) new-key
-                                    #:level (watch-intent-level intent))
+                                    #:level (watch-intent-level intent)
+                                    #:provenance
+                                    (watch-intent-provenance intent))
             (set-watch-intent-bound-key! intent new-key)
             (cons (format "watch ~a: rebound to ~a @ ~a"
                           (watch-intent-id intent)
@@ -1804,7 +1828,9 @@
            (with-handlers ([exn:fail? void])
              (silent-unwatch! s (watch-intent-id intent))
              (register-daemon-watch! s (watch-intent-id intent) (~a key)
-                                     #:level 1)
+                                     #:level 1
+                                     #:provenance
+                                     (watch-intent-provenance intent))
              (set-watch-intent-bound-key! intent (~a key))))]
         [_ (void)]))))
 
@@ -2329,8 +2355,10 @@
          (and (eq? (watch-intent-kind intent) 'relation)
               (= (watch-intent-level intent) 1)))))
 
+;; Verbs that run on THIS thread even with a level-1 watch armed: they either
+;; resolve a pause or observe one, and neither wants a held run of its own.
 (define pause-resolution-verbs
-  '("commit" "continue" "replay" "abort" "step" "frames" "finish"))
+  '("commit" "continue" "replay" "abort" "step" "frames" "finish" "why"))
 
 ;; Fields of the uniform pause record, for rendering (t0-contract).
 (define (pause-record-field line key)
@@ -2393,7 +2421,7 @@
                        (if (= (held-run-replays held) 1) "" "s")))
          '())
      (list (string-append
-            "step [match|fire|emit|tuple] · frames · finish · "
+            "step [match|fire|emit|tuple] · frames · why · finish · "
             "commit · replay · abort")))
     #:kind "paused")))
 
@@ -2429,6 +2457,115 @@
   (attach-session-state
    state
    (text-result "Frames" rendered #:kind "frames")))
+
+;; ---- T5 slice (d1): `why` at the prompt (repl-ux §9.4) --------------------
+;;
+;;   why                       the candidates that tripped the pre-commit gate
+;;   why (path 1 4)            one ground fact, spelled as it would be queried
+;;   why (path 1 4) depth 6    the same tree, deeper
+;;
+;; The fact spelling goes through the QUERY front end, so `#N` handles splice
+;; here exactly as they do in a query and there is no second grammar for
+;; naming a tuple.  The bare form is the one that can name a candidate the
+;; gate has not committed: no query can return a row that is still in the
+;; send shards.
+(define (why-term state term)
+  (cond
+    [(handle-token? term)
+     (define cell (value-handle-cell
+                   (resolve-value-handle state (handle-token-label term))))
+     `(word ,(value-cell-word cell))]
+    [(exact-integer? term) `(integer ,(number->string term))]
+    [(and (real? term) (inexact? term)) `(real ,(number->string term))]
+    [(string? term) `(string ,term)]
+    [(symbol? term)
+     (error 'why "~a is a variable; why names one GROUND fact" term)]
+    [else (error 'why "unsupported term ~s" term)]))
+
+(define (why-request state body depth)
+  (define depth-field (if depth (list `(depth ,depth)) '()))
+  (cond
+    [(string=? body "") `(why ,@depth-field)]
+    [else
+     (define line
+       (with-handlers
+           ([exn:fail?
+             (lambda (e)
+               (error 'why
+                      "expected: why | why (relation term ...) [depth N]"))])
+         (parse-query-line (string-append "?" body)
+                           #:resolve-handle (query-handle-resolver state))))
+     (define pattern (query-line-pattern line))
+     (unless (and (pair? pattern) (symbol? (first pattern)))
+       (error 'why "why names ONE ground fact: why (relation term ...)"))
+     `(why (relation ,(symbol->string (first pattern)))
+           (row ,@(for/list ([term (in-list (rest pattern))])
+                    (why-term state term)))
+           ,@depth-field)]))
+
+;; The daemon streams one record per node, parented by id and depth-first, so
+;; indentation is a walk of the ids already in hand.
+(define (render-proof-lines datums)
+  (define depths (make-hash))
+  (for/list ([datum (in-list datums)])
+    (match datum
+      [`(proof-node (id ,id) (parent ,parent) (kind ,kind)
+                    (relation ,relation) (row ,row) (derivations ,n))
+       (define depth (if (negative? parent) 0
+                         (add1 (hash-ref depths parent 0))))
+       (hash-set! depths id depth)
+       (format "~a(~a~a)~a"
+               (make-string (* 2 depth) #\space)
+               (if (equal? relation "") "?" relation)
+               (if (equal? (~a row) "") "" (format " ~a" row))
+               (cond
+                 [(equal? (~a kind) "cycle") "  · cycle"]
+                 [(and (zero? n) (not (negative? parent))) "  · base"]
+                 [(and (zero? n) (negative? parent)) "  · no captured derivation"]
+                 [else ""]))]
+      [`(proof-node (id ,id) (parent ,parent) (kind derivation) (rule ,rule)
+                    (variant ,variant) (source ,source) (tag ,tag))
+       (define depth (add1 (hash-ref depths parent 0)))
+       (hash-set! depths id depth)
+       (format "~a← r~a#~a · ~a~a"
+               (make-string (* 2 depth) #\space)
+               rule variant
+               (if (equal? (~a source) "") "?" source)
+               (if (equal? (~a tag) "") "" (format " · ~a" tag)))]
+      [`(proof-end ,nodes (records ,records) (dropped ,dropped)
+                   (depth ,depth) (truncated ,truncated))
+       (format "~a node~a · ~a captured this event · depth ~a~a~a"
+               nodes (if (equal? nodes 1) "" "s") records depth
+               (if (equal? (~a truncated) "#t") " · truncated" "")
+               (if (and (number? dropped) (positive? dropped))
+                   (format " · ~a derivation~a over budget" dropped
+                           (if (= dropped 1) "" "s"))
+                   ""))]
+      [`(refused ,class ,_generation ,detail ...)
+       (format "refused: ~a ~a" class
+               (string-join (for/list ([d (in-list detail)])
+                              (format "~s" d)) " "))]
+      [other (format "~a" other)])))
+
+(define (why-result state argument)
+  (define raw (string-trim argument))
+  (define-values (body depth)
+    (match (regexp-match
+            #px"^(.*?)[[:space:]]*depth[[:space:]]+([0-9]+)$" raw)
+      [(list _ rest n) (values (string-trim rest) (string->number n))]
+      [_ (values raw #f)]))
+  (define request (why-request state body depth))
+  (define rs (ensure-session-record! state))
+  (define lines
+    (session-debug-lines! (repl-session-session rs) request
+                          (lambda (l)
+                            (regexp-match? #px"^\\(proof-end " l))))
+  (attach-session-state
+   state
+   (text-result (if (string=? body "") "Why · gate candidates" "Why")
+                (render-proof-lines
+                 (for/list ([line (in-list lines)]) (read-datum line)))
+                #:kind "proof")))
 
 ;; Wait for the held thread's next event: it either finishes the command
 ;; (result or fault) or parks again.
@@ -2640,6 +2777,7 @@
     ["cancel" (cancel-result state)]
     ["dump" (dump-result state argument)]
     [(or "uses" "find") (uses-result state argument)]
+    ["why" (why-result state argument)]
     ["watch" (watch-result state argument)]
     ["unwatch" (unwatch-result state argument)]
     ["watches" (watches-result state)]
@@ -4091,4 +4229,86 @@
       (check-regexp-match
        #px"7 rows match"
        (string-join (hash-ref (run! "?count (path X Y)") 'lines) " | "))
-      (void (run! ":quit")))))
+      (void (run! ":quit"))))
+
+  ;; T5 slice (d1): provenance capture and `why` (contract §4(d1), repl-ux
+  ;; §9.4).  Capture is opt-in per watch, so the first thing pinned is that
+  ;; the arming rides the spelling and the rebinds.  At the gate, bare `why`
+  ;; explains the CANDIDATE -- the one fact no query could name, since it
+  ;; lives in the send shards -- and the driving row is a premise like any
+  ;; other.  A monotone re-derivation then gives a real recursive tree, cut
+  ;; honestly at the depth budget.  Controls: an unarmed session and a
+  ;; maintenance epoch each refuse, and say which silence it is.
+  (let ([why-environment (environment-variables-copy test-environment)])
+    (environment-variables-set! why-environment #"SLOG_OPT" #"interp")
+    (environment-variables-set! why-environment #"SLOG_THREADS" #"1")
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables why-environment])
+      (define state (make-server-state))
+      (define (run! line) (dispatch-command state line))
+      (define (text result) (string-join (hash-ref result 'lines) "\n"))
+      (void (run! "run tests/reach.slog"))
+      (check-regexp-match #px"· level 1 · why"
+                          (text (run! "watch path level 1 why")))
+      (check-regexp-match #px"· level 1 · why" (text (run! "watches")))
+      ;; the gate park: `why` with no argument is the candidate's proof
+      (define gate-why #f)
+      (parameterize ([session-pause-hook
+                      (lambda (_s line)
+                        (when (and (regexp-match? #px"\\(phase read\\)" line)
+                                   (regexp-match? #px"\\(cause \\(watch" line)
+                                   (not gate-why))
+                          (set! gate-why (run! "why")))
+                        'continue)])
+        (void (run! "rule (path 99 1) <-- (edge 1 2)")))
+      (check-not-false gate-why)
+      (define gate-text (text gate-why))
+      (check-equal? (hash-ref gate-why 'kind) "proof")
+      (check-regexp-match #px"\\(path 99 1\\)" gate-text)
+      (check-regexp-match #px"← r[0-9]+#[0-9]+ ·" gate-text)
+      ;; the DRIVER is a premise, and one the journal cannot expand: an edge
+      ;; fact of the original run, so it prints as a leaf rather than a
+      ;; promise
+      (check-regexp-match #px"\\(edge 1 2\\)  · base" gate-text)
+      (check-regexp-match #px"[0-9]+ nodes · [0-9]+ captured this event"
+                          gate-text)
+      ;; a monotone re-derivation of the whole program: recursion, so the
+      ;; tree has real depth, and every leaf is a ground-fact rule.  The
+      ;; hook drives past any gate this rerun trips -- with a level-1 watch
+      ;; armed and no hook, the command would be HELD at it.
+      (define (run-through! line)
+        (parameterize ([session-pause-hook (lambda (_s _l) 'continue)])
+          (run! line)))
+      (void (run-through! "run tests/reach.slog"))
+      (define deep (text (run! "why (path 1 4) depth 8")))
+      (check-regexp-match #px"^\\(path 1 4\\)" deep)
+      (check-regexp-match #px"  \\(path 1 3\\)" deep)
+      (check-regexp-match #px"  \\(path 1 2\\)" deep)
+      (check-regexp-match #px"\\(edge 3 4\\)" deep)
+      (check-regexp-match #px"reach\\.slog:[0-9]+" deep)
+      (check-false (regexp-match? #px"truncated" deep))
+      ;; the budget is a cut, and it says so
+      (define shallow (text (run! "why (path 1 4) depth 1")))
+      (check-regexp-match #px"· truncated" shallow)
+      (check-false (regexp-match? #px"\\(path 1 2\\)" shallow))
+      ;; a fact the journal never saw is a leaf, not a lie (no path runs
+      ;; backwards down the chain, so this one was never derived at all)
+      (check-regexp-match #px"· no captured derivation"
+                          (text (run! "why (path 4 1) depth 2")))
+      ;; a variable is not a fact
+      (check-exn #px"GROUND fact" (lambda () (run! "why (path X 4)")))
+      ;; control: a maintenance epoch captures nothing (contract §0.1 is
+      ;; monotone-only) and the refusal names that, not a missing arming
+      (void (run-through! "add edge 4 5"))
+      (check-regexp-match
+       #px"refused: provenance-unavailable.*MONOTONE"
+       (text (run! "why (path 1 5)")))
+      (void (run! ":quit"))
+      ;; control: nothing armed at all is the other silence
+      (define plain (make-server-state))
+      (void (dispatch-command plain "run tests/reach.slog"))
+      (check-regexp-match
+       #px"refused: provenance-unavailable.*arm a level-1 watch"
+       (string-join (hash-ref (dispatch-command plain "why (path 1 4)")
+                              'lines) "\n"))
+      (void (dispatch-command plain ":quit")))))

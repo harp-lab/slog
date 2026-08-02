@@ -348,13 +348,20 @@ public:
     return struct_id == 0 && !isLattice() && arity > 0
            && getAnyIndex() != nullptr;
   }
-  bool hasAcceptedCandidate(bool exact, const std::vector<u64>& t)
+  // T5 slice (d1): `accepted` (optional) collects the accepted rows in
+  // NOMINAL order -- shard rows are staged nominally, the ordering is
+  // applied by the index probe below -- up to `limit`, so the gate can name
+  // the very change it parked for.  Collection never changes the answer.
+  bool hasAcceptedCandidate(bool exact, const std::vector<u64>& t,
+                            std::vector<std::vector<u64>>* accepted = nullptr,
+                            size_t limit = 0)
   {
     const std::vector<u16>* ordptr = getAnyIndex();
     if (ordptr == nullptr || ordptr->size() != arity) return false;
     const std::vector<u16>& ord = *ordptr;
     Index** buckets = getIndex(ord, false);
     u64 key[max_daemon_arity + 1];
+    bool found = false;
     for (auto& shard : send_shards)
       for (InsertBatch* b : shard)
       {
@@ -371,12 +378,18 @@ public:
             if (!same) continue;
           }
           for (u16 c = 0; c < arity; ++c) key[c] = b->data[j + ord[c]];
-          if (!masterContainsRec<max_daemon_arity>(
+          if (masterContainsRec<max_daemon_arity>(
                 arity, buckets[buckethash(key[0])], key))
+            continue;
+          if (accepted == nullptr) return true;
+          found = true;
+          if (accepted->size() < limit)
+            accepted->emplace_back(b->data + j, b->data + j + arity);
+          else
             return true;
         }
       }
-    return false;
+    return found;
   }
 
   bool hasLiveTuple(const u64* t)
@@ -2790,6 +2803,12 @@ private:
     // non-monotone strata a level-1 watch behaves exactly as level 0 by
     // contract (the gate never engages there).
     u32 level = 0;
+    // T5 slice (d1): capture this run's derivations for `why` while the
+    // watch is armed.  OPT-IN, because an armed gate alone leaves the
+    // interpreter's event mask at 0 -- the separately compiled fast loop --
+    // and paying the observed loop on every gate run to answer a question
+    // nobody asked is the cost dishonesty execution-tiers §7.4 warns about.
+    bool provenance = false;
     // The pre-commit gate evaluated this watch at THIS iteration's
     // read-complete: the end-of-iteration level-0 evaluation skips it (one
     // report per accepted change, at the earlier barrier), clearing the
@@ -2848,6 +2867,150 @@ private:
   // only under SLOG_THREADS=1, which is how the goldens pin it.
   std::atomic<bool> step_claimed{false};
   StepStop step_stop;
+
+  // ---- T5 slice (d1): the provenance journal (contract §4(d1), §7.4) -----
+  // One record per captured emit while a provenance watch is armed, in
+  // NOMINAL column order (cursors expose physical index rows, so the sink
+  // inverts each ordering at the callback where the schema is known).  The
+  // journal is the substrate `why` walks: a premise resolves against it and
+  // expands, and a premise it does not hold is a leaf -- EDB, derived
+  // before the arming, or past a budget.  Scoped to one semantic event --
+  // cleared at BOTH of its doors, a prepared boundary and an update epoch's
+  // begin -- and bounded both ways.
+public:
+  struct ProofPremise
+  {
+    std::string relation;      // empty when the schema could not name it
+    std::vector<u64> row;
+  };
+  struct ProofRecord
+  {
+    std::string relation;      // head relation; with `tuple`, the key
+    std::vector<u64> tuple;
+    u32 rule_id = 0;
+    u32 variant = 0;
+    std::string rule_loc;      // source position the operator wrote
+    std::string rule_tag;      // variant tag
+    std::string driver_relation;
+    std::vector<u64> driver;
+    std::vector<ProofPremise> premises;
+  };
+
+private:
+  // §7.4's budgets: derivations per fact and nodes per run, with the
+  // omitted count reported rather than a silent cut.
+  static constexpr size_t proof_max_records = 4096;
+  static constexpr size_t proof_max_derivations = 4;
+  bool provenance_armed = false;
+  std::mutex proof_mutex;
+  std::vector<ProofRecord> proof_journal;
+  std::unordered_map<std::string, std::vector<u32>> proof_index;
+  u64 proof_dropped = 0;
+  // Where the read phase now in flight started writing: a replay discards
+  // its own records before rerunning, so the exact rerun stays exact here.
+  size_t proof_read_mark = 0;
+
+  void refreshProvenanceArming()
+  {
+    provenance_armed = false;
+    for (const WatchSpec& w : watches)
+      if (w.level == 1 && w.provenance) provenance_armed = true;
+  }
+
+public:
+  // Read by the capture sink once per bounded unit of work, never per
+  // transition (StepSink::refresh).
+  bool provenanceArmed() const { return provenance_armed; }
+
+  static std::string proofKey(const std::string& relation,
+                              const u64* row, size_t n)
+  {
+    std::string key = relation;
+    for (size_t i = 0; i < n; ++i)
+    {
+      key.push_back('|');
+      key += std::to_string(row[i]);
+    }
+    return key;
+  }
+
+  // Workers emit concurrently, so this is the one synchronized point on the
+  // capture path; which derivations survive a per-fact cap is therefore
+  // pinned only under SLOG_THREADS=1, exactly as a step stop is.
+  void recordProof(ProofRecord&& record)
+  {
+    std::lock_guard<std::mutex> lk(proof_mutex);
+    if (proof_journal.size() >= proof_max_records) { ++proof_dropped; return; }
+    const std::string key = proofKey(record.relation, record.tuple.data(),
+                                     record.tuple.size());
+    std::vector<u32>& slot = proof_index[key];
+    if (slot.size() >= proof_max_derivations) { ++proof_dropped; return; }
+    slot.push_back(static_cast<u32>(proof_journal.size()));
+    proof_journal.push_back(std::move(record));
+  }
+
+  void clearProofJournal()
+  {
+    std::lock_guard<std::mutex> lk(proof_mutex);
+    proof_journal.clear();
+    proof_index.clear();
+    proof_dropped = 0;
+    proof_read_mark = 0;
+  }
+
+  void markProofRead()
+  {
+    std::lock_guard<std::mutex> lk(proof_mutex);
+    proof_read_mark = proof_journal.size();
+  }
+
+  // The replay half: drop everything the discarded read captured.  Index
+  // slots are rebuilt for the survivors rather than patched, which is both
+  // simpler and correct when a cap already dropped entries.
+  void discardProofsFromRead()
+  {
+    std::lock_guard<std::mutex> lk(proof_mutex);
+    if (proof_read_mark >= proof_journal.size()) return;
+    proof_journal.resize(proof_read_mark);
+    proof_index.clear();
+    for (size_t i = 0; i < proof_journal.size(); ++i)
+      proof_index[proofKey(proof_journal[i].relation,
+                           proof_journal[i].tuple.data(),
+                           proof_journal[i].tuple.size())]
+        .push_back(static_cast<u32>(i));
+  }
+
+  const ProofRecord& proofRecord(u32 index) const
+  {
+    return proof_journal[index];
+  }
+
+  std::vector<u32> proofsFor(const std::string& relation,
+                             const std::vector<u64>& tuple) const
+  {
+    auto it = proof_index.find(proofKey(relation, tuple.data(), tuple.size()));
+    return it == proof_index.end() ? std::vector<u32>() : it->second;
+  }
+
+  size_t proofCount() const { return proof_journal.size(); }
+  u64 proofsDropped() const { return proof_dropped; }
+
+  // The gate's accepted candidates, retained so `why` can name a change
+  // that is not yet committed truth (contract §1's correlation).
+  struct GateCandidate
+  {
+    std::string watch_id;
+    std::string relation;
+    std::vector<u64> tuple;
+  };
+  const std::vector<GateCandidate>& gateCandidates() const
+  {
+    return gate_candidates;
+  }
+
+private:
+  static constexpr size_t gate_max_candidates = 16;
+  std::vector<GateCandidate> gate_candidates;
 
   // N3.1 logical catalog truth.  Prepare receives the complete output
   // catalog, so commit replaces these snapshots atomically with the name
@@ -3086,6 +3249,11 @@ public:
     }
     update_epoch_active = true;
     update_epoch_valid = true;
+    // T5 slice (d1): the journal is scoped to one semantic event, and an
+    // update epoch is the other kind of event (a prepared boundary is the
+    // first).  Without this, `why` after an `add` would answer with the
+    // PREVIOUS event's tree while calling it this one's.
+    if (provenance_armed) clearProofJournal();
     {
       std::lock_guard<std::mutex> lk(update_transition_mutex);
       update_transitions.clear();
@@ -4273,6 +4441,10 @@ public:
     // private until commit because command admission hides the working state;
     // Daemon::abortBoundary restores the saved position.
     ++pipeline_pos;
+    // T5 slice (d1): the provenance journal is scoped to ONE semantic event
+    // -- a prepared boundary is where the next one begins, and stale
+    // derivations under a fresh event's `why` would be a lie by omission.
+    if (provenance_armed) clearProofJournal();
     BoundaryAdmission accepted;
     accepted.ok = true;
     accepted.position = prepared_boundary->position;
@@ -4445,11 +4617,13 @@ public:
   // Returns false when the id is already taken -- ids are the client's, and
   // silently rebinding one would make `unwatch` ambiguous.
   bool addWatch(const std::string& id, const std::string& version_key,
-                bool tuple_mode, std::vector<u64> tuple, u32 level = 0)
+                bool tuple_mode, std::vector<u64> tuple, u32 level = 0,
+                bool provenance = false)
   {
     for (const WatchSpec& w : watches) if (w.id == id) return false;
     watches.push_back({id, version_key, tuple_mode, std::move(tuple),
-                       level, false, 0});
+                       level, provenance, false, 0});
+    refreshProvenanceArming();
     return true;
   }
 
@@ -4459,6 +4633,7 @@ public:
       if (watches[i].id == id)
       {
         watches.erase(watches.begin() + i);
+        refreshProvenanceArming();
         return true;
       }
     return false;
@@ -4514,6 +4689,7 @@ public:
     if (!s->semantic_instance || s->transient_instance) return false;
     if (s->flavor != "normal" && s->flavor != "delta") return false;
     bool park = false;
+    gate_candidates.clear();
     for (WatchSpec& w : watches)
     {
       if (w.level != 1) continue;
@@ -4523,10 +4699,19 @@ public:
       if (rel == nullptr) continue;
       if (!rel->level1Settleable()) continue;
       w.gate_owned = true;
-      if (rel->hasAcceptedCandidate(w.tuple_mode, w.tuple))
+      // T5 slice (d1): retain the accepted rows themselves, bounded -- a
+      // candidate is not committed truth, so `why` at the park has no other
+      // way to name it (contract §4(d1)).
+      std::vector<std::vector<u64>> accepted;
+      if (rel->hasAcceptedCandidate(w.tuple_mode, w.tuple, &accepted,
+                                    gate_max_candidates
+                                      - std::min(gate_max_candidates,
+                                                 gate_candidates.size())))
       {
         park = true;
         gate_hits.push_back(w.id);
+        for (std::vector<u64>& row : accepted)
+          gate_candidates.push_back({w.id, rel->getName(), std::move(row)});
       }
     }
     return park;
@@ -4609,10 +4794,14 @@ public:
     for (Relation* r : rel_registry)
       if (r != nullptr) r->discardSendShards();
     restoreIterationFires();
+    // T5 slice (d1): the discarded read's captured derivations go with its
+    // shards -- otherwise the rerun would double every proof it repeats.
+    discardProofsFromRead();
     rs.once_pending[phase_read] = rs.read_once_armed;
     rs.task_cursor[phase_read] = 0;
     clearPausedPhase(phase_read);
     gate_hits.clear();
+    gate_candidates.clear();
     rs.read_complete_parked = false;
     rs.read_suspended = false;
     rs.position = RUN_MID_READ;
@@ -8725,7 +8914,12 @@ inline void IterCompletion::operator()() noexcept
   // restores its fire tallies to.  Armed sessions only, so the copy never
   // touches an ordinary run's iteration barrier.
   if (db->level1Armed())
+  {
     db->snapshotIterationFires();
+    // T5 slice (d1): and the point in the journal this iteration's read
+    // starts writing at, which a replay rolls back to.
+    db->markProofRead();
+  }
 }
 
 // Decide, now that all workers have stopped claiming, whether the read phase

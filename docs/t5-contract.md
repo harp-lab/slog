@@ -224,10 +224,72 @@ it.
       artifact hash: its own change, with the plan-determinism goldens.
       (ii) `up`/`down` are a cursor over a stack the server already prints
       whole -- the interactive canvas's job, with the Rust client work.
-- **(d) Proof surfaces + non-plain settles.**  `why`/`whynot` trees,
-  struct settle (M5 co-design), lattice settle (M6L contributor-reduce),
-  hygiene + exit audit (M4N slice-4 shape): full suite, interp-union
-  sweep, monotone-enforcement matrix vs the M4N/M7 exclusions.
+- **(d) Proof surfaces + non-plain settles.**  Sub-sliced in this document
+  (one certification gate remains: the slice, not its parts).
+  - **(d1) Provenance capture and `why`.**  *(Shipped 2026-08-01.)*
+    The interpreter's `emit` port
+    plus `DebugView::proof()` are the whole mechanism; what (d1) adds is a
+    place to put the answer and a way to ask.  Capture is OPT-IN PER WATCH
+    -- `(watch ... (level 1) (provenance #t))`, additive and echoed only
+    when true -- because an armed gate alone leaves the mask at 0 and takes
+    the fast loop, and paying the observed loop for every gate run to
+    answer a question nobody asked is the cost dishonesty §7.4 warns
+    against.  The journal is RUN-SCOPED and bounded (records per run,
+    derivations per fact, §7.4's first-N-plus-omitted-count), keyed by
+    (relation, tuple) in NOMINAL column order -- cursors expose physical
+    index rows, so capture inverts each ordering at the callback, where the
+    schema is known; a replayed read discards its own records first, so an
+    exact rerun stays indistinguishable here too.  Set heads only: a
+    `mkstruct` head stages content without its id (the id is minted in the
+    intern phase), so a struct head's candidate has no key until (d4).
+    Because capture spans every iteration of the armed run, a proof TREE is
+    real within that run: premises resolve against the journal and expand,
+    and a premise the journal does not hold renders as a leaf naming its
+    relation -- EDB, pre-arming, or over budget, stated rather than
+    implied.  `why` at a gate park with no argument explains the candidates
+    that tripped the gate (the gate's settle now retains them, bounded --
+    contract §1's "correlates accepted changes with captured derivations"),
+    which is also the only spelling that can name a candidate that is not
+    yet committed truth; `why FACT` resolves its ground terms through
+    `query::resolve_literal`, the same probe-only encoder R2's `uses`
+    already shares.  Determinism: workers emit concurrently, so which
+    derivations survive a per-fact cap is pinned only under
+    `SLOG_THREADS=1`, exactly as a step stop is.
+    - AS SHIPPED, four things the choreography settled.  (i) The DRIVING row
+      is a premise node, not a field of the derivation: a rule whose only
+      body position is its driver would otherwise have a proof with no
+      premises at all, and a delta-driven recursive rule's chain would break
+      at every step.  (ii) Monotone-only is enforced at the PLAN, not the
+      epoch: `sealed.counted || sealed.maint` leaves the schema
+      uncapturable, because a flavored set head stages a signed kind-tagged
+      contribution and journalling that would call a deletion's bookkeeping
+      a proof.  (iii) "One semantic event" needed BOTH event doors --
+      `prepareBoundary` and `beginUpdateEpoch` -- since an `add` prepares no
+      boundary and would otherwise answer with the previous event's tree
+      while calling it this one's.  (iv) The two silences are different and
+      the refusal says which: nothing armed, versus armed over an epoch
+      capture does not cover.
+    - Exit (met): protocol 160 (the provenance field's echo, refusals at
+      level 0 and on a non-boolean; `why`'s four refusal classes, with
+      `reserved-verb` proven gone), REPL 207 (the spelling and its rebinds,
+      the gate candidate's tree with its driver premise as a `base` leaf, a
+      recursive 12-node tree over reach.slog cut honestly at `depth 1`, an
+      unrecorded fact, a variable refused, and both silences), pause 18,
+      joint 21, unit 406, interp, Rust 29+44+3.  Pinned by ASSERTION like
+      the stepping battery: a proof cites content-addressed rule positions.
+  - **(d2) `whynot`.**  The first-iteration failure frontier of §7.5,
+    over the same captured read.
+  - **(d3) `break`.**  repl-ux §9.1's `break r17[@k][when ...]`: stepping
+    ships an entry path only from a gate park, so a rule-position
+    breakpoint armed BEFORE a run is what makes the ports reachable
+    without a relation watch to trip first.
+  - **(d4) Non-plain settles.**  Struct settle (M5 intern-identity/
+    membership split), lattice settle (M6L contributor-reduce); until then
+    a level-1 watch on such a relation keeps level-0 semantics, and says
+    so at registration rather than downgrading silently.
+  - **(d5) Hygiene + exit audit** (M4N slice-4 shape): full suite,
+    interp-union sweep, monotone-enforcement matrix vs the M4N/M7
+    exclusions.
 
 ## 5. Exclusions
 

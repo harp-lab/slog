@@ -105,6 +105,9 @@ racket tests/api/drive.rkt \
   '(watch (id "w4") (version-key "w.edge.0") (level 1))' \
   '(watch (id "w5") (version-key "w.edge.0") (level 0))' \
   '(watch (id "w6") (version-key "w.edge.0") (level 2))' \
+  '(watch (id "w7") (version-key "w.edge.0") (level 1) (provenance #t))' \
+  '(watch (id "w8") (version-key "w.edge.0") (provenance #t))' \
+  '(watch (id "w9") (version-key "w.edge.0") (level 1) (provenance yes))' \
   > out/proto-watch.log 2>&1
 expect    "watch-added" '(watch-added (id "w1") (version-key "w.edge.0") (watches 1))' out/proto-watch.log
 expect_rx "watch-duplicate-id" '\(refused watch-binding [0-9]+ \(verb watch\) \(detail "watch id w1 is already in use"\)\)' out/proto-watch.log
@@ -118,6 +121,12 @@ expect    "watch-removed" '(watch-removed (id "w1") (watches 0))' out/proto-watc
 expect    "watch-level1-added" '(watch-added (id "w4") (version-key "w.edge.0") (watches 1) (level 1))' out/proto-watch.log
 expect    "watch-level0-explicit" '(watch-added (id "w5") (version-key "w.edge.0") (watches 2))' out/proto-watch.log
 expect_rx "watch-level-refused" '\(refused parse [0-9]+ \(verb watch\) \(detail "level must be 0 or 1"\)\)' out/proto-watch.log
+# T5 slice (d1): (provenance #t) is the capture opt-in -- echoed like the
+# level, refused at level 0 (there is no gate there to explain), and only
+# ever a boolean.  Level-0 and level-1-without-capture lines stay identical.
+expect    "watch-provenance-added" '(watch-added (id "w7") (version-key "w.edge.0") (watches 3) (level 1) (provenance #t))' out/proto-watch.log
+expect_rx "watch-provenance-level" '\(refused parse [0-9]+ \(verb watch\) \(detail "provenance capture is a level-1 watch.s observation"\)\)' out/proto-watch.log
+expect_rx "watch-provenance-bool" '\(refused parse [0-9]+ \(verb watch\) \(detail "provenance must be #t or #f"\)\)' out/proto-watch.log
 
 # T5 slice (b): prepare-time registration -- a watch binds a PREPARED
 # successor key through the private overlay, and watch verbs are exempt
@@ -164,6 +173,26 @@ expect_rx "step-not-parked"  '\(refused step-unavailable [0-9]+ \(verb step\) \(
 expect_rx "step-grain-parse" '\(refused parse [0-9]+ \(verb step\) \(detail "step \[match\|fire\|emit\|tuple\]' out/proto-step.log
 expect_rx "frames-no-stop"   '\(refused step-unavailable [0-9]+ \(verb frames\) \(detail no-stop\) \(position none\)\)' out/proto-step.log
 expect_rx "frames-bare-only" '\(refused parse [0-9]+ \(verb frames\) \(detail "frames takes no arguments"\)\)' out/proto-step.log
+
+# --- 3w. T5 slice (d1): `why` reads the provenance journal ------------------
+# The journal is opt-in and event-scoped, so with nothing armed every form
+# refuses honestly rather than answering an empty tree; the row vocabulary
+# is the QUERY payload's literal vocabulary, and a value this evaluation
+# never interned cannot appear in a fact.  (A real proof tree needs a run,
+# so the tree itself is pinned in the REPL battery.)
+racket tests/api/drive.rkt \
+  '(why)' \
+  '(why (relation "edge") (row (integer "1") (integer "2")))' \
+  '(why (relation "edge"))' \
+  '(why (relation "edge") (row (bogus "1")))' \
+  '(why (relation "edge") (row (integer "1")) (depth 99))' \
+  > out/proto-why.log 2>&1
+expect_rx "why-no-candidates" '\(refused provenance-unavailable [0-9]+ \(verb why\) \(detail "no gate candidates here' out/proto-why.log
+expect_rx "why-unarmed"       '\(refused provenance-unavailable [0-9]+ \(verb why\) \(detail "no derivations were captured' out/proto-why.log
+expect_rx "why-row-pairing"   '\(refused parse [0-9]+ \(verb why\) \(detail "relation and row go together"\)\)' out/proto-why.log
+expect_rx "why-term-kind"     '\(refused parse [0-9]+ \(verb why\) \(detail "unknown row term kind"\)\)' out/proto-why.log
+expect_rx "why-depth-range"   '\(refused parse [0-9]+ \(verb why\) \(detail "depth is 1\.\.16"\)\)' out/proto-why.log
+expect_not "why-still-reserved" '(refused reserved-verb' out/proto-why.log
 
 # --- 3a. N3-A transaction + N3-B durable boundary history -------------------
 # Prepare eagerly constructs an empty slot but keeps both its VersionKey and

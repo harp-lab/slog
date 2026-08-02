@@ -1602,6 +1602,41 @@ freeze/import with image-based compiler goldens and a first Slog-written
 lint, **T3b** full tier policy (promotion budgets, profile sidecars, core
 arbiter).
 
+**Checkpoint (2026-08-01; T5 slice (d1) — provenance capture and `why`).**
+The last slice of the debugger arc opens with its proof surface, and the
+mechanism was again already there: the interpreter's `emit` port and
+`DebugView::proof()`.  What (d1) adds is a place to put the answer and a
+way to ask.  Capture is OPT-IN PER WATCH (`watch REL level 1 why` →
+`(watch ... (provenance #t))`, additive and echoed only when true),
+because an armed gate alone leaves the event mask at 0 and the fast loop
+selected; paying the observed loop on every gate run to answer a question
+nobody asked is precisely the cost dishonesty execution-tiers §7.4 warns
+about.  The journal is event-scoped and bounded both ways (records per
+event, derivations per fact, the omitted count reported), keyed by
+(relation, tuple) in NOMINAL order — cursors hand back PHYSICAL index
+rows, so a per-rule `ProofSchema` built at bind time labels each level and
+inverts its ordering inside the callback, where the plan is still in hand.
+Three spellings: bare `why` at a gate park explains the CANDIDATES that
+stopped the run (the settle now retains them, bounded — the one thing no
+query can name, since they live in the send shards); `why (path 1 4)` goes
+through the query front end, so `#N` handles splice as they do in a query
+and there is no second grammar for naming a tuple; `depth N` deepens the
+tree.  Four things the choreography settled: the driving row is a premise
+NODE (a rule whose only body position is its driver would otherwise prove
+nothing, and a delta-driven recursive chain would break at every step);
+monotone-only is enforced at the PLAN (`counted || maint` ⇒ uncapturable,
+since a flavored set head stages a signed contribution and journalling it
+would call a deletion's bookkeeping a proof); "one semantic event" needed
+BOTH event doors, `prepareBoundary` and `beginUpdateEpoch`, because an
+`add` prepares no boundary and would otherwise answer with the previous
+event's tree; and the two silences — nothing armed, versus armed over an
+epoch capture does not cover — are told apart in the refusal.  A replayed
+read discards its own records before rerunning, so slice (c1)'s exactness
+holds here too.  Gates: protocol 160, REPL 207, pause 18, joint 21, unit
+406, interp, Rust 29+44+3.  Remaining in the arc: (d2) `whynot`, (d3)
+`break` (the missing pre-run entry path into the ports), (d4) struct and
+lattice settles, (d5) hygiene + exit audit.
+
 **Checkpoint (2026-08-01; T5 slice (c) — replay, the gate as a place,
 and stepping).**  Three parts, all over the substrate the earlier slices
 built.  **(c1) replay** (commit 7dddec0): `replay` leaves reserved-verb

@@ -1394,6 +1394,37 @@ std::unique_ptr<PrefixCursor> make_absent_ever_cursor(
   const std::vector<u16>& order,
   const std::vector<u16>& regs, u16 bound);
 
+// T5 slice (d1): what a bound rule knows and the VM deliberately does not --
+// which relation each proof row belongs to, and the ordering that row is
+// physically stored in.  Cursors expose PHYSICAL index rows (interp.h's
+// premise()), so capture inverts the ordering here, at the callback, where
+// the plan is still in hand; the journal then holds nominal rows that key
+// directly against committed tuples.  An empty relation name marks a row the
+// schema cannot label (an unused slot, a lattice contribution, a mkstruct
+// head whose id is not minted until the intern phase).
+struct ProofSchema
+{
+  struct Row
+  {
+    std::string relation;
+    std::vector<u16> order;   // physical position -> nominal column; empty = nominal
+  };
+  Row driver;
+  std::vector<std::vector<Row>> levels;  // per cursor slot, in premise order
+  std::vector<Row> heads;                // per bound sink port
+  bool capturable = false;               // any head worth journalling
+
+  static std::vector<u64> nominalize(const std::vector<u16>& order,
+                                     const u64* row, size_t n)
+  {
+    std::vector<u64> out(row, row + n);
+    if (order.size() != n) return out;   // nominal already, or a shape we
+    for (size_t i = 0; i < n; ++i)       // cannot invert: say it plainly
+      out[order[i]] = row[i];
+    return out;
+  }
+};
+
 // T5 slice (c3): the debugger's step sink (docs/t5-contract.md §3).  The
 // interpreter owns the mechanism -- eight stable ports, a mask, and a
 // post-transition observer whose pause stops the machine AFTER the
@@ -1408,6 +1439,8 @@ struct StepSink final : public DebugSink
   Database* db;
   const std::string* rule_loc;
   const std::string* rule_tag;
+  const ProofSchema* schema = nullptr;
+  bool capture = false;
 
   static u64 mask_for(Database::StepGrain grain)
   {
@@ -1444,8 +1477,9 @@ struct StepSink final : public DebugSink
     return "port";
   }
 
-  StepSink(Database* database, const std::string* loc, const std::string* tag)
-    : db(database), rule_loc(loc), rule_tag(tag)
+  StepSink(Database* database, const std::string* loc, const std::string* tag,
+           const ProofSchema* proof_schema)
+    : db(database), rule_loc(loc), rule_tag(tag), schema(proof_schema)
   {
     refresh();
   }
@@ -1453,11 +1487,69 @@ struct StepSink final : public DebugSink
   // The arming can change between bounded units of work -- a PARKED
   // continuation carries the sink that stopped it, so the next `step` at a
   // different granularity must be picked up here rather than inherited.
-  // Read once per work() call, never per transition.
-  void refresh() { mask = mask_for(db->stepGrain()); }
+  // Read once per work() call, never per transition.  Provenance capture
+  // rides the same refresh and ORs in the emit port: a session with neither
+  // armed still gets mask 0 and the fast loop.
+  void refresh()
+  {
+    capture = db->provenanceArmed() && schema != nullptr && schema->capturable;
+    mask = mask_for(db->stepGrain())
+         | (capture ? event_bit(EventK::emit) : u64{0});
+  }
+
+  // One captured derivation: the head this emit produced, the driving delta
+  // row, and one premise per open cursor level -- the same walk
+  // DebugView::proof() makes, with each row labelled and un-permuted.
+  void record(const Event& e, const DebugView& view)
+  {
+    if (e.port >= schema->heads.size()) return;         // an effect sink
+    const ProofSchema::Row& head = schema->heads[e.port];
+    if (head.relation.empty()) return;                  // not journallable
+    Database::ProofRecord out;
+    out.relation = head.relation;
+    // Set and temp heads stage the nominal row (plan.h's sealer), so the
+    // head needs no inversion: the sink permutes on the way to the index.
+    out.tuple.assign(e.tuple.begin(), e.tuple.end());
+    out.rule_id = e.rule_id;
+    out.variant = e.variant_ordinal;
+    out.rule_loc = rule_loc ? *rule_loc : std::string();
+    out.rule_tag = rule_tag ? *rule_tag : std::string();
+    out.driver_relation = schema->driver.relation;
+    out.driver = ProofSchema::nominalize(schema->driver.order,
+                                         view.driver.data(),
+                                         view.driver.size());
+    for (size_t ip : view.levels)
+    {
+      const u16 slot = view.ops[ip].cursor;
+      const PrefixCursor& cursor = *view.cursors[slot];
+      const std::vector<ProofSchema::Row>* rows =
+        slot < schema->levels.size() ? &schema->levels[slot] : nullptr;
+      for (u16 i = 0; i < cursor.premise_count(); ++i)
+      {
+        const TupleView row = cursor.premise(i);
+        Database::ProofPremise premise;
+        if (rows != nullptr && i < rows->size())
+        {
+          premise.relation = (*rows)[i].relation;
+          premise.row = ProofSchema::nominalize((*rows)[i].order, row.begin(),
+                                                row.size());
+        }
+        else
+          premise.row.assign(row.begin(), row.end());
+        out.premises.push_back(std::move(premise));
+      }
+    }
+    db->recordProof(std::move(out));
+  }
 
   DebugAction observe(const Event& e, const DebugView& view) override
   {
+    // Capture is an observation, never a stop, and it is deliberately
+    // independent of the step grain -- the machine holds exactly one sink,
+    // so the two arms share it and the grain mask alone decides a stop.
+    if (capture && e.kind == EventK::emit) record(e, view);
+    if ((mask_for(db->stepGrain()) & event_bit(e.kind)) == 0)
+      return DebugAction::continue_;
     const u32 filter = db->stepRuleFilter();
     if (filter != UINT32_MAX && e.rule_id != filter)
       return DebugAction::continue_;
@@ -1512,6 +1604,9 @@ class BoundRule
   std::vector<BoundPrim> primitives;
   std::vector<BoundPrim> pre_primitives;
   std::vector<BoundTycheck> tychecks;
+  // T5 slice (d1): the labels and orderings provenance capture needs; built
+  // once at bind, read only inside an observer callback.
+  ProofSchema proof_schema;
 
   std::vector<std::unique_ptr<PrefixCursor>> make_cursors() const
   {
@@ -2001,6 +2096,59 @@ public:
           right_delta, join3.right.regs, join3.right.view, join3.cycle));
       }
     }
+
+    build_proof_schema();
+  }
+
+  // T5 slice (d1).  Every cursor here walks ONE physical layout: a view
+  // cursor and a join3 arm each carry a single register map across their
+  // full and delta indices, so the plan's `order` is the layout of any row
+  // they hand back.  Heads need no inversion at all -- the sealer stages
+  // set and temp heads in nominal order and the sink permutes on the way to
+  // the index -- while a lattice contribution (not yet reduced) and a
+  // mkstruct head (its id minted in the intern phase) have no journal key
+  // until slice (d4), so they stay unlabelled.
+  void build_proof_schema()
+  {
+    // Contract §0.1 is monotone-only, and here that is a PLAN fact rather
+    // than an epoch one: a counted or maintenance rule's set head stages a
+    // signed, kind-tagged contribution for a fold, so journalling it as a
+    // derivation would call a deletion's bookkeeping a proof.
+    if (sealed.counted || sealed.maint) return;
+    const auto slot_name = [&](u16 slot) -> std::string {
+      return slot < frame.size() && frame[slot] != nullptr
+        ? frame[slot]->getName() : std::string();
+    };
+    if (sealed.driver.kind == DriverK::scan_delta
+        || sealed.driver.kind == DriverK::probe_delta)
+      proof_schema.driver = {slot_name(sealed.driver.relation),
+                             sealed.driver.order};
+    proof_schema.levels.reserve(sealed.cursors.size());
+    for (const CursorPlan& cursor : sealed.cursors)
+    {
+      std::vector<ProofSchema::Row> rows;
+      if (const auto* probe = std::get_if<ProbePlan>(&cursor))
+        rows.push_back({slot_name(probe->relation), probe->order});
+      else if (const auto* filter = std::get_if<FilterPlan>(&cursor))
+        rows.push_back({slot_name(filter->relation), filter->order});
+      else
+      {
+        const Join3Plan& join3 = std::get<Join3Plan>(cursor);
+        rows.push_back({slot_name(join3.left.relation), join3.left.order});
+        rows.push_back({slot_name(join3.right.relation), join3.right.order});
+      }
+      proof_schema.levels.push_back(std::move(rows));
+    }
+    proof_schema.heads.reserve(sealed.heads.size());
+    for (const EmitPlan& head : sealed.heads)
+    {
+      const bool journallable =
+        head.head_kind == HeadK::set || head.head_kind == HeadK::temp;
+      proof_schema.heads.push_back(
+        {journallable ? slot_name(head.relation) : std::string(), {}});
+      if (!proof_schema.heads.back().relation.empty())
+        proof_schema.capturable = true;
+    }
   }
 
   u16 task_count() const
@@ -2094,7 +2242,7 @@ public:
     // `<interp-rule:N:variant:M>` identity, while a frame should name the
     // source position the operator wrote (interp.h's Program::source).
     execution->stepper = std::make_unique<StepSink>(
-      db, &pinned->source, &pinned->variant);
+      db, &pinned->source, &pinned->variant, &proof_schema);
     execution->machine = std::make_unique<Machine>(
       pinned, std::move(driver), make_cursors(), std::move(ports),
       execution->stepper.get(),

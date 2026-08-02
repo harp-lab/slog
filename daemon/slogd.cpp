@@ -1456,6 +1456,108 @@ static void emit_step_frames(slog::Daemon* d)
     d->emit("(frames-end " + std::to_string(level) + ")");
 }
 
+// T5 slice (d1): the proof tree (contract §4(d1), execution-tiers §7.4).
+// One `(proof-node ...)` record per node, parented by id so the client
+// renders a tree without a second grammar, then a sentinel that ECHOES the
+// budgets -- §9.4's "both echo their budgets so a deeper look is one
+// recall-and-edit away".  A `fact` node names what is being explained, each
+// `derivation` under it names the rule variant that produced it, and its
+// `premise` children are the rows that satisfied the body.  A premise with
+// `(derivations 0)` is a LEAF, and honestly so: EDB, derived before the
+// arming, or past a budget -- the journal knows nothing further.
+struct ProofBudget
+{
+    u32 depth = 4;
+    u32 nodes = 64;
+};
+
+static std::string proof_row_text(slog::Database* db,
+                                  const std::vector<u64>& row)
+{
+    std::string text;
+    for (u64 v : row)
+        text += (text.empty() ? "" : " ") + db->writeValCSV(v);
+    return text;
+}
+
+// Depth-first, budget-bounded, cycle-guarded by the ancestor path: a
+// recursive rule can support a fact with a row whose own support cites it
+// back, and a debugger that hangs on that is worse than one that says so.
+static void emit_proof_subtree(slog::Daemon* d, const std::string& relation,
+                               const std::vector<u64>& row,
+                               int parent, u32 depth, const ProofBudget& budget,
+                               std::vector<std::string>& path, u32& next_id,
+                               bool& truncated)
+{
+    using slog::protocol::quoteString;
+    slog::Database* db = d->db();
+    const std::vector<u32> records = db->proofsFor(relation, row);
+    const std::string key = slog::Database::proofKey(relation, row.data(),
+                                                     row.size());
+    const bool cyclic =
+        std::find(path.begin(), path.end(), key) != path.end();
+    if (next_id >= budget.nodes) { truncated = true; return; }
+    const int self = static_cast<int>(next_id++);
+    d->emit("(proof-node (id " + std::to_string(self) + ") (parent "
+            + std::to_string(parent) + ") (kind "
+            + (cyclic ? "cycle" : (parent < 0 ? "fact" : "premise"))
+            + ") (relation " + quoteString(relation) + ") (row "
+            + quoteString(proof_row_text(db, row)) + ") (derivations "
+            + std::to_string(records.size()) + "))");
+    if (cyclic || records.empty()) return;
+    if (depth == 0) { truncated = !records.empty(); return; }
+    path.push_back(key);
+    for (u32 index : records)
+    {
+        if (next_id >= budget.nodes) { truncated = true; break; }
+        const slog::Database::ProofRecord& record = db->proofRecord(index);
+        const int step = static_cast<int>(next_id++);
+        d->emit("(proof-node (id " + std::to_string(step) + ") (parent "
+                + std::to_string(self) + ") (kind derivation) (rule "
+                + std::to_string(record.rule_id) + ") (variant "
+                + std::to_string(record.variant) + ") (source "
+                + quoteString(record.rule_loc) + ") (tag "
+                + quoteString(record.rule_tag) + "))");
+        // The DRIVING row is a premise like any other -- it is half the body
+        // of a delta-driven rule, and a rule whose only body position is its
+        // driver would otherwise have a proof with no premises at all.  It
+        // comes first, which is also the order the ports fire in.
+        if (!record.driver_relation.empty() && !record.driver.empty())
+          emit_proof_subtree(d, record.driver_relation, record.driver, step,
+                             depth - 1, budget, path, next_id, truncated);
+        for (const slog::Database::ProofPremise& premise : record.premises)
+        {
+            if (premise.relation.empty())
+            {
+                // An unlabelled row still belongs in the proof: the schema
+                // could not name it, and hiding it would misrepresent the
+                // body that fired.
+                if (next_id >= budget.nodes) { truncated = true; break; }
+                const int leaf = static_cast<int>(next_id++);
+                d->emit("(proof-node (id " + std::to_string(leaf)
+                        + ") (parent " + std::to_string(step)
+                        + ") (kind premise) (relation \"\") (row "
+                        + quoteString(proof_row_text(db, premise.row))
+                        + ") (derivations 0))");
+                continue;
+            }
+            emit_proof_subtree(d, premise.relation, premise.row, step,
+                               depth - 1, budget, path, next_id, truncated);
+        }
+    }
+    path.pop_back();
+}
+
+static void emit_proof_end(slog::Daemon* d, u32 nodes,
+                           const ProofBudget& budget, bool truncated)
+{
+    d->emit("(proof-end " + std::to_string(nodes) + " (records "
+            + std::to_string(d->db()->proofCount()) + ") (dropped "
+            + std::to_string(d->db()->proofsDropped()) + ") (depth "
+            + std::to_string(budget.depth) + ") (truncated "
+            + (truncated ? "#t" : "#f") + "))");
+}
+
 // (catalog) / (catalog relations): one (catalog-rel ...) record per LATEST
 // relation binding plus one (catalog-planned ...) record per announced-but-
 // unregistered version key, name-sorted, then the (catalog-end <n>) sentinel.
@@ -1671,8 +1773,12 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
     // so the lease admits it whenever the run is suspended -- including at
     // parks it will refuse, because `level-1-unwatchable` is the honest
     // answer there and a boundary-admission refusal would hide it.
+    // T5 slice (d1): `why` joins them -- it reads the journal and the
+    // parked epoch's retained candidates, moves nothing, and a
+    // boundary-admission refusal would hide the honest answer.
     const bool parked_debug_verb =
-        (verb == "replay" || verb == "step" || verb == "frames")
+        (verb == "replay" || verb == "step" || verb == "frames"
+         || verb == "why")
         && d->db()->isSuspended();
     // T5 slice (c3) widens this by exactly one park: a STEP STOP is the
     // same "remain paused and inspect" state one transition earlier -- the
@@ -1819,6 +1925,192 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
             return;
         }
         emit_step_frames(d);
+        return;
+    }
+
+    // T5 slice (d1): `why` (repl-ux §9.4, contract §4(d1)).
+    //
+    //   (why [(depth N)])                     the gate's accepted candidates
+    //   (why (relation "R") (row TERM ...) [(depth N)])
+    //     TERM ::= (integer "99") | (real "1.5") | (string "s") | (word 1234)
+    //   -- the query payload's literal vocabulary, not a second one.
+    //
+    // The bare form is the one that can name a change that is NOT committed
+    // truth -- at a gate park the candidate exists only in the send shards,
+    // so no query could hand the client its words.  Both forms read the
+    // journal only; nothing about the parked run moves.
+    if (verb == "why")
+    {
+        ProofBudget budget;
+        std::string relation;
+        std::vector<u64> row;
+        bool have_relation = false, have_row = false;
+        for (size_t i = 1; i < form.children.size(); ++i)
+        {
+            const slog::sexp::SExp& field = form.children[i];
+            if (field.kind != slog::sexp::SExp::K::list
+                || field.children.empty()
+                || field.children[0].kind != slog::sexp::SExp::K::atom)
+            {
+                refuse(d, "parse", "(verb why) (detail \"expected (why "
+                       "[(relation \\\"R\\\") (row TERM ...)] "
+                       "[(depth N)])\")");
+                return;
+            }
+            const std::string& tag = field.children[0].text;
+            if (tag == "depth")
+            {
+                u64 value = 0;
+                if (field.children.size() != 2
+                    || !parse_u64_atom(field.children[1], value) || value == 0
+                    || value > 16)
+                {
+                    refuse(d, "parse",
+                           "(verb why) (detail \"depth is 1..16\")");
+                    return;
+                }
+                budget.depth = static_cast<u32>(value);
+            }
+            else if (tag == "relation")
+            {
+                if (field.children.size() != 2
+                    || field.children[1].kind != slog::sexp::SExp::K::string)
+                {
+                    refuse(d, "parse",
+                           "(verb why) (detail \"relation takes one name\")");
+                    return;
+                }
+                relation = field.children[1].text;
+                have_relation = true;
+            }
+            else if (tag == "row")
+            {
+                have_row = true;
+                for (size_t j = 1; j < field.children.size(); ++j)
+                {
+                    const slog::sexp::SExp& term = field.children[j];
+                    if (term.kind != slog::sexp::SExp::K::list
+                        || term.children.size() != 2
+                        || term.children[0].kind != slog::sexp::SExp::K::atom)
+                    {
+                        refuse(d, "parse", "(verb why) (detail \"row terms "
+                               "are (integer|real|string \\\"text\\\") "
+                               "or (word N)\")");
+                        return;
+                    }
+                    const std::string& kind = term.children[0].text;
+                    if (kind == "word")
+                    {
+                        u64 word = 0;
+                        if (!parse_u64_atom(term.children[1], word))
+                        {
+                            refuse(d, "parse", "(verb why) (detail \"word "
+                                   "takes an encoded value\")");
+                            return;
+                        }
+                        row.push_back(word);
+                        continue;
+                    }
+                    slog::query::Literal literal;
+                    if (kind == "integer") literal.kind
+                        = slog::query::LiteralK::integer;
+                    else if (kind == "real") literal.kind
+                        = slog::query::LiteralK::real;
+                    else if (kind == "string") literal.kind
+                        = slog::query::LiteralK::string;
+                    else
+                    {
+                        refuse(d, "parse", "(verb why) (detail \"unknown row "
+                               "term kind\")");
+                        return;
+                    }
+                    literal.text = term.children[1].text;
+                    u64 word = 0;
+                    try
+                    {
+                        // Probe-only, exactly as R2's `uses` resolves: a value
+                        // this evaluation never interned cannot appear in any
+                        // fact, so there is nothing to explain.
+                        if (!slog::query::resolve_literal(*d->db(), literal,
+                                                          word))
+                        {
+                            refuse(d, "value-lookup",
+                                   "(verb why) (detail "
+                                   + slog::protocol::quoteString(
+                                       "no value in this evaluation matches "
+                                       + literal.text)
+                                   + ")");
+                            return;
+                        }
+                    }
+                    catch (const slog::query::Error& exception)
+                    {
+                        refuse(d, slog::query::error_class(exception.kind()),
+                               "(verb why) (detail "
+                               + slog::protocol::quoteString(exception.what())
+                               + ")");
+                        return;
+                    }
+                    row.push_back(word);
+                }
+            }
+            else
+            {
+                refuse(d, "parse", "(verb why) (detail \"unknown field "
+                       + tag + "\")");
+                return;
+            }
+        }
+        if (have_relation != have_row)
+        {
+            refuse(d, "parse", "(verb why) (detail \"relation and row go "
+                   "together\")");
+            return;
+        }
+        u32 nodes = 0;
+        bool truncated = false;
+        std::vector<std::string> path;
+        if (have_relation)
+        {
+            if (d->db()->proofCount() == 0)
+            {
+                // Two different silences, and the operator deserves to know
+                // which: nothing armed, or armed over an epoch capture does
+                // not cover (contract §0.1 is monotone-only, so a counted or
+                // maintenance round journals nothing by construction).
+                refuse(d, "provenance-unavailable",
+                       d->db()->provenanceArmed()
+                         ? "(verb why) (detail \"this event captured no "
+                           "derivations; capture covers MONOTONE epochs, and "
+                           "counted or maintenance rounds are "
+                           "level-1-unwatchable\")"
+                         : "(verb why) (detail \"no derivations were "
+                           "captured; arm a level-1 watch with (provenance "
+                           "#t) before the run\")");
+                return;
+            }
+            emit_proof_subtree(d, relation, row, -1, budget.depth, budget,
+                               path, nodes, truncated);
+        }
+        else
+        {
+            const std::vector<slog::Database::GateCandidate>& candidates =
+                d->db()->gateCandidates();
+            if (candidates.empty())
+            {
+                refuse(d, "provenance-unavailable",
+                       std::string("(verb why) (detail \"no gate candidates "
+                       "here; name a fact, or ask at a pre-commit gate "
+                       "park\") (position ")
+                       + d->db()->currentPositionName() + ")");
+                return;
+            }
+            for (const slog::Database::GateCandidate& candidate : candidates)
+                emit_proof_subtree(d, candidate.relation, candidate.tuple, -1,
+                                   budget.depth, budget, path, nodes,
+                                   truncated);
+        }
+        emit_proof_end(d, nodes, budget, truncated);
         return;
     }
 
@@ -2034,7 +2326,9 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
     {
         CommandFields fields;
         std::string error;
-        if (!collect_fields(form, 1, {"id", "version-key", "tuple", "level"},
+        if (!collect_fields(form, 1,
+                            {"id", "version-key", "tuple", "level",
+                             "provenance"},
                             fields, error)
             || fields.find("id") == fields.end()
             || fields.find("version-key") == fields.end())
@@ -2042,7 +2336,7 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
             refuse_boundary_parse(
               d, verb, error.empty()
                 ? "requires (id \"...\") and (version-key \"...\"), with an "
-                  "optional (tuple V ...) and (level 0|1)"
+                  "optional (tuple V ...), (level 0|1) and (provenance #t)"
                 : error);
             return;
         }
@@ -2097,6 +2391,30 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
                 return;
             }
         }
+        // T5 slice (d1): (provenance #t) additionally captures this event's
+        // derivations for `why` while the watch is armed -- opt-in, because
+        // it is what puts the interpreter on its observed loop.
+        bool provenance = false;
+        auto pit = fields.find("provenance");
+        if (pit != fields.end())
+        {
+            const auto& field = *pit->second;
+            if (field.children.size() != 2
+                || field.children[1].kind != slog::sexp::SExp::K::atom
+                || (field.children[1].text != "#t"
+                    && field.children[1].text != "#f"))
+            {
+                refuse_boundary_parse(d, verb, "provenance must be #t or #f");
+                return;
+            }
+            provenance = field.children[1].text == "#t";
+        }
+        if (provenance && level != 1)
+        {
+            refuse_boundary_parse(
+              d, verb, "provenance capture is a level-1 watch's observation");
+            return;
+        }
         // watchTarget also resolves a PREPARED successor key (T5: the
         // registration that lets the gate observe the creating run)
         if (d->db()->watchTarget(version_key) == nullptr)
@@ -2108,7 +2426,7 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
             return;
         }
         if (!d->db()->addWatch(id, version_key, tuple_mode, std::move(tuple),
-                               static_cast<u32>(level)))
+                               static_cast<u32>(level), provenance))
         {
             refuse(d, "watch-binding",
                    "(verb watch) (detail "
@@ -2119,7 +2437,8 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
         d->emit("(watch-added (id " + slog::protocol::quoteString(id)
                 + ") (version-key " + slog::protocol::quoteString(version_key)
                 + ") (watches " + std::to_string(d->db()->watchCount()) + ")"
-                + (level == 1 ? " (level 1)" : "") + ")");
+                + (level == 1 ? " (level 1)" : "")
+                + (provenance ? " (provenance #t)" : "") + ")");
         return;
     }
 

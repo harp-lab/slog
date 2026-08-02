@@ -758,6 +758,24 @@ same way, with each frontier line offering a chase (§4's transcript). Both
 verbs work at any boundary and in paused mode; both echo their budgets so a
 deeper look is one recall-and-edit away.
 
+*Shipped (T5 slice (d1), 2026-08-01):* `why`, over a run-scoped journal the
+interpreter fills at its `emit` port. Capture is opt-in per watch — `watch
+REL level 1 why` — because an armed gate alone leaves the event mask at 0
+and the fast loop selected, and paying the observed loop to answer a
+question nobody asked is exactly the cost dishonesty §7.4 warns about. Three
+spellings: bare `why` at a pre-commit gate park explains the CANDIDATES that
+stopped the run (the one thing no query can name — they are still in the
+send shards); `why (path 1 4)` names a fact through the query front end, so
+`#N` handles splice here as they do in a query; `depth N` deepens the tree.
+The driving row is a premise like any other, so a delta-driven rule's proof
+is complete. A premise the journal does not hold prints as a leaf marked
+`base` — EDB, derived before the arming, or past a budget — and a fact with
+no record at all says so rather than implying it has no derivation. Capture
+is monotone-only by the same §0.1 pin as the gate: a counted or maintenance
+round journals nothing, and `why` says which silence it is. Tree canvas
+rendering with cards, `#N` subproof dedup, and premise-card `why` are the
+client half, with the R4 canvas work.
+
 ### 9.5 The tuner's bench
 
 - `hot [run0|dbN]` — top rules by fires (from `$stat_fires`), with `r17`
