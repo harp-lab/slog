@@ -52,7 +52,11 @@
                               ;; via `keep scratch as F` -- re-keeping into
                               ;; the same file is a workflow, so those paths
                               ;; may be overwritten; unrelated files may not
-                              kept)
+                              kept
+                              ;; T5 (d3): id -> break-intent, the standing
+                              ;; breakpoints armed against this session's
+                              ;; daemon (their own id space, `bN`)
+                              breaks)
   #:transparent)
 
 ;; One Racket REPL connection can own several independent compiler sessions.
@@ -176,6 +180,7 @@
    #f
    #f
    (make-hash)
+   (make-hash)
    (make-hash)))
 
 ;; a fresh, connection-less server state -- the stateful harness entry
@@ -276,6 +281,11 @@
    "                      `why` can answer afterwards (observed loop)"
    "  why [(REL t ...)]   the proof tree for a fact, or -- bare, at a gate"
    "                      park -- for the candidates that stopped the run"
+   "  whynot (REL t ...)  why a fact is NOT there: per rule, the first body"
+   "                      position with nothing to match (the frontier)"
+   "  break REL | rN[@k]  stop the run AT a port: when a rule writes REL,"
+   "   [when (REL t|_ ...)]  when rule N fires, or at its body position k"
+   "  breaks | unbreak bN list the standing breaks, or remove one"
    "  commit|replay|abort resolve a run held at the pre-commit gate: take"
    "                      the change, rerun the same read, or discard it"
    "  step [match|fire|   walk the held read one interpreter port at a time"
@@ -1537,6 +1547,481 @@
                                       ", ")))))
       #:kind "watch")]))
 
+;; ---- T5 slice (d2): `whynot` -- the failure frontier (repl-ux §9.4) ------
+;;
+;; The frontier is a PLAN-DIRECTED PROBE over committed state, not a replay
+;; of a captured iteration (contract §4(d2) records the deviation and why).
+;; For each rule that can write the target's relation, unify the target with
+;; the head, walk the rule's atoms in plan order, and probe prefixes through
+;; the ordinary `?count` spine until one is empty: that atom is the frontier,
+;; and the count before it is how many bindings reached it.
+;;
+;; Honest edges, all reported rather than smoothed over: a head that cannot
+;; unify never probes; a computed position ends the walk (a prefix past it is
+;; not expressible as a query); delta views probe as full views, because the
+;; question is about the state that exists now.
+
+;; A register's query spelling: its bound value, or a variable named for the
+;; register (plan registers are already dense and unique per rule).
+(define (frontier-term env reg)
+  (define bound (hash-ref env reg #f))
+  (cond
+    [(not bound) (format "V~a" reg)]
+    [(string? bound) (~s bound)]
+    [(number? bound) (~a bound)]
+    [else #f]))                          ; a value no query text can spell
+
+;; (r N) -> N, (k N) -> the constant's value; #f for anything else.
+(define (frontier-ref r ref)
+  (match ref
+    [`(r ,n) n]
+    [`(k ,n) (plan-constant-value (plan-rule-constants r) n)]
+    [_ #f]))
+
+;; One plan atom -> (relation . terms-in-nominal-order), or #f when the op is
+;; not a relation probe at all.  `order` maps physical position to nominal
+;; column, exactly as it does for the daemon's proof rows; a K-prefix filter
+;; names only its bound columns and the rest are wildcards.
+(define (frontier-atom r op)
+  (define (relation slot) (plan-relation-name (plan-rule-relations r) slot))
+  (define (arity slot)
+    (match (findf (lambda (e) (match e [`(rel ,n ,_) (equal? n slot)] [_ #f]))
+                  (plan-rule-relations r))
+      [`(rel ,_ (,_kind ,_name ,a ,_ ...)) a]
+      [_ 0]))
+  ;; place `refs` (index order) into nominal columns through `order`
+  (define (nominal slot order refs)
+    (define columns (make-vector (arity slot) '_))
+    (for ([col (in-list order)] [ref (in-list refs)])
+      (when (< col (vector-length columns)) (vector-set! columns col ref)))
+    (vector->list columns))
+  (match op
+    [`(scan (rel ,slot) ,refs ...)        ; drivers scan in NOMINAL order
+     (cons (relation slot) refs)]
+    [`(probe (rel ,slot) ,order ,_K ,refs ...)
+     (cons (relation slot) (nominal slot order refs))]
+    [`(,(or 'join 'join-old 'join-new 'join-tomb) (rel ,slot) ,order ,_K
+       ,refs ...)
+     (cons (relation slot) (nominal slot order refs))]
+    [`(,(or 'exists 'absent) (rel ,slot) ,order ,_K ,refs ...)
+     (cons (relation slot) (nominal slot order refs))]
+    [_ #f]))
+
+(define (frontier-negated? op)
+  (match op [`(absent ,_ ...) #t] [_ #f]))
+
+;; The atoms of one rule, in plan order, plus how far they can be spelled.
+;; Returns (values atoms stopped-at) where `stopped-at` is the op that ended
+;; the walk (#f when the whole body is expressible).
+(define (frontier-atoms r)
+  (let loop ([ops (cons (plan-rule-driver r) (plan-rule-body r))]
+             [atoms '()] [guards '()])
+    (cond
+      [(null? ops) (values (reverse atoms) (reverse guards) #f)]
+      [else
+       (define op (car ops))
+       (define atom (frontier-atom r op))
+       (cond
+         [atom (loop (cdr ops)
+                     (cons (list atom (frontier-negated? op) op) atoms)
+                     guards)]
+         ;; guards ride along with the prefix that binds their operands
+         [(match op [`(neq ,_ ,_) #t] [`(cmp ,_ ,_ ,_) #t] [_ #f])
+          (loop (cdr ops) atoms (cons op guards))]
+         ;; `eq` is an aliasing constraint the probe expresses by equality
+         [(match op [`(eq ,_ ,_) #t] [_ #f])
+          (loop (cdr ops) atoms (cons op guards))]
+         [else (values (reverse atoms) (reverse guards) op)])])))
+
+(define frontier-guard-ops (hash '< "<" '<= "<=" '> ">" '>= ">=" 'lt "<"
+                                 'le "<=" 'gt ">" 'ge ">="))
+
+;; Unify the target with this rule's head.  Returns the register environment,
+;; or #f when the head shape cannot produce the target at all.
+(define (frontier-unify r target-args)
+  (define env (make-hash))
+  ;; constants loaded before the driver bind their registers
+  (for ([op (in-list (plan-rule-pre r))])
+    (match op
+      [`(let (r ,reg) (k ,slot))
+       (hash-set! env reg (plan-constant-value (plan-rule-constants r) slot))]
+      [_ (void)]))
+  (define head
+    (for/or ([h (in-list (plan-rule-head r))])
+      (match h [`(emit (rel ,_slot) ,_order ,refs ...) refs] [_ #f])))
+  (and head
+       (= (length head) (length target-args))
+       (for/and ([ref (in-list head)] [value (in-list target-args)])
+         (match ref
+           [`(r ,reg)
+            (define bound (hash-ref env reg #f))
+            (cond [(not bound) (hash-set! env reg value) #t]
+                  [else (equal? bound value)])]
+           [`(k ,slot)
+            (equal? (plan-constant-value (plan-rule-constants r) slot) value)]
+           [_ #f]))
+       env))
+
+(define (frontier-atom-text r env atom)
+  (match-define (cons relation refs) atom)
+  (define terms
+    (for/list ([ref (in-list refs)])
+      (cond
+        [(eq? ref '_) "_"]
+        [else
+         (define resolved (frontier-ref r ref))
+         (cond
+           [(match ref [`(k ,_) #t] [_ #f])
+            (cond [(string? resolved) (~s resolved)]
+                  [(number? resolved) (~a resolved)]
+                  [else #f])]
+           [(exact-nonnegative-integer? resolved) (frontier-term env resolved)]
+           [else #f])])))
+  (and (andmap values terms)
+       (format "(~a~a)" relation
+               (if (null? terms) "" (string-append " "
+                                                   (string-join terms " "))))))
+
+(define (frontier-guard-text r env op)
+  (match op
+    [`(neq ,x ,y)
+     (define a (frontier-term env (frontier-ref r x)))
+     (define b (frontier-term env (frontier-ref r y)))
+     (and a b (format "(/= ~a ~a)" a b))]
+    [`(cmp ,f ,x ,y)
+     (define op-text (hash-ref frontier-guard-ops f #f))
+     (define a (frontier-term env (frontier-ref r x)))
+     (define b (frontier-term env (frontier-ref r y)))
+     (and op-text a b (format "(~a ~a ~a)" op-text a b))]
+    ;; `eq` is realized by ALIASING the two registers before any text is
+    ;; built, so by the time guards render there is nothing left to say.
+    [`(eq ,_ ,_) ""]
+    [_ #f]))
+
+;; (eq (r a) (r b)) makes the two registers one variable; resolve through the
+;; alias chain wherever a register is spelled.
+(define (frontier-aliases r guards)
+  (define aliases (make-hash))
+  (for ([op (in-list guards)])
+    (match op
+      [`(eq (r ,a) (r ,b)) (unless (equal? a b) (hash-set! aliases b a))]
+      [_ (void)]))
+  aliases)
+
+(define (frontier-resolve aliases reg)
+  (let loop ([reg reg] [fuel 16])
+    (define next (hash-ref aliases reg #f))
+    (if (and next (positive? fuel)) (loop next (sub1 fuel)) reg)))
+
+;; Fold the alias map into everything BEFORE any text is built: two
+;; registers the rule equates must become one query variable, or the probe
+;; would join them independently and answer optimistically.
+(define (frontier-alias-ref aliases ref)
+  (match ref
+    [`(r ,n) `(r ,(frontier-resolve aliases n))]
+    [other other]))
+
+(define (frontier-alias-atoms aliases atoms)
+  (for/list ([entry (in-list atoms)])
+    (match-define (list (cons relation refs) negated? op) entry)
+    (list (cons relation
+                (for/list ([ref (in-list refs)])
+                  (frontier-alias-ref aliases ref)))
+          negated? op)))
+
+(define (frontier-alias-env aliases env)
+  (define folded (make-hash))
+  (for ([(reg value) (in-hash env)])
+    (hash-set! folded (frontier-resolve aliases reg) value))
+  folded)
+
+;; One rule's frontier: walk its prefixes until one is empty.  Returns a list
+;; of report lines for that rule.
+(define (frontier-for-rule state rs r target-args)
+  (define env0 (frontier-unify r target-args))
+  (define env env0)
+  (define label
+    (format "  r~a · ~a · ~a" (plan-rule-rid r)
+            (or (plan-rule-source r) "?") (plan-rule-variant r)))
+  (cond
+    [(not env0)
+     (list label "    head cannot produce this fact (shape or constants)")]
+    [else
+     (define-values (raw-atoms guards stopped) (frontier-atoms r))
+     (define aliases (frontier-aliases r guards))
+     (define atoms (frontier-alias-atoms aliases raw-atoms))
+     (set! env (frontier-alias-env aliases env))
+     (define texts
+       (for/list ([entry (in-list atoms)])
+         (match-define (list atom negated? _op) entry)
+         (define text (frontier-atom-text r env atom))
+         (and text (if negated? (string-append "~" text) text))))
+     (define guard-texts
+       (for/list ([g (in-list guards)])
+         (frontier-guard-text
+          r env
+          (match g
+            [`(,op ,x ,y) (list op (frontier-alias-ref aliases x)
+                                (frontier-alias-ref aliases y))]
+            [`(cmp ,f ,x ,y) (list 'cmp f (frontier-alias-ref aliases x)
+                                   (frontier-alias-ref aliases y))]
+            [other other]))))
+     (cond
+       [(not (andmap values texts))
+        (list label "    an atom holds a value no query can spell; stopping")]
+       [(null? texts)
+        (list label "    this rule has no probeable body (a ground fact rule)")]
+       [else
+        ;; prefixes, shortest first: the first empty one is the frontier
+        (define frontier
+          (let loop ([k 1] [previous #f])
+            (cond
+              [(> k (length texts)) (cons 'satisfiable previous)]
+              [else
+               (define prefix (take texts k))
+               (define text
+                 (string-append "?count "
+                                (string-join prefix " ")
+                                (if (= k (length texts))
+                                    (string-append
+                                     (if (null? (filter values guard-texts))
+                                         ""
+                                         " ")
+                                     (string-join
+                                      (filter (lambda (g)
+                                                (and g (not (equal? g ""))))
+                                              guard-texts)
+                                      " "))
+                                    "")))
+               (define count
+                 (with-handlers ([exn:fail? (lambda (_) #f)])
+                   (run-watch-query state rs text)))
+               (cond
+                 [(not count) (cons 'unprobeable k)]
+                 [(zero? count) (cons 'frontier (cons k previous))]
+                 [else (loop (add1 k) count)])])))
+        (append
+         (list label)
+         (match frontier
+           [(cons 'satisfiable previous)
+            (append
+             (for/list ([t (in-list texts)]) (format "    ~a" t))
+             (list (format "    every position is satisfiable~a — the fact should be derivable here"
+                           (if previous (format " (~a binding~a)" previous
+                                                (if (= previous 1) "" "s"))
+                               ""))))]
+           [(cons 'unprobeable k)
+            (append
+             (for/list ([t (in-list (take texts k))]) (format "    ~a" t))
+             (list "    this prefix is not answerable as a query; stopping"))]
+           [(cons 'frontier (cons k previous))
+            (append
+             (for/list ([t (in-list (take texts (sub1 k)))]
+                        [i (in-naturals 1)])
+               (format "    ~a~a" t
+                       (if (and (= i (sub1 k)) previous)
+                           (format "   ~a way~a" previous
+                                   (if (= previous 1) "" "s"))
+                           "")))
+             (list (format "    ~a   ✗ nothing matches — the frontier"
+                           (list-ref texts (sub1 k)))))])
+         (if stopped
+             (list (format "    (analysis stops before a computed position: ~a)"
+                           (car stopped)))
+             '()))])]))
+
+(define (whynot-result state argument)
+  (define raw (string-trim argument))
+  (when (string=? raw "")
+    (error 'whynot "expected: whynot (relation term ...)"))
+  (define shape (read-datum raw))
+  (unless (and (pair? shape) (symbol? (first shape)))
+    (error 'whynot "whynot names ONE ground fact: whynot (relation term ...)"))
+  (for ([term (in-list (rest shape))])
+    (when (symbol? term)
+      (error 'whynot "~a is a variable; whynot names one GROUND fact" term)))
+  (define relation (symbol->string (first shape)))
+  (define rs (ensure-session-record! state))
+  (define s (repl-session-session rs))
+  ;; one representative variant per rule: the atom set is the same, only the
+  ;; driver and the delta views differ, and the frontier asks about state
+  (define seen (make-hash))
+  (define rules
+    (for/list ([r (in-list (session-plan-rules s))]
+               #:when (and (equal? (~a (plan-rule-head-relation r)) relation)
+                           (not (hash-ref seen
+                                          (cons (plan-rule-hash r)
+                                                (plan-rule-rid r)) #f)))
+               #:do [(hash-set! seen (cons (plan-rule-hash r)
+                                           (plan-rule-rid r)) #t)])
+      r))
+  ;; The first thing to check is whether the premise of the question holds:
+  ;; a fact that IS there needs `why`, not a frontier.
+  (define present?
+    (with-handlers ([exn:fail? (lambda (_) #f)])
+      (positive? (run-watch-query state rs (format "?count ~a" raw)))))
+  (define body
+    (cond
+      [present?
+       (list (format "~a is present — `why ~a` explains how it got here" raw raw))]
+      [(null? rules)
+       (list (format "no resident rule writes ~a (see `tiers` and `code`)"
+                     relation))]
+      [else
+       (append
+        (append*
+         (for/list ([r (in-list rules)])
+           (frontier-for-rule state rs r (rest shape))))
+        (list (format "~a rule~a can write ~a · frontier over COMMITTED state at this boundary"
+                      (length rules) (if (= (length rules) 1) "" "s")
+                      relation)))]))
+  (attach-session-state state
+                        (text-result (format "Why not ~a" raw) body
+                                     #:kind "proof")))
+
+;; ---- T5 slice (d3): standing breakpoints (repl-ux §9.1) ------------------
+;;
+;;   break REL                     stop when a rule writes REL
+;;   break REL when (REL 99 _)     ... and the fact it writes matches
+;;   break rN                      stop when rule N fires (an instantiation)
+;;   break rN@k                    stop at body position k of rule N
+;;   breaks | unbreak bN
+;;
+;; This is the entry path stepping lacked: a step needs an existing park, so
+;; before (d3) every port needed a level-1 watch to trip the gate first.  A
+;; relation break pins that relation's writer strata to the interpreter the
+;; same way a level-1 watch does -- without the flip there are no ports to
+;; stop at, and saying so is part of the UX (repl-ux §9.1's cost note).
+(struct break-intent (id kind target position pattern) #:transparent)
+
+(define (next-break-id registry)
+  (let loop ([n (add1 (hash-count registry))])
+    (define id (format "b~a" n))
+    (if (hash-has-key? registry id) (loop (add1 n)) id)))
+
+;; `break rN` still needs a relation to pin: the rule's own head, read out of
+;; the canonical plan.
+(define (break-rule-relation s rid)
+  (for/or ([r (in-list (session-plan-rules s))]
+           #:when (equal? (plan-rule-rid r) rid))
+    (plan-rule-head-relation r)))
+
+(define (break-result state argument)
+  (define raw (string-trim argument))
+  (when (string=? raw "")
+    (error 'break "expected: break REL [when (REL t ...)] | break rN[@k]"))
+  (define-values (head when-text)
+    (match (regexp-match #px"^(.*?)[[:space:]]+when[[:space:]]+(.*)$" raw)
+      [(list _ target pattern) (values (string-trim target) pattern)]
+      [_ (values raw #f)]))
+  (define-values (target position)
+    (match (regexp-match #px"^(.*[^[:space:]])@([0-9]+)$" head)
+      [(list _ t k) (values t (string->number k))]
+      [_ (values head #f)]))
+  (define rid
+    (match (regexp-match #px"^r([0-9]+)$" target)
+      [(list _ n) (string->number n)]
+      [_ #f]))
+  (when (and position (not rid))
+    (error 'break "a body position belongs to a rule: break rN@~a" position))
+  (define rs (ensure-session-record! state))
+  (define s (repl-session-session rs))
+  (define registry (repl-session-breaks rs))
+  (define id (next-break-id registry))
+  ;; the relation whose writers must run interpreted for the ports to exist
+  (define relation
+    (~a
+     (cond
+      [rid (or (break-rule-relation s rid)
+               (error 'break
+                      "no rule r~a in a resident normal-flavor plan (see `code`)"
+                      rid))]
+      [else (relation-info-name
+             (relation-from-catalog 'break (live-catalog s) target))])))
+  ;; The pattern is read directly rather than through the query front end:
+  ;; a query drops `_` columns from its fact template (they cannot be
+  ;; projected), and a break pattern is exactly where wildcards belong.
+  (define pattern
+    (and when-text
+         (let ([shape (read-datum when-text)])
+           (unless (and (pair? shape) (symbol? (first shape)))
+             (error 'break
+                    "when takes one fact pattern of constants and _: when (~a 99 _)"
+                    relation))
+           (for/list ([term (in-list (rest shape))])
+             (if (eq? term '_) '_ (why-term state term))))))
+  (define flipped (session-set-scc-policy! s (string->symbol relation)
+                                           'interpreted))
+  (session-command-stream!
+   s
+   `(break (id ,id)
+           ,@(if rid `((rule ,rid)) `((relation ,relation)))
+           ,@(if position `((position ,position)) '())
+           ,@(if pattern `((pattern ,@pattern)) '()))
+   (lambda (_line) #t))
+  (hash-set! registry id
+             (break-intent id (if rid 'rule 'relation)
+                           (if rid (format "r~a" rid) relation)
+                           position when-text))
+  (text-result
+   (format "Break ~a" id)
+   (append
+    (list (format "~a~a~a — stops the run at the port, where step/frames/why work"
+                  (if rid (format "rule r~a" rid) relation)
+                  (if position (format " body position ~a" position) "")
+                  (if when-text (format " when ~a" when-text) "")))
+    (if (null? flipped)
+        '()
+        (list (format "writer strat~a ~a pinned to the interpreter (a native stratum has no ports)"
+                      (if (= (length flipped) 1) "um" "a")
+                      (string-join (map (lambda (n) (format "s~a" n)) flipped)
+                                   ", ")))))
+   #:kind "break"))
+
+(define (unbreak-result state argument)
+  (define id (string-trim argument))
+  (define rs (ensure-session-record! state))
+  (define registry (repl-session-breaks rs))
+  (unless (hash-has-key? registry id)
+    (error 'unbreak "no break named ~a; `breaks` lists them" id))
+  (with-handlers ([exn:fail? void])
+    (session-command-stream! (repl-session-session rs) `(unbreak (id ,id))
+                             (lambda (_line) #t)))
+  (hash-remove! registry id)
+  (text-result (format "Break ~a removed" id)
+               (list (format "~a break~a armed" (hash-count registry)
+                             (if (= (hash-count registry) 1) "" "s")))
+               #:kind "break"))
+
+;; The daemon owns the hit counts, so the listing is its answer, not the
+;; client's memory of what it asked for.
+(define (breaks-result state)
+  (define rs (ensure-session-record! state))
+  (define lines
+    (session-debug-lines! (repl-session-session rs) '(breaks)
+                          (lambda (l) (regexp-match? #px"^\\(breaks-end " l))))
+  (define rows
+    (for*/list ([line (in-list lines)]
+                #:do [(define datum (read-datum line))]
+                #:when (match datum [`(break ,_ ...) #t] [_ #f]))
+      (match datum
+        [`(break (id ,id) (relation ,relation) (rule ,rule)
+                 (position ,position) (pattern ,pattern) (hits ,hits))
+         (format "~a  ~a~a~a · ~a hit~a" id
+                 (if (equal? rule '#f) relation (format "r~a" rule))
+                 (if (equal? position '#f) ""
+                     (format "@~a" position))
+                 (if (equal? (~a pattern) "") ""
+                     (format " when (~a~a)"
+                             (if (equal? relation "") "" (format "~a " relation))
+                             pattern))
+                 hits (if (equal? hits 1) "" "s"))])))
+  (text-result "Breaks"
+               (if (null? rows)
+                   (list "none; `break REL` or `break rN` arms one")
+                   rows)
+               #:kind "break"))
+
 (define (unwatch-result state argument)
   (define id (string-trim argument))
   (define rs (ensure-session-record! state))
@@ -2239,6 +2724,77 @@
                     " · "))))))
    #:kind "tiers"))
 
+;; ---- the canonical plan as the client's rule table (T5 (d2)/(d3)) --------
+;;
+;; `code` already reads build/<hash>.plan for its shape line; the debugger
+;; reads the same artifact as the RULE SET.  It is post-planning truth --
+;; what actually runs -- with (r N) registers where the source had variables,
+;; (k N) slots into the constants table, and (rel N) slots into the relation
+;; table.  Only NORMAL-flavor plans are read: contract §0.1 is monotone-only,
+;; and a counted or maintenance variant answers a different question.
+
+(struct plan-rule
+  (stratum hash rid variant source relations constants nregs pre driver body head)
+  #:transparent)
+
+(define (plan-field parts key)
+  (match (assq key parts) [(cons _ values) values] [_ #f]))
+
+(define (read-stratum-plan hash)
+  (define path (format "build/~a.plan" hash))
+  (and (file-exists? path)
+       (with-handlers ([exn:fail? (lambda (_) #f)])
+         (call-with-input-file path read))))
+
+;; (rel 2) -> 'path, given the plan's relation table
+(define (plan-relation-name relations slot)
+  (match (findf (lambda (r) (match r [`(rel ,n ,_) (equal? n slot)] [_ #f]))
+                relations)
+    [`(rel ,_ (,_kind ,name ,_arity ,_orders ...)) name]
+    [_ #f]))
+
+;; (k 0) -> 9, given the plan's constants table
+(define (plan-constant-value constants slot)
+  (match (findf (lambda (k) (match k [`(k ,n ,_ ,_) (equal? n slot)] [_ #f]))
+                constants)
+    [`(k ,_ ,_name ,value) value]
+    [_ #f]))
+
+(define (session-plan-rules s)
+  (filter
+   values
+   (for*/list ([row (in-list (session-tiers s))]
+              #:do [(define plan (read-stratum-plan (second row)))]
+              #:when plan
+              #:do [(define parts (match plan [`(kernel-plan ,ps ...) ps] [_ #f]))]
+              #:when (and parts
+                          (equal? (car (or (plan-field parts 'flavor) '(#f)))
+                                  'normal))
+              #:do [(define relations (or (plan-field parts 'relations) '()))
+                    (define constants (or (plan-field parts 'constants) '()))
+                    (define meta (or (plan-field parts 'meta) '()))]
+              [rule (in-list (or (plan-field parts 'rules) '()))])
+    (match rule
+      [`(rule-def (rid ,rid) (variant ,variant) (nregs ,nregs)
+                  (pre ,pre ...) (driver ,driver) (body ,body ...)
+                  (head ,head ...))
+       (plan-rule (first row) (second row) rid variant
+                  (for/or ([m (in-list meta)])
+                    (match m
+                      [`(rule-meta (rid ,(== rid)) (source ,src)) src]
+                      [_ #f]))
+                  relations constants nregs pre driver body head)]
+      [_ #f]))))
+
+;; The relation a rule writes -- its first ordinary head emit.  Struct and
+;; lattice heads answer #f: they are (d4)'s settles, not this slice's.
+(define (plan-rule-head-relation r)
+  (for/or ([h (in-list (plan-rule-head r))])
+    (match h
+      [`(emit (rel ,slot) ,_order ,_regs ...)
+       (plan-relation-name (plan-rule-relations r) slot)]
+      [_ #f])))
+
 (define (code-result state argument)
   (define s (ensure-session! state))
   (define requested (string-trim argument))
@@ -2351,14 +2907,20 @@
 (define (session-level1-armed? state)
   (define rs (current-repl-session state))
   (and rs
-       (for/or ([intent (in-hash-values (repl-session-watches rs))])
-         (and (eq? (watch-intent-kind intent) 'relation)
-              (= (watch-intent-level intent) 1)))))
+       (or
+        ;; T5 (d3): a standing break makes the prompt a place for the same
+        ;; reason a level-1 watch does -- without the hold, the pause hook
+        ;; drives past the stop and nobody is sitting at it.
+        (positive? (hash-count (repl-session-breaks rs)))
+        (for/or ([intent (in-hash-values (repl-session-watches rs))])
+          (and (eq? (watch-intent-kind intent) 'relation)
+               (= (watch-intent-level intent) 1))))))
 
 ;; Verbs that run on THIS thread even with a level-1 watch armed: they either
 ;; resolve a pause or observe one, and neither wants a held run of its own.
 (define pause-resolution-verbs
-  '("commit" "continue" "replay" "abort" "step" "frames" "finish" "why"))
+  '("commit" "continue" "replay" "abort" "step" "frames" "finish" "why"
+    "breaks" "unbreak" "whynot"))
 
 ;; Fields of the uniform pause record, for rendering (t0-contract).
 (define (pause-record-field line key)
@@ -2386,6 +2948,16 @@
   (define rs (current-repl-session state))
   (define registry (and rs (repl-session-watches rs)))
   (define stepped? (step-stop-line? line))
+  ;; T5 (d3): a break stop is a step stop the operator armed in advance, so
+  ;; the daemon reports the same breakpoint cause -- with the break's id in
+  ;; front of the port, which is the only thing that distinguishes them.
+  (define broke
+    (match (and stepped? (pause-breakpoint-detail line))
+      [(? string? detail)
+       (match (regexp-match #px"^(b[0-9]+):" detail)
+         [(list _ id) id]
+         [_ #f])]
+      [_ #f]))
   (define watch-lines
     (for/list ([id (in-list cites)])
       (define intent (and registry (hash-ref registry id #f)))
@@ -2399,7 +2971,8 @@
    (text-result
     ;; Name the place honestly: a step stop, the pre-commit gate, or the
     ;; clean iteration boundary `finish` asked to be held at.
-    (cond [stepped? "Paused · step"]
+    (cond [broke (format "Paused · break ~a" broke)]
+          [stepped? "Paused · step"]
           [(pair? cites) "Paused · pre-commit gate"]
           [else "Paused · iteration boundary"])
     (append
@@ -2422,7 +2995,8 @@
          '())
      (list (string-append
             "step [match|fire|emit|tuple] · frames · why · finish · "
-            "commit · replay · abort")))
+            (if broke "continue · " "commit · replay · ")
+            "abort")))
     #:kind "paused")))
 
 ;; The daemon reports the join stack STRUCTURALLY -- port, rule position and
@@ -2778,6 +3352,10 @@
     ["dump" (dump-result state argument)]
     [(or "uses" "find") (uses-result state argument)]
     ["why" (why-result state argument)]
+    ["whynot" (whynot-result state argument)]
+    ["break" (break-result state argument)]
+    ["unbreak" (unbreak-result state argument)]
+    ["breaks" (breaks-result state)]
     ["watch" (watch-result state argument)]
     ["unwatch" (unwatch-result state argument)]
     ["watches" (watches-result state)]
@@ -3435,7 +4013,8 @@
     (check-exn exn:fail? (lambda () (datum->value-cell '(cell (word 1)))))
 
     (define state (server-state (make-hash) "alpha" #f #f (make-hash) #f))
-    (define rs (repl-session #f "alpha" 'mutable #f "eval-1" #f (make-hash) (make-hash)))
+    (define rs (repl-session #f "alpha" 'mutable #f "eval-1" #f (make-hash) (make-hash)
+                                (make-hash)))
     (hash-set! (server-state-sessions state) "alpha" rs)
     (define label (mint-value-handle! state cell))
     (check-equal? label "#1")
@@ -3452,7 +4031,8 @@
                (lambda () (resolve-value-handle state label)))
     ;; ... and one from another database is refused outright
     (set-repl-session-evaluation! rs "eval-1")
-    (define other (repl-session #f "beta" 'mutable #f "eval-1" #f (make-hash) (make-hash)))
+    (define other (repl-session #f "beta" 'mutable #f "eval-1" #f (make-hash) (make-hash)
+                                   (make-hash)))
     (hash-set! (server-state-sessions state) "beta" other)
     (set-server-state-current! state "beta")
     (check-exn #px"cannot be resolved in beta"
@@ -3509,7 +4089,8 @@
   (define mode-state (server-state (make-hash) #f #f #f (make-hash) #f))
   (hash-set! (server-state-sessions mode-state)
              "alpha"
-             (repl-session #f "alpha" 'readonly #f #f #f (make-hash) (make-hash)))
+             (repl-session #f "alpha" 'readonly #f #f #f (make-hash)
+                           (make-hash) (make-hash)))
   (set-server-state-current! mode-state "alpha")
   (check-true
    (regexp-match?
@@ -4311,4 +4892,93 @@
        #px"refused: provenance-unavailable.*arm a level-1 watch"
        (string-join (hash-ref (dispatch-command plain "why (path 1 4)")
                               'lines) "\n"))
-      (void (dispatch-command plain ":quit")))))
+      (void (dispatch-command plain ":quit"))))
+
+  ;; T5 slice (d3): a standing break is the PRE-RUN entry into the ports.
+  ;; Nothing is parked and no watch is armed: arming alone makes the run stop
+  ;; at the port, where the whole stepping surface already works.  The break
+  ;; then survives its own hit (a step would have disarmed), and `unbreak`
+  ;; at the stop is admitted because breaks are session debugging state.
+  (let ([break-environment (environment-variables-copy test-environment)])
+    (environment-variables-set! break-environment #"SLOG_OPT" #"interp")
+    (environment-variables-set! break-environment #"SLOG_THREADS" #"1")
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables break-environment])
+      (define state (make-server-state))
+      (define (run! line) (dispatch-command state line))
+      (define (text result) (string-join (hash-ref result 'lines) "\n"))
+      (void (run! "run tests/reach.slog"))
+      ;; a relation break pins the writer strata: without the flip there are
+      ;; no ports to stop at, and the note says so
+      (define armed (run! "break path"))
+      (check-equal? (hash-ref armed 'kind) "break")
+      (check-regexp-match #px"pinned to the interpreter" (text armed))
+      (check-regexp-match #px"b1  path · 0 hits" (text (run! "breaks")))
+      ;; the very next semantic command stops AT the emit port
+      (define stopped (run! "rule (path 77 7) <-- (edge 1 2)"))
+      (check-equal? (hash-ref stopped 'kind) "paused")
+      (check-equal? (hash-ref stopped 'title) "Paused · break b1")
+      (check-regexp-match #px"port b1:emit@" (text stopped))
+      ;; the stepping surface is unchanged at a break stop
+      (define frames (text (run! "frames")))
+      (check-regexp-match #px"emit at r[0-9]+" frames)
+      (check-regexp-match #px"77 7" frames)
+      (check-regexp-match #px"6 rows match"
+                          (text (run! "?count (path X Y)")))
+      ;; the hit is counted, and the break is still armed
+      (check-regexp-match #px"b1  path · 1 hit" (text (run! "breaks")))
+      (define resumed (run! "continue"))
+      (check-not-equal? (hash-ref resumed 'kind) "paused")
+      (check-regexp-match #px"path \\+1" (text resumed))
+      ;; a rule break at a BODY POSITION, and a head pattern: both narrow
+      (void (run! "unbreak b1"))
+      (void (run! "break path when (path 1 _)"))
+      (define narrowed (run! "run tests/reach.slog"))
+      ;; ids are recycled from the registry's own count, exactly as watch
+      ;; ids are: the removed b1's number is free again
+      (check-equal? (hash-ref narrowed 'title) "Paused · break b1")
+      (define narrow-frames (text (run! "frames")))
+      (check-regexp-match #px"\\(1 " narrow-frames)
+      (void (run! "unbreak b1"))
+      (check-not-equal? (hash-ref (run! "continue") 'kind) "paused")
+      (check-regexp-match #px"none; `break REL`" (text (run! "breaks")))
+      (void (run! ":quit"))))
+
+  ;; T5 slice (d2): `whynot` -- the failure frontier over committed state.
+  ;; Per rule that can write the relation, the first body position with
+  ;; nothing to match, and the count of bindings that reached it.  A fact
+  ;; that IS there is answered as such (the question's premise is false),
+  ;; a head that cannot unify never probes, and a relation nobody writes
+  ;; says so rather than printing an empty frontier.
+  (let ([why-environment (environment-variables-copy test-environment)])
+    (environment-variables-set! why-environment #"SLOG_OPT" #"interp")
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables why-environment])
+      (define state (make-server-state))
+      (define (run! line) (dispatch-command state line))
+      (define (text result) (string-join (hash-ref result 'lines) "\n"))
+      (void (run! "run tests/reach.slog"))
+      ;; 1 reaches 2,3,4 but there is no node 5: the recursive rule gets
+      ;; three ways through its driver and dies on the edge
+      (define missing (run! "whynot (path 1 5)"))
+      (check-equal? (hash-ref missing 'kind) "proof")
+      (define missing-text (text missing))
+      (check-regexp-match #px"reach\\.slog:9" missing-text)
+      (check-regexp-match #px"\\(edge 1 5\\)   ✗ nothing matches"
+                          missing-text)
+      (check-regexp-match #px"\\(path 1 V[0-9]+\\)   3 ways" missing-text)
+      (check-regexp-match #px"\\(edge V[0-9]+ 5\\)   ✗ nothing matches"
+                          missing-text)
+      (check-regexp-match #px"2 rules can write path" missing-text)
+      ;; nothing reaches 4 backwards: both rules die at their first position
+      (define backwards (text (run! "whynot (path 4 1)")))
+      (check-regexp-match #px"\\(edge 4 1\\)   ✗" backwards)
+      (check-regexp-match #px"\\(path 4 V[0-9]+\\)   ✗" backwards)
+      ;; the premise of the question can simply be false
+      (check-regexp-match #px"is present — `why "
+                          (text (run! "whynot (path 1 4)")))
+      ;; and a relation no resident rule writes is not a frontier at all
+      (check-regexp-match #px"no resident rule writes"
+                          (text (run! "whynot (nosuch 1 2)")))
+      (check-exn #px"GROUND fact" (lambda () (run! "whynot (path 1 X)")))
+      (void (run! ":quit")))))

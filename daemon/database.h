@@ -2855,6 +2855,32 @@ public:
     std::vector<u64> tuple;    // the emit candidate, when the port carries one
     std::vector<u64> driver;   // the driving delta tuple
     std::vector<std::vector<u64>> premises;   // one row per open cursor level
+    // T5 slice (d3): the standing break that produced this stop, empty for
+    // a one-shot `step`.  Same record either way -- a break IS a step the
+    // operator armed in advance, so frames/why/step at the stop are
+    // unchanged.
+    std::string break_id;
+  };
+
+  // T5 slice (d3): a STANDING stop (repl-ux §9.1's `break`), where a step
+  // is one-shot.  Three filters, each over state the earlier slices
+  // already produce, and any combination of them narrows: a head relation
+  // (matched at the emit port through the bound rule's ProofSchema head
+  // names), a rule id (matched at the `fire` port -- an instantiation IS
+  // "the rule fired"), and a body position (matched at the probe port
+  // whose cursor slot is that position).  `pattern` is repl-ux's `when`
+  // clause as a HEAD PATTERN: a binding predicate would need source
+  // variable names, and those are the rule-meta item that also blocks
+  // frames from printing them.
+  struct BreakSpec
+  {
+    std::string id;
+    std::string relation;        // head relation, or empty for any
+    u32 rule_id = UINT32_MAX;    // exact rule, or the sentinel for any
+    u16 position = 0xffff;       // cursor slot, or the sentinel for any
+    std::vector<u64> pattern;    // head pattern words, empty for any
+    std::vector<bool> wild;      // parallel to pattern: `_` columns
+    u64 hits = 0;
   };
 
 private:
@@ -2868,6 +2894,73 @@ private:
   std::atomic<bool> step_claimed{false};
   StepStop step_stop;
 
+  // ---- T5 slice (d3): standing breaks -------------------------------------
+  // The arms themselves, the union of the event bits they need (recomputed
+  // on every change, read once per bounded unit of work like the step
+  // grain), and the one-stop suppression that replaces `step`'s disarm: a
+  // break must survive its own hit, so instead of disarming it goes quiet
+  // until the resume clears the stop.
+  std::vector<BreakSpec> break_specs;
+  u64 break_event_mask = 0;
+  std::atomic<bool> break_suppressed{false};
+
+  void refreshBreakMask()
+  {
+    break_event_mask = 0;
+    for (const BreakSpec& b : break_specs)
+    {
+      if (b.position != 0xffff)
+        break_event_mask |= u64{1} << 1;          // EventK::probe_match
+      else if (!b.relation.empty() || !b.pattern.empty())
+        break_event_mask |= u64{1} << 7;          // EventK::emit
+      else
+        break_event_mask |= u64{1} << 6;          // EventK::instantiation
+    }
+  }
+
+public:
+  // The bit positions above are EventK's declaration order (interp.h); this
+  // header cannot include interp.h (it is the other way round), so the
+  // static_asserts live beside the sink that consumes the mask.
+  u64 breakEventMask() const { return break_event_mask; }
+  bool breaksArmed() const { return !break_specs.empty(); }
+  const std::vector<BreakSpec>& breakSpecs() const { return break_specs; }
+
+  bool addBreak(BreakSpec spec)
+  {
+    for (const BreakSpec& b : break_specs) if (b.id == spec.id) return false;
+    break_specs.push_back(std::move(spec));
+    refreshBreakMask();
+    return true;
+  }
+
+  bool removeBreak(const std::string& id)
+  {
+    for (size_t i = 0; i < break_specs.size(); ++i)
+      if (break_specs[i].id == id)
+      {
+        break_specs.erase(break_specs.begin() + i);
+        refreshBreakMask();
+        return true;
+      }
+    return false;
+  }
+
+  void countBreakHit(const std::string& id)
+  {
+    for (BreakSpec& b : break_specs) if (b.id == id) { ++b.hits; return; }
+  }
+
+  bool breakSuppressed() const
+  {
+    return break_suppressed.load(std::memory_order_relaxed);
+  }
+  void suppressBreaks()
+  {
+    break_suppressed.store(true, std::memory_order_relaxed);
+  }
+
+private:
   // ---- T5 slice (d1): the provenance journal (contract §4(d1), §7.4) -----
   // One record per captured emit while a provenance watch is armed, in
   // NOMINAL column order (cursors expose physical index rows, so the sink
@@ -4844,14 +4937,25 @@ public:
   StepStop& stepStopSlot() { return step_stop; }
   const StepStop& stepStop() const { return step_stop; }
   bool stepStopPending() const { return step_stop.valid; }
-  void clearStepStop() { step_stop = StepStop{}; }
+  // Resuming past a stop clears it -- and with it the two things that kept
+  // other observers off: the claim, and (T5 slice (d3)) the standing
+  // breaks' suppression.  A break survives its own hit by going quiet
+  // exactly until here.
+  void clearStepStop()
+  {
+    step_stop = StepStop{};
+    step_claimed.store(false, std::memory_order_relaxed);
+    break_suppressed.store(false, std::memory_order_relaxed);
+  }
 
   // The pause record's breakpoint detail: the port and the rule position it
   // stopped at, stable enough for a client to key on.
   std::string stepStopDetail() const
   {
     if (!step_stop.valid) return "step";
-    return step_stop.port + "@"
+    return (step_stop.break_id.empty() ? std::string()
+              : step_stop.break_id + ":")
+         + step_stop.port + "@"
          + (step_stop.rule_loc.empty() ? std::string("r")
               + std::to_string(step_stop.rule_id)
             : step_stop.rule_loc)

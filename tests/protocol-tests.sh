@@ -194,6 +194,32 @@ expect_rx "why-term-kind"     '\(refused parse [0-9]+ \(verb why\) \(detail "unk
 expect_rx "why-depth-range"   '\(refused parse [0-9]+ \(verb why\) \(detail "depth is 1\.\.16"\)\)' out/proto-why.log
 expect_not "why-still-reserved" '(refused reserved-verb' out/proto-why.log
 
+# --- 3v. T5 slice (d3): standing breakpoints --------------------------------
+# A break needs NO park to arm -- that is the point of the slice -- so what
+# the protocol pins is the shape: an id, at least one filter, a body position
+# that belongs to a rule, and the listing/removal round trip.
+racket tests/api/drive.rkt \
+  '(break (id "b1") (relation "edge"))' \
+  '(break (id "b1") (relation "edge"))' \
+  '(break (id "b2"))' \
+  '(break (relation "edge"))' \
+  '(break (id "b3") (position 2))' \
+  '(break (id "b4") (rule 7) (position 1))' \
+  '(breaks)' \
+  '(unbreak (id "b9"))' \
+  '(unbreak (id "b1"))' \
+  > out/proto-break.log 2>&1
+expect    "break-added"       '(break-added (id "b1") (breaks 1))' out/proto-break.log
+expect_rx "break-duplicate"   '\(refused break-binding [0-9]+ \(verb break\) \(detail "break id b1 is already in use"\)\)' out/proto-break.log
+expect_rx "break-needs-filter" '\(refused parse [0-9]+ \(verb break\) \(detail "a break needs a relation, a rule, or a position to narrow it"\)\)' out/proto-break.log
+expect_rx "break-needs-id"    '\(refused parse [0-9]+ \(verb break\) \(detail "requires \(id .*b1.*\)"\)\)' out/proto-break.log
+expect_rx "break-position-rule" '\(refused parse [0-9]+ \(verb break\) \(detail "a body position belongs to a rule; give \(rule N\) too"\)\)' out/proto-break.log
+expect    "break-rule-position" '(break-added (id "b4") (breaks 2))' out/proto-break.log
+expect    "breaks-listed"     '(break (id "b1") (relation "edge") (rule #f) (position #f) (pattern "") (hits 0))' out/proto-break.log
+expect    "breaks-end"        '(breaks-end 2)' out/proto-break.log
+expect_rx "unbreak-unknown"   '\(refused break-binding [0-9]+ \(verb unbreak\) \(detail "no break with id b9"\)\)' out/proto-break.log
+expect    "break-removed"     '(break-removed (id "b1") (breaks 1))' out/proto-break.log
+
 # --- 3a. N3-A transaction + N3-B durable boundary history -------------------
 # Prepare eagerly constructs an empty slot but keeps both its VersionKey and
 # latest binding private. Ordinary catalog access is refused under the lease;

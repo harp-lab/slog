@@ -688,7 +688,19 @@ watch ?(?count (path X _))           client-side: re-run query at barriers,
 
 Notification watches print dim event lines above the prompt as runs progress
 (the daemon's slice cadence makes this natural); breaking watches drop into
-paused mode. `watches` lists them with hit counts; watches follow a QName
+paused mode. *Shipped (T5 slice (d3), 2026-08-02):* `break REL`, `break rN`, `break rN@k`,
+and `break REL when (REL 99 _)`, with `breaks` and `unbreak bN`. This is the
+entry path stepping lacked — a step needs an existing park, so before (d3)
+every port needed a level-1 watch to trip the gate first. A break is a
+standing arm where a step is one-shot: it produces the same stop record (so
+`frames`, `why` and `step` work there unchanged), goes quiet until the resume
+instead of disarming, and re-arms for the next hit. A relation break pins
+that relation's writer strata to the interpreter and says so, because a
+native stratum has no ports. §9.1's `when` lands as a head PATTERN rather
+than a binding predicate: conditions over `X` need the source variable names
+that are still blocked inside the KernelPlanKey.
+
+`watches` lists them with hit counts; watches follow a QName
 across successor versions by client-side re-resolution (repl.md §6), shown
 explicitly in the listing so nobody is surprised.
 
@@ -757,6 +769,18 @@ browsing *is* tree browsing. `whynot <fact>` renders the failure frontier the
 same way, with each frontier line offering a chase (§4's transcript). Both
 verbs work at any boundary and in paused mode; both echo their budgets so a
 deeper look is one recall-and-edit away.
+
+*Shipped (T5 slice (d2), 2026-08-02):* `whynot (path 1 5)` — per rule that
+can write the relation, the first body position with nothing to match, and
+how many bindings reached it. The frontier is a plan-directed probe over
+COMMITTED state rather than a captured iteration (t5-contract §4(d2) records
+the deviation): the canonical plan the client already reads for `code` is the
+rule set, so the target unifies with each head, the atoms rebuild in plan
+order, and prefixes probe through the ordinary `?count` spine. A fact that is
+present is answered as present with a pointer to `why`; a head that cannot
+unify never probes; a computed position ends that rule's walk and says so.
+Chasing a frontier line is the next `whynot` by hand — the card action and
+the recursive memoized version stay later layers.
 
 *Shipped (T5 slice (d1), 2026-08-01):* `why`, over a run-scoped journal the
 interpreter fills at its `emit` port. Capture is opt-in per watch — `watch

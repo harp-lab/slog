@@ -1602,6 +1602,48 @@ freeze/import with image-based compiler goldens and a first Slog-written
 lint, **T3b** full tier policy (promotion budgets, profile sidecars, core
 arbiter).
 
+**Checkpoint (2026-08-02; T5 slices (d3)+(d2) — the pre-run entry and the
+failure frontier).**  Two slices, opposite in shape: one closes a hole the
+arc had left open, the other answers the debugger's other half without
+touching the daemon at all.
+
+**(d3) `break`** is the entry path stepping lacked.  A step needs an
+existing park, so before this every port (c3) built required a level-1
+watch to trip the gate first -- you had to know which relation would move
+before you could watch anything move.  A break is a STANDING arm where a
+step is one-shot: it materializes the same `StepStop` (so `frames`, `why`
+and `step` at the stop need no new machinery), and instead of disarming it
+goes QUIET until the resume clears the stop, which is what lets it fire
+again.  Three filters over state the earlier slices already produce: a head
+relation matched at the emit port through (d1)'s `ProofSchema` names, a
+rule matched at the `fire` port, and a body position matched at the probe
+port whose cursor slot is that position.  repl-ux §9.1's `when` lands as a
+head PATTERN, not a binding predicate -- conditions over `X` need the
+source variable names still blocked inside the KernelPlanKey.  A relation
+break pins that relation's writer strata to the interpreter and says so: a
+native stratum has no ports to stop at.  A session with a break armed holds
+its commands on the (c2) thread exactly as a level-1 watch does.
+
+**(d2) `whynot`** deviates from execution-tiers §7.5 deliberately, and the
+contract records why: the frontier is a PLAN-DIRECTED PROBE over committed
+state rather than a captured iteration.  §7.5's scope needs the target
+known while the read runs -- but "why is this not here?" is asked
+afterwards, usually with nothing armed.  The canonical `.plan` the client
+already reads for `code` IS the rule set, so the probe unifies the target
+with each head that can produce its relation, rebuilds that rule's atoms in
+plan order (inverting each ordering exactly as (d1)'s capture does),
+and probes prefixes through the ordinary `?count` spine until one is empty.
+Over reach.slog, `whynot (path 1 5)` answers: the base rule dies at
+`(edge 1 5)`, and the recursive rule gets three ways through `(path 1 V)`
+before dying at `(edge V 5)`.  Zero daemon changes.  Honest edges are
+printed, not smoothed: the question's premise is checked first (a present
+fact is answered as present, pointing at `why`), a head that cannot unify
+never probes, a computed position ends that rule's walk, and delta views
+probe as full views because the question is about the state that exists
+now.  Gates for both: protocol 170, REPL 234, pause 18, joint 21, unit 406,
+interp, Rust 29+44+3, session 782/782.  Remaining in the arc: (d4) struct
+and lattice settles, (d5) hygiene + exit audit.
+
 **Checkpoint (2026-08-01; T5 slice (d1) — provenance capture and `why`).**
 The last slice of the debugger arc opens with its proof surface, and the
 mechanism was again already there: the interpreter's `emit` port and

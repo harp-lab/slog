@@ -277,12 +277,79 @@ it.
       unrecorded fact, a variable refused, and both silences), pause 18,
       joint 21, unit 406, interp, Rust 29+44+3.  Pinned by ASSERTION like
       the stepping battery: a proof cites content-addressed rule positions.
-  - **(d2) `whynot`.**  The first-iteration failure frontier of §7.5,
-    over the same captured read.
-  - **(d3) `break`.**  repl-ux §9.1's `break r17[@k][when ...]`: stepping
-    ships an entry path only from a gate park, so a rule-position
-    breakpoint armed BEFORE a run is what makes the ports reachable
-    without a relation watch to trip first.
+  - **(d3) `break` — the pre-run entry path.**  *(Shipped 2026-08-02.)*
+    Stepping ships an entry
+    only from a gate park, so until a rule breakpoint can be armed BEFORE
+    a run, every port (c3) built needs a relation watch to trip the gate
+    first.  A break is a STANDING arm where a step is one-shot: it
+    materializes the same `StepStop` (so `frames`, `why` and `step` at the
+    stop need no new machinery), suppresses itself until the resume rather
+    than disarming, and re-arms for the next hit.  Three filters, each
+    reading state the earlier slices already produce: a HEAD RELATION
+    (`break path`, matched at the emit port through (d1)'s `ProofSchema`
+    head names — and the client pins that relation's writer strata to the
+    interpreter exactly as a level-1 watch does, so the ports exist),
+    a RULE (`break r3`, matched at the `fire` port -- an instantiation is
+    "the rule fired"), and a BODY POSITION (`break r3@1`, matched at the
+    probe port whose cursor slot is 1; the sink reads the slot from
+    `ops[op_index].cursor`, and slots are body positions in plan order).
+    repl-ux §9.1's `when` clause lands as a HEAD PATTERN
+    (`break path when (path 99 _)`) rather than a binding predicate:
+    conditions over `X` need source variable names, and those are the
+    rule-meta item inside the KernelPlanKey that also blocks frames --
+    a pattern says the same thing about the fact being produced without
+    inventing a second name table.  Monotone-only, enforced at the plan
+    like (d1)'s capture.  A session with a break armed holds its commands
+    on the (c2) thread exactly as a level-1 watch does; without that the
+    pause hook drives past the stop and nobody is sitting at it.
+  - **(d2) `whynot` — the failure frontier.**  *(Shipped 2026-08-02.)*
+    DEVIATION FROM §7.5,
+    deliberate and recorded here: the frontier is computed by a
+    PLAN-DIRECTED PROBE over committed state at the current boundary, not
+    by recording misses during a captured iteration.  §7.5's scope needs
+    the target known while the read runs, which means either replaying
+    every read speculatively or asking before the fact you are curious
+    about exists -- and the operator's question ("why is this not here?")
+    is asked afterwards, usually with nothing armed.  The probe answers it
+    with no daemon change at all: the canonical `.plan` the client already
+    reads for `code` IS the rule set (`rule-def` with a `driver`, a `body`
+    of `join`/`exists`/`absent`/guards, and an `emit` head, every value a
+    register or a constant slot), so `whynot FACT` unifies the target with
+    each head that can produce its relation, walks that rule's atoms in
+    plan order substituting bound registers, and probes prefixes through
+    the ordinary `?count` spine until one is empty.  The report is the
+    frontier: the first unsatisfiable atom, with the count of candidate
+    bindings that reached it.  Honest edges, each stated in the output
+    rather than papered over: a head shape that cannot unify with the
+    target is reported as such (no probe run); an `absent` atom probes as
+    a negated atom; a computed position (`let`/`letp`/`cjoin`) ENDS the
+    analysis for that rule, because a prefix past it is not expressible as
+    a query; delta views (`join-old`/`join-new`) probe as full views,
+    since the question is about the state that exists now.  Chasing a
+    frontier line (why the row it wanted is itself missing) is the next
+    `whynot`, by hand in (d2) and a card action later -- the recursive
+    memoized version stays execution-tiers §11's later layer.
+    - AS SHIPPED: the probe checks the QUESTION'S PREMISE first -- a fact
+      that is present is answered as present, with a pointer to `why` --
+      and one representative variant per rule is walked, since the delta
+      variants of a rule share its atom set and differ only in which
+      position drives.  `eq` between two registers is realized by aliasing
+      before any text is built rather than as a guard -- atoms, guards and
+      the unified environment are all rewritten through the alias map, so
+      two registers a rule equates become ONE query variable instead of an
+      independent join that would answer optimistically; `neq` and
+      spellable comparisons ride the final prefix.  Rendering names the rule, its
+      source position and its variant tag, then each atom with the count
+      that reached it.
+    - Exit (met, both slices): protocol 170 (break's shape, duplicate id,
+      filterless arm, a position without a rule, the listing round trip),
+      REPL 234 (a break armed with nothing parked stops the very next
+      command at the emit port, frames/queries work there, the hit is
+      counted, the break survives it, a pattern narrows it, `unbreak` at
+      the stop is admitted; and whynot's frontier over reach.slog -- three
+      ways then a dead edge, both rules dying at position one, a present
+      fact, an unwritten relation, a variable refused), pause 18, joint 21,
+      unit 406, interp, Rust 29+44+3, session 782/782.
   - **(d4) Non-plain settles.**  Struct settle (M5 intern-identity/
     membership split), lattice settle (M6L contributor-reduce); until then
     a level-1 watch on such a relation keeps level-0 semantics, and says

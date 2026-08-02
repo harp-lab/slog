@@ -1456,6 +1456,80 @@ static void emit_step_frames(slog::Daemon* d)
     d->emit("(frames-end " + std::to_string(level) + ")");
 }
 
+// T5 slices (d1)/(d3): one row vocabulary for the debugger verbs -- the
+// QUERY payload's literal kinds plus `(word N)` for a value the client
+// already holds, plus `_` where a pattern admits wildcards.  A literal the
+// interner has never seen resolves false: it cannot appear in any fact, and
+// that is an answer, not a parse error.
+static bool parse_row_terms(slog::Daemon* d, const char* verb,
+                            const slog::sexp::SExp& field, bool wildcards,
+                            std::vector<u64>& row, std::vector<bool>& wild)
+{
+    const auto bad = [&](const char* detail) {
+        refuse(d, "parse", std::string("(verb ") + verb + ") (detail "
+               + slog::protocol::quoteString(detail) + ")");
+        return false;
+    };
+    for (size_t j = 1; j < field.children.size(); ++j)
+    {
+        const slog::sexp::SExp& term = field.children[j];
+        if (wildcards && term.kind == slog::sexp::SExp::K::atom
+            && term.text == "_")
+        {
+            row.push_back(0);
+            wild.push_back(true);
+            continue;
+        }
+        if (term.kind != slog::sexp::SExp::K::list
+            || term.children.size() != 2
+            || term.children[0].kind != slog::sexp::SExp::K::atom)
+            return bad(wildcards
+                         ? "terms are (integer|real|string \"text\"), "
+                           "(word N), or _"
+                         : "terms are (integer|real|string \"text\") "
+                           "or (word N)");
+        const std::string& kind = term.children[0].text;
+        u64 word = 0;
+        if (kind == "word")
+        {
+            if (!parse_u64_atom(term.children[1], word))
+                return bad("word takes an encoded value");
+            row.push_back(word);
+            wild.push_back(false);
+            continue;
+        }
+        slog::query::Literal literal;
+        if (kind == "integer") literal.kind = slog::query::LiteralK::integer;
+        else if (kind == "real") literal.kind = slog::query::LiteralK::real;
+        else if (kind == "string") literal.kind = slog::query::LiteralK::string;
+        else return bad("unknown row term kind");
+        literal.text = term.children[1].text;
+        try
+        {
+            if (!slog::query::resolve_literal(*d->db(), literal, word))
+            {
+                refuse(d, "value-lookup",
+                       std::string("(verb ") + verb + ") (detail "
+                       + slog::protocol::quoteString(
+                           "no value in this evaluation matches "
+                           + literal.text)
+                       + ")");
+                return false;
+            }
+        }
+        catch (const slog::query::Error& exception)
+        {
+            refuse(d, slog::query::error_class(exception.kind()),
+                   std::string("(verb ") + verb + ") (detail "
+                   + slog::protocol::quoteString(exception.what()) + ")");
+            return false;
+        }
+        row.push_back(word);
+        wild.push_back(false);
+    }
+    return true;
+}
+
 // T5 slice (d1): the proof tree (contract §4(d1), execution-tiers §7.4).
 // One `(proof-node ...)` record per node, parented by id so the client
 // renders a tree without a second grammar, then a sentinel that ECHOES the
@@ -1768,7 +1842,11 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
     // bound keys are COMMITTED truth (the private boundary replaces the
     // catalog only at commit).  Every other ordinary command stays
     // refused until commit/abort, exactly as before.
-    const bool watch_verb = verb == "watch" || verb == "unwatch";
+    // T5 slice (d3): breaks are session debugging state exactly as watches
+    // are -- never saved, never hashed, and armable while a run of theirs
+    // is held mid-event.
+    const bool watch_verb = verb == "watch" || verb == "unwatch"
+        || verb == "break" || verb == "unbreak" || verb == "breaks";
     // T5 slice (c): `replay` is a debugger continuation over a PARKED epoch,
     // so the lease admits it whenever the run is suspended -- including at
     // parks it will refuse, because `level-1-unwatchable` is the honest
@@ -1928,6 +2006,167 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
         return;
     }
 
+    // T5 slice (d3): standing breakpoints (repl-ux §9.1, contract §4(d3)).
+    //
+    //   (break (id "b1") [(relation "R")] [(rule N)] [(position K)]
+    //                    [(pattern TERM ...)])     TERM ::= word | _
+    //   (unbreak (id "b1"))
+    //   (breaks)
+    //
+    // Unlike `step`, arming needs no park -- that is the whole point: this
+    // is how the ports become reachable before a run rather than only from
+    // a gate the operator had to trip first.
+    if (verb == "break")
+    {
+        slog::Database::BreakSpec spec;
+        bool have_id = false;
+        for (size_t i = 1; i < form.children.size(); ++i)
+        {
+            const slog::sexp::SExp& field = form.children[i];
+            if (field.kind != slog::sexp::SExp::K::list
+                || field.children.empty()
+                || field.children[0].kind != slog::sexp::SExp::K::atom)
+            {
+                refuse(d, "parse", "(verb break) (detail \"expected (break "
+                       "(id \\\"b1\\\") [(relation \\\"R\\\")] [(rule N)] "
+                       "[(position K)] [(pattern TERM ...)])\")");
+                return;
+            }
+            const std::string& tag = field.children[0].text;
+            u64 value = 0;
+            if (tag == "id" && field.children.size() == 2
+                && field.children[1].kind == slog::sexp::SExp::K::string)
+            {
+                spec.id = field.children[1].text;
+                have_id = !spec.id.empty();
+            }
+            else if (tag == "relation" && field.children.size() == 2
+                     && field.children[1].kind == slog::sexp::SExp::K::string)
+                spec.relation = field.children[1].text;
+            else if (tag == "rule" && field.children.size() == 2
+                     && parse_u64_atom(field.children[1], value)
+                     && value < UINT32_MAX)
+                spec.rule_id = static_cast<u32>(value);
+            else if (tag == "position" && field.children.size() == 2
+                     && parse_u64_atom(field.children[1], value)
+                     && value < 0xffff)
+                spec.position = static_cast<u16>(value);
+            else if (tag == "pattern")
+            {
+                if (!parse_row_terms(d, "break", field, true, spec.pattern,
+                                     spec.wild))
+                    return;
+                if (spec.pattern.empty())
+                {
+                    refuse(d, "parse", "(verb break) (detail \"an empty "
+                           "pattern matches nothing; omit the field\")");
+                    return;
+                }
+            }
+            else
+            {
+                refuse(d, "parse",
+                       "(verb break) (detail \"unknown or malformed field "
+                       + tag + "\")");
+                return;
+            }
+        }
+        if (!have_id)
+        {
+            refuse(d, "parse",
+                   "(verb break) (detail \"requires (id \\\"b1\\\")\")");
+            return;
+        }
+        if (spec.relation.empty() && spec.rule_id == UINT32_MAX
+            && spec.position == 0xffff && spec.pattern.empty())
+        {
+            // "stop at every port of every rule" is `step`, not a break.
+            refuse(d, "parse", "(verb break) (detail \"a break needs a "
+                   "relation, a rule, or a position to narrow it\")");
+            return;
+        }
+        if (spec.position != 0xffff && spec.rule_id == UINT32_MAX)
+        {
+            // A body position without a rule is a different position in
+            // every rule -- an accident, not an intent.
+            refuse(d, "parse", "(verb break) (detail \"a body position "
+                   "belongs to a rule; give (rule N) too\")");
+            return;
+        }
+        const std::string id = spec.id;
+        if (!d->db()->addBreak(std::move(spec)))
+        {
+            refuse(d, "break-binding", "(verb break) (detail "
+                   + slog::protocol::quoteString("break id " + id
+                                                 + " is already in use")
+                   + ")");
+            return;
+        }
+        d->emit("(break-added (id " + slog::protocol::quoteString(id)
+                + ") (breaks "
+                + std::to_string(d->db()->breakSpecs().size()) + "))");
+        return;
+    }
+
+    if (verb == "unbreak")
+    {
+        std::string id;
+        if (argc != 1 || form.children[1].kind != slog::sexp::SExp::K::list
+            || form.children[1].children.size() != 2
+            || form.children[1].children[0].text != "id"
+            || form.children[1].children[1].kind
+                 != slog::sexp::SExp::K::string)
+        {
+            refuse(d, "parse",
+                   "(verb unbreak) (detail \"expected (unbreak (id "
+                   "\\\"b1\\\"))\")");
+            return;
+        }
+        id = form.children[1].children[1].text;
+        if (!d->db()->removeBreak(id))
+        {
+            refuse(d, "break-binding", "(verb unbreak) (detail "
+                   + slog::protocol::quoteString("no break with id " + id)
+                   + ")");
+            return;
+        }
+        d->emit("(break-removed (id " + slog::protocol::quoteString(id)
+                + ") (breaks "
+                + std::to_string(d->db()->breakSpecs().size()) + "))");
+        return;
+    }
+
+    if (verb == "breaks")
+    {
+        if (argc != 0)
+        {
+            refuse(d, "parse", "(verb breaks) (detail \"breaks takes no "
+                   "arguments\")");
+            return;
+        }
+        for (const slog::Database::BreakSpec& b : d->db()->breakSpecs())
+        {
+            std::string pattern;
+            for (size_t i = 0; i < b.pattern.size(); ++i)
+                pattern += (i == 0 ? "" : " ")
+                  + (b.wild[i] ? std::string("_")
+                               : d->db()->writeValCSV(b.pattern[i]));
+            d->emit("(break (id " + slog::protocol::quoteString(b.id)
+                    + ") (relation " + slog::protocol::quoteString(b.relation)
+                    + ") (rule "
+                    + (b.rule_id == UINT32_MAX ? "#f"
+                                               : std::to_string(b.rule_id))
+                    + ") (position "
+                    + (b.position == 0xffff ? "#f"
+                                            : std::to_string(b.position))
+                    + ") (pattern " + slog::protocol::quoteString(pattern)
+                    + ") (hits " + std::to_string(b.hits) + "))");
+        }
+        d->emit("(breaks-end "
+                + std::to_string(d->db()->breakSpecs().size()) + ")");
+        return;
+    }
+
     // T5 slice (d1): `why` (repl-ux §9.4, contract §4(d1)).
     //
     //   (why [(depth N)])                     the gate's accepted candidates
@@ -1986,73 +2225,9 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
             else if (tag == "row")
             {
                 have_row = true;
-                for (size_t j = 1; j < field.children.size(); ++j)
-                {
-                    const slog::sexp::SExp& term = field.children[j];
-                    if (term.kind != slog::sexp::SExp::K::list
-                        || term.children.size() != 2
-                        || term.children[0].kind != slog::sexp::SExp::K::atom)
-                    {
-                        refuse(d, "parse", "(verb why) (detail \"row terms "
-                               "are (integer|real|string \\\"text\\\") "
-                               "or (word N)\")");
-                        return;
-                    }
-                    const std::string& kind = term.children[0].text;
-                    if (kind == "word")
-                    {
-                        u64 word = 0;
-                        if (!parse_u64_atom(term.children[1], word))
-                        {
-                            refuse(d, "parse", "(verb why) (detail \"word "
-                                   "takes an encoded value\")");
-                            return;
-                        }
-                        row.push_back(word);
-                        continue;
-                    }
-                    slog::query::Literal literal;
-                    if (kind == "integer") literal.kind
-                        = slog::query::LiteralK::integer;
-                    else if (kind == "real") literal.kind
-                        = slog::query::LiteralK::real;
-                    else if (kind == "string") literal.kind
-                        = slog::query::LiteralK::string;
-                    else
-                    {
-                        refuse(d, "parse", "(verb why) (detail \"unknown row "
-                               "term kind\")");
-                        return;
-                    }
-                    literal.text = term.children[1].text;
-                    u64 word = 0;
-                    try
-                    {
-                        // Probe-only, exactly as R2's `uses` resolves: a value
-                        // this evaluation never interned cannot appear in any
-                        // fact, so there is nothing to explain.
-                        if (!slog::query::resolve_literal(*d->db(), literal,
-                                                          word))
-                        {
-                            refuse(d, "value-lookup",
-                                   "(verb why) (detail "
-                                   + slog::protocol::quoteString(
-                                       "no value in this evaluation matches "
-                                       + literal.text)
-                                   + ")");
-                            return;
-                        }
-                    }
-                    catch (const slog::query::Error& exception)
-                    {
-                        refuse(d, slog::query::error_class(exception.kind()),
-                               "(verb why) (detail "
-                               + slog::protocol::quoteString(exception.what())
-                               + ")");
-                        return;
-                    }
-                    row.push_back(word);
-                }
+                std::vector<bool> wild;
+                if (!parse_row_terms(d, "why", field, false, row, wild))
+                    return;
             }
             else
             {

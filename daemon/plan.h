@@ -1413,6 +1413,9 @@ struct ProofSchema
   std::vector<std::vector<Row>> levels;  // per cursor slot, in premise order
   std::vector<Row> heads;                // per bound sink port
   bool capturable = false;               // any head worth journalling
+  // §0.1 monotone-only, decided at the plan: a counted or maintenance rule
+  // observes nothing at level 1 -- no capture (d1), no break (d3).
+  bool monotone = false;
 
   static std::vector<u64> nominalize(const std::vector<u16>& order,
                                      const u64* row, size_t n)
@@ -1441,6 +1444,7 @@ struct StepSink final : public DebugSink
   const std::string* rule_tag;
   const ProofSchema* schema = nullptr;
   bool capture = false;
+  bool breaking = false;
 
   static u64 mask_for(Database::StepGrain grain)
   {
@@ -1492,9 +1496,56 @@ struct StepSink final : public DebugSink
   // armed still gets mask 0 and the fast loop.
   void refresh()
   {
-    capture = db->provenanceArmed() && schema != nullptr && schema->capturable;
+    const bool monotone = schema != nullptr && schema->monotone;
+    capture = db->provenanceArmed() && monotone && schema->capturable;
+    breaking = monotone && db->breaksArmed();
     mask = mask_for(db->stepGrain())
-         | (capture ? event_bit(EventK::emit) : u64{0});
+         | (capture ? event_bit(EventK::emit) : u64{0})
+         | (breaking ? db->breakEventMask() : u64{0});
+  }
+
+  // Database cannot include interp.h (the dependency runs the other way), so
+  // it composes its break mask from EventK's declaration order.  These pin
+  // that agreement at compile time.
+  static_assert(static_cast<u8>(EventK::probe_match) == 1);
+  static_assert(static_cast<u8>(EventK::instantiation) == 6);
+  static_assert(static_cast<u8>(EventK::emit) == 7);
+
+  // T5 slice (d3): does a standing break want THIS transition?  Returns its
+  // id, or empty for none.  A break narrows by any combination of head
+  // relation, rule and body position, and each filter is tested against the
+  // state that port actually carries.
+  std::string break_here(const Event& e, const DebugView& view) const
+  {
+    const std::string* head = nullptr;
+    if (e.kind == EventK::emit && e.port < schema->heads.size())
+      head = &schema->heads[e.port].relation;
+    const u16 slot = e.op_index < view.ops.size()
+      ? view.ops[e.op_index].cursor : u16{0xffff};
+    for (const Database::BreakSpec& b : db->breakSpecs())
+    {
+      if (b.rule_id != UINT32_MAX && e.rule_id != b.rule_id) continue;
+      if (b.position != 0xffff)
+      {
+        if (e.kind != EventK::probe_match || slot != b.position) continue;
+      }
+      else if (!b.relation.empty() || !b.pattern.empty())
+      {
+        if (e.kind != EventK::emit || head == nullptr) continue;
+        if (!b.relation.empty() && *head != b.relation) continue;
+        if (!b.pattern.empty())
+        {
+          if (e.tuple.size() != b.pattern.size()) continue;
+          bool same = true;
+          for (size_t i = 0; i < b.pattern.size() && same; ++i)
+            same = b.wild[i] || e.tuple[static_cast<u16>(i)] == b.pattern[i];
+          if (!same) continue;
+        }
+      }
+      else if (e.kind != EventK::instantiation) continue;
+      return b.id;
+    }
+    return std::string();
   }
 
   // One captured derivation: the head this emit produced, the driving delta
@@ -1546,13 +1597,23 @@ struct StepSink final : public DebugSink
   {
     // Capture is an observation, never a stop, and it is deliberately
     // independent of the step grain -- the machine holds exactly one sink,
-    // so the two arms share it and the grain mask alone decides a stop.
+    // so the arms share it and only a grain or a break decides a stop.
     if (capture && e.kind == EventK::emit) record(e, view);
-    if ((mask_for(db->stepGrain()) & event_bit(e.kind)) == 0)
-      return DebugAction::continue_;
-    const u32 filter = db->stepRuleFilter();
-    if (filter != UINT32_MAX && e.rule_id != filter)
-      return DebugAction::continue_;
+    const bool stepping =
+      (mask_for(db->stepGrain()) & event_bit(e.kind)) != 0
+      && (db->stepRuleFilter() == UINT32_MAX
+          || e.rule_id == db->stepRuleFilter());
+    // A step outranks a break at the same transition: the operator asked
+    // for this position explicitly, and the break is still armed after.
+    std::string broke;
+    if (!stepping)
+    {
+      if (!breaking || db->breakSuppressed()) return DebugAction::continue_;
+      if ((db->breakEventMask() & event_bit(e.kind)) == 0)
+        return DebugAction::continue_;
+      broke = break_here(e, view);
+      if (broke.empty()) return DebugAction::continue_;
+    }
     // One stop per arming, whichever worker reaches a matching port first.
     if (!db->claimStepStop()) return DebugAction::continue_;
     Database::StepStop& stop = db->stepStopSlot();
@@ -1567,10 +1628,20 @@ struct StepSink final : public DebugSink
     const Proof proof = view.proof();
     stop.driver = proof.driver;
     stop.premises = proof.premises;
-    // Disarm here, not at resume: the machine returns breakpoint with the
-    // transition already committed, and the parked continuation must run
-    // on afterwards without stopping at every port.
-    db->stepDisarm();
+    stop.break_id = broke;
+    if (stepping)
+      // Disarm here, not at resume: the machine returns breakpoint with the
+      // transition already committed, and the parked continuation must run
+      // on afterwards without stopping at every port.
+      db->stepDisarm();
+    else
+    {
+      // A break must survive its own hit, so it goes QUIET instead: every
+      // other worker runs on to the read barrier, and the resume (which
+      // clears the stop) re-opens it for the next one.
+      db->countBreakHit(broke);
+      db->suppressBreaks();
+    }
     return DebugAction::pause;
   }
 };
@@ -2115,6 +2186,7 @@ public:
     // signed, kind-tagged contribution for a fold, so journalling it as a
     // derivation would call a deletion's bookkeeping a proof.
     if (sealed.counted || sealed.maint) return;
+    proof_schema.monotone = true;
     const auto slot_name = [&](u16 slot) -> std::string {
       return slot < frame.size() && frame[slot] != nullptr
         ? frame[slot]->getName() : std::string();
