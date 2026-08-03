@@ -1458,8 +1458,13 @@
 ;; the arming the capture sink reads is the DAEMON's, so a watch that
 ;; forgets it at a successor key stops capturing exactly when the run that
 ;; matters begins (the same lesson as the level field in slice (b)).
+;; Returns #t when the daemon reported the binding as settleable at level 1
+;; -- T5 (d4)'s registration honesty: every storage kind settles now, so a
+;; #f means the relation simply has no full index yet and the gate would
+;; never engage.  Level-0 registrations answer #t (nothing to settle).
 (define (register-daemon-watch! s id key #:level [level 0]
                                 #:provenance [provenance #f])
+  (define settleable? (box #t))
   (session-command-stream!
    s
    (cond
@@ -1467,7 +1472,11 @@
       `(watch (id ,id) (version-key ,key) (level 1) (provenance #t))]
      [(= level 1) `(watch (id ,id) (version-key ,key) (level 1))]
      [else `(watch (id ,id) (version-key ,key))])
-   (lambda (_line) #t)))
+   (lambda (line)
+     (when (and (string? line) (regexp-match? #px"\\(settleable #f\\)" line))
+       (set-box! settleable? #f))
+     #t))
+  (unbox settleable?))
 
 (define (silent-unwatch! s id)
   (with-handlers ([exn:fail? void])
@@ -1526,7 +1535,8 @@
      (define key (relation-info-version-key relation))
      (unless (string? key)
        (error 'watch "~a has no VersionKey yet; run a program first" text))
-     (register-daemon-watch! s id key #:level level #:provenance provenance)
+     (define settleable?
+       (register-daemon-watch! s id key #:level level #:provenance provenance))
      (define flipped
        (if (= level 1)
            (session-set-scc-policy! s (string->symbol text) 'interpreted)
@@ -1539,6 +1549,12 @@
        (list (format "~a @ ~a — hits report at coherent barriers~a~a"
                      text key (if (= level 1) " · level 1" "")
                      (if provenance " · why" "")))
+       (if settleable?
+           '()
+           (list (string-append
+                  "note: the pre-commit gate cannot settle this relation "
+                  "yet — it has no full index, so level-1 hits report at "
+                  "barriers like level 0 until one exists")))
        (if (null? flipped)
            '()
            (list (format "writer strat~a ~a pinned to the interpreter for future re-entries"
@@ -4981,4 +4997,65 @@
       (check-regexp-match #px"no resident rule writes"
                           (text (run! "whynot (nosuch 1 2)")))
       (check-exn #px"GROUND fact" (lambda () (run! "whynot (path 1 X)")))
-      (void (run! ":quit")))))
+      (void (run! ":quit"))))
+
+  ;; T5 slice (d4): the non-plain settles.  The gate's question is "does this
+  ;; change genuinely appear?", and each storage kind answers it by its OWN
+  ;; identity: a struct head by CONTENT (its id is not minted until intern),
+  ;; a lattice key by whether the merge would move the payload.  Both cases
+  ;; are pinned in BOTH directions, because a settle that only ever says yes
+  ;; is not a settle -- it is a park on every write.
+  (let ([settle-environment (environment-variables-copy test-environment)])
+    (environment-variables-set! settle-environment #"SLOG_OPT" #"interp")
+    (environment-variables-set! settle-environment #"SLOG_THREADS" #"1")
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables settle-environment])
+      ;; --- struct: content identity, not row novelty ---------------------
+      (define state (make-server-state))
+      (define (run! line) (dispatch-command state line))
+      (define (text result) (string-join (hash-ref result 'lines) "\n"))
+      (define parks 0)
+      (define (drive! line)
+        (parameterize ([session-pause-hook
+                        (lambda (_s l)
+                          (when (and (regexp-match? #px"\\(phase read\\)" l)
+                                     (regexp-match? #px"\\(cause \\(watch " l))
+                            (set! parks (add1 parks)))
+                          'continue)])
+          (run! line)))
+      (void (run! "run tests/structs.slog"))
+      (void (run! "watch pair level 1"))
+      ;; re-constructing content the heap already holds resolves to the
+      ;; existing instance: nothing appears, so the gate must NOT engage
+      (define same (drive! "rule (out (pair 1 2)) <-- (in 1 2)"))
+      (check-equal? parks 0)
+      (check-regexp-match #px"relation sizes: unchanged" (text same))
+      ;; new content mints a new id: that IS the change
+      (define fresh (drive! "rule (out (pair 7 8)) <-- (in 1 2)"))
+      (check-equal? parks 1)
+      (check-regexp-match #px"pair \\+1" (text fresh))
+      (void (run! ":quit"))
+      ;; --- lattice: the payload moves, or it does not --------------------
+      (define lat (make-server-state))
+      (define lat-parks 0)
+      (define (lat-drive! line)
+        (parameterize ([session-pause-hook
+                        (lambda (_s l)
+                          (when (and (regexp-match? #px"\\(phase read\\)" l)
+                                     (regexp-match? #px"\\(cause \\(watch " l))
+                            (set! lat-parks (add1 lat-parks)))
+                          'continue)])
+          (dispatch-command lat line)))
+      (void (dispatch-command lat "run tests/lat_run_base.slog"))
+      (void (dispatch-command lat "watch dist level 1"))
+      ;; a WORSE cost for a key that already has a better one is subsumed by
+      ;; the min-lattice merge: a new contribution row, but no change
+      (void (lat-drive! "rule (dist 1 2 99) <-- (edge 1 2 3)"))
+      (check-equal? lat-parks 0)
+      ;; a better one ascends the payload -- and note the relation's SIZE
+      ;; does not move, which is exactly why a lattice cannot settle by
+      ;; membership the way a plain table does
+      (define better (lat-drive! "rule (dist 1 2 1) <-- (edge 1 2 3)"))
+      (check-equal? lat-parks 1)
+      (check-regexp-match #px"relation sizes: unchanged" (text better))
+      (void (dispatch-command lat ":quit")))))

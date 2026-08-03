@@ -177,6 +177,60 @@ inline bool masterContainsRec(u16 arity, Index* bucket, const u64* key)
   }
 }
 
+// T5 slice (d4): the same dispatch for a PREFIX probe -- does any tuple of
+// this bucket match the first K columns of `key`?  The struct settle's whole
+// question: a mkstruct head stages content with a 0 id placeholder (the id
+// is minted in the intern phase), so "does this construction change
+// anything?" is "is this CONTENT already interned?", and the master ordering
+// puts content first exactly so that probe is a prefix (M5's
+// intern-identity split, m4s-contract's canonical struct master).
+template <u16 A>
+inline bool masterPrefixRec(u16 arity, u16 bound, Index* bucket,
+                            const u64* key)
+{
+  if constexpr (A == 0)
+  {
+    (void)arity; (void)bound; (void)bucket; (void)key;
+    return false;
+  }
+  else
+  {
+    if (arity != A) return masterPrefixRec<A - 1>(arity, bound, bucket, key);
+    typename BTreeIndex<A>::Key k{};
+    for (u16 c = 0; c < A; ++c) k[c] = c < bound ? key[c] : 0;
+    auto* tree = static_cast<BTreeIndex<A>*>(bucket);
+    auto it = tree->lower_bound(k);
+    if (it == tree->end()) return false;
+    const typename BTreeIndex<A>::Key& m = *it;
+    for (u16 c = 0; c < bound; ++c) if (m[c] != k[c]) return false;
+    return true;
+  }
+}
+
+// T5 slice (d4): and for a LATTICE, whose settle is not membership at all --
+// a contribution is a change iff merging it would move the resident payload
+// (M6L's contributor-reduce, previewed through BTreeMapIndex::wouldChange).
+// KA is the KEY width: a lattice of arity A has A-1 key columns and one
+// payload column, last in the master ordering.
+template <u16 KA>
+inline bool latticeWouldChangeRec(u16 keys, Index* bucket, const u64* key,
+                                  u64 value)
+{
+  if constexpr (KA == 0)
+  {
+    (void)keys; (void)bucket; (void)key; (void)value;
+    return false;
+  }
+  else
+  {
+    if (keys != KA)
+      return latticeWouldChangeRec<KA - 1>(keys, bucket, key, value);
+    typename BTreeMapIndex<KA>::Key k;
+    for (u16 c = 0; c < KA; ++c) k[c] = key[c];
+    return static_cast<BTreeMapIndex<KA>*>(bucket)->wouldChange(k, value);
+  }
+}
+
 class Relation
 {
 private:
@@ -343,10 +397,34 @@ public:
   // probe (hasLiveTuple's precedent) -- plain tables need not hold an
   // id-last "master" ordering at all.  A relation with no full index yet
   // cannot be probed; answer no rather than park on an unverifiable claim.
+  // T5 slice (d4) widens this to every storage kind, each settling by its
+  // OWN identity (contract §0.3): a plain table by master absence, a struct
+  // head by CONTENT (its id does not exist yet), a lattice key by whether
+  // the merge would move the payload.  A struct needs its id column, so
+  // arity >= 2; a lattice needs a key column beside the payload.
   bool level1Settleable()
   {
-    return struct_id == 0 && !isLattice() && arity > 0
-           && getAnyIndex() != nullptr;
+    return settleOrder() != nullptr;
+  }
+
+  // Which ordering the settle probes.  A plain table can use ANY full
+  // ordering (absence is absence).  The other two kinds cannot: a struct
+  // holds an id-first ordering BESIDE its content-first master, and only the
+  // master lets the content be a prefix; a lattice's master is the one
+  // ending in the payload column.  Picking `getAnyIndex()` for either would
+  // silently probe the wrong thing -- for a struct, the 0 id placeholder,
+  // which never matches, so every construction would look like a change.
+  const std::vector<u16>* settleOrder()
+  {
+    if (arity == 0) return nullptr;
+    if (struct_id == 0 && !isLattice()) return getAnyIndex();
+    if (arity < 2) return nullptr;
+    const u16 last = struct_id != 0 ? 0 : static_cast<u16>(arity - 1);
+    for (const auto& it : indices)
+      if (it.first.size() == arity && it.first.back() == last
+          && seeded_orderings.find(it.first) == seeded_orderings.end())
+        return &it.first;
+    return nullptr;
   }
   // T5 slice (d1): `accepted` (optional) collects the accepted rows in
   // NOMINAL order -- shard rows are staged nominally, the ordering is
@@ -356,7 +434,7 @@ public:
                             std::vector<std::vector<u64>>* accepted = nullptr,
                             size_t limit = 0)
   {
-    const std::vector<u16>* ordptr = getAnyIndex();
+    const std::vector<u16>* ordptr = settleOrder();
     if (ordptr == nullptr || ordptr->size() != arity) return false;
     const std::vector<u16>& ord = *ordptr;
     Index** buckets = getIndex(ord, false);
@@ -378,9 +456,29 @@ public:
             if (!same) continue;
           }
           for (u16 c = 0; c < arity; ++c) key[c] = b->data[j + ord[c]];
-          if (masterContainsRec<max_daemon_arity>(
-                arity, buckets[buckethash(key[0])], key))
-            continue;
+          // T5 slice (d4): three settles, one loop.  The rows are staged the
+          // same way in every case (nominal, `ord` applied here); what
+          // differs is the question each storage kind's identity asks.
+          bool changes = false;
+          if (struct_id != 0)
+            // The id column is a 0 placeholder until the intern phase, and
+            // the master ordering is content-first: a construction whose
+            // CONTENT is already interned resolves to the existing instance
+            // and changes nothing.
+            changes = !masterPrefixRec<max_daemon_arity>(
+                         arity, static_cast<u16>(arity - 1),
+                         buckets[buckethash(key[0])], key);
+          else if (isLattice())
+            // The payload is the ordering's last column; the rest is the
+            // key.  A contribution that the resident payload already
+            // subsumes is not a change, however new the row looks.
+            changes = latticeWouldChangeRec<max_daemon_arity>(
+                        static_cast<u16>(arity - 1),
+                        buckets[buckethash(key[0])], key, key[arity - 1]);
+          else
+            changes = !masterContainsRec<max_daemon_arity>(
+                         arity, buckets[buckethash(key[0])], key);
+          if (!changes) continue;
           if (accepted == nullptr) return true;
           found = true;
           if (accepted->size() < limit)

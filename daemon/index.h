@@ -169,6 +169,27 @@ public:
     return n;
   }
 
+  // T5 slice (d4): the SETTLE half of `merge` (t5-contract §0.3) -- would
+  // this contribution move the payload? -- with no mutation of the map.  The
+  // same clamp and the same join, but a LOOKUP where merge inserts: the
+  // pre-commit gate previews, and the intern task still owns the apply.
+  // (A LAT_EXTERN preview interns its merged collection in the arena exactly
+  // as the apply would; that is a content-addressed value allocation, not a
+  // relation change, and it is what makes the preview exact.)
+  bool wouldChange(const Key& k, u64 v)
+  {
+    slog::InternTable<slog::mpz_val>* mt = lat_arena ? lat_arena->mpzTable()
+                                                     : nullptr;
+    v = lat_clamp(lat_kind, lat_has_floor, lat_floor, lat_has_ceil, lat_ceil,
+                  v, mt);
+    auto it = tree.lower_bound(k);
+    if (it == tree.end() || !(it->first == k)) return true;  // a fresh key
+    const u64 n = (lat_kind == LAT_EXTERN)
+                ? lat_arena->merge_spec(it->second, v, lat_spec_tree)
+                : lat_join(lat_kind, it->second, v, mt);
+    return n != it->second;
+  }
+
   // ---- cold path (virtual; used by the daemon) ----
   bool empty() const override { return tree.empty(); }
   u64 size() const override { return tree.size(); }   // = number of keys

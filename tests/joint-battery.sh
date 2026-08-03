@@ -121,6 +121,25 @@ expect_re "s3-epoch-parked" '\(quiescence \(pauses [1-9][0-9]*\)\)' \
 expect "s3-barrier-admitted" '(barrier-query "6 rows match")' out/joint-s3.log
 expect "s3-settled-agrees" '(settled-query "6 rows match")' out/joint-s3.log
 
+# --- T5 slice (d5): the monotone-enforcement matrix -------------------------
+# The debugger arc's standing pin (t5-contract §0.1) crossed in one run: a
+# non-monotone epoch never gates, never breaks, captures nothing, and
+# refuses every level-1-only continuation by name -- while the SAME session
+# over a monotone epoch does all of it.
+timeout 900 racket tests/joint/t5-monotone-matrix.rkt > out/joint-t5.log 2>&1
+
+expect "t5-maint-no-gate"        "(matrix maint-gate-parks 0)"      out/joint-t5.log
+expect "t5-maint-level0-reports" "(matrix maint-watch-reported 1)"  out/joint-t5.log
+expect "t5-maint-no-break"       "(matrix maint-break-fired 0)"     out/joint-t5.log
+expect "t5-replay-refused"       "(matrix replay-refusal 1)"        out/joint-t5.log
+expect "t5-replay-names-flavor"  "(matrix replay-names-flavor 1)"   out/joint-t5.log
+expect "t5-refused-still-commits" "(matrix refused-change-committed 1)" out/joint-t5.log
+expect "t5-step-refused"         "(matrix step-refusal 1)"          out/joint-t5.log
+expect "t5-why-monotone-only"    "(matrix why-monotone-refusal 1)"  out/joint-t5.log
+expect "t5-monotone-stops"       "(matrix monotone-gate-or-break 1)" out/joint-t5.log
+expect "t5-monotone-commits"     "(matrix monotone-committed 1)"    out/joint-t5.log
+expect "t5-matrix-complete"      "(matrix-end)"                     out/joint-t5.log
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

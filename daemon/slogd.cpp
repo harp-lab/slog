@@ -2609,11 +2609,21 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
                        "watch id " + id + " is already in use") + ")");
             return;
         }
+        // T5 slice (d4): with every storage kind now settling by its own
+        // identity, the only relation the gate cannot preview is one with no
+        // full index yet.  Say so AT REGISTRATION rather than accepting the
+        // level and quietly never engaging -- the silent downgrade was the
+        // last of them.  Additive and negative-only, so a settleable level-1
+        // line stays byte-identical to the shipped one.
+        slog::Relation* bound = d->db()->watchTarget(version_key);
+        const bool settleable = level != 1 || (bound != nullptr
+                                               && bound->level1Settleable());
         d->emit("(watch-added (id " + slog::protocol::quoteString(id)
                 + ") (version-key " + slog::protocol::quoteString(version_key)
                 + ") (watches " + std::to_string(d->db()->watchCount()) + ")"
                 + (level == 1 ? " (level 1)" : "")
-                + (provenance ? " (provenance #t)" : "") + ")");
+                + (provenance ? " (provenance #t)" : "")
+                + (settleable ? "" : " (settleable #f)") + ")");
         return;
     }
 

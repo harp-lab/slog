@@ -350,13 +350,57 @@ it.
       ways then a dead edge, both rules dying at position one, a present
       fact, an unwritten relation, a variable refused), pause 18, joint 21,
       unit 406, interp, Rust 29+44+3, session 782/782.
-  - **(d4) Non-plain settles.**  Struct settle (M5 intern-identity/
-    membership split), lattice settle (M6L contributor-reduce); until then
-    a level-1 watch on such a relation keeps level-0 semantics, and says
-    so at registration rather than downgrading silently.
-  - **(d5) Hygiene + exit audit** (M4N slice-4 shape): full suite,
-    interp-union sweep, monotone-enforcement matrix vs the M4N/M7
-    exclusions.
+  - **(d4) Non-plain settles.**  *(Shipped 2026-08-02.)*  The gate's
+    question -- does this change genuinely appear? -- is the same for every
+    storage kind, but the IDENTITY that answers it is not, and §0.3's
+    settle/apply factoring is what makes each one a preview rather than a
+    second interner.  A STRUCT head stages content with a 0 id placeholder
+    (the id is minted in the intern phase), so its settle is M5's
+    intern-identity question asked of the content: the master ordering is
+    content-first precisely so that probe is a PREFIX, and a construction
+    whose content is already interned resolves to the existing instance and
+    changes nothing.  A LATTICE contribution settles through M6L's
+    contributor-reduce: `BTreeMapIndex::wouldChange` is `merge` with a
+    lookup where merge inserts -- same clamp, same join, no mutation -- so
+    a contribution the resident payload already subsumes is not a change,
+    however new the row looks.  (A LAT_EXTERN preview interns its merged
+    collection in the arena exactly as the apply would; that is a
+    content-addressed value allocation, not a relation change, and it is
+    what makes the preview exact.)
+    - THE BUG THIS SLICE ALMOST SHIPPED: `getAnyIndex()` is the right
+      ordering for a plain table (absence is absence) and the WRONG one for
+      the other two.  A struct carries an id-first ordering beside its
+      content-first master, and probing the id-first one reads the 0
+      placeholder, which never matches -- so every construction, new or
+      not, would have looked like a change.  `settleOrder()` now selects by
+      kind: the ordering ending in column 0 for a struct, the one ending in
+      the payload column for a lattice.  Caught by asserting the settle in
+      BOTH directions; a settle that only ever says yes is not a settle,
+      it is a park on every write.
+    - With every kind settling, the last silent downgrade goes too:
+      registration reports `(settleable #f)` when a level-1 binding has no
+      full index to preview against, so the operator learns it at the
+      prompt instead of wondering why the gate never engages.  An empty
+      declared table still settles -- it carries a full index from the
+      moment it exists -- so the field names a genuinely index-free
+      binding, the safety net rather than the norm.
+    - Not extended: (d1)'s CAPTURE still covers set and temp heads only.  A
+      struct candidate has no journal key until its id exists, and a
+      lattice contribution's key would be the pre-merge value rather than
+      the payload that lands, so `why` on such a candidate says it captured
+      nothing rather than keying on a fact that never appears.
+  - **(d5) Hygiene + exit audit** (M4N slice-4 shape).  *(Shipped
+    2026-08-02.)*  The MONOTONE-ENFORCEMENT MATRIX is the artifact:
+    `tests/joint/t5-monotone-matrix.rkt`, in the joint tier, crosses §0.1's
+    standing pin in one run instead of leaving it as five scattered
+    per-slice controls.  Over a counted maintenance epoch it asserts that
+    the gate never engages while the level-0 report still arrives, that
+    `replay` and `step` both refuse `level-1-unwatchable` naming the
+    epoch's own flavor, that a refused continuation still commits its
+    change, that capture stays empty and `why` says which silence that is,
+    and that a standing break never fires -- then, in the SAME session over
+    a monotone epoch, that every one of those does happen.  Plus the full
+    suite and the `SLOG_OPT=interp` union sweep.
 
 ## 5. Exclusions
 

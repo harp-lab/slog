@@ -91,8 +91,8 @@ expect_not "reserved-never-unknown" '(refused unknown-verb' out/proto-reserved.l
 # Ids belong to the client, so a duplicate is refused rather than rebound.
 # (Firing is behaviour over a running stratum and is gated in the session
 # battery, where a real program iterates.)
-W_DECL='(declare (qname "edge") (kind table) (arity 2) (type-key #f) (lat-spec #f) (shape "(declaration (qname \"edge\") table (fields int int))"))'
-W_PREPARE="(prepare-boundary (generation 0) (boundary \"w.b0\") (program \"w.p0\") (declarations $W_DECL) (memberships) (actions (create (qname \"edge\") (version-key \"w.edge.0\") (predecessor #f) (type-key #f))))"
+W_DECL='(declare (qname "edge") (kind table) (arity 2) (type-key #f) (lat-spec #f) (shape "(declaration (qname \"edge\") table (fields int int))")) (declare (qname "empty") (kind table) (arity 2) (type-key #f) (lat-spec #f) (shape "(declaration (qname \"empty\") table (fields int int))"))'
+W_PREPARE="(prepare-boundary (generation 0) (boundary \"w.b0\") (program \"w.p0\") (declarations $W_DECL) (memberships) (actions (create (qname \"edge\") (version-key \"w.edge.0\") (predecessor #f) (type-key #f)) (create (qname \"empty\") (version-key \"w.empty.0\") (predecessor #f) (type-key #f))))"
 racket tests/api/drive.rkt \
   "$W_PREPARE" \
   '(commit-boundary (generation 0) (boundary "w.b0"))' \
@@ -108,6 +108,7 @@ racket tests/api/drive.rkt \
   '(watch (id "w7") (version-key "w.edge.0") (level 1) (provenance #t))' \
   '(watch (id "w8") (version-key "w.edge.0") (provenance #t))' \
   '(watch (id "w9") (version-key "w.edge.0") (level 1) (provenance yes))' \
+  '(watch (id "w10") (version-key "w.empty.0") (level 1))' \
   > out/proto-watch.log 2>&1
 expect    "watch-added" '(watch-added (id "w1") (version-key "w.edge.0") (watches 1))' out/proto-watch.log
 expect_rx "watch-duplicate-id" '\(refused watch-binding [0-9]+ \(verb watch\) \(detail "watch id w1 is already in use"\)\)' out/proto-watch.log
@@ -127,6 +128,15 @@ expect_rx "watch-level-refused" '\(refused parse [0-9]+ \(verb watch\) \(detail 
 expect    "watch-provenance-added" '(watch-added (id "w7") (version-key "w.edge.0") (watches 3) (level 1) (provenance #t))' out/proto-watch.log
 expect_rx "watch-provenance-level" '\(refused parse [0-9]+ \(verb watch\) \(detail "provenance capture is a level-1 watch.s observation"\)\)' out/proto-watch.log
 expect_rx "watch-provenance-bool" '\(refused parse [0-9]+ \(verb watch\) \(detail "provenance must be #t or #f"\)\)' out/proto-watch.log
+# T5 slice (d4): with struct and lattice settles landed, registration reports
+# whether the gate can actually preview this binding, instead of accepting
+# the level and silently never engaging.  The field is negative-only, so a
+# settleable level-1 line stays byte-identical (watch-level1-added above) --
+# and an EMPTY relation is still settleable, because a declared table carries
+# a full index from the moment it exists.  `(settleable #f)` therefore names
+# a genuinely index-free binding, which is the safety net, not the norm.
+expect    "watch-empty-still-settles" '(watch-added (id "w10") (version-key "w.empty.0") (watches 4) (level 1))' out/proto-watch.log
+expect_not "watch-no-false-unsettleable" '(settleable #f)' out/proto-watch.log
 
 # T5 slice (b): prepare-time registration -- a watch binds a PREPARED
 # successor key through the private overlay, and watch verbs are exempt

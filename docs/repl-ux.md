@@ -704,6 +704,16 @@ that are still blocked inside the KernelPlanKey.
 across successor versions by client-side re-resolution (repl.md §6), shown
 explicitly in the listing so nobody is surprised.
 
+*Shipped (T5 slice (d4), 2026-08-02):* level-1 watches now settle over every
+storage kind, each by its own identity — a plain table by master absence, a
+struct head by CONTENT (its id is not minted until the intern phase), a
+lattice key by whether the merge would move the payload. The lattice case is
+why membership was never the right question: contributing a worse value adds
+a row and changes nothing, while contributing a better one changes the
+database without moving its size at all. Registration also reports when a
+binding has no full index for the gate to preview against, so a watch that
+cannot engage says so instead of going quiet.
+
 Level-0 watches are nearly free and ship first; installing any level-1 watch
 prints the tier consequence honestly: `note: scc5 will run interpreted while
 w4 is set (was O2)` — the cost model is part of the UX, not hidden.

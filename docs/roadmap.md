@@ -1602,6 +1602,42 @@ freeze/import with image-based compiler goldens and a first Slog-written
 lint, **T3b** full tier policy (promotion budgets, profile sidecars, core
 arbiter).
 
+**Checkpoint (2026-08-02; T5 slices (d4)+(d5) — the non-plain settles and
+the exit audit.  THE W4′ DEBUGGER ARC IS COMPLETE).**  (d4) finishes the
+gate: the question "does this change genuinely appear?" is the same for
+every storage kind, but the identity that answers it is not.  A STRUCT head
+stages content with a 0 id placeholder — the id is minted in the intern
+phase — so its settle asks M5's intern-identity question of the content,
+and the master ordering is content-first precisely so that probe is a
+prefix.  A LATTICE contribution settles through M6L's contributor-reduce:
+`BTreeMapIndex::wouldChange` is `merge` with a lookup where merge inserts —
+same clamp, same join, no mutation — so a contribution the resident payload
+already subsumes is not a change however new its row looks.  The lattice
+case is also the clearest argument that membership was never the right
+question: contributing a worse cost adds a row and changes nothing, while
+contributing a better one changes the database without moving its size.
+One bug nearly shipped and is worth remembering: `getAnyIndex()` is right
+for a plain table and WRONG for the other two, because a struct carries an
+id-first ordering beside its content-first master, and probing that one
+reads the 0 placeholder — so every construction, new or not, looked like a
+change.  `settleOrder()` now picks by kind, and the battery asserts each
+settle in BOTH directions, which is what caught it: a settle that only ever
+says yes is a park on every write, not a settle.  With every kind settling,
+the last silent downgrade goes too — registration reports `(settleable #f)`
+when a level-1 binding has no full index to preview against (an empty
+declared table still settles, so the field names the safety net rather than
+the norm).  (d5) is the exit audit, and its artifact is
+`tests/joint/t5-monotone-matrix.rkt`: §0.1's monotone-only pin crossed in
+ONE run rather than five scattered per-slice controls — over a counted
+maintenance epoch the gate never engages while the level-0 report still
+arrives, `replay` and `step` both refuse `level-1-unwatchable` naming the
+epoch's flavor, a refused continuation still commits its change, capture
+stays empty and `why` says which silence that is, and a standing break
+never fires; then the same session over a monotone epoch does all of it.
+Gates: protocol 172, REPL 241, joint 32, plus the full suite and the
+interp union sweep.  W4′ still holds T4 (parameterized native bundles),
+RF2 mount and T3b tier policy; R5 (`whatif`) is W5′.
+
 **Checkpoint (2026-08-02; T5 slices (d3)+(d2) — the pre-run entry and the
 failure frontier).**  Two slices, opposite in shape: one closes a hole the
 arc had left open, the other answers the debugger's other half without
