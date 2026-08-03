@@ -38,7 +38,7 @@
 ;;     subsumes the other clauses' deltas (and temps, being index-free,
 ;;     cannot be joined against anyway).
 
-(provide plan-stratum)
+(provide plan-stratum canonical-rule-order rule-sort-key)
 
 (require "utils.rkt")
 (require "params.rkt")
@@ -107,10 +107,21 @@
 ;; random run to run), and Racket set iteration order varies with symbol
 ;; spellings, so neither mint order nor raw rule text can drive the walk.
 ;; Relation/prim/struct names, constants, and accept lists are run-stable
-;; and stay verbatim.  Two rules can tie only by being alpha-equivalent,
-;; in which case the counter assignment within the tie group is arbitrary
-;; -- invisible at the plan layer, which is variable-blind (canonical
-;; plans register-rename), so either assignment yields the same plan SET.
+;; and stay verbatim.
+;;
+;; Ties are alpha-equivalent rules, and the 2026-07-29 defect
+;; (rf1-contract.md, "NEW defect logged") is that leaving them tied is NOT
+;; harmless: `sort` is stable, so a tie group kept SET-ITERATION order,
+;; which varies with gensym'd symbol spellings run to run.  The plan SET is
+;; indeed the same either way -- but the rid walk (canonical-plan.rkt
+;; `entry<?`) orders crules by canonical text, which CONTAINS the minted
+;; temp name, so the rid <-> temp pairing follows this walk's arbitrary
+;; choice while each rid's recorded SOURCE does not.  The `(rule-meta (rid
+;; N) (source LOC))` block then flips run to run and the plan bytes churn
+;; with it.  So the order must be TOTAL, and it must break ties the same way
+;; the rid walk does: by source location.  (A residual tie -- alpha-
+;; equivalent AND same-location, e.g. a `|`-split rule's derivatives -- is
+;; genuinely interchangeable, because the metas are identical too.)
 
 (define (rule-sort-key rule)
   (define names (make-hash))
@@ -140,6 +151,38 @@
     [`(syn ,_ rule ,bodys ... --> ,heads ...)
      (format "~s" `(rule ,@(map norm-cl bodys) --> ,@(map norm-cl heads)))]
     [_ (format "~s" (strip-prov rule))]))
+
+;; (file . line) for a rule, comparable numerically -- lexicographic string
+;; order would put `:9` after `:79`, the trap canonical-plan.rkt's loc-key
+;; already avoids.
+(define (rule-loc-key rule)
+  (define text (rule-location-string rule))
+  (match (regexp-match #rx"^(.*):([0-9]+)$" text)
+    [(list _ file line) (cons file (or (string->number line) 0))]
+    [_ (cons text 0)]))
+
+;; The canonical walk, exported because it is the property the determinism
+;; doctrine rests on: the order is a pure function of the rules, never of
+;; the order they arrive in (tests/unit/planner-tests.rkt shuffles the
+;; input and asserts the output is unchanged).
+(define (canonical-rule-order rules)
+  (define keyed
+    (for/list ([r (in-list rules)])
+      (vector (rule-sort-key r) (rule-loc-key r) r)))
+  (map (lambda (v) (vector-ref v 2))
+       (sort keyed
+             (lambda (a b)
+               (define ka (vector-ref a 0))
+               (define kb (vector-ref b 0))
+               (cond
+                 [(string<? ka kb) #t]
+                 [(string<? kb ka) #f]
+                 [else
+                  (define la (vector-ref a 1))
+                  (define lb (vector-ref b 1))
+                  (cond [(string<? (car la) (car lb)) #t]
+                        [(string<? (car lb) (car la)) #f]
+                        [else (< (cdr la) (cdr lb))])])))))
 
 ;; -----------------------------------------------------------------------
 ;; plan-stratum: the pass entry point.
@@ -257,11 +300,10 @@
                             #:seeded? #t)
         (plan-rule-versions staged-rule dynamic? temp? lattice? ordinary-table? statics)))
 
-  ;; Canonical rule order: temps mint in this walk (rule-sort-key above),
-  ;; NOT in set-iteration order, which varies with gensym'd symbol
+  ;; Canonical rule order: temps mint in this walk (canonical-rule-order
+  ;; above), NOT in set-iteration order, which varies with gensym'd symbol
   ;; spellings run to run.
-  (define sorted-rules
-    (sort (set->list rules) string<? #:key rule-sort-key #:cache-keys? #t))
+  (define sorted-rules (canonical-rule-order (set->list rules)))
   (define planned
     (for/fold ([acc (set)]) ([rule (in-list sorted-rules)])
      (with-rule-context rule (lambda ()

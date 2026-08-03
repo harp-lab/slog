@@ -498,6 +498,26 @@ Consequences, pinned:
      tie-group ordinal shared by both walks. Small, but it touches
      canonical-plan.rkt — schedule as its own slice, not inside an
      unrelated commit.
+     *CLOSED 2026-08-03* (its own commit, per that note).  The fix went to
+     the OTHER walk: `canonical-rule-order` (join-planning.rkt) now breaks
+     ties by source location, exactly as canonical-plan.rkt's `entry<?`
+     already did, so both walks resolve a tie group identically and
+     canonical-plan.rkt was not touched at all.  Mechanism, restated
+     precisely: `sort` is stable, so a tie group kept SET-ITERATION order;
+     the rid walk orders crules by canonical text, which CONTAINS the
+     minted temp name, so the rid ↔ temp pairing followed the temp walk's
+     arbitrary choice while each rid's recorded SOURCE did not, and
+     `(rule-meta (rid N) (source LOC))` flipped with it.  The defect did
+     NOT reproduce on the day it was fixed (the gate passed clean: 2621
+     filenames, 506 plans byte-identical), so it landed on the mechanism
+     plus a test of the PROPERTY rather than of a failing run —
+     tests/unit/planner-tests.rkt asserts the two keys genuinely tie and
+     that both input orders yield source order, with the pre-fix behaviour
+     (`:83` before `:79`) demonstrated directly first.  Residual ties —
+     alpha-equivalent AND same-location, e.g. a `|`-split rule's
+     derivatives — are genuinely interchangeable because their metas are
+     identical too, which is the claim this note originally made for ALL
+     ties and that holds only once location is in the key.
 1. **ProgramModel + program struct** (compiler-internal, zero
    behavior). The named program struct replacing the positional
    tuples; the ProgramModel record carrying condensation + lineage out

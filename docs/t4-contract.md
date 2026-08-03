@@ -61,6 +61,34 @@ alpha-equivalent, and every reason they differ is a T4 blocker:
   relation table included.  Even with B1–B3 fixed, the key would still
   separate two identical kernels.
 
+### 1.1 A cheaper path, measured and refuted (2026-08-03)
+
+Before committing to the slice order below, one shortcut deserved a
+measurement.  Production artifact identity is NOT `KernelPlanKey` — that
+function is called only from tests — it is the job hash plus the
+**content-addressed `.o` cache**, keyed on each TU's comment-stripped
+source with clusters named by the hash of their emitted body
+(fast-compile §14).  So the hypothesis was: strip relation names out of
+the generated rule bodies and the existing cache would start sharing
+clusters across instances (and across programs with the same rule
+shapes), delivering T4's compile-time benefit with no ABI change at all.
+
+It does not hold.  Over the cold golden suite — **592 generated TUs, 37 MB
+of text** — normalizing every relation/struct/index name literal, every
+stratum name and every content-derived cluster function name collapses
+**0** TUs: 592 distinct before, 592 after.  The decisive small case says
+why: for `n1_instances`, even normalizing EVERY string literal, value ref
+and function name leaves left's TU (17,611 chars) and right's (19,499)
+different, because each TU carries the WHOLE PROGRAM's relation
+registration prelude (all 17 relations, in every TU) and right's unit
+holds an extra rule that grouping put there (B2).
+
+So name-freedom alone buys nothing measurable.  The sharing that T4
+promises needs the unit to be kernel-shaped (B2) and its prelude to be
+kernel-local (B1) — which is the expensive work, not a way around it.
+The measurement's value is exactly this: it was proposed to de-risk a
+cheap path and it killed it.
+
 **Consequence for the slice order: T4 cannot start with its item 1.**
 Parameterizing the native artifact buys nothing while the unit it
 parameterizes is a stratum-shaped mixture (B2) whose plan text is
@@ -104,16 +132,32 @@ program-global (B1) and whose key is name-bearing (B4).  The item order in
 
 ## 3. Slices
 
-- **(0) Determinism re-established.**  Run the plan-determinism gate; close
+- **(0) Determinism re-established.**  *(Shipped 2026-08-03.)*  Run the plan-determinism gate; close
   rf1-contract's tie-group defect if it still reproduces (its documented
   fix direction: make the rid assignment reuse the canonical walk's order
   including minted temp names, or give the sort key a same-stratum
   tie-group ordinal shared by both walks).  Exit: two clean full golden
   tiers with identical `build/` filename sets and byte-identical `.plan`
   sets, `examples/verify/verify.slog` included.
-  *(2026-08-03: a 3-run spot check over verify.slog was byte-identical;
-  the full gate was started, then invalidated by a concurrent build of
-  mine and needs a clean re-run.  Unverified, not clean.)*
+  *As-built (2026-08-03):* the gate PASSES clean — two full golden tiers
+  (167/167 each), **2621 `build/` filename entries identical, 506 `.plan`
+  files byte-identical**.  The 2026-07-29 tie-group defect did NOT
+  reproduce, so the fix landed on the strength of the mechanism rather
+  than a failing run: `sort` is stable, so a tie group kept SET-ITERATION
+  order, and the rid walk (canonical-plan.rkt `entry<?`) orders crules by
+  canonical text — which CONTAINS the minted temp name.  The rid ↔ temp
+  pairing therefore followed the temp walk's arbitrary choice while each
+  rid's recorded SOURCE did not, so `(rule-meta (rid N) (source LOC))`
+  flipped run to run.  `canonical-rule-order` now breaks ties by source
+  location, the same way the rid walk does, and the property under test
+  is input-order independence: `tests/unit/planner-tests.rkt` asserts the
+  two keys genuinely TIE and that both input orders yield source order
+  (pre-fix, a stable sort returned `:83` before `:79` — demonstrated
+  directly before landing).  A residual tie — alpha-equivalent AND
+  same-location, e.g. a `|`-split rule's derivatives — is genuinely
+  interchangeable, because their metas are identical too.  Note for
+  slice 1: after RF1's split this churn would live in DebugMap only and
+  could not move a KernelExecPlan or its key.
 - **(1) The kernel becomes the unit (B1 + B2).**  Split the code unit from
   the scheduling container: a plan is emitted per module-SCC, its relation
   table is KERNEL-LOCAL (only the slots that kernel binds), and runtime

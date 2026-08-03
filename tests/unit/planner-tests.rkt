@@ -262,4 +262,54 @@
                  (list (CTOR 'i 'pair 'x 'x)
                        (CTOR 'i 'pair 'y 'y)
                        (S 'out10 'i))))
-    (check-exn #rx"value unification" (lambda () (plan1 r (set 'pair 'out10))))))
+    (check-exn #rx"value unification" (lambda () (plan1 r (set 'pair 'out10)))))
+
+  ;; ---------------------------------------------------------------------
+  ;; 11. RF1 determinism (rf1-contract.md's 2026-07-29 defect): the
+  ;;     canonical walk that mints temp names must be TOTAL.  Two
+  ;;     alpha-equivalent rules tie on the provenance-stripped,
+  ;;     variable-blind key, and `sort` is stable -- so before the fix the
+  ;;     tie group kept whatever order it arrived in, i.e. set-iteration
+  ;;     order, which varies with gensym'd symbol spellings run to run.
+  ;;     The rid walk (canonical-plan.rkt) orders by canonical text, which
+  ;;     contains the minted temp name, so that arbitrary choice decided
+  ;;     which rid recorded which SOURCE, and the plan's `meta` block
+  ;;     churned.  The property under test is exactly input-order
+  ;;     independence; the fix is breaking ties by source location, the
+  ;;     same way the rid walk does.
+
+  (define-values (canonical-rule-order rule-sort-key)
+    (parameterize ([current-directory repo-root])
+      (define planner
+        `(file ,(path->string (build-path repo-root "compiler" "join-planning.rkt"))))
+      (values (dynamic-require planner 'canonical-rule-order)
+              (dynamic-require planner 'rule-sort-key))))
+
+  ;; a rule whose prov carries a real (file, line), like the lexer's
+  (define (located file line bodys heads)
+    `(syn (prov (token id (pos ,file ,line 0 ,line 0) "") #f)
+          rule ,@bodys --> ,@heads))
+
+  (test-case "canonical rule order is input-order independent (tie groups)"
+    ;; alpha-equivalent bodies, different source lines: verify.slog:79/83's
+    ;; shape (same clause structure, different head relation is enough to
+    ;; keep them distinct rules while the KEY still ties on structure only
+    ;; if the heads match -- so use identical shape and rely on location)
+    ;; lexer line positions are 0-based; rule-location-string renders 1-based
+    (define a (located "v.slog" 78 (list (S 'check_err 'i 'e)) (list (S 'seen 'i 'e))))
+    (define b (located "v.slog" 82 (list (S 'check_err 'j 'f)) (list (S 'seen 'j 'f))))
+    ;; The keys must genuinely TIE, or this test proves nothing: with equal
+    ;; keys a stable sort returns input order, which is precisely the bug.
+    (check-equal? (rule-sort-key a) (rule-sort-key b))
+    (check-equal? (map rule-location-string (canonical-rule-order (list a b)))
+                  '("v.slog:79" "v.slog:83"))
+    (check-equal? (map rule-location-string (canonical-rule-order (list b a)))
+                  '("v.slog:79" "v.slog:83")))
+
+  (test-case "line order is numeric, not lexicographic"
+    ;; :9 must precede :79 -- the trap a raw string compare falls into
+    (define a (located "v.slog" 8  (list (S 'p 'x)) (list (S 'q 'x))))
+    (define b (located "v.slog" 78 (list (S 'p 'y)) (list (S 'q 'y))))
+    (check-equal? (rule-sort-key a) (rule-sort-key b))
+    (check-equal? (map rule-location-string (canonical-rule-order (list b a)))
+                  '("v.slog:9" "v.slog:79"))))
