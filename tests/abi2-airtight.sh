@@ -28,8 +28,21 @@ bad()  { echo "FAIL $1 ($2)"; FAIL=$((FAIL+1)); }
 
 # keys of every kernel in a dump directory, sorted
 keys_of() { grep -ho '(key "[0-9a-f]*")' "$1"/*.abi2 2>/dev/null | LC_ALL=C sort; }
-# binding schemas, sorted
-bindings_of() { grep -ho '(binding [^)]*)[^)]*)' "$1"/*.abi2 2>/dev/null | LC_ALL=C sort; }
+# the SET of names bound by every kernel.  A grep for a prefix of the
+# `(binding ...)` form silently stopped discriminating once the service
+# prelude took the leading slots -- it compared the prelude and nothing else,
+# so a rename looked like no change at all.  Parse the form instead.
+bindings_of() {
+  python3 - "$1" <<'PYEOF'
+import glob, re, sys
+names = set()
+for f in sorted(glob.glob(sys.argv[1] + '/*.abi2')):
+    t = open(f).read()
+    for m in re.finditer(r'\(binding (.*?)\) \(dynamic', t, re.S):
+        names.update(re.findall(r'\(slot \d+ ([^)]+)\)', m.group(1)))
+print("\n".join(sorted(names)))
+PYEOF
+}
 
 compile_dump() { # <program> <dumpdir>
   rm -rf build config/cache "$2" "$2.abi1"
@@ -99,15 +112,17 @@ fi
 # canonicalize-crule fell through to its register branch).  Constants are
 # content-addressed -- `const<sha24>` OF THE VALUE -- so the same compile's
 # ABI-1 plans and ABI-2 cohorts must name exactly the same constant set.
-consts_abi1="$(grep -ho 'const[0-9a-f]\{24\}' "$WORK/d-consts.abi1"/*.plan 2>/dev/null | LC_ALL=C sort -u)"
-consts_abi2="$(grep -ho 'const[0-9a-f]\{24\}' "$WORK/d-consts"/*.abi2 2>/dev/null | LC_ALL=C sort -u)"
-if [ -z "$consts_abi1" ]; then
-  bad "constants-survive-the-split" "fixture produced no constants to check"
-elif [ "$consts_abi1" = "$consts_abi2" ]; then
+# `(k N)` with nothing after the number is a REFERENCE from an op; the
+# 4-field `(k N name value)` is a table entry.  Count the references.
+refs_abi1="$(grep -ho '(k [0-9]*)' "$WORK/d-consts.abi1"/*.plan 2>/dev/null | wc -l)"
+refs_abi2="$(grep -ho '(k [0-9]*)' "$WORK/d-consts"/*.abi2 2>/dev/null | wc -l)"
+if [ "$refs_abi1" -eq 0 ]; then
+  bad "constants-survive-the-split" "fixture produced no constant references"
+elif [ "$refs_abi1" -eq "$refs_abi2" ]; then
   ok "constants-survive-the-split"
 else
   bad "constants-survive-the-split" \
-      "abi1 has $(echo "$consts_abi1" | wc -l), abi2 has $(echo "$consts_abi2" | wc -l)"
+      "abi1 makes $refs_abi1 constant references, abi2 makes $refs_abi2"
 fi
 
 # (c) the payoff: two instances of one library share a kernel key

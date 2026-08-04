@@ -47,6 +47,7 @@ run_harness() {
     repl)        raco test compiler/repl.rkt && cargo test --manifest-path repl/Cargo.toml ;;
     session)     bash tests/session-tests.sh ;;
     joint)       bash tests/joint-battery.sh ;;
+    abi2)        bash tests/abi2-airtight.sh && bash tests/abi2-differential.sh ;;
     incremental-stress) bash tests/incremental-stress.sh ;;
     compression) bash tests/compression/run.sh ;;
     smt-pin)     bash tests/compression/smt-pin-test.sh ;;
@@ -62,6 +63,10 @@ run_harness() {
 }
 
 ALL=(unit diag stats arena seq counts wcoj3 interp structid golden api tiered pause protocol repl session joint incremental-stress compression smt-pin smt-solver)
+# `abi2` (RF1 slice 2's airtightness + the ABI-1/ABI-2 differential) is a
+# named tier but NOT in ALL: like plan-determinism it compiles each program
+# from cold twice, so it is a slice gate rather than a per-change one.  Run it
+# before any change to the plan split, and before the ABI default flips.
 QUICK=(unit diag stats arena seq counts wcoj3 interp structid)
 
 case "${1:-}" in

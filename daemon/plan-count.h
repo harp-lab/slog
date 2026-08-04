@@ -45,6 +45,20 @@ void install_maint_stratum(Daemon* daemon, const std::string& name,
 void install_normal_stratum(Daemon* daemon, const std::string& name,
                             const SealedKernelPlan& plan);
 
+// RF1 slice 2: the cohort forms.  A runtime stratum is the SCHEDULING
+// container and a kernel is the code unit, so one stratum is populated from
+// every kernel of an ABI-2 cohort, in manifest order; the populate step is
+// additive per kernel (relations, indices, write/intern tasks and reads all
+// accumulate), which is what keeps the grouping exactly what it was while the
+// compiled unit shrinks to the module-SCC.  The *_stratum entries above are
+// now the single-kernel case of these.
+void install_normal_cohort(Daemon* daemon, const std::string& name,
+                           const std::vector<SealedKernelPlan>& kernels);
+void install_count_cohort(Daemon* daemon, const std::string& name,
+                          const std::vector<SealedKernelPlan>& kernels);
+void install_maint_cohort(Daemon* daemon, const std::string& name,
+                          const std::vector<SealedKernelPlan>& kernels);
+
 // T0(b) command-builder installation.  The caller has already generation-
 // gated `stratum-seal`; this path validates the explicit entry/flavor pair,
 // installs through Daemon::installStratum, pushes the stratum, and deliberately

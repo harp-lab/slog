@@ -718,7 +718,18 @@
                      (if (memq plan-flavor '(count maint1 maint3neg maint4neg))
                          (string-append "." incremental-flavor-abi)
                          "")))
-   (lambda () (displayln (kernel-plan->string (canonicalize-all cprog plan-flavor)))))
+   (lambda ()
+     ;; RF1 slice 2: which shape the ARTIFACT takes.  SLOG_PLAN_ABI=2 selects
+     ;; the cohort; the default stays 1 until the flip, so this is the staging
+     ;; switch rather than a second permanent path.  A cohort needs the
+     ;; ProgramModel, so a tooling path that built a cprog by hand falls back
+     ;; to ABI 1 rather than failing.
+     (define abi2
+       (and (equal? (getenv "SLOG_PLAN_ABI") "2")
+            (parameterize ([current-program-model model])
+              (canonicalize-all/abi2 cprog plan-flavor))))
+     (displayln (kernel-plan->string
+                 (or abi2 (canonicalize-all cprog plan-flavor))))))
   ;; RF1 slice 2 audit instrument (SLOG_DUMP_ABI2=<dir>): emit the ABI-2
   ;; cohort beside the shipped plan.  Inspect-only -- nothing reads it yet,
   ;; which is the point: the split gets exercised over real programs before

@@ -176,20 +176,36 @@
               [`(mkstruct ,rel ,_ ...) rel]
               [_ #f]))))
 
+;; Every relation a crule references, from EVERY position that can hold one.
+;; Getting this wrong is a loud failure -- `rel-slot` raises "unslotted
+;; relation X in kernel" -- and two positions were missing at first:
+;;
+;;  - `pre` ops.  Prefilters (`exists`/`absent` hoisted before the driver)
+;;    reference relations exactly as body filters do; walking only driver and
+;;    body missed them (neg_wild, seq_oracle).
+;;  - `join3` ARMS.  A WCOJ3 intersection carries its two arms as
+;;    `(view REL ord K dind regs ...)` nested inside the op, so the relation
+;;    is not in position 1 of the form itself (sj_tri).
+(define (crule-op-rels op)
+  (match op
+    [`(,(or 'join 'join-old 'join-new 'join-tomb 'join-lat
+            'exists 'absent 'absent-old 'absent-new 'absent-ever 'absent-lat)
+       ,rel ,_ ...)
+     (list rel)]
+    [`(join3 ,_cycle ,arms ...)
+     (for/list ([arm (in-list arms)])
+       (match arm [`(,_view ,rel ,_ ...) rel] [_ #f]))]
+    [_ '()]))
+
 (define (crule-body-rels cr)
   (filter values
-          (cons (match (crule-driver cr)
-                  [`(scan ,rel ,_ ...) rel]
-                  [`(probe ,rel ,_ ...) rel]
-                  [_ #f])
-                (for/list ([op (in-list (crule-body cr))])
-                  (match op
-                    [`(,(or 'join 'join-old 'join-new 'join-tomb 'join-lat
-                            'exists 'absent 'absent-old 'absent-new
-                            'absent-ever 'absent-lat)
-                       ,rel ,_ ...)
-                     rel]
-                    [_ #f])))))
+          (append
+           (list (match (crule-driver cr)
+                   [`(scan ,rel ,_ ...) rel]
+                   [`(probe ,rel ,_ ...) rel]
+                   [_ #f]))
+           (append* (map crule-op-rels (crule-pre cr)))
+           (append* (map crule-op-rels (crule-body cr))))))
 
 ;; temp name -> scc id, by inheriting from consumers until nothing moves
 (define (resolve-temp-sccs crules scc-of temp?)
@@ -421,7 +437,8 @@
 
 ;; One kernel's exec/binding/debug triple.
 (define (kernel-parts crules decl-of dynamic-rels rid-of tag-of flavor
-                      decl-ix constants global-text blind-text)
+                      decl-ix constants global-text blind-text
+                      service-slots)
   ;; ORDER: name-blind structural text first, so slot assignment cannot
   ;; depend on names.  It must then be TOTAL, or the residual tie falls to
   ;; input order -- which is set-iteration order, varying run to run: the
@@ -444,9 +461,11 @@
                   [else (string<? (global-text a) (global-text b))]))))
   ;; kernel-local slots, first-use over that order
   (define rel-order
-    (for*/list ([cr (in-list ordered)]
-                [r (in-list (append (crule-body-rels cr) (crule-head-rels cr)))])
-      r))
+    (append service-slots
+            (for*/list ([cr (in-list ordered)]
+                        [r (in-list (append (crule-body-rels cr)
+                                            (crule-head-rels cr)))])
+              r)))
   (define rel-ix
     (for/fold ([h (hash)]) ([r (in-list rel-order)])
       (if (hash-has-key? h r) h (hash-set h r (hash-count h)))))
@@ -551,6 +570,21 @@
                                   sexp<?))]
                [i (in-naturals)])
       (values sh i)))
+  ;; SERVICE PRELUDE.  Some relations are resolved by NAME at seal time
+  ;; rather than through an op's relation slot -- the sealer looks
+  ;; `malformed_deduction` up among the plan's bindings for every tycheck, and
+  ;; the prim error arms are the diversion targets -- so a kernel-local slot
+  ;; table that carries only what the ops reference makes the sealer fail
+  ;; ("tycheck: malformed_deduction relation is absent", 45 of 167 golden
+  ;; programs).  rf1-contract's binding schema already names this case:
+  ;; "service-relation references into the cohort prelude".  They ride EVERY
+  ;; kernel, in a fixed order over language-level names -- identical in every
+  ;; program, so slot numbering stays program-independent and sharing holds.
+  (define service-names
+    '(malformed_deduction _enum error div_by_zero modulo_by_zero int_overflow
+      nan_result toint_range type_mismatch mpz_overflow mpz_table_overflow))
+  (define service-slots
+    (for/list ([n (in-list service-names)] #:when (hash-has-key? decl-of n)) n))
   (define crules (cprog-rules cp))
   (define scc-of (program-model-scc-of model))
   (define temp-scc (resolve-temp-sccs crules scc-of temp?))
@@ -603,7 +637,7 @@
        (define-values (exec binding debug rel-ix)
          (kernel-parts (reverse krules) decl-of (cprog-dynamic-rels cp)
                        rid-of tag-of flavor decl-ix constants global-text
-                       blind-text))
+                       blind-text service-slots))
        (list (kernel-exec-key exec) scc exec binding debug rel-ix))
      string<? #:key first))
   (define dyn (cprog-dynamic-rels cp))
@@ -617,10 +651,37 @@
                       < #:key second)))
   (define members
     (program-model-scc-members model))
+  ;; Cohort-level SERVICES: the relations an attachment names -- an oracle's
+  ;; demand and answer, a seqindex's base.  The installer resolves those by
+  ;; name, so they must be declared somewhere; they cannot ride a real
+  ;; kernel's slot table, because a program-specific name there would make
+  ;; that kernel's bytes program-dependent and break its key.  So they are
+  ;; declared at cohort level and the daemon installs them with the
+  ;; attachments, in a services plan of its own that perturbs no kernel.
+  (define attachment-rel-names
+    (remove-duplicates
+     (append*
+      (for/list ([a (in-list attachments)])
+        (match a
+          [`(oracle ,_name ,demand ,answer) (list demand answer)]
+          [`(seqindex ,base ,_cols ...) (list base)]
+          [_ '()])))))
+  ;; ALL storage declarations ride the cohort, not just the ones an
+  ;; attachment names.  The ABI-1 relation table was doing double duty:
+  ;; identity AND the declaration list that makes every declared relation
+  ;; EXIST in the daemon.  Kernel-local slots keep the first role and drop the
+  ;; second, so a relation no kernel binds -- `error`, `malformed_deduction`,
+  ;; `$seq_at` -- was never registered and its output CSV simply vanished (34
+  ;; golden programs, all reporting "missing relation ...csv").  Declarations
+  ;; are a stratum fact and live outside `exec`, so carrying them here costs
+  ;; no kernel its key.
+  (define service-decls storage)
   `(kernel-cohort
     (abi 2)
     (flavor ,flavor)
     (attachments ,@attachments)
+    (declarations ,@(for/list ([d (in-list service-decls)] [i (in-naturals)])
+                       `(rel ,i ,d)))
     (dynamic ,@(sort (set->list (cprog-dynamic-rels cp)) symbol<?))
     (manifest
      ,@(for/list ([k (in-list built)] [i (in-naturals)])

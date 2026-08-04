@@ -1219,8 +1219,19 @@ void preflight_command_install(Daemon* daemon, const EntryMode& entry,
 // tasks, attachments, read scheduling, manifests, push, and first run unit.
 // ---------------------------------------------------------------------------
 
+// `declared` (RF1 slice 2) makes the relation pass idempotent ACROSS the
+// kernels of one cohort.  ABI 1 ran it exactly once, because its relation
+// table was program-global; a cohort's kernels each carry their own
+// kernel-local table plus the shared service prelude, so without this the
+// write/intern tasks are added once per kernel that mentions a relation.
+// Duplicated intern tasks double-ingest a delta, and the symptom is silent
+// under-computation rather than an error: reach's recursive stratum settled
+// after 2 iterations instead of 4.  Relations are still ENSURED every time
+// (getRelation-or-add is idempotent); it is the tasks and indices that must
+// be added once.
 static void populate_normal_stratum(Daemon* daemon, Stratum* stratum,
-                                    const SealedKernelPlan& plan)
+                                    const SealedKernelPlan& plan,
+                                    std::set<std::string>* declared = nullptr)
 {
   seal_check(plan.flavor == "normal" || plan.flavor == "delta",
              SealErrorK::flavor, "install: not a normal/delta plan");
@@ -1243,6 +1254,8 @@ static void populate_normal_stratum(Daemon* daemon, Stratum* stratum,
     Relation* relation = db->getRelation(binding.name);
     const RelationShape& shape = binding.shape;
     if (shape.temp) continue;
+    if (declared != nullptr && !declared->insert(binding.name).second)
+      continue;                    // another kernel of this cohort did it
     seal_check(!shape.full_orders.empty(), SealErrorK::index_requisition,
                "install: relation has no master ordering: " + binding.name);
 
@@ -1329,11 +1342,31 @@ static void populate_normal_stratum(Daemon* daemon, Stratum* stratum,
 void install_normal_stratum(Daemon* daemon, const std::string& name,
                             const SealedKernelPlan& plan)
 {
-  Stratum* stratum = plan.flavor == "delta"
+  install_normal_cohort(daemon, name, {plan});
+}
+
+// RF1 slice 2: a runtime stratum is the SCHEDULING container and a kernel is
+// the code unit, so one stratum is populated from every kernel of the cohort,
+// in manifest order.  populate_normal_stratum is additive per kernel --
+// relations, indices, write/intern tasks and read tasks all accumulate -- which
+// is what lets the grouping stay exactly what it was while the compiled unit
+// shrinks to the module-SCC.
+void install_normal_cohort(Daemon* daemon, const std::string& name,
+                           const std::vector<SealedKernelPlan>& kernels)
+{
+  if (kernels.empty()) return;
+  const std::string& flavor = kernels.front().flavor;
+  Stratum* stratum = flavor == "delta"
     ? daemon->beginStratumDelta(name) : daemon->beginStratum(name);
   if (stratum == nullptr) return;
-  stratum->flavor = plan.flavor;   // T5: retain the epoch flavor
-  populate_normal_stratum(daemon, stratum, plan);
+  stratum->flavor = flavor;        // T5: retain the epoch flavor
+  std::set<std::string> declared;
+  for (const SealedKernelPlan& plan : kernels)
+  {
+    seal_check(plan.flavor == flavor, SealErrorK::flavor,
+               "install: a cohort's kernels disagree on flavor");
+    populate_normal_stratum(daemon, stratum, plan, &declared);
+  }
   daemon->push(stratum);
   daemon->continueRun();
 }
@@ -1397,10 +1430,18 @@ static void populate_count_stratum(Daemon* daemon, Stratum* stratum,
 void install_count_stratum(Daemon* daemon, const std::string& name,
                            const SealedKernelPlan& plan)
 {
+  install_count_cohort(daemon, name, {plan});
+}
+
+void install_count_cohort(Daemon* daemon, const std::string& name,
+                          const std::vector<SealedKernelPlan>& kernels)
+{
+  if (kernels.empty()) return;
   Stratum* stratum = daemon->beginStratumDelta(name);
   if (stratum == nullptr) return;
-  stratum->flavor = plan.flavor;   // T5: retain the epoch flavor
-  populate_count_stratum(daemon, stratum, plan);
+  stratum->flavor = kernels.front().flavor;   // T5: retain the epoch flavor
+  for (const SealedKernelPlan& plan : kernels)
+    populate_count_stratum(daemon, stratum, plan);
   daemon->push(stratum);
   daemon->continueRun();
 }
@@ -1496,10 +1537,18 @@ static void populate_maint_stratum(Daemon* daemon, Stratum* stratum,
 void install_maint_stratum(Daemon* daemon, const std::string& name,
                            const SealedKernelPlan& plan)
 {
+  install_maint_cohort(daemon, name, {plan});
+}
+
+void install_maint_cohort(Daemon* daemon, const std::string& name,
+                          const std::vector<SealedKernelPlan>& kernels)
+{
+  if (kernels.empty()) return;
   Stratum* stratum = daemon->beginStratumDelta(name);
   if (stratum == nullptr) return;
-  stratum->flavor = plan.flavor;   // T5: retain the epoch flavor
-  populate_maint_stratum(daemon, stratum, plan);
+  stratum->flavor = kernels.front().flavor;   // T5: retain the epoch flavor
+  for (const SealedKernelPlan& plan : kernels)
+    populate_maint_stratum(daemon, stratum, plan);
   daemon->push(stratum);
   daemon->continueRun();
 }
@@ -1576,12 +1625,17 @@ bool maybe_interp_count_plugin(Daemon* daemon, const std::string& path)
     + stem + "." + abi + ".plan";
   try
   {
-    const DecodedKernelPlan decoded = parse_kernel_plan_file(plan_path);
-    const SealedKernelPlan sealed = seal_kernel_plan(decoded, daemon->db());
-    if (sealed.flavor == "count")
-      install_count_stratum(daemon, stem, sealed);
+    const std::vector<DecodedKernelPlan> decoded =
+      parse_plan_artifact_file(plan_path);
+    // Flavored cohorts install per kernel onto one stratum too; the
+    // single-kernel case is the ABI-1 shape and takes the same path.
+    std::vector<SealedKernelPlan> kernels;
+    for (const DecodedKernelPlan& one : decoded)
+      kernels.push_back(seal_kernel_plan(one, daemon->db()));
+    if (kernels.front().flavor == "count")
+      install_count_cohort(daemon, stem, kernels);
     else
-      install_maint_stratum(daemon, stem, sealed);
+      install_maint_cohort(daemon, stem, kernels);
   }
   catch (const std::exception& error)
   {
@@ -1602,9 +1656,10 @@ bool maybe_interp_plan_plugin(Daemon* daemon, const std::string& path)
   const std::string stem = file.substr(0, file.size() - 5);
   try
   {
-    const DecodedKernelPlan decoded = parse_kernel_plan_file(path);
-    const SealedKernelPlan sealed = seal_kernel_plan(decoded, daemon->db());
-    install_normal_stratum(daemon, stem, sealed);
+    std::vector<SealedKernelPlan> kernels;
+    for (const DecodedKernelPlan& decoded : parse_plan_artifact_file(path))
+      kernels.push_back(seal_kernel_plan(decoded, daemon->db()));
+    install_normal_cohort(daemon, stem, kernels);
   }
   catch (const std::exception& error)
   {

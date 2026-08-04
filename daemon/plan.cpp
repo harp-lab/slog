@@ -980,6 +980,240 @@ DecodedKernelPlan parse_kernel_plan(std::string_view input)
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// RF1 slice 2: ABI 2 cohorts (docs/rf1-contract.md).  One file per (stratum,
+// flavor) carries a manifest and N kernels, each with its own name-free
+// `exec`, its `binding` schema, its slot-relative `dynamic` set and its
+// `debug` map.
+//
+// The adaptation is PER KERNEL and it happens here, at the decoder boundary:
+// each kernel is rendered as the ABI-1 plan it is equivalent to -- relations
+// from exec's structural slots joined with binding's names, rules with their
+// dense ordinal replaced by the DebugMap's RuleId and their slot-relative
+// variant replaced by the display spelling derived through the binding schema
+// (which is exactly how rf1-contract says that spelling should be derived) --
+// and then the existing decoder, sealer, binder and installers run unchanged.
+//
+// This is not the "reaggregated compatibility view" the contract forbids:
+// kernels are never merged back into a stratum-wide plan.  Each stays its own
+// unit; only the field-decoding code is shared.  A later slice can decode
+// ABI 2 natively if the translation ever costs anything measurable.
+namespace {
+
+void write_sexp(const SExp& x, std::string& out)
+{
+  switch (x.kind)
+  {
+    case SExp::K::atom: out += x.text; return;
+    case SExp::K::string:
+      out += '"';
+      for (const char c : x.text)
+      {
+        if (c == '"' || c == '\\') out += '\\';
+        out += c;
+      }
+      out += '"';
+      return;
+    case SExp::K::list:
+      out += '(';
+      for (size_t i = 0; i < x.children.size(); ++i)
+      {
+        if (i != 0) out += ' ';
+        write_sexp(x.children[i], out);
+      }
+      out += ')';
+      return;
+  }
+}
+
+std::string sexp_text(const SExp& x)
+{
+  std::string out;
+  write_sexp(x, out);
+  return out;
+}
+
+// the fields of a kernel/manifest form, by tag, or nullptr when absent
+const SExp* field_of(const SExp& form, const char* tag)
+{
+  if (form.kind != SExp::K::list) return nullptr;
+  for (size_t i = 1; i < form.children.size(); ++i)
+  {
+    const SExp& f = form.children[i];
+    if (f.kind == SExp::K::list && !f.children.empty()
+        && f.children[0].kind == SExp::K::atom && f.children[0].text == tag)
+      return &f;
+  }
+  return nullptr;
+}
+
+}  // namespace
+
+std::vector<DecodedKernelPlan> parse_kernel_cohort(std::string_view input)
+{
+  SExp root;
+  try { root = sexp::read_one(input, plan_reader_limits); }
+  catch (const sexp::ReaderError& error)
+  {
+    throw PlanParseError(
+      error.kind() == sexp::ReaderErrorK::limit
+        ? ParseErrorK::limit : ParseErrorK::syntax,
+      error.offset(), "cohort: " + std::string(error.what()));
+  }
+  const auto& top = list(root, "kernel-cohort");
+  if (top.empty() || atom(top[0], "kernel-cohort") != "kernel-cohort")
+    syntax(root, "expected (kernel-cohort ...)");
+  const SExp* abi = field_of(root, "abi");
+  const SExp* flavor = field_of(root, "flavor");
+  const SExp* attachments = field_of(root, "attachments");
+  if (abi == nullptr || flavor == nullptr)
+    syntax(root, "cohort: requires (abi N) and (flavor F)");
+  if (medium(abi->children[1], "cohort ABI") != 2)
+    syntax(*abi, "cohort: unsupported ABI");
+  const std::string flavor_text = atom(flavor->children[1], "cohort flavor");
+
+  std::vector<DecodedKernelPlan> out;
+  // Cohort-level SERVICES first, when there are attachments: a rule-free plan
+  // carrying the attachments and the relations they name (an oracle's demand
+  // and answer, a seqindex's base).  Those relations cannot live in a real
+  // kernel's slot table -- a program-specific name there would make that
+  // kernel's bytes program-dependent and cost it its key -- so they are
+  // declared at cohort level and installed here, perturbing no kernel.
+  // The cohort's DECLARATIONS plan: every storage declaration the program
+  // makes, plus the attachments.  Kernel-local slots carry identity; this
+  // carries existence -- a relation no kernel binds still has to be
+  // registered, or its output vanishes.  Rule-free, so it perturbs no
+  // kernel's bytes.
+  const SExp* services = field_of(root, "declarations");
+  if (services != nullptr && services->children.size() > 1)
+  {
+    std::string text = "(kernel-plan (abi 1) (flavor " + flavor_text + ")";
+    text += " (relations";
+    if (services != nullptr)
+      for (size_t i = 1; i < services->children.size(); ++i)
+        text += " " + sexp_text(services->children[i]);
+    text += ") " + (attachments != nullptr ? sexp_text(*attachments)
+                                            : std::string("(attachments)"));
+    text += " (constants) (prims) (dynamic) (rules) (meta))";
+    out.push_back(parse_kernel_plan(text));
+  }
+  bool first = true;
+  for (const SExp& form : root.children)
+  {
+    if (form.kind != SExp::K::list || form.children.empty()
+        || form.children[0].kind != SExp::K::atom
+        || form.children[0].text != "kernel")
+      continue;
+    const SExp* exec = field_of(form, "exec");
+    const SExp* binding = field_of(form, "binding");
+    const SExp* debug = field_of(form, "debug");
+    const SExp* dynamic = field_of(form, "dynamic");
+    if (exec == nullptr || binding == nullptr || debug == nullptr)
+      syntax(form, "cohort kernel: requires exec, binding and debug");
+
+    // slot -> name, from the binding schema
+    std::map<u64, std::string> name_of;
+    for (size_t i = 1; i < binding->children.size(); ++i)
+    {
+      const auto& e = tagged(binding->children[i], "slot", 3);
+      name_of[medium(e[1], "binding slot")] =
+        atom(e[2], "binding relation name");
+    }
+    // ordinal -> (rid, variant display, source), from the DebugMap
+    struct DebugRule { u64 rid = 0; std::string variant, source; };
+    std::map<u64, DebugRule> debug_of;
+    for (size_t i = 1; i < debug->children.size(); ++i)
+    {
+      const auto& r = tagged(debug->children[i], "rule", 5);
+      DebugRule d;
+      const u64 ord = medium(tagged(r[1], "ord", 2)[1], "debug ordinal");
+      d.rid = medium(tagged(r[2], "rid", 2)[1], "debug rule id");
+      const auto& v = tagged(r[3], "variant", 2);
+      d.variant = v[1].kind == SExp::K::string
+        ? string_value(v[1], "debug variant") : atom(v[1], "debug variant");
+      const auto& src = tagged(r[4], "source", 2);
+      d.source = src[1].kind == SExp::K::string
+        ? string_value(src[1], "debug source") : atom(src[1], "debug source");
+      debug_of[ord] = d;
+    }
+
+    const SExp* slots = field_of(*exec, "slots");
+    const SExp* constants = field_of(*exec, "constants");
+    const SExp* prims = field_of(*exec, "prims");
+    const SExp* rules = field_of(*exec, "rules");
+    if (slots == nullptr || constants == nullptr || prims == nullptr
+        || rules == nullptr)
+      syntax(*exec, "cohort exec: requires slots, constants, prims and rules");
+
+    std::string text = "(kernel-plan (abi 1) (flavor " + flavor_text + ")";
+    // relations: exec's STRUCTURE joined with binding's NAME
+    text += " (relations";
+    for (size_t i = 1; i < slots->children.size(); ++i)
+    {
+      const auto& sl = list(slots->children[i], "slot");
+      if (sl.size() < 3 || atom(sl[0], "slot") != "slot")
+        syntax(slots->children[i], "cohort slot: expected (slot i KIND ...)");
+      const u64 slot = medium(sl[1], "exec slot");
+      auto found = name_of.find(slot);
+      if (found == name_of.end())
+        syntax(slots->children[i], "cohort slot has no binding");
+      text += " (rel " + std::to_string(slot) + " (" + atom(sl[2], "slot kind")
+            + " " + found->second;
+      for (size_t j = 3; j < sl.size(); ++j) text += " " + sexp_text(sl[j]);
+      text += "))";
+    }
+    text += ")";
+    // Cohort-level attachments (oracle/seqindex) are a STRATUM fact, so they
+    // ride the first kernel only: the installer must perform them once.
+    text += " (attachments)";   // cohort services install once, above
+    text += " " + sexp_text(*constants) + " " + sexp_text(*prims);
+    // dynamic: slot-relative here, names for the ABI-1 shape
+    text += " (dynamic";
+    if (dynamic != nullptr)
+      for (size_t i = 1; i < dynamic->children.size(); ++i)
+      {
+        const auto& d = tagged(dynamic->children[i], "slot", 2);
+        auto found = name_of.find(medium(d[1], "dynamic slot"));
+        if (found == name_of.end())
+          syntax(dynamic->children[i], "cohort dynamic slot has no binding");
+        text += " " + found->second;
+      }
+    text += ")";
+    // rules: the dense ordinal becomes the DebugMap's RuleId, and the
+    // slot-relative variant becomes its display spelling
+    text += " (rules";
+    for (size_t i = 1; i < rules->children.size(); ++i)
+    {
+      const SExp& rd = rules->children[i];
+      const auto& fs = list(rd, "rule-def");
+      if (fs.size() < 3 || atom(fs[0], "rule-def") != "rule-def")
+        syntax(rd, "cohort rule: expected (rule-def (ord i) (variant ...) ...)");
+      const u64 ord = medium(tagged(fs[1], "ord", 2)[1], "rule ordinal");
+      auto d = debug_of.find(ord);
+      if (d == debug_of.end())
+        syntax(rd, "cohort rule has no DebugMap entry");
+      text += " (rule-def (rid " + std::to_string(d->second.rid) + ")";
+      text += " (variant \"" + d->second.variant + "\")";
+      for (size_t j = 3; j < fs.size(); ++j) text += " " + sexp_text(fs[j]);
+      text += ")";
+    }
+    text += ")";
+    // meta: the DebugMap's sources, one per RuleId
+    std::map<u64, std::string> sources;
+    for (const auto& [ord, d] : debug_of) sources[d.rid] = d.source;
+    text += " (meta";
+    for (const auto& [rid, source] : sources)
+      text += " (rule-meta (rid " + std::to_string(rid) + ") (source \""
+            + source + "\"))";
+    text += "))";
+
+    out.push_back(parse_kernel_plan(text));
+    first = false;
+  }
+  if (out.empty()) syntax(root, "cohort: no kernels");
+  return out;
+}
+
 DecodedKernelPlan parse_kernel_plan_file(const std::string& path)
 {
   std::ifstream input(path, std::ios::binary | std::ios::ate);
@@ -996,6 +1230,33 @@ DecodedKernelPlan parse_kernel_plan_file(const std::string& path)
   if (!bytes.empty() && !input.read(bytes.data(), end))
     throw PlanParseError(ParseErrorK::io, 0, "plan: cannot read " + path);
   return parse_kernel_plan(bytes);
+}
+
+// RF1 slice 2: one artifact path serves both shapes.  The form's own tag
+// decides -- `(kernel-cohort ...)` is ABI 2 and yields N kernels,
+// `(kernel-plan ...)` is ABI 1 and yields one -- so the install path needs no
+// out-of-band ABI signal and a stale plan of either shape still installs
+// correctly against the planner that wrote it.
+std::vector<DecodedKernelPlan> parse_plan_artifact_file(const std::string& path)
+{
+  std::ifstream input(path, std::ios::binary | std::ios::ate);
+  if (!input)
+    throw PlanParseError(ParseErrorK::io, 0, "plan: cannot open " + path);
+  const std::streamoff end = input.tellg();
+  if (end < 0)
+    throw PlanParseError(ParseErrorK::io, 0, "plan: cannot size " + path);
+  if (static_cast<u64>(end) > plan_reader_limits.max_bytes)
+    throw PlanParseError(ParseErrorK::limit, 0,
+                         "plan: sidecar byte limit exceeded");
+  std::string bytes(static_cast<size_t>(end), '\0');
+  input.seekg(0);
+  if (!bytes.empty() && !input.read(bytes.data(), end))
+    throw PlanParseError(ParseErrorK::io, 0, "plan: cannot read " + path);
+  const size_t open_paren = bytes.find('(');
+  if (open_paren != std::string::npos
+      && bytes.compare(open_paren + 1, 13, "kernel-cohort") == 0)
+    return parse_kernel_cohort(bytes);
+  return {parse_kernel_plan(bytes)};
 }
 
 u64 materialize_constant(Database& db, const ConstantPlan& constant)

@@ -1298,6 +1298,13 @@ inline std::vector<SealedRule> seal_rules(
 
 DecodedKernelPlan parse_kernel_plan(std::string_view input);
 DecodedKernelPlan parse_kernel_plan_file(const std::string& path);
+// RF1 slice 2 (docs/rf1-contract.md): an ABI-2 cohort decodes to one
+// DecodedKernelPlan PER KERNEL, adapted at this boundary so the sealer,
+// binder and installers run unchanged; kernels are never merged.
+std::vector<DecodedKernelPlan> parse_kernel_cohort(std::string_view input);
+// Either shape, decided by the form's own tag: N kernels for a cohort, one
+// for an ABI-1 plan.
+std::vector<DecodedKernelPlan> parse_plan_artifact_file(const std::string& path);
 u64 materialize_constant(Database& db, const ConstantPlan& constant);
 SealedKernelPlan seal_kernel_plan(const DecodedKernelPlan& decoded,
                                   Database* constant_store = nullptr);
