@@ -606,6 +606,42 @@ Consequences, pinned:
      step-3 concern (that is where the `.so` becomes shared), not this
      slice's.
 
+   *Two further consequences worked out before the emitter (2026-08-03):*
+   - **Constants and prims are kernel-local too**, renumbered per kernel.
+     A program-global constant table would mean kernel A's exec bytes move
+     when kernel B adds a constant -- the same sibling dependence as the
+     relation table, and equally fatal to the key.  (Prims are referenced
+     by NAME in the ops, so their table is a declaration list only.)
+   - **The `dynamic` set belongs to the COHORT MANIFEST, not the exec
+     plan** -- it is a stratum-level scheduling fact.  What stays in the
+     exec bytes is the delta-vs-all DRIVER KIND that planning already
+     baked into the ops, and that is safe because of an invariant worth
+     stating: within one level, a relation written by one SCC cannot be
+     read by another SCC at the same level (the read edge would raise the
+     reader's level), so the dynamic status of a kernel's own slots is a
+     function of that kernel's own SCC.  Without this, adding an
+     unrelated rule to a stratum could flip a sibling kernel's
+     `all:R` to `delta:R` and move its key.
+   - **Tie-breaking in the name-blind order.**  Two structurally
+     IDENTICAL rules over differently-named relations tie on the
+     name-blind key.  The tie must still break deterministically or the
+     BINDING schema (which is in the file) churns run to run, so it
+     breaks by relation name -- which does not put name dependence into
+     the exec bytes, because both orders of a genuine tie produce
+     identical exec text with the roles permuted, and the permutation
+     lands in the binding schema where names already live.
+
+   *Partition measured over the cold golden suite (2026-08-03), from the
+   shipped ABI-1 plans with a probe written independently of the new
+   partition code so it cross-checks rather than restates it:* 506 strata
+   and 6889 crules become **1176 kernels**, with **288 of 506 strata (56%)
+   splitting**; 1124 crules (16%) have a staging TEMP head, so the
+   temp-inherits-its-consumer resolution is load-bearing rather than an
+   edge case; 0 crules have no head at all.  The split is therefore broad
+   -- the daemon's per-kernel sealing is exercised by more than half the
+   suite from day one -- and 1176 kernels against 506 strata is also why
+   the sidecar stays ONE file per (stratum, flavor).
+
    *Validation (2026-08-03), on the two real ABI-1 plans of
    `tests/n1_instances.slog`:* deriving the exec part under (a)-(f) makes
    left's and right's kernels **byte-identical -- 395 chars each** -- with

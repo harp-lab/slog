@@ -30,7 +30,9 @@
 ;; byte-stable across processes AND stable under unrelated program edits
 ;; (unlike set/hash iteration order, which is content-chaotic).
 
-(provide canonicalize-cprog       ; cprog [#:flavor sym] -> kernel-plan
+(provide crule-head-rels crule-body-rels resolve-temp-sccs crule-kernel
+         current-plan-abi kernel-exec-key canonicalize-cprog/abi2
+         canonicalize-cprog       ; cprog [#:flavor sym] -> kernel-plan
          canonicalize-cprog/tags  ; ... -> (values kernel-plan crule->rid.tag)
          canonical-rule-tags      ; cprog -> (listof (cons rid tag)),
                                   ;   aligned with (cprog-rules cprog)
@@ -39,7 +41,9 @@
 
 (require racket/set
          sha
-         "ir-stack.rkt")
+         "ir-stack.rkt"
+         (only-in "ir-shared.rkt"          ; RF1 slice 1's ProgramModel
+                  program-model-scc-of program-model-scc-members))
 
 ;; ------------------------------------------------------------------------
 ;; Deterministic total order on s-expressions.
@@ -144,6 +148,77 @@
     (driver ,driver)
     (body ,@body)
     (head ,@head)))
+
+;; ------------------------------------------------------------------------
+;; RF1 slice 2: the kernel partition (docs/rf1-contract.md Slices item 2).
+;;
+;; A kernel is a MODULE-SCC, not a runtime stratum: the stratum is a
+;; scheduling container that may group independent same-level SCCs, so a
+;; stratum-shaped code unit's content depends on what else shares its level
+;; (t4-contract B2).  Each crule joins the kernel of its head's SCC, which
+;; is what the ProgramModel carries out of stratification.
+;;
+;; STAGING TEMPS are the wrinkle.  A multi-level planned rule lowers to a
+;; chain -- one crule emits into `temp<f><l>x<n>`, a follow-up scans that
+;; temp and emits the real head -- and temps do not exist in the model,
+;; which was built over the typed rules before planning.  Resolving a temp
+;; by LOCATION would work but would tie the partition to DebugMap data, so
+;; instead a temp inherits the SCC of whatever consumes it, to a fixpoint
+;; (temp -> temp chains occur at three-way joins).  That is structural: the
+;; same answer under any renaming.
+(define (crule-head-rels cr)
+  (filter values
+          (for/list ([h (in-list (crule-head cr))])
+            (match h
+              [`(emit ,rel ,_ ...) rel]
+              [`(emit-temp ,rel ,_ ...) rel]
+              [`(emit-lat ,rel ,_ ...) rel]
+              [`(mkstruct ,rel ,_ ...) rel]
+              [_ #f]))))
+
+(define (crule-body-rels cr)
+  (filter values
+          (cons (match (crule-driver cr)
+                  [`(scan ,rel ,_ ...) rel]
+                  [`(probe ,rel ,_ ...) rel]
+                  [_ #f])
+                (for/list ([op (in-list (crule-body cr))])
+                  (match op
+                    [`(,(or 'join 'join-old 'join-new 'join-tomb 'join-lat
+                            'exists 'absent 'absent-old 'absent-new
+                            'absent-ever 'absent-lat)
+                       ,rel ,_ ...)
+                     rel]
+                    [_ #f])))))
+
+;; temp name -> scc id, by inheriting from consumers until nothing moves
+(define (resolve-temp-sccs crules scc-of temp?)
+  (let loop ([acc (hash)] [fuel 32])
+    (define next
+      (for/fold ([a acc]) ([cr (in-list crules)])
+        (define heads (crule-head-rels cr))
+        ;; the SCC this crule belongs to, if already known
+        (define known
+          (for/or ([h (in-list heads)])
+            (if (temp? h) (hash-ref a h #f) (hash-ref scc-of h #f))))
+        (cond
+          [(not known) a]
+          ;; every temp this crule READS belongs to the same kernel
+          [else
+           (for/fold ([a a]) ([b (in-list (crule-body-rels cr))])
+             (if (and (temp? b) (not (hash-ref a b #f)))
+                 (hash-set a b known)
+                 a))])))
+    (if (or (equal? next acc) (zero? fuel))
+        next
+        (loop next (sub1 fuel)))))
+
+;; crule -> kernel id, or #f when its head SCC cannot be resolved (the
+;; error-arm/internal prelude; rf1-contract puts the error-struct prelude in
+;; the cohort manifest rather than in a kernel).
+(define (crule-kernel cr scc-of temp-scc temp?)
+  (for/or ([h (in-list (crule-head-rels cr))])
+    (if (temp? h) (hash-ref temp-scc h #f) (hash-ref scc-of h #f))))
 
 ;; The stat base tag, reproducing emit-cpp's convention exactly: scan/probe
 ;; drivers are "delta:<rel>" when the relation is stratum-dynamic and
@@ -293,6 +368,234 @@
   (define-values (_plan tag-map) (canonicalize-cprog/tags cp #:flavor flavor))
   (for/list ([cr (in-list (cprog-rules cp))])
     (hash-ref tag-map cr)))
+
+;; ------------------------------------------------------------------------
+;; RF1 slice 2: ABI 2 emission -- the four-way split, per kernel.
+;;
+;; `current-plan-abi` selects the shape.  It defaults to 1 so the tree stays
+;; green while the daemon's ABI-2 decoder is built: this emitter's consumer
+;; until then is tests/unit/canonical-plan-tests.rkt, which is what makes
+;; the airtightness properties (a DebugMap-only edit changes no key; a
+;; rename changes the binding schema only) testable before anything depends
+;; on them.
+(define current-plan-abi (make-parameter 1))
+
+;; Everything the executor binds and nothing else.  KEY = hash of this part
+;; ALONE, so it is the identity of a computation rather than of a program at
+;; a moment: kernel-local slots/constants/prims (no sibling dependence),
+;; dense rule ordinals (no location dependence), slot-relative variants (no
+;; name dependence).
+(define (kernel-exec-key exec) (bytes->hex-string (sha256 (string->bytes/utf-8 (sexp->string exec)))))
+
+;; Name-blind AND variable-blind structural text of a crule, for the order
+;; that drives slot assignment.  Both halves are load-bearing:
+;;
+;;  - VARIABLE-blind, because a cprog's crules carry gensym'd variable
+;;    spellings (`__t*`) that churn run to run -- feeding raw crule forms to
+;;    the order made the ORDER churn, and with it every slot assignment and
+;;    kernel key (measured: two identical compiles disagreeing).  So the text
+;;    comes from `canonicalize-crule`, which renumbers variables to (r n).
+;;  - NAME-blind, because slot numbering must not depend on relation names:
+;;    relations resolve to their name-STRIPPED declaration's index among the
+;;    program's distinct SHAPES, not to a name-derived slot.
+;;
+;; Two rules over different relations of the SAME shape therefore tie, which
+;; is intended: that tie is genuinely interchangeable for the exec bytes and
+;; is broken (deterministically) by the caller's global-text.
+(define (blind-crule-text cr decl-of decl-ix const-ix)
+  (define (shape-slot name)
+    (define d (hash-ref decl-of name #f))
+    (if d (hash-ref decl-ix (cons (car d) (cddr d)) -1) -1))
+  (sexp->string
+   (canonicalize-crule cr
+                       (lambda (v) (hash-ref const-ix v #f))
+                       shape-slot
+                       void)))
+
+;; One kernel's exec/binding/debug triple.
+(define (kernel-parts crules decl-of dynamic-rels rid-of tag-of flavor
+                      decl-ix constants global-text blind-text)
+  ;; ORDER: name-blind structural text first, so slot assignment cannot
+  ;; depend on names.  It must then be TOTAL, or the residual tie falls to
+  ;; input order -- which is set-iteration order, varying run to run: the
+  ;; exact trap slice 0.1 closed for the temp-mint walk (measured here as
+  ;; two identical compiles disagreeing on a kernel key).  The tiebreak is
+  ;; `global-text`: the crule's canonical text under the PROGRAM-GLOBAL slot
+  ;; map -- variable-blind (registers are already renumbered) and run-stable,
+  ;; and it discriminates by relation identity.  Using names here is safe
+  ;; for the KEY because a residual tie means the crules are structurally
+  ;; identical, so either order yields the SAME exec text with the slot
+  ;; permutation landing in the binding schema, which is exactly where names
+  ;; belong.
+  (define ordered
+    (sort crules
+          (lambda (a b)
+            (define ta (blind-text a))
+            (define tb (blind-text b))
+            (cond [(string<? ta tb) #t]
+                  [(string<? tb ta) #f]
+                  [else (string<? (global-text a) (global-text b))]))))
+  ;; kernel-local slots, first-use over that order
+  (define rel-order
+    (for*/list ([cr (in-list ordered)]
+                [r (in-list (append (crule-body-rels cr) (crule-head-rels cr)))])
+      r))
+  (define rel-ix
+    (for/fold ([h (hash)]) ([r (in-list rel-order)])
+      (if (hash-has-key? h r) h (hash-set h r (hash-count h)))))
+  (define (rel-slot name)
+    (or (hash-ref rel-ix name #f)
+        (error 'canonicalize-cprog "unslotted relation ~a in kernel" name)))
+  ;; kernel-local constants, first-use over the same order
+  (define const-uses (box '()))
+  (define const-ix (box (hash)))
+  (define (const-slot v)
+    (define name (hash-ref constants v #f))
+    (and name
+         (let ([h (unbox const-ix)])
+           (cond [(hash-ref h v #f) => values]
+                 [else (define i (hash-count h))
+                       (set-box! const-ix (hash-set h v i))
+                       (set-box! const-uses (cons (cons i (cons name v))
+                                                  (unbox const-uses)))
+                       i]))))
+  (define prim-names (mutable-set))
+  (define (prim! f) (set-add! prim-names f))
+  (define canon (for/list ([cr (in-list ordered)])
+                  (canonicalize-crule cr const-slot rel-slot prim!)))
+  (define slots
+    (for/list ([(name i) (in-hash rel-ix)])
+      (define d (hash-ref decl-of name))
+      (cons i `(slot ,i ,(car d) ,@(cddr d)))))
+  (define exec
+    `(exec
+      (slots ,@(map cdr (sort slots < #:key car)))
+      (constants ,@(for/list ([e (in-list (sort (unbox const-uses) < #:key car))])
+                     `(k ,(car e) ,(cddr e))))
+      (prims ,@(sort (set->list prim-names) symbol<?))
+      (rules
+       ,@(for/list ([cr (in-list ordered)] [c (in-list canon)] [i (in-naturals)])
+           `(rule-def (ord ,i) (variant ,@(slot-relative-variant
+                                           (tag-of cr) cr rel-slot))
+                      ,@c)))))
+  (define binding
+    `(binding ,@(for/list ([e (in-list (sort (for/list ([(n i) (in-hash rel-ix)])
+                                               (cons i n))
+                                             < #:key car))])
+                  `(slot ,(car e) ,(cdr e)))))
+  (define debug
+    `(debug ,@(for/list ([cr (in-list ordered)] [i (in-naturals)])
+                `(rule (ord ,i) (rid ,(rid-of cr)) (variant ,(tag-of cr))
+                       (source ,(or (crule-loc cr) #f))))))
+  (values exec binding debug rel-ix))
+
+;; "delta:left.path#1" -> (delta (rel 3) 1): the KIND stays, the relation
+;; becomes this kernel's slot, and the display spelling lives in DebugMap.
+(define (slot-relative-variant tag cr rel-slot)
+  (match (regexp-match #px"^([a-z0-9]+)(?::([^#]*))?(?:#([0-9]+))?$" tag)
+    [(list _ kind rel ord)
+     (append (list (string->symbol kind))
+             (if (and rel (not (string=? rel "")))
+                 (list `(rel ,(with-handlers ([exn:fail? (lambda (_) -1)])
+                                (rel-slot (string->symbol rel)))))
+                 '())
+             (if ord (list (string->number ord)) '()))]
+    [_ (list (string->symbol tag))]))
+
+;; The cohort: one file per (stratum, flavor), carrying the manifest and the
+;; kernels with their labeled parts (open question 1, settled -- the atomic
+;; write stays single and the daemon's <stem>.<abi>.plan derivation keeps
+;; working; 1176 kernels against 506 strata is the other half of the reason).
+;;
+;; `model` is slice 1's ProgramModel; the partition is by head SCC, with
+;; staging temps inheriting their consumer's kernel.  A crule whose head SCC
+;; does not resolve rides the PRELUDE (rf1-contract puts the error-struct
+;; prelude in the manifest rather than in a kernel).
+(define (canonicalize-cprog/abi2 cp model #:flavor [flavor 'normal])
+  (define constants (cprog-constants cp))
+  (define all-decls (sort (cprog-decls cp) sexp<?))
+  (define-values (storage attachments)
+    (partition (lambda (d) (memq (car d) '(relation struct lattice temp)))
+               all-decls))
+  (define decl-of (for/hash ([d (in-list storage)]) (values (second d) d)))
+  (define (temp? r) (eq? (car (hash-ref decl-of r '(#f))) 'temp))
+  ;; distinct name-stripped shapes, canonically ordered: the blind order's
+  ;; discrimination without names
+  (define decl-ix
+    (for/hash ([sh (in-list (sort (remove-duplicates
+                                   (for/list ([d (in-list storage)])
+                                     (cons (car d) (cddr d))))
+                                  sexp<?))]
+               [i (in-naturals)])
+      (values sh i)))
+  (define crules (cprog-rules cp))
+  (define scc-of (program-model-scc-of model))
+  (define temp-scc (resolve-temp-sccs crules scc-of temp?))
+  ;; rid/tag identities stay ABI 1's (they are DebugMap data now, but the
+  ;; same function of the cprog, so goldens and stats keep their spelling)
+  (define tags (canonical-rule-tags cp #:flavor flavor))
+  (define tag-map (for/hash ([cr (in-list crules)] [t (in-list tags)])
+                    (values cr t)))
+  (define (rid-of cr) (car (hash-ref tag-map cr)))
+  (define (tag-of cr) (cdr (hash-ref tag-map cr)))
+  ;; The program-global canonical text per crule: the total-order tiebreak
+  ;; above.  Same construction ABI 1 uses, so it is variable-blind and
+  ;; run-stable.
+  (define global-rel-ix
+    (for/hash ([d (in-list storage)] [i (in-naturals)]) (values (second d) i)))
+  (define const-pairs
+    (sort (for/list ([(k v) (in-hash constants)])
+            (if (symbol? v) (cons v k) (cons k v)))
+          symbol<? #:key car))
+  (define global-const-ix
+    (for/hash ([p (in-list const-pairs)] [i (in-naturals)]) (values (car p) i)))
+  (define global-text-cache (make-hash))
+  (define (global-text cr)
+    (hash-ref! global-text-cache cr
+               (lambda ()
+                 (sexp->string
+                  (canonicalize-crule cr
+                                      (lambda (v) (hash-ref global-const-ix v #f))
+                                      (lambda (n) (hash-ref global-rel-ix n 0))
+                                      void)))))
+  (define blind-cache (make-hash))
+  (define (blind-text cr)
+    (hash-ref! blind-cache cr
+               (lambda () (blind-crule-text cr decl-of decl-ix global-const-ix))))
+  (define grouped
+    (for/fold ([h (hash)]) ([cr (in-list crules)])
+      (hash-update h (crule-kernel cr scc-of temp-scc temp?)
+                   (lambda (l) (cons cr l)) '())))
+  (define prelude (reverse (hash-ref grouped #f '())))
+  ;; kernels ordered by their own exec key: a cohort's kernel order is then
+  ;; a function of its kernels, not of hash iteration
+  (define built
+    (sort
+     (for/list ([(scc krules) (in-hash grouped)] #:when scc)
+       (define-values (exec binding debug rel-ix)
+         (kernel-parts (reverse krules) decl-of (cprog-dynamic-rels cp)
+                       rid-of tag-of flavor decl-ix constants global-text
+                       blind-text))
+       (list (kernel-exec-key exec) scc exec binding debug rel-ix))
+     string<? #:key first))
+  (define members
+    (program-model-scc-members model))
+  `(kernel-cohort
+    (abi 2)
+    (flavor ,flavor)
+    (attachments ,@attachments)
+    (dynamic ,@(sort (set->list (cprog-dynamic-rels cp)) symbol<?))
+    (manifest
+     ,@(for/list ([k (in-list built)] [i (in-naturals)])
+         `(kernel (ord ,i) (key ,(first k))
+                  (members ,@(hash-ref members (second k) '()))
+                  (rules ,(length (cdr (assq 'rules (cdr (third k)))))))))
+    (prelude
+     ,@(for/list ([cr (in-list prelude)])
+         `(crule (rid ,(rid-of cr)) (variant ,(tag-of cr))
+                 (source ,(or (crule-loc cr) #f)))))
+    ,@(for/list ([k (in-list built)] [i (in-naturals)])
+        `(kernel (ord ,i) ,(third k) ,(fourth k) ,(fifth k)))))
 
 ;; ------------------------------------------------------------------------
 ;; Serialization and KernelPlanKey.  One `write` line (D6): the daemon's

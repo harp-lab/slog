@@ -74,29 +74,47 @@
 ;; producing a mis-partitioned kernel later.
 (define/contract (stratify-all rules [extra-edges (set)])
   (->* (set?) (set?) strata?)
-  (define-values (strata model) (stratify-rules/model rules extra-edges))
-  (check-stratum-scc-agreement strata model)
+  (define-values (strata _model) (stratify-all/model rules extra-edges))
   strata)
 
+(define (stratify-all/model rules [extra-edges (set)])
+  (define-values (strata model) (stratify-rules/model rules extra-edges))
+  (check-stratum-scc-agreement strata model)
+  (values strata model))
+
+;; Every rule of one stratum must own a head SCC at ONE level -- that is the
+;; property slice 2's partition rests on (a rule joins the stratum of its
+;; head's SCC).  Deliberately RELATIVE, not absolute: with #:split-facts?
+;; the rest strata are renumbered (+1) after stratification, so comparing a
+;; stratum's own level number to the model's would false-alarm on every
+;; compressed-save compile while nothing was actually wrong.
 (define (check-stratum-scc-agreement strata model)
   (define scc-of (program-model-scc-of model))
   (define scc-level (program-model-scc-level model))
-  (for* ([s (in-list strata)]
-         [rule (in-set (stratum-rules s))])
-    ;; `set-first`, not `(first (set->list ...))`: this must ask about the
-    ;; SAME head stratify's own rule-level asked about, or a multi-head rule
-    ;; whose heads sit in different SCCs would false-alarm here while the
-    ;; leveling was self-consistent.
-    (define heads (rule-head-rels rule))
-    (unless (set-empty? heads)
-      (define scc (hash-ref scc-of (set-first heads) #f))
-      (define lvl (and scc (hash-ref scc-level scc #f)))
-      (unless (equal? lvl (stratum-level s))
-        (error 'stratify
-               (string-append
-                "internal: stratum level ~a disagrees with the head SCC's "
-                "level ~a for the rule at ~a (RF1 slice 1 invariant)")
-               (stratum-level s) lvl (rule-location-string rule))))))
+  (for ([s (in-list strata)])
+    (define levels
+      (for/fold ([acc (hash)]) ([rule (in-set (stratum-rules s))])
+        ;; `set-first`, not `(first (set->list ...))`: this must ask about the
+        ;; SAME head stratify's own rule-level asked about, or a multi-head
+        ;; rule whose heads sit in different SCCs would false-alarm while the
+        ;; leveling was self-consistent.
+        (define heads (rule-head-rels rule))
+        (cond
+          [(set-empty? heads) acc]
+          [else
+           (define scc (hash-ref scc-of (set-first heads) #f))
+           (define lvl (and scc (hash-ref scc-level scc #f)))
+           (if lvl (hash-update acc lvl (lambda (r) (cons rule r)) '()) acc)])))
+    (when (> (hash-count levels) 1)
+      (error 'stratify
+             (string-append
+              "internal: one stratum's rules own head SCCs at ~a different "
+              "levels (~a) -- the RF1 slice 1 partition invariant; first "
+              "offenders: ~a")
+             (hash-count levels)
+             (sort (hash-keys levels) <)
+             (for/list ([(lvl rules) (in-hash levels)])
+               (list lvl (rule-location-string (car rules))))))))
 
 (define/contract (plan-all rules rel-env dynamic-rels level)
   (-> set? hash? set? natural? (cons/c (set/c planned-rule?) hash?))
@@ -109,14 +127,29 @@
   (-> set? hash? hash? cprog?)
   (build-cprog planned-rules rel-env decomps))
 
+;; RF1 slice 2: the ProgramModel reaches canonicalization through a
+;; parameter rather than through every intermediate signature.  The front end
+;; computes it once per program (stratify-all) and the per-stratum compile
+;; runs inside that extent; #f means "not available", which keeps every
+;; tooling path that builds a cprog by hand working.
+(define current-program-model (make-parameter #f))
+
 (define/contract (canonicalize-all cprog flavor)
   (-> cprog? symbol? kernel-plan?)
   (canonicalize-cprog cprog #:flavor flavor))
 
+;; The ABI-2 cohort for one stratum, or #f without a model.  Emission is
+;; still gated by current-plan-abi (default 1); this is the seam the daemon
+;; decoder will switch on, and the audit instrument below already reads it.
+(define (canonicalize-all/abi2 cprog flavor)
+  (define model (current-program-model))
+  (and model (canonicalize-cprog/abi2 cprog model #:flavor flavor)))
+
 ;; -----------------------------------------------------------------------
 ;; Front end: a program to its list of stratum jobs.
 ;;
-;; A job is (job hash type-env stratum-rules): everything needed to build
+;; A job is (job hash type-env stratum dbmanifest decomps model): everything
+;; needed to build
 ;; one stratum's .so, plus the cache key deciding whether to.  The key is
 ;; computed from pre-simplification inputs only -- later passes introduce
 ;; generated names that differ run to run, while the front end's output is
@@ -242,7 +275,8 @@
     (set-union (for/set ([(derived info) (in-hash decomps)])
                  (cons (first info) derived))
                seq-edges))
-  (define full-strata (stratify-all typed decomp-edges))
+  (define-values (full-strata full-model)
+    (stratify-all/model typed decomp-edges))
   ;; check the ORIGINAL stratification (a superset that keeps iter0 rules in
   ;; place); the split only moves body-less rules, which can never violate the
   ;; monotone-use calculus, so passing here implies the split is safe too.
@@ -269,16 +303,25 @@
   (define fact-rules
     (if split-facts? (ground-fact-rules typed rel-names) (set)))
   (define facts? (not (set-empty? fact-rules)))
-  (define strata
+  ;; RF1 slice 2: each stratum is paired with the model of the stratify call
+  ;; that PRODUCED it.  The facts stratum keeps the FULL model -- its rules
+  ;; were subtracted from the other call, so their head relations may not even
+  ;; be nodes in that graph -- while the renumbered rest strata keep theirs.
+  (define strata+models
     (cond
-      [(not facts?) full-strata]
+      [(not facts?)
+       (for/list ([s (in-list full-strata)]) (cons s full-model))]
       [else
-       (define rest-strata (stratify-all (set-subtract typed fact-rules) decomp-edges))
-       (cons `(stratum 0 ,fact-rules)
+       (define-values (rest-strata rest-model)
+         (stratify-all/model (set-subtract typed fact-rules) decomp-edges))
+       (cons (cons `(stratum 0 ,fact-rules) full-model)
              (for/list ([s (in-list rest-strata)])
-               `(stratum ,(add1 (stratum-level s)) ,(stratum-rules s))))]))
-  (list (for/list ([stratum (in-list strata)])
-          (list (job-hash (stratum-level stratum)) type-env+ stratum dbmanifest decomps))
+               (cons `(stratum ,(add1 (stratum-level s)) ,(stratum-rules s))
+                     rest-model)))]))
+  (list (for/list ([sm (in-list strata+models)])
+          (define stratum (car sm))
+          (list (job-hash (stratum-level stratum)) type-env+ stratum dbmanifest
+                decomps (cdr sm)))
         facts?
         frozen))
 
@@ -597,7 +640,7 @@
 ;; schedules that on the parallel pool at the appropriate optimization level(s).
 
 (define (emit-stratum-cpp job)
-  (match-define (list proghash type-env stratum dbmanifest decomps) job)
+  (match-define (list proghash type-env stratum dbmanifest decomps model) job)
   ;; the delta-entry/_count flavors (docs/incremental.md 0.B5/§8B.1) write
   ;; their own artifact families; "_delta"/"_count" (not ".delta") because
   ;; the name also becomes the daemon stratum name and rides into generated
@@ -676,6 +719,20 @@
                          (string-append "." incremental-flavor-abi)
                          "")))
    (lambda () (displayln (kernel-plan->string (canonicalize-all cprog plan-flavor)))))
+  ;; RF1 slice 2 audit instrument (SLOG_DUMP_ABI2=<dir>): emit the ABI-2
+  ;; cohort beside the shipped plan.  Inspect-only -- nothing reads it yet,
+  ;; which is the point: the split gets exercised over real programs before
+  ;; the daemon decoder exists.
+  (let ([dir (getenv "SLOG_DUMP_ABI2")])
+    (when dir
+      (define cohort
+        (parameterize ([current-program-model model])
+          (canonicalize-all/abi2 cprog plan-flavor)))
+      (when cohort
+        (make-directory* dir)
+        (call-with-atomic-output
+         (build-path dir (format "~a.abi2" hash-name))
+         (lambda () (displayln (kernel-plan->string cohort)))))))
   (define accel-rels (stratum-accel-rels stratum dynamic-rels type-env decomps))
   (define emitted (write-cpp cprog dbmanifest hash-name #:accel-rels accel-rels))
   ;; write-cpp returns either one string (a single TU) or a list of
@@ -698,7 +755,7 @@
 ;; and the artifact caches; the tiered/-O2 plumbing can adopt the flavor
 ;; later if profiles ask.
 (define (ensure-delta-so job)
-  (match-define (list proghash _te _st _dm _dc) job)
+  (match-define (list proghash _te _st _dm _dc _mo) job)
   (define so (fullpath (format "build/~a_delta.O0.so" proghash)))
   (define plan (fullpath (format "build/~a_delta.plan" proghash)))
   (if (equal? (or (getenv "SLOG_OPT") "tiered") "interp")
@@ -759,7 +816,7 @@
 ;; prefixes), so stripping them changes no sidecar or golden; the flavor
 ;; ABI bump above regenerates the affected cached artifacts once.
 (define (ensure-count-so job)
-  (match-define (list proghash _te _st _dm _dc) job)
+  (match-define (list proghash _te _st _dm _dc _mo) job)
   (ensure-flavored-artifacts
    (fullpath (format "build/~a_count.~a.O0.so"
                      proghash incremental-flavor-abi))
@@ -774,7 +831,7 @@
 ;; distinct artifact family because neither the old set-only `_delta` plugin
 ;; nor the fire-once `_count` plugin has these semantics.
 (define (ensure-maintenance-so job)
-  (match-define (list proghash _te _st _dm _dc) job)
+  (match-define (list proghash _te _st _dm _dc _mo) job)
   (ensure-flavored-artifacts
    (fullpath (format "build/~a_maint1.~a.O0.so"
                      proghash incremental-flavor-abi))
@@ -788,7 +845,7 @@
 ;; -1 support sinks.  Semijoin lookahead is disabled because its FULL-only
 ;; probe would omit the delta half of a negative pre-state union view.
 (define (ensure-negative-maintenance-so job)
-  (match-define (list proghash _te _st _dm _dc) job)
+  (match-define (list proghash _te _st _dm _dc _mo) job)
   (ensure-flavored-artifacts
    (fullpath (format "build/~a_maint3neg.~a.O0.so"
                      proghash incremental-flavor-abi))
@@ -805,7 +862,7 @@
 ;; candidates' sidecar entries, and lets retained transition rows drive the
 ;; next round until the negative fixpoint.
 (define (ensure-recursive-negative-maintenance-so job)
-  (match-define (list proghash _te _st _dm _dc) job)
+  (match-define (list proghash _te _st _dm _dc _mo) job)
   (ensure-flavored-artifacts
    (fullpath (format "build/~a_maint4neg.~a.O0.so"
                      proghash incremental-flavor-abi))
@@ -1035,7 +1092,7 @@
 ;; emit-stratum-cpp still writes the parallel C++ debug artifact today, but
 ;; SLOG_OPT=interp never compiles or dlopens it; the daemon consumes this plan.
 (define (ensure-normal-plan job)
-  (match-define (list proghash _te _st _dm _dc) job)
+  (match-define (list proghash _te _st _dm _dc _mo) job)
   (define plan (fullpath (format "build/~a.plan" proghash)))
   (unless (file-exists? plan) (void (emit-stratum-cpp job)))
   plan)
@@ -1131,7 +1188,7 @@
   (define o2-cmds '())
   (define strata
     (for/list ([job (in-list jobs)])
-      (match-define (list proghash _te stratum _dm _dc) job)
+      (match-define (list proghash _te stratum _dm _dc _mo) job)
       (write-stratum-manifest proghash stratum _te _dc)  ; sidecar, even for a cached .so
       (define o2so (fullpath (format "build/~a.so" proghash)))
       (define o0so (fullpath (format "build/~a.O0.so" proghash)))
