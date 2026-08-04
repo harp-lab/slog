@@ -565,6 +565,57 @@ Consequences, pinned:
    the cohort manifest, bumps `abi` to 2, moves the error-struct
    prelude into the manifest, and re-keys; consumers walk the
    manifest's kernel list (per-kernel-native, no reaggregation).
+
+   *BYTE-DEFINING DECISIONS, pinned 2026-08-03 and VALIDATED on real
+   compiler output before any emitter was written.*  The slice rests on
+   one question -- do two instances of one library produce the IDENTICAL
+   exec plan? -- and several of the decisions that answer it were not
+   enumerated above.  Each one, chosen wrong, silently breaks the
+   airtightness property that justifies the re-key:
+
+   - **(a) Slots are KERNEL-LOCAL.**  Only what this kernel binds, so a
+     kernel's bytes stop depending on sibling kernels or unrelated
+     declarations.
+   - **(b) Slot NUMBERING is name-independent** -- assigned in first-use
+     order over a name-BLIND canonical rule order.  Numbering by sorted
+     name would reintroduce name dependence into the exec bytes: two
+     instances whose relations sort differently against shared globals
+     would number identical computations differently.  (First-use order
+     is the discipline registers already follow.)
+   - **(c) Rule identity in the exec part is a DENSE KERNEL-LOCAL
+     ORDINAL** in that same order, never the location-derived rid --
+     otherwise moving a rule to another line changes exec bytes.
+     DebugMap maps ordinal -> rid, lineage and source.  This is the
+     concrete reading of "RuleIds are referenced by KernelExecPlan and
+     defined, with lineage, in DebugMap".
+   - **(d) VariantTag is SLOT-RELATIVE** -- `(delta (rel 2))`, not
+     `"delta:left.path"` -- with the familiar spelling derived through
+     the binding schema for display (already pinned above; this records
+     that the exec bytes depend on it).
+   - **(e) The dynamic set is slot-relative** for the same reason.
+   - **(f) Constants keep D5's order** (sorted by content-derived global
+     name, itself a hash of the value): already rename-immune and
+     deterministic, so the one re-key does not also churn constant
+     order.  This settles open question 2 by choosing the incumbent.
+   - **Sidecar layout (open question 1): ONE file per (stratum, flavor)**
+     carrying the cohort manifest and the kernels, each with its four
+     labeled parts.  Keeps the atomic write one `call-with-atomic-output`,
+     keeps the daemon's existing `<stem>.<abi>.plan` path derivation
+     working with no directory scan, and keeps re-emit-on-miss one
+     decision.  Extracting per-KernelPlanKey artifact files is a T4
+     step-3 concern (that is where the `.so` becomes shared), not this
+     slice's.
+
+   *Validation (2026-08-03), on the two real ABI-1 plans of
+   `tests/n1_instances.slog`:* deriving the exec part under (a)-(f) makes
+   left's and right's kernels **byte-identical -- 395 chars each** -- with
+   every name in their differing binding schemas
+   (`(slot 0 left.edge) (slot 1 left.path)` vs the `right.` pair).  The
+   root program's `(seed X Y) --> (left.edge X Y)`, which stratum grouping
+   had put inside right's unit, correctly falls outside both kernels: B2
+   in miniature.  What this does NOT yet prove: that the daemon can seal
+   from the split form, that every flavor partitions cleanly, or that
+   multi-head/temp/struct heads land where expected.
    *Tests:* extended `tests/unit/canonical-plan-tests.rkt` — the split
    is airtight (editing a DebugMap-only fact never changes any
    KernelPlanKey; moving a rule between files changes DebugMap only;
