@@ -446,18 +446,30 @@
   (define (rel-slot name)
     (or (hash-ref rel-ix name #f)
         (error 'canonicalize-cprog "unslotted relation ~a in kernel" name)))
-  ;; kernel-local constants, first-use over the same order
+  ;; kernel-local constants, first-use over the same order.
+  ;;
+  ;; `const-slot` is handed a value-ref SYMBOL that is either a variable or a
+  ;; globalized constant NAME -- that ambiguity is the ir's own convention
+  ;; (canonicalize-crule's ref!: the name set is what distinguishes them), so
+  ;; the lookup must be by NAME.  Keying it by value instead returns #f for
+  ;; every constant, and ref! then falls through to its register branch: the
+  ;; constant silently degrades into `(let (r 0) (r 1))`, losing the value
+  ;; and emitting nonsense.  (Caught by inspecting a plan that should have
+  ;; had constants and did not; the key/binding gate cannot see semantics.)
+  (define const-value                    ; globalized NAME -> value
+    (for/fold ([h (hash)]) ([(k v) (in-hash constants)])
+      (if (symbol? v) (hash-set h v k) (hash-set h k v))))
   (define const-uses (box '()))
   (define const-ix (box (hash)))
-  (define (const-slot v)
-    (define name (hash-ref constants v #f))
-    (and name
+  (define (const-slot name)
+    (and (hash-has-key? const-value name)
          (let ([h (unbox const-ix)])
-           (cond [(hash-ref h v #f) => values]
+           (cond [(hash-ref h name #f) => values]
                  [else (define i (hash-count h))
-                       (set-box! const-ix (hash-set h v i))
-                       (set-box! const-uses (cons (cons i (cons name v))
-                                                  (unbox const-uses)))
+                       (set-box! const-ix (hash-set h name i))
+                       (set-box! const-uses
+                                 (cons (list i name (hash-ref const-value name))
+                                       (unbox const-uses)))
                        i]))))
   (define prim-names (mutable-set))
   (define (prim! f) (set-add! prim-names f))
@@ -470,8 +482,12 @@
   (define exec
     `(exec
       (slots ,@(map cdr (sort slots < #:key car)))
+      ;; the constant's global NAME rides along: it is `const<sha24>` OF THE
+      ;; VALUE (operationalization.rkt), so it is content-derived and carries
+      ;; no program or name dependence -- and the daemon's decode_constant
+      ;; reads it, so dropping it would have been a silently lossy split.
       (constants ,@(for/list ([e (in-list (sort (unbox const-uses) < #:key car))])
-                     `(k ,(car e) ,(cddr e))))
+                     `(k ,(first e) ,(second e) ,(third e))))
       (prims ,@(sort (set->list prim-names) symbol<?))
       (rules
        ,@(for/list ([cr (in-list ordered)] [c (in-list canon)] [i (in-naturals)])

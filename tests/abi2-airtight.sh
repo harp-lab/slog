@@ -32,9 +32,14 @@ keys_of() { grep -ho '(key "[0-9a-f]*")' "$1"/*.abi2 2>/dev/null | LC_ALL=C sort
 bindings_of() { grep -ho '(binding [^)]*)[^)]*)' "$1"/*.abi2 2>/dev/null | LC_ALL=C sort; }
 
 compile_dump() { # <program> <dumpdir>
-  rm -rf build config/cache "$2"
+  rm -rf build config/cache "$2" "$2.abi1"
   SLOG_DUMP_ABI2="$2" timeout 900 racket compiler/run.rkt "$1" \
     > "$WORK/$(basename "$2").log" 2>&1
+  # snapshot THIS compile's ABI-1 plans beside its ABI-2 dump: build/ is
+  # wiped by the next fixture, so a later cross-check would otherwise
+  # compare two different programs and pass for the wrong reason
+  mkdir -p "$2.abi1"
+  cp build/*.plan "$2.abi1"/ 2>/dev/null || true
 }
 
 # --- the fixture, generated so the repo gains no single-use .slog ----------
@@ -57,6 +62,7 @@ EOF
 # (b) rename: path -> reach throughout (a pure binding-schema change)
 sed 's/\bpath\b/reach/g' "$WORK/base.slog" > "$WORK/renamed.slog"
 
+compile_dump tests/structs.slog   "$WORK/d-consts"   # ground facts => constants
 compile_dump "$WORK/base.slog"    "$WORK/d-base"
 compile_dump "$WORK/moved.slog"   "$WORK/d-moved"
 compile_dump "$WORK/renamed.slog" "$WORK/d-renamed"
@@ -84,6 +90,24 @@ if diff <(bindings_of "$WORK/d-base") <(bindings_of "$WORK/d-renamed") \
   bad "rename-changes-the-binding" "binding schemas identical after a rename"
 else
   ok "rename-changes-the-binding"
+fi
+
+# (e) SEMANTIC cross-check against the shipped ABI-1 plan.  The key/binding
+# assertions above are blind to meaning: they passed while the emitter was
+# silently degrading every constant into a register (const-slot keyed by
+# value, but the IR hands it a globalized NAME, so the lookup missed and
+# canonicalize-crule fell through to its register branch).  Constants are
+# content-addressed -- `const<sha24>` OF THE VALUE -- so the same compile's
+# ABI-1 plans and ABI-2 cohorts must name exactly the same constant set.
+consts_abi1="$(grep -ho 'const[0-9a-f]\{24\}' "$WORK/d-consts.abi1"/*.plan 2>/dev/null | LC_ALL=C sort -u)"
+consts_abi2="$(grep -ho 'const[0-9a-f]\{24\}' "$WORK/d-consts"/*.abi2 2>/dev/null | LC_ALL=C sort -u)"
+if [ -z "$consts_abi1" ]; then
+  bad "constants-survive-the-split" "fixture produced no constants to check"
+elif [ "$consts_abi1" = "$consts_abi2" ]; then
+  ok "constants-survive-the-split"
+else
+  bad "constants-survive-the-split" \
+      "abi1 has $(echo "$consts_abi1" | wc -l), abi2 has $(echo "$consts_abi2" | wc -l)"
 fi
 
 # (c) the payoff: two instances of one library share a kernel key
