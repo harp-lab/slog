@@ -29,6 +29,7 @@
 ;; relations run once as static tasks.
 
 (provide stratify-rules
+         stratify-rules/model
          rule-head-rels
          rule-body-rels
          rule-body-neg-rels
@@ -161,7 +162,7 @@
 ;; complete the cycle when a rule reads R_has and writes back into R (the
 ;; in-SCC enumeration case: R and R_has share an SCC).
 
-(define (stratify-rules rules [extra-edges (set)])
+(define (stratify-rules/model rules [extra-edges (set)])
   (define rule-list (set->list rules))
 
   ;; the dependency graph over relation names
@@ -245,5 +246,51 @@
     (for/fold ([h (hash)]) ([rule (in-list rule-list)])
       (hash-update h (rule-level rule) (lambda (s) (set-add s rule)) (set))))
 
-  (for/list ([lvl (in-list (sort (hash-keys by-level) <))])
-    `(stratum ,lvl ,(hash-ref by-level lvl))))
+  (define strata
+    (for/list ([lvl (in-list (sort (hash-keys by-level) <))])
+      `(stratum ,lvl ,(hash-ref by-level lvl))))
+
+  ;; RF1 slice 1: carry the condensation out instead of discarding it.  Every
+  ;; part of the model is already computed above -- this only stops throwing
+  ;; it away, so `strata` is bit-for-bit what it always was.
+  (define scc-levels
+    (for/fold ([h (hash)]) ([(rel scc) (in-hash scc-of)])
+      (hash-set h scc (scc-level scc))))
+  (define scc-members
+    (for/fold ([h (hash)]) ([rel (in-list nodes)])
+      (hash-update h (hash-ref scc-of rel) (lambda (l) (cons rel l)) '())))
+  (define scc-members-sorted
+    (for/fold ([h (hash)]) ([(scc rels) (in-hash scc-members)])
+      (hash-set h scc (sort rels symbol<?))))
+  ;; Lineage: rules sharing a provenance key came from one source rule (a
+  ;; `|`-split's derivatives are the motivating case); an unlocated rule is
+  ;; its own source.  Ids are assigned in a canonical order -- located keys
+  ;; first, sorted -- so the model is a pure function of the rule set.
+  (define located
+    (sort (remove-duplicates
+           (filter values (map rule-lineage-key rule-list)))
+          (lambda (a b)
+            (or (string<? (first a) (first b))
+                (and (string=? (first a) (first b))
+                     (or (< (second a) (second b))
+                         (and (= (second a) (second b))
+                              (< (third a) (third b)))))))))
+  (define key->id
+    (for/fold ([h (hash)]) ([k (in-list located)] [i (in-naturals)])
+      (hash-set h k i)))
+  (define-values (source-of sources)
+    (for/fold ([of (hash)] [srcs (hash)])
+              ([rule (in-list rule-list)] [i (in-naturals (length located))])
+      (define key (rule-lineage-key rule))
+      (define id (if key (hash-ref key->id key) i))
+      (values (hash-set of rule id)
+              (hash-update srcs id (lambda (l) (cons rule l)) '()))))
+  (values strata
+          (program-model scc-of scc-levels scc-members-sorted
+                         sources source-of)))
+
+;; The shipped entry point: strata only.  Callers that want the condensation
+;; ask for it explicitly, so nothing existing changes shape.
+(define (stratify-rules rules [extra-edges (set)])
+  (define-values (strata _model) (stratify-rules/model rules extra-edges))
+  strata)

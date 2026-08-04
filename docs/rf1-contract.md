@@ -522,6 +522,38 @@ Consequences, pinned:
    behavior). The named program struct replacing the positional
    tuples; the ProgramModel record carrying condensation + lineage out
    of `stratify-rules` and through simplification/lowering.
+   *As-built (2026-08-03, SHIPPED):*
+   - **The program struct half was already done** — `program-ir`
+     (type-env, modules, manifest, decomps, occurrence-tree) landed with
+     N1, the occurrence tree being N1's own field. Seam 2's
+     struct-ification is therefore closed; only the ProgramModel
+     remained.
+   - **The condensation was computed and thrown away.**
+     `stratify-rules` builds Tarjan SCCs over the global relation graph,
+     their levels, and each rule's owning SCC (via its head), then
+     returns only `(stratum LEVEL rules)`. `stratify-rules/model` now
+     returns both; `stratify-rules` is a thin wrapper, so no existing
+     caller or test changes shape and `strata` is bit-for-bit unchanged.
+   - **Lineage needed no pass plumbing.** Provenance already threads
+     through simplification/typechecking/planning untouched, so rules
+     derived from one source rule carry the SAME prov — a `|`-split's
+     derivatives are exactly that. The model groups by a provenance KEY
+     (file, line, column) instead of asking every pass to forward a tag,
+     which would have meant widening the `(prov _ _)` shape that
+     ir-shared's own `syn?` matches at exact arity. Unlocated rules are
+     each their own source. Ids are assigned canonically (located keys
+     sorted first), so the model is a pure function of the rule set, not
+     of arrival order.
+   - **Deferred to slice 2, deliberately:** a demand-minted rule's
+     ORIGIN. demand.rkt mints with a synthetic token, so the origin is
+     absent rather than merely ungrouped, and propagating it would move
+     `(source ...)` in the plan's meta block — a plan-byte change, which
+     belongs where the one sanctioned re-key absorbs it.
+   - **The model is checked, not dormant** (the project's no-inert-
+     scaffolds rule): compile.rkt asserts on every build the invariant
+     slice 2's partition will rest on — every rule of a stratum owns an
+     SCC whose level IS that stratum's level, asked of the same head
+     `rule-level` asks about.
    *Tests:* byte-identical generated C++ and `.cprog`s on
    representative programs (the stats exact-once audit is the cheap
    gate, as in T1); lineage unit battery — a `|`-split rule maps both
@@ -566,6 +598,24 @@ order after slice 2.
 1. **Byte-identical generated C++** vs pre-RF1 across the suite —
    emit-cpp semantics untouched in this arc (the exact-once
    instantiation audit and goldens are the mechanism, as for T1).
+   *MEASURED 2026-08-03 (slice 1), and the wording matters:* this gate
+   cannot be read as a TEXT DIFF of `.cpp`/`.cprog`, because TU text is
+   run-varying TODAY.  Control, on the unmodified compiler at 553a4c3
+   over six representative programs (reach, structs, dem_lambda,
+   lat_run_base, n1_instances, neg_diff): **18 of 42 artifacts differ
+   between two runs of the SAME compiler**, after normalizing the
+   job-hash stem and the content-addressed cluster function names.  The
+   differing files are equal in LENGTH and in content but PERMUTED —
+   local-variable gensyms (`__t*`, `__err*`) churn symbol spellings,
+   symbol spellings churn Racket set-iteration order, and emission order
+   follows.  That is exactly this document's own deferral ("TU
+   emission-ORDER canonicalization stays deferred to T4 phase B") meeting
+   its determinism doctrine ("plan-layer identity is the only run-stable
+   identity").  So the operative mechanism is the one named in
+   parentheses — the exact-once instantiation audit plus the goldens —
+   with plan-layer byte stability (tests/plan-determinism.sh) as the byte
+   gate that IS meaningful.  A future arc that wants a literal TU text
+   diff must canonicalize local gensyms first.
 2. **Full suite green.**
 3. **Plan goldens** for the four representative program classes
    (deep_fact-class ground rules, lattice, demand, join3/wcoj) landed

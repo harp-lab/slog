@@ -64,9 +64,39 @@
   (->* (type-env? set?) (hash?) (set/c typed-rule?))
   (typecheck-rules type-env rules decomps))
 
+;; RF1 slice 1: stratification also yields the ProgramModel (the
+;; condensation it used to discard).  Slice 2's per-kernel partition is its
+;; production consumer; here it is checked, which is what keeps it from
+;; being a dormant field: every rule of a stratum must own an SCC whose
+;; level IS that stratum's level.  That is the exact invariant slice 2's
+;; partition will rely on -- a rule joins the stratum of its head's SCC --
+;; so if the two ever disagree, the compile says so here rather than
+;; producing a mis-partitioned kernel later.
 (define/contract (stratify-all rules [extra-edges (set)])
   (->* (set?) (set?) strata?)
-  (stratify-rules rules extra-edges))
+  (define-values (strata model) (stratify-rules/model rules extra-edges))
+  (check-stratum-scc-agreement strata model)
+  strata)
+
+(define (check-stratum-scc-agreement strata model)
+  (define scc-of (program-model-scc-of model))
+  (define scc-level (program-model-scc-level model))
+  (for* ([s (in-list strata)]
+         [rule (in-set (stratum-rules s))])
+    ;; `set-first`, not `(first (set->list ...))`: this must ask about the
+    ;; SAME head stratify's own rule-level asked about, or a multi-head rule
+    ;; whose heads sit in different SCCs would false-alarm here while the
+    ;; leveling was self-consistent.
+    (define heads (rule-head-rels rule))
+    (unless (set-empty? heads)
+      (define scc (hash-ref scc-of (set-first heads) #f))
+      (define lvl (and scc (hash-ref scc-level scc #f)))
+      (unless (equal? lvl (stratum-level s))
+        (error 'stratify
+               (string-append
+                "internal: stratum level ~a disagrees with the head SCC's "
+                "level ~a for the rule at ~a (RF1 slice 1 invariant)")
+               (stratum-level s) lvl (rule-location-string rule))))))
 
 (define/contract (plan-all rules rel-env dynamic-rels level)
   (-> set? hash? set? natural? (cons/c (set/c planned-rule?) hash?))
@@ -426,9 +456,13 @@
   (define recursive (make-hash))   ; scc-id -> #t
   (define linear    (make-hash))   ; scc-id -> #t
   (for ([rule (in-set (stratum-rules stratum))])
-    (define heads (set->list (rule-head-rels rule)))
-    (when (pair? heads)
-      (define scc (hash-ref scc-of (first heads) #f))
+    ;; `set-first`, not `(first (set->list ...))`: this must ask about the
+    ;; SAME head stratify's own rule-level asked about, or a multi-head rule
+    ;; whose heads sit in different SCCs would false-alarm here while the
+    ;; leveling was self-consistent.
+    (define heads (rule-head-rels rule))
+    (unless (set-empty? heads)
+      (define scc (hash-ref scc-of (set-first heads) #f))
       (when scc
         (define same-scc-occs
           (for/sum ([b (in-list (rule-body-rel-occurrences rule))])

@@ -30,6 +30,8 @@
  (struct-out module-ir)
  (struct-out module-occurrence)
  (struct-out program-ir)
+ (struct-out program-model)
+ rule-lineage-key
  ;; lattice value types
  lattice-spec? lattice-spec-kind lattice-spec-base lattice-spec-param
  lattice-base-type rel-lattice-spec rel-lattice-key-arity
@@ -195,6 +197,51 @@
 (struct program-ir
   (type-env modules manifest decomps occurrence-tree)
   #:transparent)
+
+;; -----------------------------------------------------------------------
+;; ProgramModel (RF1 slice 1, docs/rf1-contract.md "What RF1 pins" item 4;
+;; minimal-for-slice-2 scope).
+;;
+;; stratify-rules computes the whole condensation -- Tarjan SCCs over the
+;; global relation graph, their levels, and each rule's owning SCC (via its
+;; head) -- and then returns only `(stratum LEVEL rules)`, discarding it.
+;; Slice 2 needs precisely what is discarded: to emit PER-KERNEL plans it
+;; must partition a stratum's crules by head SCC, and to emit the cohort
+;; manifest it must name each SCC's members.  So the model carries the
+;; condensation out rather than letting a later pass rebuild it from a
+;; different graph and hope the two agree.
+;;
+;;   scc-of      : relation symbol -> scc id
+;;   scc-level   : scc id -> stratum level (1 + max level of predecessors)
+;;   scc-members : scc id -> relations in that SCC, symbol-sorted
+;;   sources     : source-rule id -> the rules derived from it, and
+;;   source-of   : rule -> its source-rule id
+;;
+;; LINEAGE, and why it needs no pass plumbing: provenance already threads
+;; through simplification, typechecking and planning untouched, so two
+;; post-simplification rules that came from one source rule carry the SAME
+;; prov -- a `|`-split's derivatives are exactly this case.  The model
+;; therefore groups by a provenance KEY rather than asking every pass to
+;; forward a tag (which would mean widening the `(prov _ _)` shape that
+;; ir-shared's own `syn?` matches at exact arity).  A rule with no location
+;; is its own source: the `#f`-loc case in rf1-contract's lineage battery.
+;;
+;; NOT here, deliberately: a demand-minted rule's ORIGIN.  demand.rkt mints
+;; with a synthetic token, so the origin is genuinely absent rather than
+;; merely ungrouped, and propagating it would move `(source ...)` in the
+;; plan's meta block -- a plan-byte change, which belongs to slice 2 where
+;; the one sanctioned re-key absorbs it.
+(struct program-model
+  (scc-of scc-level scc-members sources source-of)
+  #:transparent)
+
+;; The lineage key for a rule: its (file, line, column) when located, else
+;; #f.  Column is included so two rules on one line stay distinct.
+(define (rule-lineage-key rule)
+  (match rule
+    [`(syn (prov (token ,_ (pos ,file ,line ,col ,_ ...) ,_ ...) ,_ ...) ,_ ...)
+     (list (format "~a" file) line col)]
+    [_ #f]))
 
 ;; The kind tag and column count of a rel-env declaration.
 (define (rel-decl-kind decl) (first decl))
