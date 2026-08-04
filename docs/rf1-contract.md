@@ -631,6 +631,24 @@ Consequences, pinned:
      identical exec text with the roles permuted, and the permutation
      lands in the binding schema where names already live.
 
+   *Two properties of stratify's graph that the partition depends on
+   (2026-08-03):*
+   - **A rule's heads always share one SCC**, because `edges` links every
+     pair of them ("from body to head and among heads") -- a rule writing
+     several relations cannot be stratified between them.  So partitioning
+     by "the crule's head SCC" is well defined: there is one answer, not a
+     choice among candidates.  (Seen as `(members right.edge seed)` for a
+     ground rule writing both; correct, not a merge bug.)
+   - **The PRELUDE must be a kernel, not a metadata block.**  A
+     metadata-only prelude carries rid/variant/source but NOT the ops, so
+     the cohort would silently lose the synthesized error arms and a
+     database installed from it would stop producing error facts.  As a
+     kernel under a sentinel id it carries its exec -- and is keyed like any
+     other, which turns out to matter: the arms are identical in EVERY
+     program, so they now share one key (measured: `9428975e087cc507` for
+     both `n1_instances` and `reach`).  That is sharing beyond the
+     module-instance case the slice was designed around.
+
    *Partition measured over the cold golden suite (2026-08-03), from the
    shipped ABI-1 plans with a probe written independently of the new
    partition code so it cross-checks rather than restates it:* 506 strata

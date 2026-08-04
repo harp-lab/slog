@@ -216,6 +216,13 @@
 ;; crule -> kernel id, or #f when its head SCC cannot be resolved (the
 ;; error-arm/internal prelude; rf1-contract puts the error-struct prelude in
 ;; the cohort manifest rather than in a kernel).
+;; WELL-DEFINED because of a deliberate property of stratify's graph: `edges`
+;; links every PAIR of a rule's heads (stratify.rkt, "from body to head and
+;; among heads"), since a rule writing several relations cannot be stratified
+;; between them.  So all heads of a rule share one SCC, and "the first
+;; resolvable head" is not an arbitrary choice among candidates -- there is
+;; only ever one answer.  (Observed as `(members right.edge seed)` for a
+;; ground rule writing both, which is correct rather than a merge bug.)
 (define (crule-kernel cr scc-of temp-scc temp?)
   (for/or ([h (in-list (crule-head-rels cr))])
     (if (temp? h) (hash-ref temp-scc h #f) (hash-ref scc-of h #f))))
@@ -582,18 +589,32 @@
     (for/fold ([h (hash)]) ([cr (in-list crules)])
       (hash-update h (crule-kernel cr scc-of temp-scc temp?)
                    (lambda (l) (cons cr l)) '())))
-  (define prelude (reverse (hash-ref grouped #f '())))
+  ;; The unresolved crules (the synthesized error arms) become a KERNEL under
+  ;; a sentinel id rather than a metadata block.  Two reasons: a metadata-only
+  ;; prelude would carry rid/variant/source but NOT the ops, so the cohort
+  ;; would silently lose those rules and a database installed from it would
+  ;; stop producing error facts; and as a kernel it is keyed like any other,
+  ;; so the arms -- identical in every program -- SHARE one key.
   ;; kernels ordered by their own exec key: a cohort's kernel order is then
   ;; a function of its kernels, not of hash iteration
   (define built
     (sort
-     (for/list ([(scc krules) (in-hash grouped)] #:when scc)
+     (for/list ([(scc krules) (in-hash grouped)])
        (define-values (exec binding debug rel-ix)
          (kernel-parts (reverse krules) decl-of (cprog-dynamic-rels cp)
                        rid-of tag-of flavor decl-ix constants global-text
                        blind-text))
        (list (kernel-exec-key exec) scc exec binding debug rel-ix))
      string<? #:key first))
+  (define dyn (cprog-dynamic-rels cp))
+  (define (kernel-dynamic rel-ix)
+    ;; RESTRICTED to this kernel's bound names: the cohort's whole list would
+    ;; hand the installer dynrels the kernel does not bind.  Slot-relative,
+    ;; so it names nothing.
+    `(dynamic ,@(sort (for/list ([(name slot) (in-hash rel-ix)]
+                                 #:when (set-member? dyn name))
+                        `(slot ,slot))
+                      < #:key second)))
   (define members
     (program-model-scc-members model))
   `(kernel-cohort
@@ -604,14 +625,14 @@
     (manifest
      ,@(for/list ([k (in-list built)] [i (in-naturals)])
          `(kernel (ord ,i) (key ,(first k))
-                  (members ,@(hash-ref members (second k) '()))
+                  (members ,@(if (second k)
+                                 (hash-ref members (second k) '())
+                                 '()))
+                  ,@(if (second k) '() '((prelude #t)))
                   (rules ,(length (cdr (assq 'rules (cdr (third k)))))))))
-    (prelude
-     ,@(for/list ([cr (in-list prelude)])
-         `(crule (rid ,(rid-of cr)) (variant ,(tag-of cr))
-                 (source ,(or (crule-loc cr) #f)))))
     ,@(for/list ([k (in-list built)] [i (in-naturals)])
-        `(kernel (ord ,i) ,(third k) ,(fourth k) ,(fifth k)))))
+        `(kernel (ord ,i) ,(third k) ,(fourth k)
+                 ,(kernel-dynamic (sixth k)) ,(fifth k)))))
 
 ;; ------------------------------------------------------------------------
 ;; Serialization and KernelPlanKey.  One `write` line (D6): the daemon's
