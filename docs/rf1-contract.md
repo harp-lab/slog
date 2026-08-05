@@ -680,6 +680,106 @@ Consequences, pinned:
    two-process byte equality over all four parts; the RF0 harness
    (`tests/reflect/rf0-roundtrip.rkt`) updated to ABI 2 so the
    relational round-trip gate is preserved.
+
+   *As-built (2026-08-04, daemon decoder SHIPPED 92b3a54):* the golden
+   battery is **167/167 under `SLOG_PLAN_ABI=2 SLOG_OPT=interp`**.  The
+   adaptation is per kernel at the decoder boundary
+   (`daemon/plan.cpp parse_kernel_cohort`): each kernel renders as the
+   ABI-1 plan it is equivalent to — exec structure joined with binding
+   names, dense ordinals replaced by DebugMap RuleIds, slot-relative
+   variants replaced by the display spelling — and the existing
+   sealer/binder/installers run unchanged.  Kernels are never merged;
+   this is not the forbidden reaggregation.  `install_*_cohort` =
+   beginStratum once + populate per kernel; `install_*_stratum` is the
+   single-kernel case.  Gates: `tests/abi2-airtight.sh` +
+   `tests/abi2-differential.sh`, wired as run-all tier `abi2` (outside
+   ALL — compiles cold twice, a slice gate like plan-determinism).
+
+   *Hardening pass (2026-08-05, deep review before the flip).*  Findings
+   and their fixes, all landed together:
+   - **Count/maint cohort installs lacked the `declared` dedup** the
+     normal flavor got.  `CountTask` folds the delta ADDITIVELY (a second
+     task per (relation, bucket) doubles every counter), and the prim
+     error arms ride every kernel's bindings, so any multi-kernel
+     count cohort duplicated tasks.  Count now dedups task registration
+     lazily by name (role-uniform: one task kind).  Maintenance needs
+     more: the task KIND (maintain fold vs ordinary intern) must be
+     classified over the WHOLE cohort first, because the rule-free
+     declarations plan binds every relation with no rules — a first-wins
+     dedup asking it would install intern tasks where maintain folds
+     belong (`maint_classification`, cohort-union of maintained + read
+     names).  The differential gained a flavored leg (a maintained
+     session under both shapes: positive flush, negative flush on the
+     recursive closure, forced recount) because the original program loop
+     exercised normal cohorts only.
+   - **Flavored variant tags degraded silently in the exec bytes.**
+     `slot-relative-variant` regex-parsed the relation out of the display
+     tag, so a count/maint tag's `/<kind>` suffix rode into the slot
+     lookup, failed, and a `with-handlers` baked `(rel -1)` into the
+     HASHED bytes while dropping the fold kind entirely — and the daemon
+     derives `fold_kind` from the variant string, which under ABI 2 came
+     only from DebugMap, violating this contract's own "exec must run
+     with DebugMap absent".  Now: the relation comes from the DRIVER
+     (the tag is derived from it anyway), the fold kind rides the
+     structured variant as `(fold <kind>)`, and a failed slot resolution
+     raises instead of falling back.  Slice 3's attribute vocabulary
+     remains the place where fold kinds become first-class plan
+     attributes; this fix keeps the exec bytes honest until then.
+   - **`resolve-temp-sccs` capped its fixpoint at 32 passes and returned
+     the partial map silently** — a >32-link temp chain would send crules
+     to the prelude kernel with no error (mis-partition; the prelude key
+     stops being universal).  The fuel is gone (the map grows
+     monotonically, bounded by temp count) and `crule-kernel` now raises
+     on an unresolved TEMP head; #f stays legitimate only for the
+     synthesized error arms.
+   - **RF0 round-trip updated to ABI 2** (this slice's own outstanding
+     test item): `cohort->facts`/`facts->cohort` reuse the op/decl codec
+     per kernel under per-kernel pids; the key gate is per kernel —
+     every kernel's KernelPlanKey recomputed from the decoded exec must
+     match the original's recomputation AND the manifest's recorded
+     keys.  Measured: 21/21 cohorts and 21/21 ABI-1 plans across reach,
+     lat_run_base, dem_lambda, sj_tri, structs, n1_instances.
+   - **The first `SLOG_PLAN_ABI=2` plan-determinism run (exit gate 4)
+     caught a THIRD instance of the slice-0.1 trap**: 7/506 cohorts
+     churned run to run, in the DEBUG part only — same ord, same
+     variant, flipped rid.  Two alpha-equivalent rules over the SAME
+     relations tie on kernel-parts' blind text AND global text, so the
+     residual tie fell to set-iteration order; exec bytes are identical
+     either way (positional ordinals over identical texts), but DebugMap
+     pairs each ord with a rid and a source, and the pairing followed
+     the arbitrary order.  kernel-parts now tiebreaks by the RID WALK
+     (loc-tiebroken, run-stable; (rid, tag) unique per crule), which
+     pins the ord ↔ (rid, source, variant-ordinal) pairing without
+     putting location dependence into the exec bytes — it only ever
+     orders exec-identical rules.  The unit battery gained the property
+     test (whole-cohort byte equality under rule-list reversal, with the
+     pre-fix failure demonstrated directly before landing).  The lesson,
+     now three deep: EVERY walk that feeds plan bytes must be total over
+     run-stable data — audit any new walk against this list: temp mint
+     (slice 0), rid/D4 sort (slice 0), canonical-rule-order tie groups
+     (slice 0.1), kernel-parts order (here).
+
+   *Known limitation, recorded for T4 (sibling dependence via decl
+   payloads):* each kernel's slot entry carries `(cddr decl)` — the
+   STRATUM-UNION orderings/index requisitions of that relation — so a
+   sibling kernel's new requisition on a shared lower-level relation
+   re-keys this kernel, and cross-program sharing is forfeited when a
+   library's exports are consumed asymmetrically.  Slot LISTS are
+   kernel-local (decision (a) holds); slot PAYLOADS are not.  Not a
+   correctness issue — the daemon builds indices from the union, which
+   is also what makes first-wins dedup safe — but T4's alpha-normalized
+   key gate should either accept it (requisitions ARE part of the
+   computation the kernel's stratum performs) or move requisitions to a
+   kernel-local view before going live.  Decide there, not here.
+
+   *Service-prelude invariant:* the by-name service list
+   (`canonical-plan.rkt service-names`) must stay in sync with the
+   daemon's by-name resolvers (`plan-count.cpp prim_error_arm_names`,
+   the tycheck sealer), and the `#:when`-filtered prelude means the
+   "identical in every program" slot numbering holds only while every
+   program declares every service.  `tests/abi2-airtight.sh` pins the
+   shared-prefix property across two unrelated programs.  Adding a
+   service name is a GLOBAL RE-KEY; schedule it as one.
 3. **Attribute vocabulary + flavored emission for shipped flavors.**
    Schema validators for the closed attribute set; the `_count` and
    `_maint*` planners (which exist today) emit `no-semijoin-reopt` and
