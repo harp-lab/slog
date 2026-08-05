@@ -85,6 +85,69 @@ for prog in "${PROGRAMS[@]}"; do
   fi
 done
 
+# --- the flavored leg: counted + maintenance cohorts -----------------------
+# The program loop above exercises NORMAL cohorts only.  Count/maint plans
+# install through maybe_interp_count_plugin at update/recount time, and the
+# cohort split changed the ARITY of their install side effects too --
+# duplicated CountTasks double every counter, silently (the fold is
+# additive; operators.h says so in as many words).  So drive one maintained
+# session under both shapes: a positive flush (maint1), a negative flush on
+# the recursive closure (the recursive-deletion sweep), then a forced
+# whole-pipeline recount (count), and require identical count rows, routes,
+# dump counts and relation contents.  Mirrors session-tests.sh's b5 shape.
+run_counted() { # <abi>
+  local abi="$1" tag="counted-abi$1"
+  rm -rf build config/cache "$WORK/csv-$tag"
+  mkdir -p build   # session-drive writes action plugins here before any compile
+  local env_abi=()
+  [ "$abi" = "2" ] && env_abi=(SLOG_PLAN_ABI=2)
+  # batch- can only retract INPUT-ledger tuples (base.slog's own edges are
+  # ground-rule derived), so retract the tuple this scenario inserts: the
+  # positive flush extends the closure (maint1), the negative flush tears
+  # it back down through the recursive sweep.
+  env "${env_abi[@]}" SLOG_OPT=0 timeout 900 \
+    racket tests/api/session-drive.rkt \
+      run:tests/session/base.slog \
+      batch+:edge,4,5 flush \
+      batch-:edge,4,5 flush \
+      dump-rel:path write-csv:"$WORK/csv-$tag" \
+      dump-counts:path recount-force dump-counts:path \
+    > "$WORK/log-$tag" 2>&1
+  # sorted: countrow emission follows bucket enumeration, whose order is
+  # content-deterministic but not worth pinning; multiset equality is the
+  # signal (a doubled counter differs row-wise either way)
+  grep -E '^\((countrow|route|dumpdone) ' "$WORK/log-$tag" \
+    | LC_ALL=C sort > "$WORK/sig-$tag"
+}
+run_counted 1
+run_counted 2
+if [ ! -s "$WORK/sig-counted-abi1" ]; then
+  echo "FAIL counted-session (no countrow/route lines; see $WORK/log-counted-abi1)"
+  FAIL=$((FAIL+1))
+elif ! diff -q "$WORK/sig-counted-abi1" "$WORK/sig-counted-abi2" >/dev/null; then
+  echo "FAIL counted-session signature"
+  diff "$WORK/sig-counted-abi1" "$WORK/sig-counted-abi2" | head -8 | sed 's/^/    /'
+  FAIL=$((FAIL+1))
+else
+  counted_ok=1
+  for csv in "$WORK/csv-counted-abi1"/*.csv; do
+    [ -e "$csv" ] || continue
+    rel="$(basename "$csv")"
+    case "$rel" in '$stat_'*) continue ;; esac
+    if ! diff -q <(LC_ALL=C sort "$csv") \
+                 <(LC_ALL=C sort "$WORK/csv-counted-abi2/$rel") >/dev/null 2>&1
+    then
+      echo "FAIL counted-session contents ($rel)"; counted_ok=0; break
+    fi
+  done
+  if [ "$counted_ok" -eq 1 ]; then
+    echo "PASS counted-session ($(wc -l < "$WORK/sig-counted-abi1") signature lines)"
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+  fi
+fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

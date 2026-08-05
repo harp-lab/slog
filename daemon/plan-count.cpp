@@ -760,6 +760,9 @@ public:
   TupleView premise(u16 index) const override { return inner->premise(index); }
 };
 
+// KEEP IN SYNC with compiler/canonical-plan.rkt `service-names` (RF1's
+// cohort service prelude): relations resolved here by NAME must ride every
+// kernel's slot table, or an ABI-2 seal fails loudly.
 const char* const prim_error_arm_names[] = {
   "div_by_zero", "modulo_by_zero", "int_overflow", "nan_result",
   "toint_range", "type_mismatch", "mpz_overflow", "mpz_table_overflow"};
@@ -1376,8 +1379,20 @@ void install_normal_cohort(Daemon* daemon, const std::string& name,
 // mirroring the native flavored plugin's slog_plugin effect for effect.
 // ---------------------------------------------------------------------------
 
+// `counted` (RF1 slice 2) makes the count-task pass idempotent ACROSS the
+// kernels of one cohort, exactly as `declared` does for the normal flavor's
+// write/intern pass.  CountTask folds the delta ADDITIVELY (operators.h: a
+// second fold "would double every counter"), and the prim error arms ride
+// EVERY kernel's bindings via the service prelude, so a multi-kernel count
+// cohort without this registers one CountTask per kernel per arm.  The set
+// is keyed by NAME and claimed lazily -- only a kernel that actually COUNTS
+// a relation inserts it -- which is role-safe because count has one task
+// kind: any two kernels counting the same relation would add identical
+// tasks.  (Relations and indices need no set: getRelation-or-add and
+// addIndex are idempotent.)
 static void populate_count_stratum(Daemon* daemon, Stratum* stratum,
-                                   const SealedKernelPlan& plan)
+                                   const SealedKernelPlan& plan,
+                                   std::set<std::string>* counted = nullptr)
 {
   seal_check(plan.flavor == "count", SealErrorK::flavor,
              "install: not a counted plan");
@@ -1415,6 +1430,8 @@ static void populate_count_stratum(Daemon* daemon, Stratum* stratum,
   for (const u16 slot : counted_slots)
   {
     const RelationBinding& binding = plan.bindings[slot];
+    if (counted != nullptr && !counted->insert(binding.name).second)
+      continue;                  // another kernel of this cohort counts it
     Relation* relation = db->getRelation(binding.name);
     add_flavored_count_task(binding.shape.arity, db, stratum, relation,
                             binding.shape.kind == RelationK::struct_);
@@ -1440,14 +1457,71 @@ void install_count_cohort(Daemon* daemon, const std::string& name,
   Stratum* stratum = daemon->beginStratumDelta(name);
   if (stratum == nullptr) return;
   stratum->flavor = kernels.front().flavor;   // T5: retain the epoch flavor
+  std::set<std::string> counted;
   for (const SealedKernelPlan& plan : kernels)
-    populate_count_stratum(daemon, stratum, plan);
+  {
+    seal_check(plan.flavor == kernels.front().flavor, SealErrorK::flavor,
+               "install: a cohort's kernels disagree on flavor");
+    populate_count_stratum(daemon, stratum, plan, &counted);
+  }
   daemon->push(stratum);
   daemon->continueRun();
 }
 
+// Role classification for a maintenance install, accumulated by NAME so it
+// can be taken over a WHOLE cohort before any kernel populates (RF1 slice
+// 2).  Maintained heads (rule sink targets: emit / mkstruct / emit-lat and
+// the tycheck diversion, plus effects into the prim error arms) get the
+// serial Maintain*Task folds; everything else -- inputs, error arms no rule
+// reaches, service structs -- keeps the full ordinary write/intern
+// machinery.  A maintained head that is also READ (drivers + cursors) is a
+// same-SCC (recursive) member -- its lattice fold injects value-change
+// witnesses so the stratum's own scans cascade (M7 (b)).
+//
+// Cohort-wide, not per kernel, because the kernels disagree by design: the
+// rule-free declarations plan binds every relation with no rules at all, so
+// asking IT would classify every maintained head as ordinary -- and a
+// first-wins dedup would then install an intern task where the maintain
+// fold belongs.  (Among rules-bearing kernels the roles DO agree: a head is
+// bound only by its own kernel -- a same-level read of it would raise the
+// reader's level -- and effects into the error arms make them maintained in
+// every kernel that has rules.)
+static void maint_classification(const SealedKernelPlan& plan,
+                                 std::set<std::string>& maintained,
+                                 std::set<std::string>& reads)
+{
+  for (const SealedRule& rule : plan.rules)
+  {
+    for (const EmitPlan& head : rule.heads)
+      if (head.head_kind != HeadK::temp)
+        maintained.insert(plan.bindings[head.relation].name);
+    for (const EmitPlan& effect : rule.effects)
+      maintained.insert(plan.bindings[effect.relation].name);
+    reads.insert(plan.bindings[rule.driver.relation].name);
+    for (const CursorPlan& cursor : rule.cursors)
+      std::visit([&](const auto& c)
+      {
+        using T = std::decay_t<decltype(c)>;
+        if constexpr (std::is_same_v<T, ProbePlan>
+                      || std::is_same_v<T, FilterPlan>)
+          reads.insert(plan.bindings[c.relation].name);
+        // Join3Plan participants are plain tables (wcoj), never a lattice
+        // head; they cannot make a lattice recursive.
+      }, cursor);
+  }
+}
+
+// `declared` makes the per-relation pass idempotent across the kernels of
+// one cohort, exactly as in populate_normal_stratum: write/intern/maintain
+// tasks are NOT idempotent, and the service prelude rides every kernel's
+// bindings.  `maintained`/`reads` carry the cohort-wide classification
+// above; the single-plan path computes them over its one plan, so nothing
+// changes shape there.  Temps are staging: no indices, no tasks.
 static void populate_maint_stratum(Daemon* daemon, Stratum* stratum,
-                                   const SealedKernelPlan& plan)
+                                   const SealedKernelPlan& plan,
+                                   const std::set<std::string>& maintained,
+                                   const std::set<std::string>& reads,
+                                   std::set<std::string>* declared = nullptr)
 {
   seal_check(plan.flavor == "maint1" || plan.flavor == "maint3neg"
                || plan.flavor == "maint4neg",
@@ -1455,40 +1529,13 @@ static void populate_maint_stratum(Daemon* daemon, Stratum* stratum,
   const bool dred = plan.flavor == "maint4neg";
   Database* db = daemon->db();
 
-  // Maintained heads (rule sink targets: emit / mkstruct / emit-lat and
-  // the tycheck diversion) get the serial Maintain*Task folds; everything
-  // else -- inputs, error arms, service structs -- keeps the full ordinary
-  // write/intern machinery.  Temps are staging: no indices, no tasks.
-  std::set<u16> maintained;
-  // Slots the plan READS (drivers + cursors): a maintained head that is
-  // also read is a same-SCC (recursive) member -- its lattice fold injects
-  // value-change witnesses so the stratum's own scans cascade (M7 (b)).
-  std::set<u16> read_slots;
-  for (const SealedRule& rule : plan.rules)
-  {
-    for (const EmitPlan& head : rule.heads)
-      if (head.head_kind != HeadK::temp)
-        maintained.insert(head.relation);
-    for (const EmitPlan& effect : rule.effects)
-      maintained.insert(effect.relation);
-    read_slots.insert(rule.driver.relation);
-    for (const CursorPlan& cursor : rule.cursors)
-      std::visit([&](const auto& c)
-      {
-        using T = std::decay_t<decltype(c)>;
-        if constexpr (std::is_same_v<T, ProbePlan>
-                      || std::is_same_v<T, FilterPlan>)
-          read_slots.insert(c.relation);
-        // Join3Plan participants are plain tables (wcoj), never a lattice
-        // head; they cannot make a lattice recursive.
-      }, cursor);
-  }
-
   for (const RelationBinding& binding : plan.bindings)
   {
     Relation* relation = ensure_flavored_relation(db, binding);
-    const bool is_head = maintained.count(binding.slot) != 0;
+    const bool is_head = maintained.count(binding.name) != 0;
     if (binding.shape.temp) continue;
+    if (declared != nullptr && !declared->insert(binding.name).second)
+      continue;                    // another kernel of this cohort did it
     if (binding.shape.kind == RelationK::lattice)
     {
       // Resident payload maps stay registered; no merge/write machinery
@@ -1500,8 +1547,7 @@ static void populate_maint_stratum(Daemon* daemon, Stratum* stratum,
       if (is_head)
         add_flavored_lattice_maintain_task(binding.shape.arity, db, stratum,
                                            relation, dred,
-                                           read_slots.count(binding.slot)
-                                             != 0);
+                                           reads.count(binding.name) != 0);
       continue;
     }
     seal_check(!binding.shape.full_orders.empty(), SealErrorK::binding,
@@ -1547,8 +1593,19 @@ void install_maint_cohort(Daemon* daemon, const std::string& name,
   Stratum* stratum = daemon->beginStratumDelta(name);
   if (stratum == nullptr) return;
   stratum->flavor = kernels.front().flavor;   // T5: retain the epoch flavor
+  // Classify over the WHOLE cohort before any kernel populates: the task
+  // kind per relation (maintain fold vs ordinary intern) must not depend on
+  // which kernel declares it first.  See maint_classification.
+  std::set<std::string> maintained, reads, declared;
   for (const SealedKernelPlan& plan : kernels)
-    populate_maint_stratum(daemon, stratum, plan);
+  {
+    seal_check(plan.flavor == kernels.front().flavor, SealErrorK::flavor,
+               "install: a cohort's kernels disagree on flavor");
+    maint_classification(plan, maintained, reads);
+  }
+  for (const SealedKernelPlan& plan : kernels)
+    populate_maint_stratum(daemon, stratum, plan, maintained, reads,
+                           &declared);
   daemon->push(stratum);
   daemon->continueRun();
 }
@@ -1574,7 +1631,13 @@ bool install_command_stratum(Daemon* daemon, const std::string& name,
   else if (plan.flavor == "count")
     populate_count_stratum(daemon, stratum, plan);
   else
-    populate_maint_stratum(daemon, stratum, plan);
+  {
+    // A command install is one sealed plan, so its own classification IS
+    // the cohort-wide one (ABI-2 cohorts come through install_maint_cohort).
+    std::set<std::string> maintained, reads;
+    maint_classification(plan, maintained, reads);
+    populate_maint_stratum(daemon, stratum, plan, maintained, reads);
+  }
   daemon->push(stratum);
   (void)provisional.release();
   return true;

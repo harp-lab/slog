@@ -1033,6 +1033,17 @@ std::string sexp_text(const SExp& x)
   return out;
 }
 
+// A quoted string literal for spliced-in DebugMap text (variant spellings,
+// source locations): same escaping as write_sexp's string case, so a path
+// carrying `"` or `\` survives the re-parse instead of breaking it.
+std::string quoted_atom(const std::string& s)
+{
+  SExp x;
+  x.kind = SExp::K::string;
+  x.text = s;
+  return sexp_text(x);
+}
+
 // the fields of a kernel/manifest form, by tag, or nullptr when absent
 const SExp* field_of(const SExp& form, const char* tag)
 {
@@ -1085,11 +1096,17 @@ std::vector<DecodedKernelPlan> parse_kernel_cohort(std::string_view input)
   // registered, or its output vanishes.  Rule-free, so it perturbs no
   // kernel's bytes.
   const SExp* services = field_of(root, "declarations");
-  if (services != nullptr && services->children.size() > 1)
+  const bool have_decls = services != nullptr && services->children.size() > 1;
+  const bool have_attachments =
+    attachments != nullptr && attachments->children.size() > 1;
+  // Emitted whenever EITHER is present: attachments must not be coupled to
+  // the declaration list's non-emptiness, or a declaration-free cohort
+  // would silently drop its oracle/seqindex bindings.
+  if (have_decls || have_attachments)
   {
     std::string text = "(kernel-plan (abi 1) (flavor " + flavor_text + ")";
     text += " (relations";
-    if (services != nullptr)
+    if (have_decls)
       for (size_t i = 1; i < services->children.size(); ++i)
         text += " " + sexp_text(services->children[i]);
     text += ") " + (attachments != nullptr ? sexp_text(*attachments)
@@ -1097,7 +1114,6 @@ std::vector<DecodedKernelPlan> parse_kernel_cohort(std::string_view input)
     text += " (constants) (prims) (dynamic) (rules) (meta))";
     out.push_back(parse_kernel_plan(text));
   }
-  bool first = true;
   for (const SExp& form : root.children)
   {
     if (form.kind != SExp::K::list || form.children.empty()
@@ -1193,7 +1209,7 @@ std::vector<DecodedKernelPlan> parse_kernel_cohort(std::string_view input)
       if (d == debug_of.end())
         syntax(rd, "cohort rule has no DebugMap entry");
       text += " (rule-def (rid " + std::to_string(d->second.rid) + ")";
-      text += " (variant \"" + d->second.variant + "\")";
+      text += " (variant " + quoted_atom(d->second.variant) + ")";
       for (size_t j = 3; j < fs.size(); ++j) text += " " + sexp_text(fs[j]);
       text += ")";
     }
@@ -1203,12 +1219,11 @@ std::vector<DecodedKernelPlan> parse_kernel_cohort(std::string_view input)
     for (const auto& [ord, d] : debug_of) sources[d.rid] = d.source;
     text += " (meta";
     for (const auto& [rid, source] : sources)
-      text += " (rule-meta (rid " + std::to_string(rid) + ") (source \""
-            + source + "\"))";
+      text += " (rule-meta (rid " + std::to_string(rid) + ") (source "
+            + quoted_atom(source) + "))";
     text += "))";
 
     out.push_back(parse_kernel_plan(text));
-    first = false;
   }
   if (out.empty()) syntax(root, "cohort: no kernels");
   return out;
