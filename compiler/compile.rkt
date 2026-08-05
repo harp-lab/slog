@@ -127,22 +127,18 @@
   (-> set? hash? hash? cprog?)
   (build-cprog planned-rules rel-env decomps))
 
-;; RF1 slice 2: the ProgramModel reaches canonicalization through a
-;; parameter rather than through every intermediate signature.  The front end
-;; computes it once per program (stratify-all) and the per-stratum compile
-;; runs inside that extent; #f means "not available", which keeps every
-;; tooling path that builds a cprog by hand working.
-(define current-program-model (make-parameter #f))
-
 (define/contract (canonicalize-all cprog flavor)
   (-> cprog? symbol? kernel-plan?)
   (canonicalize-cprog cprog #:flavor flavor))
 
-;; The ABI-2 cohort for one stratum, or #f without a model.  Emission is
-;; still gated by current-plan-abi (default 1); this is the seam the daemon
-;; decoder will switch on, and the audit instrument below already reads it.
-(define (canonicalize-all/abi2 cprog flavor)
-  (define model (current-program-model))
+;; RF1 slice 2: the ABI-2 cohort for one stratum, or #f without a model.
+;; The model travels WITH the job (emit-stratum-cpp destructures it), so it
+;; is passed straight through here -- an earlier draft threaded it by
+;; parameter, but compile-strata builds every program's jobs before
+;; compiling any, so a parameter held the LAST program's model; #f means
+;; "not available", which keeps every tooling path that builds a cprog by
+;; hand working (they fall back to ABI 1).
+(define (canonicalize-all/abi2 cprog flavor model)
   (and model (canonicalize-cprog/abi2 cprog model #:flavor flavor)))
 
 ;; -----------------------------------------------------------------------
@@ -713,37 +709,35 @@
   ;; flavored .so's do: a plan-semantics change bumps the abi and re-keys
   ;; both artifacts together (a stale plan can otherwise outlive planner
   ;; fixes -- the .plan is the re-emit-on-miss marker).
+  ;; RF1 slice 2: the ABI-2 cohort, computed once and used twice below --
+  ;; as the shipped artifact under SLOG_PLAN_ABI=2, and as the audit dump
+  ;; under SLOG_DUMP_ABI2.  #f when neither asks, or when a hand-built
+  ;; cprog has no model (those paths fall back to ABI 1 rather than fail).
+  (define abi2-cohort
+    (and (or (equal? (getenv "SLOG_PLAN_ABI") "2") (getenv "SLOG_DUMP_ABI2"))
+         (canonicalize-all/abi2 cprog plan-flavor model)))
   (call-with-atomic-output
    (fullpath (format "build/~a~a.plan" hash-name
                      (if (memq plan-flavor '(count maint1 maint3neg maint4neg))
                          (string-append "." incremental-flavor-abi)
                          "")))
    (lambda ()
-     ;; RF1 slice 2: which shape the ARTIFACT takes.  SLOG_PLAN_ABI=2 selects
-     ;; the cohort; the default stays 1 until the flip, so this is the staging
-     ;; switch rather than a second permanent path.  A cohort needs the
-     ;; ProgramModel, so a tooling path that built a cprog by hand falls back
-     ;; to ABI 1 rather than failing.
-     (define abi2
-       (and (equal? (getenv "SLOG_PLAN_ABI") "2")
-            (parameterize ([current-program-model model])
-              (canonicalize-all/abi2 cprog plan-flavor))))
+     ;; Which shape the ARTIFACT takes.  SLOG_PLAN_ABI=2 selects the cohort;
+     ;; the default stays 1 until the flip, so this is the staging switch
+     ;; rather than a second permanent path.
+     (define abi2 (and (equal? (getenv "SLOG_PLAN_ABI") "2") abi2-cohort))
      (displayln (kernel-plan->string
                  (or abi2 (canonicalize-all cprog plan-flavor))))))
   ;; RF1 slice 2 audit instrument (SLOG_DUMP_ABI2=<dir>): emit the ABI-2
-  ;; cohort beside the shipped plan.  Inspect-only -- nothing reads it yet,
-  ;; which is the point: the split gets exercised over real programs before
-  ;; the daemon decoder exists.
+  ;; cohort beside the shipped plan.  Inspect-only -- nothing reads it,
+  ;; which is the point: the split gets exercised over real programs
+  ;; independently of what the daemon consumes.
   (let ([dir (getenv "SLOG_DUMP_ABI2")])
-    (when dir
-      (define cohort
-        (parameterize ([current-program-model model])
-          (canonicalize-all/abi2 cprog plan-flavor)))
-      (when cohort
-        (make-directory* dir)
-        (call-with-atomic-output
-         (build-path dir (format "~a.abi2" hash-name))
-         (lambda () (displayln (kernel-plan->string cohort)))))))
+    (when (and dir abi2-cohort)
+      (make-directory* dir)
+      (call-with-atomic-output
+       (build-path dir (format "~a.abi2" hash-name))
+       (lambda () (displayln (kernel-plan->string abi2-cohort))))))
   (define accel-rels (stratum-accel-rels stratum dynamic-rels type-env decomps))
   (define emitted (write-cpp cprog dbmanifest hash-name #:accel-rels accel-rels))
   ;; write-cpp returns either one string (a single TU) or a list of

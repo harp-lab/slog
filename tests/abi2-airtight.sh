@@ -125,6 +125,42 @@ else
       "abi1 makes $refs_abi1 constant references, abi2 makes $refs_abi2"
 fi
 
+# (f) the SERVICE PRELUDE is identical across unrelated programs.  Kernel
+# slot numbering starts with the same language-level service list everywhere
+# (canonical-plan.rkt service-names); a program missing one service would
+# shift every later slot and silently forfeit cross-program kernel sharing.
+# This is the empirical pin for the "identical in every program" claim that
+# claim (c) below rests on.
+service_prefix_of() {
+  python3 - "$1" <<'PYEOF'
+import glob, re, sys
+services = {'malformed_deduction', '_enum', 'error', 'div_by_zero',
+            'modulo_by_zero', 'int_overflow', 'nan_result', 'toint_range',
+            'type_mismatch', 'mpz_overflow', 'mpz_table_overflow'}
+prefixes = set()
+for f in sorted(glob.glob(sys.argv[1] + '/*.abi2')):
+    t = open(f).read()
+    for m in re.finditer(r'\(binding (.*?)\) \(dynamic', t, re.S):
+        slots = re.findall(r'\(slot (\d+) ([^)]+)\)', m.group(1))
+        names = [n for _, n in sorted(slots, key=lambda s: int(s[0]))]
+        k = 0
+        while k < len(names) and names[k] in services:
+            k += 1
+        prefixes.add('|'.join(names[:k]))
+print('\n'.join(sorted(prefixes)))
+PYEOF
+}
+base_prefix="$(service_prefix_of "$WORK/d-base")"
+consts_prefix="$(service_prefix_of "$WORK/d-consts")"
+if [ -z "$base_prefix" ]; then
+  bad "service-prelude-shared" "no binding prefixes extracted"
+elif [ "$(printf '%s\n%s\n' "$base_prefix" "$consts_prefix" | sort -u | wc -l)" -eq 1 ]; then
+  ok "service-prelude-shared"
+else
+  bad "service-prelude-shared" \
+      "prefixes differ across programs or kernels: [$base_prefix] vs [$consts_prefix]"
+fi
+
 # (c) the payoff: two instances of one library share a kernel key
 compile_dump tests/n1_instances.slog "$WORK/d-n1"
 shared="$(keys_of "$WORK/d-n1" | uniq -d | wc -l)"

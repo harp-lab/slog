@@ -170,4 +170,60 @@
     (define on (plan-of recursive-triangle))
     (define off (parameterize ([wcoj3-enabled #f])
                   (plan-of recursive-triangle)))
-    (check-not-equal? (kernel-plan-key on) (kernel-plan-key off))))
+    (check-not-equal? (kernel-plan-key on) (kernel-plan-key off)))
+
+  ;; ---------------------------------------------------------------------
+  ;; ABI 2: cohort bytes are input-order independent even for
+  ;; exec-identical rules -- the THIRD instance of the slice-0.1 trap,
+  ;; caught by the first SLOG_PLAN_ABI=2 plan-determinism run (2026-08-05,
+  ;; 7/506 plans): two alpha-equivalent rules over the SAME relations tie
+  ;; on blind AND global text, so the residual tie fell to set-iteration
+  ;; order, and the ord <-> (rid, source) pairing in the DebugMap churned
+  ;; run to run while the exec bytes stayed identical.  kernel-parts now
+  ;; tiebreaks by the rid walk (loc-tiebroken, run-stable); the property
+  ;; under test is exactly input-order independence of the WHOLE cohort --
+  ;; exec, binding, dynamic AND debug.
+
+  (define (cprogs+model-of src)
+    (with-output-to-file fixed-src #:exists 'replace (lambda () (display src)))
+    (match-define (list (? program-ir? program))
+      (load-program-list (path->string fixed-src) (hash)))
+    (define type-env (program-ir-type-env program))
+    (define mods (program-ir-modules program))
+    (define all-rules
+      (foldl set-union (set) (map module-ir-rules (set->list mods))))
+    (define typed
+      (typecheck-rules type-env
+                       (foldl simplify-rule (set) (set->list all-rules))))
+    (define-values (strata model) (stratify-rules/model typed))
+    (values
+     (for/list ([stratum (in-list strata)])
+       (define rules (stratum-rules stratum))
+       (define dynamic-rels
+         (for/fold ([acc (set)]) ([rule (in-set rules)])
+           (set-union acc (rule-head-rels rule))))
+       (match-define (cons planned rel-env+)
+         (plan-stratum rules (type-env-rels type-env) dynamic-rels))
+       (build-cprog planned rel-env+))
+     model))
+
+  (test-case "ABI-2 cohort bytes are input-order independent (tied rules)"
+    (define-values (cps model)
+      (cprogs+model-of
+       "table (edge int int)
+        table (out int int)
+        rule (edge X Y) --> (out X Y)
+
+        rule (edge A B) --> (out A B)"))
+    ;; the fixture must actually produce a tied pair in some stratum, or
+    ;; this test proves nothing
+    (define tied 0)
+    (for ([cp (in-list cps)])
+      (define rev
+        (list 'cprog (cprog-dynamic-rels cp) (cprog-constants cp)
+              (cprog-decls cp) (reverse (cprog-rules cp))))
+      (check-equal?
+       (kernel-plan->string (canonicalize-cprog/abi2 rev model))
+       (kernel-plan->string (canonicalize-cprog/abi2 cp model)))
+      (when (>= (length (cprog-rules cp)) 2) (set! tied (add1 tied))))
+    (check >= tied 1)))

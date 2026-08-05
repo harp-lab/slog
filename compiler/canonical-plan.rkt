@@ -207,9 +207,17 @@
            (append* (map crule-op-rels (crule-pre cr)))
            (append* (map crule-op-rels (crule-body cr))))))
 
-;; temp name -> scc id, by inheriting from consumers until nothing moves
+;; temp name -> scc id, by inheriting from consumers until nothing moves.
+;; The loop needs no fuel: the map only ever GROWS (a temp is assigned once,
+;; never reassigned) and is bounded by the temp count, so the fixpoint
+;; arrives in at most one pass per link of the longest temp -> temp chain.
+;; An early draft capped it at 32 passes and returned the partial map
+;; SILENTLY on exhaustion -- and a temp missing from this map sends its
+;; crules to the prelude kernel with no error, which is a mis-partition
+;; (wrong sharing, and the prelude key stops being the universal one).
+;; crule-kernel now guards that exit loudly instead.
 (define (resolve-temp-sccs crules scc-of temp?)
-  (let loop ([acc (hash)] [fuel 32])
+  (let loop ([acc (hash)])
     (define next
       (for/fold ([a acc]) ([cr (in-list crules)])
         (define heads (crule-head-rels cr))
@@ -225,9 +233,7 @@
              (if (and (temp? b) (not (hash-ref a b #f)))
                  (hash-set a b known)
                  a))])))
-    (if (or (equal? next acc) (zero? fuel))
-        next
-        (loop next (sub1 fuel)))))
+    (if (equal? next acc) next (loop next))))
 
 ;; crule -> kernel id, or #f when its head SCC cannot be resolved (the
 ;; error-arm/internal prelude; rf1-contract puts the error-struct prelude in
@@ -240,8 +246,20 @@
 ;; only ever one answer.  (Observed as `(members right.edge seed)` for a
 ;; ground rule writing both, which is correct rather than a merge bug.)
 (define (crule-kernel cr scc-of temp-scc temp?)
-  (for/or ([h (in-list (crule-head-rels cr))])
-    (if (temp? h) (hash-ref temp-scc h #f) (hash-ref scc-of h #f))))
+  (or (for/or ([h (in-list (crule-head-rels cr))])
+        (if (temp? h) (hash-ref temp-scc h #f) (hash-ref scc-of h #f)))
+      ;; #f is a LEGITIMATE answer only for the synthesized error arms,
+      ;; whose (non-temp) heads are minted after stratification and so are
+      ;; in no SCC.  A TEMP head that failed to resolve means no consumer
+      ;; chain reaches a real head -- a mis-partition that would otherwise
+      ;; ride the prelude silently, so it fails here instead.
+      (begin
+        (for ([h (in-list (crule-head-rels cr))])
+          (when (temp? h)
+            (error 'canonicalize-cprog
+                   "staging temp ~a resolves to no kernel (no consumer chain reaches a real head)"
+                   h)))
+        #f)))
 
 ;; The stat base tag, reproducing emit-cpp's convention exactly: scan/probe
 ;; drivers are "delta:<rel>" when the relation is stratum-dynamic and
@@ -436,21 +454,34 @@
                        void)))
 
 ;; One kernel's exec/binding/debug triple.
-(define (kernel-parts crules decl-of dynamic-rels rid-of tag-of flavor
-                      decl-ix constants global-text blind-text
-                      service-slots)
+(define (kernel-parts crules decl-of rid-of tag-of constants
+                      global-text blind-text service-slots)
   ;; ORDER: name-blind structural text first, so slot assignment cannot
   ;; depend on names.  It must then be TOTAL, or the residual tie falls to
   ;; input order -- which is set-iteration order, varying run to run: the
   ;; exact trap slice 0.1 closed for the temp-mint walk (measured here as
-  ;; two identical compiles disagreeing on a kernel key).  The tiebreak is
-  ;; `global-text`: the crule's canonical text under the PROGRAM-GLOBAL slot
-  ;; map -- variable-blind (registers are already renumbered) and run-stable,
-  ;; and it discriminates by relation identity.  Using names here is safe
-  ;; for the KEY because a residual tie means the crules are structurally
-  ;; identical, so either order yields the SAME exec text with the slot
-  ;; permutation landing in the binding schema, which is exactly where names
-  ;; belong.
+  ;; two identical compiles disagreeing on a kernel key).  The first
+  ;; tiebreak is `global-text`: the crule's canonical text under the
+  ;; PROGRAM-GLOBAL slot map -- variable-blind (registers are already
+  ;; renumbered) and run-stable, and it discriminates by relation identity.
+  ;; Using names here is safe for the KEY because a tie on blind text means
+  ;; the crules are structurally identical, so either order yields the SAME
+  ;; exec text with the slot permutation landing in the binding schema,
+  ;; which is exactly where names belong.
+  ;;
+  ;; Ties on BOTH texts still occur -- two alpha-equivalent rules over the
+  ;; SAME relations (verify.slog's demand pair; also `|`-split derivatives)
+  ;; -- and leaving them to the stable sort is the slice-0.1 defect met a
+  ;; THIRD time: either order yields identical exec bytes (the ordinals are
+  ;; positional over identical texts), but DebugMap pairs each ord with a
+  ;; rid and a source, so the pairing followed set-iteration order and the
+  ;; debug part churned run to run (measured: 7/506 ABI-2 plans, first
+  ;; SLOG_PLAN_ABI=2 plan-determinism run, 2026-08-05).  The final tiebreak
+  ;; is the RID WALK -- canonical-rule-tags is loc-tiebroken and run-stable,
+  ;; and (rid, tag) is unique per crule (the daemon seal-checks exactly
+  ;; that) -- which pins the ord <-> (rid, source, variant-ordinal) pairing
+  ;; without putting location dependence into the exec bytes: it only ever
+  ;; orders exec-identical rules.
   (define ordered
     (sort crules
           (lambda (a b)
@@ -458,7 +489,14 @@
             (define tb (blind-text b))
             (cond [(string<? ta tb) #t]
                   [(string<? tb ta) #f]
-                  [else (string<? (global-text a) (global-text b))]))))
+                  [else
+                   (define ga (global-text a))
+                   (define gb (global-text b))
+                   (cond [(string<? ga gb) #t]
+                         [(string<? gb ga) #f]
+                         [(< (rid-of a) (rid-of b)) #t]
+                         [(< (rid-of b) (rid-of a)) #f]
+                         [else (string<? (tag-of a) (tag-of b))])]))))
   ;; kernel-local slots, first-use over that order
   (define rel-order
     (append service-slots
@@ -531,18 +569,31 @@
                        (source ,(or (crule-loc cr) #f))))))
   (values exec binding debug rel-ix))
 
-;; "delta:left.path#1" -> (delta (rel 3) 1): the KIND stays, the relation
-;; becomes this kernel's slot, and the display spelling lives in DebugMap.
+;; "delta:left.path#1" -> (delta (rel 3) 1), and the count/maintenance
+;; flavors' "delta:edge/prov#0" -> (delta (rel 2) (fold prov) 0): the KIND
+;; and ordinal stay, the relation becomes this kernel's slot, and the
+;; display spelling lives in DebugMap.  The relation comes from the DRIVER,
+;; never re-parsed out of the display string -- the tag's middle is a
+;; rendering that may carry a "/<kind>" suffix (base-tag), and an early
+;; regex that captured it as part of the relation silently degraded every
+;; flavored variant to `(rel -1)` while dropping the fold kind from the
+;; exec bytes entirely.  The fold kind must ride HERE because the executor
+;; discriminates the cnt_* folds by it (daemon variant_fold_kind): exec
+;; must stay runnable with its DebugMap absent (rf1-contract, DebugMap
+;; may-nots).  And a driver that fails to resolve is a partition bug that
+;; must be LOUD -- these bytes are hashed into the kernel key, so any
+;; silent fallback would bake the failure into plan identity.
 (define (slot-relative-variant tag cr rel-slot)
-  (match (regexp-match #px"^([a-z0-9]+)(?::([^#]*))?(?:#([0-9]+))?$" tag)
-    [(list _ kind rel ord)
-     (append (list (string->symbol kind))
-             (if (and rel (not (string=? rel "")))
-                 (list `(rel ,(with-handlers ([exn:fail? (lambda (_) -1)])
-                                (rel-slot (string->symbol rel)))))
-                 '())
-             (if ord (list (string->number ord)) '()))]
-    [_ (list (string->symbol tag))]))
+  (define kind (car (regexp-match #px"^[a-z0-9]+" tag)))
+  (define ord (regexp-match #px"#([0-9]+)$" tag))
+  (define driver-rel
+    (match (crule-driver cr)
+      [`(,(or 'scan 'probe) ,rel ,_ ...) rel]
+      [_ #f]))
+  (append (list (string->symbol kind))
+          (if driver-rel (list `(rel ,(rel-slot driver-rel))) '())
+          (if (crule-kind cr) (list `(fold ,(crule-kind cr))) '())
+          (if ord (list (string->number (second ord))) '())))
 
 ;; The cohort: one file per (stratum, flavor), carrying the manifest and the
 ;; kernels with their labeled parts (open question 1, settled -- the atomic
@@ -580,6 +631,20 @@
   ;; "service-relation references into the cohort prelude".  They ride EVERY
   ;; kernel, in a fixed order over language-level names -- identical in every
   ;; program, so slot numbering stays program-independent and sharing holds.
+  ;;
+  ;; KEEP IN SYNC with the daemon's by-name resolvers: the eight prim error
+  ;; arms are daemon/plan-count.cpp `prim_error_arm_names`, and
+  ;; `malformed_deduction` is the tycheck sealer's lookup (daemon/plan.h).
+  ;; Two maintenance facts, both load-bearing: (1) a service the daemon
+  ;; resolves by name but this list omits fails LOUDLY at seal time under
+  ;; ABI 2 (the 45-of-167 failure above), so drift is caught -- but only on
+  ;; an ABI-2 run; (2) the `#:when` filter below means the "identical in
+  ;; every program" claim holds only while the compiler synthesizes every
+  ;; declared service in every program -- a program missing one shifts every
+  ;; later slot and silently forfeits cross-program kernel sharing (never
+  ;; correctness).  tests/abi2-airtight.sh pins the shared-prefix property
+  ;; across two unrelated programs.  Adding a name here is a GLOBAL RE-KEY
+  ;; (every kernel's slot table moves) -- schedule it as one.
   (define service-names
     '(malformed_deduction _enum error div_by_zero modulo_by_zero int_overflow
       nan_result toint_range type_mismatch mpz_overflow mpz_table_overflow))
@@ -635,9 +700,8 @@
     (sort
      (for/list ([(scc krules) (in-hash grouped)])
        (define-values (exec binding debug rel-ix)
-         (kernel-parts (reverse krules) decl-of (cprog-dynamic-rels cp)
-                       rid-of tag-of flavor decl-ix constants global-text
-                       blind-text service-slots))
+         (kernel-parts (reverse krules) decl-of rid-of tag-of constants
+                       global-text blind-text service-slots))
        (list (kernel-exec-key exec) scc exec binding debug rel-ix))
      string<? #:key first))
   (define dyn (cprog-dynamic-rels cp))
@@ -682,6 +746,12 @@
     (attachments ,@attachments)
     (declarations ,@(for/list ([d (in-list service-decls)] [i (in-naturals)])
                        `(rel ,i ,d)))
+    ;; The cohort-level dynamic set (by NAME -- names live at cohort level)
+    ;; is the manifest's stratum-scheduling fact (rf1-contract: "the dynamic
+    ;; set belongs to the COHORT MANIFEST").  Today's decoder reads only the
+    ;; per-kernel slot-relative form below; this one is for the T2 installer
+    ;; and T4 coordinator manifests.  Both are derived from the same
+    ;; cprog-dynamic-rels, so they cannot diverge.
     (dynamic ,@(sort (set->list (cprog-dynamic-rels cp)) symbol<?))
     (manifest
      ,@(for/list ([k (in-list built)] [i (in-naturals)])
