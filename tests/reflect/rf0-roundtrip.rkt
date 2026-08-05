@@ -8,6 +8,10 @@
 ;; the facts back to the plan term, and prove
 ;;   (a) byte-identical re-serialization against the original file, and
 ;;   (b) identical KernelPlanKey (canonical-plan.rkt's kernel-plan-key).
+;; For ABI-2 cohorts (RF1 slice 2) the key check is PER KERNEL: every
+;; kernel's KernelPlanKey is recomputed from its decoded exec part and must
+;; agree with the original's recomputation AND with the manifest's recorded
+;; keys.
 ;;
 ;; The encoding is genuinely relational: facts are tagged tuples with only
 ;; atomic columns; every sequenced position in the plan (index order, op
@@ -52,6 +56,32 @@
 ;;               (term-node pid tid len)
 ;;               (term-child pid tid pos child-tid)
 ;;
+;; ABI 2 (kernel-cohort files; docs/rf1-contract.md slice 2) adds cohort-
+;; level facts under the cohort's pid and reuses the schema above PER
+;; KERNEL, each kernel under its own pid (pid+1+ord, recorded by the
+;; `kernel` linking fact -- which is what lets the whole op/decl codec
+;; reuse verbatim):
+;;
+;;   header      (cohort pid abi flavor)
+;;   linking     (kernel pid kord kpid)
+;;   manifest    (kmanifest pid kord key nrules prelude?)
+;;               (kmember pid kord pos name)
+;;   declarations/attachments/dynamic reuse the ABI-1 fact families (the
+;;               (rel slot DECL) grammar is shared exactly)
+;;   per kernel  (kslot kpid slot kind arity)            name-free exec
+;;                                                       slots; orderings
+;;                                                       reuse rel-index[-col]
+;;                                                       and rel-lat
+;;               (krule kpid rslot ord kind nregs)       exec rule-def; ops
+;;                                                       reuse the op facts
+;;               (krule-rel kpid rslot n)                structured variant
+;;               (krule-fold kpid rslot f)               fields -- field
+;;               (krule-ord kpid rslot n)                presence = fact
+;;                                                       presence
+;;               (kbind kpid slot name)                  binding schema
+;;               (kdyn kpid slot)                        slot-relative dynamic
+;;               (kdebug kpid ord rid variant source)    DebugMap
+;;
 ;; Operand roles are positional per opcode (the op vocabulary is closed, so
 ;; the decoder knows arg 0 of a cjoin is the bound var and args 1,2 the
 ;; collection inputs); genuinely open sexps (lattice specs, cjoin collection
@@ -61,24 +91,28 @@
 ;;   racket tests/reflect/rf0-roundtrip.rkt build/<hash>.plan [more ...]
 ;;   racket tests/reflect/rf0-roundtrip.rkt --all [build-dir]
 ;;
-;; --all round-trips every *.plan under the build dir (default: <repo>/build),
-;; reports pass/fail counts, and prints a measurement table for the 5 largest.
-;; Exit status is non-zero on any failure.
+;; --all round-trips every *.plan (and *.abi2 audit dump) under the build
+;; dir (default: <repo>/build), reports pass/fail counts, and prints a
+;; measurement table for the 5 largest.  Exit status is non-zero on any
+;; failure.
 
 (require racket/runtime-path)
 
-(provide plan->facts facts->plan facts->bytes bytes->facts roundtrip)
+(provide plan->facts facts->plan cohort->facts facts->cohort
+         facts->bytes bytes->facts roundtrip)
 
 (define-runtime-path here ".")
 (define repo-root (simplify-path (build-path here ".." "..")))
 (define canonical-plan-path
   (build-path repo-root "compiler" "canonical-plan.rkt"))
 
-;; kernel-plan-key / kernel-plan->string from the shipped pass (do not copy)
-(define-values (kernel-plan-key kernel-plan->string)
+;; kernel-plan-key / kernel-plan->string / kernel-exec-key from the shipped
+;; pass (do not copy)
+(define-values (kernel-plan-key kernel-plan->string kernel-exec-key)
   (let ([resolved (path->string canonical-plan-path)])
     (values (dynamic-require `(file ,resolved) 'kernel-plan-key)
-            (dynamic-require `(file ,resolved) 'kernel-plan->string))))
+            (dynamic-require `(file ,resolved) 'kernel-plan->string)
+            (dynamic-require `(file ,resolved) 'kernel-exec-key))))
 
 ;; -------------------------------------------------------------------------
 ;; Encode: plan sexp -> list of flat facts.
@@ -107,13 +141,11 @@
     [`(k ,n) (list 'k n)]
     [_ (error 'rf0 "not a value ref: ~s" x)]))
 
-(define (plan->facts plan [pid 0])
-  (define facts '())
-  (define (emit! f) (set! facts (cons f facts)))
-  (define tid-counter 0)
-  (define (next-tid!) (begin0 tid-counter (set! tid-counter (add1 tid-counter))))
-  (define (term! x) (encode-term! x pid emit! next-tid!))
-
+;; The op codec is shared between ABI-1 rule bodies and ABI-2 kernel exec
+;; rule bodies -- the op grammar inside a rule-def is identical (both are
+;; canonicalize-crule's output).  `pid` scopes the facts; ABI 2 hands each
+;; kernel its own pid, and the codec reuses verbatim.
+(define (make-op-encoder pid emit! term!)
   (define (emit-args! rslot region pc refs [pos0 0])
     (for ([x (in-list refs)] [i (in-naturals pos0)])
       (emit! `(op-arg ,pid ,rslot ,region ,pc ,i ,@(ref->cols x)))))
@@ -195,6 +227,53 @@
        (emit-ord! 'op-ord rslot region pc ord)
        (emit-args! rslot region pc (list x rid rel col))]
       [_ (error 'rf0 "unknown op: ~s" op)]))
+  encode-op!)
+
+;; One rule's regions, through the shared op codec.
+(define (encode-regions! encode-op! rslot pre drv body head)
+  (for ([op (in-list pre)] [pc (in-naturals)])
+    (encode-op! rslot 'pre pc op))
+  (encode-op! rslot 'driver 0 drv)
+  (for ([op (in-list body)] [pc (in-naturals)])
+    (encode-op! rslot 'body pc op))
+  (for ([op (in-list head)] [pc (in-naturals)])
+    (encode-op! rslot 'head pc op)))
+
+;; A declaration's trailing index list.
+;;   idx ::= (col ...+) | (delta col ...+) | (seeded-only col ...+)
+;;   (ir-stack.rkt index?)
+(define (encode-indices! pid emit! slot indices)
+  (for ([idx (in-list indices)] [ix (in-naturals)])
+    (define-values (ikind cols)
+      (match idx
+        [`(,(and m (or 'delta 'seeded-only)) ,cols ...) (values m cols)]
+        [`(,(? exact-integer? c) ,cols ...) (values 'plain (cons c cols))]
+        [_ (error 'rf0 "unknown index shape: ~s" idx)]))
+    (emit! `(rel-index ,pid ,slot ,ix ,ikind))
+    (for ([c (in-list cols)] [i (in-naturals)])
+      (emit! `(rel-index-col ,pid ,slot ,ix ,i ,c)))))
+
+;; One (rel slot DECL) storage declaration -- ABI 1's relations table and
+;; ABI 2's cohort declarations list share this shape exactly.
+(define (encode-decl! pid emit! term! slot decl)
+  (define-values (kind name arity indices)
+    (match decl
+      [`(lattice ,name ,arity ,spec ,decomp ,idx ...)
+       (emit! `(rel-lat ,pid ,slot ,(term! spec) ,decomp))
+       (values 'lattice name arity idx)]
+      [`(,(and kind (or 'relation 'struct 'temp)) ,name ,arity ,idx ...)
+       (values kind name arity idx)]
+      [_ (error 'rf0 "unknown storage decl: ~s" decl)]))
+  (emit! `(rel-decl ,pid ,slot ,kind ,name ,arity))
+  (encode-indices! pid emit! slot indices))
+
+(define (plan->facts plan [pid 0])
+  (define facts '())
+  (define (emit! f) (set! facts (cons f facts)))
+  (define tid-counter 0)
+  (define (next-tid!) (begin0 tid-counter (set! tid-counter (add1 tid-counter))))
+  (define (term! x) (encode-term! x pid emit! next-tid!))
+  (define encode-op! (make-op-encoder pid emit! term!))
 
   (match-define `(kernel-plan (abi ,abi) (flavor ,flavor)
                               (relations ,rels ...)
@@ -208,26 +287,7 @@
   (emit! `(plan ,pid ,abi ,flavor))
   (for ([r (in-list rels)])
     (match-define `(rel ,slot ,decl) r)
-    (define-values (kind name arity indices)
-      (match decl
-        [`(lattice ,name ,arity ,spec ,decomp ,idx ...)
-         (emit! `(rel-lat ,pid ,slot ,(term! spec) ,decomp))
-         (values 'lattice name arity idx)]
-        [`(,(and kind (or 'relation 'struct 'temp)) ,name ,arity ,idx ...)
-         (values kind name arity idx)]
-        [_ (error 'rf0 "unknown storage decl: ~s" decl)]))
-    (emit! `(rel-decl ,pid ,slot ,kind ,name ,arity))
-    (for ([idx (in-list indices)] [ix (in-naturals)])
-      ;; idx ::= (col ...+) | (delta col ...+) | (seeded-only col ...+)
-      ;; (ir-stack.rkt index?)
-      (define-values (ikind cols)
-        (match idx
-          [`(,(and m (or 'delta 'seeded-only)) ,cols ...) (values m cols)]
-          [`(,(? exact-integer? c) ,cols ...) (values 'plain (cons c cols))]
-          [_ (error 'rf0 "unknown index shape: ~s" idx)]))
-      (emit! `(rel-index ,pid ,slot ,ix ,ikind))
-      (for ([c (in-list cols)] [i (in-naturals)])
-        (emit! `(rel-index-col ,pid ,slot ,ix ,i ,c)))))
+    (encode-decl! pid emit! term! slot decl))
   (for ([a (in-list atts)] [i (in-naturals)])
     (emit! `(attachment ,pid ,i ,(term! a))))
   (for ([k (in-list ks)])
@@ -245,39 +305,125 @@
                              (body ,body ...) (head ,head ...))
       rd)
     (emit! `(rule ,pid ,rslot ,rid ,tag ,nregs))
-    (for ([op (in-list pre)] [pc (in-naturals)])
-      (encode-op! rslot 'pre pc op))
-    (encode-op! rslot 'driver 0 drv)
-    (for ([op (in-list body)] [pc (in-naturals)])
-      (encode-op! rslot 'body pc op))
-    (for ([op (in-list head)] [pc (in-naturals)])
-      (encode-op! rslot 'head pc op)))
+    (encode-regions! encode-op! rslot pre drv body head))
   (for ([m (in-list metas)] [i (in-naturals)])
     (match-define `(rule-meta (rid ,rid) (source ,src)) m)
     (emit! `(rule-meta ,pid ,i ,rid ,src)))
+  (reverse facts))
+
+;; One ABI-2 kernel's exec/binding/dynamic/debug facts, under its own kpid.
+(define (encode-kernel! kpid emit! next-tid! exec binding kdyn debug)
+  (define (term! x) (encode-term! x kpid emit! next-tid!))
+  (define encode-op! (make-op-encoder kpid emit! term!))
+  (match-define `(exec (slots ,slots ...) (constants ,ks ...)
+                       (prims ,prims ...) (rules ,rules ...))
+    exec)
+  (for ([s (in-list slots)])
+    (match s
+      [`(slot ,slot lattice ,arity ,spec ,decomp ,idx ...)
+       (emit! `(rel-lat ,kpid ,slot ,(term! spec) ,decomp))
+       (emit! `(kslot ,kpid ,slot lattice ,arity))
+       (encode-indices! kpid emit! slot idx)]
+      [`(slot ,slot ,(and kind (or 'relation 'struct 'temp)) ,arity ,idx ...)
+       (emit! `(kslot ,kpid ,slot ,kind ,arity))
+       (encode-indices! kpid emit! slot idx)]
+      [_ (error 'rf0 "unknown exec slot: ~s" s)]))
+  (for ([k (in-list ks)])
+    (match-define `(k ,slot ,name ,v) k)
+    (unless (atom? v) (error 'rf0 "non-atomic constant value: ~s" v))
+    (emit! `(const ,kpid ,slot ,name ,v)))
+  (for ([p (in-list prims)] [i (in-naturals)])
+    (emit! `(prim ,kpid ,i ,p)))
+  (for ([rd (in-list rules)] [rslot (in-naturals)])
+    (match-define `(rule-def (ord ,ord) (variant ,vkind ,vrest ...)
+                             (nregs ,nregs)
+                             (pre ,pre ...) (driver ,drv)
+                             (body ,body ...) (head ,head ...))
+      rd)
+    (emit! `(krule ,kpid ,rslot ,ord ,vkind ,nregs))
+    (for ([v (in-list vrest)])
+      (match v
+        [`(rel ,n) (emit! `(krule-rel ,kpid ,rslot ,n))]
+        [`(fold ,f) (emit! `(krule-fold ,kpid ,rslot ,f))]
+        [(? exact-integer? n) (emit! `(krule-ord ,kpid ,rslot ,n))]
+        [_ (error 'rf0 "unknown variant field: ~s" v)]))
+    (encode-regions! encode-op! rslot pre drv body head))
+  (match-define `(binding ,bs ...) binding)
+  (for ([b (in-list bs)])
+    (match-define `(slot ,slot ,name) b)
+    (emit! `(kbind ,kpid ,slot ,name)))
+  (match-define `(dynamic ,ds ...) kdyn)
+  (for ([d (in-list ds)])
+    (match-define `(slot ,slot) d)
+    (emit! `(kdyn ,kpid ,slot)))
+  (match-define `(debug ,rs ...) debug)
+  (for ([r (in-list rs)])
+    (match-define `(rule (ord ,ord) (rid ,rid) (variant ,v) (source ,src)) r)
+    (emit! `(kdebug ,kpid ,ord ,rid ,v ,src))))
+
+;; ABI 2: a kernel-cohort file.  Cohort-level facts ride `pid`; each
+;; kernel's content rides pid+1+ord (the `kernel` linking fact records the
+;; assignment, so a decoder never assumes it).
+(define (cohort->facts cohort [pid 0])
+  (define facts '())
+  (define (emit! f) (set! facts (cons f facts)))
+  (define tid-counter 0)
+  (define (next-tid!) (begin0 tid-counter (set! tid-counter (add1 tid-counter))))
+  (define (term! x) (encode-term! x pid emit! next-tid!))
+  (match-define `(kernel-cohort (abi ,abi) (flavor ,flavor)
+                                (attachments ,atts ...)
+                                (declarations ,decls ...)
+                                (dynamic ,dyns ...)
+                                (manifest ,mans ...)
+                                ,kernels ...)
+    cohort)
+  (emit! `(cohort ,pid ,abi ,flavor))
+  (for ([a (in-list atts)] [i (in-naturals)])
+    (emit! `(attachment ,pid ,i ,(term! a))))
+  (for ([r (in-list decls)])
+    (match-define `(rel ,slot ,decl) r)
+    (encode-decl! pid emit! term! slot decl))
+  (for ([d (in-list dyns)] [i (in-naturals)])
+    (emit! `(dynamic ,pid ,i ,d)))
+  (for ([m (in-list mans)])
+    (match m
+      [`(kernel (ord ,kord) (key ,key) (members ,ms ...) ,rest ...)
+       (define prelude? (and (assq 'prelude rest) #t))
+       (match-define `(rules ,nrules) (assq 'rules rest))
+       (emit! `(kmanifest ,pid ,kord ,key ,nrules ,prelude?))
+       (for ([mm (in-list ms)] [i (in-naturals)])
+         (emit! `(kmember ,pid ,kord ,i ,mm)))]
+      [_ (error 'rf0 "unknown manifest entry: ~s" m)]))
+  (for ([k (in-list kernels)])
+    (match-define `(kernel (ord ,kord) ,exec ,binding ,kdyn ,debug) k)
+    (define kpid (+ pid 1 kord))
+    (emit! `(kernel ,pid ,kord ,kpid))
+    (encode-kernel! kpid emit! next-tid! exec binding kdyn debug))
   (reverse facts))
 
 ;; -------------------------------------------------------------------------
 ;; Decode: facts -> plan sexp.  Consumes facts in ANY order (they arrive
 ;; shuffled); all sequencing is recovered from explicit ordinal columns.
 
-(define (facts->plan facts [pid 0])
-  ;; one bucket hash per fact relation: key -> list of payload rows
+;; Bucket accessors over ONE pid's facts.  Key length by relation: how many
+;; leading payload cols identify the group; the rest is the row.
+(define (make-fact-db facts pid)
   (define buckets (make-hasheq))
   (define (bucket tag) (hash-ref! buckets tag make-hash))
   (for ([f (in-list facts)])
     (match-define (cons tag (cons fpid cols)) f)
     (when (equal? fpid pid)
-      ;; key length by relation: how many leading payload cols identify the
-      ;; group; the rest is the row.
       (define-values (key row)
         (case tag
-          [(plan) (values '() cols)]
-          [(rel-decl rel-lat) (values (list (car cols)) (cdr cols))]
+          [(plan cohort) (values '() cols)]
+          [(rel-decl rel-lat kslot) (values (list (car cols)) (cdr cols))]
           [(rel-index) (values (take cols 2) (drop cols 2))]
           [(rel-index-col) (values (take cols 2) (drop cols 2))]
-          [(attachment const prim dynamic rule rule-meta term-atom term-node)
+          [(attachment const prim dynamic rule rule-meta term-atom term-node
+            kernel kmanifest kbind kdyn kdebug)
            (values '() cols)]
+          [(kmember krule krule-rel krule-fold krule-ord)
+           (values (list (car cols)) (cdr cols))]
           [(term-child) (values (list (car cols)) (cdr cols))]
           [(op op-rel op-k op-prim op-spec) (values (take cols 3) (drop cols 3))]
           [(op-ord op-dord op-arg op-accept) (values (take cols 3) (drop cols 3))]
@@ -285,6 +431,11 @@
           [(op-arm-ord op-arm-dord op-arm-arg) (values (take cols 4) (drop cols 4))]
           [else (error 'rf0 "unknown fact relation: ~s" tag)]))
       (hash-update! (bucket tag) key (lambda (rs) (cons row rs)) '())))
+  ;; the (rslot region) -> pcs index, from op facts
+  (for ([key (in-list (hash-keys (bucket 'op)))])
+    (match-define (list rslot region pc) key)
+    (hash-update! (bucket 'op-pcs) (list rslot region)
+                  (lambda (rs) (cons (list pc) rs)) '()))
   (define (rows tag key) (hash-ref (bucket tag) key '()))
   (define (one tag key #:default [d #f])
     (match (rows tag key)
@@ -294,8 +445,11 @@
   ;; positional group: rows are (pos col ...); sort by pos, return payloads
   (define (seq tag key)
     (map cdr (sort (rows tag key) < #:key car)))
+  (define (keys tag) (hash-keys (bucket tag)))
+  (values rows one seq keys))
 
-  ;; term decoding, via id-keyed lookup tables
+;; term decoding, via id-keyed lookup tables
+(define (make-term-decoder rows seq)
   (define term-atoms (make-hash))
   (for ([r (in-list (rows 'term-atom '()))])
     (hash-set! term-atoms (car r) (cadr r)))
@@ -312,7 +466,10 @@
          (error 'rf0 "term ~a arity mismatch" tid))
        (map (lambda (k) (term-of (car k))) kids)]
       [else (error 'rf0 "dangling term id ~a" tid)]))
+  term-of)
 
+;; The op decoder, shared like its encoder; returns region-ops.
+(define (make-op-decoder rows one seq term-of)
   (define (ref-of kind n)
     (case kind [(r) `(r ,n)] [(k) `(k ,n)]
       [else (error 'rf0 "bad ref kind ~s" kind)]))
@@ -371,36 +528,43 @@
     ;; ops of one region, in pc order; pcs are dense from 0
     (define pcs (sort (map car (rows 'op-pcs (list rslot region))) <))
     (for/list ([pc (in-list pcs)]) (decode-op rslot region pc)))
-  ;; build the (rslot region) -> pcs index from op facts
-  (for ([(key row) (in-hash (bucket 'op))])
-    (match-define (list rslot region pc) key)
-    (hash-update! (bucket 'op-pcs) (list rslot region)
-                  (lambda (rs) (cons (list pc) rs)) '()))
+  region-ops)
 
-  ;; sections
+;; A slot's index sexps, in emitted order.
+(define (decode-indices rows one seq keys slot)
+  (define my-ixes
+    (sort (for/list ([k (in-list (keys 'rel-index))]
+                     #:when (equal? (car k) slot))
+            (list (second k) (car (one 'rel-index k))))
+          < #:key car))
+  (for/list ([ix+k (in-list my-ixes)])
+    (match-define (list ix ikind) ix+k)
+    (define cols (map car (seq 'rel-index-col (list slot ix))))
+    (if (eq? ikind 'plain) cols `(,ikind ,@cols))))
+
+;; The (rel slot DECL) list, slot-sorted -- ABI 1's relations table and
+;; ABI 2's cohort declarations.
+(define (decode-decls rows one seq keys term-of)
+  (for/list ([row (in-list (sort (map (lambda (k) (cons (car k) (one 'rel-decl k)))
+                                      (keys 'rel-decl))
+                                 < #:key car))])
+    (match-define (cons slot (list kind name arity)) row)
+    (define idx-sexps (decode-indices rows one seq keys slot))
+    (define decl
+      (case kind
+        [(lattice)
+         (match-define (list spec-tid decomp) (one 'rel-lat (list slot)))
+         `(lattice ,name ,arity ,(term-of spec-tid) ,decomp ,@idx-sexps)]
+        [else `(,kind ,name ,arity ,@idx-sexps)]))
+    `(rel ,slot ,decl)))
+
+(define (facts->plan facts [pid 0])
+  (define-values (rows one seq keys) (make-fact-db facts pid))
+  (define term-of (make-term-decoder rows seq))
+  (define region-ops (make-op-decoder rows one seq term-of))
+
   (match-define (list (list abi flavor)) (rows 'plan '()))
-  (define rels
-    (for/list ([row (in-list (sort (map (lambda (k) (cons (car k) (one 'rel-decl k)))
-                                        (hash-keys (bucket 'rel-decl)))
-                                   < #:key car))])
-      (match-define (cons slot (list kind name arity)) row)
-      (define my-ixes
-        (sort (for/list ([k (in-hash-keys (bucket 'rel-index))]
-                         #:when (equal? (car k) slot))
-                (list (second k) (car (one 'rel-index k))))
-              < #:key car))
-      (define idx-sexps
-        (for/list ([ix+k (in-list my-ixes)])
-          (match-define (list ix ikind) ix+k)
-          (define cols (map car (seq 'rel-index-col (list slot ix))))
-          (if (eq? ikind 'plain) cols `(,ikind ,@cols))))
-      (define decl
-        (case kind
-          [(lattice)
-           (match-define (list spec-tid decomp) (one 'rel-lat (list slot)))
-           `(lattice ,name ,arity ,(term-of spec-tid) ,decomp ,@idx-sexps)]
-          [else `(,kind ,name ,arity ,@idx-sexps)]))
-      `(rel ,slot ,decl)))
+  (define rels (decode-decls rows one seq keys term-of))
   (define atts
     (for/list ([row (in-list (sort (rows 'attachment '()) < #:key car))])
       (term-of (second row))))
@@ -434,6 +598,87 @@
     (rules ,@rules)
     (meta ,@metas)))
 
+;; One kernel's four parts, from its kpid-scoped facts.
+(define (decode-kernel facts kpid)
+  (define-values (rows one seq keys) (make-fact-db facts kpid))
+  (define term-of (make-term-decoder rows seq))
+  (define region-ops (make-op-decoder rows one seq term-of))
+  (define slots
+    (for/list ([row (in-list (sort (map (lambda (k) (cons (car k) (one 'kslot k)))
+                                        (keys 'kslot))
+                                   < #:key car))])
+      (match-define (cons slot (list kind arity)) row)
+      (define idx-sexps (decode-indices rows one seq keys slot))
+      (case kind
+        [(lattice)
+         (match-define (list spec-tid decomp) (one 'rel-lat (list slot)))
+         `(slot ,slot lattice ,arity ,(term-of spec-tid) ,decomp ,@idx-sexps)]
+        [else `(slot ,slot ,kind ,arity ,@idx-sexps)])))
+  (define consts
+    (for/list ([row (in-list (sort (rows 'const '()) < #:key car))])
+      (match-define (list slot name v) row)
+      `(k ,slot ,name ,v)))
+  (define prims (map second (sort (rows 'prim '()) < #:key car)))
+  (define rules
+    (for/list ([k (in-list (sort (keys 'krule) < #:key car))])
+      (match-define (list rslot) k)
+      (match-define (list ord vkind nregs) (one 'krule k))
+      (define variant
+        `(,vkind
+          ,@(match (rows 'krule-rel k) [(list (list n)) `((rel ,n))] ['() '()])
+          ,@(match (rows 'krule-fold k) [(list (list f)) `((fold ,f))] ['() '()])
+          ,@(match (rows 'krule-ord k) [(list (list n)) (list n)] ['() '()])))
+      `(rule-def (ord ,ord) (variant ,@variant)
+                 (nregs ,nregs)
+                 (pre ,@(region-ops rslot 'pre))
+                 (driver ,(car (region-ops rslot 'driver)))
+                 (body ,@(region-ops rslot 'body))
+                 (head ,@(region-ops rslot 'head)))))
+  (define binds
+    (for/list ([row (in-list (sort (rows 'kbind '()) < #:key car))])
+      `(slot ,(first row) ,(second row))))
+  (define kds
+    (for/list ([row (in-list (sort (rows 'kdyn '()) < #:key car))])
+      `(slot ,(first row))))
+  (define debugs
+    (for/list ([row (in-list (sort (rows 'kdebug '()) < #:key car))])
+      (match-define (list ord rid v src) row)
+      `(rule (ord ,ord) (rid ,rid) (variant ,v) (source ,src))))
+  (list `(exec (slots ,@slots) (constants ,@consts) (prims ,@prims)
+               (rules ,@rules))
+        `(binding ,@binds)
+        `(dynamic ,@kds)
+        `(debug ,@debugs)))
+
+(define (facts->cohort facts [pid 0])
+  (define-values (rows one seq keys) (make-fact-db facts pid))
+  (define term-of (make-term-decoder rows seq))
+  (match-define (list (list abi flavor)) (rows 'cohort '()))
+  (define atts
+    (for/list ([row (in-list (sort (rows 'attachment '()) < #:key car))])
+      (term-of (second row))))
+  (define decls (decode-decls rows one seq keys term-of))
+  (define dyns (map second (sort (rows 'dynamic '()) < #:key car)))
+  (define mans
+    (for/list ([row (in-list (sort (rows 'kmanifest '()) < #:key car))])
+      (match-define (list kord key nrules prelude?) row)
+      `(kernel (ord ,kord) (key ,key)
+               (members ,@(map car (seq 'kmember (list kord))))
+               ,@(if prelude? '((prelude #t)) '())
+               (rules ,nrules))))
+  (define kernels
+    (for/list ([row (in-list (sort (rows 'kernel '()) < #:key car))])
+      (match-define (list kord kpid) row)
+      `(kernel (ord ,kord) ,@(decode-kernel facts kpid))))
+  `(kernel-cohort
+    (abi ,abi)
+    (flavor ,flavor)
+    (attachments ,@atts)
+    (declarations ,@decls)
+    (dynamic ,@dyns)
+    (manifest ,@mans)
+    ,@kernels))
+
 ;; -------------------------------------------------------------------------
 ;; Fact serialization: one written S-expr per line, and back.
 
@@ -450,6 +695,25 @@
 ;; Round trip one file.  Returns a result hash (for reporting); raises
 ;; nothing -- failures are recorded.
 
+;; Every kernel's KernelPlanKey, RECOMPUTED from its exec part (never read
+;; from the manifest): (ord key) pairs in kernel order.
+(define (cohort-keys cohort)
+  (for/list ([form (in-list (cdr cohort))]
+             #:when (and (pair? form) (eq? (car form) 'kernel)
+                         (assq 'exec (cddr form))))
+    (list (second (second form))
+          (kernel-exec-key (assq 'exec (cddr form))))))
+
+;; The manifest's RECORDED (ord key) pairs, for the recorded-vs-recomputed
+;; agreement check.
+(define (manifest-keys cohort)
+  (define m (or (assq 'manifest (cdr cohort))
+                (error 'rf0 "cohort has no manifest")))
+  (for/list ([e (in-list (cdr m))])
+    (list (second (second e)) (second (third e)))))
+
+(define (cohort-form? x) (and (pair? x) (eq? (car x) 'kernel-cohort)))
+
 (define (roundtrip file)
   (define orig-bytes (file->bytes file))
   (define-values (parse-r parse-cpu parse-real parse-gc)
@@ -457,9 +721,10 @@
                   (with-input-from-bytes orig-bytes read))
                 '()))
   (define plan (car parse-r))
-  (define orig-key (kernel-plan-key plan))
+  (define cohort? (cohort-form? plan))
+  (define orig-key (if cohort? (cohort-keys plan) (kernel-plan-key plan)))
   (define-values (enc-r enc-cpu enc-real enc-gc)
-    (time-apply (lambda () (plan->facts plan)) '()))
+    (time-apply (lambda () ((if cohort? cohort->facts plan->facts) plan)) '()))
   (define facts (car enc-r))
   (define encoded (facts->bytes facts))
   ;; read the facts back from their serialized text and SHUFFLE them: the
@@ -467,12 +732,17 @@
   ;; order or in-memory sharing
   (define reread (shuffle (bytes->facts encoded)))
   (define-values (dec-r dec-cpu dec-real dec-gc)
-    (time-apply (lambda () (facts->plan reread)) '()))
+    (time-apply (lambda () ((if cohort? facts->cohort facts->plan) reread)) '()))
   (define plan2 (car dec-r))
   (define out-bytes
     (string->bytes/utf-8 (string-append (kernel-plan->string plan2) "\n")))
   (define byte-ok (bytes=? orig-bytes out-bytes))
-  (define key2 (kernel-plan-key plan2))
+  (define key2 (if cohort? (cohort-keys plan2) (kernel-plan-key plan2)))
+  ;; cohorts additionally require the manifest's recorded keys to agree with
+  ;; the keys recomputed from the decoded exec parts
+  (define key-ok
+    (and (equal? orig-key key2)
+         (or (not cohort?) (equal? (manifest-keys plan2) key2))))
   (hash 'file (path->string (if (path? file) file (string->path file)))
         'orig-bytes (bytes-length orig-bytes)
         'facts (length facts)
@@ -481,9 +751,9 @@
         'encode-ms enc-real
         'decode-ms dec-real
         'byte-ok byte-ok
-        'key-ok (string=? orig-key key2)
-        'orig-key orig-key
-        'new-key key2))
+        'key-ok key-ok
+        'orig-key (format "~a" orig-key)
+        'new-key (format "~a" key2)))
 
 (define (first-diff a b)
   (define n (min (bytes-length a) (bytes-length b)))
@@ -546,7 +816,8 @@
                      (build-path repo-root "build")))
      (define files
        (sort (for/list ([p (in-directory dir)]
-                        #:when (regexp-match? #rx"\\.plan$" (path->string p)))
+                        #:when (regexp-match? #rx"\\.(plan|abi2)$"
+                                              (path->string p)))
                p)
              string<? #:key path->string))
      (when (null? files)
@@ -559,16 +830,19 @@
        (report-row r)
        (unless (and (hash-ref r 'byte-ok) (hash-ref r 'key-ok))
          (define orig (file->bytes f))
-         (define plan2 (facts->plan (shuffle (bytes->facts
-                                              (facts->bytes
-                                               (plan->facts
-                                                (with-input-from-bytes orig read)))))))
+         (define form (with-input-from-bytes orig read))
+         (define cohort? (cohort-form? form))
+         (define plan2
+           ((if cohort? facts->cohort facts->plan)
+            (shuffle (bytes->facts
+                      (facts->bytes
+                       ((if cohort? cohort->facts plan->facts) form))))))
          (define out (string->bytes/utf-8
                       (string-append (kernel-plan->string plan2) "\n")))
          (define i (first-diff orig out))
          (printf "  first differing byte at ~a\n" i)
          (exit 1)))]
     [else
-     (eprintf "usage: racket rf0-roundtrip.rkt <file.plan> ...\n")
+     (eprintf "usage: racket rf0-roundtrip.rkt <file.plan|file.abi2> ...\n")
      (eprintf "       racket rf0-roundtrip.rkt --all [build-dir]\n")
      (exit 2)]))
