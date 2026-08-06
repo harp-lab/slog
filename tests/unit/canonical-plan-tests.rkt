@@ -226,4 +226,51 @@
        (kernel-plan->string (canonicalize-cprog/abi2 rev model))
        (kernel-plan->string (canonicalize-cprog/abi2 cp model)))
       (when (>= (length (cprog-rules cp)) 2) (set! tied (add1 tied))))
-    (check >= tied 1)))
+    (check >= tied 1))
+
+  ;; ---------------------------------------------------------------------
+  ;; RF1 slice 3: the closed plan-attribute vocabulary
+  ;; (docs/rf1-contract.md "Flavored-plan attributes").  Absent-when-empty
+  ;; is the byte-defining decision under test: a normal-flavor cohort must
+  ;; carry NO attribute spellings at all (its exec bytes -- and every
+  ;; normal KernelPlanKey -- survive the slice unchanged), while a counted
+  ;; cohort emitted under the real planning toggle carries the kernel
+  ;; attribute and its kinded rules carry (attrs (fold ...)).
+
+  (test-case "flavored cohorts carry attributes; normal carries none"
+    (define-values (cps model)
+      (cprogs+model-of
+       "table (edge int int)
+        table (out int int)
+        rule (edge X Y) --> (out X Y)"))
+    (define cp
+      (or (findf (lambda (c) (pair? (cprog-rules c))) cps)
+          (error 'slice3-test "no rule-bearing stratum")))
+    ;; normal flavor, default toggles: no attribute spellings anywhere
+    (define normal (kernel-plan->string (canonicalize-cprog/abi2 cp model)))
+    (check-false (regexp-match? #rx"[(]attributes" normal))
+    (check-false (regexp-match? #rx"[(]attrs " normal))
+    ;; counted: the flavored planners run with semijoin lookahead OFF and
+    ;; kinded crules (crule-kind is the seventh field); reproduce both
+    (define kinded
+      (list 'cprog (cprog-dynamic-rels cp) (cprog-constants cp)
+            (cprog-decls cp)
+            (map (lambda (r) (list-set r 6 'nonrec)) (cprog-rules cp))))
+    (define counted
+      (parameterize ([semijoin-filters-enabled #f])
+        (kernel-plan->string
+         (canonicalize-cprog/abi2 kinded model #:flavor 'count))))
+    (check-true (regexp-match? #rx"[(]attributes no-semijoin-reopt[)]" counted))
+    (check-true (regexp-match? #rx"[(]attrs [(]fold nonrec[)][)]" counted))
+    ;; the display variant keeps the "/<kind>" rendering of the same fact
+    (check-true (regexp-match? #rx"/nonrec" counted)))
+
+  (test-case "attribute validators reject unknowns"
+    (check-exn #rx"unknown kernel attribute"
+               (lambda () (validate-kernel-attributes! '(semijoin-off))))
+    (check-not-exn
+     (lambda () (validate-kernel-attributes! '(no-semijoin-reopt))))
+    (check-exn #rx"unknown rule attribute"
+               (lambda () (validate-rule-attrs! '((fold prov)))))
+    (check-not-exn
+     (lambda () (validate-rule-attrs! '((fold rec) (fold input)))))))

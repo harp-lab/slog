@@ -72,12 +72,18 @@
 ;;                                                       slots; orderings
 ;;                                                       reuse rel-index[-col]
 ;;                                                       and rel-lat
+;;               (kexec-attr kpid pos name)              kernel attributes
+;;                                                       (RF1 slice 3;
+;;                                                       absent-when-empty)
 ;;               (krule kpid rslot ord kind nregs)       exec rule-def; ops
 ;;                                                       reuse the op facts
 ;;               (krule-rel kpid rslot n)                structured variant
-;;               (krule-fold kpid rslot f)               fields -- field
-;;               (krule-ord kpid rslot n)                presence = fact
+;;               (krule-ord kpid rslot n)                fields -- field
+;;                                                       presence = fact
 ;;                                                       presence
+;;               (krule-fold kpid rslot f)               the rule's (attrs
+;;                                                       (fold f)) field
+;;                                                       (slice 3)
 ;;               (kbind kpid slot name)                  binding schema
 ;;               (kdyn kpid slot)                        slot-relative dynamic
 ;;               (kdebug kpid ord rid variant source)    DebugMap
@@ -315,9 +321,16 @@
 (define (encode-kernel! kpid emit! next-tid! exec binding kdyn debug)
   (define (term! x) (encode-term! x kpid emit! next-tid!))
   (define encode-op! (make-op-encoder kpid emit! term!))
-  (match-define `(exec (slots ,slots ...) (constants ,ks ...)
-                       (prims ,prims ...) (rules ,rules ...))
-    exec)
+  ;; assq, not positional: (attributes ...) is absent-when-empty (slice 3)
+  (match-define `(exec ,exec-parts ...) exec)
+  (define (exec-field key)
+    (match (assq key exec-parts) [(cons _ vs) vs] [_ '()]))
+  (define slots (exec-field 'slots))
+  (define ks (exec-field 'constants))
+  (define prims (exec-field 'prims))
+  (define rules (exec-field 'rules))
+  (for ([a (in-list (exec-field 'attributes))] [i (in-naturals)])
+    (emit! `(kexec-attr ,kpid ,i ,a)))
   (for ([s (in-list slots)])
     (match s
       [`(slot ,slot lattice ,arity ,spec ,decomp ,idx ...)
@@ -335,18 +348,28 @@
   (for ([p (in-list prims)] [i (in-naturals)])
     (emit! `(prim ,kpid ,i ,p)))
   (for ([rd (in-list rules)] [rslot (in-naturals)])
+    ;; the (attrs ...) field is optional (absent for unkinded rules)
     (match-define `(rule-def (ord ,ord) (variant ,vkind ,vrest ...)
-                             (nregs ,nregs)
-                             (pre ,pre ...) (driver ,drv)
-                             (body ,body ...) (head ,head ...))
+                             ,post-variant ...)
       rd)
+    (define-values (attrs canon)
+      (match post-variant
+        [`((attrs ,as ...) ,more ...) (values as more)]
+        [_ (values '() post-variant)]))
+    (match-define `((nregs ,nregs)
+                    (pre ,pre ...) (driver ,drv)
+                    (body ,body ...) (head ,head ...))
+      canon)
     (emit! `(krule ,kpid ,rslot ,ord ,vkind ,nregs))
     (for ([v (in-list vrest)])
       (match v
         [`(rel ,n) (emit! `(krule-rel ,kpid ,rslot ,n))]
-        [`(fold ,f) (emit! `(krule-fold ,kpid ,rslot ,f))]
         [(? exact-integer? n) (emit! `(krule-ord ,kpid ,rslot ,n))]
         [_ (error 'rf0 "unknown variant field: ~s" v)]))
+    (for ([a (in-list attrs)])
+      (match a
+        [`(fold ,f) (emit! `(krule-fold ,kpid ,rslot ,f))]
+        [_ (error 'rf0 "unknown rule attribute: ~s" a)]))
     (encode-regions! encode-op! rslot pre drv body head))
   (match-define `(binding ,bs ...) binding)
   (for ([b (in-list bs)])
@@ -420,7 +443,7 @@
           [(rel-index) (values (take cols 2) (drop cols 2))]
           [(rel-index-col) (values (take cols 2) (drop cols 2))]
           [(attachment const prim dynamic rule rule-meta term-atom term-node
-            kernel kmanifest kbind kdyn kdebug)
+            kernel kmanifest kbind kdyn kdebug kexec-attr)
            (values '() cols)]
           [(kmember krule krule-rel krule-fold krule-ord)
            (values (list (car cols)) (cdr cols))]
@@ -619,6 +642,7 @@
       (match-define (list slot name v) row)
       `(k ,slot ,name ,v)))
   (define prims (map second (sort (rows 'prim '()) < #:key car)))
+  (define kattrs (map second (sort (rows 'kexec-attr '()) < #:key car)))
   (define rules
     (for/list ([k (in-list (sort (keys 'krule) < #:key car))])
       (match-define (list rslot) k)
@@ -626,9 +650,11 @@
       (define variant
         `(,vkind
           ,@(match (rows 'krule-rel k) [(list (list n)) `((rel ,n))] ['() '()])
-          ,@(match (rows 'krule-fold k) [(list (list f)) `((fold ,f))] ['() '()])
           ,@(match (rows 'krule-ord k) [(list (list n)) (list n)] ['() '()])))
+      (define attrs
+        (match (rows 'krule-fold k) [(list (list f)) `((fold ,f))] ['() '()]))
       `(rule-def (ord ,ord) (variant ,@variant)
+                 ,@(if (null? attrs) '() `((attrs ,@attrs)))
                  (nregs ,nregs)
                  (pre ,@(region-ops rslot 'pre))
                  (driver ,(car (region-ops rslot 'driver)))
@@ -645,6 +671,7 @@
       (match-define (list ord rid v src) row)
       `(rule (ord ,ord) (rid ,rid) (variant ,v) (source ,src))))
   (list `(exec (slots ,@slots) (constants ,@consts) (prims ,@prims)
+               ,@(if (null? kattrs) '() `((attributes ,@kattrs)))
                (rules ,@rules))
         `(binding ,@binds)
         `(dynamic ,@kds)

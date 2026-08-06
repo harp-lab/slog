@@ -34,6 +34,7 @@
          kernel-exec-key canonicalize-cprog/abi2
          cohort->kernel-plans     ; ABI-2 cohort -> ABI-1-equivalent views
          plan-artifact->kernel-plans ; either shape -> list of kernel-plans
+         validate-kernel-attributes! validate-rule-attrs!  ; RF1 slice 3
          canonicalize-cprog       ; cprog [#:flavor sym] -> kernel-plan
          canonicalize-cprog/tags  ; ... -> (values kernel-plan crule->rid.tag)
          canonical-rule-tags      ; cprog -> (listof (cons rid tag)),
@@ -44,6 +45,7 @@
 (require racket/set
          sha
          "ir-stack.rkt"
+         (only-in "params.rkt" semijoin-filters-enabled)  ; RF1 slice 3
          (only-in "ir-shared.rkt"          ; RF1 slice 1's ProgramModel
                   program-model-scc-of program-model-scc-members))
 
@@ -427,6 +429,52 @@
 ;; name dependence).
 (define (kernel-exec-key exec) (bytes->hex-string (sha256 (string->bytes/utf-8 (sexp->string exec)))))
 
+;; ------------------------------------------------------------------------
+;; RF1 slice 3: the closed plan-attribute vocabulary (rf1-contract.md,
+;; "Flavored-plan attributes" -- the M4S resolution).  Attributes live in
+;; the EXEC part and are hashed: they change executor behavior, so they are
+;; identity.  The vocabulary is closed HERE at the writer -- the emitter
+;; validates its own output, so drift is a compile error -- and the daemon's
+;; cohort decoder rejects unknowns independently.
+;;
+;; ABSENT-WHEN-EMPTY, pinned: a kernel with no attributes emits no
+;; (attributes ...) section and an unkinded rule no (attrs ...) field.
+;; Consequence, deliberate: normal-flavor exec bytes -- and every normal
+;; KernelPlanKey -- survive this slice unchanged; only flavored artifacts
+;; churn, and those are recomputable caches (counts recount).  The
+;; contract's own test language agrees: "normal-flavor plans carry none".
+;;
+;;  - no-semijoin-reopt: derived from the ACTUAL planning toggle
+;;    (semijoin-filters-enabled), not from a flavor list -- so it can never
+;;    drift from what planning did.  Count/maint3neg/maint4neg disable the
+;;    toggle (compile.rkt); maint1 deliberately keeps lookahead, and the
+;;    daemon's structural no-exists seal check is gated the same way.
+;;  - (fold input|nonrec|rec): the per-rule prov-keyed count kind
+;;    (ir-stack.rkt crule-kind), promoted out of the variant spelling so
+;;    exec carries it first-class; the display tag's "/<kind>" suffix
+;;    remains the DebugMap rendering of the same fact.
+;;  - probe-only mkstruct is RESERVED, not emitted: it is an attribute on
+;;    the mkstruct OP (m4s-contract.md owns the semantics); the spelling is
+;;    pinned as `probe-only` so M4S cannot mint a second one.
+(define kernel-attribute-vocabulary '(no-semijoin-reopt))
+(define fold-kind-vocabulary '(input nonrec rec))
+(define mkstruct-attribute-vocabulary '(probe-only))   ; reserved for M4S
+
+(define (validate-kernel-attributes! attrs)
+  (for ([a (in-list attrs)])
+    (unless (memq a kernel-attribute-vocabulary)
+      (error 'canonicalize-cprog
+             "unknown kernel attribute ~a (closed vocabulary: ~a)"
+             a kernel-attribute-vocabulary))))
+
+(define (validate-rule-attrs! attrs)
+  (for ([a (in-list attrs)])
+    (match a
+      [`(fold ,(? (lambda (k) (memq k fold-kind-vocabulary)))) (void)]
+      [_ (error 'canonicalize-cprog
+                "unknown rule attribute ~s (closed vocabulary: (fold ~a))"
+                a fold-kind-vocabulary)])))
+
 ;; Name-blind AND variable-blind structural text of a crule, for the order
 ;; that drives slot assignment.  Both halves are load-bearing:
 ;;
@@ -542,6 +590,16 @@
     (for/list ([(name i) (in-hash rel-ix)])
       (define d (hash-ref decl-of name))
       (cons i `(slot ,i ,(car d) ,@(cddr d)))))
+  ;; RF1 slice 3: kernel attributes from the ACTUAL planning toggle, and
+  ;; per-rule fold kinds from crule-kind -- both validated against the
+  ;; closed vocabulary before they can reach hashed bytes.
+  (define kernel-attrs
+    (if (semijoin-filters-enabled) '() '(no-semijoin-reopt)))
+  (validate-kernel-attributes! kernel-attrs)
+  (define (rule-attrs cr)
+    (define as (if (crule-kind cr) `((fold ,(crule-kind cr))) '()))
+    (validate-rule-attrs! as)
+    as)
   (define exec
     `(exec
       (slots ,@(map cdr (sort slots < #:key car)))
@@ -552,10 +610,13 @@
       (constants ,@(for/list ([e (in-list (sort (unbox const-uses) < #:key car))])
                      `(k ,(first e) ,(second e) ,(third e))))
       (prims ,@(sort (set->list prim-names) symbol<?))
+      ,@(if (null? kernel-attrs) '() `((attributes ,@kernel-attrs)))
       (rules
        ,@(for/list ([cr (in-list ordered)] [c (in-list canon)] [i (in-naturals)])
            `(rule-def (ord ,i) (variant ,@(slot-relative-variant
                                            (tag-of cr) cr rel-slot))
+                      ,@(let ([as (rule-attrs cr)])
+                          (if (null? as) '() `((attrs ,@as))))
                       ,@c)))))
   (define binding
     `(binding ,@(for/list ([e (in-list (sort (for/list ([(n i) (in-hash rel-ix)])
@@ -568,20 +629,19 @@
                        (source ,(or (crule-loc cr) #f))))))
   (values exec binding debug rel-ix))
 
-;; "delta:left.path#1" -> (delta (rel 3) 1), and the count/maintenance
-;; flavors' "delta:edge/prov#0" -> (delta (rel 2) (fold prov) 0): the KIND
-;; and ordinal stay, the relation becomes this kernel's slot, and the
-;; display spelling lives in DebugMap.  The relation comes from the DRIVER,
-;; never re-parsed out of the display string -- the tag's middle is a
-;; rendering that may carry a "/<kind>" suffix (base-tag), and an early
-;; regex that captured it as part of the relation silently degraded every
-;; flavored variant to `(rel -1)` while dropping the fold kind from the
-;; exec bytes entirely.  The fold kind must ride HERE because the executor
-;; discriminates the cnt_* folds by it (daemon variant_fold_kind): exec
-;; must stay runnable with its DebugMap absent (rf1-contract, DebugMap
-;; may-nots).  And a driver that fails to resolve is a partition bug that
-;; must be LOUD -- these bytes are hashed into the kernel key, so any
-;; silent fallback would bake the failure into plan identity.
+;; "delta:left.path#1" -> (delta (rel 3) 1): the KIND and ordinal stay, the
+;; relation becomes this kernel's slot, and the display spelling lives in
+;; DebugMap.  The relation comes from the DRIVER, never re-parsed out of
+;; the display string -- the tag's middle is a rendering that may carry a
+;; "/<kind>" suffix (base-tag), and an early regex that captured it as part
+;; of the relation silently degraded every flavored variant to `(rel -1)`.
+;; The fold kind itself rides the rule-def's (attrs ...) field since slice
+;; 3 (it is executor identity, not variant identity); the display tag's
+;; "/<kind>" remains the DebugMap rendering of the same fact, and the
+;; daemon seal-checks their agreement.  A driver that fails to resolve is
+;; a partition bug that must be LOUD -- these bytes are hashed into the
+;; kernel key, so any silent fallback would bake the failure into plan
+;; identity.
 (define (slot-relative-variant tag cr rel-slot)
   (define kind (car (regexp-match #px"^[a-z0-9]+" tag)))
   (define ord (regexp-match #px"#([0-9]+)$" tag))
@@ -591,7 +651,6 @@
       [_ #f]))
   (append (list (string->symbol kind))
           (if driver-rel (list `(rel ,(rel-slot driver-rel))) '())
-          (if (crule-kind cr) (list `(fold ,(crule-kind cr))) '())
           (if ord (list (string->number (second ord))) '())))
 
 ;; The cohort: one file per (stratum, flavor), carrying the manifest and the
@@ -792,13 +851,19 @@
   (append
    (if services (list services) '())
    (for/list ([k (in-list kernels)])
-     (match-define `(kernel (ord ,_ord)
-                            (exec (slots ,slots ...) (constants ,ks ...)
-                                  (prims ,prims ...) (rules ,rules ...))
+     (match-define `(kernel (ord ,_ord) (exec ,exec-parts ...)
                             (binding ,binds ...)
                             (dynamic ,kdyns ...)
                             (debug ,debugs ...))
        k)
+     ;; assq, not positional: (attributes ...) is absent-when-empty (slice
+     ;; 3), so exec's section list varies by one
+     (define (exec-field key)
+       (match (assq key exec-parts) [(cons _ vs) vs] [_ '()]))
+     (define slots (exec-field 'slots))
+     (define ks (exec-field 'constants))
+     (define prims (exec-field 'prims))
+     (define rules (exec-field 'rules))
      (define name-of
        (for/hash ([b (in-list binds)])
          (match-define `(slot ,n ,name) b)
@@ -823,9 +888,16 @@
        (rules ,@(for/list ([rd (in-list rules)])
                   (match-define `(rule-def (ord ,o) (variant ,_v ...) ,rest ...)
                     rd)
+                  ;; the (attrs ...) field is exec identity, not ABI-1
+                  ;; grammar; the display variant already renders the fold
+                  ;; kind as its "/<kind>" suffix, so nothing is lost
+                  (define body
+                    (match rest
+                      [`((attrs ,_ ...) ,more ...) more]
+                      [_ rest]))
                   `(rule-def (rid ,(first (hash-ref debug-of o)))
                              (variant ,(second (hash-ref debug-of o)))
-                             ,@rest)))
+                             ,@body)))
        (meta ,@(let ([by-rid (for/fold ([h (hash)])
                                        ([info (in-hash-values debug-of)])
                                (hash-set h (first info) (third info)))])

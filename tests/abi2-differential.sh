@@ -148,6 +148,39 @@ else
   fi
 fi
 
+# RF1 slice 3: the ABI-2 leg's flavored artifacts (still in build/ from
+# run_counted 2) double as attribute goldens-in-miniature.  Count and the
+# negative maintenance flavors carry the kernel attribute -- maint1 keeps
+# semijoin lookahead at planning and must NOT -- every flavored rule
+# carries its fold attr, and no normal/delta plan carries any attribute
+# spelling at all (absent-when-empty is what keeps their keys stable).
+attr_ok=1
+for f in build/*_count.*.plan build/*_maint3neg.*.plan build/*_maint4neg.*.plan; do
+  [ -e "$f" ] || continue
+  grep -qF '(attributes no-semijoin-reopt)' "$f" \
+    || { echo "FAIL slice3-attributes ($(basename "$f") lacks no-semijoin-reopt)"; attr_ok=0; }
+  grep -qF '(attrs (fold ' "$f" \
+    || { echo "FAIL slice3-fold ($(basename "$f") lacks fold attrs)"; attr_ok=0; }
+done
+for f in build/*_maint1.*.plan; do
+  [ -e "$f" ] || continue
+  grep -qF '(attributes no-semijoin-reopt)' "$f" \
+    && { echo "FAIL slice3-maint1 ($(basename "$f") carries no-semijoin-reopt)"; attr_ok=0; }
+  grep -qF '(attrs (fold ' "$f" \
+    || { echo "FAIL slice3-fold ($(basename "$f") lacks fold attrs)"; attr_ok=0; }
+done
+for f in build/*.plan; do
+  case "$f" in *_count.*|*_maint*) continue ;; esac
+  grep -qE '[(]attributes |[(]attrs ' "$f" \
+    && { echo "FAIL slice3-normal ($(basename "$f") carries attribute spellings)"; attr_ok=0; }
+done
+if [ "$attr_ok" -eq 1 ]; then
+  echo "PASS slice3-attributes"
+  PASS=$((PASS+1))
+else
+  FAIL=$((FAIL+1))
+fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

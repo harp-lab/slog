@@ -1160,6 +1160,16 @@ std::vector<DecodedKernelPlan> parse_kernel_cohort(std::string_view input)
     if (slots == nullptr || constants == nullptr || prims == nullptr
         || rules == nullptr)
       syntax(*exec, "cohort exec: requires slots, constants, prims and rules");
+    // RF1 slice 3: the closed kernel-attribute vocabulary.  The section is
+    // absent-when-empty; unknown names are rejected here independently of
+    // the compiler's own validator.  Nothing rides into the ABI-1 view --
+    // the no-exists property no-semijoin-reopt declares is already
+    // seal-checked STRUCTURALLY for the flavors that carry it.
+    if (const SExp* attributes = field_of(*exec, "attributes"))
+      for (size_t i = 1; i < attributes->children.size(); ++i)
+        if (attributes->children[i].kind != SExp::K::atom
+            || attributes->children[i].text != "no-semijoin-reopt")
+          syntax(attributes->children[i], "cohort: unknown kernel attribute");
 
     std::string text = "(kernel-plan (abi 1) (flavor " + flavor_text + ")";
     // relations: exec's STRUCTURE joined with binding's NAME
@@ -1210,7 +1220,37 @@ std::vector<DecodedKernelPlan> parse_kernel_cohort(std::string_view input)
         syntax(rd, "cohort rule has no DebugMap entry");
       text += " (rule-def (rid " + std::to_string(d->second.rid) + ")";
       text += " (variant " + quoted_atom(d->second.variant) + ")";
-      for (size_t j = 3; j < fs.size(); ++j) text += " " + sexp_text(fs[j]);
+      for (size_t j = 3; j < fs.size(); ++j)
+      {
+        // RF1 slice 3: (attrs ...) is exec identity, not ABI-1 grammar.
+        // Validate the closed vocabulary, check the fold kind agrees with
+        // the DebugMap spelling (which is what the sealer's
+        // variant_fold_kind derives from), and do not copy it into the
+        // ABI-1 view.
+        if (fs[j].kind == SExp::K::list && !fs[j].children.empty()
+            && fs[j].children[0].kind == SExp::K::atom
+            && fs[j].children[0].text == "attrs")
+        {
+          for (size_t a = 1; a < fs[j].children.size(); ++a)
+          {
+            const SExp& attr = fs[j].children[a];
+            if (attr.kind != SExp::K::list || attr.children.size() != 2
+                || attr.children[0].kind != SExp::K::atom
+                || attr.children[0].text != "fold")
+              syntax(attr, "cohort rule: unknown rule attribute");
+            const std::string fold = atom(attr.children[1], "fold kind");
+            if (fold != "input" && fold != "nonrec" && fold != "rec")
+              syntax(attr, "cohort rule: unknown fold kind");
+            const u8 display = variant_fold_kind(d->second.variant);
+            if ((fold == "nonrec" && display != cnt_kind_nonrec)
+                || (fold == "rec" && display != cnt_kind_rec))
+              syntax(attr, "cohort rule: fold attribute disagrees with the "
+                           "variant spelling");
+          }
+          continue;
+        }
+        text += " " + sexp_text(fs[j]);
+      }
       text += ")";
     }
     text += ")";

@@ -788,6 +788,47 @@ Consequences, pinned:
    *Tests:* count/maintenance-flavor plan goldens showing the
    attributes; validator rejection of unknown attributes; normal-flavor
    plans carry none.
+
+   *As-built (2026-08-06, SHIPPED).*  Grammar: the exec part gains an
+   `(attributes ...)` section between prims and rules, and a rule-def an
+   `(attrs ...)` field between the variant and nregs -- both
+   **ABSENT-WHEN-EMPTY**, the slice's byte-defining decision: a
+   normal-flavor kernel emits neither, so every normal KernelPlanKey
+   survives the slice unchanged (measured: reach + lat_run_base normal
+   plans byte-identical pre/post) and only flavored artifacts churn
+   (recomputable caches; counts recount).  The contract's own test
+   language agreed in advance: "normal-flavor plans carry none".
+   Decisions, pinned:
+   - **`no-semijoin-reopt` derives from the ACTUAL planning toggle**
+     (`semijoin-filters-enabled`), not from a flavor list, so it can
+     never drift from what planning did.  Consequence discovered en
+     route: the flavor set is count/maint3neg/maint4neg — **maint1
+     deliberately keeps semijoin lookahead** (its FULL-only probe
+     over-approximates both views), and the daemon's structural
+     no-exists seal check is gated the same way, so the attribute and
+     the check agree by construction.
+   - **Fold kinds are per-rule `(attrs (fold input|nonrec|rec))`**,
+     promoted out of the variant spelling where the hardening pass had
+     parked them (one flavored-byte churn, not two).  The display tag's
+     `/<kind>` suffix remains the DebugMap rendering of the same fact;
+     the daemon's cohort decoder seal-checks their agreement and keeps
+     deriving its `fold_kind` from the display spelling — full
+     exec-only derivation is the W2 stats-rekey's concern.
+   - **The vocabulary is closed at BOTH ends**: the emitter validates
+     its own output (`validate-kernel-attributes!`/`validate-rule-attrs!`,
+     unit-tested for rejection), and `parse_kernel_cohort` independently
+     rejects unknown kernel attributes, unknown rule attributes, unknown
+     fold kinds, and fold/display disagreement.
+   - **Probe-only `mkstruct` is reserved as `probe-only`** — an attribute
+     on the mkstruct OP, spelling pinned in
+     `mkstruct-attribute-vocabulary`, no emitter until M4S.
+   *Gates:* canonical-plan unit battery (flavored cohort carries both
+   attribute forms + the `/kind` display; normal carries none; validator
+   rejections); the differential's counted leg now asserts the
+   attributes on the REAL flavored artifacts of the ABI-2 session
+   (count/maint3neg/maint4neg carry both, maint1 carries fold attrs
+   only, normal/delta carry neither); RF0 round-trips both new fields
+   (`kexec-attr` facts; `krule-fold` now sourced from attrs).
 4. **Plan goldens of record.** Golden `.plan` sets for a
    deep_fact-class giant ground-rule program, a lattice program, a
    demand program, and a join3/wcoj program; wired as a suite tier
