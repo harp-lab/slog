@@ -1,6 +1,10 @@
 # RF1 ProgramModel + Plan ABI 2 contract
 
-**Status:** design contract (2026-07-15); not yet implemented.
+**Status: COMPLETE (2026-08-06).**  All slices shipped, all six exit
+gates closed (see "Exit gates"), and **ABI 2 is the default plan
+artifact** (`003af8b`; `SLOG_PLAN_ABI=1` is the escape hatch).  Ratified
+2026-07-15 as a design contract; the as-built notes under each slice are
+the record of what shipped and where it deviated.
 This file consolidates the RF1 decisions ratified 2026-07-15 at the
 **minimal-for-T2** scope; it does not reopen them.
 [execution-tiers.md](execution-tiers.md) §2/§4/§11 and
@@ -836,6 +840,25 @@ Consequences, pinned:
    *Tests:* the goldens themselves, plus a golden-stability run
    (recompile twice, diff) pinning the determinism doctrine.
 
+   *As-built (2026-08-06, SHIPPED):* `tests/plan-goldens.sh`, tier
+   `plan-goldens`, IN run-all's ALL (it is the per-change gate the
+   goldens exist to be; ~8 cold interp compiles).  Programs: deep_fact,
+   lat_run_base, dem_lambda (the historical checkout-path offender,
+   pinned on purpose), sj_tri (join3/wcoj); 21 plans of record under
+   `tests/plan-expected/*.plans`.  Two decisions worth their comments:
+   the golden is the **LC_ALL=C-sorted concatenation of the plan
+   lines, keyed by CONTENT** — stems are job hashes over
+   pre-simplification inputs INCLUDING compiler sources, so filenames
+   churn with every compiler edit while the plan bytes do not; and the
+   compiles pin **SLOG_OPT=interp** (plan set verified tier-independent
+   against a tiered recording) because tiered runs launch background
+   -O2 compiles whose stragglers race the next iteration's build/ wipe
+   — the same race that transiently hit the airtight gate during the
+   flip validation.  Each program compiles twice from clean and the
+   runs must agree (per-program stability) and match the record.
+   Re-record with `--record` ONLY alongside a sanctioned plan-byte
+   change, in the same commit.
+
 Slices 3 and 4 are independent of each other and may land in either
 order after slice 2.
 
@@ -879,6 +902,27 @@ order after slice 2.
 Not gated here, by design: RF1.5 model queries, any daemon consumer
 (T2 owns installation), the stats rekey (W2), TU-text canonicalization
 (T4 phase B).
+
+**ALL SIX GATES CLOSED (2026-08-06):**
+1. Byte-identical C++ — closed 2026-08-03 via the operative mechanism
+   (exact-once audit + goldens; the TU-text measurement above stands).
+2. Full suite green — 21/21 run-all tiers at the ABI-2 DEFAULT
+   (`003af8b`'s flip validation).
+3. Plan goldens — the four classes recorded and green (slice 4 as-built).
+4. Two-run + two-process determinism — plan-determinism at the ABI-2
+   default: 2621 build/ filenames and 506 cohort plans byte-identical
+   across two full golden tiers (separate processes), temp-bearing and
+   multi-stratum included; plus per-program recompile-twice stability in
+   the plan-goldens tier.  This gate EARNED ITS KEEP: its first run
+   caught the third tie-group instance (slice-2 hardening notes).
+5. Canonical-plan unit battery — 15 cases: split airtightness rides the
+   gate scripts; input-order independence, attribute emission and
+   validator rejection ride the battery; lineage rides
+   program-model-tests.
+6. Partition correctness — the airtight gate's coverage/binding/key
+   checks plus the differential's behavior equality, per-kernel-native
+   with no reaggregated view (the decoder-boundary adaptation is
+   per-kernel field decoding, recorded in slice 2's as-built).
 
 ## Open implementation questions (pinned, not blocking)
 
