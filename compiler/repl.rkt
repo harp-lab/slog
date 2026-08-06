@@ -26,6 +26,7 @@
          racket/port
          racket/string
          racket/tcp
+         (only-in "canonical-plan.rkt" plan-artifact->kernel-plans)
          "catalog.rkt"   ; N4-B attachment plan projection
          "dbtool.rkt"
          "names.rkt"
@@ -2762,6 +2763,13 @@
        (with-handlers ([exn:fail? (lambda (_) #f)])
          (call-with-input-file path read))))
 
+;; The stratum's ABI-1-equivalent kernel-plan views, whatever the artifact
+;; shape: one for a monolith, one per kernel (plus the rule-free services
+;; plan) for an ABI-2 cohort.  Post-flip, cohorts are the normal case.
+(define (read-stratum-plan-views hash)
+  (define form (read-stratum-plan hash))
+  (if form (plan-artifact->kernel-plans form) '()))
+
 ;; (rel 2) -> 'path, given the plan's relation table
 (define (plan-relation-name relations slot)
   (match (findf (lambda (r) (match r [`(rel ,n ,_) (equal? n slot)] [_ #f]))
@@ -2780,8 +2788,7 @@
   (filter
    values
    (for*/list ([row (in-list (session-tiers s))]
-              #:do [(define plan (read-stratum-plan (second row)))]
-              #:when plan
+              [plan (in-list (read-stratum-plan-views (second row)))]
               #:do [(define parts (match plan [`(kernel-plan ,ps ...) ps] [_ #f]))]
               #:when (and parts
                           (equal? (car (or (plan-field parts 'flavor) '(#f)))
@@ -2851,6 +2858,51 @@
                       (length (or (field 'rules) '())))
               (format "dynamic: ~a"
                       (string-join (map ~a (or (field 'dynamic) '())) ", ")))
+        (if (null? sources)
+            '()
+            (list (format "sources: ~a" (string-join sources ", ")))))]
+      ;; ABI 2 (the default since the RF1 flip): the stratum is a cohort of
+      ;; per-SCC kernels.  Report the cohort's own shape -- kernels and their
+      ;; content-addressed keys are the load-bearing facts here -- and derive
+      ;; sources through the DebugMap views, the same adaptation the daemon
+      ;; performs at its decoder boundary.
+      [`(kernel-cohort ,parts ...)
+       (define (field key)
+         (match (assq key parts) [(cons _ values) values] [_ #f]))
+       (define manifest (or (field 'manifest) '()))
+       (define rule-count
+         (for/sum ([m (in-list manifest)])
+           (match m [`(kernel ,_ ... (rules ,n)) n] [_ 0])))
+       (define sources
+         (remove-duplicates
+          (filter values
+                  (for*/list ([view (in-list (plan-artifact->kernel-plans plan))]
+                              [m (in-list (match view
+                                            [`(kernel-plan ,ps ...)
+                                             (match (assq 'meta ps)
+                                               [(cons _ ms) ms] [_ '()])]))])
+                    (match m
+                      [`(rule-meta (rid ,_) (source ,src))
+                       (and (string? src) src)]
+                      [_ #f])))))
+       (append
+        (list (format "flavor: ~a · abi ~a · ~a kernels · ~a declarations · ~a rule variants"
+                      (car (or (field 'flavor) '(unknown)))
+                      (car (or (field 'abi) '(0)))
+                      (length manifest)
+                      (length (or (field 'declarations) '()))
+                      rule-count)
+              (format "dynamic: ~a"
+                      (string-join (map ~a (or (field 'dynamic) '())) ", ")))
+        (for/list ([m (in-list manifest)])
+          (match m
+            [`(kernel (ord ,i) (key ,key) (members ,ms ...) ,rest ...)
+             (format "kernel ~a: ~a · ~a"
+                     i (substring key 0 (min 16 (string-length key)))
+                     (if (assq 'prelude rest)
+                         "prelude"
+                         (string-join (map ~a ms) ", ")))]
+            [_ ""]))
         (if (null? sources)
             '()
             (list (format "sources: ~a" (string-join sources ", ")))))]
@@ -4507,9 +4559,11 @@
      #px"query watches are client-side re-counts; level 1 applies to relation watches"
      transcript)
     ;; the scratch stratum's card: rung, cached artifacts, plan shape
-    ;; (unchanged by the policy column)
+    ;; (unchanged by the policy column).  Since the RF1 flip the artifact
+    ;; is a cohort, so the shape line reports kernels and the card carries
+    ;; each kernel's content-addressed key and members.
     (check-regexp-match
-     #px"◆ Code · s2\n  stratum [0-9a-f]+ · running interp\n  cache: plan\n  flavor: normal · abi 1 · [0-9]+ relations · 1 rule variants\n  dynamic: hop2"
+     #px"◆ Code · s2\n  stratum [0-9a-f]+ · running interp\n  cache: plan\n  flavor: normal · abi 2 · 1 kernels · [0-9]+ declarations · 1 rule variants\n  dynamic: hop2\n  kernel 0: [0-9a-f]{16} · hop2"
      transcript)
     (check-regexp-match #px"no resident stratum matches nope" transcript))
 

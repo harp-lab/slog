@@ -37,8 +37,9 @@ fi
 run_shape() { # <program> <tag> <abi>
   local prog="$1" tag="$2" abi="$3"
   rm -rf build config/cache
-  local env_abi=()
-  [ "$abi" = "2" ] && env_abi=(SLOG_PLAN_ABI=2)
+  # explicit BOTH ways: since the flip, the default is ABI 2, so the ABI-1
+  # leg must pin itself or this differential compares a shape to itself
+  local env_abi=(SLOG_PLAN_ABI="$abi")
   env "${env_abi[@]}" SLOG_OPT=interp timeout 900 \
     racket compiler/run.rkt --no-banner --debug-dir "$WORK/out-$tag" "$prog" \
     > "$WORK/log-$tag" 2>&1
@@ -99,8 +100,7 @@ run_counted() { # <abi>
   local abi="$1" tag="counted-abi$1"
   rm -rf build config/cache "$WORK/csv-$tag"
   mkdir -p build   # session-drive writes action plugins here before any compile
-  local env_abi=()
-  [ "$abi" = "2" ] && env_abi=(SLOG_PLAN_ABI=2)
+  local env_abi=(SLOG_PLAN_ABI="$abi")   # explicit both ways, as above
   # batch- can only retract INPUT-ledger tuples (base.slog's own edges are
   # ground-rule derived), so retract the tuple this scenario inserts: the
   # positive flush extends the closure (maint1), the negative flush tears

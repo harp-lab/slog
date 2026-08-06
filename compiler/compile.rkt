@@ -709,12 +709,20 @@
   ;; flavored .so's do: a plan-semantics change bumps the abi and re-keys
   ;; both artifacts together (a stale plan can otherwise outlive planner
   ;; fixes -- the .plan is the re-emit-on-miss marker).
-  ;; RF1 slice 2: the ABI-2 cohort, computed once and used twice below --
-  ;; as the shipped artifact under SLOG_PLAN_ABI=2, and as the audit dump
-  ;; under SLOG_DUMP_ABI2.  #f when neither asks, or when a hand-built
-  ;; cprog has no model (those paths fall back to ABI 1 rather than fail).
+  ;; RF1 flip (2026-08-05): the ABI-2 cohort IS the shipped artifact.
+  ;; SLOG_PLAN_ABI=1 is the escape hatch back to the monolith; a hand-built
+  ;; cprog with no model also falls back to ABI 1 rather than failing.  The
+  ;; cohort is computed once, for the artifact and the SLOG_DUMP_ABI2 audit
+  ;; dump both -- and the dump request triggers the computation ON ITS OWN,
+  ;; because the airtight gate pins SLOG_PLAN_ABI=1 precisely so its dump
+  ;; can cross-check the two shapes of one compile (the first flip cut
+  ;; suppressed the dump under the pin, and the gate's five downstream
+  ;; checks all failed for want of .abi2 files).  Stale ABI-1 sidecars in a
+  ;; warm build/ stay valid: the daemon and every Racket reader dispatch on
+  ;; the form's own tag.
+  (define ship-abi2? (not (equal? (getenv "SLOG_PLAN_ABI") "1")))
   (define abi2-cohort
-    (and (or (equal? (getenv "SLOG_PLAN_ABI") "2") (getenv "SLOG_DUMP_ABI2"))
+    (and (or ship-abi2? (getenv "SLOG_DUMP_ABI2"))
          (canonicalize-all/abi2 cprog plan-flavor model)))
   (call-with-atomic-output
    (fullpath (format "build/~a~a.plan" hash-name
@@ -722,12 +730,9 @@
                          (string-append "." incremental-flavor-abi)
                          "")))
    (lambda ()
-     ;; Which shape the ARTIFACT takes.  SLOG_PLAN_ABI=2 selects the cohort;
-     ;; the default stays 1 until the flip, so this is the staging switch
-     ;; rather than a second permanent path.
-     (define abi2 (and (equal? (getenv "SLOG_PLAN_ABI") "2") abi2-cohort))
      (displayln (kernel-plan->string
-                 (or abi2 (canonicalize-all cprog plan-flavor))))))
+                 (or (and ship-abi2? abi2-cohort)
+                     (canonicalize-all cprog plan-flavor))))))
   ;; RF1 slice 2 audit instrument (SLOG_DUMP_ABI2=<dir>): emit the ABI-2
   ;; cohort beside the shipped plan.  Inspect-only -- nothing reads it,
   ;; which is the point: the split gets exercised over real programs

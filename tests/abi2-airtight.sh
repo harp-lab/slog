@@ -46,7 +46,10 @@ PYEOF
 
 compile_dump() { # <program> <dumpdir>
   rm -rf build config/cache "$2" "$2.abi1"
-  SLOG_DUMP_ABI2="$2" timeout 900 racket compiler/run.rkt "$1" \
+  # PIN the shipped artifact to ABI 1: since the flip the default is the
+  # cohort, and the constants cross-check below is only a cross-SHAPE check
+  # while the shipped plan and the dump genuinely differ in shape
+  SLOG_PLAN_ABI=1 SLOG_DUMP_ABI2="$2" timeout 900 racket compiler/run.rkt "$1" \
     > "$WORK/$(basename "$2").log" 2>&1
   # snapshot THIS compile's ABI-1 plans beside its ABI-2 dump: build/ is
   # wiped by the next fixture, so a later cross-check would otherwise

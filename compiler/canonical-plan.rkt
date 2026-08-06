@@ -31,7 +31,9 @@
 ;; (unlike set/hash iteration order, which is content-chaotic).
 
 (provide crule-head-rels crule-body-rels resolve-temp-sccs crule-kernel
-         current-plan-abi kernel-exec-key canonicalize-cprog/abi2
+         kernel-exec-key canonicalize-cprog/abi2
+         cohort->kernel-plans     ; ABI-2 cohort -> ABI-1-equivalent views
+         plan-artifact->kernel-plans ; either shape -> list of kernel-plans
          canonicalize-cprog       ; cprog [#:flavor sym] -> kernel-plan
          canonicalize-cprog/tags  ; ... -> (values kernel-plan crule->rid.tag)
          canonical-rule-tags      ; cprog -> (listof (cons rid tag)),
@@ -413,13 +415,10 @@
 ;; ------------------------------------------------------------------------
 ;; RF1 slice 2: ABI 2 emission -- the four-way split, per kernel.
 ;;
-;; `current-plan-abi` selects the shape.  It defaults to 1 so the tree stays
-;; green while the daemon's ABI-2 decoder is built: this emitter's consumer
-;; until then is tests/unit/canonical-plan-tests.rkt, which is what makes
-;; the airtightness properties (a DebugMap-only edit changes no key; a
-;; rename changes the binding schema only) testable before anything depends
-;; on them.
-(define current-plan-abi (make-parameter 1))
+;; The artifact shape is selected at the ONE write site (compile.rkt's
+;; plan-writing lambda; ABI 2 is the default since the flip, SLOG_PLAN_ABI=1
+;; the escape hatch).  An earlier staging parameter, current-plan-abi, is
+;; gone: it was never consulted -- the env var was always the switch.
 
 ;; Everything the executor binds and nothing else.  KEY = hash of this part
 ;; ALONE, so it is the identity of a computation rather than of a program at
@@ -764,6 +763,82 @@
     ,@(for/list ([k (in-list built)] [i (in-naturals)])
         `(kernel (ord ,i) ,(third k) ,(fourth k)
                  ,(kernel-dynamic (sixth k)) ,(fifth k)))))
+
+;; ------------------------------------------------------------------------
+;; The Racket twin of the daemon's decoder-boundary adaptation
+;; (daemon/plan.cpp parse_kernel_cohort), for Racket-side plan readers --
+;; the REPL's whynot/code and any fixture that walks rule-defs by name.
+;; Each kernel of a cohort renders as the ABI-1 kernel-plan it is
+;; equivalent to: exec structure joined with the binding schema's names,
+;; the dense ordinal replaced by the DebugMap's RuleId, the slot-relative
+;; variant replaced by its display spelling, sources into a meta block.
+;; The rule-free declarations/services plan comes first, exactly as the
+;; daemon synthesizes it.  Kernels stay separate units -- this is per-kernel
+;; FIELD adaptation, not the reaggregation rf1-contract forbids.
+(define (cohort->kernel-plans cohort)
+  (match-define `(kernel-cohort (abi 2) (flavor ,flavor)
+                                (attachments ,atts ...)
+                                (declarations ,decls ...)
+                                (dynamic ,_dyns ...)
+                                (manifest ,_mans ...)
+                                ,kernels ...)
+    cohort)
+  (define services
+    (and (or (pair? decls) (pair? atts))
+         `(kernel-plan (abi 1) (flavor ,flavor)
+                       (relations ,@decls)
+                       (attachments ,@atts)
+                       (constants) (prims) (dynamic) (rules) (meta))))
+  (append
+   (if services (list services) '())
+   (for/list ([k (in-list kernels)])
+     (match-define `(kernel (ord ,_ord)
+                            (exec (slots ,slots ...) (constants ,ks ...)
+                                  (prims ,prims ...) (rules ,rules ...))
+                            (binding ,binds ...)
+                            (dynamic ,kdyns ...)
+                            (debug ,debugs ...))
+       k)
+     (define name-of
+       (for/hash ([b (in-list binds)])
+         (match-define `(slot ,n ,name) b)
+         (values n name)))
+     (define debug-of
+       (for/hash ([d (in-list debugs)])
+         (match-define `(rule (ord ,o) (rid ,rid) (variant ,v) (source ,src))
+           d)
+         (values o (list rid v src))))
+     `(kernel-plan
+       (abi 1)
+       (flavor ,flavor)
+       (relations ,@(for/list ([s (in-list slots)])
+                      (match-define `(slot ,n ,kind ,rest ...) s)
+                      `(rel ,n (,kind ,(hash-ref name-of n) ,@rest))))
+       (attachments)                    ; cohort services carry them, above
+       (constants ,@ks)
+       (prims ,@prims)
+       (dynamic ,@(for/list ([d (in-list kdyns)])
+                    (match-define `(slot ,n) d)
+                    (hash-ref name-of n)))
+       (rules ,@(for/list ([rd (in-list rules)])
+                  (match-define `(rule-def (ord ,o) (variant ,_v ...) ,rest ...)
+                    rd)
+                  `(rule-def (rid ,(first (hash-ref debug-of o)))
+                             (variant ,(second (hash-ref debug-of o)))
+                             ,@rest)))
+       (meta ,@(let ([by-rid (for/fold ([h (hash)])
+                                       ([info (in-hash-values debug-of)])
+                               (hash-set h (first info) (third info)))])
+                 (for/list ([rid (in-list (sort (hash-keys by-rid) <))])
+                   `(rule-meta (rid ,rid) (source ,(hash-ref by-rid rid))))))))))
+
+;; Either artifact shape, decided by the form's own tag -- the Racket
+;; mirror of the daemon's parse_plan_artifact_file.
+(define (plan-artifact->kernel-plans form)
+  (match form
+    [`(kernel-cohort ,_ ...) (cohort->kernel-plans form)]
+    [`(kernel-plan ,_ ...) (list form)]
+    [_ '()]))
 
 ;; ------------------------------------------------------------------------
 ;; Serialization and KernelPlanKey.  One `write` line (D6): the daemon's
