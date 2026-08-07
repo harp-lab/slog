@@ -315,6 +315,68 @@ program-global (B1) and whose key is name-bearing (B4).  The item order in
     n1_instances' two library kernels emit byte-identical kernel cluster
     text, and the content-addressed `.o` cache collapses them — the
     compile-time payoff lands here, before any daemon change.
+    *Entry findings (2026-08-07, recorded before implementation):*
+    (α) `bumpFires("<loc>", "<tag>")` bakes the variant tag, which
+    carries instance-qualified relation names (`delta:left.path`) — for
+    clusters to collapse, TAGS become spine-supplied frame data (a
+    per-rule string table beside the relation frame); LOCS stay baked
+    (a library rule's file:line is instance-independent, and the stats
+    audit's (loc, tag) key spelling must not change — interp's
+    statsTag must keep matching).  (β) **tycheck `accept` sets carry
+    struct NAMES inside hashed exec bytes** (canonicalize-crule passes
+    the accept types through unresolved) — a live RF1 gap: a library
+    kernel whose rules tycheck against instance-qualified structs does
+    NOT share its plan key across instances; n1's proven sharing is
+    tables-only.  The TU side is fixable in (2b) without moving plan
+    bytes (spine-supplied sid tables, like α).  The PLAN side is a
+    sanctioned re-key (accept names → slots) and is deliberately NOT
+    spent in (2b): batch it with the next planned re-key (the slice-3
+    stat rekey, or 2c's descriptor landing), and record it in the
+    airtight gate's known-gaps note until then.
+    *As-built (2026-08-07).*  Kernel cluster text is fully name-free:
+    every relation reference is `f[slot]` against the kernel's binding
+    frame (`slot` from the plan's own rel-ix, exported through
+    `canonicalize-cprog/abi2+groups` — the frame layout authority is the
+    binding schema, not a second derivation); accepted tycheck structs
+    ride a frame APPENDIX (slot table first, then first-use order); the
+    stats key arrives as spine-supplied `vloc`/`vtag` tables — BOTH
+    halves, because the loc is instance-qualified too
+    (`right#1@lib.slog:4`), which the first cut missed;
+    `prim-error-check` emits through the same loc expression; and
+    instance-derived index member names (`left_edgeindex3`) dropped to
+    neutral `elocal` spellings — the last collapse blocker, found by
+    diffing the two path-kernel clusters.  Cluster signature:
+    `slog_rules_c<H>(db, s, Relation* const* f, const char* const* vl,
+    const char* const* vt)`; the spine fills STATIC frames (tasks retain
+    the pointers past `slog_plugin`'s return) and calls kernels in
+    manifest order; byte-identical clusters collide on their
+    content-hash name and DEDUP to one TU — the spine calling one
+    function twice with two frames IS the sharing.  Park continuations
+    and registrations thread `f`/`vloc`/`vtag`.  Kernel-groups now
+    ALWAYS split (spine + kernel clusters, small strata included — the
+    motivating programs are small); single-TU and name-baked emission
+    survive only for model-less cprogs.  Cluster `keep-names` is `'()`
+    (the v_-prefix hazard retires outside the spine).  PROVEN on
+    n1_instances: left.path and right.path kernels (different strata)
+    emit ONE cluster function, zero `getRelation` literals in any part
+    TU, and the prelude/settings strata share cross-program at job-hash
+    level as before.  Gate grew two checks: `cluster-name-freedom` and
+    `cross-instance-cluster-collapse`.
+    Validated: tu-det 9/9, unit 419, golden 167/167 DEFAULT opt and
+    167/167 interp, tiered 9/9 (the hot swap works over multi-TU
+    frame-mode plugins, lattice case included — after fixing the
+    harness's own assumption that one stratum = one `.cpp`: its
+    hand-compiled swap `.so` must link spine + parts), stats exact-once
+    audit (the (loc,tag) key spelling survived the move to spine
+    tables), plan-goldens WITHOUT re-record, abi2 10/10 + differential
+    11/11, full session battery, plan-determinism 506 plans
+    byte-identical.  TWO RECORDED COSTS: (i) cold golden-tier wall time
+    ~17→~29 min — the always-split overhead on per-fixture cold
+    compiles, the `.o` cache's worst case (warm edit loops are where
+    per-kernel `.o`s pay it back; 2c may re-merge small kernels per-.so
+    if this matters — judge there); (ii) kcfa's TU count 28→68.
+    Flavored-native TUs keep name-bearing `static_assert` arms
+    (differential-only, never shipped) — recorded, not fixed.
   - **(2c) The attach protocol.**  The `.so` exports the descriptor;
     `slog_plugin` splits into daemon-driven attach; declarations install
     through the SAME cohort declarations plan the interp path uses (one

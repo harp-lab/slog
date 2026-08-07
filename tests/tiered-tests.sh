@@ -93,8 +93,8 @@ else
   FACTS_SO="build/$FACTS_HASH.O0.so"
   [ -f "$FACTS_SO" ] || FACTS_SO="build/$FACTS_HASH.so"
   CXX_FLAGS="-std=c++20 -fPIC -Idaemon -fopenmp -ffp-contract=off -shared"
-  clang++ build/$REC_HASH.cpp $CXX_FLAGS -O0 -o build/$REC_HASH.swapO0.so -lz 2>/dev/null
-  clang++ build/$REC_HASH.cpp $CXX_FLAGS -O2 -o build/$REC_HASH.swapO2.so -lz 2>/dev/null
+  clang++ $(ls build/$REC_HASH.cpp build/$REC_HASH.p*.cpp 2>/dev/null) $CXX_FLAGS -O0 -o build/$REC_HASH.swapO0.so -lz 2>/dev/null
+  clang++ $(ls build/$REC_HASH.cpp build/$REC_HASH.p*.cpp 2>/dev/null) $CXX_FLAGS -O2 -o build/$REC_HASH.swapO2.so -lz 2>/dev/null
   if [ -f "build/$REC_HASH.swapO0.so" ] && [ -f "build/$REC_HASH.swapO2.so" ]; then
     SLOG_MAX_MS=1 racket tests/api/swap-drive.rkt out/swap-got \
       "plain:$FACTS_SO" "swap:build/$REC_HASH.swapO0.so,build/$REC_HASH.swapO2.so" \
@@ -131,8 +131,8 @@ LREC="$(grep -oE '\(fixpoint [0-9]+ "[a-f0-9]+" [0-9]+' out/lset-compile.log \
         | awk '$4 > 2 {print $3}' | tr -d '"' | head -1)"
 # drive every stratum in pipeline order, swapping the recursive lattice one
 if [ -n "$LREC" ] && [ -f "build/$LREC.cpp" ]; then
-  clang++ build/$LREC.cpp $CXX_FLAGS -O0 -o build/$LREC.lsO0.so -lz 2>/dev/null
-  clang++ build/$LREC.cpp $CXX_FLAGS -O2 -o build/$LREC.lsO2.so -lz 2>/dev/null
+  clang++ $(ls build/$LREC.cpp build/$LREC.p*.cpp 2>/dev/null) $CXX_FLAGS -O0 -o build/$LREC.lsO0.so -lz 2>/dev/null
+  clang++ $(ls build/$LREC.cpp build/$LREC.p*.cpp 2>/dev/null) $CXX_FLAGS -O2 -o build/$LREC.lsO2.so -lz 2>/dev/null
   # ordered stratum plugins from the reference run
   TOKENS=()
   for h in $(grep -oE '\(fixpoint [0-9]+ "[a-f0-9]+"' out/lset-compile.log | grep -oE '[a-f0-9]{6,}'); do

@@ -141,11 +141,20 @@
 ;; abandon the deduction.  `ret` is the abandon statement for the context
 ;; ("return;" for a body/head op, "return true;" for a pre-op that aborts the
 ;; whole task).  Emitted as one line (valid C++; whitespace is insignificant).
+;; (2b) frame mode: the rule's source location is instance-qualified
+;; ("right#1@lib.slog:4"), so a cluster that bakes it cannot collapse across
+;; instances.  This parameter, when set, is the C++ EXPRESSION producing the
+;; loc (the task's `vloc` member, spine-supplied); #f bakes the literal.
+(define current-rule-loc-cpp (make-parameter #f))
+(define (rule-loc-cpp)
+  (or (current-rule-loc-cpp)
+      (format "\"~a\"" (escape-c-string-literal (current-rule-loc)))))
+
 (define (prim-error-check var ret)
   (define k (current-rule-kind))
-  (format "if (v_~a == slog_error) { slog::emit_pending_error~a(db, \"~a\"~a); ~a }"
+  (format "if (v_~a == slog_error) { slog::emit_pending_error~a(db, ~a~a); ~a }"
           var (if k "_count" "")
-          (escape-c-string-literal (current-rule-loc))
+          (rule-loc-cpp)
           (if k (string-append ", " (cnt-kind-cpp k)) "")
           ret))
 
@@ -485,14 +494,29 @@
 ;; Rules.
 
 ;; A member declaration + constructor lookup for one index.
-(define (index-member name member ind delta)
+;; `access` is the C++ expression producing the Relation* -- a baked
+;; db->getRelation("name") in legacy mode, a frame slot f[k] in (2b)'s
+;; frame mode.  The ordering stays a numeric literal either way.
+(define (index-member access member ind delta)
   (define ord-name (elocal 'ord))
   (define rel-name (elocal 'readrel))
   (string-append "    "
                  (add-ord-decl ord-name ind)
-                 (format "    slog::Relation* ~a = db->getRelation(\"~a\");\n" rel-name name)
+                 (format "    slog::Relation* ~a = ~a;\n" rel-name access)
                  (format "    ~a = ~a->getIndex(~a, ~a);"
                          member rel-name ord-name (if delta "true" "false"))))
+
+;; The stats variant tag of one crule (docs/stats.md): shared between the
+;; task's bumpFires call (legacy mode bakes it; frame mode receives it from
+;; the spine's tag table, since `delta:left.path` carries instance names
+;; and would keep otherwise-identical kernel clusters from collapsing).
+(define (crule-variant-tag cr dynamic-rels)
+  (match (crule-driver cr)
+    [`(once) "once"]
+    [`(seeded) "seeded"]
+    [`(,_ ,name ,_ ...)
+     (format "~a:~a"
+             (if (set-member? dynamic-rels name) "delta" "all") name)]))
 
 ;; Emit the ops of a rule body (after the driver), innermost continuation
 ;; last.  Each join op opens a nested continuation lambda; other ops are
@@ -903,9 +927,23 @@
                            (length zs) i i
                            (u64-array-lit (map (lambda (z) (format "v_~a" z)) zs)))))]))))
 
-(define ((add-rule dynamic-rels) crule)
+;; `frame`, when supplied, switches the task to (2b)'s frame mode:
+;; (list rel-slot accept-slot vt-ix) -- rel-slot/accept-slot map a relation
+;; or accepted-struct name to its frame index, and vt-ix is this rule's
+;; entry in the cluster's variant-tag table.  Legacy mode (#f) bakes names,
+;; exactly as before, for model-less hand-built cprogs.
+(define ((add-rule dynamic-rels) crule [frame #f])
  (parameterize ([current-rule-loc (or (crule-loc crule) "<unknown>")]
+                [current-rule-loc-cpp (and frame "vloc")]
                 [current-rule-kind (crule-kind crule)])
+  (define (rel-access name)
+    (if frame
+        (format "f[~a]" ((first frame) name))
+        (format "db->getRelation(\"~a\")" name)))
+  (define (accept-access name)
+    (if frame
+        (format "f[~a]" ((second frame) name))
+        (format "db->getRelation(\"~a\")" name)))
   (define pre (crule-pre crule))
   (define driver (crule-driver crule))
   (define body (crule-body crule))
@@ -915,28 +953,34 @@
   ;; semijoin filter's existence probe, and each negated atom's absence
   ;; probe -- absent ops can also sit in the PRE slot (a negation whose key
   ;; is all-constant or all-wildcard runs before the driver), so scan both
+  ;; frame mode drops the relation-name prefix from member names -- it was
+  ;; always cosmetic (elocal owns uniqueness), and an instance-qualified
+  ;; prefix (left_edgeindex3) is the last thing keeping otherwise-identical
+  ;; kernel clusters from collapsing
+  (define (member-prefix name kind)
+    (if frame (string->symbol kind) (eident-prefix name kind)))
   (define scalar-join-members
     (for/list ([op (in-list (append pre body))]
                #:when (memq (car op) '(join join-lat exists join-old join-new
                                        join-tomb absent absent-lat)))
-      (cons op (elocal (eident-prefix (second op) "index")))))
+      (cons op (elocal (member-prefix (second op) "index")))))
   (define join3-arm-members
     (for*/list ([op (in-list body)]
                 #:when (eq? (car op) 'join3)
                 [arm (in-list (cddr op))])
-      (cons arm (elocal (eident-prefix (second arm) "index")))))
+      (cons arm (elocal (member-prefix (second arm) "index")))))
   (define join-members (append scalar-join-members join3-arm-members))
   ;; a join-old op needs a SECOND member for the delta index it excludes against
   (define scalar-delta-members
     (for/list ([op (in-list body)]
                #:when (memq (car op) '(join-old join-new)))
-      (cons op (elocal (eident-prefix (second op) "delta")))))
+      (cons op (elocal (member-prefix (second op) "delta")))))
   (define join3-delta-members
     (for*/list ([op (in-list body)]
                 #:when (eq? (car op) 'join3)
                 [arm (in-list (cddr op))]
                 #:when (memq (car arm) '(old new)))
-      (cons arm (elocal (eident-prefix (second arm) "delta")))))
+      (cons arm (elocal (member-prefix (second arm) "delta")))))
   (define join-old-delta-members
     (append scalar-delta-members join3-delta-members))
   ;; a join-tomb op needs the Relation* too (the tombstone dictionary
@@ -944,7 +988,7 @@
   (define tomb-rel-members
     (for/list ([op (in-list body)]
                #:when (eq? (car op) 'join-tomb))
-      (cons op (elocal (eident-prefix (second op) "tombrel")))))
+      (cons op (elocal (member-prefix (second op) "tombrel")))))
   (define (index-name-of op)
     (cdr (assq op join-members)))
   ;; join-tomb rides the delta-name slot through emit-ops: its auxiliary
@@ -990,17 +1034,19 @@
   ;; once) and flushes before both exits, so sliced/paused invocations
   ;; accumulate.  Same-driver variants of one rule share a key: totals per
   ;; rule are the exact-once audit's unit (docs/incremental.md §8).
-  (define variant-tag
-    (match driver
-      [`(once) "once"]
-      [`(seeded) "seeded"]
-      [`(,_ ,name ,_ ...)
-       (format "~a:~a" (if static? "all" "delta") name)]))
+  (define variant-tag (crule-variant-tag crule dynamic-rels))
+  ;; frame mode: BOTH stats-key halves arrive from the spine's tables --
+  ;; the tag carries instance-qualified relation names (delta:left.path)
+  ;; and the loc is instance-qualified too ("right#1@lib.slog:4") -- so a
+  ;; cluster baking either cannot collapse across instances.  The audit's
+  ;; (loc, tag) key SPELLING is unchanged; only where the strings live is.
   (define fires-flush
     ((emit-lines 4)
-     (format "if (_fires) db->bumpFires(\"~a\", \"~a\", _fires);"
-             (escape-c-string-literal (current-rule-loc))
-             (escape-c-string-literal variant-tag))))
+     (if frame
+         "if (_fires) db->bumpFires(vloc, vtag, _fires);"
+         (format "if (_fires) db->bumpFires(\"~a\", \"~a\", _fires);"
+                 (escape-c-string-literal (current-rule-loc))
+                 (escape-c-string-literal variant-tag)))))
 
   ;; heads that emit tuples need an insert batch (let heads do not); a
   ;; tycheck's slot batches its failure-path malformed_deduction structs
@@ -1038,32 +1084,38 @@
                  ;; content, so it needs the master index bound too
                  (if (current-rule-kind)
                      (string-append
-                      (format "    head_rel[~a] = db->getRelation(\"malformed_deduction\");\n" i)
-                      (index-member 'malformed_deduction (format "head_index[~a]" i) ind #f)
+                      (format "    head_rel[~a] = ~a;\n" i
+                              (rel-access 'malformed_deduction))
+                      (index-member (rel-access 'malformed_deduction)
+                                    (format "head_index[~a]" i) ind #f)
                       "\n")
-                     (format "    head_rel[~a] = db->getRelation(\"malformed_deduction\");\n" i))]
+                     (format "    head_rel[~a] = ~a;\n" i
+                             (rel-access 'malformed_deduction)))]
                 [`(mkstruct ,name ,ind ,_ ,_ ...)
                  (if (or seeded? (current-rule-kind))
                      ;; the checked/counting sinks probe the master index
                      (string-append
-                      (format "    head_rel[~a] = db->getRelation(\"~a\");\n" i name)
-                      (index-member name (format "head_index[~a]" i) ind #f)
+                      (format "    head_rel[~a] = ~a;\n" i (rel-access name))
+                      (index-member (rel-access name)
+                                    (format "head_index[~a]" i) ind #f)
                       "\n")
-                     (format "    head_rel[~a] = db->getRelation(\"~a\");\n" i name))]
+                     (format "    head_rel[~a] = ~a;\n" i (rel-access name)))]
                 [`(emit-temp ,name ,_ ...)
-                 (format "    head_rel[~a] = db->getRelation(\"~a\");\n" i name)]
+                 (format "    head_rel[~a] = ~a;\n" i (rel-access name))]
                 [`(emit-lat ,name ,_ ...)
-                 (format "    head_rel[~a] = db->getRelation(\"~a\");\n" i name)]
+                 (format "    head_rel[~a] = ~a;\n" i (rel-access name))]
                 [`(emit ,name ,ind ,_ ...)
                  (string-append
-                  (format "    head_rel[~a] = db->getRelation(\"~a\");\n" i name)
-                  (index-member name (format "head_index[~a]" i) ind #f)
+                  (format "    head_rel[~a] = ~a;\n" i (rel-access name))
+                  (index-member (rel-access name)
+                                (format "head_index[~a]" i) ind #f)
                   "\n")])))
      (match driver
        [`(scan ,name ,_ ...)
-        (format "    outer_rel = db->getRelation(\"~a\");\n" name)]
+        (format "    outer_rel = ~a;\n" (rel-access name))]
        [`(probe ,name ,ind ,_ ...)
-        (string-append (index-member name "driver_index" ind #t) "\n")]
+        (string-append (index-member (rel-access name) "driver_index" ind #t)
+                       "\n")]
        [`(once) ""]
        [`(seeded) ""])
      (apply string-append
@@ -1073,27 +1125,30 @@
                 ;; tombstone dictionary lives on the Relation, not an index)
                 [`(join-tomb ,name ,ind ,_ ...)
                  (string-append
-                  (index-member name (cdr om) ind #f) "\n"
-                  (format "    ~a = db->getRelation(\"~a\");\n"
-                          (tomb-rel-name-of (car om)) name))]
+                  (index-member (rel-access name) (cdr om) ind #f) "\n"
+                  (format "    ~a = ~a;\n"
+                          (tomb-rel-name-of (car om)) (rel-access name)))]
                 [`(,(or 'join 'join-lat 'exists 'absent 'absent-lat) ,name ,ind ,_ ...)
-                 (string-append (index-member name (cdr om) ind #f) "\n")]
+                 (string-append (index-member (rel-access name) (cdr om) ind #f)
+                                "\n")]
                 [`(,(or 'join-old 'join-new) ,name ,ind ,_ ,dind ,_ ...)
                  (string-append
-                  (index-member name (cdr om) ind #f) "\n"
-                  (index-member name (delta-name-of (car om)) dind #t) "\n")]
+                  (index-member (rel-access name) (cdr om) ind #f) "\n"
+                  (index-member (rel-access name) (delta-name-of (car om))
+                                dind #t) "\n")]
                 [`(,(or 'full 'old 'new) ,name ,ind ,_ ,dind ,_ ...)
                  (string-append
-                  (index-member name (cdr om) ind #f) "\n"
+                  (index-member (rel-access name) (cdr om) ind #f) "\n"
                   (if (eq? (first (car om)) 'full)
                       ""
                       (string-append
-                       (index-member name (delta-name-of (car om)) dind #t)
+                       (index-member (rel-access name) (delta-name-of (car om))
+                                     dind #t)
                        "\n")))])))
      (apply string-append
             (for/list ([p (in-list sid-members-sorted)])
-              (format "    ~a = db->getRelation(\"~a\")->getStructId();\n"
-                      (cdr p) (car p))))))
+              (format "    ~a = ~a->getStructId();\n"
+                      (cdr p) (accept-access (car p)))))))
 
   ;; --- work() body
   (define alloc-batches
@@ -1198,12 +1253,15 @@
   ;; already flushed its partial batches (send-batches, above) and now parks a
   ;; continuation copy carrying its resume position -- the canonical task in
   ;; once[]/every[] is never mutated (§9.3).  Everything else just finishes.
+  ;; frame mode: the sibling inherits this task's frame and stat members.
+  (define ctor-extra (if frame ", f, vloc, vtag" ""))
   (define work-tail
     (cond
       [(eq? slice-kind 'scan)
        ((emit-lines 4)
         "if (!_done)" "{"
-        (format "  ~a* _cont = new ~a(db, bucket);" task-name task-name)
+        (format "  ~a* _cont = new ~a(db, bucket~a);"
+                task-name task-name ctor-extra)
         "  _cont->resume_t = _rt; _cont->resume_i = _ri;"
         "  db->pushPaused(phase_read, _cont);"
         "  return false;" "}"
@@ -1211,7 +1269,8 @@
       [(eq? slice-kind 'probe)
        ((emit-lines 4)
         "if (!_done)" "{"
-        (format "  ~a* _cont = new ~a(db, bucket);" task-name task-name)
+        (format "  ~a* _cont = new ~a(db, bucket~a);"
+                task-name task-name ctor-extra)
         "  _cont->resume_key = _rkey; _cont->has_resume = true;"
         "  db->pushPaused(phase_read, _cont);"
         "  return false;" "}"
@@ -1243,6 +1302,13 @@
                tomb-rel-members))
    (apply string-append
           (map (lambda (p) (format "  u32 ~a;" (cdr p))) sid-members-sorted))
+   ;; frame mode: the binding frame and this rule's stats tag arrive from
+   ;; the spine (static arrays there -- tasks retain the pointers); both are
+   ;; members so the park path's fresh sibling and any future re-bind reuse
+   ;; them without new arguments
+   (if frame "  slog::Relation* const* f;" "")
+   (if frame "  const char* vloc;" "")
+   (if frame "  const char* vtag;" "")
    (format "public:")
    ;; index/relation lookups live in bind(db) -- the constructor calls it, and
    ;; it is the re-binding seam a resident stratum will need to re-run after a
@@ -1251,7 +1317,11 @@
    (format "  {")
    ctor-body
    (format "  }")
-   (format "  ~a(slog::Database* _db, u16 _b) : db(_db), bucket(_b) { bind(_db); }" task-name)
+   (if frame
+       (format "  ~a(slog::Database* _db, u16 _b, slog::Relation* const* _f, const char* _vl, const char* _vt) : db(_db), bucket(_b), f(_f), vloc(_vl), vtag(_vt) { bind(_db); }"
+               task-name)
+       (format "  ~a(slog::Database* _db, u16 _b) : db(_db), bucket(_b) { bind(_db); }"
+               task-name))
    (format "  virtual bool work()")
    (format "  {")
    ;; pre-ops run before any allocation, so a failing constant guard can
@@ -1267,19 +1337,25 @@
    (format "  }")
    (format "  };")
    (format "  for (u16 b = 0; b < ~a; ++b)" nbuckets)
-   (cond
-     ;; count flavor (§8B.1): the seeded PLAN SHAPE (all-full joins) is the
-     ;; fire-once count round -- registered ONCE, not gated on seeding
-     [(and (eq? (car driver) 'seeded) (current-rule-kind))
-      (format "    s->addTask(phase_read, new ~a(db,b), true);" task-name)]
-     ;; seeded re-entry task: reruns every iteration, but ONLY when the
-     ;; stratum begins over externally seeded content (daemon gate)
-     [(eq? (car driver) 'seeded)
-      (format "    s->addTaskSeeded(phase_read, new ~a(db,b));" task-name)]
-     [else
-      (format "    s->addTask(phase_read, new ~a(db,b), ~a);"
-              task-name
-              (if static? "true" "false"))]))))
+   (let ([ctor-args (if frame
+                        (format "db,b,f,vl[~a],vt[~a]"
+                                (third frame) (third frame))
+                        "db,b")])
+     (cond
+       ;; count flavor (§8B.1): the seeded PLAN SHAPE (all-full joins) is the
+       ;; fire-once count round -- registered ONCE, not gated on seeding
+       [(and (eq? (car driver) 'seeded) (current-rule-kind))
+        (format "    s->addTask(phase_read, new ~a(~a), true);"
+                task-name ctor-args)]
+       ;; seeded re-entry task: reruns every iteration, but ONLY when the
+       ;; stratum begins over externally seeded content (daemon gate)
+       [(eq? (car driver) 'seeded)
+        (format "    s->addTaskSeeded(phase_read, new ~a(~a));"
+                task-name ctor-args)]
+       [else
+        (format "    s->addTask(phase_read, new ~a(~a), ~a);"
+                task-name ctor-args
+                (if static? "true" "false"))])))))
 
 ;; -----------------------------------------------------------------------
 ;; Whole-program emission.
@@ -1323,7 +1399,7 @@
     (cond
       [(not kernel-groups) crules]
       [else
-       (define flat (append* (map cdr kernel-groups)))
+       (define flat (append* (map second kernel-groups)))
        (define seen (make-hasheq))
        (for ([cr (in-list crules)]) (hash-set! seen cr #t))
        (unless (and (= (length flat) (length crules))
@@ -1515,6 +1591,12 @@
   ;; for the per-.o cache (P2).  `tu` wraps both.
   (define (tu thunk) (canonicalize-vrefs (parameterize ([emit-local-counter (box 0)]) (thunk))
                                          const-names rel-name-tokens))
+  ;; (2b) frame-mode cluster TUs carry NO relation-name string literals, so
+  ;; the keep-set shrinks to the constant globals alone -- the v_-prefixed
+  ;; relation-name hazard retires here (it survives only in the spine).
+  (define (tu-frame thunk)
+    (canonicalize-vrefs (parameterize ([emit-local-counter (box 0)]) (thunk))
+                        const-names '()))
   ;; per-crule identity: the crule emitted ALONE (fresh counter, canonicalized,
   ;; comments stripped) -- position-independent, so bucketing is stable.
   (define (crule-id cr)
@@ -1532,54 +1614,30 @@
                          (format "void ~a(slog::Database* db, slog::Stratum* s)\n{\n" fn)
                          body "}\n\n")))
   (cond
-    ;; Single TU (the common case): read tasks emitted inline in slog_plugin,
-    ;; in canonical order when the kernel grouping is supplied.
-    [(<= (length crules) chunk-size)
+    ;; Single TU: the legacy path only (model-less hand-built cprogs).  With
+    ;; a kernel grouping, even small strata split into spine + kernel
+    ;; clusters -- (2b)'s sharing is at cluster-.o grain, and the motivating
+    ;; instantiation programs are small.
+    [(and (not kernel-groups) (<= (length crules) chunk-size))
      (tu (lambda ()
            (string-append include-block const-defs "\n\n"
                           (plugin-body (apply string-append
                                               (map emit-rule crules-ordered))))))]
-    ;; Split, kernel-aligned (T4 slice 2a): one cluster per manifest kernel,
-    ;; rules in canonical order -- the TU becomes legible per kernel, which
-    ;; is what lets (2b) make a kernel's cluster text name-free and byte-
-    ;; shareable.  A kernel larger than chunk-size sub-buckets by crule-id
-    ;; hash (the pre-2a scheme, now scoped WITHIN the kernel) so clang
-    ;; parallelism and edit locality survive; rules keep canonical order
-    ;; inside each sub-bucket.  The one-time .o re-bucket this causes is
-    ;; sanctioned by execution-tiers §10.
-    [else
+    ;; Legacy split (no grouping): bucket by hash mod a power-of-2 N over
+    ;; the whole stratum, rules ordered by id within a bucket (pre-2a).
+    [(not kernel-groups)
      (define clusters
-       (if kernel-groups
-           (append*
-            (for/list ([g (in-list kernel-groups)])
-              (define krs (cdr g))
-              (cond
-                [(null? krs) '()]
-                [(<= (length krs) chunk-size) (list (make-cluster krs))]
-                [else
-                 (define nbuckets
-                   (max 1 (next-pow2 (ceiling (/ (length krs) chunk-size)))))
-                 (define buckets
-                   (for/fold ([bs (hash)]) ([cr (in-list krs)])
-                     (hash-update bs (modulo (string->number (crule-id cr) 16)
-                                             nbuckets)
-                                  (lambda (l) (cons cr l)) '())))
-                 (for/list ([b (in-list (sort (hash-keys buckets) <))])
-                   (make-cluster (reverse (hash-ref buckets b))))])))
-           ;; legacy (no grouping supplied -- hand-built cprogs): bucket by
-           ;; hash mod a power-of-2 N ~= crules/chunk-size over the whole
-           ;; stratum, rules ordered by id within a bucket (pre-2a scheme)
-           (let* ([id+crs (for/list ([cr (in-list crules)])
-                            (cons (crule-id cr) cr))]
-                  [nbuckets (max 1 (next-pow2
-                                    (ceiling (/ (length crules) chunk-size))))]
-                  [buckets (for/fold ([bs (hash)]) ([ic (in-list id+crs)])
-                             (hash-update bs (modulo (string->number (car ic) 16)
-                                                     nbuckets)
-                                          (lambda (l) (cons ic l)) '()))])
-             (for/list ([b (in-list (sort (hash-keys buckets) <))])
-               (make-cluster (map cdr (sort (hash-ref buckets b)
-                                            string<? #:key car)))))))
+       (let* ([id+crs (for/list ([cr (in-list crules)])
+                        (cons (crule-id cr) cr))]
+              [nbuckets (max 1 (next-pow2
+                                (ceiling (/ (length crules) chunk-size))))]
+              [buckets (for/fold ([bs (hash)]) ([ic (in-list id+crs)])
+                         (hash-update bs (modulo (string->number (car ic) 16)
+                                                 nbuckets)
+                                      (lambda (l) (cons ic l)) '()))])
+         (for/list ([b (in-list (sort (hash-keys buckets) <))])
+           (make-cluster (map cdr (sort (hash-ref buckets b)
+                                        string<? #:key car))))))
      (define fwd-decls
        (apply string-append
               (for/list ([c (in-list clusters)])
@@ -1594,4 +1652,138 @@
                                   (plugin-body calls))))))
      (cons spine
            (for/list ([c (in-list clusters)] [k (in-naturals 1)])
-             (cons (format "p~a" k) (cdr c))))]))
+             (cons (format "p~a" k) (cdr c))))]
+    ;; (2b) frame-mode split: one NAME-FREE cluster per manifest kernel
+    ;; (sub-bucketed by crule-id within an oversized kernel, 2a's scheme);
+    ;; the spine builds each kernel's binding frame and variant-tag table by
+    ;; name and passes them in.  Byte-identical clusters collide on their
+    ;; content-hash function name BY DESIGN -- the TU list dedups on it, and
+    ;; the spine simply calls the shared function once per kernel with that
+    ;; kernel's frame: intra-program sharing is the linker constraint
+    ;; working, and cross-program sharing is the same collision in the
+    ;; content-addressed .o cache.
+    [else
+     ;; accepted-struct names a kernel's tychecks compare against, beyond
+     ;; the slot table: they ride an APPENDIX of the frame, so the cluster
+     ;; text stays name-free while the spine supplies instance names
+     (define (kernel-accept-names krs rel-ix)
+       (for*/fold ([acc '()] #:result (reverse acc))
+                  ([cr (in-list krs)]
+                   [hop (in-list (crule-head cr))]
+                   #:when (eq? 'tycheck (car hop))
+                   [t (in-list (cdr (third hop)))])
+         (match t
+           [`(struct ,n)
+            (if (or (hash-has-key? rel-ix n) (member n acc)) acc (cons n acc))]
+           [_ acc])))
+     ;; one kernel -> its clusters: (list fn tu-text crs) per cluster, plus
+     ;; the kernel's frame recipe for the spine
+     (define kernel-parts
+       (for/list ([g (in-list kernel-groups)] #:unless (null? (second g)))
+         (define ord (first g))
+         (define krs (second g))
+         (define rel-ix (third g))
+         (define nslots (hash-count rel-ix))
+         (define accepts (kernel-accept-names krs rel-ix))
+         (define accept-ix
+           (for/hash ([n (in-list accepts)] [i (in-naturals nslots)])
+             (values n i)))
+         (define (rel-slot name)
+           (or (hash-ref rel-ix name #f)
+               (error 'write-cpp "frame mode: unslotted relation ~a" name)))
+         (define (accept-slot name)
+           (or (hash-ref rel-ix name #f) (hash-ref accept-ix name #f)
+               (error 'write-cpp "frame mode: unslotted accept struct ~a" name)))
+         (define (frame-cluster crs)
+           (define body
+             (tu-frame
+              (lambda ()
+                (apply string-append
+                       (for/list ([cr (in-list crs)] [j (in-naturals)])
+                         (emit-rule cr (list rel-slot accept-slot j)))))))
+           (define fn (format "slog_rules_c~a" (content-hash body)))
+           (list fn
+                 (string-append
+                  include-block (used-const-externs body) "\n\n"
+                  (format "void ~a(slog::Database* db, slog::Stratum* s, slog::Relation* const* f, const char* const* vl, const char* const* vt)\n{\n" fn)
+                  body "}\n\n")
+                 crs))
+         (define kclusters
+           (if (<= (length krs) chunk-size)
+               (list (frame-cluster krs))
+               (let* ([nbuckets (max 1 (next-pow2
+                                        (ceiling (/ (length krs) chunk-size))))]
+                      [buckets (for/fold ([bs (hash)]) ([cr (in-list krs)])
+                                 (hash-update bs (modulo (string->number
+                                                          (crule-id cr) 16)
+                                                         nbuckets)
+                                              (lambda (l) (cons cr l)) '()))])
+                 (for/list ([b (in-list (sort (hash-keys buckets) <))])
+                   (frame-cluster (reverse (hash-ref buckets b)))))))
+         ;; slot -> name, dense over slots + appendix
+         (define frame-names
+           (append (map cdr (sort (for/list ([(n i) (in-hash rel-ix)])
+                                    (cons i n))
+                                  < #:key car))
+                   accepts))
+         (list ord frame-names kclusters)))
+     ;; the deduped TU list: identical kernels share one cluster function
+     (define tu-of
+       (for*/fold ([h (hash)])
+                  ([kp (in-list kernel-parts)] [c (in-list (third kp))])
+         (if (hash-has-key? h (first c)) h (hash-set h (first c) (second c)))))
+     (define cluster-fns
+       (remove-duplicates
+        (for*/list ([kp (in-list kernel-parts)] [c (in-list (third kp))])
+          (first c))))
+     (define fwd-decls
+       (apply string-append
+              (for/list ([fn (in-list cluster-fns)])
+                (format "void ~a(slog::Database* db, slog::Stratum* s, slog::Relation* const* f, const char* const* vl, const char* const* vt);\n" fn))))
+     ;; the spine's register-reads block: per kernel, fill a STATIC frame
+     ;; (tasks retain the pointer past slog_plugin's return) and static
+     ;; loc/tag tables per cluster, then call the cluster function
+     (define calls
+       (apply string-append
+              (for/list ([kp (in-list kernel-parts)])
+                (define ord (first kp))
+                (define frame-names (second kp))
+                (define fname (format "f_k~a" ord))
+                (string-append
+                 (format "  static slog::Relation* ~a[~a];\n"
+                         fname (max 1 (length frame-names)))
+                 (apply string-append
+                        (for/list ([n (in-list frame-names)] [i (in-naturals)])
+                          (format "  ~a[~a] = db->getRelation(\"~a\");\n"
+                                  fname i n)))
+                 (apply string-append
+                        (for/list ([c (in-list (third kp))] [b (in-naturals)])
+                          (define vlname (format "vl_k~a_~a" ord b))
+                          (define vtname (format "vt_k~a_~a" ord b))
+                          (string-append
+                           (format "  static const char* ~a[] = {~a};\n"
+                                   vlname
+                                   (string-join
+                                    (for/list ([cr (in-list (third c))])
+                                      (format "\"~a\""
+                                              (escape-c-string-literal
+                                               (or (crule-loc cr) "<unknown>"))))
+                                    ", "))
+                           (format "  static const char* ~a[] = {~a};\n"
+                                   vtname
+                                   (string-join
+                                    (for/list ([cr (in-list (third c))])
+                                      (format "\"~a\""
+                                              (escape-c-string-literal
+                                               (crule-variant-tag cr dynamic-rels))))
+                                    ", "))
+                           (format "  ~a(db, s, ~a, ~a, ~a);\n"
+                                   (first c) fname vlname vtname))))))))
+     (define spine
+       (cons ""
+             (tu (lambda ()
+                   (string-append include-block const-defs "\n" fwd-decls "\n\n"
+                                  (plugin-body calls))))))
+     (cons spine
+           (for/list ([fn (in-list cluster-fns)] [k (in-naturals 1)])
+             (cons (format "p~a" k) (hash-ref tu-of fn))))]))

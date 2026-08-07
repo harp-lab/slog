@@ -934,8 +934,10 @@
      ,@(for/list ([k (in-list built)] [i (in-naturals)])
          `(kernel (ord ,i) ,(third k) ,(fourth k)
                   ,(kernel-dynamic (sixth k)) ,(fifth k))))
+   ;; per manifest kernel: (list ord ordered-crules rel-ix), where rel-ix is
+   ;; the kernel's slot table (name -> slot) -- (2b)'s frame layout authority
    (for/list ([k (in-list built)] [i (in-naturals)])
-     (cons i (seventh k)))))
+     (list i (seventh k) (sixth k)))))
 
 ;; ------------------------------------------------------------------------
 ;; The Racket twin of the daemon's decoder-boundary adaptation

@@ -19,6 +19,10 @@
 # examples/kcfa (the one program here whose strata exceed chunk-size, so
 # the split spine+parts path is exercised, 17 part TUs).
 #
+# T4 slice 2b adds two checks over the n1_instances TUs: kernel cluster
+# text is name-free (no getRelation literals), and the two instances'
+# library kernels collapse to one cluster across different stems.
+#
 #   bash tests/tu-determinism.sh
 
 set -u
@@ -76,6 +80,41 @@ for p in "${PROGRAMS[@]}"; do
     FAIL=$((FAIL+1))
   fi
 done
+
+# T4 slice 2b: kernel cluster TUs are NAME-FREE (relation access is a frame
+# slot; stats keys and the binding frame arrive from the spine), so two
+# instances of one library emit ONE cluster function.  Checked on the
+# n1_instances TUs already produced above:
+#   (a) no part TU contains a getRelation string literal;
+#   (b) the left.path and right.path kernels' clusters collapse -- at least
+#       one identical comment-stripped part pair under two DIFFERENT stems.
+if [ -d "$WORK/n1_instances.1" ]; then
+  if grep -l 'getRelation("' "$WORK/n1_instances.1"/*.p*.cpp > /dev/null 2>&1; then
+    echo "FAIL cluster-name-freedom ($(grep -l 'getRelation(\"' "$WORK/n1_instances.1"/*.p*.cpp | tr '\n' ' '))"
+    FAIL=$((FAIL+1))
+  else
+    echo "PASS cluster-name-freedom"
+    PASS=$((PASS+1))
+  fi
+  if python3 - "$WORK/n1_instances.1" <<'PYEOF'
+import glob, hashlib, sys
+strip = lambda t: "\n".join(l for l in t.split("\n")
+                            if not l.lstrip().startswith("//"))
+seen = {}
+for f in glob.glob(sys.argv[1] + "/*.p*.cpp"):
+    stem = f.split("/")[-1].split(".")[0]
+    h = hashlib.sha256(strip(open(f).read()).encode()).hexdigest()
+    seen.setdefault(h, set()).add(stem)
+sys.exit(0 if any(len(s) > 1 for s in seen.values()) else 1)
+PYEOF
+  then
+    echo "PASS cross-instance-cluster-collapse"
+    PASS=$((PASS+1))
+  else
+    echo "FAIL cross-instance-cluster-collapse (no shared cluster across stems)"
+    FAIL=$((FAIL+1))
+  fi
+fi
 
 echo
 echo "$PASS passed, $FAIL failed"
