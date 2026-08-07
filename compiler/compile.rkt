@@ -141,6 +141,13 @@
 (define (canonicalize-all/abi2 cprog flavor model)
   (and model (canonicalize-cprog/abi2 cprog model #:flavor flavor)))
 
+;; T4 slice 2a: cohort + the TU emission grouping, from ONE canonicalization.
+;; (values #f #f) without a model -- write-cpp then keeps its legacy order.
+(define (canonicalize-all/abi2+groups cprog flavor model)
+  (if model
+      (canonicalize-cprog/abi2+groups cprog model #:flavor flavor)
+      (values #f #f)))
+
 ;; -----------------------------------------------------------------------
 ;; Front end: a program to its list of stratum jobs.
 ;;
@@ -721,9 +728,12 @@
   ;; warm build/ stay valid: the daemon and every Racket reader dispatch on
   ;; the form's own tag.
   (define ship-abi2? (not (equal? (getenv "SLOG_PLAN_ABI") "1")))
-  (define abi2-cohort
-    (and (or ship-abi2? (getenv "SLOG_DUMP_ABI2"))
-         (canonicalize-all/abi2 cprog plan-flavor model)))
+  ;; T4 slice 2a: the cohort is computed UNCONDITIONALLY (not just when
+  ;; shipped or dumped) because its kernel grouping now drives write-cpp's
+  ;; rule order and cluster partition -- TU text must be identical under
+  ;; every SLOG_PLAN_ABI setting, or the .so cache would key on an env var.
+  (define-values (abi2-cohort kernel-groups)
+    (canonicalize-all/abi2+groups cprog plan-flavor model))
   (call-with-atomic-output
    (fullpath (format "build/~a~a.plan" hash-name
                      (if (memq plan-flavor '(count maint1 maint3neg maint4neg))
@@ -744,7 +754,8 @@
        (build-path dir (format "~a.abi2" hash-name))
        (lambda () (displayln (kernel-plan->string abi2-cohort))))))
   (define accel-rels (stratum-accel-rels stratum dynamic-rels type-env decomps))
-  (define emitted (write-cpp cprog dbmanifest hash-name #:accel-rels accel-rels))
+  (define emitted (write-cpp cprog dbmanifest hash-name #:accel-rels accel-rels
+                             #:kernel-groups kernel-groups))
   ;; write-cpp returns either one string (a single TU) or a list of
   ;; (suffix . contents) pairs -- the spine (suffix "") plus part TUs.
   (define tus (if (string? emitted) (list (cons "" emitted)) emitted))

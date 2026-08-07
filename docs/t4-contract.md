@@ -236,7 +236,16 @@ program-global (B1) and whose key is name-bearing (B4).  The item order in
   empty-selection churn risk in principle (their slot keeps the master).
   All trace to program-global index packing; fixing them means canonical
   per-relation masters or kernel-local packing — measure before deciding,
-  at slice 2 entry.  Gates: airtight 10/10 (two new checks, pre-fix
+  at slice 2 entry.
+  *MEASURED at slice 2a (2026-08-07, full golden suite, 506 cohorts):*
+  5713 plain relation decls, 214 (3.7%) with non-identity masters; 1172
+  kernels, 1038 writers, and only **17 kernels (1.5%) embed a re-homable
+  master in an emit op — every one a `$sup` supplementary relation**,
+  whose names embed program-specific hashes and therefore never
+  cross-program-share regardless.  DECIDED: residue (ii) is ACCEPTED —
+  canonical masters would cost an index on every relation to protect
+  kernels that cannot benefit.  Residues (i)/(iii) stay recorded;
+  revisit only if a real sharing workload surfaces them.  Gates: airtight 10/10 (two new checks, pre-fix
   failure demonstrated: 8/10 with exactly (g)+(h) failing), differential
   11/11 ×2 drafts, rf0 round-trip 6 fixtures clean, plan-determinism
   506/2621 byte-identical, unit 419, golden 167 (after refutation 2's
@@ -253,6 +262,65 @@ program-global (B1) and whose key is name-bearing (B4).  The item order in
   descriptor/frame mismatch refuses structurally rather than
   null-dereferencing (the `v_c<k>` mangling crash of 2026-07-11 is the
   cautionary case — a name mismatch across TUs segfaulted in `bind`).
+  *Sub-sliced 2026-08-07 (ratified: (2a) as the bridge, then complete
+  T4).*  The 2026-08-06 code survey found the daemon half nearly free
+  (operators.h is already `Relation*`/`Index**`-parameterized; the
+  `add_flavored_*` ladders and the cohort declarations installer are the
+  daemon-owned declaration half, built for interp; the dlopen path is 35
+  lines) and the risk concentrated in emit-cpp's dormant textual
+  machinery.  Hence:
+  - **(2a) Kernel-shaped TUs, names still welded.**  `write-cpp` receives
+    the ProgramModel and the canonical (rid, tag) map; rule emission
+    order becomes canonical RuleId order (the debt T1 §11 explicitly
+    deferred here); clusters partition BY KERNEL (large kernels
+    sub-bucket by the existing content-hash within the kernel — the
+    one-time `.o` re-bucket is sanctioned by execution-tiers §10); the
+    stratum spine keeps constants/declarations/metadata/beginStratum/
+    push/continueRun and calls kernel cluster functions in manifest
+    order.  Exit: two clean compiles produce BYTE-IDENTICAL generated
+    `.cpp` (the property measured failing 18/42 on 2026-08-03 becomes a
+    gate); goldens green under DEFAULT opt (native leg) and interp; stat
+    exact-once audit green; plan bytes UNCHANGED (plan-goldens passes
+    without re-record).  No sharing claimed.
+    *As-built (2026-08-07, SHIPPED).*  One ordering authority:
+    `kernel-parts` returns its canonical `ordered` list (5th value),
+    `canonicalize-cprog/abi2+groups` exposes per-manifest-kernel crule
+    groups, and `write-cpp` takes `#:kernel-groups` — emitting rules in
+    plan order (single-TU inline and split paths both) and clustering
+    per kernel, oversized kernels sub-bucketed by the pre-2a crule-id
+    hash WITHIN the kernel.  The grouping is checked as a permutation of
+    the cprog's rules, loudly.  The cohort is now computed
+    UNCONDITIONALLY in emit-stratum-cpp (not just when shipped/dumped):
+    TU text must not fork on SLOG_PLAN_ABI, or the `.so` cache would key
+    on an env var.  Legacy order/bucketing survives only for
+    model-less hand-built cprogs.  Comparison is COMMENT-STRIPPED text
+    (the `.o` cache's own normalization): raw bytes still differ in the
+    `// <crule>` debug comments, which carry gensym spellings and are
+    excluded from every hash — content permutation, the real 18/42
+    defect, is dead.  Gate: `tests/tu-determinism.sh` (run-all tier
+    `tu-determinism`, OUTSIDE ALL like abi2) — 7 fixtures including
+    examples/kcfa (17 part TUs, the split path), 71 TUs total.
+    Validated: tu-det 7/7, unit 419, golden 167/167 under DEFAULT opt
+    (the registration-order change is results-invisible, as the
+    interp-leg differential predicted) and 167/167 interp, stats audit,
+    plan-goldens PASSED WITHOUT RE-RECORD (zero plan-byte drift from
+    the +groups refactor), abi2 10/10 + differential, plan-determinism
+    506 plans + 2633 filenames byte-identical (build/ entry count moved
+    2621→2633: per-kernel clustering makes more, smaller part TUs for
+    multi-kernel split strata — both runs identical).
+  - **(2b) Name-free rule bodies.**  The head-array micro-frame
+    (`head_rel[i]`) generalizes to every relation reference; task
+    `bind(Database*)` becomes frame-driven; `keep-names` and the
+    relation-name value-ref hazard retire with the names.  Exit:
+    n1_instances' two library kernels emit byte-identical kernel cluster
+    text, and the content-addressed `.o` cache collapses them — the
+    compile-time payoff lands here, before any daemon change.
+  - **(2c) The attach protocol.**  The `.so` exports the descriptor;
+    `slog_plugin` splits into daemon-driven attach; declarations install
+    through the SAME cohort declarations plan the interp path uses (one
+    mechanism); the T3a upgrade seam keeps its soundness argument
+    (replacement lands on the same `Stratum*`, no re-push accounting).
+    Exit: the slice-2 exit above.
 - **(3) Attachment identity (item 2's second half).**  Per-attachment
   read/write VersionId maps and per-attachment RuleIds, so stats,
   provenance, watches and the count/walk audits stay per-instance while
@@ -321,6 +389,11 @@ bytes depend on its attachment.  T6's mid-read replacement itself.
    structural, deferring the coordinator to slice 1's manifest work.
    *Half-answered by events:* RF1 built the CohortManifest.  The native
    `CodeDescriptor`'s extent remains a SLICE 2 entry question.
+   *Ratified 2026-08-07:* the minimum — one descriptor per `.so` with
+   per-kernel sub-tables mirroring the cohort manifest shape (slot
+   kinds/arities/orderings, per-slot factories, variant fingerprints);
+   the sharded-SCC coordinator waits for a real sharded case (today's
+   cluster split is clang-parallelism bucketing, not SCC sharding).
 3. **Where relation creation lives after slice 2.**  Proposal: entirely
    daemon-side (the N3 boundary machinery already creates declared
    storage; the artifact stops calling `addRelation` at all).  This makes
@@ -329,6 +402,11 @@ bytes depend on its attachment.  T6's mid-read replacement itself.
    *Still open — gates slice 2, not entry.*  Note (1a) strengthens the
    proposal: the cohort declarations plan already owns cohort-wide
    creation + requisition on the interpreted path.
+   *Ratified 2026-08-07:* entirely daemon-side, by REUSING the cohort
+   declarations plan the interp path installs (`.plan`/`.so` already
+   pair by stem) — one declaration mechanism, not two; the artifact
+   becomes pure code.  The compiler-internal-relations hole closes
+   naturally (the declarations plan carries temps).
 4. **Does the recount of pin 4 need a migration story** for long-lived
    databases, or is "counts are a recomputable cache, re-establish them"
    sufficient at this stage?  (M0's doctrine says the latter; the question

@@ -32,6 +32,7 @@
 
 (provide crule-head-rels crule-body-rels resolve-temp-sccs crule-kernel
          kernel-exec-key canonicalize-cprog/abi2
+         canonicalize-cprog/abi2+groups ; T4 2a: cohort + TU emission groups
          cohort->kernel-plans     ; ABI-2 cohort -> ABI-1-equivalent views
          plan-artifact->kernel-plans ; either shape -> list of kernel-plans
          validate-kernel-attributes! validate-rule-attrs!  ; RF1 slice 3
@@ -723,7 +724,10 @@
     `(debug ,@(for/list ([cr (in-list ordered)] [i (in-naturals)])
                 `(rule (ord ,i) (rid ,(rid-of cr)) (variant ,(tag-of cr))
                        (source ,(or (crule-loc cr) #f))))))
-  (values exec binding debug rel-ix))
+  ;; `ordered` rides out as the FIFTH value (T4 slice 2a): the canonical
+  ;; per-kernel rule order is the plan's identity order, and the TU emitter
+  ;; follows it rather than re-deriving one -- one ordering authority.
+  (values exec binding debug rel-ix ordered))
 
 ;; "delta:left.path#1" -> (delta (rel 3) 1): the KIND and ordinal stay, the
 ;; relation becomes this kernel's slot, and the display spelling lives in
@@ -759,6 +763,17 @@
 ;; does not resolve rides the PRELUDE (rf1-contract puts the error-struct
 ;; prelude in the manifest rather than in a kernel).
 (define (canonicalize-cprog/abi2 cp model #:flavor [flavor 'normal])
+  (define-values (cohort groups)
+    (canonicalize-cprog/abi2+groups cp model #:flavor flavor))
+  cohort)
+
+;; T4 slice 2a: the cohort PLUS the emission grouping -- for each manifest
+;; kernel, in manifest order, `(cons ord (listof crule))` with the crules in
+;; the kernel's canonical rule order (rule-def (ord i) order).  write-cpp
+;; consumes this so the generated TU's rule order and cluster partition are
+;; the plan's own, not a second derivation -- the single-authority rule that
+;; kept RF1's partition honest applies to the TU too.
+(define (canonicalize-cprog/abi2+groups cp model #:flavor [flavor 'normal])
   (define constants (cprog-constants cp))
   (define all-decls (sort (cprog-decls cp) sexp<?))
   (define-values (storage attachments)
@@ -853,10 +868,10 @@
   (define built
     (sort
      (for/list ([(scc krules) (in-hash grouped)])
-       (define-values (exec binding debug rel-ix)
+       (define-values (exec binding debug rel-ix ordered)
          (kernel-parts (reverse krules) decl-of rid-of tag-of constants
                        global-text blind-text service-slots))
-       (list (kernel-exec-key exec) scc exec binding debug rel-ix))
+       (list (kernel-exec-key exec) scc exec binding debug rel-ix ordered))
      string<? #:key first))
   (define dyn (cprog-dynamic-rels cp))
   (define (kernel-dynamic rel-ix)
@@ -894,30 +909,33 @@
   ;; are a stratum fact and live outside `exec`, so carrying them here costs
   ;; no kernel its key.
   (define service-decls storage)
-  `(kernel-cohort
-    (abi 2)
-    (flavor ,flavor)
-    (attachments ,@attachments)
-    (declarations ,@(for/list ([d (in-list service-decls)] [i (in-naturals)])
-                       `(rel ,i ,d)))
-    ;; The cohort-level dynamic set (by NAME -- names live at cohort level)
-    ;; is the manifest's stratum-scheduling fact (rf1-contract: "the dynamic
-    ;; set belongs to the COHORT MANIFEST").  Today's decoder reads only the
-    ;; per-kernel slot-relative form below; this one is for the T2 installer
-    ;; and T4 coordinator manifests.  Both are derived from the same
-    ;; cprog-dynamic-rels, so they cannot diverge.
-    (dynamic ,@(sort (set->list (cprog-dynamic-rels cp)) symbol<?))
-    (manifest
+  (values
+   `(kernel-cohort
+     (abi 2)
+     (flavor ,flavor)
+     (attachments ,@attachments)
+     (declarations ,@(for/list ([d (in-list service-decls)] [i (in-naturals)])
+                        `(rel ,i ,d)))
+     ;; The cohort-level dynamic set (by NAME -- names live at cohort level)
+     ;; is the manifest's stratum-scheduling fact (rf1-contract: "the dynamic
+     ;; set belongs to the COHORT MANIFEST").  Today's decoder reads only the
+     ;; per-kernel slot-relative form below; this one is for the T2 installer
+     ;; and T4 coordinator manifests.  Both are derived from the same
+     ;; cprog-dynamic-rels, so they cannot diverge.
+     (dynamic ,@(sort (set->list (cprog-dynamic-rels cp)) symbol<?))
+     (manifest
+      ,@(for/list ([k (in-list built)] [i (in-naturals)])
+          `(kernel (ord ,i) (key ,(first k))
+                   (members ,@(if (second k)
+                                  (hash-ref members (second k) '())
+                                  '()))
+                   ,@(if (second k) '() '((prelude #t)))
+                   (rules ,(length (cdr (assq 'rules (cdr (third k)))))))))
      ,@(for/list ([k (in-list built)] [i (in-naturals)])
-         `(kernel (ord ,i) (key ,(first k))
-                  (members ,@(if (second k)
-                                 (hash-ref members (second k) '())
-                                 '()))
-                  ,@(if (second k) '() '((prelude #t)))
-                  (rules ,(length (cdr (assq 'rules (cdr (third k)))))))))
-    ,@(for/list ([k (in-list built)] [i (in-naturals)])
-        `(kernel (ord ,i) ,(third k) ,(fourth k)
-                 ,(kernel-dynamic (sixth k)) ,(fifth k)))))
+         `(kernel (ord ,i) ,(third k) ,(fourth k)
+                  ,(kernel-dynamic (sixth k)) ,(fifth k))))
+   (for/list ([k (in-list built)] [i (in-naturals)])
+     (cons i (seventh k)))))
 
 ;; ------------------------------------------------------------------------
 ;; The Racket twin of the daemon's decoder-boundary adaptation

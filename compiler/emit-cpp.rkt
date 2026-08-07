@@ -1306,11 +1306,32 @@
 ;; `s`, `db`, and the interned-constant globals `v_<g>` (everything else arrives
 ;; through the header include), so a part TU needs only the includes plus
 ;; `extern u64 v_<g>;` -- the single definition of each lives in the spine.
-(define (write-cpp cprog dbmanifest stratum-name #:accel-rels [accel-rels '()])
+(define (write-cpp cprog dbmanifest stratum-name #:accel-rels [accel-rels '()]
+                   #:kernel-groups [kernel-groups #f])
   (define dynamic-rels (cprog-dynamic-rels cprog))
   (define constants (cprog-constants cprog))
   (define decls (cprog-decls cprog))
   (define crules (cprog-rules cprog))
+  ;; T4 slice 2a: when the caller supplies the plan's kernel grouping
+  ;; ((ord . crules) per manifest kernel, canonical rule order within), the
+  ;; TU follows it -- rules emit in the plan's identity order (the debt T1
+  ;; deferred here) and clusters partition by kernel.  The grouping must be
+  ;; a PERMUTATION of this cprog's rules: a silent mismatch would drop or
+  ;; duplicate a rule's native code while the plan still promised it, so it
+  ;; is checked loudly, by identity.
+  (define crules-ordered
+    (cond
+      [(not kernel-groups) crules]
+      [else
+       (define flat (append* (map cdr kernel-groups)))
+       (define seen (make-hasheq))
+       (for ([cr (in-list crules)]) (hash-set! seen cr #t))
+       (unless (and (= (length flat) (length crules))
+                    (for/and ([cr (in-list flat)]) (hash-ref seen cr #f)))
+         (error 'write-cpp
+                "kernel grouping is not a permutation of the cprog rules (~a grouped, ~a in cprog)"
+                (length flat) (length crules)))
+       flat]))
 
   ;; declarations for relations that exist in the database (input DB or an
   ;; earlier program) but are not declared by this program: they must keep
@@ -1494,41 +1515,71 @@
   ;; for the per-.o cache (P2).  `tu` wraps both.
   (define (tu thunk) (canonicalize-vrefs (parameterize ([emit-local-counter (box 0)]) (thunk))
                                          const-names rel-name-tokens))
+  ;; per-crule identity: the crule emitted ALONE (fresh counter, canonicalized,
+  ;; comments stripped) -- position-independent, so bucketing is stable.
+  (define (crule-id cr)
+    (content-hash (canonicalize-vrefs
+                   (parameterize ([emit-local-counter (box 0)]) (emit-rule cr))
+                   const-names rel-name-tokens)))
+  ;; a rule list -> one cluster TU: body emitted under a fresh counter, the
+  ;; function named by the hash of its own body so an unchanged cluster
+  ;; reuses its content-addressed .o across stratum versions (tools.rkt).
+  (define (make-cluster crs)
+    (define body (tu (lambda () (apply string-append (map emit-rule crs)))))
+    (define fn (format "slog_rules_c~a" (content-hash body)))
+    (cons fn
+          (string-append include-block (used-const-externs body) "\n\n"
+                         (format "void ~a(slog::Database* db, slog::Stratum* s)\n{\n" fn)
+                         body "}\n\n")))
   (cond
-    ;; Single TU (the common case): read tasks emitted inline in slog_plugin.
+    ;; Single TU (the common case): read tasks emitted inline in slog_plugin,
+    ;; in canonical order when the kernel grouping is supplied.
     [(<= (length crules) chunk-size)
      (tu (lambda ()
            (string-append include-block const-defs "\n\n"
-                          (plugin-body (apply string-append (map emit-rule crules))))))]
-    ;; Split: spine + content-addressed cluster TUs (docs/fast-compile.md P2).
+                          (plugin-body (apply string-append
+                                              (map emit-rule crules-ordered))))))]
+    ;; Split, kernel-aligned (T4 slice 2a): one cluster per manifest kernel,
+    ;; rules in canonical order -- the TU becomes legible per kernel, which
+    ;; is what lets (2b) make a kernel's cluster text name-free and byte-
+    ;; shareable.  A kernel larger than chunk-size sub-buckets by crule-id
+    ;; hash (the pre-2a scheme, now scoped WITHIN the kernel) so clang
+    ;; parallelism and edit locality survive; rules keep canonical order
+    ;; inside each sub-bucket.  The one-time .o re-bucket this causes is
+    ;; sanctioned by execution-tiers §10.
     [else
-     ;; per-crule identity: the crule emitted ALONE (fresh counter, canonicalized,
-     ;; comments stripped) -- position-independent, so bucketing is stable.
-     (define (crule-id cr)
-       (content-hash (canonicalize-vrefs
-                      (parameterize ([emit-local-counter (box 0)]) (emit-rule cr))
-                      const-names rel-name-tokens)))
-     (define id+crs (for/list ([cr (in-list crules)]) (cons (crule-id cr) cr)))
-     ;; bucket by hash mod a power-of-2 N ~= crules/chunk-size: a changed rule
-     ;; touches only its own bucket; N shifts only at power-of-2 boundaries.
-     (define nbuckets (max 1 (next-pow2 (ceiling (/ (length crules) chunk-size)))))
-     (define buckets
-       (for/fold ([bs (hash)]) ([ic (in-list id+crs)])
-         (hash-update bs (modulo (string->number (car ic) 16) nbuckets)
-                      (lambda (l) (cons ic l)) '())))
-     ;; each non-empty bucket -> one cluster: its rules ordered by id (stable),
-     ;; named by the hash of its emitted body so an unchanged cluster reuses its
-     ;; content-addressed .o across stratum versions (tools.rkt does the caching).
      (define clusters
-       (for/list ([b (in-list (sort (hash-keys buckets) <))])
-         (define ics (sort (hash-ref buckets b) string<? #:key car))
-         (define body (tu (lambda () (apply string-append
-                                            (map (lambda (ic) (emit-rule (cdr ic))) ics)))))
-         (define fn (format "slog_rules_c~a" (content-hash body)))
-         (cons fn
-               (string-append include-block (used-const-externs body) "\n\n"
-                              (format "void ~a(slog::Database* db, slog::Stratum* s)\n{\n" fn)
-                              body "}\n\n"))))
+       (if kernel-groups
+           (append*
+            (for/list ([g (in-list kernel-groups)])
+              (define krs (cdr g))
+              (cond
+                [(null? krs) '()]
+                [(<= (length krs) chunk-size) (list (make-cluster krs))]
+                [else
+                 (define nbuckets
+                   (max 1 (next-pow2 (ceiling (/ (length krs) chunk-size)))))
+                 (define buckets
+                   (for/fold ([bs (hash)]) ([cr (in-list krs)])
+                     (hash-update bs (modulo (string->number (crule-id cr) 16)
+                                             nbuckets)
+                                  (lambda (l) (cons cr l)) '())))
+                 (for/list ([b (in-list (sort (hash-keys buckets) <))])
+                   (make-cluster (reverse (hash-ref buckets b))))])))
+           ;; legacy (no grouping supplied -- hand-built cprogs): bucket by
+           ;; hash mod a power-of-2 N ~= crules/chunk-size over the whole
+           ;; stratum, rules ordered by id within a bucket (pre-2a scheme)
+           (let* ([id+crs (for/list ([cr (in-list crules)])
+                            (cons (crule-id cr) cr))]
+                  [nbuckets (max 1 (next-pow2
+                                    (ceiling (/ (length crules) chunk-size))))]
+                  [buckets (for/fold ([bs (hash)]) ([ic (in-list id+crs)])
+                             (hash-update bs (modulo (string->number (car ic) 16)
+                                                     nbuckets)
+                                          (lambda (l) (cons ic l)) '()))])
+             (for/list ([b (in-list (sort (hash-keys buckets) <))])
+               (make-cluster (map cdr (sort (hash-ref buckets b)
+                                            string<? #:key car)))))))
      (define fwd-decls
        (apply string-append
               (for/list ([c (in-list clusters)])

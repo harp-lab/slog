@@ -49,6 +49,7 @@ run_harness() {
     joint)       bash tests/joint-battery.sh ;;
     abi2)        bash tests/abi2-airtight.sh && bash tests/abi2-differential.sh ;;
     plan-goldens) bash tests/plan-goldens.sh ;;
+    tu-determinism) bash tests/tu-determinism.sh ;;
     incremental-stress) bash tests/incremental-stress.sh ;;
     compression) bash tests/compression/run.sh ;;
     smt-pin)     bash tests/compression/smt-pin-test.sh ;;
@@ -74,6 +75,11 @@ ALL=(unit diag stats arena seq counts wcoj3 interp structid golden plan-goldens 
 # (~8 cold compiles of small programs).  On a sanctioned plan-byte change,
 # re-record with `bash tests/plan-goldens.sh --record` and commit the new
 # goldens WITH the change.
+# `tu-determinism` (T4 slice 2a: comment-stripped generated C++ is
+# byte-reproducible across two cold compiles -- the property the .o cache
+# and cross-instance sharing key on) is named but OUTSIDE ALL, like abi2:
+# ~14 cold compiles including examples/kcfa.  Run it before any emit-cpp
+# change and before every T4 slice ships.
 QUICK=(unit diag stats arena seq counts wcoj3 interp structid)
 
 case "${1:-}" in
