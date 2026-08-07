@@ -586,10 +586,106 @@
   (define (prim! f) (set-add! prim-names f))
   (define canon (for/list ([cr (in-list ordered)])
                   (canonicalize-crule cr const-slot rel-slot prim!)))
+  ;; T4 slice 1a (t4-contract §3): a slot's hashed payload carries kind and
+  ;; arity (plus a lattice's spec/decomp) and ONLY the orderings this
+  ;; kernel's own ops reference.  Nothing rides along "as identity": scan
+  ;; drivers are nominal (plan.h DriverPlan: order empty for a delta scan),
+  ;; emit/mkstruct carry their staging layouts explicitly, and the two
+  ;; implicit consumers are tracked below (emit-lat validates its slot's
+  ;; MASTER, tycheck validates its ordering against the by-name
+  ;; malformed_deduction service slot).  The stratum-union requisitions
+  ;; live at the cohort declarations block, which installs first and owns
+  ;; registration (plan-count.cpp's `declared` dedup), so the daemon's
+  ;; index set is unchanged; what changes is that a sibling's requisition
+  ;; on a shared relation no longer moves this kernel's exec bytes
+  ;; (rf1-contract's recorded limitation, decided FIX at T4 entry).  A
+  ;; first draft kept each decl's leading index unconditionally and the
+  ;; sibling-invariance gate refuted it: a plain relation's "master" is
+  ;; the packer's EMPTY-selection assignment, and the empty selection is
+  ;; subset-compatible with every chain, so a sibling's new selection can
+  ;; re-home it -- identity it is not.  Completeness is not trusted: the
+  ;; daemon's validate_order refuses any op ordering absent from its slot
+  ;; ("was not requisitioned"), so a missed reference position below
+  ;; fails loudly at seal, not silently.
+  (define full-use (make-hash))          ; slot -> (set ordering ...)
+  (define delta-use (make-hash))
+  (define master-use (make-hash))        ; slot -> #t (emit-lat merge layout)
+  (define (use! table i ord)
+    ;; join3 full arms carry an empty delta position; guard keeps use!
+    ;; total over every op shape
+    (when (and (pair? ord) (list? ord)
+               (andmap exact-nonnegative-integer? ord))
+      (hash-update! table i (lambda (s) (set-add s ord)) set)))
+  (define (op-use! op)
+    (match op
+      [`(,(or 'join 'join-tomb 'join-lat 'exists 'absent 'absent-lat)
+         (rel ,i) ,ord ,_ ...)
+       (use! full-use i ord)]
+      [`(,(or 'join-old 'join-new 'absent-old 'absent-new 'absent-ever)
+         (rel ,i) ,ord ,_K ,dord ,_ ...)
+       (use! full-use i ord)
+       (use! delta-use i dord)]
+      [`(join3 ,_ ,arms ...)
+       (for ([arm (in-list arms)])
+         (match arm
+           [`(,_view (rel ,i) ,ord ,_K ,dind ,_ ...)
+            (use! full-use i ord)
+            (use! delta-use i dind)]
+           [_ (void)]))]
+      [`(mkstruct (rel ,i) ,ord ,_ ...) (use! full-use i ord)]
+      [`(emit (rel ,i) ,ord ,_ ...) (use! full-use i ord)]
+      [`(emit-lat (rel ,i) ,_ ...) (hash-set! master-use i #t)]
+      [`(tycheck ,_x ,_accept ,_rid ,_rel ,_col ,ord)
+       ;; the ordering is validated against the by-name service shape
+       (use! full-use (rel-slot 'malformed_deduction) ord)]
+      [_ (void)]))
+  (for ([c (in-list canon)])
+    (match-define `((nregs ,_) (pre ,pres ...) (driver ,drv)
+                    (body ,bodies ...) (head ,heads ...)) c)
+    (for-each op-use! pres)
+    (match drv
+      [`(probe (rel ,i) ,ord ,_ ...) (use! delta-use i ord)]
+      [_ (void)])
+    (for-each op-use! bodies)
+    (for-each op-use! heads))
+  ;; keep-master?: struct and lattice slots carry their leading index
+  ;; unconditionally -- a struct's content master is CANONICALLY PINNED
+  ;; (1..n 0) (operationalization's canonical-struct-master), so it is
+  ;; sibling-independent by construction, and a lattice's merge master is
+  ;; the semantic read/merge layout the decoder's grammar requires (a
+  ;; delta-scan-driven lattice consumer marks no ordering, and "lattice
+  ;; declaration lacks spec/decomp/index" refused the bare slot -- found
+  ;; by the golden tier, 11 lattice-family fixtures).  A PLAIN relation's
+  ;; leading index earns no such ride: it is the packer's empty-selection
+  ;; assignment (see the trap note above).  Lattice masters share that
+  ;; churn risk in principle -- recorded beside the writer-emit residue
+  ;; in t4-contract's as-built.
+  (define (trim-entries entries i used-full used-delta keep-master?)
+    (for/list ([e (in-list entries)]
+               [k (in-naturals)]
+               #:when (or (and (zero? k)
+                               (or keep-master? (hash-ref master-use i #f)))
+                          (match e
+                            [`(delta ,c ...) (set-member? used-delta c)]
+                            [`(seeded-only ,c ...) (set-member? used-full c)]
+                            [_ (set-member? used-full e)])))
+      e))
+  (define (trim-slot-payload kind payload i)
+    (define used-full (hash-ref full-use i set))
+    (define used-delta (hash-ref delta-use i set))
+    (match* (kind payload)
+      [('relation `(,arity ,entries ...))
+       (cons arity (trim-entries entries i used-full used-delta #f))]
+      [('struct `(,arity ,entries ...))
+       (cons arity (trim-entries entries i used-full used-delta #t))]
+      [('lattice `(,arity ,spec ,decomp ,entries ...))
+       (list* arity spec decomp
+              (trim-entries entries i used-full used-delta #t))]
+      [(_ _) payload]))          ; temps carry no index entries
   (define slots
     (for/list ([(name i) (in-hash rel-ix)])
       (define d (hash-ref decl-of name))
-      (cons i `(slot ,i ,(car d) ,@(cddr d)))))
+      (cons i `(slot ,i ,(car d) ,@(trim-slot-payload (car d) (cddr d) i)))))
   ;; RF1 slice 3: kernel attributes from the ACTUAL planning toggle, and
   ;; per-rule fold kinds from crule-kind -- both validated against the
   ;; closed vocabulary before they can reach hashed bytes.

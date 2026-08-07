@@ -8,7 +8,13 @@
 #       no kernel key;
 #   (b) a rename changes the BINDING SCHEMA only, not any kernel key;
 #   (c) two instances of one library SHARE a kernel key (the payoff);
-#   (d) every crule lands in exactly one kernel or the prelude.
+#   (d) every crule lands in exactly one kernel or the prelude;
+#   (g) T4 slice 1a: an unrelated same-level rule requisitioning a NEW
+#       ordering on a shared relation changes no existing kernel's key
+#       (slot payloads are kernel-local, not stratum-union);
+#   (h) T4 slice 1a's cross-program payoff: a program that consumes a
+#       library's exports differently (an extra ordering on left.edge)
+#       still shares the library kernel's key with one that does not.
 #
 # Tested end to end over real compiles rather than synthetic cprogs, because
 # the property has to hold of what the compiler actually emits.  Emission is
@@ -186,6 +192,105 @@ for f in "$WORK"/d-n1/*.abi2; do
   fi
 done
 [ "$covered" -eq 0 ] && ok "partition-covers-every-crule"
+
+# (g) T4 slice 1a's exit property (t4-contract §3 slice 1): kernel slot
+# payloads carry only the kernel's OWN orderings, so an unrelated rule at
+# the same stratification level that requisitions a NEW ordering on a
+# shared relation must move no existing kernel's bytes.  The added rule's
+# selection ({1}) is deliberately NOT subset-related to the base rule's
+# ({0,2}): the greedy index packer serves subset-CHAINS with one ordering,
+# so a subset-related addition can legitimately re-pack an existing probe
+# assignment -- that deeper, packer-level sibling dependence is a separate
+# (recorded) phenomenon this check must not conflate with slot payloads.
+# This check REFUTED the slice's first draft (keep each decl's leading
+# index as "identity"): a plain relation's master is the packer's
+# EMPTY-selection assignment, and the empty selection chains with
+# everything, so the sibling's {1} re-homed edge's master (0 2 1)->(1 0 2)
+# and re-keyed the path kernel through an ordering it never uses.  Slot
+# payloads are therefore PURE own-use; nothing rides as identity.
+cat > "$WORK/inv-base.slog" <<'EOF'
+table (edge int int int)
+table (path int int int)
+
+rule
+(edge 1 2 7)
+(edge 2 3 7)
+
+rule (edge X Y Z) --> (path X Y Z)
+rule (path X Y Z) (edge Y W Z) --> (path X W Z)
+EOF
+{ cat "$WORK/inv-base.slog"; cat <<'EOF'
+
+table (query int)
+table (hit int int)
+
+rule (query B) (edge X B Y) --> (hit X Y)
+EOF
+} > "$WORK/inv-sibling.slog"
+
+compile_dump "$WORK/inv-base.slog"    "$WORK/d-inv-base"
+compile_dump "$WORK/inv-sibling.slog" "$WORK/d-inv-sibling"
+if [ -z "$(keys_of "$WORK/d-inv-base")" ]; then
+  bad "sibling-requisition-changes-no-key" "no base keys extracted; see $WORK"
+elif comm -23 <(keys_of "$WORK/d-inv-base" | uniq) \
+              <(keys_of "$WORK/d-inv-sibling" | uniq) \
+       | grep -q .; then
+  bad "sibling-requisition-changes-no-key" \
+      "a base kernel's key is absent from the sibling compile: $(comm -23 <(keys_of "$WORK/d-inv-base" | uniq) <(keys_of "$WORK/d-inv-sibling" | uniq) | tr '\n' ' ')"
+else
+  ok "sibling-requisition-changes-no-key"
+fi
+
+# (h) the cross-program half: asymmetric consumption of a library's exports
+# no longer forfeits sharing.  Program B probes left.edge on a selection the
+# library never uses; the library kernel (members left.path) must keep the
+# SAME key in both programs.
+key_of_members() { # <dumpdir> <member-name>
+  python3 - "$1" "$2" <<'PYEOF'
+import glob, re, sys
+for f in sorted(glob.glob(sys.argv[1] + '/*.abi2')):
+    t = open(f).read()
+    for m in re.finditer(r'\(kernel \(ord \d+\) \(key "([0-9a-f]+)"\) \(members ([^)]*)\)', t):
+        if sys.argv[2] in m.group(2).split():
+            print(m.group(1))
+PYEOF
+}
+cat > "$WORK/asym-a.slog" <<'EOF'
+instantiate "n1_graph_lib.slog" as left
+
+table (seed int int)
+table (answer int int)
+
+rule
+(seed 1 2)
+(seed 2 3)
+
+rule (seed X Y) --> (left.edge X Y)
+rule (left.path X Y) --> (answer X Y)
+EOF
+{ cat "$WORK/asym-a.slog"; cat <<'EOF'
+
+table (meet int int)
+
+rule (left.edge X Y) (left.edge Z Y) --> (meet X Z)
+EOF
+} > "$WORK/asym-b.slog"
+# instantiate resolves the library path relative to the program file
+cp tests/n1_graph_lib.slog "$WORK/"
+
+compile_dump "$WORK/asym-a.slog" "$WORK/d-asym-a"
+compile_dump "$WORK/asym-b.slog" "$WORK/d-asym-b"
+lib_a="$(key_of_members "$WORK/d-asym-a" left.path)"
+lib_b="$(key_of_members "$WORK/d-asym-b" left.path)"
+if [ -z "$lib_a" ] || [ -z "$lib_b" ]; then
+  bad "asymmetric-consumption-shares-the-kernel" \
+      "library kernel not found (a=[$lib_a] b=[$lib_b])"
+elif [ "$lib_a" = "$lib_b" ]; then
+  ok "asymmetric-consumption-shares-the-kernel"
+else
+  bad "asymmetric-consumption-shares-the-kernel" \
+      "library kernel re-keyed by a consumer's requisition: $lib_a vs $lib_b"
+fi
 
 echo
 echo "$PASS passed, $FAIL failed"

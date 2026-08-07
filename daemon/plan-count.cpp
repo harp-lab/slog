@@ -1167,7 +1167,13 @@ void preflight_command_install(Daemon* daemon, const EntryMode& entry,
         && binding.shape.kind == RelationK::lattice)
       throw SealError(SealErrorK::binding,
         "install: resident lattice relation is absent: " + binding.name);
-    if (!binding.shape.temp
+    // T4 slice 1a: only the rule-free DECLARATIONS carrier must present a
+    // master for every relation -- it owns registration for the cohort.  A
+    // rule-carrying kernel's slots list exactly the orderings its ops use
+    // (validate_order enforces each use; scan drivers are nominal), so a
+    // slot with no orderings is legitimate there, and the registration
+    // walk's own master check still guards the consumption point.
+    if (!binding.shape.temp && plan.rules.empty()
         && ((plan.flavor == "normal" || plan.flavor == "delta")
             || (maint && binding.shape.kind != RelationK::lattice)))
       seal_check(!binding.shape.full_orders.empty(),

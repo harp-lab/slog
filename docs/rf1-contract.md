@@ -775,6 +775,9 @@ Consequences, pinned:
    key gate should either accept it (requisitions ARE part of the
    computation the kernel's stratum performs) or move requisitions to a
    kernel-local view before going live.  Decide there, not here.
+   *DECIDED 2026-08-06 at T4 entry (t4-contract §7.5): FIX — slot
+   payloads go kernel-local (T4 slice 1a); the union stays at the cohort
+   declarations block, which already carries and installs it.*
 
    *Service-prelude invariant:* the by-name service list
    (`canonical-plan.rkt service-names`) must stay in sync with the

@@ -1,7 +1,9 @@
 # T4 — parameterized native bundles (contract draft)
 
-*Drafted 2026-08-03 (W4′, after the T5 arc closed).  **Status: design
-contract, pending review — §7 holds the questions.**  Normative parents:
+*Drafted 2026-08-03 (W4′, after the T5 arc closed).  **Status: entry
+ratified 2026-08-06 — §7 records the answers; the decl-payload decision
+is FIX (kernel-local requisitions), sequenced as the entry slice (1a),
+then reassess before slice 2.**  Normative parents:
 [execution-tiers.md](execution-tiers.md) §2.2 (the identity ladder), §2.3
 (relation identity in rules), §11's T4 item list;
 [rf1-contract.md](rf1-contract.md) (the 4-way ABI split, whose
@@ -169,6 +171,76 @@ program-global (B1) and whose key is name-bearing (B4).  The item order in
   are unchanged by adding an unrelated declaration or an unrelated rule at
   the same level (the property RF1 asks to be proven); full suite green
   with counts re-established.
+  *Status (2026-08-06):* RF1 shipped the split (ABI 2 default 003af8b,
+  goldens of record 142dd45), so this slice is banked EXCEPT the
+  rf1-contract "Known limitation": slot PAYLOADS carry stratum-union
+  orderings, which leaves the bytes-unchanged exit property unprovable.
+  That residue is slice (1a) below.
+- **(1a) ENTRY SLICE — kernel-local requisitions (ratified 2026-08-06:
+  FIX, not accept).**  A kernel's slot payload keeps only identity fields
+  (kind, arity, a struct's canonical master ordering, a lattice's spec)
+  plus the orderings ITS OWN exec ops reference — which are derivable:
+  every ordering-consuming op (`scan`/`join*`/`emit`/`mkstruct`/`tycheck`/
+  `absent-*`) names its ordering inline.  The stratum union moves nowhere:
+  the cohort `(declarations …)` block already carries it and installs
+  first (plan.cpp's rule-free declarations plan, `declared`-set dedup), so
+  the daemon's index set is unchanged; only the hashed bytes stop carrying
+  sibling requisitions.  Rationale: index maintenance is storage-side
+  (`Relation::addIndex`, idempotent; relations maintain their own
+  orderings on ingest), so "which indexes exist" is attachment
+  environment, not kernel computation — the same doctrine as §5's
+  "nothing may make a kernel's bytes depend on its attachment".  This is
+  a second global re-key, accepted deliberately at the cheapest moment it
+  will ever have (no artifact cache keys on kernel keys yet; goldens one
+  day old; re-record sanctioned same-commit per RF1 slice 4).  Deciding
+  the other way and fixing later would re-key AFTER T4/T3b content-address
+  on the keys.  Exit: the bytes-unchanged property of slice (1) holds and
+  is GATED (add an unrelated same-level rule requisitioning a new ordering
+  on a bound relation ⇒ untouched kernel's key byte-identical); asymmetric
+  cross-program consumption of a library's exports no longer forfeits
+  sharing; abi2-airtight + abi2-differential + rf0-roundtrip +
+  plan-determinism green; plan goldens re-recorded in the same commit.
+  *As-built (2026-08-06).*  Slot payloads are own-use: kind + arity
+  (+ a lattice's spec/decomp) + exactly the orderings the kernel's ops
+  reference — full-side from `join*`/`exists`/`absent*`/`emit`/`mkstruct`
+  and join3 arm orders, delta-side from probe drivers, `join-old/new` and
+  `absent-old/new/ever` delta orders and viewed join3 arms, plus two
+  implicit consumers tracked explicitly: `emit-lat` marks its slot's
+  MASTER (the merge layout the daemon validates via `front()`), and
+  `tycheck` attributes its ordering to the by-name malformed_deduction
+  service slot.  Scan drivers are nominal (plan.h: `order` empty), so a
+  scan-only PLAIN slot legitimately carries NO orderings; the daemon's
+  "no master ordering" pre-check now applies only to the rule-free
+  declarations carrier, which owns registration — `validate_order` and
+  the registration walk's own master check still guard every consumption
+  point.  **Two same-day refutations shaped the final rule:**
+  (1) the first draft kept EVERY decl's leading index as "identity" and
+  the new sibling gate refuted it — a plain relation's master is the
+  packer's EMPTY-selection assignment, and the empty selection is
+  subset-compatible with every chain, so a sibling's new selection
+  re-homed `edge`'s master `(0 2 1)`→`(1 0 2)` and re-keyed a kernel
+  through an ordering it never uses; (2) the pure-own-use overcorrection
+  was refuted by the golden tier (11 lattice-family fixtures) — a
+  delta-scan-driven lattice consumer marks no ordering and the decoder's
+  grammar refuses a bare lattice slot ("lacks spec/decomp/index").
+  Final rule: STRUCT and LATTICE slots keep their leading master
+  unconditionally — a struct's content master is canonically pinned
+  `(1..n 0)` (sibling-independent by construction), a lattice's merge
+  master is semantic and grammar-required — while PLAIN relations ride
+  nothing.  KNOWN RESIDUE (next layer, not this slice): (i) the greedy
+  index packer serves subset-CHAINS with one ordering, so a sibling
+  selection subset-related to a kernel's own can legitimately re-pack
+  the ordering its op bytes embed; (ii) a WRITER kernel's `emit` embeds
+  its target's master, so empty-selection master re-homing still re-keys
+  writers (readers are now immune); (iii) lattice masters share the
+  empty-selection churn risk in principle (their slot keeps the master).
+  All trace to program-global index packing; fixing them means canonical
+  per-relation masters or kernel-local packing — measure before deciding,
+  at slice 2 entry.  Gates: airtight 10/10 (two new checks, pre-fix
+  failure demonstrated: 8/10 with exactly (g)+(h) failing), differential
+  11/11 ×2 drafts, rf0 round-trip 6 fixtures clean, plan-determinism
+  506/2621 byte-identical, unit 419, golden 167 (after refutation 2's
+  fix), plan goldens re-recorded same-commit.
 - **(2) Native slot indirection (B3).**  `emit-cpp` stops emitting names:
   relation access becomes a frame index, and the artifact exports a
   `CodeDescriptor` (slot table with kind/arity/required orderings, rule
@@ -234,23 +306,39 @@ bytes depend on its attachment.  T6's mid-read replacement itself.
   deliberately, for reload and fixpoint efficiency; slice 1 must keep that
   grouping while changing only what gets compiled.
 
-## 7. Review questions
+## 7. Review questions — answered 2026-08-06
 
 1. **Sequencing across streams.**  Slice 1 IS RF1's 4-way split (pin 2).
    Does that work land as RF1 slices 1–2 in the reflection stream and T4
    consume it, or does T4 absorb it?  The measurement says T4 cannot
    proceed without it, so the choice is about ownership and commit
    boundaries, not about whether.
+   *Answered by events:* RF1 owned it and completed 2026-08-06 (all six
+   exit gates, 142dd45).  T4 consumes; slice (1)'s residue is (1a).
 2. **How far to take the descriptor.**  Minimum is slots + orderings +
    rule ids.  Maximum is RF1's full CohortManifest with the sharded-SCC
    coordinator.  Proposal: the minimum that lets slice 2's refusal be
    structural, deferring the coordinator to slice 1's manifest work.
+   *Half-answered by events:* RF1 built the CohortManifest.  The native
+   `CodeDescriptor`'s extent remains a SLICE 2 entry question.
 3. **Where relation creation lives after slice 2.**  Proposal: entirely
    daemon-side (the N3 boundary machinery already creates declared
    storage; the artifact stops calling `addRelation` at all).  This makes
    an artifact pure code, but it moves index requisition into the
    install path — worth confirming before the emission change.
+   *Still open — gates slice 2, not entry.*  Note (1a) strengthens the
+   proposal: the cohort declarations plan already owns cohort-wide
+   creation + requisition on the interpreted path.
 4. **Does the recount of pin 4 need a migration story** for long-lived
    databases, or is "counts are a recomputable cache, re-establish them"
    sufficient at this stage?  (M0's doctrine says the latter; the question
    is whether any saved database in `data/` is expensive enough to matter.)
+   *Answered by events:* the RF1 flip (003af8b) WAS this event; the
+   doctrine held with no migration.  (1a)'s re-key repeats the same shape.
+5. **Ratified 2026-08-06 (entry decisions, Tom):** (a) decl payloads =
+   FIX NOW, kernel-local requisitions (slice 1a), not accept-as-identity;
+   (b) sequencing = entry slice now, then REASSESS before committing to
+   slice 2's emit-cpp lift (vs RF2 mount / T3b first).  Payoff honesty
+   from §4 stands: today's compile-time win is near-theoretical; the
+   entry slice is bought for the exit property and T6, at the cheapest
+   re-key moment.
