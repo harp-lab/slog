@@ -1694,13 +1694,20 @@
          (define (accept-slot name)
            (or (hash-ref rel-ix name #f) (hash-ref accept-ix name #f)
                (error 'write-cpp "frame mode: unslotted accept struct ~a" name)))
+         ;; (2c) the loc/tag tables are indexed by the rule's ordinal WITHIN
+         ;; THE KERNEL (its plan rule-def ord), not within a sub-bucket, so
+         ;; one full-kernel table serves every sub-bucket -- and the daemon
+         ;; can build it straight from the plan's DebugMap
+         (define ord-of
+           (for/hash ([cr (in-list krs)] [j (in-naturals)]) (values cr j)))
          (define (frame-cluster crs)
            (define body
              (tu-frame
               (lambda ()
                 (apply string-append
-                       (for/list ([cr (in-list crs)] [j (in-naturals)])
-                         (emit-rule cr (list rel-slot accept-slot j)))))))
+                       (for/list ([cr (in-list crs)])
+                         (emit-rule cr (list rel-slot accept-slot
+                                             (hash-ref ord-of cr))))))))
            (define fn (format "slog_rules_c~a" (content-hash body)))
            (list fn
                  (string-append
@@ -1726,7 +1733,7 @@
                                     (cons i n))
                                   < #:key car))
                    accepts))
-         (list ord frame-names kclusters)))
+         (list ord frame-names kclusters (fourth g) krs)))
      ;; the deduped TU list: identical kernels share one cluster function
      (define tu-of
        (for*/fold ([h (hash)])
@@ -1740,50 +1747,104 @@
        (apply string-append
               (for/list ([fn (in-list cluster-fns)])
                 (format "void ~a(slog::Database* db, slog::Stratum* s, slog::Relation* const* f, const char* const* vl, const char* const* vt);\n" fn))))
-     ;; the spine's register-reads block: per kernel, fill a STATIC frame
-     ;; (tasks retain the pointer past slog_plugin's return) and static
-     ;; loc/tag tables per cluster, then call the cluster function
-     (define calls
-       (apply string-append
+     ;; the full-kernel loc/tag tables, kernel-ord indexed (one pair per
+     ;; kernel, shared by its sub-buckets)
+     (define (kernel-tables kp)
+       (define ord (first kp))
+       (define krs (fifth kp))
+       (string-append
+        (format "  static const char* vl_k~a[] = {~a};\n" ord
+                (string-join
+                 (for/list ([cr (in-list krs)])
+                   (format "\"~a\"" (escape-c-string-literal
+                                     (or (crule-loc cr) "<unknown>"))))
+                 ", "))
+        (format "  static const char* vt_k~a[] = {~a};\n" ord
+                (string-join
+                 (for/list ([cr (in-list krs)])
+                   (format "\"~a\"" (escape-c-string-literal
+                                     (crule-variant-tag cr dynamic-rels))))
+                 ", "))))
+     (define (spine-text)      ; called under the spine TU's elocal counter
+       (cond
+         ;; FLAVORED (_count/_maint*): differential-only artifacts keep the
+         ;; (2b) slog_plugin spine -- frames and tables built here by name --
+         ;; until slice 3/4 migrates them onto the descriptor
+         [(or (count-flavor) (maintenance-flavor))
+          (define calls
+            (apply string-append
+                   (for/list ([kp (in-list kernel-parts)])
+                     (define ord (first kp))
+                     (define fname (format "f_k~a" ord))
+                     (string-append
+                      (format "  static slog::Relation* ~a[~a];\n"
+                              fname (max 1 (length (second kp))))
+                      (apply string-append
+                             (for/list ([n (in-list (second kp))]
+                                        [i (in-naturals)])
+                               (format "  ~a[~a] = db->getRelation(\"~a\");\n"
+                                       fname i n)))
+                      (kernel-tables kp)
+                      (apply string-append
+                             (for/list ([c (in-list (third kp))])
+                               (format "  ~a(db, s, ~a, vl_k~a, vt_k~a);\n"
+                                       (first c) fname ord ord)))))))
+          (string-append include-block const-defs "\n" fwd-decls "\n\n"
+                         (plugin-body calls))]
+         ;; (2c) NORMAL/DELTA: the .so exports a descriptor and nothing
+         ;; else -- no slog_plugin, no relation creation, no frame building.
+         ;; The daemon derives frames/tables from the sibling .plan and
+         ;; drives the attach (docs/t4-contract.md slice (2c)); the
+         ;; artifact owns only its constants init, its accel-rel names
+         ;; (compiler-computed, absent from the plan), and per-kernel
+         ;; attach functions that register read tasks against a supplied
+         ;; frame.
+         [else
+          (define attach-fns
+            (apply string-append
+                   (for/list ([kp (in-list kernel-parts)])
+                     (string-append
+                      (format "static void slog_attach_k~a(slog::Database* db, slog::Stratum* s, slog::Relation* const* f, const char* const* vl, const char* const* vt)\n{\n"
+                              (first kp))
+                      (apply string-append
+                             (for/list ([c (in-list (third kp))])
+                               (format "  ~a(db, s, f, vl, vt);\n" (first c))))
+                      "}\n\n"))))
+          (define kernel-table
+            (string-append
+             (format "static const slog::NativeKernelCode slog_kernels_[~a] = {\n"
+                     (length kernel-parts))
+             (string-join
               (for/list ([kp (in-list kernel-parts)])
-                (define ord (first kp))
-                (define frame-names (second kp))
-                (define fname (format "f_k~a" ord))
-                (string-append
-                 (format "  static slog::Relation* ~a[~a];\n"
-                         fname (max 1 (length frame-names)))
-                 (apply string-append
-                        (for/list ([n (in-list frame-names)] [i (in-naturals)])
-                          (format "  ~a[~a] = db->getRelation(\"~a\");\n"
-                                  fname i n)))
-                 (apply string-append
-                        (for/list ([c (in-list (third kp))] [b (in-naturals)])
-                          (define vlname (format "vl_k~a_~a" ord b))
-                          (define vtname (format "vt_k~a_~a" ord b))
-                          (string-append
-                           (format "  static const char* ~a[] = {~a};\n"
-                                   vlname
-                                   (string-join
-                                    (for/list ([cr (in-list (third c))])
-                                      (format "\"~a\""
-                                              (escape-c-string-literal
-                                               (or (crule-loc cr) "<unknown>"))))
-                                    ", "))
-                           (format "  static const char* ~a[] = {~a};\n"
-                                   vtname
-                                   (string-join
-                                    (for/list ([cr (in-list (third c))])
-                                      (format "\"~a\""
-                                              (escape-c-string-literal
-                                               (crule-variant-tag cr dynamic-rels))))
-                                    ", "))
-                           (format "  ~a(db, s, ~a, ~a, ~a);\n"
-                                   (first c) fname vlname vtname))))))))
-     (define spine
-       (cons ""
-             (tu (lambda ()
-                   (string-append include-block const-defs "\n" fwd-decls "\n\n"
-                                  (plugin-body calls))))))
+                (format "  {\"~a\", ~a, ~a, slog_attach_k~a}"
+                        (fourth kp)                 ; exec key
+                        (length (second kp))        ; frame width
+                        (length (fifth kp))         ; rule count
+                        (first kp)))
+              ",\n")
+             "\n};\n"))
+          (define accel-table
+            (if (null? accel-rels)
+                "static const char* const* slog_accel_ = nullptr;\n"
+                (format "static const char* slog_accel_arr_[] = {~a};\nstatic const char* const* slog_accel_ = slog_accel_arr_;\n"
+                        (string-join
+                         (for/list ([r (in-list accel-rels)])
+                           (format "\"~a\"" r))
+                         ", "))))
+          (string-append
+           include-block const-defs "\n" fwd-decls "\n\n"
+           "static void slog_init_consts_(slog::Database* db)\n{\n"
+           "  (void)db;\n"
+           const-init
+           "}\n\n"
+           attach-fns
+           kernel-table
+           accel-table
+           (format "static const slog::NativeCodeDescriptor slog_desc_ = {2, ~a, slog_kernels_, slog_init_consts_, ~a, slog_accel_};\n"
+                   (length kernel-parts) (length accel-rels))
+           "extern \"C\" const slog::NativeCodeDescriptor* slog_code_descriptor()\n"
+           "{ return &slog_desc_; }\n")]))
+     (define spine (cons "" (tu spine-text)))
      (cons spine
            (for/list ([fn (in-list cluster-fns)] [k (in-naturals 1)])
              (cons (format "p~a" k) (hash-ref tu-of fn))))]))

@@ -21,6 +21,7 @@ namespace slog
 
 class Daemon;
 struct EntryMode;
+struct NativeCodeDescriptor;   // daemon.h (T4 2c)
 
 namespace interp
 {
@@ -80,6 +81,18 @@ bool maybe_interp_count_plugin(Daemon* daemon, const std::string& path);
 // A compiler-driven normal/delta interpreter artifact is the `.plan` itself;
 // intercept it before run_plugin's regular-file/dlopen path.
 bool maybe_interp_plan_plugin(Daemon* daemon, const std::string& path);
+
+// T4 slice (2c): attach a name-free native artifact through its exported
+// descriptor (daemon.h NativeCodeDescriptor).  The caller (run_plugin) has
+// already dlopen'd the .so and resolved the `slog_code_descriptor` symbol;
+// this derives the sibling .plan (first-dot stem + ".plan"), installs the
+// cohort's declarations plan (the same mechanism as the interp path), builds
+// each kernel's binding frame and loc/tag tables from the plan, validates
+// the descriptor structurally (abi, kernel count, exec keys, rule counts,
+// frame widths -- refusal, never a null dereference), calls the per-kernel
+// attach factories, and pushes + continues.  Any failure is a loud fatal.
+void attach_native_descriptor(Daemon* daemon, const std::string& path,
+                              const NativeCodeDescriptor* desc);
 
 // Registration ladders (plan-flavored-tasks.cpp, built -O0): the per-arity
 // index/task boilerplate the native flavored plugins carry, driven from a

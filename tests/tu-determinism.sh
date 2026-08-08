@@ -116,6 +116,41 @@ PYEOF
   fi
 fi
 
+# T4 slice 2c: the slice-2 exit case -- one .so attached twice.  In
+# n1_symmetric both instances' path kernels sit at the same level, so ONE
+# stratum carries two kernels with the SAME exec key, its descriptor
+# declares both, and the daemon attaches one cluster function twice with
+# distinct frames.  Checked structurally (a plan with two identical
+# manifest keys) and behaviorally (native answers == interp answers).
+rm -rf build config/cache "$WORK/sym-i" "$WORK/sym-n"
+if SLOG_OPT=interp timeout 900 racket compiler/run.rkt --no-banner \
+     --debug-dir "$WORK/sym-i" tests/n1_symmetric.slog \
+     > "$WORK/sym-i.log" 2>&1 \
+   && { rm -rf build config/cache; \
+        SLOG_OPT=0 timeout 900 racket compiler/run.rkt --no-banner \
+          --debug-dir "$WORK/sym-n" tests/n1_symmetric.slog \
+          > "$WORK/sym-n.log" 2>&1; }; then
+  if grep -ho '(key "[0-9a-f]*")' build/*.plan | sort | uniq -d | grep -q .; then
+    echo "PASS symmetric-shared-kernel-in-one-cohort"
+    PASS=$((PASS+1))
+  else
+    echo "FAIL symmetric-shared-kernel-in-one-cohort (no duplicated manifest key)"
+    FAIL=$((FAIL+1))
+  fi
+  if diff <(LC_ALL=C sort "$WORK/sym-i/answer.csv") \
+          <(LC_ALL=C sort "$WORK/sym-n/answer.csv") > /dev/null 2>&1 \
+     && [ -s "$WORK/sym-n/answer.csv" ]; then
+    echo "PASS double-attach-byte-identical"
+    PASS=$((PASS+1))
+  else
+    echo "FAIL double-attach-byte-identical (native vs interp answer.csv)"
+    FAIL=$((FAIL+1))
+  fi
+else
+  echo "FAIL symmetric-double-attach (compile/run failed; see $WORK)"
+  FAIL=$((FAIL+1))
+fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

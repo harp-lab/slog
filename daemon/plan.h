@@ -327,6 +327,10 @@ struct DecodedKernelPlan
   // The plan's (dynamic ...) names, retained for the counted installer's
   // addDynamicRel mirroring (thread 0).
   std::vector<std::string> dynamic_names;
+  // T4 (2c): the kernel's exec key from the cohort manifest -- the identity
+  // a native descriptor must present to attach against this kernel.  Empty
+  // for the declarations carrier and for ABI-1 single plans.
+  std::string exec_key;
 };
 
 struct SealedRule
@@ -383,6 +387,7 @@ struct SealedKernelPlan
   std::map<u32, std::string> sources;
   std::vector<std::string> dynamic_names;
   std::vector<AttachmentPlan> attachments;
+  std::string exec_key;   // T4 (2c): see DecodedKernelPlan
 };
 
 inline void seal_check(bool ok, SealErrorK kind,

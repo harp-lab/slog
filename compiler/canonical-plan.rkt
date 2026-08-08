@@ -934,10 +934,11 @@
      ,@(for/list ([k (in-list built)] [i (in-naturals)])
          `(kernel (ord ,i) ,(third k) ,(fourth k)
                   ,(kernel-dynamic (sixth k)) ,(fifth k))))
-   ;; per manifest kernel: (list ord ordered-crules rel-ix), where rel-ix is
-   ;; the kernel's slot table (name -> slot) -- (2b)'s frame layout authority
+   ;; per manifest kernel: (list ord ordered-crules rel-ix key) -- rel-ix is
+   ;; the kernel's slot table (name -> slot), (2b)'s frame layout authority;
+   ;; key is the exec key the (2c) descriptor declares for identity checks
    (for/list ([k (in-list built)] [i (in-naturals)])
-     (list i (seventh k) (sixth k)))))
+     (list i (seventh k) (sixth k) (first k)))))
 
 ;; ------------------------------------------------------------------------
 ;; The Racket twin of the daemon's decoder-boundary adaptation

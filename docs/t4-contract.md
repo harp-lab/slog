@@ -383,6 +383,60 @@ program-global (B1) and whose key is name-bearing (B4).  The item order in
     mechanism); the T3a upgrade seam keeps its soundness argument
     (replacement lands on the same `Stratum*`, no re-push accounting).
     Exit: the slice-2 exit above.
+    *As-planned (2026-08-08, entry design).*  The descriptor carries NO
+    name data: per kernel only {exec key, frame width, rule count,
+    attach fn}, plus a constants-init fn and the accel-rel name list
+    (compiler-computed, not in the plan; the `.so` is program-specific
+    so names in the SPINE-side descriptor cost nothing).  Everything
+    name-bearing is daemon-derived from the sibling `.plan`: frames from
+    the binding schema, the tycheck-accept APPENDIX by the same
+    first-use walk the emitter does (frame-width cross-check catches
+    divergence), `vl` verbatim from DebugMap sources, `vt` from the
+    STRUCTURED slot-relative variant + binding names ("delta:" + name —
+    no display-string surgery).  vt/vl indexing moves bucket-local →
+    kernel-ord so the daemon passes full-kernel tables to every
+    sub-bucket.  Path-only protocol preserved: run_plugin dispatches on
+    the descriptor symbol; a descriptor `.so` with no sibling `.plan`
+    refuses loudly (the re-emit-on-miss doctrine).  beginStratum[Delta]
+    chosen from the PLAN's flavor; upgrade = the same name-identity
+    seam.  SCOPE: normal/delta flavors only — flavored (`_count`/
+    `_maint*`) TUs keep the 2b `slog_plugin` spine (differential-only,
+    never shipped; migrate at slice 3/4), and 2c's validation closes
+    the 2b gap of never having RUN flavored-native by adding a
+    SLOG_FLAVORED_NATIVE smoke.  New fixture n1_symmetric (two
+    same-LEVEL instances ⇒ one stratum, two same-key kernels, ONE `.so`
+    attached twice with distinct frames — the slice-2 exit case arising
+    naturally).
+    *As-built (2026-08-08).*  daemon.h `NativeKernelCode`/
+    `NativeCodeDescriptor`; normal/delta spines export
+    `slog_code_descriptor()` and NOTHING else — no `slog_plugin`, no
+    relation creation, no frame building; the spine keeps only constant
+    defs+init, cluster forward decls, per-kernel attach wrappers, the
+    accel name table, and the descriptor.  run_plugin dispatches on the
+    descriptor symbol; `attach_native_descriptor` (plan-count.cpp)
+    derives the sibling `.plan` by first-dot stem, seals it, and
+    `install_native_cohort` validates abi/kernel-count/exec-keys (the
+    manifest keys now ride DecodedKernelPlan.exec_key)/rule-counts/
+    frame-widths as seal refusals, installs the rule-free declarations
+    carrier via the SAME `populate_normal_stratum` the interp path uses,
+    builds frames (binding schema + the tycheck-accept first-use walk)
+    and loc/tag tables (DebugMap sources verbatim with the "<unknown>"
+    spelling; tags from the structured driver + kernel-local dynamic
+    membership), calls the factories, reuses `add_read_manifest`, and
+    pushes.  Attach storage (frames + string tables) is daemon-lifetime,
+    like the dlopen handles.  beginStratum[Delta] from the PLAN flavor —
+    the T3a name-identity upgrade seam is untouched, and the tiered swap
+    harness drives descriptor `.so`s through it directly.
+    SLOG_PLAN_ABI=1 is now an interp-only compatibility mode (a
+    descriptor artifact refuses against an ABI-1 sibling at the key
+    check, loudly).  PROVEN: n1_symmetric under SLOG_OPT=0 — one
+    stratum's descriptor declares two kernels with ONE exec key and one
+    cluster function attached twice with distinct frames; native
+    answer.csv byte-identical to interp.  Gates grown: tu-determinism
+    +2 checks (symmetric-shared-kernel-in-one-cohort,
+    double-attach-byte-identical); abi2-differential +1 leg
+    (counted-session-flavored-native — the first harness that EXECUTES
+    the flavored native artifacts, closing 2b's untested gap).
 - **(3) Attachment identity (item 2's second half).**  Per-attachment
   read/write VersionId maps and per-attachment RuleIds, so stats,
   provenance, watches and the count/walk audits stay per-instance while

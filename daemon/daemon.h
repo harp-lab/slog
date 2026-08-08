@@ -49,6 +49,38 @@
 namespace slog
 {
 
+// T4 slice (2c): a name-free native artifact's exported self-description
+// (docs/t4-contract.md).  A descriptor .so carries NO relation names --
+// the daemon derives every binding frame and loc/tag table from the
+// sibling .plan cohort -- and exports
+//
+//     extern "C" const slog::NativeCodeDescriptor* slog_code_descriptor()
+//
+// instead of slog_plugin.  Kernels appear in the cohort's manifest order;
+// `key` is the kernel's exec key (identity cross-check against the plan),
+// `frame_width` the Relation* frame the attach fn expects (binding slots
+// plus the tycheck-accept appendix), `nrules` the loc/tag table width
+// (kernel rule-def ord order).  `init_constants` interns the artifact's
+// literal constants (idempotent); accel_rels is the compiler-computed
+// accelerator-seed list, which the plan does not carry.
+struct NativeKernelCode
+{
+  const char* key;
+  u32 frame_width;
+  u32 nrules;
+  void (*attach)(Database*, Stratum*, Relation* const*,
+                 const char* const*, const char* const*);
+};
+struct NativeCodeDescriptor
+{
+  u32 plan_abi;
+  u32 nkernels;
+  const NativeKernelCode* kernels;
+  void (*init_constants)(Database*);
+  u32 naccel;
+  const char* const* accel_rels;
+};
+
 // T0(b)'s explicit stratum-entry vocabulary (docs/t0-contract.md, D10).
 // The optional `at` position is valid only for resident-count; keeping it in
 // the value object lets the future command builder validate a decoded entry

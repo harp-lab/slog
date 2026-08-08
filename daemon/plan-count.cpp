@@ -22,7 +22,9 @@
 #include "plan-count.h"
 #include "daemon.h"
 
+#include <algorithm>
 #include <cstdlib>
+#include <deque>
 #include <memory>
 #include <set>
 
@@ -1712,6 +1714,195 @@ bool maybe_interp_count_plugin(Daemon* daemon, const std::string& path)
           + ": " + error.what());
   }
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// T4 slice (2c): the native descriptor attach.  The artifact is pure code --
+// per-kernel factories registering read tasks against a supplied frame --
+// and everything name-bearing comes from the sibling .plan: relation frames
+// from the binding schema, the tycheck-accept appendix by the emitter's own
+// first-use walk (frame-width cross-checked), locs verbatim from DebugMap
+// sources, tags rebuilt from the structured driver + binding names.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+
+// Frames and loc/tag tables the native tasks point into.  Owned for the
+// daemon's lifetime, like run_plugin's dlopen handles: an upgrade attaches
+// fresh storage and the superseded tasks are already deleted, so stale
+// entries are unreachable, merely resident.  std::deque for reference
+// stability across push_back.
+struct NativeAttachStorage
+{
+  std::deque<std::vector<Relation*>> frames;
+  std::deque<std::vector<std::string>> strings;
+  std::deque<std::vector<const char*>> tables;
+};
+NativeAttachStorage& native_attach_storage()
+{
+  static NativeAttachStorage storage;
+  return storage;
+}
+
+void install_native_cohort(Daemon* daemon, const std::string& name,
+                           const std::vector<SealedKernelPlan>& kernels,
+                           const NativeCodeDescriptor* desc)
+{
+  if (kernels.empty()) return;
+  seal_check(desc->plan_abi == 2, SealErrorK::flavor,
+             "native attach: descriptor declares plan abi "
+               + std::to_string(desc->plan_abi));
+  const std::string& flavor = kernels.front().flavor;
+  seal_check(flavor == "normal" || flavor == "delta", SealErrorK::flavor,
+             "native attach: unsupported flavor " + flavor);
+  // The declarations carrier is the rule-free FIRST plan of an ABI-2
+  // cohort; every real program has one.  An ABI-1 sibling (SLOG_PLAN_ABI=1)
+  // decodes as a single rule-carrying plan with no manifest keys and
+  // refuses at the key check below, deliberately: the escape hatch is an
+  // interp-only compatibility mode.
+  const SealedKernelPlan* decls =
+    kernels.front().rules.empty() ? &kernels.front() : nullptr;
+  std::vector<const SealedKernelPlan*> rule_kernels;
+  for (const SealedKernelPlan& k : kernels)
+    if (!k.rules.empty()) rule_kernels.push_back(&k);
+  seal_check(desc->nkernels == rule_kernels.size(), SealErrorK::binding,
+             "native attach: descriptor carries "
+               + std::to_string(desc->nkernels) + " kernels, plan carries "
+               + std::to_string(rule_kernels.size()));
+
+  Stratum* stratum = flavor == "delta"
+    ? daemon->beginStratumDelta(name) : daemon->beginStratum(name);
+  if (stratum == nullptr) return;
+  Database* db = daemon->db();
+  desc->init_constants(db);
+  std::set<std::string> declared;
+  if (decls != nullptr)
+    populate_normal_stratum(daemon, stratum, *decls, &declared);
+
+  auto& storage = native_attach_storage();
+  for (size_t i = 0; i < rule_kernels.size(); ++i)
+  {
+    const SealedKernelPlan& plan = *rule_kernels[i];
+    const NativeKernelCode& code = desc->kernels[i];
+    seal_check(!plan.exec_key.empty()
+                 && code.key != nullptr && plan.exec_key == code.key,
+               SealErrorK::binding,
+               "native attach: kernel " + std::to_string(i)
+                 + " key mismatch (descriptor "
+                 + (code.key == nullptr ? "<null>" : code.key) + ", plan "
+                 + (plan.exec_key.empty() ? "<none>" : plan.exec_key) + ")");
+    seal_check(code.nrules == plan.rules.size(), SealErrorK::binding,
+               "native attach: kernel " + std::to_string(i) + " declares "
+                 + std::to_string(code.nrules) + " rules, plan holds "
+                 + std::to_string(plan.rules.size()));
+    // the binding frame: slot table, then the tycheck-accept appendix in
+    // first-use order over the kernel's rules -- the emitter's own walk;
+    // the width cross-check makes divergence a refusal, not a wrong sid
+    std::vector<Relation*> frame;
+    std::set<std::string> bound;
+    for (const RelationBinding& b : plan.bindings)
+    {
+      Relation* r = db->getRelation(b.name);
+      seal_check(r != nullptr, SealErrorK::binding,
+                 "native attach: unresolved relation " + b.name);
+      frame.push_back(r);
+      bound.insert(b.name);
+    }
+    std::vector<std::string> appendix;
+    for (const SealedRule& rule : plan.rules)
+      for (const TycheckPlan& check : rule.tychecks)
+        for (const TypePlan& type : check.accepts)
+          if (type.kind == TypeK::struct_ && bound.count(type.name) == 0
+              && std::find(appendix.begin(), appendix.end(), type.name)
+                   == appendix.end())
+            appendix.push_back(type.name);
+    for (const std::string& accept : appendix)
+    {
+      Relation* r = db->getRelation(accept);
+      seal_check(r != nullptr, SealErrorK::binding,
+                 "native attach: unresolved accept struct " + accept);
+      frame.push_back(r);
+    }
+    seal_check(code.frame_width == frame.size(), SealErrorK::binding,
+               "native attach: kernel " + std::to_string(i)
+                 + " frame width mismatch (descriptor "
+                 + std::to_string(code.frame_width) + ", plan-derived "
+                 + std::to_string(frame.size()) + ")");
+    // loc/tag tables in kernel rule-def ord order: locs verbatim from the
+    // DebugMap (with the emitter's "<unknown>" spelling for absent
+    // sources), tags rebuilt from the STRUCTURED driver + binding names --
+    // exactly the emitter's crule-variant-tag, no display-string surgery
+    std::vector<std::string> texts;
+    const std::set<std::string> dynamic(plan.dynamic_names.begin(),
+                                        plan.dynamic_names.end());
+    for (const SealedRule& rule : plan.rules)
+    {
+      const auto source = plan.sources.find(rule.program.rule_id);
+      texts.push_back(source == plan.sources.end() || source->second == "#f"
+                        ? "<unknown>" : source->second);
+    }
+    for (const SealedRule& rule : plan.rules)
+    {
+      switch (rule.driver.kind)
+      {
+        case DriverK::once: texts.push_back("once"); break;
+        case DriverK::seeded: texts.push_back("seeded"); break;
+        default:
+        {
+          const std::string& rel = plan.bindings[rule.driver.relation].name;
+          texts.push_back((dynamic.count(rel) != 0 ? "delta:" : "all:")
+                          + rel);
+        }
+      }
+    }
+    storage.strings.push_back(std::move(texts));
+    const std::vector<std::string>& owned = storage.strings.back();
+    const size_t n = plan.rules.size();
+    std::vector<const char*> vl, vt;
+    for (size_t j = 0; j < n; ++j) vl.push_back(owned[j].c_str());
+    for (size_t j = 0; j < n; ++j) vt.push_back(owned[n + j].c_str());
+    storage.frames.push_back(std::move(frame));
+    storage.tables.push_back(std::move(vl));
+    const std::vector<const char*>& vl_ref = storage.tables.back();
+    storage.tables.push_back(std::move(vt));
+    const std::vector<const char*>& vt_ref = storage.tables.back();
+    code.attach(db, stratum, storage.frames.back().data(),
+                vl_ref.data(), vt_ref.data());
+    add_read_manifest(stratum, plan);
+  }
+  daemon->push(stratum);
+  daemon->continueRun();
+}
+
+} // namespace
+
+void attach_native_descriptor(Daemon* daemon, const std::string& path,
+                              const NativeCodeDescriptor* desc)
+{
+  if (desc == nullptr)
+    fatal("native attach: null descriptor from " + path);
+  // sibling plan: directory + first-dot stem + ".plan" (covers <h>.so,
+  // <h>.O0.so, <h>_delta.O0.so, and the test harnesses' <h>.swapO0.so)
+  const size_t slash = path.rfind('/');
+  const std::string file =
+    slash == std::string::npos ? path : path.substr(slash + 1);
+  const std::string stem = file.substr(0, file.find('.'));
+  const std::string plan_path =
+    (slash == std::string::npos ? std::string() : path.substr(0, slash + 1))
+    + stem + ".plan";
+  try
+  {
+    std::vector<SealedKernelPlan> kernels;
+    for (const DecodedKernelPlan& decoded : parse_plan_artifact_file(plan_path))
+      kernels.push_back(seal_kernel_plan(decoded, daemon->db()));
+    install_native_cohort(daemon, stem, kernels, desc);
+  }
+  catch (const std::exception& error)
+  {
+    fatal("native attach: install failed for " + path + " (plan "
+          + plan_path + "): " + error.what());
+  }
 }
 
 bool maybe_interp_plan_plugin(Daemon* daemon, const std::string& path)

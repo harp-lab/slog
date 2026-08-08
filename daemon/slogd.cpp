@@ -124,6 +124,16 @@ static void run_plugin(slog::Daemon* d,
         return;
     }
     so_handles.push_back(h);
+    // T4 slice (2c): a name-free native artifact exports a descriptor
+    // instead of slog_plugin; the daemon derives its frames from the
+    // sibling .plan and drives the attach itself.
+    auto descriptor = (const slog::NativeCodeDescriptor* (*)())
+      dlsym(h, "slog_code_descriptor");
+    if (descriptor != nullptr)
+    {
+        slog::interp::attach_native_descriptor(d, path, descriptor());
+        return;
+    }
     auto entry = (void (*)(slog::Daemon*))dlsym(h, "slog_plugin");
     if (entry == 0)
     {

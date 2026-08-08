@@ -96,16 +96,24 @@ done
 # the recursive closure (the recursive-deletion sweep), then a forced
 # whole-pipeline recount (count), and require identical count rows, routes,
 # dump counts and relation contents.  Mirrors session-tests.sh's b5 shape.
-run_counted() { # <abi>
-  local abi="$1" tag="counted-abi$1"
+run_counted() { # <abi> [native]
+  local abi="$1" tag="counted-abi$1${2:+-$2}"
   rm -rf build config/cache "$WORK/csv-$tag"
   mkdir -p build   # session-drive writes action plugins here before any compile
   local env_abi=(SLOG_PLAN_ABI="$abi")   # explicit both ways, as above
+  # T4 (2c): normal strata run INTERP in the two ABI legs -- this gate
+  # compares plan-install shapes, and SLOG_PLAN_ABI=1 + native is now an
+  # explicit refusal (a descriptor .so requires its ABI-2 sibling; the
+  # escape hatch is interp-only).  The third leg compiles and EXECUTES the
+  # flavored native artifacts (the 2b frame-mode slog_plugin spines) under
+  # ABI 2 -- the only harness that runs them at all.
+  local opt=interp
+  if [ "${2:-}" = native ]; then env_abi+=(SLOG_FLAVORED_NATIVE=1); opt=0; fi
   # batch- can only retract INPUT-ledger tuples (base.slog's own edges are
   # ground-rule derived), so retract the tuple this scenario inserts: the
   # positive flush extends the closure (maint1), the negative flush tears
   # it back down through the recursive sweep.
-  env "${env_abi[@]}" SLOG_OPT=0 timeout 900 \
+  env "${env_abi[@]}" SLOG_OPT="$opt" timeout 900 \
     racket tests/api/session-drive.rkt \
       run:tests/session/base.slog \
       batch+:edge,4,5 flush \
@@ -142,6 +150,32 @@ else
   done
   if [ "$counted_ok" -eq 1 ]; then
     echo "PASS counted-session ($(wc -l < "$WORK/sig-counted-abi1") signature lines)"
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+  fi
+fi
+
+# the flavored-NATIVE leg (T4 2c; closes 2b's untested-flavored-native gap)
+run_counted 2 native
+if ! diff -q "$WORK/sig-counted-abi2" "$WORK/sig-counted-abi2-native" >/dev/null 2>&1; then
+  echo "FAIL counted-session-flavored-native signature"
+  diff "$WORK/sig-counted-abi2" "$WORK/sig-counted-abi2-native" | head -8 | sed 's/^/    /'
+  FAIL=$((FAIL+1))
+else
+  fnative_ok=1
+  for csv in "$WORK/csv-counted-abi2"/*.csv; do
+    [ -e "$csv" ] || continue
+    rel="$(basename "$csv")"
+    case "$rel" in '$stat_'*) continue ;; esac
+    if ! diff -q <(LC_ALL=C sort "$csv") \
+                 <(LC_ALL=C sort "$WORK/csv-counted-abi2-native/$rel") >/dev/null 2>&1
+    then
+      echo "FAIL counted-session-flavored-native contents ($rel)"; fnative_ok=0; break
+    fi
+  done
+  if [ "$fnative_ok" -eq 1 ]; then
+    echo "PASS counted-session-flavored-native"
     PASS=$((PASS+1))
   else
     FAIL=$((FAIL+1))

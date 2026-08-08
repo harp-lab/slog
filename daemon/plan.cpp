@@ -1095,6 +1095,21 @@ std::vector<DecodedKernelPlan> parse_kernel_cohort(std::string_view input)
   // carries existence -- a relation no kernel binds still has to be
   // registered, or its output vanishes.  Rule-free, so it perturbs no
   // kernel's bytes.
+  // T4 (2c): the manifest's ord -> exec-key map rides out on each decoded
+  // kernel, so a native descriptor's identity claim can be checked against
+  // the plan it must agree with.
+  std::map<u64, std::string> key_of_ord;
+  if (const SExp* manifest = field_of(root, "manifest"))
+    for (size_t i = 1; i < manifest->children.size(); ++i)
+    {
+      const SExp& k = manifest->children[i];
+      const SExp* ord = field_of(k, "ord");
+      const SExp* key = field_of(k, "key");
+      if (ord != nullptr && key != nullptr)
+        key_of_ord[medium(ord->children[1], "manifest ord")] =
+          string_value(key->children[1], "manifest key");
+    }
+
   const SExp* services = field_of(root, "declarations");
   const bool have_decls = services != nullptr && services->children.size() > 1;
   const bool have_attachments =
@@ -1264,6 +1279,11 @@ std::vector<DecodedKernelPlan> parse_kernel_cohort(std::string_view input)
     text += "))";
 
     out.push_back(parse_kernel_plan(text));
+    if (const SExp* kord = field_of(form, "ord"))
+    {
+      const auto found = key_of_ord.find(medium(kord->children[1], "kernel ord"));
+      if (found != key_of_ord.end()) out.back().exec_key = found->second;
+    }
   }
   if (out.empty()) syntax(root, "cohort: no kernels");
   return out;
@@ -1498,6 +1518,7 @@ SealedKernelPlan seal_kernel_plan(const DecodedKernelPlan& decoded,
   out.sources = decoded.sources;
   out.dynamic_names = decoded.dynamic_names;
   out.attachments = decoded.attachments;
+  out.exec_key = decoded.exec_key;
   for (SealedRule& rule : out.rules)
   {
     const auto source = out.sources.find(rule.program.rule_id);
