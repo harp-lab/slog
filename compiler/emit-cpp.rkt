@@ -1663,37 +1663,19 @@
     ;; working, and cross-program sharing is the same collision in the
     ;; content-addressed .o cache.
     [else
-     ;; accepted-struct names a kernel's tychecks compare against, beyond
-     ;; the slot table: they ride an APPENDIX of the frame, so the cluster
-     ;; text stays name-free while the spine supplies instance names
-     (define (kernel-accept-names krs rel-ix)
-       (for*/fold ([acc '()] #:result (reverse acc))
-                  ([cr (in-list krs)]
-                   [hop (in-list (crule-head cr))]
-                   #:when (eq? 'tycheck (car hop))
-                   [t (in-list (cdr (third hop)))])
-         (match t
-           [`(struct ,n)
-            (if (or (hash-has-key? rel-ix n) (member n acc)) acc (cons n acc))]
-           [_ acc])))
      ;; one kernel -> its clusters: (list fn tu-text crs) per cluster, plus
-     ;; the kernel's frame recipe for the spine
+     ;; the kernel's frame recipe for the spine.  Since (3a), accepted
+     ;; tycheck structs are ordinary slots in the plan's rel-ix, so the
+     ;; frame IS the binding schema -- no appendix.
      (define kernel-parts
        (for/list ([g (in-list kernel-groups)] #:unless (null? (second g)))
          (define ord (first g))
          (define krs (second g))
          (define rel-ix (third g))
-         (define nslots (hash-count rel-ix))
-         (define accepts (kernel-accept-names krs rel-ix))
-         (define accept-ix
-           (for/hash ([n (in-list accepts)] [i (in-naturals nslots)])
-             (values n i)))
          (define (rel-slot name)
            (or (hash-ref rel-ix name #f)
                (error 'write-cpp "frame mode: unslotted relation ~a" name)))
-         (define (accept-slot name)
-           (or (hash-ref rel-ix name #f) (hash-ref accept-ix name #f)
-               (error 'write-cpp "frame mode: unslotted accept struct ~a" name)))
+         (define accept-slot rel-slot)
          ;; (2c) the loc/tag tables are indexed by the rule's ordinal WITHIN
          ;; THE KERNEL (its plan rule-def ord), not within a sub-bucket, so
          ;; one full-kernel table serves every sub-bucket -- and the daemon
@@ -1727,12 +1709,11 @@
                                               (lambda (l) (cons cr l)) '()))])
                  (for/list ([b (in-list (sort (hash-keys buckets) <))])
                    (frame-cluster (reverse (hash-ref buckets b)))))))
-         ;; slot -> name, dense over slots + appendix
+         ;; slot -> name, dense: the binding schema is the frame layout
          (define frame-names
-           (append (map cdr (sort (for/list ([(n i) (in-hash rel-ix)])
-                                    (cons i n))
-                                  < #:key car))
-                   accepts))
+           (map cdr (sort (for/list ([(n i) (in-hash rel-ix)])
+                            (cons i n))
+                          < #:key car)))
          (list ord frame-names kclusters (fourth g) krs)))
      ;; the deduped TU list: identical kernels share one cluster function
      (define tu-of

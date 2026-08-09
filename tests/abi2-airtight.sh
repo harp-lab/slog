@@ -179,6 +179,41 @@ else
   bad "two-instances-share-a-kernel-key" "no key appears twice"
 fi
 
+# (i) T4 slice 3a: a STRUCT-USING library shares too.  Its kernel carries a
+# tycheck whose accept set names an instance-qualified struct (a.wrap vs
+# b.wrap); those names rode the hashed exec bytes until 3a made them slot
+# references -- the gap recorded at (2b) entry, closed here.
+cat > "$WORK/ty_lib.slog" <<'EOF'
+union (box (wrap int))
+table (raw any)
+table (unwrapped box)
+
+rule (raw X) --> (unwrapped X)
+EOF
+cat > "$WORK/ty_twice.slog" <<'EOF'
+instantiate "ty_lib.slog" as a
+instantiate "ty_lib.slog" as b
+
+table (feed int)
+
+rule
+(feed 1)
+(feed 2)
+
+rule (feed X) --> (a.raw X)
+rule (feed X) --> (b.raw X)
+EOF
+compile_dump "$WORK/ty_twice.slog" "$WORK/d-ty"
+ty_shared="$(keys_of "$WORK/d-ty" | uniq -d | wc -l)"
+ty_accepts="$(grep -ho '(accept (struct (rel [0-9]*))' "$WORK/d-ty"/*.abi2 | wc -l)"
+if [ "$ty_accepts" -eq 0 ]; then
+  bad "struct-library-shares-a-kernel-key" "fixture produced no slot-relative accepts"
+elif [ "$ty_shared" -ge 1 ]; then
+  ok "struct-library-shares-a-kernel-key"
+else
+  bad "struct-library-shares-a-kernel-key" "no key appears twice despite tycheck kernels"
+fi
+
 # (d) partition coverage: kernels' rule counts plus prelude entries account
 # for every rule-def emitted, per cohort
 covered=0

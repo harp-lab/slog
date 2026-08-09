@@ -146,6 +146,68 @@ if SLOG_OPT=interp timeout 900 racket compiler/run.rkt --no-banner \
     echo "FAIL double-attach-byte-identical (native vs interp answer.csv)"
     FAIL=$((FAIL+1))
   fi
+  # T4 slice 3b: per-instance stats attribution (the fires table keys on
+  # instance-qualified locs) ...
+  if grep -q '"a#0@n1_graph_lib' "$WORK/sym-n/\$stat_fires.csv" 2>/dev/null \
+     && grep -q '"b#1@n1_graph_lib' "$WORK/sym-n/\$stat_fires.csv" 2>/dev/null; then
+    echo "PASS per-instance-fire-attribution"
+    PASS=$((PASS+1))
+  else
+    echo "FAIL per-instance-fire-attribution (missing instance-qualified fires)"
+    FAIL=$((FAIL+1))
+  fi
+  # ... and the attachment records: replay the native pipeline through the
+  # raw driver and ask (attachments) -- two records must share ONE exec key
+  # while carrying DIFFERENT write maps: one artifact, attached twice, with
+  # disaggregated identity (execution-tiers §2.2's ladder, live).
+  sos="$(grep -oE '\(fixpoint [0-9]+ "[a-f0-9_]+"' "$WORK/sym-n.log" \
+         | grep -oE '[a-f0-9_]{6,}' \
+         | while read -r h; do so="build/$h.O0.so"; [ -f "$so" ] || so="build/$h.so"; echo "$so"; done)"
+  # shellcheck disable=SC2086
+  racket tests/api/drive.rkt $sos "(attachments)" > "$WORK/sym-att.log" 2>&1
+  if python3 - "$WORK/sym-att.log" <<'PYEOF'
+import re, sys
+recs = {}
+for line in open(sys.argv[1]):
+    m = re.match(r'\(attachment \(stratum "[^"]*"\) \(key "([0-9a-f]+)"\) \(writes (.*?)\) \(reads', line)
+    if m: recs.setdefault(m.group(1), set()).add(m.group(2))
+sys.exit(0 if any(len(w) > 1 for w in recs.values()) else 1)
+PYEOF
+  then
+    echo "PASS attachment-records-disaggregate"
+    PASS=$((PASS+1))
+  else
+    echo "FAIL attachment-records-disaggregate (no shared key with distinct writes)"
+    FAIL=$((FAIL+1))
+  fi
+  # ... and the recount half of the slice-3 exit, two ways: a SECOND forced
+  # recount over the shared kernel must reproduce the first's countrows per
+  # attachment (recount agrees with the sidecar it established), and the
+  # fixture's symmetry means a.path's and b.path's count multisets must be
+  # IDENTICAL modulo the name -- a cross-attachment mixup (one instance's
+  # counts landing on the other) breaks that immediately.
+  rm -rf build config/cache; mkdir -p build
+  timeout 900 racket tests/api/session-drive.rkt run:tests/n1_symmetric.slog \
+    batch+:seed,3,4 flush recount-force \
+    dump-counts:a.path dump-counts:b.path recount-force \
+    dump-counts:a.path dump-counts:b.path > "$WORK/sym-recount.log" 2>&1
+  # the run itself may emit an initial (recount ...) marker, so anchor on
+  # the LAST two markers: the dumps after each forced recount
+  nrec="$(grep -c '^(recount' "$WORK/sym-recount.log")"
+  pre="$(awk -v k="$((nrec-1))" '/^\(recount/{n++} n==k && /^\(countrow/' \
+         "$WORK/sym-recount.log" | LC_ALL=C sort)"
+  post="$(awk -v k="$nrec" '/^\(recount/{n++} n==k && /^\(countrow/' \
+          "$WORK/sym-recount.log" | LC_ALL=C sort)"
+  a_rows="$(echo "$post" | grep ' a\.path ' | sed 's/ a\.path / R /' | LC_ALL=C sort)"
+  b_rows="$(echo "$post" | grep ' b\.path ' | sed 's/ b\.path / R /' | LC_ALL=C sort)"
+  if [ "$nrec" -ge 2 ] && [ -n "$pre" ] && [ "$pre" = "$post" ] \
+     && [ -n "$a_rows" ] && [ "$a_rows" = "$b_rows" ]; then
+    echo "PASS per-attachment-recount-agreement"
+    PASS=$((PASS+1))
+  else
+    echo "FAIL per-attachment-recount-agreement (see $WORK/sym-recount.log)"
+    FAIL=$((FAIL+1))
+  fi
 else
   echo "FAIL symmetric-double-attach (compile/run failed; see $WORK)"
   FAIL=$((FAIL+1))

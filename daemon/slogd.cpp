@@ -2177,6 +2177,41 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
         return;
     }
 
+    // T4 slice (3b): the attachment records -- one per attached kernel,
+    // both executors.  This is the runtime half of the identity ladder
+    // (execution-tiers §2.2): one plan key, many attachments, each with its
+    // own write (name, VersionId) map.  Two records sharing a key with
+    // different writes IS one artifact attached twice.
+    if (verb == "attachments")
+    {
+        if (argc != 0)
+        {
+            refuse(d, "parse", "(verb attachments) (detail \"attachments "
+                   "takes no arguments\")");
+            return;
+        }
+        size_t count = 0;
+        for (const slog::Stratum* s : d->strata())
+            for (const auto& att : s->kernel_attachments)
+            {
+                std::string writes, reads;
+                for (const auto& [name, vid] : att.writes)
+                    writes += (writes.empty() ? "(" : " (")
+                        + slog::protocol::quoteString(name) + " "
+                        + std::to_string(vid) + ")";
+                for (const std::string& name : att.reads)
+                    reads += (reads.empty() ? "" : " ")
+                        + slog::protocol::quoteString(name);
+                d->emit("(attachment (stratum "
+                        + slog::protocol::quoteString(s->name) + ") (key "
+                        + slog::protocol::quoteString(att.exec_key)
+                        + ") (writes " + writes + ") (reads " + reads + "))");
+                ++count;
+            }
+        d->emit("(attachments-end " + std::to_string(count) + ")");
+        return;
+    }
+
     // T5 slice (d1): `why` (repl-ux §9.4, contract §4(d1)).
     //
     //   (why [(depth N)])                     the gate's accepted candidates

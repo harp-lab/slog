@@ -1003,9 +1003,9 @@ void attach_normal_rules(Database* db, Stratum* stratum,
   }
 }
 
-// The sorted read manifest: driver and body/pre probe relations (resolve
-// cursors are lowered head constructions, not reads).
-void add_read_manifest(Stratum* stratum, const SealedKernelPlan& plan)
+// The read set of one sealed plan: driver and body/pre probe relations
+// (resolve cursors are lowered head constructions, not reads).
+static std::set<std::string> plan_read_rels(const SealedKernelPlan& plan)
 {
   std::set<std::string> read_rels;
   for (const SealedRule& rule : plan.rules)
@@ -1033,10 +1033,33 @@ void add_read_manifest(Stratum* stratum, const SealedKernelPlan& plan)
       }
     }
   }
-  for (const std::string& relation : read_rels)
+  return read_rels;
+}
+
+// The sorted read manifest, per attached plan.
+void add_read_manifest(Stratum* stratum, const SealedKernelPlan& plan)
+{
+  for (const std::string& relation : plan_read_rels(plan))
     stratum->addReadRel(relation);
   for (const std::string& relation : plan.dynamic_names)
     stratum->addDynamicRel(relation);
+}
+
+// T4 slice (3b): one KernelAttachment per attached kernel, both executors.
+// Captured DURING install, so getRelation resolves through the same armed
+// bind environment the stratum-wide maps are captured under at push.
+void record_kernel_attachment(Database* db, Stratum* stratum,
+                              const SealedKernelPlan& plan)
+{
+  if (plan.rules.empty()) return;   // the declarations carrier attaches nothing
+  Stratum::KernelAttachment att;
+  att.exec_key = plan.exec_key;
+  for (const std::string& name : plan.dynamic_names)
+    if (Relation* r = db->getRelation(name))
+      att.writes.push_back({name, r->getVersionId()});
+  const std::set<std::string> reads = plan_read_rels(plan);
+  att.reads.assign(reads.begin(), reads.end());
+  stratum->kernel_attachments.push_back(std::move(att));
 }
 
 Relation* ensure_flavored_relation(Database* db,
@@ -1377,6 +1400,7 @@ void install_normal_cohort(Daemon* daemon, const std::string& name,
     seal_check(plan.flavor == flavor, SealErrorK::flavor,
                "install: a cohort's kernels disagree on flavor");
     populate_normal_stratum(daemon, stratum, plan, &declared);
+    record_kernel_attachment(daemon->db(), stratum, plan);
   }
   daemon->push(stratum);
   daemon->continueRun();
@@ -1796,32 +1820,15 @@ void install_native_cohort(Daemon* daemon, const std::string& name,
                "native attach: kernel " + std::to_string(i) + " declares "
                  + std::to_string(code.nrules) + " rules, plan holds "
                  + std::to_string(plan.rules.size()));
-    // the binding frame: slot table, then the tycheck-accept appendix in
-    // first-use order over the kernel's rules -- the emitter's own walk;
-    // the width cross-check makes divergence a refusal, not a wrong sid
+    // the binding frame IS the binding schema (since 3a, accepted tycheck
+    // structs are ordinary slots); the width cross-check makes emitter/
+    // daemon divergence a refusal, not a wrong sid
     std::vector<Relation*> frame;
-    std::set<std::string> bound;
     for (const RelationBinding& b : plan.bindings)
     {
       Relation* r = db->getRelation(b.name);
       seal_check(r != nullptr, SealErrorK::binding,
                  "native attach: unresolved relation " + b.name);
-      frame.push_back(r);
-      bound.insert(b.name);
-    }
-    std::vector<std::string> appendix;
-    for (const SealedRule& rule : plan.rules)
-      for (const TycheckPlan& check : rule.tychecks)
-        for (const TypePlan& type : check.accepts)
-          if (type.kind == TypeK::struct_ && bound.count(type.name) == 0
-              && std::find(appendix.begin(), appendix.end(), type.name)
-                   == appendix.end())
-            appendix.push_back(type.name);
-    for (const std::string& accept : appendix)
-    {
-      Relation* r = db->getRelation(accept);
-      seal_check(r != nullptr, SealErrorK::binding,
-                 "native attach: unresolved accept struct " + accept);
       frame.push_back(r);
     }
     seal_check(code.frame_width == frame.size(), SealErrorK::binding,
@@ -1870,6 +1877,7 @@ void install_native_cohort(Daemon* daemon, const std::string& name,
     code.attach(db, stratum, storage.frames.back().data(),
                 vl_ref.data(), vt_ref.data());
     add_read_manifest(stratum, plan);
+    record_kernel_attachment(db, stratum, plan);
   }
   daemon->push(stratum);
   daemon->continueRun();

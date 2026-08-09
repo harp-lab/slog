@@ -443,6 +443,57 @@ program-global (B1) and whose key is name-bearing (B4).  The item order in
   the code is shared.  Exit: `$stat_fires` and level-1 watches attribute
   to the right instance with one artifact attached twice; a recount over
   the shared kernel agrees with the sidecar per attachment.
+  *Re-scoped at entry (2026-08-08), on a measured fact:* after (2c) the
+  loc/tag tables are daemon-built per kernel from the plan's DebugMap,
+  and locs are instance-qualified — n1_symmetric's fires table shows
+  distinct `a#0@…`/`b#1@…` keys with symmetric counts, so the stats half
+  of the exit HOLDS BY CONSTRUCTION.  Slice 3 therefore carries:
+  **(3a) the batched accept re-key** — tycheck accept struct names move
+  out of hashed exec bytes into slot references (the RF1 gap recorded at
+  2b entry, finding β): accepted structs join the kernel's rel-order at
+  first use, exec carries `(struct (rel N))`, the DECODER boundary
+  rewrites slots back to names in the synthesized ABI-1 view (seal,
+  interp, whynot unchanged — the same adaptation pattern as variants),
+  and the TU's accept-appendix machinery retires (accepts are ordinary
+  slots; the native frame is the binding schema exactly).  The re-key is
+  NARROW: only tycheck-bearing kernels move.  **(3b) attachment
+  records** — per attached kernel, both executors: exec key + write
+  (name, VersionId) pairs + read names on the Stratum, the runtime
+  identity T6 binds to; exit tests pin the per-instance fires fact and
+  per-instance recount agreement over a shared kernel.  **DEFERRED with
+  reasoning:** the `(RuleId, VariantTag)` stat rekey (execution-tiers
+  §2.1's T0/T2 deviation) — instance-qualified locs already attribute
+  correctly, the audit's aggregation unit is unchanged, and the rekey's
+  real owner is T0's durable-RuleKey arc; spending it here would churn
+  stats goldens for no attribution gain.
+  *As-built (2026-08-08).*  (3a): `canonicalize-crule`'s tycheck arm
+  resolves accepted struct names through `rel!` — exec carries
+  `(accept (struct (rel N)))`; accepted structs join the kernel's
+  rel-order at first use (a NEW collection walk, audited against the
+  slice-0.1 lesson list); the decoder handles BOTH spellings (`TypePlan`
+  gains a slot field, `parse_kernel_plan` post-resolves slots to names
+  once bindings exist), so seal, bind, whynot and stale plans are all
+  untouched; the TU's accept-appendix machinery retired (the frame IS
+  the binding schema; `install_native_cohort` dropped its appendix
+  walk).  Gate: airtight grew `struct-library-shares-a-kernel-key`
+  (generated ty_lib/ty_twice fixture; self-validating — it requires
+  slot-relative accepts to be present, so it refutes pre-3a emitters by
+  construction).  (3b): `Stratum::KernelAttachment` {exec_key, write
+  (name, VersionId) pairs, read names} recorded per attached kernel in
+  BOTH install paths, captured under the same armed bind environment
+  the stratum-wide maps use at push; cleared by `clearForUpgrade` (the
+  replacement re-records); consumed by the NEW `(attachments)` protocol
+  verb (additive; modeled on `breaks`).  Live proof: n1_symmetric's
+  stratum shows two records sharing one exec key with distinct write
+  maps (`a.path`@17 / `b.path`@14) and per-instance reads.  Gate grew
+  three checks: `per-instance-fire-attribution` (the measured fact,
+  pinned), `attachment-records-disaggregate` (drive.rkt replays the
+  native pipeline and asserts a shared key with distinct writes), and
+  `per-attachment-recount-agreement` (two forced recounts reproduce
+  identical countrows per attachment, and the symmetric fixture's
+  a/b count multisets match modulo the name — a cross-attachment mixup
+  breaks either immediately; NOTE count sidecars establish lazily, so
+  the check anchors on the last two recount markers).
 - **(4) Per-rule selective emission (item 4).**  With the unit at kernel
   granularity, emission can drop to per-rule: compile the hot rules of a
   kernel natively and leave the rest interpreted, coverage still

@@ -134,8 +134,17 @@
       [`(emit ,rel ,ord ,xs ...) `(emit ,(rel! rel) ,ord ,@(refs* xs))]
       [`(emit-temp ,rel ,xs ...) `(emit-temp ,(rel! rel) ,@(refs* xs))]
       [`(emit-lat ,rel ,xs ...) `(emit-lat ,(rel! rel) ,@(refs* xs))]
+      ;; T4 slice 3a: accepted STRUCT names become slot references -- a
+      ;; name here rode the hashed exec bytes and forfeited cross-instance
+      ;; sharing for any tycheck-bearing kernel (the gap recorded at 2b
+      ;; entry).  Primitive accepts (int/float/str) are type names, not
+      ;; relations, and stay spelled out.
       [`(tycheck ,x (accept ,ts ...) ,rid ,rel ,col ,ord)
-       `(tycheck ,(ref! x) (accept ,@ts)
+       `(tycheck ,(ref! x)
+                 (accept ,@(for/list ([t (in-list ts)])
+                             (match t
+                               [`(struct ,n) `(struct ,(rel! n))]
+                               [t t])))
                  ,(ref! rid) ,(ref! rel) ,(ref! col) ,ord)]
       [_ (op->canon op)]))
   (define (driver->canon d)
@@ -545,12 +554,21 @@
                          [(< (rid-of a) (rid-of b)) #t]
                          [(< (rid-of b) (rid-of a)) #f]
                          [else (string<? (tag-of a) (tag-of b))])]))))
-  ;; kernel-local slots, first-use over that order
+  ;; kernel-local slots, first-use over that order.  Accepted tycheck
+  ;; structs join the table (T4 3a): their exec references are slots now,
+  ;; so they must be bound like any other relation the kernel touches.
+  (define (crule-accept-rels cr)
+    (for*/list ([hop (in-list (crule-head cr))]
+                #:when (eq? 'tycheck (car hop))
+                [t (in-list (cdr (third hop)))]
+                #:when (match t [`(struct ,_) #t] [_ #f]))
+      (second t)))
   (define rel-order
     (append service-slots
             (for*/list ([cr (in-list ordered)]
                         [r (in-list (append (crule-body-rels cr)
-                                            (crule-head-rels cr)))])
+                                            (crule-head-rels cr)
+                                            (crule-accept-rels cr)))])
               r)))
   (define rel-ix
     (for/fold ([h (hash)]) ([r (in-list rel-order)])

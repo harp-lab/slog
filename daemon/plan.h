@@ -149,6 +149,12 @@ struct TypePlan
 {
   TypeK kind = TypeK::primitive;
   std::string name;
+  // T4 slice 3a: a struct accept may arrive slot-relative -- `(struct
+  // (rel N))` -- so accepted-struct NAMES stop riding hashed exec bytes
+  // (the cross-instance sharing gap recorded at 2b entry).  The decoder
+  // post-resolves the slot to its binding name once the relation table is
+  // in hand; -1 means the name arrived spelled out (stale plans).
+  int slot = -1;
 };
 
 struct TycheckPlan

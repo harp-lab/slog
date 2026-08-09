@@ -2510,6 +2510,21 @@ public:
   // Exact output version instances captured at this push's bind environment
   // (M0.4a).  Recount/provenance uses ids, never Relation::getName().
   std::vector<u64> write_version_ids;
+  // T4 slice (3b): one record per attached KERNEL, both executors -- the
+  // runtime half of the identity ladder (execution-tiers §2.2: one
+  // KernelPlanKey serves many attachments, and audits must never be
+  // satisfied by the plan key alone).  `exec_key` is the kernel's plan
+  // identity; writes/reads are the kernel-local (name, VersionId) maps
+  // captured at attach, under the same bind environment the stratum-wide
+  // maps above are captured under at push.  T6's mid-read replacement
+  // binds to these records.
+  struct KernelAttachment
+  {
+    std::string exec_key;
+    std::vector<std::pair<std::string, u64>> writes;
+    std::vector<std::string> reads;
+  };
+  std::vector<KernelAttachment> kernel_attachments;
   // Semantic program instances own derivation support.  Delta/replay/count
   // incarnations are maintenance executions and must never become another
   // writer merely because they were pushed through the scheduler.
@@ -2592,6 +2607,7 @@ public:
     read_versions.clear();
     write_versions.clear();
     write_version_ids.clear();
+    kernel_attachments.clear();   // the replacement attach re-records them
     accel_rels.clear();   // the replacement plugin re-adds them
   }
 

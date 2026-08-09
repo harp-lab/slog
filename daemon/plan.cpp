@@ -378,8 +378,15 @@ TycheckPlan decode_tycheck(const SExp& op)
     else
     {
       const auto& type = tagged(accepts[i], "struct", 2);
-      out.accepts.push_back({TypeK::struct_,
-                             atom(type[1], "tycheck struct type")});
+      // slot-relative (T4 3a) or spelled out (stale plans) -- the caller
+      // post-resolves slots against the relation table
+      if (type[1].kind == SExp::K::list)
+        out.accepts.push_back(
+          {TypeK::struct_, "",
+           static_cast<int>(ref(type[1], "rel", "tycheck struct slot"))});
+      else
+        out.accepts.push_back({TypeK::struct_,
+                               atom(type[1], "tycheck struct type")});
     }
   }
   out.rule = ref(xs[3], "r", "tycheck rule register");
@@ -977,6 +984,20 @@ DecodedKernelPlan parse_kernel_plan(std::string_view input)
     if (!inserted && out.sources[id] != location)
       syntax(meta[i], "conflicting source metadata for rule id");
   }
+  // T4 slice 3a: resolve slot-relative struct accepts against the relation
+  // table, so every downstream consumer (seal, bind, whynot) keeps seeing
+  // names exactly as before.
+  for (DecodedRule& rule : out.rules)
+    for (HeadPrefixPlan& prefix : rule.plan.head_prefix)
+      if (auto* check = std::get_if<TycheckPlan>(&prefix))
+        for (TypePlan& type : check->accepts)
+          if (type.kind == TypeK::struct_ && type.slot >= 0)
+          {
+            if (static_cast<size_t>(type.slot) >= out.bindings.size())
+              throw PlanParseError(ParseErrorK::syntax, 0,
+                "tycheck struct accept slot out of range");
+            type.name = out.bindings[type.slot].name;
+          }
   return out;
 }
 
