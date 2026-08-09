@@ -47,6 +47,7 @@
 (require "operationalization.rkt")
 (require "canonical-plan.rkt")
 (require "emit-cpp.rkt")
+(require "tier-policy.rkt")   ; T3b: selective-compilation policy + sidecar
 (require "ir-shared.rkt")
 (require "ir-stack.rkt")
 (require "tools.rkt")
@@ -228,6 +229,11 @@
                              ;; T4 slice 4: a partial-coverage artifact must
                              ;; miss the cache, never stand in for a full one
                              (native-rule-coverage)
+                             ;; T3b slice 1: likewise for the tier policy --
+                             ;; it decides the covered set, so an artifact
+                             ;; built under one policy is not the artifact
+                             ;; the other policy asked for
+                             (tier-policy)
                              ;; the facts split changes stratum rule sets, so
                              ;; it must key the cache (else a split and a
                              ;; non-split build would share a .so slot)
@@ -637,6 +643,55 @@
       [_ (values '() '() '() #f)])))
 
 ;; -----------------------------------------------------------------------
+;; T3b slice 1: the tier sidecar (docs/t3b-contract.md §3).
+;;
+;; `build/<hash>.tiers` records, per kernel, which rule variants the emitter
+;; covered natively and WHY each was designated as it was.  Two consumers:
+;; compile-strata asks "did this stratum need the toolchain at all", and the
+;; REPL's tiers/code cards (slice 2+) render the designations.  It is a
+;; derived cache like the .meta -- deleting it costs a re-emit, never
+;; correctness -- and it deliberately holds no semantics: the artifact's
+;; covered-ordinal arrays remain the authority the daemon validates at
+;; attach, and the plan is untouched.
+(define (write-tier-sidecar hash-name kernels)
+  (define covered (for/sum ([k (in-list kernels)]) (third k)))
+  (define total (for/sum ([k (in-list kernels)]) (fourth k)))
+  (define form
+    `(stratum-tiers
+      (hash ,hash-name)
+      (policy ,(tier-policy))
+      (coverage ,covered ,total)
+      ,@(for/list ([k (in-list kernels)])
+          (match-define (list ord key ncov nrules entries) k)
+          `(kernel (ord ,ord) (key ,key) (coverage ,ncov ,nrules)
+                   ,@(for/list ([e (in-list entries)])
+                       (match-define (list j tier reason cov?) e)
+                       `(variant ,j ,tier ,reason ,(if cov? 'native 'interp)))))))
+  (call-with-atomic-output (fullpath (format "build/~a.tiers" hash-name))
+                           (lambda () (writeln form))))
+
+;; (values covered total) for an emitted stratum, or (values #f #f) when no
+;; sidecar exists -- the legacy single-TU path and any pre-T3b cache entry.
+;; A missing sidecar is read conservatively as "it needs its artifact".
+(define (stratum-native-coverage hash-name)
+  (with-handlers ([exn:fail? (lambda (_) (values #f #f))])
+    (match (call-with-input-file (fullpath (format "build/~a.tiers" hash-name))
+             read)
+      [`(stratum-tiers ,fields ...)
+       (match (assq 'coverage fields)
+         [`(coverage ,c ,t) (values c t)]
+         [_ (values #f #f)])]
+      [_ (values #f #f)])))
+
+;; The zero-clang verdict: every rule variant of this stratum is interp-only,
+;; so there is nothing for the toolchain to build.  `total` > 0 guards the
+;; degenerate case of a stratum with no variants at all, which should keep
+;; taking whatever path it took before.
+(define (stratum-fully-interpreted? hash-name)
+  (define-values (covered total) (stratum-native-coverage hash-name))
+  (and covered total (> total 0) (zero? covered)))
+
+;; -----------------------------------------------------------------------
 ;; Back end: emit one stratum's C++ translation unit(s).
 ;;
 ;; Runs the per-stratum Racket passes (plan -> lower -> emit) and writes the
@@ -757,8 +812,16 @@
        (build-path dir (format "~a.abi2" hash-name))
        (lambda () (displayln (kernel-plan->string abi2-cohort))))))
   (define accel-rels (stratum-accel-rels stratum dynamic-rels type-env decomps))
-  (define emitted (write-cpp cprog dbmanifest hash-name #:accel-rels accel-rels
-                             #:kernel-groups kernel-groups))
+  ;; T3b slice 1: collect the tier designations write-cpp acted on and record
+  ;; them beside the artifact.  The sidecar is diagnostic and schedulable --
+  ;; NOT semantic: it never reaches the plan, whose bytes are goldens of
+  ;; record (rf1-contract slice 4).
+  (define tier-box (box '()))
+  (define emitted
+    (parameterize ([tier-summary-sink tier-box])
+      (write-cpp cprog dbmanifest hash-name #:accel-rels accel-rels
+                 #:kernel-groups kernel-groups)))
+  (write-tier-sidecar hash-name (unbox tier-box))
   ;; write-cpp returns either one string (a single TU) or a list of
   ;; (suffix . contents) pairs -- the spine (suffix "") plus part TUs.
   (define tus (if (string? emitted) (list (cons "" emitted)) emitted))
@@ -1169,9 +1232,20 @@
                (and descriptor (storage-declaration? descriptor))))
     name))
 
+;; T3b slice 1: resolve the selective-compilation policy ONCE, before any job
+;; hash is computed -- the policy folds into progstr, so it must be settled
+;; before program->jobs runs, and it must be the same value the emitter sees.
 (define (compile-strata path dbmanifest
                         #:split-facts? [split-facts? #f]
                         #:input-catalog [input-catalog #f])
+  (parameterize ([tier-policy (effective-tier-policy (opt-mode))])
+    (compile-strata* path dbmanifest
+                     #:split-facts? split-facts?
+                     #:input-catalog input-catalog)))
+
+(define (compile-strata* path dbmanifest
+                         #:split-facts? [split-facts? #f]
+                         #:input-catalog [input-catalog #f])
   (define mode (opt-mode))
   ;; tiered = the default regime (anything but the explicit -O0-only / -O2-only
   ;; knobs); mirrors runslog.rkt's driver-side test.
@@ -1265,7 +1339,21 @@
                  (lambda () (ensure-recursive-negative-maintenance-so job)))]
         [else
          (define cpps (emit-stratum-cpp job))   ; write .cpp(s) now (fast, main thread)
-         (case mode
+         (case (if (stratum-fully-interpreted? proghash) "interp" mode)
+           ;; T3b slice 1: the policy designated EVERY variant of this stratum
+           ;; interp-only, so its artifact would export no attach function at
+           ;; all -- there is nothing for the toolchain to build.  Take the
+           ;; interp rung outright: no -O0, no claimed -O2, no upgrade
+           ;; closure.  Measured at 247 of 499 strata over the golden suite
+           ;; (docs/t3b-contract.md §1).  The .cpp text is still on disk as
+           ;; the debug artifact, exactly as SLOG_OPT=interp leaves it.
+           [("interp")
+            (sbuild proghash #f (lambda () (cons (ensure-normal-plan job) 'interp)) #f
+                    (lambda () (ensure-delta-so job))
+                    (lambda () (ensure-count-so job))
+                    (lambda () (ensure-maintenance-so job))
+                    (lambda () (ensure-negative-maintenance-so job))
+                    (lambda () (ensure-recursive-negative-maintenance-so job)))]
            [("2")
             (sbuild proghash o2so
                     (pooled-eager (lambda () (build-so cpps o2so #:opt "-O2") (cons o2so 'o2)))

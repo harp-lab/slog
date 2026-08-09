@@ -68,6 +68,31 @@
                         "SLOG_NATIVE_COVERAGE must be all|even|odd|none: ~a"
                         v)]))))
 
+;; T3b slice 1: the selective-compilation POLICY behind T4's mechanism
+;; (docs/execution-tiers.md §5.3, docs/t3b-contract.md).  'classified applies
+;; the default rule-variant classification -- interp-only variants are not
+;; emitted, and a stratum whose every variant is interp-only skips the
+;; toolchain entirely.  'all restores pre-T3b behavior (emit every rule) and
+;; is the escape hatch plus the differential control.  Cache-keyed in
+;; compile.rkt beside native-rule-coverage: an artifact built under one
+;; policy must never stand in for one built under the other.
+;;
+;; The env var, when set, is a HARD choice that holds in every mode -- it is
+;; the gate's lever and the differential control.  Left unset, the policy
+;; follows §5.3's own scoping ("the default `tiered` now means selective per
+;; this section"): selective under tiered, off under the explicit -O0/-O2
+;; modes, which mean "compile it all" (compile-strata resolves that).
+(define tier-policy
+  (make-parameter
+   (let ([v (getenv "SLOG_TIER_POLICY")])
+     (cond [(or (not v) (equal? v "") (equal? v "classified")) 'classified]
+           [(equal? v "all") 'all]
+           [else (error 'params
+                        "SLOG_TIER_POLICY must be classified|all: ~a" v)]))))
+
+(define tier-policy-pinned?
+  (let ([v (getenv "SLOG_TIER_POLICY")]) (and v (not (equal? v "")) #t)))
+
 ;; Exhaustive action search is deliberately bounded.  Larger join bodies use
 ;; the deterministic action-aware greedy fallback.
 (define wcoj3-search-cap (make-parameter 8))

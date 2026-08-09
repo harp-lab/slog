@@ -28,6 +28,7 @@
 (require "ir-stack.rkt")
 (require (only-in "type-system.rkt" prim-error-arms))  ; counted-head arms (_count)
 (require "sha256.rkt")   ; content-hashed cluster names + stable bucketing (P2)
+(require "tier-policy.rkt")  ; T3b: which rule variants are worth compiling
 
 (define (repeat s n)
   (if (= n 0)
@@ -1667,6 +1668,11 @@
      ;; the kernel's frame recipe for the spine.  Since (3a), accepted
      ;; tycheck structs are ordinary slots in the plan's rel-ix, so the
      ;; frame IS the binding schema -- no appendix.
+     ;;
+     ;; Flavored (_count/_maint*) TUs pin full coverage: they are the
+     ;; differential's second executor and a partial one would compare
+     ;; nothing (t4-contract §3 slice 4).
+     (define kernel-flavored? (and (or (count-flavor) (maintenance-flavor)) #t))
      (define kernel-parts
        (for/list ([g (in-list kernel-groups)] #:unless (null? (second g)))
          (define ord (first g))
@@ -1683,15 +1689,16 @@
          (define ord-of
            (for/hash ([cr (in-list krs)] [j (in-naturals)]) (values cr j)))
          ;; T4 slice 4: the native artifact covers only these kernel rule
-         ;; ordinals; the daemon runs the complement interpreted.  Flavored
-         ;; TUs pin full coverage (they are the differential's second
-         ;; executor -- a partial one would compare nothing).
+         ;; ordinals; the daemon runs the complement interpreted.
+         ;;
+         ;; T3b slice 1: WHICH ordinals is now a policy question, answered by
+         ;; tier-policy.rkt over the planned variant (execution-tiers §5.3).
+         ;; The even/odd/none knobs remain the mechanism's test lever and
+         ;; still win when set.
+         (define krs-vec (list->vector krs))
          (define (covered? j)
-           (if (or (count-flavor) (maintenance-flavor))
-               #t
-               (case (native-rule-coverage)
-                 [(all) #t] [(none) #f]
-                 [(even) (even? j)] [(odd) (odd? j)])))
+           (crule-natively-covered? (vector-ref krs-vec j) j dynamic-rels
+                                    #:flavored? kernel-flavored?))
          (define covered-ords
            (for/list ([j (in-range (length krs))] #:when (covered? j)) j))
          (define kcrs
@@ -1732,6 +1739,18 @@
                             (cons i n))
                           < #:key car)))
          (list ord frame-names kclusters (fourth g) krs covered-ords)))
+     ;; T3b slice 1: publish what the policy just decided, per kernel, for the
+     ;; .tiers sidecar and for compile.rkt's "does this stratum need clang at
+     ;; all" question.  Recorded from the SAME covered? the emitter used, so
+     ;; the sidecar cannot describe a coverage the artifact does not have.
+     (when (tier-summary-sink)
+       (set-box!
+        (tier-summary-sink)
+        (for/list ([kp (in-list kernel-parts)])
+          (define-values (ncov total entries)
+            (kernel-tier-summary (fifth kp) dynamic-rels
+                                 #:flavored? kernel-flavored?))
+          (list (first kp) (fourth kp) ncov total entries))))
      ;; the deduped TU list: identical kernels share one cluster function
      (define tu-of
        (for*/fold ([h (hash)])
