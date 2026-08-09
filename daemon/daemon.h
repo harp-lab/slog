@@ -63,17 +63,27 @@ namespace slog
 // (kernel rule-def ord order).  `init_constants` interns the artifact's
 // literal constants (idempotent); accel_rels is the compiler-computed
 // accelerator-seed list, which the plan does not carry.
+// T4 slice 4: `covered`/`ncovered` declare which kernel rule ordinals the
+// artifact's attach registers natively; the daemon runs the complement
+// interpreted, so coverage is native ∪ interp exactly.  covered == nullptr
+// with ncovered == nrules is full coverage (the common case); ncovered == 0
+// means attach is nullptr and the kernel runs fully interpreted.
 struct NativeKernelCode
 {
   const char* key;
   u32 frame_width;
   u32 nrules;
+  u32 ncovered;
+  const u32* covered;
   void (*attach)(Database*, Stratum*, Relation* const*,
                  const char* const*, const char* const*);
 };
 struct NativeCodeDescriptor
 {
-  u32 plan_abi;
+  // The artifact INTERFACE version, not the plan ABI (the sealed plan's own
+  // abi is validated at parse): 2 = the (2c) descriptor, 3 = coverage-
+  // bearing (slice 4).  A stale artifact refuses unambiguously at attach.
+  u32 interface_abi;
   u32 nkernels;
   const NativeKernelCode* kernels;
   void (*init_constants)(Database*);

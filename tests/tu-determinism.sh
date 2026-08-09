@@ -213,6 +213,25 @@ else
   FAIL=$((FAIL+1))
 fi
 
+# T4 slice 4: mixed-tier equivalence -- the slice's exit.  Under each
+# coverage mode the descriptor's kernels split between native tasks and
+# the daemon-attached interpreted complement; results must match the
+# recorded goldens (which the pure interpreter produced) byte-for-byte.
+# `none` is the degenerate case: descriptor artifacts, zero clusters,
+# every rule interpreted.
+for cov in even odd none; do
+  rm -rf build config/cache
+  if SLOG_NATIVE_COVERAGE=$cov SLOG_OPT=0 timeout 1800 bash tests/run-tests.sh \
+       tests/n1_symmetric.slog tests/tycheck_basic.slog tests/dem_lambda.slog \
+       > "$WORK/cov-$cov.log" 2>&1; then
+    echo "PASS mixed-tier-$cov"
+    PASS=$((PASS+1))
+  else
+    echo "FAIL mixed-tier-$cov (see $WORK/cov-$cov.log)"
+    FAIL=$((FAIL+1))
+  fi
+done
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

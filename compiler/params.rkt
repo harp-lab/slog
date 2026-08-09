@@ -50,6 +50,24 @@
 (define wcoj3-enabled
   (make-parameter (not (getenv "SLOG_NO_WCOJ3"))))
 
+;; T4 slice 4: per-rule selective native emission (t4-contract §3 slice 4).
+;; Which kernel rule ordinals the native artifact covers; the daemon runs
+;; the complement interpreted, so coverage is native ∪ interp by
+;; construction.  The deterministic even/odd/none values are the MECHANISM
+;; gate's test knob -- real hotness policy is T3b's.  Cache-keyed in
+;; compile.rkt (a partial artifact must never be served where a full one
+;; was expected); flavored (_count/_maint*) TUs pin 'all regardless.
+(define native-rule-coverage
+  (make-parameter
+   (let ([v (getenv "SLOG_NATIVE_COVERAGE")])
+     (cond [(or (not v) (equal? v "") (equal? v "all")) 'all]
+           [(equal? v "even") 'even]
+           [(equal? v "odd") 'odd]
+           [(equal? v "none") 'none]
+           [else (error 'params
+                        "SLOG_NATIVE_COVERAGE must be all|even|odd|none: ~a"
+                        v)]))))
+
 ;; Exhaustive action search is deliberately bounded.  Larger join bodies use
 ;; the deterministic action-aware greedy fallback.
 (define wcoj3-search-cap (make-parameter 8))

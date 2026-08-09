@@ -225,6 +225,9 @@
                              (semijoin-filters-enabled)
                              (wcoj3-enabled)
                              (wcoj3-search-cap)
+                             ;; T4 slice 4: a partial-coverage artifact must
+                             ;; miss the cache, never stand in for a full one
+                             (native-rule-coverage)
                              ;; the facts split changes stratum rule sets, so
                              ;; it must key the cache (else a split and a
                              ;; non-split build would share a .so slot)

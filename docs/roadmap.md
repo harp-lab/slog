@@ -12,9 +12,9 @@ remains normative for its content.
 | stream | document | slices | status 2026-07-26 (v3.1.0) |
 |---|---|---|---|
 | incremental maintenance | [incremental.md](incremental.md), [incremental-status.md](incremental-status.md) | Phase 0, M0–M7 | Phase 0, M0, M1, M3, M6L 1–2, M4T, M5, M4S, **M4N ([m4n-contract.md](m4n-contract.md), all 4 slices)** shipped; **counted-interpreter milestone complete** ([counted-interp-contract.md](counted-interp-contract.md)); **M7 slice 1 complete ([m7-contract.md](m7-contract.md), sub-slices (a)–(d), 2026-07-24)** — thread 0's M-milestone spine is done |
-| execution tiers | [execution-tiers.md](execution-tiers.md) | T0–T6, Q1 | T1 shipped; T2 core frozen, monotone conformance groups closed, **flavored execution interp-only by default**; T0 slices (a), (b), and (d) landed; canonical Q1 query/page/cancel dispatcher active; T0(c) identity remains independent; T3a/T4+ unstarted |
+| execution tiers | [execution-tiers.md](execution-tiers.md) | T0–T6, Q1 | T1 shipped; T2 core frozen, monotone conformance groups closed, **flavored execution interp-only by default**; T0 slices (a), (b), and (d) landed; canonical Q1 query/page/cancel dispatcher active; T0(c) identity remains independent; T3a cold start shipped (2026-07-28); T5+R4 debugger arc complete (2026-08-02); **T4 COMPLETE (2026-08-08, [t4-contract.md](t4-contract.md) §0.1 ledger: kernel-local requisitions, canonical TU order, name-free clusters, descriptor attach, attachment identity + the accept re-key, per-rule selective emission)** — T6's prerequisite met; next: T3b policy, T6 |
 | modules/namespaces | [modules.md](modules.md), [n4-contract.md](n4-contract.md) | N0–N5 | N0, **N1**, N2-A/B, and **all of N3** landed (N1 lexical occurrences, qualification, bindings, and persisted module identity; N3-A/B/C daemon boundaries, direct history, durable type registry; **N3-D qualified-path transforms, 2026-07-26**); **all of N4** ([n4-contract.md](n4-contract.md): N4-A durable bundle in META format 2, restore-on-open, replay audit, boundary-backed REPL projection; N4-B mapped namespace attachment) -- **N0-N4 are complete**, N5 unstarted |
-| reflection | [slog-reflection.md](slog-reflection.md) | RF0–RF5 | RF0 done; RF1 slices 0/0.1/1/2 shipped AND **THE DEFAULT IS ABI 2** (flipped 2026-08-06; [rf1-contract.md](rf1-contract.md) as-built: plan determinism, tie-group fixes ×3, ProgramModel, ABI-2 emitter + airtightness gate + daemon cohort decoder + Racket cohort adapter for the REPL's readers; `SLOG_PLAN_ABI=1` is the escape hatch; full suite 21/21 tiers + plan-determinism 506/506 cohorts at the new default); slice 3 (attribute vocabulary, absent-when-empty) and slice 4 (plan goldens of record, `plan-goldens` tier in ALL) SHIPPED 2026-08-06 — **RF1 IS COMPLETE, all six exit gates closed**; next in stream: RF1.5 model queries (unscheduled), RF2 image mount (W4′) |
+| reflection | [slog-reflection.md](slog-reflection.md) | RF0–RF5 | RF0 done; RF1 slices 0/0.1/1/2 shipped AND **THE DEFAULT IS ABI 2** (flipped 2026-08-06; [rf1-contract.md](rf1-contract.md) as-built: plan determinism, tie-group fixes ×3, ProgramModel, ABI-2 emitter + airtightness gate + daemon cohort decoder + Racket cohort adapter for the REPL's readers; `SLOG_PLAN_ABI=1` is the escape hatch; full suite 21/21 tiers + plan-determinism 506/506 cohorts at the new default); slice 3 (attribute vocabulary, absent-when-empty) and slice 4 (plan goldens of record, `plan-goldens` tier in ALL) SHIPPED 2026-08-06 — **RF1 IS COMPLETE, all six exit gates closed**; next in stream: RF1.5 model queries (unscheduled), RF2 image mount (W4′); RF5 semantic/module replacement now has a draft end-to-end contract in [rf5-contract.md](rf5-contract.md) |
 | REPL | [repl.md](repl.md), [repl-ux.md](repl-ux.md), [repl-terminal.md](repl-terminal.md) | R0–R5 | native Rust shell, private TCP server, live session/daemon vertical slice, structured change projection, executable `--plain` golden, and R1 budgeted tree, navigation, semantic change cards, command completion, visible-canvas search, live-relation observations, and buffered pagination shipped; canonical Q1 cursor protocol active, with boundary catalog/friendly parser/value/proof adapters next |
 | stats migration | [stats.md](stats.md) §7 | steps 1–7 | `$stat_*` shipped; migration unstarted |
 
@@ -83,7 +83,8 @@ discipline makes it a checklist.
                         S  — sync gate (§5)
                                 |
         W4': T5 + REPL R4 (the debugger) · T4 · N4-A -> N4-B · RF2 · T3b
-        W5': T6 · N5 + stats 5–7 · RF5 program edits · R5 · derived watches
+        W5': T6 · N5 + stats 5–7 · RF5 program/module replacement
+             (rf5-contract.md) · R5 · derived watches
 ```
 
 The interpreter is what makes the fork clean, because its concerns partition
@@ -1807,8 +1808,9 @@ audit.
 
 **W5′ — the capstone.** **T6** transactional mid-read restart; **N5 + stats
 steps 5–7**; **RF5** draft images and activation wired to writer/cone
-healing — the point where the two long arcs merge and a program edit becomes
-a recipe event healed like a fact edit; **derived watches**
+healing per [rf5-contract.md](rf5-contract.md) — the point where the two long
+arcs merge and a program or instantiated-module replacement becomes a recipe
+event healed like a fact edit; **derived watches**
 (slog-reflection.md §18.5) as the flagship meta-program; **REPL R5**
 (`whatif` cones over the maintenance machinery).
 
@@ -1817,10 +1819,140 @@ loaded analysis; watch the successor image seal, activate, and heal
 incrementally with counts valid and struct ids stable; run `whynot` on the
 same fact before and after.
 
+### W5′ two-arc implementation plan (ratified 2026-08-08)
+
+W5′ is implemented as two parallel arcs with one deliberate integration
+tail.  The split is by authority, not by UI feature:
+
+```text
+runtime / transaction arc                 program / reflection arc
+-------------------------                 ------------------------
+T3b carry-in                              RF1.5 model queries
+T0(c) durable rule/SCC identity           RF2 sealed image mount
+T6 read restart/publication               RF3/RF4 image-path closure
+N5 and stats identity migration           RF5-A drafts/diffs/lineage
+private build/recount/persistence          read-only R5/whatif surface
+                    \                     /
+                     \                   /
+                      RF5-B activation join
+                   rebuild -> audit -> preview
+                        -> commit or abort
+                                |
+                derived watches + integrated R5
+                                |
+                           W5′ exit demo
+```
+
+The **runtime / transaction arc** owns the mechanics of changing a live
+recipe-bearing database safely.  Its pre-join result must be able to accept a
+fully specified synthetic program change, build a private successor cone,
+recount and audit it, preserve or replace the correct durable identities,
+and atomically publish or abort it.  T6 supplies the one read-consistency
+mechanism: a reader pinned to an old boundary remains pinned, while a
+latest-following read attempt that crosses publication restarts.  T0(c), N5,
+and stats steps 5–7 belong here because durable rule/SCC identity, internal
+namespaces, keyed fire data, and valid count epochs are properties of the
+candidate transaction rather than compiler-diff policy.  T3b is the W4′
+carry-in at the head of this arc.  This arc does not infer source or module
+correspondence.
+
+The **program / reflection arc** owns deciding and describing what the new
+program means.  RF1.5 provides normalized queries and fingerprints over
+`ProgramModel`; RF2 mounts sealed images read-only; the remaining RF3/RF4
+closure proves that image-described interpreted/native kernels and attachment
+observations match execution; and RF5-A produces immutable drafts, the three
+compiler diffs, explicit occurrence and relation-slot lineage, affected roots,
+and the union old/new dependency cone.  Read-only `preview`/`whatif` and REPL
+navigation may be built against these products.  Before the join this arc
+does not install tasks, allocate live `VersionKey`s, replay a recipe suffix,
+or mutate a database.
+
+The arcs exchange a frozen, serializable **`ProgramChangeSet`** fixture.  The
+program arc produces at least:
+
+- the base program/image identity and the sealed candidate image;
+- old/new module and rule occurrence lineage, with fresh candidate slots;
+- proposed semantic relation-slot correspondence;
+- source/occurrence, normalized-semantic, and execution-plan diffs;
+- old/new writer sets and SCC condensation graphs, affected writer roots, and
+  the union-graph cone; and
+- required services, compiler/Plan-ABI identities, and typed refusals already
+  knowable without live database state.
+
+The runtime/session side validates that product against the named base
+boundary and enriches it into an **`ActivationPlan`**: allocated successor
+`VersionKey`s, accepted slot lineage, mapped recipe-suffix events, selected
+maintenance routes or the mandatory fresh-cone fallback, invalidated count
+epochs, and the publication/restart decision.  Compiler code remains the
+authority for semantic/SCC differences; the session remains the authority
+for recipe and version lineage; the daemon remains the authority for private
+materialization, recount, and publication.  Golden `ProgramChangeSet`s let
+the runtime arc proceed before the compiler producer is finished, and a
+synthetic consumer lets the program arc prove serialization and diagnostics
+without a daemon.  The first joint battery runs the exact golden products
+through both sides so the fixture cannot become a parallel informal ABI.
+
+W5′ collision ownership is therefore:
+
+| surface | W5′ owner before RF5-B |
+|---|---|
+| `ProgramModel` queries, image schema/container, compiler diffs and lineage | program arc |
+| RF1.5/RF2/RF5-A goldens and synthetic change-set producer | program arc |
+| T0(c) registration, counts/stats, maintenance routes, recount, T6 | runtime arc |
+| database candidate construction and atomic publication | runtime arc |
+| `ProgramChangeSet` schema and golden corpus | frozen interface; joint review |
+| native emission/descriptor attach and final plan-diff baselines | frozen until T4 lands; then joint review |
+| recipe/version resolution in `session.rkt` and RF5-B command semantics | join work; runtime authority |
+| read-only REPL browsing/preview rendering | program arc; command grammar changes reviewed jointly |
+
+**Start rule.**  Both full arcs may start in parallel from the named, clean
+integration commit containing all T4 slices and gates.  The program arc may
+start **before that commit lands**, from the latest common RF1/Plan-ABI-2
+baseline, because RF1.5, the RF2 container/query layer, and most of RF5-A do
+not consume native attachment machinery.  During that early start it should:
+
+1. prefer new compiler/reflection modules plus golden fixtures over edits to
+   central lowering or emission files;
+2. avoid `emit-cpp.rkt`, native descriptor attachment, `daemon.h`,
+   `plan-count.cpp`, and T4's TU/determinism gates while the T4 checkout is
+   under validation;
+3. delay final execution-plan-diff goldens, RF4 artifact-catalog wiring, and
+   daemon mount integration until it has merged or rebased onto the T4 landing
+   commit; and
+4. use candidate slots and abstract identities so RF5-A does not take a
+   compile-time dependency on unfinished T0(c) compact-id registration.
+
+T0(c)'s isolated identity fixtures may also be prepared early, but T6 and any
+native task/publication changes wait for the T4 landing point; beginning those
+against the checkout being vetted would create high-conflict work in the same
+daemon and attachment surfaces for little scheduling gain.
+
+Use two Git branches/worktrees, `w5-runtime` and `w5-program`, rather than two
+copies with unrecorded state.  The early program worktree starts at a known
+committed common ancestor, never by copying the dirty T4 validation tree.  As
+soon as T4 lands, merge or rebase that single landing commit into
+`w5-program`, create `w5-runtime` at the landing commit, and freeze the first
+`ProgramChangeSet` golden.  Thereafter integrate small vertical slices at the
+fixture boundary; changes to the interchange schema, command grammar,
+`session.rkt`, or shared daemon/catalog files require joint review.  This
+keeps T4 validation reproducible and limits the later merge to intentional
+RF5-B wiring rather than overlapping speculative implementations.
+
+The required W5′ join is **RF5-B**, not all of RF5.  After the join, finish
+the real R5 commands, derived watches, save/reload and abort coverage, count
+and struct-identity audits, and the capstone demo.  RF5-C's capability-by-
+capability precise healing is an optimization over RF5-B's permanent fresh-
+cone oracle; RF5-D historical descendant-branch replacement is later scope.
+Neither is required to declare this W5′ gate closed.
+
 ## 7. Ownership zones and collision watchlist
 
 During the fork, shared code has named owners; the other thread touches a
 zone only through joint review.
+
+The table below records the earlier pre-S thread-0/thread-1 fork.  It is kept
+as historical ownership evidence and does not rename or override the W5′
+arc ownership table above.
 
 | zone | owner |
 |---|---|

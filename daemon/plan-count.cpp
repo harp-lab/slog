@@ -983,14 +983,21 @@ void attach_flavored_rules(Database* db, Stratum* stratum,
 // distinction: static scans/probes and `once` run only in iteration zero,
 // dynamic scans run every iteration, and a `seeded` unit driver belongs to
 // the replay-only queue rather than the ordinary once queue.
+// `skip_ords`, when given, names the kernel rule ordinals some OTHER
+// executor already covers (T4 slice 4: the native artifact's `covered`
+// set); only the complement attaches interpreted.
 void attach_normal_rules(Database* db, Stratum* stratum,
-                         const SealedKernelPlan& plan)
+                         const SealedKernelPlan& plan,
+                         const std::set<u32>* skip_ords = nullptr)
 {
   const std::set<std::string> dynamic(plan.dynamic_names.begin(),
                                       plan.dynamic_names.end());
   const auto rules = bind_kernel_plan(plan, *db);
-  for (const auto& rule : rules)
+  for (size_t j = 0; j < rules.size(); ++j)
   {
+    if (skip_ords != nullptr && skip_ords->count(static_cast<u32>(j)) != 0)
+      continue;
+    const auto& rule = rules[j];
     const DriverPlan& driver = rule->definition().driver;
     ReadSchedule schedule = ReadSchedule::every;
     if (driver.kind == DriverK::seeded)
@@ -1774,9 +1781,10 @@ void install_native_cohort(Daemon* daemon, const std::string& name,
                            const NativeCodeDescriptor* desc)
 {
   if (kernels.empty()) return;
-  seal_check(desc->plan_abi == 2, SealErrorK::flavor,
-             "native attach: descriptor declares plan abi "
-               + std::to_string(desc->plan_abi));
+  seal_check(desc->interface_abi == 3, SealErrorK::flavor,
+             "native attach: descriptor declares interface "
+               + std::to_string(desc->interface_abi)
+               + " (3 = coverage-bearing; stale artifact, re-emit)");
   const std::string& flavor = kernels.front().flavor;
   seal_check(flavor == "normal" || flavor == "delta", SealErrorK::flavor,
              "native attach: unsupported flavor " + flavor);
@@ -1820,6 +1828,38 @@ void install_native_cohort(Daemon* daemon, const std::string& name,
                "native attach: kernel " + std::to_string(i) + " declares "
                  + std::to_string(code.nrules) + " rules, plan holds "
                  + std::to_string(plan.rules.size()));
+    // T4 slice 4: coverage well-formedness -- native ∪ interp must cover
+    // the kernel EXACTLY, so the covered set is validated structurally and
+    // the interpreted complement is derived from it below
+    seal_check(code.ncovered <= code.nrules, SealErrorK::binding,
+               "native attach: kernel " + std::to_string(i) + " covers "
+                 + std::to_string(code.ncovered) + " of "
+                 + std::to_string(code.nrules) + " rules");
+    seal_check((code.ncovered == 0) == (code.attach == nullptr),
+               SealErrorK::binding,
+               "native attach: kernel " + std::to_string(i)
+                 + " attach/coverage disagree (zero coverage needs a null "
+                   "attach and vice versa)");
+    std::set<u32> covered;
+    if (code.covered != nullptr)
+    {
+      for (u32 c = 0; c < code.ncovered; ++c)
+      {
+        seal_check(code.covered[c] < code.nrules
+                     && covered.insert(code.covered[c]).second,
+                   SealErrorK::binding,
+                   "native attach: kernel " + std::to_string(i)
+                     + " covered ordinals are not a strict subset");
+      }
+    }
+    else
+    {
+      seal_check(code.ncovered == 0 || code.ncovered == code.nrules,
+                 SealErrorK::binding,
+                 "native attach: kernel " + std::to_string(i)
+                   + " partial coverage requires an ordinal list");
+      for (u32 c = 0; c < code.ncovered; ++c) covered.insert(c);
+    }
     // the binding frame IS the binding schema (since 3a, accepted tycheck
     // structs are ordinary slots); the width cross-check makes emitter/
     // daemon divergence a refusal, not a wrong sid
@@ -1874,8 +1914,14 @@ void install_native_cohort(Daemon* daemon, const std::string& name,
     const std::vector<const char*>& vl_ref = storage.tables.back();
     storage.tables.push_back(std::move(vt));
     const std::vector<const char*>& vt_ref = storage.tables.back();
-    code.attach(db, stratum, storage.frames.back().data(),
-                vl_ref.data(), vt_ref.data());
+    if (code.attach != nullptr)
+      code.attach(db, stratum, storage.frames.back().data(),
+                  vl_ref.data(), vt_ref.data());
+    // the interpreted complement: whatever the artifact does not cover
+    // runs through BoundRules from the same sealed plan -- coverage is
+    // native ∪ interp by construction (t4-contract slice 4)
+    if (covered.size() < plan.rules.size())
+      attach_normal_rules(db, stratum, plan, &covered);
     add_read_manifest(stratum, plan);
     record_kernel_attachment(db, stratum, plan);
   }

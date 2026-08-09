@@ -1,9 +1,9 @@
-# T4 — parameterized native bundles (contract draft)
+# T4 — parameterized native bundles
 
-*Drafted 2026-08-03 (W4′, after the T5 arc closed).  **Status: entry
-ratified 2026-08-06 — §7 records the answers; the decl-payload decision
-is FIX (kernel-local requisitions), sequenced as the entry slice (1a),
-then reassess before slice 2.**  Normative parents:
+*Drafted 2026-08-03 (W4′, after the T5 arc closed).  **Status: T4 IS
+COMPLETE (2026-08-08) — every slice shipped with its exit gate green;
+the ledger below records each mechanism, commit, and gate.  §7 records
+the entry ratifications.**  Normative parents:
 [execution-tiers.md](execution-tiers.md) §2.2 (the identity ladder), §2.3
 (relation identity in rules), §11's T4 item list;
 [rf1-contract.md](rf1-contract.md) (the 4-way ABI split, whose
@@ -17,6 +17,37 @@ gates; the parents stay authoritative for mechanism.*
 One sentence: **make a compiled artifact a function of a KERNEL, so one
 artifact can serve every attachment of that kernel** — the property the
 interpreter has had since T2 and native code has never had.
+
+## 0.1 Completion ledger (2026-08-08)
+
+Every slice's mechanism lives in its §3 as-built; this is the one-screen
+map of what shipped where and which gate holds it.
+
+| slice | commit | shipped | exit gate |
+|---|---|---|---|
+| (0) determinism re-established | (gate run) | 08-03 | plan-determinism 2×full-golden clean; tie-group mechanism fix |
+| (1a) kernel-local slot requisitions | 5b54f85 | 08-06 | airtight `sibling-requisition-changes-no-key` + `asymmetric-consumption-shares-the-kernel` (pre-fix failure demonstrated) |
+| (2a) canonical emission order + kernel clusters | 355c2fe | 08-07 | `tu-determinism` tier (the 18-of-42 permuted-TU defect, dead); plan bytes unmoved |
+| (2b) name-free kernel clusters | 407ba3b | 08-07 | `cluster-name-freedom` + `cross-instance-cluster-collapse` (n1's two instances → ONE cluster fn) |
+| (2c) descriptor attach protocol | cd318e9 | 08-08 | `symmetric-shared-kernel-in-one-cohort` + `double-attach-byte-identical` (one `.so`, two frames); tiered 9/9 over descriptor artifacts |
+| (3) attachment identity + accept re-key | 6b08d6c | 08-08 | airtight `struct-library-shares-a-kernel-key` (the RF1 gap, closed); `attachment-records-disaggregate` + `per-attachment-recount-agreement` + `per-instance-fire-attribution` via the `(attachments)` verb |
+| (4) per-rule selective emission | (this commit) | 08-08 | `mixed-tier-{even,odd,none}` + one FULL golden sweep under `SLOG_NATIVE_COVERAGE=even SLOG_OPT=0` (168/168) |
+
+What §4 promised is now real: **T6's prerequisite is met** (native tasks
+construct against daemon-supplied frames at attach time), **T3b's tier
+decisions can be per-kernel** (the descriptor is the unit), and the
+dual-executor differential's native leg stops being per-instance work.
+
+**Standing residue, all recorded in place:** the greedy index packer's
+subset-chain re-packing and lattice-master re-homing (slice 1a as-built,
+residues (i)/(iii)); writer-emit masters ACCEPTED on measurement
+(17/1172 kernels, all `$sup`); flavored artifacts still export the (2b)
+`slog_plugin` spine (differential-only; migrate on need); the
+`(RuleId, VariantTag)` stat rekey deferred to T0's durable-RuleKey arc
+(slice 3 as-built records why); cold-compile overhead ~17→~29 min on the
+golden tier with the small-kernel per-`.so` re-merge as the lever if it
+starts to matter; `SLOG_PLAN_ABI=1` is an interp-only compatibility mode
+(2c as-built).
 
 execution-tiers §11 lists four items: canonical binding slots plus a
 `CodeDescriptor` and per-native-slot task factories (1); one artifact
@@ -499,6 +530,31 @@ program-global (B1) and whose key is name-bearing (B4).  The item order in
   kernel natively and leave the rest interpreted, coverage still
   native ∪ interp.  Exit: a kernel running mixed native/interp rules
   produces results byte-identical to either pure tier.
+  *As-built (2026-08-08).*  The MECHANISM ships; policy stays T3b's.
+  `SLOG_NATIVE_COVERAGE` (all|even|odd|none, over kernel rule-def ords)
+  is the deterministic test knob, cache-keyed in progstr beside the
+  semijoin/wcoj toggles (a partial artifact must never stand in for a
+  full one); flavored TUs pin `all` (a partial differential executor
+  would compare nothing).  Descriptor interface bumps to 3
+  (`interface_abi` — renamed from plan_abi with honest semantics; a
+  stale interface-2 artifact refuses unambiguously): `NativeKernelCode`
+  gains `{ncovered, covered}` — nullptr covered means all-or-nothing by
+  ncovered, an ordinal list means partial, zero coverage means a null
+  attach and the kernel runs fully interpreted.  The daemon validates
+  coverage structurally (subset, strict, attach/coverage agreement) and
+  attaches the interpreted complement from the SAME sealed plan through
+  ord-filtered `attach_normal_rules` — coverage is native ∪ interp
+  exactly, by construction.  Emitters skip clusters for uncovered rules
+  (kernel-ord vt/vl indexing from (2c) makes partial tables Just Work).
+  PROVEN: n1_symmetric under =even shows 2-rule kernels with ordinal 0
+  native and ordinal 1 interpreted, golden-identical; =none runs whole
+  programs through descriptor artifacts with zero clusters.  Gate grew
+  `mixed-tier-{even,odd,none}` (the golden runner under each mode IS
+  the equivalence check); the chain adds one FULL golden pass under
+  =even.  Residual debt recorded: flavored artifacts still export the
+  (2b) `slog_plugin` spine — exercised by the differential's
+  flavored-native leg, migrating whenever a real consumer needs
+  flavored descriptors.
 
 ## 4. What this unlocks (why it is worth the re-key)
 

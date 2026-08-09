@@ -1682,6 +1682,21 @@
          ;; can build it straight from the plan's DebugMap
          (define ord-of
            (for/hash ([cr (in-list krs)] [j (in-naturals)]) (values cr j)))
+         ;; T4 slice 4: the native artifact covers only these kernel rule
+         ;; ordinals; the daemon runs the complement interpreted.  Flavored
+         ;; TUs pin full coverage (they are the differential's second
+         ;; executor -- a partial one would compare nothing).
+         (define (covered? j)
+           (if (or (count-flavor) (maintenance-flavor))
+               #t
+               (case (native-rule-coverage)
+                 [(all) #t] [(none) #f]
+                 [(even) (even? j)] [(odd) (odd? j)])))
+         (define covered-ords
+           (for/list ([j (in-range (length krs))] #:when (covered? j)) j))
+         (define kcrs
+           (for/list ([cr (in-list krs)] [j (in-naturals)] #:when (covered? j))
+             cr))
          (define (frame-cluster crs)
            (define body
              (tu-frame
@@ -1698,23 +1713,25 @@
                   body "}\n\n")
                  crs))
          (define kclusters
-           (if (<= (length krs) chunk-size)
-               (list (frame-cluster krs))
-               (let* ([nbuckets (max 1 (next-pow2
-                                        (ceiling (/ (length krs) chunk-size))))]
-                      [buckets (for/fold ([bs (hash)]) ([cr (in-list krs)])
-                                 (hash-update bs (modulo (string->number
-                                                          (crule-id cr) 16)
-                                                         nbuckets)
-                                              (lambda (l) (cons cr l)) '()))])
-                 (for/list ([b (in-list (sort (hash-keys buckets) <))])
-                   (frame-cluster (reverse (hash-ref buckets b)))))))
+           (cond
+             [(null? kcrs) '()]
+             [(<= (length kcrs) chunk-size) (list (frame-cluster kcrs))]
+             [else
+              (let* ([nbuckets (max 1 (next-pow2
+                                       (ceiling (/ (length kcrs) chunk-size))))]
+                     [buckets (for/fold ([bs (hash)]) ([cr (in-list kcrs)])
+                                (hash-update bs (modulo (string->number
+                                                         (crule-id cr) 16)
+                                                        nbuckets)
+                                             (lambda (l) (cons cr l)) '()))])
+                (for/list ([b (in-list (sort (hash-keys buckets) <))])
+                  (frame-cluster (reverse (hash-ref buckets b)))))]))
          ;; slot -> name, dense: the binding schema is the frame layout
          (define frame-names
            (map cdr (sort (for/list ([(n i) (in-hash rel-ix)])
                             (cons i n))
                           < #:key car)))
-         (list ord frame-names kclusters (fourth g) krs)))
+         (list ord frame-names kclusters (fourth g) krs covered-ords)))
      ;; the deduped TU list: identical kernels share one cluster function
      (define tu-of
        (for*/fold ([h (hash)])
@@ -1781,9 +1798,15 @@
          ;; attach functions that register read tasks against a supplied
          ;; frame.
          [else
+          ;; T4 slice 4: a kernel with no covered rules exports no attach
+          ;; function (nullptr; the daemon runs it fully interpreted), and
+          ;; a partially covered one declares its ordinals so the daemon
+          ;; can attach the interpreted complement -- coverage is
+          ;; native ∪ interp exactly, validated at attach.
           (define attach-fns
             (apply string-append
-                   (for/list ([kp (in-list kernel-parts)])
+                   (for/list ([kp (in-list kernel-parts)]
+                              #:unless (null? (third kp)))
                      (string-append
                       (format "static void slog_attach_k~a(slog::Database* db, slog::Stratum* s, slog::Relation* const* f, const char* const* vl, const char* const* vt)\n{\n"
                               (first kp))
@@ -1791,17 +1814,34 @@
                              (for/list ([c (in-list (third kp))])
                                (format "  ~a(db, s, f, vl, vt);\n" (first c))))
                       "}\n\n"))))
+          (define covered-arrays
+            (apply string-append
+                   (for/list ([kp (in-list kernel-parts)]
+                              #:when (< 0 (length (sixth kp))
+                                        (length (fifth kp))))
+                     (format "static const u32 slog_cov_k~a[] = {~a};\n"
+                             (first kp)
+                             (string-join (map number->string (sixth kp))
+                                          ", ")))))
           (define kernel-table
             (string-append
              (format "static const slog::NativeKernelCode slog_kernels_[~a] = {\n"
                      (length kernel-parts))
              (string-join
               (for/list ([kp (in-list kernel-parts)])
-                (format "  {\"~a\", ~a, ~a, slog_attach_k~a}"
+                (define nrules (length (fifth kp)))
+                (define ncov (length (sixth kp)))
+                (format "  {\"~a\", ~a, ~a, ~a, ~a, ~a}"
                         (fourth kp)                 ; exec key
                         (length (second kp))        ; frame width
-                        (length (fifth kp))         ; rule count
-                        (first kp)))
+                        nrules
+                        ncov
+                        (if (< 0 ncov nrules)
+                            (format "slog_cov_k~a" (first kp))
+                            "nullptr")
+                        (if (zero? ncov)
+                            "nullptr"
+                            (format "slog_attach_k~a" (first kp)))))
               ",\n")
              "\n};\n"))
           (define accel-table
@@ -1819,9 +1859,12 @@
            const-init
            "}\n\n"
            attach-fns
+           covered-arrays
            kernel-table
            accel-table
-           (format "static const slog::NativeCodeDescriptor slog_desc_ = {2, ~a, slog_kernels_, slog_init_consts_, ~a, slog_accel_};\n"
+           ;; interface 3 = the coverage-bearing descriptor (slice 4); a
+           ;; stale interface-2 artifact refuses unambiguously at attach
+           (format "static const slog::NativeCodeDescriptor slog_desc_ = {3, ~a, slog_kernels_, slog_init_consts_, ~a, slog_accel_};\n"
                    (length kernel-parts) (length accel-rels))
            "extern \"C\" const slog::NativeCodeDescriptor* slog_code_descriptor()\n"
            "{ return &slog_desc_; }\n")]))

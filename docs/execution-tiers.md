@@ -1193,14 +1193,34 @@ start order and findings are recorded in execution-tiers-impl.md §7.
 
 ### T4: parameterized native bundles
 
+**Status 2026-08-08: SHIPPED** — all four items, as seven slices over
+[t4-contract.md](t4-contract.md) (its §0.1 completion ledger maps each
+slice to its commit and exit gate; its §3 as-builts own the mechanisms).
+Highlights against the item list: (1) `slog_code_descriptor()` replaced
+`slog_plugin` for normal/delta artifacts — the descriptor carries NO
+names, and the daemon derives frames/tables from the sibling `.plan`;
+(2) one `.so` attaches twice with distinct frames (n1_symmetric), with
+per-attachment `KernelAttachment` records behind the additive
+`(attachments)` verb; (3) kernels became the code unit at RF1 (plans)
+and slice 2a (TUs), with the stratum spine as the scheduling container;
+(4) `SLOG_NATIVE_COVERAGE` exercises per-rule mixed native/interp
+kernels — the golden suite passes fully mixed.  The §10 packing pin held
+(one `.so` per stratum, per-kernel factory tables; the sharded-SCC
+coordinator stays deferred until a real case).  The stat rekey below
+stays with T0's durable-RuleKey arc, deliberately (t4-contract §3
+slice 3).
+
 1. Replace baked relation strings with canonical binding slots; export
-   `CodeDescriptor` and per-native-slot task factories.
+   `CodeDescriptor` and per-native-slot task factories.  *(done)*
 2. Attach one artifact repeatedly with distinct BindingFrames/RuleIds; record
-   per-attachment read/write VersionId maps (2.2).
+   per-attachment read/write VersionId maps (2.2).  *(done — RuleIds stay
+   plan-side; per-attachment loc/tag tables + KernelAttachment maps)*
 3. Separate module-SCC code units from runtime-stratum grouping; coordinator
    manifests for sharded SCCs; coverage = native ∪ interp-designated.
+   *(done; coordinator deferred with the §10 revisit note)*
 4. Per-rule (rather than per-kernel) selective emission becomes possible here;
-   before T4, selective compilation operates at kernel granularity.
+   before T4, selective compilation operates at kernel granularity.  *(done —
+   mechanism; hotness policy is T3b's)*
 
 ### T5: interpreted debugging (level 1; struct case gated on M5)
 
