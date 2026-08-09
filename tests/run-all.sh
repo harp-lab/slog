@@ -50,6 +50,7 @@ run_harness() {
     abi2)        bash tests/abi2-airtight.sh && bash tests/abi2-differential.sh ;;
     plan-goldens) bash tests/plan-goldens.sh ;;
     tier-classification) bash tests/tier-classification.sh ;;
+    tier-profile) bash tests/tier-profile.sh ;;
     tu-determinism) bash tests/tu-determinism.sh ;;
     incremental-stress) bash tests/incremental-stress.sh ;;
     compression) bash tests/compression/run.sh ;;
@@ -65,7 +66,7 @@ run_harness() {
   esac
 }
 
-ALL=(unit diag stats arena seq counts wcoj3 interp structid golden plan-goldens tier-classification api tiered pause protocol repl session joint incremental-stress compression smt-pin smt-solver)
+ALL=(unit diag stats arena seq counts wcoj3 interp structid golden plan-goldens tier-classification tier-profile api tiered pause protocol repl session joint incremental-stress compression smt-pin smt-solver)
 # `abi2` (RF1 slice 2's airtightness + the ABI-1/ABI-2 differential) is a
 # named tier but NOT in ALL: like plan-determinism it compiles each program
 # from cold twice, so it is a slice gate rather than a per-change one.  Run it
@@ -80,6 +81,10 @@ ALL=(unit diag stats arena seq counts wcoj3 interp structid golden plan-goldens 
 # IS in ALL -- it is four small compiles, and it guards two things that fail
 # silently otherwise: a stratum designated wholly interp-only must build no
 # artifact, and the classified/all policies must produce identical output.
+# `tier-profile` (T3b slice 2: the per-KernelPlanKey runtime profile) IS in
+# ALL -- four tiered runs of one small fixture, ~2 min.  It guards the
+# zero-clang skip against a warm profile with cold artifacts (the post-re-key
+# scenario the profile exists for) and both of its escape hatches.
 # `tu-determinism` (T4 slice 2a: comment-stripped generated C++ is
 # byte-reproducible across two cold compiles -- the property the .o cache
 # and cross-instance sharing key on) is named but OUTSIDE ALL, like abi2:

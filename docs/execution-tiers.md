@@ -1184,7 +1184,10 @@ warm suite cache designates 30.8% of planned rules `interp-only` and leaves
    classification are slice 1 — every rule VARIANT carries a designation,
    `interp-only` variants are not emitted, and a stratum designated wholly
    interp-only skips the toolchain outright; the profile sidecar is slice 2,
-   the promotion budget slice 3)*
+   SHIPPED — per-KernelPlanKey observations of the T3a race under
+   `build/profile/`, consulted on the cold tiered arm so kernels whose
+   fixpoint historically beats their build skip clang, surviving job-hash
+   re-keys by construction; the promotion budget is slice 3)*
 3. Core-budget arbiter and compile priority queue (5.5).  *(T3b slice 4)*
 4. Artifact selection (cached O2 -> cached O0 -> interpret) and the shipped
    boundary swap for arrivals. **No mid-read takeover yet** — with 500 ms

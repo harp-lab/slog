@@ -24,6 +24,7 @@
 
 (require "tools.rkt")
 (require "compile.rkt")
+(require "tier-profile.rkt")  ; T3b slice 2: record the T3a race's outcome
 (require "actions.rkt")
 (require "dbmeta.rkt")
 (require "catalog.rkt")  ; N4-A bundle projection for the freeze carry-forward
@@ -380,9 +381,20 @@
         (define line (read-line out))
         (cond
           [(eof-object? line) #f]
-          [(regexp-match #px"^\\(fixpoint [0-9]+ \"[^\"]*\" [0-9]+ ([0-9.]+)\\)" line)
+          [(regexp-match #px"^\\(fixpoint [0-9]+ \"[^\"]*\" ([0-9]+) ([0-9.]+)\\)" line)
            => (lambda (m)
-                (set-box! wall-ms-box (+ (unbox wall-ms-box) (string->number (cadr m))))
+                (define iters (string->number (cadr m)))
+                (define ms (string->number (caddr m)))
+                (set-box! wall-ms-box (+ (unbox wall-ms-box) ms))
+                ;; T3b slice 2: record the T3a race's outcome for this
+                ;; stratum's kernels -- started rung, whether a better
+                ;; artifact attached before fixpoint (`loaded` > 0), and the
+                ;; daemon's fixpoint wall ms.  Tiered runs only: under the
+                ;; explicit modes there is no race, and the golden suite
+                ;; (SLOG_OPT=0) leaves build/ byte-stable.
+                (when tiered?
+                  (profile-note-fixpoint! (sbuild-hash sb) tag (> loaded 0)
+                                          iters ms))
                 (displayln line)
                 (check-errors! "at fixpoint")   ; per-stratum; daemon idle -> query safe
                 #t)]

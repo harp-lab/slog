@@ -1,7 +1,7 @@
 # T3b — selective tier policy
 
 *Drafted 2026-08-09 (W5′, the runtime/transaction arc's carry-in slice).
-**Status: slice 1 SHIPPED 2026-08-09; slices 2–4 pending.**  Normative parents:
+**Status: slices 1 and 2 SHIPPED 2026-08-09; slices 3–4 pending.**  Normative parents:
 [execution-tiers.md](execution-tiers.md) §5.3 (rule execution classes), §5.4
 (the goals stated as measurables), §5.5 (tier scheduling and CPU allocation),
 §11's T3 items 2–3, §12 gates 12/14/15; [t4-contract.md](t4-contract.md)
@@ -172,6 +172,73 @@ it costs rediscovery, never correctness.
 **Exit gate.**  §12.12's middle clause: a tiny recursive kernel with a warm
 profile sidecar runs zero clang; a warm-cache suite run reports its clang
 invocation count and the number trends to zero.
+
+#### Slice 2 as-built (2026-08-09)
+
+`compiler/tier-profile.rkt` owns the store and the rule; the hooks are one
+line each.
+
+**The store is keyed by `KernelPlanKey`, and that choice is the slice.**  Job
+hashes fold in the compiler-sources fingerprint and daemon headers, so every
+compiler or header edit re-keys them and would wipe a hash-keyed profile at
+exactly the moment it matters most — the post-edit cold suite run, the one
+that costs 65 minutes.  Kernel keys are plan-layer identity: they survive
+re-keys and transfer across programs sharing a kernel.  Observed live during
+this slice's own development: the smoke fixture's stratum re-keyed
+(`41afe073` → `dfd397eb`) under the slice's compiler edits while its kernel
+key `74db1a79…` — and therefore its profile — carried straight across.
+
+**Record** (`runslog.rkt`, the `drive-stratum!` fixpoint arm, tiered regime
+only): one observation per stratum fixpoint — started rung (`tag`), whether a
+better artifact attached mid-run (the poll loop's `loaded > 0`), iterations,
+and the daemon-reported fixpoint wall ms — fanned out to every kernel key in
+the stratum's `.tiers` sidecar.  `build/profile/<key>.profile`, newest first,
+window 8, temp+rename atomic like the rest of the cache.  Explicit
+`-O0`/`-O2`/`interp` modes record nothing: there is no race to observe, and
+the golden suite (`SLOG_OPT=0`) leaves `build/` byte-stable.
+
+**Consult** (`compile.rkt`, the cold tiered arm only, beside slice 1's
+`stratum-fully-interpreted?`): skip the toolchain iff EVERY kernel's latest
+interp-STARTED observation says interp sufficed — `upgraded #f` and
+`ms ≤ SLOG_TIER_SKIP_MS` (default 2000).  Three deliberate asymmetries in the
+rule: warm-native observations are evidence in *neither* direction (a run
+that started at `o0` says nothing about whether interp would have been
+enough); the *latest* interp observation decides rather than the best (a
+stratum that outgrew its ceiling stops skipping at its next re-entry, and one
+that shrank recovers); and the conjunction over kernels means one hot shared
+kernel keeps every stratum that carries it compiling.  The ms ceiling also
+guards the saturated-pool trap: an interp run that won the race only because
+the pool was busy still records its true cost, and a slow one never grants a
+skip.  Warm-artifact branches are untouched — if a `.so` exists, running it
+is free and faster.
+
+**Not cache-keyed, deliberately.**  `SLOG_TIER_PROFILE` and
+`SLOG_TIER_SKIP_MS` decide whether builds are *scheduled*, never what is
+emitted — TU text, plans, and the job hash are identical either way, so a
+profile flip can never serve a wrong artifact, only a present or absent one.
+
+**Gates run:** `tier-profile` 5/5 — the post-re-key scenario end to end
+(cold race recorded → artifacts deleted, profile kept → **zero clang, output
+byte-identical** → `SLOG_TIER_SKIP_MS=0` rebuilds → `SLOG_TIER_PROFILE=0`
+rebuilds), reporting the miniature trends-to-zero metric
+(`run1=1 run2=0 run3=1 run4=1` O0 jobs); `tier-profile-tests.rkt` 12/12 (every
+rule arm pure, plus the store's fan-out, conjunction, window bound, and kill
+switch against a scratch `build/`); full unit suite 442; `tiered-tests` 9/9
+(the mechanism battery — recording under tiered mode perturbs neither the
+regime differential, the swap drive, nor the O0-reuse/claim tests);
+`tier-classification` 10/10; 10 targeted goldens 10/10; api battery at slice
+end.
+
+**Residues.**  (i) The suite-wide always-on clang-invocation *report* (§5.4's
+"track this as a measured metric") is still the battery's miniature, not a
+run-level counter; it lands naturally with slice 4's arbiter, which owns the
+compile queue anyway.  (ii) A profile-skipped stratum that grows mid-run has
+no rescue until slice 3's promotion — the self-correction is re-entry-grained,
+bounded by the 2 s ceiling.  (iii) The REPL/session driver does not record
+(its runs still *consult* via `compile-strata`); recording there wants the
+session's tier-box seam and rides with slice 3's next-re-entry pickup, which
+lives in the same code.  (iv) `ensure-delta-so` and the flavored artifact
+families are out of scope: they compile lazily on first routing already.
 
 ### Slice 3 — promotion budget and next-re-entry pickup
 

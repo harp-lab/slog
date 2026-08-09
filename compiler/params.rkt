@@ -93,6 +93,29 @@
 (define tier-policy-pinned?
   (let ([v (getenv "SLOG_TIER_POLICY")]) (and v (not (equal? v "")) #t)))
 
+;; T3b slice 2: the tier-profile sidecar (docs/t3b-contract.md §3 slice 2,
+;; tier-profile.rkt).  Runtime feedback recorded per KernelPlanKey under
+;; build/profile/; consulted on the cold tiered arm to skip the toolchain for
+;; kernels whose fixpoint historically beats their build.  Deliberately NOT
+;; in the .so cache key: profiles decide whether builds are scheduled, never
+;; what is emitted.  SLOG_TIER_PROFILE=0|off disables both recording and
+;; consulting -- the mechanism batteries' pin and the differential control.
+(define tier-profile-enabled
+  (make-parameter
+   (let ([v (getenv "SLOG_TIER_PROFILE")])
+     (not (member v '("0" "off"))))))
+
+;; The consult rule's ceiling: an interp-started run counts as "interp
+;; sufficed" only when its daemon-reported fixpoint wall time stayed at or
+;; under this.  Above it, interpreting was slow enough that a compile would
+;; pay even if the fixpoint won the race this once (a saturated pool must
+;; not teach the profile that a hot kernel is cheap).  Well under any
+;; observed O0 build (seconds); deliberately conservative.
+(define tier-skip-max-ms
+  (make-parameter
+   (let ([v (getenv "SLOG_TIER_SKIP_MS")])
+     (or (and v (string->number v)) 2000))))
+
 ;; Exhaustive action search is deliberately bounded.  Larger join bodies use
 ;; the deterministic action-aware greedy fallback.
 (define wcoj3-search-cap (make-parameter 8))

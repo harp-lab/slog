@@ -48,6 +48,7 @@
 (require "canonical-plan.rkt")
 (require "emit-cpp.rkt")
 (require "tier-policy.rkt")   ; T3b: selective-compilation policy + sidecar
+(require "tier-profile.rkt")  ; T3b: per-kernel runtime profiles (skip clang)
 (require "ir-shared.rkt")
 (require "ir-stack.rkt")
 (require "tools.rkt")
@@ -1339,7 +1340,16 @@
                  (lambda () (ensure-recursive-negative-maintenance-so job)))]
         [else
          (define cpps (emit-stratum-cpp job))   ; write .cpp(s) now (fast, main thread)
-         (case (if (stratum-fully-interpreted? proghash) "interp" mode)
+         (case (if (or (stratum-fully-interpreted? proghash)
+                       ;; T3b slice 2: the profile says this stratum's every
+                       ;; kernel historically fixpoints before its artifact
+                       ;; could attach -- skip the toolchain and interpret.
+                       ;; Tiered-regime only: the explicit -O0/-O2 modes mean
+                       ;; "compile it all" and stay differential controls.
+                       ;; The run still records, so a stratum that outgrows
+                       ;; the ceiling compiles again at its next re-entry.
+                       (and tiered? (stratum-profile-skip? proghash)))
+                   "interp" mode)
            ;; T3b slice 1: the policy designated EVERY variant of this stratum
            ;; interp-only, so its artifact would export no attach function at
            ;; all -- there is nothing for the toolchain to build.  Take the
