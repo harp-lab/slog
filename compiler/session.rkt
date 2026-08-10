@@ -95,6 +95,7 @@
          session-scratch-clear! ; R3: retract the whole layer
          session-tiers          ; R3: per-stratum execution rungs + cache
          session-identity-records ; T0(c): durable RuleKey/SccInstanceKey sets
+         session-rule-meta      ; T0(c) c2: the daemon's RuleId<->RuleKey registry
          session-set-scc-policy! ; T5: pin a relation's writers to an executor
          session-pending-summary ; gate S1: staged-but-unflushed changes
          session-pause-hook     ; gate S3/R4: observe a parked epoch
@@ -513,6 +514,10 @@
                (echo! s (format "(tier ~a ~a ~a)" scc (sbuild-hash sb) rung)))
              result))))
   (define outcome (send-stratum! s so upgrade))
+  ;; T0(c) c2: a fresh push registers its RuleId<->RuleKey table -- after
+  ;; the fixpoint, so the handshake is clean (the daemon is idle between
+  ;; strata) and re-pushes/maintenance drives never re-register.
+  (register-rule-meta! s (sbuild-hash sb))
   ;; T3b slice 3: a session's fresh pushes record the T3a race exactly as
   ;; the batch driver does (slice 2 covered batch only), closing that
   ;; residue: REPL-loaded programs now feed the same per-kernel profiles.
@@ -555,6 +560,88 @@
 ;; the same program keys and slot tables, so the ledger re-mints
 ;; byte-identical -- the key-stability battery's pinned claim.
 (define (session-identity-records s) (session-identity s))
+
+;; T0(c) c2: register a freshly pushed stratum's RuleId<->RuleKey table
+;; with the daemon.  The compact rids live in the plan sidecar's per-kernel
+;; `(rule-meta (rid N) (source LOC))` blocks; the durable keys live in the
+;; session's identity ledger; the JOIN is on the source loc -- both sides
+;; derive it from the same provenance via rule-location.  Derived rules
+;; (demand $sup, splits' extra variants, error arms) either share their
+;; source rule's loc (splits: same prov, same RuleKey -- correct, they ARE
+;; the same lexical occurrence) or have none, and an unmatched rid
+;; registers with (key #f): the registry is total over the plan and honest
+;; about lineage it does not have.  Known imprecision, recorded in the
+;; contract: locs carry no column, so two source rules on one line would
+;; collide; the fix is a plan-byte change and waits for a sanctioned
+;; re-key.  Failures are swallowed: registration is diagnostics, and a
+;; legacy daemon without the verb must not break a run.
+(define (register-rule-meta! s proghash)
+  (with-handlers ([exn:fail? void])   ; diagnostics; a pre-c2 daemon must not break a run
+    (define plan-path (fullpath (format "build/~a.plan" proghash)))
+    (when (file-exists? plan-path)
+      ;; the ABI-2 cohort: (manifest (kernel (ord N) (key K) ...) ...) maps
+      ;; kernel ords to exec keys; each kernel body's (debug (rule (ord J)
+      ;; (rid R) (variant V) (source S)) ...) block carries the rids.  An
+      ;; entry is scoped (kernel EXEC-KEY, rid) -- rids are per-kernel.
+      ;; ABI-1 plans (SLOG_PLAN_ABI=1) have neither block: no registration
+      ;; under the escape hatch, by construction.
+      (define metas    ; ((kernel-key rid loc) ...)
+        (match (call-with-input-file plan-path read)
+          [`(kernel-cohort ,parts ...)
+           (define key-of-ord
+             (for*/hash ([p (in-list parts)]
+                         #:when (and (pair? p) (eq? (car p) 'manifest))
+                         [k (in-list (cdr p))])
+               (match k
+                 [`(kernel (ord ,n) (key ,key) ,_ ...)
+                  (values n (format "~a" key))])))
+           (for*/list ([p (in-list parts)]
+                       #:when (and (pair? p) (eq? (car p) 'kernel))
+                       [kord (in-value (match p
+                                         [`(kernel (ord ,n) ,_ ...) n]))]
+                       [d (in-list (cdr p))]
+                       #:when (and (pair? d) (eq? (car d) 'debug))
+                       [r (in-list (cdr d))])
+             (match r
+               [`(rule (ord ,_) (rid ,rid) (variant ,_) (source ,loc) ,_ ...)
+                (list (hash-ref key-of-ord kord "") rid (format "~a" loc))]
+               [`(rule (ord ,_) (rid ,rid) (variant ,_) ,_ ...)
+                (list (hash-ref key-of-ord kord "") rid #f)]))]
+          [_ '()]))
+      (when (pair? metas)
+        (define loc->key
+          (for*/fold ([h (hash)])
+                     ([triple (in-list (session-identity s))]
+                      [r (in-list (third triple))])
+            (match r
+              [`(rule-record ,key ,_ (scc ,_) (loc ,loc))
+               (if loc (hash-set h loc key) h)]
+              [_ h])))
+        (define entries
+          (for/list ([m (in-list metas)])
+            (match-define (list kkey rid loc) m)
+            (format "(entry (rid ~a) (kernel ~s) (key ~a) (loc ~a))"
+                    rid kkey
+                    (let ([k (and loc (hash-ref loc->key loc #f))])
+                      (if k (format "~s" k) "#f"))
+                    (if loc (format "~s" loc) "#f"))))
+        (send-command-line!
+         s (format "(register-rule-meta (stratum ~s) ~a)"
+                   (format "~a" proghash) (string-join entries " ")))
+        ;; one reply line: (rule-meta-registered "HASH" n) -- or a refusal
+        ;; from a pre-c2 daemon; either way exactly one line, not echoed
+        (read-line (session-out s))
+        (void)))))
+
+;; The daemon's registry, read back: the raw record lines up to the
+;; (rule-meta-end n) terminator (exclusive).
+(define (session-rule-meta s)
+  (send-command-line! s "(rule-meta)")
+  (let loop ([acc '()])
+    (define l (read-line (session-out s)))
+    (cond [(eof-object? l) (reverse acc)]
+          [(regexp-match? #px"^\\(rule-meta-end " l) (reverse acc)]
+          [else (loop (cons l acc))])))
 
 ;; T5 slice (a): pin the writer strata of `rel` to a policy ('interpreted
 ;; or 'auto); returns the affected scc ids.  Policy applies at re-entry

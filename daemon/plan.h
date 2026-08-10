@@ -1687,6 +1687,28 @@ class BoundRule
   std::string stats_rule_variant_key;
   std::string stats_loc;
   std::string stats_tag;
+  // T0(c) c3: the variant's dense fire slot, resolved once against the
+  // database at first use (bind may see a null db) and cached, so interp
+  // tasks tally into the fire vector natively -- no string resolution on
+  // the hot path.  Atomic because several read tasks share one BoundRule;
+  // the race is benign (fireSlot is idempotent) but must be data-race-free.
+  // The wrapper keeps BoundRule copyable (a bare atomic member would not):
+  // a copy carries the cached value, and re-resolving would be idempotent
+  // anyway.
+  struct CachedSlot
+  {
+    std::atomic<s64> v{-1};
+    CachedSlot() = default;
+    CachedSlot(const CachedSlot& o)
+      : v(o.v.load(std::memory_order_relaxed)) {}
+    CachedSlot& operator=(const CachedSlot& o)
+    {
+      v.store(o.v.load(std::memory_order_relaxed),
+              std::memory_order_relaxed);
+      return *this;
+    }
+  };
+  mutable CachedSlot fire_slot;
   void (*error_fn)(Database*, const char*) = &emit_pending_error;
   std::vector<std::shared_ptr<const PrefixCursor>> cursor_prototypes;
   std::vector<std::shared_ptr<const PrefixCursor>> prefilter_prototypes;
@@ -2366,6 +2388,18 @@ public:
   const std::string& statsKey() const { return stats_rule_variant_key; }
   const std::string& statsLoc() const { return stats_loc; }
   const std::string& statsTag() const { return stats_tag; }
+  // T0(c) c3: this variant's fire slot in db's dense vector (see the
+  // fire_slot member note).
+  u32 fireSlotIn(Database* db) const
+  {
+    s64 slot = fire_slot.v.load(std::memory_order_relaxed);
+    if (slot < 0)
+    {
+      slot = (s64)db->fireSlot(stats_loc.c_str(), stats_tag.c_str());
+      fire_slot.v.store(slot, std::memory_order_relaxed);
+    }
+    return (u32)slot;
+  }
   void attach(Database* db, Stratum* stratum,
               ReadSchedule schedule = ReadSchedule::every) const;
 };
@@ -2409,10 +2443,13 @@ public:
       {
         execution->flush();
         const Attempt& result = execution->machine->result();
+        // T0(c) c3: the attempt accumulated its instantiations locally
+        // (result.fires); a completed attempt merges once into the dense
+        // fire vector through its cached slot -- the interpreter's native
+        // vector path.  An abandoned attempt merges nothing: T6's
+        // ReadAttempt discard semantics, already in place.
         if (result.fires)
-          db->bumpFires(rule->statsLoc().c_str(),
-                        rule->statsTag().c_str(),
-                        result.fires);
+          db->bumpFiresSlot(rule->fireSlotIn(db), result.fires);
         return true;
       }
       if (why == StopReason::breakpoint)

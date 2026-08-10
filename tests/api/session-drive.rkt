@@ -151,6 +151,8 @@
     ;; T0(c) (tests/identity-keys.sh): print the session's durable
     ;; RuleKey/SccInstanceKey ledger, one record per line
     [(list "rule-keys") `(rule-keys)]
+    ;; T0(c) c2: the daemon's registered RuleId<->RuleKey table
+    [(list "daemon-rule-meta") `(daemon-rule-meta)]
     ;; the count round + sidecar introspection (docs/incremental.md §8B, M0)
     ;;   recount            whole pipeline (tip), lazy
     ;;   recount:REL        REL's counting cone (tip), lazy
@@ -269,6 +271,10 @@
          (for-each displayln scc-records)
          (for-each displayln rule-records))
        (displayln `(identity-end ,(length (session-identity-records s))))]
+      [`(daemon-rule-meta)
+       (define lines (session-rule-meta s))
+       (for-each displayln lines)
+       (displayln `(daemon-rule-meta-end ,(length lines)))]
       [`(await-build ,secs)
        ;; every COVERED stratum (native coverage > 0 per its .tiers sidecar)
        ;; should grow an artifact; zero-clang and profile-skipped strata

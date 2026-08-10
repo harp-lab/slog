@@ -6943,8 +6943,38 @@ public:
   // (docs/incremental.md §8): per-rule fire totals are the observable the
   // M0 iteration-0 audit compares -- under correct per-position delta
   // partitioning, a fresh run's totals equal the instantiation count.
+  // T0(c) slice c3 (D9): the storage is a DENSE FIRE VECTOR indexed by a
+  // per-run slot table, not a string-keyed map.  A rule variant resolves
+  // its (loc, tag) pair to a slot ONCE (callers cache it), and every tally
+  // is one locked vector add per ATTEMPT COMPLETION -- the attempt
+  // accumulated its instantiations locally, and an abandoned attempt merges
+  // nothing, which is T6's ReadAttempt discard semantics already in place.
+  // The string-keyed bumpFires entry point remains as the SHIM the T0
+  // contract pins: native artifacts' generated calls keep working
+  // unchanged until the (RuleId, VariantTag) call-site rekey.  Publication
+  // renders slot order back to the same (loc, tag, n) rows the old map
+  // produced -- sorted for row-set equality, and the stats relations are
+  // sorted at comparison anyway -- so the exact-once audit and the stats
+  // goldens see identical content over the new substrate.
   std::mutex stats_mx;
-  std::map<std::pair<std::string, std::string>, u64> fire_counts;
+  std::vector<std::pair<std::string, std::string>> fire_slots;
+  std::unordered_map<std::string, u32> fire_slot_index;  // "loc\x1ftag" -> slot
+  std::vector<u64> fire_counts_vec;
+
+  // T0(c) slice c2: the daemon-side rule-meta registry -- the piece T1
+  // deferred ("the daemon cannot resolve RuleIds until T0's rule-meta
+  // registration").  Registered per stratum by the session over the
+  // command protocol: compact RuleId <-> durable RuleKey plus the
+  // module-relative display loc.  Introspection-only until the stat rekey
+  // consumes it; session state -- never part of any hash, save, or replay.
+  struct RuleMetaEntry
+  {
+    u64 rid = 0;       // the plan's compact per-kernel rule id
+    std::string kernel; // the kernel's exec key (T4 attachment identity)
+    std::string key;   // r1:... or "" for a derived rule with no occurrence
+    std::string loc;
+  };
+  std::map<std::string, std::vector<RuleMetaEntry>> rule_meta;  // stratum ->
 
   // The database has received content from OUTSIDE the pipeline's own
   // strata (open/import/frozen ground DBs): strata run from here on must
@@ -6958,16 +6988,54 @@ public:
     return std::getenv("SLOG_NO_STATS") == nullptr;
   }
 
-  void bumpFires(const char* rule_loc, const char* variant, u64 n)
+  void registerRuleMeta(const std::string& stratum,
+                        std::vector<RuleMetaEntry> entries)
   {
     std::lock_guard<std::mutex> g(stats_mx);
-    fire_counts[{rule_loc, variant}] += n;
+    rule_meta[stratum] = std::move(entries);
+  }
+
+  const std::map<std::string, std::vector<RuleMetaEntry>>& ruleMeta() const
+  {
+    return rule_meta;
+  }
+
+  // Resolve one (loc, tag) pair to its dense slot, minting on first sight.
+  // Called once per rule variant -- callers cache the slot -- so the lock
+  // is off every hot path.
+  u32 fireSlot(const char* rule_loc, const char* variant)
+  {
+    std::string k = std::string(rule_loc) + '\x1f' + variant;
+    std::lock_guard<std::mutex> g(stats_mx);
+    auto it = fire_slot_index.find(k);
+    if (it != fire_slot_index.end()) return it->second;
+    const u32 slot = (u32)fire_slots.size();
+    fire_slots.emplace_back(rule_loc, variant);
+    fire_slot_index.emplace(std::move(k), slot);
+    fire_counts_vec.push_back(0);
+    return slot;
+  }
+
+  // The vector tally: one locked add per attempt completion.
+  void bumpFiresSlot(u32 slot, u64 n)
+  {
+    std::lock_guard<std::mutex> g(stats_mx);
+    fire_counts_vec[slot] += n;
+  }
+
+  // The string-keyed shim (T0 contract: "remains ... until the W2
+  // call-site rekey").  Generated native code calls this per task
+  // invocation; the resolution is one hash lookup, the tally the same
+  // vector add.
+  void bumpFires(const char* rule_loc, const char* variant, u64 n)
+  {
+    bumpFiresSlot(fireSlot(rule_loc, variant), n);
   }
 
   void discardPendingStratumStats()
   {
     std::lock_guard<std::mutex> g(stats_mx);
-    fire_counts.clear();
+    std::fill(fire_counts_vec.begin(), fire_counts_vec.end(), 0);
     fires_at_iteration.clear();
   }
 
@@ -6975,19 +7043,22 @@ public:
   // replayed read can roll its own instantiations back and the published
   // $stat_fires still equals the committed execution's count (the exact-once
   // audit's observable).  Snapshotted at the iteration barrier, and only
-  // while a level-1 watch is armed -- an ordinary run never copies the map.
-  std::map<std::pair<std::string, std::string>, u64> fires_at_iteration;
+  // while a level-1 watch is armed -- an ordinary run never copies anything.
+  std::vector<u64> fires_at_iteration;
 
   void snapshotIterationFires()
   {
     std::lock_guard<std::mutex> g(stats_mx);
-    fires_at_iteration = fire_counts;
+    fires_at_iteration = fire_counts_vec;
   }
 
   void restoreIterationFires()
   {
     std::lock_guard<std::mutex> g(stats_mx);
-    fire_counts = fires_at_iteration;
+    // slots minted since the snapshot keep their (zeroed-by-copy) entries:
+    // the vector only ever grows, so size reconciliation is a resize
+    fires_at_iteration.resize(fire_counts_vec.size(), 0);
+    fire_counts_vec = fires_at_iteration;
   }
 
   Relation* ensureStatsRelation(const std::string& name, u32 arity)
@@ -7031,10 +7102,17 @@ public:
     statsRows(ensureStatsRelation("$stat_fixpoint", 4), 4,
               {{encodeInt((s64)scc), encodeString(name),
                 encodeInt((s64)iters), encodeInt((s64)(ms * 1000.0))}});
-    std::map<std::pair<std::string, std::string>, u64> drained;
+    // T0(c) c3: drain the fire VECTOR -- nonzero slots render back to the
+    // same (loc, tag, n) rows the string-keyed map produced.  The counts
+    // zero at each publication exactly as the map used to swap empty; the
+    // slot table itself persists for the run (slots are per-run identity).
+    std::vector<std::pair<std::pair<std::string, std::string>, u64>> drained;
     {
       std::lock_guard<std::mutex> g(stats_mx);
-      drained.swap(fire_counts);
+      for (size_t i = 0; i < fire_counts_vec.size(); ++i)
+        if (fire_counts_vec[i])
+          drained.push_back({fire_slots[i], fire_counts_vec[i]});
+      std::fill(fire_counts_vec.begin(), fire_counts_vec.end(), 0);
     }
     if (drained.empty()) return;
     std::vector<std::vector<u64>> rows;

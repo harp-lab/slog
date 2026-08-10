@@ -40,7 +40,7 @@ keys_of() { # <log> -- the identity records, program keys normalized away
 # ---- 1+3+4: run, inspect, save ----------------------------------------------
 rm -rf data/idkeys-save
 if ! timeout 600 racket tests/api/session-drive.rkt \
-     run:tests/n1_instances.slog rule-keys save:idkeys-save \
+     run:tests/n1_instances.slog rule-keys daemon-rule-meta save:idkeys-save \
      > "$WORK/orig.log" 2>&1; then
   echo "  (original session failed; see $WORK/orig.log)"; fail "orig-run"
   echo "$PASS passed, $((FAIL+1)) failed"; exit 1
@@ -69,6 +69,18 @@ if grep -E '\(loc "?/' "$WORK/orig.keys" > /dev/null; then
 else
   pass "relative-locs"
 fi
+
+# ---- c2: the daemon-side registry ------------------------------------------
+# every registered rid resolves through the session's join; the two library
+# instances register the SAME kernel exec key with DIFFERENT RuleKeys -- the
+# per-attachment disaggregation T4's attachment identity promised
+n_reg=$(grep -c '^(rule-meta-record .* (key "r1:' "$WORK/orig.log" || true)
+[ "$n_reg" -ge 8 ] && pass "registry-populated ($n_reg keyed rids)" \
+                   || fail "registry-populated (got $n_reg)"
+lib4=$(grep '^(rule-meta-record' "$WORK/orig.log" | grep 'n1_graph_lib.slog:4' \
+         | grep -o '(key "[^"]*"' | sort -u | wc -l)
+[ "$lib4" -eq 2 ] && pass "registry-per-attachment-keys" \
+                  || fail "registry-per-attachment-keys (got $lib4 distinct)"
 
 # ---- 1: the reload re-mints byte-identical ----------------------------------
 if ! timeout 600 racket tests/api/session-drive.rkt \

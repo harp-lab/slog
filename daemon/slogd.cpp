@@ -1826,6 +1826,100 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
         return;
     }
 
+    // T0(c) c2: rule-meta registration and its introspection twin live
+    // ABOVE the protocol-mode mark and the boundary lease, deliberately.
+    // Mode-neutral: registration is session METADATA -- a driver that
+    // registers rule-meta has not committed to the uniform pause record,
+    // and flipping the mode here would swap every legacy session's pause
+    // bytes.  Lease-admitted: registration accompanies stratum pushes,
+    // which happen INSIDE a prepared boundary; the boundary-admission
+    // refusal below would starve the very flow that feeds it.
+    // T0(c) c2: daemon-side rule-meta registration -- the piece T1 deferred.
+    //   (register-rule-meta (stratum "HASH")
+    //     (entry (rid N) (key "r1:..."|#f) (loc "file:LINE"|#f)) ...)
+    // The session derives the RuleId<->RuleKey join (plan rule-meta sources
+    // against its durable identity ledger) and registers it here; the
+    // registry is session state -- introspection-only until the
+    // (RuleId, VariantTag) stat rekey consumes it, never hashed or saved.
+    if (verb == "register-rule-meta")
+    {
+        std::string stratum;
+        std::vector<slog::Database::RuleMetaEntry> entries;
+        bool ok = argc >= 1;
+        for (size_t i = 1; ok && i < form.children.size(); ++i)
+        {
+            const auto& f = form.children[i];
+            if (f.kind != slog::sexp::SExp::K::list || f.children.empty()
+                || f.children[0].kind != slog::sexp::SExp::K::atom)
+            { ok = false; break; }
+            const std::string& tag = f.children[0].text;
+            if (tag == "stratum" && f.children.size() == 2)
+            {
+                stratum = f.children[1].text;
+            }
+            else if (tag == "entry")
+            {
+                slog::Database::RuleMetaEntry e;
+                bool have_rid = false;
+                for (size_t j = 1; j < f.children.size(); ++j)
+                {
+                    const auto& g = f.children[j];
+                    if (g.kind != slog::sexp::SExp::K::list
+                        || g.children.size() != 2
+                        || g.children[0].kind != slog::sexp::SExp::K::atom)
+                    { ok = false; break; }
+                    const std::string& k = g.children[0].text;
+                    const std::string& v = g.children[1].text;
+                    if (k == "rid")
+                    { e.rid = strtoull(v.c_str(), nullptr, 10); have_rid = true; }
+                    else if (k == "kernel") { e.kernel = (v == "#f") ? "" : v; }
+                    else if (k == "key") { e.key = (v == "#f") ? "" : v; }
+                    else if (k == "loc") { e.loc = (v == "#f") ? "" : v; }
+                }
+                if (!have_rid) ok = false;
+                if (ok) entries.push_back(std::move(e));
+            }
+            else { ok = false; }
+        }
+        if (!ok || stratum.empty())
+        {
+            refuse(d, "parse",
+                   "(verb register-rule-meta) (detail \"expected (stratum H)"
+                   " then (entry (rid N) (key K) (loc L)) forms\")");
+            return;
+        }
+        const size_t n = entries.size();
+        d->db()->registerRuleMeta(stratum, std::move(entries));
+        d->emit("(rule-meta-registered "
+                + slog::protocol::quoteString(stratum) + " "
+                + std::to_string(n) + ")");
+        return;
+    }
+
+    // (rule-meta) streams the registry back, one record per entry.
+    if (verb == "rule-meta" && argc == 0)
+    {
+        size_t n = 0;
+        for (const auto& per : d->db()->ruleMeta())
+            for (const auto& e : per.second)
+            {
+                d->emit("(rule-meta-record (stratum "
+                        + slog::protocol::quoteString(per.first) + ") (kernel "
+                        + (e.kernel.empty() ? std::string("#f")
+                                            : slog::protocol::quoteString(e.kernel))
+                        + ") (rid "
+                        + std::to_string(e.rid) + ") (key "
+                        + (e.key.empty() ? std::string("#f")
+                                         : slog::protocol::quoteString(e.key))
+                        + ") (loc "
+                        + (e.loc.empty() ? std::string("#f")
+                                         : slog::protocol::quoteString(e.loc))
+                        + "))");
+                ++n;
+            }
+        d->emit("(rule-meta-end " + std::to_string(n) + ")");
+        return;
+    }
     d->markCommandProtocol();
 
     // A prepared boundary is a private execution lease.  Its own lifecycle,

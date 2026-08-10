@@ -453,6 +453,50 @@ the fork.
   compile-group field addition.  Remaining in (c): sub-slice c2 (daemon
   rule-meta registration, RuleId↔RuleKey) and c3 (fire vectors + the
   `(RuleId, VariantTag)` stat rekey T4 parked here).
+
+  *As built, sub-slices c2+c3 (2026-08-10, one daemon-header burst so the
+  cache re-keys once).*  **c2 — registration**: the session derives each
+  fresh push's RuleId↔RuleKey table by joining the ABI-2 cohort's
+  per-kernel `(debug (rule (ord …) (rid …) … (source …)))` blocks against
+  its identity ledger on the source loc (both sides derive it from one
+  provenance via rule-location), and sends `(register-rule-meta
+  (stratum H) (entry (rid N) (kernel EXEC-KEY) (key R1|#f) (loc L|#f))…)`
+  over the command layer after the stratum's fixpoint.  Entries are
+  scoped by the kernel's exec key — rids are per-kernel — which makes
+  T4's sharing visible in the registry itself: one kernel attached in two
+  strata registers the same rids with DIFFERENT RuleKeys per attachment.
+  Derived rules join through their source rule's prov (splits share the
+  occurrence, correctly); a rid with no join registers `(key #f)`, total
+  and honest.  The verbs sit ABOVE the protocol-mode mark and the
+  boundary lease, deliberately: registration is session metadata (marking
+  would flip every legacy session's pause bytes) and accompanies pushes
+  that happen INSIDE prepared boundaries.  `(rule-meta)` streams the
+  registry back; introspection-only until the stat rekey consumes it.
+  Known imprecision, recorded: locs carry no column, so two source rules
+  on one line would collide in the join — the fix is a plan-byte change
+  awaiting a sanctioned re-key.  **c3 — fire vectors (D9)**: the
+  string-keyed locked map is gone; the storage is a dense per-run vector
+  behind a slot table (`fireSlot`/`bumpFiresSlot`, database.h).  Interp
+  tasks use it natively — BoundRule caches its slot (a copyable atomic
+  wrapper) and a completed attempt merges its locally-accumulated
+  `result.fires` once; an abandoned attempt merges nothing, T6's
+  ReadAttempt discard semantics already in place.  Native artifacts'
+  generated calls keep entering through the string `bumpFires` SHIM
+  exactly as the contract pins, resolved through the slot table until the
+  `(RuleId, VariantTag)` call-site rekey.  T5's iteration
+  snapshot/restore copies the vector instead of the map; publication
+  renders slots back to the same (loc, tag, n) rows.  Gates: stats
+  battery 11/11 — fresh + reload at both coverages, goldens UNCHANGED
+  over the new substrate; the SLOG_OPT=interp leg's two hand-verified
+  divergences (stat_chain, stat_selfjoin) are PRE-EXISTING and
+  byte-identical before/after the change (verified by baseline stash
+  run — they are §12.2's cross-executor gate, tracked there, not
+  regressed here); `identity-keys` 9/9 with the two new c2 registry
+  checks; unit 454; protocol 172/172; pause 18/18; session battery at
+  slice end.  Residues: the stat REKEY itself (a sanctioned
+  golden-changing event once its consumers are ready); registration is
+  fresh-push-only (re-pushes and maintenance drives re-use the resident
+  table); the interp-leg fire divergences above.
 - **(d) uniform pause record + watch tee-up (landed 2026-07-20).** The command-stack
   structured pause record for all pause classes (protocol-mode
   scoping; legacy stack byte-identical); the cause-payload grammar —
