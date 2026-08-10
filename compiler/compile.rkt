@@ -1282,8 +1282,161 @@
 ;; segments version their writes separately.
 (struct compile-group
   (stratum-count frozen-dirs catalog-delta write-set boundary-write-set
-                 occurrence-tree)
+                 occurrence-tree
+                 ;; T0(c): the program's identity payload -- lexical rule
+                 ;; occurrence slots per module occurrence/unit and the
+                 ;; canonical SCC slot table -- program-key-free, so the
+                 ;; session mints RuleKey/SccInstanceKey from it exactly as
+                 ;; it mints ModuleInstanceKeys from the occurrence tree
+                 identity)
   #:transparent)
+
+;; T0(c): derive one program's identity payload (docs/t0-contract.md,
+;; "Persistent identity and rule-meta").  Everything here is a SLOT, an
+;; ordinal in a deterministic order -- never a name hash, source text, or
+;; pipeline position:
+;;
+;;  - a module occurrence is its lexical path (N1's slots);
+;;  - a source unit is its ordinal within the occurrence's source list;
+;;  - a rule is its lexical ordinal within its unit (rule-lineage-key
+;;    order: file position sorts, and positions replay identically because
+;;    the recipe replays captured sources);
+;;  - a semantic SCC is its canonical condensation ordinal, level-major
+;;    with the symbol-sorted member list as the tie-break -- SEPARATE from
+;;    the runtime stratum the scheduler happens to group it into.
+;;
+;; Rules are the SOURCE rules, pre-peel and pre-desugar: lexical occurrence
+;; identity belongs to what the user wrote (RF5's lineage unit), while
+;; derived rules (demand $sup, error arms, splits) resolve to their source
+;; rule through the model's lineage, which is slice c2's rule-meta
+;; registration concern.  A rule reaches its SCC through any head (a
+;; rule's heads share one SCC by stratify's edge construction); a peeled
+;; ground rule or declaration-only unit gets (scc #f).
+(define (program-identity-payload prog model)
+  (define occ-tree (program-ir-occurrence-tree prog))
+  ;; canonical SCC slots
+  (define scc-slot-of
+    (if model
+        (let* ([levels (program-model-scc-level model)]
+               [members (program-model-scc-members model)]
+               [ordered
+                (sort (hash-keys levels)
+                      (lambda (a b)
+                        (define la (hash-ref levels a))
+                        (define lb (hash-ref levels b))
+                        (or (< la lb)
+                            (and (= la lb)
+                                 (let ([ma (map symbol->string (hash-ref members a '()))]
+                                       [mb (map symbol->string (hash-ref members b '()))])
+                                   (string<? (string-join ma " ")
+                                             (string-join mb " ")))))))])
+          (for/hash ([id (in-list ordered)] [slot (in-naturals)])
+            (values id slot)))
+        (hash)))
+  (define sccs
+    (if model
+        (for/list ([(id slot) (in-hash scc-slot-of)])
+          `(,slot ,(hash-ref (program-model-scc-level model) id)
+                  ,(hash-ref (program-model-scc-members model) id '())))
+        '()))
+  ;; occurrence LEXICAL path -> (lexical-path . (unit-path -> slot)).  Keyed
+  ;; by the lexical path, NOT the source path: two instantiations of one
+  ;; library share a file but are distinct occurrences -- the motivating
+  ;; case -- and module-ir carries the same lexical-path value its
+  ;; occurrence does, so the join is exact.  Unit slots are ordinals within
+  ;; one occurrence's source list (an occurrence's units have distinct
+  ;; paths even when occurrences share them).
+  (define occ-of
+    (let walk ([occ occ-tree] [acc (hash)])
+      (cond
+        [(not (module-occurrence? occ)) acc]
+        [else
+         (define lpath (module-occurrence-lexical-path occ))
+         (define units
+           (for/hash ([p (in-list (module-occurrence-source-paths occ))]
+                      [uslot (in-naturals)])
+             (values (format "~a" p) uslot)))
+         (for/fold ([a (hash-set acc (format "~a" lpath)
+                                 (cons lpath units))])
+                   ([child (in-list (module-occurrence-children occ))])
+           (walk child a))])))
+  ;; a rule's SCC slot, via any head relation
+  (define (rule-scc-slot rule)
+    (and model
+         (for/or ([name (in-list (surface-rule-heads rule))])
+           (let ([id (hash-ref (program-model-scc-of model) name #f)])
+             (and id (hash-ref scc-slot-of id #f))))))
+  ;; group source rules by (lexical-path . unit-slot); order lexically
+  (define per-unit (make-hash))
+  (for ([m (in-set (program-ir-modules prog))])
+    (define entry (hash-ref occ-of (format "~a" (module-ir-lexical-path m))
+                            (cons '() (hash))))   ; unattributed -> root
+    (define at (cons (car entry)
+                     (hash-ref (cdr entry)
+                               (format "~a" (module-ir-path m)) 0)))
+    (for ([rule (in-set (module-ir-rules m))])
+      (hash-update! per-unit at (lambda (l) (cons rule l)) '())))
+  (define occurrences
+    (for/list ([(lpath group) (in-hash
+                               (for/fold ([h (hash)])
+                                         ([(at rules) (in-hash per-unit)])
+                                 (hash-update h (car at)
+                                              (lambda (l) (cons (cons (cdr at) rules) l))
+                                              '())))])
+      `(occurrence
+        (lexical-path ,lpath)
+        (units
+         ,@(for/list ([u (in-list (sort group < #:key car))])
+             (match-define (cons uslot rules) u)
+             `(unit ,uslot
+                    (rules
+                     ,@(for/list ([rule (in-list (sort-rules-lexically rules))]
+                                  [rslot (in-naturals)])
+                         `(rule ,rslot (loc ,(let ([l (rule-location rule)])
+                                               (and (not (equal? l "<unknown>")) l)))
+                                (scc ,(rule-scc-slot rule)))))))))))
+  `(program-identity
+    (sccs ,@(for/list ([s (in-list (sort sccs < #:key car))])
+              (match-define (list slot level mems) s)
+              `(scc ,slot ,level (members ,@mems))))
+    (occurrences ,@(sort occurrences
+                         (lambda (a b)
+                           (string<? (format "~a" (second a))
+                                     (format "~a" (second b))))))))
+
+;; Lexical order within one source unit: rule-lineage-key (file, line, col)
+;; when located; unlocated rules sort last by printed text, deterministically.
+(define (sort-rules-lexically rules)
+  (sort rules
+        (lambda (a b)
+          (define ka (rule-lineage-key a))
+          (define kb (rule-lineage-key b))
+          (cond
+            [(and ka kb)
+             (or (< (second ka) (second kb))
+                 (and (= (second ka) (second kb))
+                      (< (third ka) (third kb))))]
+            [ka #t]
+            [kb #f]
+            [else (string<? (rule-text a) (rule-text b))]))))
+
+;; The head relation symbols of one SURFACE rule (a syn form): the atoms
+;; after the arrow, or every atom of an arrowless ground rule.
+(define (surface-rule-heads rule)
+  (define (atom-name form)
+    (match form
+      [`(syn ,_ ,(? symbol? name) ,_ ...) name]
+      [_ #f]))
+  (match rule
+    [`(syn ,_ rule ,parts ...)
+     (let loop ([ps parts] [before '()])
+       (cond
+         [(null? ps) (filter values (map atom-name before))]  ; ground rule
+         [(and (pair? (car ps)) (eq? '--> (atom-name (car ps))))
+          (filter values (map atom-name (cdr ps)))]
+         [(eq? '--> (car ps)) (filter values (map atom-name (cdr ps)))]
+         [else (loop (cdr ps) (cons (car ps) before))]))]
+    [_ '()]))
 
 ;; The actual writes of already-built strata plus frozen ground facts.  This
 ;; used to live in runslog.rkt and was recomputed independently by session.rkt;
@@ -1521,12 +1674,18 @@
          (define count (length (first pp)))
          (define group-strata (take remaining count))
          (define writes (compiled-strata-write-set group-strata fds))
+         ;; T0(c): the program's identity payload; the model rides in each
+         ;; job (position 6) and is shared program-wide -- a declaration-only
+         ;; program has no jobs and gets slot tables without SCC data
+         (define model
+           (and (pair? (first pp)) (sixth (first (first pp)))))
          (loop more-pps more-programs more-fds more-deltas
                (drop remaining count)
                (cons (compile-group
                       count fds delta writes
                       (catalog-write-set delta writes)
-                      (program-ir-occurrence-tree program))
+                      (program-ir-occurrence-tree program)
+                      (program-identity-payload program model))
                      out))]
         [(_ _ _ _)
          (error 'compile-strata

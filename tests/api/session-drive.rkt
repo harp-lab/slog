@@ -148,6 +148,9 @@
     [(list "tiers") `(tiers)]
     [(list "await-build") `(await-build 120)]
     [(list "await-build" secs) `(await-build ,(string->number secs))]
+    ;; T0(c) (tests/identity-keys.sh): print the session's durable
+    ;; RuleKey/SccInstanceKey ledger, one record per line
+    [(list "rule-keys") `(rule-keys)]
     ;; the count round + sidecar introspection (docs/incremental.md §8B, M0)
     ;;   recount            whole pipeline (tip), lazy
     ;;   recount:REL        REL's counting cone (tip), lazy
@@ -259,6 +262,13 @@
        (for ([r (in-list (session-tiers s))])
          (match-define (list scc hash rung cache policy) r)
          (displayln `(tiers-record ,scc ,hash ,rung ,cache ,policy)))]
+      [`(rule-keys)
+       (for ([triple (in-list (session-identity-records s))])
+         (match-define (list pkey scc-records rule-records) triple)
+         (displayln `(identity-program ,pkey))
+         (for-each displayln scc-records)
+         (for-each displayln rule-records))
+       (displayln `(identity-end ,(length (session-identity-records s))))]
       [`(await-build ,secs)
        ;; every COVERED stratum (native coverage > 0 per its .tiers sidecar)
        ;; should grow an artifact; zero-clang and profile-skipped strata

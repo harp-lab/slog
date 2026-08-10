@@ -34,6 +34,9 @@
  module-occurrence-instances
  module-instance-descriptor->datum
  module-instance-descriptor-datum?
+ rule-key                ; T0(c): durable lexical rule occurrence identity
+ scc-instance-key        ; T0(c): semantic SCC identity, not pipeline ordinal
+ mint-program-identity   ; program-key × payload -> keyed identity records
  (struct-out transform-plan)
  plan-path-transform
  replay-path-transform
@@ -151,6 +154,72 @@
           program-key
           (if (null? slots) "root"
               (string-join (map number->string slots) "."))))
+
+;; ---- T0(c): durable rule and SCC identity (docs/t0-contract.md) ----------
+;;
+;; The construction the contract pins: keys compose the persisted
+;; ProgramInstanceKey with deterministic occurrence SLOTS -- never name
+;; hashes, source text, or pipeline position.  These join the m1:/v1:/b1:
+;; compact-string family (open question 1 resolved: the readable colon
+;; token, pinned by the golden key corpus in identity-key-tests.rkt).
+;;
+;;   RuleKey          r1:<ModuleInstanceKey>:<unit-slot>.<rule-slot>
+;;   SccInstanceKey   scc1:<ProgramInstanceKey>:<scc-slot>
+;;
+;; A rule's slot is its lexical ordinal within its source unit; a unit's
+;; slot is its ordinal within its module occurrence's source list; the SCC
+;; slot is the canonical condensation ordinal (level-major, then member
+;; order).  All three replay identically because the recipe replays the
+;; same sources under the same program key -- and a MODIFIED program mints
+;; a fresh layer/event, so every key is fresh, which is exactly RF5 §2's
+;; immutable-image demand: keys are never reused for different content.
+;; The semantic SCC key deliberately does not mention the runtime stratum:
+;; a scheduling regroup moves pipeline ordinals, not identity.
+
+(define (rule-key mkey unit-slot rule-slot)
+  (unless (and (string? mkey)
+               (exact-nonnegative-integer? unit-slot)
+               (exact-nonnegative-integer? rule-slot))
+    (catalog-fail 'invalid-key "malformed rule-key components: ~a ~a ~a"
+                  mkey unit-slot rule-slot))
+  (format "r1:~a:~a.~a" mkey unit-slot rule-slot))
+
+(define (scc-instance-key program-key slot)
+  (unless (and (string? program-key) (exact-nonnegative-integer? slot))
+    (catalog-fail 'invalid-key "malformed scc-key components: ~a ~a"
+                  program-key slot))
+  (format "scc1:~a:~a" program-key slot))
+
+;; Mint the full keyed identity record set for one program event from its
+;; ProgramInstanceKey and the compiler's identity payload (compile.rkt
+;; program-identity-payload; carried on the compile-group exactly as the
+;; occurrence tree is).  Pure and deterministic: a recipe replay re-mints
+;; byte-identical records, which is what the key-stability battery pins.
+;; Returns (values scc-records rule-records):
+;;   (scc-record KEY SLOT LEVEL (members REL ...))
+;;   (rule-record KEY MKEY (scc KEY|#f) (loc "file.slog:LINE"|#f))
+(define (mint-program-identity program-key payload)
+  (match payload
+    [`(program-identity (sccs ,sccs ...) (occurrences ,occs ...))
+     (define scc-key-of
+       (for/hash ([s (in-list sccs)])
+         (match-define `(scc ,slot ,_level (members ,_ ...)) s)
+         (values slot (scc-instance-key program-key slot))))
+     (values
+      (for/list ([s (in-list sccs)])
+        (match-define `(scc ,slot ,level (members ,mems ...)) s)
+        `(scc-record ,(hash-ref scc-key-of slot) ,slot ,level (members ,@mems)))
+      (for*/list ([o (in-list occs)]
+                  [u (in-list (match o [`(occurrence ,_ (units ,us ...)) us]))]
+                  [r (in-list (match u [`(unit ,_ (rules ,rs ...)) rs]))])
+        (match-define `(occurrence (lexical-path ,lpath) ,_) o)
+        (match-define `(unit ,uslot ,_) u)
+        (match-define `(rule ,rslot (loc ,loc) (scc ,sslot)) r)
+        (define mkey (module-instance-key program-key lpath))
+        `(rule-record ,(rule-key mkey uslot rslot) ,mkey
+                      (scc ,(and sslot (hash-ref scc-key-of sslot #f)))
+                      (loc ,loc))))]
+    [_ (catalog-fail 'invalid-key "malformed program-identity payload")]))
 
 (define (module-occurrence-instances program-key occurrence)
   (unless (module-occurrence? occurrence)

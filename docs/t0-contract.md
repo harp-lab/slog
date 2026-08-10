@@ -420,6 +420,39 @@ the fork.
   degenerate module component round-trips; repo-relative source paths
   asserted per finding 6); `tests/stats-tests.sh` goldens unchanged
   with vectors underneath (merged totals ≡ legacy map).
+
+  *As built, sub-slice c1 (2026-08-09, the W5′ runtime arc): the KEY
+  CONSTRUCTION is live.*  Open question 1 is resolved: keys join the
+  `m1:`/`v1:`/`b1:` compact colon-string family, pinned by the golden
+  corpus in `tests/unit/identity-key-tests.rkt` —
+  `r1:<ModuleInstanceKey>:<unit-slot>.<rule-slot>` and
+  `scc1:<ProgramInstanceKey>:<scc-slot>`.  The degenerate module
+  component the contract designed for is no longer needed: N1/N4 shipped
+  in the interim, so RuleKey composes the REAL ModuleInstanceKey (the
+  root occurrence serving non-module rules as `…:root`).  Slots are the
+  contract's construction exactly — a rule is its lexical ordinal within
+  its source unit (rule-lineage-key order over captured sources), a unit
+  its ordinal within its occurrence's source list, a semantic SCC its
+  canonical condensation ordinal (level-major, member-list tie-break),
+  SEPARATE from the runtime stratum ordinal.  The compiler derives a
+  program-key-free payload (`program-identity-payload`, carried on the
+  compile-group beside the occurrence tree); the session mints at the
+  boundary planner exactly as ModuleInstanceKeys mint, into a derived
+  (never persisted) identity ledger exposed via `session-identity-records`
+  and the session-drive `rule-keys` op.  One bug the smoke caught before
+  the battery did: a source-path-keyed occurrence join MERGED two
+  instantiations of one library file; the join is by lexical path
+  (`module-ir-lexical-path` = its occurrence's), and the battery pins the
+  distinction — two instances of `n1_graph_lib.slog` mint disjoint
+  RuleKey sets, which is RF5 §2's per-occurrence lineage demand.
+  Gates: `identity-keys` 7/7, new tier in ALL (ledger populated,
+  instances distinct, root round-trip, no absolute locs,
+  save→load re-mints BYTE-IDENTICAL, fresh session shares zero keys with
+  identical shape); `identity-key-tests.rkt` 5/5 (corpus, refusals,
+  minting, purity, fresh-key totality); unit 454; goldens subset over the
+  compile-group field addition.  Remaining in (c): sub-slice c2 (daemon
+  rule-meta registration, RuleId↔RuleKey) and c3 (fire vectors + the
+  `(RuleId, VariantTag)` stat rekey T4 parked here).
 - **(d) uniform pause record + watch tee-up (landed 2026-07-20).** The command-stack
   structured pause record for all pause classes (protocol-mode
   scoping; legacy stack byte-identical); the cause-payload grammar —

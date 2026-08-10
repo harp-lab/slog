@@ -94,6 +94,7 @@
          session-scratch-keep!  ; R3: export the layer and promote it
          session-scratch-clear! ; R3: retract the whole layer
          session-tiers          ; R3: per-stratum execution rungs + cache
+         session-identity-records ; T0(c): durable RuleKey/SccInstanceKey sets
          session-set-scc-policy! ; T5: pin a relation's writers to an executor
          session-pending-summary ; gate S1: staged-but-unflushed changes
          session-pause-hook     ; gate S3/R4: observe a parked epoch
@@ -188,6 +189,13 @@
                  ;; (a save while one is outstanding is refused).
                  [catalog-records #:mutable] [program-records #:mutable]
                  [nominal-names #:mutable] [prepared-boundary #:mutable]
+                 ;; T0(c): keyed identity records per committed program
+                 ;; event -- (program-key scc-records rule-records) triples,
+                 ;; oldest first.  Derived (never stored in the recipe): a
+                 ;; replay re-mints byte-identical records because the
+                 ;; program keys and slot tables replay identically, which
+                 ;; is exactly what the key-stability battery pins.
+                 [identity #:mutable]
                  ;; R3 scratch ledger: scratch-event records, oldest first.
                  ;; Every entry's run step is ALSO in `steps` -- the ledger
                  ;; marks which tip events belong to the retractable layer,
@@ -227,7 +235,7 @@
              layer-id (fresh-runtime-id "eval") 0 '()
              (make-hash) (make-hash)
              (empty-boundary (format "b0:~a" layer-id)) '()
-             '() '() (hash) #f '()))
+             '() '() (hash) #f '() '()))
   (session-action! s `(set-evaluation ,(session-evaluation-id s))
                    read-one-line-quiet!)
   s)
@@ -242,7 +250,7 @@
                      (make-hash) '() '() '() (make-hash) (make-hash) #f echo
                      layer-id (fresh-runtime-id "eval") 0 '()
                      (make-hash) (make-hash) #f '()
-                     '() '() (hash) #f '()))
+                     '() '() (hash) #f '() '()))
   (session-action! s `(set-evaluation ,(session-evaluation-id s))
                    read-one-line-quiet!)
   (define-values (_cur strata-pos _chains) (introspect! s))
@@ -537,6 +545,16 @@
                               (format "build/~a.so" (sinfo-hash i)))
                              'o2)))
           (unbox (sinfo-policy i)))))
+
+;; T0(c): the session's durable identity ledger -- one
+;; (program-key scc-records rule-records) triple per committed program
+;; event, oldest first.  Records are the mint-program-identity shapes:
+;;   (scc-record KEY SLOT LEVEL (members REL ...))
+;;   (rule-record KEY MKEY (scc KEY|#f) (loc "file:LINE"|#f))
+;; Derived deterministically at each boundary; a replayed recipe carries
+;; the same program keys and slot tables, so the ledger re-mints
+;; byte-identical -- the key-stability battery's pinned claim.
+(define (session-identity-records s) (session-identity s))
 
 ;; T5 slice (a): pin the writer strata of `rel` to a policy ('interpreted
 ;; or 'auto); returns the affected scc ids.  Policy applies at re-entry
@@ -2323,6 +2341,21 @@
                 (module-occurrence-instances
                  (boundary-plan-program-key plan)
                  (compile-group-occurrence-tree group)))))))
+  ;; T0(c): mint the durable RuleKey/SccInstanceKey records for each program
+  ;; event, exactly as ModuleInstanceKeys mint above -- from the persisted
+  ;; program key plus the compiler's slot payload, so a recipe replay
+  ;; re-mints byte-identical records (the key-stability battery's claim).
+  ;; Derived state, introspection-only for now: never in the recipe, never
+  ;; compared at load -- determinism is what the battery proves.
+  (when n2?
+    (for ([group (in-list groups)]
+          [plan (in-list plans)])
+      (define pkey (boundary-plan-program-key plan))
+      (define-values (scc-records rule-records)
+        (mint-program-identity pkey (compile-group-identity group)))
+      (set-session-identity!
+       s (append (session-identity s)
+                 (list (list pkey scc-records rule-records))))))
   (when supplied-module-data
     (unless (and
              (= (length supplied-module-data) (length groups))
