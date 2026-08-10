@@ -73,12 +73,16 @@ wait_for() { # <path> <seconds> -- poll until it exists
   return 1
 }
 
-drop_artifacts() { # <hash>... -- wait out in-flight O2s, then delete the .so's
+drop_artifacts() { # <hash>... -- settle any in-flight O2, then delete the .so's
   local h
   for h in "$@"; do
-    # a claimed O2 is in flight; deleting under it would race the rename
-    wait_for "build/$h.so" 120 \
-      || { echo "  (O2 for $h never landed; cannot proceed race-free)"; return 1; }
+    # an -O2 is in flight only under a claim marker (fast-compile §13); a run
+    # that PROFILE-SKIPPED queued nothing, so absence of marker and .so means
+    # quiet -- waiting for an .so there would block on a build nobody started
+    if [ -e "build/$h.so.building" ] && [ ! -e "build/$h.so" ]; then
+      wait_for "build/$h.so" 180 \
+        || { echo "  (claimed O2 for $h never landed)"; return 1; }
+    fi
     rm -f "build/$h.so" "build/$h.O0.so"
   done
 }

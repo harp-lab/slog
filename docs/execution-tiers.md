@@ -1187,7 +1187,12 @@ warm suite cache designates 30.8% of planned rules `interp-only` and leaves
    SHIPPED — per-KernelPlanKey observations of the T3a race under
    `build/profile/`, consulted on the cold tiered arm so kernels whose
    fixpoint historically beats their build skip clang, surviving job-hash
-   re-keys by construction; the promotion budget is slice 3)*
+   re-keys by construction; the promotion budget is slice 3, SHIPPED --
+   a profile-skipped stratum interpreting past `SLOG_TIER_PROMOTE_MS`
+   launches its build mid-run and attaches through the T3a swap seam, and
+   the session's re-entry resolver now sends the best cached artifact, so
+   a fixpoint-beats-clang stratum stops interpreting forever beside its
+   own build)*
 3. Core-budget arbiter and compile priority queue (5.5).  *(T3b slice 4)*
 4. Artifact selection (cached O2 -> cached O0 -> interpret) and the shipped
    boundary swap for arrivals. **No mid-read takeover yet** — with 500 ms

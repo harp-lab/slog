@@ -1,7 +1,7 @@
 # T3b — selective tier policy
 
 *Drafted 2026-08-09 (W5′, the runtime/transaction arc's carry-in slice).
-**Status: slices 1 and 2 SHIPPED 2026-08-09; slices 3–4 pending.**  Normative parents:
+**Status: slices 1–3 SHIPPED 2026-08-09; slice 4 pending.**  Normative parents:
 [execution-tiers.md](execution-tiers.md) §5.3 (rule execution classes), §5.4
 (the goals stated as measurables), §5.5 (tier scheduling and CPU allocation),
 §11's T3 items 2–3, §12 gates 12/14/15; [t4-contract.md](t4-contract.md)
@@ -253,6 +253,86 @@ re-entry must pick it up.
 **Exit gate.**  §12.12's first clause (a pathological interpreted acyclic join
 triggers promotion and self-rescues) plus a test that a second re-entry runs
 on the artifact built during the first.
+
+#### Slice 3 as-built (2026-08-09)
+
+Both halves ride seams that already existed; neither adds a driver loop.
+
+**Promotion** is an upgrade closure (`make-promotion-upgrade`,
+compile.rkt).  The profile-skip path used to hand the driver `#f` for its
+upgrade; it now hands a closure that offers nothing while the interpreted
+run is under budget (`SLOG_TIER_PROMOTE_MS`, default 4000), and past budget
+launches the pooled `-O0` build plus the claimed detached `-O2` ONCE — the
+TUs are already on disk — then behaves exactly like `make-native-upgrade`,
+so the artifact attaches at the next safe boundary through the unchanged
+T3a swap seam, in both drivers (the session's tier box narrates it as an
+ordinary arrival).  A classification skip (slice 1's zero-clang verdict) is
+a policy statement, not a guess, and deliberately gets no rescue closure.
+
+Two timing truths the smoke run taught, both now encoded:
+
+- **Polls only happen at pauses, and the default pause budget is 8 s**
+  (`RunBudget.max_ms`).  A 6-second stratum under the default budget never
+  pauses, so the closure credits one budget period up front — the first
+  poll is itself proof the stratum has already interpreted `max_ms` of
+  wall time.  Without the credit, promotion needed two budget periods and
+  a sub-8s stratum could never promote at all.
+- The gate drives with `SLOG_MAX_MS=500` — the daemon's own
+  pathological-budget knob, the byte-identical suspend test's precedent —
+  so boundary polls come every ~0.5 s and the battery finishes in seconds
+  without weakening what it proves.
+
+**Next-re-entry pickup** is one resolver change (`sinfo-artifact`,
+session.rkt): `'auto` now means "the best artifact the cache holds"
+(`.so` > `.O0.so` > registered) rather than "whatever the stratum
+registered with".  Two rungs of one latent defect die there: the stratum
+whose fixpoint beat clang stayed interpreted for its whole session
+lifetime beside its own built-but-unused artifact (the R3 `tiers`
+checkpoint recorded exactly this gap), and — found while reading the seam —
+a stratum that DID swap mid-run still had the plan as its registered
+`sinfo-so`, so any re-entry send silently flipped it back to the
+interpreter.  Identity still uses `sinfo-so` everywhere; the tier box
+advances at resolve time so `tiers` keeps telling the truth.  The
+`'interpreted` policy pin (T5's debugger flip) is checked first and never
+picks up.
+
+**Sessions record the race now** (slice 2's residue (iii)):
+`drive-to-fixpoint!` hands `(iterations, ms, loaded)` back from the
+fixpoint line, and `push-sbuild!` feeds `profile-note-fixpoint!` under the
+same tiered-regime scoping as the batch driver.  Re-entry and maintenance
+drives deliberately do not record — they run flavored or replay work, not
+the semantic first fixpoint.
+
+**Cross-program profile transfer is real, and the batteries prove it the
+hard way.**  The gate's 2500-chain closure kernel is byte-identical to
+`reach`'s (T4's name-free sharing), so `reach`'s fast observations made the
+chain's first cold run profile-skip — the exact stale-evidence scenario
+promotion exists for — and later the chain's honest slow observation
+un-skipped `reach`.  One battery fallout: a discovery run that skips queues
+no builds, so waiting for its `-O2` deadlocks; both batteries' quiesce now
+keys on the `.so.building` claim marker (fast-compile §13) instead of
+assuming a build is in flight.
+
+**Gates run:** `tier-promotion` 4/4, new tier in ALL — stale profile →
+`[promoting …]` → attach before fixpoint → byte-identical CSVs; the
+recorded outcome (`upgraded #t`) un-skips the stratum; a huge budget
+refuses to promote and completes interpreted with zero clang; and the
+session drive (via two additive `session-drive.rkt` ops, `tiers` +
+`await-build`) shows the cold-started stratum interp-registered beside its
+cached artifact, then climbing to `o0`/`o2` at `reenter` with the new
+tuple's closure present and the push's observation recorded.
+`tier-profile` 5/5 and `tier-classification` 10/10 re-run green after the
+marker fix; unit 442; session battery + protocol battery at slice end.
+
+**Residues.**  (i) The budget is a fixed wall-clock ceiling with a
+first-poll credit, not yet "a small multiple of estimated O0 compile
+cost" — recording per-kernel build times and deriving the estimate belongs
+to slice 4's arbiter, which owns the compile queue.  (ii) Promotion
+launches builds directly onto the pool; the "jumps the queue" phrasing
+becomes real when slice 4 gives the pool priorities.  (iii) Re-entry
+drives still do not record observations; with pickup live their evidence
+is mostly redundant (the artifact attaches anyway), so this waits for a
+demonstrated need.
 
 ### Slice 4 — core-budget arbiter and compile priority queue
 

@@ -104,6 +104,7 @@
 
 (require "tools.rkt")
 (require "compile.rkt")
+(require "tier-profile.rkt")  ; T3b slice 3: sessions record the race too
 (require (only-in "modules.rkt" current-catalog-adoption)) ; R3 scratch
 (require "catalog.rkt")
 (require "names.rkt")
@@ -374,7 +375,16 @@
     (define line (read-line (session-out s)))
     (cond
       [(eof-object? line) (error 'session "daemon EOF mid-stratum")]
-      [(regexp-match? #px"^\\(fixpoint " line) (echo! s line)]
+      ;; T3b slice 3: hand the fixpoint's metrics back to the caller --
+      ;; (list iterations ms loaded) -- so a fresh push can record the T3a
+      ;; race's outcome for the tier profile exactly as the batch driver
+      ;; does.  `loaded` > 0 means an upgrade attached during this drive.
+      [(regexp-match #px"^\\(fixpoint [0-9]+ \"[^\"]*\" ([0-9]+) ([0-9.]+)\\)"
+                     line)
+       => (lambda (m)
+            (echo! s line)
+            (list (string->number (cadr m)) (string->number (caddr m)) loaded))]
+      [(regexp-match? #px"^\\(fixpoint " line) (echo! s line) #f]
       ;; A refusal reaches the driver only as the answer to a resume it sent
       ;; itself -- today a `replay` the daemon would not honour (T5 slice
       ;; (c): a non-monotone epoch, or a park that is not the pre-commit
@@ -491,7 +501,19 @@
                (set-box! tier rung)
                (echo! s (format "(tier ~a ~a ~a)" scc (sbuild-hash sb) rung)))
              result))))
-  (send-stratum! s so upgrade))
+  (define outcome (send-stratum! s so upgrade))
+  ;; T3b slice 3: a session's fresh pushes record the T3a race exactly as
+  ;; the batch driver does (slice 2 covered batch only), closing that
+  ;; residue: REPL-loaded programs now feed the same per-kernel profiles.
+  ;; Same scoping -- the tiered regime is the only mode with a race to
+  ;; observe, so the SLOG_OPT=0 batteries stay byte-stable in build/.
+  ;; Re-entry and maintenance drives deliberately do not record (they run
+  ;; flavored or replay work, not the semantic first fixpoint).
+  (when (and outcome
+             (not (member (or (getenv "SLOG_OPT") "tiered")
+                          '("0" "2" "interp"))))
+    (match-define (list iters ms loaded) outcome)
+    (profile-note-fixpoint! (sbuild-hash sb) tag (> loaded 0) iters ms)))
 
 ;; R3 slice (c): the tier ledger `tiers` renders -- one record per
 ;; resident pipeline stratum: scc id, content hash, current rung, which
@@ -527,15 +549,34 @@
     (car p)))
 
 ;; The artifact a re-entry SEND should carry under the stratum's policy.
-;; 'auto = whatever the stratum registered with (sinfo-so); 'interpreted =
-;; the canonical plan when the cache holds it.  Identity uses (sinfo-so)
-;; everywhere -- this resolver is for send sites only.
+;; 'interpreted = the canonical plan when the cache holds it.  Identity uses
+;; (sinfo-so) everywhere -- this resolver is for send sites only.
+;;
+;; T3b slice 3: 'auto is now "the best artifact the cache holds", not
+;; "whatever the stratum registered with".  Two rungs of one latent defect
+;; die here.  A stratum whose fixpoint beat clang registered with its PLAN
+;; and -- mid-run swap being the only shipped pickup point -- stayed
+;; interpreted for its whole session lifetime while the built artifact sat
+;; unused in the cache (the R3 `tiers` checkpoint recorded exactly this
+;; gap); now the next re-entry sends the artifact.  And a stratum that DID
+;; swap mid-run still has the plan as its registered sinfo-so, so a
+;; re-entry send would have silently flipped it back to the interpreter;
+;; resolving from the cache keeps the rung.  The tier box advances so
+;; `tiers` keeps telling the truth.  An 'o2-mix rung may resolve to its
+;; plain -O0 artifact until the full -O2 lands -- a narrated, self-healing
+;; partial regression (the detached build completes it).
 (define (sinfo-artifact i)
-  (define plan (format "build/~a.plan" (sinfo-hash i)))
-  (if (and (eq? (unbox (sinfo-policy i)) 'interpreted)
-           (file-exists? plan))
-      (path->string (path->complete-path plan))
-      (sinfo-so i)))
+  (define (cached kind) (format "build/~a~a" (sinfo-hash i) kind))
+  (define (resolve! path rung)
+    (set-box! (sinfo-tier i) rung)
+    (path->string (path->complete-path path)))
+  (cond
+    [(and (eq? (unbox (sinfo-policy i)) 'interpreted)
+          (file-exists? (cached ".plan")))
+     (path->string (path->complete-path (cached ".plan")))]
+    [(file-exists? (cached ".so")) (resolve! (cached ".so") 'o2)]
+    [(file-exists? (cached ".O0.so")) (resolve! (cached ".O0.so") 'o0)]
+    [else (sinfo-so i)]))
 
 ;; The count round (docs/incremental.md §8B.1-§8B.2, M0.4c): rebuild a
 ;; VERSION-LOCAL count state in scratch sidecars, audit its coverage, then

@@ -1013,6 +1013,51 @@
       [(and (< loaded 1) (file-exists? o0so)) (list o0so 1 2)]
       [else (list #f loaded 2)])))
 
+;; T3b slice 3: the promotion budget (docs/t3b-contract.md §3 slice 3).  A
+;; profile-skipped stratum runs with THIS as its upgrade closure: while the
+;; interpreted run stays under budget it offers nothing, and past budget it
+;; launches the builds ONCE -- the TUs are already emitted -- then behaves
+;; exactly like make-native-upgrade, so the artifact attaches at the next
+;; safe boundary through the unchanged T3a swap seam.  This is §12.12's
+;; self-rescue: the profile admitted the stratum on stale evidence (its
+;; data grew), and the run recovers without waiting for its next re-entry.
+;;
+;; The clock starts at the FIRST boundary poll, not at closure creation --
+;; sbuilds are constructed for the whole pipeline up front, and stratum k
+;; may start minutes after compile time.  The first poll is itself evidence:
+;; the driver only polls at pauses, and a stratum reaching its first pause
+;; has already interpreted one full daemon budget period (RunBudget.max_ms,
+;; SLOG_MAX_MS, default 8000), so that period is credited up front --
+;; without it a 6-second-budget stratum under the 8-second default would
+;; never see a second poll and could never promote.  In a session the
+;; closure lives as long as the stratum does, so the budget is cumulative
+;; interpreted wall time across re-entries, which is the direction §5.3's
+;; slice accounting wants (exact daemon-side accounting can replace the
+;; wall clock later without moving this seam).
+(define daemon-budget-period-ms
+  (let ([v (getenv "SLOG_MAX_MS")]) (or (and v (string->number v)) 8000)))
+
+(define (make-promotion-upgrade proghash cpps o0so o2so)
+  (define native (make-native-upgrade o0so o2so))
+  (define epoch #f)
+  (define launched? #f)
+  (lambda (loaded)
+    (unless epoch (set! epoch (current-inexact-milliseconds)))
+    (cond
+      [launched? (native loaded)]
+      [(< (+ (- (current-inexact-milliseconds) epoch) daemon-budget-period-ms)
+          (tier-promote-ms))
+       (list #f loaded 2)]
+      [else
+       (set! launched? #t)
+       (eprintf "  [promoting ~a: interpreted past ~ams budget, building]\n"
+                proghash (tier-promote-ms))
+       (void (pooled-eager
+              (lambda () (build-so cpps o0so #:opt "-O0") (cons o0so 'o0))))
+       (when (try-claim-o2! o2so)
+         (spawn-detached-o2-batch (list (o2-build-command cpps o2so))))
+       (native loaded)])))
+
 (define (make-upgrade proghash cpps)
   (define pairs
     (for/list ([cpp (in-list cpps)])
@@ -1340,25 +1385,24 @@
                  (lambda () (ensure-recursive-negative-maintenance-so job)))]
         [else
          (define cpps (emit-stratum-cpp job))   ; write .cpp(s) now (fast, main thread)
-         (case (if (or (stratum-fully-interpreted? proghash)
-                       ;; T3b slice 2: the profile says this stratum's every
-                       ;; kernel historically fixpoints before its artifact
-                       ;; could attach -- skip the toolchain and interpret.
-                       ;; Tiered-regime only: the explicit -O0/-O2 modes mean
-                       ;; "compile it all" and stay differential controls.
-                       ;; The run still records, so a stratum that outgrows
-                       ;; the ceiling compiles again at its next re-entry.
-                       (and tiered? (stratum-profile-skip? proghash)))
-                   "interp" mode)
-           ;; T3b slice 1: the policy designated EVERY variant of this stratum
-           ;; interp-only, so its artifact would export no attach function at
-           ;; all -- there is nothing for the toolchain to build.  Take the
-           ;; interp rung outright: no -O0, no claimed -O2, no upgrade
-           ;; closure.  Measured at 247 of 499 strata over the golden suite
-           ;; (docs/t3b-contract.md §1).  The .cpp text is still on disk as
-           ;; the debug artifact, exactly as SLOG_OPT=interp leaves it.
+         ;; T3b slices 1-3, the two ways a stratum earns the interp rung:
+         ;; zero-clang (slice 1: every variant classified interp-only --
+         ;; nothing to build, ever) and profile-skip (slice 2: the profile
+         ;; says its kernels historically fixpoint before an artifact could
+         ;; attach; tiered regime only).  The difference is the upgrade
+         ;; closure: a profile skip is feedback-based and may be STALE, so
+         ;; it carries slice 3's promotion closure -- interpret past the
+         ;; budget and the build launches mid-run, attaching at the next
+         ;; boundary (§12.12's self-rescue).  A classification skip is a
+         ;; policy statement, not a guess, and gets no rescue.
+         (define zero-clang? (stratum-fully-interpreted? proghash))
+         (define profile-skip?
+           (and tiered? (not zero-clang?) (stratum-profile-skip? proghash)))
+         (case (if (or zero-clang? profile-skip?) "interp" mode)
            [("interp")
-            (sbuild proghash #f (lambda () (cons (ensure-normal-plan job) 'interp)) #f
+            (sbuild proghash #f (lambda () (cons (ensure-normal-plan job) 'interp))
+                    (and profile-skip?
+                         (make-promotion-upgrade proghash cpps o0so o2so))
                     (lambda () (ensure-delta-so job))
                     (lambda () (ensure-count-so job))
                     (lambda () (ensure-maintenance-so job))

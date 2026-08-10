@@ -116,6 +116,21 @@
    (let ([v (getenv "SLOG_TIER_SKIP_MS")])
      (or (and v (string->number v)) 2000))))
 
+;; T3b slice 3: the promotion budget (docs/t3b-contract.md §3 slice 3,
+;; execution-tiers §5.3's promotion feedback path).  A profile-skipped
+;; stratum that interprets past this wall-clock budget without fixpointing
+;; launches its build mid-run and attaches at the next safe boundary --
+;; the §12.12 self-rescue.  The contract's eventual form is "a small
+;; multiple of estimated O0 compile cost"; until slice 4's arbiter records
+;; build costs this is a fixed ceiling, kept ABOVE the skip ceiling so a
+;; stratum the profile admitted has real room before the rescue fires.
+;; Like the other profile knobs it schedules builds only -- never emitted
+;; content -- so it is not cache-keyed.
+(define tier-promote-ms
+  (make-parameter
+   (let ([v (getenv "SLOG_TIER_PROMOTE_MS")])
+     (or (and v (string->number v)) 4000))))
+
 ;; Exhaustive action search is deliberately bounded.  Larger join bodies use
 ;; the deterministic action-aware greedy fallback.
 (define wcoj3-search-cap (make-parameter 8))

@@ -140,6 +140,14 @@
                    (list (string->symbol a) (string->symbol b))))]
     [(list "reenter" rel) `(reenter ,(string->symbol rel))]
     [(list "rerun" rel) `(rerun ,(string->symbol rel))]
+    ;; T3b slice 3 (tests/tier-promotion.sh): `tiers` prints one
+    ;; (tiers-record SCC HASH RUNG (CACHE ...) POLICY) line per stratum;
+    ;; await-build[:SECS] blocks until every stratum with a plan in cache
+    ;; also has a native artifact there (the detached builds landing), so a
+    ;; following re-entry exercises next-re-entry pickup without timing.
+    [(list "tiers") `(tiers)]
+    [(list "await-build") `(await-build 120)]
+    [(list "await-build" secs) `(await-build ,(string->number secs))]
     ;; the count round + sidecar introspection (docs/incremental.md §8B, M0)
     ;;   recount            whole pipeline (tip), lazy
     ;;   recount:REL        REL's counting cone (tip), lazy
@@ -247,6 +255,35 @@
        (session-inject-and-reopen! s rel prog (list tuple) #:key key)]
       [`(reenter ,rel) (session-reenter! s rel)]
       [`(rerun ,rel) (session-rerun! s rel)]
+      [`(tiers)
+       (for ([r (in-list (session-tiers s))])
+         (match-define (list scc hash rung cache policy) r)
+         (displayln `(tiers-record ,scc ,hash ,rung ,cache ,policy)))]
+      [`(await-build ,secs)
+       ;; every COVERED stratum (native coverage > 0 per its .tiers sidecar)
+       ;; should grow an artifact; zero-clang and profile-skipped strata
+       ;; never build, so they must not be waited on.  The detached builds
+       ;; write atomically -- existence is completion.
+       (define (covered? hash)
+         (with-handlers ([exn:fail? (lambda (_) #f)])
+           (match (regexp-match #px"\\(coverage ([0-9]+) [0-9]+\\)"
+                                (file->string (format "build/~a.tiers" hash)))
+             [(list _ c) (> (string->number c) 0)]
+             [_ #f])))
+       (define deadline (+ (current-seconds) secs))
+       (let wait ()
+         (define pending
+           (for/list ([r (in-list (session-tiers s))]
+                      #:when (and (memq 'plan (fourth r))
+                                  (covered? (second r))
+                                  (not (memq 'o0 (fourth r)))
+                                  (not (memq 'o2 (fourth r)))))
+             (second r)))
+         (cond
+           [(null? pending) (displayln `(builds-arrived))]
+           [(> (current-seconds) deadline)
+            (displayln `(builds-timeout ,@pending))]
+           [else (sleep 1) (wait)]))]
       [`(recount ,rel ,at ,force?)
        (session-recount! s #:rel rel #:at at #:force? force?)]
       [`(recount-lattices-force)

@@ -51,6 +51,7 @@ run_harness() {
     plan-goldens) bash tests/plan-goldens.sh ;;
     tier-classification) bash tests/tier-classification.sh ;;
     tier-profile) bash tests/tier-profile.sh ;;
+    tier-promotion) bash tests/tier-promotion.sh ;;
     tu-determinism) bash tests/tu-determinism.sh ;;
     incremental-stress) bash tests/incremental-stress.sh ;;
     compression) bash tests/compression/run.sh ;;
@@ -66,7 +67,7 @@ run_harness() {
   esac
 }
 
-ALL=(unit diag stats arena seq counts wcoj3 interp structid golden plan-goldens tier-classification tier-profile api tiered pause protocol repl session joint incremental-stress compression smt-pin smt-solver)
+ALL=(unit diag stats arena seq counts wcoj3 interp structid golden plan-goldens tier-classification tier-profile tier-promotion api tiered pause protocol repl session joint incremental-stress compression smt-pin smt-solver)
 # `abi2` (RF1 slice 2's airtightness + the ABI-1/ABI-2 differential) is a
 # named tier but NOT in ALL: like plan-determinism it compiles each program
 # from cold twice, so it is a slice gate rather than a per-change one.  Run it
@@ -85,6 +86,12 @@ ALL=(unit diag stats arena seq counts wcoj3 interp structid golden plan-goldens 
 # ALL -- four tiered runs of one small fixture, ~2 min.  It guards the
 # zero-clang skip against a warm profile with cold artifacts (the post-re-key
 # scenario the profile exists for) and both of its escape hatches.
+# `tier-promotion` (T3b slice 3: the promotion budget + next-re-entry
+# pickup) IS in ALL -- ~2-3 min over one slow chain and one small session.
+# It guards the §12.12 self-rescue (stale profile -> interpret past budget
+# -> build launches mid-run and attaches), the budget's refusal direction,
+# and the session ledger climbing at re-entry instead of interpreting
+# forever beside its own built artifact.
 # `tu-determinism` (T4 slice 2a: comment-stripped generated C++ is
 # byte-reproducible across two cold compiles -- the property the .o cache
 # and cross-instance sharing key on) is named but OUTSIDE ALL, like abi2:
