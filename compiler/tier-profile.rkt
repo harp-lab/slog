@@ -42,7 +42,10 @@
 
 (provide profile-note-fixpoint! stratum-profile-skip?
          history-says-interp-sufficed? profile-observations
-         tier-profile-window)
+         tier-profile-window
+         ;; T3b slice 4: recorded O0 build cost -> the promotion estimate
+         profile-note-build! profile-build-ms
+         stratum-estimated-build-ms stratum-promote-budget-ms)
 
 ;; Observations kept per kernel, newest first.  Large enough that one
 ;; anomalous run cannot evict all history the rule wants; small enough that
@@ -79,17 +82,37 @@
 ;; file.
 ;; ---------------------------------------------------------------------------
 
-(define (profile-observations key)
-  (with-handlers ([exn:fail? (lambda (_) '())])
+;; A profile file's fields after `(key …)` are positional-free: observations
+;; are the `(obs …)` forms, and slice 4 adds an optional `(build-ms N)` --
+;; the latest measured -O0 build wall time for this kernel's stratum, the
+;; promotion budget's estimate.  Old two-field files parse unchanged.
+(define (read-profile key)
+  (with-handlers ([exn:fail? (lambda (_) (values #f '()))])
     (match (call-with-input-file (profile-path key) read)
-      [`(kernel-profile (key ,_) ,obs ...) obs]
-      [_ '()])))
+      [`(kernel-profile (key ,_) ,fields ...)
+       (values (for/or ([f (in-list fields)])
+                 (match f [`(build-ms ,n) n] [_ #f]))
+               (for/list ([f (in-list fields)]
+                          #:when (match f [`(obs ,_ ...) #t] [_ #f]))
+                 f))]
+      [_ (values #f '())])))
 
-(define (write-profile! key obs)
+(define (profile-observations key)
+  (define-values (_build obs) (read-profile key))
+  obs)
+
+(define (profile-build-ms key)
+  (define-values (build _obs) (read-profile key))
+  build)
+
+(define (write-profile! key build-ms obs)
   (make-directory* (fullpath "build/profile"))
   (call-with-atomic-output
    (profile-path key)
-   (lambda () (writeln `(kernel-profile (key ,key) ,@obs)))))
+   (lambda ()
+     (writeln `(kernel-profile (key ,key)
+                               ,@(if build-ms `((build-ms ,build-ms)) '())
+                               ,@obs)))))
 
 ;; Record one stratum fixpoint against every kernel the stratum carries.
 ;; `started` is the rung the stratum LAUNCHED on ('interp/'o0/'o2);
@@ -103,10 +126,42 @@
                      (iterations ,iterations) (ms ,ms)
                      (stratum ,proghash) (at ,(current-seconds))))
     (for ([key (in-list (stratum-kernel-keys proghash))])
-      (write-profile! key (cons ob (take-up-to (profile-observations key)
-                                               (sub1 (tier-profile-window))))))))
+      (define-values (build obs) (read-profile key))
+      (write-profile! key build
+                      (cons ob (take-up-to obs (sub1 (tier-profile-window))))))))
 
 (define (take-up-to lst n) (if (> (length lst) n) (take lst n) lst))
+
+;; T3b slice 4: record a completed -O0 build's wall ms against the stratum's
+;; kernels.  Latest-wins, like the consult rule -- the estimate should track
+;; the current tree, not average over history.
+(define (profile-note-build! proghash ms)
+  (when (tier-profile-enabled)
+    (for ([key (in-list (stratum-kernel-keys proghash))])
+      (define-values (_old obs) (read-profile key))
+      (write-profile! key ms obs))))
+
+;; The stratum's O0 cost estimate: the MAX over its kernels' recorded build
+;; times.  Kernels are built together in one stratum artifact today, so any
+;; kernel's recording is the whole build's wall time; max tolerates a kernel
+;; that also appears in a bigger stratum elsewhere.  #f = no evidence.
+(define (stratum-estimated-build-ms proghash)
+  (define costs (filter values (map profile-build-ms
+                                    (stratum-kernel-keys proghash))))
+  (and (pair? costs) (apply max costs)))
+
+;; The promotion budget (t3b-contract §3 slices 3-4).  A pinned
+;; SLOG_TIER_PROMOTE_MS is a hard override in both directions -- the gates
+;; drive with 0 and 600000.  Otherwise §5.3's "small multiple of estimated
+;; O0 compile cost" when an estimate exists, floored at the default so a
+;; tiny estimate cannot promote instantly, and the bare default when no
+;; build has ever been recorded.
+(define (stratum-promote-budget-ms proghash)
+  (cond
+    [tier-promote-pinned? (tier-promote-ms)]
+    [(stratum-estimated-build-ms proghash)
+     => (lambda (est) (max (tier-promote-ms) (* (tier-promote-mult) est)))]
+    [else (tier-promote-ms)]))
 
 ;; ---------------------------------------------------------------------------
 ;; The consult rule

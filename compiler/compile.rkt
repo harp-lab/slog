@@ -692,6 +692,28 @@
   (define-values (covered total) (stratum-native-coverage hash-name))
   (and covered total (> total 0) (zero? covered)))
 
+;; T3b slice 4: honor `o0-max` (execution-tiers §5.3 -- "compiled to O0 when
+;; warranted; never queued for O2").  A stratum earns an -O2 only when some
+;; NATIVELY COVERED variant is `tiered`; a stratum whose covered set is all
+;; o0-max caps at the -O0 rung -- no claim, no detached batch, no upgrade
+;; target.  Conservative on absent/legacy sidecars: keep today's behavior.
+(define (stratum-wants-o2? hash-name)
+  (with-handlers ([exn:fail? (lambda (_) #t)])
+    (define form
+      (call-with-input-file (fullpath (format "build/~a.tiers" hash-name))
+        read))
+    (match form
+      [`(stratum-tiers ,fields ...)
+       (for/or ([f (in-list fields)])
+         (match f
+           [`(kernel ,_ ...)
+            (for/or ([v (in-list (cdr f))])
+              (match v
+                [`(variant ,_ tiered ,_ native) #t]
+                [_ #f]))]
+           [_ #f]))]
+      [_ #t])))
+
 ;; -----------------------------------------------------------------------
 ;; Back end: emit one stratum's C++ translation unit(s).
 ;;
@@ -1039,6 +1061,12 @@
 
 (define (make-promotion-upgrade proghash cpps o0so o2so)
   (define native (make-native-upgrade o0so o2so))
+  ;; T3b slice 4: the budget is now "a small multiple of estimated O0
+  ;; compile cost" when a recorded build time exists for this stratum's
+  ;; kernels, floored at the default; a pinned SLOG_TIER_PROMOTE_MS stays a
+  ;; hard override (tier-profile.rkt stratum-promote-budget-ms).  Resolved
+  ;; at closure creation: the estimate is prior-run evidence by definition.
+  (define budget-ms (stratum-promote-budget-ms proghash))
   (define epoch #f)
   (define launched? #f)
   (lambda (loaded)
@@ -1046,17 +1074,26 @@
     (cond
       [launched? (native loaded)]
       [(< (+ (- (current-inexact-milliseconds) epoch) daemon-budget-period-ms)
-          (tier-promote-ms))
+          budget-ms)
        (list #f loaded 2)]
       [else
        (set! launched? #t)
        (eprintf "  [promoting ~a: interpreted past ~ams budget, building]\n"
-                proghash (tier-promote-ms))
-       (void (pooled-eager
-              (lambda () (build-so cpps o0so #:opt "-O0") (cons o0so 'o0))))
+                proghash budget-ms)
+       (void (pooled-eager (timed-o0-build proghash cpps o0so)
+                           #:label proghash #:priority 1))
        (when (try-claim-o2! o2so)
          (spawn-detached-o2-batch (list (o2-build-command cpps o2so))))
        (native loaded)])))
+
+;; The pooled -O0 build thunk every arm shares: builds, then records the
+;; wall ms against the stratum's kernels so the NEXT promotion decision has
+;; a real estimate (slice 4; the recording is cache-writing, never gating).
+(define ((timed-o0-build proghash cpps o0so))
+  (define t0 (current-inexact-milliseconds))
+  (build-so cpps o0so #:opt "-O0")
+  (profile-note-build! proghash (- (current-inexact-milliseconds) t0))
+  (cons o0so 'o0))
 
 (define (make-upgrade proghash cpps)
   (define pairs
@@ -1375,9 +1412,12 @@
         [(and tiered? (file-exists? o0so))
          (define cpps0 (stratum-tu-paths proghash))
          (define cpps (if (null? cpps0) (emit-stratum-cpp job) cpps0))
-         (when (try-claim-o2! o2so)
+         ;; T3b slice 4: an o0-max stratum caps here -- warm -O0 is its rung
+         (define wants-o2? (stratum-wants-o2? proghash))
+         (when (and wants-o2? (try-claim-o2! o2so))
            (set! o2-cmds (cons (o2-build-command cpps o2so) o2-cmds)))
-         (sbuild proghash o2so (lambda () (cons o0so 'o0)) (make-upgrade proghash cpps)
+         (sbuild proghash (and wants-o2? o2so) (lambda () (cons o0so 'o0))
+                 (and wants-o2? (make-upgrade proghash cpps))
                  (lambda () (ensure-delta-so job))
                  (lambda () (ensure-count-so job))
                  (lambda () (ensure-maintenance-so job))
@@ -1418,7 +1458,8 @@
                  (lambda () (ensure-recursive-negative-maintenance-so job)))]
            [("0")
             (sbuild proghash #f
-                    (pooled-eager (lambda () (build-so cpps o0so #:opt "-O0") (cons o0so 'o0)))
+                    (pooled-eager (timed-o0-build proghash cpps o0so)
+                                  #:label proghash)
                     #f (lambda () (ensure-delta-so job))
                  (lambda () (ensure-count-so job))
                  (lambda () (ensure-maintenance-so job))
@@ -1437,17 +1478,25 @@
                  ;; short programs a test suite is made of.
                  ;;
                  ;; pooled-eager starts the -O0 build IMMEDIATELY in a pool
-                 ;; thread; we simply never force its blocking thunk, so the
-                 ;; run proceeds interpreted while that compile happens and
-                 ;; the upgrade closure picks the artifact up when it lands.
-            ;; claim-gate the -O2 so concurrent/successive runs that all miss the
-            ;; -O2 don't each spawn one (docs/fast-compile.md §13)
-            (when (try-claim-o2! o2so)
+                 ;; thread (priority 2: a future SCC until the driver blocks
+                 ;; on it and boosts); we simply never force its blocking
+                 ;; thunk, so the run proceeds interpreted while that compile
+                 ;; happens and the upgrade closure picks the artifact up
+                 ;; when it lands.
+            ;; claim-gate the -O2 so concurrent/successive runs that all miss
+            ;; the -O2 don't each spawn one (docs/fast-compile.md §13) -- and
+            ;; T3b slice 4: only when some covered variant is `tiered`; an
+            ;; o0-max stratum is never queued for O2 (§5.3, honored at last)
+            (define wants-o2? (stratum-wants-o2? proghash))
+            (when (and wants-o2? (try-claim-o2! o2so))
               (set! o2-cmds (cons (o2-build-command cpps o2so) o2-cmds)))
-            (void (pooled-eager
-                   (lambda () (build-so cpps o0so #:opt "-O0") (cons o0so 'o0))))
+            (void (pooled-eager (timed-o0-build proghash cpps o0so)
+                                #:label proghash))
+            ;; an o0-max stratum's o2so can never exist (the job hash is
+            ;; policy-keyed and nothing under this policy builds it), so the
+            ;; upgrade closure's file-exists? poll on it is a benign no
             (define plan (ensure-normal-plan job))
-            (sbuild proghash o2so
+            (sbuild proghash (and wants-o2? o2so)
                     (lambda () (cons plan 'interp))
                     (make-native-upgrade o0so o2so)
                     (lambda () (ensure-delta-so job))

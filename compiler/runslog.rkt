@@ -497,6 +497,7 @@
          ;; data/<lname>.checkpoint/ rather than aborting outright (§P2.3)
          (parameterize ([current-checkpoint (string-append lname ".checkpoint")])
            (for ([sb (in-list r-strata)])
+             (pool-boost! (sbuild-hash sb))   ; T3b slice 4: current stratum first
              (match-define (cons so tag) ((sbuild-runnable sb)))
              (send-plugin so)
              (unless (drive-stratum! sb tag)
@@ -615,6 +616,9 @@
          (define g-strata (take remaining n))
          (begin-group! g-strata g-frozen (zero? i))
          (for ([sb (in-list g-strata)] [gi (in-naturals i)])
+           ;; T3b slice 4: this stratum is now the CURRENT one -- its pending
+           ;; O0 job (if any) jumps to the queue's front before we block on it
+           (pool-boost! (sbuild-hash sb))
            (match-define (cons so tag) ((sbuild-runnable sb)))  ; blocks until built
            (send-plugin so)
            ;; EOF here means the daemon died or went silent BEFORE this stratum's
@@ -632,6 +636,14 @@
              (when (not chained-input)
                (send-plugin (action-so `(capture-edb-heap))))))
          (run-groups more (drop remaining n) (+ i n))]))
+
+    ;; T3b slice 4: §5.4's measured metric -- one line per run on stderr, so
+    ;; "zero-clang warm runs" is an observable count that trends to zero, not
+    ;; a slogan.  Compiles are cache-missed clang -c invocations; links are
+    ;; .so links; o2 claims are the detached builds this run caused.
+    (let-values ([(compiles links o2-claims) (clang-report)])
+      (eprintf "  [clang: ~a compiles, ~a links, ~a o2 claims]\n"
+               compiles links o2-claims))
 
     ;; Capture the full-IDB content signature BEFORE the (possibly sampled)
     ;; layer write, so a load can verify the replay reproduced it (P1.3).

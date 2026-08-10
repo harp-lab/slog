@@ -168,14 +168,17 @@ SMALL=out/tprom_small.slog
   echo "rule (edge X Y) --> (path X Y)"
   echo "rule (path X Y) (edge Y Z) --> (path X Z)"
 } > "$SMALL"
-# Its closure kernel is shape-identical to part 1's (T4 sharing), whose
-# latest observation is now honest-and-slow -- so no skip: builds queue.
-# Its JOB hashes, however, may be warm from other batteries (an identical
-# 400-chain exists elsewhere), so discover them with a throwaway session,
-# wait out any in-flight builds, and delete the artifacts: the real run
-# must COLD-start interpreted for the pickup scenario to exist.
-if ! timeout 300 racket tests/api/session-drive.rkt "run:$SMALL" tiers \
-     > "$WORK/sdisc.log" 2>&1; then
+# The real run below must COLD-start interpreted with builds QUEUED -- the
+# pickup scenario -- regardless of what earlier batteries left behind.  Two
+# hazards, both state-dependent flakes if unhandled: the fixture's JOB
+# hashes may be warm (an identical 400-chain exists in tiered-tests), and
+# its closure KERNEL's profile may say skip (T4 sharing; even this
+# battery's own discovery run would record a fast observation when it
+# starts cold).  So: discover with the profile machinery OFF, quiesce and
+# delete the artifacts, and delete the fixture kernels' profiles -- no
+# evidence means no skip, conservatively.
+if ! timeout 300 env SLOG_TIER_PROFILE=0 racket tests/api/session-drive.rkt \
+     "run:$SMALL" tiers > "$WORK/sdisc.log" 2>&1; then
   echo "  (session discovery failed; see $WORK/sdisc.log)"; fail "session-discovery"
 fi
 SHASHES=$(grep -o '(tiers-record [0-9]* [0-9a-f]*' "$WORK/sdisc.log" | awk '{print $3}' | sort -u)
@@ -186,6 +189,9 @@ for h in $SHASHES; do
   [ "${cov:-0}" -gt 0 ] && SCOVERED="$SCOVERED $h"
 done
 drop_artifacts $SCOVERED || fail "session-quiesce"
+for h in $SHASHES; do
+  for k in $(kernel_keys "$h"); do rm -f "build/profile/$k.profile"; done
+done
 
 if ! timeout 900 racket tests/api/session-drive.rkt \
      "run:$SMALL" await-build:180 tiers \

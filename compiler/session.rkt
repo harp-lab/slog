@@ -472,6 +472,9 @@
     [else 'o2-mix]))
 
 (define (push-sbuild! s sb)
+  ;; T3b slice 4: about to block on this stratum's runnable -- its pending
+  ;; O0 job (if any) is the current SCC's and jumps the compile queue
+  (pool-boost! (sbuild-hash sb))
   (match-define (cons so tag) ((sbuild-runnable sb)))
   (define-values (dyn reads heads acyclic?)
     (read-stratum-meta (sbuild-hash sb)))

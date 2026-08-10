@@ -1,7 +1,7 @@
 # T3b — selective tier policy
 
 *Drafted 2026-08-09 (W5′, the runtime/transaction arc's carry-in slice).
-**Status: slices 1–3 SHIPPED 2026-08-09; slice 4 pending.**  Normative parents:
+**Status: T3b IS COMPLETE — all four slices SHIPPED 2026-08-09; §0.1 below is the ledger.**  Normative parents:
 [execution-tiers.md](execution-tiers.md) §5.3 (rule execution classes), §5.4
 (the goals stated as measurables), §5.5 (tier scheduling and CPU allocation),
 §11's T3 items 2–3, §12 gates 12/14/15; [t4-contract.md](t4-contract.md)
@@ -23,6 +23,25 @@ so the only tier question the tree can currently answer is "what does the
 cache already hold".  T4 then made the emission unit a kernel and made
 coverage per-rule (`SLOG_NATIVE_COVERAGE`), explicitly deferring hotness
 policy here.  T3b is that policy.
+
+## 0.1 Completion ledger (2026-08-09)
+
+All four slices shipped in one day on the `w5-runtime` branch; each §3
+as-built owns its mechanism.
+
+| slice | commit | exit gate |
+|---|---|---|
+| (1) default classification + zero-clang strata | d25d730 | `tier-classification` 10/10; plan-goldens 8/8 (bytes unmoved); unit shapes battery |
+| (2) tier-profile sidecar | c40c752 | `tier-profile` 5/5 (warm profile + cold artifacts → zero clang, both escape hatches); 12 unit cases |
+| (3) promotion + next-re-entry pickup | 4f829b9 | `tier-promotion` 4/4 (§12.12 self-rescue, budget refusal, session rung climb); session 782/782 + protocol 172/172 |
+| (4) core-budget arbiter + priority queue | (this commit) | `tier-arbiter` 5/5 (o0-max capped, clang metric zero-on-warm); 7 unit cases (priority/boost, budget arithmetic) |
+
+**Standing residues, all recorded in place:** the daemon's `-t` stays
+outside the budget until daemon-side resizing exists (slice 4 as-built);
+oracle-backend pools unbudgeted; per-SCC plan streaming untouched; slice
+1's full-sweep gate (d) runs once at arc end; the o0-max cap is
+per-artifact, so mixed strata keep their O2 until per-kernel artifacts
+(T4 §10's revisit note) make a finer unit.
 
 ## 1. The measurement (2026-08-09, warm suite cache)
 
@@ -347,6 +366,85 @@ every O2 job, still under single-flight claims and low OS priority.
 priority tests showing current-SCC O0 beating future O0 and all O2 work.
 §12.15 stays green throughout: a warm cached O2 pays no interpreter setup
 beyond the plan/manifest validation identity already needs.
+
+#### Slice 4 as-built (2026-08-09)
+
+**The budget** (`core-budget`, tools.rkt): §5.5's split applied to what the
+driver process owns — the eager `-O0` pool at `max(floor(P/2)−1, 1)` and
+the detached `-O2` batch at `max(ceil(pool/2), 1)`, both from the ONE
+function, replacing a pool that defaulted to `P` and a batch at `P/2` ON
+TOP of the daemon's `P−1` workers (~2.5 P of hard demand; on this 8-core
+machine, 19 threads → 12, five of them nice'd).  `SLOG_CORES` overrides
+the detected count; `SLOG_BUILD_JOBS` still pins the pool and wins.
+
+**One deliberate deviation from §5.5, stated plainly:** the daemon's `-t`
+stays at `P−1`.  It is launch-static — the daemon spawns before
+compile-strata knows whether any build will be queued — and §5.5's
+`ceil(P/2)` would tax every warm native fixpoint to relieve contention
+that exists only while cold builds are in flight.  The compile side is
+hard-capped and the O2 batch nice'd, so clang yields to the daemon rather
+than racing it; the fully daemon-owned budget waits for daemon-side
+resizing and stays this slice's residue.
+
+**The priority queue**: `pooled-eager` is now a real queue — jobs carry a
+priority (1 = current SCC, 2 = future) and a label (the stratum hash);
+fixed workers pop lowest-priority-then-lowest-sequence, so pipeline order
+holds within a class.  `pool-boost!` raises a pending label to priority 1;
+both drivers call it just before blocking on a stratum's runnable, and the
+promotion closure submits at priority 1 outright.  Detached O2 work never
+enters the queue: "every O2 last" is enforced by budget share and
+`nice -n 10`, not queue position — the batch must survive the driver's
+exit (that is what detached means), so it cannot be a pool job.
+
+**`o0-max` honored at last** (`stratum-wants-o2?`): a stratum earns an O2
+claim only when some natively covered variant is `tiered`.  The unit of
+enforcement is the artifact, so a MIXED stratum (an acyclic join sharing a
+level with a recursive rule) rightly keeps its O2 — the gate's fixture had
+to stratify its join above the closure to see the cap, which is the
+per-kernel-vs-per-stratum distinction made concrete.  An o0-max stratum
+gets no claim, no upgrade past `-O0`, and — the job hash being
+policy-keyed — no stale `.so` can ever satisfy its warm branch.
+Deliberate simplification: such a stratum also forgoes free-riding
+cluster-mix upgrades from `.o`s that other programs' O2 builds share into
+the cache; predictability over opportunism until a profile shows it
+matters.
+
+**The clang metric** (§5.4, "track this as a measured metric, not a
+slogan"): compiles, links, and caused-O2-claims count at the three clang
+funnels (`build-o` misses, `link-os`, `try-claim-o2!`), and the batch
+driver prints `[clang: N compiles, M links, K o2 claims]` at run end.
+Warm runs report exactly zero; a cold run's line may undercount work
+still in flight at report time (T3a deliberately does not wait), which
+the gate's assertions respect — warm is exact, cold is nonzero.
+
+**The estimate closes the promotion loop**: every pooled O0 build is
+timed (`timed-o0-build`) and recorded per kernel key (`(build-ms N)` in
+the profile file, latest-wins beside the observations), and the promotion
+budget becomes `max(default-floor, mult × estimated-O0-ms)` — §5.3's "a
+small multiple of its estimated O0 compile cost" — with a pinned
+`SLOG_TIER_PROMOTE_MS` staying a hard override in both directions
+(`SLOG_TIER_PROMOTE_MULT` defaults to 2).
+
+**Gates run:** `tier-arbiter` 5/5, new tier in ALL (o0-max capped with a
+tiered control claiming in the same run; cold reports nonzero clang; warm
+reports exactly zero); `tier-arbiter-tests.rkt` 7/7 (budget arithmetic
+over P ∈ {2..32}, a one-worker pool proving priority-then-sequence order
+and boost, error re-raise, estimate arithmetic, and the
+build-ms/observation round-trip); unit 449; `tiered-tests` 9/9 (the swap
+machinery over the rewritten pool); `tier-profile` 5/5,
+`tier-classification` 10/10, `tier-promotion` 4/4 — the last after fixing
+a state-dependence in its part 2 (the battery's own cold discovery run
+recorded a fast observation and skipped the real run; discovery now runs
+under `SLOG_TIER_PROFILE=0` and clears the fixture kernels' profiles,
+proven by running the battery twice back to back); 10 targeted goldens;
+api battery at slice end.
+
+**Residues.**  (i) The daemon's thread width stays outside the budget
+until daemon-side resizing exists (the §5.5 deviation above).  (ii)
+Oracle backends (smt.md's racing pools) still size themselves; they join
+the budget when a real workload shows the contention.  (iii) §5.5's
+"compiler streams each sealed SCC plan as lowering finishes" is untouched
+— emission remains per-program-batch ahead of the run.
 
 ## 4. What T3b hands the rest of the arc
 

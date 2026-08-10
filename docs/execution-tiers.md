@@ -1171,11 +1171,12 @@ start order and findings are recorded in execution-tiers-impl.md §7.
 
 ### T3: cold-start and selective tier scheduling
 
-**Status: T3a (items 1, 4, 5) SHIPPED 2026-07-28.  T3b (items 2 and 3) is in
-progress as four slices over [t3b-contract.md](t3b-contract.md), whose §1
-records the measurement that sets their order: applying §5.3's defaults to a
-warm suite cache designates 30.8% of planned rules `interp-only` and leaves
-247 of 499 strata (49.5%) needing no artifact at all.**
+**Status: T3 IS COMPLETE.  T3a (items 1, 4, 5) SHIPPED 2026-07-28; T3b
+(items 2 and 3) SHIPPED 2026-08-09 as four slices over
+[t3b-contract.md](t3b-contract.md) (its §0.1 ledger maps slices to commits
+and gates), whose §1 measurement set the order: §5.3's defaults designate
+30.8% of planned rules `interp-only` and leave 247 of 499 strata (49.5%)
+needing no artifact at all.**
 
 1. Install/seal plans before waiting for clang; interpret immediately.
    *(T3a, done)*
@@ -1193,7 +1194,13 @@ warm suite cache designates 30.8% of planned rules `interp-only` and leaves
    the session's re-entry resolver now sends the best cached artifact, so
    a fixpoint-beats-clang stratum stops interpreting forever beside its
    own build)*
-3. Core-budget arbiter and compile priority queue (5.5).  *(T3b slice 4)*
+3. Core-budget arbiter and compile priority queue (5.5).  *(T3b slice 4,
+   SHIPPED — one `core-budget` for the compile side (pool
+   max(floor(P/2)−1,1), nice'd O2 batch at half that), a priority queue
+   with current-SCC boost, `o0-max` capped at -O0, the §5.4 clang metric
+   printed per run, and the promotion budget derived from recorded O0
+   build cost; the daemon's -t deliberately stays P−1 until daemon-side
+   resizing — the deviation and residues are in t3b-contract §3 slice 4)*
 4. Artifact selection (cached O2 -> cached O0 -> interpret) and the shipped
    boundary swap for arrivals. **No mid-read takeover yet** — with 500 ms
    interpreter slices, boundary-only swapping already bounds the wait.

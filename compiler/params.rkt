@@ -131,6 +131,18 @@
    (let ([v (getenv "SLOG_TIER_PROMOTE_MS")])
      (or (and v (string->number v)) 4000))))
 
+;; T3b slice 4: a pinned SLOG_TIER_PROMOTE_MS is a hard budget in every
+;; case (the gates pin 0 and 600000); unpinned, the budget derives from the
+;; recorded O0 build cost -- tier-promote-mult × estimate, floored at the
+;; tier-promote-ms default (tier-profile.rkt stratum-promote-budget-ms).
+(define tier-promote-pinned?
+  (let ([v (getenv "SLOG_TIER_PROMOTE_MS")]) (and v (not (equal? v "")) #t)))
+
+(define tier-promote-mult
+  (make-parameter
+   (let ([v (getenv "SLOG_TIER_PROMOTE_MULT")])
+     (or (and v (string->number v)) 2))))
+
 ;; Exhaustive action search is deliberately bounded.  Larger join bodies use
 ;; the deterministic action-aware greedy fallback.
 (define wcoj3-search-cap (make-parameter 8))

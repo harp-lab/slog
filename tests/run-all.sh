@@ -52,6 +52,7 @@ run_harness() {
     tier-classification) bash tests/tier-classification.sh ;;
     tier-profile) bash tests/tier-profile.sh ;;
     tier-promotion) bash tests/tier-promotion.sh ;;
+    tier-arbiter) bash tests/tier-arbiter.sh ;;
     tu-determinism) bash tests/tu-determinism.sh ;;
     incremental-stress) bash tests/incremental-stress.sh ;;
     compression) bash tests/compression/run.sh ;;
@@ -67,7 +68,7 @@ run_harness() {
   esac
 }
 
-ALL=(unit diag stats arena seq counts wcoj3 interp structid golden plan-goldens tier-classification tier-profile tier-promotion api tiered pause protocol repl session joint incremental-stress compression smt-pin smt-solver)
+ALL=(unit diag stats arena seq counts wcoj3 interp structid golden plan-goldens tier-classification tier-profile tier-promotion tier-arbiter api tiered pause protocol repl session joint incremental-stress compression smt-pin smt-solver)
 # `abi2` (RF1 slice 2's airtightness + the ABI-1/ABI-2 differential) is a
 # named tier but NOT in ALL: like plan-determinism it compiles each program
 # from cold twice, so it is a slice gate rather than a per-change one.  Run it
@@ -92,6 +93,10 @@ ALL=(unit diag stats arena seq counts wcoj3 interp structid golden plan-goldens 
 # -> build launches mid-run and attaches), the budget's refusal direction,
 # and the session ledger climbing at re-entry instead of interpreting
 # forever beside its own built artifact.
+# `tier-arbiter` (T3b slice 4: o0-max capped at -O0, the clang metric at
+# zero on warm runs) IS in ALL -- one cold + one warm run of a two-strata
+# fixture, ~1 min; the queue-priority and budget-arithmetic halves are
+# deterministic unit tests (tier-arbiter-tests.rkt).
 # `tu-determinism` (T4 slice 2a: comment-stripped generated C++ is
 # byte-reproducible across two cold compiles -- the property the .o cache
 # and cross-instance sharing key on) is named but OUTSIDE ALL, like abi2:

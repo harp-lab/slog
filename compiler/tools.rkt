@@ -6,6 +6,10 @@
          compile-one
          ensure-pch
          pooled-eager
+         pool-boost!            ; T3b slice 4: current-SCC O0 jumps the queue
+         core-budget            ; T3b slice 4: the one compile-side budget
+         core-count
+         clang-report           ; T3b slice 4: §5.4's measured clang metric
          o2-build-command
          spawn-detached-o2-batch
          o-cache-path
@@ -1045,6 +1049,7 @@
                        o-paths
                        (list "-shared" (format "-o~a" tmp))
                        extra-cxx-flags))
+  (clang-bump! clang-links)
   (run-cxx argv tmp so-path))
 
 ;; Ensure build/o/<key>.o exists for `cpp` at `opt`; compile on a cache miss.
@@ -1064,6 +1069,7 @@
                           (base-cxx-flags opt)
                           (if pch (list "-include-pch" pch) '())
                           (list "-c" cpp (format "-o~a" tmp))))
+     (clang-bump! clang-compiles)
      (define-values (ok? log) (run-cxx argv tmp o-path))
      (list (and ok? o-path) ok? log)]))
 
@@ -1096,43 +1102,137 @@
   so-path)
 
 ;; ---- bounded parallel build pool (docs/fast-compile.md §5) --------------
-;; Eager clang builds run concurrently, capped at the core count so a program's
-;; strata compile in parallel instead of one-at-a-time.  pooled-eager starts the
-;; work immediately in a pool thread and returns a thunk that blocks until it is
+;; Eager clang builds run concurrently, capped by the core-budget arbiter so
+;; a program's strata compile in parallel instead of one-at-a-time.
+;; pooled-eager enqueues the work and returns a thunk that blocks until it is
 ;; done (re-raising any error), so the driver can force stratum k's build in
 ;; pipeline order while k+1.. build behind it.
-;; Parallel clang build pool size.  SLOG_BUILD_JOBS overrides (useful on shared
-;; / CI machines); otherwise use the full processor count.  Resolved lazily on
-;; first build so the slog config system (which sets SLOG_BUILD_JOBS after module
-;; load) is honored.
-(define (build-parallelism)
-  (let* ([env (getenv "SLOG_BUILD_JOBS")]
+;;
+;; T3b slice 4 (execution-tiers §5.5): ONE core budget for the compile side,
+;; and the pool is a PRIORITY queue.
+;;
+;;   compiler pool (eager -O0)   max(floor(P/2) - 1, 1)
+;;   detached -O2 batch          max(ceil(pool/2), 1), nice -n 10
+;;
+;; Before this, the pool defaulted to P and the O2 batch to P/2 ON TOP of the
+;; daemon's P-1 workers -- ~2.5P of hard demand on a P-core machine.  The
+;; daemon's own -t deliberately stays P-1 (slog-thread-count above): it is
+;; launch-static, and halving it would tax every warm native fixpoint to
+;; relieve contention that only exists while cold builds are in flight; the
+;; fully daemon-owned dynamic budget waits for daemon-side resizing
+;; (t3b-contract §3 slice 4 residues).  SLOG_CORES overrides the detected
+;; count (tests, CI); SLOG_BUILD_JOBS still pins the pool directly and wins,
+;; as it always has.  Both resolve lazily on first build so the slog config
+;; system (which sets env after module load) is honored.
+;;
+;; Queue order is §5.5's strict priority: jobs carry a priority -- 1 = the
+;; currently executing SCC (promotions and boosts), 2 = future SCCs -- and a
+;; label (the stratum hash); `pool-boost!` raises a pending labeled job to
+;; priority 1, called by the drivers just before blocking on a stratum's
+;; runnable.  Within a priority, submission (pipeline) order holds.  Detached
+;; -O2 work never enters this queue: it rides its own nice'd batch sized by
+;; the same arbiter, so "every O2 last" is enforced by OS priority and budget
+;; share rather than queue position.
+(define (core-count)
+  (let* ([env (getenv "SLOG_CORES")]
          [n (and env (string->number (string-trim env)))])
-    (max 1 (if (and n (exact-integer? n) (>= n 1)) n (processor-count)))))
-(define build-sem-box (box #f))
-(define build-sem-init-lock (make-semaphore 1))
-(define (build-sem)
-  (or (unbox build-sem-box)
-      (call-with-semaphore build-sem-init-lock
-        (lambda ()
-          (or (unbox build-sem-box)
-              (let ([s (make-semaphore (build-parallelism))])
-                (set-box! build-sem-box s)
-                s))))))
-(define (pooled-eager thunk)
-  (define result (box #f))
-  (define err (box #f))
-  (define done (make-semaphore 0))
-  (thread
-   (lambda ()
-     (with-handlers ([(lambda (_) #t) (lambda (e) (set-box! err e))])
-       (call-with-semaphore (build-sem) (lambda () (set-box! result (thunk)))))
-     (semaphore-post done)))
+    (if (and n (exact-integer? n) (>= n 1)) n (processor-count))))
+
+;; (values compile-pool-jobs o2-batch-jobs), each >= 1.
+(define (core-budget [p (core-count)])
+  (define pool
+    (let* ([env (getenv "SLOG_BUILD_JOBS")]
+           [n (and env (string->number (string-trim env)))])
+      (if (and n (exact-integer? n) (>= n 1))
+          n
+          (max 1 (sub1 (quotient p 2))))))
+  (values pool (max 1 (quotient (add1 pool) 2))))
+
+(define (build-parallelism)
+  (let-values ([(pool _o2) (core-budget)]) pool))
+
+(struct pool-job (prio-box seq label thunk result err done) #:transparent)
+
+(define pool-queue (box '()))             ; pending pool-jobs, unordered
+(define pool-lock (make-semaphore 1))
+(define pool-pending (make-semaphore 0))  ; counts pending jobs
+(define pool-seq (box 0))
+(define pool-workers-started (box #f))
+
+;; clang accounting (§5.4's "track this as a measured metric"): compiles,
+;; links, and the detached -O2 claims this run caused.  Bumped in build-o /
+;; link-os / try-claim-o2!; the batch driver reports the triple at run end.
+(define clang-compiles (box 0))
+(define clang-links (box 0))
+(define clang-o2-claims (box 0))
+(define (clang-bump! b)
+  (call-with-semaphore pool-lock (lambda () (set-box! b (add1 (unbox b))))))
+(define (clang-report)
+  (values (unbox clang-compiles) (unbox clang-links) (unbox clang-o2-claims)))
+
+;; Pop the best pending job: lowest priority number, then lowest sequence
+;; (pipeline order).  Called after pool-pending was decremented, so at least
+;; one job is present.
+(define (pool-pop!)
+  (call-with-semaphore pool-lock
+    (lambda ()
+      (define jobs (unbox pool-queue))
+      (define best
+        (for/fold ([best (car jobs)]) ([j (in-list (cdr jobs))])
+          (define bp (unbox (pool-job-prio-box best)))
+          (define jp (unbox (pool-job-prio-box j)))
+          (if (or (< jp bp)
+                  (and (= jp bp) (< (pool-job-seq j) (pool-job-seq best))))
+              j best)))
+      (set-box! pool-queue (remq best jobs))
+      best)))
+
+(define (ensure-pool-workers!)
+  (unless (unbox pool-workers-started)
+    (call-with-semaphore pool-lock
+      (lambda ()
+        (unless (unbox pool-workers-started)
+          (set-box! pool-workers-started #t)
+          (for ([_ (in-range (build-parallelism))])
+            (thread
+             (lambda ()
+               (let loop ()
+                 (semaphore-wait pool-pending)
+                 (define j (pool-pop!))
+                 (with-handlers ([(lambda (_) #t)
+                                  (lambda (e) (set-box! (pool-job-err j) e))])
+                   (set-box! (pool-job-result j) ((pool-job-thunk j))))
+                 (semaphore-post (pool-job-done j))
+                 (loop))))))))))
+
+(define (pooled-eager thunk #:label [label #f] #:priority [prio 2])
+  (define j (pool-job (box prio)
+                      (call-with-semaphore pool-lock
+                        (lambda ()
+                          (set-box! pool-seq (add1 (unbox pool-seq)))
+                          (unbox pool-seq)))
+                      label thunk (box #f) (box #f) (make-semaphore 0)))
+  (call-with-semaphore pool-lock
+    (lambda () (set-box! pool-queue (cons j (unbox pool-queue)))))
+  (semaphore-post pool-pending)
+  (ensure-pool-workers!)
   (lambda ()
-    (semaphore-wait done)
-    (semaphore-post done)            ; re-postable: force may be called again
-    (when (unbox err) (raise (unbox err)))
-    (unbox result)))
+    (semaphore-wait (pool-job-done j))
+    (semaphore-post (pool-job-done j))   ; re-postable: force may be called again
+    (when (unbox (pool-job-err j)) (raise (unbox (pool-job-err j))))
+    (unbox (pool-job-result j))))
+
+;; Raise every PENDING job with this label to priority 1 -- the driver is
+;; about to block on (or is currently interpreting) that stratum, so its
+;; build is the front of §5.5's queue.  A job already running is untouched:
+;; the pool cannot preempt clang, only order what has not started.
+(define (pool-boost! label)
+  (when label
+    (call-with-semaphore pool-lock
+      (lambda ()
+        (for ([j (in-list (unbox pool-queue))]
+              #:when (equal? (pool-job-label j) label))
+          (set-box! (pool-job-prio-box j) 1))))))
 
 ;; Minimal POSIX single-quoting for one shell word (coercing paths to strings).
 (define (sh-q x)
@@ -1186,8 +1286,12 @@
         (λ (p) (fprintf p "~a\n" (current-seconds))))
       #t))
   (cond
-    [(create!) #t]
-    [(o2-marker-stale? marker) (delete-file* marker) (create!)]
+    [(create!) (clang-bump! clang-o2-claims) #t]
+    [(o2-marker-stale? marker)
+     (delete-file* marker)
+     (let ([claimed? (create!)])
+       (when claimed? (clang-bump! clang-o2-claims))
+       claimed?)]
     [else #f]))
 
 ;; Best-effort marker cleanup, e.g. once <hash>.so is present (the claim is moot).
@@ -1265,7 +1369,9 @@
     (define jobfile (build-tempfile "o2jobs~a.sh"))
     (with-output-to-file jobfile #:exists 'replace
       (lambda () (for ([c (in-list commands)]) (displayln c))))
-    (define k (max 1 (quotient (build-parallelism) 2)))
+    ;; T3b slice 4: the batch's width comes from the same core budget as the
+    ;; eager pool, not from a second uncoordinated sizing.
+    (define k (let-values ([(_pool o2) (core-budget)]) o2))
     ;; read -r (no quote processing) each line; eval it; cap concurrency with
     ;; bash's wait -n.  Passed verbatim as bash's -c arg (no outer shell), so the
     ;; jobfile lines' own single-quoting is the only quoting that matters.
