@@ -39,7 +39,8 @@ as-built owns its mechanism.
 **Standing residues, all recorded in place:** the daemon's `-t` stays
 outside the budget until daemon-side resizing exists (slice 4 as-built);
 oracle-backend pools unbudgeted; per-SCC plan streaming untouched; slice
-1's full-sweep gate (d) runs once at arc end; the o0-max cap is
+1's full-sweep gate (d) DISCHARGED at the 2026-08-10 arc-end full-suite
+run (25/25 effective tiers; golden 168/168 under the classified default); the o0-max cap is
 per-artifact, so mixed strata keep their O2 until per-kernel artifacts
 (T4 §10's revisit note) make a finer unit.
 

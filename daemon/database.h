@@ -3891,6 +3891,13 @@ public:
   { pending_errors[omp_get_thread_num()] = PendingError{kind, op, a, b}; }
   const PendingError& currentPendingError()
   { return pending_errors[omp_get_thread_num()]; }
+  // T6 slice (a): an aborted attempt's per-thread error scratch is
+  // transient prim state and vanishes with the attempt (§8.2); the emitted
+  // error FACTS were already in the discarded shards.
+  void clearPendingErrors()
+  {
+    for (auto& pe : pending_errors) pe = PendingError{};
+  }
 
   ~Database()
   {
@@ -4956,6 +4963,24 @@ public:
     return nullptr;
   }
 
+  // T6 slice (b): the abort admission taxonomy -- replay's, widened by one
+  // position (RUN_MID_READ: a true mid-read abort drops the parked
+  // continuations replay never sees).  The `external` refusal is inherited
+  // deliberately: an oracle answer that landed during the read is not
+  // reproducible by re-running it, and stays a refusal until slice (d)
+  // verifies the answered-set idempotence the audit demands.
+  const char* abortObstacle()
+  {
+    if (!rs.suspended || rs.stratum == nullptr) return "not-parked";
+    if (!rs.stratum->semantic_instance || rs.stratum->transient_instance
+        || (rs.stratum->flavor != "normal" && rs.stratum->flavor != "delta"))
+      return "flavor";
+    if (rs.position != RUN_READ_COMPLETE && rs.position != RUN_MID_READ)
+      return "position";
+    if (external_work != nullptr && externalPending()) return "external";
+    return nullptr;
+  }
+
   // The flavor a refusal cites (the epoch's truth, exact from sealed plans
   // and arming-derived for native installs -- slice (b)).
   std::string currentFlavor() const
@@ -4998,9 +5023,30 @@ public:
   bool replayReadPhase()
   {
     if (rs.suspended == false || rs.position != RUN_READ_COMPLETE) return false;
+    return abortReadAttempt();
+  }
+
+  // T6 slice (b): abort the in-flight ReadAttempt -- §8.1 steps 2-5 as one
+  // primitive.  Valid at RUN_READ_COMPLETE (the pre-commit gate: no live
+  // continuations) and RUN_MID_READ (parked continuations are dropped --
+  // clearPausedPhase is documented safe exactly here, single-threaded at a
+  // suspension).  Masters, deltas, and interned values are untouched: the
+  // read wrote only shards, staged tallies, scratch, and journal entries,
+  // and every one of those is discarded below.  The caller enforces the
+  // flavor/external admission (abortObstacle); the primitive checks only
+  // what would corrupt.  On success the run sits at RUN_MID_READ with
+  // cursors at origin, so (continue) reruns the read over the same
+  // immutable delta -- under whatever executor is then registered, which
+  // is slice (c)'s seam.
+  bool abortReadAttempt()
+  {
+    if (rs.suspended == false
+        || (rs.position != RUN_READ_COMPLETE && rs.position != RUN_MID_READ))
+      return false;
     for (Relation* r : rel_registry)
       if (r != nullptr) r->discardSendShards();
-    restoreIterationFires();
+    discardAttemptFires();
+    clearPendingErrors();
     // T5 slice (d1): the discarded read's captured derivations go with its
     // shards -- otherwise the rerun would double every proof it repeats.
     discardProofsFromRead();
@@ -5011,7 +5057,10 @@ public:
     gate_candidates.clear();
     rs.read_complete_parked = false;
     rs.read_suspended = false;
+    // A step stop is a mid-read park; aborting the read abandons it.
+    if (stepStopPending()) clearStepStop();
     rs.position = RUN_MID_READ;
+    ++read_attempt_gen;
     return true;
   }
 
@@ -6227,6 +6276,10 @@ public:
   {
     for (Relation* r : rel_registry)
       registerLatestAnyRec(r->finalizeBatches());
+    // T6 slice (a): the read COMMITTED -- its shards just became the next
+    // delta, so its staged fire tallies fold into the committed vector at
+    // the same single-threaded point.
+    commitAttemptFires();
   }
 
   // Rebuild every relation's bucketized delta views (Stage B).  Single-threaded
@@ -6956,10 +7009,25 @@ public:
   // produced -- sorted for row-set equality, and the stats relations are
   // sorted at comparison anyway -- so the exact-once audit and the stats
   // goldens see identical content over the new substrate.
+  // T6 slice (a): the tallies are STAGED per ReadAttempt (execution-tiers
+  // §8.2, always on -- never a mode).  Bumps land in the PENDING vector;
+  // the read commit (finalizeAll) folds pending into committed and zeroes
+  // it; an abort or replay zeroes it instead -- so a restarted read can
+  // never double-count, and T5's armed-only iteration snapshot is gone
+  // (its rollback semantics were exactly "zero the pending vector").
+  // Publication drains committed plus any unfolded pending, a safety fold
+  // for round shapes that publish without a final read barrier.
   std::mutex stats_mx;
   std::vector<std::pair<std::string, std::string>> fire_slots;
   std::unordered_map<std::string, u32> fire_slot_index;  // "loc\x1ftag" -> slot
-  std::vector<u64> fire_counts_vec;
+  std::vector<u64> fire_counts_vec;      // committed: folded read attempts
+  std::vector<u64> fire_pending_vec;     // the CURRENT attempt's tallies
+
+  // T6 slice (a): the ReadAttempt generation -- bumped on every abort, so
+  // restart replies and (eventually) per-attempt stats records have an
+  // identity to cite.
+  u64 read_attempt_gen = 0;
+  u64 readAttemptGeneration() const { return read_attempt_gen; }
 
   // T0(c) slice c2: the daemon-side rule-meta registry -- the piece T1
   // deferred ("the daemon cannot resolve RuleIds until T0's rule-meta
@@ -7013,14 +7081,36 @@ public:
     fire_slots.emplace_back(rule_loc, variant);
     fire_slot_index.emplace(std::move(k), slot);
     fire_counts_vec.push_back(0);
+    fire_pending_vec.push_back(0);
     return slot;
   }
 
-  // The vector tally: one locked add per attempt completion.
+  // The vector tally: one locked add per attempt completion, staged in
+  // the current ReadAttempt's pending vector until the read commits.
   void bumpFiresSlot(u32 slot, u64 n)
   {
     std::lock_guard<std::mutex> g(stats_mx);
-    fire_counts_vec[slot] += n;
+    fire_pending_vec[slot] += n;
+  }
+
+  // Read commit: fold the attempt's tallies into the committed vector.
+  // Called from finalizeAll -- the same single-threaded point that turns
+  // the attempt's send shards into the next delta.
+  void commitAttemptFires()
+  {
+    std::lock_guard<std::mutex> g(stats_mx);
+    for (size_t i = 0; i < fire_pending_vec.size(); ++i)
+    {
+      fire_counts_vec[i] += fire_pending_vec[i];
+      fire_pending_vec[i] = 0;
+    }
+  }
+
+  // Abort/replay: the attempt's tallies vanish with its shards.
+  void discardAttemptFires()
+  {
+    std::lock_guard<std::mutex> g(stats_mx);
+    std::fill(fire_pending_vec.begin(), fire_pending_vec.end(), 0);
   }
 
   // Read-only probe for tests and audits: the pending tally for one
@@ -7030,7 +7120,8 @@ public:
     std::string k = std::string(rule_loc) + '\x1f' + variant;
     std::lock_guard<std::mutex> g(stats_mx);
     auto it = fire_slot_index.find(k);
-    return it == fire_slot_index.end() ? 0 : fire_counts_vec[it->second];
+    return it == fire_slot_index.end()
+      ? 0 : fire_counts_vec[it->second] + fire_pending_vec[it->second];
   }
 
   // The string-keyed shim (T0 contract: "remains ... until the W2
@@ -7046,29 +7137,7 @@ public:
   {
     std::lock_guard<std::mutex> g(stats_mx);
     std::fill(fire_counts_vec.begin(), fire_counts_vec.end(), 0);
-    fires_at_iteration.clear();
-  }
-
-  // T5 slice (c): the fire tallies as of the CURRENT iteration's start, so a
-  // replayed read can roll its own instantiations back and the published
-  // $stat_fires still equals the committed execution's count (the exact-once
-  // audit's observable).  Snapshotted at the iteration barrier, and only
-  // while a level-1 watch is armed -- an ordinary run never copies anything.
-  std::vector<u64> fires_at_iteration;
-
-  void snapshotIterationFires()
-  {
-    std::lock_guard<std::mutex> g(stats_mx);
-    fires_at_iteration = fire_counts_vec;
-  }
-
-  void restoreIterationFires()
-  {
-    std::lock_guard<std::mutex> g(stats_mx);
-    // slots minted since the snapshot keep their (zeroed-by-copy) entries:
-    // the vector only ever grows, so size reconciliation is a resize
-    fires_at_iteration.resize(fire_counts_vec.size(), 0);
-    fire_counts_vec = fires_at_iteration;
+    std::fill(fire_pending_vec.begin(), fire_pending_vec.end(), 0);
   }
 
   Relation* ensureStatsRelation(const std::string& name, u32 arity)
@@ -7120,9 +7189,12 @@ public:
     {
       std::lock_guard<std::mutex> g(stats_mx);
       for (size_t i = 0; i < fire_counts_vec.size(); ++i)
-        if (fire_counts_vec[i])
-          drained.push_back({fire_slots[i], fire_counts_vec[i]});
+      {
+        const u64 n = fire_counts_vec[i] + fire_pending_vec[i];
+        if (n) drained.push_back({fire_slots[i], n});
+      }
       std::fill(fire_counts_vec.begin(), fire_counts_vec.end(), 0);
+      std::fill(fire_pending_vec.begin(), fire_pending_vec.end(), 0);
     }
     if (drained.empty()) return;
     std::vector<std::vector<u64>> rows;
@@ -9221,9 +9293,10 @@ inline void IterCompletion::operator()() noexcept
   // touches an ordinary run's iteration barrier.
   if (db->level1Armed())
   {
-    db->snapshotIterationFires();
-    // T5 slice (d1): and the point in the journal this iteration's read
-    // starts writing at, which a replay rolls back to.
+    // T5 slice (d1): the point in the journal this iteration's read starts
+    // writing at, which a replay rolls back to.  (The fire rollback needs
+    // no barrier mark anymore: T6 slice (a) stages tallies per ReadAttempt,
+    // and a replay simply discards the pending vector.)
     db->markProofRead();
   }
 }

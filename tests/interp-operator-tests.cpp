@@ -5793,6 +5793,31 @@ void benchmark_debug_masks()
   _exit(0); // reached only if the fold did NOT fatal
 }
 
+// T6 slice (a): the ReadAttempt fire staging (docs/t6-contract.md).
+// Bumps land in the pending vector; a discard erases exactly the attempt's
+// tallies; a commit folds them where discard cannot reach.  The probe sums
+// pending + committed, so callers see one truth throughout.
+bool test_read_attempt_fire_staging()
+{
+  slog::Database db(1);
+  const u32 slot = db.fireSlot("t6.slog:1", "all:edge");
+  db.bumpFiresSlot(slot, 5);
+  CHECK(db.firesFor("t6.slog:1", "all:edge") == 5);
+  db.discardAttemptFires();                       // abort: tallies vanish
+  CHECK(db.firesFor("t6.slog:1", "all:edge") == 0);
+  db.bumpFiresSlot(slot, 3);
+  db.commitAttemptFires();                        // read commit: folded
+  db.bumpFiresSlot(slot, 4);                      // a fresh attempt begins
+  db.discardAttemptFires();                       // ...and aborts
+  CHECK(db.firesFor("t6.slog:1", "all:edge") == 3);
+  db.bumpFiresSlot(slot, 2);
+  db.commitAttemptFires();
+  CHECK(db.firesFor("t6.slog:1", "all:edge") == 5);
+  // the probe never mints: an unseen pair reads 0
+  CHECK(db.firesFor("t6.slog:1", "all:unseen") == 0);
+  return true;
+}
+
 int main(int argc, char** argv)
 {
   if (argc > 1 && std::string(argv[1]) == "--probe-closure-fatal")
@@ -5800,6 +5825,7 @@ int main(int argc, char** argv)
   if (argc > 1 && std::string(argv[1]) == "--probe-view-fold-fatal")
     probe_child_view_fold_fatal();
   bool ok = true;
+  ok &= test_read_attempt_fire_staging();
   ok &= test_uninterrupted_and_every_quantum();
   ok &= test_cursor_internal_pause_and_continuation_copy();
   ok &= test_parked_task_pins_immutable_program();

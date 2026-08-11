@@ -493,7 +493,10 @@ the fork.
   run — they are §12.2's cross-executor gate, tracked there, not
   regressed here); `identity-keys` 9/9 with the two new c2 registry
   checks; unit 454; protocol 172/172; pause 18/18; session battery at
-  slice end.  Residues: the stat REKEY itself (a sanctioned
+  slice end.  Arc-end follow-up (5befeec): the full suite caught
+  tests/interp-operator-tests.cpp reading the removed fire_counts map
+  (the c3 sweep grepped daemon/ only); Database gained the read-only
+  firesFor probe and the battery rewrote onto it -- green.  Residues: the stat REKEY itself (a sanctioned
   golden-changing event once its consumers are ready); registration is
   fresh-push-only (re-pushes and maintenance drives re-use the resident
   table); the interp-leg fire divergences above.

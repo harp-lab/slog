@@ -1958,9 +1958,12 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
     // T5 slice (d1): `why` joins them -- it reads the journal and the
     // parked epoch's retained candidates, moves nothing, and a
     // boundary-admission refusal would hide the honest answer.
+    // T6 slice (b): `abort-read` is a parked continuation exactly as
+    // `replay` is -- and RF5-B's activation aborts reads inside prepared
+    // boundaries, so the lease must admit it.
     const bool parked_debug_verb =
         (verb == "replay" || verb == "step" || verb == "frames"
-         || verb == "why")
+         || verb == "why" || verb == "abort-read")
         && d->db()->isSuspended();
     // T5 slice (c3) widens this by exactly one park: a STEP STOP is the
     // same "remain paused and inspect" state one transition earlier -- the
@@ -2032,6 +2035,43 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
         else
             refuse(d, "replay-unavailable",
                    std::string("(verb replay) (detail ") + obstacle
+                   + ") (position " + d->db()->currentPositionName() + ")");
+        return;
+    }
+
+    // T6 slice (b): (abort-read) -- the transactional ReadAttempt abort
+    // (docs/t6-contract.md; execution-tiers §8.1 steps 2-5).  Admitted at a
+    // pre-commit gate park OR a genuine mid-read suspension; refuses
+    // non-monotone epochs (counted/maintenance reads are never restarted,
+    // §12.13) and pending external oracle work (inherited from replay's
+    // taxonomy until slice (d) verifies the answered-set idempotence).  On
+    // success the run sits at RUN_MID_READ with cursors at origin;
+    // (continue) reruns the read over the same immutable delta.
+    if (verb == "abort-read")
+    {
+        if (argc != 0)
+        {
+            refuse(d, "parse", "(verb abort-read) (detail \"takes the bare "
+                   "form; the rerun uses the session's continue budget\")");
+            return;
+        }
+        const char* obstacle = d->db()->abortObstacle();
+        if (obstacle == nullptr)
+        {
+            d->db()->abortReadAttempt();
+            d->emit("(read-aborted (generation "
+                    + std::to_string(d->db()->readAttemptGeneration())
+                    + "))");
+            return;
+        }
+        if (std::strcmp(obstacle, "flavor") == 0)
+            refuse(d, "read-abort-flavor",
+                   "(verb abort-read) (flavor "
+                   + slog::protocol::quoteString(d->db()->currentFlavor())
+                   + ") (position " + d->db()->currentPositionName() + ")");
+        else
+            refuse(d, "read-abort-admission",
+                   std::string("(verb abort-read) (detail ") + obstacle
                    + ") (position " + d->db()->currentPositionName() + ")");
         return;
     }
