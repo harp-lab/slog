@@ -1,7 +1,7 @@
 # T6 — transactional mid-read restart
 
 *Drafted 2026-08-11 (W5′ runtime/transaction arc, after T3b and T0(c)
-closed).  **Status: slices (a)+(b) SHIPPED 2026-08-11 (as-builts below); (c)+(d) pending.**  Normative parents:
+closed).  **Status: slices (a)+(b)+(c) SHIPPED 2026-08-11 (as-builts below); (d) pending.**  Normative parents:
 [execution-tiers.md](execution-tiers.md) §8.1 (the seven-step restart, the
 ReadAttempt record), §8.2 (the side-effect audit, by name), §11's T6 item
 list, §12 gates 7/13; [t5-contract.md](t5-contract.md) (whose replay/gate
@@ -174,6 +174,41 @@ restart the read) — policy stays conservative until measured.
 **Exit gate.**  §12.7 under both flip directions at `SLOG_MAX_MS`-scale
 budgets, plus §12 gate 8's resume-inside-nested-joins property preserved
 (the interpreter side) — the existing interp battery already pins it.
+
+#### Slice (c) as-built (2026-08-11)
+
+One flag and two widened checks.  `abortReadAttempt` marks the run
+`read_aborted_pristine` — shards discarded, cursors at origin, delta and
+masters untouched: the boundary-equivalent state — and `continueStratum`
+drops the mark the moment the run is live again.  Both upgrade admissions
+(the entry validation and the legacy name-matched shim) accept
+`RUN_AT_BOUNDARY ∨ readAbortedPristine()`, so the shipped swap machinery
+serves the restart unchanged: abort at a park, send the other artifact,
+continue — the read reruns under the new executor.  The `swap:<from>,<to>`
+drive token exercises it; `t6-restart` 9/9 covers BOTH directions
+(plan→.O0.so and .O0.so→plan) at `SLOG_MAX_MS=2`.
+
+**A finding the gate had to encode:** per-key `$stat_fires` equality
+CANNOT hold across a mixed-executor run today — the executors spell one
+rule's stats identity differently (native: aggregated source loc + base
+tag; interp: disaggregated `<interp-rule:N:variant:M>`), so a swap splits
+one rule's tally across two keys.  This is precisely the identity gap the
+deferred `(RuleId, VariantTag)` rekey closes; with slice (a)'s attempt
+generation it now has two queued consumers.  The gate therefore asserts
+content equality on every relation plus the EXECUTOR-BLIND aggregate:
+total instantiations, which exact-once makes invariant — equal to the
+single-executor reference's total in both directions (31376 on the gate
+fixture).  Single-executor aborts keep the full per-key equality
+assertion.
+
+**Deliberately not wired:** the batch driver's promotion path still
+attaches at the next boundary rather than aborting a mid-flight read.
+Two reasons, both recorded: `(abort-read)` is a command verb, and a
+path-protocol driver that speaks it flips its session to the uniform
+pause record — runslog's stricter pause parsing wants that migration made
+deliberately, not as a side effect; and the policy question (when is
+wasted-read-work worth the restart?) wants the profile sidecar's numbers.
+The capability is proven; the wiring is a follow-on.
 
 ### Slice (d) — the oracle-dispatch audit
 

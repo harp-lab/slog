@@ -2693,6 +2693,11 @@ struct RunState {
   const Stratum* stratum = nullptr;    // the stratum currently (or last) run
   RunPosition position = RUN_FRESH;
   bool suspended = false;              // last continueStratum paused it
+  // T6 slice (c): the suspended read was ABORTED and has not re-entered --
+  // shards discarded, cursors at origin, masters/delta untouched.  This is
+  // the boundary-equivalent state an executor swap is safe at; cleared the
+  // moment the run resumes (or a fresh run starts).
+  bool read_aborted_pristine = false;
   bool tofixpoint = true;              // false: internal single-pass strata
   // The run began over externally seeded content (an open/import preceded
   // anywhere in this session): include the stratum's seeded[phase] tasks
@@ -5060,6 +5065,7 @@ public:
     // A step stop is a mid-read park; aborting the read abandons it.
     if (stepStopPending()) clearStepStop();
     rs.position = RUN_MID_READ;
+    rs.read_aborted_pristine = true;   // swap-safe until the run resumes
     ++read_attempt_gen;
     return true;
   }
@@ -6489,8 +6495,13 @@ public:
   // `starting` sets up a fresh run; otherwise this resumes a suspended one.
   // Returns a RunStatus: either fixpoint reached (or, unbudgeted !tofixpoint,
   // the single pass done) or suspended (AT_BOUNDARY | MID_READ, reason).
+  bool readAbortedPristine() const { return rs.read_aborted_pristine; }
+
   RunStatus continueStratum(Stratum* s, RunBudget b, bool starting, bool tofixpoint)
   {
+    // T6 slice (c): the run is live again -- the post-abort state stops
+    // being swap-safe the moment any worker can touch the read.
+    rs.read_aborted_pristine = false;
     if (starting)
     {
       restoreOrphanRelations();

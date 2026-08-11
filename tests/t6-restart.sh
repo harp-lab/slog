@@ -103,6 +103,66 @@ if [ "$got_abort" -eq 1 ]; then
                 || fail "equivalence-including-fires"
 fi
 
+# ---- 1b: T6 slice (c) -- restart under a DIFFERENT executor -------------------
+# The prebuild left both artifacts of the join stratum: the canonical plan
+# (the interpreter's runnable) and the .O0.so.  Abort at a mid-read park and
+# re-register the OTHER one through the upgrade entry; §12.7 must hold in
+# both directions.
+JOIN_HASH=$(basename "$JOIN_SO" | sed 's/\.O0\.so//; s/\.so//')
+JOIN_PLAN="$(dirname "$JOIN_SO")/$JOIN_HASH.plan"
+if [ ! -f "$JOIN_PLAN" ]; then
+  fail "swap-prebuild (no plan sidecar beside $JOIN_SO)"
+else
+  for dir in "interp-to-native:$JOIN_PLAN,$JOIN_SO" \
+             "native-to-interp:$JOIN_SO,$JOIN_PLAN"; do
+    label="${dir%%:*}"; pair="${dir#*:}"; from="${pair%%,*}"
+    got_swap=0
+    for attempt in 1 2 3; do
+      rm -rf "out/t6-swap-$label"
+      if ! SLOG_MAX_MS=2 timeout 600 racket tests/api/abort-drive.rkt \
+           "out/t6-swap-$label" $PLAIN_TOKENS "swap:$pair" \
+           > "$WORK/swap-$label.log" 2>&1; then
+        echo "  (swap drive $label failed; see $WORK/swap-$label.log)"; break
+      fi
+      if grep -q '^SWAPPED$' "$WORK/swap-$label.log"; then got_swap=1; break; fi
+    done
+    if [ "$got_swap" -ne 1 ]; then
+      fail "swap-$label (no mid-read park in 3 attempts)"
+      continue
+    fi
+    ok=1
+    for csv in out/t6-ref/*.csv; do
+      rel="$(basename "$csv")"
+      # $stat_fires is excluded from the PER-KEY comparison for a mixed-
+      # executor run: the two executors spell one rule's stats identity
+      # differently (native: aggregated source loc; interp: disaggregated
+      # <interp-rule:N:variant:M>), so a swap splits one rule's tally
+      # across two keys.  Cross-executor per-key equality is exactly what
+      # the deferred (RuleId, VariantTag) rekey buys -- T6 (c) is now its
+      # second queued consumer.  The executor-blind aggregate is asserted
+      # below instead.
+      case "$rel" in '$stat_fixpoint'* | '$stat_fires'*) continue ;; esac
+      if ! diff -q <(LC_ALL=C sort "$csv") \
+                   <(LC_ALL=C sort "out/t6-swap-$label/$rel") > /dev/null 2>&1; then
+        echo "  $rel differs after $label swap:"
+        diff <(LC_ALL=C sort "$csv") <(LC_ALL=C sort "out/t6-swap-$label/$rel") \
+          | head -5 | sed 's/^/    /'
+        ok=0
+      fi
+    done
+    [ $ok -eq 1 ] && pass "swap-$label-content" || fail "swap-$label-content"
+    # exact-once makes TOTAL instantiations executor-independent: the sum
+    # over all $stat_fires rows must equal the reference's sum exactly
+    ref_total=$(awk '{n+=$NF} END{print n+0}' out/t6-ref/'$stat_fires.csv')
+    swap_total=$(awk '{n+=$NF} END{print n+0}' "out/t6-swap-$label/\$stat_fires.csv")
+    if [ "$ref_total" = "$swap_total" ] && [ "$ref_total" != "0" ]; then
+      pass "swap-$label-total-fires ($swap_total)"
+    else
+      fail "swap-$label-total-fires (ref=$ref_total swap=$swap_total)"
+    fi
+  done
+fi
+
 # ---- 2: the admission refusal -------------------------------------------------
 timeout 300 racket tests/api/drive.rkt '(abort-read)' '(abort-read now)' \
   > "$WORK/refusal.log" 2>&1 || true
@@ -122,6 +182,67 @@ for attempt in 1 2 3; do
 done
 [ "$got_refusal" -eq 1 ] && pass "flavor-refusal" \
                          || fail "flavor-refusal (no park in 3 attempts)"
+
+# ---- 4: T6 slice (d) -- the oracle-dispatch audit ---------------------------
+# Recursion THROUGH the oracle (smt_rec's shape, scaled): each answer gates
+# the next formula, so one stratum runs many dispatch/harvest rounds and a
+# park can land AFTER a harvest -- the state where, without the staged
+# consumption, the drained answers die with the discarded shards and the
+# answered set suppresses the re-ask: silently lost answers.  Abort at every
+# read park; the final `count` relation must still reach the full chain.
+SMTFIX=out/t6_smt_fixture.slog
+{
+  echo 'include "../lib/smt.slog"'
+  echo "table (count int)"
+  echo "rule (count 0)"
+  echo "rule (count N) (= (sat) (smt_check (llt (ic N) (ic 40)))) (= M (+ N 1))"
+  echo "  --> (count M)"
+} > "$SMTFIX"
+if ! timeout 900 env SLOG_OPT=0 racket compiler/run.rkt --no-banner \
+     --debug-dir out/t6-smt-prebuild "$SMTFIX" > "$WORK/smt-prebuild.log" 2>&1; then
+  echo "  (smt fixture prebuild failed; see $WORK/smt-prebuild.log)"
+  fail smt-prebuild
+else
+  SMT_SOS=$(grep -oE '/[^ ]*/build/[a-f0-9]+(\.O0)?\.so' "$WORK/smt-prebuild.log" | awk '!seen[$0]++')
+  SMT_LAST=$(echo "$SMT_SOS" | tail -1)
+  SMT_PLAIN=""
+  while read -r so; do
+    [ "$so" = "$SMT_LAST" ] && continue
+    SMT_PLAIN="$SMT_PLAIN plain:$so"
+  done <<< "$SMT_SOS"
+  rm -rf out/t6-smt-ref
+  if ! SLOG_MAX_MS=1 timeout 600 racket tests/api/abort-drive.rkt out/t6-smt-ref \
+       $SMT_PLAIN "plain:$SMT_LAST" > "$WORK/smt-ref.log" 2>&1; then
+    echo "  (smt reference failed; see $WORK/smt-ref.log)"; fail smt-reference
+  fi
+  got=0
+  for attempt in 1 2 3; do
+    rm -rf out/t6-smt-abort
+    if ! SLOG_MAX_MS=1 timeout 600 racket tests/api/abort-drive.rkt out/t6-smt-abort \
+         $SMT_PLAIN "abort-many:$SMT_LAST" > "$WORK/smt-abort.log" 2>&1; then
+      echo "  (smt abort drive failed; see $WORK/smt-abort.log)"; break
+    fi
+    n=$(sed -n 's/^ABORTS \([0-9]*\)$/\1/p' "$WORK/smt-abort.log" | tail -1)
+    if [ "${n:-0}" -ge 1 ]; then got=1; break; fi
+  done
+  [ "$got" -eq 1 ] && pass "oracle-aborts-fired ($n)" \
+                   || fail "oracle-aborts-fired (no abort landed in 3 attempts)"
+  if [ "$got" -eq 1 ]; then
+    ok=1
+    for csv in out/t6-smt-ref/*.csv; do
+      rel="$(basename "$csv")"
+      case "$rel" in '$stat_'*) continue ;; esac
+      if ! diff -q <(LC_ALL=C sort "$csv") \
+                   <(LC_ALL=C sort "out/t6-smt-abort/$rel") > /dev/null 2>&1; then
+        echo "  $rel differs after oracle aborts:"
+        diff <(LC_ALL=C sort "$csv") <(LC_ALL=C sort "out/t6-smt-abort/$rel") \
+          | head -5 | sed 's/^/    /'
+        ok=0
+      fi
+    done
+    [ $ok -eq 1 ] && pass "oracle-abort-equivalence" || fail "oracle-abort-equivalence"
+  fi
+fi
 
 echo
 echo "$PASS passed, $FAIL failed"

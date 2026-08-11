@@ -13,6 +13,17 @@
 ;;           = abort-refused:<so>  -- arm a TRANSIENT round first; the abort
 ;;                                    must refuse (read-abort-flavor) and the
 ;;                                    round then completes normally
+;;           = abort-many:<so>     -- T6 slice (d): abort EVERY mid-read
+;;                                    park (cap 6); an `external` admission
+;;                                    refusal (in-flight oracle work) is
+;;                                    tolerated and continued past -- the
+;;                                    mock completes eagerly, so the race is
+;;                                    expected; echoes "ABORTS n" at the end
+;;           = swap:<from>,<to>    -- T6 slice (c): run FROM; at the first
+;;                                    mid-read pause abort, send TO through
+;;                                    the (now post-abort-admitting) upgrade
+;;                                    entry, continue -- the read reruns
+;;                                    under the other executor
 ;;
 ;; Launch with SLOG_MAX_MS=1..3 so mid-read pauses actually occur; the
 ;; harness echoes ABORTED / REFUSED markers for the battery to assert on.
@@ -100,12 +111,75 @@
         [(regexp-match? #px"^\\(error " l) (error l)]
         [else (displayln l) (loop refused?)])))
 
+  ;; T6 slice (c): abort the first mid-read pause, swap executors through
+  ;; the upgrade entry, continue.  The `to` artifact re-registers against
+  ;; the SAME stratum name (same job hash), so the legacy name-matched
+  ;; upgrade path accepts it at the post-abort pristine state.
+  (define (drive-swap from to)
+    (send from)
+    (let loop ([swapped? #f])
+      (define l (rd))
+      (cond
+        [(eof-object? l) (error "unexpected eof")]
+        [(regexp-match? #px"^\\(fixpoint " l) (displayln l) swapped?]
+        [(regexp-match? #px"^\\(paused " l)
+         (displayln l)
+         (cond
+           [(and (not swapped?)
+                 (regexp-match? #px"^\\(paused [^ ]+ \"[^\"]*\" [0-9]+ read " l))
+            (send "(abort-read)")
+            (define reply (rd))
+            (displayln reply)
+            (unless (regexp-match? #px"^\\(read-aborted \\(generation [0-9]+\\)\\)" reply)
+              (error (format "abort-read did not abort: ~a" reply)))
+            (send to)
+            (displayln "SWAPPED")
+            (loop #t)]
+           [else (send continue-so) (loop swapped?)])]
+        [(regexp-match? #px"^\\(error " l) (error l)]
+        [else (displayln l) (loop swapped?)])))
+
+  ;; T6 slice (d): abort at EVERY mid-read park (capped), tolerating the
+  ;; inherited `external` refusal -- with the eager mock, an abort can race
+  ;; a completed-but-unharvested answer, and refusing there is the design.
+  (define (drive-abort-many so)
+    (send so)
+    (let loop ([aborts 0])
+      (define l (rd))
+      (cond
+        [(eof-object? l) (error "unexpected eof")]
+        [(regexp-match? #px"^\\(fixpoint " l)
+         (displayln l)
+         (displayln (format "ABORTS ~a" aborts))
+         (> aborts 0)]
+        [(regexp-match? #px"^\\(paused " l)
+         (displayln l)
+         (cond
+           [(and (< aborts 6)
+                 (regexp-match? #px"^\\(paused [^ ]+ \"[^\"]*\" [0-9]+ read " l))
+            (send "(abort-read)")
+            (define reply (rd))
+            (displayln reply)
+            (cond
+              [(regexp-match? #px"^\\(read-aborted " reply)
+               (send continue-so) (loop (add1 aborts))]
+              [(regexp-match? #px"^\\(refused read-abort-admission .*external" reply)
+               (send continue-so) (loop aborts)]
+              [else (error (format "unexpected abort-read reply: ~a" reply))])]
+           [else (send continue-so) (loop aborts)])]
+        [(regexp-match? #px"^\\(error " l) (error l)]
+        [else (displayln l) (loop aborts)])))
+
   (define outcomes
     (for/list ([tok (in-list tokens)])
       (match (string-split tok ":")
         [(list "plain" so) (drive-plain so) #t]
         [(list "abort" so) (drive-abort so)]
+        [(list "abort-many" so) (drive-abort-many so)]
         [(list "abort-refused" so) (drive-abort-refused so)]
+        [(list "swap" pair)
+         (match-define (list from to) (string-split pair ","))
+         (drive-swap from to)]
         [_ (error 'abort-drive "bad token: ~a" tok)])))
   (unless (andmap values outcomes)
     ;; a target stratum that never paused mid-read aborted/refused nothing:

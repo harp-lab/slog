@@ -275,10 +275,16 @@ private:
                           "upgrade target is not the suspended stratum");
         return false;
       }
-      if (database->suspendPosition() != RUN_AT_BOUNDARY)
+      // T6 slice (c): a swap is safe at a settled boundary OR at a
+      // just-aborted read -- the abort left shards discarded and cursors
+      // at origin, which is the boundary-equivalent state; the flag drops
+      // the moment the run resumes (docs/t6-contract.md slice (c)).
+      if (database->suspendPosition() != RUN_AT_BOUNDARY
+          && !database->readAbortedPristine())
       {
         refuseEntry(replies, "suspended", entry,
-                          "upgrade requires a settled iteration boundary");
+                          "upgrade requires a settled iteration boundary "
+                          "or an aborted read");
         return false;
       }
       return true;
@@ -688,7 +694,8 @@ public:
   {
     const Stratum* current = database->suspendedStratum();
     const bool legacy_upgrade = current != nullptr && current->name == name
-      && database->suspendPosition() == RUN_AT_BOUNDARY;
+      && (database->suspendPosition() == RUN_AT_BOUNDARY
+          || database->readAbortedPristine());   // T6 (c): post-abort swap
     return installStratumImpl(name,
       legacy_upgrade ? EntryMode::upgrade() : EntryMode::fresh(),
       EntryReplyK::legacy_fresh, true);
