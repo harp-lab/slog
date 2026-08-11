@@ -7023,6 +7023,16 @@ public:
     fire_counts_vec[slot] += n;
   }
 
+  // Read-only probe for tests and audits: the pending tally for one
+  // (loc, tag) pair, 0 when the pair has never fired.  Never mints a slot.
+  u64 firesFor(const char* rule_loc, const char* variant)
+  {
+    std::string k = std::string(rule_loc) + '\x1f' + variant;
+    std::lock_guard<std::mutex> g(stats_mx);
+    auto it = fire_slot_index.find(k);
+    return it == fire_slot_index.end() ? 0 : fire_counts_vec[it->second];
+  }
+
   // The string-keyed shim (T0 contract: "remains ... until the W2
   // call-site rekey").  Generated native code calls this per task
   // invocation; the resolution is one hash lookup, the tally the same

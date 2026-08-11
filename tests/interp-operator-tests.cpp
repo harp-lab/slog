@@ -246,6 +246,14 @@ bool fail(const std::string& what)
 
 #define CHECK(COND) do { if (!(COND)) return fail(#COND); } while (false)
 
+// T0(c) c3: the fire tallies live in a dense slot vector behind
+// Database::firesFor; this shim keeps the batteries' pair-indexed reads.
+static u64 fires_of(slog::Database& db, const std::string& loc,
+                    const std::string& tag)
+{
+  return db.firesFor(loc.c_str(), tag.c_str());
+}
+
 u64 primitive_error_callbacks = 0;
 
 void record_primitive_error(Database*, const char*)
@@ -2516,8 +2524,8 @@ bool test_parsed_sidecar_scheduler_admission()
   }
   CHECK(nominal_index_rows(node, {0}) ==
         (std::vector<std::vector<u64>>{{10}, {20}}));
-  CHECK(db.fire_counts[std::make_pair(std::string("<interp-rule:0:variant:0>"),
-                                      std::string("all:edge"))] == 3);
+  // T0(c) c3: the tallies live in the dense fire vector; probe by pair
+  CHECK(db.firesFor("<interp-rule:0:variant:0>", "all:edge") == 3);
   return true;
 }
 
@@ -2809,10 +2817,8 @@ bool test_real_interp_read_task_recursive_admission()
   CHECK(nominal_index_rows(path, order) ==
         (std::vector<std::vector<u64>>{{1, 2}, {1, 3}, {1, 4},
                                        {2, 3}, {2, 4}, {3, 4}}));
-  CHECK(db.fire_counts[std::make_pair(std::string("<interp-rule:70:variant:0>"),
-                                      std::string("delta:admit_edge#0"))] == 3);
-  CHECK(db.fire_counts[std::make_pair(std::string("<interp-rule:71:variant:0>"),
-                                      std::string("delta:admit_path#0"))] == 3);
+  CHECK(db.firesFor("<interp-rule:70:variant:0>", "delta:admit_edge#0") == 3);
+  CHECK(db.firesFor("<interp-rule:71:variant:0>", "delta:admit_path#0") == 3);
 
   // Run the same recursive normal-set kernel through the fused native
   // operators and the same scheduler/barriers.  This is the admission
@@ -2862,10 +2868,8 @@ bool test_real_interp_read_task_recursive_admission()
   CHECK(deltas == native_observed_deltas);
   CHECK(nominal_index_rows(path, order) ==
         nominal_index_rows(native_path, order));
-  CHECK(native_db.fire_counts[std::make_pair(std::string("<native>"),
-         std::string("delta:admit_edge#0"))] == 3);
-  CHECK(native_db.fire_counts[std::make_pair(std::string("<native>"),
-         std::string("delta:admit_path#0"))] == 3);
+  CHECK(native_db.firesFor("<native>", "delta:admit_edge#0") == 3);
+  CHECK(native_db.firesFor("<native>", "delta:admit_path#0") == 3);
   return true;
 }
 
@@ -3019,8 +3023,8 @@ bool test_normal_once_seeded_scheduler_differential()
       ? "<interp-rule:0:variant:0>" : "unit.slog:1";
     const std::string seeded_loc = interpreted
       ? "<interp-rule:1:variant:0>" : "unit.slog:2";
-    outcome.once_fires = db.fire_counts[{once_loc, "once"}];
-    outcome.seeded_fires = db.fire_counts[{seeded_loc, "seeded"}];
+    outcome.once_fires = fires_of(db, once_loc, "once");
+    outcome.seeded_fires = fires_of(db, seeded_loc, "seeded");
     return outcome;
   };
 
@@ -3214,9 +3218,9 @@ bool test_normal_temp_staging_differential()
     const std::string followup_loc = interpreted
       ? "<interp-rule:1:variant:0>" : "nt.slog:2";
     outcome.producer_fires =
-      db.fire_counts[{producer_loc, "delta:nt_input"}];
+      fires_of(db, producer_loc, "delta:nt_input");
     outcome.followup_fires =
-      db.fire_counts[{followup_loc, "delta:nt_tmp"}];
+      fires_of(db, followup_loc, "delta:nt_tmp");
     return outcome;
   };
 
@@ -3463,10 +3467,10 @@ bool test_normal_struct_staging_differential()
       ? "<interp-rule:0:variant:0>" : "ns.slog:1";
     const std::string followup_loc = interpreted
       ? "<interp-rule:1:variant:0>" : "ns.slog:2";
-    outcome.construct_fires = db.fire_counts[
-      {construct_loc, seeded ? "seeded" : "delta:ns_input"}];
+    outcome.construct_fires =
+      fires_of(db, construct_loc, seeded ? "seeded" : "delta:ns_input");
     outcome.followup_fires =
-      db.fire_counts[{followup_loc, "delta:ns_struct"}];
+      fires_of(db, followup_loc, "delta:ns_struct");
     return outcome;
   };
 
@@ -3670,9 +3674,9 @@ bool test_normal_lattice_staging_differential()
     const std::string followup_loc = interpreted
       ? "<interp-rule:1:variant:0>" : "nl.slog:2";
     outcome.contribute_fires =
-      db.fire_counts[{contribute_loc, "all:nl_input"}];
+      fires_of(db, contribute_loc, "all:nl_input");
     outcome.followup_fires =
-      db.fire_counts[{followup_loc, "delta:nl_lat"}];
+      fires_of(db, followup_loc, "delta:nl_lat");
     return outcome;
   };
 
@@ -3911,7 +3915,7 @@ bool test_counted_recursive_seeded_differential()
   // Disaggregated fires, and the native $stat_fires identity (source
   // location plus base driver tag, no "/<kind>" suffix).
   const auto fires = [](Database& which, const char* loc) {
-    return which.fire_counts[{std::string(loc), std::string("seeded")}];
+    return fires_of(which, std::string(loc), std::string("seeded"));
   };
   CHECK(fires(db, "cnt.slog:1") == 2 && fires(native_db, "cnt.slog:1") == 2);
   CHECK(fires(db, "cnt.slog:2") == 1 && fires(native_db, "cnt.slog:2") == 1);
@@ -4088,7 +4092,7 @@ bool test_counted_temp_struct_chain_differential()
   // Same-source rule, two variants: fires aggregate per (loc, base tag)
   // exactly like the native TU's bumpFires.
   const auto fires = [](Database& which, const char* tag) {
-    return which.fire_counts[{std::string("cs.slog:19"), std::string(tag)}];
+    return fires_of(which, std::string("cs.slog:19"), std::string(tag));
   };
   CHECK(fires(db, "seeded") == 3 && fires(native_db, "seeded") == 3);
   CHECK(fires(db, "delta:cs_tmp") == 3
@@ -4154,7 +4158,7 @@ void run(bool settled)
   if (sidecar_words<1>(s2)
       != std::map<std::vector<u64>, u64>{{{3001}, cnt_pack(false, 1, 0)}})
     throw std::runtime_error("counted chained s2 sidecar mismatch");
-  if (db.fire_counts[{std::string("ch.slog:1"), std::string("seeded")}] != 1)
+  if (fires_of(db, std::string("ch.slog:1"), std::string("seeded")) != 1)
     throw std::runtime_error("counted chained fires mismatch");
 }
 
@@ -4265,7 +4269,7 @@ bool test_counted_prim_fault_arm_contribution()
         == (std::map<std::vector<u64>, u64>{{{s32_encode(25)},
                                              cnt_pack(false, 1, 0)}}));
   // The faulting row abandons before its fire: one fire for X=4 only.
-  CHECK((db.fire_counts[{std::string("arm.slog:5"), std::string("seeded")}])
+  CHECK((fires_of(db, std::string("arm.slog:5"), std::string("seeded")))
         == 1);
   return true;
 }
@@ -4532,7 +4536,7 @@ bool test_maint1_positive_differential()
         == nominal_index_rows(native_path, {1, 0}));
   CHECK(nominal_index_rows(path, {1, 0}).size() == 6);
   const auto fires = [](Database& which, const char* loc, const char* tag) {
-    return which.fire_counts[{std::string(loc), std::string(tag)}];
+    return fires_of(which, std::string(loc), std::string(tag));
   };
   CHECK(fires(db, "mt.slog:4", "all:mt_edge") == 1
         && fires(native_db, "mt.slog:4", "all:mt_edge") == 1);
@@ -4718,10 +4722,8 @@ bool test_maint3neg_negative_differential()
         == (std::vector<std::vector<u64>>{{1, 1}}));
   CHECK(nominal_index_rows(native_pair, {0, 1})
         == (std::vector<std::vector<u64>>{{1, 1}}));
-  CHECK((db.fire_counts[{std::string("mn.slog:9"),
-                         std::string("all:mn_a")}]) == 3);
-  CHECK((native_db.fire_counts[{std::string("mn.slog:9"),
-                                std::string("all:mn_a")}]) == 3);
+  CHECK((fires_of(db, std::string("mn.slog:9"), std::string("all:mn_a"))) == 3);
+  CHECK((fires_of(native_db, std::string("mn.slog:9"), std::string("all:mn_a"))) == 3);
   return true;
 }
 
@@ -4809,18 +4811,15 @@ bool test_maint4neg_tomb_resolution()
   // The VM saw the same two resolutions: the live id and the tombstoned id;
   // content 9 double-missed and produced no row.  Both decrements landed:
   // the maintained head is empty with its sidecar entries erased.
-  if ((db.fire_counts[{std::string("tb.slog:3"),
-                       std::string("all:tb_d")}]) != 2)
+  if ((fires_of(db, std::string("tb.slog:3"), std::string("all:tb_d"))) != 2)
   {
     std::cout << "tomb fires="
-              << db.fire_counts[{std::string("tb.slog:3"),
-                                 std::string("all:tb_d")}]
+              << fires_of(db, std::string("tb.slog:3"), std::string("all:tb_d"))
               << " out rows=" << nominal_index_rows(out, {0}).size()
               << "\n";
     dump_words("tomb out sidecar", sidecar_words<1>(out));
   }
-  CHECK((db.fire_counts[{std::string("tb.slog:3"),
-                         std::string("all:tb_d")}]) == 2);
+  CHECK((fires_of(db, std::string("tb.slog:3"), std::string("all:tb_d"))) == 2);
   CHECK(nominal_index_rows(out, {0}).empty());
   CHECK(sidecar_words<1>(out).empty());
   return true;
@@ -4926,15 +4925,13 @@ void run()
     for (const auto& [key, word] : sidecar_words<1>(h))
       std::cerr << " " << key[0] << "=nr" << cnt_nonrec(word);
     std::cerr << " | fires: "
-              << db.fire_counts[{std::string("na.slog:3"),
-                                 std::string("all:na_a")}] << std::endl;
+              << fires_of(db, std::string("na.slog:3"), std::string("all:na_a")) << std::endl;
     throw std::runtime_error("m4n: healed content mismatch");
   }
   if (sidecar_words<1>(h)
       != (std::map<std::vector<u64>, u64>{{{2}, cnt_pack(false, 1, 0)}}))
     throw std::runtime_error("m4n: healed sidecar mismatch");
-  if ((db.fire_counts[{std::string("na.slog:3"),
-                       std::string("all:na_a")}]) != 2)
+  if ((fires_of(db, std::string("na.slog:3"), std::string("all:na_a"))) != 2)
     throw std::runtime_error("m4n: fire count mismatch");
 }
 
