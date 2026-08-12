@@ -1,0 +1,12 @@
+;; A later PROGRAM event in the suffix: the deliberate v1 refusal (rf5 §8).
+(program-change-set (abi 1)
+  (base (program "p1:layer-base:0") (boundary "b1:layer-base:0"))
+  (candidate (image "sha-v2") (compiler "fprint-test") (plan-abi 2) (sources))
+  (occurrences) (rule-lineage)
+  (slot-lineage ((relation edge) (old "v1:layer-base:0:0") (disposition carry)))
+  (diffs) (writers (old ()) (new ()))
+  (sccs (old ()) (new ()))
+  (affected (roots ()) (cone ()))
+  (services)
+  (suffix (run "later.slog"))
+  (refusals))

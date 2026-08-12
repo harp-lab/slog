@@ -1,0 +1,12 @@
+;; A compiler-known refusal rides the fixture; the consumer surfaces it
+;; before touching anything.
+(program-change-set (abi 1)
+  (base (program "p1:layer-base:0") (boundary "b1:layer-base:0"))
+  (candidate (image "sha-v2") (compiler "fprint-test") (plan-abi 2) (sources))
+  (occurrences) (rule-lineage) (slot-lineage)
+  (diffs) (writers (old ()) (new ()))
+  (sccs (old ()) (new ()))
+  (affected (roots ()) (cone ()))
+  (services)
+  (suffix)
+  (refusals (incompatible-output-schema (relation answer))))

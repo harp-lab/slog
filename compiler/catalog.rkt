@@ -37,6 +37,8 @@
  rule-key                ; T0(c): durable lexical rule occurrence identity
  scc-instance-key        ; T0(c): semantic SCC identity, not pipeline ordinal
  mint-program-identity   ; program-key × payload -> keyed identity records
+ program-key             ; the p1: constructor (activation.rkt mints successors)
+ version-key             ; the v1: constructor (fresh slots for rebuilt writers)
  (struct-out transform-plan)
  plan-path-transform
  replay-path-transform

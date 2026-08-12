@@ -1,8 +1,8 @@
 # The activation spine — the runtime arc's pre-join deliverable
 
 *Drafted 2026-08-12 (W5′ runtime/transaction arc, after T3b, T0(c), T6,
-and the N5/stats-4 identity unification closed).  **Status: contract
-drafted; slice A1 next.**  Normative parents:
+and the N5/stats-4 identity unification closed).  **Status: slice A1
+SHIPPED 2026-08-12 (as-built in §5); A2 next.**  Normative parents:
 [roadmap.md](roadmap.md) §6 (the two-arc plan, the `ProgramChangeSet`
 fixture, the ownership table); [rf5-contract.md](rf5-contract.md) §7
 (prepare/heal/publish), §7.1 (the correctness-first route), §10.1 (the
@@ -136,6 +136,13 @@ activate(change-set):
   `ActivationPlan` record with minted successor keys — no daemon contact.
   Gate: a unit battery over the corpus (accept/refuse per case; plan
   contents pinned; determinism: same fixture → same plan modulo layer).
+  *As built (2026-08-12): `compiler/activation.rkt` + five fixtures +
+  `activation-tests.rkt` 12/12.  The plan allocates version rows for
+  every union writer PLUS every slot-lineage relation, so a carried
+  non-writer — the untouched instance's slots — gets an explicit reuse
+  row: the RF5-B outside-cone claim is checkable in the plan itself,
+  before any daemon exists.  All eight refusal types driven; resolution
+  proven pure; parse failures typed at parse, never at resolve.*
 - **A2 — the transaction over a live session.**  `session-activate!`:
   steps 3–6 composed from the shipped verbs, correctness-first route
   only; the abort path proven (abort at the gate leaves the base
