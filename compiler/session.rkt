@@ -96,6 +96,7 @@
          session-tiers          ; R3: per-stratum execution rungs + cache
          session-identity-records ; T0(c): durable RuleKey/SccInstanceKey sets
          session-rule-meta      ; T0(c) c2: the daemon's RuleId<->RuleKey registry
+         session-fires          ; N5/stats-4: RuleKey-resolved fire records
          session-set-scc-policy! ; T5: pin a relation's writers to an executor
          session-pending-summary ; gate S1: staged-but-unflushed changes
          session-pause-hook     ; gate S3/R4: observe a parked epoch
@@ -632,6 +633,17 @@
         ;; from a pre-c2 daemon; either way exactly one line, not echoed
         (read-line (session-out s))
         (void)))))
+
+;; N5/stats-4: the durable-identity fire view -- (fire-record ...) lines up
+;; to the (fire-end n) terminator (exclusive).  Fires whose locs the
+;; registry resolves carry RuleKeys; the rest carry (key #f), honestly.
+(define (session-fires s)
+  (send-command-line! s "(fires)")
+  (let loop ([acc '()])
+    (define l (read-line (session-out s)))
+    (cond [(eof-object? l) (reverse acc)]
+          [(regexp-match? #px"^\\(fire-end " l) (reverse acc)]
+          [else (loop (cons l acc))])))
 
 ;; The daemon's registry, read back: the raw record lines up to the
 ;; (rule-meta-end n) terminator (exclusive).

@@ -368,7 +368,19 @@ classes regardless of tier.
 3. Publish `stats.iter`; the runtime already computes iteration completion,
    delta magnitude, and elapsed time.
 4. Move the fire audit to `RuleKey` and `StratumExecutionId`; normalize only
-   `EvaluationId` in goldens.
+   `EvaluationId` in goldens.  *(Step 4's substance shipped 2026-08-11 on
+   the W5′ runtime arc, scoped to where the identities exist: the two
+   executors' fire identity is UNIFIED — the interpreter keys normal rules
+   by source loc + base tag exactly as native and flavored rounds always
+   did, which made the `SLOG_OPT=interp` stats legs pass their
+   hand-verified goldens for the first time and lets a mixed-executor
+   restarted read land its fires under one key (t6-restart's swap gate now
+   asserts per-key equality); and sessions expose the durable view — the
+   `(fires)` verb streams every tally with its loc resolved to a RuleKey
+   through the T0(c) rule-meta registry.  Batch goldens keep loc+tag keys
+   deliberately: RuleKeys are recipe-layer identities, and a one-shot batch
+   run has none by design.  The full stats.* golden migration remains this
+   step's later half.)*
 5. Add daemon-side memory/interner/index inventories.
 6. Add `full` codegen instrumentation and include its mode in the compile
    cache key.

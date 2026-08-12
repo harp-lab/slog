@@ -1850,22 +1850,23 @@ public:
     stats_rule_variant_key = "<interp-rule:"
       + std::to_string(sealed.program.rule_id) + ":variant:"
       + std::to_string(sealed.program.variant_ordinal) + ">";
-    if (sealed.counted || sealed.maint)
+    // EVERY interpreted rule keeps the native $stat_fires identity --
+    // source location plus the base driver tag (no "/<kind>" suffix, no
+    // "#<ordinal>") -- so cross-executor comparison holds at the
+    // aggregated-golden level the exact-once audit pins.  Flavored rounds
+    // pinned this from day one; N5/stats-4 (2026-08-11) extends it to
+    // normal rules, which closes T6 (c)'s mixed-executor finding: a read
+    // restarted under the other executor now lands its fires under the
+    // SAME key.  A rule with no source (hand-built plans, demand-minted
+    // rules) keeps the disaggregated <interp-rule:N:variant:M> spelling;
+    // the debugger's frames were never coupled to this key (they render
+    // Program::source directly).
+    stats_loc = sealed.program.source.empty()
+      ? stats_rule_variant_key : sealed.program.source;
     {
-      // Flavored rounds keep the native $stat_fires identity -- source
-      // location plus the base driver tag (no "/<kind>" suffix, no
-      // "#<ordinal>") -- so cross-executor comparison stays at the
-      // aggregated-golden level the exact-once audit pins.
-      stats_loc = sealed.program.source.empty()
-        ? stats_rule_variant_key : sealed.program.source;
       const size_t cut = sealed.program.variant.find_first_of("/#");
       stats_tag = cut == std::string::npos
         ? sealed.program.variant : sealed.program.variant.substr(0, cut);
-    }
-    else
-    {
-      stats_loc = stats_rule_variant_key;
-      stats_tag = sealed.program.variant;
     }
     // A flavored rule's primitive faults contribute kind-tagged error-arm
     // rows exactly like native flavored code (emit_pending_error_count).

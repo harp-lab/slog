@@ -7047,6 +7047,10 @@ public:
   std::unordered_map<std::string, u32> fire_slot_index;  // "loc\x1ftag" -> slot
   std::vector<u64> fire_counts_vec;      // committed: folded read attempts
   std::vector<u64> fire_pending_vec;     // the CURRENT attempt's tallies
+  // N5/stats-4: the evaluation-cumulative ledger the (fires) view reads --
+  // folded at each PUBLICATION drain (transient rounds' discarded tallies
+  // deliberately never reach it, mirroring their absent $stat rows).
+  std::vector<u64> fire_totals_vec;
 
   // T6 slice (a): the ReadAttempt generation -- bumped on every abort, so
   // restart replies and (eventually) per-attempt stats records have an
@@ -7107,6 +7111,7 @@ public:
     fire_slot_index.emplace(std::move(k), slot);
     fire_counts_vec.push_back(0);
     fire_pending_vec.push_back(0);
+    fire_totals_vec.push_back(0);
     return slot;
   }
 
@@ -7136,6 +7141,23 @@ public:
   {
     std::lock_guard<std::mutex> g(stats_mx);
     std::fill(fire_pending_vec.begin(), fire_pending_vec.end(), 0);
+  }
+
+  // N5/stats-4: a snapshot of every nonzero fire tally, committed +
+  // pending, for the (fires) introspection verb -- the daemon-side half of
+  // the RuleKey-resolved fire view (slogd joins locs through the rule-meta
+  // registry).  Read-only; publication is untouched.
+  std::vector<std::tuple<std::string, std::string, u64>> fireRows()
+  {
+    std::vector<std::tuple<std::string, std::string, u64>> rows;
+    std::lock_guard<std::mutex> g(stats_mx);
+    for (size_t i = 0; i < fire_counts_vec.size(); ++i)
+    {
+      const u64 n = fire_totals_vec[i] + fire_counts_vec[i]
+                    + fire_pending_vec[i];
+      if (n) rows.emplace_back(fire_slots[i].first, fire_slots[i].second, n);
+    }
+    return rows;
   }
 
   // Read-only probe for tests and audits: the pending tally for one
@@ -7216,7 +7238,7 @@ public:
       for (size_t i = 0; i < fire_counts_vec.size(); ++i)
       {
         const u64 n = fire_counts_vec[i] + fire_pending_vec[i];
-        if (n) drained.push_back({fire_slots[i], n});
+        if (n) { drained.push_back({fire_slots[i], n}); fire_totals_vec[i] += n; }
       }
       std::fill(fire_counts_vec.begin(), fire_counts_vec.end(), 0);
       std::fill(fire_pending_vec.begin(), fire_pending_vec.end(), 0);

@@ -133,15 +133,12 @@ else
     ok=1
     for csv in out/t6-ref/*.csv; do
       rel="$(basename "$csv")"
-      # $stat_fires is excluded from the PER-KEY comparison for a mixed-
-      # executor run: the two executors spell one rule's stats identity
-      # differently (native: aggregated source loc; interp: disaggregated
-      # <interp-rule:N:variant:M>), so a swap splits one rule's tally
-      # across two keys.  Cross-executor per-key equality is exactly what
-      # the deferred (RuleId, VariantTag) rekey buys -- T6 (c) is now its
-      # second queued consumer.  The executor-blind aggregate is asserted
-      # below instead.
-      case "$rel" in '$stat_fixpoint'* | '$stat_fires'*) continue ;; esac
+      # N5/stats-4 (2026-08-11) unified the executors' fire identity
+      # (source loc + base tag on both sides), so the mixed-run PER-KEY
+      # comparison that T6 (c) originally had to exclude now HOLDS -- and
+      # this assertion is its guard.  ($stat_fixpoint stays excluded:
+      # wall-clock rows.)
+      case "$rel" in '$stat_fixpoint'*) continue ;; esac
       if ! diff -q <(LC_ALL=C sort "$csv") \
                    <(LC_ALL=C sort "out/t6-swap-$label/$rel") > /dev/null 2>&1; then
         echo "  $rel differs after $label swap:"
@@ -195,7 +192,7 @@ SMTFIX=out/t6_smt_fixture.slog
   echo 'include "../lib/smt.slog"'
   echo "table (count int)"
   echo "rule (count 0)"
-  echo "rule (count N) (= (sat) (smt_check (llt (ic N) (ic 40)))) (= M (+ N 1))"
+  echo "rule (count N) (= (sat) (smt_check (llt (ic N) (ic 150)))) (= M (+ N 1))"
   echo "  --> (count M)"
 } > "$SMTFIX"
 if ! timeout 900 env SLOG_OPT=0 racket compiler/run.rkt --no-banner \
@@ -216,7 +213,7 @@ else
     echo "  (smt reference failed; see $WORK/smt-ref.log)"; fail smt-reference
   fi
   got=0
-  for attempt in 1 2 3; do
+  for attempt in 1 2 3 4 5; do
     rm -rf out/t6-smt-abort
     if ! SLOG_MAX_MS=1 timeout 600 racket tests/api/abort-drive.rkt out/t6-smt-abort \
          $SMT_PLAIN "abort-many:$SMT_LAST" > "$WORK/smt-abort.log" 2>&1; then

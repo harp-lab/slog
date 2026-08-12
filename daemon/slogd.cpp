@@ -1896,6 +1896,36 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
         return;
     }
 
+    // N5/stats-4: (fires) -- the durable-identity fire view.  Each nonzero
+    // tally streams as one record, its loc resolved to a RuleKey through
+    // the rule-meta registry when the session registered one; unresolved
+    // locs (batch-style sessions, derived rules) carry (key #f) honestly.
+    // Session-scoped introspection, like the registry it joins: never part
+    // of any golden, save, or replay.
+    if (verb == "fires" && argc == 0)
+    {
+        std::unordered_map<std::string, const std::string*> key_of_loc;
+        for (const auto& per : d->db()->ruleMeta())
+            for (const auto& e : per.second)
+                if (!e.loc.empty() && !e.key.empty())
+                    key_of_loc.emplace(e.loc, &e.key);
+        size_t n = 0;
+        for (const auto& row : d->db()->fireRows())
+        {
+            auto it = key_of_loc.find(std::get<0>(row));
+            d->emit("(fire-record (key "
+                    + (it == key_of_loc.end()
+                         ? std::string("#f")
+                         : slog::protocol::quoteString(*it->second))
+                    + ") (loc " + slog::protocol::quoteString(std::get<0>(row))
+                    + ") (tag " + slog::protocol::quoteString(std::get<1>(row))
+                    + ") (n " + std::to_string(std::get<2>(row)) + "))");
+            ++n;
+        }
+        d->emit("(fire-end " + std::to_string(n) + ")");
+        return;
+    }
+
     // (rule-meta) streams the registry back, one record per entry.
     if (verb == "rule-meta" && argc == 0)
     {

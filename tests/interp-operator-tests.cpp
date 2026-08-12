@@ -2525,7 +2525,8 @@ bool test_parsed_sidecar_scheduler_admission()
   CHECK(nominal_index_rows(node, {0}) ==
         (std::vector<std::vector<u64>>{{10}, {20}}));
   // T0(c) c3: the tallies live in the dense fire vector; probe by pair
-  CHECK(db.firesFor("<interp-rule:0:variant:0>", "all:edge") == 3);
+  // N5/stats-4: interp keys by the plan's source loc, same as native
+  CHECK(db.firesFor("bulk.slog:9", "all:edge") == 3);
   return true;
 }
 
@@ -2817,8 +2818,8 @@ bool test_real_interp_read_task_recursive_admission()
   CHECK(nominal_index_rows(path, order) ==
         (std::vector<std::vector<u64>>{{1, 2}, {1, 3}, {1, 4},
                                        {2, 3}, {2, 4}, {3, 4}}));
-  CHECK(db.firesFor("<interp-rule:70:variant:0>", "delta:admit_edge#0") == 3);
-  CHECK(db.firesFor("<interp-rule:71:variant:0>", "delta:admit_path#0") == 3);
+  CHECK(db.firesFor("<interp-rule:70:variant:0>", "delta:admit_edge") == 3);
+  CHECK(db.firesFor("<interp-rule:71:variant:0>", "delta:admit_path") == 3);
 
   // Run the same recursive normal-set kernel through the fused native
   // operators and the same scheduler/barriers.  This is the admission
@@ -3019,10 +3020,9 @@ bool test_normal_once_seeded_scheduler_differential()
     }
     outcome.once_rows = nominal_index_rows(once, {0});
     outcome.seeded_rows = nominal_index_rows(seeded, {0});
-    const std::string once_loc = interpreted
-      ? "<interp-rule:0:variant:0>" : "unit.slog:1";
-    const std::string seeded_loc = interpreted
-      ? "<interp-rule:1:variant:0>" : "unit.slog:2";
+    // N5/stats-4: one spelling across executors -- the source loc
+    const std::string once_loc = "unit.slog:1";
+    const std::string seeded_loc = "unit.slog:2";
     outcome.once_fires = fires_of(db, once_loc, "once");
     outcome.seeded_fires = fires_of(db, seeded_loc, "seeded");
     return outcome;
@@ -3213,10 +3213,8 @@ bool test_normal_temp_staging_differential()
       status = db.continueStratum(&stratum, budget, false, true);
     }
     outcome.output_rows = nominal_index_rows(output, {0});
-    const std::string producer_loc = interpreted
-      ? "<interp-rule:0:variant:0>" : "nt.slog:1";
-    const std::string followup_loc = interpreted
-      ? "<interp-rule:1:variant:0>" : "nt.slog:2";
+    const std::string producer_loc = "nt.slog:1";
+    const std::string followup_loc = "nt.slog:2";
     outcome.producer_fires =
       fires_of(db, producer_loc, "delta:nt_input");
     outcome.followup_fires =
@@ -3463,10 +3461,8 @@ bool test_normal_struct_staging_differential()
     }
     outcome.struct_rows = nominal_index_rows(structure, {1, 0});
     outcome.output_rows = nominal_index_rows(output, {0, 1});
-    const std::string construct_loc = interpreted
-      ? "<interp-rule:0:variant:0>" : "ns.slog:1";
-    const std::string followup_loc = interpreted
-      ? "<interp-rule:1:variant:0>" : "ns.slog:2";
+    const std::string construct_loc = "ns.slog:1";
+    const std::string followup_loc = "ns.slog:2";
     outcome.construct_fires =
       fires_of(db, construct_loc, seeded ? "seeded" : "delta:ns_input");
     outcome.followup_fires =
@@ -3669,10 +3665,8 @@ bool test_normal_lattice_staging_differential()
     }
     outcome.lattice_rows = nominal_index_rows(lattice, {0, 1});
     outcome.output_rows = nominal_index_rows(output, {0, 1});
-    const std::string contribute_loc = interpreted
-      ? "<interp-rule:0:variant:0>" : "nl.slog:1";
-    const std::string followup_loc = interpreted
-      ? "<interp-rule:1:variant:0>" : "nl.slog:2";
+    const std::string contribute_loc = "nl.slog:1";
+    const std::string followup_loc = "nl.slog:2";
     outcome.contribute_fires =
       fires_of(db, contribute_loc, "all:nl_input");
     outcome.followup_fires =

@@ -153,6 +153,8 @@
     [(list "rule-keys") `(rule-keys)]
     ;; T0(c) c2: the daemon's registered RuleId<->RuleKey table
     [(list "daemon-rule-meta") `(daemon-rule-meta)]
+    ;; N5/stats-4: RuleKey-resolved fire records
+    [(list "fires") `(fires)]
     ;; the count round + sidecar introspection (docs/incremental.md §8B, M0)
     ;;   recount            whole pipeline (tip), lazy
     ;;   recount:REL        REL's counting cone (tip), lazy
@@ -275,6 +277,10 @@
        (define lines (session-rule-meta s))
        (for-each displayln lines)
        (displayln `(daemon-rule-meta-end ,(length lines)))]
+      [`(fires)
+       (define lines (session-fires s))
+       (for-each displayln lines)
+       (displayln `(fires-end ,(length lines)))]
       [`(await-build ,secs)
        ;; every COVERED stratum (native coverage > 0 per its .tiers sidecar)
        ;; should grow an artifact; zero-clang and profile-skipped strata
