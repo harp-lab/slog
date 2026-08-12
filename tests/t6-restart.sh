@@ -201,29 +201,43 @@ if ! timeout 900 env SLOG_OPT=0 racket compiler/run.rkt --no-banner \
   fail smt-prebuild
 else
   SMT_SOS=$(grep -oE '/[^ ]*/build/[a-f0-9]+(\.O0)?\.so' "$WORK/smt-prebuild.log" | awk '!seen[$0]++')
-  SMT_LAST=$(echo "$SMT_SOS" | tail -1)
-  SMT_PLAIN=""
+  # Target the ORACLE stratum by construction: the evaluation with the
+  # largest iteration count in the prebuild log.  (This check originally
+  # targeted the LAST .so, which is a trailing 2-iteration stratum -- its
+  # early greens were sub-ms-park timing luck, and the abort never actually
+  # landed in the oracle recursion this slice exists to test.)  Tokens stay
+  # in strata order -- the target is a MIDDLE stratum, and driving strata
+  # out of order would compute garbage.
+  SMT_TARGET=$(awk 'match($0, /\/[^ ]*\/build\/[a-f0-9]+(\.O0)?\.so/) \
+                      { so=substr($0, RSTART, RLENGTH) } \
+                    /^\(fixpoint / { it=$4+0; if (it > best) { best=it; bestso=so } } \
+                    END { print bestso }' "$WORK/smt-prebuild.log")
+  SMT_REF_TOKENS=""; SMT_ABORT_TOKENS=""
   while read -r so; do
-    [ "$so" = "$SMT_LAST" ] && continue
-    SMT_PLAIN="$SMT_PLAIN plain:$so"
+    SMT_REF_TOKENS="$SMT_REF_TOKENS plain:$so"
+    if [ "$so" = "$SMT_TARGET" ]; then
+      SMT_ABORT_TOKENS="$SMT_ABORT_TOKENS abort-many:$so"
+    else
+      SMT_ABORT_TOKENS="$SMT_ABORT_TOKENS plain:$so"
+    fi
   done <<< "$SMT_SOS"
   rm -rf out/t6-smt-ref
   if ! SLOG_MAX_MS=1 timeout 600 racket tests/api/abort-drive.rkt out/t6-smt-ref \
-       $SMT_PLAIN "plain:$SMT_LAST" > "$WORK/smt-ref.log" 2>&1; then
+       $SMT_REF_TOKENS > "$WORK/smt-ref.log" 2>&1; then
     echo "  (smt reference failed; see $WORK/smt-ref.log)"; fail smt-reference
   fi
   got=0
   for attempt in 1 2 3 4 5; do
     rm -rf out/t6-smt-abort
     if ! SLOG_MAX_MS=1 timeout 600 racket tests/api/abort-drive.rkt out/t6-smt-abort \
-         $SMT_PLAIN "abort-many:$SMT_LAST" > "$WORK/smt-abort.log" 2>&1; then
+         $SMT_ABORT_TOKENS > "$WORK/smt-abort.log" 2>&1; then
       echo "  (smt abort drive failed; see $WORK/smt-abort.log)"; break
     fi
     n=$(sed -n 's/^ABORTS \([0-9]*\)$/\1/p' "$WORK/smt-abort.log" | tail -1)
     if [ "${n:-0}" -ge 1 ]; then got=1; break; fi
   done
   [ "$got" -eq 1 ] && pass "oracle-aborts-fired ($n)" \
-                   || fail "oracle-aborts-fired (no abort landed in 3 attempts)"
+                   || fail "oracle-aborts-fired (no abort landed in 5 attempts)"
   if [ "$got" -eq 1 ]; then
     ok=1
     for csv in out/t6-smt-ref/*.csv; do
