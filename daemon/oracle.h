@@ -118,6 +118,13 @@ struct OracleBinding
   std::mutex done_mu;
   std::vector<std::pair<u64, OracleResult>> done;
 
+  // T6 slice (d): answers drained by THIS read attempt, restorable until
+  // the read commits.  The harvest emits into send shards, which an abort
+  // discards -- without this stage those answers would be silently lost
+  // (the answered set suppresses the re-ask; the drain already consumed
+  // the queue).  Guarded by done_mu like the queue it shadows.
+  std::vector<std::pair<u64, OracleResult>> harvesting;
+
   // Warn once per distinct serialize-failure reason (then answer unknown).
   std::unordered_set<std::string> warned;
 
@@ -131,6 +138,8 @@ struct OracleBinding
     std::lock_guard<std::mutex> lk(done_mu);
     out.swap(done);
     done.clear();
+    // T6 slice (d): stage a copy of everything this attempt drains
+    for (const auto& e : out) harvesting.push_back(e);
   }
 };
 
@@ -298,6 +307,38 @@ public:
   {
     outstanding_.fetch_sub(n);
     undrained_.fetch_sub(n);
+  }
+
+  // ---- T6 slice (d): the staged-harvest commit/restore pair ----
+  // Both run single-threaded (finalizeAll's sentinel; an abort at a
+  // suspension), so iterating the bindings map needs no registry lock;
+  // the per-binding stage shares done_mu with the queue it shadows.
+  void commitHarvest() override
+  {
+    for (auto& kv : bindings)
+    {
+      std::lock_guard<std::mutex> lk(kv.second->done_mu);
+      kv.second->harvesting.clear();
+    }
+  }
+
+  void restoreHarvest() override
+  {
+    u64 restored = 0;
+    for (auto& kv : bindings)
+    {
+      OracleBinding* b = kv.second;
+      std::lock_guard<std::mutex> lk(b->done_mu);
+      for (auto& e : b->harvesting) b->done.push_back(std::move(e));
+      restored += b->harvesting.size();
+      b->harvesting.clear();
+    }
+    if (restored)
+    {
+      outstanding_.fetch_add(restored);
+      undrained_.fetch_add(restored);
+      done_cv.notify_all();
+    }
   }
 
   // ---- ExternalWork (the fixpoint's view; database.h) ----

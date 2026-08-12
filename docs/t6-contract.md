@@ -1,7 +1,7 @@
 # T6 — transactional mid-read restart
 
 *Drafted 2026-08-11 (W5′ runtime/transaction arc, after T3b and T0(c)
-closed).  **Status: slices (a)+(b)+(c) SHIPPED 2026-08-11 (as-builts below); (d) pending.**  Normative parents:
+closed).  **Status: T6 IS COMPLETE — all four slices SHIPPED 2026-08-11; §0.1 is the ledger.**  Normative parents:
 [execution-tiers.md](execution-tiers.md) §8.1 (the seven-step restart, the
 ReadAttempt record), §8.2 (the side-effect audit, by name), §11's T6 item
 list, §12 gates 7/13; [t5-contract.md](t5-contract.md) (whose replay/gate
@@ -9,6 +9,23 @@ machinery is the shipped precursor); [t0-contract.md](t0-contract.md)
 slice (c) (whose fire vectors are the accounting substrate).  This
 document pins the inventory, the slice order, and the exit gates; the
 parents stay authoritative for mechanism.*
+
+## 0.1 Completion ledger (2026-08-11)
+
+| slice | commit | exit gate |
+|---|---|---|
+| (a) ReadAttempt accounting | 0739993 | staging case in the interp battery; stats 11/11 unchanged; pause 18; protocol 172 |
+| (b) abort primitive + verb | 0739993 | `t6-restart` — §12.7 equivalence INCLUDING per-key `$stat_fires`; admission + §12.13 flavor refusals |
+| (c) executor-swap restart | 5bc2372 | `t6-restart` — both flip directions, content equality + executor-blind total fires |
+| (d) oracle audit + staged harvest | (this commit) | `t6-restart` 11/11 — abort-many over recursion-through-the-oracle, equivalence held; the invariant stated in smt.md §9.9 |
+
+**Standing residues, recorded in place:** the batch driver's promotion
+path attaches at boundaries (the mode-flip migration and the
+restart-worthiness policy are deliberate follow-ons, slice (c) as-built);
+per-key `$stat_fires` equality across a mixed-executor run awaits the
+`(RuleId, VariantTag)` rekey — now with two queued consumers; the
+`external` refusal stands for in-flight submissions by design (smt.md
+§9.9).
 
 ## 0. What T6 is for
 
@@ -225,6 +242,30 @@ mock backend makes both deterministic).
 **Exit gate.**  The oracle abort/replay equivalence case green under
 `SLOG_SMT_SOLVERS=mock`; the invariant stated in smt.md with a pointer
 here.
+
+#### Slice (d) as-built (2026-08-11)
+
+**The audit found a real loss, not a stateable invariant.**  The harvest
+drains the completion queue destructively and emits into send shards; an
+abort discards the shards, the `answered` set suppresses the re-ask, and
+`outstanding_` was already decremented — so an abort landing after a
+harvest within one read silently LOST the drained answers, and the
+inherited `external` refusal never covered that state (it guards
+submitted-but-unharvested only).  Per the contract's alternative, the
+consumption is now staged: each drain shadows into a per-binding
+`harvesting` buffer (same mutex as the queue it shadows);
+`ExternalWork` gains `commitHarvest`/`restoreHarvest` virtuals with
+no-op defaults (non-oracle paths untouched); `finalizeAll` commits,
+`abortReadAttempt` restores — the rerun's harvest re-emits exactly what
+the discarded shards carried, and set-semantics dedup absorbs overlap.
+Dispatch idempotence (the `answered` set, dispatch-task-private and
+grow-only) is verified by construction and now STATED in smt.md §9.9
+with the in-flight refusal's rationale.  Gate: `t6-restart` grew the
+oracle case — recursion through the oracle (smt_rec's shape scaled to
+40 rounds) under `SLOG_MAX_MS=1`, aborting at every read park via the
+`abort-many` drive token (tolerating the expected `external` refusal
+races against the eager mock) — abort landed, final relations equal the
+undisturbed reference; smt goldens 5/5; interp battery green.
 
 ## 4. What T6 hands the arc
 

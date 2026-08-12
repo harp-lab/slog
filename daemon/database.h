@@ -104,6 +104,13 @@ public:
   // inside a barrier completion, so it must be noexcept.
   virtual bool waitHarvestable(std::chrono::steady_clock::time_point deadline,
                                const std::atomic<bool>& stop) noexcept = 0;
+  // T6 slice (d) (docs/t6-contract.md; execution-tiers §8.2): answers
+  // harvested during a read are STAGED until the read commits.  Commit
+  // clears the stage; an abort restores staged answers to the completion
+  // queue, so the rerun's harvest re-emits exactly what the discarded
+  // shards carried.  Default no-ops keep every non-oracle path untouched.
+  virtual void commitHarvest() {}
+  virtual void restoreHarvest() {}
 };
 
 // Resident set size in bytes, from /proc/self/statm (the honest number, which
@@ -5052,6 +5059,11 @@ public:
       if (r != nullptr) r->discardSendShards();
     discardAttemptFires();
     clearPendingErrors();
+    // T6 slice (d): answers the attempt harvested rode its shards; restore
+    // them to the completion queue so the rerun's harvest re-emits them --
+    // the answered set keeps suppressing re-SUBMISSION, which is the
+    // dispatch idempotence §8.2 asks to have verified and stated.
+    if (external_work != nullptr) external_work->restoreHarvest();
     // T5 slice (d1): the discarded read's captured derivations go with its
     // shards -- otherwise the rerun would double every proof it repeats.
     discardProofsFromRead();
@@ -6286,6 +6298,8 @@ public:
     // delta, so its staged fire tallies fold into the committed vector at
     // the same single-threaded point.
     commitAttemptFires();
+    // T6 slice (d): and its harvested oracle answers stop being restorable.
+    if (external_work != nullptr) external_work->commitHarvest();
   }
 
   // Rebuild every relation's bucketized delta views (Stage B).  Single-threaded

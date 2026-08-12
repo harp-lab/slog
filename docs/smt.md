@@ -380,6 +380,31 @@ tests. The policy fingerprint (§4.2) is the hash of these settings.
   checks; path conditions as csets; report elidable checks. This is the
   motivating artifact and the documentation centerpiece.
 
+## 9.9 The abort/replay invariant (T6 slice (d), 2026-08-11)
+
+Stated as [t6-contract.md](t6-contract.md)'s §8.2 audit demanded:
+
+- **Dispatch is idempotent across a read abort.**  The per-binding
+  `answered` set marks a demand id at dispatch and persists across strata,
+  swaps, and aborted attempts; a rerun re-scanning the same demand delta
+  never re-submits.  Verified by construction (the set is dispatch-task
+  private and only ever grows) and exercised by `tests/t6-restart.sh`'s
+  oracle case.
+- **Harvested answers are STAGED until the read commits.**  The harvest
+  drains the completion queue destructively and emits into send shards; an
+  aborted attempt discards those shards, so without staging the answers
+  would be silently lost (the answered set suppresses the re-ask).  Each
+  drain now shadows into a per-binding `harvesting` buffer; read commit
+  (`finalizeAll`) clears it, and an abort restores it to the completion
+  queue — the rerun's harvest re-emits exactly what the discarded shards
+  carried, and set-semantics dedup absorbs any overlap.
+- **In-flight submissions still refuse the abort.**  `abortObstacle`'s
+  `external` refusal stands: an answer from a racing pool that lands
+  DURING an abort is not reproducible by rerunning, so the daemon refuses
+  rather than promising an exact rerun.  With the eager mock this window
+  is the completed-but-unharvested instant, which the gate's abort-many
+  driver tolerates and continues past.
+
 ## 10. Milestones
 
 - **M0 — printer + pool, standalone.** `smtlib.h`, `oracle.h` skeleton,
