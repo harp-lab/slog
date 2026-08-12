@@ -44,7 +44,8 @@
 
 (require "../../compiler/catalog.rkt"
          "../../compiler/names.rkt"
-         "../../compiler/session.rkt")
+         "../../compiler/session.rkt"
+         "../../compiler/activation.rkt")
 
 (define (num-or-str v) (or (string->number v) v))
 
@@ -155,6 +156,12 @@
     [(list "daemon-rule-meta") `(daemon-rule-meta)]
     ;; N5/stats-4: RuleKey-resolved fire records
     [(list "fires") `(fires)]
+    ;; spine A2 (tests/activation-live.sh): run the live activation
+    ;; transaction from a TEMPLATED fixture -- @BASE-PROGRAM@,
+    ;; @BASE-BOUNDARY@, and @V:rel@ placeholders substitute from the live
+    ;; session, since a fixture cannot know a fresh layer's keys.
+    [(list "activate" file) `(activate ,file #f)]
+    [(list "activate-fail" file) `(activate ,file #t)]
     ;; the count round + sidecar introspection (docs/incremental.md §8B, M0)
     ;;   recount            whole pipeline (tip), lazy
     ;;   recount:REL        REL's counting cone (tip), lazy
@@ -281,6 +288,30 @@
        (define lines (session-fires s))
        (for-each displayln lines)
        (displayln `(fires-end ,(length lines)))]
+      [`(activate ,file ,fail?)
+       (define text (file->string file))
+       (define head (session-current-boundary s))
+       (define pkey (boundary-plan-program-key
+                     (last (session-boundary-history s))))
+       (define versions
+         (for/hash ([(q v) (in-hash (boundary-environment head))])
+           (values (qname->display q) v)))
+       (define substituted
+         (regexp-replace*
+          #px"@V:([A-Za-z0-9_.]+)@"
+          (string-replace
+           (string-replace text "@BASE-PROGRAM@" pkey)
+           "@BASE-BOUNDARY@" (boundary-key head))
+          (lambda (_ rel)
+            (hash-ref versions rel
+                      (lambda () (error 'activate "no version for ~a" rel))))))
+       (define result
+         (session-activate! s (read (open-input-string substituted))
+                            #:fail-after-heal fail?))
+       (displayln (match result
+                    [(? activation-plan?)
+                     `(activation-committed ,(activation-plan-program-key result))]
+                    [other other]))]
       [`(await-build ,secs)
        ;; every COVERED stratum (native coverage > 0 per its .tiers sidecar)
        ;; should grow an artifact; zero-clang and profile-skipped strata

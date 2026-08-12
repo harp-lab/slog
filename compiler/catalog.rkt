@@ -576,7 +576,17 @@
                        #:layer-id layer-id
                        #:program-event program-event
                        #:boundary-event boundary-event
-                       #:type-event [type-event boundary-event])
+                       #:type-event [type-event boundary-event]
+                       ;; spine A2 (docs/activation-contract.md §4): written
+                       ;; names in `sever` mint their successor version with
+                       ;; NO predecessor -- a fresh-empty slot instead of an
+                       ;; inheriting one.  This is the correctness-first
+                       ;; heal's whole mechanism: the replaced image's rows
+                       ;; never enter the successor, the historical version
+                       ;; keeps them addressable, and because the predecessor
+                       ;; rides the persisted plan datum, replay reconstructs
+                       ;; the same severance without any recorded side step.
+                       #:sever [sever (set)])
   (validate-boundary input)
   (unless (catalog-delta? proposed)
     (catalog-fail 'invalid-delta "expected CatalogDelta; got ~a" proposed))
@@ -691,8 +701,10 @@
         [(hash-has-key? version-slots name)
          (boundary-action
           'create name (hash-ref output-environment name)
-          (and (hash-has-key? input-environment name)
-               (hash-ref input-environment name))
+          (cond [(set-member? sever name) 'sever]
+                [(hash-has-key? input-environment name)
+                 (hash-ref input-environment name)]
+                [else #f])
           nominal)]
         [else
          (boundary-action
@@ -1120,7 +1132,10 @@
            [`(,(or 'retain 'create)
               ,name
               ,(? non-empty-string?)
-              ,(or #f (? non-empty-string?))
+              ;; 'sever = spine A2's explicit no-inheritance marker --
+              ;; distinct from #f (a genuinely new relation) so the
+              ;; accidental-omission guard keeps its strength
+              ,(or #f 'sever (? non-empty-string?))
               ,(or #f (? non-empty-string?)))
             (datum->qname name)]
            [_ (catalog-fail 'invalid-recipe-plan
@@ -1142,12 +1157,22 @@
       (type-event ,type-event)
       ,_ ...)
     datum)
+  ;; spine A2: severed inheritance is SELF-DESCRIBING -- the persisted
+  ;; action carries the explicit 'sever token, so replay derives the set
+  ;; from the datum and the recompute matches byte-for-byte.
+  (define sever
+    (for/set ([a (in-list (match datum
+                            [`(boundary-plan ,_ ... (actions ,as ...) ,_ ...) as]
+                            [_ '()]))]
+              #:when (match a [`(create ,_ ,_ sever ,_) #t] [_ #f]))
+      (datum->qname (second a))))
   (define plan
     (plan-boundary input proposed writes
                    #:layer-id layer-id
                    #:program-event program-event
                    #:boundary-event boundary-event
-                   #:type-event type-event))
+                   #:type-event type-event
+                   #:sever sever))
   (unless (equal? datum (boundary-plan->datum plan))
     (catalog-fail
      'recipe-plan-mismatch

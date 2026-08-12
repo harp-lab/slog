@@ -1,8 +1,8 @@
 # The activation spine — the runtime arc's pre-join deliverable
 
 *Drafted 2026-08-12 (W5′ runtime/transaction arc, after T3b, T0(c), T6,
-and the N5/stats-4 identity unification closed).  **Status: slice A1
-SHIPPED 2026-08-12 (as-built in §5); A2 next.**  Normative parents:
+and the N5/stats-4 identity unification closed).  **Status: slices A1 and
+A2 SHIPPED 2026-08-12 (as-built in §5); A3 next.**  Normative parents:
 [roadmap.md](roadmap.md) §6 (the two-arc plan, the `ProgramChangeSet`
 fixture, the ownership table); [rf5-contract.md](rf5-contract.md) §7
 (prepare/heal/publish), §7.1 (the correctness-first route), §10.1 (the
@@ -114,9 +114,11 @@ activate(change-set):
   3 prepare       prepare-boundary — the private lease; install the
                   candidate program event (ordinary compile through the
                   boundary planner, c2 registration included)
-  4 heal          correctness-first: clear the affected cone's successor
-                  slots, rerun candidate strata + surviving writers from
-                  the base input boundary; replay mapped suffix batches
+  4 heal          correctness-first: the affected cone's successor slots
+                  are SEVERED from inheritance (fresh-empty, the plan's
+                  `sever` predecessor token) and the candidate strata
+                  recompute them from the base's carried inputs; replay
+                  mapped suffix batches
   5 recount/audit hold at the T5 pre-commit gate; recount the affected
                   epochs; the exact-once audit + (fires) records against
                   the successor RuleKeys
@@ -150,6 +152,34 @@ activate(change-set):
   battery driving the minimal fixture end to end — activate, hold,
   inspect, abort once, activate again, commit; reload the save and
   replay.
+  *As built (2026-08-12): `session-activate!` in `compiler/session.rkt`
+  builds the base-env from the head boundary plan's catalog, resolves via
+  A1's consumer (every refusal surfaces pre-mutation), writes candidate
+  sources under `out/activation/`, and runs the candidate as an ordinary
+  boundary-planned event under two parameterizations: the prepare hook
+  (fault injection for the abort gate) and **severed inheritance** — the
+  activation's REBUILT relations pass `#:sever` to the boundary planner,
+  which records the literal predecessor token `sever` in the plan datum.
+  The daemon materializes a severed slot fresh-empty instead of cloning
+  the latest binding (the correctness-first heal: removed support cannot
+  survive because nothing is inherited), while the old version stays
+  addressable history; replay re-derives the sever from the persisted
+  datum, and the boundary bundle records the severed slot's lineage as
+  `#f` — version-graph truth.  Retired strata (pre-strata whose heads
+  are all rebuilt) drop from the resident set post-commit; a retire
+  stratum that also heads a carry refuses as `activation-unsupported`.
+  Two latent pre-A2 bugs were exposed and fixed by the abort gate:
+  (1) `abortPreparedBoundary` nulls registry slots that six daemon loops
+  (`finalizeAll`/`reorgAll`/`ensureReorgBuffers`/`initShards`/`bindRun`)
+  iterated unguarded — abort-then-run segfaulted; (2) the recipe step
+  recorded BEFORE the boundary transaction, so a survivable abort left a
+  phantom `run` step that replay would re-execute (minting a program
+  record the bundle never stored) — the group abort handler now restores
+  the pre-run step snapshot, while the burned event reservation stays
+  burned.  Gate: `tests/activation-live.sh` 8/8 — abort atomicity (base
+  byte-identical), commit with removed support gone (path 6→3) and the
+  carried relation intact, plan/minter key agreement, and save→reload
+  replay convergence through the severed boundary.*
 - **A3 — the RF5-B gate shape.**  The two-instance case: replace ONE
   instance's rules; prove the other instance's and every outside-cone
   VersionKey is REUSED; removed support disappears; counts equal a fresh

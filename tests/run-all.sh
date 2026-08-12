@@ -55,6 +55,7 @@ run_harness() {
     tier-arbiter) bash tests/tier-arbiter.sh ;;
     identity-keys) bash tests/identity-keys.sh ;;
     t6-restart) bash tests/t6-restart.sh ;;
+    activation-live) bash tests/activation-live.sh ;;
     tu-determinism) bash tests/tu-determinism.sh ;;
     incremental-stress) bash tests/incremental-stress.sh ;;
     compression) bash tests/compression/run.sh ;;
@@ -70,7 +71,7 @@ run_harness() {
   esac
 }
 
-ALL=(unit diag stats arena seq counts wcoj3 interp structid golden plan-goldens tier-classification tier-profile tier-promotion tier-arbiter identity-keys t6-restart api tiered pause protocol repl session joint incremental-stress compression smt-pin smt-solver)
+ALL=(unit diag stats arena seq counts wcoj3 interp structid golden plan-goldens tier-classification tier-profile tier-promotion tier-arbiter identity-keys t6-restart activation-live api tiered pause protocol repl session joint incremental-stress compression smt-pin smt-solver)
 # `abi2` (RF1 slice 2's airtightness + the ABI-1/ABI-2 differential) is a
 # named tier but NOT in ALL: like plan-determinism it compiles each program
 # from cold twice, so it is a slice gate rather than a per-change one.  Run it

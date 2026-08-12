@@ -1,0 +1,22 @@
+;; The live A2 fixture, templated: placeholders substitute from the running
+;; session (a fixture cannot know a fresh layer's keys).  The candidate
+;; REMOVES the recursive path rule -- post-activation, path holds only the
+;; single-hop rows, which proves the replaced image's support is GONE
+;; rather than merely shadowed (rf5 §10's "removed rule/fact support
+;; disappears" claim, in its smallest form).
+(program-change-set (abi 1)
+  (base (program "@BASE-PROGRAM@") (boundary "@BASE-BOUNDARY@"))
+  (candidate (image "sha-minimal-live-v2") (compiler "fprint-live") (plan-abi 2)
+             (sources ((path "act_v2.slog")
+                       (text "table (edge int int)\ntable (path int int)\n\nrule\n(edge X Y)\n-->\n(path X Y)\n"))))
+  (occurrences (replace (old "m1:@BASE-PROGRAM@:root") (new-slot ()) (home ())))
+  (rule-lineage ((old #f) (new-slot "0.0")))
+  (slot-lineage ((relation edge) (old "@V:edge@") (disposition carry))
+                ((relation path) (old "@V:path@") (disposition rebuild)))
+  (diffs (source 1) (semantic (added 0) (removed 1) (moved 0)) (plan (kernels-changed 1)))
+  (writers (old (path)) (new (path)))
+  (sccs (old ()) (new ((scc 0 1 (members path)))))
+  (affected (roots (path)) (cone (path)))
+  (services)
+  (suffix)
+  (refusals))

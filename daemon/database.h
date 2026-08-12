@@ -4487,6 +4487,15 @@ public:
                           "initial create already has a latest binding: "
                           + action.name);
         }
+        else if (action.predecessor == "sever")
+        {
+          // spine A2: the EXPLICIT no-inheritance create -- the successor
+          // starts empty while the latest binding's version stays
+          // addressable history.  Only meaningful over an existing binding.
+          if (current == nullptr)
+            return reject("boundary-binding",
+                          "sever without a latest binding: " + action.name);
+        }
         else if (current == nullptr
                  || current->getVersionKey() != action.predecessor)
           return reject("boundary-binding",
@@ -4612,12 +4621,15 @@ public:
             = action.version_key;
         continue;
       }
-      if (current != nullptr)
+      if (current != nullptr && action.predecessor != "sever")
       {
         Relation* nv = clone(action.name, current, action.version_key);
         if (!action.type_key.empty()) nv->setTypeKey(action.type_key);
         continue;
       }
+      // a severed create falls through to the fresh path below: an empty
+      // successor, with struct TypeKey/sid/intern continuity handled there
+      // exactly as for a genuinely new relation
 
       const BoundaryCatalogDecl& decl =
         prepared_boundary->declarations.at(action.name);
@@ -6293,7 +6305,8 @@ public:
   void finalizeAll()
   {
     for (Relation* r : rel_registry)
-      registerLatestAnyRec(r->finalizeBatches());
+      // aborted-boundary discards null registry slots (abortPreparedBoundary)
+      if (r != nullptr) registerLatestAnyRec(r->finalizeBatches());
     // T6 slice (a): the read COMMITTED -- its shards just became the next
     // delta, so its staged fire tallies fold into the committed vector at
     // the same single-threaded point.
@@ -6309,14 +6322,14 @@ public:
   void reorgAll(u32 tid, u32 nthreads)
   {
     for (Relation* r : rel_registry)
-      r->reorgDelta(tid, nthreads);
+      if (r != nullptr) r->reorgDelta(tid, nthreads);
   }
 
   // Size every relation's per-thread bucket buffers (single-threaded).
   void ensureReorgBuffers()
   {
     for (Relation* r : rel_registry)
-      r->ensureReorgBuffers(thread_count);
+      if (r != nullptr) r->ensureReorgBuffers(thread_count);
   }
 
   // Run one phase to completion (write/intern) or until suspend (read).
@@ -6545,6 +6558,7 @@ public:
       // registry-wide (0.C): positional re-entry writes old versions too.
       for (Relation* r : rel_registry)
       {
+        if (r == nullptr) continue;   // aborted-boundary discard slots
         r->initShards(thread_count);
         r->ensureReorgBuffers(thread_count);
       }
@@ -6581,7 +6595,7 @@ public:
     // Bind every relation's per-run accounting (the memory cap for this
     // call) -- registry-wide (0.C), so positional writes count too.
     for (Relation* r : rel_registry)
-      r->bindRun(&rs.emitted_words, &rs.stop_requested,
+      if (r != nullptr) r->bindRun(&rs.emitted_words, &rs.stop_requested,
                  &rs.mem_tripped, rs.mem_cap);
 
     // Allocate the cyclic barriers for this call.
@@ -6608,7 +6622,7 @@ public:
     // Clear the per-run accounting so a later out-of-band sendBatch (disk
     // ingestion) does not touch a stale counter.
     for (Relation* r : rel_registry)
-      r->bindRun(nullptr, nullptr, nullptr, 0);
+      if (r != nullptr) r->bindRun(nullptr, nullptr, nullptr, 0);
 
     const double ms_call =
       std::chrono::duration_cast<std::chrono::microseconds>(

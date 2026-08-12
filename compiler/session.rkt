@@ -97,6 +97,7 @@
          session-identity-records ; T0(c): durable RuleKey/SccInstanceKey sets
          session-rule-meta      ; T0(c) c2: the daemon's RuleId<->RuleKey registry
          session-fires          ; N5/stats-4: RuleKey-resolved fire records
+         session-activate!      ; spine A2: the live activation transaction
          session-set-scc-policy! ; T5: pin a relation's writers to an executor
          session-pending-summary ; gate S1: staged-but-unflushed changes
          session-pause-hook     ; gate S3/R4: observe a parked epoch
@@ -108,6 +109,7 @@
 (require "tools.rkt")
 (require "compile.rkt")
 (require "tier-profile.rkt")  ; T3b slice 3: sessions record the race too
+(require "activation.rkt")    ; spine A1: the ProgramChangeSet consumer
 (require (only-in "modules.rkt" current-catalog-adoption)) ; R3 scratch
 (require "catalog.rkt")
 (require "names.rkt")
@@ -352,6 +354,13 @@
 ;; resolves prepared keys through its private overlay, and watch verbs
 ;; are exempt from the boundary lease (session debugging state).
 (define session-prepare-hook (make-parameter #f))
+
+;; spine A2: relation symbols whose successor versions the NEXT live
+;; boundary plan mints WITHOUT inheritance (fresh-empty slots) -- the
+;; correctness-first heal's mechanism, set by session-activate! around its
+;; candidate run.  Rides the persisted plan datum, so replay reconstructs
+;; it with no recorded side step (catalog.rkt replay-boundary-plan).
+(define session-sever-inheritance (make-parameter (set)))
 
 ;; Gate S item 3 (and R4's stepping seam): when set, called with
 ;; (s pause-line) at every driver pause BEFORE the automatic continue.
@@ -654,6 +663,124 @@
     (cond [(eof-object? l) (reverse acc)]
           [(regexp-match? #px"^\\(rule-meta-end " l) (reverse acc)]
           [else (loop (cons l acc))])))
+
+;; ---- spine A2: the live activation transaction ------------------------------
+;; (docs/activation-contract.md §4).  Composes rf5 §7's six steps from the
+;; shipped machinery: A1's validate/resolve against a base-env derived from
+;; the session catalog; the candidate installed as an ORDINARY program event
+;; through session-run! -- which is already a prepare-boundary -> push ->
+;; commit-boundary transaction with a proven abort handler -- and the
+;; correctness-first heal delivered INSIDE that transaction via the
+;; prepare-hook seam: rebuilt relations clear against the daemon's private
+;; overlay after the prepare and before any push, so an abort at any later
+;; point restores the base boundary byte-for-byte.  The replaced
+;; occurrence's old strata retire from the session's liveness bookkeeping
+;; only AFTER the commit (they are inert either way -- the session drives
+;; all re-entry -- and the recipe stays replay-honest: replay reruns old
+;; events then the candidate, converging on the same tip).
+;;
+;; Returns the resolved activation-plan on commit, a typed
+;; `(refused TYPE ...)` on validation failure, or `(aborted DETAIL)` when
+;; the transaction failed after prepare (the boundary was aborted and the
+;; base is intact).  #:fail-after-heal injects a fault between the heal and
+;; the pushes -- the battery's abort-path lever.
+(define (session-activate! s change-datum #:fail-after-heal [fail? #f])
+  (define cs (parse-change-set change-datum))
+  (cond
+    [(activation-refusal? cs) cs]
+    [(not (session-catalog-boundary s)) `(refused no-catalog-boundary)]
+    [(null? (session-boundary-plans s)) `(refused no-base-program)]
+    [else
+     (define head (session-catalog-boundary s))
+     (define env
+       (base-env
+        (boundary-plan-program-key (last (session-boundary-plans s)))
+        (boundary-key head)
+        #t
+        (for/hash ([(q v) (in-hash (boundary-environment head))])
+          (values (string->symbol (qname->display q)) v))
+        '(smt seq)))
+     (define plan
+       (resolve-activation cs env
+                           #:layer (session-layer-id s)
+                           #:event (session-next-event s)))
+     (cond
+       [(activation-refusal? plan) plan]
+       [else
+        (define rebuilds
+          (for/list ([(q alloc) (in-hash (activation-plan-version-allocs plan))]
+                     #:when (eq? (third alloc) 'rebuild))
+            q))
+        (define carries
+          (for/list ([(q alloc) (in-hash (activation-plan-version-allocs plan))]
+                     #:when (eq? (third alloc) 'carry))
+            q))
+        ;; the strata to retire: pre-activation strata heading a rebuilt
+        ;; relation.  A stratum heading BOTH a rebuild and a carry would
+        ;; be torn by retirement -- the v1 refusal, typed and pre-mutation.
+        (define pre-strata (session-strata-info s))
+        (define retire
+          (for/list ([p (in-list pre-strata)]
+                     #:when (for/or ([h (in-list (sinfo-heads (cdr p)))])
+                              (memq h rebuilds)))
+            p))
+        (cond
+          [(for/or ([p (in-list retire)])
+             (for/or ([h (in-list (sinfo-heads (cdr p)))])
+               (and (memq h carries) h)))
+           => (lambda (torn) `(refused activation-unsupported ,torn))]
+          [else
+           ;; the candidate's sources land under a content-neutral event
+           ;; directory; the ordinary source capture makes replay honest
+           (define dir (build-path "out" "activation"
+                                   (format "~a-~a" (session-layer-id s)
+                                           (session-next-event s))))
+           (make-directory* dir)
+           (define entry
+             (match (change-set-candidate cs)
+               [`((image ,_) (compiler ,_) (plan-abi ,_) (sources ,srcs ...))
+                (when (null? srcs)
+                  (error 'session-activate "candidate carries no sources"))
+                (for/last ([src (in-list srcs)] [i (in-naturals)])
+                  (match-define `((path ,p) (text ,text)) src)
+                  (define f (build-path dir (file-name-from-path (format "~a" p))))
+                  (call-with-output-file f #:exists 'replace
+                    (lambda (o) (display text o)))
+                  (if (zero? i) (path->string f) (path->string f)))]
+               [_ (error 'session-activate "malformed candidate")]))
+           (with-handlers
+               ([exn:fail?
+                 (lambda (e)
+                   ;; session-run!'s own handler already aborted the
+                   ;; boundary and restored the bookkeeping; the base is
+                   ;; intact.  Surface the abort as data.
+                   (echo! s (format "(activation-aborted ~s)" (exn-message e)))
+                   `(aborted ,(exn-message e)))])
+             (parameterize
+                 ;; the HEAL: rebuilt relations' successor versions mint
+                 ;; WITHOUT inheritance -- fresh-empty slots, the replaced
+                 ;; image's rows never enter the successor, the historical
+                 ;; version keeps them addressable, and the severance rides
+                 ;; the persisted plan so replay converges by construction
+                 ([session-sever-inheritance (list->set rebuilds)]
+                  [session-prepare-hook
+                   (let ([outer (session-prepare-hook)])
+                     (lambda (s* bplan)
+                       (when fail?
+                         (error 'session-activate
+                                "fail-after-heal: injected test fault"))
+                       (when outer (outer s* bplan))))])
+               (session-run! s entry))
+             ;; committed: retire the replaced strata from liveness
+             (set-session-strata-info!
+              s (for/list ([p (in-list (session-strata-info s))]
+                           #:unless (memq p retire))
+                  p))
+             (echo! s (format "(activated (program ~a) (rebuilt ~a) (carried ~a) (retired ~a))"
+                              (activation-plan-program-key plan)
+                              (length rebuilds) (length carries)
+                              (length retire)))
+             plan)])])]))
 
 ;; T5 slice (a): pin the writer strata of `rel` to a policy ('interpreted
 ;; or 'auto); returns the affected scc ids.  Policy applies at re-entry
@@ -2066,6 +2193,10 @@
      (define predecessors
        (for/fold ([out (hash)]) ([action (in-list planned-actions)])
          (match action
+           ;; spine A2: a severed create has no version-graph parent -- the
+           ;; 'sever token is plan-level instruction, and the bundle records
+           ;; lineage truth (#f), exactly like a genuinely initial create
+           [`(create ,_ ,key sever ,_) (hash-set out key #f)]
            [`(create ,_ ,key ,predecessor ,_) (hash-set out key predecessor)]
            [_ out])))
      (define head-names
@@ -2372,7 +2503,9 @@
              #:layer-id (session-layer-id s)
              #:program-event event
              #:boundary-event event
-             #:type-event event)]))
+             #:type-event event
+             #:sever (for/set ([r (in-set (session-sever-inheritance))])
+                       (symbol->qname r)))]))
        (define-values (table descriptor-rows)
          (boundary-plan-daemon-data plan group))
        (loop more
@@ -2484,6 +2617,13 @@
   (when (and n2? (not supplied-plan-data))
     (set-session-next-event! s
                              (+ (session-next-event s) (length groups))))
+  ;; spine A2 surfaced a latent gap: the step records BEFORE the boundary
+  ;; transaction, so a prepare-time abort used to leave a phantom run step
+  ;; in the recipe -- harmless while every run failure killed the session,
+  ;; live the moment activation made aborts survivable (replay would rerun
+  ;; the aborted event and mint a program record the bundle never stored).
+  ;; The group abort handler below restores this snapshot.
+  (define steps-before-run (session-steps s))
   (record-step!
    s
    (if n2?
@@ -2545,6 +2685,10 @@
                 (lambda (failure)
                   (set-session-next-scc! s old-next-scc)
                   (set-session-strata-info! s old-strata-info)
+                  ;; the recipe must not carry the aborted event (see the
+                  ;; snapshot's note); the burned next-event reservation
+                  ;; stays burned, deliberately
+                  (set-session-steps! s steps-before-run)
                   (with-handlers ([exn:fail? void])
                     (define aborted
                       (session-command!

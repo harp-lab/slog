@@ -1065,7 +1065,13 @@ static bool parse_boundary_action(
         || !singleton_field(fields, "version-key", value)
         || !parse_string_value(*value, out.version_key)
         || !singleton_field(fields, "predecessor", value)
-        || !parse_optional_string(*value, out.predecessor)
+        // spine A2: the bare `sever` atom is the explicit no-inheritance
+        // marker (catalog.rkt boundary-action); it rides the predecessor
+        // field as the reserved token no VersionKey can collide with
+        || !(value->kind == slog::sexp::SExp::K::atom
+               && value->text == "sever"
+               ? (out.predecessor = "sever", true)
+               : parse_optional_string(*value, out.predecessor))
         || !singleton_field(fields, "type-key", value)
         || !parse_optional_string(*value, out.type_key))
     {
