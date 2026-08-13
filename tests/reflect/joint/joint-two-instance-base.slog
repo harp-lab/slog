@@ -1,0 +1,9 @@
+instantiate "joint-graph-lib.slog" as left
+instantiate "joint-graph-lib.slog" as right
+
+table (answer int int)
+
+rule
+(right.path X Y)
+-->
+(answer X Y)

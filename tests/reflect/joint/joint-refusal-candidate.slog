@@ -1,0 +1,13 @@
+table (edge int int)
+table (path int int int)
+
+rule
+(edge X Y)
+-->
+(path X Y Y)
+
+rule
+(path X Y Z)
+(edge Z W)
+-->
+(path X W W)
