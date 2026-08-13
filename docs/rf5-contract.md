@@ -1,9 +1,14 @@
 # RF5 — semantic program and module-instance replacement
 
-**Status (2026-08-10): RF5-A compiler handoff implemented; RF5-B activation
-not implemented.** RF1.5 supplies the query foundation, RF2 supplies sealed
-read-only images, and `compiler/program-change.rkt` now freezes the pure
-draft/diff boundary described below. This document
+**Status (2026-08-13): the two-arc join is merged — RF5-A compiler handoff
+and the RF5-B activation spine (A1–A4, [activation-contract.md](activation-contract.md))
+live in one tree.** RF1.5 supplies the query foundation, RF2 supplies sealed
+read-only images, `compiler/program-change.rkt` freezes the pure
+draft/diff boundary described below, and `session-activate!` executes the
+correctness-first transaction against the frozen `.pcs` corpus. What remains
+of RF5-B is the first joint battery: the producer regenerating the golden
+corpus from its own diffs (the sealed `.pchange` spelling and the frozen
+fixture grammar still need that bridge). This document
 turns the high-level RF5 program-image plan in
 [slog-reflection.md](slog-reflection.md) into an end-to-end replacement
 contract. It is the review target for roadmap W5'. Nothing here describes
