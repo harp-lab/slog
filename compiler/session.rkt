@@ -715,72 +715,85 @@
           (for/list ([(q alloc) (in-hash (activation-plan-version-allocs plan))]
                      #:when (eq? (third alloc) 'carry))
             q))
-        ;; the strata to retire: pre-activation strata heading a rebuilt
-        ;; relation.  A stratum heading BOTH a rebuild and a carry would
-        ;; be torn by retirement -- the v1 refusal, typed and pre-mutation.
+        ;; Liveness snapshot: retirement itself now happens INSIDE the
+        ;; run (plan-derived, so replay retires identically -- see
+        ;; run-groups); the snapshot is only for the narration count.
         (define pre-strata (session-strata-info s))
-        (define retire
-          (for/list ([p (in-list pre-strata)]
-                     #:when (for/or ([h (in-list (sinfo-heads (cdr p)))])
-                              (memq h rebuilds)))
-            p))
-        (cond
-          [(for/or ([p (in-list retire)])
-             (for/or ([h (in-list (sinfo-heads (cdr p)))])
-               (and (memq h carries) h)))
-           => (lambda (torn) `(refused activation-unsupported ,torn))]
-          [else
-           ;; the candidate's sources land under a content-neutral event
-           ;; directory; the ordinary source capture makes replay honest
-           (define dir (build-path "out" "activation"
-                                   (format "~a-~a" (session-layer-id s)
-                                           (session-next-event s))))
-           (make-directory* dir)
-           (define entry
-             (match (change-set-candidate cs)
-               [`((image ,_) (compiler ,_) (plan-abi ,_) (sources ,srcs ...))
-                (when (null? srcs)
-                  (error 'session-activate "candidate carries no sources"))
-                (for/last ([src (in-list srcs)] [i (in-naturals)])
-                  (match-define `((path ,p) (text ,text)) src)
-                  (define f (build-path dir (file-name-from-path (format "~a" p))))
-                  (call-with-output-file f #:exists 'replace
-                    (lambda (o) (display text o)))
-                  (if (zero? i) (path->string f) (path->string f)))]
-               [_ (error 'session-activate "malformed candidate")]))
-           (with-handlers
-               ([exn:fail?
-                 (lambda (e)
+        ;; the candidate's sources land under a content-neutral event
+        ;; directory; the ordinary source capture makes replay honest.
+        ;; The LAST source is the compile entry (libs list first).
+        (define dir (build-path "out" "activation"
+                                (format "~a-~a" (session-layer-id s)
+                                        (session-next-event s))))
+        (make-directory* dir)
+        (define entry
+          (match (change-set-candidate cs)
+            [`((image ,_) (compiler ,_) (plan-abi ,_) (sources ,srcs ...))
+             (when (null? srcs)
+               (error 'session-activate "candidate carries no sources"))
+             (for/last ([src (in-list srcs)])
+               (match-define `((path ,p) (text ,text)) src)
+               (define f (build-path dir (file-name-from-path (format "~a" p))))
+               (call-with-output-file f #:exists 'replace
+                 (lambda (o) (display text o)))
+               (path->string f))]
+            [_ (error 'session-activate "malformed candidate")]))
+        (with-handlers
+            ([exn:fail?
+              (lambda (e)
+                (cond
+                  ;; the planner's tearing guard raises BEFORE any step
+                  ;; records or daemon mutation -- surface it as the
+                  ;; typed refusal it is, not an abort
+                  [(regexp-match? #px"activation-unsupported"
+                                  (exn-message e))
+                   `(refused activation-unsupported ,(exn-message e))]
+                  [else
                    ;; session-run!'s own handler already aborted the
                    ;; boundary and restored the bookkeeping; the base is
                    ;; intact.  Surface the abort as data.
                    (echo! s (format "(activation-aborted ~s)" (exn-message e)))
-                   `(aborted ,(exn-message e)))])
-             (parameterize
-                 ;; the HEAL: rebuilt relations' successor versions mint
-                 ;; WITHOUT inheritance -- fresh-empty slots, the replaced
-                 ;; image's rows never enter the successor, the historical
-                 ;; version keeps them addressable, and the severance rides
-                 ;; the persisted plan so replay converges by construction
-                 ([session-sever-inheritance (list->set rebuilds)]
-                  [session-prepare-hook
-                   (let ([outer (session-prepare-hook)])
-                     (lambda (s* bplan)
-                       (when fail?
-                         (error 'session-activate
-                                "fail-after-heal: injected test fault"))
-                       (when outer (outer s* bplan))))])
-               (session-run! s entry))
-             ;; committed: retire the replaced strata from liveness
-             (set-session-strata-info!
-              s (for/list ([p (in-list (session-strata-info s))]
-                           #:unless (memq p retire))
-                  p))
-             (echo! s (format "(activated (program ~a) (rebuilt ~a) (carried ~a) (retired ~a))"
-                              (activation-plan-program-key plan)
-                              (length rebuilds) (length carries)
-                              (length retire)))
-             plan)])])]))
+                   `(aborted ,(exn-message e))]))])
+          (parameterize
+              ;; the HEAL: rebuilt relations' successor versions mint
+              ;; WITHOUT inheritance -- fresh-empty slots, the replaced
+              ;; image's rows never enter the successor, the historical
+              ;; version keeps them addressable, and the severance rides
+              ;; the persisted plan so replay converges by construction
+              ([session-sever-inheritance (list->set rebuilds)]
+               [session-prepare-hook
+                (let ([outer (session-prepare-hook)])
+                  (lambda (s* bplan)
+                    (when fail?
+                      (error 'session-activate
+                             "fail-after-heal: injected test fault"))
+                    (when outer (outer s* bplan))))])
+            (session-run! s entry))
+          ;; narration from the COMMITTED plan: severed creates are the
+          ;; rebuilds; other creates are carried relations rebound by
+          ;; stratum cohabitation (level-clustered strata -- see the
+          ;; planner's closure); carries outside the closure ALIASED
+          ;; their versions, which is the reuse the A3 battery pins.
+          (define bplan (last (session-boundary-plans s)))
+          (define created
+            (for/list ([a (in-list (boundary-plan-actions bplan))]
+                       #:when (eq? 'create (boundary-action-kind a)))
+              (qname->symbol (boundary-action-name a))))
+          (define severed
+            (for/list ([a (in-list (boundary-plan-actions bplan))]
+                       #:when (eq? 'sever (boundary-action-predecessor a)))
+              (qname->symbol (boundary-action-name a))))
+          (define rebound (remove* severed created))
+          (define aliased (remove* rebound carries))
+          (define post-strata (session-strata-info s))
+          (define retired-n
+            (for/sum ([p (in-list pre-strata)])
+              (if (memq p post-strata) 0 1)))
+          (echo! s (format "(activated (program ~a) (rebuilt ~a) (carried ~a) (carried-rebound ~a) (retired ~a))"
+                           (activation-plan-program-key plan)
+                           (length severed) (length aliased)
+                           (length rebound) retired-n))
+          plan)])]))
 
 ;; T5 slice (a): pin the writer strata of `rel` to a policy ('interpreted
 ;; or 'auto); returns the affected scc ids.  Policy applies at re-entry
@@ -871,6 +884,37 @@
                #:when (and si (<= (first si) p)))
       (list (car e) (first si) (cdr e) (second si) (third si))))
   (define cstate (query-maintenance-count-state! s lattices?))
+  ;; spine A3: versions SUPERSEDED at a severing (activation) boundary
+  ;; leave the count domain -- their writer strata retired with the
+  ;; replaced image, so the walk could never cover them again (the A1
+  ;; plan's "invalidated count epochs", exact-or-absent: absent).  The
+  ;; set derives from the persisted plans, so live sessions and replays
+  ;; exclude identically.  Ordinary events (no sever) exclude nothing.
+  (define superseded
+    (for*/set ([plan (in-list (session-boundary-plans s))]
+               #:when (for/or ([a (in-list (boundary-plan-actions plan))])
+                        (eq? 'sever (boundary-action-predecessor a)))
+               [a (in-list (boundary-plan-actions plan))]
+               #:when (eq? 'create (boundary-action-kind a))
+               [pair (in-list
+                      (let* ([name (qname->symbol (boundary-action-name a))]
+                             [key (boundary-action-version-key a)]
+                             [ords (hash-ref chains name '())]
+                             [ordc (for/first
+                                       ([oc (in-list ords)]
+                                        #:when
+                                        (equal? key
+                                                (third (hash-ref
+                                                        vinfo
+                                                        (cons name (first oc))
+                                                        '(#f #f #f)))))
+                                     (first oc))])
+                        (if ordc
+                            (for/list ([oc (in-list ords)]
+                                       #:when (< (first oc) ordc))
+                              (cons name (first oc)))
+                            '())))])
+      pair))
   ;; VersionId -> counted?, de-duplicated across rename aliases.  A false
   ;; observation wins (aliases should agree, but this makes disagreement
   ;; conservatively force a rebuild).
@@ -883,7 +927,8 @@
            (list-ref (hash-ref chains name) ord)))
     (define vi (hash-ref vinfo (cons name ord) #f))
     (when (and (or (not only) (member name only))
-               binding vi (<= (second binding) p))
+               binding vi (<= (second binding) p)
+               (not (set-member? superseded (cons name ord))))
       (define vid (first vi))
       (hash-set! target-state vid
                  (and (cdr oc) (hash-ref target-state vid #t)))))
@@ -2470,7 +2515,7 @@
   (values (append public internal-pairs)
           (append public-rows internal-rows)))
 
-(define (plan-compile-groups s groups supplied-plan-data)
+(define (plan-compile-groups s groups supplied-plan-data all-strata)
   (when (and supplied-plan-data
              (not (= (length supplied-plan-data) (length groups))))
     (error 'session
@@ -2482,6 +2527,7 @@
              (legacy-planning-boundary
               s (compile-group-catalog-delta (first groups))))))
   (let loop ([remaining groups]
+             [strata-left all-strata]
              [input initial-boundary]
              [event (session-next-event s)]
              [persisted (or supplied-plan-data '())]
@@ -2493,13 +2539,62 @@
       [(cons group more)
        (define delta (compile-group-catalog-delta group))
        (define writes (compile-group-boundary-write-set group))
+       (define g-strata (take strata-left (compile-group-stratum-count group)))
        (define plan
          (cond
            [supplied-plan-data
             (replay-boundary-plan input delta writes (first persisted))]
            [else
+            ;; spine A3: an activation restricts the event's WRITE SET to
+            ;; the affected cone at STRATUM granularity -- the sever set
+            ;; closed over cohabitation (strata cluster SCCs by level, so
+            ;; a rebuilt relation can share its stratum with a carried
+            ;; one; the cohabitant must rebind with it).  Everything
+            ;; outside the closure is not written by the event at all, so
+            ;; the planner aliases its version: the outside-cone
+            ;; VersionKey survives BY CONSTRUCTION -- the RF5-B claim.
+            (define sever-syms (session-sever-inheritance))
+            (define writes*
+              (cond
+                [(set-empty? sever-syms) writes]
+                [else
+                 (define head-sets
+                   (for/list ([sb (in-list g-strata)])
+                     (define-values (_d _r heads _a)
+                       (read-stratum-meta (sbuild-hash sb)))
+                     heads))
+                 (define closure
+                   (let grow ([current sever-syms])
+                     (define next
+                       (for/fold ([acc current]) ([heads (in-list head-sets)])
+                         (if (for/or ([h (in-list heads)]) (set-member? acc h))
+                             (for/fold ([a acc]) ([h (in-list heads)])
+                               (set-add a h))
+                             acc)))
+                     (if (equal? next current) current (grow next))))
+                 ;; tearing guard: a RESIDENT stratum partially inside the
+                 ;; closure can neither retire whole nor survive whole --
+                 ;; the old image's clustering disagrees with the cone.
+                 ;; Typed, and raised BEFORE any step records or daemon
+                 ;; mutation (planning precedes the recipe record).
+                 (for ([p (in-list (session-strata-info s))])
+                   (define heads (sinfo-heads (cdr p)))
+                   (define inside
+                     (for/list ([h (in-list heads)]
+                                #:when (set-member? closure h))
+                       h))
+                   (when (and (pair? inside) (< (length inside) (length heads)))
+                     (error 'session
+                            (format "activation-unsupported: resident stratum ~a is torn by the cone (rebuilding ~a, keeping ~a)"
+                                    (car p) inside (remove* inside heads)))))
+                 (for/list ([w (in-list writes)]
+                            #:when (set-member? closure
+                                                (if (symbol? w)
+                                                    w
+                                                    (qname->symbol w))))
+                   w)]))
             (plan-boundary
-             input delta writes
+             input delta writes*
              #:layer-id (session-layer-id s)
              #:program-event event
              #:boundary-event event
@@ -2509,6 +2604,7 @@
        (define-values (table descriptor-rows)
          (boundary-plan-daemon-data plan group))
        (loop more
+             (drop strata-left (compile-group-stratum-count group))
              (boundary-plan-output plan)
              (add1 event)
              (if supplied-plan-data (rest persisted) '())
@@ -2558,7 +2654,7 @@
   (define n2? (or supplied-plan-data (not supplied-events)))
   (define-values (plans planned-events descriptor-rows)
     (cond
-      [n2? (plan-compile-groups s groups supplied-plan-data)]
+      [n2? (plan-compile-groups s groups supplied-plan-data strata)]
       [else (values (make-list (length groups) #f)
                     supplied-events
                     (make-list (length groups) '()))]))
@@ -2648,6 +2744,20 @@
        (define g-strata (take remaining n))
        (define ws (compile-group-write-set group))
        (define committed? #f)
+       (define old-next-scc (session-next-scc s))
+       (define old-strata-info (session-strata-info s))
+       ;; spine A3: a plan with any severed create is an ACTIVATION
+       ;; event; its created relations (as lowered symbols) are the
+       ;; cone at stratum granularity -- the push filter and the
+       ;; retirement after commit both read THIS, so live runs and
+       ;; recipe replays reconstruct identical liveness.
+       (define severing-created
+         (and n2? (car bps)
+              (for/or ([a (in-list (boundary-plan-actions (car bps)))])
+                (eq? 'sever (boundary-action-predecessor a)))
+              (for/list ([a (in-list (boundary-plan-actions (car bps)))]
+                         #:when (eq? 'create (boundary-action-kind a)))
+                (qname->symbol (boundary-action-name a)))))
        (cond
          [n2?
           ;; N3-A admission: even a declaration-only group creates its empty
@@ -2663,8 +2773,6 @@
           (define prepared
             (session-command!
              s (boundary-prepare-command (car bps) group generation)))
-          (define old-next-scc (session-next-scc s))
-          (define old-strata-info (session-strata-info s))
           (match prepared
             [`(boundary-prepared ,(== generation)
                                  (boundary ,(== key))
@@ -2717,8 +2825,20 @@
               ((session-prepare-hook) s (car bps)))
             (for ([dir (in-list g-frozen)])
               (session-action! s `(import-path ,dir)))
+            ;; spine A3: a severing (activation) plan runs ONLY the cone's
+            ;; strata -- the plan's create actions are the cone, and the
+            ;; outside-cone strata have nothing to derive (their relations
+            ;; alias carried versions that already hold every row).  The
+            ;; filter reads the PLAN, live and replayed alike, so a
+            ;; reloaded recipe pushes the same strata by construction.
             (for ([sb (in-list g-strata)])
-              (push-sbuild! s sb))
+              (define push?
+                (or (not severing-created)
+                    (let-values ([(_d _r heads _a)
+                                  (read-stratum-meta (sbuild-hash sb))])
+                      (for/or ([h (in-list heads)])
+                        (memq h severing-created)))))
+              (when push? (push-sbuild! s sb)))
             (let ([committed
                    (session-command!
                     s `(commit-boundary
@@ -2761,6 +2881,19 @@
             [`(program-modules (program ,_) ,instances ...) instances]
             [_ '()]))
          (install-head! s (boundary-plan-output (car bps)))
+         ;; spine A3: after a severing commit, every PRE-event stratum
+         ;; heading into the cone retires from liveness -- a survivor
+         ;; re-entered at the tip would bind the replaced image's rules
+         ;; to the severed successor.  Plan-derived, so replay retires
+         ;; identically; old versions stay addressable history.
+         (when severing-created
+           (set-session-strata-info!
+            s (for/list ([p (in-list (session-strata-info s))]
+                         #:unless
+                         (and (memq p old-strata-info)
+                              (for/or ([h (in-list (sinfo-heads (cdr p)))])
+                                (memq h severing-created))))
+                p)))
          (set-session-boundary-plans!
           s (append (session-boundary-plans s) (list (car bps))))
          (unless (session-replaying? s)

@@ -1,8 +1,9 @@
 # The activation spine — the runtime arc's pre-join deliverable
 
 *Drafted 2026-08-12 (W5′ runtime/transaction arc, after T3b, T0(c), T6,
-and the N5/stats-4 identity unification closed).  **Status: slices A1 and
-A2 SHIPPED 2026-08-12 (as-built in §5); A3 next.**  Normative parents:
+and the N5/stats-4 identity unification closed).  **Status: slices A1–A3
+SHIPPED 2026-08-12 (as-built in §5); A4 (the joint fixture freeze) is the
+remaining slice.**  Normative parents:
 [roadmap.md](roadmap.md) §6 (the two-arc plan, the `ProgramChangeSet`
 fixture, the ownership table); [rf5-contract.md](rf5-contract.md) §7
 (prepare/heal/publish), §7.1 (the correctness-first route), §10.1 (the
@@ -167,7 +168,9 @@ activate(change-set):
   datum, and the boundary bundle records the severed slot's lineage as
   `#f` — version-graph truth.  Retired strata (pre-strata whose heads
   are all rebuilt) drop from the resident set post-commit; a retire
-  stratum that also heads a carry refuses as `activation-unsupported`.
+  stratum that also heads a carry refuses as `activation-unsupported`
+  *(superseded by A3: retirement is now plan-derived inside the run and
+  the closure handles mixed strata — see the A3 as-built below)*.
   Two latent pre-A2 bugs were exposed and fixed by the abort gate:
   (1) `abortPreparedBoundary` nulls registry slots that six daemon loops
   (`finalizeAll`/`reorgAll`/`ensureReorgBuffers`/`initShards`/`bindRun`)
@@ -185,6 +188,44 @@ activate(change-set):
   VersionKey is REUSED; removed support disappears; counts equal a fresh
   recount; `why`/`whynot` before/after on one gained and one lost fact
   (the roadmap capstone's runtime half, minus the program-arc diffs).
+  *As built (2026-08-12): the activation now restricts the event's WRITE
+  SET to the affected cone at **stratum granularity** — the sever set
+  closed over cohabitation, since strata cluster SCCs by level and a
+  rebuilt relation can share its stratum with a carried one.  Everything
+  outside the closure is simply not written by the event, so the planner
+  ALIASES its version: outside-cone VersionKey reuse holds by
+  construction, not by comparison.  Three plan-derived mechanisms make
+  this replay-honest (the create actions of a severing plan ARE the
+  cone): `replay-boundary-plan` narrows the group's write set to the
+  datum's creates; the run pushes only cone strata; and after a severing
+  commit every pre-event stratum heading into the cone retires from
+  liveness (a survivor re-entered at the tip would bind the replaced
+  image's rules to the severed successor).  Versions superseded at a
+  severing boundary leave the count domain (the plan's "invalidated
+  count epochs"; exact-or-absent: absent) — the recount walk excludes
+  them by matching the plan's created VersionKeys, so post-activation
+  counts equal a fresh recount, gated.  A cohabitant that must rebind
+  (an inherited clone) is narrated as `carried-rebound`, distinct from
+  both `rebuilt` (severed) and `carried` (aliased); a resident stratum
+  PARTIALLY inside the closure refuses typed as
+  `activation-unsupported` before any recipe record or daemon mutation
+  (this supersedes A2's per-rebuild retirement and its torn-stratum
+  refusal).  The debugging leg drives REPL `why`/`whynot` and the
+  session verbs against ONE session (`ensure-session!` joined the test
+  surface): `whynot` is the pure frontier over committed state and
+  works on both sides unaided; `why` follows the T5 capture workflow —
+  arm `watch REL level 1 why`, re-derive monotonically
+  (`session-rerun!`), ask — and the post-activation watch re-arms at
+  the severed successor's fresh version.  Gate:
+  `tests/activation-a3.sh` 17/17 (reuse both ways, narration pinned at
+  2 rebuilt / 3 carried / 1 rebound / 2 retired, removed and gained
+  support, carried instance row-identical, count equality around
+  `recount-force`, plan/minter agreement, replay convergence, six
+  why/whynot legs).  Residues, recorded: candidate sources persist
+  under `out/activation/` and a reload replays from those paths — an
+  `out/` wipe orphans the recipe; `recount-at` positions preceding a
+  severing boundary walk empty version sets rather than refusing
+  typed.*
 - **A4 — the joint fixture freeze.**  The golden corpus + consumer
   handed to the program arc as the test ABI; schema changes from here on
   are joint-review (the ownership table's rule).

@@ -16,9 +16,14 @@
          ;; must interleave commands with session-level hooks (e.g.
          ;; querying a parked epoch from session-pause-hook).  This is a
          ;; test surface, not a second frontend: rendering stays with
-         ;; plain-transcript and the Rust client.
+         ;; plain-transcript and the Rust client.  ensure-session! joins
+         ;; the same surface (spine A3): the activation battery drives
+         ;; session-level verbs (session-activate!, session-rerun!) and
+         ;; REPL-level why/whynot against ONE session, which is the only
+         ;; way to prove they narrate the same transaction.
          make-server-state
-         dispatch-command)
+         dispatch-command
+         ensure-session!)
 
 (require json
          racket/cmdline

@@ -1160,14 +1160,30 @@
   ;; spine A2: severed inheritance is SELF-DESCRIBING -- the persisted
   ;; action carries the explicit 'sever token, so replay derives the set
   ;; from the datum and the recompute matches byte-for-byte.
+  (define datum-actions
+    (match datum
+      [`(boundary-plan ,_ ... (actions ,as ...) ,_ ...) as]
+      [_ '()]))
   (define sever
-    (for/set ([a (in-list (match datum
-                            [`(boundary-plan ,_ ... (actions ,as ...) ,_ ...) as]
-                            [_ '()]))]
+    (for/set ([a (in-list datum-actions)]
               #:when (match a [`(create ,_ ,_ sever ,_) #t] [_ #f]))
       (datum->qname (second a))))
+  ;; spine A3: a severing plan is an ACTIVATION event, and its write set
+  ;; was restricted to the affected cone at planning time (the outside-
+  ;; cone relations alias their versions -- the RF5-B reuse claim).  The
+  ;; restriction is self-describing too: the datum's create actions ARE
+  ;; the cone, so replay narrows the group's full write set to match.
+  (define writes*
+    (if (set-empty? sever)
+        writes
+        (let ([created (for/set ([a (in-list datum-actions)]
+                                 #:when (match a [`(create ,_ ...) #t] [_ #f]))
+                         (datum->qname (second a)))])
+          (for/list ([w (in-list writes)]
+                     #:when (set-member? created (name->qname 'replay-boundary-plan w)))
+            w))))
   (define plan
-    (plan-boundary input proposed writes
+    (plan-boundary input proposed writes*
                    #:layer-id layer-id
                    #:program-event program-event
                    #:boundary-event boundary-event

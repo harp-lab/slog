@@ -152,6 +152,9 @@
     ;; T0(c) (tests/identity-keys.sh): print the session's durable
     ;; RuleKey/SccInstanceKey ledger, one record per line
     [(list "rule-keys") `(rule-keys)]
+    ;; spine A3: the head boundary environment as (version QNAME KEY) lines
+    ;; -- the outside-cone reuse gate compares these across an activation
+    [(list "versions") `(versions)]
     ;; T0(c) c2: the daemon's registered RuleId<->RuleKey table
     [(list "daemon-rule-meta") `(daemon-rule-meta)]
     ;; N5/stats-4: RuleKey-resolved fire records
@@ -273,6 +276,12 @@
        (for ([r (in-list (session-tiers s))])
          (match-define (list scc hash rung cache policy) r)
          (displayln `(tiers-record ,scc ,hash ,rung ,cache ,policy)))]
+      [`(versions)
+       (define env (boundary-environment (session-current-boundary s)))
+       (for ([q (in-list (sort (hash-keys env) qname<?))])
+         (displayln (format "(version ~a ~a)" (qname->display q)
+                            (hash-ref env q))))
+       (displayln (format "(versions-end ~a)" (hash-count env)))]
       [`(rule-keys)
        (for ([triple (in-list (session-identity-records s))])
          (match-define (list pkey scc-records rule-records) triple)

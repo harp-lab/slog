@@ -1,0 +1,34 @@
+;; The live A3 fixture -- the RF5-B gate's shape (activation-contract §5):
+;; a two-instance program replacing ONE instance's image.  `right` swaps
+;; its lib for v2 (transitivity out, reversal in); `left` and every
+;; relation outside right's cone CARRY -- the battery proves their
+;; VersionKeys survive byte-identical while right.path/answer rebuild.
+;; Placeholders substitute from the running session (a fixture cannot
+;; know a fresh layer's keys).  Sources list libs first: the session's
+;; activate step uses the LAST source as the compile entry.
+(program-change-set (abi 1)
+  (base (program "@BASE-PROGRAM@") (boundary "@BASE-BOUNDARY@"))
+  (candidate (image "sha-a3-two-instance-v2") (compiler "fprint-live") (plan-abi 2)
+             (sources ((path "a3_lib.slog")
+                       (text "table (edge int int)\ntable (path int int)\n\nrule (edge X Y) --> (path X Y)\nrule (path X Y) (edge Y Z) --> (path X Z)\n"))
+                      ((path "a3_lib_v2.slog")
+                       (text "table (edge int int)\ntable (path int int)\n\nrule (edge X Y) --> (path X Y)\nrule (path X Y) --> (path Y X)\n"))
+                      ((path "a3_main.slog")
+                       (text "instantiate \"a3_lib.slog\" as left\ninstantiate \"a3_lib_v2.slog\" as right\n\ntable (seed int int)\ntable (answer int int int)\n\nrule\n(seed 1 2)\n(seed 2 3)\n(right.edge 8 9)\n(right.edge 9 10)\n\nrule (seed X Y) --> (left.edge X Y)\nrule (left.path X Y) --> (answer 0 X Y)\nrule (right.path X Y) --> (answer 1 X Y)\n"))))
+  (occurrences (replace (old "m1:@BASE-PROGRAM@:1") (new-slot ((1 "right"))) (home ((1 "right")))))
+  (rule-lineage ((old "r1:m1:@BASE-PROGRAM@:1:0.0") (new-slot "0.0"))
+                ((old #f) (new-slot "0.1")))
+  (slot-lineage ((relation seed) (old "@V:seed@") (disposition carry))
+                ((relation left.edge) (old "@V:left.edge@") (disposition carry))
+                ((relation left.path) (old "@V:left.path@") (disposition carry))
+                ((relation right.edge) (old "@V:right.edge@") (disposition carry))
+                ((relation right.path) (old "@V:right.path@") (disposition rebuild))
+                ((relation answer) (old "@V:answer@") (disposition rebuild)))
+  (diffs (source 1) (semantic (added 1) (removed 1) (moved 0)) (plan (kernels-changed 1)))
+  (writers (old (seed left.edge left.path right.edge right.path answer))
+           (new (seed left.edge left.path right.edge right.path answer)))
+  (sccs (old ()) (new ((scc 2 1 (members right.path)) (scc 4 3 (members answer)))))
+  (affected (roots (right.path)) (cone (right.path answer)))
+  (services)
+  (suffix)
+  (refusals))
