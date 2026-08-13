@@ -77,7 +77,9 @@ The feature serves these workflows:
 - **W7 — freeze:** materialize a chain as a history-free flat root.
 - **W8 — front-end editing:** accept mixed additions and retractions of
   data-fed facts. Program-source edits are recipe/program changes, not data
-  retractions.
+  retractions. Semantic program and instantiated-module replacement is the
+  later RF5 transaction specified in [rf5-contract.md](rf5-contract.md), not
+  part of the shipped tuple-edit surface.
 - **W9 — repeat and inspect:** instantiate cached programs at multiple
   pipeline positions and query earlier relation versions. This is currently
   a semantic guarantee, not yet a claim of bounded copy amplification.

@@ -191,6 +191,17 @@ fn classify(text: &str) -> CommandKind {
         return CommandKind::Mutation;
     }
 
+    // Most `image` forms only inspect the connection-scoped control catalog,
+    // but RF3 activation appends executable strata and therefore belongs in
+    // the mutation lane (including its read-only/private-lane protections).
+    let words: Vec<_> = text.split_whitespace().collect();
+    if words.len() == 3
+        && words[0].eq_ignore_ascii_case("image")
+        && words[2].eq_ignore_ascii_case("activate")
+    {
+        return CommandKind::Mutation;
+    }
+
     match text
         .split_whitespace()
         .next()
@@ -201,13 +212,12 @@ fn classify(text: &str) -> CommandKind {
         "rule" | "table" | "struct" | "lattice" | "enum" | "union" | "module" | "import"
         | "include" => CommandKind::Source,
         "tables" | "rels" | "relations" | "state" | "states" | "count" | "show" | "query"
-        | "has" => CommandKind::Observation,
-        "run" | "add" | "del" | "rename" | "drop" | "save" => CommandKind::Mutation,
+        | "has" | "images" => CommandKind::Observation,
+        "run" | "add" | "del" | "rename" | "drop" | "save" | "csv-import" => CommandKind::Mutation,
         "help" | "ping" | "status" | "quit" | "exit" | "library" | "open" | "use" | "current"
-        | "database" | "resident" | "sessions" | "mode" | "schema" | "pipeline" | "expand"
-        | "collapse" | "card" | "search" | "search-next" | "search-previous" | "search-clear" => {
-            CommandKind::Meta
-        }
+        | "database" | "resident" | "sessions" | "discard" | "mode" | "schema" | "pipeline"
+        | "image" | "expand" | "collapse" | "card" | "search" | "search-next"
+        | "search-previous" | "search-clear" => CommandKind::Meta,
         _ => CommandKind::Legacy,
     }
 }
@@ -225,6 +235,8 @@ mod tests {
             ("search edge", CommandKind::Meta),
             ("?(edge X _)", CommandKind::Observation),
             ("!run s45", CommandKind::Mutation),
+            ("image abc123 activate", CommandKind::Mutation),
+            ("csv-import examples/edges", CommandKind::Mutation),
             ("rule (edge X Y) --> (path X Y)", CommandKind::Source),
             ("; inspect edge next", CommandKind::Comment),
             ("future-server-verb x", CommandKind::Legacy),

@@ -310,8 +310,10 @@ line. There is no second expression language to learn — a strong reason to
 keep queries in Slog-body form rather than inventing a pipe DSL.
 
 Multi-line input continues while parens are unbalanced, exactly as a Slog file
-would read. `edit` opens `$EDITOR` on the current scratch program (psql's
-`\e`); `run !` reruns the last program event.
+would read. `edit scratch` opens `$EDITOR` on the current scratch program
+(psql's `\e`; the pre-RF5 bare `edit` spelling may remain an alias); `run !`
+reruns the last program event. Naming the scratch target leaves `edit dN`
+unambiguous for RF5 program drafts.
 
 ### 5.2 Verb inventory (working set)
 
@@ -322,13 +324,14 @@ provisional; the *groups* are the design.
 observe    ?  ?count  ?exists          queries (Q1 machinery)
            rels  schema  types  show  inspect  uses  sample  count
            diff  history  log  key  at  checkout
-           progs  rules  explain  code  hot  stats  tiers
+           progs  modules  rules  explain  code  hot  stats  tiers
            why  whynot
            handles  watches  dbs  status
 
 semantic   run  add  del  stage  flush  inject  rename  drop  link  import
            save  load  freeze  recount
            rule/table/... (scratch definitions)   clear scratch   keep scratch
+           draft  replace/remove/instantiate-in-draft  preview  activate
 
 debug      watch  break  unwatch
            step  continue  finish  frames  up  down
@@ -842,6 +845,9 @@ show r17                  source text + provenance (rule-meta)
 explain r17               canonical plan + variants + tier + attachment
 code scc5                 kernel plan key, attachments (tier, CodeId, path,
                           shard count), profile sidecar summary
+image KEY materializations
+                          native artifact coverage and interpreted complement;
+                          a vanished cache path is shown as a rebuildable miss
 types [ns.*]              struct/union catalog; show @t4 for one type's card
 ```
 
@@ -849,6 +855,45 @@ All of it reads the identity model of execution-tiers §2 — RuleId/VariantTag,
 KernelPlanKey, AttachmentId — which exists precisely so these questions have
 non-string answers. The REPL never parses mangled names back apart (repl.md
 §7's contract).
+
+### 10.1 Planned RF5 module/program replacement
+
+RF5-A's compiler-side substrate is complete: exact image/occurrence handles,
+persistent draft values, sealed previews, three diffs, explicit slot lineage,
+and the frozen `ProgramChangeSet` wire artifact live in
+`compiler/program-change.rkt`. The commands below remain planned RF5-B UI
+because resolving persisted handles against the selected committed boundary,
+allocating successor identities, healing privately, and publishing are
+session/transaction operations—not compiler-preview operations.
+
+Semantic replacement is deliberately a draft transaction, not another meaning
+of `run` and not the native tier hot swap shown by `tiers`:
+
+```text
+progs                         ; p3 is one immutable program occurrence
+modules p3                    ; m7 is an exact ModuleInstanceKey occurrence
+draft p3 as d1
+replace instance m7 in d1 with "analyze-v2.slog"
+  with syntax = syn, tuning = tune1, output = model
+preview d1                    ; seals i4; shows source, semantic, and plan diffs
+activate i4 hold              ; heals privately and pauses before publication
+diff db3 candidate model.*
+commit                        ; one atomic program-version recipe event
+```
+
+Old `dbN`, `pN`, and `mN` handles remain historical. The candidate receives
+new occurrence/version identities plus explicit lineage back to the selected
+old instance. `preview` reports changed bindings and declarations, SCC
+splits/merges, old/new writer roots, the union dependency cone, slot mappings,
+maintenance route, and artifact reuse. `activate` never exposes an interval
+where the old module has been removed but the new result has not settled;
+`abort` leaves the last committed boundary unchanged.
+
+Changing facts in a bound `tuning.*` namespace remains an ordinary `add`/`del`
+epoch. Changing which tuning namespace is bound, or changing compile-time
+rules/options, is an RF5 image replacement. The compiler/session/daemon
+contract, correctness oracle, initial suffix restriction, and gates are in
+[rf5-contract.md](rf5-contract.md).
 
 ## 11. Wilder ideas — the parking lot
 

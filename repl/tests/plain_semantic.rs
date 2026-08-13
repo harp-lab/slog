@@ -21,8 +21,8 @@ fn plain_executable_matches_the_semantic_session_golden() {
     let root = manifest
         .parent()
         .expect("repl crate lives below repository");
-    let golden = fs::read_to_string(root.join("tests/expected/repl/semantic-session.txt"))
-        .expect("semantic session golden");
+    let golden = fs::read_to_string(root.join("tests/expected/repl/semantic-session-brief.txt"))
+        .expect("compact frontend semantic session golden");
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_slog"))
         .arg("--plain")

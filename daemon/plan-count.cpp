@@ -1056,11 +1056,19 @@ void add_read_manifest(Stratum* stratum, const SealedKernelPlan& plan)
 // Captured DURING install, so getRelation resolves through the same armed
 // bind environment the stratum-wide maps are captured under at push.
 void record_kernel_attachment(Database* db, Stratum* stratum,
-                              const SealedKernelPlan& plan)
+                              const SealedKernelPlan& plan,
+                              const std::string& artifact_key = {},
+                              u32 artifact_native_slot = UINT32_MAX,
+                              const std::set<u32>* native_variants = nullptr)
 {
   if (plan.rules.empty()) return;   // the declarations carrier attaches nothing
   Stratum::KernelAttachment att;
   att.exec_key = plan.exec_key;
+  att.artifact_key = artifact_key;
+  att.artifact_native_slot = artifact_native_slot;
+  att.variants = plan.rules.size();
+  if (native_variants != nullptr)
+    att.native_variants.assign(native_variants->begin(), native_variants->end());
   for (const std::string& name : plan.dynamic_names)
     if (Relation* r = db->getRelation(name))
       att.writes.push_back({name, r->getVersionId()});
@@ -1682,6 +1690,110 @@ bool install_command_stratum(Daemon* daemon, const std::string& name,
   return true;
 }
 
+bool preflight_command_cohorts(Daemon* daemon,
+                               const std::vector<CommandCohort>& cohorts)
+{
+  seal_check(!cohorts.empty(), SealErrorK::capability,
+             "image install: no executable cohorts");
+
+  const EntryMode entry = EntryMode::fresh();
+  // Admission is invariant across the fresh suffix.  Check it before the
+  // sealed image can reach any registration/reload seam, and let Daemon emit
+  // the same typed refusal as the command builder.
+  if (!daemon->validateStratumEntry(cohorts.front().name, entry)) return false;
+
+  std::set<std::string> names;
+  struct DeclaredShape
+  {
+    u16 arity;
+    RelationK kind;
+    bool temp;
+    std::string lattice_spec;
+    std::string lattice_decomp_relation;
+    bool lattice_decomp_map;
+  };
+  std::map<std::string, DeclaredShape> declared;
+  std::map<std::string, std::pair<std::string, std::string>> oracles;
+
+  // Complete-image preflight.  In addition to each plan's ordinary
+  // database-dependent checks, compare every name-bearing slot across all
+  // kernels/cohorts.  Index requisitions may differ by kernel; storage kind,
+  // arity and lattice merge semantics may not.  This closes the only checked
+  // failure that could otherwise be discovered after an earlier cohort had
+  // already reached the pipeline.
+  for (const CommandCohort& cohort : cohorts)
+  {
+    seal_check(!cohort.name.empty(), SealErrorK::capability,
+               "image install: empty cohort name");
+    seal_check(names.insert(cohort.name).second, SealErrorK::capability,
+               "image install: duplicate cohort name " + cohort.name);
+    seal_check(!cohort.kernels.empty(), SealErrorK::capability,
+               "image install: empty cohort " + cohort.name);
+    for (const SealedKernelPlan& plan : cohort.kernels)
+    {
+      validate_command_entry_flavor(entry, plan);
+      seal_check(plan.flavor == "normal", SealErrorK::flavor,
+                 "image install: mounted images admit normal cohorts only");
+      preflight_command_install(daemon, entry, plan);
+      for (const RelationBinding& binding : plan.bindings)
+      {
+        const DeclaredShape shape{
+          binding.shape.arity, binding.shape.kind, binding.shape.temp,
+          binding.shape.lattice_spec,
+          binding.shape.lattice_decomp_relation,
+          binding.shape.lattice_decomp_map};
+        const auto [found, inserted] = declared.emplace(binding.name, shape);
+        if (!inserted)
+          seal_check(found->second.arity == shape.arity
+                       && found->second.kind == shape.kind
+                       && found->second.temp == shape.temp
+                       && found->second.lattice_spec == shape.lattice_spec
+                       && found->second.lattice_decomp_relation
+                            == shape.lattice_decomp_relation
+                       && found->second.lattice_decomp_map
+                            == shape.lattice_decomp_map,
+                     SealErrorK::binding,
+                     "image install: relation shape disagreement for "
+                       + binding.name);
+      }
+      for (const AttachmentPlan& attachment : plan.attachments)
+        if (attachment.kind == AttachmentK::oracle)
+        {
+          const auto binding = std::make_pair(attachment.b, attachment.c);
+          const auto [found, inserted] = oracles.emplace(attachment.a, binding);
+          seal_check(inserted || found->second == binding,
+                     SealErrorK::binding,
+                     "image install: oracle backend is rebound inconsistently: "
+                       + attachment.a);
+        }
+    }
+  }
+
+  return true;
+}
+
+void install_preflighted_command_cohort(Daemon* daemon,
+                                        const CommandCohort& cohort)
+{
+  const EntryMode entry = EntryMode::fresh();
+  Stratum* stratum = daemon->installStratum(cohort.name, entry);
+  // The complete-image admission checked this exact fresh entry before any
+  // cohort was installed.  A refusal now would mean internal state changed
+  // without a continuation boundary, not malformed image input.
+  if (stratum == nullptr)
+    fatal("image install: preflighted cohort entry was refused");
+  std::unique_ptr<Stratum> provisional(stratum);
+  stratum->flavor = "normal";
+  std::set<std::string> installed_relations;
+  for (const SealedKernelPlan& plan : cohort.kernels)
+  {
+    populate_normal_stratum(daemon, stratum, plan, &installed_relations);
+    record_kernel_attachment(daemon->db(), stratum, plan);
+  }
+  daemon->push(stratum);
+  (void)provisional.release();
+}
+
 bool maybe_interp_count_plugin(Daemon* daemon, const std::string& path)
 {
   // Slice 4 (counted-interp-contract.md): flavored variants are interp-only
@@ -1778,7 +1890,8 @@ NativeAttachStorage& native_attach_storage()
 
 void install_native_cohort(Daemon* daemon, const std::string& name,
                            const std::vector<SealedKernelPlan>& kernels,
-                           const NativeCodeDescriptor* desc)
+                           const NativeCodeDescriptor* desc,
+                           const std::string& artifact_key)
 {
   if (kernels.empty()) return;
   seal_check(desc->interface_abi == 3, SealErrorK::flavor,
@@ -1923,7 +2036,8 @@ void install_native_cohort(Daemon* daemon, const std::string& name,
     if (covered.size() < plan.rules.size())
       attach_normal_rules(db, stratum, plan, &covered);
     add_read_manifest(stratum, plan);
-    record_kernel_attachment(db, stratum, plan);
+    record_kernel_attachment(db, stratum, plan, artifact_key,
+                             static_cast<u32>(i), &covered);
   }
   daemon->push(stratum);
   daemon->continueRun();
@@ -1932,7 +2046,8 @@ void install_native_cohort(Daemon* daemon, const std::string& name,
 } // namespace
 
 void attach_native_descriptor(Daemon* daemon, const std::string& path,
-                              const NativeCodeDescriptor* desc)
+                              const NativeCodeDescriptor* desc,
+                              const std::string& artifact_key)
 {
   if (desc == nullptr)
     fatal("native attach: null descriptor from " + path);
@@ -1950,7 +2065,7 @@ void attach_native_descriptor(Daemon* daemon, const std::string& path,
     std::vector<SealedKernelPlan> kernels;
     for (const DecodedKernelPlan& decoded : parse_plan_artifact_file(plan_path))
       kernels.push_back(seal_kernel_plan(decoded, daemon->db()));
-    install_native_cohort(daemon, stem, kernels, desc);
+    install_native_cohort(daemon, stem, kernels, desc, artifact_key);
   }
   catch (const std::exception& error)
   {

@@ -28,8 +28,12 @@ impl CommandResult {
             .and_then(Value::as_str)
             .unwrap_or("Result")
             .to_owned();
+        // Keep diagnostic lines on the wire while preferring the server's
+        // compact user-facing projection. Structured detail stays available
+        // to the expandable live canvas through `raw`.
         let lines = raw
-            .get("lines")
+            .get("brief-lines")
+            .or_else(|| raw.get("lines"))
             .and_then(Value::as_array)
             .map(|values| {
                 values
@@ -87,7 +91,8 @@ mod tests {
         let result = CommandResult::from_value(serde_json::json!({
             "kind": "mutation",
             "title": "Add · edge",
-            "lines": ["(edge 1 2)", "settled"],
+            "lines": ["(edge 1 2)", "settled", "size changes: edge +1"],
+            "brief-lines": ["(edge 1 2)", "committed"],
             "close": true,
             "change": {
                 "operation": "add",
@@ -98,12 +103,12 @@ mod tests {
         }));
         assert_eq!(result.kind(), "mutation");
         assert_eq!(result.title(), "Add · edge");
-        assert_eq!(result.lines(), ["(edge 1 2)", "settled"]);
+        assert_eq!(result.lines(), ["(edge 1 2)", "committed"]);
         assert!(result.closes());
         assert_eq!(result.raw()["future-field"], 17);
         assert_eq!(
             result.transcript_entry().plain(),
-            "◆ Add · edge\n  (edge 1 2)\n  settled"
+            "◆ Add · edge\n  (edge 1 2)\n  committed"
         );
     }
 

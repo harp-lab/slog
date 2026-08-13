@@ -214,8 +214,12 @@
 ;;   scc-of      : relation symbol -> scc id
 ;;   scc-level   : scc id -> stratum level (1 + max level of predecessors)
 ;;   scc-members : scc id -> relations in that SCC, symbol-sorted
-;;   sources     : source-rule id -> the rules derived from it, and
-;;   source-of   : rule -> its source-rule id
+;;   sources     : source-rule id -> the rules derived from it,
+;;   source-of   : rule -> its source-rule id, and
+;;   extra-edges : compiler-derived relation dependencies which have no
+;;                 source rule (decomposition/sequence/oracle side channels)
+;;   extra-edge-kinds : pair -> derived|oracle, retaining why each side-channel
+;;                      edge exists for RF5's semantic cone
 ;;
 ;; LINEAGE, and why it needs no pass plumbing: provenance already threads
 ;; through simplification, typechecking and planning untouched, so two
@@ -232,7 +236,7 @@
 ;; plan's meta block -- a plan-byte change, which belongs to slice 2 where
 ;; the one sanctioned re-key absorbs it.
 (struct program-model
-  (scc-of scc-level scc-members sources source-of)
+  (scc-of scc-level scc-members sources source-of extra-edges extra-edge-kinds)
   #:transparent)
 
 ;; The lineage key for a rule: its (file, line, column) when located, else

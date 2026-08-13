@@ -1,0 +1,35 @@
+› open sess_w2.edb
+◆ Opened sess_w2.edb
+  database loaded into a new mutable in-memory workspace
+  Try `current`, `tables`, `state`, `show REL`, or `query REL V...`.
+  committed
+› add edge 1 2
+◆ Add · edge
+  (edge 1 2)
+  committed
+› add edge 4 5
+◆ Add · edge
+  (edge 4 5)
+  committed
+› del edge 4 5
+◆ Del · edge
+  (edge 4 5)
+  committed
+› table (deg2 int int) rule (deg2 X Z) <-- (edge X Y) (edge Y Z)
+! Command failed
+  session: this database has no logical catalog (a pre-N4 input, or one invalidated by an import/link/inject); scratch needs the typed catalog for adoption and retraction -- replay and re-save it, or regenerate it
+› scratch
+◆ Scratch
+  the scratch layer is empty
+  type a Slog definition (`rule ...`, `table ...`) to start one
+› rename edge input_edge
+◆ Renamed edge to input_edge
+  relation identity was rebound without moving tuple data
+  committed
+› drop path
+◆ Dropped path
+  relation name was removed from the live environment
+  committed
+› :quit
+◆ Goodbye
+  REPL closed

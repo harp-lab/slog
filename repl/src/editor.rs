@@ -111,6 +111,44 @@ impl Editor {
         (column as u16, row)
     }
 
+    /// Render with the same stable, grapheme-aware hard wrapping used by
+    /// `visual_cursor`. Ratatui's word wrapper can move a whole partially
+    /// typed word to the next line as each character arrives, leaving the
+    /// terminal cursor and incremental diff briefly behind the visible text.
+    pub fn hard_wrapped_text(&self, width: usize) -> String {
+        let width = width.max(1);
+        let mut rendered = String::with_capacity(self.text.len());
+        let mut column = 0_usize;
+        for grapheme in self.text.graphemes(true) {
+            if grapheme == "\n" {
+                rendered.push('\n');
+                column = 0;
+                continue;
+            }
+            let grapheme_width = UnicodeWidthStr::width(grapheme).max(1);
+            if column + grapheme_width > width {
+                rendered.push('\n');
+                column = 0;
+            }
+            rendered.push_str(grapheme);
+            column += grapheme_width;
+            if column >= width {
+                rendered.push('\n');
+                column = 0;
+            }
+        }
+        rendered
+    }
+
+    pub fn visual_rows(&self, width: usize) -> u16 {
+        self.hard_wrapped_text(width)
+            .bytes()
+            .filter(|byte| *byte == b'\n')
+            .count()
+            .saturating_add(1)
+            .min(usize::from(u16::MAX)) as u16
+    }
+
     fn previous_grapheme(&self) -> usize {
         self.text[..self.cursor]
             .grapheme_indices(true)
@@ -138,6 +176,19 @@ mod tests {
         let mut editor = Editor::default();
         editor.insert("測試");
         assert_eq!(editor.visual_cursor(20), (4, 0));
+    }
+
+    #[test]
+    fn hard_wrapping_matches_the_cursor_without_reflowing_words() {
+        let mut editor = Editor::default();
+        editor.insert("abc def");
+        assert_eq!(editor.hard_wrapped_text(5), "abc d\nef");
+        assert_eq!(editor.visual_cursor(5), (2, 1));
+
+        editor.clear();
+        editor.insert("測試x");
+        assert_eq!(editor.hard_wrapped_text(4), "測試\nx");
+        assert_eq!(editor.visual_cursor(4), (1, 1));
     }
 
     #[test]

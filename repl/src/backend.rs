@@ -71,6 +71,26 @@ impl Backend {
             .map_err(|_| "Racket session task has stopped".to_owned())
     }
 
+    /// Replace this REPL's private control-plane process with a fresh one.
+    ///
+    /// The replacement is started before the old process is closed, so a
+    /// startup failure leaves the user's current session available.  Once the
+    /// replacement is ready, graceful shutdown closes every old resident
+    /// compiler session and daemon without touching saved databases on disk.
+    pub async fn reset(&mut self) -> Result<(), String> {
+        let replacement = Self::start(&self.project_root).await?;
+        let _ = self.commands.send(BackendCommand::Shutdown).await;
+        if timeout(Duration::from_secs(1), &mut self.task)
+            .await
+            .is_err()
+        {
+            self.task.abort();
+            let _ = (&mut self.task).await;
+        }
+        *self = replacement;
+        Ok(())
+    }
+
     pub fn cancel_in_flight(&self) {
         self.task.abort();
     }

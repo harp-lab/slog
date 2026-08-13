@@ -494,6 +494,11 @@ rebuilt, never a broken program.
 
 ## 10. Program editing and incremental healing
 
+The concrete replacement semantics, cross-image module/rule/version lineage,
+compiler diff products, REPL transaction, and delivery gates are specified in
+[rf5-contract.md](rf5-contract.md). This section gives the architectural
+model; the RF5 contract owns the executable plan.
+
 Representing programs as facts makes source-to-source and IR-to-IR
 transformation pleasantly natural. It does **not** make a program change an
 ordinary base-fact insertion.
@@ -769,6 +774,35 @@ the seed of the image-based-goldens idea (§18.7).
    maps before using it for execution.
 4. Verify save/load and cache-miss behavior.
 
+**RF2 checkpoint (deep gate 2026-08-10):** the compiler-side logical container,
+read-only daemon mount, and introspection surface are implemented.
+`program-image.rkt` binds canonical declarations,
+captured source tokens, lexical module/source occurrences, RF1.5 semantic
+queries, and complete ABI-2 cohorts into one validated content-addressed
+`.pimg`; `compile.rkt` exposes the producer and an opt-in
+`SLOG_EMIT_PROGRAM_IMAGES` hook. The complete package round-trips through a
+textual golden, rejects a changed seal/format, preserves two instantiations of
+one source as distinct occurrences, and treats a missing output as a
+reconstructible cache miss. Both compiler readers now apply explicit byte and
+structural-depth quotas. The daemon's independent bounded decoder verifies
+the content seal, format/ABI, dense references, embedded digests, dependency
+causes, declaration/module/rule canonical order, a recomputed ProgramModel
+fingerprint, SCC partition, condensation edges, and component levels,
+then publishes an immutable connection-scoped mount. `catalog programs` and
+`catalog program KEY [sources|rules|kernels|plans]` expose structured streams;
+the REPL's `images` and `image` commands render them. Duplicate mounts report
+a cache hit, missing/tampered packages are typed refusals, unmount is
+non-destructive, and ordinary relation catalogs remain unchanged before and
+after the lifecycle.
+
+This chooses a compact decoded control-catalog object as RF2's first physical
+mount. A mount alone is not inserted into the user `Database`, saved with
+application facts, admitted to application rules, or executed. That firewall
+gives introspection no accidental write or execution authority. A future Slog
+meta-program surface can materialize the same records through the
+freeze/import substrate; RF3's separate activation command owns complete
+executable-plan verification, binding, and task construction.
+
 ### RF3: decoded interpreter
 
 1. Build compact bound ops and generic service tasks from the mounted image.
@@ -776,6 +810,42 @@ the seed of the image-based-goldens idea (§18.7).
 3. Keep the old native plugin path in parallel until the image path is proven.
 4. Add the deliberately slow direct-image interpreter only if useful as a
    testing oracle.
+
+**RF3 checkpoint (deep gate 2026-08-10): complete.** A mounted image now has one
+generation-gated additive activation path. Before publishing its first task,
+the daemon checks exact `ProgramModel`-component/manifest coverage, recomputes
+every manifest `KernelExecPlan` key, decodes every embedded ABI-2 cohort
+through the production bounded reader, seals every compact operator program,
+and preflights all database-dependent relation shapes and capabilities. Each
+logical cohort remains one scheduling stratum containing its declarations
+carrier and kernel-local bound programs; no kernel is flattened back into a
+program-wide unit.
+
+Manifest coverage is defined over writer-containing ProgramModel components;
+input-only SCCs do not invent kernels. Compiler-produced prelude kernels are
+accepted as empty-member execution support and excluded from semantic
+component coverage. The same definition is enforced by the Racket image
+validator and the C++ activation boundary, including programs with more than
+ten SCCs where dense numeric slot order differs from textual order.
+
+Activation deliberately installs one cohort at a time. Ordinary bounded
+`continue` drives cohort N to fixpoint, then registration of cohort N+1
+consumes the runtime's deferred full-to-delta reload. This is the same
+lifecycle as the native and standalone-plan paths and is required for
+multi-level programs. The activation catalog reports pending/settled state,
+duplicate activation is idempotent, active images cannot be unmounted, and
+the REPL exposes `image KEY activate` plus the `activation` view. A two-cohort,
+multi-head program runs through both a forced native artifact and the mounted
+decoded interpreter and produces the same settled result; malformed model /
+manifest coverage is refused before task installation. The old native plugin
+and descriptor paths are unchanged and remain the parallel executor for RF4
+coverage/materialization work.
+
+This is additive startup/extension, not program replacement. It does not
+create drafts, infer lineage, heal a writer cone, or publish a successor
+program version; those authorities remain RF5-A/RF5-B. The optional slow
+direct relational interpreter was not added—the production decoded VM already
+provides the useful differential boundary without a second semantics.
 
 ### RF4: kernel-aware native materialization
 
@@ -785,14 +855,56 @@ the seed of the image-based-goldens idea (§18.7).
    kernels.
 4. Treat missing cached files as rebuildable misses.
 
+**RF4 checkpoint (2026-08-09): complete.** T4's coverage-bearing descriptor
+already identifies the sealed kernel plan, descriptor-native slot, and dense
+variant slots, and already runs partial coverage as native plus the decoded
+complement. RF4 now records the content-addressed artifact and each live
+attachment's exact coverage partition in the control catalog. The
+image-local `materializations` view joins those observations back to immutable
+plan/kernel slots; an absent or vanished `.so` is reported as `cache-state
+miss` with full interpreted coverage. Paths remain volatile hints, and none
+of these observations enter application relations or save/replay semantics.
+The gates observe shared native attachments, a true mixed variant partition,
+the matching image-slot join, and a loaded artifact becoming a rebuildable
+miss after its copied cache file is removed. The detailed identity and catalog
+contract is [rf4-contract.md](rf4-contract.md).
+
 ### RF5: draft program transformations
 
 1. Expose immutable source/program images to explicit meta-program runs.
 2. Produce `ProgramEditProposal` images, not live mutations.
 3. Add validate/seal/preview/commit at a program boundary.
-4. Connect activation to incremental writer/cone healing and fallback.
-5. Only then consider automatic outer meta-fixpoints or direct expert plan
+4. Produce separate source/occurrence, normalized semantic, and execution-plan
+   diffs; record explicit old/new module and relation-slot lineage rather than
+   inferring correspondence from names or source locations.
+5. Connect activation to private incremental writer/cone healing and the
+   permanent clear-and-rerun fallback, then publish the image, bindings,
+   versions, counts, and recipe event atomically.
+6. Ship instantiated-module replacement and binding-tuning as the first
+   end-to-end workflow in [rf5-contract.md](rf5-contract.md).
+7. Only then consider automatic outer meta-fixpoints or direct expert plan
    editing.
+
+**RF5-A checkpoint (deep gate 2026-08-10): complete.**
+`compiler/program-change.rkt` implements exact image-bound module handles,
+immutable draft revisions, explicit preserve/replace/remove/add lineage for
+module, rule, and prospective relation-output slots, and a sealed
+content-addressed `ProgramChangeSet`. Sealing refuses incomplete or reused
+lineage and computes three distinct products: occurrence/source changes;
+normalized declaration/rule/fact/dependency/writer/SCC changes with affected
+roots and the union old/new cone; and ABI-2 cohort/kernel/binding/service
+changes with reusable `KernelPlanKey` multiplicity. Incompatible mapped
+relation shapes and modified alias/type declarations become typed compiler
+refusals rather than mutations. Oracle side channels and service attachment
+changes enter the union cone, while source facts share the compiler's
+constant-class classification. Format 1 is pinned by two ordinary
+compiler-produced ABI-2 images plus
+`tests/change-expected/rf5a-rule-removal.pchange`, and consumed through the
+independent `tests/api/program-change-consumer.rkt` without producer structs or
+codecs. Both compiler readers are byte/depth bounded; the codec admits only
+closed canonical data and contains no live `VersionId`, route, or publication
+decision. RF5-B now owns resolving the artifact against a
+committed boundary, private cone rebuild/recount, and atomic publish/abort.
 
 ## 16. Questions to work through
 
@@ -818,8 +930,11 @@ the seed of the image-based-goldens idea (§18.7).
    oracles, or sequence indices look like ordinary user rules?
 8. Which compiler IR passes deserve persistent images, and which should be
    generated only for `explain compiler ...`?
-9. How are source-level edits represented so lexical `RuleKey`s survive
-   ordinary insert/move/reformat operations where appropriate?
+9. **Resolved for RF5:** lexical `RuleKey`s do not survive as the same key
+   across immutable program occurrences. A draft records explicit old/new
+   `RuleLineage` for navigation, while an alpha-normalized semantic
+   fingerprint decides whether database semantics changed; see
+   [rf5-contract.md](rf5-contract.md) §2 and §4.
 10. Can a meta-program inspect its own source image while producing a
     successor proposal without creating an accidental dependency of its
     application facts on control-plane state?

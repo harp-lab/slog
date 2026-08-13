@@ -1,4 +1,5 @@
 mod library;
+mod tutorial;
 
 use crate::app::{App, EntryKind};
 use crate::completion::CompletionMenu;
@@ -18,6 +19,12 @@ const PANEL: Color = Color::Rgb(30, 36, 50);
 
 pub fn draw(frame: &mut Frame<'_>, app: &App) {
     let area = frame.area();
+    if let Some(overlay) = app.tutorial_overlay() {
+        let sections = Layout::vertical([Constraint::Min(8), Constraint::Length(1)]).split(area);
+        tutorial::render(frame, sections[0], overlay);
+        tutorial::render_footer(frame, sections[1], overlay);
+        return;
+    }
     if let Some(library) = &app.library {
         let sections = Layout::vertical([Constraint::Min(8), Constraint::Length(1)]).split(area);
         library::render(frame, sections[0], library, &app.sessions);
@@ -26,10 +33,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
     }
     if let Some(completion) = app.completion() {
         let completion_height = (completion.candidates().len().min(5) as u16).saturating_add(2);
+        let editor_height = editor_panel_height(area, app, completion_height.saturating_add(5));
         let sections = Layout::vertical([
             Constraint::Min(5),
             Constraint::Length(completion_height),
-            Constraint::Length(5),
+            Constraint::Length(editor_height),
         ])
         .split(area);
         render_body(frame, sections[0], app);
@@ -37,9 +45,23 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
         render_editor(frame, sections[2], app);
         return;
     }
-    let sections = Layout::vertical([Constraint::Min(8), Constraint::Length(5)]).split(area);
+    let editor_height = editor_panel_height(area, app, 8);
+    let sections =
+        Layout::vertical([Constraint::Min(8), Constraint::Length(editor_height)]).split(area);
     render_body(frame, sections[0], app);
     render_editor(frame, sections[1], app);
+}
+
+fn editor_panel_height(area: Rect, app: &App, reserved_height: u16) -> u16 {
+    let content_width = area.width.saturating_sub(2).max(1) as usize;
+    let desired = app
+        .editor
+        .visual_rows(content_width)
+        .saturating_add(1)
+        .max(5);
+    let half_screen_cap = (area.height / 2).clamp(5, 16);
+    let available = area.height.saturating_sub(reserved_height).max(1);
+    desired.min(half_screen_cap).min(available)
 }
 
 fn render_body(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -111,6 +133,10 @@ fn render_splash(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Span::raw(" connection details"),
         ]);
     }
+    lines.push(Line::from(vec![
+        Span::raw("New to Slog? Try an interactive tutorial with "),
+        Span::styled(":tutorials", Style::default().fg(PINK)),
+    ]));
     let paragraph = Paragraph::new(lines).alignment(Alignment::Center).block(
         Block::default()
             .borders(Borders::ALL)
@@ -220,18 +246,22 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, app: &App) {
         ));
         lines.push(Line::from(""));
     }
-    let visible = area.height.saturating_sub(2) as usize;
-    let bottom = lines.len().saturating_sub(visible) as u16;
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(PANEL))
+        .title(" Shared transcript ");
+    let inner = block.inner(area);
+    let mut transcript = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
+    // `Paragraph::scroll` is measured in rendered rows. Counting the source
+    // `Line`s hid the tail whenever a long command or tutorial comment
+    // wrapped: the editor occupied the bottom of the screen, but the
+    // transcript had not scrolled past the extra visual rows above it.
+    let rendered_rows = transcript.line_count(inner.width);
+    let bottom = rendered_rows
+        .saturating_sub(inner.height as usize)
+        .min(u16::MAX as usize) as u16;
     let scroll = bottom.saturating_sub(app.transcript_scroll.min(bottom));
-    let transcript = Paragraph::new(Text::from(lines))
-        .scroll((scroll, 0))
-        .wrap(Wrap { trim: false })
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(PANEL))
-                .title(" Shared transcript "),
-        );
+    transcript = transcript.scroll((scroll, 0)).block(block);
     frame.render_widget(transcript, area);
 }
 
@@ -287,34 +317,58 @@ fn render_editor(frame: &mut Frame<'_>, area: Rect, app: &App) {
         );
         return;
     }
+    let tutorial_status = app.tutorial_run().map(|run| {
+        format!(
+            "Tutorial {}/{} · {}",
+            run.step_number(),
+            run.step_count(),
+            run.status()
+        )
+    });
     let block = Block::default()
         .borders(Borders::TOP)
-        .border_style(Style::default().fg(CYAN))
+        .border_style(Style::default().fg(if tutorial_status.is_some() {
+            PINK
+        } else {
+            CYAN
+        }))
         .padding(Padding::horizontal(1))
         .title(format!(
             " {} ›  {} ",
             app.prompt_label(),
-            if app.completion().is_some() {
+            if let Some(status) = tutorial_status {
+                status
+            } else if app.completion().is_some() {
                 "Completion · Tab/↓ next · Shift-Tab/↑ previous · Enter accept · Esc close"
+                    .to_owned()
             } else {
-                "Enter send · Alt+Enter newline · Ctrl-D exit"
+                "Enter send · Alt+Enter newline · Ctrl-D exit".to_owned()
             }
         ));
     let inner = block.inner(area);
+    let (column, row) = app.editor.visual_cursor(inner.width as usize);
+    let editor_scroll = row.saturating_sub(inner.height.saturating_sub(1));
     frame.render_widget(
-        Paragraph::new(app.editor.text())
+        Paragraph::new(app.editor.hard_wrapped_text(inner.width as usize))
             .style(Style::default().fg(Color::White))
-            .wrap(Wrap { trim: false })
+            .scroll((editor_scroll, 0))
             .block(block),
         area,
     );
-    let (column, row) = app.editor.visual_cursor(inner.width as usize);
+    if app.tutorial_input_hint_visible() {
+        frame.render_widget(
+            Paragraph::new("(Enter a command here)").style(
+                Style::default()
+                    .fg(Color::LightBlue)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            inner,
+        );
+    }
     let cursor_x = inner
         .x
         .saturating_add(column.min(inner.width.saturating_sub(1)));
-    let cursor_y = inner
-        .y
-        .saturating_add(row.min(inner.height.saturating_sub(1)));
+    let cursor_y = inner.y.saturating_add(row.saturating_sub(editor_scroll));
     frame.set_cursor_position((cursor_x, cursor_y));
 }
 
@@ -442,15 +496,17 @@ fn render_library_footer(frame: &mut Frame<'_>, area: Rect) {
 
 #[cfg(test)]
 mod tests {
-    use super::{GREEN, PANEL, PINK, draw};
+    use super::{GREEN, PANEL, PINK, draw, editor_panel_height};
     use crate::app::{App, TranscriptEntry};
     use crate::backend::BackendEvent;
     use crate::command::ShellCommand;
     use crate::library::{DatabaseSummary, LibraryView, RelationSummary};
     use crate::protocol::Response;
+    use crate::tutorial::{Tutorial, TutorialCatalog};
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
     use ratatui::style::Color;
 
     fn find_text(terminal: &Terminal<TestBackend>, needle: &str) -> Option<(u16, u16)> {
@@ -482,6 +538,7 @@ mod tests {
             .expect("draw welcome");
         let rendered = terminal.backend().to_string();
         assert!(rendered.contains("Symbolic-expression logic programming"));
+        assert!(rendered.contains("New to Slog? Try an interactive tutorial with :tutorials"));
         assert!(rendered.contains("Enter send · Alt+Enter newline · Ctrl-D exit"));
         assert!(!rendered.contains("Shift"));
         assert!(!rendered.contains(":demo"));
@@ -495,12 +552,169 @@ mod tests {
         let (_, share_y) = find_text(&terminal, ":share").expect("share command");
         assert_eq!(help_y, endpoint_y);
         assert_eq!(help_y, share_y);
+        let (_, tutorials_y) = find_text(
+            &terminal,
+            "New to Slog? Try an interactive tutorial with :tutorials",
+        )
+        .expect("tutorial suggestion");
+        assert_eq!(tutorials_y, help_y + 1);
 
         let (body_x, _) = find_text(&terminal, "/____/_/").expect("logo body");
         let (descender_x, _) = find_text(&terminal, "/____/  v").expect("logo descender");
         assert_eq!(descender_x, body_x + 13);
         let (_, editor_y) = find_text(&terminal, "slog ›").expect("editor title");
         assert_eq!(editor_y, 25, "the five-row editor starts at row 25");
+    }
+
+    #[test]
+    fn multiline_input_expands_and_scrolls_to_follow_the_cursor() {
+        let mut app = App::new();
+        assert_eq!(editor_panel_height(Rect::new(0, 0, 80, 30), &app, 8), 5);
+        app.editor.insert(
+            &(1..=20)
+                .map(|line| format!("line {line}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        assert!(editor_panel_height(Rect::new(0, 0, 80, 30), &app, 8) > 5);
+
+        let backend = TestBackend::new(80, 30);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw multiline editor");
+        let rendered = terminal.backend().to_string();
+        assert!(rendered.contains("line 20"));
+        assert!(!rendered.contains("line 1 "));
+    }
+
+    #[test]
+    fn transcript_follows_the_last_rendered_row_of_wrapped_comments() {
+        let mut app = App::new();
+        let narration = format!("; {}for a path.", "word ".repeat(45));
+        app.transcript.push(TranscriptEntry::comment(
+            ShellCommand::generated(narration).expect("tutorial narration"),
+            "local",
+        ));
+
+        let backend = TestBackend::new(40, 15);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw wrapped transcript tail");
+
+        let (_, tail_y) = find_text(&terminal, "for a path.")
+            .expect("the final wrapped sentence remains above the editor");
+        let (_, editor_y) = find_text(&terminal, "slog ›").expect("editor title");
+        assert!(tail_y < editor_y);
+
+        app.editor.insert("one\ntwo\nthree\nfour\nfive\nsix\nseven");
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("redraw after the editor expands upward");
+        let (_, expanded_tail_y) = find_text(&terminal, "for a path.")
+            .expect("the transcript follows its tail as the editor grows");
+        let (_, expanded_editor_y) = find_text(&terminal, "slog ›").expect("expanded editor title");
+        assert!(expanded_tail_y < expanded_editor_y);
+        assert!(expanded_editor_y < editor_y);
+    }
+
+    #[test]
+    fn tutorial_catalog_renders_titles_summaries_and_controls() {
+        let backend = TestBackend::new(100, 28);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let tutorial = Tutorial::parse(include_str!("../../tutorials/01-repl-basics.toml"))
+            .expect("shipped tutorial");
+        let mut app = App::new();
+        app.set_tutorial_catalog(TutorialCatalog::from_tutorials(vec![tutorial]));
+        app.editor.insert(":tutorials");
+        app.on_terminal(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw tutorial catalog");
+
+        let rendered = terminal.backend().to_string();
+        assert!(rendered.contains("Tutorials · 1 available"));
+        assert!(rendered.contains("CSV to transitive closure"));
+        assert!(rendered.contains("Import edge.csv as a binary database"));
+        assert!(rendered.contains("Enter start"));
+    }
+
+    #[test]
+    fn tutorial_challenges_blink_a_blue_hint_until_input_begins() {
+        let backend = TestBackend::new(100, 28);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let tutorial = Tutorial::parse(
+            r#"
+format = 1
+id = "input-hint"
+title = "Input hint"
+summary = "Show where to type."
+
+[[steps]]
+type = "challenge"
+prompt = "Enter ping:"
+answers = [":ping"]
+fallback = ":ping"
+"#,
+        )
+        .expect("tutorial");
+        let mut app = App::new();
+        app.set_tutorial_catalog(TutorialCatalog::from_tutorials(vec![tutorial]));
+        app.editor.insert(":tutorials");
+        for key in [KeyCode::Enter, KeyCode::Enter, KeyCode::Right] {
+            app.on_terminal(Event::Key(KeyEvent::new(key, KeyModifiers::NONE)));
+        }
+
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw tutorial input hint");
+        let (hint_x, hint_y) =
+            find_text(&terminal, "(Enter a command here)").expect("visible tutorial input hint");
+        assert_eq!(
+            terminal
+                .backend()
+                .buffer()
+                .cell((hint_x, hint_y))
+                .expect("hint cell")
+                .fg,
+            Color::LightBlue
+        );
+
+        for _ in 0..14 {
+            app.tick();
+        }
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw end of solid hint phase");
+        assert!(find_text(&terminal, "(Enter a command here)").is_some());
+
+        app.tick();
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw hidden blink phase");
+        assert!(find_text(&terminal, "(Enter a command here)").is_none());
+
+        for _ in 0..3 {
+            app.tick();
+        }
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw next solid hint phase");
+        assert!(find_text(&terminal, "(Enter a command here)").is_some());
+
+        app.on_terminal(Event::Key(KeyEvent::new(
+            KeyCode::Char('?'),
+            KeyModifiers::NONE,
+        )));
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw tutorial input");
+        assert!(find_text(&terminal, "(Enter a command here)").is_none());
+        assert!(terminal.backend().to_string().contains('?'));
     }
 
     #[test]

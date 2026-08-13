@@ -164,7 +164,9 @@ if SLOG_OPT=interp timeout 900 racket compiler/run.rkt --no-banner \
          | grep -oE '[a-f0-9_]{6,}' \
          | while read -r h; do so="build/$h.O0.so"; [ -f "$so" ] || so="build/$h.so"; echo "$so"; done)"
   # shellcheck disable=SC2086
-  racket tests/api/drive.rkt $sos "(attachments)" > "$WORK/sym-att.log" 2>&1
+  racket tests/api/drive.rkt $sos "(attachments)" \
+    "(catalog artifacts)" "(catalog attachments)" \
+    > "$WORK/sym-att.log" 2>&1
   if python3 - "$WORK/sym-att.log" <<'PYEOF'
 import re, sys
 recs = {}
@@ -178,6 +180,61 @@ PYEOF
     PASS=$((PASS+1))
   else
     echo "FAIL attachment-records-disaggregate (no shared key with distinct writes)"
+    FAIL=$((FAIL+1))
+  fi
+  if racket tests/api/catalog-check.rkt < "$WORK/sym-att.log" \
+     && grep -qE '^\(catalog-native-artifact .*\(state ready\).*\(attachments [1-9][0-9]*\)' "$WORK/sym-att.log" \
+     && grep -qE '^\(catalog-executor-attachment .*\(tier native\).*\(native \([0-9]' "$WORK/sym-att.log"; then
+    echo "PASS rf4-native-artifact-and-attachment-catalog"
+    PASS=$((PASS+1))
+  else
+    echo "FAIL rf4-native-artifact-and-attachment-catalog (see $WORK/sym-att.log)"
+    FAIL=$((FAIL+1))
+  fi
+  # RF4 paths are volatile hints. Load a copied descriptor, wait for its
+  # successful attach, unlink only that temporary .so while the daemon keeps
+  # its dlopen handle, then query the registry: semantic execution survives
+  # and the artifact becomes a rebuildable cache miss.
+  first_so="$(printf '%s\n' $sos | head -n 1)"
+  first_file="${first_so##*/}"
+  first_stem="${first_file%%.*}"
+  cp "$first_so" "$WORK/rf4-miss.so"
+  cp "build/$first_stem.plan" "$WORK/rf4-miss.plan"
+  if python3 - "$WORK/rf4-miss.so" "$WORK/rf4-miss.log" <<'PYEOF'
+import os, subprocess, sys
+so, log = sys.argv[1:]
+env = os.environ.copy()
+env["SLOG_NO_MEM_CAP"] = "1"
+p = subprocess.Popen(["daemon/slogd", "-t", "2"], stdin=subprocess.PIPE,
+                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                     text=True, env=env)
+p.stdin.write(so + "\n")
+p.stdin.flush()
+first = p.stdout.readline()
+os.unlink(so)
+p.stdin.write("(catalog artifacts)\n")
+p.stdin.flush()
+lines = [first]
+while True:
+    line = p.stdout.readline()
+    if not line:
+        break
+    lines.append(line)
+    if line.startswith("(catalog-end "):
+        break
+# Stdin mode shuts down on EOF.  `(close)` is not a command verb (and is
+# correctly refused as unknown), so sending it while retaining the pipe keeps
+# the daemon alive until this test's timeout instead of testing cleanup.
+p.stdin.close()
+p.wait(timeout=30)
+open(log, "w").writelines(lines)
+sys.exit(0 if any("(state miss)" in line for line in lines) else 1)
+PYEOF
+  then
+    echo "PASS rf4-missing-artifact-is-rebuildable-miss"
+    PASS=$((PASS+1))
+  else
+    echo "FAIL rf4-missing-artifact-is-rebuildable-miss (see $WORK/rf4-miss.log)"
     FAIL=$((FAIL+1))
   fi
   # ... and the recount half of the slice-3 exit, two ways: a SECOND forced
@@ -231,6 +288,41 @@ for cov in even odd none; do
     FAIL=$((FAIL+1))
   fi
 done
+
+# RF4 observes the exact partition T4 executes. A focused native replay under
+# partial coverage must expose a mixed attachment with both lists nonempty;
+# unrelated kernels retain their own independently keyed rows.
+rm -rf build config/cache; mkdir -p build
+if SLOG_NATIVE_COVERAGE=even SLOG_OPT=0 \
+     SLOG_EMIT_PROGRAM_IMAGES="$WORK/rf4-images" \
+     timeout 900 racket compiler/run.rkt \
+     --no-banner --debug-dir "$WORK/rf4-mixed" tests/n1_symmetric.slog \
+     > "$WORK/rf4-mixed.log" 2>&1; then
+  mixed_sos="$(grep -oE '\(fixpoint [0-9]+ "[a-f0-9_]+"' "$WORK/rf4-mixed.log" \
+    | grep -oE '[a-f0-9_]{6,}' \
+    | while read -r h; do so="build/$h.O0.so"; [ -f "$so" ] || so="build/$h.so"; echo "$so"; done)"
+  mixed_image="$(find "$WORK/rf4-images" -maxdepth 1 -type f -name '*.pimg' -print -quit)"
+  mixed_image_file="${mixed_image##*/}"
+  mixed_image_key="${mixed_image_file%.pimg}"
+  # shellcheck disable=SC2086
+  racket tests/api/drive.rkt $mixed_sos \
+    "(mount-program-image \"$mixed_image\")" \
+    "(catalog attachments)" \
+    "(catalog program \"$mixed_image_key\" materializations)" \
+    > "$WORK/rf4-mixed-catalog.log" 2>&1
+  if racket tests/api/catalog-check.rkt < "$WORK/rf4-mixed-catalog.log" \
+     && grep -qE '^\(catalog-executor-attachment .*\(tier mixed\).*\(native \([0-9].*\) \(interpreted \([0-9]' "$WORK/rf4-mixed-catalog.log" \
+     && grep -qE '^\(catalog-program-materialization .*\(cache-state ready\).*\(native \([0-9].*\) \(interpreted \([0-9]' "$WORK/rf4-mixed-catalog.log"; then
+    echo "PASS rf4-mixed-coverage-observed"
+    PASS=$((PASS+1))
+  else
+    echo "FAIL rf4-mixed-coverage-observed (see $WORK/rf4-mixed-catalog.log)"
+    FAIL=$((FAIL+1))
+  fi
+else
+  echo "FAIL rf4-mixed-coverage-setup (see $WORK/rf4-mixed.log)"
+  FAIL=$((FAIL+1))
+fi
 
 echo
 echo "$PASS passed, $FAIL failed"

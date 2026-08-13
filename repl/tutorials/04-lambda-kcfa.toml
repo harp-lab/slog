@@ -1,0 +1,165 @@
+format = 1
+id = "lambda-kcfa"
+title = "Lambda lab: a k-CFA from scratch"
+summary = "Build a demand-driven control-flow analysis with bounded contexts and first-class maps."
+session = "fresh"
+typing_wpm = [147, 173]
+effects = ["discard-session"]
+
+[[steps]]
+type = "comment"
+text = "This tutorial builds a real k-CFA for the call-by-value unary lambda calculus. Our language has only variables, lambdas, and labelled calls. The result is small enough to inspect, but it has the essential k-CFA design: closures, bounded call histories, environments, and a set-valued store."
+
+[[steps]]
+type = "comment"
+text = "The expr union is our syntax tree. (var \"x\") refers to a variable; (lam \"x\" Body) binds it; and (call 10 Fun Arg) applies Fun at source-site label 10. A closure is code plus the environment present when the lambda was evaluated. That environment is a first-class cmap value."
+
+[[steps]]
+type = "command"
+text = '''union (expr (var str)
+            (lam str expr)
+            (call int expr expr))
+struct (closure str expr cmap)
+table (program expr)
+table (klimit int)'''
+typing = "code"
+
+[[steps]]
+type = "comment"
+text = "The k in k-CFA is how many recent call-site labels an address remembers. k=0 merges every call history; k=1 remembers the latest site; larger k keeps more history and usually buys precision with more time and space. We will use k=1."
+
+[[steps]]
+type = "challenge"
+prompt = "Add the fact that selects context depth 1:"
+answers = ["rule (klimit 1)"]
+fallback = "rule (klimit 1)"
+attempts = 2
+
+[[steps]]
+type = "comment"
+text = "The sample program uses the K combinator λx.λy.x, which accepts one value, returns a closure, then ignores its second argument and returns the first. It computes (K (λa.a)) (λb.b). Calls 10 and 20 are distinct allocation sites. The expected answer is λa.a; more importantly, the intermediate λy.x must retain x through a captured environment."
+
+[[steps]]
+type = "command"
+text = '''rule
+(program
+  (call 20
+    (call 10
+      (lam "x" (lam "y" (var "x")))
+      (lam "a" (var "a")))
+    (lam "b" (var "b"))))'''
+typing = "code"
+
+[[steps]]
+type = "command"
+text = "show program 10"
+
+[[steps]]
+type = "comment"
+text = "Here is the analyzer. tick grows a context with lins and truncates it to K entries with lslice. eval is demand-driven, so it explores only configurations reached from program. The store maps an abstract address (variable name, binding context) to zero or more closure rows. Multiple rows at one address are the union that makes the analysis conservative."
+
+[[steps]]
+type = "comment"
+text = "The map operations are the heart of higher-order environments. (cmap) creates the empty environment; cput functionally returns a map with a new binding; and cget reads the binding context for a variable. Because maps are immutable values, a closure safely retains its old environment while a call evaluates the body with an extended one."
+
+[[steps]]
+type = "command"
+text = '''table (store str (list int) closure)
+table (empty_env cmap)
+table (result closure)
+table (captured str int (list str))
+
+demand (tick int (list int)) (list int)
+rule (tick Label Time Next) <--
+  (klimit K)
+  (= Grown (lins Time 0 Label))
+  (= Next (lslice Grown 0 K))
+
+demand (eval expr cmap (list int)) closure
+
+rule (eval (lam X Body) Rho Time
+           (closure X Body Rho))
+
+rule (eval (var X) Rho Time V) <--
+  (= BoundAt (cget Rho X))
+  (store X BoundAt V)
+
+rule (eval (call Label Fun Arg) Rho Time V) <--
+  (eval Fun Rho Time (closure X Body ClosedRho))
+  (eval Arg Rho Time ArgValue)
+  (= Next (tick Label Time))
+  (eval Body (cput ClosedRho X Next) Next V)
+
+rule (eval (call Label Fun Arg) Rho Time)
+     (eval Fun Rho Time (closure X Body ClosedRho))
+     (eval Arg Rho Time ArgValue)
+     (= Next (tick Label Time))
+  -->
+     (store X Next ArgValue)
+
+rule (= Empty (cmap)) --> (empty_env Empty)
+rule (program E) (empty_env Empty) -->
+  (eval E Empty [])
+rule (program E) (empty_env Empty)
+     (eval E Empty [] V) -->
+  (result V)
+
+rule (closure X Body Rho)
+     (= Count (csize Rho))
+     (= Names (ckeys Rho)) -->
+  (captured X Count Names)'''
+typing = "code"
+
+[[steps]]
+type = "comment"
+text = "Read the two application rules together. The backward rule obtains a function closure and argument value, extends the closure's captured map—not the caller's map—and evaluates its body. The forward rule writes the argument into the store at (X, Next). Datalog's fixpoint lets the newly stored value satisfy variable lookups."
+
+[[steps]]
+type = "command"
+text = "show store 20"
+
+[[steps]]
+type = "comment"
+text = "The store makes 1-CFA concrete: x was bound at context [10], while y was bound at [20]. If many executions reach the same variable and same truncated context, their possible closures simply appear as additional rows at that address. That merge is why k-CFA terminates and why its answers can be approximate."
+
+[[steps]]
+type = "command"
+text = "show captured 20"
+
+[[steps]]
+type = "comment"
+text = "captured uses csize and ckeys to inspect each environment. Most lambdas closed over the empty map. The closure for y has one key, x: it is the higher-order value returned by the first call, carrying enough environment to find λa.a later."
+
+[[steps]]
+type = "command"
+text = "show closure 20"
+
+[[steps]]
+type = "comment"
+text = "You can see the map itself inside (closure \"y\" ... {\"x\":[10]}). cget is partial when a key is absent; a general program can test first with chas. Other useful map operations include cdel, cmerge, csize, ckeys, and cvals. cput, cdel, and cmerge return new maps rather than mutating old closures."
+
+[[steps]]
+type = "challenge"
+prompt = "Use the read-only ? register to ask for the value V in result, then check that the printed closure is for λa.a:"
+answers = [
+  "?(result V)",
+  "? (result V)",
+]
+fallback = "?(result V)"
+attempts = 2
+
+[[steps]]
+type = "command"
+text = "show result 20"
+
+[[steps]]
+type = "comment"
+text = "The result is the closure for λa.a, as predicted. This is k-CFA rather than concrete evaluation because addresses remember only K call sites and the relational store keeps every value that may occupy a merged address. At k=0 all contexts become []; at larger k, tick retains longer call strings. The rules themselves do not change."
+
+[[steps]]
+type = "checkpoint"
+text = "Press Enter when you are ready to leave the tutorial driver with the live analyzer:"
+
+[[steps]]
+type = "comment"
+text = "Tutorial complete. The live k-CFA is yours. Use scratch to review it or keep scratch as lambda-kcfa.slog before editing and rerunning it. Good next experiments are changing klimit to 0 or replacing the program and comparing store precision. The full repository example in examples/kcfa extends the same design with numbers, booleans, branches, recursion, and multi-argument calls."

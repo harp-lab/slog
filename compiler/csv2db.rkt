@@ -2,26 +2,28 @@
 
 ;; Turn a folder of delimited text files into a static binary database under
 ;; data/<dbname>/.  One relation per file (or per subdirectory of shards), rows
-;; newline-delimited and columns space/tab-delimited:
+;; newline-delimited, with comma CSV and whitespace-delimited rows detected
+;; automatically outside quoted strings and S-expression values:
 ;;
 ;;   $ racket compiler/csv2db.rkt path/to/folder mydb
 ;;   $ racket compiler/run.rkt --no-banner -d mydb --sizes query.slog
 ;;
 ;; The importer is convert-db-folder in tools.rkt; this is just its command
-;; line.  Run it from the repository root, since database names are logical
-;; names under data/.
+;; line. It also writes data/<dbname>/import.slog from the types observed in
+;; the values. Run it from the repository root, since database names are
+;; logical names under data/.
 
 (require "tools.rkt")
 
 (module+ main
   (define read-values? #f)
-  (define delimiter #f)
+  (define delimiter 'auto)
   (define skip-rows 0)
   (command-line
    #:program "csv2db"
    #:once-each
    [("-d" "--delim") char
-    "Separate columns on this one character (default: runs of spaces and tabs)"
+    "Force this one column separator (default: auto-detect comma or whitespace rows)"
     (unless (= 1 (string-length char))
       (raise-user-error 'csv2db "--delim takes a single character, not ~s" char))
     (set! delimiter (string-ref char 0))]

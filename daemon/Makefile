@@ -21,7 +21,7 @@ CXXFLAGS ?= -O2 -Wall -std=c++20 -pthread -I. -ffp-contract=off
 # now defined out-of-line in slogd.cpp) into the dynamic symbol table so dlopen'd
 # plugins resolve them instead of instantiating the arity ladders themselves.
 LDFLAGS ?= -rdynamic
-LDLIBS = -lz -ldl -lgmp
+LDLIBS = -lz -ldl -lgmp -lcrypto
 
 HEADERS = $(wildcard *.h)
 
@@ -32,8 +32,8 @@ HEADERS = $(wildcard *.h)
 plan-flavored-tasks.o: plan-flavored-tasks.cpp $(HEADERS)
 	$(CXX) $(filter-out -O2,$(CXXFLAGS)) -O0 $(OMPFLAGS) -c plan-flavored-tasks.cpp -o plan-flavored-tasks.o
 
-slogd: slogd.cpp plan.cpp plan-count.cpp query.cpp sexp.cpp runtime.cpp plan-flavored-tasks.o $(HEADERS)
-	$(CXX) $(CXXFLAGS) $(OMPFLAGS) $(LDFLAGS) -o slogd slogd.cpp plan.cpp plan-count.cpp query.cpp sexp.cpp runtime.cpp plan-flavored-tasks.o $(LDLIBS)
+slogd: slogd.cpp plan.cpp plan-count.cpp program-image.cpp query.cpp sexp.cpp runtime.cpp plan-flavored-tasks.o $(HEADERS)
+	$(CXX) $(CXXFLAGS) $(OMPFLAGS) $(LDFLAGS) -o slogd slogd.cpp plan.cpp plan-count.cpp program-image.cpp query.cpp sexp.cpp runtime.cpp plan-flavored-tasks.o $(LDLIBS)
 
 # The freezer: a fact stream on stdin -> a static .bin database (freeze.cpp).
 # Links the same headers as slogd so every value encodes through the one

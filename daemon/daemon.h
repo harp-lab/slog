@@ -40,6 +40,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+#include <map>
+#include <set>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -89,6 +91,29 @@ struct NativeCodeDescriptor
   void (*init_constants)(Database*);
   u32 naccel;
   const char* const* accel_rels;
+};
+
+// RF4 control-plane observation of one content-addressed native artifact.
+// The descriptor already supplies the identity mapping RF4 needs: its kernel
+// table index is the native slot, `key` is the sealed KernelExecPlan key, and
+// `covered` names the kernel-local rule/variant slots.  Copy that information
+// out of the dlopen image so the catalog remains valid even if the cache path
+// later disappears.  Paths are availability hints, never artifact identity.
+struct NativeArtifactKernelObservation
+{
+  u32 native_slot = 0;
+  std::string plan_key;
+  u32 frame_width = 0;
+  u32 variants = 0;
+  std::vector<u32> native_variants;
+};
+
+struct NativeArtifactObservation
+{
+  std::string artifact_key;
+  u32 interface_abi = 0;
+  std::set<std::string> paths;
+  std::vector<NativeArtifactKernelObservation> kernels;
 };
 
 // T0(b)'s explicit stratum-entry vocabulary (docs/t0-contract.md, D10).
@@ -196,6 +221,11 @@ private:
     double ms;
   };
   std::vector<DeferredStratumStats> boundary_stats;
+  // RF4 native materializations live in the control/observation plane.  They
+  // are deliberately absent from Database, save files, and logical replay.
+  // The content key retains the observation after a volatile cache path is
+  // removed; a later catalog read then reports a rebuildable miss.
+  std::map<std::string, NativeArtifactObservation> native_artifacts;
 
   static u64 envU64(const char* name, u64 fallback)
   {
@@ -1600,6 +1630,79 @@ public:
 
   // The pipeline so far (run and unrun), in order.
   const std::vector<Stratum*>& strata() const { return pipeline; }
+
+  void observeNativeArtifact(const std::string& artifact_key,
+                             const std::string& path,
+                             const NativeCodeDescriptor* descriptor)
+  {
+    if (artifact_key.empty() || descriptor == nullptr)
+      fatal("native artifact observation lacks content identity");
+    NativeArtifactObservation candidate;
+    candidate.artifact_key = artifact_key;
+    candidate.interface_abi = descriptor->interface_abi;
+    candidate.paths.insert(path);
+    candidate.kernels.reserve(descriptor->nkernels);
+    for (u32 i = 0; i < descriptor->nkernels; ++i)
+    {
+      const NativeKernelCode& code = descriptor->kernels[i];
+      NativeArtifactKernelObservation kernel;
+      kernel.native_slot = i;
+      kernel.plan_key = code.key == nullptr ? "" : code.key;
+      kernel.frame_width = code.frame_width;
+      kernel.variants = code.nrules;
+      if (code.covered != nullptr)
+        kernel.native_variants.assign(code.covered,
+                                      code.covered + code.ncovered);
+      else
+        for (u32 variant = 0; variant < code.ncovered; ++variant)
+          kernel.native_variants.push_back(variant);
+      candidate.kernels.push_back(std::move(kernel));
+    }
+
+    const auto [found, inserted] = native_artifacts.emplace(
+      artifact_key, std::move(candidate));
+    NativeArtifactObservation& observation = found->second;
+    if (!inserted)
+    {
+      // Same content must describe the same slots.  This is primarily a
+      // collision/corruption guard; ordinary repeated loads only add a path.
+      bool same = observation.interface_abi == descriptor->interface_abi
+               && observation.kernels.size() == descriptor->nkernels;
+      for (u32 i = 0; same && i < descriptor->nkernels; ++i)
+      {
+        const NativeKernelCode& code = descriptor->kernels[i];
+        const NativeArtifactKernelObservation& kernel = observation.kernels[i];
+        std::vector<u32> coverage;
+        if (code.covered != nullptr)
+          coverage.assign(code.covered, code.covered + code.ncovered);
+        else
+          for (u32 variant = 0; variant < code.ncovered; ++variant)
+            coverage.push_back(variant);
+        same = kernel.native_slot == i
+            && kernel.plan_key == (code.key == nullptr ? "" : code.key)
+            && kernel.frame_width == code.frame_width
+            && kernel.variants == code.nrules
+            && kernel.native_variants == coverage;
+      }
+      if (!same)
+        fatal("native artifact content key describes two descriptor shapes");
+      observation.paths.insert(path);
+    }
+  }
+
+  const std::map<std::string, NativeArtifactObservation>&
+  nativeArtifacts() const { return native_artifacts; }
+
+  // RF3 activation admission: registering a later fresh cohort before the
+  // preceding one reaches fixpoint would miss the deferred full->delta reload
+  // that seeds its reads.  Image activation therefore begins only at a
+  // settled tip and advances its sealed cohort sequence one fixpoint at a
+  // time.
+  bool pipelineSettled() const
+  {
+    return !database->isSuspended() && transient_run == nullptr
+        && next_unrun >= pipeline.size();
+  }
 
   // Perform ONE bounded unit of work (docs/pausing.md §5): start or resume the
   // frontmost not-yet-fixpointed stratum for at most one budget's worth, then

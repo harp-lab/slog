@@ -23,7 +23,7 @@
   (define db (build-path repo-root "data" dbname))
 
   ;; Import a folder; nothing this test does should print.
-  (define (import! dir #:delimiter [delimiter #f] #:skip-rows [skip-rows 0])
+  (define (import! dir #:delimiter [delimiter 'auto] #:skip-rows [skip-rows 0])
     (parameterize ([current-directory repo-root]
                    [current-output-port (open-output-nowhere)]
                    [current-error-port (open-output-nowhere)])
@@ -163,6 +163,10 @@
               "a schema line settles arity with no rows to measure")
   (check-true (directory-exists? (build-path db "table.zipped.arity.2"))
               "a .gz input is read like any other")
+  (define inferred-schema (file->string (build-path db "import.slog")))
+  (check-regexp-match #px"table \\(edge int int\\)" inferred-schema)
+  (check-regexp-match #px"struct \\(pt int int\\)" inferred-schema)
+  (check-regexp-match #px"struct \\(seg pt list\\)" inferred-schema)
 
   ;; ints, including a negative (masking to 32 bits before the tag matters:
   ;; an unmasked negative would sign-extend over the whole word)
@@ -220,14 +224,35 @@
                 (list (s32-word 1) (s32-word 2)))
   (check-equal? (words-of "table.shard.arity.1" "1.bin") (list (s32-word 3)))
 
+  ;; ---- automatic comma/whitespace detection, one dialect per row ------
+
+  (define automatic (make-temporary-directory))
+  (display-to-file "1,2\n3,4\n" (build-path automatic "comma.csv"))
+  (display-to-file "5 6\n7\t8\n" (build-path automatic "space.csv"))
+  ;; Neither the comma in a nested quoted string nor spaces inside the
+  ;; constructor split the outer Slog-style row.
+  (display-to-file "(pt 1 2) (box \"a,b\") (on)\n" (build-path automatic "shape.csv"))
+  (import! automatic)
+  (check-equal? (words-of "table.comma.arity.2" "0.bin")
+                (list (s32-word 1) (s32-word 2) (s32-word 3) (s32-word 4)))
+  (check-equal? (words-of "table.space.arity.2" "0.bin")
+                (list (s32-word 5) (s32-word 6) (s32-word 7) (s32-word 8)))
+  (check-true (directory-exists? (build-path db "table.shape.arity.3")))
+  (check-true (directory-exists? (build-path db "struct.box.arity.2.id.2")))
+  (check-regexp-match #px"enum \\(csv_import_enum on\\)"
+                      (file->string (build-path db "import.slog")))
+  (delete-directory/files automatic)
+
   ;; ---- a single delimiter, where an empty column is a real column ------
 
   (define csv (make-temporary-directory))
-  (display-to-file "name,count\nx,1\n\"c,d\",2\n,3\n" (build-path csv "hdr.csv"))
+  (display-to-file "name,count\n\nx,1\n\"c,d\",2\n\"say \"\"hi\"\"\",4\n,3\n"
+                   (build-path csv "hdr.csv"))
   (import! csv #:delimiter #\, #:skip-rows 1)
   (check-equal? (words-of "table.hdr.arity.2" "0.bin")
                 (list (expected-str "x") (s32-word 1)
                       (expected-str "c,d") (s32-word 2)
+                      (expected-str "say \"hi\"") (s32-word 4)
                       (expected-str "") (s32-word 3)))
   (delete-directory/files csv)
 

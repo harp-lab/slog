@@ -40,10 +40,12 @@
 
 #include "daemon.h"
 #include "plan-count.h"
+#include "program-image.h"
 #include "protocol.h"
 #include "query.h"
 
 #include <dlfcn.h>
+#include <openssl/sha.h>
 #include <algorithm>
 #include <cctype>
 #include <charconv>
@@ -58,6 +60,8 @@
 #include <chrono>
 #include <functional>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <unistd.h>
@@ -92,6 +96,29 @@ static void send_bye(int sock)
     auto now = std::chrono::system_clock::now();
     auto seconds = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
     send_msg(sock, "(bye " + std::to_string(seconds) + ")");
+}
+
+// RF4 ArtifactKey: hash the actual descriptor object bytes, not its volatile
+// cache pathname.  The daemon retains this identity after dlopen; filesystem
+// availability is re-checked only when rendering the control catalog.
+static std::string native_artifact_key(const std::string& path)
+{
+    std::ifstream input(path, std::ios::binary);
+    if (!input) return {};
+    const std::string bytes((std::istreambuf_iterator<char>(input)),
+                            std::istreambuf_iterator<char>());
+    if (input.bad()) return {};
+    unsigned char digest[SHA256_DIGEST_LENGTH];
+    SHA256(reinterpret_cast<const unsigned char*>(bytes.data()), bytes.size(),
+           digest);
+    static constexpr char hex[] = "0123456789abcdef";
+    std::string out(SHA256_DIGEST_LENGTH * 2, '0');
+    for (size_t i = 0; i < SHA256_DIGEST_LENGTH; ++i)
+    {
+        out[i * 2] = hex[digest[i] >> 4];
+        out[i * 2 + 1] = hex[digest[i] & 15];
+    }
+    return out;
 }
 
 // Load and invoke one plugin.  The dlopen handle is retained (vtables of
@@ -131,7 +158,15 @@ static void run_plugin(slog::Daemon* d,
       dlsym(h, "slog_code_descriptor");
     if (descriptor != nullptr)
     {
-        slog::interp::attach_native_descriptor(d, path, descriptor());
+        const std::string artifact_key = native_artifact_key(path);
+        if (artifact_key.empty())
+        {
+            d->emit("(error \"failed to hash native artifact: " + path + "\")");
+            return;
+        }
+        const slog::NativeCodeDescriptor* code = descriptor();
+        slog::interp::attach_native_descriptor(d, path, code, artifact_key);
+        d->observeNativeArtifact(artifact_key, path, code);
         return;
     }
     auto entry = (void (*)(slog::Daemon*))dlsym(h, "slog_plugin");
@@ -197,6 +232,18 @@ struct ActiveCommandQuery
     std::unique_ptr<slog::query::Context> context;
 };
 
+struct ProgramActivation
+{
+    std::string image_key;
+    u64 generation = 0;
+    size_t first_scc = 0;
+    size_t cohorts = 0;
+    size_t kernels = 0;
+    std::vector<std::string> strata;
+    std::vector<slog::interp::CommandCohort> prepared;
+    size_t installed = 0;
+};
+
 struct CommandBuilders
 {
     std::map<std::string, ProvisionalScc> provisional_sccs;
@@ -207,6 +254,16 @@ struct CommandBuilders
     // and continuation here makes the cursor connection-scoped just like the
     // T0 builders: EOF/cable loss discards it rather than leaking server state.
     std::unique_ptr<ActiveCommandQuery> active_query;
+    // RF2-B: sealed images are immutable connection-owned catalog mounts.
+    // They deliberately do not enter Database, save files, or executable
+    // stratum state; dropping the connection drops only these decoded views.
+    std::map<std::string, std::shared_ptr<const slog::image::ProgramImage>>
+        program_images;
+    // RF3 additive activation ledger.  An activation keeps its immutable
+    // mount alive and names the exact interpreted pipeline suffix it created.
+    // Program replacement/healing is deliberately not represented here; that
+    // is RF5-B's private-boundary transaction.
+    std::map<std::string, ProgramActivation> program_activations;
 };
 
 using CommandFields =
@@ -1760,6 +1817,442 @@ static void emit_catalog_types(slog::Daemon* d)
     d->emit("(catalog-end " + std::to_string(n) + ")");
 }
 
+// RF2-B read-only ProgramImage catalog.  These rows are projections of the
+// independently sealed mount, never user relations: application rules cannot
+// name or mutate them, saves omit them, and unmount only releases a decoded
+// cache.  Every stream uses the existing catalog sentinel convention.
+static std::string image_string_list(const std::vector<std::string>& values)
+{
+    std::string out = "(";
+    for (size_t i = 0; i < values.size(); ++i)
+    {
+        if (i != 0) out += " ";
+        out += slog::protocol::quoteString(values[i]);
+    }
+    return out + ")";
+}
+
+static std::string image_string_list(const std::set<std::string>& values)
+{
+    return image_string_list(
+        std::vector<std::string>(values.begin(), values.end()));
+}
+
+static std::string image_natural_list(const std::vector<u32>& values)
+{
+    std::string out = "(";
+    for (size_t i = 0; i < values.size(); ++i)
+    {
+        if (i != 0) out += " ";
+        out += std::to_string(values[i]);
+    }
+    return out + ")";
+}
+
+static std::vector<u32> interpreted_variants(
+    u32 variants, const std::vector<u32>& native)
+{
+    std::vector<u32> out;
+    size_t covered = 0;
+    for (u32 variant = 0; variant < variants; ++variant)
+    {
+        while (covered < native.size() && native[covered] < variant) ++covered;
+        if (covered == native.size() || native[covered] != variant)
+            out.push_back(variant);
+    }
+    return out;
+}
+
+static bool artifact_available(const slog::NativeArtifactObservation& artifact,
+                               std::uintmax_t* bytes = nullptr)
+{
+    for (const std::string& path : artifact.paths)
+    {
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(path, error) || error) continue;
+        const std::uintmax_t size = std::filesystem::file_size(path, error);
+        if (error) continue;
+        // A pathname may be reused or overwritten.  It is ready for THIS
+        // artifact only while its current bytes still carry the observed
+        // content key; stale bytes are the same rebuildable miss as no bytes.
+        if (native_artifact_key(path) != artifact.artifact_key) continue;
+        if (bytes != nullptr) *bytes = size;
+        return true;
+    }
+    return false;
+}
+
+static size_t artifact_attachment_count(
+    const slog::Daemon* d, const std::string& artifact_key,
+    const std::string* plan_key = nullptr, const u32* native_slot = nullptr)
+{
+    size_t count = 0;
+    for (const slog::Stratum* stratum : d->strata())
+        for (const auto& attachment : stratum->kernel_attachments)
+            if (attachment.artifact_key == artifact_key
+                && (plan_key == nullptr || attachment.exec_key == *plan_key)
+                && (native_slot == nullptr
+                    || attachment.artifact_native_slot == *native_slot))
+                ++count;
+    return count;
+}
+
+// RF4 artifact registry.  These are observations, not object-plane facts:
+// content identity and descriptor slots persist even if every cache path has
+// disappeared.  In that case state=miss means "rebuildable", never a broken
+// program or a reason to stop its interpreted executor.
+static void emit_catalog_native_artifacts(slog::Daemon* d)
+{
+    using slog::protocol::quoteString;
+    for (const auto& [key, artifact] : d->nativeArtifacts())
+    {
+        size_t variants = 0, native = 0;
+        for (const auto& kernel : artifact.kernels)
+        {
+            variants += kernel.variants;
+            native += kernel.native_variants.size();
+        }
+        std::uintmax_t bytes = 0;
+        const bool available = artifact_available(artifact, &bytes);
+        d->emit("(catalog-native-artifact (artifact-key " + quoteString(key)
+                + ") (interface " + std::to_string(artifact.interface_abi)
+                + ") (state " + (available ? "ready" : "miss")
+                + ") (paths " + image_string_list(artifact.paths)
+                + ") (bytes "
+                + (available ? std::to_string(bytes) : std::string("#f"))
+                + ") (kernels " + std::to_string(artifact.kernels.size())
+                + ") (variants " + std::to_string(variants)
+                + ") (native " + std::to_string(native)
+                + ") (attachments "
+                + std::to_string(artifact_attachment_count(d, key)) + "))");
+    }
+    d->emit("(catalog-end " + std::to_string(d->nativeArtifacts().size())
+            + ")");
+}
+
+static void emit_catalog_native_artifact(
+    slog::Daemon* d, const slog::NativeArtifactObservation& artifact)
+{
+    using slog::protocol::quoteString;
+    for (const auto& kernel : artifact.kernels)
+    {
+        d->emit("(catalog-native-artifact-kernel (artifact-key "
+                + quoteString(artifact.artifact_key) + ") (native-slot "
+                + std::to_string(kernel.native_slot) + ") (plan-key "
+                + quoteString(kernel.plan_key) + ") (frame-width "
+                + std::to_string(kernel.frame_width) + ") (variants "
+                + std::to_string(kernel.variants) + ") (native "
+                + image_natural_list(kernel.native_variants)
+                + ") (interpreted "
+                + image_natural_list(interpreted_variants(
+                    kernel.variants, kernel.native_variants))
+                + ") (attachments "
+                + std::to_string(artifact_attachment_count(
+                    d, artifact.artifact_key, &kernel.plan_key,
+                    &kernel.native_slot)) + "))");
+    }
+    d->emit("(catalog-end " + std::to_string(artifact.kernels.size()) + ")");
+}
+
+static std::string attachment_write_list(
+    const std::vector<std::pair<std::string, u64>>& writes)
+{
+    using slog::protocol::quoteString;
+    std::string out = "(";
+    for (size_t i = 0; i < writes.size(); ++i)
+    {
+        if (i != 0) out += " ";
+        out += "(" + quoteString(writes[i].first) + " "
+             + std::to_string(writes[i].second) + ")";
+    }
+    return out + ")";
+}
+
+static void emit_catalog_executor_attachments(slog::Daemon* d)
+{
+    using slog::protocol::quoteString;
+    size_t count = 0;
+    for (const slog::Stratum* stratum : d->strata())
+        for (size_t slot = 0; slot < stratum->kernel_attachments.size(); ++slot)
+        {
+            const auto& attachment = stratum->kernel_attachments[slot];
+            const std::vector<u32> interpreted = interpreted_variants(
+                attachment.variants, attachment.native_variants);
+            const char* tier = attachment.native_variants.empty()
+              ? "interpreted"
+              : (attachment.native_variants.size() == attachment.variants
+                   ? "native" : "mixed");
+            d->emit("(catalog-executor-attachment (scc "
+                    + std::to_string(stratum->scc_id) + ") (attachment-slot "
+                    + std::to_string(slot) + ") (stratum "
+                    + quoteString(stratum->name) + ") (plan-key "
+                    + quoteString(attachment.exec_key) + ") (artifact-key "
+                    + (attachment.artifact_key.empty()
+                        ? std::string("#f")
+                        : quoteString(attachment.artifact_key))
+                    + ") (native-slot "
+                    + (attachment.artifact_native_slot == UINT32_MAX
+                        ? std::string("#f")
+                        : std::to_string(attachment.artifact_native_slot))
+                    + ") (tier " + tier + ") (variants "
+                    + std::to_string(attachment.variants) + ") (native "
+                    + image_natural_list(attachment.native_variants)
+                    + ") (interpreted " + image_natural_list(interpreted)
+                    + ") (writes " + attachment_write_list(attachment.writes)
+                    + ") (reads " + image_string_list(attachment.reads)
+                    + "))");
+            ++count;
+        }
+    d->emit("(catalog-end " + std::to_string(count) + ")");
+}
+
+static void emit_catalog_program(slog::Daemon* d,
+                                 const slog::image::ProgramImage& image,
+                                 const ProgramActivation* activation = nullptr)
+{
+    using slog::protocol::quoteString;
+    d->emit("(catalog-program (image-key " + quoteString(image.key) + ")"
+            + " (format " + std::to_string(image.format) + ")"
+            + " (compiler-key " + quoteString(image.compiler_key) + ")"
+            + " (plan-abi " + std::to_string(image.plan_abi) + ")"
+            + " (model-key " + quoteString(image.model_key) + ")"
+            + " (root-module " + std::to_string(image.root_module) + ")"
+            + " (declarations " + std::to_string(image.declarations) + ")"
+            + " (modules " + std::to_string(image.modules) + ")"
+            + " (sources " + std::to_string(image.sources.size()) + ")"
+            + " (rules " + std::to_string(image.rules.size()) + ")"
+            + " (kernels " + std::to_string(image.kernels.size()) + ")"
+            + " (plans " + std::to_string(image.plans.size()) + ")"
+            + " (activated " + (activation == nullptr ? "#f" : "#t")
+            + "))");
+}
+
+static void emit_catalog_programs(slog::Daemon* d,
+                                  const CommandBuilders& builders)
+{
+    for (const auto& item : builders.program_images)
+    {
+        const auto active = builders.program_activations.find(item.first);
+        emit_catalog_program(d, *item.second,
+            active == builders.program_activations.end() ? nullptr
+                                                          : &active->second);
+    }
+    d->emit("(catalog-end "
+            + std::to_string(builders.program_images.size()) + ")");
+}
+
+static void emit_catalog_image_sources(slog::Daemon* d,
+                                       const slog::image::ProgramImage& image)
+{
+    using slog::protocol::quoteString;
+    for (const auto& source : image.sources)
+        d->emit("(catalog-program-source (image-key " + quoteString(image.key)
+                + ") (slot " + std::to_string(source.slot) + ") (module "
+                + std::to_string(source.module) + ") (path "
+                + quoteString(source.path) + ") (digest "
+                + quoteString(source.digest) + ") (tokens "
+                + std::to_string(source.tokens) + "))");
+    d->emit("(catalog-end " + std::to_string(image.sources.size()) + ")");
+}
+
+static void emit_catalog_image_rules(slog::Daemon* d,
+                                     const slog::image::ProgramImage& image)
+{
+    using slog::protocol::quoteString;
+    for (const auto& rule : image.rules)
+        d->emit("(catalog-program-rule (image-key " + quoteString(image.key)
+                + ") (slot " + std::to_string(rule.slot) + ") (source-id "
+                + std::to_string(rule.source_id) + ") (module "
+                + (rule.module ? std::to_string(*rule.module) : "#f")
+                + ") (source "
+                + (rule.source ? std::to_string(*rule.source) : "#f")
+                + ") (origin " + rule.origin + ") (fingerprint "
+                + quoteString(rule.fingerprint) + ") (normalized "
+                + quoteString(rule.normalized) + ") (heads "
+                + image_string_list(rule.heads) + ") (positive "
+                + image_string_list(rule.positive) + ") (negative "
+                + image_string_list(rule.negative) + ") (negative-wildcard "
+                + image_string_list(rule.negative_wildcard) + "))");
+    d->emit("(catalog-end " + std::to_string(image.rules.size()) + ")");
+}
+
+static void emit_catalog_image_kernels(slog::Daemon* d,
+                                       const slog::image::ProgramImage& image)
+{
+    using slog::protocol::quoteString;
+    for (const auto& kernel : image.kernels)
+        d->emit("(catalog-program-kernel (image-key " + quoteString(image.key)
+                + ") (slot " + std::to_string(kernel.slot) + ") (level "
+                + std::to_string(kernel.level) + ") (members "
+                + image_string_list(kernel.members) + "))");
+    d->emit("(catalog-end " + std::to_string(image.kernels.size()) + ")");
+}
+
+static void emit_catalog_image_plans(slog::Daemon* d,
+                                     const slog::image::ProgramImage& image)
+{
+    using slog::protocol::quoteString;
+    for (const auto& plan : image.plans)
+        d->emit("(catalog-program-plan (image-key " + quoteString(image.key)
+                + ") (slot " + std::to_string(plan.slot) + ") (digest "
+                + quoteString(plan.digest) + ") (plan " + plan.datum + "))");
+    d->emit("(catalog-end " + std::to_string(image.plans.size()) + ")");
+}
+
+static size_t image_interpreted_attachment_count(
+    const slog::Daemon* d, const std::string& plan_key)
+{
+    size_t count = 0;
+    for (const slog::Stratum* stratum : d->strata())
+        for (const auto& attachment : stratum->kernel_attachments)
+            if (attachment.exec_key == plan_key
+                && attachment.artifact_key.empty())
+                ++count;
+    return count;
+}
+
+// RF4's image-local join.  ProgramImage plan slots remain immutable semantic
+// truth; native artifacts and live attachments are nondeterministic overlays
+// joined by (KernelExecPlan key, descriptor-native-slot).  Emit a miss row
+// when no artifact is known so callers never confuse cache availability with
+// absent program semantics.
+static void emit_catalog_image_materializations(
+    slog::Daemon* d, const slog::image::ProgramImage& image)
+{
+    using slog::protocol::quoteString;
+    size_t rows = 0;
+    for (const auto& plan : image.plans)
+        for (const auto& kernel : plan.kernels)
+        {
+            bool found = false;
+            const size_t interpreted_attachments =
+                image_interpreted_attachment_count(d, kernel.exec_key);
+            for (const auto& [artifact_key, artifact] : d->nativeArtifacts())
+                for (const auto& materialization : artifact.kernels)
+                    if (materialization.plan_key == kernel.exec_key
+                        && materialization.native_slot == kernel.ordinal)
+                    {
+                        found = true;
+                        const bool available = artifact_available(artifact);
+                        const u32 slot = materialization.native_slot;
+                        d->emit("(catalog-program-materialization (image-key "
+                                + quoteString(image.key) + ") (plan-slot "
+                                + std::to_string(plan.slot)
+                                + ") (kernel-ordinal "
+                                + std::to_string(kernel.ordinal)
+                                + ") (plan-key "
+                                + quoteString(kernel.exec_key)
+                                + ") (artifact-key "
+                                + quoteString(artifact_key)
+                                + ") (cache-state "
+                                + (available ? "ready" : "miss")
+                                + ") (variants "
+                                + std::to_string(kernel.rules)
+                                + ") (native "
+                                + image_natural_list(
+                                    materialization.native_variants)
+                                + ") (interpreted "
+                                + image_natural_list(interpreted_variants(
+                                    kernel.rules,
+                                    materialization.native_variants))
+                                + ") (artifact-attachments "
+                                + std::to_string(artifact_attachment_count(
+                                    d, artifact_key, &kernel.exec_key, &slot))
+                                + ") (interpreted-attachments "
+                                + std::to_string(interpreted_attachments)
+                                + "))");
+                        ++rows;
+                    }
+            if (!found)
+            {
+                std::vector<u32> all;
+                for (u32 variant = 0; variant < kernel.rules; ++variant)
+                    all.push_back(variant);
+                d->emit("(catalog-program-materialization (image-key "
+                        + quoteString(image.key) + ") (plan-slot "
+                        + std::to_string(plan.slot) + ") (kernel-ordinal "
+                        + std::to_string(kernel.ordinal) + ") (plan-key "
+                        + quoteString(kernel.exec_key)
+                        + ") (artifact-key #f) (cache-state miss) (variants "
+                        + std::to_string(kernel.rules)
+                        + ") (native ()) (interpreted "
+                        + image_natural_list(all)
+                        + ") (artifact-attachments 0)"
+                          " (interpreted-attachments "
+                        + std::to_string(interpreted_attachments) + "))");
+                ++rows;
+            }
+        }
+    d->emit("(catalog-end " + std::to_string(rows) + ")");
+}
+
+static bool activation_settled(slog::Daemon* d,
+                               const ProgramActivation& activation)
+{
+    const auto& strata = d->strata();
+    if (activation.first_scc + activation.cohorts > strata.size()) return false;
+    for (size_t i = 0; i < activation.cohorts; ++i)
+        if (strata[activation.first_scc + i]->fixpoint_msg.empty()) return false;
+    return true;
+}
+
+static void advance_program_activations(slog::Daemon* d,
+                                        CommandBuilders& builders)
+{
+    for (auto& item : builders.program_activations)
+    {
+        ProgramActivation& activation = item.second;
+        if (activation.prepared.empty() || activation.installed == 0)
+            continue;
+        const size_t previous = activation.first_scc
+                              + activation.installed - 1;
+        const auto& strata = d->strata();
+        if (previous >= strata.size() || strata[previous]->fixpoint_msg.empty())
+            continue;
+        if (activation.installed >= activation.prepared.size())
+        {
+            // Tasks own their compact bound programs.  Once the last cohort
+            // settles, the activation ledger needs only stable identities and
+            // counts; release the second sealed copy of a potentially large
+            // image while retaining the immutable mounted catalog itself.
+            activation.prepared.clear();
+            activation.prepared.shrink_to_fit();
+            continue;
+        }
+        slog::interp::install_preflighted_command_cohort(
+            d, activation.prepared[activation.installed]);
+        ++activation.installed;
+    }
+}
+
+static void emit_catalog_image_activation(slog::Daemon* d,
+                                          const ProgramActivation* activation)
+{
+    if (activation == nullptr)
+    {
+        d->emit("(catalog-end 0)");
+        return;
+    }
+    using slog::protocol::quoteString;
+    d->emit("(catalog-program-activation (image-key "
+            + quoteString(activation->image_key) + ") (generation "
+            + std::to_string(activation->generation) + ") (state "
+            + (activation_settled(d, *activation) ? "settled" : "pending")
+            + ") (first-scc " + std::to_string(activation->first_scc)
+            + ") (cohorts " + std::to_string(activation->cohorts)
+            + ") (kernels " + std::to_string(activation->kernels)
+            + ") (strata " + image_string_list(activation->strata) + "))");
+    d->emit("(catalog-end 1)");
+}
+
+static const slog::image::ProgramImage* mounted_image(
+    const CommandBuilders& builders, const std::string& key)
+{
+    const auto found = builders.program_images.find(key);
+    return found == builders.program_images.end() ? nullptr
+                                                   : found->second.get();
+}
+
 // Dispatch one '('-line on the command stack.
 static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
                              const std::string& line)
@@ -1813,8 +2306,18 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
     // auto-continue, pause-tests) sends the bare literals, and the
     // protocol-mode seam exists precisely so slice (d) can keep the 8-field
     // (paused ...) bytes for those sessions.
-    if (verb == "continue" && argc == 0)          { d->continueRun();        return; }
-    if (verb == "continue-boundary" && argc == 0) { d->continueToBoundary(); return; }
+    if (verb == "continue" && argc == 0)
+    {
+        d->continueRun();
+        advance_program_activations(d, builders);
+        return;
+    }
+    if (verb == "continue-boundary" && argc == 0)
+    {
+        d->continueToBoundary();
+        advance_program_activations(d, builders);
+        return;
+    }
 
     // (protocol-mode): observe the session's protocol mode without changing
     // it -- exempt from marking so a test (or slice (d)) can see the mode a
@@ -1899,6 +2402,243 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
 
     if (dispatch_query_command(d, builders, form, line, verb))
         return;
+
+    // RF2-B image lifecycle.  Mount validates the complete bounded package,
+    // including its independent SHA-256 seal and embedded source/rule/plan
+    // digests, before publishing a single catalog row.  A repeated key is a
+    // cache hit; no mutable or executable state is installed.
+    if (verb == "mount-program-image")
+    {
+        if (argc != 1 || form.children[1].kind != slog::sexp::SExp::K::string
+            || form.children[1].text.empty())
+        {
+            refuse(d, "parse", "(verb mount-program-image) (detail \"expected "
+                   "(mount-program-image \\\"PATH\\\")\")");
+            return;
+        }
+        try
+        {
+            auto decoded = std::make_shared<const slog::image::ProgramImage>(
+                slog::image::load(form.children[1].text));
+            const auto found = builders.program_images.find(decoded->key);
+            const bool hit = found != builders.program_images.end();
+            if (!hit) builders.program_images.emplace(decoded->key, decoded);
+            const slog::image::ProgramImage& image =
+                hit ? *found->second : *decoded;
+            d->emit("(program-image-mounted (image-key "
+                    + slog::protocol::quoteString(image.key) + ") (cache-hit "
+                    + (hit ? "#t" : "#f") + ") (rules "
+                    + std::to_string(image.rules.size()) + ") (kernels "
+                    + std::to_string(image.kernels.size()) + ") (plans "
+                    + std::to_string(image.plans.size()) + "))");
+        }
+        catch (const slog::image::Error& error)
+        {
+            refuse(d, slog::image::error_class(error.kind()),
+                   "(verb mount-program-image) (detail "
+                   + slog::protocol::quoteString(error.what()) + ")");
+        }
+        return;
+    }
+
+    // RF3 additive activation.  The mounted package remains immutable; its
+    // ABI-2 cohorts are decoded through the production interpreter reader,
+    // sealed completely, cross-checked against the ProgramModel components,
+    // database-preflighted as one unit, and only then appended as fresh
+    // interpreted strata.  This is initial/additive execution, not RF5's
+    // replacement transaction: it creates no draft, lineage, or healing cone.
+    if (verb == "activate-program-image")
+    {
+        CommandFields fields;
+        std::string error;
+        if (argc != 2
+            || form.children[1].kind != slog::sexp::SExp::K::string
+            || form.children[1].text.empty()
+            || !collect_fields(form, 2, {"generation"}, fields, error)
+            || fields.size() != 1)
+        {
+            refuse(d, "parse", "(verb activate-program-image) (detail "
+                   + slog::protocol::quoteString(
+                       error.empty()
+                         ? "expected (activate-program-image \"KEY\" "
+                           "(generation N))"
+                         : error) + ")");
+            return;
+        }
+        u64 generation = 0;
+        if (!parse_generation(fields, generation))
+        {
+            refuse(d, "parse", "(verb activate-program-image) (detail "
+                   "\"generation must be one unsigned integer\")");
+            return;
+        }
+        if (!d->checkCommandGeneration(generation,
+                                       "activate-program-image")) return;
+        const std::string& key = form.children[1].text;
+        const slog::image::ProgramImage* image = mounted_image(builders, key);
+        if (image == nullptr)
+        {
+            refuse(d, "image-lookup", "(verb activate-program-image) "
+                   "(image-key " + slog::protocol::quoteString(key) + ")");
+            return;
+        }
+        auto emit_activated = [&](const ProgramActivation& active,
+                                  bool cache_hit) {
+            d->emit("(program-image-activated (image-key "
+                    + slog::protocol::quoteString(active.image_key)
+                    + ") (generation " + std::to_string(active.generation)
+                    + ") (cache-hit " + (cache_hit ? "#t" : "#f")
+                    + ") (first-scc " + std::to_string(active.first_scc)
+                    + ") (cohorts " + std::to_string(active.cohorts)
+                    + ") (kernels " + std::to_string(active.kernels)
+                    + "))");
+        };
+        const auto already = builders.program_activations.find(key);
+        if (already != builders.program_activations.end())
+        {
+            emit_activated(already->second, true);
+            return;
+        }
+        if (!d->pipelineSettled())
+        {
+            refuse(d, "image-admission", "(verb activate-program-image) "
+                   "(image-key " + slog::protocol::quoteString(key)
+                   + ") (detail \"activation requires a settled pipeline "
+                     "tip\")");
+            return;
+        }
+        try
+        {
+            slog::interp::seal_check(!image->plans.empty(),
+                slog::interp::SealErrorK::capability,
+                "image activation: image has no executable cohorts");
+
+            // The outer ProgramModel and the embedded executable manifests
+            // are independently sealed views.  Activation requires them to
+            // name exactly the same SCC partition; mount-only introspection
+            // remains useful for deliberately plan-free images.
+            std::vector<std::vector<std::string>> model_components;
+            std::vector<std::vector<std::string>> plan_components;
+            std::set<std::string> written_relations;
+            for (const auto& rule : image->rules)
+                written_relations.insert(rule.heads.begin(), rule.heads.end());
+            for (const auto& kernel : image->kernels)
+                if (std::any_of(kernel.members.begin(), kernel.members.end(),
+                                [&](const std::string& member) {
+                                    return written_relations.count(member) != 0;
+                                }))
+                    model_components.push_back(kernel.members);
+            for (const auto& plan : image->plans)
+                for (const auto& kernel : plan.kernels)
+                    if (!kernel.prelude)
+                        plan_components.push_back(kernel.members);
+            std::sort(model_components.begin(), model_components.end());
+            std::sort(plan_components.begin(), plan_components.end());
+            slog::interp::seal_check(model_components == plan_components,
+                slog::interp::SealErrorK::binding,
+                "image activation: executable manifests do not match the "
+                "ProgramModel components");
+
+            std::vector<slog::interp::CommandCohort> cohorts;
+            cohorts.reserve(image->plans.size());
+            for (const auto& plan : image->plans)
+            {
+                slog::interp::CommandCohort cohort;
+                cohort.name = "image-" + image->key + "-p"
+                            + std::to_string(plan.slot);
+                const std::vector<slog::interp::DecodedKernelPlan> decoded =
+                    slog::interp::parse_kernel_cohort(plan.datum);
+                size_t executable = 0;
+                for (const auto& one : decoded)
+                {
+                    if (one.exec_key.empty())
+                        slog::interp::seal_check(one.rules.empty(),
+                            slog::interp::SealErrorK::variant_identity,
+                            "image activation: executable kernel has no key");
+                    else
+                    {
+                        slog::interp::seal_check(
+                            executable < plan.kernels.size()
+                              && one.exec_key
+                                   == plan.kernels[executable].exec_key,
+                            slog::interp::SealErrorK::variant_identity,
+                            "image activation: decoded kernel key disagrees "
+                            "with the manifest");
+                        ++executable;
+                    }
+                    cohort.kernels.push_back(
+                        slog::interp::seal_kernel_plan(one, d->db()));
+                }
+                slog::interp::seal_check(executable == plan.kernels.size(),
+                    slog::interp::SealErrorK::variant_identity,
+                    "image activation: manifest kernel coverage is incomplete");
+                cohorts.push_back(std::move(cohort));
+            }
+
+            ProgramActivation active;
+            active.image_key = key;
+            active.generation = generation;
+            active.first_scc = d->strata().size();
+            active.cohorts = cohorts.size();
+            active.kernels = plan_components.size();
+            for (const auto& cohort : cohorts)
+                active.strata.push_back(cohort.name);
+            if (!slog::interp::preflight_command_cohorts(d, cohorts)) return;
+            active.prepared = std::move(cohorts);
+            slog::interp::install_preflighted_command_cohort(
+                d, active.prepared.front());
+            active.installed = 1;
+            const auto inserted = builders.program_activations.emplace(
+                key, std::move(active));
+            emit_activated(inserted.first->second, false);
+        }
+        catch (const slog::interp::PlanParseError& exception)
+        {
+            refuse(d, slog::interp::parse_error_class(exception.kind()),
+                   "(verb activate-program-image) (image-key "
+                   + slog::protocol::quoteString(key) + ") (offset "
+                   + std::to_string(exception.offset()) + ") (detail "
+                   + slog::protocol::quoteString(exception.what()) + ")");
+        }
+        catch (const slog::interp::SealError& exception)
+        {
+            refuse(d, slog::interp::seal_error_class(exception.kind()),
+                   "(verb activate-program-image) (image-key "
+                   + slog::protocol::quoteString(key) + ") (detail "
+                   + slog::protocol::quoteString(exception.what()) + ")");
+        }
+        return;
+    }
+
+    if (verb == "unmount-program-image")
+    {
+        if (argc != 1 || form.children[1].kind != slog::sexp::SExp::K::string
+            || form.children[1].text.empty())
+        {
+            refuse(d, "parse", "(verb unmount-program-image) (detail \"expected "
+                   "(unmount-program-image \\\"IMAGE-KEY\\\")\")");
+            return;
+        }
+        const std::string key = form.children[1].text;
+        if (builders.program_activations.count(key))
+        {
+            refuse(d, "image-active", "(verb unmount-program-image) "
+                   "(image-key " + slog::protocol::quoteString(key)
+                   + ") (detail \"active images remain mounted for task "
+                     "identity and debug lookup\")");
+            return;
+        }
+        if (builders.program_images.erase(key) == 0)
+        {
+            refuse(d, "image-lookup", "(verb unmount-program-image) (image-key "
+                   + slog::protocol::quoteString(key) + ")");
+            return;
+        }
+        d->emit("(program-image-unmounted (image-key "
+                + slog::protocol::quoteString(key) + ") (mounted "
+                + std::to_string(builders.program_images.size()) + "))");
+        return;
+    }
 
     if (verb == "continue" || verb == "continue-boundary")
     {
@@ -2350,6 +3090,86 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
             if (what == "relations") { emit_catalog_relations(d); return; }
             if (what == "types")     { emit_catalog_types(d);     return; }
             if (what == "boundaries"){ emit_catalog_boundaries(d); return; }
+            if (what == "programs")  { emit_catalog_programs(d, builders); return; }
+            if (what == "artifacts") { emit_catalog_native_artifacts(d); return; }
+            if (what == "attachments")
+            {
+                emit_catalog_executor_attachments(d);
+                return;
+            }
+        }
+        if (argc == 2
+            && form.children[1].kind == slog::sexp::SExp::K::atom
+            && form.children[1].text == "artifact"
+            && form.children[2].kind == slog::sexp::SExp::K::string)
+        {
+            const std::string& key = form.children[2].text;
+            const auto found = d->nativeArtifacts().find(key);
+            if (found == d->nativeArtifacts().end())
+            {
+                refuse(d, "artifact-lookup", "(verb catalog) (artifact-key "
+                       + slog::protocol::quoteString(key) + ")");
+                return;
+            }
+            emit_catalog_native_artifact(d, found->second);
+            return;
+        }
+        // RF2-B immutable image projections:
+        //   (catalog program "KEY")
+        //   (catalog program "KEY"
+        //      sources|rules|kernels|plans|activation|materializations)
+        if ((argc == 2 || argc == 3)
+            && form.children[1].kind == slog::sexp::SExp::K::atom
+            && form.children[1].text == "program"
+            && form.children[2].kind == slog::sexp::SExp::K::string)
+        {
+            const std::string& key = form.children[2].text;
+            const slog::image::ProgramImage* image = mounted_image(builders, key);
+            if (image == nullptr)
+            {
+                refuse(d, "image-lookup", "(verb catalog) (image-key "
+                       + slog::protocol::quoteString(key) + ")");
+                return;
+            }
+            if (argc == 2)
+            {
+                const auto active = builders.program_activations.find(key);
+                emit_catalog_program(
+                    d, *image,
+                    active == builders.program_activations.end()
+                      ? nullptr : &active->second);
+                d->emit("(catalog-end 1)");
+                return;
+            }
+            if (form.children[3].kind != slog::sexp::SExp::K::atom)
+            {
+                refuse(d, "parse", "(verb catalog) (detail \"program view "
+                       "must be sources, rules, kernels, plans, activation, "
+                       "or materializations\")");
+                return;
+            }
+            const std::string& view = form.children[3].text;
+            if (view == "sources") { emit_catalog_image_sources(d, *image); return; }
+            if (view == "rules")   { emit_catalog_image_rules(d, *image); return; }
+            if (view == "kernels") { emit_catalog_image_kernels(d, *image); return; }
+            if (view == "plans")   { emit_catalog_image_plans(d, *image); return; }
+            if (view == "materializations")
+            {
+                emit_catalog_image_materializations(d, *image);
+                return;
+            }
+            if (view == "activation")
+            {
+                const auto active = builders.program_activations.find(key);
+                emit_catalog_image_activation(
+                    d, active == builders.program_activations.end()
+                         ? nullptr : &active->second);
+                return;
+            }
+            refuse(d, "parse", "(verb catalog) (detail \"program view must be "
+                   "sources, rules, kernels, plans, activation, or "
+                   "materializations\")");
+            return;
         }
         // N3-D §5.3 subtree selection: a trailing structured qname narrows
         // the record stream to the exact member or nested descendants.
@@ -2389,7 +3209,11 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
         refuse(d, "parse", "(verb catalog) (detail \"expected (catalog), "
                "(catalog relations), (catalog relations (qname ...)), "
                "(catalog types), (catalog boundaries), "
-               "or (catalog boundary \\\"KEY\\\" [(qname ...)])\")");
+               "(catalog boundary \\\"KEY\\\" [(qname ...)]), "
+               "(catalog programs|artifacts|attachments), "
+               "(catalog artifact \\\"KEY\\\"), or (catalog program "
+               "\\\"KEY\\\" [sources|rules|kernels|plans|activation|"
+               "materializations])\")");
         return;
     }
 

@@ -162,7 +162,8 @@
 ;; complete the cycle when a rule reads R_has and writes back into R (the
 ;; in-SCC enumeration case: R and R_has share an SCC).
 
-(define (stratify-rules/model rules [extra-edges (set)])
+(define (stratify-rules/model rules [extra-edges (set)]
+                              [extra-edge-kinds (hash)])
   (define rule-list (set->list rules))
 
   ;; the dependency graph over relation names
@@ -287,10 +288,11 @@
               (hash-update srcs id (lambda (l) (cons rule l)) '()))))
   (values strata
           (program-model scc-of scc-levels scc-members-sorted
-                         sources source-of)))
+                         sources source-of extra-edges extra-edge-kinds)))
 
 ;; The shipped entry point: strata only.  Callers that want the condensation
 ;; ask for it explicitly, so nothing existing changes shape.
-(define (stratify-rules rules [extra-edges (set)])
-  (define-values (strata _model) (stratify-rules/model rules extra-edges))
+(define (stratify-rules rules [extra-edges (set)] [extra-edge-kinds (hash)])
+  (define-values (strata _model)
+    (stratify-rules/model rules extra-edges extra-edge-kinds))
   strata)

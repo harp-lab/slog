@@ -29,7 +29,8 @@ multiline Slog in this first line-oriented slice.
 In the full-screen client, the newest successful result is a live canvas.
 With an empty editor, Tab enters navigate mode; arrows or j/k select, Enter
 toggles an expandable node, left/h/backspace collapses, right/l expands, and
-Esc or q returns to the prompt. Semantic mutations expose a collapsed
+Esc or q returns to the prompt. Semantic mutations keep the default transcript
+to a short outcome such as `committed`, then expose a collapsed
 `▸ Change details` tree built from their structured `change` record. Every
 gesture echoes the client command it performs, such as
 `expand it.change`; typing that command takes the identical path. Press o on
@@ -77,9 +78,12 @@ main commands are:
 
 ```text
 library                  browse data/*
+csv-import FOLDER        infer comma/whitespace files into a fresh binary database
+csv-import FOLDER as N   use the explicit database name N (which must not exist)
 open NAME                load NAME, or switch back to its resident copy
 current                  describe the selected database
 resident                 list databases currently held in memory
+discard session          close the current in-memory session without saving
 mode readonly|mutable    protect or unlock the selected database
 
 tables [FILTER]          live relation schemas and row counts
@@ -95,12 +99,89 @@ save NAME                save the in-memory database
 
 ; COMMENT                add a shared transcript comment; do not invoke Slog
 :help                    show the command reference
+:tutorials               browse and run interactive tutorials
 :status                  show REPL, database, and daemon state
 :share                   show this REPL's co-author address and discovery file
 :quit                    close the REPL
 
 page POSITION NUMBER     select an absolute buffered-canvas page
 ```
+
+## Interactive tutorials
+
+`:tutorials` opens the terminal tutorial catalog. Tutorial definitions live
+under `repl/tutorials/` as one versioned TOML file per tutorial. They contain
+only ordinary comments, commands, checkpoints, and literal-answer challenges;
+there is no second Slog evaluator or hidden shell-command lane. Generated
+commands travel through the same serialized backend queue as typed commands,
+and each step waits for the real response before continuing.
+
+Starting a tutorial with resident in-memory workspaces asks for confirmation,
+then replaces only this REPL's private Racket backend with a fresh one. Saved
+databases on disk and the existing transcript are retained. Escape stops a
+tutorial without closing its current session. During automatic typing, Space
+pauses and Right Arrow finishes the current entry immediately. Tutorial
+narration is committed to the shared transcript as semicolon comments; a blue
+blinking prompt marks literal-answer challenges, and every attempted answer is
+available through normal Up/Down command history.
+
+The first shipped lesson imports `repl/tutorials/data/edge-csv/edge.csv`,
+establishes its automatically inferred logical input declaration, and builds
+transitive closure through ordinary scratch definitions. The sequel imports
+weighted edges and builds a bounded, demand-driven path search whose answers
+carry both readable routes and summed costs. The third lesson uses string
+built-ins and first-class lists and sets to reshape a small message stream. The
+fourth builds a demand-driven k-CFA for the unary lambda calculus, including
+closure environments held in first-class maps and a bounded call-string store.
+`csv-import` derives a database name from the folder and adds a numeric suffix
+when needed, so repeating either import lesson never replaces an existing
+database. An explicit `as NAME` refuses to overwrite as well.
+
+The first file format is:
+
+```toml
+format = 1
+id = "example"
+title = "Example tutorial"
+summary = "What the tutorial demonstrates."
+session = "fresh"
+typing_wpm = [147, 173]
+effects = ["discard-session"]
+
+[[steps]]
+type = "comment"
+text = "Narration is typed as a shared comment."
+
+[[steps]]
+type = "command"
+text = ":status"
+speed = 140 # optional percentage for mechanically dull text such as paths
+# typing = "code" types multiline code at about 8× speed without pauses
+
+[[steps]]
+type = "challenge"
+prompt = "Type a status command:"
+answers = [":status", "status"]
+fallback = ":status"
+attempts = 1
+```
+
+`speed` is an optional percentage on any step (100 is the tutorial's base
+cadence). Narration may use `{{database}}` to name the database most recently
+reported by the real session, including an automatically chosen numeric
+suffix. Multiline command steps can set `typing = "code"` to emit code at
+roughly eight times natural speed with no word or punctuation pauses.
+
+Challenges use token-equivalent matching by default, so irrelevant spacing is
+accepted. A rule challenge may set `match = "slog-rule"`; that additionally
+accepts consistent variable renaming, reordered body clauses, and either
+`<--` or reversed `-->` direction. Other challenge shapes should normally use
+one attempt until they have an equally honest structural matcher.
+
+An unrecognized challenge answer is not executed. After its attempt budget is
+used, the runner types a comment and demonstrates the declared fallback. TOML
+files reject unknown fields, unsupported format versions, invalid typing
+ranges, duplicate IDs, and fallbacks not present in their answer list.
 
 `schema` and `pipeline` retain the raw daemon-facing views, and `:ping` tests
 the private backend connection. Daemons start lazily. Opening a

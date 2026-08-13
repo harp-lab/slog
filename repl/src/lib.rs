@@ -11,4 +11,5 @@ pub mod present;
 pub mod response;
 pub mod runtime;
 pub mod transcript;
+pub mod tutorial;
 pub mod workspace;

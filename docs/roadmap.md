@@ -14,7 +14,7 @@ remains normative for its content.
 | incremental maintenance | [incremental.md](incremental.md), [incremental-status.md](incremental-status.md) | Phase 0, M0–M7 | Phase 0, M0, M1, M3, M6L 1–2, M4T, M5, M4S, **M4N ([m4n-contract.md](m4n-contract.md), all 4 slices)** shipped; **counted-interpreter milestone complete** ([counted-interp-contract.md](counted-interp-contract.md)); **M7 slice 1 complete ([m7-contract.md](m7-contract.md), sub-slices (a)–(d), 2026-07-24)** — thread 0's M-milestone spine is done |
 | execution tiers | [execution-tiers.md](execution-tiers.md) | T0–T6, Q1 | T1 shipped; T2 core frozen, monotone conformance groups closed, **flavored execution interp-only by default**; T0 slices (a), (b), and (d) landed; canonical Q1 query/page/cancel dispatcher active; T0(c) identity remains independent; T3a cold start shipped (2026-07-28); T5+R4 debugger arc complete (2026-08-02); **T4 COMPLETE (2026-08-08, [t4-contract.md](t4-contract.md) §0.1 ledger: kernel-local requisitions, canonical TU order, name-free clusters, descriptor attach, attachment identity + the accept re-key, per-rule selective emission)** — T6's prerequisite met; next: T3b policy, T6 |
 | modules/namespaces | [modules.md](modules.md), [n4-contract.md](n4-contract.md) | N0–N5 | N0, **N1**, N2-A/B, and **all of N3** landed (N1 lexical occurrences, qualification, bindings, and persisted module identity; N3-A/B/C daemon boundaries, direct history, durable type registry; **N3-D qualified-path transforms, 2026-07-26**); **all of N4** ([n4-contract.md](n4-contract.md): N4-A durable bundle in META format 2, restore-on-open, replay audit, boundary-backed REPL projection; N4-B mapped namespace attachment) -- **N0-N4 are complete**, N5 unstarted |
-| reflection | [slog-reflection.md](slog-reflection.md) | RF0–RF5 | RF0 done; RF1 slices 0/0.1/1/2 shipped AND **THE DEFAULT IS ABI 2** (flipped 2026-08-06; [rf1-contract.md](rf1-contract.md) as-built: plan determinism, tie-group fixes ×3, ProgramModel, ABI-2 emitter + airtightness gate + daemon cohort decoder + Racket cohort adapter for the REPL's readers; `SLOG_PLAN_ABI=1` is the escape hatch; full suite 21/21 tiers + plan-determinism 506/506 cohorts at the new default); slice 3 (attribute vocabulary, absent-when-empty) and slice 4 (plan goldens of record, `plan-goldens` tier in ALL) SHIPPED 2026-08-06 — **RF1 IS COMPLETE, all six exit gates closed**; next in stream: RF1.5 model queries (unscheduled), RF2 image mount (W4′); RF5 semantic/module replacement now has a draft end-to-end contract in [rf5-contract.md](rf5-contract.md) |
+| reflection | [slog-reflection.md](slog-reflection.md) | RF0–RF5 | RF0 and RF1 complete (ABI 2 default; deterministic kernel plans and goldens); **RF1.5 normalized model queries, RF2 sealed image mount/catalog, RF3 decoded image activation, RF4 native materialization observations, and RF5-A immutable drafts/compiler diffs are complete (deep gate 2026-08-10)**. `ProgramChangeSet` v1 is frozen with compiler-produced image/change goldens and an independent wire consumer. Next: the RF5-B runtime/transaction join; [rf5-contract.md](rf5-contract.md) owns replacement semantics. |
 | REPL | [repl.md](repl.md), [repl-ux.md](repl-ux.md), [repl-terminal.md](repl-terminal.md) | R0–R5 | native Rust shell, private TCP server, live session/daemon vertical slice, structured change projection, executable `--plain` golden, and R1 budgeted tree, navigation, semantic change cards, command completion, visible-canvas search, live-relation observations, and buffered pagination shipped; canonical Q1 cursor protocol active, with boundary catalog/friendly parser/value/proof adapters next |
 | stats migration | [stats.md](stats.md) §7 | steps 1–7 | `$stat_*` shipped; migration unstarted |
 
@@ -1845,7 +1845,7 @@ private build/recount/persistence          read-only R5/whatif surface
 
 The **runtime / transaction arc** owns the mechanics of changing a live
 recipe-bearing database safely.  Its pre-join result must be able to accept a
-fully specified synthetic program change, build a private successor cone,
+fully specified sealed program change, build a private successor cone,
 recount and audit it, preserve or replace the correct durable identities,
 and atomically publish or abort it.  T6 supplies the one read-consistency
 mechanism: a reader pinned to an old boundary remains pinned, while a
@@ -1858,14 +1858,20 @@ correspondence.
 
 The **program / reflection arc** owns deciding and describing what the new
 program means.  RF1.5 provides normalized queries and fingerprints over
-`ProgramModel`; RF2 mounts sealed images read-only; the remaining RF3/RF4
-closure proves that image-described interpreted/native kernels and attachment
-observations match execution; and RF5-A produces immutable drafts, the three
-compiler diffs, explicit occurrence and relation-slot lineage, affected roots,
-and the union old/new dependency cone.  Read-only `preview`/`whatif` and REPL
-navigation may be built against these products.  Before the join this arc
-does not install tasks, allocate live `VersionKey`s, replay a recipe suffix,
-or mutate a database.
+`ProgramModel`; RF2 mounts sealed images read-only; RF3 cross-seals and runs
+image-described interpreted kernels; RF4 joins native coverage and attachment
+observations back to immutable image slots (RF2–RF4 complete 2026-08-09); and
+RF5-A now produces immutable drafts, the three compiler diffs, explicit total
+occurrence and relation-slot lineage, affected roots, and the union old/new
+dependency cone in frozen `ProgramChangeSet` format 1. Its compiler-produced
+image/change goldens and independent wire consumer are live in
+`tests/change-expected/` and `tests/api/`.
+Read-only `preview`/`whatif` and REPL
+navigation may be built against these products. RF3's additive equivalence
+path installs ordinary interpreted tasks at a settled tip, but before the join
+this arc does not replace an existing task graph, allocate successor
+`VersionKey`s, replay a recipe suffix, or mutate an existing recipe-bearing
+database as a program-change transaction.
 
 The arcs exchange a frozen, serializable **`ProgramChangeSet`** fixture.  The
 program arc produces at least:
@@ -1886,10 +1892,10 @@ maintenance routes or the mandatory fresh-cone fallback, invalidated count
 epochs, and the publication/restart decision.  Compiler code remains the
 authority for semantic/SCC differences; the session remains the authority
 for recipe and version lineage; the daemon remains the authority for private
-materialization, recount, and publication.  Golden `ProgramChangeSet`s let
-the runtime arc proceed before the compiler producer is finished, and a
-synthetic consumer lets the program arc prove serialization and diagnostics
-without a daemon.  The first joint battery runs the exact golden products
+materialization, recount, and publication. Golden `ProgramChangeSet`s let
+the runtime arc proceed before the compiler producer is finished, and the
+independent consumer lets the program arc prove serialization and diagnostics
+without importing producer codecs or a daemon. The first joint battery runs the exact golden products
 through both sides so the fixture cannot become a parallel informal ABI.
 
 W5′ collision ownership is therefore:
@@ -1897,7 +1903,7 @@ W5′ collision ownership is therefore:
 | surface | W5′ owner before RF5-B |
 |---|---|
 | `ProgramModel` queries, image schema/container, compiler diffs and lineage | program arc |
-| RF1.5/RF2/RF5-A goldens and synthetic change-set producer | program arc |
+| RF1.5/RF2/RF5-A compiler-produced goldens and fixture producer | program arc |
 | T0(c) registration, counts/stats, maintenance routes, recount, T6 | runtime arc |
 | database candidate construction and atomic publication | runtime arc |
 | `ProgramChangeSet` schema and golden corpus | frozen interface; joint review |

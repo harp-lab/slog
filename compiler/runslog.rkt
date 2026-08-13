@@ -23,7 +23,7 @@
          set-recipe-chain-loader!)   ; installed by compiler/session.rkt (E2)
 
 (require "tools.rkt")
-(require "compile.rkt")
+(require "compile.rkt") ; RF2 adds image analysis values without changing this driver API
 (require "actions.rkt")
 (require "dbmeta.rkt")
 (require "catalog.rkt")  ; N4-A bundle projection for the freeze carry-forward

@@ -26,6 +26,15 @@ struct NativeCodeDescriptor;   // daemon.h (T4 2c)
 namespace interp
 {
 
+// RF3 mounted-image activation unit.  Every ABI-2 cohort remains one runtime
+// scheduling stratum; `kernels` contains its optional rule-free declarations
+// carrier followed by the independently sealed executable kernels.
+struct CommandCohort
+{
+  std::string name;
+  std::vector<SealedKernelPlan> kernels;
+};
+
 // Install one sealed `(flavor count)` plan as a resident count-round stratum
 // under `name` (the `<hash>_count` stem beginStratumDelta expects), then push
 // and continue the run -- the exact effect sequence of the native flavored
@@ -70,6 +79,20 @@ bool install_command_stratum(Daemon* daemon, const std::string& name,
                              const EntryMode& entry,
                              const SealedKernelPlan& plan);
 
+// RF3 complete-image admission.  The caller has already generation-gated the
+// command and verified image/model manifest correspondence.  Every plan and
+// database shape is checked before cohort 0 is appended; false is Daemon's
+// typed entry refusal and structural failures throw SealError.
+bool preflight_command_cohorts(Daemon* daemon,
+                               const std::vector<CommandCohort>& cohorts);
+
+// Append ONE cohort that passed the complete-image preflight, without running
+// it.  Activation calls this for cohort 0, then after each preceding fixpoint:
+// fresh registration must consume the reload armed by that fixpoint, exactly
+// as the native/per-plan driver does.  No checked failure remains here.
+void install_preflighted_command_cohort(Daemon* daemon,
+                                        const CommandCohort& cohort);
+
 // When `path` is a flavored plugin whose flavor the interpreter admits,
 // parse/seal/install its sidecar plan through the production reader and
 // return true (the caller skips dlopen); under SLOG_FLAVORED_NATIVE it
@@ -92,7 +115,8 @@ bool maybe_interp_plan_plugin(Daemon* daemon, const std::string& path);
 // frame widths -- refusal, never a null dereference), calls the per-kernel
 // attach factories, and pushes + continues.  Any failure is a loud fatal.
 void attach_native_descriptor(Daemon* daemon, const std::string& path,
-                              const NativeCodeDescriptor* desc);
+                              const NativeCodeDescriptor* desc,
+                              const std::string& artifact_key);
 
 // Registration ladders (plan-flavored-tasks.cpp, built -O0): the per-arity
 // index/task boilerplate the native flavored plugins carry, driven from a

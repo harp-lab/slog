@@ -30,6 +30,7 @@
          stratum-meta-dynamic-rels   ; segment write-sets (incremental B0)
          read-stratum-meta           ; cone/polarity input (incremental B4)
          program->jobs    ; tooling/debug: inspect a program's stratum jobs
+         emit-program-image ; RF2-A: sealed read-only compiler image package
          flavored-native?  ; session M4N admission: no native leg for anti-delta variants
          opt-mode-override) ; R3 scratch: force interp-only for one compile
 
@@ -52,6 +53,7 @@
 (require "tools.rkt")
 (require "freeze.rkt")
 (require "sha256.rkt")
+(require "program-image.rkt")
 
 ;; -----------------------------------------------------------------------
 ;; Pass drivers, contract-checked once per program/stratum.
@@ -72,13 +74,17 @@
 ;; partition will rely on -- a rule joins the stratum of its head's SCC --
 ;; so if the two ever disagree, the compile says so here rather than
 ;; producing a mis-partitioned kernel later.
-(define/contract (stratify-all rules [extra-edges (set)])
-  (->* (set?) (set?) strata?)
-  (define-values (strata _model) (stratify-all/model rules extra-edges))
+(define/contract (stratify-all rules [extra-edges (set)]
+                               [extra-edge-kinds (hash)])
+  (->* (set?) (set? hash?) strata?)
+  (define-values (strata _model)
+    (stratify-all/model rules extra-edges extra-edge-kinds))
   strata)
 
-(define (stratify-all/model rules [extra-edges (set)])
-  (define-values (strata model) (stratify-rules/model rules extra-edges))
+(define (stratify-all/model rules [extra-edges (set)]
+                            [extra-edge-kinds (hash)])
+  (define-values (strata model)
+    (stratify-rules/model rules extra-edges extra-edge-kinds))
   (check-stratum-scc-agreement strata model)
   (values strata model))
 
@@ -158,7 +164,11 @@
 ;; generated names that differ run to run, while the front end's output is
 ;; a pure function of these inputs.
 
-;; program->jobs returns (list jobs facts-stratum? frozen).  When
+;; program->jobs returns
+;;   (list jobs facts-stratum? frozen final-type-env full-program-model).
+;; The trailing RF2 analysis values are additive: existing execution callers
+;; consume the first three fields, while a declaration-only program (zero
+;; jobs) still has enough semantic context to seal a ProgramImage.  When
 ;; #:split-facts? is set (a compressed save, docs/db-compression.md P0.5), the
 ;; program's iteration-0 rules -- those whose body reads no declared relation,
 ;; i.e. facts and constant/primitive-computed ground tuples -- are pulled into
@@ -277,12 +287,25 @@
   ;; rule read R and wrote R_has (the base's merge tasks do exactly that), so
   ;; a derived relation closes no earlier than its base -- and shares its SCC
   ;; when some rule feeds R_has back into R (in-SCC enumeration)
-  (define decomp-edges
+  (define derived-edges
     (set-union (for/set ([(derived info) (in-hash decomps)])
                  (cons (first info) derived))
                seq-edges))
+  ;; An oracle answer table grows from its demand struct through the daemon's
+  ;; dispatch/harvest side channel.  It is a real semantic dependency even
+  ;; though no source rule owns it; without demand -> answer, RF5's union cone
+  ;; can preserve stale answer/downstream state after a program replacement.
+  (define oracle-edges
+    (for/set ([(name decl) (in-hash (type-env-rels type-env+))]
+              #:when (and (pair? decl) (eq? (car decl) 'oracle)))
+      (match decl
+        [`(oracle ,_ ,demand ,answer) (cons demand answer)])))
+  (define extra-edges (set-union derived-edges oracle-edges))
+  (define extra-edge-kinds
+    (for/hash ([edge (in-set extra-edges)])
+      (values edge (if (set-member? oracle-edges edge) 'oracle 'derived))))
   (define-values (full-strata full-model)
-    (stratify-all/model typed decomp-edges))
+    (stratify-all/model typed extra-edges extra-edge-kinds))
   ;; check the ORIGINAL stratification (a superset that keeps iter0 rules in
   ;; place); the split only moves body-less rules, which can never violate the
   ;; monotone-use calculus, so passing here implies the split is safe too.
@@ -319,7 +342,8 @@
        (for/list ([s (in-list full-strata)]) (cons s full-model))]
       [else
        (define-values (rest-strata rest-model)
-         (stratify-all/model (set-subtract typed fact-rules) decomp-edges))
+         (stratify-all/model (set-subtract typed fact-rules)
+                             extra-edges extra-edge-kinds))
        (cons (cons `(stratum 0 ,fact-rules) full-model)
              (for/list ([s (in-list rest-strata)])
                (cons `(stratum ,(add1 (stratum-level s)) ,(stratum-rules s))
@@ -329,7 +353,9 @@
           (list (job-hash (stratum-level stratum)) type-env+ stratum dbmanifest
                 decomps (cdr sm)))
         facts?
-        frozen))
+        frozen
+        type-env+
+        full-model))
 
 ;; -----------------------------------------------------------------------
 ;; Rule/SCC ids + sidecar manifest (docs/pausing.md §6).
@@ -1121,6 +1147,80 @@
   (unless (file-exists? plan) (void (emit-stratum-cpp job)))
   plan)
 
+;; RF2-A compiler producer.  The ordinary compile return shape is unchanged;
+;; callers can request a sealed package explicitly, and compile-strata's
+;; SLOG_EMIT_PROGRAM_IMAGES hook below uses the same function.  Every cohort
+;; is embedded in one content-addressed image file, so RF2 does not multiply
+;; filesystem artifacts per kernel.
+(define (emit-program-image program jobs output-dir
+                            #:type-env [provided-type-env #f]
+                            #:model [provided-model #f]
+                            #:compiler-key [provided-compiler-key #f])
+  (define plans
+    (for/list ([job (in-list jobs)])
+      (define path (ensure-normal-plan job))
+      (define (read-plan)
+        (call-with-input-file path
+          (lambda (in)
+            (define plan (read in))
+            (unless (eof-object? (read in))
+              (error 'emit-program-image "trailing data in plan ~a" path))
+            plan)))
+      (define plan (read-plan))
+      (cond
+        [(and (pair? plan) (eq? (car plan) 'kernel-cohort)) plan]
+        [(equal? (getenv "SLOG_PLAN_ABI") "1")
+         (error 'emit-program-image
+                "RF2 requires Plan ABI 2, but SLOG_PLAN_ABI=1 is active")]
+        [else
+         ;; A warm ABI-1 sidecar may predate the ABI-2 default.  Re-emit from
+         ;; this job once; emit-stratum-cpp is the canonical plan authority.
+         (void (emit-stratum-cpp job))
+         (define refreshed (read-plan))
+         (unless (and (pair? refreshed)
+                      (eq? (car refreshed) 'kernel-cohort))
+           (error 'emit-program-image
+                  "compiler did not produce an ABI-2 cohort for ~a" path))
+         refreshed])))
+  (define-values (type-env model)
+    (cond
+      [(and provided-type-env provided-model)
+       (values provided-type-env provided-model)]
+      [(pair? jobs)
+       (match-define (list _hash inferred-type-env _stratum _manifest
+                           _decomps inferred-model)
+         (first jobs))
+       (values inferred-type-env inferred-model)]
+      [else
+       (error 'emit-program-image
+              (string-append
+               "a declaration-only program has no jobs; provide its "
+               "#:type-env and #:model from program->jobs"))]))
+  (define compiler-key
+    (or provided-compiler-key
+        (bytes->hex-string
+         (sha256 (string->bytes/utf-8 compiler-sources-fingerprint)))))
+  (define image
+    (seal-program-image program type-env model
+                        #:compiler-key compiler-key
+                        #:cohorts plans))
+  (make-directory* output-dir)
+  (define path
+    (build-path output-dir (format "~a.pimg" (program-image-key image))))
+  (unless (file-exists? path)
+    ;; `output-dir` may be a separately mounted cache.  tools.rkt's general
+    ;; build temp lives under build/ and cannot be atomically renamed across
+    ;; filesystems, so this package's temp belongs beside its destination.
+    (define tmp (make-temporary-file "program-image-~a.tmp" #f output-dir))
+    (dynamic-wind
+      void
+      (lambda ()
+        (call-with-output-file tmp #:exists 'truncate
+          (lambda (out) (write-program-image image out)))
+        (rename-file-or-directory tmp path #t))
+      (lambda () (when (file-exists? tmp) (delete-file tmp)))))
+  (values image path))
+
 ;; Returns (values strata partition edb-boundary frozen-dirs groups).
 ;; edb-boundary is the number of leading strata whose combined output is the
 ;; iteration-0 EDB root (P0.5): 1 when the first program contributed a facts
@@ -1313,6 +1413,16 @@
                     (lambda () (ensure-maintenance-so job))
                     (lambda () (ensure-negative-maintenance-so job))
                  (lambda () (ensure-recursive-negative-maintenance-so job)))])])))
+  ;; RF2-A audit/producer hook.  Off by default until the daemon catalog mount
+  ;; consumes image keys.  When selected, emit one sealed package per lexical
+  ;; program occurrence without changing compile-strata's runtime-facing
+  ;; return values.
+  (let ([image-dir (getenv "SLOG_EMIT_PROGRAM_IMAGES")])
+  (when (and image-dir (not (string=? image-dir "")))
+      (for ([program (in-list programs)] [pp (in-list per-program)])
+        (emit-program-image program (first pp) image-dir
+                            #:type-env (fourth pp)
+                            #:model (fifth pp)))))
   (spawn-detached-o2-batch (reverse o2-cmds))
   (define groups
     (let loop ([pps per-program]

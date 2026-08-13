@@ -1,0 +1,95 @@
+format = 1
+id = "repl-basics"
+title = "CSV to transitive closure"
+summary = "Import edge.csv as a binary database, then build and query reachability live."
+session = "fresh"
+typing_wpm = [147, 173]
+effects = ["discard-session", "create-database"]
+
+[[steps]]
+type = "comment"
+text = "The most basic REPL task is naturally to load some existing data. We will load repl/tutorials/data/edge-csv/edge.csv, whose five rows describe the directed edges 1→2, 2→3, 2→4, 3→4, and 4→5."
+speed = 140
+
+[[steps]]
+type = "command"
+text = "csv-import repl/tutorials/data/edge-csv"
+speed = 140
+
+[[steps]]
+type = "comment"
+text = "The filename became relation edge, and its values determined that both columns are int. Comma- or whitespace-separated imports can also contain floats, quoted strings, and Slog values or clause forms such as nested (constructor ...) values. The import created and opened a real mutable database called {{database}}. That is its library name, so you can refer to it later with open {{database}}."
+
+[[steps]]
+type = "command"
+text = "show edge"
+
+[[steps]]
+type = "comment"
+text = "A relation is a set of rows. Here an edge X→Y is a direct arrow from X to Y. We will write X⇢Y in the explanations for a path made from one or more direct arrows."
+
+[[steps]]
+type = "comment"
+text = "At the prompt, a line beginning table or rule is a scratch definition. It is interpreted for quick feedback and committed to the live session immediately. The ? prefix is reserved for read-only queries. Use scratch to review these definitions or clear scratch to retract them."
+
+[[steps]]
+type = "command"
+text = "table (path int int)"
+
+[[steps]]
+type = "comment"
+text = "The table declaration says the path relation has two integer columns. It starts empty, so now give it a rule. Read <-- as 'if': the rule says X⇢Y holds if X→Y exists. Uppercase names are variables that must agree everywhere they appear in a rule."
+
+[[steps]]
+type = "command"
+text = "rule (path X Y) <-- (edge X Y)"
+
+[[steps]]
+type = "command"
+text = "show path 20"
+
+[[steps]]
+type = "comment"
+text = "So far reachability contains only the five direct arrows. Next add a two-hop rule: if X→Y and Y→Z both exist, then X⇢Z. The shared Y joins the two edges end to end."
+
+[[steps]]
+type = "command"
+text = "rule (path X Z) <-- (edge X Y) (edge Y Z)"
+
+[[steps]]
+type = "command"
+text = "show path 20"
+
+[[steps]]
+type = "challenge"
+prompt = "There are more reachable pairs now, but 1⇢5 is still missing because it needs at least three direct arrows. How could a rule reuse already-known reachability so it keeps extending? Try replacing one edge condition in the two-hop rule with path:"
+answers = [
+  "rule (path X Z) <-- (path X Y) (edge Y Z)",
+  "rule (path X Z) <-- (edge X Y) (path Y Z)",
+]
+fallback = "rule (path X Z) <-- (path X Y) (edge Y Z)"
+attempts = 2
+match = "slog-rule"
+
+[[steps]]
+type = "comment"
+text = "Because the path relation appears in both the result and the conditions, this rule is recursive. Slog repeats it until an iteration finds no new rows—a fixpoint. On this graph that eventually discovers every reachable pair, including 1⇢5."
+
+[[steps]]
+type = "command"
+text = "show path 20"
+
+[[steps]]
+type = "challenge"
+prompt = "Use the read-only ? query register to ask whether 1⇢5 holds:"
+answers = ["?(path 1 5)", "query path 1 5"]
+fallback = "?(path 1 5)"
+attempts = 1
+
+[[steps]]
+type = "checkpoint"
+text = "Press Enter when you are ready to leave the tutorial driver behind:"
+
+[[steps]]
+type = "comment"
+text = "Tutorial complete. The imported database, its transitive-closure scratch program, and this live session are yours. Try add edge 5 6, show path 20, scratch, or keep scratch as reachability.slog. Use :help whenever you want the command list."

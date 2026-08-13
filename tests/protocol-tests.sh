@@ -931,6 +931,96 @@ else
   bad "pause-live-build (see out/proto-pause-build.log)"
 fi
 
+# --- 10. RF2-B sealed ProgramImage mounts -----------------------------------
+# Images are connection-scoped immutable catalog objects, not Database
+# relations or executable strata.  The daemon independently verifies the
+# compiler's content seal and embedded source/rule/plan digests before the
+# first row is published.  Repeating a key is a decoded-cache hit; unmounting
+# leaves the artifact itself untouched.
+RF2_IMAGE=tests/image-expected/rf2-basic.pimg
+RF2_KEY=98db03c33027946f1fa293f105845043bf23643b43ced43926747b7396871bd8
+racket tests/api/drive.rkt \
+  "(catalog)" \
+  "(mount-program-image \"$RF2_IMAGE\")" \
+  "(catalog programs)" \
+  "(catalog program \"$RF2_KEY\" sources)" \
+  "(catalog program \"$RF2_KEY\" rules)" \
+  "(catalog program \"$RF2_KEY\" kernels)" \
+  "(catalog program \"$RF2_KEY\" plans)" \
+  "(mount-program-image \"$RF2_IMAGE\")" \
+  "(catalog)" \
+  "(unmount-program-image \"$RF2_KEY\")" \
+  "(catalog programs)" \
+  > out/proto-program-image.log 2>&1
+expect "image-mounted" '(program-image-mounted (image-key "98db03c33027946f1fa293f105845043bf23643b43ced43926747b7396871bd8") (cache-hit #f) (rules 2) (kernels 2) (plans 1))' out/proto-program-image.log
+expect "image-cache-hit" '(cache-hit #t)' out/proto-program-image.log
+expect "image-program-catalog" '(catalog-program (image-key "98db03c33027946f1fa293f105845043bf23643b43ced43926747b7396871bd8")' out/proto-program-image.log
+expect "image-source-map-catalog" '(catalog-program-source ' out/proto-program-image.log
+expect "image-rule-catalog" '(catalog-program-rule ' out/proto-program-image.log
+expect "image-kernel-catalog" '(catalog-program-kernel ' out/proto-program-image.log
+expect "image-plan-catalog" '(catalog-program-plan ' out/proto-program-image.log
+expect "image-unmounted" '(program-image-unmounted ' out/proto-program-image.log
+if racket tests/api/catalog-check.rkt images'>='1 < out/proto-program-image.log; then
+  ok "image-catalog-round-trip"; else bad "image-catalog-round-trip"; fi
+# Both ordinary relation catalogs are empty: mounting never creates a user
+# relation, and unmount cannot remove one.
+if [ "$(grep -cF '(catalog-end 0)' out/proto-program-image.log)" -eq 3 ]; then
+  ok "image-read-only-catalog-isolation"; else bad "image-read-only-catalog-isolation"; fi
+
+RF2_BAD_KEY=out/rf2-bad-key.pimg
+RF2_BAD_FORMAT=out/rf2-bad-format.pimg
+sed 's/(key "[0-9a-f]*")/(key "0000000000000000000000000000000000000000000000000000000000000000")/' \
+  "$RF2_IMAGE" > "$RF2_BAD_KEY"
+sed 's/(format 1)/(format 9)/' "$RF2_IMAGE" > "$RF2_BAD_FORMAT"
+racket tests/api/drive.rkt \
+  '(mount-program-image "out/no-such-program-image.pimg")' \
+  "(mount-program-image \"$RF2_BAD_KEY\")" \
+  "(mount-program-image \"$RF2_BAD_FORMAT\")" \
+  > out/proto-program-image-refuse.log 2>&1
+expect_rx "image-missing-cache-is-a-miss" '\(refused image-io [0-9]+' out/proto-program-image-refuse.log
+expect_rx "image-tampered-seal-refused" '\(refused image-seal [0-9]+' out/proto-program-image-refuse.log
+expect_rx "image-unknown-format-refused" '\(refused image-format [0-9]+' out/proto-program-image-refuse.log
+
+# RF4 control observations are empty but structurally complete before any
+# descriptor artifact or executable kernel is attached. Unknown content keys
+# refuse as lookups, not filesystem/path errors: paths are only cache hints.
+racket tests/api/drive.rkt \
+  '(catalog artifacts)' \
+  '(catalog attachments)' \
+  '(catalog artifact "0000000000000000000000000000000000000000000000000000000000000000")' \
+  > out/proto-native-materializations-empty.log 2>&1
+if [ "$(grep -cF '(catalog-end 0)' out/proto-native-materializations-empty.log)" -eq 2 ]; then
+  ok "native-materialization-catalogs-start-empty"
+else
+  bad "native-materialization-catalogs-start-empty"
+fi
+expect_rx "native-artifact-lookup-typed" \
+  '\(refused artifact-lookup [0-9]+ \(verb catalog\) \(artifact-key "0{64}"\)\)' \
+  out/proto-native-materializations-empty.log
+
+# RF3 activation is generation-gated and cross-seals the executable manifests
+# against the outer ProgramModel before installing a task.  RF2's intentionally
+# introspection-only golden has two model SCCs and an empty manifest, making it
+# a compact negative fixture: stale generation wins first, then exact coverage
+# is refused and no activation row is published.
+racket tests/api/drive.rkt \
+  "(mount-program-image \"$RF2_IMAGE\")" \
+  "(activate-program-image \"$RF2_KEY\" (generation 1))" \
+  "(activate-program-image \"$RF2_KEY\" (generation 0))" \
+  "(catalog program \"$RF2_KEY\" activation)" \
+  "(unmount-program-image \"$RF2_KEY\")" \
+  > out/proto-program-image-activation-refuse.log 2>&1
+expect_rx "image-activation-generation-gated" \
+  '\(refused stale-generation 0 \(verb activate-program-image\)' \
+  out/proto-program-image-activation-refuse.log
+expect_rx "image-activation-model-manifest-cross-seal" \
+  '\(refused binding 0 \(verb activate-program-image\).*manifests do not match the ProgramModel' \
+  out/proto-program-image-activation-refuse.log
+expect "image-refused-activation-not-published" '(catalog-end 0)' \
+  out/proto-program-image-activation-refuse.log
+expect "image-refused-activation-still-unmountable" '(program-image-unmounted ' \
+  out/proto-program-image-activation-refuse.log
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

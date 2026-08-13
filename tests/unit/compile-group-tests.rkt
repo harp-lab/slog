@@ -1,5 +1,8 @@
 #lang racket
 
+;; RF2's additive program->jobs analysis tail must not change compile-strata's
+;; five runtime-facing return values or declaration-only group behavior.
+
 (module+ test
   (require rackunit
            racket/file

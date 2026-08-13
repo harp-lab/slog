@@ -84,6 +84,7 @@
          session-prepared-boundary ; the leased, uncommitted BoundaryKey or #f
          session-action!        ; low-level: one action + a reader
          session-command-stream! ; low-level: one T0 command record stream
+         session-activate-program-image! ; RF3: install + settle mounted image
          session-query-lines!   ; low-level: one Q1 query command + records
          session-debug-lines!   ; T5 (c3): one debugger stream (frames)
          session-recount!       ; the count round over the pipeline (M0)
@@ -103,7 +104,7 @@
          inline-batch-max)
 
 (require "tools.rkt")
-(require "compile.rkt")
+(require "compile.rkt") ; RF2 image emission is additive to the session-facing API
 (require (only-in "modules.rkt" current-catalog-adoption)) ; R3 scratch
 (require "catalog.rkt")
 (require "names.rkt")
@@ -709,6 +710,47 @@
     [`(update-epoch ,revision settled) revision]
     [`(update-epoch ,revision active) revision]
     [x (error 'session (format "unparseable update-epoch reply: ~a" x))]))
+
+;; RF3 additive ProgramImage execution.  The daemon performs the complete
+;; image/plan cross-seal and appends cohort 0 before replying; each ordinary
+;; bounded continuation that settles cohort N installs cohort N+1 through the
+;; deferred reload seam.  A cache hit is observation-only and must not advance
+;; the session's SCC mirror or re-run settled strata.
+(define (session-activate-program-image! s image-key)
+  (define generation (query-update-epoch! s))
+  (define reply
+    (session-command!
+     s `(activate-program-image ,image-key (generation ,generation))))
+  (match reply
+    [`(program-image-activated
+       (image-key ,(== image-key))
+       (generation ,(== generation))
+       (cache-hit ,cache-hit?)
+       (first-scc ,first-scc)
+       (cohorts ,cohorts)
+       (kernels ,kernels))
+     (unless cache-hit?
+       (unless (= first-scc (session-next-scc s))
+         (error 'session
+                (format "image activation SCC drift: daemon starts at ~a, client expects ~a"
+                        first-scc (session-next-scc s))))
+       (set-session-next-scc! s (+ first-scc cohorts))
+       (for ([_ (in-range cohorts)])
+         (send-command-line! s "(continue)")
+         (drive-to-fixpoint! s))
+       ;; RF3 proves/adds execution but does not yet mint RF5's successor
+       ;; logical boundary.  Do not leave a stale pre-activation head hiding
+       ;; the new physical relations from `tables`/`count`/queries; force the
+       ;; established catalog-less live-schema projection until the next
+       ;; ordinary program event adopts it.
+       (install-head! s #f))
+     (list image-key generation cache-hit? first-scc cohorts kernels)]
+    [`(refused ,class ,_generation ,details ...)
+     (error 'session
+            (format "program image activation refused (~a): ~a"
+                    class details))]
+    [other
+     (error 'session (format "unexpected image activation reply: ~a" other))]))
 
 ;; M4N slice 3: per-relation sign census of the open epoch's journals --
 ;; the derived-negated route reads it after the producer prefix settles.

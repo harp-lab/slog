@@ -1,0 +1,126 @@
+format = 1
+id = "structs-and-demands"
+title = "Routes on demand: weighted paths"
+summary = "Find every route to a destination whose summed edge weights fit a chosen budget."
+session = "fresh"
+typing_wpm = [147, 173]
+effects = ["discard-session", "create-database"]
+
+[[steps]]
+type = "comment"
+text = "The first tutorial found reachability: whether one node can get to another. Real route questions often have a cost as well. This sequel will find every path ending at a chosen destination, but only when its summed edge weights fit a bound you specify."
+
+[[steps]]
+type = "command"
+text = "csv-import repl/tutorials/data/weighted-paths"
+speed = 140
+
+[[steps]]
+type = "comment"
+text = "The import created and opened a real mutable database called {{database}}. Its edge relation has three integer columns: (edge From To Weight). For example, (edge 1 2 2) says the step 1→2 costs 2. You can refer to this database later by its displayed library name."
+
+[[steps]]
+type = "command"
+text = "show edge 20"
+
+[[steps]]
+type = "comment"
+text = "Two direct shortcuts are deliberately expensive: 3→6 costs 8 and 1→6 costs 9. Several longer routes are cheaper. We want the program to add all the weights along each complete route rather than confuse the number of steps with its cost."
+
+[[steps]]
+type = "comment"
+text = "path_reaches will be a demand relation. The types inside (path_reaches int int) are its requested inputs—Target and Bound. The route type after that is its answer. Rules for a demand relation run only for requested inputs, and their answers are memoized for reuse."
+
+[[steps]]
+type = "comment"
+text = "A route answer is a struct with three fields: its starting node, readable path text, and total cost. The zero-step base answer reaches Target from itself at cost 0. The recursive rule walks one incoming edge, subtracts its weight from the remaining bound, asks for a smaller route, then adds the weight to that route's cost."
+
+[[steps]]
+type = "command"
+text = '''struct (route int str int)
+table (search int int)
+table (found int int int str int)
+
+demand (path_reaches int int) route
+
+rule (path_reaches Target Bound
+                   (route Target Label 0)) <--
+  (= Label (i2s Target))
+
+rule (path_reaches Target Bound
+                   (route From Nodes Total)) <--
+  (edge From Next Weight)
+  (<= Weight Bound)
+  (= Remaining (- Bound Weight))
+  (path_reaches Target Remaining
+                (route Next Tail Cost))
+  (= Name (i2s From))
+  (= Prefix (+ Name "→"))
+  (= Nodes (+ Prefix Tail))
+  (= Total (+ Weight Cost))
+
+rule (search Target Bound)
+     (path_reaches Target Bound
+                   (route From Nodes Cost)) -->
+  (found Target Bound From Nodes Cost)'''
+typing = "code"
+
+[[steps]]
+type = "comment"
+text = "Read the recursive rule from its conditions upward. Weight must fit the current Bound. Remaining is Bound−Weight. A recursive answer must start at this edge's Next node, so the pieces join into one continuous path. Total is Weight+Cost. Because every weight here is positive, Remaining gets smaller and the bounded search terminates even if a graph contains cycles."
+
+[[steps]]
+type = "challenge"
+prompt = "search is an input relation containing (Target Bound). Use the mutable add command to request every route ending at node 6 with total cost at most 5:"
+answers = ["add search 6 5"]
+fallback = "add search 6 5"
+attempts = 2
+
+[[steps]]
+type = "command"
+text = "show found 20"
+
+[[steps]]
+type = "comment"
+text = "Each row repeats Target and Bound, then shows From, the complete path, and its summed cost. The result includes the useful zero-step path 6 at cost 0. It finds two distinct routes from node 2, but none from node 1: node 1's cheapest routes cost 6."
+
+[[steps]]
+type = "command"
+text = "count path_reaches"
+
+[[steps]]
+type = "comment"
+text = "That count is the small set of demand subproblems reached while answering this request, not every possible target and bound in advance. No search for destination 4, bound 100, or any other unrequested pair was evaluated."
+
+[[steps]]
+type = "challenge"
+prompt = "Now make a second request for destination 6 with a larger bound of 7; keep the first request so we can compare both result sets:"
+answers = ["add search 6 7"]
+fallback = "add search 6 7"
+attempts = 2
+
+[[steps]]
+type = "command"
+text = "show found 30"
+
+[[steps]]
+type = "comment"
+text = "The bound-5 rows remain, and bound 7 admits three routes beginning at node 1. Their totals are 6, 6, and 7. The direct 1→6 route still does not fit because it costs 9, and the direct 3→6 route still costs 8; more edges can genuinely be cheaper than fewer edges."
+
+[[steps]]
+type = "challenge"
+prompt = "Use the read-only ? register to show only the bound-7 routes that begin at node 1. Leave Path and Cost as variables so their values are printed:"
+answers = [
+  "?(found 6 7 1 Path Cost)",
+  "? (found 6 7 1 Path Cost)",
+]
+fallback = "?(found 6 7 1 Path Cost)"
+attempts = 2
+
+[[steps]]
+type = "checkpoint"
+text = "Press Enter when you are ready to leave the tutorial driver with the weighted-route session:"
+
+[[steps]]
+type = "comment"
+text = "Tutorial complete. The imported graph, both demand requests, memoized route answers, and live scratch program are yours. Try add search 5 4, show found 30, scratch, or keep scratch as weighted-routes.slog. Use :help whenever you want the command list."
