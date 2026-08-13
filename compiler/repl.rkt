@@ -302,6 +302,9 @@
    "   emit|tuple|rule rN] (from the gate it replays the read to get there)"
    "  finish              leave the ports; run to the next iteration boundary"
    "  frames              the join stack at the current step stop"
+   "  watch cone REL [image KEY]  derive level-0 watches over REL's whole"
+   "                      dependency-ancestor cone in the mounted image; the"
+   "                      SET re-derives semantically (rerun after an edit)"
    "  unwatch wN          remove one watch;  `watches` lists them"
    "  explain ?QUERY      show the query plan and degradations, do not run"
    "  tiers               show each stratum's execution rung (interp/-O0/-O2)"
@@ -1681,10 +1684,130 @@
     (query-run-aggregate! s (query-plan->wire-string plan)))
   matched)
 
+;; ---- §18.5 derived watches: the first meta-program -----------------------
+;;
+;; `watch cone REL [image KEY]` runs a meta-query over the mounted image's
+;; dependency records -- "which relations could transitively contribute to
+;; a derivation of REL" is ancestor reachability over heads x bodies --
+;; and derives one WatchRequest per cone member.  Each request installs
+;; through the ORDINARY level-0 watch protocol below: rules derive
+;; requests, the client installs them (repl.md §6's invariant intact).
+;; The derived SET is semantic: re-running the command against a successor
+;; image re-derives it after a refactor or an RF5 activation, while each
+;; installed watch remains a version-pinned capability that dies with its
+;; version -- exactly the §18.5 split.
+(define (watch-cone-result state target-text image-key0)
+  (define rs (ensure-session-record! state))
+  (define s (repl-session-session rs))
+  (define image-key
+    (or image-key0
+        (match (program-image-catalog s '(catalog programs))
+          [(list one) (record-field one 'image-key)]
+          ['() (error 'watch
+                      "no mounted image to derive from; `image mount PATH` first")]
+          [several (error 'watch
+                          "~a images mounted; name one: watch cone REL image KEY"
+                          (length several))])))
+  (define rules
+    (program-image-catalog s `(catalog program ,image-key rules)))
+  (when (null? rules)
+    (error 'watch "image ~a exposes no rule records" image-key))
+  (define target (string->symbol target-text))
+  ;; ancestors of `target` through the union of positive and negative
+  ;; dependencies, by head unification: seed the target, then add every
+  ;; body relation of a rule whose head is already in the cone.
+  (define wildcard-rules 0)
+  ;; the daemon renders relation lists as quoted strings; the meta-query
+  ;; unifies by qname symbol
+  (define (as-symbols values)
+    (for/list ([v (in-list (or values '()))])
+      (if (string? v) (string->symbol v) v)))
+  (define (rule-heads record) (as-symbols (record-field record 'heads)))
+  (define (rule-bodies record)
+    (append (as-symbols (record-field record 'positive))
+            (as-symbols (record-field record 'negative))))
+  (define cone
+    (let loop ([members (set target)])
+      (define grown
+        (for/fold ([acc members]) ([record (in-list rules)])
+          (if (for/or ([head (in-list (rule-heads record))])
+                (set-member? acc head))
+              (for/fold ([acc acc]) ([body (in-list (rule-bodies record))])
+                (set-add acc body))
+              acc)))
+      (if (= (set-count grown) (set-count members)) grown (loop grown))))
+  (for ([record (in-list rules)])
+    (when (and (record-field record 'negative-wildcard #f)
+               (for/or ([head (in-list (rule-heads record))])
+                 (set-member? cone head)))
+      (set! wildcard-rules (add1 wildcard-rules))))
+  ;; install one ordinary level-0 watch per LIVE cone member; image-only
+  ;; or not-yet-versioned relations are reported, never guessed at.
+  (define registry (repl-session-watches rs))
+  (define (already-watched? name)
+    (for/or ([(_ intent) (in-hash registry)])
+      (and (eq? (watch-intent-kind intent) 'relation)
+           (equal? (watch-intent-target intent) name))))
+  (define catalog (live-catalog s))
+  (define outcomes
+    (for/list ([member (in-list (sort (set->list cone) symbol<?))])
+      (define name (symbol->string member))
+      (cond
+        [(already-watched? name) (list member 'already #f)]
+        [else
+         (define relation
+           (with-handlers ([exn:fail? (lambda (_e) #f)])
+             (relation-from-catalog 'watch catalog name)))
+         (define key (and relation (relation-info-version-key relation)))
+         (cond
+           [(not (string? key)) (list member 'inactive #f)]
+           [else
+            (define id (next-watch-id registry))
+            (register-daemon-watch! s id key)
+            (hash-set! registry id
+                       (watch-intent id 'relation name key #f 0 #f))
+            (list member 'watched id)])])))
+  (define (of kind) (filter (lambda (o) (eq? (second o) kind)) outcomes))
+  (define lines
+    (append
+     (for/list ([o (in-list (of 'watched))])
+       (format "~a — ~a installed (level 0)" (first o) (third o)))
+     (for/list ([o (in-list (of 'already))])
+       (format "~a — already watched" (first o)))
+     (for/list ([o (in-list (of 'inactive))])
+       (format "~a — no live VersionKey; derived, not installed" (first o)))
+     (if (> wildcard-rules 0)
+         (list (format "note: ~a cone rule~a with wildcard negation read beyond these relations"
+                       wildcard-rules (if (= wildcard-rules 1) "" "s")))
+         '())))
+  (hash-set*
+   (text-result
+    (format "Derived watch cone for ~a (image ~a…): ~a relation~a"
+            target-text (substring image-key 0 (min 12 (string-length image-key)))
+            (set-count cone) (if (= (set-count cone) 1) "" "s"))
+    lines
+    #:kind "watch-cone")
+   'target target-text
+   'image-key image-key
+   'members (map (lambda (o) (hasheq 'relation (format "~a" (first o))
+                                     'outcome (format "~a" (second o))
+                                     'watch (and (third o) (format "~a" (third o)))))
+                 outcomes)))
+
 (define (watch-result state argument)
   (define raw (string-trim argument))
   (when (string=? raw "")
-    (error 'watch "expected: watch REL [level 1 [why]] | watch ?QUERY"))
+    (error 'watch "expected: watch REL [level 1 [why]] | watch ?QUERY | watch cone REL [image KEY]"))
+  ;; §18.5: the derived-cone form dispatches before the single-target forms.
+  (define cone-match
+    (regexp-match
+     #px"^cone[[:space:]]+([^[:space:]]+)([[:space:]]+image[[:space:]]+([^[:space:]]+))?[[:space:]]*$"
+     raw))
+  (if cone-match
+      (watch-cone-result state (second cone-match) (fourth cone-match))
+      (watch-result/single state raw)))
+
+(define (watch-result/single state raw)
   ;; T5 slice (a): `watch REL level 1` records the pre-commit-gate intent
   ;; (docs/t5-contract.md) and forces the relation's writer SCCs onto the
   ;; interpreter at their next re-entry (client-side policy, ratified).
