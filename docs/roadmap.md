@@ -1900,7 +1900,7 @@ W5′ collision ownership is therefore:
 | RF1.5/RF2/RF5-A goldens and synthetic change-set producer | program arc |
 | T0(c) registration, counts/stats, maintenance routes, recount, T6 | runtime arc |
 | database candidate construction and atomic publication | runtime arc |
-| `ProgramChangeSet` schema and golden corpus | frozen interface; joint review |
+| `ProgramChangeSet` schema and golden corpus | frozen interface; joint review — **FROZEN 2026-08-12** ([activation-contract.md](activation-contract.md) §2/§6: abi 1, seven-fixture corpus of record via `tests/activation/CORPUS.sha256`, producer conformance gate `tests/api/pcs-check.rkt`, `activation-freeze` tier in ALL; the runtime arc's A1–A4 pre-join deliverable is COMPLETE — validate/mint/prepare/sever-heal/recount/publish-or-abort proven live, the RF5-B two-instance gate 17/17 with outside-cone VersionKey reuse by construction) |
 | native emission/descriptor attach and final plan-diff baselines | frozen until T4 lands; then joint review |
 | recipe/version resolution in `session.rkt` and RF5-B command semantics | join work; runtime authority |
 | read-only REPL browsing/preview rendering | program arc; command grammar changes reviewed jointly |

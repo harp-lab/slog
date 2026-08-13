@@ -1,9 +1,10 @@
 # The activation spine — the runtime arc's pre-join deliverable
 
 *Drafted 2026-08-12 (W5′ runtime/transaction arc, after T3b, T0(c), T6,
-and the N5/stats-4 identity unification closed).  **Status: slices A1–A3
-SHIPPED 2026-08-12 (as-built in §5); A4 (the joint fixture freeze) is the
-remaining slice.**  Normative parents:
+and the N5/stats-4 identity unification closed).  **Status: A1–A4 ALL
+SHIPPED 2026-08-12 (as-built in §5) — the runtime arc's pre-join
+deliverable is COMPLETE; next is the RF5-B join itself (the first joint
+battery, §6).**  Normative parents:
 [roadmap.md](roadmap.md) §6 (the two-arc plan, the `ProgramChangeSet`
 fixture, the ownership table); [rf5-contract.md](rf5-contract.md) §7
 (prepare/heal/publish), §7.1 (the correctness-first route), §10.1 (the
@@ -54,10 +55,15 @@ abort path proven.
 
 ## 2. The `ProgramChangeSet` fixture (frozen interface)
 
-Per rf5 §10.1, serialized as one s-expression datum; this contract pins
-the concrete spelling the goldens use (the program arc reviews it at the
-first joint battery — roadmap's ownership table marks the schema "frozen
-interface; joint review"):
+**FROZEN 2026-08-12 (slice A4).**  Per rf5 §10.1, serialized as one
+s-expression datum; this contract pins the concrete spelling the goldens
+use.  From this date the schema and the golden corpus are JOINT-REVIEW
+(roadmap's ownership table): any change to the grammar below, to
+`compiler/activation.rkt`'s acceptance behavior, or to a corpus file is a
+sanctioned two-arc event, re-recorded via
+`tests/activation-freeze.sh --record` as part of that review — never
+unilaterally.  §6 is the handoff: what the program arc's producer gates
+on.
 
 ```text
 (program-change-set
@@ -229,8 +235,53 @@ activate(change-set):
 - **A4 — the joint fixture freeze.**  The golden corpus + consumer
   handed to the program arc as the test ABI; schema changes from here on
   are joint-review (the ownership table's rule).
+  *As built (2026-08-12): `tests/api/pcs-check.rkt` — the standalone
+  conformance checker (§7) with NO session or daemon dependency — plus
+  the corpus manifest `tests/activation/CORPUS.sha256` and the
+  `activation-freeze` tier (9 checks in ALL): manifest of record,
+  pinned accept/refuse verdicts per corpus file, and verdict
+  determinism.  The corpus at freeze: seven fixtures — minimal,
+  two-instance (the RF5-B shape), suffix-batch, and the two LIVE
+  templated forms driven end to end by the A2/A3 batteries, plus the
+  two refusal carriers (fixture-refusal,
+  historical-program-replacement).*
 
-## 6. Deliberate cuts (recorded, not silent)
+## 6. The handoff (what the program arc's producer gates on)
+
+The producer's conformance surface is ONE tool and ONE battery, neither
+of which touches a session or a daemon:
+
+```text
+racket tests/api/pcs-check.rkt FIXTURE.pcs
+  -> (accepted (program K) (rebuild N) (carry N) (retire N) (suffix N))   exit 0
+  -> (refused TYPE DETAIL ...)                                            exit 1
+bash tests/activation-freeze.sh          # corpus manifest + pinned verdicts
+```
+
+`pcs-check` substitutes the templated placeholders against the SYNTHETIC
+base identity (`p1:layer-base:0` / `b1:layer-base:0`; `@V:rel@` mints
+`v1:layer-base:0:N` per distinct relation) and builds the base
+environment from the fixture's own slot-lineage rows — exactly what a
+live catalog would answer — then resolves with A1's `resolve-activation`
+at `layer-new`/event 1.  The determinism claim (same fixture → same
+plan) makes its verdicts comparable across harnesses: a fixture the
+producer emits is CONFORMANT iff pcs-check accepts it, and the typed
+refusal it prints is the same refusal `session-activate!` would surface
+live.  The three fixture rules (§2) remain the producer's contract: no
+live VersionIds/routes/decisions, no inferred lineage, typed refusals
+ride along.
+
+The first joint battery (the RF5-B join's opening move) runs the exact
+golden corpus through BOTH sides — the producer regenerating each
+fixture from its diffs, this consumer resolving them — so the fixture
+cannot drift into a parallel informal ABI (roadmap §6's rule).  The live
+templated forms (`minimal-live.pcs`, `two-instance-live.pcs`) are the
+join's executable examples: the A2/A3 batteries drive them through the
+full transaction, and the placeholder convention (`@BASE-PROGRAM@`,
+`@BASE-BOUNDARY@`, `@V:rel@`) is how a fixture written before a layer
+exists names that layer's keys.
+
+## 7. Deliberate cuts (recorded, not silent)
 
 Precise healing routes (RF5-C) are out of scope — the correctness-first
 route is the permanent fallback and the v1 route.  Historical suffix
