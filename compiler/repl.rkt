@@ -38,7 +38,8 @@
          "params.rkt"
          "query-front.rkt" ; the R2 `?` register grammar
          "query-plan.rkt"  ; Q1 catalog planner + ABI-1 wire emission
-         "session.rkt")
+         "session.rkt"
+         (only-in "tools.rkt" convert-db-folder))
 
 (define protocol-version 1)
 (define default-max-frame-bytes (* 16 1024 1024))
@@ -261,9 +262,12 @@
    "  library             browse saved databases"
    "  library select NAME focus a saved database in the library"
    "  library close       return from the library to the shell"
+   "  csv-import FOLDER [as NAME]"
+   "                      infer comma/whitespace rows into a binary database and open it"
    "  open NAME           load NAME, or switch to its resident in-memory copy"
    "  current             describe the current database"
    "  resident            list databases currently held in memory"
+   "  discard session     close the current in-memory session without saving"
    "  mode readonly       protect the current database from mutations"
    "  mode mutable        allow the current database to be extended"
    ""
@@ -302,6 +306,12 @@
    "  explain ?QUERY      show the query plan and degradations, do not run"
    "  tiers               show each stratum's execution rung (interp/-O0/-O2)"
    "  code sN | HASH      show one stratum's rung, artifacts, and plan shape"
+   "  images              list sealed ProgramImages mounted read-only"
+   "  image mount PATH    validate and mount one compiler .pimg package"
+   "  image KEY [rules|sources|kernels|plans|activation|materializations]"
+   "                      inspect semantic image data or executor caches"
+   "  image KEY activate  seal, bind, and run its interpreted cohorts"
+   "  image unmount KEY   release the decoded mount (the file is unchanged)"
    "  catalog             show the selected boundary, history, and types"
    "  schema              show the daemon's raw live schema"
    "  pipeline            show the daemon's raw versioned pipeline"
@@ -834,6 +844,175 @@
 
 (define (tables-result state argument)
   (tables-result-from-catalog (live-catalog (ensure-session! state)) argument))
+
+;; RF2-B/RF3/RF4 sealed ProgramImage register.  The daemon owns the independent
+;; decoder/seal check, immutable mount, generation-gated interpreted
+;; activation, and native-materialization overlay; this layer turns its
+;; structured control-catalog rows into the same presentation-neutral JSON
+;; used by every other REPL observation.
+(define (program-image-catalog s command)
+  (define lines
+    (session-command-stream!
+     s command
+     (lambda (line) (regexp-match? #px"^\\(catalog-end [0-9]+\\)$" line))))
+  (filter values (map read-datum (drop-right lines 1))))
+
+(define (record-field record key [default #f])
+  (match (assq key (cdr record))
+    [(list _ value) value]
+    [_ default]))
+
+(define (image-record-line record)
+  (match record
+    [`(catalog-program ,_ ...)
+     (format "~a · ~a rule~a · ~a kernel~a · ~a plan~a · ~a source~a~a"
+             (record-field record 'image-key)
+             (record-field record 'rules 0)
+             (if (= (record-field record 'rules 0) 1) "" "s")
+             (record-field record 'kernels 0)
+             (if (= (record-field record 'kernels 0) 1) "" "s")
+             (record-field record 'plans 0)
+             (if (= (record-field record 'plans 0) 1) "" "s")
+             (record-field record 'sources 0)
+             (if (= (record-field record 'sources 0) 1) "" "s")
+             (if (record-field record 'activated #f) " · active" ""))]
+    [`(catalog-program-source ,_ ...)
+     (format "s~a · module m~a · ~a · ~a token~a"
+             (record-field record 'slot)
+             (record-field record 'module)
+             (record-field record 'path)
+             (record-field record 'tokens 0)
+             (if (= (record-field record 'tokens 0) 1) "" "s"))]
+    [`(catalog-program-rule ,_ ...)
+     (format "r~a · heads ~a · source ~a · ~a"
+             (record-field record 'slot)
+             (string-join (record-field record 'heads '()) ", ")
+             (match (record-field record 'source)
+               [#f "external"] [slot (format "s~a" slot)])
+             (record-field record 'normalized))]
+    [`(catalog-program-kernel ,_ ...)
+     (format "k~a · level ~a · ~a"
+             (record-field record 'slot)
+             (record-field record 'level)
+             (string-join (record-field record 'members '()) ", "))]
+    [`(catalog-program-plan ,_ ...)
+     (format "p~a · ~a · ~a"
+             (record-field record 'slot)
+             (record-field record 'digest)
+             (record-field record 'plan))]
+    [`(catalog-program-activation ,_ ...)
+     (format "~a · ~a · SCC ~a · ~a cohort~a · ~a kernel~a"
+             (record-field record 'image-key)
+             (record-field record 'state)
+             (record-field record 'first-scc)
+             (record-field record 'cohorts 0)
+             (if (= (record-field record 'cohorts 0) 1) "" "s")
+             (record-field record 'kernels 0)
+             (if (= (record-field record 'kernels 0) 1) "" "s"))]
+    [`(catalog-program-materialization ,_ ...)
+     (define variants (record-field record 'variants 0))
+     (define native (record-field record 'native '()))
+     (define artifact (record-field record 'artifact-key #f))
+     (format "p~a/k~a · cache ~a~a · ~a/~a native · ~a artifact + ~a interpreted attachment~a"
+             (record-field record 'plan-slot)
+             (record-field record 'kernel-ordinal)
+             (record-field record 'cache-state)
+             (if artifact (format " · ~a" artifact) "")
+             (length native) variants
+             (record-field record 'artifact-attachments 0)
+             (record-field record 'interpreted-attachments 0)
+             (if (= (+ (record-field record 'artifact-attachments 0)
+                       (record-field record 'interpreted-attachments 0))
+                    1)
+                 "" "s"))]
+    [_ (~s record)]))
+
+(define (program-image-record->json record)
+  (for/hasheq ([field (in-list (cdr record))]
+               #:when (and (list? field) (= (length field) 2)))
+    (values (car field)
+            (let ([value (cadr field)])
+              (cond [(symbol? value) (symbol->string value)]
+                    [(list? value) (map ~a value)]
+                    [else value])))))
+
+(define (program-image-view-result title kind records)
+  (hash-set
+   (text-result title
+                (if (null? records)
+                    (list "no mounted image records")
+                    (map image-record-line records))
+                #:kind kind)
+   'records (map program-image-record->json records)))
+
+(define (program-images-result state)
+  (define records
+    (program-image-catalog (ensure-session! state) '(catalog programs)))
+  (program-image-view-result "Mounted program images" "program-images" records))
+
+(define (program-image-result state argument)
+  (define parts (read-command-data 'image argument))
+  (define s (ensure-session! state))
+  (match parts
+    [(list 'mount path)
+     (define lines
+       (session-command-stream! s `(mount-program-image ,(relation-key path))
+                                (lambda (_line) #t)))
+     (define reply (read-datum (first lines)))
+     (match reply
+       [`(program-image-mounted ,fields ...)
+        (define key (match (assq 'image-key fields) [(list _ v) v]))
+        (define hit? (match (assq 'cache-hit fields) [(list _ v) v]))
+        (hash-set
+         (text-result
+          "Program image mounted"
+          (list (format "~a · ~a"
+                        key (if hit? "validated cache hit" "validated and mounted")))
+          #:kind "program-image-mount")
+         'image-key key)]
+       [_ (error 'image "unexpected daemon mount reply: ~a" reply)])]
+    [(list 'unmount key)
+     (define lines
+       (session-command-stream! s `(unmount-program-image ,(relation-key key))
+                                (lambda (_line) #t)))
+     (define reply (read-datum (first lines)))
+     (match reply
+       [`(program-image-unmounted (image-key ,image-key) (mounted ,remaining))
+        (text-result "Program image unmounted"
+                     (list (format "~a · ~a mount~a remain"
+                                   image-key remaining
+                                   (if (= remaining 1) "" "s")))
+                     #:kind "program-image-unmount")]
+       [_ (error 'image "unexpected daemon unmount reply: ~a" reply)])]
+    [(list key 'activate)
+     (define rs (ensure-mutable-session-record! state 'image))
+     (define image-key (relation-key key))
+     (match-define (list _ generation hit? first-scc cohorts kernels)
+       (session-activate-program-image! (repl-session-session rs) image-key))
+     (set-repl-session-changed?! rs #t)
+     (text-result
+      "Program image activated"
+      (list
+       (format "~a · ~a" image-key
+               (if hit? "already active" "sealed, bound, and settled"))
+       (format "generation ~a · SCC ~a · ~a cohort~a · ~a kernel~a"
+               generation first-scc cohorts (if (= cohorts 1) "" "s")
+               kernels (if (= kernels 1) "" "s")))
+      #:kind "program-image-activation")]
+    [(list key)
+     (define image-key (relation-key key))
+     (program-image-view-result
+      (format "Program image · ~a" image-key) "program-image"
+      (program-image-catalog s `(catalog program ,image-key)))]
+    [(list key (and view (or 'sources 'rules 'kernels 'plans 'activation
+                             'materializations)))
+     (define image-key (relation-key key))
+     (program-image-view-result
+      (format "Program image ~a · ~a" image-key view)
+      (format "program-image-~a" view)
+      (program-image-catalog s `(catalog program ,image-key ,view)))]
+    [_ (error 'image
+              "expected: image mount PATH | image unmount KEY | image KEY activate | image KEY [sources|rules|kernels|plans|activation|materializations]")]))
 
 (define (relation-from-catalog who catalog name)
   (or (findf (lambda (relation) (string=? (relation-info-name relation) name))
@@ -2443,9 +2622,34 @@
    ;; the operator's heartbeat: watch hits, rebinds, and query deltas
    (hash-ref change 'watches '())))
 
+(define (brief-change-summary-lines change)
+  ;; The structured change record remains authoritative and the Rust client
+  ;; exposes it as the collapsed `Change details` tree. Keep the ordinary
+  ;; transcript to the one fact every operator needs, plus alerts that would
+  ;; be unsafe to hide. Diagnostic clients may still consume `lines`.
+  (define status (hash-ref change 'status))
+  (define refusal-lines
+    (let ([refusals (hash-ref change 'refusals '())])
+      (if (null? refusals)
+          '()
+          (list
+           (format "refused: ~a"
+                   (string-join
+                    (for/list ([record (in-list refusals)])
+                      (string-join (cons (hash-ref record 'class)
+                                         (hash-ref record 'detail)) " "))
+                    "; "))))))
+  (append
+   (list (if (string=? status "settled") "committed" status))
+   refusal-lines
+   (hash-ref change 'watches '())))
+
 (define (semantic-text-result title lines change #:kind kind)
-  (text-result title (append lines (change-summary-lines change))
-               #:kind kind #:change change))
+  (hash-set
+   (text-result title (append lines (change-summary-lines change))
+                #:kind kind #:change change)
+   'brief-lines
+   (append lines (brief-change-summary-lines change))))
 
 (define (state-result state argument)
   (define rs (ensure-session-record! state))
@@ -2503,6 +2707,10 @@
      (define replay?
        (for/or ([step (in-list (db-load-steps name))])
          (match step [`(replay ,_ ,_) #t] [`(replay-recipe ,_) #t] [_ #f])))
+     (define inferred-schema
+       (and (not (db-managed? name))
+            (let ([path (format "data/~a/import.slog" name)])
+              (and (file-exists? path) path))))
      (define-values (_ events change)
        (with-handlers
            ([exn:fail?
@@ -2512,7 +2720,10 @@
                (raise e))])
          (capture-semantic-change
           state rs "open" "settled" '()
-          (lambda () (session-open! (repl-session-session rs) name)))))
+          (lambda ()
+            (session-open! (repl-session-session rs) name)
+            (when inferred-schema
+              (session-run! (repl-session-session rs) inferred-schema))))))
      (hash-set! sessions name rs)
      (set-server-state-current! state name)
      (semantic-text-result
@@ -2521,9 +2732,83 @@
        (list (if replay?
                  "compressed load materialized retained data and recomputed replay layers"
                  "database loaded into a new mutable in-memory workspace"))
+       (if inferred-schema
+           (list "the inferred import schema established its logical input boundary")
+           '())
        (list "Try `current`, `tables`, `state`, `show REL`, or `query REL V...`."))
       change
       #:kind "open")]))
+
+;; A narrow interactive adapter over tools.rkt's transactional folder
+;; importer.  This is deliberately a real REPL operation rather than a
+;; tutorial-only shell escape: tutorials and people exercise the same path.
+;; The implicit name is collision-free, making a tutorial safe to repeat
+;; without replacing an unrelated saved database.
+(define csv-import-db-name-rx #px"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+
+(define (csv-import-parts argument)
+  (define text (string-trim argument))
+  (when (string=? text "")
+    (error 'csv-import "expected: csv-import FOLDER [as NAME]"))
+  (match (regexp-match #px"^(.*)[[:space:]]+as[[:space:]]+([^[:space:]]+)$" text)
+    [(list _ folder name) (values (string-trim folder) name #t)]
+    [_ (values text #f #f)]))
+
+(define (csv-import-derived-name folder)
+  (unless (directory-exists? folder)
+    (error 'csv-import "~a is not a folder" folder))
+  (define-values (_base name _dir?)
+    (split-path (simplify-path (path->complete-path folder))))
+  (define candidate (and (path? name) (path->string name)))
+  (unless (and candidate (regexp-match? csv-import-db-name-rx candidate))
+    (error 'csv-import
+           "cannot derive a database name from ~a; use `csv-import ~a as NAME`"
+           folder folder))
+  candidate)
+
+(define (csv-import-name-taken? state name)
+  (or (db-exists? name)
+      (hash-has-key? (server-state-sessions state) name)))
+
+(define (csv-import-available-name state base)
+  (let loop ([suffix 1])
+    (define candidate
+      (if (= suffix 1) base (format "~a-~a" base suffix)))
+    (if (csv-import-name-taken? state candidate)
+        (loop (add1 suffix))
+        candidate)))
+
+(define (csv-import-result state argument)
+  (define-values (folder requested-name explicit?) (csv-import-parts argument))
+  (define base (or requested-name (csv-import-derived-name folder)))
+  (unless (regexp-match? csv-import-db-name-rx base)
+    (error 'csv-import
+           "database NAME must use letters, digits, dot, underscore, or hyphen"))
+  (when (and explicit? (csv-import-name-taken? state base))
+    (error 'csv-import
+           "database ~a already exists on disk or in this REPL; choose another name"
+           base))
+  (define name (if explicit? base (csv-import-available-name state base)))
+  (define report-port (open-output-string))
+  (parameterize ([current-output-port report-port]
+                 [current-error-port report-port])
+    (convert-db-folder folder name))
+  (define report
+    (filter (lambda (line) (not (string=? line "")))
+            (string-split (get-output-string report-port) "\n")))
+  (define opened (open-database! state name))
+  (hash-set
+   (hash-set
+    (hash-set opened 'title (format "Imported and opened ~a" name))
+    'lines
+    (append
+     (list (format "~a → data/~a/ · binary relations are ready" folder name))
+     report
+     (hash-ref opened 'lines '())))
+   'brief-lines
+   (append
+    (list (format "~a → database ~a" folder name))
+    (hash-ref opened 'brief-lines (hash-ref opened 'lines '())))))
 
 (define (current-result state)
   (define rs (current-repl-session state))
@@ -2552,6 +2837,29 @@
                  (if (hash-ref summary 'changed) "extended" "clean")
                  (if (hash-ref summary 'current) " · current" ""))))
    #:kind "resident"))
+
+(define (discard-session-result state argument)
+  (unless (string=? (string-downcase (string-trim argument)) "session")
+    (error 'discard "expected: discard session"))
+  (when (server-state-held state)
+    (error 'discard
+           "a run is held at the debugger gate; resolve it with commit, replay, or abort first"))
+  (define key (server-state-current state))
+  (unless key
+    (error 'discard "there is no current in-memory session"))
+  (define sessions (server-state-sessions state))
+  (define rs (hash-ref sessions key #f))
+  (unless rs
+    (error 'discard "the current in-memory session is no longer resident"))
+  (discard-query-cursor! rs)
+  (session-close! (repl-session-session rs))
+  (hash-remove! sessions key)
+  (set-server-state-current! state #f)
+  (text-result
+   (format "Discarded ~a" (session-display-name key rs))
+   (list "the in-memory session and its unsaved extensions were closed"
+         "saved database files were not changed")
+   #:kind "discard"))
 
 (define (mode-result state argument)
   (define rs (ensure-session-record! state))
@@ -2657,7 +2965,11 @@
 
 (define (clear-scratch-result state argument)
   (unless (string=? (string-downcase (string-trim argument)) "scratch")
-    (error 'clear "expected: clear scratch"))
+    (error 'clear
+           (string-append
+            "expected: `clear scratch` to retract scratch definitions; "
+            "use `discard session` to close the current in-memory session, "
+            "or `:clear` to clear only the transcript")))
   (define rs (ensure-mutable-session-record! state 'clear))
   (define outcome (box #f))
   (define-values (_ _events change)
@@ -3411,8 +3723,10 @@
      (when (string=? argument "")
        (error 'open "expected: open NAME"))
      (open-database! state argument)]
+    ["csv-import" (csv-import-result state argument)]
     [(or "current" "database") (current-result state)]
     [(or "resident" "sessions") (resident-result state)]
+    ["discard" (discard-session-result state argument)]
     ["mode" (mode-result state argument)]
     [(or "tables" "rels" "relations") (tables-result state argument)]
     [(or "state" "states") (state-result state argument)]
@@ -3437,6 +3751,8 @@
     ["clear" (clear-scratch-result state argument)]
     ["tiers" (tiers-result state)]
     ["code" (code-result state argument)]
+    ["images" (program-images-result state)]
+    ["image" (program-image-result state argument)]
     ;; Gate S1 (roadmap §5 item 1): the staged-batch surface -- the git
     ;; index for facts (§5.2.1).  `stage` queues client-side (no daemon
     ;; touch, no epoch); `flush` commits everything queued as ONE update
@@ -3741,9 +4057,9 @@
   (attach-session-state state result))
 
 ;; Deterministic transcript projection for the server contract.  This is a
-;; test harness, not a second interactive frontend: the future Rust --plain
-;; mode must render the same structured responses and is golden-compared to
-;; this projection before it replaces the harness at the executable boundary.
+;; test harness, not a second interactive frontend. It deliberately retains
+;; the server's diagnostic `lines`; the Rust clients prefer `brief-lines` and
+;; keep the same details in their expandable structured change record.
 (define (plain-command-result source result)
   (define title (hash-ref result 'title))
   (define lines (hash-ref result 'lines '()))
@@ -4158,6 +4474,8 @@
   ;; pinned here and the verbs in the interp battery below)
   (check-not-false
    (member "tiers: s3 -> -O0 arrived" (change-summary-lines sample-change)))
+  (check-equal? (brief-change-summary-lines sample-change)
+                (list "committed"))
 
   (define mode-state (server-state (make-hash) #f #f #f (make-hash) #f))
   (hash-set! (server-state-sessions mode-state)

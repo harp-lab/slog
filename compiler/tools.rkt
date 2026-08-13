@@ -87,8 +87,9 @@
 ;;   edge/  or  edge.2/               a directory of shards, one .bin each
 ;;
 ;; Any input may be gzipped (edge.csv.gz).  Rows are newline-delimited and
-;; columns are separated by runs of spaces and tabs, or by a single #:delimiter
-;; character if one is given.  A column is
+;; columns are separated by runs of spaces and tabs or, when a row has a
+;; top-level comma, as ordinary comma CSV.  A single #:delimiter character
+;; overrides that auto-detection.  A column is
 ;;
 ;;   1712              an int  (an interned bignum outside the s32 range)
 ;;   0.5 | -1.25e2     a float
@@ -105,6 +106,8 @@
 ;;
 ;; #:read-values? #t restores the original Racket-`read` tokenizer, where a
 ;; value may span lines and row boundaries come from the arity alone.
+;; The inferred declarations are written beside the bins as import.slog. This
+;; is executable schema metadata, not a managed N4 META/boundary bundle.
 ;;
 ;; The delicate part is interned ids.  value.strings/0.bin and value.mpz/0.bin
 ;; are re-interned in file order by Database::loadStringsBIN/loadMpzBIN, so the
@@ -121,7 +124,7 @@
 ;; the largest id in a loaded file, so nothing the daemon mints later collides.
 (define (convert-db-folder path dbname
                           #:read-values? [read-values? #f]
-                          #:delimiter [delimiter #f]
+                          #:delimiter [delimiter 'auto]
                           #:skip-rows [skip-rows 0])
   (unless (directory-exists? path)
     (error 'convert-db-folder "cannot convert ~a; it is not a directory" path))
@@ -152,6 +155,7 @@
         [struct-fields (make-hash)] ; struct name -> vector of observed type sets
         [rel-shape (make-hash)]     ; relname -> (arity schema-or-#f), rows or not
         [enum-members (mutable-set)]
+        [import-enum-type #f]
         [struct-id-max 1])
 
     (define (alloc-struct-id)
@@ -283,7 +287,17 @@
        (for/list ([s (in-vector seen)] [i (in-naturals)])
          ;; sorted list, not the set itself: `seen` holds mutable sets and
          ;; equal? never says one of those is an immutable set
-         (define kinds (sort (set->list s) string<?))
+         (define kinds
+           (sort
+            (remove-duplicates
+             (for/list ([kind (in-set s)])
+               (cond
+                 ;; nil is already the built-in list union's nullary member.
+                 [(string=? kind "nil") "list"]
+                 [(and import-enum-type (set-member? enum-members kind))
+                  import-enum-type]
+                 [else kind])))
+            string<?))
          (cond [(= 1 (length kinds)) (first kinds)]
                ;; an int column with one decimal in it is a float column
                [(equal? kinds '("float" "int")) "float"]
@@ -389,11 +403,6 @@
 
     ;; ---- rows ------------------------------------------------------------
 
-    (define (delimiter? c)
-      (if delimiter
-          (char=? c delimiter)
-          (or (char=? c #\space) (char=? c #\tab) (char=? c #\return))))
-
     ;; A column is a "quoted string" (backslash escapes; may contain the
     ;; delimiter), a balanced ( s-expression ) -- which may itself contain
     ;; quoted strings and nested parens -- or a run of ordinary characters.
@@ -407,7 +416,10 @@
         (let loop ([j (add1 i)])
           (cond [(>= j n) (error 'convert-db-folder "~a: unterminated string" where)]
                 [(char=? (string-ref line j) #\\) (loop (+ j 2))]
-                [(char=? (string-ref line j) #\") (add1 j)]
+                [(char=? (string-ref line j) #\")
+                 (if (and (< (add1 j) n) (char=? (string-ref line (add1 j)) #\"))
+                     (loop (+ j 2))
+                     (add1 j))]
                 [else (loop (add1 j))])))
       (define (scan-sexp i)        ; line[i] is #\(; returns the index past it
         (let loop ([j i] [depth 0])
@@ -418,6 +430,22 @@
                       [(char=? c #\() (loop (add1 j) (add1 depth))]
                       [(char=? c #\)) (if (= depth 1) (add1 j) (loop (add1 j) (sub1 depth)))]
                       [else (loop (add1 j) depth)])))))
+      ;; A comma only selects CSV mode at top level. Commas inside quoted
+      ;; strings and Slog constructor values are data, not separators.
+      (define row-delimiter
+        (cond
+          [(eq? delimiter 'auto)
+           (let loop ([i 0])
+             (cond [(>= i n) #f]
+                   [(char=? (string-ref line i) #\") (loop (scan-quoted i))]
+                   [(char=? (string-ref line i) #\() (loop (scan-sexp i))]
+                   [(char=? (string-ref line i) #\,) #\,]
+                   [else (loop (add1 i))]))]
+          [else delimiter]))
+      (define (delimiter? c)
+        (if row-delimiter
+            (char=? c row-delimiter)
+            (or (char=? c #\space) (char=? c #\tab) (char=? c #\return))))
       (define (scan-token i)
         (define c (string-ref line i))
         (cond [(char=? c #\") (scan-quoted i)]
@@ -426,27 +454,30 @@
                       (cond [(>= j n) j]
                             [(delimiter? (string-ref line j)) j]
                             [else (loop (add1 j))]))]))
-      (if delimiter
-          ;; one field per delimiter, so an empty field is a real empty column
-          (let loop ([i 0] [start 0] [acc '()])
-            (cond [(>= i n) (reverse (cons (string-trim (substring line start i)) acc))]
-                  [(char=? (string-ref line i) #\") (loop (scan-quoted i) start acc)]
-                  [(char=? (string-ref line i) #\() (loop (scan-sexp i) start acc)]
-                  [(delimiter? (string-ref line i))
-                   (loop (add1 i) (add1 i) (cons (string-trim (substring line start i)) acc))]
-                  [else (loop (add1 i) start acc)]))
-          ;; runs of whitespace separate columns and cannot make an empty one
-          (let loop ([i 0] [acc '()])
-            (cond [(>= i n) (reverse acc)]
-                  [(delimiter? (string-ref line i)) (loop (add1 i) acc)]
-                  [else (define e (scan-token i))
-                        (loop e (cons (substring line i e) acc))]))))
+      (if (string=? (string-trim line) "")
+          '()
+          (if row-delimiter
+              ;; one field per delimiter, so an empty field is a real empty column
+              (let loop ([i 0] [start 0] [acc '()])
+                (cond [(>= i n) (reverse (cons (string-trim (substring line start i)) acc))]
+                      [(char=? (string-ref line i) #\") (loop (scan-quoted i) start acc)]
+                      [(char=? (string-ref line i) #\() (loop (scan-sexp i) start acc)]
+                      [(delimiter? (string-ref line i))
+                       (loop (add1 i) (add1 i) (cons (string-trim (substring line start i)) acc))]
+                      [else (loop (add1 i) start acc)]))
+              ;; runs of whitespace separate columns and cannot make an empty one
+              (let loop ([i 0] [acc '()])
+                (cond [(>= i n) (reverse acc)]
+                      [(delimiter? (string-ref line i)) (loop (add1 i) acc)]
+                      [else (define e (scan-token i))
+                            (loop e (cons (substring line i e) acc))])))))
 
     (define int-rx #px"^[+-]?[0-9]+$")
     (define float-rx #px"^[+-]?(?:[0-9]+\\.[0-9]*|\\.[0-9]+|[0-9]+)(?:[eE][+-]?[0-9]+)?$")
 
     (define (unescape body)
-      (regexp-replace* #px"\\\\(.)" body
+      (define csv-unescaped (string-replace body "\"\"" "\""))
+      (regexp-replace* #px"\\\\(.)" csv-unescaped
                        (lambda (_ c) (case c [("n") "\n"] [("t") "\t"] [else c]))))
 
     (define (token->value t where)
@@ -644,44 +675,80 @@
       (for-each import-one-relation work))
 
     (close-all!)
-    (delete-folder (format "data/~a" dbname))
-    (rename-file-or-directory staging (format "data/~a" dbname))
 
-    ;; What a query over this database has to declare.  A column type that
+    ;; What a query over this database has to declare. A column type that
     ;; disagrees with the stored rows is rejected at load rather than
-    ;; reinterpreted, so print what was actually written.
+    ;; reinterpreted. Keep the inferred declarations beside the bins as
+    ;; executable metadata as well as printing them for command-line users.
     (define (pad s w) (string-append s (make-string (max 1 (- w (string-length s))) #\space)))
     ;; a nullary constructor declares as (nil), not (nil )
     (define (decl kind name cols)
       (if (string=? cols "") (format "~a (~a)" kind name) (format "~a (~a ~a)" kind name cols)))
+
+    ;; The runtime represents every nullary constructor in one shared _enum
+    ;; store, but Slog source needs a logical enum name. Mint a collision-free
+    ;; transparent name; users may wrap it in a one-member union of any name.
+    (define declared-enum-members
+      (for/set ([member (in-set enum-members)]
+                #:unless (string=? member "nil"))
+        member))
+    (unless (set-empty? declared-enum-members)
+      (set! import-enum-type
+            (let loop ([suffix 0])
+              (define candidate
+                (if (zero? suffix)
+                    "csv_import_enum"
+                    (format "csv_import_enum_~a" suffix)))
+              (if (or (hash-has-key? out-files candidate)
+                      (set-member? declared-enum-members candidate))
+                  (loop (add1 suffix))
+                  candidate))))
+
+    (define struct-reports
+      (for/list ([name (in-list (sort (hash-keys struct-fields) string<?))]
+                 ;; _enum is the runtime's shared carrier, not a declaration.
+                 #:unless (string=? name "_enum"))
+        (list (decl "struct" name
+                    (column-decl name (hash-ref struct-fields name)))
+              (hash-ref row-counts name 0))))
+    (define enum-report
+      (and import-enum-type
+           (list
+            (format "enum (~a ~a)"
+                    import-enum-type
+                    (string-join (sort (set->list declared-enum-members) string<?) " "))
+            (set-count declared-enum-members))))
+    (define table-reports
+      (for/list ([name (in-list (sort (hash-keys rel-shape) string<?))])
+        (define shape (hash-ref rel-shape name))
+        ;; what the rows say, else what a schema line said, else nothing to go on
+        (define cols
+          (cond [(hash-ref col-types name #f) => (lambda (seen) (column-decl name seen))]
+                [(second shape) (string-join (second shape) " ")]
+                [else (string-join (for/list ([_ (in-range (first shape))]) "any") " ")]))
+        (list (decl "table" name cols) (hash-ref row-counts name 0))))
+
+    (call-with-output-file (format "~a/import.slog" staging)
+      (lambda (out)
+        (displayln ";; Inferred by csv2db from the imported values." out)
+        (displayln ";; Edit a copy to introduce domain-specific union names." out)
+        (for ([report (in-list struct-reports)]) (displayln (first report) out))
+        (when enum-report (displayln (first enum-report) out))
+        (for ([report (in-list table-reports)]) (displayln (first report) out))))
+
+    (delete-folder (format "data/~a" dbname))
+    (rename-file-or-directory staging (format "data/~a" dbname))
+
     (printf "data/~a\n" dbname)
-    (for ([name (in-list (sort (hash-keys struct-fields) string<?))]
-          ;; _enum is the runtime's shared carrier for enum members, never
-          ;; something a program declares; report the members instead
-          #:unless (string=? name "_enum"))
-      (printf "  ~a~a values\n"
-              (pad (decl "struct" name (column-decl name (hash-ref struct-fields name))) 44)
-              (hash-ref row-counts name 0)))
-    (unless (set-empty? enum-members)
-      (printf "  ~a~a values\n"
-              (pad (format "nullary members: ~a"
-                           (string-join (for/list ([m (sort (set->list enum-members) string<?)])
-                                          (format "(~a)" m))
-                                        " "))
-                   44)
-              (hash-ref row-counts "_enum" 0)))
-    (for ([name (in-list (sort (hash-keys rel-shape) string<?))])
-      (define shape (hash-ref rel-shape name))
-      ;; what the rows say, else what a schema line said, else nothing to go on
-      (define cols
-        (cond [(hash-ref col-types name #f) => (lambda (seen) (column-decl name seen))]
-              [(second shape) (string-join (second shape) " ")]
-              [else (string-join (for/list ([_ (in-range (first shape))]) "any") " ")]))
-      (printf "  ~a~a rows\n"
-              (pad (decl "table" name cols) 44)
-              (hash-ref row-counts name 0)))
+    (for ([report (in-list struct-reports)])
+      (printf "  ~a~a values\n" (pad (first report) 44) (second report)))
+    (when enum-report
+      (printf "  ~a~a values\n" (pad (first enum-report) 44) (second enum-report)))
+    (for ([report (in-list table-reports)])
+      (printf "  ~a~a rows\n" (pad (first report) 44) (second report)))
     (printf "  ~a interned strings, ~a interned bignums\n"
             (hash-count string-to-value) (hash-count mpz-to-value))
+    (printf "  inferred schema: data/~a/import.slog\n" dbname)
     ;; A column of two primitive kinds is nearly always a delimiter or schema
     ;; mistake.  A column of several CONSTRUCTORS is not a mistake at all --
     ;; that is what a union type is for -- so say so rather than crying `any`.

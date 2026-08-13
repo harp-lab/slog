@@ -120,9 +120,19 @@ const COMMANDS: &[CommandSpec] = &[
         detail: "show REPL and database state",
     },
     CommandSpec {
+        label: ":tutorials",
+        takes_argument: false,
+        detail: "browse interactive tutorials",
+    },
+    CommandSpec {
         label: "add",
         takes_argument: true,
         detail: "add an input tuple",
+    },
+    CommandSpec {
+        label: "csv-import",
+        takes_argument: true,
+        detail: "infer and open comma or whitespace-delimited relations",
     },
     CommandSpec {
         label: "card",
@@ -150,6 +160,11 @@ const COMMANDS: &[CommandSpec] = &[
         detail: "retract an input tuple",
     },
     CommandSpec {
+        label: "discard",
+        takes_argument: true,
+        detail: "close the current in-memory session without saving",
+    },
+    CommandSpec {
         label: "drop",
         takes_argument: true,
         detail: "remove a live relation name",
@@ -158,6 +173,16 @@ const COMMANDS: &[CommandSpec] = &[
         label: "expand",
         takes_argument: true,
         detail: "expand a live-canvas node",
+    },
+    CommandSpec {
+        label: "image",
+        takes_argument: true,
+        detail: "mount, inspect, activate, or view executor caches for an image",
+    },
+    CommandSpec {
+        label: "images",
+        takes_argument: false,
+        detail: "list read-only program-image mounts",
     },
     CommandSpec {
         label: "library",
@@ -291,6 +316,9 @@ pub fn complete(
                 ("mutable", "allow extensions"),
             ],
         ),
+        [verb] if verb.eq_ignore_ascii_case("discard") => {
+            word_candidates(prefix, [("session", "close without saving")])
+        }
         [verb] if matches_lower(verb, &["open", "use"]) => {
             dynamic_candidates(prefix, &inventory.databases, "database")
         }
@@ -314,6 +342,13 @@ pub fn complete(
             [
                 ("select ", "focus a saved database"),
                 ("close", "return to the shell"),
+            ],
+        ),
+        [verb] if verb.eq_ignore_ascii_case("image") => word_candidates(
+            prefix,
+            [
+                ("mount ", "validate and mount a .pimg package"),
+                ("unmount ", "release a decoded image mount"),
             ],
         ),
         [verb, subcommand]
@@ -458,6 +493,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["alpha", "alpine"]
         );
+        let discard = complete("discard ", 8, &inventory).expect("discard completion");
+        assert_eq!(discard.selected_candidate().replacement, "session");
     }
 
     /// N4-A work order 6: relation and namespace arguments complete from the

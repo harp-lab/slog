@@ -8,7 +8,7 @@ mod ui;
 mod version;
 
 pub use slog_repl::{
-    command, completion, operation, present, response, runtime, transcript, workspace,
+    command, completion, operation, present, response, runtime, transcript, tutorial, workspace,
 };
 
 use app::{App, Effect};
@@ -27,6 +27,7 @@ use std::collections::VecDeque;
 use std::error::Error;
 use std::io::{self, BufRead, IsTerminal, Write};
 use transcript::TranscriptEntry;
+use tutorial::TutorialCatalog;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FrontendMode {
@@ -111,7 +112,9 @@ async fn launch_pending(
                 app.should_quit = true;
                 return Ok((None, None));
             }
-            Effect::Ignore | Effect::None => return Ok((None, None)),
+            Effect::Ignore | Effect::None | Effect::RestartForTutorial(_) => {
+                return Ok((None, None));
+            }
         },
         PendingCommand::Private {
             peer,
@@ -174,6 +177,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let root = project_root().map_err(|error| format!("slog: {error}"))?;
+    let tutorial_catalog = TutorialCatalog::load(&root.join("repl/tutorials"));
     let mut backend = Backend::start(&root)
         .await
         .map_err(|error| format!("slog: {error}"))?;
@@ -190,7 +194,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let mut terminal = ratatui::init();
     let terminal_features = TerminalFeatures::enable();
-    let result = run_repl(&mut terminal, &mut backend, &mut share).await;
+    let result = run_repl(&mut terminal, &mut backend, &mut share, tutorial_catalog).await;
     drop(terminal_features);
     ratatui::restore();
     backend.shutdown().await;
@@ -281,8 +285,10 @@ async fn run_repl(
     terminal: &mut ratatui::DefaultTerminal,
     backend: &mut Backend,
     share: &mut ShareServer,
+    tutorial_catalog: TutorialCatalog,
 ) -> Result<(), String> {
     let mut app = App::new();
+    app.set_tutorial_catalog(tutorial_catalog);
     app.set_coauthor_info(
         share.endpoint().to_owned(),
         share.registry_path().display().to_string(),
@@ -294,12 +300,17 @@ async fn run_repl(
         .map_err(|error| format!("cannot read terminal size: {error}"))?;
     app.set_terminal_size(area.width, area.height);
     let mut terminal_events = EventStream::new();
-    let mut animation = tokio::time::interval(tokio::time::Duration::from_millis(120));
+    let mut animation = tokio::time::interval(tokio::time::Duration::from_millis(100));
     animation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut tutorial_tick = tokio::time::interval(tokio::time::Duration::from_millis(
+        tutorial::TUTORIAL_TICK_MS,
+    ));
+    tutorial_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut pending_commands = VecDeque::new();
     let mut in_flight: Option<InFlight> = None;
 
     loop {
+        app.set_command_queue_busy(in_flight.is_some() || !pending_commands.is_empty());
         terminal
             .draw(|frame| ui::draw(frame, &app))
             .map_err(|error| format!("terminal draw failed: {error}"))?;
@@ -406,9 +417,12 @@ async fn run_repl(
                     None => (Effect::Ignore, None),
                 }
             }
-            _ = animation.tick(), if !app.operations.is_empty() => {
+            _ = animation.tick(), if app.animation_needs_tick() => {
                 app.tick();
                 (Effect::None, None)
+            }
+            _ = tutorial_tick.tick(), if app.tutorial_needs_tick() => {
+                (app.tick_tutorial(), None)
             }
             _ = std::future::ready(()), if in_flight.is_none() && !pending_commands.is_empty() => {
                 (Effect::None, pending_commands.pop_front())
@@ -426,6 +440,16 @@ async fn run_repl(
                     pending_commands.push_back(command);
                 } else {
                     launch = Some(command);
+                }
+            }
+            Effect::RestartForTutorial(tutorial) => {
+                if in_flight.is_some() || launch.is_some() || !pending_commands.is_empty() {
+                    app.tutorial_start_failed(
+                        "wait for queued and in-flight commands to finish, then choose the tutorial again",
+                    );
+                } else {
+                    backend.reset().await?;
+                    app.begin_tutorial_after_backend_restart(tutorial);
                 }
             }
             Effect::Shutdown => {

@@ -1,0 +1,8 @@
+table (seed int)
+table (keep int)
+table (edge int int)
+table (reach int int)
+
+rule (seed X) --> (keep X)
+rule (edge X Y) --> (reach X Y)
+rule (reach X Y) (edge Y Z) --> (reach X Z)

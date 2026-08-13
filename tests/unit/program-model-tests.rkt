@@ -16,6 +16,7 @@
   (require rackunit)
   (require racket/runtime-path)
   (require "../../compiler/ir-shared.rkt")
+  (require "../../compiler/program-model.rkt")
 
   (define-runtime-path repo-root "../..")
   (define stratify-rules/model
@@ -143,4 +144,109 @@
                                              (list (S 'o 'x))))
                   '("f.slog" 12 0))
     (check-false (rule-lineage-key (rule-nowhere (list (S 'e 'x))
-                                                 (list (S 'o 'x)))))))
+                                                 (list (S 'o 'x))))))
+
+  ;; ---------------------------------------------------------------------
+  ;; RF1.5: normalized, id-free model queries for the W5' program arc.
+
+  (define (neg . parts) (S '~ (apply S parts)))
+
+  (test-case "RF1.5 fingerprints ignore provenance and variable spelling"
+    (define m1
+      (model-of
+       (rule-at "old/path.slog" 3
+                (list (S 'edge 'x 'y))
+                (list (S 'reach 'x 'y)))))
+    (define m2
+      (model-of
+       (rule-at "new/path.slog" 80
+                (list (S 'edge 'from 'to))
+                (list (S 'reach 'from 'to)))))
+    (check-equal? (program-model-normalized-rules m1)
+                  (program-model-normalized-rules m2))
+    (check-equal? (program-model-fingerprint m1)
+                  (program-model-fingerprint m2))
+    (define diff (diff-program-models m1 m2))
+    (check-equal? (program-semantic-diff-rule-changes diff) '())
+    (check-equal? (program-semantic-diff-affected-roots diff) '())
+    (check-equal? (program-semantic-diff-cone diff) '()))
+
+  (test-case "RF1.5 exposes typed dependency kinds, writers, and stable SCCs"
+    (define r1
+      (rule-at "q.slog" 1 (list (S 'input 'x)) (list (S 'mid 'x))))
+    (define r2
+      (rule-at "q.slog" 2
+               (list (S 'mid 'x) (neg 'blocked '__wild))
+               (list (S 'out 'x))))
+    (define-values (_ model)
+      (stratify-rules/model (set r1 r2) (set (cons 'out 'side))))
+    (define kinds
+      (for/set ([edge (in-list (program-model-dependency-edges model))])
+        (list (program-edge-from edge) (program-edge-to edge)
+              (program-edge-kind edge))))
+    (check-true (set-member? kinds '(input mid positive)))
+    (check-true (set-member? kinds '(mid out positive)))
+    (check-true
+     (set-member? kinds '(blocked out negative-wildcard)))
+    (check-true (set-member? kinds '(out side derived)))
+    (check-equal? (sort (hash-keys (program-model-writers model)) symbol<?)
+                  '(mid out))
+    (check-equal? (program-model-forward-cone model '(mid)) '(mid out side))
+    ;; Components use member names rather than exposing Tarjan's local ids.
+    (check-not-false (member '((out) (side) (derived))
+                             (program-model-condensation-edges model))))
+
+  (test-case "oracle side-channel edges are typed semantics and enter cones"
+    (define producer
+      (rule-at "oracle.slog" 1
+               (list (S 'request 'x)) (list (S 'demand 'x))))
+    (define consumer
+      (rule-at "oracle.slog" 2
+               (list (S 'answer 'x)) (list (S 'result 'x))))
+    (define oracle-edge (cons 'demand 'answer))
+    (define-values (_ model)
+      (stratify-rules/model
+       (set producer consumer)
+       (set oracle-edge)
+       (hash oracle-edge 'oracle)))
+    (check-not-false
+     (for/or ([edge (in-list (program-model-dependency-edges model))])
+       (and (eq? (program-edge-from edge) 'demand)
+            (eq? (program-edge-to edge) 'answer)
+            (eq? (program-edge-kind edge) 'oracle)
+            (not (program-edge-rule-slot edge)))))
+    (check-equal? (program-model-forward-cone model '(demand))
+                  '(answer demand result)))
+
+  (test-case "RF1.5 semantic diff preserves duplicate multiplicity and uses the union cone"
+    (define duplicate-a
+      (rule-at "a.slog" 1 (list (S 'input 'x)) (list (S 'mid 'x))))
+    (define duplicate-b
+      (rule-at "b.slog" 9 (list (S 'input 'renamed))
+               (list (S 'mid 'renamed))))
+    (define sink
+      (rule-at "sink.slog" 1 (list (S 'mid 'x)) (list (S 'answer 'x))))
+    (define old (model-of duplicate-a duplicate-b sink))
+    (define new (model-of duplicate-a sink))
+    (define diff (diff-program-models old new))
+    (check-not-equal? (program-semantic-diff-old-fingerprint diff)
+                      (program-semantic-diff-new-fingerprint diff))
+    (check-equal? (length (program-semantic-diff-rule-changes diff)) 1)
+    (define change (first (program-semantic-diff-rule-changes diff)))
+    (check-equal? (program-rule-change-old-count change) 2)
+    (check-equal? (program-rule-change-new-count change) 1)
+    (check-equal? (program-semantic-diff-affected-roots diff) '(mid))
+    (check-equal? (program-semantic-diff-cone diff) '(answer mid)))
+
+  (test-case "RF1.5 union cone retains consumers present only in the old graph"
+    (define old
+      (model-of
+       (rule-at "old.slog" 1 (list (S 'root 'x)) (list (S 'gone 'x)))
+       (rule-at "old.slog" 2 (list (S 'gone 'x)) (list (S 'old-leaf 'x)))))
+    (define new
+      (model-of
+       (rule-at "new.slog" 1 (list (S 'root 'x)) (list (S 'added 'x)))
+       (rule-at "new.slog" 2 (list (S 'added 'x)) (list (S 'new-leaf 'x)))))
+    (check-equal?
+     (program-model-union-cone old new '(gone added))
+     '(added gone new-leaf old-leaf))))

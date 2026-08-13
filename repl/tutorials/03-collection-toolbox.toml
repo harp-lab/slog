@@ -1,0 +1,139 @@
+format = 1
+id = "collection-toolbox"
+title = "Message lab: strings, lists, and sets"
+summary = "Split and reshape short messages with first-class collections and useful built-ins."
+session = "fresh"
+typing_wpm = [147, 173]
+effects = ["discard-session"]
+
+[[steps]]
+type = "comment"
+text = "This tutorial turns two tiny radio messages into useful views. Along the way you will use string primitives, immutable list values, list patterns, and finite sets. We will deliberately stop before maps; the next tutorial gives maps a larger job."
+
+[[steps]]
+type = "command"
+text = '''table (line int str)
+rule (line 1 "red fox red")
+rule (line 2 "blue owl")'''
+typing = "code"
+
+[[steps]]
+type = "command"
+text = "show line 20"
+
+[[steps]]
+type = "comment"
+text = "ssplit takes a string and a separator and returns a real list value. The type (list str) records that every element is a string. Lists can live in columns, be passed to built-ins, and be matched inside rules just like structs."
+
+[[steps]]
+type = "command"
+text = '''table (words int (list str))
+rule (line Id Text) (= Parts (ssplit Text " ")) --> (words Id Parts)'''
+typing = "code"
+
+[[steps]]
+type = "command"
+text = "show words 20"
+
+[[steps]]
+type = "comment"
+text = "A list pattern can expose its shape. [First Rest ...] means a first element followed by the list Rest; the postfix ... splices an entire list rather than one value. We have declared a view for the first word. Add its rule:"
+
+[[steps]]
+type = "command"
+text = "table (first_word int str)"
+
+[[steps]]
+type = "challenge"
+prompt = "For every (words Id Parts) row, match Parts as [First Rest ...] and emit (first_word Id First):"
+answers = [
+  "rule (words Id [First Rest ...]) --> (first_word Id First)",
+  "rule (first_word Id First) <-- (words Id [First Rest ...])",
+]
+fallback = "rule (words Id [First Rest ...]) --> (first_word Id First)"
+attempts = 2
+match = "slog-rule"
+
+[[steps]]
+type = "command"
+text = "show first_word 20"
+
+[[steps]]
+type = "comment"
+text = "Now combine several pure built-ins. lrev returns a reversed list without changing the original; sjoin joins a list of strings; substr uses character offsets [start,end); and + concatenates strings as well as adding numbers."
+
+[[steps]]
+type = "command"
+text = '''table (remix int str)
+table (preview int str)
+rule (words Id Parts)
+  (= Backward (lrev Parts))
+  (= Text (sjoin Backward " / "))
+  --> (remix Id Text)
+rule (line Id Text)
+  (= FirstFour (substr Text 0 4))
+  (= Label (+ "preview: " FirstFour))
+  --> (preview Id Label)'''
+typing = "code"
+
+[[steps]]
+type = "command"
+text = "show remix 20"
+
+[[steps]]
+type = "command"
+text = "show preview 20"
+
+[[steps]]
+type = "comment"
+text = "lst2set forgets order and duplicates, producing a canonical finite set. csize counts its distinct elements. The first message has three list elements but only two set elements because \"red\" appears twice."
+
+[[steps]]
+type = "command"
+text = '''table (vocabulary int cset int)
+rule (words Id Parts)
+  (= Unique (lst2set Parts))
+  (= Count (csize Unique))
+  --> (vocabulary Id Unique Count)'''
+typing = "code"
+
+[[steps]]
+type = "command"
+text = "show vocabulary 20"
+
+[[steps]]
+type = "comment"
+text = "cmem returns 1 when a set contains a value and 0 otherwise, so a numeric guard turns membership into a filter. Build a mentions_red view for just the messages whose vocabulary contains \"red\":"
+
+[[steps]]
+type = "command"
+text = "table (mentions_red int)"
+
+[[steps]]
+type = "challenge"
+prompt = "Read each vocabulary set Unique, compute Hit with (cmem Unique \"red\"), require (> Hit 0), and emit the message Id:"
+answers = [
+  "rule (vocabulary Id Unique Count) (= Hit (cmem Unique \"red\")) (> Hit 0) --> (mentions_red Id)",
+  "rule (mentions_red Id) <-- (vocabulary Id Unique Count) (= Hit (cmem Unique \"red\")) (> Hit 0)",
+  "rule (vocabulary Id Unique _) (= Hit (cmem Unique \"red\")) (> Hit 0) --> (mentions_red Id)",
+  "rule (mentions_red Id) <-- (vocabulary Id Unique _) (= Hit (cmem Unique \"red\")) (> Hit 0)",
+]
+fallback = "rule (vocabulary Id Unique Count) (= Hit (cmem Unique \"red\")) (> Hit 0) --> (mentions_red Id)"
+attempts = 2
+match = "slog-rule"
+
+[[steps]]
+type = "command"
+text = "show mentions_red 20"
+
+[[steps]]
+type = "comment"
+text = "The same families go further: strings have size, shas, sidx, and schar; lists have llen, lref, lpush, lcat, lslice, and lsort; sets have cins, cdel, cdiff, and set2lst. These operations return new immutable values, so a relation keeps whatever version it was given."
+
+[[steps]]
+type = "checkpoint"
+text = "Press Enter when you are ready to keep experimenting with the message lab:"
+
+[[steps]]
+type = "comment"
+text = "Tutorial complete. The live session is yours. Try deriving another view from words, using lref to select an element, or building a literal list such as [\"north\" \"east\"]. Use scratch to review the program and :help for the REPL command list."

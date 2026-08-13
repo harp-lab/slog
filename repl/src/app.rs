@@ -11,6 +11,10 @@ use crate::present::{
 use crate::response::CommandResult;
 use crate::runtime::RuntimeLedger;
 pub use crate::transcript::{EntryKind, SharedAction, TranscriptEntry};
+use crate::tutorial::{
+    ChallengeOutcome, Tutorial, TutorialAction, TutorialCatalog, TutorialMenu, TutorialOverlay,
+    TutorialRun, TutorialSubmission,
+};
 use crate::workspace::Workspace;
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, ModifierKeyCode, MouseButton, MouseEvent,
@@ -38,6 +42,7 @@ pub enum Effect {
     Ignore,
     None,
     Execute(ShellCommand),
+    RestartForTutorial(Tutorial),
     Shutdown,
 }
 
@@ -58,6 +63,10 @@ pub struct App {
     /// the newest output.
     pub transcript_scroll: u16,
     pub library: Option<LibraryView>,
+    tutorial_catalog: TutorialCatalog,
+    tutorial_overlay: Option<TutorialOverlay>,
+    tutorial_run: Option<TutorialRun>,
+    command_queue_busy: bool,
     /// The newest successful result remains a live, client-owned canvas.
     /// Older result entries retain their last rendered lines in the transcript.
     pub canvas: Option<PresentationCanvas>,
@@ -79,6 +88,7 @@ pub struct App {
     pub should_quit: bool,
     history: Vec<String>,
     history_position: Option<usize>,
+    animation_tick: u64,
     terminal_width: u16,
     terminal_height: u16,
     physical_shift_held: bool,
@@ -102,6 +112,10 @@ impl App {
             operations: OperationTable::default(),
             transcript_scroll: 0,
             library: None,
+            tutorial_catalog: TutorialCatalog::default(),
+            tutorial_overlay: None,
+            tutorial_run: None,
+            command_queue_busy: false,
             canvas: None,
             canvas_entry: None,
             canvas_search: None,
@@ -115,6 +129,7 @@ impl App {
             should_quit: false,
             history: Vec::new(),
             history_position: None,
+            animation_tick: 0,
             terminal_width: 80,
             terminal_height: 24,
             physical_shift_held: false,
@@ -124,6 +139,56 @@ impl App {
     pub fn set_terminal_size(&mut self, width: u16, height: u16) {
         self.terminal_width = width;
         self.terminal_height = height;
+    }
+
+    pub fn set_tutorial_catalog(&mut self, catalog: TutorialCatalog) {
+        if !catalog.errors().is_empty() {
+            self.transcript.push(TranscriptEntry::error(
+                "Tutorial catalog",
+                catalog
+                    .errors()
+                    .iter()
+                    .map(|error| format!("{}: {}", error.path.display(), error.message))
+                    .collect(),
+            ));
+        }
+        self.tutorial_catalog = catalog;
+    }
+
+    pub fn tutorial_overlay(&self) -> Option<&TutorialOverlay> {
+        self.tutorial_overlay.as_ref()
+    }
+
+    pub fn tutorial_run(&self) -> Option<&TutorialRun> {
+        self.tutorial_run.as_ref()
+    }
+
+    pub fn tutorial_needs_tick(&self) -> bool {
+        !self.command_queue_busy
+            && self
+                .tutorial_run
+                .as_ref()
+                .is_some_and(|run| run.is_typing() && !run.paused())
+    }
+
+    pub fn tutorial_input_hint_active(&self) -> bool {
+        self.editor.is_empty()
+            && self
+                .tutorial_run
+                .as_ref()
+                .is_some_and(TutorialRun::is_waiting_for_challenge)
+    }
+
+    pub fn tutorial_input_hint_visible(&self) -> bool {
+        self.tutorial_input_hint_active() && self.animation_tick % 18 < 15
+    }
+
+    pub fn animation_needs_tick(&self) -> bool {
+        !self.operations.is_empty() || self.tutorial_input_hint_active()
+    }
+
+    pub fn set_command_queue_busy(&mut self, busy: bool) {
+        self.command_queue_busy = busy;
     }
 
     pub fn on_terminal(&mut self, event: Event) -> Effect {
@@ -140,7 +205,15 @@ impl App {
                 }
                 self.on_key(key)
             }
-            Event::Paste(text) if self.library.is_none() => {
+            Event::Paste(text)
+                if self.library.is_none()
+                    && self.tutorial_overlay.is_none()
+                    && !self.tutorial_run.as_ref().is_some_and(|run| {
+                        run.is_typing()
+                            || run.is_waiting_for_command()
+                            || run.is_waiting_for_checkpoint()
+                    }) =>
+            {
                 self.completion = None;
                 if let Some(search) = self.canvas_search.as_mut() {
                     search.editor.insert(&text.replace(['\r', '\n'], " "));
@@ -183,6 +256,7 @@ impl App {
                 self.cancel_canvas_search();
                 let workflow = self.finish_operation(&command);
                 if !response.ok {
+                    self.observe_tutorial_command(&command, false);
                     let error = response.error.unwrap_or(crate::protocol::ServerError {
                         kind: "server".to_owned(),
                         message: "unknown server failure".to_owned(),
@@ -239,6 +313,7 @@ impl App {
                             ));
                         }
                     }
+                    self.observe_tutorial_command(&command, true);
                     return;
                 }
                 let canvas = PresentationCanvas::for_result(&result);
@@ -256,6 +331,7 @@ impl App {
                 if result.closes() || matches!(command.as_str(), ":quit" | "quit" | "exit") {
                     self.should_quit = true;
                 }
+                self.observe_tutorial_command(&command, true);
             }
         }
     }
@@ -264,6 +340,10 @@ impl App {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
                 KeyCode::Char('c') => {
+                    if self.tutorial_run.is_some() {
+                        self.stop_tutorial();
+                        return Effect::None;
+                    }
                     if self.editor.is_empty() {
                         return Effect::Shutdown;
                     }
@@ -272,18 +352,38 @@ impl App {
                     return Effect::None;
                 }
                 KeyCode::Char('d') if self.editor.is_empty() => return Effect::Shutdown,
-                KeyCode::Char('a') => {
+                KeyCode::Char('a')
+                    if self.tutorial_run.is_none()
+                        || self
+                            .tutorial_run
+                            .as_ref()
+                            .is_some_and(TutorialRun::is_waiting_for_challenge) =>
+                {
                     self.completion = None;
                     self.editor.move_home();
                     return Effect::None;
                 }
-                KeyCode::Char('e') => {
+                KeyCode::Char('e')
+                    if self.tutorial_run.is_none()
+                        || self
+                            .tutorial_run
+                            .as_ref()
+                            .is_some_and(TutorialRun::is_waiting_for_challenge) =>
+                {
                     self.completion = None;
                     self.editor.move_end();
                     return Effect::None;
                 }
                 _ => {}
             }
+        }
+        if self.tutorial_overlay.is_some() {
+            return self.on_tutorial_overlay_key(key);
+        }
+        if self.tutorial_run.is_some()
+            && let Some(effect) = self.on_tutorial_key(key)
+        {
+            return effect;
         }
         if self.library.is_some() {
             return self.on_library_key(key);
@@ -301,6 +401,10 @@ impl App {
         if self.completion.is_some() {
             return self.on_completion_key(key);
         }
+        self.on_editor_key(key)
+    }
+
+    fn on_editor_key(&mut self, key: KeyEvent) -> Effect {
         match key.code {
             KeyCode::Enter
                 if key
@@ -368,7 +472,8 @@ impl App {
                 Effect::None
             }
             KeyCode::Tab => {
-                if self.editor.is_empty()
+                if self.tutorial_run.is_none()
+                    && self.editor.is_empty()
                     && self
                         .canvas
                         .as_mut()
@@ -840,13 +945,40 @@ impl App {
     fn submit(&mut self) -> Effect {
         self.completion = None;
         let source = self.editor.take();
+        if source.trim() == ":tutorial stop" && self.tutorial_run.is_some() {
+            self.stop_tutorial();
+            return Effect::None;
+        }
+        if self
+            .tutorial_run
+            .as_ref()
+            .is_some_and(TutorialRun::is_waiting_for_challenge)
+        {
+            return self.submit_tutorial_challenge(source);
+        }
+        if source.trim().is_empty()
+            && self
+                .tutorial_run
+                .as_ref()
+                .is_some_and(TutorialRun::is_waiting_for_checkpoint)
+        {
+            if let Some(run) = self.tutorial_run.as_mut() {
+                run.continue_checkpoint();
+            }
+            self.finish_tutorial_if_complete();
+            return Effect::None;
+        }
         let Some(command) = ShellCommand::local(source.clone()) else {
             return Effect::None;
         };
         self.history.push(source.clone());
         self.history_position = None;
+        self.dispatch_command(command, "local")
+    }
+
+    fn dispatch_command(&mut self, command: ShellCommand, comment_title: &str) -> Effect {
         if command.is_comment() {
-            self.comment(command, "local");
+            self.comment(command, comment_title);
             return Effect::None;
         }
         if command.text() == ":clear" {
@@ -856,8 +988,22 @@ impl App {
             self.canvas_search = None;
             return Effect::None;
         }
+        if command.text() == "clear" {
+            self.transcript.push(TranscriptEntry::error(
+                "Clear needs a target",
+                vec![
+                    "use `clear scratch` to retract scratch definitions, `discard session` to close the current in-memory session, or `:clear` to clear only this transcript"
+                        .to_owned(),
+                ],
+            ));
+            return Effect::None;
+        }
         if command.text() == ":share" {
             self.show_coauthor_info();
+            return Effect::None;
+        }
+        if command.text() == ":tutorials" {
+            self.open_tutorial_menu();
             return Effect::None;
         }
         if Self::is_canvas_command(&command) {
@@ -880,6 +1026,321 @@ impl App {
             return Effect::None;
         }
         self.issue(command)
+    }
+
+    fn open_tutorial_menu(&mut self) {
+        if self.tutorial_run.is_some() {
+            self.transcript.push(TranscriptEntry::error(
+                "Tutorial",
+                vec![
+                    "a tutorial is already running; press Esc or type `:tutorial stop` first"
+                        .to_owned(),
+                ],
+            ));
+            return;
+        }
+        self.library = None;
+        self.completion = None;
+        self.tutorial_overlay = Some(TutorialOverlay::Menu(TutorialMenu::new(
+            &self.tutorial_catalog,
+        )));
+    }
+
+    fn on_tutorial_overlay_key(&mut self, key: KeyEvent) -> Effect {
+        let Some(overlay) = self.tutorial_overlay.take() else {
+            return Effect::Ignore;
+        };
+        match overlay {
+            TutorialOverlay::Menu(mut menu) => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => Effect::None,
+                KeyCode::Up | KeyCode::Char('k') => {
+                    menu.previous(1);
+                    self.tutorial_overlay = Some(TutorialOverlay::Menu(menu));
+                    Effect::None
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    menu.next(1);
+                    self.tutorial_overlay = Some(TutorialOverlay::Menu(menu));
+                    Effect::None
+                }
+                KeyCode::PageUp => {
+                    menu.previous(8);
+                    self.tutorial_overlay = Some(TutorialOverlay::Menu(menu));
+                    Effect::None
+                }
+                KeyCode::PageDown => {
+                    menu.next(8);
+                    self.tutorial_overlay = Some(TutorialOverlay::Menu(menu));
+                    Effect::None
+                }
+                KeyCode::Home => {
+                    menu.select(0);
+                    self.tutorial_overlay = Some(TutorialOverlay::Menu(menu));
+                    Effect::None
+                }
+                KeyCode::End => {
+                    menu.select(usize::MAX);
+                    self.tutorial_overlay = Some(TutorialOverlay::Menu(menu));
+                    Effect::None
+                }
+                KeyCode::Enter => {
+                    let Some(tutorial) = menu.current().cloned() else {
+                        self.tutorial_overlay = Some(TutorialOverlay::Menu(menu));
+                        return Effect::None;
+                    };
+                    if self.command_queue_busy {
+                        self.transcript.push(TranscriptEntry::error(
+                            "Tutorial could not start",
+                            vec!["wait for queued and in-flight commands to finish, then open `:tutorials` again"
+                                .to_owned()],
+                        ));
+                        return Effect::None;
+                    }
+                    if self.sessions.is_empty() {
+                        self.begin_tutorial(tutorial);
+                    } else {
+                        self.tutorial_overlay = Some(TutorialOverlay::Confirm {
+                            tutorial,
+                            resident: self.sessions.len(),
+                            extended: self
+                                .sessions
+                                .iter()
+                                .filter(|session| session.changed)
+                                .count(),
+                        });
+                    }
+                    Effect::None
+                }
+                _ => {
+                    self.tutorial_overlay = Some(TutorialOverlay::Menu(menu));
+                    Effect::Ignore
+                }
+            },
+            confirmation @ TutorialOverlay::Confirm { .. } => match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                    let TutorialOverlay::Confirm { tutorial, .. } = confirmation else {
+                        unreachable!()
+                    };
+                    Effect::RestartForTutorial(tutorial)
+                }
+                KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
+                    self.tutorial_overlay = Some(TutorialOverlay::Menu(TutorialMenu::new(
+                        &self.tutorial_catalog,
+                    )));
+                    Effect::None
+                }
+                _ => {
+                    self.tutorial_overlay = Some(confirmation);
+                    Effect::Ignore
+                }
+            },
+        }
+    }
+
+    fn on_tutorial_key(&mut self, key: KeyEvent) -> Option<Effect> {
+        self.tutorial_run.as_ref()?;
+        if key.code == KeyCode::Esc {
+            self.stop_tutorial();
+            return Some(Effect::None);
+        }
+        if self
+            .tutorial_run
+            .as_ref()
+            .is_some_and(TutorialRun::is_typing)
+        {
+            return Some(match key.code {
+                KeyCode::Char(' ') => {
+                    if let Some(run) = self.tutorial_run.as_mut() {
+                        run.toggle_pause();
+                    }
+                    Effect::None
+                }
+                KeyCode::Right => self.finish_tutorial_typing(),
+                _ => Effect::Ignore,
+            });
+        }
+        if self
+            .tutorial_run
+            .as_ref()
+            .is_some_and(TutorialRun::is_waiting_for_command)
+        {
+            return Some(Effect::Ignore);
+        }
+        if self
+            .tutorial_run
+            .as_ref()
+            .is_some_and(TutorialRun::is_waiting_for_checkpoint)
+        {
+            if key.code == KeyCode::Enter {
+                if let Some(run) = self.tutorial_run.as_mut() {
+                    run.continue_checkpoint();
+                }
+                self.finish_tutorial_if_complete();
+                return Some(Effect::None);
+            }
+            return Some(Effect::Ignore);
+        }
+        if self
+            .tutorial_run
+            .as_ref()
+            .is_some_and(TutorialRun::is_waiting_for_challenge)
+        {
+            // A challenge owns the prompt even if a prior result canvas was
+            // left in navigation mode. This keeps `?`, editing, history, and
+            // transcript scrolling available for the learner's real input.
+            return Some(self.on_editor_key(key));
+        }
+        None
+    }
+
+    pub fn tick_tutorial(&mut self) -> Effect {
+        let action = self.tutorial_run.as_mut().and_then(TutorialRun::tick);
+        self.apply_tutorial_action(action)
+    }
+
+    fn finish_tutorial_typing(&mut self) -> Effect {
+        let Some((remainder, action)) = self
+            .tutorial_run
+            .as_mut()
+            .and_then(TutorialRun::finish_current_typing)
+        else {
+            return Effect::None;
+        };
+        self.editor.insert(&remainder);
+        self.apply_tutorial_action(Some(action))
+    }
+
+    fn apply_tutorial_action(&mut self, action: Option<TutorialAction>) -> Effect {
+        match action {
+            None => Effect::None,
+            Some(TutorialAction::Insert(text)) => {
+                self.editor.insert(&text);
+                Effect::None
+            }
+            Some(TutorialAction::Submit { text, kind }) => {
+                self.editor.clear();
+                let command =
+                    ShellCommand::generated(text).expect("validated tutorial input is non-empty");
+                let effect = match kind {
+                    TutorialSubmission::Comment => {
+                        let text = command.text().to_owned();
+                        let effect = self.dispatch_command(command, "local");
+                        let committed = self
+                            .tutorial_run
+                            .as_mut()
+                            .is_some_and(|run| run.observe_comment_committed(&text));
+                        debug_assert!(committed, "tutorial comment must commit before advancing");
+                        if committed
+                            && self
+                                .tutorial_run
+                                .as_ref()
+                                .is_some_and(TutorialRun::is_waiting_for_challenge)
+                        {
+                            // Start every input hint with a full solid phase:
+                            // 15 × 100 ms visible, then 3 × 100 ms hidden.
+                            self.animation_tick = 0;
+                        }
+                        effect
+                    }
+                    TutorialSubmission::Command => {
+                        let text = command.text().to_owned();
+                        let effect = self.dispatch_command(command, "tutorial");
+                        if !matches!(effect, Effect::Execute(_)) {
+                            self.observe_tutorial_command(&text, true);
+                        }
+                        effect
+                    }
+                };
+                self.finish_tutorial_if_complete();
+                effect
+            }
+        }
+    }
+
+    fn submit_tutorial_challenge(&mut self, source: String) -> Effect {
+        if !source.trim().is_empty() {
+            self.history.push(source.clone());
+            self.history_position = None;
+        }
+        let outcome = self
+            .tutorial_run
+            .as_mut()
+            .map(|run| run.submit_challenge(&source))
+            .unwrap_or(ChallengeOutcome::Rejected);
+        match outcome {
+            ChallengeOutcome::Accepted(command) => {
+                let shell_command = ShellCommand::local(command.clone())
+                    .expect("accepted tutorial answer is non-empty");
+                let effect = self.dispatch_command(shell_command, "local");
+                if !matches!(effect, Effect::Execute(_)) {
+                    self.observe_tutorial_command(&command, true);
+                }
+                effect
+            }
+            ChallengeOutcome::Rejected => Effect::None,
+        }
+    }
+
+    fn observe_tutorial_command(&mut self, command: &str, ok: bool) {
+        let database_name = self.current_database.clone();
+        if let Some(run) = self.tutorial_run.as_mut() {
+            run.set_database_name(database_name.as_deref());
+            run.observe_command_result(command, ok);
+        }
+        self.finish_tutorial_if_complete();
+    }
+
+    fn finish_tutorial_if_complete(&mut self) {
+        if self
+            .tutorial_run
+            .as_ref()
+            .is_some_and(TutorialRun::is_finished)
+        {
+            self.tutorial_run = None;
+            self.editor.clear();
+        }
+    }
+
+    fn stop_tutorial(&mut self) {
+        if self.tutorial_run.take().is_some() {
+            self.editor.clear();
+            let command =
+                ShellCommand::generated("; Tutorial stopped. This live session is yours.")
+                    .expect("tutorial stop comment is non-empty");
+            self.comment(command, "local");
+        }
+    }
+
+    fn begin_tutorial(&mut self, tutorial: Tutorial) {
+        self.tutorial_overlay = None;
+        self.library = None;
+        self.completion = None;
+        self.cancel_canvas_search();
+        if let Some(canvas) = self.canvas.as_mut() {
+            canvas.leave_navigation();
+        }
+        self.editor.clear();
+        self.tutorial_run = Some(TutorialRun::new(tutorial));
+    }
+
+    pub fn begin_tutorial_after_backend_restart(&mut self, tutorial: Tutorial) {
+        self.operations.clear();
+        self.library = None;
+        self.canvas = None;
+        self.canvas_entry = None;
+        self.canvas_search = None;
+        self.current_database = None;
+        self.sessions.clear();
+        self.runtime = RuntimeLedger::default();
+        self.begin_tutorial(tutorial);
+    }
+
+    pub fn tutorial_start_failed(&mut self, message: impl Into<String>) {
+        self.tutorial_overlay = None;
+        self.transcript.push(TranscriptEntry::error(
+            "Tutorial could not start",
+            vec![message.into()],
+        ));
     }
 
     fn issue(&mut self, command: ShellCommand) -> Effect {
@@ -1068,6 +1529,9 @@ impl App {
         let Some(command) = ShellCommand::coauthor(source, text) else {
             return Effect::None;
         };
+        if self.tutorial_run.is_some() && !command.is_comment() {
+            self.stop_tutorial();
+        }
         self.completion = None;
         self.cancel_canvas_search();
         if command.is_comment() {
@@ -1207,6 +1671,7 @@ impl App {
     }
 
     pub fn tick(&mut self) -> bool {
+        self.animation_tick = self.animation_tick.wrapping_add(1);
         self.operations.tick()
     }
 
@@ -1441,6 +1906,7 @@ mod tests {
     use crate::backend::BackendEvent;
     use crate::command::ShellCommand;
     use crate::protocol::Response;
+    use crate::tutorial::{Tutorial, TutorialCatalog, TutorialOverlay, TutorialRun};
     use crossterm::event::{
         Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, ModifierKeyCode,
         MouseEvent, MouseEventKind,
@@ -1459,6 +1925,342 @@ mod tests {
             KeyModifiers::NONE,
         )));
         assert_eq!(app.transcript_scroll, 0);
+    }
+
+    #[test]
+    fn tutorials_open_as_a_menu_and_drive_the_normal_command_path() {
+        let tutorial = Tutorial::parse(
+            r#"
+format = 1
+id = "test-drive"
+title = "Test drive"
+summary = "Exercise the host seam."
+session = "fresh"
+typing_wpm = [110, 160]
+
+[[steps]]
+type = "comment"
+text = "A real comment."
+
+[[steps]]
+type = "command"
+text = ":status"
+
+[[steps]]
+type = "challenge"
+prompt = "Ping the server."
+answers = [":ping"]
+fallback = ":ping"
+attempts = 1
+"#,
+        )
+        .expect("tutorial");
+        let mut app = App::new();
+        app.set_tutorial_catalog(TutorialCatalog::from_tutorials(vec![tutorial]));
+        app.editor.insert(":tutorials");
+        assert!(matches!(
+            app.on_terminal(Event::Key(KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE
+            ))),
+            Effect::None
+        ));
+        assert!(matches!(
+            app.tutorial_overlay(),
+            Some(TutorialOverlay::Menu(_))
+        ));
+
+        app.on_terminal(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert!(app.tutorial_run().is_some());
+        app.on_terminal(Event::Key(KeyEvent::new(
+            KeyCode::Right,
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(
+            app.transcript.last().expect("tutorial comment").lines,
+            vec!["; A real comment."]
+        );
+
+        let effect = app.on_terminal(Event::Key(KeyEvent::new(
+            KeyCode::Right,
+            KeyModifiers::NONE,
+        )));
+        assert!(matches!(
+            effect,
+            Effect::Execute(ref command) if command.text() == ":status"
+        ));
+        app.on_backend(BackendEvent::Response {
+            command: ":status".to_owned(),
+            response: Response {
+                id: 1,
+                ok: true,
+                result: Some(serde_json::json!({
+                    "kind": "status",
+                    "title": "REPL status",
+                    "lines": ["current: none"],
+                    "current": null,
+                    "sessions": []
+                })),
+                error: None,
+            },
+        });
+        assert!(app.tutorial_run().is_some_and(|run| run.is_typing()));
+        app.on_terminal(Event::Key(KeyEvent::new(
+            KeyCode::Right,
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(
+            app.transcript.last().expect("challenge instruction").lines,
+            vec!["; Ping the server:"]
+        );
+        assert_eq!(
+            app.transcript.last().expect("challenge instruction").title,
+            "local"
+        );
+        assert!(
+            app.tutorial_run()
+                .is_some_and(|run| run.is_waiting_for_challenge())
+        );
+    }
+
+    #[test]
+    fn rejected_tutorial_input_is_editable_from_history_and_owns_the_prompt() {
+        let tutorial = Tutorial::parse(
+            r#"
+format = 1
+id = "history"
+title = "History"
+summary = "Exercise tutorial input history."
+
+[[steps]]
+type = "challenge"
+prompt = "Enter ping:"
+answers = [":ping"]
+fallback = ":ping"
+attempts = 2
+"#,
+        )
+        .expect("tutorial");
+        let mut app = App::new();
+        app.begin_tutorial(tutorial);
+        app.on_terminal(Event::Key(KeyEvent::new(
+            KeyCode::Right,
+            KeyModifiers::NONE,
+        )));
+
+        // Even an accidentally active result canvas must not consume the
+        // learner's challenge input (the old cause of the `?`-stage lock).
+        app.on_backend(BackendEvent::Response {
+            command: "show old-result".to_owned(),
+            response: Response {
+                id: 1,
+                ok: true,
+                result: Some(serde_json::json!({
+                    "kind": "query",
+                    "title": "Old result",
+                    "lines": ["row"]
+                })),
+                error: None,
+            },
+        });
+        assert!(
+            app.canvas
+                .as_mut()
+                .is_some_and(|canvas| canvas.enter_navigation())
+        );
+        app.on_terminal(Event::Key(KeyEvent::new(
+            KeyCode::Char('?'),
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(app.editor.text(), "?");
+        app.editor.clear();
+
+        for character in "pin".chars() {
+            app.on_terminal(Event::Key(KeyEvent::new(
+                KeyCode::Char(character),
+                KeyModifiers::NONE,
+            )));
+        }
+        app.on_terminal(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert!(app.tutorial_run().is_some_and(TutorialRun::is_typing));
+        app.on_terminal(Event::Key(KeyEvent::new(
+            KeyCode::Right,
+            KeyModifiers::NONE,
+        )));
+        assert!(
+            app.tutorial_run()
+                .is_some_and(TutorialRun::is_waiting_for_challenge)
+        );
+        app.on_terminal(Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)));
+        assert_eq!(app.editor.text(), "pin");
+    }
+
+    #[test]
+    fn failed_normal_commands_remain_editable_from_history() {
+        let mut app = App::new();
+        app.editor.insert("bad command");
+        assert!(matches!(
+            app.on_terminal(Event::Key(KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE
+            ))),
+            Effect::Execute(_)
+        ));
+        app.on_backend(BackendEvent::Response {
+            command: "bad command".to_owned(),
+            response: Response {
+                id: 1,
+                ok: false,
+                result: None,
+                error: Some(crate::protocol::ServerError {
+                    kind: "parse".to_owned(),
+                    message: "bad input".to_owned(),
+                }),
+            },
+        });
+        app.on_terminal(Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)));
+        assert_eq!(app.editor.text(), "bad command");
+    }
+
+    #[test]
+    fn bare_clear_is_a_safe_hint_and_discard_session_clears_context() {
+        let mut app = App::new();
+        app.editor.insert("clear");
+        assert!(matches!(
+            app.on_terminal(Event::Key(KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE
+            ))),
+            Effect::None
+        ));
+        assert!(!app.should_quit);
+        assert_eq!(
+            app.transcript.last().expect("clear hint").title,
+            "Clear needs a target"
+        );
+        assert!(app.transcript.last().expect("clear hint").lines[0].contains("discard session"));
+
+        app.current_database = Some("edge-csv-7".to_owned());
+        app.sessions.push(super::SessionSummary {
+            name: "edge-csv-7".to_owned(),
+            database: Some("edge-csv-7".to_owned()),
+            current: true,
+            mode: "mutable".to_owned(),
+            changed: true,
+        });
+        app.on_backend(BackendEvent::Response {
+            command: "discard session".to_owned(),
+            response: Response {
+                id: 2,
+                ok: true,
+                result: Some(serde_json::json!({
+                    "kind": "discard",
+                    "title": "Discarded edge-csv-7",
+                    "lines": ["closed"],
+                    "current": null,
+                    "sessions": []
+                })),
+                error: None,
+            },
+        });
+        assert_eq!(app.current_database, None);
+        assert!(app.sessions.is_empty());
+    }
+
+    #[test]
+    fn tutorial_narration_can_name_the_database_returned_by_the_real_backend() {
+        let tutorial = Tutorial::parse(
+            r#"
+format = 1
+id = "database-name"
+title = "Database name"
+summary = "Name the imported database."
+
+[[steps]]
+type = "command"
+text = "csv-import fixtures/edge-csv"
+
+[[steps]]
+type = "comment"
+text = "The mutable database is called {{database}}."
+"#,
+        )
+        .expect("tutorial");
+        let mut app = App::new();
+        app.begin_tutorial(tutorial);
+        let effect = app.on_terminal(Event::Key(KeyEvent::new(
+            KeyCode::Right,
+            KeyModifiers::NONE,
+        )));
+        assert!(matches!(effect, Effect::Execute(_)));
+        app.on_backend(BackendEvent::Response {
+            command: "csv-import fixtures/edge-csv".to_owned(),
+            response: Response {
+                id: 1,
+                ok: true,
+                result: Some(serde_json::json!({
+                    "kind": "open",
+                    "title": "Imported and opened edge-csv-7",
+                    "lines": ["imported"],
+                    "current": "edge-csv-7",
+                    "sessions": []
+                })),
+                error: None,
+            },
+        });
+        app.on_terminal(Event::Key(KeyEvent::new(
+            KeyCode::Right,
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(
+            app.transcript.last().expect("database narration").lines,
+            vec!["; The mutable database is called edge-csv-7."]
+        );
+    }
+
+    #[test]
+    fn resident_workspaces_require_explicit_tutorial_restart_confirmation() {
+        let tutorial =
+            Tutorial::parse(include_str!("../tutorials/01-repl-basics.toml")).expect("tutorial");
+        let mut app = App::new();
+        app.set_tutorial_catalog(TutorialCatalog::from_tutorials(vec![tutorial]));
+        app.sessions.push(super::SessionSummary {
+            name: "alpha".to_owned(),
+            database: Some("alpha".to_owned()),
+            current: true,
+            mode: "mutable".to_owned(),
+            changed: true,
+        });
+        app.editor.insert(":tutorials");
+        app.on_terminal(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        app.on_terminal(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert!(matches!(
+            app.tutorial_overlay(),
+            Some(TutorialOverlay::Confirm {
+                resident: 1,
+                extended: 1,
+                ..
+            })
+        ));
+        assert!(matches!(
+            app.on_terminal(Event::Key(KeyEvent::new(
+                KeyCode::Char('y'),
+                KeyModifiers::NONE
+            ))),
+            Effect::RestartForTutorial(_)
+        ));
     }
 
     #[test]

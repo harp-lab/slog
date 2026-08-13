@@ -1,8 +1,8 @@
 # Namespaced module instances and schema bundles
 
-2026-07-13, implemented 2026-07-26. **N0–N3 are implemented; N4 is pinned as
-an unstarted two-slice contract; N5 remains design.** In particular N1 now
-ships the lexical module-instance surface described below:
+2026-07-13, implemented through N4 on 2026-07-27. **N0–N4 are implemented;
+N5 remains design.** In particular N1 ships the lexical module-instance
+surface described below, and N4 persists its identities and bindings:
 
 *2026-07-14: [execution-tiers.md](execution-tiers.md) designs its
 KernelPlanKey/BindingFrame identity model so that §8.4's alpha-normalized
@@ -668,6 +668,44 @@ continue to contain an old TypeKey, which remains decodable even with no
 current public constructor name. This conservative rule avoids inventing a
 second hidden namespace or a general compile-time type-node identity merely to
 make dangling schemas appear valid.
+
+### 5.4 Replacing an instantiated module is a program-version operation
+
+`instantiate` is lexical composition, so an instance is not a separately
+loaded runtime object that can be unloaded by namespace prefix. Its rules may
+share an SCC with client rules or another instance, and its outputs may share
+writers. Replacing instance `X` with `Y` must therefore create a successor
+program image, recompute the qualified old/new dependency graphs, and heal the
+union of their affected writer cones. It is not a namespace `drop` followed by
+another `instantiate`, and it is not the O0/O2 executor hot swap.
+
+The selected old occurrence is identified by `ModuleInstanceKey`. A draft
+explicitly records the corresponding new occurrence, while the new image
+mints a fresh `ProgramInstanceKey`, `ModuleInstanceKey`s, `RuleKey`s, and
+affected output `VersionKey`s so the historical image remains addressable.
+Aliases, source paths, and source locations are never used to infer that
+correspondence.
+
+Replacement normally retains the selected occurrence's home and namespace
+bindings. The compiler expands and qualifies the complete candidate, then
+computes source/occurrence, semantic-rule/dependency, and execution-plan
+diffs. These are intentionally different: a reformat can change source
+metadata without changing semantics; the same kernel code can bind different
+VersionKeys; and a small source edit can split or merge an SCC spanning
+several module instances.
+
+Omitting a declaration still does not mean `drop`. However, every relation
+written by the old or new occurrence is an affected output even when the new
+occurrence no longer writes it. Its replacement version is rebuilt from the
+target program's input boundary plus surviving writers, rather than inheriting
+tuples supported only by the removed module. Incompatible output schemas need
+a fresh namespace and explicit migration.
+
+The complete transaction, compiler diff contract, tuning cases, REPL draft
+workflow, suffix-replay rules, and acceptance gates are specified in
+[rf5-contract.md](rf5-contract.md). RF5 is planned work; the module and
+catalog substrate described here does not yet expose live instance
+replacement.
 
 ## 6. Stable identities in pipelines
 
@@ -1359,9 +1397,8 @@ declaration-only session boundary assertion, and all 605 session checks.
 
 ### N4: durable boundaries and namespace attachment
 
-N4 is an unstarted **two-slice** contract; see
-[n4-contract.md](n4-contract.md) for the data model, work order, migration
-cut, and acceptance gates.
+N4's two slices are implemented; see [n4-contract.md](n4-contract.md) for the
+data model, as-built notes, migration cut, and acceptance gates.
 
 1. **N4-A — durable boundary bundle and catalog-backed REPL.** Put the
    complete selected boundary, history, stable version/type/program/module

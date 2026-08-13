@@ -43,11 +43,13 @@ data/mygraph
   table (edge str str)                        1204332 rows
   table (node str)                             300000 rows
   300000 interned strings, 0 interned bignums
+  inferred schema: data/mygraph/import.slog
 ```
 
 The importer prints the declarations a query over the result has to write. A
 column type that disagrees with the stored rows is rejected at load rather
-than reinterpreted, so this is the list to copy into the query.
+than reinterpreted. It also writes those declarations to `data/NAME/import.slog`;
+the native REPL adopts that sidecar automatically when it opens the import.
 
 There is one input file per relation. The relation name is the file name, and
 its arity is either taken from the first row or stated in the name:
@@ -59,16 +61,20 @@ edge.csv.gz     any input may be gzipped
 edge/           a directory of shard files, all one relation
 ```
 
-`.csv`, `.tsv`, and `.txt` are read the same way: rows are newline-delimited
-and columns are separated by runs of spaces and tabs. Every row in a file must
-have the same number of columns as the declared or inferred arity; a ragged row
-is reported by line number rather than silently shifting the rows after it.
+`.csv`, `.tsv`, and `.txt` are read the same way. Rows are newline-delimited
+and blank rows are ignored. A top-level comma selects comma CSV for that row;
+otherwise runs of spaces and tabs separate columns. Commas and whitespace
+inside quoted strings or balanced S-expression values remain part of the
+value. Every row in a file must have the same number of columns as the inferred
+arity; a ragged row is reported by line number rather than silently shifting
+the rows after it.
 
 ### Columns
 
 A column that reads as an integer becomes an `int`, one that reads as a decimal
 becomes a `float`, and anything else becomes a `str`. Quoting forces a string
-and allows spaces inside a column. A parenthesized column is a structure, and
+and allows delimiters inside a column; both Slog-style backslash escapes and
+CSV doubled quotes are accepted. A parenthesized column is a structure, and
 structures nest:
 
 ```text
@@ -77,14 +83,22 @@ structures nest:
 alice               str
 "bob jones"         str, spaces and all
 (pt 1 2)            struct (pt int int)
-(seg (pt 1 2) (nil)) struct (seg pt ilist), with a nullary constructor inside
+(seg (pt 1 2) (nil)) struct (seg pt list), with a nullary constructor inside
 ```
+
+Types are accumulated across every row, including the fields of nested
+constructors. Mixed `int`/`float` becomes `float`; incompatible primitive kinds
+fall back to `any`. Multiple constructor kinds also use `any` in the generated
+table declaration while retaining each inferred `struct` declaration, so a
+follow-up program can introduce a domain-specific `union` name without
+rewriting the imported values.
 
 Bignums are ordinary `int` columns: a value outside the `int` fast path
 (`-2^31` to `2^31 - 1`) is written as an interned bignum, exactly as the
 runtime would.
 
-A `#` line is a comment. A comment whose columns are all type names —
+A `#` line is a comment. No type header is required. A comment whose columns
+are all type names —
 `int`, `float`, `str`, or `any` — is a schema line, which pins the column types
 instead of leaving them to whatever the first row happens to look like:
 
@@ -103,7 +117,8 @@ relation of the right shape.
 $ racket compiler/csv2db.rkt --delim , --skip 1 path/to/folder mydb
 ```
 
-`--delim` separates columns on a single character instead of on whitespace.
+`--delim` forces one column separator instead of auto-detecting comma versus
+whitespace rows.
 With an explicit delimiter, an empty column is a real empty string, and a
 quoted column may contain the delimiter. `--skip` drops that many leading rows
 of every input file, for a text header that is not a `#` comment.
@@ -129,8 +144,10 @@ Three limits are worth knowing. String columns must be at most 256 bytes, since
 a longer string is a rope in the sequence arena and this writer does not build
 one. Collection and lattice columns cannot be imported at all. And an imported
 database carries no logical catalog, so the N4 boundary operations refuse it
-(`docs/n4-contract.md` §4.1) — it is a set of relations to query, not a session
-to attach.
+(`docs/n4-contract.md` §4.1). The inferred `import.slog` is executable schema
+metadata rather than a persisted N4 boundary bundle; the native REPL runs it
+while opening the database so scratch definitions can immediately adopt the
+imported relations.
 
 ## Query an existing database
 

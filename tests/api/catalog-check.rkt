@@ -13,6 +13,10 @@
 ;;   - every (catalog-type ...) record carries [sid name|#f arity type-key];
 ;;   - every (catalog-boundary ...) history record carries durable boundary
 ;;     and program keys plus position/generation/relation-count naturals;
+;;   - RF2-B program/source/rule/kernel/plan rows carry the sealed image key,
+;;     dense slots, typed references, digests, and structured plan/source maps;
+;;   - RF4 artifact/materialization/attachment observations carry content and
+;;     plan keys plus explicit native/interpreted variant-slot partitions;
 ;;   - each stream's (catalog-end <n>) sentinel count equals the number of
 ;;     records that preceded it.
 ;;
@@ -22,6 +26,7 @@
 ;;                         integer struct-id and a version-id >= 1
 ;;   type=NAME             a catalog-type record with that name exists
 ;;   rels>=N / types>=N    at least N records of that class seen
+;;   images>=N              at least N catalog-program records seen
 ;;
 ;;   racket tests/api/catalog-check.rkt rel=edge,table,2 < transcript
 
@@ -78,10 +83,124 @@
   (check-typed rec 'generation exact-nonnegative-integer? "a natural")
   (check-typed rec 'relations exact-nonnegative-integer? "a natural"))
 
+(define (digest? value)
+  (and (string? value) (regexp-match? #px"^[0-9a-f]{64}$" value)))
+
+(define (check-program rec)
+  (check-typed rec 'image-key digest? "a SHA-256 image key")
+  (check-typed rec 'format exact-positive-integer? "a positive format")
+  (check-typed rec 'compiler-key string? "a compiler key string")
+  (check-typed rec 'plan-abi exact-positive-integer? "a positive Plan ABI")
+  (check-typed rec 'model-key digest? "a SHA-256 model key")
+  (for ([key '(root-module declarations modules sources rules kernels plans)])
+    (check-typed rec key exact-nonnegative-integer? "a natural")))
+
+(define (check-program-source rec)
+  (check-typed rec 'image-key digest? "a SHA-256 image key")
+  (check-typed rec 'slot exact-nonnegative-integer? "a source slot")
+  (check-typed rec 'module exact-nonnegative-integer? "a module slot")
+  (check-typed rec 'path string? "a root-relative path")
+  (check-typed rec 'digest digest? "a SHA-256 source digest")
+  (check-typed rec 'tokens exact-nonnegative-integer? "a token count"))
+
+(define (check-program-rule rec)
+  (check-typed rec 'image-key digest? "a SHA-256 image key")
+  (check-typed rec 'slot exact-nonnegative-integer? "a rule slot")
+  (check-typed rec 'source-id exact-nonnegative-integer? "a source rule id")
+  (check-typed rec 'module nat-or-f? "a module slot or #f")
+  (check-typed rec 'source nat-or-f? "a source slot or #f")
+  (check-typed rec 'fingerprint digest? "a SHA-256 rule fingerprint")
+  (check-typed rec 'normalized string? "a normalized rule string")
+  (for ([key '(heads positive negative negative-wildcard)])
+    (check-typed rec key
+                 (lambda (value) (and (list? value) (andmap string? value)))
+                 "a string list")))
+
+(define (check-program-kernel rec)
+  (check-typed rec 'image-key digest? "a SHA-256 image key")
+  (check-typed rec 'slot exact-nonnegative-integer? "a kernel slot")
+  (check-typed rec 'level exact-nonnegative-integer? "a dependency level")
+  (check-typed rec 'members
+               (lambda (value) (and (pair? value) (andmap string? value)))
+               "a nonempty relation-name list"))
+
+(define (check-program-plan rec)
+  (check-typed rec 'image-key digest? "a SHA-256 image key")
+  (check-typed rec 'slot exact-nonnegative-integer? "a plan slot")
+  (check-typed rec 'digest digest? "a SHA-256 plan digest")
+  (check-typed rec 'plan
+               (lambda (value) (and (pair? value) (eq? (car value) 'kernel-cohort)))
+               "a kernel-cohort datum"))
+
+(define (natural-list? value)
+  (and (list? value) (andmap exact-nonnegative-integer? value)))
+
+(define (check-native-artifact rec)
+  (check-typed rec 'artifact-key digest? "a SHA-256 artifact key")
+  (check-typed rec 'interface exact-positive-integer? "a descriptor ABI")
+  (check-typed rec 'state (lambda (value) (memq value '(ready miss)))
+               "ready|miss")
+  (check-typed rec 'paths
+               (lambda (value) (and (pair? value) (andmap string? value)))
+               "a nonempty path-hint list")
+  (check-typed rec 'bytes nat-or-f? "a byte count or #f")
+  (for ([key '(kernels variants native attachments)])
+    (check-typed rec key exact-nonnegative-integer? "a natural")))
+
+(define (check-native-artifact-kernel rec)
+  (check-typed rec 'artifact-key digest? "a SHA-256 artifact key")
+  (check-typed rec 'native-slot exact-nonnegative-integer? "a native slot")
+  (check-typed rec 'plan-key digest? "a KernelExecPlan key")
+  (for ([key '(frame-width variants attachments)])
+    (check-typed rec key exact-nonnegative-integer? "a natural"))
+  (for ([key '(native interpreted)])
+    (check-typed rec key natural-list? "a variant-slot list")))
+
+(define (check-executor-attachment rec)
+  (for ([key '(scc attachment-slot variants)])
+    (check-typed rec key exact-nonnegative-integer? "a natural"))
+  (check-typed rec 'stratum string? "a stratum name")
+  (check-typed rec 'plan-key digest? "a KernelExecPlan key")
+  (check-typed rec 'artifact-key
+               (lambda (value) (or (eq? value #f) (digest? value)))
+               "an ArtifactKey or #f")
+  (check-typed rec 'native-slot nat-or-f? "a native slot or #f")
+  (check-typed rec 'tier (lambda (value) (memq value '(interpreted native mixed)))
+               "interpreted|native|mixed")
+  (for ([key '(native interpreted)])
+    (check-typed rec key natural-list? "a variant-slot list"))
+  (check-typed rec 'writes
+               (lambda (value)
+                 (and (list? value)
+                      (andmap (lambda (write)
+                                (and (list? write) (= (length write) 2)
+                                     (string? (first write))
+                                     (exact-nonnegative-integer? (second write))))
+                              value)))
+               "a (name VersionId) list")
+  (check-typed rec 'reads
+               (lambda (value) (and (list? value) (andmap string? value)))
+               "a relation-name list"))
+
+(define (check-program-materialization rec)
+  (check-typed rec 'image-key digest? "a SHA-256 image key")
+  (for ([key '(plan-slot kernel-ordinal variants artifact-attachments
+                         interpreted-attachments)])
+    (check-typed rec key exact-nonnegative-integer? "a natural"))
+  (check-typed rec 'plan-key digest? "a KernelExecPlan key")
+  (check-typed rec 'artifact-key
+               (lambda (value) (or (eq? value #f) (digest? value)))
+               "an ArtifactKey or #f")
+  (check-typed rec 'cache-state (lambda (value) (memq value '(ready miss)))
+               "ready|miss")
+  (for ([key '(native interpreted)])
+    (check-typed rec key natural-list? "a variant-slot list")))
+
 (module+ main
   (define assertions (vector->list (current-command-line-arguments)))
   (define rels '())      ; every catalog-rel record seen
   (define types '())     ; every catalog-type record seen
+  (define images '())    ; every sealed ProgramImage summary seen
   (define in-stream 0)   ; records since the last sentinel
   (define streams 0)
   (for ([line (in-lines)])
@@ -99,6 +218,25 @@
                            (set! in-stream (add1 in-stream))]
         [(catalog-boundary)(check-boundary rec)
                            (set! in-stream (add1 in-stream))]
+        [(catalog-program) (check-program rec)
+                           (set! images (cons rec images))
+                           (set! in-stream (add1 in-stream))]
+        [(catalog-program-source) (check-program-source rec)
+                                  (set! in-stream (add1 in-stream))]
+        [(catalog-program-rule) (check-program-rule rec)
+                                (set! in-stream (add1 in-stream))]
+        [(catalog-program-kernel) (check-program-kernel rec)
+                                  (set! in-stream (add1 in-stream))]
+        [(catalog-program-plan) (check-program-plan rec)
+                                (set! in-stream (add1 in-stream))]
+        [(catalog-native-artifact) (check-native-artifact rec)
+                                   (set! in-stream (add1 in-stream))]
+        [(catalog-native-artifact-kernel) (check-native-artifact-kernel rec)
+                                          (set! in-stream (add1 in-stream))]
+        [(catalog-executor-attachment) (check-executor-attachment rec)
+                                       (set! in-stream (add1 in-stream))]
+        [(catalog-program-materialization) (check-program-materialization rec)
+                                           (set! in-stream (add1 in-stream))]
         [(catalog-end)
          (unless (and (= (length rec) 2) (equal? (cadr rec) in-stream))
            (fail! "sentinel ~s after ~a records" rec in-stream))
@@ -140,6 +278,11 @@
             (unless (>= (length types) (string->number (second m)))
               (fail! "only ~a catalog-type records, wanted >= ~a"
                      (length types) (second m))))]
+      [(regexp-match #px"^images>=([0-9]+)$" a)
+       => (lambda (m)
+            (unless (>= (length images) (string->number (second m)))
+              (fail! "only ~a catalog-program records, wanted >= ~a"
+                     (length images) (second m))))]
       [else (fail! "unknown assertion ~a" a)]))
-  (printf "catalog-check: ok (~a rel, ~a type records, ~a streams)\n"
-          (length rels) (length types) streams))
+  (printf "catalog-check: ok (~a rel, ~a type, ~a image records, ~a streams)\n"
+          (length rels) (length types) (length images) streams))

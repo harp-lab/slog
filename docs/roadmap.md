@@ -14,7 +14,7 @@ remains normative for its content.
 | incremental maintenance | [incremental.md](incremental.md), [incremental-status.md](incremental-status.md) | Phase 0, M0–M7 | Phase 0, M0, M1, M3, M6L 1–2, M4T, M5, M4S, **M4N ([m4n-contract.md](m4n-contract.md), all 4 slices)** shipped; **counted-interpreter milestone complete** ([counted-interp-contract.md](counted-interp-contract.md)); **M7 slice 1 complete ([m7-contract.md](m7-contract.md), sub-slices (a)–(d), 2026-07-24)** — thread 0's M-milestone spine is done |
 | execution tiers | [execution-tiers.md](execution-tiers.md) | T0–T6, Q1 | T1 shipped; T2 core frozen, monotone conformance groups closed, **flavored execution interp-only by default**; T0 slices (a), (b), and (d) landed; canonical Q1 query/page/cancel dispatcher active; **T0(c) sub-slice c1 SHIPPED 2026-08-09 on `w5-runtime` (durable RuleKey/SccInstanceKey live: r1:/scc1: family over real ModuleInstanceKeys, session identity ledger, `identity-keys` tier — replay re-mints byte-identical, two instances of one library mint disjoint keys); **c2+c3 SHIPPED 2026-08-10: daemon rule-meta registry (register-rule-meta/rule-meta verbs, kernel-scoped RuleId↔RuleKey, mode-neutral + lease-admitted) and D9 fire vectors (dense slot table replaces the locked string map; interp native, string shim for native artifacts; stats battery 11/11 goldens unchanged) — T0(c) COMPLETE except the deliberately deferred (RuleId,VariantTag) stat rekey, a sanctioned golden-changing event for when its consumers exist**; T3a cold start shipped (2026-07-28); T5+R4 debugger arc complete (2026-08-02); **T4 COMPLETE (2026-08-08, [t4-contract.md](t4-contract.md) §0.1 ledger: kernel-local requisitions, canonical TU order, name-free clusters, descriptor attach, attachment identity + the accept re-key, per-rule selective emission)** — T6's prerequisite met; **T3b slice 1 (default tier classification) 2026-08-09 on `w5-runtime`: every rule VARIANT carries a §5.3 designation, `interp-only` variants are not emitted, and a stratum designated wholly interp-only builds no artifact at all — measured 247/499 strata over the warm suite cache ([t3b-contract.md](t3b-contract.md) §1); `tier-classification` tier in ALL, plan bytes unmoved; **slice 2 (tier-profile sidecar) same day: per-KernelPlanKey race observations under build/profile/, cold-tiered-arm consult — a warm profile with cold artifacts (the post-re-key 65-min scenario) runs zero clang, `tier-profile` tier in ALL**; **slice 3 (promotion + next-re-entry pickup) same day: make-promotion-upgrade self-rescue on the skip path, sinfo-artifact resolves best-cached at re-entry (also fixes the silent post-swap downgrade), sessions record the race, `tier-promotion` tier in ALL**; **slice 4 (core-budget arbiter + priority queue) same day — T3b IS COMPLETE ([t3b-contract.md](t3b-contract.md) §0.1 ledger: classification, profile sidecar, promotion/pickup, arbiter; o0-max honored, clang metric zero-on-warm, promote budget = 2× recorded O0 cost)**; **T6 IS COMPLETE 2026-08-11 ([t6-contract.md](t6-contract.md) §0.1 ledger; slice (d): the audit found harvested-answer LOSS on abort — consumption now staged per-binding, commit at finalizeAll / restore on abort, invariant in smt.md §9.9; `t6-restart` 11/11)**; next: the activation spine — **N5 item 1 + stats step 4 (scoped) SHIPPED 2026-08-11: cross-executor fire identity unified (interp-leg stats goldens green for the FIRST time; t6-restart swap gate asserts per-key $stat_fires equality in mixed runs), session `(fires)` verb streams RuleKey-resolved tallies via the c2 registry + an evaluation-cumulative ledger** — **T6 slices (a)+(b) SHIPPED 2026-08-11 ([t6-contract.md](t6-contract.md)): always-on per-ReadAttempt fire staging (armed-only snapshot deleted), abortReadAttempt at MID_READ ∪ READ_COMPLETE with the (abort-read) verb, `t6-restart` tier 5/5 — §12.7 equivalence INCLUDING $stat_fires, admission + §12.13 flavor refusals driven; **slice (c) same day: post-abort pristine state admits the upgrade entry — executor-swap restart proven BOTH directions (plan↔.O0.so) with content equality + executor-blind total fires; per-key mixed-run fires equality is the (RuleId,VariantTag) rekey's second queued consumer** |
 | modules/namespaces | [modules.md](modules.md), [n4-contract.md](n4-contract.md) | N0–N5 | N0, **N1**, N2-A/B, and **all of N3** landed (N1 lexical occurrences, qualification, bindings, and persisted module identity; N3-A/B/C daemon boundaries, direct history, durable type registry; **N3-D qualified-path transforms, 2026-07-26**); **all of N4** ([n4-contract.md](n4-contract.md): N4-A durable bundle in META format 2, restore-on-open, replay audit, boundary-backed REPL projection; N4-B mapped namespace attachment) -- **N0-N4 are complete**, N5 unstarted |
-| reflection | [slog-reflection.md](slog-reflection.md) | RF0–RF5 | RF0 done; RF1 slices 0/0.1/1/2 shipped AND **THE DEFAULT IS ABI 2** (flipped 2026-08-06; [rf1-contract.md](rf1-contract.md) as-built: plan determinism, tie-group fixes ×3, ProgramModel, ABI-2 emitter + airtightness gate + daemon cohort decoder + Racket cohort adapter for the REPL's readers; `SLOG_PLAN_ABI=1` is the escape hatch; full suite 21/21 tiers + plan-determinism 506/506 cohorts at the new default); slice 3 (attribute vocabulary, absent-when-empty) and slice 4 (plan goldens of record, `plan-goldens` tier in ALL) SHIPPED 2026-08-06 — **RF1 IS COMPLETE, all six exit gates closed**; next in stream: RF1.5 model queries (unscheduled), RF2 image mount (W4′); RF5 semantic/module replacement now has a draft end-to-end contract in [rf5-contract.md](rf5-contract.md) |
+| reflection | [slog-reflection.md](slog-reflection.md) | RF0–RF5 | RF0 and RF1 complete (ABI 2 default; deterministic kernel plans and goldens); **RF1.5 normalized model queries, RF2 sealed image mount/catalog, RF3 decoded image activation, RF4 native materialization observations, and RF5-A immutable drafts/compiler diffs are complete (deep gate 2026-08-10)**. `ProgramChangeSet` v1 is frozen with compiler-produced image/change goldens and an independent wire consumer. Next: the RF5-B runtime/transaction join; [rf5-contract.md](rf5-contract.md) owns replacement semantics. |
 | REPL | [repl.md](repl.md), [repl-ux.md](repl-ux.md), [repl-terminal.md](repl-terminal.md) | R0–R5 | native Rust shell, private TCP server, live session/daemon vertical slice, structured change projection, executable `--plain` golden, and R1 budgeted tree, navigation, semantic change cards, command completion, visible-canvas search, live-relation observations, and buffered pagination shipped; canonical Q1 cursor protocol active, with boundary catalog/friendly parser/value/proof adapters next |
 | stats migration | [stats.md](stats.md) §7 | steps 1–7 | `$stat_*` shipped; migration unstarted |
 
@@ -1845,7 +1845,7 @@ private build/recount/persistence          read-only R5/whatif surface
 
 The **runtime / transaction arc** owns the mechanics of changing a live
 recipe-bearing database safely.  Its pre-join result must be able to accept a
-fully specified synthetic program change, build a private successor cone,
+fully specified sealed program change, build a private successor cone,
 recount and audit it, preserve or replace the correct durable identities,
 and atomically publish or abort it.  T6 supplies the one read-consistency
 mechanism: a reader pinned to an old boundary remains pinned, while a
@@ -1858,14 +1858,20 @@ correspondence.
 
 The **program / reflection arc** owns deciding and describing what the new
 program means.  RF1.5 provides normalized queries and fingerprints over
-`ProgramModel`; RF2 mounts sealed images read-only; the remaining RF3/RF4
-closure proves that image-described interpreted/native kernels and attachment
-observations match execution; and RF5-A produces immutable drafts, the three
-compiler diffs, explicit occurrence and relation-slot lineage, affected roots,
-and the union old/new dependency cone.  Read-only `preview`/`whatif` and REPL
-navigation may be built against these products.  Before the join this arc
-does not install tasks, allocate live `VersionKey`s, replay a recipe suffix,
-or mutate a database.
+`ProgramModel`; RF2 mounts sealed images read-only; RF3 cross-seals and runs
+image-described interpreted kernels; RF4 joins native coverage and attachment
+observations back to immutable image slots (RF2–RF4 complete 2026-08-09); and
+RF5-A now produces immutable drafts, the three compiler diffs, explicit total
+occurrence and relation-slot lineage, affected roots, and the union old/new
+dependency cone in frozen `ProgramChangeSet` format 1. Its compiler-produced
+image/change goldens and independent wire consumer are live in
+`tests/change-expected/` and `tests/api/`.
+Read-only `preview`/`whatif` and REPL
+navigation may be built against these products. RF3's additive equivalence
+path installs ordinary interpreted tasks at a settled tip, but before the join
+this arc does not replace an existing task graph, allocate successor
+`VersionKey`s, replay a recipe suffix, or mutate an existing recipe-bearing
+database as a program-change transaction.
 
 The arcs exchange a frozen, serializable **`ProgramChangeSet`** fixture.  The
 program arc produces at least:
@@ -1886,10 +1892,10 @@ maintenance routes or the mandatory fresh-cone fallback, invalidated count
 epochs, and the publication/restart decision.  Compiler code remains the
 authority for semantic/SCC differences; the session remains the authority
 for recipe and version lineage; the daemon remains the authority for private
-materialization, recount, and publication.  Golden `ProgramChangeSet`s let
-the runtime arc proceed before the compiler producer is finished, and a
-synthetic consumer lets the program arc prove serialization and diagnostics
-without a daemon.  The first joint battery runs the exact golden products
+materialization, recount, and publication. Golden `ProgramChangeSet`s let
+the runtime arc proceed before the compiler producer is finished, and the
+independent consumer lets the program arc prove serialization and diagnostics
+without importing producer codecs or a daemon. The first joint battery runs the exact golden products
 through both sides so the fixture cannot become a parallel informal ABI.
 
 W5′ collision ownership is therefore:
@@ -1897,7 +1903,7 @@ W5′ collision ownership is therefore:
 | surface | W5′ owner before RF5-B |
 |---|---|
 | `ProgramModel` queries, image schema/container, compiler diffs and lineage | program arc |
-| RF1.5/RF2/RF5-A goldens and synthetic change-set producer | program arc |
+| RF1.5/RF2/RF5-A compiler-produced goldens and fixture producer | program arc |
 | T0(c) registration, counts/stats, maintenance routes, recount, T6 | runtime arc |
 | database candidate construction and atomic publication | runtime arc |
 | `ProgramChangeSet` schema and golden corpus | frozen interface; joint review — **FROZEN 2026-08-12** ([activation-contract.md](activation-contract.md) §2/§6: abi 1, seven-fixture corpus of record via `tests/activation/CORPUS.sha256`, producer conformance gate `tests/api/pcs-check.rkt`, `activation-freeze` tier in ALL; the runtime arc's A1–A4 pre-join deliverable is COMPLETE — validate/mint/prepare/sever-heal/recount/publish-or-abort proven live, the RF5-B two-instance gate 17/17 with outside-cone VersionKey reuse by construction) |

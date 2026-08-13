@@ -2528,6 +2528,15 @@ public:
   struct KernelAttachment
   {
     std::string exec_key;
+    // RF4 execution materialization: variant slots are kernel rule-def
+    // ordinals.  An empty artifact key denotes the decoded interpreter;
+    // otherwise native_variants is exactly the descriptor's covered set and
+    // the complement remains interpreted.  native_slot is the descriptor
+    // kernel-table position, not an evaluation-local relation id.
+    std::string artifact_key;
+    u32 artifact_native_slot = UINT32_MAX;
+    u32 variants = 0;
+    std::vector<u32> native_variants;
     std::vector<std::pair<std::string, u64>> writes;
     std::vector<std::string> reads;
   };

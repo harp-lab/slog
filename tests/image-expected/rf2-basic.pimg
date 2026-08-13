@@ -1,0 +1,78 @@
+(program-image
+ (state sealed)
+ (key "98db03c33027946f1fa293f105845043bf23643b43ced43926747b7396871bd8")
+ (format 1)
+ (compiler-key "compiler-test")
+ (plan-abi 2)
+ (model-key "086a596c6fb16af3cd2d9f669739388ccb5d9473d62005e0c91922d66929e6ac")
+ (root-module 0)
+ (declarations
+  (declaration 0 alias scalar (set int str))
+  (declaration 1 function plus (int int int))
+  (declaration 2 relation edge (table int int))
+  (declaration 3 relation reach (table int int)))
+ (modules
+  (module 0 (parent #f)
+    (ordinal 0)
+    (entry-source 0)
+    (home ())
+    (lexical-path ())
+    (bindings)
+    (sources 0)))
+ (sources
+  (source
+   0
+   (module 0)
+   (path "tests/reflect/rf2-basic.slog")
+   (digest "368d81e4bbf548c98f0f45d46c2aed711d886a09dea0e5fa9cc7c68f6647b311")
+   (tokens
+    (token id (span 0 0 0 5) "table")
+    (token newline (span 0 5 0 6) "\n")
+    (token eof (span 6 0 6 0) ""))))
+ (rules
+  (rule
+   0
+   (source-id 0)
+   (module 0)
+   (source 0)
+   (origin (source 0 4 0))
+   (fingerprint
+    "a18e148a98a4398bd368e6d8d9c8053ace752e6fda622f42ddf63fbc3f214048")
+   (normalized "(rule (edge ?0 ?1) --> (reach ?0 ?1))")
+   (heads reach)
+   (positive edge)
+   (negative)
+   (negative-wildcard))
+  (rule
+   1
+   (source-id 1)
+   (module 0)
+   (source 0)
+   (origin (source 0 5 0))
+   (fingerprint
+    "1a557175f4ab8174f580696bf81a64735eee7db52e995317d6cc224538a1c68f")
+   (normalized "(rule (reach ?0 ?1) (edge ?1 ?2) --> (reach ?0 ?2))")
+   (heads reach)
+   (positive edge reach)
+   (negative)
+   (negative-wildcard)))
+ (dependencies
+  (dependency edge reach positive 0)
+  (dependency edge reach positive 1)
+  (dependency reach reach positive 1))
+ (components
+  (component 0 (level 0) (members edge))
+  (component 1 (level 1) (members reach)))
+ (component-edges (component-edge 0 1 positive))
+ (cohorts
+  (cohort
+   0
+   (digest "4520fc312294866052bdb8cf1eb880719c1abebdc1b87f44495f2e0932a0be14")
+   (plan
+    (kernel-cohort
+     (abi 2)
+     (flavor normal)
+     (attachments)
+     (declarations)
+     (dynamic)
+     (manifest))))))
