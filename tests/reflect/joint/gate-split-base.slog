@@ -1,0 +1,22 @@
+table (edge int int)
+table (path int int)
+table (back int int)
+
+rule
+(edge 1 2)
+(edge 2 3)
+
+rule
+(edge X Y)
+-->
+(path X Y)
+
+rule
+(path X Y)
+-->
+(back Y X)
+
+rule
+(back X Y)
+-->
+(path Y X)

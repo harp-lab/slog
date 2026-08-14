@@ -750,6 +750,13 @@
                   [(regexp-match? #px"activation-unsupported"
                                   (exn-message e))
                    `(refused activation-unsupported ,(exn-message e))]
+                  ;; a suffix batch that fails does so AFTER the candidate
+                  ;; program event committed -- the recipe records exactly
+                  ;; the prefix that ran; never narrate that as an abort
+                  [(regexp-match? #px"activation-suffix" (exn-message e))
+                   (echo! s (format "(activation-suffix-failed ~s)"
+                                    (exn-message e)))
+                   `(suffix-failed ,(exn-message e))]
                   [else
                    ;; session-run!'s own handler already aborted the
                    ;; boundary and restored the bookkeeping; the base is
@@ -771,6 +778,33 @@
                              "fail-after-heal: injected test fault"))
                     (when outer (outer s* bplan))))])
             (session-run! s entry))
+          ;; rf5 §7 step 4 / §8's v1 admission: replay the mapped
+          ;; data-overlay suffix IN ORDER -- each admitted batch is one
+          ;; ordinary recipe event against its carried anchor, applied to
+          ;; the descendant recipe (so it propagates through the CANDIDATE
+          ;; rules, which is the oracle's demand).  resolve-activation
+          ;; already refused any suffix whose anchor is not carried-unique
+          ;; and any non-batch event (historical-program-replacement).
+          (define suffix-events (activation-plan-suffix plan))
+          (with-handlers ([exn:fail?
+                           (lambda (e)
+                             (error 'session-activate
+                                    "activation-suffix: ~a" (exn-message e)))])
+            (for ([ev (in-list suffix-events)])
+              (match ev
+                [`(batch ,rel ,_anchor ,changes ())
+                 (for ([c (in-list changes)])
+                   (match c
+                     [`(,(and sign (or '+ '-)) ,vals ...)
+                      (session-batch! s sign
+                                      (if (symbol? rel) rel
+                                          (string->symbol (format "~a" rel)))
+                                      vals)]
+                     [_ (error 'session-activate
+                               "unsupported suffix change: ~s" c)]))
+                 (session-flush! s)]
+                [other (error 'session-activate
+                              "unsupported suffix event: ~s" other)])))
           ;; narration from the COMMITTED plan: severed creates are the
           ;; rebuilds; other creates are carried relations rebound by
           ;; stratum cohabitation (level-clustered strata -- see the
@@ -791,10 +825,15 @@
           (define retired-n
             (for/sum ([p (in-list pre-strata)])
               (if (memq p post-strata) 0 1)))
-          (echo! s (format "(activated (program ~a) (rebuilt ~a) (carried ~a) (carried-rebound ~a) (retired ~a))"
+          ;; (suffix N) is absent-when-empty -- the RF1 attribute idiom;
+          ;; suffix-less narrations stay byte-identical to the A2/A3 pins
+          (echo! s (format "(activated (program ~a) (rebuilt ~a) (carried ~a) (carried-rebound ~a) (retired ~a)~a)"
                            (activation-plan-program-key plan)
                            (length severed) (length aliased)
-                           (length rebound) retired-n))
+                           (length rebound) retired-n
+                           (if (null? suffix-events)
+                               ""
+                               (format " (suffix ~a)" (length suffix-events)))))
           plan)])]))
 
 ;; T5 slice (a): pin the writer strata of `rel` to a policy ('interpreted

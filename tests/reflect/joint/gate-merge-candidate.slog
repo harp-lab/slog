@@ -1,0 +1,30 @@
+instantiate "w5-demo-lib.slog" as left
+instantiate "w5-demo-lib.slog" as right
+
+table (seed int int)
+table (probe int int)
+
+rule
+(seed 1 2)
+(seed 2 3)
+(right.edge 5 6)
+
+rule
+(seed X Y)
+-->
+(left.edge X Y)
+
+rule
+(left.path X Y)
+-->
+(probe X Y)
+
+rule
+(left.path X Y)
+-->
+(right.path X Y)
+
+rule
+(right.path X Y)
+-->
+(left.path X Y)

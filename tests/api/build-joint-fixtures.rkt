@@ -183,7 +183,20 @@
         (list "w5-demo"
               "w5-demo-base.slog" "w5-demo-candidate.slog"
               '("w5-demo-lib.slog" "w5-demo-lib-v2.slog"
-                "w5-demo-candidate.slog"))))
+                "w5-demo-candidate.slog"))
+        ;; the rf5 §10 gate cases (tests/rf5-gate.sh)
+        (list "gate-split"
+              "gate-split-base.slog" "gate-split-candidate.slog"
+              '("gate-split-candidate.slog"))
+        (list "gate-merge"
+              "gate-merge-base.slog" "gate-merge-candidate.slog"
+              '("w5-demo-lib.slog" "gate-merge-candidate.slog"))
+        (list "gate-identical"
+              "gate-identical-base.slog" "gate-identical-candidate.slog"
+              '("gate-identical-candidate.slog"))
+        (list "gate-duplicate"
+              "gate-duplicate-base.slog" "gate-duplicate-candidate.slog"
+              '("gate-duplicate-candidate.slog"))))
 
 (define (build-joint-fixtures! output-dir)
   (make-directory* output-dir)

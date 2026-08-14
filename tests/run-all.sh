@@ -59,6 +59,7 @@ run_harness() {
     activation-a3) bash tests/activation-a3.sh ;;
     activation-freeze) bash tests/activation-freeze.sh ;;
     rf5-join)    bash tests/rf5-join.sh ;;
+    rf5-gate)    bash tests/rf5-gate.sh ;;
     w5-exit-demo) bash tests/w5-exit-demo.sh ;;
     tu-determinism) bash tests/tu-determinism.sh ;;
     incremental-stress) bash tests/incremental-stress.sh ;;
@@ -75,7 +76,7 @@ run_harness() {
   esac
 }
 
-ALL=(unit diag stats arena seq counts wcoj3 interp structid golden plan-goldens tier-classification tier-profile tier-promotion tier-arbiter identity-keys t6-restart activation-live activation-a3 activation-freeze rf5-join w5-exit-demo api tiered pause protocol repl session joint incremental-stress compression smt-pin smt-solver)
+ALL=(unit diag stats arena seq counts wcoj3 interp structid golden plan-goldens tier-classification tier-profile tier-promotion tier-arbiter identity-keys t6-restart activation-live activation-a3 activation-freeze rf5-join rf5-gate w5-exit-demo api tiered pause protocol repl session joint incremental-stress compression smt-pin smt-solver)
 # `abi2` (RF1 slice 2's airtightness + the ABI-1/ABI-2 differential) is a
 # named tier but NOT in ALL: like plan-determinism it compiles each program
 # from cold twice, so it is a slice gate rather than a per-change one.  Run it
