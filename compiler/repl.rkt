@@ -2505,13 +2505,20 @@
                                            (plan-rule-rid r)) #t)])
       r))
   ;; The first thing to check is whether the premise of the question holds:
-  ;; a fact that IS there needs `why`, not a frontier.
+  ;; a fact that IS there needs `why`, not a frontier.  Distinguish a
+  ;; failing probe from a confirmed absence: a swallowed query error must
+  ;; not masquerade as "absent" and send the frontier over a premise it
+  ;; never established.
   (define present?
-    (with-handlers ([exn:fail? (lambda (_) #f)])
+    (with-handlers ([exn:fail? (lambda (e) (cons 'unprobeable (exn-message e)))])
       (positive? (run-watch-query state rs (format "?count ~a" raw)))))
+  (define unprobeable-note
+    (and (pair? present?)
+         (format "(could not probe presence: ~a) — showing the frontier anyway"
+                 (cdr present?))))
   (define body
     (cond
-      [present?
+      [(eq? present? #t)
        (list (format "~a is present — `why ~a` explains how it got here" raw raw))]
       [(null? rules)
        (list (format "no resident rule writes ~a (see `tiers` and `code`)"
@@ -2525,7 +2532,10 @@
                       (length rules) (if (= (length rules) 1) "" "s")
                       relation)))]))
   (attach-session-state state
-                        (text-result (format "Why not ~a" raw) body
+                        (text-result (format "Why not ~a" raw)
+                                     (if unprobeable-note
+                                         (cons unprobeable-note body)
+                                         body)
                                      #:kind "proof")))
 
 ;; ---- T5 slice (d3): standing breakpoints (repl-ux §9.1) ------------------

@@ -589,39 +589,46 @@
 ;; re-key.  Failures are swallowed: registration is diagnostics, and a
 ;; legacy daemon without the verb must not break a run.
 (define (register-rule-meta! s proghash)
-  (with-handlers ([exn:fail? void])   ; diagnostics; a pre-c2 daemon must not break a run
-    (define plan-path (fullpath (format "build/~a.plan" proghash)))
-    (when (file-exists? plan-path)
-      ;; the ABI-2 cohort: (manifest (kernel (ord N) (key K) ...) ...) maps
-      ;; kernel ords to exec keys; each kernel body's (debug (rule (ord J)
-      ;; (rid R) (variant V) (source S)) ...) block carries the rids.  An
-      ;; entry is scoped (kernel EXEC-KEY, rid) -- rids are per-kernel.
-      ;; ABI-1 plans (SLOG_PLAN_ABI=1) have neither block: no registration
-      ;; under the escape hatch, by construction.
-      (define metas    ; ((kernel-key rid loc) ...)
-        (match (call-with-input-file plan-path read)
-          [`(kernel-cohort ,parts ...)
-           (define key-of-ord
-             (for*/hash ([p (in-list parts)]
-                         #:when (and (pair? p) (eq? (car p) 'manifest))
-                         [k (in-list (cdr p))])
-               (match k
-                 [`(kernel (ord ,n) (key ,key) ,_ ...)
-                  (values n (format "~a" key))])))
-           (for*/list ([p (in-list parts)]
-                       #:when (and (pair? p) (eq? (car p) 'kernel))
-                       [kord (in-value (match p
-                                         [`(kernel (ord ,n) ,_ ...) n]))]
-                       [d (in-list (cdr p))]
-                       #:when (and (pair? d) (eq? (car d) 'debug))
-                       [r (in-list (cdr d))])
-             (match r
-               [`(rule (ord ,_) (rid ,rid) (variant ,_) (source ,loc) ,_ ...)
-                (list (hash-ref key-of-ord kord "") rid (format "~a" loc))]
-               [`(rule (ord ,_) (rid ,rid) (variant ,_) ,_ ...)
-                (list (hash-ref key-of-ord kord "") rid #f)]))]
-          [_ '()]))
-      (when (pair? metas)
+  ;; parse the plan under its OWN handler: a torn/unreadable build/<h>.plan
+  ;; must surface a skip note, not silently disable rule-meta for this
+  ;; stratum forever (fires would degrade to (key #f), indistinguishable
+  ;; from honest "no lineage").  The daemon round-trip below keeps the
+  ;; blanket swallow -- a pre-c2 daemon lacking the verb must not break a
+  ;; run.  ABI-1 plans (SLOG_PLAN_ABI=1) have no manifest/debug blocks: no
+  ;; registration under the escape hatch, by construction (empty metas).
+  (define plan-path (fullpath (format "build/~a.plan" proghash)))
+  (define metas    ; ((kernel-key rid loc) ...) or #f on a parse failure
+    (and (file-exists? plan-path)
+         (with-handlers
+             ([exn:fail?
+               (lambda (e)
+                 (echo! s (format "(rule-meta-skipped ~s ~s)"
+                                  (format "~a" proghash) (exn-message e)))
+                 #f)])
+           (match (call-with-input-file plan-path read)
+             [`(kernel-cohort ,parts ...)
+              (define key-of-ord
+                (for*/hash ([p (in-list parts)]
+                            #:when (and (pair? p) (eq? (car p) 'manifest))
+                            [k (in-list (cdr p))])
+                  (match k
+                    [`(kernel (ord ,n) (key ,key) ,_ ...)
+                     (values n (format "~a" key))])))
+              (for*/list ([p (in-list parts)]
+                          #:when (and (pair? p) (eq? (car p) 'kernel))
+                          [kord (in-value (match p
+                                            [`(kernel (ord ,n) ,_ ...) n]))]
+                          [d (in-list (cdr p))]
+                          #:when (and (pair? d) (eq? (car d) 'debug))
+                          [r (in-list (cdr d))])
+                (match r
+                  [`(rule (ord ,_) (rid ,rid) (variant ,_) (source ,loc) ,_ ...)
+                   (list (hash-ref key-of-ord kord "") rid (format "~a" loc))]
+                  [`(rule (ord ,_) (rid ,rid) (variant ,_) ,_ ...)
+                   (list (hash-ref key-of-ord kord "") rid #f)]))]
+             [_ '()]))))
+  (with-handlers ([exn:fail? void])   ; the daemon round-trip; a pre-c2 daemon must not break a run
+    (when (and metas (pair? metas))
         (define loc->key
           (for*/fold ([h (hash)])
                      ([triple (in-list (session-identity s))]
@@ -644,7 +651,7 @@
         ;; one reply line: (rule-meta-registered "HASH" n) -- or a refusal
         ;; from a pre-c2 daemon; either way exactly one line, not echoed
         (read-line (session-out s))
-        (void)))))
+        (void))))
 
 ;; N5/stats-4: the durable-identity fire view -- (fire-record ...) lines up
 ;; to the (fire-end n) terminator (exclusive).  Fires whose locs the
@@ -728,19 +735,28 @@
         (define dir (build-path "out" "activation"
                                 (format "~a-~a" (session-layer-id s)
                                         (session-next-event s))))
-        (make-directory* dir)
-        (define entry
+        ;; validate the candidate sources BEFORE creating the dir, so a
+        ;; malformed candidate refuses without leaving an orphan directory
+        (define srcs
           (match (change-set-candidate cs)
             [`((image ,_) (compiler ,_) (plan-abi ,_) (sources ,srcs ...))
              (when (null? srcs)
                (error 'session-activate "candidate carries no sources"))
-             (for/last ([src (in-list srcs)])
-               (match-define `((path ,p) (text ,text)) src)
-               (define f (build-path dir (file-name-from-path (format "~a" p))))
-               (call-with-output-file f #:exists 'replace
-                 (lambda (o) (display text o)))
-               (path->string f))]
+             srcs]
             [_ (error 'session-activate "malformed candidate")]))
+        ;; a committed activation's dir is load-bearing (replay reads its
+        ;; captured sources), but an aborted/refused one's is pure garbage
+        (define (clean-event-dir!)
+          (with-handlers ([exn:fail? void])
+            (when (directory-exists? dir) (delete-directory/files dir))))
+        (make-directory* dir)
+        (define entry
+          (for/last ([src (in-list srcs)])
+            (match-define `((path ,p) (text ,text)) src)
+            (define f (build-path dir (file-name-from-path (format "~a" p))))
+            (call-with-output-file f #:exists 'replace
+              (lambda (o) (display text o)))
+            (path->string f)))
         (with-handlers
             ([exn:fail?
               (lambda (e)
@@ -750,10 +766,13 @@
                   ;; typed refusal it is, not an abort
                   [(regexp-match? #px"activation-unsupported"
                                   (exn-message e))
+                   ;; nothing committed: the event dir is garbage
+                   (clean-event-dir!)
                    `(refused activation-unsupported ,(exn-message e))]
                   ;; a suffix batch that fails does so AFTER the candidate
                   ;; program event committed -- the recipe records exactly
-                  ;; the prefix that ran; never narrate that as an abort
+                  ;; the prefix that ran; never narrate that as an abort, and
+                  ;; KEEP the dir (replay reads its captured sources)
                   [(regexp-match? #px"activation-suffix" (exn-message e))
                    (echo! s (format "(activation-suffix-failed ~s)"
                                     (exn-message e)))
@@ -761,7 +780,8 @@
                   [else
                    ;; session-run!'s own handler already aborted the
                    ;; boundary and restored the bookkeeping; the base is
-                   ;; intact.  Surface the abort as data.
+                   ;; intact.  Surface the abort as data and drop the dir.
+                   (clean-event-dir!)
                    (echo! s (format "(activation-aborted ~s)" (exn-message e)))
                    `(aborted ,(exn-message e))]))])
           (parameterize
@@ -859,8 +879,17 @@
        (hash-ref versions rel
                  (lambda ()
                    (error 'session-activate-pcs "no version for ~a" rel))))))
-  (session-activate! s (read (open-input-string substituted))
-                     #:fail-after-heal fail?))
+  ;; a syntactically malformed fixture must surface as a typed refusal, not
+  ;; a raw "read: expected a closing )" with no hint of its origin
+  (define datum
+    (with-handlers
+        ([exn:fail:read?
+          (lambda (e)
+            `(refused malformed-change-set ,(exn-message e)))])
+      (read (open-input-string substituted))))
+  (if (and (pair? datum) (eq? 'refused (car datum)))
+      datum
+      (session-activate! s datum #:fail-after-heal fail?)))
 
 ;; T5 slice (a): pin the writer strata of `rel` to a policy ('interpreted
 ;; or 'auto); returns the affected scc ids.  Policy applies at re-entry
