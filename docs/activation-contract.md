@@ -2,8 +2,11 @@
 
 *Drafted 2026-08-12 (W5′ runtime/transaction arc, after T3b, T0(c), T6,
 and the N5/stats-4 identity unification closed).  **Status: A1–A4 ALL
-SHIPPED 2026-08-12 (as-built in §5) — the runtime arc's pre-join
-deliverable is COMPLETE; next is the RF5-B join itself (the first joint
+SHIPPED 2026-08-12 (as-built in §5); **the RF5-B join is COMPLETE
+2026-08-13** — the first joint battery (tier `rf5-join`) runs the
+producer's regenerated fixtures through this consumer, the suffix replays
+live, and the §10 cases are pinned (tier `rf5-gate`); the original plan
+(the first joint
 battery, §6).**  Normative parents:
 [roadmap.md](roadmap.md) §6 (the two-arc plan, the `ProgramChangeSet`
 fixture, the ownership table); [rf5-contract.md](rf5-contract.md) §7

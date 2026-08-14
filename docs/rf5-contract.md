@@ -1,14 +1,17 @@
 # RF5 — semantic program and module-instance replacement
 
-**Status (2026-08-13): the two-arc join is merged — RF5-A compiler handoff
-and the RF5-B activation spine (A1–A4, [activation-contract.md](activation-contract.md))
-live in one tree.** RF1.5 supplies the query foundation, RF2 supplies sealed
-read-only images, `compiler/program-change.rkt` freezes the pure
-draft/diff boundary described below, and `session-activate!` executes the
-correctness-first transaction against the frozen `.pcs` corpus. What remains
-of RF5-B is the first joint battery: the producer regenerating the golden
-corpus from its own diffs (the sealed `.pchange` spelling and the frozen
-fixture grammar still need that bridge). This document
+**Status (2026-08-13): RF5-B IS COMPLETE.** The two-arc join is merged;
+the first joint battery runs the producer and consumer together
+(`compiler/change-pcs.rkt` bridges the sealed set into the frozen fixture
+grammar; tier `rf5-join`); the mapped data-overlay suffix replays live
+through the candidate rules; the §10 additional cases are pinned (tier
+`rf5-gate`: split commits, cross-instance merge refuses typed on the torn
+clustering, identical/duplicate/reactivation/suffix cases live); and §6's
+initial surface — `replace instance ALIAS with "LIB.slog"`, `preview`,
+`activate` — runs at the prompt over `session-activate-pcs!`.  RF5-C
+(precise healing) and RF5-D (historical branches) remain open, as does
+widening the sever closure to the resident∪candidate clustering union.
+This document
 turns the high-level RF5 program-image plan in
 [slog-reflection.md](slog-reflection.md) into an end-to-end replacement
 contract. It is the review target for roadmap W5'. Nothing here describes
@@ -476,9 +479,12 @@ accepts a newly inferred correspondence.
    handles, immutable draft revisions, preserve/replace/remove/add operations,
    sealed previews, the three-diff result, explicit total lineage, frozen
    serialization/golden consumer, and no daemon mutation.
-2. **RF5-B — correctness-first activation.** Latest-program replacement,
-   mapped data-overlay suffix, private cone rebuild, recount, pre-commit
-   inspection, atomic publish/abort, save/replay.
+2. **RF5-B — correctness-first activation (complete 2026-08-13).**
+   Latest-program replacement, mapped data-overlay suffix (replayed live
+   through the candidate rules), private cone rebuild, recount, pre-commit
+   inspection, atomic publish/abort, save/replay; the joint battery
+   (`rf5-join`), the §10 case battery (`rf5-gate`), and the prompt surface
+   (`replace instance`/`preview`/`activate`).
 3. **RF5-C — precise healing.** Admit positive additions, acyclic deletions,
    and recursive DRed one capability-certified surface at a time; compare
    every result and sidecar with RF5-B's fresh cone oracle.
