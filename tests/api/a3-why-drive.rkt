@@ -51,22 +51,8 @@
             (not (regexp-match? #px"is present" whynot-gained-before))))
 
 ;; ---- THE ACTIVATION -------------------------------------------------------
-;; substituted exactly as session-drive's activate op does
-(define text (file->string fixture-path))
-(define head (session-current-boundary s))
-(define pkey (boundary-plan-program-key (last (session-boundary-history s))))
-(define versions
-  (for/hash ([(q v) (in-hash (boundary-environment head))])
-    (values (qname->display q) v)))
-(define substituted
-  (regexp-replace*
-   #px"@V:([A-Za-z0-9_.]+)@"
-   (string-replace (string-replace text "@BASE-PROGRAM@" pkey)
-                   "@BASE-BOUNDARY@" (boundary-key head))
-   (lambda (_ rel)
-     (hash-ref versions rel
-               (lambda () (error 'a3-why-drive "no version for ~a" rel))))))
-(define plan (session-activate! s (read (open-input-string substituted))))
+;; the templated substitution + activation is session-activate-pcs!
+(define plan (session-activate-pcs! s (file->string fixture-path)))
 (check 'activation-committed (activation-plan? plan))
 
 ;; ---- AFTER ----------------------------------------------------------------

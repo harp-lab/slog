@@ -360,6 +360,12 @@
   (add-rule-lineage 'program-draft-preserve-rule draft old-rule-key
                     old-slot new-slot 'preserved))
 
+;; Completes the symmetric draft-verb family (preserve/replace/remove/add).
+;; No current producer emits 'modified rule lineage -- auto-program-draft
+;; pairs rules by normalized text, so a changed rule is a remove+add -- but
+;; datum->rule-lineage reads the 'modified kind off the wire, so the verb
+;; and its vocabulary are kept intentionally for a producer that diffs rules
+;; positionally.
 (define (program-draft-replace-rule draft old-rule-key old-slot new-slot)
   (add-rule-lineage 'program-draft-replace-rule draft old-rule-key
                     old-slot new-slot 'modified))

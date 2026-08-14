@@ -39,7 +39,10 @@
 
 (provide program-change-set->pcs
          pcs->string
-         auto-program-draft)
+         auto-program-draft
+         ;; the per-facet mappers, shared with the RF5-A golden builder
+         map-rules
+         map-relations)
 
 ;; ---------------------------------------------------------------------------
 ;; Generic total-coverage draft construction (shared by the joint fixture

@@ -298,25 +298,9 @@
        (for-each displayln lines)
        (displayln `(fires-end ,(length lines)))]
       [`(activate ,file ,fail?)
-       (define text (file->string file))
-       (define head (session-current-boundary s))
-       (define pkey (boundary-plan-program-key
-                     (last (session-boundary-history s))))
-       (define versions
-         (for/hash ([(q v) (in-hash (boundary-environment head))])
-           (values (qname->display q) v)))
-       (define substituted
-         (regexp-replace*
-          #px"@V:([A-Za-z0-9_.]+)@"
-          (string-replace
-           (string-replace text "@BASE-PROGRAM@" pkey)
-           "@BASE-BOUNDARY@" (boundary-key head))
-          (lambda (_ rel)
-            (hash-ref versions rel
-                      (lambda () (error 'activate "no version for ~a" rel))))))
+       ;; the templated-fixture substitution + activation is session-activate-pcs!
        (define result
-         (session-activate! s (read (open-input-string substituted))
-                            #:fail-after-heal fail?))
+         (session-activate-pcs! s (file->string file) #:fail-after-heal fail?))
        (displayln (match result
                     [(? activation-plan?)
                      `(activation-committed ,(activation-plan-program-key result))]

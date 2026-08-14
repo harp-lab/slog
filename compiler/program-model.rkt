@@ -14,17 +14,14 @@
  (struct-out program-rule-change)
  (struct-out program-semantic-diff)
  semantic-rule-normal-form
- semantic-rule-fingerprint
  program-model-content-fingerprint
  program-model-rules
  program-model-normalized-rules
  program-model-fingerprint
- program-model-relations
  program-model-writers
  program-model-dependency-edges
  program-model-components
  program-model-condensation-edges
- program-model-successors
  program-model-forward-cone
  program-model-union-cone
  diff-program-models)
@@ -73,9 +70,6 @@
 ;; reflection and emission to acquire subtly different normalization rules.
 (define (semantic-rule-normal-form rule)
   (rule-sort-key rule))
-
-(define (semantic-rule-fingerprint rule)
-  (sha256-string (semantic-rule-normal-form rule)))
 
 (define (symbols xs)
   (sort (remove-duplicates xs) symbol<?))
@@ -187,12 +181,6 @@
        (hash-ref (program-model-extra-edge-kinds model) edge 'derived) #f)))
   (sort (append rule-edges derived) program-edge<?))
 
-(define (program-model-relations model)
-  (symbols
-   (append*
-    (for/list ([members (in-hash-values (program-model-scc-members model))])
-      members))))
-
 ;; relation -> sorted image-local rule slots (duplicates retained)
 (define (program-model-writers model)
   (define writers
@@ -241,13 +229,6 @@
     (hash-update h (program-edge-from edge)
                  (lambda (targets) (set-add targets (program-edge-to edge)))
                  (set))))
-
-(define (program-model-successors model relation)
-  (sort
-   (set->list
-    (hash-ref (successor-hash (program-model-dependency-edges model))
-              relation (set)))
-   symbol<?))
 
 (define (normalize-roots roots)
   (cond [(set? roots) (set->list roots)]
