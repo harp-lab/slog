@@ -39,7 +39,19 @@
          "query-front.rkt" ; the R2 `?` register grammar
          "query-plan.rkt"  ; Q1 catalog planner + ABI-1 wire emission
          "session.rkt"
-         (only-in "tools.rkt" convert-db-folder))
+         (only-in "tools.rkt" convert-db-folder)
+         ;; RF5-B at the prompt: the producer pipeline + the consumer's
+         ;; synthetic preview resolution
+         (only-in "modules.rkt" load-program-list)
+         (only-in "compile.rkt" program->jobs emit-program-image)
+         (only-in "program-change.rkt" seal-program-draft
+                  program-change-set-key)
+         "change-pcs.rkt"
+         (only-in "activation.rkt" parse-change-set resolve-activation
+                  activation-refusal? base-env
+                  change-set-diffs change-set-slot-lineage
+                  activation-plan? activation-plan-version-allocs
+                  activation-plan-program-key))
 
 (define protocol-version 1)
 (define default-max-frame-bytes (* 16 1024 1024))
@@ -330,6 +342,10 @@
    "  del REL V...        retract one input tuple and propagate it"
    "  whatif add|del REL V...  preview the edit's cone: affected relations,"
    "                      sizes, and the repair route -- nothing is mutated"
+   "  replace instance ALIAS with \"LIB.slog\"  seal a program-replacement"
+   "                      proposal from the last-run program (RF5-B)"
+   "  preview             re-render the pending proposal's diffs/dispositions"
+   "  activate            run the pending proposal's activation transaction"
    "  stage +(R V..) -(..) queue signed edits; `status` shows them pending"
    "  flush               commit everything staged as one update epoch"
    "  recount [force]     re-establish (or force-rebuild) the count cache"
@@ -1795,6 +1811,199 @@
                                      'outcome (format "~a" (second o))
                                      'watch (and (third o) (format "~a" (third o)))))
                  outcomes)))
+
+;; ---- RF5-B at the prompt: replace instance / preview / activate -----------
+;;
+;; rf5-contract §6's initial surface, the slice §10.1 assigns to RF5-B.
+;; `replace instance ALIAS with "LIB.slog"` edits the LAST-RUN program by
+;; retargeting that one instantiate line, then runs the ORDINARY producer
+;; pipeline -- both images compiled, the total-coverage draft
+;; (auto-program-draft: nothing inferred), the sealed ProgramChangeSet,
+;; the frozen templated fixture (change-pcs.rkt) -- and renders the
+;; PREVIEW from a synthetic resolution: dispositions, diff counts, typed
+;; refusals.  Nothing touches the live session until `activate`, which
+;; substitutes the placeholders against the committed boundary
+;; (session-activate-pcs!) and runs the proven A2 transaction.  `preview`
+;; re-renders the pending proposal.  drafts persist under out/drafts/.
+
+(define repl-last-run (make-weak-hasheq))
+(define repl-proposals (make-weak-hasheq))
+(define repl-draft-counter (box 0))
+
+(define (proposal-compile-image source-path)
+  (define program
+    (first (load-program-list (path->string source-path) (hash))))
+  (define pp (program->jobs program))
+  (define out-dir (make-temporary-file "repl-draft-image-~a" 'directory))
+  (dynamic-wind
+    void
+    (lambda ()
+      (define-values (image _path)
+        (emit-program-image program (first pp) out-dir
+                            #:type-env (fourth pp) #:model (fifth pp)))
+      image)
+    (lambda () (delete-directory/files out-dir))))
+
+;; synthetic preview: the pcs-check convention -- placeholders substitute
+;; against the synthetic base, the consumer resolves at layer-new/1
+(define (proposal-preview pcs-text)
+  (define vslots (make-hash))
+  (define substituted
+    (regexp-replace*
+     #px"@V:([A-Za-z0-9_.]+)@"
+     (string-replace (string-replace pcs-text "@BASE-PROGRAM@" "p1:layer-base:0")
+                     "@BASE-BOUNDARY@" "b1:layer-base:0")
+     (lambda (_ rel)
+       (format "v1:layer-base:0:~a"
+               (hash-ref! vslots rel (lambda () (hash-count vslots)))))))
+  (define cs (parse-change-set (read (open-input-string substituted))))
+  (cond
+    [(activation-refusal? cs) (list (format "~a" cs))]
+    [else
+     (define diffs (change-set-diffs cs))
+     (define result
+       (resolve-activation
+        cs
+        (base-env "p1:layer-base:0" "b1:layer-base:0" #t
+                  (for/hash ([sl (in-list (change-set-slot-lineage cs))]
+                             #:when (second sl))
+                    (values (first sl) (second sl)))
+                  '(smt seq))
+        #:layer "layer-new" #:event 1))
+     (cond
+       [(activation-refusal? result) (list (format "~a" result))]
+       [else
+        (define allocs (activation-plan-version-allocs result))
+        (define (of disp)
+          (sort (for/list ([(q a) (in-hash allocs)]
+                           #:when (eq? (third a) disp))
+                  q)
+                symbol<?))
+        (append
+         (list (format "diffs: ~a" diffs))
+         (list (format "rebuild: ~a" (of 'rebuild))
+               (format "carry: ~a relation~a" (length (of 'carry))
+                       (if (= 1 (length (of 'carry))) "" "s"))
+               (if (null? (of 'retire))
+                   "retire: none"
+                   (format "retire: ~a" (of 'retire))))
+         (list "route: correctness-first · publication: commit after audits"
+               "nothing is live yet — `activate` runs the transaction"))])]))
+
+(define (replace-instance-result state argument)
+  (define m
+    (regexp-match
+     #px"^instance[[:space:]]+([^[:space:]]+)[[:space:]]+with[[:space:]]+\"([^\"]+)\"[[:space:]]*$"
+     (string-trim argument)))
+  (unless m
+    (error 'replace "expected: replace instance ALIAS with \"LIB.slog\""))
+  (match-define (list _ alias lib) m)
+  (define rs (ensure-session-record! state))
+  (define base-path
+    (or (hash-ref repl-last-run rs #f)
+        (error 'replace "no program has been run in this session; `run PATH` first")))
+  (define base-dir (or (path-only (string->path base-path)) (build-path ".")))
+  (define base-text (file->string base-path))
+  ;; retarget exactly ONE instantiate line -- explicit, or refuse
+  (define pattern
+    (pregexp (format "instantiate[[:space:]]+\"([^\"]+)\"[[:space:]]+as[[:space:]]+~a\\b"
+                     (regexp-quote alias))))
+  (define hits (regexp-match* pattern base-text))
+  (unless (= 1 (length hits))
+    (error 'replace
+           (if (null? hits)
+               (format "no `instantiate ... as ~a` occurrence in ~a" alias base-path)
+               (format "~a occurrences of instance ~a; replacement must select exactly one"
+                       (length hits) alias))))
+  (define candidate-text
+    (regexp-replace pattern base-text
+                    (format "instantiate \"~a\" as ~a" lib alias)))
+  ;; the draft directory: candidate main + every lib it references
+  (define n (begin (set-box! repl-draft-counter (add1 (unbox repl-draft-counter)))
+                   (unbox repl-draft-counter)))
+  (define draft-dir (build-path "out" "drafts" (format "d~a" n)))
+  (make-directory* draft-dir)
+  (define lib-names
+    (remove-duplicates
+     (for/list ([hit (in-list (regexp-match* #px"instantiate[[:space:]]+\"([^\"]+)\""
+                                             candidate-text
+                                             #:match-select cadr))])
+       hit)))
+  (for ([name (in-list lib-names)])
+    (define src (build-path base-dir name))
+    (unless (file-exists? src)
+      (error 'replace "library ~a not found beside ~a" name base-path))
+    (copy-file src (build-path draft-dir name) #t))
+  (define main-name
+    (format "~a-draft~a.slog"
+            (path->string
+             (path-replace-extension (file-name-from-path base-path) ""))
+            n))
+  (define candidate-path (build-path draft-dir main-name))
+  (call-with-output-file candidate-path #:exists 'replace
+    (lambda (o) (display candidate-text o)))
+  ;; the producer pipeline
+  (define base-image (proposal-compile-image (string->path base-path)))
+  (define candidate-image (proposal-compile-image candidate-path))
+  (define change-set
+    (seal-program-draft (auto-program-draft base-image candidate-image)))
+  (define sources
+    (append (for/list ([name (in-list lib-names)])
+              (cons name (file->string (build-path draft-dir name))))
+            (list (cons main-name candidate-text))))
+  (define pcs-text
+    (pcs->string
+     (program-change-set->pcs change-set base-image candidate-image
+                              #:sources sources)))
+  (define preview-lines (proposal-preview pcs-text))
+  (hash-set! repl-proposals rs
+             (hasheq 'alias alias 'lib lib 'base base-path
+                     'key (program-change-set-key change-set)
+                     'pcs pcs-text 'preview preview-lines))
+  (text-result
+   (format "Proposal d~a — replace instance ~a with ~a (sealed ~a…)"
+           n alias lib
+           (substring (program-change-set-key change-set) 0 12))
+   preview-lines
+   #:kind "replace-instance"))
+
+(define (preview-result state)
+  (define rs (ensure-session-record! state))
+  (define proposal
+    (or (hash-ref repl-proposals rs #f)
+        (error 'preview "no pending proposal; `replace instance ALIAS with \"LIB.slog\"` first")))
+  (text-result
+   (format "Proposal — replace instance ~a with ~a (sealed ~a…)"
+           (hash-ref proposal 'alias) (hash-ref proposal 'lib)
+           (substring (hash-ref proposal 'key) 0 12))
+   (hash-ref proposal 'preview)
+   #:kind "preview"))
+
+(define (activate-result state argument)
+  (unless (string=? (string-trim argument) "")
+    (error 'activate
+           "bare `activate` commits after audits; a pre-commit hold rides an armed level-1 watch (`watch REL level 1`)"))
+  (define rs (ensure-session-record! state))
+  (define proposal
+    (or (hash-ref repl-proposals rs #f)
+        (error 'activate "no pending proposal; `replace instance ...` first")))
+  (define s (repl-session-session rs))
+  (define result (session-activate-pcs! s (hash-ref proposal 'pcs)))
+  (cond
+    [(activation-plan? result)
+     (hash-remove! repl-proposals rs)
+     (set-repl-session-changed?! rs #t)
+     (text-result
+      (format "Activated — ~a" (activation-plan-program-key result))
+      (list (format "instance ~a now runs ~a; the old boundary remains addressable"
+                    (hash-ref proposal 'alias) (hash-ref proposal 'lib))
+            "committed atomically after recount and audits")
+      #:kind "activate")]
+    [else
+     (text-result "Activation refused or aborted"
+                  (list (format "~a" result)
+                        "the proposal is retained; the base boundary is unchanged")
+                  #:kind "activate")]))
 
 ;; ---- R5 whatif: the operator's edge (repl-ux §8) --------------------------
 ;;
@@ -4059,6 +4268,7 @@
        (capture-semantic-change
         state rs "run" "settled" '()
         (lambda () (session-run! (repl-session-session rs) argument))))
+     (hash-set! repl-last-run rs argument)
      (set-repl-session-changed?! rs #t)
      (semantic-text-result
       (format "Run ~a" argument)
@@ -4066,6 +4276,9 @@
       change
       #:kind "run")]
     ["whatif" (whatif-result state argument)]
+    ["replace" (replace-instance-result state argument)]
+    ["preview" (preview-result state)]
+    ["activate" (activate-result state argument)]
     [(or "add" "del")
      (match-define (list* rel values)
        (read-command-data (string->symbol verb) argument #:minimum 2))

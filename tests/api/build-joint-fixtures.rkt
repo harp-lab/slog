@@ -43,98 +43,8 @@
         image)
       (lambda () (delete-directory/files output-dir)))))
 
-;; ---------------------------------------------------------------------------
-;; Generic total-coverage draft construction.  Modules pair by lexical path
-;; and are preserved exactly when the seal validator's occurrence shape --
-;; home, lexical path, bindings, and source digests -- is unchanged; any
-;; textual change (including the candidate main naming a v2 library) makes
-;; the occurrence an explicit replacement, never an inference.  Rules pair
-;; globally by normalized form, relations by qualified name: the same
-;; explicit-coverage discipline as the RF5-A golden builder.
-;; ---------------------------------------------------------------------------
-
-(define (module-shape image m)
-  (list (image-module-home m)
-        (image-module-lexical-path m)
-        (image-module-bindings m)
-        (for/list ([slot (in-list (image-module-sources m))])
-          (image-source-digest (program-image-source-at image slot)))))
-
-(define (map-modules draft base candidate)
-  (define candidate-by-path
-    (for/hash ([m (in-list (program-image-modules candidate))])
-      (values (image-module-lexical-path m) m)))
-  (for/fold ([current draft])
-            ([old (in-list (program-image-modules base))])
-    (define new
-      (hash-ref candidate-by-path (image-module-lexical-path old)
-                (lambda ()
-                  (error 'build-joint-fixtures
-                         "no candidate occurrence at path ~a"
-                         (image-module-lexical-path old)))))
-    (define handle
-      (make-module-handle "program.old"
-                          (format "module.~a" (image-module-slot old))
-                          base (image-module-slot old)))
-    (if (equal? (module-shape base old) (module-shape candidate new))
-        (program-draft-preserve-module current handle (image-module-slot new))
-        (program-draft-replace-module current handle (image-module-slot new)))))
-
-(define (map-rules draft base candidate)
-  (define used-new (mutable-set))
-  (define after-old
-    (for/fold ([current draft])
-              ([old (in-list (program-image-rules base))])
-      (define new
-        (for/first ([candidate-rule (in-list (program-image-rules candidate))]
-                    #:unless (set-member? used-new
-                                          (image-rule-slot candidate-rule))
-                    #:when (equal? (image-rule-normalized old)
-                                   (image-rule-normalized candidate-rule)))
-          candidate-rule))
-      (define old-key (format "rule.~a" (image-rule-slot old)))
-      (cond
-        [new
-         (set-add! used-new (image-rule-slot new))
-         (program-draft-preserve-rule current old-key
-                                      (image-rule-slot old)
-                                      (image-rule-slot new))]
-        [else
-         (program-draft-remove-rule current old-key (image-rule-slot old))])))
-  (for/fold ([current after-old])
-            ([new (in-list (program-image-rules candidate))]
-             #:unless (set-member? used-new (image-rule-slot new)))
-    (program-draft-add-rule current (image-rule-slot new))))
-
-(define (map-relations draft base candidate)
-  (define candidate-by-name
-    (for/hash ([output (in-list (program-image-outputs candidate))])
-      (values (program-output-relation output) output)))
-  (define used-new (mutable-set))
-  (define after-old
-    (for/fold ([current draft])
-              ([old (in-list (program-image-outputs base))])
-      (define new
-        (hash-ref candidate-by-name (program-output-relation old) #f))
-      (define version-key
-        (format "version.~a" (program-output-slot old)))
-      (cond
-        [(not new)
-         (program-draft-remove-relation current version-key
-                                        (program-output-slot old))]
-        [else
-         (set-add! used-new (program-output-slot new))
-         (if (equal? (program-output-value old) (program-output-value new))
-             (program-draft-preserve-relation current version-key
-                                              (program-output-slot old)
-                                              (program-output-slot new))
-             (program-draft-replace-relation current version-key
-                                             (program-output-slot old)
-                                             (program-output-slot new)))])))
-  (for/fold ([current after-old])
-            ([new (in-list (program-image-outputs candidate))]
-             #:unless (set-member? used-new (program-output-slot new)))
-    (program-draft-add-relation current (program-output-slot new))))
+;; The generic total-coverage draft construction lives in
+;; compiler/change-pcs.rkt (auto-program-draft) -- shared with the REPL.
 
 ;; ---------------------------------------------------------------------------
 ;; Cases.
@@ -145,14 +55,7 @@
 (define (build-case base-name candidate-name source-names)
   (define base (compile-image (joint-path base-name)))
   (define candidate (compile-image (joint-path candidate-name)))
-  (define draft
-    (map-relations
-     (map-rules
-      (map-modules (make-program-draft "program.old" base candidate)
-                   base candidate)
-      base candidate)
-     base candidate))
-  (define change-set (seal-program-draft draft))
+  (define change-set (seal-program-draft (auto-program-draft base candidate)))
   (define sources
     (for/list ([name (in-list source-names)])
       (cons name (file->string (joint-path name)))))

@@ -100,6 +100,7 @@
          session-rule-meta      ; T0(c) c2: the daemon's RuleId<->RuleKey registry
          session-fires          ; N5/stats-4: RuleKey-resolved fire records
          session-activate!      ; spine A2: the live activation transaction
+         session-activate-pcs!  ; RF5-B: templated fixture -> live keys -> activate
          session-set-scc-policy! ; T5: pin a relation's writers to an executor
          session-pending-summary ; gate S1: staged-but-unflushed changes
          session-pause-hook     ; gate S3/R4: observe a parked epoch
@@ -835,6 +836,31 @@
                                ""
                                (format " (suffix ~a)" (length suffix-events)))))
           plan)])]))
+
+;; The templated-fixture entry: substitute @BASE-PROGRAM@/@BASE-BOUNDARY@/
+;; @V:rel@ against THIS session's committed boundary (the convention
+;; session-drive and the a3 harness established -- "how a fixture written
+;; before a layer exists names that layer's keys"), then run the ordinary
+;; activation transaction.  The producer bridge (change-pcs.rkt) always
+;; emits templated fixtures, so this is the one live entry they need.
+(define (session-activate-pcs! s text #:fail-after-heal [fail? #f])
+  (define head (session-catalog-boundary s))
+  (unless head (error 'session-activate-pcs "no committed boundary"))
+  (define pkey (boundary-plan-program-key (last (session-boundary-plans s))))
+  (define versions
+    (for/hash ([(q v) (in-hash (boundary-environment head))])
+      (values (qname->display q) v)))
+  (define substituted
+    (regexp-replace*
+     #px"@V:([A-Za-z0-9_.]+)@"
+     (string-replace (string-replace text "@BASE-PROGRAM@" pkey)
+                     "@BASE-BOUNDARY@" (boundary-key head))
+     (lambda (_ rel)
+       (hash-ref versions rel
+                 (lambda ()
+                   (error 'session-activate-pcs "no version for ~a" rel))))))
+  (session-activate! s (read (open-input-string substituted))
+                     #:fail-after-heal fail?))
 
 ;; T5 slice (a): pin the writer strata of `rel` to a policy ('interpreted
 ;; or 'auto); returns the affected scc ids.  Policy applies at re-entry
