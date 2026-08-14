@@ -216,6 +216,20 @@
                                               #:layer "layer-new" #:event 1))
                   'unknown-occurrence))
 
+  (test-case "a retire disposition refuses (unimplemented heal, no silent leak)"
+    ;; a candidate that drops a written relation emits `retire`; honoring it
+    ;; (advance the relation to empty) is unimplemented, so refuse rather
+    ;; than carry the stale materialization
+    (define cs (load-cs "minimal.pcs"))
+    (define retired
+      (struct-copy change-set cs
+                   [slot-lineage
+                    (list (list 'edge "v1:layer-base:0:0" 'carry)
+                          (list 'path "v1:layer-base:0:1" 'retire))]))
+    (check-equal? (second (resolve-activation retired base
+                                              #:layer "layer-new" #:event 1))
+                  'retirement-unsupported))
+
   (test-case "multi-occurrence rule lineage mints no colliding keys"
     ;; two occurrences + rule lineage: keys are empty (grammar has no module
     ;; coordinate), never two identical fabricated keys

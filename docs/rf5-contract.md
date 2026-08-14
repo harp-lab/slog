@@ -417,6 +417,17 @@ The first RF5 activation route is deliberately coarse:
 This is already incremental at the recipe/cone granularity and avoids a full
 database reload. It is the mandatory fallback permanently.
 
+**Recorded cut (2026-08-14): `retire` refuses.** A relation the candidate
+drops entirely carries a `retire` slot disposition. Honoring it means
+advancing the relation to an *empty* successor version (§5's "materialization
+loses tuples"). The correctness-first route as built rebuilds only relations
+the candidate still writes, so a dropped relation would silently *carry* its
+stale materialization into the new boundary. Until the retirement heal lands,
+`resolve-activation` refuses a `retire` disposition with a typed
+`retirement-unsupported` rather than leak — verified at the producer gate and
+the live transaction (`tests/rf5-gate.sh`). A relation that keeps a writer but
+loses rules (its rows shrink) is the ordinary rebuild path and is unaffected.
+
 ### 7.2 Precise routes
 
 Later admission can specialize without changing the transaction:

@@ -969,17 +969,23 @@ if [ "$(grep -cF '(catalog-end 0)' out/proto-program-image.log)" -eq 3 ]; then
 
 RF2_BAD_KEY=out/rf2-bad-key.pimg
 RF2_BAD_FORMAT=out/rf2-bad-format.pimg
+RF2_GARBAGE=out/rf2-garbage.pimg
 sed 's/(key "[0-9a-f]*")/(key "0000000000000000000000000000000000000000000000000000000000000000")/' \
   "$RF2_IMAGE" > "$RF2_BAD_KEY"
 sed 's/(format 1)/(format 9)/' "$RF2_IMAGE" > "$RF2_BAD_FORMAT"
+# non-sexp bytes: the bounded decoder's parse leg (ErrorK::parse), which no
+# other case drives -- the seal/format/io legs are covered above
+printf 'this is not an s-expression ((( \x00 \xff garbage' > "$RF2_GARBAGE"
 racket tests/api/drive.rkt \
   '(mount-program-image "out/no-such-program-image.pimg")' \
   "(mount-program-image \"$RF2_BAD_KEY\")" \
   "(mount-program-image \"$RF2_BAD_FORMAT\")" \
+  "(mount-program-image \"$RF2_GARBAGE\")" \
   > out/proto-program-image-refuse.log 2>&1
 expect_rx "image-missing-cache-is-a-miss" '\(refused image-io [0-9]+' out/proto-program-image-refuse.log
 expect_rx "image-tampered-seal-refused" '\(refused image-seal [0-9]+' out/proto-program-image-refuse.log
 expect_rx "image-unknown-format-refused" '\(refused image-format [0-9]+' out/proto-program-image-refuse.log
+expect_rx "image-garbage-parse-refused" '\(refused image-parse [0-9]+' out/proto-program-image-refuse.log
 
 # RF4 control observations are empty but structurally complete before any
 # descriptor artifact or executable kernel is attached. Unknown content keys

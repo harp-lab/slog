@@ -1,0 +1,21 @@
+;; RF5-B gate: a suffix batch that FAILS AFTER the program event committed.
+;; The candidate (single-hop path) commits; the suffix then replays a
+;; wrong-ARITY tuple for the carried edge anchor, which faults at flush.
+;; The recipe records exactly the committed prefix; this is narrated as
+;; (activation-suffix-failed ...), never an abort (rf5 §7 step 4).
+(program-change-set (abi 1)
+  (base (program "@BASE-PROGRAM@") (boundary "@BASE-BOUNDARY@"))
+  (candidate (image "sha-gate-suffix-v2") (compiler "fprint-live") (plan-abi 2)
+             (sources ((path "gate_suffix_v2.slog")
+                       (text "table (edge int int)\ntable (path int int)\n\nrule\n(edge 1 2)\n(edge 2 3)\n(edge 3 4)\n\nrule\n(edge X Y)\n-->\n(path X Y)\n"))))
+  (occurrences (replace (old "m1:@BASE-PROGRAM@:root") (new-slot ()) (home ())))
+  (rule-lineage ((old #f) (new-slot "0.0")))
+  (slot-lineage ((relation edge) (old "@V:edge@") (disposition carry))
+                ((relation path) (old "@V:path@") (disposition rebuild)))
+  (diffs (source 1) (semantic (added 0) (removed 1) (moved 0)) (plan (kernels-changed 1)))
+  (writers (old (path)) (new (path)))
+  (sccs (old ()) (new ((scc 0 1 (members path)))))
+  (affected (roots (path)) (cone (path)))
+  (services)
+  (suffix (batch edge (v 0) ((+ 7 8 9)) ()))
+  (refusals))

@@ -99,7 +99,11 @@
               '("gate-identical-candidate.slog"))
         (list "gate-duplicate"
               "gate-duplicate-base.slog" "gate-duplicate-candidate.slog"
-              '("gate-duplicate-candidate.slog"))))
+              '("gate-duplicate-candidate.slog"))
+        ;; a candidate that DROPS a written relation -> retire disposition
+        (list "gate-retire"
+              "gate-retire-base.slog" "gate-retire-candidate.slog"
+              '("gate-retire-candidate.slog"))))
 
 (define (build-joint-fixtures! output-dir)
   (make-directory* output-dir)

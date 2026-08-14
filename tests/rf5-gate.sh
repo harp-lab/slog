@@ -162,6 +162,45 @@ else
     || { fail "suffix-rebuilt-anchor-refuses"; sed 's/^/  /' "$WORK/refuse.verdict"; }
 fi
 
+# ---- SUFFIX-FAILS-AFTER-COMMIT ----------------------------------------------
+# A suffix batch that faults AFTER the candidate program event committed is
+# narrated (activation-suffix-failed ...), never an abort: the recipe records
+# exactly the committed prefix (single-hop path = 3), and the base survives.
+drive suffix-fail "run:tests/reflect/joint/joint-live-base.slog" \
+      "activate:tests/reflect/joint/gate-suffix-fail.pcs" dump-tuples:path
+grep -q '(activation-suffix-failed ' "$WORK/suffix-fail.log" \
+  && pass "suffix-failure-narrated-not-aborted" \
+  || fail "suffix-failure-narrated-not-aborted"
+grep -q '(activation-aborted ' "$WORK/suffix-fail.log" \
+  && fail "suffix-failure-must-not-abort (aborted!)" \
+  || pass "suffix-failure-committed-the-prefix"
+[ "$(tuples suffix-fail 0)" = "3" ] \
+  && pass "suffix-failure-prefix-committed (path single-hop 3)" \
+  || fail "suffix-failure-prefix-committed ($(tuples suffix-fail 0))"
+
+# ---- RETIRE (a fully-dropped relation) -- refused, not silently leaked ------
+# A candidate that drops a written relation emits a `retire` disposition. The
+# retirement heal (advance the relation to an empty successor, rf5 §5) is
+# unimplemented, so the correctness-first route would silently CARRY the
+# stale materialization; the resolver refuses typed instead. Verified at both
+# the producer gate AND the live transaction.
+if racket tests/api/pcs-check.rkt "$WORK/fx/gate-retire.pcs" \
+     > "$WORK/retire.verdict" 2>&1; then
+  fail "retire-refuses-at-producer (accepted!)"
+else
+  grep -q '^(refused retirement-unsupported' "$WORK/retire.verdict" \
+    && pass "retire-refuses-at-producer" \
+    || { fail "retire-refuses-at-producer"; sed 's/^/  /' "$WORK/retire.verdict"; }
+fi
+drive retire-live "run:tests/reflect/joint/gate-retire-base.slog" \
+      "activate:$WORK/fx/gate-retire.pcs" dump-tuples:dead
+grep -q '(refused retirement-unsupported' "$WORK/retire-live.log" \
+  && pass "retire-refuses-live" || fail "retire-refuses-live"
+# dead survives UNCHANGED (the refusal touched no state)
+[ "$(tuples retire-live 0)" = "2" ] \
+  && pass "retire-refusal-left-base-intact" \
+  || fail "retire-refusal-left-base-intact ($(tuples retire-live 0))"
+
 # ---- REACTIVATION without identity reuse ------------------------------------
 drive reactivate "run:tests/reflect/joint/joint-live-base.slog" \
       "activate:$WORK/fx/joint-minimal-live.pcs" \

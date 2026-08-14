@@ -207,6 +207,16 @@
             (not (hash-ref (base-env-versions env) (first sl) #f))
             (first sl)))
      => (lambda (bad) (refuse 'slot-lineage-conflict bad))]
+    ;; 3b. a `retire` disposition (a relation the candidate drops entirely)
+    ;; needs the correctness-first route to advance the relation to an empty
+    ;; successor.  That retirement heal is unimplemented: the live route only
+    ;; rebuilds relations the CANDIDATE writes, so a dropped relation would
+    ;; silently CARRY its stale materialization into the new boundary.
+    ;; Refuse typed rather than leak (rf5 §5's "materialization loses tuples"
+    ;; is the intended behavior; delivering it is a later RF5 slice).
+    [(for/or ([sl (in-list (change-set-slot-lineage cs))])
+       (and (eq? (third sl) 'retire) (first sl)))
+     => (lambda (bad) (refuse 'retirement-unsupported bad))]
     ;; 4. required services must be servable
     [(for/or ([svc (in-list (change-set-services cs))])
        (and (not (memq svc (base-env-services env))) svc))
