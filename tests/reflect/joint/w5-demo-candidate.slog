@@ -1,0 +1,34 @@
+instantiate "w5-demo-lib.slog" as left
+instantiate "w5-demo-lib-v2.slog" as right
+
+struct (pt int int)
+
+table (seed int int)
+table (marks pt)
+table (answer int int int)
+
+rule
+(seed 1 2)
+(seed 2 3)
+(right.edge 1 2)
+(right.edge 2 3)
+(right.edge 3 4)
+
+rule
+(seed X Y)
+-->
+(left.edge X Y)
+
+rule
+(marks (pt 7 7))
+(marks (pt 8 9))
+
+rule
+(left.path X Y)
+-->
+(answer 0 X Y)
+
+rule
+(right.path X Y)
+-->
+(answer 1 X Y)

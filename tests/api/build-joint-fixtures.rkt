@@ -175,7 +175,15 @@
                 "joint-graph-lib.slog" "joint-graph-lib-v2.slog"))
         (list "joint-refusal"
               "joint-minimal-base.slog" "joint-refusal-candidate.slog"
-              '("joint-refusal-candidate.slog"))))
+              '("joint-refusal-candidate.slog"))
+        ;; the W5' exit demo's producer leg: ONE rule of the right
+        ;; instance edited (recursion narrowed to two-hop paths)
+        ;; libs first, entry main LAST: the session's activate step
+        ;; compiles the final source as the program entry
+        (list "w5-demo"
+              "w5-demo-base.slog" "w5-demo-candidate.slog"
+              '("w5-demo-lib.slog" "w5-demo-lib-v2.slog"
+                "w5-demo-candidate.slog"))))
 
 (define (build-joint-fixtures! output-dir)
   (make-directory* output-dir)
