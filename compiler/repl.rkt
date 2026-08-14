@@ -1754,8 +1754,11 @@
                 (set-add acc body))
               acc)))
       (if (= (set-count grown) (set-count members)) grown (loop grown))))
+  ;; the daemon always emits the (negative-wildcard ...) field, empty as `()`
+  ;; -- and an empty list is TRUTHY in Racket, so this must test for a
+  ;; non-empty list or the note fires on every wildcard-free cone rule.
   (for ([record (in-list rules)])
-    (when (and (record-field record 'negative-wildcard #f)
+    (when (and (pair? (record-field record 'negative-wildcard))
                (for/or ([head (in-list (rule-heads record))])
                  (set-member? cone head)))
       (set! wildcard-rules (add1 wildcard-rules))))
@@ -1916,8 +1919,11 @@
                (format "~a occurrences of instance ~a; replacement must select exactly one"
                        (length hits) alias))))
   (define candidate-text
+    ;; regexp-replace-quote: a lib or alias containing `&` or `\N` must
+    ;; insert literally, not be interpreted as a backreference splice
     (regexp-replace pattern base-text
-                    (format "instantiate \"~a\" as ~a" lib alias)))
+                    (regexp-replace-quote
+                     (format "instantiate \"~a\" as ~a" lib alias))))
   ;; the draft directory: candidate main + every lib it references
   (define n (begin (set-box! repl-draft-counter (add1 (unbox repl-draft-counter)))
                    (unbox repl-draft-counter)))
@@ -1956,9 +1962,16 @@
      (program-change-set->pcs change-set base-image candidate-image
                               #:sources sources)))
   (define preview-lines (proposal-preview pcs-text))
+  ;; stamp the boundary this proposal was sealed against: the diffs,
+  ;; dispositions, and cone are all computed relative to THIS program, so
+  ;; `activate` must refuse if the tip has since moved (a `run` in between)
+  ;; rather than silently applying A's plan to program B.
   (hash-set! repl-proposals rs
              (hasheq 'alias alias 'lib lib 'base base-path
                      'key (program-change-set-key change-set)
+                     'boundary (boundary-key
+                                (session-current-boundary
+                                 (repl-session-session rs)))
                      'pcs pcs-text 'preview preview-lines))
   (text-result
    (format "Proposal d~a — replace instance ~a with ~a (sealed ~a…)"
@@ -1988,6 +2001,14 @@
     (or (hash-ref repl-proposals rs #f)
         (error 'activate "no pending proposal; `replace instance ...` first")))
   (define s (repl-session-session rs))
+  ;; the proposal is only valid against the boundary it was sealed on: if
+  ;; the tip moved (a `run` since `replace`), the diffs and cone describe a
+  ;; program that is no longer live -- refuse rather than misapply them
+  (define now-boundary (boundary-key (session-current-boundary s)))
+  (unless (equal? now-boundary (hash-ref proposal 'boundary #f))
+    (error 'activate
+           "the committed boundary moved since this proposal was sealed (~a → ~a); re-issue `replace instance ...` against the current program"
+           (hash-ref proposal 'boundary #f) now-boundary))
   (define result (session-activate-pcs! s (hash-ref proposal 'pcs)))
   (cond
     [(activation-plan? result)
@@ -2028,8 +2049,17 @@
   (define s (repl-session-session rs))
   (define sign (if (string=? verb "add") '+ '-))
   (define rel-name (relation-key rel))
+  ;; cone-of raises when the target was rebound after a cone stratum (the
+  ;; flush would divert to an anchored walk).  A preview must report that,
+  ;; not crash at the prompt.
   (match-define (list affected route cone-strata mono? negatable?)
-    (session-whatif s sign rel-name))
+    (with-handlers
+        ([exn:fail?
+          (lambda (e)
+            (error 'whatif
+                   "~a cannot be previewed at the tip: ~a; the flush would take an anchored walk"
+                   rel-name (exn-message e)))])
+      (session-whatif s sign rel-name)))
   (define catalog (live-catalog s))
   (define (size-of name)
     (with-handlers ([exn:fail? (lambda (_e) #f)])
@@ -2040,18 +2070,22 @@
   (define matches
     (with-handlers ([exn:fail? (lambda (_e) #f)])
       (run-watch-query state rs (string-append "?" tuple-text))))
+  ;; This is the COARSE cone classification from cone-of's monotone/negatable
+  ;; test -- not the precise route.  The flush certifies a finer route at run
+  ;; time (M1/M3/M4N/M4T/M6L/M7) or falls back to clear-and-rerun; a lattice
+  ;; or struct cone in particular may maintain where this says clear-rerun.
   (define route-line
     (case route
       [(input-only)
-       "route: input-only edit — no derived relation reads this one"]
+       "likely route: input-only edit — no derived relation reads this one"]
       [(maintain-positive)
-       (format "route: precise positive maintenance across ~a ~a (monotone cone)"
+       (format "likely route: positive maintenance across ~a ~a (monotone cone; flush certifies the precise route)"
                cone-strata (if (= cone-strata 1) "stratum" "strata"))]
       [(maintain-negative)
-       (format "route: negative-then-positive maintenance across ~a ~a (negatable cone)"
+       (format "likely route: negative-then-positive maintenance across ~a ~a (negatable cone; flush certifies the precise route)"
                cone-strata (if (= cone-strata 1) "stratum" "strata"))]
       [else
-       (format "route: clear-and-rerun across ~a ~a (~a)"
+       (format "likely route: clear-and-rerun across ~a ~a (~a; a certified maintenance route may still apply)"
                cone-strata (if (= cone-strata 1) "stratum" "strata")
                (if (eq? sign '+) "non-monotone cone" "cone not negatable"))]))
   (hash-set*

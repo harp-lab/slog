@@ -99,7 +99,28 @@
                             transcript)
         (check-false (regexp-match? #px"short — w[0-9]+ installed" transcript))
         (check-regexp-match #px"answer — already watched" transcript)
-        (check-regexp-match #px"edge — already watched" transcript))
+        (check-regexp-match #px"edge — already watched" transcript)
+        ;; a wildcard-free cone must NOT emit the wildcard-negation note --
+        ;; the empty-list-is-truthy bug fired it on every cone rule
+        (check-false (regexp-match? #px"note:.*wildcard" transcript)))
+
+      (test-case "a cone with wildcard negation DOES note it"
+        ;; reach reads a wildcard-negated `bad _` -- the note must fire
+        (define wc-text
+          (string-append
+           "table (edge int int)\n"
+           "table (bad int)\n"
+           "table (reach int int)\n"
+           "rule (edge 1 2) (edge 2 3)\n"
+           "rule\n(edge X Y)\n~(bad _)\n-->\n(reach X Y)\n"))
+        (define-values (k wc-path _s) (emit-image-for dir "dw_wc.slog" wc-text))
+        (define transcript
+          (parameterize ([current-directory repo-root])
+            (plain-transcript
+             (list (format "run ~a" (path->string (build-path dir "dw_wc.slog")))
+                   (format "image mount ~s" (path->string wc-path))
+                   (format "watch cone reach image ~a" k)))))
+        (check-regexp-match #px"note:.*wildcard negation" transcript))
 
       (test-case "no mounted image refuses with instructions"
         (define transcript

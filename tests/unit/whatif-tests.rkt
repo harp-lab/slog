@@ -66,7 +66,7 @@
         (check-regexp-match #px"Whatif add \\(edge 4 5\\)" transcript)
         (check-regexp-match #px"absent now \\(a genuine addition\\)" transcript)
         (check-regexp-match
-         #px"route: precise positive maintenance across [0-9]+ strat"
+         #px"likely route: positive maintenance across [0-9]+ strat"
          transcript)
         ;; 4. island has no readers: input-only edit
         (check-regexp-match #px"no derived relations read island" transcript)

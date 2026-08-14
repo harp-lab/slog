@@ -63,5 +63,20 @@
                    "activate"))))
         (check-regexp-match #px"no pending proposal" transcript)
         (check-regexp-match #px"no `instantiate \\.\\.\\. as nosuch` occurrence"
-                            transcript)))
+                            transcript))
+
+      (test-case "a proposal stale against a moved boundary refuses, is retained"
+        (define transcript
+          (parameterize ([current-directory repo-root])
+            (plain-transcript
+             (list (format "run ~a" (path->string (build-path dir "analysis.slog")))
+                   "replace instance right with \"w5-demo-lib-v2.slog\""
+                   ;; move the tip out from under the sealed proposal
+                   (format "run ~a" (path->string (build-path dir "analysis.slog")))
+                   "activate"
+                   ;; the proposal survives the refusal -- preview still works
+                   "preview"))))
+        (check-regexp-match #px"the committed boundary moved since this proposal was sealed"
+                            transcript)
+        (check-regexp-match #px"Proposal — replace instance right" transcript)))
     (lambda () (delete-directory/files dir))))
