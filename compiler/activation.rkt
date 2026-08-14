@@ -66,16 +66,45 @@
 ;; Parse: datum -> change-set | (refused malformed-change-set ...)
 ;; ---------------------------------------------------------------------------
 
-(define (field parts key [default #f])
+(define (field parts key)
   (for/or ([p (in-list parts)])
-    (match p [(cons (== key) rest) rest] [_ #f]))
-  )
+    (match p [(cons (== key) rest) rest] [_ #f])))
+
+;; The closed section vocabulary (rf5 §10.1's fixture rules: nothing else
+;; rides along -- in particular no live VersionIds, route, or publication
+;; field).  A typo'd or forbidden section is a hard refusal, never a silent
+;; empty default: a fixture's whole intent must not vanish because a
+;; section name was misspelled.
+(define known-sections
+  '(base candidate occurrences rule-lineage slot-lineage
+    diffs writers sccs affected services suffix refusals))
+
+;; "U.R" -- two non-negative integers.  Validated at parse so a dotless or
+;; non-numeric slot refuses typed here rather than crashing resolve with a
+;; raw `second:`/`string->number` error outside session-activate!'s handler.
+(define (rule-slot-parts who slot)
+  (define text (format "~a" slot))
+  (define parts (string-split text "."))
+  (unless (and (= 2 (length parts))
+               (andmap (lambda (p) (regexp-match? #px"^[0-9]+$" p)) parts))
+    (error (format "~a: slot must be U.R (two integers), got ~a" who slot)))
+  text)
 
 (define (parse-change-set datum)
   (with-handlers ([exn:fail? (lambda (e)
                                (refuse 'malformed-change-set (exn-message e)))])
     (match datum
       [`(program-change-set (abi 1) ,parts ...)
+       (for ([p (in-list parts)])
+         (define key (and (pair? p) (car p)))
+         (unless (memq key known-sections)
+           (error (format "unknown section ~a (allowed: ~a)"
+                          (if key p key) known-sections))))
+       (let ([seen (make-hasheq)])
+         (for ([p (in-list parts)])
+           (when (hash-ref seen (car p) #f)
+             (error (format "duplicate section ~a" (car p))))
+           (hash-set! seen (car p) #t)))
        (define (need key)
          (or (field parts key)
              (error (format "missing (~a ...)" key))))
@@ -91,7 +120,7 @@
            (match r
              [`((old ,old) (new-slot ,slot))
               (list (and (not (eq? old '#f)) (format "~a" old))
-                    (format "~a" slot))]
+                    (rule-slot-parts "rule lineage" slot))]
              [_ (error (format "malformed rule lineage: ~a" r))])))
        (define slot-lineage
          (for/list ([sl (in-list (or (field parts 'slot-lineage) '()))])
@@ -100,21 +129,35 @@
               #:when (memq d '(carry rebuild retire))
               (list q (and (not (eq? v '#f)) (format "~a" v)) d)]
              [_ (error (format "malformed slot lineage: ~a" sl))])))
-       (define writers (or (field parts 'writers) '()))
+       (define (writer-list side raw)
+         (unless (and (list? raw) (andmap symbol? raw))
+           (error (format "~a writers must be a list of relation symbols, got ~a"
+                          side raw)))
+         raw)
+       (define-values (writers-old writers-new)
+         (match (field parts 'writers)
+           [#f (values '() '())]
+           [`((old ,o) (new ,n))
+            (values (writer-list "old" o) (writer-list "new" n))]
+           [other (error (format "malformed writers: ~a" other))]))
+       (define-values (affected-roots affected-cone)
+         (match (field parts 'affected)
+           [#f (values '() '())]
+           [`((roots ,r) (cone ,c)) (values r c)]
+           [other (error (format "malformed affected: ~a" other))]))
        (change-set
         (format "~a" pkey) (format "~a" bkey)
         (field parts 'candidate)
         occurrences rule-lineage slot-lineage
         (field parts 'diffs)
-        (match writers [`((old ,o) (new ,_)) o] [_ '()])
-        (match writers [`((old ,_) (new ,n)) n] [_ '()])
+        writers-old writers-new
         (for/list ([s (in-list (match (field parts 'sccs)
+                                 [#f '()]
                                  [`((old ,_) (new ,n)) n]
-                                 [#f '()] [other other]))])
+                                 [other (error (format "malformed sccs: ~a" other))]))])
           (match s [`(scc ,slot ,level (members ,m ...)) (list slot level m)]
                    [_ (error (format "malformed scc: ~a" s))]))
-        (match (field parts 'affected) [`((roots ,r) (cone ,_)) r] [_ '()])
-        (match (field parts 'affected) [`((roots ,_) (cone ,c)) c] [_ '()])
+        affected-roots affected-cone
         (or (field parts 'services) '())
         (or (field parts 'suffix) '())
         (or (field parts 'refusals) '()))]
@@ -140,12 +183,24 @@
      (refuse 'unknown-base-boundary (change-set-base-program cs))]
     [(not (base-env-tip? env))
      (refuse 'stale-base (base-env-boundary-key env))]
-    ;; 2. every replaced occurrence must belong to the base program
+    ;; 2. every replaced occurrence must belong to the base program.  The
+    ;; trailing ':' matters -- without it p1:layer:1 would accept an
+    ;; occurrence of p1:layer:10 (any longer-key sibling).
     [(for/or ([o (in-list (change-set-occurrences cs))])
        (and (not (string-prefix? (first o)
-                                 (format "m1:~a" (base-env-program-key env))))
+                                 (format "m1:~a:" (base-env-program-key env))))
             (first o)))
      => (lambda (bad) (refuse 'unknown-occurrence bad))]
+    ;; 2b. slot-lineage names each relation at most once.  Two rows for one
+    ;; relation make disposition order-dependent: suffix admission reads the
+    ;; first, version-allocs the last, so a `(carry)` then `(retire)` pair
+    ;; would admit a batch against a relation the plan actually retires.
+    [(let ([seen (make-hash)])
+       (for/or ([sl (in-list (change-set-slot-lineage cs))])
+         (define rel (first sl))
+         (begin0 (and (hash-ref seen rel #f) rel)
+           (hash-set! seen rel #t))))
+     => (lambda (bad) (refuse 'slot-lineage-conflict `(duplicate ,bad)))]
     ;; 3. carried/retired slots must exist at the base boundary
     [(for/or ([sl (in-list (change-set-slot-lineage cs))])
        (and (memq (third sl) '(carry retire))
@@ -173,18 +228,26 @@
        (for/hash ([o (in-list (change-set-occurrences cs))])
          (values (first o)
                  (module-instance-key pkey (second o)))))
+     ;; v1 rule lineage scopes to a SINGLE replaced occurrence: the new U.R
+     ;; slot names a rule within that one module.  With two or more
+     ;; occurrences the fixture grammar has no mkey coordinate to
+     ;; disambiguate "0.0" across modules, so minting RuleKeys would
+     ;; fabricate collisions under one arbitrary module.  Those keys have no
+     ;; live consumer yet; rather than mint colliding identities (or refuse
+     ;; a legitimate whole-program two-instance diff), leave rule-keys empty
+     ;; until the grammar grows a module coordinate.  The diagnostic
+     ;; rule-lineage still rides in the fixture.
      (define rule-keys
-       (for/list ([r (in-list (change-set-rule-lineage cs))])
-         ;; the new slot is "U.R" within its occurrence; v1 fixtures scope
-         ;; lineage to the single replaced occurrence -- multi-occurrence
-         ;; lineage rides the same slot spelling with an explicit mkey
-         (match-define (list u-dot-r) (list (second r)))
-         (define parts (string-split u-dot-r "."))
-         (rule-key (if (= 1 (hash-count module-keys))
-                       (for/first ([(k v) (in-hash module-keys)]) v)
-                       (module-instance-key pkey '()))
-                   (string->number (first parts))
-                   (string->number (second parts)))))
+       (cond
+         [(= 1 (hash-count module-keys))
+          (define mkey (for/first ([(k v) (in-hash module-keys)]) v))
+          (for/list ([r (in-list (change-set-rule-lineage cs))])
+            ;; parse already validated the two-integer "U.R" shape
+            (define parts (string-split (second r) "."))
+            (rule-key mkey
+                      (string->number (first parts))
+                      (string->number (second parts))))]
+         [else '()]))
      (define scc-keys
        (for/list ([s (in-list (change-set-sccs-new cs))])
          (list (scc-instance-key pkey (first s))

@@ -144,4 +144,90 @@
   (test-case "malformed datums refuse at parse, not at resolve"
     (check-pred activation-refusal? (parse-change-set '(not-a-change-set)))
     (check-pred activation-refusal?
-                (parse-change-set '(program-change-set (abi 1) (base broken))))))
+                (parse-change-set '(program-change-set (abi 1) (base broken)))))
+
+  ;; ---- hardening: the vetting round's typed refusals -----------------------
+
+  (define (parse-refusal-detail datum)
+    (define r (parse-change-set datum))
+    (and (activation-refusal? r) (third r)))
+
+  (test-case "a typo'd or forbidden section refuses, never silently empty"
+    ;; a misspelled section name must not make its intent vanish
+    (check-pred activation-refusal?
+                (parse-change-set
+                 '(program-change-set (abi 1)
+                   (base (program "p") (boundary "b")) (occurences))))
+    ;; a forbidden field (rf5 §10.1: no route/publication/live VersionId)
+    (check-pred activation-refusal?
+                (parse-change-set
+                 '(program-change-set (abi 1)
+                   (base (program "p") (boundary "b")) (route fast))))
+    ;; a duplicated section is refused rather than first-wins
+    (check-pred activation-refusal?
+                (parse-change-set
+                 '(program-change-set (abi 1)
+                   (base (program "p") (boundary "b"))
+                   (services) (services)))))
+
+  (test-case "a malformed rule-lineage slot refuses at parse, not a raw crash"
+    (check-pred activation-refusal?
+                (parse-change-set
+                 '(program-change-set (abi 1)
+                   (base (program "p") (boundary "b"))
+                   (rule-lineage ((old #f) (new-slot bogus))))))
+    (check-pred activation-refusal?
+                (parse-change-set
+                 '(program-change-set (abi 1)
+                   (base (program "p") (boundary "b"))
+                   (rule-lineage ((old #f) (new-slot "0.x")))))))
+
+  (test-case "malformed writers / affected refuse rather than default empty"
+    (check-pred activation-refusal?
+                (parse-change-set
+                 '(program-change-set (abi 1)
+                   (base (program "p") (boundary "b"))
+                   (writers (old ("edge")) (new (edge))))))
+    (check-pred activation-refusal?
+                (parse-change-set
+                 '(program-change-set (abi 1)
+                   (base (program "p") (boundary "b"))
+                   (affected (roots))))))
+
+  (test-case "duplicate slot-lineage for one relation is a conflict"
+    ;; carry-then-retire must not admit a batch against a retired relation
+    (define cs (load-cs "minimal.pcs"))
+    (define dup
+      (struct-copy change-set cs
+                   [slot-lineage (append (change-set-slot-lineage cs)
+                                         (list (list 'edge "v1:layer-base:0:0"
+                                                     'retire)))]))
+    (check-equal? (second (resolve-activation dup base
+                                              #:layer "layer-new" #:event 1))
+                  'slot-lineage-conflict))
+
+  (test-case "an occurrence of a longer-keyed sibling program refuses"
+    ;; p1:layer-base:0 must not accept an occurrence of p1:layer-base:01
+    (define cs (load-cs "minimal.pcs"))
+    (define sib
+      (struct-copy change-set cs
+                   [occurrences (list (list "m1:p1:layer-base:01:root" '() '()))]))
+    (check-equal? (second (resolve-activation sib base
+                                              #:layer "layer-new" #:event 1))
+                  'unknown-occurrence))
+
+  (test-case "multi-occurrence rule lineage mints no colliding keys"
+    ;; two occurrences + rule lineage: keys are empty (grammar has no module
+    ;; coordinate), never two identical fabricated keys
+    (define cs (load-cs "two-instance.pcs"))
+    (define multi
+      (struct-copy change-set cs
+                   [occurrences
+                    (list (list "m1:p1:layer-base:0:0" '((0 "left")) '((0 "left")))
+                          (list "m1:p1:layer-base:0:1" '((1 "right")) '((1 "right"))))]
+                   [rule-lineage
+                    (list (list "r1:m1:p1:layer-base:0:0:0.0" "0.0")
+                          (list "r1:m1:p1:layer-base:0:1:0.0" "0.0"))]))
+    (define plan (resolve-activation multi base #:layer "layer-new" #:event 1))
+    (check-pred activation-plan? plan)
+    (check-equal? (activation-plan-rule-keys plan) '())))
