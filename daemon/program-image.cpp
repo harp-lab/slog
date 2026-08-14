@@ -33,6 +33,19 @@ constexpr sexp::Limits image_reader_limits{
   512
 };
 
+// The sexp reader caps s-expression NESTING at 512, but three post-parse
+// walks recurse over graph structures whose depth is bounded only by node
+// count (up to 4M), not by the nesting cap: the module preorder, the Tarjan
+// SCC recompute, and the condensation leveling.  An untrusted .pimg (every
+// seal is a hash of attacker-supplied bytes, so all content is controllable)
+// with a linear module/dependency chain would drive native recursion deep
+// enough to overflow the C++ stack -- a SIGSEGV the Error catch cannot
+// intercept, defeating the bounded decoder.  Cap graph depth well below the
+// stack budget (8192 frames * a few hundred bytes each is a fraction of the
+// default stack) and refuse typed instead; no real program stratifies or
+// nests modules anywhere near this deep.
+constexpr std::uint32_t image_max_graph_depth = 8192;
+
 [[noreturn]] void fail(ErrorK kind, const SExp& x,
                        const std::string& message)
 {
@@ -383,12 +396,16 @@ ProgramImage decode(const SExp& datum)
              "module child ordinals are not dense");
   }
   std::vector<std::uint32_t> preorder;
-  std::function<void(std::uint32_t)> visit_module =
-    [&](std::uint32_t slot) {
+  std::function<void(std::uint32_t, std::uint32_t)> visit_module =
+    [&](std::uint32_t slot, std::uint32_t depth) {
+      if (depth > image_max_graph_depth)
+        fail(ErrorK::format, module_records[slot + 1],
+             "module nesting exceeds the decode depth limit");
       preorder.push_back(slot);
-      for (const auto& child : children[slot]) visit_module(child.second);
+      for (const auto& child : children[slot])
+        visit_module(child.second, depth + 1);
     };
-  visit_module(out.root_module);
+  visit_module(out.root_module, 0);
   for (size_t i = 0; i < preorder.size(); ++i)
     if (preorder[i] != i)
       fail(ErrorK::format, module_records[preorder[i] + 1],
@@ -656,7 +673,12 @@ ProgramImage decode(const SExp& datum)
   std::vector<std::string> stack;
   std::uint32_t next_index = 0;
   std::vector<std::vector<std::string>> recomputed;
-  std::function<void(const std::string&)> visit = [&](const std::string& node) {
+  std::function<void(const std::string&, std::uint32_t)> visit =
+    [&](const std::string& node, std::uint32_t depth) {
+    if (depth > image_max_graph_depth)
+      throw Error(ErrorK::format,
+                  "program image: dependency chain exceeds the decode depth "
+                  "limit");
     index[node] = next_index;
     lowlink[node] = next_index++;
     stack.push_back(node);
@@ -665,7 +687,7 @@ ProgramImage decode(const SExp& datum)
     {
       if (!index.contains(target))
       {
-        visit(target);
+        visit(target, depth + 1);
         lowlink[node] = std::min(lowlink[node], lowlink[target]);
       }
       else if (on_stack.contains(target))
@@ -685,7 +707,7 @@ ProgramImage decode(const SExp& datum)
     recomputed.push_back(std::move(component));
   };
   for (const auto& item : adjacency)
-    if (!index.contains(item.first)) visit(item.first);
+    if (!index.contains(item.first)) visit(item.first, 0);
   std::sort(recomputed.begin(), recomputed.end());
   std::vector<std::vector<std::string>> declared;
   for (const Kernel& kernel : out.kernels) declared.push_back(kernel.members);
@@ -744,22 +766,25 @@ ProgramImage decode(const SExp& datum)
     predecessors[edge.first.second].insert(edge.first.first);
   std::map<std::uint32_t, std::uint32_t> levels;
   std::set<std::uint32_t> level_stack;
-  std::function<std::uint32_t(std::uint32_t)> level_of =
-    [&](std::uint32_t slot) -> std::uint32_t {
+  std::function<std::uint32_t(std::uint32_t, std::uint32_t)> level_of =
+    [&](std::uint32_t slot, std::uint32_t depth) -> std::uint32_t {
       const auto known = levels.find(slot);
       if (known != levels.end()) return known->second;
+      if (depth > image_max_graph_depth)
+        fail(ErrorK::format, component_records[slot + 1],
+             "component leveling exceeds the decode depth limit");
       if (!level_stack.insert(slot).second)
         fail(ErrorK::format, component_records[slot + 1],
              "component graph contains a cycle");
       std::uint32_t level = 0;
       for (std::uint32_t predecessor : predecessors[slot])
-        level = std::max(level, level_of(predecessor) + 1);
+        level = std::max(level, level_of(predecessor, depth + 1) + 1);
       level_stack.erase(slot);
       levels[slot] = level;
       return level;
     };
   for (const Kernel& kernel : out.kernels)
-    if (level_of(kernel.slot) != kernel.level)
+    if (level_of(kernel.slot, 0) != kernel.level)
       fail(ErrorK::format, component_records[kernel.slot + 1],
            "component level does not match condensation predecessors");
 

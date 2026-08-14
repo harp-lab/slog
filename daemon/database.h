@@ -7108,11 +7108,23 @@ public:
     return std::getenv("SLOG_NO_STATS") == nullptr;
   }
 
-  void registerRuleMeta(const std::string& stratum,
+  // Registry of RuleId<->RuleKey lineage per stratum hash.  Registration is
+  // per-stratum replacement, so re-registering a stratum is bounded, but the
+  // stratum key is arbitrary client text -- cap the number of DISTINCT strata
+  // so a client cannot grow the registry without bound across a session.  A
+  // real program has one hash per compiled stratum; the cap is far above any
+  // plausible count.  Returns false (and drops the registration) over the cap.
+  static constexpr size_t max_rule_meta_strata = 1u << 20;
+
+  bool registerRuleMeta(const std::string& stratum,
                         std::vector<RuleMetaEntry> entries)
   {
     std::lock_guard<std::mutex> g(stats_mx);
+    if (rule_meta.find(stratum) == rule_meta.end()
+        && rule_meta.size() >= max_rule_meta_strata)
+      return false;
     rule_meta[stratum] = std::move(entries);
+    return true;
   }
 
   const std::map<std::string, std::vector<RuleMetaEntry>>& ruleMeta() const

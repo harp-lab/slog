@@ -101,16 +101,33 @@ static void send_bye(int sock)
 // RF4 ArtifactKey: hash the actual descriptor object bytes, not its volatile
 // cache pathname.  The daemon retains this identity after dlopen; filesystem
 // availability is re-checked only when rendering the control catalog.
+// Hash a native artifact (.so) at a client-supplied path.  Streams the file
+// through SHA256 in bounded chunks rather than slurping it whole -- an
+// oversized or runaway path must not be able to allocate unbounded memory.
+// Over the cap the key is empty (treated as "no content identity" by the
+// callers), matching an unreadable file.
+static constexpr std::uint64_t max_artifact_bytes = 512ull * 1024 * 1024;
+
 static std::string native_artifact_key(const std::string& path)
 {
     std::ifstream input(path, std::ios::binary);
     if (!input) return {};
-    const std::string bytes((std::istreambuf_iterator<char>(input)),
-                            std::istreambuf_iterator<char>());
+    SHA256_CTX ctx;
+    SHA256_Init(&ctx);
+    char buffer[64 * 1024];
+    std::uint64_t total = 0;
+    while (input)
+    {
+        input.read(buffer, sizeof(buffer));
+        const std::streamsize got = input.gcount();
+        if (got <= 0) break;
+        total += static_cast<std::uint64_t>(got);
+        if (total > max_artifact_bytes) return {};
+        SHA256_Update(&ctx, buffer, static_cast<size_t>(got));
+    }
     if (input.bad()) return {};
     unsigned char digest[SHA256_DIGEST_LENGTH];
-    SHA256(reinterpret_cast<const unsigned char*>(bytes.data()), bytes.size(),
-           digest);
+    SHA256_Final(digest, &ctx);
     static constexpr char hex[] = "0123456789abcdef";
     std::string out(SHA256_DIGEST_LENGTH * 2, '0');
     for (size_t i = 0; i < SHA256_DIGEST_LENGTH; ++i)
@@ -2380,10 +2397,20 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
                     const std::string& k = g.children[0].text;
                     const std::string& v = g.children[1].text;
                     if (k == "rid")
-                    { e.rid = strtoull(v.c_str(), nullptr, 10); have_rid = true; }
+                    {
+                        // a non-numeric rid must refuse, not silently
+                        // register as 0 (durable-key corruption)
+                        if (v.empty()
+                            || v.find_first_not_of("0123456789")
+                               != std::string::npos)
+                        { ok = false; break; }
+                        e.rid = strtoull(v.c_str(), nullptr, 10);
+                        have_rid = true;
+                    }
                     else if (k == "kernel") { e.kernel = (v == "#f") ? "" : v; }
                     else if (k == "key") { e.key = (v == "#f") ? "" : v; }
                     else if (k == "loc") { e.loc = (v == "#f") ? "" : v; }
+                    else { ok = false; break; }  // unknown entry key
                 }
                 if (!have_rid) ok = false;
                 if (ok) entries.push_back(std::move(e));
@@ -2398,7 +2425,13 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
             return;
         }
         const size_t n = entries.size();
-        d->db()->registerRuleMeta(stratum, std::move(entries));
+        if (!d->db()->registerRuleMeta(stratum, std::move(entries)))
+        {
+            refuse(d, "resource",
+                   "(verb register-rule-meta) (detail \"rule-meta registry "
+                   "is full\")");
+            return;
+        }
         d->emit("(rule-meta-registered "
                 + slog::protocol::quoteString(stratum) + " "
                 + std::to_string(n) + ")");
