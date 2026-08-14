@@ -328,6 +328,8 @@
    "  clear scratch       retract the whole scratch layer"
    "  add REL V...        add one input tuple and propagate it"
    "  del REL V...        retract one input tuple and propagate it"
+   "  whatif add|del REL V...  preview the edit's cone: affected relations,"
+   "                      sizes, and the repair route -- nothing is mutated"
    "  stage +(R V..) -(..) queue signed edits; `status` shows them pending"
    "  flush               commit everything staged as one update epoch"
    "  recount [force]     re-establish (or force-rebuild) the count cache"
@@ -1793,6 +1795,86 @@
                                      'outcome (format "~a" (second o))
                                      'watch (and (third o) (format "~a" (third o)))))
                  outcomes)))
+
+;; ---- R5 whatif: the operator's edge (repl-ux §8) --------------------------
+;;
+;; `whatif del edge 1 2` (or `whatif del (edge 1 2)`) answers "what would
+;; this edit break?" from the maintenance machinery's own cone and route
+;; classification, READ-ONLY: affected relations with their committed
+;; sizes, the repair route the flush would choose, and whether the edited
+;; tuple is present now.  Nothing is staged, nothing runs, nothing
+;; commits -- the summary says so explicitly.
+(define (whatif-result state argument)
+  (define raw (string-trim argument))
+  (define parsed
+    (match (regexp-match #px"^(add|del)[[:space:]]+(.*)$" raw)
+      [(list _ verb rest)
+       (match (read-command-data 'whatif rest #:minimum 1)
+         ;; both spellings: `whatif del (edge 1 2)` and `whatif del edge 1 2`
+         [(list (list* rel values)) (list verb rel values)]
+         [(list* rel values) (list verb rel values)])]
+      [_ (error 'whatif "expected: whatif add|del REL VALUE... (or whatif del (REL VALUE...))")]))
+  (match-define (list verb rel values) parsed)
+  (define rs (ensure-session-record! state))
+  (define s (repl-session-session rs))
+  (define sign (if (string=? verb "add") '+ '-))
+  (define rel-name (relation-key rel))
+  (match-define (list affected route cone-strata mono? negatable?)
+    (session-whatif s sign rel-name))
+  (define catalog (live-catalog s))
+  (define (size-of name)
+    (with-handlers ([exn:fail? (lambda (_e) #f)])
+      (relation-info-size
+       (relation-from-catalog 'whatif catalog (format "~a" name)))))
+  (define tuple-text
+    (format "(~a ~a)" rel-name (string-join (map ~s values) " ")))
+  (define matches
+    (with-handlers ([exn:fail? (lambda (_e) #f)])
+      (run-watch-query state rs (string-append "?" tuple-text))))
+  (define route-line
+    (case route
+      [(input-only)
+       "route: input-only edit — no derived relation reads this one"]
+      [(maintain-positive)
+       (format "route: precise positive maintenance across ~a ~a (monotone cone)"
+               cone-strata (if (= cone-strata 1) "stratum" "strata"))]
+      [(maintain-negative)
+       (format "route: negative-then-positive maintenance across ~a ~a (negatable cone)"
+               cone-strata (if (= cone-strata 1) "stratum" "strata"))]
+      [else
+       (format "route: clear-and-rerun across ~a ~a (~a)"
+               cone-strata (if (= cone-strata 1) "stratum" "strata")
+               (if (eq? sign '+) "non-monotone cone" "cone not negatable"))]))
+  (hash-set*
+   (text-result
+    (format "Whatif ~a ~a" verb tuple-text)
+    (append
+     (list
+      (cond
+        [(not matches) (format "~a — presence not checkable here" tuple-text)]
+        [(eq? sign '-)
+         (format "~a — ~a row~a match~a now~a"
+                 tuple-text matches (if (= matches 1) "" "s")
+                 (if (= matches 1) "es" "")
+                 (if (zero? matches) " (retraction would be a no-op)" ""))]
+        [else
+         (format "~a — ~a now (~a)"
+                 tuple-text
+                 (if (zero? matches) "absent" "already present")
+                 (if (zero? matches) "a genuine addition" "addition would be a no-op"))]))
+     (if (null? affected)
+         (list (format "no derived relations read ~a" rel-name))
+         (for/list ([name (in-list affected)])
+           (define n (size-of name))
+           (format "~a — ~a affected"
+                   name (if n (format "~a row~a now;" n (if (= n 1) "" "s")) ""))))
+     (list route-line
+           "nothing staged, nothing mutated — preview only"))
+    #:kind "whatif")
+   'relation rel-name
+   'sign (format "~a" sign)
+   'affected (map (lambda (n) (format "~a" n)) affected)
+   'route (format "~a" route)))
 
 (define (watch-result state argument)
   (define raw (string-trim argument))
@@ -3983,6 +4065,7 @@
       (list "program completed at a settled daemon boundary")
       change
       #:kind "run")]
+    ["whatif" (whatif-result state argument)]
     [(or "add" "del")
      (match-define (list* rel values)
        (read-command-data (string->symbol verb) argument #:minimum 2))

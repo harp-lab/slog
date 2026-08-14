@@ -90,6 +90,7 @@
          session-recount!       ; the count round over the pipeline (M0)
          session-reenter!       ; direct replay-entry (tests/tools)
          session-rerun!         ; direct clear-and-rerun (tests/tools)
+         session-whatif         ; R5: read-only cone/route preview of an edit
          session-scratch-add!   ; R3: run one scratch fragment, interp-only
          session-scratch-events ; R3: the live scratch ledger, oldest first
          session-scratch-keep!  ; R3: export the layer and promote it
@@ -2979,6 +2980,32 @@
 ;; Explicit existing-slot edit spelling.  Keep session-batch! as the
 ;; compatibility alias used by the current harness and recipe reader.
 (define session-edit-batch! session-batch!)
+
+;; ---- R5 whatif: the cone preview (repl-ux §8) -----------------------------
+;;
+;; "What would this edit break?" answered by the maintenance machinery's
+;; own front half, run READ-ONLY: the same cone-of the next flush would
+;; consult and the same monotone/negatable classification that picks its
+;; route.  Nothing is staged, nothing runs, nothing commits.  The richer
+;; form -- actually maintaining a discardable successor cone and counting
+;; casualties -- waits for a driver that can hold and discard applied
+;; maintenance; the daemon's update-epoch abort is deliberately protocol
+;; cleanup only (never data rollback), so running maintenance here could
+;; not honestly discard it.
+(define (session-whatif s sign rel)
+  (unless (memq sign '(+ -))
+    (error 'session "whatif sign must be + or -"))
+  (define rel* (if (symbol? rel) rel (string->symbol rel)))
+  (define-values (_cur strata-pos chains) (introspect! s))
+  (define-values (cone mono? negatable?) (cone-of s rel* strata-pos chains))
+  (define affected
+    (sort (remove-duplicates (append-map sinfo-heads cone)) symbol<?))
+  (define route
+    (cond
+      [(null? cone) 'input-only]
+      [(eq? sign '+) (if mono? 'maintain-positive 'clear-and-rerun)]
+      [else (if negatable? 'maintain-negative 'clear-and-rerun)]))
+  (list affected route (length cone) mono? negatable?))
 
 ;; Create a distinct input-only successor slot at the current JIT tip.  An
 ;; earlier pipeline point requires a recipe-branch rebuild; refusing it keeps
