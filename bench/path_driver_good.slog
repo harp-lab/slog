@@ -1,0 +1,32 @@
+;; db: bench_pathdriver
+;; THE DATA-BLIND DRIVER PATHOLOGY (acyclic, 2 joins -- neither WCOJ nor
+;; semijoin applies).  A simple path query X -> hub -> Z filtered by a tiny
+;; selective relation `sel` on X:
+;;
+;;   sel(X,_)   3 rows          (the selective endpoint)
+;;   big1(X,H)  N rows, H := 0   (every X into the single hub)
+;;   big2(H,Z)  N rows, H  = 0   (the hub out to every Z)
+;;
+;; The good plan drives from sel (3 rows) and probes big1 then big2: O(N).
+;; The bad plan drives from a big relation and applies sel LAST, after
+;; big1 |><| big2 has enumerated the N*N (X,hub,Z) intermediate: O(N^2).
+;;
+;; The rule join planner (compiler/join-planning.rkt) is DATA-BLIND: with
+;; all three relations arity 2 the structural score ties, and the driver is
+;; chosen by source-clause order, not by size.  So the same query written
+;; two ways picks opposite drivers and differs ~100x-260x at N=8k-16k, and
+;; the gap WIDENS with N.  WCOJ3's join3 does not fire (acyclic, no cycle);
+;; the semijoin filter does not fire either (it needs >= 3 join clauses --
+;; this has 2).  Both maskers are inapplicable, so the bad driver stands
+;; even in the default configuration.
+;;
+;; This spelling writes `sel` LAST, which happens to get the fast
+;; practice" -- and gets the SLOW plan.  Swap the body to end with `sel` and
+;; it gets the fast plan.  That fragility is the bug: a cardinality-aware
+;; driver choice would drive from sel(3) regardless of how it is written.
+table (big1 int int)
+table (big2 int int)
+table (sel int int)
+table (ans int int)
+
+rule (big1 X H) (big2 H Z) (sel X D) --> (ans X Z)

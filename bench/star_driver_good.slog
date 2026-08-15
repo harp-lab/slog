@@ -1,0 +1,19 @@
+;; db: bench_stardriver
+;; DATA-BLIND DRIVER, 3-join variant (semijoin threshold IS met, yet does
+;; not rescue).  Path X -> hub -> Z -> W filtered by a tiny selective `sa`:
+;;
+;;   sa(X,_)  3 rows selective     a(X,H) N rows H:=0     (fan-in to hub)
+;;   b(H,Z)   N rows H=0           c(Z,W) N rows identity (a|><|b = N^2)
+;;
+;; sel-driven: O(N).  big-driven: O(N^2).  With 3 joins the semijoin filter
+;; DOES fire, but it only trims ~15% -- filtering cannot undo driving from
+;; the large relation, you still enumerate the huge driver x join.  So the
+;; ~100x source-order gap survives the full default machinery.  Proof that
+;; the data-blind driver problem is NOT confined to sub-threshold queries.
+table (sa int int)
+table (a int int)
+table (b int int)
+table (c int int)
+table (ans int int)
+
+rule (a X H) (b H Z) (c Z W) (sa X D) --> (ans X W)

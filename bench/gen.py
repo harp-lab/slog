@@ -111,7 +111,30 @@ def bipartite_random(rng, nl, nr, m):
     return sorted(edges)
 
 
+def path_driver(n, hub=0):
+    """Acyclic path pathology: big1 = every spoke -> hub, big2 = hub -> every
+    spoke, sel = 3 selective spokes.  big1|><|big2 is n^2; sel prunes to O(1)
+    rows but only if it drives.  Used by bench/path_driver.slog."""
+    big1 = [(i, hub) for i in range(n)]
+    big2 = [(hub, j) for j in range(n)]
+    sel = [(3, 3), (7, 7), (9, 9)]
+    return big1, big2, sel
+
+
 def main():
+    # star driver pathology (bench/star_driver.slog)
+    sdn = 8000
+    write_bin_db("bench_stardriver", {
+        "sa": (2, [(3, 3), (7, 7), (9, 9)]),
+        "a": (2, [(i, 0) for i in range(sdn)]),
+        "b": (2, [(0, j) for j in range(sdn)]),
+        "c": (2, [(j, j) for j in range(sdn)])})
+
+    # path-driver pathology (bench/path_driver.slog)
+    for pdn in (8000, 16000):
+        b1, b2, sl = path_driver(pdn)
+        write_bin_db("bench_pathdriver" if pdn == 8000 else "bench_pathdriver%d" % pdn,
+                     {"big1": (2, b1), "big2": (2, b2), "sel": (2, sl)})
     print("writing binary databases under data/")
 
     # -- er: triangle stress (dense) -----------------------------------------
