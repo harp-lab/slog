@@ -200,62 +200,237 @@ interp/compile and compose with the existing lower-level mechanics
 
 ## Proposed direction: runtime plan selection by cardinality
 
-**Status — DESIGN NOTE, UNDER DEVELOPMENT (2026-08-15). Not implemented.**
-Recorded as a plan we expect to want soon and to de-risk with case studies
-before building. The mechanism below is proposed; the numbers cited are from
-the reproduced failures above, not from a built implementation.
+**Status — DESIGN NOTE, UNDER DEVELOPMENT. Not implemented.**
+First pass 2026-08-15 (mechanism sketch, case studies). Refined the same
+day: compiler and daemon anchor points verified in-tree, the racing
+alternative assessed and rejected as a control mechanism, phased roadmap
+adopted. Numbers cited are from the reproduced failures above, not from a
+built implementation.
 
 ### The idea
 
-Compile a small set (K ≈ 2–3) of alternative join orders per size-sensitive
-rule into the **same cached artifact**, and choose one **at run time** from
-actual relation row counts — the same way a name-free kernel already attaches
-to different relations at run time (T4's descriptor attach). This is
-parametric / "choose-plan" optimization: for a non-recursive rule every valid
-order computes the identical relation, so the runtime picks the cheapest with
-no correctness risk.
+Compile a small set (K ≈ 2–3) of alternative join orders per
+size-sensitive rule into the **same cached artifact**, and choose one **at
+run time** from actual relation row counts. Every valid order of a rule
+computes the identical instantiation set, so the runtime picks the
+cheapest with no correctness risk; the alternatives all derive from one
+program text, so the **cache key is unchanged** and there is **no
+recompile when the DB changes**.
 
-It is the clean answer to the compile-time problem above: the alternatives
-all derive from one program text, so the **cache key is unchanged** and there
-is **no recompile when the DB changes**; the runtime just reads a row-count
-per relation (which the daemon already has at rule entry) and picks. That is
-categorically lighter than profiling a representative database.
+Two verified compiler facts make this smaller than it sounds:
 
-### Mechanism sketch
+- **The candidates are already enumerated.** For closed/seeded rules the
+  planner already builds one complete candidate order per legal driver
+  (`enumerate-drivers?`, `join-planning.rkt:756-759`, capped by
+  `wcoj3-search-cap`) and discards all but the argmax (`candidate-better?`
+  sort, `:845-848`). Plan-set emission = retain top-K of a list the
+  planner already constructs.
+- **Reordering is exactness-safe by construction.** The FULL/OLD/NEW/TOMB
+  views that make semi-naive and the count/M4N/M4S/DRed^c flavors exact
+  bind to *logical occurrence ordinals* assigned before driver choice and
+  scheduling (`join-planning.rkt:589-592` — "views immune to later action
+  reordering"). Any alternative order of a version derives the identical
+  instantiation set under every flavor. This is the load-bearing
+  soundness fact.
 
-- **Planner** — emit a *choice group* of K complete orders instead of a
-  single argmax. Minimal version: drive-from-each-relation; the structural
-  score already ranks candidates, so keep the top few.
-- **Plan format** — a new variant kind: a *pick-one-by-cost* group, alongside
-  the existing `all`/`delta` variants (which still all run, for semi-naive
-  completeness).
-- **Executor, both tiers** — at rule entry, evaluate a cheap size cost per
-  candidate from the daemon's relation counts, pick one, run it. Interp:
-  cheap (K plan entries + a comparison). Native: K× codegen for affected
-  rules only.
-- **Selector scope** — keep it to what row counts can decide: driver =
-  smallest eligible relation (robust); coarse size-greedy tail. Finer choices
-  want per-column distinct/selectivity, which counts alone do not give.
+### The two choice surfaces
 
-### Soundness and scope
+- **Closed and seeded rules** (`drivers`, `join-planning.rkt:760-784`) — a
+  whole-order choice among drive-from-each candidates. Resolved **once at
+  stratum entry**: these rules run once per stratum, and the task fan-out
+  depends on the driver kind (`task_count()`, `plan.h:2267`), so the pick
+  must land before `BoundRule::attach` (`plan.h:2481`).
+- **Dynamic (semi-naive) rules** — the delta versions all still run, one
+  per dynamic join (`:776`); the choice is the **tail order within each
+  version** (`schedule-body-actions:1182`; K tails = re-runs of the same
+  scheduler under forced-first / size-greedy variation). The driver — and
+  hence `task_count()` — is identical across arms, so the pick can be a
+  per-rule index read in `make_execution` (`plan.h:2314`) and legally
+  changed between iterations. Temp-driven versions keep their driver
+  (temps have no indices, `:772`); only their tails are choosable.
 
-- **Non-recursive rule** — pick the whole order once at rule entry. Fully
-  sound (all orders equivalent).
-- **Recursive / semi-naive rule** — the delta variants must all still run;
-  the choice applies to the **tail order within each**, picked once at
-  fixpoint entry from settled input/lower-stratum sizes. Sound, kills the
-  tail blowup, but a *heuristic* for a relation that grows during its own
-  fixpoint (entry-time sizes ≠ final sizes) — deliberately no per-iteration
-  re-selection, to stay clear of dynamic profiling.
-- **Determinism** — the artifact stays deterministic (same program → same K
-  variants); the runtime pick is a deterministic function of the DB's sizes;
-  correctness goldens are unaffected (all orders equal); only plan-*shape*
-  goldens grow (re-record), and any per-variant fire-count stat becomes
-  data-dependent.
-- **Cost control** — emit alternatives only for size-sensitive rules
-  (multi-relation, no key-bound / provably non-expanding driver);
-  single-join and key-bound rules keep one plan, so the K× native codegen hits
-  only the rules that need it. Gate behind an `SLOG_*` flag until proven.
+### Why counts, not clocks — the racing alternative assessed
+
+The other mechanism on the table was **plan racing**: every N iterations
+run all K arms of a rule, keep whichever finishes first, drop the rest,
+reuse the winner between races. Rejected as a *control* mechanism, on
+grounded reasons:
+
+1. **No cancellation primitive at the right granularity.** The only abort
+   in the tree is `abortReadAttempt` (`database.h:5074`) — it discards the
+   **entire read phase** (send shards, staged fires, harvest, proofs) and
+   is restart-grade, initiated from outside over the protocol. Nothing
+   cancels *one rule's* half-executed tasks inside a phase. Worse,
+   admission (`abortObstacle:5005`) refuses the `count`/`maint*` flavors
+   outright — the abort-based salvage is unavailable exactly where racing
+   is unsound:
+2. **Duplicate derivations under the counted flavors.** K arms racing over
+   the same delta each derive every fact. Set semantics dedups; DRed^c
+   derivation counts and the exact-once fire audit do not — the suite
+   asserts *literal* fire counts (`tests/session-tests.sh:286-287`,
+   `stats-tests.sh:95`, `t6-restart.sh:151`). A sound race must fully
+   stage-and-abort every loser: a new per-rule transactional machine,
+   built to obtain a signal counts deliver for free.
+3. **The verdict is stale by construction.** A race measures relative cost
+   on *this iteration's* delta; delta sizes swing across iterations, so
+   the winner is out of date the moment it is crowned. Row counts are
+   re-readable every iteration for the price of a comparison.
+4. **Timing-as-control makes behavior load-dependent.** Nuance, verified:
+   this would *not* break correctness gates — every arm computes the same
+   logical fixpoint, and the byte image is already nondeterministic
+   (struct ids are minted in encounter order; `db-compression.md:160-178`,
+   `:496-503`; the comparison discipline is content-based throughout). But
+   *which plan ran*, the work done, and the selection state would differ
+   run to run and machine to machine: un-replayable performance,
+   nondeterministic answers to "why was this run slow", a selector whose
+   decisions cannot be reproduced from a bug report. Counts make the same
+   class of decision deterministically.
+
+Against those costs, racing's genuine edge over counts — it sees constant
+factors (cache locality, index quality) a size model cannot — is
+second-order next to the 100–260× order-of-growth wins counts capture.
+
+**The salvageable core** (parked as phase J4 below, likely never needed):
+if measured adaptation is ever wanted, measure **deterministic work
+counters** (tuples probed/scanned per arm), collected by *alternating*
+arms across iterations — never racing within one. Counters are pure
+functions of the data, so everything stays reproducible.
+
+### The determinism boundary
+
+Design rule for every phase: **every control input to plan selection is a
+pure function of database state** — row counts, work counters — never
+wall-clock time. Time may be logged as a diagnostic; it is never consulted
+for control.
+
+One verified caveat: "deterministic function of DB state" is **not** the
+same as "same arm chosen on replay". The accel seed reservoir injects
+sampled tuples before replay (`accelRecordRound`, `database.h:7637`) and
+flips the seeded task set on (`rs.seeded_run`, `:6556`), so entry-time
+sizes on a seeded replay legitimately differ from the original run and the
+selector may pick a different arm there. That is sound — arms are
+logically equivalent, and replay re-fires every instantiation exactly once
+regardless (`db-compression.md:291-293`) — but it means **gates must
+assert content equality and `$stat_fires` equality, never arm identity.**
+
+### Fire identity survives — with one structural constraint
+
+Verified: nothing in the fire/stat path keys on plan bytes. The fire key
+is `(loc, tag)` where `tag` strips the `#ordinal` suffix
+(`plan.h:1850-1870`, the N5/stats-4 unification), and the base tag names
+the **driver relation** (`canonical-plan.rkt:373-390`) — which the arms of
+one version share. K alternative orders of a version land on the same fire
+slot by existing design; the `#ordinal`-strip rule was written for exactly
+this shape.
+
+The constraint that shapes the plan format: **a choice group must be a
+sub-structure inside ONE `rule-def`/crule, never K separate rule-defs.**
+The scheduler runs every attached task unconditionally
+(`runPhase`/`task_at`, `database.h:6358-6388`); K separate rule-defs would
+all attach, all fire, multiply `$stat_fires` by K, and fail the exact-once
+audit hard. One rule-def, K cursor ladders inside it, exactly one executed
+per (version, iteration).
+
+The chosen arm is published as a *diagnostic* (a column beside
+`$stat_fixpoint` in `publishStratumStats`, `database.h:7258`) — never as
+an identity input.
+
+### Isolation inventory — what this must not touch, and why it doesn't
+
+The arm is an execution detail **below fire identity**. Invariant: exactly
+one arm of each rule-version executes per iteration. Above that line:
+
+| feature | interaction | why safe |
+|---|---|---|
+| exact semi-naive + count/M4N/M4S/DRed^c | reordering inside a version | views bind to logical ordinals pre-scheduling (`join-planning.rkt:589-592`); identical instantiations for any arm |
+| exact-once fire audit / `$stat_fires` | fires from an arm | `(loc, tag)` key strips `#ordinal`; arms share the driver-named base tag; one-rule-def constraint above |
+| lattices | order-sensitive merges | **excluded from choice groups initially**: an extern or float lattice merge is the one place order can change the *logical* result (`db-compression.md:512-535`) |
+| RF5 activation (A2/A3 cone) | plan-set rides the program payload | arms of a rule have identical relation-level read/write sets → write-set narrowing, push filters, retirement unaffected; the plan-set swaps atomically with activation |
+| plan/.so cache | key discipline | the *policy* (flag, K, candidate rule) joins the settings block of the job hash (`compile.rkt:236-250`, beside `semijoin-filters-enabled`); the runtime *pick* never enters any key (the `:839-841` "TU text must not fork on an env var" discipline); `o-cache-key` (`tools.rkt:1095`) is content-addressed and needs no change |
+| tiered native (T3b/T4) | which arms exist natively | J1/J2: choice-group rules simply **leave native coverage** — T4 partial coverage runs the complement interpreted *by construction* (`attach_normal_rules(..., &covered)`, `plan-count.cpp:989`, `:2035`); no swap machinery involved. J3 decides between K×-in-cluster codegen with a selector branch and an `(ordinal, arm)` coverage axis |
+| T6 executor swap | selection flip on a compiled rule | not a swap at all under the coverage route (the production ladder is monotone interp→O0→O2 and never daemon-initiated, `compile.rkt:1053-1055`); the T6 `readAbortedPristine` seam (`daemon.h:312`) exists if a mid-read flip is ever needed |
+| plan goldens | .plan shape | flag off → arm 0 ≡ today's argmax, byte-identical; flag on → goldens grow choice groups and `#N` suffixing can flip (golden-visible, `$stat`-invisible); re-record sanctioned |
+| semijoin / WCOJ | per-arm | applied within each candidate order; compose, don't compete |
+| replay / compression | reproducibility | replay re-executes every instantiation exactly once; the selector is deterministic from DB state; seeded-replay caveat above (gates assert content + fires, not arm identity) |
+
+### Where the hooks land (verified anchors)
+
+Compiler — all inside the planner and the existing emission seam:
+
+- Candidate retention: keep top-K at `join-planning.rkt:845-848`; K tail
+  schedules per dynamic version via `schedule-body-actions:1182` re-runs.
+- Choice node: inside one `rule-def` in the canonical plan
+  (base-tag/`#N` grouping, `canonical-plan.rkt:373-390`). The `exec_key`
+  changes — an expected new artifact identity, not a break (attachment
+  audits carry reads/writes independently, `database.h:2521-2543`).
+- Emission: `.plan` and native TUs both derive from the one `cprog`
+  (`compile.rkt:842-871`); native ignores arms > 0 until J3.
+
+Daemon — the "few driver hooks", now concrete:
+
+- Decode: the body-op loop of `decode_rule` (`plan.cpp:585-686`) grows a
+  `(choose (alt …) …)` form; unrecognized forms already degrade gracefully
+  via `out.unsupported`, so old daemons refuse cleanly. Each arm seals
+  through the existing `seal_rule` (`plan.h:555`) into its own cursor
+  ladder (`SealedRule::cursors`, `plan.h:346`).
+- Whole-order pick (closed/seeded): at stratum entry — the
+  `continueStratum` `starting` block (`database.h:6541-6574`), which
+  already pays for a registry-wide `totalTuples()` — before
+  `BoundRule::attach`.
+- Tail pick (dynamic versions): a per-rule current-arm atomic read in
+  `make_execution` (`plan.h:2314`, the relation `frame` already in hand),
+  recomputed once per iteration at `EndIterCompletion`
+  (`database.h:9435`) — the existing single-threaded per-round hook that
+  already hosts `accelRecordRound` and `rankRecordRound`.
+- Sizes: `Relation::tupleCount()` (`database.h:1924`) — 32 O(1) btree
+  size reads, no scan; from a bound rule, `frame[slot]->tupleCount()`.
+  Live delta counts have **no O(1) source** (batch rows can be nulled in
+  place): the cheapest exact form is summing the post-reorg `read_buckets`
+  RefVec sizes (precedent: `accelRecordRound` pass 1, `:7653-7657`).
+  **Not `$stat_*`** — `$stat_size` is a dump-time snapshot
+  (`:7293-7306`), not a runtime oracle.
+
+### Phased roadmap (bang-for-buck order)
+
+- **J0 — size-blind robustness + the tripwire (compiler-only, small).**
+  (i) Fix the tie-break (option 4) and prefer key-bound / provably
+  non-expanding drivers (option 3) in `join-score`. No format change, no
+  daemon change; kills the "spelling decides 100×" fragility before any
+  size plumbing exists. (ii) Wire the `bench/*_driver` pairs into an
+  asserted ratio gate (bad-spelling ≤ k× good-spelling) **first**, so
+  every later phase has a tripwire. Re-record plan goldens (sanctioned).
+- **J1 — plan-set emission (compiler-only, behind `SLOG_MULTIPLAN`).**
+  Retain top-K candidates for closed/seeded rules; K=2 tails per dynamic
+  version. Sensitivity gate: only multi-join rules with no key-bound
+  driver and tied/near-tied scores get K>1 — and no lattice-merging rules
+  — so most rules keep one plan. Arm 0 = today's argmax (flag off →
+  byte-identical plans). Choice-group rules drop out of native coverage
+  (interp-only entry — the `SLOG_PLAN_ABI` precedent).
+- **J2 — the daemon selector (the one real daemon change).** Decode +
+  seal arms; whole-order pick at stratum entry, tail pick at fixpoint
+  entry stored per BoundRule; arm = argmin of a per-arm cost signature
+  over `tupleCount()` reads. Chosen arm published as a diagnostic.
+- **J2b — per-iteration tail reselection with hysteresis.** Recompute at
+  `EndIterCompletion` from delta live-counts; switch only on an estimated
+  ≥k× win (thrash guard). Still counts-only, still reproducible. This
+  subsumes the useful part of "re-decide every N iterations" with none of
+  racing's costs. (Revises the first draft's "no per-iteration
+  re-selection" stance: the worry there was dynamic *profiling*; an O(K)
+  count comparison at a seam that already hosts two per-round samplers is
+  not profiling.)
+- **J3 — native tier for choice rules.** Two candidate shapes, decided by
+  profile data once J2 shows which choice rules stay hot: (a) K× codegen
+  inside the covered rule's cluster with the selector branch in generated
+  C++ (simple; bounded by the sensitivity gate), or (b) an
+  `(ordinal, arm)` coverage axis compiling only the dominant arm
+  (`crule-natively-covered?` is the single policy function either way).
+  The policy knob joins the job-hash settings block.
+- **J4 — measured adaptation (probably never).** Only if the case studies
+  show counts mis-selecting: deterministic work counters, alternation
+  across iterations, wall-clock never a control input.
+
+Each phase lands behind the J0 ratio gate; targeted batteries per phase,
+full suite at arc end per the standing test discipline.
 
 ### Motivating case studies (to develop before/with implementation)
 
@@ -285,24 +460,31 @@ cleanly each justifies the mechanism:
 4. **Recursive reachability tail order** — *the honest bounded case, TO
    BUILD.* Transitive closure joined with a selective filter: the delta
    variants all run, but the tail order (apply the filter before or after the
-   edge expansion) matters and depends on selectivity. Tail chosen once at
-   fixpoint entry — a heuristic for the growing relation, still strictly
-   better than a blind fixed order, still no profiling. This case study
-   should quantify how much the entry-time heuristic leaves on the table
-   versus an oracle, to decide whether recursive rules are worth the K×.
+   edge expansion) matters and depends on selectivity. This case study should
+   quantify entry-time-only (J2) against per-iteration reselection (J2b)
+   against an oracle — it is the J2 → J2b decision, and it decides whether
+   recursive rules are worth K>1 at all.
 
-### Open design questions (the case studies should answer)
+### Open design questions (updated)
 
-- **Candidate-set policy** — drive-from-each (N candidates) vs top-K
-  structural vs FD-pruned. What K is enough? The reproduced examples need only
-  *driver* robustness → K = #join relations, usually 2–4.
-- **Native codegen budget** — is K× acceptable in general, or gated behind a
-  flag until the case studies show the win? (Interp is cheap regardless.)
-- **Selector placement / cost** — where the entry-time size lookup lives and
-  its per-rule overhead.
-- **Interaction with semijoin / WCOJ** — they ride *on top*; selection just
-  gives them a better base order (a well-chosen driver, then the existing
-  filters/`join3`), so they compose rather than compete.
+- **ANSWERED — selector placement/cost:** the anchors above; entry-time
+  reads ride an already-paid seam, per-iteration reads are
+  `thread_count × 32` vector-size reads at `EndIterCompletion`.
+- **ANSWERED — native codegen budget:** dissolved by the coverage route
+  (J1 ships choice rules interp-only; J3 compiles at most the dominant arm,
+  or a K× cluster bounded by the sensitivity gate).
+- **NARROWED — candidate-set policy:** closed rules K = drive-eligible
+  joins (usually 2–4); dynamic tails start at K=2 (structural argmax +
+  size-greedy).
+- **OPEN — signature form:** driver size alone, or driver size × a
+  first-join fanout bound? Start minimal; case study 4 decides if more is
+  needed.
+- **OPEN — hysteresis constant k, and selection-state persistence:** does
+  the last-chosen arm survive pause/resume and daemon restart? Position:
+  it is reconstructible optimization state; reset-on-restart is acceptable
+  and keeps it out of every snapshot format.
+- **OPEN — J3 shape:** `(ordinal, arm)` coverage vs K×-cluster selector
+  branch (see roadmap).
 
 ### Relationship to the options above
 
@@ -310,9 +492,9 @@ This is the concrete, recompile-free realization of options (1) and (2) in
 "General improvement options": it delivers size-aware ordering without the
 bind-time replan, by moving the size read to run time and pre-paying the
 alternatives into the cached artifact. Options (3) (FD/key-aware) and (4)
-(tie-break) remain valuable *complements* — they improve the structural
-default order each candidate starts from, and reduce how often a choice group
-is even needed (a key-bound driver needs no alternatives).
+(tie-break) are J0 — they improve the structural default order each
+candidate starts from and reduce how often a choice group is even needed
+(a key-bound driver needs no alternatives).
 
 ## Files
 
@@ -320,7 +502,22 @@ is even needed (a key-bound driver needs no alternatives).
   `bench/star_driver.slog`, `bench/star_driver_good.slog`; generators in
   `bench/gen.py` (`bench_pathdriver`, `bench_stardriver`).
 - Planner: `compiler/join-planning.rkt` (`join-score:991`,
-  `best-occurrence:1009`, `schedule-body-actions:1182`); weights
-  `compiler/params.rkt:34-36`; toggles `SLOG_NO_WCOJ3`, `SLOG_NO_SEMIJOIN`.
+  `best-occurrence:1009`, `schedule-body-actions:1182`; candidate
+  enumeration `:756-784`, retention seam `:845-848`, ordinal-bound views
+  `:589-592`); weights `compiler/params.rkt:34-36`; toggles
+  `SLOG_NO_WCOJ3`, `SLOG_NO_SEMIJOIN`.
 - Cardinality-aware precedent: `compiler/query-plan.rkt` (`estimate-probe`,
   `best-probe-choice`).
+- Daemon seams: `daemon/database.h` — `runLoop:6419` (iteration loop
+  `:6448`), `continueStratum:6536` (stratum entry `:6541`),
+  `EndIterCompletion:9435`, `tupleCount:1924`,
+  `abortReadAttempt:5074` / `abortObstacle:5005`,
+  `publishStratumStats:7258`; `daemon/plan.cpp` — `decode_rule:466`
+  (body ops `:585-686`), `bind_kernel_plan:2590`; `daemon/plan.h` —
+  `seal_rule:555`, `SealedRule:342`, `make_execution:2314`,
+  `attach:2481`, fire identity `:1850-1870`; `daemon/plan-count.cpp` —
+  partial coverage `:989`, `:2035`.
+- Cache keys: `compiler/compile.rkt:229-251` (settings block `:236-250`),
+  `compiler/tools.rkt:1095` (`o-cache-key`).
+- Nondeterminism doctrine + replay: `docs/db-compression.md:160-178`,
+  `:291-293`, `:496-535`.
