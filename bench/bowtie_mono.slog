@@ -1,0 +1,13 @@
+;; db: bench_bowtie
+;; BOWTIE, monolithic: two transitive triangles (a->b, b->c, a->c) sharing
+;; their apex M -- tri1 = (X,Y,M) with M the sink, tri2 = (M,U,V) with M the
+;; source -- written as ONE 6-atom rule, subpatterns adjacent (the natural
+;; spelling).  The triangle pattern appears TWICE, identical up to renaming.
+;; Case-study questions (docs/join-planning-assessment.md): does join3 fire
+;; here at all, on which triangle, can it fire on both; and what does the
+;; scalar remainder pay on the wedge-hub (global 2-path tax) and near-bowtie
+;; (re-derive-the-second-triangle tax) gadgets of bench/gen.py bowtie_graph.
+table (edge int int)
+table (bt int int int int int)
+
+rule (edge X Y) (edge Y M) (edge X M) (edge M U) (edge U V) (edge M V) --> (bt X Y M U V)

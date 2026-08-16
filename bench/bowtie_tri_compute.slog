@@ -1,0 +1,12 @@
+;; db: bench_bowtie
+;; BOWTIE + a body COMPUTE, factored.  Logically identical output to
+;; bowtie_mono_compute.slog.  The compute lives in the 2-join outer rule
+;; (which never wanted join3 anyway); the materialized tri/3 rule keeps its
+;; join3.  The factored form is thus IMMUNE to the compute cliff that
+;; strips every join3 from the monolithic spelling.
+table (edge int int)
+table (tri int int int)
+table (btw int int int int int int)
+
+rule (edge A B) (edge B C) (edge A C) --> (tri A B C)
+rule (tri X Y M) (tri M U V) (= W (+ X U)) --> (btw X Y M U V W)

@@ -1,0 +1,10 @@
+;; db: bench_bowtie
+;; BOWTIE, monolithic, adversarial spelling: same 6 atoms as
+;; bowtie_mono.slog but with both CLOSING edges written last -- the shape a
+;; user produces by listing "the path" first and "the checks" at the end.
+;; A data-blind schedule that follows source order expands
+;; X->Y->M->U->V (a 4-path) before either triangle check prunes anything.
+table (edge int int)
+table (bt int int int int int)
+
+rule (edge X Y) (edge Y M) (edge M U) (edge U V) (edge X M) (edge M V) --> (bt X Y M U V)

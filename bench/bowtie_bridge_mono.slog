@@ -1,0 +1,11 @@
+;; db: bench_bowtie
+;; BRIDGED BOWTIE, monolithic: two transitive triangles whose apexes are
+;; connected by a 1-hop bridge M1->M2 (see bench/gen.py bowtie_graph
+;; `bridges`/`near_bridges` gadgets).  7 atoms, the triangle subpattern
+;; twice + a connector -- the decomposition-detection target where the
+;; shared fragment is joined through an extra hop rather than a shared
+;; variable.
+table (edge int int)
+table (bb int int int int int int)
+
+rule (edge X Y) (edge Y M1) (edge X M1) (edge M1 M2) (edge M2 U) (edge U V) (edge M2 V) --> (bb X Y M1 M2 U V)

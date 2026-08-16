@@ -1,0 +1,14 @@
+;; db: bench_bowtie
+;; BOWTIE + a body COMPUTE, monolithic.  Identical join structure to
+;; bowtie_mono.slog plus one arithmetic compute consumed by the head -- the
+;; everyday "derive a value from the matched pattern" shape.  The wcoj
+;; search refuses any body with a surviving computation
+;; (join-planning.rkt schedule-body-actions: computes1 must be null), so
+;; this rule falls back to the greedy SCALAR schedule: BOTH join3s are
+;; lost, and with them the spelling-insensitivity that driver enumeration
+;; provided.  Compare bowtie_tri_compute.slog, where factoring quarantines
+;; the compute in a 2-join outer rule and the triangles keep join3.
+table (edge int int)
+table (btw int int int int int int)
+
+rule (edge X Y) (edge Y M) (edge X M) (edge M U) (edge U V) (edge M V) (= W (+ X U)) --> (btw X Y M U V W)

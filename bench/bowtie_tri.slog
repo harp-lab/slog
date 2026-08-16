@@ -1,0 +1,15 @@
+;; db: bench_bowtie
+;; BOWTIE, factored: the triangle subpattern is materialized ONCE as tri/3
+;; and the bowtie is a self-join on the shared apex M.  Logically identical
+;; output to bowtie_mono.slog.  This is the two-phase decomposition the
+;; case study asks the compiler to eventually find itself: the triangle
+;; scan (and its wedge-hub 2-path tax) is paid once instead of once per
+;; side, join3 gets the shape it is known to handle (bench/wcoj_hub.slog),
+;; and the second side becomes a probe of a materialized relation instead
+;; of a from-scratch re-derivation at every candidate apex.
+table (edge int int)
+table (tri int int int)
+table (bt int int int int int)
+
+rule (edge A B) (edge B C) (edge A C) --> (tri A B C)
+rule (tri X Y M) (tri M U V) --> (bt X Y M U V)

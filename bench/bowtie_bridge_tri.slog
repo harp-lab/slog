@@ -1,0 +1,10 @@
+;; db: bench_bowtie
+;; BRIDGED BOWTIE, factored: tri/3 materialized once, bridge joined between
+;; the two apex roles.  Logically identical output to
+;; bowtie_bridge_mono.slog.
+table (edge int int)
+table (tri int int int)
+table (bb int int int int int int)
+
+rule (edge A B) (edge B C) (edge A C) --> (tri A B C)
+rule (tri X Y M1) (edge M1 M2) (tri M2 U V) --> (bb X Y M1 M2 U V)

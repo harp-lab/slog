@@ -1,0 +1,15 @@
+;; db: bench_bowtie
+;; CROSS-RULE REDUNDANCY, factored: the same three queries as
+;; bowtie_multi_mono.slog sharing ONE materialized tri/3.  The triangle
+;; scan (and its wedge-hub tax) is paid once; each query becomes a cheap
+;; join over tri.  Logically identical outputs.
+table (edge int int)
+table (tri int int int)
+table (bt int int int int int)
+table (trip int int int int)
+table (bb int int int int int int)
+
+rule (edge A B) (edge B C) (edge A C) --> (tri A B C)
+rule (tri X Y M) (tri M U V) --> (bt X Y M U V)
+rule (tri X Y M) (edge M W) --> (trip X Y M W)
+rule (tri X Y M1) (edge M1 M2) (tri M2 U V) --> (bb X Y M1 M2 U V)

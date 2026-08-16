@@ -1,0 +1,15 @@
+;; db: bench_bowtie
+;; CROSS-RULE REDUNDANCY, unfactored: three queries that each inline the
+;; same triangle subpattern (bowtie, triangle-with-pendant, bridged
+;; bowtie).  Each rule pays its own full edge-driver scan and its own
+;; wedge-hub tax to re-derive the identical tri fragment -- the shape
+;; where subpattern factoring (docs/static-join-decomposition.md S3) is a
+;; structural win: N scans collapse to 1.  Compare bowtie_multi_tri.slog.
+table (edge int int)
+table (bt int int int int int)
+table (trip int int int int)
+table (bb int int int int int int)
+
+rule (edge X Y) (edge Y M) (edge X M) (edge M U) (edge U V) (edge M V) --> (bt X Y M U V)
+rule (edge X Y) (edge Y M) (edge X M) (edge M W) --> (trip X Y M W)
+rule (edge X Y) (edge Y M1) (edge X M1) (edge M1 M2) (edge M2 U) (edge U V) (edge M2 V) --> (bb X Y M1 M2 U V)

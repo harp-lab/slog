@@ -121,6 +121,80 @@ def path_driver(n, hub=0):
     return big1, big2, sel
 
 
+def bowtie_graph(rng, n_bg, m_bg, hubs, hub_deg, near, near_wedges,
+                 bows, bridges, near_bridges, nb_wedges=10):
+    """Bowtie stress: two directed 'transitive' triangles (a->b, b->c, a->c)
+    sharing their apex M -- tri1 has M as sink (x->y, y->m, x->m), tri2 has
+    M as source (m->u, u->v, m->v) -- planted in a sea of near-misses over
+    one `edge` relation.  Gadget node ranges are disjoint from each other
+    and from the ER background, so each cost signature is attributable:
+
+      wedge hubs    hub_deg in-spokes -> h -> hub_deg out-spokes, closures
+                    ABSENT: the global 2-path tax (hubs * hub_deg^2) that any
+                    unbound binary triangle scan pays and join3 avoids.
+      near-bowties  one real triangle (x,y,m) + near_wedges open wedges
+                    m->u_i, u_i->v_i with the closing m->v_i ABSENT: tri1
+                    succeeds at m, a monolithic plan re-expands the second
+                    triangle from scratch and dies at the closing check --
+                    the redundancy a factored tri(...) self-join pays once.
+      bowties       triangle (x,y,m) + triangle (m,u,v): the real answers.
+      bridges       tri at m1, edge m1->m2, tri at m2: answers for the
+                    1-hop-bridge variant.
+      near-bridges  tri at m1, edge m1->w, nb_wedges open wedges at w (no
+                    far triangle): the bridge variant's wasted expansions.
+
+    Returns a sorted edge list."""
+    edges = list(er_graph(rng, n_bg, m_bg))
+    base = n_bg
+
+    def fresh(k):
+        nonlocal base
+        r = range(base, base + k)
+        base += k
+        return r
+
+    def plant_tri_sink(m):           # (x,y,m): x->y, y->m, x->m
+        x, y = fresh(2)
+        edges.extend([(x, y), (y, m), (x, m)])
+
+    def plant_tri_source(m):         # (m,u,v): m->u, u->v, m->v
+        u, v = fresh(2)
+        edges.extend([(m, u), (u, v), (m, v)])
+
+    def plant_open_wedges(m, k):     # m->u_i, u_i->v_i, NO m->v_i
+        for _ in range(k):
+            u, v = fresh(2)
+            edges.extend([(m, u), (u, v)])
+
+    for h in fresh(hubs):
+        for a in fresh(hub_deg):
+            edges.append((a, h))
+        for b in fresh(hub_deg):
+            edges.append((h, b))
+
+    for m in fresh(near):
+        plant_tri_sink(m)
+        plant_open_wedges(m, near_wedges)
+
+    for m in fresh(bows):
+        plant_tri_sink(m)
+        plant_tri_source(m)
+
+    for m1 in fresh(bridges):
+        (m2,) = fresh(1)
+        plant_tri_sink(m1)
+        plant_tri_source(m2)
+        edges.append((m1, m2))
+
+    for m1 in fresh(near_bridges):
+        (w,) = fresh(1)
+        plant_tri_sink(m1)
+        plant_open_wedges(w, nb_wedges)
+        edges.append((m1, w))
+
+    return sorted(set(edges))
+
+
 def main():
     # star driver pathology (bench/star_driver.slog)
     sdn = 8000
@@ -243,6 +317,29 @@ def main():
     write_bin_db("bench_accel_er",
                  {"edge": (2, er_graph(rng, 50000, 500000)),
                   "src": (1, [(0,)])})
+
+    # -- bowtie: two triangles sharing an apex, in a sea of near-misses -----
+    # (bench/bowtie_*.slog; docs/static-join-decomposition.md.)
+    # The wedge-hub 2-path tax must DWARF |E| * c to separate plans: at O2
+    # the btree probe rate is ~0.4G/s aggregate and every plan pays a
+    # ~|E|-row driver scan as baseline (measured 2026-08-15, first round
+    # with hubs=600*300 was flat at ~1s for every variant).
+    # small: interp-tier stats runs.  tax ~ 8*1500^2 = 18M over 262k edges.
+    rng = random.Random(21)
+    write_bin_db("bench_bowtie_small",
+                 {"edge": (2, bowtie_graph(rng, 50000, 100000,
+                                           hubs=8, hub_deg=1500,
+                                           near=2500, near_wedges=20,
+                                           bows=500, bridges=250,
+                                           near_bridges=1000))})
+    # big: -O2 wall-clock runs.  tax ~ 20*10000^2 = 2G over ~5.1M edges.
+    rng = random.Random(22)
+    write_bin_db("bench_bowtie",
+                 {"edge": (2, bowtie_graph(rng, 1000000, 2000000,
+                                           hubs=20, hub_deg=10000,
+                                           near=50000, near_wedges=20,
+                                           bows=10000, bridges=5000,
+                                           near_bridges=20000))})
 
 
 if __name__ == "__main__":
