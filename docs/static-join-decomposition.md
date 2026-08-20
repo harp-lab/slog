@@ -324,6 +324,42 @@ Six findings, each verified against the emitted `.plan` bytes:
    drivers should be broken by size, or at least by expand *position*
    (see S2b).
 
+## Arc-end verification (2026-08-19/20)
+
+Full sweep at `bd23002`: **33 of 34 harnesses green**, the one failure being
+the then-unrecorded golden for the new `frag_multi` program (recorded
+since; the golden battery is green at 170 with the two new programs).
+Beyond the sweep, three checks were added specifically for the risky
+seams a golden cannot see:
+
+- **Factored ≡ unfactored, per program.** `tests/frag_multi.slog` and
+  `tests/frag_rec.slog` each run twice, with and without
+  `SLOG_NO_FRAGMENT_FACTOR=1`; every relation is identical, and no `$frag`
+  relation exists when the switch is off. Outputs also match the
+  hand-computed values written into each program's header.
+- **Factoring inside a recursive SCC** (`tests/frag_rec.slog`): the shared
+  triangle is over the recursive `path`, and one consumer writes *back*
+  into `path`, so `$frag` both reads and feeds its own base. Stratify
+  merges it into that SCC from the synthesized rule's own edges (no manual
+  edges), semi-naive converges (5 iterations), and the fixpoint is
+  identical to the unfactored program. This was the riskiest untested
+  path for S3.
+- **Counted flavor, against an independent oracle**
+  (`tests/session/frag_counts.slog`): a factored program under `_count`
+  with a double `(recount)`, cross-checked against
+  `tests/api/count-ir-oracle.rkt`, which shares no runtime count
+  machinery. The daemon's per-row support words match the oracle exactly,
+  and the counts equal the unfactored program's — the instantiation-
+  bijectivity claim, verified rather than argued.
+
+**Pre-existing blind spot found (not introduced here, worth its own
+fix):** `count-ir-oracle.rkt` has no `join3` support and fails loudly on
+it, so the independent count oracle cannot cover ANY wcoj-containing
+program — the check above had to run under `SLOG_NO_WCOJ3=1` (counts are
+operator-independent, so this still validates the factoring). Teaching
+the oracle `join3` would extend counted-flavor oracle coverage to the
+whole wcoj surface, `sj_tri` included.
+
 ## Proposed static improvements (ranked)
 
 - **S1 — lift the compute cliff. SHIPPED 2026-08-19.** As built: the

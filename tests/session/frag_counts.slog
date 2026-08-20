@@ -1,0 +1,25 @@
+;; S3 fragment factoring under the COUNTED flavor (docs/incremental.md
+;; §8B.3; compiler/fragment-factor.rkt).  Two rules share the transitive
+;; triangle over `edge`, so the pass factors it into one $frag relation and
+;; both rules become probes of it.  The pass claims INSTANTIATION
+;; BIJECTIVITY -- the fragment projects all three variables, so no
+;; derivation is collapsed -- and this program is the gate for that claim:
+;; the daemon's support sidecars must match the independent count-IR oracle
+;; row for row, and a second (recount) must reproduce rather than double.
+;;
+;; Graph: one triangle (1,2,3) plus a pendant 3->4.  Hand-verified:
+;;   tri1 = {(1 2 3)}          one nonrecursive instantiation
+;;   tri2 = {(1 2 3 4)}        one nonrecursive instantiation
+;; Both counts are what the UNFACTORED program derives, which is the point.
+table (edge int int)
+table (tri1 int int int)
+table (tri2 int int int int)
+
+rule
+(edge 1 2)
+(edge 2 3)
+(edge 1 3)
+(edge 3 4)
+
+rule (edge X Y) (edge Y Z) (edge X Z) --> (tri1 X Y Z)
+rule (edge X Y) (edge Y Z) (edge X Z) (edge Z W) --> (tri2 X Y Z W)

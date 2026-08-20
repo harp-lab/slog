@@ -1,0 +1,33 @@
+;; S3 fragment factoring INSIDE A RECURSIVE SCC (compiler/fragment-factor.rkt;
+;; docs/static-join-decomposition.md).  The riskiest factoring path: the
+;; shared triangle is over `path`, which is recursive, AND one consumer
+;; writes back into `path`.  So the synthesized $frag both reads and (via
+;; that consumer) feeds its own base -- stratification must merge $frag into
+;; path's SCC and semi-naive must give it delta versions on both sides.  The
+;; pass adds no manual stratification edges: the synthesized rule is an
+;; ordinary rule, so stratify derives path -> $frag from it directly, and
+;; the consumer's head supplies $frag -> path.
+;;
+;; Graph: the 4-cycle 1->2->3->4->1, so `path` saturates to all 16 ordered
+;; pairs over {1,2,3,4} (self-pairs included, via the cycle).  Every triangle
+;; over a saturated `path` exists, so tri1 = all 64 triples and the feedback
+;; rule derives only pairs `path` already has -- the fixpoint is reached and
+;; the answer is independent of whether factoring happened, which is exactly
+;; what this golden checks (cross-verified against SLOG_NO_FRAGMENT_FACTOR=1).
+table (edge int int)
+table (path int int)
+table (tri1 int int int)
+
+rule
+(edge 1 2)
+(edge 2 3)
+(edge 3 4)
+(edge 4 1)
+
+rule (edge X Y) --> (path X Y)
+rule (path X Y) (path Y Z) --> (path X Z)
+
+;; two rules sharing the triangle over the RECURSIVE relation; the second
+;; feeds its result back into that same relation
+rule (path X Y) (path Y Z) (path X Z) --> (tri1 X Y Z)
+rule (path X Y) (path Y Z) (path X Z) (path Z W) --> (path X W)

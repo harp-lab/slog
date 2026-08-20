@@ -45,6 +45,17 @@
 ;; computed, and identical programs must factor identically.  The
 ;; SLOG_NO_FRAGMENT_FACTOR toggle is folded into the job-hash settings
 ;; block (compile.rkt) so flipping it can never reuse a stale artifact.
+;;
+;; KNOWN LIMITATION (benign, documented rather than engineered around): a
+;; synthesized rule inherits its prov from the format-least first atom of
+;; the class's embeddings.  A prov is a token SPAN, so it can never equal a
+;; user RULE's prov (different span) -- but two distinct fragment classes
+;; whose format-least embedding starts at the SAME atom would share one
+;; prov.  `count-classify!` (join-planning.rkt) keys by prov, so if those
+;; two synthesized rules then classified differently for counting, the
+;; documented conservative behavior applies: degrade to 'rec with a warning
+;; (docs/incremental.md 6.4).  No silent divergence, and fabricating a
+;; distinct prov would mean fabricating tokens.
 
 (provide factor-shared-fragments)
 
@@ -127,8 +138,14 @@
            (unless (hash-has-key? numbering v)
              (hash-set! numbering v (hash-count numbering))
              (set! order (cons v order))))
+         ;; WRITE mode, not display: the key must be INJECTIVE over relation
+         ;; symbols, and `~a` would render a (hypothetical) symbol containing
+         ;; spaces or parens indistinguishably from a different triple list --
+         ;; fusing two unrelated patterns into one $frag.  Today's lexer
+         ;; cannot produce such a name, so this is insurance against a future
+         ;; pass minting one; `~s` quotes it and costs nothing.
          (define key
-           (format "~a"
+           (format "~s"
                    (for/list ([a (in-list perm)])
                      (list (atom-rel a)
                            (hash-ref numbering (first (atom-vars a)))
@@ -193,9 +210,21 @@
           (for/fold ([env type-env]) ([key (in-list sorted-keys)])
             (match-define (list canon _rs _provs) (hash-ref triggered key))
             (define name (frag-name key))
+            ;; The only way this can fire is a 40-bit prefix collision
+            ;; between two DISTINCT class keys: users cannot write `$` in an
+            ;; identifier, and every other machinery relation is named by a
+            ;; different pass.  Aborting is correct (it precedes any
+            ;; rewrite), but say what actually happened -- a name-conflict
+            ;; message would send the reader hunting for a declaration that
+            ;; does not exist.
             (when (hash-has-key? (type-env-rels env) name)
               (error 'fragment-factor
-                     "~a is a reserved fragment relation" name))
+                     (string-append
+                      "fragment name hash collision on ~a\n"
+                      "  key: ~a\n"
+                      "this is a sha256-prefix collision between two distinct"
+                      " fragment patterns; widen the prefix in frag-name")
+                     name key))
             (define col-types
               (for/list ([v (in-list '(v0 v1 v2))])
                 (define ts

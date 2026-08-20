@@ -1,0 +1,29 @@
+;; S3 fragment factoring, end-to-end golden (docs/static-join-decomposition.md,
+;; compiler/fragment-factor.rkt): two rules share the transitive-triangle
+;; subpattern over `edge`, so the pass materializes one $frag relation and
+;; rewrites both bodies to probe it.  The golden pins the OUTPUTS (the $frag
+;; relation itself is skipped as internal, like $sup); correctness reference
+;; is the SLOG_NO_FRAGMENT_FACTOR=1 run, which must produce identical rows.
+;;
+;; Planted: triangles (1,2,3), (3,4,5), (9,10,11); a bowtie at apex 3; an
+;; open wedge 3->6->7 (no closure) so trip has a non-triangle pendant.
+;; Expected: bt = (1 2 3 4 5); trip = (1 2 3 4), (1 2 3 5), (1 2 3 6).
+table (edge int int)
+table (bt int int int int int)
+table (trip int int int int)
+
+rule
+(edge 1 2)
+(edge 2 3)
+(edge 1 3)
+(edge 3 4)
+(edge 4 5)
+(edge 3 5)
+(edge 3 6)
+(edge 6 7)
+(edge 9 10)
+(edge 10 11)
+(edge 9 11)
+
+rule (edge X Y) (edge Y M) (edge X M) (edge M U) (edge U V) (edge M V) --> (bt X Y M U V)
+rule (edge X Y) (edge Y M) (edge X M) (edge M W) --> (trip X Y M W)
