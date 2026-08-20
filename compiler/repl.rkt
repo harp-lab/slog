@@ -365,6 +365,7 @@
    "  :quit               close every resident database and the REPL"
    "  :clear              clear the visible client transcript"
    "  :share              show the trusted-local co-author endpoint"
+   "  :theme light|dark   switch the full-screen client's color palette"
    "  expand POSITION     expand a node in the newest live result canvas"
    "  collapse POSITION   collapse a node in the newest live result canvas"
    "  card POSITION       show the contextual card for a live canvas node"
@@ -3701,7 +3702,7 @@
 ;; and `code` never touch the daemon, so a held cursor survives them.
 (define keep-cursor-verbs
   '(":help" "help" "?" ":ping" ":status" "library" "current" "resident"
-    "sessions" "mode" ":share" ":clear" "more" "cancel" "scratch" "keep"
+    "sessions" "mode" ":share" ":clear" ":theme" "more" "cancel" "scratch" "keep"
     "tiers" "code" "stage"))
 
 ;; ---- T5 slice (c) / R4: the pre-commit gate as a place ---------------------

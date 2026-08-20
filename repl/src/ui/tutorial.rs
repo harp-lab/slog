@@ -1,23 +1,30 @@
-use super::{CYAN, MUTED, PANEL, PINK};
+use crate::theme::Theme;
 use crate::tutorial::{TutorialMenu, TutorialOverlay};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, Wrap};
 
-pub fn render(frame: &mut Frame<'_>, area: Rect, overlay: &TutorialOverlay) {
+pub fn render(frame: &mut Frame<'_>, area: Rect, overlay: &TutorialOverlay, theme: &Theme) {
     match overlay {
-        TutorialOverlay::Menu(menu) => render_menu(frame, area, menu),
+        TutorialOverlay::Menu(menu) => render_menu(frame, area, menu, theme),
         TutorialOverlay::Confirm {
             tutorial,
             resident,
             extended,
-        } => render_confirmation(frame, area, tutorial.title.as_str(), *resident, *extended),
+        } => render_confirmation(
+            frame,
+            area,
+            tutorial.title.as_str(),
+            *resident,
+            *extended,
+            theme,
+        ),
     }
 }
 
-pub fn render_footer(frame: &mut Frame<'_>, area: Rect, overlay: &TutorialOverlay) {
+pub fn render_footer(frame: &mut Frame<'_>, area: Rect, overlay: &TutorialOverlay, theme: &Theme) {
     let text = match overlay {
         TutorialOverlay::Menu(_) => " ↑/↓ or j/k select · Enter start · Esc/q close ",
         TutorialOverlay::Confirm { .. } => {
@@ -27,12 +34,12 @@ pub fn render_footer(frame: &mut Frame<'_>, area: Rect, overlay: &TutorialOverla
     frame.render_widget(
         Paragraph::new(text)
             .alignment(Alignment::Center)
-            .style(Style::default().fg(MUTED)),
+            .style(Style::default().fg(theme.muted)),
         area,
     );
 }
 
-fn render_menu(frame: &mut Frame<'_>, area: Rect, menu: &TutorialMenu) {
+fn render_menu(frame: &mut Frame<'_>, area: Rect, menu: &TutorialMenu, theme: &Theme) {
     let visible_rows = area.height.saturating_sub(3) as usize;
     let offset = menu.visible_offset(visible_rows);
     let rows = menu
@@ -50,11 +57,11 @@ fn render_menu(frame: &mut Frame<'_>, area: Rect, menu: &TutorialMenu) {
             ])
             .style(if selected {
                 Style::default()
-                    .fg(Color::Black)
-                    .bg(CYAN)
+                    .fg(theme.on_accent)
+                    .bg(theme.accent)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::Gray)
+                Style::default().fg(theme.body)
             })
         });
     let title = format!(
@@ -76,14 +83,17 @@ fn render_menu(frame: &mut Frame<'_>, area: Rect, menu: &TutorialMenu) {
             ],
         )
         .header(
-            Row::new(["", "tutorial", "what you will do"])
-                .style(Style::default().fg(PINK).add_modifier(Modifier::BOLD)),
+            Row::new(["", "tutorial", "what you will do"]).style(
+                Style::default()
+                    .fg(theme.highlight)
+                    .add_modifier(Modifier::BOLD),
+            ),
         )
         .column_spacing(1)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(PANEL))
+                .border_style(Style::default().fg(theme.panel))
                 .title(title),
         ),
         area,
@@ -96,6 +106,7 @@ fn render_confirmation(
     title: &str,
     resident: usize,
     extended: usize,
+    theme: &Theme,
 ) {
     let vertical = Layout::vertical([
         Constraint::Fill(1),
@@ -115,7 +126,9 @@ fn render_confirmation(
             Span::raw("Starting "),
             Span::styled(
                 title,
-                Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" needs a fresh session."),
         ]),
@@ -134,12 +147,14 @@ fn render_confirmation(
         )),
         Line::styled(
             "Saved databases on disk are not deleted. The old transcript is retained.",
-            Style::default().fg(MUTED),
+            Style::default().fg(theme.muted),
         ),
         Line::from(""),
         Line::styled(
             "Continue?",
-            Style::default().fg(PINK).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.highlight)
+                .add_modifier(Modifier::BOLD),
         ),
     ];
     frame.render_widget(
@@ -149,7 +164,7 @@ fn render_confirmation(
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(PINK))
+                    .border_style(Style::default().fg(theme.highlight))
                     .title(" Fresh tutorial session "),
             ),
         horizontal[1],

@@ -64,8 +64,10 @@ fn help_is_headless_and_does_not_require_a_project_or_terminal() {
         .expect("run plain CLI help");
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).expect("help is UTF-8");
-    assert!(stdout.starts_with("usage: slog [--plain]\n"));
+    assert!(stdout.starts_with("usage: slog [--plain] [--light|--dark]\n"));
     assert!(stdout.contains("--plain  read one command per input line"));
+    assert!(stdout.contains("--light  force the light palette"));
+    assert!(stdout.contains("--dark   force the dark palette"));
     assert!(output.stderr.is_empty());
 }
 

@@ -99,6 +99,7 @@ save NAME                save the in-memory database
 
 ; COMMENT                add a shared transcript comment; do not invoke Slog
 :help                    show the command reference
+:theme light|dark        switch the full-screen client's color palette
 :tutorials               browse and run interactive tutorials
 :status                  show REPL, database, and daemon state
 :share                   show this REPL's co-author address and discovery file
@@ -305,7 +306,15 @@ ready.
 
 The UI is intentionally a full-screen workbench in this first demo so the
 contextual inspector, lightweight multiline editor, colors, and wide characters
-are all exercised. PageUp/PageDown or the mouse wheel revisit the session
+are all exercised. The client never paints a full-screen background, so the
+terminal's own background shows through; two palettes choose foreground and
+selection colors that read on it. At startup the workbench asks the terminal
+for its background color (the standard OSC 11 query, written to and answered
+on `/dev/tty` while the slower Racket backend boots), falls back to the
+`COLORFGBG` convention, and keeps the dark palette when neither answers.
+`--light` and `--dark` skip detection and force one palette; `:theme light` /
+`:theme dark` switches a running workbench. All of this is client-side only:
+plain mode and the co-author projection are colorless and unaffected. PageUp/PageDown or the mouse wheel revisit the session
 transcript without moving the editor cursor. Alt+Enter inserts an editor newline;
 Ctrl+J is a portable fallback. `--plain` is the non-TTY rendering of the same
 command/result model; a future inline-scrollback frontend can likewise reuse
