@@ -41,6 +41,7 @@
 (require "names.rkt")
 (require "simplification.rkt")
 (require "seq-expand.rkt")
+(require "fragment-factor.rkt")
 (require "type-system.rkt")
 (require "stratify.rkt")
 (require "lattice-check.rkt")
@@ -237,6 +238,9 @@
                              (semijoin-filters-enabled)
                              (wcoj3-enabled)
                              (wcoj3-search-cap)
+                             ;; S3: factoring changes rule sets and plan
+                             ;; bytes, so its switch must miss the cache
+                             (fragment-factor-enabled)
                              ;; T4 slice 4: a partial-coverage artifact must
                              ;; miss the cache, never stand in for a full one
                              (native-rule-coverage)
@@ -287,8 +291,16 @@
   ;; pre-typecheck (the emitted clauses are ordinary surface forms).  May
   ;; declare the $seq_at/$seq_atr occurrence relations and return their
   ;; stratification edges (base -> occurrence, decomp-edges style).
-  (define-values (expanded type-env+ seq-edges)
+  (define-values (expanded0 type-env0+ seq-edges)
     (expand-seq-patterns (simplify-all all-rules) type-env))
+  ;; S3 fragment factoring (docs/static-join-decomposition.md,
+  ;; fragment-factor.rkt): same slot contract as seq expansion -- rewrite
+  ;; bodies, declare synthesized $frag relations.  No manual stratification
+  ;; edges: the synthesized rule is an ordinary rule, so stratify derives
+  ;; base -> fragment from it directly (unlike $seq_at, which has no
+  ;; defining rule).
+  (define-values (expanded type-env+)
+    (factor-shared-fragments expanded0 type-env0+))
   (define typed (typecheck-all type-env+ expanded decomps))
   ;; the M2.4 decomposition's derived dependency edges: R -> R_has as if a
   ;; rule read R and wrote R_has (the base's merge tasks do exactly that), so

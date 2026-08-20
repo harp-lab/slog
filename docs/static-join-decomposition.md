@@ -1,7 +1,7 @@
 # Static join decomposition & WCOJ chaining (bowtie case study)
 
-**Status — CASE STUDY EXECUTED (2026-08-15); S1 + S1b SHIPPED
-(2026-08-19), measured below; S2/S3 remain proposed.** Companion to
+**Status — CASE STUDY EXECUTED (2026-08-15); S1 + S1b + S2 + S3 ALL
+SHIPPED (2026-08-19), measured below.** Companion to
 `docs/join-planning-assessment.md` (the runtime-selection track): that doc
 moves *cardinality* decisions to run time; this one asks what the compiler
 can do better **purely statically** — decomposing complex rules so
@@ -20,14 +20,16 @@ the 3-way WCOJ operator (`join3`) does and does not reach.
    clause orders emit byte-identical plans).
 2. **But three cliffs bound that happy region**, and they, not the bowtie
    itself, are where static work should go:
-   - **the compute cliff** — ONE surviving body computation (the everyday
-     `(= W (+ X U))` "derive a value from the match" shape) disables the
-     search for the WHOLE rule: every join3 lost, spelling-sensitivity back;
-   - **the cap cliff** — bodies with more than `wcoj3-search-cap` (= 8)
-     join occurrences skip the search entirely; the greedy fallback can
-     never emit a join3, so a 9-join rule silently loses ALL wcoj;
-   - **the arm cliff** — lattice/struct/temp occurrences, 3+ eligible arms
-     on one key, payload columns: each falls back per-shape.
+   - **the compute cliff** *(FIXED by S1, 2026-08-19)* — ONE surviving
+     body computation (the everyday `(= W (+ X U))` "derive a value from
+     the match" shape) disabled the search for the WHOLE rule: every
+     join3 lost, spelling-sensitivity back;
+   - **the cap cliff** *(DEGRADED by S2, 2026-08-19)* — bodies with more
+     than `wcoj3-search-cap` (= 8) join occurrences skip the search; the
+     greedy fallback could never emit a join3, so a 9-join rule silently
+     lost ALL wcoj (now: greedy-local closers);
+   - **the arm cliff** *(remains)* — lattice/struct/temp occurrences, 3+
+     eligible arms on one key, payload columns: each falls back per-shape.
 3. **No factoring/CSE exists anywhere in the compiler**, and the staging
    temp mechanism *cannot* express it (temps are index-free and can never
    be probed — `tri(X,Y,M), tri(M,U,V)` needs two probeable occurrences).
@@ -56,13 +58,15 @@ the 3-way WCOJ operator (`join3`) does and does not reach.
    positional tie-break, S2 cap-cliff degradation, S3 factoring gated on
    structural wins (cross-rule sharing, cliff rescue) — explicitly NOT
    on single-rule aesthetics.
-6. **S1 + S1b shipped 2026-08-19** (see §"Proposed static improvements"
-   for the as-built shape and the post-fix rerun in §"Results"): the
-   compute cliff is gone (9 914 → 870 ms, parity with compute-free) and
-   the tie casualty is fixed (48 676 → 2 653 ms), with zero plan-golden
-   churn. What survives for factoring: many-rule fan-in (~1.8× at
-   |E|-scan scale, unbounded in the wcoj-off/cliff worlds) and the cap /
-   arm-kind cliffs (S2/S3, still proposed).
+6. **S1 + S1b + S2 + S3 all shipped 2026-08-19** (as-built shapes in
+   §"Proposed static improvements", post-fix reruns in §"Results"): the
+   compute cliff is gone (9 914 → 870 ms, parity with compute-free), the
+   tie casualty is fixed (48 676 → 2 653 ms), the cap cliff degrades to
+   greedy-local closers, and cross-rule shared triangles now factor
+   AUTOMATICALLY into `$frag` relations (the unfactored 3-rule program
+   compiles to the hand-factored shape and matches its performance) —
+   all with zero plan-golden churn. Point 3 below is historical: the
+   compiler now has exactly the factoring pass it describes as missing.
 
 ## The machinery as verified (join3 ground truth)
 
@@ -249,10 +253,27 @@ gone (finding 3 is historical), and finding 6's tie is fixed — which
 retro-decomposes the original 30×: ~46 s of it was the tie casualty, and
 the *redundancy proper* is the remaining multi_mono 2 653 vs multi_tri
 1 461 ms (~1.8× at this scale, three |E|-row scans vs one) — plus the
-unchanged wcoj-off story (multi_mono still >900 s vs factored 10.3 s).
-Factoring's case (S3) therefore now rests on: many-rule fan-in at
-|E|-scan scale, and the worlds the remaining cliffs (cap, arm-kind)
-still drop rules into.
+(then-)unchanged wcoj-off story (multi_mono still >900 s vs factored
+10.3 s).
+
+**Post-S3 rerun (2026-08-19, the factoring pass live):**
+
+| program | small interp on | big O2 on | big O2 off |
+|---|---:|---:|---:|
+| bowtie_multi_mono (now AUTO-factored) | 87 | 1 210 | **1 397** |
+| bowtie_multi_tri (hand-factored) | 103 | 1 581 | 10 718 |
+
+The unfactored three-rule program now compiles to the factored shape by
+itself (one `$frag` relation, two strata) and runs at parity or better
+with the hand-factored twin in every configuration; the full 168-golden
+correctness battery passes with the pass live, and all nine
+cross-variant output checks are identical. The wcoj-off TIMEOUT row is
+gone (>900 s → 1 397 ms) — and it lands 7.7× BELOW the hand-factored
+twin's 10.7 s there, a final data-blindness lesson: the synthesized
+rule's *canonical* atom order happens to greedy-plan into a hub-pruning
+driver on this graph while the hand-written `tri` spelling does not.
+Spelling-dependence persists in the scalar world; that is
+J0/runtime-selection's job, not S3's.
 
 ### Reading of the results
 
@@ -348,50 +369,58 @@ Six findings, each verified against the emitted `.plan` bytes:
   gap to the factored twin (1 461 ms) is the honest three-scans-vs-one
   redundancy. The full fix for such ties remains cardinality
   (J0/runtime selection).
-- **S2 — degrade the cap cliff gracefully (planner-local, small).**
-  Above `wcoj3-search-cap`, don't abandon join3 wholesale: run the greedy
-  scheduler and, at each frontier, apply the *local* expand3 test
-  (2-arm group + `incidence-connected?` — linear work, no search) and
-  emit a join3 opportunistically. Big bodies then degrade to
-  "greedy with local closers" instead of "no wcoj at all". Alternatively
-  or additionally: raise the cap (the search is memoized on
-  `(pending, ground)`, `:1117-1120`; measure whether 10–12 is affordable).
-- **S3 — subpattern factoring (the decomposition pass; medium; gated).**
-  New pass in the `expand-seq-patterns` slot: canonicalize body fragments
-  (alpha-normalized, `rule-sort-key`-style), detect repeats, factor into a
-  synthesized indexed relation with deterministic content-derived naming,
-  contribute stratification edges, apply uniformly across flavors.
+- **S2 — degrade the cap cliff gracefully. SHIPPED 2026-08-19.** As
+  built: the greedy loop runs the same *local* 2-arm frontier test the
+  search uses (`expand3-candidates` — linear, no lookahead) and takes the
+  best closer, with two policy guards: (a) a fully-bound scalar check
+  fires first (it only prunes — the same order the search's free-sequence
+  doctrine picks), and (b) a closer whose cycle variable is a pending
+  compute's output is skipped (compute-then-probe is O(1)/row; the closer
+  pays an intersection). Searched bodies are unaffected by construction —
+  a greedy-local closer implies a ≥1-expand schedule the search finds and
+  prefers — so plans change only for over-cap and join-consumed-compute
+  bodies, exactly the target set. Pleasant surprise: closed-rule driver
+  enumeration now maximizes greedy-local closers too, so a
+  join-consumed-compute rule picks the driver that *grounds* the compute
+  output and closes the remaining cycles by intersection (pinned in the
+  unit battery). Plan goldens: zero churn.
+- **S3 — subpattern factoring. SHIPPED 2026-08-19
+  (`compiler/fragment-factor.rkt`).** As built: a pass in the
+  `expand-seq-patterns` slot (post-simplify, pre-typecheck), v1 fragment
+  shape = three positive binary-table atoms forming a variable triangle.
+  Canonical class key = lexicographically-least rendering over the six
+  atom orderings with first-occurrence variable numbering (resolves
+  automorphisms deterministically); name = `$frag` + sha256 of the key;
+  the synthesized relation projects ALL THREE variables, so fragment rows
+  are in bijection with fragment instantiations and the rewritten rule's
+  instantiations are in bijection with the original's — tuple output AND
+  derivation counts preserved exactly, stronger than §8B.3 requires.
+  **Trigger: ≥2 distinct rules share the class** — the case study's
+  verdict encoded (single-rule repeats like the bare bowtie do NOT
+  trigger; they measurably lose). Exclusions: lattice relations
+  (order-sensitive merges), structs, `$`-internal relations,
+  repeated-var atoms, embeddings touching const-bound variables (the
+  fragment would compute the unconstrained pattern and post-filter).
+  No manual stratification edges needed — the synthesized rule is an
+  ordinary rule, so stratify derives base→fragment from it (the
+  `$seq_at` manual-edge case was for a relation with no defining rule);
+  a recursive base pulls the fragment into its SCC by design. The
+  `SLOG_NO_FRAGMENT_FACTOR` switch is cache-keyed beside the
+  semijoin/wcoj switches; `$frag*` joins `$stat_*`/`$sup*` in the test
+  harness's internal-relation skip. Unit battery: trigger,
+  canonicalization across renaming/reordering, determinism, single-rule
+  and const-bound non-triggers, distinct classes stay distinct, kill
+  switch.
 
-  *Detection sketch.* Candidate fragments are not arbitrary subsets
-  (exponential): enumerate **connected atom-subsets of bounded size**
-  (start: exactly the 3-atom cycle cores the wcoj machinery already
-  certifies via `incidence-connected?`), alpha-normalize each into a
-  canonical fragment key (`rule-sort-key` gives the recipe: strip prov,
-  canonical variable numbering, sorted atoms), and count embeddings in a
-  table keyed by that hash — within one body first (the bowtie's two
-  triangles are atom-disjoint and share only M; both normalize to the
-  same key), across the rule set second (the `bowtie_multi` case). A
-  fragment must not cross a negation, aggregation, or lattice boundary,
-  and its interface (the variables shared with the residue) becomes the
-  factored relation's columns.
-
-  **Trigger policy is the crux — factor on structural win conditions,
-  not taste:**
-  (a) the fragment has ≥2 embeddings *across the rule set* — the measured
-  win case: N edge-scans + N wedge taxes collapse to 1 (`bowtie_multi`);
-  (b) extraction rescues wcoj that a cliff forfeited — the residual core
-  becomes compute-free (S1's case until S1 lands) or drops under the cap
-  (the measured compute-cliff A/B);
-  (c) explicit user opt-in while confidence builds.
-  Notably **absent** from the trigger list: the single-rule shared-apex
-  bowtie itself — measured, factoring *loses* there (the chained-join3
-  mono plan needs one driver scan and no materialization; the factored
-  form pays a second stratum + intern for nothing). Materialization is
-  NOT free (a fragment relation can be superlinear on dense inputs — the
-  same data-blindness caveat as `join-planning-assessment.md`), so
-  (a)/(b) — size-free, purely structural wins — come first, and a
-  cardinality-gated version waits for the runtime-selection track's size
-  machinery.
+  *What v1 leaves open, deliberately:* larger/acyclic fragment shapes
+  (the enumerator generalizes to connected bounded-size subsets);
+  cliff-rescue triggers beyond cross-rule sharing (S1/S2 shrank that
+  need); and any size-gated trigger — materialization is not free (a
+  fragment relation can be superlinear on dense inputs, the same
+  data-blindness caveat as `join-planning-assessment.md`), which is why
+  v1's trigger is purely structural and single-rule repeats stay
+  unfactored, and why a cardinality-gated version waits for the
+  runtime-selection track's size machinery.
 - **S4 — cross-links.** The J0 tie-break/FD work
   (`join-planning-assessment.md`) extends spelling-insensitivity to the
   greedy/scalar world the cliffs currently drop rules into. The missing

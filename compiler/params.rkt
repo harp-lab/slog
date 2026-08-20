@@ -50,6 +50,12 @@
 (define wcoj3-enabled
   (make-parameter (not (getenv "SLOG_NO_WCOJ3"))))
 
+;; S3 (docs/static-join-decomposition.md, fragment-factor.rkt): factor a
+;; triangle subpattern shared by >= 2 rules into a synthesized $frag
+;; relation.  Cache-keyed in compile.rkt like the semijoin/wcoj switches.
+(define fragment-factor-enabled
+  (make-parameter (not (getenv "SLOG_NO_FRAGMENT_FACTOR"))))
+
 ;; T4 slice 4: per-rule selective native emission (t4-contract §3 slice 4).
 ;; Which kernel rule ordinals the native artifact covers; the daemon runs
 ;; the complement interpreted, so coverage is native ∪ interp by

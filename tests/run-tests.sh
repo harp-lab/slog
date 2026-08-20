@@ -110,7 +110,7 @@ run_one_test() {
       # appears depends only on demand codegen, so excluding them keeps goldens
       # stable across demand-transform changes (they were an inconsistent, churny
       # presence: most demand tests' goldens lack them, a few carry them).
-      case "$(basename "$csv")" in '$stat_'* | '$sup'*) continue ;; esac
+      case "$(basename "$csv")" in '$stat_'* | '$sup'* | '$frag'*) continue ;; esac
       LC_ALL=C sort "$csv" > "$expected/$(basename "$csv")"
     done
     echo "UPDATED $name"; echo "UPDATED" > "$RESULTS/$name"; return
@@ -138,7 +138,7 @@ run_one_test() {
   for got in "$outdir"/*.csv; do
     [ -e "$got" ] || continue
     local rel; rel="$(basename "$got")"
-    case "$rel" in '$stat_'* | '$sup'*) continue ;; esac  # internal relations (see --update)
+    case "$rel" in '$stat_'* | '$sup'* | '$frag'*) continue ;; esac  # internal relations (see --update)
     if [ ! -e "$expected/$rel" ]; then
       echo "  $name: unexpected non-empty relation $rel"; ok=0
     fi
