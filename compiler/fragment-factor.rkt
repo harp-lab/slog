@@ -120,8 +120,26 @@
                                   (not (equal? (first pairs) (third pairs)))
                                   (not (equal? (second pairs) (third pairs)))
                                   (for/and ([v (in-set vars)])
-                                    (not (set-member? const-bound v)))))
+                                    (not (set-member? const-bound v)))
+                                  (type-consistent? atoms vars)))
             (list (car x) (car y) (car z)))]))
+
+     ;; A variable shared by two atoms whose declared column types are
+     ;; INCOMPATIBLE means the user's join is type-inconsistent -- the
+     ;; program is rejected either way, but factoring would report the
+     ;; failure against the synthesized rule ($frag<hash>, variables
+     ;; v0/v1/v2) instead of the rule and variable the user wrote.  Decline
+     ;; to factor those, so the diagnostic stays theirs.  `any` is a
+     ;; legitimate widening on either side, never a conflict.
+     (define (type-consistent? atoms vars)
+       (for/and ([v (in-set vars)])
+         (define ts
+           (for*/list ([a (in-list atoms)]
+                       [pos (in-list '(0 1))]
+                       #:when (eq? (list-ref (atom-vars a) pos) v))
+             (list-ref (hash-ref rels (atom-rel a)) (add1 pos))))
+         (for/and ([t (in-list ts)])
+           (or (eq? t 'any) (eq? t (car ts)) (eq? (car ts) 'any)))))
 
      ;; ---- canonicalization ----------------------------------------------
      ;; For each of the six atom orderings, number variables by first
@@ -183,17 +201,73 @@
                   #:when (>= (set-count (second info)) 2))
          (values key info)))
 
+     (define (frag-name key)
+       (string->symbol
+        (string-append
+         "$frag"
+         (substring (bytes->hex-string
+                     (sha256 (string->bytes/utf-8 key))) 0 10))))
+
+     ;; The embeddings a rule will actually rewrite: greedily selected
+     ;; atom-disjoint, restricted to `active` classes, ordered
+     ;; deterministically by (class key, first body position).  Two
+     ;; embeddings that share an atom cannot both be rewritten, so one of
+     ;; them loses this race -- which is why the trigger has to be
+     ;; re-checked against SELECTED embeddings, not merely present ones.
+     (define (chosen-embeddings bodys active)
+       (let loop ([embs (sort
+                         (for/list ([emb (in-list (rule-embeddings bodys))]
+                                    #:do [(define atoms
+                                            (map (lambda (i) (list-ref bodys i))
+                                                 emb))
+                                          (match-define (cons key var-order)
+                                            (canonicalize atoms))]
+                                    #:when (set-member? active key))
+                           (list key emb var-order))
+                         (lambda (a b)
+                           (if (string=? (first a) (first b))
+                               (< (car (second a)) (car (second b)))
+                               (string<? (first a) (first b)))))]
+                  [used (set)] [acc '()])
+         (match embs
+           ['() (reverse acc)]
+           [(cons e rest)
+            (if (for/or ([i (in-list (second e))]) (set-member? used i))
+                (loop rest used acc)
+                (loop rest (set-union used (list->set (second e)))
+                      (cons e acc)))])))
+
+     ;; A class earns synthesis only if >= 2 DISTINCT RULES actually SELECT
+     ;; it.  Counting embeddings (as `triggered` does) is not enough: the
+     ;; atom-disjointness race above can strand a class at one consumer --
+     ;; precisely the single-rule shape the case study measured as a LOSS --
+     ;; or at none, leaving a $frag relation that is materialized at runtime
+     ;; and never read (outputs stay correct, so no golden would catch it;
+     ;; the cost is a wasted stratum plus a materialization the design doc
+     ;; warns can be superlinear).  Narrowing is a FIXPOINT because dropping
+     ;; a class frees its atoms, which can change which embeddings other
+     ;; classes win -- monotone (active only shrinks), so it terminates.
+     (define active
+       (let narrow ([active (list->set (hash-keys triggered))])
+         (define consumers (make-hash))
+         (for ([rule (in-set rules)])
+           (match rule
+             [`(syn ,_ rule ,bodys ... --> ,_ ...)
+              (for ([e (in-list (chosen-embeddings bodys active))])
+                (hash-update! consumers (first e)
+                              (lambda (s) (set-add s rule)) (set)))]
+             [_ (void)]))
+         (define active+
+           (for/set ([k (in-set active)]
+                     #:when (>= (set-count (hash-ref consumers k (set))) 2))
+             k))
+         (if (equal? active+ active) active (narrow active+))))
+
      (cond
-       [(zero? (hash-count triggered)) (values rules type-env)]
+       [(set-empty? active) (values rules type-env)]
        [else
         ;; ---- synthesized relations + rules -------------------------------
-        (define (frag-name key)
-          (string->symbol
-           (string-append
-            "$frag"
-            (substring (bytes->hex-string
-                        (sha256 (string->bytes/utf-8 key))) 0 10))))
-        (define sorted-keys (sort (hash-keys triggered) string<?))
+        (define sorted-keys (sort (set->list active) string<?))
         (define synth-rules
           (for/list ([key (in-list sorted-keys)])
             (match-define (list canon _rs provs) (hash-ref triggered key))
@@ -245,36 +319,9 @@
         (define (rewrite-rule rule)
           (match rule
             [`(syn ,prov rule ,bodys ... --> ,heads ...)
-             ;; embeddings of triggered classes, deterministically ordered,
-             ;; greedily selected atom-disjoint
-             (define chosen
-               (let loop ([embs (sort
-                                 (for/list ([emb (in-list
-                                                  (rule-embeddings bodys))]
-                                            #:do [(define atoms
-                                                    (map (lambda (i)
-                                                           (list-ref bodys i))
-                                                         emb))
-                                                  (match-define
-                                                    (cons key var-order)
-                                                    (canonicalize atoms))]
-                                            #:when (hash-has-key? triggered
-                                                                  key))
-                                   (list key emb var-order))
-                                 (lambda (a b)
-                                   (if (string=? (first a) (first b))
-                                       (< (car (second a)) (car (second b)))
-                                       (string<? (first a) (first b)))))]
-                          [used (set)] [acc '()])
-                 (match embs
-                   ['() (reverse acc)]
-                   [(cons e rest)
-                    (if (for/or ([i (in-list (second e))])
-                          (set-member? used i))
-                        (loop rest used acc)
-                        (loop rest
-                              (set-union used (list->set (second e)))
-                              (cons e acc)))])))
+             ;; the same selection the `active` fixpoint counted, so what a
+             ;; rule rewrites and what a class was credited for cannot drift
+             (define chosen (chosen-embeddings bodys active))
              (cond
                [(null? chosen) rule]
                [else

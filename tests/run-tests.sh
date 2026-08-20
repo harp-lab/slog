@@ -125,7 +125,7 @@ run_one_test() {
   # every expected file must match, and no unexpected relations may appear
   for want in "$expected"/*.csv; do
     local rel; rel="$(basename "$want")"
-    case "$rel" in '$stat_'* | '$sup'*) continue ;; esac  # internal relations (excluded, see --update)
+    case "$rel" in '$stat_'* | '$sup'* | '$frag'*) continue ;; esac  # internal relations (excluded, see --update)
     if [ ! -e "$outdir/$rel" ]; then
       echo "  $name: missing relation $rel"; ok=0; continue
     fi

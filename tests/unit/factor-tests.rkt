@@ -121,6 +121,55 @@
         rule (r X Y) (s Y Z) (u X Z) --> (out4 X Y Z)"))
     (check-equal? (length (frag-rels env+)) 2))
 
+  ;; Regression (review finding, 2026-08-20): the >=2-rule trigger counts
+  ;; embeddings, but the atom-disjointness race in the rewrite can STRAND a
+  ;; class at one consumer or none.  Emitting from the embedding count alone
+  ;; materialized a $frag relation nothing ever read.  Every synthesized
+  ;; relation must have >= 2 real body-consumers after selection.
+  (define (frag-consumer-counts rules+ env+)
+    (for/hash ([frag (in-list (frag-rels env+))])
+      (values frag
+              (for/sum ([rule (in-set rules+)])
+                (if (memq frag (body-rels rule)) 1 0)))))
+
+  (test-case "no synthesized relation is left without >= 2 consumers"
+    ;; Both rules embed TWO triangle classes that share the atom `(m A B)`,
+    ;; so in each rule only the lexicographically-smaller class can be
+    ;; rewritten -- the other is embedded in 2 rules (hence "triggered" by
+    ;; embedding count) but SELECTED in none.  Before the fix it still got a
+    ;; synthesized rule, relation, and stratum with zero readers.
+    (match-define (list rules+ env+)
+      (factored-of
+       "table (m int int) table (a2 int int) table (a3 int int)
+        table (b2 int int) table (b3 int int)
+        table (o1 int int int int) table (o2 int int int int)
+        rule (m A B) (a2 B C) (a3 A C) (b2 B D) (b3 A D) --> (o1 A B C D)
+        rule (m X Y) (a2 Y Z) (a3 X Z) (b2 Y W) (b3 X W) --> (o2 X Y Z W)"))
+    (define counts (frag-consumer-counts rules+ env+))
+    ;; the pass must still do its job (the winning class is factored) ...
+    (check-equal? (hash-count counts) 1)
+    ;; ... and must not leave a materialized relation nobody reads
+    (for ([(frag n) (in-hash counts)])
+      (check-true (>= n 2)
+                  (format (string-append
+                           "~a has ~a consumer(s); a synthesized relation"
+                           " with fewer than 2 is materialized for nothing")
+                          frag n))))
+
+  ;; Regression (review finding, 2026-08-20): a type-inconsistent triangle
+  ;; must NOT be factored -- the program is rejected either way, but the
+  ;; factored form reported the error against $frag<hash>/v0..v2 instead of
+  ;; the user's own rule and variable.
+  (test-case "a type-inconsistent triangle is left inline"
+    ;; C is `str` in s but `int` in t -- the join can never hold
+    (match-define (list _ env+)
+      (factored-of
+       "table (r int int) table (s int str) table (t int int)
+        table (o1 int int int) table (o2 int int int)
+        rule (r A B) (s B C) (t A C) --> (o1 A B C)
+        rule (r X Y) (s Y Z) (t X Z) --> (o2 X Y Z)"))
+    (check-equal? (frag-rels env+) '()))
+
   (test-case "the kill switch disables the pass"
     (parameterize ([fragment-factor-enabled #f])
       (match-define (list rules+ env+) (factored-of two-rule-shared))

@@ -352,6 +352,14 @@ seams a golden cannot see:
   and the counts equal the unfactored program's — the instantiation-
   bijectivity claim, verified rather than argued.
 
+- **The deferred guard actually filters**
+  (`tests/wcoj3_compute_guard.slog`): a triangle rule with a body compute
+  and a guard over that compute's output — S1's exact path. The unit
+  battery pins that the closer survives, but only rows can catch a
+  regression that keeps the closer and silently drops the deferred guard,
+  so this golden pins the rows: one triangle passes the guard, one is
+  rejected, and dropping the guard would wrongly admit the second.
+
 **Pre-existing blind spot found (not introduced here, worth its own
 fix):** `count-ir-oracle.rkt` has no `join3` support and fails loudly on
 it, so the independent count oracle cannot cover ANY wcoj-containing
@@ -359,6 +367,44 @@ program — the check above had to run under `SLOG_NO_WCOJ3=1` (counts are
 operator-independent, so this still validates the factoring). Teaching
 the oracle `join3` would extend counted-flavor oracle coverage to the
 whole wcoj surface, `sj_tri` included.
+
+**A real S3 defect the review caught: stranded fragment classes.** The
+`≥2 distinct rules` trigger was computed in pass 1 over embeddings
+*present*, but the rewrite's greedy atom-disjoint selection can strand a
+class — two triangle classes sharing an atom cannot both be rewritten in
+one rule, so the loser can end up selected in one rule or none while
+still counting as triggered. Emission ran unconditionally off that
+count, so a `$frag` relation could be synthesized, given its own rule and
+stratum, materialized at runtime, and **never read** — outputs stay
+correct, so no golden would ever catch it; the cost is a wasted stratum
+plus exactly the single-rule materialization the trigger policy exists to
+prevent. Fixed by re-checking the trigger against embeddings actually
+*selected*, iterated to a **fixpoint**: dropping a class frees its atoms,
+which can change which embeddings other classes win. Monotone, so it
+terminates. Pinned by a unit test that reproduces the original (two
+overlapping classes across two rules → the pre-fix pass emits 2 `$frag`
+relations, one with zero consumers; the fixed pass emits 1).
+
+**A diagnostic regression, also fixed:** a type-inconsistent triangle
+(a variable joined against columns of incompatible declared types) was
+factored anyway, so the program's — correct — rejection was reported
+against the synthesized `$frag<hash>` rule and its `v0/v1/v2` variables
+instead of the rule and variable the user wrote. Such patterns are now
+left inline, so the diagnostic stays theirs. `any` on either side is a
+legitimate widening, never a conflict.
+
+**Two further review findings, both fixed.** The review
+(partially completed — several angles died on an API spend limit) also
+landed two smaller points. First, S3's end-to-end program was still *untracked*
+when the pass shipped, so no committed program triggered factoring and
+the battery's pass over it was vacuous; the `frag_multi`/`frag_rec`
+goldens close that, and they now exercise the pass on every run. Second,
+`tests/run-tests.sh` carries **three** copies of the internal-relation
+prefix filter and the original change updated only two (record-side and
+got-side), leaving the expected-side out of step; latent, because
+`--update` never records a `$frag*` file, but a genuine asymmetry, now
+fixed. The unfinished review angles remain the honest residue here: the
+line-by-line, cross-file, and rewrite-correctness sweeps never completed.
 
 ## Proposed static improvements (ranked)
 

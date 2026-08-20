@@ -1,0 +1,26 @@
+;; S1 (docs/static-join-decomposition.md): a triangle rule carrying a body
+;; COMPUTE whose output no join consumes, plus a GUARD over that output.
+;; The compute and guard are withheld from the Expand3 search and spliced
+;; into the post-join flush -- the same firing point the greedy scheduler
+;; would use, since a compute no join consumes can only fire at the flush
+;; under either plan.  The rule therefore keeps its join3 AND still filters.
+;;
+;; This golden pins the ROWS, not the plan shape: the unit battery checks
+;; that the closer survives, but only real output can catch a regression
+;; that keeps the closer and silently drops the deferred guard.
+;;
+;; Two triangles: (1,2,3) with W = 1+3 = 4, kept by (< W 10); and (5,6,9)
+;; with W = 5+9 = 14, REJECTED.  Dropping the guard would wrongly admit
+;; (5 6 9 14); dropping the compute would fail to bind W at all.
+table (edge int int)
+table (out int int int int)
+
+rule
+(edge 1 2)
+(edge 2 3)
+(edge 1 3)
+(edge 5 6)
+(edge 6 9)
+(edge 5 9)
+
+rule (edge X Y) (edge Y Z) (edge X Z) (= W (+ X Z)) (< W 10) --> (out X Y Z W)
