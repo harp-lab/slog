@@ -825,6 +825,54 @@
        (match (cdr candidate)
          [`(syn ,_ ,_ ,body ... --> ,_ ...)
           (count expand3-action? body)]))
+     ;; S1b (docs/static-join-decomposition.md): among equal-expand-count
+     ;; candidates, compare (1) the per-step free-variable-count sequence
+     ;; lexicographically -- selective-early schedules win, and a plan
+     ;; smuggling an avoidable K=0 Cartesian step (free count 2+) loses to
+     ;; any all-bound-probe schedule; the summed score CANNOT make this
+     ;; distinction because it is order-insensitive by linearity (see
+     ;; better-searched-plan) -- then (2) the Expand3 positions: earlier
+     ;; closers bound every scalar expansion after them by intersection.
+     ;; The pinned regression is the triangle+pendant shape
+     ;; (bench/bowtie_multi_mono.slog `trip`): both drive-from-the-cycle
+     ;; and drive-from-the-pendant yield exactly one Expand3 and identical
+     ;; free sequences, and the structural score alone picked the pendant,
+     ;; whose scalar {X : X->M} step streams every in-edge of a hub before
+     ;; the closer runs.  Profiles are comparable across candidates: the
+     ;; pre phase and the atom set are shared by every driver choice of
+     ;; one rule.
+     (define (candidate-profile candidate)
+       (match-define `(syn ,_ ,_ ,body ... --> ,_ ...) (cdr candidate))
+       (let walk ([entries body] [ground const-vars] [i 0]
+                  [frees '()] [positions '()])
+         (match entries
+           ['() (values (reverse frees) (reverse positions))]
+           [(cons entry rest)
+            (cond
+              [(expand3-action? entry)
+               (walk rest (set-add ground (expand3-action-cycle entry))
+                     (add1 i) (cons 1 frees) (cons i positions))]
+              [else
+               (define cl
+                 (match entry
+                   [`(syn ,_ ,(or '$oldjoin '$newjoin '$tombjoin) ,inner)
+                    inner]
+                   [_ entry]))
+               (cond
+                 [(join-cl? cl)
+                  (define vs (clause-vars cl))
+                  (walk rest (set-union ground vs) (add1 i)
+                        (cons (set-count (set-subtract vs ground)) frees)
+                        positions)]
+                 [(compute-cl? cl)
+                  (match-define `(syn ,_ let ,x ,_) cl)
+                  (walk rest (set-add ground x) (add1 i) frees positions)]
+                 [else (walk rest ground (add1 i) frees positions)])])])))
+     ;; Ranking: expand count, then the DRIVER's structural score (the
+     ;; original doctrine -- a selective driver, e.g. a const-prefixed
+     ;; $sup probe, must not lose to a full scan on a downstream
+     ;; refinement; verified live on dem_lambda's plan golden), and only
+     ;; on a score TIE the profile refinements above, then occurrence id.
      (define (candidate-better? a b)
        (define ea (expand-count a))
        (define eb (expand-count b))
@@ -838,10 +886,19 @@
                                         const-vars computes guards) 0))
           (define sb (if db (join-score (join-occurrence-clause db)
                                         const-vars computes guards) 0))
-          (if (= sa sb)
-              (< (if da (join-occurrence-id da) -1)
-                 (if db (join-occurrence-id db) -1))
-              (> sa sb))]))
+          (cond
+            [(> sa sb) #t]
+            [(< sa sb) #f]
+            [else
+             (define-values (fa pa) (candidate-profile a))
+             (define-values (fb pb) (candidate-profile b))
+             (cond
+               [(lexicographic<? fa fb) #t]
+               [(lexicographic<? fb fa) #f]
+               [(lexicographic<? pa pb) #t]
+               [(lexicographic<? pb pa) #f]
+               [else (< (if da (join-occurrence-id da) -1)
+                        (if db (join-occurrence-id db) -1))])])]))
      (define base-versions
        (if choose-one-driver?
            (set (cdr (first (sort candidates candidate-better?))))
@@ -1095,14 +1152,28 @@
     [(> (car xs) (car ys)) #f]
     [else (lexicographic<? (cdr xs) (cdr ys))]))
 
-(struct searched-plan (schedule ground expands score) #:transparent)
+(struct searched-plan (schedule ground expands frees score) #:transparent)
 
+;; Rank complete schedules: most Expand3s, then the lexicographically
+;; smallest per-step FREE-VARIABLE-count sequence, then score.  The
+;; free-count sequence is the real discriminator between equal-expand
+;; schedules: the summed join-score is order-INSENSITIVE by linearity
+;; (across any complete schedule each variable is free at exactly one
+;; step and bound at every other occurrence, so the bound/free totals --
+;; hence the sum -- are fixed by the atom set; e.g. a mid-schedule
+;; Cartesian scan at -70 plus a terminal fully-bound check at +200 sums
+;; identically to two ordinary 1-bound probes at 65+65).  Comparing
+;; free counts step by step prefers selective-early schedules and rules
+;; out an avoidable K=0 scan outright, instead of leaving the choice to
+;; candidate enumeration order.
 (define (better-searched-plan a b)
   (cond
     [(not a) b]
     [(not b) a]
     [(> (searched-plan-expands a) (searched-plan-expands b)) a]
     [(< (searched-plan-expands a) (searched-plan-expands b)) b]
+    [(lexicographic<? (searched-plan-frees a) (searched-plan-frees b)) a]
+    [(lexicographic<? (searched-plan-frees b) (searched-plan-frees a)) b]
     [(> (searched-plan-score a) (searched-plan-score b)) a]
     [else a]))
 
@@ -1130,7 +1201,7 @@
             (fire-specials ground+ '() guards+))
           (and (null? final-computes)
                (null? final-guards)
-               (searched-plan (append fired tail) final-ground 0 0))]
+               (searched-plan (append fired tail) final-ground 0 '() 0))]
          [else
           (define expansions
             (expand3-candidates pending ground+ consumed access-of ordinary-table?))
@@ -1150,6 +1221,7 @@
                      [schedule (append fired (list action)
                                        (searched-plan-schedule suffix))]
                      [expands (add1 (searched-plan-expands suffix))]
+                     [frees (cons 1 (searched-plan-frees suffix))]
                      [score (+ (expand-candidate-bound-count candidate)
                                (searched-plan-score suffix))])))
              (for/list ([occ (in-list
@@ -1167,6 +1239,9 @@
                       (append fired
                               (list (scalar-join-action (access-of occ)))
                               (searched-plan-schedule suffix))]
+                     [frees (cons (set-count
+                                   (set-subtract (clause-vars clause) ground+))
+                                  (searched-plan-frees suffix))]
                      [score (+ (join-score clause ground+ '() guards+)
                                (searched-plan-score suffix))])))))
           (for/fold ([best #f]) ([candidate (in-list candidates)])
@@ -1195,17 +1270,56 @@
         (set-union ground1 (clause-vars (join-occurrence-clause driver)))
         ground1))
   (define pending (remq driver joins))
+  ;; S1 (docs/static-join-decomposition.md): a surviving computation used
+  ;; to disable the WCOJ search for the whole rule.  When NO join consumes
+  ;; any compute's output, the greedy order fires every compute in the
+  ;; post-join flush anyway (the speculative-compute doctrine above: prims
+  ;; run only on fully-matched rows), so the search may run around them
+  ;; and the flush is spliced after the searched schedule -- identical
+  ;; firing point, never speculative.  Guards over compute outputs cannot
+  ;; fire until the flush either, so they are withheld from the search
+  ;; (whose leaf demands every guard discharged) and flushed with the
+  ;; computes.  A compute output consumed by a join keeps the greedy path:
+  ;; there on-demand firing and the ==-check interplay genuinely order
+  ;; the schedule, which the search does not model.
+  (define compute-outs
+    (for/set ([cl (in-list computes1)])
+      (match-define `(syn ,_ let ,x ,_) cl)
+      x))
+  (define computes-flushable?
+    (for/and ([occ (in-list joins)])
+      (set-empty? (set-intersect compute-outs
+                                 (clause-vars (join-occurrence-clause occ))))))
+  (define-values (deferred-guards searchable-guards)
+    (partition (lambda (gd)
+                 (not (set-empty? (set-intersect (clause-in-vars gd)
+                                                 compute-outs))))
+               guards1))
   (define searched
     (and driver
          (wcoj3-enabled)
-         (null? computes1)
+         computes-flushable?
          (<= (length joins) (wcoj3-search-cap))
-         (search-action-tail pending initial-ground (list driver) guards1
-                             access-of ordinary-table?)))
+         (search-action-tail pending initial-ground (list driver)
+                             searchable-guards access-of ordinary-table?)))
   (cond
     [(and searched (> (searched-plan-expands searched) 0))
-     (values (append initial-schedule (searched-plan-schedule searched))
-             (searched-plan-ground searched))]
+     (define-values (flush flush-ground flush-computes flush-guards)
+       (fire-specials (searched-plan-ground searched) computes1
+                      deferred-guards))
+     (cond
+       [(pair? flush-computes)
+        (error 'plan-stratum
+               "circular let dependencies (cannot order ~a):\n~a"
+               (map strip-prov flush-computes) (strip-prov rule))]
+       [(pair? flush-guards)
+        (error 'plan-stratum
+               "guard over variables never bound in body (~a):\n~a"
+               (map strip-prov flush-guards) (strip-prov rule))]
+       [else
+        (values (append initial-schedule (searched-plan-schedule searched)
+                        flush)
+                flush-ground)])]
     [else
   (let loop ([schedule initial-schedule]
              [ground initial-ground]

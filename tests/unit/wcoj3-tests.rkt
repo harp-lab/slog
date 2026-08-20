@@ -153,14 +153,62 @@
           --> (root A B D) (out A B C D)"))
      '()))
 
-  (test-case "body computation uses the conservative scalar fallback"
+  ;; S1 (docs/static-join-decomposition.md): a compute whose output no
+  ;; join consumes fires in the post-join flush under either order, so it
+  ;; no longer disables the search -- the cycle keeps its closer and the
+  ;; compute is spliced after the searched schedule.
+  (test-case "head-only computation no longer disables the search"
+    (check-equal?
+     (length
+      (join3s
+       (cprogs-of
+        "table (r int int) table (s int int) table (t int int)
+         table (out int int int int)
+         rule (r A B) (s B C) (t A C) (= X (+ A B)) --> (out A B C X)")))
+     1))
+
+  ;; ... and a guard over that compute's output is withheld from the
+  ;; search and flushed with it, still without losing the closer.
+  (test-case "guard over a compute output flushes without losing the closer"
+    (check-equal?
+     (length
+      (join3s
+       (cprogs-of
+        "table (r int int) table (s int int) table (t int int)
+         table (out int int int)
+         rule (r A B) (s B C) (t A C) (= X (+ A B)) (< X 99)
+           --> (out A B C)")))
+     1))
+
+  ;; The boundary that stays conservative: a compute output CONSUMED BY A
+  ;; JOIN keeps the greedy path (on-demand firing / ==-check interplay
+  ;; that the search does not model).
+  (test-case "join-consumed computation uses the conservative scalar fallback"
     (check-equal?
      (join3s
       (cprogs-of
        "table (r int int) table (s int int) table (t int int)
-        table (out int int int int)
-        rule (r A B) (s B C) (t A C) (= X (+ A B)) --> (out A B C X)"))
+        table (out int int int)
+        rule (r A B) (= C (+ A B)) (s B C) (t A C) --> (out A B C)"))
      '()))
+
+  ;; S1b: among equal-expand-count driver candidates, the one whose
+  ;; Expand3 comes earliest wins.  The pinned regression is the
+  ;; triangle+pendant shape: driving from the pendant (join, THEN join3)
+  ;; ties on expand count with driving from the cycle (join3, then join)
+  ;; and the structural score alone picked the pendant.
+  (test-case "triangle+pendant drives from the cycle: join3 precedes the scalar join"
+    (define ops
+      (filter (lambda (op) (memq (car op) '(join join3)))
+              (all-ops
+               (cprogs-of
+                "table (edge int int)
+                 table (trip int int int int)
+                 rule (edge X Y) (edge Y M) (edge X M) (edge M W)
+                   --> (trip X Y M W)"))))
+    (check-equal? (length ops) 2)
+    (check-equal? (car (first ops)) 'join3)
+    (check-equal? (car (second ops)) 'join))
 
   (test-case "search cap falls back without changing rule validity"
     (parameterize ([wcoj3-search-cap 2])

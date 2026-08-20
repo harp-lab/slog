@@ -1,7 +1,7 @@
 # Static join decomposition & WCOJ chaining (bowtie case study)
 
-**Status — CASE STUDY + PROPOSED DIRECTION (2026-08-15). Study executed;
-improvements proposed, not implemented.** Companion to
+**Status — CASE STUDY EXECUTED (2026-08-15); S1 + S1b SHIPPED
+(2026-08-19), measured below; S2/S3 remain proposed.** Companion to
 `docs/join-planning-assessment.md` (the runtime-selection track): that doc
 moves *cardinality* decisions to run time; this one asks what the compiler
 can do better **purely statically** — decomposing complex rules so
@@ -56,6 +56,13 @@ the 3-way WCOJ operator (`join3`) does and does not reach.
    positional tie-break, S2 cap-cliff degradation, S3 factoring gated on
    structural wins (cross-rule sharing, cliff rescue) — explicitly NOT
    on single-rule aesthetics.
+6. **S1 + S1b shipped 2026-08-19** (see §"Proposed static improvements"
+   for the as-built shape and the post-fix rerun in §"Results"): the
+   compute cliff is gone (9 914 → 870 ms, parity with compute-free) and
+   the tie casualty is fixed (48 676 → 2 653 ms), with zero plan-golden
+   churn. What survives for factoring: many-rule fan-in (~1.8× at
+   |E|-scan scale, unbounded in the wcoj-off/cliff worlds) and the cap /
+   arm-kind cliffs (S2/S3, still proposed).
 
 ## The machinery as verified (join3 ground truth)
 
@@ -229,6 +236,24 @@ Per-stratum attribution for the factored variants (big, O2):
 off = 9 399 + 240. `bowtie_multi_tri` on = 1 030 (tri) + 581 (all three
 consumers). `bowtie_tri_compute` on = 936 + 206.
 
+**Post-S1/S1b rerun (2026-08-19, same harness; only the changed rows):**
+
+| program | small interp on | big O2 on |
+|---|---:|---:|
+| bowtie_mono_compute | 203 → **34** | 9 914 → **870** |
+| bowtie_multi_mono | 579 → **96** | 48 676 → **2 653** |
+
+All other rows within run noise of the table above; outputs identical
+throughout; all four plan goldens byte-identical. The compute cliff is
+gone (finding 3 is historical), and finding 6's tie is fixed — which
+retro-decomposes the original 30×: ~46 s of it was the tie casualty, and
+the *redundancy proper* is the remaining multi_mono 2 653 vs multi_tri
+1 461 ms (~1.8× at this scale, three |E|-row scans vs one) — plus the
+unchanged wcoj-off story (multi_mono still >900 s vs factored 10.3 s).
+Factoring's case (S3) therefore now rests on: many-rule fan-in at
+|E|-scan scale, and the worlds the remaining cliffs (cap, arm-kind)
+still drop rules into.
+
 ### Reading of the results
 
 Six findings, each verified against the emitted `.plan` bytes:
@@ -280,24 +305,49 @@ Six findings, each verified against the emitted `.plan` bytes:
 
 ## Proposed static improvements (ranked)
 
-- **S1 — lift the compute cliff (planner-local, small, likely the
-  biggest win-per-line).** Run the search over the join-only body and
-  splice surviving computes/guards back at their earliest fire point
-  (the greedy loop's `fire-specials` logic already knows how), instead of
-  refusing to search at all (`join-planning.rkt:1201`). A compute whose
-  inputs bind late loses nothing by firing late; one that could fire
-  early still can. Every "match a cyclic pattern, derive a value" rule —
-  a very common shape — keeps its join3s and its spelling-insensitivity.
-  Verify the gate's original motivation before building; the unit test
-  battery (`wcoj3-tests.rkt`) pins current behavior.
-- **S1b — break expand-count ties by position, not blindly
-  (planner-local, tiny; the `trip` rule is the pinned regression).**
-  `candidate-better?` compares expand COUNT only; the trip rule's two
-  1-expand drivers tied and the structural score picked the pendant —
-  a ~46 s casualty on the big graph. Secondary criterion: prefer the
-  candidate whose expands come *earlier* in the schedule (WCOJ-first
-  bounds the scalar expansions by intersection). This is the static
-  stopgap; the full fix is cardinality (J0/runtime selection).
+- **S1 — lift the compute cliff. SHIPPED 2026-08-19.** As built: the
+  gate's real motivation is the speculative-compute doctrine
+  (`fire-specials`' header — a prim fired before a later filtering join
+  can fault on rows that join would reject), so the relaxation is exactly
+  the case where timing cannot differ: when **no join consumes any
+  compute's output**, the greedy order fires every compute in the
+  post-join flush anyway, so the search runs around them and the same
+  flush is spliced after the searched schedule (never speculative,
+  identical firing point). Guards over compute outputs are withheld from
+  the search (its leaf demands every guard discharged) and flushed with
+  the computes — the flush-mode feeder preference that lets a guard
+  protect a faultable compute is preserved. A compute output consumed by
+  a join keeps the greedy path (on-demand firing / ==-check interplay).
+  **Measured:** big O2 compute bowtie 9 914 → 870 ms (11.4×, parity with
+  the compute-free mono); small interp 203 → 34 ms. Unit battery grew
+  head-only-compute / guard-over-compute / join-consumed-compute pins.
+- **S1b — break expand-count ties by schedule profile. SHIPPED
+  2026-08-19, after one instructive failure.** The naive version —
+  compare Expand3 *positions* right after expand count — shipped a
+  worse plan: for the bridged bowtie it preferred a schedule that
+  closed tri1, ran a **K=0 Cartesian scan** of all edges as `(M2,V)`,
+  closed tri2, and checked the bridge last (positions (1,3) beating the
+  sane plan's (1,4)). Two lessons became the design:
+  (i) **the summed schedule score cannot arbitrate complete schedules —
+  it is order-insensitive by linearity** (each variable is free at
+  exactly one step of any complete schedule, so bound/free totals are
+  fixed by the atom set: a −70 Cartesian plus a +200 terminal check sums
+  identically to two 65-point probes), which is why within-driver ties
+  silently fell to candidate enumeration order all along;
+  (ii) the real discriminator is the **lexicographic per-step
+  free-variable-count sequence** (selective-early wins; an avoidable
+  Cartesian step loses outright), applied BOTH within the search
+  (`better-searched-plan`, via a new `frees` field) and across driver
+  candidates — but ranked **below the driver's structural score**: the
+  first cut ranked it above and flipped a demand rule's driver from the
+  const-prefixed `$sup` probe to a full `_enum` scan (caught by the
+  dem_lambda plan golden). Final order: expand count → driver score →
+  free sequence → expand positions → occurrence id. Plan goldens:
+  zero churn (all four byte-identical). **Measured:** multi_mono big O2
+  48 676 → 2 653 ms (18.4×); small interp 579 → ~100 ms. The remaining
+  gap to the factored twin (1 461 ms) is the honest three-scans-vs-one
+  redundancy. The full fix for such ties remains cardinality
+  (J0/runtime selection).
 - **S2 — degrade the cap cliff gracefully (planner-local, small).**
   Above `wcoj3-search-cap`, don't abandon join3 wholesale: run the greedy
   scheduler and, at each frontier, apply the *local* expand3 test
