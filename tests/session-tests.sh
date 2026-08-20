@@ -877,6 +877,51 @@ else
   echo "FAIL m04-count-ir-oracle (see out/sess-counts-oracle.diff/.log)"; FAIL=$((FAIL+1))
 fi
 
+# The same independent oracle over WCOJ3 and FRAGMENT-FACTORED programs
+# (docs/static-join-decomposition.md).  Until the oracle learned `join3` it
+# hard-errored on every wcoj-containing program, so counted-flavor
+# cross-checking had a hole exactly where the S1/S2 planner work widened
+# join3's reach -- and where S3's synthesized $frag rules (triangles, hence
+# join3) live.  sj_tri is the canonical wcoj program; frag_counts is a
+# factored program whose counts must equal the unfactored ones (the
+# instantiation-bijectivity claim).
+oracle_check() {  # <label> <program> <countrow-regex> <dump-args...>
+  local label="$1" prog="$2" re="$3"; shift 3
+  local log="out/sess-$label.log" olog="out/sess-$label-oracle.log"
+  if ! timeout 900 racket tests/api/session-drive.rkt \
+         "run:$prog" recount "$@" > "$log" 2>&1; then
+    echo "FAIL $label (drive; see $log)"; FAIL=$((FAIL+1)); return
+  fi
+  local args=()
+  while read -r h; do args+=("build/${h}_count.cprog"); done < <(
+    grep -oE '\(s [0-9]+ [0-9]+ "[0-9a-f]{8}"' "$log" \
+      | sed -E 's/.*"([0-9a-f]{8})"/\1/' | awk '!seen[$0]++')
+  # the point of the gate: the count IR must actually contain a join3,
+  # else it would pass by testing nothing.  Guard the empty case first --
+  # `grep` with no FILE operands reads stdin and would HANG the battery
+  # rather than failing it.
+  if [ ${#args[@]} -eq 0 ]; then
+    echo "FAIL $label (no _count.cprog artifacts; see $log)"
+    FAIL=$((FAIL+1)); return
+  fi
+  if ! grep -lq join3 "${args[@]}" 2>/dev/null; then
+    echo "FAIL $label (no join3 in the count IR -- gate is vacuous)"
+    FAIL=$((FAIL+1)); return
+  fi
+  if racket tests/api/count-ir-oracle.rkt "${args[@]}" > "$olog" 2>&1 \
+     && grep -E "^\(countrow $re " "$log" | sort -u > "$log.rt" \
+     && grep -E "^\(countrow $re " "$olog" | sort -u > "$log.or" \
+     && [ -s "$log.rt" ] \
+     && diff "$log.rt" "$log.or" > "$log.diff"; then
+    echo "PASS $label"; PASS=$((PASS+1))
+  else
+    echo "FAIL $label (see $olog / $log.diff)"; FAIL=$((FAIL+1))
+  fi
+}
+oracle_check wcoj-count-oracle tests/sj_tri.slog 'tri' dump-counts:tri
+oracle_check frag-count-oracle tests/session/frag_counts.slog \
+  '(edge|tri1|tri2)' dump-counts:edge dump-counts:tri1 dump-counts:tri2
+
 # The TEMP-SPLIT headline case (the 6.2 temps decision): two instantiations
 # agreeing on the staged construction's only input -- a narrow residue temp
 # would collapse them to one row and report (g (h 2)) at nonrec 1; the

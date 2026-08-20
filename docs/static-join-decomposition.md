@@ -360,13 +360,26 @@ seams a golden cannot see:
   so this golden pins the rows: one triangle passes the guard, one is
   rejected, and dropping the guard would wrongly admit the second.
 
-**Pre-existing blind spot found (not introduced here, worth its own
-fix):** `count-ir-oracle.rkt` has no `join3` support and fails loudly on
-it, so the independent count oracle cannot cover ANY wcoj-containing
-program — the check above had to run under `SLOG_NO_WCOJ3=1` (counts are
-operator-independent, so this still validates the factoring). Teaching
-the oracle `join3` would extend counted-flavor oracle coverage to the
-whole wcoj surface, `sj_tri` included.
+**A blind spot found — and closed.** `count-ir-oracle.rkt` had no
+`join3` case and hard-errors on unknown ops by design, so the
+independent count oracle could not check ANY wcoj-containing program;
+the factoring check above initially had to run under `SLOG_NO_WCOJ3=1`.
+That hole predated this arc but this arc *widened* it: S1 and S2 put
+`join3` into many rules that previously fell back to scalar plans, and
+S3's synthesized `$frag` rules are triangles, hence `join3` themselves —
+so the unverifiable surface was exactly the surface that just grew.
+
+The oracle now interprets `join3` directly: both arms bind the same
+cycle variable and are otherwise fully bound, so the op *means* the
+conjunction of its two arm joins — the runtime's leapfrog intersection
+is an implementation of that conjunction, not a different relation — and
+folding the arms sequentially yields the intersection (the first binds
+the cycle value, the second unifies against it). Two permanent session
+gates ride on it, `wcoj-count-oracle` (over `sj_tri`, the canonical wcoj
+program, whose counts had never been independently checked) and
+`frag-count-oracle` (the factored program, wcoj enabled). Both assert
+that the count IR actually contains a `join3`, so neither can pass by
+testing nothing.
 
 **A real S3 defect the review caught: stranded fragment classes.** The
 `≥2 distinct rules` trigger was computed in pass 1 over embeddings

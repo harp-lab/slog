@@ -180,6 +180,30 @@
      ;; Count flavor enumerates the settled full relation.  A join-old is not
      ;; expected there today, but its full-side meaning is unambiguous.
      (join-envs env (rel-key rel) ordering vars)]
+    ;; WCOJ3 (docs/wcoj.md): the key-simple 3-way cycle closer.  Both arms
+    ;; bind the SAME cycle variable and are otherwise fully bound, so this
+    ;; op MEANS exactly the conjunction of its two arm joins -- the
+    ;; runtime's leapfrog intersection over sorted prefix cursors is an
+    ;; implementation of that conjunction, not a different relation.
+    ;; Folding the arms sequentially yields the intersection for free: the
+    ;; first arm binds the cycle value, the second unifies against it.
+    ;;
+    ;; Without this case the oracle could not check ANY wcoj-containing
+    ;; program (it hard-errors on unknown ops by design), which since the
+    ;; S1/S2 planner work -- lifting the compute cliff, adding greedy-local
+    ;; closers -- is a large and growing share of all rules
+    ;; (docs/static-join-decomposition.md).  Arm views follow the join-old
+    ;; precedent above: the count flavor enumerates settled FULL relations.
+    [`(join3 ,_cycle ,arms ...)
+     (for/fold ([es (list env)]) ([arm (in-list arms)])
+       (append-map
+        (lambda (e)
+          (match arm
+            [`(,(or 'full 'old 'new) ,rel ,ordering ,_k ,_delta ,vars ...)
+             (join-envs e (rel-key rel) ordering vars)]
+            [_ (error 'count-ir-oracle
+                      "unsupported join3 arm: ~s" arm)]))
+        es))]
     [`(exists ,rel ,ordering ,_k ,vars ...)
      (if (pair? (join-envs env (rel-key rel) ordering vars)) (list env) '())]
     [`(,(or 'absent 'absent-lat) ,rel ,ordering ,_k ,vars ...)
