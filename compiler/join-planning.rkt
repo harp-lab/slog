@@ -1325,7 +1325,8 @@
              [ground initial-ground]
              [joins pending]
              [computes computes1]
-             [guards guards1])
+             [guards guards1]
+             [consumed (if driver (list driver) '())])
     (cond
       [(pair? joins)
        ;; drain guards, pick the join, then fire exactly the computes it
@@ -1334,14 +1335,56 @@
          (fire-specials ground computes guards (set)))
        (define next (best-occurrence joins ground0+ computes0+ guards0+))
        (define next-clause (join-occurrence-clause next))
-       (define-values (fired1 ground1+ computes1+ guards1+)
-         (fire-specials ground0+ computes0+ guards0+ (clause-vars next-clause)))
-       (loop (append schedule fired0 fired1
-                     (list (scalar-join-action (access-of next))))
-             (set-union ground1+ (clause-vars next-clause))
-             (remq next joins)
-             computes1+
-             guards1+)]
+       ;; S2 (docs/static-join-decomposition.md): the bodies the search
+       ;; refuses (over wcoj3-search-cap, or a join-consumed compute) used
+       ;; to lose every Expand3 -- the greedy fallback never emitted one.
+       ;; At each frontier, run the same LOCAL 2-arm test the search uses
+       ;; (expand3-candidates: linear work, no lookahead) and take the
+       ;; best closer -- unless (a) the best scalar is a fully-bound
+       ;; check, which only prunes and is exactly what the search's
+       ;; free-sequence doctrine orders first, or (b) the closer's cycle
+       ;; variable is a pending compute's output, where compute-then-probe
+       ;; is O(1) per row while the closer pays an intersection.  Searched
+       ;; bodies are unaffected: a greedy-local closer implies a >=1-expand
+       ;; schedule, which the search would have found and preferred.
+       (define pending-compute-outs
+         (for/set ([cl (in-list computes0+)])
+           (match-define `(syn ,_ let ,x ,_) cl)
+           x))
+       (define closer
+         (and (wcoj3-enabled)
+              (> (set-count (set-subtract (clause-vars next-clause)
+                                          ground0+))
+                 0)
+              (for/first ([candidate
+                           (in-list (expand3-candidates
+                                     joins ground0+ consumed access-of
+                                     ordinary-table?))]
+                          #:unless (set-member?
+                                    pending-compute-outs
+                                    (expand3-action-cycle
+                                     (expand-candidate-action candidate))))
+                (expand-candidate-action candidate))))
+       (cond
+         [closer
+          (define arms (map join-access-occurrence (action-accesses closer)))
+          (loop (append schedule fired0 (list closer))
+                (set-add ground0+ (expand3-action-cycle closer))
+                (filter (lambda (occ) (not (memq occ arms))) joins)
+                computes0+
+                guards0+
+                (append arms consumed))]
+         [else
+          (define-values (fired1 ground1+ computes1+ guards1+)
+            (fire-specials ground0+ computes0+ guards0+
+                           (clause-vars next-clause)))
+          (loop (append schedule fired0 fired1
+                        (list (scalar-join-action (access-of next))))
+                (set-union ground1+ (clause-vars next-clause))
+                (remq next joins)
+                computes1+
+                guards1+
+                (cons next consumed))])]
       [else
        ;; flush: every remaining compute and guard, on fully-matched rows
        (define-values (fired ground+ computes+ guards+)

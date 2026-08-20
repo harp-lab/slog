@@ -181,16 +181,21 @@
      1))
 
   ;; The boundary that stays conservative: a compute output CONSUMED BY A
-  ;; JOIN keeps the greedy path (on-demand firing / ==-check interplay
-  ;; that the search does not model).
-  (test-case "join-consumed computation uses the conservative scalar fallback"
-    (check-equal?
-     (join3s
-      (cprogs-of
-       "table (r int int) table (s int int) table (t int int)
-        table (out int int int)
-        rule (r A B) (= C (+ A B)) (s B C) (t A C) --> (out A B C)"))
-     '()))
+  ;; JOIN keeps the GREEDY path (on-demand firing / ==-check interplay
+  ;; that the search does not model).  Since S2 the greedy path itself
+  ;; emits local closers, and driver enumeration maximizes them: the
+  ;; winning driver binds the compute's output directly (s), the compute
+  ;; becomes a flush check, and the remaining pair closes by
+  ;; intersection -- one join3, never over the compute-owned cycle C.
+  (test-case "join-consumed computation stays greedy, keeps a local closer"
+    (define js
+      (join3s
+       (cprogs-of
+        "table (r int int) table (s int int) table (t int int)
+         table (out int int int)
+         rule (r A B) (= C (+ A B)) (s B C) (t A C) --> (out A B C)")))
+    (check-equal? (length js) 1)
+    (check-false (memq 'C (map cadr js))))
 
   ;; S1b: among equal-expand-count driver candidates, the one whose
   ;; Expand3 comes earliest wins.  The pinned regression is the
@@ -210,9 +215,42 @@
     (check-equal? (car (first ops)) 'join3)
     (check-equal? (car (second ops)) 'join))
 
-  (test-case "search cap falls back without changing rule validity"
+  ;; S2 (docs/static-join-decomposition.md): above the search cap the
+  ;; greedy fallback now emits LOCAL closers (same 2-arm frontier test,
+  ;; no lookahead), so the cap degrades instead of losing all wcoj.
+  (test-case "search cap falls back to greedy-local closers"
     (parameterize ([wcoj3-search-cap 2])
-      (check-equal? (join3s (cprogs-of triangle)) '())))
+      (check-equal? (length (join3s (cprogs-of triangle))) 1)))
+
+  (test-case "over-cap body keeps its triangle closer via the greedy loop"
+    (define js
+      (join3s
+       (cprogs-of
+        "table (r int int) table (s int int) table (t int int)
+         table (p1 int int) table (p2 int int) table (p3 int int)
+         table (p4 int int) table (p5 int int) table (p6 int int)
+         table (out int int int)
+         rule (r A B) (s B C) (t A C) (p1 C D) (p2 D E) (p3 E F)
+              (p4 F G) (p5 G H) (p6 H I)
+           --> (out A B C)")))
+    (check-equal? (length js) 1))
+
+  ;; S2's compute guard: a closer whose cycle variable is a pending
+  ;; compute's output is skipped (compute-then-probe is the selective
+  ;; route).  Driver enumeration then maximizes the remaining closers:
+  ;; the winning driver grounds the compute's output, and BOTH other
+  ;; cycles close by intersection -- but never the compute-owned C.
+  (test-case "greedy-local closers avoid compute-owned cycles"
+    (define js
+      (join3s
+       (cprogs-of
+        "table (r int int) table (s int int) table (t int int)
+         table (u int int) table (v int int)
+         table (out int int int int)
+         rule (r A B) (= C (+ A B)) (s B C) (t A C) (u A D) (v B D)
+           --> (out A B C D)")))
+    (check-equal? (length js) 2)
+    (check-false (memq 'C (map cadr js))))
 
   (test-case "payload arm is outside key-simple scope"
     (define js
