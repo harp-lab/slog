@@ -2451,6 +2451,12 @@ public:
         // ReadAttempt discard semantics, already in place.
         if (result.fires)
           db->bumpFiresSlot(rule->fireSlotIn(db), result.fires);
+        // The attempt's work accounting (cursor ticks + driver rows) merges
+        // on the same complete-only protocol; abandoned attempts merge
+        // nothing, so measurement runs stay invisible by construction.
+        if (result.work | result.driver_rows)
+          db->bumpWorkSlot(rule->fireSlotIn(db),
+                           result.work, result.driver_rows);
         return true;
       }
       if (why == StopReason::breakpoint)

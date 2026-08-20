@@ -549,6 +549,15 @@ struct Attempt
   u64 output_count = 0;
   u64 checksum = 0;
   u64 fires = 0;
+  // Measurement substrate (join-planning-assessment.md, "the measurement
+  // layer"): deterministic work accounting -- cursor ticks consumed and
+  // driver rows pulled -- accumulated across resumptions exactly like
+  // `fires` and merged/discarded under the same attempt protocol.  A
+  // diagnostic, never an identity or audit input: probes without fires
+  // are invisible to $stat_fires, and these are the observable the
+  // plan-selection tripwire reads.
+  u64 work = 0;
+  u64 driver_rows = 0;
   // Emit staging, sized once to the program's widest emit.  Event::tuple
   // views this storage (see Event lifetime note).
   std::vector<u64> emit_scratch;
@@ -692,7 +701,14 @@ class Machine
     size_t& pc = Policy::observed ? ip : pc_local;
     std::vector<size_t>& stack = Policy::observed ? levels : stack_local;
 
+    // Every run_loop invocation owns one WorkBudget; each exit path settles
+    // the ticks it consumed into the attempt exactly once (save() covers
+    // all exits except the observed-policy breakpoint return below).
+    const auto account_work = [&] {
+      attempt->work += cursor_work_budget - work.left;
+    };
     const auto save = [&](StopReason why) {
+      account_work();
       if constexpr (!Policy::observed)
       {
         state = st;
@@ -726,6 +742,7 @@ class Machine
             st = MachineState::done;
             return save(StopReason::complete);
           }
+          ++attempt->driver_rows;
           load_driver_regs();
           stack.clear();
           pc = 0;
@@ -928,7 +945,11 @@ class Machine
         {
           const Event e{ek, program->rule_id, program->variant_ordinal,
                         eip, eport, etuple};
-          if (debug_event(e)) return StopReason::breakpoint;
+          if (debug_event(e))
+          {
+            account_work();
+            return StopReason::breakpoint;
+          }
         }
       }
       if (committed && ++transitions == transition_budget)

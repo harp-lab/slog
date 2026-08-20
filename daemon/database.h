@@ -7074,6 +7074,12 @@ public:
   // folded at each PUBLICATION drain (transient rounds' discarded tallies
   // deliberately never reach it, mirroring their absent $stat rows).
   std::vector<u64> fire_totals_vec;
+  // Measurement substrate (join-planning-assessment.md): per-slot work
+  // tallies -- interpreter cursor ticks and driver rows -- sharing the fire
+  // slot registry and staged/committed/discarded under the exact protocol
+  // fires use.  Diagnostic only; never an identity, audit, or replay input.
+  std::vector<u64> work_pending_vec, work_counts_vec;
+  std::vector<u64> rows_pending_vec, rows_counts_vec;
 
   // T6 slice (a): the ReadAttempt generation -- bumped on every abort, so
   // restart replies and (eventually) per-attempt stats records have an
@@ -7147,6 +7153,10 @@ public:
     fire_counts_vec.push_back(0);
     fire_pending_vec.push_back(0);
     fire_totals_vec.push_back(0);
+    work_pending_vec.push_back(0);
+    work_counts_vec.push_back(0);
+    rows_pending_vec.push_back(0);
+    rows_counts_vec.push_back(0);
     return slot;
   }
 
@@ -7156,6 +7166,14 @@ public:
   {
     std::lock_guard<std::mutex> g(stats_mx);
     fire_pending_vec[slot] += n;
+  }
+
+  // One locked add per completed attempt, exactly like bumpFiresSlot.
+  void bumpWorkSlot(u32 slot, u64 ticks, u64 rows)
+  {
+    std::lock_guard<std::mutex> g(stats_mx);
+    work_pending_vec[slot] += ticks;
+    rows_pending_vec[slot] += rows;
   }
 
   // Read commit: fold the attempt's tallies into the committed vector.
@@ -7168,6 +7186,10 @@ public:
     {
       fire_counts_vec[i] += fire_pending_vec[i];
       fire_pending_vec[i] = 0;
+      work_counts_vec[i] += work_pending_vec[i];
+      work_pending_vec[i] = 0;
+      rows_counts_vec[i] += rows_pending_vec[i];
+      rows_pending_vec[i] = 0;
     }
   }
 
@@ -7176,6 +7198,8 @@ public:
   {
     std::lock_guard<std::mutex> g(stats_mx);
     std::fill(fire_pending_vec.begin(), fire_pending_vec.end(), 0);
+    std::fill(work_pending_vec.begin(), work_pending_vec.end(), 0);
+    std::fill(rows_pending_vec.begin(), rows_pending_vec.end(), 0);
   }
 
   // N5/stats-4: a snapshot of every nonzero fire tally, committed +
@@ -7220,6 +7244,10 @@ public:
     std::lock_guard<std::mutex> g(stats_mx);
     std::fill(fire_counts_vec.begin(), fire_counts_vec.end(), 0);
     std::fill(fire_pending_vec.begin(), fire_pending_vec.end(), 0);
+    std::fill(work_counts_vec.begin(), work_counts_vec.end(), 0);
+    std::fill(work_pending_vec.begin(), work_pending_vec.end(), 0);
+    std::fill(rows_counts_vec.begin(), rows_counts_vec.end(), 0);
+    std::fill(rows_pending_vec.begin(), rows_pending_vec.end(), 0);
   }
 
   Relation* ensureStatsRelation(const std::string& name, u32 arity)
@@ -7277,6 +7305,37 @@ public:
       }
       std::fill(fire_counts_vec.begin(), fire_counts_vec.end(), 0);
       std::fill(fire_pending_vec.begin(), fire_pending_vec.end(), 0);
+    }
+    // $stat_work(loc, tag, ticks, driver_rows) -- the interpreter's
+    // deterministic work counters (cursor ticks + driver rows), drained on
+    // the same cadence as $stat_fires.  Probes without fires are invisible
+    // to $stat_fires; this is the blowup observable and the input the
+    // plan-selection tripwire will read.  Native-executed rules publish no
+    // rows here until the native tick accumulator ships (J3).
+    std::vector<std::pair<std::pair<std::string, std::string>,
+                          std::pair<u64, u64>>> wdrained;
+    {
+      std::lock_guard<std::mutex> g(stats_mx);
+      for (size_t i = 0; i < work_counts_vec.size(); ++i)
+      {
+        const u64 t = work_counts_vec[i] + work_pending_vec[i];
+        const u64 r = rows_counts_vec[i] + rows_pending_vec[i];
+        if (t | r) wdrained.push_back({fire_slots[i], {t, r}});
+      }
+      std::fill(work_counts_vec.begin(), work_counts_vec.end(), 0);
+      std::fill(work_pending_vec.begin(), work_pending_vec.end(), 0);
+      std::fill(rows_counts_vec.begin(), rows_counts_vec.end(), 0);
+      std::fill(rows_pending_vec.begin(), rows_pending_vec.end(), 0);
+    }
+    if (!wdrained.empty())
+    {
+      std::vector<std::vector<u64>> wrows;
+      for (const auto& kv : wdrained)
+        wrows.push_back({encodeString(kv.first.first),
+                         encodeString(kv.first.second),
+                         encodeInt((s64)kv.second.first),
+                         encodeInt((s64)kv.second.second)});
+      statsRows(ensureStatsRelation("$stat_work", 4), 4, wrows);
     }
     if (drained.empty()) return;
     std::vector<std::vector<u64>> rows;
