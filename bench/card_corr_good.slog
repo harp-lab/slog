@@ -1,0 +1,34 @@
+;; CARD-CORR-GOOD: oracle twin of card_corr.slog -- identical data, query
+;; clauses reversed so the tie-break drives fa (the identity-strip side).
+;; ~3k ops instead of ~1e9.
+
+table (d int)
+table (n2 int)
+table (n4 int)
+table (idn int)
+table (kset int)
+table (fa int int)
+table (m int int)
+table (n int int)
+table (fb int int)
+table (ans int int)
+
+rule (d 0) (d 1) (d 2) (d 3) (d 4) (d 5) (d 6) (d 7) (d 8) (d 9)
+rule (n2 X) <-- (d A) (d B) (= X (+ (* 10 A) B))
+rule (n4 X) <-- (n2 A) (n2 B) (= X (+ (* 100 A) B))
+
+rule (idn V) <-- (n4 A) (d C) (< C 5) (= V (+ (* 5 A) C))
+rule (kset K) <-- (n4 K) (< K 1000)
+
+rule (m V V) <-- (idn V)
+rule (m X W) <-- (kset I) (kset J) (= X (+ 60000 I)) (= W (+ 70000 J))
+
+rule (n V V) <-- (idn V)
+rule (n W Z) <-- (kset I) (kset J) (= W (+ 70000 I)) (= Z (+ 90000 J))
+
+rule (fa X 0) <-- (n4 X) (< X 1000)
+rule (fb Z 0) <-- (n4 Z) (< Z 5)
+rule (fb Z 0) <-- (n4 J) (< J 995) (= Z (+ 90000 J))
+
+;; the query stratum -- clause order reversed vs card_corr.slog
+rule (ans X Z) <-- (fb Z B) (n Y Z) (m X Y) (fa X A)

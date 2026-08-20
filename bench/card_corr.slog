@@ -1,0 +1,49 @@
+;; CARD-CORR: the counts-blind correlation case (same query rule as
+;; card_skew).  ALL count-level signals TIE: |fa|=|fb|=1000, |m|=|n|,
+;; identical distinct counts and fanout histograms in BOTH directions
+;; (each relation = a 50k identity strip + one 1000x1000 block).  What
+;; differs is COMPOSITION: m's block output range equals n's block input
+;; range, so driving from fb (whose members sit on n's block output) chains
+;; block-into-block: 995 x 1000 x 1000 = ~1e9 probes.  Driving from fa
+;; (identity strip) is ~3k ops.  No function of per-relation statistics
+;; can tell fa from fb here -- only probing the actual values (bounded
+;; entry measurement) can.  This gates D6 entry exploration; counts-only
+;; J2 flips a coin.
+;; Spelled with fb last => the tie-break drives fb => the BAD plan.
+;; Twin card_corr_good.slog spells fa last.  Planted matches {0..4} give
+;; both twins the same 5-row answer.
+
+table (d int)
+table (n2 int)
+table (n4 int)
+table (idn int)
+table (kset int)
+table (fa int int)
+table (m int int)
+table (n int int)
+table (fb int int)
+table (ans int int)
+
+rule (d 0) (d 1) (d 2) (d 3) (d 4) (d 5) (d 6) (d 7) (d 8) (d 9)
+rule (n2 X) <-- (d A) (d B) (= X (+ (* 10 A) B))
+rule (n4 X) <-- (n2 A) (n2 B) (= X (+ (* 100 A) B))
+
+;; identity strip domain 0..49999; block key set 0..999
+rule (idn V) <-- (n4 A) (d C) (< C 5) (= V (+ (* 5 A) C))
+rule (kset K) <-- (n4 K) (< K 1000)
+
+;; m = identity strip + block Xf[60000..) x W[70000..)
+rule (m V V) <-- (idn V)
+rule (m X W) <-- (kset I) (kset J) (= X (+ 60000 I)) (= W (+ 70000 J))
+
+;; n = identity strip + block W[70000..) x Zf[90000..)  (blocks COMPOSE)
+rule (n V V) <-- (idn V)
+rule (n W Z) <-- (kset I) (kset J) (= W (+ 70000 I)) (= Z (+ 90000 J))
+
+;; fa: 1000 identity-strip members; fb: 5 planted + 995 block outputs
+rule (fa X 0) <-- (n4 X) (< X 1000)
+rule (fb Z 0) <-- (n4 Z) (< Z 5)
+rule (fb Z 0) <-- (n4 J) (< J 995) (= Z (+ 90000 J))
+
+;; the query stratum -- same rule text as card_skew; fb written last
+rule (ans X Z) <-- (fa X A) (m X Y) (n Y Z) (fb Z B)

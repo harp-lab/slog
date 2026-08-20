@@ -1,0 +1,58 @@
+;; CARD-MONSTER (spelling "ac"): single-driver-tuple subtree blowup.
+;; Two-entry recursive choice rule (both a and c keyed on I):
+;;
+;;   (walk J) <-- (walk I) (a I X P) (b1 X M R) (b2 M Z) (c I Z Q) (= J (+ I 1))
+;;
+;; Every iteration has a singleton chain a->b1->b2->c in both directions.
+;; Iteration 42 ONLY hangs a fat wing off a: a(42,.) = 5000 X's, each with
+;; 40 b1-successors, each M with 5000 b2-successors -- the a-first tail
+;; enumerates 5000*40*5000 = 1e9 (X,M,Z) triples inside ONE driver tuple's
+;; subtree, all rejected by c(42,.) (a singleton).  c-first at 42 is ~4 ops.
+;; Payload columns on a, b1, c poison every join3 arm (key-simple needs all
+;; non-cycle columns ground), so the planner cannot close the middle by
+;; intersection; work exceeds every relation's size (blocks are 200k rows),
+;; so no scalar order is cheap FOR THE SPELLED DIRECTION.  a and c score-tie
+;; (1 bound, 2 free) so source order picks the entry.
+;;
+;; The delta is ONE row; driver-boundary arm switching cannot rescue it,
+;; and stratum-entry measurement cannot see it (iteration-42-specific).
+;; This is the mid-SUBTREE rescue test (R1 support matrix).
+;; Twin card_monster_ca.slog spells c first: cheap everywhere incl. 42.
+
+table (d int)
+table (n2 int)
+table (n4 int)
+table (iter int)
+table (xsetM int)
+table (mset int)
+table (zsetM int)
+table (a int int int)
+table (b1 int int int)
+table (b2 int int)
+table (c int int int)
+table (walk int)
+
+rule (d 0) (d 1) (d 2) (d 3) (d 4) (d 5) (d 6) (d 7) (d 8) (d 9)
+rule (n2 X) <-- (d A) (d B) (= X (+ (* 10 A) B))
+rule (n4 X) <-- (n2 A) (n2 B) (= X (+ (* 100 A) B))
+
+rule (iter I) <-- (n4 I) (< I 200)
+rule (xsetM X) <-- (n4 I) (< I 5000) (= X (+ 3000000 I))
+rule (mset M)  <-- (n4 I) (< I 40)   (= M (+ 4000000 I))
+rule (zsetM Z) <-- (n4 I) (< I 5000) (= Z (+ 5000000 I))
+
+;; the singleton chain, every iteration: a(I)->x_I, b1(x_I)->m_I,
+;; b2(m_I)->z_I, c(I,z_I)
+rule (a I X 0)   <-- (iter I) (= X (+ 1000000 I))
+rule (b1 X M 0)  <-- (iter I) (= X (+ 1000000 I)) (= M (+ 1500000 I))
+rule (b2 M Z)    <-- (iter I) (= M (+ 1500000 I)) (= Z (+ 2000000 I))
+rule (c I Z 0)   <-- (iter I) (= Z (+ 2000000 I))
+
+;; the monster wing: hangs off a at iteration 42 only
+rule (a 42 X 0)  <-- (xsetM X)
+rule (b1 X M 0)  <-- (xsetM X) (mset M)
+rule (b2 M Z)    <-- (mset M) (zsetM Z)
+
+;; the recursive choice rule, "ac" spelling: entry = a
+rule (walk 0)
+rule (walk J) <-- (walk I) (< I 199) (a I X P) (b1 X M R) (b2 M Z) (c I Z Q) (= J (+ I 1))

@@ -1,0 +1,42 @@
+;; CARD-BAIT: the literal foo/bar/baz/boo shape from the design discussion.
+;;   (ans x w) <-- (foo x) (bar x 7 y) (baz x y w) (boo y)
+;; foo/boo selective (100 rows each); bar dense (SxS pairs through const 7).
+;; MEASURED (2026-08-20, post S1-S3): the planner drives from BAR -- the
+;; constant-bound column wins the driver join-score before the free-seq
+;; tie-break is consulted -- and pays an 18M-op scan-then-check.  No
+;; spelling fixes it (the score is source-order-independent); see
+;; card_bait_good.slog for the shape change that reaches the good driver.
+;; Stratum 0 generates all data intensionally (no external DB).
+
+table (d int)
+table (n2 int)
+table (n4 int)
+table (side int)
+
+table (foo int)
+table (bar int int int)
+table (baz int int int)
+table (boo int)
+table (ans int int)
+
+rule (d 0) (d 1) (d 2) (d 3) (d 4) (d 5) (d 6) (d 7) (d 8) (d 9)
+
+rule (n2 X) <-- (d A) (d B) (= X (+ (* 10 A) B))
+rule (n4 X) <-- (n2 A) (n2 B) (= X (+ (* 100 A) B))
+
+;; side = 0..1999 (the x/y domain of bar)
+rule (side X) <-- (n4 X) (< X 3000)
+
+;; foo: 100 selective x's; boo: 100 selective y's
+rule (foo X) <-- (side X) (< X 100)
+rule (boo Y) <-- (side Y) (< Y 100)
+
+;; bar: dense 3000 x 3000 pairs through the constant middle column
+rule (bar X 7 Y) <-- (side X) (side Y)
+
+;; baz: every bar pair extended by one payload column
+rule (baz X Y 1) <-- (side X) (side Y)
+
+;; the query (stratum 1): 9M (x,y) pairs satisfy bar+baz; only 100x100
+;; survive foo and boo.
+rule (ans X W) <-- (foo X) (bar X 7 Y) (baz X Y W) (boo Y)

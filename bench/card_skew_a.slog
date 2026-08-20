@@ -1,0 +1,43 @@
+;; CARD-SKEW dataset A (see card_skew_b.slog for the mirror).
+;; The impossibility case: ONE rule text, congruent endpoint drivers, and
+;; the winning driver depends only on the DATA.  All relations binary (dead
+;; second columns defeat the S1b free-seq tie-break: every endpoint driver
+;; profiles [2,1,1,0]), so the static planner must tie-break blind.
+;;
+;;   (ans x z) <-- (fa x a) (m x y) (n y z) (fb z b)
+;;
+;; A-skew: fa selective (10 rows), fb non-selective (100k rows).
+;;   m: every x in [0,100k) -> hub 0       (100k rows)
+;;   n: hub 0 -> z for z in [0,10k)        (10k rows)
+;; drive fa:  10 -> m(x->0) -> n(0->10k z) -> fb check   ~1e5 probes  GOOD
+;; drive fb:  100k -> n-rev(z<10k hit: 0)  -> m-rev(0 -> 100k x's!)
+;;            -> fa check                  ~1e9 probes   BAD
+;; The mirror dataset B makes the OPPOSITE driver good.  One compiled plan
+;; cannot be right for both: this is the J2 runtime-selection test.
+
+table (d int)
+table (n2 int)
+table (n4 int)
+table (dom int)
+
+table (fa int int)
+table (m int int)
+table (n int int)
+table (fb int int)
+table (ans int int)
+
+rule (d 0) (d 1) (d 2) (d 3) (d 4) (d 5) (d 6) (d 7) (d 8) (d 9)
+rule (n2 X) <-- (d A) (d B) (= X (+ (* 10 A) B))
+rule (n4 X) <-- (n2 A) (n2 B) (= X (+ (* 100 A) B))
+
+;; dom = 0..99999
+rule (dom X) <-- (n4 A) (d C) (= X (+ (* 10 A) C))
+
+;; A-skew data
+rule (fa X 0) <-- (dom X) (< X 10)
+rule (m X 0)  <-- (dom X)
+rule (n 0 Z)  <-- (dom Z) (< Z 10000)
+rule (fb Z 0) <-- (dom Z)
+
+;; the query stratum
+rule (ans X Z) <-- (fa X A) (m X Y) (n Y Z) (fb Z B)

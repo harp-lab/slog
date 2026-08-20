@@ -1,0 +1,56 @@
+;; CARD-FLIP (spelling "ac"): mid-fixpoint tail-order flip.
+;; A 200-step recursive walk carries the choice join inside the recursion:
+;;
+;;   (walk J) <-- (walk I) (a I X P) (b X Z) (c I Z Q) (= J (+ I 1))
+;;
+;; Per iteration the delta is ONE row {I}; the tail choice is expand a-then-b
+;; vs expand c-then-b-reversed, and the profitable order FLIPS at I=100:
+;;   phase 1 (I<100):  a(I,.) singleton, c(I,.) = 5000 fat rows whose
+;;                     b-reverse fanout is 2000  -> a-first ~4 ops,
+;;                     c-first ~1e7 ops per iteration
+;;   phase 2 (I>=100): mirrored (a fat, c singleton)
+;; NO static tail order wins: each spelling pays ~1e9 probes in one phase.
+;; Relation sizes and per-iteration delta size (1 row) are CONSTANT across
+;; the flip -- pure counts cannot see it; only measurement can.  This is the
+;; J2b/tripwire (mid-fixpoint reselection) test.  Twin: card_flip_ca.slog;
+;; hand-adaptive oracle: card_flip_oracle.slog.
+
+table (d int)
+table (n2 int)
+table (n4 int)
+table (iter int)
+table (xsetA int)
+table (zsetA int)
+table (xsetB int)
+table (zsetB int)
+table (a int int int)
+table (b int int)
+table (c int int int)
+table (walk int)
+
+rule (d 0) (d 1) (d 2) (d 3) (d 4) (d 5) (d 6) (d 7) (d 8) (d 9)
+rule (n2 X) <-- (d A) (d B) (= X (+ (* 10 A) B))
+rule (n4 X) <-- (n2 A) (n2 B) (= X (+ (* 100 A) B))
+
+rule (iter I) <-- (n4 I) (< I 200)
+rule (xsetA X) <-- (n4 I) (< I 2000) (= X (+ 3000000 I))
+rule (zsetA Z) <-- (n4 I) (< I 5000) (= Z (+ 4000000 I))
+rule (xsetB X) <-- (n4 I) (< I 5000) (= X (+ 5000000 I))
+rule (zsetB Z) <-- (n4 I) (< I 2000) (= Z (+ 6000000 I))
+
+;; the good singleton chain, every iteration: a(I)->x_I, b(x_I)->z_I, c(I,z_I)
+rule (a I X 0) <-- (iter I) (= X (+ 1000000 I))
+rule (b X Z) <-- (iter I) (= X (+ 1000000 I)) (= Z (+ 2000000 I))
+rule (c I Z 0) <-- (iter I) (= Z (+ 2000000 I))
+
+;; phase 1: fat side hangs off c (c-first pays |zsetA| x |xsetA| = 1e7/iter)
+rule (c I Z 0) <-- (iter I) (< I 100) (zsetA Z)
+rule (b X Z) <-- (xsetA X) (zsetA Z)
+
+;; phase 2: fat side hangs off a (a-first pays |xsetB| x |zsetB| = 1e7/iter)
+rule (a I X 0) <-- (iter I) (< 99 I) (xsetB X)
+rule (b X Z) <-- (xsetB X) (zsetB Z)
+
+;; the recursive choice rule, "ac" spelling: tail = a, b, c
+rule (walk 0)
+rule (walk J) <-- (walk I) (< I 199) (a I X P) (b X Z) (c I Z Q) (= J (+ I 1))

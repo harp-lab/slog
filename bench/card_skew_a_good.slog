@@ -1,0 +1,33 @@
+;; CARD-SKEW-A-GOOD: the oracle twin of card_skew_a.slog -- identical data,
+;; query clauses spelled in reverse so the occurrence-id tie-break lands on
+;; fa (the selective endpoint under A-skew) instead of fb.
+;; All four drivers tie through expand-count, driver join-score, and the
+;; free-seq profile ([2,1,1,1] everywhere: dead columns), so source order
+;; decides -- demonstrating the spelling fragility on top of the skew pair.
+
+table (d int)
+table (n2 int)
+table (n4 int)
+table (dom int)
+
+table (fa int int)
+table (m int int)
+table (n int int)
+table (fb int int)
+table (ans int int)
+
+rule (d 0) (d 1) (d 2) (d 3) (d 4) (d 5) (d 6) (d 7) (d 8) (d 9)
+rule (n2 X) <-- (d A) (d B) (= X (+ (* 10 A) B))
+rule (n4 X) <-- (n2 A) (n2 B) (= X (+ (* 100 A) B))
+
+;; dom = 0..99999
+rule (dom X) <-- (n4 A) (d C) (= X (+ (* 10 A) C))
+
+;; A-skew data (identical to card_skew_a.slog)
+rule (fa X 0) <-- (dom X) (< X 10)
+rule (m X 0)  <-- (dom X)
+rule (n 0 Z)  <-- (dom Z) (< Z 10000)
+rule (fb Z 0) <-- (dom Z)
+
+;; the query stratum -- clause order reversed vs card_skew_a.slog
+rule (ans X Z) <-- (fb Z B) (n Y Z) (m X Y) (fa X A)

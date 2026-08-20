@@ -1,0 +1,33 @@
+;; CARD-BAIT-GOOD: the oracle twin of card_bait.slog -- same data, same
+;; logical query, but foo/boo carry a constant second column so the driver
+;; join-score no longer singles out bar (all candidates now have one
+;; const-bound column; foo's 1-free beats bar's 2-free).  Expected driver:
+;; foo -> ~200k probes instead of an 18M-op scan-then-check.
+;; No spelling of card_bait.slog itself can achieve this: the driver choice
+;; there is score-driven (constant column), source-order-independent.
+
+table (d int)
+table (n2 int)
+table (n4 int)
+table (side int)
+
+table (foo int int)
+table (bar int int int)
+table (baz int int int)
+table (boo int int)
+table (ans int int)
+
+rule (d 0) (d 1) (d 2) (d 3) (d 4) (d 5) (d 6) (d 7) (d 8) (d 9)
+
+rule (n2 X) <-- (d A) (d B) (= X (+ (* 10 A) B))
+rule (n4 X) <-- (n2 A) (n2 B) (= X (+ (* 100 A) B))
+
+rule (side X) <-- (n4 X) (< X 3000)
+
+rule (foo X 9) <-- (side X) (< X 100)
+rule (boo Y 9) <-- (side Y) (< Y 100)
+
+rule (bar X 7 Y) <-- (side X) (side Y)
+rule (baz X Y 1) <-- (side X) (side Y)
+
+rule (ans X W) <-- (foo X 9) (bar X 7 Y) (baz X Y W) (boo Y 9)

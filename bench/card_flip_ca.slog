@@ -1,0 +1,42 @@
+;; CARD-FLIP (spelling "ca"): the mirror twin of card_flip_ac.slog.
+;; Identical data; the recursive rule's body spells c before a, so the
+;; greedy tail expands c-then-b-reverse: bad in phase 1 (I<100), good in
+;; phase 2.  Both spellings pay ~1e9 probes total; only per-iteration
+;; adaptation avoids it.
+
+table (d int)
+table (n2 int)
+table (n4 int)
+table (iter int)
+table (xsetA int)
+table (zsetA int)
+table (xsetB int)
+table (zsetB int)
+table (a int int int)
+table (b int int)
+table (c int int int)
+table (walk int)
+
+rule (d 0) (d 1) (d 2) (d 3) (d 4) (d 5) (d 6) (d 7) (d 8) (d 9)
+rule (n2 X) <-- (d A) (d B) (= X (+ (* 10 A) B))
+rule (n4 X) <-- (n2 A) (n2 B) (= X (+ (* 100 A) B))
+
+rule (iter I) <-- (n4 I) (< I 200)
+rule (xsetA X) <-- (n4 I) (< I 2000) (= X (+ 3000000 I))
+rule (zsetA Z) <-- (n4 I) (< I 5000) (= Z (+ 4000000 I))
+rule (xsetB X) <-- (n4 I) (< I 5000) (= X (+ 5000000 I))
+rule (zsetB Z) <-- (n4 I) (< I 2000) (= Z (+ 6000000 I))
+
+rule (a I X 0) <-- (iter I) (= X (+ 1000000 I))
+rule (b X Z) <-- (iter I) (= X (+ 1000000 I)) (= Z (+ 2000000 I))
+rule (c I Z 0) <-- (iter I) (= Z (+ 2000000 I))
+
+rule (c I Z 0) <-- (iter I) (< I 100) (zsetA Z)
+rule (b X Z) <-- (xsetA X) (zsetA Z)
+
+rule (a I X 0) <-- (iter I) (< 99 I) (xsetB X)
+rule (b X Z) <-- (xsetB X) (zsetB Z)
+
+;; the recursive choice rule, "ca" spelling: tail = c, b, a
+rule (walk 0)
+rule (walk J) <-- (walk I) (< I 199) (c I Z Q) (b X Z) (a I X P) (= J (+ I 1))

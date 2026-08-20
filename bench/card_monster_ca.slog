@@ -1,0 +1,39 @@
+;; CARD-MONSTER (spelling "ca"): the oracle twin of card_monster_ac.slog.
+;; Identical data; the recursive rule enters through c, so iteration 42
+;; runs c(42)->z_42 (singleton), b2-rev, b1-rev, a-check: ~4 ops.
+;; Every other iteration is a singleton chain either way.
+
+table (d int)
+table (n2 int)
+table (n4 int)
+table (iter int)
+table (xsetM int)
+table (mset int)
+table (zsetM int)
+table (a int int int)
+table (b1 int int int)
+table (b2 int int)
+table (c int int int)
+table (walk int)
+
+rule (d 0) (d 1) (d 2) (d 3) (d 4) (d 5) (d 6) (d 7) (d 8) (d 9)
+rule (n2 X) <-- (d A) (d B) (= X (+ (* 10 A) B))
+rule (n4 X) <-- (n2 A) (n2 B) (= X (+ (* 100 A) B))
+
+rule (iter I) <-- (n4 I) (< I 200)
+rule (xsetM X) <-- (n4 I) (< I 5000) (= X (+ 3000000 I))
+rule (mset M)  <-- (n4 I) (< I 40)   (= M (+ 4000000 I))
+rule (zsetM Z) <-- (n4 I) (< I 5000) (= Z (+ 5000000 I))
+
+rule (a I X 0)   <-- (iter I) (= X (+ 1000000 I))
+rule (b1 X M 0)  <-- (iter I) (= X (+ 1000000 I)) (= M (+ 1500000 I))
+rule (b2 M Z)    <-- (iter I) (= M (+ 1500000 I)) (= Z (+ 2000000 I))
+rule (c I Z 0)   <-- (iter I) (= Z (+ 2000000 I))
+
+rule (a 42 X 0)  <-- (xsetM X)
+rule (b1 X M 0)  <-- (xsetM X) (mset M)
+rule (b2 M Z)    <-- (mset M) (zsetM Z)
+
+;; the recursive choice rule, "ca" spelling: entry = c
+rule (walk 0)
+rule (walk J) <-- (walk I) (< I 199) (c I Z Q) (b2 M Z) (b1 X M R) (a I X P) (= J (+ I 1))

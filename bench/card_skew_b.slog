@@ -1,0 +1,35 @@
+;; CARD-SKEW dataset B: the exact mirror of card_skew_a.slog.
+;; IDENTICAL query-rule text; the generators swap which endpoint is
+;; selective.  B-skew: fb selective (10 rows), fa non-selective (100k).
+;;   m: x -> hub 0 only for x in [0,10k)   (10k rows)
+;;   n: hub 0 -> z for all z in [0,100k)   (100k rows)
+;; drive fa:  100k -> m(x<10k hit: 0) -> n(0 -> 100k z's!) -> fb check  BAD
+;; drive fb:  10 -> n-rev(z->0) -> m-rev(0 -> 10k x's) -> fa check   GOOD
+;; Whichever driver the (data-blind) planner picks, one of A/B blows up.
+
+table (d int)
+table (n2 int)
+table (n4 int)
+table (dom int)
+
+table (fa int int)
+table (m int int)
+table (n int int)
+table (fb int int)
+table (ans int int)
+
+rule (d 0) (d 1) (d 2) (d 3) (d 4) (d 5) (d 6) (d 7) (d 8) (d 9)
+rule (n2 X) <-- (d A) (d B) (= X (+ (* 10 A) B))
+rule (n4 X) <-- (n2 A) (n2 B) (= X (+ (* 100 A) B))
+
+;; dom = 0..99999
+rule (dom X) <-- (n4 A) (d C) (= X (+ (* 10 A) C))
+
+;; B-skew data (mirror of A)
+rule (fa X 0) <-- (dom X)
+rule (m X 0)  <-- (dom X) (< X 10000)
+rule (n 0 Z)  <-- (dom Z)
+rule (fb Z 0) <-- (dom Z) (< Z 10)
+
+;; the query stratum -- byte-identical rule text to card_skew_a.slog
+rule (ans X Z) <-- (fa X A) (m X Y) (n Y Z) (fb Z B)
