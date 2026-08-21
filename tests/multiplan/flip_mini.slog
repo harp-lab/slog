@@ -1,0 +1,41 @@
+;; Miniature card_flip (bench/card_flip_ac.slog at 1/100 scale) for the
+;; multiplan battery: a 20-step recursive walk whose choice join has two
+;; I-keyed entries (a and c, payload columns poisoning join3 eligibility),
+;; with the profitable tail order flipping at I=10.  Small enough to run in
+;; milliseconds under either arm; the battery asserts arm EQUIVALENCE
+;; (identical walk rows, identical $stat_fires) and per-arm $stat_work
+;; attribution, not timing.
+
+table (d int)
+table (n2 int)
+table (iter int)
+table (xsetA int)
+table (zsetA int)
+table (xsetB int)
+table (zsetB int)
+table (a int int int)
+table (b int int)
+table (c int int int)
+table (walk int)
+
+rule (d 0) (d 1) (d 2) (d 3) (d 4) (d 5) (d 6) (d 7) (d 8) (d 9)
+rule (n2 X) <-- (d A) (d B) (= X (+ (* 10 A) B))
+
+rule (iter I) <-- (n2 I) (< I 20)
+rule (xsetA X) <-- (n2 I) (< I 30) (= X (+ 30000 I))
+rule (zsetA Z) <-- (n2 I) (< I 50) (= Z (+ 40000 I))
+rule (xsetB X) <-- (n2 I) (< I 50) (= X (+ 50000 I))
+rule (zsetB Z) <-- (n2 I) (< I 30) (= Z (+ 60000 I))
+
+rule (a I X 0) <-- (iter I) (= X (+ 10000 I))
+rule (b X Z) <-- (iter I) (= X (+ 10000 I)) (= Z (+ 20000 I))
+rule (c I Z 0) <-- (iter I) (= Z (+ 20000 I))
+
+rule (c I Z 0) <-- (iter I) (< I 10) (zsetA Z)
+rule (b X Z) <-- (xsetA X) (zsetA Z)
+
+rule (a I X 0) <-- (iter I) (< 9 I) (xsetB X)
+rule (b X Z) <-- (xsetB X) (zsetB Z)
+
+rule (walk 0)
+rule (walk J) <-- (walk I) (< I 19) (a I X P) (b X Z) (c I Z Q) (= J (+ I 1))

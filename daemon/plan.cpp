@@ -1243,6 +1243,7 @@ std::vector<DecodedKernelPlan> parse_kernel_cohort(std::string_view input)
     text += ")";
     // rules: the dense ordinal becomes the DebugMap's RuleId, and the
     // slot-relative variant becomes its display spelling
+    std::map<u64, int> arm_of;   // J1 choice groups: rule ordinal -> arm
     text += " (rules";
     for (size_t i = 1; i < rules->children.size(); ++i)
     {
@@ -1259,10 +1260,11 @@ std::vector<DecodedKernelPlan> parse_kernel_cohort(std::string_view input)
       for (size_t j = 3; j < fs.size(); ++j)
       {
         // RF1 slice 3: (attrs ...) is exec identity, not ABI-1 grammar.
-        // Validate the closed vocabulary, check the fold kind agrees with
-        // the DebugMap spelling (which is what the sealer's
-        // variant_fold_kind derives from), and do not copy it into the
-        // ABI-1 view.
+        // Validate the closed vocabulary -- (fold k) and the J1 choice-group
+        // (arm n) -- check the fold kind agrees with the DebugMap spelling
+        // (which is what the sealer's variant_fold_kind derives from), and
+        // do not copy it into the ABI-1 view.  Arm ordinals are recorded
+        // per rule ordinal and re-applied to the parsed RulePlans below.
         if (fs[j].kind == SExp::K::list && !fs[j].children.empty()
             && fs[j].children[0].kind == SExp::K::atom
             && fs[j].children[0].text == "attrs")
@@ -1271,17 +1273,29 @@ std::vector<DecodedKernelPlan> parse_kernel_cohort(std::string_view input)
           {
             const SExp& attr = fs[j].children[a];
             if (attr.kind != SExp::K::list || attr.children.size() != 2
-                || attr.children[0].kind != SExp::K::atom
-                || attr.children[0].text != "fold")
+                || attr.children[0].kind != SExp::K::atom)
               syntax(attr, "cohort rule: unknown rule attribute");
-            const std::string fold = atom(attr.children[1], "fold kind");
-            if (fold != "input" && fold != "nonrec" && fold != "rec")
-              syntax(attr, "cohort rule: unknown fold kind");
-            const u8 display = variant_fold_kind(d->second.variant);
-            if ((fold == "nonrec" && display != cnt_kind_nonrec)
-                || (fold == "rec" && display != cnt_kind_rec))
-              syntax(attr, "cohort rule: fold attribute disagrees with the "
-                           "variant spelling");
+            if (attr.children[0].text == "fold")
+            {
+              const std::string fold = atom(attr.children[1], "fold kind");
+              if (fold != "input" && fold != "nonrec" && fold != "rec")
+                syntax(attr, "cohort rule: unknown fold kind");
+              const u8 display = variant_fold_kind(d->second.variant);
+              if ((fold == "nonrec" && display != cnt_kind_nonrec)
+                  || (fold == "rec" && display != cnt_kind_rec))
+                syntax(attr, "cohort rule: fold attribute disagrees with the "
+                             "variant spelling");
+            }
+            else if (attr.children[0].text == "arm")
+            {
+              const u64 n = small(attr.children[1], "arm ordinal");
+              // keyed by POSITION in the cohort's rules list -- the rebuilt
+              // ABI-1 text preserves that order, so it is exactly the index
+              // into the parsed RulePlan vector
+              arm_of[i - 1] = (int)n;
+            }
+            else
+              syntax(attr, "cohort rule: unknown rule attribute");
           }
           continue;
         }
@@ -1300,6 +1314,15 @@ std::vector<DecodedKernelPlan> parse_kernel_cohort(std::string_view input)
     text += "))";
 
     out.push_back(parse_kernel_plan(text));
+    // Re-apply the J1 arm ordinals the ABI-1 rewrite could not carry: the
+    // rebuilt text lists rule-defs in cohort order, so the position an
+    // attrs entry was recorded under is its index in the parsed vector.
+    for (const auto& [pos, arm] : arm_of)
+    {
+      if (pos >= out.back().rules.size())
+        syntax(*rules, "cohort rule: arm attribute position out of range");
+      out.back().rules[pos].plan.arm = arm;
+    }
     if (const SExp* kord = field_of(form, "ord"))
     {
       const auto found = key_of_ord.find(medium(kord->children[1], "kernel ord"));

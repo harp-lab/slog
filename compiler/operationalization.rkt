@@ -324,7 +324,11 @@
            (values (hash-set constants v g)
                    (cons `(syn ,p let ,x ,g) out))]
           [_ (values constants (cons cl out))])))
-    (cons constants+ (cons `(syn ,prov ,tag ,@cls+) rules+))))
+    (define rule+ `(syn ,prov ,tag ,@cls+))
+    ;; this pass rebuilds the syn: transfer the eq?-keyed J1 arm mark
+    (let ([a (planned-rule-arm rule)])
+      (when a (arm-mark! rule+ a)))
+    (cons constants+ (cons rule+ rules+))))
 
 ;; -----------------------------------------------------------------------
 ;; Semijoin filters (Yannakakis-style lookahead pruning).
@@ -1345,6 +1349,12 @@
                           (error 'lower-rule
                                  "count flavor: no classification recorded for the rule at ~a"
                                  (rule-loc-string rule)))))))
+  ;; J1: a normal-flavor arm version carries `(arm n)` in the kind slot
+  ;; (count-kind is #f outside the _count flavor, and the arm generator is
+  ;; gated to the normal flavor, so the two uses never collide)
+  (define kind
+    (or count-kind
+        (let ([a (planned-rule-arm rule0)]) (and a `(arm ,a)))))
   `(crule (pre ,@(map (lambda (cl)
                         (if (neg-clause? cl)
                             (lower-absent cl)
@@ -1354,4 +1364,4 @@
           (body ,@ops)
           (head ,@check-hops ,@emit-hops)
           ,(rule-loc-string rule)
-          ,count-kind))
+          ,kind))

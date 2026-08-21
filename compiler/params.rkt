@@ -56,6 +56,22 @@
 (define fragment-factor-enabled
   (make-parameter (not (getenv "SLOG_NO_FRAGMENT_FACTOR"))))
 
+;; J1 / SLOG_MULTIPLAN (docs/join-planning-assessment.md, "Phased roadmap"):
+;; emit ONE alternative tail order ("arm") for eligible dynamic rule
+;; versions as a sibling rule-def sharing the driver-named base tag; the
+;; canonical plan marks the group with (attrs (arm n)) and the daemon
+;; attaches exactly ONE arm per group (default arm 0 = today's argmax, so
+;; the flag changes which plans EXIST, never which plan runs by default).
+;; Off by default; plan bytes change under the flag, so it joins the job
+;; hash (compile.rkt).  Requires the ABI-2 cohort -- the arm mark rides
+;; exec attrs, which the fixed-8-field ABI-1 grammar cannot carry -- so it
+;; is forced off under SLOG_PLAN_ABI=1.
+(define multiplan-enabled
+  (make-parameter (and (getenv "SLOG_MULTIPLAN")
+                       (not (equal? (getenv "SLOG_MULTIPLAN") ""))
+                       (not (equal? (getenv "SLOG_PLAN_ABI") "1"))
+                       #t)))
+
 ;; T4 slice 4: per-rule selective native emission (t4-contract §3 slice 4).
 ;; Which kernel rule ordinals the native artifact covers; the daemon runs
 ;; the complement interpreted, so coverage is native ∪ interp by

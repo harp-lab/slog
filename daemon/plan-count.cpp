@@ -993,11 +993,38 @@ void attach_normal_rules(Database* db, Stratum* stratum,
   const std::set<std::string> dynamic(plan.dynamic_names.begin(),
                                       plan.dynamic_names.end());
   const auto rules = bind_kernel_plan(plan, *db);
+  // J1 choice groups (docs/join-planning-assessment.md): rule-defs marked
+  // (attrs (arm n)) are alternative join orders of ONE logical rule.  All
+  // arms of a group share the fire identity (the "#N"-stripped tag), so
+  // exactly ONE may attach per group -- the scheduler runs every attached
+  // task, and two arms would double every fire.  V1 selection: arm 0 (the
+  // planner's argmax) unless SLOG_FORCE_ARM names another arm the group
+  // has; the J2 selector replaces this env read with the counts argmin.
+  const auto group_key = [](const SealedRule& sr) {
+    const size_t cut = sr.program.variant.find_first_of("/#");
+    return std::make_pair(sr.program.rule_id,
+                          cut == std::string::npos
+                            ? sr.program.variant
+                            : sr.program.variant.substr(0, cut));
+  };
+  std::map<std::pair<u32, std::string>, std::set<int>> arm_groups;
+  for (const auto& r : rules)
+    if (r->definition().arm >= 0)
+      arm_groups[group_key(r->definition())].insert(r->definition().arm);
+  int want = 0;
+  if (const char* e = std::getenv("SLOG_FORCE_ARM")) want = std::atoi(e);
   for (size_t j = 0; j < rules.size(); ++j)
   {
     if (skip_ords != nullptr && skip_ords->count(static_cast<u32>(j)) != 0)
       continue;
     const auto& rule = rules[j];
+    const SealedRule& sr = rule->definition();
+    if (sr.arm >= 0)
+    {
+      const std::set<int>& arms = arm_groups[group_key(sr)];
+      const int pick = arms.count(want) != 0 ? want : 0;
+      if (sr.arm != pick) continue;
+    }
     const DriverPlan& driver = rule->definition().driver;
     ReadSchedule schedule = ReadSchedule::every;
     if (driver.kind == DriverK::seeded)

@@ -647,7 +647,8 @@
      (define (make-version driver0 exact-old?
                            #:neg-guards [neg-guards default-neg-guards]
                            #:extra-eqs [extra-eqs '()]
-                           #:anti? [anti? #f])
+                           #:anti? [anti? #f]
+                           #:banned-first [banned-first '()])
        (define-values (driver drive-const-eqs)
          (if (and driver0 (maintenance-flavor) (not seeded?))
              (lift-driver-consts driver0 const-vars)
@@ -706,35 +707,44 @@
             (if (negative-maintenance-flavor?) 'new 'old)]
            [else 'full]))
        (define (access-of occ) (join-access occ (view-of occ)))
-       (define-values (body-schedule ground)
+       (define-values (body-schedule ground first-tail)
          (schedule-body-actions driver joins* access-of computes+
                                 (append plain-guards neg-guards eq-guards
                                         extra-eqs drive-const-eqs)
-                                const-vars rule ordinary-table?))
-       ;; every variable a head emits must be ground by now
-       (for ([cl (in-list head-rest)])
-         (define missing (set-subtract (head-in-vars cl) ground))
-         (unless (set-empty? missing)
-           (error 'plan-stratum
-                  "head variable~a ~a never bound in body:\n~a"
-                  (if (> (set-count missing) 1) "s" "")
-                  (string-join (map symbol->string
-                                    (sort (set->list missing) symbol<?)) ", ")
-                  (strip-prov rule))))
-       (define planned-body
-         (for/list ([entry (in-list body-schedule)])
-           (cond
-             [(scalar-join-action? entry)
-              (define access (scalar-join-action-access entry))
-              (define cl (access-clause access))
-              (case (join-access-view access)
-                [(old) `(syn ,(cadr cl) $oldjoin ,cl)]
-                [(new) `(syn ,(cadr cl) $newjoin ,cl)]
-                [(tomb) `(syn ,(cadr cl) $tombjoin ,cl)]
-                [else cl])]
-             [else entry])))
-       `(syn ,prov ,(if seeded? 'seeded-rule 'rule) ,@const-lets ,@planned-body
-             --> ,@head-rest))
+                                const-vars rule ordinary-table?
+                                #:banned-first banned-first))
+       (cond
+         [(not body-schedule)
+          ;; banned mode found no ground-connected alternative first pick:
+          ;; the requested arm does not exist (never an error -- the caller
+          ;; simply emits no arm for this version)
+          (values #f #f)]
+         [else
+          ;; every variable a head emits must be ground by now
+          (for ([cl (in-list head-rest)])
+            (define missing (set-subtract (head-in-vars cl) ground))
+            (unless (set-empty? missing)
+              (error 'plan-stratum
+                     "head variable~a ~a never bound in body:\n~a"
+                     (if (> (set-count missing) 1) "s" "")
+                     (string-join (map symbol->string
+                                       (sort (set->list missing) symbol<?)) ", ")
+                     (strip-prov rule))))
+          (define planned-body
+            (for/list ([entry (in-list body-schedule)])
+              (cond
+                [(scalar-join-action? entry)
+                 (define access (scalar-join-action-access entry))
+                 (define cl (access-clause access))
+                 (case (join-access-view access)
+                   [(old) `(syn ,(cadr cl) $oldjoin ,cl)]
+                   [(new) `(syn ,(cadr cl) $newjoin ,cl)]
+                   [(tomb) `(syn ,(cadr cl) $tombjoin ,cl)]
+                   [else cl])]
+                [else entry])))
+          (values `(syn ,prov ,(if seeded? 'seeded-rule 'rule)
+                        ,@const-lets ,@planned-body --> ,@head-rest)
+                  first-tail)]))
 
      (define (occ-rel occ) (join-rel (join-occurrence-clause occ)))
      (define temp-joins (filter (lambda (occ) (temp? (occ-rel occ))) driver-joins))
@@ -783,9 +793,15 @@
          ;; no joins at all: a fact rule
          [else (list #f)]))
 
+     ;; first-tail-of: version -> the first tail occurrence its greedy
+     ;; schedule consumed (#f for searched/wcoj schedules) -- the ban
+     ;; candidate when the J1 arm generator asks for an alternative order.
+     (define first-tail-of (make-hasheq))
      (define candidates
        (for/list ([driver (in-list drivers)])
-         (cons driver (make-version driver exact-old?))))
+         (define-values (v ft) (make-version driver exact-old?))
+         (hash-set! first-tail-of v ft)
+         (cons driver v)))
      ;; M4N anti-delta versions: one per fully-bound table-negated
      ;; occurrence, driven by the negated relation's staged opposite-sign
      ;; transitions.  The drive row binds the atom's variables (no probe of
@@ -816,10 +832,12 @@
                             (if (negative-maintenance-flavor?)
                                 (if (< j i) '~new '~old)
                                 (if (< j i) '~old '~new)))))
-             (make-version drive-occ exact-old?
-                           #:neg-guards anti-neg-guards
-                           #:extra-eqs drive-eqs
-                           #:anti? #t))
+             (define-values (av _ft)
+               (make-version drive-occ exact-old?
+                             #:neg-guards anti-neg-guards
+                             #:extra-eqs drive-eqs
+                             #:anti? #t))
+             av)
            '()))
      (define (expand-count candidate)
        (match (cdr candidate)
@@ -903,7 +921,49 @@
        (if choose-one-driver?
            (set (cdr (first (sort candidates candidate-better?))))
            (for/set ([candidate (in-list candidates)]) (cdr candidate))))
-     (set-union base-versions (list->set anti-versions))]))
+     ;; J1 / SLOG_MULTIPLAN (docs/join-planning-assessment.md): for eligible
+     ;; dynamic versions, ONE alternative tail order becomes a sibling "arm"
+     ;; version of the same staged rule.  Both versions share prov (hence
+     ;; rid) and the delta driver (hence the base tag), so canonical-plan
+     ;; groups them and mints #N ordinal suffixes; the (arm n) mark rides
+     ;; the crule kind slot into the ABI-2 exec attrs, and the daemon
+     ;; attaches exactly ONE arm per group (default 0 = this argmax).
+     ;; V1 gates: normal flavor only (flavored twins carry no arms until
+     ;; J2b makes verdicts transfer), scalar-only primaries, every body
+     ;; join an ordinary table, and >= 2 tail joins so an order choice
+    ;; exists at all.
+     (define arm-versions
+       (if (and (multiplan-enabled)
+                (not seeded?)
+                (null? temp-joins)
+                (pair? dynamic-joins)
+                (not (count-flavor))
+                (not (maintenance-flavor))
+                (not (delta-entry-flavor))
+                (>= (length joins) 3)
+                (for/and ([occ (in-list joins)])
+                  (ordinary-table? (occ-rel occ))))
+           (for/fold ([acc '()]) ([c (in-list candidates)])
+             (match-define (cons driver version) c)
+             (define ft (hash-ref first-tail-of version #f))
+             (define scalar?
+               (match version
+                 [`(syn ,_ ,_ ,body ... --> ,_ ...)
+                  (not (ormap expand3-action? body))]))
+             (cond
+               [(and ft scalar?)
+                (define-values (alt _aft)
+                  (make-version driver exact-old?
+                                #:banned-first (list ft)))
+                (cond
+                  [alt (arm-mark! version 0)
+                       (arm-mark! alt 1)
+                       (cons alt acc)]
+                  [else acc])]
+               [else acc]))
+           '()))
+     (set-union base-versions (list->set anti-versions)
+                (list->set arm-versions))]))
 
 ;; Rewrite a join clause so no variable repeats, returning the clause and
 ;; the equality guards that restore the constraint.
@@ -1254,8 +1314,18 @@
 ;; last join (see fire-specials).  A join-free rule has nothing that can
 ;; reject a row later, so it keeps the fully-eager order.
 ;; Returns (values schedule ground).
+;; Returns (values schedule ground first-tail): first-tail is the first
+;; tail OCCURRENCE the greedy loop consumed as a scalar expansion (#f for
+;; searched/wcoj schedules, closer-first schedules, and tail-less rules) --
+;; the J1 arm generator's ban candidate.  With #:banned-first non-empty,
+;; the FIRST greedy pick must be a ground-connected occurrence outside the
+;; banned set (an arm's entry must be a real probe, never a Cartesian
+;; scan); when no such occurrence exists the requested alternative order
+;; does not exist and all three values are #f (never an error).  The wcoj
+;; search and the S2 greedy-local closers are suppressed for the banned
+;; first step only -- arms are scalar-entry by construction.
 (define (schedule-body-actions driver joins access-of computes guards ground0 rule
-                               ordinary-table?)
+                               ordinary-table? #:banned-first [banned-first '()])
   ;; the pre phase stays fully eager: nothing row-bound is ground yet, so
   ;; a fireable compute here has constant inputs only -- it cannot be
   ;; speculative on rows, and fact rules keep their pre-slot ops
@@ -1297,6 +1367,7 @@
                guards1))
   (define searched
     (and driver
+         (null? banned-first)
          (wcoj3-enabled)
          computes-flushable?
          (<= (length joins) (wcoj3-search-cap))
@@ -1319,21 +1390,36 @@
        [else
         (values (append initial-schedule (searched-plan-schedule searched)
                         flush)
-                flush-ground)])]
+                flush-ground #f)])]
     [else
   (let loop ([schedule initial-schedule]
              [ground initial-ground]
              [joins pending]
              [computes computes1]
              [guards guards1]
-             [consumed (if driver (list driver) '())])
+             [consumed (if driver (list driver) '())]
+             [banned banned-first]
+             [first-tail #f])
     (cond
       [(pair? joins)
        ;; drain guards, pick the join, then fire exactly the computes it
        ;; consumes (transitively), then the join itself
        (define-values (fired0 ground0+ computes0+ guards0+)
          (fire-specials ground computes guards (set)))
-       (define next (best-occurrence joins ground0+ computes0+ guards0+))
+       (define eligible
+         (if (pair? banned)
+             (filter (lambda (o)
+                       (and (not (memq o banned))
+                            (not (set-empty?
+                                  (set-intersect
+                                   (clause-vars (join-occurrence-clause o))
+                                   ground0+)))))
+                     joins)
+             joins))
+       (cond
+        [(null? eligible) (values #f #f #f)]
+        [else
+       (define next (best-occurrence eligible ground0+ computes0+ guards0+))
        (define next-clause (join-occurrence-clause next))
        ;; S2 (docs/static-join-decomposition.md): the bodies the search
        ;; refuses (over wcoj3-search-cap, or a join-consumed compute) used
@@ -1352,7 +1438,8 @@
            (match-define `(syn ,_ let ,x ,_) cl)
            x))
        (define closer
-         (and (wcoj3-enabled)
+         (and (null? banned)          ; an arm's first step is scalar entry
+              (wcoj3-enabled)
               (> (set-count (set-subtract (clause-vars next-clause)
                                           ground0+))
                  0)
@@ -1373,7 +1460,9 @@
                 (filter (lambda (occ) (not (memq occ arms))) joins)
                 computes0+
                 guards0+
-                (append arms consumed))]
+                (append arms consumed)
+                '()
+                first-tail)]
          [else
           (define-values (fired1 ground1+ computes1+ guards1+)
             (fire-specials ground0+ computes0+ guards0+
@@ -1384,7 +1473,9 @@
                 (remq next joins)
                 computes1+
                 guards1+
-                (cons next consumed))])]
+                (cons next consumed)
+                '()
+                (or first-tail next))])])]
       [else
        ;; flush: every remaining compute and guard, on fully-matched rows
        (define-values (fired ground+ computes+ guards+)
@@ -1398,4 +1489,4 @@
           (error 'plan-stratum
                  "guard over variables never bound in body (~a):\n~a"
                  (map strip-prov guards+) (strip-prov rule))]
-         [else (values (append schedule fired) ground+)])]))]))
+         [else (values (append schedule fired) ground+ first-tail)])]))]))

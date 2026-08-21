@@ -16,6 +16,8 @@
 ;; from here rather than re-deriving them.
 
 (provide
+ ;; J1 arm marks (SLOG_MULTIPLAN)
+ arm-mark! planned-rule-arm
  ;; provenance
  syn? syn-prov strip-prov rule-location-string with-rule-context
  ;; atoms
@@ -44,6 +46,20 @@
  clause-vars clause-in-vars clause-out-vars head-in-vars)
 
 (require "primitives.rkt")
+
+;; -----------------------------------------------------------------------
+;; J1 arm marks (SLOG_MULTIPLAN, docs/join-planning-assessment.md): planned
+;; rule-version syn -> arm ordinal, keyed by object identity.  Minted by
+;; join-planning's arm generator; any downstream pass that REBUILDS a
+;; marked syn must transfer the mark to the new object with arm-mark!
+;; (operationalization's globalize-constants is the one such pass today).
+;; Weak so dropped versions cost nothing.  The mark is planning metadata,
+;; never program content: it must not affect rule-sort-key or any canonical
+;; rule text -- it surfaces only as the crule kind `(arm n)` and the ABI-2
+;; (attrs (arm n)) exec entry.
+(define arm-marks (make-weak-hasheq))
+(define (arm-mark! version n) (hash-set! arm-marks version n))
+(define (planned-rule-arm version) (hash-ref arm-marks version #f))
 
 ;; -----------------------------------------------------------------------
 ;; Provenance

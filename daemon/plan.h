@@ -230,6 +230,11 @@ struct RulePlan
   // cnt_kind_rec), decoded from the variant tag's "/<kind>" suffix under the
   // ABI-1 interim (counted-interp-contract.md); cnt_kind_none otherwise.
   u8 fold_kind = 0;
+  // J1 choice groups (docs/join-planning-assessment.md): this rule-def's
+  // arm ordinal within its (rule_id, base-tag) group, from the ABI-2
+  // (attrs (arm n)) entry; -1 = not an arm.  Arms are alternative join
+  // orders of ONE logical rule -- exactly one arm per group may attach.
+  int arm = -1;
 };
 
 enum class SealErrorK : u8
@@ -364,6 +369,8 @@ struct SealedRule
   // folds; the sign is flavor-static (+1 maint1, -1 maint3neg/maint4neg).
   bool maint = false;
   s8 sign = 1;
+  // J1 choice-group arm ordinal (RulePlan::arm), -1 = not an arm.
+  int arm = -1;
 };
 
 // Flavored seal context (thread 0): which flavored vocabulary a rule may
@@ -578,6 +585,7 @@ inline SealedRule seal_rule(const RulePlan& plan,
   out.fold_kind = plan.fold_kind;
   out.maint = flavor.maint;
   out.sign = flavor.sign;
+  out.arm = plan.arm;
   if (out.preops.empty())
     for (const FilterPlan& filter : plan.prefilters)
       out.preops.emplace_back(filter);
@@ -1709,6 +1717,7 @@ class BoundRule
     }
   };
   mutable CachedSlot fire_slot;
+  mutable CachedSlot work_slot;   // full-variant work-tally slot (workSlotIn)
   void (*error_fn)(Database*, const char*) = &emit_pending_error;
   std::vector<std::shared_ptr<const PrefixCursor>> cursor_prototypes;
   std::vector<std::shared_ptr<const PrefixCursor>> prefilter_prototypes;
@@ -2401,6 +2410,24 @@ public:
     }
     return (u32)slot;
   }
+  // The work-tally slot keys on the FULL variant (no "/#" strip): $stat_work
+  // attributes per rule-def -- per choice-group ARM in particular, which is
+  // exactly the per-arm cost signature the plan selector reads -- while
+  // $stat_fires stays aggregated under the stripped tag (the exact-once
+  // audit's cross-executor identity).  Same slot registry; a rule whose
+  // variant carries no suffix shares one slot for both, harmlessly (fires
+  // and work drain from disjoint vectors).
+  u32 workSlotIn(Database* db) const
+  {
+    s64 slot = work_slot.v.load(std::memory_order_relaxed);
+    if (slot < 0)
+    {
+      slot = (s64)db->fireSlot(stats_loc.c_str(),
+                               sealed.program.variant.c_str());
+      work_slot.v.store(slot, std::memory_order_relaxed);
+    }
+    return (u32)slot;
+  }
   void attach(Database* db, Stratum* stratum,
               ReadSchedule schedule = ReadSchedule::every) const;
 };
@@ -2454,8 +2481,9 @@ public:
         // The attempt's work accounting (cursor ticks + driver rows) merges
         // on the same complete-only protocol; abandoned attempts merge
         // nothing, so measurement runs stay invisible by construction.
+        // Keyed by the FULL variant (workSlotIn): per-arm attribution.
         if (result.work | result.driver_rows)
-          db->bumpWorkSlot(rule->fireSlotIn(db),
+          db->bumpWorkSlot(rule->workSlotIn(db),
                            result.work, result.driver_rows);
         return true;
       }

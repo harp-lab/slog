@@ -241,6 +241,10 @@
                              ;; S3: factoring changes rule sets and plan
                              ;; bytes, so its switch must miss the cache
                              (fragment-factor-enabled)
+                             ;; J1: arm emission adds rule-defs and index
+                             ;; requisitions, so its switch must miss the
+                             ;; cache (the runtime PICK never enters a key)
+                             (multiplan-enabled)
                              ;; T4 slice 4: a partial-coverage artifact must
                              ;; miss the cache, never stand in for a full one
                              (native-rule-coverage)
