@@ -993,38 +993,34 @@ void attach_normal_rules(Database* db, Stratum* stratum,
   const std::set<std::string> dynamic(plan.dynamic_names.begin(),
                                       plan.dynamic_names.end());
   const auto rules = bind_kernel_plan(plan, *db);
-  // J1 choice groups (docs/join-planning-assessment.md): rule-defs marked
-  // (attrs (arm n)) are alternative join orders of ONE logical rule.  All
-  // arms of a group share the fire identity (the "#N"-stripped tag), so
-  // exactly ONE may attach per group -- the scheduler runs every attached
-  // task, and two arms would double every fire.  V1 selection: arm 0 (the
-  // planner's argmax) unless SLOG_FORCE_ARM names another arm the group
-  // has; the J2 selector replaces this env read with the counts argmin.
-  const auto group_key = [](const SealedRule& sr) {
-    const size_t cut = sr.program.variant.find_first_of("/#");
-    return std::make_pair(sr.program.rule_id,
-                          cut == std::string::npos
-                            ? sr.program.variant
-                            : sr.program.variant.substr(0, cut));
-  };
-  std::map<std::pair<u32, std::string>, std::set<int>> arm_groups;
+  // J1/J2 choice groups (docs/join-planning-assessment.md): rule-defs
+  // marked (attrs (arm n gid)) are alternative join orders of ONE logical
+  // rule.  ALL arms attach; each shares its group's ArmGroup cell, and the
+  // task gate in InterpReadTask::work lets exactly one arm do work -- the
+  // J2 counts argmin, resolved lazily at the group's FIRST task execution
+  // (attach time is too early: the between-strata reload re-stages prior
+  // content as deltas, so master counts read zero here).  Dynamic tail
+  // arms share the driver, so they tie to arm 0 until per-iteration
+  // measurement (J2b/V3) can separate them; closed-rule whole-order arms
+  // differ by driver, which is exactly the 100-300x skew class.
+  std::map<s64, std::shared_ptr<ArmGroup>> arm_groups;
   for (const auto& r : rules)
-    if (r->definition().arm >= 0)
-      arm_groups[group_key(r->definition())].insert(r->definition().arm);
-  int want = 0;
-  if (const char* e = std::getenv("SLOG_FORCE_ARM")) want = std::atoi(e);
+  {
+    const SealedRule& sr = r->definition();
+    if (sr.arm < 0) continue;
+    auto& g = arm_groups[sr.arm_gid];
+    if (g == nullptr) g = std::make_shared<ArmGroup>();
+    g->drivers.emplace_back(sr.arm, r->driverRelation());
+    r->arm_group = g;
+  }
+  for (auto& [gid, g] : arm_groups)
+    std::sort(g->drivers.begin(), g->drivers.end(),
+              [](const auto& x, const auto& y) { return x.first < y.first; });
   for (size_t j = 0; j < rules.size(); ++j)
   {
     if (skip_ords != nullptr && skip_ords->count(static_cast<u32>(j)) != 0)
       continue;
     const auto& rule = rules[j];
-    const SealedRule& sr = rule->definition();
-    if (sr.arm >= 0)
-    {
-      const std::set<int>& arms = arm_groups[group_key(sr)];
-      const int pick = arms.count(want) != 0 ? want : 0;
-      if (sr.arm != pick) continue;
-    }
     const DriverPlan& driver = rule->definition().driver;
     ReadSchedule schedule = ReadSchedule::every;
     if (driver.kind == DriverK::seeded)

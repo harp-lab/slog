@@ -1932,6 +1932,23 @@ public:
     return n;
   }
 
+  // Live (non-null) rows currently STAGED in the delta batches -- the
+  // entry-time size signal for content a between-strata reload has
+  // re-staged but not yet interned into the masters (the J2 arm selector's
+  // second read; accelRecordRound pass 1 is the counting precedent).
+  // O(staged bytes); staged deltas at a stratum's entry are exactly the
+  // reloaded content, so tupleCount() + deltaLiveCount() sees a relation's
+  // rows whichever side of the first intern they are on.
+  u64 deltaLiveCount()
+  {
+    if (arity == 0) return 0;
+    u64 live = 0;
+    for (InsertBatch* b : getDelta())
+      for (u64 j = 0; j + arity <= b->usage; j += arity)
+        if (b->data[j] != slog_null) ++live;
+    return live;
+  }
+
   // R2 `uses`: rows whose ANY storage column equals `word`, counted over
   // one full index (each holds the complete tuple set).  0 when index-free.
   u64 countWordUses(u64 word)

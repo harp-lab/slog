@@ -55,10 +55,14 @@
 ;; (operationalization's globalize-constants is the one such pass today).
 ;; Weak so dropped versions cost nothing.  The mark is planning metadata,
 ;; never program content: it must not affect rule-sort-key or any canonical
-;; rule text -- it surfaces only as the crule kind `(arm n)` and the ABI-2
-;; (attrs (arm n)) exec entry.
+;; rule text -- it surfaces only as the crule kind `(arm n gid)` and the
+;; ABI-2 (attrs (arm n gid)) exec entry.  The mark VALUE is an opaque
+;; (arm-index . group-id) pair: gid -- kernel-unique, minted along
+;; plan-stratum's canonical walk -- is the daemon's attach-selection key,
+;; because a group's rule-defs may carry DIFFERENT base tags (closed-rule
+;; whole-order arms differ by driver).
 (define arm-marks (make-weak-hasheq))
-(define (arm-mark! version n) (hash-set! arm-marks version n))
+(define (arm-mark! version v) (hash-set! arm-marks version v))
 (define (planned-rule-arm version) (hash-ref arm-marks version #f))
 
 ;; -----------------------------------------------------------------------

@@ -230,11 +230,14 @@ struct RulePlan
   // cnt_kind_rec), decoded from the variant tag's "/<kind>" suffix under the
   // ABI-1 interim (counted-interp-contract.md); cnt_kind_none otherwise.
   u8 fold_kind = 0;
-  // J1 choice groups (docs/join-planning-assessment.md): this rule-def's
-  // arm ordinal within its (rule_id, base-tag) group, from the ABI-2
-  // (attrs (arm n)) entry; -1 = not an arm.  Arms are alternative join
-  // orders of ONE logical rule -- exactly one arm per group may attach.
+  // J1/J2 choice groups (docs/join-planning-assessment.md): this rule-def's
+  // arm ordinal and its kernel-unique group id, from the ABI-2
+  // (attrs (arm n gid)) entry; -1 = not an arm.  Arms are alternative join
+  // orders of ONE logical rule -- exactly one arm per gid may attach.  The
+  // gid, not the variant, is the group key: closed-rule whole-order arms
+  // carry different drivers, hence different base tags.
   int arm = -1;
+  s64 arm_gid = -1;
 };
 
 enum class SealErrorK : u8
@@ -369,8 +372,9 @@ struct SealedRule
   // folds; the sign is flavor-static (+1 maint1, -1 maint3neg/maint4neg).
   bool maint = false;
   s8 sign = 1;
-  // J1 choice-group arm ordinal (RulePlan::arm), -1 = not an arm.
+  // J1/J2 choice-group arm ordinal + group id (RulePlan), -1 = not an arm.
   int arm = -1;
+  s64 arm_gid = -1;
 };
 
 // Flavored seal context (thread 0): which flavored vocabulary a rule may
@@ -586,6 +590,7 @@ inline SealedRule seal_rule(const RulePlan& plan,
   out.maint = flavor.maint;
   out.sign = flavor.sign;
   out.arm = plan.arm;
+  out.arm_gid = plan.arm_gid;
   if (out.preops.empty())
     for (const FilterPlan& filter : plan.prefilters)
       out.preops.emplace_back(filter);
@@ -1686,6 +1691,54 @@ struct BoundExecution
 
 class InterpReadTask;
 
+// J2 choice-group selection state (docs/join-planning-assessment.md): one
+// per (attrs (arm n gid)) group, shared by the group's BoundRules.  The
+// pick resolves LAZILY at the group's first task execution -- attach time
+// is too early: a between-strata reload re-stages prior content as delta
+// batches, so master counts read zero until the first intern -- and is
+// STICKY for the run (a parked continuation resumes under the pick that
+// admitted it; per-iteration reselection is J2b's hysteresis-gated
+// extension).  The signal, tupleCount() + deltaLiveCount() of each arm's
+// driver, is a pure function of database state read while the phase has
+// the indices frozen, so every racing task computes the same argmin and
+// the CAS is benign.  Ties break to the smallest arm index (the planner's
+// structural argmax).  SLOG_FORCE_ARM overrides (test hook; ignored when
+// it names an arm the group lacks).
+struct ArmGroup
+{
+  std::atomic<int> pick{-1};
+  std::vector<std::pair<int, Relation*>> drivers;  // ascending arm order
+  int select()
+  {
+    const int seen = pick.load(std::memory_order_acquire);
+    if (seen >= 0) return seen;
+    int best = -1;
+    if (const char* e = std::getenv("SLOG_FORCE_ARM"))
+    {
+      const int want = std::atoi(e);
+      for (const auto& [a, r] : drivers)
+        if (a == want) { (void)r; best = want; break; }
+    }
+    if (best < 0)
+    {
+      u64 best_rows = 0;
+      for (const auto& [a, r] : drivers)
+      {
+        const u64 rows =
+          r == nullptr ? 0 : r->tupleCount() + r->deltaLiveCount();
+        if (std::getenv("SLOG_ARM_DEBUG") != nullptr)
+          fprintf(stderr, "[arm] select arm=%d rows=%llu\n",
+                  a, (unsigned long long)rows);
+        if (best < 0 || rows < best_rows) { best = a; best_rows = rows; }
+      }
+    }
+    int expected = -1;
+    pick.compare_exchange_strong(expected, best,
+                                 std::memory_order_acq_rel);
+    return pick.load(std::memory_order_acquire);
+  }
+};
+
 class BoundRule
 {
   SealedRule sealed;
@@ -2395,6 +2448,18 @@ public:
   }
 
   const SealedRule& definition() const { return sealed; }
+  // The bound driver relation (nullptr for once/seeded drivers) -- the J2
+  // arm selector's size-signal source.
+  Relation* driverRelation() const
+  {
+    if (sealed.driver.kind == DriverK::once
+        || sealed.driver.kind == DriverK::seeded)
+      return nullptr;
+    return frame[sealed.driver.relation];
+  }
+  // J2 choice groups: the group's shared selection cell, set by
+  // attach_normal_rules before attach; nullptr for non-arm rules.
+  std::shared_ptr<ArmGroup> arm_group;
   const std::string& statsKey() const { return stats_rule_variant_key; }
   const std::string& statsLoc() const { return stats_loc; }
   const std::string& statsTag() const { return stats_tag; }
@@ -2451,6 +2516,13 @@ public:
 
   bool work() override
   {
+    // J2 choice groups: only the selected arm of a group does work; the
+    // other arms' tasks complete as no-ops (nothing staged, nothing
+    // merged -- their fires and work never existed).  The pick is sticky,
+    // so a parked continuation always re-passes the gate that admitted it.
+    if (rule->arm_group != nullptr
+        && rule->arm_group->select() != rule->definition().arm)
+      return true;
     std::unique_ptr<BoundExecution> execution = parked
       ? std::move(parked) : rule->make_execution(db, bucket);
     // T5 slice (c3): pick up the CURRENT arming (a resumed continuation

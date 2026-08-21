@@ -1,0 +1,30 @@
+;; Miniature card_skew_a (bench/card_skew_a.slog at 1/500 scale) for the
+;; multiplan battery's CLOSED-RULE whole-order arms: same query rule text
+;; as skew_mini_b.slog, A-skew data (fa selective: 5 rows; fb: all 200).
+;; The J2 counts selector must drive from fa here and from fb in the
+;; mirror -- one compiled artifact, opposite picks -- with identical
+;; answers either way.
+
+table (d int)
+table (n2 int)
+table (dom int)
+table (fa int int)
+table (m int int)
+table (n int int)
+table (fb int int)
+table (ans int int)
+
+rule (d 0) (d 1) (d 2) (d 3) (d 4) (d 5) (d 6) (d 7) (d 8) (d 9)
+rule (n2 X) <-- (d A) (d B) (= X (+ (* 10 A) B))
+
+;; dom = 0..199
+rule (dom X) <-- (n2 A) (d C) (< C 2) (= X (+ (* 2 A) C))
+
+;; A-skew data
+rule (fa X 0) <-- (dom X) (< X 5)
+rule (m X 0)  <-- (dom X)
+rule (n 0 Z)  <-- (dom Z) (< Z 40)
+rule (fb Z 0) <-- (dom Z)
+
+;; the query stratum -- byte-identical rule text to skew_mini_b.slog
+rule (ans X Z) <-- (fa X A) (m X Y) (n Y Z) (fb Z B)

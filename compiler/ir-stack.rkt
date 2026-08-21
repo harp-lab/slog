@@ -449,11 +449,12 @@
     ;; `kind` = the rule's counting classification (docs/incremental.md §6.4),
     ;; #f outside the _count flavor: 'input | 'nonrec | 'rec selects which
     ;; sidecar counter the counting sinks bump.  In the NORMAL flavor the
-    ;; slot may instead carry `(arm n)` -- the J1/SLOG_MULTIPLAN choice-group
-    ;; mark (docs/join-planning-assessment.md): this crule is arm n of its
-    ;; (rid, base-tag) group, never natively covered, and the daemon
-    ;; attaches exactly one arm per group.  Arm kinds never suffix the
-    ;; variant tag (fire identity is the shared base tag).
+    ;; slot may instead carry `(arm n gid)` -- the J1/SLOG_MULTIPLAN
+    ;; choice-group mark (docs/join-planning-assessment.md): this crule is
+    ;; arm n of choice group gid (kernel-unique), never natively covered,
+    ;; and the daemon attaches exactly one arm per gid.  Arm kinds never
+    ;; suffix the variant tag; NOTE closed-rule whole-order arms carry
+    ;; different DRIVERS, so a group's base tags may legitimately differ.
     [`(crule (pre ,pre ...) ,driver (body ,body ...) (head ,head ...) ,loc ,kind)
      (and (andmap c-op? pre)
           (c-driver? driver)
@@ -462,7 +463,8 @@
           (or (string? loc) (not loc))
           (and (or (memq kind '(#f input nonrec rec))
                    (match kind
-                     [`(arm ,(? exact-nonnegative-integer?)) #t]
+                     [`(arm ,(? exact-nonnegative-integer?)
+                            ,(? exact-nonnegative-integer?)) #t]
                      [_ #f]))
                #t))]
     [_ #f]))

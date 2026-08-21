@@ -144,7 +144,7 @@
     ;; among sibling rule-defs, and covering only SOME arms of a group
     ;; would let the coverage complement attach the others alongside
     ;; (docs/join-planning-assessment.md, "tiered native" row).  J3 revisits.
-    [(match (crule-kind cr) [`(arm ,_) #t] [_ #f]) #f]
+    [(match (crule-kind cr) [`(arm ,_ ,_) #t] [_ #f]) #f]
     [else
      (case (native-rule-coverage)
        [(none) #f]

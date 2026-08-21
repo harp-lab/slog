@@ -1,0 +1,27 @@
+;; Miniature card_skew_b: the mirror of skew_mini_a.slog (fb selective,
+;; fa all 200).  Identical query rule text; the J2 counts selector must
+;; drive from fb here.
+
+table (d int)
+table (n2 int)
+table (dom int)
+table (fa int int)
+table (m int int)
+table (n int int)
+table (fb int int)
+table (ans int int)
+
+rule (d 0) (d 1) (d 2) (d 3) (d 4) (d 5) (d 6) (d 7) (d 8) (d 9)
+rule (n2 X) <-- (d A) (d B) (= X (+ (* 10 A) B))
+
+;; dom = 0..199
+rule (dom X) <-- (n2 A) (d C) (< C 2) (= X (+ (* 2 A) C))
+
+;; B-skew data (mirror of A)
+rule (fa X 0) <-- (dom X)
+rule (m X 0)  <-- (dom X) (< X 40)
+rule (n 0 Z)  <-- (dom Z)
+rule (fb Z 0) <-- (dom Z) (< Z 5)
+
+;; the query stratum -- byte-identical rule text to skew_mini_a.slog
+rule (ans X Z) <-- (fa X A) (m X Y) (n Y Z) (fb Z B)

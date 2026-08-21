@@ -1349,12 +1349,13 @@
                           (error 'lower-rule
                                  "count flavor: no classification recorded for the rule at ~a"
                                  (rule-loc-string rule)))))))
-  ;; J1: a normal-flavor arm version carries `(arm n)` in the kind slot
+  ;; J1: a normal-flavor arm version carries `(arm n gid)` in the kind slot
   ;; (count-kind is #f outside the _count flavor, and the arm generator is
   ;; gated to the normal flavor, so the two uses never collide)
   (define kind
     (or count-kind
-        (let ([a (planned-rule-arm rule0)]) (and a `(arm ,a)))))
+        (let ([a (planned-rule-arm rule0)])
+          (and a `(arm ,(car a) ,(cdr a))))))
   `(crule (pre ,@(map (lambda (cl)
                         (if (neg-clause? cl)
                             (lower-absent cl)

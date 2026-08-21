@@ -45,6 +45,18 @@
 (require "ir-shared.rkt")
 (require "join-actions.rkt")
 
+;; J1/J2 arm choice-group ids: kernel-unique and deterministic (minted
+;; along plan-stratum's canonical walk; the box is parameterized per
+;; plan-stratum call).  The gid -- not the variant spelling -- is the
+;; daemon's attach-selection group key: closed-rule whole-order arms have
+;; DIFFERENT drivers, hence different base tags, so no spelling groups them.
+(define current-arm-gid-box (make-parameter #f))
+(define (mint-arm-gid!)
+  (define b (current-arm-gid-box))
+  (define g (unbox b))
+  (set-box! b (add1 g))
+  g)
+
 ;; -----------------------------------------------------------------------
 ;; Clause classification.
 
@@ -305,6 +317,7 @@
   ;; spellings run to run.
   (define sorted-rules (canonical-rule-order (set->list rules)))
   (define planned
+    (parameterize ([current-arm-gid-box (box 0)])
     (for/fold ([acc (set)]) ([rule (in-list sorted-rules)])
      (with-rule-context rule (lambda ()
       (count-classify! rule)
@@ -352,7 +365,7 @@
                     (if needs-seeded?
                         (plan-rule-versions staged-rule dynamic? temp? lattice? ordinary-table? '()
                                             #:seeded? #t)
-                        (set))))))))
+                        (set)))))))))
   (cons planned (unbox rel-env-box)))
 
 ;; -----------------------------------------------------------------------
@@ -917,10 +930,63 @@
                [(lexicographic<? pb pa) #f]
                [else (< (if da (join-occurrence-id da) -1)
                         (if db (join-occurrence-id db) -1))])])]))
+     (define sorted-candidates
+       (and choose-one-driver? (sort candidates candidate-better?)))
      (define base-versions
        (if choose-one-driver?
-           (set (cdr (first (sort candidates candidate-better?))))
+           (set (cdr (first sorted-candidates)))
            (for/set ([candidate (in-list candidates)]) (cdr candidate))))
+     ;; shared J1/J2 arm-eligibility gates: normal flavor, scalar-only
+     ;; version bodies over ordinary tables, >= 2 tail joins
+     (define (arm-flavor-ok?)
+       (and (multiplan-enabled)
+            (not (count-flavor))
+            (not (maintenance-flavor))
+            (not (delta-entry-flavor))
+            (>= (length joins) 3)
+            (for/and ([occ (in-list joins)])
+              (ordinary-table? (occ-rel occ)))))
+     (define (scalar-version? version)
+       (match version
+         [`(syn ,_ ,_ ,body ... --> ,_ ...)
+          (not (ormap expand3-action? body))]))
+     ;; J2 closed-rule WHOLE-ORDER arms: the drive-from-each candidates the
+     ;; planner already enumerated, retained one per DISTINCT driver
+     ;; relation in rank order, capped at 4 (the ratified candidate-set
+     ;; policy: which driver is small is exactly what compile time cannot
+     ;; know, so the runtime argmin must see every driver; same-driver
+     ;; alternates differ only in tail, which entry counts cannot
+     ;; separate).  The arms carry different base tags (all:<driver>), so
+     ;; per-key $stat_fires varies with the pick -- the invariant is the
+     ;; per-loc TOTAL; gates must sum over tags.
+     (define closed-arm-versions
+       (cond
+         [(and choose-one-driver? (not seeded?) (arm-flavor-ok?)
+               sorted-candidates (pair? (cdr sorted-candidates))
+               (car (first sorted-candidates))
+               (scalar-version? (cdr (first sorted-candidates))))
+          (define primary (first sorted-candidates))
+          (define alts
+            (let loop ([cs (rest sorted-candidates)]
+                       [seen (set (occ-rel (car primary)))]
+                       [n 1] [acc '()])
+              (cond
+                [(or (null? cs) (>= n 4)) (reverse acc)]
+                [(and (car (car cs))
+                      (not (set-member? seen (occ-rel (car (car cs)))))
+                      (scalar-version? (cdr (car cs))))
+                 (loop (cdr cs) (set-add seen (occ-rel (car (car cs))))
+                       (add1 n) (cons (car cs) acc))]
+                [else (loop (cdr cs) seen n acc)])))
+          (cond
+            [(pair? alts)
+             (define gid (mint-arm-gid!))
+             (arm-mark! (cdr primary) (cons 0 gid))
+             (for ([c (in-list alts)] [i (in-naturals 1)])
+               (arm-mark! (cdr c) (cons i gid)))
+             (map cdr alts)]
+            [else '()])]
+         [else '()]))
      ;; J1 / SLOG_MULTIPLAN (docs/join-planning-assessment.md): for eligible
      ;; dynamic versions, ONE alternative tail order becomes a sibling "arm"
      ;; version of the same staged rule.  Both versions share prov (hence
@@ -933,37 +999,29 @@
      ;; join an ordinary table, and >= 2 tail joins so an order choice
     ;; exists at all.
      (define arm-versions
-       (if (and (multiplan-enabled)
-                (not seeded?)
+       (if (and (not seeded?)
                 (null? temp-joins)
                 (pair? dynamic-joins)
-                (not (count-flavor))
-                (not (maintenance-flavor))
-                (not (delta-entry-flavor))
-                (>= (length joins) 3)
-                (for/and ([occ (in-list joins)])
-                  (ordinary-table? (occ-rel occ))))
+                (arm-flavor-ok?))
            (for/fold ([acc '()]) ([c (in-list candidates)])
              (match-define (cons driver version) c)
              (define ft (hash-ref first-tail-of version #f))
-             (define scalar?
-               (match version
-                 [`(syn ,_ ,_ ,body ... --> ,_ ...)
-                  (not (ormap expand3-action? body))]))
              (cond
-               [(and ft scalar?)
+               [(and ft (scalar-version? version))
                 (define-values (alt _aft)
                   (make-version driver exact-old?
                                 #:banned-first (list ft)))
                 (cond
-                  [alt (arm-mark! version 0)
-                       (arm-mark! alt 1)
+                  [alt (define gid (mint-arm-gid!))
+                       (arm-mark! version (cons 0 gid))
+                       (arm-mark! alt (cons 1 gid))
                        (cons alt acc)]
                   [else acc])]
                [else acc]))
            '()))
      (set-union base-versions (list->set anti-versions)
-                (list->set arm-versions))]))
+                (list->set arm-versions)
+                (list->set closed-arm-versions))]))
 
 ;; Rewrite a join clause so no variable repeats, returning the clause and
 ;; the equality guards that restore the constraint.

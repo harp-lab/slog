@@ -279,7 +279,7 @@
 ;; drivers are "delta:<rel>" when the relation is stratum-dynamic and
 ;; "all:<rel>" otherwise (emit-cpp's static?); count-flavor kinds suffix.
 (define (arm-kind? kind)
-  (match kind [`(arm ,_) #t] [_ #f]))
+  (match kind [`(arm ,_ ,_) #t] [_ #f]))
 
 (define (base-tag driver kind dynamic-rels)
   (define base
@@ -489,12 +489,15 @@
   (for ([a (in-list attrs)])
     (match a
       [`(fold ,(? (lambda (k) (memq k fold-kind-vocabulary)))) (void)]
-      ;; (arm n): the J1/SLOG_MULTIPLAN choice-group mark -- this rule-def
-      ;; is arm n of its (rid, base-tag) group and the daemon attaches
-      ;; exactly one arm per group (docs/join-planning-assessment.md)
-      [`(arm ,(? exact-nonnegative-integer?)) (void)]
+      ;; (arm n gid): the J1/SLOG_MULTIPLAN choice-group mark -- this
+      ;; rule-def is arm n of choice group gid, and the daemon attaches
+      ;; exactly one arm per gid (docs/join-planning-assessment.md).  The
+      ;; gid, not the variant spelling, is the group key: closed-rule
+      ;; whole-order arms carry different drivers, hence different tags.
+      [`(arm ,(? exact-nonnegative-integer?)
+             ,(? exact-nonnegative-integer?)) (void)]
       [_ (error 'canonicalize-cprog
-                "unknown rule attribute ~s (closed vocabulary: (fold ~a) | (arm n))"
+                "unknown rule attribute ~s (closed vocabulary: (fold ~a) | (arm n gid))"
                 a fold-kind-vocabulary)])))
 
 ;; Name-blind AND variable-blind structural text of a crule, for the order

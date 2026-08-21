@@ -1243,7 +1243,8 @@ std::vector<DecodedKernelPlan> parse_kernel_cohort(std::string_view input)
     text += ")";
     // rules: the dense ordinal becomes the DebugMap's RuleId, and the
     // slot-relative variant becomes its display spelling
-    std::map<u64, int> arm_of;   // J1 choice groups: rule ordinal -> arm
+    // J1/J2 choice groups: rules-list position -> (arm ordinal, group id)
+    std::map<u64, std::pair<int, s64>> arm_of;
     text += " (rules";
     for (size_t i = 1; i < rules->children.size(); ++i)
     {
@@ -1272,10 +1273,11 @@ std::vector<DecodedKernelPlan> parse_kernel_cohort(std::string_view input)
           for (size_t a = 1; a < fs[j].children.size(); ++a)
           {
             const SExp& attr = fs[j].children[a];
-            if (attr.kind != SExp::K::list || attr.children.size() != 2
+            if (attr.kind != SExp::K::list || attr.children.empty()
                 || attr.children[0].kind != SExp::K::atom)
               syntax(attr, "cohort rule: unknown rule attribute");
-            if (attr.children[0].text == "fold")
+            if (attr.children[0].text == "fold"
+                && attr.children.size() == 2)
             {
               const std::string fold = atom(attr.children[1], "fold kind");
               if (fold != "input" && fold != "nonrec" && fold != "rec")
@@ -1286,13 +1288,15 @@ std::vector<DecodedKernelPlan> parse_kernel_cohort(std::string_view input)
                 syntax(attr, "cohort rule: fold attribute disagrees with the "
                              "variant spelling");
             }
-            else if (attr.children[0].text == "arm")
+            else if (attr.children[0].text == "arm"
+                     && attr.children.size() == 3)
             {
               const u64 n = small(attr.children[1], "arm ordinal");
+              const u64 g = medium(attr.children[2], "arm group id");
               // keyed by POSITION in the cohort's rules list -- the rebuilt
               // ABI-1 text preserves that order, so it is exactly the index
               // into the parsed RulePlan vector
-              arm_of[i - 1] = (int)n;
+              arm_of[i - 1] = {(int)n, (s64)g};
             }
             else
               syntax(attr, "cohort rule: unknown rule attribute");
@@ -1317,11 +1321,12 @@ std::vector<DecodedKernelPlan> parse_kernel_cohort(std::string_view input)
     // Re-apply the J1 arm ordinals the ABI-1 rewrite could not carry: the
     // rebuilt text lists rule-defs in cohort order, so the position an
     // attrs entry was recorded under is its index in the parsed vector.
-    for (const auto& [pos, arm] : arm_of)
+    for (const auto& [pos, av] : arm_of)
     {
       if (pos >= out.back().rules.size())
         syntax(*rules, "cohort rule: arm attribute position out of range");
-      out.back().rules[pos].plan.arm = arm;
+      out.back().rules[pos].plan.arm = av.first;
+      out.back().rules[pos].plan.arm_gid = av.second;
     }
     if (const SExp* kord = field_of(form, "ord"))
     {
