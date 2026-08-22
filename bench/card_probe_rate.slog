@@ -1,0 +1,59 @@
+;; CARD-PROBE-RATE: the all-capped rate case.  Every driver row is
+;; UNIFORMLY ~100x+ costlier under the a-first arm (each K fans through 20
+;; shared X's x 5 shared M's before the closing check rejects) than under
+;; the c-first arm (~5 ops).  With 8k-row deltas, BOTH arms' probes cap at
+;; both budget rungs, so raw probe meters tie -- the selector must compare
+;; PROGRESS (driver rows traversed for the same budget) to see that the
+;; c-first probe got ~40x further.  No tripwire fires here: under the
+;; correct pick nothing is anomalous, and under the wrong pick the run
+;; matches its own (bad) baseline -- this is a SELECTION case, the
+;; rate-rule complement to card_probe_blind's rescue case.
+;;
+;; Study lines: unforced SLOG_MULTIPLAN=1 (must pick the c-first arm) vs
+;; SLOG_FORCE_ARM=0 (the uniformly-slow arm).
+
+table (d int)
+table (n2 int)
+table (n4 int)
+table (n8k int)
+table (kk int)
+table (xc int)
+table (mc int)
+table (zdead int)
+table (a int int int)
+table (b1 int int int)
+table (b2 int int)
+table (c int int int)
+table (walkg int)
+
+rule (d 0) (d 1) (d 2) (d 3) (d 4) (d 5) (d 6) (d 7) (d 8) (d 9)
+rule (n2 X) <-- (d A) (d B) (= X (+ (* 10 A) B))
+rule (n4 X) <-- (n2 A) (n2 B) (= X (+ (* 100 A) B))
+rule (n8k X) <-- (n4 X) (< X 8000)
+
+;; every live walk key: K = 8000*I + J for I<40, J<8000
+rule (kk K) <-- (n2 I) (< I 40) (n8k J) (= K (+ (* 8000 I) J))
+
+;; the shared fan sets: 20 X's, 5 M's, 100 dead Z's
+rule (xc X) <-- (n2 I) (< I 20) (= X (+ 7000000 I))
+rule (mc M) <-- (n2 I) (< I 5)  (= M (+ 8000000 I))
+rule (zdead Z) <-- (n2 I) (= Z (+ 9000000 I))
+
+;; the singleton chain, every K: a(K)->x, b1(x)->m, b2(m)->z, c(K,z)
+rule (a K X 0)  <-- (kk K) (= X (+ 1000000 K))
+rule (b1 X M 0) <-- (kk K) (= X (+ 1000000 K)) (= M (+ 3000000 K))
+rule (b2 M Z)   <-- (kk K) (= M (+ 3000000 K)) (= Z (+ 5000000 K))
+rule (c K Z 0)  <-- (kk K) (= Z (+ 5000000 K))
+
+;; the uniform a-side fan: EVERY K also reaches the shared 20x5x100
+;; block, whose b2 rows lead to dead Z's the closing check rejects --
+;; ~20k meter per row under the a-first arm vs ~25 under c-first
+rule (a K X 0)  <-- (kk K) (xc X)
+rule (b1 X M 0) <-- (xc X) (mc M)
+rule (b2 M Z)   <-- (mc M) (zdead Z)
+
+;; the parallel walk (8k rows per iteration, 40 iterations)
+rule (walkg J) <-- (n8k J)
+rule (walkg K2) <-- (walkg K) (< K 312000)
+                    (a K X P) (b1 X M R) (b2 M Z) (c K Z Q)
+                    (= K2 (+ K 8000))

@@ -1,0 +1,71 @@
+;; CARD-PROBE-LATE: card_probe_blind with TWO hidden monsters, at
+;; iterations 20 and 33 (K = 419999 and 679998) -- the double-rescue case:
+;; each monster's iteration must trip and transplant INDEPENDENTLY (the
+;; per-epoch pick and trip state reset between them), so this validates
+;; repeated mid-fixpoint rescues as the IDB's shape shifts across
+;; iterations.
+;;
+;; A parallel walk steps 20,000 rows per iteration for 40 iterations, the
+;; row key K encoding (I,J) as 20000*I+J:
+;;
+;;   (walkg K2) <-- (walkg K) (< K 780000)
+;;                  (a K X P) (b1 X M R) (b2 M Z) (c K Z Q)
+;;                  (= K2 (+ K 20000))
+;;
+;; Every K has a singleton chain both ways; ONE driver row -- K = 419999,
+;; i.e. (I,J) = (20,19999) -- hangs a 1000 x 40 x 50000 = 2e9-probe wing
+;; off the a-first tail (the c-first tail stays ~5 ops there).  The
+;; per-iteration probe cannot see it: 20k clean rows x ~5 meter cap BOTH
+;; arms at every budget rung, so they tie blind -- and a hash-window
+;; sample would miss one row in 20k with high probability anyway.  Only
+;; detection DURING execution (the rate tripwire) plus a driver-boundary /
+;; mid-subtree switch (the R1 rescue) can save the monster iteration.
+;;
+;; Study lines: unforced SLOG_MULTIPLAN=1 (expected: eats the wing) vs
+;; SLOG_FORCE_ARM=1 (the c-first oracle).
+
+table (d int)
+table (n2 int)
+table (n4 int)
+table (n20k int)
+table (kk int)
+table (xw int)
+table (mw int)
+table (zw int)
+table (a int int int)
+table (b1 int int int)
+table (b2 int int)
+table (c int int int)
+table (walkg int)
+
+rule (d 0) (d 1) (d 2) (d 3) (d 4) (d 5) (d 6) (d 7) (d 8) (d 9)
+rule (n2 X) <-- (d A) (d B) (= X (+ (* 10 A) B))
+rule (n4 X) <-- (n2 A) (n2 B) (= X (+ (* 100 A) B))
+rule (n20k X) <-- (n4 A) (d C) (< C 2) (= X (+ (* 2 A) C))
+
+;; every live walk key: K = 20000*I + J for I<40, J<20000
+rule (kk K) <-- (n2 I) (< I 40) (n20k J) (= K (+ (* 20000 I) J))
+
+;; wing sets: 1000 X's, 40 M's, 50000 Z's
+rule (xw X) <-- (n4 I) (< I 1000) (= X (+ 7000000 I))
+rule (mw M) <-- (n2 I) (< I 40)   (= M (+ 8000000 I))
+rule (zw Z) <-- (n4 A) (d C) (< C 5) (= Z (+ 9000000 (+ (* 5 A) C)))
+
+;; the singleton chain, every K: a(K)->x, b1(x)->m, b2(m)->z, c(K,z)
+rule (a K X 0)  <-- (kk K) (= X (+ 1000000 K))
+rule (b1 X M 0) <-- (kk K) (= X (+ 1000000 K)) (= M (+ 3000000 K))
+rule (b2 M Z)   <-- (kk K) (= M (+ 3000000 K)) (= Z (+ 5000000 K))
+rule (c K Z 0)  <-- (kk K) (= Z (+ 5000000 K))
+
+;; the monster wings: driver rows K=419999 (iter 20) and K=679998
+;; (iter 33), a-side only
+rule (a 419999 X 0) <-- (xw X)
+rule (a 679998 X 0) <-- (xw X)
+rule (b1 X M 0)     <-- (xw X) (mw M)
+rule (b2 M Z)       <-- (mw M) (zw Z)
+
+;; the parallel walk (20k rows per iteration, 40 iterations)
+rule (walkg J) <-- (n20k J)
+rule (walkg K2) <-- (walkg K) (< K 780000)
+                    (a K X P) (b1 X M R) (b2 M Z) (c K Z Q)
+                    (= K2 (+ K 20000))

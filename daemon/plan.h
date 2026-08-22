@@ -1723,18 +1723,47 @@ struct ArmGroup
   std::atomic<u64> epoch_done{~0ull};
   std::atomic<u64> epoch_claim{~0ull};
   std::atomic<int> pick{-1};
-  // ascending arm order.  Raw pointers to the OWNED task copies: attach()
-  // clones each bound rule into a shared_ptr its tasks hold for the
-  // stratum's lifetime and registers that clone here (adopt) -- the
-  // bind_kernel_plan originals die when attach_normal_rules returns.  The
-  // group is reachable only from those same-stratum copies, so member
-  // lifetimes coincide; raw avoids a rule<->group shared_ptr cycle.
-  std::vector<std::pair<int, const BoundRule*>> arms;
-  void adopt(int arm, const BoundRule* rule)
+  // V4 rescue baseline: the WINNING arm's probe measurement from this
+  // epoch's selection (meter units over driver rows probed).  pick_rows
+  // == 0 means the pick was screen-only (no probe ran): the tripwire then
+  // uses the flat C_init ceiling instead of a rate.
+  std::atomic<u64> pick_meter{0};
+  std::atomic<u64> pick_rows{0};
+  // ascending arm order.  WEAK pointers to the OWNED task copies attach()
+  // registers (adopt): rules hold the group shared, so shared members
+  // would cycle and leak across activations; a lock() always succeeds
+  // while any member task is alive -- the only callers ARE member tasks.
+  std::vector<std::pair<int, std::weak_ptr<const BoundRule>>> arms;
+  void adopt(int arm, std::shared_ptr<const BoundRule> rule)
   {
-    arms.emplace_back(arm, rule);
+    arms.emplace_back(arm, std::weak_ptr<const BoundRule>(rule));
     std::sort(arms.begin(), arms.end(),
               [](const auto& x, const auto& y) { return x.first < y.first; });
+  }
+  // V4 tripwire (design R5, docs/join-planning-assessment.md): the meter
+  // ceiling for one task's attempt.  Rate-normalized against the epoch's
+  // probe baseline chat = pick_meter/pick_rows -- a task trips only when
+  // its per-row cost exceeds k * chat past the floor, never merely for
+  // being big -- with a flat C_init when no probe ran this epoch.  All
+  // inputs are pure functions of database state; slice boundaries are
+  // deterministic transition quanta, so the trip point is replayable.
+  u64 tripCeiling(u64 rows) const
+  {
+    static const u64 floor_ = [] {
+      const char* e = std::getenv("SLOG_TRIP_FLOOR");
+      const long v = e ? std::atol(e) : 0;
+      return v > 0 ? (u64)v : 1000000ull;
+    }();
+    static const u64 k_ = [] {
+      const char* e = std::getenv("SLOG_TRIP_K");
+      const long v = e ? std::atol(e) : 0;
+      return v > 0 ? (u64)v : 8ull;
+    }();
+    const u64 pr = pick_rows.load(std::memory_order_relaxed);
+    if (pr == 0) return 100000000ull;   // C_init: unmeasured pick
+    const u64 chat = std::max<u64>(
+      1, (pick_meter.load(std::memory_order_relaxed) + pr - 1) / pr);
+    return floor_ + k_ * chat * std::max<u64>(rows, 1);
   }
   int currentPick(Database* db);   // defined after BoundRule
   int selectPick(Database* db);
@@ -2543,65 +2572,83 @@ std::vector<std::shared_ptr<BoundRule>> bind_kernel_plan(
 // arm's own task partition (every bucket) until done or capped.  Returns
 // min(actual, budget): a capped arm reads as exactly `budget`, which is
 // all the selector needs -- worse than any uncapped sibling.
-inline u64 probe_arm_meter(const BoundRule& rule, Database* db, u64 budget)
+// Meter one arm over ONE bucket, optionally fast-forwarded past `skip`
+// already-processed driver rows (the rescue's remainder probe).
+inline u64 probe_arm_bucket_meter(const BoundRule& rule, Database* db,
+                                  u16 bucket, u64 skip, u64 budget,
+                                  u64* rows_out = nullptr)
+{
+  auto ex = rule.make_probe_execution(db, bucket);
+  if (skip > 0) ex->machine->skip_driver(skip);
+  for (;;)
+  {
+    const StopReason why = ex->machine->run(budget, budget);
+    const Attempt& a = ex->machine->result();
+    const u64 meter = a.work + a.driver_rows;
+    if (why == StopReason::complete || meter >= budget)
+    {
+      if (rows_out != nullptr) *rows_out += a.driver_rows;
+      return meter > budget ? budget : meter;
+    }
+    // quantum/cursor pause below the remaining budget: keep metering
+  }
+}
+
+inline u64 probe_arm_meter(const BoundRule& rule, Database* db, u64 budget,
+                           u64* rows_out = nullptr)
 {
   u64 spent = 0;
   const u32 buckets = rule.task_count();
   for (u32 b = 0; b < buckets && spent < budget; ++b)
-  {
-    auto ex = rule.make_probe_execution(db, (u16)b);
-    for (;;)
-    {
-      const u64 left = budget - spent;
-      const StopReason why = ex->machine->run(left, left);
-      const Attempt& a = ex->machine->result();
-      const u64 meter = a.work + a.driver_rows;
-      if (why == StopReason::complete || spent + meter >= budget)
-      {
-        spent += meter;
-        break;
-      }
-      // quantum/cursor pause below the remaining budget: keep metering
-    }
-  }
+    spent += probe_arm_bucket_meter(rule, db, (u16)b, 0, budget - spent,
+                                    rows_out);
   return spent > budget ? budget : spent;
 }
 
 inline int ArmGroup::selectPick(Database* db)
 {
   const bool dbg = std::getenv("SLOG_ARM_DEBUG") != nullptr;
+  pick_meter.store(0, std::memory_order_relaxed);
+  pick_rows.store(0, std::memory_order_relaxed);
+  // pin the member rules for the duration of the selection
+  std::vector<std::pair<int, std::shared_ptr<const BoundRule>>> live;
+  for (const auto& [a, w] : arms)
+    if (auto r = w.lock()) live.emplace_back(a, std::move(r));
+  if (live.empty()) return 0;
   if (const char* e = std::getenv("SLOG_FORCE_ARM"))
   {
     const int want = std::atoi(e);
-    for (const auto& [a, r] : arms)
+    for (const auto& [a, r] : live)
       if (a == want) { (void)r; return want; }
   }
   // 1. the counts screen: keep arms within 2x of the smallest driver
-  std::vector<u64> rows(arms.size());
+  std::vector<u64> rows(live.size());
   u64 cmin = ~0ull;
-  for (size_t i = 0; i < arms.size(); ++i)
+  for (size_t i = 0; i < live.size(); ++i)
   {
-    Relation* r = arms[i].second->driverRelation();
+    Relation* r = live[i].second->driverRelation();
     rows[i] = r == nullptr ? 0 : r->tupleCount() + r->deltaLiveCount();
     if (rows[i] < cmin) cmin = rows[i];
   }
   std::vector<size_t> cand;
-  for (size_t i = 0; i < arms.size(); ++i)
+  for (size_t i = 0; i < live.size(); ++i)
     if (rows[i] <= 2 * cmin) cand.push_back(i);
   if (dbg)
-    for (size_t i = 0; i < arms.size(); ++i)
+    for (size_t i = 0; i < live.size(); ++i)
     {
-      Relation* r = arms[i].second->driverRelation();
+      Relation* r = live[i].second->driverRelation();
       fprintf(stderr, "[arm] screen arm=%d driver=%s full=%llu delta=%llu%s\n",
-              arms[i].first, r == nullptr ? "<none>" : r->getName().c_str(),
+              live[i].first, r == nullptr ? "<none>" : r->getName().c_str(),
               (unsigned long long)(r ? r->tupleCount() : 0),
               (unsigned long long)(r ? r->deltaLiveCount() : 0),
               rows[i] <= 2 * cmin ? " (candidate)" : "");
     }
-  if (cand.size() == 1) return arms[cand[0]].first;
+  if (cand.size() == 1) return live[cand[0]].first;
   // 2. bounded emission-free probes of the near-tied arms; if every
   // candidate hits the cap, escalate the budget once (successive
-  // halving's first rung) before settling for the smallest arm index
+  // halving's first rung) before settling for the smallest arm index.
+  // The winner's (meter, rows-probed) become the epoch's tripwire
+  // baseline (tripCeiling above).
   u64 budget = 4096;
   if (const char* e = std::getenv("SLOG_MEASURE_BUDGET"))
   {
@@ -2611,22 +2658,52 @@ inline int ArmGroup::selectPick(Database* db)
   for (int round = 0; round < 2; ++round)
   {
     size_t best = cand[0];
-    u64 best_meter = ~0ull;
+    u64 best_meter = ~0ull, best_rows = 0;
     bool all_capped = true;
-    for (size_t i : cand)
+    std::vector<u64> pmeter(cand.size()), prows_v(cand.size());
+    for (size_t ci = 0; ci < cand.size(); ++ci)
     {
-      const u64 m = probe_arm_meter(*arms[i].second, db, budget);
+      const size_t i = cand[ci];
+      u64 prows = 0;
+      const u64 m = probe_arm_meter(*live[i].second, db, budget, &prows);
+      pmeter[ci] = m;
+      prows_v[ci] = prows;
       if (dbg)
-        fprintf(stderr, "[arm] probe arm=%d meter=%llu budget=%llu\n",
-                arms[i].first, (unsigned long long)m,
-                (unsigned long long)budget);
+        fprintf(stderr, "[arm] probe arm=%d meter=%llu rows=%llu budget=%llu\n",
+                live[i].first, (unsigned long long)m,
+                (unsigned long long)prows, (unsigned long long)budget);
       if (m < budget) all_capped = false;
-      if (m < best_meter) { best = i; best_meter = m; }
+      if (m < best_meter) { best = i; best_meter = m; best_rows = prows; }
     }
-    if (!all_capped || round == 1) return arms[best].first;
+    if (all_capped && round == 1)
+    {
+      // every candidate capped at both budget rungs: raw meters tie, but
+      // PROGRESS does not -- the arm that traversed the most driver rows
+      // for the same budget has the cheapest per-row rate.  Ties still
+      // break to the smallest arm (cand is in ascending arm order).
+      size_t bp = cand[0];
+      u64 bp_rows = 0;
+      for (size_t ci = 0; ci < cand.size(); ++ci)
+        if (prows_v[ci] > bp_rows) { bp = cand[ci]; bp_rows = prows_v[ci]; }
+      best = bp;
+      best_meter = budget;
+      best_rows = bp_rows;
+    }
+    if (!all_capped || round == 1)
+    {
+      // baseline: the winning probe's meter over the driver rows it
+      // actually pulled.  A capped probe's rate is its observed PREFIX
+      // rate -- exactly the clean-row baseline the tripwire wants (the
+      // cap is why a hidden monster can still trip the real run).
+      pick_meter.store(best_meter == ~0ull ? 0 : best_meter,
+                       std::memory_order_relaxed);
+      pick_rows.store(best_meter == ~0ull ? 0 : best_rows,
+                      std::memory_order_relaxed);
+      return live[best].first;
+    }
     budget *= 8;
   }
-  return arms[cand[0]].first;   // unreachable
+  return live[cand[0]].first;   // unreachable
 }
 
 inline int ArmGroup::currentPick(Database* db)
@@ -2655,13 +2732,86 @@ class InterpReadTask final : public Task
   std::shared_ptr<const BoundRule> rule;
   u16 bucket;
   std::unique_ptr<BoundExecution> parked;
+  // V4 rescue: a transplanted remainder task.  Gate-exempt (it exists
+  // BECAUSE the pick was overridden for this bucket's remainder) and
+  // tripwire-exempt (K=2 groups would ping-pong; a rescued task runs its
+  // arm to completion).
+  bool rescued = false;
 
 public:
   InterpReadTask(Database* database, std::shared_ptr<const BoundRule> bound,
                  u16 task_bucket,
-                 std::unique_ptr<BoundExecution> continuation = nullptr)
+                 std::unique_ptr<BoundExecution> continuation = nullptr,
+                 bool rescued_task = false)
     : db(database), rule(std::move(bound)), bucket(task_bucket),
-      parked(std::move(continuation)) {}
+      parked(std::move(continuation)), rescued(rescued_task) {}
+
+  // V4 rescue (design R5 tripwire + R1 switch, as built): abandon this
+  // attempt at its CURRENT driver row and hand the bucket's remainder to
+  // the best alternative arm.  Exact-once accounting: rows 1..j-1 are
+  // fully this attempt's -- their fires merge from the last
+  // driver-boundary snapshot -- while row j (partially expanded) is
+  // REDONE in full by the replacement; the partial row's fires die with
+  // the attempt and its flushed tuples dedup at intern (set semantics --
+  // arm eligibility requires ordinary-table heads for exactly this).
+  // The replacement is a real execution of the alternative arm
+  // fast-forwarded past the j-1 completed rows, re-queued into THIS read
+  // phase through the pause machinery.
+  bool rescue(BoundExecution& execution)
+  {
+    const Attempt& a = execution.machine->result();
+    const u64 done_rows = a.driver_rows > 0 ? a.driver_rows - 1 : 0;
+    // choose the best alternative over the REMAINDER (bounded, emission-
+    // free; skip past the completed rows, including a redo of row j)
+    u64 budget = 4096;
+    if (const char* e = std::getenv("SLOG_MEASURE_BUDGET"))
+    {
+      const long v = std::atol(e);
+      if (v > 0) budget = (u64)v;
+    }
+    std::shared_ptr<const BoundRule> target;
+    u64 target_meter = ~0ull;
+    for (const auto& [arm, w] : rule->arm_group->arms)
+    {
+      if (arm == rule->definition().arm) continue;
+      auto r = w.lock();
+      if (r == nullptr) continue;
+      // only SAME-DRIVER (tail) arms are transplantable: the driver's
+      // deterministic row order is what makes "this bucket, rows j..n"
+      // mean the same thing in both executions.  A whole-order arm's
+      // different driver re-partitions the work -- the ratified "closed
+      // drivers are unswitchable mid-run" constraint, enforced here.
+      const DriverPlan& mine = rule->definition().driver;
+      const DriverPlan& theirs = r->definition().driver;
+      if (theirs.kind != mine.kind || theirs.relation != mine.relation
+          || theirs.order != mine.order || theirs.bound != mine.bound)
+        continue;
+      const u64 m = probe_arm_bucket_meter(*r, db, bucket, done_rows, budget);
+      if (m < target_meter) { target = std::move(r); target_meter = m; }
+    }
+    if (target == nullptr) return false;   // no live alternative: carry on
+    if (std::getenv("SLOG_ARM_DEBUG") != nullptr)
+      fprintf(stderr,
+              "[arm] rescue bucket=%u rows_done=%llu meter=%llu -> arm=%d\n",
+              (unsigned)bucket, (unsigned long long)done_rows,
+              (unsigned long long)(a.work + a.driver_rows),
+              target->definition().arm);
+    // settle the abandoned attempt: completed rows' fires (boundary
+    // snapshot), full honest work, staged tuples flushed (the redone
+    // row's overlap dedups at intern)
+    execution.flush();
+    if (a.fires_at_driver)
+      db->bumpFiresSlot(rule->fireSlotIn(db), a.fires_at_driver);
+    if (a.work | done_rows)
+      db->bumpWorkSlot(rule->workSlotIn(db), a.work, done_rows);
+    // transplant: the alternative arm's real execution over the remainder
+    auto ex = target->make_execution(db, bucket);
+    ex->machine->skip_driver(done_rows);
+    db->pushPaused(phase_read,
+      new InterpReadTask(db, std::move(target), bucket, std::move(ex),
+                         true));
+    return true;
+  }
 
   bool work() override
   {
@@ -2671,12 +2821,14 @@ public:
     // per read epoch: stable across every task and replay of ONE
     // iteration (a parked continuation always re-passes the gate that
     // admitted it -- the epoch cannot advance under a parked read), and
-    // re-selected against each new iteration's delta.
-    if (rule->arm_group != nullptr
+    // re-selected against each new iteration's delta.  A rescued
+    // remainder task bypasses the gate: its arm IS the override.
+    if (!rescued && rule->arm_group != nullptr
         && rule->arm_group->currentPick(db) != rule->definition().arm)
       return true;
     std::unique_ptr<BoundExecution> execution = parked
       ? std::move(parked) : rule->make_execution(db, bucket);
+    bool rescue_declined = false;
     // T5 slice (c3): pick up the CURRENT arming (a resumed continuation
     // carries the sink that stopped it, whose mask is last step's).
     if (execution->stepper) execution->stepper->refresh();
@@ -2721,16 +2873,34 @@ public:
         // the ordinary mid-read resume is what carries on.
         execution->flush();
         db->pushPaused(phase_read,
-          new InterpReadTask(db, rule, bucket, std::move(execution)));
+          new InterpReadTask(db, rule, bucket, std::move(execution), rescued));
         db->requestStepSuspend();
         return false;
+      }
+      // V4 tripwire (R5): a choice-group task whose meter blows past the
+      // rate-normalized ceiling abandons this arm at its current driver
+      // row and hands the bucket's remainder to the best alternative
+      // (rescue above).  Checked at slice granularity -- deterministic
+      // transition quanta -- so the trip point is a pure function of the
+      // data.  Rescued tasks never re-trip (K=2 would ping-pong).
+      static const bool no_rescue = std::getenv("SLOG_NO_RESCUE") != nullptr;
+      if (!rescued && !rescue_declined && !no_rescue
+          && rule->arm_group != nullptr)
+      {
+        const Attempt& a = execution->machine->result();
+        if (a.work + a.driver_rows
+              > rule->arm_group->tripCeiling(a.driver_rows))
+        {
+          if (rescue(*execution)) return true;
+          rescue_declined = true;   // no live alternative: run it out
+        }
       }
       if (db->runStopFlag().load(std::memory_order_relaxed)
           || std::chrono::steady_clock::now() >= deadline)
       {
         execution->flush();
         db->pushPaused(phase_read,
-          new InterpReadTask(db, rule, bucket, std::move(execution)));
+          new InterpReadTask(db, rule, bucket, std::move(execution), rescued));
         return false;
       }
     }
@@ -2745,7 +2915,7 @@ inline void BoundRule::attach(Database* db, Stratum* stratum,
   // object is bind_kernel_plan's transient; the copy lives as long as the
   // stratum's tasks).  The shared arm_group pointer itself was copied in.
   if (arm_group != nullptr)
-    arm_group->adopt(definition().arm, owned.get());
+    arm_group->adopt(definition().arm, owned);
   for (u16 bucket = 0; bucket < task_count(); ++bucket)
   {
     Task* task = new InterpReadTask(db, owned, bucket);

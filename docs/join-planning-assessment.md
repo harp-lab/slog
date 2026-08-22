@@ -1,4 +1,4 @@
-# Join-planning assessment (2026-08-15; selection V0–V3 shipped 2026-08-21)
+# Join-planning assessment (2026-08-15; selection V0–V4 shipped 2026-08-22)
 
 Prompted by a report that *simple queries on large knowledge graphs run
 slower than expected, apparently in the join planning*. This assesses the
@@ -220,9 +220,10 @@ interp/compile and compose with the existing lower-level mechanics
 
 ## Runtime plan selection + bounded measurement
 
-**Status — SHIPPED V0–V3, 2026-08-20/21** (`8564861` work counters,
+**Status — SHIPPED V0–V4, 2026-08-20/22** (`8564861` work counters,
 `e08af3b` J1 arms, `7550680` J2 counts selector, `60b727f` V3 measurement
-layer), behind `SLOG_MULTIPLAN` (flag off ⇒ plan bytes unchanged, gated
+layer, V4 = the R5 tripwire + R1 rescue and the all-capped rate rule),
+behind `SLOG_MULTIPLAN` (flag off ⇒ plan bytes unchanged, gated
 by plan-goldens + plan-determinism). Design history: mechanism sketch and
 verified anchors 2026-08-15; racing rejected; measurement layer and
 decisions R1–R5 ratified 2026-08-20; built and measured through 08-21.
@@ -310,21 +311,44 @@ the design.
 | `card_corr` | 9479 | 128 ms | 83 | probes resolve exactly-tied counts |
 | `card_flip_ac` / `_ca` | 69446 / 85350 | 1846 / 1822 ms | 2071 | **beats the hand-split oracle**; both arms run, per phase |
 | `card_monster_ac` | 38810 | 69.6 ms | 57 | the single-row monster's probe caps |
-| `card_probe_blind` | — | **128.7 s (XFAIL)** | 0.55 s | see below |
+| `card_probe_blind` | 128.7 s unrescued | **0.92 s** | 0.55 s | the V4 rescue (below) |
+| `card_probe_late` | ~2× that | 1.0 s | 0.6 s | TWO rescues, independent epochs |
+| `card_probe_rate` | 35.6 s | 0.80 s | 0.49 s | the all-capped rate rule |
 
 `bench/card-study.sh` now runs both worlds (static gates + selection
 gates, `CARD_ASSERT=1` to enforce) and is the standing gate for every
 later phase.
 
-**The known limitation, as a bench — `card_probe_blind` (XFAIL).**  A
-20k-row-per-iteration walk hides ONE 2×10⁹-probe wing at iteration 20.
-Both arms' probes cap on clean rows at every budget rung and tie blind
-(and a hash-window sample would miss one row in 20k anyway); the real
-run eats the wing: 233× worse than `SLOG_FORCE_ARM=1`.  Only detection
-DURING execution — the ratified R5 rate tripwire (per-row ĉ from the
-$stat_work baseline) plus the R1 driver-boundary / mid-subtree switch —
-can save a monster hiding in a big delta.  That is the next major
-phase, now with its evidence in the repo.
+**V4 — the tripwire and rescue (shipped 2026-08-22).**  A blowup the
+probe's budget horizon cannot see (`card_probe_blind`: one 2×10⁹-probe
+wing hidden in 20k-row deltas; both arms' probes cap blind on clean
+rows, and sampling cannot reliably find one row in 20k) is caught DURING
+execution: each choice-group task checks, at deterministic slice
+boundaries, `meter > C_floor + k·ĉ·rows` (R5; ĉ = the epoch's winning
+probe rate, `SLOG_TRIP_FLOOR`/`SLOG_TRIP_K`, flat C_init for unprobed
+picks).  On a trip the task ABANDONS its arm at the current driver row:
+completed rows' fires merge from the last driver-boundary snapshot
+(`Attempt::fires_at_driver`), the partially-expanded row's fires die
+with the attempt, and the bucket's remainder — INCLUDING a full redo of
+that row — transplants to the best alternative (chosen by probing the
+remainder), fast-forwarded via `Machine::skip_driver` and re-queued
+through the pause machinery as a gate-exempt rescued task.  Exact-once
+holds literally: rows 1..j−1 fire under the old arm, rows j..n under the
+new, and the redone row's flushed partials dedup at intern — which is
+why arm eligibility requires ordinary-table HEADS (a temp head would
+double follow-up fires; order-sensitive lattice merges could change
+values).  Only SAME-DRIVER (tail) arms are transplantable — a
+whole-order arm's different driver re-partitions the work, enforcing the
+ratified "closed drivers are unswitchable mid-run" structurally.
+Rescued tasks never re-trip (K=2 would ping-pong); `SLOG_NO_RESCUE=1`
+disables.  Measured: probe_blind 128.7 s → 0.92 s (1.8× oracle);
+probe_late's TWO hidden monsters rescue independently across epochs
+(per-epoch trip state); and the sibling selection fix — when every
+candidate probe caps at both budget rungs, compare PROGRESS (driver rows
+traversed) instead of tied raw meters — takes `card_probe_rate`'s
+uniformly-40× arm from 35.6 s to 0.80 s with no trip at all.  Battery:
+rescue-content / rescue-footprint (both arm tags in one run) /
+rescue-fires-loc-total over `tests/multiplan/pblind_mini.slog`.
 
 **The index-cost finding.**  The eager arm-union built several new
 9M-row orderings for `card_bait` and the systemd-run 4G cgroup cap
@@ -712,13 +736,11 @@ Daemon — measurement (verified 2026-08-20):
   counts signal for tail arms (which always tie on counts) and needs no
   hysteresis at current budgets (≤ ~74k meter per group-iteration worst
   case, negligible against any real iteration).
-- **NEXT — the R5 tripwire + R1 rescue**, motivated and gated by
-  `bench/card_probe_blind.slog` (233× XFAIL): per-row rate ĉ from the
-  now-live `$stat_work` baselines, trip at
-  `ticks > C_floor + k·ĉ·rows_consumed` during execution, pause at
-  driver boundaries, re-measure the REMAINDER, transplant-resume under
-  the winner (set flavors may redo a half-expanded subtree; counted
-  flavors switch at boundaries only — the R1 matrix below).
+- **SHIPPED — V4, the R5 tripwire + R1 rescue** (see "As built"): gated
+  by `card_probe_blind`/`card_probe_late`/`card_probe_rate` at ≤3× their
+  oracles in `bench/card-study.sh`.  Counted flavors carry no arms, so
+  the R1 boundary-only restriction is currently vacuous by construction;
+  it binds when flavor-uniform arms arrive.
 - **NEXT — index-policy knobs** (free-arms-only / budgeted / lazy) +
   the install-OOM story: `card_bait`'s silent 4G cgroup kill is the
   evidence (the runslog EOF error now names it; the knobs remain

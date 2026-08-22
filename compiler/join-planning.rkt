@@ -945,7 +945,18 @@
             (not (delta-entry-flavor))
             (>= (length joins) 3)
             (for/and ([occ (in-list joins)])
-              (ordinary-table? (occ-rel occ)))))
+              (ordinary-table? (occ-rel occ)))
+            ;; V4 rescue safety (R1): a rescued task REDOES its partially
+            ;; expanded driver row under the new arm, re-emitting that
+            ;; row's head tuples -- only ordinary set tables absorb the
+            ;; overlap (intern dedup).  A temp head would double the
+            ;; follow-up rule's fires; an order-sensitive lattice merge
+            ;; could change values; struct heads re-intern to the same id
+            ;; but stay excluded with everything else for now.
+            (for/and ([cl (in-list head-rest)])
+              (match cl
+                [`(syn ,_ ,(? symbol? nm) ,_ ...) (ordinary-table? nm)]
+                [_ #f]))))
      (define (scalar-version? version)
        (match version
          [`(syn ,_ ,_ ,body ... --> ,_ ...)

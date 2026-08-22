@@ -1,0 +1,52 @@
+;; Miniature card_probe_blind for the multiplan battery's RESCUE checks:
+;; 500-row deltas x 12 iterations; ONE driver row (K = 2999, iteration 5)
+;; hangs a 50 x 10 x 200 = 1e5-meter wing off the a-first arm.  The
+;; battery runs it with SLOG_MEASURE_BUDGET=256 (so both arms' probes cap
+;; blind on clean rows) and SLOG_TRIP_FLOOR=2000 (so the wing trips at
+;; mini scale), then asserts content identity, per-loc fires invariance
+;; against the forced-oracle run, and that BOTH arm work tags appear --
+;; the deterministic footprint of a mid-iteration transplant.
+
+table (d int)
+table (n2 int)
+table (n4 int)
+table (n500 int)
+table (kk int)
+table (xw int)
+table (mw int)
+table (zw int)
+table (a int int int)
+table (b1 int int int)
+table (b2 int int)
+table (c int int int)
+table (walkg int)
+
+rule (d 0) (d 1) (d 2) (d 3) (d 4) (d 5) (d 6) (d 7) (d 8) (d 9)
+rule (n2 X) <-- (d A) (d B) (= X (+ (* 10 A) B))
+rule (n4 X) <-- (n2 A) (n2 B) (= X (+ (* 100 A) B))
+rule (n500 X) <-- (n4 X) (< X 500)
+
+;; every live walk key: K = 500*I + J for I<12, J<500
+rule (kk K) <-- (n2 I) (< I 12) (n500 J) (= K (+ (* 500 I) J))
+
+;; wing sets: 50 X's, 10 M's, 200 Z's
+rule (xw X) <-- (n2 I) (< I 50) (= X (+ 7000000 I))
+rule (mw M) <-- (n2 I) (< I 10) (= M (+ 8000000 I))
+rule (zw Z) <-- (n4 I) (< I 200) (= Z (+ 9000000 I))
+
+;; the singleton chain, every K
+rule (a K X 0)  <-- (kk K) (= X (+ 1000000 K))
+rule (b1 X M 0) <-- (kk K) (= X (+ 1000000 K)) (= M (+ 3000000 K))
+rule (b2 M Z)   <-- (kk K) (= M (+ 3000000 K)) (= Z (+ 5000000 K))
+rule (c K Z 0)  <-- (kk K) (= Z (+ 5000000 K))
+
+;; the monster wing: driver row K=2999 (iteration 5), a-side only
+rule (a 2999 X 0) <-- (xw X)
+rule (b1 X M 0)   <-- (xw X) (mw M)
+rule (b2 M Z)     <-- (mw M) (zw Z)
+
+;; the parallel walk (500 rows per iteration, 12 iterations)
+rule (walkg J) <-- (n500 J)
+rule (walkg K2) <-- (walkg K) (< K 5500)
+                    (a K X P) (b1 X M R) (b2 M Z) (c K Z Q)
+                    (= K2 (+ K 500))

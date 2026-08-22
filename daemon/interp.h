@@ -558,6 +558,11 @@ struct Attempt
   // plan-selection tripwire reads.
   u64 work = 0;
   u64 driver_rows = 0;
+  // V4 rescue: `fires` as of the LAST driver-row pull.  An abandoned
+  // attempt merges THIS value, not `fires`: the partially-expanded row's
+  // fires die with the attempt (its replacement redoes that row in full),
+  // keeping $stat_fires literally exact across a mid-task arm switch.
+  u64 fires_at_driver = 0;
   // Emit staging, sized once to the program's widest emit.  Event::tuple
   // views this storage (see Event lifetime note).
   std::vector<u64> emit_scratch;
@@ -742,6 +747,7 @@ class Machine
             st = MachineState::done;
             return save(StopReason::complete);
           }
+          attempt->fires_at_driver = attempt->fires;
           ++attempt->driver_rows;
           load_driver_regs();
           stack.clear();
@@ -1072,6 +1078,16 @@ public:
 
   bool done() const { return state == MachineState::done; }
   const Attempt& result() const { return *attempt; }
+
+  // V4 rescue: fast-forward the driver past `n` already-processed rows
+  // (the transplant/remainder-probe seam).  Call before the first run();
+  // counts nothing -- the skipped rows belong to the abandoned attempt's
+  // accounting, and the replacement redoes the abandoned row itself.
+  void skip_driver(u64 n)
+  {
+    for (u64 i = 0; i < n; ++i)
+      if (!driver->next(driver_row)) return;
+  }
 };
 
 } // namespace interp

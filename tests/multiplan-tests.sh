@@ -41,12 +41,13 @@ OUT=out/multiplan-tests
 mkdir -p "$OUT"
 raco make compiler/run.rkt >/dev/null 2>&1
 
-run_one() {  # name prog multiplan force_arm
+run_one() {  # name prog multiplan force_arm [extra env...]
   local name="$1" prog="$2" mp="$3" force="$4"
   rm -rf "$OUT/$name"
   local env=(SLOG_OPT=interp)
   [ -n "$mp" ] && env+=(SLOG_MULTIPLAN=1)
   [ -n "$force" ] && env+=(SLOG_FORCE_ARM="$force")
+  [ $# -gt 4 ] && env+=("${@:5}")
   env "${env[@]}" timeout 300 racket compiler/run.rkt --no-banner \
     --debug-dir "$OUT/$name" "tests/multiplan/$prog.slog" \
     > "$OUT/$name.log" 2>&1
@@ -168,6 +169,30 @@ if diff <(LC_ALL=C sort "$OUT/corr_on/ans.csv") \
         <(LC_ALL=C sort "$OUT/corr_off/ans.csv") >/dev/null 2>&1
 then ok "probe-equivalence (corr_mini ans)"
 else bad "probe-equivalence"; fi
+
+# --- 11. the V4 rescue: mid-iteration trip + transplant (pblind_mini) --------
+# SLOG_MEASURE_BUDGET=64 makes both arms' probes cap blind on clean rows;
+# SLOG_TRIP_FLOOR=2000 lets the 1e5-meter wing trip at mini scale.  The
+# deterministic footprint of a rescue: BOTH arm work tags on the walkg
+# rule in ONE run, with content and per-loc fires identical to the
+# forced-oracle and flag-off runs.
+PBENV=(SLOG_MEASURE_BUDGET=64 SLOG_TRIP_FLOOR=2000)
+run_one pb_off pblind_mini "" "" "${PBENV[@]}"
+run_one pb_on  pblind_mini 1  "" "${PBENV[@]}"
+run_one pb_f1  pblind_mini 1  1  "${PBENV[@]}"
+if diff <(LC_ALL=C sort "$OUT/pb_on/walkg.csv") \
+        <(LC_ALL=C sort "$OUT/pb_off/walkg.csv") >/dev/null 2>&1
+then ok "rescue-content (pblind_mini == flag-off)"
+else bad "rescue-content"; fi
+pbtags=$(grep -o 'delta:walkg#[01]' "$OUT/pb_on/\$stat_work.csv" | sort -u | wc -l)
+[ "$pbtags" = 2 ] && ok "rescue-footprint (both arm tags in one run)" \
+                  || bad "rescue-footprint (tags: $pbtags)"
+pbloc=$(grep -o 'pblind_mini.slog:[0-9]*' "$OUT/pb_on/\$stat_fires.csv" | sort | tail -1)
+pt0=$(grep "$pbloc" "$OUT/pb_on/\$stat_fires.csv" | awk '{s+=$NF} END{print s+0}')
+pt1=$(grep "$pbloc" "$OUT/pb_f1/\$stat_fires.csv" | awk '{s+=$NF} END{print s+0}')
+if [ "$pt0" != 0 ] && [ "$pt0" = "$pt1" ]
+then ok "rescue-fires-loc-total ($pt0 rescued == forced)"
+else bad "rescue-fires-loc-total ($pt0 vs $pt1)"; fi
 
 echo
 echo "$PASS passed, $FAIL failed"
