@@ -228,9 +228,11 @@ else bad "index-free-keeps-zero-cost-arms ($sfarms)"; fi
 # (no pin marker); with SLOG_NATIVE_ARM=0 arm 0 compiles natively and its
 # group PINS (the attach trace's deterministic footprint), with content
 # and per-loc fires identical to the pure-interp run.
-run_one nat_i  native_mini 1 "" SLOG_ARM_DEBUG=1
-run_one nat_o0 native_mini 1 "" SLOG_ARM_DEBUG=1 SLOG_OPT=0
-run_one nat_on native_mini 1 "" SLOG_ARM_DEBUG=1 SLOG_OPT=0 SLOG_NATIVE_ARM=0
+# (advisories disabled here: a repeat battery run must not find its own
+# prior recording and pin the "unpromoted" leg -- section 14 owns the loop)
+run_one nat_i  native_mini 1 "" SLOG_ARM_DEBUG=1 SLOG_NO_ARM_ADVISORIES=1
+run_one nat_o0 native_mini 1 "" SLOG_ARM_DEBUG=1 SLOG_NO_ARM_ADVISORIES=1 SLOG_OPT=0
+run_one nat_on native_mini 1 "" SLOG_ARM_DEBUG=1 SLOG_NO_ARM_ADVISORIES=1 SLOG_OPT=0 SLOG_NATIVE_ARM=0
 if [ "$(grep -c 'native, pinned' "$OUT/nat_on.log")" -ge 1 ] \
    && [ "$(grep -c 'native, pinned' "$OUT/nat_o0.log")" = 0 ]
 then ok "native-arm-pins (marker on, absent off)"
@@ -249,6 +251,31 @@ nf1=$(grep "$natloc" "$OUT/nat_on/\$stat_fires.csv" | awk '{s+=$NF} END{print s+
 if [ "$nf0" != 0 ] && [ "$nf0" = "$nf1" ]
 then ok "native-arm-fires ($nf0 both executors)"
 else bad "native-arm-fires ($nf0 vs $nf1)"; fi
+
+# --- 14. J3 phase 1b: the profile loop -----------------------------------
+# Run 1 (no overrides) converges, reports (arms ...), and records the
+# advisory; run 2 recompiles with it applied and pins NATIVELY with no
+# env override.  flip_mini's picks change across its phases, so it must
+# never record.  The store is cleaned before and after: battery runs
+# leave no cross-suite advisory state.
+rm -f build/profile/arms.rktd
+run_one loop1 native_mini 1 "" SLOG_ARM_DEBUG=1 SLOG_OPT=0
+run_one loop2 native_mini 1 "" SLOG_ARM_DEBUG=1 SLOG_OPT=0
+if [ "$(grep -c 'native, pinned' "$OUT/loop1.log")" = 0 ] \
+   && [ "$(grep -c 'native, pinned' "$OUT/loop2.log")" -ge 1 ] \
+   && grep -q 'native_mini.slog' build/profile/arms.rktd 2>/dev/null
+then ok "profile-loop-promotes (run2 pinned via advisory)"
+else bad "profile-loop-promotes"; fi
+if diff <(LC_ALL=C sort "$OUT/loop1/walk.csv") \
+        <(LC_ALL=C sort "$OUT/loop2/walk.csv") >/dev/null 2>&1
+then ok "profile-loop-content (identical across the loop)"
+else bad "profile-loop-content"; fi
+run_one floop flip_mini 1 "" SLOG_ARM_DEBUG=1
+if ! grep -q 'flip_mini.slog' build/profile/arms.rktd 2>/dev/null \
+   && [ "$(grep -c 'native, pinned' "$OUT/floop.log")" = 0 ]
+then ok "profile-loop-negative (flip never converges or records)"
+else bad "profile-loop-negative"; fi
+rm -f build/profile/arms.rktd
 
 echo
 echo "$PASS passed, $FAIL failed"

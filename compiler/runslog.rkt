@@ -25,6 +25,7 @@
 (require "tools.rkt")
 (require "compile.rkt") ; RF2 adds image analysis values without changing this driver API
 (require "tier-profile.rkt")  ; T3b slice 2: record the T3a race's outcome
+(require "arm-profile.rkt")   ; J3 1b: record converged choice-group picks
 (require "actions.rkt")
 (require "dbmeta.rkt")
 (require "catalog.rkt")  ; N4-A bundle projection for the freeze carry-forward
@@ -398,6 +399,22 @@
                 (displayln line)
                 (check-errors! "at fixpoint")   ; per-stratum; daemon idle -> query safe
                 #t)]
+          [(regexp-match? #px"^\\(arms " line)
+           (displayln line)
+           ;; J3 phase 1b: the daemon's per-fixpoint choice-group report --
+           ;; (arms (g GID ARM CONVERGED "LOC") ...).  Record the CONVERGED
+           ;; entries as advisories (arm-profile.rkt); the next compile of
+           ;; a program naming these rules promotes the arm to native
+           ;; coverage and pins its group.  Non-converged groups (the
+           ;; adaptive ones: flip/monster/probe-blind shapes) never record.
+           (with-handlers ([exn:fail? (lambda (_e) (void))])
+             (record-arm-advisories!
+              (for/list ([e (in-list (cdr (read (open-input-string line))))]
+                         #:when (and (list? e) (= (length e) 5)
+                                     (equal? (first e) 'g)
+                                     (equal? (fourth e) 1)))
+                (list (fifth e) (second e) (third e)))))
+           (poll loaded)]
           [(regexp-match? #px"^\\(paused " line)
            (displayln line)
            (cond

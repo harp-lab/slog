@@ -19,7 +19,7 @@
 ;; The plan is a golden of record (rf1-contract slice 4) and T3b must leave
 ;; its bytes unmoved.
 
-(require "ir-stack.rkt" "params.rkt")
+(require "ir-stack.rkt" "params.rkt" "arm-profile.rkt")
 
 (provide variant-tier tier-native? crule-natively-covered?
          kernel-tier-summary tier-reason
@@ -141,14 +141,17 @@
   (cond
     [flavored? #t]
     ;; J1/J3: choice-group arms stay interpreted UNLESS the J3 dominant-arm
-    ;; policy names this crule's arm index (SLOG_NATIVE_ARM; params.rkt has
-    ;; the doctrine) -- then it competes for coverage like any rule, and
-    ;; the daemon PINS its group to it at attach (the interp siblings stay
-    ;; as the permanently-gated complement).
+    ;; policy names this crule's arm -- SLOG_NATIVE_ARM (the explicit
+    ;; override, which wins outright when set) or, phase 1b, a recorded
+    ;; ARM ADVISORY for this rule's (loc, gid) (arm-profile.rkt: the pick a
+    ;; prior run's selection converged on).  A named arm competes for
+    ;; coverage like any rule, and the daemon PINS its group at attach
+    ;; (the interp siblings stay as the permanently-gated complement).
     [(match (crule-kind cr)
-       [`(arm ,n ,_)
-        (not (and (multiplan-native-arm)
-                  (= n (multiplan-native-arm))))]
+       [`(arm ,n ,gid)
+        (not (if (multiplan-native-arm)
+                 (= n (multiplan-native-arm))
+                 (equal? n (arm-advisory (crule-loc cr) gid))))]
        [_ #f]) #f]
     [else
      (case (native-rule-coverage)

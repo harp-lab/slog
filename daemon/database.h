@@ -7112,6 +7112,39 @@ public:
   std::atomic<u64> read_epoch{0};
   u64 readEpoch() const { return read_epoch.load(std::memory_order_acquire); }
 
+  // J3 phase 1b: choice groups registered at attach for the per-fixpoint
+  // `(arms ...)` report (the arm-advisory sidecar's input).  The entry is
+  // a closure so this header stays ignorant of ArmGroup (plan.h): it
+  // fills the current arm and returns 0 = no pick yet, 1 = picked but not
+  // converged, 2 = converged.  Keyed (loc, gid); re-attach (activation)
+  // replaces.  Diagnostic/advisory only -- never identity, audit, or
+  // replay input.
+  std::map<std::pair<std::string, long long>, std::function<int(int*)>>
+    arm_report_registry;
+  std::mutex arm_report_mx;
+  void registerArmGroup(const std::string& loc, long long gid,
+                        std::function<int(int*)> probe)
+  {
+    std::lock_guard<std::mutex> g(arm_report_mx);
+    arm_report_registry[{loc, gid}] = std::move(probe);
+  }
+  std::string armReport()
+  {
+    std::lock_guard<std::mutex> g(arm_report_mx);
+    std::string out;
+    for (auto& [key, probe] : arm_report_registry)
+    {
+      int arm = -1;
+      const int st = probe(&arm);
+      if (st == 0) continue;
+      char buf[512];
+      std::snprintf(buf, sizeof(buf), " (g %lld %d %d \"%s\")",
+                    key.second, arm, st == 2 ? 1 : 0, key.first.c_str());
+      out += buf;
+    }
+    return out.empty() ? out : "(arms" + out + ")";
+  }
+
   // T0(c) slice c2: the daemon-side rule-meta registry -- the piece T1
   // deferred ("the daemon cannot resolve RuleIds until T0's rule-meta
   // registration").  Registered per stratum by the session over the

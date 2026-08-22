@@ -51,6 +51,7 @@
 (require "emit-cpp.rkt")
 (require "tier-policy.rkt")   ; T3b: selective-compilation policy + sidecar
 (require "tier-profile.rkt")  ; T3b: per-kernel runtime profiles (skip clang)
+(require "arm-profile.rkt")   ; J3 1b: converged-arm advisories (native pin)
 (require "ir-shared.rkt")
 (require "ir-stack.rkt")
 (require "tools.rkt")
@@ -251,6 +252,17 @@
                              ;; J3: the native dominant-arm pick changes
                              ;; which crules are covered, hence TU contents
                              (multiplan-native-arm)
+                             ;; J3 phase 1b: so do APPLIED arm advisories --
+                             ;; a converged pick recorded for this program's
+                             ;; rules recompiles it once (PGO semantics; the
+                             ;; basename filter keeps other programs'
+                             ;; advisories from re-keying this one)
+                             (if (getenv "SLOG_NO_ARM_ADVISORIES")
+                                 'no-arm-advisories
+                                 (arm-advisories-fingerprint
+                                  (for/list ([m (in-set mods)])
+                                    (format "~a" (file-name-from-path
+                                                  (module-ir-path m))))))
                              ;; T4 slice 4: a partial-coverage artifact must
                              ;; miss the cache, never stand in for a full one
                              (native-rule-coverage)

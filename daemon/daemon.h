@@ -1774,6 +1774,14 @@ public:
           database->publishStratumStats(s->scc_id, s->name, st.iteration,
                                         st.ms_total);
       }
+      // J3 phase 1b: the choice-group report precedes the fixpoint line --
+      // (arms (g GID ARM CONVERGED "LOC") ...) -- so the driver records
+      // converged picks as arm advisories (arm-profile.rkt) before it
+      // advances.  Empty (and absent) unless SLOG_MULTIPLAN arms exist.
+      {
+        const std::string arms_line = database->armReport();
+        if (!arms_line.empty()) emit(arms_line);
+      }
       std::snprintf(buf, sizeof(buf), "(fixpoint %u \"%s\" %u %.3f)",
                     s->scc_id, s->name.c_str(), st.iteration, st.ms_total);
       s->fixpoint_msg = buf;

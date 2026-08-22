@@ -1729,6 +1729,31 @@ struct ArmGroup
   // tripwire are frozen for the rule (promotion's premise is that
   // selection already converged).  Set once at attach, single-threaded.
   std::atomic<bool> pinned{false};
+  // J3 phase 1b convergence evidence, updated by the epoch claimer:
+  // selections made, and how many CHANGED the pick.  A group is reported
+  // converged (the (arms ...) fixpoint report -> the arm-advisory
+  // sidecar) iff pinned, or selected >= 4 epochs with zero changes --
+  // the adaptive shapes (flip/monster/probe-blind) change picks and are
+  // never advised, by construction.
+  std::atomic<u32> epochs_selected{0};
+  std::atomic<u32> pick_changes{0};
+  // ... and how many mid-iteration RESCUES its tasks performed.  A rescue
+  // is task-local and invisible to the pick counters, but it is direct
+  // evidence the epoch pick was wrong for part of the data -- a group
+  // that ever rescued must NOT be advised: pinning it would freeze the
+  // very selection machinery that saved it (the probe-blind monster would
+  // return at full price on the next profiled run).
+  std::atomic<u32> rescues{0};
+  bool convergedPick(int* out) const
+  {
+    const int p = pick.load(std::memory_order_relaxed);
+    if (p < 0) return false;
+    *out = p;
+    if (pinned.load(std::memory_order_relaxed)) return true;
+    return epochs_selected.load(std::memory_order_relaxed) >= 4
+        && pick_changes.load(std::memory_order_relaxed) == 0
+        && rescues.load(std::memory_order_relaxed) == 0;
+  }
   // V4 rescue baseline: the WINNING arm's probe measurement from this
   // epoch's selection (meter units over driver rows probed).  pick_rows
   // == 0 means the pick was screen-only (no probe ran): the tripwire then
@@ -2729,9 +2754,14 @@ inline int ArmGroup::currentPick(Database* db)
       std::this_thread::yield();
     return pick.load(std::memory_order_relaxed);
   }
-  pick.store(selectPick(db), std::memory_order_relaxed);
+  const int prev = pick.load(std::memory_order_relaxed);
+  const int chosen = selectPick(db);
+  pick.store(chosen, std::memory_order_relaxed);
+  const u32 n = epochs_selected.fetch_add(1, std::memory_order_relaxed) + 1;
+  if (n > 1 && chosen != prev)
+    pick_changes.fetch_add(1, std::memory_order_relaxed);
   epoch_done.store(e, std::memory_order_release);
-  return pick.load(std::memory_order_relaxed);
+  return chosen;
 }
 
 class InterpReadTask final : public Task
@@ -2798,6 +2828,7 @@ public:
       if (m < target_meter) { target = std::move(r); target_meter = m; }
     }
     if (target == nullptr) return false;   // no live alternative: carry on
+    rule->arm_group->rescues.fetch_add(1, std::memory_order_relaxed);
     if (std::getenv("SLOG_ARM_DEBUG") != nullptr)
       fprintf(stderr,
               "[arm] rescue bucket=%u rows_done=%llu meter=%llu -> arm=%d\n",

@@ -769,6 +769,37 @@ Daemon — measurement (verified 2026-08-20):
   it binds when flavor-uniform arms arrive.
 - **SHIPPED — the index-policy knobs** (`SLOG_MULTIPLAN_INDEX`; see the
   index-cost finding above).  Lazy materialization remains the follow-on.
+- **SHIPPED — J3 phases 1 + 1b: native dominant-arm promotion.**  Phase 1
+  (`SLOG_NATIVE_ARM=n`, job-hashed): a named arm competes for native
+  coverage under the ordinary tier policy; at attach a group whose arm's
+  ordinal the native artifact covers PINS (`ArmGroup::pinned`) -- the
+  native task runs unconditionally, the interp siblings are the
+  permanently gated complement, selection/tripwire freeze (promotion's
+  premise: selection converged).  Codegen hazard fixed en route: emit-cpp
+  kind consumers treat truthy kinds as COUNT kinds, so arm kinds read as
+  #f there.  Measured (`bench/card_native.slog`, a live head-fed 14-prim
+  compute chain): the walk stratum 1139 → 456 ms (2.5×); study gate ≥1.2×
+  on summed fixpoint.  Phase 1b (the profile loop): the daemon emits a
+  per-fixpoint `(arms (g GID ARM CONVERGED "LOC") ...)` report; runslog
+  records CONVERGED picks into the arm-advisory sidecar
+  (`compiler/arm-profile.rkt`, `build/profile/arms.rktd`, keyed
+  (loc, gid)); the next compile applies them in tier-policy and folds the
+  program-relevant advisory set into the job hash (PGO semantics -- one
+  recompile per new advisory, stable thereafter).  **Convergence** =
+  pinned, or ≥4 epochs selected with zero pick changes AND ZERO RESCUES —
+  the rescue is task-local and invisible to pick counters, so without the
+  rescues guard a probe-blind group could converge onto an arm whose
+  monster the rescue was saving it from, and pinning would disable the
+  rescue.  Advisories are correctness-safe by construction (they can only
+  name a valid sibling arm) and performance-risky exactly like the tier
+  profile's cross-program sharing: opposite-skew datasets must not share
+  a profile.  Escapes: delete the store, `SLOG_NO_ARM_ADVISORIES=1`, or
+  the explicit `SLOG_NATIVE_ARM` (wins outright).  Known limitation:
+  closed-rule groups select once per run and never reach 4 epochs, so
+  they are never advised — cross-RUN stability accounting is the noted
+  refinement.  Still pending: phase 2 (native tick accumulation:
+  $stat_work parity + tripwire on pinned rules), phase 3 (native rescue,
+  evidence-gated).
 - **J3 — native tier for choice rules** (unchanged shape: dominant-arm
   or K×-cluster; requires the native tick accumulator for tripwire
   parity).

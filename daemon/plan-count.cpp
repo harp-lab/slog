@@ -1010,7 +1010,27 @@ void attach_normal_rules(Database* db, Stratum* stratum,
     const SealedRule& sr = r->definition();
     if (sr.arm < 0) continue;
     auto& g = arm_groups[sr.arm_gid];
-    if (g == nullptr) g = std::make_shared<ArmGroup>();
+    if (g == nullptr)
+    {
+      g = std::make_shared<ArmGroup>();
+      // J3 phase 1b: register for the per-fixpoint (arms ...) report --
+      // the closure keeps this seam ignorant of group lifetime (weak)
+      if (!sr.program.source.empty())
+      {
+        std::weak_ptr<ArmGroup> w = g;
+        db->registerArmGroup(sr.program.source, (long long)sr.arm_gid,
+          [w](int* arm) -> int {
+            auto p = w.lock();
+            if (p == nullptr) return 0;
+            int a = -1;
+            if (p->convergedPick(&a)) { *arm = a; return 2; }
+            const int cur = p->pick.load(std::memory_order_relaxed);
+            if (cur < 0) return 0;
+            *arm = cur;
+            return 1;
+          });
+      }
+    }
     // membership is registered by attach() itself, on the OWNED task copy
     r->arm_group = g;
     // J3: an arm whose ordinal the NATIVE artifact covers runs natively,
