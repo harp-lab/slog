@@ -7104,6 +7104,14 @@ public:
   u64 read_attempt_gen = 0;
   u64 readAttemptGeneration() const { return read_attempt_gen; }
 
+  // J2b/V3 arm-reselection epoch: bumped once per completed iteration at
+  // the EndIterCompletion barrier (all workers parked).  ArmGroup picks
+  // memoize per epoch, so every task of one iteration -- and a read
+  // REPLAY within it (abort leaves the epoch untouched) -- sees the same
+  // pick, while each new iteration re-selects against its own delta.
+  std::atomic<u64> read_epoch{0};
+  u64 readEpoch() const { return read_epoch.load(std::memory_order_acquire); }
+
   // T0(c) slice c2: the daemon-side rule-meta registry -- the piece T1
   // deferred ("the daemon cannot resolve RuleIds until T0's rule-meta
   // registration").  Registered per stratum by the session over the
@@ -9511,6 +9519,8 @@ inline void ReadCompletion::operator()() noexcept
 inline void EndIterCompletion::operator()() noexcept
 {
   RunState& rs = db->rs;
+  // J2b/V3: open the next iteration's arm-selection epoch (see read_epoch)
+  db->read_epoch.fetch_add(1, std::memory_order_acq_rel);
   // sample this round's delta into the accelerator-seed sidecar (§4.4 v2):
   // single-threaded here (all workers parked), delta finalized+interned+idle
   db->accelRecordRound();

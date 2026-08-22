@@ -1010,12 +1010,12 @@ void attach_normal_rules(Database* db, Stratum* stratum,
     if (sr.arm < 0) continue;
     auto& g = arm_groups[sr.arm_gid];
     if (g == nullptr) g = std::make_shared<ArmGroup>();
-    g->drivers.emplace_back(sr.arm, r->driverRelation());
+    // membership is registered by attach() itself, on the OWNED task copy
     r->arm_group = g;
+    if (std::getenv("SLOG_ARM_DEBUG") != nullptr)
+      fprintf(stderr, "[arm] attach group gid=%lld arm=%d variant=%s\n",
+              (long long)sr.arm_gid, sr.arm, sr.program.variant.c_str());
   }
-  for (auto& [gid, g] : arm_groups)
-    std::sort(g->drivers.begin(), g->drivers.end(),
-              [](const auto& x, const auto& y) { return x.first < y.first; });
   for (size_t j = 0; j < rules.size(); ++j)
   {
     if (skip_ords != nullptr && skip_ords->count(static_cast<u32>(j)) != 0)

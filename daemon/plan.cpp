@@ -1327,6 +1327,10 @@ std::vector<DecodedKernelPlan> parse_kernel_cohort(std::string_view input)
         syntax(*rules, "cohort rule: arm attribute position out of range");
       out.back().rules[pos].plan.arm = av.first;
       out.back().rules[pos].plan.arm_gid = av.second;
+      if (std::getenv("SLOG_ARM_DEBUG") != nullptr)
+        fprintf(stderr, "[arm] apply pos=%llu arm=%d gid=%lld variant=%s\n",
+                (unsigned long long)pos, av.first, (long long)av.second,
+                out.back().rules[pos].plan.variant.c_str());
     }
     if (const SExp* kord = field_of(form, "ord"))
     {

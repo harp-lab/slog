@@ -1,0 +1,40 @@
+;; Miniature card_corr for the multiplan battery's MEASUREMENT layer: every
+;; count-level signal ties (|fa|=|fb|=30, |m|=|n|, mirrored shapes), but
+;; m's block output range composes into n's block input range, so driving
+;; from fb chains block-into-block (~25x40x40 probes) while fa rides the
+;; identity strip.  The counts screen cannot separate fa from fb; the
+;; bounded emission-free probe must (fa's probe completes tiny, fb's hits
+;; the cap).  Expected pick: all:fa.  Planted matches {0..4}.
+
+table (d int)
+table (n2 int)
+table (idn int)
+table (kset int)
+table (fa int int)
+table (m int int)
+table (n int int)
+table (fb int int)
+table (ans int int)
+
+rule (d 0) (d 1) (d 2) (d 3) (d 4) (d 5) (d 6) (d 7) (d 8) (d 9)
+rule (n2 X) <-- (d A) (d B) (= X (+ (* 10 A) B))
+
+;; identity strip 0..499; block key set 0..39
+rule (idn V) <-- (n2 A) (d C) (< C 5) (= V (+ (* 5 A) C))
+rule (kset K) <-- (n2 K) (< K 40)
+
+;; m = identity strip + block X[6000..) x W[7000..)
+rule (m V V) <-- (idn V)
+rule (m X W) <-- (kset I) (kset J) (= X (+ 6000 I)) (= W (+ 7000 J))
+
+;; n = identity strip + block W[7000..) x Z[9000..)  (blocks COMPOSE)
+rule (n V V) <-- (idn V)
+rule (n W Z) <-- (kset I) (kset J) (= W (+ 7000 I)) (= Z (+ 9000 J))
+
+;; fa: 30 identity members; fb: 5 planted + 25 block outputs (30 total)
+rule (fa X 0) <-- (n2 X) (< X 30)
+rule (fb Z 0) <-- (n2 Z) (< Z 5)
+rule (fb Z 0) <-- (n2 J) (< J 25) (= Z (+ 9000 J))
+
+;; the query stratum -- fb written last (the data-blind pick)
+rule (ans X Z) <-- (fa X A) (m X Y) (n Y Z) (fb Z B)

@@ -23,6 +23,14 @@
 #      the ans rule's per-LOC fires total is arm-invariant (per-KEY tags
 #      legitimately differ across whole-order arms: driver-named).
 #
+# V3 measurement layer:
+#   9. flip_mini unforced runs BOTH arms across its phases (per-iteration
+#      reselection: delta:walk#0 AND #1 work rows in one run), with walk
+#      rows identical to flag-off;
+#  10. corr_mini's counts TIE exactly (|fa|=|fb|, mirrored shapes); the
+#      bounded emission-free probe resolves the tie to all:fa and the
+#      answer matches the flag-off run.
+#
 set -u
 cd "$(dirname "$0")/.."
 PASS=0; FAIL=0
@@ -94,11 +102,14 @@ if [ -n "$w0" ] && [ -n "$w1" ] && [ "$w0" != "$w1" ]
 then ok "per-arm-work-tags ($w0 vs $w1)"
 else bad "per-arm-work-tags ($w0 vs $w1)"; fi
 
-# --- 5. out-of-range force falls back to the selector's pick ----------------
+# --- 5. out-of-range force falls back to the SELECTOR's pick -----------------
+# (V3: the selector re-measures per iteration, so the fallback run matches
+# the unforced run -- including running both arms across the flip's phases)
 run_one armbig flip_mini 1 7
 if diff <(LC_ALL=C sort "$OUT/armbig/walk.csv") \
-        <(LC_ALL=C sort "$OUT/arm0/walk.csv") >/dev/null 2>&1 \
-   && [ "$(grep -o 'delta:walk#[01]' "$OUT/armbig/\$stat_work.csv" | sort -u)" = "$w0" ]
+        <(LC_ALL=C sort "$OUT/on/walk.csv") >/dev/null 2>&1 \
+   && [ "$(grep -o 'delta:walk#[01]' "$OUT/armbig/\$stat_work.csv" | sort -u)" \
+        = "$(grep -o 'delta:walk#[01]' "$OUT/on/\$stat_work.csv" | sort -u)" ]
 then ok "force-out-of-range-falls-back"
 else bad "force-out-of-range-falls-back"; fi
 
@@ -140,6 +151,23 @@ for ds in a b; do
   then ok "fires-loc-total ($ds: $t0 both arms)"
   else bad "fires-loc-total ($ds: $t0 vs $t1)"; fi
 done
+
+# --- 9. per-iteration reselection: both arms run in ONE unforced run --------
+won=$(grep -o 'delta:walk#[01]' "$OUT/on/\$stat_work.csv" | sort -u | wc -l)
+if [ "$won" = 2 ]
+then ok "per-iteration-reselection (both arms ran)"
+else bad "per-iteration-reselection (arms seen: $won)"; fi
+
+# --- 10. measurement resolves tied counts (corr_mini) ------------------------
+run_one corr_off corr_mini "" ""
+run_one corr_on  corr_mini 1 ""
+cpick=$(grep 'corr_mini' "$OUT/corr_on/\$stat_work.csv" | grep -o 'all:f[ab]' | sort -u)
+[ "$cpick" = "all:fa" ] && ok "probe-resolves-tie (picked all:fa)" \
+                        || bad "probe-resolves-tie (got: $cpick)"
+if diff <(LC_ALL=C sort "$OUT/corr_on/ans.csv") \
+        <(LC_ALL=C sort "$OUT/corr_off/ans.csv") >/dev/null 2>&1
+then ok "probe-equivalence (corr_mini ans)"
+else bad "probe-equivalence"; fi
 
 echo
 echo "$PASS passed, $FAIL failed"

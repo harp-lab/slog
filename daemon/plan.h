@@ -22,6 +22,7 @@
 #include <set>
 #include <stdexcept>
 #include <string_view>
+#include <thread>
 #include <variant>
 
 namespace slog
@@ -1690,53 +1691,53 @@ struct BoundExecution
 };
 
 class InterpReadTask;
+class BoundRule;
 
-// J2 choice-group selection state (docs/join-planning-assessment.md): one
-// per (attrs (arm n gid)) group, shared by the group's BoundRules.  The
-// pick resolves LAZILY at the group's first task execution -- attach time
-// is too early: a between-strata reload re-stages prior content as delta
-// batches, so master counts read zero until the first intern -- and is
-// STICKY for the run (a parked continuation resumes under the pick that
-// admitted it; per-iteration reselection is J2b's hysteresis-gated
-// extension).  The signal, tupleCount() + deltaLiveCount() of each arm's
-// driver, is a pure function of database state read while the phase has
-// the indices frozen, so every racing task computes the same argmin and
-// the CAS is benign.  Ties break to the smallest arm index (the planner's
-// structural argmax).  SLOG_FORCE_ARM overrides (test hook; ignored when
-// it names an arm the group lacks).
+// V3 measurement: the sink that stages nothing.  A probe execution runs a
+// candidate arm's machine over the frozen read state purely to METER it.
+struct NullSink final : BoundSink
+{
+  void stage(TupleView) override {}
+  void flush() override {}
+};
+
+// J2/J2b choice-group selection state (docs/join-planning-assessment.md):
+// one per (attrs (arm n gid)) group, shared by the group's BoundRules.
+// The pick is memoized PER READ EPOCH (Database::readEpoch, bumped once
+// per completed iteration): every task of one iteration -- and any read
+// replay within it -- sees the same pick, while each new iteration
+// re-selects against its own delta.  Selection = the counts screen
+// (tupleCount + deltaLiveCount of each arm's driver; the clear 100-300x
+// skew class resolves here for free), then bounded EMISSION-FREE probes
+// of the near-tied arms (the V3 measurement layer): each candidate's own
+// machine runs over the frozen read state under a meter budget -- a bad
+// arm's probe simply hits the cap and is abandoned, which is the blowup
+// detector -- and the measured meter (cursor ticks + driver rows) picks
+// the argmin.  Every input is a pure function of database state read
+// while the phase has indices frozen, so racing tasks agree; the first
+// task to arrive claims the epoch and computes, siblings spin-yield for
+// the bounded probe duration.  Ties break to the smallest arm index (the
+// planner's structural argmax).  SLOG_FORCE_ARM overrides (test hook).
 struct ArmGroup
 {
+  std::atomic<u64> epoch_done{~0ull};
+  std::atomic<u64> epoch_claim{~0ull};
   std::atomic<int> pick{-1};
-  std::vector<std::pair<int, Relation*>> drivers;  // ascending arm order
-  int select()
+  // ascending arm order.  Raw pointers to the OWNED task copies: attach()
+  // clones each bound rule into a shared_ptr its tasks hold for the
+  // stratum's lifetime and registers that clone here (adopt) -- the
+  // bind_kernel_plan originals die when attach_normal_rules returns.  The
+  // group is reachable only from those same-stratum copies, so member
+  // lifetimes coincide; raw avoids a rule<->group shared_ptr cycle.
+  std::vector<std::pair<int, const BoundRule*>> arms;
+  void adopt(int arm, const BoundRule* rule)
   {
-    const int seen = pick.load(std::memory_order_acquire);
-    if (seen >= 0) return seen;
-    int best = -1;
-    if (const char* e = std::getenv("SLOG_FORCE_ARM"))
-    {
-      const int want = std::atoi(e);
-      for (const auto& [a, r] : drivers)
-        if (a == want) { (void)r; best = want; break; }
-    }
-    if (best < 0)
-    {
-      u64 best_rows = 0;
-      for (const auto& [a, r] : drivers)
-      {
-        const u64 rows =
-          r == nullptr ? 0 : r->tupleCount() + r->deltaLiveCount();
-        if (std::getenv("SLOG_ARM_DEBUG") != nullptr)
-          fprintf(stderr, "[arm] select arm=%d rows=%llu\n",
-                  a, (unsigned long long)rows);
-        if (best < 0 || rows < best_rows) { best = a; best_rows = rows; }
-      }
-    }
-    int expected = -1;
-    pick.compare_exchange_strong(expected, best,
-                                 std::memory_order_acq_rel);
-    return pick.load(std::memory_order_acquire);
+    arms.emplace_back(arm, rule);
+    std::sort(arms.begin(), arms.end(),
+              [](const auto& x, const auto& y) { return x.first < y.first; });
   }
+  int currentPick(Database* db);   // defined after BoundRule
+  int selectPick(Database* db);
 };
 
 class BoundRule
@@ -2375,15 +2376,43 @@ public:
 
   std::unique_ptr<BoundExecution> make_execution(Database* db, u16 bucket) const
   {
+    return make_execution_impl(db, bucket, false);
+  }
+
+  // V3 measurement (docs/join-planning-assessment.md, "the measurement
+  // layer"): a bounded, EMISSION-FREE execution of this arm over the
+  // frozen read state -- same driver, cursors, pre pass, and prefilters as
+  // production, but null sinks, no stepper, and a swallowed error channel.
+  // The caller meters it (Attempt::work + driver_rows) under a budget and
+  // abandons it: fires and work merge only through InterpReadTask's
+  // complete path, which a probe never takes, so probes are invisible to
+  // every audit, stat, and sink by construction.
+  std::unique_ptr<BoundExecution> make_probe_execution(Database* db,
+                                                       u16 bucket) const
+  {
+    return make_execution_impl(db, bucket, true);
+  }
+
+private:
+  static void probe_error_noop(Database*, const char*) {}
+
+  std::unique_ptr<BoundExecution> make_execution_impl(Database* db,
+                                                      u16 bucket,
+                                                      bool probe) const
+  {
     seal_check(db != nullptr && (database == nullptr || database == db),
                SealErrorK::binding,
                "bind: execution database does not match bound database");
     auto execution = std::make_unique<BoundExecution>();
     execution->sinks.reserve(sealed.heads.size() + sealed.effects.size());
     for (const EmitPlan& head : sealed.heads)
-      execution->sinks.push_back(make_head_sink(head));
+      execution->sinks.push_back(probe
+        ? std::unique_ptr<BoundSink>(new NullSink())
+        : make_head_sink(head));
     for (const EmitPlan& effect : sealed.effects)
-      execution->sinks.push_back(make_effect_sink(effect));
+      execution->sinks.push_back(probe
+        ? std::unique_ptr<BoundSink>(new NullSink())
+        : make_effect_sink(effect));
     std::vector<BoundSink*> ports;
     for (auto& sink : execution->sinks) ports.push_back(sink.get());
 
@@ -2416,15 +2445,23 @@ public:
     // set-semantics rule's stats_loc is the disaggregated
     // `<interp-rule:N:variant:M>` identity, while a frame should name the
     // source position the operator wrote (interp.h's Program::source).
-    execution->stepper = std::make_unique<StepSink>(
-      db, &pinned->source, &pinned->variant, &proof_schema);
+    // A PROBE gets neither the stepper (it is a meter, not a debuggable
+    // execution) nor the real error channel (a prim fault during a probe
+    // must not grow error relations; the production run re-encounters and
+    // reports it).
+    if (!probe)
+      execution->stepper = std::make_unique<StepSink>(
+        db, &pinned->source, &pinned->variant, &proof_schema);
     execution->machine = std::make_unique<Machine>(
       pinned, std::move(driver), make_cursors(), std::move(ports),
-      execution->stepper.get(),
-      false, db, primitives, tychecks, error_fn,
+      probe ? nullptr : execution->stepper.get(),
+      false, db, primitives, tychecks,
+      probe ? &probe_error_noop : error_fn,
       std::move(initial));
     return execution;
   }
+
+public:
 
   void apply(const Attempt& attempt) const
   {
@@ -2500,6 +2537,118 @@ public:
 std::vector<std::shared_ptr<BoundRule>> bind_kernel_plan(
   const SealedKernelPlan& plan, Database& db);
 
+// V3 measurement: meter one arm over the frozen read state, emission-free,
+// stopping at `budget` meter units (cursor ticks + driver rows -- both
+// V0 Attempt counters, so every enumeration path is bounded).  Walks the
+// arm's own task partition (every bucket) until done or capped.  Returns
+// min(actual, budget): a capped arm reads as exactly `budget`, which is
+// all the selector needs -- worse than any uncapped sibling.
+inline u64 probe_arm_meter(const BoundRule& rule, Database* db, u64 budget)
+{
+  u64 spent = 0;
+  const u32 buckets = rule.task_count();
+  for (u32 b = 0; b < buckets && spent < budget; ++b)
+  {
+    auto ex = rule.make_probe_execution(db, (u16)b);
+    for (;;)
+    {
+      const u64 left = budget - spent;
+      const StopReason why = ex->machine->run(left, left);
+      const Attempt& a = ex->machine->result();
+      const u64 meter = a.work + a.driver_rows;
+      if (why == StopReason::complete || spent + meter >= budget)
+      {
+        spent += meter;
+        break;
+      }
+      // quantum/cursor pause below the remaining budget: keep metering
+    }
+  }
+  return spent > budget ? budget : spent;
+}
+
+inline int ArmGroup::selectPick(Database* db)
+{
+  const bool dbg = std::getenv("SLOG_ARM_DEBUG") != nullptr;
+  if (const char* e = std::getenv("SLOG_FORCE_ARM"))
+  {
+    const int want = std::atoi(e);
+    for (const auto& [a, r] : arms)
+      if (a == want) { (void)r; return want; }
+  }
+  // 1. the counts screen: keep arms within 2x of the smallest driver
+  std::vector<u64> rows(arms.size());
+  u64 cmin = ~0ull;
+  for (size_t i = 0; i < arms.size(); ++i)
+  {
+    Relation* r = arms[i].second->driverRelation();
+    rows[i] = r == nullptr ? 0 : r->tupleCount() + r->deltaLiveCount();
+    if (rows[i] < cmin) cmin = rows[i];
+  }
+  std::vector<size_t> cand;
+  for (size_t i = 0; i < arms.size(); ++i)
+    if (rows[i] <= 2 * cmin) cand.push_back(i);
+  if (dbg)
+    for (size_t i = 0; i < arms.size(); ++i)
+    {
+      Relation* r = arms[i].second->driverRelation();
+      fprintf(stderr, "[arm] screen arm=%d driver=%s full=%llu delta=%llu%s\n",
+              arms[i].first, r == nullptr ? "<none>" : r->getName().c_str(),
+              (unsigned long long)(r ? r->tupleCount() : 0),
+              (unsigned long long)(r ? r->deltaLiveCount() : 0),
+              rows[i] <= 2 * cmin ? " (candidate)" : "");
+    }
+  if (cand.size() == 1) return arms[cand[0]].first;
+  // 2. bounded emission-free probes of the near-tied arms; if every
+  // candidate hits the cap, escalate the budget once (successive
+  // halving's first rung) before settling for the smallest arm index
+  u64 budget = 4096;
+  if (const char* e = std::getenv("SLOG_MEASURE_BUDGET"))
+  {
+    const long v = std::atol(e);
+    if (v > 0) budget = (u64)v;
+  }
+  for (int round = 0; round < 2; ++round)
+  {
+    size_t best = cand[0];
+    u64 best_meter = ~0ull;
+    bool all_capped = true;
+    for (size_t i : cand)
+    {
+      const u64 m = probe_arm_meter(*arms[i].second, db, budget);
+      if (dbg)
+        fprintf(stderr, "[arm] probe arm=%d meter=%llu budget=%llu\n",
+                arms[i].first, (unsigned long long)m,
+                (unsigned long long)budget);
+      if (m < budget) all_capped = false;
+      if (m < best_meter) { best = i; best_meter = m; }
+    }
+    if (!all_capped || round == 1) return arms[best].first;
+    budget *= 8;
+  }
+  return arms[cand[0]].first;   // unreachable
+}
+
+inline int ArmGroup::currentPick(Database* db)
+{
+  const u64 e = db->readEpoch();
+  if (epoch_done.load(std::memory_order_acquire) == e)
+    return pick.load(std::memory_order_relaxed);
+  u64 claim = epoch_claim.load(std::memory_order_relaxed);
+  if (claim == e
+      || !epoch_claim.compare_exchange_strong(claim, e,
+                                              std::memory_order_acq_rel))
+  {
+    // a sibling task claimed this epoch: wait out its bounded probes
+    while (epoch_done.load(std::memory_order_acquire) != e)
+      std::this_thread::yield();
+    return pick.load(std::memory_order_relaxed);
+  }
+  pick.store(selectPick(db), std::memory_order_relaxed);
+  epoch_done.store(e, std::memory_order_release);
+  return pick.load(std::memory_order_relaxed);
+}
+
 class InterpReadTask final : public Task
 {
   Database* db;
@@ -2516,12 +2665,15 @@ public:
 
   bool work() override
   {
-    // J2 choice groups: only the selected arm of a group does work; the
-    // other arms' tasks complete as no-ops (nothing staged, nothing
-    // merged -- their fires and work never existed).  The pick is sticky,
-    // so a parked continuation always re-passes the gate that admitted it.
+    // J2/J2b choice groups: only the currently selected arm of a group
+    // does work; the other arms' tasks complete as no-ops (nothing staged,
+    // nothing merged -- their fires and work never existed).  The pick is
+    // per read epoch: stable across every task and replay of ONE
+    // iteration (a parked continuation always re-passes the gate that
+    // admitted it -- the epoch cannot advance under a parked read), and
+    // re-selected against each new iteration's delta.
     if (rule->arm_group != nullptr
-        && rule->arm_group->select() != rule->definition().arm)
+        && rule->arm_group->currentPick(db) != rule->definition().arm)
       return true;
     std::unique_ptr<BoundExecution> execution = parked
       ? std::move(parked) : rule->make_execution(db, bucket);
@@ -2589,6 +2741,11 @@ inline void BoundRule::attach(Database* db, Stratum* stratum,
                               ReadSchedule schedule) const
 {
   auto owned = std::make_shared<const BoundRule>(*this);
+  // J2/J2b choice groups: the group must meter the OWNED copy (this
+  // object is bind_kernel_plan's transient; the copy lives as long as the
+  // stratum's tasks).  The shared arm_group pointer itself was copied in.
+  if (arm_group != nullptr)
+    arm_group->adopt(definition().arm, owned.get());
   for (u16 bucket = 0; bucket < task_count(); ++bucket)
   {
     Task* task = new InterpReadTask(db, owned, bucket);
