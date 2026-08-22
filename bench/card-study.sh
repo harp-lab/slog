@@ -36,28 +36,29 @@ mkdir -p "$OUT"
 raco make compiler/run.rkt >/dev/null 2>&1
 
 declare -A QMS WALL ROWS
-run_one() {  # prog
-  local p="$1" log="$OUT/$1.log" dbg="$OUT/$1"
+run_one() {  # prog [key] [extra env...]
+  local p="$1" key="${2:-$1}"; shift; shift 2>/dev/null || true
+  local log="$OUT/$key.log" dbg="$OUT/$key"
   rm -rf "$dbg"
   local t0 t1
   t0=$(date +%s.%N)
-  SLOG_OPT="$TIER" timeout "$TIMEOUT" racket compiler/run.rkt \
+  env "$@" SLOG_OPT="$TIER" timeout "$TIMEOUT" racket compiler/run.rkt \
     --no-banner --debug-dir "$dbg" "bench/$p.slog" > "$log" 2>&1
   local rc=$?
   t1=$(date +%s.%N)
-  WALL[$p]=$(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.1f", b-a}')
+  WALL[$key]=$(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.1f", b-a}')
   if [ $rc -ne 0 ]; then
-    QMS[$p]=$([ $rc -eq 124 ] && echo TIMEOUT || echo "FAIL($rc)")
-    ROWS[$p]=-
+    QMS[$key]=$([ $rc -eq 124 ] && echo TIMEOUT || echo "FAIL($rc)")
+    ROWS[$key]=-
   else
-    QMS[$p]=$(grep '^(fixpoint' "$log" | tail -1 | awk '{v=$NF; gsub(/\)/,"",v); printf "%.1f", v}')
+    QMS[$key]=$(grep '^(fixpoint' "$log" | tail -1 | awk '{v=$NF; gsub(/\)/,"",v); printf "%.1f", v}')
     local f
-    for f in ans walk; do
-      [ -e "$dbg/$f.csv" ] && ROWS[$p]=$(wc -l < "$dbg/$f.csv")
+    for f in ans walk walkg; do
+      [ -e "$dbg/$f.csv" ] && ROWS[$key]=$(wc -l < "$dbg/$f.csv")
     done
   fi
-  printf "%-22s %-7s | query-stratum %10s ms | wall %6ss | rows %8s\n" \
-         "$p" "$TIER" "${QMS[$p]}" "${WALL[$p]}" "${ROWS[$p]:--}"
+  printf "%-26s %-7s | query-stratum %10s ms | wall %6ss | rows %8s\n" \
+         "$key" "$TIER" "${QMS[$key]}" "${WALL[$key]}" "${ROWS[$key]:--}"
 }
 
 PROGS="card_bait card_bait_good card_skew_a card_skew_a_good card_skew_b
@@ -84,6 +85,22 @@ diffpair walk card_flip_ac    card_flip_oracle   "flip_ac vs oracle"
 diffpair walk card_monster_ac card_monster_ca    "monster ac vs ca"
 
 echo
+echo "-- runtime selection (SLOG_MULTIPLAN=1, unforced; one artifact each) --"
+run_one card_bait        bait-mp    SLOG_MULTIPLAN=1 SLOG_MEM_MAX=16G
+run_one card_skew_a      skew_a-mp  SLOG_MULTIPLAN=1
+run_one card_skew_b      skew_b-mp  SLOG_MULTIPLAN=1
+run_one card_corr        corr-mp    SLOG_MULTIPLAN=1
+run_one card_flip_ac     flip_ac-mp SLOG_MULTIPLAN=1
+run_one card_flip_ca     flip_ca-mp SLOG_MULTIPLAN=1
+run_one card_monster_ac  monster-mp SLOG_MULTIPLAN=1
+echo "-- probe-blind (XFAIL: motivates the R5 tripwire + R1 rescue) --"
+run_one card_probe_blind pblind-mp     SLOG_MULTIPLAN=1
+run_one card_probe_blind pblind-oracle SLOG_MULTIPLAN=1 SLOG_FORCE_ARM=1
+pbr=$(awk -v a="${QMS[pblind-mp]}" -v b="${QMS[pblind-oracle]}" \
+      'BEGIN{ if (a+0!=a || b+0!=b || b==0) print "n/a"; else printf "%.1f", a/b }')
+echo "  probe-blind unforced/oracle: ${pbr}x (EXPECTED >> 1 until the rescue ships; no gate)"
+
+echo
 echo "ratio gates (bad-plan / oracle query-stratum ms):"
 gate() {  # bad good min label
   local r
@@ -103,6 +120,27 @@ gate card_corr        card_corr_good    5  "corr / corr_good"
 gate card_flip_ac     card_flip_oracle  10 "flip_ac / oracle"
 gate card_flip_ca     card_flip_oracle  10 "flip_ca / oracle"
 gate card_monster_ac  card_monster_ca   50 "monster ac / ca"
+
+echo
+echo "selection gates (SLOG_MULTIPLAN unforced / oracle; small = selector works):"
+sgate() {  # mp-key oracle-key max label
+  local r
+  r=$(awk -v a="${QMS[$1]}" -v b="${QMS[$2]}" \
+        'BEGIN{ if (a+0!=a || b+0!=b || b==0) print "n/a"; else printf "%.1f", a/b }')
+  local ok="?"
+  if [ "$r" != "n/a" ]; then
+    ok=$(awk -v r="$r" -v m="$3" 'BEGIN{print (r<=m) ? "PASS" : "MISS"}')
+  fi
+  printf "  %-32s %8sx (gate <= %sx)  %s\n" "$4" "$r" "$3" "$ok"
+  [ "$ok" = MISS ] && fail=1
+}
+sgate bait-mp    card_bait_good    6 "bait-mp / bait_good"
+sgate skew_a-mp  card_skew_a_good  3 "skew_a-mp / a_good"
+sgate skew_b-mp  card_skew_b       3 "skew_b-mp / skew_b"
+sgate corr-mp    card_corr_good    4 "corr-mp / corr_good"
+sgate flip_ac-mp card_flip_oracle  2 "flip_ac-mp / flip_oracle"
+sgate flip_ca-mp card_flip_oracle  2 "flip_ca-mp / flip_oracle"
+sgate monster-mp card_monster_ca   4 "monster-mp / monster_ca"
 
 if [ "${CARD_ASSERT:-0}" = 1 ] && [ $fail -ne 0 ]; then
   echo "CARD_ASSERT: gate or equivalence failure"; exit 1

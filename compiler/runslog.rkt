@@ -625,7 +625,17 @@
            ;; fixpoint: erroring (rather than sailing on to the terminal actions)
            ;; is what keeps a half-run from masquerading as a successful one
            (unless (drive-stratum! sb tag)
-             (error "daemon output ended (EOF) mid-stratum -- the daemon died or went silent"))
+             (error (string-append
+                     "daemon output ended (EOF) mid-stratum -- the daemon died"
+                     " or went silent.  A silent death here is most often the"
+                     " systemd-run memory cap killing slogd (install-time"
+                     " index builds bypass the in-daemon OOM diagnostics):"
+                     " check `journalctl --user -t systemd` for an oom-kill"
+                     " and raise SLOG_MEM_MAX (default 4G), or set"
+                     " SLOG_NO_MEM_CAP=1 to launch uncapped.  Large-relation"
+                     " index-ordering unions (e.g. SLOG_MULTIPLAN arm"
+                     " requisitions over multi-million-row relations) are a"
+                     " known trigger (docs/join-planning-assessment.md).")))
            ;; After the facts stratum fixpoints (its output is the pure iteration-0
            ;; EDB), snapshot the root before any derived tuple exists (P0.5).  A
            ;; silent write-db emits no line, so it cannot desync the next stratum's

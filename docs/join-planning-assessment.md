@@ -1,4 +1,4 @@
-# Join-planning assessment (2026-08-15; design ratified 2026-08-20)
+# Join-planning assessment (2026-08-15; selection V0–V3 shipped 2026-08-21)
 
 Prompted by a report that *simple queries on large knowledge graphs run
 slower than expected, apparently in the join planning*. This assesses the
@@ -218,15 +218,121 @@ interp/compile and compose with the existing lower-level mechanics
   see the suite section below). Wire `CARD_ASSERT=1` into a cardsel tier as
   the J-phases land.
 
-## Proposed direction: runtime plan selection + bounded measurement
+## Runtime plan selection + bounded measurement
 
-**Status — DESIGN RATIFIED 2026-08-20. Not implemented.**
-First pass 2026-08-15 (mechanism sketch); refined the same day (verified
-compiler/daemon anchors, racing rejected as a control mechanism, phased
-roadmap). Extended and **ratified 2026-08-20**: a bounded, emission-free
-*measurement layer* joins the counts-based selector (decisions R1–R5
-recorded below), and the motivating blowup suite is **built and measured**
-(`bench/card-study.sh`; table below, validated at HEAD `bd23002`).
+**Status — SHIPPED V0–V3, 2026-08-20/21** (`8564861` work counters,
+`e08af3b` J1 arms, `7550680` J2 counts selector, `60b727f` V3 measurement
+layer), behind `SLOG_MULTIPLAN` (flag off ⇒ plan bytes unchanged, gated
+by plan-goldens + plan-determinism). Design history: mechanism sketch and
+verified anchors 2026-08-15; racing rejected; measurement layer and
+decisions R1–R5 ratified 2026-08-20; built and measured through 08-21.
+The ratified-design sections below are kept as the rationale record; the
+**As built** section right after records where implementation corrected
+the design.
+
+### As built (V0–V3): the architecture that shipped
+
+- **V0 — work counters.** The interpreter's per-row tick and driver-row
+  pull accumulate in `Attempt` beside `fires` (settled once per
+  `run_loop` invocation at every exit), merge on complete only, and
+  publish as `$stat_work(loc, tag, ticks, driver_rows)` — keyed by the
+  FULL variant, so work attributes per ARM while fires stay
+  audit-aggregated under the stripped tag.
+- **V1 — arms are sibling rule-defs, not a `(choose)` form.** An eligible
+  version's alternative order is a second rule-def sharing prov→rid and
+  (for tail arms) the driver→base tag; canonical-plan's existing
+  `(rid, tag)` grouping mints the `#N` ordinals, seal uniqueness holds on
+  the suffixed variants, and fire identity is untouched.  The mark rides
+  the crule kind slot into an ABI-2 `(attrs (arm n gid))` exec entry —
+  the **gid** (kernel-unique, minted along plan-stratum's canonical walk)
+  is the group key, because closed-rule whole-order arms carry different
+  drivers, hence different tags.  Dynamic tail arms come from a
+  `#:banned-first` re-run of the greedy scheduler; closed-rule arms are
+  the already-enumerated drive-from-each candidates, retained one per
+  DISTINCT driver relation (cap 4).  Arm crules never enter native
+  coverage; index needs union automatically (eager-union default).
+- **V2/V3 — the selection gate.** ALL arms attach; each shares an
+  `ArmGroup` cell, and the task gate in `InterpReadTask::work` lets
+  exactly one arm do work per iteration.  The pick memoizes per **read
+  epoch** (`Database::read_epoch`, bumped at the `EndIterCompletion`
+  barrier): every task and any abort-REPLAY of one iteration sees the
+  same pick — the T6 determinism story survives — while each new
+  iteration re-selects against its own delta.  Selection = the **counts
+  screen** (arms within 2× of the smallest driver by
+  `tupleCount() + deltaLiveCount()`; the skew class resolves here at zero
+  probe cost) then **bounded emission-free probes** of the near-tied
+  arms: `make_probe_execution` runs the arm's own machine over the frozen
+  read state with null sinks, no stepper, and a swallowed error channel,
+  metered by the V0 counters under `SLOG_MEASURE_BUDGET` (default 4096,
+  one 8× escalation when every candidate caps).  **The budget cap is the
+  blowup detector**: a bad arm's probe hits the cap and is abandoned
+  free — probes are invisible to every audit, stat, and sink because
+  fires/work merge only on the complete path a probe never takes.  The
+  first group task of an epoch claims and probes; siblings spin-yield
+  for the bounded duration.  `SLOG_FORCE_ARM` forces (test hook);
+  `SLOG_ARM_DEBUG=1` traces screens, probes, and picks.
+
+**Corrections the implementation made to the ratified design:**
+
+1. **Attach-time counts read ZERO** — the between-strata reload re-stages
+   prior content as delta batches, so masters are empty until the first
+   intern.  Selection therefore lives at first task execution (the gate),
+   not at attach, and the size signal is `tupleCount() + deltaLiveCount()`
+   (the new `Relation::deltaLiveCount`, accelRecordRound's counting
+   idiom).
+2. **`BoundRule::attach` COPIES the rule** into its tasks' shared
+   ownership; the group must adopt the OWNED copies (the
+   bind_kernel_plan originals die when `attach_normal_rules` returns).
+   Task-time probes against the originals read freed memory — found as
+   two crashes and garbage picks, fixed by `ArmGroup::adopt` inside
+   `attach`.
+3. **No tripwire or rescue was needed for the entry suite.**  Per-epoch
+   probing with the budget cap subsumed the ratified R5 tripwire for
+   every case whose delta the probe can traverse or cap on — including
+   the single-row monster (its probe caps).  The R5/R1 machinery is
+   NOT dead: `bench/card_probe_blind.slog` (below) is its motivating
+   case.
+4. **Whole-order arms fire under driver-named tags** (`all:<driver>`), so
+   the arm-invariant is the per-LOC fires total; tail arms keep exact
+   per-key fires identity.  Gates sum over tags for closed arms.
+5. **Entry measurement subsumed "measure at stratum entry for flagged
+   rules"**: the near-tie screen IS the flag, evaluated per group per
+   epoch, so no compiler-side sensitivity flag was needed for
+   measurement (the emission gate in the planner still bounds which
+   rules carry arms at all).
+
+**Measured (unforced, one artifact per case; interp tier):**
+
+| case | static bad | selected (V3) | oracle | note |
+|---|---:|---:|---:|---|
+| `card_skew_a` / `_b` | 4994 | 25.5 / 23.3 ms | 16.5 | counts screen only, no probes |
+| `card_bait` | 4148 | ~3.8 s incl. index build | 1077 | needs `SLOG_MEM_MAX=16G` (below) |
+| `card_corr` | 9479 | 128 ms | 83 | probes resolve exactly-tied counts |
+| `card_flip_ac` / `_ca` | 69446 / 85350 | 1846 / 1822 ms | 2071 | **beats the hand-split oracle**; both arms run, per phase |
+| `card_monster_ac` | 38810 | 69.6 ms | 57 | the single-row monster's probe caps |
+| `card_probe_blind` | — | **128.7 s (XFAIL)** | 0.55 s | see below |
+
+`bench/card-study.sh` now runs both worlds (static gates + selection
+gates, `CARD_ASSERT=1` to enforce) and is the standing gate for every
+later phase.
+
+**The known limitation, as a bench — `card_probe_blind` (XFAIL).**  A
+20k-row-per-iteration walk hides ONE 2×10⁹-probe wing at iteration 20.
+Both arms' probes cap on clean rows at every budget rung and tie blind
+(and a hash-window sample would miss one row in 20k anyway); the real
+run eats the wing: 233× worse than `SLOG_FORCE_ARM=1`.  Only detection
+DURING execution — the ratified R5 rate tripwire (per-row ĉ from the
+$stat_work baseline) plus the R1 driver-boundary / mid-subtree switch —
+can save a monster hiding in a big delta.  That is the next major
+phase, now with its evidence in the repo.
+
+**The index-cost finding.**  The eager arm-union built several new
+9M-row orderings for `card_bait` and the systemd-run 4G cgroup cap
+OOM-killed slogd **silently at install time** (the in-daemon OOM
+diagnostics never see a cgroup kill; the runslog EOF error now names
+this cause and the remedies).  This is the concrete evidence for the
+free-arms-only / budgeted / lazy index-policy knobs — still unbuilt;
+eager-union remains the only mode.
 
 ### The idea
 
@@ -598,46 +704,44 @@ Daemon — measurement (verified 2026-08-20):
   range count. Any prefix probe must be budget-capped; this is why the
   measurement primitive is tick-budgeted execution, not "count the range".
 
-### Phased roadmap (revised 2026-08-20)
+### Phased roadmap (statuses as of 2026-08-21)
 
-- **J0 — size-blind robustness (compiler-only, partially landed).**
+- **SHIPPED — J1 (`e08af3b`), J2 (`7550680`), J2b-as-V3 (`60b727f`)**:
+  see "As built" above.  J2b shipped as per-iteration emission-free
+  probing rather than counts-with-hysteresis — the probe subsumes the
+  counts signal for tail arms (which always tie on counts) and needs no
+  hysteresis at current budgets (≤ ~74k meter per group-iteration worst
+  case, negligible against any real iteration).
+- **NEXT — the R5 tripwire + R1 rescue**, motivated and gated by
+  `bench/card_probe_blind.slog` (233× XFAIL): per-row rate ĉ from the
+  now-live `$stat_work` baselines, trip at
+  `ticks > C_floor + k·ĉ·rows_consumed` during execution, pause at
+  driver boundaries, re-measure the REMAINDER, transplant-resume under
+  the winner (set flavors may redo a half-expanded subtree; counted
+  flavors switch at boundaries only — the R1 matrix below).
+- **NEXT — index-policy knobs** (free-arms-only / budgeted / lazy) +
+  the install-OOM story: `card_bait`'s silent 4G cgroup kill is the
+  evidence (the runslog EOF error now names it; the knobs remain
+  unbuilt).
+- **J3 — native tier for choice rules** (unchanged shape: dominant-arm
+  or K×-cluster; requires the native tick accumulator for tripwire
+  parity).
+- **J0 — size-blind robustness (compiler-only, partially landed;
+  deprioritized).**  With runtime selection shipped, the static-score
+  fixes matter mainly for flag-off users; the const-bait case is
+  handled by the selector (bait picks a 100-row driver), and the
+  dem_lambda history shows the static score cannot distinguish a
+  selective constant probe from a bait without data.
   S1/S1b (`e63ca3a`) fixed the compute cliff and profile-distinguishable
   expand ties *inside the searched world*; S2/S3 (`6c26f46`, `bd23002`)
-  degraded the cap cliff and added gated fragment factoring. Still open
-  here: the scalar/greedy driver score (constants bait it —
-  `card_bait`), FD/key-aware preference (option 3), and the tie polarity
-  (option 4). The ratio tripwire exists: `bench/card-study.sh`.
-- **J1 — plan-set emission (compiler-only, behind `SLOG_MULTIPLAN`).**
-  Retain top-K for closed/seeded rules; K=2 tails per dynamic version.
-  Sensitivity gate: only multi-join rules with no key-bound driver and
-  tied/near-tied candidates get K>1; no lattice-merging rules. Arm 0 =
-  today's argmax (flag off → byte-identical plans). **Uniform arm
-  vocabulary across flavor twins. Index requisition per the ratified
-  policy (eager union default; free-only / lazy knobs).** Choice rules
-  drop out of native coverage (interp-only entry).
-- **J2 — the daemon selector + entry measurement.** Decode + seal arms;
-  counts argmin at stratum entry (whole orders) and fixpoint entry
-  (tails); **bounded emission-free entry measurement** for flagged rules
-  per R3, mandatory for flagged closed rules. Chosen arm and measured ĉ
-  published as diagnostics (a column beside `$stat_fixpoint`).
-- **J2b — per-iteration reselection + the tripwire and rescue.**
-  Counts-only reselection with hysteresis at `EndIterCompletion`; interp
-  tick accumulation; the R5 rate tripwire; on trip: pause at driver
-  boundaries → re-measure remaining sample → transplant-resume under the
-  winner (R1 flavor matrix). Gate: `card_flip` within a small multiple of
-  its oracle; `card_monster` (set flavor) rescued mid-subtree.
-- **J3 — native tier for choice rules.** Compile the dominant arm (or a
-  K×-cluster with a selector branch, bounded by the sensitivity gate) once
-  J2 shows which choice rules stay hot; add the native per-rule tick
-  accumulator (the tripwire's native leg). `crule-natively-covered?` is
-  the single policy function; the policy knob joins the job-hash settings
-  block.
-- *(The former J4 — "measured adaptation, probably never" — is dissolved:
-  measurement is now the J2/J2b layer, made sound by being emission-free.
-  Racing remains rejected as a control mechanism.)*
+  degraded the cap cliff and added gated fragment factoring.  Still open
+  in principle: the scalar/greedy driver score, FD/key-aware preference
+  (option 3), and the tie polarity (option 4).
 
-Each phase lands behind the card-study gate; targeted batteries per phase,
-full suite at arc end per the standing test discipline.
+Every phase lands behind the card-study gate (`CARD_ASSERT=1
+bench/card-study.sh` covers the static ratios AND the selection
+ratios); targeted batteries per phase, full suite at arc end per the
+standing test discipline.
 
 ### The cardsel blowup suite (BUILT and measured 2026-08-20)
 
@@ -752,8 +856,27 @@ reduce how often a choice group is even needed.
 - Failing examples: `bench/path_driver.slog`, `bench/star_driver.slog` and
   `_good` twins (`bench/gen.py`); the cardsel suite `bench/card_bait*.slog`,
   `bench/card_skew_*.slog`, `bench/card_corr*.slog`,
-  `bench/card_flip_*.slog`, `bench/card_monster_*.slog`, harness
-  `bench/card-study.sh` (opt-in; `CARD_ASSERT=1` gates).
+  `bench/card_flip_*.slog`, `bench/card_monster_*.slog`, and the XFAIL
+  `bench/card_probe_blind.slog`; harness `bench/card-study.sh` (opt-in;
+  `CARD_ASSERT=1` gates static ratios AND selection ratios).
+- Shipped selection machinery (V0–V3): compiler — `multiplan-enabled`
+  (`params.rkt`; job-hashed in `compile.rkt`), arm generation + gid mint
+  (`join-planning.rkt`, `#:banned-first` in `schedule-body-actions`), arm
+  marks (`ir-shared.rkt` `arm-mark!`/`planned-rule-arm`, transferred
+  across `globalize-constants`), kind vocabulary (`ir-stack.rkt`),
+  `(attrs (arm n gid))` emission (`canonical-plan.rkt`), native exclusion
+  (`tier-policy.rkt`); daemon — attrs decode + re-application
+  (`plan.cpp`), `ArmGroup`/`currentPick`/`selectPick`/`probe_arm_meter` +
+  `make_probe_execution` + `NullSink` + the task gate (`plan.h`),
+  `read_epoch` + `deltaLiveCount` (`database.h`), group wiring
+  (`plan-count.cpp` `attach_normal_rules`).
+- Knobs: `SLOG_MULTIPLAN` (compile-time, job-hashed);
+  `SLOG_MEASURE_BUDGET` (runtime, default 4096), `SLOG_FORCE_ARM`
+  (runtime test hook), `SLOG_ARM_DEBUG` (runtime tracing) — runtime knobs
+  never enter any cache key.
+- Batteries: `tests/multiplan-tests.sh` (18 checks) over
+  `tests/multiplan/{flip_mini,skew_mini_a,skew_mini_b,corr_mini}.slog` —
+  always-on, fast; the full-scale study stays opt-in.
 - Planner: `compiler/join-planning.rkt` (`join-score:991`,
   `best-occurrence:1009`, `schedule-body-actions:1182`; candidate
   enumeration `:756-784`, retention seam `:845-848`, ordinal-bound views
