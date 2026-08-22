@@ -1,0 +1,35 @@
+;; Miniature card_native for the multiplan battery's J3 checks: a
+;; compute-chain recursive walk with equal-cost tail arms.  The battery
+;; runs it interp, O0-without-SLOG_NATIVE_ARM (arms interp), and
+;; O0-with-SLOG_NATIVE_ARM=0 (arm 0 native, group pinned), asserting
+;; identical content, identical per-loc fires, and the pin marker.
+
+table (d int)
+table (n2 int)
+table (n4 int)
+table (n500 int)
+table (kk int)
+table (a int int int)
+table (b int int)
+table (c int int int)
+table (walk int int)
+
+rule (d 0) (d 1) (d 2) (d 3) (d 4) (d 5) (d 6) (d 7) (d 8) (d 9)
+rule (n2 X) <-- (d A) (d B) (= X (+ (* 10 A) B))
+rule (n4 X) <-- (n2 A) (n2 B) (= X (+ (* 100 A) B))
+rule (n500 X) <-- (n4 X) (< X 500)
+
+;; K = 500*I + J for I<10, J<500
+rule (kk K) <-- (d I) (n500 J) (= K (+ (* 500 I) J))
+
+rule (a K X 0) <-- (kk K) (= X (+ 1000000 K))
+rule (b X Z)   <-- (kk K) (= X (+ 1000000 K)) (= Z (+ 3000000 K))
+rule (c K Z 0) <-- (kk K) (= Z (+ 3000000 K))
+
+rule (walk J 0) <-- (n500 J)
+rule (walk K2 V) <-- (walk K V0) (< K 4500)
+                     (a K X P) (b X Z) (c K Z Q)
+                     (= T1 (* X 3)) (= T2 (+ T1 7)) (= T3 (* T2 5))
+                     (= T4 (- T3 11)) (= T5 (* T4 2)) (= T6 (+ T5 13))
+                     (= T7 (- T6 4)) (= V (+ T7 K))
+                     (= K2 (+ K 500))

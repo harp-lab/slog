@@ -42,7 +42,7 @@ run_one() {  # prog [key] [extra env...]
   rm -rf "$dbg"
   local t0 t1
   t0=$(date +%s.%N)
-  env "$@" SLOG_OPT="$TIER" timeout "$TIMEOUT" racket compiler/run.rkt \
+  env SLOG_OPT="$TIER" "$@" timeout "$TIMEOUT" racket compiler/run.rkt \
     --no-banner --debug-dir "$dbg" "bench/$p.slog" > "$log" 2>&1
   local rc=$?
   t1=$(date +%s.%N)
@@ -104,6 +104,17 @@ run_one card_probe_late  plate-oracle  SLOG_MULTIPLAN=1 SLOG_FORCE_ARM=1
 run_one card_probe_rate  prate-mp      SLOG_MULTIPLAN=1
 run_one card_probe_rate  prate-oracle  SLOG_MULTIPLAN=1 SLOG_FORCE_ARM=1
 
+echo "-- J3 native dominant-arm promotion (SLOG_OPT=0) --"
+run_one card_native nat-off SLOG_MULTIPLAN=1 SLOG_OPT=0
+run_one card_native nat-on  SLOG_MULTIPLAN=1 SLOG_OPT=0 SLOG_NATIVE_ARM=0
+sumfix() { grep '^(fixpoint' "$OUT/$1.log" | awk '{v=$NF; gsub(/\)/,"",v); s+=v} END{printf "%.1f", s}'; }
+NOFF=$(sumfix nat-off); NON=$(sumfix nat-on)
+nr=$(awk -v a="$NOFF" -v b="$NON" 'BEGIN{ if (b==0) print "n/a"; else printf "%.2f", a/b }')
+echo "  native promotion: interp-arms ${NOFF}ms / native-pinned ${NON}ms = ${nr}x"
+nok=$(awk -v r="$nr" 'BEGIN{print (r>=1.2) ? "PASS" : "MISS"}')
+printf "  %-32s %8sx (gate >= 1.2x)  %s\n" "nat-off / nat-on (summed fixpoint)" "$nr" "$nok"
+[ "$nok" = MISS ] && fail=1
+
 echo
 echo "ratio gates (bad-plan / oracle query-stratum ms):"
 gate() {  # bad good min label
@@ -142,7 +153,9 @@ sgate() {  # mp-key oracle-key max label
 # 18M-row relations (load-sensitive; measured 3.5-7.3x) -- the linear
 # class.  The index-policy knobs are the real fix; gate loosely until then.
 sgate bait-mp    card_bait_good   10 "bait-mp / bait_good"
-sgate bait-fr    card_bait_good    6 "bait-free / bait_good (4G cap)"
+# bait-free shares bait-mp's load-sensitive floor (18M-row relations;
+# measured 4.7-6.6x across runs) -- the gate asserts sanity, not optimum
+sgate bait-fr    card_bait_good    8 "bait-free / bait_good (4G cap)"
 sgate skew_a-mp  card_skew_a_good  3 "skew_a-mp / a_good"
 sgate skew_b-mp  card_skew_b       3 "skew_b-mp / skew_b"
 sgate corr-mp    card_corr_good    4 "corr-mp / corr_good"

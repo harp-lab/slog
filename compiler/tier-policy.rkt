@@ -140,11 +140,16 @@
 (define (crule-natively-covered? cr ord dynamic-rels #:flavored? [flavored? #f])
   (cond
     [flavored? #t]
-    ;; J1: choice-group arms stay interpreted -- native code cannot select
-    ;; among sibling rule-defs, and covering only SOME arms of a group
-    ;; would let the coverage complement attach the others alongside
-    ;; (docs/join-planning-assessment.md, "tiered native" row).  J3 revisits.
-    [(match (crule-kind cr) [`(arm ,_ ,_) #t] [_ #f]) #f]
+    ;; J1/J3: choice-group arms stay interpreted UNLESS the J3 dominant-arm
+    ;; policy names this crule's arm index (SLOG_NATIVE_ARM; params.rkt has
+    ;; the doctrine) -- then it competes for coverage like any rule, and
+    ;; the daemon PINS its group to it at attach (the interp siblings stay
+    ;; as the permanently-gated complement).
+    [(match (crule-kind cr)
+       [`(arm ,n ,_)
+        (not (and (multiplan-native-arm)
+                  (= n (multiplan-native-arm))))]
+       [_ #f]) #f]
     [else
      (case (native-rule-coverage)
        [(none) #f]

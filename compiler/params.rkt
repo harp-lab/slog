@@ -87,6 +87,24 @@
 ;;               relation gains at most N new FULL orderings (delta
 ;;               orderings are delta-sized and ride free)
 ;; Changes plan bytes, so it joins the job hash (compile.rkt).
+;; SLOG_NATIVE_ARM -- J3 phase 1, the native dominant-arm policy input: an
+;; arm INDEX n means "every choice group's arm n compiles natively (subject
+;; to the ordinary tier policy) and its group PINS to it at attach" -- the
+;; interp siblings stay attached but permanently gated off, and selection/
+;; tripwire are frozen for that rule (the premise of promotion is that
+;; selection already CONVERGED there).  Unset = no native arms (arms stay
+;; interp-only, the J1 default).  This is the explicit hook the
+;; profile-guided loop (phase 1b) will drive; today it is set by hand or by
+;; test harnesses.  Changes which crules are natively covered, hence TU
+;; contents: job-hashed in compile.rkt.
+(define multiplan-native-arm
+  (make-parameter
+   (let ([v (getenv "SLOG_NATIVE_ARM")])
+     (and v (not (equal? v ""))
+          (or (string->number v)
+              (error 'params "SLOG_NATIVE_ARM must be an arm index; got ~a"
+                     v))))))
+
 (define multiplan-index-policy
   (make-parameter
    (let ([v (getenv "SLOG_MULTIPLAN_INDEX")])

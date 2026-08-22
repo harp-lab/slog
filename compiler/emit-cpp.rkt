@@ -936,7 +936,13 @@
 (define ((add-rule dynamic-rels) crule [frame #f])
  (parameterize ([current-rule-loc (or (crule-loc crule) "<unknown>")]
                 [current-rule-loc-cpp (and frame "vloc")]
-                [current-rule-kind (crule-kind crule)])
+                ;; J3: an `(arm n gid)` kind is choice-group metadata, not a
+                ;; COUNT kind -- the consumers below (prim-error-check, the
+                ;; tycheck count branch) treat any truthy kind as counted,
+                ;; so arm kinds must read as #f here
+                [current-rule-kind
+                 (let ([k (crule-kind crule)])
+                   (and k (not (match k [`(arm ,_ ,_) #t] [_ #f])) k))])
   (define (rel-access name)
     (if frame
         (format "f[~a]" ((first frame) name))

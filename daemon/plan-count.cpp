@@ -1004,17 +1004,28 @@ void attach_normal_rules(Database* db, Stratum* stratum,
   // measurement (J2b/V3) can separate them; closed-rule whole-order arms
   // differ by driver, which is exactly the 100-300x skew class.
   std::map<s64, std::shared_ptr<ArmGroup>> arm_groups;
-  for (const auto& r : rules)
+  for (size_t j = 0; j < rules.size(); ++j)
   {
+    const auto& r = rules[j];
     const SealedRule& sr = r->definition();
     if (sr.arm < 0) continue;
     auto& g = arm_groups[sr.arm_gid];
     if (g == nullptr) g = std::make_shared<ArmGroup>();
     // membership is registered by attach() itself, on the OWNED task copy
     r->arm_group = g;
+    // J3: an arm whose ordinal the NATIVE artifact covers runs natively,
+    // unconditionally, every iteration -- pin the group to it so the
+    // interp siblings (the coverage complement) are permanently gated off
+    if (skip_ords != nullptr && skip_ords->count(static_cast<u32>(j)) != 0)
+    {
+      g->pick.store(sr.arm, std::memory_order_relaxed);
+      g->pinned.store(true, std::memory_order_release);
+    }
     if (std::getenv("SLOG_ARM_DEBUG") != nullptr)
-      fprintf(stderr, "[arm] attach group gid=%lld arm=%d variant=%s\n",
-              (long long)sr.arm_gid, sr.arm, sr.program.variant.c_str());
+      fprintf(stderr, "[arm] attach group gid=%lld arm=%d variant=%s%s\n",
+              (long long)sr.arm_gid, sr.arm, sr.program.variant.c_str(),
+              skip_ords != nullptr && skip_ords->count((u32)j) != 0
+                ? " (native, pinned)" : "");
   }
   for (size_t j = 0; j < rules.size(); ++j)
   {

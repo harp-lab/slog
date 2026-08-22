@@ -1723,6 +1723,12 @@ struct ArmGroup
   std::atomic<u64> epoch_done{~0ull};
   std::atomic<u64> epoch_claim{~0ull};
   std::atomic<int> pick{-1};
+  // J3: a group whose dominant arm is NATIVELY covered pins to it -- the
+  // native task runs unconditionally every iteration, so the interp
+  // siblings must be permanently gated off; selection, probing, and the
+  // tripwire are frozen for the rule (promotion's premise is that
+  // selection already converged).  Set once at attach, single-threaded.
+  std::atomic<bool> pinned{false};
   // V4 rescue baseline: the WINNING arm's probe measurement from this
   // epoch's selection (meter units over driver rows probed).  pick_rows
   // == 0 means the pick was screen-only (no probe ran): the tripwire then
@@ -2708,6 +2714,8 @@ inline int ArmGroup::selectPick(Database* db)
 
 inline int ArmGroup::currentPick(Database* db)
 {
+  if (pinned.load(std::memory_order_acquire))
+    return pick.load(std::memory_order_relaxed);
   const u64 e = db->readEpoch();
   if (epoch_done.load(std::memory_order_acquire) == e)
     return pick.load(std::memory_order_relaxed);

@@ -248,6 +248,9 @@
                              ;; ... and the arm index policy decides WHICH
                              ;; arms and orderings exist, so it does too
                              (multiplan-index-policy)
+                             ;; J3: the native dominant-arm pick changes
+                             ;; which crules are covered, hence TU contents
+                             (multiplan-native-arm)
                              ;; T4 slice 4: a partial-coverage artifact must
                              ;; miss the cache, never stand in for a full one
                              (native-rule-coverage)

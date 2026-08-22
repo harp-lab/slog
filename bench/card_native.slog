@@ -1,0 +1,56 @@
+;; CARD-NATIVE: the J3 dominant-arm promotion case.  A recursive walk whose
+;; per-row cost is COMPUTE (a 14-prim arithmetic chain feeding the head --
+;; live, so the needed-gated compute placement cannot prune it), not
+;; probes: the choice-join tails (a-first vs c-first) are equal-cost
+;; singleton chains, so selection converges trivially to arm 0 -- but with
+;; arms present the rule is excluded from native coverage and pays the
+;; interpreter's per-transition dispatch on every prim, forever.
+;; SLOG_NATIVE_ARM=0 compiles arm 0 natively and PINS its group: the
+;; compute chain runs as generated C++ while the sibling arm stays
+;; attached as the permanently gated interp complement.
+;;
+;; Study lines (both SLOG_OPT=0): SLOG_MULTIPLAN=1 alone (choice rule
+;; interp) vs + SLOG_NATIVE_ARM=0 (choice rule native, pinned) -- identical
+;; content and fires, measurably faster.
+
+table (d int)
+table (n2 int)
+table (n4 int)
+table (kk int)
+table (a int int int)
+table (b int int)
+table (c int int int)
+table (walk int int)
+table (acc int int)
+
+rule (d 0) (d 1) (d 2) (d 3) (d 4) (d 5) (d 6) (d 7) (d 8) (d 9)
+rule (n2 X) <-- (d A) (d B) (= X (+ (* 10 A) B))
+rule (n4 X) <-- (n2 A) (n2 B) (= X (+ (* 100 A) B))
+
+;; every live walk key: K = 10000*I + J for I<50, J<10000
+rule (kk K) <-- (n2 I) (< I 50) (n4 J) (= K (+ (* 10000 I) J))
+
+;; the singleton chain, every K
+rule (a K X 0) <-- (kk K) (= X (+ 1000000 K))
+rule (b X Z)   <-- (kk K) (= X (+ 1000000 K)) (= Z (+ 3000000 K))
+rule (c K Z 0) <-- (kk K) (= Z (+ 3000000 K))
+
+;; the walk: equal-cost tails + a live 14-prim compute chain per row
+rule (walk J 0) <-- (n4 J)
+rule (walk K2 V) <-- (walk K V0) (< K 490000)
+                     (a K X P) (b X Z) (c K Z Q)
+                     (= T1 (* X 3)) (= T2 (+ T1 7)) (= T3 (* T2 5))
+                     (= T4 (- T3 11)) (= T5 (* T4 2)) (= T6 (+ T5 13))
+                     (= T7 (* T6 3)) (= T8 (- T7 17)) (= T9 (+ T8 19))
+                     (= TA (* T9 2)) (= TB (+ TA 23)) (= TC (- TB 29))
+                     (= V (+ TC K))
+                     (= K2 (+ K 10000))
+
+;; a closed compute-heavy twin over the finished walk (whole-order arms)
+rule (acc K V) <-- (walk K V0) (< K 490000)
+                   (a K X P) (b X Z) (c K Z Q)
+                   (= T1 (* Z 7)) (= T2 (+ T1 3)) (= T3 (* T2 11))
+                   (= T4 (- T3 5)) (= T5 (* T4 13)) (= T6 (+ T5 2))
+                   (= T7 (* T6 17)) (= T8 (- T7 7)) (= T9 (+ T8 29))
+                   (= TA (* T9 19)) (= TB (+ TA 5)) (= TC (- TB 3))
+                   (= V (+ TC K))

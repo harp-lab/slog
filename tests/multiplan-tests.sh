@@ -223,6 +223,33 @@ if [ "$sfarms" -ge 2 ] \
 then ok "index-free-keeps-zero-cost-arms ($sfarms marked, ans == eager)"
 else bad "index-free-keeps-zero-cost-arms ($sfarms)"; fi
 
+# --- 13. J3 native dominant-arm promotion (native_mini) ----------------------
+# Under SLOG_OPT=0: without SLOG_NATIVE_ARM the choice rule stays interp
+# (no pin marker); with SLOG_NATIVE_ARM=0 arm 0 compiles natively and its
+# group PINS (the attach trace's deterministic footprint), with content
+# and per-loc fires identical to the pure-interp run.
+run_one nat_i  native_mini 1 "" SLOG_ARM_DEBUG=1
+run_one nat_o0 native_mini 1 "" SLOG_ARM_DEBUG=1 SLOG_OPT=0
+run_one nat_on native_mini 1 "" SLOG_ARM_DEBUG=1 SLOG_OPT=0 SLOG_NATIVE_ARM=0
+if [ "$(grep -c 'native, pinned' "$OUT/nat_on.log")" -ge 1 ] \
+   && [ "$(grep -c 'native, pinned' "$OUT/nat_o0.log")" = 0 ]
+then ok "native-arm-pins (marker on, absent off)"
+else bad "native-arm-pins"; fi
+natok=1
+for pair in "nat_i nat_on" "nat_o0 nat_on"; do
+  set -- $pair
+  diff <(LC_ALL=C sort "$OUT/$1/walk.csv") \
+       <(LC_ALL=C sort "$OUT/$2/walk.csv") >/dev/null 2>&1 || natok=0
+done
+[ "$natok" = 1 ] && ok "native-arm-content (identical across tiers)" \
+                 || bad "native-arm-content"
+natloc=$(grep -o 'native_mini.slog:[0-9]*' "$OUT/nat_i/\$stat_fires.csv" | sort | tail -1)
+nf0=$(grep "$natloc" "$OUT/nat_i/\$stat_fires.csv" | awk '{s+=$NF} END{print s+0}')
+nf1=$(grep "$natloc" "$OUT/nat_on/\$stat_fires.csv" | awk '{s+=$NF} END{print s+0}')
+if [ "$nf0" != 0 ] && [ "$nf0" = "$nf1" ]
+then ok "native-arm-fires ($nf0 both executors)"
+else bad "native-arm-fires ($nf0 vs $nf1)"; fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ $FAIL -eq 0 ]
