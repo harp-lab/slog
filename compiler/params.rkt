@@ -72,6 +72,33 @@
                        (not (equal? (getenv "SLOG_PLAN_ABI") "1"))
                        #t)))
 
+;; SLOG_MULTIPLAN_INDEX -- the arm index-cost policy (docs/
+;; join-planning-assessment.md, "the index-cost finding").  Each FULL
+;; ordering is 32 btrees of complete permuted tuple copies, so an extra
+;; ordering costs ~1x the relation's index memory plus an O(n log n)
+;; install-time build; the eager union concentrates that cost exactly on
+;; giant-EDB rules (card_bait's silent 4G OOM).
+;;   eager    -- union every arm's needs (the ratified default: most rules
+;;               carry no arms and the union is small)
+;;   free     -- keep only alternative arms that lower against the
+;;               PRIMARY-ONLY index plan: zero new orderings, declarations
+;;               match the flag-off plan's
+;;   budget:N -- admit alternatives in deterministic rank order while each
+;;               relation gains at most N new FULL orderings (delta
+;;               orderings are delta-sized and ride free)
+;; Changes plan bytes, so it joins the job hash (compile.rkt).
+(define multiplan-index-policy
+  (make-parameter
+   (let ([v (getenv "SLOG_MULTIPLAN_INDEX")])
+     (cond
+       [(or (not v) (equal? v "") (equal? v "eager")) 'eager]
+       [(equal? v "free") 'free]
+       [(regexp-match #rx"^budget:([1-9][0-9]*)$" v)
+        => (lambda (m) (cons 'budget (string->number (cadr m))))]
+       [else (error 'params
+                    "SLOG_MULTIPLAN_INDEX must be eager | free | budget:N (N >= 1); got ~a"
+                    v)]))))
+
 ;; T4 slice 4: per-rule selective native emission (t4-contract §3 slice 4).
 ;; Which kernel rule ordinals the native artifact covers; the daemon runs
 ;; the complement interpreted, so coverage is native ∪ interp by

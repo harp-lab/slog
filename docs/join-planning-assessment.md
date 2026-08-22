@@ -350,13 +350,39 @@ uniformly-40× arm from 35.6 s to 0.80 s with no trip at all.  Battery:
 rescue-content / rescue-footprint (both arm tags in one run) /
 rescue-fires-loc-total over `tests/multiplan/pblind_mini.slog`.
 
-**The index-cost finding.**  The eager arm-union built several new
-9M-row orderings for `card_bait` and the systemd-run 4G cgroup cap
-OOM-killed slogd **silently at install time** (the in-daemon OOM
-diagnostics never see a cgroup kill; the runslog EOF error now names
-this cause and the remedies).  This is the concrete evidence for the
-free-arms-only / budgeted / lazy index-policy knobs — still unbuilt;
-eager-union remains the only mode.
+**The index-cost finding, and the knobs (shipped 2026-08-22).**  The
+eager arm-union built several new 9M-row orderings for `card_bait` and
+the systemd-run 4G cgroup cap OOM-killed slogd **silently at install
+time** (the in-daemon OOM diagnostics never see a cgroup kill; the
+runslog EOF error names this cause and the remedies).
+`SLOG_MULTIPLAN_INDEX` (job-hashed) now selects the policy:
+
+- **`eager`** (default, unchanged): union every arm's needs.
+- **`free`** ≡ budget:0 — alternatives are admitted only when they add
+  ZERO new FULL orderings beyond the primary-only plan (delta orderings
+  are delta-sized and ride free under every policy); a group reduced to
+  its primary is unmarked entirely.  Headline: `card_bait` under free
+  completes at the DEFAULT 4G cap picking `all:boo` — the good arm fit
+  the primary's orderings all along — gated at ≤6× `bait_good` in the
+  study, no OOM, no union build.
+- **`budget:N`** — deterministic rank-order admission while each
+  relation gains ≤N new FULL orderings.  Honest caveat: the budget
+  counts ORDERINGS, not bytes — `budget:1` on bait still admits one
+  9M-row ordering per big relation and still OOMs at 4G; byte-aware
+  budgeting (rows × orderings estimate) is the noted refinement.
+- **lazy** (declare-then-materialize-on-selection) remains the follow-on
+  slice: it needs a third "declared" state in the seal contract's
+  `validate_order` and a counts-nominate → backfill → probe selection
+  flow, and it can never apply to a J3-promoted native arm (generated
+  code cannot wait for a backfill).
+
+Free-mode admission is implemented as the budget machinery at N=0,
+between the primary-only needs fold and `choose-indices`, with dropped
+arms unmarked pre-lowering — so a free-mode plan's index declarations
+match the flag-off plan's.  Battery: index-free-drops-unrealizable /
+index-budget-keeps (flip_mini's alternate needs one new b-reverse
+ordering) / index-free-keeps-zero-cost-arms (skew_mini keeps a
+delta-only alternative with answers identical to eager).
 
 ### The idea
 
@@ -741,10 +767,8 @@ Daemon — measurement (verified 2026-08-20):
   oracles in `bench/card-study.sh`.  Counted flavors carry no arms, so
   the R1 boundary-only restriction is currently vacuous by construction;
   it binds when flavor-uniform arms arrive.
-- **NEXT — index-policy knobs** (free-arms-only / budgeted / lazy) +
-  the install-OOM story: `card_bait`'s silent 4G cgroup kill is the
-  evidence (the runslog EOF error now names it; the knobs remain
-  unbuilt).
+- **SHIPPED — the index-policy knobs** (`SLOG_MULTIPLAN_INDEX`; see the
+  index-cost finding above).  Lazy materialization remains the follow-on.
 - **J3 — native tier for choice rules** (unchanged shape: dominant-arm
   or K×-cluster; requires the native tick accumulator for tripwire
   parity).
@@ -892,10 +916,11 @@ reduce how often a choice group is even needed.
   `make_probe_execution` + `NullSink` + the task gate (`plan.h`),
   `read_epoch` + `deltaLiveCount` (`database.h`), group wiring
   (`plan-count.cpp` `attach_normal_rules`).
-- Knobs: `SLOG_MULTIPLAN` (compile-time, job-hashed);
-  `SLOG_MEASURE_BUDGET` (runtime, default 4096), `SLOG_FORCE_ARM`
-  (runtime test hook), `SLOG_ARM_DEBUG` (runtime tracing) — runtime knobs
-  never enter any cache key.
+- Knobs: `SLOG_MULTIPLAN`, `SLOG_MULTIPLAN_INDEX=eager|free|budget:N`
+  (compile-time, job-hashed); `SLOG_MEASURE_BUDGET` (runtime, default
+  4096), `SLOG_TRIP_FLOOR` (1e6) / `SLOG_TRIP_K` (8), `SLOG_FORCE_ARM`
+  (runtime test hook), `SLOG_NO_RESCUE`, `SLOG_ARM_DEBUG` — runtime
+  knobs never enter any cache key.
 - Batteries: `tests/multiplan-tests.sh` (18 checks) over
   `tests/multiplan/{flip_mini,skew_mini_a,skew_mini_b,corr_mini}.slog` —
   always-on, fast; the full-scale study stays opt-in.

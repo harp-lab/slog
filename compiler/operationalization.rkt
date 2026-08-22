@@ -23,6 +23,7 @@
 (require "params.rkt")
 (require "ir-shared.rkt")
 (require "join-actions.rkt")
+(require "join-planning.rkt")  ; canonical-rule-order (arm admission order)
 (require "primitives.rkt")    ; prim-partial? (letp lowering)
 (require "type-system.rkt")   ; rule-has-fallible-prims?, prim-error-arms
 (require "sha256.rkt")                 ; content-derived constant global names (P2)
@@ -159,9 +160,61 @@
   (define dynamic-rels
     (for/fold ([acc head-dynamic-rels]) ([(derived _info) (in-hash decomp-env)])
       (set-add acc derived)))
-  (define needs
-    (foldl (add-select-sets rel-env) (seed-selection-needs rel-env) rules))
-  (define indices (choose-indices rel-env needs))
+  ;; J1 arm index policy (SLOG_MULTIPLAN_INDEX; params.rkt has the knob
+  ;; doc).  Under `free`/`budget:N`, alternative arms (arm index >= 1) are
+  ;; admitted against the PRIMARY-ONLY index plan: free keeps only arms
+  ;; that lower without any new ordering; budget:N re-packs with each
+  ;; candidate (deterministic canonical order) and admits it while every
+  ;; relation's FULL-ordering count stays within N of the primary plan's.
+  ;; A dropped arm leaves its choice group; a group reduced to its primary
+  ;; alone is unmarked entirely (no attrs, gate, or probe overhead
+  ;; survives).  Eager -- the default -- unions everything, as before.
+  (define (arm-alt? r)
+    (let ([a (planned-rule-arm r)]) (and a (>= (car a) 1))))
+  (define (finish-arm-policy base kept indices*)
+    ;; unmark primaries whose group lost every alternative
+    (define kept-gids
+      (for/set ([r (in-list kept)]) (cdr (planned-rule-arm r))))
+    (for ([r (in-list base)])
+      (let ([a (planned-rule-arm r)])
+        (when (and a (not (set-member? kept-gids (cdr a))))
+          (arm-mark! r #f))))
+    (values (append base kept) indices*))
+  (define (fold-needs rs [seed (seed-selection-needs rel-env)])
+    (foldl (add-select-sets rel-env) seed rs))
+  (define (full-ordering-counts ip)
+    (for/hash ([(key ords) (in-hash (index-plan-orderings ip))]
+               #:when (symbol? key))
+      (values key (set-count ords))))
+  (define policy (multiplan-index-policy))
+  (define-values (rules-kept indices)
+    (cond
+      [(or (eq? policy 'eager) (not (ormap arm-alt? rules)))
+       (values rules (choose-indices rel-env (fold-needs rules)))]
+      [else
+       (define-values (alts base) (partition arm-alt? rules))
+       (define alts* (canonical-rule-order alts))
+       ;; free == budget:0 -- an arm may fold its DELTA needs (delta
+       ;; orderings are delta-sized and ride free under every policy) but
+       ;; may add at most N new FULL orderings per relation beyond the
+       ;; primary-only plan
+       (define n (if (eq? policy 'free) 0 (cdr policy)))
+       (define base-counts
+         (full-ordering-counts (choose-indices rel-env (fold-needs base))))
+       (define-values (kept needs-final)
+         (for/fold ([kept '()] [needs (fold-needs base)]
+                    #:result (values (reverse kept) needs))
+                   ([r (in-list alts*)])
+           (define needs* (fold-needs (list r) needs))
+           (define counts* (full-ordering-counts
+                            (choose-indices rel-env needs*)))
+           (if (for/and ([(name cnt) (in-hash counts*)])
+                 (<= (- cnt (hash-ref base-counts name 0)) n))
+               (values (cons r kept) needs*)
+               (values kept needs))))
+       (finish-arm-policy base kept
+                          (choose-indices rel-env needs-final))]))
+  (define rules++ rules-kept)
   ;; (decls are built AFTER rule lowering: which orderings are seeded-only
   ;; is decided from the indices crules actually reference)
   ;; extern oracle bindings (docs/smt.md): a stratum whose rules write the
@@ -231,7 +284,7 @@
   ;; `hash-ref: no value found`; docs/build-issues-notes.md §5).
   (define lower-one (lower-rule rel-env indices))
   (define crules
-    (for/list ([rule (in-list rules)])
+    (for/list ([rule (in-list rules++)])
       (with-rule-context rule (lambda () (lower-one rule)))))
   ;; Gate an ordering's WriteTask behind addTaskSeeded only if EVERY
   ;; reference to it comes from a seeded re-entry crule.  Attribution must

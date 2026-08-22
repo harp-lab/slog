@@ -194,6 +194,35 @@ if [ "$pt0" != 0 ] && [ "$pt0" = "$pt1" ]
 then ok "rescue-fires-loc-total ($pt0 rescued == forced)"
 else bad "rescue-fires-loc-total ($pt0 vs $pt1)"; fi
 
+# --- 12. the index-policy knobs (SLOG_MULTIPLAN_INDEX) -----------------------
+# free == budget:0 (delta needs ride free; zero new FULL orderings):
+# flip_mini's alternate tail needs a new b-reverse ordering, so free must
+# DROP it (group unmarked: no attrs at all) while budget:1 keeps it;
+# skew_mini_a keeps at least one zero-cost whole-order alternative under
+# free, with answers identical to eager in every mode.
+run_one flip_free flip_mini 1 "" SLOG_MULTIPLAN_INDEX=free
+fp=$(last_plan flip_free)
+if [ "$(grep -o '(attrs (arm [0-9] [0-9]*))' "$fp" | wc -l)" = 0 ] \
+   && diff <(LC_ALL=C sort "$OUT/flip_free/walk.csv") \
+           <(LC_ALL=C sort "$OUT/off/walk.csv") >/dev/null 2>&1
+then ok "index-free-drops-unrealizable (0 arms, == flag-off)"
+else bad "index-free-drops-unrealizable"; fi
+run_one flip_b1 flip_mini 1 "" SLOG_MULTIPLAN_INDEX=budget:1
+bp=$(last_plan flip_b1)
+if [ "$(grep -o '(attrs (arm [0-9] [0-9]*))' "$bp" | wc -l)" = 2 ] \
+   && diff <(LC_ALL=C sort "$OUT/flip_b1/walk.csv") \
+           <(LC_ALL=C sort "$OUT/off/walk.csv") >/dev/null 2>&1
+then ok "index-budget-keeps (2 arms, == flag-off)"
+else bad "index-budget-keeps"; fi
+run_one skew_free skew_mini_a 1 "" SLOG_MULTIPLAN_INDEX=free
+sfp=$(last_plan skew_free)
+sfarms=$(grep -o '(attrs (arm [0-9] [0-9]*))' "$sfp" | wc -l)
+if [ "$sfarms" -ge 2 ] \
+   && diff <(LC_ALL=C sort "$OUT/skew_free/ans.csv") \
+           <(LC_ALL=C sort "$OUT/skew_a/ans.csv") >/dev/null 2>&1
+then ok "index-free-keeps-zero-cost-arms ($sfarms marked, ans == eager)"
+else bad "index-free-keeps-zero-cost-arms ($sfarms)"; fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ $FAIL -eq 0 ]

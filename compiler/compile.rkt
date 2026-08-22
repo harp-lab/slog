@@ -245,6 +245,9 @@
                              ;; requisitions, so its switch must miss the
                              ;; cache (the runtime PICK never enters a key)
                              (multiplan-enabled)
+                             ;; ... and the arm index policy decides WHICH
+                             ;; arms and orderings exist, so it does too
+                             (multiplan-index-policy)
                              ;; T4 slice 4: a partial-coverage artifact must
                              ;; miss the cache, never stand in for a full one
                              (native-rule-coverage)

@@ -87,6 +87,9 @@ diffpair walk card_monster_ac card_monster_ca    "monster ac vs ca"
 echo
 echo "-- runtime selection (SLOG_MULTIPLAN=1, unforced; one artifact each) --"
 run_one card_bait        bait-mp    SLOG_MULTIPLAN=1 SLOG_MEM_MAX=16G
+# the index-policy headline: free mode fits bait's arms into the
+# primary-only orderings -- no OOM at the DEFAULT 4G cap, no union build
+run_one card_bait        bait-fr    SLOG_MULTIPLAN=1 SLOG_MULTIPLAN_INDEX=free
 run_one card_skew_a      skew_a-mp  SLOG_MULTIPLAN=1
 run_one card_skew_b      skew_b-mp  SLOG_MULTIPLAN=1
 run_one card_corr        corr-mp    SLOG_MULTIPLAN=1
@@ -139,6 +142,7 @@ sgate() {  # mp-key oracle-key max label
 # 18M-row relations (load-sensitive; measured 3.5-7.3x) -- the linear
 # class.  The index-policy knobs are the real fix; gate loosely until then.
 sgate bait-mp    card_bait_good   10 "bait-mp / bait_good"
+sgate bait-fr    card_bait_good    6 "bait-free / bait_good (4G cap)"
 sgate skew_a-mp  card_skew_a_good  3 "skew_a-mp / a_good"
 sgate skew_b-mp  card_skew_b       3 "skew_b-mp / skew_b"
 sgate corr-mp    card_corr_good    4 "corr-mp / corr_good"
