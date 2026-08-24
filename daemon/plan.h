@@ -1760,6 +1760,22 @@ struct ArmGroup
   // uses the flat C_init ceiling instead of a rate.
   std::atomic<u64> pick_meter{0};
   std::atomic<u64> pick_rows{0};
+  // J3 phase 2: native pinned-arm meters.  The promoted arm's generated
+  // task accumulates (ticks, rows) per invocation -- approximate parity
+  // with the interp Attempt meter: one tick per join-lambda entry, one
+  // row per driver row -- via Database::noteNativeArmWork.  The pinned
+  // claim-lite path in currentPick closes each epoch by rolling epoch ->
+  // life and evaluating the pinned tripwire on the CLOSED epoch's final
+  // totals.
+  std::atomic<u64> native_epoch_ticks{0}, native_epoch_rows{0};
+  std::atomic<u64> native_life_ticks{0}, native_life_rows{0};
+  void noteNativeWork(u64 t, u64 r)
+  {
+    native_epoch_ticks.fetch_add(t, std::memory_order_relaxed);
+    native_epoch_rows.fetch_add(r, std::memory_order_relaxed);
+  }
+  // the group id, stamped at attach -- diagnostics only
+  s64 gid = -1;
   // ascending arm order.  WEAK pointers to the OWNED task copies attach()
   // registers (adopt): rules hold the group shared, so shared members
   // would cycle and leak across activations; a lock() always succeeds
@@ -1778,23 +1794,31 @@ struct ArmGroup
   // being big -- with a flat C_init when no probe ran this epoch.  All
   // inputs are pure functions of database state; slice boundaries are
   // deterministic transition quanta, so the trip point is replayable.
+  static u64 tripFloor()
+  {
+    static const u64 v = [] {
+      const char* e = std::getenv("SLOG_TRIP_FLOOR");
+      const long x = e ? std::atol(e) : 0;
+      return x > 0 ? (u64)x : 1000000ull;
+    }();
+    return v;
+  }
+  static u64 tripK()
+  {
+    static const u64 v = [] {
+      const char* e = std::getenv("SLOG_TRIP_K");
+      const long x = e ? std::atol(e) : 0;
+      return x > 0 ? (u64)x : 8ull;
+    }();
+    return v;
+  }
   u64 tripCeiling(u64 rows) const
   {
-    static const u64 floor_ = [] {
-      const char* e = std::getenv("SLOG_TRIP_FLOOR");
-      const long v = e ? std::atol(e) : 0;
-      return v > 0 ? (u64)v : 1000000ull;
-    }();
-    static const u64 k_ = [] {
-      const char* e = std::getenv("SLOG_TRIP_K");
-      const long v = e ? std::atol(e) : 0;
-      return v > 0 ? (u64)v : 8ull;
-    }();
     const u64 pr = pick_rows.load(std::memory_order_relaxed);
     if (pr == 0) return 100000000ull;   // C_init: unmeasured pick
     const u64 chat = std::max<u64>(
       1, (pick_meter.load(std::memory_order_relaxed) + pr - 1) / pr);
-    return floor_ + k_ * chat * std::max<u64>(rows, 1);
+    return tripFloor() + tripK() * chat * std::max<u64>(rows, 1);
   }
   int currentPick(Database* db);   // defined after BoundRule
   int selectPick(Database* db);
@@ -2739,8 +2763,6 @@ inline int ArmGroup::selectPick(Database* db)
 
 inline int ArmGroup::currentPick(Database* db)
 {
-  if (pinned.load(std::memory_order_acquire))
-    return pick.load(std::memory_order_relaxed);
   const u64 e = db->readEpoch();
   if (epoch_done.load(std::memory_order_acquire) == e)
     return pick.load(std::memory_order_relaxed);
@@ -2753,6 +2775,50 @@ inline int ArmGroup::currentPick(Database* db)
     while (epoch_done.load(std::memory_order_acquire) != e)
       std::this_thread::yield();
     return pick.load(std::memory_order_relaxed);
+  }
+  if (pinned.load(std::memory_order_acquire))
+  {
+    // J3 phase 2, the pinned tripwire (claim-lite epoch close): the
+    // epoch's first ask rolls the native meter and evaluates the trip on
+    // the epoch that just CLOSED -- final totals, so the decision is a
+    // pure function of that epoch's completed work (identical across
+    // task orderings; abort/replay re-lands on the same closed totals).
+    // Deferred unpin: the betrayed epoch already ran at full price (a
+    // native task cannot abandon mid-flight until phase 3 rescue); THIS
+    // epoch falls through to interp selection below -- the native gate
+    // reads the new pick and no-ops, and the promoted ordinal is never
+    // in `arms`, so it cannot be re-picked.  Pinned epochs never bump
+    // epochs_selected: post-unpin convergence evidence starts from zero,
+    // and rescues++ marks the group never-advise for the rest of the run
+    // (a stale advisory heals instead of re-pinning the betrayer).
+    const u64 t = native_epoch_ticks.exchange(0, std::memory_order_relaxed);
+    const u64 r = native_epoch_rows.exchange(0, std::memory_order_relaxed);
+    const u64 lt = native_life_ticks.fetch_add(t, std::memory_order_relaxed);
+    const u64 lr = native_life_rows.fetch_add(r, std::memory_order_relaxed);
+    static const bool no_rescue = std::getenv("SLOG_NO_RESCUE") != nullptr;
+    // rate baseline = lifetime EXCLUDING the closed epoch (fetch_add
+    // returns priors); the flat C_init when history is too thin to trust
+    // a rate, mirroring tripCeiling's unmeasured-pick ceiling
+    const u64 ceiling =
+      lr >= 64 ? tripFloor()
+                   + tripK() * std::max<u64>(1, (lt + lr - 1) / lr)
+                       * std::max<u64>(r, 1)
+               : 100000000ull;
+    if (no_rescue || t <= ceiling)
+    {
+      epoch_done.store(e, std::memory_order_release);
+      return pick.load(std::memory_order_relaxed);
+    }
+    pinned.store(false, std::memory_order_release);
+    pick.store(-1, std::memory_order_relaxed);
+    rescues.fetch_add(1, std::memory_order_relaxed);
+    if (std::getenv("SLOG_ARM_DEBUG") != nullptr)
+      fprintf(stderr,
+              "[arm] UNPIN gid=%lld epoch=%llu ticks=%llu rows=%llu "
+              "ceiling=%llu\n",
+              (long long)gid, (unsigned long long)e, (unsigned long long)t,
+              (unsigned long long)r, (unsigned long long)ceiling);
+    // fall through to selection -- the epoch claim is already held
   }
   const int prev = pick.load(std::memory_order_relaxed);
   const int chosen = selectPick(db);

@@ -73,13 +73,18 @@
               (and (string=? (first a) (first b))
                    (< (second a) (second b)))))))
 
-;; Merge converged picks into the store (runslog, per (arms ...) report).
-;; entries: (list (list loc gid arm) ...)
-(define (record-arm-advisories! entries)
-  (when (pair? entries)
-    (define t
-      (for/fold ([t (load-table)]) ([e (in-list entries)])
-        (hash-set t (cons (first e) (second e)) (third e))))
+;; Merge converged picks into the store, and REMOVE stale advisories for
+;; groups the run reported UNCONVERGED (J3 phase 2 heal: a pinned arm that
+;; betrayed mid-run unpins and reports rescues > 0 = never-converged, so
+;; its advisory must not re-pin the betrayer on the next profiled run).
+;; Last run wins, in both directions -- the same policy as the merge.
+;; entries: (list (list loc gid arm) ...); removals: (list (cons loc gid))
+(define (record-arm-advisories! entries [removals '()])
+  (define t0 (load-table))
+  (define t1 (for/fold ([t t0]) ([k (in-list removals)]) (hash-remove t k)))
+  (define t (for/fold ([t t1]) ([e (in-list entries)])
+              (hash-set t (cons (first e) (second e)) (third e))))
+  (unless (equal? t t0)
     (set-box! table-box t)
     (make-parent-directory* store-path)
     (define tmp (path-add-extension store-path #".tmp"))

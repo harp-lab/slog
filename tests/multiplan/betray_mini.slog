@@ -1,0 +1,43 @@
+;; J3 phase 2 betrayal mini: a 20-step, 10-walker recursive walk whose
+;; choice join is CHEAP for the first ten steps (the 1-row spine) and
+;; explodes for one arm from step 10 on (xsetB x zsetB poison).  Pinning
+;; that arm natively (SLOG_NATIVE_ARM) makes the pin BETRAY mid-run: the
+;; group's native meter sees the epoch's ticks blow past the rate
+;; ceiling, the pinned tripwire unpins at the next epoch close, and the
+;; interp sibling (the reverse order, still cheap) finishes the walk.
+;; Ten walkers advance in lockstep so the lifetime baseline has >= 64
+;; driver rows before the flip -- the rate ceiling is armed, not C_init.
+
+table (d int)
+table (n2 int)
+table (iter int)
+table (wid int)
+table (xsetB int)
+table (zsetB int)
+table (a int int int)
+table (b int int)
+table (c int int int)
+table (walk int int)
+
+rule (d 0) (d 1) (d 2) (d 3) (d 4) (d 5) (d 6) (d 7) (d 8) (d 9)
+rule (n2 X) <-- (d A) (d B) (= X (+ (* 10 A) B))
+
+rule (iter I) <-- (n2 I) (< I 20)
+rule (wid J) <-- (d J)
+
+;; the 1-row spine: every step always has exactly one satisfying chain
+rule (a I X 0) <-- (iter I) (= X (+ 10000 I))
+rule (b X Z) <-- (iter I) (= X (+ 10000 I)) (= Z (+ 20000 I))
+rule (c I Z 0) <-- (iter I) (= Z (+ 20000 I))
+
+;; the late poison (I >= 10): a fans to 50 X's, b crosses them into 30
+;; Z's each -- the a-first order pays 50*30 dead probes per driver row
+rule (xsetB X) <-- (n2 I) (< I 50) (= X (+ 50000 I))
+rule (zsetB Z) <-- (n2 I) (< I 30) (= Z (+ 60000 I))
+rule (a I X 0) <-- (iter I) (< 9 I) (xsetB X)
+rule (b X Z) <-- (xsetB X) (zsetB Z)
+
+rule (walk J 0) <-- (wid J)
+rule (walk J I2) <-- (walk J I) (< I 19)
+                     (a I X P) (b X Z) (c I Z Q)
+                     (= I2 (+ I 1))

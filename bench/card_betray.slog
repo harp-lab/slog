@@ -1,0 +1,46 @@
+;; J3 phase 2 betrayal at the DEFAULT trip floor (bench-scale betray_mini;
+;; docs/join-planning-assessment.md).  A 20-step, 200-walker recursive
+;; walk: for ten epochs every step is the 1-row spine (2000 baseline
+;; driver rows arm the rate ceiling), then the a-first order explodes to
+;; ~90k join matches per driver row (~18M meter ticks per epoch, far past
+;; floor 1e6 + k*chat*rows).  Pinning arm 0 natively (SLOG_NATIVE_ARM=0)
+;; makes the pin betray mid-run: the native meter trips at the next epoch
+;; close, the group unpins, and the interp sibling (c-first, still on the
+;; 1-row spine) finishes.  SLOG_NO_RESCUE=1 is the held-pin control: the
+;; native arm pays all ten exploded epochs.
+
+table (d int)
+table (n2 int)
+table (n4 int)
+table (iter int)
+table (wid int)
+table (xsetB int)
+table (zsetB int)
+table (a int int int)
+table (b int int)
+table (c int int int)
+table (walk int int)
+
+rule (d 0) (d 1) (d 2) (d 3) (d 4) (d 5) (d 6) (d 7) (d 8) (d 9)
+rule (n2 X) <-- (d A) (d B) (= X (+ (* 10 A) B))
+rule (n4 X) <-- (n2 A) (n2 B) (= X (+ (* 100 A) B))
+
+rule (iter I) <-- (n2 I) (< I 20)
+rule (wid J) <-- (n4 J) (< J 200)
+
+;; the 1-row spine: every step always has exactly one satisfying chain
+rule (a I X 0) <-- (iter I) (= X (+ 100000 I))
+rule (b X Z) <-- (iter I) (= X (+ 100000 I)) (= Z (+ 200000 I))
+rule (c I Z 0) <-- (iter I) (= Z (+ 200000 I))
+
+;; the late poison (I >= 10): a fans to 300 X's, b crosses them into 300
+;; Z's each -- the a-first order pays ~90k dead matches per driver row
+rule (xsetB X) <-- (n4 I) (< I 300) (= X (+ 500000 I))
+rule (zsetB Z) <-- (n4 I) (< I 300) (= Z (+ 600000 I))
+rule (a I X 0) <-- (iter I) (< 9 I) (xsetB X)
+rule (b X Z) <-- (xsetB X) (zsetB Z)
+
+rule (walk J 0) <-- (wid J)
+rule (walk J I2) <-- (walk J I) (< I 19)
+                     (a I X P) (b X Z) (c I Z Q)
+                     (= I2 (+ I 1))

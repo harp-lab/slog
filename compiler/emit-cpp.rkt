@@ -130,6 +130,18 @@
 ;; counting sinks and which sidecar counter their batches bump.
 (define current-rule-kind (make-parameter #f))
 
+;; J3 phase 2: (list arm gid) when the crule being emitted is a choice-group
+;; arm compiled natively (the promoted dominant arm).  Drives three emission
+;; extras: the task-entry gate (nativeArmGate -- the SAME currentPick gate
+;; interp siblings use, so an unpinned group's native task no-ops), the
+;; work meter (++_work at every join-lambda entry, ++_rows per driver row;
+;; approximate parity with the interp meter -- exists/absent probes are
+;; uncounted -- which is fine for a diagnostic and a rate tripwire), and
+;; the both-exit flush into bumpWork + noteNativeArmWork.
+(define current-arm-info (make-parameter #f))
+(define (meter-mark) (if (current-arm-info) " ++_work;" ""))
+(define (rows-mark) (if (current-arm-info) " ++_rows;" ""))
+
 (define (cnt-kind-cpp kind) (format "slog::cnt_kind_~a" kind))
 
 ;; unkeyed-scan warnings already issued this compile, keyed (loc . relation)
@@ -548,10 +560,11 @@
      (define cv (elocal 'cycle))
      (string-append
       ((emit-lines indent)
-       (format "slog::join3<~a,~a,~a,~a,~a,~a>(~a, ~a, ~a, ~a, ~a, ~a, [&](u64 ~a) {"
+       (format "slog::join3<~a,~a,~a,~a,~a,~a>(~a, ~a, ~a, ~a, ~a, ~a, [&](u64 ~a) {~a"
                LA LK (view-cpp lview) RA RK (view-cpp rview)
                (index-name-of left) (delta-index left lview) left-key
-               (index-name-of right) (delta-index right rview) right-key cv)
+               (index-name-of right) (delta-index right rview) right-key cv
+               (meter-mark))
        (format "u64 v_~a = ~a;" cycle cv))
       (emit-ops rest index-name-of delta-name-of head-fun (+ indent 2))
       ((emit-lines indent) "});"))]
@@ -580,8 +593,8 @@
                                            (make-list (- A K) "0")))])
            (string-append
             ((emit-lines indent)
-             (format "slog::join_probe<~a,~a>(~a, ~a, [&](const std::array<u64,~a>& ~a) {"
-                     A K (index-name-of op) key A m))
+             (format "slog::join_probe<~a,~a>(~a, ~a, [&](const std::array<u64,~a>& ~a) {~a"
+                     A K (index-name-of op) key A m (meter-mark)))
             inner
             ((emit-lines indent) "});"))))]
     ;; JOIN against R_old = full - current delta (exact semi-naive, §6/§8): like
@@ -610,8 +623,8 @@
                                            (make-list (- A K) "0")))])
            (string-append
             ((emit-lines indent)
-             (format "slog::join_probe_~a<~a,~a>(~a, ~a, ~a, [&](const std::array<u64,~a>& ~a) {"
-                     suffix A K (index-name-of op) (delta-name-of op) key A m))
+             (format "slog::join_probe_~a<~a,~a>(~a, ~a, ~a, [&](const std::array<u64,~a>& ~a) {~a"
+                     suffix A K (index-name-of op) (delta-name-of op) key A m (meter-mark)))
             inner
             ((emit-lines indent) "});"))))]
     ;; M4S struct resolution (docs/m4s-contract.md): content->id against the
@@ -633,8 +646,8 @@
                                         (make-list (- A K) "0"))))
      (string-append
       ((emit-lines indent)
-       (format "slog::join_probe_tomb<~a>(~a, ~a, ~a, [&](const std::array<u64,~a>& ~a) {"
-               A (delta-name-of op) (index-name-of op) key A m))
+       (format "slog::join_probe_tomb<~a>(~a, ~a, ~a, [&](const std::array<u64,~a>& ~a) {~a"
+               A (delta-name-of op) (index-name-of op) key A m (meter-mark)))
       inner
       ((emit-lines indent) "});"))]
     ;; a lattice body read: probe the payload map over the key columns; the
@@ -711,8 +724,8 @@
                                            (make-list (- KA K) "0")))])
            (string-append
             ((emit-lines indent)
-             (format "slog::join_probe_lat<~a,~a>(~a, ~a, [&](const std::array<u64,~a>& ~a, u64 ~a) {"
-                     KA K (index-name-of op) key KA m vparam))
+             (format "slog::join_probe_lat<~a,~a>(~a, ~a, [&](const std::array<u64,~a>& ~a, u64 ~a) {~a"
+                     KA K (index-name-of op) key KA m vparam (meter-mark)))
             inner
             ((emit-lines indent) "});"))))]
     [`(,op . ,rest)
@@ -942,7 +955,11 @@
                 ;; so arm kinds must read as #f here
                 [current-rule-kind
                  (let ([k (crule-kind crule)])
-                   (and k (not (match k [`(arm ,_ ,_) #t] [_ #f])) k))])
+                   (and k (not (match k [`(arm ,_ ,_) #t] [_ #f])) k))]
+                [current-arm-info
+                 (match (crule-kind crule)
+                   [`(arm ,n ,gid) (list n gid)]
+                   [_ #f])])
   (define (rel-access name)
     (if frame
         (format "f[~a]" ((first frame) name))
@@ -1054,6 +1071,34 @@
          (format "if (_fires) db->bumpFires(\"~a\", \"~a\", _fires);"
                  (escape-c-string-literal (current-rule-loc))
                  (escape-c-string-literal variant-tag)))))
+
+  ;; J3 phase 2: the native arm-rule meter flushes like _fires (both exits),
+  ;; into the shared $stat_work slot (coarser-keyed than the interp's
+  ;; full-variant work slots: native uses the fires tag, the only spelling a
+  ;; frame carries) and into the ArmGroup's native meters -- the inputs the
+  ;; pinned-rule tripwire closes each epoch.
+  (define arm-loc-expr
+    (if frame "vloc" (format "\"~a\"" (escape-c-string-literal (current-rule-loc)))))
+  (define work-flush
+    (match (current-arm-info)
+      [(list _ gid)
+       ((emit-lines 4)
+        (format "if (_work | _rows) { db->bumpWork(~a, ~a, _work, _rows); db->noteNativeArmWork(~a, ~a, _work, _rows); }"
+                arm-loc-expr
+                (if frame "vtag" (format "\"~a\"" (escape-c-string-literal variant-tag)))
+                arm-loc-expr gid))]
+      [_ ""]))
+
+  ;; J3 phase 2: the native arm gate -- the SAME per-epoch pick the interp
+  ;; siblings consult, so exactly one arm of the group runs.  While pinned it
+  ;; returns the pin (this arm); if the tripwire unpins, selection falls back
+  ;; to the interp siblings and this task no-ops from then on.
+  (define arm-gate
+    (match (current-arm-info)
+      [(list arm gid)
+       (format "    if (!db->nativeArmGate(~a, ~a, ~a)) return true;"
+               arm-loc-expr gid arm)]
+      [_ ""]))
 
   ;; heads that emit tuples need an insert batch (let heads do not); a
   ;; tycheck's slot batches its failure-path malformed_deduction structs
@@ -1206,7 +1251,9 @@
         slice-ctx-setup
         ((emit-lines 4)
          "u32 _rt = resume_t, _ri = resume_i;"
-         "bool _done = slog::read_delta_sliced(outer_rel, bucket, db->getThreadCount(), _sc, _rt, _ri, [&](const u64* _t) {")
+         (string-append
+          "bool _done = slog::read_delta_sliced(outer_rel, bucket, db->getThreadCount(), _sc, _rt, _ri, [&](const u64* _t) {"
+          (rows-mark)))
         (apply (emit-lines 6)
                (for/list ([x (in-list xs)] [n (in-naturals)])
                  (format "u64 v_~a = _t[~a];" x n)))
@@ -1236,15 +1283,19 @@
             slice-ctx-setup
             ((emit-lines 4)
              (format "std::array<u64,~a> _rkey = resume_key; bool _hr = has_resume;" A)
-             (format "bool _done = slog::join_probe_sliced<~a,~a>(driver_index, ~a, _sc, _rkey, _hr, [&](const std::array<u64,~a>& ~a) {"
-                     A K key A m))
+             (string-append
+              (format "bool _done = slog::join_probe_sliced<~a,~a>(driver_index, ~a, _sc, _rkey, _hr, [&](const std::array<u64,~a>& ~a) {"
+                      A K key A m)
+              (rows-mark)))
             bind+body
             ((emit-lines 4) "});"))
            ;; fully bound (K==A): at most one match, nothing to slice
            (string-append
             ((emit-lines 4)
-             (format "slog::join_probe<~a,~a>(driver_index, ~a, [&](const std::array<u64,~a>& ~a) {"
-                     A K key A m))
+             (string-append
+              (format "slog::join_probe<~a,~a>(driver_index, ~a, [&](const std::array<u64,~a>& ~a) {"
+                      A K key A m)
+              (rows-mark)))
             bind+body
             ((emit-lines 4) "});")))]))
 
@@ -1331,15 +1382,18 @@
                task-name))
    (format "  virtual bool work()")
    (format "  {")
+   arm-gate
    ;; pre-ops run before any allocation, so a failing constant guard can
    ;; abort the whole task early (return true = finished, produced nothing)
    (apply (emit-lines 4) (map (lambda (op) (emit-pre-op op index-name-of)) pre))
    (format "    u64 _fires = 0;")
+   (if (current-arm-info) "    u64 _work = 0; u64 _rows = 0;" "")
    (format "    slog::InsertBatch* newbatch[~a];" (max 1 (length heads)))
    alloc-batches
    pipeline
    send-batches
    fires-flush
+   work-flush
    work-tail
    (format "  }")
    (format "  };")

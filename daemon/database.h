@@ -7112,30 +7112,42 @@ public:
   std::atomic<u64> read_epoch{0};
   u64 readEpoch() const { return read_epoch.load(std::memory_order_acquire); }
 
-  // J3 phase 1b: choice groups registered at attach for the per-fixpoint
-  // `(arms ...)` report (the arm-advisory sidecar's input).  The entry is
-  // a closure so this header stays ignorant of ArmGroup (plan.h): it
-  // fills the current arm and returns 0 = no pick yet, 1 = picked but not
-  // converged, 2 = converged.  Keyed (loc, gid); re-attach (activation)
-  // replaces.  Diagnostic/advisory only -- never identity, audit, or
-  // replay input.
-  std::map<std::pair<std::string, long long>, std::function<int(int*)>>
+  // J3 phase 1b/2: choice groups registered at attach.  The entries are
+  // closures so this header stays ignorant of ArmGroup (plan.h):
+  //   report    fills the current arm; returns 0 = no pick yet, 1 = picked
+  //             but not converged, 2 = converged (the per-fixpoint `(arms
+  //             ...)` report -- the arm-advisory sidecar's input)
+  //   gate_pick returns the group's pick for THIS epoch (running selection
+  //             if this is the epoch's first ask) -- the native arm task's
+  //             entry gate, the same pick its interp siblings consult
+  //   note      accumulates a native task's (ticks, rows) into the group's
+  //             epoch meter -- the pinned-rule tripwire's input
+  // Keyed (loc, gid); re-attach (activation) replaces.  report is
+  // diagnostic/advisory only; gate_pick/note ARE execution inputs, but
+  // pure functions of DB state like every other arm-selection input.
+  struct ArmGroupHooks
+  {
+    std::function<int(int*)> report;
+    std::function<int()> gate_pick;
+    std::function<void(u64, u64)> note;
+  };
+  std::map<std::pair<std::string, long long>, ArmGroupHooks>
     arm_report_registry;
   std::mutex arm_report_mx;
   void registerArmGroup(const std::string& loc, long long gid,
-                        std::function<int(int*)> probe)
+                        ArmGroupHooks hooks)
   {
     std::lock_guard<std::mutex> g(arm_report_mx);
-    arm_report_registry[{loc, gid}] = std::move(probe);
+    arm_report_registry[{loc, gid}] = std::move(hooks);
   }
   std::string armReport()
   {
     std::lock_guard<std::mutex> g(arm_report_mx);
     std::string out;
-    for (auto& [key, probe] : arm_report_registry)
+    for (auto& [key, hooks] : arm_report_registry)
     {
       int arm = -1;
-      const int st = probe(&arm);
+      const int st = hooks.report(&arm);
       if (st == 0) continue;
       char buf[512];
       std::snprintf(buf, sizeof(buf), " (g %lld %d %d \"%s\")",
@@ -7143,6 +7155,39 @@ public:
       out += buf;
     }
     return out.empty() ? out : "(arms" + out + ")";
+  }
+
+  // J3 phase 2: the native arm task's gate.  Copy the closure out of the
+  // lock before calling -- a first-of-epoch gate call runs full selection
+  // (counts, possibly probes), far too long to hold arm_report_mx across.
+  // An unregistered group fails CLOSED (task no-ops): a native arm task
+  // can only exist alongside its interp-attached group, so a miss means
+  // the group is gone (mid-activation teardown) and running would double
+  // an arm against its replacement.
+  bool nativeArmGate(const char* rule_loc, long long gid, int arm)
+  {
+    std::function<int()> gate;
+    {
+      std::lock_guard<std::mutex> g(arm_report_mx);
+      auto it = arm_report_registry.find({std::string(rule_loc), gid});
+      if (it == arm_report_registry.end() || !it->second.gate_pick)
+        return false;
+      gate = it->second.gate_pick;
+    }
+    return gate() == arm;
+  }
+
+  void noteNativeArmWork(const char* rule_loc, long long gid,
+                         u64 ticks, u64 rows)
+  {
+    std::function<void(u64, u64)> note;
+    {
+      std::lock_guard<std::mutex> g(arm_report_mx);
+      auto it = arm_report_registry.find({std::string(rule_loc), gid});
+      if (it == arm_report_registry.end() || !it->second.note) return;
+      note = it->second.note;
+    }
+    note(ticks, rows);
   }
 
   // T0(c) slice c2: the daemon-side rule-meta registry -- the piece T1
@@ -7295,6 +7340,13 @@ public:
   void bumpFires(const char* rule_loc, const char* variant, u64 n)
   {
     bumpFiresSlot(fireSlot(rule_loc, variant), n);
+  }
+
+  // J3 phase 2: the native arm-rule meter's string-keyed entry point,
+  // exactly parallel to bumpFires above.
+  void bumpWork(const char* rule_loc, const char* variant, u64 ticks, u64 rows)
+  {
+    bumpWorkSlot(fireSlot(rule_loc, variant), ticks, rows);
   }
 
   void discardPendingStratumStats()

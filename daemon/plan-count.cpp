@@ -1013,22 +1013,37 @@ void attach_normal_rules(Database* db, Stratum* stratum,
     if (g == nullptr)
     {
       g = std::make_shared<ArmGroup>();
-      // J3 phase 1b: register for the per-fixpoint (arms ...) report --
-      // the closure keeps this seam ignorant of group lifetime (weak)
+      g->gid = sr.arm_gid;
+      // J3 phase 1b/2: register the group's hooks -- closures keep this
+      // seam ignorant of group lifetime (weak).  report feeds the
+      // per-fixpoint (arms ...) advisory; gate_pick/note are the NATIVE
+      // arm task's entry gate and work meter, routed through the same
+      // group so the native arm and its interp siblings share one pick
+      // and one tripwire.
       if (!sr.program.source.empty())
       {
         std::weak_ptr<ArmGroup> w = g;
+        Database::ArmGroupHooks hooks;
+        hooks.report = [w](int* arm) -> int {
+          auto p = w.lock();
+          if (p == nullptr) return 0;
+          int a = -1;
+          if (p->convergedPick(&a)) { *arm = a; return 2; }
+          const int cur = p->pick.load(std::memory_order_relaxed);
+          if (cur < 0) return 0;
+          *arm = cur;
+          return 1;
+        };
+        hooks.gate_pick = [w, db]() -> int {
+          auto p = w.lock();
+          return p == nullptr ? -1 : p->currentPick(db);
+        };
+        hooks.note = [w](u64 ticks, u64 rows) {
+          auto p = w.lock();
+          if (p != nullptr) p->noteNativeWork(ticks, rows);
+        };
         db->registerArmGroup(sr.program.source, (long long)sr.arm_gid,
-          [w](int* arm) -> int {
-            auto p = w.lock();
-            if (p == nullptr) return 0;
-            int a = -1;
-            if (p->convergedPick(&a)) { *arm = a; return 2; }
-            const int cur = p->pick.load(std::memory_order_relaxed);
-            if (cur < 0) return 0;
-            *arm = cur;
-            return 1;
-          });
+                             std::move(hooks));
       }
     }
     // membership is registered by attach() itself, on the OWNED task copy

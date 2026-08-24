@@ -406,14 +406,20 @@
            ;; entries as advisories (arm-profile.rkt); the next compile of
            ;; a program naming these rules promotes the arm to native
            ;; coverage and pins its group.  Non-converged groups (the
-           ;; adaptive ones: flip/monster/probe-blind shapes) never record.
+           ;; adaptive ones: flip/monster/probe-blind shapes) never record
+           ;; -- and any STALE advisory they hold is removed (phase 2 heal:
+           ;; a pinned arm that betrayed and unpinned reports unconverged).
            (with-handlers ([exn:fail? (lambda (_e) (void))])
+             (define gs
+               (for/list ([e (in-list (cdr (read (open-input-string line))))]
+                          #:when (and (list? e) (= (length e) 5)
+                                      (equal? (first e) 'g)))
+                 e))
              (record-arm-advisories!
-              (for/list ([e (in-list (cdr (read (open-input-string line))))]
-                         #:when (and (list? e) (= (length e) 5)
-                                     (equal? (first e) 'g)
-                                     (equal? (fourth e) 1)))
-                (list (fifth e) (second e) (third e)))))
+              (for/list ([e (in-list gs)] #:when (equal? (fourth e) 1))
+                (list (fifth e) (second e) (third e)))
+              (for/list ([e (in-list gs)] #:unless (equal? (fourth e) 1))
+                (cons (fifth e) (second e)))))
            (poll loaded)]
           [(regexp-match? #px"^\\(paused " line)
            (displayln line)

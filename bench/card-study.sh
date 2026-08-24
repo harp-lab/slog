@@ -116,12 +116,32 @@ printf "  %-32s %8sx (gate >= 1.2x)  %s\n" "nat-off / nat-on (summed fixpoint)" 
 [ "$nok" = MISS ] && fail=1
 
 echo
+echo "-- J3 phase 2: the pinned tripwire at the default floor (SLOG_OPT=0) --"
+# card_betray pins its a-first arm natively; the arm betrays at step 10
+# (~18M meter ticks/epoch vs the 1e6+rate default ceiling).  The tripped
+# leg pays ONE exploded epoch then hands off to the interp sibling; the
+# held-pin control (SLOG_NO_RESCUE) pays all ten.
+run_one card_betray bet-pin  SLOG_MULTIPLAN=1 SLOG_OPT=0 SLOG_NATIVE_ARM=0 \
+                             SLOG_ARM_DEBUG=1 SLOG_NO_ARM_ADVISORIES=1
+run_one card_betray bet-held SLOG_MULTIPLAN=1 SLOG_OPT=0 SLOG_NATIVE_ARM=0 \
+                             SLOG_NO_RESCUE=1 SLOG_NO_ARM_ADVISORIES=1
+BP=$(sumfix bet-pin); BH=$(sumfix bet-held)
+btr=$(awk -v a="$BH" -v b="$BP" 'BEGIN{ if (b==0) print "n/a"; else printf "%.2f", a/b }')
+btu=$(grep -c 'UNPIN' "$OUT/bet-pin.log")
+echo "  betrayal: held-pin ${BH}ms / tripped ${BP}ms = ${btr}x (UNPINs: $btu)"
+btok=$(awk -v r="$btr" -v u="$btu" 'BEGIN{print (r>=2 && u==1) ? "PASS" : "MISS"}')
+printf "  %-32s %8sx (gate >= 2x, 1 unpin)  %s\n" "bet-held / bet-pin (summed fixpoint)" "$btr" "$btok"
+[ "$btok" = MISS ] && fail=1
+
+echo
 echo "ratio gates (bad-plan / oracle query-stratum ms):"
 gate() {  # bad good min label
   local r
   r=$(awk -v a="${QMS[$1]}" -v b="${QMS[$2]}" \
         'BEGIN{ if (a+0!=a || b+0!=b || b==0) print "n/a"; else printf "%.1f", a/b }')
-  local ok="?"
+  # n/a means a leg TIMEOUT/FAILed -- an unmeasurable gate is a failed
+  # gate under CARD_ASSERT, never a silent skip
+  local ok="MISS"
   if [ "$r" != "n/a" ]; then
     ok=$(awk -v r="$r" -v m="$3" 'BEGIN{print (r>=m) ? "PASS" : "MISS"}')
   fi
@@ -142,7 +162,8 @@ sgate() {  # mp-key oracle-key max label
   local r
   r=$(awk -v a="${QMS[$1]}" -v b="${QMS[$2]}" \
         'BEGIN{ if (a+0!=a || b+0!=b || b==0) print "n/a"; else printf "%.1f", a/b }')
-  local ok="?"
+  # n/a = a leg TIMEOUT/FAILed: fail the gate, never skip it silently
+  local ok="MISS"
   if [ "$r" != "n/a" ]; then
     ok=$(awk -v r="$r" -v m="$3" 'BEGIN{print (r<=m) ? "PASS" : "MISS"}')
   fi
@@ -151,7 +172,10 @@ sgate() {  # mp-key oracle-key max label
 }
 # bait-mp is dominated by the one-time eager index-union build over its
 # 18M-row relations (load-sensitive; measured 3.5-7.3x) -- the linear
-# class.  The index-policy knobs are the real fix; gate loosely until then.
+# class; bait-free below is the shipped fix.  The eager leg also needs
+# real RAM headroom: under heavy desktop memory pressure (<~6G
+# available) the union build thrashes into TIMEOUT -- verified
+# environmental (2026-08-24: pre-change daemon times out identically).
 sgate bait-mp    card_bait_good   10 "bait-mp / bait_good"
 # bait-free shares bait-mp's load-sensitive floor (18M-row relations;
 # measured 4.7-6.6x across runs) -- the gate asserts sanity, not optimum

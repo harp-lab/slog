@@ -277,6 +277,66 @@ then ok "profile-loop-negative (flip never converges or records)"
 else bad "profile-loop-negative"; fi
 rm -f build/profile/arms.rktd
 
+# --- 15. J3 phase 2: the pinned tripwire (betray_mini) -----------------------
+# betray_mini is cheap for ten epochs (100 baseline driver rows, arming
+# the rate ceiling past the 64-row floor) then explodes for the a-first
+# arm.  Pinning that arm natively makes the pin BETRAY: the native work
+# meter's epoch close trips (ticks > floor + k*chat*rows at the lowered
+# floor), the group unpins (rescues++ = never-advise this run), and the
+# interp sibling finishes the walk.  Deterministic: the meter is counts,
+# not clocks, so the trip epoch and both work totals are data-exact.
+run_one bt_off betray_mini "" ""
+run_one bt_pin betray_mini 1 "" SLOG_ARM_DEBUG=1 SLOG_NO_ARM_ADVISORIES=1 \
+        SLOG_OPT=0 SLOG_NATIVE_ARM=0 SLOG_TRIP_FLOOR=2000
+run_one bt_nr  betray_mini 1 "" SLOG_ARM_DEBUG=1 SLOG_NO_ARM_ADVISORIES=1 \
+        SLOG_OPT=0 SLOG_NATIVE_ARM=0 SLOG_TRIP_FLOOR=2000 SLOG_NO_RESCUE=1
+if [ "$(grep -c 'native, pinned' "$OUT/bt_pin.log")" -ge 1 ] \
+   && [ "$(grep -c 'UNPIN' "$OUT/bt_pin.log")" = 1 ] \
+   && [ "$(grep -c 'UNPIN' "$OUT/bt_nr.log")" = 0 ]
+then ok "betray-unpins (one trip; SLOG_NO_RESCUE holds the pin)"
+else bad "betray-unpins"; fi
+btok=1
+for leg in bt_pin bt_nr; do
+  diff <(LC_ALL=C sort "$OUT/bt_off/walk.csv") \
+       <(LC_ALL=C sort "$OUT/$leg/walk.csv") >/dev/null 2>&1 || btok=0
+done
+[ "$btok" = 1 ] && ok "betray-content (identical off/tripped/held)" \
+                || bad "betray-content"
+# the handoff: the tripped leg carries BOTH the native meter's work row
+# (unsuffixed tag) and the interp sibling's post-unpin rows, and the trip
+# bounds the native ticks well under the held-pin leg's full price
+nw=$(grep '"delta:walk"' "$OUT/bt_pin/\$stat_work.csv" | awk '{print $3+0}')
+iw=$(grep -c 'delta:walk#' "$OUT/bt_pin/\$stat_work.csv")
+hw=$(grep '"delta:walk"' "$OUT/bt_nr/\$stat_work.csv" | awk '{print $3+0}')
+bloc=$(grep '"delta:walk"' "$OUT/bt_pin/\$stat_work.csv" | awk '{print $1}' | tr -d '"')
+bf0=$(grep "$bloc" "$OUT/bt_off/\$stat_fires.csv" | awk '{s+=$NF} END{print s+0}')
+bf1=$(grep "$bloc" "$OUT/bt_pin/\$stat_fires.csv" | awk '{s+=$NF} END{print s+0}')
+if [ -n "$nw" ] && [ "$iw" -ge 1 ] && [ -n "$hw" ] \
+   && [ "$hw" -ge $((nw * 4)) ] \
+   && [ "$bf0" != 0 ] && [ "$bf0" = "$bf1" ]
+then ok "betray-handoff (native $nw ticks + interp; held $hw >= 4x; fires $bf0)"
+else bad "betray-handoff (nw=$nw iw=$iw hw=$hw fires $bf0/$bf1)"; fi
+
+# --- 16. J3 phase 2: the advisory heal ----------------------------------
+# A STALE advisory (cross-dataset skew, simulated by seeding the store
+# with the betrayer; the gid is the kernel's deterministic mint, 0 for a
+# one-group program) pins with no env override; the run trips, unpins,
+# reports the group unconverged at fixpoint, and runslog REMOVES the
+# advisory -- the next run compiles unpinned.  Cleaned before and after.
+rm -f build/profile/arms.rktd; mkdir -p build/profile
+printf '#hash(((%s . 0) . 0))\n' "\"$bloc\"" > build/profile/arms.rktd
+run_one bt_heal  betray_mini 1 "" SLOG_ARM_DEBUG=1 SLOG_OPT=0 SLOG_TRIP_FLOOR=2000
+run_one bt_after betray_mini 1 "" SLOG_ARM_DEBUG=1 SLOG_OPT=0 SLOG_TRIP_FLOOR=2000
+if [ "$(grep -c 'native, pinned' "$OUT/bt_heal.log")" -ge 1 ] \
+   && [ "$(grep -c 'UNPIN' "$OUT/bt_heal.log")" = 1 ] \
+   && ! grep -q 'betray_mini' build/profile/arms.rktd 2>/dev/null \
+   && [ "$(grep -c 'native, pinned' "$OUT/bt_after.log")" = 0 ] \
+   && diff <(LC_ALL=C sort "$OUT/bt_off/walk.csv") \
+           <(LC_ALL=C sort "$OUT/bt_heal/walk.csv") >/dev/null 2>&1
+then ok "advisory-heal (stale pin trips, unpins, and unrecords)"
+else bad "advisory-heal"; fi
+rm -f build/profile/arms.rktd
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ $FAIL -eq 0 ]

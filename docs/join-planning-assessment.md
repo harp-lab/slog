@@ -797,8 +797,39 @@ Daemon — measurement (verified 2026-08-20):
   the explicit `SLOG_NATIVE_ARM` (wins outright).  Known limitation:
   closed-rule groups select once per run and never reach 4 epochs, so
   they are never advised — cross-RUN stability accounting is the noted
-  refinement.  Still pending: phase 2 (native tick accumulation:
-  $stat_work parity + tripwire on pinned rules), phase 3 (native rescue,
+  refinement.
+- **SHIPPED — J3 phase 2: the native meter + the pinned tripwire + the
+  advisory heal.**  An arm-kind crule's generated task now (a) gates its
+  `work()` entry on `db->nativeArmGate(loc, gid, arm)` — the SAME
+  per-epoch pick its interp siblings consult, so exactly one arm of the
+  group ever runs — and (b) meters itself (`++_work` at every
+  join-lambda entry = per MATCH, `++_rows` per driver row; approximate
+  interp-Attempt parity — exists/absent semijoin probes are uncounted),
+  flushing at both exits into the shared `$stat_work` slot (the fires
+  tag: the only spelling a frame carries) and into the group's native
+  meter (`Database::bumpWork` / `noteNativeArmWork`, routed through the
+  registry's closure hooks so database.h stays ignorant of ArmGroup).
+  **The pinned tripwire**: a pinned group's `currentPick` runs a
+  claim-lite epoch close — the epoch's first ask rolls the native meter
+  (epoch → lifetime) and evaluates the trip on the CLOSED epoch's final
+  totals: trip iff `ticks > floor + k·ĉ·rows` with ĉ = lifetime rate
+  EXCLUDING the closed epoch, flat C_init while lifetime rows < 64.
+  Counts, not clocks: the trip epoch is data-exact and replay-honest.
+  On trip the group unpins DEFERRED (the betrayed epoch already ran at
+  full price; a native task cannot abandon mid-flight until phase 3),
+  falls through to interp selection while holding the epoch claim, and
+  — since the promoted ordinal was never adopted into `arms` — the
+  interp siblings take over permanently.  `rescues++` marks the group
+  never-advise; the fixpoint report shows it unconverged, and runslog
+  now REMOVES stale advisories for unconverged groups (the heal: a
+  betraying advisory unrecords itself instead of re-pinning next run).
+  `SLOG_NO_RESCUE=1` also holds pins (one "never abandon the pick"
+  hatch).  Validated: `tests/multiplan/betray_mini.slog` (§15 tripwire:
+  UNPIN at epoch 20, ticks 15530 vs ceiling 2240, held-pin control 8.8×
+  the native ticks; §16 heal: seeded stale advisory pins → trips →
+  unrecords, next run unpinned) and `bench/card_betray.slog` at the
+  DEFAULT floor (study gate: held-pin ≥ 2× tripped, exactly one UNPIN).
+  Still pending: phase 3 (native rescue via driver-position export,
   evidence-gated).
 - **J3 — native tier for choice rules** (unchanged shape: dominant-arm
   or K×-cluster; requires the native tick accumulator for tripwire
