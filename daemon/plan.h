@@ -1820,6 +1820,23 @@ struct ArmGroup
       1, (pick_meter.load(std::memory_order_relaxed) + pr - 1) / pr);
     return tripFloor() + tripK() * chat * std::max<u64>(rows, 1);
   }
+  // J3 phase 3: the MID-EPOCH trip parameters for a pinned native arm
+  // task -- trip iff work > floor + rate * rows, checked inside the
+  // generated task against its own locals.  rate = k * chat from the
+  // LIFETIME meter, which rolls only at epoch close, so the ceiling is
+  // stable (and deterministic) for the whole epoch; the flat C_init
+  // applies while the baseline is thin, mirroring tripCeiling above.
+  void nativeTripInfo(u64* floor_out, u64* rate_out) const
+  {
+    const u64 lt = native_life_ticks.load(std::memory_order_relaxed);
+    const u64 lr = native_life_rows.load(std::memory_order_relaxed);
+    if (lr < 64) { *floor_out = 100000000ull; *rate_out = 0; }
+    else
+    {
+      *floor_out = tripFloor();
+      *rate_out = tripK() * std::max<u64>(1, (lt + lr - 1) / lr);
+    }
+  }
   int currentPick(Database* db);   // defined after BoundRule
   int selectPick(Database* db);
 };

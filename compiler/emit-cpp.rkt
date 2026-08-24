@@ -139,8 +139,31 @@
 ;; uncounted -- which is fine for a diagnostic and a rate tripwire), and
 ;; the both-exit flush into bumpWork + noteNativeArmWork.
 (define current-arm-info (make-parameter #f))
-(define (meter-mark) (if (current-arm-info) " ++_work;" ""))
-(define (rows-mark) (if (current-arm-info) " ++_rows;" ""))
+
+;; J3 phase 3: #t while emitting the pipeline of an arm-kind task whose
+;; driver is a sliced delta SCAN -- the only shape the mid-epoch native
+;; rescue supports (redo-from-zero over the driver's bucket; the daemon
+;; re-validates at attach and simply never arms other shapes).  Adds to
+;; every join/driver lambda: a _trip early-return (cheap abandonment --
+;; open cursors finish their ranges body-free, no exceptions) and, on the
+;; work meter, a masked ceiling check every 2048 matches.  The ceiling
+;; (floor, rate) is fetched once per invocation, so the check is local
+;; arithmetic; the trip point is a pure function of the data.
+(define current-arm-trip (make-parameter #f))
+(define (meter-mark)
+  (cond
+    [(not (current-arm-info)) ""]
+    [(current-arm-trip)
+     (string-append
+      " if (_trip) return; ++_work;"
+      " if (!(_work & 2047) && _armed && _work > _floor + _rate * _rows)"
+      " _trip = true;")]
+    [else " ++_work;"]))
+(define (rows-mark)
+  (cond
+    [(not (current-arm-info)) ""]
+    [(current-arm-trip) " if (_trip) return; ++_rows;"]
+    [else " ++_rows;"]))
 
 (define (cnt-kind-cpp kind) (format "slog::cnt_kind_~a" kind))
 
@@ -1226,6 +1249,42 @@
       [`(once) 'none]
       [`(seeded) 'none]))
   (define sliceable? (not (eq? slice-kind 'none)))
+
+  ;; J3 phase 3: mid-epoch native rescue, scan-driver arm tasks only.
+  ;; Arming happens per invocation and only at the bucket's START (a
+  ;; sliced continuation resumes past committed slices, where redo-from-
+  ;; zero would double fires -- those fall back to the phase-2 epoch-close
+  ;; tripwire).  A trip aborts BEFORE send-batches/fires-flush, so the
+  ;; invocation commits nothing and the daemon-side rescue redoes the
+  ;; bucket on an interp sibling with exactly-once fires by construction.
+  ;; State 2 = a sibling bucket already declared the betrayal this epoch:
+  ;; bail immediately (work=0) and rescue from zero.
+  (define arm-trip? (and (current-arm-info) (eq? slice-kind 'scan) #t))
+  (define arm-trip-decl
+    (if arm-trip?
+        (match (current-arm-info)
+          [(list _ gid)
+           (string-append
+            "    bool _trip = false; u64 _floor = 0, _rate = 0;\n"
+            (format "    const int _tstate = (resume_t == 0 && resume_i == 0) ? db->nativeArmTripInfo(~a, ~a, outer_rel, &_floor, &_rate) : 0;\n"
+                    arm-loc-expr gid)
+            (format "    if (_tstate == 2) { db->nativeArmRescue(~a, ~a, bucket, outer_rel, 0, 0); return true; }\n"
+                    arm-loc-expr gid)
+            "    const bool _armed = _tstate == 1;\n")])
+        ""))
+  (define arm-abort
+    (if arm-trip?
+        (match (current-arm-info)
+          [(list _ gid)
+           (string-append
+            "    if (_trip)\n    {\n"
+            (format "      db->nativeArmRescue(~a, ~a, bucket, outer_rel, _work, _rows);\n"
+                    arm-loc-expr gid)
+            (apply string-append
+                   (map (lambda (i) (format "      delete newbatch[~a];\n" i))
+                        emitting-head-is))
+            "      return true;\n    }\n")])
+        ""))
   (define probe-A
     (match driver [`(probe ,_ ,_ ,_ ,ys ...) (length ys)] [_ 0]))
 
@@ -1243,6 +1302,7 @@
         (string-append ((emit-lines indent) "++_fires;") (hf indent)))))
 
   (define pipeline
+   (parameterize ([current-arm-trip arm-trip?])
     (match driver
       [`(,(or 'once 'seeded))
        (emit-ops body index-name-of delta-name-of count+heads 4)]
@@ -1297,7 +1357,7 @@
                       A K key A m)
               (rows-mark)))
             bind+body
-            ((emit-lines 4) "});")))]))
+            ((emit-lines 4) "});")))])))
 
   ;; a fully-bound probe cannot partition; run it as a single task
   (define nbuckets
@@ -1383,6 +1443,7 @@
    (format "  virtual bool work()")
    (format "  {")
    arm-gate
+   arm-trip-decl
    ;; pre-ops run before any allocation, so a failing constant guard can
    ;; abort the whole task early (return true = finished, produced nothing)
    (apply (emit-lines 4) (map (lambda (op) (emit-pre-op op index-name-of)) pre))
@@ -1391,6 +1452,7 @@
    (format "    slog::InsertBatch* newbatch[~a];" (max 1 (length heads)))
    alloc-batches
    pipeline
+   arm-abort
    send-batches
    fires-flush
    work-flush

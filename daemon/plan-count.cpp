@@ -1004,6 +1004,9 @@ void attach_normal_rules(Database* db, Stratum* stratum,
   // measurement (J2b/V3) can separate them; closed-rule whole-order arms
   // differ by driver, which is exactly the 100-300x skew class.
   std::map<s64, std::shared_ptr<ArmGroup>> arm_groups;
+  // J3 phase 3: the natively covered variants per group, collected at the
+  // pin sites for the rescue-validation pass below
+  std::map<s64, std::vector<size_t>> native_variant_idx;
   for (size_t j = 0; j < rules.size(); ++j)
   {
     const auto& r = rules[j];
@@ -1055,12 +1058,131 @@ void attach_normal_rules(Database* db, Stratum* stratum,
     {
       g->pick.store(sr.arm, std::memory_order_relaxed);
       g->pinned.store(true, std::memory_order_release);
+      native_variant_idx[sr.arm_gid].push_back(j);
     }
     if (std::getenv("SLOG_ARM_DEBUG") != nullptr)
       fprintf(stderr, "[arm] attach group gid=%lld arm=%d variant=%s%s\n",
               (long long)sr.arm_gid, sr.arm, sr.program.variant.c_str(),
               skip_ords != nullptr && skip_ords->count((u32)j) != 0
                 ? " (native, pinned)" : "");
+  }
+  // J3 phase 3: validate + install the mid-epoch native-rescue hooks per
+  // pinned group.  A native variant is rescueable iff (a) it drives a
+  // delta SCAN (redo-from-zero is a bucket-of-the-driver notion; the
+  // generated trip machinery is scan-only too), (b) its driver plan is
+  // UNIQUE among the group's native variants (a self-join occurrence
+  // pair shares a driver spelling, making "the matching sibling variant"
+  // ambiguous), and (c) every matching interp sibling arm has EXACTLY
+  // ONE variant with the identical driver plan (kind/relation/order/
+  // bound -- V4's transplant test: coverage, not position, must match).
+  // Anything else stays phase 2 (deferred unpin at epoch close).
+  const auto same_driver = [](const DriverPlan& a, const DriverPlan& b) {
+    return a.kind == b.kind && a.relation == b.relation
+        && a.order == b.order && a.bound == b.bound;
+  };
+  for (const auto& [ngid, idxs] : native_variant_idx)
+  {
+    auto git = arm_groups.find(ngid);
+    if (git == arm_groups.end()) continue;
+    const std::string loc = rules[idxs[0]]->definition().program.source;
+    if (loc.empty()) continue;
+    struct TripEntry { Relation* drv; DriverPlan plan; };
+    std::vector<TripEntry> entries;
+    for (const size_t j : idxs)
+    {
+      const SealedRule& nsr = rules[j]->definition();
+      if (nsr.driver.kind != DriverK::scan_delta) continue;
+      bool dup = false;
+      for (const size_t j2 : idxs)
+        if (j2 != j && same_driver(rules[j2]->definition().driver, nsr.driver))
+          { dup = true; break; }
+      if (dup) continue;
+      std::vector<int> matched;
+      bool ambiguous = false;
+      for (size_t i = 0; i < rules.size(); ++i)
+      {
+        const SealedRule& s2 = rules[i]->definition();
+        if (s2.arm < 0 || s2.arm_gid != ngid || s2.arm == nsr.arm) continue;
+        if (skip_ords != nullptr && skip_ords->count((u32)i) != 0) continue;
+        if (!same_driver(s2.driver, nsr.driver)) continue;
+        if (std::find(matched.begin(), matched.end(), s2.arm) != matched.end())
+          { ambiguous = true; break; }
+        matched.push_back(s2.arm);
+      }
+      if (ambiguous || matched.empty()) continue;
+      entries.push_back({rules[j]->driverRelation(), nsr.driver});
+    }
+    if (entries.empty()) continue;
+    auto ep = std::make_shared<std::vector<TripEntry>>(std::move(entries));
+    std::weak_ptr<ArmGroup> w = git->second;
+    db->setArmGroupNativeHooks(loc, ngid,
+      // trip_info: called once per task invocation, BEFORE any work
+      [w, ep](Relation* drv, u64* floor_out, u64* rate_out) -> int {
+        static const bool off =
+          std::getenv("SLOG_NO_RESCUE") != nullptr
+          || std::getenv("SLOG_NO_NATIVE_RESCUE") != nullptr
+          || std::getenv("SLOG_FORCE_ARM") != nullptr;
+        if (off) return 0;
+        bool known = false;
+        for (const auto& e : *ep) if (e.drv == drv) { known = true; break; }
+        if (!known) return 0;
+        auto p = w.lock();
+        if (p == nullptr) return 0;
+        // unpinned yet past the gate = a sibling bucket's rescue already
+        // declared the betrayal THIS epoch (the pick memo still names the
+        // native arm): skip the native run entirely, rescue from zero
+        if (!p->pinned.load(std::memory_order_acquire)) return 2;
+        p->nativeTripInfo(floor_out, rate_out);
+        return 1;
+      },
+      // rescue: the tripped (or bailing) task committed NOTHING -- redo
+      // its whole bucket on the best same-driver interp sibling.  The
+      // rescued task is gate-exempt (the epoch pick names the native arm)
+      [w, ep, db](u16 bucket, Relation* drv, u64 work, u64 rows) {
+        auto p = w.lock();
+        if (p == nullptr) return;
+        const TripEntry* e = nullptr;
+        for (const auto& x : *ep) if (x.drv == drv) { e = &x; break; }
+        if (e == nullptr) return;
+        // candidates from the OWNED attach copies, ascending arm order
+        std::vector<std::shared_ptr<const BoundRule>> cand;
+        for (const auto& [a, wr] : p->arms)
+          if (auto r = wr.lock())
+          {
+            const DriverPlan& d = r->definition().driver;
+            if (d.kind == e->plan.kind && d.relation == e->plan.relation
+                && d.order == e->plan.order && d.bound == e->plan.bound)
+              cand.push_back(std::move(r));
+          }
+        if (cand.empty()) return;   // teardown race; impossible mid-phase
+        size_t best = 0;
+        if (cand.size() > 1)
+        {
+          static const u64 budget = [] {
+            const char* v = std::getenv("SLOG_MEASURE_BUDGET");
+            const long x = v ? std::atol(v) : 0;
+            return x > 0 ? (u64)x : 4096ull;
+          }();
+          u64 bm = ~0ull;
+          for (size_t i = 0; i < cand.size(); ++i)
+          {
+            const u64 m =
+              probe_arm_bucket_meter(*cand[i], db, bucket, 0, budget);
+            if (m < bm) { bm = m; best = i; }  // ties: smallest arm (order)
+          }
+        }
+        p->pinned.store(false, std::memory_order_release);
+        p->rescues.fetch_add(1, std::memory_order_relaxed);
+        db->pushPaused(phase_read,
+          new InterpReadTask(db, cand[best], bucket, nullptr, true));
+        if (std::getenv("SLOG_ARM_DEBUG") != nullptr)
+          fprintf(stderr,
+                  "[arm] NATIVE-RESCUE gid=%lld bucket=%u tripped work=%llu "
+                  "rows=%llu -> arm %d\n",
+                  (long long)cand[best]->definition().arm_gid,
+                  (unsigned)bucket, (unsigned long long)work,
+                  (unsigned long long)rows, cand[best]->definition().arm);
+      });
   }
   for (size_t j = 0; j < rules.size(); ++j)
   {

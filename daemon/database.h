@@ -7130,6 +7130,19 @@ public:
     std::function<int(int*)> report;
     std::function<int()> gate_pick;
     std::function<void(u64, u64)> note;
+    // J3 phase 3 (mid-epoch native rescue), set separately at the pin
+    // site (setArmGroupNativeHooks) because only the NATIVE arm's
+    // variants can validate them:
+    //   trip_info keyed by the task's bound driver relation; returns
+    //             0 = disarmed, 1 = armed (fills floor/rate: trip iff
+    //             work > floor + rate*rows), 2 = bail now (a sibling
+    //             bucket already declared the betrayal this epoch --
+    //             skip the native run entirely and rescue from zero)
+    //   rescue    abort handler: redo this bucket on the best interp
+    //             sibling arm (redo-from-ZERO -- the caller committed
+    //             NOTHING, so exactly-once fires hold by construction)
+    std::function<int(Relation*, u64*, u64*)> trip_info;
+    std::function<void(u16, Relation*, u64, u64)> rescue;
   };
   std::map<std::pair<std::string, long long>, ArmGroupHooks>
     arm_report_registry;
@@ -7188,6 +7201,49 @@ public:
       note = it->second.note;
     }
     note(ticks, rows);
+  }
+
+  // J3 phase 3: the native-rescue hook pair is validated and installed at
+  // the PIN site (attach knows the native variants' driver plans and can
+  // reject ambiguous shapes there); everything else registered at group
+  // creation is preserved.
+  void setArmGroupNativeHooks(const std::string& loc, long long gid,
+                              std::function<int(Relation*, u64*, u64*)> trip,
+                              std::function<void(u16, Relation*, u64, u64)> res)
+  {
+    std::lock_guard<std::mutex> g(arm_report_mx);
+    auto& h = arm_report_registry[{loc, gid}];
+    h.trip_info = std::move(trip);
+    h.rescue = std::move(res);
+  }
+
+  // The native arm task's per-invocation arming call.  0 when the shape
+  // has no validated same-driver interp sibling (or rescue is off), so an
+  // unarmed task simply runs phase-2 semantics.
+  int nativeArmTripInfo(const char* rule_loc, long long gid, Relation* drv,
+                        u64* floor_out, u64* rate_out)
+  {
+    std::function<int(Relation*, u64*, u64*)> f;
+    {
+      std::lock_guard<std::mutex> g(arm_report_mx);
+      auto it = arm_report_registry.find({std::string(rule_loc), gid});
+      if (it == arm_report_registry.end() || !it->second.trip_info) return 0;
+      f = it->second.trip_info;
+    }
+    return f(drv, floor_out, rate_out);
+  }
+
+  void nativeArmRescue(const char* rule_loc, long long gid, u16 bucket,
+                       Relation* drv, u64 work, u64 rows)
+  {
+    std::function<void(u16, Relation*, u64, u64)> f;
+    {
+      std::lock_guard<std::mutex> g(arm_report_mx);
+      auto it = arm_report_registry.find({std::string(rule_loc), gid});
+      if (it == arm_report_registry.end() || !it->second.rescue) return;
+      f = it->second.rescue;
+    }
+    f(bucket, drv, work, rows);
   }
 
   // T0(c) slice c2: the daemon-side rule-meta registry -- the piece T1

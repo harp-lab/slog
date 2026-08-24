@@ -1,0 +1,49 @@
+;; J3 phase 3 mid-epoch rescue at the DEFAULT trip floor (bench-scale
+;; betray_monster_mini; docs/join-planning-assessment.md).  A 20-step,
+;; 200-walker recursive walk with ONE poisoned step: at I = 10 the
+;; a-first arm explodes to ~1M join matches per driver row (xsetM x
+;; zsetM, 1000 x 1000), ~200M meter ticks for the epoch, while every
+;; other step is the 1-row spine (2000 baseline driver rows arm the rate
+;; ceiling well past the 64-row floor).  Pinned natively
+;; (SLOG_NATIVE_ARM=0), the poisoned bucket trips mid-epoch at ~1e6
+;; ticks (floor + k*chat*rows), aborts without committing, and the
+;; daemon rescues the bucket onto the interp sibling; sibling buckets of
+;; the same epoch bail without paying.  SLOG_NO_NATIVE_RESCUE=1 is the
+;; phase-2 control: the same run pays the full ~200M-tick epoch natively
+;; before the epoch-close unpin.
+
+table (d int)
+table (n2 int)
+table (n4 int)
+table (iter int)
+table (wid int)
+table (xsetM int)
+table (zsetM int)
+table (a int int int)
+table (b int int)
+table (c int int int)
+table (walk int int)
+
+rule (d 0) (d 1) (d 2) (d 3) (d 4) (d 5) (d 6) (d 7) (d 8) (d 9)
+rule (n2 X) <-- (d A) (d B) (= X (+ (* 10 A) B))
+rule (n4 X) <-- (n2 A) (n2 B) (= X (+ (* 100 A) B))
+
+rule (iter I) <-- (n2 I) (< I 20)
+rule (wid J) <-- (n4 J) (< J 200)
+
+;; the 1-row spine: every step always has exactly one satisfying chain
+rule (a I X 0) <-- (iter I) (= X (+ 100000 I))
+rule (b X Z) <-- (iter I) (= X (+ 100000 I)) (= Z (+ 200000 I))
+rule (c I Z 0) <-- (iter I) (= Z (+ 200000 I))
+
+;; the monster step (I = 10 ONLY): a fans to 1000 X's, b crosses them
+;; into 1000 Z's each -- ~1M dead matches per driver row in that epoch
+rule (xsetM X) <-- (n4 I) (< I 1000) (= X (+ 500000 I))
+rule (zsetM Z) <-- (n4 I) (< I 1000) (= Z (+ 600000 I))
+rule (a I X 0) <-- (iter I) (= I 10) (xsetM X)
+rule (b X Z) <-- (xsetM X) (zsetM Z)
+
+rule (walk J 0) <-- (wid J)
+rule (walk J I2) <-- (walk J I) (< I 19)
+                     (a I X P) (b X Z) (c I Z Q)
+                     (= I2 (+ I 1))

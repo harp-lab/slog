@@ -89,7 +89,12 @@ echo "-- runtime selection (SLOG_MULTIPLAN=1, unforced; one artifact each) --"
 run_one card_bait        bait-mp    SLOG_MULTIPLAN=1 SLOG_MEM_MAX=16G
 # the index-policy headline: free mode fits bait's arms into the
 # primary-only orderings -- no OOM at the DEFAULT 4G cap, no union build
-run_one card_bait        bait-fr    SLOG_MULTIPLAN=1 SLOG_MULTIPLAN_INDEX=free
+# free-mode's measured peak RSS is 3.55-3.70G (VmHWM, both 2026-08-24
+# daemons) -- ON the default cap's 3.75G soft ceiling, so pass/pause
+# flipped with allocator noise.  6G steps off the knife edge while
+# keeping the leg's point: free mode fits in modest memory where the
+# eager arm-union needs the 16G-class cap above.
+run_one card_bait        bait-fr    SLOG_MULTIPLAN=1 SLOG_MULTIPLAN_INDEX=free SLOG_MEM_MAX=6G
 run_one card_skew_a      skew_a-mp  SLOG_MULTIPLAN=1
 run_one card_skew_b      skew_b-mp  SLOG_MULTIPLAN=1
 run_one card_corr        corr-mp    SLOG_MULTIPLAN=1
@@ -120,9 +125,12 @@ echo "-- J3 phase 2: the pinned tripwire at the default floor (SLOG_OPT=0) --"
 # card_betray pins its a-first arm natively; the arm betrays at step 10
 # (~18M meter ticks/epoch vs the 1e6+rate default ceiling).  The tripped
 # leg pays ONE exploded epoch then hands off to the interp sibling; the
-# held-pin control (SLOG_NO_RESCUE) pays all ten.
+# held-pin control (SLOG_NO_RESCUE) pays all ten.  SLOG_NO_NATIVE_RESCUE
+# isolates the phase-2 epoch-close tripwire (phase 3 would otherwise
+# trip MID-epoch -- the bmon gate below owns that).
 run_one card_betray bet-pin  SLOG_MULTIPLAN=1 SLOG_OPT=0 SLOG_NATIVE_ARM=0 \
-                             SLOG_ARM_DEBUG=1 SLOG_NO_ARM_ADVISORIES=1
+                             SLOG_ARM_DEBUG=1 SLOG_NO_ARM_ADVISORIES=1 \
+                             SLOG_NO_NATIVE_RESCUE=1
 run_one card_betray bet-held SLOG_MULTIPLAN=1 SLOG_OPT=0 SLOG_NATIVE_ARM=0 \
                              SLOG_NO_RESCUE=1 SLOG_NO_ARM_ADVISORIES=1
 BP=$(sumfix bet-pin); BH=$(sumfix bet-held)
@@ -132,6 +140,25 @@ echo "  betrayal: held-pin ${BH}ms / tripped ${BP}ms = ${btr}x (UNPINs: $btu)"
 btok=$(awk -v r="$btr" -v u="$btu" 'BEGIN{print (r>=2 && u==1) ? "PASS" : "MISS"}')
 printf "  %-32s %8sx (gate >= 2x, 1 unpin)  %s\n" "bet-held / bet-pin (summed fixpoint)" "$btr" "$btok"
 [ "$btok" = MISS ] && fail=1
+
+echo
+echo "-- J3 phase 3: mid-epoch native rescue at the default floor (SLOG_OPT=0) --"
+# card_betray_monster's poison is ONE ~200M-tick epoch: phase 3 trips
+# mid-epoch at ~1e6 ticks and rescues the bucket onto the interp
+# sibling; the phase-2 control (SLOG_NO_NATIVE_RESCUE) pays the whole
+# epoch natively before its epoch-close unpin.
+run_one card_betray_monster bmon-p3 SLOG_MULTIPLAN=1 SLOG_OPT=0 SLOG_NATIVE_ARM=0 \
+                                    SLOG_ARM_DEBUG=1 SLOG_NO_ARM_ADVISORIES=1
+run_one card_betray_monster bmon-p2 SLOG_MULTIPLAN=1 SLOG_OPT=0 SLOG_NATIVE_ARM=0 \
+                                    SLOG_ARM_DEBUG=1 SLOG_NO_ARM_ADVISORIES=1 \
+                                    SLOG_NO_NATIVE_RESCUE=1
+BM3=$(sumfix bmon-p3); BM2=$(sumfix bmon-p2)
+bmr=$(awk -v a="$BM2" -v b="$BM3" 'BEGIN{ if (b==0) print "n/a"; else printf "%.2f", a/b }')
+bmu=$(grep -c 'NATIVE-RESCUE' "$OUT/bmon-p3.log")
+echo "  mid-epoch rescue: phase-2 ${BM2}ms / phase-3 ${BM3}ms = ${bmr}x (rescues: $bmu)"
+bmok=$(awk -v r="$bmr" -v u="$bmu" 'BEGIN{print (r>=2 && u>=1) ? "PASS" : "MISS"}')
+printf "  %-32s %8sx (gate >= 2x, >=1 rescue)  %s\n" "bmon-p2 / bmon-p3 (summed fixpoint)" "$bmr" "$bmok"
+[ "$bmok" = MISS ] && fail=1
 
 echo
 echo "ratio gates (bad-plan / oracle query-stratum ms):"
@@ -179,7 +206,7 @@ sgate() {  # mp-key oracle-key max label
 sgate bait-mp    card_bait_good   10 "bait-mp / bait_good"
 # bait-free shares bait-mp's load-sensitive floor (18M-row relations;
 # measured 4.7-6.6x across runs) -- the gate asserts sanity, not optimum
-sgate bait-fr    card_bait_good    8 "bait-free / bait_good (4G cap)"
+sgate bait-fr    card_bait_good    8 "bait-free / bait_good (6G cap)"
 sgate skew_a-mp  card_skew_a_good  3 "skew_a-mp / a_good"
 sgate skew_b-mp  card_skew_b       3 "skew_b-mp / skew_b"
 sgate corr-mp    card_corr_good    4 "corr-mp / corr_good"

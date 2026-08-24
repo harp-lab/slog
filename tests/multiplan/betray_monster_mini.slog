@@ -1,0 +1,48 @@
+;; J3 phase 3 mid-epoch rescue mini: a 20-step, 10-walker recursive walk
+;; with ONE poisoned step -- at I = 10 the a-first arm explodes to ~40k
+;; join matches per driver row (xsetM x zsetM), far past the lowered
+;; per-invocation ceiling, while every other step is the 1-row spine.
+;; Pinned natively (SLOG_NATIVE_ARM=0), each poisoned bucket's task trips
+;; MID-EPOCH: it aborts before committing anything, the daemon rescues
+;; the bucket onto the interp sibling (redo-from-zero), and the group
+;; unpins -- sibling buckets of the same epoch bail without paying.  The
+;; phase-2 epoch-close UNPIN never fires (nothing left pinned to close).
+;; Ten walkers advance in lockstep so the lifetime baseline has >= 64
+;; driver rows before the poison -- the rate ceiling is armed, not C_init.
+
+table (d int)
+table (n2 int)
+table (n4 int)
+table (iter int)
+table (wid int)
+table (xsetM int)
+table (zsetM int)
+table (a int int int)
+table (b int int)
+table (c int int int)
+table (walk int int)
+
+rule (d 0) (d 1) (d 2) (d 3) (d 4) (d 5) (d 6) (d 7) (d 8) (d 9)
+rule (n2 X) <-- (d A) (d B) (= X (+ (* 10 A) B))
+rule (n4 X) <-- (n2 A) (n2 B) (= X (+ (* 100 A) B))
+
+rule (iter I) <-- (n2 I) (< I 20)
+rule (wid J) <-- (d J)
+
+;; the 1-row spine: every step always has exactly one satisfying chain
+rule (a I X 0) <-- (iter I) (= X (+ 10000 I))
+rule (b X Z) <-- (iter I) (= X (+ 10000 I)) (= Z (+ 20000 I))
+rule (c I Z 0) <-- (iter I) (= Z (+ 20000 I))
+
+;; the monster step (I = 10 ONLY): a fans to 200 X's, b crosses them
+;; into 200 Z's each -- the a-first order pays ~40k dead matches per
+;; driver row in that single epoch
+rule (xsetM X) <-- (n4 I) (< I 200) (= X (+ 50000 I))
+rule (zsetM Z) <-- (n4 I) (< I 200) (= Z (+ 60000 I))
+rule (a I X 0) <-- (iter I) (= I 10) (xsetM X)
+rule (b X Z) <-- (xsetM X) (zsetM Z)
+
+rule (walk J 0) <-- (wid J)
+rule (walk J I2) <-- (walk J I) (< I 19)
+                     (a I X P) (b X Z) (c I Z Q)
+                     (= I2 (+ I 1))

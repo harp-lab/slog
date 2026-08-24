@@ -285,9 +285,11 @@ rm -f build/profile/arms.rktd
 # floor), the group unpins (rescues++ = never-advise this run), and the
 # interp sibling finishes the walk.  Deterministic: the meter is counts,
 # not clocks, so the trip epoch and both work totals are data-exact.
+# SLOG_NO_NATIVE_RESCUE isolates the phase-2 backstop: with phase 3 on,
+# the betrayed epoch would trip MID-epoch instead (section 17 owns that).
 run_one bt_off betray_mini "" ""
 run_one bt_pin betray_mini 1 "" SLOG_ARM_DEBUG=1 SLOG_NO_ARM_ADVISORIES=1 \
-        SLOG_OPT=0 SLOG_NATIVE_ARM=0 SLOG_TRIP_FLOOR=2000
+        SLOG_OPT=0 SLOG_NATIVE_ARM=0 SLOG_TRIP_FLOOR=2000 SLOG_NO_NATIVE_RESCUE=1
 run_one bt_nr  betray_mini 1 "" SLOG_ARM_DEBUG=1 SLOG_NO_ARM_ADVISORIES=1 \
         SLOG_OPT=0 SLOG_NATIVE_ARM=0 SLOG_TRIP_FLOOR=2000 SLOG_NO_RESCUE=1
 if [ "$(grep -c 'native, pinned' "$OUT/bt_pin.log")" -ge 1 ] \
@@ -325,8 +327,10 @@ else bad "betray-handoff (nw=$nw iw=$iw hw=$hw fires $bf0/$bf1)"; fi
 # advisory -- the next run compiles unpinned.  Cleaned before and after.
 rm -f build/profile/arms.rktd; mkdir -p build/profile
 printf '#hash(((%s . 0) . 0))\n' "\"$bloc\"" > build/profile/arms.rktd
-run_one bt_heal  betray_mini 1 "" SLOG_ARM_DEBUG=1 SLOG_OPT=0 SLOG_TRIP_FLOOR=2000
-run_one bt_after betray_mini 1 "" SLOG_ARM_DEBUG=1 SLOG_OPT=0 SLOG_TRIP_FLOOR=2000
+run_one bt_heal  betray_mini 1 "" SLOG_ARM_DEBUG=1 SLOG_OPT=0 SLOG_TRIP_FLOOR=2000 \
+        SLOG_NO_NATIVE_RESCUE=1
+run_one bt_after betray_mini 1 "" SLOG_ARM_DEBUG=1 SLOG_OPT=0 SLOG_TRIP_FLOOR=2000 \
+        SLOG_NO_NATIVE_RESCUE=1
 if [ "$(grep -c 'native, pinned' "$OUT/bt_heal.log")" -ge 1 ] \
    && [ "$(grep -c 'UNPIN' "$OUT/bt_heal.log")" = 1 ] \
    && ! grep -q 'betray_mini' build/profile/arms.rktd 2>/dev/null \
@@ -336,6 +340,50 @@ if [ "$(grep -c 'native, pinned' "$OUT/bt_heal.log")" -ge 1 ] \
 then ok "advisory-heal (stale pin trips, unpins, and unrecords)"
 else bad "advisory-heal"; fi
 rm -f build/profile/arms.rktd
+
+# --- 17. J3 phase 3: mid-epoch native rescue (betray_monster_mini) -----------
+# One poisoned step (I=10, ~40k matches per driver row) inside a 20-step
+# walk.  Pinned natively, the poisoned bucket's task trips MID-epoch at
+# the first masked check past the ceiling (~2048 ticks at the lowered
+# floor), aborts WITHOUT committing anything, and the daemon rescues the
+# bucket onto the interp sibling (redo-from-zero -- exactly-once fires by
+# construction).  No epoch-close UNPIN fires (the rescue already
+# unpinned).  The bm_p2 control disables phase 3: the same run pays the
+# full ~400k-tick epoch natively and unpins at epoch close -- the
+# phase-2 backstop.  Ticks are counts: both totals are data-exact.
+run_one bm_off betray_monster_mini "" ""
+run_one bm_pin betray_monster_mini 1 "" SLOG_ARM_DEBUG=1 SLOG_NO_ARM_ADVISORIES=1 \
+        SLOG_OPT=0 SLOG_NATIVE_ARM=0 SLOG_TRIP_FLOOR=2000
+run_one bm_p2  betray_monster_mini 1 "" SLOG_ARM_DEBUG=1 SLOG_NO_ARM_ADVISORIES=1 \
+        SLOG_OPT=0 SLOG_NATIVE_ARM=0 SLOG_TRIP_FLOOR=2000 SLOG_NO_NATIVE_RESCUE=1
+if [ "$(grep -c 'NATIVE-RESCUE' "$OUT/bm_pin.log")" -ge 1 ] \
+   && [ "$(grep -c 'UNPIN' "$OUT/bm_pin.log")" = 0 ] \
+   && [ "$(grep -c 'NATIVE-RESCUE' "$OUT/bm_p2.log")" = 0 ] \
+   && [ "$(grep -c 'UNPIN' "$OUT/bm_p2.log")" = 1 ]
+then ok "monster-rescue (mid-epoch trip; backstop only when disabled)"
+else bad "monster-rescue"; fi
+bmok=1
+for leg in bm_pin bm_p2; do
+  diff <(LC_ALL=C sort "$OUT/bm_off/walk.csv") \
+       <(LC_ALL=C sort "$OUT/$leg/walk.csv") >/dev/null 2>&1 || bmok=0
+done
+[ "$bmok" = 1 ] && ok "monster-rescue-content (identical off/rescued/backstop)" \
+                || bad "monster-rescue-content"
+# the work bound: a tripped invocation never commits its meter, so the
+# rescued leg's native ticks are the SPINE ONLY, orders of magnitude
+# under the backstop leg's full monster epoch; the interp handoff rows
+# appear under the sibling's tag; per-loc fires stay exact
+mn=$(grep '"delta:walk"' "$OUT/bm_pin/\$stat_work.csv" | awk '{print $3+0}')
+m2=$(grep '"delta:walk"' "$OUT/bm_p2/\$stat_work.csv" | awk '{print $3+0}')
+mi=$(grep -c 'delta:walk#' "$OUT/bm_pin/\$stat_work.csv")
+mloc=$(grep '"delta:walk"' "$OUT/bm_pin/\$stat_work.csv" | awk '{print $1}' | tr -d '"')
+mf0=$(grep "$mloc" "$OUT/bm_off/\$stat_fires.csv" | awk '{s+=$NF} END{print s+0}')
+mf1=$(grep "$mloc" "$OUT/bm_pin/\$stat_fires.csv" | awk '{s+=$NF} END{print s+0}')
+if [ -n "$mn" ] && [ -n "$m2" ] && [ "$mi" -ge 1 ] \
+   && [ "$m2" -ge $((mn * 50)) ] \
+   && [ "$mf0" != 0 ] && [ "$mf0" = "$mf1" ]
+then ok "monster-rescue-bound (native $mn vs backstop $m2 ticks; fires $mf0)"
+else bad "monster-rescue-bound (mn=$mn m2=$m2 mi=$mi fires $mf0/$mf1)"; fi
 
 echo
 echo "$PASS passed, $FAIL failed"

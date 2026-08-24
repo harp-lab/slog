@@ -829,8 +829,50 @@ Daemon — measurement (verified 2026-08-20):
   the native ticks; §16 heal: seeded stale advisory pins → trips →
   unrecords, next run unpinned) and `bench/card_betray.slog` at the
   DEFAULT floor (study gate: held-pin ≥ 2× tripped, exactly one UNPIN).
-  Still pending: phase 3 (native rescue via driver-position export,
-  evidence-gated).
+- **SHIPPED — J3 phase 3: mid-epoch native rescue.**  A pinned native
+  arm task now bounds its own betrayal WITHIN the epoch.  Arming: once
+  per invocation, at the bucket's start only (`resume == 0` — a sliced
+  continuation resumed past committed slices falls back to phase 2),
+  the task fetches (floor, rate) from the group's LIFETIME meter, which
+  rolls only at epoch close — the ceiling is stable and deterministic
+  all epoch.  Checking: every join-lambda entry early-returns on the
+  `_trip` flag (open cursors drain their ranges body-free — descent
+  stops at the flag, no exceptions), and every 2048th match compares
+  `_work > _floor + _rate·_rows` in pure local arithmetic.  Aborting:
+  the tripped invocation returns BEFORE send-batches/fires-flush/
+  note — it commits NOTHING — so the rescue redoes the whole bucket on
+  an interp sibling with exactly-once fires **by construction** (no
+  position translation across executors, no fires merge; the
+  driver-position export degenerates to "the invocation start", which
+  for an unsliced task is zero).  The daemon side validates at the pin
+  site: scan-delta drivers only, the native variant's DriverPlan unique
+  within the group (self-join occurrence pairs are ambiguous → phase 2),
+  and every matching interp sibling arm contributes exactly one variant
+  with the identical (kind, relation, order, bound) — V4's transplant
+  test, reused for coverage equality.  The rescue picks the sibling by
+  bucket probe (argmin, ties to smallest arm), unpins, `rescues++`
+  (never-advise; the advisory heal composes for free), and pushes a
+  gate-exempt rescued `InterpReadTask` — V4's exact mechanism.  Sibling
+  buckets of the same epoch that reach their gate after the unpin get
+  trip-state 2 and BAIL: they skip the native run entirely and rescue
+  from zero.  (The bail is a timing short-circuit of a deterministic
+  decision: content, fires, and the trip verdict are invariant; only
+  the native-vs-interp work ATTRIBUTION of unpoisoned sibling buckets
+  can vary run to run.)  Escapes: `SLOG_NO_NATIVE_RESCUE=1` disables
+  phase 3 alone (the phase-2 epoch-close backstop remains — the
+  batteries use this to isolate each layer); `SLOG_NO_RESCUE=1` and
+  `SLOG_FORCE_ARM` disable both.  Known meter blind spot (inherited
+  from "approximate parity"): a join3 intersection that advances long
+  ranges between MATCHES ticks nothing while it walks, so a dead-
+  intersection blowup escapes both tripwires.  Validated:
+  `tests/multiplan/betray_monster_mini.slog` (§17: one poisoned step;
+  trip at 2048 ticks vs the 40k-tick row, rescue, zero UNPINs; the
+  `SLOG_NO_NATIVE_RESCUE` control pays the full 402k-tick epoch then
+  unpins at close; rescued-leg native ticks = spine only, 50×+ bound
+  gate; per-loc fires exact) and `bench/card_betray_monster.slog` at
+  the DEFAULT floor (~200M-tick poisoned epoch: trip at 1,001,472
+  ticks, sibling buckets bail at zero, phase-2 control 6.5× slower;
+  study gate ≥ 2× + ≥1 rescue).
 - **J3 — native tier for choice rules** (unchanged shape: dominant-arm
   or K×-cluster; requires the native tick accumulator for tripwire
   parity).
