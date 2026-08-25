@@ -1,0 +1,47 @@
+;; J3 join3-arm mini: a 20-step, 10-walker walk over a key-simple ternary
+;; CYCLE -- g1(I,X) g2(X,Y) g3(Y,I) -- so the primary arm schedules a
+;; join3 (wcoj) intersection and the sibling arm is the SAME driver with
+;; join3 suppressed (the pairwise order).  One poisoned step: at I = 10,
+;; g2 gains 3000 EVEN-offset Y's under the spine X and g3 gains 3000
+;; ODD-offset Y's under I -- interleaved and disjoint, the leapfrog's
+;; anti-gallop worst case: ~6000 seek iterations per driver row with ONE
+;; match (the spine Y).  A match-only meter reads ~zero there; the
+;; metered join3 ticks per ITERATION, so the pinned native arm trips
+;; mid-epoch and the daemon rescues the bucket onto the pairwise interp
+;; sibling.  Ten walkers advance in lockstep: >= 64 baseline driver rows
+;; arm the rate ceiling before the poison.
+
+table (d int)
+table (n2 int)
+table (n4 int)
+table (iter int)
+table (wid int)
+table (pk int)
+table (g1 int int)
+table (g2 int int)
+table (g3 int int)
+table (walk int int)
+
+rule (d 0) (d 1) (d 2) (d 3) (d 4) (d 5) (d 6) (d 7) (d 8) (d 9)
+rule (n2 X) <-- (d A) (d B) (= X (+ (* 10 A) B))
+rule (n4 X) <-- (n2 A) (n2 B) (= X (+ (* 100 A) B))
+
+rule (iter I) <-- (n2 I) (< I 20)
+rule (wid J) <-- (d J)
+rule (pk K) <-- (n4 K) (< K 3000)
+
+;; the 1-row spine cycle: every step has exactly one satisfying triangle
+rule (g1 I X) <-- (iter I) (= X (+ 10000 I))
+rule (g2 X Y) <-- (iter I) (= X (+ 10000 I)) (= Y (+ 20000 I))
+rule (g3 Y I) <-- (iter I) (= Y (+ 20000 I))
+
+;; the poisoned step (I = 10 ONLY): interleaved DISJOINT Y ranges --
+;; evens under the spine X in g2, odds under I in g3 -- so the join3
+;; intersection walks ~6000 dead seeks per driver row for one match
+rule (g2 X Y) <-- (pk K) (= X 10010) (= Y (+ 70000 (* 2 K)))
+rule (g3 Y I) <-- (pk K) (= I 10) (= Y (+ 70001 (* 2 K)))
+
+rule (walk J 0) <-- (wid J)
+rule (walk J I2) <-- (walk J I) (< I 19)
+                     (g1 I X) (g2 X Y) (g3 Y I)
+                     (= I2 (+ I 1))

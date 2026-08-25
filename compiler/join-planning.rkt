@@ -936,8 +936,13 @@
        (if choose-one-driver?
            (set (cdr (first sorted-candidates)))
            (for/set ([candidate (in-list candidates)]) (cdr candidate))))
-     ;; shared J1/J2 arm-eligibility gates: normal flavor, scalar-only
-     ;; version bodies over ordinary tables, >= 2 tail joins
+     ;; shared J1/J2 arm-eligibility gates: normal flavor, version bodies
+     ;; over ordinary tables, >= 2 tail joins.  join3-bearing versions are
+     ;; ELIGIBLE (the V1 scalar-only fence is lifted): the interp executes
+     ;; them through the erased join3 cursor with per-iteration budget
+     ;; ticks, native arm tasks emit the metered join3 variant, and both
+     ;; rescues operate at driver granularity, so an expand3 in the tail
+     ;; changes nothing about arm equivalence or rescue safety.
      (define (arm-flavor-ok?)
        (and (multiplan-enabled)
             (not (count-flavor))
@@ -957,10 +962,6 @@
               (match cl
                 [`(syn ,_ ,(? symbol? nm) ,_ ...) (ordinary-table? nm)]
                 [_ #f]))))
-     (define (scalar-version? version)
-       (match version
-         [`(syn ,_ ,_ ,body ... --> ,_ ...)
-          (not (ormap expand3-action? body))]))
      ;; J2 closed-rule WHOLE-ORDER arms: the drive-from-each candidates the
      ;; planner already enumerated, retained one per DISTINCT driver
      ;; relation in rank order, capped at 4 (the ratified candidate-set
@@ -974,8 +975,7 @@
        (cond
          [(and choose-one-driver? (not seeded?) (arm-flavor-ok?)
                sorted-candidates (pair? (cdr sorted-candidates))
-               (car (first sorted-candidates))
-               (scalar-version? (cdr (first sorted-candidates))))
+               (car (first sorted-candidates)))
           (define primary (first sorted-candidates))
           (define alts
             (let loop ([cs (rest sorted-candidates)]
@@ -984,8 +984,7 @@
               (cond
                 [(or (null? cs) (>= n 4)) (reverse acc)]
                 [(and (car (car cs))
-                      (not (set-member? seen (occ-rel (car (car cs)))))
-                      (scalar-version? (cdr (car cs))))
+                      (not (set-member? seen (occ-rel (car (car cs))))))
                  (loop (cdr cs) (set-add seen (occ-rel (car (car cs))))
                        (add1 n) (cons (car cs) acc))]
                 [else (loop (cdr cs) seen n acc)])))
@@ -1006,9 +1005,14 @@
      ;; the crule kind slot into the ABI-2 exec attrs, and the daemon
      ;; attaches exactly ONE arm per group (default 0 = this argmax).
      ;; V1 gates: normal flavor only (flavored twins carry no arms until
-     ;; J2b makes verdicts transfer), scalar-only primaries, every body
-     ;; join an ordinary table, and >= 2 tail joins so an order choice
-    ;; exists at all.
+     ;; J2b makes verdicts transfer), every body join an ordinary table,
+     ;; and >= 2 tail joins so an order choice exists at all.
+     ;; a version whose scheduled body contains an expand3 (join3) action
+     (define (wcoj-version? version)
+       (match version
+         [`(syn ,_ ,_ ,body ... --> ,_ ...)
+          (and (ormap expand3-action? body) #t)]
+         [_ #f]))
      (define arm-versions
        (if (and (not seeded?)
                 (null? temp-joins)
@@ -1018,10 +1022,28 @@
              (match-define (cons driver version) c)
              (define ft (hash-ref first-tail-of version #f))
              (cond
-               [(and ft (scalar-version? version))
+               [ft
                 (define-values (alt _aft)
                   (make-version driver exact-old?
                                 #:banned-first (list ft)))
+                (cond
+                  [alt (define gid (mint-arm-gid!))
+                       (arm-mark! version (cons 0 gid))
+                       (arm-mark! alt (cons 1 gid))
+                       (cons alt acc)]
+                  [else acc])]
+               ;; a wcoj (join3) primary has no greedy first tail to ban;
+               ;; its natural alternative is the SAME driver scheduled with
+               ;; join3 suppressed -- wcoj-vs-pairwise is exactly the
+               ;; data-dependent choice (join3 wins on dense cycles, the
+               ;; pairwise order when selectivity kills early or the
+               ;; intersection is a dead interleaved walk).  Non-degenerate
+               ;; by construction: the primary contains an expand3, the
+               ;; suppressed re-run cannot.
+               [(wcoj-version? version)
+                (define-values (alt _aft)
+                  (parameterize ([wcoj3-enabled #f])
+                    (make-version driver exact-old?)))
                 (cond
                   [alt (define gid (mint-arm-gid!))
                        (arm-mark! version (cons 0 gid))

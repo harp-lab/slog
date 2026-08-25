@@ -285,6 +285,40 @@ inline void join3(Index** left_full, Index** left_delta,
   }
 }
 
+// The METERED variant, emitted for arm-kind (choice-group) rules only: the
+// tick functor runs once per leapfrog ITERATION -- dead seeks included,
+// mirroring the interp join3 cursor's per-iteration budget tick
+// (plan.cpp ErasedJoin3Cursor) -- so an intersection that walks two large,
+// interleaved-but-rarely-equal streams meters its real work even when it
+// produces few or no matches (a match-only meter would read ~zero there
+// and blind both tripwires).  A false tick aborts the walk: the caller's
+// invocation is being abandoned, so nothing downstream matters.
+template <u16 LA, u16 LK, Join3View LV,
+          u16 RA, u16 RK, Join3View RV, class Cont, class Tick>
+inline void join3_metered(Index** left_full, Index** left_delta,
+                          const std::array<u64, LA>& left_key,
+                          Index** right_full, Index** right_delta,
+                          const std::array<u64, RA>& right_key,
+                          Cont&& k, Tick&& t)
+{
+  Join3PrefixCursor<LA, LK, LV> left(left_full, left_delta, left_key);
+  Join3PrefixCursor<RA, RK, RV> right(right_full, right_delta, right_key);
+  while (left.valid() && right.valid())
+  {
+    if (!t()) return;
+    const u64 l = left.value();
+    const u64 r = right.value();
+    if (l < r) left.seek(r);
+    else if (r < l) right.seek(l);
+    else
+    {
+      k(l);
+      left.advance_past(l);
+      right.advance_past(r);
+    }
+  }
+}
+
 // JOIN DRIVER (bound prefix), SLICEABLE (docs/pausing.md §3): the probe-driver
 // analogue of read_delta_sliced.  Like join_probe, but pausable at the
 // outer-match granularity: resume from the saved match key `rkey` (when

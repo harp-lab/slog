@@ -1,4 +1,4 @@
-# Join-planning assessment (2026-08-15; selection V0–V4 shipped 2026-08-22)
+# Join-planning assessment (2026-08-15; runtime-selection arc COMPLETE 2026-08-24: V0–V4, J3 phases 1–3, join3 arms)
 
 Prompted by a report that *simple queries on large knowledge graphs run
 slower than expected, apparently in the join planning*. This assesses the
@@ -873,9 +873,41 @@ Daemon — measurement (verified 2026-08-20):
   the DEFAULT floor (~200M-tick poisoned epoch: trip at 1,001,472
   ticks, sibling buckets bail at zero, phase-2 control 6.5× slower;
   study gate ≥ 2× + ≥1 rescue).
-- **J3 — native tier for choice rules** (unchanged shape: dominant-arm
-  or K×-cluster; requires the native tick accumulator for tripwire
-  parity).
+- **SHIPPED — join3 arms: the wcoj fence lift + the seek-metered
+  intersection (arc closer, 2026-08-24).**  Two fences had kept
+  join3-planned rules entirely OUTSIDE runtime selection (the "arm
+  cliff" the bowtie study pinned): the V1 `scalar-version?` gate
+  excluded expand3-bearing versions from arm marking, and a wcoj
+  schedule has no greedy first tail for `#:banned-first` to ban, so the
+  tail-arm generator produced nothing.  Both lifted: join3 versions are
+  arm-eligible (the interp executes them through the erased join3
+  cursor, both rescues operate at driver granularity, so nothing about
+  equivalence or rescue safety changes), and a wcoj primary's sibling
+  arm is the SAME driver re-scheduled under `wcoj3-enabled = #f` — the
+  pairwise order, non-degenerate by construction — making
+  wcoj-vs-pairwise itself a data-dependent runtime choice.  With arms
+  now able to carry join3, the native meter blind spot became live and
+  was closed in the same slice: `slog::join3_metered` (emitted for arm
+  tasks only; plain `join3` and all non-arm emission byte-identical)
+  runs a tick functor once per leapfrog ITERATION — dead seeks
+  included, mirroring the interp cursor's per-iteration budget tick —
+  carrying both the work meter and the trip check, and aborting the
+  walk itself on a trip (a `_trip` flag inside `k` could never stop the
+  intersection loop).  Honest bound worth recording: on a dead
+  interleaved intersection the leapfrog costs ≈ |L|+|R| iterations
+  where the best pairwise order pays ≈ min-side probes — at most ~2×,
+  and clustered values gallop far below that (the wcoj guarantee) — so
+  this tripwire is meter honesty plus cheap insurance, not a
+  big-rescue class; the big-win direction is that dense-cycle rules can
+  now SELECT join3 at runtime instead of being spelled into it.
+  Validated (`tests/multiplan/tri_betray_mini.slog`, battery §18): the
+  poisoned step is the anti-gallop worst case (~6000 dead seeks per
+  driver row, ONE match — a match-only meter reads ~zero there); the
+  pinned native arm trips mid-epoch at 2048 ticks and rescues onto the
+  pairwise sibling; the phase-2 control unpins at epoch close on
+  60,010 ticks against 190 fires (316× seek-dominated — the closure
+  proof); five legs content-identical; arm pair + join3 co-present in
+  one plan.
 - **J0 — size-blind robustness (compiler-only, partially landed;
   deprioritized).**  With runtime selection shipped, the static-score
   fixes matter mainly for flag-off users; the const-bait case is
@@ -892,6 +924,54 @@ Every phase lands behind the card-study gate (`CARD_ASSERT=1
 bench/card-study.sh` covers the static ratios AND the selection
 ratios); targeted batteries per phase, full suite at arc end per the
 standing test discipline.
+
+### Arc closure (2026-08-24): the layered detection stack, as built
+
+One artifact per program; selection is layered, each layer catching
+what the previous cannot, every input a pure function of database
+state:
+
+1. **Counts screen** (per epoch, free): `tupleCount + deltaLiveCount`
+   argmin over arm drivers — resolves the 100–300× skew class.
+2. **Bounded emission-free probes** (near-ties only): each candidate's
+   own machine over the frozen read state under a tick budget; a bad
+   arm caps out, which IS the blowup signal — resolves exact ties and
+   the flip class per epoch.
+3. **Interp tripwire + rescue** (mid-iteration): rate-normalized
+   ceiling at slice boundaries; abandon at the driver row, transplant
+   the remainder to the probed-best same-driver sibling — the
+   probe-blind/monster class.
+4. **Pinned epoch-close tripwire** (native, phase 2): the claim-lite
+   epoch close evaluates the CLOSED epoch's native meter; deferred
+   unpin hands the next epoch to interp selection; `rescues++` marks
+   never-advise and the advisory heal unrecords the betrayer.
+5. **Mid-epoch native rescue** (phase 3): armed per invocation at the
+   bucket start; the tripped invocation aborts BEFORE committing
+   anything, so the bucket redoes on an interp sibling with
+   exactly-once fires by construction; sibling buckets bail free.
+
+**Ratified deferred list** (decisions, not omissions):
+
+- Probe-driver (`probe_delta`) and static-variant native rescue: the
+  emit gate and the attach validation both restrict phase 3 to
+  scan-delta variants; everything else keeps the phase-2 backstop.
+  Mechanical extension (mirror the scan guards over `resume_key`) with
+  no new design — deferred until a shape demands it.
+- Closed-rule pinned groups carry no tripwire at all (one epoch, and
+  whole-order arms have no same-driver sibling); they are reachable
+  only via the explicit `SLOG_NATIVE_ARM` override (advisories never
+  converge closed rules), so the override owns the risk.
+- Bail-race work attribution: which unpoisoned sibling buckets run
+  native vs bail to interp within the betrayed epoch varies with task
+  timing; content, fires, and the trip verdict are invariant.
+- Native `$stat_work` keys on the fires tag (coarser than interp's
+  per-arm `#N` variants — frames carry no other spelling); arm-id
+  beside `$stat_work` likewise deferred.
+- Probe hysteresis, K>2 rescue re-trips, byte-aware budgets, the lazy
+  index lifecycle, closed-rule cross-run stability advisories: parked
+  with rationale in the phase entries above.
+- Flavored arms (count/maint selection) and seeded-rule arms: the next
+  arc's capabilities, not this one's debts.
 
 ### The cardsel blowup suite (BUILT and measured 2026-08-20)
 
@@ -1020,14 +1100,24 @@ reduce how often a choice group is even needed.
   `make_probe_execution` + `NullSink` + the task gate (`plan.h`),
   `read_epoch` + `deltaLiveCount` (`database.h`), group wiring
   (`plan-count.cpp` `attach_normal_rules`).
-- Knobs: `SLOG_MULTIPLAN`, `SLOG_MULTIPLAN_INDEX=eager|free|budget:N`
-  (compile-time, job-hashed); `SLOG_MEASURE_BUDGET` (runtime, default
-  4096), `SLOG_TRIP_FLOOR` (1e6) / `SLOG_TRIP_K` (8), `SLOG_FORCE_ARM`
-  (runtime test hook), `SLOG_NO_RESCUE`, `SLOG_ARM_DEBUG` — runtime
-  knobs never enter any cache key.
-- Batteries: `tests/multiplan-tests.sh` (18 checks) over
-  `tests/multiplan/{flip_mini,skew_mini_a,skew_mini_b,corr_mini}.slog` —
-  always-on, fast; the full-scale study stays opt-in.
+- Knobs, compile-time (job-hashed): `SLOG_MULTIPLAN`,
+  `SLOG_MULTIPLAN_INDEX=eager|free|budget:N`, `SLOG_NATIVE_ARM=n` (the
+  explicit promotion override — wins over advisories), and the
+  arm-advisory store itself (`build/profile/arms.rktd`, fingerprinted by
+  source basenames; `SLOG_NO_ARM_ADVISORIES=1` records but never
+  consults).  Runtime (never in any cache key): `SLOG_MEASURE_BUDGET`
+  (default 4096, one 8× escalation), `SLOG_TRIP_FLOOR` (1e6) /
+  `SLOG_TRIP_K` (8), `SLOG_FORCE_ARM` (test hook; disables tripwires),
+  `SLOG_NO_RESCUE` (holds every pick: disables the interp rescue, the
+  pinned epoch-close unpin, AND the mid-epoch native rescue),
+  `SLOG_NO_NATIVE_RESCUE` (disables the mid-epoch native rescue alone —
+  the phase-2 epoch-close backstop remains; the batteries use it to
+  isolate each layer), `SLOG_ARM_DEBUG` (attach/pick/UNPIN/
+  NATIVE-RESCUE trace on stderr).
+- Batteries: `tests/multiplan-tests.sh` (40 checks, always-on) over
+  `tests/multiplan/{flip,skew_a,skew_b,corr,pblind,native,betray,
+  betray_monster,tri_betray}_mini.slog`; the full-scale study
+  (`CARD_ASSERT=1 bench/card-study.sh`, 21 gates) stays opt-in.
 - Planner: `compiler/join-planning.rkt` (`join-score:991`,
   `best-occurrence:1009`, `schedule-body-actions:1182`; candidate
   enumeration `:756-784`, retention seam `:845-848`, ordinal-bound views

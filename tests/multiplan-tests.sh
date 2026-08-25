@@ -385,6 +385,51 @@ if [ -n "$mn" ] && [ -n "$m2" ] && [ "$mi" -ge 1 ] \
 then ok "monster-rescue-bound (native $mn vs backstop $m2 ticks; fires $mf0)"
 else bad "monster-rescue-bound (mn=$mn m2=$m2 mi=$mi fires $mf0/$mf1)"; fi
 
+# --- 18. join3 arms: the wcoj fence lift + the seek-metered tripwire ---------
+# tri_betray_mini's choice rule schedules a join3 (ternary cycle); the
+# fence lift gives it a sibling arm = the SAME driver with join3
+# SUPPRESSED (wcoj vs pairwise, the data-dependent choice).  The poisoned
+# step is the leapfrog's anti-gallop worst case: ~6000 dead seek
+# iterations per driver row with ONE match -- a match-only meter reads
+# ~zero there.  These checks close that blind spot: the metered join3
+# ticks per ITERATION, so the pinned native arm trips mid-epoch (phase
+# 3), and with phase 3 disabled the same seek ticks drive the epoch-close
+# backstop (phase 2).  All totals are counts: data-exact.
+run_one tb_off tri_betray_mini "" ""
+run_one tb_mp  tri_betray_mini 1 ""
+run_one tb_f0  tri_betray_mini 1 0
+run_one tb_f1  tri_betray_mini 1 1
+run_one tb_pin tri_betray_mini 1 "" SLOG_ARM_DEBUG=1 SLOG_NO_ARM_ADVISORIES=1 \
+        SLOG_OPT=0 SLOG_NATIVE_ARM=0 SLOG_TRIP_FLOOR=2000
+run_one tb_p2  tri_betray_mini 1 "" SLOG_ARM_DEBUG=1 SLOG_NO_ARM_ADVISORIES=1 \
+        SLOG_OPT=0 SLOG_NATIVE_ARM=0 SLOG_TRIP_FLOOR=2000 SLOG_NO_NATIVE_RESCUE=1
+tp=$(last_plan tb_mp)
+if [ "$(grep -o '(arm [01] [0-9]*)' "$tp" | sort -u | wc -l)" = 2 ] \
+   && grep -q 'join3' "$tp"
+then ok "join3-arm-pair (wcoj + suppressed sibling in one plan)"
+else bad "join3-arm-pair"; fi
+triok=1
+for leg in tb_mp tb_f0 tb_f1 tb_pin tb_p2; do
+  diff <(LC_ALL=C sort "$OUT/tb_off/walk.csv") \
+       <(LC_ALL=C sort "$OUT/$leg/walk.csv") >/dev/null 2>&1 || triok=0
+done
+[ "$triok" = 1 ] && ok "join3-arm-content (identical across 5 legs)" \
+                 || bad "join3-arm-content"
+tn=$(grep '"delta:walk"' "$OUT/tb_pin/\$stat_work.csv" | awk '{print $3+0}')
+t2=$(grep '"delta:walk"' "$OUT/tb_p2/\$stat_work.csv" | awk '{print $3+0}')
+tloc=$(grep '"delta:walk"' "$OUT/tb_p2/\$stat_work.csv" | awk '{print $1}' | tr -d '"')
+tf=$(grep "$tloc" "$OUT/tb_p2/\$stat_fires.csv" | awk '{s+=$NF} END{print s+0}')
+tf0=$(grep "$tloc" "$OUT/tb_off/\$stat_fires.csv" | awk '{s+=$NF} END{print s+0}')
+if [ "$(grep -c 'NATIVE-RESCUE' "$OUT/tb_pin.log")" -ge 1 ] \
+   && [ "$(grep -c 'UNPIN' "$OUT/tb_pin.log")" = 0 ] \
+   && [ "$(grep -c 'UNPIN' "$OUT/tb_p2.log")" = 1 ] \
+   && [ -n "$tn" ] && [ -n "$t2" ] \
+   && [ "$t2" -ge $((tn * 20)) ] \
+   && [ "$t2" -ge $((tf * 100)) ] \
+   && [ "$tf" != 0 ] && [ "$tf" = "$tf0" ]
+then ok "join3-seek-meter (backstop $t2 ticks vs $tf fires; tripped $tn)"
+else bad "join3-seek-meter (tn=$tn t2=$t2 fires=$tf/$tf0)"; fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ $FAIL -eq 0 ]

@@ -581,16 +581,33 @@
         (append (map (lambda (y) (format "v_~a" y)) (take rys RK))
                 (make-list (- RA RK) "0"))))
      (define cv (elocal 'cycle))
+     ;; Arm-kind tasks meter join3 PER ITERATION via the metered variant's
+     ;; tick functor (dead seeks included -- interp-cursor parity; a
+     ;; match-only ++_work in k would read ~zero on a dead intersection
+     ;; walk and blind both tripwires).  The tick also carries the trip
+     ;; check and aborts the walk by returning false, which a _trip flag
+     ;; inside k could never do.  k itself gets NO mark: the match's
+     ;; iteration already ticked.
+     (define join3-tick
+       (cond
+         [(not (current-arm-info)) #f]
+         [(current-arm-trip)
+          (string-append
+           "[&]() -> bool { ++_work;"
+           " if (!(_work & 2047) && _armed && _work > _floor + _rate * _rows)"
+           " _trip = true; return !_trip; }")]
+         [else "[&]() -> bool { ++_work; return true; }"]))
      (string-append
       ((emit-lines indent)
-       (format "slog::join3<~a,~a,~a,~a,~a,~a>(~a, ~a, ~a, ~a, ~a, ~a, [&](u64 ~a) {~a"
+       (format "slog::join3~a<~a,~a,~a,~a,~a,~a>(~a, ~a, ~a, ~a, ~a, ~a, [&](u64 ~a) {"
+               (if join3-tick "_metered" "")
                LA LK (view-cpp lview) RA RK (view-cpp rview)
                (index-name-of left) (delta-index left lview) left-key
-               (index-name-of right) (delta-index right rview) right-key cv
-               (meter-mark))
+               (index-name-of right) (delta-index right rview) right-key cv)
        (format "u64 v_~a = ~a;" cycle cv))
       (emit-ops rest index-name-of delta-name-of head-fun (+ indent 2))
-      ((emit-lines indent) "});"))]
+      ((emit-lines indent)
+       (if join3-tick (format "}, ~a);" join3-tick) "});")))]
     [`(,(and op `(join ,name ,ind ,K ,ys ...)) . ,rest)
      (define A (length ys))
      (define free (drop ys K))
