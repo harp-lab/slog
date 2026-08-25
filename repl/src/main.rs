@@ -4,6 +4,7 @@ mod editor;
 mod library;
 mod protocol;
 mod share;
+mod theme;
 mod ui;
 mod version;
 
@@ -26,6 +27,7 @@ use share::{DirectReply, ShareEvent, ShareServer};
 use std::collections::VecDeque;
 use std::error::Error;
 use std::io::{self, BufRead, IsTerminal, Write};
+use theme::Theme;
 use transcript::TranscriptEntry;
 use tutorial::TutorialCatalog;
 
@@ -36,16 +38,24 @@ enum FrontendMode {
     Help,
 }
 
-fn frontend_mode(
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CliOptions {
+    mode: FrontendMode,
+    /// `None` asks the terminal frontend to detect the background.
+    theme: Option<Theme>,
+}
+
+fn cli_options(
     args: impl IntoIterator<Item = String>,
     terminal_output: bool,
-) -> Result<FrontendMode, String> {
+) -> Result<CliOptions, String> {
     let mut mode = if terminal_output {
         FrontendMode::Terminal
     } else {
         FrontendMode::Plain
     };
     let mut explicit = false;
+    let mut theme = None;
     for argument in args {
         match argument.as_str() {
             "--plain" if !explicit => {
@@ -62,18 +72,27 @@ fn frontend_mode(
             "--help" | "-h" => {
                 return Err("help cannot be combined with another frontend mode".to_owned());
             }
+            "--light" if theme.is_none() => theme = Some(Theme::light()),
+            "--dark" if theme.is_none() => theme = Some(Theme::dark()),
+            "--light" | "--dark" => {
+                return Err("palette options cannot be combined or repeated".to_owned());
+            }
             _ => return Err(format!("unknown option: {argument}\n{}", usage())),
         }
     }
-    Ok(mode)
+    Ok(CliOptions { mode, theme })
 }
 
 fn usage() -> &'static str {
-    "usage: slog [--plain]\n\
+    "usage: slog [--plain] [--light|--dark]\n\
      \n\
      With terminal stdout, open the full-screen workbench. Redirected stdout\n\
-     automatically selects plain mode.\n\
+     automatically selects plain mode. The workbench detects the terminal's\n\
+     background color and picks a matching palette, keeping dark when the\n\
+     terminal does not say; :theme light|dark switches a running workbench.\n\
      --plain  read one command per input line and write a stable transcript\n\
+     --light  force the light palette instead of detecting the background\n\
+     --dark   force the dark palette instead of detecting the background\n\
      -h, --help  show this help"
 }
 
@@ -169,8 +188,9 @@ impl Drop for TerminalFeatures {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let mode = frontend_mode(std::env::args().skip(1), io::stdout().is_terminal())
+    let options = cli_options(std::env::args().skip(1), io::stdout().is_terminal())
         .map_err(|error| format!("slog: {error}"))?;
+    let mode = options.mode;
     if mode == FrontendMode::Help {
         println!("{}", usage());
         return Ok(());
@@ -178,6 +198,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let root = project_root().map_err(|error| format!("slog: {error}"))?;
     let tutorial_catalog = TutorialCatalog::load(&root.join("repl/tutorials"));
+    // Ask the terminal for its background color while the far slower Racket
+    // backend boots, so a terminal that never answers costs no startup time.
+    // Detection must finish before Ratatui starts reading terminal input.
+    let detection = (mode == FrontendMode::Terminal && options.theme.is_none())
+        .then(|| tokio::task::spawn_blocking(theme::detect));
     let mut backend = Backend::start(&root)
         .await
         .map_err(|error| format!("slog: {error}"))?;
@@ -192,9 +217,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await
         .map_err(|error| format!("slog: {error}"))?;
 
+    let theme = match (options.theme, detection) {
+        (Some(theme), _) => theme,
+        (None, Some(handle)) => handle.await.ok().flatten().unwrap_or(Theme::dark()),
+        (None, None) => Theme::dark(),
+    };
+
     let mut terminal = ratatui::init();
     let terminal_features = TerminalFeatures::enable();
-    let result = run_repl(&mut terminal, &mut backend, &mut share, tutorial_catalog).await;
+    let result = run_repl(
+        &mut terminal,
+        &mut backend,
+        &mut share,
+        tutorial_catalog,
+        theme,
+    )
+    .await;
     drop(terminal_features);
     ratatui::restore();
     backend.shutdown().await;
@@ -286,8 +324,10 @@ async fn run_repl(
     backend: &mut Backend,
     share: &mut ShareServer,
     tutorial_catalog: TutorialCatalog,
+    theme: Theme,
 ) -> Result<(), String> {
     let mut app = App::new();
+    app.theme = theme;
     app.set_tutorial_catalog(tutorial_catalog);
     app.set_coauthor_info(
         share.endpoint().to_owned(),
@@ -495,23 +535,47 @@ async fn run_repl(
 
 #[cfg(test)]
 mod cli_tests {
-    use super::{FrontendMode, frontend_mode, usage};
+    use super::{CliOptions, FrontendMode, Theme, cli_options, usage};
 
-    fn parse(args: &[&str], terminal_output: bool) -> Result<FrontendMode, String> {
-        frontend_mode(
+    fn parse(args: &[&str], terminal_output: bool) -> Result<CliOptions, String> {
+        cli_options(
             args.iter().map(|argument| (*argument).to_owned()),
             terminal_output,
         )
     }
 
+    fn mode(args: &[&str], terminal_output: bool) -> Result<FrontendMode, String> {
+        parse(args, terminal_output).map(|options| options.mode)
+    }
+
     #[test]
     fn selects_exactly_one_frontend_before_starting_processes() {
-        assert_eq!(parse(&[], true), Ok(FrontendMode::Terminal));
-        assert_eq!(parse(&[], false), Ok(FrontendMode::Plain));
-        assert_eq!(parse(&["--plain"], true), Ok(FrontendMode::Plain));
-        assert_eq!(parse(&["--plain"], false), Ok(FrontendMode::Plain));
-        assert_eq!(parse(&["--help"], true), Ok(FrontendMode::Help));
-        assert_eq!(parse(&["-h"], false), Ok(FrontendMode::Help));
+        assert_eq!(mode(&[], true), Ok(FrontendMode::Terminal));
+        assert_eq!(mode(&[], false), Ok(FrontendMode::Plain));
+        assert_eq!(mode(&["--plain"], true), Ok(FrontendMode::Plain));
+        assert_eq!(mode(&["--plain"], false), Ok(FrontendMode::Plain));
+        assert_eq!(mode(&["--help"], true), Ok(FrontendMode::Help));
+        assert_eq!(mode(&["-h"], false), Ok(FrontendMode::Help));
+    }
+
+    #[test]
+    fn selects_the_terminal_palette_or_defers_to_detection() {
+        assert_eq!(parse(&[], true).map(|o| o.theme), Ok(None));
+        assert_eq!(
+            parse(&["--light"], true).map(|o| o.theme),
+            Ok(Some(Theme::light()))
+        );
+        assert_eq!(
+            parse(&["--dark"], true).map(|o| o.theme),
+            Ok(Some(Theme::dark()))
+        );
+        assert_eq!(
+            parse(&["--light", "--plain"], false).map(|o| o.theme),
+            Ok(Some(Theme::light()))
+        );
+        assert!(parse(&["--light", "--light"], true).is_err());
+        assert!(parse(&["--dark", "--dark"], true).is_err());
+        assert!(parse(&["--light", "--dark"], true).is_err());
     }
 
     #[test]

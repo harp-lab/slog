@@ -4,31 +4,27 @@ mod tutorial;
 use crate::app::{App, EntryKind};
 use crate::completion::CompletionMenu;
 use crate::present::PresentationCard;
+use crate::theme::Theme;
 use crate::version;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Padding, Paragraph, Wrap};
 
-const CYAN: Color = Color::Rgb(62, 207, 227);
-const PINK: Color = Color::Rgb(244, 114, 182);
-const GREEN: Color = Color::Rgb(74, 222, 128);
-const MUTED: Color = Color::Rgb(124, 139, 161);
-const PANEL: Color = Color::Rgb(30, 36, 50);
-
 pub fn draw(frame: &mut Frame<'_>, app: &App) {
     let area = frame.area();
+    let theme = &app.theme;
     if let Some(overlay) = app.tutorial_overlay() {
         let sections = Layout::vertical([Constraint::Min(8), Constraint::Length(1)]).split(area);
-        tutorial::render(frame, sections[0], overlay);
-        tutorial::render_footer(frame, sections[1], overlay);
+        tutorial::render(frame, sections[0], overlay, theme);
+        tutorial::render_footer(frame, sections[1], overlay, theme);
         return;
     }
     if let Some(library) = &app.library {
         let sections = Layout::vertical([Constraint::Min(8), Constraint::Length(1)]).split(area);
-        library::render(frame, sections[0], library, &app.sessions);
-        render_library_footer(frame, sections[1]);
+        library::render(frame, sections[0], library, &app.sessions, theme);
+        render_library_footer(frame, sections[1], theme);
         return;
     }
     if let Some(completion) = app.completion() {
@@ -41,7 +37,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
         ])
         .split(area);
         render_body(frame, sections[0], app);
-        render_completion(frame, sections[1], completion);
+        render_completion(frame, sections[1], completion, theme);
         render_editor(frame, sections[2], app);
         return;
     }
@@ -72,7 +68,7 @@ fn render_body(frame: &mut Frame<'_>, area: Rect, app: &App) {
         let columns =
             Layout::horizontal([Constraint::Min(40), Constraint::Length(card_width)]).split(area);
         render_primary(frame, columns[0], app);
-        render_canvas_card(frame, columns[1], &card);
+        render_canvas_card(frame, columns[1], &card, &app.theme);
     } else {
         render_primary(frame, area, app);
     }
@@ -87,6 +83,7 @@ fn render_primary(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn render_splash(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let theme = &app.theme;
     let version_line = format!("                 /____/  v{}", version::current());
     // Ratatui centers each line independently. Pad the whole logo to the
     // version line's width so the descender of the `g` stays aligned.
@@ -104,20 +101,20 @@ fn render_splash(frame: &mut Frame<'_>, area: Rect, app: &App) {
     }
     let mut lines = vec![Line::from("")];
     for (index, line) in art.iter().enumerate() {
-        let color = Color::Rgb(45 + index as u8 * 16, 180 + index as u8 * 8, 230);
-        lines.push(Line::styled(line.as_str(), Style::default().fg(color)));
+        lines.push(Line::styled(
+            line.as_str(),
+            Style::default().fg(theme.logo(index)),
+        ));
     }
     lines.extend([
         Line::from(""),
         Line::styled(
             "Symbolic-expression logic programming",
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
         ),
         Line::from(""),
         Line::from(vec![
-            Span::styled(":help", Style::default().fg(CYAN)),
+            Span::styled(":help", Style::default().fg(theme.accent)),
             Span::raw(" for commands"),
         ]),
     ]);
@@ -125,40 +122,41 @@ fn render_splash(frame: &mut Frame<'_>, area: Rect, app: &App) {
         let suggestion = lines.last_mut().expect("splash has suggestion line");
         suggestion.spans.extend([
             Span::raw("  ·  "),
-            Span::styled("co-author", Style::default().fg(MUTED)),
+            Span::styled("co-author", Style::default().fg(theme.muted)),
             Span::raw("  "),
-            Span::styled(endpoint, Style::default().fg(CYAN)),
+            Span::styled(endpoint, Style::default().fg(theme.accent)),
             Span::raw("  ·  "),
-            Span::styled(":share", Style::default().fg(PINK)),
+            Span::styled(":share", Style::default().fg(theme.highlight)),
             Span::raw(" connection details"),
         ]);
     }
     lines.push(Line::from(vec![
         Span::raw("New to Slog? Try an interactive tutorial with "),
-        Span::styled(":tutorials", Style::default().fg(PINK)),
+        Span::styled(":tutorials", Style::default().fg(theme.highlight)),
     ]));
     let paragraph = Paragraph::new(lines).alignment(Alignment::Center).block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(PANEL))
+            .border_style(Style::default().fg(theme.panel))
             .title(" Welcome "),
     );
     frame.render_widget(paragraph, area);
 }
 
 fn render_transcript(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let theme = &app.theme;
     let mut lines = Vec::new();
     for (entry_index, entry) in app.transcript.iter().enumerate() {
         if entry.kind == EntryKind::Comment {
             for (index, line) in entry.lines.iter().enumerate() {
                 let mut spans = vec![Span::styled(
                     format!("  {line}"),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(theme.faint),
                 )];
                 if index == 0 && entry.title != "local" {
                     spans.push(Span::styled(
                         format!("  — {}", entry.title),
-                        Style::default().fg(MUTED),
+                        Style::default().fg(theme.muted),
                     ));
                 }
                 lines.push(Line::from(spans));
@@ -169,15 +167,15 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, app: &App) {
         if entry.kind == EntryKind::Presence {
             lines.push(Line::styled(
                 format!("  · {}", entry.title),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme.faint),
             ));
             continue;
         }
         if matches!(entry.kind, EntryKind::Command | EntryKind::GeneratedCommand) {
             let color = if entry.kind == EntryKind::GeneratedCommand {
-                Color::DarkGray
+                theme.faint
             } else {
-                CYAN
+                theme.accent
             };
             for (index, command_line) in entry.lines.iter().enumerate() {
                 let mut spans = vec![Span::styled(
@@ -193,7 +191,7 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 {
                     spans.push(Span::styled(
                         format!("  — {actor}"),
-                        Style::default().fg(MUTED),
+                        Style::default().fg(theme.muted),
                     ));
                 }
                 lines.push(Line::from(spans));
@@ -207,9 +205,9 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, app: &App) {
             }
             EntryKind::Comment => unreachable!("comments render above"),
             EntryKind::Presence => unreachable!("presence renders above"),
-            EntryKind::Result => ("◆", GREEN),
-            EntryKind::Error => ("!", Color::LightRed),
-            EntryKind::System => ("•", MUTED),
+            EntryKind::Result => ("◆", theme.success),
+            EntryKind::Error => ("!", theme.error),
+            EntryKind::System => ("•", theme.muted),
         };
         lines.push(Line::from(vec![
             Span::styled(format!("{prefix} "), Style::default().fg(color)),
@@ -227,13 +225,15 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 format!("{}{line}", if selected { "› " } else { "  " }),
                 if selected {
                     Style::default()
-                        .fg(Color::White)
-                        .bg(PANEL)
+                        .fg(theme.text)
+                        .bg(theme.selection_bg)
                         .add_modifier(Modifier::BOLD)
                 } else if search_match {
-                    Style::default().fg(PINK).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(theme.highlight)
+                        .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(Color::Gray)
+                    Style::default().fg(theme.body)
                 },
             ));
         }
@@ -242,13 +242,13 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, app: &App) {
     for entry in app.operations.active() {
         lines.push(Line::styled(
             format!("  {}", entry.animated_label()),
-            Style::default().fg(Color::Gray),
+            Style::default().fg(theme.body),
         ));
         lines.push(Line::from(""));
     }
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(PANEL))
+        .border_style(Style::default().fg(theme.panel))
         .title(" Shared transcript ");
     let inner = block.inner(area);
     let mut transcript = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
@@ -266,6 +266,7 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn render_editor(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let theme = &app.theme;
     if let Some(search) = app.canvas_search_editor() {
         let status = match app.canvas_search_summary() {
             Some(summary) if summary.total > 0 => format!(
@@ -278,13 +279,13 @@ fn render_editor(frame: &mut Frame<'_>, area: Rect, app: &App) {
         };
         let block = Block::default()
             .borders(Borders::TOP)
-            .border_style(Style::default().fg(PINK))
+            .border_style(Style::default().fg(theme.highlight))
             .padding(Padding::horizontal(1))
             .title(format!(" Search › {status} · Enter keep · Esc cancel "));
         let inner = block.inner(area);
         frame.render_widget(
             Paragraph::new(format!("/{}", search.text()))
-                .style(Style::default().fg(Color::White))
+                .style(Style::default().fg(theme.text))
                 .wrap(Wrap { trim: false })
                 .block(block),
             area,
@@ -303,14 +304,14 @@ fn render_editor(frame: &mut Frame<'_>, area: Rect, app: &App) {
     if app.canvas_navigating() {
         let block = Block::default()
             .borders(Borders::TOP)
-            .border_style(Style::default().fg(PINK))
+            .border_style(Style::default().fg(theme.highlight))
             .padding(Padding::horizontal(1))
             .title(
                 " Navigate › ↑/↓ j/k select · Enter expand/page · o card · / search · n/N matches · ←/→ collapse/expand · Esc/q prompt ",
             );
         frame.render_widget(
             Paragraph::new(app.editor.text())
-                .style(Style::default().fg(MUTED))
+                .style(Style::default().fg(theme.muted))
                 .wrap(Wrap { trim: false })
                 .block(block),
             area,
@@ -328,9 +329,9 @@ fn render_editor(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let block = Block::default()
         .borders(Borders::TOP)
         .border_style(Style::default().fg(if tutorial_status.is_some() {
-            PINK
+            theme.highlight
         } else {
-            CYAN
+            theme.accent
         }))
         .padding(Padding::horizontal(1))
         .title(format!(
@@ -350,18 +351,15 @@ fn render_editor(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let editor_scroll = row.saturating_sub(inner.height.saturating_sub(1));
     frame.render_widget(
         Paragraph::new(app.editor.hard_wrapped_text(inner.width as usize))
-            .style(Style::default().fg(Color::White))
+            .style(Style::default().fg(theme.text))
             .scroll((editor_scroll, 0))
             .block(block),
         area,
     );
     if app.tutorial_input_hint_visible() {
         frame.render_widget(
-            Paragraph::new("(Enter a command here)").style(
-                Style::default()
-                    .fg(Color::LightBlue)
-                    .add_modifier(Modifier::BOLD),
-            ),
+            Paragraph::new("(Enter a command here)")
+                .style(Style::default().fg(theme.hint).add_modifier(Modifier::BOLD)),
             inner,
         );
     }
@@ -372,7 +370,12 @@ fn render_editor(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.set_cursor_position((cursor_x, cursor_y));
 }
 
-fn render_completion(frame: &mut Frame<'_>, area: Rect, completion: &CompletionMenu) {
+fn render_completion(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    completion: &CompletionMenu,
+    theme: &Theme,
+) {
     let visible = area.height.saturating_sub(2) as usize;
     let offset = completion
         .selected()
@@ -389,22 +392,26 @@ fn render_completion(frame: &mut Frame<'_>, area: Rect, completion: &CompletionM
             Line::from(vec![
                 Span::styled(
                     if selected { "› " } else { "  " },
-                    Style::default().fg(if selected { PINK } else { MUTED }),
+                    Style::default().fg(if selected {
+                        theme.highlight
+                    } else {
+                        theme.muted
+                    }),
                 ),
                 Span::styled(
                     &candidate.label,
                     if selected {
                         Style::default()
-                            .fg(Color::White)
-                            .bg(PANEL)
+                            .fg(theme.text)
+                            .bg(theme.selection_bg)
                             .add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default().fg(CYAN)
+                        Style::default().fg(theme.accent)
                     },
                 ),
                 Span::styled(
                     format!("  {}", candidate.detail),
-                    Style::default().fg(MUTED),
+                    Style::default().fg(theme.muted),
                 ),
             ])
         })
@@ -413,7 +420,7 @@ fn render_completion(frame: &mut Frame<'_>, area: Rect, completion: &CompletionM
         Paragraph::new(lines).block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(PANEL))
+                .border_style(Style::default().fg(theme.panel))
                 .title(format!(
                     " Completion · {} match{} ",
                     completion.candidates().len(),
@@ -428,39 +435,37 @@ fn render_completion(frame: &mut Frame<'_>, area: Rect, completion: &CompletionM
     );
 }
 
-fn render_canvas_card(frame: &mut Frame<'_>, area: Rect, card: &PresentationCard) {
+fn render_canvas_card(frame: &mut Frame<'_>, area: Rect, card: &PresentationCard, theme: &Theme) {
     let mut lines = vec![
         Line::styled(
             &card.title,
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
         ),
-        Line::styled(&card.kind, Style::default().fg(MUTED)),
-        Line::styled(&card.path, Style::default().fg(CYAN)),
+        Line::styled(&card.kind, Style::default().fg(theme.muted)),
+        Line::styled(&card.path, Style::default().fg(theme.accent)),
         Line::from(""),
     ];
     for field in &card.fields {
         lines.push(Line::from(vec![
             Span::styled(
                 format!("{}: ", field.label),
-                Style::default().fg(PINK).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.highlight)
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(&field.value, Style::default().fg(Color::Gray)),
+            Span::styled(&field.value, Style::default().fg(theme.body)),
         ]));
     }
     if !card.actions.is_empty() {
         lines.push(Line::from(""));
         lines.push(Line::styled(
             "Actions",
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
         ));
         for action in &card.actions {
             lines.push(Line::styled(
                 format!("  {action}"),
-                Style::default().fg(CYAN),
+                Style::default().fg(theme.accent),
             ));
         }
     }
@@ -468,25 +473,25 @@ fn render_canvas_card(frame: &mut Frame<'_>, area: Rect, card: &PresentationCard
         Paragraph::new(lines).wrap(Wrap { trim: false }).block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(PANEL))
+                .border_style(Style::default().fg(theme.panel))
                 .title(" Card "),
         ),
         area,
     );
 }
 
-fn render_library_footer(frame: &mut Frame<'_>, area: Rect) {
+fn render_library_footer(frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(" ↑/↓", Style::default().fg(CYAN)),
+            Span::styled(" ↑/↓", Style::default().fg(theme.accent)),
             Span::raw(" select  "),
-            Span::styled("Enter", Style::default().fg(CYAN)),
+            Span::styled("Enter", Style::default().fg(theme.accent)),
             Span::raw(" open/switch  "),
-            Span::styled("wheel/click", Style::default().fg(CYAN)),
+            Span::styled("wheel/click", Style::default().fg(theme.accent)),
             Span::raw(" browse  "),
-            Span::styled("PgUp/PgDn", Style::default().fg(CYAN)),
+            Span::styled("PgUp/PgDn", Style::default().fg(theme.accent)),
             Span::raw(" jump  "),
-            Span::styled("Esc/q", Style::default().fg(CYAN)),
+            Span::styled("Esc/q", Style::default().fg(theme.accent)),
             Span::raw(" shell"),
         ]))
         .alignment(Alignment::Center),
@@ -496,12 +501,13 @@ fn render_library_footer(frame: &mut Frame<'_>, area: Rect) {
 
 #[cfg(test)]
 mod tests {
-    use super::{GREEN, PANEL, PINK, draw, editor_panel_height};
+    use super::{draw, editor_panel_height};
     use crate::app::{App, TranscriptEntry};
     use crate::backend::BackendEvent;
     use crate::command::ShellCommand;
     use crate::library::{DatabaseSummary, LibraryView, RelationSummary};
     use crate::protocol::Response;
+    use crate::theme::Theme;
     use crate::tutorial::{Tutorial, TutorialCatalog};
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     use ratatui::Terminal;
@@ -744,7 +750,7 @@ fallback = ":ping"
                 .cell((selected_x, selected_y))
                 .expect("selected candidate")
                 .bg,
-            PANEL
+            Theme::dark().selection_bg
         );
     }
 
@@ -803,7 +809,7 @@ fallback = ":ping"
                 .cell((match_x, match_y))
                 .expect("highlighted match")
                 .fg,
-            PINK
+            Theme::dark().highlight
         );
     }
 
@@ -940,6 +946,32 @@ fallback = ":ping"
     }
 
     #[test]
+    fn light_theme_renders_the_transcript_with_the_light_palette() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let mut app = App::new();
+        app.theme = Theme::light();
+        app.transcript.push(TranscriptEntry::command(
+            ShellCommand::local("tables".to_owned()).expect("command"),
+            "local",
+        ));
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw light transcript");
+
+        let (command_x, command_y) = find_text(&terminal, "› tables").expect("typed command");
+        assert_eq!(
+            terminal
+                .backend()
+                .buffer()
+                .cell((command_x, command_y))
+                .expect("command cell")
+                .fg,
+            Theme::light().accent
+        );
+    }
+
+    #[test]
     fn generated_library_command_is_rendered_dim() {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("test terminal");
@@ -1037,7 +1069,7 @@ fallback = ":ping"
                 .cell((loaded_x, loaded_y))
                 .expect("loaded cell")
                 .fg,
-            GREEN
+            Theme::dark().success
         );
     }
 
@@ -1091,7 +1123,7 @@ fallback = ":ping"
                 .cell((marker_x, marker_y))
                 .expect("selected marker")
                 .bg,
-            PANEL
+            Theme::dark().selection_bg
         );
         assert_eq!(
             terminal

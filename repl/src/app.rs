@@ -10,6 +10,7 @@ use crate::present::{
 };
 use crate::response::CommandResult;
 use crate::runtime::RuntimeLedger;
+use crate::theme::Theme;
 pub use crate::transcript::{EntryKind, SharedAction, TranscriptEntry};
 use crate::tutorial::{
     ChallengeOutcome, Tutorial, TutorialAction, TutorialCatalog, TutorialMenu, TutorialOverlay,
@@ -86,6 +87,9 @@ pub struct App {
     /// with co-authors but do not become durable shell transcript entries.
     shared_actions: Vec<SharedAction>,
     pub should_quit: bool,
+    /// The terminal palette the ui module renders with. Plain mode and the
+    /// co-author projection are colorless, so this never affects them.
+    pub theme: Theme,
     history: Vec<String>,
     history_position: Option<usize>,
     animation_tick: u64,
@@ -127,6 +131,7 @@ impl App {
             coauthor_discovery: None,
             shared_actions: Vec::new(),
             should_quit: false,
+            theme: Theme::dark(),
             history: Vec::new(),
             history_position: None,
             animation_tick: 0,
@@ -1002,6 +1007,14 @@ impl App {
             self.show_coauthor_info();
             return Effect::None;
         }
+        if let Some(argument) = command
+            .text()
+            .strip_prefix(":theme")
+            .filter(|rest| rest.is_empty() || rest.starts_with(' '))
+        {
+            self.switch_theme(argument.trim());
+            return Effect::None;
+        }
         if command.text() == ":tutorials" {
             self.open_tutorial_menu();
             return Effect::None;
@@ -1026,6 +1039,34 @@ impl App {
             return Effect::None;
         }
         self.issue(command)
+    }
+
+    fn switch_theme(&mut self, argument: &str) {
+        if argument.is_empty() {
+            self.transcript.push(TranscriptEntry::system(
+                "Theme",
+                vec![format!(
+                    "current palette is {}; `:theme light` or `:theme dark` switches it",
+                    self.theme.name
+                )],
+            ));
+            return;
+        }
+        match Theme::named(argument) {
+            Some(theme) => {
+                self.theme = theme;
+                self.transcript.push(TranscriptEntry::system(
+                    "Theme",
+                    vec![format!("switched to the {} palette", theme.name)],
+                ));
+            }
+            None => self.transcript.push(TranscriptEntry::error(
+                "Theme",
+                vec![format!(
+                    "unknown palette `{argument}`; expected `light` or `dark`"
+                )],
+            )),
+        }
     }
 
     fn open_tutorial_menu(&mut self) {
@@ -1906,6 +1947,7 @@ mod tests {
     use crate::backend::BackendEvent;
     use crate::command::ShellCommand;
     use crate::protocol::Response;
+    use crate::theme::Theme;
     use crate::tutorial::{Tutorial, TutorialCatalog, TutorialOverlay, TutorialRun};
     use crossterm::event::{
         Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, ModifierKeyCode,
@@ -3116,6 +3158,58 @@ text = "The mutable database is called {{database}}."
         assert_eq!(entry.kind, EntryKind::System);
         assert_eq!(entry.lines[0], "connect: nc 127.0.0.1 45678");
         assert_eq!(entry.lines[1], "discovery: /tmp/slog-repl.42.45678.json");
+    }
+
+    #[test]
+    fn theme_command_switches_the_palette_without_touching_the_backend() {
+        let mut app = App::new();
+        assert_eq!(app.theme, Theme::dark());
+
+        app.editor.insert(":theme light");
+        let effect = app.on_terminal(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert!(matches!(effect, Effect::None));
+        assert_eq!(app.theme, Theme::light());
+        let entry = app.transcript.last().expect("theme confirmation");
+        assert_eq!(entry.kind, EntryKind::System);
+        assert_eq!(entry.lines[0], "switched to the light palette");
+
+        app.editor.insert(":theme");
+        let effect = app.on_terminal(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert!(matches!(effect, Effect::None));
+        let entry = app.transcript.last().expect("theme report");
+        assert_eq!(entry.kind, EntryKind::System);
+        assert_eq!(
+            entry.lines[0],
+            "current palette is light; `:theme light` or `:theme dark` switches it"
+        );
+
+        app.editor.insert(":theme sepia");
+        let effect = app.on_terminal(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert!(matches!(effect, Effect::None));
+        assert_eq!(app.theme, Theme::light());
+        let entry = app.transcript.last().expect("theme error");
+        assert_eq!(entry.kind, EntryKind::Error);
+        assert_eq!(
+            entry.lines[0],
+            "unknown palette `sepia`; expected `light` or `dark`"
+        );
+
+        // `:themes` is not a palette command and must still reach the server.
+        app.editor.insert(":themes");
+        let effect = app.on_terminal(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert!(matches!(effect, Effect::Execute(ref command) if command.text() == ":themes"));
     }
 
     #[test]

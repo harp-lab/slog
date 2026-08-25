@@ -120,6 +120,11 @@ const COMMANDS: &[CommandSpec] = &[
         detail: "show REPL and database state",
     },
     CommandSpec {
+        label: ":theme",
+        takes_argument: true,
+        detail: "switch the terminal palette",
+    },
+    CommandSpec {
         label: ":tutorials",
         takes_argument: false,
         detail: "browse interactive tutorials",
@@ -319,6 +324,13 @@ pub fn complete(
         [verb] if verb.eq_ignore_ascii_case("discard") => {
             word_candidates(prefix, [("session", "close without saving")])
         }
+        [verb] if verb.eq_ignore_ascii_case(":theme") => word_candidates(
+            prefix,
+            [
+                ("dark", "the original dark-terminal palette"),
+                ("light", "read on a light terminal background"),
+            ],
+        ),
         [verb] if matches_lower(verb, &["open", "use"]) => {
             dynamic_candidates(prefix, &inventory.databases, "database")
         }
