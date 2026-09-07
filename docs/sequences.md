@@ -502,10 +502,23 @@ which is what makes need-driven generation sound.
   quadratic index is exactly what the user wants and n is small.
 - **Staleness/deletion.**  Occurrence rows never retract (ids are immutable;
   value-role).  A stale row for an id no longer present in any live atom is
-  harmless: every compiled use joins `list` back to a live atom.  When
-  DRed^c lands, the publish task must emit signed records equivalent to a
-  rules-derived maintenance (docs/incremental.md §8.5 obligation) — the
-  append-only discipline makes the interim sound.
+  harmless: every compiled use joins `list` back to a live atom.
+  *(Discharge note, 2026-09-06 audit.)*  The signed-record emission an
+  earlier draft promised here was never built and is NOT needed: the
+  obligation as governed by incremental.md **§8B.4** ("side-channel-grown
+  relations" — the "§8.5" this note used to cite does not exist) is met by
+  ROUTE EXCLUSION instead.  Three stacked facts make it sound: (1) probes
+  are additive and anchored — the source atom always stays in the body
+  (seq-expand's invariant), so a stale row can never derive; (2) counted/
+  maintained routes are structurally unreachable for seq-probing cones —
+  `$`-relations are skipped by the daemon's capability report, so every
+  certificate fails and deletions take clear-and-rerun; (3) clear-and-rerun
+  rebuilds the index from fresh tasks + full iteration-0 restaging, and
+  flavored artifacts carry no seqindex attachments at all.  FRAGILITY: the
+  exclusion is implicit (the `$` capability filter, `$seq_at` in every
+  stratum's dynamic-rels, the certificates' every-name check); the session
+  battery's `seq-route-*` case is the tripwire — a retraction over a
+  seq-probing cone must echo `(route rerun`, never a maintain route.
 
 ### 5.4 The full classification table
 
@@ -1032,8 +1045,9 @@ through import/merge.  Self-contained legacy data is unaffected.
   position enumerator covers semantics today).
 - The lbuild c-op (constructions cost one lpush rebuild per element —
   source-bounded, fine at test scale).
-- DRed^c signed-record emission for SeqIndexTask (§5.3 note, when
-  docs/incremental.md M-phases land).
+- ~~DRed^c signed-record emission for SeqIndexTask~~ DISCHARGED WITHOUT
+  EMISSION 2026-09-06: route exclusion per incremental.md §8B.4 covers it
+  (see the §5.3 discharge note for the mechanism and its tripwire test).
 - String/content indexing beyond `sidx`-style search: §15.
 
 ---
@@ -1073,6 +1087,8 @@ of it applies to string CONTENT yet — `sidx`/`shas`/`ssplit` are scans.*
    would reuse wholesale; blocked only on a surface-syntax decision.
 5. **SeqIndexTask generalization**: today it walks list columns; a string
    variant (feeding n-grams) should share the RowPublisher discipline and
-   the iteration-0 re-derivation contract, and both must emit signed
-   records under DRed^c (§5.3's obligation) — design the incremental
-   story ONCE for both.*
+   the iteration-0 re-derivation contract.  Incrementality: the list task's
+   DRed^c story was discharged by ROUTE EXCLUSION, not signed emission
+   (§5.3's discharge note; incremental.md §8B.4) — a string variant must
+   preserve the same three facts (anchored additive probes, `$`-name
+   capability exclusion, rebuild-on-rerun), designed ONCE for both.*

@@ -1356,6 +1356,12 @@ public:
     if (drel == nullptr || arel == nullptr)
       fatal("bindOracle: relations " + demand_rel + " / " + ans_rel
             + " must be registered first");
+    // §8B.4 durable memos: the answer table -- and the fallible-formula
+    // side channel the dispatcher also writes -- are oracle-fed, which
+    // the counted-capability report translates to oracle-fallback.
+    arel->markOracleFed();
+    if (Relation* err = database->getRelation("smt_bad_formula"))
+      err->markOracleFed();
     OracleBinding* b = oracle_registry->bind(oracle_name, demand_rel, ans_rel);
     s->addTask(phase_read, new OracleDispatchTask(database, oracle_registry, b, drel, arel));
     s->addTask(phase_read, new OracleHarvestTask(database, oracle_registry, b, arel));

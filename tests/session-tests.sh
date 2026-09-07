@@ -3776,6 +3776,81 @@ timeout 300 racket -e '
 (displayln "loaded")' > out/sess-n4c-replload.log 2>&1
 expect "n4c-repl-loads" "loaded" out/sess-n4c-replload.log
 
+# --- §8B.4 oracle-answer pinning (docs/smt.md §7 as-built) -------------------
+#
+# Answer tables are durable solver memos no rule re-derives.  Three pins in
+# one drive: (1) the FIRST flush lands against an EMPTY answer table, and
+# certification must STILL refuse counted routes (oracle-fallback) -- a
+# demand first raised under a maintenance flavor (no oracle bindings) would
+# never dispatch -- so the edit takes a binding-carrying delta/reenter and
+# keep{3} appears; (2) the deletion routes to rerun, which must PRESERVE the
+# answer table: before pinning, the cleared answers could never come back
+# (the re-derived demand structs resurrect their interned ids, which the
+# oracle registry's persistent answered set skips), so keep re-derived EMPTY
+# and the update committed silently; (3) a demand raised AFTER the rerun
+# still dispatches (the loss was never "new demands break too").
+SLOG_SMT_SOLVERS=mock timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/oracle_pin.slog \
+  count-capabilities \
+  batch+:input,3 batch+:input,7 flush \
+  dump-tuples:keep \
+  batch-:input,7 flush \
+  dump-tuples:keep \
+  batch+:input,4 flush \
+  dump-tuples:keep \
+  > out/sess-oracle-pin.log 2>&1
+expect "oracle-pin-caps" "(reason oracle-fallback)" out/sess-oracle-pin.log
+expect_re "oracle-pin-first-route" '\(route (delta|reenter)' out/sess-oracle-pin.log
+expect "oracle-pin-rerun" "(route rerun" out/sess-oracle-pin.log
+expect_not "oracle-pin-no-maintain" "(route maintain" out/sess-oracle-pin.log
+expect_not "oracle-pin-never-7" "(tuplerow 7)" out/sess-oracle-pin.log
+if [ "$(grep -cF '(tuplerow 3)' out/sess-oracle-pin.log)" -eq 3 ]; then
+  echo "PASS oracle-pin-survives-rerun"; PASS=$((PASS+1))
+else
+  echo "FAIL oracle-pin-survives-rerun (keep{3} must appear in all 3 dumps)"
+  FAIL=$((FAIL+1))
+fi
+if [ "$(grep -cF '(tuplerow 4)' out/sess-oracle-pin.log)" -eq 1 ]; then
+  echo "PASS oracle-pin-new-demand"; PASS=$((PASS+1))
+else
+  echo "FAIL oracle-pin-new-demand (keep{4} must appear in the last dump only)"
+  FAIL=$((FAIL+1))
+fi
+
+# --- seq-occurrence route tripwire (docs/sequences.md §5.3 discharge) --------
+#
+# The seq-index x DRed^c obligation is discharged by ROUTE EXCLUSION, and
+# that exclusion is implicit (the daemon's `$` capability filter, $seq_at in
+# every stratum's dynamic-rels, the certificates' every-name check).  This
+# case is the tripwire: a retraction over a seq-probing cone must echo
+# `(route rerun`, never a maintain route -- a maintain would run flavored
+# artifacts that carry NO SeqIndexTask and silently under-derive.  The
+# independent kw/kwhit stratum stays outside the cone, so $seq_at survives
+# as a protected shared side channel; its stale rows must stay harmless
+# (kwhit unchanged across the rerun).
+timeout 900 racket tests/api/session-drive.rkt \
+  run:tests/session/seq_route.slog \
+  batch+:want,7 batch+:want,3 flush \
+  dump-tuples:hitn dump-tuples:kwhit \
+  batch-:want,7 flush \
+  dump-tuples:hitn dump-tuples:kwhit \
+  > out/sess-seq-route.log 2>&1
+expect "seq-route-rerun" "(route rerun" out/sess-seq-route.log
+expect_not "seq-route-no-maintain" "(route maintain" out/sess-seq-route.log
+if [ "$(grep -cF '(tuplerow 7)' out/sess-seq-route.log)" -eq 1 ] \
+   && [ "$(grep -cF '(tuplerow 3)' out/sess-seq-route.log)" -eq 2 ]; then
+  echo "PASS seq-route-retraction-lands"; PASS=$((PASS+1))
+else
+  echo "FAIL seq-route-retraction-lands (hitn must be {3,7} then {3})"
+  FAIL=$((FAIL+1))
+fi
+if [ "$(grep -cF '(tuplerow 9)' out/sess-seq-route.log)" -eq 2 ]; then
+  echo "PASS seq-route-protected-sidechannel"; PASS=$((PASS+1))
+else
+  echo "FAIL seq-route-protected-sidechannel (kwhit{9} must survive both dumps)"
+  FAIL=$((FAIL+1))
+fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

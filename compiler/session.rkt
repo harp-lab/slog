@@ -133,7 +133,10 @@
 ;; dynamic-rels/reads/heads, and the thunks that lazily build its
 ;; legacy delta-entry (0.B5), `_count` (§8B.1/M0), and `_maint1` (M1)
 ;; flavors.
-(struct sinfo (so dyn reads heads acyclic? delta count maintenance
+;; pinned: manifest pinned-rels -- oracle-fed relations (answer tables +
+;; smt_bad_formula) whose rows no rule re-derives (incremental.md §8B.4
+;; durable memos); every clear-and-rerun clear-set subtracts them.
+(struct sinfo (so dyn reads heads acyclic? pinned delta count maintenance
                   negative-maintenance recursive-negative-maintenance
                   ;; R3 slice (c) tier visibility: the stratum's content
                   ;; hash (artifact/plan lookup key) and its current
@@ -498,14 +501,14 @@
   ;; O0 job (if any) is the current SCC's and jumps the compile queue
   (pool-boost! (sbuild-hash sb))
   (match-define (cons so tag) ((sbuild-runnable sb)))
-  (define-values (dyn reads heads acyclic?)
+  (define-values (dyn reads heads acyclic? pinned)
     (read-stratum-meta (sbuild-hash sb)))
   (define scc (session-next-scc s))
   (define tier (box tag))
   (set-session-strata-info!
    s (append (session-strata-info s)
              (list (cons scc
-                         (sinfo so dyn reads heads acyclic?
+                         (sinfo so dyn reads heads acyclic? pinned
                                 (sbuild-delta sb) (sbuild-count sb)
                                 (sbuild-maintenance sb)
                                 (sbuild-negative-maintenance sb)
@@ -2697,7 +2700,7 @@
                 [else
                  (define head-sets
                    (for/list ([sb (in-list g-strata)])
-                     (define-values (_d _r heads _a)
+                     (define-values (_d _r heads _a _p)
                        (read-stratum-meta (sbuild-hash sb)))
                      heads))
                  (define closure
@@ -2971,7 +2974,7 @@
             (for ([sb (in-list g-strata)])
               (define push?
                 (or (not severing-created)
-                    (let-values ([(_d _r heads _a)
+                    (let-values ([(_d _r heads _a _p)
                                   (read-stratum-meta (sbuild-hash sb))])
                       (for/or ([h (in-list heads)])
                         (memq h severing-created)))))
@@ -4101,8 +4104,22 @@
                  [d (in-list (sinfo-dyn (cdr p)))]
                  #:unless (> (length (hash-ref chains d '())) 1))
         d))
+    ;; §8B.4: oracle-fed relations (manifest pinned-rels) never clear --
+    ;; their rows are durable solver memos no rule re-derives.  Clearing
+    ;; them would lose answers PERMANENTLY: the re-derived demand structs
+    ;; resurrect their interned ids (M5), which the dispatch task's
+    ;; persistent answered set then skips, so nothing ever re-submits.
+    ;; Preserved rows are anchored reads (a downstream join needs the live
+    ;; demand atom for the id), so a deleted demand's surviving answer is
+    ;; unreachable dead weight, never a wrong derivation.
+    (define pinned
+      (for*/set ([info (in-list union-cone)]
+                 [p (in-list (sinfo-pinned info))])
+        p))
     (define clear-set
-      (sort (set->list (set-subtract cone-dyn noncone-dyn)) symbol<?))
+      (sort (set->list (set-subtract (set-subtract cone-dyn noncone-dyn)
+                                     pinned))
+            symbol<?))
     (for ([r (in-list clear-set)])
       (session-action! s `(clear-rel ,r)))
     (echo! s (format "(route rerun ~a ~a)" (length union-cone) (length clear-set)))
@@ -4855,7 +4872,12 @@
                #:unless (set-member? cone-sos (sinfo-so (cdr p)))
                [d (in-list (sinfo-dyn (cdr p)))])
       d))
-  (define clear-set (sort (set->list (set-subtract cone-dyn noncone-dyn)) symbol<?))
+  ;; §8B.4 durable memos: same pinned-rels subtraction as rerun-cone!
+  (define pinned
+    (for*/set ([i (in-list cone)] [p (in-list (sinfo-pinned i))]) p))
+  (define clear-set
+    (sort (set->list (set-subtract (set-subtract cone-dyn noncone-dyn) pinned))
+          symbol<?))
   (for ([r (in-list clear-set)])
     (session-action! s `(clear-rel ,r)))
   (echo! s (format "(rerun ~a ~a ~a)" rel (length cone) (length clear-set)))

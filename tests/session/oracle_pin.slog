@@ -1,0 +1,20 @@
+;; §8B.4 oracle-answer pinning (docs/incremental.md; docs/smt.md §7): base
+;; program for the session regression.  It declares the shape only -- the
+;; battery drives every input through tip batches, because the FIRST flush
+;; is itself a pin: against an EMPTY answer table, certification must
+;; refuse counted routes (oracle-fallback), since a demand first raised
+;; under a maintenance flavor (which registers no oracle bindings) would
+;; never dispatch.  The later deletion pins answer persistence: a rerun
+;; must PRESERVE the answer table, because a cleared answer can never come
+;; back -- the re-derived demand struct resurrects its interned id, which
+;; the oracle registry's persistent answered set skips.
+include "../../lib/smt.slog"
+
+table (input int)
+table (keep int)
+
+rule
+(input X)
+(= (sat) (smt_check (llt (ic X) (ic 5))))
+-->
+(keep X)

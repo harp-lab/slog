@@ -650,11 +650,28 @@
   (define heads
     (for/fold ([acc (set)]) ([rule (in-set (stratum-rules stratum))])
       (set-union acc (rule-head-rels rule))))
+  ;; §8B.4 durable-memo pinning (docs/incremental.md): oracle answer tables
+  ;; -- and the smt_bad_formula side channel beside them -- hold rows the
+  ;; dispatcher wrote, which no rule can re-derive.  The session subtracts
+  ;; these from every clear-and-rerun clear-set; this is the same set the
+  ;; compression partition pins (db-partition's oracle-pinned).
+  (define oracle-ans
+    (for/set ([(k decl) (in-hash rel-env)]
+              #:when (and (pair? decl) (eq? 'oracle (car decl))))
+      (fourth decl)))
+  (define pinned-rels
+    (if (set-empty? oracle-ans)
+        '()
+        (sort (set->list
+               (set-intersect (set-add oracle-ans 'smt_bad_formula)
+                              dynamic-rels))
+              symbol<?)))
   (define meta
     `(stratum-meta
       (hash ,proghash)
       (level ,(stratum-level stratum))
       (dynamic-rels ,@(sort (set->list dynamic-rels) symbol<?))
+      (pinned-rels ,@pinned-rels)
       (accel-rels ,@(stratum-accel-rels stratum dynamic-rels type-env decomps))
       (heads ,@(sort (set->list heads) symbol<?))
       (reads ,@reads)
@@ -675,18 +692,20 @@
 ;; write lands in the predecessor version in place; final fixpoints are
 ;; unchanged, only versioned addressing loses precision for that name).
 (define (stratum-meta-dynamic-rels proghash)
-  (define-values (dyn _reads _heads _acyclic?) (read-stratum-meta proghash))
+  (define-values (dyn _reads _heads _acyclic? _pinned)
+    (read-stratum-meta proghash))
   dyn)
 
 ;; The manifest fields the session driver consumes: (values dynamic-rels
-;; reads heads acyclic?) -- reads is the ((REL KIND ...) ...) polarity entries
+;; reads heads acyclic? pinned-rels) -- reads is the ((REL KIND ...) ...)
+;; polarity entries
 ;; (cone input), heads the pure rule heads (the anchored walk's affected
 ;; propagation; side-channel-free).  Metas regenerate on every compile
 ;; job, so a missing `heads` (a stale pre-0.C meta) degrades to '() only
 ;; transiently.
 (define (read-stratum-meta proghash)
   (define p (fullpath (format "build/~a.meta" proghash)))
-  (with-handlers ([exn:fail? (lambda (_) (values '() '() '() #f))])
+  (with-handlers ([exn:fail? (lambda (_) (values '() '() '() #f '()))])
     (match (call-with-input-file p read)
       [`(stratum-meta ,fields ...)
        (values (match (assq 'dynamic-rels fields)
@@ -700,8 +719,12 @@
                  [_ '()])
                (match (assq 'acyclic fields)
                  [`(acyclic ,v) (eq? v #t)]
-                 [_ #f]))]
-      [_ (values '() '() '() #f)])))
+                 [_ #f])
+               ;; absent in pre-pinning .meta files: no oracle, nothing pinned
+               (match (assq 'pinned-rels fields)
+                 [`(pinned-rels ,rels ...) rels]
+                 [_ '()]))]
+      [_ (values '() '() '() #f '())])))
 
 ;; -----------------------------------------------------------------------
 ;; T3b slice 1: the tier sidecar (docs/t3b-contract.md §3).

@@ -341,11 +341,34 @@ treated like EDB, not IDB:
   because replay is now deterministic again.
   `--refresh-oracle` (dbtool flag) deliberately drops recorded answers to
   re-solve — accepting drift, e.g. after a solver upgrade.
-- **DRed^c / incrementality**: answer rows count as base facts (like EDB) —
-  deleting an input fact can delete *demands* transitively, and a deleted
-  demand's answer row is removed with it (its count derivation is exactly the
-  demand's); the memo/side cache may retain the verdict for re-use if the
-  demand reappears.
+- **DRed^c / incrementality** *(revised to incremental.md §8B.4; as-built
+  2026-09-06)*: answer rows are **durable memo inputs, never DRed-retracted**.
+  (An earlier draft here said an answer is "removed with its demand" — that
+  was superseded by §8B.4 and would in fact be UNSOUND to implement: the
+  oracle registry's `answered` set persists across hot swaps, so a removed
+  answer whose demand later re-derives — resurrecting its interned id — is
+  skipped by dispatch and never re-solved.  Lineage stability requires the
+  row to stay.)  As built, two mechanisms enforce this:
+  1. **Capability refusal**: `bindOracle` marks the answer tables and
+     `smt_bad_formula` oracle-fed, and the daemon's count-capability report
+     answers `(recount no) (reason oracle-fallback)` for them — no counted
+     or maintained route ever certifies over a cone containing one (count
+     and maintenance flavors register no oracle bindings, so a demand first
+     raised there could never dispatch; and no count epoch could establish
+     support for dispatcher-written rows).  Non-monotone edits over oracle
+     cones take clear-and-rerun; monotone edits take delta/reenter, whose
+     normal artifacts carry live bindings.
+  2. **Clear-set pinning**: each stratum manifest carries `pinned-rels`
+     (the oracle answer tables + `smt_bad_formula`, the same set the
+     compression partition pins), and every clear-and-rerun subtracts them.
+     A rerun therefore rebuilds THROUGH the persisted answers: re-derived
+     demands rejoin their retained rows, new demands dispatch, zero
+     re-solving.  A deleted demand's surviving answer is unreachable dead
+     weight (every downstream read is anchored by the live demand atom's
+     id) — reclamation is an explicit GC/compaction concern, never a DRed
+     side effect.
+  Regression: tests/session-tests.sh `oracle-pin-*` (tests/session/
+  oracle_pin.slog).
 - **Checkpoint-on-pause**: answers checkpoint like everything else; in-flight
   queries are represented by unanswered demand facts and re-dispatch on
   resume (§5.2–5.3). Nothing about oracle state needs serializing.
@@ -673,3 +696,34 @@ pinned-only import in that mode (deferred; the standard load path is
 covered).  Model/core VALUES are solver-chosen: pinning makes them stable
 per lineage, which is the guarantee.  Theories (reals/BV/arrays/UF),
 lattice verdicts, and quantifiers remain future vocabulary work.
+
+## 16. Session incrementality: the §7 durable-memo contract enforced (2026-09-06)
+
+A consistency audit found §7's DRed^c classification unimplemented — and
+that the accidental fence (the recount coverage audit failing over
+unsupported answer rows) had two holes.  **Chain A**: a non-monotone edit
+over an oracle cone fell through to clear-and-rerun, which cleared the
+answer tables; the re-derived demand structs resurrect their interned ids
+(M5), the registry's persistent `answered` set skips them, so nothing
+re-dispatched — answers were lost PERMANENTLY and downstream re-derived
+empty, silently.  **Chain B**: with an EMPTY answer table the audit passed
+vacuously, counted routes certified, and maintenance flavors (which
+register no oracle bindings) either crashed at plan install (probe-driver
+inadmissibility) or would raise demands that never dispatch.
+
+Shipped (see §7's revised DRed^c bullet for the contract): `bindOracle`
+marks answer tables + `smt_bad_formula` oracle-fed (daemon/daemon.h);
+`countCapabilitiesSexpr` answers `(recount no) (precise-delete no)
+(reason oracle-fallback)` for them, so certification refuses BEFORE any
+count epoch (daemon/database.h); each stratum manifest carries
+`pinned-rels` (compile.rkt write/read-stratum-meta, same set as the
+compression partition's `oracle-pinned`), and both clear-and-rerun paths
+subtract it (session.rkt `rerun-cone!`, `session-rerun!`).  Net semantics:
+monotone edits take delta/reenter (bindings live, new demands dispatch);
+non-monotone edits rerun THROUGH the persisted answers (zero re-solving,
+re-derived demands rejoin retained rows); counted maintenance over oracle
+cones remains refused by design.  Regression: session-tests.sh
+`oracle-pin-*` — first-flush-over-empty-answers must route delta/reenter,
+the deletion must route rerun with `keep` surviving, and a post-rerun
+demand must answer.  The A/B against the pre-fix build reproduced chain B
+as the fatal maint1 plan-install crash on the first positive edit.

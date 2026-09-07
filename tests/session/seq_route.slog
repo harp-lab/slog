@@ -1,0 +1,35 @@
+;; Sequence-occurrence route tripwire (docs/sequences.md §5.3 discharge
+;; note; 2026-09-06 audit).  The seq-index x DRed^c story is discharged by
+;; ROUTE EXCLUSION: $seq_at/$seq_atr carry no counted capability (the
+;; daemon's `$` filter), so every certificate over a seq-probing cone must
+;; fail and a retraction must take clear-and-rerun.  That exclusion rests
+;; on three implicit facts -- this fixture is the tripwire if any of them
+;; is refactored away (a maintain route over this cone would run flavored
+;; artifacts that carry NO SeqIndexTask, silently under-deriving).
+;;
+;; `want` anchors a head-position probe (hitn); `kw` anchors an independent
+;; end-position probe (kwhit) so a partial cone leaves $seq_at protected as
+;; a shared side channel -- its stale rows must stay harmless.
+
+table (want int)
+table (kw int)
+table (doc (list int))
+table (hitn int)
+table (kwhit int)
+
+rule (doc [7 1 2]) (doc [3 7 9]) (doc [1 2 3])
+rule (kw 9)
+
+rule
+(want v)
+(doc l)
+(= l [v xs ...])
+-->
+(hitn v)
+
+rule
+(kw v)
+(doc l)
+(= l [xs ... v])
+-->
+(kwhit v)

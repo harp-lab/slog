@@ -258,6 +258,12 @@ private:
   // physical version for boundary catalog/version diagnostics.
   std::string type_key;
   bool compiler_temporary = false;
+  // §8B.4 (docs/incremental.md): rows arrive from an external oracle's
+  // side channel (dispatch/harvest), never from rules -- durable memo
+  // inputs.  Set by bindOracle at stratum install; never cleared (the
+  // binding outlives every hot swap).  Gates the counted-capability
+  // report: no count epoch can establish support for such rows.
+  bool oracle_fed = false;
   // Evaluation-local semantic input ledger (M0.4b).  Direct assertions are
   // local to this slot.  An inheritance mask suppresses the predecessor's
   // single set-valued contribution without mutating the predecessor.
@@ -389,6 +395,8 @@ public:
   void setTypeKey(const std::string& key) { type_key = key; }
   void markCompilerTemporary() { compiler_temporary = true; }
   bool isCompilerTemporary() const { return compiler_temporary; }
+  void markOracleFed() { oracle_fed = true; }
+  bool isOracleFed() const { return oracle_fed; }
 
   std::vector<u64> tupleKey(const u64* t) const
   {
@@ -6118,7 +6126,21 @@ public:
         const char* recount = "yes";
         const char* precise = "conditional";
         const char* reason = "table-recount";
-        if (b.rel->getArity() == 0)
+        if (b.rel->isOracleFed())
+        {
+          // §8B.4: oracle-fed rows are durable memo inputs -- no rule
+          // re-derives them, so a count epoch can never establish their
+          // support and a precise delete can never be grounded.  Refusing
+          // here (rather than letting the coverage audit fail mid-epoch)
+          // also closes the empty-table hole: certification must not open
+          // counted routes over a cone that could raise NEW demands, since
+          // count/maintenance flavors register no oracle bindings and a
+          // demand raised there would never dispatch.
+          recount = "no";
+          precise = "no";
+          reason = "oracle-fallback";
+        }
+        else if (b.rel->getArity() == 0)
         {
           recount = "no";
           precise = "no";
