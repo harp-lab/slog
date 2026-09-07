@@ -875,8 +875,16 @@ Daemon — measurement (verified 2026-08-20):
   study gate ≥ 2× + ≥1 rescue).
 - **SHIPPED — join3 arms: the wcoj fence lift + the seek-metered
   intersection (arc closer, 2026-08-24).**  Two fences had kept
-  join3-planned rules entirely OUTSIDE runtime selection (the "arm
-  cliff" the bowtie study pinned): the V1 `scalar-version?` gate
+  join3-planned rules entirely OUTSIDE runtime selection — the
+  **selection fences**.  (Earlier drafts called these "the arm cliff";
+  that name is retired here because it collided with — and
+  misattributed — the bowtie study's cliff.  What the bowtie study
+  pinned is the *shape cliff* of static-join-decomposition.md §2: a
+  STATIC question of which rules can receive a join3 plan at all
+  (lattice/struct/temp occurrences, payload columns, 3+ eligible arms
+  on one key), and it is NOT lifted by this slice.  This slice lifts
+  only the runtime boundary, so rules that already carry join3 plans
+  now join arm selection.)  The V1 `scalar-version?` gate
   excluded expand3-bearing versions from arm marking, and a wcoj
   schedule has no greedy first tail for `#:banned-first` to ban, so the
   tail-arm generator produced nothing.  Both lifted: join3 versions are
@@ -1037,8 +1045,9 @@ What each case proves:
   last step closes a cycle with a bound-prefix arm became a leapfrog
   intersection, and a 4-chain with selective ends got both ends bound
   first and the middle closed by `join3` on the shared variable. The
-  suite defeats this only via the documented arm-kind cliff (payload
-  columns break key-simple eligibility) — i.e. these tests also pin the
+  suite defeats this only via the documented shape cliff (payload
+  columns break key-simple eligibility; static-join-decomposition.md
+  §2) — i.e. these tests also pin the
   boundary of what static WCOJ covers, and anything inside that boundary
   should stay the planner's job, not the selector's.
 - Calibration: interp aggregate probe/visit rate on these shapes ≈ 0.4G

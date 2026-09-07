@@ -12,12 +12,20 @@
 #
 # Usage:
 #   tests/run-all.sh              # full suite (several minutes -- the arc-end run)
-#   tests/run-all.sh --quick      # fast subset: unit diag stats arena seq
+#   tests/run-all.sh --quick      # fast subset: the QUICK array below (C++
+#                                 #   batteries + unit/diag/stats)
 #   tests/run-all.sh NAME...      # only the named harnesses (see --list)
 #   tests/run-all.sh --list       # print the harness names and exit
 #
-# Harness names (also = full execution order):
-#   unit diag stats arena seq counts wcoj3 interp structid golden api tiered pause protocol repl session incremental-stress compression smt-pin smt-solver
+# The full roster and execution order is the ALL array below (--list prints
+# it); abi2, tu-determinism, and plan-determinism are named-but-outside-ALL
+# slice gates (see the notes under ALL).
+#
+# HYGIENE (tribal rules, now written down): while any battery is running,
+# never `raco make` and never edit daemon/*.h -- .zo rewrites and PCH mtime
+# changes fail the run in confusing ways.  Never run `raco test` (or any
+# compile) alongside the tu-determinism/plan-determinism gates: they wipe
+# build/ between their cold compiles and race anything else's artifacts.
 #
 # Gating: `smt-solver` self-skips its z3 leg when z3 is not on PATH.  `golden`
 # clears build/ by default (correctness is cache-independent), so it is ordered
@@ -47,7 +55,9 @@ run_harness() {
     repl)        raco test compiler/repl.rkt && cargo test --manifest-path repl/Cargo.toml ;;
     session)     bash tests/session-tests.sh ;;
     joint)       bash tests/joint-battery.sh ;;
+    multiplan)   bash tests/multiplan-tests.sh ;;
     abi2)        bash tests/abi2-airtight.sh && bash tests/abi2-differential.sh ;;
+    plan-determinism) bash tests/plan-determinism.sh ;;
     plan-goldens) bash tests/plan-goldens.sh ;;
     tier-classification) bash tests/tier-classification.sh ;;
     tier-profile) bash tests/tier-profile.sh ;;
@@ -76,11 +86,20 @@ run_harness() {
   esac
 }
 
-ALL=(unit diag stats arena seq counts wcoj3 interp structid golden plan-goldens tier-classification tier-profile tier-promotion tier-arbiter identity-keys t6-restart activation-live activation-a3 activation-freeze rf5-join rf5-gate w5-exit-demo api tiered pause protocol repl session joint incremental-stress compression smt-pin smt-solver)
+ALL=(unit diag stats arena seq counts wcoj3 interp structid golden plan-goldens tier-classification tier-profile tier-promotion tier-arbiter identity-keys t6-restart activation-live activation-a3 activation-freeze rf5-join rf5-gate w5-exit-demo api tiered pause protocol repl session joint multiplan incremental-stress compression smt-pin smt-solver)
+# `multiplan` (J1-J3 runtime join selection, docs/join-planning-assessment.md)
+# IS in ALL -- the arm-equivalence/selector/probe/tripwire battery over the
+# tests/multiplan/ mini fixtures.  It landed 2026-08-16+ but was only wired
+# here 2026-09-06; the assessment doc calls it always-on, and a "full suite"
+# that skips it is silently blind to the whole cardsel selection layer.
 # `abi2` (RF1 slice 2's airtightness + the ABI-1/ABI-2 differential) is a
 # named tier but NOT in ALL: like plan-determinism it compiles each program
 # from cold twice, so it is a slice gate rather than a per-change one.  Run it
 # before any change to the plan split, and before the ABI default flips.
+# `plan-determinism` (byte-identical .plan across two cold compiles) is
+# likewise named but OUTSIDE ALL: it wipes build/ and config/cache between
+# its runs.  Run it before every planner/emission slice ships, and NEVER
+# alongside any other compile (see HYGIENE above).
 # `plan-goldens` (RF1 slice 4: the plan sets of record for four program
 # classes, plus per-program recompile-twice stability) IS in ALL: plan-layer
 # identity is the golden format of record, and this is its per-change gate

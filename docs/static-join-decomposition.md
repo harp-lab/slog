@@ -28,8 +28,20 @@ the 3-way WCOJ operator (`join3`) does and does not reach.
      than `wcoj3-search-cap` (= 8) join occurrences skip the search; the
      greedy fallback could never emit a join3, so a 9-join rule silently
      lost ALL wcoj (now: greedy-local closers);
-   - **the arm cliff** *(remains)* — lattice/struct/temp occurrences, 3+
-     eligible arms on one key, payload columns: each falls back per-shape.
+   - **the shape cliff** *(remains; formerly "the arm cliff")* —
+     lattice/struct/temp occurrences, 3+ eligible arms on one key,
+     payload columns: each falls back per-shape.  Naming note: "arms"
+     in this bullet are the probeable occurrences feeding ONE join3
+     intersection — a *static planning* question (which rules can
+     receive a join3 plan at all).  That is a different "arm" from
+     join-planning-assessment.md's runtime selection arms, which are
+     whole plan variants.  The J3 arc closer (408aaab, 2026-08-24)
+     lifted only the *runtime* boundary — join3-planned rules now
+     participate in arm selection, and wcoj-vs-pairwise is itself a
+     data-dependent runtime choice — while this shape cliff stands
+     unchanged: a rule these shapes exclude never gets a join3 plan
+     for the selector to pick, so widening static eligibility remains
+     purely this document's problem.
 3. **No factoring/CSE exists anywhere in the compiler**, and the staging
    temp mechanism *cannot* express it (temps are index-free and can never
    be probed — `tri(X,Y,M), tri(M,U,V)` needs two probeable occurrences).

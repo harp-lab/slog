@@ -1,4 +1,9 @@
-;; db: bench_accel_braid -- single-source reach down a braided DAG
+;; db: bench_accel_broom -- single-source reach over the broom graph (fat
+;; ER core + long thin chains hanging off it).  NOTE 2026-09-06: this file
+;; had been byte-identical to accel_reach_braid.slog INCLUDING its db
+;; header, so every "broom" measurement before this date actually re-ran
+;; braid; data/bench_accel_broom existed unused.  The rule body is the
+;; same generic reach on purpose -- only the graph shape differs.
 table (edge int int)
 table (src int)
 table (reach int)

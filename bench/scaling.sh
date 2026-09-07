@@ -10,6 +10,10 @@
 set -u
 cd "$(dirname "$0")/.."
 
+# Pin the executor tier (override by exporting SLOG_OPT): mid-run -O2
+# hot-swaps under the default tiered mode would bend the scaling curve.
+export SLOG_OPT="${SLOG_OPT:-2}"
+
 NS=("$@")
 [ ${#NS[@]} -eq 0 ] && NS=(10000 20000 40000 80000 160000)
 

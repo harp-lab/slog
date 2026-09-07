@@ -12,6 +12,11 @@
 set -u
 cd "$(dirname "$0")/.."
 
+# Pin the executor tier (override by exporting SLOG_OPT): under the default
+# tiered mode, background -O2 builds hot-swap artifacts mid-run and add
+# noise to exactly the off/on comparison this script exists to make.
+export SLOG_OPT="${SLOG_OPT:-2}"
+
 REPS="${REPS:-3}"
 TESTS=("$@")
 if [ ${#TESTS[@]} -eq 0 ]; then

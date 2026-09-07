@@ -4325,8 +4325,17 @@
     ["preview" (preview-result state)]
     ["activate" (activate-result state argument)]
     [(or "add" "del")
-     (match-define (list* rel values)
-       (read-command-data (string->symbol verb) argument #:minimum 2))
+     ;; Accept both spellings: `add edge 1 2` and `add (edge 1 2)` -- the
+     ;; bare-fact hint suggests the parenthesized form, which the reader
+     ;; wraps as ((edge 1 2)); unwrap that single-fact shape before the
+     ;; arity check so the hint's own spelling works.
+     (define datum
+       (match (read-command-data (string->symbol verb) argument #:minimum 1)
+         [(list (and fact (list* (? symbol? _) _))) fact]
+         [d d]))
+     (unless (>= (length datum) 2)
+       (error (string->symbol verb) "expected a relation followed by values"))
+     (match-define (list* rel values) datum)
      (define rs (ensure-mutable-session-record! state (string->symbol verb)))
      (define requested
        (list (hasheq 'relation (relation-key rel)
