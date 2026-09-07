@@ -2,7 +2,13 @@
 *#*
 out/*
 build/*
+# any build-suffixed snapshot dir (build-post2 was accidentally committed
+# once -- 2,343 files -- because `build/*` doesn't match siblings)
+/build-*/
 data/*
+# scratch convention: experiment/comparison snapshots go under work/,
+# never in an ad-hoc tracked sibling dir
+/work/
 # Config system (config/Config.md and config/default-config.slog ARE tracked):
 config/config.slog
 config/system.slog
