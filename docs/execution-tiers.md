@@ -1,8 +1,13 @@
 # First-class rules, tiered execution, and interpreted queries
 
-2026-07-14. **Design proposal; not implemented.** Revised the same day after a
-review against the shipped substrate (pausing/tiered-swap machinery, the
-incremental/count architecture, and the in-flight WCOJ3 operators). This
+2026-07-14; status header refreshed 2026-09-07.  **IMPLEMENTED IN FULL:
+every phase — T0–T6 and Q1 — is complete** (the per-phase ledgers live in
+t0/t3b/t4/t5/t6-contract.md; the interpreter is the default executor,
+selective compilation and hot-swap are live, the W4′ debugger arc closed
+2026-08-02, T6 restart closed 2026-08-11).  The body below remains the
+authoritative DESIGN record — decisions, invariants, and the §11 phase
+narratives, some of which still carry their in-progress phrasing.  Revised
+2026-07-14 after a review against the then-shipped substrate.  This
 document consolidates the execution-tier, parameterized-code, REPL debugging,
 query, and iteration-replay designs that were previously spread across:
 
@@ -1135,11 +1140,12 @@ bytes.
 
 ### T2: daemon interpreter
 
-**Preparation status 2026-07-15:** the VM/pause/debug machinery and a narrow
+**Preparation status 2026-07-15** *(historical — T2 has long since
+shipped: the interpreter is the DEFAULT executor and the whole suite runs
+green under `SLOG_OPT=interp`)*: the VM/pause/debug machinery and a narrow
 `Plan -> seal -> bind -> task -> real emit` path are executable in
-[tests/interp-operator-tests.cpp](../tests/interp-operator-tests.cpp). No
-production daemon/compiler/protocol code has been lifted yet. The detailed
-start order and findings are recorded in execution-tiers-impl.md §7.
+[tests/interp-operator-tests.cpp](../tests/interp-operator-tests.cpp). The
+detailed start order and findings are recorded in execution-tiers-impl.md §7.
 
 1. **T2-A, normal-set vertical slice first.** Land the conformance fixture,
    then extract `daemon/interp.h`: tri-state arity-erased cursors, immutable

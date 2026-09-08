@@ -1,6 +1,15 @@
 # T5 + R4 — the debugger contract (level-1 watches, the pre-commit gate, stepping)
 
-*Drafted 2026-07-31 (W4′ entry; pending review).  Normative parents:
+**Status: THE W4′ ARC IS COMPLETE (2026-08-02, 97a2706)** — gate,
+replay + held prompt, stepping (a)–(c3), and (d1)–(d5) why/whynot +
+settles + the exit audit all shipped; the sub-slice as-builts below are
+the ledger.  Genuinely open residues: `frames` source variable names
+(needs the rule-meta register map — plan-byte, rides the stat-rekey
+train), the `up`/`down` Rust canvas half, struct/lattice provenance
+capture (d1 covers set/temp heads), and counted-sidecar preview/apply
+(post-M7, if ever).
+
+*Drafted 2026-07-31 (W4′ entry).  Normative parents:
 [execution-tiers.md](execution-tiers.md) §7 (the pre-commit gate, provenance,
 and the §7.3 monotone-only decision), [repl-ux.md](repl-ux.md) §9 (watch UX,
 four-port stepping, why/why-not), [t0-contract.md](t0-contract.md) (reserved
@@ -141,8 +150,8 @@ it.
   same-read rerun), the interactive pause state in the REPL server over
   `session-pause-hook`, `step*`/`finish`/`frames`/`up`/`down`.  Exit:
   replay-then-commit content equality; a stepping golden over a 3-rule
-  fixture (the teaching transcript repl-ux §2.7 wants).  Shipped in parts;
-  stepping is still open:
+  fixture (the teaching transcript repl-ux §2.7 wants).  All sub-slices
+  below shipped (the arc closed 2026-08-02):
   - **(c1) the rerun and the refusal** *(2026-07-31)*.  `replay` leaves
     reserved-verb parking through the T0 dispatcher.  At a gate park
     `Database::replayReadPhase` discards every relation's send shards

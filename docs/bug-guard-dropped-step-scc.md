@@ -1,7 +1,10 @@
 # BUG: rule guards silently dropped for `step`-SCC rules over the occurrence-indexed `Appl` relation
 
 > **Status: FIXED 2026-07-12** in `compiler/demand.rkt` (the demand transform's
-> ask scheduler). Both M1 and M2 verified gone end-to-end through the real
+> ask scheduler).  In-tree regression: `tests/dem_head_guarded.slog` covers
+> the guard-under-occurrence-index shape, so this record is self-contained
+> beyond the external repro dir.  Both M1 and M2 verified gone end-to-end
+> through the real
 > interpreter (`repro_interp2.slog`): `(null? (cons 1 2))` now evaluates to
 > `False` with **no** `PrimResult` and **no** `BUG2-FIRED` opaque value. The
 > `interp.slog:~300` `/=` workaround has been reverted to the intended

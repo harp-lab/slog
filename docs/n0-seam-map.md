@@ -1,5 +1,14 @@
 # N0 seam map: where flat names live today
 
+> **SUPERSEDED AS A WORK-MAP (2026-09-07 audit note):** N0–N4 shipped and
+> `compiler/names.rkt` implements the API this map proposed; line numbers
+> drifted long ago (as the doc itself predicted).  Three fragments remain
+> uniquely load-bearing and are why the file stays: the **Seam-4
+> generated-prefix table** (the only inventory of `$`-prefix conventions
+> and their prefix-test sites), the **"5 riskiest spots" cache-key list**
+> (Seam 9), and the **pinned-encoding test notes** (Seam 10).  Read those
+> as living reference; read everything else as history.
+
 2026-07-15. **Scouting inventory for the N0 qualified-name substrate**
 ([modules.md](modules.md) §8, §10 N0; [roadmap.md](roadmap.md) W1). A
 verified file:line work-map of every seam where relation/struct/type

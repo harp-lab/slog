@@ -530,10 +530,13 @@ line-by-line, cross-file, and rewrite-correctness sweeps never completed.
   runtime-selection track's size machinery.
 - **S4 — cross-links.** The J0 tie-break/FD work
   (`join-planning-assessment.md`) extends spelling-insensitivity to the
-  greedy/scalar world the cliffs currently drop rules into. The missing
+  greedy/scalar world the cliffs currently drop rules into.  *(Since
+  executed: the per-rule work counter shipped as V0's `$stat_work`
+  (8564861), and "J4" became the V0–V4/J1–J3 runtime-selection arc,
+  complete 2026-08-24.)*  The missing
   **per-rule work counter** (probes/scans; `$stat_fires` counts only
-  successful instantiations) is a shared need of this study's cost
-  attribution and that doc's J4 measured-adaptation phase — one
+  successful instantiations) was a shared need of this study's cost
+  attribution and that doc's measured-adaptation phase — one
   diagnostics feature serves both.
 
 ## Files

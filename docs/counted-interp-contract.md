@@ -1,5 +1,11 @@
 # Counted interpreter contract: admissibility for `_count` and maintenance flavors
 
+**Status: COMPLETE 2026-07-18** — all four slices shipped with as-builts
+inline (slice 4's routing flip makes the interpreter the DEFAULT executor
+for `_count` and every maintenance flavor; `SLOG_FLAVORED_NATIVE=1` is the
+differential's second executor; the old `SLOG_COUNT_INTERP` knob was
+retired by that inversion).
+
 Drafted 2026-07-17, at the head of thread 0's spine (roadmap §4.1). The
 milestone makes the production interpreter (daemon/plan.h, plan.cpp —
 the core frozen 2026-07-16 per interp-core-contract.md) an admissible

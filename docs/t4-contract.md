@@ -31,7 +31,7 @@ map of what shipped where and which gate holds it.
 | (2b) name-free kernel clusters | 407ba3b | 08-07 | `cluster-name-freedom` + `cross-instance-cluster-collapse` (n1's two instances → ONE cluster fn) |
 | (2c) descriptor attach protocol | cd318e9 | 08-08 | `symmetric-shared-kernel-in-one-cohort` + `double-attach-byte-identical` (one `.so`, two frames); tiered 9/9 over descriptor artifacts |
 | (3) attachment identity + accept re-key | 6b08d6c | 08-08 | airtight `struct-library-shares-a-kernel-key` (the RF1 gap, closed); `attachment-records-disaggregate` + `per-attachment-recount-agreement` + `per-instance-fire-attribution` via the `(attachments)` verb |
-| (4) per-rule selective emission | (this commit) | 08-08 | `mixed-tier-{even,odd,none}` + one FULL golden sweep under `SLOG_NATIVE_COVERAGE=even SLOG_OPT=0` (168/168) |
+| (4) per-rule selective emission | a3ec9ef | 08-08 | `mixed-tier-{even,odd,none}` + one FULL golden sweep under `SLOG_NATIVE_COVERAGE=even SLOG_OPT=0` (168/168) |
 
 What §4 promised is now real: **T6's prerequisite is met** (native tasks
 construct against daemon-supplied frames at attach time), **T3b's tier

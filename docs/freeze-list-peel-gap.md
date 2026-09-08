@@ -56,7 +56,7 @@ Note the classifier and the emitter already *support* the `[]` bracket form
 accepts `[term …]` (`docs/freeze.md §3`). The gap is only that by peel time the
 bracket has already become an `lpush` chain, which neither recognizes.
 
-## Proposed fix (classifier + emitter side; not yet done)
+## Proposed fix (classifier + emitter side) — EXECUTED (see the RESOLVED banner above)
 
 Teach the peel pass to treat a **ground** `lempty`/`lpush`/`lcat` chain as a
 sequence literal:

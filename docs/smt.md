@@ -380,12 +380,16 @@ Via the dogfooded config program → env vars, per the established pattern
 
 ```
 rule (setting_str "smt_solvers" "z3:500,cvc5:2000")   → SLOG_SMT_SOLVERS
-rule (setting_int "smt_procs" 4)                      → SLOG_SMT_PROCS
-rule (setting_str "smt_logic" "QF_LIA")               → SLOG_SMT_LOGIC (opt)
+rule (setting_int "oracle_procs" 4)                   → SLOG_ORACLE_PROCS
 ```
 
-Daemon ctor reads them like the budget fields. `SLOG_SMT_SOLVERS=mock` for
-tests. The policy fingerprint (§4.2) is the hash of these settings.
+*(As-built correction, 2026-09-07: an earlier draft here named
+`smt_procs → SLOG_SMT_PROCS` and `smt_logic → SLOG_SMT_LOGIC`; neither
+was ever read by any code — the shipped mapping is `oracle_procs →
+SLOG_ORACLE_PROCS` (config.rkt / oracle.h), and the logic is inferred per
+formula.)*  Daemon ctor reads them like the budget fields.
+`SLOG_SMT_SOLVERS=mock` for tests. The policy fingerprint (§4.2) is the
+hash of these settings.
 
 ## 9. Testing
 

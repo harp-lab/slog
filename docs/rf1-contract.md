@@ -929,6 +929,14 @@ Not gated here, by design: RF1.5 model queries, any daemon consumer
 
 ## Open implementation questions (pinned, not blocking)
 
+*(Status note, 2026-09-07: items 1–4 were settled by this contract's own
+as-builts — 1: ONE `build/<hash>.plan` per (stratum, flavor); 2: the
+content-derived global name, settled with the goldens; 3: the structured
+`(delta (rel 2))` spelling; 4: cohort-manifest services
+(canonical-plan.rkt's oracle/seqindex service resolution).  Only item 5,
+the canonical sequence-value encoding vs RF2's `.pimg` codec, remains
+genuinely unverified.)*
+
 1. **Sidecar layout:** four files per kernel versus one
    `build/<hash>.plan` carrying the four labeled parts. Interacts with
    atomic writes (`call-with-atomic-output`) and re-emit-on-miss;

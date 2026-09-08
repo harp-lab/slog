@@ -1,7 +1,11 @@
 # Incremental Slog implementation ledger
 
-**Reviewed:** 2026-07-14 after M5 slice 1 (struct identity) and the
-join3 cross-layer regression
+**Reviewed:** 2026-09-07 (header + known-limitations refreshed; content
+sections through the 07-25 M7 exit audit are the ledger of record).
+**THE M-SPINE IS COMPLETE** — Phase 0, M0–M5, M6L 1–2, M4T, M4S, M4N,
+counted-interp, M7 slice 1 (vetted, selectivity-gated).  Early sections
+below narrate milestones in progress; their own exit audits later in this
+file supersede any "next milestone"/"absent" phrasing.
 **Normative design:** `docs/incremental.md`
 
 This file records what the tree currently implements and where it differs
@@ -702,14 +706,16 @@ These remain explicit capability boundaries or future correctness work.
    nonrec barrier on the tip route). Mid-cone version edges divert to the
    anchored walk via the rebound guard; historical anchors keep the
    anchored walk permanently.
-3. **Precise negation maintenance is absent.** Current absent probes implement
-   set construction. M4N still needs anti-delta variants and transition
-   scheduling.
-4. **Recursive lattice repair is not enabled.** Contributor repair and
-   old-to-new propagation are precise for certified root/acyclic producers and
-   stratified acyclic plain-table consumers. Recursive producer/consumer
-   regression remains M4T/M7 fallback work; negation and downstream lattice
-   writers are also excluded.
+3. ~~Precise negation maintenance is absent~~ **SHIPPED** (M4N, all four
+   slices — see this file's M4N exit audit): anti-delta variants and
+   transition scheduling are live.  The surviving exclusions are the
+   designed ones: negation×lattices and negation×struct-cones stay on
+   their named fallbacks.
+4. ~~Recursive lattice repair is not enabled~~ **SHIPPED for SELECTIVE
+   joins** (M7 slice 1 — see this file's M7 exit audit): stored-contributor
+   + rank-witness repair behind the round seam, selectivity-gated after
+   the vetting round.  Non-selective joins (set/map/flat) stay on the
+   acyclic routes until per-element contributor identity (§7A.2).
 5. **Chained hot-links remain refused.** Freeze the target first or load it as
    a base chain.
 6. **Low-level injection is intentionally input-only.** `inject-version`

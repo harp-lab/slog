@@ -432,6 +432,12 @@ an extension behind the frozen cursor factory seam: no opcode, VM arm, or
 public cursor interface changed. The catalog planner now chooses and explains
 this fallback; real-catalog adaptation and T0 wire verbs remain Q1/R2 work.
 
+*(The "remain Q1/R2 work" tails in the three slice notes above are all
+DISCHARGED: the canonical Q1 dispatcher landed 2026-07-23 and the full R2
+query spine — catalog planning, wire admission/pagination, T0 wire verbs,
+real-catalog adaptation — closed 2026-07-29.  The frozen-core content of
+this contract is unaffected and remains the permanent reference.)*
+
 ## Opcode and registration-table reservations
 
 The core monotone vocabulary, thread-0 flavored ops, and thread-1 query

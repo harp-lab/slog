@@ -797,7 +797,9 @@ All M0 placement/feasibility claims below were verified against the compiler
 
 ### Phase 1 — canonical sets/maps + `(vec T)` as values
 
-**STATUS: sets/maps SHIPPED 2026-07-05** (`(vec T)` is the remaining item).
+**STATUS: sets/maps SHIPPED 2026-07-05.**  *( `(vec T)` was RETIRED, not
+deferred — the §2.2 supersession banner above stands: sequences.md's `[T]`
+prolly-tree lists replaced it, and no `vecof` exists in the compiler.)*
 `lib/set.slog` + `lib/map.slog`: Okasaki-Gill big-endian Patricia tries as
 demand judgments over non-negative int keys (bit helpers via the arithmetic
 prims; element generality arrives with the native kernels). Ops: ins/put,

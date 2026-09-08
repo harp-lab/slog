@@ -1,8 +1,11 @@
 # Namespaced module instances and schema bundles
 
 2026-07-13, implemented through N4 on 2026-07-27. **N0–N4 are implemented;
-N5 remains design.** In particular N1 ships the lexical module-instance
-surface described below, and N4 persists its identities and bindings:
+of N5, item 1 shipped scoped (fire identity unified, 5d4bc18 2026-08-11 —
+see stats.md) and item 3 is substantially covered by the shipped
+watch/stepping surface; items 2 and 4 remain design.** In particular N1
+ships the lexical module-instance surface described below, and N4 persists
+its identities and bindings:
 
 *2026-07-14: [execution-tiers.md](execution-tiers.md) designs its
 KernelPlanKey/BindingFrame identity model so that §8.4's alpha-normalized
@@ -703,9 +706,11 @@ a fresh namespace and explicit migration.
 
 The complete transaction, compiler diff contract, tuning cases, REPL draft
 workflow, suffix-replay rules, and acceptance gates are specified in
-[rf5-contract.md](rf5-contract.md). RF5 is planned work; the module and
-catalog substrate described here does not yet expose live instance
-replacement.
+[rf5-contract.md](rf5-contract.md).  **RF5-B SHIPPED 2026-08-13**: live
+instance replacement is exposed at the prompt (`replace instance ALIAS
+with "LIB.slog"`, `preview`, `activate`) over exactly this module/catalog
+substrate; RF5-C precise healing and RF5-D historical replacement remain
+open.
 
 ## 6. Stable identities in pipelines
 

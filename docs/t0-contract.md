@@ -5,8 +5,13 @@ implemented 2026-07-16; Q1's canonical payload decoder and typed builder
 boundary implemented 2026-07-17; slice (a)'s dual-stack dispatcher and
 catalog verbs implemented 2026-07-18; slice (d)'s uniform pause record and
 slice (b)'s checked `EntryMode` state machine/legacy forwarding shims
-implemented 2026-07-20. Generic command builders, resident-count tier-policy
-admission, and identity remain.
+implemented 2026-07-20.  **ALL FOUR SLICES ARE COMPLETE** — (b) generic
+builders 2026-07-21, (d) 2026-07-20, and (c) c1–c3 durable identity
+2026-08-09/10 (see the as-builts below).  The live residues are the ones
+the c-slices recorded: the deliberately deferred (RuleId,VariantTag) stat
+rekey (a sanctioned golden-changing event with queued consumers), interp-leg
+fire divergences (§12.2), fresh-push-only rule-meta registration, and the
+missing source-loc column.
 `execution-tiers.md` §9/§9.1/§11-T0/§12 and `execution-tiers-impl.md`
 (decisions D6, D9, D10, D16, D17; findings 6 and 8; the §5 daemon
 change map) remain normative; this file pins the dual-stack dispatcher,
@@ -541,10 +546,11 @@ Tied to the fork-gate criteria (roadmap §3.1):
 
 ## Open questions (pinned, not blocking)
 
-1. **Key serialization spelling:** opaque token versus readable
+1. **Key serialization spelling** *(RESOLVED at slice c1: the compact
+   colon-string family — r1:/scc1: — with a golden key corpus; see the
+   c1 as-built above)*: opaque token versus readable
    s-expression for RuleKey/SccInstanceKey on the wire — modules.md
-   §6.4 permits opaque (the REPL aliases either way); decide at slice
-   (c) with a golden key corpus either way.
+   §6.4 permits opaque (the REPL aliases either way).
 2. **Generation-token granularity:** one daemon-global counter
    suffices now; the M1 expected-revision unification
    (execution-tiers §2.2) decides per-run/per-epoch structure when M1

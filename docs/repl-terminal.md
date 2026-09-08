@@ -177,8 +177,10 @@ of the compiler response.
 Plain mode is deliberately line-oriented: one input line is one command, with
 `run PATH` covering multiline Slog. EOF performs graceful shutdown; a response
 with `close` stops consumption; command refusals remain transcript entries,
-while transport loss is a failing process exit. `stage`/`flush` and `inject`
-remain deferred until their ownership and anchoring rules are explicit:
+while transport loss is a failing process exit.  `stage`/`flush` shipped at
+gate S1 (727e1a1: staging pins the selected session, flush is one atomic
+semantic change); only `inject` remains deferred until its anchoring rules
+are explicit:
 whether a staged buffer follows or pins the selected session, what switching
 or failure does to it, whether a flush is atomic, and which BoundaryKey an
 anchored operation names. A temporary update counter must not masquerade as
@@ -359,11 +361,20 @@ $ ./slog
 ```
 
 The build copies `repl/target/debug/slog` to the ignored root `slog` path.
-`make -C repl release` does the same with the release build. The current
-server commands include `library`, `open`, `current`, `resident`, `mode`,
-`tables`, `state`, `count`, `show`, `query`, `run`, `add`, `del`, `save`, the
-raw `schema`/`pipeline` views, and the general `:help`/`:status`/`:ping`/`:quit`
-set. Client-local commands include `:clear` and `:share`.
+`make -C repl release` does the same with the release build.  *(The command
+list below is the 2026-07-15 snapshot — roughly a third of today's set;
+the authority is `:help` at the prompt / the dispatch table in
+compiler/repl.rkt.  Shipped since: `?`/`?count`/`?exists` + cursors
+(`more`/`cancel`/`dump`), `explain`, `uses`/`find`, `why`/`whynot`,
+`break*`/`watch*`/`step`/`finish`/`frames`, `commit`/`replay`/`abort`,
+`scratch`/`keep`/`clear`, `stage`/`flush`, `recount`/`counts`, `whatif`,
+`replace`/`preview`/`activate`, `catalog`, `attach`, `csv-import`,
+`tiers`/`code`, `images`, `discard`, and client `:theme`/`:tutorials`.)*
+The 07-15 server commands were `library`, `open`, `current`, `resident`,
+`mode`, `tables`, `state`, `count`, `show`, `query`, `run`, `add`, `del`,
+`save`, the raw `schema`/`pipeline` views, and the general
+`:help`/`:status`/`:ping`/`:quit` set. Client-local commands include
+`:clear` and `:share`.
 
 The minimum gates for changes are:
 

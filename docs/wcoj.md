@@ -24,13 +24,21 @@ implemented and enabled by default:
   - `daemon/operators.h` implements FULL, OLD difference, and NEW sorted-union
     prefix cursors plus a symmetric hybrid sequential/`lower_bound` leapfrog.
 
-Automatic selection remains intentionally narrow.  Both arms must be ordinary
-set tables with exactly one common free stored column and no other free/payload
-column; each must have a non-empty bound prefix; the already-consumed positive
-occurrence graph must certify a real cycle between distinct anchors; and an
-ambiguous group of three or more eligible arms is left scalar.  A body compute
-that remains after the constant pre-phase also keeps the current scalar plan.
-Unsupported rules are not errors.  They follow the unchanged greedy pipeline.
+Automatic selection remains intentionally narrow on SHAPE — the shape
+cliff of static-join-decomposition.md §2: both arms must be ordinary set
+tables with exactly one common free stored column and no other free/payload
+column; each must have a non-empty bound prefix; the already-consumed
+positive occurrence graph must certify a real cycle between distinct
+anchors; and an ambiguous group of three or more eligible arms is left
+scalar.  *(Two fences this section originally stated were LIFTED by the
+S-track, 2026-08-19: a surviving body compute no longer disables the
+search — S1 defers computes to a fire-specials flush, and only a
+join-consumed compute refuses — and unsupported/over-cap rules no longer
+fall to the plain greedy pipeline: S2's greedy-local Expand3 closers
+still emit join3 where legal.  Since the J3 arc closer (2026-08-24),
+join3-planned rules also participate in RUNTIME arm selection, with
+wcoj-vs-pairwise itself a data-dependent choice —
+join-planning-assessment.md.)*  Unsupported shapes are not errors.
 
 This first implementation uses Slog's existing coarse-grained batch
 parallelism: outer driver partitions are claimed by workers, every worker opens

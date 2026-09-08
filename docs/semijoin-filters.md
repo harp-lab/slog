@@ -113,8 +113,10 @@ Natural next steps, in rough order of value:
   3. **Backjumping** on the final clause's misses (TreeTracker, TODS
      2025): gets the full O(N + OUT) guarantee for acyclic bodies with no
      upfront passes.
-  4. A ternary **WCOJ operator** for the cyclic cores that filters
-     provably cannot help.
+  4. ~~A ternary **WCOJ operator** for the cyclic cores that filters
+     provably cannot help~~ — SHIPPED long since: docs/wcoj.md's join3
+     leapfrog, extended by the S-track (static-join-decomposition.md) and
+     runtime arm selection (join-planning-assessment.md).
 
 ## 7. Measurements
 

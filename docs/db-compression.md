@@ -362,7 +362,8 @@ inputs). Score each SCC:
 | 1 | recursive, all recursive rules ≥2 same-SCC occurrences | doubling fronts, shallow — skip by default |
 | 0 | non-recursive | replays in O(strata) rounds — never seed |
 
-Default: sidecars for tiers ≥ 2 (`SLOG_SEED_TIERS` widens). **Selection** is
+Default: sidecars for tiers ≥ 2 (the `SLOG_SEED_TIERS` widening knob was
+drafted but NOT built — see the as-built note under §4.4). **Selection** is
 at SCC granularity (every IDB relation of a qualifying SCC gets a sidecar — in
 a mutual recursion chains alternate relations round by round, so covering only
 one member relation would cover only every k-th cut point); the **quota** is
@@ -1433,12 +1434,11 @@ flavor is needed.)
    records rounds at O(q)/round; even spacing (not depth preference) is the
    right policy; the `accel_min_rounds` gate confines it to round-dominated
    strata. Remaining empirical: `q` / cap defaults (P3.0 histograms decide).
-6. **What exactly goes in `prog.sexpr`** — raw source text (most robust) vs. the
-   parsed module AST (skips re-parsing but couples to parser output)? Leaning raw
-   text; confirm library capture is complete.
-7. **`convert-db-folder` (tools.rkt:45)**: still on any live path? Its id scheme
-   differs from the runtime interner, so roots must be produced by the daemon's
-   canonical writer to be replay-consistent.
+6. **What exactly goes in `prog.sexpr`** — ANSWERED by this doc's own P1.1
+   as-built (§ above): raw source text with captured includes.
+7. **`convert-db-folder`** — the premise is STALE: 8da70ad fixed its id
+   scheme to mirror the runtime InternTable exactly, and it sits on the
+   live csv2db/repl import path (db-merge.md §6 records the fix).
 
 ## 22. Appendix
 

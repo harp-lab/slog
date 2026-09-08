@@ -284,13 +284,12 @@ Merge is the first feature to read two independently-authored DBs, so it
   local max+1 — not the global max. **Already a bug** for open-then-intern-a-new-
   struct (collision), and fatal for merge. → seed globally/per-bucket.
 - **`readGzBIN` `word>>28`** (`database.h:589`): guard #2 above.
-- **`tools.rkt` string ids** (`tools.rkt:101`): `convert-db-folder` encodes a
-  string id as `(coll_n<<32)|fnv32`, but the daemon's `InternTable` keeps only
-  the low **26** hash bits and puts the collision counter at bit 26; it also
-  hashes code points, not UTF-8 bytes. Offline-built DBs' string refs don't
-  resolve after the daemon re-interns. Fix `convert-db-folder` to mirror
-  `InternTable` exactly, **or** mandate daemon-only offline merge and add a
-  round-trip test. (Blocks using `convert-db-folder` output as a merge input.)
+- **`tools.rkt` string ids** — **FIXED (8da70ad)**: `convert-db-folder` now
+  mirrors `InternTable` exactly (lo-26 hash bits, collision counter at bit
+  26, UTF-8 bytes), and it sits on the live csv2db/repl import path.  The
+  original defect for the record: it encoded `(coll_n<<32)|fnv32` over code
+  points, so offline-built DBs' string refs didn't resolve after the daemon
+  re-interned.
 - **String-id reconstruction into a non-empty table** (`database.h:1314`):
   `loadStringsBIN`'s re-intern-in-order is faithful only into an *empty* table;
   `loadRelationBIN`/`refreshRelationBIN`/any online import shift collision
@@ -406,6 +405,13 @@ full stratified re-derivation before any incremental +/- op. Merge and
 incrementality both redefine the same index-value slot — settle the interaction
 before either ships to avoid a rewrite.
 
+*(Settled — both have since shipped.  The resolution is the
+counts-as-recomputable-cache doctrine recorded in db-compression.md §14:
+counts are never persisted or combined — a merged/imported DB is simply
+uncounted and the lazy count round re-establishes on demand.  Exactly the
+"counts-invalid" option above, achieved by never making counts part of the
+persistent index value at all.)*
+
 ### 7.4 Other cross-DB concerns
 
 - **mpz bigints** (`mpz_intern_tag`, `types.h:39`): a second interned domain with
@@ -479,9 +485,11 @@ import is rejected cleanly and the daemon continues.
   bounds arity to 1..32 (arity-0 CSVs previously hung it forever).
   §7.1 pinned (see above). NOT yet fixed (P2 as planned): zero-arity
   persistence (round-trip still drops propositional facts — the readers
-  now refuse rather than SIGFPE), `tools.rkt` string-id scheme,
-  header/atomicity, mtime races, `writeRelationBIN` not co-persisting
-  struct relations its rows reference (partial-write contract).
+  now refuse rather than SIGFPE), header/atomicity for the ONLINE import
+  (the offline write half shipped: tmp-then-rename in writeDatabaseBIN),
+  mtime races, `writeRelationBIN` not co-persisting struct relations its
+  rows reference (partial-write contract).  The `tools.rkt` string-id
+  scheme is fixed (8da70ad, see §6).
 - **P1 — core merge**: `importDatabaseBIN` (§4), `internStructTuple` factoring,
   `ensureStructIndices`, `import` + `merge-db` verbs, guards §5, id-preserving
   reload for already-interned structs (§7.1). Restrict/flag EDB-vs-IDB per §7.2.
@@ -510,8 +518,9 @@ import is rejected cleanly and the daemon continues.
   struct dedup, rebuilt string-keyed collections, `(min int)` per-key
   join, and `(set int)` union; self-merge is a no-op.  §7.2 stands as the
   honest contract: merge-then-run is a monotone over-approximation.
-  Still open (P2): offline `merge-db` one-shot verb, atomicity
-  (scratch-then-swap), header/fingerprint gating, counts-invalid flag.
+  Still open (P2): offline `merge-db` one-shot verb, ONLINE import
+  atomicity (scratch-then-swap; the offline write half is done —
+  tmp-then-rename), header/fingerprint gating, counts-invalid flag.
 - **P2 — hardening**: header (magic/version/endianness/fingerprint) + reject
   incompatible; atomic offline write + scratch-swap online; gz buffering;
   concurrency-safe iteration; counts-invalid flag (§7.3); mpz/enum guards.

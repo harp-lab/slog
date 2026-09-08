@@ -1,12 +1,14 @@
 # REPL names, boundaries, and historical values
 
-2026-07-13. **Semantic design proposal with a connected R0 transport slice as
-of 2026-07-15.** The native Rust client under `repl/` now connects to the sole
-Racket server, `compiler/repl.rkt`, which owns a persistent compiler session
-and daemon. [repl-terminal.md](repl-terminal.md) is normative for that process,
-wire, and terminal split. The rich names, handles, catalogs, queries, and
-watches below remain planned; the REPL should expose the compiler/session's
-database model, not daemon implementation strings.
+2026-07-13; status refreshed 2026-09-07.  **The identity/semantics design
+below is largely SHIPPED**: queries (`?`/`?count`/`?exists`, cursors,
+dumps — R2), watches (level 0 + T5's level-1/cone forms), the `catalog`
+verb (N4-A), the checked `#N` value-handle table, and the expansion
+budgets are all live at the prompt.  Still open: the dbN/@vN/@tN
+name-handle economy and the §5 history/time verbs (inspect/history/diff/
+key) — those sections remain design.  [repl-terminal.md](repl-terminal.md)
+is normative for the process/wire/terminal split; this file stays the
+authority on names, identity, and watch semantics.
 
 *2026-07-14: [execution-tiers.md](execution-tiers.md) adopts §6 verbatim as
 "level-0 observation watches" and layers a pre-commit provenance gate above
@@ -230,9 +232,9 @@ without a second value-inspection facility.
 
 The N3-C daemon registry survives rename/drop and boundary-aware rendering now
 chooses a historical constructor name without scanning current names. The
-remaining REPL work here is the checked `#N` handle table, aliasing TypeKeys as
-`@tN`, and applying the independent expansion budgets above; descriptor
-identity itself is no longer the blocker.
+checked `#N` handle table and the expansion budgets have since shipped
+(R2); the remaining REPL work here is aliasing TypeKeys as `@tN`;
+descriptor identity itself is no longer the blocker.
 
 ## 6. A small daemon debugging protocol
 

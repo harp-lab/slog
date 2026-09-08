@@ -2,8 +2,17 @@
 
 ## Status and reading contract
 
-**Status, 2026-07-13:** this is the normative semantics, architecture, and
-active implementation plan for incremental Slog.
+**Status, 2026-09-07 (header refreshed; body semantics unchanged):** this
+is the normative semantics and architecture for incremental Slog.  **The
+M-milestone spine is COMPLETE**: Phase 0, M0–M5, M6L 1–2, M4T, M4S, M4N
+(all four slices, 2026-07-22), the counted-interpreter milestone, and M7
+slice 1 (2026-07-24/25, incl. the vetting round's selectivity gate).  Any
+"until M4N/M7 ships" phrasing below is historical — those routes are
+live; the standing exclusions are the DESIGNED ones (negation×lattices,
+non-selective joins × recursive repair, negation×struct-cones), each with
+a named fallback.  §8B.4's side-channel classification is ENFORCED as of
+2026-09-06 (oracle answers — smt.md §16; sequence occurrences — the
+seq-route tripwire).  incremental-status.md carries the milestone ledger.
 
 Phase 0 is shipped: stratified negation, resident forward-incremental
 sessions, relation versions, anchored batches, rename/drop, recipe
@@ -440,8 +449,8 @@ H(x) :- A(x), not B(x)
   and emit +H.
 
 M4N must therefore emit negated-body-driven variants with explicit pre/post
-state. Until M4N, negative edges remain on clear-and-rerun even when the rest
-of the cone is counted.
+state.  *(Executed: M4N shipped all four slices 2026-07-22 —
+m4n-contract.md; the clear-and-rerun interim below is history.)*
 
 Negation of demand-grown, intern-only, oracle, and unanchored value-side-table
 relations remains rejected as documented by the shipped type checks.
@@ -1024,7 +1033,9 @@ re-evaluation engine. The workload measurements move to M7's sidecar-memory
 gate, and a localized-re-evaluation variant remains a permitted later swap
 behind the same repair seam — as does the truncated top-k retention
 interpolation sketched in [aggregate-retention.md](aggregate-retention.md).
-Until M7 ships, recursive lattice regressions route to clear-and-rerun.
+*(M7 slice 1 shipped 2026-07-24/25: SELECTIVE recursive lattice
+regressions repair in place; non-selective joins (set/map/flat) stay on
+rerun until per-element contributor identity — m7-contract.md.)*
 
 ### 7A.4 DRed repair versus rank repair
 
@@ -1538,7 +1549,7 @@ every negative edge uses clear-and-rerun.
 Design and implement the separate stratified aggregate language from §7A.6.
 This is not a prerequisite for M4T.
 
-### M7 — recursive lattice/rank repair
+### M7 — recursive lattice/rank repair *(COMPLETE — slice 1 shipped 2026-07-24/25, vetted 07-25)*
 
 Implement change splitting and regression repair for admitted recursive
 lattices. Keep non-stable recursive aggregates rejected. The narrower state,

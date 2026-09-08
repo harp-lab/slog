@@ -34,7 +34,7 @@ as-built owns its mechanism.
 | (1) default classification + zero-clang strata | d25d730 | `tier-classification` 10/10; plan-goldens 8/8 (bytes unmoved); unit shapes battery |
 | (2) tier-profile sidecar | c40c752 | `tier-profile` 5/5 (warm profile + cold artifacts → zero clang, both escape hatches); 12 unit cases |
 | (3) promotion + next-re-entry pickup | 4f829b9 | `tier-promotion` 4/4 (§12.12 self-rescue, budget refusal, session rung climb); session 782/782 + protocol 172/172 |
-| (4) core-budget arbiter + priority queue | (this commit) | `tier-arbiter` 5/5 (o0-max capped, clang metric zero-on-warm); 7 unit cases (priority/boost, budget arithmetic) |
+| (4) core-budget arbiter + priority queue | 8fa0f50 | `tier-arbiter` 5/5 (o0-max capped, clang metric zero-on-warm); 7 unit cases (priority/boost, budget arithmetic) |
 
 **Standing residues, all recorded in place:** the daemon's `-t` stays
 outside the budget until daemon-side resizing exists (slice 4 as-built);

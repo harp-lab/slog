@@ -17,7 +17,7 @@ parents stay authoritative for mechanism.*
 | (a) ReadAttempt accounting | 0739993 | staging case in the interp battery; stats 11/11 unchanged; pause 18; protocol 172 |
 | (b) abort primitive + verb | 0739993 | `t6-restart` — §12.7 equivalence INCLUDING per-key `$stat_fires`; admission + §12.13 flavor refusals |
 | (c) executor-swap restart | 5bc2372 | `t6-restart` — both flip directions, content equality + executor-blind total fires |
-| (d) oracle audit + staged harvest | (this commit) | `t6-restart` 11/11 — abort-many over recursion-through-the-oracle, equivalence held; the invariant stated in smt.md §9.9 |
+| (d) oracle audit + staged harvest | 305833e | `t6-restart` 11/11 — abort-many over recursion-through-the-oracle, equivalence held; the invariant stated in smt.md §9.9 |
 
 **Standing residues, recorded in place:** the batch driver's promotion
 path attaches at boundaries (the mode-flip migration and the

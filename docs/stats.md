@@ -14,7 +14,7 @@ they are not ordinary instantiated Slog modules.
 
 ## 1. What ships today
 
-Every run publishes three daemon-owned relations unless
+Every run publishes four daemon-owned relations unless
 `SLOG_NO_STATS=1` is set:
 
 | relation | columns | publication point |
@@ -22,6 +22,7 @@ Every run publishes three daemon-owned relations unless
 | `$stat_fires` | rule-location `str`, variant `str`, count `int` | each stratum fixpoint |
 | `$stat_fixpoint` | SCC/push position `int`, stratum hash-name `str`, iterations `int`, microseconds `int` | each stratum fixpoint |
 | `$stat_size` | relation name `str`, tuples `int` | CSV dump |
+| `$stat_work` | rule-location `str`, tag `str`, ticks `int`, driver rows `int` | each stratum fixpoint (V0, 2026-08-16 — the runtime-selection substrate; probe/seek work that `$stat_fires` is blind to) |
 
 The names in this table describe the implementation exactly. In particular,
 the first column of `$stat_fixpoint` is called `scc` in the code, but is the
@@ -345,8 +346,9 @@ The namespace has policy:
 The original tiering idea remains useful, but identity should be fixed before
 adding many tables.
 
-`SLOG_STATS=off|basic|full` is the intended control, with
-`SLOG_NO_STATS=1` retained as an alias for `off`.
+`SLOG_STATS=off|basic|full` is the intended FUTURE control (not built —
+only `SLOG_NO_STATS=1` exists today; when `SLOG_STATS` ships, the old
+flag becomes an alias for `off`).
 
 - **off:** publish nothing. Whether task-local audit counters are completely
   compiled out is a separate build/cache choice.

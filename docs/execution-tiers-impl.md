@@ -2,10 +2,13 @@
 
 2026-07-14. Companion to [execution-tiers.md](execution-tiers.md). Sections
 1–7 are the design-phase record (decisions D1–D18, prototype results,
-liftable code, change map); **section 0 tracks as-built execution status**
-and is the place to resume from in a new session.
+liftable code, change map).  **Section 0 is a FROZEN 2026-07-16 snapshot**
+— it is no longer the resume point: every phase it lists as pending
+(T0(c), level-0 watches, RF1, M4S, the counted interpreter, and everything
+after) has shipped; the per-phase contract ledgers
+(t0/t3b/t4/t5/t6-contract.md §0.1) are the as-built record now.
 
-## 0. Execution status (updated 2026-07-16)
+## 0. Execution status (FROZEN snapshot, 2026-07-16)
 
 **T1 SHIPPED** in `50bb329` (`execution tiers and interpretation prep`).
 The changed set was:

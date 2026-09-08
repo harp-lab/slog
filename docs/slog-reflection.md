@@ -1,6 +1,14 @@
 # Reflective Slog program images and code as data
 
-2026-07-14. **Design brainstorm; no implementation commitment yet.** This
+2026-07-14; status refreshed 2026-09-07.  **The thesis WON and shipped:
+RF0 through RF5-B are complete and deep-vetted** (RF1 plan ABI 2 +
+goldens 2026-08-05/06; RF1.5/RF2/RF3/RF4/RF5-A the program arc, deep gate
+2026-08-10; RF5-B live replacement 2026-08-13; five-auditor vetting round
+2026-08-14).  Per-slice checkpoints are annotated inline below — except
+RF1, which shipped FIRST despite carrying no inline note; see
+rf1-contract.md.  RF5-C precise healing and RF5-D historical replacement
+remain open (rf5-contract.md owns them).  Originally: design brainstorm;
+no implementation commitment.  This
 document records a possible deeper foundation for the program-model,
 interpreter, execution-tier, REPL, debugging, and incremental-program-edit
 work. It is deliberately broader than

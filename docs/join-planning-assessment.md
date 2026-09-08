@@ -1071,13 +1071,14 @@ What each case proves:
 - **ANSWERED — selector placement/cost and native budget:** unchanged from
   the 2026-08-15 refinement (entry reads ride a paid seam; choice rules
   ship interp-only until J3).
-- **OPEN — native tick accumulation shape:** per-rule counter placement in
-  generated C++ (J3-era; small).
+- **ANSWERED (J3-P2, ed0b959) — native tick accumulation shape:** the
+  `++_work` per-match meter in generated arm tasks, bumpWork +
+  ArmGroupHooks (§ SHIPPED entries above).
 - **OPEN — entry-measurement parallelization:** the entry pass is
   single-threaded and bounded (K·B ticks per flagged rule); parallelize as
   read tasks only if a large program shows it on a profile.
-- **OPEN — J3 shape:** `(ordinal, arm)` coverage vs K×-cluster selector
-  branch (unchanged).
+- **ANSWERED (J3-P1, 75bbbfb) — J3 shape:** group pin (the K×-cluster
+  selector branch direction), per the SHIPPED phase-1 entry above.
 
 ### Relationship to the options above
 
