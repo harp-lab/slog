@@ -1470,12 +1470,19 @@ public:
       }();
       if (debug_boundary)
       {
-        char bbuf[160];
+        char bbuf[384];
         std::snprintf(bbuf, sizeof(bbuf),
                       "(boundary-sweep \"%s\" (kept %u) (rebuilt %u)"
-                      " (untouched %u) (dumped %u) (ms %.3f))",
+                      " (untouched %u) (dumped %u)"
+                      " (ords (live %u) (new %u) (dropped %u))"
+                      " (backfill (ords %u) (rows %llu) (ms %.3f))"
+                      " (ms %.3f))",
                       s->name.c_str(), st.kept_rels, st.rebuilt_rels,
-                      st.untouched_rels, st.dumped_rels, st.ms);
+                      st.untouched_rels, st.dumped_rels,
+                      st.ords_live, st.ords_new, st.ords_dropped,
+                      st.backfill_ords,
+                      (unsigned long long)st.backfill_rows, st.backfill_ms,
+                      st.ms);
         emit(bbuf);
       }
     }

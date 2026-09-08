@@ -323,6 +323,16 @@ private:
   bool tracking_requisitions = false;
   std::set<std::vector<u16>> fresh_requisitions;
   std::set<std::vector<u16>> fresh_delta_requisitions;
+  // Per-ORDERING boundary accounting (SLOG_BOUNDARY_DEBUG, docs/index-reuse.md
+  // §5 P3): which full orderings this install CREATED (vs. re-requisitioned
+  // live), and what the 0.B5 backfill of those creations cost.  A backfilled
+  // creation on a relation that already had live trees is exactly the
+  // cross-stratum ordering MISMATCH the P3 compiler alignment would remove.
+  std::set<std::vector<u16>> fresh_created;
+  u32 backfill_ords = 0;
+  u64 backfill_rows = 0;
+  double backfill_ms = 0.0;
+  u32 sweep_kept_live = 0, sweep_created = 0, sweep_dropped = 0;
   std::vector<s16> leadcol_slot;
   u32 last_slot_leadcols = 0;  // write_leadcols.size() when leadcol_slot was last built
 
@@ -826,6 +836,9 @@ public:
     tracking_requisitions = true;
     fresh_requisitions.clear();
     fresh_delta_requisitions.clear();
+    fresh_created.clear();
+    backfill_ords = 0; backfill_rows = 0; backfill_ms = 0.0;
+    sweep_kept_live = sweep_created = sweep_dropped = 0;
   }
 
   // Did the current boundary install requisition anything at all for this
@@ -876,10 +889,36 @@ public:
     tracking_requisitions = false;
     if (fresh_requisitions.empty() && fresh_delta_requisitions.empty())
       return false;
+    static const bool debug_ords = []{
+      const char* v = std::getenv("SLOG_BOUNDARY_DEBUG");
+      return v != nullptr && std::string(v) == "2";
+    }();
+    auto ord_str = [](const std::vector<u16>& o)
+    {
+      std::string r = "[";
+      for (size_t i = 0; i < o.size(); ++i)
+        r += (i ? " " : "") + std::to_string(o[i]);
+      return r + "]";
+    };
+    if (debug_ords)
+    {
+      for (const auto& kv : indices)
+        if (!fresh_requisitions.count(kv.first))
+          fprintf(stderr, "[sweep-ord] %s drop %s\n",
+                  name.c_str(), ord_str(kv.first).c_str());
+        else if (fresh_created.count(kv.first))
+          fprintf(stderr, "[sweep-ord] %s new %s%s\n",
+                  name.c_str(), ord_str(kv.first).c_str(),
+                  backfill_ords ? " (backfilled)" : "");
+        else
+          fprintf(stderr, "[sweep-ord] %s live %s\n",
+                  name.c_str(), ord_str(kv.first).c_str());
+    }
     for (auto it = indices.begin(); it != indices.end(); )
     {
       if (!fresh_requisitions.count(it->first))
       {
+	++sweep_dropped;
 	for (u16 b = 0; b < bucket_count; ++b)
 	  delete it->second[b];
 	delete [] it->second;
@@ -887,6 +926,8 @@ public:
       }
       else
       {
+	if (fresh_created.count(it->first)) ++sweep_created;
+	else ++sweep_kept_live;
 	if (clear_kept_contents || seeded_orderings.count(it->first))
 	  for (u16 b = 0; b < bucket_count; ++b)
 	    it->second[b]->clear();
@@ -916,6 +957,7 @@ public:
     clearRanks();
     fresh_requisitions.clear();
     fresh_delta_requisitions.clear();
+    fresh_created.clear();
     return true;
   }
 
@@ -926,6 +968,20 @@ public:
   bool keepEligible() const
   {
     return struct_id == 0 && lattice_kind == LAT_NONE && arity > 0;
+  }
+
+  // Read-out of the per-ordering boundary accounting after a sweep
+  // (SLOG_BOUNDARY_DEBUG; aggregated by Database::boundarySweep).
+  struct OrdSweepStats
+  {
+    u32 kept_live, created, dropped, backfill_ords;
+    u64 backfill_rows;
+    double backfill_ms;
+  };
+  OrdSweepStats ordSweepStats() const
+  {
+    return {sweep_kept_live, sweep_created, sweep_dropped,
+            backfill_ords, backfill_rows, backfill_ms};
   }
 
   // ---- DRed^c count sidecar (docs/incremental.md §6.1/§8B.2) ----
@@ -1868,6 +1924,7 @@ public:
     if (tracking_requisitions)
       fresh_requisitions.insert(ord);   // boundary keep-set (see addIndex)
     if (indices.count(ord)) return;
+    if (tracking_requisitions) fresh_created.insert(ord);
     indices[ord] = new Index*[bucket_count];
     auto& indices_ord = indices[ord];
     for (u32 i = 0; i < bucket_count; ++i)
@@ -1904,6 +1961,8 @@ public:
         }
       if (src != nullptr)
       {
+        const auto bf0 = std::chrono::steady_clock::now();
+        u64 bf_rows = 0;
         Index** srcarr = indices[*src];
         std::vector<u16> rewrite(src->size(), 0);
         for (u16 i = 0; i < src->size(); ++i)
@@ -1918,7 +1977,12 @@ public:
             for (u16 c = 0; c + 1 < arity; ++c) ordered[c] = row[ord[c]];
             indices_ord[buckethash(ordered[0])]
               ->setPayload(ordered, arity - 1, row[arity - 1]);
+            ++bf_rows;
           });
+        ++backfill_ords;
+        backfill_rows += bf_rows;
+        backfill_ms += std::chrono::duration<double, std::milli>(
+                         std::chrono::steady_clock::now() - bf0).count();
       }
     }
 
@@ -1959,6 +2023,7 @@ public:
     // (all its tuples) with empty buckets.  Also prevents a latent duplicate
     // write_leadcols entry.
     if (tbl.count(ord)) return;
+    if (tracking_requisitions && !delta) fresh_created.insert(ord);
     tbl[ord] = new Index*[bucket_count];
     auto& indices_ord = tbl[ord];
     for (u32 i = 0; i < bucket_count; ++i)
@@ -1982,6 +2047,8 @@ public:
 	}
       if (src != nullptr)
       {
+	const auto bf0 = std::chrono::steady_clock::now();
+	u64 bf_rows = 0;
 	Index** srcarr = indices[*src];
 	std::vector<u16> rewrite(src->size(), 0);
 	for (u16 i = 0; i < src->size(); ++i)
@@ -1993,7 +2060,12 @@ public:
 	    for (u16 c = 0; c < arity; ++c)
 	      row[c] = t[rewrite[c]];
 	    indices_ord[buckethash(row[ord[0]])]->insertTuple(row, ord.data());
+	    ++bf_rows;
 	  });
+	++backfill_ords;
+	backfill_rows += bf_rows;
+	backfill_ms += std::chrono::duration<double, std::milli>(
+	                 std::chrono::steady_clock::now() - bf0).count();
       }
     }
 
@@ -9757,6 +9829,13 @@ public:
     u32 rebuilt_rels = 0;   // rebuild-mode (dump + contents-clear)
     u32 untouched_rels = 0; // undeclared or unread-and-kept without dump
     u32 dumped_rels = 0;    // relations staged into iteration-0 delta
+    // per-ORDERING view over the swept relations' FULL orderings (P3 measure)
+    u32 ords_live = 0;      // re-requisitioned: tree survived the boundary
+    u32 ords_new = 0;       // created by this install
+    u32 ords_dropped = 0;   // live before, not re-requisitioned: erased
+    u32 backfill_ords = 0;  // creations populated by the 0.B5 backfill
+    u64 backfill_rows = 0;  // rows the backfills re-inserted
+    double backfill_ms = 0.0;
     double ms = 0.0;
   };
 
@@ -9836,6 +9915,7 @@ public:
       return v != nullptr && std::string(v) == "2";
     }();
     const bool force_rebuild = indexReuseDisabled();
+    std::vector<Relation*> swept;
     Stratum s("boundary-sweep");
     forEachBoundaryRelation([&](Relation* r)
     {
@@ -9865,6 +9945,7 @@ public:
 	    s.addTask(0, new DumpTask(r, b, true), true);
 	}
 	s.addTask(1, new SweepTask(r, false), true);
+	swept.push_back(r);
 	++st.kept_rels;
       }
       else if (read || force_rebuild)
@@ -9876,6 +9957,7 @@ public:
 	for (u16 b = 0; b < bucket_count; ++b)
 	  s.addTask(0, new DumpTask(r, b, false), true);
 	s.addTask(1, new SweepTask(r, true), true);
+	swept.push_back(r);
 	++st.rebuilt_rels;
       }
       else
@@ -9886,11 +9968,23 @@ public:
 	// undeclared ordering has no WriteTask and would silently go stale
 	// if the stratum writes the relation).
 	s.addTask(1, new SweepTask(r, false), true);
+	swept.push_back(r);
 	++st.kept_rels;
       }
     });
 
     runStratum(&s, false);
+
+    for (Relation* r : swept)
+    {
+      const Relation::OrdSweepStats o = r->ordSweepStats();
+      st.ords_live += o.kept_live;
+      st.ords_new += o.created;
+      st.ords_dropped += o.dropped;
+      st.backfill_ords += o.backfill_ords;
+      st.backfill_rows += o.backfill_rows;
+      st.backfill_ms += o.backfill_ms;
+    }
 
     st.ms = std::chrono::duration<double, std::milli>(
               std::chrono::steady_clock::now() - t0).count();

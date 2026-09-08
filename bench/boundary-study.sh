@@ -95,6 +95,10 @@ for shape in chain probe; do
   sp=$(awk -v a="$offw" -v b="$onw" 'BEGIN{printf "%.2fx", a/(b>0?b:1)}')
   printf "%6s | %10s %10s | %10s %10s | %8s\n" \
          "$shape" "$offw" "$onw" "$offf" "$onf" "$sp"
+  # the sweep's own ms is the LAST (ms X)) on each line; the backfill
+  # sub-form carries its own (ms X)) earlier on the line
   echo "  on-mode sweeps: $(grep -c 'boundary-sweep' "$on_log") lines," \
-       "summed sweep ms: $(sum_ms '\(ms [0-9.]*\)' "$on_log")"
+       "summed sweep ms: $(grep -oE '\(ms [0-9.]*\)\)$' "$on_log" | awk '{ v=$2; gsub(/\)/,"",v); s+=v } END { printf "%.0f", s }')," \
+       "summed backfill ms: $(grep -oE '\(backfill \(ords [0-9]+\) \(rows [0-9]+\) \(ms [0-9.]*\)' "$on_log" | awk '{ v=$NF; gsub(/\)/,"",v); s+=v } END { printf "%.0f", s }')," \
+       "backfilled ords: $(grep -oE '\(backfill \(ords [0-9]+' "$on_log" | awk '{ s+=$NF } END { print s+0 }')"
 done

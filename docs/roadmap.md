@@ -16,7 +16,7 @@ below is its consolidation, updated through the index-reuse arc).
 | incremental / DRed^c | [incremental.md](incremental.md), [incremental-status.md](incremental-status.md) | **M-spine complete** (Phase 0, M0–M7 incl. counted-interp); oracle-answer §8B.4 enforcement shipped 09-06 (smt.md §16) |
 | execution tiers / runtime | [execution-tiers.md](execution-tiers.md), t0/t3b/t4/t5/t6-contracts | **T0–T6 + Q1 complete**; residues live in each contract's ledger |
 | join planning | [join-planning-assessment.md](join-planning-assessment.md), [static-join-decomposition.md](static-join-decomposition.md), [wcoj.md](wcoj.md) | **runtime-selection arc complete 08-24** (V0–V4, J1–J3, join3 arms); S1–S3 shipped; the static SHAPE cliff stands |
-| index reuse | [index-reuse.md](index-reuse.md) | **P1+P2 shipped 09-07** (boundary keep-set; ~1.7× fixpoint on boundary-bound pipelines); P3 measure-gated, P4 parked |
+| index reuse | [index-reuse.md](index-reuse.md) | **P1+P2 shipped 09-07** (boundary keep-set; ~1.7× fixpoint on boundary-bound pipelines); **P3 decided NO 09-08** (per-ordering survey: 0.06 % of golden fixpoint; the residual is the serial backfill → P3-D deferred parallel backfill, daemon-only, open); P4 parked |
 | reflection | [slog-reflection.md](slog-reflection.md), [rf5-contract.md](rf5-contract.md), [activation-contract.md](activation-contract.md) | RF0–RF5-B complete + deep-vetted (08-14); **RF5-C precise healing and RF5-D historical replacement open** |
 | modules / namespaces | [modules.md](modules.md), [n4-contract.md](n4-contract.md) | N0–N4 complete; N5 item 1 shipped scoped, item 3 substantially shipped; **items 2 + 4 open** |
 | REPL | [repl-ux.md](repl-ux.md) (living), [repl.md](repl.md), [repl-terminal.md](repl-terminal.md) | R0–R5 spine + W4′ debugger complete; handle economy, history verbs, R4 client half open; Ctrl-C pause doctrine unbuilt |
@@ -49,10 +49,13 @@ Static: fragment shapes beyond binary-triangle, size-gated factoring,
 factoring-strips-semijoin cost modeling, the shape cliff itself
 (lattice/struct/temp occurrences, payload columns, 3+ arms).
 
-**Index reuse.**  P3 compiler ordering alignment — decide from
-`SLOG_BOUNDARY_DEBUG=1` kept/rebuilt splits on real workloads (plan-byte
-re-key if taken).  P4 virtual iteration-0 delta.  Struct/lattice
-keep-mode after the id-keyed-intern/M5-tombstone and payload-map audits.
+**Index reuse.**  P3-D deferred bucket-parallel backfill (daemon-only;
+the per-ordering survey of 09-08 showed the 0.B5 backfill of re-homed
+orderings is serial, outside both timers, and 105 % of fixpoint on the
+probe shape; index-reuse.md §5).  Ping-pong suppression for
+declaration-only relations (compiler, 12–22 % of churn) rides the rekey
+train if taken.  P4 virtual iteration-0 delta.  Struct/lattice keep-mode
+after the id-keyed-intern/M5-tombstone and payload-map audits.
 
 **Incremental.**  join-pre XOR view + derived×recursive readers (M4N
 unlocks); per-derivation rank folds; negation×lattices fallback; M7

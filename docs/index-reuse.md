@@ -1,8 +1,10 @@
 # Cross-stratum index reuse (the boundary keep-set)
 
 Status: **P1+P2 shipped 2026-09-07** (daemon-only, plan-byte-neutral).
-P3 (compiler ordering alignment across strata — a plan-byte change) is a
-measured decision recorded in §5; P4 (virtual iteration-0 delta) is parked.
+**P3 decided 2026-09-08: NO as a compiler pass** — the measurement (§5)
+refuted its premise and exposed the real residual, the SERIAL 0.B5
+backfill of re-homed orderings; the follow-up is a deferred, bucket-parallel
+backfill (daemon-only, §5).  P4 (virtual iteration-0 delta) is parked.
 
 ## 1. What the boundary used to do
 
@@ -73,9 +75,25 @@ database.h `beginBoundaryInstall`/`boundarySweep`):
 `SLOG_NO_INDEX_REUSE=1` (runtime-only; not in any cache key) forces every
 declared relation onto the rebuild path — the faithful emulation of the
 old boundary for A/B measurement and fault isolation.
-`SLOG_BOUNDARY_DEBUG=1` emits one
-`(boundary-sweep "name" (kept K) (rebuilt R) (untouched U) (dumped D) (ms M))`
-line per boundary.
+`SLOG_BOUNDARY_DEBUG=1` emits one line per boundary:
+
+```text
+(boundary-sweep "name" (kept K) (rebuilt R) (untouched U) (dumped D)
+                (ords (live L) (new N) (dropped X))
+                (backfill (ords B) (rows RW) (ms M)) (ms S))
+```
+
+The first four counters are RELATIONS; `ords` counts the FULL orderings of
+the swept relations — `live` re-requisitioned and kept, `new` created by
+this install, `dropped` live before but not re-requisitioned — and
+`backfill` is the 0.B5 copy that populated the creations from a live
+sibling ordering (rows and ms).  NOTE that the backfill runs inside
+`addIndex` on the install thread, serially, BEFORE the sweep: it is in
+neither the `(fixpoint …)` ms nor the sweep's own `(ms S)`, only in wall
+time.  `SLOG_BOUNDARY_DEBUG=2` adds per-relation stderr lines,
+`[sweep] rel decl= keep= read=` and `[sweep-ord] rel live|new|drop [ord]`,
+which attribute every re-homing to a relation and ordering.
+`bench/boundary-study.sh` prints the summed backfill beside the sweep ms.
 
 ## 3. The two correctness cruxes
 
@@ -117,14 +135,60 @@ bind them) but empty their contents, as the old boundary left them.
 
 ## 5. Deferred
 
-- **P3 — cross-stratum ordering alignment** (compiler): keep-mode only
-  helps where orderings textually coincide; table masters re-home stratum
-  to stratum (the T4 subset-chain re-pack residue), so feeding previous
-  strata's choices into `pack-selections` as preferred `fixed` seeds would
-  widen the win.  Plan-byte change: global re-key, plan-goldens re-record,
-  abi2/tu-det/plan-det gates.  Decide from bench/boundary-study.sh numbers.
+- **P3 — cross-stratum ordering alignment (compiler): DECIDED NO,
+  2026-09-08.**  The premise was that table orderings re-home stratum to
+  stratum as a *packer preference* that `pack-selections` `fixed` seeds
+  could align.  Measured with the per-ordering counters above:
+
+  *Golden corpus* (172 programs, interp, all passing): 164 programs with a
+  boundary, 352 boundaries, 515 strata.  Full orderings at swept
+  relations: 16 474 live, 1 188 new, 1 162 dropped (6.7 % churn, 71
+  programs).  Backfill: 1 173 orderings, 11 972 rows, **3.8 ms against
+  6 842 ms of summed fixpoint (0.06 %)** — negligible at golden scale.
+
+  *Probe shape* (`bench/boundary-study.sh 500000 6`): every boundary after
+  the first re-homes two 500k-row orderings; backfill 279 ms against
+  264 ms of summed fixpoint (**105 %**, serial, invisible to both
+  timers).  Index keeping saved 118 ms of iteration-0 rebuild on that
+  shape and the serial backfill added 279 ms; the 1.7 → 1.4 s wall win
+  came from P2's dump narrowing, not from keeping trees.  `chain`: zero.
+
+  *Attribution* (`SLOG_BOUNDARY_DEBUG=2` on kcfa / schemecfa /
+  seq_oracle / st_basic): 78–88 % of new orderings are on relations the
+  incoming stratum READS — probe requirements, 2–3 orderings per reader
+  (kcfa's `$sup` demand relations), which the writer's ONE free master
+  could never have served; the reader's selection is hard (the probe
+  shape needs r_i on column 1 → (1 0); only the writer's (0 1) was free).
+  Orderings dropped by an untouched stratum were re-needed later 0–1
+  times.  The remaining 12–22 % is **ping-pong**: the ABI-2 cohort
+  declares EVERY program relation in every stratum (canonical-plan.rkt,
+  "all storage declarations ride the cohort"; emit-cpp's manifest
+  keep-alive decls likewise) with the default `(range arity)` when the
+  stratum has no selections, so an untouched relation whose live ordering
+  was non-default is dropped and re-homed to the default — 50 % of the
+  probe shape's waste, but tiny relations on the analyzers (kcfa: 759
+  rows over 286 backfills).
+
+  Hence: seeding the packer cannot align anything (the reader side is
+  fixed, the writer side is one ordering); a FORWARD alignment (writer
+  materialises the readers' orderings) moves exactly the same inserts
+  into the writer's parallel WriteTasks — i.e. its whole value is
+  parallelism, which the daemon can provide without a plan-byte change.
+- **P3-D — deferred, bucket-parallel backfill** (daemon-only, the
+  follow-up): under requisition tracking, `addIndex` records a pending
+  `ord ← src` instead of copying inline; `boundarySweep` runs per-bucket
+  backfill tasks in phase 0 beside the dumps, and SKIPS the backfill for
+  rebuild-mode survivors (today a re-homed struct/lattice ordering is
+  backfilled and then emptied by the sweep).  Ghost hazard: `getAnyIndex`
+  and the backfill `src` pick must skip pending orderings until they are
+  filled.  The eager copy stays for non-tracking paths (hot-swap, delta
+  re-push — 0.B5's original clients).  Expected on the probe shape:
+  ≈ −240 ms of 1.4 s.  Ping-pong suppression (declaration-only relations
+  requisition nothing when the relation already has live trees) is a
+  compiler change worth at most 12–22 % of churn on the analyzers; it
+  rides the stat-rekey golden train if taken, not scheduled on its own.
 - **P4 — virtual iteration-0 delta**: alias delta reads to the kept full
   trees at iteration 0, eliminating the dump/reorg/delta-build for read
-  relations too.  Deep read-path surgery; only if P3 still leaves meat.
+  relations too.  Deep read-path surgery; parked.
 - **Struct/lattice keep-mode**: needs the id-keyed intern + tombstone
   (M5) and payload-map audits before marked batches may skip their intern.
