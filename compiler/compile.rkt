@@ -1226,8 +1226,17 @@
 ;; store them VERBATIM and unsampled: replay cannot re-derive them, and
 ;; re-ingesting them is what keeps the oracle from being re-queried (the
 ;; dispatch task treats loaded answers as already-answered demands).
+;; plan-stamp: sha16 over the sorted stratum job hashes -- the FAITHFUL-
+;; REBUILD identity META records (docs/db-merge.md §8 `env`).  Two builds
+;; agree iff every stratum compiled to the same artifact, which covers the
+;; program text, compiler sources, daemon headers, and every plan-shaping
+;; env knob (they are all inside each job hash) -- so META no longer
+;; depends on a hand-maintained env-var list staying in sync with the
+;; cache key.  (The result-affecting-env list is retained alongside for
+;; human readability; folding the full knob list into it rides the
+;; stat-rekey golden train.)
 (struct db-partition (idb-rels edb-rels mixed-rels strata-range productive-rels
-                      pinned-rels)
+                      pinned-rels plan-stamp)
   #:transparent)
 
 ;; Ground (EDB) rules, TWO levels (docs/db-compression.md P0.5; the
@@ -1332,7 +1341,14 @@
                 (sort (set->list (set-intersect idb edb)) symbol<?)
                 (if (null? lvl-list) '(0 . 0) (cons (first lvl-list) (last lvl-list)))
                 (sort (set->list (set-intersect idb read-rels)) symbol<?)
-                pinned))
+                pinned
+                ;; the faithful-rebuild identity (see the struct comment)
+                (substring
+                 (bytes->hex-string
+                  (sha256 (string->bytes/utf-8
+                           (string-join (sort (map first jobs) string<?)
+                                        ":"))))
+                 0 16)))
 
 ;; R3 scratch segments compile interp-only regardless of the ambient
 ;; SLOG_OPT: the canonical plan is the runnable artifact and no toolchain

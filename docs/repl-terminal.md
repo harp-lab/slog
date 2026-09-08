@@ -137,7 +137,13 @@ different session and daemon. `run` before an open creates a distinguished
 scratch session. Every exit path closes all resident sessions and child
 processes. Ctrl-C/Ctrl-D is an interrupting exit: it aborts an in-flight
 request immediately, drops the kill-on-drop Racket child, and closes the pipes
-owned by any attached daemon. Graceful shutdown also has a one-second deadline
+owned by any attached daemon.  Since 2026-09-07 that exit is GUARDED while
+a command is in flight: the first Ctrl-C warns, and only a second press
+within 2s takes the interrupting exit (the hatch a hung server still
+needs) — one reflexive press cannot kill a long fixpoint.  The full
+"Ctrl-C means pause, never kill" doctrine is repl-ux.md §9.2; its stage 2
+(a genuine pause) awaits an out-of-band control channel, since the client
+today blocks on the in-flight response. Graceful shutdown also has a one-second deadline
 before taking the same abort path, so a blocked request cannot keep the terminal
 process alive.
 

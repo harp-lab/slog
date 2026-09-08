@@ -891,7 +891,9 @@
      (unless (directory-exists? dir) (make-directory* dir))
      (define m0 (make-db-meta #:kind 'flat #:pure-edb? #f #:manifest '()
                               #:per 1.0 #:strata range #:compiler-stamp cstamp
-                              #:idb-rels idb #:edb-rels edb))
+                              #:idb-rels idb #:edb-rels edb
+                              #:extra `((plan-stamp
+                                         . ,(db-partition-plan-stamp partition)))))
      (write-db-meta (hash-set m0 'stamp (compute-db-stamp m0 #:db-dir dir)) dir)]
     [else
      ;; The layer's manifest links, in load order: the chained -d input (if any,
@@ -930,6 +932,11 @@
                                ;; daemon writes accel/ only when a stratum
                                ;; cleared the min-rounds gate
                                #:extra `((accel . ,(directory-exists?
-                                                    (string-append dir "/accel"))))))
+                                                    (string-append dir "/accel")))
+                                         ;; faithful-rebuild identity: same
+                                         ;; plan-stamp <=> a replay recompiles
+                                         ;; every stratum to the same artifact
+                                         (plan-stamp
+                                          . ,(db-partition-plan-stamp partition)))))
      (write-db-meta (hash-set lm0 'stamp (compute-db-stamp lm0 #:prog-fingerprint cstamp))
                     dir)]))

@@ -737,6 +737,13 @@ A pause (breakpoint, watch, memory, Ctrl-C) changes the prompt to
   the run to its next slice boundary and opens paused mode; `abort` is the
   explicit destructive verb. This single choice removes the classic terror of
   long fixpoints.
+  *(Adoption status 2026-09-07 — STAGE 1 SHIPPED: while a command is in
+  flight the client's first Ctrl-C warns and only a quick second press
+  force-quits (repl/src/app.rs; repl-terminal.md documents the shipped
+  behavior).  STAGE 2 — the true pause — is blocked on ONE missing piece:
+  an out-of-band control channel to the Racket server, since the client
+  blocks on the in-flight response today.  The server side already exists:
+  slice budgets, the pause protocol, paused-mode verbs.)*
 
 ### 9.3 Stepping: the semi-naive four-port
 
