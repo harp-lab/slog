@@ -1141,7 +1141,12 @@ public:
       const u32 n = (u32)refs.size();
       for (u32 r = 0; r < n; ++r)
       {
-        if (!is_delta && refs[r].batch->sign < 0) continue;
+        // A keep-mode boundary dump (batch->reloaded) is already present in
+        // every surviving FULL ordering -- kept trees and 0.B5-backfilled new
+        // ones alike -- so full-index writes skip it; delta-index writes
+        // consume it normally (it IS the iteration-0 delta).
+        if (!is_delta
+            && (refs[r].batch->sign < 0 || refs[r].batch->reloaded)) continue;
         const u64* d = refs[r].batch->data + refs[r].offset;
         std::array<u64, A> key;
         for (u16 c = 0; c < A; ++c) key[c] = d[ord[c]];
@@ -1178,6 +1183,15 @@ public:
     for (u32 i = 0; i < delta.size(); ++i)
     {
       InsertBatch* batch = delta[i];
+      // Keep-mode boundary dump (batch->reloaded): its rows came from the
+      // surviving master, so they are pre-deduped AND already present --
+      // neither nulled (they must fire as the incoming stratum's iteration-0
+      // delta) nor re-inserted.  Ground facts staged beside the dump are
+      // ordinary batches: one that duplicates an inherited row finds it in
+      // the kept master and nulls exactly as the rebuilt master would have
+      // nulled it, preserving the exact-once fire accounting.
+      if (batch->reloaded)
+        continue;
       for (u32 j = 0; j < batch->usage; j += N)
       {
         if (buckethash(batch->data[j + ord[0]]) != bucket || batch->data[j] == slog_null)

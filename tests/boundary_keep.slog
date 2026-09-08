@@ -1,0 +1,24 @@
+;; Boundary keep-set regression (docs/index-reuse.md).  r is built early,
+;; IGNORED by the middle stratum -- whose boundary must keep r's trees
+;; without dumping them (the unread-relation arm of the sweep) -- and read
+;; again by a late stratum, which must see ALL of r through its own
+;; boundary's marked dump.  The ground (out 1 2), duplicating a derived
+;; row, pins the ordinary-batch intern against a kept master: it must null
+;; against the surviving content exactly as it would have against a
+;; rebuilt one (out stays 6 rows).
+table (edge int int)
+table (r int int)
+table (a int)
+table (b int)
+table (out int int)
+
+rule (edge 1 2) (edge 2 3) (edge 3 4)
+
+rule (edge X Y) --> (r X Y)
+rule (r X Y) (edge Y Z) --> (r X Z)
+
+rule (a 10) (a 11)
+rule (a X) --> (b X)
+
+rule (out 1 2)
+rule (r X Y) (b A) (= A 10) --> (out X Y)

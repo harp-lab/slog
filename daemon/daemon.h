@@ -16,14 +16,16 @@
  * DAG into a linear sequence of (merged) strata; each stratum's .so pushes
  * its Stratum here, so the Daemon accumulates the whole pipeline in memory
  * as state.  Daemon::run() advances a cursor over the pipeline, running
- * each not-yet-run stratum to fixpoint and reloading the database between
- * strata (so each stratum re-ingests the whole database as its
- * iteration-zero delta).  Strata stay resident after running -- the
- * intended seam for incremental recomputation later: push a delta into
- * some stratum and replay the pipeline from there.  (Not built yet; note
- * that a retained stratum's tasks bind index arrays that a later reload
- * clears, so re-running an old stratum requires re-binding -- index
- * *registrations* survive, their contents do not.)
+ * each not-yet-run stratum to fixpoint; between strata the index-reuse
+ * boundary (Database::boundarySweep) stages what the next stratum READS as
+ * its iteration-zero delta while KEEPING every index ordering the next
+ * stratum re-requisitions -- only orderings it does not requisition are
+ * dropped, and only struct/lattice/arity-0 relations still take the old
+ * dump-and-rebuild path (SLOG_NO_INDEX_REUSE=1 forces it for everything).
+ * Strata stay resident after running; a retained old stratum's tasks bind
+ * index arrays that a later boundary may drop, so re-running an old
+ * stratum requires re-binding (re-pushes re-register, which is also what
+ * keeps an ordering alive across the sweep).
  *
  * Copyright (C) Thomas Gilray, Kristopher Micinski, Sidharth Kumar, et al., 2025
  * Some rights reserved. See License.md for details.
@@ -176,13 +178,23 @@ private:
   // legacy numeric pipeline position.  This flag keeps it out of semantic
   // writer ownership while preserving old position-addressed recipes.
   bool next_push_maintenance = false;
-  // Set after each run; consumed by beginStratum.  The reload (dump every
-  // relation to insert batches, CLEAR all indices) must happen before the
-  // next stratum registers its indices and binds its tasks to them -- so it
-  // is deferred to beginStratum rather than performed after a run, which
-  // also leaves the indices intact for any statistics/output plugins that
-  // arrive after the final stratum.
+  // Set after each run; consumed by the next FRESH beginStratum.  It used to
+  // trigger an eager whole-database dump + clearAllIndices there; it now arms
+  // the index-reuse boundary instead (boundary_pending below): the incoming
+  // install registers against the LIVE database while its requisitions are
+  // recorded, and push() reconciles -- re-requisitioned orderings survive
+  // with their content, everything else is swept, and only relations the
+  // stratum READS are dumped into the iteration-0 delta
+  // (Database::boundarySweep).  Deferring past the run also leaves indices
+  // intact for any statistics/output plugins after the final stratum.
   bool needs_reload = false;
+  // A fresh install consumed needs_reload and is between registration and
+  // push: requisition tracking is armed and the physical sweep is owed.
+  // Consumed by push(); canceled (re-arming needs_reload) if a different
+  // entry kind interposes, which can only mean the fresh install died before
+  // pushing -- the database is untouched in that case, unlike the old eager
+  // reload, so cancel is always safe.
+  bool boundary_pending = false;
   // Default budget a no-argument continueRun() uses -- both the first unit of
   // work each stratum plugin requests and any bare (continue) action poll.
   // Overridable via env (SLOG_MAX_MS / SLOG_SLICE_MS / SLOG_MEM_BYTES) so a
@@ -211,6 +223,7 @@ private:
     size_t pipeline_size = 0;
     size_t next_unrun = 0;
     bool needs_reload = false;
+    bool boundary_pending = false;
   };
   std::unique_ptr<BoundaryRunSnapshot> boundary_run;
   struct DeferredStratumStats
@@ -360,6 +373,18 @@ private:
       return live;
     }
 
+    // A pending index-reuse boundary can only survive to a NON-fresh entry
+    // (or a positional fresh) if the fresh install that armed it died before
+    // push().  The database is untouched in that case -- the deferred
+    // boundary is non-destructive until the sweep -- so cancel by re-arming
+    // the reload debt for the next ordinary fresh entry.
+    if (boundary_pending
+        && !(entry.kind == EntryModeK::fresh && pending_bind_pos < 0))
+    {
+      boundary_pending = false;
+      needs_reload = true;
+    }
+
     switch (entry.kind)
     {
       case EntryModeK::fresh:
@@ -374,9 +399,14 @@ private:
           pending_bind_pos = -1;
           pending_bind_versions.clear();
         }
-        else if (needs_reload)
+        else if (needs_reload || boundary_pending)
         {
-          database->reloadInsertBatches();
+          // Index-reuse boundary: defer the physical sweep to push(), after
+          // the incoming stratum's requisitions and read manifest are known.
+          // Re-arming (boundary_pending already set) means the previous
+          // fresh install died before pushing; tracking simply restarts.
+          database->beginBoundaryInstall();
+          boundary_pending = true;
           needs_reload = false;
         }
         break;
@@ -494,6 +524,7 @@ public:
       boundary_run->pipeline_size = pipeline.size();
       boundary_run->next_unrun = next_unrun;
       boundary_run->needs_reload = needs_reload;
+      boundary_run->boundary_pending = boundary_pending;
       boundary_stats.clear();
     }
     return result;
@@ -619,6 +650,7 @@ public:
     pipeline.resize(boundary_run->pipeline_size);
     next_unrun = boundary_run->next_unrun;
     needs_reload = boundary_run->needs_reload;
+    boundary_pending = boundary_run->boundary_pending;
     database->discardPendingStratumStats();
     boundary_stats.clear();
     BoundaryAdmission result = database->abortPreparedBoundary();
@@ -1420,6 +1452,33 @@ public:
       else if (next_push_maintenance) s->flavor = "maint";
     }
     next_push_maintenance = false;
+    // Index-reuse boundary reconciliation: the fresh install's registrations
+    // and read manifest are complete and its tasks have bound their index
+    // arrays -- reconcile now, before the run (Database::boundarySweep).
+    // Unconditional on arming: a maintenance-armed re-push (clear-and-rerun,
+    // replay, re-entry pickup) is still a FRESH install whose run needs its
+    // iteration-0 delta staged -- only the pending flag's own scope (set at
+    // fresh entries, canceled by any interposing non-fresh entry) gates this.
+    if (boundary_pending)
+    {
+      const Database::BoundarySweepStats st =
+        database->boundarySweep(s->read_rels);
+      boundary_pending = false;
+      static const bool debug_boundary = []{
+        const char* v = std::getenv("SLOG_BOUNDARY_DEBUG");
+        return v != nullptr && *v != '\0' && !(v[0] == '0' && v[1] == '\0');
+      }();
+      if (debug_boundary)
+      {
+        char bbuf[160];
+        std::snprintf(bbuf, sizeof(bbuf),
+                      "(boundary-sweep \"%s\" (kept %u) (rebuilt %u)"
+                      " (untouched %u) (dumped %u) (ms %.3f))",
+                      s->name.c_str(), st.kept_rels, st.rebuilt_rels,
+                      st.untouched_rels, st.dumped_rels, st.ms);
+        emit(bbuf);
+      }
+    }
     // Capture the exact output instances BEFORE positional resolution is
     // reset.  Several strata may name the same version; aliases do not mint
     // another id.

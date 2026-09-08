@@ -32,6 +32,7 @@
 #include <atomic>
 #include <barrier>
 #include <chrono>
+#include <functional>
 #include <bitset>
 #include <mutex>
 #include <memory>
@@ -145,8 +146,17 @@ public:
   // transport and arithmetic are already honest for the recoverable negative
   // path used by underflow tests and by later deletion milestones.
   s8 sign;
+  // Index-reuse boundary staging (the cross-stratum keep-set): set on batches
+  // produced by a boundary dump of a relation whose full indices SURVIVE the
+  // stratum boundary.  Such rows are already present in every kept/backfilled
+  // full ordering and are pre-deduped (they came from the master), so the
+  // iteration-0 InternTask must neither null them (they must fire as the
+  // incoming stratum's iteration-0 delta) nor re-insert them, and full-index
+  // WriteTasks skip them.  Delta-index writes and read tasks consume them
+  // normally.  Always 0 outside a keep-mode boundary dump.
+  u8 reloaded;
   u64 data[batch_size_max];
-  InsertBatch() : usage(0), kind(0), sign(1) { }
+  InsertBatch() : usage(0), kind(0), sign(1), reloaded(0) { }
 };
 
 // A lightweight reference to a single tuple inside a delta batch: the batch and
@@ -302,6 +312,17 @@ private:
   // full-index orderings maintained only in externally-seeded runs (the
   // staging-replay fix); getAnyIndex skips them (see addIndex)
   std::set<std::vector<u16>> seeded_orderings;
+  // Index-reuse boundary (cross-stratum keep-set): while an incoming FRESH
+  // stratum installs, addIndex/addMapIndex record every ordering it
+  // requisitions here; the boundary sweep (Database::boundarySweep, run at
+  // push time, AFTER task construction bound the requisitioned arrays) then
+  // drops exactly the orderings the incoming stratum did NOT re-requisition
+  // and keeps the rest live.  Tracking is armed per boundary install
+  // (beginRequisitionTracking) and disarmed by the sweep; an aborted install
+  // simply leaves stale sets that the next arming clears.
+  bool tracking_requisitions = false;
+  std::set<std::vector<u16>> fresh_requisitions;
+  std::set<std::vector<u16>> fresh_delta_requisitions;
   std::vector<s16> leadcol_slot;
   u32 last_slot_leadcols = 0;  // write_leadcols.size() when leadcol_slot was last built
 
@@ -782,6 +803,129 @@ public:
     // count map covers exactly its live tuples", §6.1) with everything else.
     clearCounts();
     clearRanks();
+  }
+
+  // ---- index-reuse boundary (the cross-stratum keep-set) -------------------
+  //
+  // A fresh stratum boundary used to dump every relation and clearAllIndices,
+  // then rebuild every ordering element-wise from the iteration-0 delta --
+  // pure waste for every ordering the incoming stratum re-requisitions (the
+  // destroyed tree is byte-identical to the rebuilt one).  The boundary is
+  // now a three-step protocol driven by Database::boundarySweep:
+  //   1. beginRequisitionTracking() arms per-install requisition recording
+  //      (Daemon consumes needs_reload into it at the fresh entry);
+  //   2. the incoming install's addIndex/addMapIndex calls record every
+  //      ordering (idempotent re-registrations keep live trees; genuinely
+  //      new full orderings are populated by the 0.B5 backfill against the
+  //      still-live database);
+  //   3. at push time -- after the stratum's tasks bound their arrays --
+  //      the sweep below reconciles: requisitioned orderings survive,
+  //      everything else is dropped.
+  void beginRequisitionTracking()
+  {
+    tracking_requisitions = true;
+    fresh_requisitions.clear();
+    fresh_delta_requisitions.clear();
+  }
+
+  // Did the current boundary install requisition anything at all for this
+  // relation?  (false => the incoming stratum never declared it, and the
+  // sweep leaves it completely untouched.)
+  bool requisitionedAnything() const
+  {
+    return tracking_requisitions
+           && (!fresh_requisitions.empty()
+               || !fresh_delta_requisitions.empty());
+  }
+
+  // Disarm tracking without touching any index -- the untouched-relation arm
+  // of the boundary sweep.
+  void endRequisitionTracking()
+  {
+    tracking_requisitions = false;
+    fresh_requisitions.clear();
+    fresh_delta_requisitions.clear();
+  }
+
+  // The boundary sweep: drop every ordering the incoming install did not
+  // requisition -- a GHOST registration is worse than useless: it has no
+  // WriteTask, so it sits empty/stale while shape-based selectors
+  // (getAnyIndex, getMasterIndex/getLookupIndex recomputation, dumps,
+  // saves) could pick it over a maintained sibling.  The old whole-clear
+  // boundary erased ghosts implicitly by erasing every registration; the
+  // sweep does it explicitly.  Requisitioned survivors either KEEP their
+  // content (keep-mode: the cross-stratum reuse win) or have their
+  // contents emptied (rebuild-mode, clear_kept_contents=true: the
+  // conservative struct/lattice path -- arrays survive, since the incoming
+  // stratum's tasks bound them, and the unmarked boundary dump re-interns
+  // and re-writes everything at iteration 0 as the old boundary did).
+  // Seeded-only survivors always empty (they are refilled only by
+  // externally-seeded runs).  Master/lookup memos could name a dropped
+  // ordering, so they clear unconditionally (recomputed lazily);
+  // counts/ranks clear to preserve the pre-reuse boundary invariant.
+  // Returns false -- leaving the relation completely untouched -- when the
+  // install requisitioned nothing for it (a relation outside the incoming
+  // program: its content must survive verbatim, and
+  // restoreOrphanRelations correctly skips it because its registrations
+  // remain live).  Send shards and pending delta batches are deliberately
+  // untouched in both modes: they hold the boundary dump itself plus any
+  // ground facts the install staged.
+  bool sweepToRequisitions(bool clear_kept_contents)
+  {
+    if (!tracking_requisitions) return false;
+    tracking_requisitions = false;
+    if (fresh_requisitions.empty() && fresh_delta_requisitions.empty())
+      return false;
+    for (auto it = indices.begin(); it != indices.end(); )
+    {
+      if (!fresh_requisitions.count(it->first))
+      {
+	for (u16 b = 0; b < bucket_count; ++b)
+	  delete it->second[b];
+	delete [] it->second;
+	it = indices.erase(it);
+      }
+      else
+      {
+	if (clear_kept_contents || seeded_orderings.count(it->first))
+	  for (u16 b = 0; b < bucket_count; ++b)
+	    it->second[b]->clear();
+	++it;
+      }
+    }
+    for (auto it = deltaindices.begin(); it != deltaindices.end(); )
+    {
+      if (!fresh_delta_requisitions.count(it->first))
+      {
+	for (u16 b = 0; b < bucket_count; ++b)
+	  delete it->second[b];
+	delete [] it->second;
+	it = deltaindices.erase(it);
+      }
+      else
+      {
+	if (clear_kept_contents)
+	  for (u16 b = 0; b < bucket_count; ++b)
+	    it->second[b]->clear();
+	++it;
+      }
+    }
+    struct_master_index.clear();
+    struct_lookup_index.clear();
+    clearCounts();
+    clearRanks();
+    fresh_requisitions.clear();
+    fresh_delta_requisitions.clear();
+    return true;
+  }
+
+  // Keep-set eligibility (P1): plain tables only.  Struct relations wait on
+  // an intern/tombstone audit (their iteration-0 intern is id-keyed) and
+  // lattices on a payload-map audit; arity-0 relations keep the legacy
+  // boundary because their dump stages nothing to rebuild from.
+  bool keepEligible() const
+  {
+    return struct_id == 0 && lattice_kind == LAT_NONE && arity > 0;
   }
 
   // ---- DRed^c count sidecar (docs/incremental.md §6.1/§8B.2) ----
@@ -1721,6 +1865,8 @@ public:
     // Idempotent, like addIndex: a hot-swap upgrade re-requisitions the same
     // payload-map index the running lattice stratum already built; re-creating
     // it would replace the live merged map with an empty one.
+    if (tracking_requisitions)
+      fresh_requisitions.insert(ord);   // boundary keep-set (see addIndex)
     if (indices.count(ord)) return;
     indices[ord] = new Index*[bucket_count];
     auto& indices_ord = indices[ord];
@@ -1797,6 +1943,13 @@ public:
     // as the relation's authoritative contents.
     if (seeded_only && !delta)
       seeded_orderings.insert(ord);
+    // Index-reuse boundary: record the requisition (re-registrations too --
+    // an idempotent re-requisition is exactly what keeps an ordering alive
+    // across the boundary sweep).  Seeded orderings are tracked as well:
+    // their ARRAYS must survive (tasks bind them at construction), though
+    // the sweep empties their contents like the pre-reuse boundary did.
+    if (tracking_requisitions)
+      (delta ? fresh_delta_requisitions : fresh_requisitions).insert(ord);
     auto& tbl = delta ? deltaindices : indices;
     // Idempotent: re-registering an existing ordering is a no-op.  A hot-swap
     // upgrade (docs/fast-compile.md §4) re-runs a stratum plugin against the
@@ -2280,8 +2433,10 @@ public:
   // position of storage column i, so t[rewrite_ord[i]] is storage column i.
   InsertBatch* writeAllFacts(InsertBatch* batch,
 		     Index* node,
-		     const std::vector<u16>& rewrite_ord)
+		     const std::vector<u16>& rewrite_ord,
+		     bool reloaded = false)
   {
+    batch->reloaded = reloaded ? 1 : 0;
     node->forEach([&](const u64* t)
     {
       for (u16 i = 0; i < arity; ++i)
@@ -2291,12 +2446,18 @@ public:
       {
 	this->sendBatch(batch);
 	batch = new InsertBatch();
+	batch->reloaded = reloaded ? 1 : 0;
       }
     });
     return batch;
   }
 
-  void reloadInsertBatches(u16 b)
+  // `reloaded` marks the produced batches as a keep-mode boundary dump (see
+  // InsertBatch::reloaded): rows already present in every surviving full
+  // ordering, staged only so they form the incoming stratum's iteration-0
+  // delta.  The default (unmarked) is every pre-reuse caller: the rebuild
+  // boundary, clear-and-rerun's removeTuple, and positional restaging.
+  void reloadInsertBatches(u16 b, bool reloaded = false)
   {
     auto ordptr = getAnyIndex();
     if (ordptr)
@@ -2305,7 +2466,8 @@ public:
       std::vector<u16> rewrite_ord(ordptr->size(), 0);
       for (u16 i = 0; i < ordptr->size(); ++i)
 	rewrite_ord[ordptr->operator[](i)] = i;
-      this->sendBatch(writeAllFacts(new InsertBatch(), node, rewrite_ord));
+      this->sendBatch(writeAllFacts(new InsertBatch(), node, rewrite_ord,
+				    reloaded));
     }
   }
 
@@ -9558,6 +9720,181 @@ public:
     for (auto& p : relations)
       if (seen.insert(p.second).second) rels.push_back(p.second);
     reloadRelations(rels, "reload");
+  }
+
+  // ---- index-reuse boundary (cross-stratum keep-set) ------------------------
+  //
+  // The pre-reuse boundary (reloadInsertBatches above) dumped EVERY relation
+  // and destroyed EVERY index, relation- and ordering-blind, only so the
+  // incoming stratum could see the whole database as its iteration-0 delta --
+  // a read-side staging need paid for with write-side demolition.  The
+  // replacement decouples them: the boundary begins by arming requisition
+  // tracking (beginBoundaryInstall, at the fresh entry), lets the incoming
+  // install register against the LIVE database (idempotent re-registrations
+  // keep built trees; new full orderings backfill from live content, 0.B5),
+  // and reconciles at push time (boundarySweep):
+  //   - keep-mode relations (Relation::keepEligible -- plain tables) keep
+  //     every re-requisitioned ordering; a relation the stratum READS is
+  //     dumped into RELOADED-marked batches, which iteration 0 treats as
+  //     already-present (InternTask neither nulls nor inserts them; full
+  //     WriteTasks skip them; delta writes and reads consume them normally);
+  //   - rebuild-mode relations (structs/lattices/arity-0) that the stratum
+  //     reads keep the pre-reuse behavior exactly: unmarked dump, contents
+  //     emptied (registrations kept -- tasks already bound the arrays),
+  //     full re-intern/re-write at iteration 0;
+  //   - relations the stratum does not read are not dumped at all (their
+  //     rows could feed no task), and relations it did not declare at all
+  //     are left completely untouched;
+  //   - relations neither kept nor rebuilt lose exactly the orderings the
+  //     incoming stratum did not requisition.
+  // SLOG_NO_INDEX_REUSE=1 forces every declared relation onto the
+  // rebuild-mode path (dump + contents-clear), the closest faithful
+  // emulation of the pre-reuse boundary (registrations survive either way;
+  // undeclared relations stay untouched, which is strictly safer).
+  struct BoundarySweepStats
+  {
+    u32 kept_rels = 0;      // keep-mode relations with surviving trees
+    u32 rebuilt_rels = 0;   // rebuild-mode (dump + contents-clear)
+    u32 untouched_rels = 0; // undeclared or unread-and-kept without dump
+    u32 dumped_rels = 0;    // relations staged into iteration-0 delta
+    double ms = 0.0;
+  };
+
+  static bool indexReuseDisabled()
+  {
+    static const bool disabled = []{
+      const char* v = std::getenv("SLOG_NO_INDEX_REUSE");
+      return v != nullptr && *v != '\0' && !(v[0] == '0' && v[1] == '\0');
+    }();
+    return disabled;
+  }
+
+  void forEachBoundaryRelation(const std::function<void(Relation*)>& f)
+  {
+    std::unordered_set<Relation*> seen;
+    if (prepared_boundary)
+      for (auto& p : prepared_boundary->environment)
+        if (seen.insert(p.second).second) f(p.second);
+    for (auto& p : relations)
+      if (seen.insert(p.second).second) f(p.second);
+  }
+
+  // Arm requisition tracking on every relation the boundary can see.  Called
+  // when the fresh entry consumes needs_reload; re-arming after an aborted
+  // install simply clears the stale sets.
+  void beginBoundaryInstall()
+  {
+    forEachBoundaryRelation([](Relation* r){ r->beginRequisitionTracking(); });
+  }
+
+  // Reconcile the boundary at push time.  `read_names` is the incoming
+  // stratum's read manifest (drivers, probes/filters incl. negation, join3
+  // arms, seqindex feeds) -- the complete set of relations whose rows can
+  // reach any of its tasks, hence the only ones whose content must be staged
+  // as the iteration-0 delta.
+  BoundarySweepStats boundarySweep(const std::vector<std::string>& read_names)
+  {
+    const auto t0 = std::chrono::steady_clock::now();
+    BoundarySweepStats st;
+
+    std::unordered_set<Relation*> read_set;
+    for (const std::string& name : read_names)
+    {
+      Relation* r = getRelation(name);
+      if (r != nullptr) read_set.insert(r);
+    }
+
+    class DumpTask : public Task
+    {
+    public:
+      Relation* rel; u16 b; bool marked;
+      DumpTask(Relation* _rel, u16 _b, bool _marked)
+	: rel(_rel), b(_b), marked(_marked)
+      {}
+      virtual bool work()
+      {
+	rel->reloadInsertBatches(b, marked);
+	return true;
+      }
+    };
+    class SweepTask : public Task
+    {
+    public:
+      Relation* rel; bool rebuild;
+      SweepTask(Relation* _rel, bool _rebuild)
+	: rel(_rel), rebuild(_rebuild)
+      {}
+      virtual bool work()
+      {
+	rel->sweepToRequisitions(rebuild);
+	return true;
+      }
+    };
+
+    static const bool debug_sweep = []{
+      const char* v = std::getenv("SLOG_BOUNDARY_DEBUG");
+      return v != nullptr && std::string(v) == "2";
+    }();
+    const bool force_rebuild = indexReuseDisabled();
+    Stratum s("boundary-sweep");
+    forEachBoundaryRelation([&](Relation* r)
+    {
+      const bool declared = r->requisitionedAnything();
+      if (debug_sweep)
+        fprintf(stderr, "[sweep] %s decl=%d keep=%d read=%d\n",
+                r->getName().c_str(), (int)declared,
+                (int)(!force_rebuild && r->keepEligible()),
+                (int)(read_set.count(r) != 0));
+      if (!declared)
+      {
+	// Untouched: content and registrations survive verbatim; nothing the
+	// incoming stratum runs can read it, and restoreOrphanRelations
+	// skips it because its registrations are live.
+	r->endRequisitionTracking();
+	++st.untouched_rels;
+	return;
+      }
+      const bool keep = !force_rebuild && r->keepEligible();
+      const bool read = read_set.count(r) != 0;
+      if (keep)
+      {
+	if (read)
+	{
+	  ++st.dumped_rels;
+	  for (u16 b = 0; b < bucket_count; ++b)
+	    s.addTask(0, new DumpTask(r, b, true), true);
+	}
+	s.addTask(1, new SweepTask(r, false), true);
+	++st.kept_rels;
+      }
+      else if (read || force_rebuild)
+      {
+	// Rebuild-mode: pre-reuse behavior (dump everything the stratum can
+	// see -- under the kill switch, everything declared -- then empty
+	// tree contents so iteration 0 re-interns and re-writes it all).
+	++st.dumped_rels;
+	for (u16 b = 0; b < bucket_count; ++b)
+	  s.addTask(0, new DumpTask(r, b, false), true);
+	s.addTask(1, new SweepTask(r, true), true);
+	++st.rebuilt_rels;
+      }
+      else
+      {
+	// Rebuild-eligible but unread: nothing it holds can reach a task, so
+	// keep its live trees rather than rebuild them -- but still drop the
+	// orderings the incoming install did not requisition (a kept-but-
+	// undeclared ordering has no WriteTask and would silently go stale
+	// if the stratum writes the relation).
+	s.addTask(1, new SweepTask(r, false), true);
+	++st.kept_rels;
+      }
+    });
+
+    runStratum(&s, false);
+
+    st.ms = std::chrono::duration<double, std::milli>(
+              std::chrono::steady_clock::now() - t0).count();
+    return st;
   }
 
   // Positional variant (docs/incremental.md §0.5, 0.C): restage the
