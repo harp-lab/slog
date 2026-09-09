@@ -11,7 +11,7 @@ below is its consolidation, updated through the index-reuse arc).
 
 ## Streams
 
-| stream | authority | status 2026-09-07 |
+| stream | authority | status 2026-09-08 |
 |---|---|---|
 | incremental / DRed^c | [incremental.md](incremental.md), [incremental-status.md](incremental-status.md) | **M-spine complete** (Phase 0, M0–M7 incl. counted-interp); oracle-answer §8B.4 enforcement shipped 09-06 (smt.md §16) |
 | execution tiers / runtime | [execution-tiers.md](execution-tiers.md), t0/t3b/t4/t5/t6-contracts | **T0–T6 + Q1 complete**; residues live in each contract's ledger |
@@ -60,8 +60,9 @@ factoring-strips-semijoin cost modeling, the shape cliff itself
 the per-ordering survey of 09-08 showed the 0.B5 backfill of re-homed
 orderings is serial, outside both timers, and 105 % of fixpoint on the
 probe shape; index-reuse.md §5).  Ping-pong suppression for
-declaration-only relations (compiler, 12–22 % of churn) rides the rekey
-train if taken.  P4 virtual iteration-0 delta.  Struct/lattice keep-mode
+declaration-only relations (compiler, 12–22 % of churn): the cohort
+declarations sit outside the kernel exec key, so it is a plan-golden
+re-record rather than a re-key — not scheduled.  P4 virtual iteration-0 delta.  Struct/lattice keep-mode
 after the id-keyed-intern/M5-tombstone and payload-map audits.
 
 **Incremental.**  join-pre XOR view + derived×recursive readers (M4N
