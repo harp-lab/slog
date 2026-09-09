@@ -82,10 +82,20 @@
     [`(syn ,prov ,_ ...) prov]
     [_ (error 'syn-prov "not a syn form: ~a" e)]))
 
-;; "basename:line" (1-based) for a rule/clause syn form, else "<unknown>".
-;; The source position lives in the first delimiting token of the prov.
+;; "basename:line:col" (both 1-based) for a rule/clause syn form, else
+;; "<unknown>".  The source position lives in the first delimiting token of
+;; the prov.  The column is what keeps two source rules on one line
+;; distinct: this string is the $stat_* rule-location, the DebugMap
+;; (source ...) and the rid-grouping key (canonical-plan.rkt loc-key), and a
+;; line alone merged such rules (t0-contract's "known imprecision", closed
+;; 2026-09-08).  A position without a column (hand-built fixtures) keeps the
+;; two-part spelling; every loc parser accepts both.
 (define (rule-location-string form)
   (match form
+    [`(syn (prov (token ,_ (pos ,file ,line ,col ,_ ...) ,_ ...) ,_ ...) ,_ ...)
+     #:when (exact-integer? col)
+     (define p (file-name-from-path (format "~a" file)))
+     (format "~a:~a:~a" (if p (path->string p) file) (add1 line) (add1 col))]
     [`(syn (prov (token ,_ (pos ,file ,line ,_ ...) ,_ ...) ,_ ...) ,_ ...)
      (define p (file-name-from-path (format "~a" file)))
      (format "~a:~a" (if p (path->string p) file) (add1 line))]

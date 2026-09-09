@@ -19,20 +19,27 @@ below is its consolidation, updated through the index-reuse arc).
 | index reuse | [index-reuse.md](index-reuse.md) | **P1+P2 shipped 09-07** (boundary keep-set; ~1.7× fixpoint on boundary-bound pipelines); **P3 decided NO 09-08** (per-ordering survey: 0.06 % of golden fixpoint; the residual is the serial backfill → P3-D deferred parallel backfill, daemon-only, open); P4 parked |
 | reflection | [slog-reflection.md](slog-reflection.md), [rf5-contract.md](rf5-contract.md), [activation-contract.md](activation-contract.md) | RF0–RF5-B complete + deep-vetted (08-14); **RF5-C precise healing and RF5-D historical replacement open** |
 | modules / namespaces | [modules.md](modules.md), [n4-contract.md](n4-contract.md) | N0–N4 complete; N5 item 1 shipped scoped, item 3 substantially shipped; **items 2 + 4 open** |
-| REPL | [repl-ux.md](repl-ux.md) (living), [repl.md](repl.md), [repl-terminal.md](repl-terminal.md) | R0–R5 spine + W4′ debugger complete; handle economy, history verbs, R4 client half open; Ctrl-C pause doctrine unbuilt |
-| stats | [stats.md](stats.md) | `$stat_*` + `$stat_work` + RuleKey `(fires)` shipped; **target-model migration open** (rides the stat-rekey train) |
+| REPL | [repl-ux.md](repl-ux.md) (living), [repl.md](repl.md), [repl-terminal.md](repl-terminal.md) | R0–R5 spine + W4′ debugger complete (`frames` source names 09-08); handle economy, history verbs, R4 client half open; Ctrl-C stage 1 shipped, stage 2 (control channel) open |
+| stats | [stats.md](stats.md) | `$stat_*` + `$stat_work` + RuleKey `(fires)` shipped; loc carries its column (09-08); **target-model migration open** (steps 5–7, standalone) |
 | SMT / oracles | [smt.md](smt.md) | Phases 1–2c + §16 session enforcement complete; theories, `--refresh-oracle`, pinned-only replay import open |
 | compression / merge | [db-compression.md](db-compression.md), [db-merge.md](db-merge.md) | P0–P3 shipped; **offline merge verb (P2) never built**; §19 accel gaps |
 | type system | [type-system.md](type-system.md), [type-errors.md](type-errors.md) | errors v1 shipped; **stages 0–4 entirely unstarted** (the plan remains valid) |
 
 ## The open-work ledger
 
-**Identity / stats (the rekey train).**  The (RuleId,VariantTag) stat
-rekey is a sanctioned golden-changing event with queued consumers:
-mixed-executor per-key fires (t6), per-attempt stats records, the
-source-loc column fix (two rules on one line collide), and META's
-plan-shaping env list (dbmeta).  Stats steps 5–7 + `$stat_*`/`$seq_*`
-namespace migration (N5) ride with it or after.
+**Identity / stats (the rekey train — DISSOLVED 2026-09-08).**  Audited
+car by car: mixed-executor per-key fires already HOLD (N5/stats-4 unified
+the `(source-loc, base-tag)` spelling; t6-restart guards it); per-attempt
+records are served by T0 c3's slot vector + T6 (a)'s staging (no table
+warranted); source-less rules and same-line rule pairs have ZERO instances
+in the 172-program corpus.  The KernelPlanKey hashes the exec part alone
+(canonical-plan.rkt `kernel-exec-key`), so the DebugMap-widening cars were
+never re-keys.  Shipped as three plan-golden re-records: the source-loc
+COLUMN (`file:line:col`, one producer), `frames` source variable names
+(DebugMap `(regs …)` → `(bindings …)`), and META's full plan-shaping knob
+list (dbmeta `result-affecting-env`).  No `(RuleId,VariantTag)` call-site
+rekey is scheduled; the string shim stays.  Stats steps 5–7 and the
+`$stat_*`/`$seq_*` namespace migration (N5 item 2) are independent items.
 
 **Reflection / activation.**  RF5-C capability-by-capability healing;
 RF5-D descendant-branch replacement; sever-closure widening to the
@@ -70,8 +77,7 @@ re-pack + lattice-master re-homing (also P3's substrate).
 
 **REPL.**  dbN/@vN/@tN handle economy; history/time verbs; `inject` +
 anchored stage; unsolicited server events; R4 proof-tree canvas + whynot
-chase; `frames` source variable names (needs the rule-meta register map —
-plan-byte, rides the rekey); Rust query-canvas adapters; relation
+chase; Rust query-canvas adapters; relation
 fast-path dump; extended-layer clear recipe; Ctrl-C stage 1 (busy guard)
 then stage 2 (control channel — the genuinely missing piece).
 

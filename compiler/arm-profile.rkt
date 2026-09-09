@@ -58,10 +58,13 @@
 ;; programs' advisories from re-keying this one.
 (define (arm-advisories-fingerprint basenames)
   (define bset (list->set basenames))
+  ;; the basename is everything before the FIRST ':' -- a loc is
+  ;; "file.slog:LINE:COL" (the column since 2026-09-08; module-instance
+  ;; labels use '#'/'@', never ':'), so the last ':' would keep the line
   (define (loc-file loc)
-    (let ([i (for/last ([j (in-naturals)]
-                        [c (in-string loc)]
-                        #:when (char=? c #\:))
+    (let ([i (for/first ([j (in-naturals)]
+                         [c (in-string loc)]
+                         #:when (char=? c #\:))
                j)])
       (if i (substring loc 0 i) loc)))
   (sort (for/list ([(k arm) (in-hash (load-table))]

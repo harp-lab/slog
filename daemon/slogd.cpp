@@ -1536,6 +1536,16 @@ static void emit_step_frames(slog::Daemon* d)
             + quoteString(stop.rule_loc) + ") (tag "
             + quoteString(stop.rule_tag) + ") (tuple "
             + quoteString(row_text(stop.tuple)) + "))");
+    // T5 frames names: (bindings ("X" "5") ...) -- the named registers the
+    // ports have bound at this stop, source-variable spelling
+    if (!stop.bindings.empty())
+    {
+        std::string b = "(bindings";
+        for (const auto& [name, value] : stop.bindings)
+            b += " (" + quoteString(name) + " "
+               + quoteString(db->writeValCSV(value)) + ")";
+        d->emit(b + ")");
+    }
     size_t level = 0;
     d->emit("(frame (level " + std::to_string(level++) + ") (kind drive) (row "
             + quoteString(row_text(stop.driver)) + "))");

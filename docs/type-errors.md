@@ -122,8 +122,8 @@ On bad data it records the kind + operands via
 `Database::setPendingError` and returns the reserved `slog_error`
 sentinel (daemon/types.h).  The generated code checks for the sentinel
 right after each prim call/guard and, if seen, calls
-`slog::emit_pending_error(db, "file:line")` — which interns the matching
-`error_spec` arm (tagged with the rule's basename:line) via the
+`slog::emit_pending_error(db, "file:line:col")` — which interns the matching
+`error_spec` arm (tagged with the rule's basename:line:col) via the
 per-thread `emit_error_struct` path (operators.h) — then abandons the
 deduction (`return`, exactly like a failed `tycheck`).  A per-stratum
 wrap rule per producible arm (`(= e (arm …)) --> (error e)`,

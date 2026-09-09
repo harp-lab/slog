@@ -1,6 +1,6 @@
 (program-image
  (state sealed)
- (key "4cdc48cada1b4a659b70745b6aa339f9cc1785a4e5feeb42edc0945495e6a4bd")
+ (key "7bffacbee58f2f6c2dfaa8078b40c96b87770109388579dfa02f0595ed16b7a4")
  (format 1)
  (compiler-key "compiler-test")
  (plan-abi 2)
@@ -241,7 +241,7 @@
  (cohorts
   (cohort
    0
-   (digest "59e29bb88aeba0af5ea45808ac9f677851be903e796da6ab37f3da4e819ccc06")
+   (digest "be9bfac25b670173d3729338b9a0aa78e38204173459e3893c52658ca130ff0f")
    (plan
     (kernel-cohort
      (abi 2)
@@ -324,7 +324,8 @@
         (ord 0)
         (rid 1)
         (variant "all:edge")
-        (source "rf5a-candidate.slog:7"))))
+        (source "rf5a-candidate.slog:7:1")
+        (regs "X" "Y"))))
      (kernel
       (ord 1)
       (exec
@@ -373,4 +374,5 @@
         (ord 0)
         (rid 0)
         (variant "all:seed")
-        (source "rf5a-candidate.slog:6")))))))))
+        (source "rf5a-candidate.slog:6:1")
+        (regs "X")))))))))

@@ -28,15 +28,13 @@
 (require "type-system.rkt")   ; rule-has-fallible-prims?, prim-error-arms
 (require "sha256.rkt")                 ; content-derived constant global names (P2)
 
-;; The rule's "basename:line" (1-based), baked into any runtime-error
-;; (error_spec ...) it reports.  Mirrors compile.rkt's rule-location; basename
-;; (not absolute path) so error facts don't vary with the checkout location.
-(define (rule-loc-string rule)
-  (match rule
-    [`(syn (prov (token ,_ (pos ,file ,line ,_ ...) ,_) ,_ ...) ,_ ...)
-     (define p (file-name-from-path (format "~a" file)))
-     (format "~a:~a" (if p (path->string p) file) (add1 line))]
-    [_ "<unknown>"]))
+;; The rule's "basename:line:col" (1-based), baked into any runtime-error
+;; (error_spec ...) it reports and carried as the crule loc -- the $stat_*
+;; rule-location and the DebugMap (source ...).  ONE producer
+;; (ir-shared.rkt rule-location-string): compile.rkt's program-identity
+;; (loc ...) and the daemon's (fires) join must agree with it byte for byte.
+;; Basename (not absolute path) so error facts don't vary with the checkout.
+(define (rule-loc-string rule) (rule-location-string rule))
 
 ;; -----------------------------------------------------------------------
 ;; Clause views shared by the steps below.

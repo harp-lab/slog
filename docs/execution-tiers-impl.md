@@ -46,7 +46,8 @@ order and the findings that must survive the lift.
 same-driver variants sharing a key as the exact-once audit's unit, and the
 daemon cannot resolve RuleIds until T0's rule-meta registration.
 Disaggregated RuleVariantId identity lives only in the `.plan` sidecar for
-now. Also deferred: single-TU emission-order canonicalization (to T4 phase
+now (closed 2026-09-08: the aggregated key stayed, both executors spell it
+identically, the loc carries its column; no rekey — roadmap ledger). Also deferred: single-TU emission-order canonicalization (to T4 phase
 B, with the slot rewrite), prim opcode numbering (to T2, when the daemon
 dispatch table exists — plans carry a sorted prim name table).
 

@@ -3866,6 +3866,12 @@
                  (if (equal? (~a tuple) "") "" (format " · (~a)" tuple)))]
         [`(frame (level ,level) (kind ,kind) (row ,row))
          (format "  ~a ~a  (~a)" level kind row)]
+        ;; the registers the ports have bound so far, by SOURCE variable
+        ;; name (the plan's DebugMap (regs ...); daemon plan.h StepSink)
+        [`(bindings ,pairs ...)
+         (format "  ~a" (string-join (for/list ([pr (in-list pairs)])
+                                       (format "~a = ~a" (first pr) (second pr)))
+                                     " · "))]
         [`(frames-end ,n) (format "~a frame~a" n (if (= n 1) "" "s"))]
         [`(refused ,class ,_generation ,detail ...)
          (format "refused: ~a ~a" class
@@ -5673,6 +5679,21 @@
       (define committed (run! "commit"))
       (check-not-equal? (hash-ref committed 'kind) "paused")
       (check-regexp-match #px"path \\+1" (text committed))
+      (check-regexp-match
+       #px"7 rows match"
+       (string-join (hash-ref (run! "?count (path X Y)") 'lines) " | "))
+      ;; source VARIABLE NAMES at a stop (contract §3's last open half): the
+      ;; DebugMap's (regs ...) names each register, so `frames` prints the
+      ;; bindings the ports have established -- at the drive port, the
+      ;; driver's own variables.
+      (check-equal? (hash-ref (run! "rule (path 500 Y) <-- (edge X Y)") 'kind)
+                    "paused")
+      (check-equal? (hash-ref (run! "step tuple") 'kind) "paused")
+      (define named (text (run! "frames")))
+      (check-regexp-match #px"X = [0-9]+ · Y = [0-9]+" named)
+      ;; back to the gate, and abort leaves the database as it was
+      (check-equal? (hash-ref (run! "finish") 'title) "Paused · pre-commit gate")
+      (check-not-equal? (hash-ref (run! "abort") 'kind) "paused")
       (check-regexp-match
        #px"7 rows match"
        (string-join (hash-ref (run! "?count (path X Y)") 'lines) " | "))

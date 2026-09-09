@@ -1,18 +1,18 @@
 (program-change-set
  (state sealed)
- (key "39a747c771dc79c8125f62818efd48827db393beb412286dad67a2451334c4cc")
+ (key "1f8ecfacb2cd1e80c5ece5fa7d163b62d51ebca3a3a6c0f20f392b3029e3004c")
  (format 1)
  (base
   (program-instance "program.old")
   (image-key
-   "f109298b30810719ae198f0acfd5af6f1ebaaa4fdc130aaf2e5d4e9cfc95a87a")
+   "d52540ac86b912c3ee65b26d96a45b5cd6c7cc48288a121c4b4e7390ac82b645")
   (modules 1)
   (rules 3)
   (outputs 17))
  (candidate
   (program-slot 0)
   (image-key
-   "4cdc48cada1b4a659b70745b6aa339f9cc1785a4e5feeb42edc0945495e6a4bd")
+   "7bffacbee58f2f6c2dfaa8078b40c96b87770109388579dfa02f0595ed16b7a4")
   (modules 1)
   (rules 2)
   (outputs 17))
@@ -1258,11 +1258,11 @@
   (new-plan-abi 2)
   (cohort-changes
    (cohort-change
-    (digest "3ce06db1cc888144e02858c70c77f713471d045810da6dbd17eda36dc43cdc78")
+    (digest "1d165401c16fa70fcf85747317de24e231c0070611036320ce9582d4972374fc")
     (old-count 1)
     (new-count 0))
    (cohort-change
-    (digest "59e29bb88aeba0af5ea45808ac9f677851be903e796da6ab37f3da4e819ccc06")
+    (digest "be9bfac25b670173d3729338b9a0aa78e38204173459e3893c52658ca130ff0f")
     (old-count 0)
     (new-count 1)))
   (old-kernels

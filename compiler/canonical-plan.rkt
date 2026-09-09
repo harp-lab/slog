@@ -43,7 +43,7 @@
          kernel-plan->string      ; single-line deterministic serialization
          kernel-plan-key)         ; sha256 hex of that serialization
 
-(require racket/set
+(require "utils.rkt" racket/set
          sha
          "ir-stack.rkt"
          (only-in "params.rkt" semijoin-filters-enabled)  ; RF1 slice 3
@@ -61,15 +61,42 @@
 
 ;; "file:line" -> (list file line-number) for rid ordering; #f locs sort
 ;; after every located rule (each as its own rid, in canonical rule order).
+;; "file:line[:col]" -> (file line col); the column is 0 when absent (older
+;; fixtures), so two-part and three-part locs sort together.  The file group
+;; is NON-greedy: a greedy one swallows "file:9" as the file when the col is
+;; present ("v.slog:9:1" -> file "v.slog:9", line 1) and line order goes
+;; lexicographic again -- the trap planner-tests' "numeric, not
+;; lexicographic" case exists to catch.
 (define (loc-key loc)
-  (match (and loc (regexp-match #rx"^(.*):([0-9]+)$" loc))
-    [(list _ file line) (list file (string->number line))]
-    [_ (list (or loc "") 0)]))
+  (match (and loc (regexp-match #rx"^(.*?):([0-9]+)(?::([0-9]+))?$" loc))
+    [(list _ file line col)
+     (list file (string->number line) (if col (string->number col) 0))]
+    [_ (list (or loc "") 0 0)]))
 
 (define (loc-key<? a b)
-  (match-define (list fa la) a)
-  (match-define (list fb lb) b)
-  (or (string<? fa fb) (and (string=? fa fb) (< la lb))))
+  (match-define (list fa la ca) a)
+  (match-define (list fb lb cb) b)
+  (or (string<? fa fb)
+      (and (string=? fa fb)
+           (or (< la lb) (and (= la lb) (< ca cb))))))
+
+;; DebugMap register names (t5-contract §3, the `frames` residue): each
+;; register's SOURCE variable spelling in canonicalize-crule's first-use
+;; order, "" for a compiler-introduced variable.  The crule spellings are
+;; C-escaped (a user "_" is doubled, so a gensymb temp's leading "_" arrives
+;; as "__"): unescape first, then the rule is simply that a LEADING "_" is
+;; the compiler's namespace -- gensymb bases `_t`/`_tconst`/`_err…`/`_`
+;; (whose per-compile RANDOM suffix must never reach plan bytes: the first
+;; plan-goldens run caught exactly that), demand's `_v`/`_d` argument
+;; variables, and the wildcard itself.  Display metadata in the debug part,
+;; outside the exec key.
+(define (display-reg-name v)
+  (define s (unescape-id-from-C (symbol->string v)))
+  (if (or (string=? s "")
+          (char=? (string-ref s 0) #\_)
+          (char=? (string-ref s 0) #\$))   ; sequence-lowering temps ($sq…)
+      ""
+      s))
 
 ;; ------------------------------------------------------------------------
 ;; Per-crule canonicalization: rewrite every value-ref symbol to (r n) or
@@ -80,7 +107,7 @@
 ;; note pre runs BEFORE the driver (probe drivers key on constants loaded
 ;; there), so register 0 is not necessarily a driver column.
 
-(define (canonicalize-crule cr const-slot rel-slot prim!)
+(define (canonicalize-crule cr const-slot rel-slot prim! #:names-out [names-out #f])
   (define regs (make-hash))
   (define (ref! v)
     (cond [(const-slot v) => (lambda (k) `(k ,k))]
@@ -157,6 +184,11 @@
   (define driver (driver->canon (crule-driver cr)))
   (define body (map op->canon (crule-body cr)))
   (define head (map hop->canon (crule-head cr)))
+  ;; the register table, index order, for the DebugMap's (regs ...) names
+  (when names-out
+    (let ([inv (for/hash ([(v i) (in-hash regs)]) (values i v))])
+      (set-box! names-out
+                (for/list ([i (in-range (hash-count regs))]) (hash-ref inv i)))))
   `((nregs ,(hash-count regs))
     (pre ,@pre)
     (driver ,driver)
@@ -618,8 +650,13 @@
                        i]))))
   (define prim-names (mutable-set))
   (define (prim! f) (set-add! prim-names f))
+  (define reg-names-of (make-hasheq))   ; crule -> register variable names
   (define canon (for/list ([cr (in-list ordered)])
-                  (canonicalize-crule cr const-slot rel-slot prim!)))
+                  (define names (box '()))
+                  (define c (canonicalize-crule cr const-slot rel-slot prim!
+                                                #:names-out names))
+                  (hash-set! reg-names-of cr (unbox names))
+                  c))
   ;; T4 slice 1a (t4-contract §3): a slot's hashed payload carries kind and
   ;; arity (plus a lattice's spec/decomp) and ONLY the orderings this
   ;; kernel's own ops reference.  Nothing rides along "as identity": scan
@@ -759,7 +796,10 @@
   (define debug
     `(debug ,@(for/list ([cr (in-list ordered)] [i (in-naturals)])
                 `(rule (ord ,i) (rid ,(rid-of cr)) (variant ,(tag-of cr))
-                       (source ,(or (crule-loc cr) #f))))))
+                       (source ,(or (crule-loc cr) #f))
+                       ;; register -> source variable name, display only
+                       (regs ,@(map display-reg-name
+                                    (hash-ref reg-names-of cr '())))))))
   ;; `ordered` rides out as the FIFTH value (T4 slice 2a): the canonical
   ;; per-kernel rule order is the plan's identity order, and the TU emitter
   ;; follows it rather than re-deriving one -- one ordering authority.
@@ -1023,7 +1063,8 @@
          (values n name)))
      (define debug-of
        (for/hash ([d (in-list debugs)])
-         (match-define `(rule (ord ,o) (rid ,rid) (variant ,v) (source ,src))
+         (match-define `(rule (ord ,o) (rid ,rid) (variant ,v) (source ,src)
+                               ,_more ...)     ; (regs ...) and later fields
            d)
          (values o (list rid v src))))
      `(kernel-plan

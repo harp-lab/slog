@@ -413,12 +413,11 @@
 
 (define (rule-text rule) (format "~s" (strip-prov rule)))
 
-(define (rule-location rule)
-  (match (syn-prov rule)
-    [`(prov (token ,_ (pos ,file ,line ,_ ...) ,_) ,_)
-     (define p (file-name-from-path (format "~a" file)))
-     (format "~a:~a" (if p (path->string p) file) (add1 line))]
-    [_ "<unknown>"]))
+;; ONE producer for the rule-location spelling (ir-shared.rkt): the
+;; program-identity (loc ...) below, the DebugMap (source ...) and the
+;; $stat_* rule-location column must agree byte for byte -- the daemon's
+;; (fires) verb joins them.
+(define (rule-location rule) (rule-location-string rule))
 
 (define (rule-id-of text occurrence)
   (bitwise-and

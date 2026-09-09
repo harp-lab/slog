@@ -167,11 +167,13 @@
 ;; (file . line) for a rule, comparable numerically -- lexicographic string
 ;; order would put `:9` after `:79`, the trap canonical-plan.rkt's loc-key
 ;; already avoids.
-(define (rule-loc-key rule)
+(define (rule-loc-key rule)              ; (file line col), col 0 if absent
   (define text (rule-location-string rule))
-  (match (regexp-match #rx"^(.*):([0-9]+)$" text)
-    [(list _ file line) (cons file (or (string->number line) 0))]
-    [_ (cons text 0)]))
+  ;; non-greedy file group: see canonical-plan.rkt loc-key for the trap
+  (match (regexp-match #rx"^(.*?):([0-9]+)(?::([0-9]+))?$" text)
+    [(list _ file line col)
+     (list file (or (string->number line) 0) (if col (or (string->number col) 0) 0))]
+    [_ (list text 0 0)]))
 
 ;; The canonical walk, exported because it is the property the determinism
 ;; doctrine rests on: the order is a pure function of the rules, never of
@@ -192,9 +194,11 @@
                  [else
                   (define la (vector-ref a 1))
                   (define lb (vector-ref b 1))
-                  (cond [(string<? (car la) (car lb)) #t]
-                        [(string<? (car lb) (car la)) #f]
-                        [else (< (cdr la) (cdr lb))])])))))
+                  (cond [(string<? (first la) (first lb)) #t]
+                        [(string<? (first lb) (first la)) #f]
+                        [(< (second la) (second lb)) #t]
+                        [(< (second lb) (second la)) #f]
+                        [else (< (third la) (third lb))])])))))
 
 ;; -----------------------------------------------------------------------
 ;; plan-stratum: the pass entry point.
@@ -548,7 +552,7 @@
         ;; follow-up exactly once, at multiplicity 1.
         (define-values (carried+ extra-consts)
           (if (and (count-flavor) (null? carried))
-              (let ([dv (gensymb 'cntone)])
+              (let ([dv (gensymb '_cntone)])
                 (values (list dv) `((syn ,prov = ,dv (syn ,prov const 0)))))
               (values carried '())))
         (define-values (parent-heads sub-body-front)
@@ -1087,7 +1091,7 @@
       ;; exactly the initially-ground const-vars: struct construction
       ;; terms and other non-var args belong to the staging machinery
       (if (and (var? x) (set-member? const-vars x))
-          (let ([x* (gensymb 'dcst)])
+          (let ([x* (gensymb '_dcst)])
             (values (cons x* out)
                     (cons `(syn ,prov == ,x* ,x) eqs)))
           (values (cons x out) eqs))))
@@ -1102,7 +1106,7 @@
              #:result (values (reverse out) eqs))
             ([x (in-list xs)])
     (if (set-member? seen x)
-        (let ([x* (gensymb 'dup)])
+        (let ([x* (gensymb '_dup)])
           (values seen (cons x* out) (cons `(syn ,prov == ,x ,x*) eqs)))
         (values (set-add seen x) (cons x out) eqs))))
 
@@ -1172,7 +1176,9 @@
       [c
        (match-define `(syn ,prov let ,x ,rhs) c)
        (if (set-member? ground x)
-           (let ([x* (gensymb 'chk)])
+           ;; introduced variables live in the compiler's `_` namespace
+           ;; (canonical-plan.rkt display-reg-name blanks them in the DebugMap)
+           (let ([x* (gensymb '_chk)])
              (loop (list* `(syn ,prov == ,x ,x*) `(syn ,prov let ,x* ,rhs) emitted)
                    ground (remq c computes) guards needed))
            (loop (cons c emitted) (set-add ground x) (remq c computes) guards

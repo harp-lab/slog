@@ -1172,11 +1172,18 @@ std::vector<DecodedKernelPlan> parse_kernel_cohort(std::string_view input)
         atom(e[2], "binding relation name");
     }
     // ordinal -> (rid, variant display, source), from the DebugMap
-    struct DebugRule { u64 rid = 0; std::string variant, source; };
+    struct DebugRule { u64 rid = 0; std::string variant, source;
+                       std::vector<std::string> regs; };
     std::map<u64, DebugRule> debug_of;
+    std::vector<u64> ord_by_pos;   // rule-def position -> its DebugMap ord
     for (size_t i = 1; i < debug->children.size(); ++i)
     {
-      const auto& r = tagged(debug->children[i], "rule", 5);
+      // (rule (ord) (rid) (variant) (source) [(regs "X" ...)]) -- the
+      // register-name field arrived 2026-09-08 (t5 frames names); a plan
+      // without it decodes unchanged.
+      const auto& r = tagged(debug->children[i], "rule");
+      if (r.size() != 5 && r.size() != 6)
+        syntax(debug->children[i], "rule: wrong field count");
       DebugRule d;
       const u64 ord = medium(tagged(r[1], "ord", 2)[1], "debug ordinal");
       d.rid = medium(tagged(r[2], "rid", 2)[1], "debug rule id");
@@ -1186,6 +1193,14 @@ std::vector<DecodedKernelPlan> parse_kernel_cohort(std::string_view input)
       const auto& src = tagged(r[4], "source", 2);
       d.source = src[1].kind == SExp::K::string
         ? string_value(src[1], "debug source") : atom(src[1], "debug source");
+      if (r.size() == 6)
+      {
+        const auto& regs = tagged(r[5], "regs");
+        for (size_t k = 1; k < regs.size(); ++k)
+          d.regs.push_back(regs[k].kind == SExp::K::string
+                           ? string_value(regs[k], "debug register name")
+                           : atom(regs[k], "debug register name"));
+      }
       debug_of[ord] = d;
     }
 
@@ -1256,6 +1271,7 @@ std::vector<DecodedKernelPlan> parse_kernel_cohort(std::string_view input)
       auto d = debug_of.find(ord);
       if (d == debug_of.end())
         syntax(rd, "cohort rule has no DebugMap entry");
+      ord_by_pos.push_back(ord);
       text += " (rule-def (rid " + std::to_string(d->second.rid) + ")";
       text += " (variant " + quoted_atom(d->second.variant) + ")";
       for (size_t j = 3; j < fs.size(); ++j)
@@ -1318,6 +1334,13 @@ std::vector<DecodedKernelPlan> parse_kernel_cohort(std::string_view input)
     text += "))";
 
     out.push_back(parse_kernel_plan(text));
+    // DebugMap register names ride beside the parsed RulePlans by position
+    // (the rebuilt text lists rule-defs in cohort order).
+    for (size_t pos = 0; pos < ord_by_pos.size() && pos < out.back().rules.size(); ++pos)
+    {
+      const auto d = debug_of.find(ord_by_pos[pos]);
+      if (d != debug_of.end()) out.back().rules[pos].plan.reg_names = d->second.regs;
+    }
     // Re-apply the J1 arm ordinals the ABI-1 rewrite could not carry: the
     // rebuilt text lists rule-defs in cohort order, so the position an
     // attrs entry was recorded under is its index in the parsed vector.

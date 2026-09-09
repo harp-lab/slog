@@ -1,6 +1,6 @@
 (program-image
  (state sealed)
- (key "f109298b30810719ae198f0acfd5af6f1ebaaa4fdc130aaf2e5d4e9cfc95a87a")
+ (key "d52540ac86b912c3ee65b26d96a45b5cd6c7cc48288a121c4b4e7390ac82b645")
  (format 1)
  (compiler-key "compiler-test")
  (plan-abi 2)
@@ -284,7 +284,7 @@
  (cohorts
   (cohort
    0
-   (digest "3ce06db1cc888144e02858c70c77f713471d045810da6dbd17eda36dc43cdc78")
+   (digest "1d165401c16fa70fcf85747317de24e231c0070611036320ce9582d4972374fc")
    (plan
     (kernel-cohort
      (abi 2)
@@ -367,7 +367,8 @@
         (ord 0)
         (rid 0)
         (variant "all:seed")
-        (source "rf5a-base.slog:6"))))
+        (source "rf5a-base.slog:6:1")
+        (regs "X"))))
      (kernel
       (ord 1)
       (exec
@@ -420,9 +421,15 @@
        (slot 12 reach))
       (dynamic (slot 12))
       (debug
-       (rule (ord 0) (rid 1) (variant "all:edge") (source "rf5a-base.slog:7"))
+       (rule
+        (ord 0)
+        (rid 1)
+        (variant "all:edge")
+        (source "rf5a-base.slog:7:1")
+        (regs "X" "Y"))
        (rule
         (ord 1)
         (rid 2)
         (variant "delta:reach")
-        (source "rf5a-base.slog:8")))))))))
+        (source "rf5a-base.slog:8:1")
+        (regs "X" "Y" "Z")))))))))

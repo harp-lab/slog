@@ -302,9 +302,9 @@
     ;; keys a stable sort returns input order, which is precisely the bug.
     (check-equal? (rule-sort-key a) (rule-sort-key b))
     (check-equal? (map rule-location-string (canonical-rule-order (list a b)))
-                  '("v.slog:79" "v.slog:83"))
+                  '("v.slog:79:1" "v.slog:83:1"))
     (check-equal? (map rule-location-string (canonical-rule-order (list b a)))
-                  '("v.slog:79" "v.slog:83")))
+                  '("v.slog:79:1" "v.slog:83:1")))
 
   (test-case "line order is numeric, not lexicographic"
     ;; :9 must precede :79 -- the trap a raw string compare falls into
@@ -312,4 +312,17 @@
     (define b (located "v.slog" 78 (list (S 'p 'y)) (list (S 'q 'y))))
     (check-equal? (rule-sort-key a) (rule-sort-key b))
     (check-equal? (map rule-location-string (canonical-rule-order (list b a)))
-                  '("v.slog:9" "v.slog:79"))))
+                  '("v.slog:9:1" "v.slog:79:1")))
+
+  (test-case "column order breaks a same-line tie"
+    ;; two source rules on ONE line -- t0-contract's recorded collision --
+    ;; stay distinct and ordered by column (the loc carries it since
+    ;; 2026-09-08; 0-based in the token, 1-based in the string)
+    (define (at-col col bodys heads)
+      `(syn (prov (token id (pos "v.slog" 4 ,col 4 ,col) "") #f)
+            rule ,@bodys --> ,@heads))
+    (define a (at-col 0  (list (S 'p 'x)) (list (S 'q 'x))))
+    (define b (at-col 20 (list (S 'p 'y)) (list (S 'q 'y))))
+    (check-equal? (rule-sort-key a) (rule-sort-key b))
+    (check-equal? (map rule-location-string (canonical-rule-order (list b a)))
+                  '("v.slog:5:1" "v.slog:5:21"))))

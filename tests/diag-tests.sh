@@ -121,7 +121,7 @@ rule (p 1)
 rule (out X) <-- (p X) ~(q X Y)
 EOF
 o="$(run neg_unsafe)"
-if echo "$o" | grep -q 'unsafe negation at neg_unsafe\.slog:5: variable Y'; then
+if echo "$o" | grep -q 'unsafe negation at neg_unsafe\.slog:5:[0-9]*: variable Y'; then
   ok unsafe-negated-var-rejected
 else bad unsafe-negated-var-rejected "$o"; fi
 

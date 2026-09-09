@@ -7,6 +7,11 @@ compile.rkt's key construction); everything else is runtime-only.
 
 ## Plan/codegen-shaping (ALL in the job hash)
 
+Every knob in this table is also recorded, with its value, in a saved
+database's META `env` alist (dbmeta.rkt `result-affecting-env`, 2026-09-08)
+beside the `plan-stamp` — the human-readable half of the faithful-rebuild
+identity.
+
 | knob | effect | doc |
 |---|---|---|
 | `SLOG_NO_SEMIJOIN` | disable Yannakakis exists-probes | semijoin-filters.md |

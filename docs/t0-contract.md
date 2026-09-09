@@ -477,9 +477,12 @@ the fork.
   would flip every legacy session's pause bytes) and accompanies pushes
   that happen INSIDE prepared boundaries.  `(rule-meta)` streams the
   registry back; introspection-only until the stat rekey consumes it.
-  Known imprecision, recorded: locs carry no column, so two source rules
-  on one line would collide in the join — the fix is a plan-byte change
-  awaiting a sanctioned re-key.  **c3 — fire vectors (D9)**: the
+  Known imprecision, CLOSED 2026-09-08: locs now carry the column
+  (`file:line:col`, ir-shared.rkt `rule-location-string`, the one
+  producer), so two source rules on one line no longer collide in the
+  join.  It moved plan BYTES (the DebugMap `(source …)`) but no kernel
+  key — the exec part alone is hashed — so it was a plan-golden
+  re-record, not a re-key.  **c3 — fire vectors (D9)**: the
   string-keyed locked map is gone; the storage is a dense per-run vector
   behind a slot table (`fireSlot`/`bumpFiresSlot`, database.h).  Interp
   tasks use it natively — BoundRule caches its slot (a copyable atomic

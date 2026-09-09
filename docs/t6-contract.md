@@ -22,10 +22,13 @@ parents stay authoritative for mechanism.*
 **Standing residues, recorded in place:** the batch driver's promotion
 path attaches at boundaries (the mode-flip migration and the
 restart-worthiness policy are deliberate follow-ons, slice (c) as-built);
-per-key `$stat_fires` equality across a mixed-executor run awaits the
-`(RuleId, VariantTag)` rekey — now with two queued consumers; the
-`external` refusal stands for in-flight submissions by design (smt.md
-§9.9).
+per-key `$stat_fires` equality across a mixed-executor run HOLDS since
+N5/stats-4 unified the spelling (interp uses the source location plus the
+base driver tag for every source-bearing rule; `t6-restart`'s
+`swap-*-content` assertion guards it) — the `(RuleId, VariantTag)` rekey
+this residue waited on has no remaining consumer (roadmap ledger,
+2026-09-08); the `external` refusal stands for in-flight submissions by
+design (smt.md §9.9).
 
 ## 0. What T6 is for
 
@@ -205,13 +208,15 @@ continue — the read reruns under the new executor.  The `swap:<from>,<to>`
 drive token exercises it; `t6-restart` 9/9 covers BOTH directions
 (plan→.O0.so and .O0.so→plan) at `SLOG_MAX_MS=2`.
 
-**A finding the gate had to encode:** per-key `$stat_fires` equality
-CANNOT hold across a mixed-executor run today — the executors spell one
-rule's stats identity differently (native: aggregated source loc + base
-tag; interp: disaggregated `<interp-rule:N:variant:M>`), so a swap splits
-one rule's tally across two keys.  This is precisely the identity gap the
-deferred `(RuleId, VariantTag)` rekey closes; with slice (a)'s attempt
-generation it now has two queued consumers.  The gate therefore asserts
+**A finding the gate had to encode (since resolved):** per-key
+`$stat_fires` equality could not hold across a mixed-executor run at the
+time — the executors spelled one rule's stats identity differently
+(native: aggregated source loc + base tag; interp: disaggregated
+`<interp-rule:N:variant:M>`), so a swap split one rule's tally across two
+keys.  N5/stats-4 then made interp spell source-bearing rules exactly as
+native does, and the per-key assertion now HOLDS (the harness keeps it as
+a guard; `<interp-rule:…>` survives only for source-less rules, of which
+the golden corpus has none).  The gate ALSO asserts
 content equality on every relation plus the EXECUTOR-BLIND aggregate:
 total instantiations, which exact-once makes invariant — equal to the
 single-executor reference's total in both directions (31376 on the gate

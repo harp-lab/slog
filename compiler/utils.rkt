@@ -1,6 +1,7 @@
 #lang racket
 
 (provide fnv
+         unescape-id-from-C
          fullpath
          source-name-key
          escape-id-for-C
@@ -60,6 +61,11 @@
 (define alpha-pool "abcdefghijklmnopqrstuvwxyz")
 (define alphanum-pool (string-append nums-pool alpha-pool (string-upcase alpha-pool)))
 
+;; CONVENTION: every gensymb base is `_`- or `$`-prefixed (`_t`, `_tconst`,
+;; `_err…`, `_chk`, `$sq…`).  The random suffix below must never reach plan
+;; bytes; canonical-plan.rkt's DebugMap register names rely on the prefix to
+;; blank compiler-introduced variables (the lexer admits neither a leading
+;; "$" nor -- once escaped -- a single "_" in a user identifier).
 ;; Monotonic counter so generated names are guaranteed unique within a compile.
 ;; (The random suffix alone collides via the birthday paradox once a program has
 ;; a few hundred generated names -- e.g. a large block of ground rules.)
@@ -76,6 +82,32 @@
   (string->symbol
    (string-append (add (add (symbol->string s) 1 nums-pool) (if debug-mode 3 12) alphanum-pool)
                   (number->string gensymb-counter))))
+
+;; The inverse, for DISPLAY only (canonical-plan's DebugMap register names):
+;; "__" -> "_", "_" + 5 hex digits (6 for a supplementary-plane code point,
+;; which escape-one pads to at least 5) -> the character; anything else is
+;; kept verbatim.  Never used for identity.
+(define (unescape-id-from-C id)
+  (define s (if (symbol? id) (symbol->string id) id))
+  (define n (string-length s))
+  (define (hex-at i len)
+    (and (<= (+ i len) n)
+         (let ([v (string->number (substring s i (+ i len)) 16)])
+           (and v (or (< v #xD800) (> v #xDFFF)) (<= v #x10FFFF) v))))
+  (let loop ([i 0] [acc '()])
+    (cond
+      [(>= i n) (apply string-append (reverse acc))]
+      [(char=? (string-ref s i) #\_)
+       (cond
+         [(and (< (add1 i) n) (char=? (string-ref s (add1 i)) #\_))
+          (loop (+ i 2) (cons "_" acc))]
+         [(let ([six (hex-at (add1 i) 6)])
+            (and six (>= six #x100000) six))
+          => (lambda (cp) (loop (+ i 7) (cons (string (integer->char cp)) acc)))]
+         [(hex-at (add1 i) 5)
+          => (lambda (cp) (loop (+ i 6) (cons (string (integer->char cp)) acc)))]
+         [else (loop (add1 i) (cons "_" acc))])]
+      [else (loop (add1 i) (cons (string (string-ref s i)) acc))])))
 
 (define (escape-id-for-C id)
   (define lst

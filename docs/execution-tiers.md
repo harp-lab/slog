@@ -1116,6 +1116,10 @@ non-vacuously deterministic across separate Racket processes on a
    daemon cannot resolve RuleIds until rule-meta registration exists — so
    the stat rekey moves to T0/T2, and generated C++ stays byte-identical
    now. Disaggregated RuleVariantId identity lives in the plan.
+   *Resolved 2026-09-08 without a rekey:* N5/stats-4 made both executors
+   spell `(source-loc, base-tag)` identically, the loc gained its column
+   (two rules on one line no longer merge), and no consumer of a
+   `(RuleId, VariantTag)` call-site key remains — see roadmap ledger.
 4. Gate: emitted C++ is content-identical before/after canonicalization;
    the exact-once instantiation audit and goldens stay green. *(achieved:
    quick tier 7/7 including stats; 16/16 lattice goldens over the changed

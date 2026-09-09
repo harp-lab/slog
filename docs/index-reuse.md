@@ -185,8 +185,9 @@ bind them) but empty their contents, as the old boundary left them.
   re-push — 0.B5's original clients).  Expected on the probe shape:
   ≈ −240 ms of 1.4 s.  Ping-pong suppression (declaration-only relations
   requisition nothing when the relation already has live trees) is a
-  compiler change worth at most 12–22 % of churn on the analyzers; it
-  rides the stat-rekey golden train if taken, not scheduled on its own.
+  compiler change worth at most 12–22 % of churn on the analyzers (the
+  cohort declarations sit outside the kernel exec key, so it would be a
+  plan-golden re-record, not a re-key); not scheduled.
 - **P4 — virtual iteration-0 delta**: alias delta reads to the kept full
   trees at iteration 0, eliminating the dump/reorg/delta-build for read
   relations too.  Deep read-path surgery; parked.

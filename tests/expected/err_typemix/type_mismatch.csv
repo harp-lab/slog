@@ -1,5 +1,5 @@
  "+"
- "err_typemix.slog:9"
+ "err_typemix.slog:9:1"
  "oops"
  1)
 (type_mismatch

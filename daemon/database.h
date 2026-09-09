@@ -3254,6 +3254,10 @@ public:
     // operator armed in advance, so frames/why/step at the stop are
     // unchanged.
     std::string break_id;
+    // T5 frames names: (source variable, value) for every named register
+    // the ports have bound at this stop (plan.h StepSink).  Last, so any
+    // positional initializer of the earlier fields stays valid.
+    std::vector<std::pair<std::string, u64>> bindings;
   };
 
   // T5 slice (d3): a STANDING stop (repl-ux §9.1's `break`), where a step

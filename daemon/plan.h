@@ -239,6 +239,9 @@ struct RulePlan
   // carry different drivers, hence different base tags.
   int arm = -1;
   s64 arm_gid = -1;
+  // DebugMap (regs ...): per-register source variable names, display only.
+  // Kept LAST: fixtures aggregate-initialize RulePlan positionally.
+  std::vector<std::string> reg_names;
 };
 
 enum class SealErrorK : u8
@@ -580,6 +583,7 @@ inline SealedRule seal_rule(const RulePlan& plan,
   out.program.variant_ordinal = plan.variant_ordinal;
   out.program.variant = plan.variant;
   out.program.nregs = plan.nregs;
+  out.program.reg_names = plan.reg_names;
   out.program.driver_regs = plan.driver.regs;
   out.program.preloads = plan.preloads;
   out.driver = plan.driver;
@@ -1303,6 +1307,41 @@ inline SealedRule seal_rule(const RulePlan& plan,
   return out;
 }
 
+// Which registers each VM op assigns (Program::op_writes) -- a probe's
+// fresh suffix, a join3's cycle register, a copy/prim output; guards, fire
+// and emits assign nothing.  Read by StepSink to decide which named
+// registers are BOUND at a stop (t5 frames names).
+inline void compute_op_writes(SealedRule& r)
+{
+  auto& writes = r.program.op_writes;
+  writes.assign(r.program.ops.size(), {});
+  for (size_t i = 0; i < r.program.ops.size(); ++i)
+  {
+    const Op& op = r.program.ops[i];
+    switch (op.kind)
+    {
+      case OpK::probe:
+        if (op.cursor < r.cursors.size())
+        {
+          const CursorPlan& c = r.cursors[op.cursor];
+          if (const auto* pr = std::get_if<ProbePlan>(&c))
+            for (size_t k = pr->bound; k < pr->regs.size(); ++k)
+              writes[i].push_back(pr->regs[k]);
+          else if (const auto* j3 = std::get_if<Join3Plan>(&c))
+            writes[i].push_back(j3->cycle);
+        }
+        break;
+      case OpK::copy:
+      case OpK::prim:
+      case OpK::prim_partial:
+        writes[i].push_back(op.a);
+        break;
+      default:
+        break;
+    }
+  }
+}
+
 inline std::vector<SealedRule> seal_rules(
   const std::vector<RulePlan>& plans,
   const std::vector<RelationShape>& relations,
@@ -1317,6 +1356,7 @@ inline std::vector<SealedRule> seal_rules(
                SealErrorK::variant_identity,
                "rule: duplicate RuleVariant identity");
     out.push_back(seal_rule(plan, relations, flavor));
+    compute_op_writes(out.back());
   }
   return out;
 }
@@ -1475,6 +1515,7 @@ struct StepSink final : public DebugSink
   const std::string* rule_loc;
   const std::string* rule_tag;
   const ProofSchema* schema = nullptr;
+  const Program* program = nullptr;   // names + op_writes for the bindings
   bool capture = false;
   bool breaking = false;
 
@@ -1514,8 +1555,9 @@ struct StepSink final : public DebugSink
   }
 
   StepSink(Database* database, const std::string* loc, const std::string* tag,
-           const ProofSchema* proof_schema)
-    : db(database), rule_loc(loc), rule_tag(tag), schema(proof_schema)
+           const ProofSchema* proof_schema, const Program* prog = nullptr)
+    : db(database), rule_loc(loc), rule_tag(tag), schema(proof_schema),
+      program(prog)
   {
     refresh();
   }
@@ -1661,6 +1703,43 @@ struct StepSink final : public DebugSink
     stop.driver = proof.driver;
     stop.premises = proof.premises;
     stop.break_id = broke;
+    // Named registers bound at this port (t5-contract §3, frames names).
+    // Bound = preloads + the driver's columns + every assignment by an op
+    // that has run: ops before op_index, plus op_index itself when the port
+    // reports a success (a match, a passed guard, a fire, an emit).  A miss
+    // or failed guard leaves op_index's outputs unbound; the drive port has
+    // run no body op at all.
+    stop.bindings.clear();
+    if (program != nullptr && !program->reg_names.empty())
+    {
+      std::vector<bool> bound(program->nregs, false);
+      for (const auto& [reg, _v] : program->preloads)
+        if (reg < bound.size()) bound[reg] = true;
+      if (program->driver_regs.empty())
+      {
+        for (size_t i = 0; i < view.driver.size() && i < bound.size(); ++i)
+          bound[i] = true;
+      }
+      else
+        for (u16 r : program->driver_regs)
+          if (r < bound.size()) bound[r] = true;
+      if (e.kind != EventK::driver)
+      {
+        const bool success = e.kind == EventK::probe_match
+                          || e.kind == EventK::guard_pass
+                          || e.kind == EventK::instantiation
+                          || e.kind == EventK::emit;
+        const size_t upto = std::min(e.op_index + (success ? 1 : 0),
+                                     program->op_writes.size());
+        for (size_t i = 0; i < upto; ++i)
+          for (u16 r : program->op_writes[i])
+            if (r < bound.size()) bound[r] = true;
+      }
+      for (size_t r = 0; r < program->reg_names.size() && r < bound.size()
+                         && r < view.regs.size(); ++r)
+        if (bound[r] && !program->reg_names[r].empty())
+          stop.bindings.emplace_back(program->reg_names[r], view.regs[r]);
+    }
     if (stepping)
       // Disarm here, not at resume: the machine returns breakpoint with the
       // transition already committed, and the parked continuation must run
@@ -2552,7 +2631,7 @@ private:
     // reports it).
     if (!probe)
       execution->stepper = std::make_unique<StepSink>(
-        db, &pinned->source, &pinned->variant, &proof_schema);
+        db, &pinned->source, &pinned->variant, &proof_schema, pinned.get());
     execution->machine = std::make_unique<Machine>(
       pinned, std::move(driver), make_cursors(), std::move(ports),
       probe ? nullptr : execution->stepper.get(),

@@ -3,9 +3,9 @@
 **Status: THE W4′ ARC IS COMPLETE (2026-08-02, 97a2706)** — gate,
 replay + held prompt, stepping (a)–(c3), and (d1)–(d5) why/whynot +
 settles + the exit audit all shipped; the sub-slice as-builts below are
-the ledger.  Genuinely open residues: `frames` source variable names
-(needs the rule-meta register map — plan-byte, rides the stat-rekey
-train), the `up`/`down` Rust canvas half, struct/lattice provenance
+the ledger.  `frames` source variable names SHIPPED 2026-09-08 (the
+DebugMap `(regs …)` names each register; `(bindings …)` at every stop).
+Genuinely open residues: the `up`/`down` Rust canvas half, struct/lattice provenance
 capture (d1 covers set/temp heads), and counted-sidecar preview/apply
 (post-M7, if ever).
 
@@ -225,13 +225,21 @@ it.
     content-addressed stratum and the rule position, so a transcript
     golden would gate unrelated compiler churn on debugger output -- the
     same lesson as "gate on .plan diffs, not TU text".
-    - STILL OPEN, deliberately: (i) `frames` prints the join stack
-      STRUCTURALLY (port, rule position, driver row, premise rows).  Source
-      VARIABLE NAMES need the canonical plan's `rule-meta` -- today only
-      `(rid source)` -- to carry a register-to-name map, and every byte of
-      that plan text is the KernelPlanKey, so widening it moves every
-      artifact hash: its own change, with the plan-determinism goldens.
-      (ii) `up`/`down` are a cursor over a stack the server already prints
+    - (i) SHIPPED 2026-09-08 -- source VARIABLE NAMES: the DebugMap's
+      `(rule … (regs "X" "Y" …))` names each register (canonical-plan.rkt,
+      canonicalize-crule's first-use order, "" for compiler temporaries,
+      unescaped from the C spelling); the sealer copies them onto the
+      interpreter Program with a per-op assigned-register table
+      (plan.h `compute_op_writes`), and StepSink resolves the registers
+      BOUND at the stop -- preloads, the driver's columns, and every op
+      that has run (op_index inclusive only at a success port) -- into
+      `(bindings ("X" "5") …)`, which `frames` renders as `X = 5 · Y = 7`.
+      The earlier note that this "moves every artifact hash" was wrong:
+      the KernelPlanKey hashes the EXEC part alone (canonical-plan.rkt
+      `kernel-exec-key`), and the debug part sits outside it, so this was
+      a plan-golden re-record with no key movement.  Pinned in repl.rkt's
+      c3 test (`X = … · Y = …` at a `step tuple` stop).
+      STILL OPEN, deliberately: (ii) `up`/`down` are a cursor over a stack the server already prints
       whole -- the interactive canvas's job, with the Rust client work.
 - **(d) Proof surfaces + non-plain settles.**  Sub-sliced in this document
   (one certification gate remains: the slice, not its parts).
@@ -304,9 +312,10 @@ it.
     `ops[op_index].cursor`, and slots are body positions in plan order).
     repl-ux §9.1's `when` clause lands as a HEAD PATTERN
     (`break path when (path 99 _)`) rather than a binding predicate:
-    conditions over `X` need source variable names, and those are the
-    rule-meta item inside the KernelPlanKey that also blocks frames --
-    a pattern says the same thing about the fact being produced without
+    conditions over `X` need source variable names -- available since
+    2026-09-08 via the DebugMap `(regs …)` (see (c3)), so a binding
+    predicate is now possible; the head pattern stays because it says the
+    same thing about the fact being produced without
     inventing a second name table.  Monotone-only, enforced at the plan
     like (d1)'s capture.  A session with a break armed holds its commands
     on the (c2) thread exactly as a level-1 watch does; without that the

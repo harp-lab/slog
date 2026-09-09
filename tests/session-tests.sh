@@ -283,8 +283,8 @@ fi
 # double-staged batch (insert + restage, or two shard entries) would fire
 # the once-variants twice per tuple and these exact counts would not
 # appear.
-expect_re "b6-exact-once-base" '"base.slog:9"[[:space:]]+"all:edge"[[:space:]]+1\b' "out/sess-b5-csv/\$stat_fires.csv"
-expect_re "b6-exact-once-rec"  '"base.slog:14"[[:space:]]+"all:edge"[[:space:]]+3\b' "out/sess-b5-csv/\$stat_fires.csv"
+expect_re "b6-exact-once-base" '"base.slog:9:[0-9]+"[[:space:]]+"all:edge"[[:space:]]+1\b' "out/sess-b5-csv/\$stat_fires.csv"
+expect_re "b6-exact-once-rec"  '"base.slog:14:[0-9]+"[[:space:]]+"all:edge"[[:space:]]+3\b' "out/sess-b5-csv/\$stat_fires.csv"
 
 # --- 0.C: anchored batches (back-insertion) --------------------------------
 # An add anchored INSIDE segment 1's version (position 1, edge@v0): the

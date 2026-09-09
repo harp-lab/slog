@@ -287,13 +287,21 @@
               (sha256 (string->bytes/utf-8 compiler-sources-fingerprint)))
              0 16))
 
-;; The result-affecting environment captured into META so a replay recompiles
-;; faithfully (§8 `env`).  Only vars that can change the logical result belong
-;; here (SLOG_NO_SEMIJOIN flips the plan but not the result today, yet it is in
-;; the .so cache key, so we record it for a faithful rebuild); perf-only vars
-;; (SLOG_OPT, SLOG_MEM_*) are deliberately excluded.
+;; The plan-shaping environment captured into META so a replay recompiles
+;; faithfully (§8 `env`): exactly the knobs docs/knobs.md lists as "in the
+;; job hash" -- each flips plan bytes or generated code (never the logical
+;; result today), so a faithful rebuild must see the same values.  The
+;; plan-stamp (compile.rkt db-partition) is the authoritative identity;
+;; this alist is its human-readable companion.  Perf-only vars (SLOG_OPT,
+;; SLOG_MEM_*, tiering) are deliberately excluded; SLOG_PLAN_ABI is
+;; deliberately NOT keyed (TU text is ABI-invariant, knobs.md).
+(define plan-shaping-knobs
+  '(SLOG_NO_SEMIJOIN SLOG_NO_WCOJ3 SLOG_NO_FRAGMENT_FACTOR
+    SLOG_MULTIPLAN SLOG_MULTIPLAN_INDEX SLOG_NATIVE_ARM SLOG_NO_ARM_ADVISORIES
+    SLOG_NATIVE_COVERAGE SLOG_TIER_POLICY SLOG_NO_FREEZE SLOG_FREEZE_MIN))
 (define (result-affecting-env)
-  (list (cons 'SLOG_NO_SEMIJOIN (getenv "SLOG_NO_SEMIJOIN"))))
+  (for/list ([k (in-list plan-shaping-knobs)])
+    (cons k (getenv (symbol->string k)))))
 
 ;; Cheap per-relation directory digest: sorted (entry-name . total-bytes) over
 ;; a db directory's relation/interner subdirs, excluding META itself.  Used to

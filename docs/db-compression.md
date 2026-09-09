@@ -702,7 +702,7 @@ data/<name>/
 | `per`, `rng-seed` | retention target + sample seed (§4.2) |
 | `value-encoding-version` | daemon NaN-box/interner version — gates bin readability (§9) |
 | `compiler-stamp` | `compiler-sources-fingerprint` (tools.rkt:36) that produced `signature` (§11) |
-| `env` | result-affecting env (`SLOG_NO_SEMIJOIN`) captured for faithful recompile |
+| `env` | plan-shaping env captured for faithful recompile — every knob knobs.md lists as in the job hash (dbmeta.rkt `plan-shaping-knobs`; the `plan-stamp` extra is the authoritative identity) |
 | `fixpoint-wall-ms` | recorded cost, for the load policy / `per` heuristic (§13) |
 | `pure-edb?` | true for roots (no `prog.sexpr`) |
 | `full-store-rels` | relations forced to `per = 100 %` (nondeterministic, §5.3) |

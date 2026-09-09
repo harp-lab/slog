@@ -76,7 +76,7 @@ was imprecise; corrected there).
 
 - `ir-shared.rkt`: explicit invariant "variables (and relation names)
   are plain symbols" (105–107); type env = 3 symbol-keyed hashes
-  (aliases/rels/funs, 156–173); `rule-location-string` = basename:line
+  (aliases/rels/funs, 156–173); `rule-location-string` = basename:line:col (column since 2026-09-08)
   (60–65); lattice/listof/mapof specs carry member/element type names
   verbatim (201–280).
 - `type-system.rkt`: the residual-`any` check interns a

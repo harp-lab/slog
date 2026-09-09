@@ -776,9 +776,11 @@ so you walk the read that produced the candidate. The interpreter separates
 the two ports this section's "(next emit)" ran together: `step fire` stops
 at an instantiation (a satisfying body assignment), `step emit` at the head
 actually produced. `frames` prints the whole stack, so `up`/`down` become a
-cursor in the canvas rather than a server round trip; source VARIABLE names
-wait on rule-meta carrying a register-to-name map (it is inside the
-KernelPlanKey, so widening it is its own change).
+cursor in the canvas rather than a server round trip.  *Source VARIABLE
+names shipped 2026-09-08:* the plan's DebugMap names every register, the
+daemon reports the registers bound at the stop as `(bindings …)`, and
+`frames` prints them as `X = 5 · Y = 7` (the debug part sits outside the
+KernelPlanKey, so this was a plan-golden re-record, not a re-key).
 
 ### 9.4 Why and why-not
 

@@ -439,6 +439,16 @@ struct Program
   std::vector<u16> operands;
   // Display/error metadata used by fallible primitive effects.
   std::string source;
+  // (Kept after `source`: fixtures aggregate-initialize Program
+  // positionally.)  T5 frames names (t5-contract §3): display name of each register -- the
+  // source variable, "" for a compiler temporary -- from the plan's DebugMap
+  // (regs ...).  Shorter than nregs when hidden registers follow.  Display
+  // only; never identity.
+  std::vector<std::string> reg_names;
+  // Registers each op ASSIGNS (probe suffix / join3 cycle / copy and prim
+  // outputs), computed at seal from the cursor plans: the debugger's
+  // "bound so far" at a port is the union over the ops that have run.
+  std::vector<std::vector<u16>> op_writes;
 };
 
 // ---------------------------------------------------------------------------
@@ -492,6 +502,7 @@ struct DebugView
   const std::vector<size_t>& levels;
   const std::vector<Op>& ops;
   const std::vector<std::unique_ptr<PrefixCursor>>& cursors;
+  const std::vector<u64>& regs;   // the live register file (frames bindings)
 
   Proof proof() const
   {
@@ -630,7 +641,7 @@ class Machine
   {
     if (debug == nullptr || (debug->mask & event_bit(e.kind)) == 0)
       return false;
-    DebugView view{driver_row, levels, program->ops, cursors};
+    DebugView view{driver_row, levels, program->ops, cursors, regs};
     return debug->observe(e, view) == DebugAction::pause;
   }
 

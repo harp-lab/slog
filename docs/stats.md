@@ -19,10 +19,10 @@ Every run publishes four daemon-owned relations unless
 
 | relation | columns | publication point |
 |---|---|---|
-| `$stat_fires` | rule-location `str`, variant `str`, count `int` | each stratum fixpoint |
+| `$stat_fires` | rule-location `str` (`basename:line:col`), variant `str`, count `int` | each stratum fixpoint |
 | `$stat_fixpoint` | SCC/push position `int`, stratum hash-name `str`, iterations `int`, microseconds `int` | each stratum fixpoint |
 | `$stat_size` | relation name `str`, tuples `int` | CSV dump |
-| `$stat_work` | rule-location `str`, tag `str`, ticks `int`, driver rows `int` | each stratum fixpoint (V0, 2026-08-16 — the runtime-selection substrate; probe/seek work that `$stat_fires` is blind to) |
+| `$stat_work` | rule-location `str` (`basename:line:col`), tag `str`, ticks `int`, driver rows `int` | each stratum fixpoint (V0, 2026-08-16 — the runtime-selection substrate; probe/seek work that `$stat_fires` is blind to) |
 
 The names in this table describe the implementation exactly. In particular,
 the first column of `$stat_fixpoint` is called `scc` in the code, but is the
@@ -61,11 +61,15 @@ discarded. Counting maintenance would instead turn that firing into excess
 support. The small `tests/stat_*.slog` programs therefore compare counts with
 hand-derived goldens and run twice to detect schedule-dependent totals.
 
-The current identity is intentionally weak: a basename-and-line location plus
-a variant is adequate for these isolated tests, but not for a module
-instantiated twice or a source rule emitted into more than one execution. The
-target model below fixes that rather than stretching `rule-loc` into an
-accidental global key.
+The identity is a `basename:line:col` location (both 1-based; module
+instances prefix it `occ#n@file`, T4) plus a variant.  Since 2026-09-08 the
+column is part of the string, so two source rules on one line no longer
+merge (the DebugMap's rid grouping and the `(fires)` verb's join key on the
+same string); both executors spell it identically (N5/stats-4 made interp
+use the source location plus the base driver tag), so the once-planned
+`(RuleId, VariantTag)` call-site rekey has no remaining consumer — see the
+roadmap's ledger entry.  The location remains metadata under the durable
+RuleKey (§4.5), not a global identity.
 
 ### 1.2 Performance regression gate
 
