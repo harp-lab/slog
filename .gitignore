@@ -31,3 +31,6 @@ slog-freeze
 /slog
 /.slog.new
 /repl/target/
+
+/daemon/.toolchain*
+/daemon/.build.lock

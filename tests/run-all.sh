@@ -39,8 +39,8 @@ KNOWN_FAIL=()   # e.g. ("compression/foo -- <reason + tracking note>")
 
 set -u
 cd "$(dirname "$0")/.."
-mkdir -p build out
-CXX="${CXX:-clang++}"
+mkdir -p build out data
+source tests/native-env.sh
 
 run_harness() {
   case "$1" in
@@ -76,17 +76,18 @@ run_harness() {
     compression) bash tests/compression/run.sh ;;
     smt-pin)     bash tests/compression/smt-pin-test.sh ;;
     smt-solver)  bash tests/smt-solver-tests.sh ;;
-    arena)       "$CXX" -O2 -Wall -std=c++20 -pthread -Idaemon tests/arena-tests.cpp -o build/arena-tests -lgmp && ./build/arena-tests ;;
-    seq)         "$CXX" -O2 -Wall -std=c++20 -pthread -Idaemon tests/seq-tests.cpp   -o build/seq-tests   -lgmp && ./build/seq-tests ;;
-    counts)      "$CXX" -O2 -Wall -std=c++20 -pthread -Idaemon tests/counts-tests.cpp -o build/counts-tests -lgmp && ./build/counts-tests ;;
-    wcoj3)       "$CXX" -O2 -Wall -std=c++20 -pthread -Idaemon tests/wcoj3-operator-tests.cpp -o build/wcoj3-operator-tests -lgmp && ./build/wcoj3-operator-tests ;;
-    interp)      "$CXX" -O0 -Wall -std=c++20 -pthread -fopenmp -Idaemon -c daemon/plan-flavored-tasks.cpp -o build/plan-flavored-tasks.O0.o && "$CXX" -O2 -Wall -std=c++20 -pthread -fopenmp -Idaemon tests/interp-operator-tests.cpp daemon/plan.cpp daemon/plan-count.cpp daemon/query.cpp daemon/sexp.cpp daemon/runtime.cpp build/plan-flavored-tasks.O0.o -o build/interp-operator-tests -lgmp && ./build/interp-operator-tests ;;
-    structid)    "$CXX" -O2 -Wall -std=c++20 -pthread -fopenmp -Idaemon tests/struct-identity-tests.cpp -o build/struct-identity-tests -lz -lgmp && ./build/struct-identity-tests ;;
+    platform)    native_cxx -O2 -Wall -std=c++20 -pthread -Idaemon tests/platform-tests.cpp -o build/platform-tests && ./build/platform-tests ;;
+    arena)       native_cxx -O2 -Wall -std=c++20 -pthread -Idaemon tests/arena-tests.cpp -o build/arena-tests && ./build/arena-tests ;;
+    seq)         native_cxx -O2 -Wall -std=c++20 -pthread -Idaemon tests/seq-tests.cpp   -o build/seq-tests   && ./build/seq-tests ;;
+    counts)      native_cxx -O2 -Wall -std=c++20 -pthread -Idaemon tests/counts-tests.cpp -o build/counts-tests && ./build/counts-tests ;;
+    wcoj3)       native_cxx -O2 -Wall -std=c++20 -pthread -Idaemon tests/wcoj3-operator-tests.cpp -o build/wcoj3-operator-tests && ./build/wcoj3-operator-tests ;;
+    interp)      native_cxx -O0 -Wall -std=c++20 -pthread -Idaemon -c daemon/plan-flavored-tasks.cpp -o build/plan-flavored-tasks.O0.o && native_cxx -O2 -Wall -std=c++20 -pthread -Idaemon tests/interp-operator-tests.cpp daemon/plan.cpp daemon/plan-count.cpp daemon/query.cpp daemon/sexp.cpp daemon/runtime.cpp build/plan-flavored-tasks.O0.o -o build/interp-operator-tests && ./build/interp-operator-tests ;;
+    structid)    native_cxx -O2 -Wall -std=c++20 -pthread -Idaemon tests/struct-identity-tests.cpp -o build/struct-identity-tests && ./build/struct-identity-tests ;;
     *)           echo "run-all: unknown harness '$1'" >&2; return 2 ;;
   esac
 }
 
-ALL=(unit diag stats arena seq counts wcoj3 interp structid golden plan-goldens tier-classification tier-profile tier-promotion tier-arbiter identity-keys t6-restart activation-live activation-a3 activation-freeze rf5-join rf5-gate w5-exit-demo api tiered pause protocol repl session joint multiplan incremental-stress compression smt-pin smt-solver)
+ALL=(unit diag stats platform arena seq counts wcoj3 interp structid golden plan-goldens tier-classification tier-profile tier-promotion tier-arbiter identity-keys t6-restart activation-live activation-a3 activation-freeze rf5-join rf5-gate w5-exit-demo api tiered pause protocol repl session joint multiplan incremental-stress compression smt-pin smt-solver)
 # `multiplan` (J1-J3 runtime join selection, docs/join-planning-assessment.md)
 # IS in ALL -- the arm-equivalence/selector/probe/tripwire battery over the
 # tests/multiplan/ mini fixtures.  It landed 2026-08-16+ but was only wired
@@ -129,7 +130,7 @@ ALL=(unit diag stats arena seq counts wcoj3 interp structid golden plan-goldens 
 # and cross-instance sharing key on) is named but OUTSIDE ALL, like abi2:
 # ~14 cold compiles including examples/kcfa.  Run it before any emit-cpp
 # change and before every T4 slice ships.
-QUICK=(unit diag stats arena seq counts wcoj3 interp structid)
+QUICK=(unit diag stats platform arena seq counts wcoj3 interp structid)
 
 case "${1:-}" in
   --list)  printf '%s\n' "${ALL[@]}"; exit 0 ;;

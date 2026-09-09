@@ -28,9 +28,9 @@ make -C daemon >/dev/null 2>&1 || { echo "daemon build failed"; exit 1; }
 # ---- 0. unit battery ------------------------------------------------------
 note "unit battery (tests/smt-tests.cpp)"
 mkdir -p build
-CXX="${CXX:-clang++}"
-if "$CXX" -O1 -Wall -std=c++20 -pthread -fopenmp -Idaemon \
-      tests/smt-tests.cpp -o build/smt-tests -lz -lgmp 2>&1 | head -5; then
+source tests/native-env.sh
+if native_cxx -O1 -Wall -std=c++20 -pthread -Idaemon \
+      tests/smt-tests.cpp -o build/smt-tests 2>&1 | head -5; then
   Z3BIN="${SMT_TEST_Z3:-$(command -v z3 || true)}"
   if [ -n "$Z3BIN" ]; then
     SMT_TEST_Z3="$Z3BIN" ./build/smt-tests || fail "unit battery"
