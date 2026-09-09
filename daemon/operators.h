@@ -1124,12 +1124,21 @@ class WriteTask : public Task
   std::array<u16, A> ord;
   BTreeIndex<A>* root;
   bool is_delta;
+  // P3-D: whether this FULL ordering skips the keep-mode boundary dump.  A
+  // kept ordering already holds those rows; an ordering this install just
+  // created does not, so it CONSUMES them and the ordinary write phase
+  // fills it -- replacing the serial 0.B5 backfill for every READ relation.
+  // Captured here because the sweep clears fresh_created at push, before
+  // work() ever runs (and addIndex provably precedes this ctor: getIndex
+  // below fatals on an unregistered ordering).
+  bool skip_reloaded;
 public:
   WriteTask(Database* _db, Relation* _rel, const std::array<u16, A>& _ord, bool delta, u16 _b)
     : db(_db), rel(_rel), bucket(_b), ord(_ord), is_delta(delta)
   {
     std::vector<u16> ordv(ord.begin(), ord.end());
     root = static_cast<BTreeIndex<A>*>(rel->getIndex(ordv, delta)[bucket]);
+    skip_reloaded = !delta && !rel->createdThisInstall(ordv);
   }
   bool work() override
   {
@@ -1142,11 +1151,13 @@ public:
       for (u32 r = 0; r < n; ++r)
       {
         // A keep-mode boundary dump (batch->reloaded) is already present in
-        // every surviving FULL ordering -- kept trees and 0.B5-backfilled new
-        // ones alike -- so full-index writes skip it; delta-index writes
-        // consume it normally (it IS the iteration-0 delta).
+        // every SURVIVING full ordering, so those skip it; an ordering this
+        // install just created is NOT, so it consumes the dump and is filled
+        // by this very write phase (P3-D).  Delta-index writes always
+        // consume it (the dump IS the iteration-0 delta).
         if (!is_delta
-            && (refs[r].batch->sign < 0 || refs[r].batch->reloaded)) continue;
+            && (refs[r].batch->sign < 0
+                || (skip_reloaded && refs[r].batch->reloaded))) continue;
         const u64* d = refs[r].batch->data + refs[r].offset;
         std::array<u64, A> key;
         for (u16 c = 0; c < A; ++c) key[c] = d[ord[c]];

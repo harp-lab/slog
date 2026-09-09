@@ -329,9 +329,18 @@ private:
   // creation on a relation that already had live trees is exactly the
   // cross-stratum ordering MISMATCH the P3 compiler alignment would remove.
   std::set<std::vector<u16>> fresh_created;
-  u32 backfill_ords = 0;
-  u64 backfill_rows = 0;
-  double backfill_ms = 0.0;
+  // P3-D: full orderings this install created whose 0.B5 backfill is
+  // DEFERRED to the boundary sweep (where it runs bucket-parallel, or is
+  // skipped outright for a rebuild-mode relation).  A pending ordering is
+  // registered but still EMPTY, so every selector that picks an
+  // authoritative ordering must skip it -- the ghost-registration lesson,
+  // load-bearing here because the sweep's own DumpTask reads getAnyIndex in
+  // the same phase.  Non-empty only between the install's addIndex calls and
+  // boundarySweep.
+  std::map<std::vector<u16>, bool> pending_backfill;   // ord -> is map
+  u32 backfill_ords = 0;                    // counted serially, at enqueue
+  std::atomic<u64> backfill_rows{0};        // summed by parallel tasks
+  std::atomic<u64> backfill_us{0};          // SUMMED task time, not wall
   u32 sweep_kept_live = 0, sweep_created = 0, sweep_dropped = 0;
   std::vector<s16> leadcol_slot;
   u32 last_slot_leadcols = 0;  // write_leadcols.size() when leadcol_slot was last built
@@ -468,7 +477,8 @@ public:
     const u16 last = struct_id != 0 ? 0 : static_cast<u16>(arity - 1);
     for (const auto& it : indices)
       if (it.first.size() == arity && it.first.back() == last
-          && seeded_orderings.find(it.first) == seeded_orderings.end())
+          && seeded_orderings.find(it.first) == seeded_orderings.end()
+          && pending_backfill.find(it.first) == pending_backfill.end())
         return &it.first;
     return nullptr;
   }
@@ -837,7 +847,10 @@ public:
     fresh_requisitions.clear();
     fresh_delta_requisitions.clear();
     fresh_created.clear();
-    backfill_ords = 0; backfill_rows = 0; backfill_ms = 0.0;
+    pending_backfill.clear();
+    backfill_ords = 0;
+    backfill_rows.store(0);
+    backfill_us.store(0);
     sweep_kept_live = sweep_created = sweep_dropped = 0;
   }
 
@@ -858,6 +871,7 @@ public:
     tracking_requisitions = false;
     fresh_requisitions.clear();
     fresh_delta_requisitions.clear();
+    pending_backfill.clear();          // P3-D: empty for an untouched relation
   }
 
   // The boundary sweep: drop every ordering the incoming install did not
@@ -961,6 +975,109 @@ public:
     return true;
   }
 
+  // P3-D: copy this relation's live content into the newly-registered
+  // ordering `ord`, from a sibling ordering.  `dst_bucket` == all_buckets
+  // fills the whole ordering (the EAGER path: hot-swap re-runs and
+  // delta-entry re-pushes, 0.B5's original clients, have no sweep coming to
+  // run a deferred task).  Otherwise it fills exactly one DESTINATION
+  // bucket, so boundarySweep can run bucket_count of these in parallel:
+  // the destination bucket is buckethash(row[ord[0]]) -- the NEW ordering's
+  // lead column, NOT the source bucket -- so per-SOURCE-bucket tasks would
+  // race on shared destination trees.  Destination ownership is how
+  // WriteTask stays race-free, and scan-all-and-filter-by-my-bucket is
+  // InternTask's pattern for a not-yet-bucketized input.
+  static constexpr u16 all_buckets = 0xFFFF;
+  // P3-D sweep interface: what to backfill, how many were enqueued, and the
+  // release that makes the filled orderings visible to the selectors again.
+  const std::map<std::vector<u16>, bool>& pendingBackfills() const
+  {
+    return pending_backfill;
+  }
+  // P3-D: did THIS install create this full ordering?  Read by WriteTask at
+  // CONSTRUCTION -- which provably runs after the ordering's addIndex (its
+  // ctor binds getIndex, which fatals on a missing ordering) and before the
+  // sweep clears fresh_created at push.  A fresh ordering must CONSUME the
+  // keep-mode boundary dump that kept orderings skip: the dump is the whole
+  // relation's content staged as the iteration-0 delta, so the existing
+  // parallel write phase fills the new ordering at 1x reads -- no backfill,
+  // no staging, no read amplification.
+  bool createdThisInstall(const std::vector<u16>& ord) const
+  {
+    return fresh_created.count(ord) != 0;
+  }
+  void notePendingBackfillCount()
+  {
+    backfill_ords += (u32)pending_backfill.size();
+  }
+  void clearPendingBackfill() { pending_backfill.clear(); }
+  void backfillOrdering(const std::vector<u16>& ord, bool map, u16 dst_bucket)
+  {
+    if (ord.empty()) return;
+    auto found = indices.find(ord);
+    if (found == indices.end()) return;
+    Index** indices_ord = found->second;
+    // Source pick, PREFERRING a sibling whose lead column matches ord[0]:
+    // then the destination bucket equals the source bucket (identical
+    // buckethash input), so a per-destination task reads ONE source bucket
+    // instead of all of them.  Skip seeded-only (never authoritative) and
+    // other pending orderings (still empty).
+    const std::vector<u16>* src = nullptr;
+    for (const auto& it : indices)
+    {
+      if (it.first == ord || it.first.empty()) continue;
+      if (seeded_orderings.find(it.first) != seeded_orderings.end()) continue;
+      if (pending_backfill.find(it.first) != pending_backfill.end()) continue;
+      if (it.first[0] == ord[0]) { src = &it.first; break; }
+      if (src == nullptr) src = &it.first;
+    }
+    if (src == nullptr) return;
+    const bool same_lead = (*src)[0] == ord[0];
+    const auto bf0 = std::chrono::steady_clock::now();
+    u64 bf_rows = 0;
+    // find, not operator[]: several BackfillTasks run this concurrently and
+    // map::operator[] counts as a modifying access for data-race purposes
+    // (it inserts a default when the key is absent).  `src` came from
+    // iterating `indices`, so it is present.
+    auto srcit = indices.find(*src);
+    if (srcit == indices.end()) return;
+    Index** srcarr = srcit->second;
+    std::vector<u16> rewrite(src->size(), 0);
+    for (u16 i = 0; i < src->size(); ++i)
+      rewrite[(*src)[i]] = i;
+    // same_lead + a single destination => that one source bucket holds
+    // exactly this destination's rows; otherwise every source bucket may
+    // contribute and the filter below keeps only ours.
+    const bool one_src = (dst_bucket != all_buckets) && same_lead;
+    for (u16 b = 0; b < bucket_count; ++b)
+    {
+      if (one_src && b != dst_bucket) continue;
+      srcarr[b]->forEach([&](const u64* t)
+      {
+        u64 row[max_daemon_arity + 1];
+        for (u16 c = 0; c < arity; ++c)
+          row[c] = t[rewrite[c]];
+        if (map)
+        {
+          u64 ordered[max_daemon_arity];
+          for (u16 c = 0; c + 1 < arity; ++c) ordered[c] = row[ord[c]];
+          const u16 dst = buckethash(ordered[0]);
+          if (dst_bucket != all_buckets && dst != dst_bucket) return;
+          indices_ord[dst]->setPayload(ordered, arity - 1, row[arity - 1]);
+        }
+        else
+        {
+          const u16 dst = buckethash(row[ord[0]]);
+          if (dst_bucket != all_buckets && dst != dst_bucket) return;
+          indices_ord[dst]->insertTuple(row, ord.data());
+        }
+        ++bf_rows;
+      });
+    }
+    backfill_rows.fetch_add(bf_rows);
+    backfill_us.fetch_add((u64)std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::steady_clock::now() - bf0).count());
+  }
+
   // Keep-set eligibility (P1): plain tables only.  Struct relations wait on
   // an intern/tombstone audit (their iteration-0 intern is id-keyed) and
   // lattices on a payload-map audit; arity-0 relations keep the legacy
@@ -981,7 +1098,8 @@ public:
   OrdSweepStats ordSweepStats() const
   {
     return {sweep_kept_live, sweep_created, sweep_dropped,
-            backfill_ords, backfill_rows, backfill_ms};
+            backfill_ords, backfill_rows.load(),
+            backfill_us.load() / 1000.0};
   }
 
   // ---- DRed^c count sidecar (docs/incremental.md §6.1/§8B.2) ----
@@ -1949,41 +2067,13 @@ public:
     // probes silently under-derive and getAnyIndex walkers -- coverage,
     // dumps, saves, reload staging -- may treat its buckets as the
     // relation's authoritative contents.
+    // P3-D: deferred under a boundary install, eager otherwise (see
+    // addIndex).  A lattice is never keep-eligible, so its pending entry is
+    // always DISCARDED at the sweep -- the rebuild-mode dump refills it.
     if (!ord.empty())
     {
-      const std::vector<u16>* src = nullptr;
-      for (const auto& it : indices)
-        if (it.first != ord
-            && seeded_orderings.find(it.first) == seeded_orderings.end())
-        {
-          src = &it.first;
-          break;
-        }
-      if (src != nullptr)
-      {
-        const auto bf0 = std::chrono::steady_clock::now();
-        u64 bf_rows = 0;
-        Index** srcarr = indices[*src];
-        std::vector<u16> rewrite(src->size(), 0);
-        for (u16 i = 0; i < src->size(); ++i)
-          rewrite[(*src)[i]] = i;
-        for (u16 b = 0; b < bucket_count; ++b)
-          srcarr[b]->forEach([&](const u64* t)
-          {
-            u64 row[max_daemon_arity + 1];
-            for (u16 c = 0; c < arity; ++c)
-              row[c] = t[rewrite[c]];
-            u64 ordered[max_daemon_arity];
-            for (u16 c = 0; c + 1 < arity; ++c) ordered[c] = row[ord[c]];
-            indices_ord[buckethash(ordered[0])]
-              ->setPayload(ordered, arity - 1, row[arity - 1]);
-            ++bf_rows;
-          });
-        ++backfill_ords;
-        backfill_rows += bf_rows;
-        backfill_ms += std::chrono::duration<double, std::milli>(
-                         std::chrono::steady_clock::now() - bf0).count();
-      }
+      if (tracking_requisitions) pending_backfill.emplace(ord, true);
+      else backfillOrdering(ord, true, all_buckets);
     }
 
     if (!ord.empty())
@@ -2035,38 +2125,14 @@ public:
     // will restage content into them, so an empty-but-registered index
     // would silently under-derive.  No-op on the common paths: after a
     // reload (or on first registration) there is nothing indexed to copy.
+    // P3-D: inside a boundary install the copy is DEFERRED to the sweep
+    // (bucket-parallel there, and skipped entirely for a rebuild-mode
+    // relation, whose unmarked dump re-writes every ordering anyway --
+    // today such an ordering is backfilled and then immediately emptied).
     if (!delta && !seeded_only && !ord.empty())
     {
-      const std::vector<u16>* src = nullptr;
-      for (const auto& it : indices)
-	if (it.first != ord
-	    && seeded_orderings.find(it.first) == seeded_orderings.end())
-	{
-	  src = &it.first;
-	  break;
-	}
-      if (src != nullptr)
-      {
-	const auto bf0 = std::chrono::steady_clock::now();
-	u64 bf_rows = 0;
-	Index** srcarr = indices[*src];
-	std::vector<u16> rewrite(src->size(), 0);
-	for (u16 i = 0; i < src->size(); ++i)
-	  rewrite[(*src)[i]] = i;
-	for (u16 b = 0; b < bucket_count; ++b)
-	  srcarr[b]->forEach([&](const u64* t)
-	  {
-	    u64 row[max_daemon_arity + 1];
-	    for (u16 c = 0; c < arity; ++c)
-	      row[c] = t[rewrite[c]];
-	    indices_ord[buckethash(row[ord[0]])]->insertTuple(row, ord.data());
-	    ++bf_rows;
-	  });
-	++backfill_ords;
-	backfill_rows += bf_rows;
-	backfill_ms += std::chrono::duration<double, std::milli>(
-	                 std::chrono::steady_clock::now() - bf0).count();
-      }
+      if (tracking_requisitions) pending_backfill.emplace(ord, false);
+      else backfillOrdering(ord, false, all_buckets);
     }
 
     // Record this index's leading column so reorg hash-buckets the delta by it.
@@ -2085,8 +2151,12 @@ public:
     // for writing, reloading (cannot be a delta).  Skip seeded-only
     // orderings: in a fresh run their buckets are never maintained, and
     // staging a reload from one would silently DROP the relation's rows.
+    // Skip P3-D pending orderings for the same reason -- they are still
+    // empty, and the sweep's DumpTask reaches for this in the very phase
+    // the backfill tasks are filling them.
     for (const auto& it : indices)
-      if (seeded_orderings.find(it.first) == seeded_orderings.end())
+      if (seeded_orderings.find(it.first) == seeded_orderings.end()
+          && pending_backfill.find(it.first) == pending_backfill.end())
         return &(it.first);
     for (const auto& it : indices)
       return &(it.first);
@@ -2102,7 +2172,8 @@ public:
   {
     std::vector<std::vector<u16>> orders;
     for (const auto& it : indices)
-      if (seeded_orderings.find(it.first) == seeded_orderings.end())
+      if (seeded_orderings.find(it.first) == seeded_orderings.end()
+          && pending_backfill.find(it.first) == pending_backfill.end())
         orders.push_back(it.first);
     if (orders.empty())
       for (const auto& it : indices)
@@ -2723,6 +2794,10 @@ public:
     {
       if (seeded_orderings.find(it.first) != seeded_orderings.end())
         continue;
+      // P3-D pending: still empty, and the backfill will copy from a source
+      // this loop DOES maintain, so it picks this row up at the sweep.
+      if (pending_backfill.find(it.first) != pending_backfill.end())
+        continue;
       it.second[buckethash(t[it.first[0]])]->insertTuple(t, it.first.data());
     }
   }
@@ -2734,6 +2809,10 @@ public:
     for (const auto& it : indices)
     {
       if (seeded_orderings.find(it.first) != seeded_orderings.end())
+        continue;
+      // P3-D pending: empty, so a removal there would report `false` and
+      // wrongly mark the retraction incomplete.
+      if (pending_backfill.find(it.first) != pending_backfill.end())
         continue;
       const bool removed = it.second[buckethash(t[it.first[0]])]
                              ->removeTuple(t, it.first.data());
@@ -9913,6 +9992,24 @@ public:
 	return true;
       }
     };
+    // P3-D: one task per DESTINATION bucket of one newly-created ordering.
+    // Destination ownership is what makes this parallel-safe (the
+    // destination bucket is keyed on the NEW ordering's lead column, so
+    // per-source-bucket tasks would race); phase 0, beside the dumps.
+    class BackfillTask : public Task
+    {
+    public:
+      Relation* rel; std::vector<u16> ord; bool map; u16 b;
+      BackfillTask(Relation* _rel, const std::vector<u16>& _ord, bool _map,
+                   u16 _b)
+	: rel(_rel), ord(_ord), map(_map), b(_b)
+      {}
+      virtual bool work()
+      {
+	rel->backfillOrdering(ord, map, b);
+	return true;
+      }
+    };
 
     static const bool debug_sweep = []{
       const char* v = std::getenv("SLOG_BOUNDARY_DEBUG");
@@ -9921,6 +10018,17 @@ public:
     const bool force_rebuild = indexReuseDisabled();
     std::vector<Relation*> swept;
     Stratum s("boundary-sweep");
+    // P3-D: enqueue the deferred 0.B5 copies for a relation whose surviving
+    // trees KEEP their content.  Skipped for rebuild-mode reads, whose
+    // unmarked dump re-writes every ordering at iteration 0 -- backfilling
+    // there filled a tree the sweep then emptied.
+    const auto enqueue_backfills = [&](Relation* r)
+    {
+      for (const auto& [ord, map] : r->pendingBackfills())
+	for (u16 b = 0; b < bucket_count; ++b)
+	  s.addTask(0, new BackfillTask(r, ord, map, b), true);
+      r->notePendingBackfillCount();
+    };
     forEachBoundaryRelation([&](Relation* r)
     {
       const bool declared = r->requisitionedAnything();
@@ -9948,6 +10056,11 @@ public:
 	  for (u16 b = 0; b < bucket_count; ++b)
 	    s.addTask(0, new DumpTask(r, b, true), true);
 	}
+	// A READ relation's fresh ordering is filled by its own WriteTask
+	// consuming the marked dump (Relation::createdThisInstall), which is
+	// the existing parallel write phase at 1x reads.  Only an UNREAD
+	// relation gets no dump, so only it needs the copy.
+	if (!read) enqueue_backfills(r);
 	s.addTask(1, new SweepTask(r, false), true);
 	swept.push_back(r);
 	++st.kept_rels;
@@ -9970,7 +10083,10 @@ public:
 	// keep its live trees rather than rebuild them -- but still drop the
 	// orderings the incoming install did not requisition (a kept-but-
 	// undeclared ordering has no WriteTask and would silently go stale
-	// if the stratum writes the relation).
+	// if the stratum writes the relation).  Its contents survive, so a
+	// newly created ordering here needs the backfill too (there is no
+	// dump to refill it).
+	enqueue_backfills(r);
 	s.addTask(1, new SweepTask(r, false), true);
 	swept.push_back(r);
 	++st.kept_rels;
@@ -9981,6 +10097,10 @@ public:
 
     for (Relation* r : swept)
     {
+      // P3-D: pending stays set for the WHOLE sweep -- every selector must
+      // skip a half-built ordering while phase 0 runs, the rebuild-mode
+      // dump (getAnyIndex) included -- and is released only now.
+      r->clearPendingBackfill();
       const Relation::OrdSweepStats o = r->ordSweepStats();
       st.ords_live += o.kept_live;
       st.ords_new += o.created;

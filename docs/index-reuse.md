@@ -174,20 +174,80 @@ bind them) but empty their contents, as the old boundary left them.
   materialises the readers' orderings) moves exactly the same inserts
   into the writer's parallel WriteTasks — i.e. its whole value is
   parallelism, which the daemon can provide without a plan-byte change.
-- **P3-D — deferred, bucket-parallel backfill** (daemon-only, the
-  follow-up): under requisition tracking, `addIndex` records a pending
-  `ord ← src` instead of copying inline; `boundarySweep` runs per-bucket
-  backfill tasks in phase 0 beside the dumps, and SKIPS the backfill for
-  rebuild-mode survivors (today a re-homed struct/lattice ordering is
-  backfilled and then emptied by the sweep).  Ghost hazard: `getAnyIndex`
-  and the backfill `src` pick must skip pending orderings until they are
-  filled.  The eager copy stays for non-tracking paths (hot-swap, delta
-  re-push — 0.B5's original clients).  Expected on the probe shape:
-  ≈ −240 ms of 1.4 s.  Ping-pong suppression (declaration-only relations
-  requisition nothing when the relation already has live trees) is a
-  compiler change worth at most 12–22 % of churn on the analyzers (the
-  cohort declarations sit outside the kernel exec key, so it would be a
-  plan-golden re-record, not a re-key); not scheduled.
+- **P3-D — SHIPPED 2026-09-09.**  Three parts, daemon-only and
+  plan-byte-neutral:
+
+  1. **Rebuild-mode relations no longer backfill at all.**  A re-homed
+     struct/lattice ordering was backfilled and then immediately emptied
+     by `sweepToRequisitions(true)`, then re-written by the unmarked dump
+     — pure waste, now deleted.
+  2. **A READ relation's fresh ordering consumes the boundary dump** and
+     is filled by the ordinary parallel write phase, replacing the serial
+     copy entirely.  The marked dump already stages the whole relation as
+     the iteration-0 delta; full-index writes skip it only because KEPT
+     trees already hold those rows, and a freshly created ordering does
+     not.  `WriteTask` therefore captures
+     `!Relation::createdThisInstall(ord)` at construction (the sweep
+     clears `fresh_created` at push, before any `work()`; `addIndex`
+     provably precedes the ctor, whose `getIndex` fatals on an
+     unregistered ordering) and skips reloaded batches only when the
+     ordering survived.  1× reads, no staging, no new task type.
+  3. **An UNREAD relation's fresh ordering** still needs a real copy (it
+     gets no dump), now deferred into the sweep as one task per
+     DESTINATION bucket, phase 0 beside the dumps.
+
+  **Why destination-partitioned, and its cost.**  The destination bucket
+  is `buckethash(row[ord[0]])` — the NEW ordering's lead column, not the
+  source bucket — so per-SOURCE-bucket tasks would race on shared
+  destination trees.  Destination ownership is `WriteTask`'s own
+  discipline, and scan-all-then-filter-by-my-bucket is `InternTask`'s
+  pattern for a not-yet-bucketized input.  The price is `bucket_count`×
+  READ amplification whenever no sibling ordering shares `ord[0]`; the
+  src pick now PREFERS a lead-matching sibling, which makes destination
+  bucket == source bucket and removes the amplification, but a re-homing
+  that changes the lead column (the probe shape's whole point) has no
+  such sibling.  This is why part 2 matters: it moves the common case off
+  this path entirely.
+
+  **Ghost hazard (the P1 lesson, third time).**  A pending ordering is
+  registered but EMPTY, so every selector that picks an authoritative
+  ordering skips it until the sweep releases it — `getAnyIndex`,
+  `fullOrders`, `settleOrder`, both `src` picks, and the two
+  insert/remove-all-indices walkers.  Load-bearing: the sweep's own
+  `DumpTask` reaches for `getAnyIndex` in the very phase the backfills
+  are filling, and a rebuild-mode dump that read a half-built ordering
+  would silently drop the relation's rows.
+
+  **Measured (n=500k and n=2M, `bench/boundary-study.sh`, 3 runs each).**
+  Backfilled orderings 9 → 4 (only unread relations remain), summed
+  backfill 1070 → ~520 ms, sweep wall 195 → ~110 ms at 500k.  **Probe
+  wall is 1.00–1.08×, and that is the honest figure: the earlier "1.22×"
+  P0 probe number compared against a kill-switch baseline that was itself
+  paying for wasted rebuild-mode backfills.  Part 1 removed that waste
+  from BOTH sides, so the comparison is now fair and cross-stratum reuse
+  is roughly break-even on this shape** — the ~1.3–1.6× FIXPOINT gain is
+  real, but the boundary's remaining cost consumes it.  The chain shape is
+  untouched (it re-homes nothing): sweep 5–19 ms, zero backfills.
+
+  **The whole residual is declaration ping-pong.**  All 4 remaining
+  backfills sit on relations the stratum neither reads nor writes: the
+  ABI-2 cohort declares EVERY relation in every stratum (canonical-plan.rkt,
+  "all storage declarations ride the cohort"), with the default
+  `(range arity)` when it has no selections, so an untouched relation whose
+  live ordering was non-default re-homes for an ordering that may never be
+  used — ~430–550 ms of a 4–5 s run at n=2M.  The daemon cannot do better
+  than parallelize work that should not exist; the fix is compiler-side
+  suppression (declaration-only relations requisition nothing when the
+  relation already has live trees), a plan-golden re-record rather than a
+  re-key since the cohort declarations sit outside the kernel exec key.
+  **That is now the open follow-up, and it is what would make index reuse
+  pay on probe-shaped pipelines.**  Not scheduled.
+
+  Gates: golden 172/172, stats 795 (the exact-once fire audit), session,
+  multiplan, t6-restart, incremental-stress, compression, counts,
+  structid — all green.  The eager copy stays for non-tracking callers
+  (hot-swap re-runs, delta-entry re-pushes: 0.B5's original clients, which
+  have no sweep coming to run a deferred task).
 - **P4 — virtual iteration-0 delta**: alias delta reads to the kept full
   trees at iteration 0, eliminating the dump/reorg/delta-build for read
   relations too.  Deep read-path surgery; parked.
