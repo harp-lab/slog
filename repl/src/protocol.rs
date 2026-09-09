@@ -79,6 +79,13 @@ impl SessionConnection {
     pub async fn shutdown(&mut self) -> io::Result<Response> {
         self.request("shutdown", json!({})).await
     }
+    /// Stage-2 Ctrl-C (repl-ux.md §9.2): ask the server to pause the run in
+    /// flight at its next slice boundary.  Sent on the CONTROL connection --
+    /// the primary one is blocked on the in-flight response -- and answered
+    /// immediately; the pause itself arrives as that response.
+    pub async fn interrupt(&mut self) -> io::Result<Response> {
+        self.request("interrupt", json!({})).await
+    }
 
     async fn request(&mut self, method: &str, params: Value) -> io::Result<Response> {
         let id = self.next_id;

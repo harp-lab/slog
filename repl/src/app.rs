@@ -45,6 +45,9 @@ pub enum Effect {
     Execute(ShellCommand),
     RestartForTutorial(Tutorial),
     Shutdown,
+    /// Stage-2 Ctrl-C while a command is in flight: ask the server to pause
+    /// the run at its next slice boundary (repl-ux.md §9.2).
+    Interrupt,
 }
 
 #[derive(Debug)]
@@ -199,6 +202,13 @@ impl App {
         !self.operations.is_empty() || self.tutorial_input_hint_active()
     }
 
+    /// Stage-2 Ctrl-C could not reach the server (no control connection).
+    pub fn interrupt_unavailable(&mut self, message: String) {
+        self.transcript.push(TranscriptEntry::error(
+            "Interrupt unavailable",
+            vec![message, "Ctrl-C again within 2s force-quits".to_string()],
+        ));
+    }
     pub fn set_command_queue_busy(&mut self, busy: bool) {
         self.command_queue_busy = busy;
     }
@@ -263,6 +273,38 @@ impl App {
                     .push(TranscriptEntry::error("Server disconnected", vec![message]));
                 self.should_quit = true;
             }
+            // Stage-2 Ctrl-C: the server's acknowledgement.  The paused run
+            // itself arrives as the in-flight command's Response.
+            BackendEvent::Interrupt(outcome) => match outcome {
+                Ok(response) if response.ok => {
+                    let lines: Vec<String> = response
+                        .result
+                        .as_ref()
+                        .and_then(|value| value.get("lines"))
+                        .and_then(|value| value.as_array())
+                        .map(|lines| {
+                            lines
+                                .iter()
+                                .filter_map(|line| line.as_str().map(str::to_owned))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    self.transcript
+                        .push(TranscriptEntry::system("Interrupt", lines));
+                }
+                Ok(response) => {
+                    let message = response
+                        .error
+                        .map(|error| error.message)
+                        .unwrap_or_else(|| "interrupt refused".to_owned());
+                    self.transcript
+                        .push(TranscriptEntry::error("Interrupt refused", vec![message]));
+                }
+                Err(message) => {
+                    self.transcript
+                        .push(TranscriptEntry::error("Interrupt failed", vec![message]));
+                }
+            },
             BackendEvent::Response { command, response } => {
                 self.completion = None;
                 self.cancel_canvas_search();
@@ -357,9 +399,12 @@ impl App {
                         return Effect::None;
                     }
                     if self.editor.is_empty() {
-                        // Busy guard: a run is in flight -- require a quick
-                        // second Ctrl-C before the interrupting exit, so one
-                        // reflexive press cannot kill a long fixpoint.
+                        // Ctrl-C means pause, never kill (repl-ux.md §9.2).
+                        // A run in flight: the first press asks the server to
+                        // PAUSE it at the next slice boundary (stage 2, over
+                        // the control connection); only a quick second press
+                        // takes the interrupting exit -- the hatch a hung
+                        // server still needs.
                         if self.command_queue_busy {
                             let confirm = self
                                 .busy_ctrlc_at
@@ -369,12 +414,13 @@ impl App {
                                 self.transcript.push(TranscriptEntry::system(
                                     "Interrupt",
                                     vec![
-                                        "a command is still running; Ctrl-C again \
-                                         within 2s to force-quit (kills the run)"
+                                        "pausing the run at its next slice boundary; \
+                                         Ctrl-C again within 2s to force-quit instead \
+                                         (kills the run)"
                                             .to_string(),
                                     ],
                                 ));
-                                return Effect::None;
+                                return Effect::Interrupt;
                             }
                         }
                         return Effect::Shutdown;
@@ -1650,6 +1696,8 @@ impl App {
         match event {
             BackendEvent::Log(line) => format!("• Racket\n  {line}"),
             BackendEvent::Disconnected(message) => format!("! Server disconnected\n  {message}"),
+            BackendEvent::Interrupt(Ok(_)) => "• Interrupt requested".to_owned(),
+            BackendEvent::Interrupt(Err(message)) => format!("! Interrupt failed\n  {message}"),
             BackendEvent::Response { response, .. } => {
                 if !response.ok {
                     let error = response.error.unwrap_or(crate::protocol::ServerError {
@@ -2198,13 +2246,14 @@ attempts = 2
     }
 
     #[test]
-    fn busy_ctrlc_warns_first_and_force_quits_on_quick_second_press() {
+    fn busy_ctrlc_pauses_first_and_force_quits_on_quick_second_press() {
         let mut app = App::new();
         app.set_command_queue_busy(true);
         let ctrlc = Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
-        // First press while busy: no shutdown, a visible warning instead.
-        assert!(matches!(app.on_terminal(ctrlc.clone()), Effect::None));
-        assert_eq!(app.transcript.last().expect("warning").title, "Interrupt");
+        // First press while busy: an INTERRUPT (stage 2: pause at the next
+        // slice boundary), never a shutdown, with a visible notice.
+        assert!(matches!(app.on_terminal(ctrlc.clone()), Effect::Interrupt));
+        assert_eq!(app.transcript.last().expect("notice").title, "Interrupt");
         // Quick second press: the interrupting exit (the hung-server hatch).
         assert!(matches!(app.on_terminal(ctrlc.clone()), Effect::Shutdown));
         // Idle prompt (not busy): Ctrl-C still exits directly.

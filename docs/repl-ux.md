@@ -737,13 +737,17 @@ A pause (breakpoint, watch, memory, Ctrl-C) changes the prompt to
   the run to its next slice boundary and opens paused mode; `abort` is the
   explicit destructive verb. This single choice removes the classic terror of
   long fixpoints.
-  *(Adoption status 2026-09-07 — STAGE 1 SHIPPED: while a command is in
-  flight the client's first Ctrl-C warns and only a quick second press
-  force-quits (repl/src/app.rs; repl-terminal.md documents the shipped
-  behavior).  STAGE 2 — the true pause — is blocked on ONE missing piece:
-  an out-of-band control channel to the Racket server, since the client
-  blocks on the in-flight response today.  The server side already exists:
-  slice budgets, the pause protocol, paused-mode verbs.)*
+  *(Adoption status 2026-09-08 — STAGE 2 SHIPPED.  The missing piece was an
+  out-of-band control channel; the client now opens a SECOND connection to
+  the same Racket server (backend.rs run_control) and its first in-flight
+  Ctrl-C sends `interrupt` on it while the primary connection stays blocked
+  on the response.  The server arms a per-command flag (repl.rkt
+  request-interrupt!) that the held run's pause hook consults at every slice
+  boundary; the in-flight command answers with "Paused · interrupt", which
+  `continue` resumes and `abort` discards — reusing the T5 (c) held-run
+  machinery, now installed for EVERY command, not only those under an armed
+  watch.  A quick SECOND Ctrl-C still force-quits (the hung-server hatch);
+  a run that finishes before its next slice is simply not paused.)*
 
 ### 9.3 Stepping: the semi-naive four-port
 

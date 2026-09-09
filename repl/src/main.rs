@@ -131,7 +131,7 @@ async fn launch_pending(
                 app.should_quit = true;
                 return Ok((None, None));
             }
-            Effect::Ignore | Effect::None | Effect::RestartForTutorial(_) => {
+            Effect::Ignore | Effect::None | Effect::RestartForTutorial(_) | Effect::Interrupt => {
                 return Ok((None, None));
             }
         },
@@ -271,6 +271,8 @@ async fn run_plain(backend: &mut Backend) -> Result<(), String> {
                 Some(BackendEvent::Disconnected(message)) => {
                     return Err(format!("server disconnected: {message}"));
                 }
+                // plain mode sends no interrupts; an acknowledgement is noise
+                Some(BackendEvent::Interrupt(_)) => {}
                 Some(BackendEvent::Response { response, .. }) => {
                     if !response.ok {
                         let error = response.error.unwrap_or(crate::protocol::ServerError {
@@ -384,6 +386,7 @@ async fn run_repl(
                             Some(InFlight::Shared) | None => app.on_backend(event),
                         }
                     }
+                    Some(event @ BackendEvent::Interrupt(_)) => app.on_backend(event),
                     Some(BackendEvent::Disconnected(message)) => {
                         if let Some(InFlight::Private { reply, .. }) = in_flight.take() {
                             let _ = reply.send(format!("! Server disconnected\n  {message}"));
@@ -495,6 +498,13 @@ async fn run_repl(
             Effect::Shutdown => {
                 backend.cancel_in_flight();
                 app.should_quit = true;
+            }
+            // Stage-2 Ctrl-C: pause, never kill -- the request rides the
+            // control connection while the command stays in flight.
+            Effect::Interrupt => {
+                if let Err(message) = backend.interrupt().await {
+                    app.interrupt_unavailable(message);
+                }
             }
         }
 

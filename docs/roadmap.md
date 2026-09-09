@@ -19,7 +19,7 @@ below is its consolidation, updated through the index-reuse arc).
 | index reuse | [index-reuse.md](index-reuse.md) | **P1+P2 shipped 09-07** (boundary keep-set; ~1.7× fixpoint on boundary-bound pipelines); **P3 decided NO 09-08** (per-ordering survey: 0.06 % of golden fixpoint; the residual is the serial backfill → P3-D deferred parallel backfill, daemon-only, open); P4 parked |
 | reflection | [slog-reflection.md](slog-reflection.md), [rf5-contract.md](rf5-contract.md), [activation-contract.md](activation-contract.md) | RF0–RF5-B complete + deep-vetted (08-14); **RF5-C precise healing and RF5-D historical replacement open** |
 | modules / namespaces | [modules.md](modules.md), [n4-contract.md](n4-contract.md) | N0–N4 complete; N5 item 1 shipped scoped, item 3 substantially shipped; **items 2 + 4 open** |
-| REPL | [repl-ux.md](repl-ux.md) (living), [repl.md](repl.md), [repl-terminal.md](repl-terminal.md) | R0–R5 spine + W4′ debugger complete (`frames` source names 09-08); handle economy, history verbs, R4 client half open; Ctrl-C stage 1 shipped, stage 2 (control channel) open |
+| REPL | [repl-ux.md](repl-ux.md) (living), [repl.md](repl.md), [repl-terminal.md](repl-terminal.md) | R0–R5 spine + W4′ debugger complete (`frames` source names 09-08); Ctrl-C pause doctrine COMPLETE (stage 1 + stage 2 control channel, 09-08); handle economy, history verbs, R4 client half open |
 | stats | [stats.md](stats.md) | `$stat_*` + `$stat_work` + RuleKey `(fires)` shipped; loc carries its column (09-08); **target-model migration open** (steps 5–7, standalone) |
 | SMT / oracles | [smt.md](smt.md) | Phases 1–2c + §16 session enforcement complete; theories, `--refresh-oracle`, pinned-only replay import open |
 | compression / merge | [db-compression.md](db-compression.md), [db-merge.md](db-merge.md) | P0–P3 shipped; **offline merge verb (P2) never built**; §19 accel gaps |
@@ -79,7 +79,7 @@ re-pack + lattice-master re-homing (also P3's substrate).
 anchored stage; unsolicited server events; R4 proof-tree canvas + whynot
 chase; Rust query-canvas adapters; relation
 fast-path dump; extended-layer clear recipe; Ctrl-C stage 1 (busy guard)
-then stage 2 (control channel — the genuinely missing piece).
+then stage 2 (control channel) — both SHIPPED 2026-09-08: the client's second connection carries `interrupt`, the server parks the in-flight run as "Paused · interrupt".
 
 **SMT / compression / merge.**  Theories (reals/BV/arrays/UF),
 quantifiers, verdict lattices; `--refresh-oracle` (designed, never

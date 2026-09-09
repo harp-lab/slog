@@ -21,6 +21,10 @@ pub enum BackendEvent {
     Response { command: String, response: Response },
     Log(String),
     Disconnected(String),
+    /// The server's answer to a stage-2 interrupt (or the control channel's
+    /// failure).  The paused run itself comes back as the ordinary Response
+    /// of the command that was in flight.
+    Interrupt(Result<Response, String>),
 }
 
 pub struct Backend {
@@ -28,6 +32,10 @@ pub struct Backend {
     pub events: mpsc::Receiver<BackendEvent>,
     task: JoinHandle<()>,
     project_root: PathBuf,
+    /// Stage-2 Ctrl-C: the control-only connection's request queue, None
+    /// when the server offered no second connection.
+    interrupts: Option<mpsc::Sender<()>>,
+    control_task: Option<JoinHandle<()>>,
 }
 
 impl Backend {
@@ -48,12 +56,25 @@ impl Backend {
 
         let (command_tx, command_rx) = mpsc::channel(32);
         let (event_tx, event_rx) = mpsc::channel(32);
+        // Stage-2 Ctrl-C (repl-ux.md §9.2): a SECOND, control-only connection
+        // to the same server.  The primary connection blocks on each
+        // in-flight response, so an interrupt needs its own wire; serve-repl
+        // keeps its listener open for exactly this.  A server without it
+        // (connect refused) leaves interrupts unavailable, never broken.
+        let control = SessionConnection::connect(&address, &token).await.ok();
+        let (interrupt_tx, interrupt_rx) = mpsc::channel(4);
+        let control_task = control.map(|control| {
+            tokio::spawn(run_control(control, interrupt_rx, event_tx.clone()))
+        });
+        let interrupts = control_task.as_ref().map(|_| interrupt_tx);
         let task = tokio::spawn(run_backend(child, connection, command_rx, event_tx));
         Ok(Self {
             commands: command_tx,
             events: event_rx,
             task,
             project_root: project_root.to_owned(),
+            interrupts,
+            control_task,
         })
     }
 
@@ -79,6 +100,9 @@ impl Backend {
     /// compiler session and daemon without touching saved databases on disk.
     pub async fn reset(&mut self) -> Result<(), String> {
         let replacement = Self::start(&self.project_root).await?;
+        if let Some(task) = self.control_task.take() {
+            task.abort();
+        }
         let _ = self.commands.send(BackendCommand::Shutdown).await;
         if timeout(Duration::from_secs(1), &mut self.task)
             .await
@@ -92,10 +116,29 @@ impl Backend {
     }
 
     pub fn cancel_in_flight(&self) {
+        if let Some(task) = &self.control_task {
+            task.abort();
+        }
         self.task.abort();
+    }
+    /// Stage-2 Ctrl-C: queue one interrupt on the control connection.  The
+    /// server pauses the in-flight run at its next slice boundary and answers
+    /// the in-flight command with a `paused` result; this call only confirms
+    /// the request was taken (BackendEvent::Interrupt).
+    pub async fn interrupt(&self) -> Result<(), String> {
+        match &self.interrupts {
+            Some(interrupts) => interrupts
+                .send(())
+                .await
+                .map_err(|_| "the control channel has stopped".to_owned()),
+            None => Err("no control channel: this server offers no interrupts".to_owned()),
+        }
     }
 
     pub async fn shutdown(self) {
+        if let Some(task) = &self.control_task {
+            task.abort();
+        }
         let _ = self.commands.send(BackendCommand::Shutdown).await;
         let mut task = self.task;
         if timeout(Duration::from_secs(1), &mut task).await.is_err() {
@@ -126,6 +169,24 @@ fn daemon_rebuild_pending(project_root: &Path) -> bool {
                 .and_then(|metadata| metadata.modified())
                 .is_ok_and(|modified| modified > executable_modified)
     })
+}
+
+/// The control connection's pump: one `interrupt` request per queued
+/// Ctrl-C, its answer surfaced as BackendEvent::Interrupt.
+async fn run_control(
+    mut control: SessionConnection,
+    mut interrupts: mpsc::Receiver<()>,
+    events: mpsc::Sender<BackendEvent>,
+) {
+    while interrupts.recv().await.is_some() {
+        let outcome = control
+            .interrupt()
+            .await
+            .map_err(|error| error.to_string());
+        if events.send(BackendEvent::Interrupt(outcome)).await.is_err() {
+            break;
+        }
+    }
 }
 
 async fn run_backend(

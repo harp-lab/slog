@@ -141,9 +141,12 @@ owned by any attached daemon.  Since 2026-09-07 that exit is GUARDED while
 a command is in flight: the first Ctrl-C warns, and only a second press
 within 2s takes the interrupting exit (the hatch a hung server still
 needs) — one reflexive press cannot kill a long fixpoint.  The full
-"Ctrl-C means pause, never kill" doctrine is repl-ux.md §9.2; its stage 2
-(a genuine pause) awaits an out-of-band control channel, since the client
-today blocks on the in-flight response. Graceful shutdown also has a one-second deadline
+"Ctrl-C means pause, never kill" doctrine is repl-ux.md §9.2, and its
+stage 2 shipped 2026-09-08: a run in flight now PAUSES on the first Ctrl-C
+(the client opens a second, control-only connection and sends `interrupt`;
+the server parks the run at its next slice boundary as "Paused · interrupt",
+resumable with `continue` or discardable with `abort`).  A quick second
+Ctrl-C still force-quits. Graceful shutdown also has a one-second deadline
 before taking the same abort path, so a blocked request cannot keep the terminal
 process alive.
 

@@ -364,7 +364,13 @@ changing the REPL to guess what empty declarations once existed.
 The connected transport/UI keel now ships:
 
 1. `compiler/repl.rkt` owns one lazy compiler session, dispatches the initial
-   command envelope, and speaks authenticated framed JSON on loopback TCP;
+   command envelope, and speaks authenticated framed JSON on loopback TCP.
+   The wire methods are `hello` (the token handshake), `command`, and
+   `shutdown` on the primary connection; since 2026-09-08 the listener also
+   accepts a second, CONTROL connection (same handshake) carrying one method,
+   `interrupt` — Ctrl-C stage 2 (repl-ux.md §9.2).  It arms a per-command
+   pause flag while the primary connection is blocked on an in-flight run, so
+   the run parks at its next slice boundary instead of the client killing it;
 2. the `repl/` Rust crate owns the terminal, process lifecycle, grapheme-aware
    multiline editor, transcript, and structured layouts;
 3. `help`, `status`, `ping`, `library`, `run`, `open`, `schema`, `pipeline`,

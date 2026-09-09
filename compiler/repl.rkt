@@ -91,7 +91,12 @@
                       handles
                       ;; T5 slice (c): the held-run record while a command is
                       ;; parked at the pre-commit gate, or #f
-                      [held #:mutable])
+                      [held #:mutable]
+                      ;; Ctrl-C stage 2 (repl-ux §9.2): an interrupt has been
+                      ;; requested over the control connection and the next
+                      ;; slice boundary of the command in flight must hold.
+                      ;; Scoped to that command: cleared when it finishes.
+                      [interrupt #:mutable])
   #:transparent)
 
 ;; T5 slice (c) / R4: a run HELD at the pre-commit gate (repl-ux §9.2 -- the
@@ -109,7 +114,11 @@
                          ;; with no debugger cause -- this one-shot box is
                          ;; what tells the held thread's hook to hold it
                          ;; anyway instead of driving past.
-                         hold-next))
+                         hold-next
+                         ;; Ctrl-C stage 2: a box, #t while the current park
+                         ;; was caused by an interrupt (names the pause
+                         ;; honestly: "Paused · interrupt").
+                         interrupted))
 
 ;; Raised INTO the held thread by `abort`.  An exn:fail subtype on purpose:
 ;; the session's boundary driver already unwinds a failed run through
@@ -204,7 +213,7 @@
 
 ;; a fresh, connection-less server state -- the stateful harness entry
 (define (make-server-state)
-  (server-state (make-hash) #f #f #f (make-hash) #f))
+  (server-state (make-hash) #f #f #f (make-hash) #f #f))
 
 (define (current-repl-session state)
   (and (server-state-current state)
@@ -3818,6 +3827,7 @@
     (cond [broke (format "Paused · break ~a" broke)]
           [stepped? "Paused · step"]
           [(pair? cites) "Paused · pre-commit gate"]
+          [(unbox (held-run-interrupted held)) "Paused · interrupt"]
           [else "Paused · iteration boundary"])
     (append
      (list (format "~a · iteration ~a · phase ~a"
@@ -3829,6 +3839,10 @@
                "frames shows the join stack at this port")
          '())
      watch-lines
+     (if (unbox (held-run-interrupted held))
+         (list "Ctrl-C: the run is paused at a slice boundary; nothing is committed"
+               "continue resumes it · abort settles the current iteration, then discards the run")
+         '())
      (list
       "queries here answer COMMITTED masters; the candidate rows are not in them"
       (format "held: ~a" (held-run-source held)))
@@ -3844,9 +3858,10 @@
     #:kind "paused")))
 
 ;; The daemon reports the join stack STRUCTURALLY -- port, rule position and
-;; rows.  Source variable names are the remaining half of contract §3: the
-;; canonical plan's rule-meta carries only (rid source) today, and widening
-;; it moves every KernelPlanKey, so that is its own change.
+;; rows -- plus, since 2026-09-08, the BINDINGS of the named registers the
+;; ports have established (the plan's DebugMap (regs ...) names them; the
+;; debug part sits outside the KernelPlanKey, so widening it was a
+;; plan-golden re-record, not a re-key).
 (define (frames-result state)
   (define rs (ensure-session-record! state))
   (define s (repl-session-session rs))
@@ -4002,24 +4017,35 @@
      (held-pause-result state held)]
     [(list 'result value)
      (set-server-state-held! state #f)
+     (set-server-state-interrupt! state #f)   ; scoped to the command
      value]
     [(list 'raise exception)
      (set-server-state-held! state #f)
+     (set-server-state-interrupt! state #f)
      (if (exn:fail:gate-abort? exception)
          (attach-session-state
           state
           (text-result
-           "Aborted · pre-commit gate"
-           (list "the run was discarded at the gate; nothing was committed"
+           (if (unbox (held-run-interrupted held))
+               "Aborted · interrupt"
+               "Aborted · pre-commit gate")
+           (list (if (unbox (held-run-interrupted held))
+                     "the interrupted run was discarded; nothing was committed"
+                     "the run was discarded at the gate; nothing was committed")
                  (format "discarded: ~a" (held-run-source held)))
            #:kind "mutation"))
          (raise exception))]))
 
 ;; Start a semantic command on its own thread with the gate hook installed.
+;; Since Ctrl-C stage 2 (2026-09-08) EVERY command runs here, not only those
+;; under an armed level-1 watch or break: the hold is what lets an interrupt
+;; requested over the control connection park the run at its next slice
+;; boundary while this request answers with the pause record.
 (define (dispatch-held-command state source)
   (define to-run (make-channel))
   (define from-run (make-channel))
   (define hold-next (box #f))
+  (define interrupted (box #f))
   (define runner
     (thread
      (lambda ()
@@ -4027,8 +4053,12 @@
            ([session-pause-hook
              (lambda (_s line)
                (cond
-                 [(or (gate-pause-line? line) (unbox hold-next))
+                 [(or (gate-pause-line? line) (unbox hold-next)
+                      (server-state-interrupt state))
                   (set-box! hold-next #f)
+                  ;; an interrupt is consumed by the park it causes
+                  (set-box! interrupted (and (server-state-interrupt state) #t))
+                  (set-server-state-interrupt! state #f)
                   (channel-put from-run (list 'paused line))
                   (match (channel-get to-run)
                     ['abort
@@ -4042,7 +4072,8 @@
            (channel-put from-run
                         (list 'result (dispatch-command* state source))))))))
   (await-held-run state
-                  (held-run runner to-run from-run source #f 0 0 hold-next)))
+                  (held-run runner to-run from-run source #f 0 0 hold-next
+                            interrupted)))
 
 ;; A command typed while a run is held.  The three resolutions resume the
 ;; held thread; everything else is an ordinary observation of the parked
@@ -4097,12 +4128,33 @@
   (define held (server-state-held state))
   (cond
     [held (dispatch-at-gate state held source)]
-    [(and (session-level1-armed? state)
-          (not (session-pause-hook))
+    ;; Ctrl-C stage 2: hold every command (not only under an armed watch or
+    ;; break, as T5 (c) first did), so an interrupt can park it.  The
+    ;; resolution verbs run on this thread; nested dispatch from inside a
+    ;; held thread (the hook is set there) runs directly.
+    [(and (not (session-pause-hook))
           (not (member (let-values ([(verb _a) (split-command source)]) verb)
                        pause-resolution-verbs)))
      (dispatch-held-command state source)]
     [else (dispatch-command* state source)]))
+
+;; Ctrl-C stage 2 (repl-ux §9.2): the control connection's `interrupt`.
+;; Arms the flag the held thread's hook consults at every slice boundary;
+;; the pause itself is the in-flight command's answer.  Never kills: a run
+;; between slice records (a compile, a daemon start) pauses at its first
+;; boundary, and an interrupt that finds no run in flight is a no-op.
+(define (request-interrupt! state)
+  (define held (server-state-held state))
+  (cond
+    [held
+     (text-result "Interrupt"
+                  (list "the run is already paused; continue resumes it, abort discards it")
+                  #:kind "interrupt")]
+    [else
+     (set-server-state-interrupt! state #t)
+     (text-result "Interrupt"
+                  (list "pausing at the next slice boundary; the running command answers with the pause")
+                  #:kind "interrupt")]))
 
 (define (dispatch-command* state source)
   (define trimmed (string-trim source))
@@ -4554,7 +4606,7 @@
   (read-frame (open-input-bytes (get-output-bytes out))))
 
 (define (plain-transcript commands)
-  (define state (server-state (make-hash) #f #f #f (make-hash) #f))
+  (define state (server-state (make-hash) #f #f #f (make-hash) #f #f))
   (dynamic-wind
     void
     (lambda ()
@@ -4625,7 +4677,9 @@
 
 (define (open-loopback-listener requested-port)
   (define (listen port)
-    (values (tcp-listen port 1 #t "127.0.0.1") port))
+    ;; backlog 4: the client opens its control connection right behind the
+    ;; primary one (Ctrl-C stage 2)
+    (values (tcp-listen port 4 #t "127.0.0.1") port))
   (cond
     [(positive? requested-port) (listen requested-port)]
     [else
@@ -4656,8 +4710,25 @@
   (hash-clear! (server-state-sessions state))
   (set-server-state-current! state #f))
 
-(define (serve-connection in out token)
-  (define state (server-state (make-hash) #f #f #f (make-hash) #f))
+;; Ctrl-C stage 2: a CONTROL connection -- same handshake, one method.  It
+;; runs on its own thread beside the primary connection, whose loop blocks
+;; on each in-flight command, so `interrupt` can land while a run is in
+;; flight.  Anything else is refused; the connection closes on EOF.
+(define (serve-control in out token state)
+  (when (authenticate! in out token)
+    (let loop ()
+      (define request (read-frame in))
+      (unless (eof-object? request)
+        (define id (request-id request))
+        (write-frame
+         out
+         (match (hash-ref request 'method #f)
+           ["interrupt" (success id (request-interrupt! state))]
+           [method (failure id "protocol"
+                            (format "control connection: unknown method ~a" method))]))
+        (loop)))))
+
+(define (serve-connection in out token [state (make-server-state)])
   (dynamic-wind
     void
     (lambda ()
@@ -4687,12 +4758,35 @@
       (newline)
       (flush-output)
       (define-values (in out) (tcp-accept listener))
-      (tcp-close listener)
-      (set! listener #f)
+      ;; Ctrl-C stage 2: the listener stays open for CONTROL connections
+      ;; (serve-control), accepted on their own thread for as long as the
+      ;; primary connection lives; the state is shared so an interrupt
+      ;; reaches the command in flight.
+      (define state (make-server-state))
+      (define acceptor
+        (thread
+         (lambda ()
+           (let loop ()
+             (define-values (cin cout)
+               (with-handlers ([exn:fail? (lambda (_) (values #f #f))])
+                 (tcp-accept listener)))
+             (when cin
+               (thread
+                (lambda ()
+                  (dynamic-wind
+                    void
+                    (lambda ()
+                      (with-handlers ([exn:fail? void])
+                        (serve-control cin cout token state)))
+                    (lambda ()
+                      (close-input-port cin)
+                      (close-output-port cout)))))
+               (loop))))))
       (dynamic-wind
         void
-        (lambda () (serve-connection in out token))
+        (lambda () (serve-connection in out token state))
         (lambda ()
+          (kill-thread acceptor)
           (close-input-port in)
           (close-output-port out))))
     (lambda () (when listener (tcp-close listener)))))
@@ -4723,7 +4817,7 @@
   (check-equal? (read-frame (open-input-bytes framed))
                 (hasheq 'id 7 'method "ping"))
 
-  (define state (server-state (make-hash) #f #f #f (make-hash) #f))
+  (define state (make-server-state))
   (define help-result (dispatch-command state ":help"))
   (check-equal? (hash-ref help-result 'kind) "help")
   (check-not-false
@@ -4880,7 +4974,7 @@
        '(cell (word 7) (kind int) (sid #f) (type-key #f) (text "3")))))
     (check-exn exn:fail? (lambda () (datum->value-cell '(cell (word 1)))))
 
-    (define state (server-state (make-hash) "alpha" #f #f (make-hash) #f))
+    (define state (server-state (make-hash) "alpha" #f #f (make-hash) #f #f))
     (define rs (repl-session #f "alpha" 'mutable #f "eval-1" #f (make-hash) (make-hash)
                                 (make-hash)))
     (hash-set! (server-state-sessions state) "alpha" rs)
@@ -4956,7 +5050,7 @@
   (check-equal? (brief-change-summary-lines sample-change)
                 (list "committed"))
 
-  (define mode-state (server-state (make-hash) #f #f #f (make-hash) #f))
+  (define mode-state (server-state (make-hash) #f #f #f (make-hash) #f #f))
   (hash-set! (server-state-sessions mode-state)
              "alpha"
              (repl-session #f "alpha" 'readonly #f #f #f (make-hash)
@@ -4974,7 +5068,7 @@
                 "mutable")
   (check-equal? (hash-ref (dispatch-command mode-state "resident") 'lines)
                 (list "alpha  mutable · clean · current"))
-  (define quit-state (server-state (make-hash) #f #f #f (make-hash) #f))
+  (define quit-state (server-state (make-hash) #f #f #f (make-hash) #f #f))
   (check-true (hash-ref (dispatch-command quit-state ":quit") 'close))
   ;; The golden deliberately stops at the server contract.  It proves real
   ;; session calls and deterministic presentation data without making this
@@ -5006,7 +5100,7 @@
   ;; tests/reach.slog (edge = the 1-2-3-4 chain, path = its closure).  Row
   ;; ORDER is index order, so assertions pin content the planner/daemon
   ;; must produce, never incidental orderings.
-  (let ([bare-state (server-state (make-hash) #f #f #f (make-hash) #f)])
+  (let ([bare-state (server-state (make-hash) #f #f #f (make-hash) #f #f)])
     (check-regexp-match
      #px"ambiguous"
      (with-handlers ([exn:fail? exn-message])
@@ -5698,6 +5792,74 @@
        #px"7 rows match"
        (string-join (hash-ref (run! "?count (path X Y)") 'lines) " | "))
       (void (run! ":quit"))))
+
+  ;; Ctrl-C stage 2 (repl-ux §9.2): an interrupt requested over the control
+  ;; connection parks the command in flight at its next slice boundary; the
+  ;; command answers with "Paused · interrupt", `continue` resumes it to
+  ;; completion, and the flag is scoped to that one command.  accel_chain's
+  ;; 120-round linear closure suspends deterministically under SLOG_MAX_MS=1
+  ;; at one thread (a smaller fixture races the 1ms budget); continue drives
+  ;; the ~5 remaining slices to the full 7140-pair closure.  Continue and
+  ;; abort get a fresh session each, since each runs the initial program.
+  (let ([interrupt-environment (environment-variables-copy test-environment)])
+    (environment-variables-set! interrupt-environment #"SLOG_OPT" #"interp")
+    (environment-variables-set! interrupt-environment #"SLOG_THREADS" #"1")
+    (environment-variables-set! interrupt-environment #"SLOG_MAX_MS" #"1")
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables interrupt-environment])
+      (define (text result) (string-join (hash-ref result 'lines) "\n"))
+      ;; The control connection's method, driven on in-memory pipes: the
+      ;; same handshake, `interrupt` arms the flag and answers immediately,
+      ;; and any other method refuses.  Returns the armed state.
+      (define (arm-via-control!)
+        (define state (make-server-state))
+        (define-values (req-in req-out) (make-pipe))
+        (define-values (resp-in resp-out) (make-pipe))
+        (write-frame req-out (hasheq 'id 1 'method "hello"
+                                     'params (hasheq 'token "t"
+                                                     'protocol protocol-version)))
+        (write-frame req-out (hasheq 'id 2 'method "interrupt" 'params (hasheq)))
+        (write-frame req-out (hasheq 'id 3 'method "command"
+                                     'params (hasheq 'line ":ping")))
+        (close-output-port req-out)
+        (serve-control req-in resp-out "t" state)
+        (close-output-port resp-out)
+        (check-equal? (hash-ref (read-frame resp-in) 'id) 1)     ; hello ok
+        (define armed (read-frame resp-in))
+        (check-equal? (hash-ref armed 'id) 2)
+        (check-equal? (hash-ref (hash-ref armed 'result) 'kind) "interrupt")
+        (check-false (hash-ref (read-frame resp-in) 'ok))        ; command refused
+        (check-true (server-state-interrupt state))
+        state)
+      ;; -- continue: the armed interrupt parks the run, continue finishes it
+      (let* ([state (arm-via-control!)]
+             [run! (lambda (line) (dispatch-command state line))]
+             [paused (run! "run tests/accel_chain.slog")])
+        (check-equal? (hash-ref paused 'kind) "paused")
+        (check-equal? (hash-ref paused 'title) "Paused · interrupt")
+        (check-regexp-match #px"Ctrl-C: the run is paused" (text paused))
+        (check-false (server-state-interrupt state))    ; consumed by the park
+        ;; a second interrupt while parked is answered, not re-armed
+        (check-regexp-match #px"already paused" (text (request-interrupt! state)))
+        (check-false (server-state-interrupt state))
+        ;; continue drives the rest to fixpoint; the closure is all 66 pairs
+        (define done (run! "continue"))
+        (check-not-equal? (hash-ref done 'kind) "paused")
+        (check-regexp-match #px"7140 rows match"
+                            (string-join (hash-ref (run! "?count (path X Y)") 'lines) " | "))
+        (void (run! ":quit")))
+      ;; -- abort: at an interrupt pause the daemon settles the suspended
+      ;; stratum and discards the boundary, so the program never commits
+      (let* ([state (arm-via-control!)]
+             [run! (lambda (line) (dispatch-command state line))]
+             [paused (run! "run tests/accel_chain.slog")])
+        (check-equal? (hash-ref paused 'title) "Paused · interrupt")
+        (define aborted (run! "abort"))
+        (check-equal? (hash-ref aborted 'title) "Aborted · interrupt")
+        (check-regexp-match #px"discarded" (text aborted))
+        (check-false (server-state-interrupt state))
+        (check-false (server-state-held state))
+        (void (run! ":quit")))))
 
   ;; T5 slice (d1): provenance capture and `why` (contract §4(d1), repl-ux
   ;; §9.4).  Capture is opt-in per watch, so the first thing pinned is that
