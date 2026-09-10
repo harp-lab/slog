@@ -10,12 +10,13 @@ HEADERS = $(wildcard *.h)
 NATIVE_COMPILE = $(call native-quote,$(CXX)) $(call native-argv,$(CPPFLAGS) $(NATIVE_CPPFLAGS))
 NATIVE_LINK = $(call native-argv,$(LDFLAGS) $(NATIVE_LDFLAGS))
 
-# plan-flavored-tasks.cpp instantiates the daemon storage templates across
-# the full arity range for the flavored installers' registration ladders --
-# cold code whose -O2 build dominates compile time -- so it builds -O0 into
-# its own object (the optimization level every native flavored .so uses).
+# Registration is cold, but constructing tasks also instantiates their hot
+# virtual work() methods and storage operations across the full arity range.
+# Use normal daemon optimization: mixed-O0/O2 template definitions can select
+# an unoptimized lookup at link time (observed on macOS). Keep this expensive
+# compilation in its own cached object for unrelated daemon source edits.
 plan-flavored-tasks.o: plan-flavored-tasks.cpp $(HEADERS) .toolchain
-	$(NATIVE_COMPILE) $(call native-argv,$(filter-out -O2,$(CXXFLAGS)) -O0 $(OMPFLAGS)) -c plan-flavored-tasks.cpp -o plan-flavored-tasks.o
+	$(NATIVE_COMPILE) $(call native-argv,$(CXXFLAGS) $(OMPFLAGS)) -c plan-flavored-tasks.cpp -o plan-flavored-tasks.o
 
 slogd: slogd.cpp plan.cpp plan-count.cpp program-image.cpp query.cpp sexp.cpp runtime.cpp plan-flavored-tasks.o $(HEADERS) .toolchain
 	$(NATIVE_COMPILE) $(call native-argv,$(CXXFLAGS) $(OMPFLAGS)) $(NATIVE_LINK) $(call native-argv,$(EXPORT_LDFLAGS)) -o slogd slogd.cpp plan.cpp plan-count.cpp program-image.cpp query.cpp sexp.cpp runtime.cpp plan-flavored-tasks.o $(call native-argv,$(LDLIBS))
@@ -41,7 +42,7 @@ clean:
 
 .PHONY: test interp-check clean
 
-# Flag/compiler changes must rebuild binaries and the cold template object.
+# Flag/compiler changes must rebuild binaries and the task template object.
 # Preserve the stamp's mtime when unchanged, so a warm invocation is a no-op.
 .PHONY: FORCE
 .toolchain: FORCE
