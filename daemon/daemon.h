@@ -1438,8 +1438,8 @@ public:
         if (pipeline[i]->name == s->name)
           pipeline[i]->clearTasksForHusk();
     s->semantic_instance = !next_push_transient && !next_push_maintenance;
-    // Count/recount incarnations fold sidecars without touching membership:
-    // rank marking must neither stamp nor invalidate under them (M7).
+    // Count/recount incarnations fold sidecars without touching membership
+    // (the recursive-cone marking at stratum entry skips them).
     s->transient_instance = next_push_transient;
     // T5: retain the epoch flavor.  Plan installs set the sealed plan's
     // exact string before pushing; the fallback here covers native .so
@@ -1858,6 +1858,25 @@ public:
                     s->scc_id, s->name.c_str(), st.iteration, st.ms_total);
       s->fixpoint_msg = buf;
       emit(s->fixpoint_msg);
+      // Per-phase wall-time breakdown of the stratum (sentinel thread, ms,
+      // summed over iterations): write = delta inserted into full indices,
+      // join = read tasks minus finalize, finalize = shard merge into the
+      // new delta, intern = delta dedup against masters, reorg = delta
+      // bucketising, end = end-of-iteration barrier + completion.  Opt-in so
+      // golden logs are unchanged.
+      static const bool phase_times = std::getenv("SLOG_PHASE_TIMES") != nullptr;
+      if (phase_times)
+      {
+        char pbuf[256];
+        std::snprintf(pbuf, sizeof(pbuf),
+                      "(phases %u \"%s\" iters %u write %.3f join %.3f finalize %.3f "
+                      "intern %.3f reorg %.3f end %.3f endcomp %.3f)",
+                      s->scc_id, s->name.c_str(), st.iteration, st.ms_phase_write,
+                      st.ms_phase_read - st.ms_phase_finalize, st.ms_phase_finalize,
+                      st.ms_phase_intern, st.ms_phase_reorg, st.ms_phase_end,
+                      st.ms_phase_endcomp);
+        emit(std::string(pbuf));
+      }
       if (transient)
       {
         transient_run = nullptr;

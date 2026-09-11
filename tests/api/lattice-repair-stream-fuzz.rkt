@@ -1,7 +1,7 @@
 #lang racket
 
 ;; M7 sub-slice (d) differential stream (docs/m7-contract.md, warm fuzz).
-;; One session keeps its contributor/rank sidecars warm across ten mixed
+;; One session keeps its contributor sidecars warm across ten mixed
 ;; signed epochs over a cyclic weighted graph (0-weight edges included, so
 ;; unfounded-cycle repair is exercised).  Every maintained flush is
 ;; compared -- content AND contributor sidecars -- with a fresh, unseeded

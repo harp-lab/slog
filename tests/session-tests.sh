@@ -957,10 +957,10 @@ timeout 600 racket tests/api/session-drive.rkt \
   > out/sess-counts-lat.log 2>&1
 expect "cnt-lat-out"     "(countrow out (pair 1 2) 0 1 0)" out/sess-counts-lat.log
 expect "cnt-lat-skip"    "(countdone dist -1)" out/sess-counts-lat.log
-# FLIPPED(M7 sub-slice (d)): a recursive lattice's live rank sidecar
-# reports the repair capability; rankless (acyclic) lattices keep
+# FLIPPED(M7 sub-slice (d)): a recursive (same-SCC) selective lattice
+# reports the repair capability; acyclic lattices keep
 # lattice-contributor-recount (asserted by m6l blocks).
-expect_re "m04-cap-lattice" '\(cap dist 0 [0-9]+ \(recount yes\) \(precise-delete conditional\) \(fallback clear-rerun\) \(reason lattice-rank-repair\)\)' out/sess-counts-lat.log
+expect_re "m04-cap-lattice" '\(cap dist 0 [0-9]+ \(recount yes\) \(precise-delete conditional\) \(fallback clear-rerun\) \(reason lattice-recursive-repair\)\)' out/sess-counts-lat.log
 versioned_count_oracle "m04-lattice-boundary-oracle" out/sess-counts-lat.log
 
 # --- M0.3: counted state, laziness, invalidation, positional/cone walks ------
@@ -2906,12 +2906,9 @@ fi
 # --- M7 sub-slice (a): recursive (same-SCC) lattice substrate -------------
 # docs/m7-contract.md.  Retention establishes and CERTIFIES contributor
 # state for the recursive min cone before route selection (the recount is
-# version-local and transactional); routing still falls back.  Rank
-# witnesses stamp first-derivation rounds (temp-staged rules stride two
-# physical rounds per logical hop) and the rerun re-certifies them from
-# empty.  Loser contributors subsumed before reaching the delta carry no
-# forward stamp (lattice merge) -- repair derives those on demand, a
-# pinned sub-slice (b) design point.
+# version-local and transactional); routing still falls back.  Loser
+# contributors subsumed before reaching the delta are derived on demand by
+# the repair, a pinned sub-slice (b) design point.
 # FLIPPED(M7 sub-slice (b)): the deletion flush takes the stored-
 # contributor repair fixpoint -- the maint4neg sweep runs the contributor
 # candidate lifecycle with pessimistic retraction and old-value witnesses,
@@ -2922,9 +2919,9 @@ timeout 900 racket tests/api/session-drive.rkt \
   run:tests/session/m7_rec_min.slog \
   batch+:edge,1,2,10 batch+:edge,2,3,5 batch+:edge,3,1,2 \
   batch+:edge,1,3,100 batch+:edge,3,4,1 batch+:edge,2,4,20 batch+:edge,1,4,17 \
-  flush dump-rel:dist rank-witness-state dump-ranks:dist \
+  flush dump-rel:dist \
   recount-lattices-force dump-counts:dist lattice-contributor-state \
-  batch-:edge,2,3,5 flush dump-rel:dist rank-witness-state \
+  batch-:edge,2,3,5 flush dump-rel:dist \
   recount-lattices-force dump-counts:dist lattice-contributor-state \
   > out/sess-m7-recmin.log 2>&1
 if [ "$(grep -cF '(m7-retention (dist))' out/sess-m7-recmin.log)" -eq 2 ]; then
@@ -2952,31 +2949,12 @@ if [ "$(grep -cF '(countrow dist 1 3 100 0 1 0)' out/sess-m7-recmin.log)" -eq 2 
 else
   echo "FAIL m7-recmin-loser-retained"; FAIL=$((FAIL+1))
 fi
-# rank witnesses: valid after the initial from-empty run; the REPAIR epoch
-# is a warm maintenance re-entry, so ranks go honestly invalid (as-built,
-# m7-contract.md: DRed over-deletes every touched derived-only row, and a
-# derivation-grain rank recompute needs the finer per-derivation
-# contributor identity 7A.2 reserves -- per-derivation rank folds behind
-# the repair seam are the deferred precise mechanism).  Transient count
-# rounds no longer flip validity either way; dead rows' stamps erase.
-if [ "$(grep -cF '(rnk dist 0 1)' out/sess-m7-recmin.log)" -eq 1 ] \
-   && [ "$(grep -cF '(rnk dist 0 2)' out/sess-m7-recmin.log)" -eq 1 ]; then
-  echo "PASS m7-recmin-ranks-honest"; PASS=$((PASS+1))
-else
-  echo "FAIL m7-recmin-ranks-honest"; FAIL=$((FAIL+1))
-fi
-if [ "$(grep -cF '(rankrow dist 1 3 100 1)' out/sess-m7-recmin.log)" -ge 1 ] \
-   && [ "$(grep -cF '(rankrow dist 1 3 15 3)' out/sess-m7-recmin.log)" -eq 1 ] \
-   && [ "$(grep -cF '(rankrow dist 1 1 17 5)' out/sess-m7-recmin.log)" -eq 1 ]; then
-  echo "PASS m7-recmin-rank-depths"; PASS=$((PASS+1))
-else
-  echo "FAIL m7-recmin-rank-depths"; FAIL=$((FAIL+1))
-fi
 # the M7 repair schedule: candidate lifecycle visible in the reseed reply
 expect "m7-recmin-reseed" "(dred-reseeded 0 0)" out/sess-m7-recmin.log
-# conditional capability: a live rank sidecar reports the repair reason
-# (rankless lattices keep lattice-contributor-recount; m04-cap-lattice)
-expect_re "m7-recmin-cap-rank" '\(cap dist 0 [0-9]+ \(recount yes\) \(precise-delete conditional\) \(fallback clear-rerun\) \(reason lattice-rank-repair\)\)' out/sess-m7-recmin.log
+# conditional capability: a recursive-cone selective lattice reports the
+# repair reason (acyclic lattices keep lattice-contributor-recount;
+# m04-cap-lattice)
+expect_re "m7-recmin-cap-recursive" '\(cap dist 0 [0-9]+ \(recount yes\) \(precise-delete conditional\) \(fallback clear-rerun\) \(reason lattice-recursive-repair\)\)' out/sess-m7-recmin.log
 
 # --- M7 sub-slice (d): transaction hygiene ----------------------------------
 # An aborted recount transaction publishes nothing; the next flush's lazy
@@ -3063,31 +3041,24 @@ else
 fi
 expect_not "m7-cycle0-no-rerun" "(route rerun" out/sess-m7-cycle0.log
 
-# --- M7 sub-slice (a): rank witnesses on a plain-table recursive cone -----
+# --- plain-table recursive cone: diamond/refound + symmetric cycle --------
 # Diamond/refound from incremental.md section 10's foundedness list, plus
-# a symmetric cycle.  The initial from-empty run stamps exact ranks
-# (path(1,4) = 2 via the diamond; first-seen-wins beats the rank-3 refound
-# chain).  Deletion takes M4T's PRECISE sweep -- a maintenance epoch over
-# warm content -- so rank witnesses go honestly INVALID (state 2), and
-# as-built (m7-contract.md) they STAY so: DRed over-deletes every touched
-# derived-only row (path(1,4) reseeds), so exact table ranks through a
-# sweep need the deferred per-derivation rank folds.  The value-level
-# unchanged skip is the operative re-fire exclusion (ratified 2026-07-24).
+# a symmetric cycle.  Deleting the diamond's (2,4) edge takes M4T's PRECISE
+# sweep (a maintenance epoch over warm content); path(1,4) is over-deleted
+# and reseeds through the refound chain.  The value-level unchanged skip
+# is the operative re-fire exclusion (ratified 2026-07-24); the per-tuple
+# rank witnesses once stamped here were removed 2026-09-10
+# (docs/history/m7-rank-witnesses.md).
 timeout 900 racket tests/api/session-drive.rkt \
   run:tests/session/m7_rank_diamond.slog \
   batch+:edge,1,2 batch+:edge,1,3 batch+:edge,2,4 batch+:edge,3,4 \
   batch+:edge,1,5 batch+:edge,5,6 batch+:edge,6,4 \
   batch+:edge,9,10 batch+:edge,10,11 batch+:edge,11,10 \
-  flush rank-witness-state dump-ranks:path \
-  batch-:edge,2,4 flush rank-witness-state \
+  flush \
+  batch-:edge,2,4 flush \
   > out/sess-m7-rankdiamond.log 2>&1
-expect "m7-diamond-ranks-valid" "(rnk path 0 1)" out/sess-m7-rankdiamond.log
-expect "m7-diamond-rank-14" "(rankrow path 1 4 2)" out/sess-m7-rankdiamond.log
-expect "m7-diamond-rank-refound" "(rankrow path 5 4 2)" out/sess-m7-rankdiamond.log
-expect "m7-diamond-rank-cycle" "(rankrow path 9 11 2)" out/sess-m7-rankdiamond.log
-expect "m7-diamond-rankcount" "(rankdone path 16)" out/sess-m7-rankdiamond.log
 expect "m7-diamond-m4t-route" "(route maintain-recursive-negative 1)" out/sess-m7-rankdiamond.log
-expect "m7-diamond-ranks-honest" "(rnk path 0 2)" out/sess-m7-rankdiamond.log
+expect_not "m7-diamond-no-rerun" "(route rerun" out/sess-m7-rankdiamond.log
 
 # --- M7 sub-slice (c): persistence -----------------------------------------
 # Save a warm recursive-lattice session, reopen: the load re-establishes
@@ -3186,7 +3157,7 @@ expect_not "m7-nonselective-no-stale" "(tuplerow 2 {1:1 5:1})" out/sess-m7-setla
 # edge.  A cone is repaired as one fixpoint, so the hazard belongs to the
 # cone rather than to the head that carries it: retention is refused for the
 # WHOLE cone and dist -- repair-capable, still reporting
-# lattice-rank-repair -- falls to clear-and-rerun with it.  Sound, but a real
+# lattice-recursive-repair -- falls to clear-and-rerun with it.  Sound, but a real
 # precision loss; pinned so narrowing the gate to the offending head (the
 # per-element contributor identity of m7-contract §7A.2) is a deliberate
 # decision against a failing assertion, not a silent drift.  Content is the
@@ -3199,7 +3170,7 @@ timeout 900 racket tests/api/session-drive.rkt \
   batch-:edge,2,3,5 flush dump-tuples:dist dump-tuples:tags \
   > out/sess-m7-mixed.log 2>&1
 expect_re "m7-mixed-selective-capable" \
-  '\(cap dist 0 [0-9]+ \(recount yes\) \(precise-delete conditional\) \(fallback clear-rerun\) \(reason lattice-rank-repair\)\)' \
+  '\(cap dist 0 [0-9]+ \(recount yes\) \(precise-delete conditional\) \(fallback clear-rerun\) \(reason lattice-recursive-repair\)\)' \
   out/sess-m7-mixed.log
 expect_re "m7-mixed-nonselective-sibling" \
   '\(cap tags 0 [0-9]+ \(recount yes\) \(precise-delete conditional\) \(fallback clear-rerun\) \(reason lattice-nonselective-recount\)\)' \

@@ -4,8 +4,8 @@
 ;; sub-slice (d)).  Cold = initial derivation flush + contributor
 ;; establishment over a weighted chain with shortcut losers; warm = a
 ;; one-edge deletion repaired from stored contributors.  Correct
-;; route/state are hard gates; timings and the contributor/rank storage
-;; lower bounds are trend data for CI.
+;; route/state are hard gates; timings and the contributor storage lower
+;; bound are trend data for CI.
 
 (require "../../compiler/session.rkt")
 
@@ -33,8 +33,6 @@
   rows)
 (define (count-rows s rel)
   (dump-lines s `(dump-counts ,rel) #px"^\\(countdone " #px"^\\(countrow "))
-(define (rank-rows s rel)
-  (dump-lines s `(dump-ranks ,rel) #px"^\\(rankdone " #px"^\\(rankrow "))
 
 (define s (make-session
            #:echo (lambda (line) (set! transcript (cons line transcript)))))
@@ -66,18 +64,15 @@
      (error 'lattice-repair-perf "the repair route was not selected"))
 
    (define contributors (count-rows s 'dist))
-   (define ranks (rank-rows s 'dist))
    (when (null? contributors)
      (error 'lattice-repair-perf "post-repair contributor cache is absent"))
    ;; storage lower bound: key columns + payload/word, 8 bytes each
    (define row-words 4)   ; dist arity 3 + sidecar word
-   (printf "m7-perf-ok n=~a cold-ms=~a warm-ms=~a ratio=~a contributors=~a contributor-bytes-lb=~a ranks=~a rank-bytes-lb=~a\n"
+   (printf "m7-perf-ok n=~a cold-ms=~a warm-ms=~a ratio=~a contributors=~a contributor-bytes-lb=~a\n"
            n
            (real->decimal-string cold-ms 3)
            (real->decimal-string warm-ms 3)
            (real->decimal-string (/ warm-ms (max cold-ms 1e-9)) 4)
            (length contributors)
-           (* 8 row-words (length contributors))
-           (length ranks)
-           (* 8 row-words (length ranks))))
+           (* 8 row-words (length contributors))))
  (lambda () (session-close! s)))

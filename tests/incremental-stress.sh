@@ -197,8 +197,8 @@ else
 fi
 
 # M7 repair perf + sidecar memory (docs/m7-contract.md sub-slice (d)):
-# cold derivation vs warm one-edge repair, contributor/rank storage lower
-# bounds -- reported, not thresholded; route selection is the hard gate.
+# cold derivation vs warm one-edge repair, contributor storage lower
+# bound -- reported, not thresholded; route selection is the hard gate.
 log="out/m7-perf.log"
 if SLOG_THREADS=4 timeout 1200 \
      racket tests/api/lattice-repair-perf.rkt > "$log" 2>&1 \

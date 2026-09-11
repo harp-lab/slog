@@ -70,34 +70,28 @@ that substrate, and the tombstone persistence policy is pinned and
 implemented (the chain is the sidecar). The remaining implementation
 queue, in the decided order, is:
 
-1. **M7 — recursive lattice/rank repair** (interpreter-first per roadmap
+1. **M7 — recursive lattice repair** (interpreter-first per roadmap
    P4, as interpreter variants on the admitted counted core; the counted
    interpreter and M4N are complete — see their exit audits below).
    `docs/m7-contract.md` (2026-07-23) is the certification target and the
    **single admission gate**; the sub-slices below are implementation
    order only, not separately certified admissions. Admission stays off
    until (b) lands, so no sub-slice weakens fallback:
-   - (a) **sidecar substrate** — same-SCC contributor retention plus the
-     new rank-witness sidecar (eager forward maintenance) and its
-     coverage/certification plumbing; regressions still fall back; gated
-     by the fresh-recount oracles.  LANDED 2026-07-23: the
+   - (a) **sidecar substrate** — same-SCC contributor retention and its
+     coverage/certification plumbing (plus a rank-witness sidecar, REMOVED
+     2026-09-10 — history/m7-rank-witnesses.md); regressions still fall
+     back; gated by the fresh-recount oracles.  LANDED 2026-07-23: the
      `lattice-retention-shape?` route predicate (acyclicity-free subset
      of M6L's certificate) runs the version-local establishment recount
      for recursive lattice cones before route selection (`(m7-retention
      ...)`), after fixing the latent missing-backfill bug in late
      lattice payload-map ordering requisition that aborted every
-     recursive-lattice recount; rank witnesses stamp first-derivation
-     rounds at the iteration barrier (write∩read = the same-SCC test,
-     no emit-cpp or frozen-core changes), certified `(rnk NAME ORD 1)`
-     when stamped from empty, honestly invalid (2) across warm
-     re-entries and M4T sweeps until (b); new verbs
-     `(rank-witness-state)`/`(dump-ranks ...)`; fixtures
-     `m7_rec_min`/`m7_rank_diamond` with (b) flip points.  Pinned for
-     (b): lattice-subsumed losers carry no forward stamp (repair derives
-     them on demand); temp-staged rules stride two physical rounds per
-     logical hop.
+     recursive-lattice recount; fixtures `m7_rec_min`/`m7_rank_diamond`
+     with (b) flip points.  Pinned for (b): lattice-subsumed losers are
+     derived on demand by the repair; temp-staged rules stride two
+     physical rounds per logical hop.
    - (b) **repair fixpoint on plain tables** — M4T candidate seeding, the
-     rank-unchanged exclusion, value re-join from live contributors,
+     re-fire exclusion, value re-join from live contributors,
      replacement pairs; opens admission. Fixtures: recursive value
      regression, rank corpse fire, contributor collapse/loser retention.
      VALUE REPAIR LANDED 2026-07-24: `m7-eligible?` route (M4T schedule +
@@ -117,16 +111,13 @@ queue, in the decided order, is:
      dies via absorption — the rank gate is an OPTIMIZATION in this
      design, not a correctness precondition; the value-unchanged skip is
      the operative re-fire exclusion).  Cache survives repair epochs.
-     RANK AS-BUILT PINNED 2026-07-24 (contract, ratified): the
-     value-unchanged skip is the operative re-fire exclusion (the rank
-     comparison is an admissible optimization behind the round seam);
-     transient count rounds flip rank validity neither way (forced
-     recounts used to spuriously invalidate), dead rows' stamps erase at
-     all three genuine-deletion sites, warm maintenance epochs downgrade
-     honestly — DRed over-deletes every touched derived-only row, so
-     exact table ranks through a sweep need the per-derivation rank
-     folds §7A.2 reserves (the deferred precise mechanism behind the
-     repair seam).  Sub-slice (b) COMPLETE.
+     RE-FIRE EXCLUSION PINNED 2026-07-24 (contract, ratified): the
+     value-unchanged skip is the operative exclusion; a rank-unchanged
+     exclusion stays an admissible optimization behind the round seam.
+     Sub-slice (b) COMPLETE.  2026-09-10: the rank-witness sidecar that
+     (a) had built for that exclusion was REMOVED — never consumed, valid
+     for one epoch only, and 25–75 % of recursive-closure fixpoints as
+     serial barrier work (stats.md §1.5; history/m7-rank-witnesses.md).
    - (c) **struct-keyed cones + persistence** — M5 tombstone identity
      across delete/reseed/relearn; load re-establishment from the exact
      historical writers, or certified fallback when that is impossible.
@@ -181,16 +172,14 @@ first seed), legacy reenter flushes drop the cache per §8B.2's lazy
 protocol, and every certified epoch's coverage audit proves repaired
 visible ≡ reduce of from-scratch contributors.  Foundedness holds
 without a rank gate — pessimistic retraction + exact counting +
-absorption break unfounded 0-weight cycles (ratified as-built; the rank
-comparison remains an optimization seam) — and rank witnesses stay
-honest: exact from-scratch, transient count rounds neutral, erasure
-hygiene at every deletion site, warm-epoch downgrades with the
-per-derivation rank folds pinned as the deferred precise mechanism.
+absorption break unfounded 0-weight cycles (ratified as-built; a rank
+comparison remains an optimization seam, its former substrate removed
+2026-09-10 — history/m7-rank-witnesses.md).
 
 Deterministic coverage: the m7-* session blocks (flagship regression,
 collapse/loser retention, 0-weight cycles, reopen persistence, inherited
 fallback, struct-keyed identity, recount abort/heal, counter-overflow
-fallback, flavored-native refusal, rank-repair capability) plus the
+fallback, flavored-native refusal, recursive-repair capability) plus the
 flipped m6l/m5 blocks.  Randomized coverage: the repair stream fuzz
 (ten mixed signed epochs, cyclic 0-weight graphs, content + sidecars vs
 fresh rerun + forced recount) under 1/2/8 workers and SLOG_MAX_MS=1.

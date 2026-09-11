@@ -356,17 +356,11 @@ private:
   Index** count_sidecar = nullptr;
   Index** count_epoch_sidecar = nullptr;
 
-  // M7 sub-slice (a) rank witnesses (docs/m7-contract.md): per-tuple best
-  // derivation rank = the semi-naive round of first derivation, stamped
-  // once per round at the EndIterCompletion barrier for relations their
-  // stratum both writes and reads (the same-SCC members).  Session-
-  // ephemeral recomputable cache exactly like counts: never serialized,
-  // never an entry in `indices`.  rank_state: 0 = pending (cleared or
-  // never tracked), 1 = valid (stamped from an empty relation, exact),
-  // 2 = invalid (a warm re-entry restarted round numbering, or a point
-  // mutation bypassed the stamp; precise maintenance is sub-slice (b)).
-  Index** rank_sidecar = nullptr;
-  u8 rank_state = 0;
+  // Set at stratum entry when the executing stratum both writes and reads
+  // this relation (a same-SCC member).  Selective lattices among them
+  // advertise the M7 recursive repair capability (countCapabilitiesSexpr);
+  // nothing else consults it.  Reset with the count caches.
+  bool recursive_cone_member = false;
   bool count_epoch_active = false;
   std::atomic<bool> count_epoch_valid{true};
   // Authoritative M0.4 semantic-writer ownership.  Pipeline maintenance
@@ -697,7 +691,6 @@ public:
     else
       removeTuple(t);
     clearCounts();
-    rankInvalidate();
   }
 
   void markAllLiveDirect()
@@ -822,7 +815,7 @@ public:
     // Registration teardown invalidates the count invariant ("a version's
     // count map covers exactly its live tuples", §6.1) with everything else.
     clearCounts();
-    clearRanks();
+    recursive_cone_member = false;
   }
 
   // ---- index-reuse boundary (the cross-stratum keep-set) -------------------
@@ -889,7 +882,7 @@ public:
   // Seeded-only survivors always empty (they are refilled only by
   // externally-seeded runs).  Master/lookup memos could name a dropped
   // ordering, so they clear unconditionally (recomputed lazily);
-  // counts/ranks clear to preserve the pre-reuse boundary invariant.
+  // counts clear to preserve the pre-reuse boundary invariant.
   // Returns false -- leaving the relation completely untouched -- when the
   // install requisitioned nothing for it (a relation outside the incoming
   // program: its content must survive verbatim, and
@@ -968,7 +961,7 @@ public:
     struct_master_index.clear();
     struct_lookup_index.clear();
     clearCounts();
-    clearRanks();
+    recursive_cone_member = false;
     fresh_requisitions.clear();
     fresh_delta_requisitions.clear();
     fresh_created.clear();
@@ -1134,50 +1127,8 @@ public:
     return count_sidecar;
   }
 
-  // ---- M7 rank-witness sidecar (docs/m7-contract.md sub-slice (a)) -----
-
-  Index** ensureRankSidecar()
-  {
-    if (rank_sidecar) return rank_sidecar;
-    rank_sidecar = new Index*[bucket_count];
-    for (u32 b = 0; b < bucket_count; ++b)
-      rank_sidecar[b] = makeMapIndex(countKeyArity(), LAT_NONE,
-                                     false, 0, false, 0);
-    return rank_sidecar;
-  }
-  Index** getRankSidecar() { return rank_sidecar; }
-  u8 rankState() const { return rank_state; }
-  void setRankStateValid() { rank_state = 1; }
-  // Never un-invalidates: only a stamp-from-empty run re-certifies.  An
-  // invalidated sidecar is never consulted, so drop the memory too -- the
-  // repair-perf gate showed stale stamps accumulating across warm epochs.
-  void rankInvalidate()
-  {
-    if (rank_state != 1) return;
-    rank_state = 2;
-    deleteCountArray(rank_sidecar);
-  }
-  void clearRanks()
-  {
-    deleteCountArray(rank_sidecar);
-    rank_state = 0;
-  }
-  // First-seen-wins stamp for one storage-order row (key prefix per
-  // countKeyArity, so struct relations stamp by their id column).
-  void stampRankIfAbsent(const u64* row, u32 round)
-  {
-    Index** side = ensureRankSidecar();
-    Index* node = side[buckethash(row[0])];
-    u64 cur;
-    if (!node->getPayload(row, countKeyArity(), cur))
-      node->setPayload(row, countKeyArity(), (u64)round);
-  }
-  bool hasAnyLiveNominal()
-  {
-    bool found = false;
-    forEachLiveNominal([&](const u64*) { found = true; });
-    return found;
-  }
+  bool isRecursiveConeMember() const { return recursive_cone_member; }
+  void markRecursiveConeMember() { recursive_cone_member = true; }
 
   bool isCounted()
   {
@@ -1707,12 +1658,6 @@ public:
     for (u16 c = 0; c < arity; ++c) ident[c] = c;
     return side[buckethash(row[0])]
              ->removeTuple(const_cast<u64*>(row.data()), ident.data());
-  }
-
-  void eraseRankStamp(const std::vector<u64>& row)
-  {
-    if (rank_sidecar == nullptr) return;
-    eraseContributorRow(rank_sidecar, row);
   }
 
   u16 getArity()
@@ -2730,10 +2675,9 @@ public:
       for (u16 b = 0; b < bucket_count; ++b)
 	it.second[b]->clear();
     // Contents gone => counts gone ("covers exactly its live tuples", §6.1);
-    // the lazy protocol re-establishes them on demand.  Ranks reset to
-    // pending: the refilling run stamps from empty and re-certifies.
+    // the lazy protocol re-establishes them on demand.
     clearCounts();
-    clearRanks();
+    recursive_cone_member = false;
     for (InsertBatch* ib : *delta)
       delete ib;
     delta->clear();
@@ -2772,7 +2716,6 @@ public:
   void insertTupleAllIndices(const u64* t)
   {
     clearCounts();
-    rankInvalidate();
     insertTupleAllIndicesPreservingCounts(t);
   }
 
@@ -2891,7 +2834,7 @@ public:
   // hot-swapped stratum keeps its epoch identity.
   std::string flavor = "normal";
   // Transient (count/recount) incarnations fold sidecars without mutating
-  // membership; rank marking skips them entirely (M7).
+  // membership (the recursive-cone marking at stratum entry skips them).
   bool transient_instance = false;
   // accelerator-seed relations (docs/db-compression.md §4.4 v2): the
   // compiler's per-SCC tier scoring picked these (linear-recursive or
@@ -3035,6 +2978,11 @@ struct RunStatus {
   u64 new_tuples;       // growth since the stratum started (see continueRun)
   double ms_call;       // wall time this call
   double ms_total;      // wall time across all calls for this stratum
+  // Per-phase wall time of the sentinel thread, accumulated over every
+  // iteration of this stratum (see RunState::ms_phase_*).  Published on the
+  // (phases ...) line when SLOG_PHASE_TIMES is set.
+  double ms_phase_write, ms_phase_read, ms_phase_finalize, ms_phase_intern,
+         ms_phase_reorg, ms_phase_end, ms_phase_endcomp;
 };
 
 // All state of an in-flight (possibly suspended) stratum run.  Grouped in one
@@ -3084,6 +3032,17 @@ struct RunState {
   u32 iteration_count = 0;
   double ms_total = 0.0;
   u64 start_tuples = 0;                        // total tuples at stratum start
+  // Phase wall-time accounting, sentinel thread (tid 0), summed over the
+  // iterations of this stratum.  write: the previous delta inserted into
+  // every full index (WriteTasks); read: join/read tasks up to and including
+  // the read barrier (so it contains finalize); finalize: merging the read
+  // phase's send shards into the new delta (ReadCompletion, one thread);
+  // intern: dedup of the new delta against the master indices; reorg:
+  // bucketising the delta; end: the end-of-iteration barrier and its
+  // completion (growth decision, watches, RSS check).
+  double ms_phase_write = 0.0, ms_phase_read = 0.0, ms_phase_finalize = 0.0,
+         ms_phase_intern = 0.0, ms_phase_reorg = 0.0, ms_phase_end = 0.0,
+         ms_phase_endcomp = 0.0;   // the part of `end` spent inside EndIterCompletion
   std::string last_message;                    // cached fixpoint msg (§5)
 
   // Set by ReadCompletion / EndIterCompletion, read by runLoop after barriers.
@@ -4080,7 +4039,6 @@ public:
       else
       {
         rel->eraseContributorRow(side, row);
-        rel->eraseRankStamp(row);
         ++discarded;
       }
     }
@@ -6391,34 +6349,6 @@ public:
     return s;
   }
 
-  // M7 rank-witness certification, beside contributor certification:
-  //   (rank-witness-state (rnk NAME ORD 1|2) ...)
-  // 1 = stamped from an empty relation and exact; 2 = invalidated (a warm
-  // re-entry or a bypassing mutation); never-tracked relations are omitted.
-  std::string rankWitnessStateSexpr()
-  {
-    std::map<std::string, const std::vector<RelBinding>*> sorted;
-    for (const auto& kv : rel_bindings)
-      if (!kv.first.empty() && kv.first[0] != '$')
-        sorted[kv.first] = &kv.second;
-    std::string s = "(rank-witness-state";
-    for (const auto& kv : sorted)
-    {
-      u32 ord = 0;
-      for (const RelBinding& b : *kv.second)
-      {
-        const u32 o = ord++;
-        if (b.rel == nullptr || b.rel->isCompilerTemporary()
-            || b.rel->rankState() == 0)
-          continue;
-        s += " (rnk " + kv.first + " " + std::to_string(o) + " "
-           + std::to_string(b.rel->rankState()) + ")";
-      }
-    }
-    s += ")";
-    return s;
-  }
-
   // Explicit per-VersionId capability report.  Recount capability is
   // separate from precise deletion: ordinary tables can establish counts,
   // structs advertise conditional maintenance on the M5 identity substrate
@@ -6467,7 +6397,8 @@ public:
         {
           recount = "yes";
           precise = "conditional";
-          // M7: a live rank-witness sidecar marks the recursive repair
+          // M7: a selective lattice its stratum both writes and reads (a
+          // recursive-cone member) advertises the recursive repair
           // capability (conditional -- the session route still proves the
           // admitted cone shape; storage class is never sufficient).
           // SELECTIVE joins only (min/max/count-as-max): value preservation
@@ -6482,7 +6413,7 @@ public:
           const bool selective =
             k == LAT_MIN || k == LAT_MAX || k == LAT_COUNT;
           reason = !selective ? "lattice-nonselective-recount"
-                 : b.rel->rankState() != 0 ? "lattice-rank-repair"
+                 : b.rel->isRecursiveConeMember() ? "lattice-recursive-repair"
                                            : "lattice-contributor-recount";
         }
         else if (!b.rel->getAnyIndex())
@@ -6801,18 +6732,33 @@ public:
     // RUN_AT_BOUNDARY: latest_any_rec persists true (we boundary-suspend only
     // when the last iteration grew), so the next iteration runs.
 
+    // Phase wall clocks (sentinel thread).  Every phase ends at a barrier all
+    // workers cross together, so the sentinel's segment between two barriers
+    // is the phase's wall time for the whole team.
+    using clk = std::chrono::steady_clock;
+    const auto ms_between = [](clk::time_point a, clk::time_point b) {
+      return std::chrono::duration<double, std::milli>(b - a).count();
+    };
     for (;;)
     {
+      clk::time_point t_start = clk::now(), t_write = t_start, t_read = t_start;
       if (!skip_to_intern)
       {
         if (!skip_to_read)
         {
           db->iter_barrier->arrive_and_wait();     // IterCompletion: latest=false
           db->runPhase(phase_write, sentinel);
+          t_write = clk::now();
         }
         skip_to_read = false;
 
         db->runPhase(phase_read, sentinel);        // may suspend mid-read
+        t_read = clk::now();
+        if (sentinel)
+        {
+          rs.ms_phase_write += ms_between(t_start, t_write);
+          rs.ms_phase_read += ms_between(t_write, t_read);
+        }
         if (rs.read_suspended)
         {
           if (sentinel) rs.position = RUN_MID_READ;
@@ -6829,6 +6775,8 @@ public:
       skip_to_intern = false;
 
       db->runPhase(phase_intern, sentinel);
+      const clk::time_point t_intern = clk::now();
+      if (sentinel) rs.ms_phase_intern += ms_between(t_read, t_intern);
 
       // Unbudgeted single pass (internal reload/disk strata): one iteration.
       if (!rs.tofixpoint)
@@ -6846,10 +6794,13 @@ public:
       // just clears the views.
       if (db->getLatestAnyRec() || rs.external_pending)
         db->reorgAll(tid, nthreads);               // bucketize for next iter
+      const clk::time_point t_reorg = clk::now();
+      if (sentinel) rs.ms_phase_reorg += ms_between(t_intern, t_reorg);
 
       // Decide continue / fixpoint / boundary-suspend ONCE (single-threaded),
       // so every worker acts on the same verdict (§4 point 2).
       db->end_barrier->arrive_and_wait();          // EndIterCompletion
+      if (sentinel) rs.ms_phase_end += ms_between(t_reorg, clk::now());
       if (rs.next_action == ACT_FIXPOINT)
         break;
       if (rs.next_action == ACT_BOUNDARY_SUSPEND)
@@ -6904,7 +6855,7 @@ public:
         auto it = accel_sidecar.find(s->name);
         if (it != accel_sidecar.end()) ++it->second.generation;
       }
-      rankMarkStratumEntry(s);
+      markRecursiveConeMembers(s);
       rs.stratum = s;
       rs.position = RUN_FRESH;
       rs.suspended = false;
@@ -6918,6 +6869,9 @@ public:
       }
       rs.iteration_count = 0;
       rs.ms_total = 0.0;
+      rs.ms_phase_write = rs.ms_phase_read = rs.ms_phase_finalize = 0.0;
+      rs.ms_phase_intern = rs.ms_phase_reorg = rs.ms_phase_end = 0.0;
+      rs.ms_phase_endcomp = 0.0;
       rs.start_tuples = totalTuples();
       // Every relation gets a send buffer per worker and reorg buffers --
       // registry-wide (0.C): positional re-entry writes old versions too.
@@ -6998,6 +6952,13 @@ public:
     st.iteration = rs.iteration_count;
     st.ms_call = ms_call;
     st.ms_total = rs.ms_total;
+    st.ms_phase_write = rs.ms_phase_write;
+    st.ms_phase_read = rs.ms_phase_read;
+    st.ms_phase_finalize = rs.ms_phase_finalize;
+    st.ms_phase_intern = rs.ms_phase_intern;
+    st.ms_phase_reorg = rs.ms_phase_reorg;
+    st.ms_phase_end = rs.ms_phase_end;
+    st.ms_phase_endcomp = rs.ms_phase_endcomp;
     if (rs.position == RUN_FRESH)          // loop exited => fixpoint / pass done
     {
       rs.suspended = false;
@@ -8080,75 +8041,28 @@ public:
     return marked;
   }
 
-  // ---- M7 rank-witness stamping (docs/m7-contract.md sub-slice (a)) --------
+  // ---- recursive-cone membership (M7 capability report) --------------------
   //
-  // A tuple's foundedness rank is the recursive minimum over derivations of
-  // (1 + max body rank); under fair semi-naive evaluation that IS the round
-  // its first derivation lands in the finalized delta -- deterministic
-  // across worker counts and stable across pause slices (an interrupted
-  // round resumes as the same round; partial read phases never finalize).
-  // Stamped single-threaded from EndIterCompletion beside the accelerator
-  // recorder.  Only relations their stratum both writes and reads (the
-  // same-SCC members) pay; the stamp is first-seen-wins.
-
-  static bool rankTracked(const Stratum* s, const std::string& rname)
+  // A relation its stratum both writes and reads is a recursive-cone
+  // member; selective lattices among them advertise the recursive repair
+  // capability in countCapabilitiesSexpr.  Marked once at stratum entry --
+  // program structure, no per-tuple work.  Count/recount incarnations fold
+  // sidecars only and leave the mark untouched.
+  void markRecursiveConeMembers(Stratum* s)
   {
-    return std::find(s->read_rels.begin(), s->read_rels.end(), rname)
-             != s->read_rels.end();
-  }
-
-  // Decide this run's stamping validity per recursive relation.  Stamping
-  // that begins on an EMPTY relation yields exact ranks; a warm re-entry
-  // restarts round numbering, so a previously-valid sidecar goes invalid
-  // until sub-slice (b) maintains ranks precisely.
-  void rankMarkStratumEntry(Stratum* s)
-  {
-    // A count round reads membership and folds sidecars only -- it can
-    // neither corrupt stamps nor make them stale, so it must not flip
-    // validity either way (forced recounts used to spuriously invalidate).
     if (s->transient_instance) return;
     for (const std::string& rname : s->dynamic_rels)
     {
-      if (!rankTracked(s, rname)) continue;
+      if (std::find(s->read_rels.begin(), s->read_rels.end(), rname)
+            == s->read_rels.end())
+        continue;
       // Resolve the instance this run actually executes against: an N3
       // prepared boundary registers the program's output versions only in
       // its private environment until commit, and maintenance re-entries
       // bind exact historical versions -- the latest map sees neither.
       Relation* rel = getRelation(rname);
-      if (rel == nullptr) continue;
-      if (rel->getArity() == 0) continue;
-      if (!rel->hasAnyLiveNominal())
-      {
-        rel->clearRanks();
-        rel->setRankStateValid();
-      }
-      else
-        rel->rankInvalidate();
-    }
-  }
-
-  void rankRecordRound()
-  {
-    const Stratum* s = rs.stratum;
-    if (s == nullptr || s->transient_instance) return;
-    const u32 round = rs.iteration_count;
-    for (const std::string& rname : s->dynamic_rels)
-    {
-      if (!rankTracked(s, rname)) continue;
-      // Same resolution as rankMarkStratumEntry: the executing instance,
-      // not the public latest map (prepared boundaries, bound re-entries).
-      Relation* rel = getRelation(rname);
-      if (rel == nullptr) continue;
-      const u16 arity = rel->getArity();
-      if (arity == 0 || rel->rankState() != 1) continue;
-      for (InsertBatch* b : rel->getDelta())
-      {
-        if (b->kind == cnt_kind_premise || b->kind == cnt_kind_view
-            || b->sign < 0) continue;
-        for (u64 j = 0; j + arity <= b->usage; j += arity)
-          if (b->data[j] != slog_null)
-            rel->stampRankIfAbsent(&b->data[j], round);
-      }
+      if (rel == nullptr || rel->getArity() == 0) continue;
+      rel->markRecursiveConeMember();
     }
   }
 
@@ -10225,7 +10139,12 @@ inline void ReadCompletion::operator()() noexcept
       rs.read_once_armed = (n_once > 0);
     }
     else
+    {
+      const auto t0 = std::chrono::steady_clock::now();
       db->finalizeAll();
+      rs.ms_phase_finalize += std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - t0).count();
+    }
   }
 }
 
@@ -10237,12 +10156,12 @@ inline void ReadCompletion::operator()() noexcept
 inline void EndIterCompletion::operator()() noexcept
 {
   RunState& rs = db->rs;
+  const auto t_comp = std::chrono::steady_clock::now();
   // J2b/V3: open the next iteration's arm-selection epoch (see read_epoch)
   db->read_epoch.fetch_add(1, std::memory_order_acq_rel);
   // sample this round's delta into the accelerator-seed sidecar (§4.4 v2):
   // single-threaded here (all workers parked), delta finalized+interned+idle
   db->accelRecordRound();
-  db->rankRecordRound();
   // Level-0 watches evaluate HERE and nowhere else: the delta is finalized,
   // every worker is parked, and the iteration's growth is already known.
   db->evaluateWatchesAtBarrier();
@@ -10279,6 +10198,8 @@ inline void EndIterCompletion::operator()() noexcept
     rs.next_action = ACT_BOUNDARY_SUSPEND;
   else
     rs.next_action = ACT_CONTINUE;
+  rs.ms_phase_endcomp += std::chrono::duration<double, std::milli>(
+    std::chrono::steady_clock::now() - t_comp).count();
 }
 
 

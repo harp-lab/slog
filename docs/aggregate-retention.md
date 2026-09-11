@@ -130,18 +130,20 @@ re-establishment route.
 
 ## Where rank sits
 
-The M7 rank witness is already the opposite pole: it stores top-1 (the best
-surviving rank) and repairs by localized recompute over the candidate cone's
-live contributors (a recursive min of neighbor ranks). Truncation should
-target value contributors first; extending it to rank (retain k best depths
-per tuple) is possible but rank changes propagate along derivation chains
-even when membership doesn't, so refill rate likely dominates the savings.
-Measure values before touching rank.
+A per-tuple rank witness would be the opposite pole: top-1 (the best
+surviving rank) repaired by localized recompute over the candidate cone's
+live contributors (a recursive min of neighbor ranks).  M7 built and then
+removed exactly that sidecar (2026-09-10, history/m7-rank-witnesses.md):
+never consumed, and serial barrier cost.  Truncation should target value
+contributors first; extending it to rank (retain k best depths per tuple) is
+possible but rank changes propagate along derivation chains even when
+membership doesn't, so refill rate likely dominates the savings.  Measure
+values before touching rank.
 
 ## What M7 slice 1 must preserve (the only near-term obligation)
 
-- Repair consults contributors only through the next-surviving-value/rank
-  seam; no caller assumes contributor-set completeness as an ambient fact.
+- Repair consults contributors only through the next-surviving-value seam;
+  no caller assumes contributor-set completeness as an ambient fact.
 - Retention class is a *certified property* of the sidecar — `complete`
   today; `truncated (k, h)` later — reported through
   `(lattice-contributor-state ...)` beside the existing certification bits.

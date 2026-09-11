@@ -26,6 +26,7 @@
 
 #pragma once
 
+#include <cstdlib>
 #include "slogd.h"
 #include <algorithm>
 #include <array>
@@ -567,11 +568,23 @@ inline void join_all_lat(Index** index, Cont&& k)
 // head_ord[j] is the storage (nominal) position of index-order column j, so the
 // batch holds tuples in storage order for the downstream write/intern phases.
 // `nb` is reassigned on flush, hence the reference.
+// SLOG_NO_EMIT_DEDUP=1 (measurement knob, docs/knobs.md): skip the emit-time
+// probe of the head's master index.  Intern dedups the delta against the
+// master anyway, so results are unchanged; the delta merely carries the
+// duplicate candidates through finalize/intern/reorg.  Used to size the cost
+// of one master probe per candidate.
+inline bool emit_probes_head()
+{
+  static const bool probe = std::getenv("SLOG_NO_EMIT_DEDUP") == nullptr;
+  return probe;
+}
+
 template <u16 A>
 inline void emit(Relation* head_rel, Index** head_index, InsertBatch*& nb,
                  const std::array<u64, A>& zs, const std::array<u16, A>& head_ord)
 {
-  if (static_cast<BTreeIndex<A>*>(head_index[buckethash(zs[0])])->contains(zs))
+  if (emit_probes_head()
+      && static_cast<BTreeIndex<A>*>(head_index[buckethash(zs[0])])->contains(zs))
     return;
   u64* d = nb->data + nb->usage;
   for (u16 j = 0; j < A; ++j)
@@ -1531,9 +1544,6 @@ public:
           std::array<u64, A> countkey;
           for (u16 c = 0; c < A; ++c) countkey[c] = row[c];
           static_cast<BTreeMapIndex<A>*>(side[cb])->tree.erase(countkey);
-          // M7 stamp hygiene: a genuinely-dead row's rank witness goes too.
-          if (Index** rside = rel->getRankSidecar())
-            static_cast<BTreeMapIndex<A>*>(rside[cb])->tree.erase(countkey);
         }
         else
           db->invalidateUpdateCounts();
@@ -1663,9 +1673,6 @@ public:
               for (u16 c = 0; c < A; ++c) contribution[c] = row[c];
               static_cast<BTreeMapIndex<A>*>(side[bucket])
                 ->tree.erase(contribution);
-              if (Index** rside = rel->getRankSidecar())
-                static_cast<BTreeMapIndex<A>*>(rside[bucket])
-                  ->tree.erase(contribution);
               rel->lattice_dred_candidates.erase(
                 std::vector<u64>(row, row + A));
             }
@@ -1696,9 +1703,6 @@ public:
           std::array<u64, A> contribution;
           for (u16 c = 0; c < A; ++c) contribution[c] = row[c];
           static_cast<BTreeMapIndex<A>*>(side[bucket])->tree.erase(contribution);
-          if (Index** rside = rel->getRankSidecar())
-            static_cast<BTreeMapIndex<A>*>(rside[bucket])
-              ->tree.erase(contribution);
         }
         else
           db->invalidateUpdateCounts();

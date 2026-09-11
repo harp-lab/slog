@@ -74,7 +74,22 @@ after the id-keyed-intern/M5-tombstone and payload-map audits.
 **Incremental.**  join-pre XOR view + derived×recursive readers (M4N
 unlocks); per-derivation rank folds; negation×lattices fallback; M7
 refresh scoping; non-selective joins × recursive repair (7A.2);
-truncated retention (aggregate-retention.md); M6A aggregates.
+truncated retention (aggregate-retention.md); M6A aggregates.  (The M7
+rank-witness sidecar — never consumed, 25–75 % of closure fixpoints as
+serial barrier work — was REMOVED 09-10; history/m7-rank-witnesses.md.)
+
+**Fixpoint per-tuple cost (stats.md §1.5, 2026-09-10).**  The recursive
+closures spent ~1.4 µs of index operations per new tuple across emit-time
+dedup, intern, and rank stamping, with join algorithm choice not the
+issue; the stamping is gone (above).  Open, by size: skip unread inputs at load; bulk-load sorted
+batches into input indices instead of point insertion; a thin-iteration
+schedule that avoids 32-bucket fan-out when the delta is a few thousand
+rows; intern tasks that read only their bucket (delta pre-bucketised)
+instead of 32 whole-delta scans; sort-and-merge or adaptive dedup of an
+iteration's candidates replacing the per-candidate emit probe; and a
+read-only sorted-array index kind for closed relations on the index-reuse
+seam.  Replacing the btree masters themselves is NOT on this list: they
+carry DRed^c, counts, struct identity, lattices, sessions and persistence.
 
 **Tiers / daemon.**  Counted-sidecar preview/apply (lifts the monotone
 watch restriction); whole-fixpoint why-not; daemon `-t` in the core

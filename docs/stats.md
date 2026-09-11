@@ -101,6 +101,77 @@ semantics. This warning is a static companion to the dynamic work counters.
 - `tests/stats-tests.sh`, `tests/stat_*.slog`, and
   `tests/stats-expected/`: exact-once audit.
 - `bench/regress.sh` and `bench/regress/`: performance gate.
+- `daemon/database.h` `runLoop` / `ReadCompletion` / `EndIterCompletion`:
+  the per-phase sentinel timers behind `SLOG_PHASE_TIMES` (§1.5).
+
+### 1.5 Where fixpoint time goes (`SLOG_PHASE_TIMES`, 2026-09-10)
+
+`SLOG_PHASE_TIMES=1` prints one `(phases <scc> "<name>" iters N write W join
+J finalize F intern I reorg R end E endcomp C)` line after each `(fixpoint
+...)`: the sentinel thread's wall milliseconds per iteration phase, summed
+over the stratum.  The phases are the iteration pipeline in order:
+
+| phase | what it measures |
+|---|---|
+| `write` | the previous delta inserted into every non-master index (and, in iteration 0, every reloaded input indexed) |
+| `join` | the read tasks -- probes, guards, emit -- minus `finalize` |
+| `finalize` | per-shard insert batches merged into the new delta |
+| `intern` | per-bucket dedup of the delta against the master (`InternTask`) |
+| `reorg` | delta bucketising for the next write/read |
+| `end` | the end-of-iteration barrier plus its completion; `endcomp` is the completion body alone (fire aggregation, accel sampling, the continue/stop decision) |
+
+Measured on recursive closures (transitive closure and multi-source
+reachability over random sparse graphs, 2--8M derived tuples, 8--24M rule
+firings, `-O2`, one thread), the cost is a per-tuple constant on set
+insertion rather than join algorithm choice.  Before 2026-09-10 a 7.9M-tuple
+closure spent 16.6 s as:
+
+| cost centre | per unit | share |
+|---|---|---|
+| `join`: one master `contains` per candidate at emit time, plus the join proper | ~350 ns per firing | 8.2 s |
+| `intern`: master `contains` + `insert` per new tuple, with each of the 32 bucket tasks scanning the whole delta | ~510 ns per new tuple | 4.0 s |
+| `end`: the M7 rank-witness stamping, one `btree_map` probe+insert per new tuple, serial | ~530 ns per new tuple | 4.2 s |
+
+Three consequences worth knowing before touching any of it:
+
+1. **Serial per-iteration work is the scaling ceiling.**  The stamping ran
+   on the sentinel alone, so its share grew with threads: 25 % of the
+   closure at one thread, up to 75 % at six.  It was removed on 2026-09-10
+   (nothing consumed it -- history/m7-rank-witnesses.md): the closure went
+   from 16.6 to 12.3 s at one thread and from 7.1 to 2.7 s at six, and a
+   2001-iteration chain closure from 4.1 to 1.1 s at six threads.  The
+   rule it leaves behind: nothing O(new tuples) may run in a barrier
+   completion; `endcomp` should read as a few milliseconds per stratum.
+2. **Dedup is now the largest term, and moving it does not shrink it.**  On
+   closures 3--10 candidates are fired per kept tuple, and each candidate
+   costs one random master probe wherever that probe happens.
+   `SLOG_NO_EMIT_DEDUP=1` (measurement only) moves the probe from `emit` to
+   `InternTask`: `join` falls from 11.2 to 1.4 s (the join proper -- probes
+   into the body relation plus emission -- is only that 1.4 s, ~60 ns per
+   firing) while `intern` rises from 5.3 to 11.0 s, a net 1.2x.  The probe
+   is pure waste for a candidate intern was about to insert anyway: on a
+   closure with 1.2 firings per kept tuple skipping it is 1.33x at one
+   thread with intern almost unchanged, while on one with 10 firings per
+   kept tuple it is a wash.  With the stamping gone the closure is ~90 %
+   random btree operations on the head relation, and the only lever left
+   is to stop doing one per candidate -- sort each iteration's candidates
+   and merge-dedup them, then probe the master once per distinct candidate
+   in key order (a sorted probe sequence walks the tree's leaves instead of
+   random pages).  An adaptive per-rule probe (sample the duplicate rate,
+   skip the emit probe when it is low) is the cheap partial version and is
+   worth 1.1--1.3x on its own on low-duplicate rules.  Both keep the master
+   trees unchanged.
+3. **Input indexing hides in `write` and load.**  Iteration 0's `write`
+   builds every input index by point insertion (5.1M rows: 0.76 s, 6--23 %
+   of the join-shaped benchmarks' fixpoint), and the binary-DB load path
+   indexes relations no rule reads (a 2M-row unused input costs ~2 s of a
+   4.9 s load).  Bulk-loading sorted batches into the btrees and dropping
+   unread inputs at load are both mechanical.
+
+The interpreter tier is within ~1.2x of `-O2` on these workloads: only
+`join` differs between the tiers, and `join` is not where most of the time
+goes.  The phase line is the first place to look whenever a fixpoint number
+moves.
 
 ## 2. Statistics are observations, not program facts
 

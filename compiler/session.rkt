@@ -1225,7 +1225,7 @@
                    (and (member '(recount yes) fields)
                         (or (member '(reason table-recount) fields)
                             (member '(reason lattice-contributor-recount) fields)
-                            (member '(reason lattice-rank-repair) fields)
+                            (member '(reason lattice-recursive-repair) fields)
                             (member '(reason lattice-nonselective-recount) fields)
                             (member '(reason struct-recount) fields))
                         (pair? chain) (= ord (first (last chain))))]
@@ -1234,7 +1234,7 @@
        (values name
                (cond
                  [(member '(reason lattice-contributor-recount) fields) 'lattice]
-                 [(member '(reason lattice-rank-repair) fields) 'lattice]
+                 [(member '(reason lattice-recursive-repair) fields) 'lattice]
                  ;; non-selective joins (set/map/flat): M6L's acyclic routes
                  ;; only; the recursive repair refuses them (selectivity is
                  ;; what grounds row-level candidacy -- M7 as-built).

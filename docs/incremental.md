@@ -1045,6 +1045,12 @@ best surviving rank changes, at the cost of more provenance or
 re-evaluation. They can share scheduling, candidate, and replacement-delta
 infrastructure, but neither representation should be forced into the other.
 
+*As built:* M7 ships DRed repair only.  The value-unchanged skip was
+ratified as the operative re-fire exclusion (2026-07-24) and the rank-witness
+substrate built for a rank-unchanged exclusion was removed on 2026-09-10 as
+unconsumed serial cost ([history/m7-rank-witnesses.md](history/m7-rank-witnesses.md));
+rank repair remains a design option behind the same seam.
+
 ### 7A.5 Custom stable semilattices
 
 A future custom declaration needs a domain, bottom, join, order, serialization,
@@ -1549,15 +1555,15 @@ every negative edge uses clear-and-rerun.
 Design and implement the separate stratified aggregate language from §7A.6.
 This is not a prerequisite for M4T.
 
-### M7 — recursive lattice/rank repair *(COMPLETE — slice 1 shipped 2026-07-24/25, vetted 07-25)*
+### M7 — recursive lattice repair *(COMPLETE — slice 1 shipped 2026-07-24/25, vetted 07-25)*
 
 Implement change splitting and regression repair for admitted recursive
 lattices. Keep non-stable recursive aggregates rejected. The narrower state,
 admission, and repair-fixpoint lifecycle are pinned in
 [m7-contract.md](m7-contract.md): stored-contributor repair (extending M6L's
-`Contrib` plus per-tuple rank witnesses) unifying recursive lattice value
-regression and foundedness rank regression over one DRed^c
-candidate/replacement substrate (§7A.3/§7A.4), ratified 2026-07-23.
+`Contrib`) over the DRed^c candidate/replacement substrate (§7A.3/§7A.4),
+ratified 2026-07-23; the per-tuple rank witnesses of the original direction
+were removed 2026-09-10 (§7A.4 as-built note).
 
 ---
 

@@ -41,6 +41,18 @@ artifacts), `SLOG_FLAVORED_NATIVE` (the differential's native leg),
 **`SLOG_NO_MEM_CAP`** (skip the systemd-run wrap entirely — set by ~19
 test harnesses; previously documented nowhere), `SLOG_THREADS`,
 `SLOG_NO_STATS` (stats.md; `SLOG_STATS=off|basic|full` is future),
+**`SLOG_PHASE_TIMES`** (emit one `(phases <scc> "<name>" iters N write W join J
+finalize F intern I reorg R end E)` line after each `(fixpoint ...)`: the
+sentinel thread's wall milliseconds per iteration phase, summed over the
+stratum -- write = previous delta inserted into the full indices, join =
+read tasks minus finalize, finalize = shard merge into the new delta, intern
+= delta dedup against the masters, reorg = delta bucketising, end = the
+end-of-iteration barrier and its completion, endcomp = the completion body
+alone; 2026-09-10),
+**`SLOG_NO_EMIT_DEDUP`** (measurement knob, 2026-09-10: skip the emit-time
+`contains` on the head master -- intern still dedups the delta, so results
+are unchanged and only the cost of one master probe per candidate is
+removed; stats.md §1.5),
 `SLOG_MPZ_MAX_BITS`/`_TABLE_BYTES`, `SLOG_ACCEL`(+`_RATE`/`_QUOTA`/`_MB`/
 `_MIN_ROUNDS`) (db-compression.md §4.4), `SLOG_SMT_SOLVERS` /
 `SLOG_ORACLE_PROCS` (smt.md §8), `SLOG_NO_INDEX_REUSE` /
