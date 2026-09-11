@@ -81,14 +81,17 @@ serial barrier work — was REMOVED 09-10; history/m7-rank-witnesses.md.)
 **Fixpoint per-tuple cost (stats.md §1.5, 2026-09-10).**  The recursive
 closures spent ~1.4 µs of index operations per new tuple across emit-time
 dedup, intern, and rank stamping, with join algorithm choice not the
-issue; the stamping is gone (above).  Open, by size: skip unread inputs at load; bulk-load sorted
-batches into input indices instead of point insertion; a thin-iteration
-schedule that avoids 32-bucket fan-out when the delta is a few thousand
-rows; intern tasks that read only their bucket (delta pre-bucketised)
-instead of 32 whole-delta scans; sort-and-merge dedup of an iteration's
-candidates in key order (the adaptive emit probe shipped 09-10 --
-`SLOG_EMIT_PROBE` -- removes the probe where it is waste but a random
-probe per remaining candidate stays); and a
+issue.  Shipped 09-10/11: the stamping is gone; the emit probe is adaptive
+(`SLOG_EMIT_PROBE`); intern is one descent per candidate (`insertNew`) fed
+by a parallel pre-intern partition instead of 32 whole-delta scans; the
+write phase sorts and bulk-loads empty indices (`SLOG_SORTED_WRITE`), and
+database load bulk-ingests (7.9M-tuple closure 16.6 → 4.1 s at one thread,
+7.1 → 1.2 s at six).  Sorted interning was measured and REJECTED (stats.md
+§1.5).  Open, by size: skip unread inputs at load; the ~5 s between database
+open and the first push on a 5M-row input (index registration/backfill --
+timeline marks under `SLOG_PHASE_TIMES`); a thin-iteration schedule that
+avoids 32-bucket fan-out when the delta is a few thousand rows; a transient
+per-iteration hash set so intra-round duplicates skip the master descent; and a
 read-only sorted-array index kind for closed relations on the index-reuse
 seam.  Replacing the btree masters themselves is NOT on this list: they
 carry DRed^c, counts, struct identity, lattices, sessions and persistence.

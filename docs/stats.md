@@ -167,11 +167,21 @@ Three consequences worth knowing before touching any of it:
    (a rule firing hundreds of times per new tuple would otherwise stage
    every firing until intern), which is what the adaptive policy keeps:
    sample, and probe continuously only while the sampled duplicate rate is
-   extreme.  After that the closures are ~85 % `intern` at one thread, one
-   btree operation per candidate: the lever left is to sort each bucket's
-   candidates before probing, so intra-delta duplicates collapse by
-   adjacency and the master is walked in key order (leaf-sequential instead
-   of random) -- see `SLOG_SORTED_INTERN`.  The master trees are unchanged
+   extreme.  After that the closures are ~85 % `intern` at one thread, and
+   `intern` itself split roughly half and half between the btree descents
+   and the 32 per-bucket tasks each scanning the whole delta to find their
+   rows (measured 2.9 s of 5.2 s on the 7.9M-tuple closure).  The scan is
+   gone: a parallel pre-intern *partition* routes each thread's slice of
+   the delta by master bucket once, behind one extra barrier, and each task
+   reads only its bucket (the `partition` field of the phases line):
+   7.9M-tuple closure intern 5.2 → 2.7 + 0.3 s partition at one thread,
+   fixpoint 6.1 → 4.1 s (1.2 s at six threads); 2M-tuple reachability 4.0 →
+   2.6 s.  The
+   descents stay: sorting a bucket's candidates first so the master is
+   walked in key order was measured and rejected -- a bucket's tree fits in
+   cache, so the sort cost three times what sorted probing saved -- and the
+   single-descent `insertNew` (dedup and insert in one walk) is the
+   per-candidate floor of a btree master.  The master trees are unchanged
    by any of this.
 3. **Input indexing hides in `write` and load.**  Iteration 0's `write`
    builds every input index by point insertion (5.1M rows: 0.76 s, 6--23 %

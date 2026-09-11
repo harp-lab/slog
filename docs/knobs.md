@@ -42,27 +42,33 @@ artifacts), `SLOG_FLAVORED_NATIVE` (the differential's native leg),
 test harnesses; previously documented nowhere), `SLOG_THREADS`,
 `SLOG_NO_STATS` (stats.md; `SLOG_STATS=off|basic|full` is future),
 **`SLOG_PHASE_TIMES`** (emit one `(phases <scc> "<name>" iters N write W join J
-finalize F intern I reorg R end E)` line after each `(fixpoint ...)`: the
+finalize F intern I reorg R end E endcomp C partition P)` line after each
+`(fixpoint ...)`: the
 sentinel thread's wall milliseconds per iteration phase, summed over the
 stratum -- write = previous delta inserted into the full indices, join =
 read tasks minus finalize, finalize = shard merge into the new delta, intern
 = delta dedup against the masters, reorg = delta bucketising, end = the
 end-of-iteration barrier and its completion, endcomp = the completion body
-alone; 2026-09-10),
+alone, partition = the parallel pre-intern bucket partition and its barrier;
+also `(load "<rel>" read R ingest I)` per relation at database open and
+`(mark "<what>" <ms since start>)` timeline marks -- open-done, reload-done,
+push -- on stderr; 2026-09-10/11),
 **`SLOG_EMIT_PROBE`** = `adaptive` (default) | `always` | `never`
 (2026-09-10: emit-time dedup policy for set-semantics heads, both tiers.
 `always` probes the head master for every candidate (the pre-09-10
 behaviour); `never` sends every candidate to the delta and lets intern
 dedup; `adaptive` samples 256 candidates per (task, head) and skips the
-next 4096 probes when fewer than 90 % were duplicates.  Results are
+next 16384 probes unless at least 99 % were duplicates (intern's
+bucket-local probe is cheaper than emit's, so the emit probe only pays for
+itself by bounding transient delta memory at extreme duplicate rates).  Results are
 identical under all three -- intern is the dedup of record; only the delta's
-size and the probe count change.  stats.md §1.5), **`SLOG_SORTED_WRITE`** /
-**`SLOG_SORTED_INTERN`** = `0` to disable (2026-09-11: the write and intern
-phases gather each bucket's rows, sort them, and then bulk-load an empty
-index or insert in key order; intern dedups intra-delta duplicates by
-adjacency and probes the master once per distinct key.  Content is identical
-either way -- only btree access order changes; measurement knobs, stats.md
-§1.5),
+size and the probe count change.  stats.md §1.5), **`SLOG_SORTED_WRITE`** = `0` to disable (2026-09-11: write tasks gather
+their bucket's rows, sort them, and bulk-load an empty index or insert in key
+order; content is identical, only btree access order changes.  A sorted
+INTERN was measured and rejected -- the sort cost three times what sorted
+probing saved, since a bucket's master tree fits in cache -- so intern probes
+in delta order, one descent per candidate, reading its bucket from the
+parallel pre-intern partition; stats.md §1.5),
 `SLOG_MPZ_MAX_BITS`/`_TABLE_BYTES`, `SLOG_ACCEL`(+`_RATE`/`_QUOTA`/`_MB`/
 `_MIN_ROUNDS`) (db-compression.md §4.4), `SLOG_SMT_SOLVERS` /
 `SLOG_ORACLE_PROCS` (smt.md §8), `SLOG_NO_INDEX_REUSE` /

@@ -28,7 +28,9 @@
 #include "tlx/container/btree_map.hpp"
 #pragma pop_macro("debug")
 
+#include <algorithm>
 #include <array>
+#include <vector>
 #include <functional>
 
 
@@ -52,6 +54,13 @@ public:
   // arity-generic escape hatch for the daemon itself (out-of-band ingestion);
   // generated code uses the typed insert below.
   virtual void insertTuple(const u64* t, const u16* ord) = 0;
+  // Insert MANY storage-order tuples at once (the bulk form of insertTuple,
+  // used by out-of-band ingestion): a set index sorts them and bulk-loads
+  // an empty tree or inserts in key order; a payload map merges row by row.
+  virtual void insertTuples(const std::vector<const u64*>& ts, const u16* ord)
+  {
+    for (const u64* t : ts) insertTuple(t, ord);
+  }
   virtual bool removeTuple(const u64* t, const u16* ord) = 0;
   // Payload-map cold path used by transactional count foundation seeding and
   // coverage audits.  Plain set indices return false/refuse; BTreeMapIndex
@@ -76,6 +85,14 @@ public:
 
   // ---- hot path (typed; called from generated code) ----
   void insert(const Key& k) { tree.insert(k); }
+  // Insert and report whether the key was new: dedup and insert in ONE
+  // descent (the intern phase's per-candidate operation).
+  bool insertNew(const Key& k) { return tree.insert(k).second; }
+  // Build an EMPTY tree bottom-up from a sorted, duplicate-free range: leaves
+  // are filled sequentially and the inner levels constructed above them, so
+  // a fresh index costs one sort plus a linear pass instead of one random
+  // descent per row.
+  template <class It> void bulkLoad(It first, It last) { tree.bulk_load(first, last); }
   bool contains(const Key& k) const { return tree.exists(k); }
   iterator lower_bound(const Key& k) { return tree.lower_bound(k); }
   iterator begin() { return tree.begin(); }
@@ -95,6 +112,21 @@ public:
     for (u16 c = 0; c < A; ++c)
       k[c] = t[ord[c]];
     tree.insert(k);
+  }
+  void insertTuples(const std::vector<const u64*>& ts, const u16* ord) override
+  {
+    std::vector<Key> keys;
+    keys.reserve(ts.size());
+    for (const u64* t : ts)
+    {
+      Key k;
+      for (u16 c = 0; c < A; ++c) k[c] = t[ord[c]];
+      keys.push_back(k);
+    }
+    std::sort(keys.begin(), keys.end());
+    keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+    if (tree.empty()) tree.bulk_load(keys.begin(), keys.end());
+    else for (const Key& k : keys) tree.insert(k);
   }
   bool removeTuple(const u64* t, const u16* ord) override
   {

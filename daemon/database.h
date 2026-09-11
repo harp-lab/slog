@@ -397,6 +397,19 @@ private:
   // across threads (0..thread_count).
   std::vector<std::vector<std::vector<RefVec>>> write_buckets;  // [tid][slot][bucket]
   std::vector<std::vector<RefVec>> read_buckets;                // [tid][bucket]
+  // Pre-intern partition (parallel, before the intern phase): thread tid's
+  // slice of the un-deduped delta routed by MASTER bucket (storage column 0,
+  // the master ordering's lead for plain relations) into flat rows of
+  // `arity` storage words followed by the row's lead-cell address.  Each
+  // per-bucket InternTask then reads its bucket from nthreads vectors instead
+  // of every task scanning the whole delta (32 passes over the delta were
+  // half of the intern phase).  Built only for plain set relations with an
+  // index and a delta of at least intern_partition_min_rows;
+  // `intern_partitioned` says whether this iteration's vectors are
+  // authoritative (else tasks scan as before).
+  std::vector<std::vector<std::vector<u64>>> intern_rows;      // [tid][bucket]
+  bool intern_partitioned = false;
+  static constexpr u32 intern_partition_min_rows = 4096;
 
   // Per-run accounting bound by Database::continueStratum (docs/pausing.md
   // §3/§5): every produced batch bumps *rs_emitted by its word count at the
@@ -2271,6 +2284,55 @@ public:
     write_buckets.assign(nthreads,
 	std::vector<std::vector<RefVec>>(nlead, std::vector<RefVec>(bucket_count)));
     read_buckets.assign(nthreads, std::vector<RefVec>(bucket_count));
+    intern_rows.assign(nthreads, std::vector<std::vector<u64>>(bucket_count));
+    intern_partitioned = false;
+  }
+
+  // Whether this iteration's delta gets a pre-intern partition: a decision
+  // every thread reaches identically from shared read-only state, so each
+  // partitions its own slice and thread 0 publishes the flag.
+  bool wantsInternPartition()
+  {
+    if (arity == 0 || struct_id != 0 || isLattice() || delta->empty()
+        || indices.empty())
+      return false;
+    u64 rows = 0;
+    for (InsertBatch* b : *delta) rows += b->usage / arity;
+    return rows >= intern_partition_min_rows;
+  }
+
+  // Thread `tid`'s share of the pre-intern partition (see intern_rows).
+  // Runs between finalize and the intern phase; a barrier follows.
+  void partitionForIntern(u32 tid, u32 nthreads)
+  {
+    if (tid >= intern_rows.size()) return;
+    auto& mine = intern_rows[tid];
+    for (auto& v : mine)
+    {
+      // keep capacity across iterations unless a fat one left it huge
+      if (v.capacity() > (1u << 20)) std::vector<u64>().swap(v);
+      else v.clear();
+    }
+    const bool part = wantsInternPartition();
+    if (tid == 0) intern_partitioned = part;
+    if (!part) return;
+    for (u32 i = tid; i < delta->size(); i += nthreads)
+    {
+      InsertBatch* batch = (*delta)[i];
+      if (batch->reloaded) continue;       // pre-deduped boundary dump: intern skips it
+      for (u32 j = 0; j < batch->usage; j += arity)
+      {
+        if (batch->data[j] == slog_null) continue;
+        std::vector<u64>& v = mine[buckethash(batch->data[j])];
+        v.insert(v.end(), batch->data + j, batch->data + j + arity);
+        v.push_back(reinterpret_cast<u64>(batch->data + j));
+      }
+    }
+  }
+  bool internPartitioned() const { return intern_partitioned; }
+  const std::vector<u64>& internRows(u32 tid, u16 bucket) const
+  {
+    return intern_rows[tid][bucket];
   }
 
   // Rebuild thread `tid`'s share of the bucketized views of `delta`.  Thread tid
@@ -2696,14 +2758,48 @@ public:
   // from disk between runs -- goes through here instead of the write phase.
   void ingestDelta()
   {
+    // Bulk form: gather the live rows once, then hand each index bucket its
+    // rows together (Index::insertTuples sorts and bulk-loads an empty set
+    // index) -- one sort and a sequential leaf fill instead of one random
+    // descent per row.  Content is identical to the per-row path; the
+    // per-row path remains for struct relations with live tombstones, whose
+    // identity reconciliation is per tuple.
+    const bool per_row =
+      struct_id != 0 && struct_tombstones
+      && struct_tombstone_count.load(std::memory_order_relaxed) != 0;
+    if (per_row)
+    {
+      for (InsertBatch* batch : *delta)
+        for (u32 j = 0; j < batch->usage; j += arity)
+        {
+          if (batch->data[j] == slog_null)
+            continue;
+          insertTupleAllIndices(batch->data + j);
+        }
+      return;
+    }
+    std::vector<const u64*> live;
     for (InsertBatch* batch : *delta)
       for (u32 j = 0; j < batch->usage; j += arity)
-      {
-	if (batch->data[j] == slog_null)
-	  continue;
-	const u64* t = batch->data + j;
-	insertTupleAllIndices(t);
-      }
+        if (batch->data[j] != slog_null)
+          live.push_back(batch->data + j);
+    if (live.empty())
+      return;
+    clearCounts();   // a direct content mutation (as insertTupleAllIndices)
+    std::vector<std::vector<const u64*>> by_bucket(bucket_count);
+    for (const auto& it : indices)
+    {
+      if (seeded_orderings.find(it.first) != seeded_orderings.end())
+        continue;
+      if (pending_backfill.find(it.first) != pending_backfill.end())
+        continue;
+      const u16 lead = it.first[0];
+      for (auto& v : by_bucket) v.clear();
+      for (const u64* t : live) by_bucket[buckethash(t[lead])].push_back(t);
+      for (u16 b = 0; b < bucket_count; ++b)
+        if (!by_bucket[b].empty())
+          it.second[b]->insertTuples(by_bucket[b], it.first.data());
+    }
   }
 
   // Insert ONE storage-order tuple into every registered (non-delta) index,
@@ -2982,7 +3078,7 @@ struct RunStatus {
   // iteration of this stratum (see RunState::ms_phase_*).  Published on the
   // (phases ...) line when SLOG_PHASE_TIMES is set.
   double ms_phase_write, ms_phase_read, ms_phase_finalize, ms_phase_intern,
-         ms_phase_reorg, ms_phase_end, ms_phase_endcomp;
+         ms_phase_reorg, ms_phase_end, ms_phase_endcomp, ms_phase_partition;
 };
 
 // All state of an in-flight (possibly suspended) stratum run.  Grouped in one
@@ -3042,7 +3138,8 @@ struct RunState {
   // completion (growth decision, watches, RSS check).
   double ms_phase_write = 0.0, ms_phase_read = 0.0, ms_phase_finalize = 0.0,
          ms_phase_intern = 0.0, ms_phase_reorg = 0.0, ms_phase_end = 0.0,
-         ms_phase_endcomp = 0.0;   // the part of `end` spent inside EndIterCompletion
+         ms_phase_endcomp = 0.0,   // the part of `end` spent inside EndIterCompletion
+         ms_phase_partition = 0.0; // pre-intern partition + its barrier
   std::string last_message;                    // cached fixpoint msg (§5)
 
   // Set by ReadCompletion / EndIterCompletion, read by runLoop after barriers.
@@ -3617,6 +3714,8 @@ private:
   std::barrier<IterCompletion>* iter_barrier = nullptr;   // resets latest_any_rec
   std::barrier<ReadCompletion>* read_barrier = nullptr;   // finalizes phase_read
   std::barrier<EndIterCompletion>* end_barrier = nullptr; // decides next_action
+  std::barrier<NoopCompletion>* partition_barrier = nullptr; // pre-intern partition complete
+
   std::barrier<NoopCompletion>* phase_barrier[phase_count] = {};
   std::atomic<bool> latest_any_rec;
   u32 thread_count;
@@ -6621,6 +6720,14 @@ public:
       if (r != nullptr) r->reorgDelta(tid, nthreads);
   }
 
+  // Thread `tid`'s share of every relation's pre-intern partition (parallel,
+  // race-free like reorgAll; the partition barrier follows).
+  void partitionForInternAll(u32 tid, u32 nthreads)
+  {
+    for (Relation* r : rel_registry)
+      if (r != nullptr) r->partitionForIntern(tid, nthreads);
+  }
+
   // Size every relation's per-thread bucket buffers (single-threaded).
   void ensureReorgBuffers()
   {
@@ -6774,9 +6881,16 @@ public:
       }
       skip_to_intern = false;
 
+      // Route the finalized (not yet deduped) delta by master bucket in
+      // parallel, then rendezvous so every bucket's rows are complete before
+      // its InternTask runs.
+      db->partitionForInternAll(tid, nthreads);
+      db->partition_barrier->arrive_and_wait();
+      const clk::time_point t_part = clk::now();
+      if (sentinel) rs.ms_phase_partition += ms_between(t_read, t_part);
       db->runPhase(phase_intern, sentinel);
       const clk::time_point t_intern = clk::now();
-      if (sentinel) rs.ms_phase_intern += ms_between(t_read, t_intern);
+      if (sentinel) rs.ms_phase_intern += ms_between(t_part, t_intern);
 
       // Unbudgeted single pass (internal reload/disk strata): one iteration.
       if (!rs.tofixpoint)
@@ -6871,7 +6985,7 @@ public:
       rs.ms_total = 0.0;
       rs.ms_phase_write = rs.ms_phase_read = rs.ms_phase_finalize = 0.0;
       rs.ms_phase_intern = rs.ms_phase_reorg = rs.ms_phase_end = 0.0;
-      rs.ms_phase_endcomp = 0.0;
+      rs.ms_phase_endcomp = rs.ms_phase_partition = 0.0;
       rs.start_tuples = totalTuples();
       // Every relation gets a send buffer per worker and reorg buffers --
       // registry-wide (0.C): positional re-entry writes old versions too.
@@ -6921,6 +7035,7 @@ public:
     iter_barrier = new std::barrier<IterCompletion>(thread_count, IterCompletion{this});
     read_barrier = new std::barrier<ReadCompletion>(thread_count, ReadCompletion{this});
     end_barrier  = new std::barrier<EndIterCompletion>(thread_count, EndIterCompletion{this});
+    partition_barrier = new std::barrier<NoopCompletion>(thread_count, NoopCompletion{});
     for (u32 i = 0; i < phase_count; ++i)
       phase_barrier[i] = new std::barrier<NoopCompletion>(thread_count, NoopCompletion{});
 
@@ -6933,6 +7048,7 @@ public:
     delete iter_barrier; iter_barrier = nullptr;
     delete read_barrier; read_barrier = nullptr;
     delete end_barrier;  end_barrier  = nullptr;
+    delete partition_barrier; partition_barrier = nullptr;
     for (u32 i = 0; i < phase_count; ++i)
     {
       delete phase_barrier[i];
@@ -6959,6 +7075,7 @@ public:
     st.ms_phase_reorg = rs.ms_phase_reorg;
     st.ms_phase_end = rs.ms_phase_end;
     st.ms_phase_endcomp = rs.ms_phase_endcomp;
+    st.ms_phase_partition = rs.ms_phase_partition;
     if (rs.position == RUN_FRESH)          // loop exited => fixpoint / pass done
     {
       rs.suspended = false;
@@ -9183,6 +9300,20 @@ private:
   }
 
 public:
+  // SLOG_PHASE_TIMES timeline: `(mark "<what>" <ms since process start>)` on
+  // stderr, so the time between the daemon's milestones (database open,
+  // reload strata, program pushes) can be read off a run log beside the
+  // per-stratum (fixpoint ...) and (phases ...) lines.
+  static void phaseTimesMark(const std::string& what)
+  {
+    static const bool on = std::getenv("SLOG_PHASE_TIMES") != nullptr;
+    if (!on) return;
+    static const auto t0 = std::chrono::steady_clock::now();
+    std::fprintf(stderr, "(mark \"%s\" %.1f)\n", what.c_str(),
+                 std::chrono::duration<double, std::milli>(
+                   std::chrono::steady_clock::now() - t0).count());
+  }
+
   // Open a stored database: register its relations and stage their tuples
   // (the first stratum run ingests them as its iteration-zero delta).
   void loadDatabaseBIN(const std::string& db_dir)
@@ -9222,13 +9353,26 @@ public:
       // build a payload map (so ingestDelta merges rather than inserts)
       if (kind == "lat")
 	rel->setLatticeFromSpec(lat_spec, cnode_arena);
+      // SLOG_PHASE_TIMES: one `(load "<rel>" read R ingest I)` line per
+      // relation on stderr (milliseconds: file decode vs index build), the
+      // load-side companion of the per-iteration (phases ...) line.
+      static const bool load_times = std::getenv("SLOG_PHASE_TIMES") != nullptr;
+      const auto t0 = std::chrono::steady_clock::now();
       readRelationFiles(rel, path);
+      const auto t1 = std::chrono::steady_clock::now();
       // materialize immediately (into a default index) so the database is
       // queryable/writable before any program arrives; a following stratum
       // re-ingests via the deferred reload (Daemon::open sets it)
       rel->ensureDefaultIndex();
       rel->finalizeBatches();
       rel->ingestDelta();
+      if (load_times)
+      {
+        const auto t2 = std::chrono::steady_clock::now();
+        std::fprintf(stderr, "(load \"%s\" read %.1f ingest %.1f)\n", name.c_str(),
+                     std::chrono::duration<double, std::milli>(t1 - t0).count(),
+                     std::chrono::duration<double, std::milli>(t2 - t1).count());
+      }
       disk_mtimes[name] = dirMTime(path + "/");
     }
 
@@ -9777,6 +9921,7 @@ public:
     }
 
     runStratum(&s, false);
+    phaseTimesMark(std::string("reload-done ") + sname);
   }
 
   void reloadInsertBatches()

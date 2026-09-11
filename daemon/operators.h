@@ -576,13 +576,15 @@ inline void join_all_lat(Index** index, Cont&& k)
 // probe only pays for itself on candidates that turn out to be duplicates
 // -- for a candidate intern was about to insert anyway it is pure waste, and
 // the duplicate rate is a property of the rule variant and the iteration.
-// Each (task, head) therefore samples: probe `emit_probe_window` candidates,
-// and when fewer than `emit_probe_dup_percent` of them were duplicates pass
-// the next `emit_skip_window` candidates straight to the delta (intern still
-// dedups them, so results are identical), then sample again.  The skip
-// window bounds the extra delta a high-duplicate phase can accumulate before
-// probing resumes.  SLOG_EMIT_PROBE=always|never|adaptive overrides
-// (docs/knobs.md).
+// Measured, intern's bucket-local probe is cheaper than emit's random one
+// (~170 vs ~240 ns per candidate), so skipping wins even at ten firings per
+// kept tuple; the emit probe's one remaining job is to bound the transient
+// delta a rule with an EXTREME duplicate rate would otherwise stage.  Each
+// (task, head) therefore samples: probe `emit_probe_window` candidates, and
+// unless at least `emit_probe_dup_percent` of them were duplicates pass the
+// next `emit_skip_window` candidates straight to the delta (intern still
+// dedups them, so results are identical), then sample again.
+// SLOG_EMIT_PROBE=always|never|adaptive overrides (docs/knobs.md).
 struct EmitProbeState
 {
   u32 probed = 0;      // candidates probed in the current sampling window
@@ -590,8 +592,8 @@ struct EmitProbeState
   u32 skip_left = 0;   // candidates still to pass unprobed (0 = probing)
 };
 constexpr u32 emit_probe_window = 256;
-constexpr u32 emit_skip_window = 4096;
-constexpr u32 emit_probe_dup_percent = 90;
+constexpr u32 emit_skip_window = 16384;
+constexpr u32 emit_probe_dup_percent = 99;
 
 enum EmitProbePolicy : u8 { emit_probe_adaptive = 0, emit_probe_always = 1, emit_probe_never = 2 };
 inline EmitProbePolicy emit_probe_policy()
@@ -1172,9 +1174,25 @@ public:
 // instantiations per-arity instead of per-ordering).
 // ---------------------------------------------------------------------------
 
+// Sorted write phase (docs/knobs.md; default on).  A write task gathers its
+// bucket's rows and sorts them before touching the btree: an EMPTY index is
+// then built bottom-up from the sorted run (iteration 0 of a fresh ordering,
+// every reloaded input, each iteration's delta indices) and a populated one
+// takes the keys in order, so consecutive descents share their path.
+// SLOG_SORTED_WRITE=0 restores row-order point insertion (measurement).
+inline bool sorted_write_enabled()
+{
+  static const bool on = [] { const char* v = std::getenv("SLOG_SORTED_WRITE");
+                              return v == nullptr || std::strcmp(v, "0") != 0; }();
+  return on;
+}
+
 // WRITE: insert this iteration's delta (the pre-bucketized write partition for
 // `ord`'s lead column, across all worker threads) into one bucket of one index.
-// Refs already exclude null (deduped) tuples.
+// Refs already exclude null (deduped) tuples.  The bucket's keys are gathered,
+// sorted, and either bulk-loaded (empty index: iteration 0 of a fresh ordering,
+// every input relation's non-master indices, and each delta index) or inserted
+// in key order.
 template <u16 A>
 class WriteTask : public Task
 {
@@ -1184,6 +1202,7 @@ class WriteTask : public Task
   std::array<u16, A> ord;
   BTreeIndex<A>* root;
   bool is_delta;
+  std::vector<std::array<u64, A>> keys;   // reused across iterations
   // P3-D: whether this FULL ordering skips the keep-mode boundary dump.  A
   // kept ordering already holds those rows; an ordering this install just
   // created does not, so it CONSUMES them and the ordinary write phase
@@ -1204,6 +1223,8 @@ public:
   {
     const u16 leadcol = ord[0];
     const u32 nthreads = db->getThreadCount();
+    const bool sorted = sorted_write_enabled();
+    keys.clear();
     for (u32 t = 0; t < nthreads; ++t)
     {
       RefVec& refs = rel->getWriteBucket(t, leadcol, bucket);
@@ -1221,18 +1242,40 @@ public:
         const u64* d = refs[r].batch->data + refs[r].offset;
         std::array<u64, A> key;
         for (u16 c = 0; c < A; ++c) key[c] = d[ord[c]];
-        root->insert(key);
+        if (sorted) keys.push_back(key);
+        else root->insert(key);
       }
     }
+    if (!sorted || keys.empty()) return true;
+    std::sort(keys.begin(), keys.end());
+    if (root->empty())
+    {
+      keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+      root->bulkLoad(keys.begin(), keys.end());
+    }
+    else
+      for (const std::array<u64, A>& key : keys) root->insert(key);
+    // keep the buffer for the next iteration unless a fat one left it huge
+    if (keys.capacity() > 65536) std::vector<std::array<u64, A>>().swap(keys);
     return true;
   }
 };
 
-// INTERN (relation, set semantics): scan the new delta, drop (null out) tuples
-// already present in the master index, else insert.  Each per-bucket task filters
-// the whole delta by buckethash (the new delta is not yet reorg-bucketized -- the
-// reorg that builds the bucket views runs after intern).  The null check must
-// come after the bucket check (a null lead column must still be skipped).
+// INTERN (relation, set semantics): drop (null out) delta tuples already present
+// in the master index, else insert -- one btree descent per candidate
+// (`insertNew` reports presence).  The bucket's candidates come from the
+// parallel pre-intern partition when the relation ran one this iteration
+// (Relation::partitionForIntern: plain set relations whose master ordering is
+// the identity and whose delta is above a size floor -- the common case), so
+// the task reads its own bucket's rows from the per-thread partition vectors.
+// Otherwise it filters the whole delta by buckethash itself (the delta is not
+// yet reorg-bucketized: the reorg that builds the bucket views runs after
+// intern); there the null check must come after the bucket check (a null lead
+// column must still be skipped).
+//
+// Candidates are probed in delta order.  Sorting them first was measured and
+// rejected: a bucket's master tree is small enough to sit in cache, so sorted
+// probing saved far less than the sort cost.
 template <u16 N>
 class InternTask : public Task
 {
@@ -1241,15 +1284,33 @@ class InternTask : public Task
   u16 bucket;
   std::array<u16, N> ord;
   BTreeIndex<N>* root;
+  bool identity_ord;
 public:
   InternTask(Database* _db, Relation* _rel, const std::array<u16, N>& _ord, u16 _b)
     : db(_db), rel(_rel), bucket(_b), ord(_ord)
   {
     std::vector<u16> ordv(ord.begin(), ord.end());
     root = static_cast<BTreeIndex<N>*>(rel->getIndex(ordv, false)[bucket]);
+    identity_ord = true;
+    for (u16 c = 0; c < N; ++c) if (ord[c] != c) identity_ord = false;
   }
   bool work() override
   {
+    if (identity_ord && rel->internPartitioned())
+    {
+      const u32 nthreads = db->getThreadCount();
+      for (u32 t = 0; t < nthreads; ++t)
+      {
+        const std::vector<u64>& v = rel->internRows(t, bucket);
+        for (size_t k = 0; k + N < v.size(); k += N + 1)
+        {
+          std::array<u64, N> key;
+          for (u16 c = 0; c < N; ++c) key[c] = v[k + c];
+          if (!root->insertNew(key)) *reinterpret_cast<u64*>(v[k + N]) = slog_null;
+        }
+      }
+      return true;
+    }
     auto& delta = rel->getDelta();
     for (u32 i = 0; i < delta.size(); ++i)
     {
@@ -1269,8 +1330,7 @@ public:
           continue;
         std::array<u64, N> key;
         for (u16 c = 0; c < N; ++c) key[c] = batch->data[j + ord[c]];
-        if (root->contains(key)) batch->data[j] = slog_null;
-        else root->insert(key);
+        if (!root->insertNew(key)) batch->data[j] = slog_null;
       }
     }
     return true;

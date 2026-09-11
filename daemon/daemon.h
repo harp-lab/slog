@@ -681,6 +681,7 @@ public:
   {
     if (refuseIfSuspended("open")) return;
     database->loadDatabaseBIN("data/" + db_name + "/");
+    Database::phaseTimesMark("open-done");
     // A flat/root open is semantic input.  Recipe/compressed derived layers
     // use importLayer/replay instead and therefore do not take this path.
     database->markLatestRelationsDirect();
@@ -1418,6 +1419,7 @@ public:
   void push(Stratum* s)
   {
     if (s == nullptr) return;
+    Database::phaseTimesMark(std::string("push ") + s->name);
     // Idempotent: a hot-swap upgrade plugin re-pushes the SAME Stratum object
     // beginStratum handed back (docs/fast-compile.md §4).  Re-adding it would
     // duplicate it in the pipeline and churn scc_id / next_unrun; skip.
@@ -1870,11 +1872,11 @@ public:
         char pbuf[256];
         std::snprintf(pbuf, sizeof(pbuf),
                       "(phases %u \"%s\" iters %u write %.3f join %.3f finalize %.3f "
-                      "intern %.3f reorg %.3f end %.3f endcomp %.3f)",
+                      "intern %.3f reorg %.3f end %.3f endcomp %.3f partition %.3f)",
                       s->scc_id, s->name.c_str(), st.iteration, st.ms_phase_write,
                       st.ms_phase_read - st.ms_phase_finalize, st.ms_phase_finalize,
                       st.ms_phase_intern, st.ms_phase_reorg, st.ms_phase_end,
-                      st.ms_phase_endcomp);
+                      st.ms_phase_endcomp, st.ms_phase_partition);
         emit(std::string(pbuf));
       }
       if (transient)
