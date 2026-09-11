@@ -85,8 +85,10 @@ issue; the stamping is gone (above).  Open, by size: skip unread inputs at load;
 batches into input indices instead of point insertion; a thin-iteration
 schedule that avoids 32-bucket fan-out when the delta is a few thousand
 rows; intern tasks that read only their bucket (delta pre-bucketised)
-instead of 32 whole-delta scans; sort-and-merge or adaptive dedup of an
-iteration's candidates replacing the per-candidate emit probe; and a
+instead of 32 whole-delta scans; sort-and-merge dedup of an iteration's
+candidates in key order (the adaptive emit probe shipped 09-10 --
+`SLOG_EMIT_PROBE` -- removes the probe where it is waste but a random
+probe per remaining candidate stays); and a
 read-only sorted-array index kind for closed relations on the index-reuse
 seam.  Replacing the btree masters themselves is NOT on this list: they
 carry DRed^c, counts, struct identity, lattices, sessions and persistence.

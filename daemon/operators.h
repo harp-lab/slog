@@ -27,6 +27,7 @@
 #pragma once
 
 #include <cstdlib>
+#include <cstring>
 #include "slogd.h"
 #include <algorithm>
 #include <array>
@@ -568,24 +569,70 @@ inline void join_all_lat(Index** index, Cont&& k)
 // head_ord[j] is the storage (nominal) position of index-order column j, so the
 // batch holds tuples in storage order for the downstream write/intern phases.
 // `nb` is reassigned on flush, hence the reference.
-// SLOG_NO_EMIT_DEDUP=1 (measurement knob, docs/knobs.md): skip the emit-time
-// probe of the head's master index.  Intern dedups the delta against the
-// master anyway, so results are unchanged; the delta merely carries the
-// duplicate candidates through finalize/intern/reorg.  Used to size the cost
-// of one master probe per candidate.
-inline bool emit_probes_head()
+//
+// Emit-time dedup is ADAPTIVE (docs/stats.md 1.5).  Probing the head's
+// master for every candidate costs one random btree lookup per firing; the
+// intern phase probes the master again for every delta row, so the emit
+// probe only pays for itself on candidates that turn out to be duplicates
+// -- for a candidate intern was about to insert anyway it is pure waste, and
+// the duplicate rate is a property of the rule variant and the iteration.
+// Each (task, head) therefore samples: probe `emit_probe_window` candidates,
+// and when fewer than `emit_probe_dup_percent` of them were duplicates pass
+// the next `emit_skip_window` candidates straight to the delta (intern still
+// dedups them, so results are identical), then sample again.  The skip
+// window bounds the extra delta a high-duplicate phase can accumulate before
+// probing resumes.  SLOG_EMIT_PROBE=always|never|adaptive overrides
+// (docs/knobs.md).
+struct EmitProbeState
 {
-  static const bool probe = std::getenv("SLOG_NO_EMIT_DEDUP") == nullptr;
-  return probe;
+  u32 probed = 0;      // candidates probed in the current sampling window
+  u32 dups = 0;        // ... of which the master already held
+  u32 skip_left = 0;   // candidates still to pass unprobed (0 = probing)
+};
+constexpr u32 emit_probe_window = 256;
+constexpr u32 emit_skip_window = 4096;
+constexpr u32 emit_probe_dup_percent = 90;
+
+enum EmitProbePolicy : u8 { emit_probe_adaptive = 0, emit_probe_always = 1, emit_probe_never = 2 };
+inline EmitProbePolicy emit_probe_policy()
+{
+  static const EmitProbePolicy policy = [] {
+    const char* v = std::getenv("SLOG_EMIT_PROBE");
+    if (v == nullptr) return emit_probe_adaptive;
+    if (std::strcmp(v, "always") == 0) return emit_probe_always;
+    if (std::strcmp(v, "never") == 0) return emit_probe_never;
+    return emit_probe_adaptive;
+  }();
+  return policy;
 }
 
 template <u16 A>
 inline void emit(Relation* head_rel, Index** head_index, InsertBatch*& nb,
-                 const std::array<u64, A>& zs, const std::array<u16, A>& head_ord)
+                 EmitProbeState& ps, const std::array<u64, A>& zs,
+                 const std::array<u16, A>& head_ord)
 {
-  if (emit_probes_head()
-      && static_cast<BTreeIndex<A>*>(head_index[buckethash(zs[0])])->contains(zs))
-    return;
+  const EmitProbePolicy policy = emit_probe_policy();
+  if (policy == emit_probe_always
+      || (policy == emit_probe_adaptive && ps.skip_left == 0))
+  {
+    const bool dup =
+      static_cast<BTreeIndex<A>*>(head_index[buckethash(zs[0])])->contains(zs);
+    if (policy == emit_probe_adaptive)
+    {
+      ++ps.probed;
+      ps.dups += dup;
+      if (ps.probed >= emit_probe_window)
+      {
+        if (ps.dups * 100u < emit_probe_dup_percent * ps.probed)
+          ps.skip_left = emit_skip_window;
+        ps.probed = 0;
+        ps.dups = 0;
+      }
+    }
+    if (dup) return;
+  }
+  else if (policy == emit_probe_adaptive)
+    --ps.skip_left;
   u64* d = nb->data + nb->usage;
   for (u16 j = 0; j < A; ++j)
     d[head_ord[j]] = zs[j];

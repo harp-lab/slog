@@ -142,25 +142,37 @@ Three consequences worth knowing before touching any of it:
    2001-iteration chain closure from 4.1 to 1.1 s at six threads.  The
    rule it leaves behind: nothing O(new tuples) may run in a barrier
    completion; `endcomp` should read as a few milliseconds per stratum.
-2. **Dedup is now the largest term, and moving it does not shrink it.**  On
-   closures 3--10 candidates are fired per kept tuple, and each candidate
-   costs one random master probe wherever that probe happens.
-   `SLOG_NO_EMIT_DEDUP=1` (measurement only) moves the probe from `emit` to
-   `InternTask`: `join` falls from 11.2 to 1.4 s (the join proper -- probes
-   into the body relation plus emission -- is only that 1.4 s, ~60 ns per
-   firing) while `intern` rises from 5.3 to 11.0 s, a net 1.2x.  The probe
-   is pure waste for a candidate intern was about to insert anyway: on a
-   closure with 1.2 firings per kept tuple skipping it is 1.33x at one
-   thread with intern almost unchanged, while on one with 10 firings per
-   kept tuple it is a wash.  With the stamping gone the closure is ~90 %
-   random btree operations on the head relation, and the only lever left
-   is to stop doing one per candidate -- sort each iteration's candidates
-   and merge-dedup them, then probe the master once per distinct candidate
-   in key order (a sorted probe sequence walks the tree's leaves instead of
-   random pages).  An adaptive per-rule probe (sample the duplicate rate,
-   skip the emit probe when it is low) is the cheap partial version and is
-   worth 1.1--1.3x on its own on low-duplicate rules.  Both keep the master
-   trees unchanged.
+2. **Dedup is now the largest term, and where it happens matters.**  On
+   closures 1.2--10 candidates are fired per kept tuple, and each candidate
+   costs one master probe.  The emit-time probe (one random descent into
+   one of 32 bucket trees, interleaved with the join's own memory traffic)
+   is the more expensive place to pay it: `InternTask` probes the same
+   master bucket-by-bucket, so its descents share a working set.  Measured
+   with `SLOG_EMIT_PROBE` (`-O2`, same machine state, medians of 2):
+
+   | closure (firings per kept) | threads | always probe | adaptive | never probe |
+   |---|---|---|---|---|
+   | 7.9M tuples (3.0) | 1 | 9.04 s (join 6.4, intern 2.6) | 6.42 s | 6.13 s (join 0.7, intern 5.3) |
+   | 7.9M tuples (3.0) | 6 | 2.59 s | 2.25 s | 2.20 s |
+   | 9.8M tuples (1.2) | 1 | 6.92 s | 4.59 s | 4.26 s |
+   | 9.8M tuples (1.2) | 6 | 2.11 s | 1.45 s | 1.35 s |
+   | 2.0M tuples (10) | 1 | 4.97 s | 4.39 s | 4.04 s |
+   | 2.0M tuples (10) | 6 | 1.35 s | 1.29 s | 1.29 s |
+
+   Removing the emit probe costs intern ~170 ns per extra delta row and
+   saves ~240 ns per candidate in `join`, so it wins even at ten firings
+   per kept tuple.  The join proper -- probes into the body relation plus
+   emission -- is 0.4--0.7 s of these runs.  The emit probe's one remaining
+   job is to bound transient delta memory for pathological duplicate rates
+   (a rule firing hundreds of times per new tuple would otherwise stage
+   every firing until intern), which is what the adaptive policy keeps:
+   sample, and probe continuously only while the sampled duplicate rate is
+   extreme.  After that the closures are ~85 % `intern` at one thread, one
+   btree operation per candidate: the lever left is to sort each bucket's
+   candidates before probing, so intra-delta duplicates collapse by
+   adjacency and the master is walked in key order (leaf-sequential instead
+   of random) -- see `SLOG_SORTED_INTERN`.  The master trees are unchanged
+   by any of this.
 3. **Input indexing hides in `write` and load.**  Iteration 0's `write`
    builds every input index by point insertion (5.1M rows: 0.76 s, 6--23 %
    of the join-shaped benchmarks' fixpoint), and the binary-DB load path

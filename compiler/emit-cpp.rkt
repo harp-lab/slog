@@ -950,8 +950,8 @@
                                (u64-array-lit (map (lambda (z) (format "v_~a" z)) zs))
                                (u16-array-lit ind))))
                   ((emit-lines indent)
-                   (format "slog::emit<~a>(head_rel[~a], head_index[~a], newbatch[~a], ~a, ~a);"
-                           (length zs) i i i
+                   (format "slog::emit<~a>(head_rel[~a], head_index[~a], newbatch[~a], probe_state[~a], ~a, ~a);"
+                           (length zs) i i i i
                            (u64-array-lit (map (lambda (z) (format "v_~a" z)) zs))
                            (u16-array-lit ind))))]
              [`(emit-temp ,name ,zs ...)
@@ -1467,6 +1467,8 @@
    (format "    u64 _fires = 0;")
    (if (current-arm-info) "    u64 _work = 0; u64 _rows = 0;" "")
    (format "    slog::InsertBatch* newbatch[~a];" (max 1 (length heads)))
+   ;; adaptive emit-time dedup sampling, one state per head (operators.h)
+   (format "    slog::EmitProbeState probe_state[~a];" (max 1 (length heads)))
    alloc-batches
    pipeline
    arm-abort

@@ -1696,6 +1696,7 @@ class SetSink final : public BoundSink
   Relation* relation;
   Index** index;
   InsertBatch* batch = new InsertBatch();
+  EmitProbeState probe{};
   std::array<u16, A> order{};
 
 public:
@@ -1712,7 +1713,7 @@ public:
     if (tuple.size() != A) fatal("interpreted sink arity mismatch");
     std::array<u64, A> values{};
     std::copy(tuple.begin(), tuple.end(), values.begin());
-    emit<A>(relation, index, batch, values, order);
+    emit<A>(relation, index, batch, probe, values, order);
   }
 
   void flush() override
