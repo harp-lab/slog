@@ -3716,6 +3716,7 @@ private:
   std::barrier<EndIterCompletion>* end_barrier = nullptr; // decides next_action
   std::barrier<NoopCompletion>* partition_barrier = nullptr; // pre-intern partition complete
 
+
   std::barrier<NoopCompletion>* phase_barrier[phase_count] = {};
   std::atomic<bool> latest_any_rec;
   u32 thread_count;
@@ -9313,6 +9314,9 @@ public:
                  std::chrono::duration<double, std::milli>(
                    std::chrono::steady_clock::now() - t0).count());
   }
+  // Arm the timeline clock as early as possible (the daemon's constructor);
+  // harmless if never called (the first mark then defines time zero).
+  static void phaseTimesStart() { phaseTimesMark("start"); }
 
   // Open a stored database: register its relations and stage their tuples
   // (the first stratum run ingests them as its iteration-zero delta).

@@ -1276,6 +1276,13 @@ public:
 // Candidates are probed in delta order.  Sorting them first was measured and
 // rejected: a bucket's master tree is small enough to sit in cache, so sorted
 // probing saved far less than the sort cost.
+//
+// Intra-iteration duplicates (the same candidate emitted several times in one
+// round -- 60 % of all candidates on multi-source reachability, 24 % on
+// transitive closure) are NOT pre-filtered: a transient per-bucket hash set
+// sized to the round's candidates was measured at the same cost as the
+// master descent it saved (both are one cache miss once the set outgrows L2),
+// a pure loss on duplicate-free workloads.
 template <u16 N>
 class InternTask : public Task
 {

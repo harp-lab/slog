@@ -362,6 +362,7 @@ private:
                               EntryReplyK replies,
                               bool consume_pending_legacy_bind)
   {
+    Database::phaseTimesMark(std::string("install ") + name);
     if (!validateStratumEntryImpl(name, entry, replies,
                                   consume_pending_legacy_bind))
       return nullptr;
@@ -440,6 +441,7 @@ public:
   Daemon(u32 thread_count, Emit _out)
     : database(new Database(thread_count)), out(std::move(_out))
   {
+    Database::phaseTimesStart();   // arm the SLOG_PHASE_TIMES timeline clock
     default_budget.max_ms    = envU64("SLOG_MAX_MS", default_budget.max_ms);
     default_budget.slice_ms  = envU64("SLOG_SLICE_MS", default_budget.slice_ms);
     default_budget.mem_bytes = envU64("SLOG_MEM_BYTES", default_budget.mem_bytes);
@@ -680,11 +682,13 @@ public:
   void open(const std::string& db_name)
   {
     if (refuseIfSuspended("open")) return;
+    Database::phaseTimesMark("open-begin");
     database->loadDatabaseBIN("data/" + db_name + "/");
-    Database::phaseTimesMark("open-done");
+    Database::phaseTimesMark("load-done");
     // A flat/root open is semantic input.  Recipe/compressed derived layers
     // use importLayer/replay instead and therefore do not take this path.
     database->markLatestRelationsDirect();
+    Database::phaseTimesMark("open-done");
     // A boundary event (docs/incremental.md §0.4/B0): the loaded relations
     // registered at the position just consumed; advancing here keeps a
     // following segment boundary's rebinds from shadowing them at the same
@@ -1465,6 +1469,7 @@ public:
     {
       const Database::BoundarySweepStats st =
         database->boundarySweep(s->read_rels);
+        Database::phaseTimesMark(std::string("boundary-sweep-done ") + s->name);
       boundary_pending = false;
       static const bool debug_boundary = []{
         const char* v = std::getenv("SLOG_BOUNDARY_DEBUG");

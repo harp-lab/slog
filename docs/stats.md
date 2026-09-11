@@ -181,8 +181,12 @@ Three consequences worth knowing before touching any of it:
    walked in key order was measured and rejected -- a bucket's tree fits in
    cache, so the sort cost three times what sorted probing saved -- and the
    single-descent `insertNew` (dedup and insert in one walk) is the
-   per-candidate floor of a btree master.  The master trees are unchanged
-   by any of this.
+   per-candidate floor of a btree master.  Two more rejected variants,
+   measured: pre-filtering intra-round duplicates (24 % of candidates on
+   transitive closure, 73 % on multi-source reachability) through a
+   transient per-bucket hash set costs as much as the descent it saves
+   once the set outgrows L2; and the earlier sort.  The master trees are
+   unchanged by any of this.
 3. **Input indexing hides in `write` and load.**  Iteration 0's `write`
    builds every input index by point insertion (5.1M rows: 0.76 s, 6--23 %
    of the join-shaped benchmarks' fixpoint), and the binary-DB load path
