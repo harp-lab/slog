@@ -1864,13 +1864,14 @@ public:
       std::snprintf(buf, sizeof(buf), "(fixpoint %u \"%s\" %u %.3f)",
                     s->scc_id, s->name.c_str(), st.iteration, st.ms_total);
       s->fixpoint_msg = buf;
-      emit(s->fixpoint_msg);
       // Per-phase wall-time breakdown of the stratum (sentinel thread, ms,
       // summed over iterations): write = delta inserted into full indices,
       // join = read tasks minus finalize, finalize = shard merge into the
       // new delta, intern = delta dedup against masters, reorg = delta
       // bucketising, end = end-of-iteration barrier + completion.  Opt-in so
-      // golden logs are unchanged.
+      // golden logs are unchanged.  Emitted BEFORE the fixpoint message: a
+      // client that drives a stratum by waiting for `(fixpoint ...)` (the
+      // session layer) must never find this line as its next reply.
       static const bool phase_times = std::getenv("SLOG_PHASE_TIMES") != nullptr;
       if (phase_times)
       {
@@ -1884,6 +1885,7 @@ public:
                       st.ms_phase_endcomp, st.ms_phase_partition);
         emit(std::string(pbuf));
       }
+      emit(s->fixpoint_msg);
       if (transient)
       {
         transient_run = nullptr;

@@ -62,6 +62,8 @@ public:
     for (const u64* t : ts) insertTuple(t, ord);
   }
   virtual bool removeTuple(const u64* t, const u16* ord) = 0;
+  // Membership of a storage-order tuple (permuted by `ord`, as insertTuple).
+  virtual bool containsTuple(const u64* t, const u16* ord) const = 0;
   // Payload-map cold path used by transactional count foundation seeding and
   // coverage audits.  Plain set indices return false/refuse; BTreeMapIndex
   // interprets `key` in its own (identity for count sidecars) key order.
@@ -112,6 +114,13 @@ public:
     for (u16 c = 0; c < A; ++c)
       k[c] = t[ord[c]];
     tree.insert(k);
+  }
+  bool containsTuple(const u64* t, const u16* ord) const override
+  {
+    Key k;
+    for (u16 c = 0; c < A; ++c)
+      k[c] = t[ord[c]];
+    return tree.exists(k);
   }
   void insertTuples(const std::vector<const u64*>& ts, const u16* ord) override
   {
@@ -252,6 +261,12 @@ public:
     if (tree.find(k) == tree.end()) return false;
     tree.erase(k);
     return true;
+  }
+  bool containsTuple(const u64* t, const u16* ord) const override
+  {
+    Key k;
+    for (u16 c = 0; c < KA; ++c) k[c] = t[ord[c]];
+    return tree.exists(k);
   }
   bool getPayload(const u64* key, u16 n, u64& value) const override
   {

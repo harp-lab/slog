@@ -187,12 +187,22 @@ Three consequences worth knowing before touching any of it:
    transient per-bucket hash set costs as much as the descent it saves
    once the set outgrows L2; and the earlier sort.  The master trees are
    unchanged by any of this.
-3. **Input indexing hides in `write` and load.**  Iteration 0's `write`
-   builds every input index by point insertion (5.1M rows: 0.76 s, 6--23 %
-   of the join-shaped benchmarks' fixpoint), and the binary-DB load path
-   indexes relations no rule reads (a 2M-row unused input costs ~2 s of a
-   4.9 s load).  Bulk-loading sorted batches into the btrees and dropping
-   unread inputs at load are both mechanical.
+3. **The time outside the fixpoint is now marked.**  `(mark "<what>" ms)`
+   lines (stderr, `SLOG_PHASE_TIMES`) at open-begin, load-done, open-done,
+   install, push and boundary-sweep-done account for a run from daemon
+   start to the first fixpoint.  On a 5.1M-row input they found the load
+   itself at 0.35 s (read 0.12 + bulk index build 0.22) but 3.4 s in marking
+   the loaded content as direct inputs -- one heap-allocated key per row
+   in an `unordered_set` -- for a set no one-shot run consults.  That ledger
+   is now bucketed btrees (`DirectSet`, bulk-loaded through the same
+   `Index::insertTuples`): open-done at 0.65 s, wall 6.9 → 3.4 s, peak RSS
+   1146 → 758 MB on that input, and the session paths that do consult it
+   (assert/retract classification, overlays, the input ledger) are
+   unchanged in behaviour.  Iteration 0's `write` of the reloaded inputs
+   into the program's orderings is 0.5--0.6 s for the 5.1M rows and is
+   already bulk (the reload dumps rows in sorted order); dropping unread
+   inputs at load remains open but is now worth ~0.1 s per 2M rows rather
+   than seconds.
 
 The interpreter tier is within ~1.2x of `-O2` on these workloads: only
 `join` differs between the tiers, and `join` is not where most of the time

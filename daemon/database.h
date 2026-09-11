@@ -248,6 +248,92 @@ inline bool latticeWouldChangeRec(u16 keys, Index* bucket, const u64* key,
   }
 }
 
+// A relation's directly-asserted input tuples (the M0.4b semantic input
+// ledger: direct assertions, as opposed to inherited or derived content),
+// keyed by the full storage-order tuple.  Bucketed btrees behind the
+// arity-generic Index interface, so a whole loaded database is marked direct
+// with one bulk insertion per bucket (Index::insertTuples) instead of one
+// heap-allocated key per row, and membership is a btree probe.  An arity-0
+// relation holds at most the one empty tuple.
+class DirectSet
+{
+  Index** buckets = nullptr;
+  u16 arity = 0;
+  bool has_nullary = false;
+  std::vector<u16> ident;
+  void ensure()
+  {
+    if (buckets != nullptr || arity == 0) return;
+    buckets = new Index*[bucket_count];
+    for (u32 b = 0; b < bucket_count; ++b) buckets[b] = makeIndex(arity);
+  }
+public:
+  DirectSet() = default;
+  DirectSet(const DirectSet&) = delete;
+  DirectSet& operator=(const DirectSet&) = delete;
+  ~DirectSet() { clear(); }
+  void init(u16 a)
+  {
+    arity = a;
+    ident.resize(a);
+    for (u16 c = 0; c < a; ++c) ident[c] = c;
+  }
+  bool contains(const u64* t) const
+  {
+    if (arity == 0) return has_nullary;
+    return buckets != nullptr
+        && buckets[buckethash(t[0])]->containsTuple(t, ident.data());
+  }
+  void insert(const u64* t)
+  {
+    if (arity == 0) { has_nullary = true; return; }
+    ensure();
+    buckets[buckethash(t[0])]->insertTuple(t, ident.data());
+  }
+  // Bulk form: storage-order rows, routed by bucket, sorted and bulk-loaded.
+  void insertMany(const std::vector<const u64*>& ts)
+  {
+    if (ts.empty()) return;
+    if (arity == 0) { has_nullary = true; return; }
+    ensure();
+    std::vector<std::vector<const u64*>> by_bucket(bucket_count);
+    for (const u64* t : ts) by_bucket[buckethash(t[0])].push_back(t);
+    for (u16 b = 0; b < bucket_count; ++b)
+      if (!by_bucket[b].empty())
+        buckets[b]->insertTuples(by_bucket[b], ident.data());
+  }
+  bool erase(const u64* t)
+  {
+    if (arity == 0) { const bool had = has_nullary; has_nullary = false; return had; }
+    if (buckets == nullptr) return false;
+    return buckets[buckethash(t[0])]->removeTuple(t, ident.data());
+  }
+  void clear()
+  {
+    has_nullary = false;
+    if (buckets == nullptr) return;
+    for (u32 b = 0; b < bucket_count; ++b) delete buckets[b];
+    delete[] buckets;
+    buckets = nullptr;
+  }
+  size_t size() const
+  {
+    if (arity == 0) return has_nullary ? 1 : 0;
+    size_t n = 0;
+    if (buckets != nullptr)
+      for (u32 b = 0; b < bucket_count; ++b) n += buckets[b]->size();
+    return n;
+  }
+  bool empty() const { return size() == 0; }
+  // Visit every row (storage order; the nullary tuple is a pointer to a zero word).
+  void forEach(const std::function<void(const u64*)>& f) const
+  {
+    if (arity == 0) { static const u64 zero = 0; if (has_nullary) f(&zero); return; }
+    if (buckets == nullptr) return;
+    for (u32 b = 0; b < bucket_count; ++b) buckets[b]->forEach(f);
+  }
+};
+
 class Relation
 {
 private:
@@ -277,7 +363,7 @@ private:
   // Evaluation-local semantic input ledger (M0.4b).  Direct assertions are
   // local to this slot.  An inheritance mask suppresses the predecessor's
   // single set-valued contribution without mutating the predecessor.
-  std::unordered_set<std::vector<u64>, boost::hash<std::vector<u64>>> direct_inputs;
+  DirectSet direct_inputs;
   std::unordered_set<std::vector<u64>, boost::hash<std::vector<u64>>> inheritance_masks;
   std::unordered_map<std::vector<u16>, Index**, boost::hash<std::vector<u16>>> indices;
   std::unordered_map<std::vector<u16>, Index**, boost::hash<std::vector<u16>>> deltaindices;
@@ -603,9 +689,13 @@ public:
 
   bool isDirectInput(const u64* t) const
   {
-    return direct_inputs.count(tupleKey(t)) != 0;
+    return direct_inputs.contains(t);
   }
-  const auto& directInputRows() const { return direct_inputs; }
+  void forEachDirectInput(const std::function<void(const u64*)>& f) const
+  {
+    direct_inputs.forEach(f);
+  }
+  size_t directInputCount() const { return direct_inputs.size(); }
   const auto& inheritanceMaskRows() const { return inheritance_masks; }
 
   bool isInheritanceMasked(const u64* t) const
@@ -642,7 +732,7 @@ public:
   InputOutcome addInput(const u64* t, bool force_direct = false)
   {
     const std::vector<u64> k = tupleKey(t);
-    if (direct_inputs.count(k)) return INPUT_ALREADY_DIRECT;
+    if (direct_inputs.contains(t)) return INPUT_ALREADY_DIRECT;
     if (!force_direct && inheritance_masks.erase(k) != 0)
     {
       insertTupleAllIndices(t);
@@ -650,7 +740,7 @@ public:
     }
     if (!force_direct && isActivelyInherited(t))
       return INPUT_INHERITED_NOOP;
-    direct_inputs.insert(k);
+    direct_inputs.insert(t);
     insertTupleAllIndices(t);
     return INPUT_ASSERTED;
   }
@@ -668,7 +758,7 @@ public:
     const std::vector<u64> k = tupleKey(t);
     if (o == INPUT_DIRECT_REMOVED)
     {
-      direct_inputs.erase(k);
+      direct_inputs.erase(t);
       if (!isActivelyInherited(t)) removeTuple(t);
     }
     else if (o == INPUT_INHERITANCE_MASKED)
@@ -686,11 +776,11 @@ public:
   void setInputOverlay(const u64* t, u8 state)
   {
     const std::vector<u64> k = tupleKey(t);
-    direct_inputs.erase(k);
+    direct_inputs.erase(t);
     inheritance_masks.erase(k);
     if (state == 1)
     {
-      direct_inputs.insert(k);
+      direct_inputs.insert(t);
       insertTupleAllIndices(t);
     }
     else if (state == 2)
@@ -714,16 +804,21 @@ public:
     std::vector<u16> rewrite_ord(ord.size(), 0);
     for (u16 i = 0; i < ord.size(); ++i) rewrite_ord[ord[i]] = i;
     Index** buckets = getIndex(ord, false);
+    // Copy the live rows out in storage order, then bulk-insert them.
+    std::vector<u64> rows;
+    rows.reserve((size_t)tupleCount() * arity);
     for (u16 b = 0; b < bucket_count; ++b)
       buckets[b]->forEach([&](const u64* r)
       {
-        std::vector<u64> k(arity);
-        for (u16 c = 0; c < arity; ++c) k[c] = r[rewrite_ord[c]];
-        direct_inputs.insert(std::move(k));
+        for (u16 c = 0; c < arity; ++c) rows.push_back(r[rewrite_ord[c]]);
       });
+    std::vector<const u64*> ptrs;
+    ptrs.reserve(arity ? rows.size() / arity : 0);
+    for (size_t i = 0; i + arity <= rows.size() && arity > 0; i += arity)
+      ptrs.push_back(&rows[i]);
+    direct_inputs.insertMany(ptrs);
   }
 
-  const auto& directInputs() const { return direct_inputs; }
   const auto& inheritanceMasks() const { return inheritance_masks; }
   Relation* predecessorRelation() const { return predecessor_relation; }
 
@@ -753,6 +848,7 @@ public:
       // more worker threads) lands a Relation on dirty memory and triggers it.
       intern_allocators{}
   {
+    direct_inputs.init(arity);
     if (struct_id > 0)
       struct_tombstones =
         new std::unordered_map<std::vector<u64>, u64,
@@ -1338,7 +1434,7 @@ public:
   {
     if (!counted || count_sidecar == nullptr) return false;
     const std::vector<u64> k = tupleKey(t);
-    if (direct_inputs.count(k) || isActivelyInherited(t)) return false;
+    if (direct_inputs.contains(t) || isActivelyInherited(t)) return false;
     const bool was_live = hasLiveTuple(t);
     const u16 b = buckethash(t[0]);
     u64 word = 0;
@@ -1359,7 +1455,7 @@ public:
       if (!count_sidecar[b]->removeTuple(t, identity.data())) return false;
     }
     inheritance_masks.erase(k);
-    direct_inputs.insert(k);
+    direct_inputs.insert(t);
     if (!was_live) insertTupleAllIndicesPreservingCounts(t);
     became_live = !was_live;
     return true;
@@ -1373,7 +1469,7 @@ public:
   {
     if (!counted || count_sidecar == nullptr) return false;
     const std::vector<u64> k = tupleKey(t);
-    const bool direct = direct_inputs.count(k) != 0;
+    const bool direct = direct_inputs.contains(t);
     const bool inherited = !direct && isActivelyInherited(t);
     if (!direct && !inherited) return false;
     const bool was_live = hasLiveTuple(t);
@@ -1395,7 +1491,7 @@ public:
       if (!count_sidecar[b]->removeTuple(t, identity.data())) return false;
     }
     if (direct)
-      direct_inputs.erase(k);
+      direct_inputs.erase(t);
     else
       inheritance_masks.insert(k);
     became_absent = was_live && !cnt_present(next);
@@ -1416,7 +1512,7 @@ public:
     removed = false;
     if (!counted || count_sidecar == nullptr) return false;
     const std::vector<u64> k = tupleKey(t);
-    const bool direct = direct_inputs.count(k) != 0;
+    const bool direct = direct_inputs.contains(t);
     const bool inherited = !direct && isActivelyInherited(t);
     if (!direct && !inherited) return false;
     const bool was_live = hasLiveTuple(t);
@@ -1448,7 +1544,7 @@ public:
       removed = was_live;
     }
     if (direct)
-      direct_inputs.erase(k);
+      direct_inputs.erase(t);
     else
       inheritance_masks.insert(k);
     return true;
@@ -1468,8 +1564,7 @@ public:
         if (!isInheritanceMasked(row))
           insertTupleAllIndices(row);
       });
-    for (const std::vector<u64>& row : direct_inputs)
-      insertTupleAllIndices(row.data());
+    direct_inputs.forEach([&](const u64* row) { insertTupleAllIndices(row); });
   }
 
   // M4T reseed step (docs/m4t-contract.md) for one journaled candidate: if
@@ -1533,8 +1628,7 @@ public:
     count_epoch_valid.store(true);
     count_epoch_writer_ids.clear();
     ensureCountSidecar();
-    for (const std::vector<u64>& row : direct_inputs)
-      applyCountFoundation(row.data(), cnt_kind_input);
+    direct_inputs.forEach([&](const u64* row) { applyCountFoundation(row, cnt_kind_input); });
     if (predecessor_relation != nullptr)
       predecessor_relation->forEachLiveNominal([&](const u64* row)
       {
@@ -10222,8 +10316,7 @@ public:
       if (!v->isInheritanceMasked(row))
         v->insertTupleAllIndices(row);
     });
-    for (const std::vector<u64>& row : v->directInputs())
-      v->insertTupleAllIndices(row.data());
+    v->forEachDirectInput([&](const u64* row) { v->insertTupleAllIndices(row); });
     return true;
   }
 };
