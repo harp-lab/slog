@@ -37,6 +37,9 @@
 #include <mutex>
 #include <memory>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <mach/mach.h>
+#endif
 #include <omp.h>
 #include <unordered_map>
 #include <unordered_set>
@@ -114,20 +117,28 @@ public:
   virtual void restoreHarvest() {}
 };
 
-// Resident set size in bytes, from /proc/self/statm (the honest number, which
-// composes with the SLOG_MEM_MAX cgroup cap).  Field 2 is resident pages.
+// Current resident bytes, not the high-water mark returned by getrusage.
+// Used by the graceful memory cap on both Linux and macOS.
 inline u64 readRSSbytes()
 {
+#ifdef __APPLE__
+  mach_task_basic_info_data_t info{};
+  mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+  if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO,
+                reinterpret_cast<task_info_t>(&info), &count) == KERN_SUCCESS)
+    return static_cast<u64>(info.resident_size);
+#else
   std::ifstream statm("/proc/self/statm");
   u64 total_pages = 0, resident_pages = 0;
   if (statm >> total_pages >> resident_pages)
     return resident_pages * (u64)sysconf(_SC_PAGESIZE);
+#endif
   return 0;
 }
 
 // The memory cap (docs/pausing.md §5) is checked against ACTUAL RSS, re-read at
 // the sendBatch choke point about once per this many emitted words (~2 MiB) --
-// a /proc read that rarely is negligible, and reading the true RSS avoids the
+// an OS query that rarely is negligible, and reading the true RSS avoids the
 // false trips an emitted-words estimate would cause (re-derivations, non-dedup
 // temps over-count growth).
 #define rss_check_words (256 * 1024)

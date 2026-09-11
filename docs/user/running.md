@@ -40,21 +40,23 @@ Slog needs:
 - Boost headers
 - zlib development headers and library
 - GMP development headers and library
+- OpenSSL development headers and libcrypto
 
 On Debian and Ubuntu the package names are typically:
 
 ```console
-$ sudo apt install racket make clang libomp-dev libboost-dev zlib1g-dev libgmp-dev
+$ sudo apt install racket make clang libomp-dev libboost-dev zlib1g-dev libgmp-dev libssl-dev
 $ raco pkg install sha
 ```
 
-Package names differ on other systems. Slog's build scripts invoke `clang++`
-and link OpenMP, zlib, and GMP, so a compiler found under another name may
-need the repository's build settings adjusted.
+On macOS, follow the [Homebrew installation instructions](../../Readme.md#install-and-run).
+The daemon, freezer, generated plugins, and C++ tests share one toolchain
+configuration; see [native build notes](../native-build.md) for details.
 
-`systemd-run --user` is optional. When available, the launcher uses it for a
-hard cgroup memory limit. Without it, Slog warns and starts the daemon
-directly with only its graceful in-process limit.
+On Linux, `systemd-run --user` is optional. When available, the launcher uses it
+for a hard cgroup memory limit. Without it, Slog warns and starts the daemon
+directly with only its graceful in-process limit. macOS launches directly and
+measures current RSS through Mach for the same graceful memory pause behavior.
 
 Z3 and cvc5 are optional. They are only needed for symbolic SMT solving; the
 default mock backend handles supported ground formulas without a subprocess.

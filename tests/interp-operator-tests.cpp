@@ -4177,12 +4177,15 @@ void run(bool settled)
   _exit(0); // reached only if the resolve cursor did NOT fatal
 }
 
+static const char* test_executable = nullptr;
+
 static bool run_reexec_probe(const char* flag)
 {
   const pid_t pid = fork();
+  if (pid < 0) return false;
   if (pid == 0)
   {
-    execl("/proc/self/exe", "interp-operator-tests", flag, (char*)nullptr);
+    execlp(test_executable, test_executable, flag, (char*)nullptr);
     _exit(97); // exec failed
   }
   int status = 0;
@@ -5814,6 +5817,7 @@ bool test_read_attempt_fire_staging()
 
 int main(int argc, char** argv)
 {
+  test_executable = argv[0];
   if (argc > 1 && std::string(argv[1]) == "--probe-closure-fatal")
     probe_child_closure_fatal();
   if (argc > 1 && std::string(argv[1]) == "--probe-view-fold-fatal")

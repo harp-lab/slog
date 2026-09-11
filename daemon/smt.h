@@ -44,6 +44,10 @@
 #include <poll.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <spawn.h>
+#include <crt_externs.h>
+#endif
 
 #include <map>
 #include <optional>
@@ -578,7 +582,41 @@ inline bool smtWriteAll(int fd, const std::string& input)
 inline bool smtSpawn(const std::vector<std::string>& argv,
                      pid_t& pid, int& in_fd, int& out_fd)
 {
+  if (argv.empty()) return false;
+  std::vector<char*> cargv;
+  for (const std::string& a : argv) cargv.push_back(const_cast<char*>(a.c_str()));
+  cargv.push_back(nullptr);
   int inpipe[2], outpipe[2];
+#ifdef __APPLE__
+  // macOS has no pipe2. CLOEXEC_DEFAULT closes every descriptor except those
+  // explicitly selected by the spawn actions, including another pool worker's
+  // newly-created pipes. pipe()+fcntl() alone would retain the EOF race above.
+  if (pipe(inpipe) != 0) return false;
+  if (pipe(outpipe) != 0) { close(inpipe[0]); close(inpipe[1]); return false; }
+  posix_spawn_file_actions_t actions;
+  posix_spawnattr_t attr;
+  int rc = posix_spawn_file_actions_init(&actions);
+  if (rc == 0)
+  {
+    rc = posix_spawnattr_init(&attr);
+    if (rc == 0)
+    {
+      rc = posix_spawnattr_setflags(&attr, POSIX_SPAWN_CLOEXEC_DEFAULT);
+      if (rc == 0) rc = posix_spawn_file_actions_adddup2(&actions, inpipe[0], STDIN_FILENO);
+      if (rc == 0) rc = posix_spawn_file_actions_adddup2(&actions, outpipe[1], STDOUT_FILENO);
+      if (rc == 0) rc = posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
+      if (rc == 0) rc = posix_spawnp(&pid, cargv[0], &actions, &attr, cargv.data(), *_NSGetEnviron());
+      posix_spawnattr_destroy(&attr);
+    }
+    posix_spawn_file_actions_destroy(&actions);
+  }
+  if (rc != 0)
+  {
+    close(inpipe[0]); close(inpipe[1]);
+    close(outpipe[0]); close(outpipe[1]);
+    return false;
+  }
+#else
   if (pipe2(inpipe, O_CLOEXEC) != 0) return false;
   if (pipe2(outpipe, O_CLOEXEC) != 0) { close(inpipe[0]); close(inpipe[1]); return false; }
   pid = fork();
@@ -596,12 +634,10 @@ inline bool smtSpawn(const std::vector<std::string>& argv,
     if (devnull >= 0) dup2(devnull, 2);
     close(inpipe[0]); close(inpipe[1]);
     close(outpipe[0]); close(outpipe[1]);
-    std::vector<char*> cargv;
-    for (const std::string& a : argv) cargv.push_back(const_cast<char*>(a.c_str()));
-    cargv.push_back(nullptr);
     execvp(cargv[0], cargv.data());
     _exit(127);
   }
+#endif
   close(inpipe[0]);
   close(outpipe[1]);
   in_fd = inpipe[1];

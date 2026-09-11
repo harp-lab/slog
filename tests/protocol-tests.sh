@@ -36,7 +36,7 @@ set -u
 cd "$(dirname "$0")/.."
 mkdir -p build out data
 export SLOG_NO_MEM_CAP=1
-CXX="${CXX:-clang++}"
+source tests/native-env.sh
 
 PASS=0; FAIL=0
 ok()  { echo "PASS $1"; PASS=$((PASS+1)); }
@@ -715,7 +715,7 @@ expect "mode-refusal-marks-command" "(protocol-mode command)" out/proto-mode2.lo
 # requested-boundary, terminal-prepared, and future watch-citation causes. The
 # test binary reparses every rendered record through the shared bounded reader
 # and also refuses an empty watch citation.
-if "$CXX" -O2 -Wall -std=c++20 -Idaemon tests/protocol-record-tests.cpp \
+if native_cxx -O2 -Wall -std=c++20 -Idaemon tests/protocol-record-tests.cpp \
      daemon/sexp.cpp -o build/protocol-record-tests \
    && build/protocol-record-tests > out/proto-pause-records.log \
    && diff -u tests/data/t0-pause-records.txt out/proto-pause-records.log \
