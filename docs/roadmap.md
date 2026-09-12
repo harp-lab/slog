@@ -87,11 +87,14 @@ by a parallel pre-intern partition instead of 32 whole-delta scans; the
 write phase sorts and bulk-loads empty indices (`SLOG_SORTED_WRITE`), and
 database load bulk-ingests (7.9M-tuple closure 16.6 → 4.1 s at one thread,
 7.1 → 1.2 s at six).  Sorted interning was measured and REJECTED (stats.md
-§1.5).  Open, by size: skip unread inputs at load; the ~5 s between database
-open and the first push on a 5M-row input (index registration/backfill --
-timeline marks under `SLOG_PHASE_TIMES`); a thin-iteration schedule that
-avoids 32-bucket fan-out when the delta is a few thousand rows; a transient
-per-iteration hash set so intra-round duplicates skip the master descent; and a
+§1.5), as was a transient intra-round hash set in intern; the direct-input
+ledger built at database open is now bucketed btrees (5M-row input: open 3.8
+→ 0.65 s, RSS −400 MB; `(mark ...)` timeline under `SLOG_PHASE_TIMES`).
+Open, by size: skip unread inputs at load (~0.1 s per 2M rows now); a
+thin-iteration schedule that avoids 32-bucket fan-out when the delta is a
+few thousand rows; the join phase of cyclic queries (btree range probes vs
+a read-only sorted-array index kind for closed relations, the largest
+remaining ratio on the join-shaped benches); and a
 read-only sorted-array index kind for closed relations on the index-reuse
 seam.  Replacing the btree masters themselves is NOT on this list: they
 carry DRed^c, counts, struct identity, lattices, sessions and persistence.

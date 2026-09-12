@@ -34,16 +34,21 @@ export SLOG_OPT=tiered
 export SLOG_SMT_SOLVERS=mock
 export SLOG_NO_FREEZE=1     # keep the ground facts inline: stable stratum shape
 export SLOG_MAX_MS=500      # boundary polls every ~0.5s (daemon RunBudget)
+# The promotion race is against wall-clock compile time, so the interpreted
+# fixpoint must outlast the build regardless of core count: pin one thread.
+export SLOG_THREADS=1
 unset SLOG_TIER_PROFILE SLOG_TIER_SKIP_MS SLOG_TIER_PROMOTE_MS 2>/dev/null || true
 
 mkdir -p build out
 
-# The pathological-for-interp fixture: full transitive closure of a 2500-chain
-# (~3.1M path tuples, ~6s interpreted) against a ~4s -O0 build of two rules.
+# The pathological-for-interp fixture: full transitive closure of a 5000-chain
+# (~12.5M path tuples, ~6s interpreted on one thread) against a ~4s -O0 build
+# of two rules.  (A 2500-chain took ~6s until the 2026-09 intern/dedup work
+# made closures several times faster; the chain grew to keep the margin.)
 CHAIN=out/tprom_fixture.slog
 {
   echo "table (edge int int)"; echo "table (path int int)"; echo "rule"
-  for i in $(seq 1 2500); do echo "(edge $i $((i+1)))"; done
+  for i in $(seq 1 5000); do echo "(edge $i $((i+1)))"; done
   echo "rule (edge X Y) --> (path X Y)"
   echo "rule (path X Y) (edge Y Z) --> (path X Z)"
 } > "$CHAIN"

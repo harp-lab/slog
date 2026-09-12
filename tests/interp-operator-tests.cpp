@@ -44,6 +44,13 @@
 #include <variant>
 #include <vector>
 
+// emit() samples the head master's duplicate rate per (task, head) through an
+// EmitProbeState (operators.h); these tests emit through one shared state and
+// pin SLOG_EMIT_PROBE=always in main() so every candidate is probed, as the
+// pre-adaptive dedup did -- the assertions below count emitted rows.
+static slog::EmitProbeState test_probe_state;
+
+
 using namespace slog;
 using namespace slog::interp;
 namespace q = slog::query;
@@ -2712,7 +2719,7 @@ bool test_real_interp_read_task_recursive_admission()
       u64 fires = 0;
       read_delta(edge, bucket, db->getThreadCount(), [&](const u64* row) {
         ++fires;
-        emit<2>(path, path_index, batch, {row[0], row[1]}, {0, 1});
+        emit<2>(path, path_index, batch, test_probe_state, {row[0], row[1]}, {0, 1});
       });
       path->sendBatch(batch);
       if (fires) db->bumpFires("<native>", "delta:admit_edge#0", fires);
@@ -2738,7 +2745,7 @@ bool test_real_interp_read_task_recursive_admission()
       read_delta(path, bucket, db->getThreadCount(), [&](const u64* row) {
         join_probe<2, 1>(edge_index, {row[1], 0}, [&](const auto& match) {
           ++fires;
-          emit<2>(path, path_index, batch, {row[0], match[1]}, {0, 1});
+          emit<2>(path, path_index, batch, test_probe_state, {row[0], match[1]}, {0, 1});
         });
       });
       path->sendBatch(batch);
@@ -2893,7 +2900,7 @@ bool test_normal_once_seeded_scheduler_differential()
     bool work() override
     {
       InsertBatch* batch = new InsertBatch();
-      emit<1>(output, output_index, batch, {s32_encode(7)}, {0});
+      emit<1>(output, output_index, batch, test_probe_state, {s32_encode(7)}, {0});
       output->sendBatch(batch);
       db->bumpFires("unit.slog:1", "once", 1);
       return true;
@@ -2917,7 +2924,7 @@ bool test_normal_once_seeded_scheduler_differential()
       u64 fires = 0;
       join_all<1>(input_index, [&](const std::array<u64, 1>& row) {
         ++fires;
-        emit<1>(output, output_index, batch, {row[0]}, {0});
+        emit<1>(output, output_index, batch, test_probe_state, {row[0]}, {0});
       });
       output->sendBatch(batch);
       if (fires) db->bumpFires("unit.slog:2", "seeded", fires);
@@ -3110,7 +3117,7 @@ bool test_normal_temp_staging_differential()
       u64 fires = 0;
       read_delta(temp, bucket, db->getThreadCount(), [&](const u64* row) {
         ++fires;
-        emit<1>(output, output_index, batch, {row[0]}, {0});
+        emit<1>(output, output_index, batch, test_probe_state, {row[0]}, {0});
       });
       output->sendBatch(batch);
       if (fires) db->bumpFires("nt.slog:2", "delta:nt_tmp", fires);
@@ -3328,7 +3335,7 @@ bool test_normal_struct_staging_differential()
       read_delta(structure, bucket, db->getThreadCount(),
                  [&](const u64* row) {
         ++fires;
-        emit<2>(output, output_index, batch,
+        emit<2>(output, output_index, batch, test_probe_state,
                 {row[0], row[1]}, {0, 1});
       });
       output->sendBatch(batch);
@@ -3546,7 +3553,7 @@ bool test_normal_lattice_staging_differential()
       u64 fires = 0;
       read_delta(lattice, bucket, db->getThreadCount(), [&](const u64* row) {
         ++fires;
-        emit<2>(output, output_index, batch,
+        emit<2>(output, output_index, batch, test_probe_state,
                 {row[0], row[1]}, {0, 1});
       });
       output->sendBatch(batch);
@@ -5814,6 +5821,7 @@ bool test_read_attempt_fire_staging()
 
 int main(int argc, char** argv)
 {
+  setenv("SLOG_EMIT_PROBE", "always", 1);   // deterministic emit-time dedup (see test_probe_state)
   if (argc > 1 && std::string(argv[1]) == "--probe-closure-fatal")
     probe_child_closure_fatal();
   if (argc > 1 && std::string(argv[1]) == "--probe-view-fold-fatal")

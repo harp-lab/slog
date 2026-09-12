@@ -209,6 +209,35 @@ The interpreter tier is within ~1.2x of `-O2` on these workloads: only
 goes.  The phase line is the first place to look whenever a fixpoint number
 moves.
 
+A note on the adaptive emit probe's memory: with the probe skipped, each
+iteration's delta carries every candidate until intern nulls the
+duplicates, so a rule firing ten times per kept tuple stages ten rows per
+tuple for one iteration.  Peak RSS on the multi-source reachability
+workload rose from 334 to 704 MB for its 2x speed-up; the run memory cap
+(`SLOG_MEM_BYTES`, boundary suspend on trip) still bounds a runaway, and a
+delta-size-aware probe policy is the open refinement.
+
+### 1.6 What the 2026-09-10/11 changes bought
+
+Same harness, same machine state, `-O2`, evaluation-only medians (before =
+2026-09-10 sweep, after = commit 93a5a20).  Nothing here touched the join
+phase, so the two join-shaped workloads move only in wall and memory.
+
+| workload | tuples | iterations | -O2, 1 thread: before → after | -O2, 6 threads: before → after | wall 1 thread | peak RSS |
+|---|---|---|---|---|---|---|
+| transitive closure, random sparse graph | 7.9M | 20 | 16.61 → 5.83 s (2.8×) | 7.18 → 1.46 s (4.9×) | 17.7 → 6.8 s | 703 → 667 MB |
+| transitive closure, denser graph | 9.8M | 102 | 15.41 → 4.05 s (3.8×) | 11.45 → 1.28 s (8.9×) | 16.6 → 5.0 s | 776 → 379 MB |
+| multi-source reachability | 2.0M | 8 | 7.57 → 3.72 s (2.0×) | 2.37 → 0.84 s (2.8×) | 8.6 → 4.7 s | 334 → 704 MB |
+| same-generation on a tree | 2.2M | 2 | 1.77 → 0.84 s (2.1×) | 0.78 → 0.19 s (4.1×) | 2.8 → 1.8 s | 423 → 372 MB |
+| chain closure (2001 iterations) | 2.0M | 2001 | 1.83 → 1.06 s (1.7×) | 4.03 → 1.09 s (3.7×) | 2.8 → 2.0 s | 285 → 206 MB |
+| triangles | 216K | 2 | 1.03 → 1.04 s (1.0×) | 0.26 → 0.26 s (1.0×) | 2.0 → 2.0 s | 229 → 194 MB |
+| bowtie pattern, 5.1M-edge input | 10K | 4 | 4.07 → 2.95 s (1.4×) | 0.95 → 0.77 s (1.2×) | 11.2 → 5.0 s | 1242 → 740 MB |
+
+Serial per-iteration work (the rank stamping) was the scaling ceiling: the
+six-thread gains are the larger ones, and the 2001-iteration chain closure
+now runs as fast at six threads as at one instead of 2.2x slower.  Peak
+memory fell on every workload except the reachability one (above).
+
 ## 2. Statistics are observations, not program facts
 
 A statistic is produced at an evaluation boundary and describes an execution
