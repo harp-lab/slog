@@ -97,8 +97,11 @@ item 4): triangles 1.31x, closure 1.17x at one thread; large key spaces
 stay trees because the tree's shared upper levels out-probe a big flat
 directory.  Open, by size: skip unread inputs at load (~0.1 s per 2M rows
 now); a thin-iteration schedule that avoids 32-bucket fan-out when the delta
-is a few thousand rows; an Eytzinger or two-level directory to extend the
-frozen form to large key spaces; and a
+is a few thousand rows; column-narrowed frozen keys with a two-level
+directory to extend the frozen form to large key spaces; **a sorted-run
+master with merge absorb for plain set relations in semantic runs** (the
+closure constant, stats.md §1.5 item 6 -- the one design-level item left
+with a measured payoff); and a
 read-only sorted-array index kind for closed relations on the index-reuse
 seam.  Replacing the btree masters themselves is NOT on this list: they
 carry DRed^c, counts, struct identity, lattices, sessions and persistence.

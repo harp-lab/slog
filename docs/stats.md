@@ -236,6 +236,31 @@ The interpreter tier is within ~1.2x of `-O2` on these workloads: only
 goes.  The phase line is the first place to look whenever a fixpoint number
 moves.
 
+5. **Where the compiled tier's advantage is decisive: work per firing.**  An
+   arithmetic step in a compiled rule body costs ~8 ns (`bench/
+   arith_chain30.slog`: thirty steps per firing over 5.1M edges, `join`
+   166 → 1325 ms from one step to thirty).  The fixed cost of materialising
+   the 5.1M result tuples (~0.55 s: intern, reorg, write) is what the
+   reference closures are made of, so on them the tier hardly matters; on a
+   body with tens of steps -- arithmetic, functor chains, guards, string
+   operations -- the body dominates and the compiled tier is the engine's
+   strongest asset.  Keep such workloads in the regression bench.
+
+6. **What would change the closure constant itself.**  After the arc a
+   closure is ~85 % `intern` at one thread, one master descent per
+   candidate at ~110 ns, and two attempts to cut that inside the current
+   design were measured and rejected (item 2).  The remaining lever is not a
+   faster point probe -- a bulk-loaded btree is already a good one (item 4)
+   -- but not probing per candidate at all: a sorted-run master per bucket
+   for plain set relations in semantic to-fixpoint runs, where a round's
+   candidates are radix-sorted and merge-anti-joined against the runs (the
+   dedup) and the survivors become both the delta and a new run, with
+   periodic compaction.  Counted, struct-keyed, lattice and session-mutated
+   relations keep the tree, exactly the gate the frozen index uses, so it is
+   a per-relation master kind beside the btree rather than a replacement.
+   Second lever: column-narrowed frozen keys (32-bit when every value fits),
+   which is what keeps a large key space cache-resident.
+
 A note on the adaptive emit probe's memory: with the probe skipped, each
 iteration's delta carries every candidate until intern nulls the
 duplicates, so a rule firing ten times per kept tuple stages ten rows per
