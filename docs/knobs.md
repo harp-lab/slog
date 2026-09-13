@@ -42,15 +42,16 @@ artifacts), `SLOG_FLAVORED_NATIVE` (the differential's native leg),
 test harnesses; previously documented nowhere), `SLOG_THREADS`,
 `SLOG_NO_STATS` (stats.md; `SLOG_STATS=off|basic|full` is future),
 **`SLOG_PHASE_TIMES`** (emit one `(phases <scc> "<name>" iters N write W join J
-finalize F intern I reorg R end E endcomp C partition P)` line after each
-`(fixpoint ...)`: the
+finalize F intern I reorg R end E endcomp C partition P freeze Z)` line after
+each `(fixpoint ...)`: the
 sentinel thread's wall milliseconds per iteration phase, summed over the
 stratum -- write = previous delta inserted into the full indices, join =
 read tasks minus finalize, finalize = shard merge into the new delta, intern
 = delta dedup against the masters, reorg = delta bucketising, end = the
 end-of-iteration barrier and its completion, endcomp = the completion body
-alone, partition = the parallel pre-intern bucket partition and its barrier;
-also `(load "<rel>" read R ingest I)` per relation at database open and
+alone, partition = the parallel pre-intern bucket partition and its barrier,
+freeze = iteration 0's freeze of the read-only relations' indices into their
+static form; also `(load "<rel>" read R ingest I)` per relation at database open and
 `(mark "<what>" <ms since start>)` timeline marks -- open-done, reload-done,
 push -- on stderr; 2026-09-10/11),
 **`SLOG_EMIT_PROBE`** = `adaptive` (default) | `always` | `never`
@@ -68,7 +69,19 @@ order; content is identical, only btree access order changes.  A sorted
 INTERN was measured and rejected -- the sort cost three times what sorted
 probing saved, since a bucket's master tree fits in cache -- so intern probes
 in delta order, one descent per candidate, reading its bucket from the
-parallel pre-intern partition; stats.md §1.5),
+parallel pre-intern partition; stats.md §1.5), **`SLOG_STATIC_INDEX`** = `0`
+to disable (2026-09-12: after iteration 0's write phase every full ordering
+of a relation the stratum reads but never writes is FROZEN into its static
+form -- a directory of the bucket's distinct lead values plus one sorted
+contiguous array, so a probe is a small directory search and a search inside
+one lead group, range walks are pointer bumps, and the index is ~30 %
+smaller -- and thaws back into a btree on the first mutation, so no caller
+sees the difference.  Only buckets whose directory and groups stay
+cache-resident freeze -- at most **`SLOG_STATIC_MAX_LEADS`** distinct lead
+values per bucket (default 8192) and **`SLOG_STATIC_MAX_GROUP`** keys per
+lead (default 256); a 5M-edge input over 2.5M nodes has 80K leads per bucket
+and probed 0.75x as fast frozen, so it stays a tree.  Semantic to-fixpoint
+runs only; measurement knobs, stats.md §1.5),
 `SLOG_MPZ_MAX_BITS`/`_TABLE_BYTES`, `SLOG_ACCEL`(+`_RATE`/`_QUOTA`/`_MB`/
 `_MIN_ROUNDS`) (db-compression.md §4.4), `SLOG_SMT_SOLVERS` /
 `SLOG_ORACLE_PROCS` (smt.md §8), `SLOG_NO_INDEX_REUSE` /

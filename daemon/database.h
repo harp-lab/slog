@@ -2424,6 +2424,19 @@ public:
     }
   }
   bool internPartitioned() const { return intern_partitioned; }
+
+  // Every bucket of every authoritative full ordering (not seeded-only, not
+  // awaiting backfill) -- the indices a stratum that only READS this
+  // relation may freeze into their static form (Index::freeze).
+  void collectFreezableIndices(std::vector<Index*>& out) const
+  {
+    for (const auto& it : indices)
+    {
+      if (seeded_orderings.find(it.first) != seeded_orderings.end()) continue;
+      if (pending_backfill.find(it.first) != pending_backfill.end()) continue;
+      for (u16 b = 0; b < bucket_count; ++b) out.push_back(it.second[b]);
+    }
+  }
   const std::vector<u64>& internRows(u32 tid, u16 bucket) const
   {
     return intern_rows[tid][bucket];
@@ -3172,7 +3185,8 @@ struct RunStatus {
   // iteration of this stratum (see RunState::ms_phase_*).  Published on the
   // (phases ...) line when SLOG_PHASE_TIMES is set.
   double ms_phase_write, ms_phase_read, ms_phase_finalize, ms_phase_intern,
-         ms_phase_reorg, ms_phase_end, ms_phase_endcomp, ms_phase_partition;
+         ms_phase_reorg, ms_phase_end, ms_phase_endcomp, ms_phase_partition,
+         ms_phase_freeze;
 };
 
 // All state of an in-flight (possibly suspended) stratum run.  Grouped in one
@@ -3233,7 +3247,8 @@ struct RunState {
   double ms_phase_write = 0.0, ms_phase_read = 0.0, ms_phase_finalize = 0.0,
          ms_phase_intern = 0.0, ms_phase_reorg = 0.0, ms_phase_end = 0.0,
          ms_phase_endcomp = 0.0,   // the part of `end` spent inside EndIterCompletion
-         ms_phase_partition = 0.0; // pre-intern partition + its barrier
+         ms_phase_partition = 0.0, // pre-intern partition + its barrier
+         ms_phase_freeze = 0.0;    // iteration-0 freeze of the read-only indices
   std::string last_message;                    // cached fixpoint msg (§5)
 
   // Set by ReadCompletion / EndIterCompletion, read by runLoop after barriers.
@@ -3809,6 +3824,12 @@ private:
   std::barrier<ReadCompletion>* read_barrier = nullptr;   // finalizes phase_read
   std::barrier<EndIterCompletion>* end_barrier = nullptr; // decides next_action
   std::barrier<NoopCompletion>* partition_barrier = nullptr; // pre-intern partition complete
+  std::barrier<NoopCompletion>* freeze_barrier = nullptr;    // static indices frozen
+  // The index buckets this stratum run freezes after iteration 0's write
+  // phase: every authoritative full ordering of every relation the stratum
+  // reads but never writes (planStaticFreeze).  Empty under
+  // SLOG_STATIC_INDEX=0.
+  std::vector<Index*> static_freeze_jobs;
 
 
   std::barrier<NoopCompletion>* phase_barrier[phase_count] = {};
@@ -6823,6 +6844,48 @@ public:
       if (r != nullptr) r->partitionForIntern(tid, nthreads);
   }
 
+  // Static indices (docs/stats.md 1.5): a relation the stratum reads but
+  // never writes is closed for the whole run, so after iteration 0's write
+  // phase (which fills any fresh ordering from the reload dump) its full
+  // orderings are frozen into sorted contiguous arrays -- binary-search
+  // probes and pointer-bump range walks instead of btree descents.  The
+  // freeze is a bucket-parallel copy behind one barrier; a later mutation
+  // (the next stratum writing the relation, a session edit) thaws the
+  // bucket back into a tree on first touch.
+  void planStaticFreeze(const Stratum* s, bool tofixpoint)
+  {
+    static_freeze_jobs.clear();
+    static const bool enabled = [] { const char* v = std::getenv("SLOG_STATIC_INDEX");
+                                     return v == nullptr || std::strcmp(v, "0") != 0; }();
+    // Semantic to-fixpoint runs only.  Count rounds and maintenance flavors
+    // are short, gain nothing from static probes, and mutate relations the
+    // stratum does not list as its heads (overlays, reseeds, sidecar-driven
+    // reinsertion), so they keep every index in its mutable form.
+    if (!enabled || s == nullptr || !tofixpoint || !s->semantic_instance
+        || s->transient_instance)
+      return;
+    for (const std::string& rname : s->read_rels)
+    {
+      if (std::find(s->dynamic_rels.begin(), s->dynamic_rels.end(), rname)
+            != s->dynamic_rels.end())
+        continue;
+      Relation* rel = getRelation(rname);
+      if (rel == nullptr || rel->getArity() == 0 || rel->isLattice()) continue;
+      rel->collectFreezableIndices(static_freeze_jobs);
+    }
+    // One freezer per bucket: a relation reachable under two names (version
+    // aliases) would otherwise be listed twice and two threads would race to
+    // copy and clear the same tree.
+    std::sort(static_freeze_jobs.begin(), static_freeze_jobs.end());
+    static_freeze_jobs.erase(std::unique(static_freeze_jobs.begin(), static_freeze_jobs.end()),
+                             static_freeze_jobs.end());
+  }
+  void freezeStaticIndices(u32 tid, u32 nthreads)
+  {
+    for (size_t i = tid; i < static_freeze_jobs.size(); i += nthreads)
+      static_freeze_jobs[i]->freeze();
+  }
+
   // Size every relation's per-thread bucket buffers (single-threaded).
   void ensureReorgBuffers()
   {
@@ -6943,7 +7006,8 @@ public:
     };
     for (;;)
     {
-      clk::time_point t_start = clk::now(), t_write = t_start, t_read = t_start;
+      clk::time_point t_start = clk::now(), t_write = t_start, t_freeze = t_start,
+                      t_read = t_start;
       if (!skip_to_intern)
       {
         if (!skip_to_read)
@@ -6951,6 +7015,15 @@ public:
           db->iter_barrier->arrive_and_wait();     // IterCompletion: latest=false
           db->runPhase(phase_write, sentinel);
           t_write = clk::now();
+          // Iteration 0 only: the read-only relations' indices are complete
+          // now (fresh orderings consumed the reload dump above), so freeze
+          // them into their static form before anything probes them.
+          if (rs.iteration_count == 0 && !db->static_freeze_jobs.empty())
+          {
+            db->freezeStaticIndices(tid, nthreads);
+            db->freeze_barrier->arrive_and_wait();
+          }
+          t_freeze = clk::now();
         }
         skip_to_read = false;
 
@@ -6959,7 +7032,8 @@ public:
         if (sentinel)
         {
           rs.ms_phase_write += ms_between(t_start, t_write);
-          rs.ms_phase_read += ms_between(t_write, t_read);
+          rs.ms_phase_freeze += ms_between(t_write, t_freeze);
+          rs.ms_phase_read += ms_between(t_freeze, t_read);
         }
         if (rs.read_suspended)
         {
@@ -7065,6 +7139,7 @@ public:
         if (it != accel_sidecar.end()) ++it->second.generation;
       }
       markRecursiveConeMembers(s);
+      planStaticFreeze(s, tofixpoint);
       rs.stratum = s;
       rs.position = RUN_FRESH;
       rs.suspended = false;
@@ -7080,7 +7155,7 @@ public:
       rs.ms_total = 0.0;
       rs.ms_phase_write = rs.ms_phase_read = rs.ms_phase_finalize = 0.0;
       rs.ms_phase_intern = rs.ms_phase_reorg = rs.ms_phase_end = 0.0;
-      rs.ms_phase_endcomp = rs.ms_phase_partition = 0.0;
+      rs.ms_phase_endcomp = rs.ms_phase_partition = rs.ms_phase_freeze = 0.0;
       rs.start_tuples = totalTuples();
       // Every relation gets a send buffer per worker and reorg buffers --
       // registry-wide (0.C): positional re-entry writes old versions too.
@@ -7131,6 +7206,7 @@ public:
     read_barrier = new std::barrier<ReadCompletion>(thread_count, ReadCompletion{this});
     end_barrier  = new std::barrier<EndIterCompletion>(thread_count, EndIterCompletion{this});
     partition_barrier = new std::barrier<NoopCompletion>(thread_count, NoopCompletion{});
+    freeze_barrier = new std::barrier<NoopCompletion>(thread_count, NoopCompletion{});
     for (u32 i = 0; i < phase_count; ++i)
       phase_barrier[i] = new std::barrier<NoopCompletion>(thread_count, NoopCompletion{});
 
@@ -7144,6 +7220,7 @@ public:
     delete read_barrier; read_barrier = nullptr;
     delete end_barrier;  end_barrier  = nullptr;
     delete partition_barrier; partition_barrier = nullptr;
+    delete freeze_barrier; freeze_barrier = nullptr;
     for (u32 i = 0; i < phase_count; ++i)
     {
       delete phase_barrier[i];
@@ -7171,6 +7248,7 @@ public:
     st.ms_phase_end = rs.ms_phase_end;
     st.ms_phase_endcomp = rs.ms_phase_endcomp;
     st.ms_phase_partition = rs.ms_phase_partition;
+    st.ms_phase_freeze = rs.ms_phase_freeze;
     if (rs.position == RUN_FRESH)          // loop exited => fixpoint / pass done
     {
       rs.suspended = false;

@@ -2239,7 +2239,7 @@ public:
     key[A - 1] = target;
     if (fok && (*fit)[A - 1] < target)
     {
-      fit = full->lower_bound(key);
+      fit = full->lower_bound_from(fit, key);
       normalize_full();
     }
     if (view == ProbePlan::View::new_

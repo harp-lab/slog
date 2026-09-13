@@ -246,7 +246,7 @@ public:
     key[K] = target;
     if (fok && (*fit)[K] < target)
     {
-      fit = full->lower_bound(key);
+      fit = full->lower_bound_from(fit, key);
       normalize_full();
     }
     if constexpr (V == Join3View::new_)

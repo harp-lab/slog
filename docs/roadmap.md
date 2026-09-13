@@ -90,11 +90,15 @@ database load bulk-ingests (7.9M-tuple closure 16.6 → 4.1 s at one thread,
 §1.5), as was a transient intra-round hash set in intern; the direct-input
 ledger built at database open is now bucketed btrees (5M-row input: open 3.8
 → 0.65 s, RSS −400 MB; `(mark ...)` timeline under `SLOG_PHASE_TIMES`).
-Open, by size: skip unread inputs at load (~0.1 s per 2M rows now); a
-thin-iteration schedule that avoids 32-bucket fan-out when the delta is a
-few thousand rows; the join phase of cyclic queries (btree range probes vs
-a read-only sorted-array index kind for closed relations, the largest
-remaining ratio on the join-shaped benches); and a
+Shipped 09-13: static (frozen) indices for the relations a stratum only
+reads -- sorted array + lead directory per bucket, thawed on mutation,
+gated to cache-resident directories (`SLOG_STATIC_INDEX`, stats.md §1.5
+item 4): triangles 1.31x, closure 1.17x at one thread; large key spaces
+stay trees because the tree's shared upper levels out-probe a big flat
+directory.  Open, by size: skip unread inputs at load (~0.1 s per 2M rows
+now); a thin-iteration schedule that avoids 32-bucket fan-out when the delta
+is a few thousand rows; an Eytzinger or two-level directory to extend the
+frozen form to large key spaces; and a
 read-only sorted-array index kind for closed relations on the index-reuse
 seam.  Replacing the btree masters themselves is NOT on this list: they
 carry DRed^c, counts, struct identity, lattices, sessions and persistence.

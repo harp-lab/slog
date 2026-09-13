@@ -204,6 +204,33 @@ Three consequences worth knowing before touching any of it:
    inputs at load remains open but is now worth ~0.1 s per 2M rows rather
    than seconds.
 
+4. **Static indices for the relations a stratum only reads (2026-09-12).**
+   Inputs and earlier strata's outputs never change while a stratum runs,
+   so after iteration 0's write phase their full orderings are *frozen*:
+   each bucket's keys move into one sorted contiguous array with a
+   directory of its distinct lead values, the tree is dropped, and any
+   later mutation (the next stratum writing the relation, a session edit)
+   thaws the bucket back on first touch.  A probe is then a directory
+   search plus a search inside one lead group; a range walk is a pointer
+   bump.  Two things decide whether that beats the bulk-loaded btree, and
+   both were measured the hard way: the directory and the group must be
+   cache-resident.  A 600K-edge graph over 10K nodes (312 leads per bucket,
+   2.5 KB) probes 1.2--1.3x faster frozen; a 5.1M-edge graph over 2.5M
+   nodes (80K leads per bucket, 640 KB) probed 0.75x -- the deeper steps of
+   the directory search all miss, where the tree's shared upper levels stay
+   hot -- and a plain flat array without the directory was no faster than
+   the tree at all.  Buckets beyond `SLOG_STATIC_MAX_LEADS` (8192) or
+   `SLOG_STATIC_MAX_GROUP` (256 keys per lead) therefore stay trees.  Net
+   on the reference workloads, `-O2`: triangles 1.31x / 1.16x (1 / 6
+   threads), transitive closure 1.17x at one thread, reachability 1.10x,
+   same-generation 1.04x / 1.25x, bowtie unchanged (its input stays a
+   tree).  The freeze step (`freeze` on the phases line) is a bucket-parallel
+   copy, 1--13 ms here.  `SLOG_STATIC_INDEX=0` disables it.  The lesson to
+   carry forward: a sorted array is not a faster *search* structure than a
+   dense B-tree on this hardware; it wins only where the search itself is
+   tiny and the win is the contiguous walk and the smaller footprint.  An
+   Eytzinger-ordered or two-level directory would extend the regime.
+
 The interpreter tier is within ~1.2x of `-O2` on these workloads: only
 `join` differs between the tiers, and `join` is not where most of the time
 goes.  The phase line is the first place to look whenever a fixpoint number

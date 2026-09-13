@@ -1878,11 +1878,11 @@ public:
         char pbuf[256];
         std::snprintf(pbuf, sizeof(pbuf),
                       "(phases %u \"%s\" iters %u write %.3f join %.3f finalize %.3f "
-                      "intern %.3f reorg %.3f end %.3f endcomp %.3f partition %.3f)",
+                      "intern %.3f reorg %.3f end %.3f endcomp %.3f partition %.3f freeze %.3f)",
                       s->scc_id, s->name.c_str(), st.iteration, st.ms_phase_write,
                       st.ms_phase_read - st.ms_phase_finalize, st.ms_phase_finalize,
                       st.ms_phase_intern, st.ms_phase_reorg, st.ms_phase_end,
-                      st.ms_phase_endcomp, st.ms_phase_partition);
+                      st.ms_phase_endcomp, st.ms_phase_partition, st.ms_phase_freeze);
         emit(std::string(pbuf));
       }
       emit(s->fixpoint_msg);
