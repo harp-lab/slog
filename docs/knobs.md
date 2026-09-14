@@ -53,7 +53,13 @@ alone, partition = the parallel pre-intern bucket partition and its barrier,
 freeze = iteration 0's freeze of the read-only relations' indices into their
 static form; also `(load "<rel>" read R ingest I)` per relation at database open and
 `(mark "<what>" <ms since start>)` timeline marks -- open-done, reload-done,
-push -- on stderr; 2026-09-10/11),
+push -- on stderr; 2026-09-10/11), **`SLOG_ITER_TRACE`**=1 (one `(iter <scc>
+"<stratum>" <round> "<rel>" cand C new N master M)` line per relation per
+round on stderr: candidates produced, survivors after dedup, master size;
+2026-09-14), **`SLOG_DUMP_DELTA`**=`<dir>` (append every plain set relation's
+un-deduplicated candidate rows per round to `<dir>/<rel>.bin` as blocks of
+`u64 iteration, arity, rows` + rows*arity words -- the input of
+`bench/master-sim/`, docs/run-master.md; 2026-09-14),
 **`SLOG_EMIT_PROBE`** = `adaptive` (default) | `always` | `never`
 (2026-09-10: emit-time dedup policy for set-semantics heads, both tiers.
 `always` probes the head master for every candidate (the pre-09-10

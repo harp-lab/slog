@@ -100,8 +100,8 @@ now); a thin-iteration schedule that avoids 32-bucket fan-out when the delta
 is a few thousand rows; column-narrowed frozen keys with a two-level
 directory to extend the frozen form to large key spaces; **a sorted-run
 master with merge absorb for plain set relations in semantic runs** (the
-closure constant, stats.md §1.5 item 6 -- the one design-level item left
-with a measured payoff); and a
+closure constant, stats.md §1.5 item 6; PLANNED 09-14 as a hybrid with the
+btree as memtable after a trace-driven study -- docs/run-master.md); and a
 read-only sorted-array index kind for closed relations on the index-reuse
 seam.  Replacing the btree masters themselves is NOT on this list: they
 carry DRed^c, counts, struct identity, lattices, sessions and persistence.

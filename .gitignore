@@ -31,3 +31,4 @@ slog-freeze
 /slog
 /.slog.new
 /repl/target/
+bench/master-sim/sim

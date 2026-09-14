@@ -6844,6 +6844,70 @@ public:
       if (r != nullptr) r->partitionForIntern(tid, nthreads);
   }
 
+  // Measurement knobs for the fixpoint's per-round shape (docs/knobs.md).
+  //
+  // SLOG_DUMP_DELTA=<dir>: after each round's finalize (single-threaded, the
+  // delta complete and not yet deduplicated) append every plain set
+  // relation's candidate rows to <dir>/<relation>.bin as blocks of
+  //   u64 iteration, u64 arity, u64 rows, rows*arity words (storage order)
+  // -- the exact candidate stream a master-index design must absorb, for
+  // trace-driven simulation off-line.  Struct and lattice relations are not
+  // dumped (their intern paths are different).
+  void dumpDeltas(u32 iteration)
+  {
+    static const char* dir = std::getenv("SLOG_DUMP_DELTA");
+    if (dir == nullptr || rs.stratum == nullptr || rs.stratum->transient_instance) return;
+    for (Relation* r : rel_registry)
+    {
+      if (r == nullptr || r->getArity() == 0 || r->isLattice() || r->getStructId() != 0) continue;
+      auto& delta = r->getDelta();
+      u64 rows = 0;
+      const u16 arity = r->getArity();
+      for (InsertBatch* b : delta)
+        for (u64 j = 0; j + arity <= b->usage; j += arity)
+          if (b->data[j] != slog_null) ++rows;
+      if (rows == 0) continue;
+      const std::string path = std::string(dir) + "/" + r->getName() + ".bin";
+      FILE* f = std::fopen(path.c_str(), "ab");
+      if (f == nullptr) continue;
+      const u64 hdr[3] = { iteration, arity, rows };
+      std::fwrite(hdr, sizeof(u64), 3, f);
+      for (InsertBatch* b : delta)
+        for (u64 j = 0; j + arity <= b->usage; j += arity)
+          if (b->data[j] != slog_null) std::fwrite(b->data + j, sizeof(u64), arity, f);
+      std::fclose(f);
+    }
+  }
+  // SLOG_ITER_TRACE=1: after each round's intern (single-threaded), one line
+  // per relation whose delta was non-empty:
+  //   (iter <scc> "<stratum>" <round> "<relation>" cand C new N master M)
+  // C = candidate rows the round produced, N = the ones that were new (the
+  // next round's delta), M = the master's size after the round.
+  void traceIteration(u32 iteration)
+  {
+    static const bool on = std::getenv("SLOG_ITER_TRACE") != nullptr;
+    if (!on || rs.stratum == nullptr) return;
+    for (Relation* r : rel_registry)
+    {
+      if (r == nullptr || r->getArity() == 0) continue;
+      auto& delta = r->getDelta();
+      if (delta.empty()) continue;
+      const u16 arity = r->getArity();
+      u64 cand = 0, live = 0;
+      for (InsertBatch* b : delta)
+        for (u64 j = 0; j + arity <= b->usage; j += arity)
+        {
+          ++cand;
+          if (b->data[j] != slog_null) ++live;
+        }
+      if (cand == 0) continue;
+      std::fprintf(stderr, "(iter %u \"%s\" %u \"%s\" cand %llu new %llu master %llu)\n",
+                   rs.stratum->scc_id, rs.stratum->name.c_str(), iteration, r->getName().c_str(),
+                   (unsigned long long)cand, (unsigned long long)live,
+                   (unsigned long long)r->tupleCount());
+    }
+  }
+
   // Static indices (docs/stats.md 1.5): a relation the stratum reads but
   // never writes is closed for the whole run, so after iteration 0's write
   // phase (which fills any fresh ordering from the reload dump) its full
@@ -10462,6 +10526,7 @@ inline void ReadCompletion::operator()() noexcept
     {
       const auto t0 = std::chrono::steady_clock::now();
       db->finalizeAll();
+      db->dumpDeltas(rs.iteration_count);
       rs.ms_phase_finalize += std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t0).count();
     }
@@ -10482,6 +10547,7 @@ inline void EndIterCompletion::operator()() noexcept
   // sample this round's delta into the accelerator-seed sidecar (§4.4 v2):
   // single-threaded here (all workers parked), delta finalized+interned+idle
   db->accelRecordRound();
+  db->traceIteration(rs.iteration_count);
   // Level-0 watches evaluate HERE and nowhere else: the delta is finalized,
   // every worker is parked, and the iteration's growth is already known.
   db->evaluateWatchesAtBarrier();
