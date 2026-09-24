@@ -32,6 +32,7 @@
 #include <array>
 #include <vector>
 #include <functional>
+#include <iterator>
 
 
 namespace slog
@@ -89,27 +90,97 @@ public:
   using Key = std::array<u64, A>;   // tuple columns in this index's ordering
   using Tree = tlx::btree_set<Key>; // default std::less<Key> = lexicographic
 
-  // Two representations behind one interface.  Normally the keys live in the
-  // tree.  A FROZEN index (Index::freeze, applied to the indices a stratum
-  // only reads -- inputs and earlier strata's outputs) holds the same keys
-  // in `flat`, one sorted contiguous array, and the tree is empty: probes
-  // are a binary search, range walks are pointer bumps over packed 16-byte
-  // keys with no node overhead, and the index is ~30% smaller.  Any mutating
-  // entry point thaws first (one bulk load back into the tree), so callers
-  // never see the distinction.
+  // A RUN: one sorted, duplicate-free, contiguous array of keys, with a
+  // directory over its lead column (A >= 2): the distinct lead values in
+  // order and, for each, where its group of keys starts (`off` has one extra
+  // entry = keys.size()).  A probe binary-searches the directory -- a few
+  // thousand values that stay in cache -- and then only the matching group,
+  // instead of the whole array: the array of a large relation does not fit
+  // in cache and a plain binary search over it misses on most of its steps,
+  // which is why a flat array alone probed no faster than the tree.  Range
+  // walks are pointer bumps over packed keys with no node overhead, and a
+  // run is ~30% smaller than the same keys in the tree.
+  struct Run
+  {
+    std::vector<Key> keys;
+    std::vector<u64> lead;
+    std::vector<u32> off;
+
+    const Key* begin() const { return keys.data(); }
+    const Key* end() const { return keys.data() + keys.size(); }
+    u64 size() const { return keys.size(); }
+    u64 leads() const { if constexpr (A >= 2) return lead.size(); else return keys.size(); }
+
+    // `keys` must be sorted and duplicate-free.
+    void buildDirectory()
+    {
+      if constexpr (A >= 2)
+      {
+        lead.clear(); off.clear();
+        for (size_t i = 0; i < keys.size(); ++i)
+          if (i == 0 || keys[i][0] != keys[i - 1][0]) { lead.push_back(keys[i][0]); off.push_back((u32)i); }
+        off.push_back((u32)keys.size());
+      }
+    }
+    // lower_bound(k): directory first, then the lead value's group.
+    const Key* lowerBound(const Key& k) const
+    {
+      if constexpr (A >= 2)
+      {
+        const auto li = std::lower_bound(lead.begin(), lead.end(), k[0]);
+        if (li == lead.end()) return end();
+        const size_t g = li - lead.begin();
+        const Key* lo = keys.data() + off[g];
+        if (*li != k[0]) return lo;                       // k[0] absent: first key of the next group
+        return std::lower_bound(lo, keys.data() + off[g + 1], k);
+      }
+      else
+        return std::lower_bound(begin(), end(), k);
+    }
+    // End of the lead-column group that position p (a valid key) belongs to.
+    const Key* groupEnd(const Key* p) const
+    {
+      if constexpr (A >= 2)
+      {
+        const size_t g = std::lower_bound(lead.begin(), lead.end(), (*p)[0]) - lead.begin();
+        return keys.data() + off[g + 1];
+      }
+      else
+        return end();
+    }
+    bool contains(const Key& k) const
+    {
+      const Key* p = lowerBound(k);
+      return p != end() && *p == k;
+    }
+  };
+
+  // Two kinds of storage behind one interface.  Normally every key lives in
+  // the tree, the MEMTABLE.  An index may also hold sorted RUNS (newest
+  // last), pairwise disjoint and disjoint from the tree; the index's content
+  // is their union.  Today a run arises in one way: Index::freeze, applied
+  // to the indices a stratum only reads (inputs and earlier strata's
+  // outputs), moves the whole tree into a single run -- the STATIC form --
+  // and any mutating entry point thaws it back into the tree first (one bulk
+  // load), so callers never see the distinction.  The structure is general
+  // (several runs beside a non-empty memtable) so that the intern phase can
+  // later absorb a round's survivors as a new run instead of one tree
+  // descent per candidate (docs/run-master.md); until it does, the range
+  // reads below rely on the static invariant: runs present => one run and an
+  // empty tree.
   Tree tree;
-  std::vector<Key> flat;
-  bool frozen = false;
-  // Directory over `flat` (frozen only, A >= 2): the bucket's distinct lead-
-  // column values in order and, for each, where its group of keys starts
-  // (`off` has one extra entry = flat.size()).  A probe binary-searches the
-  // directory -- a few thousand values that stay in cache -- and then only
-  // the matching group, instead of the whole array: the array of a large
-  // relation does not fit in cache and a plain binary search over it misses
-  // on most of its steps, which is why a flat array alone probed no faster
-  // than the tree.
-  std::vector<u64> lead;
-  std::vector<u32> off;
+  std::vector<Run> runs;
+  // The static run's bounds, cached so that begin()/end() -- which every
+  // range-walk loop re-evaluates per step -- are one load and a branch,
+  // not a walk through the run vector.  Null unless the static invariant
+  // holds; maintained by freeze/thaw/clear.
+  const Key* static_begin = nullptr;
+  const Key* static_end = nullptr;
+  void cacheStaticBounds()
+  {
+    if (runs.size() == 1 && tree.empty()) { static_begin = runs[0].begin(); static_end = runs[0].end(); }
+    else static_begin = static_end = nullptr;
+  }
 
   // Iterator over either representation.  Every consumer uses only
   // lower_bound/begin/end, !=, ++ and *, so a mode flag checked per step
@@ -132,17 +203,34 @@ public:
     const Key* flatPos() const { return is_flat ? p : nullptr; }
   };
 
+  // The static invariant the range reads rely on (see above).
+  bool singleStaticRun() const { return static_end != nullptr; }
+
+  // Fold every run back into the tree.  One run into an empty tree is a bulk
+  // load; anything else merges the runs (they are disjoint) and inserts.
   void thaw()
   {
-    if (!frozen) return;
-    tree.bulk_load(flat.begin(), flat.end());
-    std::vector<Key>().swap(flat);
-    std::vector<u64>().swap(lead);
-    std::vector<u32>().swap(off);
-    frozen = false;
+    if (runs.empty()) return;
+    if (singleStaticRun())
+      tree.bulk_load(runs[0].keys.begin(), runs[0].keys.end());
+    else
+    {
+      std::vector<Key> all;
+      for (const Run& r : runs)
+      {
+        std::vector<Key> merged;
+        merged.reserve(all.size() + r.size());
+        std::merge(all.begin(), all.end(), r.begin(), r.end(), std::back_inserter(merged));
+        all.swap(merged);
+      }
+      if (tree.empty()) tree.bulk_load(all.begin(), all.end());
+      else for (const Key& k : all) tree.insert(k);
+    }
+    std::vector<Run>().swap(runs);
+    cacheStaticBounds();
   }
-  // Freeze only when the frozen form's two searches stay cache-resident.  A
-  // probe is a binary search over the bucket's DIRECTORY (its distinct lead
+  // Freeze only when the static form's two searches stay cache-resident.  A
+  // probe is a binary search over the run's DIRECTORY (its distinct lead
   // values) and then over one lead GROUP; both must be small.  A directory
   // of a few hundred leads (a random graph with a few thousand nodes) is
   // one or two KB and beats the tree descent by 1.2-1.3x on the join-shaped
@@ -166,7 +254,7 @@ public:
   }
   void freeze() override
   {
-    if (frozen || tree.empty()) return;
+    if (!runs.empty() || tree.empty()) return;
     if constexpr (A >= 2)
     {
       u64 leads = 0; bool first = true; u64 prev = 0;
@@ -177,33 +265,14 @@ public:
       if (leads == 0 || leads > maxLeads() || tree.size() / leads > maxGroupKeys()) return;
     }
     else if (tree.size() > maxLeads()) return;
-    flat.assign(tree.begin(), tree.end());
+    Run r;
+    r.keys.assign(tree.begin(), tree.end());
+    r.buildDirectory();
     tree.clear();
-    if constexpr (A >= 2)
-    {
-      lead.clear(); off.clear();
-      for (size_t i = 0; i < flat.size(); ++i)
-        if (i == 0 || flat[i][0] != flat[i - 1][0]) { lead.push_back(flat[i][0]); off.push_back((u32)i); }
-      off.push_back((u32)flat.size());
-    }
-    frozen = true;
+    runs.push_back(std::move(r));
+    cacheStaticBounds();
   }
-  // Frozen lower_bound: directory first, then the lead value's group.
-  const Key* flatLowerBound(const Key& k) const
-  {
-    if constexpr (A >= 2)
-    {
-      const auto li = std::lower_bound(lead.begin(), lead.end(), k[0]);
-      if (li == lead.end()) return flat.data() + flat.size();
-      const size_t g = li - lead.begin();
-      const Key* lo = flat.data() + off[g];
-      if (*li != k[0]) return lo;                       // k[0] absent: first key of the next group
-      return std::lower_bound(lo, flat.data() + off[g + 1], k);
-    }
-    else
-      return std::lower_bound(flat.data(), flat.data() + flat.size(), k);
-  }
-  bool isFrozen() const override { return frozen; }
+  bool isFrozen() const override { return !runs.empty(); }
 
   // ---- hot path (typed; called from generated code) ----
   void insert(const Key& k) { thaw(); tree.insert(k); }
@@ -222,25 +291,29 @@ public:
   }
   bool contains(const Key& k) const
   {
-    if (!frozen) return tree.exists(k);
-    const Key* p = flatLowerBound(k);
-    return p != flat.data() + flat.size() && *p == k;
+    if (runs.empty()) return tree.exists(k);
+    if (!tree.empty() && tree.exists(k)) return true;
+    for (auto r = runs.rbegin(); r != runs.rend(); ++r)
+      if (r->contains(k)) return true;
+    return false;
   }
   iterator lower_bound(const Key& k)
   {
-    if (frozen) return iterator(flatLowerBound(k));
-    return iterator(tree.lower_bound(k));
+    if (runs.empty()) return iterator(tree.lower_bound(k));
+    if (!singleStaticRun()) { thaw(); return iterator(tree.lower_bound(k)); }   // not reachable today; keeps the reads correct if it ever is
+    return iterator(runs[0].lowerBound(k));
   }
   // lower_bound(k) for a k known to lie at or after `hint` (a cursor seeking
-  // forward).  Frozen: gallop from the hint -- doubling strides, then a
+  // forward).  Static run: gallop from the hint -- doubling strides, then a
   // binary search inside the bracket -- so a short hop costs a few
   // comparisons on the keys already in cache instead of a full descent.
   // Tree: a plain lower_bound.
   iterator lower_bound_from(const iterator& hint, const Key& k)
   {
-    if (!frozen || !hint.flatPos()) return lower_bound(k);
+    if (!singleStaticRun() || !hint.flatPos()) return lower_bound(k);
+    const Run& r = runs[0];
     const Key* p = hint.flatPos();
-    const Key* e = flat.data() + flat.size();
+    const Key* e = static_end;
     if (p == e || !(*p < k)) return iterator(p);
     if constexpr (A >= 2)
     {
@@ -249,9 +322,8 @@ public:
       // key, which is >= k) and take the directory path when the hint sits
       // in another group -- galloping across a large array would miss on
       // every doubling step, costing more than the tree descent it replaces.
-      if ((*p)[0] != k[0]) return iterator(flatLowerBound(k));
-      const size_t g = std::lower_bound(lead.begin(), lead.end(), k[0]) - lead.begin();
-      e = flat.data() + off[g + 1];
+      if ((*p)[0] != k[0]) return iterator(r.lowerBound(k));
+      e = r.groupEnd(p);
       if (p >= e) return iterator(e);
     }
     size_t step = 1;
@@ -260,22 +332,41 @@ public:
     while (hi < e && *hi < k) { lo = hi; step <<= 1; hi = (size_t)(e - hi) > step ? hi + step : e; }
     return iterator(std::lower_bound(lo, hi, k));
   }
-  iterator begin() { return frozen ? iterator(flat.data()) : iterator(tree.begin()); }
-  iterator end() { return frozen ? iterator(flat.data() + flat.size()) : iterator(tree.end()); }
+  iterator begin()
+  {
+    if (static_begin) return iterator(static_begin);
+    if (!runs.empty()) thaw();
+    return iterator(tree.begin());
+  }
+  iterator end()
+  {
+    if (static_end) return iterator(static_end);
+    return iterator(tree.end());
+  }
 
   // ---- cold path (virtual; used by the daemon) ----
-  bool empty() const override { return frozen ? flat.empty() : tree.empty(); }
-  u64 size() const override { return frozen ? flat.size() : tree.size(); }
+  bool empty() const override
+  {
+    if (!tree.empty()) return false;
+    for (const Run& r : runs) if (r.size() != 0) return false;
+    return true;
+  }
+  u64 size() const override
+  {
+    u64 n = tree.size();
+    for (const Run& r : runs) n += r.size();
+    return n;
+  }
   void clear() override
   {
-    tree.clear(); std::vector<Key>().swap(flat);
-    std::vector<u64>().swap(lead); std::vector<u32>().swap(off);
-    frozen = false;
+    tree.clear();
+    std::vector<Run>().swap(runs);
+    cacheStaticBounds();
   }
   void forEach(const std::function<void(const u64*)>& f) const override
   {
-    if (frozen) { for (const Key& k : flat) f(k.data()); return; }
     for (const Key& k : tree) f(k.data());
+    for (const Run& r : runs) for (const Key& k : r.keys) f(k.data());
   }
   void insertTuple(const u64* t, const u16* ord) override
   {

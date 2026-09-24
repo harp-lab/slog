@@ -299,21 +299,108 @@ none elsewhere.
 
 ## 7. Rollout, each step behind a knob and reversible
 
-0. *(done)* Measurement knobs and the simulator; the round profiles and the A/B numbers above.
-1. `runs` inside `BTreeIndex<A>` with the k-way iterator, used first only to *replace the frozen
-   form* (one run, empty memtable): no behaviour change, the code path exercised by every
-   static relation.  Gate: golden + session batteries, the static-index benchmark unchanged.
-2. The absorb path in `InternTask` behind `SLOG_MASTER=runs`, default off: thin path with
-   filters, flush-before-fat, compaction; differential runs (§5.1–5.2) over the golden set and
-   the benches.  Gate: identical content and fires; intern on the fat closures within 20 % of
-   the simulator's prediction; the chain closure and the 0CFA program within 5 % of the btree.
-3. The run-stepping iterator for the order-free probes (`join_probe`, `join_all`, semijoins) and
-   the merged one for the ternary cursors; secondary orderings as runs in `WriteTask`; the
-   OLD-view simplification.  Gate: join phase on the closures faster; cyclic-join benches
-   unchanged or better.
-4. Threshold and policy tuning from `SLOG_ITER_TRACE` on the bench set; then default on for
-   eligible relations, `SLOG_MASTER=btree` retained as the escape hatch.
-5. *(optional)* Content-run interning for struct relations.
+Two facts about the code shape the order.  First, *every* range read in the daemon goes
+through one iterator type -- the generated operators in `operators.h`, the interpreter's
+cursors in `plan.cpp` and `plan-count.cpp`, the query engine and the count tasks all use only
+`lower_bound`/`begin`/`end`, `!=`, `++`, `*` (and the ternary cursors `lower_bound_from`) --
+so a representation change is one class, and the compiler emits no index call of its own.
+Second, a relation's FULL index is range-read *during* its own fixpoint whenever a rule has
+it in the body with full access (non-linear rules, the two-dynamic-clause `_old`/`_new`
+variants, the ternary cursors' OLD/NEW views), so reads over "memtable plus several runs" must
+be correct before any round is absorbed into a run.  Hence: representation, then reads, then
+the absorb, then the write phase, then defaults.
+
+0. *(done, 09-14)* Measurement knobs `SLOG_ITER_TRACE`, `SLOG_DUMP_DELTA`; the simulator;
+   the round profiles, the A/B/H numbers and the read-side study above.
+
+1. **Runs inside the index class** *(09-23)*.  `BTreeIndex<A>` holds a `tree`
+   (the memtable) and `std::vector<Run> runs`, a `Run` being the sorted array plus its lead
+   directory; the static form is one run and an empty tree; `thaw` folds any number of runs
+   back (bulk load for one run into an empty tree, merge otherwise).  No behaviour change: the
+   range reads still assume the static invariant and every mutator thaws.  The static run's
+   bounds are cached in two pointers because every range-walk loop re-evaluates `end()` per
+   step: reached through the run vector it cost a 200-row walk 40 % (150 → 212 ns in a
+   header-only A/B); cached, old and new forms are at parity on contains, walks and the
+   gallop.  *Gate:* operator unit tests, golden subset, quick semantics, session battery, full
+   golden suite; the static-index benchmark (tri_er, bowtie_tri, tc_er at 1 and 6 threads,
+   `SLOG_STATIC_INDEX=1` vs `0`) keeps its ratios.  A lesson for phase 2: `begin()`/`end()`
+   are on the per-row path of every consumer and must stay a load and a branch in every mode.
+
+2. **Reads over memtable + runs.**  Two iterator forms behind the same class:
+   - *merged*: a third iterator mode holding one cursor per source (tree iterator plus up to
+     `SLOG_RUN_MAX`+1 run pointers), `*` = the minimum, `++` advances it, `==end` = all
+     exhausted; `lower_bound_from` gallops per source.  Correct for every consumer, including
+     the ternary cursors and the interpreter's, with no consumer change.
+   - *run-stepping*: for the order-free consumers -- `join_probe`, `join_probe_sliced`,
+     `join_all`, `exists_probe`, the `_old`/`_new` probes -- a `forPrefix<K>(key, cont)` on
+     the index walks the tree's group, then each run's group (lower bound via the directory,
+     end via the prefix), no merge.  The operators call it when runs are present; the
+     interpreter's plain probe cursor can follow later.
+   - `contains` already consults every source (phase 1).
+   *Testing without an absorb:* a test-only knob `SLOG_STATIC_SPLIT=N` freezes a static index
+   into N runs instead of one and leaves every N-th key in the memtable, so every static
+   relation in the golden suite exercises the general read path against the single-run form.
+   *Gate:* golden suite and session battery identical under the split knob; the static-index
+   benchmark unchanged with the knob off; a bound-prefix microbenchmark of merged vs stepping
+   vs tree on the dumped relations agreeing with §2.3.
+
+3. **The absorb, behind `SLOG_MASTER=runs` (default `btree`).**  Eligibility at stratum entry
+   beside `planStaticFreeze`: plain set relations (no struct id, not lattice, not counted)
+   written by a semantic to-fixpoint stratum, master ordering the identity.  In `InternTask`'s
+   partition path, per bucket per round: below `SLOG_ABSORB_MIN_ROWS` (256) the thin path --
+   `insertNew` becomes "absent from every run (filters first), then tree insert", no thaw;
+   at or above it the fat path -- `flushMemtable()`, radix sort with the comparison fallback,
+   adjacent dedup nulling the later copies through the lead pointers the partition already
+   carries, gallop-merge anti-join nulling the found, survivors appended as a run, tiered
+   compaction (`SLOG_RUN_RATIO` 8, `SLOG_RUN_MAX` 6), filters built lazily on first probe
+   (`SLOG_RUN_FILTERS=0` disables).  At fixpoint end compact to one run and build the
+   directory: that is the frozen form the next stratum reads.  Every out-of-pipeline mutator
+   keeps thawing.  Secondary orderings stay trees in this phase (each `BTreeIndex` is
+   independent, so mixed representations per relation are fine).  *Gate:* the differential of
+   §5.1 (`SLOG_MASTER=btree` vs `runs`: sizes, CSV content, `$stat_fires`) over the golden set,
+   the session programs and the benches; per-round survivor counts equal to the simulator's
+   (§5.2); the ASan build with the disjointness assertion on flush; intern on the fat closures
+   within 20 % of §2.4, the chain closure and the 0CFA program within 5 % of `btree`; memory
+   under `SLOG_MEM_BYTES` caps no worse than `btree`.
+
+4. **Write phase and views.**  `WriteTask` appends the round's sorted rows as a run for a
+   run-set relation's secondary orderings instead of inserting them one by one into a
+   non-empty tree; the ternary cursors' OLD view becomes "all runs but the newest" when the
+   delta is the newest run, dropping the per-tuple `delta->contains`; the interpreter's probe
+   cursor takes the run-stepping form.  *Gate:* the write phase on the closures down; the
+   cyclic-join benches unchanged or better; goldens identical.
+
+5. **Tuning, then default on.**  Sweep `SLOG_ABSORB_MIN_ROWS` (128–1024), ratio and cap, and
+   filter bits with `SLOG_ITER_TRACE` reporting the path taken per round; then
+   `SLOG_MASTER=runs` becomes the default for eligible relations with `btree` kept as the
+   escape hatch.  *Gate:* the full suite, the M3/M4/M7 fuzzers, `incremental-stress`, the
+   tier-promotion harness, the memory-cap tests, and a full benchmark pass at 1 and 6 threads.
+
+6. *(optional)* Struct relations: `InternStructTask` interns by content and is excluded above;
+   content rows carrying the id could be absorbed the same way.  Half of the 0CFA program's
+   time sits there.
+
+Each phase is one or two commits and reverts cleanly; phases 3–5 are off by default until 5.
+
+### 7.1 Open decisions to settle before phase 3
+
+- **Where the memtable is flushed.**  The plan flushes it at the start of a fat round and
+  never on size (no M).  The alternative -- also flushing when it exceeds M rows -- bounds the
+  tree's size for readers but never triggered on the reference set; proposed: keep M as an
+  optional knob, default off.
+- **Filter geometry.**  8 bits per key, two probes in one 64-bit block, lazily built: ~5 %
+  false positives, one byte per tuple.  Eager building taxed fat rounds 12–20 %; proposed lazy.
+- **Threshold semantics.**  256 candidates per bucket per round, absolute.  The crossover
+  depends weakly on the master's size (a small hot tree is cheaper), so a later refinement
+  could scale T with the bucket's tree size; proposed: absolute, tune in phase 5.
+- **Secondary orderings in phase 3 or 4.**  Leaving them as trees in phase 3 keeps that phase
+  to the intern path; the closures have one ordering so they lose nothing.  Proposed: 4.
+- **Run-stepping for the interpreter.**  The interpreter tier runs first under tiers, so
+  order-free probes there matter for short programs; proposed in phase 4 after the compiled
+  operators prove the form.
+- **The delta as a run.**  The round's survivors are a sorted run *and* the delta; today the
+  delta orderings are rebuilt each round by bulk load from the batches.  Sharing the array
+  (zero-copy delta index) is a later saving, not in this plan.
 
 ## 8. Decision log
 
