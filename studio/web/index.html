@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Slog Studio</title>
+<link rel="stylesheet" href="/static/studio.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
+</head>
+<body>
+<header>
+  <span id="file"></span>
+  <span id="saved"></span>
+  <span class="spacer"></span>
+  <button id="evaluate" title="Save and evaluate the program in a fresh session (⌘↵)">Evaluate</button>
+  <button id="stop" title="Pause the running command at its next slice boundary" hidden>Stop</button>
+  <button id="restart" title="Kill the session server; the next command starts a fresh one">Restart server</button>
+</header>
+<main>
+  <div id="editor"></div>
+  <div id="divider" title="Drag to resize"></div>
+  <section id="repl">
+    <div id="transcript"></div>
+    <textarea id="prompt" rows="1" spellcheck="false" autocomplete="off"
+      placeholder="?(relation X Y)   tables   :help      — Enter runs when parentheses balance; Shift+Enter for a new line"></textarea>
+  </section>
+</main>
+<footer id="status">
+  <span id="connection"></span>
+  <span id="lane"></span>
+  <span id="session"></span>
+  <span id="evaluation"></span>
+</footer>
+<script type="module" src="/static/main.js"></script>
+</body>
+</html>

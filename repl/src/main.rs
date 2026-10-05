@@ -86,6 +86,7 @@ fn cli_options(
 
 fn usage() -> &'static str {
     "usage: slog [--plain] [--light|--dark]\n\
+     \x20      slog studio [FILE]    (see `slog studio --help`)\n\
      \n\
      With terminal stdout, open the full-screen workbench. Redirected stdout\n\
      automatically selects plain mode. The workbench detects the terminal's\n\
@@ -187,8 +188,28 @@ impl Drop for TerminalFeatures {
     }
 }
 
+/// `slog studio ...` is Slog Studio, a separate binary installed beside this
+/// one (`make -C studio`); hand the process over to it.
+fn exec_studio(args: impl Iterator<Item = String>) -> Box<dyn Error> {
+    use std::os::unix::process::CommandExt;
+    let studio = match std::env::current_exe() {
+        Ok(executable) => executable.with_file_name("slog-studio"),
+        Err(error) => return format!("slog: cannot locate slog-studio: {error}").into(),
+    };
+    let error = std::process::Command::new(&studio).args(args).exec();
+    format!(
+        "slog: cannot run {}: {error}; build it with `make -C studio`",
+        studio.display()
+    )
+    .into()
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    let mut args = std::env::args().skip(1).peekable();
+    if args.peek().map(String::as_str) == Some("studio") {
+        return Err(exec_studio(args.skip(1)));
+    }
     let options = cli_options(std::env::args().skip(1), io::stdout().is_terminal())
         .map_err(|error| format!("slog: {error}"))?;
     let mode = options.mode;
