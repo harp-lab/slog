@@ -1539,9 +1539,18 @@
                #:kind "query"))
 
 (define (csv-field text)
-  (if (regexp-match? #px"[,\"\n]" text)
+  (if (regexp-match? #px"[,\"\r\n]" text)
       (string-append "\"" (regexp-replace* #px"\"" text "\"\"") "\"")
       text))
+
+;; A string cell holds the string itself, not its Slog literal: CSV quoting
+;; is the only layer a CSV reader undoes, so the literal's quotes and
+;; escapes would otherwise survive into the decoded cell.  Compound values
+;; have no plainer form and stay Slog text.
+(define (csv-cell-text cell)
+  (if (eq? (value-cell-kind cell) 'str)
+      (read (open-input-string (value-cell-text cell)))
+      (value-cell-text cell)))
 
 ;; `dump ?QUERY to PATH` -- pull the cursor to completion page by page and
 ;; write one CSV row per answer under a variable-name header.  Full-depth
@@ -1576,7 +1585,7 @@
                (displayln
                 (string-join
                  (for/list ([cell (in-list cells)])
-                   (csv-field (value-cell-text cell)))
+                   (csv-field (csv-cell-text cell)))
                  ",")
                 out))
              (define now (+ written (length rows)))
@@ -5249,16 +5258,20 @@
     (check-regexp-match #px"◆ Watches\n  w2  \\?count" transcript))
 
   ;; String values (audit Q-14): a row prints each string as the Slog
-  ;; literal that lexes back to it.  The value carries every escape the
-  ;; daemon emits and a non-ASCII character.
-  (let* ([value "q\"\\ ☃\n\t\r"]
+  ;; literal that lexes back to it, and `dump` writes the string itself
+  ;; under CSV quoting alone.  The value carries every escape the daemon
+  ;; emits, a CSV delimiter, and a non-ASCII character.
+  (let* ([value "q\"\\, ☃\n\t\r"]
+         [dump-path "out/repl-strings.csv"]
          [transcript
           (parameterize ([current-directory repository-root]
                          [current-environment-variables test-environment])
+            (when (file-exists? dump-path) (delete-file dump-path))
             (plain-transcript
              (list "run tests/reach.slog"
                    (format "table (word str int) rule (word ~s 1)" value)
                    "?(word W I)"
+                   (format "dump ?(word W I) to ~a" dump-path)
                    ":quit")))]
          ;; one transcript line: the row did not split at the newline
          [printed (regexp-match #px"\n  1  \\(word (\"[^\n]*\") 1\\)\n"
@@ -5268,7 +5281,10 @@
       (let ([in (open-input-string (second printed))])
         ((make-tinkr-lexer "row" in) in)))
     (check-equal? (token->tag token) 'str)
-    (check-equal? (token->str token) (string-append "\"" value "\"")))
+    (check-equal? (token->str token) (string-append "\"" value "\""))
+    (define dump-file (build-path repository-root dump-path))
+    (check-equal? (file->string dump-file) "W,I\n\"q\"\"\\, ☃\n\t\r\",1\n")
+    (delete-file dump-file))
 
   ;; The scratch register (R3 slice a): Slog definitions typed at the prompt
   ;; are immediate interp-only program events; a fragment ADOPTS the live
