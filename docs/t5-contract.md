@@ -171,8 +171,11 @@ it.
     any other park answers `replay-unavailable` with the position; and
     outstanding oracle work refuses rather than promising an
     unreproducible rerun.  The client seam is the pause hook's RETURN value
-    (`'replay`); a refusal the driver meets is echoed, committed past, and
-    rendered in the change summary (`refused: ...`) rather than swallowed.
+    (`'replay`); a refusal the driver meets is echoed and handed back to
+    the hook, which answers for the same park: the REPL's held run stays
+    held and reports it, and a hook that continues commits past it, with
+    the refusal rendered in the change summary (`refused: ...`) rather than
+    swallowed.
   - **(c2) the gate as a place** *(2026-07-31)*.  A session with a level-1
     watch armed -- and no embedding hook of its own, which then owns the
     pause -- runs its commands on a HELD thread: at a gate park the REPL

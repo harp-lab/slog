@@ -2922,9 +2922,9 @@
 ;; T5 slice (c): a structured refusal the DRIVER met mid-run -- today a
 ;; `replay` the daemon would not honour (a non-monotone epoch answers
 ;; `level-1-unwatchable`, any non-gate park answers `replay-unavailable`).
-;; The run commits past it, so without this the refusal would vanish; a
-;; debugger continuation that was declined is exactly what the operator
-;; needs told.
+;; A pause hook that declines the refusal commits past it, so without this
+;; the refusal would vanish; a debugger continuation that was declined is
+;; exactly what the operator needs told.
 (define (refusal-records events)
   (for/list ([line (in-list events)]
              #:do [(define datum (read-datum line))]
@@ -3795,7 +3795,7 @@
        [_ '()])]
     [_ '()]))
 
-(define (held-pause-result state held)
+(define (held-pause-result state held #:refused [refused #f])
   (define line (held-run-record held))
   (define cites (pause-watch-citations line))
   (define rs (current-repl-session state))
@@ -3830,6 +3830,13 @@
           [(unbox (held-run-interrupted held)) "Paused · interrupt"]
           [else "Paused · iteration boundary"])
     (append
+     ;; the continuation the operator just asked for, declined in place
+     (match (and refused (read-datum refused))
+       [`(refused ,class ,_generation ,detail ...)
+        (list (format "refused: ~a ~a" class
+                      (string-join (for/list ([d (in-list detail)])
+                                     (format "~s" d)) " ")))]
+       [_ '()])
      (list (format "~a · iteration ~a · phase ~a"
                    (or (pause-record-field line 'stratum) "?")
                    (or (pause-record-field line 'iteration) "?")
@@ -4007,14 +4014,19 @@
                 #:kind "proof")))
 
 ;; Wait for the held thread's next event: it either finishes the command
-;; (result or fault) or parks again.
-(define (await-held-run state held)
+;; (result or fault), parks again, or stays at the park on record because
+;; the daemon declined the continuation.  A replay counts only once it
+;; lands.
+(define (await-held-run state held #:replay? [replay? #f])
   (match (channel-get (held-run-from-run held))
     [(list 'paused line)
      (set-held-run-record! held line)
      (set-held-run-parks! held (add1 (held-run-parks held)))
+     (when replay?
+       (set-held-run-replays! held (add1 (held-run-replays held))))
      (set-server-state-held! state held)
      (held-pause-result state held)]
+    [(list 'refused line) (held-pause-result state held #:refused line)]
     [(list 'result value)
      (set-server-state-held! state #f)
      (set-server-state-interrupt! state #f)   ; scoped to the command
@@ -4052,20 +4064,27 @@
        (parameterize
            ([session-pause-hook
              (lambda (_s line)
+               (define (hold! event)
+                 (channel-put from-run event)
+                 (match (channel-get to-run)
+                   ['abort
+                    (raise (exn:fail:gate-abort
+                            "aborted at the pre-commit gate"
+                            (current-continuation-marks)))]
+                   [directive directive]))
                (cond
+                 ;; only a held park sends anything but a continue, so a
+                 ;; refusal answers the operator: the run is still parked
+                 ;; there, and must stay held rather than commit
+                 [(regexp-match? #px"^\\(refused " line)
+                  (hold! (list 'refused line))]
                  [(or (gate-pause-line? line) (unbox hold-next)
                       (server-state-interrupt state))
                   (set-box! hold-next #f)
                   ;; an interrupt is consumed by the park it causes
                   (set-box! interrupted (and (server-state-interrupt state) #t))
                   (set-server-state-interrupt! state #f)
-                  (channel-put from-run (list 'paused line))
-                  (match (channel-get to-run)
-                    ['abort
-                     (raise (exn:fail:gate-abort
-                             "aborted at the pre-commit gate"
-                             (current-continuation-marks)))]
-                    [directive directive])]
+                  (hold! (list 'paused line))]
                  [else 'continue]))])
          (with-handlers ([(lambda (_) #t)
                           (lambda (e) (channel-put from-run (list 'raise e)))])
@@ -4085,9 +4104,8 @@
      (channel-put (held-run-to-run held) 'continue)
      (await-held-run state held)]
     [(equal? verb "replay")
-     (set-held-run-replays! held (add1 (held-run-replays held)))
      (channel-put (held-run-to-run held) 'replay)
-     (await-held-run state held)]
+     (await-held-run state held #:replay? #t)]
     ;; T5 slice (c3): a step is a resume with a granularity.  From the gate
     ;; it replays the completed read and stops at the first matching port
     ;; (walking the very read that produced the candidate); from a step stop
@@ -5581,7 +5599,7 @@
   ;; still answers committed masters only, and the commit that follows writes
   ;; content byte-equal to a run that was never replayed.  Control: a
   ;; maintenance epoch refuses the level-1-only continuation by name and
-  ;; flavor, and the run commits past the refusal.
+  ;; flavor, and a hook that continues commits past the refusal.
   (let ([interp-environment (environment-variables-copy test-environment)])
     (environment-variables-set! interp-environment #"SLOG_OPT" #"interp")
     (parameterize ([current-directory repository-root]
@@ -5639,7 +5657,9 @@
       (void (run3! "run tests/reach.slog"))
       (void (run3! "watch path level 1"))
       (define maint-result #f)
-      (parameterize ([session-pause-hook (lambda (_s _line) 'replay)])
+      (parameterize ([session-pause-hook
+                      (lambda (_s line)
+                        (and (regexp-match? #px"^\\(paused " line) 'replay))])
         (set! maint-result (run3! "add edge 4 1")))
       (define maint-text (string-join (hash-ref maint-result 'lines) "\n"))
       ;; every park of the change's epochs refuses, naming that epoch's own
@@ -5991,6 +6011,32 @@
       (void (run! "unbreak b1"))
       (check-not-equal? (hash-ref (run! "continue") 'kind) "paused")
       (check-regexp-match #px"none; `break REL`" (text (run! "breaks")))
+      (void (run! ":quit"))))
+
+  ;; A continuation the daemon declines leaves the run where it was.  Replay
+  ;; is gate-only, so a break stop refuses it; the refusal must come back as
+  ;; the same held stop -- not resume the run and commit the held command --
+  ;; and the stop must still resolve.
+  (let ([break-environment (environment-variables-copy test-environment)])
+    (environment-variables-set! break-environment #"SLOG_OPT" #"interp")
+    (environment-variables-set! break-environment #"SLOG_THREADS" #"1")
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables break-environment])
+      (define state (make-server-state))
+      (define (run! line) (dispatch-command state line))
+      (define (text result) (string-join (hash-ref result 'lines) "\n"))
+      (void (run! "run tests/reach.slog"))
+      (void (run! "break path"))
+      (check-equal? (hash-ref (run! "rule (path 77 7) <-- (edge 1 2)") 'title)
+                    "Paused · break b1")
+      (define refused (run! "replay"))
+      (check-equal? (hash-ref refused 'title) "Paused · break b1")
+      (check-regexp-match #px"refused: replay-unavailable" (text refused))
+      ;; a declined replay is not one that happened
+      (check-false (regexp-match? #px"replayed" (text refused)))
+      (check-regexp-match #px"6 rows match" (text (run! "?count (path X Y)")))
+      (check-regexp-match #px"nothing was committed" (text (run! "abort")))
+      (check-regexp-match #px"6 rows match" (text (run! "?count (path X Y)")))
       (void (run! ":quit"))))
 
   ;; T5 slice (d2): `whynot` -- the failure frontier over committed state.
