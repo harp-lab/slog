@@ -4,15 +4,10 @@
 //! The server owns the text. A tab edits by sending the whole text with the
 //! version it edited; an edit to a superseded version is refused and answered
 //! with the current text, so two tabs cannot silently overwrite each other.
-//!
-//! Evaluation runs the saved file in a fresh session: the program is the whole
-//! file, evaluated from nothing. Re-running into an old session would instead
-//! layer the new program over the old one (audit M-01, M-07).
 
 use crate::lane::{Lane, LaneStatus};
+use crate::session::{Outcome, Session, SessionView};
 use serde::Serialize;
-use serde_json::Value;
-use slog_repl::protocol::{Response, ServerError};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -40,7 +35,11 @@ pub enum Event {
     /// A line of the session server's stderr.
     Log { line: String },
     /// One command and its outcome.
-    Entry(Entry),
+    Entry {
+        origin: Origin,
+        #[serde(flatten)]
+        outcome: Outcome,
+    },
     Evaluation { phase: Phase, ok: bool, ms: u64 },
 }
 
@@ -49,15 +48,6 @@ pub enum Event {
 pub enum Phase {
     Start,
     Done,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct Entry {
-    pub origin: Origin,
-    pub line: String,
-    pub ms: u64,
-    pub result: Option<Value>,
-    pub error: Option<ServerError>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -69,26 +59,10 @@ pub enum Origin {
     Evaluate,
 }
 
-/// What the session server is doing, as far as its answers have told us.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
-pub struct SessionView {
-    /// The current database (`scratch` for an evaluated program), if any.
-    pub current: Option<String>,
-    /// A run is paused at a gate, break, step, or interrupt, waiting for
-    /// continue, commit, or abort.
-    pub held: bool,
-}
-
 struct Doc {
     text: String,
     version: u64,
     saved_version: u64,
-}
-
-struct Session {
-    /// The lane generation this view describes; a new server has no session.
-    generation: u64,
-    view: SessionView,
 }
 
 pub struct Studio {
@@ -111,10 +85,7 @@ impl Studio {
                 version: 0,
                 saved_version: 0,
             }),
-            session: Mutex::new(Session {
-                generation: lane.generation(),
-                view: SessionView::default(),
-            }),
+            session: Mutex::new(Session::new(&lane)),
             lane,
             events: broadcast::channel(1024).0,
         }
@@ -158,7 +129,7 @@ impl Studio {
     }
 
     pub async fn snapshot(&self) -> Snapshot {
-        let session = self.session.lock().await.view.clone();
+        let session = self.session.lock().await.view().clone();
         let doc = self.doc.lock().expect("doc lock");
         Snapshot {
             file: self.file.display().to_string(),
@@ -207,11 +178,12 @@ impl Studio {
     /// Run one line typed at the REPL prompt.
     pub async fn command(&self, line: &str) {
         let mut session = self.session.lock().await;
-        self.execute(&mut session, Origin::Repl, line).await;
+        let before = session.view().clone();
+        let outcome = session.execute(&self.lane, line).await;
+        self.publish_outcome(Origin::Repl, &before, &outcome);
     }
 
-    /// Save, then evaluate the file from nothing: resolve any held run,
-    /// discard the current session, run the program, and list its relations.
+    /// Save, then evaluate the file from nothing in a fresh session.
     pub async fn evaluate(&self) {
         let started = Instant::now();
         let mut session = self.session.lock().await;
@@ -220,7 +192,22 @@ impl Studio {
             ok: false,
             ms: 0,
         });
-        let ok = self.evaluate_in(&mut session).await;
+        let ok = match self.save() {
+            Err(message) => {
+                let failure = session.failure("save", "save", &message);
+                self.publish_outcome(Origin::Evaluate, session.view(), &failure);
+                false
+            }
+            Ok(()) => {
+                let mut shown = session.view().clone();
+                session
+                    .evaluate(&self.lane, &self.file, &mut |outcome| {
+                        self.publish_outcome(Origin::Evaluate, &shown, outcome);
+                        shown = outcome.session.clone();
+                    })
+                    .await
+            }
+        };
         self.publish(Event::Evaluation {
             phase: Phase::Done,
             ok,
@@ -228,129 +215,23 @@ impl Studio {
         });
     }
 
-    async fn evaluate_in(&self, session: &mut Session) -> bool {
-        if let Err(message) = self.save() {
-            self.report(Origin::Evaluate, "save", "save", message);
-            return false;
+    /// Publish an entry, and the session state when it moved past `before`.
+    fn publish_outcome(&self, origin: Origin, before: &SessionView, outcome: &Outcome) {
+        if outcome.session != *before {
+            self.publish(Event::Session(outcome.session.clone()));
         }
-        let Some(path) = run_argument(&self.file) else {
-            self.report(
-                Origin::Evaluate,
-                "run",
-                "path",
-                format!(
-                    "`run` cannot name {}: its path has whitespace or quotes",
-                    self.file.display()
-                ),
-            );
-            return false;
-        };
-        self.refresh(session);
-        // `discard` refuses while a run is held, and quitting would commit it.
-        if session.view.held && self.execute(session, Origin::Evaluate, "abort").await.is_none()
-        {
-            return false;
-        }
-        if session.view.current.is_some()
-            && self
-                .execute(session, Origin::Evaluate, "discard session")
-                .await
-                .is_none()
-        {
-            return false;
-        }
-        let run = format!("run {path}");
-        self.execute(session, Origin::Evaluate, &run).await.is_some()
-            && self
-                .execute(session, Origin::Evaluate, "tables")
-                .await
-                .is_some()
-    }
-
-    /// Send `line`, publish the entry, and follow the session state the
-    /// answer reports. Returns the result of a successful command.
-    async fn execute(&self, session: &mut Session, origin: Origin, line: &str) -> Option<Value> {
-        let started = Instant::now();
-        let outcome = self.lane.command(line).await;
-        self.refresh(session);
-        let ms = started.elapsed().as_millis() as u64;
-        let (result, error) = match outcome {
-            Ok(Response {
-                ok: true, result, ..
-            }) => (Some(result.unwrap_or(Value::Null)), None),
-            Ok(Response { error, .. }) => (
-                None,
-                Some(error.unwrap_or_else(|| server_error("server", "unknown server failure"))),
-            ),
-            Err(message) => (None, Some(server_error("lane", &message))),
-        };
-        if let Some(result) = &result {
-            // Failures carry no session state; only successes move it.
-            let view = SessionView {
-                current: result
-                    .get("current")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                held: result.get("kind").and_then(Value::as_str) == Some("paused"),
-            };
-            self.set_session(session, view);
-        }
-        self.publish(Event::Entry(Entry {
+        self.publish(Event::Entry {
             origin,
-            line: line.to_owned(),
-            ms,
-            result: result.clone(),
-            error,
-        }));
-        result
+            outcome: outcome.clone(),
+        });
     }
-
-    /// A server that restarted has no session and nothing held.
-    fn refresh(&self, session: &mut Session) {
-        let generation = self.lane.generation();
-        if session.generation != generation {
-            session.generation = generation;
-            self.set_session(session, SessionView::default());
-        }
-    }
-
-    fn set_session(&self, session: &mut Session, view: SessionView) {
-        if session.view != view {
-            session.view = view.clone();
-            self.publish(Event::Session(view));
-        }
-    }
-
-    fn report(&self, origin: Origin, line: &str, kind: &str, message: String) {
-        self.publish(Event::Entry(Entry {
-            origin,
-            line: line.to_owned(),
-            ms: 0,
-            result: None,
-            error: Some(server_error(kind, &message)),
-        }));
-    }
-}
-
-fn server_error(kind: &str, message: &str) -> ServerError {
-    ServerError {
-        kind: kind.to_owned(),
-        message: message.to_owned(),
-        span: None,
-    }
-}
-
-/// `run` takes the rest of its line verbatim, with no quoting (audit M-15),
-/// so a path is usable only if it has no whitespace or quotes.
-fn run_argument(file: &std::path::Path) -> Option<&str> {
-    file.to_str()
-        .filter(|path| !path.contains(|c: char| c.is_whitespace() || c == '"' || c == '\''))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{Event, Origin, Studio};
     use crate::lane::Lane;
+    use crate::session::Outcome;
     use slog_repl::server::project_root;
     use std::path::PathBuf;
 
@@ -388,8 +269,7 @@ mod tests {
         let mut events = studio.subscribe();
 
         studio.evaluate().await;
-        let first = relations(&mut events);
-        assert_eq!(first, vec![("edge".to_owned(), 2)]);
+        assert_eq!(relations(&mut events), vec![("edge".to_owned(), 2)]);
 
         studio
             .edit(0, 0, "table (node int)\nrule (node 7)\n".to_owned())
@@ -401,9 +281,9 @@ mod tests {
             .edit(0, 1, "table (node int)\nrule (node 7))\n".to_owned())
             .expect("edit");
         studio.evaluate().await;
-        let span = entries(&mut events)
+        let span = outcomes(&mut events)
             .into_iter()
-            .find_map(|entry| entry.error.and_then(|error| error.span))
+            .find_map(|outcome| outcome.error.and_then(|error| error.span))
             .expect("a positioned syntax error");
         assert_eq!((span.file.as_str(), span.line, span.col), (file.to_str().unwrap(), 2, 14));
 
@@ -411,10 +291,13 @@ mod tests {
         std::fs::remove_dir_all(directory).expect("cleanup");
     }
 
-    fn entries(events: &mut tokio::sync::broadcast::Receiver<Event>) -> Vec<super::Entry> {
+    fn outcomes(events: &mut tokio::sync::broadcast::Receiver<Event>) -> Vec<Outcome> {
         std::iter::from_fn(|| events.try_recv().ok())
             .filter_map(|event| match event {
-                Event::Entry(entry) => Some(entry),
+                Event::Entry {
+                    origin: Origin::Evaluate,
+                    outcome,
+                } => Some(outcome),
                 _ => None,
             })
             .collect()
@@ -422,11 +305,11 @@ mod tests {
 
     /// The (name, rows) pairs of the `tables` that ended an evaluation.
     fn relations(events: &mut tokio::sync::broadcast::Receiver<Event>) -> Vec<(String, u64)> {
-        let tables = entries(events)
+        let tables = outcomes(events)
             .into_iter()
-            .filter(|entry| entry.origin == Origin::Evaluate && entry.line == "tables")
+            .filter(|outcome| outcome.line == "tables")
             .last()
-            .and_then(|entry| entry.result)
+            .and_then(|outcome| outcome.result)
             .expect("the evaluation listed its relations");
         tables["relations"]
             .as_array()

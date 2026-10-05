@@ -3,6 +3,8 @@
 //! notebook. `./slog studio FILE` runs it.
 
 mod lane;
+mod scenario;
+mod session;
 mod studio;
 mod web;
 
@@ -14,11 +16,15 @@ use std::sync::Arc;
 use studio::Studio;
 
 const USAGE: &str = "usage: slog studio [--port N] [--no-open] [--compiled] [FILE]
+       slog studio scenario [--json] FILE.scenario.toml...
 
 Edit and evaluate FILE (default ~/.slog-studio/scratch.slog) in the browser.
 --port N     listen on 127.0.0.1:N (default: any free port)
 --no-open    print the address without opening a browser
---compiled   evaluate with native compilation instead of the interpreter";
+--compiled   evaluate with native compilation instead of the interpreter
+
+`scenario` runs scenario files headless and reports each check and step;
+it exits non-zero if any fails. --json prints the reports as JSON.";
 
 struct Options {
     file: Option<PathBuf>,
@@ -75,8 +81,16 @@ fn program_file(file: Option<PathBuf>) -> Result<PathBuf, String> {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    match run().await {
-        Ok(()) => ExitCode::SUCCESS,
+    let mut args = std::env::args().skip(1).peekable();
+    let outcome = if args.peek().map(String::as_str) == Some("scenario") {
+        scenarios(args.skip(1)).await
+    } else {
+        serve(args).await.map(|()| true)
+    };
+    match outcome {
+        Ok(true) => ExitCode::SUCCESS,
+        // The reports already said what failed.
+        Ok(false) => ExitCode::FAILURE,
         Err(message) => {
             eprintln!("slog studio: {message}");
             ExitCode::FAILURE
@@ -84,8 +98,60 @@ async fn main() -> ExitCode {
     }
 }
 
-async fn run() -> Result<(), String> {
-    let Some(options) = options(std::env::args().skip(1))? else {
+/// Run scenario files; true when every one passed.
+async fn scenarios(args: impl Iterator<Item = String>) -> Result<bool, String> {
+    let (flags, files): (Vec<String>, Vec<String>) = args.partition(|arg| arg.starts_with('-'));
+    let json = match flags.as_slice() {
+        [] => false,
+        [flag] if flag == "--json" => true,
+        _ => return Err(USAGE.to_owned()),
+    };
+    if files.is_empty() {
+        return Err(USAGE.to_owned());
+    }
+    let root = project_root()?;
+    let mut reports = Vec::new();
+    for file in &files {
+        let report = scenario::run(&root, std::path::Path::new(file)).await?;
+        if !json {
+            print_report(&report);
+        }
+        reports.push(report);
+    }
+    if json {
+        println!("{}", serde_json::to_string_pretty(&reports).map_err(|error| error.to_string())?);
+    }
+    Ok(reports.iter().all(scenario::Report::passed))
+}
+
+fn print_report(report: &scenario::Report) {
+    println!("{} — {}", report.id, report.title);
+    if let Some(setup) = &report.setup {
+        println!("  ✗ {setup}");
+    }
+    let judged = report
+        .checks
+        .iter()
+        .map(|check| (format!("check {}", check.what), &check.verdict))
+        .chain(report.steps.iter().map(|step| (step.what.clone(), &step.verdict)));
+    for (what, verdict) in judged {
+        match verdict {
+            scenario::Verdict::Pass => println!("  ✓ {what}"),
+            scenario::Verdict::Xfail(why) => println!("  ~ {what}   (expected failure: {why})"),
+            scenario::Verdict::Fail(why) => println!("  ✗ {what}\n      {why}"),
+        }
+    }
+    let count = |n: usize, noun: &str| format!("{n} {noun}{}", if n == 1 { "" } else { "s" });
+    println!(
+        "  {} ({}, {})\n",
+        if report.passed() { "PASS" } else { "FAIL" },
+        count(report.checks.len(), "check"),
+        count(report.steps.len(), "step")
+    );
+}
+
+async fn serve(args: impl Iterator<Item = String>) -> Result<(), String> {
+    let Some(options) = options(args)? else {
         println!("{USAGE}");
         return Ok(());
     };

@@ -1,0 +1,58 @@
+# Pins what reach.slog derives and how a breakpoint stops it.
+# Run it with: slog-studio scenario studio/examples/reach/reach.scenario.toml
+format = 2
+id = "reach"
+title = "Transitive closure of a chain"
+mode = "debug"
+
+[program]
+main = "reach.slog"
+
+# Every two-step walk is already a path, and nothing failed at runtime.
+[[checks]]
+name = "closure-complete"
+slog = """
+table (missing int int)
+rule (path X Y) (edge Y Z) ~(path X Z) --> (missing X Z)
+"""
+empty = ["missing", "error"]
+
+[[steps]]
+run = "?count (path X Y)"
+expect = { count = 6 }
+
+[[steps]]
+run = "?(path 1 Y)"
+expect = { rows = ["(path 1 2)", "(path 1 3)", "(path 1 4)"] }
+
+[[steps]]
+run = "? (path X Y) (path Y X)"
+expect = { exists = false }
+
+[[steps]]
+run = "?(pth X Y)"
+expect = { refused = "unknown relation" }
+
+# Three distinct (X Z) pairs, but the projection keeps one row per witness Y.
+[[steps]]
+run = "? (path X Y) (path Y Z) -> (X Z)"
+expect = { count = 3, xfail = "projection keeps duplicate rows (audit Q-02)" }
+
+# Stop the recursive rule on a re-run, look at its bindings, discard the run.
+[[steps]]
+run = "break r1"
+
+[[steps]]
+run = "run {program}"
+expect = { paused = "break b1" }
+
+[[steps]]
+run = "frames"
+expect = { contains = ["fire at r1", "X = 2 · Y = 3 · Z = 4"] }
+
+[[steps]]
+run = "abort"
+
+[[steps]]
+run = "?count (path X Y)"
+expect = { count = 6 }
