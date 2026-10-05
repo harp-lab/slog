@@ -47,6 +47,18 @@
 (require "ir-shared.rkt")
 (require "primitives.rkt")   ; prim-fun-env (which heads are value prims)
 
+;; How a type error names a variable.  Simplification lifts each constant
+;; argument into a fresh variable bound by (= X (const V)) (simplification.rkt
+;; simplify-subclause); such a variable is named by the literal V the user
+;; wrote, not by its gensym.
+(define (variable-display x rule)
+  (or (let find ([e rule])
+        (match e
+          [`(syn ,_ = ,(== x) (syn ,_ const ,v)) (format "~s" v)]
+          [(? list?) (for/or ([sub (in-list e)]) (find sub))]
+          [_ #f]))
+      (format "~a" x)))
+
 ;; -----------------------------------------------------------------------
 ;; Pass driver: check every rule, then intern every enum constant the
 ;; program mentions via one synthetic fact rule each.
@@ -110,7 +122,7 @@
                           (set-member? positively-bound x)))
          (error (format "unsafe negation at ~a: variable ~a of ~a is not bound by any positive body clause (a negated atom can only check values, not bind them)\n  in rule: ~a"
                         (rule-location-string rule) x
-                        (strip-prov (neg-inner cl)) (strip-prov rule)))))
+                        (syn-source (neg-inner cl)) (syn-source rule)))))
 
      ;; ---- first pass: immediate variable types --------------------------
      ;; `head?` marks a HEAD clause: a variable emitted into a relation column
@@ -191,9 +203,11 @@
                        x
                        name)]
             [`(struct ,ts ...)
-             (error (format "Struct ~a takes ~a fields but is used with ~a in ~a"
-                            name (length ts) (length args) (strip-prov cl)))]
-            [_ (error (format "Struct ~a in ~a is not defined." name (strip-prov cl)))])]
+             (error (format "~a: Struct ~a takes ~a fields but is used with ~a in ~a"
+                            (rule-location-string cl)
+                            name (length ts) (length args) (syn-source cl)))]
+            [_ (error (format "~a: Struct ~a in ~a is not defined."
+                              (rule-location-string cl) name (syn-source cl)))])]
          [`(syn ,_ ,name ,(? symbol? args) ...)
           (match (hash-ref rel-env name list)
             [`(,(or 'table 'struct) ,ts ...)
@@ -209,10 +223,12 @@
                         env args ts))]
             [`(enum ,_) env]
             [`(,(or 'table 'struct) ,ts ...)
-             (error (format "~a takes ~a columns but is used with ~a in ~a"
-                            name (length ts) (length args) (strip-prov cl)))]
+             (error (format "~a: ~a takes ~a columns but is used with ~a in ~a"
+                            (rule-location-string cl)
+                            name (length ts) (length args) (syn-source cl)))]
             [_
-             (error (format "Table ~a in ~a is not defined." name (strip-prov cl)))])]))
+             (error (format "~a: Table ~a in ~a is not defined."
+                            (rule-location-string cl) name (syn-source cl)))])]))
 
      ;; Seed body clauses first (full type sources), THEN head clauses with the
      ;; sink rule above -- so a variable computed in the body and emitted into a
@@ -286,11 +302,12 @@
                          (not (set-empty? (set-intersect t* t+))))])
          (if (or checks (set-member? (set 'A 'B 'C) t))
              checks
-             (error (format "~a : ~a does not match type '~a' in\n~a"
-                            x
+             (error (format "~a: ~a : ~a does not match type '~a' in\n  ~a"
+                            (rule-location-string rule)
+                            (variable-display x rule)
                             t
                             (hash-ref local-env x void)
-                            (strip-prov rule))))))
+                            (syn-source rule))))))
 
      ;; ---- residual dynamic type checks -----------------------------------
      ;; The ground member types of a column/variable type: alias-expand and
@@ -405,7 +422,8 @@
          ;; positive binder to type them).
          [`(syn ,prov ~ (syn ,iprov ,(? symbol? name) ,(? symbol? args) ...))
           (define (die fmt . fargs)
-            (error (format "~a\n  in: ~a" (apply format fmt fargs) (strip-prov cl))))
+            (error (format "~a: ~a\n  in: ~a"
+                           (rule-location-string cl) (apply format fmt fargs) (syn-source cl))))
           (when (hash-has-key? fun-env name)
             (die "primitive ~a cannot be negated (negation applies to relation atoms)" name))
           (define oracle-ans-rels
