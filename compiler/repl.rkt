@@ -36,6 +36,9 @@
          "dbtool.rkt"
          "names.rkt"
          "params.rkt"
+         (only-in "parser.rkt" parse-errors-raise?
+                  exn:fail:slog-parse? exn:fail:slog-parse-file
+                  exn:fail:slog-parse-line exn:fail:slog-parse-col)
          "query-front.rkt" ; the R2 `?` register grammar
          "query-plan.rkt"  ; Q1 catalog planner + ABI-1 wire emission
          "session.rkt"
@@ -184,6 +187,18 @@
   (hasheq 'id id
           'ok #f
           'error (hasheq 'kind kind 'message message)))
+
+;; A failed command.  A syntax error also carries its source position, so a
+;; client can mark the offending token instead of parsing the message.
+(define (command-failure id e)
+  (define response (failure id "command" (exn-message e)))
+  (if (exn:fail:slog-parse? e)
+      (hash-set response 'error
+                (hash-set (hash-ref response 'error) 'span
+                          (hasheq 'file (~a (exn:fail:slog-parse-file e))
+                                  'line (exn:fail:slog-parse-line e)
+                                  'col (exn:fail:slog-parse-col e))))
+      response))
 
 (define (capture-session-events state thunk)
   (define sink (box '()))
@@ -4125,6 +4140,13 @@
     [else (dispatch-command* state source)]))
 
 (define (dispatch-command state source)
+  ;; The server outlives the programs it compiles: a syntax error must come
+  ;; back as this command's failure, never print to the bootstrap pipe and
+  ;; exit the process (the parser's command-line default).
+  (parameterize ([parse-errors-raise? #t])
+    (dispatch-command/held state source)))
+
+(define (dispatch-command/held state source)
   (define held (server-state-held state))
   (cond
     [held (dispatch-at-gate state held source)]
@@ -4631,9 +4653,7 @@
 
 (define (serve-request state request)
   (define id (request-id request))
-  (with-handlers ([exn:fail?
-                   (lambda (e)
-                     (failure id "command" (exn-message e)))])
+  (with-handlers ([exn:fail? (lambda (e) (command-failure id e))])
     (match (hash-ref request 'method #f)
       ["command"
        (define params (hash-ref request 'params (hasheq)))
@@ -4816,6 +4836,38 @@
   (define framed (get-output-bytes out))
   (check-equal? (read-frame (open-input-bytes framed))
                 (hasheq 'id 7 'method "ping"))
+
+  ;; A syntax error is the command's failure, positioned at the offending
+  ;; token -- the parser must not print to the bootstrap pipe and exit the
+  ;; server -- and the session survives it.
+  (let ([state (make-server-state)]
+        [broken (make-temporary-file "repl-parse-~a.slog")])
+    (define (command line)
+      (serve-request state (hasheq 'id 1 'method "command"
+                                   'params (hasheq 'line line))))
+    (with-output-to-file broken #:exists 'truncate
+      (lambda () (display "table (edge int int)\nrule (edge X Y) --> (edge Y X))\n")))
+    (dynamic-wind
+      void
+      (lambda ()
+        (parameterize ([current-directory repository-root])
+          (define run-error (hash-ref (command (format "run ~a" broken)) 'error))
+          (check-equal? (hash-ref run-error 'span)
+                        (hasheq 'file (path->string broken) 'line 2 'col 31))
+          (check-regexp-match #px"^repl-parse-[^:]+\\.slog:2:31: Expected an atom"
+                              (hash-ref run-error 'message))
+          ;; a scratch fragment is positioned in its own layer file
+          (define scratch-span
+            (hash-ref (hash-ref (command "rule (edge X Y --> (edge Y X)") 'error)
+                      'span))
+          (check-equal? (list (file-name-from-path (hash-ref scratch-span 'file))
+                              (hash-ref scratch-span 'line)
+                              (hash-ref scratch-span 'col))
+                        (list (string->path "1.slog") 1 16))
+          (check-true (hash-ref (command ":ping") 'ok))))
+      (lambda ()
+        (close-server-session! state)
+        (delete-file broken))))
 
   (define state (make-server-state))
   (define help-result (dispatch-command state ":help"))
