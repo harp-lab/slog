@@ -1927,6 +1927,38 @@ public:
     struct_tombstone_count.fetch_sub(1, std::memory_order_relaxed);
   }
 
+  // A struct instance the lookup index does not hold, read at an iteration
+  // barrier: minted this iteration (its interned row sits in the delta until
+  // the next write phase indexes it) or retracted (the dictionary's dead
+  // half keeps its content).  Storage order, id at column 0.  Both are
+  // scans, for the rare reader that renders values at a barrier -- the
+  // trace, a boundary peek -- where a delta names such an instance.
+  bool unindexedStructRow(u64 id, std::vector<u64>& row)
+  {
+    if (struct_id == 0) return false;
+    for (const InsertBatch* b : *delta)
+      for (u64 j = 0; j + arity <= b->usage; j += arity)
+        if (b->data[j] == id)
+        {
+          row.assign(&b->data[j], &b->data[j] + arity);
+          return true;
+        }
+    if (!struct_tombstones
+        || struct_tombstone_count.load(std::memory_order_relaxed) == 0)
+      return false;
+    const std::vector<u16>& ord = getMasterIndex();
+    for (u16 b = 0; b < bucket_count; ++b)
+      for (const auto& [key, dead] : struct_tombstones[b])
+      {
+        if (dead != id) continue;
+        row.assign(arity, 0);
+        row[0] = id;
+        for (u16 c = 0; c + 1 < arity; ++c) row[ord[c]] = key[c];
+        return true;
+      }
+    return false;
+  }
+
   // Id-space severance (refresh-from-disk, merge scratch teardown, freeze):
   // the incoming id space replaces this one wholesale, so retained mappings
   // would collide with unrelated content rather than protect identity.
@@ -7058,37 +7090,54 @@ public:
   {
     const u32 struct_id = (u32)decode_struct_id(v);
     TypeDescriptor* descriptor = getTypeDescriptorBySid(struct_id);
+    Relation* rel = nullptr;
+    std::string display_name;
     if (descriptor == nullptr)
-      fatal("Could not find TypeDescriptor for struct SID "
-            + std::to_string(struct_id));
-    Relation* rel = descriptor->canonical_relation;
-    if (!boundary_key.empty())
     {
-      const BoundarySnapshot* boundary = getBoundary(boundary_key);
-      if (boundary == nullptr)
-        fatal("Could not find selected boundary " + boundary_key);
-      const std::string selected_name =
-        typeNameAtBoundary(*descriptor, boundary_key);
-      if (!selected_name.empty())
-      {
-        auto selected = boundary->environment.find(selected_name);
-        if (selected != boundary->environment.end()
-            && selected->second->getStructId() == struct_id)
-          rel = selected->second;
-      }
+      // A type the prepared run is creating publishes its descriptor only at
+      // commit; until then its storage is bound by name in the overlay.
+      if (prepared_boundary)
+        for (const auto& [name, bound] : prepared_boundary->environment)
+          if (bound != nullptr && bound->getStructId() == struct_id
+              && (rel == nullptr || name < display_name))
+          {
+            rel = bound;
+            display_name = name;
+          }
+      if (rel == nullptr)
+        fatal("Could not find TypeDescriptor for struct SID "
+              + std::to_string(struct_id));
     }
-    if (rel == nullptr)
-      fatal("TypeDescriptor has no canonical relation for struct SID "
-            + std::to_string(struct_id));
+    else
+    {
+      rel = descriptor->canonical_relation;
+      if (!boundary_key.empty())
+      {
+        const BoundarySnapshot* boundary = getBoundary(boundary_key);
+        if (boundary == nullptr)
+          fatal("Could not find selected boundary " + boundary_key);
+        const std::string selected_name =
+          typeNameAtBoundary(*descriptor, boundary_key);
+        if (!selected_name.empty())
+        {
+          auto selected = boundary->environment.find(selected_name);
+          if (selected != boundary->environment.end()
+              && selected->second->getStructId() == struct_id)
+            rel = selected->second;
+        }
+      }
+      if (rel == nullptr)
+        fatal("TypeDescriptor has no canonical relation for struct SID "
+              + std::to_string(struct_id));
 
-    std::string display_name =
-      typeNameAtBoundary(*descriptor, boundary_key);
-    if (display_name.empty())
-      display_name = "<type "
-        + (descriptor->type_key.empty()
-             ? "sid:" + std::to_string(descriptor->sid)
-             : descriptor->type_key)
-        + ">";
+      display_name = typeNameAtBoundary(*descriptor, boundary_key);
+      if (display_name.empty())
+        display_name = "<type "
+          + (descriptor->type_key.empty()
+               ? "sid:" + std::to_string(descriptor->sid)
+               : descriptor->type_key)
+          + ">";
+    }
     std::string tupstr = "(" + display_name;
     const std::vector<u16>& ord = rel->getLookupIndex();
     std::vector<u16> rewrite_ord(ord.size(), 0);
@@ -7113,7 +7162,13 @@ public:
       }
     });
     if (!found)
-      fatal("Could not find struct instance in selected TypeDescriptor store");
+    {
+      std::vector<u64> row;
+      if (!rel->unindexedStructRow(v, row))
+        fatal("Could not find struct instance in selected TypeDescriptor store");
+      for (u16 i = 0; i < ord.size(); ++i)
+        tuple[i] = row[ord[i]];
+    }
 
     // Write tuple out in nominal order (fields nest one level deeper)
     for (u16 i = 1; i < rewrite_ord.size(); ++i)
