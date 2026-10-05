@@ -316,6 +316,8 @@
    "                      position with nothing to match (the frontier)"
    "  break REL | rN[@k]  stop the run AT a port: when a rule writes REL,"
    "   [when (REL t|_ ...)]  when rule N fires, or at its body position k"
+   "  break FILE:LINE[@k]  stop when the rule at that line fires (rule ids"
+   "                      restart per stratum; a location names one rule)"
    "  breaks | unbreak bN list the standing breaks, or remove one"
    "  commit|replay|abort resolve a run held at the pre-commit gate: take"
    "                      the change, rerun the same read, or discard it"
@@ -2570,6 +2572,12 @@
 
 ;; `break rN` still needs a relation to pin: the rule's own head, read out of
 ;; the canonical plan.
+;; A break's location names a rule location: the same spelling, or the
+;; same file and line without a column (daemon/plan.h at_source).
+(define (source-names? source location)
+  (or (equal? source location)
+      (string-prefix? location (string-append source ":"))))
+
 (define (break-rule-relation s rid)
   (for/or ([r (in-list (session-plan-rules s))]
            #:when (equal? (plan-rule-rid r) rid))
@@ -2578,7 +2586,7 @@
 (define (break-result state argument)
   (define raw (string-trim argument))
   (when (string=? raw "")
-    (error 'break "expected: break REL [when (REL t ...)] | break rN[@k]"))
+    (error 'break "expected: break REL [when (REL t ...)] | break FILE:LINE[@k] | break rN[@k]"))
   (define-values (head when-text)
     (match (regexp-match #px"^(.*?)[[:space:]]+when[[:space:]]+(.*)$" raw)
       [(list _ target pattern) (values (string-trim target) pattern)]
@@ -2591,22 +2599,45 @@
     (match (regexp-match #px"^r([0-9]+)$" target)
       [(list _ n) (string->number n)]
       [_ #f]))
-  (when (and position (not rid))
-    (error 'break "a body position belongs to a rule: break rN@~a" position))
+  ;; A source location names one rule program-wide; rule ids restart in
+  ;; every stratum.  Locations are spelled as rule-location-string spells
+  ;; them, by basename, so a full path is reduced to its last component.
+  (define source
+    (match (regexp-match #px"^(.+\\.slog):([0-9]+)(:[0-9]+)?$" target)
+      [(list _ file line column)
+       (format "~a:~a~a" (file-name-from-path file) line (or column ""))]
+      [_ #f]))
+  (when (and position (not rid) (not source))
+    (error 'break "a body position belongs to a rule: break rN@~a or FILE:LINE@~a"
+           position position))
   (define rs (ensure-session-record! state))
   (define s (repl-session-session rs))
   (define registry (repl-session-breaks rs))
   (define id (next-break-id registry))
-  ;; the relation whose writers must run interpreted for the ports to exist
-  (define relation
-    (~a
+  ;; the relations whose writers must run interpreted for the ports to exist
+  (define relations
+    (map
+     ~a
      (cond
-      [rid (or (break-rule-relation s rid)
-               (error 'break
-                      "no rule r~a in a resident normal-flavor plan (see `code`)"
-                      rid))]
-      [else (relation-info-name
-             (relation-from-catalog 'break (live-catalog s) target))])))
+       [rid (list (or (break-rule-relation s rid)
+                      (error 'break
+                             "no rule r~a in a resident normal-flavor plan (see `code`)"
+                             rid)))]
+       [source
+        (define written
+          (remove-duplicates
+           (for/list ([r (in-list (session-plan-rules s))]
+                      #:when (and (plan-rule-source r)
+                                  (source-names? source (plan-rule-source r)))
+                      #:when (plan-rule-head-relation r))
+             (plan-rule-head-relation r))))
+        (when (null? written)
+          (error 'break "no rule at ~a in a resident normal-flavor plan (see `code`)"
+                 source))
+        written]
+       [else (list (relation-info-name
+                    (relation-from-catalog 'break (live-catalog s) target)))])))
+  (define relation (first relations))
   ;; The pattern is read directly rather than through the query front end:
   ;; a query drops `_` columns from its fact template (they cannot be
   ;; projected), and a break pattern is exactly where wildcards belong.
@@ -2619,24 +2650,32 @@
                     relation))
            (for/list ([term (in-list (rest shape))])
              (if (eq? term '_) '_ (why-term state term))))))
-  (define flipped (session-set-scc-policy! s (string->symbol relation)
-                                           'interpreted))
+  (define flipped
+    (remove-duplicates
+     (append-map (lambda (r) (session-set-scc-policy! s (string->symbol r) 'interpreted))
+                 relations)))
   (session-command-stream!
    s
    `(break (id ,id)
-           ,@(if rid `((rule ,rid)) `((relation ,relation)))
+           ,@(cond [rid `((rule ,rid))]
+                   [source `((source ,source))]
+                   [else `((relation ,relation))])
            ,@(if position `((position ,position)) '())
            ,@(if pattern `((pattern ,@pattern)) '()))
    (lambda (_line) #t))
+  (define described
+    (cond [rid (format "rule r~a" rid)]
+          [source (format "the rule at ~a" source)]
+          [else relation]))
   (hash-set! registry id
-             (break-intent id (if rid 'rule 'relation)
-                           (if rid (format "r~a" rid) relation)
+             (break-intent id (if (or rid source) 'rule 'relation)
+                           (cond [rid (format "r~a" rid)] [source source] [else relation])
                            position when-text))
   (text-result
    (format "Break ~a" id)
    (append
     (list (format "~a~a~a — stops the run at the port, where step/frames/why work"
-                  (if rid (format "rule r~a" rid) relation)
+                  described
                   (if position (format " body position ~a" position) "")
                   (if when-text (format " when ~a" when-text) "")))
     (if (null? flipped)
@@ -2674,10 +2713,12 @@
                 #:do [(define datum (read-datum line))]
                 #:when (match datum [`(break ,_ ...) #t] [_ #f]))
       (match datum
-        [`(break (id ,id) (relation ,relation) (rule ,rule)
+        [`(break (id ,id) (relation ,relation) (rule ,rule) (source ,source)
                  (position ,position) (pattern ,pattern) (hits ,hits))
          (format "~a  ~a~a~a · ~a hit~a" id
-                 (if (equal? rule '#f) relation (format "r~a" rule))
+                 (cond [(not (equal? rule '#f)) (format "r~a" rule)]
+                       [(not (equal? source "")) source]
+                       [else relation])
                  (if (equal? position '#f) ""
                      (format "@~a" position))
                  (if (equal? (~a pattern) "") ""
@@ -2687,7 +2728,7 @@
                  hits (if (equal? hits 1) "" "s"))])))
   (text-result "Breaks"
                (if (null? rows)
-                   (list "none; `break REL` or `break rN` arms one")
+                   (list "none; `break REL`, `break FILE:LINE` or `break rN` arms one")
                    rows)
                #:kind "break"))
 
@@ -5991,6 +6032,39 @@
       (void (run! "unbreak b1"))
       (check-not-equal? (hash-ref (run! "continue") 'kind) "paused")
       (check-regexp-match #px"none; `break REL`" (text (run! "breaks")))
+      (void (run! ":quit"))))
+
+  ;; A break at a source location stops in that rule and no other.  Rule ids
+  ;; restart in every stratum -- reach.slog's fact block and its first rule
+  ;; are both r0 in their own strata -- so `break rN` can stop in rules it
+  ;; does not name; a location names one rule program-wide.
+  (let ([break-environment (environment-variables-copy test-environment)])
+    (environment-variables-set! break-environment #"SLOG_OPT" #"interp")
+    (environment-variables-set! break-environment #"SLOG_THREADS" #"1")
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables break-environment])
+      (define state (make-server-state))
+      (define (run! line) (dispatch-command state line))
+      (define (text result) (string-join (hash-ref result 'lines) "\n"))
+      (void (run! "run tests/reach.slog"))
+      (check-exn #px"no rule at reach\\.slog:3"
+                 (lambda () (run! "break reach.slog:3")))
+      ;; a path is reduced to the basename rule locations are spelled with
+      (check-regexp-match #px"the rule at reach\\.slog:14"
+                          (text (run! "break tests/reach.slog:14")))
+      ;; every stop of the re-run is in the recursive rule (line 14), until
+      ;; the run completes; the edge->path rule (line 9) never stops it
+      (define stops
+        (let loop ([result (run! "run tests/reach.slog")] [stops '()])
+          (if (equal? (hash-ref result 'kind) "paused")
+              (loop (run! "continue") (cons (text result) stops))
+              stops)))
+      (check-true (pair? stops))
+      (for ([stop (in-list stops)])
+        (check-regexp-match #px"port b1:fire@reach\\.slog:14:1:" stop))
+      (check-regexp-match
+       (pregexp (format "b1  reach\\.slog:14 · ~a hit" (length stops)))
+       (text (run! "breaks")))
       (void (run! ":quit"))))
 
   ;; T5 slice (d2): `whynot` -- the failure frontier over committed state.
