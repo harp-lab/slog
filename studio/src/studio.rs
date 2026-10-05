@@ -6,6 +6,7 @@
 //! with the current text, so two tabs cannot silently overwrite each other.
 
 use crate::lane::{Lane, LaneStatus};
+use crate::scenario::{self, Report};
 use crate::session::{Outcome, Session, SessionView};
 use serde::Serialize;
 use std::path::PathBuf;
@@ -41,6 +42,14 @@ pub enum Event {
         outcome: Outcome,
     },
     Evaluation { phase: Phase, ok: bool, ms: u64 },
+    /// A scenario beside the program started, or finished with a report or
+    /// an error that kept it from running.
+    Scenario {
+        name: String,
+        running: bool,
+        report: Option<Report>,
+        error: Option<String>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -58,6 +67,8 @@ pub enum Origin {
     /// Issued by Studio to evaluate the program.
     Evaluate,
 }
+
+const SCENARIO_SUFFIX: &str = ".scenario.toml";
 
 struct Doc {
     text: String,
@@ -215,6 +226,47 @@ impl Studio {
         });
     }
 
+    /// The scenario files beside the program: `*.scenario.toml` in its
+    /// directory, by name.
+    pub fn scenarios(&self) -> Vec<String> {
+        let Some(directory) = self.file.parent() else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = std::fs::read_dir(directory)
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+            .filter(|name| name.ends_with(SCENARIO_SUFFIX))
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Run the scenario beside the program named `name`, on a lane of its
+    /// own, publishing its start and its report.
+    pub async fn run_scenario(&self, name: &str) {
+        let publish = |running, report, error| {
+            self.publish(Event::Scenario {
+                name: name.to_owned(),
+                running,
+                report,
+                error,
+            })
+        };
+        // Only a file directly beside the program: the name is not a path.
+        let path = match self.file.parent() {
+            Some(directory) if name.ends_with(SCENARIO_SUFFIX) && !name.contains('/') => {
+                directory.join(name)
+            }
+            _ => return publish(false, None, Some(format!("no scenario named {name}"))),
+        };
+        publish(true, None, None);
+        match scenario::run(self.lane.root(), &path).await {
+            Ok(report) => publish(false, Some(report), None),
+            Err(error) => publish(false, None, Some(error)),
+        }
+    }
+
     /// Publish an entry, and the session state when it moved past `before`.
     fn publish_outcome(&self, origin: Origin, before: &SessionView, outcome: &Outcome) {
         if outcome.session != *before {
@@ -230,16 +282,13 @@ impl Studio {
 #[cfg(test)]
 mod tests {
     use super::{Event, Origin, Studio};
-    use crate::lane::Lane;
+    use crate::lane::{Lane, Mode};
     use crate::session::Outcome;
     use slog_repl::server::project_root;
     use std::path::PathBuf;
 
     fn studio(file: PathBuf, text: &str) -> Studio {
-        let lane = Lane::new(
-            project_root().expect("repository root"),
-            vec![("SLOG_OPT", "interp")],
-        );
+        let lane = Lane::new(project_root().expect("repository root"), Mode::Fast);
         Studio::new(file, text.to_owned(), lane)
     }
 

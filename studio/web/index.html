@@ -11,18 +11,38 @@
   <span id="file"></span>
   <span id="saved"></span>
   <span class="spacer"></span>
+  <select id="mode" title="How the session server evaluates: fast (interpreter), debug (interpreter on one thread, for breakpoints and stepping), or compiled (native code). Switching restarts the server.">
+    <option value="fast">fast</option>
+    <option value="debug">debug</option>
+    <option value="compiled">compiled</option>
+  </select>
   <button id="evaluate" title="Save and evaluate the program in a fresh session (⌘↵)">Evaluate</button>
   <button id="stop" title="Pause the running command at its next slice boundary" hidden>Stop</button>
   <button id="restart" title="Kill the session server; the next command starts a fresh one">Restart server</button>
+  <button id="scenarios-toggle" title="Tests and debugging sessions beside the program">Scenarios</button>
 </header>
 <main>
+  <div id="work">
   <div id="editor"></div>
   <div id="divider" title="Drag to resize"></div>
   <section id="repl">
     <div id="transcript"></div>
+    <div id="held" hidden>
+      <span id="held-title"></span>
+      <button data-command="continue" title="Resume the run">continue</button>
+      <button data-command="step" title="Run to the next interpreter port">step</button>
+      <button data-command="frames" title="Show the join stack and bindings here">frames</button>
+      <button data-command="abort" title="Discard the run; nothing is committed">abort</button>
+    </div>
     <textarea id="prompt" rows="1" spellcheck="false" autocomplete="off"
       placeholder="?(relation X Y)   tables   :help      — Enter runs when parentheses balance; Shift+Enter for a new line"></textarea>
   </section>
+  </div>
+  <aside id="drawer" hidden>
+    <h2>Scenarios</h2>
+    <p class="hint">Files named <code>*.scenario.toml</code> beside the program.</p>
+    <div id="scenario-list"></div>
+  </aside>
 </main>
 <footer id="status">
   <span id="connection"></span>

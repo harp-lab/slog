@@ -8,7 +8,7 @@
 //! command is in flight. The server starts on first use and again after it
 //! dies or is killed.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use slog_repl::protocol::{Response, SessionConnection};
 use slog_repl::server::{self, ServerProcess};
 use std::path::PathBuf;
@@ -18,6 +18,29 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Child;
 use tokio::sync::{Mutex, broadcast, watch};
 use tokio::time::{Duration, timeout};
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Mode {
+    /// The interpreter: no C++ toolchain, the edit-evaluate default.
+    #[default]
+    Fast,
+    /// Native compilation, as `./slog` runs programs.
+    Compiled,
+    /// The interpreter on one thread: breakpoints, stepping and provenance
+    /// stop at the same places every run (audit D-07, D-14).
+    Debug,
+}
+
+impl Mode {
+    pub fn env(self) -> Vec<(&'static str, &'static str)> {
+        match self {
+            Mode::Fast => vec![("SLOG_OPT", "interp")],
+            Mode::Compiled => Vec::new(),
+            Mode::Debug => vec![("SLOG_OPT", "interp"), ("SLOG_THREADS", "1")],
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -39,11 +62,12 @@ pub struct LaneStatus {
     pub detail: String,
     /// Servers started so far; more than one means the lane has restarted.
     pub starts: u32,
+    pub mode: Mode,
 }
 
 pub struct Lane {
     root: PathBuf,
-    env: Vec<(&'static str, &'static str)>,
+    mode: std::sync::Mutex<Mode>,
     /// The command connection, held for the whole of each command.
     connection: Mutex<Option<Live>>,
     /// The interrupt-only connection (serve-control in repl.rkt).
@@ -62,17 +86,17 @@ struct Live {
 }
 
 impl Lane {
-    /// A lane over the repository at `root`, its servers started with `env`
-    /// added to the inherited environment.
-    pub fn new(root: PathBuf, env: Vec<(&'static str, &'static str)>) -> Self {
+    /// A lane over the repository at `root`, its servers run in `mode`.
+    pub fn new(root: PathBuf, mode: Mode) -> Self {
         let (status, _) = watch::channel(LaneStatus {
             state: LaneState::Idle,
             detail: String::new(),
             starts: 0,
+            mode,
         });
         Self {
             root,
-            env,
+            mode: std::sync::Mutex::new(mode),
             connection: Mutex::new(None),
             control: Mutex::new(None),
             child: std::sync::Mutex::new(None),
@@ -80,6 +104,11 @@ impl Lane {
             status: Arc::new(status),
             log: broadcast::channel(256).0,
         }
+    }
+
+    /// The repository the lane's servers run in.
+    pub fn root(&self) -> &std::path::Path {
+        &self.root
     }
 
     pub fn status(&self) -> watch::Receiver<LaneStatus> {
@@ -139,6 +168,14 @@ impl Lane {
             .map_err(|error| format!("cannot reach the control connection: {error}"))
     }
 
+    /// Run later servers in `mode`. The current one is killed, so the next
+    /// command already runs in the new mode; its session is gone.
+    pub fn set_mode(&self, mode: Mode) {
+        *self.mode.lock().expect("lane mode lock") = mode;
+        self.status.send_modify(|status| status.mode = mode);
+        self.kill();
+    }
+
     /// Kill the server, in flight or not. The next command starts a new one.
     pub fn kill(&self) {
         self.generation.fetch_add(1, Ordering::SeqCst);
@@ -159,11 +196,12 @@ impl Lane {
     async fn start(&self) -> Result<Live, String> {
         self.kill_child();
         self.set(LaneState::Starting, "");
+        let mode = *self.mode.lock().expect("lane mode lock");
         let ServerProcess {
             mut child,
             address,
             token,
-        } = server::launch(&self.root, &self.env)
+        } = server::launch(&self.root, &mode.env())
             .await
             .inspect_err(|error| self.set(LaneState::Dead, error))?;
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
@@ -221,13 +259,13 @@ impl Lane {
 
 #[cfg(test)]
 mod tests {
-    use super::{Lane, LaneState};
+    use super::{Lane, LaneState, Mode};
     use slog_repl::server::project_root;
 
     /// A killed server is replaced by the next command, transparently.
     #[tokio::test]
     async fn a_killed_lane_restarts_on_the_next_command() {
-        let lane = Lane::new(project_root().expect("repository root"), Vec::new());
+        let lane = Lane::new(project_root().expect("repository root"), Mode::Fast);
         assert!(lane.command(":ping").await.expect("first server").ok);
         lane.kill();
         assert_eq!(lane.status().borrow().state, LaneState::Dead);

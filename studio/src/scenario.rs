@@ -31,7 +31,7 @@
 //! `{program}` in a step names the harness, so a debugging scenario can arm
 //! a break and `run {program}` again into the session to stop there.
 
-use crate::lane::Lane;
+use crate::lane::{Lane, Mode};
 use crate::session::{Outcome, Session};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -57,29 +57,6 @@ pub struct Scenario {
     pub checks: Vec<Check>,
     #[serde(default)]
     pub steps: Vec<Step>,
-}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum Mode {
-    /// The interpreter: no C++ toolchain, the edit-evaluate default.
-    #[default]
-    Fast,
-    /// Native compilation, as `./slog` runs programs.
-    Compiled,
-    /// The interpreter on one thread: breakpoints, stepping and provenance
-    /// stop at the same places every run (audit D-07, D-14).
-    Debug,
-}
-
-impl Mode {
-    pub fn env(self) -> Vec<(&'static str, &'static str)> {
-        match self {
-            Mode::Fast => vec![("SLOG_OPT", "interp")],
-            Mode::Compiled => Vec::new(),
-            Mode::Debug => vec![("SLOG_OPT", "interp"), ("SLOG_THREADS", "1")],
-        }
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -227,7 +204,7 @@ pub struct Judged {
     pub verdict: Verdict,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Report {
     pub id: String,
     pub title: String,
@@ -265,7 +242,7 @@ pub async fn run(root: &Path, path: &Path) -> Result<Report, String> {
     std::fs::create_dir_all(&workspace)
         .map_err(|error| format!("cannot create {}: {error}", workspace.display()))?;
     let harness = write_harness(&workspace, &main, &scenario.checks)?;
-    let lane = Lane::new(root.to_path_buf(), scenario.mode.env());
+    let lane = Lane::new(root.to_path_buf(), scenario.mode);
     let report = Runner {
         lane: &lane,
         session: Session::new(&lane),

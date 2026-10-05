@@ -54,7 +54,8 @@ button:hover { border-color: var(--muted); }
 #evaluate { border-color: var(--yellow); color: var(--yellow); }
 button:disabled { opacity: 0.5; cursor: default; }
 
-main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+main { flex: 1; display: flex; min-height: 0; }
+#work { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 #editor { height: var(--editor-height); min-height: 80px; }
 #editor textarea {
   width: 100%;
@@ -102,6 +103,38 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .entry .note { color: var(--muted); }
 .log { margin: 0 0 10px; color: var(--muted); font-size: 12px; white-space: pre-wrap; border-left: 2px solid var(--border); padding-left: 8px; }
 .evaluation { color: var(--yellow); margin: 0 0 10px; }
+
+/* A run held at a gate, break, step, or interrupt */
+#held {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: #fdf1e8;
+  border-top: 1px solid var(--orange);
+  color: var(--orange);
+  font-size: 13px;
+}
+#held-title { flex: 1; font-family: var(--mono); }
+
+/* Scenarios drawer */
+#drawer {
+  width: 400px;
+  border-left: 1px solid var(--border);
+  background: var(--page);
+  overflow: auto;
+  padding: 8px 12px;
+}
+#drawer h2 { font-size: 15px; margin: 4px 0; color: var(--strong); }
+.hint { color: var(--muted); font-size: 12px; margin: 0 0 10px; }
+.scenario { border: 1px solid var(--border); border-radius: 6px; background: white; padding: 8px; margin-bottom: 8px; }
+.scenario-head { display: flex; align-items: center; gap: 8px; }
+.scenario-name { flex: 1; font-family: var(--mono); color: var(--strong); }
+.scenario .result { font: 12px/1.5 var(--mono); margin-top: 6px; white-space: pre-wrap; }
+.scenario .pass { color: var(--green); }
+.scenario .fail { color: var(--red); }
+.scenario .xfail { color: var(--yellow); }
+.scenario .why { color: var(--muted); padding-left: 1.5em; }
 
 /* Status strip */
 footer .dot::before { content: "●"; margin-right: 4px; }

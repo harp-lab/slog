@@ -8,7 +8,7 @@ mod session;
 mod studio;
 mod web;
 
-use lane::Lane;
+use lane::{Lane, Mode};
 use slog_repl::server::{private_token, project_root};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -164,16 +164,11 @@ async fn serve(args: impl Iterator<Item = String>) -> Result<(), String> {
     };
     // The interpreter skips the C++ toolchain, which is what an edit-evaluate
     // loop wants; it is also what breakpoints and stepping need.
-    let env = if options.compiled {
-        Vec::new()
-    } else {
-        vec![("SLOG_OPT", "interp")]
-    };
-    let studio = Arc::new(Studio::new(file, text, Lane::new(root, env)));
+    let mode = if options.compiled { Mode::Compiled } else { Mode::Fast };
+    let studio = Arc::new(Studio::new(file, text, Lane::new(root, mode)));
     studio.relay_lane();
     // Start the session server now so the first evaluation does not wait.
-    let warm = studio.clone();
-    tokio::spawn(async move { warm.lane.command(":ping").await });
+    web::warm(studio.clone());
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", options.port))
         .await

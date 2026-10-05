@@ -5,6 +5,7 @@
 //! requires the per-launch token and a same-origin `Origin` header. The page
 //! and its assets hold no data.
 
+use crate::lane::Mode;
 use crate::studio::{Event, Snapshot, Studio};
 use axum::Router;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -60,6 +61,12 @@ enum Request {
     Interrupt,
     /// Kill the session server; the next command starts a fresh one.
     Restart,
+    /// Run later servers in this mode, starting now.
+    Mode { mode: Mode },
+    /// List the scenarios beside the program.
+    Scenarios,
+    /// Run one of them by name.
+    RunScenario { name: String },
 }
 
 /// Messages meant for one tab only; everything else is a broadcast `Event`.
@@ -71,6 +78,7 @@ enum Reply<'a> {
     Ack { version: u64 },
     /// The edit was refused: this is the current text.
     Reset { version: u64, text: &'a str },
+    Scenarios { names: Vec<String> },
     Notice { message: &'a str },
 }
 
@@ -198,8 +206,29 @@ fn handle(studio: &Arc<Studio>, connection: u64, text: &str, direct: &mpsc::Unbo
                 }
             });
         }
-        Request::Restart => studio.lane.kill(),
+        Request::Restart => {
+            studio.lane.kill();
+            warm(studio);
+        }
+        Request::Mode { mode } => {
+            studio.lane.set_mode(mode);
+            warm(studio);
+        }
+        Request::Scenarios => {
+            let _ = direct.send(json(&Reply::Scenarios {
+                names: studio.scenarios(),
+            }));
+        }
+        Request::RunScenario { name } => {
+            tokio::spawn(async move { studio.run_scenario(&name).await });
+        }
     }
+}
+
+/// Start a replacement server at once, so the lane reads as starting and
+/// then ready, rather than dead until the next command.
+pub fn warm(studio: Arc<Studio>) {
+    tokio::spawn(async move { studio.lane.command(":ping").await });
 }
 
 fn json<T: Serialize>(value: &T) -> String {

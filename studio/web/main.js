@@ -19,6 +19,8 @@ const state = {
   session: { current: null, held: false },
   evaluating: false,
   log: null, // the <pre> collecting consecutive server output lines
+  heldTitle: "", // where the held run stopped, from its pause result
+  scenarios: new Map(), // name -> { running, report, error }
 };
 
 let socket = null;
@@ -106,6 +108,10 @@ const receive = {
   },
   entry(entry) {
     state.log = null;
+    if (entry.result?.kind === "paused") {
+      state.heldTitle = entry.result.title;
+      renderStatus();
+    }
     append(renderEntry(entry, { file: state.file, onSpan: (span) => editor.reveal(span) }));
     if (entry.origin === "evaluate") {
       const span = entry.error?.span;
@@ -123,6 +129,15 @@ const receive = {
   },
   notice({ message }) {
     note(message);
+  },
+  scenarios({ names }) {
+    const known = state.scenarios;
+    state.scenarios = new Map(names.map((name) => [name, known.get(name) ?? {}]));
+    renderScenarios();
+  },
+  scenario({ name, running, report, error }) {
+    state.scenarios.set(name, { running, report, error });
+    renderScenarios();
   },
 };
 
@@ -251,15 +266,77 @@ function renderStatus() {
   sessionNode.className = held ? "held" : "";
 
   $("evaluation").textContent = state.evaluating ? "evaluating…" : "";
+  $("held").hidden = !held;
+  $("held-title").textContent = `run held — ${state.heldTitle || "paused"}`;
+  $("mode").value = state.lane.mode;
   $("stop").hidden = lane !== "busy";
   $("evaluate").disabled = state.evaluating;
 }
+
+// Scenarios --------------------------------------------------------------
+
+function renderScenarios() {
+  const list = $("scenario-list");
+  list.replaceChildren();
+  if (!state.scenarios.size) {
+    list.append(Object.assign(document.createElement("p"), { className: "hint", textContent: "No scenarios yet." }));
+  }
+  for (const [name, { running, report, error }] of state.scenarios) {
+    const card = list.appendChild(document.createElement("div"));
+    card.className = "scenario";
+    const head = card.appendChild(document.createElement("div"));
+    head.className = "scenario-head";
+    head.append(Object.assign(document.createElement("span"), { className: "scenario-name", textContent: name }));
+    const verdict = running ? "running…" : error ? "error" : report ? (passed(report) ? "PASS" : "FAIL") : "";
+    head.append(Object.assign(document.createElement("span"), {
+      className: verdict === "PASS" ? "pass" : verdict === "FAIL" || verdict === "error" ? "fail" : "",
+      textContent: verdict,
+    }));
+    const run = head.appendChild(Object.assign(document.createElement("button"), { textContent: "Run", disabled: running }));
+    run.addEventListener("click", () => send({ t: "run-scenario", name }));
+    if (error) card.append(line("fail", error));
+    if (report && !running) card.append(renderReport(report));
+  }
+}
+
+function passed(report) {
+  return !report.setup && [...report.checks, ...report.steps].every((judged) => judged.verdict !== "fail");
+}
+
+function renderReport(report) {
+  const node = document.createElement("div");
+  node.className = "result";
+  if (report.setup) node.append(line("fail", `✗ ${report.setup}`));
+  const mark = { pass: "✓", fail: "✗", xfail: "~" };
+  for (const [prefix, judged] of [
+    ...report.checks.map((check) => ["check ", check]),
+    ...report.steps.map((step) => ["", step]),
+  ]) {
+    node.append(line(judged.verdict, `${mark[judged.verdict]} ${prefix}${judged.what}`));
+    if (judged.why) node.append(line("why", judged.why));
+  }
+  return node;
+}
+
+function line(className, text) {
+  return Object.assign(document.createElement("div"), { className, textContent: text });
+}
+
+$("scenarios-toggle").addEventListener("click", () => {
+  const drawer = $("drawer");
+  drawer.hidden = !drawer.hidden;
+  if (!drawer.hidden) send({ t: "scenarios" });
+});
 
 // Layout -----------------------------------------------------------------
 
 $("evaluate").addEventListener("click", evaluate);
 $("stop").addEventListener("click", () => send({ t: "interrupt" }));
 $("restart").addEventListener("click", () => send({ t: "restart" }));
+$("mode").addEventListener("change", (event) => send({ t: "mode", mode: event.target.value }));
+for (const button of $("held").querySelectorAll("button")) {
+  button.addEventListener("click", () => send({ t: "command", line: button.dataset.command }));
+}
 
 $("divider").addEventListener("pointerdown", (event) => {
   const divider = event.currentTarget;
