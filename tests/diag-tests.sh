@@ -207,6 +207,28 @@ o="$(run neg_valid)"
 if echo "$o" | grep -qE '\(fixpoint '; then ok valid-negation-compiles
 else bad valid-negation-compiles "$o"; fi
 
+# 14. errors quote the rule as written, not its desugared form: a constant
+#     argument and a nested constructor are lifted into gensyms (was:
+#     `_tconst6jUh7 : int does not match ...` and `Table expr in
+#     (expr _t5whY28) is not defined.`).
+cat > "$D/quote_const.slog" <<'EOF'
+table (edge int int)
+table (path int int)
+rule (edge 1 2)
+rule (edge X Y) --> (path X "s")
+EOF
+cat > "$D/quote_nested.slog" <<'EOF'
+union (expr (num int) (add expr expr))
+rule (expr (num 3))
+EOF
+o="$(run quote_const; run quote_nested)"
+if echo "$o" | grep -qF 'quote_const.slog:4:1: "s" : int' \
+   && echo "$o" | grep -qF 'rule (edge X Y) --> (path X "s")' \
+   && echo "$o" | grep -qF 'quote_nested.slog:2:6: Table expr in (expr (num 3)) is not defined' \
+   && ! echo "$o" | grep -qE '_t[A-Za-z]*[0-9]'; then
+  ok errors-quote-source
+else bad errors-quote-source "$o"; fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
