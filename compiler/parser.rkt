@@ -49,9 +49,10 @@
 (define module-toks (hash))
 (define (parse-error msg toks [after-toks '()])
   (newline)
-  ; Pretty-prints an error message
+  ; Pretty-prints an error message.  Lexer lines are 0-based; editors and
+  ; rule-location-string count from 1.
   (define (line-prefix line)
-    (let ([pre (format "~a: " line)]) (string-append (whitespace (- 5 (string-length pre))) pre)))
+    (let ([pre (format "~a: " (add1 line))]) (string-append (whitespace (- 5 (string-length pre))) pre)))
   ; whitespace up to first column
   (define col (pos->startcol (token->pos (first toks))))
   (define origin-line (pos->startline (token->pos (first toks))))
