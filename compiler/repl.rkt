@@ -323,6 +323,8 @@
    "   emit|tuple|rule rN] (from the gate it replays the read to get there)"
    "  finish              leave the ports; run to the next iteration boundary"
    "  frames              the join stack at the current step stop"
+   "  peek REL [LIMIT]    REL's delta at the park: the iteration's signed"
+   "                      change, or the read's pending candidates"
    "  watch cone REL [image KEY]  derive level-0 watches over REL's whole"
    "                      dependency-ancestor cone in the mounted image; the"
    "                      SET re-derives semantically (rerun after an edit)"
@@ -3773,7 +3775,7 @@
 ;; resolve a pause or observe one, and neither wants a held run of its own.
 (define pause-resolution-verbs
   '("commit" "continue" "replay" "abort" "step" "frames" "finish" "why"
-    "breaks" "unbreak" "whynot"))
+    "breaks" "unbreak" "whynot" "peek"))
 
 ;; Fields of the uniform pause record, for rendering (t0-contract).
 (define (pause-record-field line key)
@@ -3896,6 +3898,47 @@
   (attach-session-state
    state
    (text-result "Frames" rendered #:kind "frames")))
+
+;; `peek REL [LIMIT]` (repl-ux §9.2): one relation's delta at the park.  At
+;; an iteration boundary that is the iteration's settled signed change; at
+;; the gate or a step stop it is the read's pending candidates, which the
+;; daemon marks inexact.
+(define peek-default-limit 50)
+
+(define (peek-result state argument)
+  (define-values (rel limit)
+    (match (read-command-data 'peek argument)
+      [(list rel) (values (relation-key rel) peek-default-limit)]
+      [(list rel (? exact-positive-integer? n)) (values (relation-key rel) n)]
+      [_ (error 'peek "expected: peek REL [LIMIT]")]))
+  (define rs (ensure-session-record! state))
+  (define lines
+    (session-debug-lines! (repl-session-session rs)
+                          `(delta (relation ,rel) (limit ,limit))
+                          (lambda (l) (regexp-match? #px"^\\(delta-end " l))))
+  (define rendered
+    (for/list ([line (in-list lines)])
+      (match (read-datum line)
+        [`(delta-row (row ,row) (sign ,sign) (kind ,kind))
+         (format "~a(~a ~a)~a" sign rel row
+                 (if (eq? kind 'none) "" (format " · ~a" kind)))]
+        [`(delta-end (exact ,exact) (rows ,n) (omitted ,omitted))
+         (format "~a row~a · ~a~a" n (if (= n 1) "" "s")
+                 (if (eq? exact #t)
+                     "this iteration's settled delta"
+                     "pending candidates, not yet deduplicated")
+                 (if (positive? omitted)
+                     (format " · ~a more (peek ~a ~a)" omitted rel
+                             (+ limit omitted))
+                     ""))]
+        [`(refused ,class ,_generation ,detail ...)
+         (format "refused: ~a ~a" class
+                 (string-join (for/list ([d (in-list detail)])
+                                (format "~s" d)) " "))]
+        [_ line])))
+  (attach-session-state
+   state
+   (text-result (format "Peek · ~a" rel) rendered #:kind "peek")))
 
 ;; ---- T5 slice (d1): `why` at the prompt (repl-ux §9.4) --------------------
 ;;
@@ -4256,6 +4299,7 @@
     ["dump" (dump-result state argument)]
     [(or "uses" "find") (uses-result state argument)]
     ["why" (why-result state argument)]
+    ["peek" (peek-result state argument)]
     ["whynot" (whynot-result state argument)]
     ["break" (break-result state argument)]
     ["unbreak" (unbreak-result state argument)]
@@ -5714,6 +5758,32 @@
        #px"6 rows match"
        (string-join (hash-ref (run2! "?count (path X Y)") 'lines) " | "))
       (void (run2! ":quit"))))
+
+  ;; `peek` (repl-ux §9.2) reads the parked epoch's delta.  At the gate the
+  ;; read is complete but unfinalized, so peek shows its pending candidate,
+  ;; inexact; `finish` interns it and parks at the iteration boundary,
+  ;; where the same row is the iteration's settled delta.
+  (parameterize ([current-directory repository-root]
+                 [current-environment-variables test-environment])
+    (define state (make-server-state))
+    (define (run! line) (dispatch-command state line))
+    (define (text result) (string-join (hash-ref result 'lines) "\n"))
+    (check-regexp-match #px"refused: delta-unavailable .*not-parked"
+                        (text (run! "peek path")))
+    (void (run! "run tests/reach.slog"))
+    (void (run! "watch path level 1"))
+    (check-equal? (hash-ref (run! "rule (path 97 97) <-- (edge 1 2)") 'title)
+                  "Paused · pre-commit gate")
+    (check-equal? (hash-ref (run! "peek path") 'lines)
+                  (list "+(path 97 97)"
+                        "1 row · pending candidates, not yet deduplicated"))
+    (check-regexp-match #px"refused: delta-unavailable .*no relation named nosuch"
+                        (text (run! "peek nosuch")))
+    (check-equal? (hash-ref (run! "finish") 'title) "Paused · iteration boundary")
+    (check-equal? (hash-ref (run! "peek path") 'lines)
+                  (list "+(path 97 97)" "1 row · this iteration's settled delta"))
+    (check-regexp-match #px"path \\+1" (text (run! "commit")))
+    (void (run! ":quit")))
 
   ;; T5 slice (c3): stepping the held read (contract §3, repl-ux §9.3).
   ;; From the gate a step REPLAYS the completed read and stops at the first

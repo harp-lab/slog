@@ -1556,6 +1556,55 @@ static void emit_step_frames(slog::Daemon* d)
     d->emit("(frames-end " + std::to_string(level) + ")");
 }
 
+// The `delta` peek.  At an iteration boundary a relation's delta is final:
+// interned against its master (duplicates nulled in place, skipped here),
+// it is exactly the iteration's signed change.  Anywhere inside a read the
+// delta is still the previous iteration's driver, so the rows worth seeing
+// are the pending candidates in the send shards -- not yet deduplicated
+// across threads or against the master, hence (exact #f).  Rows render as
+// dump-tuples renders them, each with its batch's sign and kind.
+static void emit_delta(slog::Daemon* d, const std::string& name, u64 limit)
+{
+    using slog::protocol::quoteString;
+    slog::Database* db = d->db();
+    if (!db->isSuspended())
+    {
+        refuse(d, "delta-unavailable",
+               "(verb delta) (detail not-parked) (position none)");
+        return;
+    }
+    slog::Relation* rel = db->getRelation(name);
+    if (rel == nullptr)
+    {
+        refuse(d, "delta-unavailable", "(verb delta) (detail "
+               + quoteString("no relation named " + name) + ")");
+        return;
+    }
+    const bool exact = db->suspendPosition() == slog::RUN_AT_BOUNDARY;
+    const u16 arity = rel->getArity();
+    u64 rows = 0, omitted = 0;
+    const auto emit_rows = [&](const slog::InsertBatch* b) {
+        for (u64 j = 0; arity > 0 && j + arity <= b->usage; j += arity)
+        {
+            if (b->data[j] == slog_null) continue;
+            if (rows == limit) { ++omitted; continue; }
+            d->emit("(delta-row (row "
+                    + quoteString(db->writeRowCSV(&b->data[j], arity))
+                    + ") (sign " + (b->sign < 0 ? "-" : "+") + ") (kind "
+                    + slog::cnt_kind_name(b->kind) + "))");
+            ++rows;
+        }
+    };
+    if (exact)
+        for (const slog::InsertBatch* b : rel->getDelta()) emit_rows(b);
+    else
+        for (const auto& shard : rel->getSendShards())
+            for (const slog::InsertBatch* b : shard) emit_rows(b);
+    d->emit(std::string("(delta-end (exact ") + (exact ? "#t" : "#f")
+            + ") (rows " + std::to_string(rows) + ") (omitted "
+            + std::to_string(omitted) + "))");
+}
+
 // T5 slices (d1)/(d3): one row vocabulary for the debugger verbs -- the
 // QUERY payload's literal kinds plus `(word N)` for a value the client
 // already holds, plus `_` where a pattern admits wildcards.  A literal the
@@ -2542,10 +2591,11 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
     // boundary-admission refusal would hide the honest answer.
     // T6 slice (b): `abort-read` is a parked continuation exactly as
     // `replay` is -- and RF5-B's activation aborts reads inside prepared
-    // boundaries, so the lease must admit it.
+    // boundaries, so the lease must admit it.  `delta` reads the parked
+    // epoch's delta or candidates and moves nothing, as `frames` does.
     const bool parked_debug_verb =
         (verb == "replay" || verb == "step" || verb == "frames"
-         || verb == "why" || verb == "abort-read")
+         || verb == "why" || verb == "abort-read" || verb == "delta")
         && d->db()->isSuspended();
     // T5 slice (c3) widens this by exactly one park: a STEP STOP is the
     // same "remain paused and inspect" state one transition earlier -- the
@@ -2966,6 +3016,31 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
             return;
         }
         emit_step_frames(d);
+        return;
+    }
+
+    // (delta (relation "R") [(limit N)]): one relation's delta at the
+    // current park -- the iteration's z-set, which no other verb reads.
+    if (verb == "delta")
+    {
+        CommandFields fields;
+        std::string error;
+        std::string name;
+        u64 limit = UINT64_MAX;
+        if (!collect_fields(form, 1, {"relation", "limit"}, fields, error)
+            || fields.count("relation") == 0
+            || fields.at("relation")->children.size() != 2
+            || !parse_string_value(fields.at("relation")->children[1], name)
+            || (fields.count("limit")
+                && (fields.at("limit")->children.size() != 2
+                    || !parse_u64_atom(fields.at("limit")->children[1],
+                                       limit))))
+        {
+            refuse(d, "parse", "(verb delta) (detail \"expected (delta "
+                   "(relation \\\"R\\\") [(limit N)])\")");
+            return;
+        }
+        emit_delta(d, name, limit);
         return;
     }
 

@@ -230,6 +230,20 @@ expect    "breaks-end"        '(breaks-end 2)' out/proto-break.log
 expect_rx "unbreak-unknown"   '\(refused break-binding [0-9]+ \(verb unbreak\) \(detail "no break with id b9"\)\)' out/proto-break.log
 expect    "break-removed"     '(break-removed (id "b1") (breaks 1))' out/proto-break.log
 
+# --- 3u. the delta peek ----------------------------------------------------
+# `delta` reads a PARKED epoch's delta (or its pending candidates), so with
+# nothing parked it refuses and names the position.  (The rows themselves,
+# exact and inexact, are pinned in the REPL battery's `peek`.)
+racket tests/api/drive.rkt \
+  '(delta (relation "edge"))' \
+  '(delta (limit 3))' \
+  '(delta (relation "edge") (limit many))' \
+  > out/proto-delta.log 2>&1
+expect_rx "delta-not-parked" '\(refused delta-unavailable [0-9]+ \(verb delta\) \(detail not-parked\) \(position none\)\)' out/proto-delta.log
+# a missing relation and a non-numeric limit are both parse refusals
+if [ "$(grep -cE '\(refused parse [0-9]+ \(verb delta\) \(detail "expected \(delta \(relation' out/proto-delta.log)" -eq 2 ]; then
+  ok "delta-parse"; else bad "delta-parse"; fi
+
 # --- 3a. N3-A transaction + N3-B durable boundary history -------------------
 # Prepare eagerly constructs an empty slot but keeps both its VersionKey and
 # latest binding private. Ordinary catalog access is refused under the lease;

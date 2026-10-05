@@ -499,3 +499,31 @@ Also: while suspended the guardrails refuse **binary** DB writes
 that would clobber the single `RunState`); CSV writes, `(sizes)`, and
 `(lookup)` (read-only) remain allowed against the consistent suspended
 snapshot, and a client continues to fixpoint before persisting anyway.
+
+## 14. Observing the run: the delta peek
+
+A park is a place to look at the iteration itself, not only at the masters.
+`(delta (relation "R") [(limit N)])` streams one relation's delta at the
+current park and moves nothing; the boundary lease admits it whenever the run
+is suspended, as it admits `frames`:
+
+```
+(delta-row (row "4 5") (sign +) (kind rec))      ; one per row, up to N
+(delta-end (exact #t) (rows 1) (omitted 0))
+```
+
+- At an **iteration boundary** (`(phase iter)`) the delta is final: interned
+  against the master, duplicates nulled in place and skipped, so it is
+  exactly the iteration's signed change, `(exact #t)`.
+- **Inside a read** (the pre-commit gate, a step or break stop, a budget or
+  interrupt slice) the delta still drives the read, so the verb shows the
+  pending candidates in the send shards instead: not yet deduplicated across
+  threads or against the master, `(exact #f)`, in thread order.
+
+Rows render as `dump-tuples` renders them (nominal column order, the ordinary
+value writer).  `sign` and `kind` are the batch's (`counts.h`): `none` for
+set-semantics runs; `input`, `nonrec`, `rec` or `premise` under the counted
+and maintenance flavors.  With nothing parked the verb refuses
+`(refused delta-unavailable G (verb delta) (detail not-parked) (position
+none))`; an unknown name refuses with the same class.  The REPL spells it
+`peek REL [LIMIT]` (default 50 rows).

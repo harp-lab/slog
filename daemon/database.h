@@ -2316,6 +2316,14 @@ public:
     return *delta;
   }
 
+  // The read phase's per-thread output before finalize: candidate rows not
+  // yet unioned into the delta, deduplicated across threads, or interned.
+  // Coherent only while the run is parked (the `delta` peek).
+  const std::vector<std::vector<InsertBatch*>>& getSendShards() const
+  {
+    return send_shards;
+  }
+
   // Size the per-thread bucket buffers; call once (single-threaded) per run,
   // after all indices are registered, before the parallel reorg.
   void ensureReorgBuffers(u32 nthreads)
@@ -7210,6 +7218,16 @@ public:
   std::string writeValCSV(u64 v, u32 cdepth = 0)
   {
     return writeValCSVAtBoundary(v, "", cdepth);
+  }
+
+  // One nominal row as `dump-tuples` prints it: the column renderings,
+  // space-separated.  `max_depth` is writeValCSVAtBoundary's preview budget.
+  std::string writeRowCSV(const u64* row, u16 arity, u32 max_depth = 0)
+  {
+    std::string text;
+    for (u16 c = 0; c < arity; ++c)
+      text += (c ? " " : "") + writeValCSVAtBoundary(row[c], "", 0, max_depth);
+    return text;
   }
 
   // The value adapter (repl.md §1, roadmap "value adapter"): one CELL record
