@@ -19,7 +19,7 @@
 #include "gzfile.h"
 #include "index.h"
 #include "counts.h"
-#include "protocol.h"   // quoteString, for the value adapter's CELL records
+#include "protocol.h"   // quoteString, for string values and CELL records
 #include <string>
 #include <vector>
 #include <set>
@@ -7178,8 +7178,12 @@ public:
       return "...";
     if (is_int(v))
       return decodeIntString(v);                           // s32 or bignum
+    // A string renders as the Slog literal that reads back to it: this text
+    // is re-read (line-framed (dumprow ...) replies, a REPL row pasted back
+    // as a fact), where a raw `"` or newline would end the value early.
+    // quoteString emits only escapes the Slog lexer decodes.
     else if (is_str(v))
-      return std::string("\"") + decodeString(v) + "\"";   // mono or rope
+      return slog::protocol::quoteString(decodeString(v)); // mono or rope
     else if (is_float(v))
     {
       // Shortest round-trippable form, but keep floats visually distinct from

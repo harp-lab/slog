@@ -4805,7 +4805,8 @@
 
 (module+ test
   (require rackunit
-           racket/runtime-path)
+           racket/runtime-path
+           (only-in "lexer.rkt" make-tinkr-lexer token->tag token->str))
 
   (define-runtime-path semantic-session-golden
     "../tests/expected/repl/semantic-session.txt")
@@ -5246,6 +5247,28 @@
     ;; unwatch removes the daemon registration and the intent
     (check-regexp-match #px"◆ Watch w1\n  removed \\(path\\)" transcript)
     (check-regexp-match #px"◆ Watches\n  w2  \\?count" transcript))
+
+  ;; String values (audit Q-14): a row prints each string as the Slog
+  ;; literal that lexes back to it.  The value carries every escape the
+  ;; daemon emits and a non-ASCII character.
+  (let* ([value "q\"\\ ☃\n\t\r"]
+         [transcript
+          (parameterize ([current-directory repository-root]
+                         [current-environment-variables test-environment])
+            (plain-transcript
+             (list "run tests/reach.slog"
+                   (format "table (word str int) rule (word ~s 1)" value)
+                   "?(word W I)"
+                   ":quit")))]
+         ;; one transcript line: the row did not split at the newline
+         [printed (regexp-match #px"\n  1  \\(word (\"[^\n]*\") 1\\)\n"
+                                transcript)])
+    (check-not-false printed)
+    (define token
+      (let ([in (open-input-string (second printed))])
+        ((make-tinkr-lexer "row" in) in)))
+    (check-equal? (token->tag token) 'str)
+    (check-equal? (token->str token) (string-append "\"" value "\"")))
 
   ;; The scratch register (R3 slice a): Slog definitions typed at the prompt
   ;; are immediate interp-only program events; a fragment ADOPTS the live
