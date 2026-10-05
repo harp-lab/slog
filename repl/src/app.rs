@@ -314,6 +314,7 @@ impl App {
                     let error = response.error.unwrap_or(crate::protocol::ServerError {
                         kind: "server".to_owned(),
                         message: "unknown server failure".to_owned(),
+                        span: None,
                     });
                     self.transcript.push(TranscriptEntry::error(
                         failure_title(&error.kind),
@@ -1703,6 +1704,7 @@ impl App {
                     let error = response.error.unwrap_or(crate::protocol::ServerError {
                         kind: "server".to_owned(),
                         message: "unknown server failure".to_owned(),
+                        span: None,
                     });
                     return format!("! {}\n  {}", failure_title(&error.kind), error.message);
                 }
@@ -2238,6 +2240,7 @@ attempts = 2
                 error: Some(crate::protocol::ServerError {
                     kind: "parse".to_owned(),
                     message: "bad input".to_owned(),
+                    span: None,
                 }),
             },
         });

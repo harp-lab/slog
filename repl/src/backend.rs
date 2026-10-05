@@ -1,11 +1,8 @@
-use crate::protocol::{Announcement, PROTOCOL_VERSION, Response, SessionConnection};
-use std::env;
-use std::fs::File;
-use std::io::{self, Read};
+use crate::protocol::{Response, SessionConnection};
+use crate::server::{self, ServerProcess};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, timeout};
@@ -40,16 +37,11 @@ pub struct Backend {
 
 impl Backend {
     pub async fn start(project_root: &Path) -> Result<Self, String> {
-        let token =
-            private_token().map_err(|error| format!("cannot create REPL token: {error}"))?;
-        let (child, announcement) = launch_server(project_root, &token).await?;
-        if announcement.protocol != PROTOCOL_VERSION {
-            return Err(format!(
-                "Racket protocol {} does not match Rust protocol {}",
-                announcement.protocol, PROTOCOL_VERSION
-            ));
-        }
-        let address = format!("{}:{}", announcement.host, announcement.port);
+        let ServerProcess {
+            child,
+            address,
+            token,
+        } = server::launch(project_root, &[]).await?;
         let connection = SessionConnection::connect(&address, &token)
             .await
             .map_err(|error| format!("cannot connect to Racket REPL server: {error}"))?;
@@ -82,7 +74,7 @@ impl Backend {
     /// daemon. The first database session will synchronously rebuild a stale
     /// runtime, so the REPL can label that wait honestly before sending open.
     pub fn daemon_rebuild_pending(&self) -> bool {
-        daemon_rebuild_pending(&self.project_root)
+        server::daemon_rebuild_pending(&self.project_root)
     }
 
     pub async fn execute(&self, line: String) -> Result<(), String> {
@@ -146,29 +138,6 @@ impl Backend {
             let _ = task.await;
         }
     }
-}
-
-fn daemon_rebuild_pending(project_root: &Path) -> bool {
-    let daemon = project_root.join("daemon");
-    let executable_modified =
-        match std::fs::metadata(daemon.join("slogd")).and_then(|metadata| metadata.modified()) {
-            Ok(modified) => modified,
-            Err(_) => return true,
-        };
-    let Ok(entries) = std::fs::read_dir(daemon) else {
-        return false;
-    };
-    entries.filter_map(Result::ok).any(|entry| {
-        let source = entry.path();
-        let relevant = matches!(
-            source.extension().and_then(|extension| extension.to_str()),
-            Some("h" | "cpp")
-        );
-        relevant
-            && std::fs::metadata(source)
-                .and_then(|metadata| metadata.modified())
-                .is_ok_and(|modified| modified > executable_modified)
-    })
 }
 
 /// The control connection's pump: one `interrupt` request per queued
@@ -250,76 +219,4 @@ async fn run_backend(
     if let Some(task) = stderr_task {
         let _ = task.await;
     }
-}
-
-async fn launch_server(project_root: &Path, token: &str) -> Result<(Child, Announcement), String> {
-    let mut child = Command::new("racket")
-        .arg("compiler/repl.rkt")
-        .current_dir(project_root)
-        .env("SLOG_REPL_TOKEN", token)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|error| format!("cannot start racket compiler/repl.rkt: {error}"))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "Racket server did not expose its bootstrap pipe".to_owned())?;
-    let mut reader = BufReader::new(stdout);
-    let mut line = String::new();
-    let read = timeout(Duration::from_secs(15), reader.read_line(&mut line))
-        .await
-        .map_err(|_| "Racket REPL server did not announce a port within 15 seconds".to_owned())?
-        .map_err(|error| format!("cannot read Racket REPL announcement: {error}"))?;
-    if read == 0 {
-        return Err("Racket REPL server exited before announcing a port".to_owned());
-    }
-    let announcement = serde_json::from_str(&line)
-        .map_err(|error| format!("invalid Racket REPL announcement: {error}: {line:?}"))?;
-    Ok((child, announcement))
-}
-
-fn private_token() -> io::Result<String> {
-    let mut random = [0_u8; 32];
-    File::open("/dev/urandom")?.read_exact(&mut random)?;
-    Ok(random.iter().map(|byte| format!("{byte:02x}")).collect())
-}
-
-pub fn project_root() -> Result<PathBuf, String> {
-    if let Some(root) = env::var_os("SLOG_ROOT") {
-        let root = PathBuf::from(root);
-        if is_project_root(&root) {
-            return Ok(root);
-        }
-        return Err(format!(
-            "SLOG_ROOT={} does not contain compiler/repl.rkt",
-            root.display()
-        ));
-    }
-
-    if let Ok(cwd) = env::current_dir()
-        && let Some(root) = find_root(cwd)
-    {
-        return Ok(root);
-    }
-    if let Ok(executable) = env::current_exe()
-        && let Some(parent) = executable.parent()
-        && let Some(root) = find_root(parent.to_path_buf())
-    {
-        return Ok(root);
-    }
-    Err("cannot find the Slog repository; run the copied ./slog or set SLOG_ROOT".to_owned())
-}
-
-fn find_root(start: PathBuf) -> Option<PathBuf> {
-    start
-        .ancestors()
-        .find(|candidate| is_project_root(candidate))
-        .map(Path::to_path_buf)
-}
-
-fn is_project_root(path: &Path) -> bool {
-    path.join("compiler/repl.rkt").is_file() && path.join("daemon").is_dir()
 }

@@ -22,10 +22,21 @@ struct Request {
     params: Value,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ServerError {
     pub kind: String,
     pub message: String,
+    /// Where a syntax error sits in its source file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span: Option<Span>,
+}
+
+/// A 1-based source position, as `compiler/parser.rkt` reports it.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Span {
+    pub file: String,
+    pub line: u32,
+    pub col: u32,
 }
 
 #[derive(Clone, Debug, Deserialize)]

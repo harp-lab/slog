@@ -2,18 +2,19 @@ mod app;
 mod backend;
 mod editor;
 mod library;
-mod protocol;
 mod share;
 mod theme;
 mod ui;
 mod version;
 
 pub use slog_repl::{
-    command, completion, operation, present, response, runtime, transcript, tutorial, workspace,
+    command, completion, operation, present, protocol, response, runtime, server, transcript,
+    tutorial, workspace,
 };
 
 use app::{App, Effect};
-use backend::{Backend, BackendEvent, project_root};
+use backend::{Backend, BackendEvent};
+use server::project_root;
 use command::ShellCommand;
 use crossterm::event::{
     DisableMouseCapture, EnableMouseCapture, EventStream, KeyboardEnhancementFlags,
@@ -278,6 +279,7 @@ async fn run_plain(backend: &mut Backend) -> Result<(), String> {
                         let error = response.error.unwrap_or(crate::protocol::ServerError {
                             kind: "server".to_owned(),
                             message: "unknown server failure".to_owned(),
+                            span: None,
                         });
                         write_plain_entry(
                             &mut stdout,
