@@ -71,12 +71,8 @@ pub struct App {
     tutorial_overlay: Option<TutorialOverlay>,
     tutorial_run: Option<TutorialRun>,
     command_queue_busy: bool,
-    /// Ctrl-C stage-1 guard (repl-ux.md §9.2 doctrine, partially adopted):
-    /// while a command is in flight, one Ctrl-C must not tear the session
-    /// down mid-fixpoint -- the first press warns, and only a second press
-    /// within the confirmation window takes the interrupting-exit path
-    /// (the escape hatch a genuinely hung server still needs).
-    busy_ctrlc_at: Option<std::time::Instant>,
+    /// When a Ctrl-C or Ctrl-D last armed the quit confirmation (`quit_key`).
+    quit_armed_at: Option<std::time::Instant>,
     /// The newest successful result remains a live, client-owned canvas.
     /// Older result entries retain their last rendered lines in the transcript.
     pub canvas: Option<PresentationCanvas>,
@@ -129,7 +125,7 @@ impl App {
             tutorial_overlay: None,
             tutorial_run: None,
             command_queue_busy: false,
-            busy_ctrlc_at: None,
+            quit_armed_at: None,
             canvas: None,
             canvas_entry: None,
             canvas_search: None,
@@ -209,6 +205,47 @@ impl App {
             vec![message, "Ctrl-C again within 2s force-quits".to_string()],
         ));
     }
+
+    /// Ctrl-C or Ctrl-D at an empty prompt. Ctrl-C means pause, never kill
+    /// (repl-ux.md §9.2), and neither key quits on one press: an idle prompt
+    /// may stand at a paused run, which quitting discards along with every
+    /// session's unsaved changes. The first press says so, and a Ctrl-C with
+    /// a run in flight also asks the server to PAUSE it at the next slice
+    /// boundary (stage 2, over the control connection). Only a second press
+    /// within 2s takes the interrupting exit -- the hatch a hung server
+    /// still needs.
+    fn quit_key(&mut self, interrupt: bool) -> Effect {
+        if self
+            .quit_armed_at
+            .is_some_and(|armed| armed.elapsed().as_secs() < 2)
+        {
+            return Effect::Shutdown;
+        }
+        self.quit_armed_at = Some(std::time::Instant::now());
+        if interrupt && self.command_queue_busy {
+            self.transcript.push(TranscriptEntry::system(
+                "Interrupt",
+                vec![
+                    "pausing the run at its next slice boundary; \
+                     Ctrl-C again within 2s to force-quit instead \
+                     (kills the run)"
+                        .to_string(),
+                ],
+            ));
+            return Effect::Interrupt;
+        }
+        self.transcript.push(TranscriptEntry::system(
+            "Quit",
+            vec![
+                "Ctrl-C or Ctrl-D again within 2s quits".to_string(),
+                "quitting closes every resident session: any paused run and \
+                 unsaved changes are lost"
+                    .to_string(),
+            ],
+        ));
+        Effect::None
+    }
+
     pub fn set_command_queue_busy(&mut self, busy: bool) {
         self.command_queue_busy = busy;
     }
@@ -399,37 +436,13 @@ impl App {
                         return Effect::None;
                     }
                     if self.editor.is_empty() {
-                        // Ctrl-C means pause, never kill (repl-ux.md §9.2).
-                        // A run in flight: the first press asks the server to
-                        // PAUSE it at the next slice boundary (stage 2, over
-                        // the control connection); only a quick second press
-                        // takes the interrupting exit -- the hatch a hung
-                        // server still needs.
-                        if self.command_queue_busy {
-                            let confirm = self
-                                .busy_ctrlc_at
-                                .is_some_and(|t| t.elapsed().as_secs() < 2);
-                            if !confirm {
-                                self.busy_ctrlc_at = Some(std::time::Instant::now());
-                                self.transcript.push(TranscriptEntry::system(
-                                    "Interrupt",
-                                    vec![
-                                        "pausing the run at its next slice boundary; \
-                                         Ctrl-C again within 2s to force-quit instead \
-                                         (kills the run)"
-                                            .to_string(),
-                                    ],
-                                ));
-                                return Effect::Interrupt;
-                            }
-                        }
-                        return Effect::Shutdown;
+                        return self.quit_key(true);
                     }
                     self.completion = None;
                     self.editor.clear();
                     return Effect::None;
                 }
-                KeyCode::Char('d') if self.editor.is_empty() => return Effect::Shutdown,
+                KeyCode::Char('d') if self.editor.is_empty() => return self.quit_key(false),
                 KeyCode::Char('a')
                     if self.tutorial_run.is_none()
                         || self
@@ -2255,11 +2268,19 @@ attempts = 2
         assert!(matches!(app.on_terminal(ctrlc.clone()), Effect::Interrupt));
         assert_eq!(app.transcript.last().expect("notice").title, "Interrupt");
         // Quick second press: the interrupting exit (the hung-server hatch).
-        assert!(matches!(app.on_terminal(ctrlc.clone()), Effect::Shutdown));
-        // Idle prompt (not busy): Ctrl-C still exits directly.
-        let mut idle = App::new();
-        assert!(matches!(app.on_terminal(ctrlc.clone()), Effect::Shutdown));
-        assert!(matches!(idle.on_terminal(ctrlc), Effect::Shutdown));
+        assert!(matches!(app.on_terminal(ctrlc), Effect::Shutdown));
+    }
+
+    #[test]
+    fn idle_quit_keys_warn_first_and_quit_on_a_quick_second_press() {
+        for code in [KeyCode::Char('c'), KeyCode::Char('d')] {
+            let key = Event::Key(KeyEvent::new(code, KeyModifiers::CONTROL));
+            // An idle prompt may stand at a paused run: one press only warns.
+            let mut app = App::new();
+            assert!(matches!(app.on_terminal(key.clone()), Effect::None));
+            assert_eq!(app.transcript.last().expect("warning").title, "Quit");
+            assert!(matches!(app.on_terminal(key), Effect::Shutdown));
+        }
     }
 
     #[test]
