@@ -22,9 +22,10 @@ use tokio::time::{Duration, timeout};
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
-    /// Slog's default tiering: strata start interpreted and the long-running
-    /// ones are promoted to native code mid-run, so a short program never
-    /// waits for the C++ toolchain and a long one does not stay slow.
+    /// The interpreter on every thread, so a program never waits for the C++
+    /// toolchain. (Slog's default tiering, which promotes long strata to
+    /// native code mid-run, can crash the daemon at the promotion; fast mode
+    /// returns to it once that is fixed.)
     #[default]
     Fast,
     /// Native code (-O2) from the start, for performance work.
@@ -37,7 +38,7 @@ pub enum Mode {
 impl Mode {
     pub fn env(self) -> Vec<(&'static str, &'static str)> {
         match self {
-            Mode::Fast => Vec::new(),
+            Mode::Fast => vec![("SLOG_OPT", "interp")],
             Mode::Compiled => vec![("SLOG_OPT", "2")],
             Mode::Debug => vec![("SLOG_OPT", "interp"), ("SLOG_THREADS", "1")],
         }

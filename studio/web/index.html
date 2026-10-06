@@ -30,7 +30,7 @@
     </div>
     <div id="mode" class="segmented" role="radiogroup" aria-label="Evaluation mode"
          title="How the session server evaluates. Switching restarts it.">
-      <button data-mode="fast" role="radio" title="Slog's tiering: starts interpreted, compiles long-running strata to native code mid-run">fast</button>
+      <button data-mode="fast" role="radio" title="The interpreter on every thread: no wait for the C++ toolchain">fast</button>
       <button data-mode="debug" role="radio" title="The interpreter on one thread: breakpoints and stepping stop at the same place every run">debug</button>
       <button data-mode="compiled" role="radio" title="Native code (-O2) from the start, for performance work">compiled</button>
     </div>
