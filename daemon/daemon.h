@@ -1913,17 +1913,17 @@ public:
         const bool settled = st.where == RUN_AT_BOUNDARY;
         emit(protocol::renderPauseRecord({
           commandGeneration(), s->scc_id, s->name, st.iteration,
-          settled ? "iter" : "read", settled, st.new_tuples, settled,
+          settled ? "iter" : "read", settled, st.progress, settled,
           st.ms_call, st.ms_total, std::move(cause)
         }));
       }
       else
       {
         std::snprintf(buf, sizeof(buf),
-                      "(paused %u \"%s\" %u %s %llu %.3f %.3f %s)",
+                      "(paused %u \"%s\" %u %s %lld %.3f %.3f %s)",
                       s->scc_id, s->name.c_str(), st.iteration,
                       st.where == RUN_MID_READ ? "read" : "iter",
-                      (unsigned long long)st.new_tuples,
+                      (long long)st.progress,
                       st.ms_call, st.ms_total, st.reason);
         emit(buf);
       }

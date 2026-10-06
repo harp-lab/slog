@@ -3043,7 +3043,10 @@ struct RunStatus {
   RunPosition where;    // when suspended: AT_BOUNDARY | MID_READ
   const char* reason;   // when suspended: "time" | "memory"
   u32 iteration;        // iteration count so far
-  u64 new_tuples;       // growth since the stratum started (see continueRun)
+  // Net growth since the stratum started: signed, because deletion
+  // maintenance shrinks relations.  Mid-read it is the emitted-words counter
+  // instead -- the only figure a partial read has (see continueRun).
+  s64 progress;
   double ms_call;       // wall time this call
   double ms_total;      // wall time across all calls for this stratum
 };
@@ -7020,7 +7023,7 @@ public:
       rs.suspended = false;
       for (u32 i = 0; i < phase_count; ++i) clearPausedPhase(i);
       st.fixpoint = true;
-      st.new_tuples = totalTuples() - rs.start_tuples;
+      st.progress = (s64)totalTuples() - (s64)rs.start_tuples;
       // Internal strata (reload/disk) are stack-local Stratum objects destroyed
       // right after runStratum returns; drop the pointer so it can't dangle.
       rs.stratum = nullptr;
@@ -7031,9 +7034,9 @@ public:
       st.fixpoint = false;
       st.where = rs.position;
       st.reason = rs.mem_tripped.load(std::memory_order_relaxed) ? "memory" : "time";
-      st.new_tuples = (rs.position == RUN_AT_BOUNDARY)
-        ? (totalTuples() - rs.start_tuples)                 // exact at boundary
-        : rs.emitted_words.load(std::memory_order_relaxed); // estimate mid-read
+      st.progress = (rs.position == RUN_AT_BOUNDARY)
+        ? (s64)totalTuples() - (s64)rs.start_tuples              // exact
+        : (s64)rs.emitted_words.load(std::memory_order_relaxed); // words
     }
     return st;
   }
