@@ -99,6 +99,10 @@
          session-identity-records ; T0(c): durable RuleKey/SccInstanceKey sets
          session-rule-meta      ; T0(c) c2: the daemon's RuleId<->RuleKey registry
          session-fires          ; N5/stats-4: RuleKey-resolved fire records
+         session-trace-on!      ; the execution trace (docs/pausing.md §15)
+         session-trace-off!
+         session-tracing?
+         session-trace-read!
          session-activate!      ; spine A2: the live activation transaction
          session-activate-pcs!  ; RF5-B: templated fixture -> live keys -> activate
          session-set-scc-policy! ; T5: pin a relation's writers to an executor
@@ -212,7 +216,11 @@
                  ;; so `clear scratch` knows what to unwind and a save knows
                  ;; what a stripped recipe omits.  Kept fragments leave the
                  ;; ledger (they become ordinary history).
-                 [scratch #:mutable])
+                 [scratch #:mutable]
+                 ;; The execution trace's read cursor: the daemon sequence
+                 ;; number the next trace read starts from, or #f while the
+                 ;; trace is off (docs/pausing.md §15).
+                 [trace-from #:mutable])
   #:transparent)
 
 ;; One committed scratch fragment (R3, repl-ux.md §5.3): its ordinal, the
@@ -245,7 +253,7 @@
              layer-id (fresh-runtime-id "eval") 0 '()
              (make-hash) (make-hash)
              (empty-boundary (format "b0:~a" layer-id)) '()
-             '() '() (hash) #f '() '()))
+             '() '() (hash) #f '() '() #f))
   (session-action! s `(set-evaluation ,(session-evaluation-id s))
                    read-one-line-quiet!)
   s)
@@ -260,7 +268,7 @@
                      (make-hash) '() '() '() (make-hash) (make-hash) #f echo
                      layer-id (fresh-runtime-id "eval") 0 '()
                      (make-hash) (make-hash) #f '()
-                     '() '() (hash) #f '() '()))
+                     '() '() (hash) #f '() '() #f))
   (session-action! s `(set-evaluation ,(session-evaluation-id s))
                    read-one-line-quiet!)
   (define-values (_cur strata-pos _chains) (introspect! s))
@@ -666,6 +674,123 @@
     (cond [(eof-object? l) (reverse acc)]
           [(regexp-match? #px"^\\(fire-end " l) (reverse acc)]
           [else (loop (cons l acc))])))
+
+;; ---- the execution trace (docs/pausing.md §15) ----------------------------
+;; The daemon records each stratum, iteration, park and fixpoint at its
+;; barriers; a read drains what accumulated since the previous one.  Read
+;; after an event for its whole execution, or from a pause hook for the
+;; part so far -- the cursor makes consecutive reads disjoint, and moving it
+;; releases the daemon's copy.
+
+;; Arm (or re-arm) the trace.  `sample` rows per relation per sign (0 for
+;; counts only, #f for the daemon's default), `focus` relations sampled
+;; more deeply, `rules?` per-iteration fire tallies.
+(define (session-trace-on! s #:sample [sample #f] #:focus [focus '()]
+                           #:rules? [rules? #f])
+  (define reply
+    (session-command!
+     s `(trace (on)
+               ,@(if sample `((sample ,sample)) '())
+               ,@(if (null? focus) '() `((focus ,@focus)))
+               ,@(if rules? '((rules #t)) '()))))
+  (match reply
+    [`(trace-state (on #t) (next ,next))
+     ;; re-arming keeps the unread records
+     (unless (session-trace-from s) (set-session-trace-from! s next))]
+    [_ (error 'session (format "trace refused: ~s" reply))]))
+
+(define (session-trace-off! s)
+  (void (session-command! s '(trace (off))))
+  (set-session-trace-from! s #f))
+
+(define (session-tracing? s) (and (session-trace-from s) #t))
+
+;; The records since the last read, grouped by stratum:
+;;   (hasheq 'strata (list STRATUM ...) 'dropped N)
+;; STRATUM: 'scc 'stratum 'flavor ('null when the read began mid-stratum),
+;;   'iterations (list ITER ...), 'parks (list PARK ...), 'fixpoint (hasheq
+;;   'iterations 'ms) or 'null while the stratum is still running.
+;; ITER: 'iteration, 'relations (list REL ...), 'rules (list RULE ...).
+;; REL: 'relation 'vid 'plus 'minus 'dups 'kinds (hasheq KIND N ...)
+;;   'size-after 'sample (list (hasheq 'row 'sign 'kind) ...) 'sample-omitted.
+;; 'dropped counts the sample rows the daemon's byte cap took.
+(define (session-trace-read! s)
+  (define lines
+    (session-command-stream!
+     s `(trace-read (from ,(session-trace-from s)))
+     (lambda (line) (regexp-match? #px"^\\(trace-end " line))))
+  (match-define `(trace-end ,next ,dropped)
+    (read (open-input-string (last lines))))
+  (set-session-trace-from! s next)
+  (hasheq 'strata (trace-strata
+                   (for/list ([line (in-list (drop-right lines 1))])
+                     (read (open-input-string line))))
+          'dropped dropped))
+
+(define (trace-strata records)
+  (define (field rec key)
+    (match (assq key (cdr rec)) [(list _ v) v] [_ #f]))
+  (define (stratum header)
+    (hasheq 'scc (if header (field header 'scc) 'null)
+            'stratum (if header (field header 'stratum) 'null)
+            'flavor (if header (field header 'flavor) 'null)
+            'iterations '() 'parks '() 'fixpoint 'null))
+  (define (relation rel)
+    (match-define `(rel ,name ,fields ...) rel)
+    (define (f key) (match (assq key fields) [(list _ v) v] [_ #f]))
+    (hasheq 'relation name 'vid (f 'vid) 'plus (f 'plus) 'minus (f 'minus)
+            'dups (f 'dups) 'size-after (f 'size-after)
+            'kinds (for/hasheq ([k (in-list (cdr (assq 'kinds fields)))])
+                     (values (first k) (second k)))
+            'sample (for/list ([row (in-list (cdr (assq 'sample fields)))])
+                      (match-define (list text sign kind) row)
+                      (hasheq 'row text 'sign (symbol->string sign)
+                              'kind (symbol->string kind)))
+            'sample-omitted (f 'sample-omitted)))
+  ;; fold the records into strata, newest first, then restore order
+  (define (push st key item) (hash-update st key (lambda (xs) (cons item xs))))
+  (define folded
+    (for/fold ([acc '()]) ([rec (in-list records)])
+      (define current (if (null? acc) (stratum #f) (car acc)))
+      (define rest (if (null? acc) '() (cdr acc)))
+      (match (car rec)
+        ['trace-stratum (cons (stratum rec) acc)]
+        ['trace-iter
+         (cons (push current 'iterations
+                     (hasheq 'iteration (field rec 'iteration)
+                             'relations (for/list ([r (in-list (cdr rec))]
+                                                   #:when (eq? (car r) 'rel))
+                                          (relation r))
+                             'rules '()))
+               rest)]
+        ['trace-rule
+         (define rule
+           (hasheq 'rule (or (field rec 'rule) 'null) 'loc (field rec 'loc)
+                   'tag (field rec 'tag) 'fires (field rec 'fires)
+                   'work (field rec 'work)
+                   'driver-rows (field rec 'driver-rows)))
+         (cons (hash-update current 'iterations
+                            (lambda (iters)
+                              (cons (push (car iters) 'rules rule)
+                                    (cdr iters))))
+               rest)]
+        ['trace-park
+         (cons (push current 'parks
+                     (hasheq 'iteration (field rec 'iteration)
+                             'phase (symbol->string (field rec 'phase))
+                             'cause (format "~s" (field rec 'cause))))
+               rest)]
+        ['trace-fixpoint
+         (cons (hash-set current 'fixpoint
+                         (hasheq 'iterations (field rec 'iterations)
+                                 'ms (field rec 'ms)))
+               rest)])))
+  (for/list ([st (in-list (reverse folded))])
+    (hash-set* st
+               'iterations
+               (for/list ([it (in-list (reverse (hash-ref st 'iterations)))])
+                 (hash-set it 'rules (reverse (hash-ref it 'rules))))
+               'parks (reverse (hash-ref st 'parks)))))
 
 ;; The daemon's registry, read back: the raw record lines up to the
 ;; (rule-meta-end n) terminator (exclusive).
