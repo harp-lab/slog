@@ -331,6 +331,7 @@ impl Linter {
             state.running = true;
             state.last = Some(job.clone());
             state.before = state.view.findings.clone();
+            state.view.tier = 0;
             state.view.error = None;
             state.view.analysis = self.config.analysis.current().display().to_string();
         }
@@ -587,6 +588,11 @@ impl Linter {
 /// A finding row (severity, file, line, col, code, message), with its form.
 fn finding(row: &[String], job: &Job) -> Option<Finding> {
     let [severity, file, line, col, code, message] = row else { return None };
+    // a file outside the project (an include from elsewhere) is not the
+    // author's to fix here
+    if file.starts_with('/') {
+        return None;
+    }
     let line: u32 = line.parse().ok()?;
     let (form_line, form) = job
         .files

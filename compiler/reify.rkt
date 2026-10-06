@@ -307,7 +307,10 @@
         (match ast
           [`(syn ,_ top-level) (void)]
           [`(syn ,_ include (syn ,_ const ,(? string? target)) ,_)
-           (define resolved (resolve-include target dir))
+           ;; a path through a directory that is not there names no file
+           (define resolved
+             (with-handlers ([exn:fail? (lambda (_) (path->string (build-path dir target)))])
+               (resolve-include target dir)))
            (emit out "includes" (~a (number file)) (~a (number resolved)) (at ast))
            (if (or (file-exists? resolved)
                    (let ([ov (current-source-override)])
