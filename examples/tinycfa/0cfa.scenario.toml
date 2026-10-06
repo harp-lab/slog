@@ -1,0 +1,29 @@
+# Pins what 0cfa.slog derives for prog0.slog's two programs.
+# Run it with: ./slog studio scenario examples/tinycfa/0cfa.scenario.toml
+format = 2
+id = "tinycfa-0cfa"
+title = "0CFA as an abstract machine with a continuation store"
+
+[program]
+main = "0cfa.slog"
+
+# In the self-application both binders hold the one lambda that reaches
+# them. Stated in Slog: `?` matches no nested values yet.
+[[checks]]
+name = "the-loop-binds-y-lambda"
+slog = """
+table (unbound str)
+rule (program (app (lambda x b) l=(lambda y c))) ~(store x l) --> (unbound x)
+rule (program (app (lambda x b) l=(lambda y c))) ~(store y l) --> (unbound y)
+"""
+empty = ["unbound", "error"]
+
+# The identity function evaluates to itself; the self-application loops,
+# so it adds no result.
+[[steps]]
+run = "?(result V)"
+expect = { rows = ['(result (lambda "x" (ref "x")))'] }
+
+[[steps]]
+run = "?count (store X V)"
+expect = { count = 2 }

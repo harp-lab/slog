@@ -1,4 +1,8 @@
-
+;; 0CFA for the lambda calculus as an abstract machine: eval and ret states
+;; over an explicit continuation, whose return points are kept in a store
+;; (kstore) so that the analysis stays finite.  The programs it analyzes
+;; come from prog0.slog, run first.  0cfa-demand.slog is the same analysis
+;; with the demand transform doing this plumbing.
 
 run "prog0.slog"
 run "freevars.slog"

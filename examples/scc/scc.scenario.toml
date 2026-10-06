@@ -1,0 +1,32 @@
+# Pins the components scc.slog finds in its seven-vertex graph.
+# Run it with: ./slog studio scenario examples/scc/scc.scenario.toml
+format = 2
+id = "scc"
+title = "Strongly connected components by mutual reachability"
+
+[program]
+main = "scc.slog"
+
+# Two vertices share a component exactly when each reaches the other.
+[[checks]]
+name = "components-are-mutual-reachability"
+slog = """
+table (split any any)
+table (merged any any)
+rule (reachable x y) (reachable y x) (scc x c) (scc y d) (/= c d) --> (split x y)
+rule (scc x c) (scc y c) ~(reachable x y) --> (merged x y)
+"""
+empty = ["split", "merged", "error"]
+
+[[steps]]
+run = "?count (reachable X Y)"
+expect = { count = 26, sizes = { scc = 7 } }
+
+# scc is a lattice relation, which `?` does not plan yet; `show` lists it.
+# {1,2,3} and {4,5} are components; 6 and 7 are alone.
+[[steps]]
+run = "show scc"
+expect = { contains = [
+  "(scc 1 {1:1 2:1 3:1}", "(scc 3 {1:1 2:1 3:1}",
+  "(scc 4 {4:1 5:1}", "(scc 6 {6:1}", "(scc 7 {7:1}",
+] }

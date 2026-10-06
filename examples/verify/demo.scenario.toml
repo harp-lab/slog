@@ -1,0 +1,35 @@
+# Pins the verdicts demo.slog's three programs get from any backend. The
+# fourth, "abs-nonneg", is elided under a real solver (z3 on PATH) and kept
+# under the built-in ground backend, so it is pinned only to get a verdict.
+# Run it with: ./slog studio scenario examples/verify/demo.scenario.toml
+format = 2
+id = "verify"
+title = "Lifting dynamic checks to static facts"
+
+[program]
+main = "demo.slog"
+
+# Every check gets exactly one verdict.
+[[checks]]
+name = "one-verdict-each"
+slog = """
+table (both str)
+table (neither str)
+rule (elidable id) (kept id) --> (both id)
+rule (stmt l (check id c n)) ~(elidable id) ~(kept id) --> (neither id)
+"""
+empty = ["both", "neither", "error"]
+
+# 9 <= 10 holds on every path: its error path is unsat.
+[[steps]]
+run = "?(elidable Id)"
+expect = { rows_include = ['(elidable "const-ok")'] }
+
+# 1 > 2 fails on every run, and d /= 0 can fail: both stay.
+[[steps]]
+run = "?(kept Id)"
+expect = { rows_include = ['(kept "div-nonzero")', '(kept "const-bad")'] }
+
+[[steps]]
+run = "?count (check_status Id V)"
+expect = { count = 4 }

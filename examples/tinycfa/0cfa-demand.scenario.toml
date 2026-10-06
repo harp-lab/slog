@@ -1,0 +1,27 @@
+# Pins that 0cfa-demand.slog agrees with 0cfa.slog on prog0.slog.
+# Run it with: ./slog studio scenario examples/tinycfa/0cfa-demand.scenario.toml
+format = 2
+id = "tinycfa-0cfa-demand"
+title = "0CFA by demand-driven evaluation"
+
+[program]
+main = "0cfa-demand.slog"
+
+# In the self-application both binders hold the one lambda that reaches
+# them. Stated in Slog: `?` matches no nested values yet.
+[[checks]]
+name = "the-loop-binds-y-lambda"
+slog = """
+table (unbound str)
+rule (program (app (lambda x b) l=(lambda y c))) ~(store x l) --> (unbound x)
+rule (program (app (lambda x b) l=(lambda y c))) ~(store y l) --> (unbound y)
+"""
+empty = ["unbound", "error"]
+
+[[steps]]
+run = "?(result V)"
+expect = { rows = ['(result (lambda "x" (ref "x")))'] }
+
+[[steps]]
+run = "?count (store X V)"
+expect = { count = 2 }
