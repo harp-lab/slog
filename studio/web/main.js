@@ -310,14 +310,16 @@ const receive = {
       files.reveal(span);
     }
   },
-  evaluation({ phase, ok, ms }) {
+  evaluation({ phase, ok, held, ms }) {
     state.evaluating = phase === "start";
     if (phase === "start") {
       editor.mark(null);
       trace.started();
     } else {
       explorer.evaluated(); // stale peeks read again
-      note(ok ? `✓ ran in ${(ms / 1000).toFixed(1)} s` : "✗ run failed", ok ? "evaluation" : "evaluation failed");
+      // A held run has not failed: it waits for continue, commit or abort.
+      if (held) note(`⏸ run held after ${(ms / 1000).toFixed(1)} s`, "evaluation");
+      else note(ok ? `✓ ran in ${(ms / 1000).toFixed(1)} s` : "✗ run failed", ok ? "evaluation" : "evaluation failed");
     }
     renderStatus();
   },

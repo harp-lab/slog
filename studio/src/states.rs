@@ -646,7 +646,7 @@ impl Studio {
         };
         let mut session = self.session_lock().await;
         let started = Instant::now();
-        self.publish(Event::Evaluation { phase: Phase::Start, ok: false, ms: 0 });
+        self.publish(Event::Evaluation { phase: Phase::Start, ok: false, held: false, ms: 0 });
         {
             let mut states = self.states();
             states.restarted(self.lane.generation());
@@ -665,7 +665,13 @@ impl Studio {
             session.view().current.is_some().then(|| "discard session".to_owned()),
         ];
         let mut ok = true;
-        for line in fresh.into_iter().flatten().chain(steps).chain(["tables".to_owned()]) {
+        let mut lines = fresh.into_iter().flatten().chain(steps).chain(["tables".to_owned()]);
+        while let Some(line) = lines.next() {
+            // A replayed step that holds the run leaves it held: the session
+            // reads nothing while a run is parked, so nothing more is sent.
+            if session.view().held && line != "abort" {
+                break;
+            }
             let before = session.view().clone();
             let outcome = session.execute(&self.lane, &line).await;
             if let Some(result) = &outcome.result {
@@ -687,7 +693,8 @@ impl Studio {
             states.timed(ms);
         }
         self.publish_states();
-        self.publish(Event::Evaluation { phase: Phase::Done, ok, ms });
+        let held = ok && session.view().held;
+        self.publish(Event::Evaluation { phase: Phase::Done, ok, held, ms });
     }
 
     /// The lines that re-derive state `id` in a fresh session: its Run's

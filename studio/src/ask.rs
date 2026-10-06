@@ -406,7 +406,8 @@ impl Studio {
         let mut outcomes = Vec::new();
         let ok = session
             .evaluate(lane, &path, prepare, &mut |outcome| outcomes.push(outcome.clone()))
-            .await;
+            .await
+            .done();
         let _ = std::fs::remove_file(&path);
         (outcomes, ok, hash)
     }

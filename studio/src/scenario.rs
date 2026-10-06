@@ -284,7 +284,8 @@ impl Runner<'_> {
         let evaluated = self
             .session
             .evaluate(self.lane, harness, &[], &mut |outcome| transcript.push(outcome.clone()))
-            .await;
+            .await
+            .done();
         self.transcript = transcript;
         let mut report = Report {
             id: scenario.id.clone(),

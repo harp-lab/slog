@@ -17,7 +17,7 @@ use crate::results::{
 use crate::review::{Review, ReviewView};
 use crate::scenario::{self, Report};
 use crate::breakpoints::Breakpoint;
-use crate::session::{Outcome, Session, SessionView};
+use crate::session::{Evaluated, Outcome, Session, SessionView};
 use crate::states::{Stamp, States};
 use crate::summary::{self, Summarizer};
 use crate::lint::{self, Linter};
@@ -150,7 +150,15 @@ pub enum Event {
     /// The database queries see may have changed: what was read of it
     /// before `epoch` is stale.
     Database { epoch: u64 },
-    Evaluation { phase: Phase, ok: bool, ms: u64 },
+    /// An evaluation started, or ended: `ok` unless a step failed, and
+    /// `held` when it ended with the run held mid-way (not failed).
+    Evaluation {
+        phase: Phase,
+        ok: bool,
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        held: bool,
+        ms: u64,
+    },
     /// Progress of an agent turn.
     Agent(AgentEvent),
     /// Threads, changesets or proposals changed.
@@ -1198,6 +1206,7 @@ impl Studio {
         self.publish(Event::Evaluation {
             phase: Phase::Start,
             ok: false,
+            held: false,
             ms: 0,
         });
         let touched = {
@@ -1211,11 +1220,11 @@ impl Studio {
         // A program that fails the static check is refused at once, at its
         // error, without starting or discarding a session.
         let checked = self.check_program(&BTreeMap::new(), None).await;
-        let ok = match self.save(if debug { "debug" } else { "run" }) {
+        let evaluated = match self.save(if debug { "debug" } else { "run" }) {
             Err(message) => {
                 let failure = session.failure("save", "save", &message);
                 self.publish_outcome(Origin::Evaluate, session.view(), &failure, None);
-                false
+                Evaluated::Failed
             }
             // (an error naming no file is the checker's own trouble: no reason
             // to refuse)
@@ -1226,7 +1235,7 @@ impl Studio {
                     server.span = Some(slog_repl::protocol::Span { file: error.file.clone(), line: error.line, col: error.col });
                 }
                 self.publish_outcome(Origin::Evaluate, session.view(), &failure, None);
-                false
+                Evaluated::Failed
             }
             Ok((version, text)) => {
                 let main = {
@@ -1250,7 +1259,7 @@ impl Studio {
                 let mut shown = session.view().clone();
                 let mut tables = None;
                 let mut outcomes = Vec::new();
-                let ok = session
+                let evaluated = session
                     .evaluate(&self.lane, &main, &prepare, &mut |outcome| {
                         if outcome.line.starts_with("break ") {
                             outcomes.push(outcome.clone());
@@ -1273,15 +1282,18 @@ impl Studio {
                     *self.armed.lock().expect("armed lock") = Default::default();
                 }
                 // A held run's relations are partial: not the program's.
+                // (A held run lists none: the session reads nothing while
+                // the run is parked.)
                 let complete = tables.as_ref().filter(|_| !session.view().held);
                 self.keep_tables(complete);
                 self.summarize(version, text, complete);
-                ok
+                evaluated
             }
         };
         self.publish(Event::Evaluation {
             phase: Phase::Done,
-            ok,
+            ok: evaluated != Evaluated::Failed,
+            held: evaluated == Evaluated::Held,
             ms: started.elapsed().as_millis() as u64,
         });
     }
@@ -1829,7 +1841,23 @@ pub(crate) mod tests {
         };
         studio.set_breakpoints("main.slog".to_owned(), vec![point("p1", 5), point("p2", 2)]);
         studio.debug().await;
-        let outcomes = outcomes(&mut events);
+        let events: Vec<Event> = std::iter::from_fn(|| events.try_recv().ok()).collect();
+        // held, not failed: and the held session is asked no `tables`,
+        // which it would refuse
+        let done = events.iter().rev().find_map(|event| match event {
+            Event::Evaluation { phase: super::Phase::Done, ok, held, .. } => Some((*ok, *held)),
+            _ => None,
+        });
+        assert_eq!(done, Some((true, true)));
+        let outcomes: Vec<Outcome> = events
+            .into_iter()
+            .filter_map(|event| match event {
+                Event::Entry { origin: Origin::Evaluate, outcome, .. } => Some(outcome),
+                _ => None,
+            })
+            .collect();
+        assert!(outcomes.iter().all(|o| o.ok()), "{outcomes:?}");
+        assert!(!outcomes.iter().any(|o| o.line == "tables"));
         let run = outcomes
             .iter()
             .find(|o| o.line.starts_with("run "))
