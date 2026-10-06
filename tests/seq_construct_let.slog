@@ -1,0 +1,29 @@
+;; Bracket construction feeding a let in the same rule body: the list var
+;; of [0 l ... 9] is only READ by (llen l2), so seq-expand must build it
+;; (construction direction), not destructure it as if something else had
+;; bound it -- that left nothing to bind l2 and planning died with
+;; "circular let dependencies".  Also: several splices, nested brackets, a
+;; construction fed by a let fed by a construction, a splice in a head,
+;; and the pattern direction when a let reads a pattern-bound splice.
+
+table (base (list int))
+rule (base [1 2 3]) (base [])
+
+table (wrapped int (list int))      ;; [0 l ... 9] then (llen l2)
+rule (base l) (= l2 [0 l ... 9]) (= n (llen l2)) --> (wrapped n l2)
+
+table (doubled int (list int))      ;; several splices
+rule (base l) (= l2 [l ... 5 l ...]) (= n (llen l2)) --> (doubled n l2)
+
+table (nested int)                  ;; nested brackets
+rule (base l) (= l2 [[0 l ...] l]) (= n (llen l2)) --> (nested n)
+
+table (chained (list int))          ;; construction -> let -> construction
+rule (base l) (= l2 [0 l ...]) (= n (llen l2)) (= l3 [n l2 ...])
+  --> (chained l3)
+
+table (headed (list int))           ;; splice in a head
+rule (base l) (= n (llen l)) --> (headed [n l ... n])
+
+table (tail_len int int)            ;; pattern direction, let reads a splice
+rule (base l) (= l [x rest ...]) (= m (llen rest)) --> (tail_len x m)
