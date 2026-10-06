@@ -816,7 +816,9 @@ impl Studio {
         self.publish_sets(touched);
         let query = outcome.result.as_ref().and_then(|result| result["query-mode"].as_str());
         let (mut shown, set) = match (query, results::rows_line(line)) {
-            (Some("rows" | "exists"), Some(read)) => {
+            // A held stop's answers stay in the transcript: keeping them as a
+            // relation would define one in the middle of the held run.
+            (Some("rows" | "exists"), Some(read)) if !session.view().held => {
                 self.open_set(&mut session, line, &read, &outcome, lineage).await
             }
             _ => (outcome, None),

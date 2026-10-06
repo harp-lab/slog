@@ -21,6 +21,7 @@ import { createBreakpoints, glyphClass, describe, stopOf } from "./breakpoints.j
 import { initCalls } from "./calls.js";
 import { initTimeline } from "./timeline.js";
 import { createCheck } from "./check.js";
+import { createInspector } from "./inspect.js";
 
 const $ = (id) => document.getElementById(id);
 // Local mode's launch token; a server's login rides in a cookie instead.
@@ -92,6 +93,7 @@ const breakpoints = createBreakpoints({
     send({ t: "breakpoints", file, points });
     renderBreakpoints();
   },
+  onBindings: (x, y) => inspector.bindingsPopup(x, y),
 });
 // A REPL line answered to this tab only, kept out of the transcript.
 const asked = new Map();
@@ -132,6 +134,15 @@ const trace = initTrace({
 const timeline = initTimeline({ at: $("stamp"), panel: $("state-tree"), send });
 // The Calls tab: the run's demand calls (calls.js).
 const calls = initCalls({
+  quiet,
+  reveal: revealSource,
+  tabs: $("result-tabs"),
+  transcript: $("transcript"),
+  results: $("results"),
+});
+// The Variables tab and hovers over a held stop (inspect.js).
+const inspector = createInspector({
+  editor,
   quiet,
   reveal: revealSource,
   tabs: $("result-tabs"),
@@ -193,8 +204,10 @@ const receive = {
     // nothing held: no stop to show
     if (!view.held) {
       state.callsHeld = false;
+      state.stopAt = null;
       stops++;
       breakpoints.held(null);
+      inspector.released();
     }
     renderStatus();
   },
@@ -213,8 +226,11 @@ const receive = {
       renderStatus();
     } else if (entry.result?.held === false) {
       state.callsHeld = false;
+      state.stopAt = null;
       stops++;
       breakpoints.held(null);
+      inspector.released();
+      renderStatus();
     }
     measured(entry);
     const node = append(renderEntry(entry, {
@@ -295,7 +311,17 @@ async function showStop(result) {
   if (path && path !== files.active()) files.open(path);
   breakpoints.held(path ? stop : null);
   const frames = await quiet("frames");
-  if (serial === stops) breakpoints.held(path ? stop : null, frames.result?.bindings ?? []);
+  if (serial !== stops) return;
+  breakpoints.held(path ? stop : null, frames.result?.bindings ?? []);
+  const where = /iteration (\d+)/.exec(result.lines?.[0] ?? "");
+  state.stopAt = `${stop.port} ${stop.file}:${stop.line}${where ? ` · iteration ${where[1]}` : ""}`;
+  renderStatus();
+  await inspector.held(breakpoints.stopRange(), frames.result, result.calls?.stack);
+  // a first stop shows its variables; later ones keep the tab chosen
+  if (!state.inspected) {
+    state.inspected = true;
+    inspector.show();
+  }
 }
 
 // The Breakpoints panel and the header's count.
@@ -548,6 +574,11 @@ function renderStatus() {
   pill("evaluation", state.evaluating ? "running…" : "", state.evaluating ? "busy" : null);
 
   $("held").hidden = !held;
+  // the prompt reads the paused state, and says so
+  prompt.placeholder = held && state.stopAt
+    ? `held at ${state.stopAt} (paused) — p VAR, ?(rel …) and peek REL read this stop without moving it`
+    : "?(relation X Y)   tables   :help        Enter runs once brackets balance · Shift+Enter for a new line";
+  prompt.classList.toggle("held", Boolean(held && state.stopAt));
   for (const button of document.querySelectorAll(".calls-step")) button.hidden = !state.callsHeld;
   $("held-title").textContent = `run held — ${state.heldTitle || "paused"}`;
   $("stop").disabled = lane !== "busy";

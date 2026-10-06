@@ -100,15 +100,16 @@ fn armed_id(outcome: &Outcome) -> Option<String> {
     id.starts_with('b').then(|| id.to_owned())
 }
 
-/// The verbs a `Quiet` request may send: they observe the session.
-const QUIET: [&str; 5] = ["calls", "breaks", "logs", "frames", "watches"];
+/// The verbs a `Quiet` request may send: they observe the session (`p`,
+/// `peek` and `?` queries at a held stop read it without moving it).
+const QUIET: [&str; 8] = ["calls", "breaks", "logs", "frames", "watches", "p", "print", "peek"];
 
 impl Studio {
     /// One observing REPL line, answered without a transcript entry.
     pub async fn quiet(&self, line: &str) -> Outcome {
         let verb = line.split_whitespace().next().unwrap_or("");
         let mut session = self.session_lock().await;
-        if !QUIET.contains(&verb) {
+        if !QUIET.contains(&verb) && !verb.starts_with('?') {
             return session.failure(line, "quiet", &format!("{verb} is not one of {}", QUIET.join(", ")));
         }
         let started = std::time::Instant::now();

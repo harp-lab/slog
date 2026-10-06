@@ -2,7 +2,7 @@
 // how they are spelled for `break`, and the live checks of a breakpoint's
 // clause and condition.
 
-import { breakables, clauseError, conditionError, demandsOf, ruleVariables, stopOf } from "../breakpoints.js";
+import { breakables, constructorsOf, clauseError, conditionError, demandsOf, ruleVariables, stopOf } from "../breakpoints.js";
 import { forms, formAt } from "../forms.js";
 import { equal as check } from "./check.js";
 
@@ -66,3 +66,18 @@ check("stop: a break's port", stopOf({ lines: ["7d · iteration 3 · phase read"
   { id: "b2", port: "emit", file: "stlc.slog", line: 17 });
 check("stop: a step's port", stopOf({ lines: ["port fire@reach.slog:14:1:all:edge"] }),
   { id: null, port: "fire", file: "reach.slog", line: 14 });
+
+// a clause keeps its constructor terms and their variables, so the stop
+// has every variable the clause binds; a call or a primitive is `_`
+const CEK = `union (kont (halt str) (ar expr kont) (fn val kont))
+union (val (clo str expr) (zero))
+table (ret val kont)
+table (eval expr kont)
+rule (ret V (ar A K)) --> (eval A (fn V K))
+rule (ret V (fn (clo X B) K)) (= n (+ 1 2)) --> (eval B (halt "x"))
+`;
+const ctors = constructorsOf(CEK);
+check("constructors: union members", [...ctors].sort(), ["ar", "clo", "fn", "halt", "zero"]);
+const cek = (line) => breakables(CEK, formAt(forms(CEK), line), new Map(), ctors).map((b) => b.clause);
+check("clauses: nested terms keep their variables", cek(5), ["match (ret V (ar A K))", "emit (eval A (fn V K))"]);
+check("clauses: deeper, with a literal", cek(6), ["match (ret V (fn (clo X B) K))", "emit (eval B (halt \"x\"))"]);

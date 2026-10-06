@@ -21,6 +21,7 @@
 import { forms, formAt, lineIndex } from "./forms.js";
 import { parse } from "./sexp.js";
 import { isName } from "./lexer.js";
+import { fitBindings } from "./inspect.js";
 
 // ---- The model ------------------------------------------------------------
 
@@ -30,17 +31,53 @@ const headOf = (text, list) => {
   const first = sexps(list)[0];
   return first?.kind === "word" ? textOf(text, first) : null;
 };
-// The pattern for the first `n` arguments of the atom `list`, as written:
-// a variable is the rule's own (the break matches that very clause), a
-// literal itself, and anything computed `_`.
-function patternOf(text, list, n) {
-  const args = sexps(list).slice(1, 1 + n).map((arg) => {
-    const word = textOf(text, arg);
-    if (arg.kind === "string") return word;
-    if (arg.kind === "word" && (isName(word) || /^-?\d+(\.\d+)?$/.test(word))) return word;
-    return "_";
-  });
+// A clause argument as a pattern, as written: a variable is the rule's own
+// (the break matches that very clause), a literal itself, a constructor
+// term keeps its structure and its variables -- `(ar A K)` binds A and K at
+// the stop -- and anything computed (a call, a primitive) is `_`.
+function termPattern(text, node, ctors) {
+  const word = textOf(text, node);
+  if (node.kind === "string") return word;
+  if (node.kind === "word") return isName(word) || /^-?\d+(\.\d+)?$/.test(word) ? word : "_";
+  if (node.kind !== "list" || !node.closed) return "_";
+  if (text[node.start] === "[") {
+    const items = sexps(node).map((item) => {
+      const w = textOf(text, item);
+      return w === "..." ? w : termPattern(text, item, ctors);
+    });
+    return `[${items.join(" ")}]`;
+  }
+  const head = headOf(text, node);
+  if (!head || !ctors.has(head)) return "_";
+  return `(${[head, ...sexps(node).slice(1).map((arg) => termPattern(text, arg, ctors))].join(" ")})`;
+}
+
+// The pattern for the first `n` arguments of the atom `list`.
+function patternOf(text, list, n, ctors) {
+  const args = sexps(list).slice(1, 1 + n).map((arg) => termPattern(text, arg, ctors));
   return `(${[headOf(text, list), ...args].join(" ")})`;
+}
+
+// The constructors `text` declares: the members of each `union`, and each
+// `struct` and `enum`.
+export function constructorsOf(text) {
+  const found = new Set();
+  for (const form of forms(text)) {
+    if (!["union", "struct", "enum"].includes(form.keyword)) continue;
+    const local = text.slice(form.start + form.keyword.length, form.end);
+    const first = sexps(parse(local))[0];
+    if (first?.kind !== "list") continue;
+    if (form.keyword === "union") {
+      for (const member of sexps(first).slice(1)) {
+        const name = member.kind === "list" ? headOf(local, member) : null;
+        if (name) found.add(name);
+      }
+    } else {
+      const name = headOf(local, first);
+      if (name) found.add(name);
+    }
+  }
+  return found;
 }
 
 // name -> { inputs, answers } for each `demand (f t ...) a ...` of `text`.
@@ -63,7 +100,7 @@ export function demandsOf(text) {
 // relation, at: [line, column], end: [line, column], label }] in text
 // order.  Guards and negations cannot stop on their own; nested calls of a
 // demand can (the rule asks them).
-export function breakables(text, form, demands) {
+export function breakables(text, form, demands, ctors = new Set()) {
   if (form?.keyword !== "rule") return [];
   const local = text.slice(form.start, form.end);
   const lineAt = lineIndex(text);
@@ -78,7 +115,7 @@ export function breakables(text, form, demands) {
   };
   const add = (node, kind, name, n) => {
     const label = { demand: "asks", answer: "answers", match: "matches", emit: "writes" }[kind];
-    found.push({ kind, relation: name, clause: `${kind} ${patternOf(local, node, n)}`, label: `${label} ${name}`, ...position(node) });
+    found.push({ kind, relation: name, clause: `${kind} ${patternOf(local, node, n, ctors)}`, label: `${label} ${name}`, ...position(node) });
   };
   // calls in value position: `(nf (subst b 0 vx))` asks subst
   const calls = (node) => {
@@ -236,7 +273,7 @@ const node = (tag, className, text) => {
 // `editor` is editor.js's (its Monaco parts, `editor.raw`);
 // `onChange(file, points)` sends a file's breakpoints; `file()` is the path
 // shown; `texts()` every file's text, for the demands they declare.
-export function createBreakpoints({ editor, onChange, file, texts }) {
+export function createBreakpoints({ editor, onChange, file, texts, onBindings = () => {} }) {
   const parts = editor.raw;
   const state = {
     points: new Map(), // path -> [breakpoint]
@@ -244,6 +281,7 @@ export function createBreakpoints({ editor, onChange, file, texts }) {
     hover: null,       // the rule form the mouse is over
     stop: null,        // { line, at, end } of a held stop in the file shown
     bindings: [],
+    elided: false,
   };
   if (!parts) {
     return { show() {}, receive() {}, status() {}, held() {}, list: () => [], remove() {}, toggle() {}, reveal() {}, open() {} };
@@ -258,15 +296,18 @@ export function createBreakpoints({ editor, onChange, file, texts }) {
   // Demands are read from every file; a rule's clauses from the one shown.
   let demandsKey = "";
   let demands = new Map();
+  let ctors = new Set();
   const currentDemands = () => {
     const all = texts();
     const key = all.join("\u0000");
     if (key !== demandsKey) {
       demandsKey = key;
       demands = new Map(all.flatMap((text) => [...demandsOf(text)]));
+      ctors = new Set(all.flatMap((text) => [...constructorsOf(text)]));
     }
     return demands;
   };
+  const clauses = (text, form) => breakables(text, form, currentDemands(), ctors);
 
   // Decorations carry each breakpoint's position as the text moves: one
   // per breakpoint, keyed by index into the file's list.
@@ -329,7 +370,7 @@ export function createBreakpoints({ editor, onChange, file, texts }) {
     state.hover = form;
     if (!form) { candidates.clear(); return; }
     const armed = new Set(points().filter((p) => p.at).map((p) => String(p.at)));
-    candidates.set(breakables(model().getValue(), form, currentDemands())
+    candidates.set(clauses(model().getValue(), form)
       .filter((b) => !armed.has(String(b.at)))
       .map((b) => ({
         range: new monaco.Range(b.at[0], b.at[1], b.at[0], b.at[1] + 1),
@@ -344,7 +385,7 @@ export function createBreakpoints({ editor, onChange, file, texts }) {
     if (!line) return null;
     const columns = [
       ...points().filter((p) => p.at?.[0] === line).map((p) => p.at[1]),
-      ...(state.hover ? breakables(model().getValue(), state.hover, currentDemands())
+      ...(state.hover ? clauses(model().getValue(), state.hover)
         .filter((b) => b.at[0] === line).map((b) => b.at[1]) : []),
     ];
     const x = event.event.browserEvent.clientX - ed.getDomNode().getBoundingClientRect().left;
@@ -370,7 +411,7 @@ export function createBreakpoints({ editor, onChange, file, texts }) {
     const at = [position.lineNumber, position.column];
     const existing = list.find((p) => p.at && p.at[0] === at[0] && p.at[1] === at[1]);
     if (existing) return set(list.filter((p) => p !== existing));
-    const target = breakables(text, form, currentDemands()).find((b) => b.at[0] === at[0] && b.at[1] === at[1]);
+    const target = clauses(text, form).find((b) => b.at[0] === at[0] && b.at[1] === at[1]);
     if (!target) return;
     set([...list, blank(form.line, target.at, target.clause)]);
     state.hover = null;
@@ -408,6 +449,13 @@ export function createBreakpoints({ editor, onChange, file, texts }) {
     removed = { point, at: performance.now() };
     set(points().filter((p) => p !== point));
   };
+  // the bindings beside a held clause open in full on a click
+  ed.onMouseDown((event) => {
+    if (!event.target.element?.classList?.contains("stop-bindings")) return;
+    const { clientX, clientY } = event.event.browserEvent;
+    onBindings(clientX, clientY);
+  });
+  ed.onDidLayoutChange(() => { if (state.stop) showStop(); });
   ed.onMouseDown((event) => {
     const { MouseTargetType } = monaco.editor;
     const glyph = event.target.type === MouseTargetType.GUTTER_GLYPH_MARGIN;
@@ -554,13 +602,23 @@ export function createBreakpoints({ editor, onChange, file, texts }) {
     if (!stop) { stopping.clear(); return; }
     const [line, column] = stop.at ?? [stop.line, 1];
     const end = stop.end ?? [line, model().getLineMaxColumn(line)];
-    const bindings = state.bindings.map(([name, value]) => `${name} = ${value}`).join(" · ");
+    // Beside the clause as a comment while the bindings fit to the right of
+    // the code; past that, each is cut a level at a time (inspect.js) so the
+    // line never wraps.  The whole values are a hover or a click away.
+    const layout = ed.getLayoutInfo();
+    const columns = Math.min(layout.viewportColumn, ed.getOption(monaco.editor.EditorOption.wordWrapColumn));
+    const room = columns - model().getLineLength(end[0]) - 4;
+    const { text: bindings, elided } = fitBindings(state.bindings, Math.max(8, room));
+    state.elided = elided;
     stopping.set([
       { range: new monaco.Range(line, 1, line, 1), options: { glyphMarginClassName: "bp-stop", isWholeLine: true, className: "stop-line" } },
       { range: new monaco.Range(line, column, end[0], end[1]), options: { className: "stop-clause" } },
       ...(bindings ? [{
         range: new monaco.Range(end[0], Math.max(1, model().getLineMaxColumn(end[0]) - 1), end[0], model().getLineMaxColumn(end[0])),
-        options: { after: { content: `   ${bindings}`, inlineClassName: "stop-bindings" } },
+        options: {
+          after: { content: `   ${bindings}`, inlineClassName: `stop-bindings${elided ? " elided" : ""}` },
+          hoverMessage: { value: "click for the whole values" },
+        },
       }] : []),
     ]);
     ed.revealLineInCenterIfOutsideViewport(line);
@@ -600,12 +658,15 @@ export function createBreakpoints({ editor, onChange, file, texts }) {
       let end = null;
       if (at) {
         const form = formAt(forms(model().getValue()), stop.line);
-        end = breakables(model().getValue(), form, currentDemands()).find((b) => String(b.at) === String(at))?.end ?? null;
+        end = clauses(model().getValue(), form).find((b) => String(b.at) === String(at))?.end ?? null;
       }
-      state.stop = { line: stop.line, at, end };
+      const form = formAt(forms(model().getValue()), stop.line);
+      state.stop = { line: stop.line, at, end, from: form?.line ?? stop.line, to: form?.endLine ?? stop.line };
       state.bindings = bindings.map(([name, value]) => [name, value.replace(/\(_enum "([^"]*)"\)/g, "($1)")]);
       showStop();
     },
+    // The lines of the stopped rule, for the inspector's hovers.
+    stopRange: () => state.stop && { from: state.stop.from, to: state.stop.to },
     // Every breakpoint, for the panel: [{ path, point, status }].
     list: () => [...state.points].flatMap(([path, list]) => list.map((point) => ({ path, point, status: state.status.get(point.id) }))),
     remove(path, id) {

@@ -166,3 +166,42 @@
 .frame-bindings { color: var(--orange); font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
 .call-frontier { margin-bottom: 6px; }
 .calls-panel .more { margin: 2px 0; }
+
+/* ---- Inspecting a held stop (inspect.js) ----------------------------------- */
+
+.stop-bindings.elided { text-decoration: underline dotted rgba(203, 75, 22, 0.5); cursor: pointer; }
+.inspect-panel { flex: 1; overflow: auto; padding: 8px 12px; font: 12px/1.6 var(--mono); }
+.inspect-section { margin-bottom: 10px; }
+.inspect-section h4 { margin: 4px 0; font: 600 11px var(--sans); color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.inspect-row { display: flex; align-items: baseline; gap: 8px; padding: 1px 4px; border-radius: 3px; }
+.inspect-row:hover { background: var(--chrome); }
+.inspect-row > .v-tree { flex: 1; min-width: 0; }
+.inspect-row > .inspect-pin { margin-left: auto; }
+.inspect-row.unbound .inspect-name { color: var(--muted); }
+.inspect-name { color: var(--orange); font-weight: 600; white-space: nowrap; }
+.inspect-eq { color: var(--muted); }
+.inspect-note { color: var(--muted); font-family: var(--sans); font-size: 11.5px; }
+.inspect-error { color: var(--red); font-size: 11.5px; }
+.inspect-where { color: var(--blue); cursor: pointer; font-size: 11.5px; }
+.inspect-call { color: var(--strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inspect-pin { border: none; background: none; height: auto; padding: 0 4px; color: var(--muted); font: 11px var(--sans); cursor: pointer; }
+.inspect-pin:hover { color: var(--blue); }
+.inspect-add { width: 100%; height: 24px; margin-top: 4px; padding: 0 6px; border: 1px solid var(--border); border-radius: 4px; background: white; font: 12px var(--mono); }
+.inspect-pop {
+  position: fixed;
+  z-index: 60;
+  max-width: 420px;
+  max-height: 360px;
+  overflow: auto;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(7, 54, 66, 0.18);
+  font: 12px/1.6 var(--mono);
+}
+.inspect-pop-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+.inspect-pop-head .inspect-note { flex: 1; }
+.inspect-pop-label { margin-top: 6px; color: var(--muted); font: 600 10.5px var(--sans); text-transform: uppercase; letter-spacing: 0.03em; }
+.inspect-pop-row { display: flex; gap: 6px; align-items: baseline; }
+#prompt.held::placeholder { color: var(--orange); }
