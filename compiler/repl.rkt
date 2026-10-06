@@ -3303,7 +3303,20 @@
                      #:kind "state")])]
     [other (error 'state "unparseable pipeline response: ~a" other)]))
 
+;; Every command that names a database (open, save, attach, csv-import)
+;; accepts one spelling: a single path component under data/.  Anything
+;; else -- `..`, a slash, a space -- would read or write outside data/, or
+;; nest a directory the library then lists as a database (audit L-02).
+(define database-name-rx #px"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+
+(define (check-database-name! who name)
+  (unless (regexp-match? database-name-rx name)
+    (error who
+           "database name ~s must start with a letter or digit and use only letters, digits, dot, underscore, or hyphen"
+           name)))
+
 (define (open-database! state name)
+  (check-database-name! 'open name)
   (unless (db-exists? name) (error 'open "no database named ~a under data/" name))
   (define sessions (server-state-sessions state))
   (cond
@@ -3354,8 +3367,6 @@
 ;; tutorial-only shell escape: tutorials and people exercise the same path.
 ;; The implicit name is collision-free, making a tutorial safe to repeat
 ;; without replacing an unrelated saved database.
-(define csv-import-db-name-rx #px"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
-
 (define (csv-import-parts argument)
   (define text (string-trim argument))
   (when (string=? text "")
@@ -3370,7 +3381,7 @@
   (define-values (_base name _dir?)
     (split-path (simplify-path (path->complete-path folder))))
   (define candidate (and (path? name) (path->string name)))
-  (unless (and candidate (regexp-match? csv-import-db-name-rx candidate))
+  (unless (and candidate (regexp-match? database-name-rx candidate))
     (error 'csv-import
            "cannot derive a database name from ~a; use `csv-import ~a as NAME`"
            folder folder))
@@ -3391,9 +3402,7 @@
 (define (csv-import-result state argument)
   (define-values (folder requested-name explicit?) (csv-import-parts argument))
   (define base (or requested-name (csv-import-derived-name folder)))
-  (unless (regexp-match? csv-import-db-name-rx base)
-    (error 'csv-import
-           "database NAME must use letters, digits, dot, underscore, or hyphen"))
+  (check-database-name! 'csv-import base)
   (when (and explicit? (csv-import-name-taken? state base))
     (error 'csv-import
            "database ~a already exists on disk or in this REPL; choose another name"
@@ -4708,6 +4717,7 @@
          [(list db source "as" destination) (values db source destination)]
          [_ (error 'attach
                    "expected: attach DB as DEST | attach DB SOURCE as DEST")]))
+     (check-database-name! 'attach db)
      (define rs (ensure-mutable-session-record! state 'attach))
      (define plan (box #f))
      (define-values (_ _events change)
@@ -4772,6 +4782,7 @@
          [_ (values (string-trim argument) #f)]))
      (when (string=? name "")
        (error 'save "expected: save NAME [with scratch]"))
+     (check-database-name! 'save name)
      (define rs (ensure-mutable-session-record! state 'save))
      (define pending-scratch
        (session-scratch-events (repl-session-session rs)))
@@ -5138,6 +5149,13 @@
                (dispatch-command state "library select __missing_repl_test_database__")))
   (check-exn #px"expected: library"
              (lambda () (dispatch-command state "library next")))
+  ;; L-02: a database name is one component under data/, for every command
+  ;; that takes one; the refusal comes before any session is created.
+  (for ([command (in-list (list "open .."
+                                "save ../out/l02_escape"
+                                "attach l02/nested as x"))])
+    (check-exn #px"database name \".*\" must start with a letter or digit"
+               (lambda () (dispatch-command state command))))
   (check-equal? (hash-ref (dispatch-command state ":status") 'lines)
                 (list (format "protocol: ~a" protocol-version)
                       (format "slog: ~a" slog-version)
