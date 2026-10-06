@@ -1,0 +1,45 @@
+/* Structured editing: the prompt's completion list and the key help
+   (paredit.js), in studio.css's palette. */
+
+.completions {
+  position: fixed;
+  z-index: 20;
+  min-width: 220px;
+  max-width: 520px;
+  max-height: 14em;
+  overflow-y: auto;
+  margin: 0;
+  padding: 3px 0;
+  list-style: none;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 14px rgba(7, 54, 66, 0.12);
+  font: 12px/1.6 var(--mono);
+}
+.completions li {
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+  padding: 0 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.completions li.chosen { background: var(--chrome); }
+.completions .label { color: var(--strong); }
+.completions .detail { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+
+.key-help {
+  position: fixed;
+  z-index: 20;
+  max-width: 560px;
+  padding: 10px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 14px rgba(7, 54, 66, 0.12);
+}
+.key-help h3 { margin: 0 0 6px; font-size: 13px; color: var(--strong); }
+.key-help table { border-collapse: collapse; }
+.key-help td { padding: 2px 0; vertical-align: top; }
+.key-help td.keys { padding-right: 16px; font: 12px var(--mono); color: var(--strong); white-space: nowrap; }

@@ -9,6 +9,7 @@ import { initAgent } from "./agent.js";
 import { createHistory } from "./history.js";
 import { renderEntry } from "./render.js";
 import { createSummary } from "./summary.js";
+import * as structure from "./paredit.js";
 
 const $ = (id) => document.getElementById(id);
 // Local mode's launch token; a server's login rides in a cookie instead.
@@ -111,6 +112,7 @@ const receive = {
   },
   entry(entry) {
     state.log = null;
+    structure.observe(entry.result); // completion's catalog, breaks, watches
     if (entry.result?.kind === "paused") {
       state.heldTitle = entry.result.title;
       renderStatus();
@@ -142,6 +144,9 @@ const receive = {
   },
   asked(reply) {
     agent.asked(reply);
+  },
+  databases({ names }) {
+    structure.setDatabases(names);
   },
   scenarios({ names }) {
     const known = state.scenarios;
@@ -184,6 +189,11 @@ function connect() {
 // The REPL prompt --------------------------------------------------------
 
 const prompt = $("prompt");
+// Structured editing and completion, ahead of the prompt's own keys; the
+// rules `break` can name are those of the file shown.
+structure.bindPrompt(prompt, { program: () => ({ file: files.active() ?? "", text: editor.get() }) });
+prompt.addEventListener("focus", () => send({ t: "databases" }));
+structure.mountControls(document.querySelector("header .controls"));
 const historyKey = () => `slog-studio.history:${files.project()}`;
 const history = {
   lines: [],

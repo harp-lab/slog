@@ -66,6 +66,8 @@ fn asset(name: &str) -> Response {
         "format.js" => (include_str!("../web/format.js"), "text/javascript; charset=utf-8"),
         "complete.js" => (include_str!("../web/complete.js"), "text/javascript; charset=utf-8"),
         "commands.js" => (include_str!("../web/commands.js"), "text/javascript; charset=utf-8"),
+        "paredit.js" => (include_str!("../web/paredit.js"), "text/javascript; charset=utf-8"),
+        "structure.css" => (include_str!("../web/structure.css"), "text/css; charset=utf-8"),
         "agent.js" => (include_str!("../web/agent.js"), "text/javascript; charset=utf-8"),
         "summary.js" => (include_str!("../web/summary.js"), "text/javascript; charset=utf-8"),
         "files.js" => (include_str!("../web/files.js"), "text/javascript; charset=utf-8"),
@@ -97,6 +99,8 @@ enum Request {
     Scenarios,
     /// Run one of them by name.
     RunScenario { name: String },
+    /// List the saved databases, for the prompt to offer.
+    Databases,
     /// Ask the agent, following up in `thread` or starting a new one.
     Ask { thread: Option<u32>, message: String },
     StopThread { thread: u32 },
@@ -148,6 +152,7 @@ enum Reply<'a> {
     /// The files of version `id`.
     VersionFiles { id: u64, files: &'a Files },
     Scenarios { names: Vec<String> },
+    Databases { names: Vec<String> },
     /// The thread an ask went to (new threads get an id here).
     Asked { thread: u32 },
     Notice { message: &'a str },
@@ -311,6 +316,11 @@ fn handle(
         Request::Scenarios => {
             let _ = direct.send(json(&Reply::Scenarios {
                 names: studio.scenarios(),
+            }));
+        }
+        Request::Databases => {
+            let _ = direct.send(json(&Reply::Databases {
+                names: studio.databases(),
             }));
         }
         Request::RunScenario { name } => {

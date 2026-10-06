@@ -733,6 +733,12 @@ impl Studio {
         names
     }
 
+    /// The saved databases `open` can name, for the prompt to offer: read
+    /// from disk, so asking puts no command on the lane.
+    pub fn databases(&self) -> Vec<String> {
+        databases(self.lane.root())
+    }
+
     /// Run the scenario beside the program named `name`, on a lane of its
     /// own, publishing its start and its report.
     pub async fn run_scenario(&self, name: &str) {
@@ -816,9 +822,25 @@ impl Studio {
     }
 }
 
+/// The directories under `root/data`, by name: the databases the REPL
+/// knows (compiler/dbtool.rkt `all-db-names`).
+fn databases(root: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(root.join("data"))
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            entry.file_type().ok()?.is_dir().then_some(())?;
+            entry.file_name().into_string().ok()
+        })
+        .collect();
+    names.sort();
+    names
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Event, Made, Origin, Refused, Studio};
+    use super::{databases, Event, Made, Origin, Refused, Studio};
     use crate::review::Change;
     use crate::lane::{Lane, Mode};
     use crate::projects::Projects;
@@ -844,6 +866,17 @@ mod tests {
         fn snapshot_version(&self, file: &str) -> u64 {
             self.open().docs[file].version
         }
+    }
+
+    #[test]
+    fn the_databases_are_the_directories_under_data() {
+        let root = std::env::temp_dir().join(format!("slog-studio-databases-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("data/reach")).unwrap();
+        std::fs::create_dir_all(root.join("data/kcfa")).unwrap();
+        std::fs::write(root.join("data/notes.txt"), "").unwrap();
+        assert_eq!(databases(&root), ["kcfa", "reach"]);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(databases(&root).is_empty());
     }
 
     #[test]

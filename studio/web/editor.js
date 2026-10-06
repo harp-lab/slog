@@ -16,6 +16,8 @@
 // `keysAt(line)` names what the keys do there, shown with the hints.
 // `readOnly: true` makes an editor for looking only.
 
+import { bindMonaco, bindTextarea } from "./paredit.js";
+
 const MONACO = "https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs";
 
 export async function createEditor(element, handlers) {
@@ -169,6 +171,7 @@ function monacoEditor(monaco, element, { onChange, onEvaluate, onSave, onBreakpo
   });
   editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, onEvaluate);
   editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, onSave);
+  bindMonaco(monaco, editor); // structured editing and completion (paredit.js)
   return {
     show(key, text) {
       if (key !== shown) {
@@ -269,6 +272,7 @@ function textareaEditor(element, { onChange, onEvaluate, onSave, readOnly = fals
   let shown = null;
   element.append(area);
   area.addEventListener("input", onChange);
+  bindTextarea(area); // structured editing (paredit.js)
   area.addEventListener("keydown", (event) => {
     if (!(event.metaKey || event.ctrlKey)) return;
     if (event.key === "Enter") { event.preventDefault(); onEvaluate(); }

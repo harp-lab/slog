@@ -91,13 +91,16 @@ const DEFINITIONS = ["rule", "table", "struct", "union", "enum", "lattice", "dem
 
 const byName = new Map(COMMANDS.flatMap(([names, about, forms = []]) => names.map((name) => [name, { about, forms }])));
 
-export function completeCommand(text, pos, live) {
+// Whether `pos` is in Slog rather than a command's words: a query, a
+// definition, or a list.
+export function slogAt(text, pos) {
   const trimmed = text.trimStart();
-  const firstWord = trimmed.match(/^\S*/)[0];
-  // queries, definitions and lists are Slog, which complete.js knows
-  if (trimmed.startsWith("?") || DEFINITIONS.includes(firstWord) || enclosing(parse(text), pos).kind === "list") {
-    return complete(text, pos, live.catalog);
-  }
+  return trimmed.startsWith("?") || DEFINITIONS.includes(trimmed.match(/^\S*/)[0])
+    || enclosing(parse(text), pos).kind === "list";
+}
+
+export function completeCommand(text, pos, live) {
+  if (slogAt(text, pos)) return complete(text, pos, live.catalog);
   let from = pos;
   let to = pos;
   while (from > 0 && /\S/.test(text[from - 1])) from--;
