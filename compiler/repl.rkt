@@ -39,6 +39,7 @@
          (only-in "parser.rkt" parse-errors-raise?
                   exn:fail:slog-parse? exn:fail:slog-parse-file
                   exn:fail:slog-parse-line exn:fail:slog-parse-col)
+         "demand-debug.rkt" ; the demand call tree and break patterns
          "query-front.rkt" ; the R2 `?` register grammar
          "query-plan.rkt"  ; Q1 catalog planner + ABI-1 wire emission
          "session.rkt"
@@ -333,7 +334,18 @@
    "   [when (REL t|_ ...)]  when rule N fires, or at its body position k"
    "  break FILE:LINE[@k]  stop when the rule at that line fires (rule ids"
    "                      restart per stratum; a location names one rule)"
+   "  break demand (f t ...) | answer (f t ... a ...)  stop when a demand"
+   "                      call matching the pattern is asked, or answered"
+   "   ... when (OP a b) ... ignore N  log   conditions over the pattern's and"
+   "                      the rule's variables; skip N hits; record, don't stop"
    "  breaks | unbreak bN list the standing breaks, or remove one"
+   "  enable|disable bN   keep a break, with its hits, in or out of the run"
+   "  logs [bN]           what the logpoints recorded"
+   "  calls on|off        record each run's demand calls (the call tree)"
+   "  calls [#N | (f t ...) [depth D] | stack | failed]  the calls no rule"
+   "                      asked, one call's subtree, the stack, the failures"
+   "  step into|over|out  at a demand stop: into the call, to its answer,"
+   "                      or to the answer of the call the run is inside"
    "  commit|replay|abort resolve a run held at the pre-commit gate: take"
    "                      the change, rerun the same read, or discard it"
    "  step [match|fire|   walk the held read one interpreter port at a time"
@@ -2685,10 +2697,37 @@
            #:when (equal? (plan-rule-rid r) rid))
     (plan-rule-head-relation r)))
 
+(define break-usage
+  (string-append
+   "expected: break REL [when (REL t ...) COND ...] | break FILE:LINE[@k] [when COND ...]"
+   " | break rN[@k] | break demand (f t ...) [when COND ...]"
+   " | break answer (f t ... a ...) [when COND ...], each optionally ending"
+   " `ignore N` and `log`"))
+
+;; Slog text as data: `[a b ...]` stays a list literal, `(#%brackets a b ...)`.
+(define (read-slog-data who text)
+  (with-handlers ([exn:fail:read?
+                   (lambda (e) (error who "cannot read ~a: ~a" text (exn-message e)))])
+    (parameterize ([read-square-bracket-with-tag #t])
+      (read (open-input-string (string-append "(" text ")"))))))
+
+;; `... ignore N` and `... log`, in either order, off the end of a break.
+(define (break-modifiers raw)
+  (let loop ([raw raw] [ignore #f] [log? #f])
+    (match (regexp-match #px"^(.*?)[[:space:]]+(log|ignore[[:space:]]+([0-9]+))$" raw)
+      [(list _ rest "log" _) (loop rest ignore #t)]
+      [(list _ rest _ n) (loop rest (string->number n) log?)]
+      [_ (values raw ignore log?)])))
+
 (define (break-result state argument)
-  (define raw (string-trim argument))
+  (define-values (raw ignore log?) (break-modifiers (string-trim argument)))
   (when (string=? raw "")
-    (error 'break "expected: break REL [when (REL t ...)] | break FILE:LINE[@k] | break rN[@k]"))
+    (error 'break break-usage))
+  (match (regexp-match #px"^(demand|answer)[[:space:]]+(.*)$" raw)
+    [(list _ kind rest) (demand-break-result state (string->symbol kind) rest ignore log?)]
+    [_ (location-break-result state raw ignore log?)]))
+
+(define (location-break-result state raw ignore log?)
   (define-values (head when-text)
     (match (regexp-match #px"^(.*?)[[:space:]]+when[[:space:]]+(.*)$" raw)
       [(list _ target pattern) (values (string-trim target) pattern)]
@@ -2749,16 +2788,17 @@
   (define relation (if pending? "REL" (first relations)))
   ;; The pattern is read directly rather than through the query front end:
   ;; a query drops `_` columns from its fact template (they cannot be
-  ;; projected), and a break pattern is exactly where wildcards belong.
-  (define pattern
-    (and when-text
-         (let ([shape (read-datum when-text)])
-           (unless (and (pair? shape) (symbol? (first shape)))
-             (error 'break
-                    "when takes one fact pattern of constants and _: when (~a 99 _)"
-                    relation))
-           (for/list ([term (in-list (rest shape))])
-             (if (eq? term '_) '_ (why-term state term))))))
+  ;; projected), and a break pattern is exactly where wildcards belong.  A
+  ;; relation break's first `when` clause naming the relation is its head
+  ;; pattern; every other clause is a condition over the pattern's
+  ;; variables and the rule's.
+  (define clauses (if when-text (read-slog-data 'break when-text) '()))
+  (define-values (pattern guards)
+    (match clauses
+      [(cons (cons (== (string->symbol relation)) terms) more)
+       #:when (not (or rid source))
+       (values (map break-term terms) (map break-guard more))]
+      [_ (values #f (map break-guard clauses))]))
   (define flipped
     (remove-duplicates
      (append-map (lambda (r) (session-set-scc-policy! s (string->symbol r) 'interpreted))
@@ -2770,7 +2810,8 @@
                    [source `((source ,source))]
                    [else `((relation ,relation))])
            ,@(if position `((position ,position)) '())
-           ,@(if pattern `((pattern ,@pattern)) '()))
+           ,@(if pattern `((pattern ,@pattern)) '())
+           ,@(break-options guards ignore log?))
    (lambda (_line) #t))
   (define described
     (cond [rid (format "rule r~a" rid)]
@@ -2781,12 +2822,16 @@
                            (cond [rid (format "r~a" rid)] [source source] [else relation])
                            position when-text))
   (text-result
-   (format "Break ~a" id)
+   (format "~a ~a" (if log? "Logpoint" "Break") id)
    (append
-    (list (format "~a~a~a — stops the run at the port, where step/frames/why work"
+    (list (format "~a~a~a~a — ~a"
                   described
                   (if position (format " body position ~a" position) "")
-                  (if when-text (format " when ~a" when-text) "")))
+                  (if when-text (format " when ~a" when-text) "")
+                  (if ignore (format " ignore ~a" ignore) "")
+                  (if log?
+                      "records each match in the break log, without stopping"
+                      "stops the run at the port, where step/frames/why work")))
     (cond
       [pending?
        (list (string-append
@@ -2818,35 +2863,477 @@
                #:kind "break"))
 
 ;; The daemon owns the hit counts, so the listing is its answer, not the
-;; client's memory of what it asked for.
+;; client's memory of what it asked for.  The breaks the debugger arms for
+;; itself (the demand log, a demand step) are not the operator's.
 (define (breaks-result state)
   (define rs (ensure-session-record! state))
+  (define registry (repl-session-breaks rs))
   (define lines
     (session-debug-lines! (repl-session-session rs) '(breaks)
                           (lambda (l) (regexp-match? #px"^\\(breaks-end " l))))
-  (define rows
+  (define listed
     (for*/list ([line (in-list lines)]
                 #:do [(define datum (read-datum line))]
-                #:when (match datum [`(break ,_ ...) #t] [_ #f]))
+                #:when (match datum [`(break (id ,id) ,_ ...) (hash-ref registry id #f)] [_ #f]))
       (match datum
         [`(break (id ,id) (relation ,relation) (rule ,rule) (source ,source)
-                 (position ,position) (pattern ,pattern) (hits ,hits))
-         (format "~a  ~a~a~a · ~a hit~a" id
-                 (cond [(not (equal? rule '#f)) (format "r~a" rule)]
-                       [(not (equal? source "")) source]
-                       [else relation])
-                 (if (equal? position '#f) ""
-                     (format "@~a" position))
-                 (if (equal? (~a pattern) "") ""
-                     (format " when (~a~a)"
-                             (if (equal? relation "") "" (format "~a " relation))
-                             pattern))
-                 hits (if (equal? hits 1) "" "s"))])))
-  (text-result "Breaks"
-               (if (null? rows)
-                   (list "none; `break REL`, `break FILE:LINE` or `break rN` arms one")
-                   rows)
+                 (position ,position) (pattern ,pattern) (hits ,hits)
+                 (when ,guards) (judgment ,_) (ignore ,ignore) (log ,log?)
+                 (enabled ,enabled?))
+         (define intent (hash-ref registry id))
+         (define what
+           (string-append
+            (cond [(memq (break-intent-kind intent) '(demand answer))
+                   (format "~a ~a" (break-intent-kind intent) (break-intent-target intent))]
+                  [(not (equal? rule '#f)) (format "r~a" rule)]
+                  [(not (equal? source "")) source]
+                  [else relation])
+            (if (equal? position '#f) "" (format "@~a" position))
+            (if (or (memq (break-intent-kind intent) '(demand answer))
+                    (equal? (~a pattern) ""))
+                ""
+                (format " when (~a ~a)" relation pattern))
+            (if (or (equal? guards "") (memq (break-intent-kind intent) '(demand answer)))
+                ""
+                (format " when ~a" guards))))
+         (hasheq 'id id 'what what 'hits hits 'ignore ignore
+                 'log (eq? log? #t) 'enabled (eq? enabled? #t)
+                 'kind (~a (break-intent-kind intent)))])))
+  (define rows
+    (for/list ([b (in-list listed)])
+      (format "~a  ~a · ~a hit~a~a~a~a" (hash-ref b 'id) (hash-ref b 'what)
+              (hash-ref b 'hits) (if (equal? (hash-ref b 'hits) 1) "" "s")
+              (if (positive? (hash-ref b 'ignore))
+                  (format " · ignore ~a" (hash-ref b 'ignore)) "")
+              (if (hash-ref b 'log) " · log" "")
+              (if (hash-ref b 'enabled) "" " · disabled"))))
+  (hash-set
+   (text-result "Breaks"
+                (if (null? rows)
+                    (list "none; `break REL`, `break FILE:LINE`, `break rN` or `break demand (f ...)` arms one")
+                    rows)
+                #:kind "break")
+   'breaks listed))
+
+;; `enable bN` / `disable bN`: the break stays, with its hits, but a
+;; disabled one neither stops nor counts.
+(define (enable-break-result state argument on?)
+  (define id (string-trim argument))
+  (define rs (ensure-session-record! state))
+  (unless (hash-ref (repl-session-breaks rs) id #f)
+    (error (if on? 'enable 'disable) "no break named ~a; `breaks` lists them" id))
+  (session-command-stream! (repl-session-session rs)
+                           `(break-enable (id ,id) (enabled ,on?))
+                           (lambda (_line) #t))
+  (text-result (format "Break ~a ~a" id (if on? "enabled" "disabled"))
+               (list (if on? "it stops the run again" "it neither stops nor counts until enabled"))
                #:kind "break"))
+
+;; The daemon fields a break's conditions, ignore count and logging add.
+(define (break-options guards ignore log?)
+  (append (if (null? guards) '() `((when ,@guards)))
+          (if ignore `((ignore ,ignore)) '())
+          (if log? '((log #t)) '())))
+
+;; ---- demand relations: the call tree and its breakpoints ---------------------
+;;
+;;   calls on | off              record each run's demand calls (the break log)
+;;   calls                       the calls no rule asked, and where failure starts
+;;   calls #N [depth D] | calls (f t ...)   a call, its answers and subcalls
+;;   calls stack                 the chain of calls at the held stop
+;;   break demand (f t ...)      stop when f is asked of a matching call
+;;   break answer (f t ... a ...)  stop when such a call is answered
+;;   step into | over | out      move the held run a call at a time
+;;
+;; compiler/demand-debug.rkt reads the log; this is the REPL's half.
+
+(struct demand-debug ([on? #:mutable] [demands #:mutable] [calls #:mutable])
+  #:transparent)
+
+;; rs -> demand-debug, beside the session record as repl-last-run is.
+(define repl-demands (make-weak-hasheq))
+
+(define (session-demand rs)
+  (hash-ref! repl-demands rs (lambda () (demand-debug #f (hash) (make-calls (hash))))))
+
+;; The logpoint the log is recorded by, and the break a demand step arms.
+(define demand-log-id "demand-log")
+(define demand-step-id "demand-step")
+
+;; The live catalog's demands, for a session whose run is not being prepared.
+(define (live-demands s)
+  (define head (session-current-boundary s))
+  (if head (catalog-demands (catalog-declarations (boundary-catalog head))) (hash)))
+
+;; At each prepared run (session-prepare-hook): learn the program's demands
+;; from the catalog it will have, start a fresh call graph, and arm the
+;; logpoint on its asks and answers, and on the relations that carry a
+;; gate between rules (demand-debug.rkt `carrier?`).
+(define (demand-prepare! rs plan)
+  (define dd (hash-ref repl-demands rs #f))
+  (when (and dd (demand-debug-on? dd))
+    (define demands
+      (catalog-demands (catalog-declarations (boundary-catalog (boundary-plan-output plan)))))
+    (set-demand-debug-demands! dd demands)
+    (set-demand-debug-calls! dd (make-calls demands))
+    (arm-demand-log! (repl-session-session rs) demands)))
+
+(define (arm-demand-log! s demands)
+  (with-handlers ([exn:fail? void])
+    (session-command-stream! s `(unbreak (id ,demand-log-id)) (lambda (_l) #t)))
+  (unless (hash-empty? demands)
+    (session-command-stream!
+     s
+     `(break (id ,demand-log-id)
+             (relation ,@(sort (hash-keys demands) string<?)
+                       ,@(for/list ([f (in-list (sort (hash-keys demands) string<?))])
+                           (string-append f "_ans"))
+                       "$sup*" "temp*")
+             (log #t))
+     (lambda (_l) #t))))
+
+;; Read what the daemon logged since the last read into the call graph.
+(define (demand-sync! rs #:always? [always? #f])
+  (define dd (session-demand rs))
+  (define c (demand-debug-calls dd))
+  (when (or always? (demand-debug-on? dd))
+    (define lines
+      (session-debug-lines! (repl-session-session rs)
+                            `(break-log (from ,(calls-next c)))
+                            (lambda (l) (regexp-match? #px"^\\(break-log-end " l))))
+    (calls-read! c lines))
+  c)
+
+(define (demand-on! state rs)
+  (define dd (session-demand rs))
+  (unless (demand-debug-on? dd)
+    (set-demand-debug-on?! dd #t)
+    ;; a program already loaded is recorded from its next run on; its
+    ;; demands are known now, for breaks and steps
+    (define s (repl-session-session rs))
+    (define demands (live-demands s))
+    (set-demand-debug-demands! dd demands)
+    (set-demand-debug-calls! dd (make-calls demands))
+    (arm-demand-log! s demands)))
+
+(define (demand-result state argument)
+  (define rs (ensure-session-record! state))
+  (define dd (session-demand rs))
+  (define running? (and (server-state-held state) #t))
+  (match (string-split (string-trim argument))
+    [(list "on")
+     (demand-on! state rs)
+     (text-result "Demand calls recorded"
+                  (list "each run records its demand calls: `calls` shows them,"
+                        "`break demand (f t ...)` stops at one, `step into|over|out` walks them")
+                  #:kind "calls")]
+    [(list "off")
+     (set-demand-debug-on?! dd #f)
+     (with-handlers ([exn:fail? void])
+       (session-command-stream! (repl-session-session rs) `(unbreak (id ,demand-log-id))
+                                (lambda (_l) #t)))
+     (text-result "Demand calls not recorded" (list "runs no longer record demand calls")
+                  #:kind "calls")]
+    [_
+     (unless (demand-debug-on? dd)
+       (error 'calls "demand calls are not being recorded; `calls on`, then run"))
+     (define c (demand-sync! rs))
+     (define words (string-split (string-trim argument)))
+     (match words
+       ['() (demand-roots-result c running?)]
+       [(list "stack") (demand-stack-result c running?)]
+       [(list "failed") (demand-failed-result c running?)]
+       [_ (demand-node-result c (string-trim argument) running?)])]))
+
+(define (logged-line c r)
+  (format "~a s~a i~a ~a ~a~a" (logged-id r) (logged-scc r) (logged-iteration r)
+          (logged-source r)
+          (if (equal? (logged-relation r) "")
+              ""
+              (format "(~a~a)" (logged-relation r)
+                      (string-append* (for/list ([w (in-list (logged-row r))])
+                                        (string-append " " (word-text c w))))))
+          (string-append* (for/list ([b (in-list (logged-bindings r))])
+                            (format " · ~a = ~a" (car b) (word-text c (cdr b)))))))
+
+;; `logs [bN]`: what the logpoints recorded in the latest run, oldest first.
+(define (logs-result state argument)
+  (define rs (ensure-session-record! state))
+  (define id (string-trim argument))
+  (define c (demand-sync! rs #:always? #t))
+  (define records
+    (for/list ([r (in-list (reverse (calls-logged c)))]
+               #:when (or (equal? id "") (equal? id (logged-id r))))
+      r))
+  (hash-set
+   (text-result (if (equal? id "") "Logpoints" (format "Logpoint ~a" id))
+                (if (null? records)
+                    (list "nothing logged; `break ... log` arms a logpoint")
+                    (for/list ([r (in-list records)]) (logged-line c r)))
+                #:kind "logs")
+   'logs (for/list ([r (in-list records)])
+           (hasheq 'id (logged-id r) 'scc (logged-scc r) 'iteration (logged-iteration r)
+                   'source (logged-source r) 'text (logged-line c r)))))
+
+(define (call-ask-json a)
+  (hasheq 'scc (call-ask-scc a) 'iteration (call-ask-iteration a)
+          'source (call-ask-source a)))
+
+;; A call as Studio's tree shows it; `children` lists the subcalls' ids
+;; when `children?`, else only counts them.
+(define (call-json c n running? #:children? [children? #f])
+  (define asks (reverse (call-node-asks n)))
+  (define parents
+    (remove-duplicates
+     (for/list ([a (in-list asks)] #:when (call-ask-parent a))
+       (call-node-index (calls-lookup c (call-ask-parent a))))))
+  (define kids (for/list ([k (in-list (call-node-children n))])
+                 (call-node-index (calls-lookup c k))))
+  (hasheq 'id (call-node-index n)
+          'call (call-text c n)
+          'relation (call-node-relation n)
+          'status (~a (call-status n running?))
+          'asked (if (pair? asks) (call-ask-json (first asks)) 'null)
+          'asks (length asks)
+          'parents parents
+          'answers (for/list ([a (in-list (reverse (call-node-answers n)))])
+                     (hasheq 'value (call-answer-text c a)
+                             'scc (call-answer-scc a) 'iteration (call-answer-iteration a)
+                             'source (call-answer-source a)))
+          'subcalls (length kids)
+          'children (if children? kids 'null)))
+
+(define (call-line c n running?)
+  (define answers (reverse (call-node-answers n)))
+  (format "#~a ~a  ~a" (call-node-index n) (call-text c n)
+          (match (call-status n running?)
+            ['answered (string-join (for/list ([a (in-list answers)])
+                                      (format "⇒ ~a (s~a i~a)" (call-answer-text c a)
+                                              (call-answer-scc a) (call-answer-iteration a)))
+                                    " ")]
+            ['pending "· no answer yet"]
+            ['failed "· no answer"])))
+
+(define (calls-summary c)
+  (define all (for/list ([i (in-range (hash-count (calls-nodes c)))]) (calls-node c i)))
+  (hasheq 'calls (length all)
+          'answered (for/sum ([n (in-list all)]) (if (pair? (call-node-answers n)) 1 0))
+          'dropped (calls-dropped c)))
+
+(define (calls-result title lines payload)
+  (hash-set (text-result title lines #:kind "calls") 'calls payload))
+
+(define (demand-roots-result c running?)
+  (define roots (calls-roots c))
+  (define frontier (calls-frontier c))
+  (define summary (calls-summary c))
+  (calls-result
+   "Demand calls"
+   (append
+    (list (format "~a calls · ~a answered~a" (hash-ref summary 'calls) (hash-ref summary 'answered)
+                  (if (positive? (calls-dropped c))
+                      (format " · ~a log records dropped at the cap" (calls-dropped c)) "")))
+    (for/list ([n (in-list roots)]) (call-line c n running?))
+    (if (and (not running?) (pair? frontier))
+        (cons "where failure starts (no answer, every subcall answered):"
+              (for/list ([n (in-list frontier)]) (string-append "  " (call-line c n running?))))
+        '()))
+   (hasheq 'view "roots" 'summary summary
+           'nodes (for/list ([n (in-list roots)]) (call-json c n running?))
+           'frontier (if running? '() (for/list ([n (in-list frontier)]) (call-node-index n))))))
+
+(define (demand-failed-result c running?)
+  (define frontier (calls-frontier c))
+  (calls-result
+   "Demand calls · no answer"
+   (if (null? frontier)
+       (list "every call has an answer")
+       (for/list ([n (in-list frontier)]) (call-line c n running?)))
+   (hasheq 'view "failed" 'summary (calls-summary c)
+           'nodes (for/list ([n (in-list frontier)]) (call-json c n running?)))))
+
+;; `#N [depth D]` or a call written out, `(nf (app (ix 0) (zero)))`.
+(define (demand-node-result c text running?)
+  (define-values (spec depth)
+    (match (regexp-match #px"^(.*?)[[:space:]]+depth[[:space:]]+([0-9]+)$" text)
+      [(list _ spec d) (values spec (string->number d))]
+      [_ (values text 1)]))
+  (define n
+    (match (regexp-match #px"^#([0-9]+)$" spec)
+      [(list _ i) (or (calls-node c (string->number i))
+                      (error 'calls "no call #~a in this run" i))]
+      [_ (or (for/first ([i (in-range (hash-count (calls-nodes c)))]
+                         #:when (equal? (call-text c (calls-node c i)) spec))
+               (calls-node c i))
+             (error 'calls "no call ~a in this run (`calls` lists the calls)" spec))]))
+  (define lines
+    (let walk ([n n] [indent ""] [depth depth] [seen '()])
+      (cons (string-append indent (call-line c n running?))
+            (if (or (zero? depth) (memq n seen))
+                '()
+                (append*
+                 (for/list ([k (in-list (call-node-children n))])
+                   (walk (calls-lookup c k) (string-append indent "  ") (sub1 depth)
+                         (cons n seen))))))))
+  (calls-result
+   (format "Demand call #~a" (call-node-index n))
+   (append lines
+           (let ([a (and (pair? (call-node-asks n)) (last (call-node-asks n)))])
+             (if a
+                 (list (format "asked at s~a i~a by ~a~a" (call-ask-scc a) (call-ask-iteration a)
+                               (call-ask-source a)
+                               (if (call-ask-parent a)
+                                   (format " in #~a" (call-node-index
+                                                      (calls-lookup c (call-ask-parent a))))
+                                   "")))
+                 '())))
+   (hasheq 'view "node" 'focus (call-node-index n)
+           'nodes (cons (call-json c n running? #:children? #t)
+                        (for/list ([k (in-list (call-node-children n))])
+                          (call-json c (calls-lookup c k) running?))))))
+
+;; The calls from the latest demand event up through each asker, with the
+;; asking rule's bindings: the stack a held stop is in.
+(define (demand-stack c running?)
+  (define last (calls-last c))
+  (if last
+      (for/list ([n (in-list (calls-stack c (cdr last)))])
+        (define a (and (pair? (call-node-asks n)) (first (call-node-asks n))))
+        (hasheq 'node (call-json c n running?)
+                'bindings (if a
+                              (for/list ([b (in-list (call-ask-bindings a))])
+                                (list (car b) (word-text c (cdr b))))
+                              '())))
+      '()))
+
+(define (stack-lines c running?)
+  (define last (calls-last c))
+  (define frames (demand-stack c running?))
+  (if (null? frames)
+      '()
+      (cons (format "demand ~a of ~a; the calls it is inside:"
+                    (car last) (hash-ref (hash-ref (first frames) 'node) 'call))
+            (for/list ([f (in-list frames)] [i (in-naturals)])
+              (define node (hash-ref f 'node))
+              (format "  ~a #~a ~a~a~a" i (hash-ref node 'id) (hash-ref node 'call)
+                      (let ([asked (hash-ref node 'asked)])
+                        (if (hash? asked) (format " · asked by ~a" (hash-ref asked 'source)) ""))
+                      (if (null? (hash-ref f 'bindings))
+                          ""
+                          (string-append " · "
+                                         (string-join (for/list ([b (in-list (hash-ref f 'bindings))])
+                                                        (format "~a = ~a" (first b) (second b)))
+                                                      " · "))))))))
+
+(define (demand-stack-result c running?)
+  (define lines (stack-lines c running?))
+  (calls-result "Demand stack"
+                (if (null? lines) (list "no demand call has been asked yet") lines)
+                (hasheq 'view "stack" 'last (and (calls-last c) (~a (car (calls-last c))))
+                        'stack (demand-stack c running?))))
+
+;; `break demand (f t ...)` and `break answer (f t ... a ...)`.
+(define (demand-break-result state kind text ignore log?)
+  (define rs (ensure-session-record! state))
+  (define s (repl-session-session rs))
+  (define data (read-slog-data 'break text))
+  (define-values (call guards)
+    (match data
+      [(list (cons (? symbol? f) terms)) (values (cons f terms) '())]
+      [(list (cons (? symbol? f) terms) 'when conds ..1) (values (cons f terms) conds)]
+      [_ (error 'break "expected: break ~a (f t ...) [when COND ...]" kind)]))
+  (define f (symbol->string (car call)))
+  (demand-on! state rs)
+  (define demands (demand-debug-demands (session-demand rs)))
+  (define arity (hash-ref demands f #f))
+  (when (and (pair? (hash-keys demands)) (not arity))
+    (error 'break "~a is not a demand relation; this program's are ~a" f
+           (string-join (sort (hash-keys demands) string<?) ", ")))
+  (when arity
+    (define wanted (if (eq? kind 'demand) (car arity) (+ (car arity) (cdr arity))))
+    (unless (= wanted (length (cdr call)))
+      (error 'break "~a ~a takes ~a terms~a, not ~a" kind f wanted
+             (if (eq? kind 'answer) " (its inputs, then its answers)" "")
+             (length (cdr call)))))
+  (define registry (repl-session-breaks rs))
+  (define id (next-break-id registry))
+  (session-command-stream!
+   s
+   `(break (id ,id)
+           (relation ,(if (eq? kind 'demand) f (string-append f "_ans")))
+           (pattern ,@(map break-term (cdr call)))
+           ,@(if (eq? kind 'answer) '((judgment #t)) '())
+           ,@(break-options (map break-guard guards) ignore log?))
+   (lambda (_line) #t))
+  (define shown (string-trim text))
+  (hash-set! registry id (break-intent id kind shown #f #f))
+  (text-result
+   (format "~a ~a" (if log? "Logpoint" "Break") id)
+   (list (format "~a ~a~a — ~a" kind shown (if ignore (format " ignore ~a" ignore) "")
+                 (cond [log? "records each one in the demand log, without stopping"]
+                       [(eq? kind 'demand) "stops when such a call is asked"]
+                       [else "stops when such a call is answered"]))
+         (if arity
+             "demand calls are recorded: `calls stack` at the stop, `calls` after"
+             "armed for when the program runs"))
+   #:kind "break"))
+
+;; `step into|over|out` at a held stop, a call at a time.  The latest demand
+;; event is where the run stands: at an ask of D, `into` stops at the first
+;; thing D's rules do and `over` at D's answer; at an answer of D (or an ask
+;; D already answered) both go on in D's caller; `out` stops at the answer
+;; of the call the run is inside.  Each arms one break, which the stop (or
+;; the end of the run) removes; other breaks still stop the run first.
+(define (demand-step-break rs how)
+  (define dd (session-demand rs))
+  (unless (demand-debug-on? dd)
+    (error 'step "demand calls are not being recorded; `calls on` before the run"))
+  (define c (demand-sync! rs))
+  (define event (or (calls-last c)
+                   (error 'step "~a: no demand call has been asked yet" how)))
+  (define n (calls-lookup c (cdr event)))
+  (define asks (call-node-asks n))
+  ;; the call the event's rule belongs to
+  (define frame
+    (if (eq? (car event) 'ask)
+        (and (pair? asks) (call-ask-parent (first asks)))
+        (cdr event)))
+  (define caller
+    (if (eq? (car event) 'ask) frame (and (pair? asks) (call-ask-parent (last asks)))))
+  (define returned? (pair? (call-node-answers n)))
+  (define demands (demand-debug-demands dd))
+  (define (term key)
+    `(ctor ,(car key) ,@(for/list ([w (in-list (cdr key))]) `(word ,w))))
+  (define (inside key)
+    `((relation ,@(append* (for/list ([f (in-list (sort (hash-keys demands) string<?))])
+                             (list f (string-append f "_ans")))))
+      (uses ,(term key))))
+  (define (answer-of key)
+    (define outs (cdr (hash-ref demands (car key))))
+    `((relation ,(string-append (car key) "_ans"))
+      (pattern ,(term key) ,@(make-list outs '_))))
+  (define where
+    (match how
+      ['into (cond [(and (eq? (car event) 'ask) (not returned?)) (inside (cdr event))]
+                   [caller (inside caller)]
+                   [else #f])]
+      ['over (cond [(and (eq? (car event) 'ask) (not returned?)) (answer-of (cdr event))]
+                   [caller (inside caller)]
+                   [else #f])]
+      ['out (if (eq? (car event) 'ask)
+                (and frame (answer-of frame))
+                (and caller (answer-of caller)))]))
+  (with-handlers ([exn:fail? void])
+    (session-command-stream! (repl-session-session rs) `(unbreak (id ,demand-step-id))
+                             (lambda (_l) #t)))
+  (when where
+    (session-command-stream! (repl-session-session rs) `(break (id ,demand-step-id) ,@where)
+                             (lambda (_l) #t))))
+
+(define (demand-step-done! rs)
+  (with-handlers ([exn:fail? void])
+    (session-command-stream! (repl-session-session rs) `(unbreak (id ,demand-step-id))
+                             (lambda (_l) #t))))
 
 (define (unwatch-result state argument)
   (define id (string-trim argument))
@@ -3150,7 +3637,9 @@
   (define before (catalog-size-snapshot s))
   (define-values (value events)
     (parameterize ([session-prepare-hook
-                    (lambda (_s plan) (prepare-rebind-level1! rs plan))])
+                    (lambda (_s plan)
+                      (prepare-rebind-level1! rs plan)
+                      (demand-prepare! rs plan))])
       (capture-session-events state thunk)))
   (define after (catalog-size-snapshot s))
   (define change
@@ -3939,7 +4428,7 @@
 ;; resolve a pause or observe one, and neither wants a held run of its own.
 (define pause-resolution-verbs
   '("commit" "continue" "replay" "abort" "step" "frames" "finish" "why"
-    "breaks" "unbreak" "whynot"))
+    "breaks" "unbreak" "whynot" "enable" "disable" "calls" "logs"))
 
 ;; Fields of the uniform pause record, for rendering (t0-contract).
 (define (pause-record-field line key)
@@ -3962,6 +4451,17 @@
     [_ '()]))
 
 (define (held-pause-result state held #:refused [refused #f])
+  (held-pause-result* state held refused))
+
+;; The pause record, carrying the demand stack when calls are recorded.
+(define (with-calls-stack result calls)
+  (if calls
+      (hash-set result 'calls (hasheq 'view "stack"
+                                      'last (and (calls-last calls) (~a (car (calls-last calls))))
+                                      'stack (demand-stack calls #t)))
+      result))
+
+(define (held-pause-result* state held refused)
   (define line (held-run-record held))
   (define cites (pause-watch-citations line))
   (define rs (current-repl-session state))
@@ -3973,10 +4473,13 @@
   (define broke
     (match (and stepped? (pause-breakpoint-detail line))
       [(? string? detail)
-       (match (regexp-match #px"^(b[0-9]+):" detail)
+       (match (regexp-match #px"^(b[0-9]+|demand-step):" detail)
          [(list _ id) id]
          [_ #f])]
       [_ #f]))
+  ;; With demand calls recorded, the stop is inside a chain of calls.
+  (define calls
+    (and rs stepped? (demand-debug-on? (session-demand rs)) (demand-sync! rs)))
   (define watch-lines
     (for/list ([id (in-list cites)])
       (define intent (and registry (hash-ref registry id #f)))
@@ -3987,10 +4490,12 @@
                   ""))))
   (attach-session-state
    state
+   (with-calls-stack
    (text-result
     ;; Name the place honestly: a step stop, the pre-commit gate, or the
     ;; clean iteration boundary `finish` asked to be held at.
-    (cond [broke (format "Paused · break ~a" broke)]
+    (cond [(equal? broke demand-step-id) "Paused · demand step"]
+          [broke (format "Paused · break ~a" broke)]
           [stepped? "Paused · step"]
           [(pair? cites) "Paused · pre-commit gate"]
           [(unbox (held-run-interrupted held)) "Paused · interrupt"]
@@ -4011,6 +4516,7 @@
          (list (format "port ~a" (or (pause-breakpoint-detail line) "?"))
                "frames shows the join stack at this port")
          '())
+     (if calls (stack-lines calls #t) '())
      watch-lines
      (if (unbox (held-run-interrupted held))
          (list "Ctrl-C: the run is paused at a slice boundary; nothing is committed"
@@ -4025,10 +4531,13 @@
                        (if (= (held-run-replays held) 1) "" "s")))
          '())
      (list (string-append
-            "step [match|fire|emit|tuple] · frames · why · finish · "
+            "step [match|fire|emit|tuple] · "
+            (if calls "step into|over|out · calls stack · " "")
+            "frames · why · finish · "
             (if broke "continue · " "commit · replay · ")
             "abort")))
-    #:kind "paused")))
+    #:kind "paused")
+   calls)))
 
 ;; The daemon reports the join stack STRUCTURALLY -- port, rule position and
 ;; rows -- plus, since 2026-09-08, the BINDINGS of the named registers the
@@ -4280,6 +4789,13 @@
           (equal? (string-trim argument) "iter"))
      ;; repl-ux §9.3's coarsest step is `finish` by another name.
      (dispatch-at-gate state held "finish")]
+    [(and (equal? verb "step")
+          (member (string-trim argument) '("into" "over" "out")))
+     (define rs (ensure-session-record! state))
+     (demand-step-break rs (string->symbol (string-trim argument)))
+     (channel-put (held-run-to-run held) 'continue)
+     (begin0 (await-held-run state held)
+             (demand-step-done! rs))]
     [(equal? verb "step")
      (define line (step-command-line argument))
      (unless line
@@ -4460,6 +4976,10 @@
     ["break" (break-result state argument)]
     ["unbreak" (unbreak-result state argument)]
     ["breaks" (breaks-result state)]
+    ["enable" (enable-break-result state argument #t)]
+    ["disable" (enable-break-result state argument #f)]
+    ["calls" (demand-result state argument)]
+    ["logs" (logs-result state argument)]
     ["watch" (watch-result state argument)]
     ["unwatch" (unwatch-result state argument)]
     ["watches" (watches-result state)]
@@ -6500,6 +7020,93 @@
       (check-regexp-match #px"port b1:fire@reach\\.slog:14:1:" (text first-run))
       (void (run! "abort"))
         (void (run! ":quit"))))
+
+  ;; Demand relations, a call at a time (demand-debug.rkt).  dem_stlc asks
+  ;; `ck` of three programs; `(app (num 3) (num 4))` is ill-typed, so its
+  ;; call has no answer while both of its subcalls do -- the failure
+  ;; frontier.  A demand break with a constructor pattern names a call
+  ;; whose `app` does not exist yet when it is armed.
+  (let ([break-environment (environment-variables-copy test-environment)])
+    (environment-variables-set! break-environment #"SLOG_OPT" #"interp")
+    (environment-variables-set! break-environment #"SLOG_THREADS" #"1")
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables break-environment])
+      (define state (make-server-state))
+      (define (run! line) (dispatch-command state line))
+      (define (text result) (string-join (hash-ref result 'lines) "\n"))
+      (check-regexp-match #px"armed for when the program runs"
+                          (text (run! "break demand (ck _ (app (num 3) _))")))
+      (define stop (run! "run tests/dem_stlc.slog"))
+      (check-equal? (hash-ref stop 'title) "Paused · break b1")
+      ;; the stop is the ask, and the stack names it with its asker's
+      ;; bindings: a root call, asked by the program's own rule
+      (check-regexp-match
+       #px"demand ask of \\(ck \\(mt\\) \\(app \\(num 3\\) \\(num 4\\)\\)\\)"
+       (text stop))
+      (check-regexp-match #px"0 #0 .* · asked by dem_stlc\\.slog:30:1 · e = " (text stop))
+      ;; into: the first thing the call's rules do is ask its function
+      (define into (run! "step into"))
+      (check-equal? (hash-ref into 'title) "Paused · demand step")
+      (check-regexp-match #px"demand ask of \\(ck \\(mt\\) \\(num 3\\)\\)" (text into))
+      (check-regexp-match #px"1 #0 \\(ck \\(mt\\) \\(app" (text into))
+      ;; over: run until that call answers, inside the same caller
+      (define over (run! "step over"))
+      (check-regexp-match #px"demand answer of \\(ck \\(mt\\) \\(num 3\\)\\)" (text over))
+      ;; out of a call that never answers runs to the end
+      (define out (run! "step out"))
+      (check-equal? (hash-ref out 'kind) "run")
+      ;; the tree: the ill-typed call has no answer and is where failure starts
+      (define tree (run! "calls"))
+      (check-regexp-match #px"#0 \\(ck \\(mt\\) \\(app \\(num 3\\) \\(num 4\\)\\)\\)  · no answer"
+                          (text tree))
+      (check-regexp-match #px"where failure starts[^\n]*\n  #0 " (text tree))
+      (check-equal? (hash-ref (hash-ref tree 'calls) 'frontier) '(0))
+      (define node (text (run! "calls #0")))
+      (check-regexp-match #px"  #[0-9]+ \\(ck \\(mt\\) \\(num 3\\)\\)  ⇒ \\(tint\\)" node)
+      (check-regexp-match #px"  #[0-9]+ \\(ck \\(mt\\) \\(num 4\\)\\)  ⇒ \\(tint\\)" node)
+      ;; a well-typed call's subtree reaches its lookups
+      (check-regexp-match #px"\\(lookup \\(ext \\(mt\\) \"x\" \\(tint\\)\\) \"x\"\\)  ⇒ \\(tint\\)"
+                          (text (run! "calls #3 depth 9")))
+      (void (run! ":quit"))))
+
+  ;; Answer breaks read the answer row as its judgment and take conditions;
+  ;; a logpoint records without stopping; ignore counts hits before the
+  ;; first stop; a disabled break neither stops nor counts.
+  (let ([break-environment (environment-variables-copy test-environment)])
+    (environment-variables-set! break-environment #"SLOG_OPT" #"interp")
+    (environment-variables-set! break-environment #"SLOG_THREADS" #"1")
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables break-environment])
+      (define state (make-server-state))
+      (define (run! line) (dispatch-command state line))
+      (define (text result) (string-join (hash-ref result 'lines) "\n"))
+      (void (run! "run tests/dem_stlc.slog"))
+      ;; with the program loaded, a pattern is checked against the demand
+      (check-exn #px"answer ck takes 3 terms" (lambda () (run! "break answer (ck E T)")))
+      (check-exn #px"path is not a demand relation|is not a demand relation"
+                 (lambda () (run! "break demand (prog _)")))
+      (void (run! "break answer (ck G E T) when (= E (num _)) ignore 1"))
+      (void (run! "break demand (lookup _ X) log"))
+      (define stop (run! "run tests/dem_stlc.slog"))
+      (check-equal? (hash-ref stop 'title) "Paused · break b1")
+      ;; the first num answer was ignored; this is the second
+      (check-regexp-match #px"demand answer of \\(ck \\(mt\\) \\(num 4\\)\\)" (text stop))
+      (check-regexp-match #px"b1  answer \\(ck G E T\\) when \\(= E \\(num _\\)\\) · 2 hits · ignore 1"
+                          (text (run! "breaks")))
+      (void (run! "disable b1"))
+      (check-equal? (hash-ref (run! "continue") 'kind) "run")
+      (define breaks (text (run! "breaks")))
+      (check-regexp-match #px"· 2 hits · ignore 1 · disabled" breaks)
+      (check-regexp-match #px"b2  demand \\(lookup _ X\\) · 5 hits · log" breaks)
+      (check-regexp-match #px"b2 s[0-9]+ i[0-9]+ dem_stlc\\.slog:15:1 \\(lookup .* · X = \"x\""
+                          (text (run! "logs b2")))
+      ;; a rule break's condition is over the rule's own variables
+      (void (run! "break tests/dem_stlc.slog:17 when (= e1 (var _))"))
+      (define ruled (run! "run tests/dem_stlc.slog"))
+      (check-equal? (hash-ref ruled 'title) "Paused · break b3")
+      (check-regexp-match #px"e1 = \\(var " (text (run! "frames")))
+      (void (run! "abort"))
+      (void (run! ":quit"))))
 
   ;; A continuation the daemon declines leaves the run where it was.  Replay
   ;; is gate-only, so a break stop refuses it; the refusal must come back as
