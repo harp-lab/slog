@@ -279,13 +279,11 @@
 ;; ---------------------------------------------------------------------------
 
 ;; A short, stable hash of the whole-compiler source fingerprint -- the
-;; compiler-stamp recorded in META for drift attribution (§11).  We hash the
-;; (large) concatenated-source fingerprint down to 16 hex chars; two builds
-;; agree iff every compiler .rkt is byte-identical.
+;; compiler-stamp recorded in META for drift attribution (§11): the
+;; fingerprint digest cut to 16 hex chars; two builds agree iff every
+;; compiler .rkt is byte-identical.
 (define (current-compiler-stamp)
-  (substring (bytes->hex-string
-              (sha256 (string->bytes/utf-8 compiler-sources-fingerprint)))
-             0 16))
+  (substring compiler-sources-fingerprint 0 16))
 
 ;; The plan-shaping environment captured into META so a replay recompiles
 ;; faithfully (§8 `env`): exactly the knobs docs/knobs.md lists as "in the

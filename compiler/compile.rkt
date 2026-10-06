@@ -1415,9 +1415,7 @@
                "a declaration-only program has no jobs; provide its "
                "#:type-env and #:model from program->jobs"))]))
   (define compiler-key
-    (or provided-compiler-key
-        (bytes->hex-string
-         (sha256 (string->bytes/utf-8 compiler-sources-fingerprint)))))
+    (or provided-compiler-key compiler-sources-fingerprint))
   (define image
     (seal-program-image program type-env model
                         #:compiler-key compiler-key
