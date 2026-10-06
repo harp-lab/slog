@@ -118,7 +118,7 @@
 (when (regexp-match? #px"Paused" (~a (hash-ref mono-result 'title "")))
   (void (dispatch-command state "continue")))
 (define final (lines (dispatch-command state "?count (path X Y)")))
-(emit! "monotone-committed" (if (regexp-match? #px"[0-9]+ rows match" final) 1 0))
+(emit! "monotone-committed" (if (regexp-match? #px"r[0-9]+ · [0-9]+ rows" final) 1 0))
 
 (displayln "(matrix-end)")
 (void (dispatch-command state ":quit"))

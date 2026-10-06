@@ -100,7 +100,9 @@
                       ;; requested over the control connection and the next
                       ;; slice boundary of the command in flight must hold.
                       ;; Scoped to that command: cleared when it finishes.
-                      [interrupt #:mutable])
+                      [interrupt #:mutable]
+                      ;; the result sets (set-registry), made on first use
+                      [results #:auto #:mutable])
   #:transparent)
 
 ;; T5 slice (c) / R4: a run HELD at the pre-commit gate (repl-ux §9.2 -- the
@@ -313,10 +315,17 @@
    "  state [REL]         summarize the pipeline or one relation's versions"
    "  count REL           count the current version of a relation"
    "  show REL [LIMIT]    show rows for a small relation (safety cap: 200)"
-   "  query REL V...      test whether any row matches a value prefix"
+   "  query REL V...      the rows whose first columns hold the values"
    "  ?(REL V...)         query the committed boundary; also"
    "                      ? (a X Y) (b Y Z) (< Z 9) -> (X Z)  and  ~ absence"
-   "  ?count ?exists      the same query without materializing rows"
+   "  ?count ?exists      the same query: its count, or its witnesses"
+   "                      every query makes a result set rN, watched for the"
+   "                      session (`?QUERY as rN` names it, `as _` makes none)"
+   "  sets                list the result sets: size, live, stale"
+   "  show rN             read a set's rows again (its count is re-taken)"
+   "  unwatch rN | watch rN  stop or resume re-counting a set after commits"
+   "  drop rN             forget a set"
+   "  keep rN             keep a set's rows as relation rN in the scratch layer"
    "  more | cancel       pull or discard the held query cursor"
    "  dump ?QUERY to F    stream every answer row into a CSV file"
    "  uses #N | VALUE     which relations contain a value (`find` = alias)"
@@ -1281,22 +1290,28 @@
    #:kind "query"))
 
 (define (query-result state argument)
+  ;; `query REL V ...` is `?(REL V ... X ...)`: the rows whose first
+  ;; columns hold the values, as a result set
   (match-define (list* rel values) (read-command-data 'query argument #:minimum 2))
   (define name (relation-key rel))
-  (define reply
-    (session-action! (ensure-session! state)
-                     `(lookup ,(string->symbol name) ,@values)
-                     read-one-response))
-  (define found?
-    (match (and (pair? reply) (read-datum (first reply)))
-      [`(found ,_ 1) #t]
-      [`(found ,_ 0) #f]
-      [other (error 'query "unexpected lookup response: ~a" other)]))
-  (text-result
-   (format "Query · ~a" name)
-   (list (format "~a — ~a row matches prefix ~s"
-                 (if found? "yes" "no") name values))
-   #:kind "query"))
+  (define arity
+    (or (relation-info-arity
+         (relation-from-catalog 'query (live-catalog (ensure-session! state)) name))
+        (length values)))
+  (when (> (length values) arity)
+    (error 'query "~a has ~a column~a; ~a values given"
+           name arity (if (= arity 1) "" "s") (length values)))
+  (define terms
+    (append
+     (for/list ([value (in-list values)])
+       (unless (or (string? value) (exact-integer? value)
+                   (and (real? value) (inexact? value)))
+         (error 'query "~s is not a value a query can spell; use ?(~a ...)"
+                value name))
+       (~s value))
+     (for/list ([i (in-range (length values) arity)])
+       (format "X~a" (add1 i)))))
+  (query-register-result state (format "?(~a ~a)" name (string-join terms " "))))
 
 ;; ---- the `?` register (R2 over Q1) -----------------------------------------
 ;;
@@ -1411,8 +1426,9 @@
   (format "q~a" (unbox query-id-counter)))
 
 ;; id lives on the daemon connection; line keeps the vars/template for
-;; rendering later pages; shown numbers rows continuously across pages.
-(struct query-cursor (id line shown) #:transparent)
+;; rendering later pages; shown numbers rows continuously across pages;
+;; set is the result set whose rows these are.
+(struct query-cursor (id line shown set) #:transparent)
 
 (define (query-refused! who lines)
   (for ([line (in-list lines)])
@@ -1512,19 +1528,21 @@
 ;; Substitute an answer row back into the single-atom sugar's fact template.
 ;; Every symbol in a qualifying template is a projected variable, so the
 ;; lookup cannot miss.
-(define (render-query-fact pattern vars displays)
+(define (query-fact-cells pattern vars displays)
   (define bindings (map cons vars displays))
-  (define parts
-    (for/list ([term (in-list (rest pattern))])
-      (cond
-        [(symbol? term) (cdr (assq term bindings))]
-        [(handle-token? term) (handle-token-label term)]
-        [(string? term) (~s term)]
-        [else (~a term)])))
+  (for/list ([term (in-list (rest pattern))])
+    (cond
+      [(symbol? term) (cdr (assq term bindings))]
+      [(handle-token? term) (handle-token-label term)]
+      [(string? term) (~s term)]
+      [else (~a term)])))
+
+(define (render-query-fact pattern vars displays)
+  (define parts (query-fact-cells pattern vars displays))
   (format "(~a~a)" (first pattern)
           (if (null? parts) "" (string-append " " (string-join parts " ")))))
 
-(define (render-query-page state rs line rows-cells status matched
+(define (render-query-page state rs set line rows-cells status matched
                            start-index)
   (ensure-evaluation! state (repl-session-session rs))
   (define vars (query-line-project-vars line))
@@ -1540,34 +1558,61 @@
                   (render-query-fact pattern vars row)
                   (format "(~a)" (string-join row " "))))))
   (define shown (+ start-index (length rows-cells)))
-  (define header
-    (match status
-      ['complete
-       (cond
-         [(zero? start-index)
-          (format "~a row~a" shown (if (= shown 1) "" "s"))]
-         [(null? rows-cells) (format "no more rows (~a total)" matched)]
-         [else (format "rows ~a–~a · complete (~a total)"
-                       (add1 start-index) shown matched)])]
-      ['open
-       (format "rows ~a–~a — `more` continues, `cancel` discards"
-               (add1 start-index) shown)]
-      ['budget
-       (format "~a row~a before the work budget; narrow the query or use ?count"
-               shown (if (= shown 1) "" "s"))]))
-  (hash-set*
-   (text-result
-    (if pattern
-        "Query"
-        (format "Query · (~a)" (string-join (map ~a vars) " ")))
-    (cons header numbered)
-    #:kind "query")
-   'query-mode "rows"
-   'query-status (~a status)
-   'query-matched matched
-   'query-shown shown))
+  ;; the first page leads with the set, its name and size; a later page
+  ;; says which rows it holds
+  (define head-lines
+    (cond
+      [(zero? start-index)
+       (cons (set-headline set)
+             (match status
+               ['complete '()]
+               ['open (list (format "rows 1–~a shown — `more` continues, `cancel` discards"
+                                    shown))]
+               ['budget (list (format "~a shown before the work budget; narrow the query"
+                                      shown))]))]
+      [else
+       (define header
+         (match status
+           ['complete
+            (if (null? rows-cells)
+                (format "no more rows (~a total)" matched)
+                (format "rows ~a–~a · complete (~a total)"
+                        (add1 start-index) shown matched))]
+           ['open
+            (format "rows ~a–~a — `more` continues, `cancel` discards"
+                    (add1 start-index) shown)]
+           ['budget
+            (format "~a row~a before the work budget; narrow the query or use ?count"
+                    shown (if (= shown 1) "" "s"))]))
+       (list (if (result-set-name set)
+                 (format "~a · ~a" (result-set-name set) header)
+                 header))]))
+  (define result
+    (hash-set*
+     (text-result
+      (if pattern
+          "Query"
+          (format "Query · (~a)" (string-join (map ~a vars) " ")))
+      (append head-lines numbered)
+      #:kind "query")
+     'query-mode "rows"
+     'query-status (~a status)
+     'query-matched matched
+     'query-shown shown))
+  (if (result-set-name set)
+      ;; the page's values also as a table, for clients that draw one
+      (hash-set* result
+                 'set (set-record state set)
+                 'columns (result-set-columns set)
+                 'rows (if pattern
+                           (for/list ([row (in-list displays)])
+                             (query-fact-cells pattern vars row))
+                           displays))
+      result))
 
-(define (query-register-result state text)
+(define (query-register-result state typed)
+  ;; `as rN` names the set the query makes; `as _` makes none.
+  (define-values (text name) (split-set-name typed))
   ;; At a held stop a query reads the run's working state, and the stopped
   ;; rule's variables stand for their values (frame handles).
   (define rs0 (current-repl-session state))
@@ -1577,15 +1622,17 @@
     (if scope (frame-substituted-query text scope) (values text (hash))))
   ;; grammar refusals need no session, so parse before touching the daemon
   ;; (the handle resolver only fires when a #N actually appears)
-  (define line
-    (parse-query-line source #:resolve-handle (frame-handle-resolver state table)))
+  (define (parse text)
+    (parse-query-line text #:resolve-handle (frame-handle-resolver state table)))
+  (void (parse source))
   (define rs (ensure-session-record! state))
   (discard-query-cursor! rs)
   (define s (repl-session-session rs))
-  (define result (query-register-run state rs s line
-                                     (if plan
-                                         (held-query-boundary-snapshot s plan)
-                                         (query-boundary-snapshot s))))
+  (define snapshot
+    (if plan (held-query-boundary-snapshot s plan) (query-boundary-snapshot s)))
+  (define result
+    (open-result-set! state rs s text parse snapshot name
+                      #:read source #:held? (and plan #t)))
   ;; a frame handle reads back as the variable's value
   (define (unhandled line)
     (for/fold ([line line]) ([(label word) (in-hash table)])
@@ -1600,45 +1647,6 @@
                  'view "held")
       result))
 
-(define (query-register-run state rs s line snapshot)
-  (define catalog (query-catalog-from-boundary snapshot))
-  (define plan (plan-query catalog (query-line-request line)))
-  (define wire (query-plan->wire-string plan))
-  (match (query-request-mode (query-line-request line))
-    ['rows
-     (define id (next-query-id))
-     (define-values (status rows matched)
-       (query-pull-page!
-        s id
-        #:start (format "(query ~a ~a (page ~a) (depth ~a))"
-                        id wire query-page-size query-preview-depth)))
-     (when (eq? status 'open)
-       (set-repl-session-cursor! rs (query-cursor id line (length rows))))
-     (render-query-page state rs line rows status matched 0)]
-    ['count
-     (define-values (exact? matched) (query-run-aggregate! s wire))
-     (hash-set*
-      (text-result
-       "Query count"
-       (list (format "~a~a row~a match"
-                     matched (if exact? "" "+")
-                     (if (= matched 1) "" "s")))
-       #:kind "query")
-      'query-mode "count"
-      'query-matched matched)]
-    ['exists
-     (define-values (exact? matched) (query-run-aggregate! s wire))
-     (define yes? (positive? matched))
-     (hash-set*
-      (text-result
-       "Query exists"
-       (list (cond [yes? "yes — at least one row matches"]
-                   [exact? "no rows match"]
-                   [else "none found before the work budget"]))
-       #:kind "query")
-      'query-mode "exists"
-      'query-matched matched)]))
-
 ;; `more` continues the held cursor; `cancel` discards it.  The handle is
 ;; cleared before pulling so an error mid-pull cannot strand a stale id.
 (define (more-result state)
@@ -1652,10 +1660,9 @@
   (define start (query-cursor-shown cursor))
   (when (eq? status 'open)
     (set-repl-session-cursor!
-     rs (query-cursor (query-cursor-id cursor) (query-cursor-line cursor)
-                      (+ start (length rows)))))
-  (render-query-page state rs (query-cursor-line cursor) rows status matched
-                     start))
+     rs (struct-copy query-cursor cursor [shown (+ start (length rows))])))
+  (render-query-page state rs (query-cursor-set cursor) (query-cursor-line cursor)
+                     rows status matched start))
 
 (define (cancel-result state)
   (define rs (ensure-session-record! state))
@@ -1667,6 +1674,456 @@
                              (query-cursor-shown cursor)
                              (if (= (query-cursor-shown cursor) 1) "" "s")))
                #:kind "query"))
+
+;; ---- result sets ------------------------------------------------------------
+;;
+;; Every query makes a result set: a name, r1, r2, ..., for its rows -- the
+;; witnesses of an existence test, the fact itself of a ground query --
+;; shown by its size and first page (a count shows only its size).  A set
+;; is watched for its session: after each committed change it is re-counted,
+;; as a `watch ?QUERY` intent is, and the change says how it moved.  `sets`
+;; lists them; `show rN` reads a set's rows again; `unwatch rN` and `watch
+;; rN` stop and resume its re-count; `drop rN` forgets it; `keep rN` keeps
+;; its rows as a relation rN in the scratch layer, which later queries name.
+;; A set whose session is gone (`discard session`) is stale: it keeps its
+;; last size and says so.  `?QUERY as rN` names the set; `as _` makes none.
+
+;; text: the query as typed; read: the `?` query whose rows the set holds
+;; (`?(rN V ...)` once kept); columns: as its rows print (set-columns);
+;; kept: the scratch definition, or #f; note: why the set is stale, or #f.
+;; A set read at a held stop is never re-counted.
+(struct result-set
+  (name text [read #:mutable] rs held?
+        [count #:mutable] [exact? #:mutable] [live? #:mutable]
+        [note #:mutable] [kept #:mutable] [columns #:mutable])
+  #:transparent)
+
+(struct set-registry (sets [made #:mutable]))
+
+(define max-live-sets 8)
+(define max-result-sets 100)
+
+(define (result-sets state)
+  (or (server-state-results state)
+      (let ([registry (set-registry (make-hash) 0)])
+        (set-server-state-results! state registry)
+        registry)))
+
+(define (set-number set) (string->number (substring (result-set-name set) 1)))
+
+(define (ordered-sets state)
+  (sort (hash-values (set-registry-sets (result-sets state))) < #:key set-number))
+
+(define (result-set-named state name)
+  (hash-ref (set-registry-sets (result-sets state)) (string-trim name) #f))
+
+(define (split-set-name text)
+  (match (regexp-match #px"^(.*?)[[:space:]]+as[[:space:]]+(r[0-9]+|_)[[:space:]]*$"
+                       (string-trim text))
+    [(list _ query name) (values query name)]
+    [_ (values (string-trim text) #f)]))
+
+;; `?count BODY` and `?exists BODY` hold the rows of `? BODY`.
+(define (set-read-text text)
+  (regexp-replace #px"^\\?(?:count|exists)(?![[:alnum:]])" (string-trim text) "?"))
+
+(define (set-stale state set)
+  (or (result-set-note set)
+      (and (not (memq (result-set-rs set)
+                      (hash-values (server-state-sessions state))))
+           "its session was discarded")))
+
+(define (set-size-text set)
+  (define n (result-set-count set))
+  (cond
+    [(not (result-set-exact? set)) (format "~a+ rows" n)]
+    [(zero? n) "no rows"]
+    [(= n 1) "1 row"]
+    [else (format "~a rows" n)]))
+
+(define (set-headline set)
+  (if (result-set-name set)
+      (format "~a · ~a" (result-set-name set) (set-size-text set))
+      (set-size-text set)))
+
+(define (set-record state set)
+  (define stale (set-stale state set))
+  (hasheq 'name (result-set-name set)
+          'query (result-set-text set)
+          'read (result-set-read set)
+          'count (result-set-count set)
+          'exact (result-set-exact? set)
+          'live (and (result-set-live? set) (not stale))
+          'stale (or stale 'null)
+          'held (result-set-held? set)
+          'relation (if (result-set-kept set) (result-set-name set) 'null)
+          'database (or (repl-session-database (result-set-rs set)) "scratch")))
+
+;; The next free name, skipping a relation's; taken when the set is added.
+(define (next-set-name state snapshot)
+  (define registry (result-sets state))
+  (let loop ([n (add1 (set-registry-made registry))])
+    (define name (format "r~a" n))
+    (if (or (hash-has-key? (set-registry-sets registry) name)
+            (hash-has-key? (query-boundary-declarations snapshot) name))
+        (loop (add1 n))
+        name)))
+
+;; A set's size: its read query's count, or -- with no variable to show --
+;; 1 when the body matches at all: the fact itself, once.
+(define (count-set-rows s snapshot line)
+  (define request (query-line-request line))
+  (define ground? (eq? (query-request-mode request) 'exists))
+  (define counted
+    (if ground?
+        request
+        (struct-copy query-request request [mode 'count] [project '()])))
+  (define plan (plan-query (query-catalog-from-boundary snapshot) counted))
+  (define-values (exact? matched)
+    (query-run-aggregate! s (query-plan->wire-string plan)))
+  (values exact? (if ground? (min matched 1) matched)))
+
+;; Register SET, forgetting the oldest beyond the bound, and keep at most
+;; max-live-sets of its session's sets live.  Returns lines saying which
+;; sets stopped being watched.
+(define (add-result-set! state set)
+  (define registry (result-sets state))
+  (define table (set-registry-sets registry))
+  (hash-set! table (result-set-name set) set)
+  (set-set-registry-made! registry (max (set-registry-made registry) (set-number set)))
+  (define ordered (ordered-sets state))
+  (for ([old (in-list ordered)]
+        [_ (in-range (- (length ordered) max-result-sets))])
+    (hash-remove! table (result-set-name old)))
+  (cap-live-sets! state (result-set-rs set)))
+
+(define (cap-live-sets! state rs)
+  (define live
+    (for/list ([set (in-list (ordered-sets state))]
+               #:when (and (eq? (result-set-rs set) rs) (result-set-live? set)))
+      set))
+  (for/list ([old (in-list live)]
+             [_ (in-range (- (length live) max-live-sets))])
+    (set-result-set-live?! old #f)
+    (format "~a is no longer watched: ~a sets stay live (`watch ~a` resumes it)"
+            (result-set-name old) max-live-sets (result-set-name old))))
+
+;; The first answer of a new set.  `text` is the query as typed; `source`,
+;; the text read -- at a held stop, with the stop's frame handles, which
+;; `parse` resolves; `name` is the name asked for, if any: `_` reads the
+;; rows as a set would, and keeps no set.
+(define (open-result-set! state rs s text parse snapshot name
+                          #:read [source text] #:held? [held? #f])
+  (define mode (query-request-mode (query-line-request (parse source))))
+  (define transient? (equal? name "_"))
+  (define set
+    (result-set (cond [transient? #f] [name] [else (next-set-name state snapshot)])
+                text (set-read-text source) rs held? 0 #t
+                (not (or held? transient?)) #f #f '()))
+  ;; a query that fails makes no set
+  (define result
+    (read-result-set state set s (parse (result-set-read set)) snapshot
+                     #:rows? (not (eq? mode 'count))))
+  (define unwatched (if transient? '() (add-result-set! state set)))
+  (hash-set result 'lines (append (hash-ref result 'lines) unwatched)))
+
+;; Count SET's rows, then show the first page of them -- or, for a count,
+;; only the count.  A ground set's one row is its query's body.
+(define (read-result-set state set s line snapshot #:rows? [rows? #t])
+  (define-values (exact? count) (count-set-rows s snapshot line))
+  (set-result-set-count! set count)
+  (set-result-set-exact?! set exact?)
+  (set-result-set-columns! set (map column-record (set-columns line snapshot)))
+  (define request (query-line-request line))
+  (define (answer title lines . fields)
+    (define result
+      (apply hash-set* (text-result title lines #:kind "query")
+             'query-matched count fields))
+    (if (result-set-name set)
+        (hash-set* result 'set (set-record state set) 'columns (result-set-columns set))
+        result))
+  (cond
+    [(not rows?)
+     (answer "Query count" (list (set-headline set)) 'query-mode "count")]
+    [(eq? (query-request-mode request) 'exists)
+     (answer "Query"
+             (cons (set-headline set)
+                   (if (positive? count)
+                       (list (format "1  ~a"
+                                     (string-trim (substring (result-set-read set) 1))))
+                       '()))
+             'query-mode "rows" 'query-status "complete"
+             'query-shown (min count 1))]
+    [else
+     (define rs (result-set-rs set))
+     (define wire
+       (query-plan->wire-string
+        (plan-query (query-catalog-from-boundary snapshot) request)))
+     (define id (next-query-id))
+     (define-values (status rows matched)
+       (query-pull-page!
+        s id
+        #:start (format "(query ~a ~a (page ~a) (depth ~a))"
+                        id wire query-page-size query-preview-depth)))
+     (when (eq? status 'open)
+       (set-repl-session-cursor! rs (query-cursor id line (length rows) set)))
+     (render-query-page state rs set line rows status matched 0)]))
+
+;; After a committed change, re-count every live set of RS and say how each
+;; stands: one record per set, its size before and after.
+(define (settle-result-sets! state rs)
+  (define live
+    (for/list ([set (in-list (ordered-sets state))]
+               #:when (and (eq? (result-set-rs set) rs) (result-set-live? set)
+                           (not (result-set-note set))))
+      set))
+  (define s (repl-session-session rs))
+  (define snapshot
+    (and (pair? live)
+         (with-handlers ([exn:fail? (lambda (_) #f)])
+           (query-boundary-snapshot s))))
+  (for/list ([set (in-list live)])
+    (define before (result-set-count set))
+    (with-handlers
+        ([exn:fail?
+          (lambda (e)
+            (set-result-set-note! set (format "its query no longer reads: ~a"
+                                              (exn-message e)))
+            (hasheq 'name (result-set-name set) 'before before 'after 'null
+                    'exact #f 'stale (result-set-note set)))])
+      (unless snapshot (error '? "no committed boundary to read"))
+      (define-values (exact? after)
+        (count-set-rows s snapshot
+                        (parse-query-line (result-set-read set)
+                                          #:resolve-handle
+                                          (query-handle-resolver state))))
+      (set-result-set-count! set after)
+      (set-result-set-exact?! set exact?)
+      (hasheq 'name (result-set-name set) 'before before 'after after
+              'exact exact? 'stale 'null))))
+
+;; "r3: +2 rows (now 5)" for each set a change moved.
+(define (set-change-lines change)
+  (for/list ([record (in-list (hash-ref change 'sets '()))]
+             #:unless (equal? (hash-ref record 'before) (hash-ref record 'after)))
+    (define name (hash-ref record 'name))
+    (define after (hash-ref record 'after))
+    (cond
+      [(eq? after 'null) (format "~a: stale — ~a" name (hash-ref record 'stale))]
+      [else
+       (define delta (- after (hash-ref record 'before)))
+       (format "~a: ~a row~a (now ~a~a)" name (signed-count delta)
+               (if (= (abs delta) 1) "" "s") after
+               (if (hash-ref record 'exact) "" "+"))])))
+
+(define (set-status-text state set)
+  (define stale (set-stale state set))
+  (define database (or (repl-session-database (result-set-rs set)) "scratch"))
+  (string-join
+   (filter values
+           (list (set-size-text set)
+                 (cond [stale (format "stale: ~a" stale)]
+                       [(result-set-held? set) "read at a held stop"]
+                       [(result-set-live? set) "live"]
+                       [else "not watched"])
+                 (and (result-set-kept set) "kept as a relation")
+                 (and (not stale)
+                      (not (eq? (result-set-rs set) (current-repl-session state)))
+                      (format "in ~a" database))))
+   " · "))
+
+(define (sets-result state)
+  (define sets (ordered-sets state))
+  (hash-set
+   (text-result
+    "Result sets"
+    (if (null? sets)
+        (list "none yet; every ?query makes one")
+        (for/list ([set (in-list sets)])
+          (format "~a  ~a · ~a" (result-set-name set) (result-set-text set)
+                  (set-status-text state set))))
+    #:kind "sets")
+   'sets (for/list ([set (in-list sets)]) (set-record state set))))
+
+;; A set's rows are read in its own session, made current, at a commit.
+(define (check-set-readable! who state set)
+  (define stale (set-stale state set))
+  (define database (or (repl-session-database (result-set-rs set)) "scratch"))
+  (when stale
+    (error who "~a is stale (~a); it was ~a" (result-set-name set) stale
+           (set-size-text set)))
+  (when (result-set-held? set)
+    (error who "~a was read at a held stop; ask its query again"
+           (result-set-name set)))
+  (unless (eq? (result-set-rs set) (current-repl-session state))
+    (error who "~a belongs to ~a; `open ~a` first"
+           (result-set-name set) database database)))
+
+(define (show-set-result state set)
+  (check-set-readable! 'show state set)
+  (define s (repl-session-session (result-set-rs set)))
+  (read-result-set state set s
+                   (parse-query-line (result-set-read set)
+                                     #:resolve-handle (query-handle-resolver state))
+                   (query-boundary-snapshot s)))
+
+(define (watch-set-result state set live?)
+  (define name (result-set-name set))
+  (cond
+    [live?
+     (check-set-readable! 'watch state set)
+     (set-result-set-live?! set #t)
+     (text-result (format "Watch ~a" name)
+                  (cons (format "~a · changes report after each commit"
+                                (set-headline set))
+                        (cap-live-sets! state (result-set-rs set)))
+                  #:kind "sets")]
+    [else
+     (set-result-set-live?! set #f)
+     (text-result (format "Watch ~a" name)
+                  (list (format "~a is no longer watched; `show ~a` still reads it"
+                                name name))
+                  #:kind "sets")]))
+
+(define (drop-set-result state set)
+  (define name (result-set-name set))
+  (hash-remove! (set-registry-sets (result-sets state)) name)
+  (text-result
+   (format "Dropped ~a" name)
+   (cons (format "~a  ~a — forgotten" name (result-set-text set))
+         (if (result-set-kept set)
+             (list (format "its relation ~a stays in the scratch layer; `clear scratch` retracts it"
+                           name))
+             '()))
+   #:kind "sets"))
+
+;; ---- keeping a set as a relation ---------------------------------------------
+
+;; Slog text for a query term: a variable, `_` for a wildcard, or a literal.
+(define (query-term-text term)
+  (match term
+    [(? symbol?) (if (symbol-interned? term) (symbol->string term) "_")]
+    [(query-literal 'string text) (~s text)]
+    [(query-literal (or 'integer 'real) text) text]
+    [_ (error 'keep "a #N value has no Slog spelling; name the value in the query")]))
+
+(define guard-kind-texts
+  (hash 'lt "<" 'le "<=" 'gt ">" 'ge ">=" 'neq "/=" 'eq "="))
+
+;; A query's clauses as a rule body.
+(define (query-body-text request)
+  (define (terms ts) (string-join (map query-term-text ts) " "))
+  (string-join
+   (append
+    (for/list ([atom (in-list (query-request-atoms request))])
+      (format "~a(~a ~a)" (if (query-atom-negated? atom) "~" "")
+              (query-atom-relation atom) (terms (query-atom-terms atom))))
+    (for/list ([guard (in-list (query-request-guards request))])
+      (format "(~a ~a ~a)" (hash-ref guard-kind-texts (query-guard-kind guard))
+              (query-term-text (query-guard-left guard))
+              (query-term-text (query-guard-right guard))))
+    (for/list ([compute (in-list (query-request-computes request))])
+      (format "(= ~a (~a ~a))" (query-term-text (query-compute-output compute))
+              (query-compute-name compute) (terms (query-compute-args compute)))))
+   " "))
+
+;; A set's columns as its rows print: when they print as facts, the atoms'
+;; own terms, else the projected variables -- each (term name type), typed
+;; by the first positive atom column it is drawn from, or #f.
+(define (set-columns line snapshot)
+  (define request (query-line-request line))
+  (define declarations (query-boundary-declarations snapshot))
+  (define positive
+    (filter (lambda (atom) (not (query-atom-negated? atom)))
+            (query-request-atoms request)))
+  (define (column-type relation i)
+    (define declaration (hash-ref declarations relation #f))
+    (define types (if declaration (query-declaration-field-types declaration) '()))
+    (define type (and (< i (length types)) (list-ref types i)))
+    (and type (not (eq? type 'any)) type))
+  (if (or (query-line-pattern line) (eq? (query-request-mode request) 'exists))
+      (for*/list ([atom (in-list positive)]
+                  [(term i) (in-indexed (query-atom-terms atom))])
+        (list term (format "~a.~a" (query-atom-relation atom) (add1 i))
+              (column-type (query-atom-relation atom) i)))
+      (for/list ([var (in-list (query-line-project-vars line))])
+        (list var (~a var)
+              (for*/first ([atom (in-list positive)]
+                           [(term i) (in-indexed (query-atom-terms atom))]
+                           #:when (eq? term var))
+                (column-type (query-atom-relation atom) i))))))
+
+(define (variable? term) (and (symbol? term) (symbol-interned? term)))
+
+(define (column-record column)
+  (match-define (list term name type) column)
+  (hasheq 'name name
+          'var (if (variable? term) (~a term) 'null)
+          'type (if type (~a type) 'null)))
+
+;; The scratch definition that keeps a set's rows as the relation NAME:
+;; table (rN T ...) rule (rN H ...) <-- BODY, its head the set's columns.
+;; Returns the definition, the `?` query that reads the relation back, and
+;; its columns.
+(define (set-definition name line snapshot)
+  (define head (set-columns line snapshot))
+  (for ([column (in-list head)])
+    (match-define (list term column-name type) column)
+    (when (and (symbol? term) (not (variable? term)))
+      (error 'keep "`_` matches without naming a value to keep"))
+    (unless type
+      (error 'keep "the type of ~a is not known" column-name)))
+  ;; read back by variable: the head's own, or a fresh one for a constant
+  (define named
+    (for/list ([column (in-list head)] #:when (symbol? (first column)))
+      (~a (first column))))
+  (define vars
+    (for/fold ([vars '()] #:result (reverse vars))
+              ([column (in-list head)] [i (in-naturals 1)])
+      (define term (first column))
+      (let loop ([var (if (symbol? term) (~a term) (format "C~a" i))])
+        (if (or (member var vars) (and (not (symbol? term)) (member var named)))
+            (loop (string-append var "_"))
+            (cons var vars)))))
+  (values
+   (format "table (~a ~a) rule (~a ~a) <-- ~a"
+           name (string-join (map (lambda (c) (~a (third c))) head) " ")
+           name (string-join (map (lambda (c) (query-term-text (first c))) head) " ")
+           (query-body-text (query-line-request line)))
+   (format "?(~a ~a)" name (string-join vars " "))
+   (for/list ([column (in-list head)] [var (in-list vars)])
+     (hasheq 'name (second column) 'var var 'type (~a (third column))))))
+
+(define (keep-set-result state set)
+  (check-set-readable! 'keep state set)
+  (define name (result-set-name set))
+  (when (result-set-kept set)
+    (error 'keep "~a is already kept as a relation" name))
+  (define rs (result-set-rs set))
+  (discard-query-cursor! rs)
+  (define s (repl-session-session rs))
+  (define-values (definition read columns)
+    (set-definition name (parse-query-line (result-set-read set))
+                    (query-boundary-snapshot s)))
+  (define kept (scratch-register-result state definition "table"))
+  (set-result-set-kept! set definition)
+  (set-result-set-read! set read)
+  (set-result-set-columns! set columns)
+  ;; a relation holds each row once
+  (define-values (exact? count)
+    (count-set-rows s (query-boundary-snapshot s) (parse-query-line read)))
+  (set-result-set-count! set count)
+  (set-result-set-exact?! set exact?)
+  (define headline
+    (format "~a · kept as relation ~a; read it with ~a" (set-headline set) name read))
+  (hash-set* kept
+             'title (format "Kept ~a" name)
+             'lines (cons headline (hash-ref kept 'lines))
+             'brief-lines (cons headline (hash-ref kept 'brief-lines
+                                                   (lambda () (hash-ref kept 'lines))))
+             'set (set-record state set)
+             'definition definition
+             'columns columns))
 
 (define (csv-field text)
   (if (regexp-match? #px"[,\"\r\n]" text)
@@ -3748,11 +4205,13 @@
   ;; watches settle after the event: in-run hits from the captured stream,
   ;; relation intents rebound to successor keys, query intents re-counted
   (define watch-notes (settle-watches! state rs events))
+  ;; and every live result set of the session is re-counted
+  (define sets (settle-result-sets! state rs))
+  (define watched
+    (if (null? watch-notes) change (hash-set change 'watches watch-notes)))
   (values value
           events
-          (if (null? watch-notes)
-              change
-              (hash-set change 'watches watch-notes))))
+          (if (null? sets) watched (hash-set watched 'sets sets))))
 
 (define (change-relation-line record)
   (define name (hash-ref record 'relation))
@@ -3834,7 +4293,8 @@
                                         (hash-ref record 'detail)) " "))
                    "; ")))))
    ;; the operator's heartbeat: watch hits, rebinds, and query deltas
-   (hash-ref change 'watches '())))
+   (hash-ref change 'watches '())
+   (set-change-lines change)))
 
 (define (brief-change-summary-lines change)
   ;; The structured change record remains authoritative and the Rust client
@@ -3856,7 +4316,8 @@
   (append
    (list (if (string=? status "settled") "committed" status))
    refusal-lines
-   (hash-ref change 'watches '())))
+   (hash-ref change 'watches '())
+   (set-change-lines change)))
 
 (define (semantic-text-result title lines change #:kind kind)
   (hash-set
@@ -4078,10 +4539,22 @@
   (session-close! (repl-session-session rs))
   (hash-remove! sessions key)
   (set-server-state-current! state #f)
+  ;; its result sets keep their last sizes, marked stale
+  (define stale
+    (for/list ([set (in-list (ordered-sets state))]
+               #:when (eq? (result-set-rs set) rs))
+      (result-set-name set)))
   (text-result
    (format "Discarded ~a" (session-display-name key rs))
-   (list "the in-memory session and its unsaved extensions were closed"
-         "saved database files were not changed")
+   (append
+    (list "the in-memory session and its unsaved extensions were closed"
+          "saved database files were not changed")
+    (if (null? stale)
+        '()
+        (list (format "~a ~a stale now; `sets` lists ~a"
+                      (string-join stale ", ")
+                      (if (= (length stale) 1) "is" "are")
+                      (if (= (length stale) 1) "it" "them")))))
    #:kind "discard"))
 
 (define (mode-result state argument)
@@ -4547,7 +5020,7 @@
 (define keep-cursor-verbs
   '(":help" "help" "?" ":ping" ":status" "library" "current" "resident"
     "sessions" "mode" ":share" ":clear" ":theme" "more" "cancel" "scratch" "keep"
-    "tiers" "code" "stage"))
+    "tiers" "code" "stage" "sets"))
 
 ;; ---- inspecting a held stop, without moving it ------------------------------
 ;;
@@ -5287,7 +5760,9 @@
     [(or "tables" "rels" "relations") (tables-result state argument)]
     [(or "state" "states") (state-result state argument)]
     ["count" (count-result state argument)]
-    ["show" (show-result state argument)]
+    ["show"
+     (define set (result-set-named state argument))
+     (if set (show-set-result state set) (show-result state argument))]
     [(or "query" "has") (query-result state argument)]
     ["explain" (explain-result state argument)]
     ["more" (more-result state)]
@@ -5304,11 +5779,18 @@
     ["calls" (demand-result state argument)]
     ["logs" (logs-result state argument)]
     [(or "p" "print") (print-result state argument)]
-    ["watch" (watch-result state argument)]
-    ["unwatch" (unwatch-result state argument)]
+    ["watch"
+     (define set (result-set-named state argument))
+     (if set (watch-set-result state set #t) (watch-result state argument))]
+    ["unwatch"
+     (define set (result-set-named state argument))
+     (if set (watch-set-result state set #f) (unwatch-result state argument))]
+    ["sets" (sets-result state)]
     ["watches" (watches-result state)]
     ["scratch" (scratch-show-result state)]
-    ["keep" (keep-scratch-result state argument)]
+    ["keep"
+     (define set (result-set-named state argument))
+     (if set (keep-set-result state set) (keep-scratch-result state argument))]
     ["clear" (clear-scratch-result state argument)]
     ["tiers" (tiers-result state)]
     ["code" (code-result state argument)]
@@ -5497,6 +5979,9 @@
          change
          #:kind "mutation")]
        [_ (error 'rename "expected: rename FROM TO")])]
+    ["drop"
+     #:when (result-set-named state argument)
+     (drop-set-result state (result-set-named state argument))]
     ["drop"
      (match (read-command-data 'drop argument)
        [(list rel)
@@ -5903,6 +6388,9 @@
       (check-false (held? "break r1"))
       (check-true (held? "run tests/reach.slog"))
       (check-true (held? "?count (path X Y)"))
+      ;; a set read at a held stop is never re-counted
+      (check-regexp-match #px"r1  \\?count \\(path X Y\\) · 1 row · read at a held stop"
+                          (string-join (hash-ref (dispatch-command state "sets") 'lines)))
       (check-regexp-match #px"a run is held"
                           (string-join (hash-ref (dispatch-command state ":status") 'lines)))
       (check-false (held? "abort"))
@@ -6407,7 +6895,7 @@
     (check-regexp-match
      #px"tuple is absent; nothing was applied, and the staged changes are kept"
      transcript)
-    (check-regexp-match #px"◆ Query\n  1 row\n  1  \\(edge 9 9\\)" transcript)
+    (check-regexp-match #px"◆ Query\n  r[0-9]+ · 1 row\n  1  \\(edge 9 9\\)" transcript)
     (check-regexp-match #px"› del edge 7 7\n! Command failed" transcript)
     (check-false
      (regexp-match? #px"pending" (last (string-split transcript "› :status")))))
@@ -6452,14 +6940,14 @@
                   "?count (path X Y)"
                   ":quit")))])
     ;; count is exact at completion
-    (check-regexp-match #px"◆ Query count\n  6 rows match" transcript)
+    (check-regexp-match #px"◆ Query count\n  r[0-9]+ · 6 rows" transcript)
     ;; existence, spelled and ground-sugared
-    (check-regexp-match #px"◆ Query exists\n  yes" transcript)
-    (check-regexp-match #px"◆ Query exists\n  no rows match" transcript)
+    (check-regexp-match #px"◆ Query\n  r2 · 1 row\n  1  \\(edge 1 2\\)" transcript)
+    (check-regexp-match #px"◆ Query\n  r3 · no rows\n" transcript)
     ;; the single-atom sugar substitutes answers into the fact template
-    (check-regexp-match #px"1 row\n  1  \\(edge 1 2\\)" transcript)
+    (check-regexp-match #px"r[0-9]+ · 1 row\n  1  \\(edge 1 2\\)" transcript)
     ;; guards ride the audited whitelist
-    (check-regexp-match #px"◆ Query count\n  2 rows match" transcript)
+    (check-regexp-match #px"◆ Query count\n  r[0-9]+ · 2 rows" transcript)
     ;; explain plans without running and reports the boundary identity
     (check-regexp-match #px"◆ Explain query\n  mode: rows\n  boundary: "
                         transcript)
@@ -6469,7 +6957,78 @@
     (check-regexp-match #px"no such value handle: #1" transcript)
     ;; closing the 4-cycle makes path the complete relation on 4 nodes,
     ;; and the query observes it at the post-edit epoch
-    (check-regexp-match #px"◆ Query count\n  16 rows match" transcript))
+    (check-regexp-match #px"◆ Query count\n  r[0-9]+ · 16 rows" transcript))
+
+  ;; Every query makes a result set, watched for its session: its answer
+  ;; leads with the set's name and size, never a bare yes or no; each
+  ;; commit re-counts the live sets and says how they moved; `unwatch`,
+  ;; `drop`, `keep`, and a discarded session act on them.
+  (parameterize ([current-directory repository-root]
+                 [current-environment-variables test-environment])
+    (define state (make-server-state))
+    (define (lines-of line)
+      (string-join (hash-ref (dispatch-command state line) 'lines) "\n"))
+    (dynamic-wind
+      void
+      (lambda ()
+        (void (dispatch-command state "run tests/reach.slog"))
+        ;; a ground query's set holds the fact itself
+        (check-equal? (lines-of "?(edge 1 2)") "r1 · 1 row\n1  (edge 1 2)")
+        (check-equal? (lines-of "?(edge 9 9)") "r2 · no rows")
+        ;; an existence test's set holds its witnesses
+        (check-equal? (lines-of "?exists (edge X 3)") "r3 · 1 row\n1  (edge 2 3)")
+        ;; a count's set leads with its size; its rows come on demand
+        (check-equal? (lines-of "?count (path 1 Y)") "r4 · 3 rows")
+        ;; `query REL V ...` asks for the rows with that prefix
+        (define prefix (dispatch-command state "query edge 2"))
+        (check-equal? (hash-ref (hash-ref prefix 'set) 'query) "?(edge 2 X2)")
+        (check-equal? (for/list ([column (in-list (hash-ref prefix 'columns))])
+                        (list (hash-ref column 'name) (hash-ref column 'var)
+                              (hash-ref column 'type)))
+                      '(("edge.1" null "int") ("edge.2" "X2" "int")))
+        (check-equal? (hash-ref prefix 'rows) '(("2" "3")))
+        ;; `as rN` names the set; `as _` makes none
+        (check-regexp-match #px"^r9 · 2 rows"
+                            (lines-of "? (path X Y) (edge Y 4) -> (X) as r9"))
+        (check-equal? (lines-of "?count (edge X Y) as _") "3 rows")
+        (check-equal? (lines-of "?(edge 1 2) as _") "1 row\n1  (edge 1 2)")
+        (check-regexp-match #px"^r10 · 3 rows" (lines-of "?(path X 4)"))
+        ;; a commit re-counts the live sets; an unwatched one is left alone
+        (check-regexp-match #px"r10 is no longer watched" (lines-of "unwatch r10"))
+        (define added (dispatch-command state "add edge 4 5"))
+        (define brief (string-join (hash-ref added 'brief-lines) "\n"))
+        (check-regexp-match #px"r4: \\+1 row \\(now 4\\)" brief)
+        (check-false (regexp-match? #px"r10:" brief))
+        (check-equal? (for/first ([record (in-list (hash-ref (hash-ref added 'change) 'sets))]
+                                  #:when (equal? (hash-ref record 'name) "r4"))
+                        (list (hash-ref record 'before) (hash-ref record 'after)))
+                      '(3 4))
+        (check-regexp-match #px"(?m:^r10  \\?\\(path X 4\\) · 3 rows · not watched$)"
+                            (lines-of "sets"))
+        ;; `show` reads a set's rows again
+        (check-regexp-match #px"^r4 · 4 rows\n(?s:.*)\\(path 1 5\\)" (lines-of "show r4"))
+        ;; `keep` makes the rows a relation named for the set, which later
+        ;; queries name
+        (check-equal? (hash-ref (dispatch-command state "keep r9") 'definition)
+                      "table (r9 int) rule (r9 X) <-- (path X Y) (edge Y 4)")
+        (check-equal? (lines-of "?count (r9 X)") "r11 · 2 rows")
+        ;; `drop` forgets a set
+        (check-regexp-match #px"r2  \\?\\(edge 9 9\\) — forgotten" (lines-of "drop r2"))
+        (check-false (regexp-match? #px"(?m:^r2 )" (lines-of "sets")))
+        ;; a query that fails makes no set and takes no name
+        (check-exn #px"unknown relation" (lambda () (dispatch-command state "?(nope X)")))
+        (check-regexp-match #px"^r12 · " (lines-of "?(edge 1 X)"))
+        ;; at most eight sets of a session stay live
+        (void (dispatch-command state "?(edge X Y)"))
+        (check-regexp-match #px"r1 is no longer watched: 8 sets stay live"
+                            (lines-of "?(path X Y)"))
+        ;; discarding the session leaves its sets stale, not empty
+        (check-regexp-match #px"r1, r3, r4, .* are stale now" (lines-of "discard session"))
+        (check-regexp-match
+         #px"(?m:^r4  \\?count \\(path 1 Y\\) · 4 rows · stale: its session was discarded$)"
+         (lines-of "sets"))
+        (check-exn #px"r4 is stale" (lambda () (dispatch-command state "show r4"))))
+      (lambda () (void (dispatch-command state ":quit")))))
 
   ;; A first run's later strata see every row its first stratum wrote, though
   ;; that stratum kept `goal` in (1 0) alone and the later ones read it
@@ -6486,11 +7045,11 @@
                   "?count (answer G N)"
                   ":quit")))])
     (check-regexp-match
-     #px"› \\?count \\(goal G N\\)\n◆ Query count\n  3 rows match" transcript)
+     #px"› \\?count \\(goal G N\\)\n◆ Query count\n  r[0-9]+ · 3 rows" transcript)
     (check-regexp-match
-     #px"› \\?count \\(every G\\)\n◆ Query count\n  3 rows match" transcript)
+     #px"› \\?count \\(every G\\)\n◆ Query count\n  r[0-9]+ · 3 rows" transcript)
     (check-regexp-match
-     #px"› \\?count \\(answer G N\\)\n◆ Query count\n  3 rows match" transcript))
+     #px"› \\?count \\(answer G N\\)\n◆ Query count\n  r[0-9]+ · 3 rows" transcript))
 
   ;; The oracle and the value writer decode formulas a first run destructures
   ;; (land, lle: id-leading join orderings of their own) and mints in later
@@ -6506,12 +7065,12 @@
                   "?(part \"neither\" F)"
                   ":quit")))])
     (check-regexp-match
-     #px"◆ Query\n  2 rows\n  1  \\(answer \"(both|neither)\"" transcript)
+     #px"◆ Query\n  r[0-9]+ · 2 rows\n  1  \\(answer \"(both|neither)\"" transcript)
     (check-regexp-match #px"\\(answer \"both\" \\(_enum \"sat\"\\)" transcript)
     (check-regexp-match #px"\\(answer \"neither\" \\(_enum \"unsat\"\\)"
                         transcript)
     (check-regexp-match
-     #px"› \\?count \\(error E\\)\n◆ Query count\n  0 rows match"
+     #px"› \\?count \\(error E\\)\n◆ Query count\n  r[0-9]+ · no rows"
      transcript)
     (check-regexp-match #px"\\(part \"neither\" \\(llt \\(ic 3\\) \\(ladd \\(ic 2\\) \\(ic 1\\)\\)\\)"
                         transcript))
@@ -6551,8 +7110,8 @@
                    ":quit")))])
     ;; page one holds the cursor; `more` finishes it; a third `more` refuses
     (check-regexp-match
-     #px"rows 1–50 — `more` continues, `cancel` discards" transcript)
-    (check-regexp-match #px"rows 51–66 · complete \\(66 total\\)" transcript)
+     #px"r1 · 66 rows\n  rows 1–50 shown — `more` continues, `cancel` discards" transcript)
+    (check-regexp-match #px"r1 · rows 51–66 · complete \\(66 total\\)" transcript)
     (check-regexp-match #px"no open query cursor" transcript)
     ;; `cancel` reports what was shown
     (check-regexp-match #px"◆ Query cursor\n  discarded after 50 rows"
@@ -6572,8 +7131,8 @@
     (check-false (regexp-match? #px"digs further" transcript))
     ;; #1 splices back into queries as a preloaded word: ground existence
     ;; through the struct value, and an eq guard that re-yields its row
-    (check-regexp-match #px"◆ Query exists\n  yes" transcript)
-    (check-regexp-match #px"◆ Query · \\(D\\)\n  1 row" transcript)
+    (check-regexp-match #px"◆ Query\n  r[0-9]+ · 1 row\n  1  \\(deep #1\\)" transcript)
+    (check-regexp-match #px"◆ Query · \\(D\\)\n  r[0-9]+ · 1 row" transcript)
     ;; uses/find walk every user relation's master index for one value:
     ;; a scalar by typed literal, a struct by its handle's word, and a
     ;; probe-miss honestly appears nowhere
@@ -6689,7 +7248,7 @@
     (check-regexp-match #px"hop2 \\+2 \\(2 -> 4\\)" transcript)
     (check-regexp-match #px"hop4 \\+4 \\(new -> 4|hop4 \\+4 \\(0 -> 4"
                         transcript)
-    (check-regexp-match #px"◆ Query count\n  4 rows match" transcript)
+    (check-regexp-match #px"◆ Query count\n  r[0-9]+ · 4 rows" transcript)
     ;; the layer lists its fragments in order
     (check-regexp-match
      #px"◆ Scratch\n  1  table \\(hop2 int int\\)[^\n]*\n  2  table \\(hop4 int int\\)[^\n]*\n  2 fragments"
@@ -6746,10 +7305,10 @@
      #px"1 scratch fragment saved as ordinary history" transcript)
     ;; both the live and the replayed boundary yield the struct-matched leaf
     (check-regexp-match
-     #px"◆ Query\n  1 row\n  1  \\(leaf 7\\)\n(?s:.*)Opened r3_scratch_replay(?s:.*)◆ Query\n  1 row\n  1  \\(leaf 7\\)"
+     #px"◆ Query\n  r[0-9]+ · 1 row\n  1  \\(leaf 7\\)\n(?s:.*)Opened r3_scratch_replay(?s:.*)◆ Query\n  r[0-9]+ · 1 row\n  1  \\(leaf 7\\)"
      transcript)
     ;; the replayed database stays a live workbench: the edit propagates
-    (check-regexp-match #px"◆ Query count\n  144 rows match" transcript)
+    (check-regexp-match #px"◆ Query count\n  r[0-9]+ · 144 rows" transcript)
     (parameterize ([current-directory repository-root])
       (when (directory-exists? "data/r3_scratch_replay")
         (delete-directory/files "data/r3_scratch_replay"))))
@@ -6822,7 +7381,7 @@
     (check-regexp-match #px"dropped: hop9" transcript)
     ;; the reloaded database re-derives kept history, not the cleared layer
     (check-regexp-match
-     #px"Opened r3_clear_replay(?s:.*)◆ Query count\n  7 rows match"
+     #px"Opened r3_clear_replay(?s:.*)◆ Query count\n  r[0-9]+ · 7 rows"
      transcript)
     (check-regexp-match #px"unknown relation \"hop9\"" transcript)
     ;; a freshly loaded database holds no live scratch ledger
@@ -6852,7 +7411,7 @@
                        "save l01_own_base"
                        ":quit")))
     (check-regexp-match
-     #px"Opened l01_own_base(?s:.*)◆ Query count\n  6 rows match"
+     #px"Opened l01_own_base(?s:.*)◆ Query count\n  r[0-9]+ · 6 rows"
      (transcript (list "open l01_own_base" "?count (path X Y)" ":quit")))
     (parameterize ([current-directory repository-root])
       (delete-directory/files "data/l01_own_base")))
@@ -6926,7 +7485,7 @@
       (check-not-false (memq (third (first pinned)) '(o0 o2)))
       (session-rerun! s 'edge)
       (check-regexp-match
-       #px"6 rows match"
+       #px"r[0-9]+ · 6 rows"
        (string-join (hash-ref (run! "?count (path X Y)") 'lines '()) "\n"))
       (close-server-session! state)))
 
@@ -6966,9 +7525,9 @@
        #px"\\(paused \\(generation [0-9]+\\) \\(scc [0-9]+\\) \\(stratum \"[0-9a-f]+\"\\) \\(iteration 0\\) \\(phase read\\) \\(settled #f\\)[^\n]*\\(cause \\(watch \\(watch-id \"w1\"\\)\\)\\)\\)"
        (first gate-lines))
       ;; committed masters only: the candidate is invisible at the park
-      (check-regexp-match #px"6 rows match" paused-answer)
+      (check-regexp-match #px"r[0-9]+ · 6 rows" paused-answer)
       (check-regexp-match
-       #px"7 rows match"
+       #px"r[0-9]+ · 7 rows"
        (string-join (hash-ref (run! "?count (path X Y)") 'lines) " | "))
       (void (run! "dump ?(path X Y) to out/t5b-watched.csv"))
       (void (run! ":quit"))
@@ -7078,9 +7637,9 @@
          #px"\\(iteration 0\\) \\(phase read\\) \\(settled #f\\)[^\n]*\\(cause \\(watch \\(watch-id \"w1\"\\)\\)\\)\\)"
          park))
       ;; a replayed read has still committed nothing
-      (check-regexp-match #px"6 rows match" replayed-answer)
+      (check-regexp-match #px"r[0-9]+ · 6 rows" replayed-answer)
       (check-regexp-match
-       #px"7 rows match"
+       #px"r[0-9]+ · 7 rows"
        (string-join (hash-ref (run! "?count (path X Y)") 'lines) " | "))
       (void (run! "dump ?(path X Y) to out/t5c-replayed.csv"))
       (void (run! ":quit"))
@@ -7149,20 +7708,20 @@
       (check-regexp-match #px"commit · replay · abort" paused-text)
       (check-regexp-match #px"step \\[match\\|fire\\|emit\\|tuple\\]" paused-text)
       ;; the parked epoch is a place: queries answer committed masters
-      (check-regexp-match #px"6 rows match" (count-line))
+      (check-regexp-match #px"r[0-9]+ · 6 rows" (count-line))
       ;; replay reruns the same read and lands in the same place
       (define replayed (run! "replay"))
       (check-equal? (hash-ref replayed 'kind) "paused")
       (define replay-text (string-join (hash-ref replayed 'lines) "\n"))
       (check-regexp-match #px"iteration 0 · phase read" replay-text)
       (check-regexp-match #px"replayed 1 time" replay-text)
-      (check-regexp-match #px"6 rows match" (count-line))
+      (check-regexp-match #px"r[0-9]+ · 6 rows" (count-line))
       ;; commit finishes the HELD command -- its own summary returns now
       (define committed (run! "commit"))
       (check-not-equal? (hash-ref committed 'kind) "paused")
       (check-regexp-match #px"path \\+1"
                           (string-join (hash-ref committed 'lines) "\n"))
-      (check-regexp-match #px"7 rows match" (count-line))
+      (check-regexp-match #px"r[0-9]+ · 7 rows" (count-line))
       (void (run! ":quit"))
       ;; abort discards the whole change at the gate; the session survives
       (define state2 (make-server-state))
@@ -7175,7 +7734,7 @@
       (check-regexp-match #px"nothing was committed"
                           (string-join (hash-ref aborted 'lines) "\n"))
       (check-regexp-match
-       #px"6 rows match"
+       #px"r[0-9]+ · 6 rows"
        (string-join (hash-ref (run2! "?count (path X Y)") 'lines) " | "))
       (void (run2! ":quit"))))
 
@@ -7217,7 +7776,7 @@
       (check-regexp-match #px"[0-9]+ frames?" frame-text)
       ;; still parked: nothing committed, and frames again is stable
       (check-regexp-match
-       #px"6 rows match"
+       #px"r[0-9]+ · 6 rows"
        (string-join (hash-ref (run! "?count (path X Y)") 'lines) " | "))
       (check-equal? frame-text (text (run! "frames")))
       ;; a SECOND step re-arms at a different granularity: the stop moves
@@ -7238,7 +7797,7 @@
       (check-not-equal? (hash-ref committed 'kind) "paused")
       (check-regexp-match #px"path \\+1" (text committed))
       (check-regexp-match
-       #px"7 rows match"
+       #px"r[0-9]+ · 7 rows"
        (string-join (hash-ref (run! "?count (path X Y)") 'lines) " | "))
       ;; source VARIABLE NAMES at a stop (contract §3's last open half): the
       ;; DebugMap's (regs ...) names each register, so `frames` prints the
@@ -7253,7 +7812,7 @@
       (check-equal? (hash-ref (run! "finish") 'title) "Paused · pre-commit gate")
       (check-not-equal? (hash-ref (run! "abort") 'kind) "paused")
       (check-regexp-match
-       #px"7 rows match"
+       #px"r[0-9]+ · 7 rows"
        (string-join (hash-ref (run! "?count (path X Y)") 'lines) " | "))
       (void (run! ":quit"))))
 
@@ -7309,7 +7868,7 @@
         ;; continue drives the rest to fixpoint; the closure is all 66 pairs
         (define done (run! "continue"))
         (check-not-equal? (hash-ref done 'kind) "paused")
-        (check-regexp-match #px"7140 rows match"
+        (check-regexp-match #px"r[0-9]+ · 7140 rows"
                             (string-join (hash-ref (run! "?count (path X Y)") 'lines) " | "))
         (void (run! ":quit")))
       ;; -- abort: at an interrupt pause the daemon settles the suspended
@@ -7436,7 +7995,7 @@
       (define frames (text (run! "frames")))
       (check-regexp-match #px"emit at r[0-9]+" frames)
       (check-regexp-match #px"77 7" frames)
-      (check-regexp-match #px"6 rows match"
+      (check-regexp-match #px"r[0-9]+ · 6 rows"
                           (text (run! "?count (path X Y)")))
       ;; the hit is counted, and the break is still armed
       (check-regexp-match #px"b1  path · 1 hit" (text (run! "breaks")))
@@ -7668,10 +8227,10 @@
       (check-regexp-match #px"^ea = \\(" (text (run! "ea")))
       (check-exn #px"not a variable of the stopped rule" (lambda () (run! "print zz")))
       (define counted (run! "?count (ret V K)"))
-      (check-regexp-match #px"[1-9][0-9]* rows? match" (text counted))
+      (check-regexp-match #px"^r1 · [1-9][0-9]* rows?" (text counted))
       (check-equal? (hash-ref counted 'view) "held")
       ;; `v` stands for its value: the ret row the stop matched is there
-      (check-regexp-match #px"yes" (text (run! "?exists (ret v _)")))
+      (check-regexp-match #px"^r2 · 1 row\n1  \\(ret \\(lambda" (text (run! "?exists (ret v _)")))
       (check-equal? (list (pipeline-datum s) (text (run! "frames")) (text (run! "breaks")))
                     before)
       (check-not-equal? (hash-ref (run! "continue") 'kind) "error")
@@ -7699,9 +8258,9 @@
       (check-regexp-match #px"refused: replay-unavailable" (text refused))
       ;; a declined replay is not one that happened
       (check-false (regexp-match? #px"replayed" (text refused)))
-      (check-regexp-match #px"6 rows match" (text (run! "?count (path X Y)")))
+      (check-regexp-match #px"r[0-9]+ · 6 rows" (text (run! "?count (path X Y)")))
       (check-regexp-match #px"nothing was committed" (text (run! "abort")))
-      (check-regexp-match #px"6 rows match" (text (run! "?count (path X Y)")))
+      (check-regexp-match #px"r[0-9]+ · 6 rows" (text (run! "?count (path X Y)")))
       (void (run! ":quit"))))
 
   ;; T5 slice (d2): `whynot` -- the failure frontier over committed state.
