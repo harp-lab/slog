@@ -48,6 +48,7 @@ const editor = await createEditor($("editor"), {
     if (form?.keyword === "rule") {
       keys.push(editor.breakpoints().includes(form.line) ? "Debug stops here" : "click the margin to break here");
     }
+    keys.push(structure.keysAt(editor.get(), line)); // paredit and completion
     return keys.join(" · ");
   },
 });

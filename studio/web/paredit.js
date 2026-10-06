@@ -12,6 +12,7 @@
 //                                  state (the catalog after every Run)
 //   setDatabases(names)            the saved databases, from the studio
 //   mountControls(container)       the structured-mode toggle and key help
+//   keysAt(text, line)             a line of the keys for the Alt+H hints
 //
 // Structured mode (balanced typing and the paredit keys) is on unless
 // turned off, and remembered in localStorage. Completion is always on.
@@ -68,6 +69,25 @@ const TYPING = {
   Backspace: paredit.deleteBackward,
   Delete: paredit.deleteForward,
 };
+
+// The keys the Alt+H hints name, with a word each: on a line with a list,
+// the structural ones; anywhere, completion.
+const HINTED = { slurpForward: "slurp", barfForward: "barf", expandSelection: "select", formatForm: "format" };
+
+// One line of hints for `line` (1-based) of `text`.
+export function keysAt(text, line) {
+  const listy = /[([{]/.test(text.split("\n")[line - 1] ?? "");
+  const keys = structured.on && listy
+    ? BINDINGS.filter(([name]) => HINTED[name]).map(([name, chords]) => `${symbols(chords.at(-1))} ${HINTED[name]}`)
+    : [];
+  return [...keys, `${symbols("Alt-/")} complete`].join(" · ");
+}
+
+// "Ctrl-Alt-Right" as ⌃⌥→ on a Mac, as it is elsewhere.
+const symbols = (chord) => (MAC
+  ? chord.replace(/Ctrl-/, "⌃").replace(/Alt-/, "⌥").replace(/Shift-/, "⇧")
+    .replace(/Right$/, "→").replace(/Left$/, "←").replace(/Up$/, "↑").replace(/Down$/, "↓")
+  : chord);
 
 // Structured mode ------------------------------------------------------------
 
