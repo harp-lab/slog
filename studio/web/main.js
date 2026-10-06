@@ -10,6 +10,7 @@ import { createHistory } from "./history.js";
 import { renderEntry } from "./render.js";
 import { createSummary } from "./summary.js";
 import * as structure from "./paredit.js";
+import { createResults } from "./results.js";
 
 const $ = (id) => document.getElementById(id);
 // Local mode's launch token; a server's login rides in a cookie instead.
@@ -71,6 +72,13 @@ const files = createFiles({
 // Every message goes behind the edits already made, so it sees them.
 const send = files.send;
 const versions = createHistory({ send, files });
+const results = createResults({
+  tabs: $("result-tabs"),
+  panel: $("results"),
+  transcript: $("transcript"),
+  send,
+  run: (line) => send({ t: "command", line }),
+});
 
 function save() {
   files.flush();
@@ -95,6 +103,7 @@ const receive = {
     state.session = snapshot.session;
     agent.snapshot(snapshot);
     summary.show(snapshot.summary);
+    results.init(snapshot.results);
     history.load();
     renderStatus();
   },
@@ -121,7 +130,11 @@ const receive = {
     append(renderEntry(entry, {
       inProject: (span) => files.pathOf(span.file) !== null,
       onSpan: (span) => files.reveal(span),
+      onSet: results.show,
     }));
+    // The area follows the newest output: a query's set, else the transcript.
+    if (entry.set) results.show(entry.set);
+    else if (entry.origin === "repl") results.show(null);
     const span = entry.error?.span;
     if (entry.origin === "evaluate" && span) {
       files.mark(span, entry.error.message);
@@ -149,6 +162,8 @@ const receive = {
   databases({ names }) {
     structure.setDatabases(names);
   },
+  "result-set": (view) => results.update(view),
+  rows: (reply) => results.rows(reply),
   scenarios({ names }) {
     const known = state.scenarios;
     state.scenarios = new Map(names.map((name) => [name, known.get(name) ?? {}]));

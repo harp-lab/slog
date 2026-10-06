@@ -9,18 +9,32 @@ const element = (tag, className, text) => {
   return node;
 };
 
-// `entry` is a studio Entry: { origin, line, ms, result, error }.
+// `entry` is a studio Entry: { origin, set?, line, ms, result, error }.
 // `inProject(span)` says whether a source position is in a project file;
-// `onSpan(span)` is called when one is clicked.
-export function renderEntry(entry, { inProject, onSpan }) {
+// `onSpan(span)` is called when one is clicked, `onSet(id)` when the result
+// set a query opened is.
+export function renderEntry(entry, { inProject, onSpan, onSet }) {
   const node = element("div", `entry ${entry.origin}`);
   const line = node.appendChild(element("div", "line", entry.line));
   if (entry.ms >= 100) line.append(element("span", "ms", `${(entry.ms / 1000).toFixed(1)} s`));
   if (entry.error) {
     node.append(renderError(entry.error, inProject, onSpan));
+  } else if (entry.set) {
+    node.append(renderSetLink(entry.set, entry.result, onSet));
   } else if (entry.result) {
     node.append(...renderResult(entry.result));
   }
+  return node;
+}
+
+// A query's rows live in its result set; the transcript links to it.
+function renderSetLink(set, result, onSet) {
+  const shown = result["query-shown"];
+  const rows = result["query-status"] === "complete" ? `${shown} row${shown === 1 ? "" : "s"}` : `${shown}+ rows`;
+  const node = element("div", "note");
+  const link = node.appendChild(element("a", "set", set));
+  link.addEventListener("click", () => onSet(set));
+  node.append(` · ${rows}`);
   return node;
 }
 

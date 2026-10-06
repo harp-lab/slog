@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <title>Slog Studio</title>
 <link rel="stylesheet" href="/static/studio.css">
+<link rel="stylesheet" href="/static/results.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
 </head>
 <body>
@@ -75,7 +76,9 @@
     </div>
     <div id="divider" title="Drag to resize"></div>
     <section id="repl">
+      <nav id="result-tabs" aria-label="Transcript and result sets"></nav>
       <div id="transcript"></div>
+      <div id="results" hidden></div>
       <div id="held" hidden>
         <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="3" width="2.6" height="10" rx=".6"/><rect x="9.4" y="3" width="2.6" height="10" rx=".6"/></svg>
         <span id="held-title"></span>

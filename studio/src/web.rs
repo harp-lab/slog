@@ -74,6 +74,8 @@ fn asset(name: &str) -> Response {
         "summary.js" => (include_str!("../web/summary.js"), "text/javascript; charset=utf-8"),
         "files.js" => (include_str!("../web/files.js"), "text/javascript; charset=utf-8"),
         "history.js" => (include_str!("../web/history.js"), "text/javascript; charset=utf-8"),
+        "results.js" => (include_str!("../web/results.js"), "text/javascript; charset=utf-8"),
+        "results.css" => (include_str!("../web/results.css"), "text/css; charset=utf-8"),
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
     ([(header::CONTENT_TYPE, kind), (header::CACHE_CONTROL, "no-cache")], body).into_response()
