@@ -157,24 +157,6 @@
       (format "  std::vector<std::vector<u64>> ts = { ~a };\n"
               (encode-tuples 'del-batch tuples))
       (format "  d->delBatchAt(\"~a\", ~a, ts);\n" rel pos))]
-    [`(input-state ,rel ,pos (,tuples ...))
-     (string-append
-      "  slog::Database* db = d->db();\n"
-      (format "  std::vector<std::vector<u64>> ts = { ~a };\n"
-              (encode-tuples 'input-state tuples))
-      (format "  d->emitInputStates(\"~a\", ~a, ts);\n" rel pos))]
-    [`(set-overlay ,rel ,pos (,rows ...))
-     (define states (hash 'none 0 'direct 1 'mask 2))
-     (define encoded
-       (for/list ([row (in-list rows)])
-         (match-define `(,state ,tuple) row)
-         (format "{~a, ~a}" (hash-ref states state)
-                 (encode-tuple 'set-overlay tuple))))
-     (string-append
-      "  slog::Database* db = d->db();\n"
-      (format "  std::vector<std::pair<u8, std::vector<u64>>> rows = { ~a };\n"
-              (string-join encoded ", "))
-      (format "  d->setOverlayAt(\"~a\", ~a, rows);\n" rel pos))]
     ;; Test/oracle bulk loader with a stable plugin identity: read whitespace-
     ;; separated signed integers from a fixed file at execution time, encode
     ;; each A-wide row, and install direct overlay support.  This keeps
@@ -198,34 +180,6 @@
       "  }\n"
       "  fclose(f);\n"
       (format "  d->setOverlayAt(\"~a\", -1, rows);\n" rel))]
-    [`(set-overlay-positive ,rel (,tuples ...))
-     (string-append
-      "  slog::Database* db = d->db();\n"
-      (format "  std::vector<std::vector<u64>> ts = { ~a };\n"
-              (encode-tuples 'set-overlay-positive tuples))
-      (format "  d->setOverlayPositive(\"~a\", ts);\n" rel))]
-    [`(set-overlay-negative ,rel (,tuples ...))
-     (string-append
-      "  slog::Database* db = d->db();\n"
-      (format "  std::vector<std::vector<u64>> ts = { ~a };\n"
-              (encode-tuples 'set-overlay-negative tuples))
-      (format "  d->setOverlayNegative(\"~a\", ts);\n" rel))]
-    ;; M4T head edits (docs/m4t-contract.md): foundation-aware retraction
-    ;; for relations dynamic in a recursive stratum of the maintained cone.
-    [`(set-overlay-negative-dred ,rel (,tuples ...))
-     (string-append
-      "  slog::Database* db = d->db();\n"
-      (format "  std::vector<std::vector<u64>> ts = { ~a };\n"
-              (encode-tuples 'set-overlay-negative-dred tuples))
-      (format "  d->setOverlayNegativeDred(\"~a\", ts);\n" rel))]
-    [`(stage-update-transitions signed ,sign ,rels ...)
-     (format "  d->stageUpdateTransitions(std::vector<std::string>{~a}, ~a);\n"
-             (string-join (for/list ([r (in-list rels)])
-                            (format "\"~a\"" r)) ", ") sign)]
-    [`(journal-signs ,rels ...)
-     (format "  d->journalSigns(std::vector<std::string>{~a});\n"
-             (string-join (for/list ([r (in-list rels)])
-                            (format "\"~a\"" r)) ", "))]
     [`(stage-view-transitions signed ,sign ,rels ...)
      (format "  d->stageViewTransitions(std::vector<std::string>{~a}, ~a);\n"
              (string-join (for/list ([r (in-list rels)])
@@ -247,15 +201,6 @@
       "  d->stageLatticeReplacements(std::vector<std::string>{~a}, ~a, true);\n"
       (string-join (for/list ([r (in-list rels)])
                      (format "\"~a\"" r)) ", ") sign)]
-    ;; M4T reseed (docs/m4t-contract.md): restore rec>0 candidates of the
-    ;; named swept relations after the negative walk, journaling survivors
-    ;; as positive transitions; reply (dred-reseeded R D).
-    [`(dred-reseed ,rels ...)
-     (format "  d->dredReseed(std::vector<std::string>{~a});\n"
-             (string-join (for/list ([r (in-list rels)])
-                            (format "\"~a\"" r)) ", "))]
-    [`(begin-update ,expected)
-     (format "  d->beginUpdateEpoch(~a);\n" expected)]
     [`(commit-update) "  d->commitUpdateEpoch();\n"]
     [`(abort-update) "  d->abortUpdateEpoch();\n"]
     [`(update-epoch) "  d->emitUpdateEpoch();\n"]
@@ -366,27 +311,6 @@
      (format "  d->continueRun(slog::RunBudget{~a});\n" ms)]
     [`(continue ,ms ,mem)
      (format "  d->continueRun(slog::RunBudget{~a, 500, ~a});\n" ms mem)]
-    ;; A point-query against the (possibly suspended) database (§8a): does any
-    ;; tuple of `rel` match the given storage-order prefix?  Values are baked
-    ;; into the plugin source (the path-only protocol has no arg channel), so a
-    ;; new query value costs one clang -- but the motivating "poll whether tuple
-    ;; X appeared yet between pauses" repeats the SAME query, compiled once.
-    ;; Read-only, so it is safe against a suspended snapshot.
-    [`(lookup ,rel ,vals ...)
-     (string-append
-      "  slog::Database* db = d->db();\n"
-      (format "  slog::Relation* r = db->getRelation(\"~a\");\n" rel)
-      (format "  u64 q[] = { ~a };\n"
-              (string-join (for/list ([v (in-list vals)]) (encode-val 'lookup v)) ", "))
-      "  const size_t QN = sizeof(q) / sizeof(q[0]);\n"
-      "  bool found = false;\n"
-      "  if (r) slog::Database::forEachNominal(r, [&](const u64* row) {\n"
-      "    bool eq = true;\n"
-      "    for (size_t c = 0; c < QN; ++c) if (row[c] != q[c]) { eq = false; break; }\n"
-      "    if (eq) found = true;\n"
-      "  });\n"
-      (format "  d->emit(std::string(\"(found ~a \") + (found ? \"1\" : \"0\") + \")\");\n"
-              rel))]
     ;; Versioned point-query (docs/incremental.md §0.4, 0.C1): the same
     ;; prefix probe against the version of `rel` current at position P.
     [`(lookup-at ,rel ,pos ,vals ...)
@@ -447,24 +371,6 @@
       "    ++n;\n"
       "  });\n"
       "  d->emit(std::string(\"(tupledone \") + std::to_string(n) + \")\");\n")]
-    ;; The value adapter (repl.md §1): the same rows as `dump-tuples`, but as
-    ;; structured CELL records rather than one rendered line -- each cell
-    ;; carries its encoded word, kind, struct id, TypeKey, and rendering, so a
-    ;; client can mint a checked `#N` handle without parsing display text.
-    ;; The word is evaluation-local; the client pairs it with the EvaluationId.
-    [`(dump-cells ,rel)
-     (string-append
-      "  slog::Database* db = d->db();\n"
-      (format "  slog::Relation* r = db->getRelation(\"~a\");\n" rel)
-      "  size_t n = 0;\n"
-      "  if (r) slog::Database::forEachNominal(r, [&](const u64* row) {\n"
-      "    std::string line = \"(cellrow\";\n"
-      "    for (u16 c = 0; c < r->getArity(); ++c)\n"
-      "      line += \" \" + db->describeValue(row[c]);\n"
-      "    d->emit(line + \")\");\n"
-      "    ++n;\n"
-      "  });\n"
-      "  d->emit(std::string(\"(cellsdone \") + std::to_string(n) + \")\");\n")]
     ;; M5 diagnostics (docs/m5-contract.md): the raw live id words and the
     ;; tombstone count of a struct relation.  Rendered dumps hide the id, so
     ;; id stability across a clear-and-rerun is asserted on this protocol.

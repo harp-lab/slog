@@ -2458,6 +2458,234 @@ static const slog::image::ProgramImage* mounted_image(
                                                    : found->second.get();
 }
 
+// ---- data-carrying session actions -------------------------------------
+// The session's edit, inspection and maintenance actions that carry DATA --
+// tuples, relation names, an epoch counter -- arrive as commands whose
+// shape mirrors the action spec.  As plugins, the data was baked into the
+// plugin source, so every new tuple or name cost a clang build (an `add`
+// took seconds).  Each verb calls the same Daemon method the plugin did and
+// answers with exactly its reply, so the session reads them unchanged.
+
+using SExp = slog::sexp::SExp;
+
+static bool name_of(const SExp& v, std::string& out)
+{
+    if ((v.kind != SExp::K::string && v.kind != SExp::K::atom) || v.text.empty())
+        return false;
+    out = v.text;
+    return true;
+}
+
+static bool names_from(const SExp& form, size_t first,
+                       std::vector<std::string>& out)
+{
+    for (size_t i = first; i < form.children.size(); ++i)
+    {
+        std::string name;
+        if (!name_of(form.children[i], name)) return false;
+        out.push_back(std::move(name));
+    }
+    return true;
+}
+
+// One value as the plugin's encode-val compiled it: a string interns, an
+// integer is an s32 word when it fits and an mpz otherwise, a real is a
+// float word.
+static bool value_of(slog::Database* db, const SExp& v, u64& out)
+{
+    if (v.kind == SExp::K::string)
+    {
+        out = str_encode(db, v.text);
+        return true;
+    }
+    if (v.kind != SExp::K::atom || v.text.empty()) return false;
+    const char* begin = v.text.data();
+    const char* end = begin + v.text.size();
+    const bool integral = std::all_of(
+        v.text[0] == '-' ? begin + 1 : begin, end,
+        [](char c) { return c >= '0' && c <= '9'; })
+        && end - begin > (v.text[0] == '-' ? 1 : 0);
+    if (integral)
+    {
+        s64 small = 0;
+        const auto parsed = std::from_chars(begin, end, small);
+        if (parsed.ec == std::errc() && small >= INT32_MIN && small <= INT32_MAX)
+        {
+            const int narrow = (int)small;
+            out = s32_encode(narrow);
+        }
+        else
+            out = db->encodeIntLiteral(v.text);
+        return true;
+    }
+    char* used = nullptr;
+    const double real = std::strtod(begin, &used);
+    if (used != end) return false;
+    out = float_encode(real);
+    return true;
+}
+
+static bool tuple_of(slog::Database* db, const SExp& t, std::vector<u64>& out)
+{
+    if (t.kind != SExp::K::list) return false;
+    for (const SExp& v : t.children)
+    {
+        u64 word;
+        if (!value_of(db, v, word)) return false;
+        out.push_back(word);
+    }
+    return true;
+}
+
+static bool tuples_of(slog::Database* db, const SExp& ts,
+                      std::vector<std::vector<u64>>& out)
+{
+    if (ts.kind != SExp::K::list) return false;
+    for (const SExp& t : ts.children)
+    {
+        out.emplace_back();
+        if (!tuple_of(db, t, out.back())) return false;
+    }
+    return true;
+}
+
+static bool s64_of(const SExp& v, s64& out)
+{
+    if (v.kind != SExp::K::atom || v.text.empty()) return false;
+    const auto parsed =
+        std::from_chars(v.text.data(), v.text.data() + v.text.size(), out);
+    return parsed.ec == std::errc()
+        && parsed.ptr == v.text.data() + v.text.size();
+}
+
+// Handles `verb` if it is one of these actions; false leaves it to the
+// rest of the dispatcher.
+static bool dispatch_data_action(slog::Daemon* d, const SExp& form,
+                                 const std::string& verb)
+{
+    slog::Database* db = d->db();
+    const size_t argc = form.children.size() - 1;
+    const auto& a = form.children;
+    const auto malformed = [&]() {
+        refuse(d, "parse", "(verb " + verb + ") (detail \"malformed "
+               "arguments\")");
+        return true;
+    };
+    std::string rel;
+    if (verb == "input-state")
+    {
+        s64 pos;
+        std::vector<std::vector<u64>> ts;
+        if (argc != 3 || !name_of(a[1], rel) || !s64_of(a[2], pos)
+            || !tuples_of(db, a[3], ts))
+            return malformed();
+        d->emitInputStates(rel, pos, ts);
+        return true;
+    }
+    if (verb == "set-overlay")
+    {
+        s64 pos;
+        std::vector<std::pair<u8, std::vector<u64>>> rows;
+        if (argc != 3 || !name_of(a[1], rel) || !s64_of(a[2], pos)
+            || a[3].kind != SExp::K::list)
+            return malformed();
+        for (const SExp& row : a[3].children)
+        {
+            if (row.kind != SExp::K::list || row.children.size() != 2
+                || row.children[0].kind != SExp::K::atom)
+                return malformed();
+            const std::string& state = row.children[0].text;
+            const u8 code = state == "none" ? 0 : state == "direct" ? 1
+                          : state == "mask" ? 2 : 3;
+            rows.emplace_back(code, std::vector<u64>{});
+            if (code == 3 || !tuple_of(db, row.children[1], rows.back().second))
+                return malformed();
+        }
+        d->setOverlayAt(rel, pos, rows);
+        return true;
+    }
+    if (verb == "set-overlay-positive" || verb == "set-overlay-negative"
+        || verb == "set-overlay-negative-dred")
+    {
+        std::vector<std::vector<u64>> ts;
+        if (argc != 2 || !name_of(a[1], rel) || !tuples_of(db, a[2], ts))
+            return malformed();
+        if (verb == "set-overlay-positive") d->setOverlayPositive(rel, ts);
+        else if (verb == "set-overlay-negative") d->setOverlayNegative(rel, ts);
+        else d->setOverlayNegativeDred(rel, ts);
+        return true;
+    }
+    if (verb == "begin-update")
+    {
+        u64 expected;
+        if (argc != 1 || !parse_u64_atom(a[1], expected)) return malformed();
+        d->beginUpdateEpoch(expected);
+        return true;
+    }
+    if (verb == "journal-signs" || verb == "dred-reseed")
+    {
+        std::vector<std::string> names;
+        if (!names_from(form, 1, names)) return malformed();
+        if (verb == "journal-signs") d->journalSigns(names);
+        else d->dredReseed(names);
+        return true;
+    }
+    if (verb == "stage-update-transitions")
+    {
+        // (stage-update-transitions signed SIGN REL ...)
+        s64 sign;
+        std::vector<std::string> names;
+        if (argc < 2 || a[1].kind != SExp::K::atom || a[1].text != "signed"
+            || !s64_of(a[2], sign) || (sign != 1 && sign != -1)
+            || !names_from(form, 3, names))
+            return malformed();
+        d->stageUpdateTransitions(names, (s8)sign);
+        return true;
+    }
+    // The value adapter (repl.md §1): a relation's rows as structured cell
+    // records (encoded word, kind, struct id, TypeKey, rendering), so a
+    // client can mint a checked #N handle without parsing display text.
+    if (verb == "dump-cells")
+    {
+        if (argc != 1 || !name_of(a[1], rel)) return malformed();
+        slog::Relation* r = db->getRelation(rel);
+        size_t n = 0;
+        if (r) slog::Database::forEachNominal(r, [&](const u64* row) {
+            std::string line = "(cellrow";
+            for (u16 c = 0; c < r->getArity(); ++c)
+                line += " " + db->describeValue(row[c]);
+            d->emit(line + ")");
+            ++n;
+        });
+        d->emit("(cellsdone " + std::to_string(n) + ")");
+        return true;
+    }
+    // A point-query (§8a): does any row of REL match the storage-order
+    // prefix?  Read-only, so it is safe against a suspended snapshot.
+    if (verb == "lookup")
+    {
+        std::vector<u64> q;
+        if (argc < 1 || !name_of(a[1], rel)) return malformed();
+        for (size_t i = 2; i < a.size(); ++i)
+        {
+            u64 word;
+            if (!value_of(db, a[i], word)) return malformed();
+            q.push_back(word);
+        }
+        slog::Relation* r = db->getRelation(rel);
+        bool found = false;
+        if (r) slog::Database::forEachNominal(r, [&](const u64* row) {
+            bool eq = true;
+            for (size_t c = 0; c < q.size(); ++c)
+                if (row[c] != q[c]) { eq = false; break; }
+            if (eq) found = true;
+        });
+        d->emit("(found " + rel + " " + (found ? "1" : "0") + ")");
+        return true;
+    }
+    return false;
+}
+
 // Dispatch one '('-line on the command stack.
 static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
                              const std::string& line)
@@ -2572,6 +2800,12 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
         d->emit("(imported)");
         return;
     }
+
+    // Data-carrying session actions: mode-neutral and lease-admitted, like
+    // the plugin path they replace (a recipe replay may drive them over a
+    // legacy driver's connection).
+    if (dispatch_data_action(d, form, verb))
+        return;
 
     // T0(c) c2: rule-meta registration and its introspection twin live
     // ABOVE the protocol-mode mark and the boundary lease, deliberately.
