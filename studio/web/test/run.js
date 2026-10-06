@@ -20,6 +20,7 @@ import "./breakpoints.test.js";
 import "./timeline.test.js";
 import "./static-check.test.js";
 import "./inspect.test.js";
+import "./sexpview.test.js";
 import "./stamp.test.js";
 import "./lint.test.js";
 import "./lint-why.test.js";

@@ -7,7 +7,8 @@
 // `p`, `peek`, `?`), which the server answers without stepping, continuing
 // or committing.  The model functions are pure; web/test runs them.
 
-import { parseValue, renderTree } from "./table.js";
+import { parseValue } from "./table.js";
+import { renderSexp } from "./sexpview.js";
 
 // ---- The model --------------------------------------------------------------
 
@@ -83,11 +84,17 @@ const node = (tag, className, text) => {
   return element;
 };
 
-const pretty = (text, open = 2) => renderTree(parseValue(text), open);
+// A value as Slog text, cut to what `columns` holds on a line, each `…`
+// opening in place (sexpview.js).
+const pretty = (text, columns) => renderSexp(text, { columns });
+// characters a panel or popup of `pixels` holds, in the 12px mono
+const columnsOf = (pixels) => Math.max(24, Math.floor(pixels / 7.3));
 
 // How long the mouse rests on a word before its popup: long enough not to
 // flash while passing over the rule.
 const HOVER_MS = 150;
+// characters a popup holds
+const POP = 56;
 
 // `editor` is editor.js's; `quiet(line)` answers an observing REPL line;
 // `reveal(loc)` shows a rule; `tabs`, `transcript` and `results` are the
@@ -145,6 +152,9 @@ export function createInspector({ editor, quiet, reveal, tabs, transcript, resul
     render();
   }
 
+  // the Variables panel's width in characters
+  const wide = () => columnsOf((panel.clientWidth || 900) - 160);
+
   function section(title) {
     const box = panel.appendChild(node("section", "inspect-section"));
     box.append(node("h4", null, title));
@@ -165,14 +175,14 @@ export function createInspector({ editor, quiet, reveal, tabs, transcript, resul
     if (state.scope.clause && state.scope.clause !== "null") {
       const row = where.appendChild(node("div", "inspect-row"));
       row.append(node("span", "inspect-note", "matched"));
-      row.append(renderTree(parseValue(`(${state.scope.clause.relation} ${state.scope.clause.row})`), 0));
+      row.append(pretty(`(${state.scope.clause.relation} ${state.scope.clause.row})`, wide()));
     }
 
     const locals = section("Variables");
     for (const [name, value] of state.scope.bindings ?? []) {
       const row = locals.appendChild(node("div", "inspect-row"));
       row.append(node("span", "inspect-name", name), node("span", "inspect-eq", "="));
-      row.append(pretty(value, 1));
+      row.append(pretty(value, wide() - name.length - 3));
       const pinIt = row.appendChild(node("button", "inspect-pin", "pin"));
       pinIt.title = "Watch it at every stop";
       pinIt.addEventListener("click", () => pin(name));
@@ -191,7 +201,7 @@ export function createInspector({ editor, quiet, reveal, tabs, transcript, resul
       row.append(node("span", "inspect-name", watch.expr));
       if (!watch.answer) row.append(node("span", "inspect-note", "…"));
       else if (watch.answer.error) row.append(node("span", "inspect-error", watch.answer.error));
-      else if (watch.answer.value) row.append(pretty(watch.answer.value, 1));
+      else if (watch.answer.value) row.append(pretty(watch.answer.value, wide() - watch.expr.length - 3));
       else row.append(node("span", "inspect-note", watch.answer.lines.join(" · ")));
       const remove = row.appendChild(node("button", "inspect-pin", "×"));
       remove.addEventListener("click", () => { state.watches = state.watches.filter((w) => w !== watch); render(); });
@@ -206,7 +216,7 @@ export function createInspector({ editor, quiet, reveal, tabs, transcript, resul
       const stack = section("Demand calls, latest first");
       state.stack.forEach((frame, i) => {
         const row = stack.appendChild(node("div", "inspect-row"));
-        row.append(node("span", "inspect-note", String(i)), node("span", "inspect-call", frame.node.call));
+        row.append(node("span", "inspect-note", String(i)), pretty(frame.node.call, wide() - 24));
         if (frame.node.asked?.source) {
           const link = row.appendChild(node("a", "inspect-where", frame.node.asked.source));
           link.addEventListener("click", () => reveal(frame.node.asked.source));
@@ -235,7 +245,7 @@ export function createInspector({ editor, quiet, reveal, tabs, transcript, resul
     pop = document.body.appendChild(node("div", "inspect-pop"));
     for (const [name, value] of state.scope.bindings ?? []) {
       const row = pop.appendChild(node("div", "inspect-row"));
-      row.append(node("span", "inspect-name", name), node("span", "inspect-eq", "="), pretty(value, 2));
+      row.append(node("span", "inspect-name", name), node("span", "inspect-eq", "="), pretty(value, POP - name.length - 3));
     }
     place(pop, x, y);
   }
@@ -251,7 +261,7 @@ export function createInspector({ editor, quiet, reveal, tabs, transcript, resul
     if (!binding) {
       pop.append(node("div", "inspect-note", "not yet bound at this clause"));
     } else {
-      pop.append(pretty(binding[1], 3));
+      pop.append(pretty(binding[1], POP));
       const copy = head.appendChild(node("button", "inspect-pin", "copy"));
       copy.addEventListener("click", () => navigator.clipboard?.writeText(binding[1]));
       const pinIt = head.appendChild(node("button", "inspect-pin", "pin to watches"));
@@ -279,13 +289,7 @@ export function createInspector({ editor, quiet, reveal, tabs, transcript, resul
       pop.append(node("div", "inspect-pop-label", `${label} · ${rows.length}${rows.length === 5 ? "+" : ""}`));
       for (const [sign, row] of rows) {
         const line = pop.appendChild(node("div", "inspect-pop-row"));
-        // folded: the row's heads on one line, open for the whole of it
-        const tree = parseValue(`(${name} ${row})`);
-        const folded = line.appendChild(node("details", "v-tree"));
-        const summary = folded.appendChild(node("summary", "inspect-elided", elide(tree, 2)));
-        summary.title = "open for the whole row";
-        folded.append(renderTree(tree, 2));
-        line.prepend(node("span", "inspect-note", sign));
+        line.append(node("span", "inspect-note", sign), pretty(`(${name} ${row})`, POP - 2));
       }
     }
     place(pop, x, y);

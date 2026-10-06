@@ -229,3 +229,25 @@
 .rewind-label { color: var(--blue); font: 600 12px var(--mono); min-width: 2.5em; }
 .rewind-line { flex: 1; color: var(--strong); font: 12px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rewind-note { color: var(--muted); font-size: 11px; }
+
+/* ---- Values as Slog text (sexpview.js), in the editor's colours ------------- */
+
+.sx { font: 12px/1.55 var(--mono); color: #657b83; white-space: pre; min-width: 0; }
+.sx-line { white-space: pre; }
+.sx-ctor { color: #b58900; }
+.sx-str { color: #2aa198; }
+.sx-num { color: #d33682; }
+.sx-sym { color: #657b83; }
+.sx-paren { color: #93a1a1; border-radius: 2px; }
+.sx-paren[data-role="open"] { cursor: pointer; }
+.sx-paren.sx-lit { color: var(--strong); background: rgba(38, 139, 210, 0.16); }
+.sx-more {
+  padding: 0 3px;
+  border-radius: 3px;
+  background: rgba(38, 139, 210, 0.1);
+  color: var(--blue);
+  cursor: pointer;
+}
+.sx-more:hover { background: rgba(38, 139, 210, 0.22); }
+.sx-same { text-decoration: underline dotted rgba(108, 113, 196, 0.6); text-underline-offset: 3px; }
+.inspect-row > .sx { flex: 1; }
