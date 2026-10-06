@@ -366,6 +366,27 @@
             [_ '()])]
          [_ '()]))
 
+     ;; Ordering guards (< <= > >=) compare NUMBERS: the runtime kernels
+     ;; (daemon/prims.h SLOG_CMP) take int, float, or a mixed pair, and
+     ;; anything else surfaces as a type_mismatch fact that kills every head
+     ;; of the rule.  Strings in particular have no ordering: intern ids do
+     ;; not order by content, and a string cmp prim is a reserved extension
+     ;; (docs/sequences.md §7).  So reject an operand whose type cannot hold
+     ;; a number at all.  `any` and a union overlapping int/float pass, as
+     ;; in type-match?; a type with no runtime tag (a count-lattice value)
+     ;; is left alone, as residual-accepts leaves it.
+     (define (check-ordered! op x)
+       (define t (hash-ref local-env x #f))
+       (define members
+         (if t (ground-member-types (lattice-base-type rel-env t)) (set)))
+       (unless (or (set-empty? members)
+                   (for/or ([m (in-list '(any int float))])
+                     (set-member? members m)))
+         (error (format "~a: ~a : ~a cannot be compared with ~a: ordering comparisons take numbers (int or float) in\n  ~a"
+                        (rule-location-string rule)
+                        (variable-display x rule) t op
+                        (syn-source rule)))))
+
      ;; ---- clause checking + normalization -------------------------------
      (define (check-clause cl)
        (define (check-rel! x name args decl)
@@ -386,7 +407,10 @@
                     (error (format "~a is being used with the wrong arity" name))))]))
        (match cl
          [`(syn ,_ /= ,(? symbol? x) ,(? symbol? y)) cl]
-         [`(syn ,_ ,(? primitive-cmp?) ,(? symbol? x) ,(? symbol? y)) cl]
+         [`(syn ,_ ,(? primitive-cmp? op) ,(? symbol? x) ,(? symbol? y))
+          (check-ordered! op x)
+          (check-ordered! op y)
+          cl]
          [`(syn ,_ = ,(? symbol? x) (syn ,_ const ,v)) cl]
          [`(syn ,pr0 = ,(? symbol? x) (syn ,pr1 ,name ,(? symbol? args) ...))
           #:when (hash-has-key? fun-env name)

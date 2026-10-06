@@ -229,6 +229,21 @@ if echo "$o" | grep -qF 'quote_const.slog:4:1: "s" : int' \
   ok errors-quote-source
 else bad errors-quote-source "$o"; fi
 
+# 15. an ordering comparison on a string is a located compile error (was: it
+#     compiled, then every binding surfaced a runtime type_mismatch fact and
+#     the rule derived nothing).
+cat > "$D/str_order.slog" <<'EOF'
+table (s str)
+table (out str)
+rule (s "a") (s "c")
+rule (s S) (< S "b") --> (out S)
+EOF
+o="$(run str_order)"
+if echo "$o" | grep -qF 'str_order.slog:4:1: S : str cannot be compared with <' \
+   && echo "$o" | grep -qF 'rule (s S) (< S "b") --> (out S)'; then
+  ok string-order-rejected
+else bad string-order-rejected "$o"; fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
