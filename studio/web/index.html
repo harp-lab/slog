@@ -8,36 +8,63 @@
 </head>
 <body>
 <header>
-  <span id="file"></span>
-  <span id="saved"></span>
-  <span class="spacer"></span>
-  <select id="mode" title="How the session server evaluates: fast (interpreter), debug (interpreter on one thread, for breakpoints and stepping), or compiled (native code). Switching restarts the server.">
-    <option value="fast">fast</option>
-    <option value="debug">debug</option>
-    <option value="compiled">compiled</option>
-  </select>
-  <button id="evaluate" title="Save and evaluate the program in a fresh session (⌘↵)">Evaluate</button>
-  <button id="debug" title="Evaluate with a break armed at each margin breakpoint, stopping in the first marked rule the run reaches">Debug</button>
-  <button id="stop" title="Pause the running command at its next slice boundary" hidden>Stop</button>
-  <button id="restart" title="Kill the session server; the next command starts a fresh one">Restart server</button>
-  <button id="scenarios-toggle" title="Tests and debugging sessions beside the program">Scenarios</button>
+  <div class="identity">
+    <span class="brand">Slog Studio</span>
+    <span id="file" class="file"></span>
+    <span id="saved" class="badge"></span>
+  </div>
+  <div class="controls">
+    <div class="group" role="group" aria-label="Run">
+      <button id="evaluate" class="primary" title="Save and evaluate the program from nothing, in a fresh session">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5v11l9-5.5z"/></svg>
+        Run <kbd>⌘↵</kbd>
+      </button>
+      <button id="debug" class="secondary" title="Run with a break armed at each margin breakpoint, stopping in the first marked rule the run reaches">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="5" cy="8" r="2.6" class="dot"/><path d="M8.5 3.5v9l6-4.5z"/></svg>
+        Debug
+      </button>
+      <button id="stop" class="danger" title="Pause the running command at its next slice boundary" disabled>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="1"/></svg>
+        Stop
+      </button>
+    </div>
+    <div id="mode" class="segmented" role="radiogroup" aria-label="Evaluation mode"
+         title="How the session server evaluates. Switching restarts it.">
+      <button data-mode="fast" role="radio" title="The interpreter: no C++ toolchain, quickest to start">fast</button>
+      <button data-mode="debug" role="radio" title="The interpreter on one thread: breakpoints and stepping stop at the same place every run">debug</button>
+      <button data-mode="compiled" role="radio" title="Native code, as ./slog runs programs">compiled</button>
+    </div>
+    <div class="group" role="group" aria-label="Session">
+      <button id="restart" class="icon" title="Restart the session server (its session is discarded)" aria-label="Restart the session server">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.6-3.7" fill="none" stroke-width="1.6"/><path d="M13.5 2v3.5H10"/></svg>
+      </button>
+      <button id="scenarios-toggle" class="icon" title="Scenarios: tests and debugging sessions beside the program" aria-label="Scenarios" aria-pressed="false">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4.5l1.5 1.5 2.5-3M2.5 10.5l1.5 1.5 2.5-3" fill="none" stroke-width="1.5"/><path d="M8.5 4h5M8.5 10h5" fill="none" stroke-width="1.5"/></svg>
+        Scenarios
+      </button>
+    </div>
+  </div>
 </header>
 <main>
   <div id="work">
-  <div id="editor"></div>
-  <div id="divider" title="Drag to resize"></div>
-  <section id="repl">
-    <div id="transcript"></div>
-    <div id="held" hidden>
-      <span id="held-title"></span>
-      <button data-command="continue" title="Resume the run">continue</button>
-      <button data-command="step" title="Run to the next interpreter port">step</button>
-      <button data-command="frames" title="Show the join stack and bindings here">frames</button>
-      <button data-command="abort" title="Discard the run; nothing is committed">abort</button>
-    </div>
-    <textarea id="prompt" rows="1" spellcheck="false" autocomplete="off"
-      placeholder="?(relation X Y)   tables   :help      — Enter runs when parentheses balance; Shift+Enter for a new line"></textarea>
-  </section>
+    <div id="editor"></div>
+    <div id="divider" title="Drag to resize"></div>
+    <section id="repl">
+      <div id="transcript"></div>
+      <div id="held" hidden>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="3" width="2.6" height="10" rx=".6"/><rect x="9.4" y="3" width="2.6" height="10" rx=".6"/></svg>
+        <span id="held-title"></span>
+        <button data-command="continue" class="primary small" title="Resume the run">Continue</button>
+        <button data-command="step" class="secondary small" title="Run to the next interpreter port">Step</button>
+        <button data-command="frames" class="secondary small" title="Show the join stack and bindings here">Frames</button>
+        <button data-command="abort" class="danger small" title="Discard the run; nothing is committed">Abort</button>
+      </div>
+      <div class="prompt-row">
+        <span class="caret">›</span>
+        <textarea id="prompt" rows="1" spellcheck="false" autocomplete="off"
+          placeholder="?(relation X Y)   tables   :help        Enter runs once brackets balance · Shift+Enter for a new line"></textarea>
+      </div>
+    </section>
   </div>
   <aside id="drawer" hidden>
     <h2>Scenarios</h2>
@@ -46,10 +73,10 @@
   </aside>
 </main>
 <footer id="status">
-  <span id="connection"></span>
-  <span id="lane"></span>
-  <span id="session"></span>
-  <span id="evaluation"></span>
+  <span id="connection" class="pill"></span>
+  <span id="lane" class="pill"></span>
+  <span id="session" class="pill"></span>
+  <span id="evaluation" class="pill"></span>
 </footer>
 <script type="module" src="/static/main.js"></script>
 </body>

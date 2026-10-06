@@ -141,7 +141,7 @@ const receive = {
   evaluation({ phase, ok, ms }) {
     state.evaluating = phase === "start";
     if (phase === "start") editor.mark(null);
-    else note(ok ? `evaluated in ${(ms / 1000).toFixed(1)} s` : "evaluation failed", "evaluation");
+    else note(ok ? `✓ ran in ${(ms / 1000).toFixed(1)} s` : "✗ run failed", ok ? "evaluation" : "evaluation failed");
     renderStatus();
   },
   notice({ message }) {
@@ -261,32 +261,41 @@ function note(text, className = "entry note") {
 
 function renderSaved() {
   const dirty = state.editTimer !== null || state.savedVersion !== state.version;
-  $("saved").textContent = dirty ? "unsaved" : "saved";
+  const badge = $("saved");
+  badge.textContent = dirty ? "unsaved" : "saved";
+  badge.className = `badge${dirty ? " dirty" : ""}`;
+}
+
+// A status pill: a state dot ("ok", "busy", "bad", or none) and its text.
+function pill(id, text, dot = null, className = "") {
+  const node = $(id);
+  node.className = `pill ${className}`.trim();
+  node.replaceChildren();
+  if (dot) node.append(Object.assign(document.createElement("span"), { className: `state ${dot}` }));
+  node.append(text);
 }
 
 function renderStatus() {
   const online = socket?.readyState === WebSocket.OPEN;
-  const connection = $("connection");
-  connection.textContent = online ? "connected" : "reconnecting…";
-  connection.className = `dot ${online ? "ok" : "bad"}`;
+  pill("connection", online ? "connected" : "reconnecting…", online ? "ok" : "bad");
 
-  const { state: lane, detail, starts } = state.lane;
-  const laneNode = $("lane");
+  const { state: lane, detail, starts, mode } = state.lane;
   const restarts = starts > 1 ? ` · restarted ${starts - 1}×` : "";
-  laneNode.textContent = `session server ${lane}${restarts}${detail ? ` — ${detail}` : ""}`;
-  laneNode.className = `dot ${{ ready: "ok", idle: "ok", busy: "busy", starting: "busy" }[lane] ?? "bad"}`;
+  const laneDot = { ready: "ok", idle: "ok", busy: "busy", starting: "busy" }[lane] ?? "bad";
+  pill("lane", `session server ${lane}${restarts}${detail ? ` — ${detail}` : ""}`, laneDot);
 
   const { current, held } = state.session;
-  const sessionNode = $("session");
-  sessionNode.textContent = held ? `${current ?? "session"} · run held — continue, commit, or abort`
-    : current ? `database ${current}` : "no session";
-  sessionNode.className = held ? "held" : "";
+  pill("session",
+    held ? "run held" : current ? `database ${current}` : "no session",
+    null, held ? "held" : "");
+  pill("evaluation", state.evaluating ? "running…" : "", state.evaluating ? "busy" : null);
 
-  $("evaluation").textContent = state.evaluating ? "evaluating…" : "";
   $("held").hidden = !held;
   $("held-title").textContent = `run held — ${state.heldTitle || "paused"}`;
-  $("mode").value = state.lane.mode;
-  $("stop").hidden = lane !== "busy";
+  for (const button of $("mode").querySelectorAll("button")) {
+    button.setAttribute("aria-checked", String(button.dataset.mode === mode));
+  }
+  $("stop").disabled = lane !== "busy";
   $("evaluate").disabled = state.evaluating;
   $("debug").disabled = state.evaluating;
 }
@@ -307,10 +316,12 @@ function renderScenarios() {
     head.append(Object.assign(document.createElement("span"), { className: "scenario-name", textContent: name }));
     const verdict = running ? "running…" : error ? "error" : report ? (passed(report) ? "PASS" : "FAIL") : "";
     head.append(Object.assign(document.createElement("span"), {
-      className: verdict === "PASS" ? "pass" : verdict === "FAIL" || verdict === "error" ? "fail" : "",
+      className: `verdict ${verdict === "PASS" ? "pass" : verdict === "FAIL" || verdict === "error" ? "fail" : ""}`,
       textContent: verdict,
     }));
-    const run = head.appendChild(Object.assign(document.createElement("button"), { textContent: "Run", disabled: running }));
+    const run = head.appendChild(Object.assign(document.createElement("button"), {
+      className: "secondary small", textContent: "Run", disabled: running,
+    }));
     run.addEventListener("click", () => send({ t: "run-scenario", name }));
     if (error) card.append(line("fail", error));
     if (report && !running) card.append(renderReport(report));
@@ -343,6 +354,7 @@ function line(className, text) {
 $("scenarios-toggle").addEventListener("click", () => {
   const drawer = $("drawer");
   drawer.hidden = !drawer.hidden;
+  $("scenarios-toggle").setAttribute("aria-pressed", String(!drawer.hidden));
   if (!drawer.hidden) send({ t: "scenarios" });
 });
 
@@ -352,7 +364,9 @@ $("evaluate").addEventListener("click", evaluate);
 $("debug").addEventListener("click", debug);
 $("stop").addEventListener("click", () => send({ t: "interrupt" }));
 $("restart").addEventListener("click", () => send({ t: "restart" }));
-$("mode").addEventListener("change", (event) => send({ t: "mode", mode: event.target.value }));
+for (const button of $("mode").querySelectorAll("button")) {
+  button.addEventListener("click", () => send({ t: "mode", mode: button.dataset.mode }));
+}
 for (const button of $("held").querySelectorAll("button")) {
   button.addEventListener("click", () => send({ t: "command", line: button.dataset.command }));
 }
