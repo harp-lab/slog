@@ -14,7 +14,6 @@ export function createSummary(element, { editor, current }) {
 
   const head = element.appendChild(document.createElement("div"));
   head.className = "summary-head";
-  head.append(Object.assign(document.createElement("span"), { className: "summary-label", textContent: "Summary" }));
   const badge = head.appendChild(Object.assign(document.createElement("span"), { className: "summary-state" }));
   const text = head.appendChild(Object.assign(document.createElement("span"), { className: "summary-text" }));
   const toggle = head.appendChild(Object.assign(document.createElement("button"), {
@@ -33,9 +32,12 @@ export function createSummary(element, { editor, current }) {
   };
 
   function render() {
-    element.hidden = view === null;
-    if (view === null) return;
-    const { unavailable, analyzer, working, summary, analysis, errors } = view;
+    // The strip earns its space only with something to say: a summary, an
+    // analysis, or why one failed. Nothing yet, or no way to make one, shows
+    // nothing.
+    const { unavailable, analyzer, working, summary, analysis, errors } = view ?? {};
+    element.hidden = !(summary || analysis || errors?.length);
+    if (element.hidden) return;
     const stale = [summary, analysis].some((part) => part && !describes(part));
     // Nothing at all can be computed: the strip only says why.
     const off = unavailable && !analyzer;
@@ -50,8 +52,7 @@ export function createSummary(element, { editor, current }) {
     if (dot) badge.append(Object.assign(document.createElement("span"), { className: `state ${dot}` }));
     badge.append(state);
     badge.classList.toggle("stale", state === "stale");
-    text.textContent = summary?.summary ?? analysis?.summary
-      ?? (off ? unavailable : "Save (⌘S) or Run to summarize the program.");
+    text.textContent = summary?.summary ?? analysis?.summary ?? errors[0] ?? "";
     text.title = text.textContent;
 
     toggle.hidden = off;
