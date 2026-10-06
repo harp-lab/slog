@@ -2579,9 +2579,11 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
     // refused until commit/abort, exactly as before.
     // T5 slice (d3): breaks are session debugging state exactly as watches
     // are -- never saved, never hashed, and armable while a run of theirs
-    // is held mid-event.
+    // is held mid-event.  The execution trace is the same kind of state,
+    // and a driver reads it at parks and after each fixpoint of a run.
     const bool watch_verb = verb == "watch" || verb == "unwatch"
-        || verb == "break" || verb == "unbreak" || verb == "breaks";
+        || verb == "break" || verb == "unbreak" || verb == "breaks"
+        || verb == "trace" || verb == "trace-read";
     // T5 slice (c): `replay` is a debugger continuation over a PARKED epoch,
     // so the lease admits it whenever the run is suspended -- including at
     // parks it will refuse, because `level-1-unwatchable` is the honest
@@ -3041,6 +3043,101 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
             return;
         }
         emit_delta(d, name, limit);
+        return;
+    }
+
+    // The execution trace (docs/pausing.md §15, trace.h):
+    //   (trace (on) [(sample K)] [(focus "R" ...)] [(rules #t|#f)])
+    //   (trace (off))
+    // answer (trace-state (on #t|#f) (next SEQ)); arming again replaces the
+    // configuration and keeps the records, disarming discards them.
+    if (verb == "trace")
+    {
+        CommandFields fields;
+        std::string error;
+        slog::TraceConfig config;
+        bool parsed =
+            collect_fields(form, 1, {"on", "off", "sample", "focus", "rules"},
+                           fields, error)
+            && fields.count("on") + fields.count("off") == 1
+            && (fields.count("off") == 0 || fields.size() == 1);
+        for (const auto& [key, field] : fields)
+        {
+            if (!parsed) break;
+            const auto& args = field->children;
+            if (key == "on" || key == "off")
+                parsed = args.size() == 1;
+            else if (key == "sample")
+            {
+                u64 k = 0;
+                parsed = args.size() == 2 && parse_u64_atom(args[1], k)
+                    && k <= slog::trace_iteration_sample_cap;
+                config.sample = static_cast<u32>(k);
+            }
+            else if (key == "focus")
+            {
+                parsed = args.size() >= 2;
+                for (size_t i = 1; parsed && i < args.size(); ++i)
+                {
+                    std::string name;
+                    parsed = parse_string_value(args[i], name);
+                    config.focus.insert(name);
+                }
+            }
+            else
+            {
+                parsed = args.size() == 2
+                    && args[1].kind == slog::sexp::SExp::K::atom
+                    && (args[1].text == "#t" || args[1].text == "#f");
+                config.rules = parsed && args[1].text == "#t";
+            }
+        }
+        if (!parsed)
+        {
+            refuse(d, "parse", "(verb trace) (detail \"expected (trace (on) "
+                   "[(sample K)] [(focus \\\"R\\\" ...)] [(rules #t)]) or "
+                   "(trace (off)); K is 0.."
+                   + std::to_string(slog::trace_iteration_sample_cap) + "\")");
+            return;
+        }
+        slog::Database* db = d->db();
+        if (fields.count("on"))
+        {
+            db->trace.arm(std::move(config));
+            // a mid-stratum arming reports rule growth from here on
+            if (db->trace.config().rules) db->traceMarkFires();
+        }
+        else
+            db->trace.disarm();
+        d->emit(std::string("(trace-state (on ")
+                + (db->trace.armed() ? "#t" : "#f") + ") (next "
+                + std::to_string(db->trace.nextSeq()) + "))");
+        return;
+    }
+
+    // (trace-read [(from SEQ)]): the retained records from SEQ on (default
+    // all), releasing every record before SEQ, then (trace-end NEXT DROPPED)
+    // -- NEXT is the `from` that continues the stream, DROPPED the sample
+    // rows the byte cap took from the records just read.
+    if (verb == "trace-read")
+    {
+        CommandFields fields;
+        std::string error;
+        u64 from = 0;
+        if (!collect_fields(form, 1, {"from"}, fields, error)
+            || (fields.count("from")
+                && (fields.at("from")->children.size() != 2
+                    || !parse_u64_atom(fields.at("from")->children[1], from))))
+        {
+            refuse(d, "parse", "(verb trace-read) (detail \"expected "
+                   "(trace-read [(from SEQ)])\")");
+            return;
+        }
+        slog::ExecutionTrace& trace = d->db()->trace;
+        const u64 dropped =
+            trace.read(from, [&](const std::string& record) { d->emit(record); });
+        d->emit("(trace-end " + std::to_string(trace.nextSeq()) + " "
+                + std::to_string(dropped) + ")");
         return;
     }
 

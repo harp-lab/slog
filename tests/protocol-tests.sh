@@ -244,6 +244,25 @@ expect_rx "delta-not-parked" '\(refused delta-unavailable [0-9]+ \(verb delta\) 
 if [ "$(grep -cE '\(refused parse [0-9]+ \(verb delta\) \(detail "expected \(delta \(relation' out/proto-delta.log)" -eq 2 ]; then
   ok "delta-parse"; else bad "delta-parse"; fi
 
+# --- 3t. the execution trace -------------------------------------------------
+# Arming answers the state and the sequence the records will start at; a read
+# with nothing recorded is just its terminator; a bad configuration is a
+# parse refusal.  (The records themselves are pinned in the REPL battery.)
+racket tests/api/drive.rkt \
+  '(trace (on) (sample 4) (focus "path" "edge") (rules #t))' \
+  '(trace-read)' \
+  '(trace (off))' \
+  '(trace (on) (off))' \
+  '(trace (on) (sample 9999))' \
+  '(trace-read (from x))' \
+  > out/proto-trace.log 2>&1
+expect "trace-armed"    '(trace-state (on #t) (next 0))' out/proto-trace.log
+expect "trace-read-empty" '(trace-end 0 0)' out/proto-trace.log
+expect "trace-disarmed" '(trace-state (on #f) (next 0))' out/proto-trace.log
+if [ "$(grep -cE '\(refused parse [0-9]+ \(verb trace\) ' out/proto-trace.log)" -eq 2 ]; then
+  ok "trace-parse"; else bad "trace-parse"; fi
+expect_rx "trace-read-parse" '\(refused parse [0-9]+ \(verb trace-read\) ' out/proto-trace.log
+
 # --- 3a. N3-A transaction + N3-B durable boundary history -------------------
 # Prepare eagerly constructs an empty slot but keeps both its VersionKey and
 # latest binding private. Ordinary catalog access is refused under the lease;

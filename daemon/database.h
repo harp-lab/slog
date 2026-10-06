@@ -19,6 +19,7 @@
 #include "gzfile.h"
 #include "index.h"
 #include "counts.h"
+#include "trace.h"
 #include "protocol.h"   // quoteString, for the value adapter's CELL records
 #include <string>
 #include <vector>
@@ -5621,6 +5622,204 @@ public:
     }
   }
 
+  // ---- Execution trace (docs/pausing.md §15; trace.h) ----------------------
+  //
+  // Recorded at the barriers the run loop already has: a stratum's start
+  // (continueStratum), each iteration's end (EndIterCompletion), its parks
+  // and its fixpoint (Daemon::continueRun).  Every hook is behind one
+  // `trace.armed()` test at its call site, so a session that never asks
+  // pays one predictable branch per barrier.
+  ExecutionTrace trace;
+  // (rules #t): each fire slot's committed fires/work/driver rows as of the
+  // previous barrier, so a barrier reports the iteration's own growth.  The
+  // tallies only grow within a stratum (publication drains them between
+  // strata), so the marks are re-taken at every stratum start.
+  std::vector<u64> trace_fire_marks, trace_work_marks, trace_row_marks;
+  std::unordered_map<std::string, std::string> trace_rule_keys;  // loc -> RuleKey
+
+  // Compiler temporaries and the daemon's own `$`-relations are counted but
+  // never sampled; their rows are machinery, not program facts.
+  static bool traceInternal(Relation* rel)
+  {
+    const std::string& name = rel->getName();
+    return rel->isCompilerTemporary() || name.rfind('$', 0) == 0
+      || name == "_enum";
+  }
+
+  void traceMarkFires()
+  {
+    std::lock_guard<std::mutex> g(stats_mx);
+    trace_fire_marks = fire_counts_vec;
+    trace_work_marks = work_counts_vec;
+    trace_row_marks = rows_counts_vec;
+  }
+
+  void traceStratumBegin(const Stratum* s)
+  {
+    TraceRecord r;
+    r.kind = "trace-stratum";
+    r.fields = " (scc " + std::to_string(s->scc_id) + ") (stratum "
+      + protocol::quoteString(s->name) + ") (flavor "
+      + protocol::quoteString(s->flavor) + ")";
+    trace.append(std::move(r));
+    if (!trace.config().rules) return;
+    traceMarkFires();
+    trace_rule_keys.clear();
+    for (const auto& per : rule_meta)
+      for (const RuleMetaEntry& e : per.second)
+        if (!e.loc.empty() && !e.key.empty())
+          trace_rule_keys.emplace(e.loc, e.key);
+  }
+
+  // The coordinated-sample hash of one value (trace.h): an immediate word
+  // is canonical; a heap word hashes its rendering, memoized per barrier.
+  u64 traceValueHash(u64 w, std::unordered_map<u64, u64>& memo)
+  {
+    if (!is_intern(w) && !is_struct(w)) return w;
+    auto [it, fresh] = memo.try_emplace(w, 0);
+    if (fresh) it->second = traceTextHash(writeValCSV(w));
+    return it->second;
+  }
+
+  // One trace-iter record: every relation the iteration changed, in
+  // registry order, with its signed counts, kinds, size, and a bottom-k
+  // sample per sign.  Focus relations draw on the per-iteration sample
+  // budget first.
+  void traceIteration()
+  {
+    const TraceConfig& cfg = trace.config();
+    std::vector<Relation*> changed;
+    for (Relation* r : rel_registry)
+      if (r != nullptr && r->getArity() > 0 && !r->getDelta().empty())
+        changed.push_back(r);
+    std::vector<size_t> order(changed.size());
+    for (size_t i = 0; i < order.size(); ++i) order[i] = i;
+    std::stable_partition(order.begin(), order.end(), [&](size_t i) {
+      return cfg.focus.count(changed[i]->getName()) > 0;
+    });
+    std::vector<TraceRel> rels(changed.size());
+    std::vector<bool> touched(changed.size(), false);
+    std::unordered_map<u64, u64> memo;
+    u32 budget = trace_iteration_sample_cap;
+    for (size_t i : order)
+    {
+      Relation* rel = changed[i];
+      const u16 arity = rel->getArity();
+      const u32 k = traceInternal(rel)
+        ? 0 : std::min(cfg.sampleFor(rel->getName()), budget);
+      TraceSampler plus_pick(k), minus_pick(k);
+      u64 plus = 0, minus = 0, dups = 0;
+      u64 kinds[cnt_kind_view + 1] = {};
+      for (InsertBatch* b : rel->getDelta())
+        for (u64 j = 0; j + arity <= b->usage; j += arity)
+        {
+          if (b->data[j] == slog_null) { ++dups; continue; }
+          (b->sign < 0 ? minus : plus) += 1;
+          if (b->kind <= cnt_kind_view) ++kinds[b->kind];
+          if (k == 0) continue;
+          u64 h = 0;
+          for (u16 c = 0; c < arity; ++c)
+            h = traceMix(h ^ traceValueHash(b->data[j + c], memo));
+          (b->sign < 0 ? minus_pick : plus_pick).offer(h, b->kind,
+                                                       &b->data[j]);
+        }
+      if (plus + minus + dups == 0) continue;
+      touched[i] = true;
+      TraceRel& out = rels[i];
+      out.counts = protocol::quoteString(rel->getName()) + " (vid "
+        + std::to_string(rel->getVersionId()) + ") (plus "
+        + std::to_string(plus) + ") (minus " + std::to_string(minus)
+        + ") (dups " + std::to_string(dups) + ") (kinds";
+      for (u8 kind = 0; kind <= cnt_kind_view; ++kind)
+        if (kinds[kind])
+          out.counts += std::string(" (") + cnt_kind_name(kind) + " "
+            + std::to_string(kinds[kind]) + ")";
+      out.counts += ") (size-after " + std::to_string(rel->tupleCount()) + ")";
+      for (const char* sign : {"+", "-"})
+        for (const TraceSampler::Pick& p :
+               (sign[0] == '+' ? plus_pick : minus_pick).take())
+        {
+          if (budget == 0) break;
+          --budget;
+          out.sample.push_back(
+            "(" + protocol::quoteString(writeRowCSV(p.row, arity,
+                                                    trace_render_depth))
+            + " " + sign + " " + cnt_kind_name(p.kind) + ")");
+        }
+      out.omitted = plus + minus - out.sample.size();
+    }
+    TraceRecord r;
+    r.kind = "trace-iter";
+    r.fields = " (scc " + std::to_string(rs.stratum->scc_id)
+      + ") (iteration " + std::to_string(rs.iteration_count) + ")";
+    for (size_t i = 0; i < rels.size(); ++i)
+      if (touched[i]) r.rels.push_back(std::move(rels[i]));
+    trace.append(std::move(r));
+    if (cfg.rules) traceRules();
+  }
+
+  // (rules #t): one trace-rule record per rule variant that fired or
+  // worked this iteration, keyed like `(fires)`.
+  void traceRules()
+  {
+    std::vector<TraceRecord> out;
+    {
+      std::lock_guard<std::mutex> g(stats_mx);
+      const auto grown = [](const std::vector<u64>& now,
+                            const std::vector<u64>& mark, size_t i) {
+        const u64 before = i < mark.size() ? mark[i] : 0;
+        return now[i] >= before ? now[i] - before : now[i];
+      };
+      for (size_t i = 0; i < fire_counts_vec.size(); ++i)
+      {
+        const u64 fires = grown(fire_counts_vec, trace_fire_marks, i);
+        const u64 work = grown(work_counts_vec, trace_work_marks, i);
+        const u64 rows = grown(rows_counts_vec, trace_row_marks, i);
+        if ((fires | work | rows) == 0) continue;
+        const std::string& loc = fire_slots[i].first;
+        auto key = trace_rule_keys.find(loc);
+        TraceRecord r;
+        r.kind = "trace-rule";
+        r.fields = " (scc " + std::to_string(rs.stratum->scc_id)
+          + ") (iteration " + std::to_string(rs.iteration_count)
+          + ") (rule " + (key == trace_rule_keys.end()
+                            ? std::string("#f")
+                            : protocol::quoteString(key->second))
+          + ") (loc " + protocol::quoteString(loc) + ") (tag "
+          + protocol::quoteString(fire_slots[i].second) + ") (fires "
+          + std::to_string(fires) + ") (work " + std::to_string(work)
+          + ") (driver-rows " + std::to_string(rows) + ")";
+        out.push_back(std::move(r));
+      }
+      trace_fire_marks = fire_counts_vec;
+      trace_work_marks = work_counts_vec;
+      trace_row_marks = rows_counts_vec;
+    }
+    for (TraceRecord& r : out) trace.append(std::move(r));
+  }
+
+  void tracePark(u32 scc, u32 iteration, const char* phase,
+                 const std::string& cause)
+  {
+    TraceRecord r;
+    r.kind = "trace-park";
+    r.fields = " (scc " + std::to_string(scc) + ") (iteration "
+      + std::to_string(iteration) + ") (phase " + phase + ") (cause "
+      + cause + ")";
+    trace.append(std::move(r));
+  }
+
+  void traceFixpoint(u32 scc, u32 iterations, double ms)
+  {
+    char buf[96];
+    std::snprintf(buf, sizeof(buf), " (scc %u) (iterations %u) (ms %.3f)",
+                  scc, iterations, ms);
+    TraceRecord r;
+    r.kind = "trace-fixpoint";
+    r.fields = buf;
+    trace.append(std::move(r));
+  }
+
   // The legacy environment events the session answers by re-adopting the
   // live environment before its next program: the daemon must not compare
   // a later complete catalog against pre-event declarations.
@@ -6956,6 +7155,9 @@ public:
         if (it != accel_sidecar.end()) ++it->second.generation;
       }
       rankMarkStratumEntry(s);
+      // a to-fixpoint run is a traced one; internal single passes never
+      // reach an iteration barrier
+      if (tofixpoint && trace.armed()) traceStratumBegin(s);
       rs.stratum = s;
       rs.position = RUN_FRESH;
       rs.suspended = false;
@@ -10330,6 +10532,7 @@ inline void EndIterCompletion::operator()() noexcept
   // Level-0 watches evaluate HERE and nowhere else: the delta is finalized,
   // every worker is parked, and the iteration's growth is already known.
   db->evaluateWatchesAtBarrier();
+  if (db->trace.armed()) db->traceIteration();
   if (readRSSbytes() >= rs.mem_cap)
   {
     rs.mem_tripped.store(true, std::memory_order_relaxed);
