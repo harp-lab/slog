@@ -6,6 +6,7 @@ import { formAt, forms } from "./forms.js";
 import { renderEntry } from "./render.js";
 
 const $ = (id) => document.getElementById(id);
+// Local mode's launch token; a server's login rides in a cookie instead.
 const token = location.hash.slice(1);
 // The project the page was opened on (`/?project=NAME`); none is the default.
 const project = new URLSearchParams(location.search).get("project") ?? "";
@@ -166,8 +167,9 @@ const receive = {
 let failedAttempts = 0;
 
 function connect() {
+  const scheme = location.protocol === "https:" ? "wss" : "ws";
   const query = `token=${encodeURIComponent(token)}&project=${encodeURIComponent(project)}`;
-  socket = new WebSocket(`ws://${location.host}/ws?${query}`);
+  socket = new WebSocket(`${scheme}://${location.host}/ws?${query}`);
   socket.onopen = () => {
     failedAttempts = 0;
     renderStatus();
@@ -291,7 +293,9 @@ function renderStatus() {
   const online = socket?.readyState === WebSocket.OPEN;
   pill("connection",
     online ? "connected"
-      : failedAttempts >= 3 ? "not connected — is the studio running? A link from an earlier launch needs the address it printed"
+      : failedAttempts >= 3 ? ($("account")
+        ? "not connected — is the studio running? If your login ended, reload to log in again"
+        : "not connected — is the studio running? A link from an earlier launch needs the address it printed")
       : "reconnecting…",
     online ? "ok" : "bad");
 

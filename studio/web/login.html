@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Slog Studio · log in</title>
+<link rel="stylesheet" href="/static/studio.css">
+</head>
+<body class="login">
+<form method="post" action="/login">
+  <span class="brand">Slog Studio</span>
+  <label>Name <input name="user" autocomplete="username" required autofocus></label>
+  <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+  <button class="primary">Log in</button>
+  <p class="error"><!--error--></p>
+</form>
+</body>
+</html>

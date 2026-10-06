@@ -1,7 +1,13 @@
 //! Slog Studio: a browser workbench for a Slog program — the program above,
 //! a REPL over its evaluation below — served from loopback like a local
 //! notebook. `./slog studio FILE` runs it.
+//!
+//! `slog-studio serve` runs the same studio for many users, who log in and
+//! each get their own projects. Local mode is that server with one user,
+//! `local`, admitted by the launch token, and its data in the studio home.
 
+mod accounts;
+mod auth;
 mod lane;
 mod registry;
 mod scenario;
@@ -9,6 +15,8 @@ mod session;
 mod studio;
 mod web;
 
+use accounts::Accounts;
+use auth::Gate;
 use lane::Mode;
 use registry::{LOCAL_USER, Registry};
 use slog_repl::server::{private_token, project_root};
@@ -18,6 +26,8 @@ use std::sync::Arc;
 
 const USAGE: &str = "usage: slog studio [--port N] [--no-open] [--compiled] [FILE]
        slog studio scenario [--json] FILE.scenario.toml...
+       slog-studio serve --data DIR [--bind ADDRESS]
+       slog-studio user add NAME --data DIR
 
 Edit and evaluate FILE (default ~/.slog-studio/scratch.slog) in the browser.
 --port N     listen on 127.0.0.1:N (default: any free port)
@@ -25,7 +35,13 @@ Edit and evaluate FILE (default ~/.slog-studio/scratch.slog) in the browser.
 --compiled   evaluate with native compilation instead of the interpreter
 
 `scenario` runs scenario files headless and reports each check and step;
-it exits non-zero if any fails. --json prints the reports as JSON.";
+it exits non-zero if any fails. --json prints the reports as JSON.
+
+`serve` runs the studio for many users, on ADDRESS (default 127.0.0.1:7200).
+Each logs in as a user added by `user add` and has their own projects under
+DIR/users/; a page's ?project=NAME picks one. With TRUST_PROXY_AUTH=1 a
+reverse proxy logs users in instead and names them in the Remote-User
+header.";
 
 struct Options {
     file: Option<PathBuf>,
@@ -111,10 +127,11 @@ fn launch_token(home: &std::path::Path) -> Result<String, String> {
 #[tokio::main]
 async fn main() -> ExitCode {
     let mut args = std::env::args().skip(1).peekable();
-    let outcome = if args.peek().map(String::as_str) == Some("scenario") {
-        scenarios(args.skip(1)).await
-    } else {
-        serve(args).await.map(|()| true)
+    let outcome = match args.peek().map(String::as_str) {
+        Some("scenario") => scenarios(args.skip(1)).await,
+        Some("serve") => serve_shared(args.skip(1)).await.map(|()| true),
+        Some("user") => accounts::user_command(args.skip(1)).map(|()| true),
+        _ => serve_local(args).await.map(|()| true),
     };
     match outcome {
         Ok(true) => ExitCode::SUCCESS,
@@ -179,7 +196,7 @@ fn print_report(report: &scenario::Report) {
     );
 }
 
-async fn serve(args: impl Iterator<Item = String>) -> Result<(), String> {
+async fn serve_local(args: impl Iterator<Item = String>) -> Result<(), String> {
     let Some(options) = options(args)? else {
         println!("{USAGE}");
         return Ok(());
@@ -204,9 +221,80 @@ async fn serve(args: impl Iterator<Item = String>) -> Result<(), String> {
     if options.open {
         open_browser(&url);
     }
+    run(listener, registry, Gate::Token(token)).await
+}
 
-    let app = web::router(registry.clone(), token);
-    let served = axum::serve(listener, app)
+struct ServeOptions {
+    bind: String,
+    data: PathBuf,
+}
+
+/// `Ok(None)` asks for the usage text.
+fn serve_options(args: impl IntoIterator<Item = String>) -> Result<Option<ServeOptions>, String> {
+    let mut options = ServeOptions {
+        bind: "127.0.0.1:7200".to_owned(),
+        data: PathBuf::new(),
+    };
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--bind" => options.bind = args.next().ok_or("--bind needs an address")?,
+            "--data" => options.data = args.next().ok_or("--data needs a directory")?.into(),
+            "-h" | "--help" => return Ok(None),
+            _ => return Err(format!("unexpected {arg}\n{USAGE}")),
+        }
+    }
+    if options.data.as_os_str().is_empty() {
+        return Err(format!("serve needs --data DIR\n{USAGE}"));
+    }
+    Ok(Some(options))
+}
+
+async fn serve_shared(args: impl Iterator<Item = String>) -> Result<(), String> {
+    let Some(options) = serve_options(args)? else {
+        println!("{USAGE}");
+        return Ok(());
+    };
+    let data = std::path::absolute(&options.data)
+        .map_err(|error| format!("{}: {error}", options.data.display()))?;
+    accounts::private_dir(&data)?;
+    let listener = tokio::net::TcpListener::bind(&options.bind)
+        .await
+        .map_err(|error| format!("cannot listen on {}: {error}", options.bind))?;
+    let address = listener.local_addr().map_err(|error| error.to_string())?;
+    let proxy = matches!(std::env::var("TRUST_PROXY_AUTH").as_deref(), Ok("1" | "true"));
+    let gate = if proxy {
+        if !address.ip().is_loopback() {
+            eprintln!(
+                "slog studio: warning: TRUST_PROXY_AUTH believes any Remote-User header; \
+                 {address} must be reachable only through the proxy"
+            );
+        }
+        Gate::Proxy
+    } else {
+        let accounts = Accounts::new(data.clone());
+        accounts.prune_sessions();
+        if accounts.is_empty()? {
+            eprintln!(
+                "slog studio: nobody can log in yet; add a user with \
+                 `slog-studio user add NAME --data {}`",
+                data.display()
+            );
+        }
+        Gate::Login(Arc::new(accounts))
+    };
+    let registry = Arc::new(Registry::new(project_root()?, data, Mode::Fast, None));
+    println!("Slog Studio: http://{address}/");
+    run(listener, registry, gate).await
+}
+
+/// Serve until Ctrl-C, then stop every lane.
+async fn run(
+    listener: tokio::net::TcpListener,
+    registry: Arc<Registry>,
+    gate: Gate,
+) -> Result<(), String> {
+    let served = axum::serve(listener, web::router(registry.clone(), gate))
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
         })
