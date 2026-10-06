@@ -229,6 +229,42 @@ if echo "$o" | grep -qF 'quote_const.slog:4:1: "s" : int' \
   ok errors-quote-source
 else bad errors-quote-source "$o"; fi
 
+# 15. a hyphenated name is rejected where it is written, naming it (was: the
+#     lexer split `on-cycle` into the subtraction `on - cycle`, and
+#     simplify-all broke its own contract on the resulting rule).
+cat > "$D/name_hyphen.slog" <<'EOF'
+table (edge int int)
+table (on-cycle int)
+rule (edge 1 2)
+rule (on-cycle X) <-- (edge X X)
+EOF
+cat > "$D/name_hyphen_ctor.slog" <<'EOF'
+union (term (my-var int) (lam term))
+table (t term)
+rule (t (my-var 1))
+EOF
+o="$(run name_hyphen; run name_hyphen_ctor)"
+if echo "$o" | grep -qF "name_hyphen.slog:2:8: on-cycle is not a valid name" \
+   && echo "$o" | grep -qF "name_hyphen_ctor.slog:1:14: my-var is not a valid name" \
+   && echo "$o" | grep -qF "write on_cycle" \
+   && ! echo "$o" | grep -qi 'contract'; then
+  ok hyphenated-name-rejected
+else bad hyphenated-name-rejected "$o"; fi
+
+# 16. `const` is reserved: the parser spells every literal (const v), so a
+#     constructor named const read as a malformed literal (was: the same
+#     simplify-all contract failure).
+cat > "$D/name_const.slog" <<'EOF'
+union (term (const int) (lam term))
+table (t term)
+rule (t (const 1))
+EOF
+o="$(run name_const)"
+if echo "$o" | grep -qF "name_const.slog:1:14: const is a reserved word" \
+   && ! echo "$o" | grep -qi 'contract'; then
+  ok const-name-reserved
+else bad const-name-reserved "$o"; fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

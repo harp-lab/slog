@@ -134,6 +134,13 @@
   (match (token->tag tok)
     [(or 'id 'ref)
      (define symb (string->symbol (token->str tok)))
+     ;; `const` is reserved: every literal is spelled (const v) below, so a
+     ;; user's (const 1) -- a constructor, relation or variable named const
+     ;; -- would be indistinguishable from one, and downstream passes would
+     ;; read it as a malformed literal
+     (when (eq? symb 'const)
+       (error (format "~a: const is a reserved word (the compiler's spelling of a literal); choose another name"
+                      (rule-location-string `(syn (prov ,tok ,tok))))))
      (if (member symb '(true false))
          (cons (emit-expr `(const ,symb) toks (advance toks)) (advance toks))
          (cons symb (advance toks)))]
