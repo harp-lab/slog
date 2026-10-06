@@ -23,6 +23,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use crate::states::Stamp;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
@@ -201,6 +202,8 @@ pub struct View {
     pub unkept: Option<String>,
     /// Studio sorted the rows; they are the parent's, in this order.
     pub sorted: Option<Order>,
+    /// The session state the query ran at (states.rs).
+    pub state: Option<Stamp>,
 }
 
 /// A query's answers kept as a relation: its name, and its columns as the
@@ -229,6 +232,8 @@ pub struct Opening {
     pub read: String,
     pub kept: Result<Kept, String>,
     pub parent: Option<Lineage>,
+    /// The session state the query ran at (states.rs).
+    pub state: Option<Stamp>,
 }
 
 /// What to do to serve a range of rows.
@@ -277,6 +282,7 @@ struct Set {
     /// The rows were sorted by Studio: they cannot be read again, only
     /// sorted again.
     sorted: Option<Order>,
+    state: Option<Stamp>,
 }
 
 struct Page {
@@ -346,7 +352,7 @@ impl Results {
     /// Open a set on the first page of its `read` query; an answer that is
     /// not a rows page opens none.
     pub fn open(&mut self, opening: Opening, result: &Value) -> Result<Option<SetId>, String> {
-        let Opening { query, read, kept, parent } = opening;
+        let Opening { query, read, kept, parent, state } = opening;
         if result["query-mode"] != "rows" || !read.trim_start().starts_with('?') {
             return Ok(None);
         }
@@ -394,6 +400,7 @@ impl Results {
                 parent,
                 kept,
                 sorted: None,
+                state,
             },
         );
         while self.sets.len() > MAX_SETS {
@@ -639,6 +646,7 @@ impl Results {
             parent: Some(lineage),
             kept: parent.kept.clone(),
             sorted: Some(Order { column, descending }),
+            state: parent.state,
         };
         let id = SetId(self.next);
         self.next += 1;
@@ -746,6 +754,7 @@ impl Results {
             relation: set.kept.as_ref().ok().cloned(),
             unkept: set.kept.as_ref().err().filter(|why| !why.is_empty()).cloned(),
             sorted: set.sorted,
+            state: set.state,
         })
     }
 
@@ -1111,6 +1120,7 @@ mod tests {
             read: line.to_owned(),
             kept: Err(String::new()),
             parent: None,
+            state: None,
         }
     }
 

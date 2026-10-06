@@ -103,6 +103,8 @@ fn asset(name: &str) -> Response {
         "assist.css" => (include_str!("../web/assist.css"), "text/css; charset=utf-8"),
         "breakpoints.js" => (include_str!("../web/breakpoints.js"), "text/javascript; charset=utf-8"),
         "calls.js" => (include_str!("../web/calls.js"), "text/javascript; charset=utf-8"),
+        "timeline.js" => (include_str!("../web/timeline.js"), "text/javascript; charset=utf-8"),
+        "timeline.css" => (include_str!("../web/timeline.css"), "text/css; charset=utf-8"),
         "debugger.css" => (include_str!("../web/debugger.css"), "text/css; charset=utf-8"),
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
@@ -169,6 +171,10 @@ enum Request {
     DeleteFile { path: String },
     /// Make `path` the file Run and Debug evaluate.
     SetMain { path: String },
+    /// Explore session state `id` read-only; none returns to the current.
+    Explore { id: Option<u64> },
+    /// Continue from session state `id`, re-derived as a new state.
+    BranchState { id: u64 },
     /// Rows `start..end` (0-based) of a result set.
     Rows { set: SetId, start: u64, end: u64 },
     /// Run a refinement of a result set as a new query.
@@ -190,6 +196,8 @@ impl Request {
                 | Request::Refine { .. }
                 | Request::Assist { .. }
                 | Request::Preview { .. }
+                | Request::Explore { .. }
+                | Request::BranchState { .. }
         )
     }
 }
@@ -388,6 +396,12 @@ fn handle(
         }
         Request::Command { line } => {
             tokio::spawn(async move { studio.command(&line).await });
+        }
+        Request::Explore { id } => {
+            tokio::spawn(async move { studio.explore(id).await });
+        }
+        Request::BranchState { id } => {
+            tokio::spawn(async move { studio.branch_state(id).await });
         }
         Request::Interrupt => {
             let direct = direct.clone();

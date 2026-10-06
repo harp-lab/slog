@@ -18,6 +18,7 @@ use crate::review::{Review, ReviewView};
 use crate::scenario::{self, Report};
 use crate::breakpoints::Breakpoint;
 use crate::session::{Outcome, Session, SessionView};
+use crate::states::{Stamp, States};
 use crate::summary::{self, Summarizer};
 use crate::store::Files;
 use crate::versions::{Origin as Made, Refs, Version};
@@ -53,6 +54,7 @@ pub struct Snapshot {
     pub results: Vec<results::View>,
     /// Plain Runs record their trace.
     pub tracing: bool,
+    pub states: States,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -111,6 +113,8 @@ pub enum Event {
     },
     Lane(LaneStatus),
     Session(SessionView),
+    /// The session's states changed: one was made, explored, or asked at.
+    States(States),
     /// Whether plain Runs record their trace.
     Tracing {
         on: bool,
@@ -125,6 +129,11 @@ pub enum Event {
         origin: Origin,
         #[serde(skip_serializing_if = "Option::is_none")]
         set: Option<SetId>,
+        /// The session state it ran at, or made (states.rs).
+        state: Stamp,
+        /// It ran at a past state, explored read-only.
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        exploring: bool,
         #[serde(flatten)]
         outcome: Outcome,
     },
@@ -312,6 +321,9 @@ pub struct Studio {
     port: OnceLock<u16>,
     /// Summarizes each saved text in the background, once attached.
     summary: OnceLock<Arc<Summarizer>>,
+    /// The session's states, and the lane exploring a past one (states.rs).
+    pub(crate) states: std::sync::Mutex<States>,
+    pub(crate) explorer: Mutex<Option<crate::states::Explorer>>,
 }
 
 impl Studio {
@@ -350,6 +362,8 @@ impl Studio {
             port: OnceLock::new(),
             results: std::sync::Mutex::new(Results::default()),
             summary: OnceLock::new(),
+            states: Default::default(),
+            explorer: Mutex::new(None),
         }
     }
 
@@ -461,6 +475,7 @@ impl Studio {
             breakpoints: open.breakpoints.clone(),
             results: self.results().views(),
             tracing: self.tracing.load(std::sync::atomic::Ordering::Relaxed),
+            states: self.states.lock().expect("states lock").clone(),
         }
     }
 
@@ -624,6 +639,18 @@ impl Studio {
         }
     }
 
+    /// The program version the working files were last saved as, and the
+    /// main file's and the project's names: what a Run evaluates
+    /// (states.rs).
+    pub(crate) fn program(&self) -> (Option<u64>, String, String) {
+        let open = self.open();
+        (
+            open.project.history.head().map(|version| version.id),
+            open.project.main().to_owned(),
+            open.project.name().to_owned(),
+        )
+    }
+
     /// The files of version `id`, to look at.
     pub fn version_files(&self, id: u64) -> Result<Files, String> {
         self.open()
@@ -720,10 +747,15 @@ impl Studio {
     /// Run a REPL line. A `?` or `?exists` query's answers open a result
     /// set, refining `lineage`'s set when given.
     pub async fn run(&self, line: &str, lineage: Option<Lineage>) {
+        // A past state being explored answers the prompt (states.rs).
+        if self.explore_command(line).await {
+            return;
+        }
         let mut session = self.session.lock().await;
         let before = session.view().clone();
         let started = Instant::now();
         let outcome = session.execute(&self.lane, line).await;
+        self.observe(Origin::Repl, &before, &outcome);
         let touched = {
             let mut results = self.results();
             // Any command may have discarded the cursor (audit Q-10).
@@ -808,6 +840,7 @@ impl Studio {
                     read,
                     kept,
                     parent: lineage,
+                    state: Some(self.stamp()),
                 };
                 let mut results = self.results();
                 let opened = results.open(opening, result);
@@ -1017,6 +1050,7 @@ impl Studio {
                         if outcome.line.starts_with("break ") {
                             outcomes.push(outcome.clone());
                         }
+                        self.observe(Origin::Evaluate, &shown, outcome);
                         self.publish_outcome(Origin::Evaluate, &shown, outcome, None);
                         shown = outcome.session.clone();
                         if let Some(result) = &outcome.result {
@@ -1143,25 +1177,27 @@ impl Studio {
         }
     }
 
-    fn trouble(&self, message: &str) {
+    pub(crate) fn trouble(&self, message: &str) {
         self.publish(Event::Log {
             line: format!("studio: {message}"),
         });
     }
 
     /// Publish an entry, and the session state when it moved past `before`.
-    fn publish_outcome(&self, origin: Origin, before: &SessionView, outcome: &Outcome, set: Option<SetId>) {
+    pub(crate) fn publish_outcome(&self, origin: Origin, before: &SessionView, outcome: &Outcome, set: Option<SetId>) {
         if outcome.session != *before {
             self.publish(Event::Session(outcome.session.clone()));
         }
         self.publish(Event::Entry {
             origin,
             set,
+            state: self.stamp(),
+            exploring: false,
             outcome: outcome.clone(),
         });
     }
 
-    fn publish_sets(&self, ids: impl IntoIterator<Item = SetId>) {
+    pub(crate) fn publish_sets(&self, ids: impl IntoIterator<Item = SetId>) {
         let views: Vec<results::View> = {
             let results = self.results();
             ids.into_iter().filter_map(|id| results.view(id)).collect()
@@ -1188,7 +1224,7 @@ impl Studio {
         self.results().views()
     }
 
-    fn results(&self) -> std::sync::MutexGuard<'_, Results> {
+    pub(crate) fn results(&self) -> std::sync::MutexGuard<'_, Results> {
         self.results.lock().expect("results lock")
     }
 }

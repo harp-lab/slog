@@ -10,6 +10,7 @@
 <link rel="stylesheet" href="/static/diff.css">
 <link rel="stylesheet" href="/static/assist.css">
 <link rel="stylesheet" href="/static/debugger.css">
+<link rel="stylesheet" href="/static/timeline.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
 </head>
 <body>
@@ -91,6 +92,7 @@
     <div id="divider" title="Drag to resize"></div>
     <section id="repl">
       <nav id="result-tabs" aria-label="Transcript and result sets"></nav>
+      <div id="state-tree" hidden></div>
       <div id="transcript"></div>
       <div id="results" hidden></div>
       <div id="held" hidden>
@@ -105,6 +107,7 @@
         <button data-command="abort" class="danger small" title="Discard the run; nothing is committed">Abort</button>
       </div>
       <div class="prompt-row">
+        <span id="stamp"></span>
         <span class="caret">›</span>
         <textarea id="prompt" rows="1" spellcheck="false" autocomplete="off"
           placeholder="?(relation X Y)   tables   :help   ?? ask the assistant (or Tab)      Enter runs once brackets balance · Shift+Enter for a new line"></textarea>

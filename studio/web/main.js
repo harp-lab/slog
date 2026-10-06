@@ -19,6 +19,7 @@ import { initTrace } from "./trace.js";
 import { initAssist } from "./assist.js";
 import { createBreakpoints, glyphClass, describe, stopOf } from "./breakpoints.js";
 import { initCalls } from "./calls.js";
+import { initTimeline } from "./timeline.js";
 
 const $ = (id) => document.getElementById(id);
 // Local mode's launch token; a server's login rides in a cookie instead.
@@ -120,6 +121,9 @@ const trace = initTrace({
   transcript: $("transcript"),
   results: $("results"),
 });
+// The session's states, by logical timestamp, at the prompt and in each
+// entry's gutter; a click explores a past one (timeline.js).
+const timeline = initTimeline({ at: $("stamp"), panel: $("state-tree"), send });
 // The Calls tab: the run's demand calls (calls.js).
 const calls = initCalls({
   quiet,
@@ -154,9 +158,13 @@ const receive = {
     summary.show(snapshot.summary);
     results.init(snapshot.results);
     trace.tracing(snapshot.tracing);
+    timeline.states(snapshot.states);
     snapshot.results.forEach(offerRelation);
     history.load();
     renderStatus();
+  },
+  states(view) {
+    timeline.states(view);
   },
   tracing({ on }) {
     trace.tracing(on);
@@ -200,6 +208,7 @@ const receive = {
       onSet: results.show,
     }));
     assist.entry(entry, node); // "explain", "Ask why", and the assistant's context
+    timeline.entry(entry, node); // its state's stamp
     // The area follows the newest output: a query's set, else the
     // transcript, unless the Execution tab shows what it was about.
     const executing = trace.entry(entry);
