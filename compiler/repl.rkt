@@ -339,6 +339,10 @@
    "   ... when (OP a b) ... ignore N  log   conditions over the pattern's and"
    "                      the rule's variables; skip N hits; record, don't stop"
    "  breaks | unbreak bN list the standing breaks, or remove one"
+   "  p | print VAR       at a held stop, a variable of the stopped rule (a bare"
+   "                      VAR no command claims prints it too); ?queries there"
+   "                      read the run's working state, the rule's variables"
+   "                      standing for their values"
    "  enable|disable bN   keep a break, with its hits, in or out of the run"
    "  logs [bN]           what the logpoints recorded"
    "  calls on|off        record each run's demand calls (the call tree)"
@@ -1305,10 +1309,10 @@
 ;; arity, materialized full-index orders, tuple count.  An index-free
 ;; relation reports no orders and is dropped -- it has no scannable storage,
 ;; so it is not queryable until something materializes it.
-(define (daemon-materialization-facts s)
+(define (daemon-materialization-facts s [command '(catalog)])
   (define lines
     (session-command-stream!
-     s '(catalog)
+     s command
      (lambda (line) (regexp-match? #px"^\\(catalog-end [0-9]+\\)$" line))))
   (for/fold ([out (hash)]) ([line (in-list lines)])
     (match (read-datum line)
@@ -1343,8 +1347,8 @@
 ;; whose logical and runtime kinds agree join the snapshot -- anything else
 ;; (non-storage declarations, drifted kinds, index-free storage) stays out
 ;; and queries against it refuse as unknown rather than poisoning the rest.
-(define (query-boundary-snapshot s)
-  (define head (session-current-boundary s))
+(define (query-boundary-snapshot s #:head [given #f] #:facts [facts '(catalog)])
+  (define head (or given (session-current-boundary s)))
   (unless head
     (error '? (string-append
                "queries need a committed boundary catalog; "
@@ -1354,7 +1358,7 @@
       [`(pipeline (pos ,_) (evaluation ,_) (update-epoch ,epoch) ,_ ...)
        epoch]
       [_ (error '? "cannot read the daemon update epoch")]))
-  (define materializations (daemon-materialization-facts s))
+  (define materializations (daemon-materialization-facts s facts))
   (define declarations (catalog-declarations (boundary-catalog head)))
   (define-values (decl-map env-map)
     (for/fold ([decls (hash)] [env (hash)])
@@ -1564,14 +1568,40 @@
    'query-shown shown))
 
 (define (query-register-result state text)
+  ;; At a held stop a query reads the run's working state, and the stopped
+  ;; rule's variables stand for their values (frame handles).
+  (define rs0 (current-repl-session state))
+  (define scope (and rs0 (current-stop-scope state)))
+  (define plan (and scope (hash-ref repl-held-plans rs0 #f)))
+  (define-values (source table)
+    (if scope (frame-substituted-query text scope) (values text (hash))))
   ;; grammar refusals need no session, so parse before touching the daemon
   ;; (the handle resolver only fires when a #N actually appears)
   (define line
-    (parse-query-line text #:resolve-handle (query-handle-resolver state)))
+    (parse-query-line source #:resolve-handle (frame-handle-resolver state table)))
   (define rs (ensure-session-record! state))
   (discard-query-cursor! rs)
   (define s (repl-session-session rs))
-  (define catalog (query-catalog-from-boundary (query-boundary-snapshot s)))
+  (define result (query-register-run state rs s line
+                                     (if plan
+                                         (held-query-boundary-snapshot s plan)
+                                         (query-boundary-snapshot s))))
+  ;; a frame handle reads back as the variable's value
+  (define (unhandled line)
+    (for/fold ([line line]) ([(label word) (in-hash table)])
+      (define b (for/first ([b (in-list (stop-scope-bindings scope))]
+                            #:when (equal? (third b) word))
+                  b))
+      (string-replace line label (if b (second b) label))))
+  (if plan
+      (hash-set* result
+                 'lines (append (map unhandled (hash-ref result 'lines '()))
+                                (list "at the held stop: the run's working state -- committed facts plus what this run has derived through its last completed iteration"))
+                 'view "held")
+      result))
+
+(define (query-register-run state rs s line snapshot)
+  (define catalog (query-catalog-from-boundary snapshot))
   (define plan (plan-query catalog (query-line-request line)))
   (define wire (query-plan->wire-string plan))
   (match (query-request-mode (query-line-request line))
@@ -3693,6 +3723,7 @@
   (define-values (value events)
     (parameterize ([session-prepare-hook
                     (lambda (_s plan)
+                      (hash-set! repl-held-plans rs plan)
                       (prepare-rebind-level1! rs plan)
                       (demand-prepare! rs plan))])
       (capture-session-events state thunk)))
@@ -4424,6 +4455,134 @@
     "sessions" "mode" ":share" ":clear" ":theme" "more" "cancel" "scratch" "keep"
     "tiers" "code" "stage"))
 
+;; ---- inspecting a held stop, without moving it ------------------------------
+;;
+;; A stop's scope: the rule's variables bound at the port (and those a clause
+;; break's pattern bound from the matched values), each with its word; the
+;; rule's variables not bound yet; the clause row a clause break matched.  It
+;; is read once per stop -- `frames` reads the daemon's step record, which
+;; nothing but a resume changes -- and everything below reads only it, the
+;; held run's working state, or committed state: none of it steps,
+;; continues, commits or moves the session's logical time.
+(struct stop-scope (where bindings unbound clause) #:transparent)
+;; bindings: ((name text word) ...); clause: (relation . row-text) or #f
+
+(define (read-stop-scope lines)
+  (define (datums) (for/list ([line (in-list lines)]) (read-datum line)))
+  (stop-scope
+   (for/or ([d (in-list (datums))])
+     (match d
+       [`(step-at (port ,port) (rule ,_) (variant ,_) (op ,_) (source ,source) ,_ ...)
+        (hasheq 'port (~a port) 'source (~a source))]
+       [_ #f]))
+   (append*
+    (for/list ([d (in-list (datums))])
+      (match d
+        [`(bindings ,pairs ...)
+         (for/list ([pr (in-list pairs)])
+           (list (~a (first pr)) (~a (second pr))
+                 (and (= (length pr) 3) (third pr))))]
+        [_ '()])))
+   (append* (for/list ([d (in-list (datums))])
+              (match d [`(unbound ,names ...) (map ~a names)] [_ '()])))
+   (for/or ([d (in-list (datums))])
+     (match d
+       [`(clause (relation ,r) (row ,row)) (cons (~a r) (~a row))]
+       [_ #f]))))
+
+;; held -> (cons record scope): the scope of the stop the held run is at.
+(define held-scopes (make-weak-hasheq))
+
+(define (frame-lines s)
+  (session-debug-lines! s '(frames)
+                        (lambda (l) (regexp-match? #px"^\\(frames-end " l))))
+
+(define (current-stop-scope state)
+  (define held (server-state-held state))
+  (define rs (current-repl-session state))
+  (and held rs (step-stop-line? (held-run-record held))
+       (let ([cached (hash-ref held-scopes held #f)])
+         (if (and cached (eq? (car cached) (held-run-record held)))
+             (cdr cached)
+             (let ([scope (read-stop-scope (frame-lines (repl-session-session rs)))])
+               (hash-set! held-scopes held (cons (held-run-record held) scope))
+               scope)))))
+
+(define (scope-binding scope name)
+  (and scope (assoc name (stop-scope-bindings scope))))
+
+;; `p X` / `print X` at a held stop: the value a rule variable is bound to.
+(define (print-result state argument)
+  (define name (string-trim argument))
+  (unless (regexp-match? #px"^[A-Za-z_][A-Za-z0-9_']*$" name)
+    (error 'print "expected: print VAR, a variable of the stopped rule"))
+  (define scope (or (current-stop-scope state)
+                    (error 'print "no run is held at a rule's port; `print` reads a stop's variables")))
+  (define binding (scope-binding scope name))
+  (cond
+    [binding
+     (hash-set* (text-result (format "~a" name) (list (format "~a = ~a" name (second binding)))
+                             #:kind "print")
+                'name name 'value (second binding) 'word (or (third binding) 'null))]
+    [(member name (stop-scope-unbound scope))
+     (text-result (format "~a" name)
+                  (list (format "~a is not yet bound at this clause" name))
+                  #:kind "print")]
+    [else
+     (error 'print "~a is not a variable of the stopped rule; its variables are ~a" name
+            (string-join (append (map first (stop-scope-bindings scope))
+                                 (stop-scope-unbound scope))
+                         ", "))]))
+
+;; A query at a held stop reads the run's working state; a variable of the
+;; stopped rule stands for its value there.  Frame handles are `#` labels
+;; this server never mints (it counts up from 1), resolved before the
+;; checked table.
+(define frame-handle-base 900000000)
+
+(define (frame-substituted-query text scope)
+  (define bound
+    (for/list ([b (in-list (stop-scope-bindings scope))] #:when (third b)) b))
+  (define table (make-hash))
+  (define replaced
+    ;; whole words outside strings and comments
+    (let loop ([parts (regexp-split #px"(\"(?:[^\"\\\\]|\\\\.)*\")" text)]
+               [strings (regexp-match* #px"\"(?:[^\"\\\\]|\\\\.)*\"" text)]
+               [out '()])
+      (define piece
+        (regexp-replace*
+         #px"(?<![A-Za-z0-9_'#])([A-Za-z_][A-Za-z0-9_']*)(?![A-Za-z0-9_'])"
+         (car parts)
+         (lambda (all name)
+           (match (assoc name bound)
+             [(list _ _ word)
+              (define label (format "#~a" (+ frame-handle-base (hash-count table))))
+              (hash-set! table label word)
+              label]
+             [_ all]))))
+      (if (null? strings)
+          (string-append* (reverse (cons piece out)))
+          (loop (cdr parts) (cdr strings) (list* (car strings) piece out)))))
+  (values replaced table))
+
+(define (frame-handle-resolver state table)
+  (define checked (query-handle-resolver state))
+  (lambda (label)
+    (define word (hash-ref table label #f))
+    (if word
+        (query-literal 'word (number->string word))
+        (checked label))))
+
+;; The prepared run the held stop is in, from the session's prepare hook.
+(define repl-held-plans (make-weak-hasheq))
+
+;; The snapshot a query at a held stop plans against: the prepared
+;; boundary's catalog, bound by the daemon to the run's working relations.
+(define (held-query-boundary-snapshot s plan)
+  (define head (boundary-plan-output plan))
+  (query-boundary-snapshot s #:head head
+                           #:facts `(catalog boundary ,(boundary-key head))))
+
 ;; ---- T5 slice (c) / R4: the pre-commit gate as a place ---------------------
 ;; A level-1 watch is an explicit request to stop the run before it commits,
 ;; so a session that has armed one runs its semantic commands on a HELD
@@ -4483,7 +4642,8 @@
 ;; resolve a pause or observe one, and neither wants a held run of its own.
 (define pause-resolution-verbs
   '("commit" "continue" "replay" "abort" "step" "frames" "finish" "why"
-    "breaks" "unbreak" "whynot" "enable" "disable" "calls" "logs"))
+    "breaks" "unbreak" "whynot" "enable" "disable" "calls" "logs"
+    "p" "print"))
 
 ;; Fields of the uniform pause record, for rendering (t0-contract).
 (define (pause-record-field line key)
@@ -4578,7 +4738,9 @@
                "continue resumes it · abort settles the current iteration, then discards the run")
          '())
      (list
-      "queries here answer COMMITTED masters; the candidate rows are not in them"
+      (if stepped?
+          "p VAR prints the rule's variables; ?queries read the run's working state, a variable of the rule standing for its value"
+          "queries here answer COMMITTED masters; the candidate rows are not in them")
       (format "held: ~a" (held-run-source held)))
      (if (positive? (held-run-replays held))
          (list (format "replayed ~a time~a"
@@ -4624,30 +4786,27 @@
          (format "  ~a" (string-join (for/list ([pr (in-list pairs)])
                                        (format "~a = ~a" (first pr) (second pr)))
                                      " · "))]
+        [`(unbound ,names ...)
+         (format "  not yet bound at this clause: ~a" (string-join (map ~a names) ", "))]
+        [`(clause (relation ,r) (row ,row)) (format "  matched (~a ~a)" r row)]
         [`(frames-end ,n) (format "~a frame~a" n (if (= n 1) "" "s"))]
         [`(refused ,class ,_generation ,detail ...)
          (format "refused: ~a ~a" class
                  (string-join (for/list ([d (in-list detail)])
                                 (format "~s" d)) " "))]
         [_ line])))
-  ;; the bindings as data too, for an editor to show beside the rule
-  (define bindings
-    (for*/list ([line (in-list lines)]
-                #:do [(define datum (read-datum line))]
-                #:when (match datum [`(bindings ,_ ...) #t] [_ #f])
-                [pr (in-list (cdr datum))])
-      (list (~a (first pr)) (~a (second pr)))))
-  (define where
-    (for/or ([line (in-list lines)])
-      (match (read-datum line)
-        [`(step-at (port ,port) (rule ,_) (variant ,_) (op ,_) (source ,source) ,_ ...)
-         (hasheq 'port (~a port) 'source (~a source))]
-        [_ #f])))
+  ;; the scope as data too, for an editor to show beside the rule
+  (define scope (read-stop-scope lines))
   (attach-session-state
    state
    (hash-set* (text-result "Frames" rendered #:kind "frames")
-              'bindings bindings
-              'at (or where 'null))))
+              'bindings (for/list ([b (in-list (stop-scope-bindings scope))])
+                          (list (first b) (second b)))
+              'unbound (stop-scope-unbound scope)
+              'clause (match (stop-scope-clause scope)
+                        [(cons r row) (hasheq 'relation r 'row row)]
+                        [_ 'null])
+              'at (or (stop-scope-where scope) 'null))))
 
 ;; ---- T5 slice (d1): `why` at the prompt (repl-ux §9.4) --------------------
 ;;
@@ -5050,6 +5209,7 @@
     ["disable" (enable-break-result state argument #f)]
     ["calls" (demand-result state argument)]
     ["logs" (logs-result state argument)]
+    [(or "p" "print") (print-result state argument)]
     ["watch" (watch-result state argument)]
     ["unwatch" (unwatch-result state argument)]
     ["watches" (watches-result state)]
@@ -5389,6 +5549,14 @@
     [(or ":quit" "quit" "exit")
      (set-server-state-closing?! state #t)
      (hasheq 'kind "quit" 'title "Goodbye" 'lines (list "REPL closed") 'close #t)]
+    ;; at a held stop, a bare variable of the stopped rule that no command
+    ;; claims prints it
+    [_ #:when (and (string=? (string-trim argument) "")
+                   (server-state-held state)
+                   (let ([scope (current-stop-scope state)])
+                     (and scope (or (scope-binding scope trimmed)
+                                    (member trimmed (stop-scope-unbound scope))))))
+     (print-result state trimmed)]
     [_
      (error 'command
             (format "unknown command ~a; type :help for the current command set" verb))])]))
@@ -7220,6 +7388,43 @@
       (void (run! "break tests/dem_stlc.slog:17 demand (ck env e2)"))
       (define second (run! "run tests/dem_stlc.slog"))
       (check-regexp-match #px"demand ask of \\(ck \\(mt\\) \\(num 4\\)\\)" (text second))
+      (void (run! "abort"))
+      (void (run! ":quit"))))
+
+  ;; Inspecting a held stop does not move it.  A clause break on the
+  ;; nested pattern of 0cfa's `(ret v (ar ea k))` stops at the drive port,
+  ;; where the rule has bound only `v` -- the pattern binds `ea` and `k`
+  ;; from the matched value.  Printing, bare variables, queries against the
+  ;; run's working state with the frame's variables substituted, and frames
+  ;; again leave the daemon's pipeline position, the stop and the hit count
+  ;; exactly where they were.
+  (let ([break-environment (environment-variables-copy test-environment)])
+    (environment-variables-set! break-environment #"SLOG_OPT" #"interp")
+    (environment-variables-set! break-environment #"SLOG_THREADS" #"1")
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables break-environment])
+      (define state (make-server-state))
+      (define (run! line) (dispatch-command state line))
+      (define (text result) (string-join (hash-ref result 'lines) "\n"))
+      (void (run! "break examples/tinycfa/0cfa.slog:46 match (ret v (ar ea k))"))
+      (define stop (run! "run examples/tinycfa/0cfa.slog"))
+      (check-equal? (hash-ref stop 'title) "Paused · break b1")
+      (define s (ensure-session! state))
+      (define before (list (pipeline-datum s) (text (run! "frames")) (text (run! "breaks"))))
+      (define frames (run! "frames"))
+      (check-equal? (map first (hash-ref frames 'bindings)) '("v" "ea" "k"))
+      (check-regexp-match #px"matched \\(ret " (text frames))
+      (check-regexp-match #px"^k = \\(" (text (run! "p k")))
+      (check-regexp-match #px"^ea = \\(" (text (run! "ea")))
+      (check-exn #px"not a variable of the stopped rule" (lambda () (run! "print zz")))
+      (define counted (run! "?count (ret V K)"))
+      (check-regexp-match #px"[1-9][0-9]* rows? match" (text counted))
+      (check-equal? (hash-ref counted 'view) "held")
+      ;; `v` stands for its value: the ret row the stop matched is there
+      (check-regexp-match #px"yes" (text (run! "?exists (ret v _)")))
+      (check-equal? (list (pipeline-datum s) (text (run! "frames")) (text (run! "breaks")))
+                    before)
+      (check-not-equal? (hash-ref (run! "continue") 'kind) "error")
       (void (run! "abort"))
       (void (run! ":quit"))))
 
