@@ -95,23 +95,6 @@ button.icon { padding: 0 9px; color: var(--text); }
 button.icon[aria-pressed="true"] { background: var(--strong); border-color: var(--strong); color: var(--page); }
 button.small { height: 24px; padding: 0 9px; font-size: 12px; }
 
-.segmented {
-  display: inline-flex;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
-  overflow: hidden;
-}
-.segmented button {
-  height: calc(var(--control) - 2px);
-  border: 0;
-  border-radius: 0;
-  background: var(--surface);
-  color: var(--text);
-  font-weight: 500;
-}
-.segmented button + button { border-left: 1px solid var(--border); }
-.segmented button[aria-checked="true"] { background: var(--strong); color: var(--page); }
-
 /* ---- Layout ------------------------------------------------------------ */
 
 main { flex: 1; display: flex; min-height: 0; }
@@ -265,11 +248,6 @@ main { flex: 1; display: flex; min-height: 0; }
 .finding a { cursor: pointer; text-decoration: underline; color: var(--blue); }
 .finding.error a { color: var(--red); }
 .finding.warning a { color: var(--yellow); }
-
-/* A form's one-liner, after its first line in the editor. */
-.form-note { color: var(--muted) !important; font-style: italic; font-family: var(--sans); font-size: 12px; opacity: 0.85; }
-.form-note.far { opacity: 0.45; }
-.line-keys { color: var(--blue) !important; font-family: var(--sans); font-size: 11px; opacity: 0.8; }
 
 /* ---- Panels: Ask, Review, Scenarios ------------------------------------ */
 
@@ -540,8 +518,6 @@ button.quiet:hover:not(:disabled) { color: var(--red); }
 #drawer h2 { font-size: 14px; margin: 0 0 4px; color: var(--strong); }
 .hint { color: var(--muted); font-size: 12px; margin: 0 0 12px; }
 .notice { color: var(--text); font-size: 12px; margin: 0 0 12px; }
-body:not(.hints) :is(.hint, kbd) { display: none; }
-body:not(.hints) ::placeholder { color: transparent; }
 .hint code { font-family: var(--mono); font-size: 11px; }
 .scenario {
   border: 1px solid var(--border);
@@ -561,26 +537,29 @@ body:not(.hints) ::placeholder { color: transparent; }
 
 /* ---- Status strip ------------------------------------------------------ */
 
+/* Quiet while all is well: muted text, a dot; trouble reads stronger. */
 footer {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 5px 12px;
+  gap: 14px;
+  min-height: 24px;
+  padding: 3px 14px;
   background: var(--chrome);
   border-top: 1px solid var(--border);
-  font-size: 11.5px;
+  font-size: 11px;
+  color: var(--muted);
 }
-.pill { display: inline-flex; align-items: center; gap: 5px; color: var(--text); }
+.pill { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); white-space: nowrap; }
 .pill:empty { display: none; }
-.pill + .pill::before { content: ""; width: 1px; height: 12px; background: var(--border-strong); margin-right: 3px; }
-.dot::after { content: none; }
-.state { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); display: inline-block; }
+.pill:has(.state.bad) { color: var(--text); white-space: normal; }
+#lane { cursor: pointer; }
+#lane:hover { color: var(--text); }
+.state { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); display: inline-block; flex: none; }
 .state.ok { background: var(--green); }
 .state.busy { background: var(--yellow); animation: pulse 1s ease-in-out infinite; }
 .state.bad { background: var(--red); }
 .pill.held { color: var(--orange); font-weight: 600; }
-button.hints-key {
-  margin-left: auto;
+button.quiet-link {
   height: auto;
   padding: 0;
   border: none;
@@ -588,7 +567,10 @@ button.hints-key {
   color: var(--muted);
   font: 11px var(--sans);
 }
-button.hints-key:hover:not(:disabled) { background: none; color: var(--text); }
+button.quiet-link:hover:not(:disabled) { background: none; color: var(--text); }
+#restart { color: var(--blue); text-decoration: underline; }
+.status-keys { margin-left: auto; display: flex; gap: 14px; }
+#hints.locked { color: var(--blue); }
 @keyframes pulse { 50% { opacity: 0.35; } }
 
 /* ---- Accounts (server mode) -------------------------------------------- */
@@ -649,6 +631,8 @@ body.login .error { margin: 0; min-height: 1.4em; color: var(--red); }
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
+/* New shows with the pointer or focus on the list (and in the palette). */
+#files:not(:hover, :focus-within) #new-file { visibility: hidden; }
 .file-row {
   display: flex;
   width: 100%;

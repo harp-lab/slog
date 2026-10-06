@@ -32,6 +32,9 @@
 .key-help {
   position: fixed;
   z-index: 20;
+  top: 64px;
+  left: 50%;
+  transform: translateX(-50%);
   max-width: 560px;
   padding: 10px 14px;
   background: var(--surface);
