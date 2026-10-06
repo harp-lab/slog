@@ -126,12 +126,12 @@
              (for/list ([(lvl rules) (in-hash levels)])
                (list lvl (rule-location-string (car rules))))))))
 
-(define/contract (plan-all rules rel-env dynamic-rels level)
-  (-> set? hash? set? natural? (cons/c (set/c planned-rule?) hash?))
-  ;; level rides into deterministic temp names (temp<flavor><level>x<n>):
-  ;; temps of different strata coexist by name in one daemon database, so
-  ;; names must be unique program-wide (RF1 slice 0)
-  (plan-stratum rules rel-env dynamic-rels #:level level))
+(define/contract (plan-all rules rel-env dynamic-rels)
+  (-> set? hash? set? (cons/c (set/c planned-rule?) hash?))
+  ;; temp names are a digest of the stratum's rules (join-planning.rkt):
+  ;; temps coexist by name in one daemon database across every program a
+  ;; session layers onto it, so names must be unique session-wide
+  (plan-stratum rules rel-env dynamic-rels))
 
 (define/contract (lower-all planned-rules rel-env decomps)
   (-> set? hash? hash? cprog?)
@@ -863,7 +863,7 @@
   (parameterize ([count-flavor (and (count-flavor)
                                     (count-mode dynamic-rels (make-hash)))])
   (match-define (cons planned rel-env+)
-    (plan-all rules (type-env-rels type-env) plan-dynamic (stratum-level stratum)))
+    (plan-all rules (type-env-rels type-env) plan-dynamic))
   (define cprog (lower-all planned rel-env+ decomps))
   ;; atomic writes: run-tests.sh -jN can compile the SAME content-addressed
   ;; stratum in two processes at once, and a torn .cpp/.cprog read would break a

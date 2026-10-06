@@ -5986,6 +5986,54 @@
           (void (command ":quit"))
           (delete-file second-program)))))
 
+  ;; Two programs whose heads stage (a constructed id another head reads)
+  ;; each mint a temp in their first rule stratum.  Layered into one
+  ;; session they must not land on one relation: level-numbered temps
+  ;; named both `temp1x0`, at arities 2 and 3, and the second install
+  ;; killed the daemon ("relation arity mismatch for temp1x0").  Both
+  ;; layers stay queryable, and both keep maintaining afterwards.
+  (let ([layer-environment (environment-variables-copy (current-environment-variables))]
+        [first-program (make-temporary-file "repl-layer-a-~a.slog")]
+        [second-program (make-temporary-file "repl-layer-b-~a.slog")])
+    (environment-variables-set! layer-environment #"SLOG_OPT" #"interp")
+    (environment-variables-set! layer-environment #"SLOG_THREADS" #"1")
+    (with-output-to-file first-program #:exists 'truncate
+      (lambda ()
+        (display (string-append
+                  "struct (lbnd int int)\ntable (lsrc int int)\n"
+                  "table (lst int lbnd)\ntable (lkv lbnd int)\n"
+                  "rule (lsrc 1 2) (lsrc 2 3)\n"
+                  "rule (lsrc X Y) --> (lst X (lbnd X Y)) (lkv (lbnd X Y) Y)\n"))))
+    (with-output-to-file second-program #:exists 'truncate
+      (lambda ()
+        (display (string-append
+                  "struct (lcell int int int)\ntable (llink int int int)\n"
+                  "table (lowns int int lcell)\ntable (lval lcell int int)\n"
+                  "rule (llink 1 2 5) (llink 2 3 6)\n"
+                  "rule (llink X Y C) --> (lowns X C (lcell X Y C)) (lval (lcell X Y C) Y C)\n"))))
+    (define state (make-server-state))
+    (define (count-of query)
+      (hash-ref (dispatch-command state query) 'query-matched))
+    (dynamic-wind
+      void
+      (lambda ()
+        (parameterize ([current-directory repository-root]
+                       [current-environment-variables layer-environment])
+          (void (dispatch-command state (format "run ~a" first-program)))
+          (void (dispatch-command state (format "run ~a" second-program)))
+          (check-equal? (count-of "?count (lst X Y)") 2)
+          (check-equal? (count-of "?count (lkv X Y)") 2)
+          (check-equal? (count-of "?count (lowns X Y Z)") 2)
+          (check-equal? (count-of "?count (lval X Y Z)") 2)
+          (void (dispatch-command state "add lsrc 5 6"))
+          (void (dispatch-command state "add llink 7 8 9"))
+          (check-equal? (count-of "?count (lkv X Y)") 3)
+          (check-equal? (count-of "?count (lval X Y Z)") 3)))
+      (lambda ()
+        (close-server-session! state)
+        (delete-file first-program)
+        (delete-file second-program))))
+
   ;; A syntax error is the command's failure, positioned at the offending
   ;; token -- the parser must not print to the bootstrap pipe and exit the
   ;; server -- and the session survives it.
