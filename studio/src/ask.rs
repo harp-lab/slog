@@ -3,7 +3,7 @@
 //! a thread's proposed program is evaluated on the preview lane.
 
 use crate::agent::{self, Agent};
-use crate::review::{Change, Status};
+use crate::review::{Change, Message, Note, Status, now};
 use crate::lane::Lane;
 use crate::session::{Outcome, Session, run_argument};
 use crate::studio::{Event, Studio};
@@ -34,14 +34,19 @@ impl Studio {
             None => review.new_thread(agent::title_of(&message)),
         };
         let entry = review.thread_mut(thread).expect("the thread exists");
-        entry.messages.push(("user", message.as_str()).into());
+        entry.messages.push(Message::new("user", &message, Value::Null));
         entry.running = true;
         // Each turn's proposals form one changeset, named after the request.
         review.open_changeset(thread, agent::title_of(&message));
         drop(review);
         self.publish_review();
         let file = self.main_name();
-        let context = format!("- Program file: {file}\n");
+        let (main, _) = self.main_file();
+        let directory = main.parent().map(|dir| dir.display().to_string()).unwrap_or_default();
+        let root = self.lane.root().display();
+        let context = format!(
+            "- Program file: {file}\n- Project directory: {directory}\n- Slog repository (your working directory): {root}\n"
+        );
         tokio::spawn(agent::run(self.clone(), thread, message, context));
         Ok(thread)
     }
@@ -50,10 +55,20 @@ impl Studio {
         self.agent.stop(thread)
     }
 
-    pub(crate) fn thread_message(&self, thread: u32, role: &str, text: &str) {
-        if let Some(entry) = self.review.lock().expect("review lock").thread_mut(thread) {
-            entry.messages.push((role, text).into());
-        }
+    /// Add `message` to `thread`'s transcript; returns its index there.
+    pub(crate) fn thread_push(&self, thread: u32, message: Message) -> usize {
+        let mut review = self.review.lock().expect("review lock");
+        let Some(entry) = review.thread_mut(thread) else { return 0 };
+        entry.messages.push(message);
+        entry.messages.len() - 1
+    }
+
+    /// Change entry `index` of `thread`'s transcript; returns it as changed.
+    pub(crate) fn thread_update(&self, thread: u32, index: usize, change: impl FnOnce(&mut Message)) -> Option<Message> {
+        let mut review = self.review.lock().expect("review lock");
+        let message = review.thread_mut(thread)?.messages.get_mut(index)?;
+        change(message);
+        Some(message.clone())
     }
 
     pub(crate) fn thread_session(&self, thread: u32) -> Option<String> {
@@ -61,8 +76,12 @@ impl Studio {
     }
 
     pub(crate) fn set_thread_session(&self, thread: u32, session: Option<String>) {
-        if let Some(entry) = self.review.lock().expect("review lock").thread_mut(thread) {
+        let mut review = self.review.lock().expect("review lock");
+        let Some(entry) = review.thread_mut(thread) else { return };
+        if entry.session != session {
             entry.session = session;
+            drop(review);
+            self.keep_review();
         }
     }
 
@@ -73,10 +92,12 @@ impl Studio {
         self.publish_review();
     }
 
+    /// Show every tab the review as it stands, and keep it.
     pub(crate) fn publish_review(&self) {
         let text = self.text();
         let view = self.review.lock().expect("review lock").view(&text);
         self.publish(Event::Review(view));
+        self.keep_review();
     }
 
     /// The main file's working text: the program agents read and change.
@@ -108,6 +129,24 @@ impl Studio {
             "proposed": id,
             "message": "queued for the author to accept or reject; nothing changed yet. evaluate_proposal runs the program as your proposals would leave it.",
         }))
+    }
+
+    pub(crate) fn record_note(&self, thread: u32, title: String, text: String) -> Result<Value, String> {
+        if title.trim().is_empty() || text.trim().is_empty() {
+            return Err("a note needs a title and a text".to_owned());
+        }
+        let mut review = self.review.lock().expect("review lock");
+        let entry = review.thread_mut(thread).ok_or_else(|| format!("no thread {thread}"))?;
+        entry.notes.push(Note { title, text, at: now() });
+        let count = entry.notes.len();
+        drop(review);
+        self.keep_review();
+        Ok(json!({ "recorded": count, "message": "kept with this thread; get_notes reads it back in later turns" }))
+    }
+
+    pub(crate) fn notes_of(&self, thread: u32) -> Value {
+        let review = self.review.lock().expect("review lock");
+        json!(review.thread(thread).map(|entry| entry.notes.clone()).unwrap_or_default())
     }
 
     pub(crate) fn proposals_of(&self, thread: u32) -> Value {

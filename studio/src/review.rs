@@ -11,9 +11,11 @@
 //! The ported shape is the slides app's review model (threads, changesets,
 //! ops); the anchoring is Slog Studio's own.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::BTreeMap;
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Change {
     /// Replace the one occurrence of `old` with `new`.
@@ -22,7 +24,7 @@ pub enum Change {
     Append { source: String },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
     Pending,
@@ -30,7 +32,7 @@ pub enum Status {
     Rejected,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Op {
     pub id: u32,
     pub thread: u32,
@@ -42,28 +44,66 @@ pub struct Op {
 }
 
 /// One agent turn's proposals, titled with the request that caused them.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Changeset {
     pub id: u32,
     pub thread: u32,
     pub title: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+/// One entry of a thread's transcript.
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Message {
-    /// "user", "assistant", "tool", or "error".
+    /// "user", "assistant", "thinking", "tool", "plan", "notice", "error",
+    /// or "turn" (a turn's closing line).
     pub role: String,
     pub text: String,
+    /// When it was said, in milliseconds since the epoch.
+    #[serde(default)]
+    pub at: u64,
+    /// What the role carries beyond text: a tool call's name, input, status
+    /// and result; a plan's items; a thought's duration; a turn's usage.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub data: Value,
+}
+
+impl Message {
+    pub fn new(role: &str, text: &str, data: Value) -> Self {
+        Self {
+            role: role.to_owned(),
+            text: text.to_owned(),
+            at: now(),
+            data,
+        }
+    }
+}
+
+/// Milliseconds since the epoch.
+pub fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_millis() as u64)
+}
+
+/// A finding or decision an agent recorded to keep (`record_note`).
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Note {
+    pub title: String,
+    pub text: String,
+    pub at: u64,
 }
 
 /// One line of questioning: its own claude session, resumed for follow-ups.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Thread {
     pub id: u32,
     pub title: String,
     #[serde(skip)]
     pub session: Option<String>,
     pub messages: Vec<Message>,
+    #[serde(default)]
+    pub notes: Vec<Note>,
+    #[serde(default)]
     pub running: bool,
 }
 
@@ -92,7 +132,41 @@ pub struct Review {
     ops: Vec<Op>,
 }
 
+/// What a project keeps of its review across restarts: everything, the
+/// threads' claude sessions included, so a follow-up still resumes one.
+#[derive(Deserialize, Serialize)]
+pub struct Record {
+    threads: Vec<Thread>,
+    sessions: BTreeMap<u32, String>,
+    changesets: Vec<Changeset>,
+    ops: Vec<Op>,
+}
+
 impl Review {
+    pub fn record(&self) -> Record {
+        Record {
+            threads: self.threads.clone(),
+            sessions: self
+                .threads
+                .iter()
+                .filter_map(|thread| Some((thread.id, thread.session.clone()?)))
+                .collect(),
+            changesets: self.changesets.clone(),
+            ops: self.ops.clone(),
+        }
+    }
+
+    /// The review `record` kept. No run survives a restart, so no thread is
+    /// running.
+    pub fn restore(record: Record) -> Self {
+        let Record { mut threads, sessions, changesets, ops } = record;
+        for thread in &mut threads {
+            thread.session = sessions.get(&thread.id).cloned();
+            thread.running = false;
+        }
+        Self { threads, changesets, ops }
+    }
+
     pub fn new_thread(&mut self, title: String) -> u32 {
         let id = self.threads.len() as u32 + 1;
         self.threads.push(Thread {
@@ -100,6 +174,7 @@ impl Review {
             title,
             session: None,
             messages: Vec::new(),
+            notes: Vec::new(),
             running: false,
         });
         id

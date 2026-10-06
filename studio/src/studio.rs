@@ -164,6 +164,9 @@ pub enum Refused {
 
 const SCENARIO_SUFFIX: &str = ".scenario.toml";
 
+/// The project store's record of the agent threads (`review::Record`).
+const THREADS: &str = "threads";
+
 struct Doc {
     text: String,
     version: u64,
@@ -313,6 +316,13 @@ impl Studio {
     /// `mcp_token` admits agent runs to `/mcp`.
     pub fn new(projects: Projects, project: Project, files: Files, lane: Lane, mcp_token: String) -> Self {
         let preview = Lane::new(lane.root().to_path_buf(), Mode::Fast);
+        let review = match project.store().read(THREADS) {
+            Ok(record) => record.map(Review::restore).unwrap_or_default(),
+            Err(error) => {
+                eprintln!("slog-studio: cannot read the agent threads of {}: {error}", project.name());
+                Review::default()
+            }
+        };
         Self {
             projects,
             open: std::sync::Mutex::new(Open::new(project, files, 0)),
@@ -321,7 +331,7 @@ impl Studio {
             events: broadcast::channel(1024).0,
             edited: Arc::new(Notify::new()),
             agent: Agent::new(mcp_token),
-            review: std::sync::Mutex::new(Review::default()),
+            review: std::sync::Mutex::new(review),
             preview_session: Mutex::new((Session::new(&preview), None)),
             debugger: crate::trace::Debugger::new(preview.root()),
             preview,
@@ -1016,6 +1026,18 @@ impl Studio {
         self.edited.notify_one();
     }
 
+    /// Keep the agent threads, their transcripts and proposals in the
+    /// project's store. The open project is locked first, as everywhere, so
+    /// records are written in the order they were taken.
+    pub(crate) fn keep_review(&self) {
+        let open = self.open();
+        let record = self.review.lock().expect("review lock").record();
+        if let Err(error) = open.project.store().write(THREADS, &record) {
+            drop(open);
+            self.trouble(&format!("cannot keep the agent threads: {error}"));
+        }
+    }
+
     fn trouble(&self, message: &str) {
         self.publish(Event::Log {
             line: format!("studio: {message}"),
@@ -1075,7 +1097,8 @@ fn databases(root: &std::path::Path) -> Vec<String> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::{databases, Event, Made, Origin, Refused, Studio};
-    use crate::review::Change;
+    use crate::review::{Change, Message};
+    use serde_json::{Value, json};
     use crate::lane::{Lane, Mode};
     use crate::projects::Projects;
     use crate::session::Outcome;
@@ -1215,6 +1238,53 @@ pub(crate) mod tests {
         assert_eq!(studio.open().files()["lib.slog"], "", "other files are kept");
         assert!(studio.accept(op).is_err());
         assert_eq!(studio.history().versions.len(), versions + 1);
+    }
+
+    /// The agent threads outlive the studio: a studio opened on the project
+    /// again has each thread's transcript, notes and claude session (so a
+    /// follow-up resumes it), and its proposals, with new ids after theirs.
+    #[test]
+    fn agent_threads_survive_a_restart() {
+        let scratch = Scratch::new("threads");
+        let text = "table (t int)\nrule (t 1)\n";
+        let (thread, op) = {
+            let studio = studio(&scratch, Mode::Fast, text);
+            let ids = {
+                let mut review = studio.review.lock().unwrap();
+                let thread = review.new_thread("facts".to_owned());
+                review.open_changeset(thread, "add a fact".to_owned());
+                let change = Change::Append { source: "rule (t 2)".to_owned() };
+                (thread, review.propose(text, thread, change, "a second fact".to_owned()).unwrap())
+            };
+            studio.thread_push(ids.0, Message::new("user", "add a fact", Value::Null));
+            studio.thread_update(ids.0, 0, |message| message.data = json!({ "kept": true }));
+            studio.record_note(ids.0, "why".to_owned(), "two facts".to_owned()).unwrap();
+            studio.set_thread_session(ids.0, Some("session-1".to_owned()));
+            studio.review.lock().unwrap().thread_mut(ids.0).unwrap().running = true;
+            studio.publish_review();
+            ids
+        };
+
+        let projects = Projects::new(scratch.path());
+        let (project, files) = projects.open("p").unwrap();
+        let lane = Lane::new(project_root().unwrap(), Mode::Fast);
+        let studio = Studio::new(projects, project, files, lane, "test".to_owned());
+        assert_eq!(studio.thread_session(thread).as_deref(), Some("session-1"));
+        let view = studio.review.lock().unwrap().view(text);
+        let kept = &view.threads[0];
+        assert_eq!((kept.title.as_str(), kept.running), ("facts", false));
+        assert_eq!(kept.messages[0].text, "add a fact");
+        assert_eq!(kept.messages[0].data, json!({ "kept": true }));
+        assert_eq!(kept.notes[0].text, "two facts");
+        assert_eq!(view.ops[0].op.id, op);
+        assert_eq!(view.ops[0].op.change, Change::Append { source: "rule (t 2)".to_owned() });
+
+        let mut review = studio.review.lock().unwrap();
+        let next = review.new_thread("more".to_owned());
+        review.open_changeset(next, "more".to_owned());
+        assert_eq!(next, thread + 1);
+        let change = Change::Append { source: "rule (t 3)".to_owned() };
+        assert_eq!(review.propose(text, next, change, String::new()).unwrap(), op + 1);
     }
 
     /// Evaluation starts from nothing: re-evaluating an edited program shows

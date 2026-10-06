@@ -215,6 +215,11 @@ impl Project {
         &self.name
     }
 
+    /// The project's store, for records kept beside its versions.
+    pub fn store(&self) -> &Store {
+        &self.store
+    }
+
     /// The path, within the project, of the file evaluation runs.
     pub fn main(&self) -> &str {
         &self.config.main
