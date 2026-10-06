@@ -101,7 +101,10 @@
                       ;; requested over the control connection and the next
                       ;; slice boundary of the command in flight must hold.
                       ;; Scoped to that command: cleared when it finishes.
-                      [interrupt #:mutable])
+                      [interrupt #:mutable]
+                      ;; live progress of the latest run, as the session's
+                      ;; echo sees it (`run-progress`); #f before any
+                      [progress #:auto #:mutable])
   #:transparent)
 
 ;; T5 slice (c) / R4: a run HELD at the pre-commit gate (repl-ux §9.2 -- the
@@ -212,13 +215,19 @@
     (lambda () (set-server-state-event-sink! state #f))))
 
 (define (make-repl-session state database)
+  (define s
+    (make-session
+     #:echo
+     (lambda (line)
+       ;; progress lines feed the live view only; a change record keeps
+       ;; the fixpoints
+       (unless (note-progress! state line)
+         (define sink (server-state-event-sink state))
+         (when sink
+           (set-box! sink (cons line (unbox sink))))))))
+  (session-progress! s progress-every-ms)
   (repl-session
-   (make-session
-    #:echo
-    (lambda (line)
-      (define sink (server-state-event-sink state))
-      (when sink
-        (set-box! sink (cons line (unbox sink))))))
+   s
    database
    'mutable
    #f
@@ -227,6 +236,178 @@
    (make-hash)
    (make-hash)
    (make-hash)))
+
+;; ---- Live progress (docs/pausing.md §16) ----------------------------------
+;; While a command runs, the daemon reports each stratum as it starts, every
+;; `progress-every-ms` as it runs, and at its fixpoint; the session's echo folds
+;; those lines into the server state, which the control connection's
+;; `progress` method reads from its own thread while the command is still in
+;; flight.  The state is an immutable hash, replaced whole, so a reader never
+;; sees half an update.
+;;
+;;   'seq      bumped by every update, so a poller can tell nothing moved
+;;   'run      bumped by the first stratum of a command, so commands that
+;;             run nothing (a query, `tables`) leave the last run in view;
+;;             a `continue` of a held run stays the same run
+;;   'command  the line that started the run; 'running while a command is
+;;             in flight, whether or not it starts a run, 'compiling while
+;;             that command has run no stratum yet
+;;   'started  when that command started (ms since the epoch), 'ended when
+;;             the last command that ran its strata ended, #f before
+;;   'strata   the finished strata, oldest first: 'scc 'hash 'flavor
+;;             'iterations 'ms 'tuples 'sizes ((relation size) ...) and
+;;             'reads (relation ...)
+;;   'current  the running stratum ('iteration in place of 'iterations), or #f
+;;   'paused   the last pause record's 'scc 'iteration 'phase 'cause, or #f
+;;   'error    the message the run's command failed with, or #f
+;; SLOG_PROGRESS_MS overrides the interval; 0 turns the reports off.
+(define progress-every-ms
+  (match (string->number (or (getenv "SLOG_PROGRESS_MS") "100"))
+    [(? exact-positive-integer? ms) ms]
+    [_ #f]))
+
+(define empty-progress
+  (hasheq 'seq 0 'run 0 'command "" 'running #f 'started 0 'strata '()
+          'current #f 'paused #f 'error #f 'next-run? #f 'ran? #f
+          'next-command "" 'next-started 0 'ended #f))
+
+(define (update-progress! state f)
+  (define now (or (server-state-progress state) empty-progress))
+  (define next (f now))
+  (set-server-state-progress! state (hash-set next 'seq (add1 (hash-ref now 'seq)))))
+
+;; A stratum record, from the name a fixpoint or progress line carries.
+(define (progress-stratum scc name)
+  (match-define (list _ hash flavor)
+    (or (regexp-match #px"^([^_]*)_(.+)$" name) (list name name "normal")))
+  (hasheq 'scc scc 'hash hash 'flavor flavor))
+
+;; Fold one echoed daemon line into the live progress; true when the line
+;; was a progress record (and so is nothing else's business).
+(define (note-progress! state line)
+  (define (into-run p)
+    ;; the first stratum of a command starts a new run
+    (if (hash-ref p 'next-run? #f)
+        (hash-set* p 'run (add1 (hash-ref p 'run)) 'next-run? #f 'ran? #t
+                   'command (hash-ref p 'next-command)
+                   'started (hash-ref p 'next-started) 'ended #f
+                   'strata '() 'current #f 'paused #f 'error #f)
+        (hash-set p 'ran? #t)))
+  (define (finish p st)
+    (define strata (hash-ref p 'strata))
+    ;; an idle continue re-confirms the last fixpoint verbatim
+    (if (and (pair? strata)
+             (equal? (hash-ref (last strata) 'scc) (hash-ref st 'scc))
+             (equal? (hash-ref (last strata) 'hash) (hash-ref st 'hash))
+             (equal? (hash-ref (last strata) 'flavor) (hash-ref st 'flavor)))
+        p
+        (hash-set* p 'strata (append strata (list st)) 'current #f 'paused #f)))
+  (cond
+    [(string-prefix? line "(progress (scc ")
+     (match (read-datum line)
+       [`(progress (scc ,scc) (stratum ,name) (iteration ,iteration) (ms ,ms)
+                   (tuples ,tuples) (final ,final) (sizes ,sizes ...)
+                   (reads ,reads ...))
+        (define st (hash-set* (progress-stratum scc name)
+                              'ms ms 'tuples tuples
+                              'sizes (for/list ([size (in-list sizes)])
+                                       (list (first size) (second size)))
+                              'reads reads))
+        (update-progress!
+         state
+         (lambda (p)
+           (let ([p (into-run p)])
+             (if final
+                 (finish p (hash-set st 'iterations iteration))
+                 (hash-set* p 'current (hash-set st 'iteration iteration)
+                            'paused #f)))))]
+       [_ (void)])
+     #t]
+    [(string-prefix? line "(fixpoint ")
+     (match (read-datum line)
+       [`(fixpoint ,scc ,(? string? name) ,iterations ,ms)
+        (update-progress!
+         state
+         (lambda (p)
+           (let* ([p (into-run p)]
+                  [current (hash-ref p 'current)]
+                  [st (hash-set* (progress-stratum scc name)
+                                 'iterations iterations 'ms ms
+                                 'tuples #f 'sizes '() 'reads '())])
+             ;; without a final report, the last one seen of this stratum
+             (finish p (if (and current (equal? (hash-ref current 'scc) scc))
+                           (hash-set* st 'tuples (hash-ref current 'tuples)
+                                      'sizes (hash-ref current 'sizes)
+                                      'reads (hash-ref current 'reads))
+                           st)))))]
+       [_ (void)])
+     #f]
+    [(string-prefix? line "(paused (generation ")
+     (match (read-datum line)
+       [`(paused ,fields ...)
+        (define (field key)
+          (match (assq key fields) [(list _ value _ ...) value] [_ #f]))
+        (update-progress!
+         state
+         (lambda (p)
+           (hash-set (into-run p) 'paused
+                     (hasheq 'scc (field 'scc) 'iteration (field 'iteration)
+                             'phase (~a (or (field 'phase) ""))
+                             'cause (let ([cause (field 'cause)]) (if cause (~s cause) ""))))))]
+       [_ (void)])
+     #f]
+    [else #f]))
+
+;; A command starts: a run it starts is a new one, unless it resumes the
+;; run held at a pause.
+(define (progress-begin! state line)
+  (define held? (and (server-state-held state) #t))
+  (update-progress!
+   state
+   (lambda (p)
+     (if held?
+         (hash-set* p 'running #t 'ran? #f 'error #f)
+         (hash-set* p 'running #t 'ran? #f 'next-run? #t 'next-command line
+                    'next-started (current-inexact-milliseconds))))))
+
+;; The command finished, failing with `message` or not.
+(define (progress-end! state message)
+  (update-progress!
+   state
+   (lambda (p)
+     (define ran? (hash-ref p 'ran? #f))
+     (hash-set* p 'running #f 'next-run? #f
+                'ended (if ran? (current-inexact-milliseconds) (hash-ref p 'ended))
+                ;; only a command that ran strata failed in the run
+                'error (if ran? message (hash-ref p 'error))))))
+
+;; The control connection's `progress`: the live state, its finished strata
+;; from index `from` on (a poller asks only for what it has not seen).
+(define (run-progress state from)
+  (define p (or (server-state-progress state) empty-progress))
+  (define strata (hash-ref p 'strata))
+  (define (json-stratum st)
+    (for/hasheq ([(k v) (in-hash st)])
+      (values k (if (eq? k 'sizes)
+                    (for/list ([size (in-list v)]) (list (~a (first size)) (second size)))
+                    (or v 'null)))))
+  (hasheq 'kind "progress"
+          'seq (hash-ref p 'seq)
+          'run (hash-ref p 'run)
+          'command (hash-ref p 'command)
+          'running (hash-ref p 'running)
+          ;; a command is in flight that has run no stratum yet: compiling
+          'compiling (and (hash-ref p 'running) (hash-ref p 'next-run?))
+          'elapsed (if (positive? (hash-ref p 'started))
+                       (- (or (hash-ref p 'ended) (current-inexact-milliseconds))
+                          (hash-ref p 'started))
+                       0)
+          'done (length strata)
+          'from (min from (length strata))
+          'strata (map json-stratum (if (< from (length strata)) (drop strata from) '()))
+          'current (let ([c (hash-ref p 'current)]) (if c (json-stratum c) 'null))
+          'paused (or (hash-ref p 'paused) 'null)
+          'error (or (hash-ref p 'error) 'null)))
 
 ;; a fresh, connection-less server state -- the stateful harness entry
 (define (make-server-state)
@@ -5912,8 +6093,15 @@
     (match (hash-ref request 'method #f)
       ["command"
        (define params (hash-ref request 'params (hasheq)))
-       (success id
-                (dispatch-command state (hash-ref params 'line "")))]
+       (define line (hash-ref params 'line ""))
+       (progress-begin! state line)
+       (define result
+         (with-handlers ([exn:fail? (lambda (e)
+                                      (progress-end! state (exn-message e))
+                                      (raise e))])
+           (dispatch-command state line)))
+       (progress-end! state #f)
+       (success id result)]
       ["shutdown"
        (set-server-state-closing?! state #t)
        (success id
@@ -5999,6 +6187,9 @@
          out
          (match (hash-ref request 'method #f)
            ["interrupt" (success id (request-interrupt! state))]
+           ["progress"
+            (define from (hash-ref (hash-ref request 'params (hasheq)) 'from 0))
+            (success id (run-progress state (if (exact-nonnegative-integer? from) from 0)))]
            [method (failure id "protocol"
                             (format "control connection: unknown method ~a" method))]))
         (loop)))))
@@ -7337,6 +7528,43 @@
              (hash-ref added 'lines)))
     (void (run! ":quit")))
 
+  ;; Live progress (docs/pausing.md §16), as the control connection reads it
+  ;; while a command runs and after: each run's strata with their final
+  ;; iterations and sizes.  A command that runs nothing leaves the last run
+  ;; in view; a failure before any stratum ran is not the run's.
+  (parameterize ([current-directory repository-root]
+                 [current-environment-variables test-environment])
+    (define state (make-server-state))
+    (define (command! line)
+      (serve-request state (hasheq 'id 1 'method "command"
+                                   'params (hasheq 'line line))))
+    (define (strata p)
+      (for/list ([st (in-list (hash-ref p 'strata))])
+        (list (hash-ref st 'flavor) (hash-ref st 'iterations) (hash-ref st 'sizes))))
+    (check-equal? (hash-ref (run-progress state 0) 'run) 0)
+    (void (command! "run tests/reach.slog"))
+    (define cold (run-progress state 0))
+    (check-equal? (hash-ref cold 'run) 1)
+    (check-false (hash-ref cold 'running))
+    (check-equal? (hash-ref cold 'command) "run tests/reach.slog")
+    (check-equal? (last (strata cold)) '("normal" 4 (("path" 6))))
+    (check-equal? (hash-ref cold 'current) 'null)
+    (check-equal? (hash-ref cold 'error) 'null)
+    ;; a poller asks only for the strata it has not seen
+    (check-equal? (hash-ref (run-progress state 1) 'strata) (cdr (hash-ref cold 'strata)))
+    (void (command! "tables"))
+    (check-equal? (hash-ref (run-progress state 0) 'run) 1)
+    (check-equal? (hash-ref (run-progress state 0) 'command) "run tests/reach.slog")
+    (void (command! "add edge 4 5"))
+    (define added (run-progress state 0))
+    (check-equal? (hash-ref added 'run) 2)
+    (check-equal? (map first (strata added)) '("count" "count" "maint1"))
+    (check-equal? (last (strata added)) '("maint1" 2 (("path" 10))))
+    (check-false (hash-ref (command! "run tests/no-such-file.slog") 'ok))
+    (check-equal? (hash-ref (run-progress state 0) 'run) 2)
+    (check-equal? (hash-ref (run-progress state 0) 'error) 'null)
+    (void (command! ":quit")))
+
   ;; A deletion's iterations carry minus signs, and its rows still render
   ;; the struct instances the same iteration retracted (M5 tombstones).
   (parameterize ([current-directory repository-root]
@@ -7510,6 +7738,7 @@
         (write-frame req-out (hasheq 'id 2 'method "interrupt" 'params (hasheq)))
         (write-frame req-out (hasheq 'id 3 'method "command"
                                      'params (hasheq 'line ":ping")))
+        (write-frame req-out (hasheq 'id 4 'method "progress" 'params (hasheq 'from 0)))
         (close-output-port req-out)
         (serve-control req-in resp-out "t" state)
         (close-output-port resp-out)
@@ -7518,13 +7747,25 @@
         (check-equal? (hash-ref armed 'id) 2)
         (check-equal? (hash-ref (hash-ref armed 'result) 'kind) "interrupt")
         (check-false (hash-ref (read-frame resp-in) 'ok))        ; command refused
+        ;; progress answers beside the command too: no run yet
+        (check-equal? (hash-ref (hash-ref (read-frame resp-in) 'result) 'run) 0)
         (check-true (server-state-interrupt state))
         state)
       ;; -- continue: the armed interrupt parks the run, continue finishes it
+      ;; (as the primary connection does, so the live progress follows)
       (let* ([state (arm-via-control!)]
-             [run! (lambda (line) (dispatch-command state line))]
+             [run! (lambda (line)
+                     (hash-ref (serve-request state (hasheq 'id 1 'method "command"
+                                                            'params (hasheq 'line line)))
+                               'result))]
              [paused (run! "run tests/accel_chain.slog")])
         (check-equal? (hash-ref paused 'kind) "paused")
+        ;; the live progress holds where the run does
+        (let ([held (run-progress state 0)])
+          (check-equal? (hash-ref held 'run) 1)
+          (check-false (hash-ref held 'running))
+          (check-not-equal? (hash-ref held 'current) 'null)
+          (check-equal? (hash-ref (hash-ref held 'paused) 'cause) "(budget time)"))
         (check-equal? (hash-ref paused 'title) "Paused · interrupt")
         (check-regexp-match #px"Ctrl-C: the run is paused" (text paused))
         (check-false (server-state-interrupt state))    ; consumed by the park
@@ -7534,6 +7775,11 @@
         ;; continue drives the rest to fixpoint; the closure is all 66 pairs
         (define done (run! "continue"))
         (check-not-equal? (hash-ref done 'kind) "paused")
+        ;; and is the same run, now finished
+        (let ([finished (run-progress state 0)])
+          (check-equal? (hash-ref finished 'run) 1)
+          (check-equal? (hash-ref finished 'current) 'null)
+          (check-equal? (hash-ref (last (hash-ref finished 'strata)) 'sizes) '(("path" 7140))))
         (check-regexp-match #px"7140 rows match"
                             (string-join (hash-ref (run! "?count (path X Y)") 'lines) " | "))
         (void (run! ":quit")))

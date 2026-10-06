@@ -2805,7 +2805,7 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
     const bool watch_verb = verb == "watch" || verb == "unwatch"
         || verb == "break" || verb == "unbreak" || verb == "breaks"
         || verb == "break-enable" || verb == "break-log"
-        || verb == "trace" || verb == "trace-read";
+        || verb == "trace" || verb == "trace-read" || verb == "progress";
     // T5 slice (c): `replay` is a debugger continuation over a PARKED epoch,
     // so the lease admits it whenever the run is suspended -- including at
     // parks it will refuse, because `level-1-unwatchable` is the honest
@@ -3341,6 +3341,35 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
         d->emit(std::string("(trace-state (on ")
                 + (db->trace.armed() ? "#t" : "#f") + ") (next "
                 + std::to_string(db->trace.nextSeq()) + "))");
+        return;
+    }
+
+    // Live progress (docs/pausing.md §16):
+    //   (progress (every MS))   (progress (off))
+    // answer (progress-state (every MS)), 0 when off.  While armed, every
+    // run a client drives reports each stratum as it starts, at the first
+    // iteration barrier MS after the last report, and at its fixpoint.
+    if (verb == "progress")
+    {
+        CommandFields fields;
+        std::string error;
+        u64 every = 0;
+        const bool parsed =
+            collect_fields(form, 1, {"every", "off"}, fields, error)
+            && fields.size() == 1
+            && (fields.count("off")
+                    ? fields.at("off")->children.size() == 1
+                    : fields.at("every")->children.size() == 2
+                      && parse_u64_atom(fields.at("every")->children[1], every)
+                      && every > 0);
+        if (!parsed)
+        {
+            refuse(d, "parse", "(verb progress) (detail \"expected (progress "
+                   "(every MS)) with MS > 0, or (progress (off))\")");
+            return;
+        }
+        d->setProgress(every);
+        d->emit("(progress-state (every " + std::to_string(every) + "))");
         return;
     }
 

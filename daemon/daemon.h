@@ -201,6 +201,9 @@ private:
   // whole run can be driven under a pathological budget (the byte-identical
   // suspend test) without recompiling any plugin.
   RunBudget default_budget;
+  // Live progress (docs/pausing.md §16): the report interval every
+  // client-driven continue runs under, set by (progress (every MS)); 0 = off.
+  u64 progress_ms = 0;
   // Pending positional re-entry (docs/incremental.md §0.5, 0.C): set by a
   // (bind-at P) action, consumed by the NEXT fresh beginStratum -- that
   // stratum restages and binds the P-environment instead of the latest;
@@ -448,6 +451,7 @@ public:
     oracle_registry->registerOracle("smtmodel", new SmtOracle(SMT_MODE_MODEL));
     oracle_registry->registerOracle("smtcore", new SmtOracle(SMT_MODE_CORE));
     database->setExternalWork(oracle_registry);
+    database->progress_out = out;
   }
 
   ~Daemon()
@@ -464,6 +468,9 @@ public:
 
   // Send one message (conventionally an s-expression) back to the client.
   void emit(const std::string& msg) { out(msg); }
+
+  // Report live progress every `ms` of each client-driven run; 0 = off.
+  void setProgress(u64 ms) { progress_ms = ms; }
 
   // ---- T0 command layer (docs/t0-contract.md, slice (a)) ----
   // The session's protocol mode: `true` after any command-layer verb beyond
@@ -1817,6 +1824,7 @@ public:
     // only if the run stops at a fresh port, and the gate's watch citation
     // is not shadowed by a stale one.
     database->clearStepStop();
+    b.progress_ms = progress_ms;
     const bool suspended = database->isSuspended();
     if (!suspended && transient_run == nullptr && next_unrun >= pipeline.size())
     {
@@ -1859,6 +1867,9 @@ public:
       s->fixpoint_msg = buf;
       if (database->trace.armed())
         database->traceFixpoint(s->scc_id, st.iteration, st.ms_total);
+      if (progress_ms != 0)
+        database->reportProgress(s, st.iteration, st.ms_total, st.progress,
+                                 true);
       emit(s->fixpoint_msg);
       if (transient)
       {

@@ -1,7 +1,9 @@
-// The Execution tab beside the REPL transcript: each traced change (a run,
-// an add or del) as its strata and iterations, the signed rows behind each
-// iteration, and a scrubber that steps through them while the editor
-// highlights the rules that fired.
+// The Execution tab beside the REPL transcript: the latest run as it goes,
+// and where it failed or holds (live.js's run view); then each traced change
+// (a run, an add or del) as its strata and iterations, the signed rows
+// behind each iteration, and a scrubber that steps through them, and
+// replays them through the run view, while the editor highlights the rules
+// that fired.
 //
 // A trace is the change record's `trace` field (docs/pausing.md §15, as
 // compiler/session.rkt groups it): strata in run order, each with its
@@ -11,6 +13,7 @@
 
 import { formAt, forms } from "./forms.js";
 import { stamped } from "./stamp.js";
+import { absorb, createRunView, outcome, replay as replayed, rulesWriting, shown } from "./live.js";
 
 // ---- The model ------------------------------------------------------------
 
@@ -153,6 +156,8 @@ export function parkedAt(lines) {
 // ---- The view -------------------------------------------------------------
 
 const RECORDS = 20;
+// The scrubber's replay takes about this long, however many steps.
+const REPLAY_MS = 4000;
 
 const node = (tag, className, text) => {
   const element = document.createElement(tag);
@@ -164,10 +169,14 @@ const node = (tag, className, text) => {
 // `editor` is editor.js's; `send` sends a request to the studio; `file()`
 // is the path of the file the editor shows, whose rules it can shade.
 // `tabs`, `transcript` and `results` are the result tab strip and the two
-// panels it switches between (results.js). Returns `entry(entry)`, fed every
-// REPL entry, which says whether the Execution tab, shown, is what the
-// entry was about: a traced change, a pause, a peek.
-export function initTrace({ editor, send, file, tabs, transcript, results }) {
+// panels it switches between (results.js). `reveal(span)` shows a place in
+// the project's files, and `ask(entry)` opens the REPL assistant about a
+// failed entry. Returns `entry(entry)`, fed every REPL entry, which says
+// whether the Execution tab, shown, is what the entry was about: a run, a
+// traced change, a pause, a peek; `progress(delta)`, fed the studio's
+// progress messages; `started()`, when a Run or Debug starts; and
+// `tracing(on)`.
+export function initTrace({ editor, send, file, tabs, transcript, results, reveal, ask }) {
   // Whether plain Runs record a trace; Debug always does. Tracing costs a
   // Run noticeably, so it is the author's choice.
   const recording = node("label", "trace-toggle");
@@ -182,7 +191,23 @@ export function initTrace({ editor, send, file, tabs, transcript, results }) {
     step: 0,       // its scrubber position
     parked: null,  // where the session's held run stands, from its pause
     peek: null,    // the last peek at it: { title, lines }
+    live: null,    // the latest run's progress (live.js absorb)
+    run: null,     // the entry that answered the latest run, held or not
+    selected: null, // the stratum clicked in the run view
+    replaying: false, // the run view shows the record at the scrubber
+    timer: 0,      // the scrubber's replay, while it plays
+    starting: false, // a Run or Debug started, and has run nothing yet
   };
+  const view = createRunView({
+    select(index) {
+      state.selected = index;
+      paint();
+      shade();
+    },
+    reveal: (span) => reveal(span),
+    ask: () => state.run && ask(state.run),
+    command: (line) => send({ t: "command", line }),
+  });
 
   // A tab after Transcript in the strip results.js keeps, and the panel it
   // shows in place of the transcript or a result set. Whichever of those
@@ -192,8 +217,10 @@ export function initTrace({ editor, send, file, tabs, transcript, results }) {
   panel.tabIndex = 0;
   transcript.after(panel);
   const executionTab = node("button", "rs-tab", "Execution");
-  executionTab.title = "Each change's strata and iterations, and the rows behind them";
+  executionTab.title = "The latest run as it goes, where it failed, and each traced change's iterations";
   tabs.firstElementChild.after(executionTab);
+  // the run's state at a glance from any tab: running, failed, held, or a
+  // trace not yet seen
   const fresh = executionTab.appendChild(node("span", "fresh"));
   fresh.hidden = true;
   executionTab.addEventListener("click", () => {
@@ -207,6 +234,7 @@ export function initTrace({ editor, send, file, tabs, transcript, results }) {
     if (panel.hidden || (transcript.hidden && results.hidden)) return;
     panel.hidden = true;
     executionTab.setAttribute("aria-selected", "false");
+    stopReplay();
     editor.highlight([]);
   });
   for (const other of [transcript, results]) yielded.observe(other, { attributes: true, attributeFilter: ["hidden"] });
@@ -221,14 +249,42 @@ export function initTrace({ editor, send, file, tabs, transcript, results }) {
   function move(by) {
     const record = state.records[state.shown];
     if (!record) return;
+    stopReplay();
     state.step = Math.max(0, Math.min(record.steps.length - 1, state.step + by));
+    state.replaying = true;
     render();
   }
 
   function select(s, i) {
     const record = state.records[state.shown];
+    stopReplay();
     state.step = record.steps.findIndex(([a, b]) => a === s && b === i);
+    state.replaying = true;
     render();
+  }
+
+  // Play the shown record's steps from the first, through the run view.
+  function replay() {
+    const record = state.records[state.shown];
+    if (!record?.steps.length) return;
+    stopReplay();
+    state.step = 0;
+    state.replaying = true;
+    const every = Math.max(60, Math.min(400, REPLAY_MS / record.steps.length));
+    const advance = () => {
+      const more = state.step < record.steps.length - 1;
+      state.timer = more ? setTimeout(() => {
+        state.step++;
+        advance();
+      }, every) : 0;
+      render();
+    };
+    advance();
+  }
+
+  function stopReplay() {
+    clearTimeout(state.timer);
+    state.timer = 0;
   }
 
   // The rules that fired in the selected iteration, as editor forms less
@@ -245,15 +301,90 @@ export function initTrace({ editor, send, file, tabs, transcript, results }) {
     }));
   }
 
-  function render() {
-    if (panel.hidden) return;
-    fresh.hidden = true;
-    panel.replaceChildren(recording);
-    if (state.parked) panel.append(renderParked());
+  // The form a compile error is in, when it is the shown file's.
+  function shadeError(span) {
+    const text = editor.get();
+    const form = span.file.split("/").pop() === file().split("/").pop() && formAt(forms(text), span.line);
+    if (!form) return highlight(null);
+    const lines = text.split("\n");
+    let to = form.endLine;
+    while (to > form.line && !lines[to - 1]?.trim()) to--;
+    editor.highlight([{ from: form.line, to, tone: "error" }]);
+  }
+
+  // The rules of the stratum clicked in the run view: those that write its
+  // relations.
+  function shade() {
+    const model = runModel();
+    const st = model && state.selected !== null ? shown(model)[state.selected] : null;
+    if (!st) return highlight(null);
+    const text = editor.get();
+    const lines = text.split("\n");
+    editor.highlight(rulesWriting(text, st.sizes.map(([relation]) => relation)).map(({ from, to }) => {
+      while (to > from && !lines[to - 1]?.trim()) to--;
+      return { from, to };
+    }));
+  }
+
+  // What the run view shows: the shown record at the scrubber while
+  // replaying, else the latest run.
+  function runModel() {
     const record = state.records[state.shown];
+    if (state.replaying && record?.steps.length) return replayed(record.model, record.steps[state.step]);
+    return latest();
+  }
+
+  // The latest run. Every command is in flight a while, a query too: the
+  // run is running only once a stratum of the command has run, and
+  // compiling only while a Run or Debug has run none yet.
+  function latest() {
+    const live = state.live;
+    return live && { ...live, running: live.running && !live.compiling, compiling: live.compiling && state.starting };
+  }
+
+  // The run view repaints at most once a frame, and only while shown.
+  let painting = 0;
+  function paint() {
+    badge();
+    if (panel.hidden || painting) return;
+    painting = requestAnimationFrame(() => {
+      painting = 0;
+      view.show(runModel(), {
+        text: editor.get(),
+        selected: state.selected,
+        failure: state.replaying ? null : outcome(state.run, latest(), state.parked),
+      });
+    });
+  }
+
+  // The tab's dot: the run's state while another tab is shown.
+  function badge() {
+    const live = latest();
+    const failure = outcome(state.run, live, state.parked);
+    const running = (live?.running || live?.compiling) && !failure;
+    const tone = running ? "running" : failure?.kind === "held" ? "held"
+      : failure && failure.kind !== "aborted" ? "failed" : fresh.dataset.tone === "trace" ? "trace" : "";
+    fresh.dataset.tone = tone;
+    fresh.hidden = !tone || (!panel.hidden && tone === "trace");
+  }
+
+  function render() {
+    if (panel.hidden) return paint(); // the tab's dot, at least
+    if (fresh.dataset.tone === "trace") fresh.dataset.tone = "";
+    const record = state.records[state.shown];
+    if (state.replaying && !record) state.replaying = false;
+    // the run view stays put, so its animations run on
+    if (panel.firstChild !== recording || recording.nextSibling !== view.element) panel.replaceChildren(recording, view.element);
+    else while (view.element.nextSibling) view.element.nextSibling.remove();
+    paint();
+    if (state.peek && state.parked) panel.append(renderParked());
+    const failure = state.replaying ? null : outcome(state.run, latest(), state.parked);
+    if (failure?.kind === "compile") shadeError(failure.span);
     if (!record) {
-      panel.append(node("p", "hint", "Debug the program, or Run it with tracing on: each change's strata and iterations appear here."));
-      highlight(null);
+      if (!state.live && !state.run) {
+        panel.append(node("p", "hint", "Run the program: its strata appear here as they run. Debug it, or Run with tracing on, to step through each iteration's rows."));
+      }
+      if (state.selected === null && failure?.kind !== "compile") highlight(null);
       return;
     }
     panel.append(renderHead(record));
@@ -264,12 +395,13 @@ export function initTrace({ editor, send, file, tabs, transcript, results }) {
     if (s !== undefined) {
       const stratum = model.strata[s];
       panel.append(renderZset(stratum, stratum.iterations[i], record.at));
-      highlight(stratum.iterations[i]);
+      if (state.replaying || (state.selected === null && failure?.kind !== "compile")) highlight(stratum.iterations[i]);
     }
   }
 
   function renderHead(record) {
     const head = node("div", "trace-head");
+    head.append(node("span", "trace-caption", "Traced changes"));
     const choose = head.appendChild(node("select"));
     choose.title = "The traced changes of this session, newest first";
     state.records.forEach(({ model }, index) => {
@@ -279,6 +411,7 @@ export function initTrace({ editor, send, file, tabs, transcript, results }) {
       option.selected = index === state.shown;
     });
     choose.addEventListener("change", () => {
+      stopReplay();
       state.shown = Number(choose.value);
       state.step = 0;
       render();
@@ -295,6 +428,23 @@ export function initTrace({ editor, send, file, tabs, transcript, results }) {
     forward.title = "The next iteration (→)";
     forward.disabled = state.step >= record.steps.length - 1;
     forward.addEventListener("click", () => move(1));
+    const play = head.appendChild(node("button", "secondary small", state.timer ? "■ stop" : "⟲ replay"));
+    play.title = "Play the change's iterations through the run view above";
+    play.disabled = !record.steps.length;
+    play.addEventListener("click", () => {
+      if (state.timer) {
+        stopReplay();
+        render();
+      } else replay();
+    });
+    if (state.replaying && !state.timer) {
+      const latest = head.appendChild(node("button", "secondary small", "latest run"));
+      latest.title = "Show the latest run above again";
+      latest.addEventListener("click", () => {
+        state.replaying = false;
+        render();
+      });
+    }
     if (record.model.dropped > 0) {
       head.append(node("span", "warn", `${record.model.dropped} sample rows dropped at the 16 MB cap`));
     }
@@ -397,10 +547,9 @@ export function initTrace({ editor, send, file, tabs, transcript, results }) {
     return box;
   }
 
+  // A peek at the held run (the run view's card says where it holds).
   function renderParked() {
     const box = node("div", "parked-card");
-    box.append(node("div", null,
-      `Run held at ${state.parked.name} · iteration ${state.parked.iteration} · phase ${state.parked.phase}`));
     box.append(node("div", "note", state.parked.phase === "iter"
       ? "Its delta is final here: show all lists every row."
       : "Inside a read, peek shows the pending candidates, not yet deduplicated."));
@@ -412,9 +561,44 @@ export function initTrace({ editor, send, file, tabs, transcript, results }) {
     tracing(on) {
       box.checked = on;
     },
+    // A Run or Debug started: the run view follows it from here.
+    started() {
+      stopReplay();
+      if (!panel.hidden) editor.highlight([]);
+      state.starting = true;
+      state.run = null;
+      state.selected = null;
+      state.replaying = false;
+      paint();
+    },
+    progress(delta) {
+      const before = state.live;
+      state.live = absorb(before, delta);
+      if (before && state.live.run !== before.run) {
+        // a new run: what was said of the last no longer holds
+        state.starting = false;
+        state.selected = null;
+        if (!state.timer) state.replaying = false;
+        // another command's answer is the last run's (this run's own may
+        // have come first)
+        if (state.run && state.run.line !== state.live.command) state.run = null;
+      }
+      paint();
+    },
     entry(entry) {
       const result = entry.result;
-      if (!result) return false;
+      // the entry that answered a run, or moved a held one on
+      const ran = entry.line === state.live?.command || result?.change || result?.kind === "paused"
+        || /^(run|check|save|add|del|continue|commit|abort|finish|step)\b/.test(entry.line);
+      if (ran && (entry.origin === "evaluate" || result?.change || result?.kind === "paused" || entry.error
+        || /^Aborted/.test(result?.title ?? ""))) {
+        state.run = entry;
+        state.starting = false;
+      }
+      if (!result) {
+        render();
+        return !panel.hidden && state.run === entry;
+      }
       if (result.kind === "paused") {
         state.parked = parkedAt(result.lines);
         state.peek = null;
@@ -438,10 +622,10 @@ export function initTrace({ editor, send, file, tabs, transcript, results }) {
         state.records = [{ model, steps: steps(model), at: entry.state }, ...state.records].slice(0, RECORDS);
         state.shown = 0;
         state.step = 0;
-        fresh.hidden = !panel.hidden;
+        if (panel.hidden) fresh.dataset.tone = "trace";
       }
       render();
-      return !panel.hidden && (model !== null || result.kind === "paused" || result.kind === "peek");
+      return !panel.hidden && (model !== null || result.kind === "paused" || result.kind === "peek" || state.run === entry);
     },
   };
 }

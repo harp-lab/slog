@@ -104,6 +104,7 @@
          session-trace-off!
          session-tracing?
          session-trace-read!
+         session-progress!      ; live progress records (docs/pausing.md §16)
          session-activate!      ; spine A2: the live activation transaction
          session-activate-pcs!  ; RF5-B: templated fixture -> live keys -> activate
          session-set-scc-policy! ; T5: pin a relation's writers to an executor
@@ -699,6 +700,16 @@
 ;; after an event for its whole execution, or from a pause hook for the
 ;; part so far -- the cursor makes consecutive reads disjoint, and moving it
 ;; releases the daemon's copy.
+
+;; Live progress (docs/pausing.md §16): while a run is driven, the daemon
+;; reports its running stratum every `ms` (#f: never) as a `(progress ...)`
+;; line, and once more at each fixpoint.  The driver echoes the lines like
+;; any other record it does not act on.
+(define (session-progress! s ms)
+  (define reply
+    (session-command! s (if ms `(progress (every ,ms)) '(progress (off)))))
+  (unless (equal? reply `(progress-state (every ,(or ms 0))))
+    (error 'session (format "progress refused: ~s" reply))))
 
 ;; Arm (or re-arm) the trace.  `sample` rows per relation per sign (0 for
 ;; counts only, #f for the daemon's default), `focus` relations sampled

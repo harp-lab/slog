@@ -57,6 +57,8 @@ arm 0: `atoi("")`).
 **`SLOG_INLINE_MAX`** (inline-fact transport threshold, default 2048 —
 session.rkt), **`SLOG_ROOT`** (repl backend override for the checkout
 root), `SLOG_REPL_TOKEN` (set by the client, not for users),
+`SLOG_PROGRESS_MS` (the REPL server's live-progress interval, default 100;
+0 turns the reports off — pausing.md §16),
 `SLOG_N4_RESTORE_REVERSE`, `SLOG_EMIT_PROGRAM_IMAGES` (rf5-contract.md),
 `SLOG_DUMP_PROGSTR` / **`SLOG_DUMP_ABI2`** / **`SLOG_DEBUG_PARTITION`**
 (compiler debug dumps — rf1-contract.md territory), `SLOG_TEST_JOBS`

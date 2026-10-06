@@ -24,7 +24,7 @@
 //
 // The hooks, from main.js:
 //   initAssist({ prompt, transcript, send, openThread, showTranscript,
-//                proposalChip, check }) -> { receive, entry }
+//                proposalChip, check }) -> { receive, entry, ask }
 //   proposalChip(ids)  the chip for proposals (proposals.js)
 //   check(payload)     a static check's report (check.js `request`)
 //   receive    the studio's messages: agent, assisted, preview, session
@@ -552,6 +552,8 @@ export function initAssist({ prompt, transcript, send, openThread, showTranscrip
 
   return {
     entry,
+    // Ask about `entry`, with `text` as the question to send.
+    ask: (about, text) => ask({ entry: about, text }),
     receive: {
       agent: agentEvent,
       assisted({ thread, message, error }) {

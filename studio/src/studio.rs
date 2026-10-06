@@ -61,6 +61,8 @@ pub struct Snapshot {
     /// The session's last unfiltered `tables` answer, for the prompt's
     /// completion to start from.
     pub tables: Option<serde_json::Value>,
+    /// The latest run's progress, as far as it has got (trace.rs).
+    pub progress: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -162,6 +164,9 @@ pub enum Event {
     Summary(summary::View),
     /// The analysis of the working files moved on (lint.rs).
     Lint(lint::View),
+    /// The run in flight got further: its strata from `from` on, and the
+    /// one running (trace.rs).
+    Progress(serde_json::Value),
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -328,6 +333,8 @@ pub struct Studio {
     tracing: std::sync::atomic::AtomicBool,
     /// The breaks armed for the editor's breakpoints (breakpoints.rs).
     pub(crate) armed: std::sync::Mutex<crate::breakpoints::Armed>,
+    /// The latest run's progress, relayed as it runs (trace.rs).
+    pub(crate) progress: std::sync::Mutex<crate::trace::Progress>,
     /// The port this studio serves on, which agent runs connect back to.
     port: OnceLock<u16>,
     /// Summarizes each saved text in the background, once attached.
@@ -396,6 +403,7 @@ impl Studio {
             projects,
             open: std::sync::Mutex::new(open),
             armed: Default::default(),
+            progress: Default::default(),
             session: Mutex::new(Session::new(&lane)),
             lane,
             events: broadcast::channel(1024).0,
@@ -545,6 +553,7 @@ impl Studio {
                 studio.publish(Event::Log { line });
             }
         });
+        crate::trace::relay_progress(self);
     }
 
     /// Settle the working files into an Auto version each time editing
@@ -593,6 +602,7 @@ impl Studio {
             tracing: self.tracing.load(std::sync::atomic::Ordering::Relaxed),
             states: self.states.lock().expect("states lock").clone(),
             tables: self.tables.lock().expect("tables lock").clone(),
+            progress: self.progress.lock().expect("progress lock").whole(),
         }
     }
 

@@ -7,6 +7,7 @@ import "./complete.test.js";
 import "./commands.test.js";
 import "./emacs.test.js";
 import "./trace.test.js";
+import "./live.test.js";
 import "./markdown.test.js";
 import "./hints.test.js";
 import "./hunks.test.js";

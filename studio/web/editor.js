@@ -21,7 +21,7 @@
 //                           a document's key and its model's URI, for the
 //                           providers that point into documents (check.js)
 //   markers(key, owner, list)  set `owner`'s markers on document `key` (lint.js)
-//   highlight(ranges)       shade these [{ from, to }] line ranges (trace.js:
+//   highlight(ranges)       shade these [{ from, to, tone? }] line ranges (trace.js:
 //                           the rules that fired), or none
 // `readOnly: true` makes an editor for looking only. `raw` is { monaco,
 // editor } for Monaco, else null.
@@ -283,9 +283,14 @@ function monacoEditor(monaco, element, { onChange, onEvaluate, onSave, readOnly 
         }));
     },
     highlight(ranges) {
-      fired.set(ranges.map(({ from, to }) => ({
+      // a `tone` shades a range apart: "error", a form that did not compile
+      fired.set(ranges.map(({ from, to, tone }) => ({
         range: new monaco.Range(from, 1, to, 1),
-        options: { isWholeLine: true, className: "fired-rule", linesDecorationsClassName: "fired-rule-margin" },
+        options: {
+          isWholeLine: true,
+          className: tone ? `fired-rule ${tone}` : "fired-rule",
+          linesDecorationsClassName: tone ? `fired-rule-margin ${tone}` : "fired-rule-margin",
+        },
       })));
       if (ranges.length) editor.revealLinesInCenterIfOutsideViewport(ranges[0].from, ranges[0].to);
     },

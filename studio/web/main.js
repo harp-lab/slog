@@ -17,6 +17,7 @@ import { createLint } from "./lint.js";
 import * as structure from "./paredit.js";
 import { createResults } from "./results.js";
 import { initTrace } from "./trace.js";
+import { locate } from "./live.js";
 import { initAssist } from "./assist.js";
 import { createBreakpoints, glyphClass, describe, stopOf } from "./breakpoints.js";
 import { initCalls } from "./calls.js";
@@ -38,6 +39,7 @@ const state = {
   log: null, // the <pre> collecting consecutive server output lines
   heldTitle: "", // where the held run stopped, from its pause result
   scenarios: new Map(), // name -> { running, report, error }
+  directory: "", // where the project's files are evaluated
 };
 
 let socket = null;
@@ -128,7 +130,8 @@ const results = createResults({
   send,
   run: (line) => send({ t: "command", line }),
 });
-// The Execution tab: each change's trace, fed every entry (trace.js).
+// The Execution tab: the latest run as it goes, and each change's trace,
+// fed every entry and the run's progress (trace.js).
 const trace = initTrace({
   editor,
   send,
@@ -136,11 +139,22 @@ const trace = initTrace({
   tabs: $("result-tabs"),
   transcript: $("transcript"),
   results: $("results"),
+  reveal: (span) => files.reveal(projectSpan(span) ?? span),
+  ask: (entry) => assist.ask(entry, "Why did this fail, and how do I fix it?"),
 });
 // The session's states, by logical timestamp, at the prompt and in each
 // entry's gutter; a click explores a past one (timeline.js).
 const timeline = initTimeline({ at: $("stamp"), panel: $("state-tree"), send });
 installStamps({ send }); // every stamp's card, and its rename
+
+// An error's place as the files panel names it: a compiler message that
+// names its file by base name ("main.slog:4:1: …") names the project's.
+function projectSpan(span) {
+  if (!span || files.pathOf(span.file) !== null) return span;
+  const path = files.paths().find((p) => p.split("/").pop() === span.file.split("/").pop());
+  return path ? { ...span, file: `${state.directory}/${path}` } : null;
+}
+
 // The Calls tab: the run's demand calls (calls.js).
 const calls = initCalls({
   quiet,
@@ -180,6 +194,8 @@ const receive = {
   init(snapshot) {
     state.lane = snapshot.lane;
     state.session = snapshot.session;
+    state.directory = snapshot.directory;
+    if (snapshot.progress) trace.progress(snapshot.progress);
     agent.snapshot(snapshot);
     summary.show(snapshot.summary);
     snapshot.results.forEach(noteSet);
@@ -207,6 +223,9 @@ const receive = {
   },
   tracing({ on }) {
     trace.tracing(on);
+  },
+  progress(delta) {
+    trace.progress(delta);
   },
   lane(status) {
     state.lane = status;
@@ -260,7 +279,8 @@ const receive = {
     calls.entry(entry);
     if (entry.set) results.show(entry.set);
     else if (entry.origin === "repl" && !executing) results.show(null);
-    const span = entry.error?.span;
+    // a compile error located only by its message is marked all the same
+    const span = entry.error?.span ?? projectSpan(locate(entry.error?.message));
     if (entry.origin === "evaluate" && span) {
       files.mark(span, entry.error.message);
       files.reveal(span);
@@ -268,8 +288,10 @@ const receive = {
   },
   evaluation({ phase, ok, ms }) {
     state.evaluating = phase === "start";
-    if (phase === "start") editor.mark(null);
-    else note(ok ? `✓ ran in ${(ms / 1000).toFixed(1)} s` : "✗ run failed", ok ? "evaluation" : "evaluation failed");
+    if (phase === "start") {
+      editor.mark(null);
+      trace.started();
+    } else note(ok ? `✓ ran in ${(ms / 1000).toFixed(1)} s` : "✗ run failed", ok ? "evaluation" : "evaluation failed");
     renderStatus();
   },
   notice({ message }) {

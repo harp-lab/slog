@@ -898,6 +898,23 @@ expect_rx "builder-run-fixpoint" '^\(fixpoint ' out/proto-builder-run.log
 expect_rx "builder-run-catalog" '^\(catalog-rel \(name "node"\)' out/proto-builder-run.log
 expect_not "builder-run-no-error" '(error' out/proto-builder-run.log
 
+# --- 5d. live progress (docs/pausing.md §16) --------------------------------
+# Off by default: the run above reported nothing.  Armed, a driven run reports
+# its stratum at each fixpoint (and every MS while it runs) before the
+# fixpoint line; arming answers its interval, (off) answers 0, and an interval
+# of 0 or a missing one is a parse refusal.
+expect_not "progress-off-by-default" '(progress ' out/proto-builder-run.log
+racket tests/api/drive.rkt '(progress (every 50))' "${BUILDER[@]}" '(continue)' \
+  '(progress (off))' '(progress (every 0))' '(progress)' \
+  > out/proto-progress.log 2>&1
+expect "progress-armed" '(progress-state (every 50))' out/proto-progress.log
+expect_rx "progress-final" '^\(progress \(scc 0\) \(stratum "st0"\) \(iteration [0-9]+\) \(ms [0-9.]+\) \(tuples [0-9]+\) \(final #t\) \(sizes( \("[a-z_]+" [0-9]+\))+\) \(reads( "[a-z_]+")*\)\)$' out/proto-progress.log
+if grep -A1 -E '^\(progress .*\(final #t\)' out/proto-progress.log | grep -qE '^\(fixpoint 0 "st0" '; then
+  ok "progress-precedes-fixpoint"; else bad "progress-precedes-fixpoint"; fi
+expect "progress-disarmed" '(progress-state (every 0))' out/proto-progress.log
+if [ "$(grep -cE '\(refused parse [0-9]+ \(verb progress\)' out/proto-progress.log)" -eq 2 ]; then
+  ok "progress-parse"; else bad "progress-parse"; fi
+
 # Every builder mutation is generation-gated before object-state admission.
 GEN_SCRIPT=(
   '(scc-begin stale (generation 1) (kernel-plan (sidecar "tests/data/t0-normal-set.plan")))'
