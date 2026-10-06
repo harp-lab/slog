@@ -2578,6 +2578,10 @@
   (or (equal? source location)
       (string-prefix? location (string-append source ":"))))
 
+;; The file part of a location: "reach.slog" of "reach.slog:9:1".
+(define (source-file source)
+  (first (string-split source ":")))
+
 (define (break-rule-relation s rid)
   (for/or ([r (in-list (session-plan-rules s))]
            #:when (equal? (plan-rule-rid r) rid))
@@ -2624,20 +2628,27 @@
                              "no rule r~a in a resident normal-flavor plan (see `code`)"
                              rid)))]
        [source
+        (define resident
+          (filter plan-rule-source (session-plan-rules s)))
         (define written
           (remove-duplicates
-           (for/list ([r (in-list (session-plan-rules s))]
-                      #:when (and (plan-rule-source r)
-                                  (source-names? source (plan-rule-source r)))
+           (for/list ([r (in-list resident)]
+                      #:when (source-names? source (plan-rule-source r))
                       #:when (plan-rule-head-relation r))
              (plan-rule-head-relation r))))
-        (when (null? written)
+        ;; A file with resident rules is loaded, so a line with none is a
+        ;; mistake.  A file with none has not run yet: the break waits for
+        ;; it, matched by location when its rules do run (audit D-06).
+        (when (and (null? written)
+                   (for/or ([r (in-list resident)])
+                     (source-names? (source-file source) (plan-rule-source r))))
           (error 'break "no rule at ~a in a resident normal-flavor plan (see `code`)"
                  source))
         written]
        [else (list (relation-info-name
                     (relation-from-catalog 'break (live-catalog s) target)))])))
-  (define relation (first relations))
+  (define pending? (and source (null? relations)))
+  (define relation (if pending? "REL" (first relations)))
   ;; The pattern is read directly rather than through the query front end:
   ;; a query drops `_` columns from its fact template (they cannot be
   ;; projected), and a break pattern is exactly where wildcards belong.
@@ -2678,12 +2689,19 @@
                   described
                   (if position (format " body position ~a" position) "")
                   (if when-text (format " when ~a" when-text) "")))
-    (if (null? flipped)
-        '()
+    (cond
+      [pending?
+       (list (string-append
+              "no resident rule there yet: armed for when one runs"
+              (if (equal? (getenv "SLOG_OPT") "interp")
+                  ""
+                  " (it stops only where that rule runs interpreted: set SLOG_OPT=interp, or arm it after a first run)")))]
+      [(null? flipped) '()]
+      [else
         (list (format "writer strat~a ~a pinned to the interpreter (a native stratum has no ports)"
                       (if (= (length flipped) 1) "um" "a")
                       (string-join (map (lambda (n) (format "s~a" n)) flipped)
-                                   ", ")))))
+                                   ", ")))]))
    #:kind "break"))
 
 (define (unbreak-result state argument)
@@ -6065,6 +6083,25 @@
       (check-regexp-match
        (pregexp (format "b1  reach\\.slog:14 · ~a hit" (length stops)))
        (text (run! "breaks")))
+      (void (run! ":quit"))))
+
+  ;; A location in a file that has not run yet arms a pending break, which
+  ;; stops that file's first run (audit D-06): the debugger is reachable
+  ;; without a run to arm it from.
+  (let ([break-environment (environment-variables-copy test-environment)])
+    (environment-variables-set! break-environment #"SLOG_OPT" #"interp")
+    (environment-variables-set! break-environment #"SLOG_THREADS" #"1")
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables break-environment])
+      (define state (make-server-state))
+      (define (run! line) (dispatch-command state line))
+      (define (text result) (string-join (hash-ref result 'lines) "\n"))
+      (check-regexp-match #px"armed for when one runs"
+                          (text (run! "break tests/reach.slog:14")))
+      (define first-run (run! "run tests/reach.slog"))
+      (check-equal? (hash-ref first-run 'title) "Paused · break b1")
+      (check-regexp-match #px"port b1:fire@reach\\.slog:14:1:" (text first-run))
+      (void (run! "abort"))
       (void (run! ":quit"))))
 
   ;; T5 slice (d2): `whynot` -- the failure frontier over committed state.
