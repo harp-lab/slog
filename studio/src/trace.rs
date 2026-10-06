@@ -24,11 +24,9 @@ use tokio::sync::Mutex;
 const ARM: &str = "trace on rules";
 
 /// The command that makes a run in `mode` record its trace, if it records
-/// one. Only debug runs do for now: a traced run of a program with
-/// constructor values can kill the daemon ("daemon EOF mid-stratum"), and
-/// a Run must not fail for the sake of its trace.
+/// one. Compiled runs are for performance work and record none.
 pub fn arm(mode: Mode) -> Option<String> {
-    (mode == Mode::Debug).then(|| ARM.to_owned())
+    (mode != Mode::Compiled).then(|| ARM.to_owned())
 }
 
 /// The agent's debugging state, shared by its threads.
