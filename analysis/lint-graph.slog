@@ -34,10 +34,14 @@ rule (component_of _ S) --> (component S)
 ;; A rule reading Rel under ~ while writing a relation that Rel depends
 ;; on: no stratum can finish Rel before the rule needs it.
 rule (negated R _ Rel _ L) (writes R H _) (/= H Rel) (reaches H Rel)
-  --> (report "error" L "negation-cycle"
+  --> (issue "error" L "negation-cycle" [Rel H])
+rule (negated R _ Rel _ L) (writes R Rel _) --> (issue "error" L "negation-cycle" [Rel])
+
+rule (issue S L "negation-cycle" [Rel H])
+  --> (report S L "negation-cycle"
               (+ Rel (+ " is negated here, but it depends on " (+ H ", which this rule derives: negation through recursion has no stratification"))))
-rule (negated R _ Rel _ L) (writes R Rel _)
-  --> (report "error" L "negation-cycle"
+rule (issue S L "negation-cycle" [Rel])
+  --> (report S L "negation-cycle"
               (+ Rel " is negated in a rule that derives it: negation through recursion has no stratification"))
 
 ;; ---- lattice values read inside their own recursion ----
@@ -50,7 +54,9 @@ table (lattice_value int str str)      ;; (lattice_value R Rel X): X is Rel's va
 rule (body R _ Rel [_ ... (var X _)] _) (is_lattice Rel) --> (lattice_value R Rel X)
 
 rule (lattice_value R Rel X) (head R _ H Ts _) (element Ts _ (var X L)) ~(is_lattice H) (reaches H Rel)
-  --> (report "warning" L "ascending-lattice"
+  --> (issue "warning" L "ascending-lattice" [X Rel H])
+rule (issue S L "ascending-lattice" [X Rel H])
+  --> (report S L "ascending-lattice"
               (+ X (+ " is the still-growing value of the lattice " (+ Rel (+ ", but " (+ H " keeps every value it sees and feeds back into it; the compiler rejects this"))))))
 
 ;; ---- relations nothing writes, nothing reads ----
@@ -70,11 +76,15 @@ table (input str)                      ;; read, never written: an input to fill 
 rule (relation Rel "table" _ _) (read Rel) ~(written Rel) --> (input Rel)
 
 rule (relation Rel "table" _ (loc F Line Col)) (input Rel) (has_rules F) (main_file M) ~(loads_others M)
-  --> (report "info" (loc F Line Col) "never-written"
-              (+ "nothing writes " (+ Rel ", so it stays empty unless it is filled from outside (add, an import, a database)")))
+  --> (issue "info" (loc F Line Col) "never-written" [Rel])
 rule (relation Rel "table" _ (loc F Line Col)) ~(read Rel) ~(written Rel) (has_rules F)
      (main_file M) ~(loads_others M)
-  --> (report "info" (loc F Line Col) "unused" (+ Rel " is declared but never used"))
+  --> (issue "info" (loc F Line Col) "unused" [Rel])
+
+rule (issue S L "never-written" [Rel])
+  --> (report S L "never-written"
+              (+ "nothing writes " (+ Rel ", so it stays empty unless it is filled from outside (add, an import, a database)")))
+rule (issue S L "unused" [Name]) --> (report S L "unused" (+ Name " is declared but never used"))
 
 ;; A file of declarations alone is an interface for others to include:
 ;; what it declares is not expected to be written or used there.
@@ -109,9 +119,9 @@ rule (rule_at R _ _) ~(fires R) --> (dead_rule R)
 ;; blame the first clause that can never match
 table (blocked_at int int)
 rule (fires_upto R I) (needs R I Rel) ~(inhabited Rel) --> (blocked_at R I)
-rule (blocked_at R I) (needs R I Rel) (body R I Rel _ L)
-  --> (report "warning" L "dead-rule"
-              (+ "this rule never fires: no rule can ever derive a row of " Rel))
+rule (blocked_at R I) (needs R I Rel) (body R I Rel _ L) --> (issue "warning" L "dead-rule" [Rel])
+rule (issue S L "dead-rule" [Rel])
+  --> (report S L "dead-rule" (+ "this rule never fires: no rule can ever derive a row of " Rel))
 
 ;; For the editor: the rules that can never fire, by line
 table (never_fires str int)            ;; (never_fires File Line)

@@ -1,18 +1,25 @@
 ;; Variables: used once, never bound, or a constructor missing its parentheses.
 ;; A comment `expect CODE TEXT` names each finding on its line: its code,
 ;; and the text at its column.  A line without one must have none.
+;;
+;; A singleton is a hint when its name documents what it ignores: the name
+;; the program gives that column elsewhere, or a request's input.  A name
+;; of its own, as a misspelling has, makes it a warning.
 enum (color red green)
 table (edge int int)
 table (paint int color)
 table (out int)
 table (pair int int)
+demand (first_of int int) int
 rule (edge 1 2) (paint 1 (red)) (paint 2 (green))
 
-rule (edge X Y) --> (out X)                      ;; expect singleton Y
+rule (edge X Y) --> (out X)                      ;; expect singleton:hint Y
+rule (edge X Yy) --> (out X)                     ;; expect singleton:warning Yy
+rule (first_of A B A)                            ;; expect singleton:hint B
 rule (edge X _) --> (out X)
 rule (edge X _y) --> (out X)
 rule (edge X Y) (edge Y Z) --> (pair X Z)
-rule (edge X Y) --> (pair X W)                   ;; expect singleton Y, unbound W
+rule (edge X Y) --> (pair X W)                   ;; expect singleton:hint Y, unbound W
 rule (out X) ~(edge X Z) --> (pair X X)          ;; expect unbound Z
 rule (out X) ~(edge X _) --> (pair X X)
 rule (out X) (< X Q) --> (pair X X)              ;; expect unbound Q
@@ -21,3 +28,4 @@ rule (out X) (= (+ X 1) (+ Y 1)) --> (pair X X)  ;; expect unbound Y
 rule (paint X red) --> (out X)                   ;; expect bare-constructor red
 rule (out X) --> (paint X green)                 ;; expect bare-constructor green
 rule (paint X (red)) --> (out X)
+rule (out X) --> (pair X (first_of X 1))

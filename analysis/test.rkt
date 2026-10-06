@@ -6,8 +6,9 @@
 ;;   racket analysis/test.rkt --corpus   ... and every program in tests/ and examples/
 ;;
 ;; A finding test marks each finding its program must produce with a
-;; comment on that line, `;; expect CODE TEXT, CODE TEXT`: the finding's
-;; code and the text at its column.  A line without one must have none, so
+;; comment on that line, `;; expect CODE TEXT, CODE:SEVERITY TEXT`: the
+;; finding's code (and, when it says, its severity) and the text at its
+;; column.  A line without one must have none, so
 ;; each file is both the programs that trigger a finding and the ones that
 ;; must not.
 ;;
@@ -58,15 +59,17 @@
 
 ;; ---- the finding tests ----
 
-;; line -> (listof (cons code text))
+;; line -> (listof (list code severity-or-#f text))
 (define (expectations lines)
   (for/fold ([expected (hash)]) ([text (in-list lines)] [line (in-naturals 1)]
                                  #:when (regexp-match? #px";; expect " text))
     (define m (regexp-match #px";; expect (.*)$" text))
     (hash-set expected line
               (for/list ([one (in-list (string-split (second m) ","))])
-                (match-define (list code mark) (string-split (string-trim one) " "))
-                (cons code mark)))))
+                (match-define (list kind mark) (string-split (string-trim one) " "))
+                (match (string-split kind ":")
+                  [(list code severity) (list code severity mark)]
+                  [(list code) (list code #f mark)])))))
 
 (define (check-case path)
   (define lines (file->lines path))
@@ -75,19 +78,23 @@
   (define-values (left problems)
     (for/fold ([left (expectations lines)] [problems '()])
               ([f (in-list found)])
-      (match-define (list _ _ line col code message) f)
+      (match-define (list severity _ line col code message) f)
       (define at (let ([text (list-ref lines (sub1 line))])
                    (substring text (min (sub1 col) (string-length text)))))
       (define wanted (hash-ref left line '()))
-      (define hit (findf (lambda (e) (and (equal? (car e) code) (string-prefix? at (cdr e))))
+      (define hit (findf (lambda (e)
+                           (match-define (list c s mark) e)
+                           (and (equal? c code) (member s (list #f severity)) (string-prefix? at mark)))
                          wanted))
       (if hit
           (values (hash-set left line (remove hit wanted)) problems)
-          (values left (cons (format "~a:~a:~a: unexpected ~a: ~a" path line col code message)
+          (values left (cons (format "~a:~a:~a: unexpected ~a ~a: ~a" path line col severity code message)
                              problems)))))
   (append (reverse problems)
           (for*/list ([(line wanted) (in-hash left)] [e (in-list wanted)])
-            (format "~a:~a: missing ~a at ~a" path line (car e) (cdr e)))))
+            (match-define (list code severity mark) e)
+            (format "~a:~a: missing ~a~a at ~a" path line code
+                    (if severity (format ":~a" severity) "") mark))))
 
 ;; ---- the corpus ----
 

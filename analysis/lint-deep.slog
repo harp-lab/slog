@@ -22,12 +22,14 @@ rule (demand_reaches F G) (demand_calls G H) --> (demand_reaches F H)
 table (recursive_demand str)
 rule (demand_reaches F F) --> (recursive_demand F)
 
-rule (asks _ F L) (is_demand F) ~(written F)
-  --> (report "warning" L "unanswered"
-              (+ F " is asked here, but no rule answers it, so the call never returns a value"))
+rule (asks _ F L) (is_demand F) ~(written F) --> (issue "warning" L "unanswered" [F])
 rule (relation F "demand" _ L) ~(asked F) (main_file M) ~(loads_others M)
-  --> (report "info" L "never-asked"
-              (+ "nothing asks " (+ F ", so the rules answering it never run")))
+  --> (issue "info" L "never-asked" [F])
+
+rule (issue S L "unanswered" [F])
+  --> (report S L "unanswered" (+ F " is asked here, but no rule answers it, so the call never returns a value"))
+rule (issue S L "never-asked" [F])
+  --> (report S L "never-asked" (+ "nothing asks " (+ F ", so the rules answering it never run")))
 
 ;; ---- constructor flow ----
 
@@ -56,14 +58,17 @@ table (mentioned str)
 rule (term_in _ (call C _ _)) --> (mentioned C)
 rule (atom _ C _ _) --> (mentioned C)
 
-rule (pattern _ (call C _ L)) (is_constructor C) ~(built C) ~(arrives C) (main_file M) ~(loads_others M)
-  --> (report "warning" L "never-built"
-              (+ "no rule ever builds a " (+ C " value, so this pattern never matches")))
+rule (pattern _ (call C _ L) _) (is_constructor C) ~(built C) ~(arrives C) (main_file M) ~(loads_others M)
+  --> (issue "warning" L "never-built" [C "matched"])
 rule (body _ _ C _ L) (is_constructor C) ~(built C) ~(arrives C) (main_file M) ~(loads_others M)
-  --> (report "warning" L "never-built"
-              (+ "no rule ever builds a " (+ C " value, so enumerating them finds none")))
+  --> (issue "warning" L "never-built" [C "enumerated"])
 rule (constructor C _ (loc F Line Col)) ~(mentioned C) ~(arrives C) (has_rules F)
-  --> (report "info" (loc F Line Col) "unused" (+ C " is declared but never used"))
+  --> (issue "info" (loc F Line Col) "unused" [C])
+
+rule (issue S L "never-built" [C "matched"])
+  --> (report S L "never-built" (+ "no rule ever builds a " (+ C " value, so this pattern never matches")))
+rule (issue S L "never-built" [C "enumerated"])
+  --> (report S L "never-built" (+ "no rule ever builds a " (+ C " value, so enumerating them finds none")))
 
 ;; (flows Rel I C): Rel's column I holds values built by constructor C
 table (flows str int str)

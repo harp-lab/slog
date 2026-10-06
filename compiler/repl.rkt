@@ -5195,12 +5195,25 @@
     (session-debug-lines! (repl-session-session rs) request
                           (lambda (l)
                             (regexp-match? #px"^\\(proof-end " l))))
+  (define datums (for/list ([line (in-list lines)]) (read-datum line)))
   (attach-session-state
    state
-   (text-result (if (string=? body "") "Why · gate candidates" "Why")
-                (render-proof-lines
-                 (for/list ([line (in-list lines)]) (read-datum line)))
-                #:kind "proof")))
+   (hash-set (text-result (if (string=? body "") "Why · gate candidates" "Why")
+                          (render-proof-lines datums)
+                          #:kind "proof")
+             'nodes (proof-nodes datums))))
+
+;; The proof tree as data, for a client to draw its own way: each node
+;; {id, parent, kind, ...}, a fact with its relation and row as printed, a
+;; derivation with its rule's location.
+(define (proof-nodes datums)
+  (for/list ([datum (in-list datums)]
+             #:when (and (pair? datum) (eq? (car datum) 'proof-node)))
+    (define fields
+      (for/hasheq ([field (in-list (cdr datum))] #:when (and (pair? field) (pair? (cdr field))))
+        (values (car field) (cadr field))))
+    (for/hasheq ([(key value) (in-hash fields)])
+      (values key (if (or (exact-integer? value) (string? value)) value (~a value))))))
 
 ;; Wait for the held thread's next event: it either finishes the command
 ;; (result or fault), parks again, or stays at the park on record because
