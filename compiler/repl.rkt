@@ -1371,31 +1371,38 @@
                #:do [(define datum (read-datum line))]
                #:when (match datum [`(cellrow ,_ ...) #t] [_ #f]))
       (match datum [`(cellrow ,cells ...) (map datum->value-cell cells)])))
-  (define rows
+  ;; Each value as (text . handle-or-#f), then as a fact's text.
+  (define value-rows
     (for/list ([cells (in-list cell-rows)])
+      (for/list ([cell (in-list cells)])
+        (cons (value-cell-text cell)
+              (and (handle-worthy? cell) (mint-value-handle! state cell))))))
+  (define rows
+    (for/list ([values (in-list value-rows)])
       (format "(~a~a)" name
-              (if (null? cells)
-                  ""
-                  (string-append
-                   " "
-                   (string-join
-                    (for/list ([cell (in-list cells)])
-                      (define handle (and (handle-worthy? cell)
-                                          (mint-value-handle! state cell)))
-                      (if handle
-                          (format "~a ~a" (value-cell-text cell) handle)
-                          (value-cell-text cell)))
-                    " "))))))
+              (string-append*
+               (for/list ([value (in-list values)])
+                 (if (cdr value)
+                     (format " ~a ~a" (car value) (cdr value))
+                     (format " ~a" (car value))))))))
   (define shown (take rows (min limit (length rows))))
-  (text-result
-   (format "Rows · ~a" name)
-   (append shown
-           (if (> (length rows) (length shown))
-               (list (format "… ~a more; use `show ~a all`"
-                             (- (length rows) (length shown)) name))
-               '())
-           (if (null? rows) (list "0 rows") '()))
-   #:kind "query"))
+  ;; The rows shown also as data: each a list of cells {text, handle}, as
+  ;; a rows query's page carries them, so a client need not parse facts.
+  (hash-set*
+   (text-result
+    (format "Rows · ~a" name)
+    (append shown
+            (if (> (length rows) (length shown))
+                (list (format "… ~a more; use `show ~a all`"
+                              (- (length rows) (length shown)) name))
+                '())
+            (if (null? rows) (list "0 rows") '()))
+    #:kind "query")
+   'relation name
+   'rows (for/list ([values (in-list (take value-rows (length shown)))])
+           (for/list ([value (in-list values)])
+             (hasheq 'text (car value) 'handle (or (cdr value) 'null))))
+   'rows-total (length rows)))
 
 (define (query-result state argument)
   (match-define (list* rel values) (read-command-data 'query argument #:minimum 2))
