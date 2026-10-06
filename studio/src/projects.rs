@@ -2,7 +2,7 @@
 //! that evaluation runs, with its versions (studio-design.md §4.1).
 //!
 //! ```text
-//! <studio home>/users/local/
+//! <data>/users/<user>/        (the studio home's users/local/ in local mode)
 //!   last                  the name of the project opened last
 //!   projects/<name>/
 //!     project.toml        main = "x.slog"; link = "/dir" if linked
@@ -19,6 +19,7 @@
 //! Disk version; unsaved work is recorded first, so nothing is lost.
 
 use crate::hash::Hash;
+use crate::registry::valid_name;
 use crate::store::{Files, Store, write_atomic};
 use crate::versions::{History, Origin, Version};
 use serde::{Deserialize, Serialize};
@@ -26,7 +27,7 @@ use std::fs;
 use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
 
-/// The projects of the one local user.
+/// One user's projects.
 pub struct Projects {
     root: PathBuf,
 }
@@ -50,9 +51,10 @@ const NEW_MAIN: &str = "main.slog";
 const SYNCED: &str = "synced";
 
 impl Projects {
-    pub fn new(studio_home: &Path) -> Self {
+    /// The projects in `user`, a user's directory.
+    pub fn new(user: &Path) -> Self {
         Self {
-            root: studio_home.join("users").join("local"),
+            root: user.to_owned(),
         }
     }
 
@@ -83,7 +85,7 @@ impl Projects {
         if !valid_name(name) {
             return Err(io::Error::new(
                 ErrorKind::InvalidInput,
-                format!("{name:?} is not a project name: use letters, digits, - _ and ."),
+                format!("{name:?} is not a project name: use letters, digits and - _ . @"),
             ));
         }
         let dir = self.dir(name);
@@ -236,10 +238,7 @@ impl Project {
     /// files the studio wrote or read are removed.
     pub fn save(&mut self, files: &Files, label: &str) -> io::Result<Option<Version>> {
         let directory = self.directory();
-        let synced = match self.store.read::<Hash>(SYNCED)? {
-            Some(tree) => self.store.get_files(tree)?,
-            None => Files::new(),
-        };
+        let synced = self.saved()?;
         fs::create_dir_all(&directory)?;
         for (path, text) in files {
             let target = directory.join(path);
@@ -257,7 +256,18 @@ impl Project {
         self.history.checkpoint(files, label)
     }
 
-    /// The `.slog` files directly in the project's directory.
+    /// The files as the studio last wrote them to, or read them from, the
+    /// project's directory.
+    pub fn saved(&self) -> io::Result<Files> {
+        match self.store.read::<Hash>(SYNCED)? {
+            Some(tree) => self.store.get_files(tree),
+            None => Ok(Files::new()),
+        }
+    }
+
+    /// The `.slog` files directly in the project's directory, under names a
+    /// project file can have: hidden ones are the studio's own, such as an
+    /// agent's preview.
     fn read_directory(&self) -> io::Result<Files> {
         let entries = match fs::read_dir(self.directory()) {
             Ok(entries) => entries,
@@ -270,7 +280,7 @@ impl Project {
             let Ok(name) = entry.file_name().into_string() else {
                 continue;
             };
-            if !name.ends_with(".slog") || !entry.file_type()?.is_file() {
+            if !valid_file(&name) || !entry.file_type()?.is_file() {
                 continue;
             }
             // A file that is not UTF-8 is not a program the studio can edit.
@@ -282,16 +292,8 @@ impl Project {
     }
 }
 
-/// A project name: letters, digits, `-`, `_` and `.`, not starting with `.`.
-pub fn valid_name(name: &str) -> bool {
-    !name.is_empty()
-        && !name.starts_with('.')
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-}
-
-/// A file name within a project: a project name ending in `.slog`.
+/// A file name within a project: one that could name a project, ending in
+/// `.slog`.
 pub fn valid_file(path: &str) -> bool {
     valid_name(path) && path.len() > ".slog".len() && path.ends_with(".slog")
 }

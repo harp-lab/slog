@@ -5,8 +5,8 @@
 // the text on screen: once shown they move with edits, while lines from an
 // older text would land on the wrong forms.
 //
-// `current()` is { version, dirty }: the text's version, and whether an
-// edit to it is not yet sent.
+// `current()` is { version, dirty, shown }: the main file's version, whether
+// an edit to it is not yet sent, and whether it is the file in the editor.
 
 export function createSummary(element, { editor, current }) {
   let view = null;
@@ -78,10 +78,13 @@ export function createSummary(element, { editor, current }) {
   }
 
   return {
-    show(next) {
+    // With no view, show the last one again: the main file is back in the
+    // editor.
+    show(next = view) {
       view = next;
-      if (describes(view?.summary)) editor.notes(view.summary.forms);
-      if (describes(view?.analysis)) editor.findings(view.analysis.findings);
+      const shown = current().shown;
+      if (shown && describes(view?.summary)) editor.notes(view.summary.forms);
+      if (shown && describes(view?.analysis)) editor.findings(view.analysis.findings);
       render();
     },
     // The text or its version changed: the parts may have gone stale.

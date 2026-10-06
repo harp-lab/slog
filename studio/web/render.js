@@ -10,25 +10,26 @@ const element = (tag, className, text) => {
 };
 
 // `entry` is a studio Entry: { origin, line, ms, result, error }.
-// `onSpan(span)` is called when a source position is clicked.
-export function renderEntry(entry, { file, onSpan }) {
+// `inProject(span)` says whether a source position is in a project file;
+// `onSpan(span)` is called when one is clicked.
+export function renderEntry(entry, { inProject, onSpan }) {
   const node = element("div", `entry ${entry.origin}`);
   const line = node.appendChild(element("div", "line", entry.line));
   if (entry.ms >= 100) line.append(element("span", "ms", `${(entry.ms / 1000).toFixed(1)} s`));
   if (entry.error) {
-    node.append(renderError(entry.error, file, onSpan));
+    node.append(renderError(entry.error, inProject, onSpan));
   } else if (entry.result) {
     node.append(...renderResult(entry.result));
   }
   return node;
 }
 
-function renderError({ kind, message, span }, file, onSpan) {
+function renderError({ kind, message, span }, inProject, onSpan) {
   const node = element("div", "error");
-  if (span && span.file === file) {
+  if (span && inProject(span)) {
     // The message repeats the position as BASENAME:LINE:COL; make it the link.
     const prefix = message.match(/^[^:\s]+:\d+:\d+: /);
-    const link = node.appendChild(element("a", "span", `${span.line}:${span.col}`));
+    const link = node.appendChild(element("a", "span", `${span.file.split("/").pop()}:${span.line}:${span.col}`));
     link.addEventListener("click", () => onSpan(span));
     node.append(` ${prefix ? message.slice(prefix[0].length) : message}`);
   } else {

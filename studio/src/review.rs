@@ -175,6 +175,14 @@ impl Review {
         Ok(updated)
     }
 
+    /// What was asked in the turn that proposed op `id`: its changeset's
+    /// title.
+    pub fn request_of(&self, id: u32) -> Option<String> {
+        let op = self.ops.iter().find(|op| op.id == id)?;
+        let changeset = self.changesets.iter().find(|changeset| changeset.id == op.changeset)?;
+        Some(changeset.title.clone())
+    }
+
     pub fn reject(&mut self, id: u32) -> Result<(), String> {
         match self.ops.iter().find(|op| op.id == id).map(|op| op.status) {
             None => Err(format!("no proposal #{id}")),

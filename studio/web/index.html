@@ -9,7 +9,7 @@
 <body>
 <header>
   <div class="identity">
-    <span id="file" class="file"></span>
+    <select id="project" aria-label="Project"></select>
     <span id="saved" class="badge"></span>
   </div>
   <div class="controls">
@@ -48,8 +48,16 @@
   </div>
 </header>
 <main>
+  <nav id="files" aria-label="Files">
+    <div class="files-head">
+      <span>Files</span>
+      <button id="new-file" class="small secondary" title="Add a file to the project">New</button>
+    </div>
+    <div id="file-list"></div>
+  </nav>
   <div id="work">
     <section id="summary" hidden></section>
+    <div id="tabs"></div>
     <div id="editor"></div>
     <div id="divider" title="Drag to resize"></div>
     <section id="repl">

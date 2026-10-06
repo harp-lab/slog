@@ -6,6 +6,7 @@ use crate::agent::{self, Agent};
 use crate::review::{Change, Status};
 use crate::session::{Outcome, Session, run_argument};
 use crate::studio::{Event, Studio};
+use crate::versions::Origin as Made;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -38,7 +39,7 @@ impl Studio {
         review.open_changeset(thread, agent::title_of(&message));
         drop(review);
         self.publish_review();
-        let file = self.file.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+        let file = self.main_name();
         let context = format!("- Program file: {file}\n");
         tokio::spawn(agent::run(self.clone(), thread, message, context));
         Ok(thread)
@@ -72,13 +73,19 @@ impl Studio {
     }
 
     pub(crate) fn publish_review(&self) {
-        let text = self.doc.lock().expect("doc lock").text.clone();
+        let text = self.text();
         let view = self.review.lock().expect("review lock").view(&text);
         self.publish(Event::Review(view));
     }
 
+    /// The main file's working text: the program agents read and change.
     fn text(&self) -> String {
-        self.doc.lock().expect("doc lock").text.clone()
+        self.main_file().1
+    }
+
+    fn main_name(&self) -> String {
+        let (path, _) = self.main_file();
+        path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()
     }
 
     // ---- tools (mcp.rs) ------------------------------------------------
@@ -86,7 +93,7 @@ impl Studio {
     pub(crate) fn program_for(&self, thread: u32) -> Value {
         let text = self.review.lock().expect("review lock").fork(&self.text(), thread);
         json!({
-            "file": self.file.file_name().map(|name| name.to_string_lossy().into_owned()),
+            "file": self.main_name(),
             "text": text,
             "note": "the author's program with your pending proposals applied",
         })
@@ -144,13 +151,14 @@ impl Studio {
     /// The fork, written beside the program (so its includes resolve) under
     /// a hidden name, evaluated, and removed.
     async fn evaluate_fork_in(&self, session: &mut Session, thread: u32) -> (Vec<Outcome>, bool, u64) {
-        let text = self.review.lock().expect("review lock").fork(&self.text(), thread);
+        let (main, text) = self.main_file();
+        let text = self.review.lock().expect("review lock").fork(&text, thread);
         let hash = hash(&text);
         let name = format!(
             ".{}.studio-preview.slog",
-            self.file.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default()
+            main.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default()
         );
-        let path = self.file.with_file_name(name);
+        let path = main.with_file_name(name);
         if run_argument(&path).is_none() {
             return (vec![session.failure("run", "path", "the program's directory cannot be named by `run`")], false, hash);
         }
@@ -168,10 +176,15 @@ impl Studio {
 
     // ---- the author's decisions ----------------------------------------
 
+    /// Apply op `op` to the main file, as a version labelled with the
+    /// request that proposed it.
     pub fn accept(&self, op: u32) -> Result<(), String> {
-        let text = self.text();
-        let updated = self.review.lock().expect("review lock").accept(&text, op)?;
-        self.replace_text(updated);
+        let request = self.review.lock().expect("review lock").request_of(op);
+        self.record_version(Made::Accept, request, |files, main| {
+            let updated = self.review.lock().expect("review lock").accept(&files[main], op)?;
+            files.insert(main.to_owned(), updated);
+            Ok(())
+        })?;
         self.publish_review();
         Ok(())
     }

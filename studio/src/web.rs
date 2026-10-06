@@ -10,7 +10,8 @@
 use crate::auth::{self, Gate};
 use crate::lane::Mode;
 use crate::registry::Registry;
-use crate::studio::{Event, Snapshot, Studio};
+use crate::store::Files;
+use crate::studio::{Event, HistoryView, Refused, Snapshot, Studio};
 use axum::Router;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
@@ -62,6 +63,7 @@ fn asset(name: &str) -> Response {
         "forms.js" => (include_str!("../web/forms.js"), "text/javascript; charset=utf-8"),
         "agent.js" => (include_str!("../web/agent.js"), "text/javascript; charset=utf-8"),
         "summary.js" => (include_str!("../web/summary.js"), "text/javascript; charset=utf-8"),
+        "files.js" => (include_str!("../web/files.js"), "text/javascript; charset=utf-8"),
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
     ([(header::CONTENT_TYPE, kind), (header::CACHE_CONTROL, "no-cache")], body).into_response()
@@ -71,14 +73,14 @@ fn asset(name: &str) -> Response {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "t", rename_all = "kebab-case")]
 enum Request {
-    /// The whole text, edited from version `base`.
-    Edit { base: u64, text: String },
+    /// The whole text of `file`, edited from version `base`.
+    Edit { file: String, base: u64, text: String },
     Save,
     Evaluate,
     /// Evaluate, then re-run under the breakpoints.
     Debug,
-    /// The full set of breakpoint lines.
-    Breakpoints { lines: Vec<u32> },
+    /// The full set of breakpoint lines of `file`.
+    Breakpoints { file: String, lines: Vec<u32> },
     Command { line: String },
     Interrupt,
     /// Kill the session server; the next command starts a fresh one.
@@ -95,6 +97,19 @@ enum Request {
     Accept { op: u32 },
     Reject { op: u32 },
     AcceptChangeset { changeset: u32 },
+    /// The version DAG and the branches.
+    History,
+    /// The files of version `id`, to look at.
+    ViewVersion { id: u64 },
+    /// Restore version `id` as a new version on the current branch.
+    Restore { id: u64 },
+    /// Start a branch at version `id` and continue on it.
+    Branch { id: u64 },
+    NewFile { path: String },
+    RenameFile { from: String, to: String },
+    DeleteFile { path: String },
+    /// Make `path` the file Run and Debug evaluate.
+    SetMain { path: String },
 }
 
 impl Request {
@@ -117,10 +132,15 @@ impl Request {
 #[serde(tag = "t", rename_all = "kebab-case")]
 enum Reply<'a> {
     Init(&'a Snapshot),
-    /// The edit to `version` was taken.
-    Ack { version: u64 },
+    /// The edit making `file`'s `version` was taken.
+    Ack { file: &'a str, version: u64 },
     /// The edit was refused: this is the current text.
-    Reset { version: u64, text: &'a str },
+    Reset { file: &'a str, version: u64, text: &'a str },
+    /// The edit was refused: `file` is no longer in the project.
+    Gone { file: &'a str },
+    History(&'a HistoryView),
+    /// The files of version `id`.
+    VersionFiles { id: u64, files: &'a Files },
     Scenarios { names: Vec<String> },
     /// The thread an ask went to (new threads get an id here).
     Asked { thread: u32 },
@@ -238,17 +258,19 @@ fn handle(
     }
     let studio = studio.clone();
     match request {
-        Request::Edit { base, text } => {
-            let reply = match studio.edit(connection, base, text) {
-                Ok(version) => json(&Reply::Ack { version }),
-                Err((version, text)) => json(&Reply::Reset {
+        Request::Edit { file, base, text } => {
+            let reply = match studio.edit(connection, &file, base, text) {
+                Ok(version) => json(&Reply::Ack { file: &file, version }),
+                Err(Refused::Stale { version, text }) => json(&Reply::Reset {
+                    file: &file,
                     version,
                     text: &text,
                 }),
+                Err(Refused::NoFile) => json(&Reply::Gone { file: &file }),
             };
             let _ = direct.send(reply);
         }
-        Request::Save => match studio.save() {
+        Request::Save => match studio.save("save") {
             Ok((version, text)) => studio.summarize(version, text, None),
             Err(message) => {
                 let _ = direct.send(json(&Reply::Notice { message: &message }));
@@ -260,7 +282,7 @@ fn handle(
         Request::Debug => {
             tokio::spawn(async move { studio.debug().await });
         }
-        Request::Breakpoints { lines } => studio.set_breakpoints(lines),
+        Request::Breakpoints { file, lines } => studio.set_breakpoints(file, lines),
         Request::Command { line } => {
             tokio::spawn(async move { studio.command(&line).await });
         }
@@ -316,6 +338,28 @@ fn handle(
                 let _ = direct.send(json(&Reply::Notice { message: &message }));
             }
         }
+        Request::History => {
+            let _ = direct.send(json(&Reply::History(&studio.history())));
+        }
+        Request::ViewVersion { id } => match studio.version_files(id) {
+            Ok(files) => {
+                let _ = direct.send(json(&Reply::VersionFiles { id, files: &files }));
+            }
+            Err(message) => notice(direct, Err(message)),
+        },
+        Request::Restore { id } => notice(direct, studio.restore(id)),
+        Request::Branch { id } => notice(direct, studio.branch(id)),
+        Request::NewFile { path } => notice(direct, studio.new_file(&path)),
+        Request::RenameFile { from, to } => notice(direct, studio.rename_file(&from, &to)),
+        Request::DeleteFile { path } => notice(direct, studio.delete_file(&path)),
+        Request::SetMain { path } => notice(direct, studio.set_main(&path)),
+    }
+}
+
+/// Tell the tab why its request failed, if it did.
+fn notice(direct: &mpsc::UnboundedSender<String>, outcome: Result<(), String>) {
+    if let Err(message) = outcome {
+        let _ = direct.send(json(&Reply::Notice { message: &message }));
     }
 }
 

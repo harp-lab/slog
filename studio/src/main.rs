@@ -40,7 +40,10 @@ const USAGE: &str = "usage: slog studio [--port N] [--no-open] [--compiled] [FIL
        slog-studio serve --data DIR [--bind ADDRESS] [--max-lanes N] [--idle-minutes N]
        slog-studio user add NAME --data DIR
 
-Edit and evaluate FILE (default ~/.slog-studio/scratch.slog) in the browser.
+Edit and evaluate a project of Slog files in the browser. FILE opens the
+project of FILE's directory, with FILE as the main file; without it, the
+project opened last. Projects and their versions live in SLOG_STUDIO_HOME
+(default ~/.slog-studio).
 --port N     listen on 127.0.0.1:N (default: any free port)
 --no-open    print the address without opening a browser
 --compiled   evaluate with native code (-O2) from the start
@@ -94,17 +97,15 @@ fn options(args: impl IntoIterator<Item = String>) -> Result<Option<Options>, St
     Ok(Some(options))
 }
 
-/// The program to edit, made absolute: `run` resolves relative paths against
-/// the repository, not the directory Studio was started from.
-fn program_file(file: Option<PathBuf>) -> Result<PathBuf, String> {
-    let file = match file {
-        Some(file) => file,
-        None => studio_home()?.join("scratch.slog"),
-    };
-    std::path::absolute(&file).map_err(|error| format!("{}: {error}", file.display()))
+/// The program named on the command line, made absolute: `run` resolves
+/// relative paths against the repository, not the directory Studio was
+/// started from.
+fn program_file(file: &std::path::Path) -> Result<PathBuf, String> {
+    std::path::absolute(file).map_err(|error| format!("{}: {error}", file.display()))
 }
 
-/// Studio's own directory: `SLOG_STUDIO_HOME`, else `~/.slog-studio`.
+/// Studio's own directory: `SLOG_STUDIO_HOME`, else `~/.slog-studio`, made
+/// absolute for the same reason, since projects are evaluated in it.
 fn studio_home() -> Result<PathBuf, String> {
     let home = std::env::var_os("SLOG_STUDIO_HOME")
         .map(PathBuf::from)
@@ -112,7 +113,7 @@ fn studio_home() -> Result<PathBuf, String> {
         .ok_or("set HOME or SLOG_STUDIO_HOME")?;
     std::fs::create_dir_all(&home)
         .map_err(|error| format!("cannot create {}: {error}", home.display()))?;
-    Ok(home)
+    std::path::absolute(&home).map_err(|error| format!("{}: {error}", home.display()))
 }
 
 /// The token that admits a browser tab. It is kept (readable only by this
@@ -218,10 +219,10 @@ async fn serve_local(args: impl Iterator<Item = String>) -> Result<(), String> {
         return Ok(());
     };
     let home = studio_home()?;
-    let file = program_file(options.file)?;
+    let file = options.file.map(|file| program_file(&file)).transpose()?;
     let mode = if options.compiled { Mode::Compiled } else { Mode::Fast };
-    // One user, no limits, and FILE as the default project.
-    let registry = Arc::new(Registry::new(project_root()?, home.clone(), mode, Some(file), None));
+    // One user, no limits, and FILE's project as the default.
+    let registry = Arc::new(Registry::new(project_root()?, home.clone(), mode, file, None));
     // Start the session server now so the first evaluation does not wait.
     web::warm(registry.open(LOCAL_USER, "")?);
 

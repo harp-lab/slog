@@ -1,7 +1,9 @@
-// Slog Studio in the browser: the program editor, the REPL transcript and
-// prompt, and the status strip, all fed by one WebSocket to the studio.
+// Slog Studio in the browser: the project's files and editor, the REPL
+// transcript and prompt, and the status strip, all fed by one WebSocket to
+// the studio.
 
 import { createEditor } from "./editor.js";
+import { createFiles } from "./files.js";
 import { formAt, forms } from "./forms.js";
 import { initAgent } from "./agent.js";
 import { renderEntry } from "./render.js";
@@ -14,13 +16,6 @@ const token = location.hash.slice(1);
 const project = new URLSearchParams(location.search).get("project") ?? "";
 
 const state = {
-  file: "",
-  // The version the studio will hold once every edit sent so far is applied.
-  // The server applies messages in order, so an edit or an evaluate sent
-  // after an edit always sees it.
-  version: 0,
-  savedVersion: 0,
-  editTimer: null,
   lane: { state: "idle", detail: "", starts: 0 },
   session: { current: null, held: false },
   evaluating: false,
@@ -30,15 +25,15 @@ const state = {
 };
 
 let socket = null;
-const send = (message) => {
+const transmit = (message) => {
   if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
 };
 
 const editor = await createEditor($("editor"), {
-  onChange: scheduleEdit,
+  onChange: () => files.changed(),
   onEvaluate: evaluate,
   onSave: save,
-  onBreakpoints: (lines) => send({ t: "breakpoints", lines }),
+  onBreakpoints: (lines) => files.setBreakpoints(lines),
   // A break names the line of a rule's `rule` keyword, which is where the
   // compiler locates it; a click anywhere in the rule marks that line.
   snapBreakpoint: (line) => {
@@ -57,37 +52,31 @@ const editor = await createEditor($("editor"), {
 
 const summary = createSummary($("summary"), {
   editor,
-  current: () => ({ version: state.version, dirty: state.editTimer !== null }),
+  current: () => files.mainState(),
 });
-
-// Edits ------------------------------------------------------------------
-
-function scheduleEdit() {
-  clearTimeout(state.editTimer);
-  state.editTimer = setTimeout(flushEdit, 150);
-  renderSaved();
-}
-
-function flushEdit() {
-  if (state.editTimer === null) return;
-  clearTimeout(state.editTimer);
-  state.editTimer = null;
-  send({ t: "edit", base: state.version, text: editor.get() });
-  state.version += 1;
-}
+const files = createFiles({
+  editor,
+  transmit,
+  note,
+  // The summary's notes and findings belong on the main file.
+  onOpen: () => summary.show(),
+  onSaved: () => summary.refresh(),
+});
+// Every message goes behind the edits already made, so it sees them.
+const send = files.send;
 
 function save() {
-  flushEdit();
+  files.flush();
   send({ t: "save" });
 }
 
 function evaluate() {
-  flushEdit();
+  files.flush();
   send({ t: "evaluate" });
 }
 
 function debug() {
-  flushEdit();
+  files.flush();
   send({ t: "debug" });
 }
 
@@ -95,41 +84,12 @@ function debug() {
 
 const receive = {
   init(snapshot) {
-    state.file = snapshot.file;
-    state.version = snapshot.version;
-    state.savedVersion = snapshot.saved ? snapshot.version : -1;
     state.lane = snapshot.lane;
     state.session = snapshot.session;
-    $("file").textContent = snapshot.file.split("/").pop();
-    $("file").title = snapshot.file;
-    document.title = `${snapshot.file.split("/").pop()} — Slog Studio`;
-    editor.set(snapshot.text);
-    editor.setBreakpoints(snapshot.breakpoints);
     agent.snapshot(snapshot);
     summary.show(snapshot.summary);
     history.load();
-    renderSaved();
     renderStatus();
-  },
-  ack() {},
-  // Our edit lost a race with another tab; theirs stands.
-  reset({ version, text }) {
-    state.version = version;
-    editor.set(text);
-    note("another tab changed the program; showing its version");
-    renderSaved();
-  },
-  text({ version, text }) {
-    state.version = version;
-    editor.set(text);
-    renderSaved();
-  },
-  breakpoints({ lines }) {
-    editor.setBreakpoints(lines);
-  },
-  saved({ version }) {
-    state.savedVersion = version;
-    renderSaved();
   },
   lane(status) {
     state.lane = status;
@@ -150,13 +110,14 @@ const receive = {
       state.heldTitle = entry.result.title;
       renderStatus();
     }
-    append(renderEntry(entry, { file: state.file, onSpan: (span) => editor.reveal(span) }));
-    if (entry.origin === "evaluate") {
-      const span = entry.error?.span;
-      if (span && span.file === state.file) {
-        editor.mark(span, entry.error.message);
-        editor.reveal(span);
-      }
+    append(renderEntry(entry, {
+      inProject: (span) => files.pathOf(span.file) !== null,
+      onSpan: (span) => files.reveal(span),
+    }));
+    const span = entry.error?.span;
+    if (entry.origin === "evaluate" && span) {
+      files.mark(span, entry.error.message);
+      files.reveal(span);
     }
   },
   evaluation({ phase, ok, ms }) {
@@ -206,7 +167,7 @@ function connect() {
   };
   socket.onmessage = (message) => {
     const data = JSON.parse(message.data);
-    receive[data.t]?.(data);
+    for (const handlers of [files.receive, receive]) handlers[data.t]?.(data);
   };
   socket.onclose = () => {
     failedAttempts += 1;
@@ -218,7 +179,7 @@ function connect() {
 // The REPL prompt --------------------------------------------------------
 
 const prompt = $("prompt");
-const historyKey = () => `slog-studio.history:${state.file}`;
+const historyKey = () => `slog-studio.history:${files.project()}`;
 const history = {
   lines: [],
   index: 0,
@@ -301,14 +262,6 @@ function note(text, className = "entry note") {
   const node = document.createElement("div");
   node.textContent = text;
   append(node, className);
-}
-
-function renderSaved() {
-  const dirty = state.editTimer !== null || state.savedVersion !== state.version;
-  const badge = $("saved");
-  badge.textContent = dirty ? "unsaved" : "saved";
-  badge.className = `badge${dirty ? " dirty" : ""}`;
-  summary.refresh();
 }
 
 // A status pill: a state dot ("ok", "busy", "bad", or none) and its text.

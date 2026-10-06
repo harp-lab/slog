@@ -1,7 +1,10 @@
 // The program editor: Monaco when its loader is reachable, else a textarea.
 // Both offer the same small interface:
-//   get() / set(text)       the text; set keeps the cursor and does not fire onChange
-//   mark(span, message)     underline a 1-based position, or clear with null
+//   show(key, text)         switch to document `key` (made on first use) holding `text`;
+//                           each document keeps its own undo, cursor and scroll
+//   forget(key)             drop document `key`
+//   get() / set(text)       the shown text; set keeps the cursor and does not fire onChange
+//   mark(span, message)     underline a 1-based position, or clear every mark with null
 //   reveal(span)            put the cursor at a position
 //   setBreakpoints(lines)   show breakpoint dots on these 1-based lines
 //   breakpoints()           the lines with a dot
@@ -11,6 +14,7 @@
 // `onBreakpoints(lines)` fires when a margin click or an edit changes them;
 // `snapBreakpoint(line)` says which line a click on `line` marks, or null;
 // `keysAt(line)` names what the keys do there, shown with the hints.
+// `readOnly: true` makes an editor for looking only.
 
 const MONACO = "https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs";
 
@@ -60,7 +64,7 @@ const SLOG = {
   },
 };
 
-function monacoEditor(monaco, element, { onChange, onEvaluate, onSave, onBreakpoints, snapBreakpoint, keysAt }) {
+function monacoEditor(monaco, element, { onChange, onEvaluate, onSave, onBreakpoints, snapBreakpoint, keysAt, readOnly = false }) {
   monaco.languages.register({ id: "slog" });
   monaco.languages.setMonarchTokensProvider("slog", SLOG);
   monaco.languages.setLanguageConfiguration("slog", {
@@ -99,8 +103,11 @@ function monacoEditor(monaco, element, { onChange, onEvaluate, onSave, onBreakpo
     fontFamily: "\"JetBrains Mono\", \"SF Mono\", Menlo, Consolas, monospace",
     fontSize: 14,
     glyphMargin: true,
+    readOnly,
   });
-  const model = editor.getModel();
+  const current = () => editor.getModel();
+  const documents = new Map(); // key -> { model, view }
+  let shown = null;
   let quiet = false;
   // The summary's one-liner per form, decorations so they move with the
   // text. Only those nearest the cursor show, and only while hints do: the
@@ -122,7 +129,7 @@ function monacoEditor(monaco, element, { onChange, onEvaluate, onSave, onBreakpo
     }));
     const text = hinting ? keysAt(cursor) : "";
     keys.set(text ? [{
-      range: new monaco.Range(cursor, 1, cursor, model.getLineMaxColumn(cursor)),
+      range: new monaco.Range(cursor, 1, cursor, current().getLineMaxColumn(cursor)),
       options: { after: { content: `   ${text}`, inlineClassName: "line-keys" } },
     }] : []);
   };
@@ -163,34 +170,56 @@ function monacoEditor(monaco, element, { onChange, onEvaluate, onSave, onBreakpo
   editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, onEvaluate);
   editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, onSave);
   return {
-    get: () => model.getValue(),
+    show(key, text) {
+      if (key !== shown) {
+        if (documents.has(shown)) documents.get(shown).view = editor.saveViewState();
+        if (!documents.has(key)) documents.set(key, { model: monaco.editor.createModel(text, "slog"), view: null });
+        const { model, view } = documents.get(key);
+        quiet = true;
+        editor.setModel(model);
+        quiet = false;
+        if (view) editor.restoreViewState(view);
+        shown = key;
+      }
+      this.set(text);
+    },
+    forget(key) {
+      documents.get(key)?.model.dispose();
+      documents.delete(key);
+      if (shown === key) shown = null;
+    },
+    get: () => current().getValue(),
     set(text) {
-      if (model.getValue() === text) return;
+      if (current().getValue() === text) return;
       const selection = editor.getSelection();
       // Replacing the whole text would collapse every breakpoint onto its
       // start, so they are kept by line number instead.
       const lines = dotLines();
       quiet = true;
       // An edit operation, not setValue, so undo can step back over it.
-      model.pushEditOperations([], [{ range: model.getFullModelRange(), text }], () => null);
-      showDots(lines.filter((line) => line <= model.getLineCount()));
+      current().pushEditOperations([], [{ range: current().getFullModelRange(), text }], () => null);
+      showDots(lines.filter((line) => line <= current().getLineCount()));
       // Notes and findings cannot be mapped onto a replaced text.
       notes.clear();
       noteTexts = [];
-      monaco.editor.setModelMarkers(model, "analyzer", []);
+      monaco.editor.setModelMarkers(current(), "analyzer", []);
       quiet = false;
       if (selection) editor.setSelection(selection);
     },
     mark(span, message) {
-      const markers = span ? [{
+      if (!span) {
+        for (const { model } of documents.values()) monaco.editor.setModelMarkers(model, "slog", []);
+        monaco.editor.setModelMarkers(current(), "slog", []);
+        return;
+      }
+      monaco.editor.setModelMarkers(current(), "slog", [{
         startLineNumber: span.line,
         startColumn: span.col,
         endLineNumber: span.line,
-        endColumn: (model.getWordAtPosition({ lineNumber: span.line, column: span.col })?.endColumn) ?? span.col + 1,
+        endColumn: (current().getWordAtPosition({ lineNumber: span.line, column: span.col })?.endColumn) ?? span.col + 1,
         message,
         severity: monaco.MarkerSeverity.Error,
-      }] : [];
-      monaco.editor.setModelMarkers(model, "slog", markers);
+      }]);
     },
     reveal(span) {
       editor.revealLineInCenter(span.line);
@@ -203,11 +232,11 @@ function monacoEditor(monaco, element, { onChange, onEvaluate, onSave, onBreakpo
       showDots(lines);
     },
     notes(list) {
-      const kept = list.filter(({ line }) => line <= model.getLineCount()).sort((a, b) => a.line - b.line);
+      const kept = list.filter(({ line }) => line <= current().getLineCount()).sort((a, b) => a.line - b.line);
       noteTexts = kept.map(({ text }) => text);
       // The whole line, not an empty range at its end: a collapsed
       // decoration shows no injected text.
-      notes.set(kept.map(({ line }) => ({ range: new monaco.Range(line, 1, line, model.getLineMaxColumn(line)), options: {} })));
+      notes.set(kept.map(({ line }) => ({ range: new monaco.Range(line, 1, line, current().getLineMaxColumn(line)), options: {} })));
       showNotes();
     },
     hints(on) {
@@ -216,13 +245,13 @@ function monacoEditor(monaco, element, { onChange, onEvaluate, onSave, onBreakpo
     },
     findings(list) {
       const severity = { error: "Error", warning: "Warning", info: "Info" };
-      monaco.editor.setModelMarkers(model, "analyzer", list
-        .filter(({ line }) => line <= model.getLineCount())
+      monaco.editor.setModelMarkers(current(), "analyzer", list
+        .filter(({ line }) => line <= current().getLineCount())
         .map(({ line, severity: level, message }) => ({
           startLineNumber: line,
-          startColumn: model.getLineFirstNonWhitespaceColumn(line) || 1,
+          startColumn: current().getLineFirstNonWhitespaceColumn(line) || 1,
           endLineNumber: line,
-          endColumn: model.getLineMaxColumn(line),
+          endColumn: current().getLineMaxColumn(line),
           message,
           severity: monaco.MarkerSeverity[severity[level]],
           source: "analyzer",
@@ -232,10 +261,12 @@ function monacoEditor(monaco, element, { onChange, onEvaluate, onSave, onBreakpo
 }
 
 // The fallback has no margin: breakpoints, notes and findings need the
-// Monaco editor.
-function textareaEditor(element, { onChange, onEvaluate, onSave }) {
+// Monaco editor. Nor does it keep undo per document.
+function textareaEditor(element, { onChange, onEvaluate, onSave, readOnly = false }) {
   const area = document.createElement("textarea");
   area.spellcheck = false;
+  area.readOnly = readOnly;
+  let shown = null;
   element.append(area);
   area.addEventListener("input", onChange);
   area.addEventListener("keydown", (event) => {
@@ -248,6 +279,17 @@ function textareaEditor(element, { onChange, onEvaluate, onSave }) {
     return lines.slice(0, line - 1).reduce((sum, text) => sum + text.length + 1, 0) + col - 1;
   };
   return {
+    show(key, text) {
+      if (key !== shown) {
+        area.value = text;
+        area.setSelectionRange(0, 0);
+        shown = key;
+      }
+      this.set(text);
+    },
+    forget(key) {
+      if (shown === key) shown = null;
+    },
     get: () => area.value,
     set(text) {
       if (area.value === text) return;

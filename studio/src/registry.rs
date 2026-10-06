@@ -2,11 +2,10 @@
 //! use, each with its own lane.
 //!
 //! A project is a directory `users/<user>/projects/<name>/` under the data
-//! directory, evaluated from its `main.slog`; the empty name is the user's
-//! default project. In local mode the default is instead the file named on
-//! the command line. A user can reach only their own directory: the user
-//! comes from the login, never from the request, and a name is one path
-//! segment.
+//! directory (`projects.rs`), made on first use; the empty name is the
+//! user's default project. A user can reach only their own directory: the
+//! user comes from the login, never from the request, and a name is one
+//! path segment.
 //!
 //! On a shared server, `Limits` bound what each user's lanes hold: past the
 //! cap the user's least recently used lane stops, and a lane idle too long
@@ -15,6 +14,7 @@
 
 use crate::auth::same_secret;
 use crate::lane::{Lane, LaneState, Mode};
+use crate::projects::Projects;
 use crate::studio::{Event, Studio};
 use crate::summary::{self, Summarizer};
 use slog_repl::server::private_token;
@@ -50,11 +50,12 @@ pub struct Registry {
     root: PathBuf,
     data: PathBuf,
     mode: Mode,
-    /// Local mode's default project: the file named on the command line.
+    /// Local mode's default project: the project of the file named on the
+    /// command line.
     linked: Option<PathBuf>,
     limits: Option<Limits>,
-    /// By program file, so no two Studios ever hold one file.
-    open: Mutex<HashMap<PathBuf, Entry>>,
+    /// By user and project name, so no two Studios ever hold one project.
+    open: Mutex<HashMap<(String, String), Entry>>,
     /// The port the server listens on, which agent runs connect back to.
     port: OnceLock<u16>,
 }
@@ -103,29 +104,32 @@ impl Registry {
 
     /// `user`'s Studio for `project`, created on first use.
     pub fn open(&self, user: &str, project: &str) -> Result<Arc<Studio>, String> {
-        let file = self.program(user, project)?;
+        if !valid_name(user) {
+            return Err(format!("{user:?} cannot be a user name"));
+        }
+        let projects = Projects::new(&self.data.join("users").join(user));
+        // Held while the project is found or made, so two tabs asking for a
+        // new one at once make it once.
         let mut open = self.open.lock().expect("registry lock");
-        if let Some(entry) = open.get(&file) {
+        let name = self.project_name(&projects, project)?;
+        let key = (user.to_owned(), name.clone());
+        if let Some(entry) = open.get(&key) {
             return Ok(entry.studio.clone());
         }
-        let directory = file.parent().expect("a program file has a directory");
-        std::fs::create_dir_all(directory)
-            .map_err(|error| format!("cannot create {}: {error}", directory.display()))?;
-        let text = match std::fs::read_to_string(&file) {
-            Ok(text) => text,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(error) => return Err(format!("cannot read {}: {error}", file.display())),
-        };
+        let (project, files) = projects
+            .open(&name)
+            .map_err(|error| format!("cannot open project {name}: {error}"))?;
         let lane = Lane::new(self.root.clone(), self.mode);
         // Each Studio's own credential for its agent runs' /mcp calls.
         let mcp_token = private_token().map_err(|error| format!("cannot create a token: {error}"))?;
-        let studio = Arc::new(Studio::new(file.clone(), text, lane, mcp_token));
+        let studio = Arc::new(Studio::new(projects, project, files, lane, mcp_token));
         if let Some(port) = self.port.get() {
             studio.set_port(*port);
         }
         studio.relay_lane();
+        studio.watch_edits();
         let tabs = Arc::downgrade(&studio);
-        let config = summary::Config::from_env(&self.data, &file);
+        let config = summary::Config::from_env(&self.data, &studio.main_file().0);
         studio.attach_summarizer(Summarizer::start(config, move |view| {
             if let Some(studio) = tabs.upgrade() {
                 studio.publish(Event::Summary(view));
@@ -136,24 +140,34 @@ impl Registry {
             studio: studio.clone(),
             active: Instant::now(),
         };
-        open.insert(file, entry);
+        open.insert(key, entry);
         Ok(studio)
     }
 
-    /// The program file of `user`'s `project`.
-    fn program(&self, user: &str, project: &str) -> Result<PathBuf, String> {
-        if !valid_name(user) {
-            return Err(format!("{user:?} cannot be a user name"));
+    /// The project `asked` names among `projects`, made if it does not
+    /// exist yet. The empty name is the default: in local mode, the project
+    /// of the file named on the command line, else the project opened last,
+    /// else `scratch`.
+    fn project_name(&self, projects: &Projects, asked: &str) -> Result<String, String> {
+        let name = match (asked, &self.linked) {
+            ("", Some(file)) => {
+                return projects
+                    .linked(file)
+                    .map_err(|error| format!("cannot open a project for {}: {error}", file.display()));
+            }
+            ("", None) => projects.last().unwrap_or_else(|| DEFAULT_PROJECT.to_owned()),
+            (name, _) => name.to_owned(),
+        };
+        if !valid_name(&name) {
+            return Err(format!("{name:?} cannot be a project name"));
         }
-        if let ("", Some(linked)) = (project, &self.linked) {
-            return Ok(linked.clone());
+        let exists = projects.names().map_err(|error| error.to_string())?.contains(&name);
+        if !exists {
+            projects
+                .create(&name)
+                .map_err(|error| format!("cannot create project {name}: {error}"))?;
         }
-        let project = if project.is_empty() { DEFAULT_PROJECT } else { project };
-        if !valid_name(project) {
-            return Err(format!("{project:?} cannot be a project name"));
-        }
-        let projects = self.data.join("users").join(user).join("projects");
-        Ok(projects.join(project).join("main.slog"))
+        Ok(name)
     }
 
     /// Called before `studio`'s lane is asked to work. Marks it active and,
@@ -262,9 +276,12 @@ mod tests {
         let bob = registry.open("bob", "notes").expect("bob's notes");
         assert!(!Arc::ptr_eq(&alice, &bob));
         assert!(Arc::ptr_eq(&alice, &registry.open("alice", "notes").expect("again")));
-        let program = |user| data.join(format!("users/{user}/projects/notes/main.slog"));
-        assert_eq!(alice.snapshot().await.file, program("alice").display().to_string());
-        assert_eq!(bob.snapshot().await.file, program("bob").display().to_string());
+        let directory = |user| data.join(format!("users/{user}/projects/notes/files"));
+        assert_eq!(alice.snapshot().await.directory, directory("alice").display().to_string());
+        assert_eq!(bob.snapshot().await.directory, directory("bob").display().to_string());
+        // the default project is the one opened last, in the same Studio
+        let default = registry.open("alice", "").expect("the default project");
+        assert!(Arc::ptr_eq(&default, &alice));
 
         for project in ["../../bob/projects/notes", "..", ".", "a/b", "/etc", ".hidden"] {
             assert!(registry.open("alice", project).is_err(), "{project}");
