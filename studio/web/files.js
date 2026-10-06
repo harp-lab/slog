@@ -9,12 +9,15 @@
 
 const $ = (id) => document.getElementById(id);
 const EDIT_DELAY = 150;
+// The switcher's choice that is not a project: no project name has a colon.
+const EXAMPLES = ":examples";
 
 // `onOpen(path)` is called when a file is shown in the editor,
-// `onSaved()` when what is saved or unsent may have changed, and
+// `onSaved()` when what is saved or unsent may have changed,
 // `onBreakpoints(path, points)` with a file's breakpoints as the studio has
-// them (breakpoints.js keeps them).
-export function createFiles({ editor, transmit, note, onOpen, onSaved, onBreakpoints }) {
+// them (breakpoints.js keeps them), and `onExamples()` when the switcher
+// asks for a project from an example.
+export function createFiles({ editor, transmit, note, onOpen, onSaved, onBreakpoints, onExamples }) {
   const state = {
     project: "",
     projects: [],
@@ -190,6 +193,7 @@ export function createFiles({ editor, transmit, note, onOpen, onSaved, onBreakpo
     select.replaceChildren(
       ...state.projects.map((name) => new Option(name, name, false, name === state.project)),
       new Option("New project…", ""),
+      new Option("New from example…", EXAMPLES),
     );
     select.title = `Project ${state.project}: ${state.directory}`;
   }
@@ -197,6 +201,11 @@ export function createFiles({ editor, transmit, note, onOpen, onSaved, onBreakpo
   // A project is its own page, `?project=NAME`; opening a name that does
   // not exist yet makes the project, holding an empty main.slog.
   $("project").addEventListener("change", (event) => {
+    if (event.target.value === EXAMPLES) {
+      renderProjects();
+      onExamples();
+      return;
+    }
     const name = event.target.value || window.prompt("Name the new project (letters, digits, - _ . @)");
     renderProjects(); // shown again if the choice is abandoned
     if (!name || name === state.project) return;

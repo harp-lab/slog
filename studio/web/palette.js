@@ -2,17 +2,18 @@
 // Cmd/Ctrl+Shift+P, or the header's ⋯. It is the home of the controls that
 // are not always on screen (modes, panels, restart, structured editing).
 //
-//   createPalette(commands)   commands() lists { title, keys?, note?, run }
+//   createPalette(commands)   commands() lists { title, keys?, note?, about?, run }
 //   returns { open(query = "") }
-// A command's `note` says its state ("current", "on"); `keys`, its shortcut.
+// A command's `note` says its state ("current", "on"); `keys`, its shortcut;
+// `about`, a line under the title on what it does.
 
-// The commands whose title (or note) holds every word of `query`, those
-// whose title starts with it first; otherwise in their own order.
+// The commands whose title (or note, or about) holds every word of `query`,
+// those whose title starts with it first; otherwise in their own order.
 export function rank(commands, query) {
   const words = query.toLowerCase().split(/\s+/).filter(Boolean);
   const q = words.join(" ");
   const matching = commands.filter((command) => {
-    const text = `${command.title} ${command.note ?? ""}`.toLowerCase();
+    const text = `${command.title} ${command.note ?? ""} ${command.about ?? ""}`.toLowerCase();
     return words.every((word) => text.includes(word));
   });
   const starts = (command) => (q && command.title.toLowerCase().startsWith(q) ? 0 : 1);
@@ -43,6 +44,7 @@ export function createPalette(commands) {
       item.append(Object.assign(document.createElement("span"), { className: "title", textContent: command.title }));
       if (command.note) item.append(Object.assign(document.createElement("span"), { className: "note", textContent: command.note }));
       if (command.keys) item.append(Object.assign(document.createElement("kbd"), { textContent: command.keys }));
+      if (command.about) item.append(Object.assign(document.createElement("span"), { className: "about", textContent: command.about }));
       item.addEventListener("mousedown", (event) => { event.preventDefault(); choose(i); });
       return item;
     }));

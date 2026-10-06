@@ -56,6 +56,7 @@ const commands = [
   { title: "Mode: debug" },
   { title: "Debug: run at the breakpoints" },
   { title: "Restart the session server" },
+  { title: "New from example: Sudoku", about: "Pure constraint propagation" },
 ];
 const titles = (query) => rank(commands, query).map((command) => command.title);
 equal("no query keeps the order", titles("").length, commands.length);
@@ -63,5 +64,6 @@ equal("a word anywhere", titles("server"), ["Restart the session server"]);
 equal("a prefix first", titles("debug"), ["Debug: run at the breakpoints", "Mode: debug"]);
 equal("every word", titles("mode fast"), ["Mode: fast"]);
 equal("notes match too", titles("current"), ["Mode: fast"]);
+equal("so do the lines on what a command does", titles("example propagation"), ["New from example: Sudoku"]);
 equal("case does not matter", titles("RUN"), ["Run", "Debug: run at the breakpoints"]);
 equal("nothing matches", titles("zzz"), []);

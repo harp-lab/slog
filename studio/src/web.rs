@@ -97,6 +97,7 @@ fn asset(name: &str) -> Response {
         "hints.js" => (include_str!("../web/hints.js"), "text/javascript; charset=utf-8"),
         "hints.css" => (include_str!("../web/hints.css"), "text/css; charset=utf-8"),
         "palette.js" => (include_str!("../web/palette.js"), "text/javascript; charset=utf-8"),
+        "starters.js" => (include_str!("../web/starters.js"), "text/javascript; charset=utf-8"),
         "inspect.js" => (include_str!("../web/inspect.js"), "text/javascript; charset=utf-8"),
         "sexpview.js" => (include_str!("../web/sexpview.js"), "text/javascript; charset=utf-8"),
         "rewind.js" => (include_str!("../web/rewind.js"), "text/javascript; charset=utf-8"),
