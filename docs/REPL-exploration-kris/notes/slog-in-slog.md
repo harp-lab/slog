@@ -138,18 +138,30 @@ the analysis project's files reach every other project's linter at once
 the target's findings update live.  The analysis analyzes itself cleanly
 (`test.rkt` checks that).
 
-## 8. Performance (arithm.slog: 501 lines, ~1000 facts; interpreter)
+## 8. Performance (interpreter; end to end in Studio)
 
-Measured on a machine with load average 25-95, so absolute numbers are
-inflated; see the final report for the end-to-end figures.
+Measured in headless Chrome on a real studio, three edits each, with the
+machine's load average at 40-55 on 10 cores (other agents' builds), so
+absolute numbers are inflated.  "First findings" is from the keystroke,
+including the 400 ms debounce.
 
-| step | ms |
-|---|---|
-| reify (warm server) | 40-90 |
-| freeze | 130-300 |
-| open | 50-70 |
-| tier 2 (everything), compile + run | 1400-2900 (strata 500-900) |
+| program | reify + freeze | tier 1 (rules) | tier 2 (graph) | tier 3 (deep) | first findings | everything |
+|---|---|---|---|---|---|---|
+| arithm.slog (501 lines) | 245-280 ms | 0.9-1.5 s | 1.4-2.2 s | 1.5-2.5 s | 1.9-2.4 s | 4.7-6.8 s |
+| examples/kcfa (5 files) | 265-310 ms | 0.9-1.1 s | 1.3-1.7 s | 1.3-1.8 s | 1.7-2.0 s | 4.3-5.4 s |
 
-Most of a tier's time is the compiler's front end on the analysis (~0.5 s
-CPU, mostly the per-stratum sha256 of the printed program).  Hashing the
-program string once per compile would cut it.
+Each tier recompiles the analysis's front end (~0.5 s CPU: the cache key
+prints the program and sha256s it per stratum) and recomputes the tiers
+before it.  Both go once `fix/layering-and-key` lands: flip `LAYERED` in
+lint.rs and tier k+1 runs only its own rules over tier k's session.
+
+## 9. Status of the pieces around it
+
+- `compiler/check.rkt` landed on web-repl while this was built.  The
+  reifier does not go through its front end: it needs the program as
+  written, before demand and pattern desugaring, which `load-program-list`
+  has already done.  It shares the parser, `resolve-include`, the source
+  override and the `--serve` request shape, so one process could answer
+  both kinds of request later.
+- The check's `symbols`/`refs` are not consumed yet; the reifier already
+  locates every atom, so the writer/reader relations come from the facts.
