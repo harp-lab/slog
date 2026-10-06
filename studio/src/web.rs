@@ -2,10 +2,14 @@
 //! WebSocket per browser tab carrying edits and commands in and events out.
 //!
 //! Only the WebSocket can read or change anything, so only it is guarded: it
-//! requires the per-launch token and a same-origin `Origin` header. The page
-//! and its assets hold no data.
+//! requires the gate's credential (`auth.rs`: the launch token, or a login)
+//! and a same-origin `Origin` header. The page and its assets hold no data.
+//! A tab names its project in the handshake; the registry maps the user and
+//! the project to their Studio.
 
+use crate::auth::{self, Gate};
 use crate::lane::Mode;
+use crate::registry::Registry;
 use crate::studio::{Event, Snapshot, Studio};
 use axum::Router;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -19,33 +23,38 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{broadcast, mpsc};
 
 struct Web {
-    studio: Arc<Studio>,
-    token: String,
+    registry: Arc<Registry>,
+    gate: Gate,
     next_connection: AtomicU64,
 }
 
-pub fn router(studio: Arc<Studio>, token: String) -> Router {
+pub fn router(registry: Arc<Registry>, gate: Gate) -> Router {
+    let routes = gate.routes();
     let web = Arc::new(Web {
-        studio,
-        token,
+        registry,
+        gate,
         next_connection: AtomicU64::new(1),
     });
     Router::new()
-        .route("/", get(|| async { asset("index.html") }))
+        .route("/", get(page))
         .route("/static/{name}", get(|Path(name): Path<String>| async move { asset(&name) }))
         .route("/ws", get(socket))
         .route(
             "/mcp",
             post(|State(web): State<Arc<Web>>, headers: HeaderMap, body: String| async move {
-                crate::mcp::handle(web.studio.clone(), headers, body).await
+                crate::mcp::handle(&web.registry, headers, body).await
             }),
         )
         .with_state(web)
+        .merge(routes)
+}
+
+async fn page(State(web): State<Arc<Web>>, headers: HeaderMap) -> Response {
+    web.gate.page(&headers, include_str!("../web/index.html"))
 }
 
 fn asset(name: &str) -> Response {
     let (body, kind) = match name {
-        "index.html" => (include_str!("../web/index.html"), "text/html; charset=utf-8"),
         "studio.css" => (include_str!("../web/studio.css"), "text/css; charset=utf-8"),
         "main.js" => (include_str!("../web/main.js"), "text/javascript; charset=utf-8"),
         "editor.js" => (include_str!("../web/editor.js"), "text/javascript; charset=utf-8"),
@@ -87,6 +96,21 @@ enum Request {
     AcceptChangeset { changeset: u32 },
 }
 
+impl Request {
+    /// Whether the request puts the lane to work, starting a server if none
+    /// runs. (A scenario runs on a lane of its own.)
+    fn uses_lane(&self) -> bool {
+        matches!(
+            self,
+            Request::Evaluate
+                | Request::Debug
+                | Request::Command { .. }
+                | Request::Restart
+                | Request::Mode { .. }
+        )
+    }
+}
+
 /// Messages meant for one tab only; everything else is a broadcast `Event`.
 #[derive(Debug, Serialize)]
 #[serde(tag = "t", rename_all = "kebab-case")]
@@ -108,39 +132,45 @@ async fn socket(
     headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Response {
-    // The token is hex, so it needs no percent-decoding.
-    let token_ok = uri
-        .query()
-        .and_then(|query| query.split('&').find_map(|pair| pair.strip_prefix("token=")))
-        .is_some_and(|token| same_secret(token, &web.token));
-    if !token_ok || !same_origin(&headers) {
+    let Some(user) = web.gate.socket_user(&uri, &headers) else {
+        return StatusCode::FORBIDDEN.into_response();
+    };
+    if !auth::same_origin(&headers) {
         return StatusCode::FORBIDDEN.into_response();
     }
+    let project = uri.query().and_then(|query| field(query, "project"));
+    let studio = match web.registry.open(&user, project.as_deref().unwrap_or("")) {
+        Ok(studio) => studio,
+        Err(message) => return (StatusCode::NOT_FOUND, message).into_response(),
+    };
     let connection = web.next_connection.fetch_add(1, Ordering::SeqCst);
-    upgrade.on_upgrade(move |socket| serve(socket, web.studio.clone(), connection))
+    upgrade.on_upgrade(move |socket| serve(socket, web, studio, connection))
 }
 
-/// Browsers send cookies and tokens cross-site on WebSocket handshakes, so
-/// the handshake must come from a page this server served.
-fn same_origin(headers: &HeaderMap) -> bool {
-    let value = |name| headers.get(name).and_then(|value| value.to_str().ok());
-    match (value(header::ORIGIN), value(header::HOST)) {
-        (Some(origin), Some(host)) => origin.strip_prefix("http://") == Some(host),
-        _ => false,
+/// The value of `key` in `a=1&b=2`, a query or a form's body, decoded.
+pub fn field(encoded: &str, key: &str) -> Option<String> {
+    encoded.split('&').find_map(|pair| {
+        let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if decode(name)? == key { decode(value) } else { None }
+    })
+}
+
+/// Undo form encoding: `+` is a space and `%XX` a byte.
+fn decode(text: &str) -> Option<String> {
+    let hex = |digit: Option<u8>| char::from(digit?).to_digit(16);
+    let mut bytes = Vec::with_capacity(text.len());
+    let mut rest = text.bytes();
+    while let Some(byte) = rest.next() {
+        bytes.push(match byte {
+            b'+' => b' ',
+            b'%' => (hex(rest.next())? * 16 + hex(rest.next())?) as u8,
+            byte => byte,
+        });
     }
+    String::from_utf8(bytes).ok()
 }
 
-/// Comparison whose time does not depend on where the inputs differ.
-pub(crate) fn same_secret(given: &str, expected: &str) -> bool {
-    given.len() == expected.len()
-        && given
-            .bytes()
-            .zip(expected.bytes())
-            .fold(0, |difference, (a, b)| difference | (a ^ b))
-            == 0
-}
-
-async fn serve(mut socket: WebSocket, studio: Arc<Studio>, connection: u64) {
+async fn serve(mut socket: WebSocket, web: Arc<Web>, studio: Arc<Studio>, connection: u64) {
     let mut events = studio.subscribe();
     let (direct, mut replies) = mpsc::unbounded_channel::<String>();
     if send_init(&mut socket, &studio).await.is_err() {
@@ -150,7 +180,7 @@ async fn serve(mut socket: WebSocket, studio: Arc<Studio>, connection: u64) {
         let outgoing = tokio::select! {
             incoming = socket.recv() => match incoming {
                 Some(Ok(Message::Text(text))) => {
-                    handle(&studio, connection, &text, &direct);
+                    handle(&web.registry, &studio, connection, &text, &direct);
                     continue;
                 }
                 Some(Ok(_)) => continue,
@@ -186,7 +216,13 @@ async fn send_init(socket: &mut WebSocket, studio: &Studio) -> Result<(), axum::
 
 /// Edits are answered at once; everything that talks to the session server
 /// runs as its own task so this tab can still interrupt it.
-fn handle(studio: &Arc<Studio>, connection: u64, text: &str, direct: &mpsc::UnboundedSender<String>) {
+fn handle(
+    registry: &Registry,
+    studio: &Arc<Studio>,
+    connection: u64,
+    text: &str,
+    direct: &mpsc::UnboundedSender<String>,
+) {
     let request = match serde_json::from_str::<Request>(text) {
         Ok(request) => request,
         Err(error) => {
@@ -195,6 +231,10 @@ fn handle(studio: &Arc<Studio>, connection: u64, text: &str, direct: &mpsc::Unbo
             return;
         }
     };
+    // A server about to start counts against its user's lanes.
+    if request.uses_lane() {
+        registry.admit(studio);
+    }
     let studio = studio.clone();
     match request {
         Request::Edit { base, text } => {
@@ -289,23 +329,19 @@ fn json<T: Serialize>(value: &T) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{same_origin, same_secret};
-    use axum::http::{HeaderMap, HeaderValue, header};
+    use super::field;
 
+    /// Queries and forms (and the passwords in them) arrive encoded, so
+    /// every byte must survive decoding.
     #[test]
-    fn the_socket_accepts_only_its_own_origin() {
-        let headers = |origin: &'static str| {
-            let mut headers = HeaderMap::new();
-            headers.insert(header::HOST, HeaderValue::from_static("127.0.0.1:7300"));
-            headers.insert(header::ORIGIN, HeaderValue::from_static(origin));
-            headers
-        };
-        assert!(same_origin(&headers("http://127.0.0.1:7300")));
-        assert!(!same_origin(&headers("http://evil.example")));
-        assert!(!same_origin(&headers("http://127.0.0.1:7301")));
-        assert!(!same_origin(&HeaderMap::new()));
-        assert!(same_secret("abc", "abc"));
-        assert!(!same_secret("abd", "abc"));
-        assert!(!same_secret("ab", "abc"));
+    fn form_fields_decode_exactly() {
+        let body = "user=alice&password=p%40ss+w%26rd%3D%25&next=";
+        assert_eq!(field(body, "user").as_deref(), Some("alice"));
+        assert_eq!(field(body, "password").as_deref(), Some("p@ss w&rd=%"));
+        assert_eq!(field(body, "next").as_deref(), Some(""));
+        assert_eq!(field(body, "token"), None);
+        assert_eq!(field("password=%4", "password"), None);
+        assert_eq!(field("password=%+1", "password"), None);
+        assert_eq!(field("password=%C3%A9", "password").as_deref(), Some("é"));
     }
 }

@@ -378,3 +378,32 @@ footer {
 .state.bad { background: var(--red); }
 .pill.held { color: var(--orange); font-weight: 600; }
 @keyframes pulse { 50% { opacity: 0.35; } }
+
+/* ---- Accounts (server mode) -------------------------------------------- */
+
+.account { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+
+body.login { align-items: center; justify-content: center; }
+body.login form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 280px;
+  padding: 24px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+body.login label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); }
+body.login input {
+  height: var(--control);
+  padding: 0 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--page);
+  color: var(--strong);
+  font: 13px var(--sans);
+}
+body.login input:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+body.login button { justify-content: center; }
+body.login .error { margin: 0; min-height: 1.4em; color: var(--red); }

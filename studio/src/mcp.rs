@@ -1,25 +1,26 @@
 //! `POST /mcp`: the tools an agent uses to read, change, and test the
 //! program, as a JSON-RPC MCP server (plain request/response HTTP, as in the
-//! slides app). It is gated by its own bearer token, and each call is
+//! slides app). Each Studio's agent has its own bearer token, so the token
+//! both admits a call and names the project it may touch; the call is
 //! attributed to the thread its `x-studio-thread` header names.
 
 use crate::agent::THREAD_HEADER;
+use crate::registry::Registry;
 use crate::review::Change;
 use crate::studio::Studio;
-use crate::web::same_secret;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-pub async fn handle(studio: Arc<Studio>, headers: HeaderMap, body: String) -> Response {
+pub async fn handle(registry: &Registry, headers: HeaderMap, body: String) -> Response {
     let bearer = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "));
-    if !bearer.is_some_and(|token| same_secret(token, &studio.agent.mcp_token)) {
+    let Some(studio) = bearer.and_then(|token| registry.by_mcp_token(token)) else {
         return StatusCode::UNAUTHORIZED.into_response();
-    }
+    };
     let thread = headers
         .get(THREAD_HEADER)
         .and_then(|value| value.to_str().ok())
