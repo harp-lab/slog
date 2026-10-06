@@ -64,6 +64,9 @@ const ARGUMENTS = [
   ["calls (lookup \"x\" []) |", ["depth"]],
   ["step |", ["match", "fire", "emit", "tuple", "iter", "into", "over", "out", "rule"]],
   ["peek |", RELATIONS],
+  ["peek edge |", ["delta", "new"]],
+  // a variable of the held rule: nothing to offer until the stop is known
+  ["p |", []],
   ["trace |", ["on", "off"]],
   ["trace on |", ["sample", "focus", "rules"]],
   ["trace on focus edge |", [...RELATIONS, "rules"]],
