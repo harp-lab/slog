@@ -1,0 +1,70 @@
+;; slog-lint, tier 2: demands and constructors across the whole program.
+;;
+;; Which demands ask which, demands asked that nothing answers, and how
+;; constructor values flow: built in heads and computations, matched in
+;; patterns.
+
+include "lint-graph.slog"
+
+;; ---- the demand call graph ----
+
+table (asked str)
+rule (asks _ F _) --> (asked F)
+
+;; (demand_calls F G): answering F asks G
+table (demand_calls str str)
+rule (writes R F _) (is_demand F) (asks R G _) --> (demand_calls F G)
+
+table (demand_reaches str str)
+rule (demand_calls F G) --> (demand_reaches F G)
+rule (demand_reaches F G) (demand_calls G H) --> (demand_reaches F H)
+
+table (recursive_demand str)
+rule (demand_reaches F F) --> (recursive_demand F)
+
+rule (asks _ F L) (is_demand F) ~(written F)
+  --> (report "warning" L "unanswered"
+              (+ F " is asked here, but no rule answers it, so the call never returns a value"))
+rule (relation F "demand" _ L) ~(asked F) (main_file M) ~(loads_others M)
+  --> (report "info" L "never-asked"
+              (+ "nothing asks " (+ F ", so the rules answering it never run")))
+
+;; ---- constructor flow ----
+
+;; A value is built where a term is computed: in a head, an equation, a
+;; guard, a call's arguments, or the inputs of a demand asked in a body.
+table (value_term int term)
+rule (head R _ _ Ts _) (element Ts _ T) --> (value_term R T)
+rule (binds R _ A B _) --> (value_term R A) (value_term R B)
+rule (guard R _ _ A B _) --> (value_term R A) (value_term R B)
+rule (term_in R (call F Ts _)) ~(is_constructor F) (element Ts _ T) --> (value_term R T)
+rule (body R _ F Ts _) (inputs_of F N) (element Ts I T) (< I N) --> (value_term R T)
+rule (value_term R (call _ Ts _)) (element Ts _ T) --> (value_term R T)
+rule (value_term R (lst Ts)) (element Ts _ T) --> (value_term R T)
+rule (value_term R (splice T)) --> (value_term R T)
+
+table (built str)
+rule (value_term _ (call C _ _)) (is_constructor C) --> (built C)
+
+;; Values of an input relation's columns arrive from outside, with every
+;; constructor their types allow, down through the fields.
+table (arrives str)
+rule (input Rel) (column Rel _ T) (fits C T) --> (arrives C)
+rule (arrives C) (field C _ T) (fits C2 T) --> (arrives C2)
+
+table (mentioned str)
+rule (term_in _ (call C _ _)) --> (mentioned C)
+rule (atom _ C _ _) --> (mentioned C)
+
+rule (pattern _ (call C _ L)) (is_constructor C) ~(built C) ~(arrives C) (main_file M) ~(loads_others M)
+  --> (report "warning" L "never-built"
+              (+ "no rule ever builds a " (+ C " value, so this pattern never matches")))
+rule (body _ _ C _ L) (is_constructor C) ~(built C) ~(arrives C) (main_file M) ~(loads_others M)
+  --> (report "warning" L "never-built"
+              (+ "no rule ever builds a " (+ C " value, so enumerating them finds none")))
+rule (constructor C _ (loc F Line Col)) ~(mentioned C) ~(arrives C) (has_rules F)
+  --> (report "info" (loc F Line Col) "unused" (+ C " is declared but never used"))
+
+;; (flows Rel I C): Rel's column I holds values built by constructor C
+table (flows str int str)
+rule (head _ _ Rel Ts _) (element Ts I (call C _ _)) (is_constructor C) --> (flows Rel I C)

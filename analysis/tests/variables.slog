@@ -1,0 +1,23 @@
+;; Variables: used once, never bound, or a constructor missing its parentheses.
+;; A comment `expect CODE TEXT` names each finding on its line: its code,
+;; and the text at its column.  A line without one must have none.
+enum (color red green)
+table (edge int int)
+table (paint int color)
+table (out int)
+table (pair int int)
+rule (edge 1 2) (paint 1 (red)) (paint 2 (green))
+
+rule (edge X Y) --> (out X)                      ;; expect singleton Y
+rule (edge X _) --> (out X)
+rule (edge X _y) --> (out X)
+rule (edge X Y) (edge Y Z) --> (pair X Z)
+rule (edge X Y) --> (pair X W)                   ;; expect singleton Y, unbound W
+rule (out X) ~(edge X Z) --> (pair X X)          ;; expect unbound Z
+rule (out X) ~(edge X _) --> (pair X X)
+rule (out X) (< X Q) --> (pair X X)              ;; expect unbound Q
+rule (out X) (= Z (+ X 1)) --> (pair X Z)
+rule (out X) (= (+ X 1) (+ Y 1)) --> (pair X X)  ;; expect unbound Y
+rule (paint X red) --> (out X)                   ;; expect bare-constructor red
+rule (out X) --> (paint X green)                 ;; expect bare-constructor green
+rule (paint X (red)) --> (out X)

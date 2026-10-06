@@ -1,0 +1,282 @@
+;; slog-lint, tier 0: what each rule says on its own.
+;;
+;; Variables (used once, never bound), the arity and shape of every atom
+;; and constructor, and which rules write and read each relation.  Every
+;; finding is a `report` at the exact atom or variable; slog-lint.slog
+;; turns reports into `finding` rows.
+
+include "schema.slog"
+
+;; ---- findings ----
+
+table (report str loc str str)         ;; (report Severity Loc Code Message)
+
+;; Findings in the compiler's own lib/ are not the author's to fix.
+rule (report Sev (loc F Line Col) Code Msg) (source_file F Path) ~(library_file F)
+  --> (finding Sev Path Line Col Code Msg)
+
+rule (missing_include _ Target L)
+  --> (report "warning" L "missing-include"
+              (+ "include " (+ Target " is not found, so the compiler skips it and its declarations are missing")))
+
+;; ---- names ----
+
+table (is_constructor str)
+table (is_demand str)                  ;; a demand, or an extern (an oracle-answered demand)
+table (is_table str)
+table (arity_of str int)               ;; columns of a relation, fields of a constructor
+table (inputs_of str int)              ;; a demand's input columns
+
+rule (constructor C N _) --> (is_constructor C) (arity_of C N)
+rule (relation R "table" N _) --> (is_table R) (arity_of R N)
+rule (relation R "demand" N _) --> (is_demand R) (arity_of R N)
+rule (relation R "extern" N _) --> (is_demand R) (arity_of R N)
+rule (demand_inputs R N) --> (inputs_of R N)
+
+;; ---- terms ----
+
+;; (element Ts I T): T is element I of the argument list Ts, for every
+;; list of terms in the program.  Every constructor is also the relation of
+;; the values it has built, so (= T (call F Ts L)) finds every call term
+;; without walking a rule.  And terms are interned, so each distinct list is
+;; taken apart once, however many rules share it.
+table (arglist (list term))
+table (element (list term) int term)
+table (position int)                   ;; 0 .. the longest list's length - 1
+
+rule (head _ _ _ Ts _) --> (arglist Ts)
+rule (body _ _ _ Ts _) --> (arglist Ts)
+rule (negated _ _ _ Ts _) --> (arglist Ts)
+rule (= _call (call _ Ts _)) --> (arglist Ts)
+rule (= _list (lst Ts)) --> (arglist Ts)
+
+rule (arglist Ts) (= N (llen Ts)) (> N 0) --> (position (- N 1))
+rule (position I) (> I 0) --> (position (- I 1))
+rule (arglist Ts) (position I) (< I (llen Ts)) (= T (lref Ts I)) --> (element Ts I T)
+
+;; (term_in R T): T is a term of rule R, at any depth
+table (term_in int term)
+rule (head R _ _ Ts _) (element Ts _ T) --> (term_in R T)
+rule (body R _ _ Ts _) (element Ts _ T) --> (term_in R T)
+rule (negated R _ _ Ts _) (element Ts _ T) --> (term_in R T)
+rule (binds R _ A B _) --> (term_in R A) (term_in R B)
+rule (guard R _ _ A B _) --> (term_in R A) (term_in R B)
+rule (term_in R (call _ Ts _)) (element Ts _ T) --> (term_in R T)
+rule (term_in R (lst Ts)) (element Ts _ T) --> (term_in R T)
+rule (term_in R (splice T)) --> (term_in R T)
+rule (term_in R (lam _ T)) --> (term_in R T)
+
+;; A call whose name is no constructor, primitive or relation calls a
+;; closure held in the variable of that name.
+table (closure_call int str loc)
+rule (term_in R (call F _ L)) ~(is_constructor F) ~(primitive F) ~(relation F _ _ _)
+     ~(builtin F)
+  --> (closure_call R F L)
+
+;; names the language gives meaning to without a declaration
+table (builtin str)
+rule (builtin "{}") (builtin ":") (builtin "=") (builtin "/=") (builtin "<") (builtin "<=")
+     (builtin ">") (builtin ">=") (builtin "~") (builtin "|") (builtin "error")
+
+;; the runtime's error variants, matched in (error (div_by_zero Loc N)) ...
+rule (is_constructor "div_by_zero") (is_constructor "modulo_by_zero")
+     (is_constructor "nan_result") (is_constructor "toint_range")
+     (is_constructor "type_mismatch") (is_constructor "malformed_deduction")
+     (is_constructor "int_overflow") (is_constructor "mpz_overflow")
+     (is_constructor "mpz_table_overflow") (is_constructor "smt_bad_formula")
+
+;; (occurs R X L): variable X occurs in rule R at L.
+table (occurs int str loc)
+rule (term_in R (var X L)) --> (occurs R X L)
+rule (closure_call R F L) --> (occurs R F L)
+
+;; ---- binding ----
+;;
+;; A variable is bound when it occurs in a pattern: an argument of a
+;; positive body atom, down through constructors and lists but not into a
+;; computation.  An equation (= A B) matches one side as a pattern once the
+;; other is known, so binding is a small fixpoint; with a constructor on
+;; one side and neither known, it enumerates that constructor's values.
+
+table (pattern int term)               ;; T is matched against values
+table (bound int str)
+
+rule (body R _ _ Ts _) (element Ts _ T) --> (pattern R T)
+;; a rule answering a demand is matched against each request: the inputs
+;; in its head are patterns too
+rule (head R _ F Ts _) (inputs_of F N) (arity_of F M) (= M (llen Ts)) (element Ts I T) (< I N)
+  --> (pattern R T)
+rule (pattern R (call C Ts _)) (is_constructor C) (element Ts _ T) --> (pattern R T)
+rule (pattern R (call F Ts _)) (is_demand F) (element Ts _ T) --> (pattern R T)  ;; a request
+rule (pattern R (call "=" Ts _)) (element Ts _ T) --> (pattern R T)              ;; x=(pattern)
+rule (pattern R (lst Ts)) (element Ts _ T) --> (pattern R T)
+rule (pattern R (splice T)) --> (pattern R T)
+rule (pattern R (var X _)) --> (bound R X)
+
+rule (binds R _ A B _) (known R B) --> (pattern R A)
+rule (binds R _ A B _) (known R A) --> (pattern R B)
+rule (binds R _ A (call C Args L) _) (is_constructor C) --> (pattern R A) (pattern R (call C Args L))
+rule (binds R _ (call C Args L) B _) (is_constructor C) --> (pattern R B) (pattern R (call C Args L))
+
+;; a lambda's parameters are bound inside it
+rule (term_in R (lam Ps _)) (position I) (= P (lref Ps I)) --> (bound R P)
+
+;; (known R T): every variable of T, a subterm of an equation, is bound
+table (eq_term int term)
+table (eq_terms int (list term))       ;; the argument lists of eq_terms, and their tails
+table (known int term)
+table (all_known int (list term))
+rule (binds R _ A B _) --> (eq_term R A) (eq_term R B)
+rule (eq_term R (call _ Ts _)) --> (eq_terms R Ts)
+rule (eq_term R (lst Ts)) --> (eq_terms R Ts)
+rule (eq_term R (splice T)) --> (eq_term R T)
+rule (eq_terms R [T Ts ...]) --> (eq_term R T) (eq_terms R Ts)
+
+rule (eq_term R (var X L)) (bound R X) --> (known R (var X L))
+rule (eq_term R (int_lit N L)) --> (known R (int_lit N L))
+rule (eq_term R (float_lit N L)) --> (known R (float_lit N L))
+rule (eq_term R (str_lit S L)) --> (known R (str_lit S L))
+rule (eq_term R (bool_lit S L)) --> (known R (bool_lit S L))
+rule (eq_term R (call F Ts L)) (all_known R Ts) --> (known R (call F Ts L))
+rule (eq_term R (lst Ts)) (all_known R Ts) --> (known R (lst Ts))
+rule (eq_term R (splice T)) (known R T) --> (known R (splice T))
+rule (eq_term R (lam Ps T)) --> (known R (lam Ps T))
+rule (eq_terms R []) --> (all_known R [])
+rule (eq_terms R [T Ts ...]) (known R T) (all_known R Ts) --> (all_known R [T Ts ...])
+
+;; ---- variable findings ----
+
+;; X occurs in rule R at L and somewhere else too
+table (seen_twice int str loc)
+rule (occurs R X L) (occurs R X L2) (/= L L2) --> (seen_twice R X L)
+
+table (ignored str)                    ;; _x: a variable meant to be used once
+rule (occurs _ X _) (= "_" (substr X 0 1)) --> (ignored X)
+
+rule (occurs R X L) (bound R X) (nullary X)
+  --> (report "warning" L "bare-constructor"
+              (+ X (+ " is a variable here, so it matches any value; the constructor is written with parentheses, (" (+ X ")"))))
+
+rule (occurs R X L) ~(seen_twice R X L) ~(ignored X) (bound R X) ~(nullary X)
+  --> (report "warning" L "singleton"
+              (+ X (+ " is used only once in this rule; if that is intended, write _ (or _"
+                      (+ X ")"))))
+
+;; a variable no positive clause binds: in a head, under ~, in a guard or
+;; in a computation, it has no value to give
+table (in_head int str loc)
+table (head_term int term)
+rule (head R _ _ Ts _) (element Ts _ T) --> (head_term R T)
+rule (head_term R (call _ Ts _)) (element Ts _ T) --> (head_term R T)
+rule (head_term R (lst Ts)) (element Ts _ T) --> (head_term R T)
+rule (head_term R (splice T)) --> (head_term R T)
+rule (head_term R (var X L)) --> (in_head R X L)
+
+table (nullary str)                    ;; an enum member or argument-less constructor
+rule (constructor C 0 _) --> (nullary C)
+
+rule (in_head R X L) ~(bound R X) (nullary X)
+  --> (report "error" L "bare-constructor"
+              (+ X (+ " is a variable here; the constructor is written with parentheses, (" (+ X ")"))))
+rule (in_head R X L) ~(bound R X) ~(nullary X)
+  --> (report "error" L "unbound"
+              (+ X " in the head is never bound: no positive body clause gives it a value"))
+rule (occurs R X L) ~(bound R X) ~(in_head R X L) (nullary X)
+  --> (report "error" L "bare-constructor"
+              (+ X (+ " is a variable here; the constructor is written with parentheses, (" (+ X ")"))))
+rule (occurs R X L) ~(bound R X) ~(in_head R X L) ~(nullary X)
+  --> (report "error" L "unbound"
+              (+ X " is never bound: only a positive body clause gives a variable its value, not ~, a guard or a computation"))
+
+;; ---- atoms: arity ----
+
+;; (atom R Rel Args L): a head, body or negated atom
+table (atom int str (list term) loc)
+rule (head R _ Rel Args L) --> (atom R Rel Args L)
+rule (body R _ Rel Args L) --> (atom R Rel Args L)
+rule (negated R _ Rel Args L) --> (atom R Rel Args L)
+
+table (fits_arity str int)             ;; Rel may be written with N arguments
+rule (arity_of Rel N) --> (fits_arity Rel N)
+rule (inputs_of Rel N) --> (fits_arity Rel N)   ;; a demand asked, or its requests enumerated
+rule (is_lattice Rel) (arity_of Rel N) --> (fits_arity Rel (- N 1))  ;; ~(R key ...): no value
+
+;; A lattice relation's last column holds one joined value per key.
+table (is_lattice str)
+rule (column Rel I T) (type_decl T "lattice" _) (arity_of Rel N) (= I (- N 1)) --> (is_lattice Rel)
+
+rule (atom _ Rel Args L) (arity_of Rel N) (= M (llen Args)) (/= M N) ~(fits_arity Rel M)
+  --> (report "error" L "arity"
+              (+ Rel (+ " takes " (+ (i2s N) (+ " columns but is given " (i2s M))))))
+
+;; a constructor built or matched, and a demand called for its value
+rule (term_in _ (call C Args L)) (constructor C N _) (= M (llen Args)) (/= M N)
+  --> (report "error" L "arity"
+              (+ C (+ " takes " (+ (i2s N) (+ " fields but is given " (i2s M))))))
+rule (term_in _ (call F Args L)) (inputs_of F N) (= M (llen Args)) (/= M N)
+  --> (report "error" L "arity"
+              (+ F (+ " is called with " (+ (i2s M) (+ " arguments but takes " (i2s N))))))
+
+;; ---- atoms: the shape of each argument ----
+
+;; (slot Owner I Type): argument I of a relation or constructor has Type
+table (slot str int str)
+rule (column Rel I T) --> (slot Rel I T)
+rule (field C I T) --> (slot C I T)
+
+;; (arg_at Owner I T L): T is argument I of an atom or call at L
+table (arg_at str int term loc)
+rule (atom _ Rel Ts L) (element Ts I T) --> (arg_at Rel I T L)
+rule (term_in _ (call F Ts L)) (element Ts I T) --> (arg_at F I T L)
+
+;; (literal T Type L): T is a literal of base type Type, at L
+table (literal term str loc)
+rule (arg_at _ _ (int_lit N L) _) --> (literal (int_lit N L) "int" L)
+rule (arg_at _ _ (float_lit X L) _) --> (literal (float_lit X L) "float" L)
+rule (arg_at _ _ (str_lit S L) _) --> (literal (str_lit S L) "str" L)
+
+table (base_type str)
+rule (base_type "int") (base_type "float") (base_type "str")
+
+rule (arg_at O I T _) (literal T Ty L) (slot O I Want) (base_type Want) (/= Ty Want)
+  --> (report "error" L "type"
+              (+ "this is a " (+ Ty (+ " literal, but argument " (+ (i2s (+ I 1))
+                 (+ " of " (+ O (+ " holds " Want))))))))
+
+;; (fits C Type): a value built by constructor C has type Type
+table (fits str str)
+rule (constructor C _ _) --> (fits C C)
+rule (union_member U M) (fits C M) --> (fits C U)
+
+;; a type whose values are exactly its constructors
+table (closed_type str)
+rule (type_decl T "struct" _) --> (closed_type T)
+rule (type_decl T "union" _) --> (closed_type T)
+rule (type_decl T "enum" _) --> (closed_type T)
+rule (base_type T) --> (closed_type T)
+
+rule (arg_at O I (call C _ L) _) (is_constructor C) (slot O I Want) (closed_type Want)
+     ~(fits C Want)
+  --> (report "error" L "type"
+              (+ C (+ " values are not of type " (+ Want (+ ", which argument " (+ (i2s (+ I 1))
+                 (+ " of " (+ O " holds"))))))))
+
+;; ---- who writes and reads each relation ----
+
+table (writes int str loc)             ;; (writes R Rel L): rule R derives Rel at L
+table (reads int str str loc)          ;; (reads R Rel Sign L): Sign is "+" or "-"
+table (asks int str loc)               ;; rule R asks demand F at L
+
+rule (head R _ Rel Args L) (= N (llen Args)) (arity_of Rel N) --> (writes R Rel L)
+rule (head R _ F Args L) (inputs_of F N) (= N (llen Args)) --> (asks R F L)
+rule (body R _ Rel _ L) --> (reads R Rel "+" L)
+rule (body R _ F Args L) (inputs_of F _) (arity_of F M) (= M (llen Args)) --> (asks R F L)
+rule (negated R _ Rel _ L) --> (reads R Rel "-" L)
+rule (term_in R (call F _ L)) (is_demand F) --> (reads R F "+" L) (asks R F L)
+
+;; For the editor, by line: the rules that write each relation, and those
+;; that read it.
+table (writer str str int)             ;; (writer Rel File Line)
+table (reader str str int str)         ;; (reader Rel File Line Sign)
+rule (writes _ Rel (loc F Line _)) (source_file F Path) --> (writer Rel Path Line)
+rule (reads _ Rel Sign (loc F Line _)) (source_file F Path) --> (reader Rel Path Line Sign)

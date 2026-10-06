@@ -1,0 +1,17 @@
+;; Constructors: built, matched, or neither.  Values of an input relation
+;; arrive from outside, with every constructor its column's type allows.
+union (expr (num int) (neg_of expr) (ghost int) (lost int))  ;; expect unused lost
+union (cmd (go str) (stop))
+table (prog expr)
+table (input cmd)                                 ;; expect never-written input
+table (value int)
+table (went str)
+rule (prog (neg_of (num 1)))
+
+rule (prog (num N)) --> (value N)
+rule (prog (neg_of (num N))) --> (value N)
+rule (prog (ghost N)) --> (value N)               ;; expect never-built ghost
+rule (ghost N) --> (value N)                      ;; expect never-built ghost
+rule (prog E) (= E (num N)) --> (value N)
+;; go is never built here, but an input row can hold one
+rule (input (go X)) --> (went X)

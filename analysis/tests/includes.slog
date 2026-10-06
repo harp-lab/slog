@@ -1,0 +1,7 @@
+;; Includes: a missing one, and a library's declarations, which are not
+;; this program's to use.
+include "no-such-file.slog"                       ;; expect missing-include include
+include "list.slog"
+table (n int)
+rule (n 1)
+rule (n X) (< X 3) --> (n (+ X 1))

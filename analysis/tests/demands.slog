@@ -1,0 +1,16 @@
+;; Demands: asked and answered, asked and never answered, never asked.
+;; A rule answering a demand is matched against each request, so the
+;; inputs in its head are bound.
+demand (fib int) int
+demand (half int) int
+demand (orphan int) int
+demand (unused_fn int) int                       ;; expect never-asked unused_fn
+table (answer int)
+table (other int)
+rule (fib N N) <-- (< N 2)
+rule (fib N (+ (fib (- N 1)) (fib (- N 2)))) <-- (>= N 2)
+rule (unused_fn N N)
+rule (answer (fib 10))
+rule (answer (orphan 3))                         ;; expect unanswered orphan
+rule (answer N) --> (other (half N))             ;; expect unanswered half
+rule (fib 3 V) --> (other V)

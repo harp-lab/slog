@@ -1,0 +1,118 @@
+;; slog-lint, tier 1: how the relations depend on one another.
+;;
+;; The dependency graph, its recursive components, negation and lattice
+;; reads through recursion, relations nothing writes or reads, and which
+;; relations can ever hold a row -- so which rules can ever fire.
+
+include "lint-local.slog"
+
+;; ---- the dependency graph ----
+
+;; (dep From To Sign): a rule writing To reads From, positively ("+") or
+;; under negation ("-").  Asking a demand writes its requests, so the
+;; asker's body feeds the demand too.
+table (dep str str str)
+rule (reads R From Sign _) (writes R To _) --> (dep From To Sign)
+rule (reads R From "+" _) (asks R F _) (/= From F) --> (dep From F "+")
+
+table (reaches str str)                ;; a path of dependencies leads from one to the other
+rule (dep A B _) --> (reaches A B)
+rule (reaches A B) (dep B C _) --> (reaches A C)
+
+table (recursive str)
+rule (reaches R R) --> (recursive R)
+
+;; a strongly connected component, named by the set of its members
+lattice (names (set str))
+table (component_of str names)
+table (component cset)                 ;; a plain column: a lattice table needs a key
+rule (reaches A B) (reaches B A) (= S (cins (cmap) B)) --> (component_of A S)
+rule (component_of _ S) --> (component S)
+
+;; ---- negation through recursion ----
+
+;; A rule reading Rel under ~ while writing a relation that Rel depends
+;; on: no stratum can finish Rel before the rule needs it.
+rule (negated R _ Rel _ L) (writes R H _) (/= H Rel) (reaches H Rel)
+  --> (report "error" L "negation-cycle"
+              (+ Rel (+ " is negated here, but it depends on " (+ H ", which this rule derives: negation through recursion has no stratification"))))
+rule (negated R _ Rel _ L) (writes R Rel _)
+  --> (report "error" L "negation-cycle"
+              (+ Rel " is negated in a rule that derives it: negation through recursion has no stratification"))
+
+;; ---- lattice values read inside their own recursion ----
+
+;; A lattice relation's last column holds a value that only grows while
+;; its component runs.  Copying that value into a plain table that feeds
+;; back into the lattice cannot be undone when the value improves.
+
+table (lattice_value int str str)      ;; (lattice_value R Rel X): X is Rel's value in rule R
+rule (body R _ Rel [_ ... (var X _)] _) (is_lattice Rel) --> (lattice_value R Rel X)
+
+rule (lattice_value R Rel X) (head R _ H Ts _) (element Ts _ (var X L)) ~(is_lattice H) (reaches H Rel)
+  --> (report "warning" L "ascending-lattice"
+              (+ X (+ " is the still-growing value of the lattice " (+ Rel (+ ", but " (+ H " keeps every value it sees and feeds back into it; the compiler rejects this"))))))
+
+;; ---- relations nothing writes, nothing reads ----
+
+table (written str)
+table (read str)
+rule (writes _ Rel _) --> (written Rel)
+rule (relation Rel "extern" _ _) --> (written Rel)  ;; its oracle answers it
+rule (reads _ Rel _ _) --> (read Rel)
+rule (asks _ F _) --> (read F)
+
+;; A program that loads others (run, instantiate) may get rows from them.
+table (loads_others int)
+rule (loads F _ _ _) --> (loads_others F)
+
+table (input str)                      ;; read, never written: an input to fill from outside
+rule (relation Rel "table" _ _) (read Rel) ~(written Rel) --> (input Rel)
+
+rule (relation Rel "table" _ (loc F Line Col)) (input Rel) (has_rules F) (main_file M) ~(loads_others M)
+  --> (report "info" (loc F Line Col) "never-written"
+              (+ "nothing writes " (+ Rel ", so it stays empty unless it is filled from outside (add, an import, a database)")))
+rule (relation Rel "table" _ (loc F Line Col)) ~(read Rel) ~(written Rel) (has_rules F)
+     (main_file M) ~(loads_others M)
+  --> (report "info" (loc F Line Col) "unused" (+ Rel " is declared but never used"))
+
+;; A file of declarations alone is an interface for others to include:
+;; what it declares is not expected to be written or used there.
+table (has_rules int)
+rule (rule_at _ _ (loc F _ _)) --> (has_rules F)
+
+;; ---- can a relation ever hold a row? ----
+;;
+;; Optimistically, a relation is inhabited when some rule writing it can
+;; fire, and a rule can fire when every positive body atom over a declared
+;; relation is inhabited.  Inputs count as inhabited.  Clauses are checked
+;; in order, so "every" is a walk along the body.
+
+table (inhabited str)
+table (fires int)
+table (fires_upto int int)             ;; (fires_upto R I): body clauses before I can all match
+
+table (needs int int str)              ;; (needs R I Rel): clause I matches rows of Rel
+rule (body R I Rel Args _) (relation Rel _ N _) (= N (llen Args)) --> (needs R I Rel)
+
+rule (input Rel) --> (inhabited Rel)
+rule (relation Rel "extern" _ _) --> (inhabited Rel)
+rule (rule_at R _ _) --> (fires_upto R 0)
+rule (fires_upto R I) (needs R I Rel) (inhabited Rel) --> (fires_upto R (+ I 1))
+rule (fires_upto R I) (rule_at R N _) (< I N) ~(needs R I _) --> (fires_upto R (+ I 1))
+rule (fires_upto R N) (rule_at R N _) --> (fires R)
+rule (fires R) (writes R Rel _) --> (inhabited Rel)
+
+table (dead_rule int)
+rule (rule_at R _ _) ~(fires R) --> (dead_rule R)
+
+;; blame the first clause that can never match
+table (blocked_at int int)
+rule (fires_upto R I) (needs R I Rel) ~(inhabited Rel) --> (blocked_at R I)
+rule (blocked_at R I) (needs R I Rel) (body R I Rel _ L)
+  --> (report "warning" L "dead-rule"
+              (+ "this rule never fires: no rule can ever derive a row of " Rel))
+
+;; For the editor: the rules that can never fire, by line
+table (never_fires str int)            ;; (never_fires File Line)
+rule (dead_rule R) (rule_at R _ (loc F Line _)) (source_file F Path) --> (never_fires Path Line)

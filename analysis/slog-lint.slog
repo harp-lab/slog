@@ -1,0 +1,28 @@
+;; slog-lint: a static analysis of Slog programs, written in Slog.
+;;
+;; compiler/reify.rkt reads a program with the compiler's own parser and
+;; writes it as facts over schema.slog: its declarations, rules, clauses
+;; and terms, each at its line and column.  The analysis reads those facts
+;; and derives `finding` rows -- (finding Severity File Line Col Code
+;; Message) -- along with the relations Studio shows beside the program
+;; (writer, reader, dep, recursive, inhabited, never_fires, demand_calls).
+;;
+;; It comes in three tiers, each including the one before, so a runner can
+;; show the quick findings first:
+;;   lint-local.slog   each rule on its own: variables, arity, shapes
+;;   lint-graph.slog   the dependency graph: recursion, negation, dead rules
+;;   lint-deep.slog    demands and constructors across the program
+;;
+;; This file is the whole analysis over one program's facts:
+;;
+;;   racket compiler/reify.rkt PROGRAM.slog > analysis/facts.slog
+;;   racket compiler/run.rkt analysis/slog-lint.slog
+;;
+;; Studio runs the tiers on every edit (studio/src/lint.rs), reading the
+;; facts from a database rather than compiling them; "Edit the analysis"
+;; opens this directory as a project, with facts.slog the program you came
+;; from, so the analysis can be run, debugged and edited like any program.
+;; analysis/test.rkt holds it to its tests.
+
+include "lint-deep.slog"
+include "facts.slog"

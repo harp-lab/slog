@@ -1,0 +1,30 @@
+;; The dependency graph: negation and lattice values through recursion,
+;; relations nothing writes or reads, and rules that can never fire.
+lattice (cost (min int))
+table (node int)
+table (edge int int)
+table (input int)                                ;; expect never-written input
+table (spare int)                                ;; expect unused spare
+table (p int)
+table (q int)
+table (r int)
+table (dist int int cost)
+table (seen int int int)
+table (loop int)
+table (after_loop int)
+table (blocked int)
+rule (node 1) (node 2) (edge 1 2)
+
+rule (node X) ~(q X) --> (p X)                   ;; expect negation-cycle q
+rule (p X) --> (q X)
+rule (node X) ~(p X) (input X) --> (r X)
+rule (node X) ~(blocked X) --> (blocked X)       ;; expect negation-cycle blocked
+
+rule (edge X Y) --> (dist X Y 1)
+rule (dist X Y D) (edge Y Z) --> (dist X Z (+ D 1))
+rule (dist X Y D) --> (seen X Y D)               ;; expect ascending-lattice D
+rule (seen X Y D) (edge Y Z) --> (dist X Z D)
+
+;; loop has no base case: it is only ever derived from itself
+rule (loop X) (edge X Y) --> (loop Y)            ;; expect dead-rule loop
+rule (loop X) --> (after_loop X)                 ;; expect dead-rule loop

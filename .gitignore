@@ -37,3 +37,5 @@ slog-freeze
 
 /daemon/.toolchain*
 /daemon/.build.lock
+# slog-lint: the facts of the program under analysis (compiler/reify.rkt)
+/analysis/facts.slog
