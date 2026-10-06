@@ -11,9 +11,10 @@
 //! The ported shape is the slides app's review model (threads, changesets,
 //! ops); the anchoring is Slog Studio's own.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Change {
     /// Replace the one occurrence of `old` with `new`.
@@ -22,7 +23,7 @@ pub enum Change {
     Append { source: String },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
     Pending,
@@ -30,7 +31,7 @@ pub enum Status {
     Rejected,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Op {
     pub id: u32,
     pub thread: u32,
@@ -42,28 +43,66 @@ pub struct Op {
 }
 
 /// One agent turn's proposals, titled with the request that caused them.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Changeset {
     pub id: u32,
     pub thread: u32,
     pub title: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+/// One entry of a thread's transcript.
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Message {
-    /// "user", "assistant", "tool", or "error".
+    /// "user", "assistant", "thinking", "tool", "plan", "notice", "error",
+    /// or "turn" (a turn's closing line).
     pub role: String,
     pub text: String,
+    /// When it was said, in milliseconds since the epoch.
+    #[serde(default)]
+    pub at: u64,
+    /// What the role carries beyond text: a tool call's name, input, status
+    /// and result; a plan's items; a thought's duration; a turn's usage.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub data: Value,
+}
+
+impl Message {
+    pub fn new(role: &str, text: &str, data: Value) -> Self {
+        Self {
+            role: role.to_owned(),
+            text: text.to_owned(),
+            at: now(),
+            data,
+        }
+    }
+}
+
+/// Milliseconds since the epoch.
+pub fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_millis() as u64)
+}
+
+/// A finding or decision an agent recorded to keep (`record_note`).
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Note {
+    pub title: String,
+    pub text: String,
+    pub at: u64,
 }
 
 /// One line of questioning: its own claude session, resumed for follow-ups.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Thread {
     pub id: u32,
     pub title: String,
     #[serde(skip)]
     pub session: Option<String>,
     pub messages: Vec<Message>,
+    #[serde(default)]
+    pub notes: Vec<Note>,
+    #[serde(default)]
     pub running: bool,
 }
 
@@ -100,6 +139,7 @@ impl Review {
             title,
             session: None,
             messages: Vec::new(),
+            notes: Vec::new(),
             running: false,
         });
         id

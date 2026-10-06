@@ -13,10 +13,11 @@ use crate::review::Message;
 use crate::studio::{Event, Studio};
 use serde::Serialize;
 use serde_json::{Value, json};
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::{Child, Command};
 
@@ -52,6 +53,31 @@ the alternative in your reply instead of asking.
 same text the author settles it.
 - Reply when done with a short summary of what you proposed and what you checked. No preamble.";
 
+/// What a run can do besides the `slog` tools, appended to the persona.
+const RESEARCH: &str = "\
+## Research, plans and notes
+- Read, Grep and Glob read Slog's own repository -- your working directory: compiler/, docs/, \
+examples/, tests/ -- and the project's directory. Nothing you can run writes a file: every change \
+to the program is a proposal.
+- WebSearch and WebFetch find papers, Datalog techniques and documentation; say what you used.
+- For work of several steps, keep a short plan with your task tools (TaskCreate and TaskUpdate, or \
+TodoWrite); the author watches it as a checklist.
+- record_note keeps a finding or decision with this thread -- why a rule is stratified the way it \
+is, what a design choice rests on; get_notes reads them back in later turns.
+- Task runs subagents with the same read-only tools, for investigations that split cleanly.
+- Write replies in Markdown, with Slog in ```slog fences.";
+
+/// The built-in tools a run has: research that reads, never writes.
+const TOOLS: &str = "Read,Grep,Glob,WebSearch,WebFetch,TodoWrite,TaskCreate,TaskUpdate,TaskList,TaskGet,Task,Agent";
+/// Refused even if a setting would allow them.
+const DENIED: &str = "Bash,Write,Edit,NotebookEdit,Skill";
+/// Tools whose calls make the turn's plan rather than transcript entries.
+const PLAN_TOOLS: [&str; 5] = ["TodoWrite", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet"];
+/// Claude Code's own plumbing, never shown.
+const HIDDEN_TOOLS: [&str; 1] = ["ToolSearch"];
+/// How much of a tool's input string or result a transcript keeps.
+const CLIP: usize = 4000;
+
 pub struct Agent {
     /// The bearer token `/mcp` requires; it never leaves this machine except
     /// in the 0600 config file a run reads.
@@ -60,14 +86,24 @@ pub struct Agent {
     effort: String,
     /// The claude process of every run in flight, by thread.
     running: Mutex<HashMap<u32, Child>>,
+    /// Threads whose run the author stopped, so its end is no failure.
+    stopped: Mutex<HashSet<u32>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct AgentEvent {
     pub thread: u32,
-    /// "start", "phase", "delta", "text", "tool", "error", or "done".
+    /// "start"; "phase" (what the run is doing: "thinking", "replying" or
+    /// "tool NAME"); "delta" and "thinking" (streamed text of the reply or
+    /// the thought in progress); "entry" (transcript entry `index`, new or
+    /// changed); or "done".
     pub kind: &'static str,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entry: Option<Message>,
 }
 
 impl Agent {
@@ -76,8 +112,9 @@ impl Agent {
             mcp_token,
             // The CLI's own default model unless the operator picks one.
             model: std::env::var("STUDIO_AGENT_MODEL").ok().filter(|model| !model.is_empty()),
-            effort: std::env::var("STUDIO_AGENT_EFFORT").unwrap_or_else(|_| "medium".to_owned()),
+            effort: std::env::var("STUDIO_AGENT_EFFORT").unwrap_or_else(|_| "high".to_owned()),
             running: Mutex::new(HashMap::new()),
+            stopped: Mutex::new(HashSet::new()),
         }
     }
 
@@ -93,11 +130,16 @@ impl Agent {
     }
 
     pub fn stop(&self, thread: u32) -> bool {
-        self.running
+        let killed = self
+            .running
             .lock()
             .expect("agent lock")
             .get_mut(&thread)
-            .is_some_and(|child| child.start_kill().is_ok())
+            .is_some_and(|child| child.start_kill().is_ok());
+        if killed {
+            self.stopped.lock().expect("agent lock").insert(thread);
+        }
+        killed
     }
 
     /// The MCP config for one run (mode 0600): our loopback `/mcp`, the
@@ -137,26 +179,69 @@ pub fn title_of(message: &str) -> String {
     }
 }
 
+/// One thread's transcript as a run writes it: each change is kept by the
+/// studio and streamed to every tab.
+struct Transcript<'a> {
+    studio: &'a Studio,
+    thread: u32,
+}
+
+impl Transcript<'_> {
+    fn event(&self, kind: &'static str, text: impl Into<String>) {
+        self.studio.publish(Event::Agent(AgentEvent {
+            thread: self.thread,
+            kind,
+            text: text.into(),
+            index: None,
+            entry: None,
+        }));
+    }
+
+    fn show(&self, index: usize, entry: Message) {
+        self.studio.publish(Event::Agent(AgentEvent {
+            thread: self.thread,
+            kind: "entry",
+            text: String::new(),
+            index: Some(index),
+            entry: Some(entry),
+        }));
+    }
+
+    fn push(&self, role: &str, text: &str, data: Value) -> usize {
+        let entry = Message::new(role, text, data);
+        let index = self.studio.thread_push(self.thread, entry.clone());
+        self.show(index, entry);
+        index
+    }
+
+    fn update(&self, index: usize, change: impl FnOnce(&mut Message)) {
+        if let Some(entry) = self.studio.thread_update(self.thread, index, change) {
+            self.show(index, entry);
+        }
+    }
+}
+
 /// One turn of `thread`: run claude until it finishes, streaming its
 /// progress, then close the turn's changeset.
 pub async fn run(studio: Arc<Studio>, thread: u32, message: String, context: String) {
-    let emit = |kind: &'static str, text: String| {
-        studio.publish(Event::Agent(AgentEvent { thread, kind, text }));
-    };
+    let transcript = Transcript { studio: &studio, thread };
     let agent = &studio.agent;
     let config = match agent.write_config(studio.port(), thread) {
         Ok(path) => path,
         Err(error) => {
-            studio.thread_message(thread, "error", &error);
-            emit("error", error);
+            transcript.push("error", &error, Value::Null);
             studio.finish_turn(thread);
-            emit("done", String::new());
+            transcript.event("done", "");
             return;
         }
     };
+    // Research reads Slog's own repository, and the project's directory
+    // when it lies elsewhere.
+    let root = studio.lane.root().to_path_buf();
+    let project = studio.main_file().0.parent().map(Path::to_path_buf);
     let mut resume = studio.thread_session(thread);
     loop {
-        let system = format!("{PERSONA}\n\n## Runtime context (from Slog Studio)\n- Thread: {thread}\n{context}");
+        let system = format!("{PERSONA}\n\n{RESEARCH}\n\n## Runtime context (from Slog Studio)\n- Thread: {thread}\n{context}");
         let mut args: Vec<String> = vec![
             "-p".into(), message.clone(),
             "--output-format".into(), "stream-json".into(), "--verbose".into(),
@@ -164,24 +249,28 @@ pub async fn run(studio: Arc<Studio>, thread: u32, message: String, context: Str
             "--include-partial-messages".into(),
             "--effort".into(), agent.effort.clone(),
             "--disable-slash-commands".into(),
+            // Only the operator's own settings: none of the repository's.
+            "--setting-sources".into(), "user".into(),
             "--mcp-config".into(), config.to_string_lossy().into_owned(), "--strict-mcp-config".into(),
-            "--allowedTools".into(), "mcp__slog".into(),
-            "--disallowedTools".into(),
-            "Bash,Task,Agent,Skill,TodoWrite,NotebookEdit,Write,Edit,Read,Glob,Grep,WebSearch,WebFetch".into(),
+            "--tools".into(), TOOLS.into(),
+            "--allowedTools".into(), format!("mcp__slog,{TOOLS}"),
+            "--disallowedTools".into(), DENIED.into(),
             "--max-turns".into(), "40".into(),
             "--append-system-prompt".into(), system,
         ];
+        if let Some(project) = project.as_ref().filter(|project| !project.starts_with(&root)) {
+            args.extend(["--add-dir".to_owned(), project.to_string_lossy().into_owned()]);
+        }
         if let Some(model) = &agent.model {
             args.extend(["--model".to_owned(), model.clone()]);
         }
         if let Some(session) = &resume {
             args.extend(["--resume".to_owned(), session.clone()]);
         }
-        emit("start", agent.model.clone().unwrap_or_default());
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        transcript.event("start", "");
         let mut child = match Command::new("claude")
             .args(&args)
-            .current_dir(&home)
+            .current_dir(&root)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -190,9 +279,7 @@ pub async fn run(studio: Arc<Studio>, thread: u32, message: String, context: Str
         {
             Ok(child) => child,
             Err(error) => {
-                let message = format!("could not start claude: {error}");
-                studio.thread_message(thread, "error", &message);
-                emit("error", message);
+                transcript.push("error", &format!("could not start claude: {error}"), Value::Null);
                 break;
             }
         };
@@ -206,82 +293,10 @@ pub async fn run(studio: Arc<Studio>, thread: u32, message: String, context: Str
         });
 
         let mut lines = BufReader::new(stdout).lines();
-        let mut got_result = false;
-        let mut last_text = String::new();
+        let mut stream = Stream { effort: agent.effort.clone(), ..Stream::default() };
         while let Ok(Some(line)) = lines.next_line().await {
-            let Ok(event) = serde_json::from_str::<Value>(&line) else {
-                continue;
-            };
-            match event["type"].as_str() {
-                Some("system") if event["subtype"] == "init" => {
-                    if let Some(session) = event["session_id"].as_str() {
-                        studio.set_thread_session(thread, Some(session.to_owned()));
-                    }
-                }
-                Some("stream_event") => {
-                    let inner = &event["event"];
-                    match inner["type"].as_str() {
-                        Some("content_block_start") => {
-                            let block = &inner["content_block"];
-                            match block["type"].as_str() {
-                                Some("thinking") => emit("phase", "thinking…".into()),
-                                Some("tool_use") => {
-                                    let name = block["name"].as_str().unwrap_or("tool");
-                                    let tool = name.rsplit("__").next().unwrap_or(name);
-                                    emit("phase", format!("calling {tool}…"));
-                                }
-                                Some("text") => emit("phase", "replying…".into()),
-                                _ => {}
-                            }
-                        }
-                        Some("content_block_delta") => {
-                            if let Some(text) = inner["delta"]["text"].as_str() {
-                                emit("delta", text.to_owned());
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                Some("assistant") => {
-                    for block in event["message"]["content"].as_array().into_iter().flatten() {
-                        match block["type"].as_str() {
-                            Some("text") => {
-                                let text = block["text"].as_str().unwrap_or("").trim().to_owned();
-                                if !text.is_empty() {
-                                    last_text = text.clone();
-                                    studio.thread_message(thread, "assistant", &text);
-                                    emit("text", text);
-                                }
-                            }
-                            Some("tool_use") => {
-                                let label = tool_label(block);
-                                studio.thread_message(thread, "tool", &label);
-                                emit("tool", label);
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                Some("result") => {
-                    got_result = true;
-                    if let Some(session) = event["session_id"].as_str() {
-                        studio.set_thread_session(thread, Some(session.to_owned()));
-                    }
-                    let text = event["result"].as_str().unwrap_or("").trim().to_owned();
-                    if event["is_error"].as_bool().unwrap_or(false) {
-                        let message = if text.is_empty() {
-                            event["subtype"].as_str().unwrap_or("error").to_owned()
-                        } else {
-                            text
-                        };
-                        studio.thread_message(thread, "error", &message);
-                        emit("error", message);
-                    } else if !text.is_empty() && text != last_text {
-                        studio.thread_message(thread, "assistant", &text);
-                        emit("text", text);
-                    }
-                }
-                _ => {}
+            if let Ok(event) = serde_json::from_str::<Value>(&line) {
+                stream.read(&event, &transcript);
             }
         }
         let child = agent.running.lock().expect("agent lock").remove(&thread);
@@ -290,12 +305,16 @@ pub async fn run(studio: Arc<Studio>, thread: u32, message: String, context: Str
             None => None,
         };
         let stderr_text = stderr_text.await.unwrap_or_default();
-        let failed = !got_result && !status.is_some_and(|status| status.success());
+        if agent.stopped.lock().expect("agent lock").remove(&thread) {
+            transcript.push("notice", "stopped", Value::Null);
+            break;
+        }
+        let failed = !stream.got_result && !status.is_some_and(|status| status.success());
         if failed && resume.is_some() {
             // A stale session id (its transcript gone) is the usual cause.
             studio.set_thread_session(thread, None);
             resume = None;
-            emit("tool", "could not resume the conversation; starting a new one".into());
+            transcript.push("notice", "could not resume the conversation; starting a new one", Value::Null);
             continue;
         }
         if failed {
@@ -308,26 +327,288 @@ pub async fn run(studio: Arc<Studio>, thread: u32, message: String, context: Str
                     .map(|line| format!(": {line}"))
                     .unwrap_or_default()
             );
-            studio.thread_message(thread, "error", &message);
-            emit("error", message);
+            transcript.push("error", &message, Value::Null);
         }
         break;
     }
     let _ = std::fs::remove_file(&config);
     studio.finish_turn(thread);
-    emit("done", String::new());
+    transcript.event("done", "");
 }
 
-/// "propose_edit · note" for the transcript.
-fn tool_label(block: &Value) -> String {
+/// What a turn's stream-json has shown so far, made into transcript entries:
+/// replies, thoughts, tool calls with their results, the plan, and the
+/// turn's closing line.
+#[derive(Default)]
+struct Stream {
+    effort: String,
+    model: String,
+    /// The thought being streamed: its block's index, when it began, its
+    /// text, and the tokens it is estimated to have used.
+    thinking: Option<(u64, Instant, String, u64)>,
+    /// Tool call id -> its transcript entry, or the plan item it made.
+    calls: HashMap<String, Call>,
+    /// The turn's plan, and its transcript entry once shown.
+    plan: Vec<Item>,
+    plan_entry: Option<usize>,
+    last_text: String,
+    got_result: bool,
+}
+
+enum Call {
+    Entry(usize),
+    Plan(usize),
+}
+
+#[derive(Serialize)]
+struct Item {
+    /// The task tools' id, once its creation is answered.
+    #[serde(skip)]
+    id: Option<String>,
+    text: String,
+    /// What it reads as while in progress ("Reading the parser").
+    active: String,
+    /// "pending", "in_progress", or "completed".
+    status: String,
+}
+
+impl Stream {
+    fn read(&mut self, event: &Value, out: &Transcript) {
+        // A subagent's own steps: its call's result reports them.
+        if !event["parent_tool_use_id"].is_null() {
+            return;
+        }
+        match event["type"].as_str() {
+            Some("system") if event["subtype"] == "init" => {
+                if let Some(session) = event["session_id"].as_str() {
+                    out.studio.set_thread_session(out.thread, Some(session.to_owned()));
+                }
+                self.model = event["model"].as_str().unwrap_or("").to_owned();
+            }
+            Some("stream_event") => self.partial(&event["event"], out),
+            Some("assistant") => {
+                for block in event["message"]["content"].as_array().into_iter().flatten() {
+                    match block["type"].as_str() {
+                        Some("text") => {
+                            let text = block["text"].as_str().unwrap_or("").trim();
+                            if !text.is_empty() {
+                                self.last_text = text.to_owned();
+                                out.push("assistant", text, Value::Null);
+                            }
+                        }
+                        Some("tool_use") => self.call(block, out),
+                        _ => {}
+                    }
+                }
+            }
+            Some("user") => {
+                for block in event["message"]["content"].as_array().into_iter().flatten() {
+                    if block["type"] == "tool_result" {
+                        self.answer(block, out);
+                    }
+                }
+            }
+            Some("result") => self.result(event, out),
+            _ => {}
+        }
+    }
+
+    /// A partial event: what the run is doing, and the text streaming in.
+    fn partial(&mut self, event: &Value, out: &Transcript) {
+        match event["type"].as_str() {
+            Some("content_block_start") => {
+                let block = &event["content_block"];
+                match block["type"].as_str() {
+                    Some("thinking" | "redacted_thinking") => {
+                        let index = event["index"].as_u64().unwrap_or(0);
+                        self.thinking = Some((index, Instant::now(), String::new(), 0));
+                        out.event("phase", "thinking");
+                    }
+                    Some("tool_use") => {
+                        let name = tool_name(block);
+                        if !HIDDEN_TOOLS.contains(&name) {
+                            out.event("phase", format!("tool {name}"));
+                        }
+                    }
+                    Some("text") => out.event("phase", "replying"),
+                    _ => {}
+                }
+            }
+            Some("content_block_delta") => {
+                let delta = &event["delta"];
+                match delta["type"].as_str() {
+                    Some("text_delta") => out.event("delta", delta["text"].as_str().unwrap_or("")),
+                    Some("thinking_delta") => {
+                        if let Some((_, _, text, tokens)) = &mut self.thinking {
+                            let more = delta["thinking"].as_str().unwrap_or("");
+                            text.push_str(more);
+                            *tokens = (*tokens).max(delta["estimated_tokens"].as_u64().unwrap_or(0));
+                            if !more.is_empty() {
+                                out.event("thinking", more);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Some("content_block_stop") => {
+                let index = event["index"].as_u64().unwrap_or(0);
+                if self.thinking.as_ref().is_some_and(|(open, ..)| *open == index) {
+                    let (_, began, text, tokens) = self.thinking.take().expect("a thought is open");
+                    let ms = began.elapsed().as_millis() as u64;
+                    out.push("thinking", text.trim(), json!({ "ms": ms, "tokens": tokens }));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn call(&mut self, block: &Value, out: &Transcript) {
+        let name = tool_name(block);
+        let id = block["id"].as_str().unwrap_or("").to_owned();
+        let input = &block["input"];
+        if HIDDEN_TOOLS.contains(&name) {
+            return;
+        }
+        if PLAN_TOOLS.contains(&name) {
+            self.plan_call(name, id, input, out);
+            return;
+        }
+        let data = json!({ "id": id, "name": name, "input": clip(input), "status": "running" });
+        let index = out.push("tool", "", data);
+        self.calls.insert(id, Call::Entry(index));
+    }
+
+    /// A tool's result: its entry is done, or a task the plan made has its id.
+    fn answer(&mut self, block: &Value, out: &Transcript) {
+        let text = match &block["content"] {
+            Value::String(text) => text.clone(),
+            Value::Array(parts) => parts.iter().filter_map(|part| part["text"].as_str()).collect::<Vec<_>>().join("\n"),
+            _ => String::new(),
+        };
+        let error = block["is_error"].as_bool().unwrap_or(false);
+        match block["tool_use_id"].as_str().and_then(|id| self.calls.get(id)) {
+            Some(Call::Entry(index)) => out.update(*index, |entry| {
+                entry.data["status"] = json!(if error { "error" } else { "ok" });
+                // A proposal's id, for its card.
+                if let Some(op) = serde_json::from_str::<Value>(&text).ok().and_then(|value| value["proposed"].as_u64()) {
+                    entry.data["op"] = json!(op);
+                }
+                entry.data["result"] = json!(clip_text(&text));
+            }),
+            // "Task #3 created successfully: …"
+            Some(Call::Plan(item)) => {
+                let id: String = text.split('#').nth(1).unwrap_or("").chars().take_while(char::is_ascii_digit).collect();
+                if let Some(item) = self.plan.get_mut(*item).filter(|_| !id.is_empty()) {
+                    item.id = Some(id);
+                }
+            }
+            None => {}
+        }
+    }
+
+    fn plan_call(&mut self, name: &str, id: String, input: &Value, out: &Transcript) {
+        let text = |key: &str| input[key].as_str().unwrap_or("").to_owned();
+        match name {
+            "TodoWrite" => {
+                self.plan = input["todos"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|todo| Item {
+                        id: None,
+                        text: todo["content"].as_str().unwrap_or("").to_owned(),
+                        active: todo["activeForm"].as_str().unwrap_or("").to_owned(),
+                        status: todo["status"].as_str().unwrap_or("pending").to_owned(),
+                    })
+                    .collect();
+            }
+            "TaskCreate" => {
+                self.plan.push(Item { id: None, text: text("subject"), active: text("activeForm"), status: "pending".to_owned() });
+                self.calls.insert(id, Call::Plan(self.plan.len() - 1));
+            }
+            "TaskUpdate" => {
+                let task = text("taskId");
+                let Some(at) = self.plan.iter().position(|item| item.id.as_deref() == Some(task.as_str())) else {
+                    return;
+                };
+                match input["status"].as_str() {
+                    Some("deleted") => {
+                        self.plan.remove(at);
+                    }
+                    Some(status) => self.plan[at].status = status.to_owned(),
+                    None => {}
+                }
+                if let Some(item) = self.plan.get_mut(at) {
+                    for (key, field) in [("subject", &mut item.text), ("activeForm", &mut item.active)] {
+                        if let Some(value) = input[key].as_str() {
+                            *field = value.to_owned();
+                        }
+                    }
+                }
+            }
+            _ => return,
+        }
+        let data = json!({ "items": self.plan });
+        match self.plan_entry {
+            Some(index) => out.update(index, |entry| entry.data = data),
+            None => self.plan_entry = Some(out.push("plan", "", data)),
+        }
+    }
+
+    /// The turn's end: an error, or the reply if no text block carried it,
+    /// and the closing line with what the turn took.
+    fn result(&mut self, event: &Value, out: &Transcript) {
+        self.got_result = true;
+        if let Some(session) = event["session_id"].as_str() {
+            out.studio.set_thread_session(out.thread, Some(session.to_owned()));
+        }
+        let text = event["result"].as_str().unwrap_or("").trim();
+        if event["is_error"].as_bool().unwrap_or(false) {
+            let message = match (text, event["subtype"].as_str()) {
+                ("", Some("error_max_turns")) => "stopped at the limit of 40 steps; ask it to go on",
+                ("", subtype) => subtype.unwrap_or("error"),
+                (text, _) => text,
+            };
+            out.push("error", message, Value::Null);
+        } else if !text.is_empty() && text != self.last_text {
+            out.push("assistant", text, Value::Null);
+        }
+        let usage = &event["usage"];
+        let count = |key: &str| usage[key].as_u64().unwrap_or(0);
+        out.push("turn", "", json!({
+            "ms": event["duration_ms"],
+            "cost": event["total_cost_usd"],
+            "input": count("input_tokens") + count("cache_read_input_tokens") + count("cache_creation_input_tokens"),
+            "output": count("output_tokens"),
+            "model": self.model,
+            "effort": self.effort,
+        }));
+    }
+}
+
+/// A tool's name without its MCP server's prefix: "get_program", not
+/// "mcp__slog__get_program".
+fn tool_name(block: &Value) -> &str {
     let name = block["name"].as_str().unwrap_or("tool");
-    let tool = name.rsplit("__").next().unwrap_or(name);
-    let detail = ["note", "q"]
-        .iter()
-        .find_map(|key| block["input"][key].as_str())
-        .map(|detail| format!(" · {detail}"))
-        .unwrap_or_default();
-    format!("{tool}{detail}")
+    name.rsplit("__").next().unwrap_or(name)
+}
+
+/// `value` with its long strings cut, for the transcript.
+fn clip(value: &Value) -> Value {
+    match value {
+        Value::String(text) => json!(clip_text(text)),
+        Value::Array(items) => Value::Array(items.iter().map(clip).collect()),
+        Value::Object(fields) => Value::Object(fields.iter().map(|(key, value)| (key.clone(), clip(value))).collect()),
+        other => other.clone(),
+    }
+}
+
+fn clip_text(text: &str) -> String {
+    match text.char_indices().nth(CLIP) {
+        Some((end, _)) => format!("{}\n… ({} more characters)", &text[..end], text[end..].chars().count()),
+        None => text.to_owned(),
+    }
 }
 
 fn which(binary: &str) -> Option<PathBuf> {
@@ -336,13 +617,4 @@ fn which(binary: &str) -> Option<PathBuf> {
             .map(|directory| directory.join(binary))
             .find(|path| path.is_file())
     })
-}
-
-impl From<(&str, &str)> for Message {
-    fn from((role, text): (&str, &str)) -> Self {
-        Message {
-            role: role.to_owned(),
-            text: text.to_owned(),
-        }
-    }
 }

@@ -106,6 +106,8 @@ async fn call(studio: &Arc<Studio>, thread: Option<u32>, name: &str, arguments: 
         "evaluate_proposal" => Ok(studio.evaluate_fork(thread).await),
         "query" => studio.query_fork(thread, &text("q")?).await,
         "get_proposals" => Ok(studio.proposals_of(thread)),
+        "record_note" => studio.record_note(thread, text("title")?, text("text")?),
+        "get_notes" => Ok(studio.notes_of(thread)),
         // the execution tools (trace.rs)
         _ => match studio.trace_tool(thread, name, arguments).await {
             Some(result) => result,
@@ -160,6 +162,19 @@ fn tools() -> Value {
         {
             "name": "get_proposals",
             "description": "Your proposals in this thread: status (pending, accepted, rejected), whether each still applies (stale), and conflicts with other threads.",
+            "inputSchema": object(json!({}), &[]),
+        },
+        {
+            "name": "record_note",
+            "description": "Keep a finding or decision with this thread, for the author and for your later turns: why a rule is stratified the way it is, what a design choice rests on, what a source said. Shown to the author as a note.",
+            "inputSchema": object(json!({
+                "title": { "type": "string", "description": "A few words naming it." },
+                "text": { "type": "string", "description": "The note, in Markdown." },
+            }), &["title", "text"]),
+        },
+        {
+            "name": "get_notes",
+            "description": "The notes recorded in this thread so far, oldest first.",
             "inputSchema": object(json!({}), &[]),
         },
     ]);
