@@ -11,6 +11,7 @@ import "./hints.test.js";
 import "./hunks.test.js";
 import "./graph.test.js";
 import "./assist.test.js";
+import "./table.test.js";
 import { finish } from "./check.js";
 
 finish();

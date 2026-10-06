@@ -1,5 +1,7 @@
-/* Result sets: tabs over the transcript area, and a set's table. Colours
-   and sizes come from studio.css. */
+/* Result sets: tabs over the transcript area, and a set's table, under the
+   REPL or in a window of its own. Colours and sizes come from studio.css;
+   the table itself is table.css. */
+@import url("/static/table.css");
 
 #result-tabs {
   display: flex;
@@ -36,18 +38,31 @@
 .rs-close { color: var(--muted); padding: 0 2px; border-radius: 3px; }
 .rs-close:hover { color: var(--strong); background: var(--chrome); }
 
-#results {
+.rs-panel {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--surface);
 }
-.rs-lineage { padding: 8px 14px 0; font-size: 11.5px; color: var(--muted); }
+/* Expanded over the page, when a window of its own was not to be had. */
+.rs-panel.rs-expanded {
+  position: fixed;
+  inset: 12px;
+  z-index: 40;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  box-shadow: 0 12px 48px rgba(7, 54, 66, 0.25);
+}
+.rs-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 8px 14px 0; }
+.rs-lineage { flex-basis: 100%; font: 11.5px var(--mono); color: var(--muted); }
 .rs-lineage:empty { display: none; }
-.rs-lineage a { color: var(--blue); font-family: var(--mono); cursor: pointer; text-decoration: underline; }
+.rs-lineage a { color: var(--blue); cursor: pointer; text-decoration: underline; }
+.rs-lineage b { color: var(--strong); }
+.rs-step { font-family: var(--sans); }
 .rs-query {
-  margin: 8px 14px 0;
+  flex: 1;
+  min-width: 12em;
   padding: 5px 8px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -57,6 +72,7 @@
   outline: none;
 }
 .rs-query:focus { border-color: var(--blue); }
+.rs-buttons { display: flex; gap: 6px; }
 .rs-status {
   display: flex;
   flex-wrap: wrap;
@@ -86,48 +102,10 @@
 .rs-caution { color: var(--yellow); }
 .rs-error { color: var(--red); }
 
-.rs-scroll { flex: 1; min-height: 0; overflow: auto; position: relative; }
-.rs-table {
-  table-layout: fixed;
-  border-collapse: separate;
-  border-spacing: 0;
-  font: 12.5px var(--mono);
-}
-.rs-table th {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  height: 26px;
-  padding: 0 10px;
-  text-align: left;
-  background: var(--chrome);
-  border-bottom: 1px solid var(--border-strong);
-  color: var(--strong);
-  font: 600 12px var(--mono);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  cursor: pointer;
-}
-.rs-type { margin-left: 6px; color: var(--muted); font: 400 10.5px var(--sans); }
-.rs-table td {
-  height: 22px;            /* ROW in results.js */
-  padding: 0 10px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  border-bottom: 1px solid rgba(226, 217, 191, 0.5);
-  color: var(--strong);
-  cursor: default;
-}
-.rs-table tbody tr:not(.rs-spacer):hover td { background: rgba(238, 232, 213, 0.45); }
-.rs-table tr.rs-spacer td { padding: 0; border: 0; }
-.rs-table .rs-index { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; cursor: default; }
-.rs-table th.rs-index { cursor: default; }
-.rs-table td.compound { color: var(--blue); }
-.rs-table .n { text-align: right; font-variant-numeric: tabular-nums; }
-.rs-table td.selected { outline: 2px solid var(--blue); outline-offset: -2px; background: white; }
-.rs-table tr.rs-missing td { color: var(--border-strong); }
+/* The table, and the row at the cursor below it, or beside it when full. */
+.rs-main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.rs-grid { flex: 1; min-height: 0; min-width: 0; display: flex; }
+.rs-full .rs-main, .rs-expanded .rs-main { flex-direction: row; }
 
 .rs-detail {
   max-height: 40%;
@@ -136,19 +114,51 @@
   border-top: 1px solid var(--border);
   background: var(--chrome);
 }
+.rs-full .rs-detail, .rs-expanded .rs-detail {
+  max-height: none;
+  width: min(38%, 480px);
+  flex-shrink: 0;
+  border-top: 0;
+  border-left: 1px solid var(--border);
+}
 .rs-detail-head { display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: var(--muted); }
-.rs-value {
-  margin: 6px 0;
-  padding: 6px 8px;
-  max-height: 10em;
-  overflow: auto;
+.rs-fields { display: flex; flex-direction: column; gap: 6px; margin: 6px 0 10px; }
+.rs-field {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: white;
+  overflow-x: auto;
+  cursor: default;
+}
+.rs-field.focused { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue); }
+.rs-field-name { display: flex; gap: 6px; align-items: baseline; margin-bottom: 2px; font: 600 11.5px var(--mono); color: var(--text); }
+.rs-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* A set's own window (results.html). */
+.rs-page { height: 100vh; display: flex; flex-direction: column; }
+.rs-page #result-tabs .rs-tab:first-child { font-family: var(--mono); }
+.rs-page-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  background: var(--chrome);
+  border-bottom: 1px solid var(--border);
+}
+.rs-page-head h1 { margin: 0; font: 600 13px var(--sans); color: var(--strong); }
+.rs-page-head input {
+  flex: 1;
+  padding: 5px 8px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: white;
   color: var(--strong);
-  font: 12.5px/1.5 var(--mono);
-  white-space: pre-wrap;
-  word-break: break-word;
+  font: 13px var(--mono);
+  outline: none;
 }
-.rs-handle { color: var(--muted); }
-.rs-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.rs-page-head input:focus { border-color: var(--blue); }
+.rs-page-note { color: var(--muted); font-size: 12px; }
+.rs-page-note.error { color: var(--red); }
+.rs-empty { margin: auto; color: var(--muted); }
+.rs-flash { margin-left: auto; color: var(--blue); }
