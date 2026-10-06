@@ -418,6 +418,24 @@ const agent = initAgent({
   },
 });
 
+// Hints (key bindings, placeholders, empty-panel notes) stay out of the way
+// until asked for: Alt+H toggles them, and the choice is remembered here.
+const hintsKey = "slog-studio.hints";
+function showHints(on) {
+  document.body.classList.toggle("hints", on);
+  $("hints").textContent = on ? "Alt+H hides hints" : "Alt+H for hints";
+  try { localStorage.setItem(hintsKey, on ? "1" : ""); } catch {}
+}
+try { showHints(localStorage.getItem(hintsKey) === "1"); } catch { showHints(false); }
+$("hints").addEventListener("click", () => showHints(!document.body.classList.contains("hints")));
+// `code`, not `key`: on a Mac, Option+H types a character.
+addEventListener("keydown", (event) => {
+  if (!event.altKey || event.ctrlKey || event.metaKey || event.code !== "KeyH") return;
+  event.preventDefault();
+  event.stopPropagation();
+  showHints(!document.body.classList.contains("hints"));
+}, true);
+
 // Layout -----------------------------------------------------------------
 
 $("evaluate").addEventListener("click", evaluate);

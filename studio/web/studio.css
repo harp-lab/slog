@@ -366,6 +366,9 @@ button.panel-toggle.ask[aria-pressed="true"] { background: var(--blue); border-c
 }
 #drawer h2 { font-size: 14px; margin: 0 0 4px; color: var(--strong); }
 .hint { color: var(--muted); font-size: 12px; margin: 0 0 12px; }
+.notice { color: var(--text); font-size: 12px; margin: 0 0 12px; }
+body:not(.hints) :is(.hint, kbd) { display: none; }
+body:not(.hints) ::placeholder { color: transparent; }
 .hint code { font-family: var(--mono); font-size: 11px; }
 .scenario {
   border: 1px solid var(--border);
@@ -403,6 +406,16 @@ footer {
 .state.busy { background: var(--yellow); animation: pulse 1s ease-in-out infinite; }
 .state.bad { background: var(--red); }
 .pill.held { color: var(--orange); font-weight: 600; }
+button.hints-key {
+  margin-left: auto;
+  height: auto;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font: 11px var(--sans);
+}
+button.hints-key:hover:not(:disabled) { background: none; color: var(--text); }
 @keyframes pulse { 50% { opacity: 0.35; } }
 
 /* ---- Accounts (server mode) -------------------------------------------- */

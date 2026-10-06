@@ -56,7 +56,7 @@ export function initAgent({ send, onPending }) {
     list.replaceChildren();
     const thread = state.view.threads.find((t) => t.id === state.open);
     if (state.unavailable) {
-      list.append(node("p", "hint", state.unavailable));
+      list.append(node("p", "notice", state.unavailable));
     }
     if (thread) {
       const back = head.appendChild(node("button", "icon small", "‹ all threads"));
