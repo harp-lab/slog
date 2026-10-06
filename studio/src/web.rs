@@ -39,13 +39,6 @@ pub fn router(registry: Arc<Registry>, gate: Gate) -> Router {
     });
     Router::new()
         .route("/", get(page))
-        // A result set in a window of its own (results-page.js).
-        .route(
-            "/results",
-            get(|State(web): State<Arc<Web>>, headers: HeaderMap| async move {
-                web.gate.page(&headers, include_str!("../web/results.html"))
-            }),
-        )
         .route("/static/{name}", get(|Path(name): Path<String>| async move { asset(&name) }))
         .route("/ws", get(socket))
         .route(
@@ -92,9 +85,12 @@ fn asset(name: &str) -> Response {
         "diff.css" => (include_str!("../web/diff.css"), "text/css; charset=utf-8"),
         "results.js" => (include_str!("../web/results.js"), "text/javascript; charset=utf-8"),
         "results.css" => (include_str!("../web/results.css"), "text/css; charset=utf-8"),
-        "results-page.js" => (include_str!("../web/results-page.js"), "text/javascript; charset=utf-8"),
         "table.js" => (include_str!("../web/table.js"), "text/javascript; charset=utf-8"),
         "table.css" => (include_str!("../web/table.css"), "text/css; charset=utf-8"),
+        "explorer.js" => (include_str!("../web/explorer.js"), "text/javascript; charset=utf-8"),
+        "explorer.css" => (include_str!("../web/explorer.css"), "text/css; charset=utf-8"),
+        "cells.js" => (include_str!("../web/cells.js"), "text/javascript; charset=utf-8"),
+        "inline.js" => (include_str!("../web/inline.js"), "text/javascript; charset=utf-8"),
         "trace.js" => (include_str!("../web/trace.js"), "text/javascript; charset=utf-8"),
         "trace.css" => (include_str!("../web/trace.css"), "text/css; charset=utf-8"),
         "hints.js" => (include_str!("../web/hints.js"), "text/javascript; charset=utf-8"),

@@ -16,6 +16,9 @@ import { createSummary } from "./summary.js";
 import { createLint } from "./lint.js";
 import * as structure from "./paredit.js";
 import { createResults } from "./results.js";
+import { createExplorer } from "./explorer.js";
+import { createCells } from "./cells.js";
+import { createInline } from "./inline.js";
 import { initTrace } from "./trace.js";
 import { initAssist } from "./assist.js";
 import { createBreakpoints, glyphClass, describe, stopOf } from "./breakpoints.js";
@@ -121,13 +124,27 @@ function revealSource(loc) {
   files.open(path);
   editor.reveal({ line: Number(match[2]), col: Number(match[3]) });
 }
+// Peeks, break-outs and the Relations panel (explorer.js), kept as cells
+// in a column beside the transcript (cells.js).
+const cellsColumn = $("drawer").insertAdjacentElement("beforebegin", document.createElement("aside"));
+const explorer = createExplorer({
+  send,
+  panel: $("relations-tab"),
+  openPanel: () => isOpen("relations") || showTab("relations"),
+  run: (line) => send({ t: "command", line }),
+  openSet: (line) => results.openQuery(line),
+  cells: createCells(cellsColumn),
+});
 const results = createResults({
   tabs: $("result-tabs"),
   panel: $("results"),
   transcript: $("transcript"),
   send,
   run: (line) => send({ t: "command", line }),
+  explorer,
 });
+// Answers of rows as tables in the transcript (inline.js).
+const inline = createInline({ results, explorer, root: $("transcript") });
 // The Execution tab: each change's trace, fed every entry (trace.js).
 const trace = initTrace({
   editor,
@@ -186,6 +203,7 @@ const receive = {
     timeline.states(snapshot.states); // before anything stamped
     lint.show(snapshot.lint);
     results.init(snapshot.results);
+    explorer.init();
     trace.tracing(snapshot.tracing);
     structure.observe({ result: snapshot.tables }); // completion: the session's relations, after a reload
     snapshot.results.forEach(offerRelation);
@@ -251,6 +269,7 @@ const receive = {
       inProject: (span) => files.pathOf(span.file) !== null,
       onSpan: (span) => files.reveal(span),
       onSet: results.show,
+      table: inline.table,
     }));
     assist.entry(entry, node); // "explain", "Ask why", and the assistant's context
     timeline.entry(entry, node); // its state's stamp
@@ -258,7 +277,9 @@ const receive = {
     // transcript, unless the Execution tab shows what it was about.
     const executing = trace.entry(entry);
     calls.entry(entry);
-    if (entry.set) results.show(entry.set);
+    // A query's rows show in the transcript; the Results area follows only
+    // while it is open.
+    if (entry.set && !$("results").hidden) results.show(entry.set);
     else if (entry.origin === "repl" && !executing) results.show(null);
     const span = entry.error?.span;
     if (entry.origin === "evaluate" && span) {
@@ -269,7 +290,10 @@ const receive = {
   evaluation({ phase, ok, ms }) {
     state.evaluating = phase === "start";
     if (phase === "start") editor.mark(null);
-    else note(ok ? `✓ ran in ${(ms / 1000).toFixed(1)} s` : "✗ run failed", ok ? "evaluation" : "evaluation failed");
+    else {
+      explorer.evaluated(); // stale peeks read again
+      note(ok ? `✓ ran in ${(ms / 1000).toFixed(1)} s` : "✗ run failed", ok ? "evaluation" : "evaluation failed");
+    }
     renderStatus();
   },
   notice({ message }) {
@@ -427,7 +451,7 @@ function connect() {
   };
   socket.onmessage = (message) => {
     const data = JSON.parse(message.data);
-    for (const handlers of [files.receive, receive, versions.receive, assist.receive, check.receive]) handlers[data.t]?.(data);
+    for (const handlers of [files.receive, receive, versions.receive, assist.receive, check.receive, explorer.receive]) handlers[data.t]?.(data);
   };
   socket.onclose = () => {
     failedAttempts += 1;
@@ -757,6 +781,7 @@ const palette = createPalette(() => {
     panel("ask", "Ask the agent"),
     panel("review", "Review proposals"),
     panel("scenarios", "Scenarios"),
+    panel("relations", "Relations: every relation, its count and rows"),
     { title: "History: every version of the project, and its branches", run: versions.open },
     { title: "Edit the analysis: slog-lint, over this program's facts", run: lint.edit },
     { title: "New file", run: () => $("new-file").click() },

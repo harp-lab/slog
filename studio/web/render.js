@@ -14,8 +14,9 @@ const element = (tag, className, text) => {
 // `entry` is a studio Entry: { origin, set?, line, ms, result, error }.
 // `inProject(span)` says whether a source position is in a project file;
 // `onSpan(span)` is called when one is clicked, `onSet(id)` when the result
-// set a query opened is.
-export function renderEntry(entry, { inProject, onSpan, onSet }) {
+// set a query opened is. `table(entry)`, if given, makes an answer of rows
+// a table (inline.js), or answers null.
+export function renderEntry(entry, { inProject, onSpan, onSet, table = () => null }) {
   const node = element("div", `entry ${entry.origin}`);
   // a result set the line names is stamped with its state
   const line = node.appendChild(element("div", "line"));
@@ -26,9 +27,10 @@ export function renderEntry(entry, { inProject, onSpan, onSet }) {
   } else if (entry.set) {
     // An existence question keeps its answer; rows live in the set.
     if (entry.result["query-mode"] !== "rows") node.append(...renderResult(entry.result, entry.state));
-    node.append(renderSetLink(entry.set, entry.result, onSet, entry.state));
+    node.append(table(entry) ?? renderSetLink(entry.set, entry.result, onSet, entry.state));
   } else if (entry.result) {
-    node.append(...renderResult(entry.result, entry.state));
+    const rows = table(entry);
+    node.append(...(rows ? [rows] : renderResult(entry.result, entry.state)));
   }
   return node;
 }

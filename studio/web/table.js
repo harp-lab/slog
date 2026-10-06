@@ -1,6 +1,6 @@
-// The result table, one component for both of its homes: the Results area
-// under the REPL (compact) and a result set's own window (results-page.js,
-// full). Only the rows in view are in the DOM; the header's columns are
+// The result table, one component for all of its homes: the transcript's
+// answers and the cells beside it (compact), and the Results area, compact
+// over the transcript or full in its sheet. Only the rows in view are in the DOM; the header's columns are
 // named and typed, and resize, reorder and hide; cells show Slog values as
 // structure; a cursor and a row selection move by mouse and keys.
 //
@@ -162,24 +162,71 @@ export const treeOf = (cell) => {
   return parsed.get(cell);
 };
 
-const BRACKETS = { tuple: ["(", ")"], list: ["[", "]"], set: ["{", "}"] };
+const BRACKETS = { tuple: ["(", ")"], list: ["[", "]"], set: ["{", "}"], map: ["{", "}"] };
+// Levels of a term a compact cell shows before folding the rest into a
+// pill, which a click opens; strings longer than LONG are cut likewise.
+export const FOLD = 3;
+const LONG = 48;
+
+// A set of pairs `{(k v) …}` reads as a map.
+export const isMap = (tree) => tree.kind === "set" && tree.items.length > 0
+  && tree.items.every((item) => item.kind === "tuple" && item.items.length === 2);
 
 // One line of a value: constructor names stand out, terms nest as pills.
-export function renderInline(tree, depth = 0) {
+// Past `fold` levels a term is one pill, its constructor and "…", which
+// opens in place on a click. Each value's node knows its text (`.v`), so
+// equal values can be found (values are interned: equal text, one value).
+export function renderInline(tree, depth = 0, fold = Infinity) {
+  // a constructor of no fields prints as `(_enum "nat")`: show it as `nat`
+  if (tree.kind === "term" && tree.head === "_enum" && tree.args[0]?.kind === "string") {
+    const node = element("span", `v v-term v-enum d${depth % 3}`);
+    node.append(element("span", "v-ctor", tree.args[0].text.slice(1, -1)));
+    node.v = tree.text;
+    node.title = tree.text;
+    return node;
+  }
   if (tree.kind === "term" || BRACKETS[tree.kind]) {
-    const node = element("span", `v-${tree.kind} d${depth % 3}`);
-    const [open, close] = BRACKETS[tree.kind] ?? ["(", ")"];
+    const kind = isMap(tree) ? "map" : tree.kind;
+    const items = tree.kind === "term" ? tree.args : tree.items;
+    const node = element("span", `v v-${kind} d${depth % 3}`);
+    node.v = tree.text;
+    if (fold <= 0 && items.length) {
+      node.classList.add("v-fold");
+      node.append(element("span", tree.kind === "term" ? "v-ctor" : "v-bracket", tree.kind === "term" ? tree.head : BRACKETS[kind][0]), " …");
+      node.title = "Click to open";
+      node.addEventListener("click", (event) => {
+        event.stopPropagation();
+        node.replaceWith(renderInline(tree, depth, FOLD));
+      }, { once: true });
+      return node;
+    }
+    const [open, close] = BRACKETS[kind] ?? ["(", ")"];
     if (tree.kind === "term") node.append(element("span", "v-ctor", tree.head));
     else node.append(element("span", "v-bracket", open));
-    const items = tree.kind === "term" ? tree.args : tree.items;
     items.forEach((item, i) => {
       if (tree.kind === "term" || i > 0) node.append(" ");
-      node.append(renderInline(item, depth + 1));
+      if (kind === "map") {
+        const [key, value] = item.items;
+        node.append(renderInline(key, depth + 1, fold - 1), element("span", "v-bracket", " ↦ "), renderInline(value, depth + 1, fold - 1));
+      } else {
+        node.append(renderInline(item, depth + 1, fold - 1));
+      }
     });
     if (tree.kind !== "term") node.append(element("span", "v-bracket", close));
     return node;
   }
-  return element("span", `v-${tree.kind}`, tree.text);
+  const node = element("span", `v v-${tree.kind}`, tree.text);
+  node.v = tree.text;
+  if (tree.kind === "string" && tree.text.length > LONG && fold !== Infinity) {
+    node.textContent = `${tree.text.slice(0, LONG - 8)}…`;
+    const more = node.appendChild(element("span", "v-expand", `+${tree.text.length - LONG + 8}`));
+    more.title = "Show the whole string";
+    more.addEventListener("click", (event) => {
+      event.stopPropagation();
+      node.textContent = tree.text;
+    }, { once: true });
+  }
+  return node;
 }
 
 // A value as a tree that folds: each term or collection a <details>, open
@@ -211,9 +258,12 @@ export function openMenu(event, items) {
     const item = menu.appendChild(element("button", null, label));
     item.addEventListener("click", () => { closeMenu(); act(); });
   }
-  const box = event.currentTarget.getBoundingClientRect();
+  // under the button it came from, or where the pointer is
+  const box = event.type === "contextmenu"
+    ? { left: event.clientX, bottom: event.clientY }
+    : event.currentTarget.getBoundingClientRect();
   menu.style.left = `${Math.max(4, Math.min(box.left, innerWidth - menu.offsetWidth - 4))}px`;
-  menu.style.top = `${box.bottom + 2}px`;
+  menu.style.top = `${Math.min(box.bottom + 2, innerHeight - menu.offsetHeight - 4)}px`;
 }
 
 function closeMenu() {
@@ -445,14 +495,18 @@ export function createTable(host, { source, on, compact = true }) {
 
   function fill(node, index) {
     const row = source.row(index);
-    node.classList.toggle("missing", !row);
+    node.className = `tb-row${row ? "" : " missing"}${row && source.rowClass ? ` ${source.rowClass(index)}` : ""}`;
     const cells = [element("div", "tb-cell tb-index", source.label(index))];
     for (const i of visible()) {
       const cell = element("div", `tb-cell${columns[i].numeric ? " n" : ""}`);
       cell.dataset.column = i;
       if (row && row[i]) {
-        cell.append(renderInline(treeOf(row[i])));
-        if (row[i].handle) cell.append(element("span", "v-handle", row[i].handle));
+        cell.append(renderInline(treeOf(row[i]), 0, FOLD));
+        if (row[i].handle) {
+          // a handle opens the value it names in place, and closes it again
+          const handle = cell.appendChild(element("span", `v-handle${row[i].shallow ? " open" : ""}`, row[i].handle));
+          handle.title = row[i].shallow ? "Close the value again" : "Open the whole value, in place";
+        }
       } else {
         cell.textContent = row ? "" : "…";
       }
@@ -480,6 +534,37 @@ export function createTable(host, { source, on, compact = true }) {
     moveTo(row, column, event.shiftKey);
   });
   body.addEventListener("dblclick", () => cursor && on.open?.(cursor));
+  // A preview cut short (`...`), or its handle, is read deeper on a click.
+  body.addEventListener("click", (event) => {
+    const cut = event.target.closest(".v-more, .v-handle");
+    const cell = cut?.closest(".tb-cell");
+    if (cell && on.dig) on.dig(Number(cell.parentElement.dataset.row), Number(cell.dataset.column));
+  });
+  body.addEventListener("contextmenu", (event) => {
+    const cell = event.target.closest(".tb-cell[data-column]");
+    if (!cell || !on.cellMenu) return;
+    event.preventDefault();
+    moveTo(Number(cell.parentElement.dataset.row), Number(cell.dataset.column));
+    const items = on.cellMenu(cursor);
+    if (items.length) openMenu(event, items);
+  });
+  // Pointing at a value marks every occurrence of it in view.
+  let same = [];
+  body.addEventListener("mouseover", (event) => {
+    const value = event.target.closest(".v");
+    for (const node of same) node.classList.remove("v-same");
+    same = [];
+    if (!value || value.v === undefined) return;
+    for (const node of body.querySelectorAll(".v")) {
+      if (node.v === value.v && node !== value) same.push(node);
+    }
+    if (same.length) same.push(value);
+    for (const node of same) node.classList.add("v-same");
+  });
+  body.addEventListener("mouseleave", () => {
+    for (const node of same) node.classList.remove("v-same");
+    same = [];
+  });
 
   // Put the cursor at (row, column); `extend` grows the selection to it.
   function moveTo(row, column, extend = false) {
@@ -587,6 +672,11 @@ export function createTable(host, { source, on, compact = true }) {
       } finally {
         quiet = false;
       }
+    },
+    // The rows changed in place: draw them all again.
+    redraw() {
+      clear();
+      render();
     },
     // The rows are in a new order: draw them all again.
     setSort(next) {

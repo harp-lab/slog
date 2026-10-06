@@ -3,12 +3,9 @@
 // for rows as they scroll into it. The studio pages them from the session
 // server; this module never holds more than a window of them.
 //
-// It runs in two places: over the transcript under the REPL, compact, with
-// buttons to expand the set over the page or pop it out; and as a set's own
-// window (results-page.js), `full`. Both are clients of the same studio, so
-// sets, their rows and refinements are the same in each; what one view of a
-// set does besides (scrolling, the cursor, column layout, a sort of its
-// cached rows) it tells the other over a BroadcastChannel.
+// A set shows over the transcript, compact, or opens as a sheet over the
+// page, the full table: Esc, a click beside it or Alt+R puts the sheet
+// away, and Alt+R brings it back as it was.
 
 import { isPast, onStates, stamped, stateName, states } from "./stamp.js";
 import { createTable, filterRefinement, openMenu, renderTree, sortedOrder, toCSV, toFacts, toTSV, treeOf } from "./table.js";
@@ -30,29 +27,23 @@ const element = (tag, className, text) => {
 };
 const number = (n) => n.toLocaleString("en-US");
 
-// The launch token and project, to open a set's window on the same studio.
-const token = location.hash.slice(1);
-const project = new URLSearchParams(location.search).get("project") ?? "";
-
 // `tabs` holds the tab strip, `panel` the set shown; `transcript`, if
 // given, is what the Transcript tab shows. `send` writes to the studio;
-// `run` runs a REPL line.
-export function createResults({ tabs, panel, transcript, send, run, full = false }) {
+// `run` runs a REPL line; `explorer` (explorer.js), if given, breaks slices
+// of a set out into peeks.
+export function createResults({ tabs, panel, transcript, send, run, explorer = null }) {
   // id -> { view, rows: Map(index -> row), pending, error, state, order, busy }
   // `state` is the table's (scroll, layout, sort, cursor, selection), and
   // `order` the rows' order when they are sorted here.
   const sets = new Map();
   const closed = new Set();
   let shown = null;
-  let popup = null;
-  const channel = globalThis.BroadcastChannel ? new BroadcastChannel(`slog-results:${project}`) : null;
 
   const transcriptTab = transcript && tabs.appendChild(element("button", "rs-tab", "Transcript"));
   transcriptTab?.addEventListener("click", () => show(null));
 
   // One panel, filled with whichever set is shown.
   panel.classList.add("rs-panel");
-  panel.classList.toggle("rs-full", full);
   const bar = panel.appendChild(element("div", "rs-bar"));
   const lineage = bar.appendChild(element("div", "rs-lineage"));
   const query = bar.appendChild(element("input", "rs-query"));
@@ -74,8 +65,7 @@ export function createResults({ tabs, panel, transcript, send, run, full = false
   // A set of a past state reads there; this runs its query at the session's.
   const nowButton = button("Show now", "Run the query again at the session's current state, as a new set",
     () => shown && send({ t: "show-now", set: shown }));
-  const expandButton = full ? null : button("Expand", "Show the set over the whole page", () => expand(!expanded));
-  if (!full) button("Pop out ⧉", "Open the set in a window of its own, beside the studio", popOut);
+  const expandButton = button("Expand ⤢", "Open the set as a sheet over the page (Alt+R); Esc puts it away", () => expand(!expanded));
   const status = panel.appendChild(element("div", "rs-status"));
   // What a gesture did, or why it could not, for a few seconds.
   const flash = element("span", "rs-flash");
@@ -94,13 +84,14 @@ export function createResults({ tabs, panel, transcript, send, run, full = false
 
   const current = () => sets.get(shown);
   const table = createTable(grid, {
-    compact: !full,
+    compact: true,
     source: {
       count: () => (current() ? extent(current().view) : 0),
       row: (i) => current()?.rows.get(indexOf(current(), i)),
       label: (i) => number(indexOf(current(), i) + 1),
       want(first, last) {
         const set = current();
+        if (set) set.near = first;
         if (set && !set.order) request(set, first, last);
         if (set) renderStatus(set);
       },
@@ -115,6 +106,16 @@ export function createResults({ tabs, panel, transcript, send, run, full = false
         if (refinement) send({ t: "refine", set: set.view.id, refinement });
       },
       copy: () => copySelection("tsv"),
+      cellMenu: ({ row, column }) => breakouts(current(), row, column),
+      async dig(row, column) {
+        const set = current();
+        const index = indexOf(set, row);
+        const cells = set?.rows.get(index);
+        if (!cells || !explorer) return;
+        const deeper = await explorer.toggle(cells[column]);
+        set.rows.set(index, cells.map((cell, i) => (i === column ? deeper : cell)));
+        if (set === current()) table.redraw();
+      },
       menu: (column) => {
         const set = current();
         return set.view.columns.length > 1
@@ -126,7 +127,6 @@ export function createResults({ tabs, panel, transcript, send, run, full = false
         if (!set) return;
         set.state = state;
         renderStatus(set);
-        channel?.postMessage({ set: set.view.id, state });
       },
     },
   });
@@ -136,51 +136,30 @@ export function createResults({ tabs, panel, transcript, send, run, full = false
     event.preventDefault();
     send({ t: "refine", set: shown, refinement: { op: "edit", line: query.value } });
   });
-  // Escape collapses an expanded set, once the table has nothing selected.
+  // The sheet goes with Escape, once the table has nothing selected, with a
+  // click beside it, or with Alt+R, which also brings it back.
   panel.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && expanded && !event.defaultPrevented) expand(false);
   });
+  const backdrop = document.body.appendChild(element("div", "rs-backdrop"));
+  backdrop.hidden = true;
+  backdrop.addEventListener("pointerdown", () => expand(false));
+  addEventListener("keydown", (event) => {
+    if (!(event.altKey && event.code === "KeyR" && !event.metaKey && !event.ctrlKey)) return;
+    event.preventDefault();
+    if (expanded) expand(false);
+    else if (sets.has(sheet)) open(sheet);
+    else if (shown !== null) expand(true);
+  }, true);
 
-  // ---- the twin view --------------------------------------------------
-
-  if (channel) {
-    channel.onmessage = ({ data }) => {
-      if (data.hello) {
-        // a window opening asks how each set was left
-        const states = [...sets].filter(([, set]) => set.state).map(([id, set]) => [id, set.state]);
-        channel.postMessage({ states, shown });
-      } else if (data.states && full) {
-        for (const [id, state] of data.states) mirror(id, state);
-      } else if (data.show && full) {
-        show(data.show);
-      } else if (data.set) {
-        mirror(data.set, data.state);
-      }
-    };
-  }
-
-  function mirror(id, state) {
-    const set = sets.get(id);
-    if (!set) return;
-    const sorted = JSON.stringify(state.sort) !== JSON.stringify(set.state?.sort);
-    set.state = state;
-    if (sorted && !set.view.sorted) sortHere(set, state.sort, false);
-    if (id === shown) {
-      table.restore(state);
-      renderStatus(set);
-      renderDetail(set);
-    }
-  }
 
   // ---- views of the set -----------------------------------------------
 
   function show(id) {
-    shown = sets.has(id) ? id : full ? sets.keys().next().value ?? null : null;
+    shown = sets.has(id) ? id : null;
     if (transcript) transcript.hidden = shown !== null;
     panel.hidden = shown === null && Boolean(transcript);
     renderTabs();
-    if (full) history.replaceState(null, "", `?${new URLSearchParams({ project, set: shown ?? "" })}${location.hash}`);
-    if (full) document.title = shown ? `${shown} · Slog results` : "Slog results";
     if (shown === null) {
       if (expanded) expand(false);
       return;
@@ -198,27 +177,31 @@ export function createResults({ tabs, panel, transcript, send, run, full = false
     renderDetail(set);
   }
 
+  // The sheet: the set over the page, the full table. Put away, the area
+  // shows what it showed before.
+  let sheet = null; // the set the sheet last showed
+  let opening = null; // a query whose set opens as the sheet
+  let before = null; // what the area showed before the sheet opened
   function expand(on) {
+    if (on === expanded) return;
     expanded = on;
+    if (on) sheet = shown;
     panel.classList.toggle("rs-expanded", on);
-    expandButton.textContent = on ? "Collapse" : "Expand";
+    backdrop.hidden = !on;
+    expandButton.textContent = on ? "Put away ⤡" : "Expand ⤢";
     table.setCompact(!on);
+    if (!on && before !== shown) show(before);
+    if (on) table.focus();
   }
 
-  // A window of its own, or, where popups are blocked, the page.
-  function popOut() {
-    if (popup && !popup.closed) {
-      channel?.postMessage({ show: shown });
-      popup.focus();
-      return;
-    }
-    const url = `/results?${new URLSearchParams({ project, set: shown ?? "" })}#${token}`;
-    popup = window.open(url, `slog-results-${project}`, "popup,width=1280,height=820");
-    if (!popup) {
-      expand(true);
-      note("This browser blocked the window, so the set is expanded over the page instead.");
-    }
+  // Open set `id` as the sheet.
+  function open(id) {
+    if (!sets.has(id)) return;
+    if (!expanded) before = shown;
+    show(id);
+    expand(true);
   }
+
 
   function update(view) {
     if (closed.has(view.id)) return;
@@ -226,12 +209,16 @@ export function createResults({ tabs, panel, transcript, send, run, full = false
     if (!set) {
       sets.set(view.id, { view, rows: new Map(), pending: null, error: null, state: null, order: null });
       renderTabs();
-      if (full && shown === null) show(view.id);
+      if (opening && view.query === opening) {
+        opening = null;
+        open(view.id);
+      }
       return;
     }
     const columnsChanged = JSON.stringify(set.view.columns) !== JSON.stringify(view.columns);
     set.view = view;
     renderTabs();
+    set.watchers?.forEach((changed) => changed());
     if (view.id !== shown) return;
     if (columnsChanged) table.setColumns(columnsOf(set), null);
     if (document.activeElement !== query) query.value = view.query;
@@ -253,6 +240,7 @@ export function createResults({ tabs, panel, transcript, send, run, full = false
     }
     rows.forEach((row, i) => set.rows.set(start + i, row));
     if (set.rows.size > KEEP && !set.order) prune(set);
+    set.watchers?.forEach((changed) => changed());
     if (id === shown) {
       // the first rows read size the columns
       if (!set.measured && rows.length) {
@@ -265,9 +253,9 @@ export function createResults({ tabs, panel, transcript, send, run, full = false
     }
   }
 
-  // Forget the rows farthest from the window in view.
+  // Forget the rows farthest from those asked for last, here or inline.
   function prune(set) {
-    const middle = (set.view.id === shown ? table.state().top : set.state?.top) ?? 0;
+    const middle = set.near ?? (set.view.id === shown ? table.state().top : set.state?.top) ?? 0;
     for (const index of set.rows.keys()) {
       if (Math.abs(index - middle) > KEEP / 2) set.rows.delete(index);
     }
@@ -333,24 +321,21 @@ export function createResults({ tabs, panel, transcript, send, run, full = false
         return note(String(error.message ?? error));
       }
     }
-    sortHere(set, sort, true);
+    sortHere(set, sort);
   }
 
   // Order the set's rows, all cached, by `sort` (null: as they came).
-  function sortHere(set, sort, announce) {
+  function sortHere(set, sort) {
     const { total, seen } = set.view;
     const rows = Array.from({ length: total.kind === "exact" ? total.n : seen }, (_, i) => set.rows.get(i));
-    if (sort && rows.some((row) => !row)) return; // not all here: the twin view sorts
+    if (sort && rows.some((row) => !row)) return;
     set.order = sort ? sortedOrder(rows, sort.column, sort.descending) : null;
     set.state = { ...set.state, sort };
     if (set.view.id !== shown) return;
     table.setSort(sort);
     table.refresh();
     renderStatus(set);
-    if (announce) {
-      set.state = table.state();
-      channel?.postMessage({ set: set.view.id, state: set.state });
-    }
+    set.state = table.state();
   }
 
   // ---- reading ranges whole: copy and export -----------------------------
@@ -476,7 +461,7 @@ export function createResults({ tabs, panel, transcript, send, run, full = false
       link.addEventListener("click", () => show(parent));
       lineage.append(element("span", "rs-step", ` › ${refinement} › `));
     }
-    if (chain.length) lineage.append(element("b", null, view.id));
+    lineage.appendChild(element("b")).append(stamped(view.id, view.state));
   }
 
   function renderStatus(set) {
@@ -537,7 +522,7 @@ export function createResults({ tabs, panel, transcript, send, run, full = false
   function renderDetail(set) {
     const at = set && table.state().cursor;
     const row = at && set.rows.get(indexOf(set, at.row));
-    // compact, the panel opens with a click; full, it stays open beside
+    // compact, the panel opens with a click; in the sheet, it stays beside
     detail.hidden = !row;
     if (!row) return;
     detail.replaceChildren();
@@ -579,9 +564,55 @@ export function createResults({ tabs, panel, transcript, send, run, full = false
     action("Where else?", `Which relations hold this value: uses ${value}`, () => run(`uses ${value}`));
     if (cell.handle) action(`Show ${cell.handle}`, "Print the whole value", () => run(`show ${cell.handle}`));
     action("Copy value", "Copy the value as Slog", () => navigator.clipboard.writeText(cell.text).then(() => note("Copied.")));
+    for (const [label, act] of breakouts(set, at.row, at.column).filter(([label]) => !label.startsWith("Rows where"))) action(label, "Break this out into a peek of its own", act);
+  }
+
+  // The slices of a set a cell can be broken out into (explorer.js): the
+  // set read back from its relation, which later queries can name.
+  function breakouts(set, row, column, cells = set?.rows.get(indexOf(set, row))) {
+    if (!explorer || !set) return [];
+    const { view } = set;
+    const columns = columnsOf(set);
+    const line = view.relation && columns.every((c) => c.var)
+      ? `?(${[view.relation, ...columns.map((c) => c.var)].join(" ")})`
+      : null;
+    return explorer.menu({ line, columns, row: cells, column, title: view.id });
+  }
+
+  // The set's rows for a table elsewhere: the transcript's inline table
+  // (inline.js). `changed` is called as rows or what is known of the set
+  // arrive. Null once the set is no longer kept.
+  function attach(id, changed) {
+    const set = sets.get(id);
+    if (!set) return null;
+    (set.watchers ??= new Set()).add(changed);
+    return {
+      view: () => set.view,
+      columns: () => columnsOf(set),
+      count: () => extent(set.view),
+      row: (i) => set.rows.get(i),
+      label: (i) => number(i + 1),
+      want(first, last) {
+        set.near = first;
+        request(set, first, last);
+      },
+      menu: (row, column) => breakouts(set, row, column, set.rows.get(row)),
+      // open or close a cell's value in place (explorer.toggle)
+      async toggle(row, column) {
+        const cells = set.rows.get(row);
+        if (!cells || !explorer) return;
+        const next = await explorer.toggle(cells[column]);
+        set.rows.set(row, cells.map((cell, i) => (i === column ? next : cell)));
+        set.watchers?.forEach((changed) => changed(true));
+        if (set === current()) table.redraw();
+      },
+      error: () => set.error,
+      detach: () => set.watchers.delete(changed),
+    };
   }
 
   return {
+    attach,
     // Every set the studio keeps, as a tab opens.
     init(views) {
       sets.clear();
@@ -589,10 +620,15 @@ export function createResults({ tabs, panel, transcript, send, run, full = false
       for (const tab of tabs.querySelectorAll(".rs-tab[data-set]")) tab.remove();
       views.forEach(update);
       show(sets.has(shown) ? shown : null);
-      if (full) channel?.postMessage({ hello: true });
     },
     update,
     rows: receive,
     show,
+    open,
+    // Run `line`, and open the set it makes as the sheet.
+    openQuery(line) {
+      opening = line;
+      run(line);
+    },
   };
 }

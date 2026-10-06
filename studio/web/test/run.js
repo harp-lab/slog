@@ -13,6 +13,8 @@ import "./hunks.test.js";
 import "./graph.test.js";
 import "./assist.test.js";
 import "./table.test.js";
+import "./explorer.test.js";
+import "./inline.test.js";
 import "./breakpoints.test.js";
 import "./timeline.test.js";
 import "./static-check.test.js";
