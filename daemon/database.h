@@ -7340,44 +7340,45 @@ public:
                : descriptor->type_key)
           + ">";
     }
-    std::string tupstr = "(" + display_name;
-    const std::vector<u16>& ord = rel->getLookupIndex();
-    std::vector<u16> rewrite_ord(ord.size(), 0);
-    for (u16 i = 0; i < ord.size(); ++i)
-      rewrite_ord[ord[i]] = i;
-    Index* node = rel->getIndex(ord, false)[buckethash(v)];
-    // Heap, not a 2KB `u64 tuple[256]` stack frame: with the frame shrunk the
-    // recursion (below, cdepth+1) tolerates far deeper struct/list values before
-    // the writeValCSV depth guard trips.
-    std::vector<u64> tuple(ord.size(), 0);
-
-    // The lookup index leads with the id column (ord[0]==0); find the tuple
-    // whose id == v (unique) and copy its columns (in index order).
-    bool found = false;
-    node->forEach([&](const u64* t)
-    {
-      if (t[0] == v)
-      {
-        found = true;
-	for (u16 i = 0; i < rewrite_ord.size(); ++i)
-	  tuple[i] = t[i];
-      }
-    });
+    // A run inside a prepared boundary writes the overlay's version of the
+    // type, so an instance it minted is found there, not in the canonical.
+    std::vector<u64> row;
+    bool found = structRowById(rel, v, row);
+    if (!found && prepared_boundary && boundary_key.empty())
+      for (const auto& [name, bound] : prepared_boundary->environment)
+        if (bound != nullptr && bound != rel
+            && bound->getStructId() == struct_id
+            && (found = structRowById(bound, v, row)))
+          break;
     if (!found)
-    {
-      std::vector<u64> row;
-      if (!rel->unindexedStructRow(v, row))
-        fatal("Could not find struct instance in selected TypeDescriptor store");
-      for (u16 i = 0; i < ord.size(); ++i)
-        tuple[i] = row[ord[i]];
-    }
+      fatal("Could not find struct instance in selected TypeDescriptor store");
 
-    // Write tuple out in nominal order (fields nest one level deeper)
-    for (u16 i = 1; i < rewrite_ord.size(); ++i)
+    // Write the fields out in nominal order (they nest one level deeper)
+    std::string tupstr = "(" + display_name;
+    for (u16 c = 1; c < row.size(); ++c)
       tupstr += " "
-        + writeValCSVAtBoundary(
-            tuple[rewrite_ord[i]], boundary_key, cdepth + 1, max_depth);
+        + writeValCSVAtBoundary(row[c], boundary_key, cdepth + 1, max_depth);
     return tupstr + ")";
+  }
+
+  // One struct instance's storage-order row (id at column 0): from the
+  // lookup index, or -- at an iteration barrier -- from the delta or the
+  // tombstones (Relation::unindexedStructRow).
+  static bool structRowById(Relation* rel, u64 v, std::vector<u64>& row)
+  {
+    const std::vector<u16>& ord = rel->getLookupIndex();
+    // The lookup index leads with the id column (ord[0]==0): the bucket is
+    // the id's, and the id is unique within it.
+    bool found = false;
+    rel->getIndex(ord, false)[buckethash(v)]->forEach([&](const u64* t)
+    {
+      if (t[0] != v) return;
+      found = true;
+      row.assign(ord.size(), 0);
+      for (u16 i = 0; i < ord.size(); ++i)
+        row[ord[i]] = t[i];
+    });
+    return found || rel->unindexedStructRow(v, row);
   }
 
   std::string writeStructCSV(u64 v, u32 cdepth = 0)

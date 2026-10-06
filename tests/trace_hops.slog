@@ -1,7 +1,7 @@
 ;; Execution-trace sampling fixture (docs/pausing.md §15): reachability
 ;; over a 24-node graph, with each reached pair a STRUCT, so the bottom-k
-;; samples must hash struct content rather than intern ids (which the
-;; intern phase mints in thread order).  Deltas run to ~200 rows, far past
+;; samples must hash struct content rather than intern ids (which follow
+;; session history and, in general, thread order).  Deltas run to ~200 rows, far past
 ;; the default sample of 8.
 struct (hop int int)
 table (edge int int)

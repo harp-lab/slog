@@ -5960,8 +5960,10 @@
 
   ;; Coordinated samples choose rows by a hash of their VALUES, so a run's
   ;; trace is identical at one thread and at many -- here over struct
-  ;; values, whose intern ids the hash must not see.  Only the timings may
-  ;; differ.
+  ;; values, whose intern ids the hash must not see.  The fragment then
+  ;; mints a struct into the boundary's private version of `hop`, which its
+  ;; rows must render from.  Only timings may differ, and stratum names: a
+  ;; scratch fragment's hash includes its session's layer.
   (define (hops-trace threads)
     (define environment (environment-variables-copy test-environment))
     ;; #f unsets it: the driver default, one worker per core but one
@@ -5969,14 +5971,17 @@
     (parameterize ([current-directory repository-root]
                    [current-environment-variables environment])
       (define state (make-server-state))
+      (define (strata line)
+        (for/list ([st (in-list (hash-ref (hash-ref (hash-ref
+                                                     (dispatch-command state line)
+                                                     'change)
+                                                    'trace)
+                                          'strata))])
+          (hash-remove (hash-remove st 'fixpoint) 'stratum)))
       (void (dispatch-command state "trace on"))
-      (define trace
-        (hash-ref (hash-ref (dispatch-command state "run tests/trace_hops.slog")
-                            'change)
-                  'trace))
-      (void (dispatch-command state ":quit"))
-      (for/list ([st (in-list (hash-ref trace 'strata))])
-        (hash-remove st 'fixpoint))))
+      (begin0 (append (strata "run tests/trace_hops.slog")
+                      (strata "rule (reach (hop 30 31)) <-- (edge 0 1)"))
+        (void (dispatch-command state ":quit")))))
   (let ([single (hops-trace #"1")])
     (check-true (for/or ([st (in-list single)])
                   (for/or ([it (in-list (hash-ref st 'iterations))])
