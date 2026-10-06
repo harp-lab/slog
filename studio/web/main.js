@@ -33,6 +33,9 @@ const $ = (id) => document.getElementById(id);
 // Local mode's launch token; a server's login rides in a cookie instead.
 const token = location.hash.slice(1);
 // The project the page was opened on (`/?project=NAME`); none is the default.
+// connect() asks for the project the first connection named, so a page opened
+// on the default stays on that project when it reconnects, though the
+// default (the project opened last) may since have moved to another.
 const project = new URLSearchParams(location.search).get("project") ?? "";
 
 const state = {
@@ -465,7 +468,8 @@ function offerRelation(view) {
 
 function connect() {
   const scheme = location.protocol === "https:" ? "wss" : "ws";
-  const query = `token=${encodeURIComponent(token)}&project=${encodeURIComponent(project)}`;
+  const named = files.project() || project;
+  const query = `token=${encodeURIComponent(token)}&project=${encodeURIComponent(named)}`;
   socket = new WebSocket(`${scheme}://${location.host}/ws?${query}`);
   socket.onopen = () => {
     failedAttempts = 0;

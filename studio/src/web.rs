@@ -118,8 +118,9 @@ fn asset(name: &str) -> Response {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "t", rename_all = "kebab-case")]
 enum Request {
-    /// The whole text of `file`, edited from version `base`.
-    Edit { file: String, base: u64, text: String },
+    /// The whole text of `file`, edited from version `base`, in the tab
+    /// of `project`.
+    Edit { project: String, file: String, base: u64, text: String },
     Save,
     Evaluate,
     /// Evaluate, then re-run under the breakpoints.
@@ -244,6 +245,9 @@ enum Reply<'a> {
     Reset { file: &'a str, version: u64, text: &'a str },
     /// The edit was refused: `file` is no longer in the project.
     Gone { file: &'a str },
+    /// The edit was refused: it was made for another project than this
+    /// connection's, `project`.
+    OtherProject { file: &'a str, project: &'a str },
     History(&'a HistoryView),
     /// The files of version `id`.
     VersionFiles { id: u64, files: &'a Files },
@@ -403,8 +407,8 @@ fn handle(
     }
     let studio = studio.clone();
     match request {
-        Request::Edit { file, base, text } => {
-            let reply = match studio.edit(connection, &file, base, text) {
+        Request::Edit { project, file, base, text } => {
+            let reply = match studio.edit_in(&project, connection, &file, base, text) {
                 Ok(version) => json(&Reply::Ack { file: &file, version }),
                 Err(Refused::Stale { version, text }) => json(&Reply::Reset {
                     file: &file,
@@ -412,6 +416,7 @@ fn handle(
                     text: &text,
                 }),
                 Err(Refused::NoFile) => json(&Reply::Gone { file: &file }),
+                Err(Refused::OtherProject { project }) => json(&Reply::OtherProject { file: &file, project: &project }),
             };
             let _ = direct.send(reply);
         }

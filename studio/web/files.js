@@ -44,7 +44,8 @@ export function createFiles({ editor, transmit, note, onOpen, onSaved, onBreakpo
       if (unsent) {
         const [path, file] = unsent;
         state.inFlight = { path, text: file.local };
-        transmit({ t: "edit", file: path, base: file.version, text: file.local });
+        // The edit names its project: a studio refuses one meant for another.
+        transmit({ t: "edit", project: state.project, file: path, base: file.version, text: file.local });
       } else if (state.held.length) {
         transmit(state.held.shift());
       } else {
@@ -96,22 +97,21 @@ export function createFiles({ editor, transmit, note, onOpen, onSaved, onBreakpo
     else render();
   }
 
-  // Take the studio's files. A file the studio still has at the version this
-  // tab knows keeps this tab's unsent text.
-  function load(main, files) {
+  // Take the studio's files, those of project `project`. A file the studio
+  // still has as this tab last knew it keeps this tab's unsent text.
+  function load(main, files, project = state.project) {
+    const known = state.project === project ? state.files : new Map();
+    state.project = project;
     state.main = main;
-    const known = state.files;
     // Typing not yet taken from the editor is unsent text too.
     const typing = known.get(state.active);
     if (state.editTimer !== null && typing) typing.local = editor.get();
     clearTimeout(state.editTimer);
     state.editTimer = null;
-    state.files = new Map(files.map(({ path, text, version, saved }) => {
-      const mine = known.get(path);
-      const local = mine?.version === version ? mine.local : text;
-      return [path, { text, version, local, saved }];
-    }));
-    for (const path of known.keys()) if (!state.files.has(path)) editor.forget(path);
+    const previous = state.files;
+    state.files = new Map(files.map(({ path, text, version, saved }) =>
+      [path, { text, version, local: carried(known.get(path), text), saved }]));
+    for (const path of previous.keys()) if (!state.files.has(path)) editor.forget(path);
     state.tabs = state.tabs.filter((path) => state.files.has(path));
     if (!state.tabs.length) state.tabs = [main];
     const active = state.files.has(state.active) ? state.active : state.tabs[0];
@@ -218,13 +218,12 @@ export function createFiles({ editor, transmit, note, onOpen, onSaved, onBreakpo
       // snapshot itself.
       state.inFlight = null;
       state.held = [];
-      state.project = snapshot.project;
       state.projects = snapshot.projects;
       state.directory = snapshot.directory;
       for (const [path, points] of Object.entries(snapshot.breakpoints)) onBreakpoints(path, points);
       document.title = `${snapshot.project} — Slog Studio`;
+      load(snapshot.main, snapshot.files, snapshot.project);
       renderProjects();
-      load(snapshot.main, snapshot.files);
     },
     files({ main, files }) {
       load(main, files);
@@ -246,6 +245,15 @@ export function createFiles({ editor, transmit, note, onOpen, onSaved, onBreakpo
     },
     gone({ file }) {
       note(`${file} is no longer in the project; the edit was not kept`);
+      answered();
+    },
+    // Our edit was for another project than this connection's: never kept.
+    // The snapshot that follows a reconnect brings this project's text.
+    "other-project"({ file, project }) {
+      const known = state.files.get(file);
+      if (known) known.local = known.text;
+      if (file === state.active && known) editor.set(known.text);
+      note(`an edit to ${file} was for another project than ${project}; it was not kept`);
       answered();
     },
     text({ file, version, text }) {
@@ -308,6 +316,16 @@ export function createFiles({ editor, transmit, note, onOpen, onSaved, onBreakpo
       editor.mark(span, message);
     },
   };
+}
+
+// The text a tab shows for a file the studio sent as `text`, given what the
+// tab knew of it, `mine` ({ text, local }, from the same project; undefined
+// for a file of another project or none). The tab's own text is kept only
+// when it is unsent typing over exactly the text the studio still has; a
+// version number alone says nothing, since every studio, each project's
+// and each launch's, counts versions from the start.
+export function carried(mine, text) {
+  return mine && mine.text === text ? mine.local : text;
 }
 
 function withSuffix(path) {

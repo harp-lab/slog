@@ -197,6 +197,9 @@ pub enum Refused {
         text: String,
     },
     NoFile,
+    /// The edit was made in a tab of another project: this Studio's
+    /// files are not the ones it was made to.
+    OtherProject { project: String },
 }
 
 const SCENARIO_SUFFIX: &str = ".scenario.toml";
@@ -636,6 +639,19 @@ impl Studio {
 
     pub(crate) async fn session_lock(&self) -> tokio::sync::MutexGuard<'_, Session> {
         self.session.lock().await
+    }
+
+    /// Replace the text of `file` at version `base` in `project`, a tab's
+    /// edit: refused unless `project` is this Studio's. A version names a
+    /// text only within one Studio, so a tab that has wandered to another
+    /// project (a reconnect, a default that moved) must not have its text
+    /// taken for this one's file of the same name.
+    pub fn edit_in(&self, project: &str, origin: u64, file: &str, base: u64, text: String) -> Result<u64, Refused> {
+        let own = self.open().project.name().to_owned();
+        if project != own {
+            return Err(Refused::OtherProject { project: own });
+        }
+        self.edit(origin, file, base, text)
     }
 
     /// Replace the text of `file` at version `base`. Returns the new version.
@@ -1549,6 +1565,36 @@ pub(crate) mod tests {
             studio.edit(2, "other.slog", 0, "x".to_owned()),
             Err(Refused::NoFile)
         );
+    }
+
+    /// Two projects, each with a main.slog at the same version: a tab's
+    /// edit is taken only by its own project's Studio, so saving one never
+    /// writes the other's text.
+    #[test]
+    fn an_edit_for_another_project_is_refused() {
+        let scratch = Scratch::new("two-projects");
+        let open = |name: &str| {
+            let projects = Projects::new(scratch.path());
+            projects.create(name).expect("project");
+            let (project, files) = projects.open(name).expect("open");
+            let lane = Lane::new(project_root().expect("repository root"), Mode::Fast);
+            Studio::new(projects, project, files, lane, "test".to_owned())
+        };
+        let (one, two) = (open("one"), open("two"));
+        let v = one.snapshot_version("main.slog");
+        assert_eq!(v, two.snapshot_version("main.slog"));
+        assert_eq!(one.edit_in("one", 1, "main.slog", v, "rule (one)\n".into()), Ok(v + 1));
+        assert_eq!(two.edit_in("two", 2, "main.slog", v, "rule (two)\n".into()), Ok(v + 1));
+        assert_eq!(
+            two.edit_in("one", 1, "main.slog", v + 1, "rule (one)\n".into()),
+            Err(Refused::OtherProject { project: "two".into() })
+        );
+        one.save("save").expect("save one");
+        two.save("save").expect("save two");
+        let text = |name: &str| {
+            std::fs::read_to_string(scratch.path().join(format!("projects/{name}/files/main.slog"))).unwrap()
+        };
+        assert_eq!((text("one"), text("two")), ("rule (one)\n".to_owned(), "rule (two)\n".to_owned()));
     }
 
     /// A file that goes and comes back starts above every version it had,
