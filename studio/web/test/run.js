@@ -3,6 +3,7 @@
 
 import "./sexp.test.js";
 import "./format.test.js";
+import "./complete.test.js";
 import { finish } from "./check.js";
 
 finish();

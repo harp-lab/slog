@@ -64,6 +64,8 @@ fn asset(name: &str) -> Response {
         "lexer.js" => (include_str!("../web/lexer.js"), "text/javascript; charset=utf-8"),
         "sexp.js" => (include_str!("../web/sexp.js"), "text/javascript; charset=utf-8"),
         "format.js" => (include_str!("../web/format.js"), "text/javascript; charset=utf-8"),
+        "complete.js" => (include_str!("../web/complete.js"), "text/javascript; charset=utf-8"),
+        "commands.js" => (include_str!("../web/commands.js"), "text/javascript; charset=utf-8"),
         "agent.js" => (include_str!("../web/agent.js"), "text/javascript; charset=utf-8"),
         "summary.js" => (include_str!("../web/summary.js"), "text/javascript; charset=utf-8"),
         "files.js" => (include_str!("../web/files.js"), "text/javascript; charset=utf-8"),
