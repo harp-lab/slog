@@ -124,6 +124,19 @@
                         (rule-location-string rule) x
                         (syn-source (neg-inner cl)) (syn-source rule)))))
 
+     ;; ---- enum members written as variables -------------------------------
+     ;; A member is a nullary constructor, written (red); a bare `red` parses
+     ;; as a variable.  In a head it is unbound -- previously an opaque
+     ;; `internal error ... key: 'red` -- and in a body it silently matches
+     ;; every value.  Name the clause and say how to write it.
+     (for* ([cl (in-list (append bodys heads))]
+            [x (in-set (clause-vars cl))]
+            #:when (match (hash-ref rel-env x #f)
+                     [`(enum ,_) #t]
+                     [_ #f]))
+       (error (format "~a: ~a is an enum member, not a variable: write it with parentheses, (~a), in ~a\n  in rule: ~a"
+                      (rule-location-string cl) x x (syn-source cl) (syn-source rule))))
+
      ;; ---- first pass: immediate variable types --------------------------
      ;; `head?` marks a HEAD clause: a variable emitted into a relation column
      ;; or struct field there is a SINK, not a source of its own type -- seeding
