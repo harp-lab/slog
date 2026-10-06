@@ -1,4 +1,9 @@
-
+;; A demand-style m-CFA over a small R7RS syntax tree whose nodes carry
+;; their source positions.  The analysis steps an abstract machine of
+;; eval, apply and return states (`step`, a demand), and finds a value by
+;; chasing dataflow edges back to where it was made.  Contexts are the
+;; youngest m call sites, m = (config "m").  The two programs at the end
+;; show what reaches the top level (`result`) and the call graph (`calls`).
 
 include "syntax.slog"
 include "list.slog"

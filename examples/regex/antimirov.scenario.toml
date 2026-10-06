@@ -1,0 +1,36 @@
+# Pins the matches and the automaton antimirov.slog derives.
+# Run it with: ./slog studio scenario examples/regex/antimirov.scenario.toml
+format = 2
+id = "regex"
+title = "Regex matching by Antimirov partial derivatives"
+
+[program]
+main = "antimirov.slog"
+
+# Each subject either matches a query or is a real non-member.
+[[checks]]
+name = "no-runtime-errors"
+slog = ""
+empty = ["error"]
+
+[[steps]]
+run = "?(match Name S)"
+expect = { rows = [
+  '(match "(a|b)*abb" "abb")', '(match "(a|b)*abb" "babb")', '(match "(a|b)*abb" "aababb")',
+  '(match "(a|ab)*" "")', '(match "(a|ab)*" "abab")', '(match "(a|ab)*" "aab")', '(match "(a|ab)*" "abaab")',
+] }
+
+# The textbook 4-state NFA for (a|b)*abb, plus 2 states for (a|ab)*; one
+# accepting state each.
+[[steps]]
+run = "?count (state R)"
+expect = { count = 6 }
+
+[[steps]]
+run = "?count (accepting R)"
+expect = { count = 2 }
+
+# The start state of (a|b)*abb has an a-edge back to itself.
+[[steps]]
+run = '? (query "(a|b)*abb" R) (nfa R "a" R)'
+expect = { exists = true }

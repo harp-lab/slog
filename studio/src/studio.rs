@@ -16,6 +16,7 @@ use crate::results::{
 };
 use crate::review::{Review, ReviewView};
 use crate::scenario::{self, Report};
+use crate::starters::{Catalog, Starter};
 use crate::breakpoints::Breakpoint;
 use crate::session::{Evaluated, Outcome, Session, SessionView};
 use crate::states::{Stamp, States};
@@ -63,6 +64,8 @@ pub struct Snapshot {
     pub tables: Option<serde_json::Value>,
     /// The latest run's progress, as far as it has got (trace.rs).
     pub progress: Option<serde_json::Value>,
+    /// The examples a new project can start from (starters.rs).
+    pub starters: Vec<Starter>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -510,6 +513,22 @@ impl Studio {
             .map_err(|error| format!("cannot open a project for {}: {error}", main.display()))
     }
 
+    /// A new project copied from the example `id`, with its scenario
+    /// beside it; its name.
+    pub fn new_from_starter(&self, id: &str) -> Result<String, String> {
+        let catalog = Catalog::load(self.lane.root())?;
+        let starter = catalog.get(id).ok_or_else(|| format!("no example {id}"))?;
+        let copy = catalog.copy(starter)?;
+        let mut files = copy.files;
+        let scenario = catalog.scenario(starter);
+        if let (Some(name), Ok(text)) = (scenario.file_name(), std::fs::read_to_string(&scenario)) {
+            files.insert(name.to_string_lossy().into_owned(), text);
+        }
+        self.projects
+            .create_from(&starter.id, &copy.main, &files)
+            .map_err(|error| format!("cannot make a project from {id}: {error}"))
+    }
+
     /// Whether plain Runs record their trace, from the next Run on.
     pub fn set_tracing(&self, on: bool) {
         self.tracing.store(on, std::sync::atomic::Ordering::Relaxed);
@@ -635,6 +654,7 @@ impl Studio {
             states: self.states.lock().expect("states lock").clone(),
             tables: self.tables.lock().expect("tables lock").clone(),
             progress: self.progress.lock().expect("progress lock").whole(),
+            starters: Catalog::load(self.lane.root()).map(|catalog| catalog.starters).unwrap_or_default(),
         }
     }
 
@@ -1951,5 +1971,25 @@ pub(crate) mod tests {
                 )
             })
             .collect()
+    }
+
+    /// An example becomes a project of its own: a copy of its files and
+    /// its scenario, never the example itself, under a name not taken.
+    #[tokio::test]
+    async fn a_project_starts_from_an_example() {
+        let scratch = Scratch::new("starter");
+        let studio = studio(&scratch, Mode::Fast, "");
+        let snapshot = studio.snapshot().await;
+        assert!(snapshot.starters.iter().any(|starter| starter.id == "kcfa"));
+
+        assert_eq!(studio.new_from_starter("kcfa").unwrap(), "kcfa");
+        assert_eq!(studio.new_from_starter("kcfa").unwrap(), "kcfa-2");
+        assert!(studio.new_from_starter("no-such-example").is_err());
+        let (project, files) = studio.projects.open("kcfa").unwrap();
+        assert_eq!(project.main(), "kcfa.slog");
+        assert!(project.directory().starts_with(scratch.path()));
+        assert!(files.contains_key("map.slog") && files.contains_key("list.slog"));
+        assert!(files["context.slog"].contains("include \"list.slog\""));
+        assert!(project.directory().join("kcfa.scenario.toml").is_file());
     }
 }

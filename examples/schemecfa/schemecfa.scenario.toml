@@ -1,0 +1,56 @@
+# Pins what schemecfa.slog's test programs P1-P6 show at m = 2.
+# Run it with: ./slog studio scenario examples/schemecfa/schemecfa.scenario.toml
+format = 2
+id = "schemecfa"
+title = "m-CFA with abstract counting for a small Scheme"
+
+[program]
+main = "schemecfa.slog"
+
+# The header's claims, stated in Slog: `?` matches no nested values yet.
+[[checks]]
+name = "claims"
+slog = """
+table (claim str)
+table (refuted str)
+rule (must_value "g" l1 (prim "+")) (must_value "g" l2 (prim "<"))
+ --> (claim "P3: g is + in one frame and < in the other")
+rule (must_value "s1" l1 (symval "one")) (must_value "s2" l2 (symval "two"))
+ --> (claim "P4: s1 and s2 are must-values")
+rule (program_result (boolval (tt))) --> (refuted "P3, P4: an eq? answers #t")
+rule (reachable_expr (sym "dead")) --> (refuted "P5: the dead branch is demanded")
+rule (unique_closure (closure (lambda ["k"] b) l1)) (unique_closure (closure (lambda ["k"] b) l2)) (/= l1 l2)
+ --> (claim "P6: two of the escaping closures are unique")
+rule (summarized_closure (closure (lambda ["k"] b) l)) --> (claim "P6: the self-loop frame's closure is summarized")
+rule (unique_binding x l) (summarized_binding x l) --> (refuted "a binding is both unique and summarized")
+"""
+empty = ["refuted", "error"]
+
+[[steps]]
+run = "?(claim C)"
+expect = { rows = [
+  '(claim "P3: g is + in one frame and < in the other")',
+  '(claim "P4: s1 and s2 are must-values")',
+  '(claim "P6: two of the escaping closures are unique")',
+  '''(claim "P6: the self-loop frame's closure is summarized")''',
+] }
+
+# P1: factorial's top unwindings bind n uniquely; the self-loop frame's n
+# is summarized.
+[[steps]]
+run = '? (unique_binding "n" L)'
+expect = { exists = true }
+
+[[steps]]
+run = '? (summarized_binding "n" L)'
+expect = { exists = true }
+
+# P3: r2, the comparison result, is the one polyvariant address, and still
+# a unique binding.
+[[steps]]
+run = "?(polyvariant_flow X L)"
+expect = { rows = ['(polyvariant_flow "r2" [])'] }
+
+[[steps]]
+run = '? (polyvariant_flow "r2" L) (unique_binding "r2" L)'
+expect = { exists = true }

@@ -1,0 +1,31 @@
+# Pins that sudoku.slog solves the 17-clue "hid_a" puzzle, which needs
+# hidden singles as well as naked ones.
+# Run it with: ./slog studio scenario examples/sudoku/hid_a.scenario.toml
+format = 2
+id = "sudoku-hid-a"
+title = "Sudoku: the hid_a puzzle, which needs hidden singles"
+
+[program]
+main = "hid_a.slog"
+
+# A solution: one digit per cell, no digit twice among peers, clues kept.
+[[checks]]
+name = "a-consistent-board"
+slog = """
+table (two_digits int)
+table (clash int int)
+table (clue_lost int)
+rule (solved c d) (solved c e) (/= d e) --> (two_digits c)
+rule (solved c d) (peer c p) (solved p d) --> (clash c p)
+rule (given c d) ~(solved c d) --> (clue_lost c)
+"""
+empty = ["two_digits", "clash", "clue_lost", "error"]
+
+[[steps]]
+run = "?count (solved C D)"
+expect = { count = 81 }
+
+# The top row, 9 8 7 6 5 4 3 2 1, all derived. Rows are (cell digit).
+[[steps]]
+run = "?(solved C D) (< C 9)"
+expect = { rows = ["(0 9)", "(1 8)", "(2 7)", "(3 6)", "(4 5)", "(5 4)", "(6 3)", "(7 2)", "(8 1)"] }

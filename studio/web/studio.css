@@ -242,6 +242,23 @@ main { flex: 1; display: flex; min-height: 0; }
 .finding.error a { color: var(--red); }
 .finding.warning a { color: var(--yellow); }
 
+/* ---- Welcome strip: starting from an example (starters.js) -------------- */
+
+#welcome {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 4px 14px;
+  background: var(--chrome);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text);
+}
+#welcome[hidden] { display: none; }
+.welcome-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.welcome-text strong { color: var(--strong); font-weight: 600; }
+#welcome button.icon { height: 20px; padding: 0 6px; border-color: transparent; background: transparent; }
+
 /* ---- Panels: Ask, Review, Scenarios ------------------------------------ */
 
 button.panel-toggle[aria-pressed="true"] { background: var(--strong); border-color: var(--strong); color: var(--page); }

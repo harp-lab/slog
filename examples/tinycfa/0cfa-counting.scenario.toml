@@ -1,0 +1,32 @@
+# Pins the flow-set cardinalities 0cfa-counting.slog's header describes.
+# Run it with: ./slog studio scenario examples/tinycfa/0cfa-counting.scenario.toml
+format = 2
+id = "tinycfa-0cfa-counting"
+title = "0CFA with a flow-set cardinality measure"
+
+[program]
+main = "0cfa-counting.slog"
+
+[[checks]]
+name = "no-runtime-errors"
+slog = ""
+empty = ["error"]
+
+# id is bound once, to one lambda.
+[[steps]]
+run = "?(singleton X)"
+expect = { rows = ['(singleton "id")'] }
+
+# z really holds two lambdas; dummy gets both through 0CFA's merging.
+[[steps]]
+run = "?(polyvariant X)"
+expect = { rows = ['(polyvariant "z")', '(polyvariant "dummy")'] }
+
+# v and w are dead parameters: never bound.
+[[steps]]
+run = '? (store "v" V)'
+expect = { exists = false }
+
+[[steps]]
+run = '? (store "w" V)'
+expect = { exists = false }

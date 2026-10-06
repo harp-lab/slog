@@ -1,0 +1,43 @@
+# Pins a few of the counts mcfa-counting.slog's test programs T1-T9 explain.
+# Run it with: ./slog studio scenario examples/tinycfa/mcfa-counting.scenario.toml
+format = 2
+id = "tinycfa-mcfa-counting"
+title = "1-m-CFA with abstract counting"
+
+[program]
+main = "mcfa-counting.slog"
+
+# T7: every frame is entered once, so a sound counter pins every binding.
+[[checks]]
+name = "t7-everything-pinned"
+slog = """
+table (t7_var str)
+table (t7_blurred str ctx)
+rule (t7_var "p7") (t7_var "q7") (t7_var "r7") (t7_var "a7") (t7_var "b7") (t7_var "c7")
+rule (store x l v) (t7_var x) ~(pinned x l) --> (t7_blurred x l)
+"""
+empty = ["t7_blurred", "error"]
+
+# T1: y1's frame re-enters itself; it holds one closure, bound infinitely often.
+[[steps]]
+run = '? (bindblur "y1" L)'
+expect = { exists = true }
+
+# T6: per-address counting pins a6 and b6 though their frame count is inf.
+[[steps]]
+run = '? (pinned "a6" L) (pinned "b6" L)'
+expect = { exists = true }
+
+# T8: two different lambdas bind k8 at one site: rebound and poly.
+[[steps]]
+run = '? (rebound "k8" L) (poly "k8" L)'
+expect = { exists = true }
+
+# T9: the inner and outer calls of f9 are two addresses, each pinned.
+[[steps]]
+run = '?count (pinned "s9" L)'
+expect = { count = 2 }
+
+[[steps]]
+run = "?count (result V)"
+expect = { count = 7 }

@@ -1,0 +1,31 @@
+# Pins that sudoku.slog stalls on "escargot", a puzzle that needs search:
+# propagation alone places one digit beyond the 23 clues.
+# Run it with: ./slog studio scenario examples/sudoku/escargot.scenario.toml
+format = 2
+id = "sudoku-escargot"
+title = "Sudoku: escargot, where propagation stalls"
+
+[program]
+main = "escargot.slog"
+
+# What it does place is still consistent.
+[[checks]]
+name = "a-consistent-board"
+slog = """
+table (two_digits int)
+table (clash int int)
+table (clue_lost int)
+rule (solved c d) (solved c e) (/= d e) --> (two_digits c)
+rule (solved c d) (peer c p) (solved p d) --> (clash c p)
+rule (given c d) ~(solved c d) --> (clue_lost c)
+"""
+empty = ["two_digits", "clash", "clue_lost", "error"]
+
+[[steps]]
+run = "?count (solved C D)"
+expect = { count = 24 }
+
+# The one derived cell.
+[[steps]]
+run = "?(solved C D) ~(given C D)"
+expect = { rows = ["(65 1)"] }

@@ -1,0 +1,42 @@
+# Pins what domtree.slog's header promises of its doubly nested loop.
+# Run it with: ./slog studio scenario examples/domtree/domtree.scenario.toml
+format = 2
+id = "domtree"
+title = "Dominators, the dominator tree and natural loops"
+
+[program]
+main = "domtree.slog"
+
+# The entry dominates every reachable block, and every block itself.
+[[checks]]
+name = "dominance-basics"
+slog = """
+table (entry_misses str)
+table (self_misses str)
+rule (entry e) (reached n) ~(dom e n) --> (entry_misses n)
+rule (reached n) ~(dom n n) --> (self_misses n)
+"""
+empty = ["entry_misses", "self_misses", "error"]
+
+# Neither branch of the diamond dominates the join point; the branch node does.
+[[steps]]
+run = '?(idom "join" D)'
+expect = { rows = ['(idom "join" "body")'] }
+
+[[steps]]
+run = "?count (idom N D)"
+expect = { count = 8 }
+
+# Back edges found from dominance alone.
+[[steps]]
+run = "?(backedge A H)"
+expect = { rows = ['(backedge "join" "inner")', '(backedge "latch" "outer")'] }
+
+# Loop depth reads 0/1/2 like the source's indentation.
+[[steps]]
+run = "?(depth N K)"
+expect = { rows = [
+  '(depth "entry" 0)', '(depth "exit" 0)',
+  '(depth "outer" 1)', '(depth "latch" 1)',
+  '(depth "inner" 2)', '(depth "body" 2)', '(depth "then" 2)', '(depth "else" 2)', '(depth "join" 2)',
+] }

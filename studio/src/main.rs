@@ -27,6 +27,7 @@ mod results;
 mod rewind;
 mod scenario;
 mod session;
+mod starters;
 mod states;
 mod store;
 mod studio;
@@ -47,6 +48,7 @@ use std::time::Duration;
 
 const USAGE: &str = "usage: slog studio [--port N] [--no-open] [--compiled] [FILE]
        slog studio scenario [--json] FILE.scenario.toml...
+       slog studio starters [--slow]
        slog-studio serve --data DIR [--bind ADDRESS] [--max-lanes N] [--idle-minutes N]
        slog-studio user add NAME --data DIR
 
@@ -64,6 +66,10 @@ command run as `CMD analyze --program FILE --eval EVAL.json`, when set.
 
 `scenario` runs scenario files headless and reports each check and step;
 it exits non-zero if any fails. --json prints the reports as JSON.
+
+`starters` checks examples/starters.toml, the examples a new project can
+start from, then copies each starter as its project would be, checks it
+statically and runs its scenario; --slow runs the slow ones too.
 
 `serve` runs the studio for many users, on ADDRESS (default 127.0.0.1:7200).
 Each logs in as a user added by `user add` and has their own projects under
@@ -156,6 +162,7 @@ async fn main() -> ExitCode {
     let mut args = std::env::args().skip(1).peekable();
     let outcome = match args.peek().map(String::as_str) {
         Some("scenario") => scenarios(args.skip(1)).await,
+        Some("starters") => run_starters(args.skip(1)).await,
         Some("serve") => serve_shared(args.skip(1)).await.map(|()| true),
         Some("user") => accounts::user_command(args.skip(1)).map(|()| true),
         _ => serve_local(args).await.map(|()| true),
@@ -195,6 +202,65 @@ async fn scenarios(args: impl Iterator<Item = String>) -> Result<bool, String> {
         println!("{}", serde_json::to_string_pretty(&reports).map_err(|error| error.to_string())?);
     }
     Ok(reports.iter().all(scenario::Report::passed))
+}
+
+/// Check the starter catalog, then check and run each starter's scenario on
+/// a copy made as its project would be; true when all of it passed.
+async fn run_starters(args: impl Iterator<Item = String>) -> Result<bool, String> {
+    let slow = match args.collect::<Vec<_>>().as_slice() {
+        [] => false,
+        [flag] if flag == "--slow" => true,
+        _ => return Err(USAGE.to_owned()),
+    };
+    let root = project_root()?;
+    let catalog = starters::Catalog::load(&root)?;
+    let problems = catalog.problems();
+    for problem in &problems {
+        println!("✗ {problem}");
+    }
+    if !problems.is_empty() {
+        return Ok(false);
+    }
+    for skipped in &catalog.skipped {
+        println!("skipped {}: {}\n", skipped.file, skipped.why);
+    }
+    let checker = check::Checker::new(root.clone());
+    let workspace = std::env::temp_dir().join(format!("slog-starters-{}", std::process::id()));
+    let started = std::time::Instant::now();
+    let mut timings = Vec::new();
+    for starter in &catalog.starters {
+        if starter.slow && !slow {
+            println!("{} — slow: run with --slow\n", starter.id);
+            continue;
+        }
+        let began = std::time::Instant::now();
+        let directory = workspace.join(&starter.id);
+        let copy = catalog.copy(starter)?;
+        let scenario = catalog.scenario(starter);
+        let copied = directory.join(scenario.file_name().expect("a scenario file"));
+        std::fs::create_dir_all(&directory)
+            .and_then(|()| std::fs::copy(&scenario, &copied).map(drop))
+            .and_then(|()| copy.files.iter().try_for_each(|(path, text)| std::fs::write(directory.join(path), text)))
+            .map_err(|error| format!("cannot copy starter {}: {error}", starter.id))?;
+        let main = directory.join(&copy.main);
+        let checked = checker.check(&main, &Default::default()).await;
+        let passed = if checked.ok {
+            let report = scenario::run(&root, &copied).await?;
+            print_report(&report);
+            report.passed()
+        } else {
+            println!("{} — {}\n  ✗ the static check: {}\n", starter.id, starter.title, checked.describe(&main));
+            false
+        };
+        timings.push((starter.id.as_str(), began.elapsed().as_secs_f64(), passed));
+    }
+    let _ = std::fs::remove_dir_all(&workspace);
+    for (id, seconds, passed) in &timings {
+        println!("{id:<24} {seconds:>6.1}s  {}", if *passed { "PASS" } else { "FAIL" });
+    }
+    let failed = timings.iter().filter(|(_, _, passed)| !passed).count();
+    println!("{} starters, {failed} failed, in {:.0}s", timings.len(), started.elapsed().as_secs_f64());
+    Ok(failed == 0)
 }
 
 fn print_report(report: &scenario::Report) {

@@ -9,6 +9,7 @@ import { initAgent } from "./agent.js";
 import { createHistory } from "./history.js";
 import { createHints } from "./hints.js";
 import { createPalette } from "./palette.js";
+import { createStarters } from "./starters.js";
 import { createChangePanel } from "./changes.js";
 import { createProposals } from "./proposals.js";
 import { renderEntry } from "./render.js";
@@ -56,6 +57,7 @@ const transmit = (message) => {
 
 const editor = await createEditor($("editor"), {
   onChange: () => {
+    starters.hide();
     files.changed();
     check.changed();
     lint.changed();
@@ -85,9 +87,12 @@ const files = createFiles({
     breakpoints.receive(path, points);
     renderBreakpoints();
   },
+  onExamples: () => palette.open("New from example"),
 });
 // Every message goes behind the edits already made, so it sees them.
 const send = files.send;
+// New projects from the examples, and the strip that offers them.
+const starters = createStarters({ send, run: evaluate, browse: () => palette.open("New from example") });
 // Proposals are reviewed in the editor; the change graph and the history
 // strip show only when asked for or when they matter.
 const changes = createChangePanel($("work"));
@@ -203,6 +208,7 @@ function save() {
 }
 
 function evaluate() {
+  starters.hide();
   files.flush();
   send({ t: "evaluate" });
 }
@@ -233,6 +239,7 @@ const receive = {
     history.load();
     renderStatus();
     check.changed();
+    starters.init(snapshot);
   },
   // another tab's edit, an accepted proposal, a restored version
   text() {
@@ -486,7 +493,7 @@ function connect() {
   };
   socket.onmessage = (message) => {
     const data = JSON.parse(message.data);
-    for (const handlers of [files.receive, receive, versions.receive, assist.receive, check.receive, explorer.receive]) handlers[data.t]?.(data);
+    for (const handlers of [files.receive, receive, versions.receive, assist.receive, check.receive, explorer.receive, starters.receive]) handlers[data.t]?.(data);
   };
   socket.onclose = () => {
     failedAttempts += 1;
@@ -820,6 +827,7 @@ const palette = createPalette(() => {
     { title: "History: every version of the project, and its branches", run: versions.open },
     { title: "Edit the analysis: slog-lint, over this program's facts", run: lint.edit },
     { title: "New file", run: () => $("new-file").click() },
+    ...starters.commands(),
     { title: "Focus the editor", keys: "Esc", run: () => editor.focus() },
     { title: "Focus the REPL prompt", keys: "Ctrl+`", run: () => prompt.focus() },
     { title: "Structured editing", note: controls.structured() ? "on" : "off", run: () => controls.setStructured(!controls.structured()) },

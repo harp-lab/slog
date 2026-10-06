@@ -1,0 +1,39 @@
+# Pins the components tarjan.slog finds: the same as scc.slog's.
+# Run it with: ./slog studio scenario examples/scc/tarjan.scenario.toml
+format = 2
+id = "scc-tarjan"
+title = "Strongly connected components by Tarjan's algorithm"
+
+[program]
+main = "tarjan.slog"
+
+# Every vertex is in exactly one component, which contains it.
+[[checks]]
+name = "one-component-each"
+slog = """
+table (outside any)
+table (twice any)
+rule (scc v c) (= m (cmem c v)) (< m 1) --> (outside v)
+rule (scc v c1) (scc v c2) (/= c1 c2) --> (twice v)
+"""
+empty = ["outside", "twice", "error"]
+
+[[steps]]
+run = "?count (component C)"
+expect = { count = 4 }
+
+[[steps]]
+run = "?count (scc V C)"
+expect = { count = 7 }
+
+[[steps]]
+run = "? (scc 1 C) (scc 2 C) (scc 3 C)"
+expect = { exists = true }
+
+[[steps]]
+run = "? (scc 4 C) (scc 5 C)"
+expect = { exists = true }
+
+[[steps]]
+run = "? (scc 5 C) (scc 6 C)"
+expect = { exists = false }
