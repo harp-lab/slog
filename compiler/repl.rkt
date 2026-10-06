@@ -8633,7 +8633,7 @@
       (define state (make-server-state))
       (define (run! line) (dispatch-command state line))
       (define (text result) (string-join (hash-ref result 'lines) "\n"))
-      (void (run! "break examples/tinycfa/0cfa.slog:46 match (ret v (ar ea k))"))
+      (void (run! "break examples/tinycfa/0cfa.slog:50 match (ret v (ar ea k))"))
       (define stop (run! "run examples/tinycfa/0cfa.slog"))
       (check-equal? (hash-ref stop 'title) "Paused · break b1")
       ;; where it stands, as data: the stratum and iteration, the port, the
@@ -8641,7 +8641,7 @@
       (let ([at (hash-ref stop 'at)])
         (check-equal? (list (hash-ref at 'port) (hash-ref at 'relation) (hash-ref at 'phase))
                       '("drive" "ret" "read"))
-        (check-regexp-match #px"^0cfa\\.slog:46:" (hash-ref at 'source))
+        (check-regexp-match #px"^0cfa\\.slog:50:" (hash-ref at 'source))
         (check-true (exact-positive-integer? (hash-ref at 'iteration)))
         (check-true (<= 1 (hash-ref at 'driver-row) (hash-ref at 'driver-rows)))
         (check-equal? (map first (hash-ref at 'bindings)) '("v" "ea" "k")))
