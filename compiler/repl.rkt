@@ -521,6 +521,9 @@
    "   ... when (OP a b) ... ignore N  log   conditions over the pattern's and"
    "                      the rule's variables; skip N hits; record, don't stop"
    "  breaks | unbreak bN list the standing breaks, or remove one"
+   "  rerun               the program last run, from scratch in a fresh session,"
+   "                      with the breaks armed: a break armed after the program"
+   "                      reached its fixpoint stops only when it runs again"
    "  p | print VAR       at a held stop, a variable of the stopped rule (a bare"
    "                      VAR no command claims prints it too); ?queries there"
    "                      read the run's working state, the rule's variables"
@@ -678,6 +681,7 @@
     (("schema") ("") "the daemon's raw live schema")
     (("pipeline") ("") "the daemon's raw versioned pipeline")
     (("run") ("PATH") "compile and run a .slog program")
+    (("rerun") ("") "the program last run, from scratch, with the breaks armed")
     (("check") ("PATH") "check a program statically, without running it")
     (("scratch") ("") "the scratch layer's accumulated program")
     (("keep") ("scratch as FILE.slog") "export the scratch layer to a file and promote it")
@@ -3320,6 +3324,104 @@
           (if ignore `((ignore ,ignore)) '())
           (if log? '((log #t)) '())))
 
+;; ---- after the fixpoint: breaks that cannot stop, and `rerun` ---------------
+;;
+;; A break stops a run at an interpreter port, and only a run has ports:
+;; once this session's program has reached its fixpoint nothing executes
+;; again, and incremental maintenance (`add`, `del`, `flush`) runs counted
+;; strata, where breaks never stop.  So a break armed after a run waits for
+;; the next one, and the debugger says so rather than staying silent.
+;; `rerun` makes the next one: the last program run, from scratch in a fresh
+;; session, with this session's breaks (and demand recording) armed again.
+
+;; rs -> the `break` lines this session armed, by id, with whether each is
+;; enabled: what `rerun` arms again.
+(define repl-break-lines (make-weak-hasheq))
+
+(define (session-break-lines rs)
+  (hash-ref! repl-break-lines rs make-hash))
+
+;; The break id a `break` answer names: "Break b3" or "Logpoint b3".
+(define (break-result-id result)
+  (match (regexp-match #px"^(?:Break|Logpoint) (b[0-9]+)$" (hash-ref result 'title ""))
+    [(list _ id) id]
+    [_ #f]))
+
+(define (remember-break! state argument result)
+  (define id (break-result-id result))
+  (define rs (current-repl-session state))
+  (when (and id rs)
+    (hash-set! (session-break-lines rs) id
+               (cons (string-append "break " (string-trim argument)) #t)))
+  result)
+
+(define (forget-break! state id)
+  (define rs (current-repl-session state))
+  (when rs (hash-remove! (session-break-lines rs) id)))
+
+(define (break-enabled! state id on?)
+  (define rs (current-repl-session state))
+  (define entry (and rs (hash-ref (session-break-lines rs) id #f)))
+  (when entry (hash-set! (session-break-lines rs) id (cons (car entry) on?))))
+
+;; The program this session last ran to its fixpoint, while nothing is held.
+(define (settled-program state)
+  (define rs (current-repl-session state))
+  (and rs (not (server-state-held state)) (hash-ref repl-last-run rs #f)))
+
+(define (settled-note program)
+  (format "~a already reached its fixpoint, so nothing executes again; `rerun` reruns it from scratch with the breaks armed"
+          program))
+
+;; `continue`, `step` and the rest with nothing held: say why, and how to
+;; get a run to stop in.
+(define (nothing-held-error verb what)
+  (lambda (state)
+    (define program (settled-program state))
+    (define rs (current-repl-session state))
+    (if (and program rs (positive? (hash-count (repl-session-breaks rs))))
+        (error 'debugger "~a: nothing is running -- ~a" verb (settled-note program))
+        (error 'debugger what))))
+
+;; `rerun`: the last program run, from scratch, with the breaks armed.
+(define (rerun-result state argument)
+  (unless (string=? (string-trim argument) "")
+    (error 'rerun "rerun takes no arguments; it reruns the program last run"))
+  (when (server-state-held state)
+    (error 'rerun "a run is held; abort it first (or continue it to the end)"))
+  (define rs (or (current-repl-session state)
+                 (error 'rerun "nothing has run in this session; `run PATH` first")))
+  (when (repl-session-database rs)
+    (error 'rerun "~a is a saved database; rerun starts from nothing, so open a scratch session and `run` there"
+           (repl-session-database rs)))
+  (define program (or (hash-ref repl-last-run rs #f)
+                      (error 'rerun "nothing has run in this session; `run PATH` first")))
+  (define breaks
+    (sort (hash->list (session-break-lines rs)) <
+          #:key (lambda (entry) (string->number (substring (car entry) 1)))))
+  (define calls? (demand-debug-on? (session-demand rs)))
+  (dispatch-command* state "discard session")
+  (when calls? (dispatch-command* state "calls on"))
+  ;; in the order they were armed, so their ids come out as before when
+  ;; none was removed in between
+  (for ([entry (in-list breaks)])
+    (define re (dispatch-command* state (cadr entry)))
+    (define id (break-result-id re))
+    (remember-break! state (substring (cadr entry) (string-length "break ")) re)
+    (unless (or (cddr entry) (not id))
+      (dispatch-command* state (format "disable ~a" id))
+      (break-enabled! state id #f)))
+  (define result (dispatch-command* state (format "run ~a" program)))
+  (hash-set result 'lines
+            (append (list (format "reran ~a from scratch in a fresh session, ~a armed"
+                                  program
+                                  (match (length breaks)
+                                    [0 "no breaks"]
+                                    [1 "1 break"]
+                                    [n (format "~a breaks" n)]))
+                          "changes made after the last run (add, del, scratch rules) were not replayed")
+                    (hash-ref result 'lines '()))))
+
 ;; ---- demand relations: the call tree and its breakpoints ---------------------
 ;;
 ;;   calls on | off              record each run's demand calls (the break log)
@@ -5806,11 +5908,15 @@
     ["peek" (peek-result state argument)]
     ["trace" (trace-result state argument)]
     ["whynot" (whynot-result state argument)]
-    ["break" (break-result state argument)]
-    ["unbreak" (unbreak-result state argument)]
+    ["break" (remember-break! state argument (break-result state argument))]
+    ["unbreak" (begin0 (unbreak-result state argument)
+                       (forget-break! state (string-trim argument)))]
+    ["rerun" (rerun-result state argument)]
     ["breaks" (breaks-result state)]
-    ["enable" (enable-break-result state argument #t)]
-    ["disable" (enable-break-result state argument #f)]
+    ["enable" (begin0 (enable-break-result state argument #t)
+                      (break-enabled! state (string-trim argument) #t))]
+    ["disable" (begin0 (enable-break-result state argument #f)
+                       (break-enabled! state (string-trim argument) #f))]
     ["calls" (demand-result state argument)]
     ["logs" (logs-result state argument)]
     [(or "p" "print") (print-result state argument)]
@@ -6140,17 +6246,21 @@
     ;; held thread otherwise), so the honest answer is that there is no
     ;; pause to resolve -- never a bare "unknown command".
     [(or "commit" "continue" "abort")
-     (error 'debugger
-            (format (string-append
-                     "~a resolves a pause at the pre-commit gate; no run is "
-                     "held (arm one with `watch REL level 1`)")
-                    verb))]
+     ((nothing-held-error
+       verb
+       (format (string-append
+                "~a resolves a pause at the pre-commit gate; no run is "
+                "held (arm one with `watch REL level 1`)")
+               verb))
+      state)]
     [(or "step" "frames" "finish")
-     (error 'debugger
-            (format (string-append
-                     "~a works a run held at the pre-commit gate; no run is "
-                     "held (arm one with `watch REL level 1`)")
-                    verb))]
+     ((nothing-held-error
+       verb
+       (format (string-append
+                "~a works a run held at the pre-commit gate; no run is "
+                "held (arm one with `watch REL level 1`)")
+               verb))
+      state)]
     ["replay"
      (error 'debugger
             (string-append
@@ -6170,7 +6280,29 @@
     [_
      (error 'command
             (format "unknown command ~a; type :help for the current command set" verb))])]))
-  (attach-session-state state result))
+  (attach-session-state state (with-settled-note state verb result)))
+
+;; A break armed while the program is at its fixpoint, the listing then, and
+;; an edit incremental maintenance ran: each says the breaks wait for a run.
+(define (with-settled-note state verb result)
+  (define program (settled-program state))
+  (define rs (current-repl-session state))
+  (define armed? (and rs (positive? (hash-count (repl-session-breaks rs)))))
+  (define note
+    (cond
+      [(not (and program armed? (hash? result))) #f]
+      [(and (equal? verb "break") (member (hash-ref result 'kind #f) '("break")))
+       (format "armed; won't stop until the program runs again: ~a" (settled-note program))]
+      [(equal? verb "breaks") (settled-note program)]
+      [(and (member verb '("add" "del" "flush")) (hash-ref result 'change #f)
+            (not (equal? (hash-ref result 'kind #f) "paused")))
+       "breaks do not stop during incremental maintenance (add, del, flush); `rerun` reruns the program from scratch with them armed"]
+      [else #f]))
+  (if note
+      (hash-set* result
+                 'lines (append (hash-ref result 'lines '()) (list note))
+                 'settled #t)
+      result))
 
 ;; Deterministic transcript projection for the server contract.  This is a
 ;; test harness, not a second interactive frontend. It deliberately retains
@@ -8466,6 +8598,42 @@
                     before)
       (check-not-equal? (hash-ref (run! "continue") 'kind) "error")
       (void (run! "abort"))
+      (void (run! ":quit"))))
+
+  ;; After the fixpoint nothing executes again: a break armed then, the
+  ;; listing, `continue`, and an edit maintenance ran all say the break waits
+  ;; for a run, and `rerun` makes one -- from scratch, the breaks armed --
+  ;; which stops at the break.
+  (let ([break-environment (environment-variables-copy test-environment)])
+    (environment-variables-set! break-environment #"SLOG_OPT" #"interp")
+    (environment-variables-set! break-environment #"SLOG_THREADS" #"1")
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables break-environment])
+      (define state (make-server-state))
+      (define (run! line) (dispatch-command state line))
+      (define (text result) (string-join (hash-ref result 'lines) "\n"))
+      (check-exn #px"nothing has run in this session" (lambda () (run! "rerun")))
+      (void (run! "run tests/reach.slog"))
+      (define armed (run! "break tests/reach.slog:14"))
+      (check-regexp-match #px"armed; won't stop until the program runs again: tests/reach\\.slog already reached its fixpoint"
+                          (text armed))
+      (check-equal? (hash-ref armed 'settled) #t)
+      (check-regexp-match #px"`rerun` reruns it" (text (run! "breaks")))
+      (check-exn #px"continue: nothing is running -- tests/reach\\.slog already reached its fixpoint"
+                 (lambda () (run! "continue")))
+      (check-regexp-match #px"breaks do not stop during incremental maintenance"
+                          (text (run! "add edge 7 8")))
+      (void (run! "break tests/reach.slog:9"))
+      (void (run! "disable b2"))
+      (define rerun (run! "rerun"))
+      (check-equal? (hash-ref rerun 'title) "Paused · break b1")
+      (check-regexp-match #px"port b1:fire@reach\\.slog:14:1" (text rerun))
+      ;; from scratch: the edge added after the first run is gone, and the
+      ;; disabled break came back disabled
+      (check-regexp-match #px"b2  reach\\.slog:9 · 0 hits · disabled" (text (run! "breaks")))
+      (let loop ([r (run! "continue")])
+        (when (equal? (hash-ref r 'kind) "paused") (loop (run! "continue"))))
+      (check-regexp-match #px"3 rows match" (text (run! "?count (edge X Y)")))
       (void (run! ":quit"))))
 
   ;; A continuation the daemon declines leaves the run where it was.  Replay
