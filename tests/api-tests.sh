@@ -33,6 +33,9 @@ timeout 300 racket compiler/run.rkt --no-banner --sizes tests/reach.slog \
   > out/api-reach.log 2>&1
 expect "sizes-edge"  "(relation_size edge 3)" out/api-reach.log
 expect "sizes-path"  "(relation_size path 6)" out/api-reach.log
+# ... closed by a terminator counting them, so a reader knows when to stop
+expect "sizes-end" "(sizes-end $(grep -c '^(relation_size ' out/api-reach.log))" \
+  out/api-reach.log
 
 # struct interning counts distinct contents (structs.slog inserts (pair 1 2) twice)
 timeout 300 racket compiler/run.rkt --no-banner --sizes tests/structs.slog \

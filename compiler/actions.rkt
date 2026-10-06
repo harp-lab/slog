@@ -18,7 +18,8 @@
 ;;   (action-so `(refresh-rel ,db-name ,rel)) reload iff changed on disk;
 ;;                                           reports (refreshed <rel> 0|1)
 ;;   (action-so `(sizes))                    report (relation_size <rel> <n>)
-;;                                           for every indexed relation
+;;                                           for every indexed relation, then
+;;                                           (sizes-end <count>)
 ;;   (action-so `(schema))                   report (schema-rel <kind> ...)
 ;;                                           for every non-empty relation of
 ;;                                           the LIVE db, then (schema-end)
@@ -649,15 +650,21 @@
       "            + \" \" + std::format(\"{:016x}\", sg.second) + \")\");\n"
       "  }\n"
       "  d->emit(\"(sig-end)\");\n")]
+    ;; Terminated by (sizes-end n), like every other multi-line reply: the
+    ;; relation count is the daemon's to know, not the reader's.
     [`(sizes)
      (string-append
       "  std::vector<std::pair<std::string, slog::Relation*>> rels(\n"
       "      d->db()->getRelations().begin(), d->db()->getRelations().end());\n"
       "  std::sort(rels.begin(), rels.end());\n"
+      "  size_t n = 0;\n"
       "  for (auto& kv : rels)\n"
-      "    if (kv.second->getAnyIndex())\n"
+      "    if (kv.second->getAnyIndex()) {\n"
       "      d->emit(\"(relation_size \" + kv.first + \" \"\n"
-      "              + std::to_string(kv.second->tupleCount()) + \")\");\n")]
+      "              + std::to_string(kv.second->tupleCount()) + \")\");\n"
+      "      ++n;\n"
+      "    }\n"
+      "  d->emit(\"(sizes-end \" + std::to_string(n) + \")\");\n")]
     ;; Schema truth from the LIVE db (docs/finish-collections.md §B): one
     ;; s-expr per relation, name-sorted, then (schema-end) -- exactly the
     ;; information relation directory names carry (kind, arity, struct id,

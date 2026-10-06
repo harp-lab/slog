@@ -88,7 +88,7 @@ an `-O2` replacement in the background.
 | `--no-banner` | suppress the startup banner |
 | `--version` | print the Slog version and exit; the current parser still expects the positional command shape |
 | `-v`, `--verbose` | print paths and driver progress details |
-| `--sizes` | print `(relation_size NAME COUNT)` after the run |
+| `--sizes` | print `(relation_size NAME COUNT)` after the run, then `(sizes-end N)` |
 | `--debug-dir DIR` | create `DIR` and write nonempty relations as `.csv` files |
 
 The `.csv` files are space-separated runtime renderings. Strings remain
