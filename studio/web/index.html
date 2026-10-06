@@ -36,10 +36,13 @@
       <button id="restart" class="icon" title="Restart the session server (its session is discarded)" aria-label="Restart the session server">
         <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.6-3.7" fill="none" stroke-width="1.6"/><path d="M13.5 2v3.5H10"/></svg>
       </button>
-      <button id="scenarios-toggle" class="icon" title="Scenarios: tests and debugging sessions beside the program" aria-label="Scenarios" aria-pressed="false">
-        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4.5l1.5 1.5 2.5-3M2.5 10.5l1.5 1.5 2.5-3" fill="none" stroke-width="1.5"/><path d="M8.5 4h5M8.5 10h5" fill="none" stroke-width="1.5"/></svg>
-        Scenarios
+    </div>
+    <div class="group" role="group" aria-label="Panels">
+      <button class="panel-toggle ask" data-tab="ask" aria-pressed="false" title="Ask the agent to build or change the program">✦ Ask</button>
+      <button class="panel-toggle" data-tab="review" aria-pressed="false" title="Proposals waiting for you to accept or reject">
+        Review <span id="pending" class="count" hidden></span>
       </button>
+      <button class="panel-toggle" data-tab="scenarios" aria-pressed="false" title="Scenarios: tests and debugging sessions beside the program">Scenarios</button>
     </div>
   </div>
 </header>
@@ -65,9 +68,12 @@
     </section>
   </div>
   <aside id="drawer" hidden>
-    <h2>Scenarios</h2>
-    <p class="hint">Files named <code>*.scenario.toml</code> beside the program.</p>
-    <div id="scenario-list"></div>
+    <div id="ask-tab" class="tab" data-tab="ask"></div>
+    <div id="review-tab" class="tab" data-tab="review"></div>
+    <div class="tab" data-tab="scenarios">
+      <p class="hint">Files named <code>*.scenario.toml</code> beside the program.</p>
+      <div id="scenario-list"></div>
+    </div>
   </aside>
 </main>
 <footer id="status">

@@ -250,10 +250,89 @@ main { flex: 1; display: flex; min-height: 0; }
   box-shadow: 0 0 0 2px rgba(220, 50, 47, 0.2);
 }
 
+/* ---- Panels: Ask, Review, Scenarios ------------------------------------ */
+
+button.panel-toggle[aria-pressed="true"] { background: var(--strong); border-color: var(--strong); color: var(--page); }
+button.panel-toggle.ask { color: var(--blue); border-color: rgba(38, 139, 210, 0.5); }
+button.panel-toggle.ask[aria-pressed="true"] { background: var(--blue); border-color: var(--blue); color: white; }
+.count {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--orange);
+  color: white;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+}
+.tab { display: flex; flex-direction: column; min-height: 100%; }
+#ask-tab { height: 100%; }
+.thread-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.thread-title { font-weight: 600; color: var(--strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.threads { flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 6px; min-height: 0; }
+.thread-item {
+  height: auto;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 8px;
+  padding: 8px 10px;
+  text-align: left;
+  background: var(--surface);
+}
+.thread-item .thread-status { grid-column: 1 / -1; color: var(--muted); font-weight: 400; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thread-status.running { color: var(--yellow); }
+.message { padding: 7px 10px; border-radius: var(--radius); white-space: pre-wrap; font-size: 12.5px; line-height: 1.5; }
+.message.user { background: var(--strong); color: var(--page); align-self: flex-end; max-width: 90%; }
+.message.assistant { background: var(--surface); border: 1px solid var(--border); color: var(--strong); }
+.message.tool { color: var(--muted); font: 11.5px var(--mono); padding: 0 10px; }
+.message.tool::before { content: "⚙ "; }
+.message.error { background: var(--red-tint); color: var(--red); }
+.message.draft { opacity: 0.7; }
+.phase { color: var(--yellow); font-style: italic; font-size: 12px; padding: 0 10px; }
+.composer { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.composer textarea {
+  resize: vertical;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: white;
+  color: var(--strong);
+  font: 13px/1.5 var(--sans);
+  outline: none;
+}
+.composer textarea:focus { border-color: var(--blue); }
+.composer-row { display: flex; align-items: center; gap: 8px; }
+.composer-row .where { flex: 1; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.changeset { margin-bottom: 14px; }
+.changeset-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.changeset-title { flex: 1; font-weight: 600; color: var(--strong); }
+.op { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); padding: 8px 10px; margin-bottom: 6px; }
+.op.accepted { border-left: 3px solid var(--green); opacity: 0.7; }
+.op.rejected { border-left: 3px solid var(--muted); opacity: 0.55; }
+.op-head { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.op-kind { font: 600 11px var(--mono); text-transform: uppercase; letter-spacing: 0.04em; color: var(--blue); }
+.op-id { color: var(--muted); }
+.op-flag { margin-left: auto; font-size: 11px; font-weight: 600; }
+.op-flag.warn { color: var(--orange); }
+.op-flag.accepted { color: var(--green); }
+.op-flag.rejected { color: var(--muted); }
+.op-note { margin: 4px 0 6px; color: var(--strong); }
+.diff { margin: 0; padding: 6px 0; font: 12px/1.5 var(--mono); border-radius: 4px; background: white; overflow-x: auto; }
+.diff div { padding: 0 8px; white-space: pre; }
+.diff .add { background: #eef8e9; color: #4c5a00; }
+.diff .del { background: var(--red-tint); color: #a82422; }
+.diff .same { color: var(--muted); }
+.op-actions { display: flex; gap: 6px; margin-top: 8px; }
+
 /* ---- Scenarios drawer -------------------------------------------------- */
 
 #drawer {
-  width: 380px;
+  width: 420px;
+  display: flex;
+  flex-direction: column;
   border-left: 1px solid var(--border);
   background: var(--chrome);
   overflow: auto;

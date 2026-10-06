@@ -3,6 +3,7 @@
 
 import { createEditor } from "./editor.js";
 import { formAt, forms } from "./forms.js";
+import { initAgent } from "./agent.js";
 import { renderEntry } from "./render.js";
 
 const $ = (id) => document.getElementById(id);
@@ -87,6 +88,7 @@ const receive = {
     document.title = `${snapshot.file.split("/").pop()} — Slog Studio`;
     editor.set(snapshot.text);
     editor.setBreakpoints(snapshot.breakpoints);
+    agent.snapshot(snapshot);
     history.load();
     renderSaved();
     renderStatus();
@@ -147,6 +149,15 @@ const receive = {
   },
   notice({ message }) {
     note(message);
+  },
+  review(view) {
+    agent.review(view);
+  },
+  agent(event) {
+    agent.agent(event);
+  },
+  asked(reply) {
+    agent.asked(reply);
   },
   scenarios({ names }) {
     const known = state.scenarios;
@@ -365,11 +376,28 @@ function line(className, text) {
   return Object.assign(document.createElement("div"), { className, textContent: text });
 }
 
-$("scenarios-toggle").addEventListener("click", () => {
+// The drawer shows one tab; its header button toggles it.
+function showTab(tab) {
   const drawer = $("drawer");
-  drawer.hidden = !drawer.hidden;
-  $("scenarios-toggle").setAttribute("aria-pressed", String(!drawer.hidden));
-  if (!drawer.hidden) send({ t: "scenarios" });
+  const open = !(drawer.hidden === false && drawer.dataset.tab === tab);
+  drawer.hidden = !open;
+  drawer.dataset.tab = tab;
+  for (const pane of drawer.querySelectorAll(".tab")) pane.hidden = pane.dataset.tab !== tab;
+  for (const button of document.querySelectorAll(".panel-toggle")) {
+    button.setAttribute("aria-pressed", String(open && button.dataset.tab === tab));
+  }
+  if (open && tab === "scenarios") send({ t: "scenarios" });
+}
+for (const button of document.querySelectorAll(".panel-toggle")) {
+  button.addEventListener("click", () => showTab(button.dataset.tab));
+}
+
+const agent = initAgent({
+  send,
+  onPending(count) {
+    $("pending").hidden = count === 0;
+    $("pending").textContent = String(count);
+  },
 });
 
 // Layout -----------------------------------------------------------------

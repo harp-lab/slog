@@ -12,7 +12,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -34,6 +34,12 @@ pub fn router(studio: Arc<Studio>, token: String) -> Router {
         .route("/", get(|| async { asset("index.html") }))
         .route("/static/{name}", get(|Path(name): Path<String>| async move { asset(&name) }))
         .route("/ws", get(socket))
+        .route(
+            "/mcp",
+            post(|State(web): State<Arc<Web>>, headers: HeaderMap, body: String| async move {
+                crate::mcp::handle(web.studio.clone(), headers, body).await
+            }),
+        )
         .with_state(web)
 }
 
@@ -45,6 +51,7 @@ fn asset(name: &str) -> Response {
         "editor.js" => (include_str!("../web/editor.js"), "text/javascript; charset=utf-8"),
         "render.js" => (include_str!("../web/render.js"), "text/javascript; charset=utf-8"),
         "forms.js" => (include_str!("../web/forms.js"), "text/javascript; charset=utf-8"),
+        "agent.js" => (include_str!("../web/agent.js"), "text/javascript; charset=utf-8"),
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
     ([(header::CONTENT_TYPE, kind), (header::CACHE_CONTROL, "no-cache")], body).into_response()
@@ -72,6 +79,12 @@ enum Request {
     Scenarios,
     /// Run one of them by name.
     RunScenario { name: String },
+    /// Ask the agent, following up in `thread` or starting a new one.
+    Ask { thread: Option<u32>, message: String },
+    StopThread { thread: u32 },
+    Accept { op: u32 },
+    Reject { op: u32 },
+    AcceptChangeset { changeset: u32 },
 }
 
 /// Messages meant for one tab only; everything else is a broadcast `Event`.
@@ -84,6 +97,8 @@ enum Reply<'a> {
     /// The edit was refused: this is the current text.
     Reset { version: u64, text: &'a str },
     Scenarios { names: Vec<String> },
+    /// The thread an ask went to (new threads get an id here).
+    Asked { thread: u32 },
     Notice { message: &'a str },
 }
 
@@ -116,7 +131,7 @@ fn same_origin(headers: &HeaderMap) -> bool {
 }
 
 /// Comparison whose time does not depend on where the inputs differ.
-fn same_secret(given: &str, expected: &str) -> bool {
+pub(crate) fn same_secret(given: &str, expected: &str) -> bool {
     given.len() == expected.len()
         && given
             .bytes()
@@ -230,6 +245,34 @@ fn handle(studio: &Arc<Studio>, connection: u64, text: &str, direct: &mpsc::Unbo
         }
         Request::RunScenario { name } => {
             tokio::spawn(async move { studio.run_scenario(&name).await });
+        }
+        Request::Ask { thread, message } => match studio.ask(thread, message) {
+            Ok(thread) => {
+                let _ = direct.send(json(&Reply::Asked { thread }));
+            }
+            Err(message) => {
+                let _ = direct.send(json(&Reply::Notice { message: &message }));
+            }
+        },
+        Request::StopThread { thread } => {
+            studio.stop_thread(thread);
+        }
+        Request::Accept { op } => {
+            if let Err(message) = studio.accept(op) {
+                let _ = direct.send(json(&Reply::Notice { message: &message }));
+            }
+        }
+        Request::Reject { op } => {
+            if let Err(message) = studio.reject(op) {
+                let _ = direct.send(json(&Reply::Notice { message: &message }));
+            }
+        }
+        Request::AcceptChangeset { changeset } => {
+            let skipped = studio.accept_changeset(changeset);
+            if !skipped.is_empty() {
+                let message = format!("not accepted: {}", skipped.join("; "));
+                let _ = direct.send(json(&Reply::Notice { message: &message }));
+            }
         }
     }
 }

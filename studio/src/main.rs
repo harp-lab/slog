@@ -2,7 +2,11 @@
 //! a REPL over its evaluation below — served from loopback like a local
 //! notebook. `./slog studio FILE` runs it.
 
+mod agent;
+mod ask;
 mod lane;
+mod mcp;
+mod review;
 mod scenario;
 mod session;
 mod studio;
@@ -193,7 +197,9 @@ async fn serve(args: impl Iterator<Item = String>) -> Result<(), String> {
     // The interpreter skips the C++ toolchain, which is what an edit-evaluate
     // loop wants; it is also what breakpoints and stepping need.
     let mode = if options.compiled { Mode::Compiled } else { Mode::Fast };
-    let studio = Arc::new(Studio::new(file, text, Lane::new(root, mode)));
+    // Admits this launch's agent runs to /mcp; they get it in a 0600 file.
+    let mcp_token = private_token().map_err(|error| format!("cannot create a token: {error}"))?;
+    let studio = Arc::new(Studio::new(file, text, Lane::new(root, mode), mcp_token));
     studio.relay_lane();
     // Start the session server now so the first evaluation does not wait.
     web::warm(studio.clone());
@@ -202,6 +208,7 @@ async fn serve(args: impl Iterator<Item = String>) -> Result<(), String> {
         .await
         .map_err(|error| format!("cannot listen on 127.0.0.1:{}: {error}", options.port))?;
     let address = listener.local_addr().map_err(|error| error.to_string())?;
+    studio.set_port(address.port());
     let token = launch_token(&studio_home()?)?;
     let url = format!("http://{address}/#{token}");
     println!("Slog Studio: {url}");

@@ -5,12 +5,14 @@
 //! version it edited; an edit to a superseded version is refused and answered
 //! with the current text, so two tabs cannot silently overwrite each other.
 
-use crate::lane::{Lane, LaneStatus};
+use crate::agent::{Agent, AgentEvent};
+use crate::lane::{Lane, LaneStatus, Mode};
+use crate::review::{Review, ReviewView};
 use crate::scenario::{self, Report};
 use crate::session::{Outcome, Session, SessionView, run_argument};
 use serde::Serialize;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 use tokio::sync::{Mutex, broadcast};
 
@@ -24,6 +26,9 @@ pub struct Snapshot {
     pub lane: LaneStatus,
     pub session: SessionView,
     pub breakpoints: Vec<u32>,
+    pub review: ReviewView,
+    /// Why the agent cannot run here, if it cannot.
+    pub agent_unavailable: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -45,6 +50,10 @@ pub enum Event {
         outcome: Outcome,
     },
     Evaluation { phase: Phase, ok: bool, ms: u64 },
+    /// Progress of an agent turn.
+    Agent(AgentEvent),
+    /// Threads, changesets or proposals changed.
+    Review(ReviewView),
     /// A scenario beside the program started, or finished with a report or
     /// an error that kept it from running.
     Scenario {
@@ -73,15 +82,15 @@ pub enum Origin {
 
 const SCENARIO_SUFFIX: &str = ".scenario.toml";
 
-struct Doc {
-    text: String,
-    version: u64,
-    saved_version: u64,
+pub(crate) struct Doc {
+    pub text: String,
+    pub version: u64,
+    pub saved_version: u64,
 }
 
 pub struct Studio {
-    file: PathBuf,
-    doc: std::sync::Mutex<Doc>,
+    pub(crate) file: PathBuf,
+    pub(crate) doc: std::sync::Mutex<Doc>,
     /// 1-based lines whose rule a debug run stops in (`break FILE:LINE`).
     breakpoints: std::sync::Mutex<Vec<u32>>,
     pub lane: Lane,
@@ -89,12 +98,28 @@ pub struct Studio {
     /// from different tabs never interleave within one.
     session: Mutex<Session>,
     events: broadcast::Sender<Event>,
+    pub agent: Agent,
+    pub(crate) review: std::sync::Mutex<Review>,
+    /// Evaluates agents' proposed programs, apart from the author's session.
+    pub(crate) preview: Lane,
+    /// The preview lane's session, and the (thread, text hash) of the
+    /// proposed program it holds, so a query runs against what it names.
+    pub(crate) preview_session: Mutex<(Session, Option<(u32, u64)>)>,
+    /// The port this studio serves on, which agent runs connect back to.
+    port: OnceLock<u16>,
 }
 
 impl Studio {
-    /// `file` must be absolute; it need not exist yet.
-    pub fn new(file: PathBuf, text: String, lane: Lane) -> Self {
+    /// `file` must be absolute; it need not exist yet. `mcp_token` admits
+    /// agent runs to `/mcp`.
+    pub fn new(file: PathBuf, text: String, lane: Lane, mcp_token: String) -> Self {
+        let preview = Lane::new(lane.root().to_path_buf(), Mode::Fast);
         Self {
+            agent: Agent::new(mcp_token),
+            review: std::sync::Mutex::new(Review::default()),
+            preview_session: Mutex::new((Session::new(&preview), None)),
+            preview,
+            port: OnceLock::new(),
             file,
             doc: std::sync::Mutex::new(Doc {
                 text,
@@ -136,6 +161,15 @@ impl Studio {
         });
     }
 
+    /// Record the port once the listener is bound.
+    pub fn set_port(&self, port: u16) {
+        let _ = self.port.set(port);
+    }
+
+    pub fn port(&self) -> u16 {
+        *self.port.get().expect("the port is set before agents run")
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
         self.events.subscribe()
     }
@@ -156,7 +190,20 @@ impl Studio {
             lane: self.lane.status().borrow().clone(),
             session,
             breakpoints: self.breakpoints.lock().expect("breakpoints lock").clone(),
+            review: self.review.lock().expect("review lock").view(&doc.text),
+            agent_unavailable: Agent::unavailable(),
         }
+    }
+
+    /// Replace the whole text as the studio itself (an accepted proposal):
+    /// every tab, the editing one included, receives it.
+    pub(crate) fn replace_text(&self, text: String) {
+        let mut doc = self.doc.lock().expect("doc lock");
+        doc.version += 1;
+        doc.text = text.clone();
+        let version = doc.version;
+        drop(doc);
+        self.publish(Event::Text { version, text, origin: 0 });
     }
 
     /// Replace the breakpoint lines; the editor tracks them as text moves.
@@ -325,7 +372,7 @@ mod tests {
 
     fn studio(file: PathBuf, text: &str) -> Studio {
         let lane = Lane::new(project_root().expect("repository root"), Mode::Fast);
-        Studio::new(file, text.to_owned(), lane)
+        Studio::new(file, text.to_owned(), lane, "test".to_owned())
     }
 
     #[test]
@@ -391,6 +438,7 @@ mod tests {
              rule (edge X Y) --> (path X Y)\nrule (path X Y) (edge Y Z) --> (path X Z)\n"
                 .to_owned(),
             lane,
+            "test".to_owned(),
         );
         let mut events = studio.subscribe();
         studio.set_breakpoints(vec![5, 2]);
