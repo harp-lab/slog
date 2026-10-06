@@ -249,7 +249,10 @@ impl App {
                     search.editor.insert(&text.replace(['\r', '\n'], " "));
                     self.update_canvas_search_preview();
                 } else {
-                    self.editor.insert(&text);
+                    // Terminals paste a line break as the CR that Enter
+                    // sends (or as CRLF); the editor's line break is LF.
+                    self.editor
+                        .insert(&text.replace("\r\n", "\n").replace('\r', "\n"));
                 }
                 Effect::None
             }
@@ -2565,6 +2568,16 @@ text = "The mutable database is called {{database}}."
             KeyModifiers::CONTROL,
         )));
         assert_eq!(app.editor.text(), "first line\n");
+    }
+
+    #[test]
+    fn a_pasted_rule_lands_in_the_editor_as_one_buffer() {
+        let mut app = App::new();
+        let effect = app.on_terminal(Event::Paste(
+            "rule (path X Y)\r  --> (reach X)\r\n".to_owned(),
+        ));
+        assert!(matches!(effect, Effect::None));
+        assert_eq!(app.editor.text(), "rule (path X Y)\n  --> (reach X)\n");
     }
 
     #[test]
