@@ -60,6 +60,11 @@ pub struct App {
     completion_relations: BTreeSet<String>,
     completion_namespaces: BTreeSet<String>,
     pub transcript: Vec<TranscriptEntry>,
+    /// Transcript entries already published to co-authors. The transcript
+    /// only grows, except that `:clear` empties it and resets this mark with
+    /// it, so the entries past the mark are always exactly the unpublished
+    /// ones.
+    published_entries: usize,
     /// In-flight UI workflows are rendered after the durable transcript but
     /// are not part of it until the backend commits a response.
     pub operations: OperationTable,
@@ -109,19 +114,22 @@ pub struct App {
 
 impl App {
     pub fn new() -> Self {
+        let transcript = vec![TranscriptEntry::system(
+            "Connected",
+            vec![
+                "Rust terminal client ↔ Racket database control plane".to_owned(),
+                "Type :help for commands; :share shows co-author connection details".to_owned(),
+            ],
+        )];
         Self {
             editor: Editor::default(),
             completion: None,
             completion_databases: BTreeSet::new(),
             completion_relations: BTreeSet::new(),
             completion_namespaces: BTreeSet::new(),
-            transcript: vec![TranscriptEntry::system(
-                "Connected",
-                vec![
-                    "Rust terminal client ↔ Racket database control plane".to_owned(),
-                    "Type :help for commands; :share shows co-author connection details".to_owned(),
-                ],
-            )],
+            // Co-authors receive the opening entries in their first snapshot.
+            published_entries: transcript.len(),
+            transcript,
             operations: OperationTable::default(),
             transcript_scroll: 0,
             library: None,
@@ -1061,6 +1069,7 @@ impl App {
         }
         if command.text() == ":clear" {
             self.transcript.clear();
+            self.published_entries = 0;
             self.canvas = None;
             self.canvas_entry = None;
             self.canvas_search = None;
@@ -1633,6 +1642,12 @@ impl App {
 
     pub fn take_shared_actions(&mut self) -> Vec<SharedAction> {
         std::mem::take(&mut self.shared_actions)
+    }
+
+    /// Transcript entries added since the last call, for co-authors.
+    pub fn take_unpublished_entries(&mut self) -> &[TranscriptEntry] {
+        let start = std::mem::replace(&mut self.published_entries, self.transcript.len());
+        &self.transcript[start..]
     }
 
     pub fn plain_shared_action(action: &SharedAction) -> String {
@@ -3203,6 +3218,24 @@ text = "The mutable database is called {{database}}."
         let comment = app.transcript.last().expect("comment");
         assert_eq!(comment.kind, EntryKind::Comment);
         assert_eq!(comment.lines, vec!["; ask codex to inspect edge"]);
+    }
+
+    #[test]
+    fn clear_restarts_the_entries_published_to_coauthors() {
+        let mut app = App::new();
+        let enter = Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let submit = |app: &mut App, line: &str| {
+            app.editor.insert(line);
+            app.on_terminal(enter.clone());
+            app.take_unpublished_entries()
+                .iter()
+                .flat_map(|entry| entry.lines.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(submit(&mut app, "; before"), vec!["; before"]);
+        // `:clear` leaves the transcript shorter than what was published.
+        assert!(submit(&mut app, ":clear").is_empty());
+        assert_eq!(submit(&mut app, "; after"), vec!["; after"]);
     }
 
     #[test]
