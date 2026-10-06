@@ -17,9 +17,7 @@ export function createChangePanel(host) {
   close.title = "Close (Esc)";
   const body = panel.appendChild(element("div", "changes-body"));
   const legend = panel.appendChild(element("div", "changes-legend"));
-  for (const [status, text] of [["added", "added"], ["removed", "removed"], ["changed", "changed"], ["same", "context"]]) {
-    legend.append(element("span", `key ${status}`, text));
-  }
+  const CHANGES = [["added", "added"], ["removed", "removed"], ["changed", "changed"], ["same", "context"]];
   let current = null;
 
   close.addEventListener("click", hide);
@@ -35,13 +33,16 @@ export function createChangePanel(host) {
 
   // `before` and `after`: the file texts of each program; `onNode(id)`
   // shows a relation's forms; `tools`, nodes for the head. `owner` names
-  // who shows it: another owner's graph is closed (`onClose`) first.
-  function show({ owner, heading, before, after, onNode, tools = [], onClose }) {
+  // who shows it: another owner's graph is closed (`onClose`) first. A
+  // caller with a graph of its own passes it as `graph`, its statuses
+  // explained by `legend`, [status, text] pairs.
+  function show({ owner, heading, before, after, graph: given, legend: keys = CHANGES, onNode, tools = [], onClose }) {
     if (current && current.owner !== owner) hide();
     current = { owner, onClose };
     title.textContent = heading;
     controls.replaceChildren(...tools);
-    const graph = changeGraph(before, after);
+    legend.replaceChildren(...keys.map(([status, text]) => element("span", `key ${status}`, text)));
+    const graph = given ?? changeGraph(before, after);
     body.replaceChildren(graph.nodes.length
       ? draw(layout(graph), onNode)
       : element("p", "hint", "No relation or rule changes: only layout or comments differ."));

@@ -116,3 +116,7 @@ rule (blocked_at R I) (needs R I Rel) (body R I Rel _ L)
 ;; For the editor: the rules that can never fire, by line
 table (never_fires str int)            ;; (never_fires File Line)
 rule (dead_rule R) (rule_at R _ (loc F Line _)) (source_file F Path) --> (never_fires Path Line)
+
+;; For the editor: the relations each recursive one is in a cycle with
+table (cycle_with str str)
+rule (reaches A B) (reaches B A) (/= A B) --> (cycle_with A B)

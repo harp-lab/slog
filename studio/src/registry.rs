@@ -16,6 +16,7 @@ use crate::auth::same_secret;
 use crate::lane::{Lane, LaneState, Mode};
 use crate::projects::Projects;
 use crate::studio::{Event, Studio};
+use crate::lint::{self, Linter};
 use crate::summary::{self, Summarizer};
 use slog_repl::server::private_token;
 use std::collections::HashMap;
@@ -58,6 +59,11 @@ pub struct Registry {
     open: Mutex<HashMap<(String, String), Entry>>,
     /// The port the server listens on, which agent runs connect back to.
     port: OnceLock<u16>,
+    /// Whether each program is analyzed as it is edited (lint.rs): in local
+    /// mode unless STUDIO_LINT=0; on a shared server, where it costs each
+    /// project a second lane, only with STUDIO_LINT=1.
+    lint: bool,
+    analysis: Arc<lint::Analysis>,
 }
 
 struct Entry {
@@ -75,11 +81,19 @@ impl Registry {
         linked: Option<PathBuf>,
         limits: Option<Limits>,
     ) -> Self {
+        let analysis = lint::Analysis::new(&root, &data);
         Self {
             root,
             data,
             mode,
             linked,
+            analysis,
+            lint: !cfg!(test)
+                && match std::env::var("STUDIO_LINT").as_deref() {
+                    Ok("0") => false,
+                    Ok("1") => true,
+                    _ => limits.is_none(),
+                },
             limits,
             open: Mutex::new(HashMap::new()),
             port: OnceLock::new(),
@@ -136,6 +150,9 @@ impl Registry {
                 studio.publish(Event::Summary(view));
             }
         }));
+        if self.lint {
+            self.attach_lint(&studio, user, &name);
+        }
         let entry = Entry {
             user: user.to_owned(),
             studio: studio.clone(),
@@ -143,6 +160,31 @@ impl Registry {
         };
         open.insert(key, entry);
         Ok(studio)
+    }
+
+    /// Analyze `studio`'s program on every edit, on a lane of its own; and
+    /// if the project is the analysis, send its edits to every linter.
+    fn attach_lint(&self, studio: &Arc<Studio>, user: &str, project: &str) {
+        let directory = studio.directory();
+        let same = |a: &std::path::Path, b: &std::path::Path| {
+            std::fs::canonicalize(a).ok().is_some_and(|a| std::fs::canonicalize(b).ok() == Some(a))
+        };
+        if same(&directory, self.analysis.dir()) {
+            studio.attach_analysis(self.analysis.clone());
+        }
+        let name = format!("{}{user}-{project}", lint::DATABASE_PREFIX).replace('@', "_");
+        let tabs = Arc::downgrade(studio);
+        let config = lint::Config {
+            root: self.root.clone(),
+            home: self.data.join("lint").join(&name),
+            database: name,
+            analysis: self.analysis.clone(),
+        };
+        studio.attach_linter(Linter::start(config, move |view| {
+            if let Some(studio) = tabs.upgrade() {
+                studio.publish(Event::Lint(view));
+            }
+        }));
     }
 
     /// The project `asked` names among `projects`, made if it does not
@@ -238,6 +280,7 @@ impl Registry {
         };
         for studio in studios {
             studio.lane.shutdown().await;
+            studio.stop_linter().await;
         }
     }
 }

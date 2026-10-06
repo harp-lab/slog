@@ -71,6 +71,8 @@ pub struct LaneStatus {
 pub struct Lane {
     root: PathBuf,
     mode: std::sync::Mutex<Mode>,
+    /// Set for every server, beside the mode's own settings.
+    env: Vec<(&'static str, &'static str)>,
     /// The command connection, held for the whole of each command.
     connection: Mutex<Option<Live>>,
     /// The interrupt-only connection (serve-control in repl.rkt).
@@ -91,6 +93,11 @@ struct Live {
 impl Lane {
     /// A lane over the repository at `root`, its servers run in `mode`.
     pub fn new(root: PathBuf, mode: Mode) -> Self {
+        Self::with_env(root, mode, Vec::new())
+    }
+
+    /// The same, its servers also given `env`.
+    pub fn with_env(root: PathBuf, mode: Mode, env: Vec<(&'static str, &'static str)>) -> Self {
         let (status, _) = watch::channel(LaneStatus {
             state: LaneState::Idle,
             detail: String::new(),
@@ -100,6 +107,7 @@ impl Lane {
         Self {
             root,
             mode: std::sync::Mutex::new(mode),
+            env,
             connection: Mutex::new(None),
             control: Mutex::new(None),
             child: std::sync::Mutex::new(None),
@@ -200,11 +208,12 @@ impl Lane {
         self.kill_child();
         self.set(LaneState::Starting, "");
         let mode = *self.mode.lock().expect("lane mode lock");
+        let env = [mode.env(), self.env.clone()].concat();
         let ServerProcess {
             mut child,
             address,
             token,
-        } = server::launch(&self.root, &mode.env())
+        } = server::launch(&self.root, &env)
             .await
             .inspect_err(|error| self.set(LaneState::Dead, error))?;
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;

@@ -109,6 +109,8 @@ fn asset(name: &str) -> Response {
         "stamp.js" => (include_str!("../web/stamp.js"), "text/javascript; charset=utf-8"),
         "timeline.css" => (include_str!("../web/timeline.css"), "text/css; charset=utf-8"),
         "debugger.css" => (include_str!("../web/debugger.css"), "text/css; charset=utf-8"),
+        "lint.js" => (include_str!("../web/lint.js"), "text/javascript; charset=utf-8"),
+        "lint.css" => (include_str!("../web/lint.css"), "text/css; charset=utf-8"),
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
     ([(header::CONTENT_TYPE, kind), (header::CACHE_CONTROL, "no-cache")], body).into_response()
@@ -185,6 +187,10 @@ enum Request {
     ShowNow { set: SetId },
     /// Rows `start..end` (0-based) of a result set.
     Rows { set: SetId, start: u64, end: u64 },
+    /// Why the analysis made this finding (lint.rs).
+    LintWhy { finding: crate::lint::Finding, tag: u64 },
+    /// Open the analysis itself as a project, over this program's facts.
+    EditAnalysis,
     /// Run a refinement of a result set as a new query.
     Refine { set: SetId, refinement: Refinement },
     /// Check the program statically with `texts` (path -> text) in place of
@@ -259,6 +265,10 @@ enum Reply<'a> {
     Checked { tag: u64, #[serde(flatten)] report: &'a crate::check::Report },
     /// The answer to a `Quiet` request.
     Quiet { tag: u64, #[serde(flatten)] outcome: &'a crate::session::Outcome },
+    /// The derivation of a finding, as `why` renders it, or why there is none.
+    LintWhy { tag: u64, lines: Vec<String>, error: Option<String> },
+    /// A project to open in a tab of its own.
+    OpenProject { name: String },
     /// The rows asked for, as many as exist; or why they cannot be had.
     Rows {
         set: SetId,
@@ -538,6 +548,26 @@ fn handle(
                     rows,
                     error,
                 }));
+            });
+        }
+        Request::LintWhy { finding, tag } => {
+            let direct = direct.clone();
+            tokio::spawn(async move {
+                let (lines, error) = match studio.lint_why(&finding).await {
+                    Ok(lines) => (lines, None),
+                    Err(why) => (Vec::new(), Some(why)),
+                };
+                let _ = direct.send(json(&Reply::LintWhy { tag, lines, error }));
+            });
+        }
+        Request::EditAnalysis => {
+            let direct = direct.clone();
+            tokio::spawn(async move {
+                let reply = match studio.analysis_project().await {
+                    Ok(name) => json(&Reply::OpenProject { name }),
+                    Err(message) => json(&Reply::Notice { message: &message }),
+                };
+                let _ = direct.send(reply);
             });
         }
         Request::Refine {

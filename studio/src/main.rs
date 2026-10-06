@@ -17,6 +17,7 @@ mod forms;
 mod hash;
 mod knowledge;
 mod lane;
+mod lint;
 mod mcp;
 mod projects;
 mod registry;

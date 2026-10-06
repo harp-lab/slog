@@ -10,7 +10,7 @@
 ;;   racket compiler/reify.rkt FILE                 the facts as a Slog program
 ;;   racket compiler/reify.rkt --freeze NAME FILE   ... as the database data/NAME
 ;;   racket compiler/reify.rkt --serve              one JSON request a line:
-;;     {"id": 1, "path": "/abs/main.slog", "sources": {...}, "freeze": "NAME"}
+;;     {"id": 1, "path": "/abs/main.slog", "sources": {...}, "freeze": "NAME", "program": "/abs/facts.slog"}
 ;;   answered with {"id", "ok", "ms", "facts", "error"?}.
 ;;
 ;; A database is how an analysis reads the facts quickly: `open NAME`, then
@@ -378,7 +378,12 @@
             (for/hash ([(file text) (in-hash (hash-ref request 'sources (hasheq)))])
               (values (symbol->string file) text)))
           (define facts (reify-file (hash-ref request 'path) #:sources sources))
-          (facts->database facts (hash-ref request 'freeze))
+          (when (hash-ref request 'freeze #f)
+            (facts->database facts (hash-ref request 'freeze)))
+          ;; "program": also write the facts as a Slog program there
+          (when (hash-ref request 'program #f)
+            (call-with-output-file (hash-ref request 'program) #:exists 'truncate
+              (lambda (port) (write-string (facts->program facts) port))))
           (hasheq 'ok #t 'facts (length facts))))
       (write-json (hash-set* answer
                              'id (hash-ref request 'id 0)

@@ -13,6 +13,7 @@ import { createChangePanel } from "./changes.js";
 import { createProposals } from "./proposals.js";
 import { renderEntry } from "./render.js";
 import { createSummary } from "./summary.js";
+import { createLint } from "./lint.js";
 import * as structure from "./paredit.js";
 import { createResults } from "./results.js";
 import { initTrace } from "./trace.js";
@@ -48,6 +49,7 @@ const editor = await createEditor($("editor"), {
   onChange: () => {
     files.changed();
     check.changed();
+    lint.changed();
   },
   onEvaluate: evaluate,
   onSave: save,
@@ -64,6 +66,7 @@ const files = createFiles({
   onOpen(path) {
     // The summary's notes and findings belong on the main file.
     summary.show();
+    lint.show();
     versions.opened();
     proposals.refresh();
     breakpoints.show(path);
@@ -81,6 +84,8 @@ const check = createCheck({ editor, files, send });
 // Proposals are reviewed in the editor; the change graph and the history
 // strip show only when asked for or when they matter.
 const changes = createChangePanel($("work"));
+// What the analysis of Slog in Slog finds as the author edits (lint.js).
+const lint = createLint($("lint"), { editor, files, send, changes });
 const versions = createHistory({ send, files, changes });
 const proposals = createProposals({
   editor, files, send, changes, history: versions, bar: $("proposals"), list: $("review-tab"),
@@ -177,6 +182,7 @@ const receive = {
     summary.show(snapshot.summary);
     snapshot.results.forEach(noteSet);
     timeline.states(snapshot.states); // before anything stamped
+    lint.show(snapshot.lint);
     results.init(snapshot.results);
     trace.tracing(snapshot.tracing);
     structure.observe({ result: snapshot.tables }); // completion: the session's relations, after a reload
@@ -188,9 +194,11 @@ const receive = {
   // another tab's edit, an accepted proposal, a restored version
   text() {
     check.changed();
+    lint.changed();
   },
   files() {
     check.changed();
+    lint.changed();
   },
   states(view) {
     timeline.states(view);
@@ -236,6 +244,7 @@ const receive = {
       renderStatus();
     }
     measured(entry);
+    lint.entry(entry);
     const node = append(renderEntry(entry, {
       inProject: (span) => files.pathOf(span.file) !== null,
       onSpan: (span) => files.reveal(span),
@@ -293,6 +302,14 @@ const receive = {
   },
   summary(view) {
     summary.show(view);
+  },
+  lint(view) {
+    lint.show(view);
+  },
+  "lint-why": (reply) => lint.why(reply),
+  // "Edit the analysis": the analysis's own project, in a tab of its own
+  "open-project": ({ name }) => {
+    window.open(`/?project=${encodeURIComponent(name)}${location.hash}`, "_blank");
   },
   "breakpoint-status": ({ statuses }) => {
     breakpoints.status(statuses);
@@ -364,6 +381,8 @@ function renderBreakpoints() {
 // window.debugLatency holds { line, server, total } in milliseconds.
 const clicked = new Map(); // line -> when it was sent
 window.debugLatency = [];
+// The analysis's view and placement, for tests and the console.
+window.slogLint = lint;
 function measured(entry) {
   const sent = clicked.get(entry.line);
   if (sent === undefined) return;
@@ -737,6 +756,7 @@ const palette = createPalette(() => {
     panel("review", "Review proposals"),
     panel("scenarios", "Scenarios"),
     { title: "History: every version of the project, and its branches", run: versions.open },
+    { title: "Edit the analysis: slog-lint, over this program's facts", run: lint.edit },
     { title: "New file", run: () => $("new-file").click() },
     { title: "Focus the editor", keys: "Esc", run: () => editor.focus() },
     { title: "Focus the REPL prompt", keys: "Ctrl+`", run: () => prompt.focus() },

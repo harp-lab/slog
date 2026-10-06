@@ -20,6 +20,7 @@
 //   keyOf(model), keyOfUri(uri), uriOf(key)
 //                           a document's key and its model's URI, for the
 //                           providers that point into documents (check.js)
+//   markers(key, owner, list)  set `owner`'s markers on document `key` (lint.js)
 //   highlight(ranges)       shade these [{ from, to }] line ranges (trace.js:
 //                           the rules that fired), or none
 // `readOnly: true` makes an editor for looking only. `raw` is { monaco,
@@ -259,6 +260,28 @@ function monacoEditor(monaco, element, { onChange, onEvaluate, onSave, readOnly 
     keyOf: (model) => keyOfUri(model?.uri),
     keyOfUri,
     uriOf,
+    // Markers of `owner` on document `key`, each { line, col, severity,
+    // message, code, source }: an underline of the word at its column.
+    markers(key, owner, list) {
+      const model = documents.get(key)?.model;
+      if (!model) return;
+      monaco.editor.setModelMarkers(model, owner, list
+        .filter(({ line }) => line >= 1 && line <= model.getLineCount())
+        .map(({ line, col, severity: level, message, code, source }) => {
+          const column = Math.min(Math.max(1, col), model.getLineMaxColumn(line));
+          const word = model.getWordAtPosition({ lineNumber: line, column });
+          return {
+            startLineNumber: line,
+            startColumn: word?.startColumn ?? column,
+            endLineNumber: line,
+            endColumn: word?.endColumn ?? Math.min(column + 1, model.getLineMaxColumn(line)),
+            message,
+            code,
+            source,
+            severity: monaco.MarkerSeverity[level],
+          };
+        }));
+    },
     highlight(ranges) {
       fired.set(ranges.map(({ from, to }) => ({
         range: new monaco.Range(from, 1, to, 1),
@@ -323,6 +346,8 @@ function textareaEditor(element, { onChange, onEvaluate, onSave, readOnly = fals
     },
     focus: () => area.focus(),
     findings() {},
+    markers() {},
+    keyOf: () => undefined,
     highlight() {},
   };
 }

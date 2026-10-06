@@ -20,6 +20,7 @@ use crate::breakpoints::Breakpoint;
 use crate::session::{Outcome, Session, SessionView};
 use crate::states::{Stamp, States};
 use crate::summary::{self, Summarizer};
+use crate::lint::{self, Linter};
 use crate::store::Files;
 use crate::versions::{Origin as Made, Refs, Version};
 use serde::Serialize;
@@ -51,6 +52,8 @@ pub struct Snapshot {
     pub agent_unavailable: Option<String>,
     /// `None` until a summarizer is attached.
     pub summary: Option<summary::View>,
+    /// `None` when the analysis does not run here.
+    pub lint: Option<lint::View>,
     pub results: Vec<results::View>,
     /// Plain Runs record their trace.
     pub tracing: bool,
@@ -157,6 +160,8 @@ pub enum Event {
     },
     /// The program summary and analyzer findings changed.
     Summary(summary::View),
+    /// The analysis of the working files moved on (lint.rs).
+    Lint(lint::View),
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -345,6 +350,10 @@ pub struct Studio {
     /// Each thread's last evaluate_proposal: the hash of the program it
     /// evaluated, and whether that succeeded.
     pub(crate) evaluated: std::sync::Mutex<std::collections::HashMap<u32, (u64, bool)>>,
+    /// Analyzes the working files on every edit, once attached (lint.rs).
+    linter: OnceLock<Arc<Linter>>,
+    /// Set when this project is the analysis itself.
+    analysis: OnceLock<Arc<lint::Analysis>>,
 }
 
 impl Studio {
@@ -408,6 +417,8 @@ impl Studio {
             acceptances: Default::default(),
             review_changed: Arc::new(Notify::new()),
             evaluated: Default::default(),
+            linter: OnceLock::new(),
+            analysis: OnceLock::new(),
         }
     }
 
@@ -422,6 +433,41 @@ impl Studio {
             }
             Some(_) => {}
         }
+    }
+
+    /// Analyze the working files from now on, and now.
+    pub fn attach_linter(&self, linter: Arc<Linter>) {
+        let _ = self.linter.set(linter);
+        self.lint(&self.open());
+    }
+
+    /// Stop the analysis's lane and reifier, for the server's exit.
+    pub async fn stop_linter(&self) {
+        if let Some(linter) = self.linter.get() {
+            linter.shutdown().await;
+        }
+    }
+
+    /// This project is the analysis (`analysis/`): its edits go to every
+    /// program's linter.
+    pub fn attach_analysis(&self, analysis: Arc<lint::Analysis>) {
+        let _ = self.analysis.set(analysis);
+    }
+
+    /// Why the analysis made `finding`, as the lines of its derivation.
+    pub async fn lint_why(&self, finding: &lint::Finding) -> Result<Vec<String>, String> {
+        self.linter.get().ok_or("the analysis is not running")?.why(finding).await
+    }
+
+    /// Write this program's facts for the analysis to run on, and name the
+    /// project of the analysis itself, linked to `analysis/`.
+    pub async fn analysis_project(&self) -> Result<String, String> {
+        let linter = self.linter.get().ok_or("the analysis is not running")?;
+        linter.write_facts().await?;
+        let main = linter.analysis_dir().join("slog-lint.slog");
+        self.projects
+            .linked(&main)
+            .map_err(|error| format!("cannot open a project for {}: {error}", main.display()))
     }
 
     /// Whether plain Runs record their trace, from the next Run on.
@@ -452,6 +498,11 @@ impl Studio {
         if let Some(summarizer) = self.summary.get() {
             summarizer.request(version, text, tables.and_then(summary::relations));
         }
+    }
+
+    /// Where the project's files are written and evaluated.
+    pub(crate) fn directory(&self) -> PathBuf {
+        self.open().project.directory()
     }
 
     /// The main file: its path, absolute, and its working text.
@@ -529,6 +580,7 @@ impl Studio {
             review,
             agent_unavailable: Agent::unavailable(),
             summary: self.summary.get().map(|summarizer| summarizer.view()),
+            lint: self.linter.get().map(|linter| linter.view()),
             project: open.project.name().to_owned(),
             projects,
             main: open.project.main().to_owned(),
@@ -1266,6 +1318,7 @@ impl Studio {
             self.trouble(&format!("cannot keep the draft: {error}"));
         }
         let events = [open.files_event(), open.version_event(version)];
+        self.lint(&open);
         drop(open);
         for event in events {
             self.publish(event);
@@ -1279,6 +1332,22 @@ impl Studio {
             self.trouble(&format!("cannot keep the draft: {error}"));
         }
         self.edited.notify_one();
+        self.lint(open);
+    }
+
+    /// Analyze the working files (lint.rs); this project being the analysis
+    /// itself, analyze every program again with it as it now stands.
+    fn lint(&self, open: &Open) {
+        if let Some(linter) = self.linter.get() {
+            linter.request(lint::Job {
+                directory: open.project.directory(),
+                main: open.project.main().to_owned(),
+                files: open.files(),
+            });
+        }
+        if let Some(analysis) = self.analysis.get() {
+            analysis.edited(&open.files());
+        }
     }
 
     /// Keep the agent threads, their transcripts and proposals in the
@@ -1369,7 +1438,8 @@ fn changes_database(before: &SessionView, outcome: &Outcome) -> bool {
 }
 
 /// The directories under `root/data`, by name: the databases the REPL
-/// knows (compiler/dbtool.rkt `all-db-names`).
+/// knows (compiler/dbtool.rkt `all-db-names`), but for the analysis's
+/// facts (lint.rs).
 fn databases(root: &std::path::Path) -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(root.join("data"))
         .into_iter()
@@ -1379,6 +1449,7 @@ fn databases(root: &std::path::Path) -> Vec<String> {
             entry.file_type().ok()?.is_dir().then_some(())?;
             entry.file_name().into_string().ok()
         })
+        .filter(|name| !name.starts_with(lint::DATABASE_PREFIX))
         .collect();
     names.sort();
     names

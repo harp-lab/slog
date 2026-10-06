@@ -132,7 +132,7 @@
     (append (append-map check-case (filter (lambda (p) (string-suffix? p ".slog")) cases))
             (check-self)
             (append-map check-corpus-program programs)))
-  (dispatch-command state "quit")
+  (void (dispatch-command state "quit"))
   (for-each displayln problems)
   (printf "~a finding tests~a: ~a\n" (length cases)
           (if corpus? (format ", ~a corpus programs" (length programs)) "")
