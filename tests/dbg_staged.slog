@@ -1,0 +1,15 @@
+;; A head that needs an id its rule constructs runs in a later stage
+;; (compiler/join-planning.rkt stage-rule), driven by a temp that carries
+;; only what that stage uses: `(boxed (box Y))` carries Y.  The two
+;; instantiations X = 1 and X = 2 share Y = 5, so one temp row stands for
+;; both.  The REPL battery (repl.rkt) stops there and reads the rule's
+;; whole environment back.
+struct (box int)
+table (p int int)
+table (boxed box)
+
+rule
+(p 1 5)
+(p 2 5)
+
+rule (p X Y) --> (boxed (box Y))

@@ -24,6 +24,7 @@
 #include <string>
 #include <vector>
 #include <set>
+#include <map>
 #include <cstdlib>
 #include <fstream>
 #include <format>
@@ -3484,6 +3485,12 @@ public:
     // writes), nominal, and its relation; empty otherwise.
     std::string clause_relation;
     std::vector<u64> clause_row;
+    // A stop in a staged follow-up (StagedEnv): whether it is one, how many
+    // instantiations of the rule its driving row stands for (0: none was
+    // recorded), and the variables whose values differ among them.
+    bool staged = false;
+    u64 staged_instantiations = 0;
+    std::vector<std::string> several;
   };
 
   // T5 slice (d3): a STANDING stop (repl-ux §9.1's `break`), where a step
@@ -3852,6 +3859,84 @@ public:
     std::lock_guard<std::mutex> lk(break_log_mutex);
     break_log_read_mark = break_log.size();
   }
+
+  // ---- A staged rule's environment ---------------------------------------
+  // A head that needs an id the rule constructs runs in a follow-up stage,
+  // driven by a temp that carries only the variables the follow-up uses
+  // (compiler/join-planning.rkt stage-rule): a stop there sees `B` and `K`
+  // of a rule that bound V, X, B and K.  While the debugger is armed, the
+  // stage before records, per temp row it emits, the rule's variables
+  // bound there (plan.h StepSink), and the follow-up's stops read them
+  // back.  A temp is a set, so one row can stand for several
+  // instantiations: `several` names the variables whose values differ
+  // among them (the bindings keep the first instantiation's).
+  struct StagedEnv
+  {
+    BreakBindings bindings;
+    std::vector<std::string> several;
+    u64 instantiations = 0;
+  };
+
+  void recordStagedEnv(const std::string& temp, const u64* row, size_t n,
+                       const BreakBindings& env)
+  {
+    std::lock_guard<std::mutex> lk(staged_mutex);
+    auto& rows = staged_envs[temp];
+    std::vector<u64> key(row, row + n);
+    auto it = rows.find(key);
+    if (it == rows.end())
+    {
+      if (staged_count >= staged_max) return;   // a stop there says so
+      ++staged_count;
+      rows.emplace(std::move(key), StagedEnv{env, {}, 1});
+      return;
+    }
+    StagedEnv& seen = it->second;
+    ++seen.instantiations;
+    for (const auto& [name, value] : env)
+    {
+      const auto first = std::find_if(
+        seen.bindings.begin(), seen.bindings.end(),
+        [&](const auto& b) { return b.first == name; });
+      if (first == seen.bindings.end())
+        seen.bindings.emplace_back(name, value);
+      else if (first->second != value
+               && std::find(seen.several.begin(), seen.several.end(), name)
+                    == seen.several.end())
+        seen.several.push_back(name);
+    }
+  }
+
+  // The environment the stage before recorded for `row` of `temp`; false
+  // when none was (the debugger was armed after that stage ran).
+  bool stagedEnv(const std::string& temp, const std::vector<u64>& row,
+                 StagedEnv& out)
+  {
+    std::lock_guard<std::mutex> lk(staged_mutex);
+    const auto rows = staged_envs.find(temp);
+    if (rows == staged_envs.end()) return false;
+    const auto it = rows->second.find(row);
+    if (it == rows->second.end()) return false;
+    out = it->second;
+    return true;
+  }
+
+  // Scoped like the break log: one semantic event.
+  void clearStagedEnvs()
+  {
+    std::lock_guard<std::mutex> lk(staged_mutex);
+    staged_envs.clear();
+    staged_count = 0;
+  }
+
+private:
+  static constexpr size_t staged_max = 1u << 20;
+  std::mutex staged_mutex;
+  std::unordered_map<std::string, std::map<std::vector<u64>, StagedEnv>>
+    staged_envs;
+  size_t staged_count = 0;
+
+public:
 
   void discardBreakLogFromRead()
   {
@@ -4287,6 +4372,7 @@ public:
     // PREVIOUS event's tree while calling it this one's.
     if (provenance_armed) clearProofJournal();
     clearBreakLog();
+    clearStagedEnvs();
     {
       std::lock_guard<std::mutex> lk(update_transition_mutex);
       update_transitions.clear();
@@ -5510,6 +5596,7 @@ public:
     // derivations under a fresh event's `why` would be a lie by omission.
     if (provenance_armed) clearProofJournal();
     clearBreakLog();
+    clearStagedEnvs();
     BoundaryAdmission accepted;
     accepted.ok = true;
     accepted.position = prepared_boundary->position;

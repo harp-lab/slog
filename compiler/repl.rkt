@@ -5019,8 +5019,13 @@
 ;; nothing but a resume changes -- and everything below reads only it, the
 ;; held run's working state, or committed state: none of it steps,
 ;; continues, commits or moves the session's logical time.
-(struct stop-scope (where bindings unbound clause) #:transparent)
-;; bindings: ((name text word) ...); clause: (relation . row-text) or #f
+(struct stop-scope (where bindings unbound clause staged) #:transparent)
+;; bindings: ((name text word) ...); clause: (relation . row-text) or #f;
+;; staged: #f, or (cons N several-names) at a stop in a staged follow-up of
+;; the rule -- a head needing a constructed id runs in a later stage, from a
+;; temp whose row stands for N instantiations (0: none recorded); the
+;; rule's other variables come from the stage before, and `several` name
+;; those whose values differ among the N (the bindings hold the first's).
 
 (define (read-stop-scope lines)
   (define (datums) (for/list ([line (in-list lines)]) (read-datum line)))
@@ -5043,7 +5048,23 @@
    (for/or ([d (in-list (datums))])
      (match d
        [`(clause (relation ,r) (row ,row)) (cons (~a r) (~a row))]
+       [_ #f]))
+   (for/or ([d (in-list (datums))])
+     (match d
+       [`(staged (instantiations ,n) (several ,names ...)) (cons n (map ~a names))]
        [_ #f]))))
+
+;; What a staged stop's bindings are, when that needs saying: none from the
+;; stage before, or values that differ among the instantiations its row
+;; stands for.  #f when the bindings are simply the rule's.
+(define (staged-note staged)
+  (match staged
+    [(cons 0 _)
+     "this stage of the rule runs from a staging temp; the variables the stage before bound are not shown: the debugger was armed after it ran"]
+    [(cons n (? pair? several))
+     (format "this stage stands for ~a instantiations of the rule (a staging temp merged them); ~a differ among them, shown from the first"
+             n (string-join several ", "))]
+    [_ #f]))
 
 ;; held -> (cons record scope): the scope of the stop the held run is at.
 (define held-scopes (make-weak-hasheq))
@@ -5076,7 +5097,12 @@
   (define binding (scope-binding scope name))
   (cond
     [binding
-     (hash-set* (text-result (format "~a" name) (list (format "~a = ~a" name (second binding)))
+     (define several
+       (match (stop-scope-staged scope)
+         [(cons n names) #:when (member name names)
+          (list (format "the first of ~a instantiations this stop stands for; ~a differs among them" n name))]
+         [_ '()]))
+     (hash-set* (text-result (format "~a" name) (cons (format "~a = ~a" name (second binding)) several)
                              #:kind "print")
                 'name name 'value (second binding) 'word (or (third binding) 'null))]
     [(member name (stop-scope-unbound scope))
@@ -5344,6 +5370,8 @@
         [`(unbound ,names ...)
          (format "  not yet bound at this clause: ~a" (string-join (map ~a names) ", "))]
         [`(clause (relation ,r) (row ,row)) (format "  matched (~a ~a)" r row)]
+        [`(staged (instantiations ,n) (several ,names ...))
+         (format "  ~a" (or (staged-note (cons n (map ~a names))) "a later stage of the rule, its variables from the stage before"))]
         [`(frames-end ,n) (format "~a frame~a" n (if (= n 1) "" "s"))]
         [`(refused ,class ,_generation ,detail ...)
          (format "refused: ~a ~a" class
@@ -5361,7 +5389,11 @@
               'clause (match (stop-scope-clause scope)
                         [(cons r row) (hasheq 'relation r 'row row)]
                         [_ 'null])
-              'at (or (stop-scope-where scope) 'null))))
+              'at (or (stop-scope-where scope) 'null)
+              'staged (match (stop-scope-staged scope)
+                        [(cons n several) (hasheq 'instantiations n 'several several
+                                                  'note (or (staged-note (cons n several)) 'null))]
+                        [_ 'null]))))
 
 ;; `peek REL [LIMIT]` (repl-ux §9.2): one relation's delta at the park.  At
 ;; an iteration boundary that is the iteration's settled signed change; at
@@ -8597,6 +8629,52 @@
       (check-equal? (list (pipeline-datum s) (text (run! "frames")) (text (run! "breaks")))
                     before)
       (check-not-equal? (hash-ref (run! "continue") 'kind) "error")
+      (void (run! "abort"))
+      (void (run! ":quit"))))
+
+  ;; A stop sees the rule's whole environment, even where the compiler
+  ;; staged the head into a later rule.  0cfa's `(ret v (fn (lambda x eb)
+  ;; k))` writes `(kstore (kaddr eb) k)` from a follow-up stage driven by a
+  ;; temp that carries eb and k only; the stage before records the rest per
+  ;; temp row, and the daemon's frames carry it back with a (staged ...)
+  ;; record.  In tests/dbg_staged.slog one temp row stands for two
+  ;; instantiations that differ in X, and the stop says so.
+  (let ([break-environment (environment-variables-copy test-environment)])
+    (environment-variables-set! break-environment #"SLOG_OPT" #"interp")
+    (environment-variables-set! break-environment #"SLOG_THREADS" #"1")
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables break-environment])
+      (define state (make-server-state))
+      (define (run! line) (dispatch-command state line))
+      (define (text result) (string-join (hash-ref result 'lines) "\n"))
+      (void (run! "break examples/tinycfa/0cfa.slog:50 emit (kstore (kaddr eb) k)"))
+      (define stop (run! "run examples/tinycfa/0cfa.slog"))
+      (check-equal? (hash-ref stop 'title) "Paused · break b1")
+      (check-regexp-match #px"port b1:emit@0cfa\\.slog:50:1" (text stop))
+      ;; the daemon's record: every variable, and one instantiation
+      (define raw (frame-lines (ensure-session! state)))
+      (check-not-false (member "(staged (instantiations 1) (several))" raw))
+      (define frames (run! "frames"))
+      (check-equal? (sort (map first (hash-ref frames 'bindings)) string<?)
+                    '("eb" "k" "v" "x"))
+      (check-equal? (hash-ref frames 'unbound) '())
+      (check-regexp-match #px"^x = \"" (text (run! "p x")))
+      ;; every port of the stage: a step to its next one keeps them
+      (define stepped (run! "step"))
+      (check-regexp-match #px"0cfa\\.slog:50:1" (text stepped))
+      (check-equal? (sort (map first (hash-ref (run! "frames") 'bindings)) string<?)
+                    '("eb" "k" "v" "x"))
+      (void (run! "abort"))
+      (void (run! "unbreak b1"))
+      (void (run! "break tests/dbg_staged.slog:15 emit (boxed (box Y))"))
+      (check-equal? (hash-ref (run! "run tests/dbg_staged.slog") 'title) "Paused · break b1")
+      (check-not-false (member "(staged (instantiations 2) (several \"X\"))"
+                               (frame-lines (ensure-session! state))))
+      (define merged (run! "frames"))
+      (check-equal? (map first (hash-ref merged 'bindings)) '("X" "Y"))
+      (check-regexp-match #px"stands for 2 instantiations of the rule .*X differ"
+                          (text merged))
+      (check-regexp-match #px"the first of 2 instantiations .* X differs" (text (run! "p X")))
       (void (run! "abort"))
       (void (run! ":quit"))))
 

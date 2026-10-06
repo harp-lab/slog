@@ -1571,6 +1571,18 @@ static void emit_step_frames(slog::Daemon* d)
             u += " " + quoteString(name);
         d->emit(u + ")");
     }
+    // (staged (instantiations N) (several "X" ...)): the stop is in a
+    // staged follow-up of the rule, whose driving temp row stands for N
+    // instantiations of it (0: none was recorded, the debugger armed after
+    // the stage before ran), the named variables differing among them.
+    if (stop.staged)
+    {
+        std::string s = "(staged (instantiations "
+                      + std::to_string(stop.staged_instantiations) + ") (several";
+        for (const std::string& name : stop.several)
+            s += " " + quoteString(name);
+        d->emit(s + "))");
+    }
     if (!stop.clause_relation.empty())
         d->emit("(clause (relation " + quoteString(stop.clause_relation)
                 + ") (row " + quoteString(row_text(stop.clause_row)) + "))");

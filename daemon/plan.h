@@ -1491,6 +1491,11 @@ struct ProofSchema
   // derivation keyed without its id could not be found again.
   std::vector<Row> struct_heads;
   bool capturable = false;               // any head worth journalling
+  // Staging (Database::StagedEnv): the heads that write a compiler temp,
+  // per sink port, and whether the driver reads one.
+  std::vector<bool> temp_heads;
+  bool stages = false;                   // any temp head
+  bool driver_temp = false;
   // §0.1 monotone-only, decided at the plan: a counted or maintenance rule
   // observes nothing at level 1 -- no capture (d1), no break (d3).
   bool monotone = false;
@@ -1524,6 +1529,7 @@ struct StepSink final : public DebugSink
   const Program* program = nullptr;   // names + op_writes for the bindings
   bool capture = false;
   bool breaking = false;
+  bool staging = false;   // record this rule's environment per temp row
 
   static u64 mask_for(Database::StepGrain grain)
   {
@@ -1579,8 +1585,12 @@ struct StepSink final : public DebugSink
     const bool monotone = schema != nullptr && schema->monotone;
     capture = db->provenanceArmed() && monotone && schema->capturable;
     breaking = monotone && db->breaksArmed();
+    // A follow-up stage can stop only while breaks or a step are armed, so
+    // only then does the stage before record what its temp rows stand for.
+    staging = monotone && schema->stages
+           && (breaking || db->stepGrain() != Database::step_off);
     mask = mask_for(db->stepGrain())
-         | (capture ? event_bit(EventK::emit) : u64{0})
+         | (capture || staging ? event_bit(EventK::emit) : u64{0})
          | (breaking ? db->breakEventMask() : u64{0});
   }
 
@@ -1712,6 +1722,43 @@ struct StepSink final : public DebugSink
     return out;
   }
 
+  // The rule's whole environment at this port: in a staged follow-up, the
+  // variables the stage before bound for the driving temp row (its own
+  // registers, which the temp carried, agreeing), then this stage's.
+  // `staged` (when given) says what was recovered.
+  Database::BreakBindings full_bindings(
+      const Event& e, const DebugView& view,
+      std::vector<std::string>* unbound = nullptr,
+      Database::StepStop* staged = nullptr) const
+  {
+    Database::BreakBindings own = rule_bindings(e, view, unbound);
+    if (!schema->driver_temp) return own;
+    if (staged != nullptr) staged->staged = true;
+    Database::StagedEnv env;
+    const std::vector<u64> row = ProofSchema::nominalize(
+      schema->driver.order, view.driver.data(), view.driver.size());
+    if (!db->stagedEnv(schema->driver.relation, row, env)) return own;
+    if (staged != nullptr)
+    {
+      staged->staged_instantiations = env.instantiations;
+      staged->several = env.several;
+    }
+    Database::BreakBindings out = std::move(env.bindings);
+    for (auto& [name, value] : own)
+    {
+      const auto it = std::find_if(out.begin(), out.end(),
+                                   [&](const auto& b) { return b.first == name; });
+      if (it == out.end()) out.emplace_back(name, value);
+      else it->second = value;
+    }
+    if (unbound != nullptr)
+      std::erase_if(*unbound, [&](const std::string& name) {
+        return std::any_of(out.begin(), out.end(),
+                           [&](const auto& b) { return b.first == name; });
+      });
+    return out;
+  }
+
   // At the drive port or a match, the row of `relation` this port just
   // matched, in nominal order -- a struct's without its id, as the source
   // writes the atom: "the rule has matched this body atom".
@@ -1826,7 +1873,7 @@ struct StepSink final : public DebugSink
       const bool located = !b.source.empty() && !b.pattern.empty();
       if ((located || !b.guards.empty() || b.log) && !have_rule_vars)
       {
-        rule_vars = rule_bindings(e, view);
+        rule_vars = full_bindings(e, view);
         have_rule_vars = true;
       }
       Database::BreakBindings bound;
@@ -1898,6 +1945,10 @@ struct StepSink final : public DebugSink
     // independent of the step grain -- the machine holds exactly one sink,
     // so the arms share it and only a grain or a break decides a stop.
     if (capture && e.kind == EventK::emit) record(e, view);
+    if (staging && e.kind == EventK::emit && e.port < schema->temp_heads.size()
+        && schema->temp_heads[e.port])
+      db->recordStagedEnv(schema->heads[e.port].relation, e.tuple.begin(),
+                          e.tuple.size(), full_bindings(e, view));
     const bool stepping =
       (mask_for(db->stepGrain()) & event_bit(e.kind)) != 0
       && (db->stepRuleFilter() == UINT32_MAX
@@ -1930,7 +1981,10 @@ struct StepSink final : public DebugSink
     // pattern bound from the matched values (`A` and `K` of `(ar A K)`,
     // which the rule binds only at a later port), then the rest, unbound.
     stop.unbound.clear();
-    stop.bindings = rule_bindings(e, view, &stop.unbound);
+    stop.staged = false;
+    stop.staged_instantiations = 0;
+    stop.several.clear();
+    stop.bindings = full_bindings(e, view, &stop.unbound, &stop);
     for (const auto& [name, word] : stopped.bound)
       if (std::none_of(stop.bindings.begin(), stop.bindings.end(),
                        [&](const auto& b) { return b.first == name; }))
@@ -2681,6 +2735,11 @@ public:
       proof_schema.driver = {slot_name(sealed.driver.relation),
                              sealed.driver.order,
                              slot_struct(sealed.driver.relation)};
+    proof_schema.driver_temp =
+      !proof_schema.driver.relation.empty()
+      && sealed.driver.relation < frame.size()
+      && frame[sealed.driver.relation] != nullptr
+      && frame[sealed.driver.relation]->isCompilerTemporary();
     proof_schema.levels.reserve(sealed.cursors.size());
     for (const CursorPlan& cursor : sealed.cursors)
     {
@@ -2710,6 +2769,8 @@ public:
         {journallable ? slot_name(head.relation) : std::string(), {}});
       if (!proof_schema.heads.back().relation.empty())
         proof_schema.capturable = true;
+      proof_schema.temp_heads.push_back(head.head_kind == HeadK::temp);
+      if (head.head_kind == HeadK::temp) proof_schema.stages = true;
       ProofSchema::Row content;
       if (head.head_kind == HeadK::struct_ && !head.order.empty())
       {

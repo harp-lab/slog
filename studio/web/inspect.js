@@ -179,10 +179,18 @@ export function createInspector({ editor, quiet, reveal, tabs, transcript, resul
     }
 
     const locals = section("Variables");
+    // a staged head's stop: its row may stand for several instantiations
+    const staged = state.scope.staged && state.scope.staged !== "null" ? state.scope.staged : null;
+    const several = new Set(staged?.several ?? []);
+    if (staged?.note && staged.note !== "null") locals.append(node("p", "hint", staged.note));
     for (const [name, value] of state.scope.bindings ?? []) {
       const row = locals.appendChild(node("div", "inspect-row"));
       row.append(node("span", "inspect-name", name), node("span", "inspect-eq", "="));
       row.append(pretty(value, wide() - name.length - 3));
+      if (several.has(name)) {
+        const mark = row.appendChild(node("span", "inspect-note", `1 of ${staged.instantiations}`));
+        mark.title = "this stop stands for several instantiations of the rule, which differ here; shown: the first";
+      }
       const pinIt = row.appendChild(node("button", "inspect-pin", "pin"));
       pinIt.title = "Watch it at every stop";
       pinIt.addEventListener("click", () => pin(name));
