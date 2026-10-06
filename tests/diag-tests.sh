@@ -285,7 +285,7 @@ if echo "$o" | grep -qF 'str_order.slog:4:1: S : str cannot be compared with <' 
   ok string-order-rejected
 else bad string-order-rejected "$o"; fi
 
-# 99. a hyphenated name is rejected where it is written, naming it (was: the
+# 18. a hyphenated name is rejected where it is written, naming it (was: the
 #     lexer split `on-cycle` into the subtraction `on - cycle`, and
 #     simplify-all broke its own contract on the resulting rule).
 cat > "$D/name_hyphen.slog" <<'EOF'
@@ -307,7 +307,7 @@ if echo "$o" | grep -qF "name_hyphen.slog:2:8: on-cycle is not a valid name" \
   ok hyphenated-name-rejected
 else bad hyphenated-name-rejected "$o"; fi
 
-# 16. `const` is reserved: the parser spells every literal (const v), so a
+# 19. `const` is reserved: the parser spells every literal (const v), so a
 #     constructor named const read as a malformed literal (was: the same
 #     simplify-all contract failure).
 cat > "$D/name_const.slog" <<'EOF'
@@ -321,7 +321,7 @@ if echo "$o" | grep -qF "name_const.slog:1:14: const is a reserved word" \
   ok const-name-reserved
 else bad const-name-reserved "$o"; fi
 
-# 99. an enum member written without parentheses is a located error saying
+# 20. an enum member written without parentheses is a located error saying
 #     how to write it (was: in a head, `internal error ... key: 'red`; in a
 #     body, a variable silently matching every value).
 cat > "$D/enum_bare_head.slog" <<'EOF'
