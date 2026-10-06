@@ -55,6 +55,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <unordered_set>
 #include <map>
 #include <memory>
 #include <cstring>
@@ -1631,6 +1632,128 @@ static bool parse_row_terms(slog::Daemon* d, const char* verb,
     return true;
 }
 
+// A break pattern term:
+//
+//   _ | (word N) | (integer|real "text") | (string "text") | (var "X")
+//     | (ctor "name" TERM ...) | (seq TERM ...) | (seq-open TERM ...)
+//
+// Constants other than strings resolve to words now; a string, a
+// constructor or a sequence is matched by content at the port, so none of
+// them has to exist yet.  `seq-open` matches a sequence that starts with
+// its terms.  Returns false with `detail` set on a malformed term.
+static bool parse_break_term(slog::Daemon* d, const slog::sexp::SExp& term,
+                             slog::Database::BreakTerm& out,
+                             std::string& detail)
+{
+    using T = slog::Database::BreakTerm;
+    using K = slog::sexp::SExp::K;
+    if (term.kind == K::atom && term.text == "_")
+    {
+        out.kind = T::wild;
+        return true;
+    }
+    if (term.kind != K::list || term.children.empty()
+        || term.children[0].kind != K::atom)
+    {
+        detail = "a pattern term is _, (word N), (integer|real|string \"text\"), "
+                 "(var \"X\"), (ctor \"name\" TERM ...) or (seq TERM ...)";
+        return false;
+    }
+    const std::string& kind = term.children[0].text;
+    const auto text = [&](std::string& into) {
+        return term.children.size() >= 2
+            && parse_string_value(term.children[1], into);
+    };
+    if (kind == "ctor" || kind == "seq" || kind == "seq-open")
+    {
+        size_t first = 1;
+        if (kind == "ctor")
+        {
+            if (!text(out.text) || out.text.empty())
+            {
+                detail = "ctor takes a name and its field terms";
+                return false;
+            }
+            first = 2;
+        }
+        out.kind = kind == "ctor" ? T::ctor : T::seq;
+        out.open = kind == "seq-open";
+        for (size_t i = first; i < term.children.size(); ++i)
+        {
+            out.args.emplace_back();
+            if (!parse_break_term(d, term.children[i], out.args.back(), detail))
+                return false;
+        }
+        return true;
+    }
+    if (term.children.size() != 2)
+    {
+        detail = kind + " takes one value";
+        return false;
+    }
+    if (kind == "word")
+    {
+        out.kind = T::exact;
+        if (parse_u64_atom(term.children[1], out.word)) return true;
+        detail = "word takes an encoded value";
+        return false;
+    }
+    if (kind == "var" || kind == "string")
+    {
+        out.kind = kind == "var" ? T::var : T::str;
+        if (text(out.text) && (kind == "string" || !out.text.empty()))
+            return true;
+        detail = kind + " takes a string";
+        return false;
+    }
+    slog::query::Literal literal;
+    if (kind == "integer") literal.kind = slog::query::LiteralK::integer;
+    else if (kind == "real") literal.kind = slog::query::LiteralK::real;
+    else
+    {
+        detail = "unknown pattern term " + kind;
+        return false;
+    }
+    literal.text = term.children[1].text;
+    try
+    {
+        out.kind = T::exact;
+        if (slog::query::resolve_literal(*d->db(), literal, out.word))
+            return true;
+        detail = "no value in this evaluation matches " + literal.text;
+    }
+    catch (const slog::query::Error& exception)
+    {
+        detail = exception.what();
+    }
+    return false;
+}
+
+// The text a listing shows for a term: close to how the REPL wrote it.
+static std::string break_term_text(slog::Daemon* d,
+                                   const slog::Database::BreakTerm& t)
+{
+    using T = slog::Database::BreakTerm;
+    std::string out;
+    switch (t.kind)
+    {
+        case T::wild: return "_";
+        case T::exact: return d->db()->writeValCSV(t.word);
+        case T::str: return slog::protocol::quoteString(t.text);
+        case T::var: return t.text;
+        case T::ctor: out = "(" + t.text; break;
+        case T::seq: out = "["; break;
+    }
+    bool first = t.kind == T::seq;
+    for (const T& a : t.args)
+    {
+        out += (first ? "" : " ") + break_term_text(d, a);
+        first = false;
+    }
+    if (t.kind == T::seq) return out + (t.open ? " ...]" : "]");
+    return out + ")";
+}
+
 // T5 slice (d1): the proof tree (contract §4(d1), execution-tiers §7.4).
 // One `(proof-node ...)` record per node, parented by id so the client
 // renders a tree without a second grammar, then a sentinel that ECHOES the
@@ -2591,7 +2714,8 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
     // are -- never saved, never hashed, and armable while a run of theirs
     // is held mid-event.
     const bool watch_verb = verb == "watch" || verb == "unwatch"
-        || verb == "break" || verb == "unbreak" || verb == "breaks";
+        || verb == "break" || verb == "unbreak" || verb == "breaks"
+        || verb == "break-enable" || verb == "break-log";
     // T5 slice (c): `replay` is a debugger continuation over a PARKED epoch,
     // so the lease admits it whenever the run is suspended -- including at
     // parks it will refuse, because `level-1-unwatchable` is the honest
@@ -3039,77 +3163,138 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
     // a gate the operator had to trip first.
     if (verb == "break")
     {
+        using K = slog::sexp::SExp::K;
         slog::Database::BreakSpec spec;
         bool have_id = false;
+        const auto malformed = [&](const std::string& detail) {
+            refuse(d, "parse", "(verb break) (detail "
+                   + slog::protocol::quoteString(detail) + ")");
+        };
         for (size_t i = 1; i < form.children.size(); ++i)
         {
             const slog::sexp::SExp& field = form.children[i];
-            if (field.kind != slog::sexp::SExp::K::list
-                || field.children.empty()
-                || field.children[0].kind != slog::sexp::SExp::K::atom)
+            if (field.kind != K::list || field.children.empty()
+                || field.children[0].kind != K::atom)
             {
-                refuse(d, "parse", "(verb break) (detail \"expected (break "
-                       "(id \\\"b1\\\") [(relation \\\"R\\\")] [(rule N)] "
-                       "[(source \\\"FILE:LINE\\\")] [(position K)] "
-                       "[(pattern TERM ...)])\")");
+                malformed("expected (break (id \"b1\") [(relation \"R\" ...)] "
+                          "[(rule N)] [(source \"FILE:LINE\")] [(position K)] "
+                          "[(pattern TERM ...)] [(judgment #t)] "
+                          "[(when GUARD ...)] [(uses TERM ...)] [(ignore N)] "
+                          "[(log #t)] [(enabled #f)])");
                 return;
             }
             const std::string& tag = field.children[0].text;
+            const bool one = field.children.size() == 2;
+            const auto flag = [&](bool& into) {
+                if (!one || field.children[1].kind != K::atom
+                    || (field.children[1].text != "#t"
+                        && field.children[1].text != "#f"))
+                    return false;
+                into = field.children[1].text == "#t";
+                return true;
+            };
             u64 value = 0;
-            if (tag == "id" && field.children.size() == 2
-                && field.children[1].kind == slog::sexp::SExp::K::string)
+            std::string detail;
+            bool ok = true;
+            if (tag == "id" && one && field.children[1].kind == K::string)
             {
                 spec.id = field.children[1].text;
                 have_id = !spec.id.empty();
             }
-            else if (tag == "relation" && field.children.size() == 2
-                     && field.children[1].kind == slog::sexp::SExp::K::string)
-                spec.relation = field.children[1].text;
-            else if (tag == "rule" && field.children.size() == 2
+            else if (tag == "relation" && field.children.size() >= 2)
+            {
+                for (size_t j = 1; j < field.children.size() && ok; ++j)
+                {
+                    ok = field.children[j].kind == K::string
+                      && !field.children[j].text.empty();
+                    if (ok) spec.relations.push_back(field.children[j].text);
+                }
+            }
+            else if (tag == "rule" && one
                      && parse_u64_atom(field.children[1], value)
                      && value < UINT32_MAX)
                 spec.rule_id = static_cast<u32>(value);
-            else if (tag == "source" && field.children.size() == 2
-                     && field.children[1].kind == slog::sexp::SExp::K::string)
+            else if (tag == "source" && one
+                     && field.children[1].kind == K::string)
                 spec.source = field.children[1].text;
-            else if (tag == "position" && field.children.size() == 2
+            else if (tag == "position" && one
                      && parse_u64_atom(field.children[1], value)
                      && value < 0xffff)
                 spec.position = static_cast<u16>(value);
-            else if (tag == "pattern")
+            else if (tag == "pattern" || tag == "uses")
             {
-                if (!parse_row_terms(d, "break", field, true, spec.pattern,
-                                     spec.wild))
-                    return;
-                if (spec.pattern.empty())
+                std::vector<slog::Database::BreakTerm> terms;
+                for (size_t j = 1; j < field.children.size(); ++j)
                 {
-                    refuse(d, "parse", "(verb break) (detail \"an empty "
-                           "pattern matches nothing; omit the field\")");
+                    terms.emplace_back();
+                    if (!parse_break_term(d, field.children[j], terms.back(),
+                                          detail))
+                    {
+                        malformed(detail);
+                        return;
+                    }
+                }
+                if (terms.empty())
+                {
+                    malformed("an empty " + tag + " matches nothing; omit "
+                              "the field");
                     return;
                 }
+                (tag == "pattern" ? spec.pattern : spec.uses) =
+                    std::move(terms);
             }
-            else
+            else if (tag == "when")
             {
-                refuse(d, "parse",
-                       "(verb break) (detail \"unknown or malformed field "
-                       + tag + "\")");
+                for (size_t j = 1; j < field.children.size(); ++j)
+                {
+                    const slog::sexp::SExp& g = field.children[j];
+                    slog::Database::BreakGuard guard;
+                    static const char* ops[] = {"=", "/=", "<", "<=", ">", ">="};
+                    if (g.kind != K::list || g.children.size() != 3
+                        || g.children[0].kind != K::atom
+                        || std::find(std::begin(ops), std::end(ops),
+                                     g.children[0].text) == std::end(ops))
+                    {
+                        malformed("a guard is (OP TERM TERM), OP one of "
+                                  "= /= < <= > >=");
+                        return;
+                    }
+                    guard.op = g.children[0].text;
+                    if (!parse_break_term(d, g.children[1], guard.left, detail)
+                        || !parse_break_term(d, g.children[2], guard.right,
+                                             detail))
+                    {
+                        malformed(detail);
+                        return;
+                    }
+                    spec.guards.push_back(std::move(guard));
+                }
+            }
+            else if (tag == "ignore" && one
+                     && parse_u64_atom(field.children[1], value))
+                spec.ignore = value;
+            else if (tag == "judgment") ok = flag(spec.judgment);
+            else if (tag == "log") ok = flag(spec.log);
+            else if (tag == "enabled") ok = flag(spec.enabled);
+            else ok = false;
+            if (!ok)
+            {
+                malformed("unknown or malformed field " + tag);
                 return;
             }
         }
         if (!have_id)
         {
-            refuse(d, "parse",
-                   "(verb break) (detail \"requires (id \\\"b1\\\")\")");
+            malformed("requires (id \"b1\")");
             return;
         }
-        if (spec.relation.empty() && spec.rule_id == UINT32_MAX
+        if (spec.relations.empty() && spec.rule_id == UINT32_MAX
             && spec.source.empty() && spec.position == 0xffff
             && spec.pattern.empty())
         {
             // "stop at every port of every rule" is `step`, not a break.
-            refuse(d, "parse", "(verb break) (detail \"a break needs a "
-                   "relation, a rule, a source, or a position to narrow "
-                   "it\")");
+            malformed("a break needs a relation, a rule, a source, or a "
+                      "position to narrow it");
             return;
         }
         if (spec.position != 0xffff && spec.rule_id == UINT32_MAX
@@ -3117,9 +3302,13 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
         {
             // A body position without a rule is a different position in
             // every rule -- an accident, not an intent.
-            refuse(d, "parse", "(verb break) (detail \"a body position "
-                   "belongs to a rule; give (rule N) or (source "
-                   "\\\"FILE:LINE\\\") too\")");
+            malformed("a body position belongs to a rule; give (rule N) or "
+                      "(source \"FILE:LINE\") too");
+            return;
+        }
+        if (spec.judgment && spec.pattern.empty())
+        {
+            malformed("judgment reads a pattern; give (pattern TERM ...)");
             return;
         }
         const std::string id = spec.id;
@@ -3134,6 +3323,119 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
         d->emit("(break-added (id " + slog::protocol::quoteString(id)
                 + ") (breaks "
                 + std::to_string(d->db()->breakSpecs().size()) + "))");
+        return;
+    }
+
+    // (break-enable (id "b1") (enabled #f)): a break kept, with its hits,
+    // but out of the run until enabled again.
+    if (verb == "break-enable")
+    {
+        CommandFields fields;
+        std::string error;
+        std::string id;
+        if (!collect_fields(form, 1, {"id", "enabled"}, fields, error)
+            || fields.count("id") == 0 || fields.count("enabled") == 0
+            || fields.at("id")->children.size() != 2
+            || !parse_string_value(fields.at("id")->children[1], id)
+            || fields.at("enabled")->children.size() != 2
+            || (fields.at("enabled")->children[1].text != "#t"
+                && fields.at("enabled")->children[1].text != "#f"))
+        {
+            refuse(d, "parse", "(verb break-enable) (detail \"expected "
+                   "(break-enable (id \\\"b1\\\") (enabled #t|#f))\")");
+            return;
+        }
+        const bool on = fields.at("enabled")->children[1].text == "#t";
+        if (!d->db()->enableBreak(id, on))
+        {
+            refuse(d, "break-binding", "(verb break-enable) (detail "
+                   + slog::protocol::quoteString("no break with id " + id)
+                   + ")");
+            return;
+        }
+        d->emit("(break-enabled (id " + slog::protocol::quoteString(id)
+                + ") (enabled " + (on ? "#t" : "#f") + "))");
+        return;
+    }
+
+    // (break-log [(from SEQ)] [(limit N)] [(depth D)]): the logpoints'
+    // records from SEQ on, then each distinct word they name rendered once
+    // (to depth D, 0 for all of it), then the end with the seq to read from
+    // next and the records the cap dropped.
+    //
+    //   (log (seq N) (id "b1") (scc S) (iteration I) (rule R) (source "LOC")
+    //        (relation "R") (row W ...) (bindings ("X" W) ...)
+    //        (driver "R" W ...) (premises ("R" W ...) ...))
+    //   (log-value W "text")              ; each word of a row or binding
+    //   (break-log-end (records N) (next SEQ) (first SEQ) (dropped D))
+    //
+    // `first` is the oldest record held: past `from`, the log was cleared
+    // (a new event began) and a reader starts over.
+    if (verb == "break-log")
+    {
+        CommandFields fields;
+        std::string error;
+        u64 from = 0, limit = UINT64_MAX, depth = 0;
+        const auto number = [&](const char* key, u64& into) {
+            return fields.count(key) == 0
+                || (fields.at(key)->children.size() == 2
+                    && parse_u64_atom(fields.at(key)->children[1], into));
+        };
+        if (!collect_fields(form, 1, {"from", "limit", "depth"}, fields, error)
+            || !number("from", from) || !number("limit", limit)
+            || !number("depth", depth))
+        {
+            refuse(d, "parse", "(verb break-log) (detail \"expected "
+                   "(break-log [(from SEQ)] [(limit N)] [(depth D)])\")");
+            return;
+        }
+        u64 next = 0, dropped = 0, first = 0;
+        const std::vector<slog::Database::BreakLogRecord> records =
+            d->db()->breakLogFrom(from, limit, next, dropped, first);
+        std::vector<u64> words;
+        std::unordered_set<u64> seen;
+        // Rows and bindings are what a reader shows, so their words are
+        // rendered; the body's rows are identity (which call, which
+        // answer), read as words.
+        const auto words_text = [&](const std::vector<u64>& row,
+                                    bool shown = true) {
+            std::string text;
+            for (u64 w : row)
+            {
+                text += " " + std::to_string(w);
+                if (shown && seen.insert(w).second) words.push_back(w);
+            }
+            return text;
+        };
+        using slog::protocol::quoteString;
+        for (const slog::Database::BreakLogRecord& r : records)
+        {
+            std::string line = "(log (seq " + std::to_string(r.seq)
+                + ") (id " + quoteString(r.id) + ") (scc "
+                + std::to_string(r.scc) + ") (iteration "
+                + std::to_string(r.iteration) + ") (rule "
+                + std::to_string(r.rule_id) + ") (source "
+                + quoteString(r.rule_loc) + ") (relation "
+                + quoteString(r.relation) + ") (row" + words_text(r.row)
+                + ") (bindings";
+            for (const auto& [name, word] : r.bindings)
+                line += " (" + quoteString(name) + words_text({word}) + ")";
+            line += ") (driver " + quoteString(r.driver_relation)
+                + words_text(r.driver, false) + ") (premises";
+            for (const slog::Database::ProofPremise& p : r.premises)
+                line += " (" + quoteString(p.relation)
+                    + words_text(p.row, false) + ")";
+            d->emit(line + "))");
+        }
+        for (u64 w : words)
+            d->emit("(log-value " + std::to_string(w) + " "
+                    + quoteString(d->db()->writeValCSVAtBoundary(
+                          w, "", 0, static_cast<u32>(depth)))
+                    + ")");
+        d->emit("(break-log-end (records " + std::to_string(records.size())
+                + ") (next " + std::to_string(next) + ") (first "
+                + std::to_string(first) + ") (dropped "
+                + std::to_string(dropped) + "))");
         return;
     }
 
@@ -3175,13 +3477,18 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
         }
         for (const slog::Database::BreakSpec& b : d->db()->breakSpecs())
         {
-            std::string pattern;
+            std::string pattern, relations, guards;
             for (size_t i = 0; i < b.pattern.size(); ++i)
                 pattern += (i == 0 ? "" : " ")
-                  + (b.wild[i] ? std::string("_")
-                               : d->db()->writeValCSV(b.pattern[i]));
+                  + break_term_text(d, b.pattern[i]);
+            for (const std::string& r : b.relations)
+                relations += (relations.empty() ? "" : " ") + r;
+            for (const slog::Database::BreakGuard& g : b.guards)
+                guards += (guards.empty() ? "(" : " (") + g.op + " "
+                  + break_term_text(d, g.left) + " "
+                  + break_term_text(d, g.right) + ")";
             d->emit("(break (id " + slog::protocol::quoteString(b.id)
-                    + ") (relation " + slog::protocol::quoteString(b.relation)
+                    + ") (relation " + slog::protocol::quoteString(relations)
                     + ") (rule "
                     + (b.rule_id == UINT32_MAX ? "#f"
                                                : std::to_string(b.rule_id))
@@ -3190,7 +3497,12 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
                     + (b.position == 0xffff ? "#f"
                                             : std::to_string(b.position))
                     + ") (pattern " + slog::protocol::quoteString(pattern)
-                    + ") (hits " + std::to_string(b.hits) + "))");
+                    + ") (hits " + std::to_string(b.hits)
+                    + ") (when " + slog::protocol::quoteString(guards)
+                    + ") (judgment " + (b.judgment ? "#t" : "#f")
+                    + ") (ignore " + std::to_string(b.ignore)
+                    + ") (log " + (b.log ? "#t" : "#f")
+                    + ") (enabled " + (b.enabled ? "#t" : "#f") + "))");
         }
         d->emit("(breaks-end "
                 + std::to_string(d->db()->breakSpecs().size()) + ")");

@@ -3463,13 +3463,41 @@ public:
   // names), a rule id (matched at the `fire` port -- an instantiation IS
   // "the rule fired"), and a body position (matched at the probe port
   // whose cursor slot is that position).  `pattern` is repl-ux's `when`
-  // clause as a HEAD PATTERN: a binding predicate would need source
-  // variable names, and those are the rule-meta item that also blocks
-  // frames from printing them.
+  // clause as a HEAD PATTERN over the emitted row.
+  //
+  // A pattern term is a word or `_`, or structure: a constructor with its
+  // fields, a sequence, a string by content, or a variable.  Structure is
+  // matched against the value at the port, so a pattern can name a
+  // constructor instance that does not exist yet when the break is armed
+  // (`(infer _ (app _ _))` before the run that first builds an `app`).  A
+  // variable binds the word it meets; met again it must be the same word,
+  // which interning makes value equality.
+  struct BreakTerm
+  {
+    enum Kind : u8 { wild, exact, str, var, ctor, seq };
+    Kind kind = wild;
+    u64 word = 0;                  // word
+    std::string text;              // string content, var or ctor name
+    std::vector<BreakTerm> args;   // ctor fields, seq elements
+    bool open = false;             // seq: more elements may follow
+  };
+  // A guard over the pattern's variables and the rule's own named
+  // variables at the port: `=`/`/=` match the right side as a pattern
+  // (so `(= T (app _ _))` reads as it would in a rule), the orderings
+  // compare numbers.
+  struct BreakGuard
+  {
+    std::string op;
+    BreakTerm left, right;
+  };
+  using BreakBindings = std::vector<std::pair<std::string, u64>>;
+
   struct BreakSpec
   {
     std::string id;
-    std::string relation;        // head relation, or empty for any
+    // Head relations, any of them, or none for any.  A name ending in `*`
+    // names every relation it prefixes (`$sup*`).
+    std::vector<std::string> relations;
     u32 rule_id = UINT32_MAX;    // exact rule, or the sentinel for any
     // The rule at a source location, "file:line" or "file:line:col" as
     // rule-location-string spells it, or empty for any.  Rule ids restart
@@ -3477,10 +3505,33 @@ public:
     // single rule across a program.
     std::string source;
     u16 position = 0xffff;       // cursor slot, or the sentinel for any
-    std::vector<u64> pattern;    // head pattern words, empty for any
-    std::vector<bool> wild;      // parallel to pattern: `_` columns
-    u64 hits = 0;
+    std::vector<BreakTerm> pattern;  // head pattern, empty for any
+    // The row read as the judgment it answers: its first column's
+    // constructor fields, then the rest (`(nf T V)` against nf_ans's
+    // `(d V)` where d is `(nf T)`).
+    bool judgment = false;
+    std::vector<BreakGuard> guards;
+    // Values the rule instance's body must have used: a premise row (or
+    // the driving row) holds one matching a term.  "Inside this call" for
+    // a demand, whose id is not minted yet when it is asked.
+    std::vector<BreakTerm> uses;
+    u64 ignore = 0;              // matches that count but do not stop
+    bool log = false;            // a logpoint: record, never stop
+    bool enabled = true;
+    // Counted by the sink, which sees the arms read-only.
+    mutable u64 hits = 0;
   };
+
+  static bool relationNamed(const std::vector<std::string>& names,
+                            const std::string& relation)
+  {
+    for (const std::string& n : names)
+      if (!n.empty() && n.back() == '*'
+            ? relation.compare(0, n.size() - 1, n, 0, n.size() - 1) == 0
+            : n == relation)
+        return true;
+    return false;
+  }
 
 private:
   StepGrain step_grain = step_off;
@@ -3508,9 +3559,10 @@ private:
     break_event_mask = 0;
     for (const BreakSpec& b : break_specs)
     {
+      if (!b.enabled) continue;
       if (b.position != 0xffff)
         break_event_mask |= u64{1} << 1;          // EventK::probe_match
-      else if (!b.relation.empty() || !b.pattern.empty())
+      else if (!b.relations.empty() || !b.pattern.empty())
         break_event_mask |= u64{1} << 7;          // EventK::emit
       else
         break_event_mask |= u64{1} << 6;          // EventK::instantiation
@@ -3545,10 +3597,21 @@ public:
     return false;
   }
 
-  void countBreakHit(const std::string& id)
+  bool enableBreak(const std::string& id, bool enabled)
   {
-    for (BreakSpec& b : break_specs) if (b.id == id) { ++b.hits; return; }
+    for (BreakSpec& b : break_specs)
+      if (b.id == id)
+      {
+        b.enabled = enabled;
+        refreshBreakMask();
+        return true;
+      }
+    return false;
   }
+
+  // A match is a hit whether or not it stops (ignored and logged ones are
+  // hits too); the count after this one decides an `ignore`.
+  u64 countBreakHit(const BreakSpec& b) const { return ++b.hits; }
 
   bool breakSuppressed() const
   {
@@ -3686,6 +3749,238 @@ public:
 
   size_t proofCount() const { return proof_journal.size(); }
   u64 proofsDropped() const { return proof_dropped; }
+
+  // ---- logpoints: the break log -------------------------------------------
+  // A logpoint is a break that records where it would stop: the row, the
+  // bindings, and the body that produced it, labelled as the journal labels
+  // it.  Like the journal it is scoped to one semantic event (cleared where
+  // a boundary is prepared or an update epoch begins) and a discarded read
+  // takes its records with it; unlike the journal it is armed per break and
+  // needs no gate.  Bounded: past the cap a record is counted, not kept.
+  struct BreakLogRecord
+  {
+    u64 seq = 0;
+    std::string id;
+    u32 scc = 0;
+    u32 iteration = 0;
+    u32 rule_id = 0;
+    std::string rule_loc;
+    std::string relation;
+    std::vector<u64> row;       // nominal; a struct head's fields
+    BreakBindings bindings;     // the pattern's, then the rule's
+    std::string driver_relation;
+    std::vector<u64> driver;
+    std::vector<ProofPremise> premises;
+  };
+
+private:
+  static constexpr size_t break_log_max = 1u << 18;
+  std::mutex break_log_mutex;
+  std::vector<BreakLogRecord> break_log;
+  u64 break_log_base = 0;       // seq of break_log[0]
+  u64 break_log_dropped = 0;
+  size_t break_log_read_mark = 0;
+
+public:
+  void recordBreakLog(BreakLogRecord&& record)
+  {
+    std::lock_guard<std::mutex> lk(break_log_mutex);
+    if (break_log.size() >= break_log_max) { ++break_log_dropped; return; }
+    record.seq = break_log_base + break_log.size();
+    record.scc = rs.stratum != nullptr ? rs.stratum->scc_id : 0;
+    record.iteration = rs.iteration_count;
+    break_log.push_back(std::move(record));
+  }
+
+  void clearBreakLog()
+  {
+    std::lock_guard<std::mutex> lk(break_log_mutex);
+    break_log_base += break_log.size();
+    break_log.clear();
+    break_log_dropped = 0;
+    break_log_read_mark = 0;
+  }
+
+  void markBreakLogRead()
+  {
+    std::lock_guard<std::mutex> lk(break_log_mutex);
+    break_log_read_mark = break_log.size();
+  }
+
+  void discardBreakLogFromRead()
+  {
+    std::lock_guard<std::mutex> lk(break_log_mutex);
+    if (break_log_read_mark < break_log.size())
+      break_log.resize(break_log_read_mark);
+  }
+
+  // Records from `from` (a seq) on; the reader holds no lock past the copy.
+  std::vector<BreakLogRecord> breakLogFrom(u64 from, size_t limit,
+                                           u64& next, u64& dropped,
+                                           u64& first)
+  {
+    std::lock_guard<std::mutex> lk(break_log_mutex);
+    first = break_log_base;
+    std::vector<BreakLogRecord> out;
+    size_t i = from > break_log_base ? from - break_log_base : 0;
+    for (; i < break_log.size() && out.size() < limit; ++i)
+      out.push_back(break_log[i]);
+    next = break_log_base + i;
+    dropped = break_log_dropped;
+    return out;
+  }
+
+  // ---- break patterns ------------------------------------------------------
+  // A struct value's constructor and fields, or false when the word is not
+  // a struct this evaluation holds.  An enum constant is a struct of
+  // `_enum` whose one field is its name, and reads as the source spells it:
+  // that name with no fields.
+  bool decodeStructValue(u64 v, std::string& name, std::vector<u64>& fields)
+  {
+    if (!is_struct(v)) return false;
+    const u32 sid = (u32)decode_struct_id(v);
+    Relation* rel = nullptr;
+    if (TypeDescriptor* descriptor = getTypeDescriptorBySid(sid))
+    {
+      rel = descriptor->canonical_relation;
+      name = currentTypeName(*descriptor);
+    }
+    else if (prepared_boundary)
+      for (const auto& [bound_name, bound] : prepared_boundary->environment)
+        if (bound != nullptr && bound->getStructId() == sid
+            && (rel == nullptr || bound_name < name))
+        {
+          rel = bound;
+          name = bound_name;
+        }
+    if (rel == nullptr) return false;
+    std::vector<u64> row;
+    bool found = rel->indexedStructRow(v, row) || rel->unindexedStructRow(v, row);
+    if (!found && prepared_boundary)
+      for (const auto& [_n, bound] : prepared_boundary->environment)
+        if (bound != nullptr && bound != rel && bound->getStructId() == sid
+            && (found = bound->indexedStructRow(v, row)
+                        || bound->unindexedStructRow(v, row)))
+          break;
+    if (!found || row.empty()) return false;
+    if (name == "_enum" && row.size() == 2 && is_str(row[1]))
+    {
+      name = decodeString(row[1]);
+      fields.clear();
+      return true;
+    }
+    fields.assign(row.begin() + 1, row.end());
+    return true;
+  }
+
+  // A constructor name matches its declaration's name, or that name's last
+  // component when the declaration is qualified ("m.app" is `app`).
+  static bool ctorNamed(const std::string& declared, const std::string& name)
+  {
+    if (declared == name) return true;
+    return declared.size() > name.size()
+      && declared.compare(declared.size() - name.size(), name.size(), name) == 0
+      && (declared[declared.size() - name.size() - 1] == '.'
+          || declared[declared.size() - name.size() - 1] == '/');
+  }
+
+  bool matchBreakTerm(const BreakTerm& t, u64 v, BreakBindings& bound)
+  {
+    switch (t.kind)
+    {
+      case BreakTerm::wild: return true;
+      case BreakTerm::exact: return v == t.word;
+      case BreakTerm::str: return is_str(v) && decodeString(v) == t.text;
+      case BreakTerm::var:
+        for (const auto& [name, word] : bound)
+          if (name == t.text) return word == v;
+        bound.emplace_back(t.text, v);
+        return true;
+      case BreakTerm::ctor:
+      {
+        std::string name;
+        std::vector<u64> fields;
+        if (!decodeStructValue(v, name, fields) || !ctorNamed(name, t.text)
+            || fields.size() != t.args.size())
+          return false;
+        for (size_t i = 0; i < fields.size(); ++i)
+          if (!matchBreakTerm(t.args[i], fields[i], bound)) return false;
+        return true;
+      }
+      case BreakTerm::seq:
+      {
+        if (!is_seq(v)) return false;
+        std::vector<u64> items;
+        seq_arena->foreach(v, [&](u64 w) { items.push_back(w); });
+        if (t.open ? items.size() < t.args.size()
+                   : items.size() != t.args.size())
+          return false;
+        for (size_t i = 0; i < t.args.size(); ++i)
+          if (!matchBreakTerm(t.args[i], items[i], bound)) return false;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // A row against a pattern; `bound` collects the pattern's variables.
+  bool matchBreakRow(const BreakSpec& b, const std::vector<u64>& row,
+                     BreakBindings& bound)
+  {
+    std::vector<u64> cols;
+    if (b.judgment)
+    {
+      std::string name;
+      if (row.empty() || !decodeStructValue(row[0], name, cols)) return false;
+      cols.insert(cols.end(), row.begin() + 1, row.end());
+    }
+    const std::vector<u64>& r = b.judgment ? cols : row;
+    if (r.size() != b.pattern.size()) return false;
+    for (size_t i = 0; i < r.size(); ++i)
+      if (!matchBreakTerm(b.pattern[i], r[i], bound)) return false;
+    return true;
+  }
+
+  // The guards, with `bound` (the pattern's variables, then the rule's)
+  // naming variables.  An unbound variable fails its guard: a condition
+  // the port cannot decide is not a stop.
+  bool breakGuardsHold(const BreakSpec& b, const BreakBindings& bound)
+  {
+    const auto lookup = [&](const BreakTerm& t, u64& v) {
+      if (t.kind == BreakTerm::exact) { v = t.word; return true; }
+      if (t.kind != BreakTerm::var) return false;
+      for (const auto& [name, word] : bound)
+        if (name == t.text) { v = word; return true; }
+      return false;
+    };
+    for (const BreakGuard& g : b.guards)
+    {
+      u64 left = 0;
+      if (!lookup(g.left, left)) return false;
+      if (g.op == "=" || g.op == "/=")
+      {
+        BreakBindings scratch = bound;
+        u64 right = 0;
+        const bool same = lookup(g.right, right)
+          ? left == right : matchBreakTerm(g.right, left, scratch);
+        if (same != (g.op == "=")) return false;
+        continue;
+      }
+      u64 right = 0;
+      if (!lookup(g.right, right)) return false;
+      double l = 0, r = 0;
+      if (is_s32(left)) l = s32_decode(left);
+      else if (is_float(left)) l = float_decode(left);
+      else return false;
+      if (is_s32(right)) r = s32_decode(right);
+      else if (is_float(right)) r = float_decode(right);
+      else return false;
+      const bool holds = g.op == "<" ? l < r : g.op == "<=" ? l <= r
+        : g.op == ">" ? l > r : g.op == ">=" ? l >= r : false;
+      if (!holds) return false;
+    }
+    return true;
+  }
 
   // The gate's accepted candidates, retained so `why` can name a change
   // that is not yet committed truth (contract §1's correlation).
@@ -3946,6 +4241,7 @@ public:
     // first).  Without this, `why` after an `add` would answer with the
     // PREVIOUS event's tree while calling it this one's.
     if (provenance_armed) clearProofJournal();
+    clearBreakLog();
     {
       std::lock_guard<std::mutex> lk(update_transition_mutex);
       update_transitions.clear();
@@ -5156,6 +5452,7 @@ public:
     // -- a prepared boundary is where the next one begins, and stale
     // derivations under a fresh event's `why` would be a lie by omission.
     if (provenance_armed) clearProofJournal();
+    clearBreakLog();
     BoundaryAdmission accepted;
     accepted.ok = true;
     accepted.position = prepared_boundary->position;
@@ -5552,6 +5849,7 @@ public:
     // T5 slice (d1): the discarded read's captured derivations go with its
     // shards -- otherwise the rerun would double every proof it repeats.
     discardProofsFromRead();
+    discardBreakLogFromRead();
     rs.once_pending[phase_read] = rs.read_once_armed;
     rs.task_cursor[phase_read] = 0;
     clearPausedPhase(phase_read);
@@ -10332,6 +10630,8 @@ inline void IterCompletion::operator()() noexcept
     // and a replay simply discards the pending vector.)
     db->markProofRead();
   }
+  // Likewise the break log, which a replay of the read must not double.
+  if (db->breaksArmed()) db->markBreakLogRead();
 }
 
 // Decide, now that all workers have stopped claiming, whether the read phase
