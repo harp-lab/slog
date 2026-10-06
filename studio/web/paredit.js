@@ -24,7 +24,7 @@ import { format, formatForm } from "./format.js";
 import { complete, expand } from "./complete.js";
 import { completeCommand, observe as observed, slogAt } from "./commands.js";
 import { forms } from "./forms.js";
-import { EMACS, EMACS_KEYS, ring } from "./emacs.js";
+import { EMACS, EMACS_KEYS, noteKill, ring } from "./emacs.js";
 
 // The bindings: [operation, chords, what it does]. A chord names keys by
 // their position (event.code), so Alt does not change them on a Mac;
@@ -222,6 +222,7 @@ export function bindMonaco(monaco, editor) {
           return;
         }
         const result = COMMANDS[name](text, selection);
+        if (name === "kill" && result) noteKill(text, selection, result);
         if (name === "expandSelection") grown.push({ before: selection, after: result.selection });
         else if (name !== "contractSelection") grown.length = 0;
         apply(text, result);
@@ -344,6 +345,7 @@ function structureKeys(area) {
       result = { text, selection: grown.pop().before };
     } else if (name) {
       result = COMMANDS[name](text, selection);
+      if (name === "kill" && result) noteKill(text, selection, result);
       if (name === "expandSelection") grown.push({ before: selection, after: result.selection });
     } else if (TYPING[event.key] && !event.ctrlKey && !event.metaKey && !event.altKey) {
       result = TYPING[event.key](text, selection);

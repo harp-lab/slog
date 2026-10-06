@@ -6,9 +6,11 @@
 // C-a, C-e, C-f, C-b, C-n, C-p, C-d, C-h and C-t need nothing here: the
 // Mac binds them in Monaco and in every textarea.
 //
-// Kills go to a one-entry kill ring shared by every editor on the page, and
+// Kills go to a kill ring shared by every editor on the page, and the newest
 // to the clipboard; kills in a row (nothing typed or moved between them)
-// add to the entry, as in Emacs, and C-y yanks it.
+// add to one entry, as in Emacs. C-y yanks the newest, and M-y right after
+// replaces what was yanked with the entry before it. Paredit's C-k is a
+// kill too (`noteKill`).
 
 const word = (c) => /[\p{L}\p{N}_]/u.test(c);
 
@@ -28,18 +30,40 @@ const lineEnd = (text, at) => (text.indexOf("\n", at) + 1 || text.length + 1) - 
 const caret = (at) => ({ start: at, end: at });
 const moved = (text, at) => ({ text, selection: caret(at) });
 
-// The kill ring. `after` is the text and caret the last kill left: a kill
-// from exactly there continues it.
-export const ring = { text: "", after: null, copy: (text) => {} };
+// The kill ring, newest first. `after` is the text and caret the last kill
+// left: a kill from exactly there continues it. `yanked` is the last yank's
+// result, its span and entry, which M-y replaces while nothing has changed.
+const RING = 60;
+export const ring = { entries: [], after: null, yanked: null, copy: (text) => {} };
+
+function remember(piece, chained, backward) {
+  if (chained) ring.entries[0] = backward ? piece + ring.entries[0] : ring.entries[0] + piece;
+  else ring.entries = [piece, ...ring.entries].slice(0, RING);
+  ring.yanked = null;
+  ring.copy(ring.entries[0]);
+}
 
 function kill(text, from, to, backward) {
   if (from === to) return null;
-  const piece = text.slice(from, to);
   const chained = ring.after?.text === text && ring.after.at === (backward ? to : from);
-  ring.text = !chained ? piece : backward ? piece + ring.text : ring.text + piece;
+  remember(text.slice(from, to), chained, backward);
   const result = moved(text.slice(0, from) + text.slice(to), from);
   ring.after = { text: result.text, at: from };
-  ring.copy(ring.text);
+  return result;
+}
+
+// Record a deletion another command made from the caret on (paredit's
+// kill), as a kill.
+export function noteKill(text, { end }, result) {
+  const to = end + text.length - result.text.length;
+  if (to > end && text.slice(0, end) + text.slice(to) === result.text) kill(text, end, to, false);
+}
+
+function yankAt(text, start, end, index) {
+  const piece = ring.entries[index];
+  const result = moved(text.slice(0, start) + piece + text.slice(end), start + piece.length);
+  ring.after = null;
+  ring.yanked = { text: result.text, start, end: start + piece.length, index };
   return result;
 }
 
@@ -65,15 +89,17 @@ export const EMACS = {
   killRegion: (text, { start, end }) => (start === end ? null : kill(text, start, end, false)),
   copyRegion: (text, { start, end }) => {
     if (start === end) return null;
-    ring.text = text.slice(start, end);
+    remember(text.slice(start, end), false, false);
     ring.after = null;
-    ring.copy(ring.text);
     return moved(text, end);
   },
-  yank: (text, { start, end }) => {
-    if (!ring.text) return null;
-    ring.after = null;
-    return moved(text.slice(0, start) + ring.text + text.slice(end), start + ring.text.length);
+  yank: (text, { start, end }) => (ring.entries.length ? yankAt(text, start, end, 0) : null),
+  // only right after a yank or another M-y, as in Emacs
+  yankPop: (text, { end }) => {
+    const last = ring.yanked;
+    if (!last || last.text !== text || last.end !== end) return null;
+    return yankAt(text.slice(0, last.start) + text.slice(last.end), last.start, last.start,
+      (last.index + 1) % ring.entries.length);
   },
   upcaseWord: (text, { end }) => replaceWord(text, end, (w) => w.toUpperCase()),
   downcaseWord: (text, { end }) => replaceWord(text, end, (w) => w.toLowerCase()),
@@ -112,6 +138,7 @@ export const EMACS_KEYS = [
   ["killLine", ["Ctrl-K"], { mac: true, structured: false }],
   ["killRegion", ["Ctrl-W"], { mac: true }],
   ["yank", ["Ctrl-Y"], { mac: true }],
+  ["yankPop", ["Alt-Y"]],
   ["openLine", ["Ctrl-O"], { mac: true }],
   // Monaco's own actions, in the program editor
   ["undo", ["Ctrl-/", "Ctrl-Shift-Minus"], { mac: true, monaco: "undo" }],
