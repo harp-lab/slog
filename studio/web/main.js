@@ -11,6 +11,7 @@ import { renderEntry } from "./render.js";
 import { createSummary } from "./summary.js";
 import * as structure from "./paredit.js";
 import { createResults } from "./results.js";
+import { initTrace } from "./trace.js";
 
 const $ = (id) => document.getElementById(id);
 // Local mode's launch token; a server's login rides in a cookie instead.
@@ -79,6 +80,15 @@ const results = createResults({
   send,
   run: (line) => send({ t: "command", line }),
 });
+// The Execution tab: each change's trace, fed every entry (trace.js).
+const trace = initTrace({
+  editor,
+  send,
+  file: () => files.active() ?? "",
+  tabs: $("result-tabs"),
+  transcript: $("transcript"),
+  results: $("results"),
+});
 
 function save() {
   files.flush();
@@ -133,9 +143,11 @@ const receive = {
       onSpan: (span) => files.reveal(span),
       onSet: results.show,
     }));
-    // The area follows the newest output: a query's set, else the transcript.
+    // The area follows the newest output: a query's set, else the
+    // transcript, unless the Execution tab shows what it was about.
+    const executing = trace.entry(entry);
     if (entry.set) results.show(entry.set);
-    else if (entry.origin === "repl") results.show(null);
+    else if (entry.origin === "repl" && !executing) results.show(null);
     const span = entry.error?.span;
     if (entry.origin === "evaluate" && span) {
       files.mark(span, entry.error.message);

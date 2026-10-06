@@ -1,0 +1,98 @@
+/* The Execution tab (trace.js), in studio.css's palette: green inserts,
+   red retracts, orange where a run held, blue selects. */
+
+/* a new trace arrived while another tab was shown */
+.rs-tab .fresh { width: 6px; height: 6px; margin-left: 6px; border-radius: 50%; background: var(--blue); }
+
+.execution {
+  flex: 1;
+  overflow: auto;
+  padding: 10px 16px;
+  font: 12px/1.5 var(--mono);
+  outline: none;
+}
+.execution .note { color: var(--muted); padding-left: 0; }
+.execution .plus { color: var(--green); }
+.execution .minus { color: var(--red); }
+.execution .support { color: var(--muted); }
+
+.trace-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-family: var(--sans); }
+.trace-head select {
+  height: 24px;
+  max-width: 40%;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--strong);
+  font: 12px var(--mono);
+}
+.trace-head .where { color: var(--text); font-size: 12px; }
+.trace-head .warn { color: var(--orange); font-size: 12px; }
+
+.grid-scroll { overflow-x: auto; margin-bottom: 12px; }
+.grid { border-collapse: collapse; }
+.grid th {
+  padding: 2px 8px;
+  color: var(--muted);
+  font: 500 11px var(--sans);
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+.grid td { padding: 3px 8px; vertical-align: top; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.grid .n { text-align: right; }
+.grid .name { color: var(--strong); }
+.grid .writes { color: var(--text); }
+.grid .flavor { color: var(--blue); }
+.grid .flavor[data-flavor="normal"] { color: var(--muted); }
+.grid .cell { min-width: 44px; text-align: right; cursor: pointer; }
+.grid .cell:empty { cursor: default; }
+.grid .cell:hover:not(:empty) { background: var(--chrome); }
+.grid .cell.fixpoint::before { content: "·"; color: var(--muted); }
+.grid .cell.parked { box-shadow: inset 2px 0 0 var(--orange); }
+.grid .cell.selected { background: rgba(38, 139, 210, 0.12); box-shadow: inset 0 0 0 1px var(--blue); }
+
+.zset { border-top: 1px solid var(--border); padding-top: 8px; }
+.zset-title { color: var(--blue); margin-bottom: 4px; }
+.zset-relation { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
+.zset-relation .relation { color: var(--strong); font-weight: 600; }
+.zset-row { display: flex; align-items: baseline; gap: 8px; padding-left: 10px; }
+.zset-row .row { color: var(--strong); }
+.sign { width: 1em; font-weight: 700; text-align: center; }
+.sign.plus { color: var(--green); }
+.sign.minus { color: var(--red); }
+.kind {
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font: 10.5px var(--sans);
+}
+.kind.input { color: var(--strong); }
+.kind.rec { color: var(--blue); border-color: rgba(38, 139, 210, 0.4); }
+.kind.premise { color: var(--yellow); }
+.fired { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; }
+.fired a { color: var(--blue); cursor: pointer; text-decoration: underline; }
+
+.maintenance {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 12px;
+  margin-bottom: 12px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--blue);
+  background: var(--chrome);
+}
+.maintenance .label { color: var(--muted); font-family: var(--sans); }
+
+.parked-card {
+  margin-bottom: 12px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--orange);
+  background: var(--orange-tint);
+  color: var(--orange);
+}
+.parked-card .lines { margin: 6px 0 0; color: var(--strong); white-space: pre-wrap; }
+
+/* The editor's rules that fired in the selected iteration. */
+.fired-rule { background: rgba(38, 139, 210, 0.1); }
+.fired-rule-margin { background: var(--blue); width: 3px !important; margin-left: 3px; }

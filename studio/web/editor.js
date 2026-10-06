@@ -11,6 +11,8 @@
 //   notes(notes)            hold each { line, text }, a hint for its line
 //   hints(on)               show the hints near the cursor, or none
 //   findings(findings)      mark each { line, severity, message } (analyzer)
+//   highlight(ranges)       shade these [{ from, to }] line ranges (trace.js:
+//                           the rules that fired), or none
 // `onBreakpoints(lines)` fires when a margin click or an edit changes them;
 // `snapBreakpoint(line)` says which line a click on `line` marks, or null;
 // `keysAt(line)` names what the keys do there, shown with the hints.
@@ -139,6 +141,7 @@ function monacoEditor(monaco, element, { onChange, onEvaluate, onSave, onBreakpo
 
   // Breakpoints are decorations, so they move with the text they mark.
   const dots = editor.createDecorationsCollection([]);
+  const fired = editor.createDecorationsCollection([]);
   const dotLines = () => [...new Set(dots.getRanges().map((range) => range.startLineNumber))].sort((a, b) => a - b);
   const showDots = (lines) => dots.set(lines.map((line) => ({
     range: new monaco.Range(line, 1, line, 1),
@@ -260,6 +263,13 @@ function monacoEditor(monaco, element, { onChange, onEvaluate, onSave, onBreakpo
           source: "analyzer",
         })));
     },
+    highlight(ranges) {
+      fired.set(ranges.map(({ from, to }) => ({
+        range: new monaco.Range(from, 1, to, 1),
+        options: { isWholeLine: true, className: "fired-rule", linesDecorationsClassName: "fired-rule-margin" },
+      })));
+      if (ranges.length) editor.revealLinesInCenterIfOutsideViewport(ranges[0].from, ranges[0].to);
+    },
   };
 }
 
@@ -311,5 +321,6 @@ function textareaEditor(element, { onChange, onEvaluate, onSave, readOnly = fals
     notes() {},
     hints() {},
     findings() {},
+    highlight() {},
   };
 }
