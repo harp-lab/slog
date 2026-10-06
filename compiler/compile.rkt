@@ -897,15 +897,20 @@
   ;; every SLOG_PLAN_ABI setting, or the .so cache would key on an env var.
   (define-values (abi2-cohort kernel-groups)
     (canonicalize-all/abi2+groups cprog plan-flavor model))
-  (call-with-atomic-output
-   (fullpath (format "build/~a~a.plan" hash-name
-                     (if (memq plan-flavor '(count maint1 maint3neg maint4neg))
-                         (string-append "." incremental-flavor-abi)
-                         "")))
-   (lambda ()
-     (displayln (kernel-plan->string
-                 (or (and ship-abi2? abi2-cohort)
-                     (canonicalize-all cprog plan-flavor))))))
+  ;; Written LAST, after the tier sidecar and every TU: a .plan on disk means
+  ;; this emission completed, so compile-strata may reuse its TUs instead of
+  ;; re-running the planner (and every .plan reader may keep treating a miss
+  ;; as "emit").
+  (define (write-plan!)
+    (call-with-atomic-output
+     (fullpath (format "build/~a~a.plan" hash-name
+                       (if (memq plan-flavor '(count maint1 maint3neg maint4neg))
+                           (string-append "." incremental-flavor-abi)
+                           "")))
+     (lambda ()
+       (displayln (kernel-plan->string
+                   (or (and ship-abi2? abi2-cohort)
+                       (canonicalize-all cprog plan-flavor)))))))
   ;; RF1 slice 2 audit instrument (SLOG_DUMP_ABI2=<dir>): emit the ABI-2
   ;; cohort beside the shipped plan.  Inspect-only -- nothing reads it,
   ;; which is the point: the split gets exercised over real programs
@@ -930,13 +935,16 @@
   ;; write-cpp returns either one string (a single TU) or a list of
   ;; (suffix . contents) pairs -- the spine (suffix "") plus part TUs.
   (define tus (if (string? emitted) (list (cons "" emitted)) emitted))
-  (for/list ([tu (in-list tus)])
-    (match-define (cons suffix contents) tu)
-    (define path
-      (fullpath (format "build/~a~a.cpp" hash-name
-                        (if (string=? suffix "") "" (string-append "." suffix)))))
-    (call-with-atomic-output path (lambda () (display contents)))
-    path)))
+  (define paths
+    (for/list ([tu (in-list tus)])
+      (match-define (cons suffix contents) tu)
+      (define path
+        (fullpath (format "build/~a~a.cpp" hash-name
+                          (if (string=? suffix "") "" (string-append "." suffix)))))
+      (call-with-atomic-output path (lambda () (display contents)))
+      path))
+  (write-plan!)
+  paths))
 
 ;; Build (or reuse) the delta-entry flavor of one stratum job
 ;; (docs/incremental.md §0.5 mode 3, 0.B5), returning its .so path.
@@ -1747,7 +1755,15 @@
                  (lambda () (ensure-negative-maintenance-so job))
                  (lambda () (ensure-recursive-negative-maintenance-so job)))]
         [else
-         (define cpps (emit-stratum-cpp job))   ; write .cpp(s) now (fast, main thread)
+         ;; a completed earlier emission (its .plan is written last) left the
+         ;; TUs and sidecars this job hash names: reuse them -- planning and
+         ;; emission dominate a warm re-run of a stratum that never built
+         (define cpps
+           (let ([cached (stratum-tu-paths proghash)])
+             (if (and (pair? cached)
+                      (file-exists? (fullpath (format "build/~a.plan" proghash))))
+                 cached
+                 (emit-stratum-cpp job))))
          ;; T3b slices 1-3, the two ways a stratum earns the interp rung:
          ;; zero-clang (slice 1: every variant classified interp-only --
          ;; nothing to build, ever) and profile-skip (slice 2: the profile

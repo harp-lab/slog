@@ -1363,14 +1363,19 @@
 ;; build/<hash>.cpp plus any part TUs build/<hash>.pK.cpp (docs/fast-compile.md
 ;; §6).  Used when a cached -O0 .so lets us skip re-emitting yet we still need
 ;; the sources to launch the background -O2.  Sorted so the spine leads; empty
-;; if none are present (caller falls back to a fresh emit).
+;; if none are present (caller falls back to a fresh emit).  Parts are numbered
+;; from 1 without gaps (emit-cpp), so probe for them rather than list build/,
+;; which holds every artifact ever built and made this a per-stratum scan.
 (define (stratum-tu-paths proghash)
-  (define builddir (fullpath "build"))
-  (define rx (regexp (format "^~a(\\.p[0-9]+)?\\.cpp$" (regexp-quote proghash))))
-  (sort (for/list ([f (in-list (directory-list builddir))]
-                   #:when (regexp-match? rx (path->string f)))
-          (path->string (build-path builddir f)))
-        string<?))
+  (define (tu suffix) (fullpath (format "build/~a~a.cpp" proghash suffix)))
+  (if (file-exists? (tu ""))
+      (sort (cons (tu "")
+                  (for*/list ([k (in-naturals 1)]
+                              [path (in-value (tu (format ".p~a" k)))]
+                              #:break (not (file-exists? path)))
+                    path))
+            string<?)
+      '()))
 
 ;; The shell command for one background -O2 build: compile to a unique temp,
 ;; then atomically rename it onto so-path (so a daemon that has already dlopen'd
