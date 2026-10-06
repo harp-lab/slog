@@ -659,3 +659,10 @@ body.login .error { margin: 0; min-height: 1.4em; color: var(--red); }
   color: var(--blue);
 }
 #viewing-title { flex: 1; font: 500 12px var(--mono); }
+
+/* The evaluation mode: three quiet words, the current one filled. */
+.mode-switch { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.mode-switch button { height: 26px; padding: 0 9px; border: none; border-radius: 0; background: transparent; color: var(--muted); font: 500 12px var(--sans); }
+.mode-switch button + button { border-left: 1px solid var(--border); }
+.mode-switch button:hover:not(:disabled) { background: var(--surface); color: var(--text); }
+.mode-switch button[aria-checked="true"] { background: var(--strong); color: var(--surface); }

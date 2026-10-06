@@ -34,8 +34,13 @@
         <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="1"/></svg>
       </button>
     </div>
-    <!-- The mode, restart, Scenarios, History and structured editing live in
-         the command palette (palette.js); Review shows while proposals wait. -->
+    <div id="mode" class="mode-switch" role="radiogroup" aria-label="Evaluation mode">
+      <button data-mode="fast" role="radio" title="Fast: Slog's interpreter on every thread; no wait for the C++ toolchain">fast</button>
+      <button data-mode="debug" role="radio" title="Debug: the interpreter on one thread, so breakpoints and steps stop at the same place every run">debug</button>
+      <button data-mode="compiled" role="radio" title="Compiled: native code (-O2) from the start; each new program waits for clang, then runs fastest">compiled</button>
+    </div>
+    <!-- Restart, Scenarios, History and structured editing live in the
+         command palette (palette.js); Review shows while proposals wait. -->
     <div class="group" role="group" aria-label="Panels">
       <button class="panel-toggle ask" data-tab="ask" aria-pressed="false" title="Ask the agent to build or change the program">✦ Ask</button>
       <button id="review-toggle" class="panel-toggle" data-tab="review" aria-pressed="false" title="Proposals: each one shows in the editor, where you accept or reject it" hidden>

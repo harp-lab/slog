@@ -498,6 +498,9 @@ function renderStatus() {
   pill("lane", [mode, well ? "ready" : `session server ${lane}${restarts}${detail ? ` — ${detail}` : ""}`]
     .filter(Boolean).join(" · "), laneDot);
   $("restart").hidden = laneDot !== "bad";
+  for (const button of $("mode").querySelectorAll("button")) {
+    button.setAttribute("aria-checked", String(button.dataset.mode === mode));
+  }
 
   const { current, held } = state.session;
   pill("session",
@@ -699,6 +702,9 @@ addEventListener("keydown", (event) => {
 
 $("evaluate").addEventListener("click", evaluate);
 $("debug").addEventListener("click", debug);
+for (const button of $("mode").querySelectorAll("button")) {
+  button.addEventListener("click", () => send({ t: "mode", mode: button.dataset.mode }));
+}
 $("stop").addEventListener("click", () => send({ t: "interrupt" }));
 $("restart").addEventListener("click", () => send({ t: "restart" }));
 for (const button of $("held").querySelectorAll("button")) {
