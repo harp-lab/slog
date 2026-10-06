@@ -29,3 +29,6 @@ test-web:
 clean:
 	cargo clean
 	rm -f ../slog-studio ../.slog-studio.new
+
+test-web:
+	/System/Library/Frameworks/JavaScriptCore.framework/Versions/Current/Helpers/jsc -m web/tests/trace.test.mjs
