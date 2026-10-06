@@ -49,7 +49,10 @@ need something not covered here, use `search_docs` / `read_doc` /
   `enum`, `lattice`, `demand`, `extern`, `include`, `run`, `instantiate`), so
   a rule can span many lines.
 - Identifiers: letters, digits, `_`, and `'` (not first). Case sensitive.
-  Dotted names `g.edge` are qualified names (modules, section 9).
+  **No hyphens**: `on-cycle` reads as `on - cycle` (and `reaches-5` as
+  `reaches -5`); write `on_cycle`. Dotted names `g.edge` are qualified names
+  (modules, section 9).
+- Negation is `~`; there is no `!`, `not`, or `\+`.
 - Literals: integers (`42`, `-17`, arbitrary precision), floats (`3.5`,
   `-0.25`; IEEE double), strings in double quotes with backslash escapes
   (`"a\nb"`), `true`, `false`. A `-` directly followed by digits is part of a
@@ -942,6 +945,21 @@ table: add a column), `Type declarations for a conflict: (table int) vs
 (table str)` (declared twice), `Demand relation f must declare at least one
 answer column`.
 
+### Internal contract error from `simplify-all`
+
+```slog-error
+;; error: simplify-all
+table (edge int int)
+table (on-cycle int)
+rule (edge 1 1)
+rule (edge X X) --> (on-cycle X)
+```
+
+This long message (`produced: '(syn (prov ...` ... `contract from: (function
+simplify-all)`) has two known causes: a hyphen in a name (`on-cycle` is
+`on - cycle`; write `on_cycle`), or a constructor named `const`, an internal
+form (use `lit`).
+
 ### Parse errors and the single `;`
 
 ```slog-error
@@ -968,8 +986,6 @@ in the evaluation and query it with `?(error E)`.
   head of that rule is lost. Never name constructors `neg`, `abs`, `min`,
   `max`, `pow`, `log`, `exp`, `floor`, `ceil`, `round`, `size`, `top`, `one`,
   `inf`, or any other name in section 4.
-- **A constructor named `const`** breaks the compiler with an internal
-  contract error from `simplify-all`; `const` is an internal form. Use `lit`.
 - **Ordering guards on strings** (`(< S "b")`) are numeric only: each match
   produces a `type_mismatch` error instead of a comparison.
 - **An `any` value written into a narrower column** keeps the rows that fit
