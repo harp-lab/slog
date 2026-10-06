@@ -528,10 +528,13 @@ static void emit_query_page(slog::Daemon* d, CommandBuilders& state,
         // requested preview depth.  Plain strings alone would strand the
         // client at whatever depth we happened to print.
         std::string record = "(query-row " + id + " (cells";
+        // a held run's values render as the run sees them
+        const std::string& key =
+            d->db()->isPreparedBoundaryKey(state.active_query->boundary_key)
+              ? std::string() : state.active_query->boundary_key;
         for (u64 value : row)
             record += " " + d->db()->describeValue(
-                value, state.active_query->boundary_key,
-                state.active_query->render_depth);
+                value, key, state.active_query->render_depth);
         d->emit(record + "))");
     }
     d->emit("(query-end " + id + " " + query_status_name(page.status)
@@ -1538,16 +1541,32 @@ static void emit_step_frames(slog::Daemon* d)
             + quoteString(stop.rule_loc) + ") (tag "
             + quoteString(stop.rule_tag) + ") (tuple "
             + quoteString(row_text(stop.tuple)) + "))");
-    // T5 frames names: (bindings ("X" "5") ...) -- the named registers the
-    // ports have bound at this stop, source-variable spelling
+    // T5 frames names: (bindings ("X" "5" WORD) ...) -- the named
+    // registers the ports have bound at this stop, source-variable
+    // spelling, then what a clause break's pattern bound from the values it
+    // matched; each with its word, so a client can ask about the value
+    // itself.  (unbound "Y" ...) names the rule's variables still unbound
+    // here, and (clause (relation "R") (row "...")) is the row a clause
+    // break matched.
     if (!stop.bindings.empty())
     {
         std::string b = "(bindings";
         for (const auto& [name, value] : stop.bindings)
             b += " (" + quoteString(name) + " "
-               + quoteString(db->writeValCSV(value)) + ")";
+               + quoteString(db->writeValCSV(value)) + " "
+               + std::to_string(value) + ")";
         d->emit(b + ")");
     }
+    if (!stop.unbound.empty())
+    {
+        std::string u = "(unbound";
+        for (const std::string& name : stop.unbound)
+            u += " " + quoteString(name);
+        d->emit(u + ")");
+    }
+    if (!stop.clause_relation.empty())
+        d->emit("(clause (relation " + quoteString(stop.clause_relation)
+                + ") (row " + quoteString(row_text(stop.clause_row)) + "))");
     size_t level = 0;
     d->emit("(frame (level " + std::to_string(level++) + ") (kind drive) (row "
             + quoteString(row_text(stop.driver)) + "))");
@@ -1931,10 +1950,16 @@ static void emit_catalog_boundaries(slog::Daemon* d)
 static bool emit_catalog_boundary(slog::Daemon* d, const std::string& key,
                                   const std::string& path = "")
 {
+    // The prepared boundary, while a run in it is parked, projects the
+    // run's working relations: what a query at the park binds.
     const slog::BoundarySnapshot* boundary = d->db()->getBoundary(key);
-    if (boundary == nullptr) return false;
+    const auto* prepared = d->db()->isPreparedBoundaryKey(key)
+                           && d->db()->isSuspended()
+                         ? d->db()->preparedEnvironment() : nullptr;
+    if (boundary == nullptr && prepared == nullptr) return false;
+    const auto& environment = boundary ? boundary->environment : *prepared;
     std::map<std::string, slog::Relation*> sorted(
-        boundary->environment.begin(), boundary->environment.end());
+        environment.begin(), environment.end());
     u64 n = 0;
     for (const auto& item : sorted)
     {

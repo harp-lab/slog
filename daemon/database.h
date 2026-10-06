@@ -3454,6 +3454,12 @@ public:
     // the ports have bound at this stop (plan.h StepSink).  Last, so any
     // positional initializer of the earlier fields stays valid.
     std::vector<std::pair<std::string, u64>> bindings;
+    // The rule's named variables no port has bound yet at this stop.
+    std::vector<std::string> unbound;
+    // A clause break's matched row (a body atom's, or the head's it
+    // writes), nominal, and its relation; empty otherwise.
+    std::string clause_relation;
+    std::vector<u64> clause_row;
   };
 
   // T5 slice (d3): a STANDING stop (repl-ux §9.1's `break`), where a step
@@ -5083,6 +5089,18 @@ public:
   }
 
   bool boundaryPrepared() const { return prepared_boundary != nullptr; }
+  // The prepared boundary's key names the working state of the run in it:
+  // what the run has derived so far, private until commit.  Read only
+  // where the run is parked (the lease admits queries nowhere else).
+  bool isPreparedBoundaryKey(const std::string& key) const
+  {
+    return prepared_boundary != nullptr && !key.empty()
+      && prepared_boundary->key == key;
+  }
+  const std::unordered_map<std::string, Relation*>* preparedEnvironment() const
+  {
+    return prepared_boundary ? &prepared_boundary->environment : nullptr;
+  }
   const std::string& preparedBoundaryKey() const
   {
     static const std::string empty;
@@ -6498,6 +6516,11 @@ public:
                                   const std::string& key) const
   {
     const BoundarySnapshot* boundary = getBoundary(key);
+    if (boundary == nullptr && isPreparedBoundaryKey(key))
+    {
+      auto it = prepared_boundary->environment.find(name);
+      return it == prepared_boundary->environment.end() ? nullptr : it->second;
+    }
     if (boundary == nullptr) return nullptr;
     auto it = boundary->environment.find(name);
     return it == boundary->environment.end() ? nullptr : it->second;
