@@ -13,6 +13,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
@@ -131,7 +132,41 @@ pub struct Review {
     ops: Vec<Op>,
 }
 
+/// What a project keeps of its review across restarts: everything, the
+/// threads' claude sessions included, so a follow-up still resumes one.
+#[derive(Deserialize, Serialize)]
+pub struct Record {
+    threads: Vec<Thread>,
+    sessions: BTreeMap<u32, String>,
+    changesets: Vec<Changeset>,
+    ops: Vec<Op>,
+}
+
 impl Review {
+    pub fn record(&self) -> Record {
+        Record {
+            threads: self.threads.clone(),
+            sessions: self
+                .threads
+                .iter()
+                .filter_map(|thread| Some((thread.id, thread.session.clone()?)))
+                .collect(),
+            changesets: self.changesets.clone(),
+            ops: self.ops.clone(),
+        }
+    }
+
+    /// The review `record` kept. No run survives a restart, so no thread is
+    /// running.
+    pub fn restore(record: Record) -> Self {
+        let Record { mut threads, sessions, changesets, ops } = record;
+        for thread in &mut threads {
+            thread.session = sessions.get(&thread.id).cloned();
+            thread.running = false;
+        }
+        Self { threads, changesets, ops }
+    }
+
     pub fn new_thread(&mut self, title: String) -> u32 {
         let id = self.threads.len() as u32 + 1;
         self.threads.push(Thread {

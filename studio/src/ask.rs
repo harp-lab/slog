@@ -76,8 +76,12 @@ impl Studio {
     }
 
     pub(crate) fn set_thread_session(&self, thread: u32, session: Option<String>) {
-        if let Some(entry) = self.review.lock().expect("review lock").thread_mut(thread) {
+        let mut review = self.review.lock().expect("review lock");
+        let Some(entry) = review.thread_mut(thread) else { return };
+        if entry.session != session {
             entry.session = session;
+            drop(review);
+            self.keep_review();
         }
     }
 
@@ -88,10 +92,12 @@ impl Studio {
         self.publish_review();
     }
 
+    /// Show every tab the review as it stands, and keep it.
     pub(crate) fn publish_review(&self) {
         let text = self.text();
         let view = self.review.lock().expect("review lock").view(&text);
         self.publish(Event::Review(view));
+        self.keep_review();
     }
 
     /// The main file's working text: the program agents read and change.
@@ -134,6 +140,7 @@ impl Studio {
         entry.notes.push(Note { title, text, at: now() });
         let count = entry.notes.len();
         drop(review);
+        self.keep_review();
         Ok(json!({ "recorded": count, "message": "kept with this thread; get_notes reads it back in later turns" }))
     }
 
