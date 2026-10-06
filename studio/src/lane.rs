@@ -179,6 +179,20 @@ impl Lane {
             .map_err(|error| format!("cannot reach the control connection: {error}"))
     }
 
+    /// How far the run in flight has got: its strata from index `from` on
+    /// (docs/pausing.md §16). Asked on the control connection, beside the
+    /// command it watches.
+    pub async fn progress(&self, from: usize) -> Result<Response, String> {
+        let mut control = self.control.lock().await;
+        let connection = control
+            .as_mut()
+            .ok_or_else(|| "no server is running".to_owned())?;
+        connection
+            .progress(from)
+            .await
+            .map_err(|error| format!("cannot reach the control connection: {error}"))
+    }
+
     /// Run later servers in `mode`. The current one is killed, so the next
     /// command already runs in the new mode; its session is gone.
     pub fn set_mode(&self, mode: Mode) {

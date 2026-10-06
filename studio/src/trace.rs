@@ -8,6 +8,9 @@
 //! it: strata in run order, each with its iterations, each with the
 //! relations that iteration changed (signed counts and a sample of rows)
 //! and the rules that fired in it.
+//!
+//! Every run, traced or not, is also relayed as it goes: its live progress
+//! (§16), polled from the main lane while it runs, for the Execution tab.
 
 use crate::ask::fork_report;
 use crate::lane::{Lane, Mode};
@@ -565,6 +568,97 @@ pub fn tools() -> Vec<Value> {
     ]
 }
 
+// ---- Live progress (docs/pausing.md §16) ----------------------------------
+
+/// How often the run in flight is asked how far it has got.
+const PROGRESS_EVERY: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// The latest run's progress as relayed so far: the session server's last
+/// `progress` answer, with every stratum gathered from the polls before it.
+#[derive(Default)]
+pub struct Progress {
+    whole: Option<Value>,
+}
+
+impl Progress {
+    /// The index of the first stratum not yet relayed, for `run`.
+    fn from(&self, run: &Value) -> usize {
+        match &self.whole {
+            Some(whole) if whole["run"] == *run => whole["strata"].as_array().map_or(0, Vec::len),
+            _ => 0,
+        }
+    }
+
+    /// Fold in an answer whose strata start at its `from`, which is at most
+    /// what is held of its run. The answer is what to publish, unless
+    /// nothing moved.
+    pub fn absorb(&mut self, answer: Value) -> Option<Value> {
+        if self.whole.as_ref().is_some_and(|whole| whole["seq"] == answer["seq"] && whole["run"] == answer["run"]) {
+            return None;
+        }
+        let from = answer["from"].as_u64().unwrap_or(0) as usize;
+        let mut strata: Vec<Value> = match &self.whole {
+            Some(whole) if whole["run"] == answer["run"] => whole["strata"].as_array().cloned().unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        strata.truncate(from);
+        strata.extend(answer["strata"].as_array().cloned().unwrap_or_default());
+        let mut whole = answer.clone();
+        whole["strata"] = Value::Array(strata);
+        whole["from"] = json!(0);
+        self.whole = Some(whole);
+        Some(answer)
+    }
+
+    /// Everything held of the latest run, its strata from the first.
+    pub fn whole(&self) -> Option<Value> {
+        self.whole.clone()
+    }
+}
+
+/// While the main lane runs a command, ask it how far it has got about ten
+/// times a second, and once more whenever its state changes (a command too
+/// short to be seen running still ends), and publish what moved.
+pub fn relay_progress(studio: &std::sync::Arc<Studio>) {
+    let mut status = studio.lane.status();
+    let weak = std::sync::Arc::downgrade(studio);
+    tokio::spawn(async move {
+        while status.changed().await.is_ok() {
+            loop {
+                let Some(studio) = weak.upgrade() else { return };
+                let busy = studio.lane.status().borrow().state == crate::lane::LaneState::Busy;
+                poll_progress(&studio).await;
+                drop(studio);
+                if !busy {
+                    break;
+                }
+                // the command finishing cuts the wait short
+                let _ = tokio::time::timeout(PROGRESS_EVERY, status.changed()).await;
+            }
+        }
+    });
+}
+
+async fn poll_progress(studio: &Studio) {
+    let ask = async |from: usize| studio.lane.progress(from).await.ok().and_then(|answer| answer.result);
+    let (known_run, from) = {
+        let progress = studio.progress.lock().expect("progress lock");
+        let run = progress.whole.as_ref().map_or(Value::Null, |whole| whole["run"].clone());
+        let from = progress.from(&run);
+        (run, from)
+    };
+    let Some(mut answer) = ask(from).await else { return };
+    // A new run: its strata from the first.
+    if answer["run"] != known_run && answer["from"].as_u64().unwrap_or(0) > 0 {
+        let Some(again) = ask(0).await else { return };
+        answer = again;
+    }
+    let moved = studio.progress.lock().expect("progress lock").absorb(answer);
+    if let Some(moved) = moved {
+        studio.publish(crate::studio::Event::Progress(moved));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::lane::Mode;
@@ -572,6 +666,30 @@ mod tests {
     use axum::http::{HeaderMap, HeaderValue, header};
     use serde_json::{Value, json};
     use slog_repl::server::project_root;
+
+    #[test]
+    fn progress_gathers_a_runs_strata_across_polls() {
+        let mut progress = super::Progress::default();
+        let poll = |seq: u64, run: u64, from: u64, strata: &[&str]| {
+            json!({ "seq": seq, "run": run, "from": from,
+                    "strata": strata.iter().map(|hash| json!({ "hash": hash })).collect::<Vec<_>>() })
+        };
+        let hashes = |progress: &super::Progress| -> Vec<String> {
+            progress.whole().unwrap()["strata"].as_array().unwrap().iter()
+                .map(|st| st["hash"].as_str().unwrap().to_owned()).collect()
+        };
+        assert!(progress.absorb(poll(1, 1, 0, &["a"])).is_some());
+        assert_eq!(progress.from(&json!(1)), 1);
+        // nothing moved: nothing to publish
+        assert!(progress.absorb(poll(1, 1, 1, &[])).is_none());
+        let moved = progress.absorb(poll(3, 1, 1, &["b", "c"])).unwrap();
+        assert_eq!(moved["from"], 1, "the published delta starts where the browser's ends");
+        assert_eq!(hashes(&progress), ["a", "b", "c"]);
+        // a new run starts over
+        progress.absorb(poll(4, 2, 0, &["x"]));
+        assert_eq!(hashes(&progress), ["x"]);
+        assert_eq!(progress.from(&json!(1)), 0);
+    }
 
     /// The agent traces and debugs its proposed program through `/mcp`, on a
     /// real session server. reach.slog's chain 1-2-3-4 grows `path` by 3, 2
