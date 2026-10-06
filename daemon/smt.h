@@ -59,8 +59,9 @@ namespace slog
 
 // ---------------------------------------------------------------------------
 // Struct-instance decoding (the writeStructCSV pattern, database.h): fetch a
-// struct value's constructor name and field values through its relation's
-// lookup (id-first) index.  Read-phase-safe: indices are immutable there.
+// struct value's constructor name and field values from one of its
+// relation's id-leading indices (Relation::indexedStructRow).
+// Read-phase-safe: indices are immutable there.
 
 inline bool smtStructFields(Database* db, u64 v,
                             std::string& name, std::vector<u64>& fields)
@@ -68,21 +69,8 @@ inline bool smtStructFields(Database* db, u64 v,
   Relation* rel = db->getStructById((u32)decode_struct_id(v));
   if (rel == nullptr) return false;
   name = rel->getName();
-  const std::vector<u16>& ord = rel->getLookupIndex();   // leads with id (col 0)
-  const u16 n = (u16)ord.size();
-  Index* node = rel->getIndex(ord, false)[buckethash(v)];
-  std::vector<u64> storage(n, 0);
-  bool found = false;
-  node->forEach([&](const u64* t)
-  {
-    if (t[0] == v && !found)
-    {
-      found = true;
-      for (u16 i = 0; i < n; ++i)
-        storage[ord[i]] = t[i];             // t is in index order
-    }
-  });
-  if (!found) return false;
+  std::vector<u64> storage;
+  if (!rel->indexedStructRow(v, storage)) return false;
   fields.assign(storage.begin() + 1, storage.end());     // storage col 0 = id
   return true;
 }

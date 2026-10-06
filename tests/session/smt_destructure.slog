@@ -1,0 +1,21 @@
+;; SMT formulas the program also destructures (docs/smt.md), run as a
+;; session's first program.  Matching (land A B) and (lle X Y) gives those
+;; constructors id-leading join orderings, (0 2 1), of their own; every
+;; reader that decodes a formula -- the oracle, the value writer -- must find
+;; each instance in whichever id-leading ordering holds it, and never in an
+;; identity ordering nothing maintains.  Each goal and each part is decided:
+;; "both" holds and all its parts do, "neither" and its parts fail.
+include "../../lib/smt.slog"
+
+table (goal str formula)
+table (part str formula)
+table (answer str verdict)
+
+rule (goal "both" (land (llt (ic 1) (ic 2)) (lle (ladd (ic 1) (ic 1)) (ic 2))))
+rule (goal "neither" (land (lle (ic 3) (ic 2)) (llt (ic 2) (ic 1))))
+
+rule (goal G (land A B)) --> (part G A) (part G B)
+rule (part G (lle X Y)) --> (part G (llt X (ladd Y (ic 1))))
+
+rule (goal G F) (= V (smt_check F)) --> (answer G V)
+rule (part G F) (= V (smt_check F)) --> (answer G V)
