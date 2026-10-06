@@ -82,11 +82,32 @@ impl Projects {
 
     /// A new unlinked project holding an empty `main.slog`.
     pub fn create(&self, name: &str) -> io::Result<()> {
+        self.create_with(name, NEW_MAIN, &Files::from([(NEW_MAIN.to_owned(), String::new())]))
+    }
+
+    /// A new unlinked project holding `files`, with `main` as its main
+    /// file, named `stem`, or `stem-2`, `stem-3`… if that is taken. Files
+    /// that are not `.slog`, such as a scenario, are written beside the
+    /// program but are not the project's: no version holds them.
+    pub fn create_from(&self, stem: &str, main: &str, files: &Files) -> io::Result<String> {
+        for name in std::iter::once(stem.to_owned()).chain((2..).map(|n| format!("{stem}-{n}"))) {
+            match self.create_with(&name, main, files) {
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+                outcome => return outcome.map(|()| name),
+            }
+        }
+        unreachable!("some name is free")
+    }
+
+    fn create_with(&self, name: &str, main: &str, files: &Files) -> io::Result<()> {
         if !valid_name(name) {
             return Err(io::Error::new(
                 ErrorKind::InvalidInput,
                 format!("{name:?} is not a project name: use letters, digits and - _ . @"),
             ));
+        }
+        if let Some(path) = files.keys().find(|path| !valid_name(path)) {
+            return Err(io::Error::new(ErrorKind::InvalidInput, format!("{path:?} cannot be a project's file")));
         }
         let dir = self.dir(name);
         fs::create_dir_all(self.root.join("projects"))?;
@@ -97,11 +118,13 @@ impl Projects {
             _ => error,
         })?;
         fs::create_dir(dir.join("files"))?;
-        write_atomic(&dir.join("files").join(NEW_MAIN), b"")?;
+        for (path, text) in files {
+            write_atomic(&dir.join("files").join(path), text.as_bytes())?;
+        }
         write_config(
             &dir,
             &Config {
-                main: NEW_MAIN.to_owned(),
+                main: main.to_owned(),
                 link: None,
             },
         )
@@ -446,6 +469,31 @@ mod tests {
         project.save(&files, "save").unwrap();
         assert!(!directory.join("lib.slog").exists());
         assert!(directory.join("stray.slog").exists());
+    }
+
+    /// A project made from files takes the first free name. A file that is
+    /// not a program is written beside them, but no version holds it.
+    #[test]
+    fn a_project_made_from_files_takes_a_free_name() {
+        let scratch = Scratch::new("from");
+        let projects = Projects::new(scratch.path());
+        projects.create("demo").unwrap();
+        let file = |path: &str, text: &str| (path.to_owned(), text.to_owned());
+        let files = Files::from([
+            file("a.slog", "include \"b.slog\"\n"),
+            file("b.slog", "table (t int)\n"),
+            file("a.scenario.toml", "format = 2\n"),
+        ]);
+        assert_eq!(projects.create_from("demo", "a.slog", &files).unwrap(), "demo-2");
+        assert_eq!(projects.create_from("demo", "a.slog", &files).unwrap(), "demo-3");
+        let (project, opened) = projects.open("demo-2").unwrap();
+        assert_eq!(project.main(), "a.slog");
+        assert_eq!(opened.keys().collect::<Vec<_>>(), ["a.slog", "b.slog"]);
+        assert!(project.directory().join("a.scenario.toml").is_file());
+
+        let escape = Files::from([file("../x.slog", "")]);
+        assert!(projects.create_from("other", "x.slog", &escape).is_err());
+        assert_eq!(projects.names().unwrap(), ["demo", "demo-2", "demo-3"]);
     }
 
     /// A project writes only to its own directory: not to one its

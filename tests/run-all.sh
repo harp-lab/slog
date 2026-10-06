@@ -77,6 +77,7 @@ run_harness() {
     compression) bash tests/compression/run.sh ;;
     smt-pin)     bash tests/compression/smt-pin-test.sh ;;
     smt-solver)  bash tests/smt-solver-tests.sh ;;
+    starters)    make -C studio && ./slog-studio starters ;;
     platform)    native_cxx -O2 -Wall -std=c++20 -pthread -Idaemon tests/platform-tests.cpp -o build/platform-tests && ./build/platform-tests ;;
     arena)       native_cxx -O2 -Wall -std=c++20 -pthread -Idaemon tests/arena-tests.cpp -o build/arena-tests && ./build/arena-tests ;;
     seq)         native_cxx -O2 -Wall -std=c++20 -pthread -Idaemon tests/seq-tests.cpp   -o build/seq-tests   && ./build/seq-tests ;;
@@ -88,7 +89,7 @@ run_harness() {
   esac
 }
 
-ALL=(unit diag stats platform arena seq counts wcoj3 interp structid golden plan-goldens tier-classification tier-profile tier-promotion tier-arbiter identity-keys t6-restart activation-live activation-a3 activation-freeze rf5-join rf5-gate w5-exit-demo api tiered pause protocol repl session joint multiplan incremental-stress compression smt-pin smt-solver)
+ALL=(unit diag stats platform arena seq counts wcoj3 interp structid golden plan-goldens tier-classification tier-profile tier-promotion tier-arbiter identity-keys t6-restart activation-live activation-a3 activation-freeze rf5-join rf5-gate w5-exit-demo api tiered pause protocol repl session joint multiplan incremental-stress compression smt-pin smt-solver starters)
 # `multiplan` (J1-J3 runtime join selection, docs/join-planning-assessment.md)
 # IS in ALL -- the arm-equivalence/selector/probe/tripwire battery over the
 # tests/multiplan/ mini fixtures.  It landed 2026-08-16+ but was only wired
@@ -135,6 +136,10 @@ ALL=(unit diag stats platform arena seq counts wcoj3 interp structid golden plan
 # and cross-instance sharing key on) is named but OUTSIDE ALL, like abi2:
 # ~14 cold compiles including examples/kcfa.  Run it before any emit-cpp
 # change and before every T4 slice ships.
+# `starters` (examples/starters.toml: every example a Studio project can start
+# from) IS in ALL -- ~2.5 min.  It fails when an example under examples/ is in
+# no starter, and runs each starter's scenario on a copy made as its project
+# would be; `./slog-studio starters --slow` adds any marked slow.
 QUICK=(unit diag stats platform arena seq counts wcoj3 interp structid)
 
 case "${1:-}" in

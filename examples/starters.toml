@@ -1,0 +1,119 @@
+# The example programs, as starter projects for Slog Studio ("New from
+# example…"). Each starter is a main program; its project is a copy of that
+# file and of every file it includes or runs, the library's too, side by
+# side. Each has a scenario beside its main file, <main>.scenario.toml,
+# which pins what the example shows.
+#
+#   ./slog studio starters          check the catalog and run every scenario
+#   ./slog studio starters --slow   ... the slow ones too
+#
+# Every .slog file under examples/ is a starter's main file, a file a starter
+# includes or runs, or listed under [[skipped]] with the reason; the check
+# fails otherwise. Paths are relative to this file. `slow` starters' scenarios
+# run only with --slow.
+
+[[starters]]
+id = "getting-started"
+title = "Getting started: transitive closure"
+main = "../studio/examples/reach/reach.slog"
+about = "A four-node chain and the paths through it: two rules, one of them recursive."
+
+[[starters]]
+id = "sudoku-easy1"
+title = "Sudoku: easy1"
+main = "sudoku/easy1.slog"
+about = "A Sudoku solver as pure constraint propagation, solving a 30-clue puzzle by naked singles."
+
+[[starters]]
+id = "sudoku-hid-a"
+title = "Sudoku: hid_a"
+main = "sudoku/hid_a.slog"
+about = "The same solver on a 17-clue puzzle that also needs hidden singles."
+
+[[starters]]
+id = "sudoku-escargot"
+title = "Sudoku: escargot"
+main = "sudoku/escargot.slog"
+about = "The same solver on a puzzle that needs search: propagation stalls at 24 of 81 cells."
+
+[[starters]]
+id = "scc"
+title = "Strongly connected components"
+main = "scc/scc.slog"
+about = "SCCs as mutual reachability, each component one canonical set value."
+
+[[starters]]
+id = "scc-tarjan"
+title = "Strongly connected components: Tarjan"
+main = "scc/tarjan.slog"
+about = "A functional transcription of Tarjan's algorithm, threading its state through demands."
+
+[[starters]]
+id = "domtree"
+title = "Dominators and natural loops"
+main = "domtree/domtree.slog"
+about = "Dominators, the dominator tree, back edges and loop depth, as one fixpoint over canonical sets."
+
+[[starters]]
+id = "regex"
+title = "Regex matching by partial derivatives"
+main = "regex/antimirov.slog"
+about = "Antimirov's partial derivatives as demand relations: a matcher, and the NFA it induces."
+
+[[starters]]
+id = "tinycfa-0cfa"
+title = "0CFA: an abstract machine"
+main = "tinycfa/0cfa.slog"
+about = "0CFA for the lambda calculus as an abstract machine with a continuation store."
+
+[[starters]]
+id = "tinycfa-0cfa-demand"
+title = "0CFA by demand"
+main = "tinycfa/0cfa-demand.slog"
+about = "The same 0CFA as a demand-driven big-step evaluator: only reachable expressions are analyzed."
+
+[[starters]]
+id = "tinycfa-0cfa-counting"
+title = "0CFA with flow-set counting"
+main = "tinycfa/0cfa-counting.slog"
+about = "0CFA with a lattice measuring how many values reach each variable."
+
+[[starters]]
+id = "tinycfa-mcfa-counting"
+title = "1-m-CFA with abstract counting"
+main = "tinycfa/mcfa-counting.slog"
+about = "1-m-CFA counting the concrete bindings each abstract address stands for, over nine test programs."
+
+[[starters]]
+id = "schemecfa"
+title = "m-CFA for a small Scheme"
+main = "schemecfa/schemecfa.slog"
+about = "Parametric m-CFA with abstract counting for a nine-form Scheme; the context depth is a fact."
+
+[[starters]]
+id = "schemecfa-analysis"
+title = "Call graphs over m-CFA"
+main = "schemecfa/analysis-demo.slog"
+about = "A query layer over the m-CFA: resolved call graph, monomorphic and polymorphic sites, inlining."
+
+[[starters]]
+id = "kcfa"
+title = "k-CFA with higher-order environments"
+main = "kcfa/kcfa.slog"
+about = "Shivers' k-CFA, environments as finite maps captured by closures, over five worked programs."
+
+[[starters]]
+id = "r7rs-small"
+title = "m-CFA over an R7RS AST"
+main = "r7rs-small/eval.slog"
+about = "A demand-style m-CFA over a small R7RS syntax tree with source positions."
+
+[[starters]]
+id = "verify"
+title = "Lifting dynamic checks to static facts"
+main = "verify/demo.slog"
+about = "Path conditions as canonical sets and an SMT oracle decide which runtime checks can never fail."
+
+[[skipped]]
+file = "sudoku/sudoku-ps.slog"
+why = "A prototype: its header says it does not run, as it needs the (ps E) powerset lattice, which is designed but not implemented."

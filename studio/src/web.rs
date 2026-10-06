@@ -202,6 +202,8 @@ enum Request {
     LintWhy { finding: crate::lint::Finding, tag: u64 },
     /// Open the analysis itself as a project, over this program's facts.
     EditAnalysis,
+    /// Make a new project from the example `id` (starters.rs).
+    NewFromStarter { id: String },
     /// Run a refinement of a result set as a new query.
     Refine { set: SetId, refinement: Refinement },
     /// Check the program statically with `texts` (path -> text) in place of
@@ -293,6 +295,8 @@ enum Reply<'a> {
     LintWhy { tag: u64, nodes: Vec<serde_json::Value>, error: Option<String> },
     /// A project to open in a tab of its own.
     OpenProject { name: String },
+    /// The project just made from the example `starter`, to open in this tab.
+    NewProject { name: String, starter: String },
     /// The rows asked for, as many as exist; or why they cannot be had.
     Rows {
         set: SetId,
@@ -610,6 +614,13 @@ fn handle(
                 };
                 let _ = direct.send(reply);
             });
+        }
+        Request::NewFromStarter { id } => {
+            let reply = match studio.new_from_starter(&id) {
+                Ok(name) => json(&Reply::NewProject { name, starter: id }),
+                Err(message) => json(&Reply::Notice { message: &message }),
+            };
+            let _ = direct.send(reply);
         }
         Request::Refine {
             set,
