@@ -1799,19 +1799,23 @@ struct StepSink final : public DebugSink
           continue;
       }
       else if (e.kind != EventK::instantiation) continue;
+      // At a rule's location the pattern's variables are the rule's own:
+      // `(ck env e1)` is the rule's ask of e1, not any ask of ck it makes.
+      const bool located = !b.source.empty() && !b.pattern.empty();
+      if ((located || !b.guards.empty() || b.log) && !have_rule_vars)
+      {
+        rule_vars = rule_bindings(e, view);
+        have_rule_vars = true;
+      }
       Database::BreakBindings bound;
+      if (located) bound = rule_vars;
       if (!b.pattern.empty()
           && !db->matchBreakRow(b, b.premise.empty() ? row : matched, bound))
         continue;
       if (!b.uses.empty() && !uses_any(b.uses, view)) continue;
       if (!b.guards.empty() || b.log)
       {
-        if (!have_rule_vars)
-        {
-          rule_vars = rule_bindings(e, view);
-          have_rule_vars = true;
-        }
-        bound.insert(bound.end(), rule_vars.begin(), rule_vars.end());
+        if (!located) bound.insert(bound.end(), rule_vars.begin(), rule_vars.end());
         if (!db->breakGuardsHold(b, bound)) continue;
       }
       const u64 hits = db->countBreakHit(b);
