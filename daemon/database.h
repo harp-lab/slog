@@ -3681,8 +3681,18 @@ public:
 
 private:
   // §7.4's budgets: derivations per fact and nodes per run, with the
-  // omitted count reported rather than a silent cut.
-  static constexpr size_t proof_max_records = 4096;
+  // omitted count reported rather than a silent cut.  SLOG_PROOF_RECORDS
+  // raises the run's budget, for a program whose every fact may be asked
+  // about (analysis/slog-lint.slog's findings, at the end of long chains).
+  static size_t proofMaxRecords()
+  {
+    static const size_t n = [] {
+      const char* v = std::getenv("SLOG_PROOF_RECORDS");
+      const long long parsed = v ? std::atoll(v) : 0;
+      return parsed > 0 ? static_cast<size_t>(parsed) : size_t{4096};
+    }();
+    return n;
+  }
   static constexpr size_t proof_max_derivations = 4;
   bool provenance_armed = false;
   std::mutex proof_mutex;
@@ -3723,7 +3733,7 @@ public:
   void recordProof(ProofRecord&& record)
   {
     std::lock_guard<std::mutex> lk(proof_mutex);
-    if (proof_journal.size() >= proof_max_records) { ++proof_dropped; return; }
+    if (proof_journal.size() >= proofMaxRecords()) { ++proof_dropped; return; }
     const std::string key = proofKey(record.relation, record.tuple.data(),
                                      record.tuple.size());
     std::vector<u32>& slot = proof_index[key];
