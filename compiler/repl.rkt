@@ -4630,9 +4630,24 @@
                  (string-join (for/list ([d (in-list detail)])
                                 (format "~s" d)) " "))]
         [_ line])))
+  ;; the bindings as data too, for an editor to show beside the rule
+  (define bindings
+    (for*/list ([line (in-list lines)]
+                #:do [(define datum (read-datum line))]
+                #:when (match datum [`(bindings ,_ ...) #t] [_ #f])
+                [pr (in-list (cdr datum))])
+      (list (~a (first pr)) (~a (second pr)))))
+  (define where
+    (for/or ([line (in-list lines)])
+      (match (read-datum line)
+        [`(step-at (port ,port) (rule ,_) (variant ,_) (op ,_) (source ,source) ,_ ...)
+         (hasheq 'port (~a port) 'source (~a source))]
+        [_ #f])))
   (attach-session-state
    state
-   (text-result "Frames" rendered #:kind "frames")))
+   (hash-set* (text-result "Frames" rendered #:kind "frames")
+              'bindings bindings
+              'at (or where 'null))))
 
 ;; ---- T5 slice (d1): `why` at the prompt (repl-ux §9.4) --------------------
 ;;
@@ -7198,6 +7213,13 @@
       (define asked (run! "run tests/dem_stlc.slog"))
       (check-regexp-match #px"port b1:emit@dem_stlc\\.slog:15:1" (text asked))
       (check-regexp-match #px"demand ask of \\(lookup .* \"x\"\\)" (text asked))
+      (void (run! "abort"))
+      ;; at a location, a pattern's variables are the rule's: line 17 asks
+      ;; ck of e1 and of e2 in one firing, and this stops only at e2's
+      (void (run! "unbreak b1"))
+      (void (run! "break tests/dem_stlc.slog:17 demand (ck env e2)"))
+      (define second (run! "run tests/dem_stlc.slog"))
+      (check-regexp-match #px"demand ask of \\(ck \\(mt\\) \\(num 4\\)\\)" (text second))
       (void (run! "abort"))
       (void (run! ":quit"))))
 
