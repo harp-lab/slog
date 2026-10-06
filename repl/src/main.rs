@@ -383,7 +383,6 @@ async fn run_repl(
             break;
         }
 
-        let transcript_start = app.transcript.len();
         let view_mode_before = app.shared_view_mode();
         let view_key_before = app.shared_view_key();
         let (effect, requested) = tokio::select! {
@@ -544,7 +543,7 @@ async fn run_repl(
         for action in app.take_shared_actions() {
             share.publish(App::plain_shared_action(&action));
         }
-        for entry in &app.transcript[transcript_start..] {
+        for entry in app.take_unpublished_entries() {
             share.publish(App::plain_entry(entry));
         }
         if let Some(label) = started_operation {
