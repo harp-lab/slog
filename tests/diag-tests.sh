@@ -229,6 +229,31 @@ if echo "$o" | grep -qF 'quote_const.slog:4:1: "s" : int' \
   ok errors-quote-source
 else bad errors-quote-source "$o"; fi
 
+# 15. a constructor named like a primitive is a located compile error at its
+#     declaration (was: (neg X) silently evaluated as the primitive, every
+#     binding surfaced a runtime type_mismatch fact, and the rule's heads were
+#     lost).  A TABLE may still take such a name: atoms are not expressions.
+cat > "$D/ctor_prim.slog" <<'EOF'
+union (expr (lit int) (neg expr))
+table (e expr)
+table (out expr)
+rule (e (lit 3))
+rule (e X) --> (out (neg X))
+EOF
+cat > "$D/table_prim.slog" <<'EOF'
+table (min int int)
+table (out int)
+rule (min 1 2)
+rule (min X Y) --> (out X)
+EOF
+o="$(run ctor_prim)"
+o2="$(run table_prim)"
+if echo "$o" | grep -qF 'ctor_prim.slog:1:23: The constructor neg has the name of a builtin primitive' \
+   && echo "$o2" | grep -qE '\(fixpoint '; then
+  ok constructor-named-like-primitive-rejected
+else bad constructor-named-like-primitive-rejected "$o
+$o2"; fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
