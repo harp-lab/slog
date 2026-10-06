@@ -3484,6 +3484,13 @@ public:
     // writes), nominal, and its relation; empty otherwise.
     std::string clause_relation;
     std::vector<u64> clause_row;
+    // Where the stop is in the rule and in the iteration: the relation of
+    // the clause at the port (the driving delta's at `drive`, the probed
+    // atom's at a match, the head's at an emit; empty at a guard or fire),
+    // and the driving row's 1-based place among the delta's rows (0 when
+    // the driver has no such order).
+    std::string port_relation;
+    u64 driver_index = 0, driver_total = 0;
   };
 
   // T5 slice (d3): a STANDING stop (repl-ux §9.1's `break`), where a step

@@ -5020,16 +5020,35 @@
 ;; held run's working state, or committed state: none of it steps,
 ;; continues, commits or moves the session's logical time.
 (struct stop-scope (where bindings unbound clause) #:transparent)
+;; where: 'port 'source 'tag 'op, and where the stop stands in its iteration
+;; -- 'relation (the clause's at the port), 'driver-row and 'driver-rows
+;; (the driving row's place in the delta; 0 when the driver has no order)
+;; and 'row, the driving row;
 ;; bindings: ((name text word) ...); clause: (relation . row-text) or #f
 
 (define (read-stop-scope lines)
   (define (datums) (for/list ([line (in-list lines)]) (read-datum line)))
   (stop-scope
-   (for/or ([d (in-list (datums))])
-     (match d
-       [`(step-at (port ,port) (rule ,_) (variant ,_) (op ,_) (source ,source) ,_ ...)
-        (hasheq 'port (~a port) 'source (~a source))]
-       [_ #f]))
+   (let ([at (for/or ([d (in-list (datums))])
+               (match d
+                 [`(step-at (port ,port) (rule ,_) (variant ,_) (op ,op) (source ,source)
+                            (tag ,tag) ,_ ...)
+                  (hasheq 'port (~a port) 'source (~a source) 'tag (~a tag) 'op op)]
+                 [_ #f]))]
+         [position (for/or ([d (in-list (datums))])
+                     (match d
+                       [`(position (relation ,r) (driver-row ,i) (driver-rows ,n))
+                        (hasheq 'relation (~a r) 'driver-row i 'driver-rows n
+                                ;; the driving row itself
+                                'row (or (for/or ([f (in-list (datums))])
+                                           (match f
+                                             [`(frame (level 0) (kind drive) (row ,row)) (~a row)]
+                                             [_ #f]))
+                                         ""))]
+                       [_ #f]))])
+     (and at (if position
+                 (for/fold ([at at]) ([(k v) (in-hash position)]) (hash-set at k v))
+                 at)))
    (append*
     (for/list ([d (in-list (datums))])
       (match d
@@ -5053,8 +5072,9 @@
                         (lambda (l) (regexp-match? #px"^\\(frames-end " l))))
 
 (define (current-stop-scope state)
-  (define held (server-state-held state))
-  (define rs (current-repl-session state))
+  (held-stop-scope (server-state-held state) (current-repl-session state)))
+
+(define (held-stop-scope held rs)
   (and held rs (step-stop-line? (held-run-record held))
        (let ([cached (hash-ref held-scopes held #f)])
          (if (and cached (eq? (car cached) (held-run-record held)))
@@ -5062,6 +5082,29 @@
              (let ([scope (read-stop-scope (frame-lines (repl-session-session rs)))])
                (hash-set! held-scopes held (cons (held-run-record held) scope))
                scope)))))
+
+;; Where a held run stands, as data, for a client to show: the pause
+;; record's stratum, iteration and phase, and at a port the stop's scope.
+(define (held-position line scope)
+  (define (field key) (pause-record-field line key))
+  (define stratum (~a (or (field 'stratum) "")))
+  (define base
+    (hasheq 'scc (or (field 'scc) 'null)
+            'stratum (car (regexp-match #px"^[^_]*" stratum))
+            'flavor (match (regexp-match #px"^[^_]*_(.+)$" stratum)
+                      [(list _ flavor) flavor]
+                      [_ "normal"])
+            'iteration (or (field 'iteration) 'null)
+            'phase (~a (or (field 'phase) ""))))
+  (define where (and scope (stop-scope-where scope)))
+  (if where
+      (for/fold ([at (hash-set* base
+                                'bindings (for/list ([b (in-list (stop-scope-bindings scope))])
+                                            (list (first b) (second b)))
+                                'unbound (stop-scope-unbound scope))])
+                ([(k v) (in-hash where)])
+        (hash-set at k v))
+      base))
 
 (define (scope-binding scope name)
   (and scope (assoc name (stop-scope-bindings scope))))
@@ -5258,8 +5301,12 @@
               (if intent
                   (format " · ~a" (watch-intent-target intent))
                   ""))))
+  ;; where it stands, as data: at a port, the stop's scope too (read once,
+  ;; and kept for `frames`, `print` and queries at this stop)
+  (define at (held-position line (and stepped? (held-stop-scope held rs))))
   (attach-session-state
    state
+   (hash-set
    (with-calls-stack
    (text-result
     ;; Name the place honestly: a step stop, the pre-commit gate, or the
@@ -5309,7 +5356,8 @@
             (if broke "continue · " "commit · replay · ")
             "abort")))
     #:kind "paused")
-   calls)))
+   calls)
+   'at at)))
 
 ;; The daemon reports the join stack STRUCTURALLY -- port, rule position and
 ;; rows -- plus, since 2026-09-08, the BINDINGS of the named registers the
@@ -5323,7 +5371,8 @@
     (session-debug-lines! s '(frames)
                           (lambda (l) (regexp-match? #px"^\\(frames-end " l))))
   (define rendered
-    (for/list ([line (in-list lines)])
+    (for*/list ([line (in-list lines)]
+                [text (in-value
       (match (read-datum line)
         [`(step-at (port ,port) (rule ,rid) (variant ,variant) (op ,op)
                    (source ,source) (tag ,tag) (tuple ,tuple))
@@ -5344,12 +5393,18 @@
         [`(unbound ,names ...)
          (format "  not yet bound at this clause: ~a" (string-join (map ~a names) ", "))]
         [`(clause (relation ,r) (row ,row)) (format "  matched (~a ~a)" r row)]
+        [`(position (relation ,r) (driver-row ,i) (driver-rows ,n))
+         (string-append
+          (if (equal? (~a r) "") "" (format "  at ~a" r))
+          (if (positive? n) (format "  · driving row ~a of ~a in the delta" i n) ""))]
         [`(frames-end ,n) (format "~a frame~a" n (if (= n 1) "" "s"))]
         [`(refused ,class ,_generation ,detail ...)
          (format "refused: ~a ~a" class
                  (string-join (for/list ([d (in-list detail)])
                                 (format "~s" d)) " "))]
-        [_ line])))
+        [_ line]))]
+                #:unless (equal? text ""))
+      text))
   ;; the scope as data too, for an editor to show beside the rule
   (define scope (read-stop-scope lines))
   (attach-session-state
@@ -8581,11 +8636,21 @@
       (void (run! "break examples/tinycfa/0cfa.slog:46 match (ret v (ar ea k))"))
       (define stop (run! "run examples/tinycfa/0cfa.slog"))
       (check-equal? (hash-ref stop 'title) "Paused · break b1")
+      ;; where it stands, as data: the stratum and iteration, the port, the
+      ;; clause's relation, and the driving row's place in the delta
+      (let ([at (hash-ref stop 'at)])
+        (check-equal? (list (hash-ref at 'port) (hash-ref at 'relation) (hash-ref at 'phase))
+                      '("drive" "ret" "read"))
+        (check-regexp-match #px"^0cfa\\.slog:46:" (hash-ref at 'source))
+        (check-true (exact-positive-integer? (hash-ref at 'iteration)))
+        (check-true (<= 1 (hash-ref at 'driver-row) (hash-ref at 'driver-rows)))
+        (check-equal? (map first (hash-ref at 'bindings)) '("v" "ea" "k")))
       (define s (ensure-session! state))
       (define before (list (pipeline-datum s) (text (run! "frames")) (text (run! "breaks"))))
       (define frames (run! "frames"))
       (check-equal? (map first (hash-ref frames 'bindings)) '("v" "ea" "k"))
       (check-regexp-match #px"matched \\(ret " (text frames))
+      (check-regexp-match #px"at ret  · driving row [0-9]+ of [0-9]+ in the delta" (text frames))
       (check-regexp-match #px"^k = \\(" (text (run! "p k")))
       (check-regexp-match #px"^ea = \\(" (text (run! "ea")))
       (check-exn #px"not a variable of the stopped rule" (lambda () (run! "print zz")))

@@ -1626,6 +1626,32 @@ struct StepSink final : public DebugSink
     return false;
   }
 
+  // The relation of the clause a port is at: the driving delta's at the
+  // drive port, the probed atom's at a probe, the written head's at an emit.
+  std::string port_relation(const Event& e, const DebugView& view) const
+  {
+    if (schema == nullptr) return {};
+    if (e.kind == EventK::driver) return schema->driver.relation;
+    const std::string* head = nullptr;
+    std::vector<u64> row;
+    // a compiler temporary's name means nothing at the source
+    if (emitted_row(e, head, row))
+      return head->rfind("temp", 0) == 0 || head->rfind("$", 0) == 0
+        ? std::string() : *head;
+    const bool probe = e.kind == EventK::probe_match || e.kind == EventK::probe_miss
+                    || e.kind == EventK::probe_exhausted;
+    const u16 slot = e.op_index < view.ops.size()
+      ? view.ops[e.op_index].cursor : u16{0xffff};
+    // the probed atom's relation; a constructor's fields probe `_enum`,
+    // which names nothing the source wrote
+    if (probe && slot < schema->levels.size())
+      for (const ProofSchema::Row& row : schema->levels[slot])
+        if (!row.relation.empty() && row.relation != "_enum"
+            && row.relation.rfind("temp", 0) != 0 && row.relation.rfind("$", 0) != 0)
+          return row.relation;
+    return {};
+  }
+
   // The driving row and one premise per open cursor level -- the same walk
   // DebugView::proof() makes, with each row labelled and un-permuted.
   void labelled_body(const DebugView& view, std::string& driver_relation,
@@ -1940,6 +1966,10 @@ struct StepSink final : public DebugSink
       }
     stop.clause_relation = std::move(stopped.relation);
     stop.clause_row = std::move(stopped.row);
+    stop.port_relation = port_relation(e, view);
+    if (view.driver_cursor == nullptr
+        || !view.driver_cursor->position(stop.driver_index, stop.driver_total))
+      stop.driver_index = stop.driver_total = 0;
     if (stepping)
       // Disarm here, not at resume: the machine returns breakpoint with the
       // transition already committed, and the parked continuation must run

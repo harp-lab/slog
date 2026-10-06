@@ -1643,6 +1643,22 @@ public:
     }
     return false;
   }
+
+  // The delta in bucket order, then thread, then row: a stable order for a
+  // stop to count in (one thread, as debug runs, makes it the run's own).
+  bool position(u64& index, u64& total) const override
+  {
+    index = total = 0;
+    for (u16 b = 0; b < bucket_count; ++b)
+      for (u32 t = 0; t < thread_count; ++t)
+      {
+        const u64 n = relation->getReadBucket(t, b).size();
+        if (b < bucket || (b == bucket && t < thread)) index += n;
+        total += n;
+      }
+    index += row;   // `row` is past the row last produced
+    return row > 0;
+  }
 };
 
 template <u16 A>

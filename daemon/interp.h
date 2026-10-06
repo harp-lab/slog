@@ -320,6 +320,10 @@ struct DriverCursor
   virtual ~DriverCursor() = default;
   virtual std::unique_ptr<DriverCursor> clone() const = 0;
   virtual bool next(std::vector<u64>& row) = 0;
+  // Where the row `next` last produced stands in the whole driving delta:
+  // its 1-based `index` among `total` rows.  Asked only at a debugger stop;
+  // a driver with no such order (a probe, `once`) says false.
+  virtual bool position(u64& /*index*/, u64& /*total*/) const { return false; }
 };
 
 // Compatibility/test driver over immutable materialized rows.  Production
@@ -503,6 +507,7 @@ struct DebugView
   const std::vector<Op>& ops;
   const std::vector<std::unique_ptr<PrefixCursor>>& cursors;
   const std::vector<u64>& regs;   // the live register file (frames bindings)
+  const DriverCursor* driver_cursor = nullptr;   // where the driver row stands
 
   Proof proof() const
   {
@@ -641,7 +646,7 @@ class Machine
   {
     if (debug == nullptr || (debug->mask & event_bit(e.kind)) == 0)
       return false;
-    DebugView view{driver_row, levels, program->ops, cursors, regs};
+    DebugView view{driver_row, levels, program->ops, cursors, regs, driver.get()};
     return debug->observe(e, view) == DebugAction::pause;
   }
 

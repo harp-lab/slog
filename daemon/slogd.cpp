@@ -1574,6 +1574,11 @@ static void emit_step_frames(slog::Daemon* d)
     if (!stop.clause_relation.empty())
         d->emit("(clause (relation " + quoteString(stop.clause_relation)
                 + ") (row " + quoteString(row_text(stop.clause_row)) + "))");
+    // Where the stop is: the relation of the clause at the port, and the
+    // driving row's place among the delta's rows (0 of 0: no such order).
+    d->emit("(position (relation " + quoteString(stop.port_relation)
+            + ") (driver-row " + std::to_string(stop.driver_index)
+            + ") (driver-rows " + std::to_string(stop.driver_total) + "))");
     size_t level = 0;
     d->emit("(frame (level " + std::to_string(level++) + ") (kind drive) (row "
             + quoteString(row_text(stop.driver)) + "))");
