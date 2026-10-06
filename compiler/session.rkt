@@ -63,6 +63,7 @@
          session-open!
          session-run!
          session-batch!
+         session-unbatch!
          session-edit-batch!
          session-inject-version!
          session-inject-batch!
@@ -3199,6 +3200,18 @@
   (define per-rel (hash-ref! per-anchor rel make-hash))
   (hash-update! per-rel tuple (lambda (commands) (cons sign commands)) '()))
 
+;; Withdraw the newest queued `sign` command for one tuple, leaving the rest
+;; of the batch as it was.  #f when no such command is queued.
+(define (session-unbatch! s sign rel tuple #:at [anchor 'tip])
+  (define per-rel (hash-ref (hash-ref (session-pending s) anchor (hash)) rel (hash)))
+  (define commands (hash-ref per-rel tuple '()))
+  (and (memq sign commands)
+       (let ([rest (remove sign commands)])
+         (if (null? rest)
+             (hash-remove! per-rel tuple)
+             (hash-set! per-rel tuple rest))
+         #t)))
+
 ;; Explicit existing-slot edit spelling.  Keep session-batch! as the
 ;; compatibility alias used by the current harness and recipe reader.
 (define session-edit-batch! session-batch!)
@@ -3657,7 +3670,6 @@
                 [(rel per-rel) (in-hash per-anchor)]
                 #:when (positive? (hash-count per-rel)))
       (list anchor rel (hash-copy per-rel))))
-  (hash-clear! pending)
   (cond
     [(null? raw-groups) (echo! s "(flush 0)")]
     [else
@@ -3680,6 +3692,10 @@
           (define normalized (normalize-pending! s rel bind-pos per-rel))
           (and (positive? (hash-count normalized))
                (list anchor rel ord bind-pos last? normalized)))))
+     ;; The batch is consumed only once all of it has validated: a refused
+     ;; flush leaves it queued, so one bad change can be withdrawn without
+     ;; restaging the rest (audit M-06).
+     (hash-clear! pending)
      ;; Serialize the complete logical edit (possibly several anchors and
      ;; strata) against one expected settled revision.  The daemon rejects a
      ;; stale writer before any mutation is applied.
