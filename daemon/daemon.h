@@ -1857,6 +1857,8 @@ public:
       std::snprintf(buf, sizeof(buf), "(fixpoint %u \"%s\" %u %.3f)",
                     s->scc_id, s->name.c_str(), st.iteration, st.ms_total);
       s->fixpoint_msg = buf;
+      if (database->trace.armed())
+        database->traceFixpoint(s->scc_id, st.iteration, st.ms_total);
       emit(s->fixpoint_msg);
       if (transient)
       {
@@ -1911,6 +1913,10 @@ public:
           cause.detail = "time";
         }
         const bool settled = st.where == RUN_AT_BOUNDARY;
+        if (database->trace.armed())
+          database->tracePark(s->scc_id, st.iteration,
+                              settled ? "iter" : "read",
+                              protocol::renderPauseCause(cause));
         emit(protocol::renderPauseRecord({
           commandGeneration(), s->scc_id, s->name, st.iteration,
           settled ? "iter" : "read", settled, st.new_tuples, settled,

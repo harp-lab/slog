@@ -499,3 +499,96 @@ Also: while suspended the guardrails refuse **binary** DB writes
 that would clobber the single `RunState`); CSV writes, `(sizes)`, and
 `(lookup)` (read-only) remain allowed against the consistent suspended
 snapshot, and a client continues to fixpoint before persisting anyway.
+
+## 14. Observing the run: the delta peek
+
+A park is a place to look at the iteration itself, not only at the masters.
+`(delta (relation "R") [(limit N)])` streams one relation's delta at the
+current park and moves nothing; the boundary lease admits it whenever the run
+is suspended, as it admits `frames`:
+
+```
+(delta-row (row "4 5") (sign +) (kind rec))      ; one per row, up to N
+(delta-end (exact #t) (rows 1) (omitted 0))
+```
+
+- At an **iteration boundary** (`(phase iter)`) the delta is final: interned
+  against the master, duplicates nulled in place and skipped, so it is
+  exactly the iteration's signed change, `(exact #t)`.
+- **Inside a read** (the pre-commit gate, a step or break stop, a budget or
+  interrupt slice) the delta still drives the read, so the verb shows the
+  pending candidates in the send shards instead: not yet deduplicated across
+  threads or against the master, `(exact #f)`, in thread order.
+
+Rows render as `dump-tuples` renders them (nominal column order, the ordinary
+value writer).  `sign` and `kind` are the batch's (`counts.h`): `none` for
+set-semantics runs; `input`, `nonrec`, `rec` or `premise` under the counted
+and maintenance flavors.  With nothing parked the verb refuses
+`(refused delta-unavailable G (verb delta) (detail not-parked) (position
+none))`; an unknown name refuses with the same class.  The REPL spells it
+`peek REL [LIMIT]` (default 50 rows).
+
+## 15. The execution trace
+
+The trace records what each stratum's fixpoint did, at the barriers the run
+loop already has: a stratum's start, each iteration's end
+(`EndIterCompletion`, single-threaded, every delta finalized and interned),
+each park and the fixpoint.  Those barriers are the same for both executors
+and every flavor (`normal`, `_count`, `_maint1`, `_maint3neg`, `_maint4neg`),
+so the trace is too.  Like watches it is session debugging state: never
+saved, never hashed, read only on request.
+
+```
+(trace (on) [(sample K)] [(focus "R" ...)] [(rules #t)])  → (trace-state (on #t) (next SEQ))
+(trace (off))                                             → (trace-state (on #f) (next SEQ))
+(trace-read [(from SEQ)])  → records… (trace-end NEXT DROPPED)
+```
+
+Records, each with a daemon-lifetime sequence number:
+
+```
+(trace-stratum (seq 41) (scc 2) (stratum "8eff64b7_maint1") (flavor "maint1"))
+(trace-iter (seq 42) (scc 2) (iteration 1)
+  (rel "path" (vid 11) (plus 4) (minus 0) (dups 0) (kinds (nonrec 1) (rec 3))
+       (size-after 10)
+       (sample ("1 5" + rec) ("4 5" + nonrec) ("2 5" + rec) ("3 5" + rec))
+       (sample-omitted 0)))
+(trace-rule (seq 43) (scc 2) (iteration 1) (rule "r1:…") (loc "reach.slog:14:1")
+            (tag "all:edge") (fires 3) (work 0) (driver-rows 0))   ; (rules #t) only
+(trace-park (seq 44) (scc 2) (iteration 1) (phase iter) (cause (watch (watch-id "w1"))))
+(trace-fixpoint (seq 45) (scc 2) (iterations 2) (ms 0.356))
+```
+
+- `trace-iter` lists every relation the iteration changed: live rows by
+  batch sign, nulled duplicates, rows per batch kind, the size after the
+  iteration, and a sample.  An iteration that changed nothing is a bare
+  `trace-iter`, as the last iteration of every fixpoint is.
+- **Samples are coordinated.**  Per relation, iteration and sign, the sample
+  is the K rows with the smallest hash of their *values* (bottom-k), so the
+  same tuple is chosen in every iteration, run and thread count and can be
+  followed across them.  An immediate (int, float) hashes as its word; a heap
+  value (string, bignum, struct, collection, sequence) hashes its canonical
+  rendering, because intern ids depend on thread order and history.  Columns
+  fold through the splitmix64 finalizer (`daemon/trace.h`).  Sample rows
+  preview values three levels deep.
+- **Defaults and caps.**  K is 8, and 64 for focus relations; `(sample 0)`
+  records counts only.  At most 256 sample rows per iteration (focus
+  relations draw first).  Compiler temporaries and `$`-relations are counted
+  but never sampled.  Retained records are capped at 16 MB: over it the
+  oldest records lose their samples first and counts are never dropped.
+- `trace-rule` (with `(rules #t)`) is each rule variant's committed fires,
+  work ticks and driver rows for that iteration, keyed like `(fires)`.
+- **Reading.**  `(trace-read (from SEQ))` returns the records from SEQ on and
+  releases everything before SEQ, so the daemon retains only the unread span.
+  `NEXT` is the `from` that continues the stream; `DROPPED` counts the sample
+  rows the cap took from the records just returned.  Arming again replaces
+  the configuration and keeps the records; `(trace (off))` discards them.
+- **Cost.**  Off, each barrier pays one predictable branch.  On, each
+  iteration scans its deltas once (the scan an armed watch makes), hashing
+  rows only for sampled relations.
+
+`compiler/session.rkt` arms and drains it (`session-trace-on!`,
+`session-trace-read!`, which groups the records by stratum); the REPL's
+`trace on [sample K] [focus REL ...] [rules]` attaches the result to each
+change record as `trace`, beside the `strata` its fixpoint lines always
+give.

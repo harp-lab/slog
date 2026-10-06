@@ -120,6 +120,22 @@ constexpr u8 cnt_kind_premise = 4;
 // silently absorbed contributions.
 constexpr u8 cnt_kind_view = 5;
 
+// The wire spelling of a batch kind, for the debugger's delta views (the
+// `delta` peek and the execution trace).
+inline const char* cnt_kind_name(u8 kind)
+{
+  switch (kind)
+  {
+    case cnt_kind_none: return "none";
+    case cnt_kind_input: return "input";
+    case cnt_kind_nonrec: return "nonrec";
+    case cnt_kind_rec: return "rec";
+    case cnt_kind_premise: return "premise";
+    case cnt_kind_view: return "view";
+  }
+  return "unknown";
+}
+
 // Fold one contribution of `kind` into a stored counter word: inputs SET the
 // bit (set semantics -- idempotent, never arithmetic, §8B.5); derivations
 // bump their counter.

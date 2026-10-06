@@ -1556,6 +1556,55 @@ static void emit_step_frames(slog::Daemon* d)
     d->emit("(frames-end " + std::to_string(level) + ")");
 }
 
+// The `delta` peek.  At an iteration boundary a relation's delta is final:
+// interned against its master (duplicates nulled in place, skipped here),
+// it is exactly the iteration's signed change.  Anywhere inside a read the
+// delta is still the previous iteration's driver, so the rows worth seeing
+// are the pending candidates in the send shards -- not yet deduplicated
+// across threads or against the master, hence (exact #f).  Rows render as
+// dump-tuples renders them, each with its batch's sign and kind.
+static void emit_delta(slog::Daemon* d, const std::string& name, u64 limit)
+{
+    using slog::protocol::quoteString;
+    slog::Database* db = d->db();
+    if (!db->isSuspended())
+    {
+        refuse(d, "delta-unavailable",
+               "(verb delta) (detail not-parked) (position none)");
+        return;
+    }
+    slog::Relation* rel = db->getRelation(name);
+    if (rel == nullptr)
+    {
+        refuse(d, "delta-unavailable", "(verb delta) (detail "
+               + quoteString("no relation named " + name) + ")");
+        return;
+    }
+    const bool exact = db->suspendPosition() == slog::RUN_AT_BOUNDARY;
+    const u16 arity = rel->getArity();
+    u64 rows = 0, omitted = 0;
+    const auto emit_rows = [&](const slog::InsertBatch* b) {
+        for (u64 j = 0; arity > 0 && j + arity <= b->usage; j += arity)
+        {
+            if (b->data[j] == slog_null) continue;
+            if (rows == limit) { ++omitted; continue; }
+            d->emit("(delta-row (row "
+                    + quoteString(db->writeRowCSV(&b->data[j], arity))
+                    + ") (sign " + (b->sign < 0 ? "-" : "+") + ") (kind "
+                    + slog::cnt_kind_name(b->kind) + "))");
+            ++rows;
+        }
+    };
+    if (exact)
+        for (const slog::InsertBatch* b : rel->getDelta()) emit_rows(b);
+    else
+        for (const auto& shard : rel->getSendShards())
+            for (const slog::InsertBatch* b : shard) emit_rows(b);
+    d->emit(std::string("(delta-end (exact ") + (exact ? "#t" : "#f")
+            + ") (rows " + std::to_string(rows) + ") (omitted "
+            + std::to_string(omitted) + "))");
+}
+
 // T5 slices (d1)/(d3): one row vocabulary for the debugger verbs -- the
 // QUERY payload's literal kinds plus `(word N)` for a value the client
 // already holds, plus `_` where a pattern admits wildcards.  A literal the
@@ -2530,9 +2579,11 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
     // refused until commit/abort, exactly as before.
     // T5 slice (d3): breaks are session debugging state exactly as watches
     // are -- never saved, never hashed, and armable while a run of theirs
-    // is held mid-event.
+    // is held mid-event.  The execution trace is the same kind of state,
+    // and a driver reads it at parks and after each fixpoint of a run.
     const bool watch_verb = verb == "watch" || verb == "unwatch"
-        || verb == "break" || verb == "unbreak" || verb == "breaks";
+        || verb == "break" || verb == "unbreak" || verb == "breaks"
+        || verb == "trace" || verb == "trace-read";
     // T5 slice (c): `replay` is a debugger continuation over a PARKED epoch,
     // so the lease admits it whenever the run is suspended -- including at
     // parks it will refuse, because `level-1-unwatchable` is the honest
@@ -2542,10 +2593,11 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
     // boundary-admission refusal would hide the honest answer.
     // T6 slice (b): `abort-read` is a parked continuation exactly as
     // `replay` is -- and RF5-B's activation aborts reads inside prepared
-    // boundaries, so the lease must admit it.
+    // boundaries, so the lease must admit it.  `delta` reads the parked
+    // epoch's delta or candidates and moves nothing, as `frames` does.
     const bool parked_debug_verb =
         (verb == "replay" || verb == "step" || verb == "frames"
-         || verb == "why" || verb == "abort-read")
+         || verb == "why" || verb == "abort-read" || verb == "delta")
         && d->db()->isSuspended();
     // T5 slice (c3) widens this by exactly one park: a STEP STOP is the
     // same "remain paused and inspect" state one transition earlier -- the
@@ -2966,6 +3018,126 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
             return;
         }
         emit_step_frames(d);
+        return;
+    }
+
+    // (delta (relation "R") [(limit N)]): one relation's delta at the
+    // current park -- the iteration's z-set, which no other verb reads.
+    if (verb == "delta")
+    {
+        CommandFields fields;
+        std::string error;
+        std::string name;
+        u64 limit = UINT64_MAX;
+        if (!collect_fields(form, 1, {"relation", "limit"}, fields, error)
+            || fields.count("relation") == 0
+            || fields.at("relation")->children.size() != 2
+            || !parse_string_value(fields.at("relation")->children[1], name)
+            || (fields.count("limit")
+                && (fields.at("limit")->children.size() != 2
+                    || !parse_u64_atom(fields.at("limit")->children[1],
+                                       limit))))
+        {
+            refuse(d, "parse", "(verb delta) (detail \"expected (delta "
+                   "(relation \\\"R\\\") [(limit N)])\")");
+            return;
+        }
+        emit_delta(d, name, limit);
+        return;
+    }
+
+    // The execution trace (docs/pausing.md §15, trace.h):
+    //   (trace (on) [(sample K)] [(focus "R" ...)] [(rules #t|#f)])
+    //   (trace (off))
+    // answer (trace-state (on #t|#f) (next SEQ)); arming again replaces the
+    // configuration and keeps the records, disarming discards them.
+    if (verb == "trace")
+    {
+        CommandFields fields;
+        std::string error;
+        slog::TraceConfig config;
+        bool parsed =
+            collect_fields(form, 1, {"on", "off", "sample", "focus", "rules"},
+                           fields, error)
+            && fields.count("on") + fields.count("off") == 1
+            && (fields.count("off") == 0 || fields.size() == 1);
+        for (const auto& [key, field] : fields)
+        {
+            if (!parsed) break;
+            const auto& args = field->children;
+            if (key == "on" || key == "off")
+                parsed = args.size() == 1;
+            else if (key == "sample")
+            {
+                u64 k = 0;
+                parsed = args.size() == 2 && parse_u64_atom(args[1], k)
+                    && k <= slog::trace_iteration_sample_cap;
+                config.sample = static_cast<u32>(k);
+            }
+            else if (key == "focus")
+            {
+                parsed = args.size() >= 2;
+                for (size_t i = 1; parsed && i < args.size(); ++i)
+                {
+                    std::string name;
+                    parsed = parse_string_value(args[i], name);
+                    config.focus.insert(name);
+                }
+            }
+            else
+            {
+                parsed = args.size() == 2
+                    && args[1].kind == slog::sexp::SExp::K::atom
+                    && (args[1].text == "#t" || args[1].text == "#f");
+                config.rules = parsed && args[1].text == "#t";
+            }
+        }
+        if (!parsed)
+        {
+            refuse(d, "parse", "(verb trace) (detail \"expected (trace (on) "
+                   "[(sample K)] [(focus \\\"R\\\" ...)] [(rules #t)]) or "
+                   "(trace (off)); K is 0.."
+                   + std::to_string(slog::trace_iteration_sample_cap) + "\")");
+            return;
+        }
+        slog::Database* db = d->db();
+        if (fields.count("on"))
+        {
+            db->trace.arm(std::move(config));
+            // a mid-stratum arming reports rule growth from here on
+            if (db->trace.config().rules) db->traceMarkFires();
+        }
+        else
+            db->trace.disarm();
+        d->emit(std::string("(trace-state (on ")
+                + (db->trace.armed() ? "#t" : "#f") + ") (next "
+                + std::to_string(db->trace.nextSeq()) + "))");
+        return;
+    }
+
+    // (trace-read [(from SEQ)]): the retained records from SEQ on (default
+    // all), releasing every record before SEQ, then (trace-end NEXT DROPPED)
+    // -- NEXT is the `from` that continues the stream, DROPPED the sample
+    // rows the byte cap took from the records just read.
+    if (verb == "trace-read")
+    {
+        CommandFields fields;
+        std::string error;
+        u64 from = 0;
+        if (!collect_fields(form, 1, {"from"}, fields, error)
+            || (fields.count("from")
+                && (fields.at("from")->children.size() != 2
+                    || !parse_u64_atom(fields.at("from")->children[1], from))))
+        {
+            refuse(d, "parse", "(verb trace-read) (detail \"expected "
+                   "(trace-read [(from SEQ)])\")");
+            return;
+        }
+        slog::ExecutionTrace& trace = d->db()->trace;
+        const u64 dropped =
+            trace.read(from, [&](const std::string& record) { d->emit(record); });
+        d->emit("(trace-end " + std::to_string(trace.nextSeq()) + " "
+                + std::to_string(dropped) + ")");
         return;
     }
 
