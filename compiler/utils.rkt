@@ -72,9 +72,11 @@
 (define gensymb-counter 0)
 
 (define (gensymb s)
+  ;; n random characters of pool: a draw per character, not a shuffle of
+  ;; the whole pool per name (a shuffle was a tenth of a front-end pass)
   (define (add s n pool)
-    (define randlst (shuffle (string->list (string-append pool pool pool))))
-    (string-append s (list->string (take randlst n))))
+    (string-append s (build-string n (lambda (_)
+                                       (string-ref pool (random (string-length pool)))))))
   (set! gensymb-counter (add1 gensymb-counter))
   ;; Append the counter as bare digits (no separator): names must stay
   ;; alphanumeric because escape-id-for-C doubles any '_', which would make a

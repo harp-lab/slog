@@ -138,11 +138,15 @@
   (when (not (list? expr))
     (error "Parser: emit-expr must be given a proper list"))
   (define left-tok (peek before-toks))
+  ;; the last token before after-toks.  Both lists are tails of one token
+  ;; list, so a token is found by identity (eq?): equal? on tokens, and
+  ;; first's list? check, made this walk most of a parse.
+  (define stop (if (null? after-toks) #f (car after-toks)))
   (define right-tok
     (let loop ([t before-toks])
-      (if (or (equal? (peek after-toks) (peek t)) (equal? (peek after-toks) (peek t 1)))
+      (if (or (null? t) (null? (cdr t)) (eq? (car t) stop) (eq? (cadr t) stop))
           (peek t)
-          (loop (advance t)))))
+          (loop (cdr t)))))
   `(syn (prov ,left-tok ,right-tok) . ,expr))
 
 (define (parse-bracketed-then toks parser close-str k)
