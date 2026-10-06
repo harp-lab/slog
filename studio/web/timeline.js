@@ -11,6 +11,7 @@
 
 import { layout } from "./graph.js";
 import { setStates } from "./stamp.js";
+import { drivingRow } from "./where.js";
 
 const SVG = "http://www.w3.org/2000/svg";
 
@@ -60,10 +61,26 @@ export function label(state, max = 22) {
   return state.name ? `${stamp(state.id)} ${state.name}` : `${stamp(state.id)} ${short}`;
 }
 
+// Stops of a debug session the tree draws, the newest; earlier ones fold
+// into one node.
+const STOPS = 6;
+
+// A debug stop's label in the tree: its iteration, port and rule line.
+export function stopLabel(stop) {
+  const at = stop.at ?? {};
+  const where = at.port ? `${at.port}${at.relation ? ` ${at.relation}` : ""}` : at.phase === "iter" ? "boundary" : "read";
+  const line = /:(\d+):\d+$/.exec(at.source ?? "")?.[1];
+  return `⏸ it ${at.iteration ?? "?"} · ${where}${line ? ` :${line}` : ""}`;
+}
+
 // The tree for graph.js's layout: { nodes, edges }, each node a state with
 // its label and marks — `current`, `explored`, `path` (on the current
-// state's ancestry) — and its prompts' count.
-export function stateGraph(view) {
+// state's ancestry) — and its prompts' count. A run held at stops (a debug
+// session, states.rs `Debug`) hangs off the state it started from as a
+// chain of its stops, `stop` nodes; once it commits it folds into the
+// state it made, which counts its stops (`debug`), unless `expanded` names
+// it. A rewind's rerun hangs off the state it branched from.
+export function stateGraph(view, expanded = new Set()) {
   const path = new Set(ancestry(view, view.current));
   const nodes = view.states.map((s) => ({
     id: label(s),
@@ -76,16 +93,64 @@ export function stateGraph(view) {
   }));
   const ids = new Map(nodes.map((n) => [n.state, n.id]));
   const edges = view.states.filter((s) => ids.has(s.pred)).map((s) => ({ from: ids.get(s.pred), to: ids.get(s.id) }));
+  const byState = new Map(nodes.map((n) => [n.state, n]));
+  for (const debug of view.debugs ?? []) {
+    if (!ids.has(debug.from) || !debug.stops.length) continue;
+    const folded = debug.into != null && ids.has(debug.into) && !expanded.has(debug.id);
+    if (folded) {
+      byState.get(debug.into).debug = { id: debug.id, stops: debug.stops.length + (debug.dropped ?? 0) };
+      continue;
+    }
+    const first = Math.max(0, debug.stops.length - STOPS);
+    let previous = ids.get(debug.from);
+    const hidden = first + (debug.dropped ?? 0);
+    if (hidden) {
+      const id = `d${debug.id}.earlier`;
+      nodes.push({ id, text: `⏸ ${hidden} earlier stop${hidden === 1 ? "" : "s"}`, kind: "stop earlier", debug: debug.id });
+      edges.push({ from: previous, to: id, debug: true });
+      previous = id;
+    }
+    debug.stops.forEach((stop, k) => {
+      if (k < first) return;
+      const id = `d${debug.id}.${k}`;
+      const last = k === debug.stops.length - 1;
+      nodes.push({
+        id, text: stopLabel(stop), kind: "stop", debug: debug.id, stop: k,
+        held: last && !debug.ended, aborted: last && debug.ended === "aborted",
+      });
+      edges.push({ from: previous, to: id, debug: true });
+      previous = id;
+    });
+    if (debug.into != null && ids.has(debug.into)) edges.push({ from: previous, to: ids.get(debug.into), debug: true, fold: true });
+  }
   return { nodes, edges };
 }
 
-// The tree drawn as SVG; `onPick(id)` is called with a state's id.
-export function drawTree(view, onPick) {
-  const laid = layout(stateGraph(view), (text) => 6.4 * text.length + 22);
+// The tree drawn as SVG; `onPick(id)` is called with a state's id,
+// `onStop(debug, stop)` with a debug stop's, `onFold(debug)` with a debug
+// session to unfold or fold again; `expanded` names the unfolded ones.
+export function drawTree(view, onPick, { onStop = () => {}, onFold = () => {}, expanded = new Set() } = {}) {
+  const graph = stateGraph(view, expanded);
+  const texts = new Map(graph.nodes.map((n) => [n.id, n.text ?? n.id]));
+  const laid = layout(graph, (id) => 6.4 * (texts.get(id) ?? id).length + 22);
   const svg = svgNode("svg", { width: laid.width, height: laid.height, class: "state-tree" });
-  for (const edge of laid.edges) svg.append(svgNode("path", { d: edge.path, class: "sedge" }));
+  for (const edge of laid.edges) {
+    const classes = ["sedge", edge.debug && "debug", edge.fold && "fold"];
+    svg.append(svgNode("path", { d: edge.path, class: classes.filter(Boolean).join(" ") }));
+  }
   const byId = new Map(view.states.map((s) => [s.id, s]));
   for (const node of laid.nodes) {
+    if (node.state === undefined) {
+      // a debug session's stop: its recorded place, read-only
+      const classes = ["snode", ...node.kind.split(" "), node.held && "held", node.aborted && "aborted"];
+      const group = svg.appendChild(svgNode("g", {
+        class: classes.filter(Boolean).join(" "), transform: `translate(${node.x},${node.y})`,
+      }));
+      group.append(svgNode("rect", { width: node.w, height: node.h, rx: 5 }));
+      group.appendChild(svgNode("text", { x: node.w / 2, y: node.h / 2 + 4 })).textContent = node.text;
+      group.addEventListener("click", () => (node.stop === undefined ? onFold(node.debug) : onStop(node.debug, node.stop)));
+      continue;
+    }
     const classes = ["snode", node.kind, node.current && "current", node.explored && "explored", node.path && "path"];
     const group = svg.appendChild(svgNode("g", {
       class: classes.filter(Boolean).join(" "), transform: `translate(${node.x},${node.y})`, "data-at": node.state,
@@ -98,6 +163,17 @@ export function drawTree(view, onPick) {
       const badge = group.appendChild(svgNode("g", { class: "prompts", transform: `translate(${node.w - 4},-3)` }));
       badge.append(svgNode("circle", { r: 7 }));
       badge.appendChild(svgNode("text", { y: 3.5 })).textContent = node.prompts > 9 ? "9+" : node.prompts;
+    }
+    if (node.debug) {
+      // the debug session it committed from, folded: a click unfolds it
+      const fold = group.appendChild(svgNode("g", { class: "folded-stops", transform: `translate(${node.w - 2},${node.h + 2})` }));
+      fold.append(svgNode("rect", { x: -30, y: -7, width: 34, height: 14, rx: 7 }));
+      fold.appendChild(svgNode("text", { x: -13, y: 3.5 })).textContent = `⏸${node.debug.stops}`;
+      fold.appendChild(svgNode("title")).textContent = `committed from a run held at ${node.debug.stops} stop${node.debug.stops === 1 ? "" : "s"}: click to unfold them`;
+      fold.addEventListener("click", (event) => {
+        event.stopPropagation();
+        onFold(node.debug.id);
+      });
     }
     group.addEventListener("click", () => onPick(state.id));
   }
@@ -112,10 +188,14 @@ export function drawTree(view, onPick) {
 export function initTimeline({ at, panel, send }) {
   let view = null;
   let pending = null; // a state asked to be explored, not yet re-derived
+  const expanded = new Set(); // debug sessions unfolded from their state
+  let card = null; // { debug, stop }: a stop shown, read-only
   const reduced = matchMedia("(prefers-reduced-motion: reduce)");
 
   const head = panel.appendChild(element("div", "state-tree-head"));
   const body = panel.appendChild(element("div", "state-tree-body"));
+  const stopCard = panel.appendChild(element("div", "stop-card"));
+  stopCard.hidden = true;
   panel.hidden = true;
   addEventListener("keydown", (event) => {
     if (event.key === "Escape" && !panel.hidden) panel.hidden = true;
@@ -195,16 +275,59 @@ export function initTimeline({ at, panel, send }) {
     close.title = "Close (Esc)";
     close.addEventListener("click", toggle);
     if (!view) return body.replaceChildren();
-    body.replaceChildren(drawTree(view, pick));
+    body.replaceChildren(drawTree(view, pick, {
+      expanded,
+      onFold(debug) {
+        if (expanded.has(debug)) expanded.delete(debug);
+        else expanded.add(debug);
+        renderTree();
+      },
+      onStop(debug, stop) {
+        card = { debug, stop };
+        renderCard();
+      },
+    }));
+    renderCard();
     // the state the prompt stands at, in view
-    const focus = body.querySelector(".snode.explored") ?? body.querySelector(".snode.current");
+    const focus = body.querySelector(".snode.stop.held") ?? body.querySelector(".snode.explored") ?? body.querySelector(".snode.current");
     focus?.scrollIntoView?.({ block: "nearest", inline: "center" });
+  }
+
+  // A stop revisited: where the run stood and its bindings, as recorded
+  // then. The run cannot go back there, so this is read-only.
+  function renderCard() {
+    const debug = card && view?.debugs?.find((d) => d.id === card.debug);
+    const stop = debug?.stops[card.stop];
+    stopCard.hidden = !stop;
+    if (!stop) return;
+    const at = stop.at ?? {};
+    stopCard.replaceChildren(
+      element("div", "stop-card-title", `${stopLabel(stop)} — ${stop.title}`),
+      element("div", "stop-card-where", [
+        `stop ${card.stop + 1 + (debug.dropped ?? 0)} of the run held from ${named(view, debug.from)}`,
+        at.stratum && `stratum ${at.stratum}${at.flavor && at.flavor !== "normal" ? ` ${at.flavor}` : ""}`,
+        at.iteration != null && `iteration ${at.iteration}`,
+        at.source && `rule ${at.source}`,
+        at["driver-rows"] > 0 && `row ${at["driver-row"]} of ${at["driver-rows"]}`,
+        `after ${stop.line.replace(/^run \S*\//, "run ")}`,
+      ].filter(Boolean).join(" · ")),
+    );
+    if (at.row) stopCard.append(element("div", "stop-card-row", drivingRow(at)));
+    for (const [name, value] of at.bindings ?? []) {
+      stopCard.append(element("div", "stop-card-binding", `${name} = ${value}`));
+    }
+    stopCard.append(element("div", "hint", "recorded at the stop: the run has moved on, so this is read-only"));
+    const close = stopCard.appendChild(button("quiet small", "×"));
+    close.addEventListener("click", () => {
+      card = null;
+      renderCard();
+    });
   }
 
   function states(next) {
     const grew = derived(view, next);
     if (next.exploring === pending || next.exploring == null) pending = null;
-    view = { states: next.states, current: next.current, exploring: next.exploring };
+    view = { states: next.states, current: next.current, exploring: next.exploring, debugs: next.debugs ?? [] };
     setStates(view);
     render();
     // the new stamp sprouts from the one it was derived from
@@ -234,6 +357,16 @@ export function initTimeline({ at, panel, send }) {
     show() {
       panel.hidden = false;
       render();
+    },
+    // Open the tree, where the held run's stops are.
+    open() {
+      panel.hidden = false;
+      render();
+    },
+    // The state the held run started from, as the author knows it.
+    heldFrom() {
+      const debug = view?.debugs?.at(-1);
+      return debug && !debug.ended ? named(view, debug.from) : view ? named(view, view.current) : null;
     },
   };
 }

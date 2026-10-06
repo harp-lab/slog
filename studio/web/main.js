@@ -27,6 +27,7 @@ import { createBreakpoints, glyphClass, describe, stopOf } from "./breakpoints.j
 import { initCalls } from "./calls.js";
 import { initTimeline } from "./timeline.js";
 import { createRewind } from "./rewind.js";
+import { createStrip, badge as stopBadge, clauseAt, drivingRow, ruleClauses } from "./where.js";
 import { createCheck } from "./check.js";
 import { createInspector } from "./inspect.js";
 import { installStamps, noteSet, stateName } from "./stamp.js";
@@ -192,6 +193,32 @@ const calls = initCalls({
   transcript: $("transcript"),
   results: $("results"),
 });
+// Where a held run stands, over the prompt: from the run down to the row
+// it drives, each part a way there (where.js).
+const strip = createStrip($("where"), (crumb, at) => {
+  if (!crumb || !at) return;
+  const row = $("where-row");
+  if (crumb.key !== "row") row.hidden = true;
+  if (crumb.key === "run") timeline.open();
+  else if (crumb.key === "stratum" || crumb.key === "iteration") trace.show();
+  else if (crumb.key === "rule") revealSource(at.source);
+  else if (crumb.key === "clause" && crumb.clause) editor.reveal({ line: crumb.clause.from[0], col: crumb.clause.from[1] });
+  else if (crumb.key === "row") {
+    row.hidden = !row.hidden;
+    row.textContent = [drivingRow(at), ...(at.bindings ?? []).map(([name, value]) => `${name} = ${value}`)].join("   ");
+  }
+});
+let shownAt = null; // the held run's position the strip shows
+function showWhere(at) {
+  shownAt = at;
+  strip.show(at, { run: timeline.heldFrom(), stratum: at && trace.stratumOf(at.stratum), text: editor.get() });
+}
+function hideWhere() {
+  shownAt = null;
+  strip.clear();
+  $("where-row").hidden = true;
+}
+
 // The Variables tab and hovers over a held stop (inspect.js).
 const inspector = createInspector({
   editor,
@@ -261,6 +288,8 @@ const receive = {
   },
   progress(delta) {
     trace.progress(delta);
+    // the held stratum's place in the run, once the progress knows it
+    if (shownAt) showWhere(shownAt);
   },
   lane(status) {
     state.lane = status;
@@ -272,6 +301,7 @@ const receive = {
     if (!view.held) {
       state.callsHeld = false;
       state.stopAt = null;
+      hideWhere();
       stops++;
       breakpoints.held(null);
       inspector.released();
@@ -294,6 +324,7 @@ const receive = {
     } else if (entry.result?.held === false) {
       state.callsHeld = false;
       state.stopAt = null;
+      hideWhere();
       stops++;
       breakpoints.held(null);
       inspector.released();
@@ -394,13 +425,21 @@ let stops = 0; // counts stops and resumes, so a late answer is dropped
 async function showStop(result) {
   const serial = ++stops;
   const stop = stopOf(result);
-  if (!stop) return breakpoints.held(null);
+  // where it stands, at once: the pause carries it (at the clause and its
+  // bindings, too, at a port)
+  const at = result.at ?? null;
+  if (!stop) {
+    if (at) showWhere(at);
+    return breakpoints.held(null);
+  }
   const path = files.paths().find((p) => p.split("/").pop() === stop.file);
   if (path && path !== files.active()) files.open(path);
-  breakpoints.held(path ? stop : null);
+  showWhere(at);
+  const place = { clause: at && clauseAt(ruleClauses(editor.get(), stop.line), at), badge: stopBadge(at) };
+  breakpoints.held(path ? stop : null, at?.bindings ?? [], place);
   const frames = await quiet("frames");
   if (serial !== stops) return;
-  breakpoints.held(path ? stop : null, frames.result?.bindings ?? []);
+  breakpoints.held(path ? stop : null, frames.result?.bindings ?? [], place);
   const where = /iteration (\d+)/.exec(result.lines?.[0] ?? "");
   state.stopAt = `${stop.port} ${stop.file}:${stop.line}${where ? ` · iteration ${where[1]}` : ""}`;
   renderStatus();

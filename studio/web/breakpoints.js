@@ -597,9 +597,29 @@ export function createBreakpoints({ editor, onChange, file, texts, onBindings = 
 
   // ---- A held stop --------------------------------------------------------
 
+  // Over the stopped rule, where the run stands: a line of its own above
+  // the rule, kept while the run holds in that rule, its text rewritten
+  // as it steps.
+  let zone = null; // { id, line, node }
+  function showBadge(line, text) {
+    if (zone && (!text || zone.line !== line)) {
+      const id = zone.id;
+      ed.changeViewZones((zones) => zones.removeZone(id));
+      zone = null;
+    }
+    if (!text) return;
+    if (!zone) {
+      const badge = node("div", "stop-badge");
+      ed.changeViewZones((zones) => {
+        zone = { line, node: badge, id: zones.addZone({ afterLineNumber: line - 1, heightInPx: 17, domNode: badge }) };
+      });
+    }
+    if (zone.node.textContent !== text) zone.node.textContent = `⏸ ${text}`;
+  }
+
   function showStop() {
     const stop = state.stop;
-    if (!stop) { stopping.clear(); return; }
+    if (!stop) { stopping.clear(); showBadge(0, ""); return; }
     const [line, column] = stop.at ?? [stop.line, 1];
     const end = stop.end ?? [line, model().getLineMaxColumn(line)];
     // Beside the clause as a comment while the bindings fit to the right of
@@ -611,6 +631,8 @@ export function createBreakpoints({ editor, onChange, file, texts, onBindings = 
     const { text: bindings, elided } = fitBindings(state.bindings, Math.max(8, room));
     state.elided = elided;
     stopping.set([
+      // the whole rule, faintly
+      { range: new monaco.Range(stop.from, 1, stop.to, 1), options: { isWholeLine: true, className: "stop-rule" } },
       { range: new monaco.Range(line, 1, line, 1), options: { glyphMarginClassName: "bp-stop", isWholeLine: true, className: "stop-line" } },
       { range: new monaco.Range(line, column, end[0], end[1]), options: { className: "stop-clause" } },
       ...(bindings ? [{
@@ -621,6 +643,7 @@ export function createBreakpoints({ editor, onChange, file, texts, onBindings = 
         },
       }] : []),
     ]);
+    showBadge(stop.from, state.badge);
     ed.revealLineInCenterIfOutsideViewport(line);
   }
 
@@ -643,11 +666,14 @@ export function createBreakpoints({ editor, onChange, file, texts, onBindings = 
       render();
     },
     // The run held at `stop` ({ id, file, line } from stopOf), with
-    // `bindings` [[name, value]]; null when nothing is held.
-    held(stop, bindings = []) {
+    // `bindings` [[name, value]]; null when nothing is held. `place` says
+    // more when the pause does (where.js): the clause the port is at, {
+    // from, to } as [line, col], and the badge over the rule.
+    held(stop, bindings = [], place = {}) {
       if (!stop) {
         state.stop = null;
         state.bindings = [];
+        state.badge = "";
         showStop();
         return;
       }
@@ -660,8 +686,13 @@ export function createBreakpoints({ editor, onChange, file, texts, onBindings = 
         const form = formAt(forms(model().getValue()), stop.line);
         end = clauses(model().getValue(), form).find((b) => String(b.at) === String(at))?.end ?? null;
       }
+      // a step stop has no armed clause: the port's own, when known
+      if (!at && place.clause) [at, end] = [place.clause.from, place.clause.to];
       const form = formAt(forms(model().getValue()), stop.line);
-      state.stop = { line: stop.line, at, end, from: form?.line ?? stop.line, to: form?.endLine ?? stop.line };
+      let to = form?.endLine ?? stop.line;
+      while (to > stop.line && !model().getLineContent(to).trim()) to--;
+      state.stop = { line: at?.[0] ?? stop.line, at, end, from: form?.line ?? stop.line, to };
+      state.badge = place.badge ?? "";
       state.bindings = bindings.map(([name, value]) => [name, value.replace(/\(_enum "([^"]*)"\)/g, "($1)")]);
       showStop();
     },

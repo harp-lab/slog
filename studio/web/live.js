@@ -295,6 +295,24 @@ export function duration(ms) {
 
 const plural = (n, word, many = `${word}s`) => `${count(n)} ${n === 1 ? word : many}`;
 
+// A stratum by what it writes, the largest relations first.
+export function stratumLabel(st) {
+  const writes = [...st.sizes].sort((a, b) => b[1] - a[1]).map(([relation]) => relation);
+  if (!writes.length) return st.hash;
+  return writes.length > 3 ? `${writes.slice(0, 3).join(" ")} +${writes.length - 3}` : writes.join(" ");
+}
+
+// A held run's position (where.js `at`) in a few words: "match ar ·
+// main.slog:72 · row 412/980".
+export function placeOf(at) {
+  if (!at) return "";
+  return [
+    at.port ? `${at.port}${at.relation ? ` ${at.relation}` : ""}` : at.phase === "iter" ? "between iterations" : "inside the read",
+    at.source && at.source.replace(/^.*\//, "").replace(/:\d+$/, ""),
+    at["driver-rows"] > 0 && `row ${at["driver-row"]}/${at["driver-rows"]}`,
+  ].filter(Boolean).join(" · ");
+}
+
 // ---- The view -------------------------------------------------------------
 
 // Strata the list shows at most: the earliest are folded into one line.
@@ -388,13 +406,8 @@ export function createRunView({ select, reveal, ask, command }) {
   const barRows = new Map(); // relation -> its bar's parts
   let selected = null;
   let shownRun = null;
-
-  // A stratum by what it writes, the largest relations first.
-  function stratumLabel(st) {
-    const writes = [...st.sizes].sort((a, b) => b[1] - a[1]).map(([relation]) => relation);
-    if (!writes.length) return st.hash;
-    return writes.length > 3 ? `${writes.slice(0, 3).join(" ")} +${writes.length - 3}` : writes.join(" ");
-  }
+  let trail = []; // a held run's last positions, newest last
+  let position = null; // the newest
 
   function row(st, curve) {
     let parts = rows.get(st.index);
@@ -403,6 +416,9 @@ export function createRunView({ select, reveal, ask, command }) {
       settle(line);
       line.append(node("span", "st-dot"));
       const name = line.appendChild(node("span", "st-name"));
+      const label = name.appendChild(node("span"));
+      // where a held run stands in this stratum
+      const port = name.appendChild(node("span", "st-port"));
       const flavor = line.appendChild(node("span", "st-flavor"));
       const iterations = line.appendChild(node("span", "st-n"));
       const tuples = line.appendChild(node("span", "st-n rows"));
@@ -411,7 +427,7 @@ export function createRunView({ select, reveal, ask, command }) {
       const path = spark.appendChild(svg("path"));
       const tip = spark.appendChild(svg("circle", { r: "2" }));
       line.addEventListener("click", () => select(selected === st.index ? null : st.index));
-      parts = { line, name, flavor, iterations, tuples, time, path, tip };
+      parts = { line, label, port, flavor, iterations, tuples, time, path, tip };
       rows.set(st.index, parts);
     }
     parts.line.classList.toggle("active", st.active);
@@ -419,7 +435,9 @@ export function createRunView({ select, reveal, ask, command }) {
     parts.line.classList.toggle("selected", selected === st.index);
     parts.line.title = `stratum ${st.index + 1} · ${st.hash}${st.flavor === "normal" ? "" : `_${st.flavor}`}`
       + (st.reads.length ? `\nreads ${st.reads.join(" ")}` : "");
-    parts.name.textContent = stratumLabel(st);
+    parts.label.textContent = stratumLabel(st);
+    const place = st.stopped && position && position.stratum === st.hash ? `⏸ ${placeOf(position)}` : "";
+    if (parts.port.textContent !== place) parts.port.textContent = place;
     parts.flavor.textContent = st.flavor === "normal" ? "" : st.flavor;
     setNumber(parts.iterations, st.iterations, (n) => `${Math.round(n)} it`);
     if (st.tuples === null) parts.tuples.textContent = "";
@@ -588,6 +606,15 @@ export function createRunView({ select, reveal, ask, command }) {
       const st = at && shown(live).find((one) => one.hash === at.name.replace(/_.*$/, ""));
       const which = st ? `stratum ${st.index + 1} (${stratumLabel(st)})` : at && `stratum ${at.name}`;
       title.textContent = `${failure.title}${at ? ` — ${which}, iteration ${at.iteration}, ${at.phase === "iter" ? "between iterations" : "inside a read"}` : ""}`;
+      // where it stands now, and the last few places, the newest last
+      if (trail.length) {
+        const steps = card.appendChild(node("ol", "card-trail"));
+        trail.forEach((place, k) => {
+          const item = steps.appendChild(node("li", k === trail.length - 1 ? "now" : "",
+            `iteration ${place.iteration ?? "?"} · ${placeOf(place)}`));
+          item.title = place.port ? `${place.port} port of ${place.source} (${place.tag})` : "";
+        });
+      }
       card.append(node("div", "card-note", "The run is held: its relations so far can be queried. Continue runs it on; Abort discards it."));
       for (const [label, line] of [["Continue", "continue"], ["Abort", "abort"]]) {
         const button = actions.appendChild(node("button", line === "continue" ? "small" : "secondary small", label));
@@ -610,8 +637,10 @@ export function createRunView({ select, reveal, ask, command }) {
   return {
     element,
     // `extras`: { text, selected, failure }
-    show(live, { text = "", failure = null, selected: chosen = null } = {}) {
+    show(live, { text = "", failure = null, selected: chosen = null, trail: places = [] } = {}) {
       selected = chosen;
+      trail = failure?.kind === "held" ? places : [];
+      position = trail.at(-1) ?? null;
       if (live && live.run !== shownRun) {
         rows.clear();
         barRows.clear();

@@ -108,6 +108,43 @@ pub struct States {
     /// Edits staged since the last change, which the next one commits.
     #[serde(skip)]
     pub staged: Vec<String>,
+    /// Each run held at stops, hanging off the state it started from.
+    #[serde(default)]
+    pub debugs: Vec<Debug>,
+}
+
+/// Stops kept per debug session, the newest.
+const STOPS: usize = 200;
+
+/// A run held at stops: a sub-timeline of the state it started from, which
+/// folds into the state it commits as. A stop records where the run stood
+/// and its bindings there, as the pause reported them (`at`): the run
+/// cannot go back to it, so revisiting one shows the record, read-only.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Debug {
+    pub id: u64,
+    /// The state the run started from.
+    pub from: u64,
+    /// The state the run committed as, once it has.
+    #[serde(default)]
+    pub into: Option<u64>,
+    /// How it ended, once it has: "committed", "aborted".
+    #[serde(default)]
+    pub ended: Option<String>,
+    /// Stops dropped from the front past `STOPS`.
+    #[serde(default)]
+    pub dropped: usize,
+    pub stops: Vec<Stop>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Stop {
+    /// The command that stopped here (`run …`, `step`, `continue`).
+    pub line: String,
+    /// The pause's title: "Paused · step", "Paused · break b1".
+    pub title: String,
+    /// Where the run stood, and its bindings there (repl.rkt `held-position`).
+    pub at: Value,
 }
 
 /// What a state's entry says of it: `{id, pred}`, on transcript entries and
@@ -140,6 +177,7 @@ impl Default for States {
             exploring: None,
             generation: 0,
             staged: Vec::new(),
+            debugs: Vec::new(),
         }
     }
 }
@@ -266,6 +304,42 @@ impl States {
         }
     }
 
+    /// The open debug session: a run held now, or held at its last stop.
+    fn open_debug(&mut self) -> Option<&mut Debug> {
+        self.debugs.last_mut().filter(|debug| debug.ended.is_none())
+    }
+
+    /// A run stopped: a stop of the open debug session, else the first of a
+    /// new one, hanging off state `from` (the current one, or the one a
+    /// rewind reruns from as a branch).
+    pub fn stopped(&mut self, from: u64, line: &str, result: &Value) {
+        let stop = Stop {
+            line: line.to_owned(),
+            title: result["title"].as_str().unwrap_or("Paused").to_owned(),
+            at: result.get("at").cloned().unwrap_or(Value::Null),
+        };
+        let id = self.debugs.len() as u64;
+        let debug = match self.open_debug() {
+            Some(debug) => debug,
+            None => {
+                self.debugs.push(Debug { id, from, into: None, ended: None, dropped: 0, stops: Vec::new() });
+                self.debugs.last_mut().expect("just pushed")
+            }
+        };
+        debug.stops.push(stop);
+        let over = debug.stops.len().saturating_sub(STOPS);
+        debug.stops.drain(..over);
+        debug.dropped += over;
+    }
+
+    /// The held run ended: committed as `into`, or aborted.
+    pub fn debug_ended(&mut self, how: &str, into: Option<u64>) {
+        if let Some(debug) = self.open_debug() {
+            debug.ended = Some(how.to_owned());
+            debug.into = into;
+        }
+    }
+
     /// The changes that re-derive `id` from the Run before it: that Run's
     /// state, then the lines of each change since, oldest first. None when
     /// no Run precedes it since the session began from nothing.
@@ -375,6 +449,15 @@ impl Studio {
             let mut states = self.states();
             states.restarted(self.lane.generation());
             let current = states.current;
+            // A held run's stops make its debug session; it ends when the
+            // run commits (below) or is let go without committing.
+            let result = outcome.result.as_ref();
+            if result.is_some_and(|result| result["kind"] == "paused") {
+                let from = self.branch_from.lock().expect("branch lock").unwrap_or(current);
+                states.stopped(from, &outcome.line, result.expect("just tested"));
+            } else if before.held && !outcome.session.held && !result.is_some_and(committed) {
+                states.debug_ended("aborted", None);
+            }
             match (origin, &outcome.result) {
                 (Origin::Evaluate, Some(result)) if outcome.line.starts_with("run ") && !outcome.session.held => {
                     let pred = self.branch_from.lock().expect("branch lock").take().unwrap_or(current);
@@ -386,13 +469,17 @@ impl Studio {
                     return;
                 }
                 (Origin::Evaluate, Some(result)) if outcome.line == "tables" => states.name(current, result),
+                // a Run held at its first stop: the stop is the news
+                (Origin::Evaluate, Some(result)) if result["kind"] == "paused" => {}
                 (Origin::Evaluate, _) => return,
-                // a held run that commits is its Run's state
+                // a held run that commits is its Run's state, into which
+                // its debug session folds
                 (Origin::Repl, Some(result)) if committed(result) && before.held => {
                     let pred = self.branch_from.lock().expect("branch lock").take().unwrap_or(current);
                     let line = self.held_run.lock().expect("held lock").take().unwrap_or_else(|| outcome.line.clone());
-                    states.derive_from(pred, Kind::Run, &line, version, Some(result));
+                    let into = states.derive_from(pred, Kind::Run, &line, version, Some(result)).id;
                     states.timed(outcome.ms);
+                    states.debug_ended("committed", Some(into));
                 }
                 (Origin::Repl, Some(result)) if committed(result) => {
                     states.derive(Kind::Change, &outcome.line, None, Some(result));
@@ -827,6 +914,30 @@ mod tests {
             (Some("run main.slog".into()), vec!["add (edge 3 4)".into(), "add (edge 9 9)".into()]),
             "a branch replays what it branched from"
         );
+    }
+
+    /// A held run's stops hang off the state it started from, and fold
+    /// into the state it commits as; an aborted one ends with none.
+    #[test]
+    fn a_held_runs_stops_are_a_sub_timeline() {
+        let mut states = States::default();
+        states.derive(Kind::Run, "run main.slog", Some(1), None);
+        let paused = |iteration: u64| json!({"kind": "paused", "title": "Paused · step",
+                                             "at": {"iteration": iteration, "port": "match"}});
+        states.stopped(1, "run main.slog", &paused(3));
+        states.stopped(1, "step", &paused(4));
+        let into = states.derive(Kind::Run, "continue", None, None).id;
+        states.debug_ended("committed", Some(into));
+        // a rewind reruns as a branch from an earlier state
+        states.stopped(0, "run main.slog", &paused(1));
+        states.debug_ended("aborted", None);
+
+        let first = &states.debugs[0];
+        assert_eq!((first.from, first.into, first.ended.as_deref()), (1, Some(2), Some("committed")));
+        assert_eq!(first.stops.iter().map(|stop| stop.at["iteration"].as_u64().unwrap()).collect::<Vec<_>>(), [3, 4]);
+        assert_eq!(first.stops[1].line, "step");
+        let second = &states.debugs[1];
+        assert_eq!((second.from, second.into, second.ended.as_deref()), (0, None, Some("aborted")));
     }
 
     #[test]

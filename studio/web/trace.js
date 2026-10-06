@@ -13,7 +13,7 @@
 
 import { formAt, forms } from "./forms.js";
 import { stamped } from "./stamp.js";
-import { absorb, createRunView, outcome, replay as replayed, rulesWriting, shown } from "./live.js";
+import { absorb, createRunView, outcome, replay as replayed, rulesWriting, shown, stratumLabel } from "./live.js";
 
 // ---- The model ------------------------------------------------------------
 
@@ -156,6 +156,8 @@ export function parkedAt(lines) {
 // ---- The view -------------------------------------------------------------
 
 const RECORDS = 20;
+// Positions of a held run the Execution view keeps, for a step's trail.
+const TRAIL = 6;
 // The scrubber's replay takes about this long, however many steps.
 const REPLAY_MS = 4000;
 
@@ -197,6 +199,7 @@ export function initTrace({ editor, send, file, tabs, transcript, results, revea
     replaying: false, // the run view shows the record at the scrubber
     timer: 0,      // the scrubber's replay, while it plays
     starting: false, // a Run or Debug started, and has run nothing yet
+    trail: [],     // the held run's last positions, newest last (where.js `at`)
   };
   const view = createRunView({
     select(index) {
@@ -353,6 +356,7 @@ export function initTrace({ editor, send, file, tabs, transcript, results, revea
         text: editor.get(),
         selected: state.selected,
         failure: state.replaying ? null : outcome(state.run, latest(), state.parked),
+        trail: state.trail,
       });
     });
   }
@@ -561,6 +565,17 @@ export function initTrace({ editor, send, file, tabs, transcript, results, revea
     tracing(on) {
       box.checked = on;
     },
+    // The stratum the progress knows by `hash`: { index, label }.
+    stratumOf(hash) {
+      const live = state.live;
+      const st = live && shown(live).find((one) => one.hash === hash);
+      return st ? { index: st.index, label: stratumLabel(st) } : null;
+    },
+    // Show the Execution tab, at the stratum a held run is in.
+    show() {
+      if (panel.hidden) executionTab.click();
+      requestAnimationFrame(() => panel.querySelector(".st-row.stopped")?.scrollIntoView({ block: "nearest" }));
+    },
     // A Run or Debug started: the run view follows it from here.
     started() {
       stopReplay();
@@ -602,6 +617,9 @@ export function initTrace({ editor, send, file, tabs, transcript, results, revea
       if (result.kind === "paused") {
         state.parked = parkedAt(result.lines);
         state.peek = null;
+        // a step's movement: the last few places the run stood
+        if (result.at) state.trail = [...state.trail, result.at].slice(-TRAIL);
+        const before = [state.shown, state.step];
         // An earlier trace of the same strata (content-hashed, so the same
         // program) shows the iteration the run holds in.
         const at = state.parked ? state.records.findIndex(({ model }) =>
@@ -612,9 +630,16 @@ export function initTrace({ editor, send, file, tabs, transcript, results, revea
             && model.strata[s].iterations[i].iteration === state.parked.iteration);
           if (step >= 0) [state.shown, state.step] = [at, step];
         }
+        // a step inside the same iteration moves only the run view: the
+        // trace below stays as it is
+        if (!panel.hidden && before[0] === state.shown && before[1] === state.step && panel.contains(view.element)) {
+          paint();
+          return true;
+        }
       } else if (result.held === false) {
         state.parked = null;
         state.peek = null;
+        state.trail = [];
       }
       if (result.kind === "peek") state.peek = { title: result.title, lines: result.lines };
       const model = traceModel(entry, file());

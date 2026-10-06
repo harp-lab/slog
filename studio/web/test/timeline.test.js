@@ -52,3 +52,27 @@ equal("a Run names its file, not its directory", label(state(1, 0, "run /tmp/x/v
   ok("a branch's two children share a column", at.get(3).x === at.get(4).x && at.get(3).y !== at.get(4).y);
   ok("states run left to right", laid.edges.every((e) => !e.back));
 }
+
+// A run held at stops hangs off the state it started from; committed, it
+// folds into the state it made, unless unfolded.
+{
+  const stop = (iteration, port, line) => ({ line: "step", title: "Paused · step",
+    at: { iteration, port, relation: "ret", source: `main.slog:${line}:1` } });
+  const held = { ...view, debugs: [{ id: 0, from: 5, into: null, ended: null, stops: [stop(19, "drive", 72), stop(19, "match", 72)] }] };
+  const graph = stateGraph(held);
+  const stops = graph.nodes.filter((n) => n.kind === "stop");
+  equal("stops: labelled by iteration, port and line", stops.map((n) => n.text), ["⏸ it 19 · drive ret :72", "⏸ it 19 · match ret :72"]);
+  equal("stops: a chain off the state they started from", graph.edges.filter((e) => e.debug).map((e) => `${e.from.split(" ")[0]}>${e.to}`),
+    ["t5>d0.0", "d0.0>d0.1"]);
+  equal("stops: the last is where the run holds", stops.map((n) => n.held), [false, true]);
+  const many = { ...view, debugs: [{ id: 0, from: 5, into: null, ended: null, stops: Array.from({ length: 9 }, (_, k) => stop(k, "fire", 72)) }] };
+  equal("stops: the earliest fold into one node", stateGraph(many).nodes.filter((n) => n.debug === 0).map((n) => n.text)[0], "⏸ 3 earlier stops");
+  const committed = { states: [...states, state(6, 5, "continue", "run")], current: 6, exploring: null,
+    debugs: [{ id: 0, from: 5, into: 6, ended: "committed", stops: [stop(19, "drive", 72)] }] };
+  equal("committed: folded into the state it made", stateGraph(committed).nodes.find((n) => n.state === 6).debug, { id: 0, stops: 1 });
+  ok("committed: no stop nodes", !stateGraph(committed).nodes.some((n) => n.kind === "stop"));
+  equal("unfolded: its stops lead into the state", stateGraph(committed, new Set([0])).edges.filter((e) => e.fold).map((e) => e.from), ["d0.0"]);
+  const rerun = { ...view, debugs: [{ id: 0, from: 2, into: null, ended: null, stops: [stop(19, "drive", 72)] }] };
+  equal("a rewind's rerun hangs off the state it branched from", stateGraph(rerun).edges.filter((e) => e.debug).map((e) => e.from.split(" ")[0]), ["t2"]);
+  ok("the sub-timeline lays out", layout(stateGraph(held), (id) => id.length * 7).nodes.every((n) => Number.isFinite(n.x)));
+}
