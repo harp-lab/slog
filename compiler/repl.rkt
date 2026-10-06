@@ -420,6 +420,97 @@
    "  page POSITION N     select an absolute page in a buffered canvas collection"
    "  ; COMMENT           add a transcript comment without invoking Slog"))
 
+;; The commands this server dispatches, for a client's completion: each
+;; (NAMES FORMS ABOUT), NAMES the verb then its aliases, and each form one
+;; spelling of the arguments after the verb.  In a form, [x] is optional,
+;; a|b either, `...` repeats what precedes it, lowercase words are typed as
+;; they stand, and the capitals name what goes there: REL a relation,
+;; (REL t ...) a fact, REL V ... a relation and its values, (DEMAND t ...)
+;; a demand's call, DB a saved database, bN a break, wN a watch, FILE:LINE
+;; a rule's location.  `:help` answers it as 'commands; Studio's
+;; web/commands.js holds a copy its tests compare with this one.
+(define command-inventory
+  '((("library") ("" "select DB" "close") "browse saved databases")
+    (("open" "use") ("DB") "load a database, or switch to its resident copy")
+    (("csv-import") ("FOLDER [as NAME]") "infer rows from a folder of CSV into a database")
+    (("current" "database") ("") "describe the current database")
+    (("resident" "sessions") ("") "list databases held in memory")
+    (("discard") ("session") "close the current in-memory session without saving")
+    (("mode") ("readonly|mutable") "protect the database from mutation, or allow it")
+    (("tables" "rels" "relations") ("[all|FILTER]") "list live relations, schemas and row counts")
+    (("state" "states") ("[REL]") "summarize the pipeline or one relation's versions")
+    (("count") ("REL") "count a relation's current version")
+    (("show") ("REL [LIMIT|all]") "show a small relation's rows")
+    (("query" "has") ("REL V ...") "whether any row matches a value prefix")
+    (("more") ("") "pull the held query cursor's next page")
+    (("cancel") ("") "discard the held query cursor")
+    (("dump") ("?QUERY to PATH.csv") "stream a query's rows into a CSV file")
+    (("uses" "find") ("#N|VALUE") "which relations contain a value")
+    (("explain") ("?QUERY") "show a query's plan without running it")
+    (("why") ("[(REL t ...) [depth N]]") "the proof tree for a fact, or the gate's candidates")
+    (("whynot") ("(REL t ...)") "why a fact is not there: each rule's frontier")
+    (("break")
+     ("REL [when (REL t ...) COND ...] [ignore N] [log]"
+      "FILE:LINE[@k] [when COND ...] [ignore N] [log]"
+      "rN[@k] [when COND ...] [ignore N] [log]"
+      "[FILE:LINE] demand|answer (DEMAND t ...) [when COND ...] [ignore N] [log]"
+      "[FILE:LINE] match|emit (REL t ...) [when COND ...] [ignore N] [log]")
+     "stop the run where a rule writes, fires, asks or answers")
+    (("breaks") ("") "list the standing breaks")
+    (("unbreak") ("bN") "remove a break")
+    (("enable") ("bN") "put a break back in the run")
+    (("disable") ("bN") "keep a break, out of the run")
+    (("logs") ("[bN]") "what the logpoints recorded")
+    (("calls") ("" "on|off|stack|failed" "#N [depth N]" "(DEMAND t ...) [depth N]")
+     "the demand calls: record them, the roots, one call's subtree, the stack")
+    (("step") ("[match|fire|emit|tuple|iter|into|over|out]" "rule rN")
+     "walk the held run one port, or one demand call, at a time")
+    (("finish") ("") "leave the ports; run to the next iteration boundary")
+    (("frames") ("") "the join stack at the current stop")
+    (("continue") ("") "resume the held run")
+    (("commit") ("") "take the change held at the pre-commit gate")
+    (("replay") ("") "rerun the held read")
+    (("abort") ("") "discard the held run; nothing is committed")
+    (("peek") ("REL [LIMIT]") "a relation's delta where the run is parked")
+    (("trace") ("on [sample K] [focus REL ...] [rules]" "off")
+     "record each change's strata and iterations, or stop")
+    (("watch") ("REL [level 1 [why]]" "?QUERY" "cone REL [image KEY]")
+     "observe a relation or a query's count")
+    (("watches") ("") "list the watches")
+    (("unwatch") ("wN") "remove a watch")
+    (("tiers") ("") "each stratum's execution rung")
+    (("code") ("sN|HASH") "one stratum's rung, artifacts and plan shape")
+    (("images") ("") "list mounted program images")
+    (("image")
+     ("mount PATH" "unmount KEY"
+      "KEY [activate|rules|sources|kernels|plans|activation|materializations]")
+     "inspect, mount, activate or unmount a program image")
+    (("catalog") ("") "the selected boundary, history and types")
+    (("schema") ("") "the daemon's raw live schema")
+    (("pipeline") ("") "the daemon's raw versioned pipeline")
+    (("run") ("PATH") "compile and run a .slog program")
+    (("scratch") ("") "the scratch layer's accumulated program")
+    (("keep") ("scratch as FILE.slog") "export the scratch layer to a file and promote it")
+    (("clear") ("scratch") "retract the whole scratch layer")
+    (("add") ("REL V ..." "(REL V ...)") "add one input tuple and propagate it")
+    (("del") ("REL V ..." "(REL V ...)") "retract one input tuple and propagate it")
+    (("whatif") ("add|del REL V ..." "del (REL V ...)") "preview an edit's cone without mutating")
+    (("stage") ("±(REL V ...) ...") "queue signed edits for one flush")
+    (("unstage") ("±(REL V ...) ...") "withdraw staged edits")
+    (("flush") ("") "commit everything staged as one update")
+    (("recount") ("[force]") "re-establish, or force-rebuild, the count cache")
+    (("counts") ("REL") "dump a relation's count sidecar rows")
+    (("rename") ("REL NAME") "rename a live relation without moving its data")
+    (("drop") ("REL") "remove a relation name at the next boundary")
+    (("attach") ("DB as DEST" "DB SOURCE as DEST") "import a saved database under one namespace")
+    (("save") ("NAME [with scratch]") "save the current database as data/NAME")
+    (("replace") ("instance ALIAS with \"LIB.slog\"") "seal a program replacement from the last run")
+    (("preview") ("") "the pending proposal's diffs")
+    (("activate") ("") "run the pending proposal's activation")
+    ((":status" "status") ("") "the REPL, the database and the daemon")
+    ((":ping" "ping") ("") "round-trip to the session server")
+    ((":help" "help") ("") "list the commands")))
+
 (define (split-command source)
   (define text (string-trim source))
   (cond
@@ -5117,7 +5208,8 @@
     [else
      (match verb
     ["" (text-result "Slog" '())]
-    [(or ":help" "help" "?") (text-result "Help" help-lines #:kind "help")]
+    [(or ":help" "help" "?")
+     (hash-set (text-result "Help" help-lines #:kind "help") 'commands command-inventory)]
     [(or ":ping" "ping")
      (text-result "Protocol"
                   (list "pong" "Racket server answered over private loopback TCP.")
@@ -5833,6 +5925,19 @@
   (check-not-false
    (member "  page POSITION N     select an absolute page in a buffered canvas collection"
            (hash-ref help-result 'lines)))
+  ;; The inventory covers every command the help names (but the terminal
+  ;; client's own), and is plain JSON.
+  (define inventory (hash-ref help-result 'commands))
+  (define inventory-names (append-map first inventory))
+  (define client-verbs
+    '(":quit" ":clear" ":share" ":theme" "expand" "collapse" "card" "search"
+      "search-next" "search-previous" "search-clear" "page" ";" "rule"))
+  (for* ([line (in-list help-lines)]
+         #:when (regexp-match? #px"^  [^ ?(]" line)
+         [verb (in-list (string-split (car (string-split line)) "|"))]
+         #:unless (member verb client-verbs))
+    (check-not-false (member verb inventory-names) verb))
+  (check-true (jsexpr? inventory))
   (check-equal? (hash-ref (dispatch-command state ":ping") 'kind) "status")
   (define library-result (dispatch-command state "library"))
   (check-equal? (hash-ref library-result 'kind) "library")
