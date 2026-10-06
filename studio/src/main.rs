@@ -66,17 +66,45 @@ fn options(args: impl IntoIterator<Item = String>) -> Result<Option<Options>, St
 fn program_file(file: Option<PathBuf>) -> Result<PathBuf, String> {
     let file = match file {
         Some(file) => file,
-        None => {
-            let home = std::env::var_os("SLOG_STUDIO_HOME")
-                .map(PathBuf::from)
-                .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".slog-studio")))
-                .ok_or("set HOME or SLOG_STUDIO_HOME")?;
-            std::fs::create_dir_all(&home)
-                .map_err(|error| format!("cannot create {}: {error}", home.display()))?;
-            home.join("scratch.slog")
-        }
+        None => studio_home()?.join("scratch.slog"),
     };
     std::path::absolute(&file).map_err(|error| format!("{}: {error}", file.display()))
+}
+
+/// Studio's own directory: `SLOG_STUDIO_HOME`, else `~/.slog-studio`.
+fn studio_home() -> Result<PathBuf, String> {
+    let home = std::env::var_os("SLOG_STUDIO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".slog-studio")))
+        .ok_or("set HOME or SLOG_STUDIO_HOME")?;
+    std::fs::create_dir_all(&home)
+        .map_err(|error| format!("cannot create {}: {error}", home.display()))?;
+    Ok(home)
+}
+
+/// The token that admits a browser tab. It is kept (readable only by this
+/// user) and reused, so a restarted studio keeps its address and an open
+/// tab simply reconnects.
+fn launch_token(home: &std::path::Path) -> Result<String, String> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = home.join("token");
+    if let Ok(token) = std::fs::read_to_string(&path)
+        && token.len() == 64
+        && token.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Ok(token);
+    }
+    let token = private_token().map_err(|error| format!("cannot create a token: {error}"))?;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&path)
+        .and_then(|mut file| file.write_all(token.as_bytes()))
+        .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
+    Ok(token)
 }
 
 #[tokio::main]
@@ -174,7 +202,7 @@ async fn serve(args: impl Iterator<Item = String>) -> Result<(), String> {
         .await
         .map_err(|error| format!("cannot listen on 127.0.0.1:{}: {error}", options.port))?;
     let address = listener.local_addr().map_err(|error| error.to_string())?;
-    let token = private_token().map_err(|error| format!("cannot create a token: {error}"))?;
+    let token = launch_token(&studio_home()?)?;
     let url = format!("http://{address}/#{token}");
     println!("Slog Studio: {url}");
     if options.open {

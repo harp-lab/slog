@@ -158,14 +158,23 @@ const receive = {
   },
 };
 
+// Consecutive connection attempts that never opened. A refused handshake
+// (a link from another launch's token) and a stopped server look the same
+// from here, so after a few the status says which to check.
+let failedAttempts = 0;
+
 function connect() {
   socket = new WebSocket(`ws://${location.host}/ws?token=${encodeURIComponent(token)}`);
-  socket.onopen = renderStatus;
+  socket.onopen = () => {
+    failedAttempts = 0;
+    renderStatus();
+  };
   socket.onmessage = (message) => {
     const data = JSON.parse(message.data);
     receive[data.t]?.(data);
   };
   socket.onclose = () => {
+    failedAttempts += 1;
     renderStatus();
     setTimeout(connect, 1000);
   };
@@ -277,7 +286,11 @@ function pill(id, text, dot = null, className = "") {
 
 function renderStatus() {
   const online = socket?.readyState === WebSocket.OPEN;
-  pill("connection", online ? "connected" : "reconnecting…", online ? "ok" : "bad");
+  pill("connection",
+    online ? "connected"
+      : failedAttempts >= 3 ? "not connected — is the studio running? A link from an earlier launch needs the address it printed"
+      : "reconnecting…",
+    online ? "ok" : "bad");
 
   const { state: lane, detail, starts, mode } = state.lane;
   const restarts = starts > 1 ? ` · restarted ${starts - 1}×` : "";
