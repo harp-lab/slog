@@ -5595,6 +5595,31 @@
       (when (directory-exists? "data/r3_clear_replay")
         (delete-directory/files "data/r3_clear_replay"))))
 
+  ;; L-01: saving an opened database back under its own name would write a
+  ;; recipe that opens itself.  The save refuses, and the database on disk
+  ;; still loads with its original contents.
+  (let ([transcript
+         (lambda (commands)
+           (parameterize ([current-directory repository-root]
+                          [current-environment-variables test-environment])
+             (plain-transcript commands)))])
+    (parameterize ([current-directory repository-root])
+      (when (directory-exists? "data/l01_own_base")
+        (delete-directory/files "data/l01_own_base")))
+    (check-regexp-match
+     #px"save l01_own_base\n! Command failed\n  session: refusing to save over l01_own_base: this session reads it as an input"
+     (transcript (list "run tests/reach.slog"
+                       "save l01_own_base"
+                       "open l01_own_base"
+                       "add edge 4 5"
+                       "save l01_own_base"
+                       ":quit")))
+    (check-regexp-match
+     #px"Opened l01_own_base(?s:.*)◆ Query count\n  6 rows match"
+     (transcript (list "open l01_own_base" "?count (path X Y)" ":quit")))
+    (parameterize ([current-directory repository-root])
+      (delete-directory/files "data/l01_own_base")))
+
   ;; tier visibility (R3 slice c): under forced interp every stratum sits
   ;; on the interpreter rung with its plan cached, deterministically;
   ;; `code` opens one stratum's card from the canonical plan sidecar.
