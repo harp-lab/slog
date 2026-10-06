@@ -80,6 +80,7 @@ fn asset(name: &str) -> Response {
         "graph.js" => (include_str!("../web/graph.js"), "text/javascript; charset=utf-8"),
         "inline-diff.js" => (include_str!("../web/inline-diff.js"), "text/javascript; charset=utf-8"),
         "changes.js" => (include_str!("../web/changes.js"), "text/javascript; charset=utf-8"),
+        "proposals.js" => (include_str!("../web/proposals.js"), "text/javascript; charset=utf-8"),
         "diff.css" => (include_str!("../web/diff.css"), "text/css; charset=utf-8"),
         "results.js" => (include_str!("../web/results.js"), "text/javascript; charset=utf-8"),
         "results.css" => (include_str!("../web/results.css"), "text/css; charset=utf-8"),

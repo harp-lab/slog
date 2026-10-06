@@ -1,12 +1,12 @@
-// The agent in the drawer: the Ask tab (threads, each a claude session the
-// author converses with) and the Review tab (what the agents propose, held
-// until the author accepts). Fed by `review` and `agent` events; a thread's
-// transcript is drawn by thread.js.
+// The agent in the drawer: the Ask tab, threads, each a claude session the
+// author converses with. Fed by `review` and `agent` events; a thread's
+// transcript is drawn by thread.js, and what the agents propose is reviewed
+// in the editor (proposals.js), a turn's proposals showing here as a chip.
 
 import { markdown } from "./markdown.js";
 import { activity, ago, duration, node, transcript } from "./thread.js";
 
-export function initAgent({ send, onPending }) {
+export function initAgent({ send, onPending, proposals }) {
   const state = {
     view: { threads: [], changesets: [], ops: [] },
     open: null,          // the thread shown, or null for the inbox
@@ -16,7 +16,6 @@ export function initAgent({ send, onPending }) {
     unavailable: null,
   };
   const ask = document.getElementById("ask-tab");
-  const review = document.getElementById("review-tab");
 
   // ---- Ask --------------------------------------------------------------
 
@@ -94,7 +93,7 @@ export function initAgent({ send, onPending }) {
       }
       list.append(...transcript(thread, {
         live: live(thread.id),
-        opCard,
+        proposals: proposals.chip,
         open: state.expanded,
         now: Date.now(),
       }));
@@ -112,7 +111,7 @@ export function initAgent({ send, onPending }) {
       if (!state.view.threads.length && !state.unavailable) {
         list.append(node("p", "empty",
           "Ask for something to build — a data type, a rule, an evaluator. Each request starts a thread; " +
-          "its changes arrive in Review for you to accept."));
+          "its changes show in the editor for you to accept or reject."));
       }
       const now = Date.now();
       for (const t of [...state.view.threads].sort((a, b) => lastAt(b) - lastAt(a))) list.append(threadItem(t, now));
@@ -135,7 +134,7 @@ export function initAgent({ send, onPending }) {
     const pending = pendingOf(t.id);
     if (pending) {
       const count = item.appendChild(node("span", "count", `${pending}`));
-      count.title = `${pending} proposal${pending === 1 ? "" : "s"} waiting in Review`;
+      count.title = `${pending} proposal${pending === 1 ? "" : "s"} waiting in the editor`;
     }
     item.addEventListener("click", () => { state.open = t.id; renderAsk(); });
     return item;
@@ -187,65 +186,14 @@ export function initAgent({ send, onPending }) {
   }, 1000);
   setInterval(() => { if (state.open === null) renderAsk(); }, 30000);
 
-  // ---- Review -----------------------------------------------------------
-
   function pendingOf(thread) {
     return state.view.ops.filter((op) => op.thread === thread && op.status === "pending").length;
   }
 
-  function renderReview() {
-    review.replaceChildren();
-    const ops = state.view.ops;
-    if (!ops.length) {
-      review.append(node("p", "hint", "Nothing proposed yet. What the agent proposes appears here for you to accept or reject."));
-    }
-    for (const changeset of [...state.view.changesets].reverse()) {
-      const mine = ops.filter((op) => op.changeset === changeset.id);
-      if (!mine.length) continue;
-      const section = review.appendChild(node("section", "changeset"));
-      const top = section.appendChild(node("div", "changeset-head"));
-      top.append(node("span", "changeset-title", changeset.title));
-      const pending = mine.filter((op) => op.status === "pending" && !op.stale && !op.conflicts.length);
-      if (pending.length > 1) {
-        const all = top.appendChild(node("button", "primary small", `Accept all ${pending.length}`));
-        all.addEventListener("click", () => send({ t: "accept-changeset", changeset: changeset.id }));
-      }
-      for (const op of mine) section.append(renderOp(op));
-    }
-  }
-
-  // An op's card in the transcript of the thread that proposed it.
-  function opCard(id) {
-    const op = state.view.ops.find((op) => op.id === id);
-    return op ? renderOp(op, true) : null;
-  }
-
-  function renderOp(op, inline = false) {
-    const card = node("div", `op ${op.status}${inline ? " inline" : ""}`);
-    const top = card.appendChild(node("div", "op-head"));
-    top.append(node("span", "op-kind", op.kind === "append" ? "add forms" : "edit"));
-    top.append(node("span", "op-id", `#${op.id}`));
-    const flag = op.status !== "pending" ? op.status
-      : op.conflicts.length ? `conflicts with ${op.conflicts.map((id) => `#${id}`).join(", ")}`
-      : op.stale ? "no longer applies" : "";
-    if (flag) top.append(node("span", `op-flag ${op.status === "pending" ? "warn" : op.status}`, flag));
-    if (op.note) card.append(node("div", "op-note", op.note));
-    card.append(renderDiff(op.kind === "append" ? "" : op.old, op.kind === "append" ? op.source : op.new));
-    if (op.status === "pending") {
-      const actions = card.appendChild(node("div", "op-actions"));
-      const accept = actions.appendChild(node("button", "primary small", "Accept"));
-      accept.disabled = op.stale || op.conflicts.length > 0;
-      accept.addEventListener("click", () => send({ t: "accept", op: op.id }));
-      const reject = actions.appendChild(node("button", "secondary small", "Reject"));
-      reject.addEventListener("click", () => send({ t: "reject", op: op.id }));
-    }
-    return card;
-  }
-
   function changed(view) {
     state.view = view;
+    proposals.update(view);
     renderAsk();
-    renderReview();
     onPending(view.ops.filter((op) => op.status === "pending").length);
   }
 
@@ -284,28 +232,4 @@ export function initAgent({ send, onPending }) {
       renderAsk();
     },
   };
-}
-
-// A line diff of two texts: the longest common subsequence of lines, with
-// removed lines marked `-` and added ones `+`. Proposals are form-sized,
-// so the quadratic table stays small.
-function renderDiff(before, after) {
-  const a = before ? before.split("\n") : [];
-  const b = after.split("\n");
-  const lengths = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
-  for (let i = a.length - 1; i >= 0; i--) {
-    for (let j = b.length - 1; j >= 0; j--) {
-      lengths[i][j] = a[i] === b[j] ? lengths[i + 1][j + 1] + 1 : Math.max(lengths[i + 1][j], lengths[i][j + 1]);
-    }
-  }
-  const out = node("pre", "diff");
-  const line = (className, prefix, text) => out.append(node("div", className, `${prefix} ${text}`));
-  let i = 0;
-  let j = 0;
-  while (i < a.length || j < b.length) {
-    if (i < a.length && j < b.length && a[i] === b[j]) { line("same", " ", a[i]); i++; j++; }
-    else if (j < b.length && (i === a.length || lengths[i][j + 1] >= lengths[i + 1][j])) { line("add", "+", b[j]); j++; }
-    else { line("del", "-", a[i]); i++; }
-  }
-  return out;
 }

@@ -1,7 +1,7 @@
 // One Ask thread's transcript, as the drawer shows it: the author's
 // requests, the agent's replies (Markdown), its thoughts, its tool calls as
-// quiet rows grouped when consecutive, its proposals as cards, its notes,
-// its plan as a checklist, and each turn's closing line.
+// quiet rows grouped when consecutive, a turn's proposals as one chip, its
+// notes, its plan as a checklist, and each turn's closing line.
 //
 // Entries come from the server (`review.rs` Message); a running turn adds
 // what is still streaming: the thought in progress, the reply's draft, and
@@ -140,8 +140,9 @@ export function ago(at, now) {
 const PLAN_MARK = { completed: "✓", in_progress: "›", pending: "" };
 const SPECIAL = new Set(["propose_edit", "propose_append", "record_note"]);
 
-// The transcript of `thread` as nodes. `ctx`: { live, opCard(id) -> node or
-// null, open: Map key -> whether a row or group is expanded, now }.
+// The transcript of `thread` as nodes. `ctx`: { live, proposals(ids) -> a
+// node for those proposals or null, open: Map key -> whether a row or group
+// is expanded, now }.
 export function transcript(thread, ctx) {
   const out = [];
   const turns = [];
@@ -176,9 +177,14 @@ function turn(thread, entries, ctx, running) {
     else if (isActivity) flow.push([entry]);
     else flow.push(entry);
   }
+  // the turn's proposals, as one chip where the first was made
+  const proposed = rest.map(({ message }) => message.role === "tool" && message.data?.op).filter(Boolean);
+  const chip = proposed.length ? ctx.proposals(proposed) : null;
   flow.forEach((item, i) => {
     if (Array.isArray(item)) section.append(...activityRun(thread, item, ctx, running && i === flow.length - 1));
-    else section.append(entryNode(thread, item, ctx, running));
+    else if (chip && item.message.data?.op) {
+      if (item.message.data.op === proposed[0]) section.append(chip);
+    } else section.append(entryNode(thread, item, ctx, running));
   });
   if (running) section.append(...liveNodes(thread, ctx));
   return section;
@@ -217,7 +223,6 @@ function entryNode(thread, { index, message }, ctx, running) {
     case "thinking": return thought(text, data?.ms ?? 0, `${thread.id}:${index}`, ctx);
     case "tool":
       if (data?.name === "record_note") return noteCard(data.input ?? {});
-      if (data?.op) return ctx.opCard(data.op) ?? toolRow(thread, index, data, ctx, running);
       return toolRow(thread, index, data ?? {}, ctx, running);
     case "error": return node("div", "msg error", text);
     case "notice": return node("div", "msg notice", text);

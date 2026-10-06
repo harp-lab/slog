@@ -33,7 +33,7 @@
          the command palette (palette.js); Review shows while proposals wait. -->
     <div class="group" role="group" aria-label="Panels">
       <button class="panel-toggle ask" data-tab="ask" aria-pressed="false" title="Ask the agent to build or change the program">✦ Ask</button>
-      <button id="review-toggle" class="panel-toggle" data-tab="review" aria-pressed="false" title="Proposals waiting for you to accept or reject" hidden>
+      <button id="review-toggle" class="panel-toggle" data-tab="review" aria-pressed="false" title="Proposals: each one shows in the editor, where you accept or reject it" hidden>
         Review <span id="pending" class="count" hidden></span>
       </button>
       <button id="commands" class="icon" aria-label="Commands">⋯</button>
@@ -55,6 +55,7 @@
       <div id="tabs"></div>
       <button id="history-chip" hidden aria-pressed="false"></button>
     </div>
+    <div id="proposals" class="proposal-bar" hidden></div>
     <div id="editor"></div>
     <div id="viewer" hidden></div>
     <div id="timeline" hidden>

@@ -10,6 +10,7 @@ import { createHistory } from "./history.js";
 import { createHints } from "./hints.js";
 import { createPalette } from "./palette.js";
 import { createChangePanel } from "./changes.js";
+import { createProposals } from "./proposals.js";
 import { renderEntry } from "./render.js";
 import { createSummary } from "./summary.js";
 import * as structure from "./paredit.js";
@@ -61,15 +62,19 @@ const files = createFiles({
     // The summary's notes and findings belong on the main file.
     summary.show();
     versions.opened();
+    proposals.refresh();
   },
   onSaved: () => summary.refresh(),
 });
 // Every message goes behind the edits already made, so it sees them.
 const send = files.send;
-// The change graph and the history strip show only when asked for or when
-// they matter.
+// Proposals are reviewed in the editor; the change graph and the history
+// strip show only when asked for or when they matter.
 const changes = createChangePanel($("work"));
 const versions = createHistory({ send, files, changes });
+const proposals = createProposals({
+  editor, files, send, changes, history: versions, bar: $("proposals"), list: $("review-tab"),
+});
 const results = createResults({
   tabs: $("result-tabs"),
   panel: $("results"),
@@ -449,6 +454,7 @@ function renderReview() {
 
 const agent = initAgent({
   send,
+  proposals,
   onPending(count) {
     pending = count;
     renderReview();
