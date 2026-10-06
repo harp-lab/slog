@@ -275,6 +275,8 @@ main { flex: 1; display: flex; min-height: 0; }
 
 /* A form's one-liner, after its first line in the editor. */
 .form-note { color: var(--muted) !important; font-style: italic; font-family: var(--sans); font-size: 12px; opacity: 0.85; }
+.form-note.far { opacity: 0.45; }
+.line-keys { color: var(--blue) !important; font-family: var(--sans); font-size: 11px; opacity: 0.8; }
 
 /* ---- Panels: Ask, Review, Scenarios ------------------------------------ */
 

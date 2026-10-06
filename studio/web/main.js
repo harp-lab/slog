@@ -45,6 +45,14 @@ const editor = await createEditor($("editor"), {
     const form = formAt(forms(editor.get()), line);
     return form?.keyword === "rule" ? form.line : null;
   },
+  keysAt: (line) => {
+    const form = formAt(forms(editor.get()), line);
+    const keys = ["⌘↵ run", "⌘S save"];
+    if (form?.keyword === "rule") {
+      keys.push(editor.breakpoints().includes(form.line) ? "Debug stops here" : "click the margin to break here");
+    }
+    return keys.join(" · ");
+  },
 });
 
 const summary = createSummary($("summary"), {
@@ -418,23 +426,40 @@ const agent = initAgent({
   },
 });
 
-// Hints (key bindings, placeholders, empty-panel notes) stay out of the way
-// until asked for: Alt+H toggles them, and the choice is remembered here.
-const hintsKey = "slog-studio.hints";
-function showHints(on) {
+// Hints (key bindings, placeholders, empty-panel notes, the summary's note
+// for the form at the cursor) show only while Alt+H is held. A tap locks
+// them on, like caps lock, and the next tap releases them.
+const TAP_MS = 300;
+const hints = { locked: false, held: null };  // held: when the press began
+function renderHints() {
+  const on = hints.locked || hints.held !== null;
   document.body.classList.toggle("hints", on);
-  $("hints").textContent = on ? "Alt+H hides hints" : "Alt+H for hints";
-  try { localStorage.setItem(hintsKey, on ? "1" : ""); } catch {}
+  editor.hints(on);
+  $("hints").textContent = hints.locked ? "hints locked · Alt+H" : "Alt+H for hints";
 }
-try { showHints(localStorage.getItem(hintsKey) === "1"); } catch { showHints(false); }
-$("hints").addEventListener("click", () => showHints(!document.body.classList.contains("hints")));
+function release() {
+  if (hints.held === null) return;
+  if (performance.now() - hints.held < TAP_MS) hints.locked = true;
+  hints.held = null;
+  renderHints();
+}
 // `code`, not `key`: on a Mac, Option+H types a character.
+const isHintKey = (event) => event.altKey && !event.ctrlKey && !event.metaKey && event.code === "KeyH";
 addEventListener("keydown", (event) => {
-  if (!event.altKey || event.ctrlKey || event.metaKey || event.code !== "KeyH") return;
+  if (!isHintKey(event)) return;
   event.preventDefault();
   event.stopPropagation();
-  showHints(!document.body.classList.contains("hints"));
+  if (event.repeat) return;
+  if (hints.locked) hints.locked = false;
+  else hints.held = performance.now();
+  renderHints();
 }, true);
+addEventListener("keyup", (event) => {
+  if (event.code === "KeyH" || event.key === "Alt") release();
+}, true);
+addEventListener("blur", () => { hints.held = null; renderHints(); });
+$("hints").addEventListener("click", () => { hints.locked = !hints.locked; renderHints(); });
+renderHints();
 
 // Layout -----------------------------------------------------------------
 

@@ -4,10 +4,13 @@
 //   mark(span, message)     underline a 1-based position, or clear with null
 //   reveal(span)            put the cursor at a position
 //   setBreakpoints(lines)   show breakpoint dots on these 1-based lines
-//   notes(notes)            show each { line, text } at the end of its line
+//   breakpoints()           the lines with a dot
+//   notes(notes)            hold each { line, text }, a hint for its line
+//   hints(on)               show the hints near the cursor, or none
 //   findings(findings)      mark each { line, severity, message } (analyzer)
 // `onBreakpoints(lines)` fires when a margin click or an edit changes them;
-// `snapBreakpoint(line)` says which line a click on `line` marks, or null.
+// `snapBreakpoint(line)` says which line a click on `line` marks, or null;
+// `keysAt(line)` names what the keys do there, shown with the hints.
 
 const MONACO = "https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs";
 
@@ -57,7 +60,7 @@ const SLOG = {
   },
 };
 
-function monacoEditor(monaco, element, { onChange, onEvaluate, onSave, onBreakpoints, snapBreakpoint }) {
+function monacoEditor(monaco, element, { onChange, onEvaluate, onSave, onBreakpoints, snapBreakpoint, keysAt }) {
   monaco.languages.register({ id: "slog" });
   monaco.languages.setMonarchTokensProvider("slog", SLOG);
   monaco.languages.setLanguageConfiguration("slog", {
@@ -99,8 +102,31 @@ function monacoEditor(monaco, element, { onChange, onEvaluate, onSave, onBreakpo
   });
   const model = editor.getModel();
   let quiet = false;
-  // The summary's one-liner per form, decorations so they move with the text.
+  // The summary's one-liner per form, decorations so they move with the
+  // text. Only those nearest the cursor show, and only while hints do: the
+  // note of the cursor's form, fainter the ones before and after it.
   const notes = editor.createDecorationsCollection([]);
+  let noteTexts = [];
+  let hinting = false;
+  const keys = editor.createDecorationsCollection([]);
+  const showNotes = () => {
+    const ranges = notes.getRanges();
+    const cursor = editor.getPosition()?.lineNumber ?? 1;
+    const here = ranges.findLastIndex((range) => range.startLineNumber <= cursor);
+    notes.set(ranges.map((range, i) => {
+      const near = hinting && Math.abs(i - here) <= 1;
+      return {
+        range,
+        options: near ? { after: { content: `   ${noteTexts[i]}`, inlineClassName: i === here ? "form-note" : "form-note far" } } : {},
+      };
+    }));
+    const text = hinting ? keysAt(cursor) : "";
+    keys.set(text ? [{
+      range: new monaco.Range(cursor, 1, cursor, model.getLineMaxColumn(cursor)),
+      options: { after: { content: `   ${text}`, inlineClassName: "line-keys" } },
+    }] : []);
+  };
+  editor.onDidChangeCursorPosition(() => { if (hinting) showNotes(); });
 
   // Breakpoints are decorations, so they move with the text they mark.
   const dots = editor.createDecorationsCollection([]);
@@ -150,6 +176,7 @@ function monacoEditor(monaco, element, { onChange, onEvaluate, onSave, onBreakpo
       showDots(lines.filter((line) => line <= model.getLineCount()));
       // Notes and findings cannot be mapped onto a replaced text.
       notes.clear();
+      noteTexts = [];
       monaco.editor.setModelMarkers(model, "analyzer", []);
       quiet = false;
       if (selection) editor.setSelection(selection);
@@ -170,19 +197,22 @@ function monacoEditor(monaco, element, { onChange, onEvaluate, onSave, onBreakpo
       editor.setPosition({ lineNumber: span.line, column: span.col });
       editor.focus();
     },
+    breakpoints: dotLines,
     setBreakpoints(lines) {
       reported = JSON.stringify([...lines].sort((a, b) => a - b));
       showDots(lines);
     },
     notes(list) {
-      notes.set(list.filter(({ line }) => line <= model.getLineCount()).map(({ line, text }) => {
-        // The whole line, not an empty range at its end: a collapsed
-        // decoration shows no injected text.
-        return {
-          range: new monaco.Range(line, 1, line, model.getLineMaxColumn(line)),
-          options: { after: { content: `   ${text}`, inlineClassName: "form-note" } },
-        };
-      }));
+      const kept = list.filter(({ line }) => line <= model.getLineCount()).sort((a, b) => a.line - b.line);
+      noteTexts = kept.map(({ text }) => text);
+      // The whole line, not an empty range at its end: a collapsed
+      // decoration shows no injected text.
+      notes.set(kept.map(({ line }) => ({ range: new monaco.Range(line, 1, line, model.getLineMaxColumn(line)), options: {} })));
+      showNotes();
+    },
+    hints(on) {
+      hinting = on;
+      showNotes();
     },
     findings(list) {
       const severity = { error: "Error", warning: "Warning", info: "Info" };
@@ -231,7 +261,9 @@ function textareaEditor(element, { onChange, onEvaluate, onSave }) {
       area.setSelectionRange(offset(span), offset(span) + 1);
     },
     setBreakpoints() {},
+    breakpoints: () => [],
     notes() {},
+    hints() {},
     findings() {},
   };
 }
