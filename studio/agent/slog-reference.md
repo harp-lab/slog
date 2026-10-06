@@ -20,7 +20,9 @@ need something not covered here, use `search_docs` / `read_doc` /
 3. **Every head variable must be bound by the body** (or computed with `=`).
    Never put `_` in a head. Facts must be ground.
 4. **Negation `~(rel ...)` needs every variable already bound** by an earlier
-   positive clause, and cannot be part of a recursive cycle.
+   positive clause, and cannot be part of a recursive cycle. Only variables,
+   constants and `_` may appear under `~`: no constructor patterns such as
+   `~(holds X (pos))` (section 5 shows the helper relation to use instead).
 5. **Arithmetic is prefix:** `(+ A B)`, never `A + B`. Bind results with
    `(= V (+ A B))` or nest the call where a value goes.
 6. **Comparisons are guards**: `(< A B)`, `(/= A B)` filter; they never bind.
@@ -352,6 +354,22 @@ table (reach int int)
 rule (edge 1 2) (edge 2 3) (edge 3 4) (edge 2 5) (blocked 3)
 rule (edge X Y) ~(blocked Y) --> (reach X Y)
 rule (reach X Y) (edge Y Z) ~(blocked Z) --> (reach X Z)
+```
+
+Only **variables, constants and `_`** may appear under `~`: never a
+constructor pattern such as `~(holds X (pos))`, nor any nested term. To ask
+"no row with that shape", derive a helper relation over plain values with a
+positive rule, then negate the helper:
+
+```slog
+union (anum (zero) (pos))
+table (var int)
+table (holds int anum)
+table (holds_pos int)
+table (never_pos int)
+rule (var 1) (var 2) (holds 1 (zero)) (holds 2 (pos))
+rule (holds X (pos)) --> (holds_pos X)
+rule (var X) ~(holds_pos X) --> (never_pos X)
 ```
 
 Universal statements ("every predecessor ...", "no path avoids ...") become
@@ -892,6 +910,21 @@ rule (node X) ~(edge Y Z) --> (sink X)
 
 Bind the variables first, or use `_` for "any value": in a rule,
 `~(edge X _)` is accepted (in a `?` query it is not).
+
+### A constructor under `~`
+
+```slog-error
+;; error: only variables, constants, and `_` wildcards may appear under ~
+union (anum (zero) (pos))
+table (var int)
+table (holds int anum)
+table (never_pos int)
+rule (var 1) (holds 1 (zero))
+rule (var X) ~(holds X (pos)) --> (never_pos X)
+```
+
+Derive a helper relation positively, `rule (holds X (pos)) --> (holds_pos X)`,
+and negate that: `~(holds_pos X)` (section 5).
 
 ### Negation through recursion
 

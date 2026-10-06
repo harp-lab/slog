@@ -128,6 +128,7 @@ impl Registry {
         }
         studio.relay_lane();
         studio.watch_edits();
+        studio.watch_proposals();
         let tabs = Arc::downgrade(&studio);
         let config = summary::Config::from_env(&self.data, &studio.main_file().0);
         studio.attach_summarizer(Summarizer::start(config, move |view| {

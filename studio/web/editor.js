@@ -15,6 +15,11 @@
 //   onMove(listener)        call listener when the cursor, the scroll or the notes change
 //   focus()                 put the keyboard here
 //   findings(findings)      mark each { line, severity, message } (analyzer)
+//   diagnostics(key, list)  mark document `key`'s static-check diagnostics,
+//                           each { line, col, severity, message, located }
+//   keyOf(model), keyOfUri(uri), uriOf(key)
+//                           a document's key and its model's URI, for the
+//                           providers that point into documents (check.js)
 //   highlight(ranges)       shade these [{ from, to }] line ranges (trace.js:
 //                           the rules that fired), or none
 // `readOnly: true` makes an editor for looking only. `raw` is { monaco,
@@ -126,6 +131,11 @@ function monacoEditor(monaco, element, { onChange, onEvaluate, onSave, readOnly 
 
   const fired = editor.createDecorationsCollection([]);
   const replaced = new Set();
+  // A document's model is named by its key, so a definition can point
+  // into another file. (Only the program's editor: a model's name is
+  // global, and a viewer shows the same files.)
+  const uriOf = (key) => (readOnly ? undefined : monaco.Uri.from({ scheme: "studio", path: `/${key}` }));
+  const keyOfUri = (uri) => (uri?.scheme === "studio" ? uri.path.slice(1) : null);
 
   editor.onDidChangeModelContent(() => {
     if (quiet) return;
@@ -140,7 +150,7 @@ function monacoEditor(monaco, element, { onChange, onEvaluate, onSave, readOnly 
     show(key, text) {
       if (key !== shown) {
         if (documents.has(shown)) documents.get(shown).view = editor.saveViewState();
-        if (!documents.has(key)) documents.set(key, { model: monaco.editor.createModel(text, "slog"), view: null });
+        if (!documents.has(key)) documents.set(key, { model: monaco.editor.createModel(text, "slog", uriOf(key)), view: null });
         const { model, view } = documents.get(key);
         quiet = true;
         editor.setModel(model);
@@ -226,6 +236,29 @@ function monacoEditor(monaco, element, { onChange, onEvaluate, onSave, readOnly 
           source: "analyzer",
         })));
     },
+    diagnostics(key, list) {
+      const model = documents.get(key)?.model;
+      if (!model) return;
+      const severity = { error: "Error", warning: "Warning" };
+      const lines = model.getLineCount();
+      monaco.editor.setModelMarkers(model, "check", list.map(({ line, col, severity: level, message, located }) => {
+        const at = Math.min(Math.max(line, 1), lines);
+        const word = located && model.getWordAtPosition({ lineNumber: at, column: col });
+        return {
+          startLineNumber: at,
+          startColumn: located ? col : 1,
+          endLineNumber: at,
+          // the word there, else the bracket or character there
+          endColumn: located ? (word?.endColumn ?? col + 1) : model.getLineMaxColumn(at),
+          message,
+          severity: monaco.MarkerSeverity[severity[level] ?? "Error"],
+          source: "check",
+        };
+      }));
+    },
+    keyOf: (model) => keyOfUri(model?.uri),
+    keyOfUri,
+    uriOf,
     highlight(ranges) {
       fired.set(ranges.map(({ from, to }) => ({
         range: new monaco.Range(from, 1, to, 1),

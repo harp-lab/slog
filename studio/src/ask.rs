@@ -1,9 +1,21 @@
 //! The studio's side of the agent: threads, the tools mcp.rs exposes, and
 //! the author's accept and reject. Agents never touch the author's session:
 //! a thread's proposed program is evaluated on the preview lane.
+//!
+//! No agent-written code reaches the author without passing the static
+//! check (check.rs), at three gates:
+//! - a proposal is refused, with the located errors as the tool's answer,
+//!   unless the thread's program as it would leave it checks; a batch
+//!   (`propose_changes`) is checked as a whole, for edits that only check
+//!   together;
+//! - accepting an op checks the text accepting it makes, taking along the
+//!   earlier ops of its thread it builds on, and is refused if that fails;
+//!   each pending op's acceptance is kept current for the Accept controls;
+//! - a turn may not end with its program failing, or unevaluated
+//!   (`turn_gate`, which agent.rs asks before it lets a turn end).
 
 use crate::agent::{self, Agent};
-use crate::review::{Change, Message, Note, Status, now};
+use crate::review::{Acceptance, Change, Message, Note, ReviewView, Status, apply, now};
 use crate::lane::Lane;
 use crate::session::{Outcome, Session, run_argument};
 use crate::studio::{Event, Studio};
@@ -85,6 +97,35 @@ impl Studio {
         }
     }
 
+    /// Why `thread`'s turn may not end yet, as a message the agent is
+    /// resumed with: its program fails the static check, or was changed
+    /// after its last evaluation, or that evaluation failed. None when the
+    /// turn proposed nothing pending or all is well.
+    pub(crate) async fn turn_gate(&self, thread: u32) -> Option<String> {
+        let text = self.text();
+        let fork = self.review.lock().expect("review lock").fork(&text, thread);
+        if fork == text {
+            return None;
+        }
+        let report = self.check_main(&fork).await;
+        if !report.ok {
+            let (main, _) = self.main_file();
+            return Some(format!(
+                "Before you finish: the program as your pending proposals leave it fails the static check:\n{}\nFix them (propose_edit on your proposed text corrects that proposal), then evaluate_proposal.",
+                report.describe(&main)
+            ));
+        }
+        match self.evaluated.lock().expect("evaluated lock").get(&thread) {
+            Some((hash, true)) if *hash == self::hash(&fork) => None,
+            Some((hash, false)) if *hash == self::hash(&fork) => Some(
+                "Before you finish: your last evaluate_proposal failed. Fix the proposals until it passes.".to_owned(),
+            ),
+            _ => Some(
+                "Before you finish: your proposals changed after your last evaluate_proposal (or you have not run it). Run evaluate_proposal now, and fix what it reports.".to_owned(),
+            ),
+        }
+    }
+
     pub(crate) fn finish_turn(&self, thread: u32) {
         if let Some(entry) = self.review.lock().expect("review lock").thread_mut(thread) {
             entry.running = false;
@@ -94,10 +135,112 @@ impl Studio {
 
     /// Show every tab the review as it stands, and keep it.
     pub(crate) fn publish_review(&self) {
-        let text = self.text();
-        let view = self.review.lock().expect("review lock").view(&text);
-        self.publish(Event::Review(view));
+        self.publish(Event::Review(self.review_view()));
         self.keep_review();
+        self.review_changed.notify_one();
+    }
+
+    /// The review as tabs see it: each pending op with what accepting it
+    /// would take, when that has been checked against the text as it is.
+    pub(crate) fn review_view(&self) -> ReviewView {
+        let text = self.text();
+        let review = self.review.lock().expect("review lock");
+        let mut view = review.view(&text);
+        let kept = self.acceptances.lock().expect("acceptances lock");
+        for op in &mut view.ops {
+            op.check = kept
+                .get(&op.op.id)
+                .filter(|(key, _)| *key == acceptance_key(&text, &review, op.op.id))
+                .map(|(_, check)| check.clone());
+        }
+        view
+    }
+
+    /// Keep each pending op's acceptance current: checked again whenever the
+    /// review or the program changes, and shown to every tab.
+    pub fn watch_proposals(self: &Arc<Self>) {
+        let studio = Arc::downgrade(self);
+        let changed = self.review_changed.clone();
+        tokio::spawn(async move {
+            loop {
+                changed.notified().await;
+                let Some(studio) = studio.upgrade() else { return };
+                if studio.refresh_acceptances().await {
+                    studio.publish(Event::Review(studio.review_view()));
+                }
+            }
+        });
+    }
+
+    /// Check the pending ops whose acceptance is not known for the text as
+    /// it is; whether any was.
+    async fn refresh_acceptances(&self) -> bool {
+        let text = self.text();
+        let pending: Vec<(u32, u64)> = {
+            let review = self.review.lock().expect("review lock");
+            review
+                .view(&text)
+                .ops
+                .iter()
+                .filter(|op| op.op.status == Status::Pending)
+                .map(|op| (op.op.id, acceptance_key(&text, &review, op.op.id)))
+                .collect()
+        };
+        let mut checked = false;
+        for (id, key) in pending {
+            let known = self.acceptances.lock().expect("acceptances lock").get(&id).is_some_and(|(k, _)| *k == key);
+            if !known {
+                let check = self.acceptance(&text, id).await;
+                self.acceptances.lock().expect("acceptances lock").insert(id, (key, check));
+                checked = true;
+            }
+        }
+        checked
+    }
+
+    /// What accepting pending op `id` into the main file's `text` would
+    /// take: the op alone if the result checks, else with the fewest
+    /// earlier ops of its thread that make it check.
+    pub(crate) async fn acceptance(&self, text: &str, id: u32) -> Acceptance {
+        let Some((change, before)) = self.review.lock().expect("review lock").chain(id) else {
+            return Acceptance { reason: format!("#{id} is not pending"), ..Acceptance::default() };
+        };
+        let (main, _) = self.main_file();
+        let made = |with: &[(u32, Change)]| {
+            with.iter()
+                .map(|(_, change)| change)
+                .chain(std::iter::once(&change))
+                .try_fold(text.to_owned(), |text, change| apply(&text, change).ok())
+        };
+        let mut failure = None;
+        if let Some(alone) = made(&[]) {
+            let report = self.check_main(&alone).await;
+            if report.ok {
+                return Acceptance { ok: true, ..Acceptance::default() };
+            }
+            failure = Some(report.describe(&main));
+        }
+        if let Some(all) = made(&before)
+            && !before.is_empty()
+            && self.check_main(&all).await.ok
+        {
+            let mut needed = before;
+            for index in (0..needed.len()).rev() {
+                let mut fewer = needed.clone();
+                fewer.remove(index);
+                if let Some(fewer_text) = made(&fewer)
+                    && self.check_main(&fewer_text).await.ok
+                {
+                    needed = fewer;
+                }
+            }
+            return Acceptance { ok: true, with: needed.iter().map(|(id, _)| *id).collect(), reason: String::new() };
+        }
+        let reason = match failure {
+            Some(errors) => format!("accepting it leaves the program failing the check:\n{errors}"),
+            None => "it builds on earlier proposals of its thread that no longer apply".to_owned(),
+        };
+        Acceptance { ok: false, with: Vec::new(), reason }
     }
 
     /// The main file's working text: the program agents read and change.
@@ -121,12 +264,42 @@ impl Studio {
         })
     }
 
-    pub(crate) fn propose(&self, thread: u32, change: Change, note: String) -> Result<Value, String> {
+    /// Propose `changes`, made in order, if the thread's program as they
+    /// leave it passes the static check; else refuse them with its errors.
+    pub(crate) async fn propose(&self, thread: u32, changes: Vec<Change>, note: String) -> Result<Value, String> {
         let text = self.text();
-        let id = self.review.lock().expect("review lock").propose(&text, thread, change, note)?;
+        let fork = self.review.lock().expect("review lock").fork(&text, thread);
+        let count = changes.len();
+        let after = changes.iter().enumerate().try_fold(fork.clone(), |after, (index, change)| {
+            apply(&after, change).map_err(|why| if count == 1 { why } else { format!("change {} of {count}: {why}", index + 1) })
+        })?;
+        let report = self.check_main(&after).await;
+        if !report.ok {
+            let (main, _) = self.main_file();
+            let also = if self.check_main(&fork).await.ok {
+                ""
+            } else {
+                "\nThe program fails the check without this change too: fix those errors as well."
+            };
+            return Err(format!(
+                "Refused: the program as this would leave it fails the static check, so nothing was proposed. Fix it and propose again (lines are those of get_program's text with the change made; propose_changes takes edits that only check together):\n{}{also}",
+                report.describe(&main)
+            ));
+        }
+        let mut review = self.review.lock().expect("review lock");
+        let mut ids: Vec<u32> = Vec::new();
+        for change in changes {
+            let id = review.propose(&text, thread, change, note.clone())?;
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+        drop(review);
         self.publish_review();
         Ok(json!({
-            "proposed": id,
+            "proposed": ids[0],
+            "ops": ids,
+            "checks": "the program as your proposals leave it passes the static check (parse, types, negation, strata)",
             "message": "queued for the author to accept or reject; nothing changed yet. evaluate_proposal runs the program as your proposals would leave it.",
         }))
     }
@@ -161,6 +334,7 @@ impl Studio {
         let (session, loaded) = &mut *preview;
         let (outcomes, ok, hash) = self.evaluate_fork_in(&self.preview, session, thread, &[]).await;
         *loaded = ok.then_some((thread, hash));
+        self.evaluated.lock().expect("evaluated lock").insert(thread, (hash, ok));
         fork_report(&outcomes, ok)
     }
 
@@ -239,12 +413,36 @@ impl Studio {
 
     // ---- the author's decisions ----------------------------------------
 
-    /// Apply op `op` to the main file, as a version labelled with the
-    /// request that proposed it.
-    pub fn accept(&self, op: u32) -> Result<(), String> {
-        let request = self.review.lock().expect("review lock").request_of(op);
+    /// Accept the ops `ids`, with the earlier ops of their threads they
+    /// build on, as one version labelled with the request that proposed
+    /// them -- if the program they leave passes the static check.
+    pub async fn accept(&self, ids: &[u32]) -> Result<(), String> {
+        let text = self.text();
+        let mut all: Vec<u32> = Vec::new();
+        for &id in ids {
+            let check = self.acceptance(&text, id).await;
+            if !check.ok {
+                return Err(format!("#{id} cannot be accepted: {}", check.reason));
+            }
+            all.extend(check.with);
+            all.push(id);
+        }
+        all.sort_unstable();
+        all.dedup();
+        // The check of the whole, made as accepting will make it.
+        let made = {
+            let mut review = self.review.lock().expect("review lock").clone_for_check();
+            all.iter().try_fold(text.clone(), |text, id| review.accept(&text, *id))?
+        };
+        let report = self.check_main(&made).await;
+        if !report.ok {
+            let (main, _) = self.main_file();
+            return Err(format!("accepting {} leaves the program failing the check:\n{}", ids_of(&all), report.describe(&main)));
+        }
+        let request = self.review.lock().expect("review lock").request_of(all[0]);
         self.record_version(Made::Accept, request, |files, main| {
-            let updated = self.review.lock().expect("review lock").accept(&files[main], op)?;
+            let mut review = self.review.lock().expect("review lock");
+            let updated = all.iter().try_fold(files[main].clone(), |text, id| review.accept(&text, *id))?;
             files.insert(main.to_owned(), updated);
             Ok(())
         })?;
@@ -258,21 +456,24 @@ impl Studio {
         Ok(())
     }
 
-    /// Accept every pending op of a changeset in order; ones that no longer
-    /// apply or conflict stay pending and are reported.
-    pub fn accept_changeset(&self, changeset: u32) -> Vec<String> {
-        let ids: Vec<u32> = {
-            let review = self.review.lock().expect("review lock");
-            review
-                .view(&self.text())
-                .ops
-                .into_iter()
-                .filter(|op| op.op.changeset == changeset && op.op.status == Status::Pending)
-                .map(|op| op.op.id)
-                .collect()
-        };
-        ids.into_iter().filter_map(|id| self.accept(id).err()).collect()
+    /// Accept every pending op of a changeset, as one version.
+    pub async fn accept_changeset(&self, changeset: u32) -> Result<(), String> {
+        let ids = self.review.lock().expect("review lock").pending_of(changeset);
+        if ids.is_empty() {
+            return Err("nothing of it is pending".to_owned());
+        }
+        self.accept(&ids).await
     }
+}
+
+/// Identifies what op `id`'s acceptance was checked against: the text, and
+/// the op and its thread's earlier pending ops.
+fn acceptance_key(text: &str, review: &crate::review::Review, id: u32) -> u64 {
+    hash(&format!("{text}\u{0}{:?}", review.chain(id)))
+}
+
+fn ids_of(ids: &[u32]) -> String {
+    ids.iter().map(|id| format!("#{id}")).collect::<Vec<_>>().join(", ")
 }
 
 /// What an agent learns from evaluating its proposed program.
@@ -302,4 +503,60 @@ pub(crate) fn fork_report(outcomes: &[Outcome], ok: bool) -> Value {
 fn hash(text: &str) -> u64 {
     text.bytes()
         .fold(0xcbf2_9ce4_8422_2325, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::lane::Mode;
+    use crate::review::Change;
+    use crate::store::tests::Scratch;
+    use crate::studio::tests::studio;
+
+    fn append(source: &str) -> Change {
+        Change::Append { source: source.to_owned() }
+    }
+
+    /// What reaches the author checks: a proposal that would leave the
+    /// program failing is refused with its located error; changes that only
+    /// check together go in as a batch; accepting one of them takes along
+    /// the one it builds on; and an accept that would leave the program
+    /// failing is refused.
+    #[tokio::test]
+    async fn only_code_that_checks_reaches_the_author() {
+        let scratch = Scratch::new("ask-checks");
+        let studio = studio(&scratch, Mode::Fast, "table (edge int int)\nrule (edge 1 2)\n");
+        let thread = {
+            let mut review = studio.review.lock().unwrap();
+            let thread = review.new_thread("t".into());
+            review.open_changeset(thread, "t".into());
+            thread
+        };
+        let refused = studio.propose(thread, vec![append("rule (edge 2 3")], "".into()).await.unwrap_err();
+        assert!(refused.contains("4:6: the ( at 4:6 opening `(edge 2 3 ...` is never closed"), "{refused}");
+        assert_eq!(studio.proposals_of(thread), serde_json::json!([]));
+
+        let rule = append("rule (edge X Y) --> (path X Y)");
+        let alone = studio.propose(thread, vec![rule.clone()], "".into()).await.unwrap_err();
+        assert!(alone.contains("Table path in (path X Y) is not defined"), "{alone}");
+        let taken = studio
+            .propose(thread, vec![append("table (path int int)"), rule], "declares and derives path".into())
+            .await
+            .unwrap();
+        let op = |index: usize| taken["ops"][index].as_u64().unwrap() as u32;
+        let (table, derive) = (op(0), op(1));
+
+        let text = studio.main_file().1;
+        let needs = studio.acceptance(&text, derive).await;
+        assert!(needs.ok && needs.with == vec![table], "{needs:?}");
+        studio.accept(&[derive]).await.unwrap();
+        assert!(studio.main_file().1.contains("table (path int int)\n\nrule (edge X Y) --> (path X Y)"));
+
+        // the author takes away what a pending proposal relies on
+        let reads = studio.propose(thread, vec![append("rule (path 1 X) --> (edge X X)")], "".into()).await.unwrap();
+        let reads = reads["proposed"].as_u64().unwrap() as u32;
+        let version = studio.snapshot().await.files[0].version;
+        studio.edit(0, "main.slog", version, "table (edge int int)\nrule (edge 1 2)\n".into()).unwrap();
+        let refused = studio.accept(&[reads]).await.unwrap_err();
+        assert!(refused.contains("Table path in (path 1 X) is not defined"), "{refused}");
+    }
 }

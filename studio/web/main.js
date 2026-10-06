@@ -20,6 +20,7 @@ import { initAssist } from "./assist.js";
 import { createBreakpoints, glyphClass, describe, stopOf } from "./breakpoints.js";
 import { initCalls } from "./calls.js";
 import { initTimeline } from "./timeline.js";
+import { createCheck } from "./check.js";
 
 const $ = (id) => document.getElementById(id);
 // Local mode's launch token; a server's login rides in a cookie instead.
@@ -42,7 +43,10 @@ const transmit = (message) => {
 };
 
 const editor = await createEditor($("editor"), {
-  onChange: () => files.changed(),
+  onChange: () => {
+    files.changed();
+    check.changed();
+  },
   onEvaluate: evaluate,
   onSave: save,
 });
@@ -70,6 +74,8 @@ const files = createFiles({
 });
 // Every message goes behind the edits already made, so it sees them.
 const send = files.send;
+// The static check, live as the author types, and the hovers it feeds.
+const check = createCheck({ editor, files, send });
 // Proposals are reviewed in the editor; the change graph and the history
 // strip show only when asked for or when they matter.
 const changes = createChangePanel($("work"));
@@ -163,6 +169,14 @@ const receive = {
     snapshot.results.forEach(offerRelation);
     history.load();
     renderStatus();
+    check.changed();
+  },
+  // another tab's edit, an accepted proposal, a restored version
+  text() {
+    check.changed();
+  },
+  files() {
+    check.changed();
   },
   states(view) {
     timeline.states(view);
@@ -361,7 +375,7 @@ function connect() {
   };
   socket.onmessage = (message) => {
     const data = JSON.parse(message.data);
-    for (const handlers of [files.receive, receive, versions.receive, assist.receive]) handlers[data.t]?.(data);
+    for (const handlers of [files.receive, receive, versions.receive, assist.receive, check.receive]) handlers[data.t]?.(data);
   };
   socket.onclose = () => {
     failedAttempts += 1;
@@ -440,6 +454,8 @@ const assist = initAssist({
   prompt,
   transcript: $("transcript"),
   send,
+  proposalChip: (ids) => proposals.chip(ids, { accept: true }),
+  check: check.request,
   showTranscript: () => results.show(null),
   openThread(thread) {
     agent.asked({ thread });
@@ -670,6 +686,7 @@ const palette = createPalette(() => {
     ] : []),
     { title: "Stop the running command", note: state.lane.state === "busy" ? "" : "nothing running", run: () => send({ t: "interrupt" }) },
     { title: "Save", keys: structure.MAC ? "⌘S" : "Ctrl+S", run: save },
+    ...check.commands(),
     ...[
       ["fast", "the interpreter on every thread"],
       ["debug", "one thread: breakpoints and steps stop at the same place"],

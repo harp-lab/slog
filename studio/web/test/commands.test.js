@@ -77,6 +77,7 @@ const ARGUMENTS = [
   ["image |", ["mount", "unmount"]],
   ["image k1 a|", ["activate", "activation"]],
   ["run |", []],
+  ["check |", []],
   ["keep |", ["scratch"]],
   ["keep scratch |", ["as"]],
   ["clear |", ["scratch"]],

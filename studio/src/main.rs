@@ -12,6 +12,7 @@ mod ask;
 mod assist;
 mod auth;
 mod breakpoints;
+mod check;
 mod forms;
 mod hash;
 mod knowledge;

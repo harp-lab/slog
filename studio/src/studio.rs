@@ -329,6 +329,17 @@ pub struct Studio {
     pub(crate) explorer: Mutex<Option<crate::states::Explorer>>,
     /// The session's last unfiltered `tables` answer.
     tables: std::sync::Mutex<Option<serde_json::Value>>,
+    /// The static check, apart from every lane (check.rs).
+    pub(crate) checker: crate::check::Checker,
+    /// Each pending op's acceptance, with the key of what it was checked
+    /// against (ask.rs).
+    pub(crate) acceptances: std::sync::Mutex<std::collections::HashMap<u32, (u64, crate::review::Acceptance)>>,
+    /// Signalled when the review or the program changes, so acceptances are
+    /// checked again.
+    pub(crate) review_changed: Arc<Notify>,
+    /// Each thread's last evaluate_proposal: the hash of the program it
+    /// evaluated, and whether that succeeded.
+    pub(crate) evaluated: std::sync::Mutex<std::collections::HashMap<u32, (u64, bool)>>,
 }
 
 impl Studio {
@@ -336,6 +347,7 @@ impl Studio {
     /// `mcp_token` admits agent runs to `/mcp`.
     pub fn new(projects: Projects, project: Project, files: Files, lane: Lane, mcp_token: String) -> Self {
         let preview = Lane::new(lane.root().to_path_buf(), Mode::Fast);
+        let checker = crate::check::Checker::new(lane.root().to_path_buf());
         let review = match project.store().read(THREADS) {
             Ok(record) => record.map(Review::restore).unwrap_or_default(),
             Err(error) => {
@@ -370,6 +382,10 @@ impl Studio {
             states: Default::default(),
             explorer: Mutex::new(None),
             tables: Default::default(),
+            checker,
+            acceptances: Default::default(),
+            review_changed: Arc::new(Notify::new()),
+            evaluated: Default::default(),
         }
     }
 
@@ -421,6 +437,13 @@ impl Studio {
         let open = self.open();
         let main = open.project.main();
         (open.project.directory().join(main), open.docs[main].text.clone())
+    }
+
+    /// The project's directory, its main file's path in it, and every
+    /// file's working text by path.
+    pub(crate) fn working_files(&self) -> (PathBuf, String, BTreeMap<String, String>) {
+        let open = self.open();
+        (open.project.directory().to_path_buf(), open.project.main().to_owned(), open.files())
     }
 
     /// Relay the lane's status changes and stderr to every tab, for as long
@@ -478,10 +501,10 @@ impl Studio {
     pub async fn snapshot(&self) -> Snapshot {
         let session = self.session.lock().await.view().clone();
         let projects = self.projects.names().unwrap_or_default();
+        let review = self.review_view();
         let open = self.open();
-        let main = &open.docs[open.project.main()].text;
         Snapshot {
-            review: self.review.lock().expect("review lock").view(main),
+            review,
             agent_unavailable: Agent::unavailable(),
             summary: self.summary.get().map(|summarizer| summarizer.view()),
             project: open.project.name().to_owned(),
@@ -544,6 +567,7 @@ impl Studio {
         open.clock = open.clock.max(version);
         self.keep_draft(&open);
         drop(open);
+        self.review_changed.notify_one();
         self.publish(Event::Text {
             file: file.to_owned(),
             version,
@@ -1041,9 +1065,23 @@ impl Studio {
             results.changed()
         };
         self.publish_sets(touched);
+        // A program that fails the static check is refused at once, at its
+        // error, without starting or discarding a session.
+        let checked = self.check_program(&BTreeMap::new(), None).await;
         let ok = match self.save(if debug { "debug" } else { "run" }) {
             Err(message) => {
                 let failure = session.failure("save", "save", &message);
+                self.publish_outcome(Origin::Evaluate, session.view(), &failure, None);
+                false
+            }
+            // (an error naming no file is the checker's own trouble: no reason
+            // to refuse)
+            Ok(_) if checked.errors().any(|error| !error.file.is_empty()) => {
+                let error = checked.errors().find(|error| !error.file.is_empty()).expect("just found");
+                let mut failure = session.failure("check", "check", &format!("does not check: {}", error.message));
+                if let Some(server) = failure.error.as_mut() {
+                    server.span = Some(slog_repl::protocol::Span { file: error.file.clone(), line: error.line, col: error.col });
+                }
                 self.publish_outcome(Origin::Evaluate, session.view(), &failure, None);
                 false
             }
@@ -1398,8 +1436,8 @@ pub(crate) mod tests {
     /// Accepting a proposal changes the main file and records an Accept
     /// version labelled with what was asked; one that no longer applies
     /// changes nothing.
-    #[test]
-    fn an_accepted_proposal_is_a_version() {
+    #[tokio::test]
+    async fn an_accepted_proposal_is_a_version() {
         let scratch = Scratch::new("accept");
         let studio = studio(&scratch, Mode::Fast, "table (t int)\nrule (t 1)\n");
         studio.new_file("lib.slog").unwrap();
@@ -1412,14 +1450,14 @@ pub(crate) mod tests {
             review.propose("table (t int)\nrule (t 1)\n", thread, change, String::new()).unwrap()
         };
         let versions = studio.history().versions.len();
-        studio.accept(op).unwrap();
+        studio.accept(&[op]).await.unwrap();
 
         let head = studio.history().versions.last().cloned().unwrap();
         assert_eq!((head.origin, head.label.as_deref()), (Made::Accept, Some("add a fact")));
         assert_eq!(head.forms_changed, ["main.slog:rule→t"]);
         assert_eq!(studio.main_file().1, "table (t int)\nrule (t 1) (t 2)\n");
         assert_eq!(studio.open().files()["lib.slog"], "", "other files are kept");
-        assert!(studio.accept(op).is_err());
+        assert!(studio.accept(&[op]).await.is_err());
         assert_eq!(studio.history().versions.len(), versions + 1);
     }
 

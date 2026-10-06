@@ -52,8 +52,16 @@ REL [when (REL t|_ ...)]` or `break FILE:LINE` stops a run when a rule writes RE
 ...` change an input fact and propagate it, which fires breaks and watches. Run (or Debug, with \
 breakpoints set in the editor's margin) evaluates the program afresh in a new session, which \
 drops REPL breaks and watches.
-- Changing the program is not yours to do here: show an edit as a ```slog block; the author can \
-take it to the Ask agent, which proposes changes.";
+- When the answer is a change to the program -- the fix for a bug you diagnosed, a missing \
+rule -- propose it with propose_edit (an exact, unique piece of the program text and its \
+replacement) or propose_append (new forms at the end). It appears in the author's editor as a \
+proposal to accept or reject. Every proposal is statically checked (parse, types, negation, \
+strata) as the program it would leave: one that fails is refused with the located errors, so fix \
+it and propose again. Then run evaluate_proposal -- the program as your proposal leaves it, in a \
+fresh session apart from the author's -- and say in a line what you proposed and what the \
+evaluation showed; do not repeat the change as a ```slog block. Show \
+Slog you are not proposing as a ```slog block: it is checked against the program, and the author \
+sees whether it checks.";
 
 /// The steps a REPL turn may take.
 pub const MAX_TURNS: u32 = 12;
@@ -153,6 +161,8 @@ impl Studio {
         let entry = review.thread_mut(thread).expect("the thread exists");
         entry.messages.push(Message::new("user", &message, Value::Null));
         entry.running = true;
+        // What it proposes in answer to this question is one changeset.
+        review.open_changeset(thread, agent::title_of(&message));
         drop(review);
         self.publish_review();
         let context = self.session_context(&context);
@@ -365,7 +375,15 @@ pub fn tools() -> Value {
     let object = |properties: Value, required: &[&str]| {
         json!({ "type": "object", "properties": properties, "required": required })
     };
-    json!([
+    // It proposes changes, and evaluates them, as the Ask agent does (mcp.rs).
+    let proposing = crate::mcp::tools()
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|tool| matches!(tool["name"].as_str(), Some("propose_edit" | "propose_append" | "evaluate_proposal")))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut tools = json!([
         {
             "name": "repl",
             "description": "Run one read-only command in the author's live REPL session and see its answer: a query (`?(path 1 Y)`, `? (edge X Y) (edge Y Z) -> (X Z)`, `?count (path X _)`, `?exists ...`), or `tables`, `count REL`, `show REL`, `why (REL v ...)`, `whynot (REL v ...)`, `explain ?...`, `uses VALUE`, `breaks`, `watches`, `state REL`. A `?` query answers its total and first rows. Commands that would change the session are refused.",
@@ -394,7 +412,9 @@ pub fn tools() -> Value {
                 "lines": { "type": "integer", "description": "How many lines (default 200, at most 400)." },
             }), &["path"]),
         },
-    ])
+    ]);
+    tools.as_array_mut().expect("a list").extend(proposing);
+    tools
 }
 
 #[cfg(test)]

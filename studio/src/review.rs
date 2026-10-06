@@ -120,6 +120,22 @@ pub struct OpView {
     pub stale: bool,
     /// Pending ops of other threads that touch the same text.
     pub conflicts: Vec<u32>,
+    /// Whether accepting it leaves a program that passes the static check;
+    /// absent until the studio has checked (ask.rs).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub check: Option<Acceptance>,
+}
+
+/// What accepting a pending op would take.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Acceptance {
+    /// The program checks with it accepted.
+    pub ok: bool,
+    /// The earlier pending ops of its thread it builds on, accepted with it.
+    pub with: Vec<u32>,
+    /// Why it cannot be accepted: the located errors.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub reason: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -210,9 +226,26 @@ impl Review {
     }
 
     /// Queue a change from `thread`, checked against that thread's fork so
-    /// it may build on its own earlier proposals.
+    /// it may build on its own earlier proposals. An edit of text that one
+    /// of those proposals wrote corrects it instead: that proposal is
+    /// rewritten, and its id returned, so the author reviews the final
+    /// text, not a chain of fixes.
     pub fn propose(&mut self, text: &str, thread: u32, change: Change, note: String) -> Result<u32, String> {
         apply(&self.fork(text, thread), &change)?;
+        if let Change::Edit { old, new } = &change
+            && let Some(op) = self.ops.iter_mut().rev().find(|op| {
+                op.thread == thread && op.status == Status::Pending && written(&op.change).matches(old.as_str()).count() == 1
+            })
+        {
+            match &mut op.change {
+                Change::Append { source } => *source = source.replacen(old.as_str(), new, 1),
+                Change::Edit { new: written, .. } => *written = written.replacen(old.as_str(), new, 1),
+            }
+            if !note.is_empty() {
+                op.note = note;
+            }
+            return Ok(op.id);
+        }
         let changeset = self
             .changesets
             .iter()
@@ -301,6 +334,7 @@ impl Review {
                     } else {
                         Vec::new()
                     },
+                    check: None,
                 }
             })
             .collect();
@@ -309,6 +343,33 @@ impl Review {
             changesets: self.changesets.clone(),
             ops,
         }
+    }
+
+    /// Pending op `id`'s change, and the pending changes of its thread
+    /// before it, in order.
+    pub fn chain(&self, id: u32) -> Option<(Change, Vec<(u32, Change)>)> {
+        let op = self.ops.iter().find(|op| op.id == id && op.status == Status::Pending)?;
+        let before = self
+            .ops
+            .iter()
+            .filter(|other| other.thread == op.thread && other.status == Status::Pending && other.id < id)
+            .map(|other| (other.id, other.change.clone()))
+            .collect();
+        Some((op.change.clone(), before))
+    }
+
+    /// A copy to try accepts on, without changing this one.
+    pub fn clone_for_check(&self) -> Review {
+        Review { threads: Vec::new(), changesets: self.changesets.clone(), ops: self.ops.clone() }
+    }
+
+    /// The pending ops of `changeset`.
+    pub fn pending_of(&self, changeset: u32) -> Vec<u32> {
+        self.ops
+            .iter()
+            .filter(|op| op.changeset == changeset && op.status == Status::Pending)
+            .map(|op| op.id)
+            .collect()
     }
 
     /// `text` with the pending ops of `op`'s thread that precede it applied.
@@ -345,6 +406,14 @@ pub fn apply(text: &str, change: &Change) -> Result<String, String> {
                 n => Err(format!("the old text occurs {n} times; include more context to make it unique")),
             }
         }
+    }
+}
+
+/// The text a change writes into the program.
+fn written(change: &Change) -> &str {
+    match change {
+        Change::Append { source } => source,
+        Change::Edit { new, .. } => new,
     }
 }
 
@@ -394,13 +463,14 @@ mod tests {
         let first = review
             .propose(PROGRAM, a, Change::Append { source: "table (path int int)".into() }, "".into())
             .unwrap();
-        // builds on `first`, which only exists in a's fork
+        // builds on `first`, which only exists in a's fork, by spanning it
+        // and the author's text
         let second = review
-            .propose(PROGRAM, a, edit("table (path int int)", "table (path int int)\nrule (edge X Y) --> (path X Y)"), "".into())
+            .propose(PROGRAM, a, edit("2)\n\ntable (path int int)", "2)\n\ntable (path int int)\nrule (edge X Y) --> (path X Y)"), "".into())
             .unwrap();
         assert!(review.propose(PROGRAM, b, edit("table (path int int)", "x"), "".into()).is_err());
-        let rival_a = review.propose(PROGRAM, a, edit("rule (edge 1 2)", "rule (edge 1 3)"), "".into()).unwrap();
-        let rival_b = review.propose(PROGRAM, b, edit("rule (edge 1 2)", "rule (edge 2 2)"), "".into()).unwrap();
+        let rival_a = review.propose(PROGRAM, a, edit("table (edge int int)", "table (edge int int) ;; edges"), "".into()).unwrap();
+        let rival_b = review.propose(PROGRAM, b, edit("table (edge int int)", "table (edge int int) ;; arcs"), "".into()).unwrap();
 
         let view = review.view(PROGRAM);
         let op = |id| view.ops.iter().find(|view| view.op.id == id).unwrap();
@@ -419,8 +489,28 @@ mod tests {
         };
         assert_eq!(
             after,
-            "table (edge int int)\nrule (edge 1 3)\n\ntable (path int int)\nrule (edge X Y) --> (path X Y)\n"
+            "table (edge int int) ;; edges\nrule (edge 1 2)\n\ntable (path int int)\nrule (edge X Y) --> (path X Y)\n"
         );
         assert!(review.ops.iter().all(|op| op.status != Status::Pending));
+    }
+
+    /// Fixing text a pending proposal wrote rewrites that proposal: the
+    /// author sees one change with the final text.
+    #[test]
+    fn a_correction_folds_into_the_proposal_it_corrects() {
+        let mut review = Review::default();
+        let a = review.new_thread("a".into());
+        review.open_changeset(a, "a".into());
+        let first = review
+            .propose(PROGRAM, a, Change::Append { source: "rule (edge 2 (+ 1 2)".into() }, "adds a fact".into())
+            .unwrap();
+        let fix = review.propose(PROGRAM, a, edit("(+ 1 2)", "(+ 1 2))"), "".into()).unwrap();
+        assert_eq!(fix, first);
+        assert_eq!(review.ops.len(), 1);
+        assert_eq!(review.ops[0].change, Change::Append { source: "rule (edge 2 (+ 1 2))".into() });
+        assert_eq!(review.ops[0].note, "adds a fact");
+        // an edit of the author's own text is a proposal of its own
+        let other = review.propose(PROGRAM, a, edit("rule (edge 1 2)", "rule (edge 1 3)"), "".into()).unwrap();
+        assert_ne!(other, first);
     }
 }

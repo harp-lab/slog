@@ -46,13 +46,20 @@ compile errors before changing anything, and fix the cause it names.
 How to work -- the author is waiting:
 - Read once (get_program), then propose. Make form-sized changes: propose_edit replaces an exact, \
 unique piece of the current program text (include enough context to be unique); propose_append \
-adds new forms at the end. Declare a relation before rules use it. Give every proposal a \
-one-sentence `note` saying what it does and why.
-- Then check your work: evaluate_proposal runs the program as your proposals would leave it, in \
-a fresh session, and reports its relations and row counts or its errors; query runs a `?` query \
-against that evaluation, e.g. `?(eval E V)` or `? (path X Y) (edge Y Z) -> (X Z)`, within the \
-limits the reference lists. Fix what you broke before you reply, and cite the evidence (row \
-counts, a sample row) in your reply.
+adds new forms at the end; propose_changes makes several at once, for changes that only hang \
+together as a whole (a renamed relation and its uses). Declare a relation before rules use it. \
+Give every proposal a one-sentence `note` saying what it does and why.
+- Every proposal is statically checked -- parse, types, negation, stratification -- as the \
+program it would leave: one that fails is refused, with the located errors, and nothing is \
+proposed. Fix the cause and propose again. To correct your own pending proposal, propose_edit \
+the text it wrote: that rewrites the proposal, so the author reviews final text, not a chain of \
+fixes.
+- Passing the check says nothing about behaviour, so check that too: after your last proposal, \
+run evaluate_proposal -- the program as your proposals would leave it, in a fresh session -- \
+which reports its relations and row counts or its errors; query runs a `?` query against that \
+evaluation, e.g. `?(eval E V)` or `? (path X Y) (edge Y Z) -> (X Z)`, within the limits the \
+reference lists. A turn cannot end with proposals that fail the check or that changed since \
+their last evaluation. Cite the evidence (row counts, a sample row) in your reply.
 - When something derives wrongly, trace it before guessing: trace_run shows each stratum's \
 iterations and signed deltas, get_trace the rows behind them, and debug_run stops at your \
 breakpoints; cite the iteration or rule that explains the bug.
@@ -98,6 +105,9 @@ const PLAN_TOOLS: [&str; 5] = ["TodoWrite", "TaskCreate", "TaskUpdate", "TaskLis
 const HIDDEN_TOOLS: [&str; 1] = ["ToolSearch"];
 /// The steps an Ask turn may take.
 const MAX_TURNS: u32 = 40;
+/// How many times a turn is sent back because its proposals fail the static
+/// check or are unevaluated (ask.rs `turn_gate`).
+const GATE_ROUNDS: u32 = 2;
 /// How much of a tool's input string or result a transcript keeps.
 const CLIP: usize = 4000;
 
@@ -253,7 +263,7 @@ impl Transcript<'_> {
 /// progress, then close the turn's changeset. `context` (the program's
 /// name, say) leads the message, not the system prompt, which stays fixed
 /// for each kind of agent.
-pub async fn run(studio: Arc<Studio>, kind: Kind, thread: u32, message: String, context: String) {
+pub async fn run(studio: Arc<Studio>, kind: Kind, thread: u32, mut message: String, mut context: String) {
     let transcript = Transcript { studio: &studio, thread };
     let agent = &studio.agent;
     let config = match agent.write_config(studio.port(), thread) {
@@ -270,6 +280,8 @@ pub async fn run(studio: Arc<Studio>, kind: Kind, thread: u32, message: String, 
     let root = studio.lane.root().to_path_buf();
     let project = studio.main_file().0.parent().map(Path::to_path_buf);
     let mut resume = studio.thread_session(thread);
+    // Times this turn was sent back to fix or evaluate its proposals.
+    let mut gated = 0;
     // The reference leads both system prompts, so every run shares its cache.
     let (system, tools, effort, model, turns) = match kind {
         Kind::Ask => (format!("{PERSONA}\n\n{RESEARCH}"), TOOLS, &agent.effort, &agent.model, MAX_TURNS),
@@ -365,6 +377,24 @@ pub async fn run(studio: Arc<Studio>, kind: Kind, thread: u32, message: String, 
                     .unwrap_or_default()
             );
             transcript.push("error", &message, Value::Null);
+            break;
+        }
+        // A turn may not end with its proposals failing the static check or
+        // unevaluated: it goes on, told why, a bounded number of times.
+        if gated < GATE_ROUNDS
+            && let Some(feedback) = studio.turn_gate(thread).await
+        {
+            gated += 1;
+            let notice = if feedback.contains("static check") {
+                "the proposals fail the static check: sent the errors back to the agent"
+            } else {
+                "the proposals are not evaluated as they stand: asked the agent to evaluate them"
+            };
+            transcript.push("notice", notice, Value::Null);
+            message = feedback;
+            context.clear();
+            resume = studio.thread_session(thread);
+            continue;
         }
         break;
     }

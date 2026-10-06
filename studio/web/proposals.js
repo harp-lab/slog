@@ -7,7 +7,10 @@
 // - the Review tab, a slim list of changesets whose rows jump to their
 //   change;
 // - the chip an Ask thread shows for a turn's proposals.
-// Accepting goes through the studio's accept, which records a version.
+// Accepting goes through the studio's accept, which records a version, and
+// only if the program it leaves passes the static check: each change says
+// whether it does ("✓ checks"), what it takes along (the earlier changes of
+// its thread it builds on), or why it cannot be accepted.
 
 import { node } from "./thread.js";
 import { fork, groupHunk, place } from "./hunks.js";
@@ -88,9 +91,19 @@ export function createProposals({ editor, files, send, bar, list, changes, histo
     if (note) line.append(node("span", "ip-note", note));
     const rivals = conflictsOf(group);
     if (rivals.length) line.append(node("span", "ip-flag", `conflicts with ${rivals.join(", ")}`));
-    const accept = line.appendChild(node("button", "ip-accept", "Accept"));
-    accept.disabled = rivals.length > 0;
-    accept.title = rivals.length ? "Reject one side of the conflict first" : "Make this change, as a new version";
+    const check = checkOf(group);
+    if (check.state === "ok") line.append(node("span", "ip-checks", "✓ checks"));
+    if (check.state === "checking") line.append(node("span", "ip-checks", "checking…"));
+    if (check.state === "fails") {
+      const flag = line.appendChild(node("span", "ip-flag", "fails the check"));
+      flag.title = check.reason;
+    }
+    const accept = line.appendChild(node("button", "ip-accept", check.with.length ? `Accept with ${ids(check.with)}` : "Accept"));
+    accept.disabled = rivals.length > 0 || check.state === "fails";
+    accept.title = rivals.length ? "Reject one side of the conflict first"
+      : check.state === "fails" ? check.reason
+      : check.with.length ? `It builds on ${ids(check.with)}, which are accepted with it, as one new version`
+      : "Make this change, as a new version";
     accept.addEventListener("click", () => acceptGroup(group));
     const reject = line.appendChild(node("button", "ip-reject", "Reject"));
     reject.addEventListener("click", () => rejectGroup(group));
@@ -104,9 +117,22 @@ export function createProposals({ editor, files, send, bar, list, changes, histo
     return [...threads].map((t) => `“${threadOf(t)?.title ?? `thread ${t}`}”`);
   }
 
+  // Whether a change's ops pass the check accepted: "ok", "fails" (with the
+  // reason) or "checking", and the earlier ops they take along.
+  function checkOf(group) {
+    const checks = group.ids.map((id) => opOf(id)?.check);
+    const failed = checks.find((check) => check && !check.ok);
+    const taken = [...new Set(checks.flatMap((check) => check?.with ?? []))].filter((id) => !group.ids.includes(id));
+    if (failed) return { state: "fails", reason: failed.reason, with: [] };
+    if (checks.some((check) => !check)) return { state: "checking", with: taken };
+    return { state: "ok", with: taken };
+  }
+
+  const ids = (list) => list.map((id) => `#${id}`).join(", ");
+
   function acceptGroup(group) {
     files.flush(); // the studio applies it to the text as typed
-    for (const id of group.ids) send({ t: "accept", op: id });
+    send({ t: "accept", ops: group.ids });
   }
 
   function rejectGroup(group) {
@@ -176,7 +202,9 @@ export function createProposals({ editor, files, send, bar, list, changes, histo
       const pending = state.view.ops.filter((op) => op.changeset === group.changeset && op.status === "pending");
       const title = changesetOf(group.changeset)?.title ?? "";
       const all = bar.appendChild(node("button", "primary small", "Accept all"));
-      all.title = `Accept every change of “${title}”`;
+      const failing = pending.find((op) => op.check && !op.check.ok);
+      all.disabled = Boolean(failing);
+      all.title = failing ? `#${failing.id}: ${failing.check.reason}` : `Accept every change of “${title}”`;
       all.addEventListener("click", () => {
         files.flush();
         send({ t: "accept-changeset", changeset: group.changeset });
@@ -290,8 +318,9 @@ export function createProposals({ editor, files, send, bar, list, changes, histo
 
   // ---- The chip in an Ask thread ----------------------------------------
 
-  // "Proposed 3 changes · view" for the ops a turn proposed.
-  function chip(ids) {
+  // "Proposed 3 changes · view" for the ops a turn proposed, with "accept"
+  // when asked for.
+  function chip(ids, { accept = false } = {}) {
     const ops = ids.map(opOf).filter(Boolean);
     if (!ops.length) return null;
     const pending = ops.filter((op) => op.status === "pending");
@@ -306,6 +335,16 @@ export function createProposals({ editor, files, send, bar, list, changes, histo
       const group = state.groups.find((g) => g.ids.some((id) => ids.includes(id)));
       if (group) focus(group);
     });
+    // Accept from here too, when every pending one checks.
+    if (accept && pending.length && pending.every((op) => op.check?.ok)) {
+      const link = button.appendChild(node("span", "chip-view", "accept"));
+      link.title = "Accept them, as a new version";
+      link.addEventListener("click", (event) => {
+        event.stopPropagation();
+        files.flush();
+        send({ t: "accept", ops: pending.map((op) => op.id) });
+      });
+    }
     return button;
   }
 

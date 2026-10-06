@@ -90,7 +90,9 @@ fn rpc_error(id: Value, code: i64, message: &str) -> Response {
 
 async fn call(studio: &Arc<Studio>, thread: Option<u32>, name: &str, arguments: &Value) -> Result<Value, String> {
     let thread = thread.ok_or("this MCP session names no thread; the studio's agent runs set one")?;
-    if studio.is_repl_thread(thread) {
+    // The REPL assistant proposes as the Ask agent does; its other tools
+    // are its own.
+    if studio.is_repl_thread(thread) && !name.starts_with("propose_") && name != "evaluate_proposal" {
         return studio.assist_tool(name, arguments).await;
     }
     let text = |key: &str| {
@@ -102,15 +104,12 @@ async fn call(studio: &Arc<Studio>, thread: Option<u32>, name: &str, arguments: 
     let note = arguments["note"].as_str().unwrap_or("").to_owned();
     match name {
         "get_program" => Ok(studio.program_for(thread)),
-        "propose_edit" => studio.propose(
-            thread,
-            Change::Edit {
-                old: text("old_text")?,
-                new: text("new_text")?,
-            },
-            note,
-        ),
-        "propose_append" => studio.propose(thread, Change::Append { source: text("source")? }, note),
+        "propose_edit" => {
+            let change = Change::Edit { old: text("old_text")?, new: text("new_text")? };
+            studio.propose(thread, vec![change], note).await
+        }
+        "propose_append" => studio.propose(thread, vec![Change::Append { source: text("source")? }], note).await,
+        "propose_changes" => studio.propose(thread, changes(&arguments["changes"])?, note).await,
         "evaluate_proposal" => Ok(studio.evaluate_fork(thread).await),
         "query" => studio.query_fork(thread, &text("q")?).await,
         "search_docs" => Ok(knowledge::search(studio.lane.root(), &text("query")?, 8)),
@@ -130,7 +129,21 @@ async fn call(studio: &Arc<Studio>, thread: Option<u32>, name: &str, arguments: 
     }
 }
 
-fn tools() -> Value {
+/// `propose_changes`' list: edits ({old_text, new_text}) and appends
+/// ({source}).
+fn changes(list: &Value) -> Result<Vec<Change>, String> {
+    let items = list.as_array().filter(|items| !items.is_empty()).ok_or("`changes` must be a non-empty list")?;
+    items
+        .iter()
+        .map(|item| match (item["old_text"].as_str(), item["new_text"].as_str(), item["source"].as_str()) {
+            (Some(old), Some(new), None) => Ok(Change::Edit { old: old.to_owned(), new: new.to_owned() }),
+            (None, None, Some(source)) => Ok(Change::Append { source: source.to_owned() }),
+            _ => Err("each change is {old_text, new_text} or {source}".to_owned()),
+        })
+        .collect()
+}
+
+pub(crate) fn tools() -> Value {
     let object = |properties: Value, required: &[&str]| {
         json!({ "type": "object", "properties": properties, "required": required })
     };
@@ -146,7 +159,7 @@ fn tools() -> Value {
         },
         {
             "name": "propose_edit",
-            "description": "Propose replacing an exact piece of the program text with new text. `old_text` must occur exactly once in get_program's text: include whole forms or enough context to be unique. Nothing changes until the author accepts.",
+            "description": "Propose replacing an exact piece of the program text with new text. `old_text` must occur exactly once in get_program's text: include whole forms or enough context to be unique. The program as it would leave it must pass the static check (parse, types, negation, strata), or the proposal is refused with the located errors. Editing text one of your pending proposals wrote corrects that proposal. Nothing changes until the author accepts.",
             "inputSchema": object(json!({
                 "old_text": { "type": "string", "description": "Exact text to replace, occurring once." },
                 "new_text": { "type": "string", "description": "Its replacement (may be empty to delete)." },
@@ -155,11 +168,30 @@ fn tools() -> Value {
         },
         {
             "name": "propose_append",
-            "description": "Propose adding new top-level forms (declarations, rules, facts) at the end of the program. Nothing changes until the author accepts.",
+            "description": "Propose adding new top-level forms (declarations, rules, facts) at the end of the program. The program as it would leave it must pass the static check, or the proposal is refused with the located errors. Nothing changes until the author accepts.",
             "inputSchema": object(json!({
                 "source": { "type": "string", "description": "Slog source of the new forms." },
                 "note": note,
             }), &["source", "note"]),
+        },
+        {
+            "name": "propose_changes",
+            "description": "Propose several edits and appends at once, made in order and checked as a whole: for changes that only pass the static check together (renaming a relation in its declaration and every use, say). Each item is {old_text, new_text} or {source}.",
+            "inputSchema": object(json!({
+                "changes": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "old_text": { "type": "string" },
+                            "new_text": { "type": "string" },
+                            "source": { "type": "string" },
+                        },
+                    },
+                    "description": "Edits ({old_text, new_text}) and appends ({source}), in order.",
+                },
+                "note": note,
+            }), &["changes", "note"]),
         },
         {
             "name": "evaluate_proposal",

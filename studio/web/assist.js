@@ -12,13 +12,21 @@
 // Every transcript entry offers "explain" and "next?", and an error "Ask
 // why", each opening ask mode about that entry.
 //
+// What the assistant changes in the program it proposes, as the Ask agent
+// does: its answer carries the proposal's chip (view, accept). Slog it only
+// shows -- a ```slog block, a definition in a ```repl block -- is
+// statically checked against the program first: a definition becomes
+// runnable only once it checks, and either shows why it does not.
+//
 // Live preview: while a `?` query being typed is complete, the studio runs
 // it aside (no entry, no result set) and its total and first rows show
 // above the prompt.
 //
 // The hooks, from main.js:
-//   initAssist({ prompt, transcript, send, openThread, showTranscript })
-//              -> { receive, entry }
+//   initAssist({ prompt, transcript, send, openThread, showTranscript,
+//                proposalChip, check }) -> { receive, entry }
+//   proposalChip(ids)  the chip for proposals (proposals.js)
+//   check(payload)     a static check's report (check.js `request`)
 //   receive    the studio's messages: agent, assisted, preview, session
 //   entry(entry, node)   a REPL entry just shown, and its node
 
@@ -151,7 +159,15 @@ const RECENT = 8;          // REPL entries a question carries
 const PREVIEW_MS = 350;    // typing pause before a preview runs
 const PREVIEW_RETRIES = 30; // tries while the lane is busy
 
-export function initAssist({ prompt, transcript, send, openThread, showTranscript }) {
+// A REPL line that defines Slog for the scratch layer (repl.rkt's
+// scratch-definition-heads), as opposed to a command.
+export const definition = (command) => /^(rule|table|struct|union|enum|lattice|demand|extern|def|let)\b/.test(command.trim());
+
+// A failed check's errors, without their positions (they are positions in
+// the program with the suggestion appended).
+const reasons = (report) => report.diagnostics.filter((d) => d.severity === "error").map((d) => d.message).join("\n");
+
+export function initAssist({ prompt, transcript, send, openThread, showTranscript, proposalChip, check }) {
   const row = prompt.closest(".prompt-row");
   const caret = row.querySelector(".caret");
   const slogPlaceholder = prompt.placeholder;
@@ -366,6 +382,10 @@ export function initAssist({ prompt, transcript, send, openThread, showTranscrip
   function finish(turn) {
     renderTurn(turn, true);
     turn.activity.remove();
+    // its proposals, to view and accept where they land
+    const proposed = turn.calls.filter((call) => call.op && call.status === "ok").map((call) => call.op);
+    const proposal = proposed.length && proposalChip?.([...new Set(proposed)]);
+    if (proposal) turn.body.append(proposal);
     if (turn.error) turn.body.append(element("div", "error", turn.error));
     turn.foot.replaceChildren();
     const tried = turn.calls.filter((call) => call.name === "repl").length;
@@ -378,11 +398,12 @@ export function initAssist({ prompt, transcript, send, openThread, showTranscrip
   }
 
   // An answer's ```repl blocks as chips, and its ```plan blocks as
-  // checklists of them.
+  // checklists of them; its ```slog blocks, checked.
   function chips(turn) {
     const found = reads(turn.calls);
     for (const block of turn.body.querySelectorAll(".code-block")) {
       const lang = block.querySelector(".code-lang")?.textContent;
+      if (lang === "slog") checked(block, block.querySelector("pre").textContent);
       if (lang !== "repl" && lang !== "plan") continue;
       const list = steps(block.querySelector("pre").textContent);
       if (!list.length) continue;
@@ -415,6 +436,18 @@ export function initAssist({ prompt, transcript, send, openThread, showTranscrip
     }
     const run = item.appendChild(element("button", "small primary", "Run"));
     run.title = "Run it now";
+    // a definition runs once it checks against the program
+    if (definition(step.command) && check) {
+      run.disabled = true;
+      run.title = "Checking it against the program…";
+      check({ append: step.command }).then((report) => {
+        const failed = !report.ok;
+        const span = item.insertBefore(element("span", `badge${failed ? " failed" : ""}`, failed ? "does not check" : "✓ checks"), run);
+        span.title = failed ? reasons(report) : "it passes the static check with the program";
+        run.disabled = failed;
+        run.title = failed ? `It does not check:\n${reasons(report)}` : "Run it now";
+      });
+    }
     const edit = item.appendChild(element("button", "small secondary", "Insert"));
     edit.title = "Put it in the prompt to edit";
     if (step.note) item.append(element("div", "note", step.note));
@@ -426,6 +459,16 @@ export function initAssist({ prompt, transcript, send, openThread, showTranscrip
     run.addEventListener("click", item.run);
     edit.addEventListener("click", () => insert(step.command));
     return item;
+  }
+
+  // A ```slog block, with whether it checks added to the program.
+  function checked(block, source) {
+    if (!check || !source.trim()) return;
+    const status = block.appendChild(element("div", "assist-checked", "checking…"));
+    check({ append: source }).then((report) => {
+      status.classList.toggle("failed", !report.ok);
+      status.textContent = report.ok ? "✓ checks with the program" : `does not check: ${reasons(report)}`;
+    });
   }
 
   // Into the prompt, in Slog mode: a follow-up question stays possible.

@@ -88,6 +88,7 @@ fn asset(name: &str) -> Response {
         "inline-diff.js" => (include_str!("../web/inline-diff.js"), "text/javascript; charset=utf-8"),
         "changes.js" => (include_str!("../web/changes.js"), "text/javascript; charset=utf-8"),
         "proposals.js" => (include_str!("../web/proposals.js"), "text/javascript; charset=utf-8"),
+        "check.js" => (include_str!("../web/check.js"), "text/javascript; charset=utf-8"),
         "diff.css" => (include_str!("../web/diff.css"), "text/css; charset=utf-8"),
         "results.js" => (include_str!("../web/results.js"), "text/javascript; charset=utf-8"),
         "results.css" => (include_str!("../web/results.css"), "text/css; charset=utf-8"),
@@ -155,7 +156,8 @@ enum Request {
     /// The total and first rows of the query being typed, apart from the
     /// transcript; `seq` names the answer.
     Preview { line: String, seq: u64 },
-    Accept { op: u32 },
+    /// Accept these ops, with the earlier ops of their threads they build on.
+    Accept { ops: Vec<u32> },
     Reject { op: u32 },
     AcceptChangeset { changeset: u32 },
     /// The version DAG and the branches.
@@ -179,6 +181,16 @@ enum Request {
     Rows { set: SetId, start: u64, end: u64 },
     /// Run a refinement of a result set as a new query.
     Refine { set: SetId, refinement: Refinement },
+    /// Check the program statically with `texts` (path -> text) in place of
+    /// the working files' and `append` added to the main file; answered
+    /// with `tag`. Uses no lane.
+    Check {
+        tag: u64,
+        #[serde(default)]
+        texts: std::collections::BTreeMap<String, String>,
+        #[serde(default)]
+        append: Option<String>,
+    },
 }
 
 impl Request {
@@ -236,6 +248,8 @@ enum Reply<'a> {
         busy: bool,
     },
     Notice { message: &'a str },
+    /// A `Check`'s report.
+    Checked { tag: u64, #[serde(flatten)] report: &'a crate::check::Report },
     /// The answer to a `Quiet` request.
     Quiet { tag: u64, #[serde(flatten)] outcome: &'a crate::session::Outcome },
     /// The rows asked for, as many as exist; or why they cannot be had.
@@ -465,10 +479,9 @@ fn handle(
                 let _ = direct.send(json(&Reply::Preview { seq, read, error, busy }));
             });
         }
-        Request::Accept { op } => {
-            if let Err(message) = studio.accept(op) {
-                let _ = direct.send(json(&Reply::Notice { message: &message }));
-            }
+        Request::Accept { ops } => {
+            let direct = direct.clone();
+            tokio::spawn(async move { notice(&direct, studio.accept(&ops).await) });
         }
         Request::Reject { op } => {
             if let Err(message) = studio.reject(op) {
@@ -476,11 +489,15 @@ fn handle(
             }
         }
         Request::AcceptChangeset { changeset } => {
-            let skipped = studio.accept_changeset(changeset);
-            if !skipped.is_empty() {
-                let message = format!("not accepted: {}", skipped.join("; "));
-                let _ = direct.send(json(&Reply::Notice { message: &message }));
-            }
+            let direct = direct.clone();
+            tokio::spawn(async move { notice(&direct, studio.accept_changeset(changeset).await) });
+        }
+        Request::Check { tag, texts, append } => {
+            let direct = direct.clone();
+            tokio::spawn(async move {
+                let report = studio.check_program(&texts, append.as_deref()).await;
+                let _ = direct.send(json(&Reply::Checked { tag, report: &report }));
+            });
         }
         Request::History => {
             let _ = direct.send(json(&Reply::History(&studio.history())));
