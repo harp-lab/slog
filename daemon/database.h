@@ -1791,6 +1791,36 @@ public:
     return struct_lookup_index;
   }
 
+  // One struct instance's storage-order row (id at column 0), by id: every
+  // reader that decodes a struct value finds its fields here.  Any
+  // id-leading ordering will do -- its bucket is the id's, and the id is
+  // unique within it -- but not just the one getLookupIndex names: a
+  // relation born with ensureDefaultIndex's identity ordering keeps it
+  // registered beside the program's own id-leading join ordering (say
+  // (0 2 1) for a rule matching (add A B)), nothing writes it, and the
+  // lookup memo may pick it.  So probe each id-leading ordering (an
+  // unwritten one's bucket is empty, so a miss there is cheap).  Seeded-only
+  // orderings are skipped, as getAnyIndex skips them: unmaintained in a
+  // fresh run.  False when no ordering holds the id.
+  bool indexedStructRow(u64 v, std::vector<u64>& row)
+  {
+    for (const auto& [ord, buckets] : indices)
+    {
+      if (ord.empty() || ord[0] != 0 || seeded_orderings.count(ord)) continue;
+      bool found = false;
+      buckets[buckethash(v)]->forEach([&](const u64* t)
+      {
+        if (found || t[0] != v) return;
+        found = true;
+        row.assign(ord.size(), 0);
+        for (u16 i = 0; i < ord.size(); ++i)
+          row[ord[i]] = t[i];               // t is in index order
+      });
+      if (found) return true;
+    }
+    return false;
+  }
+
   u64* getInternAlloc(u16 b)
   {
     return &(intern_allocators[b]);
@@ -1958,6 +1988,13 @@ public:
         return true;
       }
     return false;
+  }
+
+  // The value writer's lookup: the indexed row, else -- at an iteration
+  // barrier -- the delta's or the tombstones'.
+  bool structRowById(u64 id, std::vector<u64>& row)
+  {
+    return indexedStructRow(id, row) || unindexedStructRow(id, row);
   }
 
   // Id-space severance (refresh-from-disk, merge scratch teardown, freeze):
@@ -7357,12 +7394,12 @@ public:
     // A run inside a prepared boundary writes the overlay's version of the
     // type, so an instance it minted is found there, not in the canonical.
     std::vector<u64> row;
-    bool found = structRowById(rel, v, row);
+    bool found = rel->structRowById(v, row);
     if (!found && prepared_boundary && boundary_key.empty())
       for (const auto& [name, bound] : prepared_boundary->environment)
         if (bound != nullptr && bound != rel
             && bound->getStructId() == struct_id
-            && (found = structRowById(bound, v, row)))
+            && (found = bound->structRowById(v, row)))
           break;
     if (!found)
       fatal("Could not find struct instance in selected TypeDescriptor store");
@@ -7373,42 +7410,6 @@ public:
       tupstr += " "
         + writeValCSVAtBoundary(row[c], boundary_key, cdepth + 1, max_depth);
     return tupstr + ")";
-  }
-
-  // One struct instance's storage-order row (id at column 0): from the
-  // lookup index, or -- at an iteration barrier -- from the delta or the
-  // tombstones (Relation::unindexedStructRow).
-  //
-  // The lookup index is whichever id-leading ordering getLookupIndex met
-  // first, and mid-run that may be one nothing writes: a version born with
-  // the identity default (ensureDefaultIndex) keeps (0 1 .. n-1) registered
-  // beside the program's own id-leading join ordering, and only a boundary
-  // sweep drops it.  A barrier render (the execution trace, a peek) then
-  // misses an instance the maintained ordering holds, so a miss probes the
-  // other id-leading orderings before giving up.
-  static bool structRowById(Relation* rel, u64 v, std::vector<u64>& row)
-  {
-    // An id-leading ordering's bucket is the id's, and the id is unique
-    // within it.
-    const auto probe = [&](const std::vector<u16>& ord)
-    {
-      bool found = false;
-      rel->getIndex(ord, false)[buckethash(v)]->forEach([&](const u64* t)
-      {
-        if (t[0] != v) return;
-        found = true;
-        row.assign(ord.size(), 0);
-        for (u16 i = 0; i < ord.size(); ++i)
-          row[ord[i]] = t[i];
-      });
-      return found;
-    };
-    const std::vector<u16>& lookup = rel->getLookupIndex();
-    if (probe(lookup)) return true;
-    for (const std::vector<u16>& ord : rel->fullOrders())
-      if (!ord.empty() && ord[0] == 0 && ord != lookup && probe(ord))
-        return true;
-    return rel->unindexedStructRow(v, row);
   }
 
   std::string writeStructCSV(u64 v, u32 cdepth = 0)
@@ -7562,13 +7563,8 @@ public:
       TypeDescriptor* descriptor = getTypeDescriptorBySid(sid);
       if (descriptor == nullptr || descriptor->canonical_relation == nullptr)
         return false;
-      Relation* rel = descriptor->canonical_relation;
-      const std::vector<u16>& ord = rel->getLookupIndex();
-      if (!rel->hasIndex(ord, false)) return false;
-      Index* node = rel->getIndex(ord, false)[buckethash(v)];
-      bool found = false;
-      node->forEach([&](const u64* t) { if (t[0] == v) found = true; });
-      return found;
+      std::vector<u64> row;
+      return descriptor->canonical_relation->indexedStructRow(v, row);
     }
     return true;
   }
