@@ -3331,6 +3331,7 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
             {
                 malformed("expected (break (id \"b1\") [(relation \"R\" ...)] "
                           "[(rule N)] [(source \"FILE:LINE\")] [(position K)] "
+                          "[(match \"R\")] "
                           "[(pattern TERM ...)] [(judgment #t)] "
                           "[(when GUARD ...)] [(uses TERM ...)] [(ignore N)] "
                           "[(log #t)] [(enabled #f)])");
@@ -3370,6 +3371,10 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
             else if (tag == "source" && one
                      && field.children[1].kind == K::string)
                 spec.source = field.children[1].text;
+            else if (tag == "match" && one
+                     && field.children[1].kind == K::string
+                     && !field.children[1].text.empty())
+                spec.premise = field.children[1].text;
             else if (tag == "position" && one
                      && parse_u64_atom(field.children[1], value)
                      && value < 0xffff)
@@ -3443,7 +3448,7 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
         }
         if (spec.relations.empty() && spec.rule_id == UINT32_MAX
             && spec.source.empty() && spec.position == 0xffff
-            && spec.pattern.empty())
+            && spec.pattern.empty() && spec.premise.empty())
         {
             // "stop at every port of every rule" is `step`, not a break.
             malformed("a break needs a relation, a rule, a source, or a "
@@ -3649,6 +3654,7 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
                     + ") (position "
                     + (b.position == 0xffff ? "#f"
                                             : std::to_string(b.position))
+                    + ") (match " + slog::protocol::quoteString(b.premise)
                     + ") (pattern " + slog::protocol::quoteString(pattern)
                     + ") (hits " + std::to_string(b.hits)
                     + ") (when " + slog::protocol::quoteString(guards)
