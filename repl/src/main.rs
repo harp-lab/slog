@@ -16,8 +16,9 @@ use app::{App, Effect};
 use backend::{Backend, BackendEvent, project_root};
 use command::ShellCommand;
 use crossterm::event::{
-    DisableMouseCapture, EnableMouseCapture, EventStream, KeyboardEnhancementFlags,
-    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    EventStream, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use futures_util::StreamExt;
@@ -99,6 +100,7 @@ fn usage() -> &'static str {
 struct TerminalFeatures {
     keyboard_enhancement: bool,
     mouse_capture: bool,
+    bracketed_paste: bool,
 }
 
 enum PendingCommand {
@@ -167,9 +169,13 @@ impl TerminalFeatures {
         )
         .is_ok();
         let mouse_capture = execute!(stdout, EnableMouseCapture).is_ok();
+        // Without it a pasted newline arrives as Enter, submitting a
+        // multi-line rule one line at a time.
+        let bracketed_paste = execute!(stdout, EnableBracketedPaste).is_ok();
         Self {
             keyboard_enhancement,
             mouse_capture,
+            bracketed_paste,
         }
     }
 }
@@ -177,6 +183,9 @@ impl TerminalFeatures {
 impl Drop for TerminalFeatures {
     fn drop(&mut self) {
         let mut stdout = io::stdout();
+        if self.bracketed_paste {
+            let _ = execute!(stdout, DisableBracketedPaste);
+        }
         if self.mouse_capture {
             let _ = execute!(stdout, DisableMouseCapture);
         }
