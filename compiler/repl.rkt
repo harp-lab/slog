@@ -5979,7 +5979,7 @@
                                           'strata))])
           (hash-remove (hash-remove st 'fixpoint) 'stratum)))
       (void (dispatch-command state "trace on"))
-      (begin0 (append (strata "run tests/trace_hops.slog")
+      (begin0 (append (strata "run tests/session/trace_hops.slog")
                       (strata "rule (reach (hop 30 31)) <-- (edge 0 1)"))
         (void (dispatch-command state ":quit")))))
   (let ([single (hops-trace #"1")])
