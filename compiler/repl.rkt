@@ -2329,6 +2329,13 @@
                    "~a cannot be previewed at the tip: ~a; the flush would take an anchored walk"
                    rel-name (exn-message e)))])
       (session-whatif s sign rel-name)))
+  ;; strata bound to an OLDER version of the target never see this edit;
+  ;; say who they are rather than "no derived relations read" it
+  (define-values (rebind-lines rebinds)
+    (let-values ([(ordinal readers) (session-stale-readers s rel-name)])
+      (rebind-report (if (null? readers)
+                         '()
+                         (list (list rel-name ordinal readers))))))
   (define catalog (live-catalog s))
   (define (size-of name)
     (with-handlers ([exn:fail? (lambda (_e) #f)])
@@ -2346,7 +2353,9 @@
   (define route-line
     (case route
       [(input-only)
-       "likely route: input-only edit — no derived relation reads this one"]
+       (if (null? rebinds)
+           "likely route: input-only edit — no derived relation reads this one"
+           "likely route: input-only edit — no derived relation reads this version")]
       [(maintain-positive)
        (format "likely route: positive maintenance across ~a ~a (monotone cone; flush certifies the precise route)"
                cone-strata (if (= cone-strata 1) "stratum" "strata"))]
@@ -2374,15 +2383,20 @@
                  tuple-text
                  (if (zero? matches) "absent" "already present")
                  (if (zero? matches) "a genuine addition" "addition would be a no-op"))]))
-     (if (null? affected)
-         (list (format "no derived relations read ~a" rel-name))
-         (for/list ([name (in-list affected)])
-           (define n (size-of name))
-           (format "~a — ~a affected"
-                   name (if n (format "~a row~a now;" n (if (= n 1) "" "s")) ""))))
+     (cond
+       [(pair? affected)
+        (for/list ([name (in-list affected)])
+          (define n (size-of name))
+          (format "~a — ~a affected"
+                  name (if n (format "~a row~a now;" n (if (= n 1) "" "s")) "")))]
+       [(null? rebinds)
+        (list (format "no derived relations read ~a" rel-name))]
+       [else '()])
+     rebind-lines
      (list route-line
            "nothing staged, nothing mutated — preview only"))
     #:kind "whatif")
+   'rebinds rebinds
    'relation rel-name
    'sign (format "~a" sign)
    'affected (map (lambda (n) (format "~a" n)) affected)
@@ -4282,8 +4296,81 @@
                        (map string-trim (string-split text "\n")))
                " "))
 
+;; ---- rebinds: a program event that writes an existing relation ----------
+;;
+;; A program event that writes a relation the database already holds makes
+;; a NEW version of it (incremental.md §0.4).  The strata bound earlier keep
+;; reading the version they were bound to, so they see neither its new rows
+;; nor any later `add` or `del` on it -- every tip edit lands in the new
+;; version.  That is the pipeline semantics, not a bug, but nothing in a
+;; change summary shows it, so a scratch fragment, a `run`, and a `whatif`
+;; say it: in words, and as the structured `rebinds` field, one record per
+;; rebound relation (relation, version, readers, suggestion).
+
+;; The readers, as prose: a relation whose own (recursive) rules read the
+;; rebound version reads as "`path`'s own rules".
+(define (readers-phrase rel readers)
+  (match (for/list ([n (in-list readers)])
+           (if (eq? n rel) (format "`~a`'s own rules" n) (format "`~a`" n)))
+    [(list one) one]
+    [(list a b) (format "~a and ~a" a b)]
+    [quoted (format "~a and ~a"
+                    (string-join (drop-right quoted 1) ", ") (last quoted))]))
+
+;; The ground facts for `rel` in an arrow-free scratch fragment -- the
+;; `rule (edge 6 7)` that was meant as `add edge 6 7` -- as `add` commands.
+(define (fragment-facts source rel)
+  (cond
+    [(or (not source) (regexp-match? #px"-->|<--" source)) '()]
+    [else
+     (for/list ([m (in-list (regexp-match* #px"\\(([^()\\s]+)((?:\\s+(?:-?[0-9][0-9.]*|\"[^\"]*\"))+)\\)"
+                                           source #:match-select values))]
+                #:when (string=? (second m) (~a rel)))
+       (format "add ~a ~a" rel (string-trim (third m))))]))
+
+;; (values lines records) for `rebinds`, a list of (rel ordinal readers).
+;; `source` is a scratch fragment's text: it gets the scratch advice (the
+;; `add` it should have been; the layer cannot be cleared).  Without it the
+;; advice is the program's.  An `add` no longer helps after the fact -- it
+;; would land in the new version too.
+(define (rebind-report rebinds [source #f])
+  (for/fold ([lines '()] [records '()]
+             #:result (values (reverse lines) (reverse records)))
+            ([rb (in-list rebinds)])
+    (match-define (list rel ordinal readers) rb)
+    (define facts (fragment-facts source rel))
+    ;; one reader takes a singular verb -- unless it is the relation's own
+    ;; rules
+    (define one? (and (null? (cdr readers)) (not (eq? (car readers) rel))))
+    (define advice
+      (cond
+        [(pair? facts)
+         (format "To add a fact the program's rules see, use `~a` instead of a rule~a; this layer cannot be cleared (it extends `~a`), so `discard session` and run the program again to undo it."
+                 (first facts)
+                 (if (null? (cdr facts)) "" " (one `add` per fact)")
+                 rel)]
+        [source
+         (format "A rule deriving into `~a` belongs in the program whose rules read it; this layer cannot be cleared (it extends `~a`), so `discard session` and run the program again to undo it."
+                 rel rel)]
+        [else
+         (format "From here on, edits to `~a` reach only ~a@v~a; to change what ~a ~a, change the program that defines ~a and run it again."
+                 rel rel ordinal (readers-phrase rel readers)
+                 (if one? "sees" "see") (if one? "it" "them"))]))
+    (values
+     (list* advice
+            (format "`~a` is now a new version (~a@v~a); ~a ~a an earlier version and won't see this or later edits to `~a`."
+                    rel rel ordinal (readers-phrase rel readers)
+                    (if one? "reads" "read") rel)
+            lines)
+     (cons (hasheq 'relation (~a rel)
+                   'version ordinal
+                   'readers (map ~a readers)
+                   'suggestion (if (pair? facts) (first facts) 'null))
+           records))))
+
 (define (scratch-register-result state source head)
   (define rs (ensure-mutable-session-record! state 'scratch))
+  (define before-ids (session-strata-ids (repl-session-session rs)))
   (define event (box #f))
   (define-values (_ _events change)
     (with-handlers
@@ -4313,17 +4400,24 @@
   (set-repl-session-changed?! rs #t)
   (define n (scratch-event-n (unbox event)))
   (define writes (scratch-event-writes (unbox event)))
-  (semantic-text-result
-   (format "Scratch ~a · ~a" n head)
-   (list (scratch-single-line source)
-         (format "fragment ~a joined the scratch layer~a"
-                 n
-                 (if (null? writes)
-                     ""
-                     (format " — writes ~a"
-                             (string-join (map ~a writes) ", ")))))
-   change
-   #:kind "scratch"))
+  (define-values (rebind-lines rebinds)
+    (rebind-report (session-rebinds (repl-session-session rs) before-ids)
+                   source))
+  (hash-set
+   (semantic-text-result
+    (format "Scratch ~a · ~a" n head)
+    (append
+     (list (scratch-single-line source)
+           (format "fragment ~a joined the scratch layer~a"
+                   n
+                   (if (null? writes)
+                       ""
+                       (format " — writes ~a"
+                               (string-join (map ~a writes) ", ")))))
+     rebind-lines)
+    change
+    #:kind "scratch")
+   'rebinds rebinds))
 
 (define (scratch-show-result state)
   (define s (ensure-session! state))
@@ -5614,17 +5708,22 @@
      (when (string=? argument "")
        (error 'run "expected: run PATH"))
      (define rs (ensure-mutable-session-record! state 'run))
+     (define before-ids (session-strata-ids (repl-session-session rs)))
      (define-values (_ _events change)
        (capture-semantic-change
         state rs "run" "settled" '()
         (lambda () (session-run! (repl-session-session rs) argument))))
      (hash-set! repl-last-run rs argument)
      (set-repl-session-changed?! rs #t)
-     (semantic-text-result
-      (format "Run ~a" argument)
-      (list "program completed at a settled daemon boundary")
-      change
-      #:kind "run")]
+     (define-values (rebind-lines rebinds)
+       (rebind-report (session-rebinds (repl-session-session rs) before-ids)))
+     (hash-set
+      (semantic-text-result
+       (format "Run ~a" argument)
+       (cons "program completed at a settled daemon boundary" rebind-lines)
+       change
+       #:kind "run")
+      'rebinds rebinds)]
     ["whatif" (whatif-result state argument)]
     ["replace" (replace-instance-result state argument)]
     ["preview" (preview-result state)]
@@ -6097,6 +6196,84 @@
                           (string-join (hash-ref (dispatch-command state ":status") 'lines)))
       (check-false (held? "abort"))
       (void (dispatch-command state ":quit"))))
+
+  ;; A program event at the prompt that writes a relation the program
+  ;; already reads makes a new version of it (incremental.md §0.4): the
+  ;; earlier readers keep the version they were bound to and never see the
+  ;; new rows or any later edit.  The result says so, in words and as the
+  ;; structured `rebinds` field; `whatif` says the same; and a retraction
+  ;; of a rule-derived fact says why it refuses and what works instead.
+  (let ([rebind-environment (environment-variables-copy (current-environment-variables))]
+        [second-program (make-temporary-file "repl-rebind-~a.slog")])
+    (environment-variables-set! rebind-environment #"SLOG_OPT" #"interp")
+    (environment-variables-set! rebind-environment #"SLOG_THREADS" #"1")
+    (with-output-to-file second-program #:exists 'truncate
+      (lambda () (display "table (edge int int)\nrule (edge 8 9)\n")))
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables rebind-environment])
+      (define state (make-server-state))
+      (define (command line) (dispatch-command state line))
+      (define (lines-of result) (string-join (hash-ref result 'lines) "\n"))
+      (dynamic-wind
+        void
+        (lambda ()
+          (void (command "run tests/reach.slog"))
+          ;; a fact written as a rule is not an input
+          (check-exn
+           #px"\\(2 3\\) from edge: tuple is derived-only -- a rule of the program derives it \\(a fact in the program source, like `rule \\(edge 2 3\\)`, is a rule too\\).*to remove it, change the program and run it again"
+           (lambda () (command "del edge 2 3")))
+          ;; a scratch view over program relations rebinds nothing, and an
+          ;; edit to its inputs still reaches it
+          (define view (command "table (p2 int int) rule (path X Y) --> (p2 X Y)"))
+          (check-equal? (hash-ref view 'rebinds) '())
+          (define clean-whatif (command "whatif add edge 4 5"))
+          (check-equal? (hash-ref clean-whatif 'rebinds) '())
+          (check-equal? (hash-ref clean-whatif 'affected) '("p2" "path"))
+          (check-regexp-match #px"p2 \\+4 \\(6 -> 10\\)"
+                              (lines-of (command "add edge 4 5")))
+          (check-regexp-match #px"p2 -4 \\(10 -> 6\\)"
+                              (lines-of (command "del edge 4 5")))
+          ;; a scratch fact into edge: a new version path never reads
+          (define fact (command "rule (edge 6 7)"))
+          (check-equal? (hash-ref fact 'rebinds)
+                        (list (hasheq 'relation "edge" 'version 1
+                                      'readers '("path")
+                                      'suggestion "add edge 6 7")))
+          (check-regexp-match
+           #px"`edge` is now a new version \\(edge@v1\\); `path` reads an earlier version and won't see this or later edits to `edge`.\nTo add a fact the program's rules see, use `add edge 6 7` instead of a rule; this layer cannot be cleared"
+           (lines-of fact))
+          (check-regexp-match #px"`edge` is now a new version"
+                              (string-join (hash-ref fact 'brief-lines) "\n"))
+          ;; whatif names the readers instead of "no derived relations"
+          (define stale-whatif (command "whatif del edge 1 2"))
+          (check-equal? (hash-ref stale-whatif 'rebinds)
+                        (list (hasheq 'relation "edge" 'version 1
+                                      'readers '("path")
+                                      'suggestion 'null)))
+          (check-false (regexp-match? #px"no derived relations read"
+                                      (lines-of stale-whatif)))
+          (check-regexp-match
+           #px"From here on, edits to `edge` reach only edge@v1; to change what `path` sees, change the program that defines it and run it again.\nlikely route: input-only edit — no derived relation reads this version"
+           (lines-of stale-whatif))
+          ;; a rule extending a recursive relation: its own rules are
+          ;; stale readers, beside the scratch view over it
+          (define self (command "rule (path 99 99) <-- (edge 1 2)"))
+          (check-equal? (hash-ref (first (hash-ref self 'rebinds)) 'readers)
+                        '("p2" "path"))
+          (check-regexp-match
+           #px"`p2` and `path`'s own rules read an earlier version.*\nA rule deriving into `path` belongs in the program whose rules read it"
+           (lines-of self))
+          ;; a `run` at the prompt reports the same, with the program advice
+          (define rerun (command (format "run ~a" second-program)))
+          (check-equal? (hash-ref rerun 'rebinds)
+                        (list (hasheq 'relation "edge" 'version 2
+                                      'readers '("path")
+                                      'suggestion 'null)))
+          (check-regexp-match #px"`edge` is now a new version \\(edge@v2\\)"
+                              (lines-of rerun)))
+        (lambda ()
+          (void (command ":quit"))
+          (delete-file second-program)))))
 
   ;; A syntax error is the command's failure, positioned at the offending
   ;; token -- the parser must not print to the bootstrap pipe and exit the
