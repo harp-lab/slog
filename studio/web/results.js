@@ -445,6 +445,8 @@ export function createResults({ tabs, panel, transcript, send, run, explorer = n
         });
         tab.addEventListener("click", () => show(id));
       }
+      // a live set moves on to the session's state
+      tab.querySelector(".rs-name").replaceWith(stamped(id, view.state, { className: "rs-name" }));
       tab.title = view.parent ? `${view.query}\n${view.parent.parent} · ${view.parent.refinement}` : view.query;
       tab.setAttribute("aria-selected", String(id === shown));
       tab.classList.toggle("live", view.cursor === "live");

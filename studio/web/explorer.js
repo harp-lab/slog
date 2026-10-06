@@ -203,7 +203,8 @@ export function createExplorer({ send, panel = null, openPanel = () => {}, run, 
         rowClass: (i) => (view.added.has(rowKey(view.rows[i])) ? "added" : ""),
         want(first, last) {
           // a cell keeps to the state it was read at: no rows of a later one
-          if (frozen()) return;
+          // (frozen is defined below: the table asks before it is)
+          if (view.pinned && frozen()) return;
           if (last > view.rows.length && view.more && view.rows.length < view.limit) read(view.rows.length, view.rows.length + PAGE);
         },
       },
