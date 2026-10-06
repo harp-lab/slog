@@ -49,8 +49,8 @@ need something not covered here, use `search_docs` / `read_doc` /
   `enum`, `lattice`, `demand`, `extern`, `include`, `run`, `instantiate`), so
   a rule can span many lines.
 - Identifiers: letters, digits, `_`, and `'` (not first). Case sensitive.
-  **No hyphens**: `on-cycle` reads as `on - cycle` (and `reaches-5` as
-  `reaches -5`); write `on_cycle`. Dotted names `g.edge` are qualified names
+  **No hyphens**: `on-cycle` is a compile error ("not a valid name");
+  write `on_cycle`. Dotted names `g.edge` are qualified names
   (modules, section 9).
 - Negation is `~`; there is no `!`, `not`, or `\+`.
 - Literals: integers (`42`, `-17`, arbitrary precision), floats (`3.5`,
@@ -945,20 +945,19 @@ table: add a column), `Type declarations for a conflict: (table int) vs
 (table str)` (declared twice), `Demand relation f must declare at least one
 answer column`.
 
-### Internal contract error from `simplify-all`
+### Hyphenated names and `const`
 
 ```slog-error
-;; error: simplify-all
+;; error: on-cycle is not a valid name
 table (edge int int)
 table (on-cycle int)
 rule (edge 1 1)
 rule (edge X X) --> (on-cycle X)
 ```
 
-This long message (`produced: '(syn (prov ...` ... `contract from: (function
-simplify-all)`) has two known causes: a hyphen in a name (`on-cycle` is
-`on - cycle`; write `on_cycle`), or a constructor named `const`, an internal
-form (use `lit`).
+Names may not contain `-`: write `on_cycle` (subtraction is `(- a b)`).
+`const` is reserved too (it is the compiler's spelling of a literal): name
+such a constructor `lit`.
 
 ### Parse errors and the single `;`
 
