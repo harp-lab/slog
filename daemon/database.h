@@ -324,6 +324,13 @@ private:
   // full-index orderings maintained only in externally-seeded runs (the
   // staging-replay fix); getAnyIndex skips them (see addIndex)
   std::set<std::vector<u16>> seeded_orderings;
+  // The identity ordering ensureDefaultIndex made for an index-less relation
+  // (empty: none), until a program install requisitions it.  It holds the
+  // relation's content only until the first program ordering arrives: no
+  // WriteTask maintains an ordering its stratum did not requisition, so
+  // from then on it silently goes stale.  It must not outlive that moment
+  // unrequisitioned -- see retirePlaceholder.
+  std::vector<u16> placeholder_ord;
   // Index-reuse boundary (cross-stratum keep-set): while an incoming FRESH
   // stratum installs, addIndex/addMapIndex record every ordering it
   // requisitions here; the boundary sweep (Database::boundarySweep, run at
@@ -830,6 +837,7 @@ public:
     // the next getIndex through it then fatals during CSV/BIN export.
     struct_master_index.clear();
     struct_lookup_index.clear();
+    placeholder_ord.clear();
 
     // Registration teardown invalidates the count invariant ("a version's
     // count map covers exactly its live tuples", §6.1) with everything else.
@@ -945,6 +953,7 @@ public:
       if (!fresh_requisitions.count(it->first))
       {
 	++sweep_dropped;
+	if (it->first == placeholder_ord) placeholder_ord.clear();
 	for (u16 b = 0; b < bucket_count; ++b)
 	  delete it->second[b];
 	delete [] it->second;
@@ -2122,6 +2131,7 @@ public:
     // it would replace the live merged map with an empty one.
     if (tracking_requisitions)
       fresh_requisitions.insert(ord);   // boundary keep-set (see addIndex)
+    if (ord == placeholder_ord) placeholder_ord.clear();   // now maintained
     if (indices.count(ord)) return;
     if (tracking_requisitions) fresh_created.insert(ord);
     indices[ord] = new Index*[bucket_count];
@@ -2155,6 +2165,7 @@ public:
     {
       if (tracking_requisitions) pending_backfill.emplace(ord, true);
       else backfillOrdering(ord, true, all_buckets);
+      retirePlaceholder();
     }
 
     if (!ord.empty())
@@ -2186,6 +2197,8 @@ public:
     if (tracking_requisitions)
       (delta ? fresh_delta_requisitions : fresh_requisitions).insert(ord);
     auto& tbl = delta ? deltaindices : indices;
+    if (!delta && !seeded_only && ord == placeholder_ord)
+      placeholder_ord.clear();          // requisitioned: maintained from now on
     // Idempotent: re-registering an existing ordering is a no-op.  A hot-swap
     // upgrade (docs/fast-compile.md §4) re-runs a stratum plugin against the
     // live database, so the replacement plugin requisitions the same indices
@@ -2214,6 +2227,7 @@ public:
     {
       if (tracking_requisitions) pending_backfill.emplace(ord, false);
       else backfillOrdering(ord, false, all_buckets);
+      retirePlaceholder();
     }
 
     // Record this index's leading column so reorg hash-buckets the delta by it.
@@ -2285,9 +2299,36 @@ public:
 		       lat_spec_tree, lat_arena)
 	: makeIndex(arity);
     indices[ord] = arr;
+    placeholder_ord = ord;
     if (std::find(write_leadcols.begin(), write_leadcols.end(), (u16)0)
 	== write_leadcols.end())
       write_leadcols.push_back(0);
+  }
+
+  // A program ordering just arrived (addIndex/addMapIndex), so an
+  // unrequisitioned placeholder stops being maintained.  Drop it, or a later
+  // stratum that does requisition the identity ordering finds it registered
+  // and takes it as live: the boundary sweep keeps its stale (on a first run,
+  // empty) trees and drops the ordering that holds the rows -- a silent row
+  // loss -- and getAnyIndex, the dump source, may pick it meanwhile.  A
+  // boundary install defers this to the sweep, which drops every ordering
+  // the install did not requisition, after the deferred backfills have read
+  // from it; elsewhere the new ordering was just backfilled from it eagerly,
+  // so it holds nothing the relation would lose.  A requisition re-creating
+  // the identity ordering later backfills it from the live content.
+  void retirePlaceholder()
+  {
+    if (placeholder_ord.empty() || tracking_requisitions) return;
+    auto it = indices.find(placeholder_ord);
+    placeholder_ord.clear();
+    if (it == indices.end() || indices.size() == 1) return;
+    for (u16 b = 0; b < bucket_count; ++b)
+      delete it->second[b];
+    delete [] it->second;
+    indices.erase(it);
+    // the master/lookup memos may name it (see clearAllIndices)
+    struct_master_index.clear();
+    struct_lookup_index.clear();
   }
 
   bool isEmpty()
