@@ -36,6 +36,7 @@
 ;; rules over those relations.  Programs leave this file free of demands.
 
 (provide load-program-list
+         resolve-include
          type-env->catalog-delta
          current-catalog-adoption) ; R3 scratch: adopt used input-catalog schema
 

@@ -1,0 +1,64 @@
+;; A Slog program as Slog facts: the schema compiler/reify.rkt writes.
+;;
+;;   racket compiler/reify.rkt FILE > facts.slog
+;;
+;; The facts describe the program as written, before any desugaring:
+;; every declaration, rule, clause and term, each at its file, line and
+;; column.  A rule whose body has alternatives (`|`) is one rule per
+;; alternative, all at the rule's location.
+
+;; ---- where things are ----
+
+struct (loc int int int)               ;; (loc File Line Col), 1-based; File numbers a source_file
+
+table (main_file int)                  ;; the file the program was loaded from
+table (source_file int str)            ;; (source_file File Path): each file read, includes too
+table (library_file int)               ;; a file from the compiler's lib/
+table (includes int int loc)           ;; (includes File Target Loc): File includes Target
+table (missing_include int str loc)    ;; an include the compiler cannot find, and skips
+table (loads int str str loc)          ;; (loads File Kind Target Loc): a `run` or `instantiate`
+
+;; ---- declarations ----
+
+table (relation str str int loc)       ;; (relation Name Kind Arity Loc): Kind is table, demand or extern
+table (column str int str)             ;; (column Rel I Type): column I of Rel, its type as written
+table (demand_inputs str int)          ;; a demand's first N columns are its inputs, the rest answers
+table (type_decl str str loc)          ;; (type_decl Name Kind Loc): Kind is struct, union, enum or lattice
+table (constructor str int loc)        ;; (constructor Name Arity Loc): a struct, union arm or enum member
+table (field str int str)              ;; (field Ctor I Type)
+table (union_member str str)           ;; (union_member Type Member): an arm, or a type an arm names
+table (lattice_spec str str)           ;; (lattice_spec Name Spec)
+table (primitive str)                  ;; the compiler's built-in operations
+
+;; ---- rules ----
+
+;; A term is a clause argument.  Variables, wildcards and literals carry their
+;; own location; so does a call, which is a constructor, a primitive, a demand
+;; called for its value, or a closure.
+union (term (var str loc)
+            (wild loc)
+            (int_lit int loc)
+            (float_lit float loc)
+            (str_lit str loc)              ;; the text between the quotes, escapes as written
+            (bool_lit str loc)
+            (call str (list term) loc)
+            (lst (list term))              ;; [t ...]
+            (splice term)                  ;; t ... inside a list
+            (lam (list str) term)          ;; (lambda (x ...) body)
+            (other str loc))               ;; anything else, as text
+
+table (rule_at int int loc)            ;; (rule_at Rule BodySize Loc)
+table (head int int str (list term) loc)     ;; (head Rule I Rel Args Loc)
+table (body int int str (list term) loc)     ;; a positive body clause, I its position in the body
+table (negated int int str (list term) loc)  ;; ~(Rel Args ...)
+table (binds int int term term loc)          ;; (= A B)
+table (guard int int str term term loc)      ;; (Op A B), Op one of < <= > >= /=
+table (clause_other int int str loc)         ;; a clause of no shape above, as text
+
+;; ---- what an analysis reports ----
+
+;; (finding Severity File Line Col Code Message): Severity is error,
+;; warning or info, Code names the kind of finding.  Declared with the
+;; facts so that it exists before an analysis runs, and a watch on it can
+;; record why each finding was derived.
+table (finding str str int int str str)
