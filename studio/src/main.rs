@@ -14,6 +14,7 @@ mod forms;
 mod hash;
 mod lane;
 mod mcp;
+mod projects;
 mod registry;
 mod review;
 mod scenario;
