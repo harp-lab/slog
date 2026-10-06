@@ -97,6 +97,12 @@ impl SessionConnection {
     pub async fn interrupt(&mut self) -> io::Result<Response> {
         self.request("interrupt", json!({})).await
     }
+    /// The run in flight, as far as it has got (docs/pausing.md §16): its
+    /// finished strata from index `from` on, and the one running.  Sent on
+    /// the CONTROL connection, like `interrupt`, while a command runs.
+    pub async fn progress(&mut self, from: usize) -> io::Result<Response> {
+        self.request("progress", json!({ "from": from })).await
+    }
 
     async fn request(&mut self, method: &str, params: Value) -> io::Result<Response> {
         let id = self.next_id;

@@ -634,3 +634,10 @@ already sends:
   off and 25.0 s at 100 ms, inside the ±4% the runs vary by, and the REPL
   server's own CPU rose 30 ms (0.1%) with Studio-style polling at 10 Hz.
   Reporting at every iteration cost the daemon about 2%.
+
+`compiler/repl.rkt` arms it every 100 ms (`SLOG_PROGRESS_MS`, 0 for off)
+and folds the records, with the fixpoint and pause records, into the
+server's live state, which the control connection's `progress` method
+answers while the command is still in flight (`run-progress`).  A client
+such as Slog Studio polls it about ten times a second while a command runs
+and draws the run from it as it goes.
