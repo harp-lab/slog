@@ -5895,7 +5895,7 @@
           (define run-error (hash-ref (command (format "run ~a" broken)) 'error))
           (check-equal? (hash-ref run-error 'span)
                         (hasheq 'file (path->string broken) 'line 2 'col 31))
-          (check-regexp-match #px"^repl-parse-[^:]+\\.slog:2:31: Expected an atom"
+          (check-regexp-match #px"^repl-parse-[^:]+\\.slog:2:31: the \\) at 2:31 has nothing to close"
                               (hash-ref run-error 'message))
           ;; a scratch fragment is positioned in its own layer file
           (define scratch-span
@@ -5904,7 +5904,7 @@
           (check-equal? (list (file-name-from-path (hash-ref scratch-span 'file))
                               (hash-ref scratch-span 'line)
                               (hash-ref scratch-span 'col))
-                        (list (string->path "1.slog") 1 16))
+                        (list (string->path "1.slog") 1 6))
           (check-true (hash-ref (command ":ping") 'ok))))
       (lambda ()
         (close-server-session! state)

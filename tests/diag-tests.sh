@@ -343,6 +343,32 @@ if echo "$o" | grep -qF 'enum_bare_head.slog:3:6: red is an enum member, not a v
   ok enum-member-needs-parens
 else bad enum-member-needs-parens "$o"; fi
 
+# 21. an unclosed ( is reported at the opener that was never closed, quoting
+#     its form (was: "Expected an atom" at the end of the file, arithm.slog);
+#     an extra ) where it is.  Both before any compile.
+cat > "$D/unclosed.slog" <<'EOF'
+table (lib str int)
+rule (lib "plus"
+  (+ 1
+     (+ 2 3)
+EOF
+cat > "$D/unclosed_mid.slog" <<'EOF'
+table (lib str int)
+rule (lib "plus" (+ 1 2)
+rule (lib "one" 1)
+EOF
+cat > "$D/extra_close.slog" <<'EOF'
+table (a int)
+rule (a 1))
+EOF
+o="$(run unclosed; run unclosed_mid; run extra_close)"
+if echo "$o" | grep -qF 'Error: the ( at 2:6 opening `(lib "plus" ...` is never closed (2 open at end of file)' \
+   && echo "$o" | grep -qF 'Error: the ( at 2:6 opening `(lib "plus" (+ 1 ...` is never closed (`rule` at 3:1 begins while 1 is open)' \
+   && echo "$o" | grep -qF 'Error: the ) at 2:11 has nothing to close' \
+   && ! echo "$o" | grep -q 'Expected an atom'; then
+  ok unbalanced-brackets-located
+else bad unbalanced-brackets-located "$o"; fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

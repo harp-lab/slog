@@ -549,6 +549,71 @@
           "#"
           (make-parse-id-then-N-emit parse 2)))
 
+;; Unbalanced brackets, reported where they are.  The parser would only
+;; notice at the next token it cannot place -- often the end of the file --
+;; so this pass runs first, over tokens (strings, 'refs' and comments are
+;; single tokens: their brackets do not count).  An opener left open is
+;; blamed on the outermost one: that is the form that never ended.  If a
+;; top-level keyword starts a line while openers are open, the form before
+;; it is the one missing its closers, so the blame falls there.
+(define bracket-pairs (hash "(" ")" "[" "]" "{" "}"))
+
+(define (check-brackets toks)
+  (define (at tok)
+    (define pos (token->pos tok))
+    (format "~a:~a" (add1 (pos->startline pos)) (add1 (pos->startcol pos))))
+  ;; the opener's form as written: its first tokens on its line
+  (define (excerpt tail)
+    (define line (pos->startline (token->pos (car tail))))
+    (define same-line
+      (for/list ([tok (in-list tail)]
+                 #:break (not (= line (pos->startline (token->pos tok)))))
+        tok))
+    (define shown (take same-line (min 6 (length same-line))))
+    (string-append
+     (for/fold ([out ""] [end #f] #:result out) ([tok (in-list shown)])
+       (define pos (token->pos tok))
+       (values (string-append out (if (and end (> (pos->startcol pos) end)) " " "")
+                              (token->str tok))
+               (pos->endcol pos)))
+     (if (< (length shown) (length tail)) " ..." "")))
+  (define (unclosed tail open why)
+    (define tok (car tail))
+    (parse-error (format "the ~a at ~a opening `~a` is never closed (~a)"
+                         (token->str tok) (at tok) (excerpt tail) why)
+                 tail))
+  (let loop ([toks toks] [open '()] [blame #f])
+    (define tok (and (pair? toks) (car toks)))
+    (define str (and tok (token->str tok)))
+    (cond
+      [(or (not tok) (eq? 'eof (token->tag tok)))
+       (cond
+         [blame (unclosed (car blame) open (cdr blame))]
+         [(pair? open)
+          (unclosed (last open) open
+                    (format "~a open at end of file" (length open)))])]
+      [(hash-has-key? bracket-pairs str)
+       (loop (cdr toks) (cons toks open) blame)]
+      [(member str '(")" "]" "}"))
+       (cond
+         [(null? open)
+          (parse-error (format "the ~a at ~a has nothing to close" str (at tok)) toks)]
+         [(not (equal? str (hash-ref bracket-pairs (token->str (caar open)))))
+          (parse-error (format "the ~a at ~a does not close the ~a at ~a"
+                               str (at tok) (token->str (caar open)) (at (caar open)))
+                       toks)]
+         [else (loop (cdr toks) (cdr open) blame)])]
+      [(and (pair? open) (not blame)
+            (eq? 'id (token->tag tok))
+            (zero? (pos->startcol (token->pos tok)))
+            (set-member? top-level-keywords str))
+       (loop (cdr toks) open
+             (cons (last open)
+                   (format "`~a` at ~a begins while ~a ~a open"
+                           str (at tok) (length open)
+                           (if (= 1 (length open)) "is" "are"))))]
+      [else (loop (cdr toks) open blame)])))
+
 ; Parses a module from an input port
 (define (parse-port filename input-port)
   (define lex (make-tinkr-lexer filename input-port))
@@ -567,6 +632,7 @@
                    (not (eq? (second x) 'newline))))
             raw-toks))
   (set! module-toks (hash-set module-toks filename raw-toks))
+  (check-brackets real-toks)
   (match-define (cons file-ast residual-toks) (parse-top-level real-toks))
   (if (eq? 'eof (token->tag (peek residual-toks)))
       `(module ,filename ,raw-toks
