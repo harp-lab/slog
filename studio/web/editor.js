@@ -4,6 +4,8 @@
 //   mark(span, message)     underline a 1-based position, or clear with null
 //   reveal(span)            put the cursor at a position
 //   setBreakpoints(lines)   show breakpoint dots on these 1-based lines
+//   notes(notes)            show each { line, text } at the end of its line
+//   findings(findings)      mark each { line, severity, message } (analyzer)
 // `onBreakpoints(lines)` fires when a margin click or an edit changes them;
 // `snapBreakpoint(line)` says which line a click on `line` marks, or null.
 
@@ -97,6 +99,8 @@ function monacoEditor(monaco, element, { onChange, onEvaluate, onSave, onBreakpo
   });
   const model = editor.getModel();
   let quiet = false;
+  // The summary's one-liner per form, decorations so they move with the text.
+  const notes = editor.createDecorationsCollection([]);
 
   // Breakpoints are decorations, so they move with the text they mark.
   const dots = editor.createDecorationsCollection([]);
@@ -144,6 +148,9 @@ function monacoEditor(monaco, element, { onChange, onEvaluate, onSave, onBreakpo
       // An edit operation, not setValue, so undo can step back over it.
       model.pushEditOperations([], [{ range: model.getFullModelRange(), text }], () => null);
       showDots(lines.filter((line) => line <= model.getLineCount()));
+      // Notes and findings cannot be mapped onto a replaced text.
+      notes.clear();
+      monaco.editor.setModelMarkers(model, "analyzer", []);
       quiet = false;
       if (selection) editor.setSelection(selection);
     },
@@ -167,10 +174,35 @@ function monacoEditor(monaco, element, { onChange, onEvaluate, onSave, onBreakpo
       reported = JSON.stringify([...lines].sort((a, b) => a - b));
       showDots(lines);
     },
+    notes(list) {
+      notes.set(list.filter(({ line }) => line <= model.getLineCount()).map(({ line, text }) => {
+        // The whole line, not an empty range at its end: a collapsed
+        // decoration shows no injected text.
+        return {
+          range: new monaco.Range(line, 1, line, model.getLineMaxColumn(line)),
+          options: { after: { content: `   ${text}`, inlineClassName: "form-note" } },
+        };
+      }));
+    },
+    findings(list) {
+      const severity = { error: "Error", warning: "Warning", info: "Info" };
+      monaco.editor.setModelMarkers(model, "analyzer", list
+        .filter(({ line }) => line <= model.getLineCount())
+        .map(({ line, severity: level, message }) => ({
+          startLineNumber: line,
+          startColumn: model.getLineFirstNonWhitespaceColumn(line) || 1,
+          endLineNumber: line,
+          endColumn: model.getLineMaxColumn(line),
+          message,
+          severity: monaco.MarkerSeverity[severity[level]],
+          source: "analyzer",
+        })));
+    },
   };
 }
 
-// The fallback has no margin: breakpoints need the Monaco editor.
+// The fallback has no margin: breakpoints, notes and findings need the
+// Monaco editor.
 function textareaEditor(element, { onChange, onEvaluate, onSave }) {
   const area = document.createElement("textarea");
   area.spellcheck = false;
@@ -199,5 +231,7 @@ function textareaEditor(element, { onChange, onEvaluate, onSave }) {
       area.setSelectionRange(offset(span), offset(span) + 1);
     },
     setBreakpoints() {},
+    notes() {},
+    findings() {},
   };
 }

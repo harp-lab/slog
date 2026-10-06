@@ -5,6 +5,7 @@ import { createEditor } from "./editor.js";
 import { formAt, forms } from "./forms.js";
 import { initAgent } from "./agent.js";
 import { renderEntry } from "./render.js";
+import { createSummary } from "./summary.js";
 
 const $ = (id) => document.getElementById(id);
 // Local mode's launch token; a server's login rides in a cookie instead.
@@ -44,6 +45,11 @@ const editor = await createEditor($("editor"), {
     const form = formAt(forms(editor.get()), line);
     return form?.keyword === "rule" ? form.line : null;
   },
+});
+
+const summary = createSummary($("summary"), {
+  editor,
+  current: () => ({ version: state.version, dirty: state.editTimer !== null }),
 });
 
 // Edits ------------------------------------------------------------------
@@ -92,6 +98,7 @@ const receive = {
     editor.set(snapshot.text);
     editor.setBreakpoints(snapshot.breakpoints);
     agent.snapshot(snapshot);
+    summary.show(snapshot.summary);
     history.load();
     renderSaved();
     renderStatus();
@@ -170,6 +177,9 @@ const receive = {
   scenario({ name, running, report, error }) {
     state.scenarios.set(name, { running, report, error });
     renderScenarios();
+  },
+  summary(view) {
+    summary.show(view);
   },
 };
 
@@ -290,6 +300,7 @@ function renderSaved() {
   const badge = $("saved");
   badge.textContent = dirty ? "unsaved" : "saved";
   badge.className = `badge${dirty ? " dirty" : ""}`;
+  summary.refresh();
 }
 
 // A status pill: a state dot ("ok", "busy", "bad", or none) and its text.

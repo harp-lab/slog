@@ -61,6 +61,7 @@ fn asset(name: &str) -> Response {
         "render.js" => (include_str!("../web/render.js"), "text/javascript; charset=utf-8"),
         "forms.js" => (include_str!("../web/forms.js"), "text/javascript; charset=utf-8"),
         "agent.js" => (include_str!("../web/agent.js"), "text/javascript; charset=utf-8"),
+        "summary.js" => (include_str!("../web/summary.js"), "text/javascript; charset=utf-8"),
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
     ([(header::CONTENT_TYPE, kind), (header::CACHE_CONTROL, "no-cache")], body).into_response()
