@@ -45,11 +45,18 @@ pub async fn handle(registry: &Registry, headers: HeaderMap, body: String) -> Re
             let name = request["params"]["name"].as_str().unwrap_or("");
             let arguments = &request["params"]["arguments"];
             match call(&studio, thread, name, arguments).await {
-                Ok(value) => json!({
-                    "content": [{ "type": "text", "text": serde_json::to_string_pretty(&value).unwrap_or_default() }],
-                    "structuredContent": value,
-                    "isError": false,
-                }),
+                Ok(value) => {
+                    let mut result = json!({
+                        "content": [{ "type": "text", "text": serde_json::to_string_pretty(&value).unwrap_or_default() }],
+                        "isError": false,
+                    });
+                    // Structured content must be an object; clients refuse a
+                    // result whose structured content is a list.
+                    if value.is_object() {
+                        result["structuredContent"] = value;
+                    }
+                    result
+                }
                 // A tool failure is a result the model reads, not a protocol error.
                 Err(message) => json!({
                     "content": [{ "type": "text", "text": message }],
