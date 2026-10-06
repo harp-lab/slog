@@ -5558,9 +5558,10 @@ public:
       // the earlier barrier.  The mark lasts exactly one iteration.
       if (w.gate_owned) { w.gate_owned = false; continue; }
       if (w.last_barrier == barrier) continue;
-      auto it = version_key_relations.find(w.version_key);
-      if (it == version_key_relations.end() || it->second == nullptr) continue;
-      Relation* rel = it->second;
+      // through the prepared overlay, as the gate's settle does: a watch
+      // bound at prepare time observes the run that creates its key
+      Relation* rel = watchTarget(w.version_key);
+      if (rel == nullptr) continue;
       const u16 arity = rel->getArity();
       if (arity == 0) continue;
       bool hit = false;
