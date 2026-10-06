@@ -5498,6 +5498,19 @@
   (define test-environment
     (environment-variables-copy (current-environment-variables)))
   (environment-variables-set! test-environment #"SLOG_NO_MEM_CAP" #"1")
+  ;; A daemon fatal() reaches the client as one (error ...) record, which
+  ;; drive-to-fixpoint! and the batch driver raise with its text.  It used to
+  ;; print two bare lines to stdout and exit, so a run that hit one -- the
+  ;; trace's struct lookup at an iteration barrier -- told the REPL user only
+  ;; "daemon EOF mid-stratum".
+  (parameterize ([current-directory repository-root]
+                 [current-environment-variables test-environment]
+                 [current-error-port (open-output-nowhere)])
+    (define s (make-session #:echo void))
+    (check-equal?
+     (session-action! s '(write-rel-csv "out/fatal-probe" "no_such_relation")
+                      (lambda (in) (for/list ([line (in-lines in)]) line)))
+     (list "(error \"fatal: Cannot write unknown relation no_such_relation\")")))
   (check-equal?
    (parameterize ([current-directory repository-root]
                   [current-environment-variables test-environment])
